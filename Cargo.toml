@@ -1,0 +1,23 @@
+[package]
+name = "foch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+env_logger = "0.11.8"
+notify = "8.1.0"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_with = "3.14.0"
+steamlocate = "2.0.1"
+strum = "0.27.1"
+strum_macros = "0.27.1"
+tempfile = "3.20.0"
+typed-builder = "0.21.0"
+vdf-serde = "0.3.0"
+walkdir = "2.5.0"
+log = "0.4.27"
+
+[[bin]]
+name = "foch-cli"
+path = "src/main.rs"
+
