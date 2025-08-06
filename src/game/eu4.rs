@@ -1,4 +1,3 @@
-use crate::filesystem::{FS, WithFileSystem};
 use crate::game::GameType;
 use serde::Serialize;
 
@@ -6,17 +5,17 @@ use serde::Serialize;
 pub struct EU4 {}
 
 impl GameType for EU4 {
-    const NAME: &'static str = "Europa Universalis IV";
+	const NAME: &'static str = "Europa Universalis IV";
 }
 
 impl TryFrom<String> for EU4 {
-    type Error = ();
+	type Error = ();
 
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value == Self::NAME {
-            Ok(EU4 {})
-        } else {
-            Err(())
-        }
-    }
+	fn try_from(value: String) -> Result<Self, Self::Error> {
+		if value == Self::NAME {
+			Ok(EU4 {})
+		} else {
+			Err(())
+		}
+	}
 }
