@@ -31,7 +31,7 @@ mod arc_mutex_map_serde {
 	}
 
 	pub fn deserialize<'de, D>(
-        deserializer: D,
+		deserializer: D,
 	) -> Result<Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>, D::Error>
 	where
 		D: Deserializer<'de>,
@@ -189,11 +189,12 @@ pub trait WithFileSystem {
 	fn fs_mut(&mut self) -> &mut FS;
 }
 
+
 #[cfg(test)]
 mod tests {
 	use super::*;
-use std::fs;
-use std::time::{Duration, Instant};
+	use std::fs;
+	use std::time::{Duration, Instant};
 
 	#[test]
 	fn test_fs_watch() {
