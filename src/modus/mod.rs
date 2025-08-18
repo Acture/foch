@@ -7,6 +7,16 @@ pub struct ModEntry {
 	pub version: String,
 }
 
+impl ModEntry {
+	pub fn from_mod_record(path: &PathBuf) -> Self {
+		todo!()
+	}
+
+	pub fn from_mod_descriptor(path: &PathBuf) -> Self {
+		todo!()
+	}
+}
+
 pub struct Mod {
 	pub name: String,
 	pub version: String,
