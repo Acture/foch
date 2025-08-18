@@ -16,6 +16,7 @@ typed-builder = "0.21.0"
 vdf-serde = "0.3.0"
 walkdir = "2.5.0"
 log = "0.4.27"
+tree-sitter-paradox = "0.2.0"
 
 [[bin]]
 name = "foch-cli"
