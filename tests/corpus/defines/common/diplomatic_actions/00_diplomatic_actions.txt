@@ -1,6 +1,6 @@
 # INSTRUCTIONS:
 #
-# condition				A diplomatic action can have any number of condition blocks, each with its own
+# condition				a diplomatic action can have any number of condition blocks, each with its own
 #						tooltip, potential and allow section
 #
 # 	tooltip					Sets a custom text string similar to the hardcoded limits
@@ -10,7 +10,7 @@
 # 	potential				Determines if the trigger is applicable or not
 # 	allow					Determines if the action is valid or not
 #
-# effect				A diplomatic action can only have one effect block
+# effect				a diplomatic action can only have one effect block
 
 # ROOT					actor
 # FROM					target
@@ -226,13 +226,13 @@ abandon_union_action = {
 form_coalition = {
 	condition = {
 		tooltip = MINAGGRESSIVEEXPANSION
-		potential = {	
+		potential = {
 		}
 		allow = {
 			has_opinion_modifier = {
 				modifier = aggressive_expansion
 				who = FROM
-			}		
+			}
 			NOT = {
 				has_opinion_modifier = {
 					modifier = aggressive_expansion
