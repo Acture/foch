@@ -1,0 +1,64 @@
+scorched_earth = {
+	local_hostile_movement_speed = -0.50
+	local_monthly_devastation = 0.2 # Addition
+}
+
+occupied = {
+	local_tax_modifier = -0.5
+	trade_goods_size_modifier = -0.5
+	province_trade_power_modifier = -0.5
+	local_manpower_modifier = -0.5
+	local_sailors_modifier = -0.5
+	local_institution_spread = -0.1
+
+	local_monthly_devastation = 0.25 # Modified from 0.2
+}
+
+under_siege = {
+	trade_goods_size_modifier = -0.25
+	province_trade_power_modifier = -0.25
+	local_institution_spread = -0.1
+	local_monthly_devastation = 0.2 # Modified from 0.1
+}
+
+devastation = {
+	trade_goods_size_modifier = -1
+	supply_limit_modifier = -0.5
+	local_institution_spread = -1.0
+	local_development_cost = 0.1
+	local_manpower_modifier = -1.0
+	local_sailors_modifier = -1.0
+	local_hostile_movement_speed = -0.25
+	local_friendly_movement_speed = -0.25
+	local_unrest = 5 # Addition
+}
+expanded_infrastructure = {
+	allowed_num_of_buildings = 1
+	allowed_num_of_manufactories = 1
+	regiment_recruit_speed = -0.15
+	ship_recruit_speed = -0.15
+	local_defensiveness = 0.05
+	garrison_growth = 0.05
+	local_development_cost = -0.05
+	local_production_efficiency = 0.05
+	local_tax_modifier = 0.1
+	local_manpower_modifier = 0.05
+	local_sailors_modifier = 0.05
+	local_ship_repair = 0.05
+	local_autonomy = -0.005
+	local_build_cost = -0.05
+	local_build_time = -0.05
+	province_trade_power_modifier = 0.05
+	trade_goods_size_modifier = 0.05
+	local_governing_cost_increase = 15
+	local_governing_cost = 0.1
+	local_great_project_upgrade_cost = -0.05
+}
+
+centralize_state = {
+	statewide_governing_cost = -0.25
+	local_prosperity_growth = 0.1
+	local_state_maintenance_modifier = -0.2
+	state_governing_cost_increase = -100
+	picture = "centralize_state"
+}

@@ -1,0 +1,343 @@
+player_reform = {
+
+	icon = "peacock_throne"
+
+	allow_banners = yes
+	allow_cawa = yes
+	allow_convert = yes
+	allow_draft_transport_ships = yes
+	allow_force_tributary = yes
+	allow_migration = yes
+	allow_normal_conversion = no
+	basic_reform = yes
+	boost_income = yes
+	can_change_primary_culture = yes
+	can_form_trade_league = yes
+	can_use_trade_post = yes
+	cb_on_religious_enemies = yes
+	claim_states = yes
+	different_religion_acceptance = 10
+	different_religion_group_acceptance = 10
+	force_conversion_gives_global_holy_war_released_modifier = yes
+	free_concentrate_development = yes
+	has_harem = yes
+	has_pashas = yes
+	heir = yes
+	heirs_can_be_generals = yes
+	lock_level_when_selected = yes
+	min_autonomy = 0
+	queen = yes
+	royal_marriage = yes
+	rulers_can_be_generals = yes
+	maintain_dynasty = yes
+	can_customise_heir = yes
+	trade_city_reform = trading_city
+
+	potential = {
+		ai = NO
+	}
+
+	valid_for_nation_designer = yes
+	nation_designer_cost = 50
+
+	trigger = {
+		OR = {
+			has_reform = player_reform
+		}
+	}
+
+	effect = {
+		change_variable = {
+			which = Noble_Influence
+			value = 3
+		}
+		change_variable = {
+			which = Burgher_Influence
+			value = 3
+		}
+		change_variable = {
+			which = Clergy_Influence
+			value = 3
+		}
+		change_variable = {
+			which = Royal_Influence
+			value = 3
+		}
+
+
+		change_variable = {
+			which = Populist_Influence
+			value = 3
+		}
+		change_variable = {
+			which = Plutocrat_Influence
+			value = 3
+		}
+		change_variable = {
+			which = Oliarch_Influence
+			value = 1
+		}
+		
+		custom_tooltip = producing_wine_and_grain_tt
+		hidden_effect = {
+			every_owned_province = {
+				if = {
+					limit = {
+						trade_goods = wine
+					}
+					add_province_modifier = { 
+						name = wine_bonus_prod
+						duration = -1
+						hidden = yes
+					}
+				}
+				if = {
+					limit = {
+						trade_goods = grain
+					}
+					add_province_modifier = { 
+						name = grain_bonus_prod
+						duration = -1
+						hidden = yes
+					}
+				}
+			}
+		}
+
+		add_country_modifier = {
+			name = look_up_purbias_upgraded
+			duration = -1
+		}
+
+		GE_set_liberalism = yes
+	}
+
+	custom_attributes = {
+		#admirals_become_rulers = yes
+		better_purbias_interaction = yes
+		election_on_death = yes
+		enable_factional_elections = yes
+		enable_settled_mechanics = yes
+		enables_abolish_noble_customs = yes
+		enables_absolute_reelection = yes
+		enables_administrative_forts = yes
+		enables_arabian_horses = yes
+		enables_aristocratic_idea_group = yes
+		enables_artillery_academia = yes
+		enables_attracting_academics = yes
+		enables_baltic_sea_trade = yes
+		enables_bear_arms = yes
+		enables_berber_guides = yes
+		enables_better_grain = yes
+		enables_blood_sacrifice = yes
+		enables_blood_tax = yes
+		enables_bureacratic_apparatus = yes
+		enables_bureaucracy_autonomy = yes
+		enables_burgher_autonomy = yes
+		enables_burgher_council = yes
+		enables_byzantine_administration = yes
+		enables_capitalism = yes
+		enables_caravanserai = yes
+		enables_central_army_conscription = yes
+		enables_church_policy = yes
+		enables_church_poorhouses = yes
+		enables_codified_law = yes
+		enables_coin_over_crown = yes
+		enables_colonial_plantations = yes
+		enables_cortes = yes
+		enables_corvee = yes
+		enables_cossack_estate = yes
+		enables_crown_of_aragon = yes
+		enables_crusader_order = yes
+		enables_cultural_inspiration = yes
+		enables_cultural_supremacy = yes
+		enables_custodian_of_cities = yes
+		enables_customs_house = yes
+		enables_davidic_line = yes
+		enables_demedici = yes
+		enables_deposition = yes
+		enables_device_forts = yes
+		enables_devshirme = yes
+		enables_divine_blood = yes
+		enables_divine_idea_group = yes
+		enables_eastern_courts = yes
+		enables_economic_block = yes
+		enables_elective_monarchy = yes
+		enables_elephant_cavalry = yes
+		enables_emergency_power = yes
+		enables_expansion_of_junker_privileges = yes
+		enables_feudal_receipts = yes
+		enables_fire_ghulams = yes
+		enables_foreign_artists = yes
+		enables_foreign_drill_masters = yes
+		enables_foreign_students = yes
+		enables_foreign_worship = yes
+		enables_fortified_settlements = yes
+		enables_four_articles = yes
+		enables_french_court = yes
+		enables_french_ordonannce = yes
+		enables_fury_of_the_reconquista = yes
+		enables_galleria_celeste = yes
+		enables_general_connections = yes
+		enables_general_guards = yes
+		enables_germanization = yes
+		enables_ghulam_governors = yes
+		enables_ghulams_estate = yes
+		enables_global_tax_modifier_buff = yes
+		enables_grand_captain = yes
+		enables_grand_leader = yes
+		enables_grazing_herds = yes
+		enables_hansa_ties = yes
+		enables_hereditary_theocracy = yes
+		enables_holy_lhasa = yes
+		enables_holy_tithe = yes
+		enables_holy_war = yes
+		enables_home_market = yes
+		enables_horde_idea_group = yes
+		enables_huaca_cults = yes
+		enables_ianuensis_ergo_mercator = yes
+		enables_iberian_harem = yes
+		enables_immigrant_settlements = yes
+		enables_imperial_circle = yes
+		enables_imperial_knights = yes
+		enables_industrialism = yes
+		enables_italian_grain_treaties = yes
+		enables_junker_estate = yes
+		enables_jurisprudence = yes
+		enables_kaza_system = yes
+		enables_kingdom_of_aragon = yes
+		enables_kingdom_of_brazil = yes
+		enables_kiwi_support = yes
+		enables_koprulu_dynasty = yes
+		enables_korean_bureaucracy = yes
+		enables_kreditwerk_appointments = yes
+		enables_legacy_of_independence = yes
+		enables_liber_augustalis = yes
+		enables_lingua_franca = yes
+		enables_local_bishoprics = yes
+		enables_long_reign = yes
+		enables_loyal_republican_army = yes
+		enables_magnate_law = yes
+		enables_mandala_periphery = yes
+		enables_marcher_lords = yes
+		enables_marriage_policies = yes
+		enables_mary_of_the_purity = yes
+		enables_masked_monarch = yes
+		enables_mercenary_markets = yes
+		enables_militant_orders = yes
+		enables_military_exports = yes
+		enables_military_governors = yes
+		enables_millet_system = yes
+		enables_mint_towns = yes
+		enables_monastic_temples = yes
+		enables_monastic_trade = yes
+		enables_morisca_band = yes
+		enables_mountain_towns = yes
+		enables_national_strenghtening_project = yes
+		enables_nations_of_the_republic = yes
+		enables_nepotism = yes
+		enables_no_crown = yes
+		enables_noble_diplomats = yes
+		enables_noble_electors = yes
+		enables_noble_estate = yes
+		enables_noble_privileges = yes
+		enables_noble_service = yes
+		enables_office_of_chancellor = yes
+		enables_officers_of_the_sword = yes
+		enables_ordine_cordone_giallo = yes
+		enables_papal_delegation = yes
+		enables_papal_favor = yes
+		enables_patriotism = yes
+		enables_pax_mongolia = yes
+		enables_peace_development_reduction = yes
+		enables_peasant_council = yes
+		enables_peasant_estate = yes
+		enables_people_under_tengri = yes
+		enables_plutocratic_idea_group = yes
+		enables_presidental_authority = yes
+		enables_pride_of_the_navy = yes
+		enables_princes_of_novogorod = yes
+		enables_public_works = yes
+		enables_qadi_authority = yes
+		enables_qing_court = yes
+		enables_qizilbash_company = yes
+		enables_regent_investments = yes
+		enables_regulated_leave = yes
+		enables_religious_adherence = yes
+		enables_religious_domination = yes
+		enables_Religious_Fervor = yes
+		enables_religious_supremacy = yes
+		enables_republican_guard = yes
+		enables_return_to_sender = yes
+		enables_roman_empire = yes
+		enables_royal_army_garrisons = yes
+		enables_royal_council = yes
+		enables_royal_domain = yes
+		enables_royal_electors = yes
+		enables_royal_mining_monopoly = yes
+		enables_royal_nobles = yes
+		enables_rural_development = yes
+		enables_saharan_outposts = yes
+		enables_salt_monopoly = yes
+		enables_satrapies = yes
+		enables_serfdom = yes
+		enables_settling_tribes = yes
+		enables_sforza = yes
+		enables_shocking_general = yes
+		enables_siamese_honor = yes
+		enables_siberian_tribe = yes
+		enables_silk_traders = yes
+		enables_society_of_agriculture = yes
+		enables_such_waste_of_life = yes
+		enables_support_ghibbellines = yes
+		enables_support_ghuelps = yes
+		enables_swiss_guard = yes
+		enables_tanistry = yes
+		enables_timariots = yes
+		enables_town_rights = yes
+		enables_trade_princes = yes
+		enables_unified_drills = yes
+		enables_union_of_arras = yes
+		enables_unrestricted_diplomats = yes
+		enables_varangian_guard = yes
+		enables_veteran_general = yes
+		enables_voc_mentality = yes
+		enables_well_trained_militia = yes
+		enables_white_knights = yes
+		#force_admiral_leader = yes
+		#generals_become_rulers = yes
+		gives_war_against_the_world_tooltip_dummy = yes
+		has_federal_kingdoms = yes
+		has_internal_tribes = yes
+		has_itinerant_capital = yes
+		has_tributaries = yes
+		has_unify_china_cb = yes
+		#is_merchant_republic = yes
+		locked_government_type = yes
+		lottery_election = yes
+		maratha_general_interaction = yes
+	}
+	government_abilities = {
+		iqta_mechanic
+		tribal_federation_mechanic
+		cossacks_mechanic
+		mamluk_mechanic
+		russian_mechanic
+		feudal_theocracy_mechanic
+	}
+	modifiers = {
+		junkers_influence_modifier = -0.5
+		junkers_loyalty_modifier = 0.5
+
+	}
+	factions = {
+		mr_aristocrats
+		GE_ultraquists
+		GE_federalists
+		GE_orthodox
+		rr_jacobins
+		pr_buccaneers
+		GE_Senate
+		temples
+	}
+}
