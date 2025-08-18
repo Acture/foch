@@ -64,7 +64,7 @@ mod tests {
 	}
 	#[test]
 	fn test_game_fs() {
-		let fs = FS::builder().root("/path/to/game".into()).build();
+		let fs = FS::builder().root("/path/to/game").build();
 		println!("{fs:?}");
 	}
 
