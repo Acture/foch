@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use crate::filesystem::{WithFileSystem, FS};
+use crate::filesystem::{FS};
 
 pub struct ModEntry {
 	pub name: String,
@@ -36,12 +36,3 @@ impl From<ModEntry> for Mod {
 	}
 }
 
-impl WithFileSystem for Mod {
-	fn fs(&self) -> &FS {
-		&self.fs
-	}
-
-	fn fs_mut(&mut self) -> &mut FS {
-		&mut self.fs
-	}
-}
