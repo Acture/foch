@@ -1,6 +1,6 @@
 mod eu4;
 
-use crate::filesystem::{WithFileSystem, FS};
+use crate::filesystem::{FS};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -26,15 +26,6 @@ pub struct Game<K: GameType> {
 	_kind: PhantomData<K>,
 }
 
-impl<K: GameType> WithFileSystem for Game<K> {
-	fn fs(&self) -> &FS {
-		&self.fs
-	}
-
-	fn fs_mut(&mut self) -> &mut FS {
-		&mut self.fs
-	}
-}
 
 fn normalize_game_name(input: &str) -> String {
 	match input.to_ascii_lowercase().as_str() {

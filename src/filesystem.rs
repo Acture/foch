@@ -1,5 +1,6 @@
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::HashMap;
+use std::error::Error;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +11,14 @@ use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
+
+pub trait FileWatcher {
+	fn get_files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>;
+	fn watch(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+	fn unwatch(&mut self) -> Result<(), Box<dyn std::error::Error>>;
+	fn update_hash(&mut self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>>;
+}
+
 
 mod arc_mutex_map_serde {
 	use super::*;
@@ -31,7 +40,7 @@ mod arc_mutex_map_serde {
 	}
 
 	pub fn deserialize<'de, D>(
-		deserializer: D,
+        deserializer: D,
 	) -> Result<Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>, D::Error>
 	where
 		D: Deserializer<'de>,
@@ -75,25 +84,11 @@ pub struct FS {
 	watcher: Option<notify::RecommendedWatcher>,
 }
 
-impl FS {
-	pub fn collect_files(&self) -> Result<(), Box<dyn std::error::Error>> {
-		let mut files = self.files.lock().expect("Failed to lock files mutex");
-		for entry in std::fs::read_dir(&self.root)? {
-			let entry = entry?;
-			let path = entry.path();
-			if path.is_file() {
-				let relative_path = path
-					.canonicalize()
-					.expect("Failed to canonicalize")
-					.strip_prefix(&self.root)
-					.expect("Path should be relative to root")
-					.to_path_buf();
-				files.entry(relative_path).or_insert(None);
-			}
-		}
-		Ok(())
+impl FileWatcher for FS {
+	fn get_files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>> {
+		return &self.files
 	}
-	pub fn watch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+	fn watch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
 		// Watching the directory for changes and updating the files map
 		if self.watcher.is_some() {
 			return Err("Watcher already started".into());
@@ -176,18 +171,27 @@ impl FS {
 		Ok(())
 	}
 
-	pub fn unwatch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+	fn unwatch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
 		if let Some(mut watcher) = self.watcher.take() {
 			watcher.unwatch(&self.root)?;
 		}
 		Ok(())
 	}
+
+	fn update_hash(&mut self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
+		self.files
+			.lock()
+			.map_err(|e| e.to_string())?
+			.entry(path.clone())
+			.and_modify(|hash| {
+				// 这里可以计算文件的哈希值并更新
+				todo!("Calculate hash for file: {:?}", path);
+			})
+			.or_insert(None);
+		Ok(())
+	}
 }
 
-pub trait WithFileSystem {
-	fn fs(&self) -> &FS;
-	fn fs_mut(&mut self) -> &mut FS;
-}
 
 
 #[cfg(test)]
@@ -203,16 +207,6 @@ mod tests {
 
 		fs.watch().expect("Failed to start filesystem watcher");
 		fs::write(temp_dir.path().join("test_file_1.txt"), b"Hello, World!")
-			.expect("Failed to create test file");
-		fs.collect_files().expect("Failed to collect files");
-		assert!(
-			fs.files
-				.lock()
-				.unwrap()
-				.contains_key(&PathBuf::from("test_file_1.txt"))
-		);
-
-		fs::write(temp_dir.path().join("test_file_2.txt"), b"Hello, World!")
 			.expect("Failed to create test file");
 		let start = Instant::now();
 		let timeout = Duration::from_secs(3);
