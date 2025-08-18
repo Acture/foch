@@ -19,7 +19,7 @@ impl ModEntry {
 	pub fn from_mod_descriptor(path: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
 		let descriptor_text = std::fs::read_to_string(path)?;
 		let mut parser = crate::parsing::TSParserWrapper::new();
-		let _ = parser.parse_as_tree(&descriptor_text);
+		let _ = parser.parse(&descriptor_text);
 		let nodes = parser
 			.find_nodes(|node| node.kind() == "assignment")
 			.expect("Failed to find assignment nodes");

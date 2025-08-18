@@ -6,7 +6,8 @@ use tree_sitter_paradox;
 use typed_builder::TypedBuilder;
 
 pub trait ParadoxScriptParser {
-	fn parse_as_tree(&mut self, text: &str) -> Result<(), &str>;
+	fn parse(&mut self, text: &str) -> Result<(), &str>;
+	fn tree(&self) -> Option<&TSTree>;
 	fn find_nodes(&self, condition: fn(TSNode<'_>) -> bool) -> Result<Vec<TSNode<'_>>, &str>;
 }
 
@@ -29,12 +30,16 @@ impl TSParserWrapper {
 }
 
 impl ParadoxScriptParser for TSParserWrapper {
-	fn parse_as_tree(&mut self, text: &str) -> Result<(), &str> {
+	fn parse(&mut self, text: &str) -> Result<(), &str> {
 		self.tree = self.parser.parse(text, self.tree.as_ref());
 		if self.tree.is_none() {
 			return Err("No Tree is parsed");
 		}
 		Ok(())
+	}
+
+	fn tree(&self) -> Option<&TSTree> {
+		self.tree.as_ref()
 	}
 
 	fn find_nodes(&self, condition: fn(TSNode<'_>) -> bool) -> Result<Vec<TSNode<'_>>, &str> {
@@ -66,14 +71,12 @@ mod tests {
 	use crate::get_corpus_path;
 	use crate::parsing::{ParadoxScriptParser, TSParserWrapper};
 
-
-
 	#[test]
 	fn test_parse_descriptor() {
 		let descriptor_path = get_corpus_path().join("defines").join("descriptor.mod");
 		let descriptor_text = std::fs::read_to_string(descriptor_path).unwrap();
 		let mut parser = TSParserWrapper::new();
-		let tree = parser.parse_as_tree(&descriptor_text);
+		let tree = parser.parse(&descriptor_text);
 		println!("{:#?}", tree);
 		let all_nodes = parser.find_nodes(|node| {
 			return true;
