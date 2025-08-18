@@ -1,24 +1,24 @@
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use typed_builder::TypedBuilder;
 
-use log::debug;
+use log::{debug, error};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 pub trait FileWatcher {
-	fn get_files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>;
+	fn files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>;
+	fn file_snapshot(&self) -> Result<HashMap<PathBuf, Option<[u8; 32]>>, Box<dyn Error>>;
 	fn watch(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 	fn unwatch(&mut self) -> Result<(), Box<dyn std::error::Error>>;
-	fn update_hash(&mut self, path: &PathBuf) -> Result<(), Box<dyn std::error::Error>>;
+	fn update_hash(&mut self, path: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>>;
 }
-
 
 mod arc_mutex_map_serde {
 	use super::*;
@@ -73,8 +73,7 @@ mod arc_mutex_map_serde {
 
 #[derive(Debug, Serialize, Deserialize, Default, TypedBuilder)]
 pub struct FS {
-	#[builder(default, setter(into, transform = |p: PathBuf| std::fs::canonicalize(p).expect("Path should be canonicalized")
-	))]
+	#[builder(default, setter(into))]
 	pub root: PathBuf,
 	#[builder(default, setter(skip), setter(into))]
 	#[serde(with = "arc_mutex_map_serde")]
@@ -85,8 +84,16 @@ pub struct FS {
 }
 
 impl FileWatcher for FS {
-	fn get_files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>> {
-		return &self.files
+	fn files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>> {
+		&self.files
+	}
+
+	fn file_snapshot(&self) -> Result<HashMap<PathBuf, Option<[u8; 32]>>, Box<dyn Error>> {
+		let files = self
+			.files
+			.lock()
+			.map_err(|e| format!("Failed to get lock:{}", e))?;
+		Ok(files.clone())
 	}
 	fn watch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
 		// Watching the directory for changes and updating the files map
@@ -94,7 +101,7 @@ impl FileWatcher for FS {
 			return Err("Watcher already started".into());
 		}
 
-		let files_ref = Arc::clone(&self.files);
+		let files_ref = self.files.clone();
 		let root = self.root.clone();
 
 		let mut watcher = notify::recommended_watcher({
@@ -108,14 +115,15 @@ impl FileWatcher for FS {
 									let path = event
 										.paths
 										.first()
-										.expect("Event should have at least one path")
+										.expect("Event should have at least one path");
+									let normalized_path = path
 										.canonicalize()
-										.expect("Path should be canonicalized")
+										.expect(format!("Failed to canonicalize path: {:?}", path).as_str())
 										.strip_prefix(&root)
-										.expect("Path should be relative to root")
+										.expect(format!("Path <{:?}> should be relative to root <{:?}>", path, root).as_str())
 										.to_path_buf();
 									let hash = None;
-									files_ref.lock().unwrap().entry(path).or_insert(hash);
+									files_ref.lock().expect("Fail to get lock").entry(normalized_path).or_insert(hash);
 								}
 								_ => {
 									debug!("Unsupported create kind: {:?}", create_kind);
@@ -127,7 +135,7 @@ impl FileWatcher for FS {
 										let file = event
 											.paths
 											.first()
-											.unwrap()
+											.expect("Event should have at least one path")
 											.strip_prefix(&root)
 											.expect("Path should be relative to root")
 											.to_path_buf();
@@ -138,7 +146,7 @@ impl FileWatcher for FS {
 										let src = event
 											.paths
 											.first()
-											.unwrap()
+											.expect("Event should have at least one path")
 											.strip_prefix(&root)
 											.expect("Path should be relative to root")
 											.to_path_buf();
@@ -161,7 +169,9 @@ impl FileWatcher for FS {
 							}
 						}
 					}
-					Err(e) => panic!("watch error: {:?}", e),
+					Err(e) => {
+						panic!("Error watching filesystem: {}", e);
+					},
 				}
 			}
 		})?;
@@ -178,55 +188,89 @@ impl FileWatcher for FS {
 		Ok(())
 	}
 
-	fn update_hash(&mut self, path: &PathBuf) -> Result<(), Box<dyn Error>> {
-		self.files
+	fn update_hash(&mut self, paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
+		let files = self
+			.files
 			.lock()
-			.map_err(|e| e.to_string())?
-			.entry(path.clone())
-			.and_modify(|hash| {
-				// 这里可以计算文件的哈希值并更新
-				todo!("Calculate hash for file: {:?}", path);
-			})
-			.or_insert(None);
-		Ok(())
+			.map_err(|e| format!("Failed to get lock:{}", e))?;
+		paths.iter().try_for_each(|path| {
+			if files.contains_key(path) {
+				debug!("Updating hash for path: {:?}", path);
+				Ok(())
+			} else {
+				Err(format!("Path {:?} not found in files map", path.display()).into())
+			}
+		})
 	}
 }
 
-
+impl FS {
+	pub fn new_file_watcher(root: impl AsRef<Path>) -> Result<Box<dyn FileWatcher>, Box<dyn Error>>
+	{
+		let p = root.as_ref().canonicalize()?;
+		Ok(Box::new(FS::builder().root(p).build()))
+	}
+}
 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::fs;
-	use std::time::{Duration, Instant};
+use std::fs;
+use std::time::{Duration, Instant};
 
 	#[test]
 	fn test_fs_watch() {
 		let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
-		let mut fs = FS::builder().root(temp_dir.path().to_path_buf()).build();
+		let mut fw = FS::new_file_watcher(temp_dir.path()).expect("Failed to create file watcher");
 
-		fs.watch().expect("Failed to start filesystem watcher");
+		fw.watch().expect("Failed to start filesystem watcher");
 		fs::write(temp_dir.path().join("test_file_1.txt"), b"Hello, World!")
 			.expect("Failed to create test file");
 		let start = Instant::now();
 		let timeout = Duration::from_secs(3);
 		let mut found = false;
-		println!("Watching directory: {:?}", fs);
 
 		while start.elapsed() < timeout {
-			if fs
-				.files
-				.lock()
-				.unwrap()
-				.contains_key(&PathBuf::from("test_file_2.txt"))
-			{
+			let files = fw.file_snapshot().expect("Failed to get file snapshot");
+			if files.contains_key(&PathBuf::from("test_file_1.txt")) {
 				found = true;
 				break;
+			} else {
+				println!("Waiting for file to be created: {:?}", files);
 			}
 			std::thread::sleep(Duration::from_millis(100));
 		}
 
 		assert!(found, "File was not found in the filesystem after creation");
-		println!("{fs:?}")
+	}
+
+	#[test]
+	fn test_fs_unwatch() {
+		let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+		let mut fw = FS::new_file_watcher(temp_dir.path()).expect("Failed to create file watcher");
+		fw.watch().expect("Failed to start filesystem watcher");
+		fw.unwatch().expect("Failed to stop filesystem watcher");
+		fs::write(temp_dir.path().join("test_file_1.txt"), b"Hello, World!")
+			.expect("Failed to create test file");
+		std::thread::sleep(Duration::from_secs(1));
+		assert!(
+			!fw.file_snapshot()
+				.expect("Failed to get file snapshot")
+				.contains_key(&PathBuf::from("test_file_1.txt"))
+		);
+	}
+
+	#[test]
+	fn test_update_hash() {
+		let temp_dir = tempfile::tempdir().expect("Failed to create temporary directory");
+		let mut fw = FS::new_file_watcher(temp_dir.path()).expect("Failed to create file watcher");
+		fw.watch().expect("Failed to start filesystem watcher");
+		fs::write(temp_dir.path().join("test_file_1.txt"), b"Hello, World!")
+			.expect("Failed to create test file");
+		std::thread::sleep(Duration::from_secs(1));
+		let file_snapshot = fw.file_snapshot().expect("Failed to get file snapshot");
+		assert!(file_snapshot.contains_key(&PathBuf::from("test_file_1.txt")));
+		fw.update_hash(&[PathBuf::from("test_file_1.txt")])
+			.expect("Failed to update hash");
 	}
 }
