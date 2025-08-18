@@ -1,0 +1,20 @@
+namespace = playerevent
+country_event = {
+	id = playerevent.1
+	hidden = yes
+	trigger = {
+			has_country_modifier = 01_player 
+	}
+	mean_time_to_happen = {
+		days = 1
+	}
+	option = {
+		every_owned_province = {
+			add_province_modifier = { 
+			name = 01_player_local
+			duration = -1  
+			desc = 01_player_local
+			}
+		}
+	}
+}

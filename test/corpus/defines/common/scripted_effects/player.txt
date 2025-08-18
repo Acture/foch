@@ -1,0 +1,14 @@
+player_script = {
+	if = {
+		limit = {
+			ROOT= { has_country_modifier = 01_player }
+		}
+		every_owned_province = {
+			add_province_modifier = {
+				name = 01_player_local
+				duration = -1
+				desc = 01_player_local
+			}
+		}
+	}
+}

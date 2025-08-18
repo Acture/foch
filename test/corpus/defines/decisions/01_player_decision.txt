@@ -1,0 +1,20 @@
+country_decisions = {
+	01_player_decision = {
+		major = yes
+		potential = {
+			NOT = { has_country_modifier = 01_player }
+			ai = NO
+		}
+		
+		allow = {
+			ai = NO
+		}
+
+		effect = {
+			add_country_modifier = {
+			name = "01_player"
+			duration = -1
+			}
+		}
+	}
+}
