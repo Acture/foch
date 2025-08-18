@@ -1,0 +1,9 @@
+CTRLMA_enable_or_disable_effects = {
+	hidden_effect = {
+		if = {
+			limit = { has_global_flag = $FLAG$ }
+			clr_global_flag = $FLAG$
+		}
+		else = { set_global_flag = $FLAG$ }	
+	}
+}

@@ -1,0 +1,95 @@
+milaccess = {
+    condition = {
+        tooltip = CTRLMA_ROOT_IS_NOT_A_WAR_LEADER
+        potential = {
+            has_global_flag = CTRLMA_non_war_leader_cannot_ask_military_access_enabled_global_flag
+            is_at_war = yes
+            NOT = { is_in_war = { attacker_leader = ROOT } }
+            NOT = { is_in_war = { defender_leader = ROOT } }
+        }
+        allow = { always = no }
+    }
+    condition = {
+        tooltip = CTRLMA_ALLIES_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE
+        potential = {
+            has_global_flag = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag
+            is_at_war = yes
+            FROM = {
+                #Asked by opposing side in ally's war
+                any_ally = { 
+                    OR = {
+                        is_in_war = { 
+                            attackers = ROOT
+                            defenders = THIS
+                        }
+                        is_in_war = { 
+                            attackers = THIS
+                            defenders = ROOT
+                        }
+                    }
+                }
+                #Opposing side is not an ally as well
+                NOT = { alliance_with = ROOT }
+                NOT = {
+                    has_opinion = {
+                        who = ROOT
+                        value = 100
+                    }
+                }
+            }
+        }
+        allow = { always = no }
+    }
+    condition = {
+        tooltip = CTRLMA_NEIGHBOR_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE
+        potential = {
+            has_global_flag = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag
+            is_at_war = yes
+            FROM = {
+                #Asked by opposing side in ally's war
+                any_neighbor_country = {
+                    OR = {
+                        reverse_has_opinion = {
+                            who = FROM
+                            value = 100
+                        }
+                        ai_attitude = {
+                            who = FROM
+                            attitude = attitude_friendly
+                        }
+                    }
+                    OR = {
+                        is_in_war = { 
+                            attackers = ROOT
+                            defenders = THIS
+                        }
+                        is_in_war = { 
+                            attackers = THIS
+                            defenders = ROOT
+                        }
+                    }
+                }
+                #Opposing side is not an ally as well
+                NOT = { alliance_with = ROOT }
+                NOT = {
+                    has_opinion = {
+                        who = ROOT
+                        value = 100
+                    }
+                }
+            }
+        }
+        allow = { always = no }
+    }
+    condition = {
+        tooltip = CTRLMA_ROOT_IS_A_VASSAL_OR_MARCH
+        potential = {
+            has_global_flag = CTRLMA_vassal_march_cannot_ask_military_access_enabled_global_flag
+            OR = {
+                is_vassal = yes
+                is_march = yes
+            }   
+        }
+        allow = { always = no }
+    }
+}

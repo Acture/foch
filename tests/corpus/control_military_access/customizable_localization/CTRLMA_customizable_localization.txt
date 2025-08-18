@@ -1,0 +1,45 @@
+#Config Events
+defined_text = {
+    name = CTRLMA_non_war_leader_cannot_ask_military_access_status_localization
+    text = {
+        localisation_key = CTRLMA.enabled
+        trigger = { has_global_flag = CTRLMA_non_war_leader_cannot_ask_military_access_enabled_global_flag }
+    }
+    text = {
+        localisation_key = CTRLMA.disabled
+        trigger = { NOT = { has_global_flag = CTRLMA_non_war_leader_cannot_ask_military_access_enabled_global_flag } }
+    }
+}
+defined_text = {
+    name = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_status_localization
+    text = {
+        localisation_key = CTRLMA.enabled
+        trigger = { has_global_flag = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag }
+    }
+    text = {
+        localisation_key = CTRLMA.disabled
+        trigger = { NOT = { has_global_flag = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag } }
+    }
+}
+defined_text = {
+    name = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_status_localization
+    text = {
+        localisation_key = CTRLMA.enabled
+        trigger = { has_global_flag = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag }
+    }
+    text = {
+        localisation_key = CTRLMA.disabled
+        trigger = { NOT = { has_global_flag = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag } }
+    }
+}
+defined_text = {
+    name = CTRLMA_vassal_and_march_cannot_ask_military_access_status_localization
+    text = {
+        localisation_key = CTRLMA.enabled
+        trigger = { has_global_flag = CTRLMA_vassal_march_cannot_ask_military_access_enabled_global_flag }
+    }
+    text = {
+        localisation_key = CTRLMA.disabled
+        trigger = { NOT = { has_global_flag = CTRLMA_vassal_march_cannot_ask_military_access_enabled_global_flag } }
+    }
+}

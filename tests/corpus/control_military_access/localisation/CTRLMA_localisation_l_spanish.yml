@@ -1,0 +1,31 @@
+﻿l_spanish:
+ #Decision
+ CTRLMA_config_decision_title: "Control Military Access: Options"
+ CTRLMA_config_decision_desc: "Enact decision to configure features of the mod."
+
+ #Events
+ CTRLMA_config_events.title: "Control Military Access: Options"
+ CTRLMA_config_events.desc: "Enable or disable features of this mod.\nThis mod allows fine-tuning diplomacy of military access. "
+
+ CTRLMA_config_events.non_war_leader_cannot_ask_military_access_status: "Non-war leader cannot ask military access = [CTRLMA_non_war_leader_cannot_ask_military_access_status_localization]"
+ CTRLMA_non_war_leader_cannot_ask_military_access_tt: "When set to '§GENABLED§!', during a war only war leaders can ask for military access."
+
+ CTRLMA_config_events.ally_cannot_be_asked_for_military_access_by_opposing_side_status: "Ally cannot be asked by opposing side = [CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_status_localization]"
+ CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_tt: "When set to '§GENABLED§!', country cannot be asked for military access if their allies is in war against the proposer (except if the proposer is also an ally or has 100 opinion of proposer)."
+
+ CTRLMA_config_events.neighbor_cannot_be_asked_for_military_access_by_opposing_side_status: "Neighbor cannot be asked by opposing side = [CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_status_localization]"
+ CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_tt: "When set to '§GENABLED§!', country cannot be asked for military access if their neighbor with friendly attitude or at least 100 opinion is in war against of the proposer (except if the proposer is also an ally or has 100 opinion of proposer)."
+
+ CTRLMA_config_events.vassal_and_march_cannot_ask_military_access_status: "Vassal and march cannot ask military access = [CTRLMA_vassal_and_march_cannot_ask_military_access_status_localization]"
+ CTRLMA_vassal_and_march_cannot_ask_military_access_tt: "When set to '§GENABLED§!', vassal and march cannot ask for military access at all."
+
+ CTRLMA.confirm: "Confirm"
+ CTRLMA.enabled: "§GENABLED§!"
+ CTRLMA.disabled: "§RDISABLED§!"
+
+ CTRLMA_ROOT_IS_NOT_A_WAR_LEADER: "[Root.GetName] is not a war leader"
+ CTRLMA_SUBJECT_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE: "Subject cannot be asked for military access when we are at war with their overlord"
+
+ CTRLMA_ALLIES_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE: "[From.GetName] refuse to discuss this matter with us"
+ CTRLMA_NEIGHBOR_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE: "[From.GetName] refuse to discuss this matter with us"
+ CTRLMA_ROOT_IS_A_VASSAL_OR_MARCH: "[Root.GetName] is a vassal or march"

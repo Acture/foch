@@ -1,0 +1,105 @@
+namespace = CTRLMA_config_events
+country_event = {
+	id = CTRLMA_config_events.0
+	title = CTRLMA_config_events.title
+	desc = CTRLMA_config_events.desc
+	picture = INVENTION_eventPicture
+	is_triggered_only = yes
+	option = {
+		#Non-war leader cannot ask military access
+		name = CTRLMA_config_events.non_war_leader_cannot_ask_military_access_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_non_war_leader_cannot_ask_military_access_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_non_war_leader_cannot_ask_military_access_enabled_global_flag }
+	}
+	option = {
+		#Ally cannot be asked by opposing side
+		name = CTRLMA_config_events.ally_cannot_be_asked_for_military_access_by_opposing_side_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag }
+	}
+	option = {
+		#Neighbor cannot be asked by opposing side
+		name = CTRLMA_config_events.neighbor_cannot_be_asked_for_military_access_by_opposing_side_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag }
+	}
+	option = {
+		#Vassal and march cannot military access
+		name = CTRLMA_config_events.vassal_and_march_cannot_ask_military_access_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_vassal_and_march_cannot_ask_military_access_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_vassal_march_cannot_ask_military_access_enabled_global_flag }
+	}
+	option = {
+		#Confirm
+		name = CTRLMA.confirm
+        highlight = yes
+		clr_country_flag = CTRLMA_open_config_menu_flag
+		ai_chance = { factor = 0 }
+	}
+	after = {
+		if = {
+			limit = {
+				has_country_flag = CTRLMA_open_config_menu_flag
+			}
+			country_event = {
+				id = CTRLMA_config_events.1
+			}
+		}
+	}
+}
+country_event = {
+	id = CTRLMA_config_events.1
+	title = CTRLMA_config_events.title
+	desc = CTRLMA_config_events.desc
+	picture = INVENTION_eventPicture
+	is_triggered_only = yes
+	option = {
+		#Non-war leader cannot ask military access
+		name = CTRLMA_config_events.non_war_leader_cannot_ask_military_access_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_non_war_leader_cannot_ask_military_access_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_non_war_leader_cannot_ask_military_access_enabled_global_flag }
+	}
+	option = {
+		#Ally cannot be asked by opposing side
+		name = CTRLMA_config_events.ally_cannot_be_asked_for_military_access_by_opposing_side_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_ally_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag }
+	}
+	option = {
+		#Neighbor cannot be asked by opposing side
+		name = CTRLMA_config_events.neighbor_cannot_be_asked_for_military_access_by_opposing_side_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_neighbor_cannot_be_asked_for_military_access_by_opposing_side_enabled_global_flag }
+	}
+	option = {
+		#Vassal and march cannot military access
+		name = CTRLMA_config_events.vassal_and_march_cannot_ask_military_access_status
+		ai_chance = { factor = 0 }
+		custom_tooltip = CTRLMA_vassal_and_march_cannot_ask_military_access_tt
+		CTRLMA_enable_or_disable_effects = { FLAG = CTRLMA_vassal_march_cannot_ask_military_access_enabled_global_flag }
+	}
+	option = {
+		#Confirm
+		name = CTRLMA.confirm
+        highlight = yes
+		clr_country_flag = CTRLMA_open_config_menu_flag
+		ai_chance = { factor = 0 }
+	}
+	after = {
+		if = {
+			limit = {
+				has_country_flag = CTRLMA_open_config_menu_flag
+			}
+			country_event = {
+				id = CTRLMA_config_events.0
+			}
+		}
+	}
+}
