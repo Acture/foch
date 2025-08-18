@@ -18,6 +18,8 @@ walkdir = "2.5.0"
 log = "0.4.27"
 tree-sitter-paradox = "0.2.0"
 tree-sitter = "0.25.8"
+blake = "2.0.2"
+blake3 = "1.8.2"
 
 [[bin]]
 name = "foch-cli"
