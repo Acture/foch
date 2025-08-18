@@ -1,0 +1,19 @@
+country_decisions = {
+	CTRLMA_config_decision = {
+		major = yes
+		potential = {
+			NOT = { has_country_flag = CTRLMA_open_config_menu_flag }
+			ai = no
+		}
+		allow = { always = yes }
+		effect = {
+			hidden_effect = {
+				set_country_flag = CTRLMA_open_config_menu_flag
+				country_event = {
+					id = CTRLMA_config_events.1
+				}
+			}
+		}
+		ai_will_do = { factor = 0 }
+	}
+}
