@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use typed_builder::TypedBuilder;
 
+use crate::utils::file_fingerprint;
 use log::{debug, error};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -13,11 +14,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
 pub trait FileWatcher {
-	fn files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>;
-	fn file_snapshot(&self) -> Result<HashMap<PathBuf, Option<[u8; 32]>>, Box<dyn Error>>;
+	fn collect_files(&self) -> Result<(), Box<dyn Error>> ;
+	fn files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<String>>>>;
+	fn file_snapshot(&self) -> Result<HashMap<PathBuf, Option<String>>, Box<dyn Error>>;
 	fn watch(&mut self) -> Result<(), Box<dyn std::error::Error>>;
 	fn unwatch(&mut self) -> Result<(), Box<dyn std::error::Error>>;
-	fn update_hash(&mut self, path: &[PathBuf]) -> Result<(), Box<dyn std::error::Error>>;
+	fn update_hash(&mut self, path: &PathBuf) -> Result<String, Box<dyn std::error::Error>>;
 }
 
 mod arc_mutex_map_serde {
@@ -25,7 +27,7 @@ mod arc_mutex_map_serde {
 	use serde::Deserializer;
 
 	pub fn serialize<S>(
-		map: &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>,
+		map: &Arc<Mutex<HashMap<PathBuf, Option<String>>>>,
 		serializer: S,
 	) -> Result<S::Ok, S::Error>
 	where
@@ -41,17 +43,17 @@ mod arc_mutex_map_serde {
 
 	pub fn deserialize<'de, D>(
         deserializer: D,
-	) -> Result<Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>, D::Error>
+	) -> Result<Arc<Mutex<HashMap<PathBuf, Option<String>>>>, D::Error>
 	where
 		D: Deserializer<'de>,
 	{
 		struct MapVisitor;
 
 		impl<'de> Visitor<'de> for MapVisitor {
-			type Value = HashMap<PathBuf, Option<[u8; 32]>>;
+			type Value = HashMap<PathBuf, Option<String>>;
 
 			fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-				formatter.write_str("a map from PathBuf to Option<[u8; 32]>")
+				formatter.write_str("a map from PathBuf to Option<String>")
 			}
 
 			fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
@@ -77,18 +79,46 @@ pub struct FS {
 	pub root: PathBuf,
 	#[builder(default, setter(skip), setter(into))]
 	#[serde(with = "arc_mutex_map_serde")]
-	pub files: Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>>, // 相对路径 -> 文件Hash
+	pub files: Arc<Mutex<HashMap<PathBuf, Option<String>>>>, // 相对路径 -> 文件Hash
 	#[builder(default, setter(skip))]
 	#[serde(skip)]
 	watcher: Option<notify::RecommendedWatcher>,
 }
 
 impl FileWatcher for FS {
-	fn files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<[u8; 32]>>>> {
+	fn collect_files(&self) -> Result<(), Box<dyn Error>> {
+		let mut files = self
+			.files
+			.lock()
+			.map_err(|e| format!("Failed to get lock:{}", e))?;
+		files.clear();
+		let mut stack = vec![self.root.clone()];
+		while let Some(dir) = stack.pop() {
+			if let Ok(entries) = std::fs::read_dir(&dir) {
+				for entry in entries {
+					let entry = entry?;
+					let path = entry.path();
+					if path.is_dir() {
+						stack.push(path);
+					} else {
+						let normalized_path = path
+							.strip_prefix(&self.root)
+							.expect("Path should be relative to root")
+							.to_path_buf();
+						files.insert(normalized_path, None);
+					}
+				}
+			}
+		}
+		debug!("Collected files: {:?}", files);
+		Ok(())
+	}
+
+	fn files(&self) -> &Arc<Mutex<HashMap<PathBuf, Option<String>>>> {
 		&self.files
 	}
 
-	fn file_snapshot(&self) -> Result<HashMap<PathBuf, Option<[u8; 32]>>, Box<dyn Error>> {
+	fn file_snapshot(&self) -> Result<HashMap<PathBuf, Option<String>>, Box<dyn Error>> {
 		let files = self
 			.files
 			.lock()
@@ -105,73 +135,88 @@ impl FileWatcher for FS {
 		let root = self.root.clone();
 
 		let mut watcher = notify::recommended_watcher({
-			move |res: Result<Event, notify::Error>| {
-				match res {
-					Ok(event) => {
-						debug!("Filesystem event: {:?}", event);
-						match event.kind {
-							EventKind::Create(create_kind) => match create_kind {
-								notify::event::CreateKind::File => {
-									let path = event
-										.paths
-										.first()
-										.expect("Event should have at least one path");
-									let normalized_path = path
-										.canonicalize()
-										.expect(format!("Failed to canonicalize path: {:?}", path).as_str())
-										.strip_prefix(&root)
-										.expect(format!("Path <{:?}> should be relative to root <{:?}>", path, root).as_str())
-										.to_path_buf();
-									let hash = None;
-									files_ref.lock().expect("Fail to get lock").entry(normalized_path).or_insert(hash);
-								}
-								_ => {
-									debug!("Unsupported create kind: {:?}", create_kind);
-								}
-							},
-							EventKind::Modify(modify_kind) => {
-								match modify_kind {
-									notify::event::ModifyKind::Data(_) => {
-										let file = event
-											.paths
-											.first()
-											.expect("Event should have at least one path")
-											.strip_prefix(&root)
-											.expect("Path should be relative to root")
-											.to_path_buf();
-										let hash: Option<[u8; 32]> = None; // 这里可以计算文件的哈希值
-										files_ref.lock().unwrap().insert(file, hash);
-									}
-									notify::event::ModifyKind::Name(_) => {
-										let src = event
-											.paths
-											.first()
-											.expect("Event should have at least one path")
-											.strip_prefix(&root)
-											.expect("Path should be relative to root")
-											.to_path_buf();
-										files_ref.lock().unwrap().remove(&src);
-										let dst = event
-											.paths
-											.get(1)
-											.and_then(|p| p.strip_prefix(&root).ok())
-											.map(PathBuf::from)
-											.unwrap();
-										files_ref.lock().unwrap().insert(dst, None);
-									}
-									_ => {
-										debug!("Unsupported modify kind: {:?}", modify_kind);
-									}
-								}
+			move |res: Result<Event, notify::Error>| match res {
+				Ok(event) => {
+					debug!("Filesystem event: {:?}", event);
+					match event.kind {
+						EventKind::Create(create_kind) => match create_kind {
+							notify::event::CreateKind::File => {
+								let path = event
+									.paths
+									.first()
+									.expect("Event should have at least one path");
+								let normalized_path = path
+									.canonicalize()
+									.expect(
+                                        format!("Failed to canonicalize path: {:?}", path).as_str(),
+									)
+									.strip_prefix(&root)
+									.expect(
+                                        format!(
+											"Path <{:?}> should be relative to root <{:?}>",
+											path, root
+										)
+										.as_str(),
+									)
+									.to_path_buf();
+								let hash = None;
+								files_ref
+									.lock()
+									.expect("Fail to get lock")
+									.entry(normalized_path)
+									.or_insert(hash);
 							}
 							_ => {
-								debug!("Unsupported event kind: {:?}", event.kind);
+								debug!("Unsupported create kind: {:?}", create_kind);
 							}
+						},
+						EventKind::Modify(modify_kind) => match modify_kind {
+							notify::event::ModifyKind::Data(_) => {
+								let file = event
+									.paths
+									.first()
+									.expect("Event should have at least one path")
+									.strip_prefix(&root)
+									.expect("Path should be relative to root")
+									.to_path_buf();
+								let hash = file_fingerprint(&file)
+									.expect("Failed to get file fingerprint");
+								files_ref
+									.lock()
+									.expect("Fail to get lock")
+									.insert(file, Some(hash));
+							}
+							notify::event::ModifyKind::Name(_) => {
+								let src = event
+									.paths
+									.first()
+									.expect("Event should have at least one path")
+									.strip_prefix(&root)
+									.expect("Path should be relative to root")
+									.to_path_buf();
+								let dst = event
+									.paths
+									.get(1)
+									.and_then(|p| p.strip_prefix(&root).ok())
+									.map(PathBuf::from)
+									.expect("Failed to get dst path");
+								let mut files = files_ref.lock().expect("Failed to get lock");
+								let hash = files
+									.remove(&src)
+									.expect("File was not found in the files map");
+								files.insert(dst, hash);
+							}
+							_ => {
+								debug!("Unsupported modify kind: {:?}", modify_kind);
+							}
+						},
+						_ => {
+							debug!("Unsupported event kind: {:?}", event.kind);
 						}
 					}
-					Err(e) => {
-						panic!("Error watching filesystem: {}", e);
-					},
+				}
+				Err(e) => {
+					panic!("Error watching filesystem: {}", e);
 				}
 			}
 		})?;
@@ -188,25 +233,27 @@ impl FileWatcher for FS {
 		Ok(())
 	}
 
-	fn update_hash(&mut self, paths: &[PathBuf]) -> Result<(), Box<dyn Error>> {
-		let files = self
+	fn update_hash(&mut self, path: &PathBuf) -> Result<String, Box<dyn Error>> {
+		let mut files = self
 			.files
 			.lock()
 			.map_err(|e| format!("Failed to get lock:{}", e))?;
-		paths.iter().try_for_each(|path| {
-			if files.contains_key(path) {
-				debug!("Updating hash for path: {:?}", path);
-				Ok(())
-			} else {
-				Err(format!("Path {:?} not found in files map", path.display()).into())
-			}
-		})
+		if files.contains_key(path) {
+			let real_path = self.root.join(path);
+			let hash = file_fingerprint(&real_path).expect("Failed to get file fingerprint");
+			debug!("Updating hash for path: {:?}", path);
+			files.insert(path.clone(), Some(hash.clone()));
+			Ok(hash)
+		} else {
+			Err(format!("Path {:?} not found in files map", path.display()).into())
+		}
 	}
 }
 
 impl FS {
-	pub fn new_file_watcher(root: impl AsRef<Path>) -> Result<Box<dyn FileWatcher>, Box<dyn Error>>
-	{
+	pub fn new_file_watcher(
+        root: impl AsRef<Path>,
+	) -> Result<Box<dyn FileWatcher>, Box<dyn Error>> {
 		let p = root.as_ref().canonicalize()?;
 		Ok(Box::new(FS::builder().root(p).build()))
 	}
@@ -270,7 +317,7 @@ use std::time::{Duration, Instant};
 		std::thread::sleep(Duration::from_secs(1));
 		let file_snapshot = fw.file_snapshot().expect("Failed to get file snapshot");
 		assert!(file_snapshot.contains_key(&PathBuf::from("test_file_1.txt")));
-		fw.update_hash(&[PathBuf::from("test_file_1.txt")])
+		fw.update_hash(&PathBuf::from("test_file_1.txt"))
 			.expect("Failed to update hash");
 	}
 }

@@ -1,7 +1,7 @@
-use crate::filesystem::FS;
+use crate::filesystem::{FileWatcher, FS};
+use crate::utils::strip_quotes;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::utils::strip_quotes;
 
 pub struct ModEntry {
 	pub name: String,
@@ -40,12 +40,10 @@ impl ModEntry {
 			.collect::<HashMap<String, String>>();
 
 		let name = strip_quotes(&hash_map["name"])?;
-		let path = path.to_path_buf();
+		let path = path.parent().expect("Failed to get parent directory of descriptor file").to_path_buf();
 		let version = strip_quotes(&hash_map["version"])?;
 		let supported_version = strip_quotes(&hash_map["supported_version"])?;
 		let remote_file_id = strip_quotes(&hash_map["remote_file_id"])?;
-
-
 
 		Ok(Self {
 			name,
@@ -60,7 +58,7 @@ impl ModEntry {
 pub struct Mod {
 	pub name: String,
 	pub version: String,
-	pub fs: FS,
+	pub fw: Box<dyn FileWatcher>,
 }
 
 impl From<ModEntry> for Mod {
@@ -68,8 +66,41 @@ impl From<ModEntry> for Mod {
 		Mod {
 			name: entry.name,
 			version: entry.version,
-			fs: FS::builder().root(entry.path).build(),
+			fw: FS::new_file_watcher(entry.path).expect("Failed to create file watcher"),
 		}
+	}
+}
+
+impl Mod {
+	pub fn find_conflict_files(&mut self, other: &mut Self) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+		let file_snapshot = self.fw.file_snapshot()?;
+		let other_file_snapshot = other.fw.file_snapshot()?;
+		let mut conflicts = Vec::new();
+		for (path, hash) in file_snapshot {
+			if let Some(other_hash) = other_file_snapshot.get(&path) {
+				let self_hash = match hash {
+					Some(h) => h,
+					None => {
+						self.fw.update_hash(&path)
+							.map_err(|e| format!("Failed to get fingerprint for {:?}: {}", path, e))?
+					}
+				};
+				let other_hash = match other_hash {
+					Some(h) => h.clone(),
+					None => {
+						other.fw.update_hash(&path).map_err(|e| format!("Failed to get fingerprint for {:?}: {}", path, e))?
+					}
+				};
+				if self_hash != other_hash {
+					conflicts.push(path);
+				}
+			}
+		}
+		Ok(conflicts)
+	}
+
+	pub fn merge(&self, other: &Self) -> Self {
+		todo!("Implement merge logic for mods")
 	}
 }
 
@@ -85,5 +116,23 @@ mod tests {
 		assert_eq!(entry.name, "defines");
 		assert_eq!(entry.version, "0.0.1");
 		assert_eq!(entry.supported_version, "1.34.4");
+	}
+
+	#[test]
+	fn test_find_conflict_files() {
+		let path1 = get_corpus_path().join("defines").join("descriptor.mod");
+		let path2 = get_corpus_path().join("control_military_access").join("descriptor.mod");
+		let mut mod1 = Mod::from(ModEntry::from_mod_descriptor(&path1).unwrap());
+		let mut mod2 = Mod::from(ModEntry::from_mod_descriptor(&path2).unwrap());
+		println!("Mod1: {:?}, Mod2: {:?}", mod1.name, mod2.name);
+		mod1.fw.collect_files().unwrap();
+		mod2.fw.collect_files().unwrap();
+
+		let conflicts = mod1.find_conflict_files(&mut mod2).unwrap();
+		let files1 = mod1.fw.file_snapshot().unwrap();
+		let files2 = mod2.fw.file_snapshot().unwrap();
+		println!("Files in mod1: {:?}", files1);
+		println!("Files in mod2: {:?}", files2);
+		assert!(conflicts.len() == 1, "Expected conflicts of mod descriptor");
 	}
 }
