@@ -1,11 +1,12 @@
 use crate::filesystem::{FileWatcher, FS};
 use crate::utils::strip_quotes;
+use log::warn;
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tree_sitter::{Node as TSNode, Tree as TSTree};
+use tree_sitter::{Node as TSNode, Range, Tree as TSTree};
 
 pub struct ModEntry {
 	pub name: String,
@@ -182,6 +183,24 @@ fn top_level_assign_map<'a>(root: TSNode<'a>, src: &str) -> BTreeMap<String, TSN
 	map
 }
 
+fn context_lines<'a>(src: &'a str, conflict_begin_line: usize, conflict_end_line: usize) -> (Vec<(usize, &'a str)>, Vec<(usize, &'a str)>) {
+	// 返回 [(行号, 行文本, 是否为当前行)]
+	let mut pre_context = Vec::new();
+	let mut post_context = Vec::new();
+	let lines= src.split_terminator('\n').collect::<Vec<_>>();
+	let start = conflict_begin_line.saturating_sub(5).max(1);
+	let end = (conflict_end_line + 5).min(lines.len());
+	for n in start..conflict_begin_line {
+		let text = lines.get(n - 1).expect("line number out of range").to_owned();;
+		pre_context.push((n, text));
+	}
+	for n in conflict_end_line+1..=end {
+		let text = lines.get(n - 1).expect("line number out of range").to_owned();
+		post_context.push((n, text));
+	}
+	(pre_context, post_context)
+}
+
 // -------- 合并“同键”的 value：array 并集；map 递归；标量冲突 --------
 
 fn merge_value_same_level(
@@ -194,6 +213,7 @@ fn merge_value_same_level(
 		("array", "array") => {
 			let la = array_items(va, merge_info.a_text);
 			let lb = array_items(vb, merge_info.b_text);
+			println!("Merging arrays: {:?} and {:?}", la, lb);
 			let mut seen = BTreeSet::<String>::new();
 			let mut items = Vec::<String>::new();
 			for s in la {
@@ -230,7 +250,9 @@ fn merge_value_same_level(
 					(None, Some(kb)) => {
 						body.push_str(&format!("  {} = {}\n", k, slice(merge_info.b_text, *kb)))
 					}
-					_ => {}
+					_ => {
+						unreachable!("Both values should not be None for the same key: {}", k);
+					}
 				}
 			}
 			Ok(format!("{{\n{}}}", body))
@@ -244,8 +266,10 @@ fn merge_value_same_level(
 			} else {
 				let conf = Conflict {
 					path: merge_info.path,
+					src: merge_info.a_text,
 					ours: slice(merge_info.a_text, va),
 					theirs: slice(merge_info.b_text, vb),
+					range: va.range()
 				};
 				resolve_conflict(&conf, &merge_info.opt)
 			}
@@ -254,11 +278,13 @@ fn merge_value_same_level(
 		_ => {
 			let conf = Conflict {
 				path: merge_info.path,
+				src: merge_info.a_text,
 				ours: slice(merge_info.a_text, va),
 				theirs: slice(merge_info.b_text, vb),
+				range: va.range()
 			};
 			resolve_conflict(&conf, &merge_info.opt)
-		},
+		}
 	}
 }
 
@@ -292,6 +318,7 @@ fn array_items(arr_node: TSNode, src: &str) -> Vec<String> {
 		match child.kind() {
 			// array 内允许的元素都作为“一个 item”的文本
 			"string"
+			| "simple_value"
 			| "number"
 			| "boolean"
 			| "identifier"
@@ -301,7 +328,9 @@ fn array_items(arr_node: TSNode, src: &str) -> Vec<String> {
 				items.push(slice(src, child).trim().to_string());
 			}
 			// 嵌套 array/map 一般不是 simple_value：若 grammar 允许，可递归或当作一个整体文本
-			_ => {}
+			_ => {
+				println!("Skipping non-simple value in array: {}", child.kind());
+			}
 		}
 	}
 	items
@@ -335,8 +364,10 @@ fn slice<'a>(src: &'a str, n: TSNode<'a>) -> &'a str {
 #[derive(Clone, Debug)]
 pub struct Conflict<'a> {
 	pub path: &'a Path,   // 例如 "name" / "block/foo/name"
+	pub src: &'a str,
 	pub ours: &'a str,   // A侧文本
 	pub theirs: &'a str, // B侧文本
+	pub range: Range
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -379,14 +410,50 @@ pub fn resolve_conflict(
 		(Ask, false) => Err(format!("conflict at {} (non-interactive)", conf.path.display()).into()),
 		(Ask, true) => {
 			let theme = ColorfulTheme::default();
+
+			let editor = opts
+				.editor
+				.clone()
+				.or_else(|| std::env::var("VISUAL").ok())
+				.or_else(|| std::env::var("EDITOR").ok())
+				.unwrap_or_else(|| {
+					warn!("No $VISUAL or $EDITOR specified, using default");
+					if cfg!(windows) {
+						"notepad".into()
+					} else {
+						"nano".into()
+					}
+				});
+
 			let items = &[
 				format!("Use ours   ← {}", ellip(&conf.ours, 60)),
 				format!("Use theirs ← {}", ellip(&conf.theirs, 60)),
-				format!("Edit manually in <$EDITOR>").into(),
+				format!("Edit manually in <{}>", editor).into(),
 				"Abort".into(),
 			];
+
+			let pre_context = &conf.src[..conf.range.start_byte].split_terminator('\n').collect::<Vec<_>>();
+			let pre_context = &pre_context[pre_context.len().saturating_sub(10)..];
+			let pre_context = pre_context.join("\n");
+			let post_context = &conf.src[conf.range.end_byte..];
+			let post_context = &post_context[..post_context.len().saturating_sub(10)];
+			let post_context = post_context.split_terminator('\n').collect::<Vec<_>>();
+			let post_context = post_context.join("\n");
+
+			let mut to_edit = String::new();
+
+			to_edit.push_str(&format!("{}", pre_context));
+
+			to_edit.push_str("\n<<< BEGIN EDIT >>>\n");
+			to_edit.push_str(&format!("<<<<<<< ours\n{}\n=======\n{}\n>>>>>>> theirs", conf.ours, conf.theirs));
+			to_edit.push_str("\n<<< END EDIT >>>\n");
+
+
+			to_edit.push_str(&format!("{}", post_context));
+
+
 			let sel = Select::with_theme(&theme)
-				.with_prompt(format!("Conflict at {}", conf.path.display()))
+				.with_prompt(format!("Conflict at {}\n{}", conf.path.display(), to_edit))
 				.items(items)
 				.default(2)
 				.interact()?;
@@ -394,7 +461,7 @@ pub fn resolve_conflict(
 			match sel {
 				0 => Ok(conf.ours.to_string()),
 				1 => Ok(conf.theirs.to_string()),
-				2 => edit_in_editor(conf, opts),
+				2 => edit_in_editor(editor, &to_edit),
 				_ => Err("aborted by user".into()),
 			}
 		}
@@ -429,34 +496,36 @@ fn spawn_editor(editor_spec: &str, path: &std::path::Path) -> Result<(), Box<dyn
 }
 
 fn edit_in_editor(
-	conf: &Conflict,
-	opts: &MergeOptions,
+	editor: String,
+	to_edit: &String,
 ) -> Result<String, Box<dyn std::error::Error>> {
-	use std::{fs, io::Write, process::Command};
+	use std::{fs, io::Write };
 	let mut tmp = tempfile::NamedTempFile::new().expect("Failed to create temp");
+
+
 	writeln!(
 		tmp,
-		"<<<<<<< ours\n{}\n=======\n{}\n>>>>>>> theirs",
-		conf.ours, conf.theirs
+		"{}",to_edit
 	)?;
 	tmp.flush()?;
-	let editor = opts
-		.editor
-		.clone()
-		.or_else(|| std::env::var("VISUAL").ok())
-		.or_else(|| std::env::var("EDITOR").ok())
-		.unwrap_or_else(|| {
-			if cfg!(windows) {
-				"notepad".into()
-			} else {
-				"nano".into()
-			}
-		});
+
 
 	println!("Edit in editor: {}", editor);
 	spawn_editor(editor.as_str(), tmp.path())?;
 
-	Ok(fs::read_to_string(tmp.path())?)
+	let contents = fs::read_to_string(tmp.path())?;
+	let edit_block = extract_edit_block(&contents).expect("Failed to extract edit block");
+
+	Ok(edit_block.to_string())
+}
+
+fn extract_edit_block(all: &str) -> Option<&str> {
+	let begin = "\n<<< BEGIN EDIT >>>\n";
+	let end = "\n<<< END EDIT >>>\n";
+	let start = all.find(begin)? + begin.len();
+	let rest = &all[start..];
+	let endpos = rest.find(end)?;
+	Some(&rest[..endpos])
 }
 
 fn ellip(s: &str, n: usize) -> String {
@@ -471,7 +540,16 @@ pub struct MergeInfo<'a> {
 	pub path: &'a Path,
 	pub a_text: &'a str,
 	pub b_text: &'a str,
-	pub opt: MergeOptions
+	pub opt: MergeOptions,
+}
+
+
+fn byte_to_line(locs: &[usize], byte: usize) -> usize {
+	// 二分找 <= byte 的最大行起始
+	match locs.binary_search(&byte) {
+		Ok(idx) => idx + 1,           // 行号 1-based
+		Err(idx) => idx.max(1),       // 插入点 → 上一行
+	}
 }
 
 #[cfg(test)]
@@ -530,7 +608,7 @@ use crate::parsing::TSParserWrapper;
 			path: path1.strip_prefix(get_corpus_path().join("defines")).expect("Failed to get path"),
 			a_text: text_1,
 			b_text: text_2,
-			opt: MergeOptions::default()
+			opt: MergeOptions::default(),
 		};
 
 		let res = merge_root(tree_1.root_node(), tree_2.root_node(),merge_info)
