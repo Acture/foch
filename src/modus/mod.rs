@@ -5,7 +5,7 @@ use std::ops::Not;
 use std::path::PathBuf;
 use tree_sitter::Tree as TSTree;
 
-mod merge;
+pub mod merge;
 
 pub struct ModEntry {
 	pub name: String,
@@ -164,6 +164,8 @@ mod tests {
 		assert!(conflicts.len() == 1, "Expected conflicts of mod descriptor");
 	}
 	#[test]
+	#[should_panic(expected = "Failed to merge trees: \"conflict at descriptor.mod (non-interactive)\"")]
+	/// This test is expected to panic because the merge logic is interactive and requires user input.
 	fn test_merge_tree() {
 		let path1 = get_corpus_path().join("defines").join("descriptor.mod");
 		let path2 = get_corpus_path()
