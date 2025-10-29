@@ -7,6 +7,7 @@ mod modus;
 mod parsing;
 mod path;
 mod utils;
+mod cli;
 
 pub use modus::merge::merge_root;
 

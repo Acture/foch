@@ -26,5 +26,5 @@ shell-words = "1.1.0"
 
 [[bin]]
 name = "foch-cli"
-path = "src/main.rs"
+path = "src/cli.rs"
 
