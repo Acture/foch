@@ -6,8 +6,27 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 jomini = "0.29.0"
+clap = { version = "4.5.51", features = ["derive"] }
+home = "0.5.12"
+toml = "0.9.8"
+indicatif = "0.18.2"
+dirs = "6.0.0"
+log = "0.4.28"
+tracing-subscriber = { version = "0.3.20", features = [
+	"env-filter", # 允许从 -v 和 RUST_LOG 环境变量读取级别
+	"fmt", # "fmt" (formatted) a.k.a. 漂亮的打印
+] }
+tracing = "0.1.41"
+clap-verbosity-flag = { version = "3.0.4", default-features = false, features = ["tracing"] }
+
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55.0"
 
 [[bin]]
 name = "foch-cli"
 path = "src/main.rs"
 
+[lib]
+name = "foch"
+path = "src/lib.rs"
