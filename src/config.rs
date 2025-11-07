@@ -2,6 +2,7 @@ use crate::steam::find_steam_root_path;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -9,23 +10,35 @@ use std::time::Duration;
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
 	pub steam_root_path: Option<PathBuf>,
+	pub paradox_data_path: Option<PathBuf>,
+	pub game_path: HashMap<String, PathBuf>,
 }
 
-fn get_config_file_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-	Ok(dirs::config_dir().ok_or("无法获取配置目录")?.join("foch"))
+impl TryFrom<&Path> for Config {
+	type Error = std::io::Error;
+	fn try_from(p: &Path) -> Result<Self, Self::Error> {
+		let content = std::fs::read_to_string(p)?;
+		toml::from_str(&content).map_err(|e| std::io::Error::other(e))
+	}
 }
 
-fn load_config(path: &Path) -> Result<Config, std::io::Error> {
-	let content = std::fs::read_to_string(path)?;
-	toml::from_str(&content).map_err(|e| std::io::Error::other(e))
+pub fn get_config_file_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+	Ok(dirs::home_dir().ok_or("无法获取$HOME目录")?.join(".config").join("foch"))
 }
 
-fn save_config(path: &Path, config: &Config) -> Result<(), std::io::Error> {
-	let content = toml::to_string_pretty(config).map_err(|e| std::io::Error::other(e))?;
-	std::fs::write(path, content)
+impl Config {
+	pub fn load_config(path: &Path) -> Result<Self, std::io::Error> {
+		let content = std::fs::read_to_string(path)?;
+		toml::from_str(&content).map_err(|e| std::io::Error::other(e))
+	}
+
+	pub fn save_config(&self, path: &Path) -> Result<(), std::io::Error> {
+		let content = toml::to_string_pretty(self).map_err(|e| std::io::Error::other(e))?;
+		std::fs::write(path, content)
+	}
 }
 
-pub fn load_or_init_config() -> Result<Config, Box<dyn std::error::Error>> {
+pub fn load_or_init_config() -> Result<(Config, PathBuf), Box<dyn std::error::Error>> {
 	let config_dir = get_config_file_path()?;
 
 	if !config_dir.exists() {
@@ -41,17 +54,12 @@ pub fn load_or_init_config() -> Result<Config, Box<dyn std::error::Error>> {
 	}
 
 	// --- 步骤 A: 尝试加载 ---
-	if let Ok(config) = load_config(&config_file)
+	if let Ok(config) = Config::load_config(&config_file)
 		&& config.steam_root_path.is_some()
 	{
-		// 缓存命中！我们啥也不用干，直接返回
-		return Ok(config);
+		return Ok((config, config_file));
 	}
 
-	// --- 步骤 B: 缓存未命中 (或文件不存在) ---
-	// 这是“第一次启动”的逻辑
-
-	// 1. 设置“漂亮”的加载条
 	let spinner = ProgressBar::new_spinner();
 	spinner.enable_steady_tick(Duration::from_millis(120));
 	spinner.set_style(
@@ -97,7 +105,7 @@ pub fn load_or_init_config() -> Result<Config, Box<dyn std::error::Error>> {
 		);
 	}
 
-	save_config(&config_file, &config)?;
+	config.save_config(&config_file)?;
 
-	Ok(config)
+	Ok((config, config_file))
 }
