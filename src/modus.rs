@@ -1,51 +1,84 @@
-use serde::Deserialize;
+use jomini::JominiDeserialize;
+use std::path::Path;
 
-#[derive(Deserialize, Debug)]
+#[derive(JominiDeserialize, Debug)]
 struct ModDescriptor {
 	name: String,
-	path: String, // "mod/ugc_12345/"
-
-	#[serde(default)] // 如果 .mod 文件里没有 "dependencies" 字段，就默认为空 Vec
+	path: Option<String>,
+	#[jomini(default)]
+	tags: Vec<String>,
+	#[jomini(default)]
 	dependencies: Vec<String>,
-
-	// 有些 .mod 文件没有 version，所以用 Option
 	version: Option<String>,
-
-	// Steam Workshop ID
 	remote_file_id: Option<String>,
 }
 
-impl<T: AsRef<Path>> TryFrom<T> for ModDescriptor {
-    // 关键：将我们的自定义错误指定为 Trait 的关联类型
-    type Error = ModParseError;
+impl TryFrom<&Path> for ModDescriptor {
 
-    // `value` 的类型是泛型 T (AsRef<Path>)
-    fn try_from(value: T) -> Result<Self, Self::Error> {
+	type Error = Box<dyn std::error::Error>;
 
-        // 1. 用 .as_ref() 把它变成一个 &Path
-        let path = value.as_ref();
+	fn try_from(p: &Path) -> Result<Self, Self::Error> {
+		let data = std::fs::read(p)?;
 
-        // 2. 读取字节（和上次一样，防止UTF-8错误）
-        let data = std::fs::read(path).map_err(|e| ModParseError::Io {
-            path: path.to_path_buf(),
-            source: e
-        })?;
+		let descriptor = jomini::text::de::from_windows1252_slice(&data)?;
 
-        // 3. Jomini 解析
-        let tape = TextTape::from_slice(&data).map_err(|e| ModParseError::Parse {
-            path: path.to_path_buf(),
-            source: e.into(),
-        })?;
+		Ok(descriptor)
+	}
+}
 
-        let reader = tape.windows_1252_reader();
+impl TryFrom<&str> for ModDescriptor {
 
-        let descriptor = Jomini::from_reader(reader)
-            .deserialize()
-            .map_err(|e| ModParseError::Parse {
-                path: path.to_path_buf(),
-                source: e,
-            })?;
+	type Error = Box<dyn std::error::Error>;
 
-        Ok(descriptor)
-    }
+	fn try_from(data: &str) -> Result<Self, Self::Error> {
+		let descriptor = jomini::text::de::from_windows1252_slice(data.as_bytes())?;
+
+		Ok(descriptor)
+	}
+}
+
+impl TryFrom<&[u8]> for ModDescriptor {
+
+	type Error = Box<dyn std::error::Error>;
+
+	fn try_from(data: &[u8]) -> Result<Self, Self::Error> {
+		let descriptor = jomini::text::de::from_windows1252_slice(data)?;
+
+		Ok(descriptor)
+	}
+}
+
+impl<const N: usize> TryFrom<&[u8; N]> for ModDescriptor {
+	type Error = Box<dyn std::error::Error>;
+	fn try_from(data: &[u8; N]) -> Result<Self, Self::Error> {
+		let descriptor = jomini::text::de::from_windows1252_slice(data)?;
+		Ok(descriptor)
+	}
+}
+
+
+mod tests {
+	use super::*;
+
+
+	#[test]
+	fn test_mod_descriptor_from_data() {
+		let data = br#"version="0.0.1"
+		tags={
+			"Utilities"
+		}
+		name="defines"
+		supported_version="1.34.4"
+		remote_file_id="2887527268""#;
+
+		let descriptor = ModDescriptor::try_from(data).unwrap();
+
+		assert_eq!(descriptor.name, "defines");
+		assert_eq!(descriptor.version.unwrap(), "0.0.1");
+		assert_eq!(descriptor.tags, vec!["Utilities"]);
+		assert_eq!(descriptor.remote_file_id.unwrap(), "2887527268");
+
+
+
+	}
 }
