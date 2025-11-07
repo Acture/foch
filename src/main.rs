@@ -1,5 +1,5 @@
 use clap::Parser;
-use foch::{cli, cli::arg, config::load_or_init_config};
+use foch::{cli, cli::arg, cli::config::load_or_init_config};
 use tracing_subscriber::FmtSubscriber;
 fn main() {
 	let cliargs = arg::ModManagerCli::parse();
@@ -25,10 +25,10 @@ fn main() {
 
 	match &cliargs.command {
 		arg::ModManagerCliCommands::Check(check_args) => {
-			cli::check::handle_check(check_args, config);
+			cli::handler::check::handle_check(check_args, config);
 		}
 		arg::ModManagerCliCommands::Config(config_args) => {
-			cli::config::handle_config(config_args, &mut config, &config_file)
+			cli::handler::config::handle_config(config_args, &mut config, &config_file)
 		}
 	}
 }

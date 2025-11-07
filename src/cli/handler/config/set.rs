@@ -1,6 +1,6 @@
 use crate::cli::arg;
 use crate::cli::arg::{ConfigArgs, SetConfigArgs};
-use crate::config::Config;
+use crate::cli::config::Config;
 use std::path::Path;
 
 pub fn handle_set(set_args: &SetConfigArgs, config: &mut Config, config_file: &Path) {

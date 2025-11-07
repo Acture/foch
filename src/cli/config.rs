@@ -1,4 +1,4 @@
-use crate::steam::find_steam_root_path;
+use crate::utils::steam::find_steam_root_path;
 use console::style;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
