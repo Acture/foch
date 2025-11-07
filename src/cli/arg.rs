@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use clap_verbosity_flag::{InfoLevel, Verbosity, WarnLevel};
+use clap_verbosity_flag::{Verbosity, WarnLevel};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
