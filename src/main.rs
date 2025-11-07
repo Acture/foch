@@ -17,6 +17,9 @@ fn main() {
 	tracing::warn!("这是一个 WARN 消息，默认就能看到");
 	let config = load_or_init_config().expect("无法加载或初始化配置");
 
+	tracing::info!("当前配置: {:?}", config);
+
+
 	match &cli.command {
 		arg::ModManagerCliCommands::Check => {}
 	}
