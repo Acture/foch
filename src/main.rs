@@ -1,8 +1,5 @@
 use clap::Parser;
-use foch::{
-	cli::arg,
-	config::{load_or_init_config},
-};
+use foch::{cli, cli::arg, config::load_or_init_config};
 use tracing_subscriber::FmtSubscriber;
 fn main() {
 	let cliargs = arg::ModManagerCli::parse();
@@ -27,49 +24,11 @@ fn main() {
 	tracing::info!("当前配置: {:?}", config);
 
 	match &cliargs.command {
-		arg::ModManagerCliCommands::Check(cliargs) => {
-			tracing::info!("检查 Playset: {:?}", cliargs.playset_path);
+		arg::ModManagerCliCommands::Check(check_args) => {
+			cli::check::handle_check(check_args, config);
 		}
-		arg::ModManagerCliCommands::Config(config_args) => match &config_args.command {
-			arg::ModManagerCliConfigCommands::Set(set_args) => {
-				tracing::info!("设置配置: {:?}", set_args);
-				match &set_args.command {
-					arg::ModManagerCliSetCommands::SteamPath(path_args) => {
-						let t_path = path_args
-							.path
-							.canonicalize()
-							.unwrap_or(path_args.path.clone());
-						println!("设置 Steam 路径为: {:?}", t_path);
-						config.steam_root_path = Some(t_path);
-					}
-					arg::ModManagerCliSetCommands::ParadoxDataPath(path_args) => {
-						let t_path = path_args
-							.path
-							.canonicalize()
-							.unwrap_or(path_args.path.clone());
-						println!("设置 Paradox 数据路径为: {:?}", t_path);
-						config.paradox_data_path = Some(t_path);
-					}
-					arg::ModManagerCliSetCommands::GamePath(game_path_args) => {
-						let t_path = game_path_args
-							.path
-							.canonicalize()
-							.unwrap_or(game_path_args.path.clone());
-						println!(
-							"设置游戏 '{}' 的路径为: {:?}",
-							game_path_args.game_name, t_path
-						);
-						config
-							.game_path
-							.insert(game_path_args.game_name.clone(), t_path);
-					}
-				}
-				config.save_config(&config_file).expect("保存配置失败");
-			}
-			arg::ModManagerCliConfigCommands::Show => {
-				tracing::info!("显示当前配置");
-				println!("当前配置: {:?}", config);
-			}
-		},
+		arg::ModManagerCliCommands::Config(config_args) => {
+			cli::config::handle_config(config_args, &mut config, &config_file)
+		}
 	}
 }
