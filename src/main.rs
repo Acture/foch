@@ -14,7 +14,7 @@ fn main() {
 
 	tracing::info!("foch 已启动，日志级别: {}", cli.verbose.tracing_level_filter());
 	tracing::debug!("这是一个 DEBUG 消息，只有 -vv 才能看到");
-	tracing::warn!("这是一个 WARN 消息，-v 就能看到");
+	tracing::warn!("这是一个 WARN 消息，默认就能看到");
 	let config = load_or_init_config().expect("无法加载或初始化配置");
 
 	match &cli.command {

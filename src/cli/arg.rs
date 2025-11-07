@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use clap_verbosity_flag::{InfoLevel, Verbosity};
+use clap_verbosity_flag::{InfoLevel, Verbosity, WarnLevel};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -11,7 +11,7 @@ pub struct ModManagerCli {
 	pub game_path: Option<String>,
 
 	#[command(flatten)]
-	pub verbose: Verbosity<InfoLevel>,
+	pub verbose: Verbosity<WarnLevel>,
 }
 
 #[derive(Subcommand, Debug)]
