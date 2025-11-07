@@ -1,6 +1,4 @@
 
 pub mod cli;
-pub mod steam;
-pub mod config;
-pub mod modus;
-mod check;
+pub mod game;
+pub mod utils;
