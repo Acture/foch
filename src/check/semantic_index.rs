@@ -191,9 +191,9 @@ fn walk_statements(
 				}
 
 				if let AstValue::Block { items, span } = value {
-					if let Some(def_kind) =
-						top_level_symbol_kind(ctx.file_kind, key, scope_id, index)
-					{
+					let definition_kind =
+						symbol_definition_kind(ctx.file_kind, key, scope_id, index);
+					if let Some(def_kind) = definition_kind {
 						let mut required_params = collect_required_params(items);
 						required_params.sort();
 						required_params.dedup();
@@ -210,7 +210,9 @@ fn walk_statements(
 						});
 					}
 
-					if is_scripted_effect_call_candidate(ctx.file_kind, key, scope_id, index) {
+					if definition_kind.is_none()
+						&& is_scripted_effect_call_candidate(ctx.file_kind, key, scope_id, index)
+					{
 						let mut provided = collect_provided_params(items);
 						provided.sort();
 						provided.dedup();
@@ -448,13 +450,46 @@ fn top_level_symbol_kind(
 	}
 	match file_kind {
 		ScriptFileKind::ScriptedEffects if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
-		ScriptFileKind::Decisions if !is_keyword(key) => Some(SymbolKind::Decision),
+		ScriptFileKind::Decisions if !is_keyword(key) && !is_decision_container_key(key) => {
+			Some(SymbolKind::Decision)
+		}
 		ScriptFileKind::DiplomaticActions if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
 		ScriptFileKind::TriggeredModifiers if !is_keyword(key) => {
 			Some(SymbolKind::TriggeredModifier)
 		}
 		_ => None,
 	}
+}
+
+fn symbol_definition_kind(
+	file_kind: ScriptFileKind,
+	key: &str,
+	scope_id: usize,
+	index: &SemanticIndex,
+) -> Option<SymbolKind> {
+	if let Some(kind) = top_level_symbol_kind(file_kind, key, scope_id, index) {
+		return Some(kind);
+	}
+	if file_kind == ScriptFileKind::Decisions
+		&& is_decision_entry_scope(index, scope_id)
+		&& !is_keyword(key)
+	{
+		return Some(SymbolKind::Decision);
+	}
+	None
+}
+
+fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
+	let Some(scope) = index.scopes.get(scope_id) else {
+		return false;
+	};
+	if scope.kind != ScopeKind::Generic {
+		return false;
+	}
+	let Some(parent_scope_id) = scope.parent else {
+		return false;
+	};
+	scope_kind(index, parent_scope_id) == ScopeKind::File
 }
 
 fn is_scripted_effect_call_candidate(
@@ -466,12 +501,36 @@ fn is_scripted_effect_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
+	if scope_kind(index, scope_id) == ScopeKind::Trigger {
+		return false;
+	}
+	if is_under_trigger_scope(index, scope_id) {
+		return false;
+	}
+	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
+		return false;
+	}
 	if file_kind == ScriptFileKind::ScriptedEffects
 		&& scope_kind(index, scope_id) == ScopeKind::File
 	{
 		return false;
 	}
 	true
+}
+
+fn is_under_trigger_scope(index: &SemanticIndex, mut scope_id: usize) -> bool {
+	loop {
+		let Some(scope) = index.scopes.get(scope_id) else {
+			return false;
+		};
+		if scope.kind == ScopeKind::Trigger {
+			return true;
+		}
+		let Some(parent) = scope.parent else {
+			return false;
+		};
+		scope_id = parent;
+	}
 }
 
 fn create_child_scope(
@@ -487,7 +546,13 @@ fn create_child_scope(
 	let mut this_type = scope_this_type(index, parent_scope_id);
 	let mut kind = ScopeKind::Generic;
 
-	if key == "trigger" || key == "limit" {
+	if key == "trigger"
+		|| key == "limit"
+		|| key == "potential"
+		|| key == "allow"
+		|| key == "condition"
+		|| key == "hidden_trigger"
+	{
 		kind = ScopeKind::Trigger;
 	} else if key == "effect" || key == "after" {
 		kind = ScopeKind::Effect;
@@ -696,6 +761,13 @@ fn is_alias_key(key: &str) -> bool {
 	matches!(key, "ROOT" | "FROM" | "THIS" | "PREV")
 }
 
+fn is_decision_container_key(key: &str) -> bool {
+	matches!(
+		key,
+		"country_decisions" | "province_decisions" | "religion_decisions" | "government_decisions"
+	)
+}
+
 fn is_keyword(key: &str) -> bool {
 	matches!(
 		key,
@@ -705,6 +777,26 @@ fn is_keyword(key: &str) -> bool {
 			| "option"
 			| "after" | "NOT"
 			| "OR" | "AND"
+			| "allow" | "potential"
+			| "condition"
+			| "modifier"
+			| "ai_chance"
+			| "hidden_effect"
+			| "custom_tooltip"
+			| "hidden_trigger"
+			| "ai_will_do"
+			| "else_if"
+			| "chance"
+			| "base" | "mean_time_to_happen"
+			| "immediate"
+			| "on_add"
+			| "on_remove"
+			| "active"
+			| "country_decisions"
+			| "province_decisions"
+			| "religion_decisions"
+			| "government_decisions"
+			| "from" | "every_owned_province"
 			| "country_event"
 			| "province_event"
 			| "namespace"

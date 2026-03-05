@@ -170,3 +170,26 @@ fn graph_export_supports_json_and_dot() {
 	assert!(dot.contains("digraph foch_semantic"));
 	assert!(dot.contains("scope_0"));
 }
+
+#[test]
+fn decision_keywords_are_not_recorded_as_scripted_effect_references() {
+	let decision = parsed("defines", "defines", "decisions/01_player_decision.txt");
+	let index = build_semantic_index(&[decision]);
+
+	let reference_names: Vec<&str> = index
+		.references
+		.iter()
+		.filter(|item| item.kind == SymbolKind::ScriptedEffect)
+		.map(|item| item.name.as_str())
+		.collect();
+
+	assert!(!reference_names.contains(&"country_decisions"));
+	assert!(!reference_names.contains(&"potential"));
+	assert!(!reference_names.contains(&"allow"));
+	assert!(
+		index
+			.definitions
+			.iter()
+			.any(|item| item.kind == SymbolKind::Decision && item.name == "_player_decision")
+	);
+}
