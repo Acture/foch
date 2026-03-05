@@ -1,4 +1,4 @@
-
+pub mod check;
 pub mod cli;
-pub mod game;
+pub mod domain;
 pub mod utils;

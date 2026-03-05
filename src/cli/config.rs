@@ -1,111 +1,168 @@
 use crate::utils::steam::find_steam_root_path;
-use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-// 1. 定义我们的配置结构
-#[derive(Serialize, Deserialize, Debug, Default)]
+pub const CONFIG_DIR_ENV: &str = "FOCH_CONFIG_DIR";
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct Config {
+	#[serde(default)]
 	pub steam_root_path: Option<PathBuf>,
+	#[serde(default)]
 	pub paradox_data_path: Option<PathBuf>,
+	#[serde(default)]
 	pub game_path: HashMap<String, PathBuf>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub enum ValidationStatus {
+	Ok,
+	Warning,
+	Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ValidationItem {
+	pub key: String,
+	pub status: ValidationStatus,
+	pub message: String,
 }
 
 impl TryFrom<&Path> for Config {
 	type Error = std::io::Error;
+
 	fn try_from(p: &Path) -> Result<Self, Self::Error> {
 		let content = std::fs::read_to_string(p)?;
-		toml::from_str(&content).map_err(|e| std::io::Error::other(e))
+		toml::from_str(&content).map_err(std::io::Error::other)
 	}
 }
 
-pub fn get_config_file_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-	Ok(dirs::home_dir().ok_or("无法获取$HOME目录")?.join(".config").join("foch"))
+pub fn get_config_dir_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+	if let Ok(path) = std::env::var(CONFIG_DIR_ENV) {
+		return Ok(PathBuf::from(path));
+	}
+
+	let home = dirs::home_dir().ok_or("无法获取 $HOME 目录")?;
+	Ok(home.join(".config").join("foch"))
 }
 
 impl Config {
 	pub fn load_config(path: &Path) -> Result<Self, std::io::Error> {
 		let content = std::fs::read_to_string(path)?;
-		toml::from_str(&content).map_err(|e| std::io::Error::other(e))
+		if content.trim().is_empty() {
+			return Ok(Self::default());
+		}
+
+		toml::from_str(&content).map_err(std::io::Error::other)
 	}
 
 	pub fn save_config(&self, path: &Path) -> Result<(), std::io::Error> {
-		let content = toml::to_string_pretty(self).map_err(|e| std::io::Error::other(e))?;
+		let content = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
 		std::fs::write(path, content)
+	}
+
+	pub fn validate(&self) -> Vec<ValidationItem> {
+		let mut items = Vec::new();
+
+		match &self.steam_root_path {
+			Some(path) if path.exists() => items.push(ValidationItem {
+				key: "steam_root_path".to_string(),
+				status: ValidationStatus::Ok,
+				message: format!("Steam 路径可用: {}", path.display()),
+			}),
+			Some(path) => items.push(ValidationItem {
+				key: "steam_root_path".to_string(),
+				status: ValidationStatus::Error,
+				message: format!("Steam 路径不存在: {}", path.display()),
+			}),
+			None => items.push(ValidationItem {
+				key: "steam_root_path".to_string(),
+				status: ValidationStatus::Warning,
+				message: "Steam 路径未设置，工坊 Mod 自动定位可能失败".to_string(),
+			}),
+		}
+
+		match &self.paradox_data_path {
+			Some(path) if path.exists() => items.push(ValidationItem {
+				key: "paradox_data_path".to_string(),
+				status: ValidationStatus::Ok,
+				message: format!("Paradox 数据目录可用: {}", path.display()),
+			}),
+			Some(path) => items.push(ValidationItem {
+				key: "paradox_data_path".to_string(),
+				status: ValidationStatus::Error,
+				message: format!("Paradox 数据目录不存在: {}", path.display()),
+			}),
+			None => items.push(ValidationItem {
+				key: "paradox_data_path".to_string(),
+				status: ValidationStatus::Warning,
+				message: "Paradox 数据目录未设置，本地 Mod 解析可能失败".to_string(),
+			}),
+		}
+
+		if self.game_path.is_empty() {
+			items.push(ValidationItem {
+				key: "game_path".to_string(),
+				status: ValidationStatus::Warning,
+				message: "尚未配置任何游戏安装路径".to_string(),
+			});
+		} else {
+			for (game, path) in &self.game_path {
+				let status = if path.exists() {
+					ValidationStatus::Ok
+				} else {
+					ValidationStatus::Error
+				};
+				let message = if path.exists() {
+					format!("游戏 {game} 路径可用: {}", path.display())
+				} else {
+					format!("游戏 {game} 路径不存在: {}", path.display())
+				};
+
+				items.push(ValidationItem {
+					key: format!("game_path.{game}"),
+					status,
+					message,
+				});
+			}
+		}
+
+		items
 	}
 }
 
 pub fn load_or_init_config() -> Result<(Config, PathBuf), Box<dyn std::error::Error>> {
-	let config_dir = get_config_file_path()?;
-
+	let config_dir = get_config_dir_path()?;
 	if !config_dir.exists() {
 		std::fs::create_dir_all(&config_dir)?;
-		tracing::info!("创建配置目录: {:?}", &config_dir);
 	}
 
 	let config_file = config_dir.join("config.toml");
-
 	if !config_file.exists() {
 		std::fs::File::create(&config_file)?;
-		tracing::info!("创建配置文件: {:?}", &config_file);
 	}
 
-	// --- 步骤 A: 尝试加载 ---
-	if let Ok(config) = Config::load_config(&config_file)
-		&& config.steam_root_path.is_some()
+	let mut config = Config::load_config(&config_file)?;
+	if config.steam_root_path.is_none()
+		&& let Some(path) = find_steam_root_path()
 	{
-		return Ok((config, config_file));
-	}
-
-	let spinner = ProgressBar::new_spinner();
-	spinner.enable_steady_tick(Duration::from_millis(120));
-	spinner.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg}") // ".cyan" 设置颜色
-			.unwrap()
-			// 这里可以自定义你喜欢的旋转动画
-			.tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-	);
-	spinner.set_message("首次运行，正在自动侦测 Steam 路径...");
-
-	let steam_path = find_steam_root_path();
-
-	spinner.finish_and_clear();
-
-	let mut config = Config::default();
-
-	if let Some(path) = steam_path {
-		println!(
-			"{} {}",
-			style("✅").green(),
-			style(format!("侦测成功！Steam 根目录: {:?}", path)).bold()
-		);
-		// 2. 把“次要”信息变暗
-		println!(
-			"   {}",
-			style(format!("配置已缓存至: {:?}", config_file)).dim()
-		);
 		config.steam_root_path = Some(path);
-	} else {
-		eprintln!(
-			"{} {}",
-			style("⚠️").yellow(),
-			style("自动侦测 Steam 路径失败。").bold()
-		);
-		// 4. 把“说明”信息变暗
-		eprintln!(
-			"   {}",
-			style("您仍可继续使用，但某些功能(如读取工坊Mod)可能受限。").dim()
-		);
-		eprintln!(
-			"   {}",
-			style("请尝试使用 --steam-path <路径> 手动配置。").dim()
-		);
+		config.save_config(&config_file)?;
 	}
-
-	config.save_config(&config_file)?;
 
 	Ok((config, config_file))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{Config, ValidationStatus};
+
+	#[test]
+	fn validate_reports_missing_paths() {
+		let config = Config::default();
+		let statuses: Vec<ValidationStatus> =
+			config.validate().into_iter().map(|x| x.status).collect();
+		assert!(statuses.contains(&ValidationStatus::Warning));
+	}
 }
