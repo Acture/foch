@@ -198,21 +198,53 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 			continue;
 		}
 
+		let mergeable = is_structurally_mergeable_path(&path);
+		let message = if mergeable {
+			format!("文件覆盖冲突（可结构化自动合并候选）: {path}")
+		} else {
+			format!("文件覆盖冲突: {path}")
+		};
+		let evidence = if mergeable {
+			format!("{} | merge_hint=structural", unique.join(" -> "))
+		} else {
+			unique.join(" -> ")
+		};
+
 		findings.push(new_finding(
 			"R005",
 			Severity::Warning,
 			FindingChannel::Advisory,
-			format!("文件覆盖冲突: {path}"),
+			message,
 			unique.last().cloned(),
 			Some(path.into()),
-			Some(unique.join(" -> ")),
+			Some(evidence),
 			None,
 			None,
-			Some(0.85),
+			Some(if mergeable { 0.75 } else { 0.85 }),
 		));
 	}
 
 	findings
+}
+
+fn is_structurally_mergeable_path(path: &str) -> bool {
+	let normalized = path.replace('\\', "/").to_ascii_lowercase();
+	if normalized.ends_with(".gui") || normalized.ends_with(".gfx") {
+		return normalized.starts_with("interface/")
+			|| normalized.starts_with("common/interface/")
+			|| normalized.starts_with("gfx/");
+	}
+	if normalized.ends_with(".txt") || normalized.ends_with(".lua") {
+		return normalized.starts_with("events/")
+			|| normalized.starts_with("decisions/")
+			|| normalized.starts_with("common/scripted_effects/")
+			|| normalized.starts_with("common/diplomatic_actions/")
+			|| normalized.starts_with("common/triggered_modifiers/")
+			|| normalized.starts_with("common/defines/")
+			|| normalized.starts_with("interface/")
+			|| normalized.starts_with("common/interface/");
+	}
+	false
 }
 
 pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
