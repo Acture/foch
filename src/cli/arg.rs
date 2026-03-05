@@ -21,7 +21,7 @@ pub enum ModManagerCliCommands {
 #[derive(Parser, Debug)]
 #[command(
 	about = "检查 playset 并输出规则发现",
-	after_help = "示例:\n  foch-cli check ./playlist.json\n  foch-cli check ./playlist.json --strict\n  foch-cli check ./playlist.json --analysis-mode semantic --channel strict\n  foch-cli check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch-cli check ./playlist.json --format json --output result.json"
+	after_help = "示例:\n  foch-cli check ./playlist.json\n  foch-cli check ./playlist.json --strict\n  foch-cli check ./playlist.json --analysis-mode semantic --channel strict\n  foch-cli check ./playlist.json --include-game-base\n  foch-cli check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch-cli check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
 	pub playset_path: PathBuf,
@@ -46,6 +46,9 @@ pub struct CheckArgs {
 
 	#[arg(long, value_enum, default_value_t = GraphFormatArg::Json)]
 	pub graph_format: GraphFormatArg,
+
+	#[arg(long)]
+	pub include_game_base: bool,
 
 	#[arg(long)]
 	pub no_color: bool,

@@ -124,6 +124,7 @@ pub struct RunOptions {
 	pub analysis_mode: AnalysisMode,
 	pub channel_mode: ChannelMode,
 	pub graph_format: Option<GraphFormat>,
+	pub include_game_base: bool,
 }
 
 #[derive(Clone, Debug)]

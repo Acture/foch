@@ -21,6 +21,7 @@ pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 			.graph_out
 			.as_ref()
 			.map(|_| to_graph_format(check_args.graph_format)),
+		include_game_base: check_args.include_game_base,
 	};
 
 	let result = run_checks_with_options(request, run_options.clone());

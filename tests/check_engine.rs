@@ -1,5 +1,5 @@
-use foch::check::model::CheckRequest;
-use foch::check::run_checks;
+use foch::check::model::{CheckRequest, RunOptions};
+use foch::check::{run_checks, run_checks_with_options};
 use foch::cli::config::Config;
 use serde_json::json;
 use std::fs;
@@ -297,5 +297,64 @@ fn resolves_mod_root_from_non_default_steam_library_folder() {
 	assert!(
 		!result.findings.iter().any(|f| f.rule_id == "R004"),
 		"should resolve descriptor.mod from steam libraryfolders path"
+	);
+}
+
+#[test]
+fn include_game_base_resolves_event_reference_from_base_game_symbols() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_root = temp.path().join("9301");
+	let game_root = temp.path().join("eu4-game");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9301"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a", &[]);
+	write_script_file(
+		&mod_root,
+		"events/ref.txt",
+		"namespace = test\ncountry_event = { id = test.1 option = { country_event = { id = base.1 } } }\n",
+	);
+	write_script_file(
+		&game_root,
+		"events/base.txt",
+		"namespace = base\ncountry_event = { id = base.1 option = { name = ok } }\n",
+	);
+
+	let mut game_path = std::collections::HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+	let config = Config {
+		steam_root_path: None,
+		paradox_data_path: None,
+		game_path,
+	};
+
+	let without_game = run_checks_with_options(
+		request_with_config(&playlist_path, config.clone()),
+		RunOptions::default(),
+	);
+	assert!(
+		without_game
+			.findings
+			.iter()
+			.any(|f| { f.rule_id == "S002" && f.message.contains("event base.1") })
+	);
+
+	let with_game = run_checks_with_options(
+		request_with_config(&playlist_path, config),
+		RunOptions {
+			include_game_base: true,
+			..RunOptions::default()
+		},
+	);
+	assert!(
+		!with_game
+			.findings
+			.iter()
+			.any(|f| { f.rule_id == "S002" && f.message.contains("event base.1") })
 	);
 }

@@ -101,6 +101,28 @@ pub fn steam_workshop_mod_path(steam_root: &Path, app_id: u32, steam_id: &str) -
 	None
 }
 
+pub fn steam_game_install_path(steam_root: &Path, app_id: u32) -> Option<PathBuf> {
+	for library in steam_library_paths(steam_root) {
+		let manifest = library
+			.join("steamapps")
+			.join(format!("appmanifest_{app_id}.acf"));
+		if !manifest.is_file() {
+			continue;
+		}
+		let Ok(content) = std::fs::read_to_string(&manifest) else {
+			continue;
+		};
+		let Some(installdir) = extract_installdir_from_appmanifest(&content) else {
+			continue;
+		};
+		let candidate = library.join("steamapps").join("common").join(installdir);
+		if candidate.is_dir() {
+			return Some(candidate);
+		}
+	}
+	None
+}
+
 fn libraryfolders_files(steam_root: &Path) -> Vec<PathBuf> {
 	vec![
 		steam_root.join("steamapps").join("libraryfolders.vdf"),
@@ -126,9 +148,20 @@ pub fn extract_library_paths_from_vdf(content: &str) -> Vec<PathBuf> {
 	paths
 }
 
+fn extract_installdir_from_appmanifest(content: &str) -> Option<String> {
+	let install_re =
+		Regex::new(r#""installdir"\s*"([^"]+)""#).expect("valid appmanifest installdir regex");
+	let capture = install_re.captures(content)?;
+	let raw = capture.get(1)?.as_str();
+	Some(raw.replace("\\\\", "\\"))
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{extract_library_paths_from_vdf, steam_library_paths, steam_root_candidates};
+	use super::{
+		extract_library_paths_from_vdf, steam_game_install_path, steam_library_paths,
+		steam_root_candidates,
+	};
 	use std::path::Path;
 	use tempfile::TempDir;
 
@@ -188,5 +221,44 @@ mod tests {
 				.iter()
 				.any(|item| item == &tmp.path().join("SteamLibrary2"))
 		);
+	}
+
+	#[test]
+	fn steam_game_install_path_uses_appmanifest() {
+		let tmp = TempDir::new().expect("temp dir");
+		let steam_root = tmp.path().join("Steam");
+		let lib2 = tmp.path().join("SteamLibrary2");
+		std::fs::create_dir_all(steam_root.join("steamapps")).expect("create steamapps");
+		std::fs::create_dir_all(lib2.join("steamapps").join("common")).expect("create common");
+		std::fs::write(
+			steam_root.join("steamapps").join("libraryfolders.vdf"),
+			format!(
+				r#""libraryfolders"
+{{
+	"0" {{ "path" "{}" }}
+	"1" {{ "path" "{}" }}
+}}"#,
+				steam_root.display(),
+				lib2.display()
+			),
+		)
+		.expect("write vdf");
+		std::fs::write(
+			lib2.join("steamapps").join("appmanifest_236850.acf"),
+			r#""AppState"
+{
+	"appid" "236850"
+	"installdir" "Europa Universalis IV"
+}"#,
+		)
+		.expect("write manifest");
+		let game_dir = lib2
+			.join("steamapps")
+			.join("common")
+			.join("Europa Universalis IV");
+		std::fs::create_dir_all(&game_dir).expect("create game dir");
+
+		let resolved = steam_game_install_path(&steam_root, 236850);
+		assert_eq!(resolved.as_deref(), Some(game_dir.as_path()));
 	}
 }
