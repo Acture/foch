@@ -515,10 +515,11 @@ fn iter_script_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 		let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
 			continue;
 		};
-		if !matches!(ext, "txt" | "lua") {
+		let ext = ext.to_ascii_lowercase();
+		if !matches!(ext.as_str(), "txt" | "lua" | "gui" | "gfx") {
 			continue;
 		}
-		if !is_semantic_target_path(root, path) {
+		if !is_parse_target_path(root, path, &ext) {
 			continue;
 		}
 		files.push(path.to_path_buf());
@@ -527,15 +528,23 @@ fn iter_script_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 	files
 }
 
-fn is_semantic_target_path(root: &std::path::Path, path: &std::path::Path) -> bool {
+fn is_parse_target_path(root: &std::path::Path, path: &std::path::Path, ext: &str) -> bool {
 	let Ok(relative) = path.strip_prefix(root) else {
 		return false;
 	};
 	let normalized = relative.to_string_lossy().replace('\\', "/");
+	if matches!(ext, "gui" | "gfx") {
+		return normalized.starts_with("interface/")
+			|| normalized.starts_with("common/interface/")
+			|| normalized.starts_with("gfx/");
+	}
+
 	normalized.starts_with("events/")
 		|| normalized.starts_with("decisions/")
 		|| normalized.starts_with("common/scripted_effects/")
 		|| normalized.starts_with("common/diplomatic_actions/")
 		|| normalized.starts_with("common/triggered_modifiers/")
 		|| normalized.starts_with("common/defines/")
+		|| normalized.starts_with("interface/")
+		|| normalized.starts_with("common/interface/")
 }
