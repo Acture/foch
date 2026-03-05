@@ -11,7 +11,10 @@ use crate::check::rules::{
 };
 use crate::check::semantic_index::{build_semantic_index, parse_script_file};
 use crate::domain::descriptor::load_descriptor;
+use crate::domain::game::Game;
 use crate::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
+use crate::utils::steam::steam_workshop_mod_path;
+use std::collections::HashSet;
 use walkdir::WalkDir;
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
@@ -172,12 +175,20 @@ fn resolve_mod_root(
 		candidates.push(playset_dir.join(format!("mod_{steam_id}")));
 
 		if let Some(path) = request.config.paradox_data_path.as_ref() {
-			candidates.push(path.join("mod").join(steam_id));
-			candidates.push(path.join("mod").join(format!("ugc_{steam_id}")));
+			for game_data_dir in paradox_game_data_dirs(path, &playlist.game) {
+				if let Some(root) = resolve_mod_from_ugc_descriptor(&game_data_dir, steam_id) {
+					candidates.push(root);
+				}
+				candidates.push(game_data_dir.join("mod").join(steam_id));
+				candidates.push(game_data_dir.join("mod").join(format!("ugc_{steam_id}")));
+			}
 		}
 
 		if let Some(steam_root) = request.config.steam_root_path.as_ref() {
 			for app_id in playlist.game.steam_app_ids() {
+				if let Some(path) = steam_workshop_mod_path(steam_root, *app_id, steam_id) {
+					candidates.push(path);
+				}
 				candidates.push(
 					steam_root
 						.join("steamapps")
@@ -195,7 +206,73 @@ fn resolve_mod_root(
 		candidates.push(playset_dir.join(name.replace(' ', "_")));
 	}
 
-	candidates.into_iter().find(|candidate| candidate.is_dir())
+	dedup_candidates(candidates)
+		.into_iter()
+		.find(|candidate| candidate.is_dir())
+}
+
+fn dedup_candidates(candidates: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+	let mut seen = HashSet::new();
+	let mut result = Vec::new();
+	for candidate in candidates {
+		let key = candidate.to_string_lossy().replace('\\', "/");
+		if !seen.insert(key) {
+			continue;
+		}
+		result.push(candidate);
+	}
+	result
+}
+
+fn paradox_game_data_dirs(base: &std::path::Path, game: &Game) -> Vec<std::path::PathBuf> {
+	let mut dirs = vec![base.to_path_buf()];
+	if let Some(game_dir_name) = game.paradox_data_dir_name() {
+		dirs.push(base.join(game_dir_name));
+	}
+	dedup_candidates(dirs)
+}
+
+fn resolve_mod_from_ugc_descriptor(
+	game_data_dir: &std::path::Path,
+	steam_id: &str,
+) -> Option<std::path::PathBuf> {
+	let metadata = game_data_dir
+		.join("mod")
+		.join(format!("ugc_{steam_id}.mod"));
+	if !metadata.is_file() {
+		return None;
+	}
+
+	let descriptor = load_descriptor(&metadata).ok()?;
+	let raw_path = descriptor.path?;
+	descriptor_path_candidates(game_data_dir, &raw_path)
+		.into_iter()
+		.find(|candidate| candidate.is_dir())
+}
+
+fn descriptor_path_candidates(
+	game_data_dir: &std::path::Path,
+	raw: &str,
+) -> Vec<std::path::PathBuf> {
+	let mut fragments = vec![raw.to_string()];
+	if raw.contains('\\') {
+		fragments.push(raw.replace('\\', "/"));
+	}
+	if raw.contains('/') {
+		fragments.push(raw.replace('/', "\\"));
+	}
+
+	let mut candidates = Vec::new();
+	for fragment in fragments {
+		let path = std::path::PathBuf::from(&fragment);
+		if path.is_absolute() {
+			candidates.push(path.clone());
+		}
+		candidates.push(game_data_dir.join(&path));
+		candidates.push(game_data_dir.join("mod").join(&path));
+	}
+
+	dedup_candidates(candidates)
 }
 
 fn collect_relative_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -232,7 +309,23 @@ fn iter_script_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 		if !matches!(ext, "txt" | "lua") {
 			continue;
 		}
+		if !is_semantic_target_path(root, path) {
+			continue;
+		}
 		files.push(path.to_path_buf());
 	}
 	files
+}
+
+fn is_semantic_target_path(root: &std::path::Path, path: &std::path::Path) -> bool {
+	let Ok(relative) = path.strip_prefix(root) else {
+		return false;
+	};
+	let normalized = relative.to_string_lossy().replace('\\', "/");
+	normalized.starts_with("events/")
+		|| normalized.starts_with("decisions/")
+		|| normalized.starts_with("common/scripted_effects/")
+		|| normalized.starts_with("common/diplomatic_actions/")
+		|| normalized.starts_with("common/triggered_modifiers/")
+		|| normalized.starts_with("common/defines/")
 }

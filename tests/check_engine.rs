@@ -40,10 +40,27 @@ fn write_script_file(mod_root: &Path, relative: &str, content: &str) {
 	fs::write(script_path, content).expect("write script file");
 }
 
+fn write_ugc_metadata(paradox_game_dir: &Path, steam_id: &str, target_path: &Path) {
+	let mod_dir = paradox_game_dir.join("mod");
+	fs::create_dir_all(&mod_dir).expect("create mod metadata dir");
+	let content = format!(
+		"name=\"ugc-{steam_id}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
+		target_path.display()
+	);
+	fs::write(mod_dir.join(format!("ugc_{steam_id}.mod")), content).expect("write ugc metadata");
+}
+
 fn request_for(playlist_path: &Path) -> CheckRequest {
 	CheckRequest {
 		playset_path: playlist_path.to_path_buf(),
 		config: Config::default(),
+	}
+}
+
+fn request_with_config(playlist_path: &Path, config: Config) -> CheckRequest {
+	CheckRequest {
+		playset_path: playlist_path.to_path_buf(),
+		config,
 	}
 }
 
@@ -194,4 +211,91 @@ fn unresolved_scripted_effect_creates_r008() {
 
 	let result = run_checks(request_for(&playlist_path));
 	assert!(result.findings.iter().any(|f| f.rule_id == "R008"));
+}
+
+#[test]
+fn resolves_mod_root_from_ugc_metadata_when_paradox_root_is_configured() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9101"}
+		]),
+	);
+
+	let paradox_root = temp.path().join("Paradox Interactive");
+	let paradox_game_dir = paradox_root.join("Europa Universalis IV");
+	let mod_root = temp.path().join("real-mod-9101");
+	write_descriptor(&mod_root, "mod-a", &[]);
+	write_ugc_metadata(&paradox_game_dir, "9101", &mod_root);
+
+	let config = Config {
+		steam_root_path: None,
+		paradox_data_path: Some(paradox_root),
+		game_path: std::collections::HashMap::new(),
+	};
+
+	let result = run_checks(request_with_config(&playlist_path, config));
+	assert!(
+		!result.findings.iter().any(|f| f.rule_id == "R004"),
+		"should resolve descriptor.mod through ugc metadata"
+	);
+}
+
+#[test]
+fn resolves_mod_root_from_non_default_steam_library_folder() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9201"}
+		]),
+	);
+
+	let steam_root = temp.path().join("Steam");
+	let lib2 = temp.path().join("SteamLibrary2");
+	fs::create_dir_all(steam_root.join("steamapps")).expect("create steamapps");
+	fs::write(
+		steam_root.join("steamapps").join("libraryfolders.vdf"),
+		format!(
+			r#""libraryfolders"
+{{
+	"0"
+	{{
+		"path"		"{}"
+	}}
+	"1"
+	{{
+		"path"		"{}"
+	}}
+}}"#,
+			steam_root.display(),
+			lib2.display()
+		),
+	)
+	.expect("write libraryfolders");
+
+	let workshop_mod_root = lib2
+		.join("steamapps")
+		.join("workshop")
+		.join("content")
+		.join("236850")
+		.join("9201");
+	write_descriptor(&workshop_mod_root, "mod-a", &[]);
+
+	let config = Config {
+		steam_root_path: Some(steam_root),
+		paradox_data_path: None,
+		game_path: std::collections::HashMap::new(),
+	};
+
+	let result = run_checks(request_with_config(&playlist_path, config));
+	assert!(
+		!result.findings.iter().any(|f| f.rule_id == "R004"),
+		"should resolve descriptor.mod from steam libraryfolders path"
+	);
 }

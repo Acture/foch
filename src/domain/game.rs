@@ -38,4 +38,15 @@ impl Game {
 			Self::Unknown => "unknown",
 		}
 	}
+
+	pub fn paradox_data_dir_name(&self) -> Option<&'static str> {
+		match self {
+			Self::EuropaUniversalis4 => Some("Europa Universalis IV"),
+			Self::CrusaderKings3 => Some("Crusader Kings III"),
+			Self::Victoria3 => Some("Victoria 3"),
+			Self::Stellaris => Some("Stellaris"),
+			Self::HeartsOfIron4 => Some("Hearts of Iron IV"),
+			Self::Unknown => None,
+		}
+	}
 }
