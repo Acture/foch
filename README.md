@@ -67,3 +67,15 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
+
+## EU4 内建符号表
+
+仓库内置 `src/check/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。
+
+如需重建该表（CWTools + eu4wiki 镜像 + 本机 EU4 文件频次）：
+
+```bash
+python3 scripts/build_eu4_builtin_catalog.py
+```
+
+默认会读取 `/tmp/foch-sources` 下缓存资料，并自动探测本机 EU4 目录。可通过 `FOCH_EU4_PATH` 覆盖。

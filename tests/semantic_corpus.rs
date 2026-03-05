@@ -186,6 +186,8 @@ fn decision_keywords_are_not_recorded_as_scripted_effect_references() {
 	assert!(!reference_names.contains(&"country_decisions"));
 	assert!(!reference_names.contains(&"potential"));
 	assert!(!reference_names.contains(&"allow"));
+	assert!(!reference_names.contains(&"add_country_modifier"));
+	assert!(!reference_names.contains(&"every_owned_province"));
 	assert!(
 		index
 			.definitions

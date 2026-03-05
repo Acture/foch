@@ -1,3 +1,6 @@
+use crate::check::eu4_builtin::{
+	is_builtin_effect, is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
+};
 use crate::check::model::{
 	AliasUsage, KeyUsage, ParseIssue, ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan,
 	SymbolDefinition, SymbolKind, SymbolReference,
@@ -555,6 +558,9 @@ fn is_scripted_effect_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
+	if is_builtin_effect(key) || is_builtin_trigger(key) {
+		return false;
+	}
 	if scope_kind(index, scope_id) == ScopeKind::Trigger {
 		return false;
 	}
@@ -823,40 +829,10 @@ fn is_decision_container_key(key: &str) -> bool {
 }
 
 fn is_keyword(key: &str) -> bool {
-	matches!(
-		key,
-		"if" | "else"
-			| "limit" | "trigger"
-			| "effect"
-			| "option"
-			| "after" | "NOT"
-			| "OR" | "AND"
-			| "allow" | "potential"
-			| "condition"
-			| "modifier"
-			| "ai_chance"
-			| "hidden_effect"
-			| "custom_tooltip"
-			| "hidden_trigger"
-			| "ai_will_do"
-			| "else_if"
-			| "chance"
-			| "base" | "mean_time_to_happen"
-			| "immediate"
-			| "on_add"
-			| "on_remove"
-			| "active"
-			| "country_decisions"
-			| "province_decisions"
-			| "religion_decisions"
-			| "government_decisions"
-			| "from" | "every_owned_province"
-			| "country_event"
-			| "province_event"
-			| "namespace"
-			| "id" | "title"
-			| "desc" | "name"
-	)
+	if is_reserved_keyword(key) || is_contextual_keyword(key) {
+		return true;
+	}
+	matches!(key, "condition" | "from")
 }
 
 pub fn resolve_scripted_effect_reference_targets(

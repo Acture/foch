@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod engine;
+pub mod eu4_builtin;
 pub mod graph;
 pub mod model;
 pub mod parser;
