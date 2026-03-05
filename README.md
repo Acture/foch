@@ -68,6 +68,30 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
+## 解析缓存（本地）
+
+`check` 现在会缓存两层数据（默认写入系统 cache 目录下的 `foch/`）：
+
+- 文件级 parser cache（game + mod 通用）
+- 游戏本体 semantic index cache（`--include-game-base` 时复用）
+
+可选环境变量：
+
+```bash
+export FOCH_PARSE_CACHE_DIR=/tmp/foch-parse-cache
+export FOCH_SEMANTIC_CACHE_DIR=/tmp/foch-semantic-cache
+```
+
+## 真实语料解析统计（本地工具）
+
+```bash
+# 统计某目录下 .txt 解析成功率
+cargo run --bin parse_stats -- "/path/to/eu4" --exts txt
+
+# 排除非脚本文本目录（例如 license / patchnotes）
+cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes licenses,patchnotes
+```
+
 ## EU4 内建符号表
 
 仓库内置 `src/check/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。
