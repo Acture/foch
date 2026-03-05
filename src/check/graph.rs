@@ -97,7 +97,7 @@ fn scope_kind_text(kind: ScopeKind) -> &'static str {
 		ScopeKind::Effect => "Effect",
 		ScopeKind::Loop => "Loop",
 		ScopeKind::AliasBlock => "AliasBlock",
-		ScopeKind::Generic => "Generic",
+		ScopeKind::Block => "Block",
 	}
 }
 

@@ -23,6 +23,7 @@ pub struct ParsedScriptFile {
 	pub path: PathBuf,
 	pub relative_path: PathBuf,
 	pub file_kind: ScriptFileKind,
+	pub module_name: String,
 	pub ast: AstFile,
 	pub parse_issues: Vec<ParseIssue>,
 }
@@ -44,9 +45,47 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 	}
 }
 
+fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
+	let normalized = relative.to_string_lossy().replace('\\', "/");
+	let parts: Vec<&str> = normalized.split('/').collect();
+	let module = match kind {
+		ScriptFileKind::Events => "events".to_string(),
+		ScriptFileKind::Decisions => "decisions".to_string(),
+		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
+		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
+		ScriptFileKind::TriggeredModifiers => module_with_tail(&parts, 2, "triggered_modifiers"),
+		ScriptFileKind::Other => fallback_module_name(&parts),
+	};
+	module.replace('-', "_")
+}
+
+fn module_with_tail(parts: &[&str], prefix_len: usize, base: &str) -> String {
+	if parts.len() <= prefix_len + 1 {
+		return base.to_string();
+	}
+	let mut name = base.to_string();
+	for part in &parts[prefix_len + 1..parts.len() - 1] {
+		name.push('.');
+		name.push_str(part);
+	}
+	name
+}
+
+fn fallback_module_name(parts: &[&str]) -> String {
+	if parts.len() <= 1 {
+		return "other".to_string();
+	}
+	parts[..parts.len() - 1].join(".")
+}
+
+fn qualify_symbol_name(module: &str, local: &str) -> String {
+	format!("eu4::{module}::{local}")
+}
+
 pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<ParsedScriptFile> {
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
 	let file_kind = classify_script_file(&relative);
+	let module_name = module_name_from_relative(&relative, file_kind);
 	let parsed = parse_clausewitz_file(file);
 
 	let parse_issues = parsed
@@ -66,6 +105,7 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 		path: file.to_path_buf(),
 		relative_path: relative,
 		file_kind,
+		module_name,
 		ast: parsed.ast,
 		parse_issues,
 	})
@@ -77,6 +117,7 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 		index.parse_issues.extend(file.parse_issues.clone());
 		build_file_index(file, &mut index);
 	}
+	infer_definition_scope_from_references(&mut index);
 	index
 }
 
@@ -113,6 +154,7 @@ fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
 		file_kind: file.file_kind,
+		module_name: &file.module_name,
 	};
 
 	walk_statements(
@@ -129,6 +171,7 @@ struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a Path,
 	file_kind: ScriptFileKind,
+	module_name: &'a str,
 }
 
 fn walk_statements(
@@ -181,6 +224,7 @@ fn walk_statements(
 					index.references.push(SymbolReference {
 						kind: SymbolKind::Event,
 						name: event_id,
+						module: ctx.module_name.to_string(),
 						mod_id: ctx.mod_id.to_string(),
 						path: ctx.path.to_path_buf(),
 						line: key_span.start.line,
@@ -200,12 +244,16 @@ fn walk_statements(
 
 						index.definitions.push(SymbolDefinition {
 							kind: def_kind,
-							name: key.clone(),
+							name: qualify_symbol_name(ctx.module_name, key),
+							module: ctx.module_name.to_string(),
+							local_name: key.clone(),
 							mod_id: ctx.mod_id.to_string(),
 							path: ctx.path.to_path_buf(),
 							line: key_span.start.line,
 							column: key_span.start.column,
 							scope_id,
+							declared_this_type: scope_this_type(index, scope_id),
+							inferred_this_type: ScopeType::Unknown,
 							required_params,
 						});
 					}
@@ -219,6 +267,7 @@ fn walk_statements(
 						index.references.push(SymbolReference {
 							kind: SymbolKind::ScriptedEffect,
 							name: key.clone(),
+							module: ctx.module_name.to_string(),
 							mod_id: ctx.mod_id.to_string(),
 							path: ctx.path.to_path_buf(),
 							line: key_span.start.line,
@@ -255,7 +304,7 @@ fn walk_statements(
 				if let AstValue::Block { items, span } = value {
 					let child_scope = push_scope(
 						index,
-						ScopeKind::Generic,
+						ScopeKind::Block,
 						Some(scope_id),
 						scope_this_type(index, scope_id),
 						scope_aliases(index, scope_id),
@@ -316,11 +365,15 @@ fn handle_country_event_block(
 		index.definitions.push(SymbolDefinition {
 			kind: SymbolKind::Event,
 			name: full_id,
+			module: ctx.module_name.to_string(),
+			local_name: "country_event".to_string(),
 			mod_id: ctx.mod_id.to_string(),
 			path: ctx.path.to_path_buf(),
 			line: span.start.line,
 			column: span.start.column,
 			scope_id: event_scope,
+			declared_this_type: ScopeType::Country,
+			inferred_this_type: ScopeType::Country,
 			required_params: Vec::new(),
 		});
 	}
@@ -329,6 +382,7 @@ fn handle_country_event_block(
 		mod_id: ctx.mod_id,
 		path: ctx.path,
 		file_kind: ctx.file_kind,
+		module_name: ctx.module_name,
 	};
 	walk_statements(items, index, event_scope, &mut child_ctx, None, namespace);
 }
@@ -483,7 +537,7 @@ fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 	let Some(scope) = index.scopes.get(scope_id) else {
 		return false;
 	};
-	if scope.kind != ScopeKind::Generic {
+	if scope.kind != ScopeKind::Block {
 		return false;
 	}
 	let Some(parent_scope_id) = scope.parent else {
@@ -544,7 +598,7 @@ fn create_child_scope(
 	let mut aliases = scope_aliases(index, parent_scope_id);
 	aliases.insert("PREV".to_string(), scope_this_type(index, parent_scope_id));
 	let mut this_type = scope_this_type(index, parent_scope_id);
-	let mut kind = ScopeKind::Generic;
+	let mut kind = ScopeKind::Block;
 
 	if key == "trigger"
 		|| key == "limit"
@@ -634,7 +688,7 @@ fn scope_kind(index: &SemanticIndex, scope_id: usize) -> ScopeKind {
 		.scopes
 		.get(scope_id)
 		.map(|scope| scope.kind)
-		.unwrap_or(ScopeKind::Generic)
+		.unwrap_or(ScopeKind::Block)
 }
 
 fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> ScopeType {
@@ -672,7 +726,7 @@ fn find_scripted_effect_definition(
 		item.kind == SymbolKind::ScriptedEffect
 			&& item.mod_id == mod_id
 			&& item.path == path
-			&& item.name == name
+			&& item.local_name == name
 	})
 }
 
@@ -803,6 +857,96 @@ fn is_keyword(key: &str) -> bool {
 			| "id" | "title"
 			| "desc" | "name"
 	)
+}
+
+pub fn resolve_scripted_effect_reference_targets(
+	index: &SemanticIndex,
+	reference: &SymbolReference,
+) -> Vec<usize> {
+	if reference.kind != SymbolKind::ScriptedEffect {
+		return Vec::new();
+	}
+
+	let mut exact = Vec::new();
+	for (idx, def) in index.definitions.iter().enumerate() {
+		if def.kind != SymbolKind::ScriptedEffect {
+			continue;
+		}
+		if def.module == reference.module && def.local_name == reference.name {
+			exact.push(idx);
+		}
+	}
+	if !exact.is_empty() {
+		return exact;
+	}
+
+	let mut by_local = Vec::new();
+	for (idx, def) in index.definitions.iter().enumerate() {
+		if def.kind != SymbolKind::ScriptedEffect {
+			continue;
+		}
+		if def.local_name == reference.name {
+			by_local.push(idx);
+		}
+	}
+	if by_local.len() == 1 {
+		return by_local;
+	}
+
+	let by_mod: Vec<usize> = by_local
+		.into_iter()
+		.filter(|idx| {
+			index
+				.definitions
+				.get(*idx)
+				.map(|def| def.mod_id == reference.mod_id)
+				.unwrap_or(false)
+		})
+		.collect();
+	if by_mod.len() == 1 {
+		return by_mod;
+	}
+
+	Vec::new()
+}
+
+fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
+	use std::collections::{HashMap, HashSet};
+
+	let mut observed: HashMap<usize, HashSet<ScopeType>> = HashMap::new();
+	for reference in &index.references {
+		if reference.kind != SymbolKind::ScriptedEffect {
+			continue;
+		}
+		let caller_type = scope_this_type(index, reference.scope_id);
+		if caller_type == ScopeType::Unknown {
+			continue;
+		}
+		for def_idx in resolve_scripted_effect_reference_targets(index, reference) {
+			observed.entry(def_idx).or_default().insert(caller_type);
+		}
+	}
+
+	for (idx, definition) in index.definitions.iter_mut().enumerate() {
+		if definition.kind != SymbolKind::ScriptedEffect {
+			continue;
+		}
+		let inferred = observed.get(&idx).map_or(ScopeType::Unknown, |set| {
+			let has_country = set.contains(&ScopeType::Country);
+			let has_province = set.contains(&ScopeType::Province);
+			match (has_country, has_province) {
+				(true, false) => ScopeType::Country,
+				(false, true) => ScopeType::Province,
+				(true, true) => ScopeType::Unknown,
+				(false, false) => ScopeType::Unknown,
+			}
+		});
+		definition.inferred_this_type = if inferred == ScopeType::Unknown {
+			definition.declared_this_type
+		} else {
+			inferred
+		};
+	}
 }
 
 #[cfg(test)]

@@ -147,7 +147,7 @@ pub enum SymbolKind {
 	TriggeredModifier,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum ScopeType {
 	Country,
 	Province,
@@ -164,7 +164,7 @@ pub enum ScopeKind {
 	Effect,
 	Loop,
 	AliasBlock,
-	Generic,
+	Block,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -189,11 +189,15 @@ pub struct ScopeNode {
 pub struct SymbolDefinition {
 	pub kind: SymbolKind,
 	pub name: String,
+	pub module: String,
+	pub local_name: String,
 	pub mod_id: String,
 	pub path: PathBuf,
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
+	pub declared_this_type: ScopeType,
+	pub inferred_this_type: ScopeType,
 	pub required_params: Vec<String>,
 }
 
@@ -201,6 +205,7 @@ pub struct SymbolDefinition {
 pub struct SymbolReference {
 	pub kind: SymbolKind,
 	pub name: String,
+	pub module: String,
 	pub mod_id: String,
 	pub path: PathBuf,
 	pub line: usize,
