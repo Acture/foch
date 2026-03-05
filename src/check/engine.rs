@@ -13,9 +13,11 @@ use crate::check::semantic_index::{build_semantic_index, parse_script_file};
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
 use crate::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
-use crate::utils::steam::steam_workshop_mod_path;
+use crate::utils::steam::{steam_game_install_path, steam_workshop_mod_path};
 use std::collections::HashSet;
 use walkdir::WalkDir;
+
+const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
 	run_checks_with_options(request, RunOptions::default())
@@ -49,7 +51,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	};
 
 	let mods = build_mod_candidates(&request, &playlist);
-	let parsed_files = collect_parsed_script_files(&mods);
+	let parsed_files = collect_parsed_script_files(&request, &playlist, &mods, &options);
 	let semantic_index = build_semantic_index(&parsed_files);
 	let ctx = CheckContext {
 		playlist_path: request.playset_path.clone(),
@@ -99,9 +101,24 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 }
 
 fn collect_parsed_script_files(
+	request: &CheckRequest,
+	playlist: &Playlist,
 	mods: &[ModCandidate],
+	options: &RunOptions,
 ) -> Vec<crate::check::semantic_index::ParsedScriptFile> {
 	let mut parsed = Vec::new();
+
+	if options.include_game_base
+		&& let Some(game_root) = resolve_game_root(request, playlist)
+	{
+		let mod_id = format!("{BASE_GAME_MOD_ID_PREFIX}{}", playlist.game.key());
+		for script_file in iter_script_files(&game_root) {
+			if let Some(file) = parse_script_file(&mod_id, &game_root, &script_file) {
+				parsed.push(file);
+			}
+		}
+	}
+
 	for mod_item in mods {
 		let Some(root) = mod_item.root_path.as_ref() else {
 			continue;
@@ -113,6 +130,23 @@ fn collect_parsed_script_files(
 		}
 	}
 	parsed
+}
+
+fn resolve_game_root(request: &CheckRequest, playlist: &Playlist) -> Option<std::path::PathBuf> {
+	let mut candidates = Vec::new();
+	if let Some(path) = request.config.game_path.get(playlist.game.key()) {
+		candidates.push(path.clone());
+	}
+	if let Some(steam_root) = request.config.steam_root_path.as_ref() {
+		for app_id in playlist.game.steam_app_ids() {
+			if let Some(path) = steam_game_install_path(steam_root, *app_id) {
+				candidates.push(path);
+			}
+		}
+	}
+	dedup_candidates(candidates)
+		.into_iter()
+		.find(|candidate| candidate.is_dir())
 }
 
 fn build_mod_candidates(request: &CheckRequest, playlist: &Playlist) -> Vec<ModCandidate> {
