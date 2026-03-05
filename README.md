@@ -74,6 +74,7 @@ cargo test --all-targets --all-features
 
 - 文件级 parser cache（game + mod 通用）
 - 游戏本体 semantic index cache（`--include-game-base` 时复用）
+- UI 语法文件（`interface/*.txt|*.gui`, `gfx/*.gfx`）会参与解析缓存与解析错误统计；当前不进入 scope/symbol 语义推导
 
 可选环境变量：
 

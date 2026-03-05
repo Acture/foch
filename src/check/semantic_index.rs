@@ -22,6 +22,7 @@ pub enum ScriptFileKind {
 	ScriptedEffects,
 	DiplomaticActions,
 	TriggeredModifiers,
+	Ui,
 	Other,
 }
 
@@ -58,6 +59,11 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
+	} else if normalized.starts_with("interface/")
+		|| normalized.starts_with("common/interface/")
+		|| normalized.starts_with("gfx/")
+	{
+		ScriptFileKind::Ui
 	} else {
 		ScriptFileKind::Other
 	}
@@ -72,6 +78,7 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
 		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
 		ScriptFileKind::TriggeredModifiers => module_with_tail(&parts, 2, "triggered_modifiers"),
+		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
 	module.replace('-', "_")
@@ -214,6 +221,10 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 }
 
 fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
+	if !should_build_semantic_index(file.file_kind) {
+		return;
+	}
+
 	let mut aliases = HashMap::new();
 	match file.file_kind {
 		ScriptFileKind::DiplomaticActions => {
@@ -257,6 +268,17 @@ fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
 		None,
 		None,
 	);
+}
+
+fn should_build_semantic_index(kind: ScriptFileKind) -> bool {
+	matches!(
+		kind,
+		ScriptFileKind::Events
+			| ScriptFileKind::Decisions
+			| ScriptFileKind::ScriptedEffects
+			| ScriptFileKind::DiplomaticActions
+			| ScriptFileKind::TriggeredModifiers
+	)
 }
 
 struct BuildContext<'a> {
@@ -1030,6 +1052,10 @@ mod tests {
 		assert_eq!(
 			classify_script_file(std::path::Path::new("events/a.txt")),
 			ScriptFileKind::Events
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("interface/a.gui")),
+			ScriptFileKind::Ui
 		);
 	}
 
