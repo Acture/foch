@@ -2,7 +2,7 @@ use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
 use crate::check::graph::export_graph;
 use crate::check::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, Finding, FindingChannel,
-	ModCandidate, RunOptions, Severity,
+	ModCandidate, RunOptions, SemanticIndex, Severity,
 };
 use crate::check::rules::{
 	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
@@ -14,10 +14,16 @@ use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
 use crate::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
 use crate::utils::steam::{steam_game_install_path, steam_workshop_mod_path};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::fs;
+use std::hash::{Hash, Hasher};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
+const BASE_SEMANTIC_CACHE_VERSION: u32 = 2;
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
 	run_checks_with_options(request, RunOptions::default())
@@ -51,8 +57,21 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	};
 
 	let mods = build_mod_candidates(&request, &playlist);
-	let parsed_files = collect_parsed_script_files(&request, &playlist, &mods, &options);
-	let semantic_index = build_semantic_index(&parsed_files);
+	let base_semantic = if options.include_game_base {
+		load_or_build_game_base_semantic_index(&request, &playlist)
+	} else {
+		None
+	};
+	let mod_parsed_files = collect_mod_parsed_script_files(&mods);
+	let mod_semantic_index = build_semantic_index(&mod_parsed_files);
+	let parsed_files_count = mod_parsed_files.len()
+		+ base_semantic
+			.as_ref()
+			.map_or(0, |snapshot| snapshot.parsed_files);
+	let semantic_index = match base_semantic {
+		Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
+		None => mod_semantic_index,
+	};
 	let ctx = CheckContext {
 		playlist_path: request.playset_path.clone(),
 		playlist,
@@ -84,7 +103,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	}
 
 	result.analysis_meta = AnalysisMeta {
-		parsed_files: parsed_files.len(),
+		parsed_files: parsed_files_count,
 		parse_errors: ctx.semantic_index.parse_issues.len(),
 		scopes: ctx.semantic_index.scopes.len(),
 		symbol_definitions: ctx.semantic_index.definitions.len(),
@@ -100,24 +119,10 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	result
 }
 
-fn collect_parsed_script_files(
-	request: &CheckRequest,
-	playlist: &Playlist,
+fn collect_mod_parsed_script_files(
 	mods: &[ModCandidate],
-	options: &RunOptions,
 ) -> Vec<crate::check::semantic_index::ParsedScriptFile> {
 	let mut parsed = Vec::new();
-
-	if options.include_game_base
-		&& let Some(game_root) = resolve_game_root(request, playlist)
-	{
-		let mod_id = format!("{BASE_GAME_MOD_ID_PREFIX}{}", playlist.game.key());
-		for script_file in iter_script_files(&game_root) {
-			if let Some(file) = parse_script_file(&mod_id, &game_root, &script_file) {
-				parsed.push(file);
-			}
-		}
-	}
 
 	for mod_item in mods {
 		let Some(root) = mod_item.root_path.as_ref() else {
@@ -130,6 +135,176 @@ fn collect_parsed_script_files(
 		}
 	}
 	parsed
+}
+
+#[derive(Clone, Debug)]
+struct GameBaseSemanticSnapshot {
+	index: SemanticIndex,
+	parsed_files: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BaseSemanticCacheEntry {
+	version: u32,
+	manifest_hash: u64,
+	parsed_files: usize,
+	index: SemanticIndex,
+}
+
+fn load_or_build_game_base_semantic_index(
+	request: &CheckRequest,
+	playlist: &Playlist,
+) -> Option<GameBaseSemanticSnapshot> {
+	let game_root = resolve_game_root(request, playlist)?;
+	let script_files = iter_script_files(&game_root);
+	let parsed_files = script_files.len();
+	if parsed_files == 0 {
+		return Some(GameBaseSemanticSnapshot {
+			index: SemanticIndex::default(),
+			parsed_files: 0,
+		});
+	}
+
+	let manifest_hash = semantic_manifest_hash(&game_root, &script_files);
+	let cache_path = base_semantic_cache_file(playlist.game.key(), &game_root);
+	if let Some(entry) = load_base_semantic_cache(&cache_path)
+		&& entry.version == BASE_SEMANTIC_CACHE_VERSION
+		&& entry.manifest_hash == manifest_hash
+		&& entry.parsed_files == parsed_files
+	{
+		return Some(GameBaseSemanticSnapshot {
+			index: entry.index,
+			parsed_files,
+		});
+	}
+
+	let mod_id = format!("{BASE_GAME_MOD_ID_PREFIX}{}", playlist.game.key());
+	let mut parsed = Vec::with_capacity(parsed_files);
+	for script_file in &script_files {
+		if let Some(file) = parse_script_file(&mod_id, &game_root, script_file) {
+			parsed.push(file);
+		}
+	}
+	let index = build_semantic_index(&parsed);
+	let snapshot = GameBaseSemanticSnapshot {
+		index,
+		parsed_files: parsed.len(),
+	};
+	let cache_entry = BaseSemanticCacheEntry {
+		version: BASE_SEMANTIC_CACHE_VERSION,
+		manifest_hash,
+		parsed_files: snapshot.parsed_files,
+		index: snapshot.index.clone(),
+	};
+	store_base_semantic_cache(&cache_path, &cache_entry);
+	Some(snapshot)
+}
+
+fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
+	let offset = base.scopes.len();
+	for scope in &mut overlay.scopes {
+		scope.id += offset;
+		if let Some(parent) = scope.parent {
+			scope.parent = Some(parent + offset);
+		}
+	}
+	for definition in &mut overlay.definitions {
+		definition.scope_id += offset;
+	}
+	for reference in &mut overlay.references {
+		reference.scope_id += offset;
+	}
+	for alias in &mut overlay.alias_usages {
+		alias.scope_id += offset;
+	}
+	for usage in &mut overlay.key_usages {
+		usage.scope_id += offset;
+	}
+
+	base.scopes.extend(overlay.scopes);
+	base.definitions.extend(overlay.definitions);
+	base.references.extend(overlay.references);
+	base.alias_usages.extend(overlay.alias_usages);
+	base.key_usages.extend(overlay.key_usages);
+	base.parse_issues.extend(overlay.parse_issues);
+	base
+}
+
+fn semantic_manifest_hash(root: &std::path::Path, files: &[std::path::PathBuf]) -> u64 {
+	let mut entries: Vec<String> = Vec::new();
+	for file in files {
+		let relative = file
+			.strip_prefix(root)
+			.unwrap_or(file)
+			.to_string_lossy()
+			.replace('\\', "/");
+		let mut entry = relative;
+		if let Ok(metadata) = fs::metadata(file) {
+			entry.push('|');
+			entry.push_str(&metadata.len().to_string());
+			entry.push('|');
+			entry.push_str(&modified_nanos(&metadata).to_string());
+		}
+		entries.push(entry);
+	}
+	entries.sort();
+
+	let mut hasher = DefaultHasher::new();
+	for entry in entries {
+		entry.hash(&mut hasher);
+	}
+	hasher.finish()
+}
+
+fn base_semantic_cache_root() -> std::path::PathBuf {
+	if let Ok(override_dir) = std::env::var("FOCH_SEMANTIC_CACHE_DIR") {
+		return std::path::PathBuf::from(override_dir);
+	}
+	dirs::cache_dir()
+		.unwrap_or_else(std::env::temp_dir)
+		.join("foch")
+		.join("semantic_base")
+}
+
+fn base_semantic_cache_file(game_key: &str, game_root: &std::path::Path) -> std::path::PathBuf {
+	let mut hasher = DefaultHasher::new();
+	game_key.hash(&mut hasher);
+	game_root
+		.to_string_lossy()
+		.replace('\\', "/")
+		.hash(&mut hasher);
+	let key = format!("{:016x}", hasher.finish());
+	base_semantic_cache_root().join(format!("{key}.json"))
+}
+
+fn load_base_semantic_cache(path: &std::path::Path) -> Option<BaseSemanticCacheEntry> {
+	let raw = fs::read_to_string(path).ok()?;
+	serde_json::from_str::<BaseSemanticCacheEntry>(&raw).ok()
+}
+
+fn store_base_semantic_cache(path: &std::path::Path, entry: &BaseSemanticCacheEntry) {
+	let Some(parent) = path.parent() else {
+		return;
+	};
+	if fs::create_dir_all(parent).is_err() {
+		return;
+	}
+	let Ok(raw) = serde_json::to_string(entry) else {
+		return;
+	};
+	let tmp = path.with_extension("json.tmp");
+	if fs::write(&tmp, raw).is_err() {
+		return;
+	}
+	let _ = fs::rename(tmp, path);
+}
+
+fn modified_nanos(metadata: &fs::Metadata) -> u128 {
+	metadata
+		.modified()
+		.ok()
+		.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+		.map_or(0, |duration| duration.as_nanos())
 }
 
 fn resolve_game_root(request: &CheckRequest, playlist: &Playlist) -> Option<std::path::PathBuf> {
@@ -348,6 +523,7 @@ fn iter_script_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 		}
 		files.push(path.to_path_buf());
 	}
+	files.sort();
 	files
 }
 

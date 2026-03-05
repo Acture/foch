@@ -1,19 +1,20 @@
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Span {
 	pub line: usize,
 	pub column: usize,
 	pub offset: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SpanRange {
 	pub start: Span,
 	pub end: Span,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ScalarValue {
 	Identifier(String),
 	String(String),
@@ -38,7 +39,7 @@ impl ScalarValue {
 	}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AstValue {
 	Scalar {
 		value: ScalarValue,
@@ -59,7 +60,7 @@ impl AstValue {
 	}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AstStatement {
 	Assignment {
 		key: String,
@@ -77,19 +78,19 @@ pub enum AstStatement {
 	},
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct AstFile {
 	pub path: PathBuf,
 	pub statements: Vec<AstStatement>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParseDiagnostic {
 	pub message: String,
 	pub span: SpanRange,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParseResult {
 	pub ast: AstFile,
 	pub diagnostics: Vec<ParseDiagnostic>,
@@ -399,27 +400,82 @@ impl ParserState {
 					})
 				}
 			}
-			TokenKind::String(value) => Some(AstStatement::Item {
-				value: AstValue::Scalar {
-					value: ScalarValue::String(value),
-					span: first.span.clone(),
-				},
-				span: first.span,
-			}),
-			TokenKind::Number(value) => Some(AstStatement::Item {
-				value: AstValue::Scalar {
-					value: ScalarValue::Number(value),
-					span: first.span.clone(),
-				},
-				span: first.span,
-			}),
-			TokenKind::Bool(value) => Some(AstStatement::Item {
-				value: AstValue::Scalar {
-					value: ScalarValue::Bool(value),
-					span: first.span.clone(),
-				},
-				span: first.span,
-			}),
+			TokenKind::String(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					let _ = self.bump();
+					let value_node = self.parse_value();
+					let end = value_node.span().end.clone();
+					Some(AstStatement::Assignment {
+						key: value,
+						key_span: first.span.clone(),
+						value: value_node,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
+				} else {
+					Some(AstStatement::Item {
+						value: AstValue::Scalar {
+							value: ScalarValue::String(value),
+							span: first.span.clone(),
+						},
+						span: first.span,
+					})
+				}
+			}
+			TokenKind::Number(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					let _ = self.bump();
+					let value_node = self.parse_value();
+					let end = value_node.span().end.clone();
+					Some(AstStatement::Assignment {
+						key: value,
+						key_span: first.span.clone(),
+						value: value_node,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
+				} else {
+					Some(AstStatement::Item {
+						value: AstValue::Scalar {
+							value: ScalarValue::Number(value),
+							span: first.span.clone(),
+						},
+						span: first.span,
+					})
+				}
+			}
+			TokenKind::Bool(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					let _ = self.bump();
+					let value_node = self.parse_value();
+					let end = value_node.span().end.clone();
+					Some(AstStatement::Assignment {
+						key: if value {
+							"yes".to_string()
+						} else {
+							"no".to_string()
+						},
+						key_span: first.span.clone(),
+						value: value_node,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
+				} else {
+					Some(AstStatement::Item {
+						value: AstValue::Scalar {
+							value: ScalarValue::Bool(value),
+							span: first.span.clone(),
+						},
+						span: first.span,
+					})
+				}
+			}
 			TokenKind::LBrace => {
 				let start = first.span.start;
 				let items = self.parse_statements(true);
@@ -447,7 +503,10 @@ impl ParserState {
 	}
 
 	fn parse_value(&mut self) -> AstValue {
-		let token = self.bump();
+		let mut token = self.bump();
+		while matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_)) {
+			token = self.bump();
+		}
 		match token.kind {
 			TokenKind::LBrace => {
 				let start = token.span.start;
@@ -519,8 +578,11 @@ impl ParserState {
 }
 
 pub fn parse_clausewitz_file(path: &Path) -> ParseResult {
-	match std::fs::read_to_string(path) {
-		Ok(content) => parse_clausewitz_content(path.to_path_buf(), &content),
+	match std::fs::read(path) {
+		Ok(bytes) => {
+			let content = String::from_utf8_lossy(&bytes);
+			parse_clausewitz_content(path.to_path_buf(), &content)
+		}
 		Err(err) => ParseResult {
 			ast: AstFile {
 				path: path.to_path_buf(),
