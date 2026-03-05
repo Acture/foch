@@ -190,6 +190,8 @@ fn decision_keywords_are_not_recorded_as_scripted_effect_references() {
 		index
 			.definitions
 			.iter()
-			.any(|item| item.kind == SymbolKind::Decision && item.name == "_player_decision")
+			.any(|item| item.kind == SymbolKind::Decision
+				&& item.local_name == "_player_decision"
+				&& item.name.ends_with("::_player_decision"))
 	);
 }

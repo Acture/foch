@@ -2,6 +2,7 @@ use crate::check::model::{
 	AnalysisMode, Finding, FindingChannel, ScopeType, SemanticDiagnostics, SemanticIndex, Severity,
 	SymbolKind,
 };
+use crate::check::semantic_index::resolve_scripted_effect_reference_targets;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Default)]
@@ -79,10 +80,10 @@ fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 }
 
 fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
-	let mut defined = HashSet::new();
+	let mut defined_events = HashSet::new();
 	for def in &index.definitions {
-		if matches!(def.kind, SymbolKind::Event | SymbolKind::ScriptedEffect) {
-			defined.insert((def.kind, def.name.clone()));
+		if def.kind == SymbolKind::Event {
+			defined_events.insert(def.name.clone());
 		}
 	}
 
@@ -95,8 +96,18 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 		) {
 			continue;
 		}
-		if defined.contains(&(reference.kind, reference.name.clone())) {
-			continue;
+		match reference.kind {
+			SymbolKind::Event => {
+				if defined_events.contains(reference.name.as_str()) {
+					continue;
+				}
+			}
+			SymbolKind::ScriptedEffect => {
+				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
+					continue;
+				}
+			}
+			_ => {}
 		}
 
 		let dedup_key = format!(
@@ -165,28 +176,17 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> Vec<Finding> {
 }
 
 fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
-	let mut defs: HashMap<&str, Vec<_>> = HashMap::new();
-	for def in &index.definitions {
-		if def.kind == SymbolKind::ScriptedEffect {
-			defs.entry(def.name.as_str()).or_default().push(def);
-		}
-	}
-
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for reference in &index.references {
 		if reference.kind != SymbolKind::ScriptedEffect {
 			continue;
 		}
-		let Some(candidates) = defs.get(reference.name.as_str()) else {
+		let targets = resolve_scripted_effect_reference_targets(index, reference);
+		let Some(def_idx) = targets.first().copied() else {
 			continue;
 		};
-		let def = candidates
-			.iter()
-			.copied()
-			.find(|item| item.mod_id == reference.mod_id)
-			.or_else(|| candidates.first().copied());
-		let Some(def) = def else {
+		let Some(def) = index.definitions.get(def_idx) else {
 			continue;
 		};
 
