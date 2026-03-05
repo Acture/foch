@@ -13,6 +13,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -542,11 +543,10 @@ fn record_alias_tokens_from_value(
 	ctx: &BuildContext<'_>,
 	value: &AstValue,
 ) {
-	let aliases_re = Regex::new(r"\b(ROOT|FROM|THIS|PREV)\b").expect("valid alias regex");
 	match value {
 		AstValue::Scalar { value, span } => {
 			let text = value.as_text();
-			for cap in aliases_re.captures_iter(&text) {
+			for cap in alias_capture_regex().captures_iter(&text) {
 				let Some(alias) = cap.get(1) else {
 					continue;
 				};
@@ -578,11 +578,10 @@ fn record_param_tokens(index: &mut SemanticIndex, def_idx: Option<usize>, value:
 		return;
 	};
 
-	let param_re = Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\$").expect("valid param regex");
 	match value {
 		AstValue::Scalar { value, .. } => {
 			let text = value.as_text();
-			for cap in param_re.captures_iter(&text) {
+			for cap in param_capture_regex().captures_iter(&text) {
 				let Some(param) = cap.get(1) else {
 					continue;
 				};
@@ -605,6 +604,16 @@ fn record_param_tokens(index: &mut SemanticIndex, def_idx: Option<usize>, value:
 			}
 		}
 	}
+}
+
+fn alias_capture_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| Regex::new(r"\b(ROOT|FROM|THIS|PREV)\b").expect("valid alias regex"))
+}
+
+fn param_capture_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\$").expect("valid param regex"))
 }
 
 fn top_level_symbol_kind(
