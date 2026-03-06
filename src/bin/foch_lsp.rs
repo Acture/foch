@@ -1,21 +1,25 @@
+use foch::check::analysis::{AnalyzeOptions, analyze_visibility};
 use foch::check::eu4_builtin::{
 	alias_keywords, builtin_effect_names, builtin_trigger_names, contextual_keywords,
 	reserved_keywords,
 };
-use foch::check::model::SymbolKind;
-use foch::check::parser::{AstStatement, AstValue, ScalarValue};
-use foch::check::semantic_index::{build_semantic_index, parse_script_file};
+use foch::check::model::{Finding, Severity, SymbolKind};
+use foch::check::parser::{AstStatement, AstValue, ScalarValue, parse_clausewitz_content};
+use foch::check::semantic_index::{
+	build_semantic_index, parse_script_file, resolve_scripted_effect_reference_targets,
+};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
 	CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-	DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-	InitializeParams, InitializeResult, InitializedParams, MessageType, Position,
-	ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+	Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+	DidSaveTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, InitializeParams,
+	InitializeResult, InitializedParams, Location, MessageType, NumberOrString, OneOf, Position,
+	Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
@@ -43,6 +47,15 @@ struct CompletionCandidate {
 	source: CandidateSource,
 }
 
+#[derive(Clone, Debug, Default)]
+struct WorkspaceSnapshot {
+	candidates: Vec<CompletionCandidate>,
+	index: foch::check::model::SemanticIndex,
+	file_paths: Vec<PathBuf>,
+	path_lookup: HashMap<String, PathBuf>,
+	diagnostics_by_path: HashMap<String, Vec<Diagnostic>>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TargetRole {
@@ -67,7 +80,7 @@ struct ServerState {
 	docs: HashMap<Url, String>,
 	targets: Vec<ScanTarget>,
 	static_candidates: Vec<CompletionCandidate>,
-	workspace_candidates: Vec<CompletionCandidate>,
+	workspace: Option<Arc<WorkspaceSnapshot>>,
 }
 
 struct Backend {
@@ -87,19 +100,26 @@ impl Backend {
 		}
 	}
 
-	async fn refresh_workspace_candidates(&self) {
+	async fn refresh_workspace_snapshot(&self) {
 		let targets = { self.state.read().await.targets.clone() };
 		let client = self.client.clone();
-		let built = tokio::task::spawn_blocking(move || build_workspace_candidates(&targets)).await;
+		let built = tokio::task::spawn_blocking(move || build_workspace_snapshot(&targets)).await;
 		match built {
-			Ok(candidates) => {
-				let count = candidates.len();
+			Ok(snapshot) => {
+				let candidate_count = snapshot.candidates.len();
+				let finding_count: usize =
+					snapshot.diagnostics_by_path.values().map(Vec::len).sum();
+				let snapshot = Arc::new(snapshot);
 				let mut state = self.state.write().await;
-				state.workspace_candidates = candidates;
+				state.workspace = Some(snapshot.clone());
+				drop(state);
+				self.publish_workspace_diagnostics(snapshot.as_ref()).await;
 				client
 					.log_message(
 						MessageType::INFO,
-						format!("foch lsp workspace symbol candidates loaded: {count}"),
+						format!(
+							"foch lsp workspace snapshot loaded: {candidate_count} candidates, {finding_count} diagnostics"
+						),
 					)
 					.await;
 			}
@@ -112,6 +132,55 @@ impl Backend {
 					.await;
 			}
 		}
+	}
+
+	async fn publish_workspace_diagnostics(&self, snapshot: &WorkspaceSnapshot) {
+		for path in &snapshot.file_paths {
+			let Some(uri) = Url::from_file_path(path).ok() else {
+				continue;
+			};
+			let key = normalize_path(path);
+			let diagnostics = snapshot
+				.diagnostics_by_path
+				.get(&key)
+				.cloned()
+				.unwrap_or_default();
+			self.client
+				.publish_diagnostics(uri, diagnostics, None)
+				.await;
+		}
+	}
+
+	async fn publish_document_diagnostics(&self, uri: &Url, text: &str) {
+		let path = match uri.to_file_path() {
+			Ok(path) => path,
+			Err(_) => return,
+		};
+		let snapshot = {
+			let state = self.state.read().await;
+			state.workspace.clone()
+		};
+		let mut diagnostics = snapshot
+			.as_ref()
+			.and_then(|snapshot| {
+				snapshot
+					.diagnostics_by_path
+					.get(&normalize_path(&path))
+					.cloned()
+			})
+			.unwrap_or_default();
+		diagnostics.extend(parse_diagnostics_for_text(&path, text));
+		diagnostics.sort_by(|lhs, rhs| {
+			range_start(&lhs.range)
+				.cmp(&range_start(&rhs.range))
+				.then_with(|| lhs.message.cmp(&rhs.message))
+		});
+		diagnostics.dedup_by(|lhs, rhs| {
+			lhs.range == rhs.range && lhs.code == rhs.code && lhs.message == rhs.message
+		});
+		self.client
+			.publish_diagnostics(uri.clone(), diagnostics, None)
+			.await;
 	}
 }
 
@@ -142,6 +211,7 @@ impl LanguageServer for Backend {
 					work_done_progress_options: Default::default(),
 					completion_item: None,
 				}),
+				definition_provider: Some(OneOf::Left(true)),
 				..ServerCapabilities::default()
 			},
 		})
@@ -151,22 +221,29 @@ impl LanguageServer for Backend {
 		self.client
 			.log_message(MessageType::INFO, "foch lsp initialized")
 			.await;
-		self.refresh_workspace_candidates().await;
+		self.refresh_workspace_snapshot().await;
 	}
 
 	async fn did_open(&self, params: DidOpenTextDocumentParams) {
-		let mut state = self.state.write().await;
-		state
-			.docs
-			.insert(params.text_document.uri, params.text_document.text);
+		let uri = params.text_document.uri;
+		let text = params.text_document.text;
+		{
+			let mut state = self.state.write().await;
+			state.docs.insert(uri.clone(), text.clone());
+		}
+		self.publish_document_diagnostics(&uri, &text).await;
 	}
 
 	async fn did_change(&self, params: DidChangeTextDocumentParams) {
-		let mut state = self.state.write().await;
 		if let Some(last) = params.content_changes.last() {
-			state
-				.docs
-				.insert(params.text_document.uri.clone(), last.text.clone());
+			{
+				let mut state = self.state.write().await;
+				state
+					.docs
+					.insert(params.text_document.uri.clone(), last.text.clone());
+			}
+			self.publish_document_diagnostics(&params.text_document.uri, &last.text)
+				.await;
 		}
 	}
 
@@ -175,6 +252,7 @@ impl LanguageServer for Backend {
 			let mut state = self.state.write().await;
 			state.docs.insert(params.text_document.uri, text);
 		}
+		self.refresh_workspace_snapshot().await;
 	}
 
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -188,7 +266,11 @@ impl LanguageServer for Backend {
 
 		let mut candidates = select_completion_candidates(
 			&state.static_candidates,
-			&state.workspace_candidates,
+			state
+				.workspace
+				.as_ref()
+				.map(|snapshot| snapshot.candidates.as_slice())
+				.unwrap_or(&[]),
 			context,
 			&prefix_lower,
 		);
@@ -208,6 +290,25 @@ impl LanguageServer for Backend {
 			.collect();
 
 		Ok(Some(CompletionResponse::Array(items)))
+	}
+
+	async fn goto_definition(
+		&self,
+		params: GotoDefinitionParams,
+	) -> Result<Option<GotoDefinitionResponse>> {
+		let state = self.state.read().await;
+		let Some(snapshot) = state.workspace.as_ref() else {
+			return Ok(None);
+		};
+		let uri = &params.text_document_position_params.text_document.uri;
+		let position = params.text_document_position_params.position;
+		let text = state.docs.get(uri).map(String::as_str).unwrap_or_default();
+		let Some(locations) =
+			resolve_definition_locations(snapshot, &state.targets, uri, text, position)
+		else {
+			return Ok(None);
+		};
+		Ok(Some(GotoDefinitionResponse::Array(locations)))
 	}
 
 	async fn shutdown(&self) -> Result<()> {
@@ -295,22 +396,32 @@ fn build_static_candidates() -> Vec<CompletionCandidate> {
 	out
 }
 
-fn build_workspace_candidates(roots: &[ScanTarget]) -> Vec<CompletionCandidate> {
+fn build_workspace_snapshot(roots: &[ScanTarget]) -> WorkspaceSnapshot {
 	let mut parsed = Vec::new();
+	let mut file_paths = Vec::new();
+	let mut path_lookup = HashMap::new();
 	for target in roots {
 		let files = collect_semantic_script_files(&target.path);
+		let mod_id = scan_target_mod_id(target);
 		for file in files {
-			let mod_id = match target.role {
-				TargetRole::Game => "__lsp_game__",
-				TargetRole::Mod => "__lsp_mod__",
-			};
-			if let Some(item) = parse_script_file(mod_id, &target.path, &file) {
+			if let Some(item) = parse_script_file(&mod_id, &target.path, &file) {
+				file_paths.push(item.path.clone());
+				path_lookup.insert(
+					path_lookup_key(&item.mod_id, &item.relative_path),
+					item.path.clone(),
+				);
 				parsed.push(item);
 			}
 		}
 	}
 
 	let index = build_semantic_index(&parsed);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: foch::check::model::AnalysisMode::Semantic,
+		},
+	);
 	let mut seen = HashMap::<String, CompletionCandidate>::new();
 	for def in &index.definitions {
 		let (label, kind, detail) =
@@ -362,9 +473,91 @@ fn build_workspace_candidates(roots: &[ScanTarget]) -> Vec<CompletionCandidate> 
 			});
 	}
 
-	let mut out: Vec<CompletionCandidate> = seen.into_values().collect();
-	out.sort_by(|a, b| a.label.cmp(&b.label));
-	out
+	let mut candidates: Vec<CompletionCandidate> = seen.into_values().collect();
+	candidates.sort_by(|a, b| a.label.cmp(&b.label));
+	file_paths.sort();
+	file_paths.dedup();
+
+	WorkspaceSnapshot {
+		candidates,
+		diagnostics_by_path: build_workspace_diagnostics(
+			&index,
+			&path_lookup,
+			&diagnostics.strict,
+			&diagnostics.advisory,
+		),
+		index,
+		file_paths,
+		path_lookup,
+	}
+}
+
+fn build_workspace_diagnostics(
+	index: &foch::check::model::SemanticIndex,
+	path_lookup: &HashMap<String, PathBuf>,
+	strict_findings: &[Finding],
+	advisory_findings: &[Finding],
+) -> HashMap<String, Vec<Diagnostic>> {
+	let mut diagnostics_by_path = HashMap::<String, Vec<Diagnostic>>::new();
+
+	for issue in &index.parse_issues {
+		let Some(path) = path_lookup.get(&path_lookup_key(&issue.mod_id, &issue.path)) else {
+			continue;
+		};
+		diagnostics_by_path
+			.entry(normalize_path(path))
+			.or_default()
+			.push(parse_issue_to_diagnostic(
+				issue.line,
+				issue.column,
+				&issue.message,
+			));
+	}
+
+	for finding in strict_findings.iter().chain(advisory_findings.iter()) {
+		let Some(relative_path) = finding.path.as_ref() else {
+			continue;
+		};
+		let Some(mod_id) = finding.mod_id.as_deref() else {
+			continue;
+		};
+		let Some(path) = path_lookup.get(&path_lookup_key(mod_id, relative_path)) else {
+			continue;
+		};
+		diagnostics_by_path
+			.entry(normalize_path(path))
+			.or_default()
+			.push(finding_to_diagnostic(finding));
+	}
+
+	for diagnostics in diagnostics_by_path.values_mut() {
+		diagnostics.sort_by(|lhs, rhs| {
+			range_start(&lhs.range)
+				.cmp(&range_start(&rhs.range))
+				.then_with(|| lhs.message.cmp(&rhs.message))
+		});
+		diagnostics.dedup_by(|lhs, rhs| {
+			lhs.range == rhs.range && lhs.code == rhs.code && lhs.message == rhs.message
+		});
+	}
+
+	diagnostics_by_path
+}
+
+fn scan_target_mod_id(target: &ScanTarget) -> String {
+	let role = match target.role {
+		TargetRole::Game => "game",
+		TargetRole::Mod => "mod",
+	};
+	format!("__lsp_{role}__{}", normalize_path(&target.path))
+}
+
+fn path_lookup_key(mod_id: &str, relative_path: &Path) -> String {
+	format!("{mod_id}|{}", normalize_path(relative_path))
+}
+
+fn normalize_path(path: &Path) -> String {
+	path.to_string_lossy().replace('\\', "/")
 }
 
 fn collect_workspace_flag_values(
@@ -474,6 +667,335 @@ fn is_workspace_scalar_candidate(value: &str) -> bool {
 	let has_separator = value.contains('_') || value.contains('.');
 	let has_upper = value.chars().any(|ch| ch.is_ascii_uppercase());
 	has_separator || has_upper
+}
+
+fn parse_diagnostics_for_text(path: &Path, text: &str) -> Vec<Diagnostic> {
+	let parsed = parse_clausewitz_content(path.to_path_buf(), text);
+	parsed
+		.diagnostics
+		.into_iter()
+		.map(|item| {
+			parse_issue_to_diagnostic(item.span.start.line, item.span.start.column, &item.message)
+		})
+		.collect()
+}
+
+fn parse_issue_to_diagnostic(line: usize, column: usize, message: &str) -> Diagnostic {
+	Diagnostic {
+		range: lsp_range(line, column),
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("PARSE".to_string())),
+		source: Some("foch".to_string()),
+		message: message.to_string(),
+		..Diagnostic::default()
+	}
+}
+
+fn finding_to_diagnostic(finding: &Finding) -> Diagnostic {
+	let severity = match finding.severity {
+		Severity::Error => DiagnosticSeverity::ERROR,
+		Severity::Warning => DiagnosticSeverity::WARNING,
+		Severity::Info => DiagnosticSeverity::INFORMATION,
+	};
+	let mut message = finding.message.clone();
+	if let Some(evidence) = finding.evidence.as_ref()
+		&& !evidence.is_empty()
+	{
+		message.push('\n');
+		message.push_str(evidence);
+	}
+	Diagnostic {
+		range: lsp_range(finding.line.unwrap_or(1), finding.column.unwrap_or(1)),
+		severity: Some(severity),
+		code: Some(NumberOrString::String(finding.rule_id.clone())),
+		source: Some("foch".to_string()),
+		message,
+		..Diagnostic::default()
+	}
+}
+
+fn lsp_range(line: usize, column: usize) -> Range {
+	let line = line.saturating_sub(1) as u32;
+	let start = column.saturating_sub(1) as u32;
+	Range {
+		start: Position {
+			line,
+			character: start,
+		},
+		end: Position {
+			line,
+			character: start.saturating_add(1),
+		},
+	}
+}
+
+fn range_start(range: &Range) -> (u32, u32) {
+	(range.start.line, range.start.character)
+}
+
+fn resolve_definition_locations(
+	snapshot: &WorkspaceSnapshot,
+	targets: &[ScanTarget],
+	uri: &Url,
+	text: &str,
+	position: Position,
+) -> Option<Vec<Location>> {
+	let path = uri.to_file_path().ok()?;
+	let (_, relative_path) = match_scan_target(targets, &path)?;
+	let line = text.lines().nth(position.line as usize)?;
+	let cursor = position.character as usize;
+	let (token, _token_start, _) = extract_token_at_cursor(line, cursor)?;
+	let (assignment_key, key_start, key_end, on_value_side) =
+		assignment_context_at_cursor(line, cursor)?;
+	let mut locations = Vec::new();
+
+	if !on_value_side && cursor >= key_start && cursor <= key_end {
+		let current_column = key_start + 1;
+		for reference in &snapshot.index.references {
+			if reference.kind != SymbolKind::ScriptedEffect {
+				continue;
+			}
+			if reference.path != relative_path
+				|| reference.line != position.line as usize + 1
+				|| reference.column != current_column
+				|| reference.name != assignment_key
+			{
+				continue;
+			}
+			for target in resolve_scripted_effect_reference_targets(&snapshot.index, reference) {
+				if let Some(definition) = snapshot.index.definitions.get(target)
+					&& let Some(location) = definition_location(
+						snapshot,
+						&definition.mod_id,
+						&definition.path,
+						definition.line,
+						definition.column,
+					) {
+					locations.push(location);
+				}
+			}
+		}
+	} else if on_value_side {
+		if assignment_key == "id" {
+			for definition in &snapshot.index.definitions {
+				if definition.kind != SymbolKind::Event || definition.name != token {
+					continue;
+				}
+				if let Some(location) = definition_location(
+					snapshot,
+					&definition.mod_id,
+					&definition.path,
+					definition.line,
+					definition.column,
+				) {
+					locations.push(location);
+				}
+			}
+		} else if is_localisation_reference_key(&assignment_key, &token) {
+			for definition in &snapshot.index.localisation_definitions {
+				if definition.key != token {
+					continue;
+				}
+				if let Some(location) = definition_location(
+					snapshot,
+					&definition.mod_id,
+					&definition.path,
+					definition.line,
+					definition.column,
+				) {
+					locations.push(location);
+				}
+			}
+		} else if let Some(flag_kind) = flag_value_kind(assignment_key.as_str()) {
+			let mut found_definition = false;
+			for usage in &snapshot.index.scalar_assignments {
+				if usage.value != token || flag_value_kind(usage.key.as_str()) != Some(flag_kind) {
+					continue;
+				}
+				if is_flag_definition_key(usage.key.as_str()) {
+					found_definition = true;
+					if let Some(location) = definition_location(
+						snapshot,
+						&usage.mod_id,
+						&usage.path,
+						usage.line,
+						usage.column,
+					) {
+						locations.push(location);
+					}
+				}
+			}
+			if !found_definition {
+				for usage in &snapshot.index.scalar_assignments {
+					if usage.value != token
+						|| flag_value_kind(usage.key.as_str()) != Some(flag_kind)
+					{
+						continue;
+					}
+					if let Some(location) = definition_location(
+						snapshot,
+						&usage.mod_id,
+						&usage.path,
+						usage.line,
+						usage.column,
+					) {
+						locations.push(location);
+					}
+				}
+			}
+		}
+	}
+
+	dedup_locations(&mut locations);
+	if locations.is_empty() {
+		None
+	} else {
+		Some(locations)
+	}
+}
+
+fn definition_location(
+	snapshot: &WorkspaceSnapshot,
+	mod_id: &str,
+	relative_path: &Path,
+	line: usize,
+	column: usize,
+) -> Option<Location> {
+	let absolute_path = snapshot
+		.path_lookup
+		.get(&path_lookup_key(mod_id, relative_path))?;
+	let uri = Url::from_file_path(absolute_path).ok()?;
+	Some(Location {
+		uri,
+		range: lsp_range(line, column),
+	})
+}
+
+fn dedup_locations(locations: &mut Vec<Location>) {
+	let mut seen = HashSet::new();
+	locations.retain(|location| {
+		let key = format!(
+			"{}:{}:{}",
+			location.uri, location.range.start.line, location.range.start.character
+		);
+		seen.insert(key)
+	});
+}
+
+fn match_scan_target(targets: &[ScanTarget], path: &Path) -> Option<(PathBuf, PathBuf)> {
+	let mut best: Option<(usize, PathBuf, PathBuf)> = None;
+	for target in targets {
+		let Ok(relative) = path.strip_prefix(&target.path) else {
+			continue;
+		};
+		let len = target.path.components().count();
+		match &best {
+			Some((best_len, ..)) if *best_len >= len => {}
+			_ => {
+				best = Some((len, target.path.clone(), relative.to_path_buf()));
+			}
+		}
+	}
+	best.map(|(_, root, relative)| (root, relative))
+}
+
+fn assignment_context_at_cursor(line: &str, cursor: usize) -> Option<(String, usize, usize, bool)> {
+	let (_, token_start, token_end) = extract_token_at_cursor(line, cursor)?;
+	let chars: Vec<char> = line.chars().collect();
+
+	let mut after = token_end;
+	while after < chars.len() && chars[after].is_whitespace() {
+		after += 1;
+	}
+	if after < chars.len() && chars[after] == '=' {
+		let key = chars[token_start..token_end].iter().collect();
+		return Some((key, token_start, token_end, false));
+	}
+
+	let eq_idx = chars[..token_start].iter().rposition(|ch| *ch == '=')?;
+	let mut end = eq_idx;
+	while end > 0 && chars[end - 1].is_whitespace() {
+		end -= 1;
+	}
+	let mut start = end;
+	while start > 0 && is_identifier_char(chars[start - 1]) {
+		start -= 1;
+	}
+	if start == end {
+		return None;
+	}
+	Some((chars[start..end].iter().collect(), start, end, true))
+}
+
+fn extract_token_at_cursor(line: &str, cursor: usize) -> Option<(String, usize, usize)> {
+	let chars: Vec<char> = line.chars().collect();
+	if chars.is_empty() {
+		return None;
+	}
+	let mut idx = cursor.min(chars.len().saturating_sub(1));
+	if !is_identifier_char(chars[idx]) {
+		if idx == 0 || !is_identifier_char(chars[idx - 1]) {
+			return None;
+		}
+		idx -= 1;
+	}
+	let mut start = idx;
+	while start > 0 && is_identifier_char(chars[start - 1]) {
+		start -= 1;
+	}
+	let mut end = idx + 1;
+	while end < chars.len() && is_identifier_char(chars[end]) {
+		end += 1;
+	}
+	Some((chars[start..end].iter().collect(), start, end))
+}
+
+#[cfg(test)]
+fn assignment_key_on_line(line: &str) -> Option<(String, usize, usize, usize)> {
+	let chars: Vec<char> = line.chars().collect();
+	let eq_idx = chars.iter().position(|ch| *ch == '=')?;
+	let mut end = eq_idx;
+	while end > 0 && chars[end - 1].is_whitespace() {
+		end -= 1;
+	}
+	let mut start = end;
+	while start > 0 && is_identifier_char(chars[start - 1]) {
+		start -= 1;
+	}
+	if start == end {
+		return None;
+	}
+	Some((chars[start..end].iter().collect(), start, end, eq_idx))
+}
+
+fn is_flag_definition_key(key: &str) -> bool {
+	matches!(
+		key,
+		"set_global_flag"
+			| "set_country_flag"
+			| "set_province_flag"
+			| "set_permanent_province_flag"
+			| "set_ruler_flag"
+			| "set_heir_flag"
+			| "set_consort_flag"
+	)
+}
+
+fn is_localisation_reference_key(key: &str, value: &str) -> bool {
+	match key {
+		"tooltip" | "custom_tooltip" | "localisation_key" | "title" | "desc" => true,
+		"name" => looks_like_localisation_name(value),
+		_ => false,
+	}
+}
+
+fn looks_like_localisation_name(value: &str) -> bool {
+	value.contains('.')
+		|| value.chars().any(|ch| ch.is_ascii_uppercase())
+		|| value.ends_with("_title")
+		|| value.ends_with("_desc")
+		|| value.ends_with("_tt")
+		|| value.ends_with("_tooltip")
 }
 
 fn resolve_scan_targets(params: &InitializeParams) -> Vec<ScanTarget> {
@@ -590,6 +1112,9 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 		"common/diplomatic_actions",
 		"common/triggered_modifiers",
 		"common/defines",
+		"interface",
+		"common/interface",
+		"gfx",
 	];
 
 	let mut files = Vec::new();
@@ -734,12 +1259,15 @@ fn is_identifier_char(ch: char) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::{
-		CandidateSource, CompletionCandidate, CompletionContext, TargetRole,
-		detect_completion_context, extract_completion_prefix, parse_scan_targets_json,
+		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
+		assignment_key_on_line, build_workspace_snapshot, detect_completion_context,
+		extract_completion_prefix, parse_scan_targets_json, resolve_definition_locations,
 		select_completion_candidates,
 	};
+	use std::fs;
+	use tempfile::TempDir;
 	use tower_lsp::lsp_types::CompletionItemKind;
-	use tower_lsp::lsp_types::Position;
+	use tower_lsp::lsp_types::{Position, Url};
 
 	#[test]
 	fn completion_prefix_extracts_identifier_tail() {
@@ -825,5 +1353,117 @@ mod tests {
 
 		assert_eq!(selected.len(), 1);
 		assert_eq!(selected[0].label, "CTRLMA_open_config_menu_flag");
+	}
+
+	#[test]
+	fn assignment_key_extracts_span() {
+		let (key, start, end, eq) =
+			assignment_key_on_line("\thas_country_flag = CTRLMA_open_config_menu_flag")
+				.expect("assignment key");
+		assert_eq!(key, "has_country_flag");
+		assert_eq!(start, 1);
+		assert_eq!(end, 17);
+		assert_eq!(eq, 18);
+	}
+
+	#[test]
+	fn definition_resolves_flag_value_to_setter() {
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("decisions")).expect("create decisions");
+		fs::create_dir_all(root.join("events")).expect("create events");
+		fs::write(
+			root.join("decisions").join("a.txt"),
+			"test_decision = { effect = { set_country_flag = CTRLMA_open_config_menu_flag } }\n",
+		)
+		.expect("write decision");
+		fs::write(
+			root.join("events").join("b.txt"),
+			"namespace = test\ncountry_event = { id = test.1 trigger = { has_country_flag = CTRLMA_open_config_menu_flag } }\n",
+		)
+		.expect("write event");
+
+		let snapshot = build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}]);
+		let target_path = root.join("events").join("b.txt");
+		let text = fs::read_to_string(&target_path).expect("read event");
+		let line = text.lines().nth(1).expect("event line");
+		let uri = Url::from_file_path(&target_path).expect("uri");
+		let column = line
+			.find("CTRLMA_open_config_menu_flag")
+			.expect("flag token") as u32;
+
+		let locations = resolve_definition_locations(
+			&snapshot,
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			&uri,
+			&text,
+			Position {
+				line: 1,
+				character: column,
+			},
+		)
+		.expect("definition locations");
+
+		assert_eq!(locations.len(), 1);
+		assert_eq!(
+			locations[0].uri,
+			Url::from_file_path(root.join("decisions").join("a.txt")).expect("decision uri")
+		);
+	}
+
+	#[test]
+	fn definition_resolves_scripted_effect_call_to_definition() {
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(root.join("decisions")).expect("create decisions");
+		fs::write(
+			root.join("common").join("scripted_effects").join("a.txt"),
+			"my_effect = { set_country_flag = TEST_FLAG }\n",
+		)
+		.expect("write effect");
+		fs::write(
+			root.join("decisions").join("b.txt"),
+			"test_decision = { effect = { my_effect = { } } }\n",
+		)
+		.expect("write decision");
+
+		let snapshot = build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}]);
+		let target_path = root.join("decisions").join("b.txt");
+		let text = fs::read_to_string(&target_path).expect("read decision");
+		let uri = Url::from_file_path(&target_path).expect("uri");
+		let column = text.find("my_effect").expect("effect token") as u32;
+
+		let locations = resolve_definition_locations(
+			&snapshot,
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			&uri,
+			&text,
+			Position {
+				line: 0,
+				character: column,
+			},
+		)
+		.expect("definition locations");
+
+		assert_eq!(locations.len(), 1);
+		assert_eq!(
+			locations[0].uri,
+			Url::from_file_path(root.join("common").join("scripted_effects").join("a.txt"))
+				.expect("effect uri")
+		);
 	}
 }
