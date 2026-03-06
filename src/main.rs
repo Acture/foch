@@ -17,7 +17,7 @@ fn main() {
 }
 
 fn run() -> Result<i32, Box<dyn std::error::Error>> {
-	let cliargs = arg::ModManagerCli::parse();
+	let cliargs = arg::FochCli::parse();
 
 	let subscriber = FmtSubscriber::builder()
 		.with_max_level(cliargs.verbose.tracing_level_filter())
@@ -30,10 +30,10 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	let (mut config, config_file) = load_or_init_config()?;
 
 	match &cliargs.command {
-		arg::ModManagerCliCommands::Check(check_args) => {
+		arg::FochCliCommands::Check(check_args) => {
 			handler::check::handle_check(check_args, config)
 		}
-		arg::ModManagerCliCommands::Config(config_args) => {
+		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
 		}
 	}

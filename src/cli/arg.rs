@@ -3,17 +3,17 @@ use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Paradox Mod Playset 检查工具", long_about = None)]
-pub struct ModManagerCli {
+#[command(author, version, about = "Foch: Paradox Mod 静态分析工具", long_about = None)]
+pub struct FochCli {
 	#[command(subcommand)]
-	pub command: ModManagerCliCommands,
+	pub command: FochCliCommands,
 
 	#[command(flatten)]
 	pub verbose: Verbosity<WarnLevel>,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ModManagerCliCommands {
+pub enum FochCliCommands {
 	Check(CheckArgs),
 	Config(ConfigArgs),
 }
@@ -21,7 +21,7 @@ pub enum ModManagerCliCommands {
 #[derive(Parser, Debug)]
 #[command(
 	about = "检查 playset 并输出规则发现",
-	after_help = "示例:\n  foch-cli check ./playlist.json\n  foch-cli check ./playlist.json --strict\n  foch-cli check ./playlist.json --analysis-mode semantic --channel strict\n  foch-cli check ./playlist.json --include-game-base\n  foch-cli check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch-cli check ./playlist.json --format json --output result.json"
+	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --include-game-base\n  foch check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
 	pub playset_path: PathBuf,
@@ -82,11 +82,11 @@ pub enum GraphFormatArg {
 #[command(about = "查看和维护本地配置")]
 pub struct ConfigArgs {
 	#[command(subcommand)]
-	pub command: ModManagerCliConfigCommands,
+	pub command: FochCliConfigCommands,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ModManagerCliConfigCommands {
+pub enum FochCliConfigCommands {
 	Set(SetConfigArgs),
 	Show(ShowConfigArgs),
 	Validate,
@@ -101,11 +101,11 @@ pub struct ShowConfigArgs {
 #[derive(Parser, Debug)]
 pub struct SetConfigArgs {
 	#[command(subcommand)]
-	pub command: ModManagerCliSetCommands,
+	pub command: FochCliSetCommands,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ModManagerCliSetCommands {
+pub enum FochCliSetCommands {
 	SteamPath(PathArgs),
 	ParadoxDataPath(PathArgs),
 	GamePath(GamePathArgs),

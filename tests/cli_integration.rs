@@ -27,11 +27,11 @@ fn write_descriptor(mod_root: &Path, name: &str) {
 }
 
 fn run_foch(args: &[&str], config_dir: &Path) -> (i32, String, String) {
-	let output = Command::new(env!("CARGO_BIN_EXE_foch-cli"))
+	let output = Command::new(env!("CARGO_BIN_EXE_foch"))
 		.env("FOCH_CONFIG_DIR", config_dir)
 		.args(args)
 		.output()
-		.expect("failed to run foch-cli");
+		.expect("failed to run foch");
 
 	(
 		output.status.code().unwrap_or(-1),

@@ -1,0 +1,53 @@
+name: publish-vscode-preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to publish"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish-preview:
+    name: Publish VS Code preview (${{ matrix.target }})
+    if: ${{ secrets.VSCE_PAT != '' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: linux-x64
+          - runner: windows-latest
+            target: win32-x64
+          - runner: macos-14
+            target: darwin-arm64
+    defaults:
+      run:
+        working-directory: vscode-foch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install extension dependencies
+        run: npm install
+
+      - name: Publish pre-release extension
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npm run publish:pre-release

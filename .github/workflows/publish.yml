@@ -1,0 +1,123 @@
+name: publish
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish and sync"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-publish:
+    name: Publish crate to crates.io
+    if: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          version="${tag#v}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify crate version matches tag
+        shell: bash
+        run: |
+          manifest_version="$(sed -n 's/^version = \"\\(.*\\)\"$/\\1/p' Cargo.toml | head -n 1)"
+          if [ "${manifest_version}" != "${{ steps.meta.outputs.version }}" ]; then
+            echo "Cargo.toml version ${manifest_version} does not match tag ${{ steps.meta.outputs.version }}" >&2
+            exit 1
+          fi
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+  homebrew-tap:
+    name: Update Homebrew tap
+    if: ${{ vars.HOMEBREW_TAP_REPO != '' && secrets.HOMEBREW_TAP_TOKEN != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.event.release.tag_name }}
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${{ github.event.release.tag_name }}"
+          fi
+          version="${tag#v}"
+          repo="${GITHUB_REPOSITORY}"
+          url="https://github.com/${repo}/archive/refs/tags/${tag}.tar.gz"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "repo=${repo}" >> "$GITHUB_OUTPUT"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+
+      - name: Download source tarball
+        shell: bash
+        run: |
+          curl -fsSL "${{ steps.meta.outputs.url }}" -o source.tar.gz
+          sha256="$(sha256sum source.tar.gz | cut -d' ' -f1)"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+        id: archive
+
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HOMEBREW_TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render formula
+        shell: bash
+        run: |
+          mkdir -p tap/Formula
+          ./scripts/render_homebrew_formula.sh \
+            "${{ steps.meta.outputs.repo }}" \
+            "${{ steps.meta.outputs.version }}" \
+            "${{ steps.meta.outputs.url }}" \
+            "${{ steps.archive.outputs.sha256 }}" \
+            > tap/Formula/foch.rb
+
+      - name: Commit and push formula update
+        shell: bash
+        working-directory: tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/foch.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date"
+            exit 0
+          fi
+          git commit -m "foch ${{ steps.meta.outputs.version }}"
+          git push
