@@ -3,7 +3,7 @@
 	"displayName": "Foch",
 	"description": "Preview VS Code client for EU4 Script powered by foch_lsp",
 	"version": "0.1.0",
-	"publisher": "acture",
+	"publisher": "acturea",
 	"preview": true,
 	"license": "AGPL-3.0-only",
 	"repository": {
@@ -108,7 +108,7 @@
 		"vscode-languageclient": "^9.0.1"
 	},
 	"devDependencies": {
-		"@vscode/vsce": "^3.6.2",
+		"@vscode/vsce": "^3.7.1",
 		"vscode": "^1.1.37"
 	}
 }
