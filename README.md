@@ -5,6 +5,10 @@
 ## 安装
 
 ```bash
+# 从 crates.io 安装
+cargo install foch
+
+# 或本地构建
 cargo build --bin foch
 ```
 
@@ -117,13 +121,31 @@ cargo run --bin parse_stats -- "/path/to/eu4" --exts txt
 cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes licenses,patchnotes
 ```
 
-## LSP（基础补全）
+## LSP 与 VS Code
 
-项目新增 `foch_lsp` language server，提供基础补全能力：
+项目包含 `foch_lsp` language server，以及位于 `vscode-foch/` 的 VS Code 扩展。
 
+当前已实现：
+
+- `EU4 Script` 文件类型与语法高亮
 - reserved/contextual/alias 关键字补全
 - builtin trigger/effect 补全
-- 工作区符号补全（event id / scripted effect / decision 等）
+- 工作区符号补全（event id / scripted effect / decision / flag value）
+- `goto definition`
+  - scripted effect 调用
+  - event id 引用
+  - flag value 引用
+  - localisation key 引用
+- 编辑器 diagnostics
+  - 当前文档 parse errors
+  - 工作区语义 findings（例如 unresolved call / invisible alias / missing localisation / unresolved flag）
+
+当前仍未实现：
+
+- `hover`
+- `find references`
+- `rename`
+- code action
 
 启动方式：
 
@@ -131,7 +153,16 @@ cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes lice
 cargo run --bin foch_lsp
 ```
 
-建议在 VS Code 的 LSP client 配置里将 server command 指向 `foch_lsp`（或 `cargo run --bin foch_lsp`）。
+VS Code 本地开发：
+
+```bash
+cd vscode-foch
+npm install
+npm run prepare:server
+code .
+```
+
+然后在 Extension Development Host 里测试扩展。
 
 可选：通过环境变量指定 LSP 仅扫描哪些目录（优先于 workspace folders）：
 
@@ -143,6 +174,26 @@ export FOCH_LSP_TARGETS_JSON='[
 ```
 
 `role` 目前支持 `game` 与 `mod`。
+
+如果不设置 `FOCH_LSP_TARGETS_JSON`，VS Code 扩展会：
+
+- 读取 `fochLsp.gamePath`
+- 读取 `fochLsp.modPaths`
+- 通过 `descriptor.mod` 自动发现 mod 根目录
+
+语义扫描目录当前覆盖：
+
+- `events/`
+- `decisions/`
+- `common/scripted_effects/`
+- `common/diplomatic_actions/`
+- `common/triggered_modifiers/`
+- `common/defines/`
+- `interface/`
+- `common/interface/`
+- `gfx/`
+
+其中 UI 目录当前主要用于解析与 diagnostics，不参与完整 scope/symbol 语义推导。
 
 ## EU4 内建符号表
 

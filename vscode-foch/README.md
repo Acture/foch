@@ -1,6 +1,6 @@
 # Foch for VS Code
 
-Preview VS Code extension for EU4 scripting.
+Preview VS Code extension for EU4 scripting, backed by `foch_lsp`.
 
 Marketplace pre-release builds use `version = 0.1.0` plus the pre-release publish flag. VS Code Marketplace does not support semver prerelease suffixes such as `0.1.0-preview.1`.
 
@@ -9,13 +9,18 @@ This extension provides:
 - `EU4 Script` language association and syntax highlighting
 - Completion for builtin trigger/effect names
 - Completion for workspace symbols and flag values
+- `goto definition` for scripted effects, event ids, flag values, and localisation keys
+- Diagnostics for current-file parse errors
+- Diagnostics for workspace semantic findings
+- Multi-root scanning for `game` + multiple `mod` directories
 - Auto-detection of mod roots via `descriptor.mod`
 
 Current non-goals for this preview build:
 
-- No `goto definition`
 - No `hover`
-- No editor diagnostics/code actions yet
+- No `find references`
+- No `rename`
+- No code actions yet
 
 ## Runtime model
 
@@ -25,7 +30,7 @@ The extension now prefers a bundled `foch_lsp` binary.
 - Otherwise, the extension looks for a bundled binary under `bin/<platform>-<arch>/`.
 - If no bundled binary exists, it falls back to `cargo run --quiet --bin foch_lsp --`.
 
-The fallback is useful for local development, but it is not suitable for a user-facing release.
+The fallback is useful for local development, but bundled binaries are the intended runtime model for release builds.
 
 ## Local development
 
@@ -101,7 +106,7 @@ Then publish the current host target as a pre-release:
 npm run publish:pre-release
 ```
 
-The `publisher` field currently targets `acture`. If your Marketplace publisher id differs, update `package.json` before publishing.
+The `publisher` field currently targets `acturea`.
 
 ## Recommended settings
 
@@ -122,3 +127,10 @@ Example settings for local development:
 ```
 
 The client automatically sets matching files to the `EU4 Script` language (internal id `foch-eu4`).
+
+Current semantic coverage:
+
+- script roots: `events`, `decisions`, `common/scripted_effects`, `common/diplomatic_actions`, `common/triggered_modifiers`, `common/defines`
+- UI parsing roots: `interface`, `common/interface`, `gfx`
+
+UI files currently contribute parse diagnostics, but not full scope/symbol inference.
