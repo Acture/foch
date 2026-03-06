@@ -1,0 +1,95 @@
+{
+	"name": "foch-lsp-client",
+	"displayName": "Foch LSP Client",
+	"description": "VS Code client for foch_lsp (EU4 scripting completion)",
+	"version": "0.0.1",
+	"publisher": "acture-local",
+	"preview": true,
+	"engines": {
+		"vscode": "^1.90.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"main": "./extension.js",
+	"contributes": {
+		"languages": [
+			{
+				"id": "foch-eu4",
+				"aliases": [
+					"EU4 Script"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "foch-eu4",
+				"scopeName": "source.foch-eu4",
+				"path": "./syntaxes/foch-eu4.tmLanguage.json"
+			}
+		],
+		"configuration": {
+			"title": "Foch LSP",
+			"properties": {
+				"fochLsp.serverPath": {
+					"type": "string",
+					"default": "",
+					"description": "Optional server command override. Empty means prefer the bundled foch_lsp binary, then fall back to cargo in a repo checkout."
+				},
+				"fochLsp.serverArgs": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"description": "Arguments passed to a custom server command. Ignored when the bundled server is used."
+				},
+				"fochLsp.serverCwd": {
+					"type": "string",
+					"default": "",
+					"description": "Working directory for launching the server. Empty means first workspace folder."
+				},
+				"fochLsp.gamePath": {
+					"type": "string",
+					"default": "",
+					"description": "Optional EU4 game root. Passed to FOCH_LSP_TARGETS_JSON with role=game."
+				},
+				"fochLsp.modPaths": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"description": "Optional mod root paths. Passed to FOCH_LSP_TARGETS_JSON with role=mod."
+				},
+				"fochLsp.autoDetectMods": {
+					"type": "boolean",
+					"default": true,
+					"description": "Automatically detect mod roots by searching workspace for descriptor.mod."
+				},
+				"fochLsp.autoDetectModsMax": {
+					"type": "number",
+					"default": 300,
+					"description": "Maximum descriptor.mod files to scan when auto detecting mod roots."
+				}
+			}
+		}
+	},
+	"scripts": {
+		"lint": "echo no-lint",
+		"prepare:server": "node ./scripts/prepare-bundled-server.js",
+		"smoke": "node ./scripts/smoke-test.js",
+		"test": "npm run prepare:server && npm run smoke",
+		"package:vsix": "npm run prepare:server && npx @vscode/vsce package"
+	},
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
+	},
+	"devDependencies": {
+		"vscode": "^1.1.37"
+	}
+}
