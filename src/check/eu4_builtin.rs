@@ -23,6 +23,11 @@ struct BuiltinLookup {
 	aliases: HashSet<String>,
 	triggers: HashSet<String>,
 	effects: HashSet<String>,
+	reserved_list: Vec<String>,
+	contextual_list: Vec<String>,
+	aliases_list: Vec<String>,
+	triggers_list: Vec<String>,
+	effects_list: Vec<String>,
 }
 
 static LOOKUP: OnceLock<BuiltinLookup> = OnceLock::new();
@@ -33,20 +38,45 @@ fn load_lookup() -> &'static BuiltinLookup {
 		let catalog: BuiltinCatalog = serde_json::from_str(raw)
 			.expect("valid src/check/data/eu4_builtin_catalog.json catalog");
 
+		let mut reserved_list = catalog.reserved_keywords;
+		reserved_list.sort();
+		reserved_list.dedup();
+
+		let mut contextual_list = catalog.contextual_keywords;
+		contextual_list.sort();
+		contextual_list.dedup();
+
+		let mut aliases_list = catalog.alias_keywords;
+		aliases_list.sort();
+		aliases_list.dedup();
+
+		let mut triggers_list: Vec<String> = catalog
+			.builtin_triggers
+			.into_iter()
+			.map(|item| item.name)
+			.collect();
+		triggers_list.sort();
+		triggers_list.dedup();
+
+		let mut effects_list: Vec<String> = catalog
+			.builtin_effects
+			.into_iter()
+			.map(|item| item.name)
+			.collect();
+		effects_list.sort();
+		effects_list.dedup();
+
 		BuiltinLookup {
-			reserved: catalog.reserved_keywords.into_iter().collect(),
-			contextual: catalog.contextual_keywords.into_iter().collect(),
-			aliases: catalog.alias_keywords.into_iter().collect(),
-			triggers: catalog
-				.builtin_triggers
-				.into_iter()
-				.map(|item| item.name)
-				.collect(),
-			effects: catalog
-				.builtin_effects
-				.into_iter()
-				.map(|item| item.name)
-				.collect(),
+			reserved: reserved_list.iter().cloned().collect(),
+			contextual: contextual_list.iter().cloned().collect(),
+			aliases: aliases_list.iter().cloned().collect(),
+			triggers: triggers_list.iter().cloned().collect(),
+			effects: effects_list.iter().cloned().collect(),
+			reserved_list,
+			contextual_list,
+			aliases_list,
+			triggers_list,
+			effects_list,
 		}
 	})
 }
@@ -69,6 +99,26 @@ pub fn is_builtin_trigger(key: &str) -> bool {
 
 pub fn is_builtin_effect(key: &str) -> bool {
 	load_lookup().effects.contains(key)
+}
+
+pub fn reserved_keywords() -> &'static [String] {
+	&load_lookup().reserved_list
+}
+
+pub fn contextual_keywords() -> &'static [String] {
+	&load_lookup().contextual_list
+}
+
+pub fn alias_keywords() -> &'static [String] {
+	&load_lookup().aliases_list
+}
+
+pub fn builtin_trigger_names() -> &'static [String] {
+	&load_lookup().triggers_list
+}
+
+pub fn builtin_effect_names() -> &'static [String] {
+	&load_lookup().effects_list
 }
 
 #[cfg(test)]

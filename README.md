@@ -93,6 +93,22 @@ cargo run --bin parse_stats -- "/path/to/eu4" --exts txt
 cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes licenses,patchnotes
 ```
 
+## LSP（基础补全）
+
+项目新增 `foch-lsp`，提供基础补全能力：
+
+- reserved/contextual/alias 关键字补全
+- builtin trigger/effect 补全
+- 工作区符号补全（event id / scripted effect / decision 等）
+
+启动方式：
+
+```bash
+cargo run --bin foch_lsp
+```
+
+建议在 VS Code 的 LSP client 配置里将 server command 指向 `foch-lsp`（或 `cargo run --bin foch_lsp`）。
+
 ## EU4 内建符号表
 
 仓库内置 `src/check/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。
