@@ -80,14 +80,17 @@ cargo test --all-targets --all-features
 发布所需的 GitHub secrets / variables：
 
 - `VSCE_PAT`: VS Code Marketplace token
-- `CARGO_REGISTRY_TOKEN`: crates.io token
 - `HOMEBREW_TAP_TOKEN`: 用于推送 tap 仓库
 - `HOMEBREW_TAP_REPO`: repository variable，例如 `Acture/homebrew-tap`
 
 说明：
 
 - `publish.yml` 当前使用 source tarball 更新 tap，因此 formula 会从源码构建
-- `cargo publish` 目前仍会警告缺失 license 元数据；在正式公开发布前，最好补齐许可证声明
+- `publish.yml` 已切到 crates.io trusted publishing，不再依赖 `CARGO_REGISTRY_TOKEN`
+- 在 crates.io 后台添加 trusted publisher 时，使用：
+  - repository: `Acture/foch`
+  - workflow: `publish.yml`
+  - environment: `release`
 
 ## 解析缓存（本地）
 
