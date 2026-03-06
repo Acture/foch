@@ -109,6 +109,17 @@ cargo run --bin foch_lsp
 
 建议在 VS Code 的 LSP client 配置里将 server command 指向 `foch-lsp`（或 `cargo run --bin foch_lsp`）。
 
+可选：通过环境变量指定 LSP 仅扫描哪些目录（优先于 workspace folders）：
+
+```bash
+export FOCH_LSP_TARGETS_JSON='[
+	{"path":"/path/to/Europa Universalis IV","role":"game"},
+	{"path":"/path/to/my_mod","role":"mod"}
+]'
+```
+
+`role` 目前支持 `game` 与 `mod`。
+
 ## EU4 内建符号表
 
 仓库内置 `src/check/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。

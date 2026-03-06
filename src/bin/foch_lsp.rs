@@ -4,6 +4,7 @@ use foch::check::eu4_builtin::{
 };
 use foch::check::model::SymbolKind;
 use foch::check::semantic_index::{build_semantic_index, parse_script_file};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -34,10 +35,29 @@ struct CompletionCandidate {
 	source: CandidateSource,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TargetRole {
+	Game,
+	Mod,
+}
+
+#[derive(Clone, Debug)]
+struct ScanTarget {
+	path: PathBuf,
+	role: TargetRole,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct EnvScanTarget {
+	path: String,
+	role: TargetRole,
+}
+
 #[derive(Default)]
 struct ServerState {
 	docs: HashMap<Url, String>,
-	roots: Vec<PathBuf>,
+	targets: Vec<ScanTarget>,
 	static_candidates: Vec<CompletionCandidate>,
 	workspace_candidates: Vec<CompletionCandidate>,
 }
@@ -60,9 +80,9 @@ impl Backend {
 	}
 
 	async fn refresh_workspace_candidates(&self) {
-		let roots = { self.state.read().await.roots.clone() };
+		let targets = { self.state.read().await.targets.clone() };
 		let client = self.client.clone();
-		let built = tokio::task::spawn_blocking(move || build_workspace_candidates(&roots)).await;
+		let built = tokio::task::spawn_blocking(move || build_workspace_candidates(&targets)).await;
 		match built {
 			Ok(candidates) => {
 				let count = candidates.len();
@@ -90,24 +110,11 @@ impl Backend {
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-		let mut roots = Vec::new();
-		if let Some(folders) = params.workspace_folders {
-			for folder in folders {
-				if let Ok(path) = folder.uri.to_file_path() {
-					roots.push(path);
-				}
-			}
-		}
-		if roots.is_empty()
-			&& let Some(root_uri) = params.root_uri
-			&& let Ok(path) = root_uri.to_file_path()
-		{
-			roots.push(path);
-		}
+		let targets = resolve_scan_targets(&params);
 
 		{
 			let mut state = self.state.write().await;
-			state.roots = roots;
+			state.targets = targets;
 		}
 
 		Ok(InitializeResult {
@@ -274,12 +281,16 @@ fn build_static_candidates() -> Vec<CompletionCandidate> {
 	out
 }
 
-fn build_workspace_candidates(roots: &[PathBuf]) -> Vec<CompletionCandidate> {
+fn build_workspace_candidates(roots: &[ScanTarget]) -> Vec<CompletionCandidate> {
 	let mut parsed = Vec::new();
-	for root in roots {
-		let files = collect_semantic_script_files(root);
+	for target in roots {
+		let files = collect_semantic_script_files(&target.path);
 		for file in files {
-			if let Some(item) = parse_script_file("__workspace__", root, &file) {
+			let mod_id = match target.role {
+				TargetRole::Game => "__lsp_game__",
+				TargetRole::Mod => "__lsp_mod__",
+			};
+			if let Some(item) = parse_script_file(mod_id, &target.path, &file) {
 				parsed.push(item);
 			}
 		}
@@ -305,6 +316,78 @@ fn build_workspace_candidates(roots: &[PathBuf]) -> Vec<CompletionCandidate> {
 
 	let mut out: Vec<CompletionCandidate> = seen.into_values().collect();
 	out.sort_by(|a, b| a.label.cmp(&b.label));
+	out
+}
+
+fn resolve_scan_targets(params: &InitializeParams) -> Vec<ScanTarget> {
+	match scan_targets_from_env() {
+		Ok(targets) if !targets.is_empty() => targets,
+		Ok(_) | Err(_) => scan_targets_from_workspace(params),
+	}
+}
+
+fn scan_targets_from_env() -> std::result::Result<Vec<ScanTarget>, String> {
+	let raw = match std::env::var("FOCH_LSP_TARGETS_JSON") {
+		Ok(value) => value,
+		Err(std::env::VarError::NotPresent) => return Ok(Vec::new()),
+		Err(err) => return Err(format!("read FOCH_LSP_TARGETS_JSON failed: {err}")),
+	};
+
+	parse_scan_targets_json(&raw)
+}
+
+fn parse_scan_targets_json(raw: &str) -> std::result::Result<Vec<ScanTarget>, String> {
+	let parsed: Vec<EnvScanTarget> = serde_json::from_str(raw)
+		.map_err(|err| format!("parse FOCH_LSP_TARGETS_JSON failed: {err}"))?;
+	let mut targets = Vec::new();
+	for item in parsed {
+		let path = PathBuf::from(item.path);
+		if path.is_dir() {
+			targets.push(ScanTarget {
+				path,
+				role: item.role,
+			});
+		}
+	}
+	Ok(dedup_scan_targets(targets))
+}
+
+fn scan_targets_from_workspace(params: &InitializeParams) -> Vec<ScanTarget> {
+	let mut targets = Vec::new();
+	if let Some(folders) = params.workspace_folders.as_ref() {
+		for folder in folders {
+			if let Ok(path) = folder.uri.to_file_path() {
+				targets.push(ScanTarget {
+					path,
+					role: TargetRole::Mod,
+				});
+			}
+		}
+	}
+	if targets.is_empty()
+		&& let Some(root_uri) = params.root_uri.as_ref()
+		&& let Ok(path) = root_uri.to_file_path()
+	{
+		targets.push(ScanTarget {
+			path,
+			role: TargetRole::Mod,
+		});
+	}
+
+	dedup_scan_targets(targets)
+}
+
+fn dedup_scan_targets(targets: Vec<ScanTarget>) -> Vec<ScanTarget> {
+	let mut seen = HashMap::<String, TargetRole>::new();
+	let mut out = Vec::new();
+	for item in targets {
+		let key = item.path.to_string_lossy().replace('\\', "/");
+		if seen.contains_key(&key) {
+			continue;
+		}
+		seen.insert(key, item.role);
+		out.push(item);
+	}
 	out
 }
 
@@ -398,7 +481,7 @@ fn is_identifier_char(ch: char) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::extract_completion_prefix;
+	use super::{TargetRole, extract_completion_prefix, parse_scan_targets_json};
 	use tower_lsp::lsp_types::Position;
 
 	#[test]
@@ -425,5 +508,15 @@ mod tests {
 			},
 		);
 		assert_eq!(prefix, "has_co");
+	}
+
+	#[test]
+	fn env_targets_parse_json() {
+		let targets = parse_scan_targets_json(
+			r#"[{"path":"/tmp","role":"game"},{"path":"/Users/nope","role":"mod"}]"#,
+		)
+		.expect("parse targets json");
+		assert!(!targets.is_empty());
+		assert_eq!(targets[0].role, TargetRole::Game);
 	}
 }
