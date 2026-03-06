@@ -12,7 +12,7 @@ pub fn handle_set(
 	tracing::info!("设置配置: {:?}", set_args);
 
 	match &set_args.command {
-		arg::ModManagerCliSetCommands::SteamPath(path_args) => {
+		arg::FochCliSetCommands::SteamPath(path_args) => {
 			let path = path_args
 				.path
 				.canonicalize()
@@ -20,7 +20,7 @@ pub fn handle_set(
 			println!("设置 Steam 路径: {}", path.display());
 			config.steam_root_path = Some(path);
 		}
-		arg::ModManagerCliSetCommands::ParadoxDataPath(path_args) => {
+		arg::FochCliSetCommands::ParadoxDataPath(path_args) => {
 			let path = path_args
 				.path
 				.canonicalize()
@@ -28,7 +28,7 @@ pub fn handle_set(
 			println!("设置 Paradox 数据路径: {}", path.display());
 			config.paradox_data_path = Some(path);
 		}
-		arg::ModManagerCliSetCommands::GamePath(game_path_args) => {
+		arg::FochCliSetCommands::GamePath(game_path_args) => {
 			let path = game_path_args
 				.path
 				.canonicalize()

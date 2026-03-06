@@ -99,7 +99,7 @@ impl Backend {
 				client
 					.log_message(
 						MessageType::INFO,
-						format!("foch-lsp workspace symbol candidates loaded: {count}"),
+						format!("foch lsp workspace symbol candidates loaded: {count}"),
 					)
 					.await;
 			}
@@ -107,7 +107,7 @@ impl Backend {
 				self.client
 					.log_message(
 						MessageType::ERROR,
-						format!("foch-lsp failed to build workspace candidates: {err}"),
+						format!("foch lsp failed to build workspace candidates: {err}"),
 					)
 					.await;
 			}
@@ -149,7 +149,7 @@ impl LanguageServer for Backend {
 
 	async fn initialized(&self, _: InitializedParams) {
 		self.client
-			.log_message(MessageType::INFO, "foch-lsp initialized")
+			.log_message(MessageType::INFO, "foch lsp initialized")
 			.await;
 		self.refresh_workspace_candidates().await;
 	}

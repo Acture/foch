@@ -2,6 +2,14 @@
 name = "foch"
 version = "0.1.0"
 edition = "2024"
+default-run = "foch"
+description = "Paradox mod static analysis toolkit with CLI and EU4-focused language tooling"
+readme = "README.md"
+homepage = "https://github.com/Acture/foch"
+repository = "https://github.com/Acture/foch"
+keywords = ["paradox", "eu4", "modding", "lsp", "static-analysis"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["vscode-foch/**"]
 
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
@@ -27,7 +35,7 @@ winreg = "0.55.0"
 tempfile = "3.15.0"
 
 [[bin]]
-name = "foch-cli"
+name = "foch"
 path = "src/main.rs"
 
 [lib]

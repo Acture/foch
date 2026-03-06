@@ -1,10 +1,26 @@
 {
-	"name": "foch-lsp-client",
-	"displayName": "Foch LSP Client",
-	"description": "VS Code client for foch_lsp (EU4 scripting completion)",
-	"version": "0.0.1",
-	"publisher": "acture-local",
+	"name": "foch",
+	"displayName": "Foch",
+	"description": "Preview VS Code client for EU4 Script powered by foch_lsp",
+	"version": "0.1.0",
+	"publisher": "acture",
 	"preview": true,
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Acture/foch.git",
+		"directory": "vscode-foch"
+	},
+	"homepage": "https://github.com/Acture/foch/tree/master/vscode-foch",
+	"bugs": {
+		"url": "https://github.com/Acture/foch/issues"
+	},
+	"keywords": [
+		"eu4",
+		"paradox",
+		"clausewitz",
+		"lsp",
+		"modding"
+	],
 	"engines": {
 		"vscode": "^1.90.0"
 	},
@@ -33,7 +49,7 @@
 			}
 		],
 		"configuration": {
-			"title": "Foch LSP",
+			"title": "Foch",
 			"properties": {
 				"fochLsp.serverPath": {
 					"type": "string",
@@ -84,12 +100,14 @@
 		"prepare:server": "node ./scripts/prepare-bundled-server.js",
 		"smoke": "node ./scripts/smoke-test.js",
 		"test": "npm run prepare:server && npm run smoke",
-		"package:vsix": "npm run prepare:server && npx @vscode/vsce package"
+		"package:vsix": "npm run prepare:server && node ./scripts/run-vsce.js package",
+		"publish:pre-release": "npm run prepare:server && node ./scripts/run-vsce.js publish"
 	},
 	"dependencies": {
 		"vscode-languageclient": "^9.0.1"
 	},
 	"devDependencies": {
+		"@vscode/vsce": "^3.6.2",
 		"vscode": "^1.1.37"
 	}
 }

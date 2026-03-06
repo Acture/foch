@@ -1,36 +1,36 @@
 # Foch
 
-`foch-cli` 是一个 Paradox Mod Playset 静态分析工具。当前版本提供通用规则引擎，会构建脚本符号索引并校验 playset 数据完整性、mod 描述文件、文件覆盖冲突、依赖关系以及 scripted effects 的定义/引用一致性。
+`foch` 是一个 Paradox Mod 静态分析工具。当前版本提供通用规则引擎，会构建脚本符号索引并校验 playset 数据完整性、mod 描述文件、文件覆盖冲突、依赖关系以及 scripted effects 的定义/引用一致性。
 
 ## 安装
 
 ```bash
-cargo build
+cargo build --bin foch
 ```
 
 ## 快速开始
 
 ```bash
 # 查看帮助
-cargo run -- --help
+cargo run --bin foch -- --help
 
 # 检查 playset
-cargo run -- check ./playlist.json
+cargo run --bin foch -- check ./playlist.json
 
 # 严格模式（有 strict finding 则返回退出码 2）
-cargo run -- check ./playlist.json --strict
+cargo run --bin foch -- check ./playlist.json --strict
 
 # 输出 JSON
-cargo run -- check ./playlist.json --format json --output result.json
+cargo run --bin foch -- check ./playlist.json --format json --output result.json
 
 # 语义分析模式（默认 semantic）
-cargo run -- check ./playlist.json --analysis-mode semantic
+cargo run --bin foch -- check ./playlist.json --analysis-mode semantic
 
 # 仅输出 strict 通道
-cargo run -- check ./playlist.json --channel strict
+cargo run --bin foch -- check ./playlist.json --channel strict
 
 # 导出语义图
-cargo run -- check ./playlist.json --graph-out semantic.dot --graph-format dot
+cargo run --bin foch -- check ./playlist.json --graph-out semantic.dot --graph-format dot
 ```
 
 ## 配置
@@ -46,12 +46,12 @@ export FOCH_CONFIG_DIR=/tmp/foch-config
 配置命令示例：
 
 ```bash
-cargo run -- config show
-cargo run -- config show --json
-cargo run -- config validate
-cargo run -- config set steam-path /path/to/steam
-cargo run -- config set paradox-data-path /path/to/paradox
-cargo run -- config set game-path eu4 /path/to/game
+cargo run --bin foch -- config show
+cargo run --bin foch -- config show --json
+cargo run --bin foch -- config validate
+cargo run --bin foch -- config set steam-path /path/to/steam
+cargo run --bin foch -- config set paradox-data-path /path/to/paradox
+cargo run --bin foch -- config set game-path eu4 /path/to/game
 ```
 
 ## 退出码
@@ -67,6 +67,27 @@ cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
+
+## 发布自动化
+
+仓库内置三条 GitHub Actions 工作流：
+
+- `ci.yml`: Rust 质量闸门 + VS Code 扩展 smoke
+- `release.yml`: 为 tag 构建 CLI 压缩包、VSIX、source tarball，并发布 GitHub Release
+- `publish.yml`: 在 release 发布后执行 `cargo publish`，并更新 Homebrew tap
+- `publish-vscode-preview.yml`: 手动发布 VS Code preview 扩展
+
+发布所需的 GitHub secrets / variables：
+
+- `VSCE_PAT`: VS Code Marketplace token
+- `CARGO_REGISTRY_TOKEN`: crates.io token
+- `HOMEBREW_TAP_TOKEN`: 用于推送 tap 仓库
+- `HOMEBREW_TAP_REPO`: repository variable，例如 `Acture/homebrew-tap`
+
+说明：
+
+- `publish.yml` 当前使用 source tarball 更新 tap，因此 formula 会从源码构建
+- `cargo publish` 目前仍会警告缺失 license 元数据；在正式公开发布前，最好补齐许可证声明
 
 ## 解析缓存（本地）
 
@@ -95,7 +116,7 @@ cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes lice
 
 ## LSP（基础补全）
 
-项目新增 `foch-lsp`，提供基础补全能力：
+项目新增 `foch_lsp` language server，提供基础补全能力：
 
 - reserved/contextual/alias 关键字补全
 - builtin trigger/effect 补全
@@ -107,7 +128,7 @@ cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes lice
 cargo run --bin foch_lsp
 ```
 
-建议在 VS Code 的 LSP client 配置里将 server command 指向 `foch-lsp`（或 `cargo run --bin foch_lsp`）。
+建议在 VS Code 的 LSP client 配置里将 server command 指向 `foch_lsp`（或 `cargo run --bin foch_lsp`）。
 
 可选：通过环境变量指定 LSP 仅扫描哪些目录（优先于 workspace folders）：
 

@@ -224,12 +224,12 @@ async function activate(context) {
 
 	const clientOptions = {
 		documentSelector: buildDocumentSelector(),
-		outputChannelName: 'foch-lsp'
+		outputChannelName: 'Foch'
 	};
 
 	client = new LanguageClient(
-		'foch-lsp',
-		'Foch LSP',
+		'foch',
+		'Foch',
 		serverOptions,
 		clientOptions
 	);
@@ -256,7 +256,7 @@ async function activate(context) {
 	}
 	if (server.mode === 'cargo-fallback') {
 		void vscode.window.showWarningMessage(
-			'Foch LSP is using cargo fallback. Bundle foch_lsp before publishing the extension.'
+			'Foch is using cargo fallback. Bundle foch_lsp before publishing the extension.'
 		);
 	}
 }

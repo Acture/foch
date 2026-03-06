@@ -1,6 +1,8 @@
-# Foch VS Code Client
+# Foch for VS Code
 
 Preview VS Code extension for EU4 scripting.
+
+Marketplace pre-release builds use `version = 0.1.0` plus the pre-release publish flag. VS Code Marketplace does not support semver prerelease suffixes such as `0.1.0-preview.1`.
 
 This extension provides:
 
@@ -36,7 +38,7 @@ npm install
 Run the extension in an Extension Development Host:
 
 ```bash
-code /Users/acture/repos/modus-foch/vscode-foch-lsp
+code /path/to/foch/vscode-foch
 ```
 
 Then press `F5`.
@@ -77,13 +79,29 @@ Or run the full local packaging check:
 npm test
 ```
 
-## Package a VSIX
+## Package a pre-release VSIX
 
 ```bash
 npm run package:vsix
 ```
 
-This command expects `npx @vscode/vsce` to be available.
+This packages the extension for the current host target, for example `darwin-arm64`.
+
+## Publish the pre-release build
+
+Set your Marketplace token first:
+
+```bash
+export VSCE_PAT=...
+```
+
+Then publish the current host target as a pre-release:
+
+```bash
+npm run publish:pre-release
+```
+
+The `publisher` field currently targets `acture`. If your Marketplace publisher id differs, update `package.json` before publishing.
 
 ## Recommended settings
 
@@ -93,10 +111,10 @@ Example settings for local development:
 {
 	"fochLsp.serverPath": "",
 	"fochLsp.serverArgs": [],
-	"fochLsp.serverCwd": "/Users/acture/repos/modus-foch",
+	"fochLsp.serverCwd": "/path/to/foch",
 	"fochLsp.gamePath": "/Users/acture/Library/Application Support/Steam/steamapps/common/Europa Universalis IV",
 	"fochLsp.modPaths": [
-		"/Users/acture/repos/modus-foch/tests/corpus/control_military_access"
+		"/path/to/foch/tests/corpus/control_military_access"
 	],
 	"fochLsp.autoDetectMods": true,
 	"fochLsp.autoDetectModsMax": 300
