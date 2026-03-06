@@ -2,8 +2,9 @@ use crate::check::eu4_builtin::{
 	is_builtin_effect, is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
 };
 use crate::check::model::{
-	AliasUsage, KeyUsage, ParseIssue, ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan,
-	SymbolDefinition, SymbolKind, SymbolReference,
+	AliasUsage, KeyUsage, LocalisationDefinition, ParamBinding, ParseIssue, ScalarAssignment,
+	ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
+	SymbolReference,
 };
 use crate::check::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_file};
 use regex::Regex;
@@ -15,6 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
+use walkdir::WalkDir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScriptFileKind {
@@ -135,6 +137,95 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 		ast: parsed.ast,
 		parse_issues,
 	})
+}
+
+pub fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<LocalisationDefinition> {
+	let mut definitions = Vec::new();
+
+	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+		if !entry.file_type().is_file() {
+			continue;
+		}
+
+		let path = entry.path();
+		let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+			continue;
+		};
+		let ext = ext.to_ascii_lowercase();
+		if !matches!(ext.as_str(), "yml" | "yaml") {
+			continue;
+		}
+
+		let Ok(relative) = path.strip_prefix(root) else {
+			continue;
+		};
+		let normalized = relative.to_string_lossy().replace('\\', "/");
+		if !(normalized.starts_with("localisation/")
+			|| normalized.starts_with("common/localisation/"))
+		{
+			continue;
+		}
+
+		let Ok(raw) = fs::read(path) else {
+			continue;
+		};
+		let content = String::from_utf8_lossy(&raw);
+		for (line_idx, line) in content.lines().enumerate() {
+			let line = if line_idx == 0 {
+				line.trim_start_matches('\u{feff}')
+			} else {
+				line
+			};
+			let trimmed = line.trim_start();
+			if trimmed.is_empty() || trimmed.starts_with('#') {
+				continue;
+			}
+			let Some(captures) = localisation_key_regex().captures(trimmed) else {
+				continue;
+			};
+			let Some(key_match) = captures.get(1) else {
+				continue;
+			};
+			let key = key_match.as_str();
+			if key.starts_with("l_") {
+				continue;
+			}
+			let column = line.find(key).map_or(1, |idx| idx + 1);
+			definitions.push(LocalisationDefinition {
+				key: key.to_string(),
+				mod_id: mod_id.to_string(),
+				path: relative.to_path_buf(),
+				line: line_idx + 1,
+				column,
+			});
+		}
+	}
+
+	definitions.sort_by(|lhs, rhs| {
+		(
+			lhs.path.clone(),
+			lhs.line,
+			lhs.column,
+			lhs.key.clone(),
+			lhs.mod_id.clone(),
+		)
+			.cmp(&(
+				rhs.path.clone(),
+				rhs.line,
+				rhs.column,
+				rhs.key.clone(),
+				rhs.mod_id.clone(),
+			))
+	});
+	definitions.dedup_by(|lhs, rhs| {
+		lhs.path == rhs.path
+			&& lhs.line == rhs.line
+			&& lhs.column == rhs.column
+			&& lhs.key == rhs.key
+			&& lhs.mod_id == rhs.mod_id
+	});
+
+	definitions
 }
 
 fn parse_clausewitz_file_cached(path: &Path) -> crate::check::parser::ParseResult {
@@ -308,6 +399,7 @@ fn walk_statements(
 				..
 			} => {
 				record_key_usage(index, scope_id, ctx, key, key_span);
+				record_scalar_assignment(index, scope_id, ctx, key, key_span, value);
 
 				if key == "namespace"
 					&& let Some(value_text) = scalar_text(value)
@@ -346,6 +438,7 @@ fn walk_statements(
 						column: key_span.start.column,
 						scope_id,
 						provided_params: Vec::new(),
+						param_bindings: Vec::new(),
 					});
 				}
 
@@ -377,8 +470,15 @@ fn walk_statements(
 						&& is_scripted_effect_call_candidate(ctx.file_kind, key, scope_id, index)
 					{
 						let mut provided = collect_provided_params(items);
-						provided.sort();
-						provided.dedup();
+						provided.names.sort();
+						provided.names.dedup();
+						provided.bindings.sort_by(|lhs, rhs| {
+							(lhs.name.as_str(), lhs.value.as_str())
+								.cmp(&(rhs.name.as_str(), rhs.value.as_str()))
+						});
+						provided
+							.bindings
+							.dedup_by(|lhs, rhs| lhs.name == rhs.name && lhs.value == rhs.value);
 						index.references.push(SymbolReference {
 							kind: SymbolKind::ScriptedEffect,
 							name: key.clone(),
@@ -388,7 +488,8 @@ fn walk_statements(
 							line: key_span.start.line,
 							column: key_span.start.column,
 							scope_id,
-							provided_params: provided,
+							provided_params: provided.names,
+							param_bindings: provided.bindings,
 						});
 					}
 
@@ -520,6 +621,29 @@ fn record_key_usage(
 	});
 }
 
+fn record_scalar_assignment(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let AstValue::Scalar { value, .. } = value else {
+		return;
+	};
+
+	index.scalar_assignments.push(ScalarAssignment {
+		key: key.to_string(),
+		value: value.as_text(),
+		mod_id: ctx.mod_id.to_string(),
+		path: ctx.path.to_path_buf(),
+		line: key_span.start.line,
+		column: key_span.start.column,
+		scope_id,
+	});
+}
+
 fn record_alias_usage(
 	index: &mut SemanticIndex,
 	scope_id: usize,
@@ -614,6 +738,13 @@ fn alias_capture_regex() -> &'static Regex {
 fn param_capture_regex() -> &'static Regex {
 	static REGEX: OnceLock<Regex> = OnceLock::new();
 	REGEX.get_or_init(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\$").expect("valid param regex"))
+}
+
+fn localisation_key_regex() -> &'static Regex {
+	static REGEX: OnceLock<Regex> = OnceLock::new();
+	REGEX.get_or_init(|| {
+		Regex::new(r#"^([A-Za-z0-9_.-]+)\s*:"#).expect("valid localisation key regex")
+	})
 }
 
 fn top_level_symbol_kind(
@@ -923,15 +1054,27 @@ fn collect_params_from_value(value: &AstValue, re: &Regex, out: &mut Vec<String>
 	}
 }
 
-fn collect_provided_params(items: &[AstStatement]) -> Vec<String> {
-	let mut params = Vec::new();
+#[derive(Default)]
+struct ProvidedParams {
+	names: Vec<String>,
+	bindings: Vec<ParamBinding>,
+}
+
+fn collect_provided_params(items: &[AstStatement]) -> ProvidedParams {
+	let mut params = ProvidedParams::default();
 	for stmt in items {
-		if let AstStatement::Assignment { key, .. } = stmt
+		if let AstStatement::Assignment { key, value, .. } = stmt
 			&& key
 				.chars()
 				.all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
 		{
-			params.push(key.clone());
+			params.names.push(key.clone());
+			if let Some(value) = scalar_text(value) {
+				params.bindings.push(ParamBinding {
+					name: key.clone(),
+					value,
+				});
+			}
 		}
 	}
 	params
