@@ -1,1 +1,5 @@
 target/
+vscode-foch-lsp/node_modules/
+vscode-foch-lsp/bin/*/foch_lsp
+vscode-foch-lsp/bin/*/foch_lsp.exe
+vscode-foch-lsp/*.vsix

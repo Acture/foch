@@ -1,0 +1,6 @@
+.vscode/**
+**/*.ts
+**/*.map
+node_modules/.bin/**
+scripts/**
+bin/.gitkeep
