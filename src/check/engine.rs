@@ -9,7 +9,9 @@ use crate::check::rules::{
 	check_missing_dependency, check_missing_descriptor, check_required_fields,
 	check_unresolved_scripted_effect,
 };
-use crate::check::semantic_index::{build_semantic_index, parse_script_file};
+use crate::check::semantic_index::{
+	build_semantic_index, collect_localisation_definitions, parse_script_file,
+};
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
 use crate::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
@@ -23,7 +25,7 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
-const BASE_SEMANTIC_CACHE_VERSION: u32 = 2;
+const BASE_SEMANTIC_CACHE_VERSION: u32 = 3;
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
 	run_checks_with_options(request, RunOptions::default())
@@ -63,7 +65,8 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		None
 	};
 	let mod_parsed_files = collect_mod_parsed_script_files(&mods);
-	let mod_semantic_index = build_semantic_index(&mod_parsed_files);
+	let mut mod_semantic_index = build_semantic_index(&mod_parsed_files);
+	append_mod_localisation_definitions(&mut mod_semantic_index, &mods);
 	let parsed_files_count = mod_parsed_files.len()
 		+ base_semantic
 			.as_ref()
@@ -137,6 +140,17 @@ fn collect_mod_parsed_script_files(
 	parsed
 }
 
+fn append_mod_localisation_definitions(index: &mut SemanticIndex, mods: &[ModCandidate]) {
+	for mod_item in mods {
+		let Some(root) = mod_item.root_path.as_ref() else {
+			continue;
+		};
+		index
+			.localisation_definitions
+			.extend(collect_localisation_definitions(&mod_item.mod_id, root));
+	}
+}
+
 #[derive(Clone, Debug)]
 struct GameBaseSemanticSnapshot {
 	index: SemanticIndex,
@@ -185,7 +199,10 @@ fn load_or_build_game_base_semantic_index(
 			parsed.push(file);
 		}
 	}
-	let index = build_semantic_index(&parsed);
+	let mut index = build_semantic_index(&parsed);
+	index
+		.localisation_definitions
+		.extend(collect_localisation_definitions(&mod_id, &game_root));
 	let snapshot = GameBaseSemanticSnapshot {
 		index,
 		parsed_files: parsed.len(),
@@ -220,12 +237,18 @@ fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -
 	for usage in &mut overlay.key_usages {
 		usage.scope_id += offset;
 	}
+	for assignment in &mut overlay.scalar_assignments {
+		assignment.scope_id += offset;
+	}
 
 	base.scopes.extend(overlay.scopes);
 	base.definitions.extend(overlay.definitions);
 	base.references.extend(overlay.references);
 	base.alias_usages.extend(overlay.alias_usages);
 	base.key_usages.extend(overlay.key_usages);
+	base.scalar_assignments.extend(overlay.scalar_assignments);
+	base.localisation_definitions
+		.extend(overlay.localisation_definitions);
 	base.parse_issues.extend(overlay.parse_issues);
 	base
 }

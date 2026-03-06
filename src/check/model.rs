@@ -201,6 +201,12 @@ pub struct SymbolDefinition {
 	pub required_params: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ParamBinding {
+	pub name: String,
+	pub value: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SymbolReference {
 	pub kind: SymbolKind,
@@ -212,6 +218,7 @@ pub struct SymbolReference {
 	pub column: usize,
 	pub scope_id: usize,
 	pub provided_params: Vec<String>,
+	pub param_bindings: Vec<ParamBinding>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -235,6 +242,26 @@ pub struct KeyUsage {
 	pub this_type: ScopeType,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScalarAssignment {
+	pub key: String,
+	pub value: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+	pub scope_id: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalisationDefinition {
+	pub key: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ParseIssue {
 	pub mod_id: String,
@@ -251,6 +278,8 @@ pub struct SemanticIndex {
 	pub references: Vec<SymbolReference>,
 	pub alias_usages: Vec<AliasUsage>,
 	pub key_usages: Vec<KeyUsage>,
+	pub scalar_assignments: Vec<ScalarAssignment>,
+	pub localisation_definitions: Vec<LocalisationDefinition>,
 	pub parse_issues: Vec<ParseIssue>,
 }
 
