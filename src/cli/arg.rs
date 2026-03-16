@@ -16,6 +16,7 @@ pub struct FochCli {
 pub enum FochCliCommands {
 	Check(CheckArgs),
 	MergePlan(MergePlanArgs),
+	Data(DataArgs),
 	Config(ConfigArgs),
 }
 
@@ -83,6 +84,60 @@ pub struct MergePlanArgs {
 pub enum MergePlanOutputFormat {
 	Text,
 	Json,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "管理可分发的基础游戏数据",
+	after_help = "Examples:\n  foch data list\n  foch data install eu4 --game-version auto\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --install\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --output-dir ./dist/data --release-asset"
+)]
+pub struct DataArgs {
+	#[command(subcommand)]
+	pub command: FochCliDataCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FochCliDataCommands {
+	Install(DataInstallArgs),
+	Build(DataBuildArgs),
+	List(DataListArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct DataInstallArgs {
+	pub game_name: String,
+
+	#[arg(long, default_value = "auto")]
+	pub game_version: String,
+
+	#[arg(long)]
+	pub release_tag: Option<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct DataBuildArgs {
+	pub game_name: String,
+
+	#[arg(long)]
+	pub from_game_path: PathBuf,
+
+	#[arg(long, default_value = "auto")]
+	pub game_version: String,
+
+	#[arg(long)]
+	pub install: bool,
+
+	#[arg(long)]
+	pub output_dir: Option<PathBuf>,
+
+	#[arg(long)]
+	pub release_asset: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct DataListArgs {
+	#[arg(long)]
+	pub json: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

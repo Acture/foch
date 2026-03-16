@@ -1,7 +1,12 @@
 use serde_json::json;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command;
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use tempfile::TempDir;
 
 fn write_playlist(path: &Path, mods: serde_json::Value) {
@@ -28,6 +33,15 @@ fn write_descriptor(mod_root: &Path, name: &str) {
 
 fn write_config(path: &Path, content: &str) {
 	fs::write(path.join("config.toml"), content).expect("write config");
+}
+
+fn write_game_version(game_root: &Path, version: &str) {
+	fs::create_dir_all(game_root).expect("create game root");
+	fs::write(
+		game_root.join("launcher-settings.json"),
+		format!(r#"{{ "rawVersion": "{version}" }}"#),
+	)
+	.expect("write launcher settings");
 }
 
 fn ensure_default_game_config(config_dir: &Path) {
@@ -75,6 +89,139 @@ fn run_foch_with_env(
 	)
 }
 
+fn build_base_data_install(config_dir: &Path, game_root: &Path) {
+	let game_root_str = game_root.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"data",
+			"build",
+			"eu4",
+			"--from-game-path",
+			game_root_str.as_str(),
+			"--game-version",
+			"auto",
+			"--install",
+		],
+		config_dir,
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+}
+
+fn build_release_assets(config_dir: &Path, game_root: &Path, output_dir: &Path) {
+	let game_root_str = game_root.display().to_string();
+	let output_dir_str = output_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"data",
+			"build",
+			"eu4",
+			"--from-game-path",
+			game_root_str.as_str(),
+			"--game-version",
+			"auto",
+			"--output-dir",
+			output_dir_str.as_str(),
+			"--release-asset",
+		],
+		config_dir,
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+}
+
+struct StaticServer {
+	base_url: String,
+	stop_tx: mpsc::Sender<()>,
+	handle: Option<JoinHandle<()>>,
+}
+
+impl Drop for StaticServer {
+	fn drop(&mut self) {
+		let _ = self.stop_tx.send(());
+		if let Some(handle) = self.handle.take() {
+			let _ = handle.join();
+		}
+	}
+}
+
+fn serve_directory(root: &Path) -> StaticServer {
+	let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+	let addr = listener.local_addr().expect("server addr");
+	listener
+		.set_nonblocking(true)
+		.expect("set nonblocking listener");
+	let root = root.to_path_buf();
+	let (stop_tx, stop_rx) = mpsc::channel::<()>();
+	let handle = thread::spawn(move || {
+		loop {
+			if stop_rx.try_recv().is_ok() {
+				break;
+			}
+			match listener.accept() {
+				Ok((mut stream, _addr)) => {
+					let mut request_line = String::new();
+					let mut reader = BufReader::new(
+						stream.try_clone().expect("clone stream for request reader"),
+					);
+					if reader.read_line(&mut request_line).is_err() {
+						continue;
+					}
+					let path = request_line
+						.split_whitespace()
+						.nth(1)
+						.unwrap_or("/")
+						.trim_start_matches('/');
+					let full_path = root.join(path);
+					if let Ok(bytes) = fs::read(&full_path) {
+						let header = format!(
+							"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+							bytes.len()
+						);
+						let _ = stream.write_all(header.as_bytes());
+						let _ = stream.write_all(&bytes);
+					} else {
+						let body = b"not found";
+						let header = format!(
+							"HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+							body.len()
+						);
+						let _ = stream.write_all(header.as_bytes());
+						let _ = stream.write_all(body);
+					}
+				}
+				Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+					thread::sleep(Duration::from_millis(25));
+				}
+				Err(_err) => break,
+			}
+		}
+	});
+
+	StaticServer {
+		base_url: format!("http://127.0.0.1:{}", addr.port()),
+		stop_tx,
+		handle: Some(handle),
+	}
+}
+
+fn collect_gzip_files(root: &Path) -> Vec<std::path::PathBuf> {
+	let mut files = Vec::new();
+	if !root.exists() {
+		return files;
+	}
+	for entry in walkdir::WalkDir::new(root)
+		.into_iter()
+		.filter_map(Result::ok)
+	{
+		if entry.file_type().is_file()
+			&& entry.path().extension().and_then(|value| value.to_str()) == Some("gz")
+		{
+			files.push(entry.path().to_path_buf());
+		}
+	}
+	files.sort();
+	files
+}
+
 #[test]
 fn missing_playset_path_returns_exit_1() {
 	let tmp = TempDir::new().expect("temp dir");
@@ -102,7 +249,7 @@ fn strict_mode_returns_exit_2_when_findings_exist() {
 	write_descriptor(&tmp.path().join("4001"), "mod-a");
 
 	let playlist_str = playlist_path.display().to_string();
-	let args = ["check", playlist_str.as_str(), "--strict"];
+	let args = ["check", playlist_str.as_str(), "--strict", "--no-game-base"];
 	let (code, stdout, _stderr) = run_foch(&args, tmp.path());
 
 	assert_eq!(code, 2);
@@ -132,6 +279,7 @@ fn check_json_output_can_be_deserialized() {
 		"json",
 		"--output",
 		output_str.as_str(),
+		"--no-game-base",
 	];
 
 	let (code, _stdout, _stderr) = run_foch(&args, tmp.path());
@@ -172,6 +320,7 @@ fn check_can_export_graph_json() {
 		graph_str.as_str(),
 		"--graph-format",
 		"json",
+		"--no-game-base",
 	];
 
 	let (code, _stdout, _stderr) = run_foch(&args, tmp.path());
@@ -254,6 +403,7 @@ fn merge_plan_json_output_can_be_deserialized() {
 		"json",
 		"--output",
 		output_str.as_str(),
+		"--no-game-base",
 	];
 
 	let (code, _stdout, _stderr) = run_foch(&args, tmp.path());
@@ -293,7 +443,10 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	.expect("write gui");
 
 	let playlist_str = playlist_path.display().to_string();
-	let (code, stdout, _stderr) = run_foch(&["merge-plan", playlist_str.as_str()], tmp.path());
+	let (code, stdout, _stderr) = run_foch(
+		&["merge-plan", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+	);
 	assert_eq!(code, 2);
 	assert!(stdout.contains("MANUAL_CONFLICT"));
 }
@@ -346,7 +499,10 @@ fn merge_plan_returns_exit_0_when_no_manual_conflict_exists() {
 	.expect("write effect");
 
 	let playlist_str = playlist_path.display().to_string();
-	let (code, stdout, _stderr) = run_foch(&["merge-plan", playlist_str.as_str()], tmp.path());
+	let (code, stdout, _stderr) = run_foch(
+		&["merge-plan", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+	);
 	assert_eq!(code, 0);
 	assert!(stdout.contains("structural_merge: 1"));
 }
@@ -398,6 +554,7 @@ fn merge_plan_json_output_contains_strategy_contributors_and_winner() {
 		"json",
 		"--output",
 		output_str.as_str(),
+		"--no-game-base",
 	];
 
 	let (code, _stdout, _stderr) = run_foch(&args, tmp.path());
@@ -446,6 +603,7 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 		"shared_effect = { log = base }\n",
 	)
 	.expect("write base effect");
+	write_game_version(&game_root, "7.5.0-test");
 	fs::write(
 		tmp.path()
 			.join("7501")
@@ -459,6 +617,7 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 		tmp.path(),
 		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
 	);
+	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = playlist_path.display().to_string();
 	let output_str = output_path.display().to_string();
@@ -536,71 +695,217 @@ fn no_game_base_opt_out_allows_check_without_game_root() {
 }
 
 #[test]
-fn builtin_base_snapshot_bootstraps_local_snapshot_cache() {
+fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let mod_root = tmp.path().join("7711");
+	let cache_dir = tmp.path().join("mod-cache");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7711"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a");
+	fs::create_dir_all(mod_root.join("events")).expect("create events");
+	fs::write(
+		mod_root.join("events").join("event.txt"),
+		"namespace = test\ncountry_event = { id = test.1 }\n",
+	)
+	.expect("write event");
+
+	let playlist_str = playlist_path.display().to_string();
+	let cache_dir_str = cache_dir.display().to_string();
+	let envs = [("FOCH_MOD_SNAPSHOT_CACHE_DIR", cache_dir_str.as_str())];
+
+	let (code, _stdout, stderr) = run_foch_with_env(
+		&["check", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+		&envs,
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	let first_files = collect_gzip_files(&cache_dir);
+	assert_eq!(first_files.len(), 1);
+
+	let (code, _stdout, stderr) = run_foch_with_env(
+		&["check", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+		&envs,
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	let second_files = collect_gzip_files(&cache_dir);
+	assert_eq!(second_files.len(), 1);
+
+	fs::write(
+		mod_root.join("events").join("event.txt"),
+		"namespace = test\ncountry_event = { id = test.2 }\n",
+	)
+	.expect("rewrite event");
+
+	let (code, _stdout, stderr) = run_foch_with_env(
+		&["check", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+		&envs,
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	let third_files = collect_gzip_files(&cache_dir);
+	assert_eq!(third_files.len(), 2);
+}
+
+#[test]
+fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let cache_dir = tmp.path().join("mod-cache");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7721"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7722"}
+		]),
+	);
+	write_descriptor(&tmp.path().join("7721"), "mod-a");
+	write_descriptor(&tmp.path().join("7722"), "mod-b");
+	fs::create_dir_all(
+		tmp.path()
+			.join("7721")
+			.join("common")
+			.join("scripted_effects"),
+	)
+	.expect("create effects dir");
+	fs::create_dir_all(
+		tmp.path()
+			.join("7722")
+			.join("common")
+			.join("scripted_effects"),
+	)
+	.expect("create effects dir");
+	fs::write(
+		tmp.path()
+			.join("7721")
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"shared_effect = { log = a }\n",
+	)
+	.expect("write effect");
+	fs::write(
+		tmp.path()
+			.join("7722")
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"shared_effect = { log = b }\n",
+	)
+	.expect("write effect");
+
+	let playlist_str = playlist_path.display().to_string();
+	let cache_dir_str = cache_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch_with_env(
+		&["merge-plan", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+		&[("FOCH_MOD_SNAPSHOT_CACHE_DIR", cache_dir_str.as_str())],
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert_eq!(collect_gzip_files(&cache_dir).len(), 2);
+}
+
+#[test]
+fn data_build_install_and_list_round_trip() {
+	let tmp = TempDir::new().expect("temp dir");
+	let game_root = tmp.path().join("eu4-game");
+	write_game_version(&game_root, "8.1.0-test");
+	fs::create_dir_all(game_root.join("events")).expect("create events");
+	fs::write(
+		game_root.join("events").join("base.txt"),
+		"namespace = base\ncountry_event = { id = base.1 }\n",
+	)
+	.expect("write base event");
+
+	build_base_data_install(tmp.path(), &game_root);
+
+	let (code, stdout, _stderr) = run_foch(&["data", "list", "--json"], tmp.path());
+	assert_eq!(code, 0);
+	let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("parse data list");
+	let entry = parsed
+		.as_array()
+		.expect("list array")
+		.iter()
+		.find(|item| item["game"] == "eu4" && item["game_version"] == "8.1.0-test")
+		.expect("installed entry");
+	assert_eq!(entry["source"], "build");
+	assert!(entry["install_path"].as_str().is_some());
+}
+
+#[test]
+fn check_uses_installed_base_data_to_resolve_base_symbols() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let game_root = tmp.path().join("eu4-game");
-	let snapshot_dir = tmp.path().join("snapshots");
+	let mod_root = tmp.path().join("7801");
+	let output_path = tmp.path().join("result.json");
+
 	write_playlist(
 		&playlist_path,
 		json!([
 			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7801"}
 		]),
 	);
-	write_descriptor(&tmp.path().join("7801"), "mod-a");
+	write_descriptor(&mod_root, "mod-a");
 	fs::create_dir_all(game_root.join("events")).expect("create events");
 	fs::write(
 		game_root.join("events").join("base.txt"),
-		"namespace = base\ncountry_event = { id = base.1 }\n",
+		"namespace = base\ncountry_event = { id = base.1 option = { name = ok } }\n",
 	)
 	.expect("write base event");
+	fs::create_dir_all(mod_root.join("events")).expect("create mod events");
 	fs::write(
-		game_root.join("launcher-settings.json"),
-		r#"{ "rawVersion": "builtin-test-1.0.0" }"#,
+		mod_root.join("events").join("ref.txt"),
+		"namespace = test\ncountry_event = { id = test.1 option = { country_event = { id = base.1 } } }\n",
 	)
-	.expect("write launcher settings");
+	.expect("write mod event");
+	write_game_version(&game_root, "8.2.0-test");
 	write_config(
 		tmp.path(),
 		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
 	);
+	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = playlist_path.display().to_string();
-	let snapshot_dir_str = snapshot_dir.display().to_string();
-	let (code, stdout, _stderr) = run_foch_with_env(
-		&["check", playlist_str.as_str()],
+	let output_str = output_path.display().to_string();
+	let (code, _stdout, _stderr) = run_foch(
+		&[
+			"check",
+			playlist_str.as_str(),
+			"--format",
+			"json",
+			"--output",
+			output_str.as_str(),
+		],
 		tmp.path(),
-		&[("FOCH_BASE_SNAPSHOT_DIR", snapshot_dir_str.as_str())],
 	);
 	assert_eq!(code, 0);
-	assert!(stdout.contains("fatal_errors: 0"));
+
+	let content = fs::read_to_string(output_path).expect("read result");
+	let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse result");
+	let findings = parsed["findings"].as_array().expect("findings array");
 	assert!(
-		fs::read_dir(&snapshot_dir)
-			.expect("snapshot dir exists")
-			.flatten()
-			.next()
-			.is_some()
+		!findings.iter().any(|item| {
+			item["rule_id"] == "S002" && item["message"].as_str().unwrap_or("").contains("base.1")
+		}),
+		"base event reference should resolve through installed snapshot"
 	);
 }
 
 #[test]
-fn local_base_snapshot_rebuilds_when_manifest_changes() {
+fn data_install_downloads_release_asset_from_manifest() {
 	let tmp = TempDir::new().expect("temp dir");
-	let playlist_path = tmp.path().join("playlist.json");
 	let game_root = tmp.path().join("eu4-game");
-	let snapshot_dir = tmp.path().join("snapshots");
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7901"}
-		]),
-	);
-	write_descriptor(&tmp.path().join("7901"), "mod-a");
+	let release_dir = tmp.path().join("release-data");
+	write_game_version(&game_root, "9.1.0-test");
 	fs::create_dir_all(game_root.join("events")).expect("create events");
-	fs::write(
-		game_root.join("launcher-settings.json"),
-		r#"{ "rawVersion": "9.9.9-test" }"#,
-	)
-	.expect("write launcher settings");
 	fs::write(
 		game_root.join("events").join("base.txt"),
 		"namespace = base\ncountry_event = { id = base.1 }\n",
@@ -610,44 +915,24 @@ fn local_base_snapshot_rebuilds_when_manifest_changes() {
 		tmp.path(),
 		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
 	);
+	build_release_assets(tmp.path(), &game_root, &release_dir);
 
-	let playlist_str = playlist_path.display().to_string();
-	let snapshot_dir_str = snapshot_dir.display().to_string();
-	let envs = [("FOCH_BASE_SNAPSHOT_DIR", snapshot_dir_str.as_str())];
-	let (code, _stdout, _stderr) =
-		run_foch_with_env(&["check", playlist_str.as_str()], tmp.path(), &envs);
+	let server = serve_directory(&release_dir);
+	let (code, _stdout, stderr) = run_foch_with_env(
+		&["data", "install", "eu4", "--game-version", "auto"],
+		tmp.path(),
+		&[("FOCH_DATA_RELEASE_BASE_URL", server.base_url.as_str())],
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+
+	let (code, stdout, _stderr) = run_foch(&["data", "list", "--json"], tmp.path());
 	assert_eq!(code, 0);
-	let first_count = collect_json_files(&snapshot_dir).len();
-	assert!(first_count >= 1);
-
-	fs::write(
-		game_root.join("events").join("base.txt"),
-		"namespace = base\ncountry_event = { id = base.2 }\n",
-	)
-	.expect("rewrite base event");
-
-	let (code, _stdout, _stderr) =
-		run_foch_with_env(&["check", playlist_str.as_str()], tmp.path(), &envs);
-	assert_eq!(code, 0);
-	let second_count = collect_json_files(&snapshot_dir).len();
-	assert!(second_count > first_count);
-}
-
-fn collect_json_files(root: &Path) -> Vec<std::path::PathBuf> {
-	let mut files = Vec::new();
-	if !root.exists() {
-		return files;
-	}
-	for entry in walkdir::WalkDir::new(root)
-		.into_iter()
-		.filter_map(Result::ok)
-	{
-		if entry.file_type().is_file()
-			&& entry.path().extension().and_then(|value| value.to_str()) == Some("json")
-		{
-			files.push(entry.path().to_path_buf());
-		}
-	}
-	files.sort();
-	files
+	let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("parse data list");
+	let entry = parsed
+		.as_array()
+		.expect("list array")
+		.iter()
+		.find(|item| item["game"] == "eu4" && item["game_version"] == "9.1.0-test")
+		.expect("downloaded entry");
+	assert_eq!(entry["source"], "download");
 }

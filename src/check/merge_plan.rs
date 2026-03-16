@@ -120,6 +120,18 @@ fn validate_structural_merge_inputs(
 	let mut failures = Vec::new();
 
 	for contributor in contributors {
+		if let Some(parse_ok) = contributor.parse_ok_hint {
+			if parse_ok {
+				continue;
+			}
+			if contributor.is_base_game {
+				failures.push(format!("base game parse issues in {}", contributor.mod_id));
+			} else {
+				failures.push(format!("cached parse issues in {}", contributor.mod_id));
+			}
+			continue;
+		}
+
 		match parse_script_file(
 			&contributor.mod_id,
 			&contributor.root_path,

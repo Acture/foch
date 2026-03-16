@@ -13,15 +13,19 @@ categories = ["command-line-utilities", "development-tools"]
 exclude = ["vscode-foch/**"]
 
 [dependencies]
+bincode = "1.3.3"
 clap = { version = "4.5.51", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", default-features = false, features = ["tracing"] }
 console = "0.16.1"
 dirs = "6.0.0"
+flate2 = "1.1.5"
 home = "0.5.12"
 jomini = "0.29.0"
 regex = "1.12.2"
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0.145"
+sha2 = "0.10.9"
 tokio = { version = "1.48.0", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
 toml = "0.9.8"
 tower-lsp = "0.20.0"
@@ -34,6 +38,7 @@ winreg = "0.55.0"
 
 [dev-dependencies]
 tempfile = "3.15.0"
+tiny_http = "0.12.0"
 
 [[bin]]
 name = "foch"
