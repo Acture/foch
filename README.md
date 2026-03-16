@@ -2,6 +2,12 @@
 
 `foch` 是一个 Paradox Mod 静态分析工具。当前版本提供通用规则引擎，会构建脚本符号索引并校验 playset 数据完整性、mod 描述文件、文件覆盖冲突、依赖关系以及 scripted effects 的定义/引用一致性。
 
+Additional documentation lives in [`docs/`](./docs/README.md):
+
+- [`docs/project-status.md`](./docs/project-status.md): current repository status, verified checks, and completion estimates under different goal definitions
+- [`docs/auto-merge-roadmap.md`](./docs/auto-merge-roadmap.md): milestone-oriented roadmap from analyzer foundation to auto-merge workflow
+- [`docs/merge-design.md`](./docs/merge-design.md): implementation-grade merge specification for commands, artifact layout, strategies, and validation
+
 ## 安装
 
 ```bash
