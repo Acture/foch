@@ -15,13 +15,14 @@ pub struct FochCli {
 #[derive(Subcommand, Debug)]
 pub enum FochCliCommands {
 	Check(CheckArgs),
+	MergePlan(MergePlanArgs),
 	Config(ConfigArgs),
 }
 
 #[derive(Parser, Debug)]
 #[command(
 	about = "检查 playset 并输出规则发现",
-	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --include-game-base\n  foch check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch check ./playlist.json --format json --output result.json"
+	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
 	pub playset_path: PathBuf,
@@ -48,7 +49,7 @@ pub struct CheckArgs {
 	pub graph_format: GraphFormatArg,
 
 	#[arg(long)]
-	pub include_game_base: bool,
+	pub no_game_base: bool,
 
 	#[arg(long)]
 	pub no_color: bool,
@@ -56,6 +57,30 @@ pub struct CheckArgs {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum CheckOutputFormat {
+	Text,
+	Json,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Generate a deterministic merge plan for a playset",
+	after_help = "Examples:\n  foch merge-plan ./playlist.json\n  foch merge-plan ./playlist.json --format json --output plan.json\n  foch merge-plan ./playlist.json --no-game-base"
+)]
+pub struct MergePlanArgs {
+	pub playset_path: PathBuf,
+
+	#[arg(long, value_enum, default_value_t = MergePlanOutputFormat::Text)]
+	pub format: MergePlanOutputFormat,
+
+	#[arg(long)]
+	pub output: Option<PathBuf>,
+
+	#[arg(long)]
+	pub no_game_base: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum MergePlanOutputFormat {
 	Text,
 	Json,
 }

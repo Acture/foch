@@ -38,6 +38,30 @@ pub enum GraphFormat {
 	Dot,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentFamily {
+	Clausewitz,
+	Localisation,
+	Csv,
+	Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergePlanFormat {
+	Text,
+	Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergePlanStrategy {
+	CopyThrough,
+	LastWriterOverlay,
+	StructuralMerge,
+	ManualConflict,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
 	pub rule_id: String,
@@ -54,6 +78,7 @@ pub struct Finding {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AnalysisMeta {
+	pub text_documents: usize,
 	pub parsed_files: usize,
 	pub parse_errors: usize,
 	pub scopes: usize,
@@ -113,18 +138,94 @@ impl CheckResult {
 	}
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergePlanContributor {
+	pub mod_id: String,
+	pub source_path: String,
+	pub precedence: usize,
+	pub is_base_game: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergePlanEntry {
+	pub path: String,
+	pub strategy: MergePlanStrategy,
+	pub contributors: Vec<MergePlanContributor>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub winner: Option<MergePlanContributor>,
+	#[serde(default)]
+	pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergePlanSummary {
+	pub total_paths: usize,
+	pub copy_through: usize,
+	pub last_writer_overlay: usize,
+	pub structural_merge: usize,
+	pub manual_conflict: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergePlanResult {
+	pub game: String,
+	pub playset_name: String,
+	pub include_game_base: bool,
+	pub entries: Vec<MergePlanEntry>,
+	pub summary: MergePlanSummary,
+	pub fatal_errors: Vec<String>,
+}
+
+impl MergePlanResult {
+	pub fn has_fatal_errors(&self) -> bool {
+		!self.fatal_errors.is_empty()
+	}
+
+	pub fn has_manual_conflicts(&self) -> bool {
+		self.summary.manual_conflict > 0
+	}
+
+	pub fn push_fatal_error(&mut self, message: impl Into<String>) {
+		self.fatal_errors.push(message.into());
+	}
+}
+
 #[derive(Clone, Debug)]
 pub struct CheckRequest {
 	pub playset_path: PathBuf,
 	pub config: Config,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RunOptions {
 	pub analysis_mode: AnalysisMode,
 	pub channel_mode: ChannelMode,
 	pub graph_format: Option<GraphFormat>,
 	pub include_game_base: bool,
+}
+
+impl Default for RunOptions {
+	fn default() -> Self {
+		Self {
+			analysis_mode: AnalysisMode::default(),
+			channel_mode: ChannelMode::default(),
+			graph_format: None,
+			include_game_base: true,
+		}
+	}
+}
+
+#[derive(Clone, Debug)]
+pub struct MergePlanOptions {
+	pub include_game_base: bool,
+}
+
+impl Default for MergePlanOptions {
+	fn default() -> Self {
+		Self {
+			include_game_base: true,
+		}
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -262,6 +363,60 @@ pub struct LocalisationDefinition {
 	pub column: usize,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalisationDuplicate {
+	pub key: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub first_line: usize,
+	pub duplicate_line: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DocumentRecord {
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub family: DocumentFamily,
+	pub parse_ok: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UiDefinition {
+	pub name: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ResourceReference {
+	pub key: String,
+	pub value: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CsvRow {
+	pub identity: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JsonProperty {
+	pub key_path: String,
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ParseIssue {
 	pub mod_id: String,
@@ -271,8 +426,15 @@ pub struct ParseIssue {
 	pub message: String,
 }
 
+impl Default for MergePlanStrategy {
+	fn default() -> Self {
+		Self::CopyThrough
+	}
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SemanticIndex {
+	pub documents: Vec<DocumentRecord>,
 	pub scopes: Vec<ScopeNode>,
 	pub definitions: Vec<SymbolDefinition>,
 	pub references: Vec<SymbolReference>,
@@ -280,6 +442,11 @@ pub struct SemanticIndex {
 	pub key_usages: Vec<KeyUsage>,
 	pub scalar_assignments: Vec<ScalarAssignment>,
 	pub localisation_definitions: Vec<LocalisationDefinition>,
+	pub localisation_duplicates: Vec<LocalisationDuplicate>,
+	pub ui_definitions: Vec<UiDefinition>,
+	pub resource_references: Vec<ResourceReference>,
+	pub csv_rows: Vec<CsvRow>,
+	pub json_properties: Vec<JsonProperty>,
 	pub parse_issues: Vec<ParseIssue>,
 }
 

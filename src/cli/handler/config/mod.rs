@@ -17,9 +17,7 @@ pub fn handle_config(
 	config_file: &Path,
 ) -> HandlerResult {
 	match &config_args.command {
-		arg::FochCliConfigCommands::Set(set_args) => {
-			handle_set(set_args, config, config_file)
-		}
+		arg::FochCliConfigCommands::Set(set_args) => handle_set(set_args, config, config_file),
 		arg::FochCliConfigCommands::Show(show_args) => handle_show(config, show_args),
 		arg::FochCliConfigCommands::Validate => handle_validate(config),
 	}

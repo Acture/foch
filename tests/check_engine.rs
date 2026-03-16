@@ -1,5 +1,5 @@
-use foch::check::model::{CheckRequest, RunOptions};
-use foch::check::{run_checks, run_checks_with_options};
+use foch::check::model::{CheckRequest, MergePlanOptions, MergePlanStrategy, RunOptions};
+use foch::check::{run_checks, run_checks_with_options, run_merge_plan_with_options};
 use foch::cli::config::Config;
 use serde_json::json;
 use std::fs;
@@ -51,9 +51,20 @@ fn write_ugc_metadata(paradox_game_dir: &Path, steam_id: &str, target_path: &Pat
 }
 
 fn request_for(playlist_path: &Path) -> CheckRequest {
+	let game_root = playlist_path
+		.parent()
+		.expect("playlist parent")
+		.join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create default game root");
+	let mut game_path = std::collections::HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
 	CheckRequest {
 		playset_path: playlist_path.to_path_buf(),
-		config: Config::default(),
+		config: Config {
+			steam_root_path: None,
+			paradox_data_path: None,
+			game_path,
+		},
 	}
 }
 
@@ -62,6 +73,17 @@ fn request_with_config(playlist_path: &Path, config: Config) -> CheckRequest {
 		playset_path: playlist_path.to_path_buf(),
 		config,
 	}
+}
+
+fn plan_entry_for<'a>(
+	result: &'a foch::check::MergePlanResult,
+	path: &str,
+) -> &'a foch::check::MergePlanEntry {
+	result
+		.entries
+		.iter()
+		.find(|entry| entry.path == path)
+		.expect("merge plan entry exists")
 }
 
 #[test]
@@ -335,7 +357,10 @@ fn include_game_base_resolves_event_reference_from_base_game_symbols() {
 
 	let without_game = run_checks_with_options(
 		request_with_config(&playlist_path, config.clone()),
-		RunOptions::default(),
+		RunOptions {
+			include_game_base: false,
+			..RunOptions::default()
+		},
 	);
 	assert!(
 		without_game
@@ -356,5 +381,301 @@ fn include_game_base_resolves_event_reference_from_base_game_symbols() {
 			.findings
 			.iter()
 			.any(|f| { f.rule_id == "S002" && f.message.contains("event base.1") })
+	);
+}
+
+#[test]
+fn merge_plan_marks_single_contributor_path_as_copy_through() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_root = temp.path().join("9401");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9401"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a", &[]);
+	write_script_file(
+		&mod_root,
+		"events/a.txt",
+		"namespace = test\ncountry_event = { id = test.1 }\n",
+	);
+
+	let result =
+		run_merge_plan_with_options(request_for(&playlist_path), MergePlanOptions::default());
+	let entry = plan_entry_for(&result, "events/a.txt");
+	assert_eq!(entry.strategy, MergePlanStrategy::CopyThrough);
+}
+
+#[test]
+fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9501");
+	let mod_b = temp.path().join("9502");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9501"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9502"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_a,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = {\n\tif = { limit = { always = yes } }\n}\n",
+	);
+	write_script_file(
+		&mod_b,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = {\n\thidden_effect = { }\n}\n",
+	);
+
+	let result =
+		run_merge_plan_with_options(request_for(&playlist_path), MergePlanOptions::default());
+	let entry = plan_entry_for(&result, "common/scripted_effects/effects.txt");
+	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
+	assert_eq!(
+		entry.winner.as_ref().expect("winner").mod_id,
+		"9502",
+		"highest-precedence mod should win ties"
+	);
+}
+
+#[test]
+fn merge_plan_marks_invalid_structural_overlap_as_manual_conflict() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9601");
+	let mod_b = temp.path().join("9602");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9601"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9602"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_a,
+		"events/shared.txt",
+		"namespace = test\ncountry_event = { id = test.1 }\n",
+	);
+	write_script_file(
+		&mod_b,
+		"events/shared.txt",
+		"namespace = broken\ncountry_event = =\n",
+	);
+
+	let result =
+		run_merge_plan_with_options(request_for(&playlist_path), MergePlanOptions::default());
+	let entry = plan_entry_for(&result, "events/shared.txt");
+	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+}
+
+#[test]
+fn merge_plan_marks_ui_overlap_as_manual_conflict() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9701");
+	let mod_b = temp.path().join("9702");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9701"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9702"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(&mod_a, "interface/main.gui", "windowType = { name = x }\n");
+	write_script_file(&mod_b, "interface/main.gui", "windowType = { name = y }\n");
+
+	let result =
+		run_merge_plan_with_options(request_for(&playlist_path), MergePlanOptions::default());
+	let entry = plan_entry_for(&result, "interface/main.gui");
+	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+}
+
+#[test]
+fn merge_plan_marks_binary_overlap_as_manual_conflict() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9801");
+	let mod_b = temp.path().join("9802");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9801"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9802"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(&mod_a, "gfx/flags/test.dds", "binary-a");
+	write_script_file(&mod_b, "gfx/flags/test.dds", "binary-b");
+
+	let result =
+		run_merge_plan_with_options(request_for(&playlist_path), MergePlanOptions::default());
+	let entry = plan_entry_for(&result, "gfx/flags/test.dds");
+	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+}
+
+#[test]
+fn merge_plan_marks_non_structural_text_overlap_as_last_writer_overlay() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9901");
+	let mod_b = temp.path().join("9902");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9901"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9902"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_a,
+		"localisation/english/test_l_english.yml",
+		"l_english:\n test:0 \"A\"\n",
+	);
+	write_script_file(
+		&mod_b,
+		"localisation/english/test_l_english.yml",
+		"l_english:\n test:0 \"B\"\n",
+	);
+
+	let result =
+		run_merge_plan_with_options(request_for(&playlist_path), MergePlanOptions::default());
+	let entry = plan_entry_for(&result, "localisation/english/test_l_english.yml");
+	assert_eq!(entry.strategy, MergePlanStrategy::LastWriterOverlay);
+	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9902");
+}
+
+#[test]
+fn merge_plan_include_game_base_keeps_game_at_lower_precedence() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_root = temp.path().join("9911");
+	let game_root = temp.path().join("eu4-game");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9911"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a", &[]);
+	write_script_file(
+		&game_root,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = {\n\tlog = base\n}\n",
+	);
+	write_script_file(
+		&mod_root,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = {\n\tlog = mod\n}\n",
+	);
+
+	let mut game_path = std::collections::HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+	let config = Config {
+		steam_root_path: None,
+		paradox_data_path: None,
+		game_path,
+	};
+
+	let result = run_merge_plan_with_options(
+		request_with_config(&playlist_path, config),
+		MergePlanOptions {
+			include_game_base: true,
+		},
+	);
+	let entry = plan_entry_for(&result, "common/scripted_effects/effects.txt");
+	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
+	assert_eq!(entry.contributors.len(), 2);
+	assert!(entry.contributors[0].is_base_game);
+	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9911");
+}
+
+#[test]
+fn check_defaults_to_base_game_and_fails_when_missing() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9921"}
+		]),
+	);
+	write_descriptor(&temp.path().join("9921"), "mod-a", &[]);
+
+	let result = run_checks(request_with_config(&playlist_path, Config::default()));
+	assert!(result.has_fatal_errors());
+	assert!(
+		result
+			.fatal_errors
+			.iter()
+			.any(|message| message.contains("基础游戏目录"))
+	);
+}
+
+#[test]
+fn whole_tree_documents_feed_ui_localisation_csv_and_json_analysis() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_root = temp.path().join("9931");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9931"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a", &[]);
+	write_script_file(
+		&mod_root,
+		"interface/main.gui",
+		"windowType = { name = TEST_WINDOW tooltip = TEST_WINDOW_TT texturefile = \"gfx/interface/main.dds\" }\n",
+	);
+	write_script_file(
+		&mod_root,
+		"localisation/english/test_l_english.yml",
+		"l_english:\n TEST_WINDOW_TT:0 \"Tooltip\"\n TEST_WINDOW_TT:0 \"Duplicate\"\n",
+	);
+	write_script_file(
+		&mod_root,
+		"common/data/table.csv",
+		"key,value\nalpha,1\nbeta\n",
+	);
+	write_script_file(&mod_root, "common/data/settings.json", "{ invalid json }\n");
+
+	let result = run_checks(request_for(&playlist_path));
+	assert!(result.analysis_meta.text_documents >= 5);
+	assert!(result.analysis_meta.parse_errors >= 2);
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|finding| finding.rule_id == "A006" && finding.message.contains("TEST_WINDOW_TT"))
+	);
+	assert!(
+		!result
+			.findings
+			.iter()
+			.any(|finding| finding.rule_id == "A005" && finding.message.contains("TEST_WINDOW_TT"))
 	);
 }
