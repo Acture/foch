@@ -2,9 +2,9 @@ use crate::check::eu4_builtin::{
 	is_builtin_effect, is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
 };
 use crate::check::model::{
-	AliasUsage, KeyUsage, LocalisationDefinition, ParamBinding, ParseIssue, ScalarAssignment,
-	ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
-	SymbolReference,
+	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, ParamBinding,
+	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType,
+	SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
 use crate::check::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_file};
 use regex::Regex;
@@ -25,6 +25,7 @@ pub enum ScriptFileKind {
 	ScriptedEffects,
 	DiplomaticActions,
 	TriggeredModifiers,
+	Defines,
 	Ui,
 	Other,
 }
@@ -62,6 +63,8 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
+	} else if normalized.starts_with("common/defines/") {
+		ScriptFileKind::Defines
 	} else if normalized.starts_with("interface/")
 		|| normalized.starts_with("common/interface/")
 		|| normalized.starts_with("gfx/")
@@ -81,6 +84,7 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
 		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
 		ScriptFileKind::TriggeredModifiers => module_with_tail(&parts, 2, "triggered_modifiers"),
+		ScriptFileKind::Defines => module_with_tail(&parts, 2, "defines"),
 		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
@@ -305,6 +309,12 @@ fn store_parse_cache_entry(path: &Path, entry: &ParseCacheEntry) {
 pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 	let mut index = SemanticIndex::default();
 	for file in files {
+		index.documents.push(DocumentRecord {
+			mod_id: file.mod_id.clone(),
+			path: file.relative_path.clone(),
+			family: DocumentFamily::Clausewitz,
+			parse_ok: file.parse_issues.is_empty(),
+		});
 		index.parse_issues.extend(file.parse_issues.clone());
 		build_file_index(file, &mut index);
 	}
@@ -313,10 +323,6 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 }
 
 fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
-	if !should_build_semantic_index(file.file_kind) {
-		return;
-	}
-
 	let mut aliases = HashMap::new();
 	match file.file_kind {
 		ScriptFileKind::DiplomaticActions => {
@@ -362,17 +368,6 @@ fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
 	);
 }
 
-fn should_build_semantic_index(kind: ScriptFileKind) -> bool {
-	matches!(
-		kind,
-		ScriptFileKind::Events
-			| ScriptFileKind::Decisions
-			| ScriptFileKind::ScriptedEffects
-			| ScriptFileKind::DiplomaticActions
-			| ScriptFileKind::TriggeredModifiers
-	)
-}
-
 struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a Path,
@@ -400,6 +395,7 @@ fn walk_statements(
 			} => {
 				record_key_usage(index, scope_id, ctx, key, key_span);
 				record_scalar_assignment(index, scope_id, ctx, key, key_span, value);
+				record_ui_scalar_semantics(index, ctx, key, key_span, value);
 
 				if key == "namespace"
 					&& let Some(value_text) = scalar_text(value)
@@ -443,6 +439,7 @@ fn walk_statements(
 				}
 
 				if let AstValue::Block { items, span } = value {
+					record_ui_block_semantics(index, ctx, key, key_span, items);
 					let definition_kind =
 						symbol_definition_kind(ctx.file_kind, key, scope_id, index);
 					if let Some(def_kind) = definition_kind {
@@ -641,6 +638,67 @@ fn record_scalar_assignment(
 		line: key_span.start.line,
 		column: key_span.start.column,
 		scope_id,
+	});
+}
+
+fn record_ui_scalar_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if ctx.file_kind != ScriptFileKind::Ui {
+		return;
+	}
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+
+	if key == "name" && is_ui_identifier_candidate(&text) {
+		index.ui_definitions.push(UiDefinition {
+			name: text.clone(),
+			mod_id: ctx.mod_id.to_string(),
+			path: ctx.path.to_path_buf(),
+			line: key_span.start.line,
+			column: key_span.start.column,
+		});
+	}
+
+	if is_ui_resource_key(key) {
+		index.resource_references.push(ResourceReference {
+			key: key.to_string(),
+			value: text,
+			mod_id: ctx.mod_id.to_string(),
+			path: ctx.path.to_path_buf(),
+			line: key_span.start.line,
+			column: key_span.start.column,
+		});
+	}
+}
+
+fn record_ui_block_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	items: &[AstStatement],
+) {
+	if ctx.file_kind != ScriptFileKind::Ui || !looks_like_ui_container_key(key) {
+		return;
+	}
+	let Some(name) = extract_assignment_scalar(items, "name") else {
+		return;
+	};
+	if !is_ui_identifier_candidate(&name) {
+		return;
+	}
+	index.ui_definitions.push(UiDefinition {
+		name,
+		mod_id: ctx.mod_id.to_string(),
+		path: ctx.path.to_path_buf(),
+		line: key_span.start.line,
+		column: key_span.start.column,
 	});
 }
 
@@ -1096,6 +1154,35 @@ fn is_keyword(key: &str) -> bool {
 		return true;
 	}
 	matches!(key, "condition" | "from")
+}
+
+fn looks_like_ui_container_key(key: &str) -> bool {
+	key.ends_with("Type")
+		|| matches!(
+			key,
+			"containerWindow" | "window" | "button" | "icon" | "sprite" | "shield"
+		)
+}
+
+fn is_ui_identifier_candidate(value: &str) -> bool {
+	!value.is_empty()
+		&& value.len() <= 128
+		&& value
+			.chars()
+			.all(|ch| matches!(ch, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '.' | '-' | ':'))
+}
+
+fn is_ui_resource_key(key: &str) -> bool {
+	matches!(
+		key,
+		"spriteType"
+			| "buttonSprite"
+			| "quadTextureSprite"
+			| "texturefile"
+			| "icon" | "iconType"
+			| "pdxmesh"
+			| "mesh"
+	)
 }
 
 pub fn resolve_scripted_effect_reference_targets(

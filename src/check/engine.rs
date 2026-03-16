@@ -1,4 +1,7 @@
 use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
+use crate::check::documents::{
+	build_semantic_index_from_documents, discover_text_documents, parse_text_documents,
+};
 use crate::check::graph::export_graph;
 use crate::check::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, Finding, FindingChannel,
@@ -9,23 +12,52 @@ use crate::check::rules::{
 	check_missing_dependency, check_missing_descriptor, check_required_fields,
 	check_unresolved_scripted_effect,
 };
-use crate::check::semantic_index::{
-	build_semantic_index, collect_localisation_definitions, parse_script_file,
-};
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
 use crate::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
 use crate::utils::steam::{steam_game_install_path, steam_workshop_mod_path};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
-const BASE_SEMANTIC_CACHE_VERSION: u32 = 3;
+const BASE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspaceResolveErrorKind {
+	PlaylistFormat,
+	Io,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceResolveError {
+	pub kind: WorkspaceResolveErrorKind,
+	pub path: PathBuf,
+	pub message: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedFileContributor {
+	pub mod_id: String,
+	pub root_path: PathBuf,
+	pub absolute_path: PathBuf,
+	pub precedence: usize,
+	pub is_base_game: bool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ResolvedWorkspace {
+	pub playlist_path: PathBuf,
+	pub playlist: Playlist,
+	pub mods: Vec<ModCandidate>,
+	pub base_game_root: Option<PathBuf>,
+	pub file_inventory: BTreeMap<String, Vec<ResolvedFileContributor>>,
+}
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
 	run_checks_with_options(request, RunOptions::default())
@@ -34,10 +66,10 @@ pub fn run_checks(request: CheckRequest) -> CheckResult {
 pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> CheckResult {
 	let mut result = CheckResult::default();
 
-	let playlist = match load_playlist(&request.playset_path) {
-		Ok(playlist) => playlist,
+	let resolved = match resolve_workspace(&request, options.include_game_base) {
+		Ok(workspace) => workspace,
 		Err(err) => {
-			if matches!(err.kind, crate::domain::ParseErrorKind::Format) {
+			if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
 				result.findings.push(Finding {
 					rule_id: "R001".to_string(),
 					severity: Severity::Error,
@@ -53,21 +85,21 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 				result.recompute_channels();
 				return result;
 			}
-			result.push_fatal_error(format!("无法读取 Playset: {err}"));
+			result.push_fatal_error(err.message);
 			return result;
 		}
 	};
 
-	let mods = build_mod_candidates(&request, &playlist);
 	let base_semantic = if options.include_game_base {
-		load_or_build_game_base_semantic_index(&request, &playlist)
+		resolved.base_game_root.as_ref().map(|game_root| {
+			load_or_build_game_base_semantic_index(resolved.playlist.game.key(), game_root)
+		})
 	} else {
 		None
 	};
-	let mod_parsed_files = collect_mod_parsed_script_files(&mods);
-	let mut mod_semantic_index = build_semantic_index(&mod_parsed_files);
-	append_mod_localisation_definitions(&mut mod_semantic_index, &mods);
-	let parsed_files_count = mod_parsed_files.len()
+	let mod_documents = collect_mod_parsed_documents(&resolved.mods);
+	let mod_semantic_index = build_semantic_index_from_documents(&mod_documents);
+	let parsed_files_count = mod_documents.len()
 		+ base_semantic
 			.as_ref()
 			.map_or(0, |snapshot| snapshot.parsed_files);
@@ -76,9 +108,9 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		None => mod_semantic_index,
 	};
 	let ctx = CheckContext {
-		playlist_path: request.playset_path.clone(),
-		playlist,
-		mods,
+		playlist_path: resolved.playlist_path.clone(),
+		playlist: resolved.playlist,
+		mods: resolved.mods,
 		semantic_index,
 	};
 
@@ -106,6 +138,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	}
 
 	result.analysis_meta = AnalysisMeta {
+		text_documents: ctx.semantic_index.documents.len(),
 		parsed_files: parsed_files_count,
 		parse_errors: ctx.semantic_index.parse_issues.len(),
 		scopes: ctx.semantic_index.scopes.len(),
@@ -122,99 +155,151 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	result
 }
 
-fn collect_mod_parsed_script_files(
+pub(crate) fn resolve_workspace(
+	request: &CheckRequest,
+	include_game_base: bool,
+) -> Result<ResolvedWorkspace, WorkspaceResolveError> {
+	let playlist = load_playlist(&request.playset_path).map_err(|err| WorkspaceResolveError {
+		kind: if matches!(err.kind, crate::domain::ParseErrorKind::Format) {
+			WorkspaceResolveErrorKind::PlaylistFormat
+		} else {
+			WorkspaceResolveErrorKind::Io
+		},
+		path: err.path.clone(),
+		message: match err.kind {
+			crate::domain::ParseErrorKind::Format => err.message,
+			crate::domain::ParseErrorKind::Io => format!("无法读取 Playset: {err}"),
+		},
+	})?;
+
+	let mods = build_mod_candidates(request, &playlist);
+	let base_game_root = if include_game_base {
+		Some(
+			resolve_game_root(request, &playlist).ok_or_else(|| WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: request.playset_path.clone(),
+				message: format!(
+					"无法定位 {} 基础游戏目录；请配置 game_path.{} 或 Steam 路径，或使用 --no-game-base",
+					playlist.game.key(),
+					playlist.game.key()
+				),
+			})?,
+		)
+	} else {
+		None
+	};
+	let file_inventory = build_file_inventory(&playlist, &mods, base_game_root.as_ref());
+
+	Ok(ResolvedWorkspace {
+		playlist_path: request.playset_path.clone(),
+		playlist,
+		mods,
+		base_game_root,
+		file_inventory,
+	})
+}
+
+fn collect_mod_parsed_documents(
 	mods: &[ModCandidate],
-) -> Vec<crate::check::semantic_index::ParsedScriptFile> {
+) -> Vec<crate::check::documents::ParsedTextDocument> {
 	let mut parsed = Vec::new();
 
 	for mod_item in mods {
 		let Some(root) = mod_item.root_path.as_ref() else {
 			continue;
 		};
-		for script_file in iter_script_files(root) {
-			if let Some(file) = parse_script_file(&mod_item.mod_id, root, &script_file) {
-				parsed.push(file);
-			}
-		}
+		parsed.extend(parse_text_documents(&mod_item.mod_id, root));
 	}
 	parsed
 }
 
-fn append_mod_localisation_definitions(index: &mut SemanticIndex, mods: &[ModCandidate]) {
-	for mod_item in mods {
-		let Some(root) = mod_item.root_path.as_ref() else {
-			continue;
-		};
-		index
-			.localisation_definitions
-			.extend(collect_localisation_definitions(&mod_item.mod_id, root));
-	}
-}
-
 #[derive(Clone, Debug)]
 struct GameBaseSemanticSnapshot {
+	detected_version: Option<String>,
 	index: SemanticIndex,
 	parsed_files: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct BaseSemanticCacheEntry {
-	version: u32,
+struct BaseSemanticSnapshotEntry {
+	schema_version: u32,
+	game_key: String,
+	detected_version: Option<String>,
 	manifest_hash: u64,
 	parsed_files: usize,
 	index: SemanticIndex,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BuiltinBaseSnapshotEntry {
+	game_key: String,
+	detected_version: String,
+	parsed_files: usize,
+	index: SemanticIndex,
+}
+
 fn load_or_build_game_base_semantic_index(
-	request: &CheckRequest,
-	playlist: &Playlist,
-) -> Option<GameBaseSemanticSnapshot> {
-	let game_root = resolve_game_root(request, playlist)?;
-	let script_files = iter_script_files(&game_root);
-	let parsed_files = script_files.len();
+	game_key: &str,
+	game_root: &Path,
+) -> GameBaseSemanticSnapshot {
+	let documents = discover_text_documents(game_root);
+	let parsed_files = documents.len();
+	let detected_version = detect_game_version(game_root);
 	if parsed_files == 0 {
-		return Some(GameBaseSemanticSnapshot {
+		return GameBaseSemanticSnapshot {
+			detected_version,
 			index: SemanticIndex::default(),
 			parsed_files: 0,
-		});
+		};
 	}
 
-	let manifest_hash = semantic_manifest_hash(&game_root, &script_files);
-	let cache_path = base_semantic_cache_file(playlist.game.key(), &game_root);
+	let manifest_hash = semantic_manifest_hash(&documents);
+	let cache_path = base_semantic_cache_file(game_key, detected_version.as_deref(), manifest_hash);
 	if let Some(entry) = load_base_semantic_cache(&cache_path)
-		&& entry.version == BASE_SEMANTIC_CACHE_VERSION
+		&& entry.schema_version == BASE_SNAPSHOT_SCHEMA_VERSION
+		&& entry.game_key == game_key
+		&& entry.detected_version == detected_version
 		&& entry.manifest_hash == manifest_hash
 		&& entry.parsed_files == parsed_files
 	{
-		return Some(GameBaseSemanticSnapshot {
+		return GameBaseSemanticSnapshot {
+			detected_version,
 			index: entry.index,
 			parsed_files,
-		});
+		};
 	}
 
-	let mod_id = format!("{BASE_GAME_MOD_ID_PREFIX}{}", playlist.game.key());
-	let mut parsed = Vec::with_capacity(parsed_files);
-	for script_file in &script_files {
-		if let Some(file) = parse_script_file(&mod_id, &game_root, script_file) {
-			parsed.push(file);
-		}
+	if let Some(snapshot) = load_builtin_base_snapshot(game_key, detected_version.as_deref()) {
+		let cache_entry = BaseSemanticSnapshotEntry {
+			schema_version: BASE_SNAPSHOT_SCHEMA_VERSION,
+			game_key: game_key.to_string(),
+			detected_version: snapshot.detected_version.clone(),
+			manifest_hash,
+			parsed_files: snapshot.parsed_files,
+			index: snapshot.index.clone(),
+		};
+		store_base_semantic_cache(&cache_path, &cache_entry);
+		return snapshot;
 	}
-	let mut index = build_semantic_index(&parsed);
-	index
-		.localisation_definitions
-		.extend(collect_localisation_definitions(&mod_id, &game_root));
+
+	let mod_id = base_game_mod_id(game_key);
+	let parsed = parse_text_documents(&mod_id, game_root);
+	let index = build_semantic_index_from_documents(&parsed);
 	let snapshot = GameBaseSemanticSnapshot {
+		detected_version: detected_version.clone(),
 		index,
 		parsed_files: parsed.len(),
 	};
-	let cache_entry = BaseSemanticCacheEntry {
-		version: BASE_SEMANTIC_CACHE_VERSION,
+	let cache_entry = BaseSemanticSnapshotEntry {
+		schema_version: BASE_SNAPSHOT_SCHEMA_VERSION,
+		game_key: game_key.to_string(),
+		detected_version,
 		manifest_hash,
 		parsed_files: snapshot.parsed_files,
 		index: snapshot.index.clone(),
 	};
 	store_base_semantic_cache(&cache_path, &cache_entry);
-	Some(snapshot)
+	snapshot
 }
 
 fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
@@ -247,22 +332,25 @@ fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -
 	base.alias_usages.extend(overlay.alias_usages);
 	base.key_usages.extend(overlay.key_usages);
 	base.scalar_assignments.extend(overlay.scalar_assignments);
+	base.documents.extend(overlay.documents);
 	base.localisation_definitions
 		.extend(overlay.localisation_definitions);
+	base.localisation_duplicates
+		.extend(overlay.localisation_duplicates);
+	base.ui_definitions.extend(overlay.ui_definitions);
+	base.resource_references.extend(overlay.resource_references);
+	base.csv_rows.extend(overlay.csv_rows);
+	base.json_properties.extend(overlay.json_properties);
 	base.parse_issues.extend(overlay.parse_issues);
 	base
 }
 
-fn semantic_manifest_hash(root: &std::path::Path, files: &[std::path::PathBuf]) -> u64 {
+fn semantic_manifest_hash(files: &[crate::check::documents::DiscoveredTextDocument]) -> u64 {
 	let mut entries: Vec<String> = Vec::new();
 	for file in files {
-		let relative = file
-			.strip_prefix(root)
-			.unwrap_or(file)
-			.to_string_lossy()
-			.replace('\\', "/");
+		let relative = file.relative_path.to_string_lossy().replace('\\', "/");
 		let mut entry = relative;
-		if let Ok(metadata) = fs::metadata(file) {
+		if let Ok(metadata) = fs::metadata(&file.absolute_path) {
 			entry.push('|');
 			entry.push_str(&metadata.len().to_string());
 			entry.push('|');
@@ -280,32 +368,36 @@ fn semantic_manifest_hash(root: &std::path::Path, files: &[std::path::PathBuf]) 
 }
 
 fn base_semantic_cache_root() -> std::path::PathBuf {
+	if let Ok(override_dir) = std::env::var("FOCH_BASE_SNAPSHOT_DIR") {
+		return std::path::PathBuf::from(override_dir);
+	}
 	if let Ok(override_dir) = std::env::var("FOCH_SEMANTIC_CACHE_DIR") {
 		return std::path::PathBuf::from(override_dir);
 	}
-	dirs::cache_dir()
+	dirs::data_local_dir()
 		.unwrap_or_else(std::env::temp_dir)
 		.join("foch")
-		.join("semantic_base")
+		.join("base_snapshots")
 }
 
-fn base_semantic_cache_file(game_key: &str, game_root: &std::path::Path) -> std::path::PathBuf {
-	let mut hasher = DefaultHasher::new();
-	game_key.hash(&mut hasher);
-	game_root
-		.to_string_lossy()
-		.replace('\\', "/")
-		.hash(&mut hasher);
-	let key = format!("{:016x}", hasher.finish());
-	base_semantic_cache_root().join(format!("{key}.json"))
+fn base_semantic_cache_file(
+	game_key: &str,
+	detected_version: Option<&str>,
+	manifest_hash: u64,
+) -> std::path::PathBuf {
+	let version_key = sanitize_cache_component(detected_version.unwrap_or("unknown"));
+	base_semantic_cache_root()
+		.join(game_key)
+		.join(version_key)
+		.join(format!("{manifest_hash:016x}.json"))
 }
 
-fn load_base_semantic_cache(path: &std::path::Path) -> Option<BaseSemanticCacheEntry> {
+fn load_base_semantic_cache(path: &std::path::Path) -> Option<BaseSemanticSnapshotEntry> {
 	let raw = fs::read_to_string(path).ok()?;
-	serde_json::from_str::<BaseSemanticCacheEntry>(&raw).ok()
+	serde_json::from_str::<BaseSemanticSnapshotEntry>(&raw).ok()
 }
 
-fn store_base_semantic_cache(path: &std::path::Path, entry: &BaseSemanticCacheEntry) {
+fn store_base_semantic_cache(path: &std::path::Path, entry: &BaseSemanticSnapshotEntry) {
 	let Some(parent) = path.parent() else {
 		return;
 	};
@@ -322,6 +414,71 @@ fn store_base_semantic_cache(path: &std::path::Path, entry: &BaseSemanticCacheEn
 	let _ = fs::rename(tmp, path);
 }
 
+fn load_builtin_base_snapshot(
+	game_key: &str,
+	detected_version: Option<&str>,
+) -> Option<GameBaseSemanticSnapshot> {
+	let detected_version = detected_version?;
+	let raw = match (game_key, detected_version) {
+		("eu4", "builtin-test-1.0.0") => {
+			include_str!("data/eu4_base_snapshot_builtin_test_1_0_0.json")
+		}
+		_ => return None,
+	};
+	let entry: BuiltinBaseSnapshotEntry = serde_json::from_str(raw).ok()?;
+	Some(GameBaseSemanticSnapshot {
+		detected_version: Some(entry.detected_version),
+		index: entry.index,
+		parsed_files: entry.parsed_files,
+	})
+}
+
+fn detect_game_version(game_root: &Path) -> Option<String> {
+	for candidate in [
+		game_root.join("launcher-settings.json"),
+		game_root.join("launcher").join("launcher-settings.json"),
+		game_root.join("version.txt"),
+	] {
+		if !candidate.is_file() {
+			continue;
+		}
+		if candidate.file_name().and_then(|value| value.to_str()) == Some("version.txt") {
+			let version = fs::read_to_string(&candidate).ok()?;
+			let version = version.lines().next()?.trim();
+			if !version.is_empty() {
+				return Some(version.to_string());
+			}
+			continue;
+		}
+		let raw = fs::read_to_string(&candidate).ok()?;
+		let json = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+		for key in ["rawVersion", "version", "gameVersion"] {
+			if let Some(value) = json.get(key).and_then(|value| value.as_str())
+				&& !value.trim().is_empty()
+			{
+				return Some(value.trim().to_string());
+			}
+		}
+	}
+	None
+}
+
+fn sanitize_cache_component(value: &str) -> String {
+	let mut out = String::with_capacity(value.len());
+	for ch in value.chars() {
+		if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+			out.push(ch);
+		} else {
+			out.push('_');
+		}
+	}
+	if out.is_empty() {
+		"unknown".to_string()
+	} else {
+		out
+	}
+}
+
 fn modified_nanos(metadata: &fs::Metadata) -> u128 {
 	metadata
 		.modified()
@@ -330,7 +487,11 @@ fn modified_nanos(metadata: &fs::Metadata) -> u128 {
 		.map_or(0, |duration| duration.as_nanos())
 }
 
-fn resolve_game_root(request: &CheckRequest, playlist: &Playlist) -> Option<std::path::PathBuf> {
+pub(crate) fn base_game_mod_id(game_key: &str) -> String {
+	format!("{BASE_GAME_MOD_ID_PREFIX}{game_key}")
+}
+
+fn resolve_game_root(request: &CheckRequest, playlist: &Playlist) -> Option<PathBuf> {
 	let mut candidates = Vec::new();
 	if let Some(path) = request.config.game_path.get(playlist.game.key()) {
 		candidates.push(path.clone());
@@ -395,11 +556,11 @@ fn build_mod_candidates(request: &CheckRequest, playlist: &Playlist) -> Vec<ModC
 }
 
 fn resolve_mod_root(
-	playset_dir: &std::path::Path,
+	playset_dir: &Path,
 	request: &CheckRequest,
 	playlist: &Playlist,
 	entry: &PlaylistEntry,
-) -> Option<std::path::PathBuf> {
+) -> Option<PathBuf> {
 	let mut candidates = Vec::new();
 
 	if let Some(steam_id) = entry.steam_id.as_ref() {
@@ -443,7 +604,7 @@ fn resolve_mod_root(
 		.find(|candidate| candidate.is_dir())
 }
 
-fn dedup_candidates(candidates: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+fn dedup_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 	let mut seen = HashSet::new();
 	let mut result = Vec::new();
 	for candidate in candidates {
@@ -456,7 +617,7 @@ fn dedup_candidates(candidates: Vec<std::path::PathBuf>) -> Vec<std::path::PathB
 	result
 }
 
-fn paradox_game_data_dirs(base: &std::path::Path, game: &Game) -> Vec<std::path::PathBuf> {
+fn paradox_game_data_dirs(base: &Path, game: &Game) -> Vec<PathBuf> {
 	let mut dirs = vec![base.to_path_buf()];
 	if let Some(game_dir_name) = game.paradox_data_dir_name() {
 		dirs.push(base.join(game_dir_name));
@@ -464,10 +625,7 @@ fn paradox_game_data_dirs(base: &std::path::Path, game: &Game) -> Vec<std::path:
 	dedup_candidates(dirs)
 }
 
-fn resolve_mod_from_ugc_descriptor(
-	game_data_dir: &std::path::Path,
-	steam_id: &str,
-) -> Option<std::path::PathBuf> {
+fn resolve_mod_from_ugc_descriptor(game_data_dir: &Path, steam_id: &str) -> Option<PathBuf> {
 	let metadata = game_data_dir
 		.join("mod")
 		.join(format!("ugc_{steam_id}.mod"));
@@ -482,10 +640,7 @@ fn resolve_mod_from_ugc_descriptor(
 		.find(|candidate| candidate.is_dir())
 }
 
-fn descriptor_path_candidates(
-	game_data_dir: &std::path::Path,
-	raw: &str,
-) -> Vec<std::path::PathBuf> {
+fn descriptor_path_candidates(game_data_dir: &Path, raw: &str) -> Vec<PathBuf> {
 	let mut fragments = vec![raw.to_string()];
 	if raw.contains('\\') {
 		fragments.push(raw.replace('\\', "/"));
@@ -507,7 +662,7 @@ fn descriptor_path_candidates(
 	dedup_candidates(candidates)
 }
 
-fn collect_relative_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
 	let mut files = Vec::new();
 
 	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
@@ -528,46 +683,55 @@ fn collect_relative_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 	files
 }
 
-fn iter_script_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-	let mut files = Vec::new();
-	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-		if !entry.file_type().is_file() {
-			continue;
+fn build_file_inventory(
+	playlist: &Playlist,
+	mods: &[ModCandidate],
+	base_game_root: Option<&PathBuf>,
+) -> BTreeMap<String, Vec<ResolvedFileContributor>> {
+	let mut inventory = BTreeMap::new();
+	let mut precedence = 0;
+
+	if let Some(root) = base_game_root {
+		let mod_id = base_game_mod_id(playlist.game.key());
+		for relative in collect_relative_files(root) {
+			let key = normalize_relative_path(&relative);
+			inventory
+				.entry(key)
+				.or_insert_with(Vec::new)
+				.push(ResolvedFileContributor {
+					mod_id: mod_id.clone(),
+					root_path: root.clone(),
+					absolute_path: root.join(&relative),
+					precedence,
+					is_base_game: true,
+				});
 		}
-		let path = entry.path();
-		let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
+		precedence += 1;
+	}
+
+	for mod_item in mods {
+		let Some(root) = mod_item.root_path.as_ref() else {
 			continue;
 		};
-		let ext = ext.to_ascii_lowercase();
-		if !matches!(ext.as_str(), "txt" | "lua" | "gui" | "gfx") {
-			continue;
+		for relative in &mod_item.files {
+			let key = normalize_relative_path(relative);
+			inventory
+				.entry(key)
+				.or_insert_with(Vec::new)
+				.push(ResolvedFileContributor {
+					mod_id: mod_item.mod_id.clone(),
+					root_path: root.clone(),
+					absolute_path: root.join(relative),
+					precedence,
+					is_base_game: false,
+				});
 		}
-		if !is_parse_target_path(root, path, &ext) {
-			continue;
-		}
-		files.push(path.to_path_buf());
+		precedence += 1;
 	}
-	files.sort();
-	files
+
+	inventory
 }
 
-fn is_parse_target_path(root: &std::path::Path, path: &std::path::Path, ext: &str) -> bool {
-	let Ok(relative) = path.strip_prefix(root) else {
-		return false;
-	};
-	let normalized = relative.to_string_lossy().replace('\\', "/");
-	if matches!(ext, "gui" | "gfx") {
-		return normalized.starts_with("interface/")
-			|| normalized.starts_with("common/interface/")
-			|| normalized.starts_with("gfx/");
-	}
-
-	normalized.starts_with("events/")
-		|| normalized.starts_with("decisions/")
-		|| normalized.starts_with("common/scripted_effects/")
-		|| normalized.starts_with("common/diplomatic_actions/")
-		|| normalized.starts_with("common/triggered_modifiers/")
-		|| normalized.starts_with("common/defines/")
-		|| normalized.starts_with("interface/")
-		|| normalized.starts_with("common/interface/")
+fn normalize_relative_path(path: &Path) -> String {
+	path.to_string_lossy().replace('\\', "/")
 }

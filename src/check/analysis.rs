@@ -34,6 +34,9 @@ pub fn analyze_visibility(index: &SemanticIndex, _options: &AnalyzeOptions) -> S
 		.advisory
 		.extend(check_a005_missing_localisation_key(index));
 	diagnostics
+		.advisory
+		.extend(check_a006_duplicate_localisation_key(index));
+	diagnostics
 }
 
 fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
@@ -655,6 +658,38 @@ fn check_a005_missing_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
 			line: Some(usage.line),
 			column: Some(usage.column),
 			confidence: Some(0.68),
+		});
+	}
+	findings
+}
+
+fn check_a006_duplicate_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
+	let mut findings = Vec::new();
+	let mut seen = HashSet::new();
+	for duplicate in &index.localisation_duplicates {
+		let dedup_key = format!(
+			"{}:{}:{}",
+			duplicate.path.display(),
+			duplicate.key,
+			duplicate.duplicate_line
+		);
+		if !seen.insert(dedup_key) {
+			continue;
+		}
+		findings.push(Finding {
+			rule_id: "A006".to_string(),
+			severity: Severity::Warning,
+			channel: FindingChannel::Advisory,
+			message: format!("重复 localisation key: {}", duplicate.key),
+			mod_id: Some(duplicate.mod_id.clone()),
+			path: Some(duplicate.path.clone()),
+			evidence: Some(format!(
+				"first defined at line {}, duplicate at line {}",
+				duplicate.first_line, duplicate.duplicate_line
+			)),
+			line: Some(duplicate.duplicate_line),
+			column: Some(1),
+			confidence: Some(0.84),
 		});
 	}
 	findings

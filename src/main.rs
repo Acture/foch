@@ -30,8 +30,9 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	let (mut config, config_file) = load_or_init_config()?;
 
 	match &cliargs.command {
-		arg::FochCliCommands::Check(check_args) => {
-			handler::check::handle_check(check_args, config)
+		arg::FochCliCommands::Check(check_args) => handler::check::handle_check(check_args, config),
+		arg::FochCliCommands::MergePlan(merge_plan_args) => {
+			handler::merge_plan::handle_merge_plan(merge_plan_args, config)
 		}
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
