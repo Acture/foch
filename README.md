@@ -104,17 +104,22 @@ cargo test --all-targets --all-features
 
 ## 解析缓存（本地）
 
-`check` 现在会缓存两层数据（默认写入系统 cache 目录下的 `foch/`）：
+`check` / `merge-plan` 现在会缓存两层本地数据：
 
-- 文件级 parser cache（game + mod 通用）
-- 游戏本体 semantic index cache（`--include-game-base` 时复用）
-- UI 语法文件（`interface/*.txt|*.gui`, `gfx/*.gfx`）会参与解析缓存与解析错误统计；当前不进入 scope/symbol 语义推导
+- 文件级 parser cache（game + mod 通用，位于系统 cache 目录）
+- mod semantic snapshot cache（按 `game + mod identity + manifest hash` 命中，位于系统 cache 目录）
+
+基础游戏不再走隐式本地扫描缓存。默认行为是加载已安装的 base data；缺失时需要显式运行：
+
+- `foch data install eu4 --game-version auto`
+- `foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --install`
 
 可选环境变量：
 
 ```bash
 export FOCH_PARSE_CACHE_DIR=/tmp/foch-parse-cache
-export FOCH_SEMANTIC_CACHE_DIR=/tmp/foch-semantic-cache
+export FOCH_MOD_SNAPSHOT_CACHE_DIR=/tmp/foch-mod-snapshot-cache
+export FOCH_DATA_DIR=/tmp/foch-data
 ```
 
 ## 真实语料解析统计（本地工具）

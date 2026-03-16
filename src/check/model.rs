@@ -53,9 +53,10 @@ pub enum MergePlanFormat {
 	Json,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergePlanStrategy {
+	#[default]
 	CopyThrough,
 	LastWriterOverlay,
 	StructuralMerge,
@@ -424,12 +425,6 @@ pub struct ParseIssue {
 	pub line: usize,
 	pub column: usize,
 	pub message: String,
-}
-
-impl Default for MergePlanStrategy {
-	fn default() -> Self {
-		Self::CopyThrough
-	}
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

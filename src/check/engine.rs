@@ -1,8 +1,10 @@
 use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
-use crate::check::documents::{
-	build_semantic_index_from_documents, discover_text_documents, parse_text_documents,
+use crate::check::base_data::{
+	InstalledBaseSnapshot, base_game_mod_id, load_installed_base_snapshot,
+	resolve_game_root_and_version,
 };
 use crate::check::graph::export_graph;
+use crate::check::mod_cache::{LoadedModSnapshot, load_or_build_mod_snapshot};
 use crate::check::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, Finding, FindingChannel,
 	ModCandidate, RunOptions, SemanticIndex, Severity,
@@ -15,18 +17,10 @@ use crate::check::rules::{
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
 use crate::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
-use crate::utils::steam::{steam_game_install_path, steam_workshop_mod_path};
-use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
+use crate::utils::steam::steam_workshop_mod_path;
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
-
-const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
-const BASE_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WorkspaceResolveErrorKind {
@@ -48,6 +42,7 @@ pub(crate) struct ResolvedFileContributor {
 	pub absolute_path: PathBuf,
 	pub precedence: usize,
 	pub is_base_game: bool,
+	pub parse_ok_hint: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -55,8 +50,16 @@ pub(crate) struct ResolvedWorkspace {
 	pub playlist_path: PathBuf,
 	pub playlist: Playlist,
 	pub mods: Vec<ModCandidate>,
-	pub base_game_root: Option<PathBuf>,
+	pub installed_base_snapshot: Option<InstalledBaseSnapshot>,
+	pub mod_snapshots: Vec<Option<LoadedModSnapshot>>,
 	pub file_inventory: BTreeMap<String, Vec<ResolvedFileContributor>>,
+}
+
+#[derive(Clone, Debug)]
+struct GameBaseSemanticSnapshot {
+	index: SemanticIndex,
+	parsed_files: usize,
+	parse_error_count: usize,
 }
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
@@ -90,19 +93,35 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		}
 	};
 
-	let base_semantic = if options.include_game_base {
-		resolved.base_game_root.as_ref().map(|game_root| {
-			load_or_build_game_base_semantic_index(resolved.playlist.game.key(), game_root)
-		})
-	} else {
-		None
-	};
-	let mod_documents = collect_mod_parsed_documents(&resolved.mods);
-	let mod_semantic_index = build_semantic_index_from_documents(&mod_documents);
-	let parsed_files_count = mod_documents.len()
+	let base_semantic =
+		resolved
+			.installed_base_snapshot
+			.as_ref()
+			.map(|installed| GameBaseSemanticSnapshot {
+				index: installed.snapshot.to_semantic_index(),
+				parsed_files: installed.snapshot.parsed_files,
+				parse_error_count: installed.snapshot.parse_error_count,
+			});
+	let mod_parsed_files_count: usize = resolved
+		.mod_snapshots
+		.iter()
+		.flatten()
+		.map(|snapshot| snapshot.parsed_files)
+		.sum();
+	let mod_parse_error_count: usize = resolved
+		.mod_snapshots
+		.iter()
+		.flatten()
+		.map(|snapshot| snapshot.parse_error_count)
+		.sum();
+	let mod_semantic_index = merge_mod_snapshots(&resolved.mod_snapshots);
+	let parsed_files_count = mod_parsed_files_count
 		+ base_semantic
 			.as_ref()
 			.map_or(0, |snapshot| snapshot.parsed_files);
+	let base_parse_error_count = base_semantic
+		.as_ref()
+		.map_or(0, |snapshot| snapshot.parse_error_count);
 	let semantic_index = match base_semantic {
 		Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
 		None => mod_semantic_index,
@@ -140,7 +159,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	result.analysis_meta = AnalysisMeta {
 		text_documents: ctx.semantic_index.documents.len(),
 		parsed_files: parsed_files_count,
-		parse_errors: ctx.semantic_index.parse_issues.len(),
+		parse_errors: mod_parse_error_count + base_parse_error_count,
 		scopes: ctx.semantic_index.scopes.len(),
 		symbol_definitions: ctx.semantic_index.definitions.len(),
 		symbol_references: ctx.semantic_index.references.len(),
@@ -173,133 +192,58 @@ pub(crate) fn resolve_workspace(
 	})?;
 
 	let mods = build_mod_candidates(request, &playlist);
-	let base_game_root = if include_game_base {
-		Some(
-			resolve_game_root(request, &playlist).ok_or_else(|| WorkspaceResolveError {
+	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
+		.iter()
+		.map(|mod_item| load_or_build_mod_snapshot(playlist.game.key(), mod_item))
+		.collect();
+	let (base_game_root, installed_base_snapshot) = if include_game_base {
+		let (game_root, game_version) =
+			resolve_game_root_and_version(&request.config, &playlist.game).map_err(|message| {
+				WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: request.playset_path.clone(),
+					message,
+				}
+			})?;
+		let installed = load_installed_base_snapshot(playlist.game.key(), &game_version)
+			.map_err(|message| WorkspaceResolveError {
 				kind: WorkspaceResolveErrorKind::Io,
 				path: request.playset_path.clone(),
-				message: format!(
-					"无法定位 {} 基础游戏目录；请配置 game_path.{} 或 Steam 路径，或使用 --no-game-base",
-					playlist.game.key(),
-					playlist.game.key()
-				),
-			})?,
-		)
+				message,
+			})?
+			.ok_or_else(|| WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: request.playset_path.clone(),
+				message: missing_base_data_message(&playlist.game, &game_version, &game_root),
+			})?;
+		(Some(game_root), Some(installed))
 	} else {
-		None
+		(None, None)
 	};
-	let file_inventory = build_file_inventory(&playlist, &mods, base_game_root.as_ref());
+	let file_inventory = build_file_inventory(
+		&playlist,
+		&mods,
+		&mod_snapshots,
+		base_game_root.as_ref(),
+		installed_base_snapshot.as_ref(),
+	);
 
 	Ok(ResolvedWorkspace {
 		playlist_path: request.playset_path.clone(),
 		playlist,
 		mods,
-		base_game_root,
+		installed_base_snapshot,
+		mod_snapshots,
 		file_inventory,
 	})
 }
 
-fn collect_mod_parsed_documents(
-	mods: &[ModCandidate],
-) -> Vec<crate::check::documents::ParsedTextDocument> {
-	let mut parsed = Vec::new();
-
-	for mod_item in mods {
-		let Some(root) = mod_item.root_path.as_ref() else {
-			continue;
-		};
-		parsed.extend(parse_text_documents(&mod_item.mod_id, root));
+fn merge_mod_snapshots(snapshots: &[Option<LoadedModSnapshot>]) -> SemanticIndex {
+	let mut merged = SemanticIndex::default();
+	for snapshot in snapshots.iter().flatten() {
+		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
 	}
-	parsed
-}
-
-#[derive(Clone, Debug)]
-struct GameBaseSemanticSnapshot {
-	detected_version: Option<String>,
-	index: SemanticIndex,
-	parsed_files: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct BaseSemanticSnapshotEntry {
-	schema_version: u32,
-	game_key: String,
-	detected_version: Option<String>,
-	manifest_hash: u64,
-	parsed_files: usize,
-	index: SemanticIndex,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct BuiltinBaseSnapshotEntry {
-	game_key: String,
-	detected_version: String,
-	parsed_files: usize,
-	index: SemanticIndex,
-}
-
-fn load_or_build_game_base_semantic_index(
-	game_key: &str,
-	game_root: &Path,
-) -> GameBaseSemanticSnapshot {
-	let documents = discover_text_documents(game_root);
-	let parsed_files = documents.len();
-	let detected_version = detect_game_version(game_root);
-	if parsed_files == 0 {
-		return GameBaseSemanticSnapshot {
-			detected_version,
-			index: SemanticIndex::default(),
-			parsed_files: 0,
-		};
-	}
-
-	let manifest_hash = semantic_manifest_hash(&documents);
-	let cache_path = base_semantic_cache_file(game_key, detected_version.as_deref(), manifest_hash);
-	if let Some(entry) = load_base_semantic_cache(&cache_path)
-		&& entry.schema_version == BASE_SNAPSHOT_SCHEMA_VERSION
-		&& entry.game_key == game_key
-		&& entry.detected_version == detected_version
-		&& entry.manifest_hash == manifest_hash
-		&& entry.parsed_files == parsed_files
-	{
-		return GameBaseSemanticSnapshot {
-			detected_version,
-			index: entry.index,
-			parsed_files,
-		};
-	}
-
-	if let Some(snapshot) = load_builtin_base_snapshot(game_key, detected_version.as_deref()) {
-		let cache_entry = BaseSemanticSnapshotEntry {
-			schema_version: BASE_SNAPSHOT_SCHEMA_VERSION,
-			game_key: game_key.to_string(),
-			detected_version: snapshot.detected_version.clone(),
-			manifest_hash,
-			parsed_files: snapshot.parsed_files,
-			index: snapshot.index.clone(),
-		};
-		store_base_semantic_cache(&cache_path, &cache_entry);
-		return snapshot;
-	}
-
-	let mod_id = base_game_mod_id(game_key);
-	let parsed = parse_text_documents(&mod_id, game_root);
-	let index = build_semantic_index_from_documents(&parsed);
-	let snapshot = GameBaseSemanticSnapshot {
-		detected_version: detected_version.clone(),
-		index,
-		parsed_files: parsed.len(),
-	};
-	let cache_entry = BaseSemanticSnapshotEntry {
-		schema_version: BASE_SNAPSHOT_SCHEMA_VERSION,
-		game_key: game_key.to_string(),
-		detected_version,
-		manifest_hash,
-		parsed_files: snapshot.parsed_files,
-		index: snapshot.index.clone(),
-	};
-	store_base_semantic_cache(&cache_path, &cache_entry);
-	snapshot
+	merged
 }
 
 fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
@@ -345,174 +289,22 @@ fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -
 	base
 }
 
-fn semantic_manifest_hash(files: &[crate::check::documents::DiscoveredTextDocument]) -> u64 {
-	let mut entries: Vec<String> = Vec::new();
-	for file in files {
-		let relative = file.relative_path.to_string_lossy().replace('\\', "/");
-		let mut entry = relative;
-		if let Ok(metadata) = fs::metadata(&file.absolute_path) {
-			entry.push('|');
-			entry.push_str(&metadata.len().to_string());
-			entry.push('|');
-			entry.push_str(&modified_nanos(&metadata).to_string());
-		}
-		entries.push(entry);
-	}
-	entries.sort();
-
-	let mut hasher = DefaultHasher::new();
-	for entry in entries {
-		entry.hash(&mut hasher);
-	}
-	hasher.finish()
-}
-
-fn base_semantic_cache_root() -> std::path::PathBuf {
-	if let Ok(override_dir) = std::env::var("FOCH_BASE_SNAPSHOT_DIR") {
-		return std::path::PathBuf::from(override_dir);
-	}
-	if let Ok(override_dir) = std::env::var("FOCH_SEMANTIC_CACHE_DIR") {
-		return std::path::PathBuf::from(override_dir);
-	}
-	dirs::data_local_dir()
-		.unwrap_or_else(std::env::temp_dir)
-		.join("foch")
-		.join("base_snapshots")
-}
-
-fn base_semantic_cache_file(
-	game_key: &str,
-	detected_version: Option<&str>,
-	manifest_hash: u64,
-) -> std::path::PathBuf {
-	let version_key = sanitize_cache_component(detected_version.unwrap_or("unknown"));
-	base_semantic_cache_root()
-		.join(game_key)
-		.join(version_key)
-		.join(format!("{manifest_hash:016x}.json"))
-}
-
-fn load_base_semantic_cache(path: &std::path::Path) -> Option<BaseSemanticSnapshotEntry> {
-	let raw = fs::read_to_string(path).ok()?;
-	serde_json::from_str::<BaseSemanticSnapshotEntry>(&raw).ok()
-}
-
-fn store_base_semantic_cache(path: &std::path::Path, entry: &BaseSemanticSnapshotEntry) {
-	let Some(parent) = path.parent() else {
-		return;
-	};
-	if fs::create_dir_all(parent).is_err() {
-		return;
-	}
-	let Ok(raw) = serde_json::to_string(entry) else {
-		return;
-	};
-	let tmp = path.with_extension("json.tmp");
-	if fs::write(&tmp, raw).is_err() {
-		return;
-	}
-	let _ = fs::rename(tmp, path);
-}
-
-fn load_builtin_base_snapshot(
-	game_key: &str,
-	detected_version: Option<&str>,
-) -> Option<GameBaseSemanticSnapshot> {
-	let detected_version = detected_version?;
-	let raw = match (game_key, detected_version) {
-		("eu4", "builtin-test-1.0.0") => {
-			include_str!("data/eu4_base_snapshot_builtin_test_1_0_0.json")
-		}
-		_ => return None,
-	};
-	let entry: BuiltinBaseSnapshotEntry = serde_json::from_str(raw).ok()?;
-	Some(GameBaseSemanticSnapshot {
-		detected_version: Some(entry.detected_version),
-		index: entry.index,
-		parsed_files: entry.parsed_files,
-	})
-}
-
-fn detect_game_version(game_root: &Path) -> Option<String> {
-	for candidate in [
-		game_root.join("launcher-settings.json"),
-		game_root.join("launcher").join("launcher-settings.json"),
-		game_root.join("version.txt"),
-	] {
-		if !candidate.is_file() {
-			continue;
-		}
-		if candidate.file_name().and_then(|value| value.to_str()) == Some("version.txt") {
-			let version = fs::read_to_string(&candidate).ok()?;
-			let version = version.lines().next()?.trim();
-			if !version.is_empty() {
-				return Some(version.to_string());
-			}
-			continue;
-		}
-		let raw = fs::read_to_string(&candidate).ok()?;
-		let json = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-		for key in ["rawVersion", "version", "gameVersion"] {
-			if let Some(value) = json.get(key).and_then(|value| value.as_str())
-				&& !value.trim().is_empty()
-			{
-				return Some(value.trim().to_string());
-			}
-		}
-	}
-	None
-}
-
-fn sanitize_cache_component(value: &str) -> String {
-	let mut out = String::with_capacity(value.len());
-	for ch in value.chars() {
-		if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-			out.push(ch);
-		} else {
-			out.push('_');
-		}
-	}
-	if out.is_empty() {
-		"unknown".to_string()
-	} else {
-		out
-	}
-}
-
-fn modified_nanos(metadata: &fs::Metadata) -> u128 {
-	metadata
-		.modified()
-		.ok()
-		.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-		.map_or(0, |duration| duration.as_nanos())
-}
-
-pub(crate) fn base_game_mod_id(game_key: &str) -> String {
-	format!("{BASE_GAME_MOD_ID_PREFIX}{game_key}")
-}
-
-fn resolve_game_root(request: &CheckRequest, playlist: &Playlist) -> Option<PathBuf> {
-	let mut candidates = Vec::new();
-	if let Some(path) = request.config.game_path.get(playlist.game.key()) {
-		candidates.push(path.clone());
-	}
-	if let Some(steam_root) = request.config.steam_root_path.as_ref() {
-		for app_id in playlist.game.steam_app_ids() {
-			if let Some(path) = steam_game_install_path(steam_root, *app_id) {
-				candidates.push(path);
-			}
-		}
-	}
-	dedup_candidates(candidates)
-		.into_iter()
-		.find(|candidate| candidate.is_dir())
+fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) -> String {
+	format!(
+		"缺少 {} {} 的已安装基础数据；请运行 `foch data install {} --game-version auto` 或 `foch data build {} --from-game-path {} --game-version auto --install`，或使用 --no-game-base",
+		game.key(),
+		game_version,
+		game.key(),
+		game.key(),
+		game_root.display()
+	)
 }
 
 fn build_mod_candidates(request: &CheckRequest, playlist: &Playlist) -> Vec<ModCandidate> {
 	let playset_dir = request
 		.playset_path
 		.parent()
-		.map_or_else(|| std::path::PathBuf::from("."), std::path::PathBuf::from);
+		.map_or_else(|| PathBuf::from("."), PathBuf::from);
 
 	let mut entries = playlist.mods.clone();
 	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
@@ -651,7 +443,7 @@ fn descriptor_path_candidates(game_data_dir: &Path, raw: &str) -> Vec<PathBuf> {
 
 	let mut candidates = Vec::new();
 	for fragment in fragments {
-		let path = std::path::PathBuf::from(&fragment);
+		let path = PathBuf::from(&fragment);
 		if path.is_absolute() {
 			candidates.push(path.clone());
 		}
@@ -680,41 +472,51 @@ fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
 		}
 	}
 
+	files.sort();
 	files
 }
 
 fn build_file_inventory(
 	playlist: &Playlist,
 	mods: &[ModCandidate],
+	mod_snapshots: &[Option<LoadedModSnapshot>],
 	base_game_root: Option<&PathBuf>,
+	installed_base_snapshot: Option<&InstalledBaseSnapshot>,
 ) -> BTreeMap<String, Vec<ResolvedFileContributor>> {
 	let mut inventory = BTreeMap::new();
 	let mut precedence = 0;
 
-	if let Some(root) = base_game_root {
+	if let (Some(root), Some(snapshot)) = (base_game_root, installed_base_snapshot) {
 		let mod_id = base_game_mod_id(playlist.game.key());
-		for relative in collect_relative_files(root) {
-			let key = normalize_relative_path(&relative);
+		let document_lookup = snapshot.snapshot.document_lookup();
+		for relative in &snapshot.snapshot.inventory_paths {
+			let document = document_lookup.get(relative.as_str());
 			inventory
-				.entry(key)
+				.entry(relative.clone())
 				.or_insert_with(Vec::new)
 				.push(ResolvedFileContributor {
 					mod_id: mod_id.clone(),
 					root_path: root.clone(),
-					absolute_path: root.join(&relative),
+					absolute_path: root.join(relative),
 					precedence,
 					is_base_game: true,
+					parse_ok_hint: document.map(|(_family, parse_ok)| *parse_ok),
 				});
 		}
 		precedence += 1;
 	}
 
-	for mod_item in mods {
+	for (idx, mod_item) in mods.iter().enumerate() {
 		let Some(root) = mod_item.root_path.as_ref() else {
 			continue;
 		};
+		let parse_hints = mod_snapshots
+			.get(idx)
+			.and_then(|snapshot| snapshot.as_ref())
+			.map(|snapshot| &snapshot.document_parse_hints);
 		for relative in &mod_item.files {
 			let key = normalize_relative_path(relative);
+			let parse_ok_hint = parse_hints.and_then(|hints| hints.get(&key).copied());
 			inventory
 				.entry(key)
 				.or_insert_with(Vec::new)
@@ -724,6 +526,7 @@ fn build_file_inventory(
 					absolute_path: root.join(relative),
 					precedence,
 					is_base_game: false,
+					parse_ok_hint,
 				});
 		}
 		precedence += 1;

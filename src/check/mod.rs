@@ -1,9 +1,11 @@
 pub mod analysis;
+pub mod base_data;
 pub mod documents;
 pub mod engine;
 pub mod eu4_builtin;
 pub mod graph;
 pub mod merge_plan;
+pub mod mod_cache;
 pub mod model;
 pub mod parser;
 pub mod report;
@@ -11,6 +13,11 @@ pub mod rules;
 pub mod semantic_index;
 
 pub use analysis::{AnalyzeOptions, analyze_visibility};
+pub use base_data::{
+	BaseAnalysisSnapshot, BaseDataSource, InstalledBaseDataEntry, ReleaseDataManifest,
+	build_base_snapshot, default_release_tag, install_built_snapshot,
+	install_snapshot_from_release, list_installed_base_data, write_snapshot_bundle,
+};
 pub use engine::{run_checks, run_checks_with_options};
 pub use graph::export_graph;
 pub use merge_plan::{run_merge_plan, run_merge_plan_with_options};
