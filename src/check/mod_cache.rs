@@ -1,8 +1,8 @@
 use crate::check::documents::{
 	DiscoveredTextDocument, build_semantic_index_from_documents, discover_text_documents,
-	parse_text_documents,
+	parse_discovered_text_documents,
 };
-use crate::check::model::{ModCandidate, SemanticIndex};
+use crate::check::model::{ModCandidate, ParseFamilyStats, SemanticIndex};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -16,13 +16,14 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MOD_SNAPSHOT_CACHE_DIR_ENV: &str = "FOCH_MOD_SNAPSHOT_CACHE_DIR";
-const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
 	pub semantic_index: SemanticIndex,
 	pub parsed_files: usize,
 	pub parse_error_count: usize,
+	pub parse_stats: ParseFamilyStats,
 	pub document_parse_hints: HashMap<String, bool>,
 }
 
@@ -35,6 +36,7 @@ struct StoredModSemanticSnapshot {
 	generated_by_cli_version: String,
 	parsed_files: usize,
 	parse_error_count: usize,
+	parse_stats: ParseFamilyStats,
 	semantic_index: SemanticIndex,
 }
 
@@ -57,10 +59,10 @@ pub(crate) fn load_or_build_mod_snapshot(
 		return Some(to_loaded_snapshot(entry));
 	}
 
-	let parsed = parse_text_documents(&mod_item.mod_id, root);
-	let semantic_index = build_semantic_index_from_documents(&parsed);
-	let parse_error_count = semantic_index.parse_issues.len();
-	let parsed_files = parsed.len();
+	let parsed = parse_discovered_text_documents(&mod_item.mod_id, root, &documents);
+	let semantic_index = build_semantic_index_from_documents(&parsed.documents);
+	let parse_error_count = parsed.parse_stats.clausewitz_mainline.parse_issue_count;
+	let parsed_files = parsed.documents.len();
 	let entry = StoredModSemanticSnapshot {
 		schema_version: MOD_SNAPSHOT_SCHEMA_VERSION,
 		game: game_key.to_string(),
@@ -69,6 +71,7 @@ pub(crate) fn load_or_build_mod_snapshot(
 		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
 		parsed_files,
 		parse_error_count,
+		parse_stats: parsed.parse_stats,
 		semantic_index,
 	};
 	store_mod_snapshot(&cache_path, &entry);
@@ -96,6 +99,7 @@ fn to_loaded_snapshot(entry: StoredModSemanticSnapshot) -> LoadedModSnapshot {
 		semantic_index: entry.semantic_index,
 		parsed_files: entry.parsed_files,
 		parse_error_count: entry.parse_error_count,
+		parse_stats: entry.parse_stats,
 		document_parse_hints,
 	}
 }

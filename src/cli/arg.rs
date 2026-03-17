@@ -89,7 +89,7 @@ pub enum MergePlanOutputFormat {
 #[derive(Parser, Debug)]
 #[command(
 	about = "管理可分发的基础游戏数据",
-	after_help = "Examples:\n  foch data list\n  foch data install eu4 --game-version auto\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --install\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --output-dir ./dist/data --release-asset"
+	after_help = "Examples:\n  foch data list\n  foch data install eu4 --game-version auto\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --install\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --profile-out ./build-profile.json --output-dir ./dist/data --release-asset"
 )]
 pub struct DataArgs {
 	#[command(subcommand)]
@@ -132,6 +132,9 @@ pub struct DataBuildArgs {
 
 	#[arg(long)]
 	pub release_asset: bool,
+
+	#[arg(long)]
+	pub profile_out: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]

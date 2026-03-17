@@ -570,7 +570,17 @@ fn whole_tree_documents_feed_ui_localisation_csv_and_json_analysis() {
 
 	let result = run_checks_no_base(request_for(&playlist_path));
 	assert!(result.analysis_meta.text_documents >= 5);
-	assert!(result.analysis_meta.parse_errors >= 2);
+	assert_eq!(result.analysis_meta.parse_errors, 0);
+	assert_eq!(
+		result
+			.analysis_meta
+			.parse_stats
+			.localisation
+			.parse_issue_count,
+		0
+	);
+	assert!(result.analysis_meta.parse_stats.csv.parse_issue_count >= 1);
+	assert!(result.analysis_meta.parse_stats.json.parse_issue_count >= 1);
 	assert!(
 		result
 			.findings

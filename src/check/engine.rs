@@ -6,8 +6,8 @@ use crate::check::base_data::{
 use crate::check::graph::export_graph;
 use crate::check::mod_cache::{LoadedModSnapshot, load_or_build_mod_snapshot};
 use crate::check::model::{
-	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, Finding, FindingChannel,
-	ModCandidate, RunOptions, SemanticIndex, Severity,
+	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, FamilyParseStats, Finding,
+	FindingChannel, ModCandidate, ParseFamilyStats, RunOptions, SemanticIndex, Severity,
 };
 use crate::check::rules::{
 	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
@@ -60,6 +60,7 @@ struct GameBaseSemanticSnapshot {
 	index: SemanticIndex,
 	parsed_files: usize,
 	parse_error_count: usize,
+	parse_stats: ParseFamilyStats,
 }
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
@@ -101,6 +102,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 				index: installed.snapshot.to_semantic_index(),
 				parsed_files: installed.snapshot.parsed_files,
 				parse_error_count: installed.snapshot.parse_error_count,
+				parse_stats: installed.snapshot.parse_stats.clone(),
 			});
 	let mod_parsed_files_count: usize = resolved
 		.mod_snapshots
@@ -114,6 +116,13 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		.flatten()
 		.map(|snapshot| snapshot.parse_error_count)
 		.sum();
+	let mod_parse_stats = resolved
+		.mod_snapshots
+		.iter()
+		.flatten()
+		.fold(ParseFamilyStats::default(), |acc, snapshot| {
+			sum_parse_family_stats(acc, snapshot.parse_stats.clone())
+		});
 	let mod_semantic_index = merge_mod_snapshots(&resolved.mod_snapshots);
 	let parsed_files_count = mod_parsed_files_count
 		+ base_semantic
@@ -122,6 +131,11 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	let base_parse_error_count = base_semantic
 		.as_ref()
 		.map_or(0, |snapshot| snapshot.parse_error_count);
+	let total_parse_stats = base_semantic
+		.as_ref()
+		.map_or(mod_parse_stats.clone(), |snapshot| {
+			sum_parse_family_stats(snapshot.parse_stats.clone(), mod_parse_stats.clone())
+		});
 	let semantic_index = match base_semantic {
 		Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
 		None => mod_semantic_index,
@@ -160,6 +174,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		text_documents: ctx.semantic_index.documents.len(),
 		parsed_files: parsed_files_count,
 		parse_errors: mod_parse_error_count + base_parse_error_count,
+		parse_stats: total_parse_stats,
 		scopes: ctx.semantic_index.scopes.len(),
 		symbol_definitions: ctx.semantic_index.definitions.len(),
 		symbol_references: ctx.semantic_index.references.len(),
@@ -244,6 +259,26 @@ fn merge_mod_snapshots(snapshots: &[Option<LoadedModSnapshot>]) -> SemanticIndex
 		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
 	}
 	merged
+}
+
+fn sum_parse_family_stats(lhs: ParseFamilyStats, rhs: ParseFamilyStats) -> ParseFamilyStats {
+	ParseFamilyStats {
+		clausewitz_mainline: sum_family_parse_stats(
+			lhs.clausewitz_mainline,
+			rhs.clausewitz_mainline,
+		),
+		localisation: sum_family_parse_stats(lhs.localisation, rhs.localisation),
+		csv: sum_family_parse_stats(lhs.csv, rhs.csv),
+		json: sum_family_parse_stats(lhs.json, rhs.json),
+	}
+}
+
+fn sum_family_parse_stats(lhs: FamilyParseStats, rhs: FamilyParseStats) -> FamilyParseStats {
+	FamilyParseStats {
+		documents: lhs.documents + rhs.documents,
+		parse_failed_documents: lhs.parse_failed_documents + rhs.parse_failed_documents,
+		parse_issue_count: lhs.parse_issue_count + rhs.parse_issue_count,
+	}
 }
 
 fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
