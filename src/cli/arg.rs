@@ -50,6 +50,9 @@ pub struct CheckArgs {
 	pub graph_format: GraphFormatArg,
 
 	#[arg(long)]
+	pub parse_issue_report: Option<PathBuf>,
+
+	#[arg(long)]
 	pub no_game_base: bool,
 
 	#[arg(long)]

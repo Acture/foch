@@ -31,6 +31,9 @@ pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 	{
 		std::fs::write(path, graph)?;
 	}
+	if let Some(path) = check_args.parse_issue_report.as_ref() {
+		std::fs::write(path, serde_json::to_string_pretty(&result.parse_issue_report)?)?;
+	}
 
 	let output_result = select_output_result(&result, run_options.channel_mode);
 	let rendered = match check_args.format {

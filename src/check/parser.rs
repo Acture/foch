@@ -504,7 +504,10 @@ impl ParserState {
 
 	fn parse_value(&mut self) -> AstValue {
 		let mut token = self.bump();
-		while matches!(token.kind, TokenKind::Newline | TokenKind::Comment(_)) {
+		while matches!(
+			token.kind,
+			TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eq
+		) {
 			token = self.bump();
 		}
 		match token.kind {
@@ -517,22 +520,50 @@ impl ParserState {
 					span: SpanRange { start, end },
 				}
 			}
-			TokenKind::Identifier(value) => AstValue::Scalar {
-				value: ScalarValue::Identifier(value),
-				span: token.span,
-			},
-			TokenKind::String(value) => AstValue::Scalar {
-				value: ScalarValue::String(value),
-				span: token.span,
-			},
-			TokenKind::Number(value) => AstValue::Scalar {
-				value: ScalarValue::Number(value),
-				span: token.span,
-			},
-			TokenKind::Bool(value) => AstValue::Scalar {
-				value: ScalarValue::Bool(value),
-				span: token.span,
-			},
+			TokenKind::Identifier(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					self.bump();
+					self.parse_value()
+				} else {
+					AstValue::Scalar {
+						value: ScalarValue::Identifier(value),
+						span: token.span,
+					}
+				}
+			}
+			TokenKind::String(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					self.bump();
+					self.parse_value()
+				} else {
+					AstValue::Scalar {
+						value: ScalarValue::String(value),
+						span: token.span,
+					}
+				}
+			}
+			TokenKind::Number(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					self.bump();
+					self.parse_value()
+				} else {
+					AstValue::Scalar {
+						value: ScalarValue::Number(value),
+						span: token.span,
+					}
+				}
+			}
+			TokenKind::Bool(value) => {
+				if matches!(self.peek().kind, TokenKind::Eq) {
+					self.bump();
+					self.parse_value()
+				} else {
+					AstValue::Scalar {
+						value: ScalarValue::Bool(value),
+						span: token.span,
+					}
+				}
+			}
 			TokenKind::Comment(text) => AstValue::Scalar {
 				value: ScalarValue::Identifier(text),
 				span: token.span,
@@ -645,5 +676,28 @@ mod tests {
 		};
 
 		assert_eq!(items.len(), 2);
+	}
+
+	#[test]
+	fn parser_accepts_nested_equals_assignment_forms() {
+		let parsed = parse_clausewitz_content(
+			PathBuf::from("missions.txt"),
+			"custom_tooltip = njd_unite_arabia_tooltip = { factor = 1 }\ncenter_of_trade = 1 = yes\n286 = = { owner = ROOT }\n",
+		);
+		assert!(
+			parsed.diagnostics.is_empty(),
+			"{:?}",
+			parsed.diagnostics
+		);
+		assert_eq!(parsed.ast.statements.len(), 3);
+
+		for statement in &parsed.ast.statements {
+			let AstStatement::Assignment { value, .. } = statement else {
+				panic!("expected assignment");
+			};
+			match value {
+				AstValue::Block { .. } | AstValue::Scalar { .. } => {}
+			}
+		}
 	}
 }

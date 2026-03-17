@@ -1,9 +1,11 @@
 pub mod analysis;
+pub mod analysis_version;
 pub mod base_data;
 pub mod documents;
 pub mod engine;
 pub mod eu4_builtin;
 pub mod graph;
+pub mod localisation;
 pub mod merge_plan;
 pub mod mod_cache;
 pub mod model;

@@ -1,18 +1,18 @@
 use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
 use crate::check::base_data::{
-	InstalledBaseSnapshot, base_game_mod_id, load_installed_base_snapshot,
-	resolve_game_root_and_version,
+	InstalledBaseSnapshot, base_game_mod_id, detect_game_version, load_installed_base_snapshot,
+	resolve_game_root, resolve_game_root_and_version,
 };
 use crate::check::graph::export_graph;
 use crate::check::mod_cache::{LoadedModSnapshot, load_or_build_mod_snapshot};
 use crate::check::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, FamilyParseStats, Finding,
-	FindingChannel, ModCandidate, ParseFamilyStats, RunOptions, SemanticIndex, Severity,
+	FindingChannel, ModCandidate, ParseFamilyStats, ParseIssueReportItem, RunOptions,
+	SemanticIndex, Severity,
 };
 use crate::check::rules::{
 	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
 	check_missing_dependency, check_missing_descriptor, check_required_fields,
-	check_unresolved_scripted_effect,
 };
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
@@ -155,9 +155,6 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	result
 		.findings
 		.extend(check_duplicate_scripted_effect(&ctx));
-	result
-		.findings
-		.extend(check_unresolved_scripted_effect(&ctx));
 
 	if options.analysis_mode == AnalysisMode::Semantic {
 		let diagnostics = analyze_visibility(
@@ -180,6 +177,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		symbol_references: ctx.semantic_index.references.len(),
 		alias_usages: ctx.semantic_index.alias_usages.len(),
 	};
+	result.parse_issue_report = build_parse_issue_report(&ctx.semantic_index);
 
 	if let Some(format) = options.graph_format {
 		result.graph_output = Some(export_graph(&ctx.semantic_index, format));
@@ -207,11 +205,8 @@ pub(crate) fn resolve_workspace(
 	})?;
 
 	let mods = build_mod_candidates(request, &playlist);
-	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
-		.iter()
-		.map(|mod_item| load_or_build_mod_snapshot(playlist.game.key(), mod_item))
-		.collect();
-	let (base_game_root, installed_base_snapshot) = if include_game_base {
+	let optional_game_root = resolve_game_root(&request.config, &playlist.game);
+	let (base_game_root, installed_base_snapshot, mod_cache_game_version) = if include_game_base {
 		let (game_root, game_version) =
 			resolve_game_root_and_version(&request.config, &playlist.game).map_err(|message| {
 				WorkspaceResolveError {
@@ -231,10 +226,26 @@ pub(crate) fn resolve_workspace(
 				path: request.playset_path.clone(),
 				message: missing_base_data_message(&playlist.game, &game_version, &game_root),
 			})?;
-		(Some(game_root), Some(installed))
+		(Some(game_root), Some(installed), Some(game_version))
 	} else {
-		(None, None)
+		(
+			None,
+			None,
+			optional_game_root
+				.as_ref()
+				.and_then(|game_root| detect_game_version(game_root)),
+		)
 	};
+	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
+		.iter()
+		.map(|mod_item| {
+			load_or_build_mod_snapshot(
+				playlist.game.key(),
+				mod_cache_game_version.as_deref(),
+				mod_item,
+			)
+		})
+		.collect();
 	let file_inventory = build_file_inventory(
 		&playlist,
 		&mods,
@@ -572,4 +583,51 @@ fn build_file_inventory(
 
 fn normalize_relative_path(path: &Path) -> String {
 	path.to_string_lossy().replace('\\', "/")
+}
+
+fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> {
+	let family_lookup = index
+		.documents
+		.iter()
+		.map(|item| {
+			(
+				(item.mod_id.clone(), normalize_relative_path(&item.path)),
+				item.family,
+			)
+		})
+		.collect::<std::collections::HashMap<_, _>>();
+	let mut items: Vec<ParseIssueReportItem> = index
+		.parse_issues
+		.iter()
+		.map(|issue| ParseIssueReportItem {
+			family: family_lookup
+				.get(&(issue.mod_id.clone(), normalize_relative_path(&issue.path)))
+				.copied()
+				.unwrap_or(crate::check::model::DocumentFamily::Clausewitz),
+			mod_id: issue.mod_id.clone(),
+			path: issue.path.clone(),
+			line: issue.line,
+			column: issue.column,
+			message: issue.message.clone(),
+		})
+		.collect();
+	items.sort_by(|lhs, rhs| {
+		(
+			format!("{:?}", lhs.family),
+			lhs.mod_id.as_str(),
+			lhs.path.as_os_str(),
+			lhs.line,
+			lhs.column,
+			lhs.message.as_str(),
+		)
+			.cmp(&(
+				format!("{:?}", rhs.family),
+				rhs.mod_id.as_str(),
+				rhs.path.as_os_str(),
+				rhs.line,
+				rhs.column,
+				rhs.message.as_str(),
+			))
+	});
+	items
 }

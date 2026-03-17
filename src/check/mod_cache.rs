@@ -1,3 +1,4 @@
+use crate::check::analysis_version::analysis_rules_version;
 use crate::check::documents::{
 	DiscoveredTextDocument, build_semantic_index_from_documents, discover_text_documents,
 	parse_discovered_text_documents,
@@ -16,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MOD_SNAPSHOT_CACHE_DIR_ENV: &str = "FOCH_MOD_SNAPSHOT_CACHE_DIR";
-const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
@@ -31,6 +32,8 @@ pub(crate) struct LoadedModSnapshot {
 struct StoredModSemanticSnapshot {
 	schema_version: u32,
 	game: String,
+	game_version: String,
+	analysis_rules_version: String,
 	mod_identity: String,
 	manifest_hash: u64,
 	generated_by_cli_version: String,
@@ -42,17 +45,30 @@ struct StoredModSemanticSnapshot {
 
 pub(crate) fn load_or_build_mod_snapshot(
 	game_key: &str,
+	game_version: Option<&str>,
 	mod_item: &ModCandidate,
 ) -> Option<LoadedModSnapshot> {
 	let root = mod_item.root_path.as_ref()?;
 	let documents = discover_text_documents(root);
 	let manifest_hash = semantic_manifest_hash(&documents);
 	let mod_identity = mod_cache_identity(mod_item);
-	let cache_path = mod_snapshot_cache_file(game_key, &mod_identity, manifest_hash);
+	let resolved_game_version = game_version.map(str::to_string);
+	let cache_path = resolved_game_version.as_ref().map(|version| {
+		mod_snapshot_cache_file(
+			game_key,
+			version,
+			analysis_rules_version(),
+			&mod_identity,
+			manifest_hash,
+		)
+	});
 
-	if let Some(entry) = load_mod_snapshot(&cache_path)
+	if let (Some(cache_path), Some(game_version)) = (cache_path.as_ref(), resolved_game_version.as_ref())
+		&& let Some(entry) = load_mod_snapshot(cache_path)
 		&& entry.schema_version == MOD_SNAPSHOT_SCHEMA_VERSION
 		&& entry.game == game_key
+		&& entry.game_version == *game_version
+		&& entry.analysis_rules_version == analysis_rules_version()
 		&& entry.mod_identity == mod_identity
 		&& entry.manifest_hash == manifest_hash
 	{
@@ -66,6 +82,8 @@ pub(crate) fn load_or_build_mod_snapshot(
 	let entry = StoredModSemanticSnapshot {
 		schema_version: MOD_SNAPSHOT_SCHEMA_VERSION,
 		game: game_key.to_string(),
+		game_version: resolved_game_version.clone().unwrap_or_default(),
+		analysis_rules_version: analysis_rules_version().to_string(),
 		mod_identity,
 		manifest_hash,
 		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -74,7 +92,9 @@ pub(crate) fn load_or_build_mod_snapshot(
 		parse_stats: parsed.parse_stats,
 		semantic_index,
 	};
-	store_mod_snapshot(&cache_path, &entry);
+	if let Some(cache_path) = cache_path.as_ref() {
+		store_mod_snapshot(cache_path, &entry);
+	}
 	Some(to_loaded_snapshot(entry))
 }
 
@@ -122,9 +142,17 @@ fn mod_cache_identity(mod_item: &ModCandidate) -> String {
 	"unknown".to_string()
 }
 
-fn mod_snapshot_cache_file(game_key: &str, mod_identity: &str, manifest_hash: u64) -> PathBuf {
+fn mod_snapshot_cache_file(
+	game_key: &str,
+	game_version: &str,
+	analysis_rules_version: &str,
+	mod_identity: &str,
+	manifest_hash: u64,
+) -> PathBuf {
 	mod_snapshot_cache_root()
 		.join(game_key)
+		.join(sanitize_component(game_version))
+		.join(sanitize_component(analysis_rules_version))
 		.join(mod_identity)
 		.join(format!("{manifest_hash:016x}.bin.gz"))
 }
