@@ -39,6 +39,7 @@ pub struct ParsedScriptFile {
 	pub module_name: String,
 	pub ast: AstFile,
 	pub parse_issues: Vec<ParseIssue>,
+	pub parse_cache_hit: bool,
 }
 
 const PARSE_CACHE_VERSION: u32 = 2;
@@ -118,7 +119,7 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
 	let file_kind = classify_script_file(&relative);
 	let module_name = module_name_from_relative(&relative, file_kind);
-	let parsed = parse_clausewitz_file_cached(file);
+	let (parsed, parse_cache_hit) = parse_clausewitz_file_cached(file);
 
 	let parse_issues = parsed
 		.diagnostics
@@ -140,6 +141,7 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 		module_name,
 		ast: parsed.ast,
 		parse_issues,
+		parse_cache_hit,
 	})
 }
 
@@ -232,7 +234,7 @@ pub fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<Locali
 	definitions
 }
 
-fn parse_clausewitz_file_cached(path: &Path) -> crate::check::parser::ParseResult {
+fn parse_clausewitz_file_cached(path: &Path) -> (crate::check::parser::ParseResult, bool) {
 	let signature = file_signature(path);
 	let cache_path = parser_cache_file(path);
 
@@ -243,7 +245,7 @@ fn parse_clausewitz_file_cached(path: &Path) -> crate::check::parser::ParseResul
 		&& entry.file_len == file_len
 		&& entry.modified_nanos == modified_nanos
 	{
-		return entry.result;
+		return (entry.result, true);
 	}
 
 	let parsed = parse_clausewitz_file(path);
@@ -258,7 +260,7 @@ fn parse_clausewitz_file_cached(path: &Path) -> crate::check::parser::ParseResul
 		store_parse_cache_entry(&cache_path, &entry);
 	}
 
-	parsed
+	(parsed, false)
 }
 
 fn file_signature(path: &Path) -> Option<(u64, u128)> {

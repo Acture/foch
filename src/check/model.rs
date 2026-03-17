@@ -82,10 +82,26 @@ pub struct AnalysisMeta {
 	pub text_documents: usize,
 	pub parsed_files: usize,
 	pub parse_errors: usize,
+	pub parse_stats: ParseFamilyStats,
 	pub scopes: usize,
 	pub symbol_definitions: usize,
 	pub symbol_references: usize,
 	pub alias_usages: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct ParseFamilyStats {
+	pub clausewitz_mainline: FamilyParseStats,
+	pub localisation: FamilyParseStats,
+	pub csv: FamilyParseStats,
+	pub json: FamilyParseStats,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FamilyParseStats {
+	pub documents: usize,
+	pub parse_failed_documents: usize,
+	pub parse_issue_count: usize,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

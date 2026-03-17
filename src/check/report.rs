@@ -23,6 +23,37 @@ pub fn render_text(result: &CheckResult, color: bool, channel: ChannelMode) -> S
 		result.analysis_meta.symbol_references,
 		result.analysis_meta.alias_usages
 	));
+	lines.push(format!(
+		"parse_families: clausewitz_mainline={{documents:{} failed:{} issues:{}}} localisation={{documents:{} failed:{} issues:{}}} csv={{documents:{} failed:{} issues:{}}} json={{documents:{} failed:{} issues:{}}}",
+		result.analysis_meta.parse_stats.clausewitz_mainline.documents,
+		result
+			.analysis_meta
+			.parse_stats
+			.clausewitz_mainline
+			.parse_failed_documents,
+		result
+			.analysis_meta
+			.parse_stats
+			.clausewitz_mainline
+			.parse_issue_count,
+		result.analysis_meta.parse_stats.localisation.documents,
+		result
+			.analysis_meta
+			.parse_stats
+			.localisation
+			.parse_failed_documents,
+		result
+			.analysis_meta
+			.parse_stats
+			.localisation
+			.parse_issue_count,
+		result.analysis_meta.parse_stats.csv.documents,
+		result.analysis_meta.parse_stats.csv.parse_failed_documents,
+		result.analysis_meta.parse_stats.csv.parse_issue_count,
+		result.analysis_meta.parse_stats.json.documents,
+		result.analysis_meta.parse_stats.json.parse_failed_documents,
+		result.analysis_meta.parse_stats.json.parse_issue_count
+	));
 
 	for fatal in &result.fatal_errors {
 		lines.push(format!("[FATAL] {fatal}"));

@@ -1,14 +1,14 @@
 use crate::check::model::{
-	CsvRow, DocumentFamily, DocumentRecord, JsonProperty, LocalisationDefinition,
-	LocalisationDuplicate, ParseIssue, SemanticIndex,
+	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
+	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
 };
 use crate::check::semantic_index::{ParsedScriptFile, build_semantic_index, parse_script_file};
-use regex::Regex;
+use encoding_rs::WINDOWS_1252;
+use rayon::prelude::*;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use walkdir::WalkDir;
 
 #[derive(Clone, Debug)]
@@ -51,6 +51,21 @@ pub(crate) struct ParsedJsonDocument {
 	pub parse_issues: Vec<ParseIssue>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ParsedDocumentBatch {
+	pub documents: Vec<ParsedTextDocument>,
+	pub clausewitz_cache_hits: usize,
+	pub clausewitz_cache_misses: usize,
+	pub parse_stats: ParseFamilyStats,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CsvSchema {
+	Generic,
+	Eu4Adjacencies,
+	Eu4Definition,
+}
+
 pub(crate) fn discover_text_documents(root: &Path) -> Vec<DiscoveredTextDocument> {
 	let mut docs = Vec::new();
 
@@ -63,6 +78,9 @@ pub(crate) fn discover_text_documents(root: &Path) -> Vec<DiscoveredTextDocument
 		let Some(relative_path) = path.strip_prefix(root).ok() else {
 			continue;
 		};
+		if is_excluded_text_path(relative_path) {
+			continue;
+		}
 		let Some(family) = classify_document_family(relative_path) else {
 			continue;
 		};
@@ -78,11 +96,63 @@ pub(crate) fn discover_text_documents(root: &Path) -> Vec<DiscoveredTextDocument
 	docs
 }
 
-pub(crate) fn parse_text_documents(mod_id: &str, root: &Path) -> Vec<ParsedTextDocument> {
-	discover_text_documents(root)
-		.into_iter()
-		.filter_map(|doc| parse_text_document(mod_id, root, &doc))
-		.collect()
+pub(crate) fn parse_discovered_text_documents(
+	mod_id: &str,
+	root: &Path,
+	documents: &[DiscoveredTextDocument],
+) -> ParsedDocumentBatch {
+	let parsed: Vec<Option<ParsedTextDocument>> = documents
+		.par_iter()
+		.map(|doc| parse_text_document(mod_id, root, doc))
+		.collect();
+
+	let mut batch = ParsedDocumentBatch::default();
+	for doc in parsed.into_iter().flatten() {
+		match document_parse_details(&doc) {
+			DocumentParseDetails::Clausewitz {
+				parse_issue_count,
+				parse_ok,
+				cache_hit,
+			} => {
+				let stats = &mut batch.parse_stats.clausewitz_mainline;
+				stats.documents += 1;
+				stats.parse_issue_count += parse_issue_count;
+				if !parse_ok {
+					stats.parse_failed_documents += 1;
+				}
+				if cache_hit {
+					batch.clausewitz_cache_hits += 1;
+				} else {
+					batch.clausewitz_cache_misses += 1;
+				}
+			}
+			DocumentParseDetails::Localisation {
+				parse_issue_count,
+				parse_ok,
+			} => record_family_parse_details(
+				&mut batch.parse_stats.localisation,
+				parse_issue_count,
+				parse_ok,
+			),
+			DocumentParseDetails::Csv {
+				parse_issue_count,
+				parse_ok,
+			} => {
+				record_family_parse_details(&mut batch.parse_stats.csv, parse_issue_count, parse_ok)
+			}
+			DocumentParseDetails::Json {
+				parse_issue_count,
+				parse_ok,
+			} => record_family_parse_details(
+				&mut batch.parse_stats.json,
+				parse_issue_count,
+				parse_ok,
+			),
+		}
+		batch.documents.push(doc);
+	}
+
+	batch
 }
 
 pub(crate) fn build_semantic_index_from_documents(
@@ -164,7 +234,7 @@ pub(crate) fn classify_document_family(relative_path: &Path) -> Option<DocumentF
 		.map(|value| value.to_ascii_lowercase())?;
 
 	match ext.as_str() {
-		"txt" | "lua" | "gui" | "gfx" | "asset" => Some(DocumentFamily::Clausewitz),
+		"txt" | "gui" | "gfx" | "asset" => Some(DocumentFamily::Clausewitz),
 		"mod" => Some(DocumentFamily::Clausewitz),
 		"yml" | "yaml" => Some(DocumentFamily::Localisation),
 		"csv" => Some(DocumentFamily::Csv),
@@ -227,6 +297,8 @@ fn parse_localisation_document(
 	};
 	let content = String::from_utf8_lossy(&raw);
 	let mut header_seen = false;
+	let mut saw_active_line = false;
+	let mut header_issue_emitted = false;
 	let mut seen_keys = HashMap::<String, usize>::new();
 
 	for (line_idx, line) in content.lines().enumerate() {
@@ -240,10 +312,15 @@ fn parse_localisation_document(
 		if trimmed.is_empty() || trimmed.starts_with('#') {
 			continue;
 		}
+		saw_active_line = true;
+
+		if parse_localisation_header(trimmed).is_some() {
+			header_seen = true;
+			continue;
+		}
 
 		if !header_seen {
-			header_seen = true;
-			if !localisation_header_regex().is_match(trimmed) {
+			if !header_issue_emitted {
 				parse_issues.push(ParseIssue {
 					mod_id: mod_id.to_string(),
 					path: relative_path.to_path_buf(),
@@ -251,11 +328,12 @@ fn parse_localisation_document(
 					column: 1,
 					message: "missing or invalid localisation header".to_string(),
 				});
+				header_issue_emitted = true;
 			}
 			continue;
 		}
 
-		let Some(captures) = localisation_entry_regex().captures(trimmed) else {
+		let Some(entry) = parse_localisation_entry(trimmed) else {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
 				path: relative_path.to_path_buf(),
@@ -265,10 +343,7 @@ fn parse_localisation_document(
 			});
 			continue;
 		};
-		let Some(key_match) = captures.get(1) else {
-			continue;
-		};
-		let key = key_match.as_str().to_string();
+		let key = entry.key;
 		let column = line.find(&key).map_or(1, |idx| idx + 1);
 		let entry = LocalisationDefinition {
 			key: key.clone(),
@@ -291,7 +366,7 @@ fn parse_localisation_document(
 		entries.push(entry);
 	}
 
-	if !header_seen {
+	if saw_active_line && !header_seen && !header_issue_emitted {
 		parse_issues.push(ParseIssue {
 			mod_id: mod_id.to_string(),
 			path: relative_path.to_path_buf(),
@@ -317,8 +392,8 @@ fn parse_csv_document(
 ) -> ParsedCsvDocument {
 	let mut rows = Vec::new();
 	let mut parse_issues = Vec::new();
-	let content = match fs::read_to_string(absolute_path) {
-		Ok(content) => content,
+	let raw = match fs::read(absolute_path) {
+		Ok(raw) => raw,
 		Err(err) => {
 			parse_issues.push(ParseIssue {
 				mod_id: mod_id.to_string(),
@@ -335,6 +410,8 @@ fn parse_csv_document(
 			};
 		}
 	};
+	let content = decode_csv_bytes(&raw);
+	let schema = csv_schema_for(relative_path);
 
 	let mut delimiter = ',';
 	if content
@@ -348,25 +425,27 @@ fn parse_csv_document(
 	let mut expected_columns = None;
 	for (line_idx, line) in content.lines().enumerate() {
 		let line_no = line_idx + 1;
+		let line = if line_idx == 0 {
+			line.trim_start_matches('\u{feff}')
+		} else {
+			line
+		};
 		if line.trim().is_empty() {
 			continue;
 		}
-		let cols = split_csv_line(line, delimiter);
-		if let Some(expected) = expected_columns {
-			if cols.len() != expected {
-				parse_issues.push(ParseIssue {
-					mod_id: mod_id.to_string(),
-					path: relative_path.to_path_buf(),
-					line: line_no,
-					column: 1,
-					message: format!(
-						"inconsistent csv column count: expected {expected}, got {}",
-						cols.len()
-					),
-				});
-			}
-		} else {
-			expected_columns = Some(cols.len());
+		let mut cols = split_csv_line(line, delimiter);
+		if let Some((expected, actual)) =
+			validate_csv_columns(schema, line_no, &mut cols, &mut expected_columns)
+		{
+			parse_issues.push(ParseIssue {
+				mod_id: mod_id.to_string(),
+				path: relative_path.to_path_buf(),
+				line: line_no,
+				column: 1,
+				message: format!(
+					"inconsistent csv column count: expected {expected}, got {actual}"
+				),
+			});
 		}
 
 		let identity = cols
@@ -388,6 +467,63 @@ fn parse_csv_document(
 		path: relative_path.to_path_buf(),
 		rows,
 		parse_issues,
+	}
+}
+
+fn decode_csv_bytes(raw: &[u8]) -> String {
+	match std::str::from_utf8(raw) {
+		Ok(content) => content.to_string(),
+		Err(_) => {
+			let (decoded, _, _) = WINDOWS_1252.decode(raw);
+			decoded.into_owned()
+		}
+	}
+}
+
+fn csv_schema_for(relative_path: &Path) -> CsvSchema {
+	let normalized = relative_path.to_string_lossy().replace('\\', "/");
+	match normalized.as_str() {
+		"map/adjacencies.csv" => CsvSchema::Eu4Adjacencies,
+		"map/definition.csv" => CsvSchema::Eu4Definition,
+		_ => CsvSchema::Generic,
+	}
+}
+
+fn validate_csv_columns(
+	schema: CsvSchema,
+	line_no: usize,
+	cols: &mut Vec<String>,
+	expected_columns: &mut Option<usize>,
+) -> Option<(usize, usize)> {
+	match schema {
+		CsvSchema::Generic => match expected_columns {
+			Some(expected) if cols.len() != *expected => Some((*expected, cols.len())),
+			Some(_) => None,
+			None => {
+				*expected_columns = Some(cols.len());
+				None
+			}
+		},
+		CsvSchema::Eu4Adjacencies => {
+			let expected = 9;
+			*expected_columns = Some(expected);
+			(cols.len() != expected).then_some((expected, cols.len()))
+		}
+		CsvSchema::Eu4Definition => {
+			let expected = 6;
+			*expected_columns = Some(expected);
+			if line_no == 1 {
+				return (cols.len() != expected).then_some((expected, cols.len()));
+			}
+			match cols.len() {
+				5 => {
+					cols.push(String::new());
+					None
+				}
+				6 => None,
+				_ => Some((expected, cols.len())),
+			}
+		}
 	}
 }
 
@@ -492,27 +628,146 @@ fn split_csv_line(line: &str, delimiter: char) -> Vec<String> {
 	}
 
 	out.push(current.trim().to_string());
+	if line.trim_end().ends_with(delimiter) && out.last().is_some_and(|value| value.is_empty()) {
+		out.pop();
+	}
 	out
 }
 
-fn localisation_header_regex() -> &'static Regex {
-	static REGEX: OnceLock<Regex> = OnceLock::new();
-	REGEX.get_or_init(|| {
-		Regex::new(r"^l_[A-Za-z0-9_]+:\s*$").expect("valid localisation header regex")
-	})
+fn is_excluded_text_path(relative_path: &Path) -> bool {
+	let normalized = relative_path.to_string_lossy().replace('\\', "/");
+	for prefix in ["licenses/", "patchnotes/", "ebook/", "legal_notes/"] {
+		if normalized.starts_with(prefix) {
+			return true;
+		}
+	}
+	false
 }
 
-fn localisation_entry_regex() -> &'static Regex {
-	static REGEX: OnceLock<Regex> = OnceLock::new();
-	REGEX.get_or_init(|| {
-		Regex::new(r#"^([A-Za-z0-9_.-]+)\s*:\s*[0-9]+\s+"(?:[^"\\]|\\.)*"\s*$"#)
-			.expect("valid localisation entry regex")
+fn record_family_parse_details(
+	stats: &mut FamilyParseStats,
+	parse_issue_count: usize,
+	parse_ok: bool,
+) {
+	stats.documents += 1;
+	stats.parse_issue_count += parse_issue_count;
+	if !parse_ok {
+		stats.parse_failed_documents += 1;
+	}
+}
+
+enum DocumentParseDetails {
+	Clausewitz {
+		parse_issue_count: usize,
+		parse_ok: bool,
+		cache_hit: bool,
+	},
+	Localisation {
+		parse_issue_count: usize,
+		parse_ok: bool,
+	},
+	Csv {
+		parse_issue_count: usize,
+		parse_ok: bool,
+	},
+	Json {
+		parse_issue_count: usize,
+		parse_ok: bool,
+	},
+}
+
+fn document_parse_details(doc: &ParsedTextDocument) -> DocumentParseDetails {
+	match doc {
+		ParsedTextDocument::Clausewitz(file) => DocumentParseDetails::Clausewitz {
+			parse_issue_count: file.parse_issues.len(),
+			parse_ok: file.parse_issues.is_empty(),
+			cache_hit: file.parse_cache_hit,
+		},
+		ParsedTextDocument::Localisation(file) => DocumentParseDetails::Localisation {
+			parse_issue_count: file.parse_issues.len(),
+			parse_ok: file.parse_issues.is_empty(),
+		},
+		ParsedTextDocument::Csv(file) => DocumentParseDetails::Csv {
+			parse_issue_count: file.parse_issues.len(),
+			parse_ok: file.parse_issues.is_empty(),
+		},
+		ParsedTextDocument::Json(file) => DocumentParseDetails::Json {
+			parse_issue_count: file.parse_issues.len(),
+			parse_ok: file.parse_issues.is_empty(),
+		},
+	}
+}
+
+struct ParsedLocalisationEntry<'a> {
+	key: String,
+	#[allow(dead_code)]
+	version: &'a str,
+	#[allow(dead_code)]
+	raw_value: &'a str,
+	#[allow(dead_code)]
+	trailing_comment: Option<&'a str>,
+}
+
+fn parse_localisation_header(line: &str) -> Option<&str> {
+	let trimmed = line.trim();
+	let body = if let Some((before, _comment)) = trimmed.split_once('#') {
+		before.trim_end()
+	} else {
+		trimmed
+	};
+	let lang = body.strip_prefix("l_")?.strip_suffix(':')?;
+	if lang.is_empty()
+		|| !lang
+			.chars()
+			.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+	{
+		return None;
+	}
+	Some(lang)
+}
+
+fn parse_localisation_entry(line: &str) -> Option<ParsedLocalisationEntry<'_>> {
+	let trimmed = line.trim_start();
+	let (key, remainder) = trimmed.split_once(':')?;
+	if key.is_empty()
+		|| !key
+			.chars()
+			.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
+	{
+		return None;
+	}
+
+	let remainder = remainder.trim_start();
+	let version_end = remainder
+		.find(|ch: char| !ch.is_ascii_digit())
+		.unwrap_or(remainder.len());
+	if version_end == 0 {
+		return None;
+	}
+	let version = &remainder[..version_end];
+	let remainder = remainder[version_end..].trim_start();
+	let value_start = remainder.find('"')?;
+	let value_region = &remainder[value_start + 1..];
+	let value_end = value_region.rfind('"')?;
+	let raw_value = &value_region[..value_end];
+	let trailing = value_region[value_end + 1..].trim_start();
+	if !trailing.is_empty() && !trailing.starts_with('#') {
+		return None;
+	}
+	Some(ParsedLocalisationEntry {
+		key: key.to_string(),
+		version,
+		raw_value,
+		trailing_comment: (!trailing.is_empty()).then_some(trailing),
 	})
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{classify_document_family, discover_text_documents};
+	use super::{
+		classify_document_family, discover_text_documents, parse_csv_document,
+		parse_localisation_document,
+	};
 	use crate::check::model::DocumentFamily;
 	use std::fs;
 	use std::path::Path;
@@ -540,6 +795,10 @@ mod tests {
 			classify_document_family(Path::new("common/settings.json")),
 			Some(DocumentFamily::Json)
 		);
+		assert_eq!(
+			classify_document_family(Path::new("script/shader.lua")),
+			None
+		);
 	}
 
 	#[test]
@@ -562,5 +821,145 @@ mod tests {
 			docs.iter()
 				.any(|doc| doc.relative_path == Path::new("interface/main.gui"))
 		);
+	}
+
+	#[test]
+	fn discovery_excludes_noise_prefixes() {
+		let tmp = TempDir::new().expect("temp dir");
+		fs::create_dir_all(tmp.path().join("licenses")).expect("create licenses");
+		fs::create_dir_all(tmp.path().join("patchnotes")).expect("create patchnotes");
+		fs::create_dir_all(tmp.path().join("events")).expect("create events");
+		fs::write(tmp.path().join("licenses").join("LUA.txt"), "license").expect("write license");
+		fs::write(tmp.path().join("patchnotes").join("1.0.txt"), "patchnotes")
+			.expect("write patchnotes");
+		fs::write(
+			tmp.path().join("events").join("real.txt"),
+			"namespace = test",
+		)
+		.expect("write event");
+
+		let docs = discover_text_documents(tmp.path());
+		assert_eq!(docs.len(), 1);
+		assert_eq!(docs[0].relative_path, Path::new("events/real.txt"));
+	}
+
+	#[test]
+	fn localisation_parser_accepts_internal_quotes_and_trailing_comments() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("localisation").join("test_l_english.yml");
+		fs::create_dir_all(path.parent().expect("loc parent")).expect("create loc dir");
+		fs::write(
+			&path,
+			"l_english:\nexample.key:0 \"The term \"Great Power\" is used here.\" # comment\n",
+		)
+		.expect("write loc");
+
+		let parsed =
+			parse_localisation_document("mod", &path, Path::new("localisation/test_l_english.yml"));
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+		assert_eq!(parsed.entries.len(), 1);
+		assert_eq!(parsed.entries[0].key, "example.key");
+	}
+
+	#[test]
+	fn localisation_parser_reports_malformed_entry() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("localisation").join("bad_l_english.yml");
+		fs::create_dir_all(path.parent().expect("loc parent")).expect("create loc dir");
+		fs::write(&path, "l_english:\nexample.key:0 Tooltip without quotes\n").expect("write loc");
+
+		let parsed =
+			parse_localisation_document("mod", &path, Path::new("localisation/bad_l_english.yml"));
+		assert_eq!(parsed.entries.len(), 0);
+		assert_eq!(parsed.parse_issues.len(), 1);
+	}
+
+	#[test]
+	fn localisation_parser_accepts_multiple_language_headers() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("localisation").join("languages.yml");
+		fs::create_dir_all(path.parent().expect("loc parent")).expect("create loc dir");
+		fs::write(
+			&path,
+			"l_english:\n foo:0 \"English\"\nl_german:\n foo:0 \"Deutsch\"\n",
+		)
+		.expect("write loc");
+
+		let parsed =
+			parse_localisation_document("mod", &path, Path::new("localisation/languages.yml"));
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+		assert_eq!(parsed.entries.len(), 2);
+	}
+
+	#[test]
+	fn localisation_parser_ignores_comment_only_files() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("localisation").join("empty_l_german.yml");
+		fs::create_dir_all(path.parent().expect("loc parent")).expect("create loc dir");
+		fs::write(&path, "# comment only\n# l_german:\n").expect("write loc");
+
+		let parsed =
+			parse_localisation_document("mod", &path, Path::new("localisation/empty_l_german.yml"));
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+		assert!(parsed.entries.is_empty());
+	}
+
+	#[test]
+	fn csv_parser_accepts_trailing_delimiter_row() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("map").join("adjacencies.csv");
+		fs::create_dir_all(path.parent().expect("csv parent")).expect("create csv dir");
+		fs::write(
+			&path,
+			"From;To;Type;x;y;z;w;u;v\n-1;-1;;-1;-1;-1;-1;-1;-1;\n",
+		)
+		.expect("write csv");
+
+		let parsed = parse_csv_document("mod", &path, Path::new("map/adjacencies.csv"));
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+		assert_eq!(parsed.rows.len(), 2);
+	}
+
+	#[test]
+	fn csv_parser_decodes_windows_1252_input() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("common").join("names.csv");
+		fs::create_dir_all(path.parent().expect("csv parent")).expect("create csv dir");
+		fs::write(&path, b"Name;Value\nMalm\xf6;1\n").expect("write csv");
+
+		let parsed = parse_csv_document("mod", &path, Path::new("common/names.csv"));
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+		assert_eq!(parsed.rows[1].identity, "Malmö");
+	}
+
+	#[test]
+	fn csv_parser_accepts_definition_standard_and_variant_rows() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("map").join("definition.csv");
+		fs::create_dir_all(path.parent().expect("csv parent")).expect("create csv dir");
+		fs::write(
+			&path,
+			"province;red;green;blue;x;x\n1;128;34;64;Stockholm;x\n3004;189;110;220;Unused1;\n",
+		)
+		.expect("write csv");
+
+		let parsed = parse_csv_document("mod", &path, Path::new("map/definition.csv"));
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+		assert_eq!(parsed.rows.len(), 3);
+	}
+
+	#[test]
+	fn csv_parser_rejects_invalid_definition_column_counts() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("map").join("definition.csv");
+		fs::create_dir_all(path.parent().expect("csv parent")).expect("create csv dir");
+		fs::write(
+			&path,
+			"province;red;green;blue;x;x\n1;128;34;64\n2;0;36;128;Östergötland;x;extra\n",
+		)
+		.expect("write csv");
+
+		let parsed = parse_csv_document("mod", &path, Path::new("map/definition.csv"));
+		assert_eq!(parsed.parse_issues.len(), 2, "{:?}", parsed.parse_issues);
 	}
 }

@@ -936,3 +936,84 @@ fn data_install_downloads_release_asset_from_manifest() {
 		.expect("downloaded entry");
 	assert_eq!(entry["source"], "download");
 }
+
+#[test]
+fn data_build_emits_progress_and_profile_output() {
+	let tmp = TempDir::new().expect("temp dir");
+	let game_root = tmp.path().join("eu4-game");
+	let output_dir = tmp.path().join("bundle");
+	let profile_path = tmp.path().join("build-profile.json");
+	write_game_version(&game_root, "10.1.0-test");
+	fs::create_dir_all(game_root.join("events")).expect("create events");
+	fs::create_dir_all(game_root.join("localisation")).expect("create localisation");
+	fs::write(
+		game_root.join("events").join("base.txt"),
+		"namespace = base\ncountry_event = { id = base.1 }\n",
+	)
+	.expect("write base event");
+	fs::write(
+		game_root.join("localisation").join("base_l_english.yml"),
+		"l_english:\n base.1.t:0 \"Base\"\n",
+	)
+	.expect("write localisation");
+
+	let game_root_str = game_root.display().to_string();
+	let output_dir_str = output_dir.display().to_string();
+	let profile_str = profile_path.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"data",
+			"build",
+			"eu4",
+			"--from-game-path",
+			game_root_str.as_str(),
+			"--game-version",
+			"auto",
+			"--output-dir",
+			output_dir_str.as_str(),
+			"--profile-out",
+			profile_str.as_str(),
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(stderr.contains("[data build] detect_version: start"));
+	assert!(stderr.contains("[data build] encode_snapshot: done"));
+	assert!(stderr.contains("[data build] write_outputs: done"));
+
+	let profile_raw = fs::read_to_string(&profile_path).expect("read profile");
+	let profile: serde_json::Value = serde_json::from_str(&profile_raw).expect("parse profile");
+	let stages = profile["stages"].as_array().expect("stages array");
+	for name in [
+		"detect_version",
+		"collect_inventory",
+		"discover_documents",
+		"parse_documents",
+		"build_semantic_index",
+		"materialize_snapshot",
+		"encode_snapshot",
+		"write_outputs",
+	] {
+		assert!(
+			stages.iter().any(|stage| stage["name"] == name),
+			"missing stage {name}: {profile_raw}"
+		);
+	}
+	assert!(profile["encoded_size_bytes"].as_u64().unwrap_or(0) > 0);
+	assert_eq!(profile["inventory_file_count"], 3);
+	assert_eq!(profile["document_count"], 3);
+	assert_eq!(
+		profile["parse_stats"]["clausewitz_mainline"]["documents"],
+		1
+	);
+	assert_eq!(profile["parse_stats"]["localisation"]["documents"], 1);
+	assert_eq!(profile["parse_stats"]["csv"]["documents"], 0);
+	assert_eq!(profile["parse_stats"]["json"]["documents"], 1);
+	assert_eq!(
+		profile["encoded_sections"]
+			.as_array()
+			.expect("encoded sections array")
+			.len(),
+		5
+	);
+}
