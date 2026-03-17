@@ -231,7 +231,7 @@ fn duplicate_scripted_effect_creates_r007() {
 }
 
 #[test]
-fn unresolved_scripted_effect_creates_r008() {
+fn unresolved_scripted_effect_reports_only_s002() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -251,7 +251,8 @@ fn unresolved_scripted_effect_creates_r008() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R008"));
+	assert!(result.findings.iter().any(|f| f.rule_id == "S002"));
+	assert!(!result.findings.iter().any(|f| f.rule_id == "R008"));
 }
 
 #[test]

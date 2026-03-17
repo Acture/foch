@@ -111,6 +111,8 @@ pub struct CheckResult {
 	pub advisory_findings: Vec<Finding>,
 	pub fatal_errors: Vec<String>,
 	pub analysis_meta: AnalysisMeta,
+	#[serde(skip_serializing, skip_deserializing)]
+	pub parse_issue_report: Vec<ParseIssueReportItem>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub graph_output: Option<String>,
 }
@@ -380,6 +382,27 @@ pub struct LocalisationDefinition {
 	pub column: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalisationValueEncoding {
+	Utf8,
+	Utf16Le,
+	Utf16Be,
+	Gb18030,
+	Windows1252,
+	Eu4DllEscape,
+	RawBytes,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecodedLocalisationValue {
+	pub raw_bytes: Vec<u8>,
+	#[serde(skip_serializing_if = "Option::is_none")]
+	pub decoded_value: Option<String>,
+	pub decode_kind: LocalisationValueEncoding,
+	pub decode_ok: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalisationDuplicate {
 	pub key: String,
@@ -436,6 +459,16 @@ pub struct JsonProperty {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ParseIssue {
+	pub mod_id: String,
+	pub path: PathBuf,
+	pub line: usize,
+	pub column: usize,
+	pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ParseIssueReportItem {
+	pub family: DocumentFamily,
 	pub mod_id: String,
 	pub path: PathBuf,
 	pub line: usize,

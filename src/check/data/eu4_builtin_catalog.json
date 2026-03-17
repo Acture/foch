@@ -20207,6 +20207,93 @@
       "game_count": 8
     }
   ],
+  "builtin_scope_changers": [
+    {
+      "name": "capital_scope",
+      "scopes": [
+        "country",
+        "province"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Changes THIS to the scoped country's capital province."
+      ],
+      "game_count": 1618
+    }
+  ],
+  "builtin_iterators": [
+    {
+      "name": "all_core_province",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Iterates all provinces that are core provinces of the current country scope."
+      ],
+      "game_count": 0
+    }
+  ],
+  "builtin_special_blocks": [
+    {
+      "name": "possible",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan"
+      ],
+      "notes": [
+        "Special trigger-like container block used by achievements and other structured definitions."
+      ],
+      "game_count": 373
+    },
+    {
+      "name": "visible",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan"
+      ],
+      "notes": [
+        "Special trigger-like container block used by achievements and similar definitions."
+      ],
+      "game_count": 0
+    },
+    {
+      "name": "happened",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan"
+      ],
+      "notes": [
+        "Special trigger-like container block describing whether a condition has happened."
+      ],
+      "game_count": 373
+    },
+    {
+      "name": "provinces_to_highlight",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan"
+      ],
+      "notes": [
+        "Special trigger-like container block selecting provinces to highlight for UI guidance."
+      ],
+      "game_count": 539
+    }
+  ],
   "game_only_candidates": [
     {
       "name": "factor",

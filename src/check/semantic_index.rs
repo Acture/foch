@@ -1,6 +1,8 @@
 use crate::check::eu4_builtin::{
-	is_builtin_effect, is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
+	is_builtin_effect, is_builtin_iterator, is_builtin_scope_changer, is_builtin_special_block,
+	is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
 };
+use crate::check::localisation::collect_localisation_definitions_from_root;
 use crate::check::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, ParamBinding,
 	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType,
@@ -16,7 +18,6 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
-use walkdir::WalkDir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScriptFileKind {
@@ -146,92 +147,7 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 }
 
 pub fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<LocalisationDefinition> {
-	let mut definitions = Vec::new();
-
-	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-		if !entry.file_type().is_file() {
-			continue;
-		}
-
-		let path = entry.path();
-		let Some(ext) = path.extension().and_then(|value| value.to_str()) else {
-			continue;
-		};
-		let ext = ext.to_ascii_lowercase();
-		if !matches!(ext.as_str(), "yml" | "yaml") {
-			continue;
-		}
-
-		let Ok(relative) = path.strip_prefix(root) else {
-			continue;
-		};
-		let normalized = relative.to_string_lossy().replace('\\', "/");
-		if !(normalized.starts_with("localisation/")
-			|| normalized.starts_with("common/localisation/"))
-		{
-			continue;
-		}
-
-		let Ok(raw) = fs::read(path) else {
-			continue;
-		};
-		let content = String::from_utf8_lossy(&raw);
-		for (line_idx, line) in content.lines().enumerate() {
-			let line = if line_idx == 0 {
-				line.trim_start_matches('\u{feff}')
-			} else {
-				line
-			};
-			let trimmed = line.trim_start();
-			if trimmed.is_empty() || trimmed.starts_with('#') {
-				continue;
-			}
-			let Some(captures) = localisation_key_regex().captures(trimmed) else {
-				continue;
-			};
-			let Some(key_match) = captures.get(1) else {
-				continue;
-			};
-			let key = key_match.as_str();
-			if key.starts_with("l_") {
-				continue;
-			}
-			let column = line.find(key).map_or(1, |idx| idx + 1);
-			definitions.push(LocalisationDefinition {
-				key: key.to_string(),
-				mod_id: mod_id.to_string(),
-				path: relative.to_path_buf(),
-				line: line_idx + 1,
-				column,
-			});
-		}
-	}
-
-	definitions.sort_by(|lhs, rhs| {
-		(
-			lhs.path.clone(),
-			lhs.line,
-			lhs.column,
-			lhs.key.clone(),
-			lhs.mod_id.clone(),
-		)
-			.cmp(&(
-				rhs.path.clone(),
-				rhs.line,
-				rhs.column,
-				rhs.key.clone(),
-				rhs.mod_id.clone(),
-			))
-	});
-	definitions.dedup_by(|lhs, rhs| {
-		lhs.path == rhs.path
-			&& lhs.line == rhs.line
-			&& lhs.column == rhs.column
-			&& lhs.key == rhs.key
-			&& lhs.mod_id == rhs.mod_id
-	});
-
-	definitions
+	collect_localisation_definitions_from_root(mod_id, root)
 }
 
 fn parse_clausewitz_file_cached(path: &Path) -> (crate::check::parser::ParseResult, bool) {
@@ -800,13 +716,6 @@ fn param_capture_regex() -> &'static Regex {
 	REGEX.get_or_init(|| Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\$").expect("valid param regex"))
 }
 
-fn localisation_key_regex() -> &'static Regex {
-	static REGEX: OnceLock<Regex> = OnceLock::new();
-	REGEX.get_or_init(|| {
-		Regex::new(r#"^([A-Za-z0-9_.-]+)\s*:"#).expect("valid localisation key regex")
-	})
-}
-
 fn top_level_symbol_kind(
 	file_kind: ScriptFileKind,
 	key: &str,
@@ -869,13 +778,15 @@ fn is_scripted_effect_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
-	if is_builtin_effect(key) || is_builtin_trigger(key) {
+	if is_builtin_effect(key)
+		|| is_builtin_trigger(key)
+		|| is_builtin_scope_changer(key)
+		|| is_builtin_iterator(key)
+		|| is_builtin_special_block(key)
+	{
 		return false;
 	}
-	if scope_kind(index, scope_id) == ScopeKind::Trigger {
-		return false;
-	}
-	if is_under_trigger_scope(index, scope_id) {
+	if !is_effect_like_scope(index, scope_id) {
 		return false;
 	}
 	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
@@ -887,6 +798,13 @@ fn is_scripted_effect_call_candidate(
 		return false;
 	}
 	true
+}
+
+fn is_effect_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
+	if scope_kind(index, scope_id) == ScopeKind::Trigger {
+		return false;
+	}
+	!is_under_trigger_scope(index, scope_id)
 }
 
 fn is_under_trigger_scope(index: &SemanticIndex, mut scope_id: usize) -> bool {
@@ -927,6 +845,16 @@ fn create_child_scope(
 		kind = ScopeKind::Trigger;
 	} else if key == "effect" || key == "after" {
 		kind = ScopeKind::Effect;
+	} else if is_builtin_special_block(key) {
+		kind = special_block_scope_kind(key);
+	} else if is_builtin_iterator(key) {
+		kind = ScopeKind::Loop;
+		this_type = iterator_scope_type(key).unwrap_or(this_type);
+		aliases.insert("THIS".to_string(), this_type);
+	} else if is_builtin_scope_changer(key) {
+		kind = ScopeKind::AliasBlock;
+		this_type = scope_changer_target_type(key).unwrap_or(this_type);
+		aliases.insert("THIS".to_string(), this_type);
 	} else if key == "every_owned_province" {
 		kind = ScopeKind::Loop;
 		this_type = ScopeType::Province;
@@ -973,6 +901,27 @@ fn create_child_scope(
 		ctx.path,
 		span.start.line,
 	)
+}
+
+fn iterator_scope_type(key: &str) -> Option<ScopeType> {
+	match key {
+		"all_core_province" => Some(ScopeType::Province),
+		_ => None,
+	}
+}
+
+fn scope_changer_target_type(key: &str) -> Option<ScopeType> {
+	match key {
+		"capital_scope" => Some(ScopeType::Province),
+		_ => None,
+	}
+}
+
+fn special_block_scope_kind(key: &str) -> ScopeKind {
+	match key {
+		"possible" | "visible" | "happened" | "provinces_to_highlight" => ScopeKind::Trigger,
+		_ => ScopeKind::Block,
+	}
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1280,7 +1229,8 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 #[cfg(test)]
 mod tests {
 	use super::{ScriptFileKind, build_semantic_index, classify_script_file, parse_script_file};
-	use crate::check::model::{ScopeType, SymbolKind};
+	use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
+	use crate::check::model::{AnalysisMode, ScopeKind, ScopeType, SymbolKind};
 	use std::fs;
 	use tempfile::TempDir;
 
@@ -1327,5 +1277,95 @@ mod tests {
 				.iter()
 				.any(|scope| scope.this_type == ScopeType::Province)
 		);
+	}
+
+	#[test]
+	fn achievements_builtin_blocks_do_not_become_scripted_effect_calls() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common")).expect("create dir");
+		fs::write(
+			mod_root.join("common").join("achievements.txt"),
+			r#"
+achievement_example = {
+	possible = {
+		capital_scope = {
+			all_core_province = {
+				region = north_america
+			}
+		}
+	}
+	visible = {
+		capital_scope = {
+			region = japan_region
+		}
+	}
+	happened = {
+		all_core_province = {
+			is_core = ROOT
+		}
+	}
+	provinces_to_highlight = {
+		all_core_province = {
+			region = china_region
+		}
+	}
+}
+"#,
+		)
+		.expect("write file");
+
+		let parsed = parse_script_file(
+			"1001",
+			&mod_root,
+			&mod_root.join("common").join("achievements.txt"),
+		)
+		.expect("parsed script");
+
+		let index = build_semantic_index(&[parsed]);
+		for name in [
+			"possible",
+			"visible",
+			"happened",
+			"provinces_to_highlight",
+			"capital_scope",
+			"all_core_province",
+		] {
+			assert!(
+				!index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+				}),
+				"{name} should not be recorded as a scripted effect reference"
+			);
+		}
+		assert!(index.scopes.iter().any(|scope| {
+			scope.kind == ScopeKind::AliasBlock && scope.this_type == ScopeType::Province
+		}));
+		assert!(index
+			.scopes
+			.iter()
+			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province));
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for name in [
+			"possible",
+			"visible",
+			"happened",
+			"provinces_to_highlight",
+			"capital_scope",
+			"all_core_province",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should not produce S002"
+			);
+		}
 	}
 }

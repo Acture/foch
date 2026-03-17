@@ -1,3 +1,4 @@
+use crate::check::analysis_version::analysis_rules_version;
 use crate::check::documents::{
 	build_semantic_index_from_documents, discover_text_documents, parse_discovered_text_documents,
 };
@@ -27,7 +28,7 @@ use walkdir::WalkDir;
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 1;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 2;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -46,6 +47,7 @@ pub struct InstalledBaseDataMetadata {
 	pub schema_version: u32,
 	pub game: String,
 	pub game_version: String,
+	pub analysis_rules_version: String,
 	pub generated_by_cli_version: String,
 	pub source: BaseDataSource,
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +61,7 @@ pub struct InstalledBaseDataEntry {
 	pub schema_version: u32,
 	pub game: String,
 	pub game_version: String,
+	pub analysis_rules_version: String,
 	pub generated_by_cli_version: String,
 	pub source: BaseDataSource,
 	pub install_path: String,
@@ -72,6 +75,7 @@ pub struct InstalledBaseDataEntry {
 pub struct ReleaseDataAsset {
 	pub game: String,
 	pub game_version: String,
+	pub analysis_rules_version: String,
 	pub asset_name: String,
 	pub sha256: String,
 }
@@ -264,6 +268,7 @@ pub struct BaseAnalysisSnapshot {
 	pub schema_version: u32,
 	pub game: String,
 	pub game_version: String,
+	pub analysis_rules_version: String,
 	pub generated_by_cli_version: String,
 	pub inventory_paths: Vec<String>,
 	pub documents: Vec<BaseDocumentRecord>,
@@ -314,6 +319,7 @@ impl From<LegacyBaseAnalysisSnapshot> for BaseAnalysisSnapshot {
 			schema_version: value.schema_version,
 			game: value.game,
 			game_version: value.game_version,
+			analysis_rules_version: analysis_rules_version().to_string(),
 			generated_by_cli_version: value.generated_by_cli_version,
 			inventory_paths: value.inventory_paths,
 			documents: value.documents,
@@ -348,6 +354,7 @@ impl BaseAnalysisSnapshot {
 			schema_version: BASE_DATA_SCHEMA_VERSION,
 			game: game.key().to_string(),
 			game_version: game_version.to_string(),
+			analysis_rules_version: analysis_rules_version().to_string(),
 			generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
 			inventory_paths,
 			documents: index
@@ -872,6 +879,7 @@ struct SnapshotMetadataSection {
 	schema_version: u32,
 	game: String,
 	game_version: String,
+	analysis_rules_version: String,
 	generated_by_cli_version: String,
 }
 
@@ -933,6 +941,7 @@ struct SnapshotMetadataSectionRef<'a> {
 	schema_version: u32,
 	game: &'a str,
 	game_version: &'a str,
+	analysis_rules_version: &'a str,
 	generated_by_cli_version: &'a str,
 }
 
@@ -1091,10 +1100,24 @@ pub fn load_installed_base_snapshot(
 			BASE_DATA_SCHEMA_VERSION, snapshot.schema_version
 		));
 	}
+	if metadata.analysis_rules_version != analysis_rules_version() {
+		return Err(format!(
+			"基础数据分析规则版本不匹配: expected {}, found {}",
+			analysis_rules_version(),
+			metadata.analysis_rules_version
+		));
+	}
 	if snapshot.game != game_key || snapshot.game_version != game_version {
 		return Err(format!(
 			"基础数据内容与请求不匹配: requested {game_key}@{game_version}, found {}@{}",
 			snapshot.game, snapshot.game_version
+		));
+	}
+	if snapshot.analysis_rules_version != analysis_rules_version() {
+		return Err(format!(
+			"基础数据 snapshot 分析规则版本不匹配: expected {}, found {}",
+			analysis_rules_version(),
+			snapshot.analysis_rules_version
 		));
 	}
 
@@ -1142,6 +1165,7 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 				schema_version: metadata.schema_version,
 				game: metadata.game,
 				game_version: metadata.game_version,
+				analysis_rules_version: metadata.analysis_rules_version,
 				generated_by_cli_version: metadata.generated_by_cli_version,
 				source: metadata.source,
 				install_path: version_dir.path().to_string_lossy().replace('\\', "/"),
@@ -1322,6 +1346,7 @@ pub fn install_built_snapshot(
 		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
 		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
 		source,
 		asset_name,
@@ -1354,6 +1379,7 @@ pub fn write_release_artifacts(
 		assets: vec![ReleaseDataAsset {
 			game: snapshot.game.clone(),
 			game_version: snapshot.game_version.clone(),
+			analysis_rules_version: snapshot.analysis_rules_version.clone(),
 			asset_name: asset_name.clone(),
 			sha256: sha256.clone(),
 		}],
@@ -1390,6 +1416,7 @@ pub fn write_snapshot_bundle(
 		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
 		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
 		source,
 		asset_name,
@@ -1424,7 +1451,11 @@ pub fn install_snapshot_from_release(
 ) -> Result<InstalledBaseSnapshot, String> {
 	let release_tag = release_tag.map_or_else(default_release_tag, ToString::to_string);
 	let base_url = release_base_url(&release_tag);
-	let client = Client::builder()
+	let mut client_builder = Client::builder();
+	if base_url.contains("127.0.0.1") || base_url.contains("localhost") {
+		client_builder = client_builder.no_proxy();
+	}
+	let client = client_builder
 		.build()
 		.map_err(|err| format!("无法初始化下载客户端: {err}"))?;
 	let manifest_url = format!("{base_url}/{}", RELEASE_MANIFEST_FILE_NAME);
@@ -1454,6 +1485,13 @@ pub fn install_snapshot_from_release(
 				game_version
 			)
 		})?;
+	if asset.analysis_rules_version != analysis_rules_version() {
+		return Err(format!(
+			"release 基础数据分析规则版本不匹配: expected {}, found {}",
+			analysis_rules_version(),
+			asset.analysis_rules_version
+		));
+	}
 	let asset_url = format!("{base_url}/{}", asset.asset_name);
 	let asset_bytes = client
 		.get(&asset_url)
@@ -1481,11 +1519,19 @@ pub fn install_snapshot_from_release(
 			snapshot.game_version
 		));
 	}
+	if snapshot.analysis_rules_version != asset.analysis_rules_version {
+		return Err(format!(
+			"下载的基础数据分析规则版本不匹配: manifest {}, snapshot {}",
+			asset.analysis_rules_version,
+			snapshot.analysis_rules_version
+		));
+	}
 
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
 		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
 		source: BaseDataSource::Download,
 		asset_name: Some(asset.asset_name),
@@ -1638,6 +1684,7 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 		schema_version: metadata.schema_version,
 		game: metadata.game,
 		game_version: metadata.game_version,
+		analysis_rules_version: metadata.analysis_rules_version,
 		generated_by_cli_version: metadata.generated_by_cli_version,
 		inventory_paths: inventory.inventory_paths,
 		documents: inventory.documents,
@@ -1804,6 +1851,7 @@ fn encode_metadata_section(snapshot: &BaseAnalysisSnapshot) -> Result<SectionEnc
 		schema_version: snapshot.schema_version,
 		game: &snapshot.game,
 		game_version: &snapshot.game_version,
+		analysis_rules_version: &snapshot.analysis_rules_version,
 		generated_by_cli_version: &snapshot.generated_by_cli_version,
 	};
 	encode_section_payload(SnapshotWireSectionName::Metadata, "metadata", &section)

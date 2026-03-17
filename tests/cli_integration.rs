@@ -695,11 +695,93 @@ fn no_game_base_opt_out_allows_check_without_game_root() {
 }
 
 #[test]
+fn check_parse_issue_report_writes_family_annotated_json() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let mod_root = tmp.path().join("7705");
+	let report_path = tmp.path().join("parse-issues.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7705"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a");
+	fs::create_dir_all(mod_root.join("localisation")).expect("create localisation dir");
+	fs::write(
+		mod_root.join("localisation").join("broken_l_english.yml"),
+		"l_english:\nbroken.key:0 Missing quotes\n",
+	)
+	.expect("write broken localisation");
+
+	let playlist_str = playlist_path.display().to_string();
+	let report_str = report_path.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"check",
+			playlist_str.as_str(),
+			"--no-game-base",
+			"--parse-issue-report",
+			report_str.as_str(),
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+
+	let content = fs::read_to_string(report_path).expect("read parse issue report");
+	let parsed: serde_json::Value =
+		serde_json::from_str(&content).expect("parse parse issue report");
+	let items = parsed.as_array().expect("parse issue report array");
+	assert!(!items.is_empty());
+	assert!(
+		items.iter()
+			.any(|item| {
+				item["family"] == "localisation"
+					&& item["path"] == "localisation/broken_l_english.yml"
+			})
+	);
+}
+
+#[test]
+fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let mod_root = tmp.path().join("7706");
+	let cache_dir = tmp.path().join("mod-cache");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7706"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a");
+	fs::create_dir_all(mod_root.join("events")).expect("create events");
+	fs::write(
+		mod_root.join("events").join("event.txt"),
+		"namespace = test\ncountry_event = { id = test.1 }\n",
+	)
+	.expect("write event");
+
+	let playlist_str = playlist_path.display().to_string();
+	let cache_dir_str = cache_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch_with_env(
+		&["check", playlist_str.as_str(), "--no-game-base"],
+		tmp.path(),
+		&[("FOCH_MOD_SNAPSHOT_CACHE_DIR", cache_dir_str.as_str())],
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(collect_gzip_files(&cache_dir).is_empty());
+}
+
+#[test]
 fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let mod_root = tmp.path().join("7711");
 	let cache_dir = tmp.path().join("mod-cache");
+	write_game_version(&tmp.path().join("eu4-game"), "11.0.0-test");
 
 	write_playlist(
 		&playlist_path,
@@ -727,6 +809,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	assert_eq!(code, 0, "stderr: {stderr}");
 	let first_files = collect_gzip_files(&cache_dir);
 	assert_eq!(first_files.len(), 1);
+	assert!(first_files[0].to_string_lossy().contains("rules-v"));
 
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
@@ -758,6 +841,7 @@ fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let cache_dir = tmp.path().join("mod-cache");
+	write_game_version(&tmp.path().join("eu4-game"), "11.1.0-test");
 
 	write_playlist(
 		&playlist_path,
@@ -837,6 +921,12 @@ fn data_build_install_and_list_round_trip() {
 		.expect("installed entry");
 	assert_eq!(entry["source"], "build");
 	assert!(entry["install_path"].as_str().is_some());
+	assert!(
+		entry["analysis_rules_version"]
+			.as_str()
+			.unwrap_or("")
+			.starts_with("rules-v")
+	);
 }
 
 #[test]

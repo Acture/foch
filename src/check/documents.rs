@@ -2,11 +2,11 @@ use crate::check::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
 	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
 };
+use crate::check::localisation::parse_localisation_file;
 use crate::check::semantic_index::{ParsedScriptFile, build_semantic_index, parse_script_file};
 use encoding_rs::WINDOWS_1252;
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -273,115 +273,17 @@ fn parse_localisation_document(
 	absolute_path: &Path,
 	relative_path: &Path,
 ) -> ParsedLocalisationDocument {
-	let mut entries = Vec::new();
-	let mut duplicates = Vec::new();
-	let mut parse_issues = Vec::new();
-	let raw = match fs::read(absolute_path) {
-		Ok(raw) => raw,
-		Err(err) => {
-			parse_issues.push(ParseIssue {
-				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
-				line: 1,
-				column: 1,
-				message: format!("unable to read localisation file: {err}"),
-			});
-			return ParsedLocalisationDocument {
-				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
-				entries,
-				duplicates,
-				parse_issues,
-			};
-		}
-	};
-	let content = String::from_utf8_lossy(&raw);
-	let mut header_seen = false;
-	let mut saw_active_line = false;
-	let mut header_issue_emitted = false;
-	let mut seen_keys = HashMap::<String, usize>::new();
-
-	for (line_idx, line) in content.lines().enumerate() {
-		let line_no = line_idx + 1;
-		let line = if line_idx == 0 {
-			line.trim_start_matches('\u{feff}')
-		} else {
-			line
-		};
-		let trimmed = line.trim_start();
-		if trimmed.is_empty() || trimmed.starts_with('#') {
-			continue;
-		}
-		saw_active_line = true;
-
-		if parse_localisation_header(trimmed).is_some() {
-			header_seen = true;
-			continue;
-		}
-
-		if !header_seen {
-			if !header_issue_emitted {
-				parse_issues.push(ParseIssue {
-					mod_id: mod_id.to_string(),
-					path: relative_path.to_path_buf(),
-					line: line_no,
-					column: 1,
-					message: "missing or invalid localisation header".to_string(),
-				});
-				header_issue_emitted = true;
-			}
-			continue;
-		}
-
-		let Some(entry) = parse_localisation_entry(trimmed) else {
-			parse_issues.push(ParseIssue {
-				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
-				line: line_no,
-				column: 1,
-				message: "invalid localisation entry".to_string(),
-			});
-			continue;
-		};
-		let key = entry.key;
-		let column = line.find(&key).map_or(1, |idx| idx + 1);
-		let entry = LocalisationDefinition {
-			key: key.clone(),
-			mod_id: mod_id.to_string(),
-			path: relative_path.to_path_buf(),
-			line: line_no,
-			column,
-		};
-
-		if let Some(first_line) = seen_keys.insert(key.clone(), line_no) {
-			duplicates.push(LocalisationDuplicate {
-				key,
-				mod_id: mod_id.to_string(),
-				path: relative_path.to_path_buf(),
-				first_line,
-				duplicate_line: line_no,
-			});
-		}
-
-		entries.push(entry);
-	}
-
-	if saw_active_line && !header_seen && !header_issue_emitted {
-		parse_issues.push(ParseIssue {
-			mod_id: mod_id.to_string(),
-			path: relative_path.to_path_buf(),
-			line: 1,
-			column: 1,
-			message: "missing localisation header".to_string(),
-		});
-	}
-
+	let parsed = parse_localisation_file(mod_id, absolute_path, relative_path);
 	ParsedLocalisationDocument {
 		mod_id: mod_id.to_string(),
 		path: relative_path.to_path_buf(),
-		entries,
-		duplicates,
-		parse_issues,
+		entries: parsed
+			.entries
+			.iter()
+			.map(|item| item.definition.clone())
+			.collect(),
+		duplicates: parsed.duplicates,
+		parse_issues: parsed.parse_issues,
 	}
 }
 
@@ -641,6 +543,16 @@ fn is_excluded_text_path(relative_path: &Path) -> bool {
 			return true;
 		}
 	}
+	let file_name = relative_path
+		.file_name()
+		.and_then(|value| value.to_str())
+		.map(|value| value.to_ascii_lowercase());
+	if file_name
+		.as_deref()
+		.is_some_and(|value| matches!(value, "steam.txt" | "描述.txt"))
+	{
+		return true;
+	}
 	false
 }
 
@@ -696,70 +608,6 @@ fn document_parse_details(doc: &ParsedTextDocument) -> DocumentParseDetails {
 			parse_ok: file.parse_issues.is_empty(),
 		},
 	}
-}
-
-struct ParsedLocalisationEntry<'a> {
-	key: String,
-	#[allow(dead_code)]
-	version: &'a str,
-	#[allow(dead_code)]
-	raw_value: &'a str,
-	#[allow(dead_code)]
-	trailing_comment: Option<&'a str>,
-}
-
-fn parse_localisation_header(line: &str) -> Option<&str> {
-	let trimmed = line.trim();
-	let body = if let Some((before, _comment)) = trimmed.split_once('#') {
-		before.trim_end()
-	} else {
-		trimmed
-	};
-	let lang = body.strip_prefix("l_")?.strip_suffix(':')?;
-	if lang.is_empty()
-		|| !lang
-			.chars()
-			.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-	{
-		return None;
-	}
-	Some(lang)
-}
-
-fn parse_localisation_entry(line: &str) -> Option<ParsedLocalisationEntry<'_>> {
-	let trimmed = line.trim_start();
-	let (key, remainder) = trimmed.split_once(':')?;
-	if key.is_empty()
-		|| !key
-			.chars()
-			.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
-	{
-		return None;
-	}
-
-	let remainder = remainder.trim_start();
-	let version_end = remainder
-		.find(|ch: char| !ch.is_ascii_digit())
-		.unwrap_or(remainder.len());
-	if version_end == 0 {
-		return None;
-	}
-	let version = &remainder[..version_end];
-	let remainder = remainder[version_end..].trim_start();
-	let value_start = remainder.find('"')?;
-	let value_region = &remainder[value_start + 1..];
-	let value_end = value_region.rfind('"')?;
-	let raw_value = &value_region[..value_end];
-	let trailing = value_region[value_end + 1..].trim_start();
-	if !trailing.is_empty() && !trailing.starts_with('#') {
-		return None;
-	}
-	Some(ParsedLocalisationEntry {
-		key: key.to_string(),
-		version,
-		raw_value,
-		trailing_comment: (!trailing.is_empty()).then_some(trailing),
-	})
 }
 
 #[cfg(test)]
@@ -832,6 +680,23 @@ mod tests {
 		fs::write(tmp.path().join("licenses").join("LUA.txt"), "license").expect("write license");
 		fs::write(tmp.path().join("patchnotes").join("1.0.txt"), "patchnotes")
 			.expect("write patchnotes");
+		fs::write(
+			tmp.path().join("events").join("real.txt"),
+			"namespace = test",
+		)
+		.expect("write event");
+
+		let docs = discover_text_documents(tmp.path());
+		assert_eq!(docs.len(), 1);
+		assert_eq!(docs[0].relative_path, Path::new("events/real.txt"));
+	}
+
+	#[test]
+	fn discovery_excludes_known_description_text_files() {
+		let tmp = TempDir::new().expect("temp dir");
+		fs::create_dir_all(tmp.path().join("events")).expect("create events");
+		fs::write(tmp.path().join("steam.txt"), "steam bbcode").expect("write steam");
+		fs::write(tmp.path().join("描述.txt"), "mod description").expect("write desc");
 		fs::write(
 			tmp.path().join("events").join("real.txt"),
 			"namespace = test",
