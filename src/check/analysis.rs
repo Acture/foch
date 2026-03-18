@@ -249,9 +249,12 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 	.into_iter()
 	.collect();
 
+	let scripted_effect_scope_map = build_scripted_effect_scope_map(index);
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
-		if usage.this_type != ScopeType::Unknown {
+		if effective_usage_scope_type(index, &scripted_effect_scope_map, usage.scope_id)
+			!= ScopeType::Unknown
+		{
 			continue;
 		}
 		if !type_sensitive_keys.contains(usage.key.as_str()) {
@@ -284,9 +287,12 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 	.into_iter()
 	.collect();
 
+	let scripted_effect_scope_map = build_scripted_effect_scope_map(index);
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
-		if usage.this_type != ScopeType::Province {
+		if effective_usage_scope_type(index, &scripted_effect_scope_map, usage.scope_id)
+			!= ScopeType::Province
+		{
 			continue;
 		}
 		if !country_only_keys.contains(usage.key.as_str()) {
@@ -760,6 +766,46 @@ fn enclosing_scripted_effect_definition(
 			return Some(*def_idx);
 		}
 		let parent = index.scopes.get(scope_id).and_then(|scope| scope.parent)?;
+		scope_id = parent;
+	}
+}
+
+fn build_scripted_effect_scope_map(index: &SemanticIndex) -> HashMap<usize, usize> {
+	index
+		.definitions
+		.iter()
+		.enumerate()
+		.filter_map(|(idx, definition)| {
+			(definition.kind == SymbolKind::ScriptedEffect).then_some((definition.scope_id, idx))
+		})
+		.collect()
+}
+
+fn effective_usage_scope_type(
+	index: &SemanticIndex,
+	scope_to_definition: &HashMap<usize, usize>,
+	mut scope_id: usize,
+) -> ScopeType {
+	loop {
+		let Some(scope) = index.scopes.get(scope_id) else {
+			return ScopeType::Unknown;
+		};
+		if scope.this_type != ScopeType::Unknown {
+			return scope.this_type;
+		}
+		if let Some(def_idx) = scope_to_definition.get(&scope_id) {
+			let inferred = index
+				.definitions
+				.get(*def_idx)
+				.map(|definition| definition.inferred_this_type)
+				.unwrap_or(ScopeType::Unknown);
+			if inferred != ScopeType::Unknown {
+				return inferred;
+			}
+		}
+		let Some(parent) = scope.parent else {
+			return ScopeType::Unknown;
+		};
 		scope_id = parent;
 	}
 }
