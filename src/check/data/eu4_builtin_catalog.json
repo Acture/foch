@@ -20209,6 +20209,20 @@
   ],
   "builtin_scope_changers": [
     {
+      "name": "owner",
+      "scopes": [
+        "province"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Changes THIS from a province-like scope to the owning country scope."
+      ],
+      "game_count": 3627
+    },
+    {
       "name": "capital_scope",
       "scopes": [
         "country",
@@ -20236,6 +20250,62 @@
       ],
       "notes": [
         "Iterates all provinces that are core provinces of the current country scope."
+      ],
+      "game_count": 0
+    },
+    {
+      "name": "all_owned_province",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Iterates all provinces directly owned by the current country scope."
+      ],
+      "game_count": 0
+    },
+    {
+      "name": "any_owned_province",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Iterates owned provinces in a trigger-like any-match context."
+      ],
+      "game_count": 2016
+    },
+    {
+      "name": "all_state_province",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Iterates provinces in the current country's states."
+      ],
+      "game_count": 0
+    },
+    {
+      "name": "all_subject_country",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Iterates subject countries of the current country scope."
       ],
       "game_count": 0
     }
@@ -20292,6 +20362,19 @@
         "Special trigger-like container block selecting provinces to highlight for UI guidance."
       ],
       "game_count": 539
+    },
+    {
+      "name": "exclude_from_progress",
+      "scopes": [
+        "province"
+      ],
+      "sources": [
+        "game_scan"
+      ],
+      "notes": [
+        "Special trigger-like container block used inside age progress iterators."
+      ],
+      "game_count": 0
     }
   ],
   "game_only_candidates": [

@@ -232,8 +232,11 @@ mod tests {
 	#[test]
 	fn builtin_symbol_taxonomy_includes_scope_and_iterator_examples() {
 		assert!(is_builtin_scope_changer("capital_scope"));
+		assert!(is_builtin_scope_changer("owner"));
 		assert!(is_builtin_iterator("all_core_province"));
+		assert!(is_builtin_iterator("all_owned_province"));
 		assert!(is_builtin_special_block("possible"));
+		assert!(is_builtin_special_block("exclude_from_progress"));
 		assert!(!builtin_catalog_hash().is_empty());
 	}
 }
