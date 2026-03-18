@@ -12,7 +12,7 @@ use crate::check::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_cla
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -40,6 +40,8 @@ pub enum ScriptFileKind {
 	CbTypes,
 	GovernmentNames,
 	CustomizableLocalization,
+	Missions,
+	NewDiplomaticActions,
 	Ui,
 	Other,
 }
@@ -77,7 +79,7 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 	} else if normalized.starts_with("common/diplomatic_actions/") {
 		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/new_diplomatic_actions/") {
-		ScriptFileKind::DiplomaticActions
+		ScriptFileKind::NewDiplomaticActions
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
 	} else if normalized.starts_with("common/defines/") {
@@ -108,6 +110,8 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::GovernmentNames
 	} else if normalized.starts_with("customizable_localization/") {
 		ScriptFileKind::CustomizableLocalization
+	} else if normalized.starts_with("missions/") {
+		ScriptFileKind::Missions
 	} else if normalized.starts_with("interface/")
 		|| normalized.starts_with("common/interface/")
 		|| normalized.starts_with("gfx/")
@@ -126,6 +130,9 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::Decisions => "decisions".to_string(),
 		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
 		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
+		ScriptFileKind::NewDiplomaticActions => {
+			module_with_tail(&parts, 2, "new_diplomatic_actions")
+		}
 		ScriptFileKind::TriggeredModifiers => module_with_tail(&parts, 2, "triggered_modifiers"),
 		ScriptFileKind::Defines => module_with_tail(&parts, 2, "defines"),
 		ScriptFileKind::Achievements => "achievements".to_string(),
@@ -145,10 +152,54 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::CustomizableLocalization => {
 			module_with_tail(&parts, 1, "customizable_localization")
 		}
+		ScriptFileKind::Missions => "missions".to_string(),
 		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
 	module.replace('-', "_")
+}
+
+#[derive(Default)]
+struct MapGroupLookup {
+	province_sets: HashSet<String>,
+}
+
+impl MapGroupLookup {
+	fn contains(&self, key: &str) -> bool {
+		self.province_sets.contains(key)
+	}
+}
+
+fn collect_map_groups(files: &[ParsedScriptFile]) -> MapGroupLookup {
+	let mut lookup = MapGroupLookup::default();
+	for file in files {
+		if !is_map_group_file(&file.relative_path) {
+			continue;
+		}
+		for stmt in &file.ast.statements {
+			if let AstStatement::Assignment {
+				key,
+				value: AstValue::Block { .. },
+				..
+			} = stmt
+				&& !is_keyword(key)
+			{
+				lookup.province_sets.insert(key.clone());
+			}
+		}
+	}
+	lookup
+}
+
+fn is_map_group_file(relative_path: &Path) -> bool {
+	matches!(
+		relative_path.to_string_lossy().replace('\\', "/").as_str(),
+		"map/area.txt"
+			| "map/region.txt"
+			| "map/superregion.txt"
+			| "map/continent.txt"
+			| "map/provincegroup.txt"
+	)
 }
 
 fn module_with_tail(parts: &[&str], prefix_len: usize, base: &str) -> String {
@@ -284,6 +335,7 @@ fn store_parse_cache_entry(path: &Path, entry: &ParseCacheEntry) {
 
 pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 	let mut index = SemanticIndex::default();
+	let map_groups = collect_map_groups(files);
 	for file in files {
 		index.documents.push(DocumentRecord {
 			mod_id: file.mod_id.clone(),
@@ -292,17 +344,24 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 			parse_ok: file.parse_issues.is_empty(),
 		});
 		index.parse_issues.extend(file.parse_issues.clone());
-		build_file_index(file, &mut index);
+		build_file_index(file, &map_groups, &mut index);
 	}
 	infer_definition_scope_from_references(&mut index);
 	index
 }
 
-fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
+fn build_file_index(
+	file: &ParsedScriptFile,
+	map_groups: &MapGroupLookup,
+	index: &mut SemanticIndex,
+) {
 	let mut aliases = HashMap::new();
 	let root_this_type = root_scope_type_for_file_kind(file.file_kind);
 	match file.file_kind {
-		ScriptFileKind::DiplomaticActions | ScriptFileKind::Buildings => {
+		ScriptFileKind::DiplomaticActions
+		| ScriptFileKind::NewDiplomaticActions
+		| ScriptFileKind::Buildings
+		| ScriptFileKind::CbTypes => {
 			aliases.insert("THIS".to_string(), root_this_type);
 			aliases.insert("ROOT".to_string(), root_this_type);
 			aliases.insert("FROM".to_string(), ScopeType::Country);
@@ -329,6 +388,7 @@ fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
 		path: &file.relative_path,
 		file_kind: file.file_kind,
 		module_name: &file.module_name,
+		map_groups,
 	};
 
 	walk_statements(
@@ -346,6 +406,7 @@ struct BuildContext<'a> {
 	path: &'a Path,
 	file_kind: ScriptFileKind,
 	module_name: &'a str,
+	map_groups: &'a MapGroupLookup,
 }
 
 fn walk_statements(
@@ -437,7 +498,7 @@ fn walk_statements(
 					}
 
 					if definition_kind.is_none()
-						&& is_scripted_effect_call_candidate(ctx.file_kind, key, scope_id, index)
+						&& is_scripted_effect_call_candidate(ctx, ctx.file_kind, key, scope_id, index)
 					{
 						let mut provided = collect_provided_params(items);
 						provided.names.sort();
@@ -569,6 +630,7 @@ fn handle_country_event_block(
 		path: ctx.path,
 		file_kind: ctx.file_kind,
 		module_name: ctx.module_name,
+		map_groups: ctx.map_groups,
 	};
 	walk_statements(items, index, event_scope, &mut child_ctx, None, namespace);
 }
@@ -786,6 +848,11 @@ fn top_level_symbol_kind(
 			Some(SymbolKind::Decision)
 		}
 		ScriptFileKind::DiplomaticActions if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
+		ScriptFileKind::NewDiplomaticActions
+			if !is_keyword(key) && !is_new_diplomatic_actions_container_key(key) =>
+		{
+			Some(SymbolKind::DiplomaticAction)
+		}
 		ScriptFileKind::TriggeredModifiers if !is_keyword(key) => {
 			Some(SymbolKind::TriggeredModifier)
 		}
@@ -825,9 +892,14 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::CbTypes
 		| ScriptFileKind::GovernmentNames
 		| ScriptFileKind::CustomizableLocalization => ScopeType::Country,
+		ScriptFileKind::Missions | ScriptFileKind::NewDiplomaticActions => ScopeType::Country,
 		ScriptFileKind::Buildings | ScriptFileKind::GreatProjects => ScopeType::Province,
 		_ => ScopeType::Unknown,
 	}
+}
+
+fn is_new_diplomatic_actions_container_key(key: &str) -> bool {
+	matches!(key, "static_actions")
 }
 
 fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
@@ -844,6 +916,7 @@ fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 }
 
 fn is_scripted_effect_call_candidate(
+	ctx: &BuildContext<'_>,
 	file_kind: ScriptFileKind,
 	key: &str,
 	scope_id: usize,
@@ -853,6 +926,9 @@ fn is_scripted_effect_call_candidate(
 		return false;
 	}
 	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
+	if is_map_group_scope_key(ctx, key, scope_id, index) {
 		return false;
 	}
 	if is_builtin_effect(key)
@@ -948,6 +1024,10 @@ fn create_child_scope(
 		kind = ScopeKind::Effect;
 	} else if let Some(file_kind_scope_kind) = file_kind_container_scope_kind(ctx.file_kind, key) {
 		kind = file_kind_scope_kind;
+	} else if is_map_group_scope_key(ctx, key, parent_scope_id, index) {
+		kind = ScopeKind::Loop;
+		this_type = ScopeType::Province;
+		aliases.insert("THIS".to_string(), ScopeType::Province);
 	} else if is_builtin_special_block(key) {
 		kind = special_block_scope_kind(key);
 	} else if is_builtin_iterator(key) {
@@ -1016,11 +1096,46 @@ fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	}
 }
 
+fn is_map_group_scope_key(
+	ctx: &BuildContext<'_>,
+	key: &str,
+	scope_id: usize,
+	index: &SemanticIndex,
+) -> bool {
+	if ctx.map_groups.contains(key) {
+		return true;
+	}
+	matches!(ctx.file_kind, ScriptFileKind::Missions | ScriptFileKind::CbTypes)
+		&& scope_kind(index, scope_id) != ScopeKind::File
+		&& looks_like_map_group_key(key)
+}
+
+fn looks_like_map_group_key(key: &str) -> bool {
+	key.ends_with("_area")
+		|| key.ends_with("_region")
+		|| key.ends_with("_superregion")
+		|| key.ends_with("_provincegroup")
+}
+
 fn file_kind_container_scope_kind(
 	file_kind: ScriptFileKind,
 	key: &str,
 ) -> Option<ScopeKind> {
 	match file_kind {
+		ScriptFileKind::Missions => match key {
+			"potential_on_load"
+			| "potential"
+			| "trigger"
+			| "provinces_to_highlight"
+			| "completed_by" => Some(ScopeKind::Trigger),
+			"effect" | "on_completed" | "on_cancelled" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::NewDiplomaticActions => match key {
+			"is_visible" | "is_allowed" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"on_accept" | "on_decline" | "add_entry" => Some(ScopeKind::Effect),
+			_ => None,
+		},
 		ScriptFileKind::Ages => match key {
 			"can_start" | "custom_trigger_tooltip" | "calc_true_if" | "ai_will_do" => {
 				Some(ScopeKind::Trigger)
@@ -1064,6 +1179,12 @@ fn file_kind_container_scope_kind(
 				Some(ScopeKind::Effect)
 			}
 			"ai_will_do" => Some(ScopeKind::Trigger),
+			_ => None,
+		},
+		ScriptFileKind::CbTypes => match key {
+			"prerequisites_self" | "prerequisites" | "can_use" | "can_take_province" => {
+				Some(ScopeKind::Trigger)
+			}
 			_ => None,
 		},
 		ScriptFileKind::GovernmentNames | ScriptFileKind::CustomizableLocalization => match key {
@@ -1474,7 +1595,11 @@ mod tests {
 			classify_script_file(std::path::Path::new(
 				"common/new_diplomatic_actions/00_actions.txt"
 			)),
-			ScriptFileKind::DiplomaticActions
+			ScriptFileKind::NewDiplomaticActions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("missions/example.txt")),
+			ScriptFileKind::Missions
 		);
 	}
 
@@ -1767,6 +1892,267 @@ achievement_example = {
 				"{path} should have a typed root scope"
 			);
 		}
+	}
+
+	#[test]
+	fn missions_and_map_groups_do_not_become_scripted_effect_calls() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("missions")).expect("create missions");
+		fs::create_dir_all(mod_root.join("map")).expect("create map");
+		fs::write(
+			mod_root.join("map").join("area.txt"),
+			"finland_area = { 1 }\n",
+		)
+		.expect("write area");
+		fs::write(
+			mod_root.join("map").join("region.txt"),
+			"baltic_region = { areas = { finland_area } }\n",
+		)
+		.expect("write region");
+		fs::write(
+			mod_root.join("missions").join("missions.txt"),
+			r#"
+mos_rus_handle_succession = {
+	potential_on_load = {
+		has_dlc = "Domination"
+	}
+	mos_rus_window_on_the_west = {
+		required_missions = { mos_prev }
+		trigger = {
+			baltic_region = {
+				type = all
+				owned_by = ROOT
+			}
+		}
+		effect = {
+			finland_area = {
+				add_prestige = 1
+			}
+			missing_effect = { FLAG = TEST }
+		}
+		ai_weight = {
+			factor = 100
+		}
+	}
+}
+"#,
+		)
+		.expect("write missions");
+
+		let parsed = [
+			parse_script_file("1004", &mod_root, &mod_root.join("map").join("area.txt"))
+				.expect("parsed area"),
+			parse_script_file("1004", &mod_root, &mod_root.join("map").join("region.txt"))
+				.expect("parsed region"),
+			parse_script_file(
+				"1004",
+				&mod_root,
+				&mod_root.join("missions").join("missions.txt"),
+			)
+			.expect("parsed missions"),
+		];
+		let index = build_semantic_index(&parsed);
+		for name in [
+			"potential_on_load",
+			"mos_rus_window_on_the_west",
+			"required_missions",
+			"baltic_region",
+			"finland_area",
+			"ai_weight",
+		] {
+			assert!(
+				!index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+				}),
+				"{name} should not be recorded as a scripted effect reference"
+			);
+		}
+		assert!(index.scopes.iter().any(|scope| {
+			scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province
+		}));
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for name in [
+			"potential_on_load",
+			"mos_rus_window_on_the_west",
+			"required_missions",
+			"baltic_region",
+			"finland_area",
+			"ai_weight",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should not produce S002"
+			);
+		}
+		assert!(diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "S002" && finding.message.contains("missing_effect")
+		}));
+	}
+
+	#[test]
+	fn new_diplomatic_actions_containers_preserve_nested_effect_calls() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("new_diplomatic_actions"))
+			.expect("create new diplomatic actions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+			r#"
+static_actions = {
+	royal_marriage = {
+		alert_index = 1
+	}
+}
+
+sell_indulgence = {
+	is_visible = { always = yes }
+	is_allowed = { always = yes }
+	on_accept = {
+		missing_effect = { FLAG = TEST }
+	}
+	on_decline = {}
+	ai_acceptance = {
+		add_entry = {
+			name = TRUST
+			change_variable = { which = score value = 1 }
+			missing_inner_effect = { FLAG = TEST }
+		}
+	}
+}
+"#,
+		)
+		.expect("write actions");
+
+		let parsed = [parse_script_file(
+			"1005",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+		)
+		.expect("parsed actions")];
+		let index = build_semantic_index(&parsed);
+		assert!(index.definitions.iter().any(|definition| {
+			definition.kind == SymbolKind::DiplomaticAction && definition.local_name == "sell_indulgence"
+		}));
+		for name in [
+			"static_actions",
+			"is_visible",
+			"is_allowed",
+			"on_accept",
+			"on_decline",
+			"ai_acceptance",
+			"add_entry",
+			"royal_marriage",
+		] {
+			assert!(
+				!index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+				}),
+				"{name} should not be recorded as a scripted effect reference"
+			);
+		}
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for name in [
+			"static_actions",
+			"is_visible",
+			"is_allowed",
+			"on_accept",
+			"on_decline",
+			"ai_acceptance",
+			"add_entry",
+			"royal_marriage",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should not produce S002"
+			);
+		}
+		for name in ["missing_effect", "missing_inner_effect"] {
+			assert!(diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S002" && finding.message.contains(name)
+			}));
+		}
+	}
+
+	#[test]
+	fn cb_types_seed_country_aliases_and_trigger_scopes() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("cb_types")).expect("create cb types");
+		fs::write(
+			mod_root.join("common").join("cb_types").join("cb.txt"),
+			r#"
+cb_restore = {
+	prerequisites_self = {
+		capital_scope = {
+			owner = {
+				government = monarchy
+			}
+			is_core = ROOT
+		}
+	}
+	prerequisites = {
+		FROM = {
+			government = monarchy
+		}
+	}
+	can_use = {
+		ROOT = {
+			legitimacy = 50
+		}
+	}
+}
+"#,
+		)
+		.expect("write cb types");
+
+		let parsed = [parse_script_file(
+			"1006",
+			&mod_root,
+			&mod_root.join("common").join("cb_types").join("cb.txt"),
+		)
+		.expect("parsed cb types")];
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001" && finding.path == Some("common/cb_types/cb.txt".into())
+			}),
+			"cb types should no longer keep ROOT/FROM/owner/capital_scope under Unknown scope"
+		);
+		assert!(
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S002" && finding.path == Some("common/cb_types/cb.txt".into())
+			}),
+			"cb type trigger containers should not become scripted effect calls"
+		);
 	}
 
 	#[test]
