@@ -11,8 +11,8 @@ use crate::check::model::{
 use crate::check::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_file};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -27,6 +27,19 @@ pub enum ScriptFileKind {
 	DiplomaticActions,
 	TriggeredModifiers,
 	Defines,
+	Achievements,
+	Ages,
+	Buildings,
+	Ideas,
+	GreatProjects,
+	GovernmentReforms,
+	Cultures,
+	CustomGui,
+	AdvisorTypes,
+	EventModifiers,
+	CbTypes,
+	GovernmentNames,
+	CustomizableLocalization,
 	Ui,
 	Other,
 }
@@ -63,10 +76,38 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::ScriptedEffects
 	} else if normalized.starts_with("common/diplomatic_actions/") {
 		ScriptFileKind::DiplomaticActions
+	} else if normalized.starts_with("common/new_diplomatic_actions/") {
+		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
 	} else if normalized.starts_with("common/defines/") {
 		ScriptFileKind::Defines
+	} else if normalized == "common/achievements.txt" {
+		ScriptFileKind::Achievements
+	} else if normalized.starts_with("common/ages/") {
+		ScriptFileKind::Ages
+	} else if normalized.starts_with("common/buildings/") {
+		ScriptFileKind::Buildings
+	} else if normalized.starts_with("common/ideas/") {
+		ScriptFileKind::Ideas
+	} else if normalized.starts_with("common/great_projects/") {
+		ScriptFileKind::GreatProjects
+	} else if normalized.starts_with("common/government_reforms/") {
+		ScriptFileKind::GovernmentReforms
+	} else if normalized.starts_with("common/cultures/") {
+		ScriptFileKind::Cultures
+	} else if normalized.starts_with("common/custom_gui/") {
+		ScriptFileKind::CustomGui
+	} else if normalized.starts_with("common/advisortypes/") {
+		ScriptFileKind::AdvisorTypes
+	} else if normalized.starts_with("common/event_modifiers/") {
+		ScriptFileKind::EventModifiers
+	} else if normalized.starts_with("common/cb_types/") {
+		ScriptFileKind::CbTypes
+	} else if normalized.starts_with("common/government_names/") {
+		ScriptFileKind::GovernmentNames
+	} else if normalized.starts_with("customizable_localization/") {
+		ScriptFileKind::CustomizableLocalization
 	} else if normalized.starts_with("interface/")
 		|| normalized.starts_with("common/interface/")
 		|| normalized.starts_with("gfx/")
@@ -87,6 +128,23 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
 		ScriptFileKind::TriggeredModifiers => module_with_tail(&parts, 2, "triggered_modifiers"),
 		ScriptFileKind::Defines => module_with_tail(&parts, 2, "defines"),
+		ScriptFileKind::Achievements => "achievements".to_string(),
+		ScriptFileKind::Ages => module_with_tail(&parts, 2, "ages"),
+		ScriptFileKind::Buildings => module_with_tail(&parts, 2, "buildings"),
+		ScriptFileKind::Ideas => module_with_tail(&parts, 2, "ideas"),
+		ScriptFileKind::GreatProjects => module_with_tail(&parts, 2, "great_projects"),
+		ScriptFileKind::GovernmentReforms => {
+			module_with_tail(&parts, 2, "government_reforms")
+		}
+		ScriptFileKind::Cultures => module_with_tail(&parts, 2, "cultures"),
+		ScriptFileKind::CustomGui => module_with_tail(&parts, 2, "custom_gui"),
+		ScriptFileKind::AdvisorTypes => module_with_tail(&parts, 2, "advisortypes"),
+		ScriptFileKind::EventModifiers => module_with_tail(&parts, 2, "event_modifiers"),
+		ScriptFileKind::CbTypes => module_with_tail(&parts, 2, "cb_types"),
+		ScriptFileKind::GovernmentNames => module_with_tail(&parts, 2, "government_names"),
+		ScriptFileKind::CustomizableLocalization => {
+			module_with_tail(&parts, 1, "customizable_localization")
+		}
 		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
@@ -242,19 +300,16 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 
 fn build_file_index(file: &ParsedScriptFile, index: &mut SemanticIndex) {
 	let mut aliases = HashMap::new();
+	let root_this_type = root_scope_type_for_file_kind(file.file_kind);
 	match file.file_kind {
-		ScriptFileKind::DiplomaticActions => {
-			aliases.insert("THIS".to_string(), ScopeType::Country);
-			aliases.insert("ROOT".to_string(), ScopeType::Country);
+		ScriptFileKind::DiplomaticActions | ScriptFileKind::Buildings => {
+			aliases.insert("THIS".to_string(), root_this_type);
+			aliases.insert("ROOT".to_string(), root_this_type);
 			aliases.insert("FROM".to_string(), ScopeType::Country);
 		}
-		ScriptFileKind::Decisions => {
-			aliases.insert("THIS".to_string(), ScopeType::Country);
-			aliases.insert("ROOT".to_string(), ScopeType::Country);
-		}
 		_ => {
-			aliases.insert("THIS".to_string(), ScopeType::Unknown);
-			aliases.insert("ROOT".to_string(), ScopeType::Unknown);
+			aliases.insert("THIS".to_string(), root_this_type);
+			aliases.insert("ROOT".to_string(), root_this_type);
 		}
 	}
 
@@ -756,6 +811,25 @@ fn symbol_definition_kind(
 	None
 }
 
+fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
+	match file_kind {
+		ScriptFileKind::Decisions
+		| ScriptFileKind::DiplomaticActions
+		| ScriptFileKind::Achievements
+		| ScriptFileKind::Ages
+		| ScriptFileKind::Ideas
+		| ScriptFileKind::GovernmentReforms
+		| ScriptFileKind::CustomGui
+		| ScriptFileKind::AdvisorTypes
+		| ScriptFileKind::EventModifiers
+		| ScriptFileKind::CbTypes
+		| ScriptFileKind::GovernmentNames
+		| ScriptFileKind::CustomizableLocalization => ScopeType::Country,
+		ScriptFileKind::Buildings | ScriptFileKind::GreatProjects => ScopeType::Province,
+		_ => ScopeType::Unknown,
+	}
+}
+
 fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 	let Some(scope) = index.scopes.get(scope_id) else {
 		return false;
@@ -778,6 +852,9 @@ fn is_scripted_effect_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
+	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
 	if is_builtin_effect(key)
 		|| is_builtin_trigger(key)
 		|| is_builtin_scope_changer(key)
@@ -787,6 +864,9 @@ fn is_scripted_effect_call_candidate(
 		return false;
 	}
 	if !is_effect_like_scope(index, scope_id) {
+		return false;
+	}
+	if !allows_generic_scripted_effect_fallback(scope_kind(index, scope_id)) {
 		return false;
 	}
 	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
@@ -805,6 +885,16 @@ fn is_effect_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 		return false;
 	}
 	!is_under_trigger_scope(index, scope_id)
+}
+
+fn allows_generic_scripted_effect_fallback(scope_kind: ScopeKind) -> bool {
+	matches!(
+		scope_kind,
+		ScopeKind::Effect
+			| ScopeKind::AliasBlock
+			| ScopeKind::Loop
+			| ScopeKind::ScriptedEffect
+	)
 }
 
 fn is_under_trigger_scope(index: &SemanticIndex, mut scope_id: usize) -> bool {
@@ -843,8 +933,21 @@ fn create_child_scope(
 		|| key == "hidden_trigger"
 	{
 		kind = ScopeKind::Trigger;
-	} else if key == "effect" || key == "after" {
+	} else if matches!(
+		key,
+		"effect"
+			| "after"
+			| "hidden_effect"
+			| "immediate"
+			| "on_add"
+			| "on_remove"
+			| "on_start"
+			| "on_end"
+			| "on_monthly"
+	) {
 		kind = ScopeKind::Effect;
+	} else if let Some(file_kind_scope_kind) = file_kind_container_scope_kind(ctx.file_kind, key) {
+		kind = file_kind_scope_kind;
 	} else if is_builtin_special_block(key) {
 		kind = special_block_scope_kind(key);
 	} else if is_builtin_iterator(key) {
@@ -905,7 +1008,68 @@ fn create_child_scope(
 
 fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	match key {
-		"all_core_province" => Some(ScopeType::Province),
+		"all_core_province" | "all_owned_province" | "any_owned_province" | "all_state_province" => {
+			Some(ScopeType::Province)
+		}
+		"all_subject_country" => Some(ScopeType::Country),
+		_ => None,
+	}
+}
+
+fn file_kind_container_scope_kind(
+	file_kind: ScriptFileKind,
+	key: &str,
+) -> Option<ScopeKind> {
+	match file_kind {
+		ScriptFileKind::Ages => match key {
+			"can_start" | "custom_trigger_tooltip" | "calc_true_if" | "ai_will_do" => {
+				Some(ScopeKind::Trigger)
+			}
+			"effect" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::Buildings => match key {
+			"ai_will_do" => Some(ScopeKind::Trigger),
+			"on_built"
+			| "on_destroyed"
+			| "on_construction_started"
+			| "on_construction_canceled"
+			| "on_obsolete" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::Ideas => match key {
+			"start" | "bonus" => Some(ScopeKind::Effect),
+			"trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
+			_ => None,
+		},
+		ScriptFileKind::GreatProjects => {
+			if key.ends_with("_trigger") {
+				Some(ScopeKind::Trigger)
+			} else if matches!(
+				key,
+				"on_built"
+					| "on_destroyed"
+					| "on_upgraded"
+					| "on_downgraded"
+					| "on_obtained"
+					| "on_lost"
+			) {
+				Some(ScopeKind::Effect)
+			} else {
+				None
+			}
+		}
+		ScriptFileKind::GovernmentReforms => match key {
+			"on_enabled" | "on_disabled" | "on_enacted" | "on_removed" | "removed_effect" => {
+				Some(ScopeKind::Effect)
+			}
+			"ai_will_do" => Some(ScopeKind::Trigger),
+			_ => None,
+		},
+		ScriptFileKind::GovernmentNames | ScriptFileKind::CustomizableLocalization => match key {
+			"trigger" => Some(ScopeKind::Trigger),
+			_ => None,
+		},
 		_ => None,
 	}
 }
@@ -913,13 +1077,15 @@ fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 fn scope_changer_target_type(key: &str) -> Option<ScopeType> {
 	match key {
 		"capital_scope" => Some(ScopeType::Province),
+		"owner" => Some(ScopeType::Country),
 		_ => None,
 	}
 }
 
 fn special_block_scope_kind(key: &str) -> ScopeKind {
 	match key {
-		"possible" | "visible" | "happened" | "provinces_to_highlight" => ScopeKind::Trigger,
+		"possible" | "visible" | "happened" | "provinces_to_highlight"
+		| "exclude_from_progress" => ScopeKind::Trigger,
 		_ => ScopeKind::Block,
 	}
 }
@@ -1248,6 +1414,68 @@ mod tests {
 			classify_script_file(std::path::Path::new("interface/a.gui")),
 			ScriptFileKind::Ui
 		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/achievements.txt")),
+			ScriptFileKind::Achievements
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/ages/00_default.txt")),
+			ScriptFileKind::Ages
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/buildings/00_buildings.txt")),
+			ScriptFileKind::Buildings
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/ideas/00_country_ideas.txt")),
+			ScriptFileKind::Ideas
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/great_projects/01_monuments.txt")),
+			ScriptFileKind::GreatProjects
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/government_reforms/01_government_reforms.txt"
+			)),
+			ScriptFileKind::GovernmentReforms
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/cultures/00_cultures.txt")),
+			ScriptFileKind::Cultures
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/custom_gui/AdvisorActionsGui.txt")),
+			ScriptFileKind::CustomGui
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/advisortypes/00_advisortypes.txt")),
+			ScriptFileKind::AdvisorTypes
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/event_modifiers/00_modifiers.txt")),
+			ScriptFileKind::EventModifiers
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/cb_types/00_cb_types.txt")),
+			ScriptFileKind::CbTypes
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/government_names/00_names.txt")),
+			ScriptFileKind::GovernmentNames
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"customizable_localization/00_customizable_localization.txt"
+			)),
+			ScriptFileKind::CustomizableLocalization
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/new_diplomatic_actions/00_actions.txt"
+			)),
+			ScriptFileKind::DiplomaticActions
+		);
 	}
 
 	#[test]
@@ -1367,5 +1595,253 @@ achievement_example = {
 				"{name} should not produce S002"
 			);
 		}
+		assert!(
+			!diagnostics
+				.advisory
+				.iter()
+				.any(|finding| finding.rule_id == "A001" && finding.path == Some("common/achievements.txt".into())),
+			"achievements root scope should no longer stay Unknown"
+		);
+	}
+
+	#[test]
+	fn common_data_file_roots_do_not_become_scripted_effect_calls() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("ideas")).expect("create ideas");
+		fs::create_dir_all(mod_root.join("common").join("ages")).expect("create ages");
+		fs::create_dir_all(mod_root.join("common").join("buildings"))
+			.expect("create buildings");
+		fs::create_dir_all(mod_root.join("common").join("great_projects"))
+			.expect("create monuments");
+		fs::create_dir_all(mod_root.join("common").join("custom_gui"))
+			.expect("create custom gui");
+		fs::create_dir_all(mod_root.join("common").join("government_names"))
+			.expect("create government names");
+		fs::create_dir_all(mod_root.join("customizable_localization"))
+			.expect("create custom loc");
+		fs::create_dir_all(mod_root.join("interface")).expect("create interface");
+		fs::write(
+			mod_root.join("common").join("ideas").join("ideas.txt"),
+			"my_ideas = { start = { add_prestige = 1 } }\n",
+		)
+		.expect("write ideas");
+		fs::write(
+			mod_root.join("common").join("ages").join("ages.txt"),
+			"age_of_discovery = { objectives = { obj_one = { calc_true_if = { all_owned_province = { is_core = ROOT controlled_by = owner exclude_from_progress = { is_core = ROOT } } amount = 1 } } } }\n",
+		)
+		.expect("write ages");
+		fs::write(
+			mod_root.join("common").join("buildings").join("buildings.txt"),
+			"marketplace = { on_built = { owner = { add_prestige = 1 } FROM = { add_stability_cost_modifier = -0.1 } } }\n",
+		)
+		.expect("write buildings");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("great_projects")
+				.join("projects.txt"),
+			"project_alpha = { build_cost = 1000 }\n",
+		)
+		.expect("write monuments");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("custom_gui")
+				.join("advisor.txt"),
+			"advisor_actions = { title = advisor_title }\n",
+		)
+		.expect("write custom gui");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("government_names")
+				.join("names.txt"),
+			"czech_localisation = { trigger = { government = monarchy } }\n",
+		)
+		.expect("write government names");
+		fs::write(
+			mod_root
+				.join("customizable_localization")
+				.join("defined.txt"),
+			"defined_text = { name = GetFoo text = { localisation_key = foo trigger = { always = yes } } }\n",
+		)
+		.expect("write custom loc");
+		fs::write(
+			mod_root.join("interface").join("main.gui"),
+			"windowType = { name = main_window }\n",
+		)
+		.expect("write ui");
+
+		let parsed = [
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root.join("common").join("ideas").join("ideas.txt"),
+			)
+			.expect("parsed ideas"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root.join("common").join("ages").join("ages.txt"),
+			)
+			.expect("parsed ages"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root.join("common").join("buildings").join("buildings.txt"),
+			)
+			.expect("parsed buildings"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("great_projects")
+					.join("projects.txt"),
+			)
+			.expect("parsed monuments"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("custom_gui")
+					.join("advisor.txt"),
+			)
+			.expect("parsed custom gui"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("government_names")
+					.join("names.txt"),
+			)
+			.expect("parsed government names"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root
+					.join("customizable_localization")
+					.join("defined.txt"),
+			)
+			.expect("parsed custom loc"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root.join("interface").join("main.gui"),
+			)
+			.expect("parsed ui"),
+		];
+
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for path in [
+			"common/ideas/ideas.txt",
+			"common/ages/ages.txt",
+			"common/buildings/buildings.txt",
+			"common/great_projects/projects.txt",
+			"common/custom_gui/advisor.txt",
+			"common/government_names/names.txt",
+			"customizable_localization/defined.txt",
+			"interface/main.gui",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.path == Some(path.into())
+				}),
+				"{path} should not report top-level scripted effect fallback"
+			);
+		}
+		for path in ["common/ages/ages.txt", "common/buildings/buildings.txt"] {
+			assert!(
+				!diagnostics.advisory.iter().any(|finding| {
+					finding.rule_id == "A001" && finding.path == Some(path.into())
+				}),
+				"{path} should have a typed root scope"
+			);
+		}
+	}
+
+	#[test]
+	fn generic_fallback_requires_explicit_effect_scope() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root.join("events").join("fallback.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	stray_container = {
+		missing_outer_effect = { amount = 1 }
+	}
+	immediate = {
+		missing_inner_effect = { amount = 1 }
+		hidden_effect = {
+			missing_hidden_effect = { amount = 1 }
+		}
+	}
+	option = {
+		name = ok
+		missing_option_effect = { amount = 1 }
+	}
+}
+"#,
+		)
+		.expect("write file");
+
+		let parsed = parse_script_file(
+			"1003",
+			&mod_root,
+			&mod_root.join("events").join("fallback.txt"),
+		)
+		.expect("parsed event");
+		let index = build_semantic_index(&[parsed]);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+
+		assert!(
+			!index.references.iter().any(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect
+					&& reference.name == "missing_outer_effect"
+			}),
+			"generic block inside an event should not trigger scripted-effect fallback"
+		);
+		for name in [
+			"missing_inner_effect",
+			"missing_hidden_effect",
+			"missing_option_effect",
+		] {
+			assert!(
+				index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+				}),
+				"{name} should still be recorded inside an explicit effect-ish scope"
+			);
+			assert!(
+				diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should still report unresolved scripted-effect usage"
+			);
+		}
+		assert!(
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S002" && finding.message.contains("missing_outer_effect")
+			}),
+			"generic block inside an event should not report S002"
+		);
 	}
 }

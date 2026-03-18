@@ -247,7 +247,7 @@ fn unresolved_scripted_effect_reports_only_s002() {
 	write_script_file(
 		&mod_a,
 		"events/events.txt",
-		"country_event = {\n\tid = test.1\n\tmissing_effect = { FLAG = TEST }\n}\n",
+		"country_event = {\n\tid = test.1\n\timmediate = {\n\t\tmissing_effect = { FLAG = TEST }\n\t}\n}\n",
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
