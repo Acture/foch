@@ -1,6 +1,7 @@
 use crate::check::engine::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
 };
+use crate::check::merge_normalize::normalize_defines_file;
 use crate::check::merge_plan::build_merge_plan_from_workspace;
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
@@ -23,6 +24,7 @@ pub enum MergeIrStructuralKind {
 	ScriptedEffects,
 	DiplomaticActions,
 	TriggeredModifiers,
+	Defines,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -64,6 +66,7 @@ pub struct MergeIrStructuralFile {
 pub struct MergeIrNode {
 	pub target_path: String,
 	pub merge_key: String,
+	pub path_segments: Vec<String>,
 	pub statement_key: String,
 	pub container_key: Option<String>,
 	pub winner: MergePlanContributor,
@@ -92,6 +95,7 @@ pub struct MergeIrDeferredStructuralPath {
 #[derive(Clone, Debug)]
 struct ExtractedFragment {
 	merge_key: String,
+	path_segments: Vec<String>,
 	statement_key: String,
 	container_key: Option<String>,
 	statement: AstStatement,
@@ -102,6 +106,7 @@ struct ExtractedFragment {
 struct NodeAccumulator {
 	target_path: String,
 	merge_key: String,
+	path_segments: Vec<String>,
 	statement_key: String,
 	container_key: Option<String>,
 	winner: MergePlanContributor,
@@ -114,7 +119,10 @@ pub fn run_merge_ir(request: CheckRequest) -> MergeIrResult {
 	run_merge_ir_with_options(request, MergePlanOptions::default())
 }
 
-pub fn run_merge_ir_with_options(request: CheckRequest, options: MergePlanOptions) -> MergeIrResult {
+pub fn run_merge_ir_with_options(
+	request: CheckRequest,
+	options: MergePlanOptions,
+) -> MergeIrResult {
 	let workspace = match resolve_workspace(&request, options.include_game_base) {
 		Ok(workspace) => workspace,
 		Err(err) => {
@@ -205,31 +213,19 @@ fn append_structural_file(
 		}
 	};
 
-	match classify_script_file(Path::new(&path_entry.path)) {
-		ScriptFileKind::Defines => {
-			result
-				.deferred_structural_paths
-				.push(MergeIrDeferredStructuralPath {
-					target_path: path_entry.path.clone(),
-					reason: "defines structural merge is deferred to Slice B2".to_string(),
-					contributors: path_entry.contributors.clone(),
-				});
-		}
-		kind => match structural_kind_for_file_kind(kind) {
-			Some(structural_kind) => match build_structural_file(
-				&path_entry.path,
-				structural_kind,
-				contributors,
-			) {
+	let kind = classify_script_file(Path::new(&path_entry.path));
+	match structural_kind_for_file_kind(kind) {
+		Some(structural_kind) => {
+			match build_structural_file(&path_entry.path, structural_kind, contributors) {
 				Ok(file) => result.structural_files.push(file),
 				Err(message) => result.push_fatal_error(message),
-			},
-			None => result.push_fatal_error(format!(
-				"merge IR does not support structural root {} for {}",
-				describe_file_kind(kind),
-				path_entry.path
-			)),
-		},
+			}
+		}
+		None => result.push_fatal_error(format!(
+			"merge IR does not support structural root {} for {}",
+			describe_file_kind(kind),
+			path_entry.path
+		)),
 	}
 }
 
@@ -270,18 +266,20 @@ fn build_structural_file(
 
 		let contributor_meta = to_merge_contributor(contributor);
 		for fragment in fragments {
-			let entry = nodes
-				.entry(fragment.merge_key.clone())
-				.or_insert_with(|| NodeAccumulator {
-					target_path: target_path.to_string(),
-					merge_key: fragment.merge_key.clone(),
-					statement_key: fragment.statement_key.clone(),
-					container_key: fragment.container_key.clone(),
-					winner: contributor_meta.clone(),
-					source_mod_order: Vec::new(),
-					winning_statement: fragment.statement.clone(),
-					source_fragments: Vec::new(),
-				});
+			let entry =
+				nodes
+					.entry(fragment.merge_key.clone())
+					.or_insert_with(|| NodeAccumulator {
+						target_path: target_path.to_string(),
+						merge_key: fragment.merge_key.clone(),
+						path_segments: fragment.path_segments.clone(),
+						statement_key: fragment.statement_key.clone(),
+						container_key: fragment.container_key.clone(),
+						winner: contributor_meta.clone(),
+						source_mod_order: Vec::new(),
+						winning_statement: fragment.statement.clone(),
+						source_fragments: Vec::new(),
+					});
 
 			push_unique_contributor(&mut entry.source_mod_order, &contributor_meta);
 			entry.source_fragments.push(MergeIrSourceFragment {
@@ -297,6 +295,7 @@ fn build_structural_file(
 					&& contributor_meta.source_path == entry.winner.source_path
 			{
 				entry.winner = contributor_meta.clone();
+				entry.path_segments = fragment.path_segments.clone();
 				entry.statement_key = fragment.statement_key.clone();
 				entry.container_key = fragment.container_key.clone();
 				entry.winning_statement = fragment.statement.clone();
@@ -309,6 +308,7 @@ fn build_structural_file(
 		.map(|accumulator| MergeIrNode {
 			target_path: accumulator.target_path,
 			merge_key: accumulator.merge_key,
+			path_segments: accumulator.path_segments,
 			statement_key: accumulator.statement_key,
 			container_key: accumulator.container_key,
 			overridden_contributors: accumulator
@@ -338,6 +338,7 @@ fn extract_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>
 		ScriptFileKind::ScriptedEffects
 		| ScriptFileKind::DiplomaticActions
 		| ScriptFileKind::TriggeredModifiers => Ok(extract_assignment_fragments(parsed)),
+		ScriptFileKind::Defines => extract_defines_fragments(parsed),
 		other => Err(format!(
 			"merge IR does not support extracting {} from {}",
 			describe_file_kind(other),
@@ -350,7 +351,10 @@ fn extract_event_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFra
 	let mut fragments = Vec::new();
 
 	for statement in &parsed.ast.statements {
-		let AstStatement::Assignment { key, value, span, .. } = statement else {
+		let AstStatement::Assignment {
+			key, value, span, ..
+		} = statement
+		else {
 			continue;
 		};
 		let AstValue::Block { items, .. } = value else {
@@ -365,6 +369,7 @@ fn extract_event_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFra
 		};
 		fragments.push(ExtractedFragment {
 			merge_key,
+			path_segments: Vec::new(),
 			statement_key: key.clone(),
 			container_key: None,
 			statement: statement.clone(),
@@ -400,6 +405,7 @@ fn extract_decision_fragments(parsed: &ParsedScriptFile) -> Vec<ExtractedFragmen
 			};
 			fragments.push(ExtractedFragment {
 				merge_key: decision_key.clone(),
+				path_segments: Vec::new(),
 				statement_key: decision_key.clone(),
 				container_key: Some(key.clone()),
 				statement: item.clone(),
@@ -415,7 +421,10 @@ fn extract_assignment_fragments(parsed: &ParsedScriptFile) -> Vec<ExtractedFragm
 	let mut fragments = Vec::new();
 
 	for statement in &parsed.ast.statements {
-		let AstStatement::Assignment { key, value, span, .. } = statement else {
+		let AstStatement::Assignment {
+			key, value, span, ..
+		} = statement
+		else {
 			continue;
 		};
 		let AstValue::Block { .. } = value else {
@@ -423,6 +432,7 @@ fn extract_assignment_fragments(parsed: &ParsedScriptFile) -> Vec<ExtractedFragm
 		};
 		fragments.push(ExtractedFragment {
 			merge_key: key.clone(),
+			path_segments: Vec::new(),
 			statement_key: key.clone(),
 			container_key: None,
 			statement: statement.clone(),
@@ -431,6 +441,20 @@ fn extract_assignment_fragments(parsed: &ParsedScriptFile) -> Vec<ExtractedFragm
 	}
 
 	fragments
+}
+
+fn extract_defines_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>, String> {
+	Ok(normalize_defines_file(parsed)?
+		.into_iter()
+		.map(|fragment| ExtractedFragment {
+			merge_key: fragment.merge_key,
+			path_segments: fragment.path_segments,
+			statement_key: fragment.statement_key,
+			container_key: None,
+			statement: fragment.statement,
+			statement_span: fragment.statement_span,
+		})
+		.collect())
 }
 
 fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option<String> {
@@ -480,6 +504,7 @@ fn structural_kind_for_file_kind(kind: ScriptFileKind) -> Option<MergeIrStructur
 		ScriptFileKind::ScriptedEffects => Some(MergeIrStructuralKind::ScriptedEffects),
 		ScriptFileKind::DiplomaticActions => Some(MergeIrStructuralKind::DiplomaticActions),
 		ScriptFileKind::TriggeredModifiers => Some(MergeIrStructuralKind::TriggeredModifiers),
+		ScriptFileKind::Defines => Some(MergeIrStructuralKind::Defines),
 		_ => None,
 	}
 }
@@ -520,6 +545,7 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 mod tests {
 	use super::{MergeIrStructuralKind, run_merge_ir_with_options};
 	use crate::check::model::{CheckRequest, MergePlanOptions};
+	use crate::check::parser::{AstStatement, AstValue, ScalarValue};
 	use crate::cli::config::Config;
 	use serde_json::json;
 	use std::fs;
@@ -746,7 +772,7 @@ mod tests {
 	}
 
 	#[test]
-	fn defines_paths_are_deferred_in_slice_b1() {
+	fn defines_ir_merges_leaf_assignment_paths_and_preserves_segments() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let mod_a = temp.path().join("9801");
@@ -764,21 +790,55 @@ mod tests {
 		write_script_file(
 			&mod_a,
 			"common/defines/test.txt",
-			"NGame = {\n\tSTART_YEAR = 1444\n}\n",
+			"NGame = {\n\tSTART_YEAR = 1444\n\tEND_YEAR = 1821\n\tNCountry = {\n\t\tMAX_IDEA_GROUPS = 8\n\t}\n}\n",
 		);
 		write_script_file(
 			&mod_b,
 			"common/defines/test.txt",
-			"NGame = {\n\tSTART_YEAR = 1445\n}\n",
+			"NGame = {\n\tSTART_YEAR = 1500\n}\nNGame = {\n\tSTART_YEAR = 1600\n}\n",
 		);
 
 		let result = run_merge_ir_no_base(request_for(&playlist_path));
 		assert!(result.fatal_errors.is_empty());
-		assert!(result.structural_files.is_empty());
-		assert_eq!(result.deferred_structural_paths.len(), 1);
-		let deferred = &result.deferred_structural_paths[0];
-		assert_eq!(deferred.target_path, "common/defines/test.txt");
-		assert!(deferred.reason.contains("Slice B2"));
-		assert_eq!(deferred.contributors.len(), 2);
+		assert!(result.deferred_structural_paths.is_empty());
+		assert_eq!(result.structural_files.len(), 1);
+		let file = &result.structural_files[0];
+		assert_eq!(file.kind, MergeIrStructuralKind::Defines);
+		let start_year = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "NGame.START_YEAR")
+			.expect("start year node");
+		let end_year = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "NGame.END_YEAR")
+			.expect("end year node");
+		let idea_groups = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "NGame.NCountry.MAX_IDEA_GROUPS")
+			.expect("nested defines node");
+		assert_eq!(start_year.path_segments, ["NGame", "START_YEAR"]);
+		assert_eq!(end_year.path_segments, ["NGame", "END_YEAR"]);
+		assert_eq!(
+			idea_groups.path_segments,
+			["NGame", "NCountry", "MAX_IDEA_GROUPS"]
+		);
+		assert_eq!(start_year.winner.mod_id, "9802");
+		assert_eq!(start_year.source_mod_order.len(), 2);
+		assert_eq!(start_year.source_fragments.len(), 3);
+		assert_eq!(start_year.overridden_contributors.len(), 1);
+		assert_eq!(start_year.overridden_contributors[0].mod_id, "9801");
+		let AstStatement::Assignment {
+			value: AstValue::Scalar { value, .. },
+			..
+		} = &start_year.winning_statement
+		else {
+			panic!("winning defines statement should remain a scalar assignment");
+		};
+		assert_eq!(value, &ScalarValue::Number("1600".to_string()));
+		assert_eq!(end_year.winner.mod_id, "9801");
+		assert_eq!(idea_groups.winner.mod_id, "9801");
 	}
 }

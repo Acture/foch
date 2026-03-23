@@ -1,6 +1,7 @@
 use crate::check::engine::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
 };
+use crate::check::merge_normalize::normalize_defines_file;
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
 	MergePlanStrategies, MergePlanStrategy,
@@ -70,7 +71,7 @@ fn classify_entry(path: &str, contributors: &[ResolvedFileContributor]) -> Merge
 		notes.push("ui path overlap is not rewritten in v1".to_string());
 		MergePlanStrategy::ManualConflict
 	} else if is_structural_merge_path(path) {
-		match validate_structural_merge_inputs(contributors) {
+		match validate_structural_merge_inputs(path, contributors) {
 			Ok(()) => MergePlanStrategy::StructuralMerge,
 			Err(message) => {
 				notes.push(message);
@@ -138,21 +139,25 @@ fn current_generated_at() -> String {
 }
 
 fn validate_structural_merge_inputs(
+	path: &str,
 	contributors: &[ResolvedFileContributor],
 ) -> Result<(), String> {
 	let mut failures = Vec::new();
+	let is_defines_path = path.to_ascii_lowercase().starts_with("common/defines/");
 
 	for contributor in contributors {
 		if let Some(parse_ok) = contributor.parse_ok_hint {
 			if parse_ok {
-				continue;
-			}
-			if contributor.is_base_game {
+				if !is_defines_path {
+					continue;
+				}
+			} else if contributor.is_base_game {
 				failures.push(format!("base game parse issues in {}", contributor.mod_id));
+				continue;
 			} else {
 				failures.push(format!("cached parse issues in {}", contributor.mod_id));
+				continue;
 			}
-			continue;
 		}
 
 		match parse_script_file(
@@ -160,7 +165,14 @@ fn validate_structural_merge_inputs(
 			&contributor.root_path,
 			&contributor.absolute_path,
 		) {
-			Some(parsed) if parsed.parse_issues.is_empty() => {}
+			Some(parsed) if parsed.parse_issues.is_empty() => {
+				if is_defines_path && let Err(message) = normalize_defines_file(&parsed) {
+					failures.push(format!(
+						"non-normalizable defines in {}: {}",
+						contributor.mod_id, message
+					));
+				}
+			}
 			Some(parsed) => failures.push(format!(
 				"{} parse issues in {}",
 				parsed.parse_issues.len(),
@@ -174,7 +186,7 @@ fn validate_structural_merge_inputs(
 		Ok(())
 	} else {
 		Err(format!(
-			"structural merge blocked by parse failures: {}",
+			"structural merge blocked by invalid contributors: {}",
 			failures.join(", ")
 		))
 	}
