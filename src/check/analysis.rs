@@ -2,6 +2,7 @@ use crate::check::model::{
 	AnalysisMode, Finding, FindingChannel, ScopeType, SemanticDiagnostics, SemanticIndex, Severity,
 	SymbolKind,
 };
+use crate::check::param_contracts::evaluate_param_contract;
 use crate::check::semantic_index::resolve_scripted_effect_reference_targets;
 use std::collections::{HashMap, HashSet};
 
@@ -204,16 +205,22 @@ fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
 			.iter()
 			.map(String::as_str)
 			.collect();
-		for required in &def.required_params {
-			if provided.contains(required.as_str()) {
-				continue;
-			}
+		let missing_messages = if let Some(contract) = def.param_contract.as_ref() {
+			evaluate_param_contract(contract, &reference.name, &provided)
+		} else {
+			def.required_params
+				.iter()
+				.filter(|required| !provided.contains(required.as_str()))
+				.map(|required| format!("参数未绑定: {} 缺失 {}", reference.name, required))
+				.collect()
+		};
+		for message in missing_messages {
 			let dedup_key = format!(
 				"{}:{}:{}:{}",
 				reference.path.display(),
 				reference.line,
 				reference.column,
-				required
+				message
 			);
 			if !seen.insert(dedup_key) {
 				continue;
@@ -222,7 +229,7 @@ fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
 				rule_id: "S004".to_string(),
 				severity: Severity::Error,
 				channel: FindingChannel::Strict,
-				message: format!("参数未绑定: {} 缺失 {}", reference.name, required),
+				message,
 				mod_id: Some(reference.mod_id.clone()),
 				path: Some(reference.path.clone()),
 				evidence: Some(format!("定义位置 {}:{}", def.path.display(), def.line)),
