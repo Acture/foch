@@ -1,4 +1,6 @@
-use crate::check::engine::{ResolvedFileContributor, WorkspaceResolveErrorKind, resolve_workspace};
+use crate::check::engine::{
+	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
+};
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
 	MergePlanStrategies, MergePlanStrategy,
@@ -14,15 +16,14 @@ pub fn run_merge_plan_with_options(
 	request: CheckRequest,
 	options: MergePlanOptions,
 ) -> MergePlanResult {
-	let mut result = MergePlanResult {
-		generated_at: current_generated_at(),
-		include_game_base: options.include_game_base,
-		..MergePlanResult::default()
-	};
-
 	let workspace = match resolve_workspace(&request, options.include_game_base) {
 		Ok(workspace) => workspace,
 		Err(err) => {
+			let mut result = MergePlanResult {
+				generated_at: current_generated_at(),
+				include_game_base: options.include_game_base,
+				..MergePlanResult::default()
+			};
 			if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
 				result.push_fatal_error("无法解析 Playset JSON");
 			} else {
@@ -30,6 +31,19 @@ pub fn run_merge_plan_with_options(
 			}
 			return result;
 		}
+	};
+
+	build_merge_plan_from_workspace(&workspace, options.include_game_base)
+}
+
+pub(crate) fn build_merge_plan_from_workspace(
+	workspace: &ResolvedWorkspace,
+	include_game_base: bool,
+) -> MergePlanResult {
+	let mut result = MergePlanResult {
+		generated_at: current_generated_at(),
+		include_game_base,
+		..MergePlanResult::default()
 	};
 
 	result.game = workspace.playlist.game.key().to_string();
