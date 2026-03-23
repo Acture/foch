@@ -25,6 +25,7 @@ use std::time::UNIX_EPOCH;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScriptFileKind {
 	Events,
+	OnActions,
 	Decisions,
 	ScriptedEffects,
 	DiplomaticActions,
@@ -73,7 +74,11 @@ struct ParseCacheEntry {
 
 pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 	let normalized = relative.to_string_lossy().replace('\\', "/");
-	if normalized.starts_with("events/") {
+	if normalized.starts_with("common/on_actions/")
+		|| normalized.starts_with("events/common/on_actions/")
+	{
+		ScriptFileKind::OnActions
+	} else if normalized.starts_with("events/") {
 		ScriptFileKind::Events
 	} else if normalized.starts_with("decisions/") {
 		ScriptFileKind::Decisions
@@ -130,6 +135,7 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 	let parts: Vec<&str> = normalized.split('/').collect();
 	let module = match kind {
 		ScriptFileKind::Events => "events".to_string(),
+		ScriptFileKind::OnActions => "on_actions".to_string(),
 		ScriptFileKind::Decisions => "decisions".to_string(),
 		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
 		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
@@ -886,6 +892,7 @@ fn symbol_definition_kind(
 
 fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 	match file_kind {
+		ScriptFileKind::OnActions => ScopeType::Unknown,
 		ScriptFileKind::Decisions
 		| ScriptFileKind::DiplomaticActions
 		| ScriptFileKind::Achievements
@@ -1025,11 +1032,14 @@ fn effect_context_scope_semantics(
 	if key == "random_list" {
 		return Some(EffectContextScopeSemantics::EffectContainer);
 	}
-	if key == "for" {
+	if matches!(key, "for" | "while" | "IF" | "ELSE_IF" | "else_if" | "ELSE" | "else") {
 		return Some(EffectContextScopeSemantics::EffectContainer);
 	}
-	if key == "every_country" {
+	if matches!(key, "every_country" | "every_subject_country" | "every_known_country" | "random_country") {
 		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Country));
+	}
+	if matches!(key, "random_owned_province" | "random_province" | "every_province") {
+		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Province));
 	}
 	if key == "overlord" {
 		return Some(EffectContextScopeSemantics::ScopeChanger(ScopeType::Country));
@@ -1047,6 +1057,30 @@ fn effect_context_scope_semantics(
 	None
 }
 
+fn is_on_actions_callback_root(
+	file_kind: ScriptFileKind,
+	parent_scope_id: usize,
+	index: &SemanticIndex,
+	key: &str,
+) -> bool {
+	file_kind == ScriptFileKind::OnActions
+		&& scope_kind(index, parent_scope_id) == ScopeKind::File
+		&& key.starts_with("on_")
+}
+
+fn on_actions_callback_this_type(key: &str) -> ScopeType {
+	match key {
+		"on_adm_development" | "on_dip_development" | "on_mil_development" => {
+			ScopeType::Province
+		}
+		_ => ScopeType::Country,
+	}
+}
+
+fn on_actions_callback_from_type(_key: &str) -> ScopeType {
+	ScopeType::Country
+}
+
 fn create_child_scope(
 	index: &mut SemanticIndex,
 	parent_scope_id: usize,
@@ -1059,8 +1093,15 @@ fn create_child_scope(
 	aliases.insert("PREV".to_string(), scope_this_type(index, parent_scope_id));
 	let mut this_type = scope_this_type(index, parent_scope_id);
 	let mut kind = ScopeKind::Block;
+	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
 
-	if key == "trigger"
+	if is_on_actions_callback_root(ctx.file_kind, parent_scope_id, index, key) {
+		kind = ScopeKind::Effect;
+		this_type = on_actions_callback_this_type(key);
+		aliases.insert("THIS".to_string(), this_type);
+		aliases.insert("ROOT".to_string(), this_type);
+		aliases.insert("FROM".to_string(), on_actions_callback_from_type(key));
+	} else if key == "trigger"
 		|| key == "limit"
 		|| key == "potential"
 		|| key == "allow"
@@ -1083,8 +1124,7 @@ fn create_child_scope(
 		kind = ScopeKind::Effect;
 	} else if let Some(file_kind_scope_kind) = file_kind_container_scope_kind(ctx.file_kind, key) {
 		kind = file_kind_scope_kind;
-	} else if let Some(semantics) = effect_context_scope_semantics(ctx, key, parent_scope_id, index)
-	{
+	} else if let Some(semantics) = effect_context_semantics {
 		match semantics {
 			EffectContextScopeSemantics::EffectContainer => {
 				kind = ScopeKind::Effect;
@@ -1142,7 +1182,15 @@ fn create_child_scope(
 		kind = ScopeKind::ScriptedEffect;
 	}
 
-	if key == "if" || key == "else" || key == "NOT" || key == "OR" || key == "AND" {
+	if key == "if" || key == "else" {
+		if effect_context_semantics == Some(EffectContextScopeSemantics::EffectContainer) {
+			kind = ScopeKind::Effect;
+		} else {
+			kind = ScopeKind::Trigger;
+		}
+	}
+
+	if key == "NOT" || key == "OR" || key == "AND" {
 		kind = ScopeKind::Trigger;
 	}
 
@@ -1693,6 +1741,14 @@ mod tests {
 
 	#[test]
 	fn classify_paths() {
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/on_actions/00_on_actions.txt")),
+			ScriptFileKind::OnActions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("events/common/on_actions/foo.txt")),
+			ScriptFileKind::OnActions
+		);
 		assert_eq!(
 			classify_script_file(std::path::Path::new("common/scripted_effects/a.txt")),
 			ScriptFileKind::ScriptedEffects
@@ -2355,6 +2411,15 @@ country_event = {
 			2022 = {
 				add_core = HBC
 			}
+			random_country = {
+				add_legitimacy = 1
+			}
+			every_known_country = {
+				add_prestige = 1
+			}
+			every_subject_country = {
+				add_stability = 1
+			}
 			hudson_bay_region = {
 				add_permanent_claim = ROOT
 			}
@@ -2362,6 +2427,27 @@ country_event = {
 				add_stability = 1
 			}
 			missing_effect = { amount = 1 }
+		}
+		random_owned_province = {
+			add_base_tax = 1
+		}
+		random_province = {
+			add_base_production = 1
+		}
+		every_province = {
+			add_base_manpower = 1
+		}
+		while = {
+			limit = { always = yes }
+			missing_loop_effect = { amount = 1 }
+		}
+		IF = {
+			limit = { always = yes }
+			missing_if_effect = { amount = 1 }
+		}
+		ELSE_IF = {
+			limit = { always = yes }
+			missing_else_if_effect = { amount = 1 }
 		}
 	}
 }
@@ -2383,6 +2469,15 @@ country_event = {
 		for name in [
 			"random_list",
 			"every_country",
+			"random_country",
+			"every_known_country",
+			"every_subject_country",
+			"random_owned_province",
+			"random_province",
+			"every_province",
+			"while",
+			"IF",
+			"ELSE_IF",
 			"HBC",
 			"2022",
 			"hudson_bay_region",
@@ -2405,6 +2500,15 @@ country_event = {
 		for name in [
 			"random_list",
 			"every_country",
+			"random_country",
+			"every_known_country",
+			"every_subject_country",
+			"random_owned_province",
+			"random_province",
+			"every_province",
+			"while",
+			"IF",
+			"ELSE_IF",
 			"HBC",
 			"2022",
 			"hudson_bay_region",
@@ -2417,9 +2521,143 @@ country_event = {
 				"{name} should not produce S002"
 			);
 		}
-		for name in ["missing_weight_effect", "missing_effect"] {
+		for name in [
+			"missing_weight_effect",
+			"missing_effect",
+			"missing_loop_effect",
+			"missing_if_effect",
+			"missing_else_if_effect",
+		] {
 			assert!(diagnostics.strict.iter().any(|finding| {
 				finding.rule_id == "S002" && finding.message.contains(name)
+			}));
+		}
+	}
+
+	#[test]
+	fn on_actions_callbacks_seed_scopes_and_do_not_start_unknown() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("on_actions")).expect("create on_actions");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root.join("events").join("events.txt"),
+			r#"
+namespace = test
+country_event = { id = test.1 }
+country_event = { id = test.2 }
+"#,
+		)
+		.expect("write events");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("on_actions")
+				.join("callbacks.txt"),
+			r#"
+on_adm_development = {
+	owner = {
+		country_event = { id = test.1 }
+	}
+	random_owned_province = {
+		missing_province_effect = { amount = 1 }
+	}
+}
+on_startup = {
+	country_event = { id = test.2 }
+	while = {
+		limit = { always = yes }
+		every_subject_country = {
+			missing_country_effect = { amount = 1 }
+		}
+	}
+}
+"#,
+		)
+		.expect("write on_actions");
+
+		let parsed = [
+			parse_script_file("1011", &mod_root, &mod_root.join("events").join("events.txt"))
+				.expect("parsed events"),
+			parse_script_file(
+				"1011",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("on_actions")
+					.join("callbacks.txt"),
+			)
+			.expect("parsed on_actions"),
+		];
+		let index = build_semantic_index(&parsed);
+		for name in [
+			"on_adm_development",
+			"on_startup",
+			"random_owned_province",
+			"while",
+			"every_subject_country",
+		] {
+			assert!(
+				!index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+				}),
+				"{name} should not be recorded as a scripted effect reference"
+			);
+		}
+		assert!(index
+			.scopes
+			.iter()
+			.any(|scope| scope.kind == ScopeKind::Effect && scope.this_type == ScopeType::Province));
+		assert!(index
+			.scopes
+			.iter()
+			.any(|scope| scope.kind == ScopeKind::Effect && scope.this_type == ScopeType::Country));
+		assert!(index
+			.scopes
+			.iter()
+			.any(|scope| scope.kind == ScopeKind::AliasBlock && scope.this_type == ScopeType::Country));
+		assert!(index
+			.scopes
+			.iter()
+			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province));
+		assert!(index
+			.scopes
+			.iter()
+			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Country));
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001"
+					&& finding.path == Some("common/on_actions/callbacks.txt".into())
+			}),
+			"on_actions callbacks should no longer start from Unknown scope"
+		);
+		for name in [
+			"random_owned_province",
+			"while",
+			"every_subject_country",
+			"country_event",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002"
+						&& finding.path == Some("common/on_actions/callbacks.txt".into())
+						&& finding.message.contains(name)
+				}),
+				"{name} should not produce S002 in on_actions callbacks"
+			);
+		}
+		for name in ["missing_province_effect", "missing_country_effect"] {
+			assert!(diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S002"
+					&& finding.path == Some("common/on_actions/callbacks.txt".into())
+					&& finding.message.contains(name)
 			}));
 		}
 	}
