@@ -28,6 +28,7 @@ pub enum ScriptFileKind {
 	OnActions,
 	Decisions,
 	ScriptedEffects,
+	ScriptedTriggers,
 	DiplomaticActions,
 	TriggeredModifiers,
 	Defines,
@@ -90,6 +91,8 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Decisions
 	} else if normalized.starts_with("common/scripted_effects/") {
 		ScriptFileKind::ScriptedEffects
+	} else if normalized.starts_with("common/scripted_triggers/") {
+		ScriptFileKind::ScriptedTriggers
 	} else if normalized.starts_with("common/diplomatic_actions/") {
 		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/new_diplomatic_actions/") {
@@ -148,6 +151,7 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::OnActions => "on_actions".to_string(),
 		ScriptFileKind::Decisions => "decisions".to_string(),
 		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
+		ScriptFileKind::ScriptedTriggers => module_with_tail(&parts, 2, "scripted_triggers"),
 		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
 		ScriptFileKind::NewDiplomaticActions => {
 			module_with_tail(&parts, 2, "new_diplomatic_actions")
@@ -516,6 +520,21 @@ fn walk_statements(
 					});
 				}
 
+				if is_scripted_trigger_call_candidate(ctx, ctx.file_kind, key, scope_id, index) {
+					index.references.push(SymbolReference {
+						kind: SymbolKind::ScriptedTrigger,
+						name: key.clone(),
+						module: ctx.module_name.to_string(),
+						mod_id: ctx.mod_id.to_string(),
+						path: ctx.path.to_path_buf(),
+						line: key_span.start.line,
+						column: key_span.start.column,
+						scope_id,
+						provided_params: Vec::new(),
+						param_bindings: Vec::new(),
+					});
+				}
+
 				if let AstValue::Block { items, span } = value {
 					record_ui_block_semantics(index, ctx, key, key_span, items);
 					let definition_kind =
@@ -538,6 +557,7 @@ fn walk_statements(
 							scope_id: child_scope,
 							declared_this_type: scope_this_type(index, child_scope),
 							inferred_this_type: ScopeType::Unknown,
+							inferred_this_mask: 0,
 							required_params,
 							param_contract: registered_param_contract(key),
 						});
@@ -672,6 +692,7 @@ fn handle_event_block(
 			scope_id: event_scope,
 			declared_this_type: this_type,
 			inferred_this_type: this_type,
+			inferred_this_mask: scope_type_mask(this_type),
 			required_params: Vec::new(),
 			param_contract: None,
 		});
@@ -896,6 +917,7 @@ fn top_level_symbol_kind(
 	}
 	match file_kind {
 		ScriptFileKind::ScriptedEffects if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
+		ScriptFileKind::ScriptedTriggers if !is_keyword(key) => Some(SymbolKind::ScriptedTrigger),
 		ScriptFileKind::Decisions if !is_keyword(key) && !is_decision_container_key(key) => {
 			Some(SymbolKind::Decision)
 		}
@@ -1018,11 +1040,59 @@ fn is_scripted_effect_call_candidate(
 	true
 }
 
+fn is_scripted_trigger_call_candidate(
+	ctx: &BuildContext<'_>,
+	file_kind: ScriptFileKind,
+	key: &str,
+	scope_id: usize,
+	index: &SemanticIndex,
+) -> bool {
+	if is_keyword(key) || is_alias_key(key) {
+		return false;
+	}
+	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
+	if is_province_id_selector(key) || is_country_tag_selector(key) {
+		return false;
+	}
+	if event_scope_type(key).is_some() {
+		return false;
+	}
+	if effect_context_scope_semantics(ctx, key, scope_id, index).is_some() {
+		return false;
+	}
+	if is_map_group_scope_key(ctx, key, scope_id, index) {
+		return false;
+	}
+	if is_builtin_effect(key)
+		|| is_builtin_trigger(key)
+		|| is_builtin_scope_changer(key)
+		|| is_builtin_iterator(key)
+		|| is_builtin_special_block(key)
+	{
+		return false;
+	}
+	if !is_trigger_like_scope(index, scope_id) {
+		return false;
+	}
+	if file_kind == ScriptFileKind::ScriptedTriggers
+		&& scope_kind(index, scope_id) == ScopeKind::File
+	{
+		return false;
+	}
+	true
+}
+
 fn is_effect_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 	if scope_kind(index, scope_id) == ScopeKind::Trigger {
 		return false;
 	}
 	!is_under_trigger_scope(index, scope_id)
+}
+
+fn is_trigger_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
+	scope_kind(index, scope_id) == ScopeKind::Trigger || is_under_trigger_scope(index, scope_id)
 }
 
 fn allows_generic_scripted_effect_fallback(scope_kind: ScopeKind) -> bool {
@@ -1221,6 +1291,11 @@ fn create_child_scope(
 		if let Some(from_type) = event_from_type(key) {
 			aliases.insert("FROM".to_string(), from_type);
 		}
+	} else if ctx.file_kind == ScriptFileKind::ScriptedTriggers
+		&& scope_kind(index, parent_scope_id) == ScopeKind::File
+		&& !is_keyword(key)
+	{
+		kind = ScopeKind::Trigger;
 	} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
@@ -1364,6 +1439,10 @@ fn file_kind_container_scope_kind(
 		ScriptFileKind::ProvinceTriggeredModifiers => match key {
 			"potential" | "trigger" => Some(ScopeKind::Trigger),
 			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::ScriptedTriggers => match key {
+			"trigger" | "limit" | "custom_trigger_tooltip" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
 		ScriptFileKind::Ideas => match key {
@@ -1639,17 +1718,22 @@ fn is_ui_resource_key(key: &str) -> bool {
 	)
 }
 
-pub fn resolve_scripted_effect_reference_targets(
+fn is_inferred_callable_kind(kind: SymbolKind) -> bool {
+	matches!(kind, SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger)
+}
+
+fn resolve_reference_targets_for_kind(
 	index: &SemanticIndex,
 	reference: &SymbolReference,
+	kind: SymbolKind,
 ) -> Vec<usize> {
-	if reference.kind != SymbolKind::ScriptedEffect {
+	if reference.kind != kind {
 		return Vec::new();
 	}
 
 	let mut exact = Vec::new();
 	for (idx, def) in index.definitions.iter().enumerate() {
-		if def.kind != SymbolKind::ScriptedEffect {
+		if def.kind != kind {
 			continue;
 		}
 		if def.module == reference.module && def.local_name == reference.name {
@@ -1662,7 +1746,7 @@ pub fn resolve_scripted_effect_reference_targets(
 
 	let mut by_local = Vec::new();
 	for (idx, def) in index.definitions.iter().enumerate() {
-		if def.kind != SymbolKind::ScriptedEffect {
+		if def.kind != kind {
 			continue;
 		}
 		if def.local_name == reference.name {
@@ -1690,15 +1774,29 @@ pub fn resolve_scripted_effect_reference_targets(
 	Vec::new()
 }
 
+pub fn resolve_scripted_effect_reference_targets(
+	index: &SemanticIndex,
+	reference: &SymbolReference,
+) -> Vec<usize> {
+	resolve_reference_targets_for_kind(index, reference, SymbolKind::ScriptedEffect)
+}
+
+pub fn resolve_scripted_trigger_reference_targets(
+	index: &SemanticIndex,
+	reference: &SymbolReference,
+) -> Vec<usize> {
+	resolve_reference_targets_for_kind(index, reference, SymbolKind::ScriptedTrigger)
+}
+
 fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	use std::collections::HashMap;
 
-	let scripted_effect_scope_map: HashMap<usize, usize> = index
+	let callable_scope_map: HashMap<usize, usize> = index
 		.definitions
 		.iter()
 		.enumerate()
 		.filter_map(|(idx, definition)| {
-			(definition.kind == SymbolKind::ScriptedEffect).then_some((definition.scope_id, idx))
+			is_inferred_callable_kind(definition.kind).then_some((definition.scope_id, idx))
 		})
 		.collect();
 
@@ -1706,7 +1804,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 		.definitions
 		.iter()
 		.map(|definition| {
-			if definition.kind == SymbolKind::ScriptedEffect {
+			if is_inferred_callable_kind(definition.kind) {
 				scope_type_mask(definition.declared_this_type)
 			} else {
 				0
@@ -1718,20 +1816,27 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	while changed {
 		changed = false;
 		for reference in &index.references {
-			if reference.kind != SymbolKind::ScriptedEffect {
+			if !is_inferred_callable_kind(reference.kind) {
 				continue;
 			}
-			let caller_type = effective_scope_this_type_with_overrides(
+			let caller_mask = effective_scope_mask_with_overrides(
 				index,
-				&scripted_effect_scope_map,
+				&callable_scope_map,
 				&observed_masks,
 				reference.scope_id,
 			);
-			if caller_type == ScopeType::Unknown {
+			if caller_mask == 0 {
 				continue;
 			}
-			for def_idx in resolve_scripted_effect_reference_targets(index, reference) {
-				let merged = observed_masks[def_idx] | scope_type_mask(caller_type);
+			let target_defs = match reference.kind {
+				SymbolKind::ScriptedEffect => resolve_scripted_effect_reference_targets(index, reference),
+				SymbolKind::ScriptedTrigger => {
+					resolve_scripted_trigger_reference_targets(index, reference)
+				}
+				_ => Vec::new(),
+			};
+			for def_idx in target_defs {
+				let merged = observed_masks[def_idx] | caller_mask;
 				if merged != observed_masks[def_idx] {
 					observed_masks[def_idx] = merged;
 					changed = true;
@@ -1741,9 +1846,10 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	}
 
 	for (idx, definition) in index.definitions.iter_mut().enumerate() {
-		if definition.kind != SymbolKind::ScriptedEffect {
+		if !is_inferred_callable_kind(definition.kind) {
 			continue;
 		}
+		definition.inferred_this_mask = observed_masks[idx];
 		definition.inferred_this_type = scope_type_from_mask(observed_masks[idx]);
 	}
 }
@@ -1764,31 +1870,27 @@ fn scope_type_from_mask(mask: u8) -> ScopeType {
 	}
 }
 
-fn effective_scope_this_type_with_overrides(
+fn effective_scope_mask_with_overrides(
 	index: &SemanticIndex,
-	scripted_effect_scope_map: &HashMap<usize, usize>,
+	callable_scope_map: &HashMap<usize, usize>,
 	observed_masks: &[u8],
 	mut scope_id: usize,
-) -> ScopeType {
+) -> u8 {
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
-			return ScopeType::Unknown;
+			return 0;
 		};
 		if scope.this_type != ScopeType::Unknown {
-			return scope.this_type;
+			return scope_type_mask(scope.this_type);
 		}
-		if let Some(def_idx) = scripted_effect_scope_map.get(&scope_id) {
-			let inferred = observed_masks
-				.get(*def_idx)
-				.copied()
-				.map(scope_type_from_mask)
-				.unwrap_or(ScopeType::Unknown);
-			if inferred != ScopeType::Unknown {
-				return inferred;
-			}
+		if let Some(def_idx) = callable_scope_map.get(&scope_id)
+			&& let Some(inferred_mask) = observed_masks.get(*def_idx).copied()
+			&& inferred_mask != 0
+		{
+			return inferred_mask;
 		}
 		let Some(parent) = scope.parent else {
-			return ScopeType::Unknown;
+			return 0;
 		};
 		scope_id = parent;
 	}
@@ -1911,6 +2013,12 @@ mod tests {
 				"common/province_triggered_modifiers/00.txt"
 			)),
 			ScriptFileKind::ProvinceTriggeredModifiers
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/scripted_triggers/00_triggers.txt"
+			)),
+			ScriptFileKind::ScriptedTriggers
 		);
 	}
 
@@ -3412,6 +3520,9 @@ conflict = {
 	owner = {
 		add_prestige = 1
 	}
+	capital_scope = {
+		add_base_tax = 1
+	}
 }
 "#,
 		)
@@ -3449,9 +3560,11 @@ country_event = {
 		let index = build_semantic_index(&parsed);
 
 		let mut inferred = std::collections::HashMap::new();
+		let mut inferred_masks = std::collections::HashMap::new();
 		for definition in &index.definitions {
 			if definition.kind == SymbolKind::ScriptedEffect {
 				inferred.insert(definition.local_name.clone(), definition.inferred_this_type);
+				inferred_masks.insert(definition.local_name.clone(), definition.inferred_this_mask);
 			}
 		}
 		assert_eq!(inferred.get("country_wrapper"), Some(&ScopeType::Country));
@@ -3459,6 +3572,11 @@ country_event = {
 		assert_eq!(inferred.get("chain_a"), Some(&ScopeType::Province));
 		assert_eq!(inferred.get("chain_b"), Some(&ScopeType::Province));
 		assert_eq!(inferred.get("conflict"), Some(&ScopeType::Unknown));
+		assert_eq!(inferred_masks.get("country_wrapper"), Some(&0b01));
+		assert_eq!(inferred_masks.get("province_wrapper"), Some(&0b10));
+		assert_eq!(inferred_masks.get("chain_a"), Some(&0b10));
+		assert_eq!(inferred_masks.get("chain_b"), Some(&0b10));
+		assert_eq!(inferred_masks.get("conflict"), Some(&0b11));
 
 		let diagnostics = analyze_visibility(
 			&index,
@@ -3474,10 +3592,123 @@ country_event = {
 			}),
 			"chain_b owner scope should resolve to Province after fixpoint inference"
 		);
-		assert!(diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
-				&& finding.path == Some("common/scripted_effects/effects.txt".into())
-		}));
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001"
+					&& finding.path == Some("common/scripted_effects/effects.txt".into())
+			}),
+			"mixed scripted effects should stay usable via mask-aware A001 checks"
+		);
+	}
+
+	#[test]
+	fn scripted_triggers_build_definitions_and_propagate_scope_masks() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_triggers"))
+			.expect("create scripted triggers");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_triggers")
+				.join("triggers.txt"),
+			r#"
+province_only = {
+	owner = {
+		has_country_flag = seen
+	}
+}
+
+mixed_trigger = {
+	owner = {
+		has_country_flag = seen
+	}
+	capital_scope = {
+		has_province_flag = seen
+	}
+}
+"#,
+		)
+		.expect("write scripted triggers");
+		fs::write(
+			mod_root.join("events").join("events.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	trigger = {
+		mixed_trigger = yes
+	}
+}
+
+province_event = {
+	id = test.2
+	trigger = {
+		mixed_trigger = yes
+		province_only = yes
+	}
+}
+"#,
+		)
+		.expect("write events");
+
+		let parsed = [
+			parse_script_file(
+				"1009",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_triggers")
+					.join("triggers.txt"),
+			)
+			.expect("parsed scripted triggers"),
+			parse_script_file("1009", &mod_root, &mod_root.join("events").join("events.txt"))
+				.expect("parsed events"),
+		];
+		let index = build_semantic_index(&parsed);
+
+		let scripted_trigger_defs: std::collections::HashMap<_, _> = index
+			.definitions
+			.iter()
+			.filter(|definition| definition.kind == SymbolKind::ScriptedTrigger)
+			.map(|definition| (definition.local_name.as_str(), definition))
+			.collect();
+		assert_eq!(scripted_trigger_defs.get("province_only").map(|d| d.inferred_this_mask), Some(0b10));
+		assert_eq!(scripted_trigger_defs.get("province_only").map(|d| d.inferred_this_type), Some(ScopeType::Province));
+		assert_eq!(scripted_trigger_defs.get("mixed_trigger").map(|d| d.inferred_this_mask), Some(0b11));
+		assert_eq!(scripted_trigger_defs.get("mixed_trigger").map(|d| d.inferred_this_type), Some(ScopeType::Unknown));
+
+		for name in ["province_only", "mixed_trigger"] {
+			assert!(
+				index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedTrigger && reference.name == name
+				}),
+				"{name} should be recorded as a scripted trigger reference"
+			);
+		}
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for name in ["province_only", "mixed_trigger"] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should not participate in scripted-effect unresolved-call reporting"
+			);
+		}
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001"
+					&& finding.path == Some("common/scripted_triggers/triggers.txt".into())
+			}),
+			"scripted triggers should use propagated masks for owner/capital_scope checks"
+		);
 	}
 
 	#[test]

@@ -112,6 +112,7 @@ fn scope_type_text(scope_type: ScopeType) -> &'static str {
 fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 	match kind {
 		SymbolKind::ScriptedEffect => "scripted_effect",
+		SymbolKind::ScriptedTrigger => "scripted_trigger",
 		SymbolKind::Event => "event",
 		SymbolKind::Decision => "decision",
 		SymbolKind::DiplomaticAction => "diplomatic_action",

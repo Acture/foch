@@ -256,15 +256,14 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 	.into_iter()
 	.collect();
 
-	let scripted_effect_scope_map = build_scripted_effect_scope_map(index);
+	let callable_scope_map = build_inferred_callable_scope_map(index);
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
-		if effective_usage_scope_type(index, &scripted_effect_scope_map, usage.scope_id)
-			!= ScopeType::Unknown
-		{
+		if !type_sensitive_keys.contains(usage.key.as_str()) {
 			continue;
 		}
-		if !type_sensitive_keys.contains(usage.key.as_str()) {
+		let scope_mask = effective_usage_scope_mask(index, &callable_scope_map, usage.scope_id);
+		if scope_mask != 0 {
 			continue;
 		}
 		findings.push(Finding {
@@ -294,11 +293,11 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 	.into_iter()
 	.collect();
 
-	let scripted_effect_scope_map = build_scripted_effect_scope_map(index);
+	let callable_scope_map = build_inferred_callable_scope_map(index);
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
-		if effective_usage_scope_type(index, &scripted_effect_scope_map, usage.scope_id)
-			!= ScopeType::Province
+		if effective_usage_scope_mask(index, &callable_scope_map, usage.scope_id)
+			!= scope_type_mask(ScopeType::Province)
 		{
 			continue;
 		}
@@ -777,43 +776,55 @@ fn enclosing_scripted_effect_definition(
 	}
 }
 
-fn build_scripted_effect_scope_map(index: &SemanticIndex) -> HashMap<usize, usize> {
+fn build_inferred_callable_scope_map(index: &SemanticIndex) -> HashMap<usize, usize> {
 	index
 		.definitions
 		.iter()
 		.enumerate()
 		.filter_map(|(idx, definition)| {
-			(definition.kind == SymbolKind::ScriptedEffect).then_some((definition.scope_id, idx))
+			matches!(
+				definition.kind,
+				SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger
+			)
+			.then_some((definition.scope_id, idx))
 		})
 		.collect()
 }
 
-fn effective_usage_scope_type(
+fn effective_usage_scope_mask(
 	index: &SemanticIndex,
 	scope_to_definition: &HashMap<usize, usize>,
 	mut scope_id: usize,
-) -> ScopeType {
+) -> u8 {
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
-			return ScopeType::Unknown;
+			return 0;
 		};
 		if scope.this_type != ScopeType::Unknown {
-			return scope.this_type;
+			return scope_type_mask(scope.this_type);
 		}
 		if let Some(def_idx) = scope_to_definition.get(&scope_id) {
-			let inferred = index
+			let inferred_mask = index
 				.definitions
 				.get(*def_idx)
-				.map(|definition| definition.inferred_this_type)
-				.unwrap_or(ScopeType::Unknown);
-			if inferred != ScopeType::Unknown {
-				return inferred;
+				.map(|definition| definition.inferred_this_mask)
+				.unwrap_or(0);
+			if inferred_mask != 0 {
+				return inferred_mask;
 			}
 		}
 		let Some(parent) = scope.parent else {
-			return ScopeType::Unknown;
+			return 0;
 		};
 		scope_id = parent;
+	}
+}
+
+fn scope_type_mask(scope_type: ScopeType) -> u8 {
+	match scope_type {
+		ScopeType::Country => 0b01,
+		ScopeType::Province => 0b10,
+		ScopeType::Unknown => 0,
 	}
 }
 
@@ -887,6 +898,7 @@ fn is_alias_visible(index: &SemanticIndex, mut scope_id: usize, alias: &str) -> 
 fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 	match kind {
 		SymbolKind::ScriptedEffect => "scripted_effect",
+		SymbolKind::ScriptedTrigger => "scripted_trigger",
 		SymbolKind::Event => "event",
 		SymbolKind::Decision => "decision",
 		SymbolKind::DiplomaticAction => "diplomatic_action",

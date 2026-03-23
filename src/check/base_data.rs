@@ -29,7 +29,7 @@ use walkdir::WalkDir;
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 3;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 4;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -396,6 +396,7 @@ impl BaseAnalysisSnapshot {
 					scope_id: item.scope_id,
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
+					inferred_this_mask: item.inferred_this_mask,
 					required_params: item.required_params.clone(),
 					param_contract: item.param_contract.clone(),
 				})
@@ -557,6 +558,11 @@ impl BaseAnalysisSnapshot {
 					scope_id: item.scope_id,
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
+					inferred_this_mask: if item.inferred_this_mask != 0 {
+						item.inferred_this_mask
+					} else {
+						scope_type_mask(item.inferred_this_type)
+					},
 					required_params: item.required_params.clone(),
 					param_contract: item.param_contract.clone(),
 				})
@@ -757,9 +763,19 @@ pub struct BaseSymbolDefinition {
 	pub scope_id: usize,
 	pub declared_this_type: ScopeType,
 	pub inferred_this_type: ScopeType,
+	#[serde(default)]
+	pub inferred_this_mask: u8,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub param_contract: Option<crate::check::model::ParamContract>,
+}
+
+fn scope_type_mask(scope_type: ScopeType) -> u8 {
+	match scope_type {
+		ScopeType::Country => 0b01,
+		ScopeType::Province => 0b10,
+		ScopeType::Unknown => 0,
+	}
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2107,6 +2123,7 @@ mod tests {
 			scope_id: 0,
 			declared_this_type: ScopeType::Country,
 			inferred_this_type: ScopeType::Country,
+			inferred_this_mask: 0b01,
 			required_params: vec!["age".to_string(), "name".to_string(), "duration".to_string()],
 			param_contract: Some(ParamContract {
 				required_all: vec![
@@ -2140,6 +2157,10 @@ mod tests {
 			.expect("serialized param contract");
 		assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
 		assert_eq!(contract.optional, vec!["else"]);
+		assert_eq!(
+			decoded.symbol_definitions.first().map(|definition| definition.inferred_this_mask),
+			Some(0b01)
+		);
 
 		let rehydrated = decoded.to_semantic_index();
 		let contract = rehydrated
@@ -2149,6 +2170,13 @@ mod tests {
 			.expect("rehydrated param contract");
 		assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
 		assert_eq!(contract.optional, vec!["else"]);
+		assert_eq!(
+			rehydrated
+				.definitions
+				.first()
+				.map(|definition| definition.inferred_this_mask),
+			Some(0b01)
+		);
 	}
 
 	#[test]
@@ -2206,10 +2234,12 @@ mod tests {
 			"scope_id": 0,
 			"declared_this_type": "Country",
 			"inferred_this_type": "Country",
+			"inferred_this_mask": 1,
 			"required_params": []
 		});
 		let decoded: BaseSymbolDefinition =
 			serde_json::from_value(raw).expect("deserialize legacy base symbol definition");
 		assert!(decoded.param_contract.is_none());
+		assert_eq!(decoded.inferred_this_mask, 1);
 	}
 }
