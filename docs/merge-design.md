@@ -1,6 +1,6 @@
 # Merge Design
 
-Last updated: 2026-03-16
+Last updated: 2026-03-23
 
 ## Summary
 
@@ -31,6 +31,9 @@ The first merge-capable version does not attempt to provide:
 - automatic resolution of unsupported overlapping binary assets
 - editor-integrated conflict review UX
 - semantic equivalence guarantees for paths outside the supported structural classes
+- a full localisation compatibility solution
+
+Localisation-specific compatibility remains a separate workstream. The merge engine may report localisation regressions during validation, but v1 merge planning and emission do not depend on solving localisation behavior end to end.
 
 ## Target Workflow
 
@@ -248,6 +251,21 @@ Always run a validation pass against the generated output tree:
 
 The final command status is derived from this validation step.
 
+## Implementation Order For Milestone 4
+
+The first implementation pass should be split into the same four slices used by the roadmap so the coordinator can assign them independently:
+
+- Slice A: contract freeze for plan/report shape and output layout
+- Slice B: merge IR for supported structural roots
+- Slice C: materialization and artifact emission
+- Slice D: post-merge revalidation and exit-status gating
+
+Recommended dependency order:
+
+- complete Slice A before any worker starts Slice B or Slice C
+- allow Slice B and Slice C to run in parallel only after the shared contract is frozen
+- keep Slice D last, because it depends on the emitted tree and metadata files
+
 ## Output Artifact Layout
 
 Given `foch merge playlist.json --out ./merged-mod`, the output directory layout is fixed as:
@@ -389,6 +407,8 @@ Return exit code `2` for:
 Return exit code `3` for:
 
 - generated output with fatal validation errors
+
+Localisation failures that are purely compatibility-related should be reported clearly, but they should not be conflated with the core merge classification or emission contract.
 
 ### Warnings only
 

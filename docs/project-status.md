@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-03-16
+Last updated: 2026-03-23
 
 ## Summary
 
@@ -13,6 +13,14 @@ Last updated: 2026-03-16
 It is not yet an automatic mod merger that generates a merged mod artifact on disk.
 
 That distinction matters because the repository looks substantially more complete when judged as an analyzer than when judged against the original end goal.
+
+## Deferred Workstreams
+
+The repository also has a separate localisation compatibility track.
+
+- It is not part of the mainline parser cleanup path.
+- It is not a blocker for the current analyzer-to-merge work.
+- It should be tracked and reported separately, especially for double-byte / EU4DLL-related handling and other compatibility gaps that do not change the core semantic analysis contract.
 
 ## Repository Shape Today
 
@@ -44,6 +52,8 @@ The existing rule and analysis system covers, at minimum:
 - file conflicts
 - scripted effect definition/reference issues
 - semantic visibility and missing localisation diagnostics
+
+Those localisation diagnostics are useful signals, but they should remain a distinct compatibility workstream rather than being folded into the main analyzer or merge milestone framing.
 
 ### Editor-side behavior
 
@@ -114,6 +124,8 @@ The current codebase does contain merge-adjacent groundwork:
 - semantic index composition across overlays
 
 That groundwork is useful, but it is still upstream of an actual generated merge workflow.
+
+The next merge milestone has now been decomposed into contract freeze, merge IR, materialization, and revalidation slices so coordination can stay explicit instead of treating `merge` as one opaque task.
 
 ## Recommended Reading
 
