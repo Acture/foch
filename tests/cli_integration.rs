@@ -411,8 +411,11 @@ fn merge_plan_json_output_can_be_deserialized() {
 
 	let content = fs::read_to_string(output_path).expect("read merge plan output");
 	let parsed: serde_json::Value = serde_json::from_str(&content).expect("deserialize merge plan");
-	assert!(parsed.get("entries").is_some());
-	assert!(parsed.get("summary").is_some());
+	assert!(parsed.get("generated_at").and_then(|value| value.as_str()).is_some());
+	assert!(parsed.get("strategies").is_some());
+	assert!(parsed.get("paths").is_some());
+	assert!(parsed.get("entries").is_none());
+	assert!(parsed.get("summary").is_none());
 }
 
 #[test]
@@ -449,6 +452,7 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	);
 	assert_eq!(code, 2);
 	assert!(stdout.contains("MANUAL_CONFLICT"));
+	assert!(stdout.contains("generated=false"));
 }
 
 #[test]
@@ -562,15 +566,77 @@ fn merge_plan_json_output_contains_strategy_contributors_and_winner() {
 
 	let content = fs::read_to_string(output_path).expect("read merge plan");
 	let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse merge plan");
-	let entry = parsed["entries"]
+	assert!(parsed["generated_at"].as_str().is_some());
+	assert_eq!(parsed["strategies"]["last_writer_overlay"], 1);
+	let entry = parsed["paths"]
 		.as_array()
-		.expect("entries array")
+		.expect("paths array")
 		.iter()
 		.find(|item| item["path"] == "localisation/english/test_l_english.yml")
 		.expect("matching entry");
 	assert_eq!(entry["strategy"], "last_writer_overlay");
 	assert!(entry["contributors"].is_array());
 	assert_eq!(entry["winner"]["mod_id"], "7402");
+	assert_eq!(entry["generated"], false);
+	assert_eq!(entry["notes"], json!([]));
+}
+
+#[test]
+fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let output_path = tmp.path().join("plan.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7411"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7412"}
+		]),
+	);
+	write_descriptor(&tmp.path().join("7411"), "mod-a");
+	write_descriptor(&tmp.path().join("7412"), "mod-b");
+	fs::create_dir_all(tmp.path().join("7411").join("interface")).expect("create interface dir");
+	fs::create_dir_all(tmp.path().join("7412").join("interface")).expect("create interface dir");
+	fs::write(
+		tmp.path().join("7411").join("interface").join("main.gui"),
+		"windowType = { name = a }\n",
+	)
+	.expect("write gui");
+	fs::write(
+		tmp.path().join("7412").join("interface").join("main.gui"),
+		"windowType = { name = b }\n",
+	)
+	.expect("write gui");
+
+	let playlist_str = playlist_path.display().to_string();
+	let output_str = output_path.display().to_string();
+	let (code, _stdout, _stderr) = run_foch(
+		&[
+			"merge-plan",
+			playlist_str.as_str(),
+			"--format",
+			"json",
+			"--output",
+			output_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 2);
+
+	let content = fs::read_to_string(output_path).expect("read merge plan");
+	let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse merge plan");
+	let entry = parsed["paths"]
+		.as_array()
+		.expect("paths array")
+		.iter()
+		.find(|item| item["path"] == "interface/main.gui")
+		.expect("matching entry");
+	assert_eq!(entry["strategy"], "manual_conflict");
+	assert!(entry["winner"].is_null());
+	assert_eq!(entry["generated"], false);
+	assert!(entry["notes"].as_array().is_some_and(|items| !items.is_empty()));
 }
 
 #[test]
@@ -635,14 +701,15 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 
 	let content = fs::read_to_string(output_path).expect("read merge plan");
 	let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse merge plan");
-	let entry = parsed["entries"]
+	let entry = parsed["paths"]
 		.as_array()
-		.expect("entries array")
+		.expect("paths array")
 		.iter()
 		.find(|item| item["path"] == "common/scripted_effects/effects.txt")
 		.expect("matching entry");
 	assert_eq!(entry["contributors"][0]["is_base_game"], true);
 	assert_eq!(entry["winner"]["mod_id"], "7501");
+	assert_eq!(entry["generated"], false);
 }
 
 #[test]

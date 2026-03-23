@@ -26,7 +26,9 @@ pub use graph::export_graph;
 pub use merge_plan::{run_merge_plan, run_merge_plan_with_options};
 pub use model::{
 	AnalysisMode, ChannelMode, CheckRequest, CheckResult, Finding, GraphFormat, MergePlanEntry,
-	MergePlanFormat, MergePlanOptions, MergePlanResult, MergePlanStrategy, RunOptions, Severity,
+	MergePlanFormat, MergePlanOptions, MergePlanResult, MergePlanStrategies, MergePlanStrategy,
+	MergeReport, MergeReportStatus, MergeReportValidation, RunOptions, Severity,
+	MERGED_MOD_DESCRIPTOR_PATH, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 };
 pub use parser::{AstFile, ParseResult, parse_clausewitz_file};
 pub use semantic_index::build_semantic_index;

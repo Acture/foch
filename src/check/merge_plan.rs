@@ -1,9 +1,10 @@
 use crate::check::engine::{ResolvedFileContributor, WorkspaceResolveErrorKind, resolve_workspace};
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
-	MergePlanStrategy, MergePlanSummary,
+	MergePlanStrategies, MergePlanStrategy,
 };
 use crate::check::semantic_index::parse_script_file;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn run_merge_plan(request: CheckRequest) -> MergePlanResult {
 	run_merge_plan_with_options(request, MergePlanOptions::default())
@@ -14,6 +15,7 @@ pub fn run_merge_plan_with_options(
 	options: MergePlanOptions,
 ) -> MergePlanResult {
 	let mut result = MergePlanResult {
+		generated_at: current_generated_at(),
 		include_game_base: options.include_game_base,
 		..MergePlanResult::default()
 	};
@@ -33,40 +35,35 @@ pub fn run_merge_plan_with_options(
 	result.game = workspace.playlist.game.key().to_string();
 	result.playset_name = workspace.playlist.name.clone();
 
-	result.entries = workspace
+	result.paths = workspace
 		.file_inventory
 		.iter()
 		.map(|(path, contributors)| classify_entry(path, contributors))
 		.collect();
-	result.summary = summarize_entries(&result.entries);
+	result.strategies = summarize_paths(&result.paths);
 	result
 }
 
 fn classify_entry(path: &str, contributors: &[ResolvedFileContributor]) -> MergePlanEntry {
 	let contributors_out: Vec<MergePlanContributor> =
 		contributors.iter().map(to_merge_contributor).collect();
-	let winner = contributors_out.last().cloned();
+	let mut winner = contributors_out.last().cloned();
 	let mut notes = Vec::new();
 
 	let strategy = if contributors.len() == 1 {
-		notes.push("single contributor".to_string());
 		MergePlanStrategy::CopyThrough
 	} else if is_ui_conflict_path(path) {
 		notes.push("ui path overlap is not rewritten in v1".to_string());
 		MergePlanStrategy::ManualConflict
 	} else if is_structural_merge_path(path) {
 		match validate_structural_merge_inputs(contributors) {
-			Ok(()) => {
-				notes.push("all contributors parsed successfully".to_string());
-				MergePlanStrategy::StructuralMerge
-			}
+			Ok(()) => MergePlanStrategy::StructuralMerge,
 			Err(message) => {
 				notes.push(message);
 				MergePlanStrategy::ManualConflict
 			}
 		}
 	} else if is_text_like_overlay_path(path) {
-		notes.push("resolved with last-writer overlay".to_string());
 		MergePlanStrategy::LastWriterOverlay
 	} else {
 		notes.push(
@@ -75,11 +72,16 @@ fn classify_entry(path: &str, contributors: &[ResolvedFileContributor]) -> Merge
 		MergePlanStrategy::ManualConflict
 	};
 
+	if strategy == MergePlanStrategy::ManualConflict {
+		winner = None;
+	}
+
 	MergePlanEntry {
 		path: path.to_string(),
 		strategy,
 		contributors: contributors_out,
 		winner,
+		generated: false,
 		notes,
 	}
 }
@@ -96,22 +98,29 @@ fn to_merge_contributor(contributor: &ResolvedFileContributor) -> MergePlanContr
 	}
 }
 
-fn summarize_entries(entries: &[MergePlanEntry]) -> MergePlanSummary {
-	let mut summary = MergePlanSummary {
-		total_paths: entries.len(),
-		..MergePlanSummary::default()
+fn summarize_paths(paths: &[MergePlanEntry]) -> MergePlanStrategies {
+	let mut strategies = MergePlanStrategies {
+		total_paths: paths.len(),
+		..MergePlanStrategies::default()
 	};
 
-	for entry in entries {
-		match entry.strategy {
-			MergePlanStrategy::CopyThrough => summary.copy_through += 1,
-			MergePlanStrategy::LastWriterOverlay => summary.last_writer_overlay += 1,
-			MergePlanStrategy::StructuralMerge => summary.structural_merge += 1,
-			MergePlanStrategy::ManualConflict => summary.manual_conflict += 1,
+	for path in paths {
+		match path.strategy {
+			MergePlanStrategy::CopyThrough => strategies.copy_through += 1,
+			MergePlanStrategy::LastWriterOverlay => strategies.last_writer_overlay += 1,
+			MergePlanStrategy::StructuralMerge => strategies.structural_merge += 1,
+			MergePlanStrategy::ManualConflict => strategies.manual_conflict += 1,
 		}
 	}
 
-	summary
+	strategies
+}
+
+fn current_generated_at() -> String {
+	let millis = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.map_or(0, |duration| duration.as_millis());
+	millis.to_string()
 }
 
 fn validate_structural_merge_inputs(

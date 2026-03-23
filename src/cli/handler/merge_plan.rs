@@ -1,5 +1,5 @@
 use crate::check::model::{CheckRequest, MergePlanFormat, MergePlanOptions};
-use crate::check::report::render_merge_plan_text;
+use crate::check::report::{merge_plan_exit_code, render_merge_plan_text};
 use crate::check::run_merge_plan_with_options;
 use crate::cli::arg::{MergePlanArgs, MergePlanOutputFormat};
 use crate::cli::config::Config;
@@ -27,15 +27,7 @@ pub fn handle_merge_plan(merge_plan_args: &MergePlanArgs, config: Config) -> Han
 		println!("{rendered}");
 	}
 
-	if result.has_fatal_errors() {
-		return Ok(1);
-	}
-
-	if result.has_manual_conflicts() {
-		return Ok(2);
-	}
-
-	Ok(0)
+	Ok(merge_plan_exit_code(&result))
 }
 
 fn to_merge_plan_format(format: MergePlanOutputFormat) -> MergePlanFormat {

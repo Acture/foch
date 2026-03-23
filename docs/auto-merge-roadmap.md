@@ -214,9 +214,9 @@ The milestones above should not be reordered:
 
 ## Suggested Near-Term Focus
 
-The next practical implementation step should be Milestone 1.
+The next practical implementation step should be Milestone 4, Slice A.
 
-That milestone is small enough to ship incrementally, but important enough to turn the repository from "an analyzer with merge-adjacent hints" into "an analyzer with a defined merge contract."
+That slice is small enough to ship incrementally, but important enough to freeze the public contract that Slice B, Slice C, and Slice D will depend on.
 
 ## Exit Criteria For A First Meaningful Merge Release
 
