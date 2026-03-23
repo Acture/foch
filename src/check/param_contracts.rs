@@ -106,6 +106,30 @@ pub(crate) fn registered_param_contract(local_name: &str) -> Option<ParamContrac
 			one_of_groups: Vec::new(),
 			conditional_required: Vec::new(),
 		}),
+		"take_estate_land_share_massive" => Some(ParamContract {
+			required_all: vec!["estate".to_string()],
+			optional: vec!["amount".to_string()],
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
+		"add_estate_loyalty" => Some(ParamContract {
+			required_all: vec!["estate".to_string()],
+			optional: vec!["short".to_string(), "amount".to_string()],
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
+		"estate_loyalty" => Some(ParamContract {
+			required_all: vec!["estate".to_string(), "loyalty".to_string()],
+			optional: Vec::new(),
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
+		"estate_influence" => Some(ParamContract {
+			required_all: vec!["estate".to_string(), "influence".to_string()],
+			optional: Vec::new(),
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
 		"for" => Some(ParamContract {
 			required_all: vec!["amount".to_string(), "effect".to_string()],
 			optional: Vec::new(),
