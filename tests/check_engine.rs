@@ -1,4 +1,7 @@
-use foch::check::model::{CheckRequest, MergePlanOptions, MergePlanStrategy, RunOptions};
+use foch::check::model::{
+	CheckRequest, MergePlanEntry, MergePlanOptions, MergePlanStrategy, MergeReport,
+	MergeReportStatus, MergeReportValidation, RunOptions,
+};
 use foch::check::{run_checks, run_checks_with_options, run_merge_plan_with_options};
 use foch::cli::config::Config;
 use serde_json::json;
@@ -78,9 +81,9 @@ fn request_with_config(playlist_path: &Path, config: Config) -> CheckRequest {
 fn plan_entry_for<'a>(
 	result: &'a foch::check::MergePlanResult,
 	path: &str,
-) -> &'a foch::check::MergePlanEntry {
+) -> &'a MergePlanEntry {
 	result
-		.entries
+		.paths
 		.iter()
 		.find(|entry| entry.path == path)
 		.expect("merge plan entry exists")
@@ -363,7 +366,12 @@ fn merge_plan_marks_single_contributor_path_as_copy_through() {
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "events/a.txt");
+	assert!(!result.generated_at.is_empty());
+	assert_eq!(result.strategies.total_paths, 1);
+	assert_eq!(result.strategies.copy_through, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::CopyThrough);
+	assert!(!entry.generated);
+	assert!(entry.notes.is_empty());
 }
 
 #[test]
@@ -395,12 +403,15 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "common/scripted_effects/effects.txt");
+	assert_eq!(result.strategies.structural_merge, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
 	assert_eq!(
 		entry.winner.as_ref().expect("winner").mod_id,
 		"9502",
 		"highest-precedence mod should win ties"
 	);
+	assert!(!entry.generated);
+	assert!(entry.notes.is_empty());
 }
 
 #[test]
@@ -432,7 +443,11 @@ fn merge_plan_marks_invalid_structural_overlap_as_manual_conflict() {
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "events/shared.txt");
+	assert_eq!(result.strategies.manual_conflict, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+	assert!(entry.winner.is_none());
+	assert!(!entry.generated);
+	assert!(!entry.notes.is_empty());
 }
 
 #[test]
@@ -457,6 +472,9 @@ fn merge_plan_marks_ui_overlap_as_manual_conflict() {
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "interface/main.gui");
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+	assert!(entry.winner.is_none());
+	assert!(!entry.generated);
+	assert!(!entry.notes.is_empty());
 }
 
 #[test]
@@ -481,6 +499,9 @@ fn merge_plan_marks_binary_overlap_as_manual_conflict() {
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "gfx/flags/test.dds");
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+	assert!(entry.winner.is_none());
+	assert!(!entry.generated);
+	assert!(!entry.notes.is_empty());
 }
 
 #[test]
@@ -512,8 +533,43 @@ fn merge_plan_marks_non_structural_text_overlap_as_last_writer_overlay() {
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "localisation/english/test_l_english.yml");
+	assert_eq!(result.strategies.last_writer_overlay, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::LastWriterOverlay);
 	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9902");
+	assert!(!entry.generated);
+	assert!(entry.notes.is_empty());
+}
+
+#[test]
+fn merge_report_serializes_frozen_contract_buckets() {
+	let report = MergeReport {
+		status: MergeReportStatus::Blocked,
+		manual_conflict_count: 2,
+		generated_file_count: 0,
+		copied_file_count: 3,
+		overlay_file_count: 1,
+		validation: MergeReportValidation {
+			fatal_errors: 0,
+			strict_findings: 4,
+			advisory_findings: 7,
+			parse_errors: 1,
+			unresolved_references: 2,
+			missing_localisation: 5,
+		},
+	};
+
+	let value = serde_json::to_value(&report).expect("serialize merge report");
+	assert_eq!(value["status"], "blocked");
+	assert_eq!(value["manual_conflict_count"], 2);
+	assert_eq!(value["generated_file_count"], 0);
+	assert_eq!(value["copied_file_count"], 3);
+	assert_eq!(value["overlay_file_count"], 1);
+	assert_eq!(value["validation"]["fatal_errors"], 0);
+	assert_eq!(value["validation"]["strict_findings"], 4);
+	assert_eq!(value["validation"]["advisory_findings"], 7);
+	assert_eq!(value["validation"]["parse_errors"], 1);
+	assert_eq!(value["validation"]["unresolved_references"], 2);
+	assert_eq!(value["validation"]["missing_localisation"], 5);
 }
 
 #[test]

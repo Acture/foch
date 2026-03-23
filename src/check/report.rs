@@ -1,5 +1,6 @@
 use crate::check::model::{
-	ChannelMode, CheckResult, Finding, MergePlanEntry, MergePlanResult, MergePlanStrategy, Severity,
+	ChannelMode, CheckResult, Finding, MergePlanEntry, MergePlanResult, MergePlanStrategy,
+	MergeReport, MergeReportStatus, Severity,
 };
 
 pub fn render_text(result: &CheckResult, color: bool, channel: ChannelMode) -> String {
@@ -69,20 +70,24 @@ pub fn render_text(result: &CheckResult, color: bool, channel: ChannelMode) -> S
 pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
 	let mut lines = Vec::new();
 	lines.push("Foch Merge Plan".to_string());
+	lines.push(format!("game: {}", result.game));
+	lines.push(format!("playset_name: {}", result.playset_name));
+	lines.push(format!("generated_at: {}", result.generated_at));
+	lines.push(format!("include_game_base: {}", result.include_game_base));
 	lines.push(format!("fatal_errors: {}", result.fatal_errors.len()));
-	lines.push(format!("total_paths: {}", result.summary.total_paths));
-	lines.push(format!("copy_through: {}", result.summary.copy_through));
+	lines.push(format!("total_paths: {}", result.strategies.total_paths));
+	lines.push(format!("copy_through: {}", result.strategies.copy_through));
 	lines.push(format!(
 		"last_writer_overlay: {}",
-		result.summary.last_writer_overlay
+		result.strategies.last_writer_overlay
 	));
 	lines.push(format!(
 		"structural_merge: {}",
-		result.summary.structural_merge
+		result.strategies.structural_merge
 	));
 	lines.push(format!(
 		"manual_conflict: {}",
-		result.summary.manual_conflict
+		result.strategies.manual_conflict
 	));
 
 	for fatal in &result.fatal_errors {
@@ -95,7 +100,7 @@ pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
 		MergePlanStrategy::LastWriterOverlay,
 	] {
 		for entry in result
-			.entries
+			.paths
 			.iter()
 			.filter(|entry| entry.strategy == strategy)
 		{
@@ -104,6 +109,50 @@ pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
 	}
 
 	lines.join("\n")
+}
+
+pub fn merge_plan_exit_code(result: &MergePlanResult) -> i32 {
+	if result.has_fatal_errors() {
+		1
+	} else if result.has_manual_conflicts() {
+		2
+	} else {
+		0
+	}
+}
+
+pub fn render_merge_report_text(report: &MergeReport) -> String {
+	let mut lines = Vec::new();
+	lines.push("Foch Merge Report".to_string());
+	lines.push(format!("status: {}", render_merge_report_status(report.status)));
+	lines.push(format!(
+		"manual_conflict_count: {}",
+		report.manual_conflict_count
+	));
+	lines.push(format!(
+		"generated_file_count: {}",
+		report.generated_file_count
+	));
+	lines.push(format!("copied_file_count: {}", report.copied_file_count));
+	lines.push(format!("overlay_file_count: {}", report.overlay_file_count));
+	lines.push(format!(
+		"validation: fatal_errors={} strict_findings={} advisory_findings={} parse_errors={} unresolved_references={} missing_localisation={}",
+		report.validation.fatal_errors,
+		report.validation.strict_findings,
+		report.validation.advisory_findings,
+		report.validation.parse_errors,
+		report.validation.unresolved_references,
+		report.validation.missing_localisation
+	));
+	lines.join("\n")
+}
+
+pub fn merge_report_exit_code(report: &MergeReport) -> i32 {
+	match report.status {
+		MergeReportStatus::Ready => 0,
+		MergeReportStatus::Blocked => 2,
+		MergeReportStatus::Fatal => 1,
+	}
 }
 
 fn render_finding(finding: &Finding, color: bool) -> String {
@@ -172,7 +221,15 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 	};
 
 	format!(
-		"[{strategy}] path={} winner={} contributors={}{}",
-		entry.path, winner, contributors, notes
+		"[{strategy}] path={} winner={} generated={} contributors={}{}",
+		entry.path, winner, entry.generated, contributors, notes
 	)
+}
+
+fn render_merge_report_status(status: MergeReportStatus) -> &'static str {
+	match status {
+		MergeReportStatus::Ready => "READY",
+		MergeReportStatus::Blocked => "BLOCKED",
+		MergeReportStatus::Fatal => "FATAL",
+	}
 }

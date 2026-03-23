@@ -1893,9 +1893,7 @@ fn nearest_enclosing_scripted_effect_definition_index(
 		{
 			return Some(*def_idx);
 		}
-		let Some(parent) = index.scopes.get(scope_id).and_then(|scope| scope.parent) else {
-			return None;
-		};
+		let parent = index.scopes.get(scope_id).and_then(|scope| scope.parent)?;
 		scope_id = parent;
 	}
 }
