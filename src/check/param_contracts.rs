@@ -212,6 +212,7 @@ mod tests {
 			scope_id: 0,
 			declared_this_type: crate::check::model::ScopeType::Country,
 			inferred_this_type: crate::check::model::ScopeType::Country,
+			inferred_this_mask: 0b01,
 			required_params: Vec::new(),
 			param_contract: Some(ParamContract {
 				required_all: vec!["custom".to_string()],

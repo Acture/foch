@@ -1081,6 +1081,11 @@ fn completion_from_definition(
 			CompletionItemKind::FUNCTION,
 			"workspace scripted effect".to_string(),
 		),
+		SymbolKind::ScriptedTrigger => (
+			local_name.to_string(),
+			CompletionItemKind::FUNCTION,
+			"workspace scripted trigger".to_string(),
+		),
 		SymbolKind::Event => (
 			full_name.to_string(),
 			CompletionItemKind::EVENT,

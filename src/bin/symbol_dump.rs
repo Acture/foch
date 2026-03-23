@@ -176,6 +176,7 @@ fn build_symbol_entries(index: &foch::check::model::SemanticIndex) -> Vec<Symbol
 fn symbol_kind_name(kind: SymbolKind) -> &'static str {
 	match kind {
 		SymbolKind::ScriptedEffect => "ScriptedEffect",
+		SymbolKind::ScriptedTrigger => "ScriptedTrigger",
 		SymbolKind::Event => "Event",
 		SymbolKind::Decision => "Decision",
 		SymbolKind::DiplomaticAction => "DiplomaticAction",

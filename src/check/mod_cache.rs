@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MOD_SNAPSHOT_CACHE_DIR_ENV: &str = "FOCH_MOD_SNAPSHOT_CACHE_DIR";
-const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 4;
+const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {

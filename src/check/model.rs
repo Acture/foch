@@ -261,6 +261,7 @@ pub struct ModCandidate {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum SymbolKind {
 	ScriptedEffect,
+	ScriptedTrigger,
 	Event,
 	Decision,
 	DiplomaticAction,
@@ -318,6 +319,8 @@ pub struct SymbolDefinition {
 	pub scope_id: usize,
 	pub declared_this_type: ScopeType,
 	pub inferred_this_type: ScopeType,
+	#[serde(default)]
+	pub inferred_this_mask: u8,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub param_contract: Option<ParamContract>,
