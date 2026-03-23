@@ -1676,7 +1676,7 @@ fn is_alias_key(key: &str) -> bool {
 	matches!(key, "ROOT" | "FROM" | "THIS" | "PREV")
 }
 
-fn is_decision_container_key(key: &str) -> bool {
+pub(crate) fn is_decision_container_key(key: &str) -> bool {
 	matches!(
 		key,
 		"country_decisions" | "province_decisions" | "religion_decisions" | "government_decisions"

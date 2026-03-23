@@ -6,6 +6,7 @@ pub mod engine;
 pub mod eu4_builtin;
 pub mod graph;
 pub mod localisation;
+pub mod merge_ir;
 pub mod merge_plan;
 pub mod mod_cache;
 pub mod model;
