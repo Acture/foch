@@ -411,7 +411,12 @@ fn merge_plan_json_output_can_be_deserialized() {
 
 	let content = fs::read_to_string(output_path).expect("read merge plan output");
 	let parsed: serde_json::Value = serde_json::from_str(&content).expect("deserialize merge plan");
-	assert!(parsed.get("generated_at").and_then(|value| value.as_str()).is_some());
+	assert!(
+		parsed
+			.get("generated_at")
+			.and_then(|value| value.as_str())
+			.is_some()
+	);
 	assert!(parsed.get("strategies").is_some());
 	assert!(parsed.get("paths").is_some());
 	assert!(parsed.get("entries").is_none());
@@ -636,7 +641,84 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
 	assert_eq!(entry["generated"], false);
-	assert!(entry["notes"].as_array().is_some_and(|items| !items.is_empty()));
+	assert!(
+		entry["notes"]
+			.as_array()
+			.is_some_and(|items| !items.is_empty())
+	);
+}
+
+#[test]
+fn merge_plan_json_output_marks_non_normalizable_defines_as_manual_conflict() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let output_path = tmp.path().join("plan.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7421"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7422"}
+		]),
+	);
+	write_descriptor(&tmp.path().join("7421"), "mod-a");
+	write_descriptor(&tmp.path().join("7422"), "mod-b");
+	fs::create_dir_all(tmp.path().join("7421").join("common").join("defines"))
+		.expect("create defines dir");
+	fs::create_dir_all(tmp.path().join("7422").join("common").join("defines"))
+		.expect("create defines dir");
+	fs::write(
+		tmp.path()
+			.join("7421")
+			.join("common")
+			.join("defines")
+			.join("test.txt"),
+		"NGame = {\n\tSTART_YEAR = 1444\n}\n",
+	)
+	.expect("write defines");
+	fs::write(
+		tmp.path()
+			.join("7422")
+			.join("common")
+			.join("defines")
+			.join("test.txt"),
+		"NGame = {\n\t1445\n}\n",
+	)
+	.expect("write defines");
+
+	let playlist_str = playlist_path.display().to_string();
+	let output_str = output_path.display().to_string();
+	let (code, _stdout, _stderr) = run_foch(
+		&[
+			"merge-plan",
+			playlist_str.as_str(),
+			"--format",
+			"json",
+			"--output",
+			output_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 2);
+
+	let content = fs::read_to_string(output_path).expect("read merge plan");
+	let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse merge plan");
+	let entry = parsed["paths"]
+		.as_array()
+		.expect("paths array")
+		.iter()
+		.find(|item| item["path"] == "common/defines/test.txt")
+		.expect("matching entry");
+	assert_eq!(entry["strategy"], "manual_conflict");
+	assert!(entry["winner"].is_null());
+	assert_eq!(entry["generated"], false);
+	assert!(entry["notes"].as_array().is_some_and(|notes| {
+		notes.iter().any(|note| {
+			note.as_str()
+				.is_some_and(|text| text.contains("non-normalizable defines"))
+		})
+	}));
 }
 
 #[test]
@@ -801,13 +883,9 @@ fn check_parse_issue_report_writes_family_annotated_json() {
 		serde_json::from_str(&content).expect("parse parse issue report");
 	let items = parsed.as_array().expect("parse issue report array");
 	assert!(!items.is_empty());
-	assert!(
-		items.iter()
-			.any(|item| {
-				item["family"] == "localisation"
-					&& item["path"] == "localisation/broken_l_english.yml"
-			})
-	);
+	assert!(items.iter().any(|item| {
+		item["family"] == "localisation" && item["path"] == "localisation/broken_l_english.yml"
+	}));
 }
 
 #[test]

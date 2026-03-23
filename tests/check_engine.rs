@@ -78,10 +78,7 @@ fn request_with_config(playlist_path: &Path, config: Config) -> CheckRequest {
 	}
 }
 
-fn plan_entry_for<'a>(
-	result: &'a foch::check::MergePlanResult,
-	path: &str,
-) -> &'a MergePlanEntry {
+fn plan_entry_for<'a>(result: &'a foch::check::MergePlanResult, path: &str) -> &'a MergePlanEntry {
 	result
 		.paths
 		.iter()
@@ -412,6 +409,43 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 	);
 	assert!(!entry.generated);
 	assert!(entry.notes.is_empty());
+}
+
+#[test]
+fn merge_plan_marks_non_normalizable_defines_overlap_as_manual_conflict() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9551");
+	let mod_b = temp.path().join("9552");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9551"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9552"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_a,
+		"common/defines/test.txt",
+		"NGame = {\n\tSTART_YEAR = 1444\n}\n",
+	);
+	write_script_file(&mod_b, "common/defines/test.txt", "NGame = {\n\t1445\n}\n");
+
+	let result = run_merge_plan_no_base(request_for(&playlist_path));
+	let entry = plan_entry_for(&result, "common/defines/test.txt");
+	assert_eq!(result.strategies.manual_conflict, 1);
+	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
+	assert!(entry.winner.is_none());
+	assert!(!entry.generated);
+	assert!(
+		entry
+			.notes
+			.iter()
+			.any(|note| note.contains("non-normalizable defines"))
+	);
 }
 
 #[test]

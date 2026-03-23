@@ -214,9 +214,9 @@ The milestones above should not be reordered:
 
 ## Suggested Near-Term Focus
 
-The next practical implementation step should be Milestone 4, Slice A.
+The next practical implementation step should be finishing Milestone 4, Slice B through the remaining `common/defines/**` work.
 
-That slice is small enough to ship incrementally, but important enough to freeze the public contract that Slice B, Slice C, and Slice D will depend on.
+Slice A is already complete, and Slice B1 has already covered the block-root merge IR classes. The remaining B2 work is to normalize `common/defines/**` into assignment-path IR and downgrade non-normalizable files to explicit manual conflicts during planning.
 
 ## Exit Criteria For A First Meaningful Merge Release
 
