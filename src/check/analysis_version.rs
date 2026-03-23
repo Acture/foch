@@ -1,7 +1,7 @@
 use crate::check::eu4_builtin::builtin_catalog_hash;
 use std::sync::OnceLock;
 
-pub const ANALYSIS_RULES_VERSION: u32 = 6;
+pub const ANALYSIS_RULES_VERSION: u32 = 7;
 
 static ANALYSIS_RULES_ID: OnceLock<String> = OnceLock::new();
 

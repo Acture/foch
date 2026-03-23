@@ -34,6 +34,8 @@ pub enum ScriptFileKind {
 	Achievements,
 	Ages,
 	Buildings,
+	Institutions,
+	ProvinceTriggeredModifiers,
 	Ideas,
 	GreatProjects,
 	GovernmentReforms,
@@ -74,10 +76,14 @@ struct ParseCacheEntry {
 
 pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 	let normalized = relative.to_string_lossy().replace('\\', "/");
-	if normalized.starts_with("common/on_actions/")
+	if normalized.starts_with("events/common/new_diplomatic_actions/") {
+		ScriptFileKind::NewDiplomaticActions
+	} else if normalized.starts_with("common/on_actions/")
 		|| normalized.starts_with("events/common/on_actions/")
 	{
 		ScriptFileKind::OnActions
+	} else if normalized.starts_with("events/decisions/") {
+		ScriptFileKind::Decisions
 	} else if normalized.starts_with("events/") {
 		ScriptFileKind::Events
 	} else if normalized.starts_with("decisions/") {
@@ -98,6 +104,10 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Ages
 	} else if normalized.starts_with("common/buildings/") {
 		ScriptFileKind::Buildings
+	} else if normalized.starts_with("common/institutions/") {
+		ScriptFileKind::Institutions
+	} else if normalized.starts_with("common/province_triggered_modifiers/") {
+		ScriptFileKind::ProvinceTriggeredModifiers
 	} else if normalized.starts_with("common/ideas/") {
 		ScriptFileKind::Ideas
 	} else if normalized.starts_with("common/great_projects/") {
@@ -147,6 +157,10 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::Achievements => "achievements".to_string(),
 		ScriptFileKind::Ages => module_with_tail(&parts, 2, "ages"),
 		ScriptFileKind::Buildings => module_with_tail(&parts, 2, "buildings"),
+		ScriptFileKind::Institutions => module_with_tail(&parts, 2, "institutions"),
+		ScriptFileKind::ProvinceTriggeredModifiers => {
+			module_with_tail(&parts, 2, "province_triggered_modifiers")
+		}
 		ScriptFileKind::Ideas => module_with_tail(&parts, 2, "ideas"),
 		ScriptFileKind::GreatProjects => module_with_tail(&parts, 2, "great_projects"),
 		ScriptFileKind::GovernmentReforms => {
@@ -411,6 +425,32 @@ fn build_file_index(
 	);
 }
 
+fn event_scope_type(key: &str) -> Option<ScopeType> {
+	match key {
+		"country_event" => Some(ScopeType::Country),
+		"province_event" => Some(ScopeType::Province),
+		_ => None,
+	}
+}
+
+fn event_from_type(key: &str) -> Option<ScopeType> {
+	match key {
+		"country_event" | "province_event" => Some(ScopeType::Country),
+		_ => None,
+	}
+}
+
+fn is_top_level_event_definition(
+	index: &SemanticIndex,
+	scope_id: usize,
+	key: &str,
+	value: &AstValue,
+) -> bool {
+	scope_kind(index, scope_id) == ScopeKind::File
+		&& event_scope_type(key).is_some()
+		&& matches!(value, AstValue::Block { .. })
+}
+
 struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a Path,
@@ -437,6 +477,11 @@ fn walk_statements(
 				value,
 				..
 			} => {
+				if is_top_level_event_definition(index, scope_id, key, value) {
+					handle_event_block(index, scope_id, ctx, key, value, current_namespace.clone());
+					continue;
+				}
+
 				record_key_usage(index, scope_id, ctx, key, key_span);
 				record_scalar_assignment(index, scope_id, ctx, key, key_span, value);
 				record_ui_scalar_semantics(index, ctx, key, key_span, value);
@@ -454,18 +499,7 @@ fn walk_statements(
 				record_alias_tokens_from_value(index, scope_id, ctx, value);
 				record_param_tokens(index, active_scripted_effect, value);
 
-				if key == "country_event" && scope_kind(index, scope_id) == ScopeKind::File {
-					handle_country_event_block(
-						index,
-						scope_id,
-						ctx,
-						value,
-						current_namespace.clone(),
-					);
-					continue;
-				}
-
-				if is_country_event_call(key, value)
+				if is_event_call(key, value)
 					&& let Some(event_id) = extract_event_call_id(value)
 				{
 					index.references.push(SymbolReference {
@@ -536,7 +570,7 @@ fn walk_statements(
 						});
 					}
 
-					let next_scripted_effect = if key == "country_event" {
+					let next_scripted_effect = if event_scope_type(key).is_some() {
 						None
 					} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
 						&& scope_kind(index, scope_id) == ScopeKind::File
@@ -585,26 +619,32 @@ fn walk_statements(
 	}
 }
 
-fn handle_country_event_block(
+fn handle_event_block(
 	index: &mut SemanticIndex,
 	scope_id: usize,
 	ctx: &BuildContext<'_>,
+	key: &str,
 	value: &AstValue,
 	namespace: Option<String>,
 ) {
 	let AstValue::Block { items, span } = value else {
 		return;
 	};
+	let Some(this_type) = event_scope_type(key) else {
+		return;
+	};
+	let from_type = event_from_type(key).unwrap_or(ScopeType::Unknown);
 
 	let mut aliases = scope_aliases(index, scope_id);
-	aliases.insert("THIS".to_string(), ScopeType::Country);
-	aliases.insert("ROOT".to_string(), ScopeType::Country);
+	aliases.insert("THIS".to_string(), this_type);
+	aliases.insert("ROOT".to_string(), this_type);
+	aliases.insert("FROM".to_string(), from_type);
 	aliases.insert("PREV".to_string(), scope_this_type(index, scope_id));
 	let event_scope = push_scope(
 		index,
 		ScopeKind::Event,
 		Some(scope_id),
-		ScopeType::Country,
+		this_type,
 		aliases,
 		ctx.mod_id,
 		ctx.path,
@@ -624,14 +664,14 @@ fn handle_country_event_block(
 			kind: SymbolKind::Event,
 			name: full_id,
 			module: ctx.module_name.to_string(),
-			local_name: "country_event".to_string(),
+			local_name: key.to_string(),
 			mod_id: ctx.mod_id.to_string(),
 			path: ctx.path.to_path_buf(),
 			line: span.start.line,
 			column: span.start.column,
 			scope_id: event_scope,
-			declared_this_type: ScopeType::Country,
-			inferred_this_type: ScopeType::Country,
+			declared_this_type: this_type,
+			inferred_this_type: this_type,
 			required_params: Vec::new(),
 			param_contract: None,
 		});
@@ -906,7 +946,10 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::GovernmentNames
 		| ScriptFileKind::CustomizableLocalization => ScopeType::Country,
 		ScriptFileKind::Missions | ScriptFileKind::NewDiplomaticActions => ScopeType::Country,
-		ScriptFileKind::Buildings | ScriptFileKind::GreatProjects => ScopeType::Province,
+		ScriptFileKind::Buildings
+		| ScriptFileKind::GreatProjects
+		| ScriptFileKind::Institutions
+		| ScriptFileKind::ProvinceTriggeredModifiers => ScopeType::Province,
 		_ => ScopeType::Unknown,
 	}
 }
@@ -1170,11 +1213,14 @@ fn create_child_scope(
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("FROM").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
-	} else if key == "country_event" {
+	} else if let Some(event_this_type) = event_scope_type(key) {
 		kind = ScopeKind::Event;
-		this_type = ScopeType::Country;
-		aliases.insert("THIS".to_string(), ScopeType::Country);
-		aliases.insert("ROOT".to_string(), ScopeType::Country);
+		this_type = event_this_type;
+		aliases.insert("THIS".to_string(), event_this_type);
+		aliases.insert("ROOT".to_string(), event_this_type);
+		if let Some(from_type) = event_from_type(key) {
+			aliases.insert("FROM".to_string(), from_type);
+		}
 	} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
@@ -1198,7 +1244,7 @@ fn create_child_scope(
 		kind = ScopeKind::Effect;
 	}
 
-	if key == "country_event" && !items.is_empty() {
+	if event_scope_type(key).is_some() && !items.is_empty() {
 		kind = ScopeKind::Event;
 	}
 
@@ -1287,6 +1333,10 @@ fn file_kind_container_scope_kind(
 			"on_accept" | "on_decline" | "add_entry" => Some(ScopeKind::Effect),
 			_ => None,
 		},
+		ScriptFileKind::Events => match key {
+			"mean_time_to_happen" => Some(ScopeKind::Trigger),
+			_ => None,
+		},
 		ScriptFileKind::Ages => match key {
 			"can_start" | "custom_trigger_tooltip" | "calc_true_if" | "ai_will_do" => {
 				Some(ScopeKind::Trigger)
@@ -1301,6 +1351,19 @@ fn file_kind_container_scope_kind(
 			| "on_construction_started"
 			| "on_construction_canceled"
 			| "on_obsolete" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::Institutions => match key {
+			"history" | "can_embrace" | "potential" | "custom_trigger_tooltip" => {
+				Some(ScopeKind::Trigger)
+			}
+			"on_start" => Some(ScopeKind::Effect),
+			"embracement_speed" | "modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::ProvinceTriggeredModifiers => match key {
+			"potential" | "trigger" => Some(ScopeKind::Trigger),
+			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
 			_ => None,
 		},
 		ScriptFileKind::Ideas => match key {
@@ -1434,8 +1497,8 @@ fn find_scripted_effect_definition(
 	})
 }
 
-fn is_country_event_call(key: &str, value: &AstValue) -> bool {
-	key == "country_event" && matches!(value, AstValue::Block { .. })
+fn is_event_call(key: &str, value: &AstValue) -> bool {
+	event_scope_type(key).is_some() && matches!(value, AstValue::Block { .. })
 }
 
 fn extract_event_call_id(value: &AstValue) -> Option<String> {
@@ -1733,7 +1796,9 @@ fn effective_scope_this_type_with_overrides(
 
 #[cfg(test)]
 mod tests {
-	use super::{ScriptFileKind, build_semantic_index, classify_script_file, parse_script_file};
+	use super::{
+		ScriptFileKind, build_semantic_index, classify_script_file, parse_script_file, scope_kind,
+	};
 	use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
 	use crate::check::model::{AnalysisMode, ScopeKind, ScopeType, SymbolKind};
 	use std::fs;
@@ -1824,8 +1889,28 @@ mod tests {
 			ScriptFileKind::NewDiplomaticActions
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"events/common/new_diplomatic_actions/00_actions.txt"
+			)),
+			ScriptFileKind::NewDiplomaticActions
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("missions/example.txt")),
 			ScriptFileKind::Missions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("events/decisions/example.txt")),
+			ScriptFileKind::Decisions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/institutions/00.txt")),
+			ScriptFileKind::Institutions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/province_triggered_modifiers/00.txt"
+			)),
+			ScriptFileKind::ProvinceTriggeredModifiers
 		);
 	}
 
@@ -1836,7 +1921,31 @@ mod tests {
 		fs::create_dir_all(mod_root.join("events")).expect("create dir");
 		fs::write(
 			mod_root.join("events").join("x.txt"),
-			"namespace = test\ncountry_event = { id = test.1 option = { every_owned_province = { ROOT = { } } } }\n",
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	option = {
+		every_owned_province = {
+			ROOT = { }
+			province_event = { id = test.2 }
+		}
+	}
+}
+province_event = {
+	id = test.2
+	trigger = {
+		FROM = {
+			has_country_flag = seen_city
+		}
+	}
+	immediate = {
+		owner = {
+			country_event = { id = test.1 }
+		}
+	}
+}
+"#,
 		)
 		.expect("write file");
 
@@ -1852,9 +1961,41 @@ mod tests {
 		);
 		assert!(
 			index
+				.definitions
+				.iter()
+				.any(|item| item.kind == SymbolKind::Event && item.name == "test.2")
+		);
+		assert!(
+			index
+				.references
+				.iter()
+				.any(|item| item.kind == SymbolKind::Event && item.name == "test.2")
+		);
+		assert!(
+			index
 				.scopes
 				.iter()
 				.any(|scope| scope.this_type == ScopeType::Province)
+		);
+		assert!(
+			!index.key_usages.iter().any(|usage| {
+				(usage.key == "country_event" || usage.key == "province_event")
+					&& scope_kind(&index, usage.scope_id) == ScopeKind::File
+			}),
+			"top-level event definitions should not be recorded as plain key usage"
+		);
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001" && finding.path == Some("events/x.txt".into())
+			}),
+			"typed event roots should not stay in Unknown scope"
 		);
 	}
 
@@ -1965,6 +2106,10 @@ achievement_example = {
 			.expect("create buildings");
 		fs::create_dir_all(mod_root.join("common").join("great_projects"))
 			.expect("create monuments");
+		fs::create_dir_all(mod_root.join("common").join("institutions"))
+			.expect("create institutions");
+		fs::create_dir_all(mod_root.join("common").join("province_triggered_modifiers"))
+			.expect("create province modifiers");
 		fs::create_dir_all(mod_root.join("common").join("custom_gui"))
 			.expect("create custom gui");
 		fs::create_dir_all(mod_root.join("common").join("government_names"))
@@ -1995,6 +2140,41 @@ achievement_example = {
 			"project_alpha = { build_cost = 1000 }\n",
 		)
 		.expect("write monuments");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("institutions")
+				.join("institutions.txt"),
+			r#"
+printing_press = {
+	potential = {
+		owner = {
+			government = monarchy
+		}
+	}
+	on_start = {
+		add_base_tax = 1
+	}
+}
+"#,
+		)
+		.expect("write institutions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("province_triggered_modifiers")
+				.join("modifiers.txt"),
+			r#"
+prosperous = {
+	trigger = {
+		owner = {
+			government = monarchy
+		}
+	}
+}
+"#,
+		)
+		.expect("write province modifiers");
 		fs::write(
 			mod_root
 				.join("common")
@@ -2057,6 +2237,24 @@ achievement_example = {
 				&mod_root,
 				&mod_root
 					.join("common")
+					.join("institutions")
+					.join("institutions.txt"),
+			)
+			.expect("parsed institutions"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("province_triggered_modifiers")
+					.join("modifiers.txt"),
+			)
+			.expect("parsed province modifiers"),
+			parse_script_file(
+				"1002",
+				&mod_root,
+				&mod_root
+					.join("common")
 					.join("custom_gui")
 					.join("advisor.txt"),
 			)
@@ -2098,6 +2296,8 @@ achievement_example = {
 			"common/ages/ages.txt",
 			"common/buildings/buildings.txt",
 			"common/great_projects/projects.txt",
+			"common/institutions/institutions.txt",
+			"common/province_triggered_modifiers/modifiers.txt",
 			"common/custom_gui/advisor.txt",
 			"common/government_names/names.txt",
 			"customizable_localization/defined.txt",
@@ -2110,7 +2310,12 @@ achievement_example = {
 				"{path} should not report top-level scripted effect fallback"
 			);
 		}
-		for path in ["common/ages/ages.txt", "common/buildings/buildings.txt"] {
+		for path in [
+			"common/ages/ages.txt",
+			"common/buildings/buildings.txt",
+			"common/institutions/institutions.txt",
+			"common/province_triggered_modifiers/modifiers.txt",
+		] {
 			assert!(
 				!diagnostics.advisory.iter().any(|finding| {
 					finding.rule_id == "A001" && finding.path == Some(path.into())
@@ -2118,6 +2323,115 @@ achievement_example = {
 				"{path} should have a typed root scope"
 			);
 		}
+	}
+
+	#[test]
+	fn mislocated_dsl_paths_reuse_existing_semantics() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("events").join("common").join("new_diplomatic_actions"))
+			.expect("create misplaced diplomatic actions");
+		fs::create_dir_all(mod_root.join("events").join("decisions"))
+			.expect("create misplaced decisions");
+		fs::write(
+			mod_root
+				.join("events")
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+			r#"
+static_actions = {
+	royal_marriage = {
+		alert_index = 1
+	}
+}
+
+sell_indulgence = {
+	is_visible = { always = yes }
+	on_accept = {
+		missing_effect = { FLAG = TEST }
+	}
+}
+"#,
+		)
+		.expect("write misplaced diplomatic actions");
+		fs::write(
+			mod_root
+				.join("events")
+				.join("decisions")
+				.join("decisions.txt"),
+			r#"
+country_decisions = {
+	test_decision = {
+		potential = { always = yes }
+		effect = {
+			missing_decision_effect = { FLAG = TEST }
+		}
+	}
+}
+"#,
+		)
+		.expect("write misplaced decisions");
+
+		let parsed = [
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("events")
+					.join("common")
+					.join("new_diplomatic_actions")
+					.join("actions.txt"),
+			)
+			.expect("parsed misplaced diplomatic actions"),
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("events")
+					.join("decisions")
+					.join("decisions.txt"),
+			)
+			.expect("parsed misplaced decisions"),
+		];
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for path in [
+			"events/common/new_diplomatic_actions/actions.txt",
+			"events/decisions/decisions.txt",
+		] {
+			assert!(
+				!diagnostics.advisory.iter().any(|finding| {
+					finding.rule_id == "A001" && finding.path == Some(path.into())
+				}),
+				"{path} should reuse typed DSL semantics"
+			);
+		}
+		for name in [
+			"static_actions",
+			"royal_marriage",
+			"is_visible",
+			"country_decisions",
+			"test_decision",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should not be treated as a scripted effect"
+			);
+		}
+		assert!(diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "S002" && finding.message.contains("missing_effect")
+		}));
+		assert!(diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "S002" && finding.message.contains("missing_decision_effect")
+		}));
 	}
 
 	#[test]
