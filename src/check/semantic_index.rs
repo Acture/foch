@@ -8,6 +8,9 @@ use crate::check::model::{
 	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType,
 	SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
+use crate::check::param_contracts::{
+	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
+};
 use crate::check::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_file};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -347,6 +350,7 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 		build_file_index(file, &map_groups, &mut index);
 	}
 	infer_definition_scope_from_references(&mut index);
+	apply_registered_param_contracts(&mut index);
 	index
 }
 
@@ -495,13 +499,14 @@ fn walk_statements(
 							declared_this_type: scope_this_type(index, child_scope),
 							inferred_this_type: ScopeType::Unknown,
 							required_params,
+							param_contract: registered_param_contract(key),
 						});
 					}
 
 					if definition_kind.is_none()
 						&& is_scripted_effect_call_candidate(ctx, ctx.file_kind, key, scope_id, index)
 					{
-						let mut provided = collect_provided_params(items);
+						let mut provided = collect_provided_params(key, items);
 						provided.names.sort();
 						provided.names.dedup();
 						provided.bindings.sort_by(|lhs, rhs| {
@@ -622,6 +627,7 @@ fn handle_country_event_block(
 			declared_this_type: ScopeType::Country,
 			inferred_this_type: ScopeType::Country,
 			required_params: Vec::new(),
+			param_contract: None,
 		});
 	}
 
@@ -1017,6 +1023,9 @@ fn effect_context_scope_semantics(
 	}
 
 	if key == "random_list" {
+		return Some(EffectContextScopeSemantics::EffectContainer);
+	}
+	if key == "for" {
 		return Some(EffectContextScopeSemantics::EffectContainer);
 	}
 	if key == "every_country" {
@@ -1450,13 +1459,15 @@ struct ProvidedParams {
 	bindings: Vec<ParamBinding>,
 }
 
-fn collect_provided_params(items: &[AstStatement]) -> ProvidedParams {
+fn collect_provided_params(local_name: &str, items: &[AstStatement]) -> ProvidedParams {
 	let mut params = ProvidedParams::default();
+	let contract_names = explicit_contract_param_names(local_name);
 	for stmt in items {
 		if let AstStatement::Assignment { key, value, .. } = stmt
-			&& key
+			&& (key
 				.chars()
 				.all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
+				|| contract_names.contains(key.as_str()))
 		{
 			params.names.push(key.clone());
 			if let Some(value) = scalar_text(value) {
@@ -2411,6 +2422,352 @@ country_event = {
 				finding.rule_id == "S002" && finding.message.contains(name)
 			}));
 		}
+	}
+
+	#[test]
+	fn scripted_effect_param_contracts_reduce_s004_noise() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("contracts.txt"),
+			r#"
+ME_give_claims = {
+	add_prestige = 1
+}
+add_prestige_or_monarch_power = {
+	add_prestige = 1
+}
+country_event_with_option_insight = {
+	add_stability = 1
+}
+create_or_add_center_of_trade_level = {
+	add_base_production = 1
+}
+"#,
+		)
+		.expect("write scripted effects");
+		fs::write(
+			mod_root.join("events").join("contracts.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	immediate = {
+		ME_give_claims = {
+			area = baltic_area
+		}
+		ME_give_claims = {
+			hidden_effect = {
+				region = finland_area
+			}
+		}
+		add_prestige_or_monarch_power = {
+			value = 10
+		}
+		country_event_with_option_insight = {
+			id = test.2
+			option_3 = some_option
+		}
+		create_or_add_center_of_trade_level = {
+			level = 2
+		}
+	}
+}
+"#,
+		)
+		.expect("write events");
+
+		let parsed = [
+			parse_script_file(
+				"1010",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("contracts.txt"),
+			)
+			.expect("parsed scripted effects"),
+			parse_script_file("1010", &mod_root, &mod_root.join("events").join("contracts.txt"))
+				.expect("parsed events"),
+		];
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+
+		assert!(
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S004" && finding.message.contains("缺失 area")
+			}),
+			"one-of contract should not expand into per-parameter missing messages"
+		);
+		assert_eq!(
+			diagnostics
+				.strict
+				.iter()
+				.filter(|finding| {
+					finding.rule_id == "S004"
+						&& finding
+							.message
+							.contains("ME_give_claims 至少需要一个参数: area|region|province|id")
+				})
+				.count(),
+			1,
+			"missing one-of params should aggregate into a single message"
+		);
+		for name in [
+			"add_prestige_or_monarch_power",
+			"country_event_with_option_insight",
+			"create_or_add_center_of_trade_level",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S004" && finding.message.contains(name)
+				}),
+				"{name} should satisfy its explicit param contract"
+			);
+		}
+	}
+
+	#[test]
+	fn second_wave_param_contracts_and_named_param_collection_work() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("contracts.txt"),
+			r#"
+add_age_modifier = {
+	add_country_modifier = {
+		name = $name$
+		duration = $duration$
+		desc = ME_until_the_end_of_$age$
+	}
+	else = { [[else] $else$ ] }
+}
+country_event_with_effect_insight = {
+	country_event = {
+		id = $id$
+		[[days] days = $days$]
+		[[random] random = $random$]
+		[[tooltip] tooltip = $tooltip$]
+	}
+	tooltip = {
+		$effect$
+	}
+}
+ME_distribute_development = {
+	while = {
+		limit = { always = yes }
+		random_owned_province = {
+			[[limit] limit = { $limit$ }]
+			add_base_$type$ = 1
+		}
+	}
+	custom_tooltip = $type$_$amount$
+	[[tooltip] custom_tooltip = $tooltip$ ]
+}
+pick_best_provinces = {
+	pick_best_provinces_2 = {
+		scope = "$scope$"
+		scale = "$scale$"
+		event_target_name = "$event_target_name$"
+		global_trigger = "$global_trigger$"
+		1 = "$1$"
+		10 = "$10$"
+	}
+}
+ME_overlord_effect = {
+	overlord = {
+		$effect$
+	}
+}
+create_general_with_pips = {
+	create_general = {
+		tradition = $tradition$
+		[[add_fire] add_fire = $add_fire$ ]
+		[[culture] culture = $culture$ ]
+	}
+}
+"#,
+		)
+		.expect("write scripted effects");
+		fs::write(
+			mod_root.join("events").join("contracts.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	immediate = {
+		add_age_modifier = {
+			age = age_of_discovery
+			name = test_modifier
+			duration = 365
+		}
+		country_event_with_effect_insight = {
+			id = test.2
+			effect = { add_stability = 1 }
+		}
+		ME_distribute_development = {
+			type = production
+			amount = 5
+		}
+		pick_best_provinces = {
+			scale = base_tax
+			event_target_name = best_province
+			global_trigger = always
+			1 = always
+			10 = never
+			effect = { culture = ROOT }
+		}
+		ME_overlord_effect = {
+			effect = { add_prestige = 1 }
+		}
+		create_general_with_pips = {
+			tradition = 40
+		}
+	}
+}
+"#,
+		)
+		.expect("write events");
+
+		let parsed = [
+			parse_script_file(
+				"1010",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("contracts.txt"),
+			)
+			.expect("parsed scripted effects"),
+			parse_script_file("1010", &mod_root, &mod_root.join("events").join("contracts.txt"))
+				.expect("parsed events"),
+		];
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		let contract_findings: Vec<String> = diagnostics
+			.strict
+			.iter()
+			.filter(|finding| finding.rule_id == "S004")
+			.map(|finding| finding.message.clone())
+			.collect();
+		for snippet in [
+			"add_age_modifier 缺失 else",
+			"country_event_with_effect_insight 缺失 days",
+			"country_event_with_effect_insight 缺失 tooltip",
+			"ME_distribute_development 缺失 limit",
+			"ME_distribute_development 缺失 tooltip",
+			"pick_best_provinces 缺失 scope",
+			"create_general_with_pips 缺失 add_fire",
+			"create_general_with_pips 缺失 culture",
+		] {
+			assert!(
+				!contract_findings.iter().any(|message| message.contains(snippet)),
+				"{snippet} should be optional"
+			);
+		}
+
+		let pick_best_reference = index
+			.references
+			.iter()
+			.find(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect
+					&& reference.name == "pick_best_provinces"
+			})
+			.expect("pick_best_provinces reference");
+		for expected in ["scale", "event_target_name", "global_trigger", "1", "10"] {
+			assert!(
+				pick_best_reference
+					.provided_params
+					.iter()
+					.any(|item| item == expected),
+				"missing collected param {expected}"
+			);
+		}
+		assert!(
+			!pick_best_reference
+				.provided_params
+				.iter()
+				.any(|item| item == "culture"),
+			"nested keys should not be collected as provided params"
+		);
+	}
+
+	#[test]
+	fn for_control_flow_does_not_emit_s002_or_s004() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root.join("events").join("for_control.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	immediate = {
+		for = {
+			amount = 3
+			effect = {
+				missing_effect = { FLAG = TEST }
+			}
+		}
+	}
+}
+"#,
+		)
+		.expect("write events");
+
+		let parsed = [parse_script_file(
+			"1011",
+			&mod_root,
+			&mod_root.join("events").join("for_control.txt"),
+		)
+		.expect("parsed events")];
+		let index = build_semantic_index(&parsed);
+		assert!(
+			!index.references.iter().any(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect && reference.name == "for"
+			}),
+			"for should not be recorded as a scripted effect reference"
+		);
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.strict.iter().any(|finding| {
+				(finding.rule_id == "S002" || finding.rule_id == "S004")
+					&& finding.message.contains("for")
+			}),
+			"for control flow should not produce S002 or S004"
+		);
+		assert!(diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "S002" && finding.message.contains("missing_effect")
+		}));
 	}
 
 	#[test]

@@ -319,12 +319,28 @@ pub struct SymbolDefinition {
 	pub declared_this_type: ScopeType,
 	pub inferred_this_type: ScopeType,
 	pub required_params: Vec<String>,
+	#[serde(default)]
+	pub param_contract: Option<ParamContract>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ParamBinding {
 	pub name: String,
 	pub value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ConditionalParamRule {
+	pub when_present: String,
+	pub requires_any_of: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ParamContract {
+	pub required_all: Vec<String>,
+	pub optional: Vec<String>,
+	pub one_of_groups: Vec<Vec<String>>,
+	pub conditional_required: Vec<ConditionalParamRule>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

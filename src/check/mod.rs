@@ -9,6 +9,7 @@ pub mod localisation;
 pub mod merge_plan;
 pub mod mod_cache;
 pub mod model;
+pub mod param_contracts;
 pub mod parser;
 pub mod report;
 pub mod rules;

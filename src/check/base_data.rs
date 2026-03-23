@@ -8,6 +8,7 @@ use crate::check::model::{
 	ScalarAssignment, ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan, SymbolDefinition,
 	SymbolKind, SymbolReference, UiDefinition,
 };
+use crate::check::param_contracts::apply_registered_param_contracts;
 use crate::cli::config::Config;
 use crate::domain::game::Game;
 use crate::utils::steam::steam_game_install_path;
@@ -28,7 +29,7 @@ use walkdir::WalkDir;
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 2;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 3;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -396,6 +397,7 @@ impl BaseAnalysisSnapshot {
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
 					required_params: item.required_params.clone(),
+					param_contract: item.param_contract.clone(),
 				})
 				.collect(),
 			symbol_references: index
@@ -514,7 +516,7 @@ impl BaseAnalysisSnapshot {
 
 	pub fn to_semantic_index(&self) -> SemanticIndex {
 		let mod_id = base_game_mod_id(&self.game);
-		SemanticIndex {
+		let mut index = SemanticIndex {
 			documents: self
 				.documents
 				.iter()
@@ -556,6 +558,7 @@ impl BaseAnalysisSnapshot {
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
 					required_params: item.required_params.clone(),
+					param_contract: item.param_contract.clone(),
 				})
 				.collect(),
 			references: self
@@ -680,7 +683,9 @@ impl BaseAnalysisSnapshot {
 				})
 				.collect(),
 			parse_issues: Vec::<ParseIssue>::new(),
-		}
+		};
+		apply_registered_param_contracts(&mut index);
+		index
 	}
 
 	pub fn document_lookup(&self) -> HashMap<&str, (&DocumentFamily, bool)> {
@@ -753,6 +758,8 @@ pub struct BaseSymbolDefinition {
 	pub declared_this_type: ScopeType,
 	pub inferred_this_type: ScopeType,
 	pub required_params: Vec<String>,
+	#[serde(default)]
+	pub param_contract: Option<crate::check::model::ParamContract>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -2066,4 +2073,143 @@ fn modified_nanos(metadata: &fs::Metadata) -> u128 {
 		.ok()
 		.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
 		.map_or(0, |duration| duration.as_nanos())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{
+		BASE_DATA_DIR_ENV, BASE_DATA_SCHEMA_VERSION, BaseAnalysisSnapshot, BaseDataSource,
+		BaseSymbolDefinition, InstalledBaseDataMetadata, decode_snapshot_from_bytes,
+		encode_snapshot_to_bytes, load_installed_base_snapshot, write_installed_snapshot,
+	};
+	use crate::check::analysis_version::analysis_rules_version;
+	use crate::check::model::{
+		ParamContract, ScopeType, SemanticIndex, SymbolDefinition, SymbolKind,
+	};
+	use crate::domain::game::Game;
+	use std::path::PathBuf;
+	use std::sync::Mutex;
+	use tempfile::TempDir;
+
+	static BASE_DATA_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+	fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
+		let mut index = SemanticIndex::default();
+		index.definitions.push(SymbolDefinition {
+			kind: SymbolKind::ScriptedEffect,
+			name: "test.effect".to_string(),
+			module: "test".to_string(),
+			local_name: "add_age_modifier".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/scripted_effects/test.txt"),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+			declared_this_type: ScopeType::Country,
+			inferred_this_type: ScopeType::Country,
+			required_params: vec!["age".to_string(), "name".to_string(), "duration".to_string()],
+			param_contract: Some(ParamContract {
+				required_all: vec![
+					"age".to_string(),
+					"name".to_string(),
+					"duration".to_string(),
+				],
+				optional: vec!["else".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			}),
+		});
+		BaseAnalysisSnapshot::from_semantic_index(
+			&Game::EuropaUniversalis4,
+			"schema-test",
+			vec!["common/scripted_effects/test.txt".to_string()],
+			&index,
+			Default::default(),
+		)
+	}
+
+	#[test]
+	fn base_snapshot_round_trip_preserves_param_contracts() {
+		let snapshot = sample_snapshot_with_contract();
+		let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+		let decoded = decode_snapshot_from_bytes(&encoded.bytes).expect("decode snapshot");
+		let contract = decoded
+			.symbol_definitions
+			.first()
+			.and_then(|definition| definition.param_contract.as_ref())
+			.expect("serialized param contract");
+		assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
+		assert_eq!(contract.optional, vec!["else"]);
+
+		let rehydrated = decoded.to_semantic_index();
+		let contract = rehydrated
+			.definitions
+			.first()
+			.and_then(|definition| definition.param_contract.as_ref())
+			.expect("rehydrated param contract");
+		assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
+		assert_eq!(contract.optional, vec!["else"]);
+	}
+
+	#[test]
+	fn load_installed_base_snapshot_rejects_old_schema_version() {
+		let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+		let temp = TempDir::new().expect("temp dir");
+		unsafe {
+			std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+		}
+
+		let snapshot = sample_snapshot_with_contract();
+		let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+		let metadata = InstalledBaseDataMetadata {
+			schema_version: BASE_DATA_SCHEMA_VERSION,
+			game: snapshot.game.clone(),
+			game_version: snapshot.game_version.clone(),
+			analysis_rules_version: analysis_rules_version().to_string(),
+			generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+			source: BaseDataSource::Build,
+			asset_name: None,
+			sha256: None,
+		};
+		let installed =
+			write_installed_snapshot(&snapshot, &metadata, &encoded.bytes).expect("install snapshot");
+		let metadata_path = installed.install_dir.join(super::INSTALLED_METADATA_FILE_NAME);
+		let old_metadata = InstalledBaseDataMetadata {
+			schema_version: BASE_DATA_SCHEMA_VERSION - 1,
+			..metadata
+		};
+		std::fs::write(
+			&metadata_path,
+			serde_json::to_string_pretty(&old_metadata).expect("serialize metadata"),
+		)
+		.expect("write metadata");
+
+		let err = load_installed_base_snapshot("eu4", "schema-test")
+			.expect_err("old schema should be rejected");
+		assert!(err.contains("基础数据 schema 不匹配"));
+
+		unsafe {
+			std::env::remove_var(BASE_DATA_DIR_ENV);
+		}
+	}
+
+	#[test]
+	fn base_symbol_definition_defaults_missing_param_contract() {
+		let raw = serde_json::json!({
+			"kind": "ScriptedEffect",
+			"name": "test.effect",
+			"module": "test",
+			"local_name": "test_effect",
+			"path": "common/scripted_effects/test.txt",
+			"line": 1,
+			"column": 1,
+			"scope_id": 0,
+			"declared_this_type": "Country",
+			"inferred_this_type": "Country",
+			"required_params": []
+		});
+		let decoded: BaseSymbolDefinition =
+			serde_json::from_value(raw).expect("deserialize legacy base symbol definition");
+		assert!(decoded.param_contract.is_none());
+	}
 }

@@ -4,6 +4,7 @@ use crate::check::documents::{
 	parse_discovered_text_documents,
 };
 use crate::check::model::{ModCandidate, ParseFamilyStats, SemanticIndex};
+use crate::check::param_contracts::apply_registered_param_contracts;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MOD_SNAPSHOT_CACHE_DIR_ENV: &str = "FOCH_MOD_SNAPSHOT_CACHE_DIR";
-const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 3;
+const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
@@ -109,14 +110,15 @@ pub(crate) fn mod_snapshot_cache_root() -> PathBuf {
 }
 
 fn to_loaded_snapshot(entry: StoredModSemanticSnapshot) -> LoadedModSnapshot {
-	let document_parse_hints = entry
-		.semantic_index
+	let mut semantic_index = entry.semantic_index;
+	apply_registered_param_contracts(&mut semantic_index);
+	let document_parse_hints = semantic_index
 		.documents
 		.iter()
 		.map(|item| (normalize_relative_path(&item.path), item.parse_ok))
 		.collect();
 	LoadedModSnapshot {
-		semantic_index: entry.semantic_index,
+		semantic_index,
 		parsed_files: entry.parsed_files,
 		parse_error_count: entry.parse_error_count,
 		parse_stats: entry.parse_stats,
@@ -235,4 +237,114 @@ fn sanitize_component(value: &str) -> String {
 
 fn normalize_relative_path(path: &Path) -> String {
 	path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{
+		MOD_SNAPSHOT_CACHE_DIR_ENV, MOD_SNAPSHOT_SCHEMA_VERSION, StoredModSemanticSnapshot,
+		load_or_build_mod_snapshot, mod_snapshot_cache_file, store_mod_snapshot,
+	};
+	use crate::check::analysis_version::analysis_rules_version;
+	use crate::check::model::{ModCandidate, ParseFamilyStats};
+	use crate::domain::descriptor::ModDescriptor;
+	use crate::domain::playlist::PlaylistEntry;
+	use std::sync::Mutex;
+	use tempfile::TempDir;
+
+	static MOD_CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+	#[test]
+	fn load_or_build_mod_snapshot_rejects_old_schema_version() {
+		let _guard = MOD_CACHE_ENV_LOCK.lock().expect("env lock");
+		let temp = TempDir::new().expect("temp dir");
+		unsafe {
+			std::env::set_var(MOD_SNAPSHOT_CACHE_DIR_ENV, temp.path());
+		}
+
+		let mod_root = temp.path().join("9001");
+		std::fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create mod root");
+		std::fs::write(
+			mod_root.join("common").join("scripted_effects").join("effects.txt"),
+			"ME_give_claims = { add_prestige = 1 }\n",
+		)
+		.expect("write scripted effect");
+
+		let mod_item = ModCandidate {
+			entry: PlaylistEntry {
+				enabled: true,
+				position: Some(0),
+				steam_id: Some("9001".to_string()),
+				display_name: Some("schema-test".to_string()),
+			},
+			mod_id: "9001".to_string(),
+			root_path: Some(mod_root.clone()),
+			descriptor_path: Some(mod_root.join("descriptor.mod")),
+			descriptor: Some(ModDescriptor {
+				name: "schema-test".to_string(),
+				path: None,
+				tags: Vec::new(),
+				dependencies: Vec::new(),
+				version: None,
+				remote_file_id: Some("9001".to_string()),
+				supported_version: None,
+			}),
+			descriptor_error: None,
+			files: Vec::new(),
+		};
+
+		let documents =
+			super::discover_text_documents(mod_item.root_path.as_ref().expect("mod root"));
+		let manifest_hash = super::semantic_manifest_hash(&documents);
+		let cache_path = mod_snapshot_cache_file(
+			"eu4",
+			"1.0.0-test",
+			analysis_rules_version(),
+			"9001",
+			manifest_hash,
+		);
+		store_mod_snapshot(
+			&cache_path,
+			&StoredModSemanticSnapshot {
+				schema_version: MOD_SNAPSHOT_SCHEMA_VERSION - 1,
+				game: "eu4".to_string(),
+				game_version: "1.0.0-test".to_string(),
+				analysis_rules_version: analysis_rules_version().to_string(),
+				mod_identity: "9001".to_string(),
+				manifest_hash,
+				generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+				parsed_files: 0,
+				parse_error_count: 0,
+				parse_stats: ParseFamilyStats::default(),
+				semantic_index: Default::default(),
+			},
+		);
+
+		let loaded = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item)
+			.expect("rebuild snapshot");
+		assert_eq!(loaded.parsed_files, 1);
+
+		let rebuilt_path = mod_snapshot_cache_file(
+			"eu4",
+			"1.0.0-test",
+			analysis_rules_version(),
+			"9001",
+			manifest_hash,
+		);
+		let rebuilt = super::load_mod_snapshot(&rebuilt_path).expect("load rebuilt snapshot");
+		assert_eq!(rebuilt.schema_version, MOD_SNAPSHOT_SCHEMA_VERSION);
+		assert!(
+			rebuilt
+				.semantic_index
+				.definitions
+				.first()
+				.and_then(|definition| definition.param_contract.as_ref())
+				.is_some()
+		);
+
+		unsafe {
+			std::env::remove_var(MOD_SNAPSHOT_CACHE_DIR_ENV);
+		}
+	}
 }
