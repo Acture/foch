@@ -1399,7 +1399,8 @@ fn file_kind_container_scope_kind(
 			| "potential"
 			| "trigger"
 			| "provinces_to_highlight"
-			| "completed_by" => Some(ScopeKind::Trigger),
+			| "completed_by"
+			| "ai_weight" => Some(ScopeKind::Trigger),
 			"effect" | "on_completed" | "on_cancelled" => Some(ScopeKind::Effect),
 			_ => None,
 		},
@@ -1835,14 +1836,38 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 				}
 				_ => Vec::new(),
 			};
-			for def_idx in target_defs {
-				let merged = observed_masks[def_idx] | caller_mask;
-				if merged != observed_masks[def_idx] {
-					observed_masks[def_idx] = merged;
-					changed = true;
-				}
+		for def_idx in target_defs {
+			let merged = observed_masks[def_idx] | caller_mask;
+			if merged != observed_masks[def_idx] {
+				observed_masks[def_idx] = merged;
+				changed = true;
 			}
 		}
+	}
+
+	}
+
+	let backfill_candidates: Vec<bool> = index
+		.definitions
+		.iter()
+		.enumerate()
+		.map(|(idx, definition)| definition.kind == SymbolKind::ScriptedEffect && observed_masks[idx] == 0)
+		.collect();
+	for scope_id in 0..index.scopes.len() {
+		let scope_mask =
+			effective_scope_mask_with_overrides(index, &callable_scope_map, &observed_masks, scope_id);
+		if scope_mask == 0 {
+			continue;
+		}
+		let Some(def_idx) =
+			nearest_enclosing_scripted_effect_definition_index(index, &callable_scope_map, scope_id)
+		else {
+			continue;
+		};
+		if !backfill_candidates[def_idx] {
+			continue;
+		}
+		observed_masks[def_idx] |= scope_mask;
 	}
 
 	for (idx, definition) in index.definitions.iter_mut().enumerate() {
@@ -1851,6 +1876,27 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 		}
 		definition.inferred_this_mask = observed_masks[idx];
 		definition.inferred_this_type = scope_type_from_mask(observed_masks[idx]);
+	}
+}
+
+fn nearest_enclosing_scripted_effect_definition_index(
+	index: &SemanticIndex,
+	callable_scope_map: &HashMap<usize, usize>,
+	mut scope_id: usize,
+) -> Option<usize> {
+	loop {
+		if let Some(def_idx) = callable_scope_map.get(&scope_id)
+			&& index
+				.definitions
+				.get(*def_idx)
+				.is_some_and(|definition| definition.kind == SymbolKind::ScriptedEffect)
+		{
+			return Some(*def_idx);
+		}
+		let Some(parent) = index.scopes.get(scope_id).and_then(|scope| scope.parent) else {
+			return None;
+		};
+		scope_id = parent;
 	}
 }
 
@@ -2647,6 +2693,112 @@ mos_rus_handle_succession = {
 	}
 
 	#[test]
+	fn mission_event_and_common_wrappers_do_not_become_scripted_effect_calls() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("missions")).expect("create missions");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::create_dir_all(mod_root.join("common").join("government_reforms"))
+			.expect("create government reforms");
+		fs::write(
+			mod_root.join("missions").join("missions.txt"),
+			r#"
+mos_rus_window_on_the_west = {
+	ai_weight = {
+		mission_weight_helper = { FLAG = TEST }
+	}
+}
+"#,
+		)
+		.expect("write missions");
+		fs::write(
+			mod_root.join("events").join("event.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.1
+	mean_time_to_happen = {
+		event_weight_helper = { FLAG = TEST }
+	}
+}
+"#,
+		)
+		.expect("write event");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("government_reforms")
+				.join("reforms.txt"),
+			r#"
+test_reform = {
+	ai_will_do = {
+		common_weight_helper = { FLAG = TEST }
+	}
+}
+"#,
+		)
+		.expect("write government reforms");
+
+		let parsed = [
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root.join("missions").join("missions.txt"),
+			)
+			.expect("parsed missions"),
+			parse_script_file("1012", &mod_root, &mod_root.join("events").join("event.txt"))
+				.expect("parsed event"),
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("government_reforms")
+					.join("reforms.txt"),
+			)
+			.expect("parsed government reforms"),
+		];
+		let index = build_semantic_index(&parsed);
+		for name in [
+			"ai_weight",
+			"mission_weight_helper",
+			"mean_time_to_happen",
+			"event_weight_helper",
+			"ai_will_do",
+			"common_weight_helper",
+		] {
+			assert!(
+				!index.references.iter().any(|reference| {
+					reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+				}),
+				"{name} should not be recorded as a scripted effect reference"
+			);
+		}
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		for name in [
+			"ai_weight",
+			"mission_weight_helper",
+			"mean_time_to_happen",
+			"event_weight_helper",
+			"ai_will_do",
+			"common_weight_helper",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S002" && finding.message.contains(name)
+				}),
+				"{name} should not produce S002"
+			);
+		}
+	}
+
+	#[test]
 	fn new_diplomatic_actions_containers_preserve_nested_effect_calls() {
 		let tmp = TempDir::new().expect("temp dir");
 		let mod_root = tmp.path().join("mod");
@@ -3375,6 +3527,103 @@ country_event = {
 	}
 
 	#[test]
+	fn third_wave_estate_param_contracts_cover_common_wrappers() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(mod_root.join("events")).expect("create events");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("estate_contracts.txt"),
+			r#"
+take_estate_land_share_massive = {
+	estate = $estate$
+	amount = $amount$
+}
+add_estate_loyalty = {
+	estate = $estate$
+	short = $short$
+	amount = $amount$
+}
+estate_loyalty = {
+	estate = $estate$
+	loyalty = $loyalty$
+}
+estate_influence = {
+	estate = $estate$
+	influence = $influence$
+}
+"#,
+		)
+		.expect("write scripted effects");
+		fs::write(
+			mod_root.join("events").join("estate_contracts.txt"),
+			r#"
+namespace = test
+country_event = {
+	id = test.3
+	immediate = {
+		take_estate_land_share_massive = {
+			estate = all
+		}
+		add_estate_loyalty = {
+			estate = all
+			short = yes
+		}
+		estate_loyalty = {
+			estate = all
+			loyalty = 50
+		}
+		estate_influence = {
+			estate = all
+			influence = 1
+		}
+	}
+}
+"#,
+		)
+		.expect("write events");
+
+		let parsed = [
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("estate_contracts.txt"),
+			)
+			.expect("parsed scripted effects"),
+			parse_script_file("1012", &mod_root, &mod_root.join("events").join("estate_contracts.txt"))
+				.expect("parsed events"),
+		];
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+
+		for name in [
+			"take_estate_land_share_massive",
+			"add_estate_loyalty",
+			"estate_loyalty",
+			"estate_influence",
+		] {
+			assert!(
+				!diagnostics.strict.iter().any(|finding| {
+					finding.rule_id == "S004" && finding.message.contains(name)
+				}),
+				"{name} should not produce S004"
+			);
+		}
+	}
+
+	#[test]
 	fn for_control_flow_does_not_emit_s002_or_s004() {
 		let tmp = TempDir::new().expect("temp dir");
 		let mod_root = tmp.path().join("mod");
@@ -3428,6 +3677,84 @@ country_event = {
 		assert!(diagnostics.strict.iter().any(|finding| {
 			finding.rule_id == "S002" && finding.message.contains("missing_effect")
 		}));
+	}
+
+	#[test]
+	fn wrapper_heavy_scripted_effects_infer_scope_without_callers() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("wrappers.txt"),
+			r#"
+country_wrapper = {
+	owner = {
+		add_prestige = 1
+	}
+}
+
+province_wrapper = {
+	capital_scope = {
+		add_base_tax = 1
+	}
+}
+
+shared_wrapper = {
+	owner = {
+		add_prestige = 1
+	}
+	capital_scope = {
+		add_base_tax = 1
+	}
+}
+"#,
+		)
+		.expect("write scripted effects");
+
+		let parsed = [parse_script_file(
+			"1010",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("wrappers.txt"),
+		)
+		.expect("parsed scripted effects")];
+		let index = build_semantic_index(&parsed);
+
+		let mut inferred = std::collections::HashMap::new();
+		let mut inferred_masks = std::collections::HashMap::new();
+		for definition in &index.definitions {
+			if definition.kind == SymbolKind::ScriptedEffect {
+				inferred.insert(definition.local_name.clone(), definition.inferred_this_type);
+				inferred_masks.insert(definition.local_name.clone(), definition.inferred_this_mask);
+			}
+		}
+
+		assert_eq!(inferred.get("country_wrapper"), Some(&ScopeType::Country));
+		assert_eq!(inferred.get("province_wrapper"), Some(&ScopeType::Province));
+		assert_eq!(inferred.get("shared_wrapper"), Some(&ScopeType::Unknown));
+		assert_eq!(inferred_masks.get("country_wrapper"), Some(&0b01));
+		assert_eq!(inferred_masks.get("province_wrapper"), Some(&0b10));
+		assert_eq!(inferred_masks.get("shared_wrapper"), Some(&0b11));
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001"
+					&& finding.path == Some("common/scripted_effects/wrappers.txt".into())
+			}),
+			"wrapper-heavy scripted effects should not stay unknown"
+		);
 	}
 
 	#[test]
