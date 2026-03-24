@@ -1,3 +1,4 @@
+use foch::check::{MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH};
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -220,6 +221,11 @@ fn collect_gzip_files(root: &Path) -> Vec<std::path::PathBuf> {
 	}
 	files.sort();
 	files
+}
+
+fn read_json_file(path: &Path) -> serde_json::Value {
+	let content = fs::read_to_string(path).expect("read json file");
+	serde_json::from_str(&content).expect("parse json file")
 }
 
 #[test]
@@ -792,6 +798,237 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 	assert_eq!(entry["contributors"][0]["is_base_game"], true);
 	assert_eq!(entry["winner"]["mod_id"], "7501");
 	assert_eq!(entry["generated"], false);
+}
+
+#[test]
+fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let mod_root = tmp.path().join("7805");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7805"}
+		]),
+	);
+	write_descriptor(&mod_root, "mod-a");
+	fs::create_dir_all(mod_root.join("common")).expect("create common dir");
+	fs::write(mod_root.join("common").join("only.txt"), "from-a\n").expect("write file");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: READY"));
+	assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+	assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
+	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
+	assert_eq!(
+		fs::read_to_string(out_dir.join("common/only.txt")).expect("read copied file"),
+		"from-a\n"
+	);
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "ready");
+	assert_eq!(report["copied_file_count"], 1);
+	assert_eq!(report["overlay_file_count"], 0);
+	assert_eq!(report["generated_file_count"], 0);
+	assert_eq!(report["validation"]["fatal_errors"], 0);
+	assert_eq!(report["validation"]["strict_findings"], 0);
+	assert_eq!(report["validation"]["parse_errors"], 0);
+}
+
+#[test]
+fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_blocks() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let mod_a = tmp.path().join("7811");
+	let mod_b = tmp.path().join("7812");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7811"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7812"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	fs::create_dir_all(mod_a.join("interface")).expect("create interface dir");
+	fs::create_dir_all(mod_b.join("interface")).expect("create interface dir");
+	fs::write(mod_a.join("interface").join("shared.gui"), "windowType = { name = a }\n")
+		.expect("write gui");
+	fs::write(mod_b.join("interface").join("shared.gui"), "windowType = { name = b }\n")
+		.expect("write gui");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 2);
+	assert!(stdout.contains("status: BLOCKED"));
+	assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+	assert!(!out_dir.join("interface/shared.gui").exists());
+	assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
+	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "blocked");
+	assert_eq!(report["manual_conflict_count"], 1);
+}
+
+#[test]
+fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let mod_a = tmp.path().join("7821");
+	let mod_b = tmp.path().join("7822");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7821"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7822"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	fs::create_dir_all(mod_a.join("interface")).expect("create interface dir");
+	fs::create_dir_all(mod_b.join("interface")).expect("create interface dir");
+	fs::create_dir_all(mod_a.join("gfx")).expect("create gfx dir");
+	fs::create_dir_all(mod_b.join("gfx")).expect("create gfx dir");
+	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
+	fs::write(mod_a.join("interface").join("shared.gui"), "windowType = { name = a }\n")
+		.expect("write gui");
+	fs::write(mod_b.join("interface").join("shared.gui"), "windowType = { name = b }\n")
+		.expect("write gui");
+	fs::write(mod_a.join("gfx").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
+	fs::write(mod_b.join("gfx").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
+	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--force",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 3);
+	assert!(stdout.contains("status: FATAL"));
+	assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+	assert_eq!(
+		fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
+		"safe\n"
+	);
+	let placeholder =
+		fs::read_to_string(out_dir.join("interface/shared.gui")).expect("read placeholder");
+	assert!(placeholder.contains("FOCH_MERGE_CONFLICT"));
+	assert!(!out_dir.join("gfx/flag.dds").exists());
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "fatal");
+	assert_eq!(report["manual_conflict_count"], 2);
+	assert_eq!(report["generated_file_count"], 1);
+	assert_eq!(report["copied_file_count"], 1);
+}
+
+#[test]
+fn merge_command_revalidates_generated_output_and_backfills_validation_buckets() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let mod_a = tmp.path().join("7831");
+	let mod_b = tmp.path().join("7832");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7831"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7832"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
+	fs::create_dir_all(mod_b.join("events")).expect("create events dir");
+	fs::create_dir_all(mod_a.join("localisation").join("english"))
+		.expect("create localisation dir");
+	fs::write(
+		mod_a.join("events").join("shared.txt"),
+		"namespace = test\ncountry_event = {\n\tid = test.1\n\ttitle = missing_title\n\ttrigger = {\n\t\thas_global_flag = missing_flag\n\t}\n\timmediate = {\n\t\tmissing_effect = { }\n\t}\n}\n",
+	)
+	.expect("write events a");
+	fs::write(
+		mod_b.join("events").join("shared.txt"),
+		"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = known_title\n}\n",
+	)
+	.expect("write events b");
+	fs::write(
+		mod_a
+			.join("localisation")
+			.join("english")
+			.join("test_l_english.yml"),
+		"l_english:\n known_title:0 \"Known\"\n",
+	)
+	.expect("write localisation");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 3);
+	assert!(stdout.contains("status: FATAL"));
+	assert!(out_dir.join("events/shared.txt").exists());
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "fatal");
+	assert_eq!(report["manual_conflict_count"], 0);
+	assert_eq!(report["generated_file_count"], 1);
+	assert_eq!(report["validation"]["fatal_errors"], 0);
+	assert_eq!(report["validation"]["strict_findings"], 1);
+	assert_eq!(report["validation"]["parse_errors"], 0);
+	assert_eq!(report["validation"]["unresolved_references"], 2);
+	assert_eq!(report["validation"]["missing_localisation"], 1);
+	assert!(
+		report["validation"]["advisory_findings"]
+			.as_u64()
+			.is_some_and(|count| count >= 2)
+	);
 }
 
 #[test]

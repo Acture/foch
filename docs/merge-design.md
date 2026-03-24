@@ -1,6 +1,6 @@
 # Merge Design
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Summary
 
@@ -66,7 +66,7 @@ Supported options:
 
 - `--format text|json`
 - `--output <path>`
-- `--include-game-base`
+- `--no-game-base`
 
 Behavior:
 
@@ -89,8 +89,8 @@ Required input:
 
 Supported options:
 
-- `--include-game-base`
 - `--force`
+- `--no-game-base`
 
 Behavior:
 
@@ -102,10 +102,10 @@ Behavior:
 
 Exit codes:
 
-- `0` when generation succeeds and validation reports no fatal errors
+- `0` when generation succeeds and validation is clean
 - `1` on system or input errors
 - `2` when manual conflicts block generation without `--force`
-- `3` when generation completes but post-merge validation reports fatal errors
+- `3` when generation completes but post-merge validation is not clean, or when `--force` leaves residual conflicts
 
 ## Merge Strategy Taxonomy
 
@@ -192,7 +192,7 @@ This keeps the implementation aligned with current parser coverage without overs
 All merge behavior must use a single precedence order:
 
 - later enabled mod in the playset overrides earlier enabled mod
-- when `--include-game-base` is set, base game content is lower precedence than every mod
+- by default, base game content is lower precedence than every mod; `--no-game-base` disables that input
 - when two contributions originate from the same mod and path, the repository uses the file discovered at that normalized relative path
 
 The merge plan and the generated output must both use this exact order. No command may use a different precedence model.
@@ -332,6 +332,12 @@ Required top-level fields:
 - `unresolved_references`
 - `missing_localisation`
 
+`status` uses the following execution semantics:
+
+- `ready` only when generation completes, `manual_conflict_count == 0`, and validation has no fatal errors, strict findings, or parse errors
+- `blocked` only when `manual_conflict` stops generation before emission because `--force` was not used
+- `fatal` for materialization failure, validation failure after generation, or any forced run that still carries residual conflicts
+
 ## Structural Merge Rules
 
 V1 structural merging uses conservative, class-level rules:
@@ -407,6 +413,8 @@ Return exit code `2` for:
 Return exit code `3` for:
 
 - generated output with fatal validation errors
+- generated output with strict findings or parse errors
+- any forced merge that still carries `manual_conflict_count > 0`
 
 Localisation failures that are purely compatibility-related should be reported clearly, but they should not be conflated with the core merge classification or emission contract.
 
@@ -442,7 +450,8 @@ At minimum, future implementation tests must cover:
 - `common/defines/**` with normalizable assignments merges by key
 - `common/defines/**` with non-normalizable content becomes `manual_conflict`
 - parse failure inside a structural class becomes `manual_conflict`
-- `--include-game-base` keeps base game at lower precedence than every mod
+- default mode keeps base game at lower precedence than every mod
+- `--no-game-base` opts out of that base-game input explicitly
 - `merge --force` continues generation while preserving conflict markers
 - post-merge validation failure returns exit code `3`
 - generated descriptor and metadata files are always present on successful generation
