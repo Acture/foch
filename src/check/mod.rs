@@ -7,6 +7,8 @@ pub mod eu4_builtin;
 pub mod graph;
 pub mod localisation;
 pub mod merge_ir;
+pub(crate) mod merge_emit;
+pub(crate) mod merge_materialize;
 pub(crate) mod merge_normalize;
 pub mod merge_plan;
 pub mod mod_cache;

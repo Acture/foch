@@ -1,6 +1,6 @@
 # Auto-Merge Roadmap
 
-Last updated: 2026-03-23
+Last updated: 2026-03-24
 
 ## Purpose
 
@@ -214,9 +214,9 @@ The milestones above should not be reordered:
 
 ## Suggested Near-Term Focus
 
-The next practical implementation step should be finishing Milestone 4, Slice B through the remaining `common/defines/**` work.
+The next practical implementation step should be Milestone 4, Slice C: internal materialization and deterministic emission.
 
-Slice A is already complete, and Slice B1 has already covered the block-root merge IR classes. The remaining B2 work is to normalize `common/defines/**` into assignment-path IR and downgrade non-normalizable files to explicit manual conflicts during planning.
+Slice A and Slice B are already complete. The next step is to write `descriptor.mod`, persist `.foch/foch-merge-plan.json` and `.foch/foch-merge-report.json`, materialize copy-through and overlay files, and emit deterministic structural outputs without exposing the public `merge` CLI before post-merge validation exists.
 
 ## Exit Criteria For A First Meaningful Merge Release
 
