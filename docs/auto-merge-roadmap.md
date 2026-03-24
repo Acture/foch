@@ -214,9 +214,9 @@ The milestones above should not be reordered:
 
 ## Suggested Near-Term Focus
 
-The next practical implementation step should be Milestone 4, Slice C: internal materialization and deterministic emission.
+The next practical implementation step should be Milestone 4, Slice D: post-merge revalidation and public `merge` command gating.
 
-Slice A and Slice B are already complete. The next step is to write `descriptor.mod`, persist `.foch/foch-merge-plan.json` and `.foch/foch-merge-report.json`, materialize copy-through and overlay files, and emit deterministic structural outputs without exposing the public `merge` CLI before post-merge validation exists.
+Slice A, Slice B, and Slice C are already complete. The next step is to expose `foch merge`, run a validation pass over the generated output tree, backfill the real validation buckets in `.foch/foch-merge-report.json`, and map the execution result to the final documented exit codes.
 
 ## Exit Criteria For A First Meaningful Merge Release
 

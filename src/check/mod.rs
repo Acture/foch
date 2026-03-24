@@ -6,6 +6,7 @@ pub mod engine;
 pub mod eu4_builtin;
 pub mod graph;
 pub mod localisation;
+pub(crate) mod merge_execute;
 pub mod merge_ir;
 pub(crate) mod merge_emit;
 pub(crate) mod merge_materialize;

@@ -34,6 +34,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 		arg::FochCliCommands::MergePlan(merge_plan_args) => {
 			handler::merge_plan::handle_merge_plan(merge_plan_args, config)
 		}
+		arg::FochCliCommands::Merge(merge_args) => handler::merge::handle_merge(merge_args, config),
 		arg::FochCliCommands::Data(data_args) => handler::data::handle_data(data_args, config),
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)

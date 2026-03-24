@@ -16,6 +16,7 @@ pub struct FochCli {
 pub enum FochCliCommands {
 	Check(CheckArgs),
 	MergePlan(MergePlanArgs),
+	Merge(MergeArgs),
 	Data(DataArgs),
 	Config(ConfigArgs),
 }
@@ -87,6 +88,24 @@ pub struct MergePlanArgs {
 pub enum MergePlanOutputFormat {
 	Text,
 	Json,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Generate a merged mod directory and revalidate it",
+	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --force\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
+)]
+pub struct MergeArgs {
+	pub playset_path: PathBuf,
+
+	#[arg(long)]
+	pub out: PathBuf,
+
+	#[arg(long)]
+	pub force: bool,
+
+	#[arg(long)]
+	pub no_game_base: bool,
 }
 
 #[derive(Parser, Debug)]
