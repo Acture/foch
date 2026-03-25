@@ -17,6 +17,8 @@ pub enum FochCliCommands {
 	Check(CheckArgs),
 	MergePlan(MergePlanArgs),
 	Merge(MergeArgs),
+	Graph(GraphArgs),
+	Simplify(SimplifyArgs),
 	Data(DataArgs),
 	Config(ConfigArgs),
 }
@@ -24,7 +26,7 @@ pub enum FochCliCommands {
 #[derive(Parser, Debug)]
 #[command(
 	about = "检查 playset 并输出规则发现",
-	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --graph-out graph.dot --graph-format dot\n  foch check ./playlist.json --format json --output result.json"
+	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
 	pub playset_path: PathBuf,
@@ -43,12 +45,6 @@ pub struct CheckArgs {
 
 	#[arg(long, value_enum, default_value_t = CheckChannelArg::All)]
 	pub channel: CheckChannelArg,
-
-	#[arg(long)]
-	pub graph_out: Option<PathBuf>,
-
-	#[arg(long, value_enum, default_value_t = GraphFormatArg::Json)]
-	pub graph_format: GraphFormatArg,
 
 	#[arg(long)]
 	pub parse_issue_report: Option<PathBuf>,
@@ -103,6 +99,66 @@ pub struct MergeArgs {
 
 	#[arg(long)]
 	pub force: bool,
+
+	#[arg(long)]
+	pub no_game_base: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Export runtime call graphs and mod dependency graphs",
+	after_help = "Examples:\n  foch graph ./playlist.json --out ./graphs\n  foch graph ./playlist.json --out ./graphs --scope mods --format both\n  foch graph ./playlist.json --out ./graphs --root scripted_effect:shared_effect"
+)]
+pub struct GraphArgs {
+	pub playset_path: PathBuf,
+
+	#[arg(long)]
+	pub out: PathBuf,
+
+	#[arg(long)]
+	pub no_game_base: bool,
+
+	#[arg(long, value_enum, default_value_t = GraphScopeArg::All)]
+	pub scope: GraphScopeArg,
+
+	#[arg(long, value_enum, default_value_t = GraphArtifactFormatArg::Both)]
+	pub format: GraphArtifactFormatArg,
+
+	#[arg(long)]
+	pub root: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum GraphScopeArg {
+	Workspace,
+	Base,
+	Mods,
+	All,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum GraphArtifactFormatArg {
+	Json,
+	Dot,
+	Both,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Remove base-equivalent definitions from a target mod",
+	after_help = "Examples:\n  foch simplify ./playlist.json --target 1234 --out ./mod-clean\n  foch simplify ./playlist.json --target 1234 --in-place"
+)]
+pub struct SimplifyArgs {
+	pub playset_path: PathBuf,
+
+	#[arg(long)]
+	pub target: String,
+
+	#[arg(long)]
+	pub out: Option<PathBuf>,
+
+	#[arg(long)]
+	pub in_place: bool,
 
 	#[arg(long)]
 	pub no_game_base: bool,
@@ -175,12 +231,6 @@ pub enum AnalysisModeArg {
 pub enum CheckChannelArg {
 	Strict,
 	All,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum GraphFormatArg {
-	Json,
-	Dot,
 }
 
 #[derive(Parser, Debug)]

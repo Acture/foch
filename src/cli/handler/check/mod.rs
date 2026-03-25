@@ -1,11 +1,7 @@
-use crate::check::model::{
-	AnalysisMode, ChannelMode, CheckRequest, CheckResult, GraphFormat, RunOptions,
-};
+use crate::check::model::{AnalysisMode, ChannelMode, CheckRequest, CheckResult, RunOptions};
 use crate::check::report::render_text;
 use crate::check::run_checks_with_options;
-use crate::cli::arg::{
-	AnalysisModeArg, CheckArgs, CheckChannelArg, CheckOutputFormat, GraphFormatArg,
-};
+use crate::cli::arg::{AnalysisModeArg, CheckArgs, CheckChannelArg, CheckOutputFormat};
 use crate::cli::config::Config;
 use crate::cli::handler::HandlerResult;
 
@@ -17,20 +13,10 @@ pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 	let run_options = RunOptions {
 		analysis_mode: to_analysis_mode(check_args.analysis_mode),
 		channel_mode: to_channel_mode(check_args.channel),
-		graph_format: check_args
-			.graph_out
-			.as_ref()
-			.map(|_| to_graph_format(check_args.graph_format)),
 		include_game_base: !check_args.no_game_base,
 	};
 
 	let result = run_checks_with_options(request, run_options.clone());
-
-	if let Some(path) = check_args.graph_out.as_ref()
-		&& let Some(graph) = result.graph_output.as_ref()
-	{
-		std::fs::write(path, graph)?;
-	}
 	if let Some(path) = check_args.parse_issue_report.as_ref() {
 		std::fs::write(path, serde_json::to_string_pretty(&result.parse_issue_report)?)?;
 	}
@@ -83,12 +69,5 @@ fn to_channel_mode(channel: CheckChannelArg) -> ChannelMode {
 	match channel {
 		CheckChannelArg::Strict => ChannelMode::Strict,
 		CheckChannelArg::All => ChannelMode::All,
-	}
-}
-
-fn to_graph_format(format: GraphFormatArg) -> GraphFormat {
-	match format {
-		GraphFormatArg::Json => GraphFormat::Json,
-		GraphFormatArg::Dot => GraphFormat::Dot,
 	}
 }
