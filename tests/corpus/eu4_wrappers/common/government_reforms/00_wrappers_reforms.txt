@@ -1,0 +1,6 @@
+wrapper_reform = {
+	ai_will_do = {
+		factor = 1
+		common_weight_helper = yes
+	}
+}

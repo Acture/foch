@@ -554,3 +554,67 @@ fn corpus_metadata_eu4_roots_do_not_emit_targeted_noise() {
 		))
 	);
 }
+
+#[test]
+fn corpus_wrapper_heavy_roots_keep_callbacks_and_helpers_clean() {
+	let files = parsed_many(
+		"eu4_wrappers",
+		"eu4wrap",
+		&[
+			"common/scripted_effects/00_wrappers_effects.txt",
+			"common/scripted_triggers/00_wrappers_triggers.txt",
+			"missions/00_wrappers_missions.txt",
+			"common/government_reforms/00_wrappers_reforms.txt",
+			"common/new_diplomatic_actions/00_wrappers_actions.txt",
+			"common/cb_types/00_wrappers_cb.txt",
+			"common/on_actions/00_wrappers_on_actions.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+
+	for name in [
+		"potential_on_load",
+		"ai_weight",
+		"static_actions",
+		"ai_acceptance",
+		"add_entry",
+	] {
+		assert!(
+			!index.references.iter().any(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect && reference.name == name
+			}),
+			"{name} should not be recorded as a scripted effect reference"
+		);
+	}
+
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"missions/00_wrappers_missions.txt",
+		"common/government_reforms/00_wrappers_reforms.txt",
+		"common/new_diplomatic_actions/00_wrappers_actions.txt",
+		"common/cb_types/00_wrappers_cb.txt",
+		"common/on_actions/00_wrappers_on_actions.txt",
+	];
+	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+
+	assert!(
+		!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+	assert!(
+		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+}

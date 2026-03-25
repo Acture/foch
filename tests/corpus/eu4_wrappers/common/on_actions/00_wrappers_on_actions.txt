@@ -1,0 +1,12 @@
+on_country_adm_power_gain = {
+	effect = {
+		if = {
+			limit = {
+				ROOT = {
+					country_gate = yes
+				}
+			}
+			nested_accept_effect = yes
+		}
+	}
+}

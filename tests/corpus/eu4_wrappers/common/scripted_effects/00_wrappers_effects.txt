@@ -1,0 +1,15 @@
+mission_weight_helper = {
+	add_prestige = 1
+}
+
+common_weight_helper = {
+	add_legitimacy = 1
+}
+
+nested_accept_effect = {
+	add_stability = 1
+}
+
+loop_effect = {
+	add_prestige = 1
+}
