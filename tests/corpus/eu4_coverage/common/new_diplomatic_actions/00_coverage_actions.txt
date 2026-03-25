@@ -1,0 +1,13 @@
+static_actions = {
+	coverage_action = {
+		is_visible = {
+			eu4_cov_country_trigger = yes
+		}
+		is_allowed = {
+			eu4_cov_country_trigger = yes
+		}
+		on_accept = {
+			eu4_cov_hidden_effect = yes
+		}
+	}
+}

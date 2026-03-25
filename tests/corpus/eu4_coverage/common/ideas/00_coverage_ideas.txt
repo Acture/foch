@@ -1,0 +1,14 @@
+coverage_ideas = {
+	trigger = {
+		eu4_cov_country_trigger = yes
+	}
+	start = {
+		eu4_cov_hidden_effect = yes
+	}
+	bonus = {
+		eu4_cov_hidden_effect = yes
+	}
+	coverage_idea_1 = {
+		inflation_reduction = 0.05
+	}
+}

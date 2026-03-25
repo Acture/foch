@@ -1,0 +1,8 @@
+coverage_cb = {
+	can_use = {
+		eu4_cov_country_trigger = yes
+	}
+	can_take_province = {
+		eu4_cov_country_trigger = yes
+	}
+}

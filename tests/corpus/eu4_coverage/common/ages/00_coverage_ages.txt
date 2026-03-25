@@ -1,0 +1,8 @@
+coverage_age = {
+	can_start = {
+		eu4_cov_country_trigger = yes
+	}
+	effect = {
+		eu4_cov_hidden_effect = yes
+	}
+}

@@ -1,0 +1,7 @@
+guiTypes = {
+	coverage_window = {
+		visible = {
+			eu4_cov_country_trigger = yes
+		}
+	}
+}

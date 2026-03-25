@@ -1,0 +1,18 @@
+coverage_missions = {
+	slot = 1
+	potential = {
+		eu4_cov_country_trigger = yes
+	}
+	missions = {
+		coverage_mission = {
+			icon = mission_icon
+			required_missions = { }
+			trigger = {
+				eu4_cov_country_trigger = yes
+			}
+			effect = {
+				eu4_cov_enable_flag = yes
+			}
+		}
+	}
+}

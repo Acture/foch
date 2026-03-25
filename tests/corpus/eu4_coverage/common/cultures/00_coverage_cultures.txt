@@ -1,0 +1,7 @@
+coverage_group = {
+	coverage_culture = {
+		primary = { 1 2 3 }
+		male_names = { "Alex" }
+		female_names = { "Alice" }
+	}
+}

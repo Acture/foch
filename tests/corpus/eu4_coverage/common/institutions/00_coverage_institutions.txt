@@ -1,0 +1,17 @@
+coverage_institution = {
+	history = {
+		owner = {
+			eu4_cov_country_trigger = yes
+		}
+	}
+	can_embrace = {
+		owner = {
+			eu4_cov_country_trigger = yes
+		}
+	}
+	on_start = {
+		owner = {
+			eu4_cov_hidden_effect = yes
+		}
+	}
+}
