@@ -1,0 +1,24 @@
+static_actions = {
+	royal_marriage = {
+		alert_index = 1
+	}
+}
+
+wrapper_action = {
+	is_visible = {
+		country_gate = yes
+	}
+	on_accept = {
+		nested_accept_effect = yes
+	}
+	ai_acceptance = {
+		add_entry = {
+			name = TEST
+			change_variable = {
+				which = score
+				value = 1
+			}
+			nested_accept_effect = yes
+		}
+	}
+}

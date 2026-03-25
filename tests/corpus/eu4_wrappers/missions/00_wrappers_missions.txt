@@ -1,0 +1,28 @@
+coverage_wrapper_tree = {
+	potential_on_load = {
+		country_gate = yes
+	}
+	coverage_wrapper_mission = {
+		ai_weight = {
+			factor = 100
+			mission_weight_helper = yes
+		}
+		trigger = {
+			country_gate = yes
+		}
+		effect = {
+			if = {
+				limit = {
+					country_gate = yes
+				}
+				loop_effect = yes
+			}
+			for = {
+				amount = 1
+				effect = {
+					nested_accept_effect = yes
+				}
+			}
+		}
+	}
+}

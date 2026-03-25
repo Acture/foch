@@ -1,0 +1,20 @@
+wrapper_cb = {
+	prerequisites_self = {
+		capital_scope = {
+			owner = {
+				government = monarchy
+			}
+			is_core = ROOT
+		}
+	}
+	prerequisites = {
+		FROM = {
+			government = monarchy
+		}
+	}
+	can_use = {
+		ROOT = {
+			legitimacy = 50
+		}
+	}
+}
