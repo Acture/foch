@@ -1,0 +1,12 @@
+coverage_building = {
+	cost = 100
+	time = 12
+	ai_will_do = {
+		owner = {
+			eu4_cov_country_trigger = yes
+		}
+	}
+	on_built = {
+		eu4_cov_apply_province_bonus = yes
+	}
+}

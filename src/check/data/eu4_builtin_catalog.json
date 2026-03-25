@@ -531,7 +531,7 @@
         "cwtools"
       ],
       "notes": [
-        "TODO: Needs description"
+        "Returns true if the country's average autonomy stays above the configured minimum threshold."
       ],
       "game_count": 16
     },
@@ -544,7 +544,7 @@
         "cwtools"
       ],
       "notes": [
-        "TODO: Needs description"
+        "Returns the country's average effective unrest value across eligible provinces."
       ],
       "game_count": 34
     },

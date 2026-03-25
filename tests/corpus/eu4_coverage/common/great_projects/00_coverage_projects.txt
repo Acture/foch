@@ -1,0 +1,12 @@
+coverage_project = {
+	build_trigger = {
+		owner = {
+			eu4_cov_country_trigger = yes
+		}
+	}
+	on_built = {
+		owner = {
+			eu4_cov_hidden_effect = yes
+		}
+	}
+}

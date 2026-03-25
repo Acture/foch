@@ -24,6 +24,35 @@ fn parsed(
 	parse_script_file(mod_id, &root, &file).expect("parse corpus file")
 }
 
+fn parsed_many(
+	mod_name: &str,
+	mod_id: &str,
+	relatives: &[&str],
+) -> Vec<foch::check::semantic_index::ParsedScriptFile> {
+	relatives
+		.iter()
+		.map(|relative| parsed(mod_name, mod_id, relative))
+		.collect()
+}
+
+fn is_targeted_noise(
+	finding: &foch::check::model::Finding,
+	relative_paths: &[&str],
+	rule_ids: &[&str],
+) -> bool {
+	rule_ids.contains(&finding.rule_id.as_str())
+		&& finding
+			.path
+			.as_ref()
+			.map(|path| {
+				let rendered = path.to_string_lossy().replace('\\', "/");
+				relative_paths
+					.iter()
+					.any(|relative| rendered.ends_with(relative))
+			})
+			.unwrap_or(false)
+}
+
 #[test]
 fn corpus_events_are_indexed_and_calls_resolve() {
 	let event = parsed(
@@ -415,5 +444,113 @@ fn templated_flag_missing_reports_inference_evidence() {
 			.as_ref()
 			.map(|value| value.contains("has_global_flag = $FLAG$"))
 			.unwrap_or(false)
+	);
+}
+
+#[test]
+fn corpus_priority_eu4_roots_do_not_emit_targeted_noise() {
+	let files = parsed_many(
+		"eu4_coverage",
+		"eu4cov",
+		&[
+			"common/scripted_effects/00_coverage_effects.txt",
+			"common/scripted_triggers/00_coverage_triggers.txt",
+			"missions/00_coverage_missions.txt",
+			"common/ages/00_coverage_ages.txt",
+			"common/buildings/00_coverage_buildings.txt",
+			"common/government_reforms/00_coverage_reforms.txt",
+			"common/institutions/00_coverage_institutions.txt",
+			"common/great_projects/00_coverage_projects.txt",
+			"common/cb_types/00_coverage_cb.txt",
+			"common/province_triggered_modifiers/00_coverage_ptm.txt",
+			"common/ideas/00_coverage_ideas.txt",
+			"common/new_diplomatic_actions/00_coverage_actions.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"missions/00_coverage_missions.txt",
+		"common/ages/00_coverage_ages.txt",
+		"common/buildings/00_coverage_buildings.txt",
+		"common/government_reforms/00_coverage_reforms.txt",
+		"common/institutions/00_coverage_institutions.txt",
+		"common/great_projects/00_coverage_projects.txt",
+		"common/cb_types/00_coverage_cb.txt",
+		"common/province_triggered_modifiers/00_coverage_ptm.txt",
+		"common/ideas/00_coverage_ideas.txt",
+		"common/new_diplomatic_actions/00_coverage_actions.txt",
+	];
+	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+
+	assert!(
+		!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+	assert!(
+		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+}
+
+#[test]
+fn corpus_metadata_eu4_roots_do_not_emit_targeted_noise() {
+	let files = parsed_many(
+		"eu4_coverage",
+		"eu4cov",
+		&[
+			"common/scripted_effects/00_coverage_effects.txt",
+			"common/scripted_triggers/00_coverage_triggers.txt",
+			"common/event_modifiers/00_coverage_event_modifiers.txt",
+			"common/government_names/00_coverage_government_names.txt",
+			"customizable_localization/00_coverage_localization.txt",
+			"common/cultures/00_coverage_cultures.txt",
+			"common/advisortypes/00_coverage_advisortypes.txt",
+			"common/custom_gui/00_coverage_gui.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"common/event_modifiers/00_coverage_event_modifiers.txt",
+		"common/government_names/00_coverage_government_names.txt",
+		"customizable_localization/00_coverage_localization.txt",
+		"common/cultures/00_coverage_cultures.txt",
+		"common/advisortypes/00_coverage_advisortypes.txt",
+		"common/custom_gui/00_coverage_gui.txt",
+	];
+	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+
+	assert!(
+		!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+	assert!(
+		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
 	);
 }

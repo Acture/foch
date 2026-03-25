@@ -1,0 +1,9 @@
+eu4_cov_country_trigger = {
+	has_country_flag = eu4_cov_enabled
+}
+
+eu4_cov_province_trigger = {
+	owner = {
+		eu4_cov_country_trigger = yes
+	}
+}

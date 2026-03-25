@@ -1,0 +1,5 @@
+coverage_localization = {
+	trigger = {
+		eu4_cov_country_trigger = yes
+	}
+}

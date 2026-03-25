@@ -1,0 +1,10 @@
+coverage_ptm = {
+	potential = {
+		owner = {
+			eu4_cov_country_trigger = yes
+		}
+	}
+	on_activation = {
+		eu4_cov_apply_province_bonus = yes
+	}
+}
