@@ -1,10 +1,24 @@
 # Auto-Merge Roadmap
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## Purpose
 
-This document describes the milestone order for turning `foch` from a static analyzer into an automatic Paradox mod merger. It intentionally stays at the roadmap level. Detailed command and artifact contracts live in [merge-design.md](./merge-design.md).
+This document now tracks the roadmap after the first merge-capable release. Detailed merge command and artifact contracts still live in [merge-design.md](./merge-design.md).
+
+## What Has Landed
+
+The first merge-capable vertical slice is now in the repository:
+
+- deterministic `merge-plan`
+- merge IR for supported structural roots
+- deterministic Clausewitz emission
+- merged output materialization
+- post-merge revalidation and `foch merge`
+- runtime graph export via `foch graph`
+- base-equivalent cleanup via `foch simplify`
+
+That shifts the roadmap from “how do we reach merge” to “how do we harden and deepen the shipped product lines”.
 
 ## Why The Current Work Is Still On-Path
 
@@ -39,6 +53,68 @@ Localisation compatibility is tracked separately from the merge roadmap.
 - It should remain visible as an explicit follow-up workstream for cases such as double-byte / EU4DLL decoding and other localisation-specific compatibility gaps.
 
 The merge roadmap may surface localisation regressions during post-merge validation, but the implementation of localisation compatibility itself belongs to its own workstream.
+
+## Completed Milestones
+
+- Milestone 1: deterministic merge planning
+- Milestone 2: merge-oriented intermediate representation
+- Milestone 3: Clausewitz emission layer
+- Milestone 4: generated merged mod output
+- Milestone 5: post-merge revalidation and exit-status gating
+
+## Active / Next Milestones
+
+### Architecture Cleanup R1
+
+Goal:
+
+- align the codebase structure with the shipped product lines instead of the original flat analyzer-first layout
+
+Deliverables:
+
+- `workspace / analyzer / runtime / merge / graph / simplify` module split
+- removal of legacy `check --graph-out`
+- updated architecture and status documentation
+
+### Graph G2
+
+Goal:
+
+- refine graph grouping, explainability, and presentation without changing runtime binding semantics
+
+Deliverables:
+
+- finer clustering inside `calls` graphs
+- richer symbol-tree breakdown
+- clearer overlap/dependency annotations
+
+### Simplify R2
+
+Goal:
+
+- extend simplification beyond base-equivalent copy removal while keeping rewrite safety explicit
+
+Deliverables:
+
+- richer reporting
+- more granular overlap categorization
+- possible future safe rewrites beyond v1 deletion-only behavior
+
+### Localisation Compatibility Workstream
+
+Goal:
+
+- improve localisation-specific compatibility independent of the shipped merge core
+
+Deliverables:
+
+- better EU4DLL/double-byte handling
+- clearer localisation validation explainability
+- compatibility fixes that do not change the merge contract
+
+## Historical Milestone Order
+
+The original merge-buildout order is preserved below for context.
 
 ## Milestone Order
 
@@ -214,9 +290,11 @@ The milestones above should not be reordered:
 
 ## Suggested Near-Term Focus
 
-The next practical implementation step should be Milestone 4, Slice D: post-merge revalidation and public `merge` command gating.
+The next practical steps are:
 
-Slice A, Slice B, and Slice C are already complete. The next step is to expose `foch merge`, run a validation pass over the generated output tree, backfill the real validation buckets in `.foch/foch-merge-report.json`, and map the execution result to the final documented exit codes.
+- finish architecture cleanup and remove remaining legacy seams
+- start Graph G2 on top of the new `graph/` product line
+- keep localisation as a separate follow-up track instead of folding it back into merge
 
 ## Exit Criteria For A First Meaningful Merge Release
 

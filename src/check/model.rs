@@ -32,12 +32,6 @@ pub enum ChannelMode {
 	All,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GraphFormat {
-	Json,
-	Dot,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentFamily {
@@ -117,8 +111,6 @@ pub struct CheckResult {
 	pub analysis_meta: AnalysisMeta,
 	#[serde(skip_serializing, skip_deserializing)]
 	pub parse_issue_report: Vec<ParseIssueReportItem>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub graph_output: Option<String>,
 }
 
 impl CheckResult {
@@ -255,7 +247,6 @@ pub struct CheckRequest {
 pub struct RunOptions {
 	pub analysis_mode: AnalysisMode,
 	pub channel_mode: ChannelMode,
-	pub graph_format: Option<GraphFormat>,
 	pub include_game_base: bool,
 }
 
@@ -264,7 +255,6 @@ impl Default for RunOptions {
 		Self {
 			analysis_mode: AnalysisMode::default(),
 			channel_mode: ChannelMode::default(),
-			graph_format: None,
 			include_game_base: true,
 		}
 	}

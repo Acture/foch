@@ -1,6 +1,5 @@
 use foch::check::analysis::{AnalyzeOptions, analyze_visibility};
-use foch::check::graph::export_graph;
-use foch::check::model::{AnalysisMode, GraphFormat, ScopeType, SymbolKind};
+use foch::check::model::{AnalysisMode, ScopeType, SymbolKind};
 use foch::check::semantic_index::{
 	build_semantic_index, collect_localisation_definitions, parse_script_file,
 };
@@ -159,20 +158,6 @@ fn corpus_diplomatic_actions_keep_aliases_visible() {
 				})
 				.unwrap_or(false)
 	}));
-}
-
-#[test]
-fn graph_export_supports_json_and_dot() {
-	let player = parsed("defines", "defines", "common/scripted_effects/player.txt");
-	let index = build_semantic_index(&[player]);
-
-	let json = export_graph(&index, GraphFormat::Json);
-	let decoded: serde_json::Value = serde_json::from_str(&json).expect("graph json should parse");
-	assert!(decoded.get("scopes").is_some());
-
-	let dot = export_graph(&index, GraphFormat::Dot);
-	assert!(dot.contains("digraph foch_semantic"));
-	assert!(dot.contains("scope_0"));
 }
 
 #[test]

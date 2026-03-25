@@ -231,6 +231,77 @@ fn duplicate_scripted_effect_creates_r007() {
 }
 
 #[test]
+fn mergeable_cross_mod_overlap_reports_a003_without_s001() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7011"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7012"}
+		]),
+	);
+
+	let mod_a = temp.path().join("7011");
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_script_file(
+		&mod_a,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = { log = a }\n",
+	);
+
+	let mod_b = temp.path().join("7012");
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_b,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = { log = b }\n",
+	);
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	assert!(result.findings.iter().any(|f| {
+		f.rule_id == "A003" && f.message.contains("可自动合并")
+	}));
+	assert!(!result.findings.iter().any(|f| f.rule_id == "S001"));
+}
+
+#[test]
+fn non_mergeable_cross_mod_overlap_reports_s001() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7021"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7022"}
+		]),
+	);
+
+	let mod_a = temp.path().join("7021");
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_script_file(
+		&mod_a,
+		"common/odd/event_defs.txt",
+		"country_event = { id = odd.1 title = odd_title }\n",
+	);
+
+	let mod_b = temp.path().join("7022");
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_b,
+		"common/odd/event_defs.txt",
+		"country_event = { id = odd.1 title = other_title }\n",
+	);
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	assert!(result.findings.iter().any(|f| {
+		f.rule_id == "S001" && f.message.contains("跨 Mod 重合定义")
+	}));
+}
+
+#[test]
 fn unresolved_scripted_effect_reports_only_s002() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");

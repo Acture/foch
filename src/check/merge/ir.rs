@@ -1,8 +1,5 @@
-use crate::check::engine::{
-	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
-};
-use crate::check::merge_normalize::normalize_defines_file;
-use crate::check::merge_plan::build_merge_plan_from_workspace;
+use crate::check::merge::normalize::normalize_defines_file;
+use crate::check::merge::plan::build_merge_plan_from_workspace;
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
 	MergePlanStrategy,
@@ -11,6 +8,9 @@ use crate::check::parser::{AstStatement, AstValue, SpanRange};
 use crate::check::semantic_index::{
 	ParsedScriptFile, ScriptFileKind, classify_script_file, is_decision_container_key,
 	parse_script_file,
+};
+use crate::check::workspace::{
+	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

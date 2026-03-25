@@ -24,12 +24,20 @@ fn write_playlist(path: &Path, mods: serde_json::Value) {
 }
 
 fn write_descriptor(mod_root: &Path, name: &str) {
+	write_descriptor_with_dependencies(mod_root, name, &[]);
+}
+
+fn write_descriptor_with_dependencies(mod_root: &Path, name: &str, dependencies: &[&str]) {
 	fs::create_dir_all(mod_root).expect("create mod root");
-	fs::write(
-		mod_root.join("descriptor.mod"),
-		format!("name=\"{name}\"\nversion=\"1.0.0\"\n"),
-	)
-	.expect("write descriptor");
+	let mut descriptor = format!("name=\"{name}\"\nversion=\"1.0.0\"\n");
+	if !dependencies.is_empty() {
+		descriptor.push_str("dependencies={\n");
+		for dependency in dependencies {
+			descriptor.push_str(&format!("\t\"{dependency}\"\n"));
+		}
+		descriptor.push_str("}\n");
+	}
+	fs::write(mod_root.join("descriptor.mod"), descriptor).expect("write descriptor");
 }
 
 fn write_config(path: &Path, content: &str) {
@@ -297,44 +305,317 @@ fn check_json_output_can_be_deserialized() {
 }
 
 #[test]
-fn check_can_export_graph_json() {
+fn check_rejects_removed_graph_flags() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
-	let graph_path = tmp.path().join("graph.json");
+	write_playlist(&playlist_path, json!([]));
+
+	let playlist_str = playlist_path.display().to_string();
+	let args = ["check", playlist_str.as_str(), "--graph-out", "graph.json"];
+
+	let (code, _stdout, stderr) = run_foch(&args, tmp.path());
+	assert_eq!(code, 2);
+	assert!(stderr.contains("--graph-out"));
+}
+
+#[test]
+fn graph_command_resolves_runtime_calls_even_without_declared_dependency() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("graphs");
+	let mod_a = tmp.path().join("9001");
+	let mod_b = tmp.path().join("9002");
 
 	write_playlist(
 		&playlist_path,
 		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"6001"}
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9001"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9002"}
 		]),
 	);
-	let mod_root = tmp.path().join("6001");
-	write_descriptor(&mod_root, "mod-a");
-	fs::create_dir_all(mod_root.join("events")).expect("create events dir");
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
+		.expect("create effects dir");
 	fs::write(
-		mod_root.join("events").join("a.txt"),
-		"namespace = test\ncountry_event = { id = test.1 }\n",
+		mod_a.join("events").join("ref.txt"),
+		"namespace = test\ncountry_event = { id = test.1 immediate = { shared_effect = { } } }\n",
 	)
-	.expect("write event file");
+	.expect("write ref event");
+	fs::write(
+		mod_b.join("common").join("scripted_effects").join("effects.txt"),
+		"shared_effect = { log = provider }\n",
+	)
+	.expect("write effect");
 
 	let playlist_str = playlist_path.display().to_string();
-	let graph_str = graph_path.display().to_string();
-	let args = [
-		"check",
-		playlist_str.as_str(),
-		"--graph-out",
-		graph_str.as_str(),
-		"--graph-format",
-		"json",
-		"--no-game-base",
-	];
+	let out_str = out_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"graph",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--scope",
+			"mods",
+			"--format",
+			"json",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
 
-	let (code, _stdout, _stderr) = run_foch(&args, tmp.path());
-	assert_eq!(code, 0);
+	let calls = read_json_file(&out_dir.join("mods/9001/calls.json"));
+	let nodes = calls["nodes"].as_array().expect("calls nodes");
+	let provider = nodes
+		.iter()
+		.find(|node| {
+			node["mod_id"] == "9002"
+				&& node["kind"] == "definition"
+				&& node["name"]
+					.as_str()
+					.is_some_and(|name| name.ends_with("::shared_effect"))
+		})
+		.expect("provider node");
+	let provider_id = provider["id"].as_str().expect("provider id");
+	let edges = calls["edges"].as_array().expect("calls edges");
+	let call_edge = edges
+		.iter()
+		.find(|edge| edge["kind"] == "calls" && edge["to"] == provider_id)
+		.expect("runtime call edge");
+	assert_eq!(call_edge["declared_dependency"], false);
+	assert_eq!(call_edge["dependency_match_kind"], "none");
+	let hint_edge = edges
+		.iter()
+		.find(|edge| edge["kind"] == "declared_dependency_hint" && edge["to"] == provider_id)
+		.expect("dependency hint edge");
+	assert_eq!(hint_edge["declared_dependency"], false);
+	assert_eq!(hint_edge["dependency_match_kind"], "none");
 
-	let content = fs::read_to_string(graph_path).expect("read graph json");
-	let parsed: serde_json::Value = serde_json::from_str(&content).expect("graph output json");
-	assert!(parsed.get("scopes").is_some());
+	let deps = read_json_file(&out_dir.join("mods/9001/mod-deps.json"));
+	assert!(
+		deps["edges"]
+			.as_array()
+			.expect("deps edges")
+			.is_empty()
+	);
+}
+
+#[test]
+fn graph_command_exports_declared_dependency_and_symbol_tree() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("graphs");
+	let mod_a = tmp.path().join("9011");
+	let mod_b = tmp.path().join("9012");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9011"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9012"}
+		]),
+	);
+	write_descriptor_with_dependencies(&mod_a, "mod-a", &["mod-b"]);
+	write_descriptor(&mod_b, "mod-b");
+	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
+		.expect("create effects dir");
+	fs::write(
+		mod_a.join("events").join("ref.txt"),
+		"namespace = test\ncountry_event = { id = test.1 immediate = { shared_effect = { } } }\n",
+	)
+	.expect("write ref event");
+	fs::write(
+		mod_b.join("common").join("scripted_effects").join("effects.txt"),
+		"shared_effect = { log = provider }\n",
+	)
+	.expect("write effect");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"graph",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--format",
+			"both",
+			"--root",
+			"scripted_effect:shared_effect",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+
+	let calls = read_json_file(&out_dir.join("mods/9011/calls.json"));
+	let nodes = calls["nodes"].as_array().expect("calls nodes");
+	let provider = nodes
+		.iter()
+		.find(|node| {
+			node["mod_id"] == "9012"
+				&& node["name"]
+					.as_str()
+					.is_some_and(|name| name.ends_with("::shared_effect"))
+		})
+		.expect("provider node");
+	let provider_id = provider["id"].as_str().expect("provider id");
+	let call_edge = calls["edges"]
+		.as_array()
+		.expect("calls edges")
+		.iter()
+		.find(|edge| edge["kind"] == "calls" && edge["to"] == provider_id)
+		.expect("runtime call edge");
+	assert_eq!(call_edge["declared_dependency"], true);
+	assert_eq!(call_edge["dependency_match_kind"], "descriptor_name");
+
+	let deps = read_json_file(&out_dir.join("workspace/mod-deps.json"));
+	let dep_edge = deps["edges"]
+		.as_array()
+		.expect("deps edges")
+		.iter()
+		.find(|edge| edge["from"] == "9011" && edge["to"] == "9012")
+		.expect("dependency edge");
+	assert_eq!(dep_edge["match_kind"], "descriptor_name");
+
+	assert!(out_dir.join("trees/scripted_effect-shared_effect.json").exists());
+	assert!(out_dir.join("trees/scripted_effect-shared_effect.dot").exists());
+}
+
+#[test]
+fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_candidates() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let game_root = tmp.path().join("eu4-game");
+	let out_dir = tmp.path().join("simplified-mod");
+	let mod_a = tmp.path().join("9021");
+	let mod_b = tmp.path().join("9022");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9021"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9022"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	write_game_version(&game_root, "12.1.0-test");
+	fs::create_dir_all(game_root.join("common").join("scripted_effects"))
+		.expect("create base effects dir");
+	fs::create_dir_all(mod_a.join("common").join("scripted_effects"))
+		.expect("create mod effects dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
+		.expect("create mod effects dir");
+	fs::write(
+		game_root.join("common").join("scripted_effects").join("effects.txt"),
+		"shared_effect = { log = base }\n",
+	)
+	.expect("write base effect");
+	fs::write(
+		mod_a.join("common").join("scripted_effects").join("effects.txt"),
+		concat!(
+			"shared_effect = { log = base }\n",
+			"merge_me = { log = a }\n",
+			"local_effect = { log = keep }\n"
+		),
+	)
+	.expect("write mod a effects");
+	fs::write(
+		mod_b.join("common").join("scripted_effects").join("effects.txt"),
+		"merge_me = { log = b }\n",
+	)
+	.expect("write mod b effects");
+	write_config(
+		tmp.path(),
+		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
+	);
+	build_base_data_install(tmp.path(), &game_root);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"simplify",
+			playlist_str.as_str(),
+			"--target",
+			"9021",
+			"--out",
+			out_str.as_str(),
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(stdout.contains("removed_definitions=1"));
+
+	let simplified = fs::read_to_string(
+		out_dir
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+	)
+	.expect("read simplified file");
+	assert!(!simplified.contains("shared_effect"));
+	assert!(simplified.contains("merge_me"));
+	assert!(simplified.contains("local_effect"));
+
+	let report = read_json_file(&out_dir.join("simplify-report.json"));
+	assert_eq!(report["target_mod_id"], "9021");
+	assert_eq!(report["removed"][0]["name"], "shared_effect");
+	assert_eq!(report["merge_candidates"][0]["name"], "merge_me");
+}
+
+#[test]
+fn simplify_command_in_place_removes_empty_files() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let game_root = tmp.path().join("eu4-game");
+	let mod_a = tmp.path().join("9031");
+	let target_file = mod_a.join("common").join("scripted_effects").join("effects.txt");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9031"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	write_game_version(&game_root, "12.2.0-test");
+	fs::create_dir_all(game_root.join("common").join("scripted_effects"))
+		.expect("create base effects dir");
+	fs::create_dir_all(mod_a.join("common").join("scripted_effects"))
+		.expect("create mod effects dir");
+	fs::write(
+		game_root.join("common").join("scripted_effects").join("effects.txt"),
+		"shared_effect = { log = base }\n",
+	)
+	.expect("write base effect");
+	fs::write(&target_file, "shared_effect = { log = base }\n").expect("write mod effect");
+	write_config(
+		tmp.path(),
+		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
+	);
+	build_base_data_install(tmp.path(), &game_root);
+
+	let playlist_str = playlist_path.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"simplify",
+			playlist_str.as_str(),
+			"--target",
+			"9031",
+			"--in-place",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(stdout.contains("removed_definitions=1"));
+	assert!(!target_file.exists());
+	assert!(mod_a.join("simplify-report.json").exists());
 }
 
 #[test]

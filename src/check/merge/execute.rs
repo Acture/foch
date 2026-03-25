@@ -1,4 +1,4 @@
-use crate::check::merge_materialize::{MergeMaterializeOptions, materialize_merge_internal};
+use crate::check::merge::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::check::model::{
 	AnalysisMode, ChannelMode, CheckRequest, Finding, MergeReport, MergeReportStatus,
 	MergeReportValidation, RunOptions, MERGE_REPORT_ARTIFACT_PATH,
@@ -12,19 +12,19 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug)]
-pub(crate) struct MergeExecuteOptions {
+pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
 	pub force: bool,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct MergeExecutionResult {
+pub struct MergeExecutionResult {
 	pub report: MergeReport,
 	pub exit_code: i32,
 }
 
-pub(crate) fn run_merge_with_options(
+pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> io::Result<MergeExecutionResult> {
@@ -118,7 +118,6 @@ fn revalidate_generated_output(
 		RunOptions {
 			analysis_mode: AnalysisMode::Semantic,
 			channel_mode: ChannelMode::All,
-			graph_format: None,
 			include_game_base,
 		},
 	);

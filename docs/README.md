@@ -1,16 +1,17 @@
 # Foch Documentation
 
-This directory documents both the current repository and the intended evolution toward a static-analysis-driven Paradox mod merger.
+This directory documents the current repository structure, shipped command surface, and the roadmap beyond the first merge-capable release.
 
 The intended audience is contributors and implementers. Read these documents in order if you are new to the project.
 
-## Current State
+## Start Here
 
+- [architecture.md](./architecture.md) - subsystem layout, shared kernels, data flow, and public check-layer façades
 - [project-status.md](./project-status.md) - what the repository implements today, what has been verified locally, and how complete it is under two different goal definitions
 
 ## Roadmap
 
-- [auto-merge-roadmap.md](./auto-merge-roadmap.md) - milestone ordering for turning the current analyzer into an automatic merge tool, with v1 boundaries and dependency sequencing
+- [auto-merge-roadmap.md](./auto-merge-roadmap.md) - roadmap after the first merge-capable release, including architecture cleanup, Graph G2, Simplify R2, and deferred localisation work
 
 ## Implementation Spec
 

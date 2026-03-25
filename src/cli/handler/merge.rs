@@ -1,5 +1,4 @@
-use crate::check::merge_execute::{MergeExecuteOptions, run_merge_with_options};
-use crate::check::model::CheckRequest;
+use crate::check::{CheckRequest, MergeExecuteOptions, run_merge_with_options};
 use crate::check::report::render_merge_report_text;
 use crate::cli::arg::MergeArgs;
 use crate::cli::config::Config;

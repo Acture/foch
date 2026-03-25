@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::check::merge_ir::{MergeIrNode, MergeIrStructuralFile, MergeIrStructuralKind};
+use crate::check::merge::ir::{MergeIrNode, MergeIrStructuralFile, MergeIrStructuralKind};
 use crate::check::parser::{AstStatement, AstValue, ScalarValue};
 use std::collections::BTreeMap;
 
@@ -19,6 +19,14 @@ pub(crate) fn emit_structural_file(file: &MergeIrStructuralFile) -> Result<Strin
 		MergeIrStructuralKind::Decisions => emit_decision_nodes(&file.nodes),
 		MergeIrStructuralKind::Defines => emit_defines_nodes(&file.nodes),
 	}
+}
+
+pub(crate) fn emit_clausewitz_statements(statements: &[AstStatement]) -> Result<String, String> {
+	let mut out = String::new();
+	for statement in statements {
+		emit_statement(statement, 0, &mut out)?;
+	}
+	Ok(out)
 }
 
 fn emit_top_level_nodes(nodes: &[MergeIrNode]) -> Result<String, String> {

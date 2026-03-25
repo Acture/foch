@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 
-use crate::check::engine::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
-use crate::check::merge_emit::emit_structural_file;
-use crate::check::merge_ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
-use crate::check::merge_plan::build_merge_plan_from_workspace;
+use crate::check::merge::emit::emit_structural_file;
+use crate::check::merge::ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
+use crate::check::merge::plan::build_merge_plan_from_workspace;
 use crate::check::model::{
 	CheckRequest, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
 	MergePlanEntry, MergePlanOptions, MergePlanResult, MergePlanStrategy, MergeReport,
 	MergeReportStatus,
 };
+use crate::check::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
