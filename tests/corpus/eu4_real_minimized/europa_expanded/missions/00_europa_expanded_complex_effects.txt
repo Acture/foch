@@ -1,0 +1,61 @@
+# Source: Europa Expanded (workshop 2164202838)
+
+hab_switzerland = {
+	icon = mission_conquer_1_province
+	position = 2
+	effect = {
+		complex_dynamic_effect = {
+			first_custom_tooltip = HAB_IF_BREISGAU_CONNECTED
+			first_limit = "
+				72 = {
+					is_in_capital_area = yes
+				}
+			"
+			first_effect = "
+				72 = {
+					add_or_upgrade_fort_building = yes
+					add_province_modifier = {
+						name = hab_fort_of_breisgau
+						duration = -1
+					}
+				}
+			"
+		}
+	}
+}
+
+EE_Celtica_Expanding_Production = {
+	icon = industrialized_rhineland
+	position = 14
+	effect = {
+		add_country_modifier = {
+			name = EE_CLT_benefit_factories
+			duration = 9125
+		}
+		complex_dynamic_effect_without_alternative = {
+			first_custom_tooltip = EE_CLT_manufactory_tt
+			first_limit = "
+				NOT = { has_institution = manufactories }
+			"
+			first_effect = "
+				custom_tooltip = EE_CLT_manufactory_tt_1
+				tooltip = {
+					add_institution_embracement = {
+						which = manufactories
+						value = 100
+					}
+				}
+			"
+		}
+		custom_tooltip = EE_CLT_timed_reward_tt
+		complex_dynamic_effect_without_alternative = {
+			first_custom_tooltip = EE_CLT_timed_reward_tt_1
+			first_limit = "
+				any_owned_province = { has_province_modifier = EE_CLT_industrial_foundation }
+			"
+			first_effect = "
+				ME_CLT_industrial_evolution_complex_effect = yes
+			"
+		}
+	}
+}

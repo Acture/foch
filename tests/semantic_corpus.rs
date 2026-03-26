@@ -489,13 +489,11 @@ fn corpus_priority_eu4_roots_do_not_emit_targeted_noise() {
 	];
 	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
 
-	assert!(
-		!diagnostics.strict.iter().any(|finding| is_targeted_noise(
-			finding,
-			&target_paths,
-			&targeted_rules
-		))
-	);
+	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+		finding,
+		&target_paths,
+		&targeted_rules
+	)));
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
 			finding,
@@ -539,13 +537,11 @@ fn corpus_metadata_eu4_roots_do_not_emit_targeted_noise() {
 	];
 	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
 
-	assert!(
-		!diagnostics.strict.iter().any(|finding| is_targeted_noise(
-			finding,
-			&target_paths,
-			&targeted_rules
-		))
-	);
+	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+		finding,
+		&target_paths,
+		&targeted_rules
+	)));
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
 			finding,
@@ -599,18 +595,23 @@ fn corpus_wrapper_heavy_roots_keep_callbacks_and_helpers_clean() {
 		"common/government_reforms/00_wrappers_reforms.txt",
 		"common/new_diplomatic_actions/00_wrappers_actions.txt",
 		"common/cb_types/00_wrappers_cb.txt",
+		"common/on_actions/00_wrappers_on_actions.txt",
+	];
+	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+
 	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
 		finding,
 		&target_paths,
 		&targeted_rules
 	)));
-		"common/on_actions/00_wrappers_on_actions.txt",
-	];
-	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
-
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
 			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+}
 
 #[test]
 fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
@@ -664,9 +665,6 @@ fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
 				.any(|param| param == "abilityName")
 	}));
 }
-			&target_paths,
-			&targeted_rules
-		))
 
 #[test]
 fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
@@ -744,12 +742,183 @@ fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
 		reference.kind == SymbolKind::ScriptedEffect && reference.name.starts_with("event_target:")
 	}));
 }
+
+#[test]
+fn corpus_real_minimized_europa_expanded_building_params_stay_clean() {
+	let files = parsed_many(
+		"eu4_real_minimized/europa_expanded",
+		"2164202838",
+		&[
+			"common/scripted_effects/00_europa_expanded_effects.txt",
+			"common/buildings/00_europa_expanded_buildings.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"common/scripted_effects/00_europa_expanded_effects.txt",
+		"common/buildings/00_europa_expanded_buildings.txt",
+	];
+	let targeted_rules = ["S004"];
+	let strict_noise: Vec<String> = diagnostics
+		.strict
+		.iter()
+		.filter(|finding| is_targeted_noise(finding, &target_paths, &targeted_rules))
+		.map(|finding| {
+			format!(
+				"{}:{}:{}:{}",
+				finding.rule_id,
+				finding
+					.path
+					.as_ref()
+					.map(|path| path.display().to_string())
+					.unwrap_or_else(|| "<none>".to_string()),
+				finding.line.unwrap_or_default(),
+				finding.message
+			)
+		})
+		.collect();
+
+	assert!(
+		strict_noise.is_empty(),
+		"strict targeted noise: {strict_noise:#?}"
+	);
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect
+			&& reference.name == "update_improved_military_buildings_modifier"
+			&& reference
+				.provided_params
+				.iter()
+				.any(|param| param == "building")
+	}));
+}
+
+#[test]
+fn corpus_real_minimized_europa_expanded_complex_effects_stay_clean() {
+	let files = parsed_many(
+		"eu4_real_minimized/europa_expanded",
+		"2164202838",
+		&[
+			"common/scripted_effects/01_europa_expanded_complex_effects.txt",
+			"missions/00_europa_expanded_complex_effects.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"common/scripted_effects/01_europa_expanded_complex_effects.txt",
+		"missions/00_europa_expanded_complex_effects.txt",
+	];
+	let targeted_rules = ["S004"];
+	let strict_noise: Vec<String> = diagnostics
+		.strict
+		.iter()
+		.filter(|finding| is_targeted_noise(finding, &target_paths, &targeted_rules))
+		.map(|finding| {
+			format!(
+				"{}:{}:{}:{}",
+				finding.rule_id,
+				finding
+					.path
+					.as_ref()
+					.map(|path| path.display().to_string())
+					.unwrap_or_else(|| "<none>".to_string()),
+				finding.line.unwrap_or_default(),
+				finding.message
+			)
+		})
+		.collect();
+
+	assert!(
+		strict_noise.is_empty(),
+		"strict targeted noise: {strict_noise:#?}"
 	);
 	assert!(
-		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
-			finding,
-			&target_paths,
-			&targeted_rules
-		))
+		index
+			.references
+			.iter()
+			.filter(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect
+					&& reference.name == "complex_dynamic_effect_without_alternative"
+			})
+			.count() >= 2
 	);
+}
+
+#[test]
+fn corpus_real_minimized_base_game_complex_effects_stay_clean() {
+	let files = parsed_many(
+		"eu4_real_minimized/base_game_complex_effects",
+		"__game__eu4",
+		&[
+			"common/scripted_effects/00_base_game_complex_effects.txt",
+			"missions/00_base_game_complex_effects.txt",
+			"decisions/00_base_game_complex_effects.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"common/scripted_effects/00_base_game_complex_effects.txt",
+		"missions/00_base_game_complex_effects.txt",
+		"decisions/00_base_game_complex_effects.txt",
+	];
+	let targeted_rules = ["S004"];
+	let strict_noise: Vec<String> = diagnostics
+		.strict
+		.iter()
+		.filter(|finding| is_targeted_noise(finding, &target_paths, &targeted_rules))
+		.map(|finding| {
+			format!(
+				"{}:{}:{}:{}",
+				finding.rule_id,
+				finding
+					.path
+					.as_ref()
+					.map(|path| path.display().to_string())
+					.unwrap_or_else(|| "<none>".to_string()),
+				finding.line.unwrap_or_default(),
+				finding.message
+			)
+		})
+		.collect();
+
+	assert!(
+		strict_noise.is_empty(),
+		"strict targeted noise: {strict_noise:#?}"
+	);
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect
+			&& reference.name == "complex_dynamic_effect"
+			&& reference
+				.provided_params
+				.iter()
+				.any(|param| param == "first_custom_tooltip")
+	}));
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect
+			&& reference.name == "complex_dynamic_effect_without_alternative"
+			&& reference
+				.provided_params
+				.iter()
+				.any(|param| param == "first_custom_tooltip")
+	}));
 }

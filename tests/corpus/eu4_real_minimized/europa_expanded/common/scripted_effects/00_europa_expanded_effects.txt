@@ -1,0 +1,22 @@
+# Source: Europa Universalis IV base game 1.37.5.0
+
+update_improved_military_buildings_modifier = {
+	if = {
+		limit = {
+			owner = { has_government_attribute = improved_military_buildings }
+		}
+		tooltip = {
+			add_province_modifier = {
+				name = wei_suo_system_reform_$building$_modifier
+				duration = -1
+			}
+		}
+		hidden_effect = {
+			remove_province_modifier = wei_suo_system_reform_barracks_modifier
+			remove_province_modifier = wei_suo_system_reform_training_fields_modifier
+			remove_province_modifier = wei_suo_system_reform_regimental_camp_modifier
+			remove_province_modifier = wei_suo_system_reform_conscription_center_modifier
+			remove_province_modifier = wei_suo_system_reform_soldier_households_modifier
+		}
+	}
+}

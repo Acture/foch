@@ -1,0 +1,86 @@
+# Source: EU4 1.37.5.0 common/scripted_effects/00_scripted_effects.txt
+complex_dynamic_effect = {
+	custom_tooltip = $first_custom_tooltip$
+	if = {
+		limit = {
+			$first_limit$
+		}
+		custom_tooltip = BONUS_REWARD_YES
+	}
+	else = { custom_tooltip = BONUS_REWARD_NO }
+	tooltip = {
+		$first_effect$
+	}
+
+	[[second_custom_tooltip]
+	custom_tooltip = mission_alternatively_tt
+	custom_tooltip = $second_custom_tooltip$
+	if = {
+		limit = {
+			$second_limit$
+		}
+		custom_tooltip = BONUS_REWARD_YES
+	}
+	else = { custom_tooltip = BONUS_REWARD_NO }
+	tooltip = {
+		$second_effect$
+	}
+	]
+
+	hidden_effect = {
+		if = {
+			limit = { $first_limit$ }
+			$first_effect$
+		}
+		[[second_custom_tooltip]
+		else_if = {
+			limit = { $second_limit$ }
+			$second_effect$
+		}
+		]
+	}
+}
+
+complex_dynamic_effect_without_alternative = {
+	custom_tooltip = $first_custom_tooltip$
+	if = {
+		limit = {
+			$first_limit$
+		}
+		custom_tooltip = BONUS_REWARD_YES
+	}
+	else = { custom_tooltip = BONUS_REWARD_NO }
+	tooltip = {
+		$first_effect$
+	}
+
+	[[second_custom_tooltip]
+	custom_tooltip = $second_custom_tooltip$
+	if = {
+		limit = {
+			$second_limit$
+		}
+		custom_tooltip = BONUS_REWARD_YES
+	}
+	else = { custom_tooltip = BONUS_REWARD_NO }
+	tooltip = {
+		$second_effect$
+	}
+	]
+
+	hidden_effect = {
+		if = {
+			limit = { $first_limit$ }
+			$first_effect$
+		}
+		[[second_custom_tooltip]
+		if = {
+			limit = { $second_limit$ }
+			$second_effect$
+		}
+		]
+		[[combined_effect]
+		$combined_effect$
+		]
+	}
+}

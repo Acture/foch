@@ -1,0 +1,26 @@
+# Source: Europa Expanded (workshop 2164202838)
+
+barracks = {
+	on_built = {
+		add_development_from_building = {
+			building = barracks
+			type = manpower
+			value = 1
+		}
+		update_improved_military_buildings_modifier = {
+			building = barracks
+		}
+		if = {
+			limit = {
+				owner = {
+					has_country_flag = azt_calpulli_houses_flag
+				}
+			}
+			add_province_modifier = {
+				name = azt_barracks_households
+				duration = -1
+				hidden = yes
+			}
+		}
+	}
+}
