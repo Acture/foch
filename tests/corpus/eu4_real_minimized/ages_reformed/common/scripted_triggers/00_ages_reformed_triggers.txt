@@ -1,0 +1,8 @@
+# Source: Ages Reformed (workshop 2896451151)
+
+st_md_is_muslim_in_europe = {
+	religion_group = muslim
+	capital_scope = {
+		continent = europe
+	}
+}

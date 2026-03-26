@@ -611,6 +611,59 @@ fn corpus_wrapper_heavy_roots_keep_callbacks_and_helpers_clean() {
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
 			finding,
+
+#[test]
+fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
+	let files = parsed_many(
+		"eu4_real_minimized/ages_reformed",
+		"2896451151",
+		&[
+			"common/scripted_effects/00_ages_reformed_effects.txt",
+			"common/scripted_triggers/00_ages_reformed_triggers.txt",
+			"common/triggered_modifiers/00_ages_reformed_modifiers.txt",
+			"common/ages/00_ages_reformed_ages.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"common/scripted_triggers/00_ages_reformed_triggers.txt",
+		"common/triggered_modifiers/00_ages_reformed_modifiers.txt",
+		"common/ages/00_ages_reformed_ages.txt",
+	];
+	let targeted_rules = ["A001", "S004"];
+
+	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+		finding,
+		&target_paths,
+		&targeted_rules
+	)));
+	assert!(
+		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
+			finding,
+			&target_paths,
+			&targeted_rules
+		))
+	);
+	assert!(index.definitions.iter().any(|definition| {
+		definition.kind == SymbolKind::ScriptedEffect
+			&& definition.local_name == "se_md_add_or_upgrade_bonus"
+	}));
+	assert!(index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect
+			&& reference.name == "se_md_add_or_upgrade_bonus"
+			&& reference
+				.provided_params
+				.iter()
+				.any(|param| param == "abilityName")
+	}));
+}
 			&target_paths,
 			&targeted_rules
 		))

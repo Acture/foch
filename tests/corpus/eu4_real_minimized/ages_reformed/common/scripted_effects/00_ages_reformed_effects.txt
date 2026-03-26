@@ -1,0 +1,62 @@
+# Source: Ages Reformed (workshop 2896451151)
+
+se_md_refund_splendor = {
+	if = {
+		limit = {
+			has_country_flag = flag_ab_md_has_had_$flagName$
+		}
+	}
+	set_country_flag = flag_ab_md_has_had_$flagName$
+	set_country_flag = flag_ab_md_has_had_cat_$flagCategory$
+}
+
+se_md_refund_splendor_bonus_progress = {
+	if = {
+		limit = {
+			OR = {
+				has_country_modifier = bns_md_$bonusName$_1
+				has_country_modifier = bns_md_$bonusName$_2
+			}
+		}
+	}
+}
+
+se_md_refund_splendor_bonus_complete = {
+	if = {
+		limit = {
+			OR = {
+				has_country_modifier = bns_md_$bonusName$_1
+				has_country_modifier = bns_md_$bonusName$_2
+			}
+		}
+	}
+}
+
+se_md_add_or_upgrade_bonus = {
+	if = {
+		limit = {
+			NOT = {
+				has_country_flag = flag_ab_md_purchased_$abilityName$
+			}
+		}
+		if = {
+			limit = {
+				NOT = {
+					has_country_modifier = bns_md_$bonusName$_3
+				}
+			}
+			se_md_refund_splendor_bonus_progress = {
+				bonusName = $bonusName$
+				flagName = $flagName$
+			}
+		}
+		else = {
+			se_md_refund_splendor_bonus_complete = {
+				bonusName = $bonusName$
+				flagName = $flagName$
+			}
+		}
+	}
+	set_country_flag = flag_ab_md_has_had_$flagName$
+	[[showTooltip] custom_tooltip = md_mention_primary_effect]
+}
