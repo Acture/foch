@@ -134,9 +134,9 @@ pub(crate) fn classify_definition_overlaps(
 		if defs.len() < 2 {
 			continue;
 		}
-		let base_definition = defs.iter().find(|definition| {
-			base_mod_id.is_some_and(|base| definition.mod_id == base)
-		});
+		let base_definition = defs
+			.iter()
+			.find(|definition| base_mod_id.is_some_and(|base| definition.mod_id == base));
 		for definition in defs {
 			if let Some(base) = base_definition
 				&& definition.mod_id != base.mod_id

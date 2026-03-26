@@ -131,7 +131,11 @@ pub(crate) fn materialize_merge_internal(
 	Ok(report)
 }
 
-fn write_metadata_only(out_dir: &Path, plan: &MergePlanResult, report: &MergeReport) -> io::Result<()> {
+fn write_metadata_only(
+	out_dir: &Path,
+	plan: &MergePlanResult,
+	report: &MergeReport,
+) -> io::Result<()> {
 	fs::create_dir_all(out_dir.join(".foch"))?;
 	write_json_artifact(&out_dir.join(MERGE_PLAN_ARTIFACT_PATH), plan)?;
 	write_json_artifact(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH), report)?;
@@ -142,8 +146,9 @@ fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
 	if let Some(parent) = path.parent() {
 		fs::create_dir_all(parent)?;
 	}
-	let bytes = serde_json::to_vec_pretty(value)
-		.map_err(|err| io::Error::other(format!("failed to serialize {}: {err}", path.display())))?;
+	let bytes = serde_json::to_vec_pretty(value).map_err(|err| {
+		io::Error::other(format!("failed to serialize {}: {err}", path.display()))
+	})?;
 	fs::write(path, bytes)
 }
 
@@ -219,7 +224,10 @@ fn winner_source_path<'a>(
 	entry: &MergePlanEntry,
 ) -> io::Result<&'a Path> {
 	let winner = entry.winner.as_ref().ok_or_else(|| {
-		io::Error::other(format!("merge plan entry {} is missing a winner", entry.path))
+		io::Error::other(format!(
+			"merge plan entry {} is missing a winner",
+			entry.path
+		))
 	})?;
 	let contributors = workspace.file_inventory.get(&entry.path).ok_or_else(|| {
 		io::Error::other(format!(
@@ -372,8 +380,12 @@ mod tests {
 		write_descriptor(&mod_root, "mod-a");
 		write_file(&mod_root, "common/only.txt", "from-a\n");
 
-		let report = materialize_merge_internal(request_for(&playlist_path), &out_dir, no_base_options(false))
-			.expect("materialize");
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		)
+		.expect("materialize");
 		assert_eq!(report.status, MergeReportStatus::Ready);
 		assert_eq!(report.manual_conflict_count, 0);
 		assert_eq!(report.generated_file_count, 0);
@@ -418,8 +430,12 @@ mod tests {
 		write_file(&mod_a, "common/overlay.txt", "from-a\n");
 		write_file(&mod_b, "common/overlay.txt", "from-b\n");
 
-		let report = materialize_merge_internal(request_for(&playlist_path), &out_dir, no_base_options(false))
-			.expect("materialize");
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		)
+		.expect("materialize");
 		assert_eq!(report.status, MergeReportStatus::Ready);
 		assert_eq!(report.overlay_file_count, 1);
 		assert_eq!(report.copied_file_count, 0);
@@ -488,8 +504,12 @@ mod tests {
 			"NGame = {\n\tSTART_YEAR = 1600\n}\n",
 		);
 
-		let report = materialize_merge_internal(request_for(&playlist_path), &out_dir, no_base_options(false))
-			.expect("materialize");
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		)
+		.expect("materialize");
 		assert_eq!(report.status, MergeReportStatus::Ready);
 		assert_eq!(report.generated_file_count, 4);
 		assert_eq!(report.copied_file_count, 0);
@@ -500,7 +520,8 @@ mod tests {
 			"country_event = {\n\tid = test.1\n\ttitle = title_override\n}\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\n"
 		);
 		assert_eq!(
-			fs::read_to_string(out_dir.join("decisions/shared.txt")).expect("read emitted decisions"),
+			fs::read_to_string(out_dir.join("decisions/shared.txt"))
+				.expect("read emitted decisions"),
 			"country_decisions = {\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
 		);
 		assert_eq!(
@@ -509,7 +530,8 @@ mod tests {
 			"shared_effect = {\n\tlog = b\n}\nunique_effect = {\n\tlog = only_a\n}\n"
 		);
 		assert_eq!(
-			fs::read_to_string(out_dir.join("common/defines/test.txt")).expect("read emitted defines"),
+			fs::read_to_string(out_dir.join("common/defines/test.txt"))
+				.expect("read emitted defines"),
 			"NGame = {\n\tEND_YEAR = 1821\n\tNCountry = {\n\t\tMAX_IDEA_GROUPS = 8\n\t}\n\tSTART_YEAR = 1600\n}\n"
 		);
 
@@ -538,10 +560,18 @@ mod tests {
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
 		write_file(&mod_a, "interface/shared.gui", "windowType = {}\n");
-		write_file(&mod_b, "interface/shared.gui", "windowType = { name = override }\n");
+		write_file(
+			&mod_b,
+			"interface/shared.gui",
+			"windowType = { name = override }\n",
+		);
 
-		let report = materialize_merge_internal(request_for(&playlist_path), &out_dir, no_base_options(false))
-			.expect("materialize");
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		)
+		.expect("materialize");
 		assert_eq!(report.status, MergeReportStatus::Blocked);
 		assert_eq!(report.manual_conflict_count, 1);
 		assert_eq!(report.generated_file_count, 0);
@@ -573,14 +603,26 @@ mod tests {
 		);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
-		write_file(&mod_a, "interface/shared.gui", "windowType = { name = a }\n");
-		write_file(&mod_b, "interface/shared.gui", "windowType = { name = b }\n");
+		write_file(
+			&mod_a,
+			"interface/shared.gui",
+			"windowType = { name = a }\n",
+		);
+		write_file(
+			&mod_b,
+			"interface/shared.gui",
+			"windowType = { name = b }\n",
+		);
 		write_file(&mod_a, "gfx/flag.dds", [0u8, 1, 2, 3]);
 		write_file(&mod_b, "gfx/flag.dds", [4u8, 5, 6, 7]);
 		write_file(&mod_b, "common/safe.txt", "safe\n");
 
-		let report = materialize_merge_internal(request_for(&playlist_path), &out_dir, no_base_options(true))
-			.expect("materialize");
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(true),
+		)
+		.expect("materialize");
 		assert_eq!(report.status, MergeReportStatus::Blocked);
 		assert_eq!(report.manual_conflict_count, 2);
 		assert_eq!(report.generated_file_count, 1);

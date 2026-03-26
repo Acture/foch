@@ -146,8 +146,10 @@ pub fn run_graph_with_options(
 		_ => {}
 	}
 
-	if matches!(options.scope, GraphScopeSelection::Base | GraphScopeSelection::All)
-		&& let Some(base_mod_id) = state.base_game_mod_id.as_ref()
+	if matches!(
+		options.scope,
+		GraphScopeSelection::Base | GraphScopeSelection::All
+	) && let Some(base_mod_id) = state.base_game_mod_id.as_ref()
 	{
 		let base_calls = filter_calls_graph_by_mod(&workspace_calls, base_mod_id);
 		let base_deps = filter_mod_deps_graph_by_mod(&workspace_deps, base_mod_id);
@@ -168,7 +170,10 @@ pub fn run_graph_with_options(
 		summary.base_written = true;
 	}
 
-	if matches!(options.scope, GraphScopeSelection::Mods | GraphScopeSelection::All) {
+	if matches!(
+		options.scope,
+		GraphScopeSelection::Mods | GraphScopeSelection::All
+	) {
 		let mut mod_ids = state.enabled_mod_ids.iter().cloned().collect::<Vec<_>>();
 		mod_ids.sort();
 		for mod_id in mod_ids {
@@ -208,9 +213,7 @@ pub fn run_graph_with_options(
 	Ok(summary)
 }
 
-fn build_workspace_calls_graph(
-	state: &crate::check::runtime::RuntimeState,
-) -> CallsGraphArtifact {
+fn build_workspace_calls_graph(state: &crate::check::runtime::RuntimeState) -> CallsGraphArtifact {
 	let mut nodes = BTreeMap::<String, CallsNode>::new();
 	let mut edges = BTreeMap::<(u8, String, String), CallsEdge>::new();
 
@@ -247,8 +250,7 @@ fn build_workspace_calls_graph(
 		if def_indices.len() < 2 {
 			continue;
 		}
-		let Some(winner) = state.winner_by_symbol.get(&(kind, name.clone())).copied()
-		else {
+		let Some(winner) = state.winner_by_symbol.get(&(kind, name.clone())).copied() else {
 			continue;
 		};
 		for def_idx in def_indices {
@@ -275,13 +277,14 @@ fn build_workspace_calls_graph(
 			SymbolKind::Event | SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger
 		)
 	}) {
-		let caller_id = if let Some(def_idx) = nearest_enclosing_definition(state, reference.scope_id) {
-			definition_node_id(def_idx)
-		} else {
-			let node = file_node(reference.mod_id.as_str(), &reference.path);
-			nodes.entry(node.id.clone()).or_insert(node.clone());
-			node.id
-		};
+		let caller_id =
+			if let Some(def_idx) = nearest_enclosing_definition(state, reference.scope_id) {
+				definition_node_id(def_idx)
+			} else {
+				let node = file_node(reference.mod_id.as_str(), &reference.path);
+				nodes.entry(node.id.clone()).or_insert(node.clone());
+				node.id
+			};
 		let callsite = CallsiteRecord {
 			path: normalize_path(&reference.path),
 			line: reference.line,
@@ -452,10 +455,7 @@ fn build_workspace_mod_deps_graph(
 	}
 }
 
-fn filter_calls_graph_by_mod(
-	graph: &CallsGraphArtifact,
-	mod_id: &str,
-) -> CallsGraphArtifact {
+fn filter_calls_graph_by_mod(graph: &CallsGraphArtifact, mod_id: &str) -> CallsGraphArtifact {
 	let seed = graph
 		.nodes
 		.iter()
@@ -494,7 +494,9 @@ fn filter_calls_graph_by_root(
 			} else {
 				None
 			};
-			if let Some(next) = neighbor && visited.insert(next.clone()) {
+			if let Some(next) = neighbor
+				&& visited.insert(next.clone())
+			{
 				queue.push_back(next);
 			}
 		}
@@ -502,10 +504,7 @@ fn filter_calls_graph_by_root(
 	filter_calls_graph(graph, visited)
 }
 
-fn filter_calls_graph(
-	graph: &CallsGraphArtifact,
-	seed: HashSet<String>,
-) -> CallsGraphArtifact {
+fn filter_calls_graph(graph: &CallsGraphArtifact, seed: HashSet<String>) -> CallsGraphArtifact {
 	let mut related = seed.clone();
 	for edge in &graph.edges {
 		if seed.contains(&edge.from) || seed.contains(&edge.to) {
@@ -599,13 +598,13 @@ fn append_callsite_edge(
 	};
 	let key = (discriminator, from.clone(), to.clone());
 	let edge = edges.entry(key).or_insert(CallsEdge {
-			kind,
-			from,
-			to,
-			declared_dependency,
-			dependency_match_kind,
-			callsites: Vec::new(),
-		});
+		kind,
+		from,
+		to,
+		declared_dependency,
+		dependency_match_kind,
+		callsites: Vec::new(),
+	});
 	edge.callsites.push(callsite);
 }
 
@@ -617,7 +616,10 @@ fn write_graph_pair<T: Serialize>(
 	format: GraphArtifactFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
 	fs::create_dir_all(dir)?;
-	if matches!(format, GraphArtifactFormat::Json | GraphArtifactFormat::Both) {
+	if matches!(
+		format,
+		GraphArtifactFormat::Json | GraphArtifactFormat::Both
+	) {
 		fs::write(
 			dir.join(format!("{stem}.json")),
 			serde_json::to_vec_pretty(json_value)?,

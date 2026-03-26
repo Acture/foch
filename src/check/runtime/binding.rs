@@ -74,10 +74,12 @@ pub(crate) fn build_runtime_state_from_workspace(
 		.installed_base_snapshot
 		.as_ref()
 		.map(|_| base_game_mod_id(workspace.playlist.game.key()));
-	let parsed_scripts = collect_workspace_scripts(workspace, &enabled_mod_ids, base_mod_id.as_deref());
+	let parsed_scripts =
+		collect_workspace_scripts(workspace, &enabled_mod_ids, base_mod_id.as_deref());
 	let semantic_index = build_semantic_index(&parsed_scripts);
 	let precedence_by_mod = build_precedence_map(workspace, base_mod_id.as_deref());
-	let definitions = collect_definition_records(&semantic_index, &parsed_scripts, &precedence_by_mod)?;
+	let definitions =
+		collect_definition_records(&semantic_index, &parsed_scripts, &precedence_by_mod)?;
 	let overlap_status_by_def = classify_definition_overlaps(&definitions, base_mod_id.as_deref());
 	let winner_by_symbol = build_winner_lookup(&definitions);
 	let dependency_hints = build_dependency_hints(workspace, base_mod_id.as_deref());
@@ -123,12 +125,14 @@ pub(crate) fn runtime_reference_target(
 				.map(|definition| definition.index)
 				.collect(),
 		),
-		SymbolKind::ScriptedEffect => {
-			pick_highest_precedence(state, resolve_scripted_effect_reference_targets(&state.semantic_index, reference))
-		}
-		SymbolKind::ScriptedTrigger => {
-			pick_highest_precedence(state, resolve_scripted_trigger_reference_targets(&state.semantic_index, reference))
-		}
+		SymbolKind::ScriptedEffect => pick_highest_precedence(
+			state,
+			resolve_scripted_effect_reference_targets(&state.semantic_index, reference),
+		),
+		SymbolKind::ScriptedTrigger => pick_highest_precedence(
+			state,
+			resolve_scripted_trigger_reference_targets(&state.semantic_index, reference),
+		),
 		_ => None,
 	}
 }
@@ -244,29 +248,35 @@ fn collect_definition_records(
 	let mut by_path = HashMap::<(String, String), &ParsedScriptFile>::new();
 	for parsed in parsed_scripts {
 		by_path.insert(
-			(parsed.mod_id.clone(), normalize_path(parsed.relative_path.as_path())),
+			(
+				parsed.mod_id.clone(),
+				normalize_path(parsed.relative_path.as_path()),
+			),
 			parsed,
 		);
 	}
 
 	let mut definitions = Vec::new();
 	for (idx, definition) in index.definitions.iter().enumerate() {
-		let key = (definition.mod_id.clone(), normalize_path(Path::new(&definition.path)));
+		let key = (
+			definition.mod_id.clone(),
+			normalize_path(Path::new(&definition.path)),
+		);
 		let Some(parsed) = by_path.get(&key) else {
 			continue;
 		};
-		let Some(statement) = find_statement_by_position(
-			&parsed.ast.statements,
-			definition.line,
-			definition.column,
-		) else {
+		let Some(statement) =
+			find_statement_by_position(&parsed.ast.statements, definition.line, definition.column)
+		else {
 			continue;
 		};
 		let normalized_statement = emit_clausewitz_statements(std::slice::from_ref(&statement))
 			.map_err(|err| {
 				format!(
 					"failed to normalize {} {}:{}: {err}",
-					definition.mod_id, definition.path.display(), definition.line
+					definition.mod_id,
+					definition.path.display(),
+					definition.line
 				)
 			})?;
 		definitions.push(DefinitionRecord {
@@ -289,9 +299,7 @@ fn collect_definition_records(
 	Ok(definitions)
 }
 
-fn build_winner_lookup(
-	definitions: &[DefinitionRecord],
-) -> HashMap<(SymbolKind, String), usize> {
+fn build_winner_lookup(definitions: &[DefinitionRecord]) -> HashMap<(SymbolKind, String), usize> {
 	let mut grouped = HashMap::<(SymbolKind, String), usize>::new();
 	for definition in definitions {
 		let key = (definition.kind, definition.name.clone());

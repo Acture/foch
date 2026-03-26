@@ -1,6 +1,6 @@
 pub(crate) mod resolve;
 
 pub(crate) use resolve::{
-	normalize_relative_path, resolve_workspace, ResolvedFileContributor, ResolvedWorkspace,
-	WorkspaceResolveErrorKind,
+	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, normalize_relative_path,
+	resolve_workspace,
 };

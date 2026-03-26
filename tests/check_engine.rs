@@ -260,9 +260,12 @@ fn mergeable_cross_mod_overlap_reports_a003_without_s001() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| {
-		f.rule_id == "A003" && f.message.contains("可自动合并")
-	}));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| { f.rule_id == "A003" && f.message.contains("可自动合并") })
+	);
 	assert!(!result.findings.iter().any(|f| f.rule_id == "S001"));
 }
 
@@ -296,9 +299,12 @@ fn non_mergeable_cross_mod_overlap_reports_s001() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| {
-		f.rule_id == "S001" && f.message.contains("跨 Mod 重合定义")
-	}));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| { f.rule_id == "S001" && f.message.contains("跨 Mod 重合定义") })
+	);
 }
 
 #[test]

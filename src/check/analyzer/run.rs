@@ -4,11 +4,11 @@ use crate::check::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckRequest, CheckResult, FamilyParseStats, Finding,
 	FindingChannel, ParseFamilyStats, ParseIssueReportItem, RunOptions, SemanticIndex, Severity,
 };
-use crate::check::runtime::{build_overlap_findings, build_runtime_state_from_workspace};
 use crate::check::rules::{
 	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
 	check_missing_dependency, check_missing_descriptor, check_required_fields,
 };
+use crate::check::runtime::{build_overlap_findings, build_runtime_state_from_workspace};
 use crate::check::workspace::{
 	WorkspaceResolveErrorKind, normalize_relative_path, resolve_workspace,
 };
