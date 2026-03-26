@@ -386,6 +386,18 @@ impl ParserState {
 							end,
 						},
 					})
+				} else if matches!(self.peek().kind, TokenKind::LBrace) {
+					let value = self.parse_value();
+					let end = value.span().end.clone();
+					Some(AstStatement::Assignment {
+						key,
+						key_span: first.span.clone(),
+						value,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
 				} else {
 					let value = AstValue::Scalar {
 						value: ScalarValue::Identifier(key),
@@ -403,6 +415,18 @@ impl ParserState {
 			TokenKind::String(value) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
 					let _ = self.bump();
+					let value_node = self.parse_value();
+					let end = value_node.span().end.clone();
+					Some(AstStatement::Assignment {
+						key: value,
+						key_span: first.span.clone(),
+						value: value_node,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
+				} else if matches!(self.peek().kind, TokenKind::LBrace) {
 					let value_node = self.parse_value();
 					let end = value_node.span().end.clone();
 					Some(AstStatement::Assignment {
@@ -438,6 +462,18 @@ impl ParserState {
 							end,
 						},
 					})
+				} else if matches!(self.peek().kind, TokenKind::LBrace) {
+					let value_node = self.parse_value();
+					let end = value_node.span().end.clone();
+					Some(AstStatement::Assignment {
+						key: value,
+						key_span: first.span.clone(),
+						value: value_node,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
 				} else {
 					Some(AstStatement::Item {
 						value: AstValue::Scalar {
@@ -451,6 +487,22 @@ impl ParserState {
 			TokenKind::Bool(value) => {
 				if matches!(self.peek().kind, TokenKind::Eq) {
 					let _ = self.bump();
+					let value_node = self.parse_value();
+					let end = value_node.span().end.clone();
+					Some(AstStatement::Assignment {
+						key: if value {
+							"yes".to_string()
+						} else {
+							"no".to_string()
+						},
+						key_span: first.span.clone(),
+						value: value_node,
+						span: SpanRange {
+							start: first.span.start.clone(),
+							end,
+						},
+					})
+				} else if matches!(self.peek().kind, TokenKind::LBrace) {
 					let value_node = self.parse_value();
 					let end = value_node.span().end.clone();
 					Some(AstStatement::Assignment {
@@ -684,11 +736,7 @@ mod tests {
 			PathBuf::from("missions.txt"),
 			"custom_tooltip = njd_unite_arabia_tooltip = { factor = 1 }\ncenter_of_trade = 1 = yes\n286 = = { owner = ROOT }\n",
 		);
-		assert!(
-			parsed.diagnostics.is_empty(),
-			"{:?}",
-			parsed.diagnostics
-		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		assert_eq!(parsed.ast.statements.len(), 3);
 
 		for statement in &parsed.ast.statements {
@@ -699,5 +747,23 @@ mod tests {
 				AstValue::Block { .. } | AstValue::Scalar { .. } => {}
 			}
 		}
+	}
+
+	#[test]
+	fn parser_accepts_implicit_block_assignments_without_equals() {
+		let parsed = parse_clausewitz_content(
+			PathBuf::from("scripted_effects.txt"),
+			"some_effect {\n\t$who$ = {\n\t\ttrigger_switch = { 100 = { PREV = { add_prestige = 1 } } }\n\t}\n}\n",
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 1);
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected implicit block assignment");
+		};
+		assert_eq!(key, "some_effect");
+		let AstValue::Block { items, .. } = value else {
+			panic!("expected block value");
+		};
+		assert!(!items.is_empty());
 	}
 }
