@@ -832,6 +832,9 @@ fn extract_param_name(value: &str) -> Option<&str> {
 	let value = value.trim();
 	if !(value.starts_with('$') && value.ends_with('$') && value.len() > 2) {
 		return None;
+	if value.contains('@') || value.contains("event_target:") || value.contains("trigger_value:") {
+		return None;
+	}
 	}
 	let param = &value[1..value.len() - 1];
 	if param
@@ -854,7 +857,7 @@ fn normalized_static_symbol(value: &str) -> Option<String> {
 	}
 	if value
 		.chars()
-		.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '@' | ':'))
+		.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | ':'))
 	{
 		Some(value.to_string())
 	} else {

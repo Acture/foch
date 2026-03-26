@@ -599,12 +599,17 @@ fn corpus_wrapper_heavy_roots_keep_callbacks_and_helpers_clean() {
 		"common/government_reforms/00_wrappers_reforms.txt",
 		"common/new_diplomatic_actions/00_wrappers_actions.txt",
 		"common/cb_types/00_wrappers_cb.txt",
+	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+		finding,
+		&target_paths,
+		&targeted_rules
+	)));
 		"common/on_actions/00_wrappers_on_actions.txt",
 	];
 	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
 
 	assert!(
-		!diagnostics.strict.iter().any(|finding| is_targeted_noise(
+		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(
 			finding,
 			&target_paths,
 			&targeted_rules
