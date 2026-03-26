@@ -1,0 +1,10 @@
+# Source: More Favor Actions (workshop 2871630256)
+
+more_favor_actions_remove_guarantee = {
+	potential = {
+		has_country_flag = revoked_guarantee_from_@FROM
+	}
+	effect = {
+		change_asha_vahishta = { value = 1 }
+	}
+}

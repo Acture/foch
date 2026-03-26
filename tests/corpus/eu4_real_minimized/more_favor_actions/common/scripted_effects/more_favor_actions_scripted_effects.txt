@@ -1,0 +1,829 @@
+# Source: More Favor Actions (workshop 2871630256)
+
+change_asha_vahishta = {
+	if = {
+		limit = { has_government_mechanic = the_three_royal_fires_mechanic }
+		[[custom_tooltip]custom_tooltip = $custom_tooltip$]
+		add_government_power = {
+			mechanic_type = the_three_royal_fires_mechanic
+			power_type = asha_vahishta
+			value = $value$
+		}
+	}
+}
+
+more_favor_actions_create_general_based_on_army_tradition_of {
+	$who$ = {
+		trigger_switch = {
+			on_trigger = army_tradition
+			100 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 100
+					}
+				}
+			}
+			99 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 99
+					}
+				}
+			}
+			98 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 98
+					}
+				}
+			}
+			97 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 97
+					}
+				}
+			}
+			96 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 96
+					}
+				}
+			}
+			95 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 95
+					}
+				}
+			}
+			94 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 94
+					}
+				}
+			}
+			93 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 93
+					}
+				}
+			}
+			92 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 92
+					}
+				}
+			}
+			91 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 91
+					}
+				}
+			}
+			90 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 90
+					}
+				}
+			}
+			89 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 89
+					}
+				}
+			}
+			88 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 88
+					}
+				}
+			}
+			87 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 87
+					}
+				}
+			}
+			86 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 86
+					}
+				}
+			}
+			85 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 85
+					}
+				}
+			}
+			84 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 84
+					}
+				}
+			}
+			83 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 83
+					}
+				}
+			}
+			82 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 82
+					}
+				}
+			}
+			81 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 81
+					}
+				}
+			}
+			80 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 80
+					}
+				}
+			}
+			79 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 79
+					}
+				}
+			}
+			78 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 78
+					}
+				}
+			}
+			77 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 77
+					}
+				}
+			}
+			76 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 76
+					}
+				}
+			}
+			75 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 75
+					}
+				}
+			}
+			74 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 74
+					}
+				}
+			}
+			73 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 73
+					}
+				}
+			}
+			72 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 72
+					}
+				}
+			}
+			71 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 71
+					}
+				}
+			}
+			70 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 70
+					}
+				}
+			}
+			69 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 69
+					}
+				}
+			}
+			68 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 68
+					}
+				}
+			}
+			67 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 67
+					}
+				}
+			}
+			66 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 66
+					}
+				}
+			}
+			65 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 65
+					}
+				}
+			}
+			64 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 64
+					}
+				}
+			}
+			63 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 63
+					}
+				}
+			}
+			62 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 62
+					}
+				}
+			}
+			61 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 61
+					}
+				}
+			}
+			60 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 60
+					}
+				}
+			}
+			59 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 59
+					}
+				}
+			}
+			58 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 58
+					}
+				}
+			}
+			57 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 57
+					}
+				}
+			}
+			56 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 56
+					}
+				}
+			}
+			55 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 55
+					}
+				}
+			}
+			54 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 54
+					}
+				}
+			}
+			53 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 53
+					}
+				}
+			}
+			52 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 52
+					}
+				}
+			}
+			51 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 51
+					}
+				}
+			}
+			50 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 50
+					}
+				}
+			}
+			49 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 49
+					}
+				}
+			}
+			48 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 48
+					}
+				}
+			}
+			47 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 47
+					}
+				}
+			}
+			46 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 46
+					}
+				}
+			}
+			45 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 45
+					}
+				}
+			}
+			44 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 44
+					}
+				}
+			}
+			43 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 43
+					}
+				}
+			}
+			42 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 42
+					}
+				}
+			}
+			41 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 41
+					}
+				}
+			}
+			40 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 40
+					}
+				}
+			}
+			39 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 39
+					}
+				}
+			}
+			38 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 38
+					}
+				}
+			}
+			37 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 37
+					}
+				}
+			}
+			36 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 36
+					}
+				}
+			}
+			35 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 35
+					}
+				}
+			}
+			34 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 34
+					}
+				}
+			}
+			33 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 33
+					}
+				}
+			}
+			32 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 32
+					}
+				}
+			}
+			31 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 31
+					}
+				}
+			}
+			30 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 30
+					}
+				}
+			}
+			29 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 29
+					}
+				}
+			}
+			28 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 28
+					}
+				}
+			}
+			27 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 27
+					}
+				}
+			}
+			26 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 26
+					}
+				}
+			}
+			25 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 25
+					}
+				}
+			}
+			24 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 24
+					}
+				}
+			}
+			23 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 23
+					}
+				}
+			}
+			22 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 22
+					}
+				}
+			}
+			21 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 21
+					}
+				}
+			}
+			20 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 20
+					}
+				}
+			}
+			19 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 19
+					}
+				}
+			}
+			18 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 18
+					}
+				}
+			}
+			17 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 17
+					}
+				}
+			}
+			16 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 16
+					}
+				}
+			}
+			15 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 15
+					}
+				}
+			}
+			14 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 14
+					}
+				}
+			}
+			13 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 13
+					}
+				}
+			}
+			12 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 12
+					}
+				}
+			}
+			11 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 11
+					}
+				}
+			}
+			10 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 10
+					}
+				}
+			}
+			9 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 9
+					}
+				}
+			}
+			8 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 8
+					}
+				}
+			}
+			7 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 7
+					}
+				}
+			}
+			6 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 6
+					}
+				}
+			}
+			5 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 5
+					}
+				}
+			}
+			4 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 4
+					}
+				}
+			}
+			3 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 3
+					}
+				}
+			}
+			2 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 2
+					}
+				}
+			}
+			1 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 1
+					}
+				}
+			}
+			0 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 0
+					}
+				}
+			}
+		}
+	}
+}
