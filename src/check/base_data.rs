@@ -399,6 +399,7 @@ impl BaseAnalysisSnapshot {
 					inferred_this_mask: item.inferred_this_mask,
 					required_params: item.required_params.clone(),
 					param_contract: item.param_contract.clone(),
+					scope_param_names: item.scope_param_names.clone(),
 				})
 				.collect(),
 			symbol_references: index
@@ -565,6 +566,7 @@ impl BaseAnalysisSnapshot {
 					},
 					required_params: item.required_params.clone(),
 					param_contract: item.param_contract.clone(),
+					scope_param_names: item.scope_param_names.clone(),
 				})
 				.collect(),
 			references: self
@@ -768,6 +770,8 @@ pub struct BaseSymbolDefinition {
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub param_contract: Option<crate::check::model::ParamContract>,
+	#[serde(default)]
+	pub scope_param_names: Vec<String>,
 }
 
 fn scope_type_mask(scope_type: ScopeType) -> u8 {
@@ -1545,8 +1549,7 @@ pub fn install_snapshot_from_release(
 	if snapshot.analysis_rules_version != asset.analysis_rules_version {
 		return Err(format!(
 			"下载的基础数据分析规则版本不匹配: manifest {}, snapshot {}",
-			asset.analysis_rules_version,
-			snapshot.analysis_rules_version
+			asset.analysis_rules_version, snapshot.analysis_rules_version
 		));
 	}
 
@@ -2124,7 +2127,11 @@ mod tests {
 			declared_this_type: ScopeType::Country,
 			inferred_this_type: ScopeType::Country,
 			inferred_this_mask: 0b01,
-			required_params: vec!["age".to_string(), "name".to_string(), "duration".to_string()],
+			required_params: vec![
+				"age".to_string(),
+				"name".to_string(),
+				"duration".to_string(),
+			],
 			param_contract: Some(ParamContract {
 				required_all: vec![
 					"age".to_string(),
@@ -2135,6 +2142,7 @@ mod tests {
 				one_of_groups: Vec::new(),
 				conditional_required: Vec::new(),
 			}),
+			scope_param_names: Vec::new(),
 		});
 		BaseAnalysisSnapshot::from_semantic_index(
 			&Game::EuropaUniversalis4,
@@ -2158,7 +2166,10 @@ mod tests {
 		assert_eq!(contract.required_all, vec!["age", "name", "duration"]);
 		assert_eq!(contract.optional, vec!["else"]);
 		assert_eq!(
-			decoded.symbol_definitions.first().map(|definition| definition.inferred_this_mask),
+			decoded
+				.symbol_definitions
+				.first()
+				.map(|definition| definition.inferred_this_mask),
 			Some(0b01)
 		);
 
@@ -2199,9 +2210,11 @@ mod tests {
 			asset_name: None,
 			sha256: None,
 		};
-		let installed =
-			write_installed_snapshot(&snapshot, &metadata, &encoded.bytes).expect("install snapshot");
-		let metadata_path = installed.install_dir.join(super::INSTALLED_METADATA_FILE_NAME);
+		let installed = write_installed_snapshot(&snapshot, &metadata, &encoded.bytes)
+			.expect("install snapshot");
+		let metadata_path = installed
+			.install_dir
+			.join(super::INSTALLED_METADATA_FILE_NAME);
 		let old_metadata = InstalledBaseDataMetadata {
 			schema_version: BASE_DATA_SCHEMA_VERSION - 1,
 			..metadata
