@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import subprocess
+import sys
 import tempfile
+import threading
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 FOCUS_RULES: tuple[str, ...] = ("A001", "S002", "S003", "S004", "A004")
 SECONDARY_RULES: tuple[str, ...] = ("A005",)
@@ -83,7 +86,23 @@ def enabled_mod_ids(playset: dict[str, Any]) -> set[str]:
 	return mod_ids
 
 
-def run_check(playset_path: Path, output_path: Path) -> subprocess.CompletedProcess[str]:
+def forward_stream(
+	stream: TextIO,
+	sink: TextIO,
+	chunks: list[str],
+) -> None:
+	try:
+		for line in iter(stream.readline, ""):
+			sink.write(line)
+			sink.flush()
+			chunks.append(line)
+	finally:
+		stream.close()
+
+
+def run_check(
+	playset_path: Path, output_path: Path
+) -> subprocess.CompletedProcess[str]:
 	command: list[str] = [
 		"cargo",
 		"run",
@@ -96,12 +115,55 @@ def run_check(playset_path: Path, output_path: Path) -> subprocess.CompletedProc
 		"--output",
 		str(output_path),
 	]
-	return subprocess.run(
+	process = subprocess.Popen(
 		command,
 		cwd=repo_root(),
 		text=True,
-		capture_output=True,
-		check=False,
+		stdout=subprocess.PIPE,
+		stderr=subprocess.PIPE,
+		bufsize=1,
+	)
+	stdout_pipe = process.stdout
+	stderr_pipe = process.stderr
+	assert stdout_pipe is not None
+	assert stderr_pipe is not None
+
+	stdout_chunks: list[str] = []
+	stderr_chunks: list[str] = []
+	threads: list[threading.Thread] = [
+		threading.Thread(
+			target=forward_stream,
+			args=(stdout_pipe, sys.stdout, stdout_chunks),
+			daemon=True,
+		),
+		threading.Thread(
+			target=forward_stream,
+			args=(stderr_pipe, sys.stderr, stderr_chunks),
+			daemon=True,
+		),
+	]
+	for thread in threads:
+		thread.start()
+
+	interrupted = False
+	try:
+		returncode = process.wait()
+	except KeyboardInterrupt:
+		interrupted = True
+		process.send_signal(signal.SIGINT)
+		returncode = process.wait()
+	finally:
+		for thread in threads:
+			thread.join()
+
+	if interrupted:
+		raise KeyboardInterrupt
+
+	return subprocess.CompletedProcess(
+		command,
+		returncode,
+		"".join(stdout_chunks),
+		"".join(stderr_chunks),
 	)
 
 
@@ -116,7 +178,9 @@ def summarize_findings(
 
 	by_rule: Counter[str] = Counter(finding["rule_id"] for finding in target_findings)
 	by_path: dict[str, Counter[str]] = defaultdict(Counter)
-	examples: dict[str, list[dict[str, Any]]] = {rule: [] for rule in (*FOCUS_RULES, *SECONDARY_RULES)}
+	examples: dict[str, list[dict[str, Any]]] = {
+		rule: [] for rule in (*FOCUS_RULES, *SECONDARY_RULES)
+	}
 
 	for finding in target_findings:
 		rule_id: str = str(finding["rule_id"])
@@ -145,19 +209,74 @@ def summarize_findings(
 		"target_mod_ids": sorted(target_mod_ids),
 		"focus_rules": list(FOCUS_RULES),
 		"secondary_rules": list(SECONDARY_RULES),
+		"fatal_errors": list(data.get("fatal_errors", [])),
 		"global_counts": {
 			"fatal_errors": len(data.get("fatal_errors", [])),
 			"strict_findings": len(data.get("strict_findings", [])),
 			"advisory_findings": len(data.get("advisory_findings", [])),
 		},
-		"target_counts": {rule: by_rule.get(rule, 0) for rule in (*FOCUS_RULES, *SECONDARY_RULES)},
+		"target_counts": {
+			rule: by_rule.get(rule, 0) for rule in (*FOCUS_RULES, *SECONDARY_RULES)
+		},
 		"focus_by_path": focus_by_path,
 		"examples": examples,
 	}
 
 
+def build_failure_summary(
+	target_mod_ids: set[str],
+	raw_output_path: Path,
+	error: str,
+) -> dict[str, Any]:
+	return {
+		"target_mod_ids": sorted(target_mod_ids),
+		"focus_rules": list(FOCUS_RULES),
+		"secondary_rules": list(SECONDARY_RULES),
+		"global_counts": {
+			"fatal_errors": 0,
+			"strict_findings": 0,
+			"advisory_findings": 0,
+		},
+		"target_counts": {rule: 0 for rule in (*FOCUS_RULES, *SECONDARY_RULES)},
+		"focus_by_path": [],
+		"examples": {rule: [] for rule in (*FOCUS_RULES, *SECONDARY_RULES)},
+		"error": error,
+		"raw_output_path": str(raw_output_path),
+	}
+
+
 def render_text_summary(summary: dict[str, Any]) -> str:
 	lines: list[str] = []
+	if summary.get("error"):
+		lines.append("== check failed ==")
+		lines.append(f"exit_code: {summary.get('check_exit_code', '<unknown>')}")
+		lines.append(f"error: {summary['error']}")
+		lines.append(f"raw_output_path: {summary.get('raw_output_path', '<unknown>')}")
+		if summary.get("stdout"):
+			lines.append("")
+			lines.append("== stdout ==")
+			lines.append(str(summary["stdout"]).rstrip())
+		if summary.get("stderr"):
+			lines.append("")
+			lines.append("== stderr ==")
+			lines.append(str(summary["stderr"]).rstrip())
+		return "\n".join(lines).rstrip() + "\n"
+
+	if (
+		summary.get("check_exit_code", 0) != 0
+		or summary["global_counts"].get("fatal_errors", 0) > 0
+	):
+		lines.append("== check status ==")
+		lines.append(f"exit_code: {summary.get('check_exit_code', 0)}")
+		for key in ("fatal_errors", "strict_findings", "advisory_findings"):
+			lines.append(f"{key}: {summary['global_counts'].get(key, 0)}")
+		if summary.get("fatal_errors"):
+			lines.append("")
+			lines.append("== fatal errors ==")
+			for error in summary["fatal_errors"]:
+				lines.append(str(error))
+			lines.append("")
+
 	lines.append("== target counts ==")
 	for rule in (*FOCUS_RULES, *SECONDARY_RULES):
 		lines.append(f"{rule}: {summary['target_counts'].get(rule, 0)}")
@@ -211,9 +330,28 @@ def main() -> int:
 	summary_text_path: Path = out_dir / f"{playset_slug}-summary.txt"
 
 	try:
-		result: subprocess.CompletedProcess[str] = run_check(temp_playset_path, raw_output_path)
-		data: dict[str, Any] = json.loads(raw_output_path.read_text(encoding="utf-8"))
-		summary: dict[str, Any] = summarize_findings(data, target_mod_ids)
+		result: subprocess.CompletedProcess[str] = run_check(
+			temp_playset_path, raw_output_path
+		)
+		if raw_output_path.is_file():
+			try:
+				data: dict[str, Any] = json.loads(
+					raw_output_path.read_text(encoding="utf-8")
+				)
+			except json.JSONDecodeError as err:
+				summary = build_failure_summary(
+					target_mod_ids,
+					raw_output_path,
+					f"check output is not valid JSON: {err}",
+				)
+			else:
+				summary = summarize_findings(data, target_mod_ids)
+		else:
+			summary = build_failure_summary(
+				target_mod_ids,
+				raw_output_path,
+				"check did not produce an output file",
+			)
 		summary["playset_path"] = str(args.playset)
 		summary["selected_mod_filters"] = sorted(selected)
 		summary["check_exit_code"] = result.returncode
@@ -228,6 +366,9 @@ def main() -> int:
 
 		print(summary_text_path)
 		return result.returncode
+	except KeyboardInterrupt:
+		print("Interrupted.", file=sys.stderr)
+		return 130
 	finally:
 		temp_playset_path.unlink(missing_ok=True)
 
