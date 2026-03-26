@@ -47,6 +47,36 @@ pub(crate) fn registered_param_contract(local_name: &str) -> Option<ParamContrac
 			one_of_groups: Vec::new(),
 			conditional_required: Vec::new(),
 		}),
+		"change_asha_vahishta" => Some(ParamContract {
+			required_all: vec!["value".to_string()],
+			optional: vec!["custom_tooltip".to_string()],
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
+		"se_md_refund_splendor" => Some(ParamContract {
+			required_all: vec!["flagName".to_string(), "flagCategory".to_string()],
+			optional: Vec::new(),
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
+		"se_md_refund_splendor_bonus_progress" | "se_md_refund_splendor_bonus_complete" => {
+			Some(ParamContract {
+				required_all: vec!["flagName".to_string(), "bonusName".to_string()],
+				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			})
+		}
+		"se_md_add_or_upgrade_bonus" => Some(ParamContract {
+			required_all: vec![
+				"abilityName".to_string(),
+				"bonusName".to_string(),
+				"flagName".to_string(),
+			],
+			optional: vec!["showTooltip".to_string()],
+			one_of_groups: Vec::new(),
+			conditional_required: Vec::new(),
+		}),
 		"country_event_with_effect_insight" => Some(ParamContract {
 			required_all: vec!["id".to_string(), "effect".to_string()],
 			optional: vec![
@@ -183,7 +213,10 @@ pub(crate) fn evaluate_param_contract(
 	}
 
 	for group in &contract.one_of_groups {
-		if group.iter().any(|candidate| provided.contains(candidate.as_str())) {
+		if group
+			.iter()
+			.any(|candidate| provided.contains(candidate.as_str()))
+		{
 			continue;
 		}
 		messages.push(format!(
@@ -244,6 +277,7 @@ mod tests {
 				one_of_groups: Vec::new(),
 				conditional_required: Vec::new(),
 			}),
+			scope_param_names: Vec::new(),
 		});
 
 		apply_registered_param_contracts(&mut index);
