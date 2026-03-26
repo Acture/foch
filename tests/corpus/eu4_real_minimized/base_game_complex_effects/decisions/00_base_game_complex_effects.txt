@@ -1,0 +1,25 @@
+# Source: EU4 1.37.5.0 decisions/Timurid_Decisions.txt
+TIM_revoke_the_soyurghal = {
+	effect = {
+		custom_tooltip = " "
+		complex_dynamic_effect_without_alternative = {
+			first_custom_tooltip = TIM_crown_land_share
+			first_limit = "
+				crown_land_share = 40
+			"
+			first_effect = "
+				add_years_of_income = 2
+			"
+			second_custom_tooltip = TIM_seize_land_and_development
+			second_limit = "
+				num_of_provinces_developed = { amount = 10 }
+			"
+			second_effect = "
+				change_estate_land_share = {
+					estate = all
+					share = -15
+				}
+			"
+		}
+	}
+}

@@ -1,173 +1,297 @@
 use crate::check::model::{ConditionalParamRule, ParamContract, SemanticIndex, SymbolKind};
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
+use std::sync::OnceLock;
 
-pub(crate) fn registered_param_contract(local_name: &str) -> Option<ParamContract> {
-	match local_name {
-		"ME_give_claims" => Some(ParamContract {
-			required_all: Vec::new(),
-			optional: Vec::new(),
-			one_of_groups: vec![vec![
-				"area".to_string(),
-				"region".to_string(),
-				"province".to_string(),
-				"id".to_string(),
-			]],
-			conditional_required: Vec::new(),
-		}),
-		"add_prestige_or_monarch_power" | "add_army_tradition_or_mil_power" => {
-			Some(ParamContract {
+type ParamContractRegistry = BTreeMap<&'static str, ParamContract>;
+
+fn complex_dynamic_effect_optional_params(include_combined_effect: bool) -> Vec<String> {
+	let mut optional = Vec::new();
+	for prefix in [
+		"second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "nineth", "tenth",
+	] {
+		for suffix in ["custom_tooltip", "limit", "effect"] {
+			optional.push(format!("{prefix}_{suffix}"));
+		}
+	}
+	for suffix in ["custom_tooltip", "limit", "effect"] {
+		optional.push(format!("eigth_{suffix}"));
+	}
+	if include_combined_effect {
+		optional.push("combined_effect".to_string());
+	}
+	optional
+}
+
+fn complex_dynamic_effect_contract(include_combined_effect: bool) -> ParamContract {
+	ParamContract {
+		required_all: vec![
+			"first_custom_tooltip".to_string(),
+			"first_limit".to_string(),
+			"first_effect".to_string(),
+		],
+		optional: complex_dynamic_effect_optional_params(include_combined_effect),
+		one_of_groups: Vec::new(),
+		conditional_required: Vec::new(),
+	}
+}
+
+fn registered_param_contract_registry() -> &'static ParamContractRegistry {
+	static REGISTRY: OnceLock<ParamContractRegistry> = OnceLock::new();
+	REGISTRY.get_or_init(|| {
+		let mut registry = ParamContractRegistry::new();
+		registry.insert(
+			"complex_dynamic_effect",
+			complex_dynamic_effect_contract(false),
+		);
+		registry.insert(
+			"complex_dynamic_effect_without_alternative",
+			complex_dynamic_effect_contract(true),
+		);
+		registry.insert(
+			"ME_give_claims",
+			ParamContract {
 				required_all: Vec::new(),
 				optional: Vec::new(),
-				one_of_groups: vec![vec!["amount".to_string(), "value".to_string()]],
+				one_of_groups: vec![vec![
+					"area".to_string(),
+					"region".to_string(),
+					"province".to_string(),
+					"id".to_string(),
+				]],
 				conditional_required: Vec::new(),
-			})
+			},
+		);
+		for local_name in [
+			"add_prestige_or_monarch_power",
+			"add_army_tradition_or_mil_power",
+		] {
+			registry.insert(
+				local_name,
+				ParamContract {
+					required_all: Vec::new(),
+					optional: Vec::new(),
+					one_of_groups: vec![vec!["amount".to_string(), "value".to_string()]],
+					conditional_required: Vec::new(),
+				},
+			);
 		}
-		"country_event_with_option_insight" => Some(ParamContract {
-			required_all: vec!["id".to_string()],
-			optional: vec![
-				"days".to_string(),
-				"random".to_string(),
-				"tooltip".to_string(),
-				"option_1".to_string(),
-				"option_2".to_string(),
-				"option_3".to_string(),
-				"option_4".to_string(),
-				"option_5".to_string(),
-			],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"add_age_modifier" => Some(ParamContract {
-			required_all: vec![
-				"age".to_string(),
-				"name".to_string(),
-				"duration".to_string(),
-			],
-			optional: vec!["else".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"change_asha_vahishta" => Some(ParamContract {
-			required_all: vec!["value".to_string()],
-			optional: vec!["custom_tooltip".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"se_md_refund_splendor" => Some(ParamContract {
-			required_all: vec!["flagName".to_string(), "flagCategory".to_string()],
-			optional: Vec::new(),
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"se_md_refund_splendor_bonus_progress" | "se_md_refund_splendor_bonus_complete" => {
-			Some(ParamContract {
-				required_all: vec!["flagName".to_string(), "bonusName".to_string()],
+		registry.insert(
+			"country_event_with_option_insight",
+			ParamContract {
+				required_all: vec!["id".to_string()],
+				optional: vec![
+					"days".to_string(),
+					"random".to_string(),
+					"tooltip".to_string(),
+					"option_1".to_string(),
+					"option_2".to_string(),
+					"option_3".to_string(),
+					"option_4".to_string(),
+					"option_5".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"add_age_modifier",
+			ParamContract {
+				required_all: vec![
+					"age".to_string(),
+					"name".to_string(),
+					"duration".to_string(),
+				],
+				optional: vec!["else".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"change_asha_vahishta",
+			ParamContract {
+				required_all: vec!["value".to_string()],
+				optional: vec!["custom_tooltip".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"se_md_refund_splendor",
+			ParamContract {
+				required_all: vec!["flagName".to_string(), "flagCategory".to_string()],
 				optional: Vec::new(),
 				one_of_groups: Vec::new(),
 				conditional_required: Vec::new(),
-			})
+			},
+		);
+		for local_name in [
+			"se_md_refund_splendor_bonus_progress",
+			"se_md_refund_splendor_bonus_complete",
+		] {
+			registry.insert(
+				local_name,
+				ParamContract {
+					required_all: vec!["flagName".to_string(), "bonusName".to_string()],
+					optional: Vec::new(),
+					one_of_groups: Vec::new(),
+					conditional_required: Vec::new(),
+				},
+			);
 		}
-		"se_md_add_or_upgrade_bonus" => Some(ParamContract {
-			required_all: vec![
-				"abilityName".to_string(),
-				"bonusName".to_string(),
-				"flagName".to_string(),
-			],
-			optional: vec!["showTooltip".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"country_event_with_effect_insight" => Some(ParamContract {
-			required_all: vec!["id".to_string(), "effect".to_string()],
-			optional: vec![
-				"days".to_string(),
-				"random".to_string(),
-				"tooltip".to_string(),
-			],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"ME_distribute_development" => Some(ParamContract {
-			required_all: vec!["type".to_string(), "amount".to_string()],
-			optional: vec!["limit".to_string(), "tooltip".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"pick_best_provinces" => Some(ParamContract {
-			required_all: vec![
-				"scale".to_string(),
-				"event_target_name".to_string(),
-				"global_trigger".to_string(),
-			],
-			optional: vec![
-				"scope".to_string(),
-				"1".to_string(),
-				"2".to_string(),
-				"3".to_string(),
-				"4".to_string(),
-				"5".to_string(),
-				"10".to_string(),
-			],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"ME_overlord_effect" => Some(ParamContract {
-			required_all: vec!["effect".to_string()],
-			optional: Vec::new(),
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"create_general_with_pips" => Some(ParamContract {
-			required_all: vec!["tradition".to_string()],
-			optional: vec![
-				"add_fire".to_string(),
-				"add_shock".to_string(),
-				"add_manuever".to_string(),
-				"add_siege".to_string(),
-				"name".to_string(),
-				"culture".to_string(),
-			],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"create_or_add_center_of_trade_level" => Some(ParamContract {
-			required_all: vec!["level".to_string()],
-			optional: Vec::new(),
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"take_estate_land_share_massive" => Some(ParamContract {
-			required_all: vec!["estate".to_string()],
-			optional: vec!["amount".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"add_estate_loyalty" => Some(ParamContract {
-			required_all: vec!["estate".to_string()],
-			optional: vec!["short".to_string(), "amount".to_string()],
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"estate_loyalty" => Some(ParamContract {
-			required_all: vec!["estate".to_string(), "loyalty".to_string()],
-			optional: Vec::new(),
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"estate_influence" => Some(ParamContract {
-			required_all: vec!["estate".to_string(), "influence".to_string()],
-			optional: Vec::new(),
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		"for" => Some(ParamContract {
-			required_all: vec!["amount".to_string(), "effect".to_string()],
-			optional: Vec::new(),
-			one_of_groups: Vec::new(),
-			conditional_required: Vec::new(),
-		}),
-		_ => None,
-	}
+		registry.insert(
+			"se_md_add_or_upgrade_bonus",
+			ParamContract {
+				required_all: vec![
+					"abilityName".to_string(),
+					"bonusName".to_string(),
+					"flagName".to_string(),
+				],
+				optional: vec!["showTooltip".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"country_event_with_effect_insight",
+			ParamContract {
+				required_all: vec!["id".to_string(), "effect".to_string()],
+				optional: vec![
+					"days".to_string(),
+					"random".to_string(),
+					"tooltip".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_distribute_development",
+			ParamContract {
+				required_all: vec!["type".to_string(), "amount".to_string()],
+				optional: vec!["limit".to_string(), "tooltip".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"pick_best_provinces",
+			ParamContract {
+				required_all: vec![
+					"scale".to_string(),
+					"event_target_name".to_string(),
+					"global_trigger".to_string(),
+				],
+				optional: vec![
+					"scope".to_string(),
+					"1".to_string(),
+					"2".to_string(),
+					"3".to_string(),
+					"4".to_string(),
+					"5".to_string(),
+					"10".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_overlord_effect",
+			ParamContract {
+				required_all: vec!["effect".to_string()],
+				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"create_general_with_pips",
+			ParamContract {
+				required_all: vec!["tradition".to_string()],
+				optional: vec![
+					"add_fire".to_string(),
+					"add_shock".to_string(),
+					"add_manuever".to_string(),
+					"add_siege".to_string(),
+					"name".to_string(),
+					"culture".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"create_or_add_center_of_trade_level",
+			ParamContract {
+				required_all: vec!["level".to_string()],
+				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"take_estate_land_share_massive",
+			ParamContract {
+				required_all: vec!["estate".to_string()],
+				optional: vec!["amount".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"add_estate_loyalty",
+			ParamContract {
+				required_all: vec!["estate".to_string()],
+				optional: vec!["short".to_string(), "amount".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"estate_loyalty",
+			ParamContract {
+				required_all: vec!["estate".to_string(), "loyalty".to_string()],
+				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"estate_influence",
+			ParamContract {
+				required_all: vec!["estate".to_string(), "influence".to_string()],
+				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"for",
+			ParamContract {
+				required_all: vec!["amount".to_string(), "effect".to_string()],
+				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry
+	})
+}
+
+pub(crate) fn registered_param_contracts_hash() -> &'static str {
+	static HASH: OnceLock<String> = OnceLock::new();
+	HASH.get_or_init(|| {
+		let encoded = serde_json::to_vec(registered_param_contract_registry())
+			.expect("serialize registered param contract registry");
+		let digest = Sha256::digest(&encoded);
+		format!("{digest:x}")[..16].to_string()
+	})
+}
+
+pub(crate) fn registered_param_contract(local_name: &str) -> Option<ParamContract> {
+	registered_param_contract_registry()
+		.get(local_name)
+		.cloned()
 }
 
 pub(crate) fn apply_registered_param_contracts(index: &mut SemanticIndex) {

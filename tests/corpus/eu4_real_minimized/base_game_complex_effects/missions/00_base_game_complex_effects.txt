@@ -1,0 +1,28 @@
+# Source: EU4 1.37.5.0 missions/DOM_Britain_Missions.txt
+eng_handle_the_reformation = {
+	effect = {
+		complex_dynamic_effect = {
+			first_custom_tooltip = eng_handle_the_reformation_at
+			first_limit = "has_country_modifier = counter_reformation"
+			first_effect = "
+			add_papal_influence = 50
+			add_country_modifier = {
+				name = eng_loyalty_to_catholocisim
+				duration = 9125
+			}
+			"
+			second_custom_tooltip = eng_handle_the_reformation_bt
+			second_limit = "religion = protestant"
+			second_effect = "
+			if = {
+				limit = { has_dlc = \\\"Common Sense\\\" }
+				add_church_power = 100
+			}
+			add_country_modifier = {
+				name = eng_own_church_creation
+				duration = 9125
+			}
+			"
+		}
+	}
+}

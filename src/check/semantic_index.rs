@@ -1723,14 +1723,14 @@ fn collect_provided_params(local_name: &str, items: &[AstStatement]) -> Provided
 				.chars()
 				.all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
 				|| contract_names.contains(key.as_str());
-			let is_named_scalar_binding = !key.is_empty()
+			let is_named_param_binding = !key.is_empty()
 				&& key
 					.chars()
 					.all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
-			if is_explicit_param_name {
+			if is_explicit_param_name || is_named_param_binding {
 				params.names.push(key.clone());
 			}
-			if is_named_scalar_binding && let Some(value) = scalar_text(value) {
+			if is_named_param_binding && let Some(value) = scalar_text(value) {
 				params.bindings.push(ParamBinding {
 					name: key.clone(),
 					value,
@@ -3893,6 +3893,294 @@ country_event = {
 				"{name} should satisfy its explicit param contract"
 			);
 		}
+	}
+
+	#[test]
+	fn complex_dynamic_effect_contracts_keep_optional_slots_optional() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(mod_root.join("missions")).expect("create missions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("contracts.txt"),
+			r#"
+complex_dynamic_effect = {
+	custom_tooltip = $first_custom_tooltip$
+	if = {
+		limit = { $first_limit$ }
+	}
+	tooltip = {
+		$first_effect$
+	}
+	[[third_custom_tooltip]
+	custom_tooltip = $third_custom_tooltip$
+	if = {
+		limit = { $third_limit$ }
+	}
+	tooltip = {
+		$third_effect$
+	}
+	]
+	hidden_effect = {
+		[[eigth_custom_tooltip]
+		else_if = {
+			limit = { $eigth_limit$ }
+			$eigth_effect$
+		}
+		]
+	}
+}
+
+complex_dynamic_effect_without_alternative = {
+	custom_tooltip = $first_custom_tooltip$
+	if = {
+		limit = { $first_limit$ }
+	}
+	tooltip = {
+		$first_effect$
+	}
+	[[second_custom_tooltip]
+	custom_tooltip = $second_custom_tooltip$
+	if = {
+		limit = { $second_limit$ }
+	}
+	tooltip = {
+		$second_effect$
+	}
+	]
+	[[third_custom_tooltip]
+	custom_tooltip = $third_custom_tooltip$
+	if = {
+		limit = { $third_limit$ }
+	}
+	tooltip = {
+		$third_effect$
+	}
+	]
+	[[combined_effect]
+	if = {
+		limit = {
+			$first_limit$
+			$second_limit$
+			$third_limit$
+			$eigth_limit$
+		}
+		$combined_effect$
+	}
+	]
+	hidden_effect = {
+		[[eigth_custom_tooltip]
+		if = {
+			limit = { $eigth_limit$ }
+			$eigth_effect$
+		}
+		]
+	}
+}
+"#,
+		)
+		.expect("write scripted effects");
+		fs::write(
+			mod_root.join("missions").join("contracts.txt"),
+			r#"
+test_mission = {
+	icon = mission_conquer_1_province
+	position = 1
+	effect = {
+		complex_dynamic_effect = {
+			first_custom_tooltip = TEST_DYNAMIC_EFFECT_1
+			first_limit = "
+				always = yes
+			"
+			first_effect = "
+				add_prestige = 5
+			"
+		}
+		complex_dynamic_effect = {
+			first_custom_tooltip = TEST_DYNAMIC_EFFECT_2
+			first_limit = "
+				always = yes
+			"
+			first_effect = "
+				add_prestige = 10
+			"
+			third_custom_tooltip = TEST_DYNAMIC_EFFECT_3
+			third_limit = "
+				always = yes
+			"
+			third_effect = "
+				add_stability = 1
+			"
+		}
+		complex_dynamic_effect_without_alternative = {
+			first_custom_tooltip = TEST_DYNAMIC_EFFECT_WITHOUT_ALT_1
+			first_limit = "
+				always = yes
+			"
+			first_effect = "
+				add_legitimacy = 10
+			"
+		}
+		complex_dynamic_effect_without_alternative = {
+			first_custom_tooltip = TEST_DYNAMIC_EFFECT_WITHOUT_ALT_2
+			first_limit = "
+				always = yes
+			"
+			first_effect = "
+				add_meritocracy = 5
+			"
+			third_custom_tooltip = TEST_DYNAMIC_EFFECT_WITHOUT_ALT_3
+			third_limit = "
+				always = yes
+			"
+			third_effect = "
+				add_treasury = 50
+			"
+		}
+	}
+}
+"#,
+		)
+		.expect("write missions");
+
+		let parsed = [
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("contracts.txt"),
+			)
+			.expect("parsed scripted effects"),
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root.join("missions").join("contracts.txt"),
+			)
+			.expect("parsed missions"),
+		];
+		let index = build_semantic_index(&parsed);
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+
+		for name in [
+			"complex_dynamic_effect",
+			"complex_dynamic_effect_without_alternative",
+		] {
+			assert!(
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S004" && finding.message.contains(name) }),
+				"{name} should treat later dynamic slots as optional"
+			);
+		}
+	}
+
+	#[test]
+	fn scripted_effect_named_param_bindings_satisfy_required_params() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(mod_root.join("common").join("buildings")).expect("create buildings");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("effects.txt"),
+			r#"
+update_improved_military_buildings_modifier = {
+	if = {
+		tooltip = {
+			add_province_modifier = {
+				name = wei_suo_system_reform_$building$_modifier
+				duration = -1
+			}
+		}
+	}
+}
+"#,
+		)
+		.expect("write scripted effects");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("buildings")
+				.join("buildings.txt"),
+			r#"
+barracks = {
+	on_built = {
+		update_improved_military_buildings_modifier = {
+			building = barracks
+		}
+	}
+}
+"#,
+		)
+		.expect("write buildings");
+
+		let parsed = [
+			parse_script_file(
+				"1011",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("effects.txt"),
+			)
+			.expect("parsed scripted effects"),
+			parse_script_file(
+				"1011",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("buildings")
+					.join("buildings.txt"),
+			)
+			.expect("parsed buildings"),
+		];
+		let index = build_semantic_index(&parsed);
+		let reference = index
+			.references
+			.iter()
+			.find(|reference| {
+				reference.kind == SymbolKind::ScriptedEffect
+					&& reference.name == "update_improved_military_buildings_modifier"
+			})
+			.expect("scripted effect reference");
+		assert!(
+			reference
+				.provided_params
+				.iter()
+				.any(|param| param == "building"),
+			"named building binding should count as a provided param"
+		);
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S004"
+					&& finding
+						.message
+						.contains("update_improved_military_buildings_modifier")
+			}),
+			"named building binding should satisfy $building$"
+		);
 	}
 
 	#[test]
