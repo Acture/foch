@@ -1,0 +1,22 @@
+# Source: Ages Reformed (workshop 2896451151)
+
+age_of_discovery = {
+	test_bonus = {
+		effect = {
+			se_md_add_or_upgrade_bonus = {
+				bonusName = spread_the_faith
+				flagName = ageability_spread_the_faith
+				abilityName = spread_the_faith
+			}
+		}
+	}
+
+	test_refund = {
+		effect = {
+			se_md_refund_splendor = {
+				flagName = ageability_justified_wars
+				flagCategory = warfare
+			}
+		}
+	}
+}

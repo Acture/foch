@@ -1,0 +1,15 @@
+# Source: Ages Reformed (workshop 2896451151)
+
+tm_md_two_continents = {
+	potential = {
+		current_age = age_of_reformation
+		capital_scope = {
+			continent = africa
+		}
+	}
+	trigger = {
+		st_md_is_muslim_in_europe = yes
+		num_of_cities = 10
+	}
+	global_trade_power = 0.05
+}
