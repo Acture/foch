@@ -29,7 +29,8 @@ use walkdir::WalkDir;
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 4;
+// Bump when any serialized snapshot section becomes wire-incompatible.
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 5;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -1114,24 +1115,45 @@ pub fn load_installed_base_snapshot(
 	let metadata: InstalledBaseDataMetadata = serde_json::from_str(&metadata_raw)
 		.map_err(|err| format!("无法解析基础数据元数据 {}: {err}", metadata_path.display()))?;
 	if metadata.schema_version != BASE_DATA_SCHEMA_VERSION {
-		return Err(format!(
-			"基础数据 schema 不匹配: expected {}, found {}",
-			BASE_DATA_SCHEMA_VERSION, metadata.schema_version
-		));
-	}
-
-	let snapshot = load_snapshot_from_file(&snapshot_path)?;
-	if snapshot.schema_version != BASE_DATA_SCHEMA_VERSION {
-		return Err(format!(
-			"基础数据 snapshot schema 不匹配: expected {}, found {}",
-			BASE_DATA_SCHEMA_VERSION, snapshot.schema_version
+		return Err(stale_installed_base_data_message(
+			game_key,
+			game_version,
+			&format!(
+				"基础数据 schema 不匹配: expected {}, found {}",
+				BASE_DATA_SCHEMA_VERSION, metadata.schema_version
+			),
 		));
 	}
 	if metadata.analysis_rules_version != analysis_rules_version() {
-		return Err(format!(
-			"基础数据分析规则版本不匹配: expected {}, found {}",
-			analysis_rules_version(),
-			metadata.analysis_rules_version
+		return Err(stale_installed_base_data_message(
+			game_key,
+			game_version,
+			&format!(
+				"基础数据分析规则版本不匹配: expected {}, found {}",
+				analysis_rules_version(),
+				metadata.analysis_rules_version
+			),
+		));
+	}
+
+	let snapshot = load_snapshot_from_file(&snapshot_path).map_err(|message| {
+		stale_installed_base_data_message(
+			game_key,
+			game_version,
+			&format!(
+				"无法解析基础数据 snapshot {}: {message}",
+				snapshot_path.display()
+			),
+		)
+	})?;
+	if snapshot.schema_version != BASE_DATA_SCHEMA_VERSION {
+		return Err(stale_installed_base_data_message(
+			game_key,
+			game_version,
+			&format!(
+				"基础数据 snapshot schema 不匹配: expected {}, found {}",
+				BASE_DATA_SCHEMA_VERSION, snapshot.schema_version
+			),
 		));
 	}
 	if snapshot.game != game_key || snapshot.game_version != game_version {
@@ -1141,10 +1163,14 @@ pub fn load_installed_base_snapshot(
 		));
 	}
 	if snapshot.analysis_rules_version != analysis_rules_version() {
-		return Err(format!(
-			"基础数据 snapshot 分析规则版本不匹配: expected {}, found {}",
-			analysis_rules_version(),
-			snapshot.analysis_rules_version
+		return Err(stale_installed_base_data_message(
+			game_key,
+			game_version,
+			&format!(
+				"基础数据 snapshot 分析规则版本不匹配: expected {}, found {}",
+				analysis_rules_version(),
+				snapshot.analysis_rules_version
+			),
 		));
 	}
 
@@ -1153,6 +1179,12 @@ pub fn load_installed_base_snapshot(
 		metadata,
 		snapshot,
 	}))
+}
+
+fn stale_installed_base_data_message(game_key: &str, game_version: &str, reason: &str) -> String {
+	format!(
+		"{reason}；已安装基础数据已过期，请重新运行 `foch data install {game_key} --game-version {game_version}`，或重新执行 `foch data build {game_key} --from-game-path <game_root> --game-version {game_version} --install`"
+	)
 }
 
 pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String> {
@@ -2098,8 +2130,9 @@ fn modified_nanos(metadata: &fs::Metadata) -> u128 {
 mod tests {
 	use super::{
 		BASE_DATA_DIR_ENV, BASE_DATA_SCHEMA_VERSION, BaseAnalysisSnapshot, BaseDataSource,
-		BaseSymbolDefinition, InstalledBaseDataMetadata, decode_snapshot_from_bytes,
-		encode_snapshot_to_bytes, load_installed_base_snapshot, write_installed_snapshot,
+		BaseSymbolDefinition, INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata,
+		decode_snapshot_from_bytes, encode_snapshot_to_bytes, load_installed_base_snapshot,
+		write_installed_snapshot,
 	};
 	use crate::check::analysis_version::analysis_rules_version;
 	use crate::check::model::{
@@ -2228,6 +2261,54 @@ mod tests {
 		let err = load_installed_base_snapshot("eu4", "schema-test")
 			.expect_err("old schema should be rejected");
 		assert!(err.contains("基础数据 schema 不匹配"));
+
+		unsafe {
+			std::env::remove_var(BASE_DATA_DIR_ENV);
+		}
+	}
+
+	#[test]
+	fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot() {
+		let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+		let temp = TempDir::new().expect("temp dir");
+		unsafe {
+			std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+		}
+
+		let snapshot = sample_snapshot_with_contract();
+		let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+		let metadata = InstalledBaseDataMetadata {
+			schema_version: BASE_DATA_SCHEMA_VERSION,
+			game: snapshot.game.clone(),
+			game_version: snapshot.game_version.clone(),
+			analysis_rules_version: analysis_rules_version().to_string(),
+			generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+			source: BaseDataSource::Build,
+			asset_name: None,
+			sha256: None,
+		};
+		let installed = write_installed_snapshot(&snapshot, &metadata, &encoded.bytes)
+			.expect("install snapshot");
+		let metadata_path = installed
+			.install_dir
+			.join(super::INSTALLED_METADATA_FILE_NAME);
+		let old_metadata = InstalledBaseDataMetadata {
+			schema_version: BASE_DATA_SCHEMA_VERSION - 1,
+			..metadata
+		};
+		std::fs::write(
+			&metadata_path,
+			serde_json::to_string_pretty(&old_metadata).expect("serialize metadata"),
+		)
+		.expect("write metadata");
+		let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+		std::fs::write(&snapshot_path, b"definitely-not-a-valid-snapshot")
+			.expect("write corrupt snapshot");
+
+		let err = load_installed_base_snapshot("eu4", "schema-test")
+			.expect_err("stale metadata should short-circuit before decode");
+		assert!(err.contains("基础数据 schema 不匹配"));
+		assert!(!err.contains("无法解析基础数据 snapshot"));
 
 		unsafe {
 			std::env::remove_var(BASE_DATA_DIR_ENV);
