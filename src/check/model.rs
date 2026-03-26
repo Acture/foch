@@ -350,6 +350,8 @@ pub struct SymbolDefinition {
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub param_contract: Option<ParamContract>,
+	#[serde(default)]
+	pub scope_param_names: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

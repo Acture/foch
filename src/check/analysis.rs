@@ -3,7 +3,11 @@ use crate::check::model::{
 	SymbolKind,
 };
 use crate::check::param_contracts::evaluate_param_contract;
-use crate::check::semantic_index::resolve_scripted_effect_reference_targets;
+use crate::check::semantic_index::{
+	build_inferred_callable_scope_map, collect_inferred_callable_masks,
+	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
+	resolve_scripted_effect_reference_targets,
+};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Default)]
@@ -257,12 +261,27 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 	.collect();
 
 	let callable_scope_map = build_inferred_callable_scope_map(index);
+	let inferred_masks = collect_inferred_callable_masks(index);
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
 		if !type_sensitive_keys.contains(usage.key.as_str()) {
 			continue;
 		}
-		let scope_mask = effective_usage_scope_mask(index, &callable_scope_map, usage.scope_id);
+		let scope_mask = match usage.key.as_str() {
+			"THIS" | "ROOT" | "FROM" | "PREV" => effective_alias_scope_mask_with_overrides(
+				index,
+				&callable_scope_map,
+				&inferred_masks,
+				usage.scope_id,
+				usage.key.as_str(),
+			),
+			_ => effective_scope_mask_with_overrides(
+				index,
+				&callable_scope_map,
+				&inferred_masks,
+				usage.scope_id,
+			),
+		};
 		if scope_mask != 0 {
 			continue;
 		}
@@ -294,10 +313,15 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 	.collect();
 
 	let callable_scope_map = build_inferred_callable_scope_map(index);
+	let inferred_masks = collect_inferred_callable_masks(index);
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
-		if effective_usage_scope_mask(index, &callable_scope_map, usage.scope_id)
-			!= scope_type_mask(ScopeType::Province)
+		if effective_scope_mask_with_overrides(
+			index,
+			&callable_scope_map,
+			&inferred_masks,
+			usage.scope_id,
+		) != scope_type_mask(ScopeType::Province)
 		{
 			continue;
 		}
@@ -776,50 +800,6 @@ fn enclosing_scripted_effect_definition(
 	}
 }
 
-fn build_inferred_callable_scope_map(index: &SemanticIndex) -> HashMap<usize, usize> {
-	index
-		.definitions
-		.iter()
-		.enumerate()
-		.filter_map(|(idx, definition)| {
-			matches!(
-				definition.kind,
-				SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger
-			)
-			.then_some((definition.scope_id, idx))
-		})
-		.collect()
-}
-
-fn effective_usage_scope_mask(
-	index: &SemanticIndex,
-	scope_to_definition: &HashMap<usize, usize>,
-	mut scope_id: usize,
-) -> u8 {
-	loop {
-		let Some(scope) = index.scopes.get(scope_id) else {
-			return 0;
-		};
-		if scope.this_type != ScopeType::Unknown {
-			return scope_type_mask(scope.this_type);
-		}
-		if let Some(def_idx) = scope_to_definition.get(&scope_id) {
-			let inferred_mask = index
-				.definitions
-				.get(*def_idx)
-				.map(|definition| definition.inferred_this_mask)
-				.unwrap_or(0);
-			if inferred_mask != 0 {
-				return inferred_mask;
-			}
-		}
-		let Some(parent) = scope.parent else {
-			return 0;
-		};
-		scope_id = parent;
-	}
-}
-
 fn scope_type_mask(scope_type: ScopeType) -> u8 {
 	match scope_type {
 		ScopeType::Country => 0b01,
@@ -832,9 +812,6 @@ fn extract_param_name(value: &str) -> Option<&str> {
 	let value = value.trim();
 	if !(value.starts_with('$') && value.ends_with('$') && value.len() > 2) {
 		return None;
-	if value.contains('@') || value.contains("event_target:") || value.contains("trigger_value:") {
-		return None;
-	}
 	}
 	let param = &value[1..value.len() - 1];
 	if param
@@ -853,6 +830,9 @@ fn normalized_static_symbol(value: &str) -> Option<String> {
 		return None;
 	}
 	if value.contains('$') || value.contains('[') || value.contains(']') {
+		return None;
+	}
+	if value.contains('@') || value.contains("event_target:") || value.contains("trigger_value:") {
 		return None;
 	}
 	if value

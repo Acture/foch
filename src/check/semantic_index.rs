@@ -167,9 +167,7 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		}
 		ScriptFileKind::Ideas => module_with_tail(&parts, 2, "ideas"),
 		ScriptFileKind::GreatProjects => module_with_tail(&parts, 2, "great_projects"),
-		ScriptFileKind::GovernmentReforms => {
-			module_with_tail(&parts, 2, "government_reforms")
-		}
+		ScriptFileKind::GovernmentReforms => module_with_tail(&parts, 2, "government_reforms"),
 		ScriptFileKind::Cultures => module_with_tail(&parts, 2, "cultures"),
 		ScriptFileKind::CustomGui => module_with_tail(&parts, 2, "custom_gui"),
 		ScriptFileKind::AdvisorTypes => module_with_tail(&parts, 2, "advisortypes"),
@@ -208,8 +206,7 @@ fn collect_map_groups(files: &[ParsedScriptFile]) -> MapGroupLookup {
 				key,
 				value: AstValue::Block { .. },
 				..
-			} = stmt
-				&& !is_keyword(key)
+			} = stmt && !is_keyword(key)
 			{
 				lookup.province_sets.insert(key.clone());
 			}
@@ -560,12 +557,18 @@ fn walk_statements(
 							inferred_this_mask: 0,
 							required_params,
 							param_contract: registered_param_contract(key),
+							scope_param_names: collect_scope_param_names(items),
 						});
 					}
 
 					if definition_kind.is_none()
-						&& is_scripted_effect_call_candidate(ctx, ctx.file_kind, key, scope_id, index)
-					{
+						&& is_scripted_effect_call_candidate(
+							ctx,
+							ctx.file_kind,
+							key,
+							scope_id,
+							index,
+						) {
 						let mut provided = collect_provided_params(key, items);
 						provided.names.sort();
 						provided.names.dedup();
@@ -695,6 +698,7 @@ fn handle_event_block(
 			inferred_this_mask: scope_type_mask(this_type),
 			required_params: Vec::new(),
 			param_contract: None,
+			scope_param_names: Vec::new(),
 		});
 	}
 
@@ -961,11 +965,11 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::GreatProjects
 		| ScriptFileKind::Institutions
 		| ScriptFileKind::ProvinceTriggeredModifiers => ScopeType::Province,
+		ScriptFileKind::TriggeredModifiers => ScopeType::Country,
 		_ => ScopeType::Unknown,
 	}
 }
 
-		ScriptFileKind::TriggeredModifiers => ScopeType::Country,
 fn is_new_diplomatic_actions_container_key(key: &str) -> bool {
 	matches!(key, "static_actions")
 }
@@ -993,16 +997,16 @@ fn is_scripted_effect_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
-	if scope_kind(index, scope_id) == ScopeKind::File {
-		return false;
-	}
-	if is_province_id_selector(key) {
 	if is_template_param_placeholder_key(key) {
 		return false;
 	}
 	if is_dynamic_scope_reference_key(key) {
 		return false;
 	}
+	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
+	if is_province_id_selector(key) {
 		return false;
 	}
 	if effect_context_scope_semantics(ctx, key, scope_id, index).is_some() {
@@ -1046,16 +1050,16 @@ fn is_scripted_trigger_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
-	if scope_kind(index, scope_id) == ScopeKind::File {
-		return false;
-	}
-	if is_province_id_selector(key) || is_country_tag_selector(key) {
 	if is_template_param_placeholder_key(key) {
 		return false;
 	}
 	if is_dynamic_scope_reference_key(key) {
 		return false;
 	}
+	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
+	if is_province_id_selector(key) || is_country_tag_selector(key) {
 		return false;
 	}
 	if event_scope_type(key).is_some() {
@@ -1100,10 +1104,7 @@ fn is_trigger_like_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 fn allows_generic_scripted_effect_fallback(scope_kind: ScopeKind) -> bool {
 	matches!(
 		scope_kind,
-		ScopeKind::Effect
-			| ScopeKind::AliasBlock
-			| ScopeKind::Loop
-			| ScopeKind::ScriptedEffect
+		ScopeKind::Effect | ScopeKind::AliasBlock | ScopeKind::Loop | ScopeKind::ScriptedEffect
 	)
 }
 
@@ -1147,23 +1148,36 @@ fn effect_context_scope_semantics(
 	if key == "random_list" {
 		return Some(EffectContextScopeSemantics::EffectContainer);
 	}
-	if matches!(key, "for" | "while" | "IF" | "ELSE_IF" | "else_if" | "ELSE" | "else") {
+	if matches!(
+		key,
+		"for" | "while" | "IF" | "ELSE_IF" | "else_if" | "ELSE" | "else"
+	) {
 		return Some(EffectContextScopeSemantics::EffectContainer);
 	}
-	if matches!(key, "every_country" | "every_subject_country" | "every_known_country" | "random_country") {
+	if matches!(
+		key,
+		"every_country" | "every_subject_country" | "every_known_country" | "random_country"
+	) {
 		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Country));
 	}
-	if matches!(key, "random_owned_province" | "random_province" | "every_province") {
+	if matches!(
+		key,
+		"random_owned_province" | "random_province" | "every_province"
+	) {
 		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Province));
 	}
 	if key == "overlord" {
-		return Some(EffectContextScopeSemantics::ScopeChanger(ScopeType::Country));
+		return Some(EffectContextScopeSemantics::ScopeChanger(
+			ScopeType::Country,
+		));
 	}
 	if let Some(selector) = numeric_effect_context_semantics(key) {
 		return Some(selector);
 	}
 	if is_country_tag_selector(key) {
-		return Some(EffectContextScopeSemantics::ScopeChanger(ScopeType::Country));
+		return Some(EffectContextScopeSemantics::ScopeChanger(
+			ScopeType::Country,
+		));
 	}
 	if is_map_group_scope_key(ctx, key, scope_id, index) {
 		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Province));
@@ -1185,9 +1199,7 @@ fn is_on_actions_callback_root(
 
 fn on_actions_callback_this_type(key: &str) -> ScopeType {
 	match key {
-		"on_adm_development" | "on_dip_development" | "on_mil_development" => {
-			ScopeType::Province
-		}
+		"on_adm_development" | "on_dip_development" | "on_mil_development" => ScopeType::Province,
 		_ => ScopeType::Country,
 	}
 }
@@ -1208,6 +1220,7 @@ fn create_child_scope(
 	aliases.insert("PREV".to_string(), scope_this_type(index, parent_scope_id));
 	let mut this_type = scope_this_type(index, parent_scope_id);
 	let mut kind = ScopeKind::Block;
+	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
 
 	if is_on_actions_callback_root(ctx.file_kind, parent_scope_id, index, key) {
@@ -1220,7 +1233,6 @@ fn create_child_scope(
 		|| key == "limit"
 		|| key == "potential"
 		|| key == "allow"
-	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 		|| key == "condition"
 		|| key == "hidden_trigger"
 	{
@@ -1228,8 +1240,7 @@ fn create_child_scope(
 	} else if matches!(
 		key,
 		"effect"
-			| "after"
-			| "hidden_effect"
+			| "after" | "hidden_effect"
 			| "immediate"
 			| "on_add"
 			| "on_remove"
@@ -1256,7 +1267,8 @@ fn create_child_scope(
 				aliases.insert("THIS".to_string(), target);
 			}
 		}
-	} else if is_province_id_selector(key) && scope_kind(index, parent_scope_id) != ScopeKind::File {
+	} else if is_province_id_selector(key) && scope_kind(index, parent_scope_id) != ScopeKind::File
+	{
 		kind = ScopeKind::AliasBlock;
 		this_type = ScopeType::Province;
 		aliases.insert("THIS".to_string(), ScopeType::Province);
@@ -1282,9 +1294,17 @@ fn create_child_scope(
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("ROOT").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
+	} else if key == "THIS" {
+		kind = ScopeKind::AliasBlock;
+		this_type = aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown);
+		aliases.insert("THIS".to_string(), this_type);
 	} else if key == "FROM" {
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("FROM").copied().unwrap_or(ScopeType::Unknown);
+		aliases.insert("THIS".to_string(), this_type);
+	} else if key == "PREV" {
+		kind = ScopeKind::AliasBlock;
+		this_type = aliases.get("PREV").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if let Some(event_this_type) = event_scope_type(key) {
 		kind = ScopeKind::Event;
@@ -1294,18 +1314,10 @@ fn create_child_scope(
 		if let Some(from_type) = event_from_type(key) {
 			aliases.insert("FROM".to_string(), from_type);
 		}
-	} else if key == "THIS" {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
 	} else if ctx.file_kind == ScriptFileKind::ScriptedTriggers
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
 	{
-	} else if key == "PREV" {
-		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("PREV").copied().unwrap_or(ScopeType::Unknown);
-		aliases.insert("THIS".to_string(), this_type);
 		kind = ScopeKind::Trigger;
 	} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
@@ -1350,6 +1362,22 @@ fn create_child_scope(
 	)
 }
 
+fn nearest_conditional_context_kind(
+	index: &SemanticIndex,
+	mut scope_id: usize,
+) -> Option<ScopeKind> {
+	loop {
+		let scope = index.scopes.get(scope_id)?;
+		match scope.kind {
+			ScopeKind::Trigger | ScopeKind::Effect | ScopeKind::ScriptedEffect => {
+				return Some(scope.kind);
+			}
+			_ => {}
+		}
+		scope_id = scope.parent?;
+	}
+}
+
 fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	match key {
 		"all_core_province"
@@ -1371,22 +1399,6 @@ fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 
 fn is_map_group_scope_key(
 	ctx: &BuildContext<'_>,
-fn nearest_conditional_context_kind(
-	index: &SemanticIndex,
-	mut scope_id: usize,
-) -> Option<ScopeKind> {
-	loop {
-		let scope = index.scopes.get(scope_id)?;
-		match scope.kind {
-			ScopeKind::Trigger | ScopeKind::Effect | ScopeKind::ScriptedEffect => {
-				return Some(scope.kind);
-			}
-			_ => {}
-		}
-		scope_id = scope.parent?;
-	}
-}
-
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -1397,8 +1409,10 @@ fn nearest_conditional_context_kind(
 	if is_explicit_effect_context_scope(index, scope_id) {
 		return looks_like_map_group_key(key);
 	}
-	matches!(ctx.file_kind, ScriptFileKind::Missions | ScriptFileKind::CbTypes)
-		&& scope_kind(index, scope_id) != ScopeKind::File
+	matches!(
+		ctx.file_kind,
+		ScriptFileKind::Missions | ScriptFileKind::CbTypes
+	) && scope_kind(index, scope_id) != ScopeKind::File
 		&& looks_like_map_group_key(key)
 }
 
@@ -1430,14 +1444,13 @@ fn numeric_effect_context_semantics(key: &str) -> Option<EffectContextScopeSeman
 	if value <= 100 {
 		Some(EffectContextScopeSemantics::EffectContainer)
 	} else {
-		Some(EffectContextScopeSemantics::ScopeChanger(ScopeType::Province))
+		Some(EffectContextScopeSemantics::ScopeChanger(
+			ScopeType::Province,
+		))
 	}
 }
 
-fn file_kind_container_scope_kind(
-	file_kind: ScriptFileKind,
-	key: &str,
-) -> Option<ScopeKind> {
+fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Option<ScopeKind> {
 	match file_kind {
 		ScriptFileKind::Missions => match key {
 			"potential_on_load"
@@ -1487,6 +1500,11 @@ fn file_kind_container_scope_kind(
 			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
 			_ => None,
 		},
+		ScriptFileKind::TriggeredModifiers => match key {
+			"potential" | "trigger" => Some(ScopeKind::Trigger),
+			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
+			_ => None,
+		},
 		ScriptFileKind::ScriptedTriggers => match key {
 			"trigger" | "limit" | "custom_trigger_tooltip" => Some(ScopeKind::Trigger),
 			_ => None,
@@ -1500,18 +1518,11 @@ fn file_kind_container_scope_kind(
 			if key.ends_with("_trigger") {
 				Some(ScopeKind::Trigger)
 			} else if matches!(
-		ScriptFileKind::TriggeredModifiers => match key {
-			"potential" | "trigger" => Some(ScopeKind::Trigger),
-			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
-			_ => None,
-		},
 				key,
 				"on_built"
 					| "on_destroyed"
-					| "on_upgraded"
-					| "on_downgraded"
-					| "on_obtained"
-					| "on_lost"
+					| "on_upgraded" | "on_downgraded"
+					| "on_obtained" | "on_lost"
 			) {
 				Some(ScopeKind::Effect)
 			} else {
@@ -1549,7 +1560,10 @@ fn scope_changer_target_type(key: &str) -> Option<ScopeType> {
 
 fn special_block_scope_kind(key: &str) -> ScopeKind {
 	match key {
-		"possible" | "visible" | "happened" | "provinces_to_highlight"
+		"possible"
+		| "visible"
+		| "happened"
+		| "provinces_to_highlight"
 		| "exclude_from_progress" => ScopeKind::Trigger,
 		_ => ScopeKind::Block,
 	}
@@ -1704,14 +1718,19 @@ fn collect_provided_params(local_name: &str, items: &[AstStatement]) -> Provided
 	let mut params = ProvidedParams::default();
 	let contract_names = explicit_contract_param_names(local_name);
 	for stmt in items {
-		if let AstStatement::Assignment { key, value, .. } = stmt
-			&& (key
+		if let AstStatement::Assignment { key, value, .. } = stmt {
+			let is_explicit_param_name = key
 				.chars()
 				.all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
-				|| contract_names.contains(key.as_str()))
-		{
-			params.names.push(key.clone());
-			if let Some(value) = scalar_text(value) {
+				|| contract_names.contains(key.as_str());
+			let is_named_scalar_binding = !key.is_empty()
+				&& key
+					.chars()
+					.all(|ch| ch.is_ascii_alphanumeric() || ch == '_');
+			if is_explicit_param_name {
+				params.names.push(key.clone());
+			}
+			if is_named_scalar_binding && let Some(value) = scalar_text(value) {
 				params.bindings.push(ParamBinding {
 					name: key.clone(),
 					value,
@@ -1720,6 +1739,45 @@ fn collect_provided_params(local_name: &str, items: &[AstStatement]) -> Provided
 		}
 	}
 	params
+}
+
+fn collect_scope_param_names(items: &[AstStatement]) -> Vec<String> {
+	let mut names = HashSet::new();
+	collect_scope_param_names_from_statements(items, &mut names);
+	let mut collected: Vec<String> = names.into_iter().collect();
+	collected.sort();
+	collected
+}
+
+fn extract_template_param_name(value: &str) -> Option<&str> {
+	let trimmed = value.trim();
+	if !(trimmed.starts_with('$') && trimmed.ends_with('$') && trimmed.len() > 2) {
+		return None;
+	}
+	let param = &trimmed[1..trimmed.len() - 1];
+	if param
+		.chars()
+		.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+	{
+		Some(param)
+	} else {
+		None
+	}
+}
+
+fn collect_scope_param_names_from_statements(items: &[AstStatement], names: &mut HashSet<String>) {
+	for stmt in items {
+		if let AstStatement::Assignment { key, value, .. } = stmt {
+			if let Some(param_name) = extract_template_param_name(key)
+				&& matches!(value, AstValue::Block { .. })
+			{
+				names.insert(param_name.to_string());
+			}
+			if let AstValue::Block { items, .. } = value {
+				collect_scope_param_names_from_statements(items, names);
+			}
+		}
+	}
 }
 
 fn is_alias_key(key: &str) -> bool {
@@ -1770,7 +1828,10 @@ fn is_ui_resource_key(key: &str) -> bool {
 }
 
 fn is_inferred_callable_kind(kind: SymbolKind) -> bool {
-	matches!(kind, SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger)
+	matches!(
+		kind,
+		SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger
+	)
 }
 
 fn resolve_reference_targets_for_kind(
@@ -1840,16 +1901,7 @@ pub fn resolve_scripted_trigger_reference_targets(
 }
 
 fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
-	use std::collections::HashMap;
-
-	let callable_scope_map: HashMap<usize, usize> = index
-		.definitions
-		.iter()
-		.enumerate()
-		.filter_map(|(idx, definition)| {
-			is_inferred_callable_kind(definition.kind).then_some((definition.scope_id, idx))
-		})
-		.collect();
+	let callable_scope_map = build_inferred_callable_scope_map(index);
 
 	let mut observed_masks: Vec<u8> = index
 		.definitions
@@ -1880,44 +1932,91 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 				continue;
 			}
 			let target_defs = match reference.kind {
-				SymbolKind::ScriptedEffect => resolve_scripted_effect_reference_targets(index, reference),
+				SymbolKind::ScriptedEffect => {
+					resolve_scripted_effect_reference_targets(index, reference)
+				}
 				SymbolKind::ScriptedTrigger => {
 					resolve_scripted_trigger_reference_targets(index, reference)
 				}
 				_ => Vec::new(),
 			};
-		for def_idx in target_defs {
-			let merged = observed_masks[def_idx] | caller_mask;
-			if merged != observed_masks[def_idx] {
-				observed_masks[def_idx] = merged;
-				changed = true;
+			for def_idx in target_defs {
+				let mut merged = observed_masks[def_idx] | caller_mask;
+				if let Some(definition) = index.definitions.get(def_idx)
+					&& definition.kind == SymbolKind::ScriptedEffect
+				{
+					for binding in &reference.param_bindings {
+						if !definition
+							.scope_param_names
+							.iter()
+							.any(|name| name == &binding.name)
+						{
+							continue;
+						}
+						merged |= binding_value_scope_mask(
+							index,
+							&callable_scope_map,
+							&observed_masks,
+							reference.scope_id,
+							&binding.value,
+						);
+					}
+				}
+				if merged != observed_masks[def_idx] {
+					observed_masks[def_idx] = merged;
+					changed = true;
+				}
 			}
 		}
-	}
-
 	}
 
 	let backfill_candidates: Vec<bool> = index
 		.definitions
 		.iter()
 		.enumerate()
-		.map(|(idx, definition)| definition.kind == SymbolKind::ScriptedEffect && observed_masks[idx] == 0)
+		.map(|(idx, definition)| {
+			definition.kind == SymbolKind::ScriptedEffect && observed_masks[idx] == 0
+		})
 		.collect();
 	for scope_id in 0..index.scopes.len() {
-		let scope_mask =
-			effective_scope_mask_with_overrides(index, &callable_scope_map, &observed_masks, scope_id);
+		let scope_mask = effective_scope_mask_with_overrides(
+			index,
+			&callable_scope_map,
+			&observed_masks,
+			scope_id,
+		);
 		if scope_mask == 0 {
 			continue;
 		}
-		let Some(def_idx) =
-			nearest_enclosing_scripted_effect_definition_index(index, &callable_scope_map, scope_id)
-		else {
+		let Some(def_idx) = nearest_enclosing_scripted_effect_definition_index(
+			index,
+			&callable_scope_map,
+			scope_id,
+		) else {
 			continue;
 		};
 		if !backfill_candidates[def_idx] {
 			continue;
 		}
 		observed_masks[def_idx] |= scope_mask;
+	}
+
+	for usage in &index.key_usages {
+		if usage.key != "capital_scope" {
+			continue;
+		}
+		let Some(def_idx) =
+			nearest_enclosing_callable_definition_index(index, &callable_scope_map, usage.scope_id)
+		else {
+			continue;
+		};
+		let Some(definition) = index.definitions.get(def_idx) else {
+			continue;
+		};
+		if definition.kind != SymbolKind::ScriptedTrigger {
+			continue;
+		}
+		observed_masks[def_idx] |= scope_type_mask(ScopeType::Country);
 	}
 
 	for (idx, definition) in index.definitions.iter_mut().enumerate() {
@@ -1929,7 +2028,105 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	}
 }
 
-fn nearest_enclosing_scripted_effect_definition_index(
+pub(crate) fn build_inferred_callable_scope_map(index: &SemanticIndex) -> HashMap<usize, usize> {
+	index
+		.definitions
+		.iter()
+		.enumerate()
+		.filter_map(|(idx, definition)| {
+			is_inferred_callable_kind(definition.kind).then_some((definition.scope_id, idx))
+		})
+		.collect()
+}
+
+pub(crate) fn collect_inferred_callable_masks(index: &SemanticIndex) -> Vec<u8> {
+	index
+		.definitions
+		.iter()
+		.map(|definition| definition.inferred_this_mask)
+		.collect()
+}
+
+fn binding_value_scope_mask(
+	index: &SemanticIndex,
+	callable_scope_map: &HashMap<usize, usize>,
+	observed_masks: &[u8],
+	scope_id: usize,
+	value: &str,
+) -> u8 {
+	let trimmed = value.trim();
+	if trimmed.is_empty() {
+		return 0;
+	}
+	match trimmed {
+		"THIS" | "ROOT" | "FROM" | "PREV" => {
+			return effective_alias_scope_mask_with_overrides(
+				index,
+				callable_scope_map,
+				observed_masks,
+				scope_id,
+				trimmed,
+			);
+		}
+		"owner" => return scope_type_mask(ScopeType::Country),
+		"capital_scope" => return scope_type_mask(ScopeType::Province),
+		_ => {}
+	}
+	if is_country_tag_selector(trimmed) {
+		return scope_type_mask(ScopeType::Country);
+	}
+	if is_province_id_selector(trimmed) {
+		return scope_type_mask(ScopeType::Province);
+	}
+	0
+}
+
+pub(crate) fn effective_alias_scope_mask_with_overrides(
+	index: &SemanticIndex,
+	callable_scope_map: &HashMap<usize, usize>,
+	observed_masks: &[u8],
+	mut scope_id: usize,
+	alias: &str,
+) -> u8 {
+	let mut fallback_mask = 0;
+	loop {
+		let Some(scope) = index.scopes.get(scope_id) else {
+			return fallback_mask;
+		};
+		if alias == "THIS" {
+			let this_mask = scope_type_mask(scope.this_type);
+			if this_mask != 0 {
+				return this_mask;
+			}
+			if let Some(def_idx) = callable_scope_map.get(&scope_id) {
+				let inferred_mask = observed_masks.get(*def_idx).copied().unwrap_or(0);
+				if inferred_mask != 0 {
+					return inferred_mask;
+				}
+			}
+		}
+		if let Some(alias_type) = scope.aliases.get(alias) {
+			let alias_mask = scope_type_mask(*alias_type);
+			if alias_mask != 0 {
+				return alias_mask;
+			}
+		}
+		if fallback_mask == 0
+			&& let Some(def_idx) = callable_scope_map.get(&scope_id)
+		{
+			let inferred_mask = observed_masks.get(*def_idx).copied().unwrap_or(0);
+			if inferred_mask != 0 {
+				fallback_mask = inferred_mask;
+			}
+		}
+		let Some(parent) = scope.parent else {
+			return fallback_mask;
+		};
+		scope_id = parent;
+	}
+}
+
+fn nearest_enclosing_callable_definition_index(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
 	mut scope_id: usize,
@@ -1939,13 +2136,26 @@ fn nearest_enclosing_scripted_effect_definition_index(
 			&& index
 				.definitions
 				.get(*def_idx)
-				.is_some_and(|definition| definition.kind == SymbolKind::ScriptedEffect)
+				.is_some_and(|definition| is_inferred_callable_kind(definition.kind))
 		{
 			return Some(*def_idx);
 		}
 		let parent = index.scopes.get(scope_id).and_then(|scope| scope.parent)?;
 		scope_id = parent;
 	}
+}
+
+fn nearest_enclosing_scripted_effect_definition_index(
+	index: &SemanticIndex,
+	callable_scope_map: &HashMap<usize, usize>,
+	scope_id: usize,
+) -> Option<usize> {
+	let def_idx = nearest_enclosing_callable_definition_index(index, callable_scope_map, scope_id)?;
+	index
+		.definitions
+		.get(def_idx)
+		.filter(|definition| definition.kind == SymbolKind::ScriptedEffect)
+		.map(|_| def_idx)
 }
 
 fn scope_type_mask(scope_type: ScopeType) -> u8 {
@@ -1964,7 +2174,7 @@ fn scope_type_from_mask(mask: u8) -> ScopeType {
 	}
 }
 
-fn effective_scope_mask_with_overrides(
+pub(crate) fn effective_scope_mask_with_overrides(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
 	observed_masks: &[u8],
@@ -1993,12 +2203,28 @@ fn effective_scope_mask_with_overrides(
 #[cfg(test)]
 mod tests {
 	use super::{
-		ScriptFileKind, build_semantic_index, classify_script_file, parse_script_file, scope_kind,
+		ScriptFileKind, build_inferred_callable_scope_map, build_semantic_index,
+		classify_script_file, collect_inferred_callable_masks,
+		effective_alias_scope_mask_with_overrides, parse_script_file, scope_kind,
 	};
 	use crate::check::analysis::{AnalyzeOptions, analyze_visibility};
 	use crate::check::model::{AnalysisMode, ScopeKind, ScopeType, SymbolKind};
 	use std::fs;
 	use tempfile::TempDir;
+
+	fn full_army_tradition_switch_effect(name: &str) -> String {
+		let branches: String = (0..=100)
+			.rev()
+			.map(|tradition| {
+				format!(
+					"\t\t\t{tradition} = {{\n\t\t\t\tPREV = {{\n\t\t\t\t\tcreate_general = {{\n\t\t\t\t\t\tculture = PREV\n\t\t\t\t\t\ttradition = {tradition}\n\t\t\t\t\t}}\n\t\t\t\t}}\n\t\t\t}}\n"
+				)
+			})
+			.collect();
+		format!(
+			"{name} {{\n\t$who$ = {{\n\t\ttrigger_switch = {{\n\t\t\ton_trigger = army_tradition\n{branches}\t\t}}\n\t}}\n}}\n"
+		)
+	}
 
 	#[test]
 	fn classify_paths() {
@@ -2039,7 +2265,9 @@ mod tests {
 			ScriptFileKind::Ideas
 		);
 		assert_eq!(
-			classify_script_file(std::path::Path::new("common/great_projects/01_monuments.txt")),
+			classify_script_file(std::path::Path::new(
+				"common/great_projects/01_monuments.txt"
+			)),
 			ScriptFileKind::GreatProjects
 		);
 		assert_eq!(
@@ -2053,15 +2281,21 @@ mod tests {
 			ScriptFileKind::Cultures
 		);
 		assert_eq!(
-			classify_script_file(std::path::Path::new("common/custom_gui/AdvisorActionsGui.txt")),
+			classify_script_file(std::path::Path::new(
+				"common/custom_gui/AdvisorActionsGui.txt"
+			)),
 			ScriptFileKind::CustomGui
 		);
 		assert_eq!(
-			classify_script_file(std::path::Path::new("common/advisortypes/00_advisortypes.txt")),
+			classify_script_file(std::path::Path::new(
+				"common/advisortypes/00_advisortypes.txt"
+			)),
 			ScriptFileKind::AdvisorTypes
 		);
 		assert_eq!(
-			classify_script_file(std::path::Path::new("common/event_modifiers/00_modifiers.txt")),
+			classify_script_file(std::path::Path::new(
+				"common/event_modifiers/00_modifiers.txt"
+			)),
 			ScriptFileKind::EventModifiers
 		);
 		assert_eq!(
@@ -2263,10 +2497,11 @@ achievement_example = {
 		assert!(index.scopes.iter().any(|scope| {
 			scope.kind == ScopeKind::AliasBlock && scope.this_type == ScopeType::Province
 		}));
-		assert!(index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province));
+		assert!(
+			index.scopes.iter().any(
+				|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province
+			)
+		);
 
 		let diagnostics = analyze_visibility(
 			&index,
@@ -2283,9 +2518,10 @@ achievement_example = {
 			"all_core_province",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not produce S002"
 			);
 		}
@@ -2293,7 +2529,8 @@ achievement_example = {
 			!diagnostics
 				.advisory
 				.iter()
-				.any(|finding| finding.rule_id == "A001" && finding.path == Some("common/achievements.txt".into())),
+				.any(|finding| finding.rule_id == "A001"
+					&& finding.path == Some("common/achievements.txt".into())),
 			"achievements root scope should no longer stay Unknown"
 		);
 	}
@@ -2304,20 +2541,17 @@ achievement_example = {
 		let mod_root = tmp.path().join("mod");
 		fs::create_dir_all(mod_root.join("common").join("ideas")).expect("create ideas");
 		fs::create_dir_all(mod_root.join("common").join("ages")).expect("create ages");
-		fs::create_dir_all(mod_root.join("common").join("buildings"))
-			.expect("create buildings");
+		fs::create_dir_all(mod_root.join("common").join("buildings")).expect("create buildings");
 		fs::create_dir_all(mod_root.join("common").join("great_projects"))
 			.expect("create monuments");
 		fs::create_dir_all(mod_root.join("common").join("institutions"))
 			.expect("create institutions");
 		fs::create_dir_all(mod_root.join("common").join("province_triggered_modifiers"))
 			.expect("create province modifiers");
-		fs::create_dir_all(mod_root.join("common").join("custom_gui"))
-			.expect("create custom gui");
+		fs::create_dir_all(mod_root.join("common").join("custom_gui")).expect("create custom gui");
 		fs::create_dir_all(mod_root.join("common").join("government_names"))
 			.expect("create government names");
-		fs::create_dir_all(mod_root.join("customizable_localization"))
-			.expect("create custom loc");
+		fs::create_dir_all(mod_root.join("customizable_localization")).expect("create custom loc");
 		fs::create_dir_all(mod_root.join("interface")).expect("create interface");
 		fs::write(
 			mod_root.join("common").join("ideas").join("ideas.txt"),
@@ -2422,7 +2656,10 @@ prosperous = {
 			parse_script_file(
 				"1002",
 				&mod_root,
-				&mod_root.join("common").join("buildings").join("buildings.txt"),
+				&mod_root
+					.join("common")
+					.join("buildings")
+					.join("buildings.txt"),
 			)
 			.expect("parsed buildings"),
 			parse_script_file(
@@ -2531,8 +2768,13 @@ prosperous = {
 	fn mislocated_dsl_paths_reuse_existing_semantics() {
 		let tmp = TempDir::new().expect("temp dir");
 		let mod_root = tmp.path().join("mod");
-		fs::create_dir_all(mod_root.join("events").join("common").join("new_diplomatic_actions"))
-			.expect("create misplaced diplomatic actions");
+		fs::create_dir_all(
+			mod_root
+				.join("events")
+				.join("common")
+				.join("new_diplomatic_actions"),
+		)
+		.expect("create misplaced diplomatic actions");
 		fs::create_dir_all(mod_root.join("events").join("decisions"))
 			.expect("create misplaced decisions");
 		fs::write(
@@ -2622,9 +2864,10 @@ country_decisions = {
 			"test_decision",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not be treated as a scripted effect"
 			);
 		}
@@ -2729,9 +2972,10 @@ mos_rus_handle_succession = {
 			"ai_weight",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not produce S002"
 			);
 		}
@@ -2794,8 +3038,12 @@ test_reform = {
 				&mod_root.join("missions").join("missions.txt"),
 			)
 			.expect("parsed missions"),
-			parse_script_file("1012", &mod_root, &mod_root.join("events").join("event.txt"))
-				.expect("parsed event"),
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root.join("events").join("event.txt"),
+			)
+			.expect("parsed event"),
 			parse_script_file(
 				"1012",
 				&mod_root,
@@ -2838,9 +3086,10 @@ test_reform = {
 			"common_weight_helper",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not produce S002"
 			);
 		}
@@ -2894,7 +3143,8 @@ sell_indulgence = {
 		.expect("parsed actions")];
 		let index = build_semantic_index(&parsed);
 		assert!(index.definitions.iter().any(|definition| {
-			definition.kind == SymbolKind::DiplomaticAction && definition.local_name == "sell_indulgence"
+			definition.kind == SymbolKind::DiplomaticAction
+				&& definition.local_name == "sell_indulgence"
 		}));
 		for name in [
 			"static_actions",
@@ -2931,17 +3181,239 @@ sell_indulgence = {
 			"royal_marriage",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not produce S002"
 			);
 		}
 		for name in ["missing_effect", "missing_inner_effect"] {
-			assert!(diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "S002" && finding.message.contains(name)
-			}));
+			assert!(
+				diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) })
+			);
 		}
+	}
+
+	#[test]
+	fn new_diplomatic_actions_if_blocks_keep_nested_effect_calls_in_effect_context() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("new_diplomatic_actions"))
+			.expect("create new diplomatic actions");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+			r#"
+request_general = {
+	on_accept = {
+		if = {
+			limit = { always = yes }
+			create_general_from_country = { who = FROM }
+		}
+	}
+}
+"#,
+		)
+		.expect("write actions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("effects.txt"),
+			r#"
+create_general_from_country {
+	$who$ = {
+		trigger_switch = {
+			on_trigger = army_tradition
+			100 = {
+				PREV = {
+					create_general = {
+						culture = PREV
+						tradition = 100
+					}
+				}
+			}
+		}
+	}
+}
+"#,
+		)
+		.expect("write effects");
+
+		let parsed = [
+			parse_script_file(
+				"1007",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("new_diplomatic_actions")
+					.join("actions.txt"),
+			)
+			.expect("parsed actions"),
+			parse_script_file(
+				"1007",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("effects.txt"),
+			)
+			.expect("parsed effects"),
+		];
+		let index = build_semantic_index(&parsed);
+		assert!(index.references.iter().any(|reference| {
+			reference.kind == SymbolKind::ScriptedEffect
+				&& reference.name == "create_general_from_country"
+		}));
+		assert!(
+			!index.references.iter().any(|reference| {
+				reference.kind == SymbolKind::ScriptedTrigger
+					&& reference.name == "create_general_from_country"
+			}),
+			"nested if effect calls should not become scripted trigger references"
+		);
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "S002"
+					&& finding
+						.path
+						.as_ref()
+						.map(|path| path.ends_with("common/new_diplomatic_actions/actions.txt"))
+						.unwrap_or(false)
+			}),
+			"nested if effect calls should resolve as scripted effects"
+		);
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001"
+					&& finding
+						.path
+						.as_ref()
+						.map(|path| path.ends_with("common/scripted_effects/effects.txt"))
+						.unwrap_or(false)
+			}),
+			"param-driven scope inference should suppress PREV Unknown-scope noise"
+		);
+	}
+
+	#[test]
+	fn full_body_scripted_effect_scope_params_resolve_nested_prev_aliases() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("new_diplomatic_actions"))
+			.expect("create new diplomatic actions");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+			r#"
+request_general = {
+	on_accept = {
+		if = {
+			limit = {
+				FROM = {
+					army_tradition = 10
+				}
+			}
+			add_favors = { who = FROM amount = -50 }
+			create_general_from_country = { who = FROM }
+			FROM = {
+				add_army_tradition = -10
+			}
+		}
+	}
+}
+"#,
+		)
+		.expect("write actions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("effects.txt"),
+			full_army_tradition_switch_effect("create_general_from_country"),
+		)
+		.expect("write effects");
+
+		let parsed = [
+			parse_script_file(
+				"1008",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("new_diplomatic_actions")
+					.join("actions.txt"),
+			)
+			.expect("parsed actions"),
+			parse_script_file(
+				"1008",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("effects.txt"),
+			)
+			.expect("parsed effects"),
+		];
+		let index = build_semantic_index(&parsed);
+		let callable_scope_map = build_inferred_callable_scope_map(&index);
+		let inferred_masks = collect_inferred_callable_masks(&index);
+		let nested_prev_usage = index
+			.alias_usages
+			.iter()
+			.find(|usage| {
+				usage.alias == "PREV"
+					&& usage.path.ends_with("common/scripted_effects/effects.txt")
+					&& usage.line > 4
+			})
+			.expect("nested PREV alias usage");
+		assert_ne!(
+			effective_alias_scope_mask_with_overrides(
+				&index,
+				&callable_scope_map,
+				&inferred_masks,
+				nested_prev_usage.scope_id,
+				"PREV",
+			),
+			0,
+			"nested PREV aliases should no longer resolve to Unknown scope"
+		);
+
+		let diagnostics = analyze_visibility(
+			&index,
+			&AnalyzeOptions {
+				mode: AnalysisMode::Semantic,
+			},
+		);
+		assert!(
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "A001"
+					&& finding
+						.path
+						.as_ref()
+						.map(|path| path.ends_with("common/scripted_effects/effects.txt"))
+						.unwrap_or(false)
+			}),
+			"full-body scripted effects should suppress PREV Unknown-scope noise"
+		);
 	}
 
 	#[test]
@@ -3137,9 +3609,10 @@ country_event = {
 			"overlord",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not produce S002"
 			);
 		}
@@ -3150,9 +3623,12 @@ country_event = {
 			"missing_if_effect",
 			"missing_else_if_effect",
 		] {
-			assert!(diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "S002" && finding.message.contains(name)
-			}));
+			assert!(
+				diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) })
+			);
 		}
 	}
 
@@ -3199,8 +3675,12 @@ on_startup = {
 		.expect("write on_actions");
 
 		let parsed = [
-			parse_script_file("1011", &mod_root, &mod_root.join("events").join("events.txt"))
-				.expect("parsed events"),
+			parse_script_file(
+				"1011",
+				&mod_root,
+				&mod_root.join("events").join("events.txt"),
+			)
+			.expect("parsed events"),
 			parse_script_file(
 				"1011",
 				&mod_root,
@@ -3226,26 +3706,38 @@ on_startup = {
 				"{name} should not be recorded as a scripted effect reference"
 			);
 		}
-		assert!(index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Effect && scope.this_type == ScopeType::Province));
-		assert!(index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Effect && scope.this_type == ScopeType::Country));
-		assert!(index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::AliasBlock && scope.this_type == ScopeType::Country));
-		assert!(index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province));
-		assert!(index
-			.scopes
-			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Country));
+		assert!(
+			index
+				.scopes
+				.iter()
+				.any(|scope| scope.kind == ScopeKind::Effect
+					&& scope.this_type == ScopeType::Province)
+		);
+		assert!(
+			index
+				.scopes
+				.iter()
+				.any(|scope| scope.kind == ScopeKind::Effect
+					&& scope.this_type == ScopeType::Country)
+		);
+		assert!(
+			index
+				.scopes
+				.iter()
+				.any(|scope| scope.kind == ScopeKind::AliasBlock
+					&& scope.this_type == ScopeType::Country)
+		);
+		assert!(
+			index.scopes.iter().any(
+				|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province
+			)
+		);
+		assert!(
+			index
+				.scopes
+				.iter()
+				.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Country)
+		);
 
 		let diagnostics = analyze_visibility(
 			&index,
@@ -3353,8 +3845,12 @@ country_event = {
 					.join("contracts.txt"),
 			)
 			.expect("parsed scripted effects"),
-			parse_script_file("1010", &mod_root, &mod_root.join("events").join("contracts.txt"))
-				.expect("parsed events"),
+			parse_script_file(
+				"1010",
+				&mod_root,
+				&mod_root.join("events").join("contracts.txt"),
+			)
+			.expect("parsed events"),
 		];
 		let index = build_semantic_index(&parsed);
 		let diagnostics = analyze_visibility(
@@ -3390,9 +3886,10 @@ country_event = {
 			"create_or_add_center_of_trade_level",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S004" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S004" && finding.message.contains(name) }),
 				"{name} should satisfy its explicit param contract"
 			);
 		}
@@ -3516,8 +4013,12 @@ country_event = {
 					.join("contracts.txt"),
 			)
 			.expect("parsed scripted effects"),
-			parse_script_file("1010", &mod_root, &mod_root.join("events").join("contracts.txt"))
-				.expect("parsed events"),
+			parse_script_file(
+				"1010",
+				&mod_root,
+				&mod_root.join("events").join("contracts.txt"),
+			)
+			.expect("parsed events"),
 		];
 		let index = build_semantic_index(&parsed);
 		let diagnostics = analyze_visibility(
@@ -3543,7 +4044,9 @@ country_event = {
 			"create_general_with_pips 缺失 culture",
 		] {
 			assert!(
-				!contract_findings.iter().any(|message| message.contains(snippet)),
+				!contract_findings
+					.iter()
+					.any(|message| message.contains(snippet)),
 				"{snippet} should be optional"
 			);
 		}
@@ -3645,8 +4148,12 @@ country_event = {
 					.join("estate_contracts.txt"),
 			)
 			.expect("parsed scripted effects"),
-			parse_script_file("1012", &mod_root, &mod_root.join("events").join("estate_contracts.txt"))
-				.expect("parsed events"),
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root.join("events").join("estate_contracts.txt"),
+			)
+			.expect("parsed events"),
 		];
 		let index = build_semantic_index(&parsed);
 		let diagnostics = analyze_visibility(
@@ -3663,9 +4170,10 @@ country_event = {
 			"estate_influence",
 		] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S004" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S004" && finding.message.contains(name) }),
 				"{name} should not produce S004"
 			);
 		}
@@ -3929,8 +4437,12 @@ country_event = {
 					.join("effects.txt"),
 			)
 			.expect("parsed scripted effects"),
-			parse_script_file("1008", &mod_root, &mod_root.join("events").join("event.txt"))
-				.expect("parsed event"),
+			parse_script_file(
+				"1008",
+				&mod_root,
+				&mod_root.join("events").join("event.txt"),
+			)
+			.expect("parsed event"),
 		];
 		let index = build_semantic_index(&parsed);
 
@@ -4038,8 +4550,12 @@ province_event = {
 					.join("triggers.txt"),
 			)
 			.expect("parsed scripted triggers"),
-			parse_script_file("1009", &mod_root, &mod_root.join("events").join("events.txt"))
-				.expect("parsed events"),
+			parse_script_file(
+				"1009",
+				&mod_root,
+				&mod_root.join("events").join("events.txt"),
+			)
+			.expect("parsed events"),
 		];
 		let index = build_semantic_index(&parsed);
 
@@ -4049,10 +4565,30 @@ province_event = {
 			.filter(|definition| definition.kind == SymbolKind::ScriptedTrigger)
 			.map(|definition| (definition.local_name.as_str(), definition))
 			.collect();
-		assert_eq!(scripted_trigger_defs.get("province_only").map(|d| d.inferred_this_mask), Some(0b10));
-		assert_eq!(scripted_trigger_defs.get("province_only").map(|d| d.inferred_this_type), Some(ScopeType::Province));
-		assert_eq!(scripted_trigger_defs.get("mixed_trigger").map(|d| d.inferred_this_mask), Some(0b11));
-		assert_eq!(scripted_trigger_defs.get("mixed_trigger").map(|d| d.inferred_this_type), Some(ScopeType::Unknown));
+		assert_eq!(
+			scripted_trigger_defs
+				.get("province_only")
+				.map(|d| d.inferred_this_mask),
+			Some(0b10)
+		);
+		assert_eq!(
+			scripted_trigger_defs
+				.get("province_only")
+				.map(|d| d.inferred_this_type),
+			Some(ScopeType::Province)
+		);
+		assert_eq!(
+			scripted_trigger_defs
+				.get("mixed_trigger")
+				.map(|d| d.inferred_this_mask),
+			Some(0b11)
+		);
+		assert_eq!(
+			scripted_trigger_defs
+				.get("mixed_trigger")
+				.map(|d| d.inferred_this_type),
+			Some(ScopeType::Unknown)
+		);
 
 		for name in ["province_only", "mixed_trigger"] {
 			assert!(
@@ -4071,9 +4607,10 @@ province_event = {
 		);
 		for name in ["province_only", "mixed_trigger"] {
 			assert!(
-				!diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				!diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should not participate in scripted-effect unresolved-call reporting"
 			);
 		}
@@ -4148,9 +4685,10 @@ country_event = {
 				"{name} should still be recorded inside an explicit effect-ish scope"
 			);
 			assert!(
-				diagnostics.strict.iter().any(|finding| {
-					finding.rule_id == "S002" && finding.message.contains(name)
-				}),
+				diagnostics
+					.strict
+					.iter()
+					.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
 				"{name} should still report unresolved scripted-effect usage"
 			);
 		}
