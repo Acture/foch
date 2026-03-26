@@ -1,6 +1,6 @@
 use crate::check::{
-	CheckRequest, GraphArtifactFormat, GraphBuildOptions, GraphRootSelector,
-	GraphScopeSelection, SymbolKind, run_graph_with_options,
+	CheckRequest, GraphArtifactFormat, GraphBuildOptions, GraphRootSelector, GraphScopeSelection,
+	SymbolKind, run_graph_with_options,
 };
 use crate::cli::arg::{GraphArgs, GraphArtifactFormatArg, GraphScopeArg};
 use crate::cli::config::Config;

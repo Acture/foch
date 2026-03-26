@@ -64,7 +64,8 @@ pub(crate) fn load_or_build_mod_snapshot(
 		)
 	});
 
-	if let (Some(cache_path), Some(game_version)) = (cache_path.as_ref(), resolved_game_version.as_ref())
+	if let (Some(cache_path), Some(game_version)) =
+		(cache_path.as_ref(), resolved_game_version.as_ref())
 		&& let Some(entry) = load_mod_snapshot(cache_path)
 		&& entry.schema_version == MOD_SNAPSHOT_SCHEMA_VERSION
 		&& entry.game == game_key
@@ -266,7 +267,10 @@ mod tests {
 		std::fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
 			.expect("create mod root");
 		std::fs::write(
-			mod_root.join("common").join("scripted_effects").join("effects.txt"),
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("effects.txt"),
 			"ME_give_claims = { add_prestige = 1 }\n",
 		)
 		.expect("write scripted effect");

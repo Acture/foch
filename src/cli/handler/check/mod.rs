@@ -18,7 +18,10 @@ pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 
 	let result = run_checks_with_options(request, run_options.clone());
 	if let Some(path) = check_args.parse_issue_report.as_ref() {
-		std::fs::write(path, serde_json::to_string_pretty(&result.parse_issue_report)?)?;
+		std::fs::write(
+			path,
+			serde_json::to_string_pretty(&result.parse_issue_report)?,
+		)?;
 	}
 
 	let output_result = select_output_result(&result, run_options.channel_mode);

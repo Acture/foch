@@ -1,5 +1,5 @@
-use crate::check::model::CheckRequest;
 use crate::check::merge::emit::emit_clausewitz_statements;
+use crate::check::model::CheckRequest;
 use crate::check::parser::{AstStatement, AstValue};
 use crate::check::runtime::{OverlapStatus, build_runtime_state_from_workspace};
 use crate::check::semantic_index::parse_script_file;
@@ -16,7 +16,8 @@ pub fn run_simplify_with_options(
 	request: CheckRequest,
 	options: SimplifyOptions,
 ) -> Result<SimplifySummary, Box<dyn std::error::Error>> {
-	let workspace = resolve_workspace(&request, options.include_game_base).map_err(|err| err.message)?;
+	let workspace =
+		resolve_workspace(&request, options.include_game_base).map_err(|err| err.message)?;
 	let runtime = build_runtime_state_from_workspace(&workspace)?;
 	let target = workspace
 		.mods
@@ -101,7 +102,9 @@ pub fn run_simplify_with_options(
 		if !absolute.exists() {
 			continue;
 		}
-		let Some(mut parsed) = parse_script_file(&options.target_mod_id, &destination_root, &absolute) else {
+		let Some(mut parsed) =
+			parse_script_file(&options.target_mod_id, &destination_root, &absolute)
+		else {
 			continue;
 		};
 		let positions = positions.into_iter().collect::<HashSet<_>>();

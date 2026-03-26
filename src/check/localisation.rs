@@ -158,7 +158,10 @@ pub(crate) fn collect_localisation_definitions_from_root(
 	root: &Path,
 ) -> Vec<LocalisationDefinition> {
 	let mut definitions = Vec::new();
-	for entry in walkdir::WalkDir::new(root).into_iter().filter_map(Result::ok) {
+	for entry in walkdir::WalkDir::new(root)
+		.into_iter()
+		.filter_map(Result::ok)
+	{
 		if !entry.file_type().is_file() {
 			continue;
 		}
@@ -311,9 +314,9 @@ fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry
 	let colon_idx = trimmed.iter().position(|byte| *byte == b':')?;
 	let key_bytes = &trimmed[..colon_idx];
 	if key_bytes.is_empty()
-		|| !key_bytes.iter().all(|byte| {
-			byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
-		})
+		|| !key_bytes
+			.iter()
+			.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
 	{
 		return None;
 	}
@@ -486,7 +489,9 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 	if needle.is_empty() {
 		return Some(0);
 	}
-	haystack.windows(needle.len()).position(|window| window == needle)
+	haystack
+		.windows(needle.len())
+		.position(|window| window == needle)
 }
 
 #[cfg(test)]
@@ -512,7 +517,11 @@ mod tests {
 		bytes.extend(&b"\"\n"[..]);
 		fs::write(&path, bytes).expect("write file");
 
-		let parsed = parse_localisation_file("mod", &path, PathBuf::from("localisation/test_l_english.yml").as_path());
+		let parsed = parse_localisation_file(
+			"mod",
+			&path,
+			PathBuf::from("localisation/test_l_english.yml").as_path(),
+		);
 		assert_eq!(parsed.entries.len(), 1);
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 	}

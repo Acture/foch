@@ -1,7 +1,7 @@
 use crate::check::merge::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::check::model::{
-	AnalysisMode, ChannelMode, CheckRequest, Finding, MergeReport, MergeReportStatus,
-	MergeReportValidation, RunOptions, MERGE_REPORT_ARTIFACT_PATH,
+	AnalysisMode, ChannelMode, CheckRequest, Finding, MERGE_REPORT_ARTIFACT_PATH, MergeReport,
+	MergeReportStatus, MergeReportValidation, RunOptions,
 };
 use crate::check::run_checks_with_options;
 use crate::domain::playlist::load_playlist;
@@ -51,7 +51,8 @@ pub fn run_merge_with_options(
 		});
 	}
 
-	let validation = revalidate_generated_output(&request, &options.out_dir, options.include_game_base)?;
+	let validation =
+		revalidate_generated_output(&request, &options.out_dir, options.include_game_base)?;
 	report.validation = validation;
 	report.status = final_merge_status(&report);
 	write_merge_report_artifact(&options.out_dir, &report)?;
@@ -88,8 +89,9 @@ fn revalidate_generated_output(
 				canonical_out_dir.display()
 			))
 		})?;
-	let original_playlist = load_playlist(&request.playset_path)
-		.map_err(|err| io::Error::other(format!("failed to reload playset for validation: {err}")))?;
+	let original_playlist = load_playlist(&request.playset_path).map_err(|err| {
+		io::Error::other(format!("failed to reload playset for validation: {err}"))
+	})?;
 	let temp_playlist_path = validation_playlist_path(parent_dir);
 	let temp_playlist = json!({
 		"game": original_playlist.game.key(),
@@ -136,7 +138,10 @@ fn revalidate_generated_output(
 		strict_findings: result.strict_findings.len(),
 		advisory_findings: result.advisory_findings.len(),
 		parse_errors: result.analysis_meta.parse_errors,
-		unresolved_references: count_findings_for_rules(&result.findings, &["S002", "S004", "A004"]),
+		unresolved_references: count_findings_for_rules(
+			&result.findings,
+			&["S002", "S004", "A004"],
+		),
 		missing_localisation: count_findings_for_rules(&result.findings, &["A005"]),
 	})
 }

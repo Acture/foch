@@ -133,7 +133,10 @@ fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) 
 	)
 }
 
-pub(crate) fn build_mod_candidates(request: &CheckRequest, playlist: &Playlist) -> Vec<ModCandidate> {
+pub(crate) fn build_mod_candidates(
+	request: &CheckRequest,
+	playlist: &Playlist,
+) -> Vec<ModCandidate> {
 	let playset_dir = request
 		.playset_path
 		.parent()

@@ -124,7 +124,10 @@ pub fn merge_plan_exit_code(result: &MergePlanResult) -> i32 {
 pub fn render_merge_report_text(report: &MergeReport) -> String {
 	let mut lines = Vec::new();
 	lines.push("Foch Merge Report".to_string());
-	lines.push(format!("status: {}", render_merge_report_status(report.status)));
+	lines.push(format!(
+		"status: {}",
+		render_merge_report_status(report.status)
+	));
 	lines.push(format!(
 		"manual_conflict_count: {}",
 		report.manual_conflict_count

@@ -12,8 +12,8 @@ pub mod model;
 pub mod param_contracts;
 pub mod parser;
 pub mod report;
-pub(crate) mod runtime;
 pub mod rules;
+pub(crate) mod runtime;
 pub mod semantic_index;
 pub mod simplify;
 pub(crate) mod workspace;
@@ -34,11 +34,10 @@ pub use merge::{
 	run_merge_with_options,
 };
 pub use model::{
-	AnalysisMode, ChannelMode, CheckRequest, CheckResult, Finding,
-	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
-	MergePlanEntry, MergePlanFormat, MergePlanOptions, MergePlanResult, MergePlanStrategies,
-	MergePlanStrategy, MergeReport, MergeReportStatus, MergeReportValidation, RunOptions, Severity,
-	SymbolKind,
+	AnalysisMode, ChannelMode, CheckRequest, CheckResult, Finding, MERGE_PLAN_ARTIFACT_PATH,
+	MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanFormat,
+	MergePlanOptions, MergePlanResult, MergePlanStrategies, MergePlanStrategy, MergeReport,
+	MergeReportStatus, MergeReportValidation, RunOptions, Severity, SymbolKind,
 };
 pub use parser::{AstFile, ParseResult, parse_clausewitz_file};
 pub use semantic_index::build_semantic_index;

@@ -1,4 +1,6 @@
-use foch::check::{MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH};
+use foch::check::{
+	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
+};
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -336,15 +338,17 @@ fn graph_command_resolves_runtime_calls_even_without_declared_dependency() {
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
-	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
-		.expect("create effects dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects")).expect("create effects dir");
 	fs::write(
 		mod_a.join("events").join("ref.txt"),
 		"namespace = test\ncountry_event = { id = test.1 immediate = { shared_effect = { } } }\n",
 	)
 	.expect("write ref event");
 	fs::write(
-		mod_b.join("common").join("scripted_effects").join("effects.txt"),
+		mod_b
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
 		"shared_effect = { log = provider }\n",
 	)
 	.expect("write effect");
@@ -395,12 +399,7 @@ fn graph_command_resolves_runtime_calls_even_without_declared_dependency() {
 	assert_eq!(hint_edge["dependency_match_kind"], "none");
 
 	let deps = read_json_file(&out_dir.join("mods/9001/mod-deps.json"));
-	assert!(
-		deps["edges"]
-			.as_array()
-			.expect("deps edges")
-			.is_empty()
-	);
+	assert!(deps["edges"].as_array().expect("deps edges").is_empty());
 }
 
 #[test]
@@ -421,15 +420,17 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 	write_descriptor_with_dependencies(&mod_a, "mod-a", &["mod-b"]);
 	write_descriptor(&mod_b, "mod-b");
 	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
-	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
-		.expect("create effects dir");
+	fs::create_dir_all(mod_b.join("common").join("scripted_effects")).expect("create effects dir");
 	fs::write(
 		mod_a.join("events").join("ref.txt"),
 		"namespace = test\ncountry_event = { id = test.1 immediate = { shared_effect = { } } }\n",
 	)
 	.expect("write ref event");
 	fs::write(
-		mod_b.join("common").join("scripted_effects").join("effects.txt"),
+		mod_b
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
 		"shared_effect = { log = provider }\n",
 	)
 	.expect("write effect");
@@ -482,8 +483,16 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 		.expect("dependency edge");
 	assert_eq!(dep_edge["match_kind"], "descriptor_name");
 
-	assert!(out_dir.join("trees/scripted_effect-shared_effect.json").exists());
-	assert!(out_dir.join("trees/scripted_effect-shared_effect.dot").exists());
+	assert!(
+		out_dir
+			.join("trees/scripted_effect-shared_effect.json")
+			.exists()
+	);
+	assert!(
+		out_dir
+			.join("trees/scripted_effect-shared_effect.dot")
+			.exists()
+	);
 }
 
 #[test]
@@ -512,12 +521,18 @@ fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_ca
 	fs::create_dir_all(mod_b.join("common").join("scripted_effects"))
 		.expect("create mod effects dir");
 	fs::write(
-		game_root.join("common").join("scripted_effects").join("effects.txt"),
+		game_root
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
 		"shared_effect = { log = base }\n",
 	)
 	.expect("write base effect");
 	fs::write(
-		mod_a.join("common").join("scripted_effects").join("effects.txt"),
+		mod_a
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
 		concat!(
 			"shared_effect = { log = base }\n",
 			"merge_me = { log = a }\n",
@@ -526,7 +541,10 @@ fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_ca
 	)
 	.expect("write mod a effects");
 	fs::write(
-		mod_b.join("common").join("scripted_effects").join("effects.txt"),
+		mod_b
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
 		"merge_me = { log = b }\n",
 	)
 	.expect("write mod b effects");
@@ -575,7 +593,10 @@ fn simplify_command_in_place_removes_empty_files() {
 	let playlist_path = tmp.path().join("playlist.json");
 	let game_root = tmp.path().join("eu4-game");
 	let mod_a = tmp.path().join("9031");
-	let target_file = mod_a.join("common").join("scripted_effects").join("effects.txt");
+	let target_file = mod_a
+		.join("common")
+		.join("scripted_effects")
+		.join("effects.txt");
 
 	write_playlist(
 		&playlist_path,
@@ -590,7 +611,10 @@ fn simplify_command_in_place_removes_empty_files() {
 	fs::create_dir_all(mod_a.join("common").join("scripted_effects"))
 		.expect("create mod effects dir");
 	fs::write(
-		game_root.join("common").join("scripted_effects").join("effects.txt"),
+		game_root
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
 		"shared_effect = { log = base }\n",
 	)
 	.expect("write base effect");
@@ -1149,10 +1173,16 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	write_descriptor(&mod_b, "mod-b");
 	fs::create_dir_all(mod_a.join("interface")).expect("create interface dir");
 	fs::create_dir_all(mod_b.join("interface")).expect("create interface dir");
-	fs::write(mod_a.join("interface").join("shared.gui"), "windowType = { name = a }\n")
-		.expect("write gui");
-	fs::write(mod_b.join("interface").join("shared.gui"), "windowType = { name = b }\n")
-		.expect("write gui");
+	fs::write(
+		mod_a.join("interface").join("shared.gui"),
+		"windowType = { name = a }\n",
+	)
+	.expect("write gui");
+	fs::write(
+		mod_b.join("interface").join("shared.gui"),
+		"windowType = { name = b }\n",
+	)
+	.expect("write gui");
 
 	let playlist_str = playlist_path.display().to_string();
 	let out_str = out_dir.display().to_string();
@@ -1200,10 +1230,16 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 	fs::create_dir_all(mod_a.join("gfx")).expect("create gfx dir");
 	fs::create_dir_all(mod_b.join("gfx")).expect("create gfx dir");
 	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
-	fs::write(mod_a.join("interface").join("shared.gui"), "windowType = { name = a }\n")
-		.expect("write gui");
-	fs::write(mod_b.join("interface").join("shared.gui"), "windowType = { name = b }\n")
-		.expect("write gui");
+	fs::write(
+		mod_a.join("interface").join("shared.gui"),
+		"windowType = { name = a }\n",
+	)
+	.expect("write gui");
+	fs::write(
+		mod_b.join("interface").join("shared.gui"),
+		"windowType = { name = b }\n",
+	)
+	.expect("write gui");
 	fs::write(mod_a.join("gfx").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
 	fs::write(mod_b.join("gfx").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
 	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
