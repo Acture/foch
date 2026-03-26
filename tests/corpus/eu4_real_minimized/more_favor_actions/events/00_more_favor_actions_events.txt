@@ -1,0 +1,36 @@
+# Source: More Favor Actions (workshop 2871630256)
+
+namespace = more_favors_action_remove_guarantee_events
+
+country_event = {
+	id = more_favors_action_remove_guarantee_events.1
+	is_triggered_only = yes
+
+	immediate = {
+		hidden_effect = {
+			event_target:more_favors_action_remove_guarantee_target = {
+				random_country = {
+					limit = {
+						NOT = { tag = ROOT }
+						guaranteed_by = PREV
+					}
+					save_event_target_as = remove_guarantee_target_1
+				}
+			}
+		}
+	}
+
+	option = {
+		name = ok
+		trigger = {
+			event_target:remove_guarantee_target_1 = {
+				NOT = { has_country_flag = remove_guarantee_target_rejected_@ROOT }
+			}
+		}
+		hidden_effect = {
+			event_target:more_favors_action_remove_guarantee_target = {
+				clr_country_flag = revoked_guarantee_from_@event_target:remove_guarantee_target_1
+			}
+		}
+	}
+}

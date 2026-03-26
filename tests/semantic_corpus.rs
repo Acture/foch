@@ -667,6 +667,83 @@ fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
 			&target_paths,
 			&targeted_rules
 		))
+
+#[test]
+fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
+	let files = parsed_many(
+		"eu4_real_minimized/more_favor_actions",
+		"2871630256",
+		&[
+			"common/scripted_effects/more_favor_actions_scripted_effects.txt",
+			"common/new_diplomatic_actions/00_more_favor_actions_actions.txt",
+			"common/diplomatic_actions/000_more_favor_actions_diplomatic_actions.txt",
+			"events/00_more_favor_actions_events.txt",
+		],
+	);
+	let index = build_semantic_index(&files);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+
+	let target_paths = [
+		"common/scripted_effects/more_favor_actions_scripted_effects.txt",
+		"common/new_diplomatic_actions/00_more_favor_actions_actions.txt",
+		"common/diplomatic_actions/000_more_favor_actions_diplomatic_actions.txt",
+		"events/00_more_favor_actions_events.txt",
+	];
+	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+	let strict_noise: Vec<String> = diagnostics
+		.strict
+		.iter()
+		.filter(|finding| is_targeted_noise(finding, &target_paths, &targeted_rules))
+		.map(|finding| {
+			format!(
+				"{}:{}:{}:{}",
+				finding.rule_id,
+				finding
+					.path
+					.as_ref()
+					.map(|path| path.display().to_string())
+					.unwrap_or_else(|| "<none>".to_string()),
+				finding.line.unwrap_or_default(),
+				finding.message
+			)
+		})
+		.collect();
+	let advisory_noise: Vec<String> = diagnostics
+		.advisory
+		.iter()
+		.filter(|finding| is_targeted_noise(finding, &target_paths, &targeted_rules))
+		.map(|finding| {
+			format!(
+				"{}:{}:{}:{}",
+				finding.rule_id,
+				finding
+					.path
+					.as_ref()
+					.map(|path| path.display().to_string())
+					.unwrap_or_else(|| "<none>".to_string()),
+				finding.line.unwrap_or_default(),
+				finding.message
+			)
+		})
+		.collect();
+
+	assert!(
+		strict_noise.is_empty(),
+		"strict targeted noise: {strict_noise:#?}"
+	);
+	assert!(
+		advisory_noise.is_empty(),
+		"advisory targeted noise: {advisory_noise:#?}"
+	);
+	assert!(!index.references.iter().any(|reference| {
+		reference.kind == SymbolKind::ScriptedEffect && reference.name.starts_with("event_target:")
+	}));
+}
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| is_targeted_noise(

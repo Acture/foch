@@ -1,0 +1,33 @@
+# Source: More Favor Actions (workshop 2871630256)
+
+more_favors_action_request_adm_power = {
+	ai_acceptance = {
+		add_entry = {
+			name = MORE_FAVOR_ACTIONS_AI_ACCEPT_REASON_FROM_BEHIND_IN_ADM_TECH
+			limit = {
+				OR = {
+					any_country = {
+						ROOT = {
+							NOT = { adm_tech = PREV }
+						}
+					}
+				}
+			}
+		}
+	}
+
+	on_accept = {
+		if = {
+			limit = {
+				FROM = {
+					army_tradition = 10
+				}
+			}
+			add_favors = { who = FROM amount = -50 }
+			more_favor_actions_create_general_based_on_army_tradition_of = { who = FROM }
+			FROM = {
+				add_army_tradition = -10
+			}
+		}
+	}
+}
