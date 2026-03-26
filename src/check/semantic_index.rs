@@ -65,7 +65,7 @@ pub struct ParsedScriptFile {
 	pub parse_cache_hit: bool,
 }
 
-const PARSE_CACHE_VERSION: u32 = 2;
+const PARSE_CACHE_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct ParseCacheEntry {
@@ -833,33 +833,22 @@ fn record_alias_tokens_from_value(
 	ctx: &BuildContext<'_>,
 	value: &AstValue,
 ) {
-	match value {
-		AstValue::Scalar { value, span } => {
-			let text = value.as_text();
-			for cap in alias_capture_regex().captures_iter(&text) {
-				let Some(alias) = cap.get(1) else {
-					continue;
-				};
-				index.alias_usages.push(AliasUsage {
-					alias: alias.as_str().to_string(),
-					mod_id: ctx.mod_id.to_string(),
-					path: ctx.path.to_path_buf(),
-					line: span.start.line,
-					column: span.start.column,
-					scope_id,
-				});
-			}
-		}
-		AstValue::Block { items, .. } => {
-			for item in items {
-				match item {
-					AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. } => {
-						record_alias_tokens_from_value(index, scope_id, ctx, value)
-					}
-					AstStatement::Comment { .. } => {}
-				}
-			}
-		}
+	let AstValue::Scalar { value, span } = value else {
+		return;
+	};
+	let text = value.as_text();
+	for cap in alias_capture_regex().captures_iter(&text) {
+		let Some(alias) = cap.get(1) else {
+			continue;
+		};
+		index.alias_usages.push(AliasUsage {
+			alias: alias.as_str().to_string(),
+			mod_id: ctx.mod_id.to_string(),
+			path: ctx.path.to_path_buf(),
+			line: span.start.line,
+			column: span.start.column,
+			scope_id,
+		});
 	}
 }
 
@@ -976,6 +965,7 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 	}
 }
 
+		ScriptFileKind::TriggeredModifiers => ScopeType::Country,
 fn is_new_diplomatic_actions_container_key(key: &str) -> bool {
 	matches!(key, "static_actions")
 }
@@ -1007,6 +997,12 @@ fn is_scripted_effect_call_candidate(
 		return false;
 	}
 	if is_province_id_selector(key) {
+	if is_template_param_placeholder_key(key) {
+		return false;
+	}
+	if is_dynamic_scope_reference_key(key) {
+		return false;
+	}
 		return false;
 	}
 	if effect_context_scope_semantics(ctx, key, scope_id, index).is_some() {
@@ -1054,6 +1050,12 @@ fn is_scripted_trigger_call_candidate(
 		return false;
 	}
 	if is_province_id_selector(key) || is_country_tag_selector(key) {
+	if is_template_param_placeholder_key(key) {
+		return false;
+	}
+	if is_dynamic_scope_reference_key(key) {
+		return false;
+	}
 		return false;
 	}
 	if event_scope_type(key).is_some() {
@@ -1218,6 +1220,7 @@ fn create_child_scope(
 		|| key == "limit"
 		|| key == "potential"
 		|| key == "allow"
+	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 		|| key == "condition"
 		|| key == "hidden_trigger"
 	{
@@ -1291,10 +1294,18 @@ fn create_child_scope(
 		if let Some(from_type) = event_from_type(key) {
 			aliases.insert("FROM".to_string(), from_type);
 		}
+	} else if key == "THIS" {
+		kind = ScopeKind::AliasBlock;
+		this_type = aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown);
+		aliases.insert("THIS".to_string(), this_type);
 	} else if ctx.file_kind == ScriptFileKind::ScriptedTriggers
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
 	{
+	} else if key == "PREV" {
+		kind = ScopeKind::AliasBlock;
+		this_type = aliases.get("PREV").copied().unwrap_or(ScopeType::Unknown);
+		aliases.insert("THIS".to_string(), this_type);
 		kind = ScopeKind::Trigger;
 	} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
@@ -1304,7 +1315,11 @@ fn create_child_scope(
 	}
 
 	if key == "if" || key == "else" {
-		if effect_context_semantics == Some(EffectContextScopeSemantics::EffectContainer) {
+		if matches!(
+			enclosing_conditional_context,
+			Some(ScopeKind::Effect | ScopeKind::ScriptedEffect)
+		) || effect_context_semantics == Some(EffectContextScopeSemantics::EffectContainer)
+		{
 			kind = ScopeKind::Effect;
 		} else {
 			kind = ScopeKind::Trigger;
@@ -1337,16 +1352,41 @@ fn create_child_scope(
 
 fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	match key {
-		"all_core_province" | "all_owned_province" | "any_owned_province" | "all_state_province" => {
-			Some(ScopeType::Province)
-		}
-		"all_subject_country" => Some(ScopeType::Country),
+		"all_core_province"
+		| "all_owned_province"
+		| "any_owned_province"
+		| "all_state_province"
+		| "every_province"
+		| "random_owned_province"
+		| "random_province" => Some(ScopeType::Province),
+		"all_subject_country"
+		| "any_country"
+		| "every_country"
+		| "every_known_country"
+		| "every_subject_country"
+		| "random_country" => Some(ScopeType::Country),
 		_ => None,
 	}
 }
 
 fn is_map_group_scope_key(
 	ctx: &BuildContext<'_>,
+fn nearest_conditional_context_kind(
+	index: &SemanticIndex,
+	mut scope_id: usize,
+) -> Option<ScopeKind> {
+	loop {
+		let scope = index.scopes.get(scope_id)?;
+		match scope.kind {
+			ScopeKind::Trigger | ScopeKind::Effect | ScopeKind::ScriptedEffect => {
+				return Some(scope.kind);
+			}
+			_ => {}
+		}
+		scope_id = scope.parent?;
+	}
+}
+
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -1374,10 +1414,15 @@ fn is_country_tag_selector(key: &str) -> bool {
 }
 
 fn is_province_id_selector(key: &str) -> bool {
-	key
-		.parse::<u32>()
-		.map(|value| value > 100)
-		.unwrap_or(false)
+	key.parse::<u32>().map(|value| value > 100).unwrap_or(false)
+}
+
+fn is_dynamic_scope_reference_key(key: &str) -> bool {
+	key.starts_with("event_target:")
+}
+
+fn is_template_param_placeholder_key(key: &str) -> bool {
+	extract_template_param_name(key).is_some()
 }
 
 fn numeric_effect_context_semantics(key: &str) -> Option<EffectContextScopeSemantics> {
@@ -1455,6 +1500,11 @@ fn file_kind_container_scope_kind(
 			if key.ends_with("_trigger") {
 				Some(ScopeKind::Trigger)
 			} else if matches!(
+		ScriptFileKind::TriggeredModifiers => match key {
+			"potential" | "trigger" => Some(ScopeKind::Trigger),
+			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
+			_ => None,
+		},
 				key,
 				"on_built"
 					| "on_destroyed"
