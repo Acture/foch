@@ -62,6 +62,20 @@ fn registered_param_contract_registry() -> &'static ParamContractRegistry {
 				conditional_required: Vec::new(),
 			},
 		);
+		registry.insert(
+			"give_claims",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec![
+					"area".to_string(),
+					"region".to_string(),
+					"province".to_string(),
+					"id".to_string(),
+				]],
+				conditional_required: Vec::new(),
+			},
+		);
 		for local_name in [
 			"add_prestige_or_monarch_power",
 			"add_army_tradition_or_mil_power",
@@ -224,6 +238,40 @@ fn registered_param_contract_registry() -> &'static ParamContractRegistry {
 					"10".to_string(),
 				],
 				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"pick_best_tags",
+			ParamContract {
+				required_all: vec![
+					"scale".to_string(),
+					"event_target_name".to_string(),
+					"global_trigger".to_string(),
+				],
+				optional: vec![
+					"scope".to_string(),
+					"1".to_string(),
+					"2".to_string(),
+					"3".to_string(),
+					"4".to_string(),
+					"5".to_string(),
+					"10".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_add_years_of_trade_income",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec![
+					"years".to_string(),
+					"value".to_string(),
+					"amount".to_string(),
+				]],
 				conditional_required: Vec::new(),
 			},
 		);
@@ -595,5 +643,8 @@ mod tests {
 			}
 		);
 		assert!(registered_param_contract("ME_give_claims").is_some());
+		assert!(registered_param_contract("give_claims").is_some());
+		assert!(registered_param_contract("pick_best_tags").is_some());
+		assert!(registered_param_contract("ME_add_years_of_trade_income").is_some());
 	}
 }
