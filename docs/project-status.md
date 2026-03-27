@@ -98,6 +98,7 @@ The current near-term execution loop is now driven by the base snapshot coverage
 - phase A: remove non-gameplay metadata/noise roots from `parse_only`
 - phase B: promote foundation gameplay roots from `parse_only` to explicit root-specific semantics
 - `ACT-127`: first common-data wave for rule-bearing roots beyond the foundation family
+- `ACT-128`: governance and estate wave for `estate_*`, `parliament_*`, and `state_edicts`
 
 The current semantic-complete gameplay roots now include:
 
@@ -105,15 +106,21 @@ The current semantic-complete gameplay roots now include:
 - `common/countries`
 - `common/disasters`
 - `common/government_mechanics`
+- `common/estate_agendas`
+- `common/estate_privileges`
+- `common/estates`
+- `common/parliament_bribes`
+- `common/parliament_issues`
 - `common/rebel_types`
 - `common/religions`
+- `common/state_edicts`
 - `common/subject_types`
 - `common/units`
 - `history/countries`
 - `history/provinces`
 - `history/wars`
 
-The next wave should move into the remaining common-data roots that still dominate `parse_only`, especially `estate_*`, `parliament_*`, `peace_treaties`, `bookmarks`, and `state_edicts`.
+The next wave should move into the remaining governance-adjacent and map/history roots that still dominate `parse_only`, especially `common/peace_treaties`, `bookmarks`, `map/random`, `common/province_names`, and `history/diplomacy`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
 
@@ -124,7 +131,7 @@ Verified locally during the latest coverage wave:
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `98` to `93` and `semantic_complete` moved from `11` to `16`
+- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `93` to `87` and `semantic_complete` moved from `16` to `22`
 
 ## Practical Reading Order
 
