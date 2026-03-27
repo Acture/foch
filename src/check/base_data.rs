@@ -1467,6 +1467,14 @@ impl CoverageAccumulator {
 				.all(|item| item.as_str() == "other")
 	}
 
+	fn has_script_file_kind(&self, kind: &str) -> bool {
+		self.script_file_kinds.contains_key(kind)
+	}
+
+	fn has_semantic_count(&self, key: &str) -> bool {
+		self.semantic_counts.contains_key(key)
+	}
+
 	fn has_graph_semantics(&self) -> bool {
 		self.semantic_counts.contains_key("symbol_definitions")
 			|| self.semantic_counts.contains_key("symbol_references")
@@ -1584,6 +1592,8 @@ fn coverage_class_for_root(root_family: &str, accumulator: &CoverageAccumulator)
 		CoverageClass::ExcludedNonGameplay
 	} else if is_merge_ready_root(root_family) {
 		CoverageClass::MergeReady
+	} else if is_semantic_complete_foundation_root(root_family, accumulator) {
+		CoverageClass::SemanticComplete
 	} else if is_parse_only_foundation_root(root_family) || accumulator.has_only_other_clausewitz()
 	{
 		CoverageClass::ParseOnly
@@ -1653,6 +1663,7 @@ fn script_file_kind_name(
 		crate::check::analyzer::semantic_index::ScriptFileKind::NewDiplomaticActions => {
 			"new_diplomatic_actions"
 		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::CountryTags => "country_tags",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Countries => "countries",
 		crate::check::analyzer::semantic_index::ScriptFileKind::CountryHistory => "country_history",
 		crate::check::analyzer::semantic_index::ScriptFileKind::ProvinceHistory => {
@@ -1660,6 +1671,13 @@ fn script_file_kind_name(
 		}
 		crate::check::analyzer::semantic_index::ScriptFileKind::Wars => "wars",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Units => "units",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Religions => "religions",
+		crate::check::analyzer::semantic_index::ScriptFileKind::SubjectTypes => "subject_types",
+		crate::check::analyzer::semantic_index::ScriptFileKind::RebelTypes => "rebel_types",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Disasters => "disasters",
+		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentMechanics => {
+			"government_mechanics"
+		}
 		crate::check::analyzer::semantic_index::ScriptFileKind::Ui => "ui",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Other => "other",
 	}
@@ -1807,7 +1825,15 @@ fn is_excluded_non_gameplay_root(root_family: &str) -> bool {
 		"licenses"
 			| "patchnotes"
 			| "ebook" | "legal_notes"
-			| "tools" | "tests"
+			| "builtin_dlc"
+			| "dlc_metadata"
+			| "hints" | "tools"
+			| "tests" | "ThirdPartyLicenses.txt"
+			| "checksum_manifest.txt"
+			| "clausewitz_branch.txt"
+			| "clausewitz_rev.txt"
+			| "eu4_branch.txt"
+			| "eu4_rev.txt"
 			| "steam.txt"
 			| "描述.txt"
 			| "launcher-settings.json"
@@ -1816,14 +1842,61 @@ fn is_excluded_non_gameplay_root(root_family: &str) -> bool {
 }
 
 fn is_parse_only_foundation_root(root_family: &str) -> bool {
-	matches!(
-		root_family,
-		"common/countries"
-			| "history/countries"
-			| "history/provinces"
-			| "history/wars"
-			| "common/units"
-	)
+	let _ = root_family;
+	false
+}
+
+fn is_semantic_complete_foundation_root(
+	root_family: &str,
+	accumulator: &CoverageAccumulator,
+) -> bool {
+	match root_family {
+		"common/country_tags" => {
+			accumulator.has_script_file_kind("country_tags")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/countries" => {
+			accumulator.has_script_file_kind("countries")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"history/countries" => {
+			accumulator.has_script_file_kind("country_history")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"history/provinces" => {
+			accumulator.has_script_file_kind("province_history")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"history/wars" => {
+			accumulator.has_script_file_kind("wars")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/units" => {
+			accumulator.has_script_file_kind("units")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/religions" => {
+			accumulator.has_script_file_kind("religions")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/subject_types" => {
+			accumulator.has_script_file_kind("subject_types")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/rebel_types" => {
+			accumulator.has_script_file_kind("rebel_types")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/disasters" => {
+			accumulator.has_script_file_kind("disasters")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/government_mechanics" => {
+			accumulator.has_script_file_kind("government_mechanics")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		_ => false,
+	}
 }
 
 fn is_merge_ready_root(root_family: &str) -> bool {
@@ -2596,8 +2669,8 @@ mod tests {
 	};
 	use crate::check::analysis_version::analysis_rules_version;
 	use crate::check::model::{
-		DocumentFamily, DocumentRecord, LocalisationDefinition, ParamContract, ScopeType,
-		SemanticIndex, SymbolDefinition, SymbolKind,
+		DocumentFamily, DocumentRecord, LocalisationDefinition, ParamContract, ResourceReference,
+		ScopeType, SemanticIndex, SymbolDefinition, SymbolKind,
 	};
 	use crate::domain::game::Game;
 	use std::path::PathBuf;
@@ -2653,13 +2726,75 @@ mod tests {
 			documents: vec![
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/country_tags/00_countries.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/countries/Sweden.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/units/swedish_tercio.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/religions/00_religion.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/subject_types/00_subject_types.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/rebel_types/independence_rebels.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/disasters/civil_war.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from(
+						"common/government_mechanics/18_parliament_vs_monarchy.txt",
+					),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/scripted_effects/test.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("history/countries/SWE - Sweden.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("history/provinces/1 - Stockholm.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("history/wars/sample.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
 				},
@@ -2696,14 +2831,124 @@ mod tests {
 			line: 1,
 			column: 1,
 		});
+		index.resource_references.extend([
+			ResourceReference {
+				key: "country_tag:SWE".to_string(),
+				value: "countries/Sweden.txt".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/country_tags/00_countries.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "graphical_culture".to_string(),
+				value: "scandinaviangfx".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/countries/Sweden.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "historical_units".to_string(),
+				value: "western_medieval_infantry".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/countries/Sweden.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "capital".to_string(),
+				value: "1".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/countries/SWE - Sweden.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "owner".to_string(),
+				value: "SWE".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/provinces/1 - Stockholm.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "unit_type".to_string(),
+				value: "western".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/units/swedish_tercio.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "center_of_religion".to_string(),
+				value: "118".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/religions/00_religion.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "copy_from".to_string(),
+				value: "default".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/subject_types/00_subject_types.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "demands_description".to_string(),
+				value: "independence_rebels_demands".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/rebel_types/independence_rebels.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "on_start".to_string(),
+				value: "civil_war.1".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/disasters/civil_war.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "gui".to_string(),
+				value: "parliament_vs_monarchy_gov_mech".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/government_mechanics/18_parliament_vs_monarchy.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "add_attacker".to_string(),
+				value: "SWE".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/wars/sample.txt"),
+				line: 1,
+				column: 1,
+			},
+		]);
 		BaseAnalysisSnapshot::from_semantic_index(
 			&Game::EuropaUniversalis4,
 			"coverage-test",
 			vec![
+				"common/country_tags/00_countries.txt".to_string(),
+				"common/countries/Sweden.txt".to_string(),
+				"common/units/swedish_tercio.txt".to_string(),
+				"common/religions/00_religion.txt".to_string(),
+				"common/subject_types/00_subject_types.txt".to_string(),
+				"common/rebel_types/independence_rebels.txt".to_string(),
+				"common/disasters/civil_war.txt".to_string(),
+				"common/government_mechanics/18_parliament_vs_monarchy.txt".to_string(),
 				"common/scripted_effects/test.txt".to_string(),
+				"history/countries/SWE - Sweden.txt".to_string(),
 				"history/provinces/1 - Stockholm.txt".to_string(),
+				"history/wars/sample.txt".to_string(),
 				"localisation/english/test_l_english.yml".to_string(),
 				"patchnotes/1_36.txt".to_string(),
+				"builtin_dlc/builtin_dlc.txt".to_string(),
+				"checksum_manifest.txt".to_string(),
 			],
 			&index,
 			Default::default(),
@@ -2763,7 +3008,69 @@ mod tests {
 			.iter()
 			.find(|item| item.root_family == "history/provinces")
 			.expect("province history coverage");
-		assert_eq!(provinces.coverage_class, CoverageClass::ParseOnly);
+		assert_eq!(provinces.coverage_class, CoverageClass::SemanticComplete);
+
+		let country_tags = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/country_tags")
+			.expect("country tags coverage");
+		assert_eq!(country_tags.coverage_class, CoverageClass::SemanticComplete);
+
+		let countries = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/countries")
+			.expect("countries coverage");
+		assert_eq!(countries.coverage_class, CoverageClass::SemanticComplete);
+
+		let units = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/units")
+			.expect("units coverage");
+		assert_eq!(units.coverage_class, CoverageClass::SemanticComplete);
+
+		let religions = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/religions")
+			.expect("religions coverage");
+		assert_eq!(religions.coverage_class, CoverageClass::SemanticComplete);
+
+		let subject_types = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/subject_types")
+			.expect("subject types coverage");
+		assert_eq!(
+			subject_types.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let rebel_types = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/rebel_types")
+			.expect("rebel types coverage");
+		assert_eq!(rebel_types.coverage_class, CoverageClass::SemanticComplete);
+
+		let disasters = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/disasters")
+			.expect("disasters coverage");
+		assert_eq!(disasters.coverage_class, CoverageClass::SemanticComplete);
+
+		let government_mechanics = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/government_mechanics")
+			.expect("government mechanics coverage");
+		assert_eq!(
+			government_mechanics.coverage_class,
+			CoverageClass::SemanticComplete
+		);
 
 		let localisation = report
 			.roots
@@ -2779,6 +3086,26 @@ mod tests {
 			.expect("patchnotes coverage");
 		assert_eq!(
 			patchnotes.coverage_class,
+			CoverageClass::ExcludedNonGameplay
+		);
+
+		let builtin_dlc = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "builtin_dlc")
+			.expect("builtin dlc coverage");
+		assert_eq!(
+			builtin_dlc.coverage_class,
+			CoverageClass::ExcludedNonGameplay
+		);
+
+		let checksum_manifest = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "checksum_manifest.txt")
+			.expect("checksum manifest coverage");
+		assert_eq!(
+			checksum_manifest.coverage_class,
 			CoverageClass::ExcludedNonGameplay
 		);
 	}

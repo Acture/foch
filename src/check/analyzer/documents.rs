@@ -538,7 +538,15 @@ fn split_csv_line(line: &str, delimiter: char) -> Vec<String> {
 
 fn is_excluded_text_path(relative_path: &Path) -> bool {
 	let normalized = relative_path.to_string_lossy().replace('\\', "/");
-	for prefix in ["licenses/", "patchnotes/", "ebook/", "legal_notes/"] {
+	for prefix in [
+		"licenses/",
+		"patchnotes/",
+		"ebook/",
+		"legal_notes/",
+		"builtin_dlc/",
+		"dlc_metadata/",
+		"hints/",
+	] {
 		if normalized.starts_with(prefix) {
 			return true;
 		}
@@ -547,10 +555,20 @@ fn is_excluded_text_path(relative_path: &Path) -> bool {
 		.file_name()
 		.and_then(|value| value.to_str())
 		.map(|value| value.to_ascii_lowercase());
-	if file_name
-		.as_deref()
-		.is_some_and(|value| matches!(value, "steam.txt" | "描述.txt"))
-	{
+	if file_name.as_deref().is_some_and(|value| {
+		matches!(
+			value,
+			"steam.txt"
+				| "描述.txt" | "thirdpartylicenses.txt"
+				| "checksum_manifest.txt"
+				| "clausewitz_branch.txt"
+				| "clausewitz_rev.txt"
+				| "eu4_branch.txt"
+				| "eu4_rev.txt"
+				| "launcher-settings.json"
+				| "settings-layout.json"
+		)
+	}) {
 		return true;
 	}
 	false
@@ -676,10 +694,24 @@ mod tests {
 		let tmp = TempDir::new().expect("temp dir");
 		fs::create_dir_all(tmp.path().join("licenses")).expect("create licenses");
 		fs::create_dir_all(tmp.path().join("patchnotes")).expect("create patchnotes");
+		fs::create_dir_all(tmp.path().join("builtin_dlc")).expect("create builtin dlc");
+		fs::create_dir_all(tmp.path().join("dlc_metadata")).expect("create dlc metadata");
+		fs::create_dir_all(tmp.path().join("hints")).expect("create hints");
 		fs::create_dir_all(tmp.path().join("events")).expect("create events");
 		fs::write(tmp.path().join("licenses").join("LUA.txt"), "license").expect("write license");
 		fs::write(tmp.path().join("patchnotes").join("1.0.txt"), "patchnotes")
 			.expect("write patchnotes");
+		fs::write(
+			tmp.path().join("builtin_dlc").join("builtin_dlc.txt"),
+			"dlc",
+		)
+		.expect("write builtin dlc");
+		fs::write(
+			tmp.path().join("dlc_metadata").join("metadata.txt"),
+			"metadata",
+		)
+		.expect("write dlc metadata");
+		fs::write(tmp.path().join("hints").join("tips.txt"), "hint").expect("write hints");
 		fs::write(
 			tmp.path().join("events").join("real.txt"),
 			"namespace = test",
@@ -697,6 +729,25 @@ mod tests {
 		fs::create_dir_all(tmp.path().join("events")).expect("create events");
 		fs::write(tmp.path().join("steam.txt"), "steam bbcode").expect("write steam");
 		fs::write(tmp.path().join("描述.txt"), "mod description").expect("write desc");
+		fs::write(
+			tmp.path().join("ThirdPartyLicenses.txt"),
+			"third party licenses",
+		)
+		.expect("write third-party licenses");
+		fs::write(tmp.path().join("checksum_manifest.txt"), "checksums")
+			.expect("write checksum manifest");
+		fs::write(tmp.path().join("clausewitz_branch.txt"), "branch")
+			.expect("write clausewitz branch");
+		fs::write(tmp.path().join("clausewitz_rev.txt"), "rev").expect("write clausewitz rev");
+		fs::write(tmp.path().join("eu4_branch.txt"), "branch").expect("write eu4 branch");
+		fs::write(tmp.path().join("eu4_rev.txt"), "rev").expect("write eu4 rev");
+		fs::write(
+			tmp.path().join("launcher-settings.json"),
+			"{\"launcher\":true}",
+		)
+		.expect("write launcher settings");
+		fs::write(tmp.path().join("settings-layout.json"), "{\"layout\":true}")
+			.expect("write settings layout");
 		fs::write(
 			tmp.path().join("events").join("real.txt"),
 			"namespace = test",
