@@ -51,11 +51,17 @@ pub enum ScriptFileKind {
 	CustomizableLocalization,
 	Missions,
 	NewDiplomaticActions,
+	CountryTags,
 	Countries,
 	CountryHistory,
 	ProvinceHistory,
 	Wars,
 	Units,
+	Religions,
+	SubjectTypes,
+	RebelTypes,
+	Disasters,
+	GovernmentMechanics,
 	Ui,
 	Other,
 }
@@ -104,6 +110,8 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/new_diplomatic_actions/") {
 		ScriptFileKind::NewDiplomaticActions
+	} else if normalized.starts_with("common/country_tags/") {
+		ScriptFileKind::CountryTags
 	} else if normalized.starts_with("common/countries/") {
 		ScriptFileKind::Countries
 	} else if normalized.starts_with("history/countries/") {
@@ -114,6 +122,16 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Wars
 	} else if normalized.starts_with("common/units/") {
 		ScriptFileKind::Units
+	} else if normalized.starts_with("common/religions/") {
+		ScriptFileKind::Religions
+	} else if normalized.starts_with("common/subject_types/") {
+		ScriptFileKind::SubjectTypes
+	} else if normalized.starts_with("common/rebel_types/") {
+		ScriptFileKind::RebelTypes
+	} else if normalized.starts_with("common/disasters/") {
+		ScriptFileKind::Disasters
+	} else if normalized.starts_with("common/government_mechanics/") {
+		ScriptFileKind::GovernmentMechanics
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
 	} else if normalized.starts_with("common/defines/") {
@@ -195,11 +213,17 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 			module_with_tail(&parts, 1, "customizable_localization")
 		}
 		ScriptFileKind::Missions => "missions".to_string(),
+		ScriptFileKind::CountryTags => module_with_tail(&parts, 2, "country_tags"),
 		ScriptFileKind::Countries => module_with_tail(&parts, 2, "countries"),
 		ScriptFileKind::CountryHistory => module_with_tail(&parts, 2, "history_countries"),
 		ScriptFileKind::ProvinceHistory => module_with_tail(&parts, 2, "history_provinces"),
 		ScriptFileKind::Wars => module_with_tail(&parts, 2, "history_wars"),
 		ScriptFileKind::Units => module_with_tail(&parts, 2, "units"),
+		ScriptFileKind::Religions => module_with_tail(&parts, 2, "religions"),
+		ScriptFileKind::SubjectTypes => module_with_tail(&parts, 2, "subject_types"),
+		ScriptFileKind::RebelTypes => module_with_tail(&parts, 2, "rebel_types"),
+		ScriptFileKind::Disasters => module_with_tail(&parts, 2, "disasters"),
+		ScriptFileKind::GovernmentMechanics => module_with_tail(&parts, 2, "government_mechanics"),
 		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
@@ -508,6 +532,7 @@ fn walk_statements(
 				record_key_usage(index, scope_id, ctx, key, key_span);
 				record_scalar_assignment(index, scope_id, ctx, key, key_span, value);
 				record_ui_scalar_semantics(index, ctx, key, key_span, value);
+				record_foundation_resource_semantics(index, scope_id, ctx, key, key_span, value);
 
 				if key == "namespace"
 					&& let Some(value_text) = scalar_text(value)
@@ -811,6 +836,275 @@ fn record_ui_scalar_semantics(
 	}
 }
 
+fn record_foundation_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	match ctx.file_kind {
+		ScriptFileKind::CountryTags => {
+			let Some(text) = scalar_text(value) else {
+				return;
+			};
+			if scope_kind(index, scope_id) != ScopeKind::File
+				|| !is_country_tag_selector(key)
+				|| !is_country_file_reference(&text)
+			{
+				return;
+			}
+			push_resource_reference(
+				index,
+				ctx,
+				key_span,
+				&format!("country_tag:{key}"),
+				text.as_str(),
+			);
+		}
+		ScriptFileKind::Countries => {
+			if scope_kind(index, scope_id) != ScopeKind::File {
+				return;
+			}
+			record_country_metadata_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::CountryHistory => {
+			let Some(text) = scalar_text(value) else {
+				return;
+			};
+			if (is_country_history_province_reference_key(key) && is_province_id_text(&text))
+				|| (is_country_history_country_reference_key(key) && is_country_tag_text(&text))
+			{
+				push_resource_reference(index, ctx, key_span, key, text.as_str());
+			}
+		}
+		ScriptFileKind::ProvinceHistory => {
+			let Some(text) = scalar_text(value) else {
+				return;
+			};
+			if is_province_history_country_reference_key(key) && is_country_tag_text(&text) {
+				push_resource_reference(index, ctx, key_span, key, text.as_str());
+			}
+		}
+		ScriptFileKind::Wars => {
+			let Some(text) = scalar_text(value) else {
+				return;
+			};
+			if (is_war_history_country_reference_key(key) && is_country_tag_text(&text))
+				|| (is_war_history_province_reference_key(key) && is_province_id_text(&text))
+			{
+				push_resource_reference(index, ctx, key_span, key, text.as_str());
+			}
+		}
+		ScriptFileKind::Units => {
+			if scope_kind(index, scope_id) != ScopeKind::File {
+				return;
+			}
+			record_unit_definition_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::Religions => {
+			record_religion_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::SubjectTypes => {
+			record_subject_type_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::RebelTypes => {
+			record_rebel_type_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::Disasters => {
+			record_disaster_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::GovernmentMechanics => {
+			record_government_mechanic_resource_semantics(index, ctx, key, key_span, value);
+		}
+		_ => {}
+	}
+}
+
+fn push_resource_reference(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key_span: &SpanRange,
+	key: &str,
+	value: &str,
+) {
+	index.resource_references.push(ResourceReference {
+		key: key.to_string(),
+		value: value.to_string(),
+		mod_id: ctx.mod_id.to_string(),
+		path: ctx.path.to_path_buf(),
+		line: key_span.start.line,
+		column: key_span.start.column,
+	});
+}
+
+fn record_country_metadata_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if let Some(text) = scalar_text(value)
+		&& is_country_metadata_scalar_reference_key(key)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+
+	let Some(reference_key) = country_metadata_block_reference_key(key) else {
+		return;
+	};
+	for item in extract_block_scalar_items(value) {
+		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
+	}
+}
+
+fn record_unit_definition_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_unit_definition_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_religion_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if let Some(text) = scalar_text(value)
+		&& ((key == "center_of_religion" && is_province_id_text(&text))
+			|| (key == "papal_tag" && is_country_tag_text(&text)))
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+
+	let Some(reference_key) = religion_block_reference_key(key) else {
+		return;
+	};
+	for item in extract_block_scalar_items(value) {
+		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
+	}
+}
+
+fn record_subject_type_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_subject_type_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_rebel_type_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_rebel_type_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_disaster_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if let Some(text) = scalar_text(value)
+		&& is_disaster_scalar_reference_key(key)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+
+	let Some(reference_key) = disaster_block_reference_key(key) else {
+		return;
+	};
+	for item in extract_block_scalar_items(value) {
+		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
+	}
+}
+
+fn record_government_mechanic_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if let Some(text) = scalar_text(value)
+		&& is_government_mechanic_scalar_reference_key(key)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+
+	if key != "country_event" {
+		return;
+	}
+	for item in extract_named_block_scalar_items(value, "id") {
+		push_resource_reference(index, ctx, key_span, key, item.as_str());
+	}
+}
+
+fn extract_block_scalar_items(value: &AstValue) -> Vec<String> {
+	let AstValue::Block { items, .. } = value else {
+		return Vec::new();
+	};
+	let mut values: Vec<String> = Vec::new();
+	for item in items {
+		match item {
+			AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. } => {
+				if let Some(text) = scalar_text(value) {
+					values.push(text);
+				}
+			}
+			AstStatement::Comment { .. } => {}
+		}
+	}
+	values
+}
+
+fn extract_named_block_scalar_items(value: &AstValue, key_name: &str) -> Vec<String> {
+	let AstValue::Block { items, .. } = value else {
+		return Vec::new();
+	};
+	let mut values: Vec<String> = Vec::new();
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			continue;
+		};
+		if key == key_name
+			&& let Some(text) = scalar_text(value)
+		{
+			values.push(text);
+		}
+	}
+	values
+}
+
 fn record_ui_block_semantics(
 	index: &mut SemanticIndex,
 	ctx: &BuildContext<'_>,
@@ -982,6 +1276,7 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::CbTypes
 		| ScriptFileKind::GovernmentNames
 		| ScriptFileKind::CustomizableLocalization
+		| ScriptFileKind::CountryTags
 		| ScriptFileKind::Countries
 		| ScriptFileKind::CountryHistory => ScopeType::Country,
 		ScriptFileKind::Missions | ScriptFileKind::NewDiplomaticActions => ScopeType::Country,
@@ -1448,8 +1743,105 @@ fn looks_like_map_group_key(key: &str) -> bool {
 		|| key.ends_with("_provincegroup")
 }
 
+fn is_country_file_reference(value: &str) -> bool {
+	value.starts_with("countries/") && value.ends_with(".txt")
+}
+
+fn is_country_tag_text(value: &str) -> bool {
+	value.len() == 3 && value.chars().all(|ch| ch.is_ascii_uppercase())
+}
+
+fn is_province_id_text(value: &str) -> bool {
+	value.parse::<u32>().is_ok_and(|id| id > 0)
+}
+
+fn is_country_history_province_reference_key(key: &str) -> bool {
+	matches!(key, "capital")
+}
+
+fn is_country_history_country_reference_key(key: &str) -> bool {
+	matches!(key, "country_of_origin")
+}
+
+fn is_province_history_country_reference_key(key: &str) -> bool {
+	matches!(key, "add_core" | "owner" | "controller")
+}
+
+fn is_war_history_country_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"add_attacker" | "add_defender" | "rem_attacker" | "rem_defender" | "country"
+	)
+}
+
+fn is_war_history_province_reference_key(key: &str) -> bool {
+	matches!(key, "location")
+}
+
 fn is_country_tag_selector(key: &str) -> bool {
 	key.len() == 3 && key.chars().all(|ch| ch.is_ascii_uppercase())
+}
+
+fn is_country_metadata_scalar_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"graphical_culture" | "second_graphical_culture" | "preferred_religion"
+	)
+}
+
+fn country_metadata_block_reference_key(key: &str) -> Option<&'static str> {
+	match key {
+		"historical_idea_groups" => Some("historical_idea_groups"),
+		"historical_units" => Some("historical_units"),
+		_ => None,
+	}
+}
+
+fn is_unit_definition_reference_key(key: &str) -> bool {
+	matches!(key, "type" | "unit_type")
+}
+
+fn religion_block_reference_key(key: &str) -> Option<&'static str> {
+	match key {
+		"allowed_conversion" => Some("allowed_conversion"),
+		"heretic" => Some("heretic"),
+		_ => None,
+	}
+}
+
+fn is_subject_type_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"copy_from"
+			| "sprite"
+			| "diplomacy_overlord_sprite"
+			| "diplomacy_subject_sprite"
+			| "overlord_opinion_modifier"
+			| "subject_opinion_modifier"
+	)
+}
+
+fn is_rebel_type_reference_key(key: &str) -> bool {
+	matches!(key, "gfx_type" | "demands_description")
+}
+
+fn is_disaster_scalar_reference_key(key: &str) -> bool {
+	matches!(key, "on_start" | "on_end" | "has_disaster")
+}
+
+fn disaster_block_reference_key(key: &str) -> Option<&'static str> {
+	match key {
+		"events" => Some("event"),
+		"random_events" => Some("event"),
+		_ => None,
+	}
+}
+
+fn is_government_mechanic_scalar_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"gui" | "mechanic_type" | "power_type" | "custom_tooltip"
+	)
 }
 
 fn is_province_id_selector(key: &str) -> bool {
@@ -1569,6 +1961,40 @@ fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Optio
 		},
 		ScriptFileKind::GovernmentNames | ScriptFileKind::CustomizableLocalization => match key {
 			"trigger" => Some(ScopeKind::Trigger),
+			_ => None,
+		},
+		ScriptFileKind::Religions => match key {
+			"potential" | "allow" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"effect" | "on_convert" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::SubjectTypes => match key {
+			"is_potential_overlord" | "can_fight" | "can_rival" | "can_ally" | "can_marry" => {
+				Some(ScopeKind::Trigger)
+			}
+			"modifier_subject" | "modifier_overlord" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::RebelTypes => match key {
+			"spawn_chance"
+			| "movement_evaluation"
+			| "can_negotiate_trigger"
+			| "can_enforce_trigger" => Some(ScopeKind::Trigger),
+			"siege_won_effect" | "demands_enforced_effect" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::Disasters => match key {
+			"potential" | "can_start" | "can_stop" | "can_end" => Some(ScopeKind::Trigger),
+			"on_start" | "on_end" | "on_monthly" => Some(ScopeKind::Effect),
+			"progress" | "modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::GovernmentMechanics => match key {
+			"available" | "trigger" => Some(ScopeKind::Trigger),
+			"on_max_reached" | "on_min_reached" => Some(ScopeKind::Effect),
+			"powers" | "scaled_modifier" | "reverse_scaled_modifier" | "modifier" => {
+				Some(ScopeKind::Block)
+			}
 			_ => None,
 		},
 		_ => None,
@@ -2235,6 +2661,7 @@ mod tests {
 	use crate::check::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 	use crate::check::model::{AnalysisMode, ScopeKind, ScopeType, SymbolKind};
 	use std::fs;
+	use std::path::Path;
 	use tempfile::TempDir;
 
 	fn full_army_tradition_switch_effect(name: &str) -> String {
@@ -2666,6 +3093,10 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::ScriptedTriggers
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new("common/country_tags/00_countries.txt")),
+			ScriptFileKind::CountryTags
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("common/countries/00_countries.txt")),
 			ScriptFileKind::Countries
 		);
@@ -2685,6 +3116,465 @@ persia_indian_hegemony_decision_coup_effect = {
 			classify_script_file(std::path::Path::new("common/units/00_units.txt")),
 			ScriptFileKind::Units
 		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/religions/00_religion.txt")),
+			ScriptFileKind::Religions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/subject_types/00_subject_types.txt"
+			)),
+			ScriptFileKind::SubjectTypes
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/rebel_types/independence_rebels.txt"
+			)),
+			ScriptFileKind::RebelTypes
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/disasters/civil_war.txt")),
+			ScriptFileKind::Disasters
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/government_mechanics/18_parliament_vs_monarchy.txt"
+			)),
+			ScriptFileKind::GovernmentMechanics
+		);
+	}
+
+	#[test]
+	fn foundation_roots_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("country_tags"))
+			.expect("create country tags");
+		fs::create_dir_all(mod_root.join("common").join("countries")).expect("create countries");
+		fs::create_dir_all(mod_root.join("common").join("units")).expect("create units");
+		fs::create_dir_all(mod_root.join("history").join("countries"))
+			.expect("create country history");
+		fs::create_dir_all(mod_root.join("history").join("provinces"))
+			.expect("create province history");
+		fs::create_dir_all(mod_root.join("history").join("wars")).expect("create wars");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("country_tags")
+				.join("00_countries.txt"),
+			"SWE = \"countries/Sweden.txt\"\n",
+		)
+		.expect("write country tags");
+		fs::write(
+			mod_root.join("common").join("countries").join("Sweden.txt"),
+			r#"
+graphical_culture = scandinaviangfx
+preferred_religion = protestant
+historical_idea_groups = {
+	quality_ideas
+	offensive_ideas
+}
+historical_units = {
+	western_medieval_infantry
+}
+"#,
+		)
+		.expect("write countries");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("units")
+				.join("swedish_tercio.txt"),
+			"type = infantry
+unit_type = western
+offensive_fire = 2
+defensive_shock = 1
+",
+		)
+		.expect("write units");
+		fs::write(
+			mod_root
+				.join("history")
+				.join("countries")
+				.join("SWE - Sweden.txt"),
+			r#"
+capital = 1
+1448.6.20 = {
+	queen = {
+		country_of_origin = SWE
+	}
+}
+"#,
+		)
+		.expect("write country history");
+		fs::write(
+			mod_root
+				.join("history")
+				.join("provinces")
+				.join("1-Uppland.txt"),
+			"add_core = SWE\nowner = SWE\ncontroller = SWE\n",
+		)
+		.expect("write province history");
+		fs::write(
+			mod_root
+				.join("history")
+				.join("wars")
+				.join("afghan_maratha.txt"),
+			r#"
+1758.1.1 = {
+	add_attacker = AFG
+	add_defender = MAR
+}
+1761.1.14 = {
+	battle = {
+		location = 521
+		attacker = { country = AFG }
+		defender = { country = MAR }
+	}
+}
+"#,
+		)
+		.expect("write war history");
+
+		let files = vec![
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("country_tags")
+					.join("00_countries.txt"),
+			)
+			.expect("parsed country tags"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root.join("common").join("countries").join("Sweden.txt"),
+			)
+			.expect("parsed countries"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("units")
+					.join("swedish_tercio.txt"),
+			)
+			.expect("parsed units"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("history")
+					.join("countries")
+					.join("SWE - Sweden.txt"),
+			)
+			.expect("parsed country history"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("history")
+					.join("provinces")
+					.join("1-Uppland.txt"),
+			)
+			.expect("parsed province history"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("history")
+					.join("wars")
+					.join("afghan_maratha.txt"),
+			)
+			.expect("parsed war history"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/country_tags/00_countries.txt")
+				&& reference.key == "country_tag:SWE"
+				&& reference.value == "countries/Sweden.txt"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/countries/Sweden.txt")
+				&& reference.key == "graphical_culture"
+				&& reference.value == "scandinaviangfx"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/countries/Sweden.txt")
+				&& reference.key == "preferred_religion"
+				&& reference.value == "protestant"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/countries/Sweden.txt")
+				&& reference.key == "historical_idea_groups"
+				&& reference.value == "quality_ideas"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/countries/Sweden.txt")
+				&& reference.key == "historical_units"
+				&& reference.value == "western_medieval_infantry"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/countries/SWE - Sweden.txt")
+				&& reference.key == "capital"
+				&& reference.value == "1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/countries/SWE - Sweden.txt")
+				&& reference.key == "country_of_origin"
+				&& reference.value == "SWE"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/provinces/1-Uppland.txt")
+				&& reference.key == "owner"
+				&& reference.value == "SWE"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/wars/afghan_maratha.txt")
+				&& reference.key == "add_attacker"
+				&& reference.value == "AFG"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/wars/afghan_maratha.txt")
+				&& reference.key == "location"
+				&& reference.value == "521"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/units/swedish_tercio.txt")
+				&& reference.key == "type"
+				&& reference.value == "infantry"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/units/swedish_tercio.txt")
+				&& reference.key == "unit_type"
+				&& reference.value == "western"
+		}));
+	}
+
+	#[test]
+	fn common_data_roots_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("religions")).expect("create religions");
+		fs::create_dir_all(mod_root.join("common").join("subject_types"))
+			.expect("create subject types");
+		fs::create_dir_all(mod_root.join("common").join("rebel_types"))
+			.expect("create rebel types");
+		fs::create_dir_all(mod_root.join("common").join("disasters")).expect("create disasters");
+		fs::create_dir_all(mod_root.join("common").join("government_mechanics"))
+			.expect("create government mechanics");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("religions")
+				.join("00_religion.txt"),
+			r#"
+christian = {
+	center_of_religion = 118
+	catholic = {
+		allowed_conversion = {
+			protestant
+		}
+		heretic = { hussite }
+		papacy = {
+			papal_tag = PAP
+		}
+	}
+}
+"#,
+		)
+		.expect("write religions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("subject_types")
+				.join("00_subject_types.txt"),
+			r#"
+default = {
+	sprite = GFX_icon_vassal
+	diplomacy_overlord_sprite = GFX_diplomacy_leadvassal
+}
+march = {
+	copy_from = default
+	subject_opinion_modifier = march_subject
+}
+"#,
+		)
+		.expect("write subject types");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("rebel_types")
+				.join("independence_rebels.txt"),
+			r#"
+independence_rebels = {
+	gfx_type = culture_province
+	demands_description = "independence_rebels_demands"
+}
+"#,
+		)
+		.expect("write rebel types");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("disasters")
+				.join("civil_war.txt"),
+			r#"
+civil_war = {
+	on_start = civil_war.1
+	on_end = civil_war.100
+	on_monthly = {
+		events = {
+			civil_war.2
+		}
+		random_events = {
+			100 = civil_war.3
+		}
+	}
+	can_start = {
+		NOT = { has_disaster = court_and_country }
+	}
+}
+"#,
+		)
+		.expect("write disasters");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("government_mechanics")
+				.join("18_parliament_vs_monarchy.txt"),
+			r#"
+parliament_vs_monarchy_mechanic = {
+	available = {
+		has_dlc = "Domination"
+	}
+	powers = {
+		governmental_power = {
+			gui = parliament_vs_monarchy_gov_mech
+			scaled_modifier = {
+				trigger = {
+					has_government_power = {
+						mechanic_type = parliament_vs_monarchy_mechanic
+						power_type = governmental_power
+					}
+				}
+			}
+			on_max_reached = {
+				custom_tooltip = parliament_vs_monarchy_mechanic_at
+				hidden_effect = {
+					country_event = {
+						id = flavor_gbr.113
+					}
+				}
+			}
+		}
+	}
+}
+"#,
+		)
+		.expect("write government mechanics");
+
+		let files = vec![
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("religions")
+					.join("00_religion.txt"),
+			)
+			.expect("parsed religions"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("subject_types")
+					.join("00_subject_types.txt"),
+			)
+			.expect("parsed subject types"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("rebel_types")
+					.join("independence_rebels.txt"),
+			)
+			.expect("parsed rebel types"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("disasters")
+					.join("civil_war.txt"),
+			)
+			.expect("parsed disasters"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("government_mechanics")
+					.join("18_parliament_vs_monarchy.txt"),
+			)
+			.expect("parsed government mechanics"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/religions/00_religion.txt")
+				&& reference.key == "center_of_religion"
+				&& reference.value == "118"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/religions/00_religion.txt")
+				&& reference.key == "allowed_conversion"
+				&& reference.value == "protestant"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/religions/00_religion.txt")
+				&& reference.key == "papal_tag"
+				&& reference.value == "PAP"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/subject_types/00_subject_types.txt")
+				&& reference.key == "copy_from"
+				&& reference.value == "default"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/subject_types/00_subject_types.txt")
+				&& reference.key == "sprite"
+				&& reference.value == "GFX_icon_vassal"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/rebel_types/independence_rebels.txt")
+				&& reference.key == "demands_description"
+				&& reference.value == "independence_rebels_demands"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/disasters/civil_war.txt")
+				&& reference.key == "on_start"
+				&& reference.value == "civil_war.1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/disasters/civil_war.txt")
+				&& reference.key == "event"
+				&& reference.value == "civil_war.3"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/government_mechanics/18_parliament_vs_monarchy.txt")
+				&& reference.key == "gui"
+				&& reference.value == "parliament_vs_monarchy_gov_mech"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/government_mechanics/18_parliament_vs_monarchy.txt")
+				&& reference.key == "country_event"
+				&& reference.value == "flavor_gbr.113"
+		}));
 	}
 
 	#[test]

@@ -88,29 +88,43 @@ These remain intentionally separate from the shipped v1 merge path:
 - Graph G2 fine-grained grouping and richer viewers
 - Simplify R2 beyond base-equivalent copy removal
 
-## Current Semantic Cleanup Loop
+## Current Coverage Reset Loop
 
-The shipped merge-capable surface does not mean semantic cleanup is done.
+The shipped merge-capable surface does not mean the EU4 base game is semantically covered.
 
-The current near-term execution loop is still driven by real EU4 playset noise reduction:
+The current near-term execution loop is now driven by the base snapshot coverage matrix rather than only by finding buckets:
 
-- `ACT-32`: tighten scripted-effect param contracts and `S004`
-- `ACT-31`: model unresolved wrapper semantics for `S002`
-- `ACT-28`: reduce shared scripted-effect `A001`
+- `ACT-126`: coverage reset foundation wave for base-game roots
+- phase A: remove non-gameplay metadata/noise roots from `parse_only`
+- phase B: promote foundation gameplay roots from `parse_only` to explicit root-specific semantics
+- `ACT-127`: first common-data wave for rule-bearing roots beyond the foundation family
 
-Issue closure for those tracks should be based on saved real-smoke artifacts, not minimized corpus tests alone:
+The current semantic-complete gameplay roots now include:
 
-- generate the run summary with `scripts/eu4_real_smoke.py`
-- compare baseline versus candidate with `scripts/eu4_real_smoke_compare.py`
-- close an issue only after the full-playset counts and hotspot paths move in the intended direction
+- `common/country_tags`
+- `common/countries`
+- `common/disasters`
+- `common/government_mechanics`
+- `common/rebel_types`
+- `common/religions`
+- `common/subject_types`
+- `common/units`
+- `history/countries`
+- `history/provinces`
+- `history/wars`
+
+The next wave should move into the remaining common-data roots that still dominate `parse_only`, especially `estate_*`, `parliament_*`, `peace_treaties`, `bookmarks`, and `state_edicts`.
+
+Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
 
 ## Verification
 
-Verified locally during the latest architecture cleanup:
+Verified locally during the latest coverage wave:
 
-- `cargo fmt --check`
+- `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
+- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `98` to `93` and `semantic_complete` moved from `11` to `16`
 
 ## Practical Reading Order
 

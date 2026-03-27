@@ -1790,14 +1790,14 @@ fn data_build_emits_progress_and_profile_output() {
 	}
 	assert!(profile["encoded_size_bytes"].as_u64().unwrap_or(0) > 0);
 	assert_eq!(profile["inventory_file_count"], 3);
-	assert_eq!(profile["document_count"], 3);
+	assert_eq!(profile["document_count"], 2);
 	assert_eq!(
 		profile["parse_stats"]["clausewitz_mainline"]["documents"],
 		1
 	);
 	assert_eq!(profile["parse_stats"]["localisation"]["documents"], 1);
 	assert_eq!(profile["parse_stats"]["csv"]["documents"], 0);
-	assert_eq!(profile["parse_stats"]["json"]["documents"], 1);
+	assert_eq!(profile["parse_stats"]["json"]["documents"], 0);
 	assert_eq!(
 		profile["encoded_sections"]
 			.as_array()
