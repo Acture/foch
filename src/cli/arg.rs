@@ -3,7 +3,12 @@ use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Foch: Paradox Mod 静态分析工具", long_about = None)]
+#[command(
+	author,
+	version,
+	about = "Foch: Paradox Mod 分析与合并工具",
+	long_about = None
+)]
 pub struct FochCli {
 	#[command(subcommand)]
 	pub command: FochCliCommands,

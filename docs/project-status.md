@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 ## Summary
 
@@ -60,7 +60,7 @@ The simplify pipeline can:
 
 ## Current Internal Shape
 
-The `src/check/` layer is now organized by product line:
+The `src/check/` layer is organized around six product-line subsystems:
 
 - `workspace/`
 - `analyzer/`
@@ -68,6 +68,15 @@ The `src/check/` layer is now organized by product line:
 - `merge/`
 - `graph/`
 - `simplify/`
+
+Two shared support modules remain at the root on purpose:
+
+- `model`
+- `base_data`
+
+The analyzer support files now live physically under `src/check/analyzer/`, while legacy top-level module paths such as `check::analysis` and `check::semantic_index` remain as thin compatibility wrappers for the library surface.
+
+`mod_cache` is no longer a standalone top-level subsystem; it now lives under `workspace/cache`.
 
 The old flat `engine.rs` / `resolution.rs` / `graph_g1.rs` structure has been retired.
 
@@ -79,12 +88,29 @@ These remain intentionally separate from the shipped v1 merge path:
 - Graph G2 fine-grained grouping and richer viewers
 - Simplify R2 beyond base-equivalent copy removal
 
+## Current Semantic Cleanup Loop
+
+The shipped merge-capable surface does not mean semantic cleanup is done.
+
+The current near-term execution loop is still driven by real EU4 playset noise reduction:
+
+- `ACT-32`: tighten scripted-effect param contracts and `S004`
+- `ACT-31`: model unresolved wrapper semantics for `S002`
+- `ACT-28`: reduce shared scripted-effect `A001`
+
+Issue closure for those tracks should be based on saved real-smoke artifacts, not minimized corpus tests alone:
+
+- generate the run summary with `scripts/eu4_real_smoke.py`
+- compare baseline versus candidate with `scripts/eu4_real_smoke_compare.py`
+- close an issue only after the full-playset counts and hotspot paths move in the intended direction
+
 ## Verification
 
 Verified locally during the latest architecture cleanup:
 
-- `cargo test --offline`
-- `cargo clippy --all-targets`
+- `cargo fmt --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
 
 ## Practical Reading Order
 
