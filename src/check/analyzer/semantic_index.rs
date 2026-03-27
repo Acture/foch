@@ -62,6 +62,12 @@ pub enum ScriptFileKind {
 	RebelTypes,
 	Disasters,
 	GovernmentMechanics,
+	EstateAgendas,
+	EstatePrivileges,
+	Estates,
+	ParliamentBribes,
+	ParliamentIssues,
+	StateEdicts,
 	Ui,
 	Other,
 }
@@ -132,6 +138,18 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Disasters
 	} else if normalized.starts_with("common/government_mechanics/") {
 		ScriptFileKind::GovernmentMechanics
+	} else if normalized.starts_with("common/estate_agendas/") {
+		ScriptFileKind::EstateAgendas
+	} else if normalized.starts_with("common/estate_privileges/") {
+		ScriptFileKind::EstatePrivileges
+	} else if normalized.starts_with("common/estates/") {
+		ScriptFileKind::Estates
+	} else if normalized.starts_with("common/parliament_bribes/") {
+		ScriptFileKind::ParliamentBribes
+	} else if normalized.starts_with("common/parliament_issues/") {
+		ScriptFileKind::ParliamentIssues
+	} else if normalized.starts_with("common/state_edicts/") {
+		ScriptFileKind::StateEdicts
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
 	} else if normalized.starts_with("common/defines/") {
@@ -224,6 +242,12 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::RebelTypes => module_with_tail(&parts, 2, "rebel_types"),
 		ScriptFileKind::Disasters => module_with_tail(&parts, 2, "disasters"),
 		ScriptFileKind::GovernmentMechanics => module_with_tail(&parts, 2, "government_mechanics"),
+		ScriptFileKind::EstateAgendas => module_with_tail(&parts, 2, "estate_agendas"),
+		ScriptFileKind::EstatePrivileges => module_with_tail(&parts, 2, "estate_privileges"),
+		ScriptFileKind::Estates => module_with_tail(&parts, 2, "estates"),
+		ScriptFileKind::ParliamentBribes => module_with_tail(&parts, 2, "parliament_bribes"),
+		ScriptFileKind::ParliamentIssues => module_with_tail(&parts, 2, "parliament_issues"),
+		ScriptFileKind::StateEdicts => module_with_tail(&parts, 2, "state_edicts"),
 		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
@@ -918,6 +942,24 @@ fn record_foundation_resource_semantics(
 		ScriptFileKind::GovernmentMechanics => {
 			record_government_mechanic_resource_semantics(index, ctx, key, key_span, value);
 		}
+		ScriptFileKind::EstateAgendas => {
+			record_estate_agenda_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::EstatePrivileges => {
+			record_estate_privilege_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::Estates => {
+			record_estate_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::ParliamentBribes => {
+			record_parliament_bribe_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::ParliamentIssues => {
+			record_parliament_issue_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ScriptFileKind::StateEdicts => {
+			record_state_edict_resource_semantics(index, ctx, key, key_span, value);
+		}
 		_ => {}
 	}
 }
@@ -1066,6 +1108,108 @@ fn record_government_mechanic_resource_semantics(
 	}
 	for item in extract_named_block_scalar_items(value, "id") {
 		push_resource_reference(index, ctx, key_span, key, item.as_str());
+	}
+}
+
+fn record_estate_agenda_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_estate_agenda_scalar_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_estate_privilege_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if let Some(text) = scalar_text(value)
+		&& is_estate_privilege_scalar_reference_key(key)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+
+	if key != "mechanics" {
+		return;
+	}
+	for item in extract_block_scalar_items(value) {
+		push_resource_reference(index, ctx, key_span, key, item.as_str());
+	}
+}
+
+fn record_estate_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if let Some(text) = scalar_text(value)
+		&& is_estate_scalar_reference_key(key)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+
+	let Some(reference_key) = estate_block_reference_key(key) else {
+		return;
+	};
+	for item in extract_block_scalar_items(value) {
+		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
+	}
+}
+
+fn record_parliament_bribe_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_parliament_bribe_scalar_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_parliament_issue_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_parliament_issue_scalar_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_state_edict_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_state_edict_scalar_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
 	}
 }
 
@@ -1278,13 +1422,19 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::CustomizableLocalization
 		| ScriptFileKind::CountryTags
 		| ScriptFileKind::Countries
-		| ScriptFileKind::CountryHistory => ScopeType::Country,
+		| ScriptFileKind::CountryHistory
+		| ScriptFileKind::EstateAgendas
+		| ScriptFileKind::EstatePrivileges
+		| ScriptFileKind::Estates
+		| ScriptFileKind::ParliamentBribes
+		| ScriptFileKind::ParliamentIssues => ScopeType::Country,
 		ScriptFileKind::Missions | ScriptFileKind::NewDiplomaticActions => ScopeType::Country,
 		ScriptFileKind::Buildings
 		| ScriptFileKind::GreatProjects
 		| ScriptFileKind::Institutions
 		| ScriptFileKind::ProvinceTriggeredModifiers
-		| ScriptFileKind::ProvinceHistory => ScopeType::Province,
+		| ScriptFileKind::ProvinceHistory
+		| ScriptFileKind::StateEdicts => ScopeType::Province,
 		ScriptFileKind::TriggeredModifiers => ScopeType::Country,
 		_ => ScopeType::Unknown,
 	}
@@ -1844,6 +1994,50 @@ fn is_government_mechanic_scalar_reference_key(key: &str) -> bool {
 	)
 }
 
+fn is_estate_agenda_scalar_reference_key(key: &str) -> bool {
+	matches!(key, "estate" | "custom_tooltip" | "tooltip")
+}
+
+fn is_estate_privilege_scalar_reference_key(key: &str) -> bool {
+	matches!(key, "icon" | "custom_tooltip" | "estate")
+}
+
+fn is_estate_scalar_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"custom_name" | "custom_desc" | "starting_reform" | "independence_government"
+	)
+}
+
+fn estate_block_reference_key(key: &str) -> Option<&'static str> {
+	match key {
+		"privileges" => Some("privileges"),
+		"agendas" => Some("agendas"),
+		_ => None,
+	}
+}
+
+fn is_parliament_bribe_scalar_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"name" | "estate" | "mechanic_type" | "power_type" | "type"
+	)
+}
+
+fn is_parliament_issue_scalar_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"parliament_action" | "issue" | "estate" | "custom_tooltip"
+	)
+}
+
+fn is_state_edict_scalar_reference_key(key: &str) -> bool {
+	matches!(
+		key,
+		"tooltip" | "custom_trigger_tooltip" | "has_state_edict"
+	)
+}
+
 fn is_province_id_selector(key: &str) -> bool {
 	key.parse::<u32>().map(|value| value > 100).unwrap_or(false)
 }
@@ -1995,6 +2189,64 @@ fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Optio
 			"powers" | "scaled_modifier" | "reverse_scaled_modifier" | "modifier" => {
 				Some(ScopeKind::Block)
 			}
+			_ => None,
+		},
+		ScriptFileKind::EstateAgendas => match key {
+			"can_select"
+			| "task_requirements"
+			| "fail_if"
+			| "invalid_trigger"
+			| "provinces_to_highlight"
+			| "selection_weight" => Some(ScopeKind::Trigger),
+			"pre_effect" | "immediate_effect" | "on_invalid" | "task_completed_effect" => {
+				Some(ScopeKind::Effect)
+			}
+			_ => None,
+		},
+		ScriptFileKind::EstatePrivileges => match key {
+			"is_valid" | "can_select" | "can_revoke" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"on_granted"
+			| "on_revoked"
+			| "on_invalid"
+			| "on_granted_province"
+			| "on_revoked_province"
+			| "on_invalid_province"
+			| "on_cooldown_expires" => Some(ScopeKind::Effect),
+			"benefits"
+			| "penalties"
+			| "modifier_by_land_ownership"
+			| "mechanics"
+			| "conditional_modifier"
+			| "influence_scaled_conditional_modifier"
+			| "loyalty_scaled_conditional_modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::Estates => match key {
+			"trigger" => Some(ScopeKind::Trigger),
+			"country_modifier_happy"
+			| "country_modifier_neutral"
+			| "country_modifier_angry"
+			| "land_ownership_modifier"
+			| "province_independence_weight"
+			| "influence_modifier"
+			| "loyalty_modifier"
+			| "influence_from_dev_modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::ParliamentBribes => match key {
+			"trigger" | "chance" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"effect" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::ParliamentIssues => match key {
+			"allow" | "chance" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"effect" | "on_issue_taken" => Some(ScopeKind::Effect),
+			"modifier" | "influence_scaled_modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::StateEdicts => match key {
+			"potential" | "allow" | "notify_trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
 		_ => None,
@@ -3142,6 +3394,40 @@ persia_indian_hegemony_decision_coup_effect = {
 			)),
 			ScriptFileKind::GovernmentMechanics
 		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/estate_agendas/00_generic_agendas.txt"
+			)),
+			ScriptFileKind::EstateAgendas
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/estate_privileges/01_church_privileges.txt"
+			)),
+			ScriptFileKind::EstatePrivileges
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/estates/01_church.txt")),
+			ScriptFileKind::Estates
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/parliament_bribes/administrative_support.txt"
+			)),
+			ScriptFileKind::ParliamentBribes
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/parliament_issues/00_adm_parliament_issues.txt"
+			)),
+			ScriptFileKind::ParliamentIssues
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/state_edicts/edict_of_governance.txt"
+			)),
+			ScriptFileKind::StateEdicts
+		);
 	}
 
 	#[test]
@@ -3574,6 +3860,262 @@ parliament_vs_monarchy_mechanic = {
 			reference.path == Path::new("common/government_mechanics/18_parliament_vs_monarchy.txt")
 				&& reference.key == "country_event"
 				&& reference.value == "flavor_gbr.113"
+		}));
+	}
+
+	#[test]
+	fn governance_roots_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		for root in [
+			"common/estate_agendas",
+			"common/estate_privileges",
+			"common/estates",
+			"common/parliament_bribes",
+			"common/parliament_issues",
+			"common/state_edicts",
+		] {
+			fs::create_dir_all(mod_root.join(root)).expect("create governance root");
+		}
+		fs::write(
+			mod_root
+				.join("common")
+				.join("estate_agendas")
+				.join("00_generic_agendas.txt"),
+			r#"
+church_diplomatic_consultation_agenda = {
+	estate = clergy
+	can_select = {
+		custom_tooltip = agenda_can_select_tt
+	}
+	task_requirements = {
+		estate = clergy
+	}
+	pre_effect = {
+		custom_tooltip = agenda_pre_tt
+	}
+	task_completed_effect = {
+		custom_tooltip = agenda_done_tt
+	}
+}
+"#,
+		)
+		.expect("write estate agendas");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("estate_privileges")
+				.join("01_church_privileges.txt"),
+			r#"
+religious_diplomats = {
+	icon = privilege_religious_diplomats
+	estate = clergy
+	mechanics = {
+		devotion
+		papal_influence
+	}
+	benefits = {
+		custom_tooltip = privilege_benefits_tt
+	}
+}
+"#,
+		)
+		.expect("write estate privileges");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("estates")
+				.join("01_church.txt"),
+			r#"
+clergy = {
+	custom_name = estate_clergy_custom_name
+	custom_desc = estate_clergy_custom_desc
+	privileges = {
+		religious_diplomats
+	}
+	agendas = {
+		church_diplomatic_consultation_agenda
+	}
+	starting_reform = monarchy_reform
+	independence_government = theocracy
+	trigger = {
+		has_dlc = "Domination"
+	}
+}
+"#,
+		)
+		.expect("write estates");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("parliament_bribes")
+				.join("administrative_support.txt"),
+			r#"
+administrative_support = {
+	name = parliament_bribe_admin_support
+	estate = clergy
+	mechanic_type = parliament_vs_monarchy_mechanic
+	power_type = governmental_power
+	type = monarch_power
+	effect = {
+		add_adm_power = 50
+	}
+}
+"#,
+		)
+		.expect("write parliament bribes");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("parliament_issues")
+				.join("00_adm_parliament_issues.txt"),
+			r#"
+expand_bureaucracy_issue = {
+	parliament_action = strengthen_government
+	issue = expand_bureaucracy_issue
+	custom_tooltip = parliament_issue_tt
+	effect = {
+		custom_tooltip = parliament_issue_effect_tt
+	}
+	influence_scaled_modifier = {
+		estate = clergy
+	}
+}
+"#,
+		)
+		.expect("write parliament issues");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("state_edicts")
+				.join("edict_of_governance.txt"),
+			r#"
+edict_of_governance = {
+	tooltip = edict_of_governance_tt
+	allow = {
+		custom_trigger_tooltip = state_edict_allow_tt
+		has_state_edict = encourage_development_edict
+	}
+	modifier = {
+		state_maintenance_modifier = -0.1
+	}
+}
+"#,
+		)
+		.expect("write state edicts");
+
+		let files = vec![
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("estate_agendas")
+					.join("00_generic_agendas.txt"),
+			)
+			.expect("parsed estate agendas"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("estate_privileges")
+					.join("01_church_privileges.txt"),
+			)
+			.expect("parsed estate privileges"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("estates")
+					.join("01_church.txt"),
+			)
+			.expect("parsed estates"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("parliament_bribes")
+					.join("administrative_support.txt"),
+			)
+			.expect("parsed parliament bribes"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("parliament_issues")
+					.join("00_adm_parliament_issues.txt"),
+			)
+			.expect("parsed parliament issues"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("state_edicts")
+					.join("edict_of_governance.txt"),
+			)
+			.expect("parsed state edicts"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/estate_agendas/00_generic_agendas.txt")
+				&& reference.key == "estate"
+				&& reference.value == "clergy"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/estate_agendas/00_generic_agendas.txt")
+				&& reference.key == "custom_tooltip"
+				&& reference.value == "agenda_done_tt"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/estate_privileges/01_church_privileges.txt")
+				&& reference.key == "icon"
+				&& reference.value == "privilege_religious_diplomats"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/estate_privileges/01_church_privileges.txt")
+				&& reference.key == "mechanics"
+				&& reference.value == "papal_influence"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/estates/01_church.txt")
+				&& reference.key == "custom_name"
+				&& reference.value == "estate_clergy_custom_name"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/estates/01_church.txt")
+				&& reference.key == "privileges"
+				&& reference.value == "religious_diplomats"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/parliament_bribes/administrative_support.txt")
+				&& reference.key == "mechanic_type"
+				&& reference.value == "parliament_vs_monarchy_mechanic"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/parliament_issues/00_adm_parliament_issues.txt")
+				&& reference.key == "parliament_action"
+				&& reference.value == "strengthen_government"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/parliament_issues/00_adm_parliament_issues.txt")
+				&& reference.key == "estate"
+				&& reference.value == "clergy"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/state_edicts/edict_of_governance.txt")
+				&& reference.key == "tooltip"
+				&& reference.value == "edict_of_governance_tt"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/state_edicts/edict_of_governance.txt")
+				&& reference.key == "has_state_edict"
+				&& reference.value == "encourage_development_edict"
 		}));
 	}
 
