@@ -51,6 +51,11 @@ pub enum ScriptFileKind {
 	CustomizableLocalization,
 	Missions,
 	NewDiplomaticActions,
+	Countries,
+	CountryHistory,
+	ProvinceHistory,
+	Wars,
+	Units,
 	Ui,
 	Other,
 }
@@ -99,6 +104,16 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::DiplomaticActions
 	} else if normalized.starts_with("common/new_diplomatic_actions/") {
 		ScriptFileKind::NewDiplomaticActions
+	} else if normalized.starts_with("common/countries/") {
+		ScriptFileKind::Countries
+	} else if normalized.starts_with("history/countries/") {
+		ScriptFileKind::CountryHistory
+	} else if normalized.starts_with("history/provinces/") {
+		ScriptFileKind::ProvinceHistory
+	} else if normalized.starts_with("history/wars/") {
+		ScriptFileKind::Wars
+	} else if normalized.starts_with("common/units/") {
+		ScriptFileKind::Units
 	} else if normalized.starts_with("common/triggered_modifiers/") {
 		ScriptFileKind::TriggeredModifiers
 	} else if normalized.starts_with("common/defines/") {
@@ -180,6 +195,11 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 			module_with_tail(&parts, 1, "customizable_localization")
 		}
 		ScriptFileKind::Missions => "missions".to_string(),
+		ScriptFileKind::Countries => module_with_tail(&parts, 2, "countries"),
+		ScriptFileKind::CountryHistory => module_with_tail(&parts, 2, "history_countries"),
+		ScriptFileKind::ProvinceHistory => module_with_tail(&parts, 2, "history_provinces"),
+		ScriptFileKind::Wars => module_with_tail(&parts, 2, "history_wars"),
+		ScriptFileKind::Units => module_with_tail(&parts, 2, "units"),
 		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
 		ScriptFileKind::Other => fallback_module_name(&parts),
 	};
@@ -961,12 +981,15 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::EventModifiers
 		| ScriptFileKind::CbTypes
 		| ScriptFileKind::GovernmentNames
-		| ScriptFileKind::CustomizableLocalization => ScopeType::Country,
+		| ScriptFileKind::CustomizableLocalization
+		| ScriptFileKind::Countries
+		| ScriptFileKind::CountryHistory => ScopeType::Country,
 		ScriptFileKind::Missions | ScriptFileKind::NewDiplomaticActions => ScopeType::Country,
 		ScriptFileKind::Buildings
 		| ScriptFileKind::GreatProjects
 		| ScriptFileKind::Institutions
-		| ScriptFileKind::ProvinceTriggeredModifiers => ScopeType::Province,
+		| ScriptFileKind::ProvinceTriggeredModifiers
+		| ScriptFileKind::ProvinceHistory => ScopeType::Province,
 		ScriptFileKind::TriggeredModifiers => ScopeType::Country,
 		_ => ScopeType::Unknown,
 	}
@@ -2325,6 +2348,32 @@ build_as_many_as_possible = {
 	}
 }
 
+give_claims = {
+	[[province] custom_tooltip = $province$ ]
+	[[id] custom_tooltip = $id$ ]
+	[[area] custom_tooltip = $area$ ]
+	[[region] custom_tooltip = $region$ ]
+}
+
+pick_best_tags = {
+	[[scope] custom_tooltip = $scope$ ]
+	custom_tooltip = $scale$
+	custom_tooltip = $event_target_name$
+	custom_tooltip = "$global_trigger$"
+	[[1] custom_tooltip = "$1$" ]
+	[[2] custom_tooltip = "$2$" ]
+	[[3] custom_tooltip = "$3$" ]
+	[[4] custom_tooltip = "$4$" ]
+	[[5] custom_tooltip = "$5$" ]
+	[[10] custom_tooltip = "$10$" ]
+}
+
+ME_add_years_of_trade_income = {
+	[[years] add_years_of_trade_income = { years = $years$ } ]
+	[[value] add_years_of_trade_income = { years = $value$ } ]
+	[[amount] add_years_of_trade_income = { years = $amount$ } ]
+}
+
 ME_tim_add_spoils_of_war = {
 	[[add]
 		add_government_power = {
@@ -2615,6 +2664,26 @@ persia_indian_hegemony_decision_coup_effect = {
 				"common/scripted_triggers/00_triggers.txt"
 			)),
 			ScriptFileKind::ScriptedTriggers
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/countries/00_countries.txt")),
+			ScriptFileKind::Countries
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("history/countries/FRA - France.txt")),
+			ScriptFileKind::CountryHistory
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("history/provinces/1 - Stockholm.txt")),
+			ScriptFileKind::ProvinceHistory
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("history/wars/100yearswar.txt")),
+			ScriptFileKind::Wars
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/units/00_units.txt")),
+			ScriptFileKind::Units
 		);
 	}
 
@@ -4837,6 +4906,31 @@ country_event = {
 			cost = 1
 			speed = 1
 		}
+		give_claims = {
+			area = austria_area
+		}
+		give_claims = {
+			id = 134
+		}
+		pick_best_tags = {
+			scale = total_development
+			event_target_name = claim_target
+			global_trigger = "tag = HAB"
+		}
+		pick_best_tags = {
+			scope = every_country
+			scale = total_development
+			event_target_name = scoped_claim_target
+			global_trigger = "tag = HAB"
+			1 = yes
+			2 = yes
+		}
+		ME_add_years_of_trade_income = {
+			value = 1
+		}
+		ME_add_years_of_trade_income = {
+			years = 5
+		}
 	}
 }
 "#,
@@ -4857,6 +4951,9 @@ country_event = {
 			"persia_indian_hegemony_decision_march_effect",
 			"persia_indian_hegemony_decision_coup_effect",
 			"build_as_many_as_possible",
+			"give_claims",
+			"pick_best_tags",
+			"ME_add_years_of_trade_income",
 		] {
 			assert!(
 				!s004_messages.iter().any(|message| message.contains(name)),
@@ -4923,6 +5020,20 @@ country_event = {
 			cost = 1
 			speed = 1
 		}
+		give_claims = { }
+		pick_best_tags = {
+			event_target_name = claim_target
+			global_trigger = "tag = HAB"
+		}
+		pick_best_tags = {
+			scale = total_development
+			global_trigger = "tag = HAB"
+		}
+		pick_best_tags = {
+			scale = total_development
+			event_target_name = claim_target
+		}
+		ME_add_years_of_trade_income = { }
 	}
 }
 "#,
@@ -4948,6 +5059,11 @@ country_event = {
 			"persia_indian_hegemony_decision_coup_effect 缺失 province",
 			"persia_indian_hegemony_decision_coup_effect 缺失 tag_1",
 			"build_as_many_as_possible 缺失 pick_best_function",
+			"give_claims 至少需要一个参数: area|region|province|id",
+			"pick_best_tags 缺失 scale",
+			"pick_best_tags 缺失 event_target_name",
+			"pick_best_tags 缺失 global_trigger",
+			"ME_add_years_of_trade_income 至少需要一个参数: years|value|amount",
 		] {
 			assert!(
 				s004_messages
