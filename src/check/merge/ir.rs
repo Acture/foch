@@ -536,6 +536,11 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::CustomizableLocalization => "customizable_localization",
 		ScriptFileKind::Missions => "missions",
 		ScriptFileKind::NewDiplomaticActions => "new_diplomatic_actions",
+		ScriptFileKind::Countries => "countries",
+		ScriptFileKind::CountryHistory => "history_countries",
+		ScriptFileKind::ProvinceHistory => "history_provinces",
+		ScriptFileKind::Wars => "history_wars",
+		ScriptFileKind::Units => "units",
 		ScriptFileKind::Ui => "ui",
 		ScriptFileKind::Other => "other",
 	}

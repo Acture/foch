@@ -73,6 +73,14 @@ fn handle_data_build(args: &DataBuildArgs) -> HandlerResult {
 					"install_snapshot_bytes".to_string(),
 					build.encoded_snapshot.len() as u64,
 				);
+				let coverage_bytes = std::fs::metadata(
+					installed
+						.install_dir
+						.join(crate::check::base_data::INSTALLED_COVERAGE_FILE_NAME),
+				)
+				.map(|item| item.len())
+				.unwrap_or_default();
+				counts.insert("install_coverage_bytes".to_string(), coverage_bytes);
 				println!(
 					"已构建并安装基础数据: game={} version={} path={}",
 					installed.metadata.game,
@@ -95,15 +103,20 @@ fn handle_data_build(args: &DataBuildArgs) -> HandlerResult {
 				let manifest_bytes = std::fs::metadata(&release_output.manifest_path)
 					.map(|item| item.len())
 					.unwrap_or_default();
+				let coverage_bytes = std::fs::metadata(&release_output.coverage_path)
+					.map(|item| item.len())
+					.unwrap_or_default();
 				counts.insert(
 					"release_snapshot_bytes".to_string(),
 					build.encoded_snapshot.len() as u64,
 				);
 				counts.insert("release_manifest_bytes".to_string(), manifest_bytes);
+				counts.insert("release_coverage_bytes".to_string(), coverage_bytes);
 				println!(
-					"已写入 release 数据资产: snapshot={} manifest={}",
+					"已写入 release 数据资产: snapshot={} manifest={} coverage={}",
 					release_output.snapshot_path.display(),
-					release_output.manifest_path.display()
+					release_output.manifest_path.display(),
+					release_output.coverage_path.display()
 				);
 			} else if let Some(output_dir) = args.output_dir.as_ref() {
 				let bundle = write_snapshot_bundle(
@@ -117,15 +130,20 @@ fn handle_data_build(args: &DataBuildArgs) -> HandlerResult {
 				let metadata_bytes = std::fs::metadata(&bundle.metadata_path)
 					.map(|item| item.len())
 					.unwrap_or_default();
+				let coverage_bytes = std::fs::metadata(&bundle.coverage_path)
+					.map(|item| item.len())
+					.unwrap_or_default();
 				counts.insert(
 					"bundle_snapshot_bytes".to_string(),
 					build.encoded_snapshot.len() as u64,
 				);
 				counts.insert("bundle_metadata_bytes".to_string(), metadata_bytes);
+				counts.insert("bundle_coverage_bytes".to_string(), coverage_bytes);
 				println!(
-					"已写入 snapshot bundle: snapshot={} metadata={}",
+					"已写入 snapshot bundle: snapshot={} metadata={} coverage={}",
 					bundle.snapshot_path.display(),
-					bundle.metadata_path.display()
+					bundle.metadata_path.display(),
+					bundle.coverage_path.display()
 				);
 			}
 			Ok(())

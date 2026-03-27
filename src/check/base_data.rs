@@ -3,6 +3,7 @@ use crate::check::analyzer::documents::{
 	build_semantic_index_from_documents, discover_text_documents, parse_discovered_text_documents,
 };
 use crate::check::analyzer::param_contracts::apply_registered_param_contracts;
+use crate::check::analyzer::semantic_index::classify_script_file;
 use crate::check::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, ParseFamilyStats, ParseIssue, ResourceReference,
@@ -34,6 +35,7 @@ pub const BASE_DATA_SCHEMA_VERSION: u32 = 5;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
+pub const INSTALLED_COVERAGE_FILE_NAME: &str = "coverage.json";
 const LEGACY_INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin.gz";
 const SNAPSHOT_WIRE_FORMAT_VERSION: u32 = 1;
 
@@ -108,6 +110,7 @@ pub struct BaseSnapshotBuildResult {
 pub struct ReleaseArtifactOutput {
 	pub snapshot_path: PathBuf,
 	pub manifest_path: PathBuf,
+	pub coverage_path: PathBuf,
 	pub asset_name: String,
 	pub sha256: String,
 }
@@ -116,6 +119,44 @@ pub struct ReleaseArtifactOutput {
 pub struct SnapshotBundleOutput {
 	pub snapshot_path: PathBuf,
 	pub metadata_path: PathBuf,
+	pub coverage_path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageClass {
+	ExcludedNonGameplay,
+	ParseOnly,
+	SemanticComplete,
+	GraphReady,
+	MergeReady,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RootCoverageEntry {
+	pub root_family: String,
+	pub coverage_class: CoverageClass,
+	pub inventory_file_count: usize,
+	pub document_count: usize,
+	pub parse_failed_documents: usize,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub document_families: Vec<String>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub script_file_kinds: Vec<String>,
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub semantic_counts: BTreeMap<String, usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BaseCoverageReport {
+	pub schema_version: u32,
+	pub game: String,
+	pub game_version: String,
+	pub analysis_rules_version: String,
+	pub generated_by_cli_version: String,
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub class_counts: BTreeMap<String, usize>,
+	pub roots: Vec<RootCoverageEntry>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1394,6 +1435,416 @@ pub(crate) fn build_base_snapshot_with_observer(
 	})
 }
 
+#[derive(Default)]
+struct CoverageAccumulator {
+	inventory_file_count: usize,
+	document_count: usize,
+	parse_failed_documents: usize,
+	document_families: BTreeMap<String, usize>,
+	script_file_kinds: BTreeMap<String, usize>,
+	semantic_counts: BTreeMap<String, usize>,
+}
+
+impl CoverageAccumulator {
+	fn increment_document_family(&mut self, family: DocumentFamily) {
+		let key = document_family_name(family).to_string();
+		*self.document_families.entry(key).or_insert(0) += 1;
+	}
+
+	fn increment_script_file_kind(&mut self, kind: &str) {
+		*self.script_file_kinds.entry(kind.to_string()).or_insert(0) += 1;
+	}
+
+	fn increment_semantic_count(&mut self, key: &str) {
+		*self.semantic_counts.entry(key.to_string()).or_insert(0) += 1;
+	}
+
+	fn has_only_other_clausewitz(&self) -> bool {
+		!self.script_file_kinds.is_empty()
+			&& self
+				.script_file_kinds
+				.keys()
+				.all(|item| item.as_str() == "other")
+	}
+
+	fn has_graph_semantics(&self) -> bool {
+		self.semantic_counts.contains_key("symbol_definitions")
+			|| self.semantic_counts.contains_key("symbol_references")
+			|| self.semantic_counts.contains_key("alias_usages")
+			|| self.semantic_counts.contains_key("key_usages")
+			|| self.semantic_counts.contains_key("scalar_assignments")
+	}
+
+	fn has_semantic_surface(&self) -> bool {
+		self.has_graph_semantics()
+			|| self
+				.semantic_counts
+				.contains_key("localisation_definitions")
+			|| self.semantic_counts.contains_key("localisation_duplicates")
+			|| self.semantic_counts.contains_key("ui_definitions")
+			|| self.semantic_counts.contains_key("resource_references")
+			|| self.semantic_counts.contains_key("csv_rows")
+			|| self.semantic_counts.contains_key("json_properties")
+			|| self
+				.script_file_kinds
+				.keys()
+				.any(|item| item.as_str() != "other")
+	}
+}
+
+pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageReport {
+	let mut roots: BTreeMap<String, CoverageAccumulator> = BTreeMap::new();
+	for path in &snapshot.inventory_paths {
+		let Some(root_family) = coverage_root_family(path) else {
+			continue;
+		};
+		roots.entry(root_family).or_default().inventory_file_count += 1;
+	}
+	for document in &snapshot.documents {
+		let Some(root_family) = coverage_root_family(&document.path) else {
+			continue;
+		};
+		let entry = roots.entry(root_family).or_default();
+		entry.document_count += 1;
+		if !document.parse_ok {
+			entry.parse_failed_documents += 1;
+		}
+		entry.increment_document_family(document.family);
+		if document.family == DocumentFamily::Clausewitz {
+			let kind = classify_script_file(Path::new(&document.path));
+			entry.increment_script_file_kind(script_file_kind_name(kind));
+		}
+	}
+	accumulate_semantic_counts(
+		&mut roots,
+		&snapshot.symbol_definitions,
+		"symbol_definitions",
+	);
+	accumulate_semantic_counts(&mut roots, &snapshot.symbol_references, "symbol_references");
+	accumulate_semantic_counts(&mut roots, &snapshot.alias_usages, "alias_usages");
+	accumulate_semantic_counts(&mut roots, &snapshot.key_usages, "key_usages");
+	accumulate_semantic_counts(
+		&mut roots,
+		&snapshot.scalar_assignments,
+		"scalar_assignments",
+	);
+	accumulate_semantic_counts(
+		&mut roots,
+		&snapshot.localisation_definitions,
+		"localisation_definitions",
+	);
+	accumulate_semantic_counts(
+		&mut roots,
+		&snapshot.localisation_duplicates,
+		"localisation_duplicates",
+	);
+	accumulate_semantic_counts(&mut roots, &snapshot.ui_definitions, "ui_definitions");
+	accumulate_semantic_counts(
+		&mut roots,
+		&snapshot.resource_references,
+		"resource_references",
+	);
+	accumulate_semantic_counts(&mut roots, &snapshot.csv_rows, "csv_rows");
+	accumulate_semantic_counts(&mut roots, &snapshot.json_properties, "json_properties");
+
+	let mut class_counts: BTreeMap<String, usize> = BTreeMap::new();
+	let entries: Vec<RootCoverageEntry> = roots
+		.into_iter()
+		.map(|(root_family, accumulator)| {
+			let coverage_class = coverage_class_for_root(&root_family, &accumulator);
+			*class_counts
+				.entry(coverage_class_name(coverage_class).to_string())
+				.or_insert(0) += 1;
+			RootCoverageEntry {
+				root_family,
+				coverage_class,
+				inventory_file_count: accumulator.inventory_file_count,
+				document_count: accumulator.document_count,
+				parse_failed_documents: accumulator.parse_failed_documents,
+				document_families: accumulator.document_families.into_keys().collect(),
+				script_file_kinds: accumulator.script_file_kinds.into_keys().collect(),
+				semantic_counts: accumulator.semantic_counts,
+			}
+		})
+		.collect();
+
+	BaseCoverageReport {
+		schema_version: snapshot.schema_version,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
+		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
+		class_counts,
+		roots: entries,
+	}
+}
+
+fn coverage_class_for_root(root_family: &str, accumulator: &CoverageAccumulator) -> CoverageClass {
+	if is_excluded_non_gameplay_root(root_family) {
+		CoverageClass::ExcludedNonGameplay
+	} else if is_merge_ready_root(root_family) {
+		CoverageClass::MergeReady
+	} else if is_parse_only_foundation_root(root_family) || accumulator.has_only_other_clausewitz()
+	{
+		CoverageClass::ParseOnly
+	} else if accumulator.has_graph_semantics() {
+		CoverageClass::GraphReady
+	} else if accumulator.has_semantic_surface() {
+		CoverageClass::SemanticComplete
+	} else {
+		CoverageClass::ParseOnly
+	}
+}
+
+fn coverage_class_name(classification: CoverageClass) -> &'static str {
+	match classification {
+		CoverageClass::ExcludedNonGameplay => "excluded_non_gameplay",
+		CoverageClass::ParseOnly => "parse_only",
+		CoverageClass::SemanticComplete => "semantic_complete",
+		CoverageClass::GraphReady => "graph_ready",
+		CoverageClass::MergeReady => "merge_ready",
+	}
+}
+
+fn script_file_kind_name(
+	kind: crate::check::analyzer::semantic_index::ScriptFileKind,
+) -> &'static str {
+	match kind {
+		crate::check::analyzer::semantic_index::ScriptFileKind::Events => "events",
+		crate::check::analyzer::semantic_index::ScriptFileKind::OnActions => "on_actions",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Decisions => "decisions",
+		crate::check::analyzer::semantic_index::ScriptFileKind::ScriptedEffects => {
+			"scripted_effects"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::ScriptedTriggers => {
+			"scripted_triggers"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::DiplomaticActions => {
+			"diplomatic_actions"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::TriggeredModifiers => {
+			"triggered_modifiers"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Defines => "defines",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Achievements => "achievements",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Ages => "ages",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Buildings => "buildings",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Institutions => "institutions",
+		crate::check::analyzer::semantic_index::ScriptFileKind::ProvinceTriggeredModifiers => {
+			"province_triggered_modifiers"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Ideas => "ideas",
+		crate::check::analyzer::semantic_index::ScriptFileKind::GreatProjects => "great_projects",
+		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentReforms => {
+			"government_reforms"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Cultures => "cultures",
+		crate::check::analyzer::semantic_index::ScriptFileKind::CustomGui => "custom_gui",
+		crate::check::analyzer::semantic_index::ScriptFileKind::AdvisorTypes => "advisortypes",
+		crate::check::analyzer::semantic_index::ScriptFileKind::EventModifiers => "event_modifiers",
+		crate::check::analyzer::semantic_index::ScriptFileKind::CbTypes => "cb_types",
+		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentNames => {
+			"government_names"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::CustomizableLocalization => {
+			"customizable_localization"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Missions => "missions",
+		crate::check::analyzer::semantic_index::ScriptFileKind::NewDiplomaticActions => {
+			"new_diplomatic_actions"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Countries => "countries",
+		crate::check::analyzer::semantic_index::ScriptFileKind::CountryHistory => "country_history",
+		crate::check::analyzer::semantic_index::ScriptFileKind::ProvinceHistory => {
+			"province_history"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Wars => "wars",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Units => "units",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Ui => "ui",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Other => "other",
+	}
+}
+
+fn accumulate_semantic_counts<T>(
+	roots: &mut BTreeMap<String, CoverageAccumulator>,
+	items: &[T],
+	metric_name: &str,
+) where
+	T: CoveragePath,
+{
+	for item in items {
+		let Some(root_family) = coverage_root_family(item.coverage_path()) else {
+			continue;
+		};
+		roots
+			.entry(root_family)
+			.or_default()
+			.increment_semantic_count(metric_name);
+	}
+}
+
+trait CoveragePath {
+	fn coverage_path(&self) -> &str;
+}
+
+impl CoveragePath for BaseSymbolDefinition {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseSymbolReference {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseAliasUsage {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseKeyUsage {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseScalarAssignment {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseLocalisationDefinition {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseLocalisationDuplicate {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseUiDefinition {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseResourceReference {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseCsvRow {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+impl CoveragePath for BaseJsonProperty {
+	fn coverage_path(&self) -> &str {
+		&self.path
+	}
+}
+
+fn coverage_root_family(path: &str) -> Option<String> {
+	let normalized = path.replace('\\', "/");
+	if !is_tracked_non_binary_path(&normalized) {
+		return None;
+	}
+	let parts: Vec<&str> = normalized
+		.split('/')
+		.filter(|item| !item.is_empty())
+		.collect();
+	if parts.is_empty() {
+		return None;
+	}
+	if parts[0] == "events"
+		&& parts.get(1) == Some(&"common")
+		&& let Some(group) = parts.get(2)
+	{
+		return Some(format!("events/common/{}", strip_extension(group)));
+	}
+	if parts[0] == "events" && parts.get(1) == Some(&"decisions") {
+		return Some("events/decisions".to_string());
+	}
+	match parts[0] {
+		"common" | "history" | "map" => {
+			let group = parts.get(1)?;
+			let family = if parts.len() == 2 {
+				strip_extension(group)
+			} else {
+				group
+			};
+			Some(format!("{}/{}", parts[0], family))
+		}
+		_ if parts.len() == 1 => Some(parts[0].to_string()),
+		_ => Some(parts[0].to_string()),
+	}
+}
+
+fn strip_extension(value: &str) -> &str {
+	value.rsplit_once('.').map_or(value, |(stem, _)| stem)
+}
+
+fn is_tracked_non_binary_path(path: &str) -> bool {
+	let normalized = path.to_ascii_lowercase();
+	matches!(
+		normalized.rsplit('.').next(),
+		Some("txt" | "gui" | "gfx" | "asset" | "mod" | "lua" | "yml" | "yaml" | "csv" | "json")
+	)
+}
+
+fn is_excluded_non_gameplay_root(root_family: &str) -> bool {
+	matches!(
+		root_family,
+		"licenses"
+			| "patchnotes"
+			| "ebook" | "legal_notes"
+			| "tools" | "tests"
+			| "steam.txt"
+			| "描述.txt"
+			| "launcher-settings.json"
+			| "settings-layout.json"
+	)
+}
+
+fn is_parse_only_foundation_root(root_family: &str) -> bool {
+	matches!(
+		root_family,
+		"common/countries"
+			| "history/countries"
+			| "history/provinces"
+			| "history/wars"
+			| "common/units"
+	)
+}
+
+fn is_merge_ready_root(root_family: &str) -> bool {
+	root_family == "events"
+		|| root_family == "events/decisions"
+		|| root_family.starts_with("events/common/")
+		|| root_family == "decisions"
+		|| root_family == "common/scripted_effects"
+		|| root_family == "common/diplomatic_actions"
+		|| root_family == "common/triggered_modifiers"
+		|| root_family == "common/defines"
+}
+
+fn write_coverage_report(path: &Path, snapshot: &BaseAnalysisSnapshot) -> Result<(), String> {
+	let coverage = build_coverage_report(snapshot);
+	let raw = serde_json::to_string_pretty(&coverage)
+		.map_err(|err| format!("无法序列化基础数据 coverage: {err}"))?;
+	fs::write(path, raw)
+		.map_err(|err| format!("无法写入基础数据 coverage {}: {err}", path.display()))
+}
+
 pub fn install_built_snapshot(
 	snapshot: &BaseAnalysisSnapshot,
 	encoded_snapshot: &[u8],
@@ -1452,10 +1903,13 @@ pub fn write_release_artifacts(
 			manifest_path.display()
 		)
 	})?;
+	let coverage_path = output_dir.join(INSTALLED_COVERAGE_FILE_NAME);
+	write_coverage_report(&coverage_path, snapshot)?;
 
 	Ok(ReleaseArtifactOutput {
 		snapshot_path,
 		manifest_path,
+		coverage_path,
 		asset_name,
 		sha256,
 	})
@@ -1485,6 +1939,7 @@ pub fn write_snapshot_bundle(
 		.map_err(|err| format!("无法序列化基础数据元数据: {err}"))?;
 	let snapshot_path = output_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	let metadata_path = output_dir.join(INSTALLED_METADATA_FILE_NAME);
+	let coverage_path = output_dir.join(INSTALLED_COVERAGE_FILE_NAME);
 	fs::write(&snapshot_path, encoded_snapshot).map_err(|err| {
 		format!(
 			"无法写入 snapshot bundle {}: {err}",
@@ -1497,9 +1952,11 @@ pub fn write_snapshot_bundle(
 			metadata_path.display()
 		)
 	})?;
+	write_coverage_report(&coverage_path, snapshot)?;
 	Ok(SnapshotBundleOutput {
 		snapshot_path,
 		metadata_path,
+		coverage_path,
 	})
 }
 
@@ -1618,6 +2075,8 @@ fn write_installed_snapshot(
 			snapshot_path.display()
 		)
 	})?;
+	let coverage_path = install_dir.join(INSTALLED_COVERAGE_FILE_NAME);
+	write_coverage_report(&coverage_path, snapshot)?;
 	Ok(InstalledBaseSnapshot {
 		install_dir,
 		metadata: metadata.clone(),
@@ -2130,13 +2589,15 @@ fn modified_nanos(metadata: &fs::Metadata) -> u128 {
 mod tests {
 	use super::{
 		BASE_DATA_DIR_ENV, BASE_DATA_SCHEMA_VERSION, BaseAnalysisSnapshot, BaseDataSource,
-		BaseSymbolDefinition, INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata,
+		BaseSymbolDefinition, CoverageClass, INSTALLED_COVERAGE_FILE_NAME,
+		INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata, build_coverage_report,
 		decode_snapshot_from_bytes, encode_snapshot_to_bytes, load_installed_base_snapshot,
-		write_installed_snapshot,
+		write_installed_snapshot, write_snapshot_bundle,
 	};
 	use crate::check::analysis_version::analysis_rules_version;
 	use crate::check::model::{
-		ParamContract, ScopeType, SemanticIndex, SymbolDefinition, SymbolKind,
+		DocumentFamily, DocumentRecord, LocalisationDefinition, ParamContract, ScopeType,
+		SemanticIndex, SymbolDefinition, SymbolKind,
 	};
 	use crate::domain::game::Game;
 	use std::path::PathBuf;
@@ -2186,6 +2647,69 @@ mod tests {
 		)
 	}
 
+	fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
+		let mod_id = "__game__eu4".to_string();
+		let mut index = SemanticIndex {
+			documents: vec![
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/scripted_effects/test.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("history/provinces/1 - Stockholm.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("localisation/english/test_l_english.yml"),
+					family: DocumentFamily::Localisation,
+					parse_ok: true,
+				},
+			],
+			..Default::default()
+		};
+		index.definitions.push(SymbolDefinition {
+			kind: SymbolKind::ScriptedEffect,
+			name: "test.effect".to_string(),
+			module: "test".to_string(),
+			local_name: "test_effect".to_string(),
+			mod_id: mod_id.clone(),
+			path: PathBuf::from("common/scripted_effects/test.txt"),
+			line: 1,
+			column: 1,
+			scope_id: 0,
+			declared_this_type: ScopeType::Country,
+			inferred_this_type: ScopeType::Country,
+			inferred_this_mask: 0b01,
+			required_params: vec!["value".to_string()],
+			param_contract: None,
+			scope_param_names: Vec::new(),
+		});
+		index.localisation_definitions.push(LocalisationDefinition {
+			key: "test_key".to_string(),
+			mod_id,
+			path: PathBuf::from("localisation/english/test_l_english.yml"),
+			line: 1,
+			column: 1,
+		});
+		BaseAnalysisSnapshot::from_semantic_index(
+			&Game::EuropaUniversalis4,
+			"coverage-test",
+			vec![
+				"common/scripted_effects/test.txt".to_string(),
+				"history/provinces/1 - Stockholm.txt".to_string(),
+				"localisation/english/test_l_english.yml".to_string(),
+				"patchnotes/1_36.txt".to_string(),
+			],
+			&index,
+			Default::default(),
+		)
+	}
+
 	#[test]
 	fn base_snapshot_round_trip_preserves_param_contracts() {
 		let snapshot = sample_snapshot_with_contract();
@@ -2224,6 +2748,61 @@ mod tests {
 	}
 
 	#[test]
+	fn build_coverage_report_classifies_foundation_and_excluded_roots() {
+		let snapshot = sample_coverage_snapshot();
+		let report = build_coverage_report(&snapshot);
+		let scripted_effects = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/scripted_effects")
+			.expect("scripted effects coverage");
+		assert_eq!(scripted_effects.coverage_class, CoverageClass::MergeReady);
+
+		let provinces = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "history/provinces")
+			.expect("province history coverage");
+		assert_eq!(provinces.coverage_class, CoverageClass::ParseOnly);
+
+		let localisation = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "localisation")
+			.expect("localisation coverage");
+		assert_eq!(localisation.coverage_class, CoverageClass::SemanticComplete);
+
+		let patchnotes = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "patchnotes")
+			.expect("patchnotes coverage");
+		assert_eq!(
+			patchnotes.coverage_class,
+			CoverageClass::ExcludedNonGameplay
+		);
+	}
+
+	#[test]
+	fn write_snapshot_bundle_emits_coverage_report() {
+		let temp = TempDir::new().expect("temp dir");
+		let snapshot = sample_coverage_snapshot();
+		let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+		let bundle = write_snapshot_bundle(
+			&snapshot,
+			&encoded.bytes,
+			temp.path(),
+			BaseDataSource::Build,
+			None,
+			None,
+		)
+		.expect("write bundle");
+		assert!(bundle.coverage_path.is_file());
+		let coverage_path = temp.path().join(INSTALLED_COVERAGE_FILE_NAME);
+		assert_eq!(bundle.coverage_path, coverage_path);
+	}
+
+	#[test]
 	fn load_installed_base_snapshot_rejects_old_schema_version() {
 		let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 		let temp = TempDir::new().expect("temp dir");
@@ -2245,6 +2824,12 @@ mod tests {
 		};
 		let installed = write_installed_snapshot(&snapshot, &metadata, &encoded.bytes)
 			.expect("install snapshot");
+		assert!(
+			installed
+				.install_dir
+				.join(INSTALLED_COVERAGE_FILE_NAME)
+				.is_file()
+		);
 		let metadata_path = installed
 			.install_dir
 			.join(super::INSTALLED_METADATA_FILE_NAME);
@@ -2289,6 +2874,12 @@ mod tests {
 		};
 		let installed = write_installed_snapshot(&snapshot, &metadata, &encoded.bytes)
 			.expect("install snapshot");
+		assert!(
+			installed
+				.install_dir
+				.join(INSTALLED_COVERAGE_FILE_NAME)
+				.is_file()
+		);
 		let metadata_path = installed
 			.install_dir
 			.join(super::INSTALLED_METADATA_FILE_NAME);
