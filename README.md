@@ -1,6 +1,6 @@
 # Foch
 
-`foch` 是一个 Paradox Mod 静态分析工具。当前版本提供通用规则引擎，会构建脚本符号索引并校验 playset 数据完整性、mod 描述文件、文件覆盖冲突、依赖关系以及 scripted effects 的定义/引用一致性。
+`foch` 是一个面向 Paradox mod playset 的分析与合并工具包。当前版本已经提供 `check`、`merge-plan`、`merge`、`graph`、`simplify`、`data` 与 `config` 命令；其中 `merge-plan` / `merge` 可以生成并复验 EU4 merged mod 输出，而 `check` / `graph` / `simplify` 继续承担分析、可视化与清理工作流。
 
 Additional documentation lives in [`docs/`](./docs/README.md):
 
@@ -39,8 +39,14 @@ cargo run --bin foch -- check ./playlist.json --analysis-mode semantic
 # 仅输出 strict 通道
 cargo run --bin foch -- check ./playlist.json --channel strict
 
+# 生成 deterministic merge plan
+cargo run --bin foch -- merge-plan ./playlist.json --format json --output merge-plan.json
+
+# 生成 merged mod 并重新校验输出
+cargo run --bin foch -- merge ./playlist.json --out ./merged-mod
+
 # 导出语义图
-cargo run --bin foch -- check ./playlist.json --graph-out semantic.dot --graph-format dot
+cargo run --bin foch -- graph ./playlist.json --out ./graphs
 ```
 
 ## 配置
@@ -131,6 +137,23 @@ cargo run --bin parse_stats -- "/path/to/eu4" --exts txt
 # 排除非脚本文本目录（例如 license / patchnotes）
 cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes licenses,patchnotes
 ```
+
+## 真实语料 smoke 对比（本地工具）
+
+```fish
+python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json --out-dir target/eu4-real-smoke/baseline
+python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json --out-dir target/eu4-real-smoke/act-32-post
+
+python3 scripts/eu4_real_smoke_compare.py \
+	target/eu4-real-smoke/baseline/<slug>-summary.json \
+	target/eu4-real-smoke/act-32-post/<slug>-summary.json \
+	--rule S004 \
+	--gate-rule S004 \
+	--min-absolute-drop 250 \
+	--min-relative-drop 0.08
+```
+
+这里的 `playset.json` 只是你本机上的实际 playset 路径，不是仓库约定文件名。第一条脚本生成真实语料 summary；第二条脚本输出 rule delta、热点路径变化，并在 gate 失败时返回非零退出码，适合收口 `ACT-32` / `ACT-31` / `ACT-28` 这类真实语料清噪任务。阈值参数按具体 issue 调整，不要把示例值当成固定标准。
 
 ## LSP 与 VS Code
 
