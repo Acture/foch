@@ -1,14 +1,14 @@
 use crate::check::analysis_version::analysis_rules_version;
-use crate::check::documents::{
+use crate::check::analyzer::documents::{
 	build_semantic_index_from_documents, discover_text_documents, parse_discovered_text_documents,
 };
+use crate::check::analyzer::param_contracts::apply_registered_param_contracts;
 use crate::check::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, ParseFamilyStats, ParseIssue, ResourceReference,
 	ScalarAssignment, ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan, SymbolDefinition,
 	SymbolKind, SymbolReference, UiDefinition,
 };
-use crate::check::param_contracts::apply_registered_param_contracts;
 use crate::cli::config::Config;
 use crate::domain::game::Game;
 use crate::utils::steam::steam_game_install_path;
@@ -1812,7 +1812,7 @@ fn normalize_path_str(path: &Path) -> String {
 }
 
 fn discover_family_counts(
-	docs: &[crate::check::documents::DiscoveredTextDocument],
+	docs: &[crate::check::analyzer::documents::DiscoveredTextDocument],
 ) -> BTreeMap<String, u64> {
 	let mut counts = BTreeMap::new();
 	for doc in docs {

@@ -1,9 +1,9 @@
+use crate::check::analyzer::semantic_index::parse_script_file;
 use crate::check::merge::normalize::normalize_defines_file;
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
 	MergePlanStrategies, MergePlanStrategy,
 };
-use crate::check::semantic_index::parse_script_file;
 use crate::check::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
 };

@@ -1,8 +1,8 @@
+use super::{LoadedModSnapshot, cache::load_or_build_mod_snapshot};
 use crate::check::base_data::{
 	InstalledBaseSnapshot, base_game_mod_id, detect_game_version, load_installed_base_snapshot,
 	resolve_game_root, resolve_game_root_and_version,
 };
-use crate::check::mod_cache::{LoadedModSnapshot, load_or_build_mod_snapshot};
 use crate::check::model::{CheckRequest, ModCandidate};
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;

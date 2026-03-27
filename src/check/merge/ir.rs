@@ -1,13 +1,13 @@
+use crate::check::analyzer::parser::{AstStatement, AstValue, SpanRange};
+use crate::check::analyzer::semantic_index::{
+	ParsedScriptFile, ScriptFileKind, classify_script_file, is_decision_container_key,
+	parse_script_file,
+};
 use crate::check::merge::normalize::normalize_defines_file;
 use crate::check::merge::plan::build_merge_plan_from_workspace;
 use crate::check::model::{
 	CheckRequest, MergePlanContributor, MergePlanEntry, MergePlanOptions, MergePlanResult,
 	MergePlanStrategy,
-};
-use crate::check::parser::{AstStatement, AstValue, SpanRange};
-use crate::check::semantic_index::{
-	ParsedScriptFile, ScriptFileKind, classify_script_file, is_decision_container_key,
-	parse_script_file,
 };
 use crate::check::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
@@ -544,8 +544,8 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::{MergeIrStructuralKind, run_merge_ir_with_options};
+	use crate::check::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 	use crate::check::model::{CheckRequest, MergePlanOptions};
-	use crate::check::parser::{AstStatement, AstValue, ScalarValue};
 	use crate::cli::config::Config;
 	use serde_json::json;
 	use std::fs;

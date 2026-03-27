@@ -166,10 +166,42 @@ fn registered_param_contract_registry() -> &'static ParamContractRegistry {
 			},
 		);
 		registry.insert(
+			"country_event_with_insight",
+			ParamContract {
+				required_all: vec!["id".to_string(), "insight_tooltip".to_string()],
+				optional: vec![
+					"days".to_string(),
+					"random".to_string(),
+					"tooltip".to_string(),
+					"effect_tooltip".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
 			"ME_distribute_development",
 			ParamContract {
 				required_all: vec!["type".to_string(), "amount".to_string()],
 				optional: vec!["limit".to_string(), "tooltip".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"define_and_hire_grand_vizier",
+			ParamContract {
+				required_all: vec!["type".to_string()],
+				optional: vec![
+					"skill".to_string(),
+					"culture".to_string(),
+					"religion".to_string(),
+					"female".to_string(),
+					"age".to_string(),
+					"max_age".to_string(),
+					"min_age".to_string(),
+					"location".to_string(),
+				],
 				one_of_groups: Vec::new(),
 				conditional_required: Vec::new(),
 			},
@@ -261,6 +293,152 @@ fn registered_param_contract_registry() -> &'static ParamContractRegistry {
 			ParamContract {
 				required_all: vec!["estate".to_string(), "influence".to_string()],
 				optional: Vec::new(),
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"unlock_estate_privilege",
+			ParamContract {
+				required_all: vec!["estate_privilege".to_string()],
+				optional: vec!["modifier_tooltip".to_string(), "effect_tooltip".to_string()],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"HAB_change_habsburg_glory",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec!["amount".to_string(), "remove".to_string()]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"add_legitimacy_or_reform_progress",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec!["amount".to_string(), "value".to_string()]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"EE_change_variable",
+			ParamContract {
+				required_all: vec!["which".to_string()],
+				optional: Vec::new(),
+				one_of_groups: vec![vec![
+					"add".to_string(),
+					"subtract".to_string(),
+					"divide".to_string(),
+					"multiply".to_string(),
+				]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"build_as_many_as_possible",
+			ParamContract {
+				required_all: vec![
+					"pick_best_function".to_string(),
+					"new_building".to_string(),
+					"cost".to_string(),
+					"speed".to_string(),
+				],
+				optional: vec!["all_prior_trig".to_string()],
+				one_of_groups: vec![vec![
+					"upgrade_target".to_string(),
+					"construct_new".to_string(),
+				]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_tim_add_spoils_of_war",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec!["add".to_string(), "remove".to_string()]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_add_power_projection",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec!["amount".to_string(), "value".to_string()]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"create_general_scaling_with_tradition_and_pips",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: vec![
+					"add_fire".to_string(),
+					"add_shock".to_string(),
+					"add_manuever".to_string(),
+					"add_siege".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_automatic_colonization_effect_module",
+			ParamContract {
+				required_all: vec!["target_region_effect".to_string()],
+				optional: Vec::new(),
+				one_of_groups: vec![vec!["region".to_string(), "superregion".to_string()]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"ME_override_country_name",
+			ParamContract {
+				required_all: Vec::new(),
+				optional: Vec::new(),
+				one_of_groups: vec![vec![
+					"country_name".to_string(),
+					"name".to_string(),
+					"country".to_string(),
+					"value".to_string(),
+					"string".to_string(),
+				]],
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"persia_indian_hegemony_decision_march_effect",
+			ParamContract {
+				required_all: vec![
+					"province".to_string(),
+					"tag_1".to_string(),
+					"trade_company_region".to_string(),
+				],
+				optional: vec![
+					"tag_2".to_string(),
+					"tag_3".to_string(),
+					"tag_4".to_string(),
+					"tag_5".to_string(),
+				],
+				one_of_groups: Vec::new(),
+				conditional_required: Vec::new(),
+			},
+		);
+		registry.insert(
+			"persia_indian_hegemony_decision_coup_effect",
+			ParamContract {
+				required_all: vec!["province".to_string(), "tag_1".to_string()],
+				optional: vec![
+					"tag_2".to_string(),
+					"tag_3".to_string(),
+					"tag_4".to_string(),
+					"tag_5".to_string(),
+				],
 				one_of_groups: Vec::new(),
 				conditional_required: Vec::new(),
 			},

@@ -1,5 +1,5 @@
-use crate::check::parser::{AstStatement, AstValue, SpanRange};
-use crate::check::semantic_index::ParsedScriptFile;
+use crate::check::analyzer::parser::{AstStatement, AstValue, SpanRange};
+use crate::check::analyzer::semantic_index::ParsedScriptFile;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DefinesAssignmentFragment {

@@ -1,9 +1,9 @@
-use crate::check::localisation::parse_localisation_file;
+use super::localisation::parse_localisation_file;
+use super::semantic_index::{ParsedScriptFile, build_semantic_index, parse_script_file};
 use crate::check::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
 	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
 };
-use crate::check::semantic_index::{ParsedScriptFile, build_semantic_index, parse_script_file};
 use encoding_rs::WINDOWS_1252;
 use rayon::prelude::*;
 use serde_json::Value as JsonValue;

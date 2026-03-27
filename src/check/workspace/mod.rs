@@ -1,4 +1,7 @@
+pub(crate) mod cache;
 pub(crate) mod resolve;
+
+pub(crate) use cache::LoadedModSnapshot;
 
 pub(crate) use resolve::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, normalize_relative_path,

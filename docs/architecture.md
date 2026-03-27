@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-03-25
+Last updated: 2026-03-27
 
 ## Summary
 
@@ -12,6 +12,11 @@ Last updated: 2026-03-25
 - `merge`: merge plan, merge IR, normalization, deterministic emission, materialization, post-merge revalidation
 - `graph`: runtime call graph and mod-dependency graph export
 - `simplify`: base-equivalent definition cleanup for a target mod
+
+There are also two shared support modules at the check-layer root:
+
+- `model`: shared types consumed across products
+- `base_data`: installed base-snapshot build/install/load support for both `foch data` and analysis products
 
 The public CLI commands map onto these layers instead of reaching into ad hoc internal files.
 
@@ -52,10 +57,27 @@ The public CLI commands map onto these layers instead of reaching into ad hoc in
 
 Two shared internal kernels now sit between raw analysis and downstream products:
 
-- `workspace::resolve`: authoritative source for the effective workspace
+- `workspace::{resolve, cache}`: authoritative source for the effective workspace and mod snapshot caching
 - `runtime::{binding, overlap}`: authoritative source for runtime winner selection, dependency hints, and overlap classification
 
 This avoids each product line inventing its own precedence or overlap rules.
+
+## Internal Module Boundaries
+
+The analyzer implementation is physically grouped under `src/check/analyzer/`:
+
+- `analysis`
+- `documents`
+- `eu4_builtin`
+- `localisation`
+- `param_contracts`
+- `parser`
+- `report`
+- `rules`
+- `semantic_index`
+- `run`
+
+For library stability, the historical top-level module paths such as `check::analysis`, `check::parser`, and `check::semantic_index` remain as thin compatibility wrappers. New internal code should prefer `check::analyzer::*` and `check::workspace::*`.
 
 ## Public Entry Points
 
@@ -68,6 +90,12 @@ The stable check-layer façade is exposed from `src/check/mod.rs`:
 - `run_simplify_with_options`
 
 CLI handlers are expected to call these façade functions only.
+
+The intended dependency direction is:
+
+- `cli -> check façade`
+- `merge/graph/simplify -> workspace/runtime/(when needed) analyzer façade`
+- internal analyzer support code stays inside `src/check/analyzer/`
 
 ## Legacy Interfaces Removed
 

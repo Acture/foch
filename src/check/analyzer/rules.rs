@@ -332,52 +332,6 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 	findings
 }
 
-pub fn check_unresolved_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
-	let defined: HashSet<&str> = ctx
-		.semantic_index
-		.definitions
-		.iter()
-		.filter(|def| def.kind == SymbolKind::ScriptedEffect)
-		.map(|def| def.name.as_str())
-		.collect();
-
-	let mut dedup = HashSet::new();
-	let mut findings = Vec::new();
-	for reference in &ctx.semantic_index.references {
-		if reference.kind != SymbolKind::ScriptedEffect {
-			continue;
-		}
-		if defined.contains(reference.name.as_str()) {
-			continue;
-		}
-
-		let key = format!(
-			"{}:{}:{}",
-			reference.path.display(),
-			reference.line,
-			reference.name
-		);
-		if !dedup.insert(key) {
-			continue;
-		}
-
-		findings.push(new_finding(
-			"R008",
-			Severity::Warning,
-			FindingChannel::Advisory,
-			format!("未解析的 scripted effect 引用: {}", reference.name),
-			Some(reference.mod_id.clone()),
-			Some(reference.path.clone()),
-			Some(format!("line {}", reference.line)),
-			Some(reference.line),
-			Some(reference.column),
-			Some(0.8),
-		));
-	}
-
-	findings
-}
-
 #[allow(clippy::too_many_arguments)]
 fn new_finding(
 	rule_id: &str,
