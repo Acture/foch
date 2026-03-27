@@ -1678,6 +1678,18 @@ fn script_file_kind_name(
 		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentMechanics => {
 			"government_mechanics"
 		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::EstateAgendas => "estate_agendas",
+		crate::check::analyzer::semantic_index::ScriptFileKind::EstatePrivileges => {
+			"estate_privileges"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Estates => "estates",
+		crate::check::analyzer::semantic_index::ScriptFileKind::ParliamentBribes => {
+			"parliament_bribes"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::ParliamentIssues => {
+			"parliament_issues"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::StateEdicts => "state_edicts",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Ui => "ui",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Other => "other",
 	}
@@ -1893,6 +1905,30 @@ fn is_semantic_complete_foundation_root(
 		}
 		"common/government_mechanics" => {
 			accumulator.has_script_file_kind("government_mechanics")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/estate_agendas" => {
+			accumulator.has_script_file_kind("estate_agendas")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/estate_privileges" => {
+			accumulator.has_script_file_kind("estate_privileges")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/estates" => {
+			accumulator.has_script_file_kind("estates")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/parliament_bribes" => {
+			accumulator.has_script_file_kind("parliament_bribes")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/parliament_issues" => {
+			accumulator.has_script_file_kind("parliament_issues")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/state_edicts" => {
+			accumulator.has_script_file_kind("state_edicts")
 				&& accumulator.has_semantic_count("resource_references")
 		}
 		_ => false,
@@ -2776,6 +2812,42 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/estate_privileges/01_church_privileges.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/estates/01_church.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/parliament_bribes/administrative_support.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/parliament_issues/00_adm_parliament_issues.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/state_edicts/edict_of_governance.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/scripted_effects/test.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -2921,6 +2993,86 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "estate".to_string(),
+				value: "clergy".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "custom_tooltip".to_string(),
+				value: "agenda_done_tt".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "icon".to_string(),
+				value: "privilege_religious_diplomats".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/estate_privileges/01_church_privileges.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "mechanics".to_string(),
+				value: "papal_influence".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/estate_privileges/01_church_privileges.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "custom_name".to_string(),
+				value: "estate_clergy_custom_name".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/estates/01_church.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "privileges".to_string(),
+				value: "religious_diplomats".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/estates/01_church.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "mechanic_type".to_string(),
+				value: "parliament_vs_monarchy_mechanic".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/parliament_bribes/administrative_support.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "parliament_action".to_string(),
+				value: "strengthen_government".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/parliament_issues/00_adm_parliament_issues.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "tooltip".to_string(),
+				value: "edict_of_governance_tt".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/state_edicts/edict_of_governance.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "has_state_edict".to_string(),
+				value: "encourage_development_edict".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/state_edicts/edict_of_governance.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
 				key: "add_attacker".to_string(),
 				value: "SWE".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -2941,6 +3093,12 @@ mod tests {
 				"common/rebel_types/independence_rebels.txt".to_string(),
 				"common/disasters/civil_war.txt".to_string(),
 				"common/government_mechanics/18_parliament_vs_monarchy.txt".to_string(),
+				"common/estate_agendas/00_generic_agendas.txt".to_string(),
+				"common/estate_privileges/01_church_privileges.txt".to_string(),
+				"common/estates/01_church.txt".to_string(),
+				"common/parliament_bribes/administrative_support.txt".to_string(),
+				"common/parliament_issues/00_adm_parliament_issues.txt".to_string(),
+				"common/state_edicts/edict_of_governance.txt".to_string(),
 				"common/scripted_effects/test.txt".to_string(),
 				"history/countries/SWE - Sweden.txt".to_string(),
 				"history/provinces/1 - Stockholm.txt".to_string(),
@@ -3071,6 +3229,60 @@ mod tests {
 			government_mechanics.coverage_class,
 			CoverageClass::SemanticComplete
 		);
+
+		let estate_agendas = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/estate_agendas")
+			.expect("estate agendas coverage");
+		assert_eq!(
+			estate_agendas.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let estate_privileges = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/estate_privileges")
+			.expect("estate privileges coverage");
+		assert_eq!(
+			estate_privileges.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let estates = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/estates")
+			.expect("estates coverage");
+		assert_eq!(estates.coverage_class, CoverageClass::SemanticComplete);
+
+		let parliament_bribes = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/parliament_bribes")
+			.expect("parliament bribes coverage");
+		assert_eq!(
+			parliament_bribes.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let parliament_issues = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/parliament_issues")
+			.expect("parliament issues coverage");
+		assert_eq!(
+			parliament_issues.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let state_edicts = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/state_edicts")
+			.expect("state edicts coverage");
+		assert_eq!(state_edicts.coverage_class, CoverageClass::SemanticComplete);
 
 		let localisation = report
 			.roots

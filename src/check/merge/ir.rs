@@ -547,6 +547,12 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::RebelTypes => "rebel_types",
 		ScriptFileKind::Disasters => "disasters",
 		ScriptFileKind::GovernmentMechanics => "government_mechanics",
+		ScriptFileKind::EstateAgendas => "estate_agendas",
+		ScriptFileKind::EstatePrivileges => "estate_privileges",
+		ScriptFileKind::Estates => "estates",
+		ScriptFileKind::ParliamentBribes => "parliament_bribes",
+		ScriptFileKind::ParliamentIssues => "parliament_issues",
+		ScriptFileKind::StateEdicts => "state_edicts",
 		ScriptFileKind::Ui => "ui",
 		ScriptFileKind::Other => "other",
 	}
