@@ -62,6 +62,8 @@ pub enum ScriptFileKind {
 	RebelTypes,
 	Disasters,
 	GovernmentMechanics,
+	PeaceTreaties,
+	Bookmarks,
 	EstateAgendas,
 	EstatePrivileges,
 	Estates,
@@ -138,6 +140,10 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Disasters
 	} else if normalized.starts_with("common/government_mechanics/") {
 		ScriptFileKind::GovernmentMechanics
+	} else if normalized.starts_with("common/peace_treaties/") {
+		ScriptFileKind::PeaceTreaties
+	} else if normalized.starts_with("common/bookmarks/") {
+		ScriptFileKind::Bookmarks
 	} else if normalized.starts_with("common/estate_agendas/") {
 		ScriptFileKind::EstateAgendas
 	} else if normalized.starts_with("common/estate_privileges/") {
@@ -242,6 +248,8 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::RebelTypes => module_with_tail(&parts, 2, "rebel_types"),
 		ScriptFileKind::Disasters => module_with_tail(&parts, 2, "disasters"),
 		ScriptFileKind::GovernmentMechanics => module_with_tail(&parts, 2, "government_mechanics"),
+		ScriptFileKind::PeaceTreaties => module_with_tail(&parts, 2, "peace_treaties"),
+		ScriptFileKind::Bookmarks => module_with_tail(&parts, 2, "bookmarks"),
 		ScriptFileKind::EstateAgendas => module_with_tail(&parts, 2, "estate_agendas"),
 		ScriptFileKind::EstatePrivileges => module_with_tail(&parts, 2, "estate_privileges"),
 		ScriptFileKind::Estates => module_with_tail(&parts, 2, "estates"),
@@ -456,6 +464,7 @@ fn build_file_index(
 		ScriptFileKind::DiplomaticActions
 		| ScriptFileKind::NewDiplomaticActions
 		| ScriptFileKind::Buildings
+		| ScriptFileKind::PeaceTreaties
 		| ScriptFileKind::CbTypes => {
 			aliases.insert("THIS".to_string(), root_this_type);
 			aliases.insert("ROOT".to_string(), root_this_type);
@@ -942,6 +951,12 @@ fn record_foundation_resource_semantics(
 		ScriptFileKind::GovernmentMechanics => {
 			record_government_mechanic_resource_semantics(index, ctx, key, key_span, value);
 		}
+		ScriptFileKind::PeaceTreaties => {
+			record_peace_treaty_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ScriptFileKind::Bookmarks => {
+			record_bookmark_resource_semantics(index, ctx, key, key_span, value);
+		}
 		ScriptFileKind::EstateAgendas => {
 			record_estate_agenda_resource_semantics(index, ctx, key, key_span, value);
 		}
@@ -1108,6 +1123,67 @@ fn record_government_mechanic_resource_semantics(
 	}
 	for item in extract_named_block_scalar_items(value, "id") {
 		push_resource_reference(index, ctx, key_span, key, item.as_str());
+	}
+}
+
+fn record_peace_treaty_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) == ScopeKind::File
+		&& matches!(value, AstValue::Block { .. })
+		&& !is_keyword(key)
+	{
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"localisation_desc",
+			&format!("{key}_desc"),
+		);
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"localisation_cb_allowed",
+			&format!("CB_ALLOWED_{key}"),
+		);
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"localisation_peace",
+			&format!("PEACE_{key}"),
+		);
+	}
+
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_peace_treaty_scalar_reference_key(key) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_bookmark_resource_semantics(
+	index: &mut SemanticIndex,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if is_bookmark_localisation_reference_key(key)
+		|| (key == "country" && is_country_tag_text(&text))
+		|| (key == "center" && is_province_id_text(&text))
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
 	}
 }
 
@@ -1423,6 +1499,7 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::CountryTags
 		| ScriptFileKind::Countries
 		| ScriptFileKind::CountryHistory
+		| ScriptFileKind::PeaceTreaties
 		| ScriptFileKind::EstateAgendas
 		| ScriptFileKind::EstatePrivileges
 		| ScriptFileKind::Estates
@@ -1994,6 +2071,14 @@ fn is_government_mechanic_scalar_reference_key(key: &str) -> bool {
 	)
 }
 
+fn is_peace_treaty_scalar_reference_key(key: &str) -> bool {
+	matches!(key, "power_projection")
+}
+
+fn is_bookmark_localisation_reference_key(key: &str) -> bool {
+	matches!(key, "name" | "desc")
+}
+
 fn is_estate_agenda_scalar_reference_key(key: &str) -> bool {
 	matches!(key, "estate" | "custom_tooltip" | "tooltip")
 }
@@ -2189,6 +2274,12 @@ fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Optio
 			"powers" | "scaled_modifier" | "reverse_scaled_modifier" | "modifier" => {
 				Some(ScopeKind::Block)
 			}
+			_ => None,
+		},
+		ScriptFileKind::PeaceTreaties => match key {
+			"is_visible" | "is_allowed" | "ai_weight" => Some(ScopeKind::Trigger),
+			"effect" => Some(ScopeKind::Effect),
+			"warscore_cost" => Some(ScopeKind::Block),
 			_ => None,
 		},
 		ScriptFileKind::EstateAgendas => match key {
@@ -3428,6 +3519,16 @@ persia_indian_hegemony_decision_coup_effect = {
 			)),
 			ScriptFileKind::StateEdicts
 		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/peace_treaties/00_peace_treaties.txt"
+			)),
+			ScriptFileKind::PeaceTreaties
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/bookmarks/a_new_world.txt")),
+			ScriptFileKind::Bookmarks
+		);
 	}
 
 	#[test]
@@ -3668,7 +3769,6 @@ christian = {
 			papal_tag = PAP
 		}
 	}
-}
 "#,
 		)
 		.expect("write religions");
@@ -4116,6 +4216,122 @@ edict_of_governance = {
 			reference.path == Path::new("common/state_edicts/edict_of_governance.txt")
 				&& reference.key == "has_state_edict"
 				&& reference.value == "encourage_development_edict"
+		}));
+	}
+
+	#[test]
+	fn peace_treaties_and_bookmarks_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("peace_treaties"))
+			.expect("create peace treaties");
+		fs::create_dir_all(mod_root.join("common").join("bookmarks")).expect("create bookmarks");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("peace_treaties")
+				.join("00_peace_treaties.txt"),
+			r#"
+spread_dynasty = {
+	power_projection = vassalized_rival
+	is_visible = { religion_group = christian }
+	is_allowed = { religion = catholic }
+	warscore_cost = { no_provinces = 20.0 }
+	effect = { add_prestige = 5 }
+	ai_weight = {
+		export_to_variable = {
+			variable_name = ai_value
+			value = 50
+		}
+	}
+}
+"#,
+		)
+		.expect("write peace treaties");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("bookmarks")
+				.join("a_new_world.txt"),
+			r#"
+bookmark = {
+	name = "NEWWORLD_NAME"
+	desc = "NEWWORLD_DESC"
+	date = 1492.1.1
+	center = 2133
+	country = CAS
+	country = ENG
+}
+"#,
+		)
+		.expect("write bookmarks");
+
+		let files = vec![
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("peace_treaties")
+					.join("00_peace_treaties.txt"),
+			)
+			.expect("parsed peace treaties"),
+			parse_script_file(
+				"1000",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("bookmarks")
+					.join("a_new_world.txt"),
+			)
+			.expect("parsed bookmarks"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+				&& reference.key == "localisation_desc"
+				&& reference.value == "spread_dynasty_desc"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+				&& reference.key == "localisation_cb_allowed"
+				&& reference.value == "CB_ALLOWED_spread_dynasty"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+				&& reference.key == "localisation_peace"
+				&& reference.value == "PEACE_spread_dynasty"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/peace_treaties/00_peace_treaties.txt")
+				&& reference.key == "power_projection"
+				&& reference.value == "vassalized_rival"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/bookmarks/a_new_world.txt")
+				&& reference.key == "name"
+				&& reference.value == "NEWWORLD_NAME"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/bookmarks/a_new_world.txt")
+				&& reference.key == "desc"
+				&& reference.value == "NEWWORLD_DESC"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/bookmarks/a_new_world.txt")
+				&& reference.key == "center"
+				&& reference.value == "2133"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/bookmarks/a_new_world.txt")
+				&& reference.key == "country"
+				&& reference.value == "CAS"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/bookmarks/a_new_world.txt")
+				&& reference.key == "country"
+				&& reference.value == "ENG"
 		}));
 	}
 

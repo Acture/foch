@@ -1678,6 +1678,8 @@ fn script_file_kind_name(
 		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentMechanics => {
 			"government_mechanics"
 		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::PeaceTreaties => "peace_treaties",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Bookmarks => "bookmarks",
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstateAgendas => "estate_agendas",
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstatePrivileges => {
 			"estate_privileges"
@@ -1905,6 +1907,14 @@ fn is_semantic_complete_foundation_root(
 		}
 		"common/government_mechanics" => {
 			accumulator.has_script_file_kind("government_mechanics")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/peace_treaties" => {
+			accumulator.has_script_file_kind("peace_treaties")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/bookmarks" => {
+			accumulator.has_script_file_kind("bookmarks")
 				&& accumulator.has_semantic_count("resource_references")
 		}
 		"common/estate_agendas" => {
@@ -2812,6 +2822,18 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/peace_treaties/00_peace_treaties.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/bookmarks/a_new_world.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -2993,6 +3015,22 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "localisation_desc".to_string(),
+				value: "spread_dynasty_desc".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/peace_treaties/00_peace_treaties.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "country".to_string(),
+				value: "CAS".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/bookmarks/a_new_world.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "estate".to_string(),
 				value: "clergy".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3093,6 +3131,8 @@ mod tests {
 				"common/rebel_types/independence_rebels.txt".to_string(),
 				"common/disasters/civil_war.txt".to_string(),
 				"common/government_mechanics/18_parliament_vs_monarchy.txt".to_string(),
+				"common/peace_treaties/00_peace_treaties.txt".to_string(),
+				"common/bookmarks/a_new_world.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
 				"common/estate_privileges/01_church_privileges.txt".to_string(),
 				"common/estates/01_church.txt".to_string(),
@@ -3229,6 +3269,23 @@ mod tests {
 			government_mechanics.coverage_class,
 			CoverageClass::SemanticComplete
 		);
+
+		let peace_treaties = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/peace_treaties")
+			.expect("peace treaties coverage");
+		assert_eq!(
+			peace_treaties.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let bookmarks = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/bookmarks")
+			.expect("bookmarks coverage");
+		assert_eq!(bookmarks.coverage_class, CoverageClass::SemanticComplete);
 
 		let estate_agendas = report
 			.roots
