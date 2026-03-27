@@ -1,5 +1,5 @@
-use crate::check::eu4_builtin::builtin_catalog_hash;
-use crate::check::param_contracts::registered_param_contracts_hash;
+use crate::check::analyzer::eu4_builtin::builtin_catalog_hash;
+use crate::check::analyzer::param_contracts::registered_param_contracts_hash;
 use std::sync::OnceLock;
 
 pub const ANALYSIS_RULES_VERSION: u32 = 9;
@@ -20,7 +20,7 @@ pub fn analysis_rules_version() -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::analysis_rules_version;
-	use crate::check::param_contracts::registered_param_contracts_hash;
+	use crate::check::analyzer::param_contracts::registered_param_contracts_hash;
 
 	#[test]
 	fn analysis_rules_version_tracks_param_contract_registry() {

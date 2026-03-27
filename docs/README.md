@@ -6,8 +6,8 @@ The intended audience is contributors and implementers. Read these documents in 
 
 ## Start Here
 
-- [architecture.md](./architecture.md) - subsystem layout, shared kernels, data flow, and public check-layer façades
-- [project-status.md](./project-status.md) - what the repository implements today, what has been verified locally, and how complete it is under two different goal definitions
+- [architecture.md](./architecture.md) - subsystem layout, analyzer/workspace internals, shared kernels, and public check-layer façades
+- [project-status.md](./project-status.md) - current shipped surface, current internal shape, and what is still deferred
 
 ## Roadmap
 

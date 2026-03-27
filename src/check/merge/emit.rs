@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
+use crate::check::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 use crate::check::merge::ir::{MergeIrNode, MergeIrStructuralFile, MergeIrStructuralKind};
-use crate::check::parser::{AstStatement, AstValue, ScalarValue};
 use std::collections::BTreeMap;
 
 #[derive(Default)]

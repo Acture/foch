@@ -1,12 +1,12 @@
-use crate::check::base_data::base_game_mod_id;
-use crate::check::merge::emit::emit_clausewitz_statements;
-use crate::check::model::{CheckRequest, SymbolKind, SymbolReference};
-use crate::check::parser::{AstStatement, SpanRange};
-use crate::check::runtime::overlap::{OverlapStatus, classify_definition_overlaps};
-use crate::check::semantic_index::{
+use crate::check::analyzer::parser::{AstStatement, AstValue, SpanRange};
+use crate::check::analyzer::semantic_index::{
 	ParsedScriptFile, build_semantic_index, parse_script_file,
 	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
 };
+use crate::check::base_data::base_game_mod_id;
+use crate::check::merge::emit::emit_clausewitz_statements;
+use crate::check::model::{CheckRequest, SymbolKind, SymbolReference};
+use crate::check::runtime::overlap::{OverlapStatus, classify_definition_overlaps};
 use crate::check::workspace::{ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -388,7 +388,7 @@ fn find_statement_by_position(
 				if key_span.start.line == line && key_span.start.column == column {
 					return Some(statement.clone());
 				}
-				if let crate::check::parser::AstValue::Block { items, .. } = value
+				if let AstValue::Block { items, .. } = value
 					&& let Some(found) = find_statement_by_position(items, line, column)
 				{
 					return Some(found);
@@ -401,7 +401,7 @@ fn find_statement_by_position(
 				}
 			}
 			AstStatement::Item { value, span } => {
-				if let crate::check::parser::AstValue::Block { items, .. } = value
+				if let AstValue::Block { items, .. } = value
 					&& let Some(found) = find_statement_by_position(items, line, column)
 				{
 					return Some(found);

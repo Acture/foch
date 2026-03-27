@@ -1,10 +1,10 @@
 use crate::check::analysis_version::analysis_rules_version;
-use crate::check::documents::{
+use crate::check::analyzer::documents::{
 	DiscoveredTextDocument, build_semantic_index_from_documents, discover_text_documents,
 	parse_discovered_text_documents,
 };
+use crate::check::analyzer::param_contracts::apply_registered_param_contracts;
 use crate::check::model::{ModCandidate, ParseFamilyStats, SemanticIndex};
-use crate::check::param_contracts::apply_registered_param_contracts;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;

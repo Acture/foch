@@ -1,8 +1,8 @@
+use crate::check::analyzer::parser::{AstStatement, AstValue};
+use crate::check::analyzer::semantic_index::parse_script_file;
 use crate::check::merge::emit::emit_clausewitz_statements;
 use crate::check::model::CheckRequest;
-use crate::check::parser::{AstStatement, AstValue};
 use crate::check::runtime::{OverlapStatus, build_runtime_state_from_workspace};
-use crate::check::semantic_index::parse_script_file;
 use crate::check::simplify::model::{
 	SimplifyKeptItem, SimplifyOptions, SimplifyRemovedItem, SimplifyReport, SimplifySummary,
 };
