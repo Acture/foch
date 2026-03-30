@@ -1,7 +1,9 @@
 use crate::check::analysis_version::analysis_rules_version;
+use crate::check::analyzer::content_family::ScriptFileKind;
 use crate::check::analyzer::documents::{
 	build_semantic_index_from_documents, discover_text_documents, parse_discovered_text_documents,
 };
+use crate::check::analyzer::eu4_profile::eu4_content_family_for_root_family;
 use crate::check::analyzer::param_contracts::apply_registered_param_contracts;
 use crate::check::analyzer::semantic_index::classify_script_file;
 use crate::check::model::{
@@ -1590,12 +1592,9 @@ pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageRep
 fn coverage_class_for_root(root_family: &str, accumulator: &CoverageAccumulator) -> CoverageClass {
 	if is_excluded_non_gameplay_root(root_family) {
 		CoverageClass::ExcludedNonGameplay
-	} else if is_merge_ready_root(root_family) {
-		CoverageClass::MergeReady
-	} else if is_semantic_complete_foundation_root(root_family, accumulator) {
-		CoverageClass::SemanticComplete
-	} else if is_parse_only_foundation_root(root_family) || accumulator.has_only_other_clausewitz()
-	{
+	} else if let Some(classification) = content_family_coverage_class(root_family, accumulator) {
+		classification
+	} else if accumulator.has_only_other_clausewitz() {
 		CoverageClass::ParseOnly
 	} else if accumulator.has_graph_semantics() {
 		CoverageClass::GraphReady
@@ -1604,6 +1603,36 @@ fn coverage_class_for_root(root_family: &str, accumulator: &CoverageAccumulator)
 	} else {
 		CoverageClass::ParseOnly
 	}
+}
+
+fn content_family_coverage_class(
+	root_family: &str,
+	accumulator: &CoverageAccumulator,
+) -> Option<CoverageClass> {
+	let descriptor = eu4_content_family_for_root_family(root_family)?;
+	if descriptor.capabilities.merge_ready {
+		return Some(CoverageClass::MergeReady);
+	}
+	if descriptor.capabilities.graph_ready {
+		return Some(if accumulator.has_graph_semantics() {
+			CoverageClass::GraphReady
+		} else {
+			CoverageClass::ParseOnly
+		});
+	}
+	if descriptor.capabilities.semantic_complete {
+		return Some(
+			if accumulator.has_semantic_count("resource_references")
+				&& accumulator
+					.has_script_file_kind(script_file_kind_name(descriptor.script_file_kind))
+			{
+				CoverageClass::SemanticComplete
+			} else {
+				CoverageClass::ParseOnly
+			},
+		);
+	}
+	Some(CoverageClass::ParseOnly)
 }
 
 fn coverage_class_name(classification: CoverageClass) -> &'static str {
@@ -1616,99 +1645,63 @@ fn coverage_class_name(classification: CoverageClass) -> &'static str {
 	}
 }
 
-fn script_file_kind_name(
-	kind: crate::check::analyzer::semantic_index::ScriptFileKind,
-) -> &'static str {
+fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 	match kind {
-		crate::check::analyzer::semantic_index::ScriptFileKind::Events => "events",
-		crate::check::analyzer::semantic_index::ScriptFileKind::OnActions => "on_actions",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Decisions => "decisions",
-		crate::check::analyzer::semantic_index::ScriptFileKind::ScriptedEffects => {
-			"scripted_effects"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::ScriptedTriggers => {
-			"scripted_triggers"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::DiplomaticActions => {
-			"diplomatic_actions"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::TriggeredModifiers => {
-			"triggered_modifiers"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Defines => "defines",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Achievements => "achievements",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Ages => "ages",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Buildings => "buildings",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Institutions => "institutions",
-		crate::check::analyzer::semantic_index::ScriptFileKind::ProvinceTriggeredModifiers => {
-			"province_triggered_modifiers"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Ideas => "ideas",
-		crate::check::analyzer::semantic_index::ScriptFileKind::GreatProjects => "great_projects",
-		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentReforms => {
-			"government_reforms"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Cultures => "cultures",
-		crate::check::analyzer::semantic_index::ScriptFileKind::CustomGui => "custom_gui",
-		crate::check::analyzer::semantic_index::ScriptFileKind::AdvisorTypes => "advisortypes",
-		crate::check::analyzer::semantic_index::ScriptFileKind::EventModifiers => "event_modifiers",
-		crate::check::analyzer::semantic_index::ScriptFileKind::CbTypes => "cb_types",
-		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentNames => {
-			"government_names"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::CustomizableLocalization => {
-			"customizable_localization"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Missions => "missions",
-		crate::check::analyzer::semantic_index::ScriptFileKind::NewDiplomaticActions => {
-			"new_diplomatic_actions"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::CountryTags => "country_tags",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Countries => "countries",
-		crate::check::analyzer::semantic_index::ScriptFileKind::CountryHistory => "country_history",
-		crate::check::analyzer::semantic_index::ScriptFileKind::ProvinceHistory => {
-			"province_history"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Wars => "wars",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Units => "units",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Religions => "religions",
-		crate::check::analyzer::semantic_index::ScriptFileKind::SubjectTypes => "subject_types",
-		crate::check::analyzer::semantic_index::ScriptFileKind::RebelTypes => "rebel_types",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Disasters => "disasters",
-		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentMechanics => {
-			"government_mechanics"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::ChurchAspects => "church_aspects",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Factions => "factions",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Hegemons => "hegemons",
-		crate::check::analyzer::semantic_index::ScriptFileKind::PersonalDeities => {
-			"personal_deities"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::FetishistCults => "fetishist_cults",
-		crate::check::analyzer::semantic_index::ScriptFileKind::PeaceTreaties => "peace_treaties",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Bookmarks => "bookmarks",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Policies => "policies",
-		crate::check::analyzer::semantic_index::ScriptFileKind::MercenaryCompanies => {
-			"mercenary_companies"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Technologies => "technologies",
-		crate::check::analyzer::semantic_index::ScriptFileKind::TechnologyGroups => {
-			"technology_groups"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::EstateAgendas => "estate_agendas",
-		crate::check::analyzer::semantic_index::ScriptFileKind::EstatePrivileges => {
-			"estate_privileges"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::Estates => "estates",
-		crate::check::analyzer::semantic_index::ScriptFileKind::ParliamentBribes => {
-			"parliament_bribes"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::ParliamentIssues => {
-			"parliament_issues"
-		}
-		crate::check::analyzer::semantic_index::ScriptFileKind::StateEdicts => "state_edicts",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Ui => "ui",
-		crate::check::analyzer::semantic_index::ScriptFileKind::Other => "other",
+		ScriptFileKind::Events => "events",
+		ScriptFileKind::OnActions => "on_actions",
+		ScriptFileKind::Decisions => "decisions",
+		ScriptFileKind::ScriptedEffects => "scripted_effects",
+		ScriptFileKind::ScriptedTriggers => "scripted_triggers",
+		ScriptFileKind::DiplomaticActions => "diplomatic_actions",
+		ScriptFileKind::TriggeredModifiers => "triggered_modifiers",
+		ScriptFileKind::Defines => "defines",
+		ScriptFileKind::Achievements => "achievements",
+		ScriptFileKind::Ages => "ages",
+		ScriptFileKind::Buildings => "buildings",
+		ScriptFileKind::Institutions => "institutions",
+		ScriptFileKind::ProvinceTriggeredModifiers => "province_triggered_modifiers",
+		ScriptFileKind::Ideas => "ideas",
+		ScriptFileKind::GreatProjects => "great_projects",
+		ScriptFileKind::GovernmentReforms => "government_reforms",
+		ScriptFileKind::Cultures => "cultures",
+		ScriptFileKind::CustomGui => "custom_gui",
+		ScriptFileKind::AdvisorTypes => "advisortypes",
+		ScriptFileKind::EventModifiers => "event_modifiers",
+		ScriptFileKind::CbTypes => "cb_types",
+		ScriptFileKind::GovernmentNames => "government_names",
+		ScriptFileKind::CustomizableLocalization => "customizable_localization",
+		ScriptFileKind::Missions => "missions",
+		ScriptFileKind::NewDiplomaticActions => "new_diplomatic_actions",
+		ScriptFileKind::CountryTags => "country_tags",
+		ScriptFileKind::Countries => "countries",
+		ScriptFileKind::CountryHistory => "country_history",
+		ScriptFileKind::ProvinceHistory => "province_history",
+		ScriptFileKind::Wars => "wars",
+		ScriptFileKind::Units => "units",
+		ScriptFileKind::Religions => "religions",
+		ScriptFileKind::SubjectTypes => "subject_types",
+		ScriptFileKind::RebelTypes => "rebel_types",
+		ScriptFileKind::Disasters => "disasters",
+		ScriptFileKind::GovernmentMechanics => "government_mechanics",
+		ScriptFileKind::ChurchAspects => "church_aspects",
+		ScriptFileKind::Factions => "factions",
+		ScriptFileKind::Hegemons => "hegemons",
+		ScriptFileKind::PersonalDeities => "personal_deities",
+		ScriptFileKind::FetishistCults => "fetishist_cults",
+		ScriptFileKind::PeaceTreaties => "peace_treaties",
+		ScriptFileKind::Bookmarks => "bookmarks",
+		ScriptFileKind::Policies => "policies",
+		ScriptFileKind::MercenaryCompanies => "mercenary_companies",
+		ScriptFileKind::Technologies => "technologies",
+		ScriptFileKind::TechnologyGroups => "technology_groups",
+		ScriptFileKind::EstateAgendas => "estate_agendas",
+		ScriptFileKind::EstatePrivileges => "estate_privileges",
+		ScriptFileKind::Estates => "estates",
+		ScriptFileKind::ParliamentBribes => "parliament_bribes",
+		ScriptFileKind::ParliamentIssues => "parliament_issues",
+		ScriptFileKind::StateEdicts => "state_edicts",
+		ScriptFileKind::Ui => "ui",
+		ScriptFileKind::Other => "other",
 	}
 }
 
@@ -1868,143 +1861,6 @@ fn is_excluded_non_gameplay_root(root_family: &str) -> bool {
 			| "launcher-settings.json"
 			| "settings-layout.json"
 	)
-}
-
-fn is_parse_only_foundation_root(root_family: &str) -> bool {
-	let _ = root_family;
-	false
-}
-
-fn is_semantic_complete_foundation_root(
-	root_family: &str,
-	accumulator: &CoverageAccumulator,
-) -> bool {
-	match root_family {
-		"common/country_tags" => {
-			accumulator.has_script_file_kind("country_tags")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/countries" => {
-			accumulator.has_script_file_kind("countries")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"history/countries" => {
-			accumulator.has_script_file_kind("country_history")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"history/provinces" => {
-			accumulator.has_script_file_kind("province_history")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"history/wars" => {
-			accumulator.has_script_file_kind("wars")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/units" => {
-			accumulator.has_script_file_kind("units")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/religions" => {
-			accumulator.has_script_file_kind("religions")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/subject_types" => {
-			accumulator.has_script_file_kind("subject_types")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/rebel_types" => {
-			accumulator.has_script_file_kind("rebel_types")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/disasters" => {
-			accumulator.has_script_file_kind("disasters")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/government_mechanics" => {
-			accumulator.has_script_file_kind("government_mechanics")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/church_aspects" => {
-			accumulator.has_script_file_kind("church_aspects")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/factions" => {
-			accumulator.has_script_file_kind("factions")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/hegemons" => {
-			accumulator.has_script_file_kind("hegemons")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/personal_deities" => {
-			accumulator.has_script_file_kind("personal_deities")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/fetishist_cults" => {
-			accumulator.has_script_file_kind("fetishist_cults")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/peace_treaties" => {
-			accumulator.has_script_file_kind("peace_treaties")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/bookmarks" => {
-			accumulator.has_script_file_kind("bookmarks")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/policies" => {
-			accumulator.has_script_file_kind("policies")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/mercenary_companies" => {
-			accumulator.has_script_file_kind("mercenary_companies")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/technologies" => {
-			accumulator.has_script_file_kind("technologies")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/technology" => {
-			accumulator.has_script_file_kind("technology_groups")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/estate_agendas" => {
-			accumulator.has_script_file_kind("estate_agendas")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/estate_privileges" => {
-			accumulator.has_script_file_kind("estate_privileges")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/estates" => {
-			accumulator.has_script_file_kind("estates")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/parliament_bribes" => {
-			accumulator.has_script_file_kind("parliament_bribes")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/parliament_issues" => {
-			accumulator.has_script_file_kind("parliament_issues")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		"common/state_edicts" => {
-			accumulator.has_script_file_kind("state_edicts")
-				&& accumulator.has_semantic_count("resource_references")
-		}
-		_ => false,
-	}
-}
-
-fn is_merge_ready_root(root_family: &str) -> bool {
-	root_family == "events"
-		|| root_family == "events/decisions"
-		|| root_family.starts_with("events/common/")
-		|| root_family == "decisions"
-		|| root_family == "common/scripted_effects"
-		|| root_family == "common/diplomatic_actions"
-		|| root_family == "common/triggered_modifiers"
-		|| root_family == "common/defines"
 }
 
 fn write_coverage_report(path: &Path, snapshot: &BaseAnalysisSnapshot) -> Result<(), String> {

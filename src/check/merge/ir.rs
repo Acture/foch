@@ -1,7 +1,7 @@
+use crate::check::analyzer::content_family::ScriptFileKind;
 use crate::check::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use crate::check::analyzer::semantic_index::{
-	ParsedScriptFile, ScriptFileKind, classify_script_file, is_decision_container_key,
-	parse_script_file,
+	ParsedScriptFile, classify_script_file, is_decision_container_key, parse_script_file,
 };
 use crate::check::merge::normalize::normalize_defines_file;
 use crate::check::merge::plan::build_merge_plan_from_workspace;

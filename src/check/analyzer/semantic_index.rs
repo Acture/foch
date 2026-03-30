@@ -1,7 +1,12 @@
+use super::content_family::{
+	ContentFamilyDescriptor, ContentFamilyExtractor, ContentFamilyScopePolicy, GameProfile,
+	ScriptFileKind, module_name_for_descriptor,
+};
 use super::eu4_builtin::{
 	is_builtin_effect, is_builtin_iterator, is_builtin_scope_changer, is_builtin_special_block,
 	is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
 };
+use super::eu4_profile::eu4_profile;
 use super::localisation::collect_localisation_definitions_from_root;
 use super::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
@@ -24,70 +29,12 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::UNIX_EPOCH;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScriptFileKind {
-	Events,
-	OnActions,
-	Decisions,
-	ScriptedEffects,
-	ScriptedTriggers,
-	DiplomaticActions,
-	TriggeredModifiers,
-	Defines,
-	Achievements,
-	Ages,
-	Buildings,
-	Institutions,
-	ProvinceTriggeredModifiers,
-	Ideas,
-	GreatProjects,
-	GovernmentReforms,
-	Cultures,
-	CustomGui,
-	AdvisorTypes,
-	EventModifiers,
-	CbTypes,
-	GovernmentNames,
-	CustomizableLocalization,
-	Missions,
-	NewDiplomaticActions,
-	CountryTags,
-	Countries,
-	CountryHistory,
-	ProvinceHistory,
-	Wars,
-	Units,
-	Religions,
-	SubjectTypes,
-	RebelTypes,
-	Disasters,
-	GovernmentMechanics,
-	ChurchAspects,
-	Factions,
-	Hegemons,
-	PersonalDeities,
-	FetishistCults,
-	PeaceTreaties,
-	Bookmarks,
-	Policies,
-	MercenaryCompanies,
-	Technologies,
-	TechnologyGroups,
-	EstateAgendas,
-	EstatePrivileges,
-	Estates,
-	ParliamentBribes,
-	ParliamentIssues,
-	StateEdicts,
-	Ui,
-	Other,
-}
-
 #[derive(Clone, Debug)]
 pub struct ParsedScriptFile {
 	pub mod_id: String,
 	pub path: PathBuf,
 	pub relative_path: PathBuf,
+	pub content_family: Option<&'static ContentFamilyDescriptor>,
 	pub file_kind: ScriptFileKind,
 	pub module_name: String,
 	pub ast: AstFile,
@@ -106,196 +53,11 @@ struct ParseCacheEntry {
 }
 
 pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
-	let normalized = relative.to_string_lossy().replace('\\', "/");
-	if normalized.starts_with("events/common/new_diplomatic_actions/") {
-		ScriptFileKind::NewDiplomaticActions
-	} else if normalized.starts_with("common/on_actions/")
-		|| normalized.starts_with("events/common/on_actions/")
-	{
-		ScriptFileKind::OnActions
-	} else if normalized.starts_with("events/decisions/") {
-		ScriptFileKind::Decisions
-	} else if normalized.starts_with("events/") {
-		ScriptFileKind::Events
-	} else if normalized.starts_with("decisions/") {
-		ScriptFileKind::Decisions
-	} else if normalized.starts_with("common/scripted_effects/") {
-		ScriptFileKind::ScriptedEffects
-	} else if normalized.starts_with("common/scripted_triggers/") {
-		ScriptFileKind::ScriptedTriggers
-	} else if normalized.starts_with("common/diplomatic_actions/") {
-		ScriptFileKind::DiplomaticActions
-	} else if normalized.starts_with("common/new_diplomatic_actions/") {
-		ScriptFileKind::NewDiplomaticActions
-	} else if normalized.starts_with("common/country_tags/") {
-		ScriptFileKind::CountryTags
-	} else if normalized.starts_with("common/countries/") {
-		ScriptFileKind::Countries
-	} else if normalized.starts_with("history/countries/") {
-		ScriptFileKind::CountryHistory
-	} else if normalized.starts_with("history/provinces/") {
-		ScriptFileKind::ProvinceHistory
-	} else if normalized.starts_with("history/wars/") {
-		ScriptFileKind::Wars
-	} else if normalized.starts_with("common/units/") {
-		ScriptFileKind::Units
-	} else if normalized.starts_with("common/religions/") {
-		ScriptFileKind::Religions
-	} else if normalized.starts_with("common/subject_types/") {
-		ScriptFileKind::SubjectTypes
-	} else if normalized.starts_with("common/rebel_types/") {
-		ScriptFileKind::RebelTypes
-	} else if normalized.starts_with("common/disasters/") {
-		ScriptFileKind::Disasters
-	} else if normalized.starts_with("common/government_mechanics/") {
-		ScriptFileKind::GovernmentMechanics
-	} else if normalized.starts_with("common/church_aspects/") {
-		ScriptFileKind::ChurchAspects
-	} else if normalized.starts_with("common/factions/") {
-		ScriptFileKind::Factions
-	} else if normalized.starts_with("common/hegemons/") {
-		ScriptFileKind::Hegemons
-	} else if normalized.starts_with("common/personal_deities/") {
-		ScriptFileKind::PersonalDeities
-	} else if normalized.starts_with("common/fetishist_cults/") {
-		ScriptFileKind::FetishistCults
-	} else if normalized.starts_with("common/peace_treaties/") {
-		ScriptFileKind::PeaceTreaties
-	} else if normalized.starts_with("common/bookmarks/") {
-		ScriptFileKind::Bookmarks
-	} else if normalized.starts_with("common/policies/") {
-		ScriptFileKind::Policies
-	} else if normalized.starts_with("common/mercenary_companies/") {
-		ScriptFileKind::MercenaryCompanies
-	} else if normalized.starts_with("common/technologies/") {
-		ScriptFileKind::Technologies
-	} else if normalized == "common/technology.txt" {
-		ScriptFileKind::TechnologyGroups
-	} else if normalized.starts_with("common/estate_agendas/") {
-		ScriptFileKind::EstateAgendas
-	} else if normalized.starts_with("common/estate_privileges/") {
-		ScriptFileKind::EstatePrivileges
-	} else if normalized.starts_with("common/estates/") {
-		ScriptFileKind::Estates
-	} else if normalized.starts_with("common/parliament_bribes/") {
-		ScriptFileKind::ParliamentBribes
-	} else if normalized.starts_with("common/parliament_issues/") {
-		ScriptFileKind::ParliamentIssues
-	} else if normalized.starts_with("common/state_edicts/") {
-		ScriptFileKind::StateEdicts
-	} else if normalized.starts_with("common/triggered_modifiers/") {
-		ScriptFileKind::TriggeredModifiers
-	} else if normalized.starts_with("common/defines/") {
-		ScriptFileKind::Defines
-	} else if normalized == "common/achievements.txt" {
-		ScriptFileKind::Achievements
-	} else if normalized.starts_with("common/ages/") {
-		ScriptFileKind::Ages
-	} else if normalized.starts_with("common/buildings/") {
-		ScriptFileKind::Buildings
-	} else if normalized.starts_with("common/institutions/") {
-		ScriptFileKind::Institutions
-	} else if normalized.starts_with("common/province_triggered_modifiers/") {
-		ScriptFileKind::ProvinceTriggeredModifiers
-	} else if normalized.starts_with("common/ideas/") {
-		ScriptFileKind::Ideas
-	} else if normalized.starts_with("common/great_projects/") {
-		ScriptFileKind::GreatProjects
-	} else if normalized.starts_with("common/government_reforms/") {
-		ScriptFileKind::GovernmentReforms
-	} else if normalized.starts_with("common/cultures/") {
-		ScriptFileKind::Cultures
-	} else if normalized.starts_with("common/custom_gui/") {
-		ScriptFileKind::CustomGui
-	} else if normalized.starts_with("common/advisortypes/") {
-		ScriptFileKind::AdvisorTypes
-	} else if normalized.starts_with("common/event_modifiers/") {
-		ScriptFileKind::EventModifiers
-	} else if normalized.starts_with("common/cb_types/") {
-		ScriptFileKind::CbTypes
-	} else if normalized.starts_with("common/government_names/") {
-		ScriptFileKind::GovernmentNames
-	} else if normalized.starts_with("customizable_localization/") {
-		ScriptFileKind::CustomizableLocalization
-	} else if normalized.starts_with("missions/") {
-		ScriptFileKind::Missions
-	} else if normalized.starts_with("interface/")
-		|| normalized.starts_with("common/interface/")
-		|| normalized.starts_with("gfx/")
-	{
-		ScriptFileKind::Ui
-	} else {
-		ScriptFileKind::Other
-	}
-}
-
-fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
-	let normalized = relative.to_string_lossy().replace('\\', "/");
-	let parts: Vec<&str> = normalized.split('/').collect();
-	let module = match kind {
-		ScriptFileKind::Events => "events".to_string(),
-		ScriptFileKind::OnActions => "on_actions".to_string(),
-		ScriptFileKind::Decisions => "decisions".to_string(),
-		ScriptFileKind::ScriptedEffects => module_with_tail(&parts, 2, "scripted_effects"),
-		ScriptFileKind::ScriptedTriggers => module_with_tail(&parts, 2, "scripted_triggers"),
-		ScriptFileKind::DiplomaticActions => module_with_tail(&parts, 2, "diplomatic_actions"),
-		ScriptFileKind::NewDiplomaticActions => {
-			module_with_tail(&parts, 2, "new_diplomatic_actions")
-		}
-		ScriptFileKind::TriggeredModifiers => module_with_tail(&parts, 2, "triggered_modifiers"),
-		ScriptFileKind::Defines => module_with_tail(&parts, 2, "defines"),
-		ScriptFileKind::Achievements => "achievements".to_string(),
-		ScriptFileKind::Ages => module_with_tail(&parts, 2, "ages"),
-		ScriptFileKind::Buildings => module_with_tail(&parts, 2, "buildings"),
-		ScriptFileKind::Institutions => module_with_tail(&parts, 2, "institutions"),
-		ScriptFileKind::ProvinceTriggeredModifiers => {
-			module_with_tail(&parts, 2, "province_triggered_modifiers")
-		}
-		ScriptFileKind::Ideas => module_with_tail(&parts, 2, "ideas"),
-		ScriptFileKind::GreatProjects => module_with_tail(&parts, 2, "great_projects"),
-		ScriptFileKind::GovernmentReforms => module_with_tail(&parts, 2, "government_reforms"),
-		ScriptFileKind::Cultures => module_with_tail(&parts, 2, "cultures"),
-		ScriptFileKind::CustomGui => module_with_tail(&parts, 2, "custom_gui"),
-		ScriptFileKind::AdvisorTypes => module_with_tail(&parts, 2, "advisortypes"),
-		ScriptFileKind::EventModifiers => module_with_tail(&parts, 2, "event_modifiers"),
-		ScriptFileKind::CbTypes => module_with_tail(&parts, 2, "cb_types"),
-		ScriptFileKind::GovernmentNames => module_with_tail(&parts, 2, "government_names"),
-		ScriptFileKind::CustomizableLocalization => {
-			module_with_tail(&parts, 1, "customizable_localization")
-		}
-		ScriptFileKind::Missions => "missions".to_string(),
-		ScriptFileKind::CountryTags => module_with_tail(&parts, 2, "country_tags"),
-		ScriptFileKind::Countries => module_with_tail(&parts, 2, "countries"),
-		ScriptFileKind::CountryHistory => module_with_tail(&parts, 2, "history_countries"),
-		ScriptFileKind::ProvinceHistory => module_with_tail(&parts, 2, "history_provinces"),
-		ScriptFileKind::Wars => module_with_tail(&parts, 2, "history_wars"),
-		ScriptFileKind::Units => module_with_tail(&parts, 2, "units"),
-		ScriptFileKind::Religions => module_with_tail(&parts, 2, "religions"),
-		ScriptFileKind::SubjectTypes => module_with_tail(&parts, 2, "subject_types"),
-		ScriptFileKind::RebelTypes => module_with_tail(&parts, 2, "rebel_types"),
-		ScriptFileKind::Disasters => module_with_tail(&parts, 2, "disasters"),
-		ScriptFileKind::GovernmentMechanics => module_with_tail(&parts, 2, "government_mechanics"),
-		ScriptFileKind::ChurchAspects => module_with_tail(&parts, 2, "church_aspects"),
-		ScriptFileKind::Factions => module_with_tail(&parts, 2, "factions"),
-		ScriptFileKind::Hegemons => module_with_tail(&parts, 2, "hegemons"),
-		ScriptFileKind::PersonalDeities => module_with_tail(&parts, 2, "personal_deities"),
-		ScriptFileKind::FetishistCults => module_with_tail(&parts, 2, "fetishist_cults"),
-		ScriptFileKind::PeaceTreaties => module_with_tail(&parts, 2, "peace_treaties"),
-		ScriptFileKind::Bookmarks => module_with_tail(&parts, 2, "bookmarks"),
-		ScriptFileKind::Policies => module_with_tail(&parts, 2, "policies"),
-		ScriptFileKind::MercenaryCompanies => module_with_tail(&parts, 2, "mercenary_companies"),
-		ScriptFileKind::Technologies => module_with_tail(&parts, 2, "technologies"),
-		ScriptFileKind::TechnologyGroups => module_with_tail(&parts, 1, "technology_groups"),
-		ScriptFileKind::EstateAgendas => module_with_tail(&parts, 2, "estate_agendas"),
-		ScriptFileKind::EstatePrivileges => module_with_tail(&parts, 2, "estate_privileges"),
-		ScriptFileKind::Estates => module_with_tail(&parts, 2, "estates"),
-		ScriptFileKind::ParliamentBribes => module_with_tail(&parts, 2, "parliament_bribes"),
-		ScriptFileKind::ParliamentIssues => module_with_tail(&parts, 2, "parliament_issues"),
-		ScriptFileKind::StateEdicts => module_with_tail(&parts, 2, "state_edicts"),
-		ScriptFileKind::Ui => module_with_tail(&parts, 1, "ui"),
-		ScriptFileKind::Other => fallback_module_name(&parts),
-	};
-	module.replace('-', "_")
+	eu4_profile()
+		.classify_content_family(relative)
+		.map_or(ScriptFileKind::Other, |descriptor| {
+			descriptor.script_file_kind
+		})
 }
 
 #[derive(Default)]
@@ -340,18 +102,6 @@ fn is_map_group_file(relative_path: &Path) -> bool {
 	)
 }
 
-fn module_with_tail(parts: &[&str], prefix_len: usize, base: &str) -> String {
-	if parts.len() <= prefix_len + 1 {
-		return base.to_string();
-	}
-	let mut name = base.to_string();
-	for part in &parts[prefix_len + 1..parts.len() - 1] {
-		name.push('.');
-		name.push_str(part);
-	}
-	name
-}
-
 fn fallback_module_name(parts: &[&str]) -> String {
 	if parts.len() <= 1 {
 		return "other".to_string();
@@ -359,14 +109,35 @@ fn fallback_module_name(parts: &[&str]) -> String {
 	parts[..parts.len() - 1].join(".")
 }
 
+fn fallback_module_name_from_relative(relative: &Path) -> String {
+	let normalized = relative.to_string_lossy().replace('\\', "/");
+	let parts: Vec<&str> = normalized.split('/').collect();
+	fallback_module_name(&parts)
+}
+
 fn qualify_symbol_name(module: &str, local: &str) -> String {
 	format!("eu4::{module}::{local}")
 }
 
 pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<ParsedScriptFile> {
+	parse_script_file_with_profile(mod_id, root, file, eu4_profile())
+}
+
+pub fn parse_script_file_with_profile(
+	mod_id: &str,
+	root: &Path,
+	file: &Path,
+	profile: &dyn GameProfile,
+) -> Option<ParsedScriptFile> {
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
-	let file_kind = classify_script_file(&relative);
-	let module_name = module_name_from_relative(&relative, file_kind);
+	let content_family = profile.classify_content_family(&relative);
+	let file_kind = content_family.map_or(ScriptFileKind::Other, |descriptor| {
+		descriptor.script_file_kind
+	});
+	let module_name = content_family.map_or_else(
+		|| fallback_module_name_from_relative(&relative),
+		|descriptor| module_name_for_descriptor(&relative, descriptor).replace('-', "_"),
+	);
 	let (parsed, parse_cache_hit) = parse_clausewitz_file_cached(file);
 
 	let parse_issues = parsed
@@ -385,6 +156,7 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 		mod_id: mod_id.to_string(),
 		path: file.to_path_buf(),
 		relative_path: relative,
+		content_family,
 		file_kind,
 		module_name,
 		ast: parsed.ast,
@@ -472,6 +244,13 @@ fn store_parse_cache_entry(path: &Path, entry: &ParseCacheEntry) {
 }
 
 pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
+	build_semantic_index_with_profile(files, eu4_profile())
+}
+
+pub fn build_semantic_index_with_profile(
+	files: &[ParsedScriptFile],
+	_profile: &dyn GameProfile,
+) -> SemanticIndex {
 	let mut index = SemanticIndex::default();
 	let map_groups = collect_map_groups(files);
 	for file in files {
@@ -495,26 +274,16 @@ fn build_file_index(
 	index: &mut SemanticIndex,
 ) {
 	let mut aliases = HashMap::new();
-	let root_this_type = root_scope_type_for_file_kind(file.file_kind);
-	match file.file_kind {
-		ScriptFileKind::DiplomaticActions
-		| ScriptFileKind::NewDiplomaticActions
-		| ScriptFileKind::Buildings
-		| ScriptFileKind::ChurchAspects
-		| ScriptFileKind::Factions
-		| ScriptFileKind::Hegemons
-		| ScriptFileKind::PersonalDeities
-		| ScriptFileKind::FetishistCults
-		| ScriptFileKind::PeaceTreaties
-		| ScriptFileKind::CbTypes => {
-			aliases.insert("THIS".to_string(), root_this_type);
-			aliases.insert("ROOT".to_string(), root_this_type);
-			aliases.insert("FROM".to_string(), ScopeType::Country);
-		}
-		_ => {
-			aliases.insert("THIS".to_string(), root_this_type);
-			aliases.insert("ROOT".to_string(), root_this_type);
-		}
+	let scope_policy = file
+		.content_family
+		.map_or(ContentFamilyScopePolicy::default(), |descriptor| {
+			descriptor.scope_policy
+		});
+	let root_this_type = scope_policy.root_scope;
+	aliases.insert("THIS".to_string(), root_this_type);
+	aliases.insert("ROOT".to_string(), root_this_type);
+	if let Some(from_alias) = scope_policy.from_alias {
+		aliases.insert("FROM".to_string(), from_alias);
 	}
 
 	let root_scope = push_scope(
@@ -531,6 +300,7 @@ fn build_file_index(
 	let mut ctx = BuildContext {
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
+		content_family: file.content_family,
 		file_kind: file.file_kind,
 		module_name: &file.module_name,
 		map_groups,
@@ -577,6 +347,7 @@ fn is_top_level_event_definition(
 struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a Path,
+	content_family: Option<&'static ContentFamilyDescriptor>,
 	file_kind: ScriptFileKind,
 	module_name: &'a str,
 	map_groups: &'a MapGroupLookup,
@@ -830,6 +601,7 @@ fn handle_event_block(
 	let mut child_ctx = BuildContext {
 		mod_id: ctx.mod_id,
 		path: ctx.path,
+		content_family: ctx.content_family,
 		file_kind: ctx.file_kind,
 		module_name: ctx.module_name,
 		map_groups: ctx.map_groups,
@@ -924,8 +696,13 @@ fn record_foundation_resource_semantics(
 	key_span: &SpanRange,
 	value: &AstValue,
 ) {
-	match ctx.file_kind {
-		ScriptFileKind::CountryTags => {
+	let Some(descriptor) = ctx.content_family else {
+		return;
+	};
+
+	match descriptor.extractor {
+		ContentFamilyExtractor::None => {}
+		ContentFamilyExtractor::CountryTags => {
 			let Some(text) = scalar_text(value) else {
 				return;
 			};
@@ -943,13 +720,13 @@ fn record_foundation_resource_semantics(
 				text.as_str(),
 			);
 		}
-		ScriptFileKind::Countries => {
+		ContentFamilyExtractor::Countries => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
 			}
 			record_country_metadata_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::CountryHistory => {
+		ContentFamilyExtractor::CountryHistory => {
 			let Some(text) = scalar_text(value) else {
 				return;
 			};
@@ -959,7 +736,7 @@ fn record_foundation_resource_semantics(
 				push_resource_reference(index, ctx, key_span, key, text.as_str());
 			}
 		}
-		ScriptFileKind::ProvinceHistory => {
+		ContentFamilyExtractor::ProvinceHistory => {
 			let Some(text) = scalar_text(value) else {
 				return;
 			};
@@ -967,7 +744,7 @@ fn record_foundation_resource_semantics(
 				push_resource_reference(index, ctx, key_span, key, text.as_str());
 			}
 		}
-		ScriptFileKind::Wars => {
+		ContentFamilyExtractor::Wars => {
 			let Some(text) = scalar_text(value) else {
 				return;
 			};
@@ -977,81 +754,80 @@ fn record_foundation_resource_semantics(
 				push_resource_reference(index, ctx, key_span, key, text.as_str());
 			}
 		}
-		ScriptFileKind::Units => {
+		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
 			}
 			record_unit_definition_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Religions => {
+		ContentFamilyExtractor::Religions => {
 			record_religion_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::SubjectTypes => {
+		ContentFamilyExtractor::SubjectTypes => {
 			record_subject_type_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::RebelTypes => {
+		ContentFamilyExtractor::RebelTypes => {
 			record_rebel_type_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Disasters => {
+		ContentFamilyExtractor::Disasters => {
 			record_disaster_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::GovernmentMechanics => {
+		ContentFamilyExtractor::GovernmentMechanics => {
 			record_government_mechanic_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::ChurchAspects => {
+		ContentFamilyExtractor::ChurchAspects => {
 			record_church_aspect_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Factions => {
+		ContentFamilyExtractor::Factions => {
 			record_faction_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Hegemons => {
+		ContentFamilyExtractor::Hegemons => {
 			record_hegemon_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::PersonalDeities => {
+		ContentFamilyExtractor::PersonalDeities => {
 			record_personal_deity_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::FetishistCults => {
+		ContentFamilyExtractor::FetishistCults => {
 			record_fetishist_cult_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::PeaceTreaties => {
+		ContentFamilyExtractor::PeaceTreaties => {
 			record_peace_treaty_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Bookmarks => {
+		ContentFamilyExtractor::Bookmarks => {
 			record_bookmark_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Policies => {
+		ContentFamilyExtractor::Policies => {
 			record_policy_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::MercenaryCompanies => {
+		ContentFamilyExtractor::MercenaryCompanies => {
 			record_mercenary_company_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Technologies => {
+		ContentFamilyExtractor::Technologies => {
 			record_technology_definition_resource_semantics(
 				index, scope_id, ctx, key, key_span, value,
 			);
 		}
-		ScriptFileKind::TechnologyGroups => {
+		ContentFamilyExtractor::TechnologyGroups => {
 			record_technology_group_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
-		ScriptFileKind::EstateAgendas => {
+		ContentFamilyExtractor::EstateAgendas => {
 			record_estate_agenda_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::EstatePrivileges => {
+		ContentFamilyExtractor::EstatePrivileges => {
 			record_estate_privilege_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::Estates => {
+		ContentFamilyExtractor::Estates => {
 			record_estate_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::ParliamentBribes => {
+		ContentFamilyExtractor::ParliamentBribes => {
 			record_parliament_bribe_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::ParliamentIssues => {
+		ContentFamilyExtractor::ParliamentIssues => {
 			record_parliament_issue_resource_semantics(index, ctx, key, key_span, value);
 		}
-		ScriptFileKind::StateEdicts => {
+		ContentFamilyExtractor::StateEdicts => {
 			record_state_edict_resource_semantics(index, ctx, key, key_span, value);
 		}
-		_ => {}
 	}
 }
 
@@ -1898,51 +1674,6 @@ fn symbol_definition_kind(
 		return Some(SymbolKind::Decision);
 	}
 	None
-}
-
-fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
-	match file_kind {
-		ScriptFileKind::OnActions => ScopeType::Unknown,
-		ScriptFileKind::Decisions
-		| ScriptFileKind::DiplomaticActions
-		| ScriptFileKind::Achievements
-		| ScriptFileKind::Ages
-		| ScriptFileKind::Ideas
-		| ScriptFileKind::GovernmentReforms
-		| ScriptFileKind::CustomGui
-		| ScriptFileKind::AdvisorTypes
-		| ScriptFileKind::EventModifiers
-		| ScriptFileKind::CbTypes
-		| ScriptFileKind::GovernmentNames
-		| ScriptFileKind::CustomizableLocalization
-		| ScriptFileKind::CountryTags
-		| ScriptFileKind::Countries
-		| ScriptFileKind::CountryHistory
-		| ScriptFileKind::ChurchAspects
-		| ScriptFileKind::Factions
-		| ScriptFileKind::Hegemons
-		| ScriptFileKind::PersonalDeities
-		| ScriptFileKind::FetishistCults
-		| ScriptFileKind::PeaceTreaties
-		| ScriptFileKind::Policies
-		| ScriptFileKind::MercenaryCompanies
-		| ScriptFileKind::Technologies
-		| ScriptFileKind::TechnologyGroups
-		| ScriptFileKind::EstateAgendas
-		| ScriptFileKind::EstatePrivileges
-		| ScriptFileKind::Estates
-		| ScriptFileKind::ParliamentBribes
-		| ScriptFileKind::ParliamentIssues => ScopeType::Country,
-		ScriptFileKind::Missions | ScriptFileKind::NewDiplomaticActions => ScopeType::Country,
-		ScriptFileKind::Buildings
-		| ScriptFileKind::GreatProjects
-		| ScriptFileKind::Institutions
-		| ScriptFileKind::ProvinceTriggeredModifiers
-		| ScriptFileKind::ProvinceHistory
-		| ScriptFileKind::StateEdicts => ScopeType::Province,
-		ScriptFileKind::TriggeredModifiers => ScopeType::Country,
-		_ => ScopeType::Unknown,
-	}
 }
 
 fn is_new_diplomatic_actions_container_key(key: &str) -> bool {
