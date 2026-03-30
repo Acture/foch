@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-03-27
+Last updated: 2026-03-30
 
 ## Summary
 
@@ -126,13 +126,15 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/religions`
 - `common/state_edicts`
 - `common/subject_types`
+- `common/technologies`
+- `common/technology`
 - `common/units`
 - `common/mercenary_companies`
 - `history/countries`
 - `history/provinces`
 - `history/wars`
 
-`ACT-131A` is now verified complete: `common/policies` and `common/mercenary_companies` both promote to `semantic_complete` in the latest real probe. The next active slice is `ACT-131B`, focused on `common/technologies`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
+`ACT-131A` is now verified complete: `common/policies` and `common/mercenary_companies` both promote to `semantic_complete` in the latest real probe. The next active slice is `ACT-131B`, focused on the technology family: `common/technologies` and `common/technology`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
 
@@ -151,6 +153,13 @@ Verified locally during the latest `ACT-131A` slice:
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
 - real `foch data build eu4 ...` probe confirmed `parse_only` moved from `80` to `78` and `semantic_complete` moved from `29` to `31`
+
+Verified locally during the current `ACT-131B` implementation slice:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- real `foch data build eu4 ...` probe pending; acceptance target is `parse_only` from `78` to `76` and `semantic_complete` from `31` to `33`
 
 ## Practical Reading Order
 

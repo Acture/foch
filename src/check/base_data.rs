@@ -1691,6 +1691,10 @@ fn script_file_kind_name(
 		crate::check::analyzer::semantic_index::ScriptFileKind::MercenaryCompanies => {
 			"mercenary_companies"
 		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::Technologies => "technologies",
+		crate::check::analyzer::semantic_index::ScriptFileKind::TechnologyGroups => {
+			"technology_groups"
+		}
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstateAgendas => "estate_agendas",
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstatePrivileges => {
 			"estate_privileges"
@@ -1954,6 +1958,14 @@ fn is_semantic_complete_foundation_root(
 		}
 		"common/mercenary_companies" => {
 			accumulator.has_script_file_kind("mercenary_companies")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/technologies" => {
+			accumulator.has_script_file_kind("technologies")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/technology" => {
+			accumulator.has_script_file_kind("technology_groups")
 				&& accumulator.has_semantic_count("resource_references")
 		}
 		"common/estate_agendas" => {
@@ -2885,6 +2897,18 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/technologies/adm.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/technology.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3144,6 +3168,62 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "monarch_power".to_string(),
+				value: "ADM".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technologies/adm.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "technology_definition".to_string(),
+				value: "adm_tech_0".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technologies/adm.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "expects_institution".to_string(),
+				value: "feudalism".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technologies/adm.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "enable".to_string(),
+				value: "temple".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technologies/adm.txt"),
+				line: 4,
+				column: 1,
+			},
+			ResourceReference {
+				key: "technology_group".to_string(),
+				value: "western".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technology.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "nation_designer_unit_type".to_string(),
+				value: "western".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technology.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "nation_designer_cost_value".to_string(),
+				value: "25".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/technology.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
 				key: "estate".to_string(),
 				value: "clergy".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3334,6 +3414,10 @@ mod tests {
 				"common/government_mechanics/18_parliament_vs_monarchy.txt".to_string(),
 				"common/peace_treaties/00_peace_treaties.txt".to_string(),
 				"common/bookmarks/a_new_world.txt".to_string(),
+				"common/policies/00_adm.txt".to_string(),
+				"common/mercenary_companies/00_mercenaries.txt".to_string(),
+				"common/technologies/adm.txt".to_string(),
+				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
 				"common/estate_privileges/01_church_privileges.txt".to_string(),
 				"common/estates/01_church.txt".to_string(),
@@ -3507,6 +3591,23 @@ mod tests {
 			.expect("mercenary companies coverage");
 		assert_eq!(
 			mercenary_companies.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let technologies = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/technologies")
+			.expect("technologies coverage");
+		assert_eq!(technologies.coverage_class, CoverageClass::SemanticComplete);
+
+		let technology_groups = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/technology")
+			.expect("technology groups coverage");
+		assert_eq!(
+			technology_groups.coverage_class,
 			CoverageClass::SemanticComplete
 		);
 

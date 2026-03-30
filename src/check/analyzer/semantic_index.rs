@@ -71,6 +71,8 @@ pub enum ScriptFileKind {
 	Bookmarks,
 	Policies,
 	MercenaryCompanies,
+	Technologies,
+	TechnologyGroups,
 	EstateAgendas,
 	EstatePrivileges,
 	Estates,
@@ -165,6 +167,10 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Policies
 	} else if normalized.starts_with("common/mercenary_companies/") {
 		ScriptFileKind::MercenaryCompanies
+	} else if normalized.starts_with("common/technologies/") {
+		ScriptFileKind::Technologies
+	} else if normalized == "common/technology.txt" {
+		ScriptFileKind::TechnologyGroups
 	} else if normalized.starts_with("common/estate_agendas/") {
 		ScriptFileKind::EstateAgendas
 	} else if normalized.starts_with("common/estate_privileges/") {
@@ -278,6 +284,8 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::Bookmarks => module_with_tail(&parts, 2, "bookmarks"),
 		ScriptFileKind::Policies => module_with_tail(&parts, 2, "policies"),
 		ScriptFileKind::MercenaryCompanies => module_with_tail(&parts, 2, "mercenary_companies"),
+		ScriptFileKind::Technologies => module_with_tail(&parts, 2, "technologies"),
+		ScriptFileKind::TechnologyGroups => module_with_tail(&parts, 1, "technology_groups"),
 		ScriptFileKind::EstateAgendas => module_with_tail(&parts, 2, "estate_agendas"),
 		ScriptFileKind::EstatePrivileges => module_with_tail(&parts, 2, "estate_privileges"),
 		ScriptFileKind::Estates => module_with_tail(&parts, 2, "estates"),
@@ -1011,6 +1019,14 @@ fn record_foundation_resource_semantics(
 		ScriptFileKind::MercenaryCompanies => {
 			record_mercenary_company_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ScriptFileKind::Technologies => {
+			record_technology_definition_resource_semantics(
+				index, scope_id, ctx, key, key_span, value,
+			);
+		}
+		ScriptFileKind::TechnologyGroups => {
+			record_technology_group_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ScriptFileKind::EstateAgendas => {
 			record_estate_agenda_resource_semantics(index, ctx, key, key_span, value);
 		}
@@ -1341,6 +1357,53 @@ fn is_top_level_named_block(
 		&& !is_keyword(key)
 }
 
+fn is_named_block_in_top_level_block(
+	index: &SemanticIndex,
+	scope_id: usize,
+	key: &str,
+	value: &AstValue,
+) -> bool {
+	scope_kind(index, scope_id) == ScopeKind::Block
+		&& scope_parent_kind(index, scope_id) == Some(ScopeKind::File)
+		&& matches!(value, AstValue::Block { .. })
+		&& !is_keyword(key)
+}
+
+fn scope_parent_kind(index: &SemanticIndex, scope_id: usize) -> Option<ScopeKind> {
+	let parent = index.scopes.get(scope_id)?.parent?;
+	Some(scope_kind(index, parent))
+}
+
+fn latest_resource_reference_value(
+	index: &SemanticIndex,
+	path: &Path,
+	key: &str,
+) -> Option<String> {
+	index
+		.resource_references
+		.iter()
+		.rev()
+		.find(|reference| reference.path == path && reference.key == key)
+		.map(|reference| reference.value.clone())
+}
+
+fn technology_definition_ordinal(index: &SemanticIndex, path: &Path) -> usize {
+	index
+		.resource_references
+		.iter()
+		.filter(|reference| reference.path == path && reference.key == "technology_definition")
+		.count()
+}
+
+fn monarch_power_prefix(value: String) -> Option<&'static str> {
+	match value.as_str() {
+		"ADM" => Some("adm"),
+		"DIP" => Some("dip"),
+		"MIL" => Some("mil"),
+		_ => None,
+	}
+}
+
 fn record_bookmark_resource_semantics(
 	index: &mut SemanticIndex,
 	ctx: &BuildContext<'_>,
@@ -1356,6 +1419,56 @@ fn record_bookmark_resource_semantics(
 		|| (key == "center" && is_province_id_text(&text))
 	{
 		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_technology_definition_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) == ScopeKind::File && key == "monarch_power" {
+		if let Some(text) = scalar_text(value) {
+			push_resource_reference(index, ctx, key_span, key, text.as_str());
+		}
+		return;
+	}
+	if scope_kind(index, scope_id) != ScopeKind::File || key != "technology" {
+		return;
+	}
+	let Some(prefix) = latest_resource_reference_value(index, ctx.path, "monarch_power")
+		.and_then(monarch_power_prefix)
+	else {
+		return;
+	};
+	let definition_key = format!(
+		"{prefix}_tech_{}",
+		technology_definition_ordinal(index, ctx.path)
+	);
+	push_resource_reference(
+		index,
+		ctx,
+		key_span,
+		"technology_definition",
+		definition_key.as_str(),
+	);
+	for year in extract_named_block_scalar_items(value, "year") {
+		push_resource_reference(index, ctx, key_span, "year", year.as_str());
+	}
+	for institution in extract_named_block_scalar_items(value, "expects_institution") {
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"expects_institution",
+			institution.as_str(),
+		);
+	}
+	for enable in extract_named_block_scalar_items(value, "enable") {
+		push_resource_reference(index, ctx, key_span, "enable", enable.as_str());
 	}
 }
 
@@ -1376,6 +1489,43 @@ fn record_policy_resource_semantics(
 	};
 	if key == "monarch_power" {
 		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_technology_group_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if !is_named_block_in_top_level_block(index, scope_id, key, value) {
+		return;
+	}
+	push_resource_reference(index, ctx, key_span, "technology_group", key);
+	let AstValue::Block { items, .. } = value else {
+		return;
+	};
+	for field in [
+		"start_level",
+		"start_cost_modifier",
+		"nation_designer_unit_type",
+	] {
+		if let Some(text) = extract_assignment_scalar(items, field) {
+			push_resource_reference(index, ctx, key_span, field, text.as_str());
+		}
+	}
+	if let Some(cost_value) =
+		extract_nested_assignment_scalar(items, "nation_designer_cost", "value")
+	{
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"nation_designer_cost_value",
+			cost_value.as_str(),
+		);
 	}
 }
 
@@ -1540,6 +1690,28 @@ fn extract_named_block_scalar_items(value: &AstValue, key_name: &str) -> Vec<Str
 		}
 	}
 	values
+}
+
+fn extract_nested_assignment_scalar(
+	items: &[AstStatement],
+	block_name: &str,
+	field_name: &str,
+) -> Option<String> {
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			continue;
+		};
+		if key != block_name {
+			continue;
+		}
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		if let Some(text) = extract_assignment_scalar(items, field_name) {
+			return Some(text);
+		}
+	}
+	None
 }
 
 fn record_ui_block_semantics(
@@ -1724,6 +1896,8 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::PeaceTreaties
 		| ScriptFileKind::Policies
 		| ScriptFileKind::MercenaryCompanies
+		| ScriptFileKind::Technologies
+		| ScriptFileKind::TechnologyGroups
 		| ScriptFileKind::EstateAgendas
 		| ScriptFileKind::EstatePrivileges
 		| ScriptFileKind::Estates
@@ -3835,6 +4009,14 @@ persia_indian_hegemony_decision_coup_effect = {
 			)),
 			ScriptFileKind::MercenaryCompanies
 		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
+			ScriptFileKind::Technologies
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/technology.txt")),
+			ScriptFileKind::TechnologyGroups
+		);
 	}
 
 	#[test]
@@ -4979,6 +5161,121 @@ merc_black_army = {
 			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
 				&& reference.key == "sprites"
 				&& reference.value == "dlc102_hun_sprite_pack"
+		}));
+	}
+
+	#[test]
+	fn technology_family_records_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("technologies"))
+			.expect("create technologies");
+		fs::write(
+			mod_root.join("common").join("technologies").join("adm.txt"),
+			r#"
+monarch_power = ADM
+ahead_of_time = {
+	adm_tech_cost_modifier = 0.2
+}
+technology = {
+	year = 1444
+	enable = temple
+	expects_institution = feudalism
+}
+technology = {
+	year = 1466
+	enable = courthouse
+	expects_institution = renaissance
+}
+"#,
+		)
+		.expect("write technologies");
+		fs::write(
+			mod_root.join("common").join("technology.txt"),
+			r#"
+groups = {
+	western = {
+		start_level = 3
+		start_cost_modifier = 0.0
+		nation_designer_unit_type = western
+		nation_designer_trigger = {
+			has_dlc = "Conquest of Paradise"
+		}
+		nation_designer_cost = {
+			trigger = { is_free_or_tributary_trigger = yes }
+			value = 25
+		}
+	}
+	eastern = {
+		start_level = 2
+		start_cost_modifier = 0.1
+		nation_designer_unit_type = eastern
+	}
+}
+"#,
+		)
+		.expect("write technology groups");
+
+		let files = vec![
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root.join("common").join("technologies").join("adm.txt"),
+			)
+			.expect("parsed technologies"),
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root.join("common").join("technology.txt"),
+			)
+			.expect("parsed technology groups"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/technologies/adm.txt")
+				&& usage.key == "adm_tech_cost_modifier"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Block
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "monarch_power"
+				&& reference.value == "ADM"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "technology_definition"
+				&& reference.value == "adm_tech_0"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "technology_definition"
+				&& reference.value == "adm_tech_1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "expects_institution"
+				&& reference.value == "feudalism"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "enable"
+				&& reference.value == "courthouse"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technology.txt")
+				&& reference.key == "technology_group"
+				&& reference.value == "western"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technology.txt")
+				&& reference.key == "nation_designer_unit_type"
+				&& reference.value == "western"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technology.txt")
+				&& reference.key == "nation_designer_cost_value"
+				&& reference.value == "25"
 		}));
 	}
 
