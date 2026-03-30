@@ -1,6 +1,8 @@
 pub(crate) mod analysis;
+pub(crate) mod content_family;
 pub(crate) mod documents;
 pub(crate) mod eu4_builtin;
+pub(crate) mod eu4_profile;
 pub(crate) mod localisation;
 pub(crate) mod param_contracts;
 pub(crate) mod parser;
