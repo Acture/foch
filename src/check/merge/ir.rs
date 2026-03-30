@@ -551,6 +551,8 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Bookmarks => "bookmarks",
 		ScriptFileKind::Policies => "policies",
 		ScriptFileKind::MercenaryCompanies => "mercenary_companies",
+		ScriptFileKind::Technologies => "technologies",
+		ScriptFileKind::TechnologyGroups => "technology_groups",
 		ScriptFileKind::EstateAgendas => "estate_agendas",
 		ScriptFileKind::EstatePrivileges => "estate_privileges",
 		ScriptFileKind::Estates => "estates",
