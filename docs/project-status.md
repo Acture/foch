@@ -101,8 +101,9 @@ The current near-term execution loop is now driven by the base snapshot coverage
 - `ACT-128`: governance and estate wave for `estate_*`, `parliament_*`, and `state_edicts`
 - `ACT-129`: scripted metadata wave for `common/peace_treaties` and `common/bookmarks`
 - `ACT-130A`: low-risk definition wave for `common/church_aspects`, `common/factions`, `common/hegemons`, `common/personal_deities`, and `common/fetishist_cults`
+- `ACT-131A`: small common-data slice for `common/policies` and `common/mercenary_companies`
 
-The current semantic-complete gameplay roots now include:
+The current semantic-complete gameplay roots in the last verified real probe include:
 
 - `common/country_tags`
 - `common/countries`
@@ -120,16 +121,18 @@ The current semantic-complete gameplay roots now include:
 - `common/parliament_issues`
 - `common/peace_treaties`
 - `common/personal_deities`
+- `common/policies`
 - `common/rebel_types`
 - `common/religions`
 - `common/state_edicts`
 - `common/subject_types`
 - `common/units`
+- `common/mercenary_companies`
 - `history/countries`
 - `history/provinces`
 - `history/wars`
 
-The next wave should finish the remaining small common-data pack before revisiting the largest tails, especially `common/policies`, `common/technologies`, and `common/mercenary_companies`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
+`ACT-131A` is now verified complete: `common/policies` and `common/mercenary_companies` both promote to `semantic_complete` in the latest real probe. The next active slice is `ACT-131B`, focused on `common/technologies`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
 
@@ -141,6 +144,13 @@ Verified locally during the latest coverage wave:
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
 - real `foch data build eu4 ...` probe confirmed `parse_only` moved from `85` to `80` and `semantic_complete` moved from `24` to `29`
+
+Verified locally during the latest `ACT-131A` slice:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `80` to `78` and `semantic_complete` moved from `29` to `31`
 
 ## Practical Reading Order
 
