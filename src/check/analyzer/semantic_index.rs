@@ -534,6 +534,8 @@ fn build_file_index(
 		file_kind: file.file_kind,
 		module_name: &file.module_name,
 		map_groups,
+		technology_monarch_power: None,
+		technology_definition_ordinal: 0,
 	};
 
 	walk_statements(
@@ -578,6 +580,8 @@ struct BuildContext<'a> {
 	file_kind: ScriptFileKind,
 	module_name: &'a str,
 	map_groups: &'a MapGroupLookup,
+	technology_monarch_power: Option<String>,
+	technology_definition_ordinal: usize,
 }
 
 fn walk_statements(
@@ -829,6 +833,8 @@ fn handle_event_block(
 		file_kind: ctx.file_kind,
 		module_name: ctx.module_name,
 		map_groups: ctx.map_groups,
+		technology_monarch_power: ctx.technology_monarch_power.clone(),
+		technology_definition_ordinal: ctx.technology_definition_ordinal,
 	};
 	walk_statements(items, index, event_scope, &mut child_ctx, None, namespace);
 }
@@ -913,7 +919,7 @@ fn record_ui_scalar_semantics(
 fn record_foundation_resource_semantics(
 	index: &mut SemanticIndex,
 	scope_id: usize,
-	ctx: &BuildContext<'_>,
+	ctx: &mut BuildContext<'_>,
 	key: &str,
 	key_span: &SpanRange,
 	value: &AstValue,
@@ -1374,29 +1380,8 @@ fn scope_parent_kind(index: &SemanticIndex, scope_id: usize) -> Option<ScopeKind
 	Some(scope_kind(index, parent))
 }
 
-fn latest_resource_reference_value(
-	index: &SemanticIndex,
-	path: &Path,
-	key: &str,
-) -> Option<String> {
-	index
-		.resource_references
-		.iter()
-		.rev()
-		.find(|reference| reference.path == path && reference.key == key)
-		.map(|reference| reference.value.clone())
-}
-
-fn technology_definition_ordinal(index: &SemanticIndex, path: &Path) -> usize {
-	index
-		.resource_references
-		.iter()
-		.filter(|reference| reference.path == path && reference.key == "technology_definition")
-		.count()
-}
-
-fn monarch_power_prefix(value: String) -> Option<&'static str> {
-	match value.as_str() {
+fn monarch_power_prefix(value: &str) -> Option<&'static str> {
+	match value {
 		"ADM" => Some("adm"),
 		"DIP" => Some("dip"),
 		"MIL" => Some("mil"),
@@ -1425,13 +1410,14 @@ fn record_bookmark_resource_semantics(
 fn record_technology_definition_resource_semantics(
 	index: &mut SemanticIndex,
 	scope_id: usize,
-	ctx: &BuildContext<'_>,
+	ctx: &mut BuildContext<'_>,
 	key: &str,
 	key_span: &SpanRange,
 	value: &AstValue,
 ) {
 	if scope_kind(index, scope_id) == ScopeKind::File && key == "monarch_power" {
 		if let Some(text) = scalar_text(value) {
+			ctx.technology_monarch_power = Some(text.clone());
 			push_resource_reference(index, ctx, key_span, key, text.as_str());
 		}
 		return;
@@ -1439,15 +1425,15 @@ fn record_technology_definition_resource_semantics(
 	if scope_kind(index, scope_id) != ScopeKind::File || key != "technology" {
 		return;
 	}
-	let Some(prefix) = latest_resource_reference_value(index, ctx.path, "monarch_power")
+	let Some(prefix) = ctx
+		.technology_monarch_power
+		.as_deref()
 		.and_then(monarch_power_prefix)
 	else {
 		return;
 	};
-	let definition_key = format!(
-		"{prefix}_tech_{}",
-		technology_definition_ordinal(index, ctx.path)
-	);
+	let definition_key = format!("{prefix}_tech_{}", ctx.technology_definition_ordinal);
+	ctx.technology_definition_ordinal += 1;
 	push_resource_reference(
 		index,
 		ctx,
@@ -1458,7 +1444,7 @@ fn record_technology_definition_resource_semantics(
 	for year in extract_named_block_scalar_items(value, "year") {
 		push_resource_reference(index, ctx, key_span, "year", year.as_str());
 	}
-	for institution in extract_named_block_scalar_items(value, "expects_institution") {
+	for institution in extract_named_block_member_keys(value, "expects_institution") {
 		push_resource_reference(
 			index,
 			ctx,
@@ -1467,7 +1453,7 @@ fn record_technology_definition_resource_semantics(
 			institution.as_str(),
 		);
 	}
-	for enable in extract_named_block_scalar_items(value, "enable") {
+	for enable in extract_yes_assignment_keys(value) {
 		push_resource_reference(index, ctx, key_span, "enable", enable.as_str());
 	}
 }
@@ -1690,6 +1676,50 @@ fn extract_named_block_scalar_items(value: &AstValue, key_name: &str) -> Vec<Str
 		}
 	}
 	values
+}
+
+fn extract_named_block_member_keys(value: &AstValue, key_name: &str) -> Vec<String> {
+	let AstValue::Block { items, .. } = value else {
+		return Vec::new();
+	};
+	let mut keys: Vec<String> = Vec::new();
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			continue;
+		};
+		if key != key_name {
+			continue;
+		}
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		for nested in items {
+			let AstStatement::Assignment { key, .. } = nested else {
+				continue;
+			};
+			keys.push(key.clone());
+		}
+	}
+	keys
+}
+
+fn extract_yes_assignment_keys(value: &AstValue) -> Vec<String> {
+	let AstValue::Block { items, .. } = value else {
+		return Vec::new();
+	};
+	let mut keys: Vec<String> = Vec::new();
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			continue;
+		};
+		let Some(text) = scalar_text(value) else {
+			continue;
+		};
+		if text.eq_ignore_ascii_case("yes") {
+			keys.push(key.clone());
+		}
+	}
+	keys
 }
 
 fn extract_nested_assignment_scalar(
@@ -5165,7 +5195,7 @@ merc_black_army = {
 	}
 
 	#[test]
-	fn technology_family_records_resource_references() {
+	fn technology_files_record_real_syntax_resource_references() {
 		let tmp = TempDir::new().expect("temp dir");
 		let mod_root = tmp.path().join("mod");
 		fs::create_dir_all(mod_root.join("common").join("technologies"))
@@ -5179,59 +5209,30 @@ ahead_of_time = {
 }
 technology = {
 	year = 1444
-	enable = temple
-	expects_institution = feudalism
+	expects_institution = {
+		feudalism = 0.5
+	}
+	temple = yes
 }
 technology = {
 	year = 1466
-	enable = courthouse
-	expects_institution = renaissance
+	expects_institution = {
+		renaissance = 0.15
+	}
+	courthouse = yes
+	may_force_march = yes
 }
 "#,
 		)
 		.expect("write technologies");
-		fs::write(
-			mod_root.join("common").join("technology.txt"),
-			r#"
-groups = {
-	western = {
-		start_level = 3
-		start_cost_modifier = 0.0
-		nation_designer_unit_type = western
-		nation_designer_trigger = {
-			has_dlc = "Conquest of Paradise"
-		}
-		nation_designer_cost = {
-			trigger = { is_free_or_tributary_trigger = yes }
-			value = 25
-		}
-	}
-	eastern = {
-		start_level = 2
-		start_cost_modifier = 0.1
-		nation_designer_unit_type = eastern
-	}
-}
-"#,
+
+		let parsed = parse_script_file(
+			"1016",
+			&mod_root,
+			&mod_root.join("common").join("technologies").join("adm.txt"),
 		)
-		.expect("write technology groups");
-
-		let files = vec![
-			parse_script_file(
-				"1016",
-				&mod_root,
-				&mod_root.join("common").join("technologies").join("adm.txt"),
-			)
-			.expect("parsed technologies"),
-			parse_script_file(
-				"1016",
-				&mod_root,
-				&mod_root.join("common").join("technology.txt"),
-			)
-			.expect("parsed technology groups"),
-		];
-
-		let index = build_semantic_index(&files);
+		.expect("parsed technologies");
+		let index = build_semantic_index(&[parsed]);
 		assert!(index.key_usages.iter().any(|usage| {
 			usage.path == Path::new("common/technologies/adm.txt")
 				&& usage.key == "adm_tech_cost_modifier"
@@ -5259,9 +5260,150 @@ groups = {
 		}));
 		assert!(index.resource_references.iter().any(|reference| {
 			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "expects_institution"
+				&& reference.value == "renaissance"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "enable"
+				&& reference.value == "temple"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
 				&& reference.key == "enable"
 				&& reference.value == "courthouse"
 		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "enable"
+				&& reference.value == "may_force_march"
+		}));
+	}
+
+	#[test]
+	fn technology_files_reset_state_per_overlay_contributor() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_a_root = tmp.path().join("mod_a");
+		let mod_b_root = tmp.path().join("mod_b");
+		fs::create_dir_all(mod_a_root.join("common").join("technologies"))
+			.expect("create mod a technologies");
+		fs::create_dir_all(mod_b_root.join("common").join("technologies"))
+			.expect("create mod b technologies");
+		fs::write(
+			mod_a_root
+				.join("common")
+				.join("technologies")
+				.join("adm.txt"),
+			r#"
+monarch_power = ADM
+technology = {
+	year = 1444
+	temple = yes
+}
+"#,
+		)
+		.expect("write mod a technologies");
+		fs::write(
+			mod_b_root
+				.join("common")
+				.join("technologies")
+				.join("adm.txt"),
+			r#"
+monarch_power = DIP
+technology = {
+	year = 1444
+	marketplace = yes
+}
+"#,
+		)
+		.expect("write mod b technologies");
+
+		let files = vec![
+			parse_script_file(
+				"mod-a",
+				&mod_a_root,
+				&mod_a_root
+					.join("common")
+					.join("technologies")
+					.join("adm.txt"),
+			)
+			.expect("parsed mod a technologies"),
+			parse_script_file(
+				"mod-b",
+				&mod_b_root,
+				&mod_b_root
+					.join("common")
+					.join("technologies")
+					.join("adm.txt"),
+			)
+			.expect("parsed mod b technologies"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.mod_id == "mod-a"
+				&& reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "technology_definition"
+				&& reference.value == "adm_tech_0"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.mod_id == "mod-b"
+				&& reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "technology_definition"
+				&& reference.value == "dip_tech_0"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.mod_id == "mod-b"
+				&& reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "monarch_power"
+				&& reference.value == "DIP"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.mod_id == "mod-b"
+				&& reference.path == Path::new("common/technologies/adm.txt")
+				&& reference.key == "technology_definition"
+				&& reference.value == "adm_tech_1"
+		}));
+	}
+
+	#[test]
+	fn technology_groups_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common")).expect("create common");
+		fs::write(
+			mod_root.join("common").join("technology.txt"),
+			r#"
+groups = {
+	western = {
+		start_level = 3
+		start_cost_modifier = 0.0
+		nation_designer_unit_type = western
+		nation_designer_trigger = {
+			has_dlc = "Conquest of Paradise"
+		}
+		nation_designer_cost = {
+			trigger = { is_free_or_tributary_trigger = yes }
+			value = 25
+		}
+	}
+	eastern = {
+		start_level = 2
+		start_cost_modifier = 0.1
+		nation_designer_unit_type = eastern
+	}
+}
+"#,
+		)
+		.expect("write technology groups");
+
+		let parsed = parse_script_file(
+			"1016",
+			&mod_root,
+			&mod_root.join("common").join("technology.txt"),
+		)
+		.expect("parsed technology groups");
+		let index = build_semantic_index(&[parsed]);
 		assert!(index.resource_references.iter().any(|reference| {
 			reference.path == Path::new("common/technology.txt")
 				&& reference.key == "technology_group"
