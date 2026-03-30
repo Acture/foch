@@ -62,6 +62,11 @@ pub enum ScriptFileKind {
 	RebelTypes,
 	Disasters,
 	GovernmentMechanics,
+	ChurchAspects,
+	Factions,
+	Hegemons,
+	PersonalDeities,
+	FetishistCults,
 	PeaceTreaties,
 	Bookmarks,
 	EstateAgendas,
@@ -140,6 +145,16 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::Disasters
 	} else if normalized.starts_with("common/government_mechanics/") {
 		ScriptFileKind::GovernmentMechanics
+	} else if normalized.starts_with("common/church_aspects/") {
+		ScriptFileKind::ChurchAspects
+	} else if normalized.starts_with("common/factions/") {
+		ScriptFileKind::Factions
+	} else if normalized.starts_with("common/hegemons/") {
+		ScriptFileKind::Hegemons
+	} else if normalized.starts_with("common/personal_deities/") {
+		ScriptFileKind::PersonalDeities
+	} else if normalized.starts_with("common/fetishist_cults/") {
+		ScriptFileKind::FetishistCults
 	} else if normalized.starts_with("common/peace_treaties/") {
 		ScriptFileKind::PeaceTreaties
 	} else if normalized.starts_with("common/bookmarks/") {
@@ -248,6 +263,11 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::RebelTypes => module_with_tail(&parts, 2, "rebel_types"),
 		ScriptFileKind::Disasters => module_with_tail(&parts, 2, "disasters"),
 		ScriptFileKind::GovernmentMechanics => module_with_tail(&parts, 2, "government_mechanics"),
+		ScriptFileKind::ChurchAspects => module_with_tail(&parts, 2, "church_aspects"),
+		ScriptFileKind::Factions => module_with_tail(&parts, 2, "factions"),
+		ScriptFileKind::Hegemons => module_with_tail(&parts, 2, "hegemons"),
+		ScriptFileKind::PersonalDeities => module_with_tail(&parts, 2, "personal_deities"),
+		ScriptFileKind::FetishistCults => module_with_tail(&parts, 2, "fetishist_cults"),
 		ScriptFileKind::PeaceTreaties => module_with_tail(&parts, 2, "peace_treaties"),
 		ScriptFileKind::Bookmarks => module_with_tail(&parts, 2, "bookmarks"),
 		ScriptFileKind::EstateAgendas => module_with_tail(&parts, 2, "estate_agendas"),
@@ -464,6 +484,11 @@ fn build_file_index(
 		ScriptFileKind::DiplomaticActions
 		| ScriptFileKind::NewDiplomaticActions
 		| ScriptFileKind::Buildings
+		| ScriptFileKind::ChurchAspects
+		| ScriptFileKind::Factions
+		| ScriptFileKind::Hegemons
+		| ScriptFileKind::PersonalDeities
+		| ScriptFileKind::FetishistCults
 		| ScriptFileKind::PeaceTreaties
 		| ScriptFileKind::CbTypes => {
 			aliases.insert("THIS".to_string(), root_this_type);
@@ -951,6 +976,21 @@ fn record_foundation_resource_semantics(
 		ScriptFileKind::GovernmentMechanics => {
 			record_government_mechanic_resource_semantics(index, ctx, key, key_span, value);
 		}
+		ScriptFileKind::ChurchAspects => {
+			record_church_aspect_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ScriptFileKind::Factions => {
+			record_faction_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ScriptFileKind::Hegemons => {
+			record_hegemon_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ScriptFileKind::PersonalDeities => {
+			record_personal_deity_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ScriptFileKind::FetishistCults => {
+			record_fetishist_cult_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ScriptFileKind::PeaceTreaties => {
 			record_peace_treaty_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
@@ -1126,6 +1166,116 @@ fn record_government_mechanic_resource_semantics(
 	}
 }
 
+fn record_church_aspect_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if !is_top_level_named_block(index, scope_id, key, value) {
+		return;
+	}
+	push_resource_reference(index, ctx, key_span, "localisation", key);
+	push_resource_reference(
+		index,
+		ctx,
+		key_span,
+		"localisation_desc",
+		&format!("desc_{key}"),
+	);
+	push_resource_reference(
+		index,
+		ctx,
+		key_span,
+		"localisation_modifier",
+		&format!("{key}_modifier"),
+	);
+}
+
+fn record_faction_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if is_top_level_named_block(index, scope_id, key, value) {
+		push_resource_reference(index, ctx, key_span, "localisation", key);
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"localisation_influence",
+			&format!("{key}_influence"),
+		);
+		return;
+	}
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if key == "monarch_power" {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_hegemon_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if is_top_level_named_block(index, scope_id, key, value) {
+		push_resource_reference(index, ctx, key_span, "localisation", key);
+	}
+}
+
+fn record_personal_deity_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if !is_top_level_named_block(index, scope_id, key, value) {
+		return;
+	}
+	push_resource_reference(index, ctx, key_span, "localisation", key);
+	push_resource_reference(
+		index,
+		ctx,
+		key_span,
+		"localisation_desc",
+		&format!("{key}_desc"),
+	);
+}
+
+fn record_fetishist_cult_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if !is_top_level_named_block(index, scope_id, key, value) {
+		return;
+	}
+	push_resource_reference(index, ctx, key_span, "localisation", key);
+	push_resource_reference(
+		index,
+		ctx,
+		key_span,
+		"localisation_desc",
+		&format!("{key}_desc"),
+	);
+}
+
 fn record_peace_treaty_resource_semantics(
 	index: &mut SemanticIndex,
 	scope_id: usize,
@@ -1134,10 +1284,7 @@ fn record_peace_treaty_resource_semantics(
 	key_span: &SpanRange,
 	value: &AstValue,
 ) {
-	if scope_kind(index, scope_id) == ScopeKind::File
-		&& matches!(value, AstValue::Block { .. })
-		&& !is_keyword(key)
-	{
+	if is_top_level_named_block(index, scope_id, key, value) {
 		push_resource_reference(
 			index,
 			ctx,
@@ -1167,6 +1314,17 @@ fn record_peace_treaty_resource_semantics(
 	if is_peace_treaty_scalar_reference_key(key) {
 		push_resource_reference(index, ctx, key_span, key, text.as_str());
 	}
+}
+
+fn is_top_level_named_block(
+	index: &SemanticIndex,
+	scope_id: usize,
+	key: &str,
+	value: &AstValue,
+) -> bool {
+	scope_kind(index, scope_id) == ScopeKind::File
+		&& matches!(value, AstValue::Block { .. })
+		&& !is_keyword(key)
 }
 
 fn record_bookmark_resource_semantics(
@@ -1499,6 +1657,11 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::CountryTags
 		| ScriptFileKind::Countries
 		| ScriptFileKind::CountryHistory
+		| ScriptFileKind::ChurchAspects
+		| ScriptFileKind::Factions
+		| ScriptFileKind::Hegemons
+		| ScriptFileKind::PersonalDeities
+		| ScriptFileKind::FetishistCults
 		| ScriptFileKind::PeaceTreaties
 		| ScriptFileKind::EstateAgendas
 		| ScriptFileKind::EstatePrivileges
@@ -2274,6 +2437,31 @@ fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Optio
 			"powers" | "scaled_modifier" | "reverse_scaled_modifier" | "modifier" => {
 				Some(ScopeKind::Block)
 			}
+			_ => None,
+		},
+		ScriptFileKind::ChurchAspects => match key {
+			"potential" | "trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"effect" => Some(ScopeKind::Effect),
+			"modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::Factions => match key {
+			"allow" => Some(ScopeKind::Trigger),
+			"modifier" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::Hegemons => match key {
+			"allow" => Some(ScopeKind::Trigger),
+			"base" | "scale" | "max" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::PersonalDeities => match key {
+			"potential" | "trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"effect" | "removed_effect" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::FetishistCults => match key {
+			"allow" | "ai_will_do" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
 		ScriptFileKind::PeaceTreaties => match key {
@@ -3487,6 +3675,34 @@ persia_indian_hegemony_decision_coup_effect = {
 		);
 		assert_eq!(
 			classify_script_file(std::path::Path::new(
+				"common/church_aspects/00_church_aspects.txt"
+			)),
+			ScriptFileKind::ChurchAspects
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/factions/00_factions.txt")),
+			ScriptFileKind::Factions
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/hegemons/0_economic_hegemon.txt"
+			)),
+			ScriptFileKind::Hegemons
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/personal_deities/00_hindu_deities.txt"
+			)),
+			ScriptFileKind::PersonalDeities
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/fetishist_cults/00_fetishist_cults.txt"
+			)),
+			ScriptFileKind::FetishistCults
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
 				"common/estate_agendas/00_generic_agendas.txt"
 			)),
 			ScriptFileKind::EstateAgendas
@@ -4332,6 +4548,234 @@ bookmark = {
 			reference.path == Path::new("common/bookmarks/a_new_world.txt")
 				&& reference.key == "country"
 				&& reference.value == "ENG"
+		}));
+	}
+
+	#[test]
+	fn low_risk_definition_roots_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("church_aspects"))
+			.expect("create church aspects");
+		fs::create_dir_all(mod_root.join("common").join("factions")).expect("create factions");
+		fs::create_dir_all(mod_root.join("common").join("hegemons")).expect("create hegemons");
+		fs::create_dir_all(mod_root.join("common").join("personal_deities"))
+			.expect("create personal deities");
+		fs::create_dir_all(mod_root.join("common").join("fetishist_cults"))
+			.expect("create fetishist cults");
+
+		fs::write(
+			mod_root
+				.join("common")
+				.join("church_aspects")
+				.join("00_church_aspects.txt"),
+			r#"
+organised_through_bishops_aspect = {
+	cost = 100
+	potential = { religion = protestant }
+	trigger = { has_church_power = yes }
+	effect = { add_stability = 1 }
+	modifier = { development_cost = -0.05 }
+	ai_will_do = { factor = 1 }
+}
+"#,
+		)
+		.expect("write church aspects");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("factions")
+				.join("00_factions.txt"),
+			r#"
+rr_jacobins = {
+	allow = { has_dlc = "Rights of Man" }
+	monarch_power = ADM
+	always = yes
+	modifier = { global_unrest = -2 }
+}
+"#,
+		)
+		.expect("write factions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("hegemons")
+				.join("0_economic_hegemon.txt"),
+			r#"
+economic_hegemon = {
+	allow = { is_great_power = yes }
+	base = { war_exhaustion = -0.1 }
+	scale = { mercenary_discipline = 0.10 }
+	max = { governing_capacity_modifier = 0.20 }
+}
+"#,
+		)
+		.expect("write hegemons");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("personal_deities")
+				.join("00_hindu_deities.txt"),
+			r#"
+shiva = {
+	sprite = 1
+	potential = { religion = hinduism }
+	trigger = { religion = hinduism }
+	effect = { add_prestige = 1 }
+	removed_effect = { add_prestige = -1 }
+	ai_will_do = { factor = 1 }
+}
+"#,
+		)
+		.expect("write personal deities");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("fetishist_cults")
+				.join("00_fetishist_cults.txt"),
+			r#"
+yemoja_cult = {
+	allow = { religion = shamanism }
+	sprite = 1
+	ai_will_do = { factor = 1 }
+}
+"#,
+		)
+		.expect("write fetishist cults");
+
+		let files = vec![
+			parse_script_file(
+				"1014",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("church_aspects")
+					.join("00_church_aspects.txt"),
+			)
+			.expect("parsed church aspects"),
+			parse_script_file(
+				"1014",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("factions")
+					.join("00_factions.txt"),
+			)
+			.expect("parsed factions"),
+			parse_script_file(
+				"1014",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("hegemons")
+					.join("0_economic_hegemon.txt"),
+			)
+			.expect("parsed hegemons"),
+			parse_script_file(
+				"1014",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("personal_deities")
+					.join("00_hindu_deities.txt"),
+			)
+			.expect("parsed personal deities"),
+			parse_script_file(
+				"1014",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("fetishist_cults")
+					.join("00_fetishist_cults.txt"),
+			)
+			.expect("parsed fetishist cults"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/church_aspects/00_church_aspects.txt")
+				&& usage.key == "religion"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/church_aspects/00_church_aspects.txt")
+				&& usage.key == "add_stability"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Effect
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/factions/00_factions.txt")
+				&& usage.key == "has_dlc"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/hegemons/0_economic_hegemon.txt")
+				&& usage.key == "war_exhaustion"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Block
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/personal_deities/00_hindu_deities.txt")
+				&& usage.key == "add_prestige"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Effect
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
+				&& usage.key == "religion"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/church_aspects/00_church_aspects.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "organised_through_bishops_aspect"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/church_aspects/00_church_aspects.txt")
+				&& reference.key == "localisation_desc"
+				&& reference.value == "desc_organised_through_bishops_aspect"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/church_aspects/00_church_aspects.txt")
+				&& reference.key == "localisation_modifier"
+				&& reference.value == "organised_through_bishops_aspect_modifier"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/factions/00_factions.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "rr_jacobins"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/factions/00_factions.txt")
+				&& reference.key == "localisation_influence"
+				&& reference.value == "rr_jacobins_influence"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/factions/00_factions.txt")
+				&& reference.key == "monarch_power"
+				&& reference.value == "ADM"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/hegemons/0_economic_hegemon.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "economic_hegemon"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/personal_deities/00_hindu_deities.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "shiva"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/personal_deities/00_hindu_deities.txt")
+				&& reference.key == "localisation_desc"
+				&& reference.value == "shiva_desc"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "yemoja_cult"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
+				&& reference.key == "localisation_desc"
+				&& reference.value == "yemoja_cult_desc"
 		}));
 	}
 

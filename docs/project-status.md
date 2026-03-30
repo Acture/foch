@@ -100,20 +100,26 @@ The current near-term execution loop is now driven by the base snapshot coverage
 - `ACT-127`: first common-data wave for rule-bearing roots beyond the foundation family
 - `ACT-128`: governance and estate wave for `estate_*`, `parliament_*`, and `state_edicts`
 - `ACT-129`: scripted metadata wave for `common/peace_treaties` and `common/bookmarks`
+- `ACT-130A`: low-risk definition wave for `common/church_aspects`, `common/factions`, `common/hegemons`, `common/personal_deities`, and `common/fetishist_cults`
 
 The current semantic-complete gameplay roots now include:
 
 - `common/country_tags`
 - `common/countries`
 - `common/bookmarks`
+- `common/church_aspects`
 - `common/disasters`
+- `common/factions`
+- `common/fetishist_cults`
 - `common/government_mechanics`
+- `common/hegemons`
 - `common/estate_agendas`
 - `common/estate_privileges`
 - `common/estates`
 - `common/parliament_bribes`
 - `common/parliament_issues`
 - `common/peace_treaties`
+- `common/personal_deities`
 - `common/rebel_types`
 - `common/religions`
 - `common/state_edicts`
@@ -123,7 +129,7 @@ The current semantic-complete gameplay roots now include:
 - `history/provinces`
 - `history/wars`
 
-The next wave should move into the remaining small common-data pack before revisiting the largest tails, especially `common/church_aspects`, `common/factions`, `common/policies`, `common/technologies`, `common/hegemons`, `common/mercenary_companies`, `common/personal_deities`, and `common/fetishist_cults`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
+The next wave should finish the remaining small common-data pack before revisiting the largest tails, especially `common/policies`, `common/technologies`, and `common/mercenary_companies`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
 
@@ -134,7 +140,7 @@ Verified locally during the latest coverage wave:
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `87` to `85` and `semantic_complete` moved from `22` to `24`
+- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `85` to `80` and `semantic_complete` moved from `24` to `29`
 
 ## Practical Reading Order
 

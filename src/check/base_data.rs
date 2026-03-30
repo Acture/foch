@@ -1678,6 +1678,13 @@ fn script_file_kind_name(
 		crate::check::analyzer::semantic_index::ScriptFileKind::GovernmentMechanics => {
 			"government_mechanics"
 		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::ChurchAspects => "church_aspects",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Factions => "factions",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Hegemons => "hegemons",
+		crate::check::analyzer::semantic_index::ScriptFileKind::PersonalDeities => {
+			"personal_deities"
+		}
+		crate::check::analyzer::semantic_index::ScriptFileKind::FetishistCults => "fetishist_cults",
 		crate::check::analyzer::semantic_index::ScriptFileKind::PeaceTreaties => "peace_treaties",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Bookmarks => "bookmarks",
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstateAgendas => "estate_agendas",
@@ -1907,6 +1914,26 @@ fn is_semantic_complete_foundation_root(
 		}
 		"common/government_mechanics" => {
 			accumulator.has_script_file_kind("government_mechanics")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/church_aspects" => {
+			accumulator.has_script_file_kind("church_aspects")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/factions" => {
+			accumulator.has_script_file_kind("factions")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/hegemons" => {
+			accumulator.has_script_file_kind("hegemons")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/personal_deities" => {
+			accumulator.has_script_file_kind("personal_deities")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/fetishist_cults" => {
+			accumulator.has_script_file_kind("fetishist_cults")
 				&& accumulator.has_semantic_count("resource_references")
 		}
 		"common/peace_treaties" => {
@@ -2870,6 +2897,36 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/factions/00_factions.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/hegemons/0_economic_hegemon.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/personal_deities/00_hindu_deities.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/fetishist_cults/00_fetishist_cults.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/scripted_effects/test.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3111,6 +3168,94 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "localisation".to_string(),
+				value: "organised_through_bishops_aspect".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation_desc".to_string(),
+				value: "desc_organised_through_bishops_aspect".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation_modifier".to_string(),
+				value: "organised_through_bishops_aspect_modifier".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/church_aspects/00_church_aspects.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation".to_string(),
+				value: "rr_jacobins".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/factions/00_factions.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation_influence".to_string(),
+				value: "rr_jacobins_influence".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/factions/00_factions.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "monarch_power".to_string(),
+				value: "ADM".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/factions/00_factions.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation".to_string(),
+				value: "economic_hegemon".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/hegemons/0_economic_hegemon.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation".to_string(),
+				value: "shiva".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/personal_deities/00_hindu_deities.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation_desc".to_string(),
+				value: "shiva_desc".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/personal_deities/00_hindu_deities.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation".to_string(),
+				value: "yemoja_cult".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/fetishist_cults/00_fetishist_cults.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation_desc".to_string(),
+				value: "yemoja_cult_desc".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/fetishist_cults/00_fetishist_cults.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
 				key: "add_attacker".to_string(),
 				value: "SWE".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3139,6 +3284,11 @@ mod tests {
 				"common/parliament_bribes/administrative_support.txt".to_string(),
 				"common/parliament_issues/00_adm_parliament_issues.txt".to_string(),
 				"common/state_edicts/edict_of_governance.txt".to_string(),
+				"common/church_aspects/00_church_aspects.txt".to_string(),
+				"common/factions/00_factions.txt".to_string(),
+				"common/hegemons/0_economic_hegemon.txt".to_string(),
+				"common/personal_deities/00_hindu_deities.txt".to_string(),
+				"common/fetishist_cults/00_fetishist_cults.txt".to_string(),
 				"common/scripted_effects/test.txt".to_string(),
 				"history/countries/SWE - Sweden.txt".to_string(),
 				"history/provinces/1 - Stockholm.txt".to_string(),
@@ -3340,6 +3490,50 @@ mod tests {
 			.find(|item| item.root_family == "common/state_edicts")
 			.expect("state edicts coverage");
 		assert_eq!(state_edicts.coverage_class, CoverageClass::SemanticComplete);
+
+		let church_aspects = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/church_aspects")
+			.expect("church aspects coverage");
+		assert_eq!(
+			church_aspects.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let factions = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/factions")
+			.expect("factions coverage");
+		assert_eq!(factions.coverage_class, CoverageClass::SemanticComplete);
+
+		let hegemons = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/hegemons")
+			.expect("hegemons coverage");
+		assert_eq!(hegemons.coverage_class, CoverageClass::SemanticComplete);
+
+		let personal_deities = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/personal_deities")
+			.expect("personal deities coverage");
+		assert_eq!(
+			personal_deities.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let fetishist_cults = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/fetishist_cults")
+			.expect("fetishist cults coverage");
+		assert_eq!(
+			fetishist_cults.coverage_class,
+			CoverageClass::SemanticComplete
+		);
 
 		let localisation = report
 			.roots
