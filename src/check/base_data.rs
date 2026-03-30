@@ -1687,6 +1687,10 @@ fn script_file_kind_name(
 		crate::check::analyzer::semantic_index::ScriptFileKind::FetishistCults => "fetishist_cults",
 		crate::check::analyzer::semantic_index::ScriptFileKind::PeaceTreaties => "peace_treaties",
 		crate::check::analyzer::semantic_index::ScriptFileKind::Bookmarks => "bookmarks",
+		crate::check::analyzer::semantic_index::ScriptFileKind::Policies => "policies",
+		crate::check::analyzer::semantic_index::ScriptFileKind::MercenaryCompanies => {
+			"mercenary_companies"
+		}
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstateAgendas => "estate_agendas",
 		crate::check::analyzer::semantic_index::ScriptFileKind::EstatePrivileges => {
 			"estate_privileges"
@@ -1942,6 +1946,14 @@ fn is_semantic_complete_foundation_root(
 		}
 		"common/bookmarks" => {
 			accumulator.has_script_file_kind("bookmarks")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/policies" => {
+			accumulator.has_script_file_kind("policies")
+				&& accumulator.has_semantic_count("resource_references")
+		}
+		"common/mercenary_companies" => {
+			accumulator.has_script_file_kind("mercenary_companies")
 				&& accumulator.has_semantic_count("resource_references")
 		}
 		"common/estate_agendas" => {
@@ -2861,6 +2873,18 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/policies/00_adm.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/mercenary_companies/00_mercenaries.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/estate_agendas/00_generic_agendas.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3085,6 +3109,38 @@ mod tests {
 				mod_id: "__game__eu4".to_string(),
 				path: PathBuf::from("common/bookmarks/a_new_world.txt"),
 				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation".to_string(),
+				value: "the_combination_act".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/policies/00_adm.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "monarch_power".to_string(),
+				value: "ADM".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/policies/00_adm.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "localisation".to_string(),
+				value: "merc_black_army".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/mercenary_companies/00_mercenaries.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "mercenary_desc_key".to_string(),
+				value: "FREE_OF_ARMY_PROFESSIONALISM_COST".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/mercenary_companies/00_mercenaries.txt"),
+				line: 2,
 				column: 1,
 			},
 			ResourceReference {
@@ -3436,6 +3492,23 @@ mod tests {
 			.find(|item| item.root_family == "common/bookmarks")
 			.expect("bookmarks coverage");
 		assert_eq!(bookmarks.coverage_class, CoverageClass::SemanticComplete);
+
+		let policies = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/policies")
+			.expect("policies coverage");
+		assert_eq!(policies.coverage_class, CoverageClass::SemanticComplete);
+
+		let mercenary_companies = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/mercenary_companies")
+			.expect("mercenary companies coverage");
+		assert_eq!(
+			mercenary_companies.coverage_class,
+			CoverageClass::SemanticComplete
+		);
 
 		let estate_agendas = report
 			.roots

@@ -69,6 +69,8 @@ pub enum ScriptFileKind {
 	FetishistCults,
 	PeaceTreaties,
 	Bookmarks,
+	Policies,
+	MercenaryCompanies,
 	EstateAgendas,
 	EstatePrivileges,
 	Estates,
@@ -159,6 +161,10 @@ pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
 		ScriptFileKind::PeaceTreaties
 	} else if normalized.starts_with("common/bookmarks/") {
 		ScriptFileKind::Bookmarks
+	} else if normalized.starts_with("common/policies/") {
+		ScriptFileKind::Policies
+	} else if normalized.starts_with("common/mercenary_companies/") {
+		ScriptFileKind::MercenaryCompanies
 	} else if normalized.starts_with("common/estate_agendas/") {
 		ScriptFileKind::EstateAgendas
 	} else if normalized.starts_with("common/estate_privileges/") {
@@ -270,6 +276,8 @@ fn module_name_from_relative(relative: &Path, kind: ScriptFileKind) -> String {
 		ScriptFileKind::FetishistCults => module_with_tail(&parts, 2, "fetishist_cults"),
 		ScriptFileKind::PeaceTreaties => module_with_tail(&parts, 2, "peace_treaties"),
 		ScriptFileKind::Bookmarks => module_with_tail(&parts, 2, "bookmarks"),
+		ScriptFileKind::Policies => module_with_tail(&parts, 2, "policies"),
+		ScriptFileKind::MercenaryCompanies => module_with_tail(&parts, 2, "mercenary_companies"),
 		ScriptFileKind::EstateAgendas => module_with_tail(&parts, 2, "estate_agendas"),
 		ScriptFileKind::EstatePrivileges => module_with_tail(&parts, 2, "estate_privileges"),
 		ScriptFileKind::Estates => module_with_tail(&parts, 2, "estates"),
@@ -997,6 +1005,12 @@ fn record_foundation_resource_semantics(
 		ScriptFileKind::Bookmarks => {
 			record_bookmark_resource_semantics(index, ctx, key, key_span, value);
 		}
+		ScriptFileKind::Policies => {
+			record_policy_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ScriptFileKind::MercenaryCompanies => {
+			record_mercenary_company_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ScriptFileKind::EstateAgendas => {
 			record_estate_agenda_resource_semantics(index, ctx, key, key_span, value);
 		}
@@ -1345,6 +1359,51 @@ fn record_bookmark_resource_semantics(
 	}
 }
 
+fn record_policy_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if is_top_level_named_block(index, scope_id, key, value) {
+		push_resource_reference(index, ctx, key_span, "localisation", key);
+		return;
+	}
+	let Some(text) = scalar_text(value) else {
+		return;
+	};
+	if key == "monarch_power" {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_mercenary_company_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if is_top_level_named_block(index, scope_id, key, value) {
+		push_resource_reference(index, ctx, key_span, "localisation", key);
+		return;
+	}
+	if let Some(text) = scalar_text(value)
+		&& is_mercenary_company_scalar_reference_key(key, text.as_str())
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+	if key != "sprites" {
+		return;
+	}
+	for item in extract_block_scalar_items(value) {
+		push_resource_reference(index, ctx, key_span, key, item.as_str());
+	}
+}
+
 fn record_estate_agenda_resource_semantics(
 	index: &mut SemanticIndex,
 	ctx: &BuildContext<'_>,
@@ -1663,6 +1722,8 @@ fn root_scope_type_for_file_kind(file_kind: ScriptFileKind) -> ScopeType {
 		| ScriptFileKind::PersonalDeities
 		| ScriptFileKind::FetishistCults
 		| ScriptFileKind::PeaceTreaties
+		| ScriptFileKind::Policies
+		| ScriptFileKind::MercenaryCompanies
 		| ScriptFileKind::EstateAgendas
 		| ScriptFileKind::EstatePrivileges
 		| ScriptFileKind::Estates
@@ -2242,6 +2303,15 @@ fn is_bookmark_localisation_reference_key(key: &str) -> bool {
 	matches!(key, "name" | "desc")
 }
 
+fn is_mercenary_company_scalar_reference_key(key: &str, value: &str) -> bool {
+	match key {
+		"home_province" => is_province_id_text(value),
+		"mercenary_desc_key" => true,
+		"tag" => is_country_tag_text(value),
+		_ => false,
+	}
+}
+
 fn is_estate_agenda_scalar_reference_key(key: &str) -> bool {
 	matches!(key, "estate" | "custom_tooltip" | "tooltip")
 }
@@ -2468,6 +2538,16 @@ fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Optio
 			"is_visible" | "is_allowed" | "ai_weight" => Some(ScopeKind::Trigger),
 			"effect" => Some(ScopeKind::Effect),
 			"warscore_cost" => Some(ScopeKind::Block),
+			_ => None,
+		},
+		ScriptFileKind::Policies => match key {
+			"potential" | "allow" | "ai_will_do" => Some(ScopeKind::Trigger),
+			"effect" | "removed_effect" => Some(ScopeKind::Effect),
+			_ => None,
+		},
+		ScriptFileKind::MercenaryCompanies => match key {
+			"trigger" => Some(ScopeKind::Trigger),
+			"modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
 		ScriptFileKind::EstateAgendas => match key {
@@ -3745,6 +3825,16 @@ persia_indian_hegemony_decision_coup_effect = {
 			classify_script_file(std::path::Path::new("common/bookmarks/a_new_world.txt")),
 			ScriptFileKind::Bookmarks
 		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/policies/00_adm.txt")),
+			ScriptFileKind::Policies
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/mercenary_companies/00_mercenaries.txt"
+			)),
+			ScriptFileKind::MercenaryCompanies
+		);
 	}
 
 	#[test]
@@ -4776,6 +4866,119 @@ yemoja_cult = {
 			reference.path == Path::new("common/fetishist_cults/00_fetishist_cults.txt")
 				&& reference.key == "localisation_desc"
 				&& reference.value == "yemoja_cult_desc"
+		}));
+	}
+
+	#[test]
+	fn policies_and_mercenary_companies_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("policies")).expect("create policies");
+		fs::create_dir_all(mod_root.join("common").join("mercenary_companies"))
+			.expect("create mercenary companies");
+		fs::write(
+			mod_root.join("common").join("policies").join("00_adm.txt"),
+			r#"
+the_combination_act = {
+	monarch_power = ADM
+	potential = { has_idea_group = aristocracy_ideas }
+	allow = { full_idea_group = aristocracy_ideas }
+	effect = { add_prestige = 1 }
+	removed_effect = { add_prestige = -1 }
+	ai_will_do = { factor = 1 }
+}
+"#,
+		)
+		.expect("write policies");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("mercenary_companies")
+				.join("00_mercenaries.txt"),
+			r#"
+merc_black_army = {
+	mercenary_desc_key = FREE_OF_ARMY_PROFESSIONALISM_COST
+	home_province = 153
+	sprites = { dlc102_hun_sprite_pack easterngfx_sprite_pack }
+	trigger = {
+		tag = HUN
+	}
+	modifier = {
+		discipline = 0.05
+	}
+}
+"#,
+		)
+		.expect("write mercenary companies");
+
+		let files = vec![
+			parse_script_file(
+				"1015",
+				&mod_root,
+				&mod_root.join("common").join("policies").join("00_adm.txt"),
+			)
+			.expect("parsed policies"),
+			parse_script_file(
+				"1015",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("mercenary_companies")
+					.join("00_mercenaries.txt"),
+			)
+			.expect("parsed mercenary companies"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/policies/00_adm.txt")
+				&& usage.key == "has_idea_group"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/policies/00_adm.txt")
+				&& usage.key == "add_prestige"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Effect
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+				&& usage.key == "tag"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Trigger
+		}));
+		assert!(index.key_usages.iter().any(|usage| {
+			usage.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+				&& usage.key == "discipline"
+				&& scope_kind(&index, usage.scope_id) == ScopeKind::Block
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/policies/00_adm.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "the_combination_act"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/policies/00_adm.txt")
+				&& reference.key == "monarch_power"
+				&& reference.value == "ADM"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+				&& reference.key == "localisation"
+				&& reference.value == "merc_black_army"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+				&& reference.key == "mercenary_desc_key"
+				&& reference.value == "FREE_OF_ARMY_PROFESSIONALISM_COST"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+				&& reference.key == "home_province"
+				&& reference.value == "153"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
+				&& reference.key == "sprites"
+				&& reference.value == "dlc102_hun_sprite_pack"
 		}));
 	}
 
