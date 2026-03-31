@@ -1,0 +1,45 @@
+[package]
+name = "foch-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+default-run = "foch"
+description = "Paradox mod static analysis toolkit with CLI and EU4-focused language tooling"
+
+[dependencies]
+clap.workspace = true
+clap-verbosity-flag.workspace = true
+foch-core = { path = "../../crates/foch-core" }
+foch-engine = { path = "../../crates/foch-engine" }
+foch-language = { path = "../../crates/foch-language" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower-lsp.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tiny_http.workspace = true
+
+[[bin]]
+name = "foch"
+path = "src/main.rs"
+
+[[bin]]
+name = "foch_lsp"
+path = "src/bin/foch_lsp.rs"
+
+[[bin]]
+name = "parse_stats"
+path = "src/bin/parse_stats.rs"
+
+[[bin]]
+name = "symbol_dump"
+path = "src/bin/symbol_dump.rs"
+

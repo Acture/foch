@@ -1,0 +1,13 @@
+{
+	"name": "foch-workspace",
+	"engines": {
+		"node": ">=22 <25",
+		"bun": ">=1.2.8"
+	},
+	"packageManager": "bun@1.2.8",
+	"private": true,
+	"workspaces": [
+		"packages/tree-sitter-paradox",
+		"packages/vscode-foch"
+	]
+}

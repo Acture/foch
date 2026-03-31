@@ -1,12 +1,12 @@
 # Project Status
 
-Last updated: 2026-03-30
+Last updated: 2026-03-31
 
 ## Summary
 
-`foch` is now a shipped analyzer-plus-merge toolkit for EU4 mod playsets.
+`foch` is a shipped EU4 analyzer-plus-merge toolkit, and the repository is now organized as a workspace monorepo instead of a single root crate.
 
-The repository currently includes:
+The shipped product surface includes:
 
 - `foch check`
 - `foch merge-plan`
@@ -15,8 +15,27 @@ The repository currently includes:
 - `foch simplify`
 - `foch data`
 - `foch config`
+- `foch_lsp`
 
-That means the earlier “analyzer only, merge not yet landed” description is no longer accurate.
+## Current Repository Shape
+
+The repository now has these first-class packages:
+
+- `apps/foch-cli`
+- `crates/foch-core`
+- `crates/foch-language`
+- `crates/foch-engine`
+- `packages/tree-sitter-paradox`
+- `packages/vscode-foch`
+
+The repository root is coordination-only:
+
+- Cargo workspace manifest
+- Bun workspace manifest
+- shared CI
+- docs and scripts
+
+The old `src/check/` compatibility shell is gone. Internal code now imports directly from `foch_core`, `foch_language`, and `foch_engine`.
 
 ## What Exists Today
 
@@ -58,50 +77,7 @@ The simplify pipeline can:
 - work either in-place or into an output copy
 - write a machine-readable `simplify-report.json`
 
-## Current Internal Shape
-
-The `src/check/` layer is organized around six product-line subsystems:
-
-- `workspace/`
-- `analyzer/`
-- `runtime/`
-- `merge/`
-- `graph/`
-- `simplify/`
-
-Two shared support modules remain at the root on purpose:
-
-- `model`
-- `base_data`
-
-The analyzer support files now live physically under `src/check/analyzer/`, while legacy top-level module paths such as `check::analysis` and `check::semantic_index` remain as thin compatibility wrappers for the library surface.
-
-`mod_cache` is no longer a standalone top-level subsystem; it now lives under `workspace/cache`.
-
-The old flat `engine.rs` / `resolution.rs` / `graph_g1.rs` structure has been retired.
-
-## Deferred Workstreams
-
-These remain intentionally separate from the shipped v1 merge path:
-
-- localisation compatibility follow-ups
-- Graph G2 fine-grained grouping and richer viewers
-- Simplify R2 beyond base-equivalent copy removal
-
 ## Current Coverage Reset Loop
-
-The shipped merge-capable surface does not mean the EU4 base game is semantically covered.
-
-The current near-term execution loop is now driven by the base snapshot coverage matrix rather than only by finding buckets:
-
-- `ACT-126`: coverage reset foundation wave for base-game roots
-- phase A: remove non-gameplay metadata/noise roots from `parse_only`
-- phase B: promote foundation gameplay roots from `parse_only` to explicit root-specific semantics
-- `ACT-127`: first common-data wave for rule-bearing roots beyond the foundation family
-- `ACT-128`: governance and estate wave for `estate_*`, `parliament_*`, and `state_edicts`
-- `ACT-129`: scripted metadata wave for `common/peace_treaties` and `common/bookmarks`
-- `ACT-130A`: low-risk definition wave for `common/church_aspects`, `common/factions`, `common/hegemons`, `common/personal_deities`, and `common/fetishist_cults`
-- `ACT-131A`: small common-data slice for `common/policies` and `common/mercenary_companies`
 
 The current semantic-complete gameplay roots in the last verified real probe include:
 
@@ -122,6 +98,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/peace_treaties`
 - `common/personal_deities`
 - `common/policies`
+- `common/province_names`
 - `common/rebel_types`
 - `common/religions`
 - `common/state_edicts`
@@ -130,45 +107,46 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/technology`
 - `common/units`
 - `common/mercenary_companies`
+- `history/advisors`
 - `history/countries`
+- `history/diplomacy`
 - `history/provinces`
 - `history/wars`
 
-`ACT-131A` is verified complete: `common/policies` and `common/mercenary_companies` both promote to `semantic_complete` in the real probe. `ACT-131B` is also now verified complete: the technology family (`common/technologies` and `common/technology`) promotes to `semantic_complete` in the post-fix real probe. `ACT-132` then refactored analyzer dispatch around `ContentFamily` / `Eu4Profile` without coverage regression. `ACT-133` is now verified complete as well: `history/diplomacy` and `history/advisors` both promote to `semantic_complete` in the latest real probe.
+The latest verified real probe is:
 
-The next planning checkpoint should reevaluate the remaining large `parse_only` tails with the new architecture in place. The most obvious candidates are still `map/random` and `common/province_names`, followed by the remaining gameplay-relevant `common/*` and `history/*` roots.
+- `parse_only = 73`
+- `semantic_complete = 36`
 
-Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
+The next planning checkpoint should reevaluate the remaining large `parse_only` tails with the new architecture in place. `common/province_names` is now complete, so the clearest remaining candidate is `map/random`, followed by other gameplay-relevant `common/*` and `history/*` roots.
+
+Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
 ## Verification
 
-Verified locally during the latest coverage wave:
+Verified locally during the completed coverage waves:
 
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `85` to `80` and `semantic_complete` moved from `24` to `29`
+- real `foch data build eu4 ...` probes confirmed:
+  - `parse_only: 85 -> 80`
+  - `semantic_complete: 24 -> 29`
+  - `parse_only: 80 -> 78`
+  - `semantic_complete: 29 -> 31`
+  - `parse_only: 78 -> 76`
+  - `semantic_complete: 31 -> 33`
+  - `parse_only: 76 -> 74`
+  - `semantic_complete: 33 -> 35`
+  - `parse_only: 74 -> 73`
+  - `semantic_complete: 35 -> 36`
 
-Verified locally during the latest `ACT-131A` slice:
+Verified locally during the workspace reorganization:
 
-- `cargo fmt --all --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `80` to `78` and `semantic_complete` moved from `29` to `31`
-
-Verified locally during the completed `ACT-131B` slice:
-
-- `cargo fmt --all --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `78` to `76` and `semantic_complete` moved from `31` to `33`
-
-Verified locally during the completed `ACT-133` slice:
-
-- `cargo fmt --all --check`
-- `cargo clippy --all-targets --all-features -- -D warnings`
-- `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `76` to `74` and `semantic_complete` moved from `33` to `35`
+- `cargo check -p foch-language`
+- `cargo check -p foch-engine`
+- `cargo check -p foch-cli`
+- `cargo check --workspace`
 
 ## Practical Reading Order
 

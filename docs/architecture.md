@@ -1,108 +1,136 @@
 # Architecture
 
-Last updated: 2026-03-27
+Last updated: 2026-03-31
 
 ## Summary
 
-`foch` is no longer just a flat static-analysis crate. The repository now has six stable product-line subsystems under `src/check/`:
+`foch` is now a workspace-based monorepo. The repository root is coordination only:
 
-- `workspace`: playset loading, mod/base discovery, file inventory, snapshot-aware workspace resolution
-- `analyzer`: parser, documents, semantic index, semantic analysis, rule execution, check runner
-- `runtime`: runtime symbol binding, precedence winner selection, dependency hints, overlap classification
-- `merge`: merge plan, merge IR, normalization, deterministic emission, materialization, post-merge revalidation
-- `graph`: runtime call graph and mod-dependency graph export
-- `simplify`: base-equivalent definition cleanup for a target mod
+- Cargo workspace manifest
+- Bun workspace manifest
+- shared CI
+- docs and scripts
 
-There are also two shared support modules at the check-layer root:
+The buildable products live under `apps/`, `crates/`, and `packages/`.
 
-- `model`: shared types consumed across products
-- `base_data`: installed base-snapshot build/install/load support for both `foch data` and analysis products
+## Workspace Layout
 
-The public CLI commands map onto these layers instead of reaching into ad hoc internal files.
+### `apps/`
+
+- `apps/foch-cli`
+  - Rust binary package for:
+    - `foch`
+    - `foch_lsp`
+    - `parse_stats`
+    - `symbol_dump`
+  - owns CLI parsing, command dispatch, and binary entrypoints
+
+### `crates/`
+
+- `crates/foch-core`
+  - shared domain types
+  - diagnostics/model payloads
+  - generic utilities
+- `crates/foch-language`
+  - parsing
+  - document discovery
+  - localisation
+  - semantic index
+  - `ContentFamily`
+  - `GameProfile`
+  - EU4 builtin/profile/content-family registry
+- `crates/foch-engine`
+  - workspace resolution/cache
+  - base snapshot build/install/load
+  - runtime binding and overlap
+  - graph export
+  - merge planning/execution
+  - simplify
+  - stable orchestration APIs consumed by the CLI
+
+### `packages/`
+
+- `packages/tree-sitter-paradox`
+  - grammar package
+  - Cargo workspace member
+  - Bun workspace package
+- `packages/vscode-foch`
+  - VS Code extension
+  - bundles `foch_lsp` from `apps/foch-cli`
+
+## Dependency Direction
+
+The intended dependency flow is:
+
+- `apps/foch-cli -> foch-engine`
+- `foch-engine -> foch-language + foch-core`
+- `foch-language -> foch-core`
+
+`foch-language` is the behavior boundary for game-aware language semantics. `ScriptFileKind` remains a plain compatibility enum and is not the primary extension point.
 
 ## Data Flow
 
 ### `foch check`
 
-1. `workspace::resolve` builds the effective workspace from playset, config, mod roots, and optional base snapshot.
-2. `analyzer::run` merges semantic snapshots, runs semantic analysis and repository rules.
-3. `runtime::overlap` contributes the final `S001` / `A003` overlap diagnostics.
-4. `report` renders the filtered result.
+1. `foch-engine::workspace` resolves the effective workspace from config, playset, mod roots, and optional base snapshot.
+2. `foch-language` parses documents, builds semantic indexes, and runs semantic analysis.
+3. `foch-engine::runtime::overlap` adds final overlap diagnostics.
+4. `foch-language::analyzer::report` renders the output.
 
 ### `foch merge-plan`
 
-1. `workspace::resolve` builds the effective file inventory.
-2. `merge::plan` classifies every effective path into `copy_through`, `last_writer_overlay`, `structural_merge`, or `manual_conflict`.
+1. `foch-engine::workspace` builds the effective file inventory.
+2. `foch-engine::merge::plan` classifies each effective path as copy-through, overlay, structural merge, or manual conflict.
 
 ### `foch merge`
 
-1. `merge::plan` builds the frozen plan.
-2. `merge::ir` lifts supported structural paths into merge IR.
-3. `merge::emit` generates deterministic Clausewitz output.
-4. `merge::materialize` writes `descriptor.mod`, `.foch/*`, copied files, overlays, placeholders, and structural outputs.
-5. `merge::execute` revalidates the generated tree with the normal analyzer pipeline and backfills the final merge report.
+1. `foch-engine::merge::plan` freezes the merge plan.
+2. `foch-engine::merge::ir` lifts supported roots into merge IR.
+3. `foch-engine::merge::emit` produces deterministic Clausewitz output.
+4. `foch-engine::merge::materialize` writes the merged tree and `.foch/*` sidecars.
+5. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline.
 
 ### `foch graph`
 
-1. `runtime::binding` resolves actual runtime winners and reference targets.
-2. `runtime::overlap` annotates discardable / mergeable / conflicting overlap states.
-3. `graph::export` writes `calls` and `mod-deps` artifacts as `json`, `dot`, or both.
+1. `foch-engine::runtime::binding` resolves runtime winners and reference targets.
+2. `foch-engine::runtime::overlap` classifies overlap states.
+3. `foch-engine::graph::export` writes `calls` and `mod-deps` artifacts.
 
 ### `foch simplify`
 
-1. `runtime::overlap` identifies `discardable_base_copy` definitions.
-2. `simplify::execute` removes only those top-level definitions, rewrites affected files, deletes empty files, and emits `simplify-report.json`.
+1. `foch-engine::runtime::overlap` identifies base-equivalent definitions.
+2. `foch-engine::simplify::execute` rewrites files, drops empty files, and emits `simplify-report.json`.
 
-## Shared Kernel
+## Language Layer
 
-Two shared internal kernels now sit between raw analysis and downstream products:
+The language crate owns:
 
-- `workspace::{resolve, cache}`: authoritative source for the effective workspace and mod snapshot caching
-- `runtime::{binding, overlap}`: authoritative source for runtime winner selection, dependency hints, and overlap classification
+- parser
+- document family discovery
+- semantic indexing
+- localisation handling
+- analyzer reporting
+- EU4-specific `ContentFamilyDescriptor` registry
+- `Eu4Profile`
 
-This avoids each product line inventing its own precedence or overlap rules.
+Behavior is attached to `ContentFamily`, not to giant central matches. That lets new EU4 roots and future game profiles register semantics without reopening core traversal logic.
 
-## Internal Module Boundaries
+## Product Packages
 
-The analyzer implementation is physically grouped under `src/check/analyzer/`:
+### VS Code
 
-- `analysis`
-- `documents`
-- `eu4_builtin`
-- `localisation`
-- `param_contracts`
-- `parser`
-- `report`
-- `rules`
-- `semantic_index`
-- `run`
+`packages/vscode-foch` is a standalone extension package. It prefers a bundled `foch_lsp` binary under `bin/<platform>-<arch>/`, and its packaging scripts build that binary from the workspace root before packaging the VSIX.
 
-For library stability, the historical top-level module paths such as `check::analysis`, `check::parser`, and `check::semantic_index` remain as thin compatibility wrappers. New internal code should prefer `check::analyzer::*` and `check::workspace::*`.
+### Tree-sitter
 
-## Public Entry Points
+`packages/tree-sitter-paradox` remains its own grammar package. It is part of the workspace, but it is not folded into the Rust crates.
 
-The stable check-layer façade is exposed from `src/check/mod.rs`:
+## Removed Legacy Shape
 
-- `run_checks_with_options`
-- `run_merge_plan_with_options`
-- `run_merge_with_options`
-- `run_graph_with_options`
-- `run_simplify_with_options`
+The old root-library shell and `src/check/` compatibility façade are gone as primary architecture. Internal code should import from workspace crates directly:
 
-CLI handlers are expected to call these façade functions only.
+- `foch_core`
+- `foch_language`
+- `foch_engine`
 
-The intended dependency direction is:
-
-- `cli -> check façade`
-- `merge/graph/simplify -> workspace/runtime/(when needed) analyzer façade`
-- internal analyzer support code stays inside `src/check/analyzer/`
-
-## Legacy Interfaces Removed
-
-The repository no longer supports graph export through `foch check`.
-
-- removed: `check --graph-out`
-- removed: `check --graph-format`
-- supported path: `foch graph`
-
-This keeps graph generation on its own product line instead of treating it as a side effect of `check`.
+The repository root is no longer a buildable Rust package.

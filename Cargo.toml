@@ -1,18 +1,24 @@
-[package]
-name = "foch"
+[workspace]
+resolver = "2"
+members = [
+	"apps/foch-cli",
+	"crates/foch-core",
+	"crates/foch-engine",
+	"crates/foch-language",
+	"packages/tree-sitter-paradox",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-default-run = "foch"
-description = "Paradox mod static analysis toolkit with CLI and EU4-focused language tooling"
 license = "AGPL-3.0-only"
 readme = "README.md"
 homepage = "https://github.com/Acture/foch"
 repository = "https://github.com/Acture/foch"
 keywords = ["paradox", "eu4", "modding", "lsp", "static-analysis"]
 categories = ["command-line-utilities", "development-tools"]
-exclude = ["vscode-foch/**"]
 
-[dependencies]
+[workspace.dependencies]
 bincode = "1.3.3"
 clap = { version = "4.5.51", features = ["derive"] }
 clap-verbosity-flag = { version = "3.0.4", default-features = false, features = ["tracing"] }
@@ -28,24 +34,12 @@ reqwest = { version = "0.12.24", default-features = false, features = ["blocking
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
+tempfile = "3.15.0"
+tiny_http = "0.12.0"
 tokio = { version = "1.48.0", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
 toml = "0.9.8"
 tower-lsp = "0.20.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 walkdir = "2.5.0"
-
-[target.'cfg(windows)'.dependencies]
 winreg = "0.55.0"
-
-[dev-dependencies]
-tempfile = "3.15.0"
-tiny_http = "0.12.0"
-
-[[bin]]
-name = "foch"
-path = "src/main.rs"
-
-[lib]
-name = "foch"
-path = "src/lib.rs"
