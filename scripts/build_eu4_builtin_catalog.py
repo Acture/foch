@@ -431,7 +431,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("src/check/data/eu4_builtin_catalog.json"),
+        default=Path("crates/foch-language/src/data/eu4_builtin_catalog.json"),
     )
     return parser.parse_args()
 
