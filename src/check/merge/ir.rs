@@ -540,6 +540,8 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Countries => "countries",
 		ScriptFileKind::CountryHistory => "history_countries",
 		ScriptFileKind::ProvinceHistory => "history_provinces",
+		ScriptFileKind::DiplomacyHistory => "history_diplomacy",
+		ScriptFileKind::AdvisorHistory => "history_advisors",
 		ScriptFileKind::Wars => "history_wars",
 		ScriptFileKind::Units => "units",
 		ScriptFileKind::Religions => "religions",

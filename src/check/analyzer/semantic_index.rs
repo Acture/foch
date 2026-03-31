@@ -744,6 +744,12 @@ fn record_foundation_resource_semantics(
 				push_resource_reference(index, ctx, key_span, key, text.as_str());
 			}
 		}
+		ContentFamilyExtractor::DiplomacyHistory => {
+			record_diplomacy_history_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::AdvisorHistory => {
+			record_advisor_history_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::Wars => {
 			let Some(text) = scalar_text(value) else {
 				return;
@@ -1291,6 +1297,89 @@ fn record_technology_group_resource_semantics(
 	}
 }
 
+fn record_diplomacy_history_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) != ScopeKind::File {
+		return;
+	}
+	if is_diplomacy_relation_block(key, value) {
+		push_resource_reference(index, ctx, key_span, "relation_type", key);
+		let AstValue::Block { items, .. } = value else {
+			return;
+		};
+		for field in ["first", "second"] {
+			let Some(text) = extract_assignment_scalar(items, field) else {
+				continue;
+			};
+			if is_country_tag_text(&text) {
+				push_resource_reference(index, ctx, key_span, field, text.as_str());
+			}
+		}
+		return;
+	}
+	if !is_diplomacy_timeline_block(key, value) {
+		return;
+	}
+	let AstValue::Block { items, .. } = value else {
+		return;
+	};
+	for field in ["emperor", "celestial_emperor"] {
+		let Some(text) = extract_assignment_scalar(items, field) else {
+			continue;
+		};
+		if is_country_tag_text(&text) {
+			push_resource_reference(index, ctx, key_span, field, text.as_str());
+		}
+	}
+}
+
+fn record_advisor_history_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) != ScopeKind::File || key != "advisor" {
+		return;
+	}
+	let AstValue::Block { items, .. } = value else {
+		return;
+	};
+	let Some(advisor_id) = extract_assignment_scalar(items, "advisor_id") else {
+		return;
+	};
+	push_resource_reference(
+		index,
+		ctx,
+		key_span,
+		"advisor_definition",
+		&format!("advisor_{advisor_id}"),
+	);
+	push_resource_reference(index, ctx, key_span, "advisor_id", advisor_id.as_str());
+	if let Some(location) = extract_assignment_scalar(items, "location")
+		&& is_province_id_text(&location)
+	{
+		push_resource_reference(index, ctx, key_span, "location", location.as_str());
+	}
+	if let Some(advisor_type) = extract_assignment_scalar(items, "type") {
+		push_resource_reference(index, ctx, key_span, "type", advisor_type.as_str());
+	}
+	if let Some(culture) = extract_assignment_scalar(items, "culture") {
+		push_resource_reference(index, ctx, key_span, "culture", culture.as_str());
+	}
+	if let Some(religion) = extract_assignment_scalar(items, "religion") {
+		push_resource_reference(index, ctx, key_span, "religion", religion.as_str());
+	}
+}
+
 fn record_mercenary_company_resource_semantics(
 	index: &mut SemanticIndex,
 	scope_id: usize,
@@ -1496,6 +1585,40 @@ fn extract_yes_assignment_keys(value: &AstValue) -> Vec<String> {
 		}
 	}
 	keys
+}
+
+fn is_diplomacy_relation_block(key: &str, value: &AstValue) -> bool {
+	matches!(
+		key,
+		"alliance" | "vassal" | "royal_marriage" | "union" | "dependency" | "guarantee" | "march"
+	) && matches!(value, AstValue::Block { .. })
+}
+
+fn is_diplomacy_timeline_block(key: &str, value: &AstValue) -> bool {
+	matches!(value, AstValue::Block { .. }) && is_clausewitz_date_key(key)
+}
+
+fn is_clausewitz_date_key(key: &str) -> bool {
+	let mut parts = key.split('.');
+	let Some(year) = parts.next() else {
+		return false;
+	};
+	let Some(month) = parts.next() else {
+		return false;
+	};
+	let Some(day) = parts.next() else {
+		return false;
+	};
+	if parts.next().is_some() {
+		return false;
+	}
+	year.parse::<u32>().is_ok()
+		&& month
+			.parse::<u32>()
+			.is_ok_and(|value| (1..=12).contains(&value))
+		&& day
+			.parse::<u32>()
+			.is_ok_and(|value| (1..=31).contains(&value))
 }
 
 fn extract_nested_assignment_scalar(
@@ -3655,6 +3778,14 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::ProvinceHistory
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new("history/diplomacy/hre.txt")),
+			ScriptFileKind::DiplomacyHistory
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("history/advisors/00_england.txt")),
+			ScriptFileKind::AdvisorHistory
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("history/wars/100yearswar.txt")),
 			ScriptFileKind::Wars
 		);
@@ -4922,6 +5053,127 @@ merc_black_army = {
 			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
 				&& reference.key == "sprites"
 				&& reference.value == "dlc102_hun_sprite_pack"
+		}));
+	}
+
+	#[test]
+	fn diplomacy_and_advisor_history_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("history").join("diplomacy"))
+			.expect("create diplomacy history");
+		fs::create_dir_all(mod_root.join("history").join("advisors"))
+			.expect("create advisor history");
+		fs::write(
+			mod_root.join("history").join("diplomacy").join("hre.txt"),
+			r#"
+alliance = {
+	first = FRA
+	second = SCO
+	start_date = 1444.11.11
+}
+1399.1.1 = {
+	emperor = BOH
+}
+1368.1.23 = {
+	celestial_emperor = MNG
+}
+"#,
+		)
+		.expect("write diplomacy history");
+		fs::write(
+			mod_root
+				.join("history")
+				.join("advisors")
+				.join("00_england.txt"),
+			r#"
+advisor = {
+	advisor_id = 216
+	name = "Thomas More"
+	location = 236
+	type = theologian
+	culture = english
+	religion = catholic
+	date = 1444.11.11
+	death_date = 1460.1.1
+}
+"#,
+		)
+		.expect("write advisor history");
+
+		let files = vec![
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root.join("history").join("diplomacy").join("hre.txt"),
+			)
+			.expect("parsed diplomacy history"),
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root
+					.join("history")
+					.join("advisors")
+					.join("00_england.txt"),
+			)
+			.expect("parsed advisor history"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/diplomacy/hre.txt")
+				&& reference.key == "relation_type"
+				&& reference.value == "alliance"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/diplomacy/hre.txt")
+				&& reference.key == "first"
+				&& reference.value == "FRA"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/diplomacy/hre.txt")
+				&& reference.key == "second"
+				&& reference.value == "SCO"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/diplomacy/hre.txt")
+				&& reference.key == "emperor"
+				&& reference.value == "BOH"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/diplomacy/hre.txt")
+				&& reference.key == "celestial_emperor"
+				&& reference.value == "MNG"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/advisors/00_england.txt")
+				&& reference.key == "advisor_definition"
+				&& reference.value == "advisor_216"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/advisors/00_england.txt")
+				&& reference.key == "advisor_id"
+				&& reference.value == "216"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/advisors/00_england.txt")
+				&& reference.key == "location"
+				&& reference.value == "236"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/advisors/00_england.txt")
+				&& reference.key == "type"
+				&& reference.value == "theologian"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/advisors/00_england.txt")
+				&& reference.key == "culture"
+				&& reference.value == "english"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("history/advisors/00_england.txt")
+				&& reference.key == "religion"
+				&& reference.value == "catholic"
 		}));
 	}
 

@@ -134,7 +134,9 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `history/provinces`
 - `history/wars`
 
-`ACT-131A` is now verified complete: `common/policies` and `common/mercenary_companies` both promote to `semantic_complete` in the latest real probe. The next active slice is `ACT-131B`, focused on the technology family: `common/technologies` and `common/technology`. After that, the largest remaining `parse_only` roots are still `map/random`, `common/province_names`, and `history/diplomacy`.
+`ACT-131A` is verified complete: `common/policies` and `common/mercenary_companies` both promote to `semantic_complete` in the real probe. `ACT-131B` is also now verified complete: the technology family (`common/technologies` and `common/technology`) promotes to `semantic_complete` in the post-fix real probe. `ACT-132` then refactored analyzer dispatch around `ContentFamily` / `Eu4Profile` without coverage regression. `ACT-133` is now verified complete as well: `history/diplomacy` and `history/advisors` both promote to `semantic_complete` in the latest real probe.
+
+The next planning checkpoint should reevaluate the remaining large `parse_only` tails with the new architecture in place. The most obvious candidates are still `map/random` and `common/province_names`, followed by the remaining gameplay-relevant `common/*` and `history/*` roots.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They are useful for regression signals, but they no longer define the main plan.
 
@@ -154,12 +156,19 @@ Verified locally during the latest `ACT-131A` slice:
 - `cargo test --all-targets --all-features`
 - real `foch data build eu4 ...` probe confirmed `parse_only` moved from `80` to `78` and `semantic_complete` moved from `29` to `31`
 
-Verified locally during the current `ACT-131B` implementation slice:
+Verified locally during the completed `ACT-131B` slice:
 
 - `cargo fmt --all --check`
 - `cargo clippy --all-targets --all-features -- -D warnings`
 - `cargo test --all-targets --all-features`
-- real `foch data build eu4 ...` probe pending; acceptance target is `parse_only` from `78` to `76` and `semantic_complete` from `31` to `33`
+- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `78` to `76` and `semantic_complete` moved from `31` to `33`
+
+Verified locally during the completed `ACT-133` slice:
+
+- `cargo fmt --all --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- real `foch data build eu4 ...` probe confirmed `parse_only` moved from `76` to `74` and `semantic_complete` moved from `33` to `35`
 
 ## Practical Reading Order
 
