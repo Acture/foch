@@ -1676,6 +1676,8 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Countries => "countries",
 		ScriptFileKind::CountryHistory => "country_history",
 		ScriptFileKind::ProvinceHistory => "province_history",
+		ScriptFileKind::DiplomacyHistory => "diplomacy_history",
+		ScriptFileKind::AdvisorHistory => "advisor_history",
 		ScriptFileKind::Wars => "wars",
 		ScriptFileKind::Units => "units",
 		ScriptFileKind::Religions => "religions",
@@ -2849,6 +2851,18 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("history/diplomacy/hre.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("history/advisors/00_england.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("history/wars/sample.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -2925,6 +2939,62 @@ mod tests {
 				mod_id: "__game__eu4".to_string(),
 				path: PathBuf::from("history/provinces/1 - Stockholm.txt"),
 				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "relation_type".to_string(),
+				value: "alliance".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/diplomacy/hre.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "first".to_string(),
+				value: "FRA".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/diplomacy/hre.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "second".to_string(),
+				value: "SCO".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/diplomacy/hre.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "emperor".to_string(),
+				value: "BOH".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/diplomacy/hre.txt"),
+				line: 4,
+				column: 1,
+			},
+			ResourceReference {
+				key: "advisor_definition".to_string(),
+				value: "advisor_216".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/advisors/00_england.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "location".to_string(),
+				value: "236".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/advisors/00_england.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "type".to_string(),
+				value: "theologian".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("history/advisors/00_england.txt"),
+				line: 3,
 				column: 1,
 			},
 			ResourceReference {
@@ -3288,6 +3358,8 @@ mod tests {
 				"common/scripted_effects/test.txt".to_string(),
 				"history/countries/SWE - Sweden.txt".to_string(),
 				"history/provinces/1 - Stockholm.txt".to_string(),
+				"history/diplomacy/hre.txt".to_string(),
+				"history/advisors/00_england.txt".to_string(),
 				"history/wars/sample.txt".to_string(),
 				"localisation/english/test_l_english.yml".to_string(),
 				"patchnotes/1_36.txt".to_string(),
@@ -3353,6 +3425,20 @@ mod tests {
 			.find(|item| item.root_family == "history/provinces")
 			.expect("province history coverage");
 		assert_eq!(provinces.coverage_class, CoverageClass::SemanticComplete);
+
+		let diplomacy = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "history/diplomacy")
+			.expect("diplomacy history coverage");
+		assert_eq!(diplomacy.coverage_class, CoverageClass::SemanticComplete);
+
+		let advisors = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "history/advisors")
+			.expect("advisor history coverage");
+		assert_eq!(advisors.coverage_class, CoverageClass::SemanticComplete);
 
 		let country_tags = report
 			.roots
