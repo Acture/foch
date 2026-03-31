@@ -1,13 +1,10 @@
-name: publish
+name: sync-homebrew-tap
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to publish and sync"
+        description: "Existing release tag to sync into Homebrew tap"
         required: true
         type: string
 
@@ -16,33 +13,29 @@ permissions:
 
 jobs:
   homebrew-tap:
-    name: Update Homebrew tap
+    name: Update Homebrew tap from release asset
     if: ${{ vars.HOMEBREW_TAP_REPO != '' && secrets.HOMEBREW_TAP_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout current repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ inputs.tag }}
 
       - name: Resolve release metadata
         id: meta
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF_NAME}"
-          fi
+          tag="${{ inputs.tag }}"
           version="${tag#v}"
           repo="${GITHUB_REPOSITORY}"
-          url="https://github.com/${repo}/archive/refs/tags/${tag}.tar.gz"
+          url="https://github.com/${repo}/releases/download/${tag}/foch-${version}-source.tar.gz"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "repo=${repo}" >> "$GITHUB_OUTPUT"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
 
-      - name: Download source tarball
+      - name: Download release source tarball
         shell: bash
         run: |
           curl -fsSL "${{ steps.meta.outputs.url }}" -o source.tar.gz
