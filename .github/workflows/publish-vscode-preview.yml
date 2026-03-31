@@ -29,7 +29,7 @@ jobs:
             target: darwin-arm64
     defaults:
       run:
-        working-directory: vscode-foch
+        working-directory: packages/vscode-foch
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,12 +42,17 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Install extension dependencies
-        run: npm install
+        run: bun install
 
       - name: Publish pre-release extension
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npm run publish:pre-release
+        run: bun run publish:pre-release

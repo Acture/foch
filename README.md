@@ -84,6 +84,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
+JS workspace（`packages/tree-sitter-paradox`、`packages/vscode-foch`）默认使用仓库根目录的 `.envrc` 把 Homebrew 的 `node@22` 放到 `PATH` 前面。先执行 `brew install node@22`，然后在仓库根目录运行一次 `direnv allow`。当前要求 `node >=22 <25` 与 Bun 1.2+；`node@25` 下 `tree-sitter` 原生依赖当前无法稳定构建，不属于支持环境。
+
 ## 发布自动化
 
 仓库内置三条 GitHub Actions 工作流：
@@ -157,7 +159,7 @@ python3 scripts/eu4_real_smoke_compare.py \
 
 ## LSP 与 VS Code
 
-项目包含 `foch_lsp` language server，以及位于 `vscode-foch/` 的 VS Code 扩展。
+项目包含 `foch_lsp` language server，以及位于 `packages/vscode-foch/` 的 VS Code 扩展。
 
 当前已实现：
 
@@ -190,9 +192,9 @@ cargo run --bin foch_lsp
 VS Code 本地开发：
 
 ```bash
-cd vscode-foch
-npm install
-npm run prepare:server
+cd packages/vscode-foch
+bun install
+bun run prepare:server
 code .
 ```
 
@@ -231,7 +233,7 @@ export FOCH_LSP_TARGETS_JSON='[
 
 ## EU4 内建符号表
 
-仓库内置 `src/check/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。
+仓库内置 `crates/foch-language/src/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。
 
 如需重建该表（CWTools + eu4wiki 镜像 + 本机 EU4 文件频次）：
 

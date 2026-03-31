@@ -1,5 +1,7 @@
 target/
-vscode-foch/node_modules/
-vscode-foch/bin/*/foch_lsp
-vscode-foch/bin/*/foch_lsp.exe
-vscode-foch/*.vsix
+packages/tree-sitter-paradox/target/
+packages/vscode-foch/node_modules/
+packages/vscode-foch/bin/*/foch_lsp
+packages/vscode-foch/bin/*/foch_lsp.exe
+packages/vscode-foch/*.vsix
+.direnv/

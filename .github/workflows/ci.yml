@@ -16,19 +16,44 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cargo fmt
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
       - name: Cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Cargo test
-        run: cargo test --all-targets --all-features
+        run: cargo test --workspace
+
+  tree-sitter-smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/tree-sitter-paradox
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install grammar dependencies
+        run: bun install
+
+      - name: Test grammar package
+        run: bun run test
 
   vscode-smoke:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: vscode-foch
+        working-directory: packages/vscode-foch
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,10 +64,15 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '22'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
 
       - name: Install extension dependencies
-        run: npm install
+        run: bun install
 
       - name: Smoke test extension
-        run: npm run smoke
+        run: bun run smoke
