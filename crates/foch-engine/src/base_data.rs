@@ -1713,6 +1713,7 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Professionalism => "professionalism",
 		ScriptFileKind::PowerProjection => "powerprojection",
 		ScriptFileKind::SubjectTypeUpgrades => "subject_type_upgrades",
+		ScriptFileKind::GovernmentRanks => "government_ranks",
 		ScriptFileKind::Technologies => "technologies",
 		ScriptFileKind::TechnologyGroups => "technology_groups",
 		ScriptFileKind::EstateAgendas => "estate_agendas",
@@ -2865,6 +2866,12 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/government_ranks/00_government_ranks.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3546,6 +3553,14 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "government_rank_definition".to_string(),
+				value: "2".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/government_ranks/00_government_ranks.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -4058,6 +4073,16 @@ mod tests {
 			.expect("subject type upgrades coverage");
 		assert_eq!(
 			subject_type_upgrades.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let government_ranks = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/government_ranks")
+			.expect("government ranks coverage");
+		assert_eq!(
+			government_ranks.coverage_class,
 			CoverageClass::SemanticComplete
 		);
 

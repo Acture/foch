@@ -533,6 +533,15 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ContentFamilyExtractor::SubjectTypeUpgrades,
 	),
 	prefix_descriptor(
+		"common/government_ranks",
+		"common/government_ranks/",
+		ScriptFileKind::GovernmentRanks,
+		ModuleNameRule::Static("government_ranks"),
+		scope(ScopeType::Country),
+		semantic_complete(),
+		ContentFamilyExtractor::GovernmentRanks,
+	),
+	prefix_descriptor(
 		"common/province_names",
 		"common/province_names/",
 		ScriptFileKind::ProvinceNames,

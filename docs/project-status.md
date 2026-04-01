@@ -130,8 +130,8 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 
 The latest verified real probe is:
 
-- `parse_only = 62`
-- `semantic_complete = 51`
+- `parse_only = 60`
+- `semantic_complete = 52`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -140,7 +140,7 @@ The latest verified real probe is:
 - `map/random_names = semantic_complete`
 - `map/random/tweaks = parse_only`
 
-`common/subject_type_upgrades` is now complete. The next planning checkpoint should stay on the remaining low-risk gameplay `common/*` tails, with `common/government_ranks` the most natural immediate follow-on.
+`common/government_ranks` is now complete. The next planning checkpoint should stay on the remaining low-risk gameplay `common/*` tails, with `common/client_states` or `common/centers_of_trade` as the most natural immediate follow-ons.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -172,6 +172,8 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 49 -> 50`
   - `parse_only: 62 -> 61`
   - `semantic_complete: 50 -> 51`
+  - `parse_only: 61 -> 60`
+  - `semantic_complete: 51 -> 52`
 
 Verified locally during the workspace reorganization:
 
