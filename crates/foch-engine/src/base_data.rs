@@ -1701,6 +1701,11 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Bookmarks => "bookmarks",
 		ScriptFileKind::Policies => "policies",
 		ScriptFileKind::MercenaryCompanies => "mercenary_companies",
+		ScriptFileKind::Fervor => "fervor",
+		ScriptFileKind::Decrees => "decrees",
+		ScriptFileKind::FederationAdvancements => "federation_advancements",
+		ScriptFileKind::GoldenBulls => "golden_bulls",
+		ScriptFileKind::FlagshipModifications => "flagship_modifications",
 		ScriptFileKind::Technologies => "technologies",
 		ScriptFileKind::TechnologyGroups => "technology_groups",
 		ScriptFileKind::EstateAgendas => "estate_agendas",
@@ -2777,6 +2782,38 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/fervor/00_fervor.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/decrees/00_china.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/federation_advancements/00_default.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/golden_bulls/00_golden_bulls.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from(
+						"common/flagship_modifications/00_flagship_modifications.txt",
+					),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3290,6 +3327,94 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "fervor_definition".to_string(),
+				value: "fervor_trade".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/fervor/00_fervor.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "cost_type".to_string(),
+				value: "fervor".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/fervor/00_fervor.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "decree_definition".to_string(),
+				value: "expand_bureaucracy_decree".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/decrees/00_china.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "icon".to_string(),
+				value: "decree_expand_bureaucracy".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/decrees/00_china.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "federation_advancement_definition".to_string(),
+				value: "federal_constitution".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/federation_advancements/00_default.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "gfx".to_string(),
+				value: "federation_constitution".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/federation_advancements/00_default.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "government".to_string(),
+				value: "federal_republic".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/federation_advancements/00_default.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "golden_bull_definition".to_string(),
+				value: "golden_bull_treasury".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/golden_bulls/00_golden_bulls.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "mechanics".to_string(),
+				value: "curia_treasury".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/golden_bulls/00_golden_bulls.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "flagship_modification_definition".to_string(),
+				value: "extra_cannons".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/flagship_modifications/00_flagship_modifications.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "cost_type".to_string(),
+				value: "sailors".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/flagship_modifications/00_flagship_modifications.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3538,6 +3663,11 @@ mod tests {
 				"common/bookmarks/a_new_world.txt".to_string(),
 				"common/policies/00_adm.txt".to_string(),
 				"common/mercenary_companies/00_mercenaries.txt".to_string(),
+				"common/fervor/00_fervor.txt".to_string(),
+				"common/decrees/00_china.txt".to_string(),
+				"common/federation_advancements/00_default.txt".to_string(),
+				"common/golden_bulls/00_golden_bulls.txt".to_string(),
+				"common/flagship_modifications/00_flagship_modifications.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -3687,6 +3817,47 @@ mod tests {
 			.find(|item| item.root_family == "history/advisors")
 			.expect("advisor history coverage");
 		assert_eq!(advisors.coverage_class, CoverageClass::SemanticComplete);
+
+		let fervor = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/fervor")
+			.expect("fervor coverage");
+		assert_eq!(fervor.coverage_class, CoverageClass::SemanticComplete);
+
+		let decrees = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/decrees")
+			.expect("decrees coverage");
+		assert_eq!(decrees.coverage_class, CoverageClass::SemanticComplete);
+
+		let federation_advancements = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/federation_advancements")
+			.expect("federation advancements coverage");
+		assert_eq!(
+			federation_advancements.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let golden_bulls = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/golden_bulls")
+			.expect("golden bulls coverage");
+		assert_eq!(golden_bulls.coverage_class, CoverageClass::SemanticComplete);
+
+		let flagship_modifications = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/flagship_modifications")
+			.expect("flagship modifications coverage");
+		assert_eq!(
+			flagship_modifications.coverage_class,
+			CoverageClass::SemanticComplete
+		);
 
 		let country_tags = report
 			.roots

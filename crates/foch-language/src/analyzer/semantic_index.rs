@@ -780,6 +780,25 @@ fn record_foundation_resource_semantics(
 				push_resource_reference(index, ctx, key_span, key, text.as_str());
 			}
 		}
+		ContentFamilyExtractor::Fervor => {
+			record_fervor_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::Decrees => {
+			record_decree_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::FederationAdvancements => {
+			record_federation_advancement_resource_semantics(
+				index, scope_id, ctx, key, key_span, value,
+			);
+		}
+		ContentFamilyExtractor::GoldenBulls => {
+			record_golden_bull_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::FlagshipModifications => {
+			record_flagship_modification_resource_semantics(
+				index, scope_id, ctx, key, key_span, value,
+			);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1523,6 +1542,196 @@ fn record_advisor_history_resource_semantics(
 	if let Some(religion) = extract_assignment_scalar(items, "religion") {
 		push_resource_reference(index, ctx, key_span, "religion", religion.as_str());
 	}
+}
+
+struct NamedDefinitionTableConfig<'a> {
+	definition_key: &'a str,
+	scalar_reference_keys: &'a [&'a str],
+	block_reference_keys: &'a [&'a str],
+}
+
+fn record_named_definition_table_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+	config: NamedDefinitionTableConfig<'_>,
+) {
+	if is_top_level_named_block(index, scope_id, key, value) {
+		push_resource_reference(index, ctx, key_span, config.definition_key, key);
+	}
+	if let Some(text) = scalar_text(value)
+		&& config.scalar_reference_keys.contains(&key)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+	if config.block_reference_keys.contains(&key) {
+		for item in extract_block_scalar_items(value) {
+			push_resource_reference(index, ctx, key_span, key, item.as_str());
+		}
+	}
+}
+
+fn record_fervor_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "fervor_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_decree_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "decree_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_federation_advancement_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "federation_advancement_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"graphical_culture",
+				"government",
+				"icon",
+				"localization",
+				"religion",
+				"technology_group",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &["names"],
+		},
+	);
+	if let Some(text) = scalar_text(value)
+		&& key == "tag"
+		&& is_country_tag_text(&text)
+	{
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+	}
+}
+
+fn record_golden_bull_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "golden_bull_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &["mechanics"],
+		},
+	);
+}
+
+fn record_flagship_modification_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "flagship_modification_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
 }
 
 fn record_mercenary_company_resource_semantics(
@@ -4091,6 +4300,32 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::MercenaryCompanies
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new("common/fervor/00_fervor.txt")),
+			ScriptFileKind::Fervor
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("common/decrees/00_china.txt")),
+			ScriptFileKind::Decrees
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/federation_advancements/00_default.txt"
+			)),
+			ScriptFileKind::FederationAdvancements
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/golden_bulls/00_golden_bulls.txt"
+			)),
+			ScriptFileKind::GoldenBulls
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/flagship_modifications/00_flagship_modifications.txt"
+			)),
+			ScriptFileKind::FlagshipModifications
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
 			ScriptFileKind::Technologies
 		);
@@ -5242,6 +5477,204 @@ merc_black_army = {
 			reference.path == Path::new("common/mercenary_companies/00_mercenaries.txt")
 				&& reference.key == "sprites"
 				&& reference.value == "dlc102_hun_sprite_pack"
+		}));
+	}
+
+	#[test]
+	fn low_risk_common_mechanics_roots_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("fervor")).expect("create fervor");
+		fs::create_dir_all(mod_root.join("common").join("decrees")).expect("create decrees");
+		fs::create_dir_all(mod_root.join("common").join("federation_advancements"))
+			.expect("create federation advancements");
+		fs::create_dir_all(mod_root.join("common").join("golden_bulls"))
+			.expect("create golden bulls");
+		fs::create_dir_all(mod_root.join("common").join("flagship_modifications"))
+			.expect("create flagship modifications");
+		fs::write(
+			mod_root.join("common").join("fervor").join("00_fervor.txt"),
+			r#"
+fervor_trade = {
+	cost_type = fervor
+	potential = { religion = reformed }
+}
+"#,
+		)
+		.expect("write fervor");
+		fs::write(
+			mod_root.join("common").join("decrees").join("00_china.txt"),
+			r#"
+expand_bureaucracy_decree = {
+	duration = 120
+	icon = decree_expand_bureaucracy
+}
+"#,
+		)
+		.expect("write decrees");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("federation_advancements")
+				.join("00_default.txt"),
+			r#"
+federal_constitution = {
+	gfx = federation_constitution
+	names = { federation_name_key }
+	effect = {
+		government = federal_republic
+		religion = catholic
+		tag = HUN
+	}
+}
+"#,
+		)
+		.expect("write federation advancements");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("golden_bulls")
+				.join("00_golden_bulls.txt"),
+			r#"
+golden_bull_treasury = {
+	mechanics = { curia_treasury curia_powers }
+}
+"#,
+		)
+		.expect("write golden bulls");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("flagship_modifications")
+				.join("00_flagship_modifications.txt"),
+			r#"
+extra_cannons = {
+	cost_type = sailors
+	base_modification = yes
+}
+"#,
+		)
+		.expect("write flagship modifications");
+
+		let files = vec![
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root.join("common").join("fervor").join("00_fervor.txt"),
+			)
+			.expect("parsed fervor"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root.join("common").join("decrees").join("00_china.txt"),
+			)
+			.expect("parsed decrees"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("federation_advancements")
+					.join("00_default.txt"),
+			)
+			.expect("parsed federation advancements"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("golden_bulls")
+					.join("00_golden_bulls.txt"),
+			)
+			.expect("parsed golden bulls"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("flagship_modifications")
+					.join("00_flagship_modifications.txt"),
+			)
+			.expect("parsed flagship modifications"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/fervor/00_fervor.txt")
+				&& reference.key == "fervor_definition"
+				&& reference.value == "fervor_trade"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/fervor/00_fervor.txt")
+				&& reference.key == "cost_type"
+				&& reference.value == "fervor"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/decrees/00_china.txt")
+				&& reference.key == "decree_definition"
+				&& reference.value == "expand_bureaucracy_decree"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/decrees/00_china.txt")
+				&& reference.key == "icon"
+				&& reference.value == "decree_expand_bureaucracy"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/federation_advancements/00_default.txt")
+				&& reference.key == "federation_advancement_definition"
+				&& reference.value == "federal_constitution"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/federation_advancements/00_default.txt")
+				&& reference.key == "gfx"
+				&& reference.value == "federation_constitution"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/federation_advancements/00_default.txt")
+				&& reference.key == "names"
+				&& reference.value == "federation_name_key"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/federation_advancements/00_default.txt")
+				&& reference.key == "government"
+				&& reference.value == "federal_republic"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/federation_advancements/00_default.txt")
+				&& reference.key == "religion"
+				&& reference.value == "catholic"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/federation_advancements/00_default.txt")
+				&& reference.key == "tag"
+				&& reference.value == "HUN"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/golden_bulls/00_golden_bulls.txt")
+				&& reference.key == "golden_bull_definition"
+				&& reference.value == "golden_bull_treasury"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/golden_bulls/00_golden_bulls.txt")
+				&& reference.key == "mechanics"
+				&& reference.value == "curia_treasury"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/golden_bulls/00_golden_bulls.txt")
+				&& reference.key == "mechanics"
+				&& reference.value == "curia_powers"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path
+				== Path::new("common/flagship_modifications/00_flagship_modifications.txt")
+				&& reference.key == "flagship_modification_definition"
+				&& reference.value == "extra_cannons"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path
+				== Path::new("common/flagship_modifications/00_flagship_modifications.txt")
+				&& reference.key == "cost_type"
+				&& reference.value == "sailors"
 		}));
 	}
 
