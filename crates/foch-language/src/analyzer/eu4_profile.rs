@@ -524,6 +524,15 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ContentFamilyExtractor::PowerProjection,
 	),
 	prefix_descriptor(
+		"common/subject_type_upgrades",
+		"common/subject_type_upgrades/",
+		ScriptFileKind::SubjectTypeUpgrades,
+		ModuleNameRule::Static("subject_type_upgrades"),
+		scope(ScopeType::Country),
+		semantic_complete(),
+		ContentFamilyExtractor::SubjectTypeUpgrades,
+	),
+	prefix_descriptor(
 		"common/province_names",
 		"common/province_names/",
 		ScriptFileKind::ProvinceNames,

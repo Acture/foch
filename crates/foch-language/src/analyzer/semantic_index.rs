@@ -817,6 +817,11 @@ fn record_foundation_resource_semantics(
 		ContentFamilyExtractor::PowerProjection => {
 			record_powerprojection_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ContentFamilyExtractor::SubjectTypeUpgrades => {
+			record_subject_type_upgrade_resource_semantics(
+				index, scope_id, ctx, key, key_span, value,
+			);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1923,6 +1928,36 @@ fn record_powerprojection_resource_semantics(
 		NamedDefinitionTableConfig {
 			definition_key: "powerprojection_definition",
 			scalar_reference_keys: &[],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_subject_type_upgrade_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "subject_type_upgrade_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
 			block_reference_keys: &[],
 		},
 	);
@@ -4524,6 +4559,12 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::PowerProjection
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/subject_type_upgrades/00_subject_type_upgrades.txt"
+			)),
+			ScriptFileKind::SubjectTypeUpgrades
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
 			ScriptFileKind::Technologies
 		);
@@ -5702,6 +5743,8 @@ merc_black_army = {
 			.expect("create professionalism");
 		fs::create_dir_all(mod_root.join("common").join("powerprojection"))
 			.expect("create powerprojection");
+		fs::create_dir_all(mod_root.join("common").join("subject_type_upgrades"))
+			.expect("create subject type upgrades");
 		fs::write(
 			mod_root.join("common").join("fervor").join("00_fervor.txt"),
 			r#"
@@ -5850,6 +5893,30 @@ humiliated_rival = {
 "#,
 		)
 		.expect("write powerprojection");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("subject_type_upgrades")
+				.join("00_subject_type_upgrades.txt"),
+			r#"
+increase_force_limit_from_colony = {
+	cost = 100
+	effect = {
+		custom_tooltip = increase_force_limit_from_colony_tt
+	}
+	modifier_overlord = {
+		land_forcelimit = 5
+	}
+}
+allow_autonomous_trade = {
+	cost = 100
+	modifier_subject = {
+		liberty_desire = -5
+	}
+}
+"#,
+		)
+		.expect("write subject type upgrades");
 
 		let files = vec![
 			parse_script_file(
@@ -5945,6 +6012,15 @@ humiliated_rival = {
 					.join("00_static.txt"),
 			)
 			.expect("parsed powerprojection"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("subject_type_upgrades")
+					.join("00_subject_type_upgrades.txt"),
+			)
+			.expect("parsed subject type upgrades"),
 		];
 
 		let index = build_semantic_index(&files);
@@ -6099,6 +6175,27 @@ humiliated_rival = {
 			assignment.path == Path::new("common/powerprojection/00_static.txt")
 				&& assignment.key == "yearly_decay"
 				&& assignment.value == "1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+				&& reference.key == "subject_type_upgrade_definition"
+				&& reference.value == "increase_force_limit_from_colony"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+				&& reference.key == "subject_type_upgrade_definition"
+				&& reference.value == "allow_autonomous_trade"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+				&& reference.key == "custom_tooltip"
+				&& reference.value == "increase_force_limit_from_colony_tt"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path
+				== Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
+				&& assignment.key == "cost"
+				&& assignment.value == "100"
 		}));
 	}
 
