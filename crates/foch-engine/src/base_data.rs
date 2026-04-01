@@ -1706,6 +1706,11 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::FederationAdvancements => "federation_advancements",
 		ScriptFileKind::GoldenBulls => "golden_bulls",
 		ScriptFileKind::FlagshipModifications => "flagship_modifications",
+		ScriptFileKind::HolyOrders => "holy_orders",
+		ScriptFileKind::NavalDoctrines => "naval_doctrines",
+		ScriptFileKind::DefenderOfFaith => "defender_of_faith",
+		ScriptFileKind::Isolationism => "isolationism",
+		ScriptFileKind::Professionalism => "professionalism",
 		ScriptFileKind::Technologies => "technologies",
 		ScriptFileKind::TechnologyGroups => "technology_groups",
 		ScriptFileKind::EstateAgendas => "estate_agendas",
@@ -2814,6 +2819,36 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/holy_orders/00_holy_orders.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/naval_doctrines/00_naval_doctrines.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/defender_of_faith/00_defender_of_faith.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/isolationism/00_shinto.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/professionalism/00_modifiers.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3415,6 +3450,70 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "holy_order_definition".to_string(),
+				value: "benedictines".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/holy_orders/00_holy_orders.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "cost_type".to_string(),
+				value: "adm_power".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/holy_orders/00_holy_orders.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "naval_doctrine_definition".to_string(),
+				value: "fleet_in_being".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/naval_doctrines/00_naval_doctrines.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "button_gfx".to_string(),
+				value: "1".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/naval_doctrines/00_naval_doctrines.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "defender_of_faith_definition".to_string(),
+				value: "defender_of_faith_1".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/defender_of_faith/00_defender_of_faith.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "isolationism_definition".to_string(),
+				value: "open_doors_isolation".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/isolationism/00_shinto.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "professionalism_definition".to_string(),
+				value: "nothingness_modifier".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/professionalism/00_modifiers.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "marker_sprite".to_string(),
+				value: "GFX_pa_rank_0".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/professionalism/00_modifiers.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3668,6 +3767,11 @@ mod tests {
 				"common/federation_advancements/00_default.txt".to_string(),
 				"common/golden_bulls/00_golden_bulls.txt".to_string(),
 				"common/flagship_modifications/00_flagship_modifications.txt".to_string(),
+				"common/holy_orders/00_holy_orders.txt".to_string(),
+				"common/naval_doctrines/00_naval_doctrines.txt".to_string(),
+				"common/defender_of_faith/00_defender_of_faith.txt".to_string(),
+				"common/isolationism/00_shinto.txt".to_string(),
+				"common/professionalism/00_modifiers.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -3856,6 +3960,50 @@ mod tests {
 			.expect("flagship modifications coverage");
 		assert_eq!(
 			flagship_modifications.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let holy_orders = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/holy_orders")
+			.expect("holy orders coverage");
+		assert_eq!(holy_orders.coverage_class, CoverageClass::SemanticComplete);
+
+		let naval_doctrines = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/naval_doctrines")
+			.expect("naval doctrines coverage");
+		assert_eq!(
+			naval_doctrines.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let defender_of_faith = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/defender_of_faith")
+			.expect("defender of faith coverage");
+		assert_eq!(
+			defender_of_faith.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let isolationism = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/isolationism")
+			.expect("isolationism coverage");
+		assert_eq!(isolationism.coverage_class, CoverageClass::SemanticComplete);
+
+		let professionalism = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/professionalism")
+			.expect("professionalism coverage");
+		assert_eq!(
+			professionalism.coverage_class,
 			CoverageClass::SemanticComplete
 		);
 
