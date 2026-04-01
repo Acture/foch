@@ -814,6 +814,9 @@ fn record_foundation_resource_semantics(
 		ContentFamilyExtractor::Professionalism => {
 			record_professionalism_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ContentFamilyExtractor::PowerProjection => {
+			record_powerprojection_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1897,6 +1900,29 @@ fn record_professionalism_resource_semantics(
 				"custom_tooltip",
 				"unit_sprite_start",
 			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_powerprojection_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "powerprojection_definition",
+			scalar_reference_keys: &[],
 			block_reference_keys: &[],
 		},
 	);
@@ -4494,6 +4520,10 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::FlagshipModifications
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new("common/powerprojection/00_static.txt")),
+			ScriptFileKind::PowerProjection
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
 			ScriptFileKind::Technologies
 		);
@@ -5670,6 +5700,8 @@ merc_black_army = {
 			.expect("create isolationism");
 		fs::create_dir_all(mod_root.join("common").join("professionalism"))
 			.expect("create professionalism");
+		fs::create_dir_all(mod_root.join("common").join("powerprojection"))
+			.expect("create powerprojection");
 		fs::write(
 			mod_root.join("common").join("fervor").join("00_fervor.txt"),
 			r#"
@@ -5801,6 +5833,23 @@ nothingness_modifier = {
 "#,
 		)
 		.expect("write professionalism");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("powerprojection")
+				.join("00_static.txt"),
+			r#"
+great_power_1 = {
+	power = 25
+}
+humiliated_rival = {
+	power = 30
+	max = 30
+	yearly_decay = 1
+}
+"#,
+		)
+		.expect("write powerprojection");
 
 		let files = vec![
 			parse_script_file(
@@ -5887,6 +5936,15 @@ nothingness_modifier = {
 					.join("00_modifiers.txt"),
 			)
 			.expect("parsed professionalism"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("powerprojection")
+					.join("00_static.txt"),
+			)
+			.expect("parsed powerprojection"),
 		];
 
 		let index = build_semantic_index(&files);
@@ -6021,6 +6079,26 @@ nothingness_modifier = {
 			reference.path == Path::new("common/professionalism/00_modifiers.txt")
 				&& reference.key == "unit_sprite_start"
 				&& reference.value == "GFX_ap1_"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/powerprojection/00_static.txt")
+				&& reference.key == "powerprojection_definition"
+				&& reference.value == "great_power_1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/powerprojection/00_static.txt")
+				&& reference.key == "powerprojection_definition"
+				&& reference.value == "humiliated_rival"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path == Path::new("common/powerprojection/00_static.txt")
+				&& assignment.key == "power"
+				&& assignment.value == "25"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path == Path::new("common/powerprojection/00_static.txt")
+				&& assignment.key == "yearly_decay"
+				&& assignment.value == "1"
 		}));
 	}
 
