@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-03-31
+Last updated: 2026-04-01
 
 ## Summary
 
@@ -107,6 +107,9 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/technology`
 - `common/units`
 - `common/mercenary_companies`
+- `map/random/scenarios`
+- `map/random/tiles`
+- `map/random_names`
 - `history/advisors`
 - `history/countries`
 - `history/diplomacy`
@@ -116,9 +119,16 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 The latest verified real probe is:
 
 - `parse_only = 73`
-- `semantic_complete = 36`
+- `semantic_complete = 39`
 
-The next planning checkpoint should reevaluate the remaining large `parse_only` tails with the new architecture in place. `common/province_names` is now complete, so the clearest remaining candidate is `map/random`, followed by other gameplay-relevant `common/*` and `history/*` roots.
+`map/random` is now split honestly instead of being treated as one mixed root:
+
+- `map/random/scenarios = semantic_complete`
+- `map/random/tiles = semantic_complete`
+- `map/random_names = semantic_complete`
+- `map/random/tweaks = parse_only`
+
+The next planning checkpoint should reevaluate the remaining large `parse_only` tails with the new architecture in place. The mixed `map/random` backlog is no longer the default next target; the remaining candidates now shift back to other gameplay-relevant `common/*` and `history/*` roots.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -140,6 +150,8 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 33 -> 35`
   - `parse_only: 74 -> 73`
   - `semantic_complete: 35 -> 36`
+  - `parse_only: 73 -> 73`
+  - `semantic_complete: 36 -> 39`
 
 Verified locally during the workspace reorganization:
 
