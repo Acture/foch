@@ -1712,6 +1712,7 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Isolationism => "isolationism",
 		ScriptFileKind::Professionalism => "professionalism",
 		ScriptFileKind::PowerProjection => "powerprojection",
+		ScriptFileKind::SubjectTypeUpgrades => "subject_type_upgrades",
 		ScriptFileKind::Technologies => "technologies",
 		ScriptFileKind::TechnologyGroups => "technology_groups",
 		ScriptFileKind::EstateAgendas => "estate_agendas",
@@ -2856,6 +2857,14 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from(
+						"common/subject_type_upgrades/00_subject_type_upgrades.txt",
+					),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3529,6 +3538,14 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "subject_type_upgrade_definition".to_string(),
+				value: "increase_force_limit_from_colony".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/subject_type_upgrades/00_subject_type_upgrades.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3788,6 +3805,7 @@ mod tests {
 				"common/isolationism/00_shinto.txt".to_string(),
 				"common/professionalism/00_modifiers.txt".to_string(),
 				"common/powerprojection/00_static.txt".to_string(),
+				"common/subject_type_upgrades/00_subject_type_upgrades.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -4030,6 +4048,16 @@ mod tests {
 			.expect("powerprojection coverage");
 		assert_eq!(
 			powerprojection.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let subject_type_upgrades = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/subject_type_upgrades")
+			.expect("subject type upgrades coverage");
+		assert_eq!(
+			subject_type_upgrades.coverage_class,
 			CoverageClass::SemanticComplete
 		);
 
