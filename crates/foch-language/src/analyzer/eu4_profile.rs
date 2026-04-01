@@ -18,6 +18,14 @@ const fn semantic_complete() -> ContentFamilyCapabilities {
 	}
 }
 
+const fn parse_only() -> ContentFamilyCapabilities {
+	ContentFamilyCapabilities {
+		semantic_complete: false,
+		graph_ready: false,
+		merge_ready: false,
+	}
+}
+
 const fn graph_ready() -> ContentFamilyCapabilities {
 	ContentFamilyCapabilities {
 		semantic_complete: false,
@@ -424,6 +432,60 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		scope(ScopeType::Unknown),
 		semantic_complete(),
 		ContentFamilyExtractor::ProvinceNames,
+	),
+	prefix_descriptor(
+		"map/random/tiles",
+		"map/random/tiles/",
+		ScriptFileKind::RandomMapTiles,
+		ModuleNameRule::Static("random_map_tiles"),
+		scope(ScopeType::Unknown),
+		semantic_complete(),
+		ContentFamilyExtractor::RandomMapTiles,
+	),
+	exact_descriptor(
+		"map/random_names",
+		"map/random/RandomLandNames.txt",
+		ScriptFileKind::RandomMapNames,
+		ModuleNameRule::Static("random_map_names"),
+		scope(ScopeType::Unknown),
+		semantic_complete(),
+		ContentFamilyExtractor::RandomMapNames,
+	),
+	exact_descriptor(
+		"map/random_names",
+		"map/random/RandomSeaNames.txt",
+		ScriptFileKind::RandomMapNames,
+		ModuleNameRule::Static("random_map_names"),
+		scope(ScopeType::Unknown),
+		semantic_complete(),
+		ContentFamilyExtractor::RandomMapNames,
+	),
+	exact_descriptor(
+		"map/random_names",
+		"map/random/RandomLakeNames.txt",
+		ScriptFileKind::RandomMapNames,
+		ModuleNameRule::Static("random_map_names"),
+		scope(ScopeType::Unknown),
+		semantic_complete(),
+		ContentFamilyExtractor::RandomMapNames,
+	),
+	exact_descriptor(
+		"map/random/scenarios",
+		"map/random/RNWScenarios.txt",
+		ScriptFileKind::RandomMapScenarios,
+		ModuleNameRule::Static("random_map_scenarios"),
+		scope(ScopeType::Unknown),
+		semantic_complete(),
+		ContentFamilyExtractor::RandomMapScenarios,
+	),
+	exact_descriptor(
+		"map/random/tweaks",
+		"map/random/tweaks.lua",
+		ScriptFileKind::RandomMapTweaks,
+		ModuleNameRule::Static("random_map_tweaks"),
+		scope(ScopeType::Unknown),
+		parse_only(),
+		ContentFamilyExtractor::None,
 	),
 	prefix_descriptor(
 		"common/technologies",

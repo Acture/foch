@@ -306,6 +306,8 @@ fn build_file_index(
 		map_groups,
 		technology_monarch_power: None,
 		technology_definition_ordinal: 0,
+		random_map_tile_emitted: false,
+		random_name_table_emitted: false,
 	};
 
 	walk_statements(
@@ -353,6 +355,8 @@ struct BuildContext<'a> {
 	map_groups: &'a MapGroupLookup,
 	technology_monarch_power: Option<String>,
 	technology_definition_ordinal: usize,
+	random_map_tile_emitted: bool,
+	random_name_table_emitted: bool,
 }
 
 fn walk_statements(
@@ -607,6 +611,8 @@ fn handle_event_block(
 		map_groups: ctx.map_groups,
 		technology_monarch_power: ctx.technology_monarch_power.clone(),
 		technology_definition_ordinal: ctx.technology_definition_ordinal,
+		random_map_tile_emitted: ctx.random_map_tile_emitted,
+		random_name_table_emitted: ctx.random_name_table_emitted,
 	};
 	walk_statements(items, index, event_scope, &mut child_ctx, None, namespace);
 }
@@ -746,6 +752,17 @@ fn record_foundation_resource_semantics(
 		}
 		ContentFamilyExtractor::ProvinceNames => {
 			record_province_name_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::RandomMapTiles => {
+			record_random_map_tile_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::RandomMapNames => {
+			record_random_map_name_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::RandomMapScenarios => {
+			record_random_map_scenario_resource_semantics(
+				index, scope_id, ctx, key, key_span, value,
+			);
 		}
 		ContentFamilyExtractor::DiplomacyHistory => {
 			record_diplomacy_history_resource_semantics(index, scope_id, ctx, key, key_span, value);
@@ -1364,6 +1381,109 @@ fn record_province_name_resource_semantics(
 	push_resource_reference(index, ctx, key_span, "province_name_literal", name.as_str());
 }
 
+fn record_random_map_tile_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &mut BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) != ScopeKind::File {
+		return;
+	}
+	let Some(tile) = random_map_tile_id(ctx.path) else {
+		return;
+	};
+	if !ctx.random_map_tile_emitted {
+		push_resource_reference(index, ctx, key_span, "tile_definition", tile.as_str());
+		ctx.random_map_tile_emitted = true;
+	}
+	if key == "size" {
+		let values = extract_block_scalar_items(value);
+		if !values.is_empty() {
+			push_resource_reference(index, ctx, key_span, "tile_size", &values.join(","));
+		}
+		return;
+	}
+	if let Some(text) = scalar_text(value)
+		&& matches!(
+			key,
+			"num_sea_provinces" | "num_land_provinces" | "regions" | "weight" | "continent"
+		) {
+		push_resource_reference(index, ctx, key_span, key, text.as_str());
+		return;
+	}
+	let values = extract_block_scalar_items(value);
+	if values.len() == 3 && values.iter().all(|item| item.parse::<u16>().is_ok()) {
+		push_resource_reference(index, ctx, key_span, "tile_color_group", key);
+		push_resource_reference(index, ctx, key_span, "tile_color_rgb", &values.join(","));
+	}
+}
+
+fn record_random_map_name_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &mut BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) != ScopeKind::File || key != "random_names" {
+		return;
+	}
+	let Some(table) = random_name_table_id(ctx.path) else {
+		return;
+	};
+	if !ctx.random_name_table_emitted {
+		push_resource_reference(index, ctx, key_span, "random_name_table", table.as_str());
+		ctx.random_name_table_emitted = true;
+	}
+	for entry in extract_block_scalar_items(value) {
+		let (token, category) = entry
+			.split_once(':')
+			.map_or((entry.as_str(), None), |(token, category)| {
+				(token, Some(category))
+			});
+		push_resource_reference(index, ctx, key_span, "random_name_token", token);
+		if let Some(category) = category {
+			push_resource_reference(index, ctx, key_span, "random_name_category", category);
+		}
+	}
+}
+
+fn record_random_map_scenario_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if scope_kind(index, scope_id) != ScopeKind::File {
+		return;
+	}
+	let AstValue::Block { items, .. } = value else {
+		return;
+	};
+	push_resource_reference(index, ctx, key_span, "random_map_scenario", key);
+	for field in [
+		"culture_group",
+		"religion",
+		"technology_group",
+		"government",
+		"graphical_culture",
+	] {
+		let Some(text) = extract_assignment_scalar(items, field) else {
+			continue;
+		};
+		push_resource_reference(index, ctx, key_span, field, text.as_str());
+	}
+	for name in extract_named_block_scalar_items(value, "names") {
+		push_resource_reference(index, ctx, key_span, "scenario_name_key", name.as_str());
+	}
+}
+
 fn record_advisor_history_resource_semantics(
 	index: &mut SemanticIndex,
 	scope_id: usize,
@@ -1559,11 +1679,14 @@ fn extract_named_block_scalar_items(value: &AstValue, key_name: &str) -> Vec<Str
 		let AstStatement::Assignment { key, value, .. } = item else {
 			continue;
 		};
-		if key == key_name
-			&& let Some(text) = scalar_text(value)
-		{
-			values.push(text);
+		if key != key_name {
+			continue;
 		}
+		if let Some(text) = scalar_text(value) {
+			values.push(text);
+			continue;
+		}
+		values.extend(extract_block_scalar_items(value));
 	}
 	values
 }
@@ -2293,6 +2416,21 @@ fn province_name_table_id(path: &Path) -> Option<String> {
 	path.file_stem()
 		.and_then(|stem| stem.to_str())
 		.map(std::string::ToString::to_string)
+}
+
+fn random_map_tile_id(path: &Path) -> Option<String> {
+	path.file_stem()
+		.and_then(|stem| stem.to_str())
+		.map(std::string::ToString::to_string)
+}
+
+fn random_name_table_id(path: &Path) -> Option<String> {
+	match path.file_stem().and_then(|stem| stem.to_str()) {
+		Some("RandomLandNames") => Some("random_land_names".to_string()),
+		Some("RandomSeaNames") => Some("random_sea_names".to_string()),
+		Some("RandomLakeNames") => Some("random_lake_names".to_string()),
+		_ => None,
+	}
 }
 
 fn is_country_history_province_reference_key(key: &str) -> bool {
@@ -3813,6 +3951,22 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::ProvinceNames
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new("map/random/tiles/tile0.txt")),
+			ScriptFileKind::RandomMapTiles
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("map/random/RandomLandNames.txt")),
+			ScriptFileKind::RandomMapNames
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("map/random/RNWScenarios.txt")),
+			ScriptFileKind::RandomMapScenarios
+		);
+		assert_eq!(
+			classify_script_file(std::path::Path::new("map/random/tweaks.lua")),
+			ScriptFileKind::RandomMapTweaks
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("history/diplomacy/hre.txt")),
 			ScriptFileKind::DiplomacyHistory
 		);
@@ -5256,6 +5410,176 @@ advisor = {
 			reference.path == Path::new("common/province_names/sorbian.txt")
 				&& reference.key == "province_id"
 				&& reference.value == "38"
+		}));
+	}
+
+	#[test]
+	fn random_map_tiles_and_names_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("map").join("random").join("tiles"))
+			.expect("create random map tiles");
+		fs::write(
+			mod_root
+				.join("map")
+				.join("random")
+				.join("tiles")
+				.join("tile0.txt"),
+			r#"
+sea_province = { 93 164 236 }
+region = { 12 34 56 }
+size = { 7 7 }
+num_sea_provinces = 21
+weight = 130
+continent = yes
+"#,
+		)
+		.expect("write tile file");
+		fs::write(
+			mod_root
+				.join("map")
+				.join("random")
+				.join("RandomLandNames.txt"),
+			r#"
+random_names = {
+	p_tumbletown
+	p_chugwater:river
+}
+"#,
+		)
+		.expect("write random land names");
+
+		let files = vec![
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root
+					.join("map")
+					.join("random")
+					.join("tiles")
+					.join("tile0.txt"),
+			)
+			.expect("parsed tile file"),
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root
+					.join("map")
+					.join("random")
+					.join("RandomLandNames.txt"),
+			)
+			.expect("parsed random names"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/tiles/tile0.txt")
+				&& reference.key == "tile_definition"
+				&& reference.value == "tile0"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/tiles/tile0.txt")
+				&& reference.key == "tile_color_group"
+				&& reference.value == "sea_province"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/tiles/tile0.txt")
+				&& reference.key == "tile_color_rgb"
+				&& reference.value == "93,164,236"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/tiles/tile0.txt")
+				&& reference.key == "tile_size"
+				&& reference.value == "7,7"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/tiles/tile0.txt")
+				&& reference.key == "weight"
+				&& reference.value == "130"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RandomLandNames.txt")
+				&& reference.key == "random_name_table"
+				&& reference.value == "random_land_names"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RandomLandNames.txt")
+				&& reference.key == "random_name_token"
+				&& reference.value == "p_tumbletown"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RandomLandNames.txt")
+				&& reference.key == "random_name_token"
+				&& reference.value == "p_chugwater"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RandomLandNames.txt")
+				&& reference.key == "random_name_category"
+				&& reference.value == "river"
+		}));
+	}
+
+	#[test]
+	fn random_map_scenarios_record_resource_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("map").join("random")).expect("create random map root");
+		fs::write(
+			mod_root.join("map").join("random").join("RNWScenarios.txt"),
+			r#"
+scenario_animism_tribes = {
+	religion = animism
+	technology_group = south_american
+	government = native
+	graphical_culture = northamericagfx
+	names = {
+		rnw_arauluche
+		rnw_namuncurcha
+	}
+}
+"#,
+		)
+		.expect("write scenarios file");
+
+		let files = vec![
+			parse_script_file(
+				"1016",
+				&mod_root,
+				&mod_root.join("map").join("random").join("RNWScenarios.txt"),
+			)
+			.expect("parsed scenarios file"),
+		];
+
+		let index = build_semantic_index(&files);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RNWScenarios.txt")
+				&& reference.key == "random_map_scenario"
+				&& reference.value == "scenario_animism_tribes"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RNWScenarios.txt")
+				&& reference.key == "religion"
+				&& reference.value == "animism"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RNWScenarios.txt")
+				&& reference.key == "technology_group"
+				&& reference.value == "south_american"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RNWScenarios.txt")
+				&& reference.key == "government"
+				&& reference.value == "native"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RNWScenarios.txt")
+				&& reference.key == "graphical_culture"
+				&& reference.value == "northamericagfx"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("map/random/RNWScenarios.txt")
+				&& reference.key == "scenario_name_key"
+				&& reference.value == "rnw_arauluche"
 		}));
 	}
 

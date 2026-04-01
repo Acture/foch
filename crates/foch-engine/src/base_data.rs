@@ -1679,6 +1679,10 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::CountryHistory => "country_history",
 		ScriptFileKind::ProvinceHistory => "province_history",
 		ScriptFileKind::ProvinceNames => "province_names",
+		ScriptFileKind::RandomMapTiles => "random_map_tiles",
+		ScriptFileKind::RandomMapNames => "random_map_names",
+		ScriptFileKind::RandomMapScenarios => "random_map_scenarios",
+		ScriptFileKind::RandomMapTweaks => "random_map_tweaks",
 		ScriptFileKind::DiplomacyHistory => "diplomacy_history",
 		ScriptFileKind::AdvisorHistory => "advisor_history",
 		ScriptFileKind::Wars => "wars",
@@ -1818,6 +1822,23 @@ fn coverage_root_family(path: &str) -> Option<String> {
 	}
 	if parts[0] == "events" && parts.get(1) == Some(&"decisions") {
 		return Some("events/decisions".to_string());
+	}
+	if normalized.starts_with("map/random/tiles/") {
+		return Some("map/random/tiles".to_string());
+	}
+	if matches!(
+		normalized.as_str(),
+		"map/random/RandomLandNames.txt"
+			| "map/random/RandomSeaNames.txt"
+			| "map/random/RandomLakeNames.txt"
+	) {
+		return Some("map/random_names".to_string());
+	}
+	if normalized == "map/random/RNWScenarios.txt" {
+		return Some("map/random/scenarios".to_string());
+	}
+	if normalized == "map/random/tweaks.lua" {
+		return Some("map/random/tweaks".to_string());
 	}
 	match parts[0] {
 		"common" | "history" | "map" => {
@@ -2858,6 +2879,30 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("map/random/tiles/tile0.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("map/random/RandomLandNames.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("map/random/RNWScenarios.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("map/random/tweaks.lua"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("history/diplomacy/hre.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -2970,6 +3015,126 @@ mod tests {
 				mod_id: "__game__eu4".to_string(),
 				path: PathBuf::from("common/province_names/sorbian.txt"),
 				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "tile_definition".to_string(),
+				value: "tile0".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/tiles/tile0.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "tile_color_group".to_string(),
+				value: "sea_province".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/tiles/tile0.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "tile_color_rgb".to_string(),
+				value: "93,164,236".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/tiles/tile0.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "tile_size".to_string(),
+				value: "7,7".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/tiles/tile0.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "weight".to_string(),
+				value: "130".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/tiles/tile0.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "random_name_table".to_string(),
+				value: "random_land_names".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RandomLandNames.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "random_name_token".to_string(),
+				value: "p_tumbletown".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RandomLandNames.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "random_name_token".to_string(),
+				value: "p_chugwater".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RandomLandNames.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "random_name_category".to_string(),
+				value: "river".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RandomLandNames.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "random_map_scenario".to_string(),
+				value: "scenario_animism_tribes".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "religion".to_string(),
+				value: "animism".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				line: 2,
+				column: 1,
+			},
+			ResourceReference {
+				key: "technology_group".to_string(),
+				value: "south_american".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				line: 3,
+				column: 1,
+			},
+			ResourceReference {
+				key: "government".to_string(),
+				value: "native".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				line: 4,
+				column: 1,
+			},
+			ResourceReference {
+				key: "graphical_culture".to_string(),
+				value: "northamericagfx".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				line: 5,
+				column: 1,
+			},
+			ResourceReference {
+				key: "scenario_name_key".to_string(),
+				value: "rnw_arauluche".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("map/random/RNWScenarios.txt"),
+				line: 6,
 				column: 1,
 			},
 			ResourceReference {
@@ -3390,6 +3555,10 @@ mod tests {
 				"history/countries/SWE - Sweden.txt".to_string(),
 				"history/provinces/1 - Stockholm.txt".to_string(),
 				"common/province_names/sorbian.txt".to_string(),
+				"map/random/tiles/tile0.txt".to_string(),
+				"map/random/RandomLandNames.txt".to_string(),
+				"map/random/RNWScenarios.txt".to_string(),
+				"map/random/tweaks.lua".to_string(),
 				"history/diplomacy/hre.txt".to_string(),
 				"history/advisors/00_england.txt".to_string(),
 				"history/wars/sample.txt".to_string(),
@@ -3467,6 +3636,43 @@ mod tests {
 			province_names.coverage_class,
 			CoverageClass::SemanticComplete
 		);
+
+		let random_map_tiles = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "map/random/tiles")
+			.expect("random map tiles coverage");
+		assert_eq!(
+			random_map_tiles.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let random_map_names = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "map/random_names")
+			.expect("random map names coverage");
+		assert_eq!(
+			random_map_names.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let random_map_scenarios = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "map/random/scenarios")
+			.expect("random map scenarios coverage");
+		assert_eq!(
+			random_map_scenarios.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let random_map_tweaks = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "map/random/tweaks")
+			.expect("random map tweaks coverage");
+		assert_eq!(random_map_tweaks.coverage_class, CoverageClass::ParseOnly);
 
 		let diplomacy = report
 			.roots
