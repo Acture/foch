@@ -85,9 +85,14 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/countries`
 - `common/bookmarks`
 - `common/church_aspects`
+- `common/decrees`
 - `common/disasters`
 - `common/factions`
+- `common/federation_advancements`
 - `common/fetishist_cults`
+- `common/fervor`
+- `common/flagship_modifications`
+- `common/golden_bulls`
 - `common/government_mechanics`
 - `common/hegemons`
 - `common/estate_agendas`
@@ -118,8 +123,8 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 
 The latest verified real probe is:
 
-- `parse_only = 73`
-- `semantic_complete = 39`
+- `parse_only = 68`
+- `semantic_complete = 44`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -128,7 +133,7 @@ The latest verified real probe is:
 - `map/random_names = semantic_complete`
 - `map/random/tweaks = parse_only`
 
-The next planning checkpoint should reevaluate the remaining large `parse_only` tails with the new architecture in place. The mixed `map/random` backlog is no longer the default next target; the remaining candidates now shift back to other gameplay-relevant `common/*` and `history/*` roots.
+The mixed `map/random` backlog is now structurally honest and no longer the default next target. The next planning checkpoint should return to the remaining low-risk gameplay `common/*` tails, with `common/holy_orders` the most natural immediate follow-on because it sits next to the just-completed small named-definition mechanics wave.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -152,6 +157,8 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 35 -> 36`
   - `parse_only: 73 -> 73`
   - `semantic_complete: 36 -> 39`
+  - `parse_only: 73 -> 68`
+  - `semantic_complete: 39 -> 44`
 
 Verified locally during the workspace reorganization:
 
