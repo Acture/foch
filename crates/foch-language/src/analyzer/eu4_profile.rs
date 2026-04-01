@@ -515,6 +515,15 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ContentFamilyExtractor::Professionalism,
 	),
 	prefix_descriptor(
+		"common/powerprojection",
+		"common/powerprojection/",
+		ScriptFileKind::PowerProjection,
+		ModuleNameRule::Static("powerprojection"),
+		scope(ScopeType::Country),
+		semantic_complete(),
+		ContentFamilyExtractor::PowerProjection,
+	),
+	prefix_descriptor(
 		"common/province_names",
 		"common/province_names/",
 		ScriptFileKind::ProvinceNames,

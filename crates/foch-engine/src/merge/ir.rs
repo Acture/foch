@@ -556,6 +556,7 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::DefenderOfFaith => "defender_of_faith",
 		ScriptFileKind::Isolationism => "isolationism",
 		ScriptFileKind::Professionalism => "professionalism",
+		ScriptFileKind::PowerProjection => "powerprojection",
 		ScriptFileKind::Units => "units",
 		ScriptFileKind::Religions => "religions",
 		ScriptFileKind::SubjectTypes => "subject_types",

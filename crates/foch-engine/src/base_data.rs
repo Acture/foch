@@ -1711,6 +1711,7 @@ fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::DefenderOfFaith => "defender_of_faith",
 		ScriptFileKind::Isolationism => "isolationism",
 		ScriptFileKind::Professionalism => "professionalism",
+		ScriptFileKind::PowerProjection => "powerprojection",
 		ScriptFileKind::Technologies => "technologies",
 		ScriptFileKind::TechnologyGroups => "technology_groups",
 		ScriptFileKind::EstateAgendas => "estate_agendas",
@@ -2849,6 +2850,12 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/powerprojection/00_static.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3514,6 +3521,14 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "powerprojection_definition".to_string(),
+				value: "great_power_1".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/powerprojection/00_static.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3772,6 +3787,7 @@ mod tests {
 				"common/defender_of_faith/00_defender_of_faith.txt".to_string(),
 				"common/isolationism/00_shinto.txt".to_string(),
 				"common/professionalism/00_modifiers.txt".to_string(),
+				"common/powerprojection/00_static.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -4004,6 +4020,16 @@ mod tests {
 			.expect("professionalism coverage");
 		assert_eq!(
 			professionalism.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let powerprojection = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/powerprojection")
+			.expect("powerprojection coverage");
+		assert_eq!(
+			powerprojection.coverage_class,
 			CoverageClass::SemanticComplete
 		);
 
