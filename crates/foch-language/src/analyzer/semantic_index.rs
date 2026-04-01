@@ -799,6 +799,21 @@ fn record_foundation_resource_semantics(
 				index, scope_id, ctx, key, key_span, value,
 			);
 		}
+		ContentFamilyExtractor::HolyOrders => {
+			record_holy_order_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::NavalDoctrines => {
+			record_naval_doctrine_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::DefenderOfFaith => {
+			record_defender_of_faith_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::Isolationism => {
+			record_isolationism_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::Professionalism => {
+			record_professionalism_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1728,6 +1743,159 @@ fn record_flagship_modification_resource_semantics(
 				"localization",
 				"tooltip",
 				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_holy_order_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "holy_order_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_naval_doctrine_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "naval_doctrine_definition",
+			scalar_reference_keys: &[
+				"button_gfx",
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_defender_of_faith_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "defender_of_faith_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_isolationism_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "isolationism_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"tooltip",
+				"custom_tooltip",
+			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_professionalism_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "professionalism_definition",
+			scalar_reference_keys: &[
+				"cost_type",
+				"gfx",
+				"icon",
+				"localization",
+				"marker_sprite",
+				"tooltip",
+				"custom_tooltip",
+				"unit_sprite_start",
 			],
 			block_reference_keys: &[],
 		},
@@ -5492,6 +5660,16 @@ merc_black_army = {
 			.expect("create golden bulls");
 		fs::create_dir_all(mod_root.join("common").join("flagship_modifications"))
 			.expect("create flagship modifications");
+		fs::create_dir_all(mod_root.join("common").join("holy_orders"))
+			.expect("create holy orders");
+		fs::create_dir_all(mod_root.join("common").join("naval_doctrines"))
+			.expect("create naval doctrines");
+		fs::create_dir_all(mod_root.join("common").join("defender_of_faith"))
+			.expect("create defender of faith");
+		fs::create_dir_all(mod_root.join("common").join("isolationism"))
+			.expect("create isolationism");
+		fs::create_dir_all(mod_root.join("common").join("professionalism"))
+			.expect("create professionalism");
 		fs::write(
 			mod_root.join("common").join("fervor").join("00_fervor.txt"),
 			r#"
@@ -5555,6 +5733,74 @@ extra_cannons = {
 "#,
 		)
 		.expect("write flagship modifications");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("holy_orders")
+				.join("00_holy_orders.txt"),
+			r#"
+benedictines = {
+	icon = GFX_holy_order_benedictines
+	cost_type = adm_power
+	localization = holy_order
+}
+"#,
+		)
+		.expect("write holy orders");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("naval_doctrines")
+				.join("00_naval_doctrines.txt"),
+			r#"
+fleet_in_being = {
+	button_gfx = 1
+	country_modifier = { naval_maintenance_modifier = -0.15 }
+}
+"#,
+		)
+		.expect("write naval doctrines");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("defender_of_faith")
+				.join("00_defender_of_faith.txt"),
+			r#"
+defender_of_faith_1 = {
+	level = 1
+	range_to = 5
+	ai_will_do = { factor = 0.1 }
+}
+"#,
+		)
+		.expect("write defender of faith");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("isolationism")
+				.join("00_shinto.txt"),
+			r#"
+open_doors_isolation = {
+	isolation_value = 0
+	modifier = { technology_cost = -0.05 }
+}
+"#,
+		)
+		.expect("write isolationism");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("professionalism")
+				.join("00_modifiers.txt"),
+			r#"
+nothingness_modifier = {
+	marker_sprite = GFX_pa_rank_0
+	unit_sprite_start = "GFX_ap1_"
+	trigger = { always = yes }
+}
+"#,
+		)
+		.expect("write professionalism");
 
 		let files = vec![
 			parse_script_file(
@@ -5596,6 +5842,51 @@ extra_cannons = {
 					.join("00_flagship_modifications.txt"),
 			)
 			.expect("parsed flagship modifications"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("holy_orders")
+					.join("00_holy_orders.txt"),
+			)
+			.expect("parsed holy orders"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("naval_doctrines")
+					.join("00_naval_doctrines.txt"),
+			)
+			.expect("parsed naval doctrines"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("defender_of_faith")
+					.join("00_defender_of_faith.txt"),
+			)
+			.expect("parsed defender of faith"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("isolationism")
+					.join("00_shinto.txt"),
+			)
+			.expect("parsed isolationism"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("professionalism")
+					.join("00_modifiers.txt"),
+			)
+			.expect("parsed professionalism"),
 		];
 
 		let index = build_semantic_index(&files);
@@ -5675,6 +5966,61 @@ extra_cannons = {
 				== Path::new("common/flagship_modifications/00_flagship_modifications.txt")
 				&& reference.key == "cost_type"
 				&& reference.value == "sailors"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/holy_orders/00_holy_orders.txt")
+				&& reference.key == "holy_order_definition"
+				&& reference.value == "benedictines"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/holy_orders/00_holy_orders.txt")
+				&& reference.key == "cost_type"
+				&& reference.value == "adm_power"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/naval_doctrines/00_naval_doctrines.txt")
+				&& reference.key == "naval_doctrine_definition"
+				&& reference.value == "fleet_in_being"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/naval_doctrines/00_naval_doctrines.txt")
+				&& reference.key == "button_gfx"
+				&& reference.value == "1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/defender_of_faith/00_defender_of_faith.txt")
+				&& reference.key == "defender_of_faith_definition"
+				&& reference.value == "defender_of_faith_1"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path == Path::new("common/defender_of_faith/00_defender_of_faith.txt")
+				&& assignment.key == "level"
+				&& assignment.value == "1"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/isolationism/00_shinto.txt")
+				&& reference.key == "isolationism_definition"
+				&& reference.value == "open_doors_isolation"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path == Path::new("common/isolationism/00_shinto.txt")
+				&& assignment.key == "isolation_value"
+				&& assignment.value == "0"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/professionalism/00_modifiers.txt")
+				&& reference.key == "professionalism_definition"
+				&& reference.value == "nothingness_modifier"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/professionalism/00_modifiers.txt")
+				&& reference.key == "marker_sprite"
+				&& reference.value == "GFX_pa_rank_0"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/professionalism/00_modifiers.txt")
+				&& reference.key == "unit_sprite_start"
+				&& reference.value == "GFX_ap1_"
 		}));
 	}
 

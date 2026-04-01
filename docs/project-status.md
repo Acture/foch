@@ -86,6 +86,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/bookmarks`
 - `common/church_aspects`
 - `common/decrees`
+- `common/defender_of_faith`
 - `common/disasters`
 - `common/factions`
 - `common/federation_advancements`
@@ -95,14 +96,18 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/golden_bulls`
 - `common/government_mechanics`
 - `common/hegemons`
+- `common/holy_orders`
+- `common/isolationism`
 - `common/estate_agendas`
 - `common/estate_privileges`
 - `common/estates`
+- `common/naval_doctrines`
 - `common/parliament_bribes`
 - `common/parliament_issues`
 - `common/peace_treaties`
 - `common/personal_deities`
 - `common/policies`
+- `common/professionalism`
 - `common/province_names`
 - `common/rebel_types`
 - `common/religions`
@@ -123,8 +128,8 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 
 The latest verified real probe is:
 
-- `parse_only = 68`
-- `semantic_complete = 44`
+- `parse_only = 63`
+- `semantic_complete = 49`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -133,7 +138,7 @@ The latest verified real probe is:
 - `map/random_names = semantic_complete`
 - `map/random/tweaks = parse_only`
 
-The mixed `map/random` backlog is now structurally honest and no longer the default next target. The next planning checkpoint should return to the remaining low-risk gameplay `common/*` tails, with `common/holy_orders` the most natural immediate follow-on because it sits next to the just-completed small named-definition mechanics wave.
+The mixed `map/random` backlog is now structurally honest and no longer the default next target. The next planning checkpoint should return to the remaining low-risk gameplay `common/*` tails, with `common/powerprojection` the most natural immediate follow-on because it sits next to the just-completed single-file mechanics wave.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -159,6 +164,8 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 36 -> 39`
   - `parse_only: 73 -> 68`
   - `semantic_complete: 39 -> 44`
+  - `parse_only: 68 -> 63`
+  - `semantic_complete: 44 -> 49`
 
 Verified locally during the workspace reorganization:
 
