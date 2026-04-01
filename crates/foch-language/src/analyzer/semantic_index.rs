@@ -822,6 +822,9 @@ fn record_foundation_resource_semantics(
 				index, scope_id, ctx, key, key_span, value,
 			);
 		}
+		ContentFamilyExtractor::GovernmentRanks => {
+			record_government_rank_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1958,6 +1961,29 @@ fn record_subject_type_upgrade_resource_semantics(
 				"tooltip",
 				"custom_tooltip",
 			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_government_rank_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "government_rank_definition",
+			scalar_reference_keys: &[],
 			block_reference_keys: &[],
 		},
 	);
@@ -4565,6 +4591,12 @@ persia_indian_hegemony_decision_coup_effect = {
 			ScriptFileKind::SubjectTypeUpgrades
 		);
 		assert_eq!(
+			classify_script_file(std::path::Path::new(
+				"common/government_ranks/00_government_ranks.txt"
+			)),
+			ScriptFileKind::GovernmentRanks
+		);
+		assert_eq!(
 			classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
 			ScriptFileKind::Technologies
 		);
@@ -5745,6 +5777,8 @@ merc_black_army = {
 			.expect("create powerprojection");
 		fs::create_dir_all(mod_root.join("common").join("subject_type_upgrades"))
 			.expect("create subject type upgrades");
+		fs::create_dir_all(mod_root.join("common").join("government_ranks"))
+			.expect("create government ranks");
 		fs::write(
 			mod_root.join("common").join("fervor").join("00_fervor.txt"),
 			r#"
@@ -5917,6 +5951,23 @@ allow_autonomous_trade = {
 "#,
 		)
 		.expect("write subject type upgrades");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("government_ranks")
+				.join("00_government_ranks.txt"),
+			r#"
+2 = {
+	diplomats = 1
+	governing_capacity = 200
+}
+3 = {
+	global_autonomy = -0.05
+	max_absolutism = 5
+}
+"#,
+		)
+		.expect("write government ranks");
 
 		let files = vec![
 			parse_script_file(
@@ -6021,6 +6072,15 @@ allow_autonomous_trade = {
 					.join("00_subject_type_upgrades.txt"),
 			)
 			.expect("parsed subject type upgrades"),
+			parse_script_file(
+				"1017",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("government_ranks")
+					.join("00_government_ranks.txt"),
+			)
+			.expect("parsed government ranks"),
 		];
 
 		let index = build_semantic_index(&files);
@@ -6196,6 +6256,26 @@ allow_autonomous_trade = {
 				== Path::new("common/subject_type_upgrades/00_subject_type_upgrades.txt")
 				&& assignment.key == "cost"
 				&& assignment.value == "100"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/government_ranks/00_government_ranks.txt")
+				&& reference.key == "government_rank_definition"
+				&& reference.value == "2"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/government_ranks/00_government_ranks.txt")
+				&& reference.key == "government_rank_definition"
+				&& reference.value == "3"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path == Path::new("common/government_ranks/00_government_ranks.txt")
+				&& assignment.key == "diplomats"
+				&& assignment.value == "1"
+		}));
+		assert!(index.scalar_assignments.iter().any(|assignment| {
+			assignment.path == Path::new("common/government_ranks/00_government_ranks.txt")
+				&& assignment.key == "global_autonomy"
+				&& assignment.value == "-0.05"
 		}));
 	}
 

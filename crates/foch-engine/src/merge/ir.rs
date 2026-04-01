@@ -558,6 +558,7 @@ fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
 		ScriptFileKind::Professionalism => "professionalism",
 		ScriptFileKind::PowerProjection => "powerprojection",
 		ScriptFileKind::SubjectTypeUpgrades => "subject_type_upgrades",
+		ScriptFileKind::GovernmentRanks => "government_ranks",
 		ScriptFileKind::Units => "units",
 		ScriptFileKind::Religions => "religions",
 		ScriptFileKind::SubjectTypes => "subject_types",
