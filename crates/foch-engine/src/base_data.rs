@@ -1850,9 +1850,6 @@ fn coverage_root_family(path: &str) -> Option<String> {
 	if normalized == "map/random/RNWScenarios.txt" {
 		return Some("map/random/scenarios".to_string());
 	}
-	if normalized == "map/random/tweaks.lua" {
-		return Some("map/random/tweaks".to_string());
-	}
 	match parts[0] {
 		"common" | "history" | "map" => {
 			let group = parts.get(1)?;
@@ -2992,12 +2989,6 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
-					path: PathBuf::from("map/random/tweaks.lua"),
-					family: DocumentFamily::Clausewitz,
-					parse_ok: true,
-				},
-				DocumentRecord {
-					mod_id: mod_id.clone(),
 					path: PathBuf::from("history/diplomacy/hre.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3841,7 +3832,6 @@ mod tests {
 				"map/random/tiles/tile0.txt".to_string(),
 				"map/random/RandomLandNames.txt".to_string(),
 				"map/random/RNWScenarios.txt".to_string(),
-				"map/random/tweaks.lua".to_string(),
 				"history/diplomacy/hre.txt".to_string(),
 				"history/advisors/00_england.txt".to_string(),
 				"history/wars/sample.txt".to_string(),
@@ -3949,13 +3939,6 @@ mod tests {
 			random_map_scenarios.coverage_class,
 			CoverageClass::SemanticComplete
 		);
-
-		let random_map_tweaks = report
-			.roots
-			.iter()
-			.find(|item| item.root_family == "map/random/tweaks")
-			.expect("random map tweaks coverage");
-		assert_eq!(random_map_tweaks.coverage_class, CoverageClass::ParseOnly);
 
 		let diplomacy = report
 			.roots

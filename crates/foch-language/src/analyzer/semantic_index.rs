@@ -1451,14 +1451,6 @@ fn record_random_map_tile_resource_semantics(
 		}
 		return;
 	}
-	if let Some(text) = scalar_text(value)
-		&& matches!(
-			key,
-			"num_sea_provinces" | "num_land_provinces" | "regions" | "weight" | "continent"
-		) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-		return;
-	}
 	let values = extract_block_scalar_items(value);
 	if values.len() == 3 && values.iter().all(|item| item.parse::<u16>().is_ok()) {
 		push_resource_reference(index, ctx, key_span, "tile_color_group", key);
@@ -4428,7 +4420,7 @@ persia_indian_hegemony_decision_coup_effect = {
 		);
 		assert_eq!(
 			classify_script_file(std::path::Path::new("map/random/tweaks.lua")),
-			ScriptFileKind::RandomMapTweaks
+			ScriptFileKind::Other
 		);
 		assert_eq!(
 			classify_script_file(std::path::Path::new("history/diplomacy/hre.txt")),
@@ -6464,6 +6456,7 @@ sea_province = { 93 164 236 }
 region = { 12 34 56 }
 size = { 7 7 }
 num_sea_provinces = 21
+num_land_provinces = 34
 weight = 130
 continent = yes
 "#,
@@ -6526,10 +6519,12 @@ random_names = {
 				&& reference.key == "tile_size"
 				&& reference.value == "7,7"
 		}));
-		assert!(index.resource_references.iter().any(|reference| {
+		assert!(!index.resource_references.iter().any(|reference| {
 			reference.path == Path::new("map/random/tiles/tile0.txt")
-				&& reference.key == "weight"
-				&& reference.value == "130"
+				&& matches!(
+					reference.key.as_str(),
+					"num_sea_provinces" | "num_land_provinces" | "weight" | "continent"
+				)
 		}));
 		assert!(index.resource_references.iter().any(|reference| {
 			reference.path == Path::new("map/random/RandomLandNames.txt")

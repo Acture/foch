@@ -140,7 +140,6 @@ The latest verified real probe is:
 - `map/random/scenarios = semantic_complete`
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
-- `map/random/tweaks = parse_only`
 
 `common/government_ranks` is now complete. The current product line has shifted from another low-risk coverage wave to semantic graphing, with `foch graph --mode semantic --family ...` now serving as the next mainline for visualizing family structure, overlay, and references.
 

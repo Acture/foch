@@ -18,14 +18,6 @@ const fn semantic_complete() -> ContentFamilyCapabilities {
 	}
 }
 
-const fn parse_only() -> ContentFamilyCapabilities {
-	ContentFamilyCapabilities {
-		semantic_complete: false,
-		graph_ready: false,
-		merge_ready: false,
-	}
-}
-
 const fn graph_ready() -> ContentFamilyCapabilities {
 	ContentFamilyCapabilities {
 		semantic_complete: false,
@@ -594,15 +586,6 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		scope(ScopeType::Unknown),
 		semantic_complete(),
 		ContentFamilyExtractor::RandomMapScenarios,
-	),
-	exact_descriptor(
-		"map/random/tweaks",
-		"map/random/tweaks.lua",
-		ScriptFileKind::RandomMapTweaks,
-		ModuleNameRule::Static("random_map_tweaks"),
-		scope(ScopeType::Unknown),
-		parse_only(),
-		ContentFamilyExtractor::None,
 	),
 	prefix_descriptor(
 		"common/technologies",
