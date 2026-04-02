@@ -11,7 +11,7 @@ use foch_core::model::{
 use foch_language::analyzer::content_family::GameProfile;
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -1165,6 +1165,12 @@ fn mark_referenced_nodes(
 	nodes: &mut BTreeMap<String, SemanticGraphNode>,
 	edges: &BTreeMap<(u8, String, String, String), SemanticGraphEdge>,
 ) {
+	let parent_by_child = edges
+		.values()
+		.filter(|edge| edge.kind == SemanticGraphEdgeKind::Contains)
+		.map(|edge| (edge.to.clone(), edge.from.clone()))
+		.collect::<HashMap<_, _>>();
+	let mut pending = Vec::<String>::new();
 	for edge in edges.values() {
 		if matches!(
 			edge.kind,
@@ -1172,14 +1178,10 @@ fn mark_referenced_nodes(
 		) {
 			continue;
 		}
-		if let Some(node) = nodes.get_mut(&edge.from) {
-			node.referenced = true;
-		}
-		if let Some(node) = nodes.get_mut(&edge.to) {
-			node.referenced = true;
-		}
+		pending.push(edge.from.clone());
+		pending.push(edge.to.clone());
 	}
-	for node in nodes.values_mut() {
+	for node in nodes.values() {
 		if node.kind == SemanticGraphNodeKind::SemanticBlock
 			&& (node.resource_reference_count > 0
 				|| node.scalar_assignment_count > 0
@@ -1187,7 +1189,19 @@ fn mark_referenced_nodes(
 				|| node.key_usage_count > 0
 				|| node.alias_usage_count > 0)
 		{
+			pending.push(node.id.clone());
+		}
+	}
+	let mut visited = HashSet::<String>::new();
+	while let Some(node_id) = pending.pop() {
+		if !visited.insert(node_id.clone()) {
+			continue;
+		}
+		if let Some(node) = nodes.get_mut(&node_id) {
 			node.referenced = true;
+			if let Some(parent_id) = parent_by_child.get(&node_id) {
+				pending.push(parent_id.clone());
+			}
 		}
 	}
 }
@@ -1638,7 +1652,10 @@ fn render_semantic_graph_html(
 	function renderTreeNode(nodeId) {{
 		const node = nodesById.get(nodeId);
 		if (!node || !visibleNode(node)) return "";
-		const children = (containsChildren.get(nodeId) || []).map(renderTreeNode).filter(Boolean).join("");
+		const childIds = state.showContains || node.kind === "family"
+			? (containsChildren.get(nodeId) || [])
+			: [];
+		const children = childIds.map(renderTreeNode).filter(Boolean).join("");
 		return `
 			<li>
 				<button class="node ${{state.selectedNodeId === nodeId ? "active" : ""}}" data-node="${{nodeId}}">
@@ -1836,6 +1853,166 @@ mod tests {
 		assert!(html.contains("data-key=\"${key}\""));
 		assert!(!html.contains("const state = {{"));
 		assert!(!html.contains("${{"));
+	}
+
+	#[test]
+	fn referenced_blocks_mark_definition_ancestors_visible() {
+		let mut nodes = BTreeMap::from([
+			(
+				"family:common/holy_orders".to_string(),
+				test_graph_node("family:common/holy_orders", SemanticGraphNodeKind::Family),
+			),
+			(
+				"file:mod:test:common/holy_orders/orders.txt".to_string(),
+				test_graph_node(
+					"file:mod:test:common/holy_orders/orders.txt",
+					SemanticGraphNodeKind::ContributorFile,
+				),
+			),
+			(
+				"definition:holy_order_definition:order_alpha".to_string(),
+				test_graph_node(
+					"definition:holy_order_definition:order_alpha",
+					SemanticGraphNodeKind::Definition,
+				),
+			),
+			(
+				"block:mod:test:common/holy_orders/orders.txt:1".to_string(),
+				SemanticGraphNode {
+					id: "block:mod:test:common/holy_orders/orders.txt:1".to_string(),
+					kind: SemanticGraphNodeKind::SemanticBlock,
+					label: "block @ 3".to_string(),
+					mod_id: None,
+					path: None,
+					line: None,
+					column: None,
+					precedence: None,
+					is_base_game: None,
+					parse_ok_hint: None,
+					scope_id: Some(1),
+					scope_kind: Some("block".to_string()),
+					definition_key: None,
+					definition_value: None,
+					target_kind: None,
+					referenced: false,
+					resource_reference_count: 1,
+					scalar_assignment_count: 0,
+					symbol_reference_count: 0,
+					key_usage_count: 0,
+					alias_usage_count: 0,
+					default_visible: false,
+					evidence: SemanticNodeEvidence::default(),
+				},
+			),
+			(
+				"external_target:Family:map/region".to_string(),
+				SemanticGraphNode {
+					id: "external_target:Family:map/region".to_string(),
+					kind: SemanticGraphNodeKind::ExternalTarget,
+					label: "map/region".to_string(),
+					mod_id: None,
+					path: None,
+					line: None,
+					column: None,
+					precedence: None,
+					is_base_game: None,
+					parse_ok_hint: None,
+					scope_id: None,
+					scope_kind: None,
+					definition_key: None,
+					definition_value: None,
+					target_kind: Some(ExternalTargetKind::Family),
+					referenced: true,
+					resource_reference_count: 0,
+					scalar_assignment_count: 0,
+					symbol_reference_count: 0,
+					key_usage_count: 0,
+					alias_usage_count: 0,
+					default_visible: false,
+					evidence: SemanticNodeEvidence::default(),
+				},
+			),
+		]);
+		let mut edges = BTreeMap::new();
+		insert_edge(
+			&mut edges,
+			SemanticGraphEdge {
+				kind: SemanticGraphEdgeKind::Contains,
+				from: "family:common/holy_orders".to_string(),
+				to: "file:mod:test:common/holy_orders/orders.txt".to_string(),
+				label: None,
+				count: None,
+				sample: None,
+			},
+		);
+		insert_edge(
+			&mut edges,
+			SemanticGraphEdge {
+				kind: SemanticGraphEdgeKind::Contains,
+				from: "file:mod:test:common/holy_orders/orders.txt".to_string(),
+				to: "definition:holy_order_definition:order_alpha".to_string(),
+				label: None,
+				count: None,
+				sample: None,
+			},
+		);
+		insert_edge(
+			&mut edges,
+			SemanticGraphEdge {
+				kind: SemanticGraphEdgeKind::Contains,
+				from: "definition:holy_order_definition:order_alpha".to_string(),
+				to: "block:mod:test:common/holy_orders/orders.txt:1".to_string(),
+				label: None,
+				count: None,
+				sample: None,
+			},
+		);
+		insert_edge(
+			&mut edges,
+			SemanticGraphEdge {
+				kind: SemanticGraphEdgeKind::ReferencesCrossFamily,
+				from: "block:mod:test:common/holy_orders/orders.txt:1".to_string(),
+				to: "external_target:Family:map/region".to_string(),
+				label: Some("region = europe_region".to_string()),
+				count: Some(1),
+				sample: None,
+			},
+		);
+
+		mark_referenced_nodes(&mut nodes, &edges);
+
+		assert!(nodes["block:mod:test:common/holy_orders/orders.txt:1"].referenced);
+		assert!(nodes["definition:holy_order_definition:order_alpha"].referenced);
+		assert!(nodes["file:mod:test:common/holy_orders/orders.txt"].referenced);
+		assert!(nodes["family:common/holy_orders"].referenced);
+	}
+
+	fn test_graph_node(id: &str, kind: SemanticGraphNodeKind) -> SemanticGraphNode {
+		SemanticGraphNode {
+			id: id.to_string(),
+			kind,
+			label: id.to_string(),
+			mod_id: None,
+			path: None,
+			line: None,
+			column: None,
+			precedence: None,
+			is_base_game: None,
+			parse_ok_hint: None,
+			scope_id: None,
+			scope_kind: None,
+			definition_key: None,
+			definition_value: None,
+			target_kind: None,
+			referenced: false,
+			resource_reference_count: 0,
+			scalar_assignment_count: 0,
+			symbol_reference_count: 0,
+			key_usage_count: 0,
+			alias_usage_count: 0,
+			default_visible: false,
+			evidence: SemanticNodeEvidence::default(),
+		}
 	}
 
 	fn test_workspace() -> ResolvedWorkspace {
