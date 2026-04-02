@@ -2,6 +2,12 @@ use foch_core::model::SymbolKind;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GraphModeSelection {
+	Calls,
+	Semantic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphScopeSelection {
 	Workspace,
 	Base,
@@ -19,18 +25,22 @@ pub enum GraphArtifactFormat {
 #[derive(Clone, Debug)]
 pub struct GraphBuildOptions {
 	pub include_game_base: bool,
+	pub mode: GraphModeSelection,
 	pub scope: GraphScopeSelection,
 	pub format: GraphArtifactFormat,
 	pub root: Option<GraphRootSelector>,
+	pub family: Option<String>,
 }
 
 impl Default for GraphBuildOptions {
 	fn default() -> Self {
 		Self {
 			include_game_base: true,
+			mode: GraphModeSelection::Calls,
 			scope: GraphScopeSelection::All,
 			format: GraphArtifactFormat::Both,
 			root: None,
+			family: None,
 		}
 	}
 }
@@ -48,4 +58,5 @@ pub struct GraphBuildSummary {
 	pub base_written: bool,
 	pub mod_count: usize,
 	pub tree_written: bool,
+	pub semantic_written: bool,
 }

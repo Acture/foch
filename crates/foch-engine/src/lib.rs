@@ -19,8 +19,8 @@ pub use config::{
 	load_or_init_config,
 };
 pub use graph::{
-	GraphArtifactFormat, GraphBuildOptions, GraphRootSelector, GraphScopeSelection,
-	run_graph_with_options,
+	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
+	GraphRootSelector, GraphScopeSelection, run_graph_with_options,
 };
 pub use merge::{
 	MergeExecuteOptions, MergeExecutionResult, run_merge_plan, run_merge_plan_with_options,

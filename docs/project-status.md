@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-04-01
+Last updated: 2026-04-02
 
 ## Summary
 
@@ -66,8 +66,10 @@ The graph pipeline can:
 
 - export runtime `calls` graphs
 - export descriptor-level `mod-deps` graphs
+- export family-first semantic graphs with `--mode semantic --family <content-family-id>`
 - annotate cross-mod edges with declared-dependency hints
 - write deterministic `json` and `dot` artifacts for workspace/base/per-mod views and optional symbol trees
+- write deterministic `semantic-graph.json` plus a static `index.html` viewer for a selected family
 
 ### Simplify
 
@@ -140,7 +142,18 @@ The latest verified real probe is:
 - `map/random_names = semantic_complete`
 - `map/random/tweaks = parse_only`
 
-`common/government_ranks` is now complete. The next planning checkpoint should stay on the remaining low-risk gameplay `common/*` tails, with `common/client_states` or `common/centers_of_trade` as the most natural immediate follow-ons.
+`common/government_ranks` is now complete. The current product line has shifted from another low-risk coverage wave to semantic graphing, with `foch graph --mode semantic --family ...` now serving as the next mainline for visualizing family structure, overlay, and references.
+
+The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
+
+Validation now splits into two tracks:
+
+- representative family output is readable again in the static viewer
+- full real-workshop graph runs still need better progress/observability before they are a good validation loop
+
+A small real-data slice using Europa Expanded's actual `common/holy_orders/00_holy_orders.txt` now renders real definition keys such as `shadhili_order`, `qadiri_order`, `aissawa_order`, and `hieronymites`, which confirms the viewer is no longer limited to synthetic fixture data.
+
+The next execution step is not a broad ACT-158-style viewer refinement pass. It is to make real semantic-graph validation operational on larger workshop inputs by adding progress logging and/or a bounded slice path that avoids opaque long-running graph builds.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -181,6 +194,18 @@ Verified locally during the workspace reorganization:
 - `cargo check -p foch-engine`
 - `cargo check -p foch-cli`
 - `cargo check --workspace`
+
+Verified locally during the semantic graph mode implementation:
+
+- `cargo fmt --all --check`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test --workspace`
+
+Verified locally during the semantic viewer repair:
+
+- `cargo fmt --all`
+- `cargo test -p foch-engine graph::semantic -- --nocapture`
+- browser validation against the regenerated `common/holy_orders` semantic viewer confirmed tree rendering and details-panel interaction
 
 ## Practical Reading Order
 

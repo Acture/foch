@@ -111,8 +111,8 @@ pub struct MergeArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Export runtime call graphs and mod dependency graphs",
-	after_help = "Examples:\n  foch graph ./playlist.json --out ./graphs\n  foch graph ./playlist.json --out ./graphs --scope mods --format both\n  foch graph ./playlist.json --out ./graphs --root scripted_effect:shared_effect"
+	about = "Export runtime graphs and family semantic graph reports",
+	after_help = "Examples:\n  foch graph ./playlist.json --out ./graphs\n  foch graph ./playlist.json --out ./graphs --scope mods --format both\n  foch graph ./playlist.json --out ./graphs --root scripted_effect:shared_effect\n  foch graph ./playlist.json --out ./graphs --mode semantic --family common/client_states"
 )]
 pub struct GraphArgs {
 	pub playset_path: PathBuf,
@@ -123,6 +123,9 @@ pub struct GraphArgs {
 	#[arg(long)]
 	pub no_game_base: bool,
 
+	#[arg(long, value_enum, default_value_t = GraphModeArg::Calls)]
+	pub mode: GraphModeArg,
+
 	#[arg(long, value_enum, default_value_t = GraphScopeArg::All)]
 	pub scope: GraphScopeArg,
 
@@ -131,6 +134,15 @@ pub struct GraphArgs {
 
 	#[arg(long)]
 	pub root: Option<String>,
+
+	#[arg(long)]
+	pub family: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum GraphModeArg {
+	Calls,
+	Semantic,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
