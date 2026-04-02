@@ -149,11 +149,11 @@ The static semantic viewer had one critical renderer regression immediately afte
 Validation now splits into two tracks:
 
 - representative family output is readable again in the static viewer
-- full real-workshop graph runs still need better progress/observability before they are a good validation loop
+- real semantic-graph runs are now observable enough to use as a validation loop without falling back to ad hoc `/tmp` slices
 
-A small real-data slice using Europa Expanded's actual `common/holy_orders/00_holy_orders.txt` now renders real definition keys such as `shadhili_order`, `qadiri_order`, `aissawa_order`, and `hieronymites`, which confirms the viewer is no longer limited to synthetic fixture data.
+A repo-backed bounded validation path now exists under `tests/corpus/eu4_real_minimized/playlist.json`. Semantic graph CLI integration coverage uses that playset to export `common/scripted_effects`, assert default-visible progress output from the `tracing` pipeline, and confirm that the generated graph contains real scripted-effect keys such as `eu4::scripted_effects::se_md_add_or_upgrade_bonus` and `eu4::scripted_effects::complex_dynamic_effect_without_alternative`.
 
-The next execution step is not a broad ACT-158-style viewer refinement pass. It is to make real semantic-graph validation operational on larger workshop inputs by adding progress logging and/or a bounded slice path that avoids opaque long-running graph builds.
+The next execution step is not infrastructure work on graph export itself. It is to use the new observability and repo-backed bounded playset to validate a few representative real families, then decide whether the next mainline issue is a narrow ACT-158-style viewer refinement pass or a return to semantic coverage promotion.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -206,6 +206,14 @@ Verified locally during the semantic viewer repair:
 - `cargo fmt --all`
 - `cargo test -p foch-engine graph::semantic -- --nocapture`
 - browser validation against the regenerated `common/holy_orders` semantic viewer confirmed tree rendering and details-panel interaction
+
+Verified locally during semantic graph observability hardening:
+
+- `cargo fmt --all`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo test -p foch-cli semantic_graph -- --nocapture`
+- `cargo test --workspace`
+- `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act164-probe --mode semantic --family common/scripted_effects --no-game-base`
 
 ## Practical Reading Order
 

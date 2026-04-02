@@ -1,0 +1,30 @@
+{
+	"game": "eu4",
+	"name": "real-minimized-semantic-graph",
+	"mods": [
+		{
+			"displayName": "europa_expanded",
+			"enabled": true,
+			"position": 0,
+			"steamId": "local_europa_expanded"
+		},
+		{
+			"displayName": "ages_reformed",
+			"enabled": true,
+			"position": 1,
+			"steamId": "local_ages_reformed"
+		},
+		{
+			"displayName": "more_favor_actions",
+			"enabled": true,
+			"position": 2,
+			"steamId": "local_more_favor_actions"
+		},
+		{
+			"displayName": "base_game_complex_effects",
+			"enabled": true,
+			"position": 3,
+			"steamId": "local_base_game_complex_effects"
+		}
+	]
+}

@@ -1,8 +1,13 @@
 use clap::Parser;
 use foch_cli::cli::arg;
 use foch_cli::cli::handler;
-use foch_engine::load_or_init_config;
-use tracing_subscriber::FmtSubscriber;
+use foch_engine::{SEMANTIC_GRAPH_PROGRESS_TARGET, load_or_init_config};
+use std::io;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::Layer;
+use tracing_subscriber::filter::Targets;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{fmt, registry};
 
 fn main() {
 	let exit_code = match run() {
@@ -18,12 +23,37 @@ fn main() {
 
 fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	let cliargs = arg::FochCli::parse();
-
-	let subscriber = FmtSubscriber::builder()
-		.with_max_level(cliargs.verbose.tracing_level_filter())
-		.with_target(false)
-		.without_time()
-		.finish();
+	let verbose_level = cliargs.verbose.tracing_level_filter();
+	let show_semantic_graph_progress = matches!(&cliargs.command, arg::FochCliCommands::Graph(graph_args) if graph_args.mode == arg::GraphModeArg::Semantic);
+	let progress_level = if show_semantic_graph_progress {
+		LevelFilter::INFO
+	} else {
+		LevelFilter::OFF
+	};
+	let subscriber = registry()
+		.with(
+			fmt::layer()
+				.with_writer(io::stderr)
+				.with_target(false)
+				.without_time()
+				.with_filter(
+					Targets::new()
+						.with_default(verbose_level)
+						.with_target(SEMANTIC_GRAPH_PROGRESS_TARGET, LevelFilter::OFF),
+				),
+		)
+		.with(
+			fmt::layer()
+				.with_writer(io::stderr)
+				.with_target(false)
+				.without_time()
+				.with_level(false)
+				.with_filter(
+					Targets::new()
+						.with_default(LevelFilter::OFF)
+						.with_target(SEMANTIC_GRAPH_PROGRESS_TARGET, progress_level),
+				),
+		);
 
 	tracing::subscriber::set_global_default(subscriber)?;
 
