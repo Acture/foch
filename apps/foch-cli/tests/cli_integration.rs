@@ -496,6 +496,114 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 }
 
 #[test]
+fn semantic_graph_requires_family_argument() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("graphs");
+	write_playlist(&playlist_path, json!([]));
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"graph",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--mode",
+			"semantic",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_ne!(code, 0);
+	assert!(stderr.contains("--family"), "stderr: {stderr}");
+}
+
+#[test]
+fn semantic_graph_writes_family_json_and_html() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("graphs");
+	let mod_a = tmp.path().join("9101");
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9101"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	fs::create_dir_all(mod_a.join("common").join("holy_orders")).expect("create holy orders dir");
+	fs::write(
+		mod_a.join("common").join("holy_orders").join("orders.txt"),
+		concat!(
+			"order_alpha = {\n",
+			"\ticon = order_icon\n",
+			"\tregion = europe_region\n",
+			"\tcustom_tooltip = HOLY_ORDER_TOOLTIP\n",
+			"\tmodifier = { manpower_recovery_speed = 0.1 }\n",
+			"}\n",
+		),
+	)
+	.expect("write holy order");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"graph",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--mode",
+			"semantic",
+			"--family",
+			"common/holy_orders",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+
+	let graph_path = out_dir
+		.join("semantic")
+		.join("common/holy_orders")
+		.join("semantic-graph.json");
+	let html_path = out_dir
+		.join("semantic")
+		.join("common/holy_orders")
+		.join("index.html");
+	assert!(graph_path.exists());
+	assert!(html_path.exists());
+
+	let graph = read_json_file(&graph_path);
+	assert_eq!(graph["family_id"], "common/holy_orders");
+	assert!(
+		graph["nodes"]
+			.as_array()
+			.expect("nodes")
+			.iter()
+			.any(|node| {
+				node["kind"] == "definition"
+					&& node["definition_key"] == "holy_order_definition"
+					&& node["definition_value"] == "order_alpha"
+			})
+	);
+	assert!(
+		graph["edges"]
+			.as_array()
+			.expect("edges")
+			.iter()
+			.any(|edge| edge["kind"] == "references_external")
+	);
+
+	let html = fs::read_to_string(html_path).expect("read html");
+	assert!(html.contains("Semantic Graph"));
+	assert!(html.contains("common/holy_orders"));
+}
+
+#[test]
 fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_candidates() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");

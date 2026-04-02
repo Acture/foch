@@ -1,7 +1,8 @@
 use super::model::{
-	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphRootSelector,
-	GraphScopeSelection,
+	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
+	GraphRootSelector, GraphScopeSelection,
 };
+use super::semantic::run_semantic_graph_with_options;
 use crate::request::CheckRequest;
 use crate::runtime::{
 	DependencyMatchKind, OverlapStatus, build_runtime_state_for_request, dependency_hint_for_edge,
@@ -118,6 +119,9 @@ pub fn run_graph_with_options(
 	out_dir: &Path,
 	options: GraphBuildOptions,
 ) -> Result<GraphBuildSummary, Box<dyn std::error::Error>> {
+	if matches!(options.mode, GraphModeSelection::Semantic) {
+		return run_semantic_graph_with_options(request, out_dir, options);
+	}
 	let state = build_runtime_state_for_request(&request, options.include_game_base)?;
 	let workspace_calls = build_workspace_calls_graph(&state);
 	let workspace_deps = build_workspace_mod_deps_graph(&state, &request);
