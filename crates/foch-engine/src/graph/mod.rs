@@ -9,3 +9,4 @@ pub use model::{
 	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
 	GraphRootSelector, GraphScopeSelection,
 };
+pub use semantic::SEMANTIC_GRAPH_PROGRESS_TARGET;

@@ -20,7 +20,7 @@ pub use config::{
 };
 pub use graph::{
 	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
-	GraphRootSelector, GraphScopeSelection, run_graph_with_options,
+	GraphRootSelector, GraphScopeSelection, SEMANTIC_GRAPH_PROGRESS_TARGET, run_graph_with_options,
 };
 pub use merge::{
 	MergeExecuteOptions, MergeExecutionResult, run_merge_plan, run_merge_plan_with_options,

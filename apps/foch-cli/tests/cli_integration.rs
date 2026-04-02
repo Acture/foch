@@ -604,6 +604,93 @@ fn semantic_graph_writes_family_json_and_html() {
 }
 
 #[test]
+fn semantic_graph_real_minimized_playlist_emits_progress_and_real_nodes() {
+	let tmp = TempDir::new().expect("temp dir");
+	let out_dir = tmp.path().join("graphs");
+	let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.join("../..")
+		.canonicalize()
+		.expect("repo root");
+	let playlist_path = repo_root
+		.join("tests")
+		.join("corpus")
+		.join("eu4_real_minimized")
+		.join("playlist.json");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, _stdout, stderr) = run_foch(
+		&[
+			"graph",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--mode",
+			"semantic",
+			"--family",
+			"common/scripted_effects",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(
+		stderr.contains("semantic graph resolve workspace: start"),
+		"stderr: {stderr}"
+	);
+	assert!(
+		stderr.contains("semantic graph build runtime state: done"),
+		"stderr: {stderr}"
+	);
+	assert!(
+		stderr.contains("semantic graph build semantic artifact: done"),
+		"stderr: {stderr}"
+	);
+
+	let graph_path = out_dir
+		.join("semantic")
+		.join("common/scripted_effects")
+		.join("semantic-graph.json");
+	let html_path = out_dir
+		.join("semantic")
+		.join("common/scripted_effects")
+		.join("index.html");
+	assert!(graph_path.exists());
+	assert!(html_path.exists());
+
+	let graph = read_json_file(&graph_path);
+	assert_eq!(graph["family_id"], "common/scripted_effects");
+	assert!(
+		graph["nodes"]
+			.as_array()
+			.expect("nodes")
+			.iter()
+			.any(|node| {
+				node["kind"] == "definition"
+					&& node["definition_key"] == "symbol:scripted_effect"
+					&& node["definition_value"]
+						== "eu4::scripted_effects::se_md_add_or_upgrade_bonus"
+			})
+	);
+	assert!(
+		graph["nodes"]
+			.as_array()
+			.expect("nodes")
+			.iter()
+			.any(|node| {
+				node["kind"] == "definition"
+					&& node["definition_key"] == "symbol:scripted_effect"
+					&& node["definition_value"]
+						== "eu4::scripted_effects::complex_dynamic_effect_without_alternative"
+			})
+	);
+
+	let html = fs::read_to_string(html_path).expect("read html");
+	assert!(html.contains("Semantic Graph"));
+	assert!(html.contains("common/scripted_effects"));
+}
+
+#[test]
 fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_candidates() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");

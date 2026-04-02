@@ -14,6 +14,9 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
+
+pub const SEMANTIC_GRAPH_PROGRESS_TARGET: &str = "foch::graph::progress";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -207,16 +210,49 @@ pub(crate) fn run_semantic_graph_with_options(
 		.family
 		.clone()
 		.ok_or("semantic graph mode requires --family")?;
-	let workspace = resolve_workspace(&request, options.include_game_base)
-		.map_err(|err| -> Box<dyn std::error::Error> { err.message.into() })?;
-	let state = build_runtime_state_from_workspace(&workspace).map_err(boxed_err)?;
-	let artifact = build_semantic_graph_artifact(&workspace, &state, &family_id)?;
+	let _span = tracing::debug_span!("semantic_graph_run", family_id = %family_id).entered();
+	let workspace = run_progress_stage(
+		&family_id,
+		"resolve workspace",
+		|| resolve_workspace(&request, options.include_game_base).map_err(|err| err.message),
+		summarize_workspace,
+	)
+	.map_err(boxed_err)?;
+	let state = run_progress_stage(
+		&family_id,
+		"build runtime state",
+		|| build_runtime_state_from_workspace(&workspace),
+		summarize_runtime_state,
+	)
+	.map_err(boxed_err)?;
+	let artifact = run_progress_stage(
+		&family_id,
+		"build semantic artifact",
+		|| build_semantic_graph_artifact(&workspace, &state, &family_id),
+		summarize_artifact,
+	)?;
 	let artifact_dir = out_dir.join("semantic").join(&family_id);
 	fs::create_dir_all(&artifact_dir)?;
 	let json_path = artifact_dir.join("semantic-graph.json");
-	fs::write(&json_path, serde_json::to_vec_pretty(&artifact)?)?;
+	run_progress_stage(
+		&family_id,
+		"write semantic graph json",
+		|| -> Result<(), Box<dyn std::error::Error>> {
+			fs::write(&json_path, serde_json::to_vec_pretty(&artifact)?)?;
+			Ok(())
+		},
+		|()| String::new(),
+	)?;
 	let html_path = artifact_dir.join("index.html");
-	fs::write(&html_path, render_semantic_graph_html(&artifact)?)?;
+	run_progress_stage(
+		&family_id,
+		"write semantic graph html",
+		|| -> Result<(), Box<dyn std::error::Error>> {
+			fs::write(&html_path, render_semantic_graph_html(&artifact)?)?;
+			Ok(())
+		},
+		|()| String::new(),
+	)?;
 	Ok(GraphBuildSummary {
 		out_dir: out_dir.to_path_buf(),
 		semantic_written: true,
@@ -226,6 +262,108 @@ pub(crate) fn run_semantic_graph_with_options(
 
 fn boxed_err(message: String) -> Box<dyn std::error::Error> {
 	message.into()
+}
+
+fn run_progress_stage<T, E, F, S>(
+	family_id: &str,
+	stage: &'static str,
+	f: F,
+	summarize: S,
+) -> Result<T, E>
+where
+	F: FnOnce() -> Result<T, E>,
+	S: FnOnce(&T) -> String,
+	E: std::fmt::Display,
+{
+	let _span =
+		tracing::debug_span!("semantic_graph_stage", family_id = %family_id, stage).entered();
+	tracing::info!(
+		target: SEMANTIC_GRAPH_PROGRESS_TARGET,
+		family_id = %family_id,
+		"semantic graph {stage}: start"
+	);
+	let started = Instant::now();
+	let result = f();
+	let elapsed_ms = started.elapsed().as_millis() as u64;
+	match &result {
+		Ok(value) => {
+			let summary = summarize(value);
+			if summary.is_empty() {
+				tracing::info!(
+					target: SEMANTIC_GRAPH_PROGRESS_TARGET,
+					family_id = %family_id,
+					elapsed_ms,
+					"semantic graph {stage}: done"
+				);
+			} else {
+				tracing::info!(
+					target: SEMANTIC_GRAPH_PROGRESS_TARGET,
+					family_id = %family_id,
+					elapsed_ms,
+					summary = %summary,
+					"semantic graph {stage}: done"
+				);
+			}
+		}
+		Err(err) => {
+			tracing::error!(
+				target: SEMANTIC_GRAPH_PROGRESS_TARGET,
+				family_id = %family_id,
+				elapsed_ms,
+				error = %err,
+				"semantic graph {stage}: failed"
+			);
+		}
+	}
+	result
+}
+
+fn summarize_workspace(workspace: &ResolvedWorkspace) -> String {
+	let enabled_mod_count = workspace
+		.mods
+		.iter()
+		.filter(|item| item.entry.enabled)
+		.count();
+	let inventory_file_count = workspace.file_inventory.len();
+	let contributor_file_count = workspace
+		.file_inventory
+		.values()
+		.map(|contributors| contributors.len())
+		.sum::<usize>();
+	tracing::debug!(
+		family_inventory_files = inventory_file_count,
+		family_contributor_files = contributor_file_count,
+		enabled_mod_count,
+		has_base_game = workspace.installed_base_snapshot.is_some(),
+		"semantic graph workspace resolved"
+	);
+	format!(
+		"enabled_mods={enabled_mod_count} inventory_files={inventory_file_count} contributors={contributor_file_count}"
+	)
+}
+
+fn summarize_runtime_state(state: &RuntimeState) -> String {
+	let document_count = state.semantic_index.documents.len();
+	let definition_count = state.definitions.len();
+	let reference_count = state.semantic_index.references.len();
+	let resource_reference_count = state.semantic_index.resource_references.len();
+	tracing::debug!(
+		document_count,
+		definition_count,
+		reference_count,
+		resource_reference_count,
+		"semantic graph runtime state built"
+	);
+	format!(
+		"documents={document_count} definitions={definition_count} references={reference_count} resource_refs={resource_reference_count}"
+	)
+}
+
+fn summarize_artifact(artifact: &SemanticGraphArtifact) -> String {
+	let node_count = artifact.nodes.len();
+	let edge_count = artifact.edges.len();
+	tracing::debug!(node_count, edge_count, "semantic graph artifact built");
+	format!("nodes={node_count} edges={edge_count}")
 }
 
 fn build_semantic_graph_artifact(
