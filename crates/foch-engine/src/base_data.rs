@@ -2869,6 +2869,12 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/buildings/buildings.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3552,6 +3558,14 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "building_definition".to_string(),
+				value: "marketplace".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/buildings/buildings.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3812,6 +3826,7 @@ mod tests {
 				"common/professionalism/00_modifiers.txt".to_string(),
 				"common/powerprojection/00_static.txt".to_string(),
 				"common/subject_type_upgrades/00_subject_type_upgrades.txt".to_string(),
+				"common/buildings/buildings.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -4068,6 +4083,13 @@ mod tests {
 			government_ranks.coverage_class,
 			CoverageClass::SemanticComplete
 		);
+
+		let buildings = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/buildings")
+			.expect("buildings coverage");
+		assert_eq!(buildings.coverage_class, CoverageClass::SemanticComplete);
 
 		let country_tags = report
 			.roots

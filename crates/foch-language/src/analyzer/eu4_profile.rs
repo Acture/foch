@@ -683,8 +683,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::Buildings,
 		ModuleNameRule::Static("buildings"),
 		country_from_scope(ScopeType::Province),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::Buildings,
 	),
 	prefix_descriptor(
 		"common/institutions",

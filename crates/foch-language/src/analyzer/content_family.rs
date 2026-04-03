@@ -167,6 +167,7 @@ pub enum ContentFamilyExtractor {
 	ParliamentBribes,
 	ParliamentIssues,
 	StateEdicts,
+	Buildings,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
