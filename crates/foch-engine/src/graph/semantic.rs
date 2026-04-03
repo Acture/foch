@@ -1244,6 +1244,7 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"subject_type_upgrade_definition" => Some("common/subject_type_upgrades"),
 		"government_rank_definition" => Some("common/government_ranks"),
 		"age_definition" => Some("common/ages"),
+		"institution_definition" => Some("common/institutions"),
 		"diplomatic_action_definition" => Some("common/diplomatic_actions"),
 		"new_diplomatic_action_definition" => Some("common/new_diplomatic_actions"),
 		"building_definition" => Some("common/buildings"),
@@ -1774,6 +1775,10 @@ mod tests {
 		);
 		assert_eq!(
 			classify_reference_target("common/buildings", "building_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/institutions", "institution_definition"),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(

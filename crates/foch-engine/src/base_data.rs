@@ -2893,6 +2893,12 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/institutions/institutions.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/technologies/adm.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3608,6 +3614,14 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "institution_definition".to_string(),
+				value: "feudalism".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/institutions/institutions.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "monarch_power".to_string(),
 				value: "ADM".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3872,6 +3886,7 @@ mod tests {
 				"common/diplomatic_actions/00_actions.txt".to_string(),
 				"common/new_diplomatic_actions/00_actions.txt".to_string(),
 				"common/buildings/buildings.txt".to_string(),
+				"common/institutions/institutions.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
 				"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -4162,6 +4177,13 @@ mod tests {
 			.find(|item| item.root_family == "common/buildings")
 			.expect("buildings coverage");
 		assert_eq!(buildings.coverage_class, CoverageClass::SemanticComplete);
+
+		let institutions = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/institutions")
+			.expect("institutions coverage");
+		assert_eq!(institutions.coverage_class, CoverageClass::SemanticComplete);
 
 		let country_tags = report
 			.roots

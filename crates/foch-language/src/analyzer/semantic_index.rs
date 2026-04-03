@@ -836,6 +836,9 @@ fn record_foundation_resource_semantics(
 		ContentFamilyExtractor::Buildings => {
 			record_building_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ContentFamilyExtractor::Institutions => {
+			record_institution_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1885,6 +1888,29 @@ fn record_building_resource_semantics(
 		value,
 		NamedDefinitionTableConfig {
 			definition_key: "building_definition",
+			scalar_reference_keys: &[],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_institution_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "institution_definition",
 			scalar_reference_keys: &[],
 			block_reference_keys: &[],
 		},
@@ -7943,6 +7969,52 @@ age_of_discovery = {
 		}));
 		assert!(!index.resource_references.iter().any(|reference| {
 			reference.key == "age_definition" && reference.value == "obj_one"
+		}));
+	}
+
+	#[test]
+	fn institutions_emit_top_level_definition_resources() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("institutions"))
+			.expect("create institutions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("institutions")
+				.join("institutions.txt"),
+			r#"
+renaissance = {
+	can_embrace = { always = yes }
+	on_start = {
+		add_prestige = 5
+	}
+}
+"#,
+		)
+		.expect("write institutions");
+
+		let parsed = [parse_script_file(
+			"1011",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("institutions")
+				.join("institutions.txt"),
+		)
+		.expect("parsed institutions")];
+		let index = build_semantic_index(&parsed);
+
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/institutions/institutions.txt")
+				&& reference.key == "institution_definition"
+				&& reference.value == "renaissance"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "institution_definition" && reference.value == "can_embrace"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "institution_definition" && reference.value == "on_start"
 		}));
 	}
 

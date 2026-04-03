@@ -700,8 +700,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::Institutions,
 		ModuleNameRule::Static("institutions"),
 		scope(ScopeType::Province),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::Institutions,
 	),
 	prefix_descriptor(
 		"common/province_triggered_modifiers",
