@@ -175,8 +175,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "scripted_triggers",
 		},
 		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::ScriptedTriggers,
 	),
 	prefix_descriptor(
 		"common/triggered_modifiers",

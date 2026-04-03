@@ -170,6 +170,7 @@ pub enum ContentFamilyExtractor {
 	Ages,
 	Institutions,
 	DiplomaticActions,
+	ScriptedTriggers,
 	NewDiplomaticActions,
 	Buildings,
 }

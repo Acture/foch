@@ -1246,6 +1246,7 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"age_definition" => Some("common/ages"),
 		"institution_definition" => Some("common/institutions"),
 		"diplomatic_action_definition" => Some("common/diplomatic_actions"),
+		"scripted_trigger_definition" => Some("common/scripted_triggers"),
 		"new_diplomatic_action_definition" => Some("common/new_diplomatic_actions"),
 		"building_definition" => Some("common/buildings"),
 		"province_name_table" => Some("common/province_names"),
@@ -1783,6 +1784,10 @@ mod tests {
 		);
 		assert_eq!(
 			classify_reference_target("common/diplomatic_actions", "diplomatic_action_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/scripted_triggers", "scripted_trigger_definition"),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(

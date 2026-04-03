@@ -2875,6 +2875,12 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/scripted_triggers/00_triggers.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/diplomatic_actions/00_actions.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3590,6 +3596,14 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "scripted_trigger_definition".to_string(),
+				value: "eu4_cov_country_trigger".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/scripted_triggers/00_triggers.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "diplomatic_action_definition".to_string(),
 				value: "milaccess".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3883,6 +3897,7 @@ mod tests {
 				"common/powerprojection/00_static.txt".to_string(),
 				"common/subject_type_upgrades/00_subject_type_upgrades.txt".to_string(),
 				"common/ages/00_ages.txt".to_string(),
+				"common/scripted_triggers/00_triggers.txt".to_string(),
 				"common/diplomatic_actions/00_actions.txt".to_string(),
 				"common/new_diplomatic_actions/00_actions.txt".to_string(),
 				"common/buildings/buildings.txt".to_string(),
@@ -4150,6 +4165,16 @@ mod tests {
 			.find(|item| item.root_family == "common/ages")
 			.expect("ages coverage");
 		assert_eq!(ages.coverage_class, CoverageClass::SemanticComplete);
+
+		let scripted_triggers = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/scripted_triggers")
+			.expect("scripted triggers coverage");
+		assert_eq!(
+			scripted_triggers.coverage_class,
+			CoverageClass::SemanticComplete
+		);
 
 		let diplomatic_actions = report
 			.roots
