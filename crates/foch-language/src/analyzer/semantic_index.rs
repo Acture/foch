@@ -828,6 +828,9 @@ fn record_foundation_resource_semantics(
 		ContentFamilyExtractor::DiplomaticActions => {
 			record_diplomatic_action_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ContentFamilyExtractor::ScriptedTriggers => {
+			record_scripted_trigger_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::NewDiplomaticActions => {
 			record_new_diplomatic_action_resource_semantics(
 				index, scope_id, ctx, key, key_span, value,
@@ -1816,6 +1819,29 @@ fn record_diplomatic_action_resource_semantics(
 		value,
 		NamedDefinitionTableConfig {
 			definition_key: "diplomatic_action_definition",
+			scalar_reference_keys: &[],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_scripted_trigger_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "scripted_trigger_definition",
 			scalar_reference_keys: &[],
 			block_reference_keys: &[],
 		},
@@ -8015,6 +8041,60 @@ renaissance = {
 		}));
 		assert!(!index.resource_references.iter().any(|reference| {
 			reference.key == "institution_definition" && reference.value == "on_start"
+		}));
+	}
+
+	#[test]
+	fn scripted_triggers_emit_top_level_definition_resources() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("scripted_triggers"))
+			.expect("create scripted triggers");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_triggers")
+				.join("triggers.txt"),
+			r#"
+eu4_cov_country_trigger = {
+	has_country_flag = eu4_cov_enabled
+}
+
+eu4_cov_province_trigger = {
+	owner = {
+		limit = { eu4_cov_country_trigger = yes }
+	}
+}
+"#,
+		)
+		.expect("write scripted triggers");
+
+		let parsed = [parse_script_file(
+			"1012",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("scripted_triggers")
+				.join("triggers.txt"),
+		)
+		.expect("parsed scripted triggers")];
+		let index = build_semantic_index(&parsed);
+
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/scripted_triggers/triggers.txt")
+				&& reference.key == "scripted_trigger_definition"
+				&& reference.value == "eu4_cov_country_trigger"
+		}));
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/scripted_triggers/triggers.txt")
+				&& reference.key == "scripted_trigger_definition"
+				&& reference.value == "eu4_cov_province_trigger"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "scripted_trigger_definition" && reference.value == "limit"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "scripted_trigger_definition" && reference.value == "owner"
 		}));
 	}
 

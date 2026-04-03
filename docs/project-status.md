@@ -146,7 +146,7 @@ The latest verified real probe is:
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
 
-`common/government_ranks`, `common/buildings`, `common/diplomatic_actions`, `common/new_diplomatic_actions`, `common/ages`, and `common/institutions` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 57`. The next planning step is to select the next low-risk `graph_ready` gameplay root.
+`common/government_ranks`, `common/buildings`, `common/diplomatic_actions`, `common/new_diplomatic_actions`, `common/ages`, and `common/institutions` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 57`.
 
 The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
 
@@ -170,6 +170,8 @@ ACT-168 has now completed its full-probe acceptance gate. This slice promotes `c
 ACT-169 has now completed its full-probe acceptance gate. This slice promotes `common/ages` from `graph_ready` to `semantic_complete` with the same narrow promotion pattern as the prior common-root waves: top-level age entries emit `age_definition`, nested objective/ability structures remain context, and the existing typed trigger/effect handling attached to `ScriptFileKind::Ages` stays intact. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 56` without regressing `parse_only`.
 
 ACT-170 has now completed its full-probe acceptance gate. This slice promotes `common/institutions` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level institution entries emit `institution_definition`, nested trigger/effect and modifier-style structures remain context, and the existing typed handling attached to `ScriptFileKind::Institutions` stays intact. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 57` without regressing `parse_only`.
+
+ACT-171 is now implemented locally and waiting on its full-probe acceptance gate. This slice promotes `common/scripted_triggers` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level scripted trigger entries emit `scripted_trigger_definition`, nested `limit` and wrapper-style trigger containers remain context, and the existing typed handling attached to `ScriptFileKind::ScriptedTriggers` stays intact. The last verified baseline remains `parse_only = 60` / `semantic_complete = 57`; the acceptance expectation for the next full EU4 probe is `parse_only = 60` / `semantic_complete = 58`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
