@@ -1243,6 +1243,7 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"powerprojection_definition" => Some("common/powerprojection"),
 		"subject_type_upgrade_definition" => Some("common/subject_type_upgrades"),
 		"government_rank_definition" => Some("common/government_ranks"),
+		"building_definition" => Some("common/buildings"),
 		"province_name_table" => Some("common/province_names"),
 		"tile_definition" => Some("map/random/tiles"),
 		"random_name_table" => Some("map/random_names"),
@@ -1762,6 +1763,10 @@ mod tests {
 	fn classifier_keeps_same_family_definitions_separate_from_cross_family_refs() {
 		assert_eq!(
 			classify_reference_target("common/holy_orders", "holy_order_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/buildings", "building_definition"),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(

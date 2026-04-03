@@ -825,6 +825,9 @@ fn record_foundation_resource_semantics(
 		ContentFamilyExtractor::GovernmentRanks => {
 			record_government_rank_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ContentFamilyExtractor::Buildings => {
+			record_building_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
 		ContentFamilyExtractor::Units => {
 			if scope_kind(index, scope_id) != ScopeKind::File {
 				return;
@@ -1777,6 +1780,29 @@ fn record_holy_order_resource_semantics(
 				"tooltip",
 				"custom_tooltip",
 			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_building_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "building_definition",
+			scalar_reference_keys: &[],
 			block_reference_keys: &[],
 		},
 	);
@@ -8639,6 +8665,11 @@ barracks = {
 			.expect("parsed buildings"),
 		];
 		let index = build_semantic_index(&parsed);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/buildings/buildings.txt")
+				&& reference.key == "building_definition"
+				&& reference.value == "barracks"
+		}));
 		let reference = index
 			.references
 			.iter()

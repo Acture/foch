@@ -86,6 +86,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/country_tags`
 - `common/countries`
 - `common/bookmarks`
+- `common/buildings`
 - `common/church_aspects`
 - `common/decrees`
 - `common/defender_of_faith`
@@ -133,7 +134,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 The latest verified real probe is:
 
 - `parse_only = 60`
-- `semantic_complete = 52`
+- `semantic_complete = 53`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -141,7 +142,7 @@ The latest verified real probe is:
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
 
-`common/government_ranks` is now complete. The current product line has shifted from another low-risk coverage wave to semantic graphing, with `foch graph --mode semantic --family ...` now serving as the next mainline for visualizing family structure, overlay, and references.
+`common/government_ranks` and `common/buildings` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 53`. The current product line has shifted from another low-risk coverage wave to semantic graphing, with `foch graph --mode semantic --family ...` now serving as the next mainline for visualizing family structure, overlay, and references.
 
 The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
 
@@ -152,7 +153,11 @@ Validation now splits into two tracks:
 
 A repo-backed bounded validation path now exists under `tests/corpus/eu4_real_minimized/playlist.json`. Semantic graph CLI integration coverage uses that playset to export `common/scripted_effects`, assert default-visible progress output from the `tracing` pipeline, and confirm that the generated graph contains real scripted-effect keys such as `eu4::scripted_effects::se_md_add_or_upgrade_bonus` and `eu4::scripted_effects::complex_dynamic_effect_without_alternative`.
 
-The next execution step is not infrastructure work on graph export itself. It is to use the new observability and repo-backed bounded playset to validate a few representative real families, then decide whether the next mainline issue is a narrow ACT-158-style viewer refinement pass or a return to semantic coverage promotion.
+ACT-165 has now completed that validation loop. The bounded real-data playset was exercised against `common/scripted_effects`, `common/new_diplomatic_actions`, `missions`, and `common/triggered_modifiers`, with one external sanity pass on a real workshop `common/holy_orders` graph. Across that sample set, the validation did not uncover a repeated semantic-viewer blocker: default visibility, `Show contains`, details-panel inspection, and large-family readability all held up well enough to avoid forcing an immediate viewer-refinement follow-up.
+
+The current recommendation is therefore to return the mainline to semantic coverage promotion rather than opening an ACT-158-style viewer refinement wave. Semantic-graph work can stay on the bugfix path unless later real-family validation turns up a repeated viewer/product failure.
+
+ACT-166 resumed that coverage line by promoting `common/buildings` from `graph_ready` to `semantic_complete`. The implementation stays intentionally narrow: it records stable top-level `building_definition` entries, preserves the existing `ScriptFileKind::Buildings` effect/trigger semantics, updates graph family classification so building definitions no longer collapse into `unknown`, and extends base-data coverage assertions accordingly. A fresh full-EU4 probe has now confirmed the updated baseline without moving `parse_only`, which means this slice cleanly converted one `graph_ready` root into a verified additional `semantic_complete` root.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -186,6 +191,8 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 50 -> 51`
   - `parse_only: 61 -> 60`
   - `semantic_complete: 51 -> 52`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 52 -> 53`
 
 Verified locally during the workspace reorganization:
 
@@ -213,6 +220,14 @@ Verified locally during semantic graph observability hardening:
 - `cargo test -p foch-cli semantic_graph -- --nocapture`
 - `cargo test --workspace`
 - `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act164-probe --mode semantic --family common/scripted_effects --no-game-base`
+
+Verified locally during ACT-165 representative-family validation:
+
+- `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act165-validation --mode semantic --family common/scripted_effects --no-game-base`
+- `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act165-validation --mode semantic --family common/new_diplomatic_actions --no-game-base`
+- `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act165-validation --mode semantic --family missions --no-game-base`
+- `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act165-validation --mode semantic --family common/triggered_modifiers --no-game-base`
+- `target/debug/foch graph /tmp/foch-act165-holy-orders-playlist.json --out /tmp/foch-act165-holy-orders --mode semantic --family common/holy_orders --no-game-base`
 
 ## Practical Reading Order
 
