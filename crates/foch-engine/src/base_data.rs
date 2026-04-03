@@ -1612,16 +1612,6 @@ fn content_family_coverage_class(
 	accumulator: &CoverageAccumulator,
 ) -> Option<CoverageClass> {
 	let descriptor = eu4_content_family_for_root_family(root_family)?;
-	if descriptor.capabilities.merge_ready {
-		return Some(CoverageClass::MergeReady);
-	}
-	if descriptor.capabilities.graph_ready {
-		return Some(if accumulator.has_graph_semantics() {
-			CoverageClass::GraphReady
-		} else {
-			CoverageClass::ParseOnly
-		});
-	}
 	if descriptor.capabilities.semantic_complete {
 		return Some(
 			if accumulator.has_semantic_count("resource_references")
@@ -1633,6 +1623,16 @@ fn content_family_coverage_class(
 				CoverageClass::ParseOnly
 			},
 		);
+	}
+	if descriptor.capabilities.merge_ready {
+		return Some(CoverageClass::MergeReady);
+	}
+	if descriptor.capabilities.graph_ready {
+		return Some(if accumulator.has_graph_semantics() {
+			CoverageClass::GraphReady
+		} else {
+			CoverageClass::ParseOnly
+		});
 	}
 	Some(CoverageClass::ParseOnly)
 }
@@ -2869,6 +2869,24 @@ mod tests {
 				},
 				DocumentRecord {
 					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/ages/00_ages.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/diplomatic_actions/00_actions.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
+					path: PathBuf::from("common/new_diplomatic_actions/00_actions.txt"),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: true,
+				},
+				DocumentRecord {
+					mod_id: mod_id.clone(),
 					path: PathBuf::from("common/buildings/buildings.txt"),
 					family: DocumentFamily::Clausewitz,
 					parse_ok: true,
@@ -3558,6 +3576,30 @@ mod tests {
 				column: 1,
 			},
 			ResourceReference {
+				key: "age_definition".to_string(),
+				value: "age_of_discovery".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/ages/00_ages.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "diplomatic_action_definition".to_string(),
+				value: "milaccess".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/diplomatic_actions/00_actions.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
+				key: "new_diplomatic_action_definition".to_string(),
+				value: "request_condottieri".to_string(),
+				mod_id: "__game__eu4".to_string(),
+				path: PathBuf::from("common/new_diplomatic_actions/00_actions.txt"),
+				line: 1,
+				column: 1,
+			},
+			ResourceReference {
 				key: "building_definition".to_string(),
 				value: "marketplace".to_string(),
 				mod_id: "__game__eu4".to_string(),
@@ -3826,6 +3868,9 @@ mod tests {
 				"common/professionalism/00_modifiers.txt".to_string(),
 				"common/powerprojection/00_static.txt".to_string(),
 				"common/subject_type_upgrades/00_subject_type_upgrades.txt".to_string(),
+				"common/ages/00_ages.txt".to_string(),
+				"common/diplomatic_actions/00_actions.txt".to_string(),
+				"common/new_diplomatic_actions/00_actions.txt".to_string(),
 				"common/buildings/buildings.txt".to_string(),
 				"common/technologies/adm.txt".to_string(),
 				"common/technology.txt".to_string(),
@@ -4081,6 +4126,33 @@ mod tests {
 			.expect("government ranks coverage");
 		assert_eq!(
 			government_ranks.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let ages = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/ages")
+			.expect("ages coverage");
+		assert_eq!(ages.coverage_class, CoverageClass::SemanticComplete);
+
+		let diplomatic_actions = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/diplomatic_actions")
+			.expect("diplomatic actions coverage");
+		assert_eq!(
+			diplomatic_actions.coverage_class,
+			CoverageClass::SemanticComplete
+		);
+
+		let new_diplomatic_actions = report
+			.roots
+			.iter()
+			.find(|item| item.root_family == "common/new_diplomatic_actions")
+			.expect("new diplomatic actions coverage");
+		assert_eq!(
+			new_diplomatic_actions.coverage_class,
 			CoverageClass::SemanticComplete
 		);
 

@@ -18,6 +18,14 @@ const fn semantic_complete() -> ContentFamilyCapabilities {
 	}
 }
 
+const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
+	ContentFamilyCapabilities {
+		semantic_complete: true,
+		graph_ready: false,
+		merge_ready: true,
+	}
+}
+
 const fn graph_ready() -> ContentFamilyCapabilities {
 	ContentFamilyCapabilities {
 		semantic_complete: false,
@@ -203,8 +211,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "diplomatic_actions",
 		},
 		country_from_scope(ScopeType::Country),
-		merge_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete_and_merge_ready(),
+		ContentFamilyExtractor::DiplomaticActions,
 	),
 	prefix_descriptor(
 		"common/new_diplomatic_actions",
@@ -215,8 +223,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "new_diplomatic_actions",
 		},
 		country_from_scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::NewDiplomaticActions,
 	),
 	prefix_descriptor(
 		"common/country_tags",
@@ -674,8 +682,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::Ages,
 		ModuleNameRule::Static("ages"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::Ages,
 	),
 	prefix_descriptor(
 		"common/buildings",

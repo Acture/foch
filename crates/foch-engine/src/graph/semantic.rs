@@ -1243,6 +1243,9 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"powerprojection_definition" => Some("common/powerprojection"),
 		"subject_type_upgrade_definition" => Some("common/subject_type_upgrades"),
 		"government_rank_definition" => Some("common/government_ranks"),
+		"age_definition" => Some("common/ages"),
+		"diplomatic_action_definition" => Some("common/diplomatic_actions"),
+		"new_diplomatic_action_definition" => Some("common/new_diplomatic_actions"),
 		"building_definition" => Some("common/buildings"),
 		"province_name_table" => Some("common/province_names"),
 		"tile_definition" => Some("map/random/tiles"),
@@ -1766,7 +1769,22 @@ mod tests {
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(
+			classify_reference_target("common/ages", "age_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
 			classify_reference_target("common/buildings", "building_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/diplomatic_actions", "diplomatic_action_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target(
+				"common/new_diplomatic_actions",
+				"new_diplomatic_action_definition"
+			),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(
