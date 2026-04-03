@@ -86,6 +86,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/country_tags`
 - `common/countries`
 - `common/bookmarks`
+- `common/ages`
 - `common/buildings`
 - `common/diplomatic_actions`
 - `common/new_diplomatic_actions`
@@ -102,6 +103,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/government_mechanics`
 - `common/hegemons`
 - `common/holy_orders`
+- `common/institutions`
 - `common/isolationism`
 - `common/estate_agendas`
 - `common/estate_privileges`
@@ -136,7 +138,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 The latest verified real probe is:
 
 - `parse_only = 60`
-- `semantic_complete = 55`
+- `semantic_complete = 57`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -144,7 +146,7 @@ The latest verified real probe is:
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
 
-`common/government_ranks`, `common/buildings`, `common/diplomatic_actions`, and `common/new_diplomatic_actions` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 55`. The current recommendation is to continue the same low-risk coverage line with `common/ages`.
+`common/government_ranks`, `common/buildings`, `common/diplomatic_actions`, `common/new_diplomatic_actions`, `common/ages`, and `common/institutions` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 57`. The next planning step is to select the next low-risk `graph_ready` gameplay root.
 
 The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
 
@@ -165,7 +167,9 @@ ACT-167 completed the next coverage slice by promoting `common/diplomatic_action
 
 ACT-168 has now completed its full-probe acceptance gate. This slice promotes `common/new_diplomatic_actions` from `graph_ready` to `semantic_complete` with a deliberately narrow extractor: top-level action definitions emit `new_diplomatic_action_definition`, the `static_actions` container itself is explicitly excluded from definition resources, the existing typed trigger/effect container semantics remain unchanged, and semantic graph classification maps the new definition key back to `common/new_diplomatic_actions`. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 55` without regressing `parse_only`.
 
-ACT-169 is now the next low-risk coverage slice. `common/ages` still has repo-backed real minimized sample coverage and can follow the same narrow promotion pattern as the previous common-root waves: record only top-level `age_definition` coverage first, keep nested objective/ability structures as context, and preserve the existing typed trigger/effect handling already attached to `ScriptFileKind::Ages`.
+ACT-169 has now completed its full-probe acceptance gate. This slice promotes `common/ages` from `graph_ready` to `semantic_complete` with the same narrow promotion pattern as the prior common-root waves: top-level age entries emit `age_definition`, nested objective/ability structures remain context, and the existing typed trigger/effect handling attached to `ScriptFileKind::Ages` stays intact. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 56` without regressing `parse_only`.
+
+ACT-170 has now completed its full-probe acceptance gate. This slice promotes `common/institutions` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level institution entries emit `institution_definition`, nested trigger/effect and modifier-style structures remain context, and the existing typed handling attached to `ScriptFileKind::Institutions` stays intact. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 57` without regressing `parse_only`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -203,6 +207,12 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 52 -> 53`
   - `parse_only: 60 -> 60`
   - `semantic_complete: 53 -> 54`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 54 -> 55`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 55 -> 56`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 56 -> 57`
 
 Verified locally during the workspace reorganization:
 

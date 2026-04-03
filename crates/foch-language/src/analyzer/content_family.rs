@@ -168,6 +168,7 @@ pub enum ContentFamilyExtractor {
 	ParliamentIssues,
 	StateEdicts,
 	Ages,
+	Institutions,
 	DiplomaticActions,
 	NewDiplomaticActions,
 	Buildings,
