@@ -825,6 +825,14 @@ fn record_foundation_resource_semantics(
 		ContentFamilyExtractor::GovernmentRanks => {
 			record_government_rank_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
+		ContentFamilyExtractor::DiplomaticActions => {
+			record_diplomatic_action_resource_semantics(index, scope_id, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::NewDiplomaticActions => {
+			record_new_diplomatic_action_resource_semantics(
+				index, scope_id, ctx, key, key_span, value,
+			);
+		}
 		ContentFamilyExtractor::Buildings => {
 			record_building_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
@@ -901,6 +909,9 @@ fn record_foundation_resource_semantics(
 		}
 		ContentFamilyExtractor::StateEdicts => {
 			record_state_edict_resource_semantics(index, ctx, key, key_span, value);
+		}
+		ContentFamilyExtractor::Ages => {
+			record_age_resource_semantics(index, scope_id, ctx, key, key_span, value);
 		}
 	}
 }
@@ -1780,6 +1791,78 @@ fn record_holy_order_resource_semantics(
 				"tooltip",
 				"custom_tooltip",
 			],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_diplomatic_action_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "diplomatic_action_definition",
+			scalar_reference_keys: &[],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_age_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "age_definition",
+			scalar_reference_keys: &[],
+			block_reference_keys: &[],
+		},
+	);
+}
+
+fn record_new_diplomatic_action_resource_semantics(
+	index: &mut SemanticIndex,
+	scope_id: usize,
+	ctx: &BuildContext<'_>,
+	key: &str,
+	key_span: &SpanRange,
+	value: &AstValue,
+) {
+	if is_new_diplomatic_actions_container_key(key) {
+		return;
+	}
+	record_named_definition_table_resource_semantics(
+		index,
+		scope_id,
+		ctx,
+		key,
+		key_span,
+		value,
+		NamedDefinitionTableConfig {
+			definition_key: "new_diplomatic_action_definition",
+			scalar_reference_keys: &[],
 			block_reference_keys: &[],
 		},
 	);
@@ -7827,6 +7910,94 @@ create_general_from_country {
 	}
 
 	#[test]
+	fn ages_emit_top_level_definition_resources() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("ages")).expect("create ages");
+		fs::write(
+			mod_root.join("common").join("ages").join("ages.txt"),
+			r#"
+age_of_discovery = {
+	objectives = {
+		obj_one = {
+			calc_true_if = { always = yes amount = 1 }
+		}
+	}
+}
+"#,
+		)
+		.expect("write ages");
+
+		let parsed = [parse_script_file(
+			"1010",
+			&mod_root,
+			&mod_root.join("common").join("ages").join("ages.txt"),
+		)
+		.expect("parsed ages")];
+		let index = build_semantic_index(&parsed);
+
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/ages/ages.txt")
+				&& reference.key == "age_definition"
+				&& reference.value == "age_of_discovery"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "age_definition" && reference.value == "obj_one"
+		}));
+	}
+
+	#[test]
+	fn new_diplomatic_actions_emit_top_level_definition_resources_without_recording_static_containers()
+	 {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("new_diplomatic_actions"))
+			.expect("create new diplomatic actions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+			r#"
+static_actions = {
+	royal_marriage = {
+		alert_index = 1
+	}
+}
+
+request_condottieri = {
+	is_visible = { always = yes }
+	on_accept = {
+		add_favors = { who = FROM amount = -10 }
+	}
+}
+"#,
+		)
+		.expect("write actions");
+
+		let parsed = [parse_script_file(
+			"1009",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("new_diplomatic_actions")
+				.join("actions.txt"),
+		)
+		.expect("parsed actions")];
+		let index = build_semantic_index(&parsed);
+
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == std::path::Path::new("common/new_diplomatic_actions/actions.txt")
+				&& reference.key == "new_diplomatic_action_definition"
+				&& reference.value == "request_condottieri"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "new_diplomatic_action_definition"
+				&& reference.value == "static_actions"
+		}));
+	}
+
+	#[test]
 	fn full_body_scripted_effect_scope_params_resolve_nested_prev_aliases() {
 		let tmp = TempDir::new().expect("temp dir");
 		let mod_root = tmp.path().join("mod");
@@ -8599,6 +8770,84 @@ test_mission = {
 				"{name} should treat later dynamic slots as optional"
 			);
 		}
+	}
+
+	#[test]
+	fn diplomatic_actions_emit_top_level_definition_resources_without_treating_conditions_as_defs()
+	{
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("diplomatic_actions"))
+			.expect("create diplomatic actions");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("diplomatic_actions")
+				.join("actions.txt"),
+			r#"
+milaccess = {
+	condition = {
+		potential = { always = yes }
+		allow = { always = yes }
+	}
+	effect = {
+		grant_free_access = { who = FROM }
+	}
+}
+"#,
+		)
+		.expect("write diplomatic actions");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("effects.txt"),
+			r#"
+grant_free_access = {
+	$who$ = {
+		add_opinion = { who = ROOT modifier = granted_military_access }
+	}
+}
+"#,
+		)
+		.expect("write scripted effects");
+
+		let parsed = [
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("diplomatic_actions")
+					.join("actions.txt"),
+			)
+			.expect("parsed diplomatic actions"),
+			parse_script_file(
+				"1012",
+				&mod_root,
+				&mod_root
+					.join("common")
+					.join("scripted_effects")
+					.join("effects.txt"),
+			)
+			.expect("parsed scripted effects"),
+		];
+		let index = build_semantic_index(&parsed);
+		assert!(index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/diplomatic_actions/actions.txt")
+				&& reference.key == "diplomatic_action_definition"
+				&& reference.value == "milaccess"
+		}));
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/diplomatic_actions/actions.txt")
+				&& reference.key == "diplomatic_action_definition"
+				&& reference.value == "condition"
+		}));
+		assert!(index.references.iter().any(|reference| {
+			reference.kind == SymbolKind::ScriptedEffect && reference.name == "grant_free_access"
+		}));
 	}
 
 	#[test]

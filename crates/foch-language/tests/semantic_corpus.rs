@@ -662,6 +662,11 @@ fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
 				.iter()
 				.any(|param| param == "abilityName")
 	}));
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.key == "age_definition"
+			&& reference.value == "age_of_discovery"
+			&& reference.path == std::path::Path::new("common/ages/00_ages_reformed_ages.txt")
+	}));
 }
 
 #[test]
@@ -736,6 +741,20 @@ fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
 		advisory_noise.is_empty(),
 		"advisory targeted noise: {advisory_noise:#?}"
 	);
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path
+			== std::path::Path::new(
+				"common/new_diplomatic_actions/00_more_favor_actions_actions.txt",
+			) && reference.key == "new_diplomatic_action_definition"
+			&& reference.value == "more_favors_action_request_adm_power"
+	}));
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path
+			== std::path::Path::new(
+				"common/diplomatic_actions/000_more_favor_actions_diplomatic_actions.txt",
+			) && reference.key == "diplomatic_action_definition"
+			&& reference.value == "more_favor_actions_remove_guarantee"
+	}));
 	assert!(!index.references.iter().any(|reference| {
 		reference.kind == SymbolKind::ScriptedEffect && reference.name.starts_with("event_target:")
 	}));

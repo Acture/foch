@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-04-02
+Last updated: 2026-04-03
 
 ## Summary
 
@@ -87,6 +87,8 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/countries`
 - `common/bookmarks`
 - `common/buildings`
+- `common/diplomatic_actions`
+- `common/new_diplomatic_actions`
 - `common/church_aspects`
 - `common/decrees`
 - `common/defender_of_faith`
@@ -134,7 +136,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 The latest verified real probe is:
 
 - `parse_only = 60`
-- `semantic_complete = 53`
+- `semantic_complete = 55`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -142,7 +144,7 @@ The latest verified real probe is:
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
 
-`common/government_ranks` and `common/buildings` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 53`. The current product line has shifted from another low-risk coverage wave to semantic graphing, with `foch graph --mode semantic --family ...` now serving as the next mainline for visualizing family structure, overlay, and references.
+`common/government_ranks`, `common/buildings`, `common/diplomatic_actions`, and `common/new_diplomatic_actions` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 55`. The current recommendation is to continue the same low-risk coverage line with `common/ages`.
 
 The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
 
@@ -158,6 +160,12 @@ ACT-165 has now completed that validation loop. The bounded real-data playset wa
 The current recommendation is therefore to return the mainline to semantic coverage promotion rather than opening an ACT-158-style viewer refinement wave. Semantic-graph work can stay on the bugfix path unless later real-family validation turns up a repeated viewer/product failure.
 
 ACT-166 resumed that coverage line by promoting `common/buildings` from `graph_ready` to `semantic_complete`. The implementation stays intentionally narrow: it records stable top-level `building_definition` entries, preserves the existing `ScriptFileKind::Buildings` effect/trigger semantics, updates graph family classification so building definitions no longer collapse into `unknown`, and extends base-data coverage assertions accordingly. A fresh full-EU4 probe has now confirmed the updated baseline without moving `parse_only`, which means this slice cleanly converted one `graph_ready` root into a verified additional `semantic_complete` root.
+
+ACT-167 completed the next coverage slice by promoting `common/diplomatic_actions` from `merge_ready` to `semantic_complete` without regressing its existing merge support. The implementation kept the same narrow promotion pattern as `common/buildings`: it records stable top-level `diplomatic_action_definition` entries, preserves the existing typed trigger/effect semantics already attached to `ScriptFileKind::DiplomaticActions`, maps those definitions back to `common/diplomatic_actions` in semantic graph classification, and fixes coverage-class precedence so a root that is both semantic-complete and merge-ready reports as `semantic_complete`. A fresh full-EU4 probe confirmed the new baseline without moving `parse_only`, so this slice converted one additional gameplay root into a verified `semantic_complete` root.
+
+ACT-168 has now completed its full-probe acceptance gate. This slice promotes `common/new_diplomatic_actions` from `graph_ready` to `semantic_complete` with a deliberately narrow extractor: top-level action definitions emit `new_diplomatic_action_definition`, the `static_actions` container itself is explicitly excluded from definition resources, the existing typed trigger/effect container semantics remain unchanged, and semantic graph classification maps the new definition key back to `common/new_diplomatic_actions`. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 55` without regressing `parse_only`.
+
+ACT-169 is now the next low-risk coverage slice. `common/ages` still has repo-backed real minimized sample coverage and can follow the same narrow promotion pattern as the previous common-root waves: record only top-level `age_definition` coverage first, keep nested objective/ability structures as context, and preserve the existing typed trigger/effect handling already attached to `ScriptFileKind::Ages`.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -193,6 +201,8 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 51 -> 52`
   - `parse_only: 60 -> 60`
   - `semantic_complete: 52 -> 53`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 53 -> 54`
 
 Verified locally during the workspace reorganization:
 
