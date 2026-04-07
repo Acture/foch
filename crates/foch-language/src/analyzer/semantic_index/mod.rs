@@ -1,6 +1,8 @@
+mod extractors;
+
 use super::content_family::{
-	ContentFamilyDescriptor, ContentFamilyExtractor, ContentFamilyScopePolicy, GameProfile,
-	ScriptFileKind, module_name_for_descriptor,
+	ContentFamilyDescriptor, ContentFamilyScopePolicy, GameProfile, ScriptFileKind,
+	module_name_for_descriptor,
 };
 use super::eu4_builtin::{
 	is_builtin_effect, is_builtin_iterator, is_builtin_scope_changer, is_builtin_special_block,
@@ -705,220 +707,8 @@ fn record_foundation_resource_semantics(
 	let Some(descriptor) = ctx.content_family else {
 		return;
 	};
-
-	match descriptor.extractor {
-		ContentFamilyExtractor::None => {}
-		ContentFamilyExtractor::CountryTags => {
-			let Some(text) = scalar_text(value) else {
-				return;
-			};
-			if scope_kind(index, scope_id) != ScopeKind::File
-				|| !is_country_tag_selector(key)
-				|| !is_country_file_reference(&text)
-			{
-				return;
-			}
-			push_resource_reference(
-				index,
-				ctx,
-				key_span,
-				&format!("country_tag:{key}"),
-				text.as_str(),
-			);
-		}
-		ContentFamilyExtractor::Countries => {
-			if scope_kind(index, scope_id) != ScopeKind::File {
-				return;
-			}
-			record_country_metadata_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::CountryHistory => {
-			let Some(text) = scalar_text(value) else {
-				return;
-			};
-			if (is_country_history_province_reference_key(key) && is_province_id_text(&text))
-				|| (is_country_history_country_reference_key(key) && is_country_tag_text(&text))
-			{
-				push_resource_reference(index, ctx, key_span, key, text.as_str());
-			}
-		}
-		ContentFamilyExtractor::ProvinceHistory => {
-			let Some(text) = scalar_text(value) else {
-				return;
-			};
-			if is_province_history_country_reference_key(key) && is_country_tag_text(&text) {
-				push_resource_reference(index, ctx, key_span, key, text.as_str());
-			}
-		}
-		ContentFamilyExtractor::ProvinceNames => {
-			record_province_name_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::RandomMapTiles => {
-			record_random_map_tile_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::RandomMapNames => {
-			record_random_map_name_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::RandomMapScenarios => {
-			record_random_map_scenario_resource_semantics(
-				index, scope_id, ctx, key, key_span, value,
-			);
-		}
-		ContentFamilyExtractor::DiplomacyHistory => {
-			record_diplomacy_history_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::AdvisorHistory => {
-			record_advisor_history_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Wars => {
-			let Some(text) = scalar_text(value) else {
-				return;
-			};
-			if (is_war_history_country_reference_key(key) && is_country_tag_text(&text))
-				|| (is_war_history_province_reference_key(key) && is_province_id_text(&text))
-			{
-				push_resource_reference(index, ctx, key_span, key, text.as_str());
-			}
-		}
-		ContentFamilyExtractor::Fervor => {
-			record_fervor_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Decrees => {
-			record_decree_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::FederationAdvancements => {
-			record_federation_advancement_resource_semantics(
-				index, scope_id, ctx, key, key_span, value,
-			);
-		}
-		ContentFamilyExtractor::GoldenBulls => {
-			record_golden_bull_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::FlagshipModifications => {
-			record_flagship_modification_resource_semantics(
-				index, scope_id, ctx, key, key_span, value,
-			);
-		}
-		ContentFamilyExtractor::HolyOrders => {
-			record_holy_order_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::NavalDoctrines => {
-			record_naval_doctrine_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::DefenderOfFaith => {
-			record_defender_of_faith_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Isolationism => {
-			record_isolationism_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Professionalism => {
-			record_professionalism_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::PowerProjection => {
-			record_powerprojection_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::SubjectTypeUpgrades => {
-			record_subject_type_upgrade_resource_semantics(
-				index, scope_id, ctx, key, key_span, value,
-			);
-		}
-		ContentFamilyExtractor::GovernmentRanks => {
-			record_government_rank_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::DiplomaticActions => {
-			record_diplomatic_action_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::ScriptedTriggers => {
-			record_scripted_trigger_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::NewDiplomaticActions => {
-			record_new_diplomatic_action_resource_semantics(
-				index, scope_id, ctx, key, key_span, value,
-			);
-		}
-		ContentFamilyExtractor::Buildings => {
-			record_building_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Institutions => {
-			record_institution_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Units => {
-			if scope_kind(index, scope_id) != ScopeKind::File {
-				return;
-			}
-			record_unit_definition_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Religions => {
-			record_religion_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::SubjectTypes => {
-			record_subject_type_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::RebelTypes => {
-			record_rebel_type_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Disasters => {
-			record_disaster_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::GovernmentMechanics => {
-			record_government_mechanic_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::ChurchAspects => {
-			record_church_aspect_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Factions => {
-			record_faction_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Hegemons => {
-			record_hegemon_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::PersonalDeities => {
-			record_personal_deity_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::FetishistCults => {
-			record_fetishist_cult_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::PeaceTreaties => {
-			record_peace_treaty_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Bookmarks => {
-			record_bookmark_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Policies => {
-			record_policy_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::MercenaryCompanies => {
-			record_mercenary_company_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Technologies => {
-			record_technology_definition_resource_semantics(
-				index, scope_id, ctx, key, key_span, value,
-			);
-		}
-		ContentFamilyExtractor::TechnologyGroups => {
-			record_technology_group_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::EstateAgendas => {
-			record_estate_agenda_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::EstatePrivileges => {
-			record_estate_privilege_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Estates => {
-			record_estate_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::ParliamentBribes => {
-			record_parliament_bribe_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::ParliamentIssues => {
-			record_parliament_issue_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::StateEdicts => {
-			record_state_edict_resource_semantics(index, ctx, key, key_span, value);
-		}
-		ContentFamilyExtractor::Ages => {
-			record_age_resource_semantics(index, scope_id, ctx, key, key_span, value);
-		}
+	if let Some(extractor) = extractors::extractor_for(descriptor) {
+		extractor.extract(index, scope_id, ctx, key, key_span, value);
 	}
 }
 
@@ -937,286 +727,6 @@ fn push_resource_reference(
 		line: key_span.start.line,
 		column: key_span.start.column,
 	});
-}
-
-fn record_country_metadata_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if let Some(text) = scalar_text(value)
-		&& is_country_metadata_scalar_reference_key(key)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-
-	let Some(reference_key) = country_metadata_block_reference_key(key) else {
-		return;
-	};
-	for item in extract_block_scalar_items(value) {
-		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
-	}
-}
-
-fn record_unit_definition_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_unit_definition_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_religion_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if let Some(text) = scalar_text(value)
-		&& ((key == "center_of_religion" && is_province_id_text(&text))
-			|| (key == "papal_tag" && is_country_tag_text(&text)))
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-
-	let Some(reference_key) = religion_block_reference_key(key) else {
-		return;
-	};
-	for item in extract_block_scalar_items(value) {
-		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
-	}
-}
-
-fn record_subject_type_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_subject_type_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_rebel_type_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_rebel_type_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_disaster_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if let Some(text) = scalar_text(value)
-		&& is_disaster_scalar_reference_key(key)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-
-	let Some(reference_key) = disaster_block_reference_key(key) else {
-		return;
-	};
-	for item in extract_block_scalar_items(value) {
-		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
-	}
-}
-
-fn record_government_mechanic_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if let Some(text) = scalar_text(value)
-		&& is_government_mechanic_scalar_reference_key(key)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-
-	if key != "country_event" {
-		return;
-	}
-	for item in extract_named_block_scalar_items(value, "id") {
-		push_resource_reference(index, ctx, key_span, key, item.as_str());
-	}
-}
-
-fn record_church_aspect_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if !is_top_level_named_block(index, scope_id, key, value) {
-		return;
-	}
-	push_resource_reference(index, ctx, key_span, "localisation", key);
-	push_resource_reference(
-		index,
-		ctx,
-		key_span,
-		"localisation_desc",
-		&format!("desc_{key}"),
-	);
-	push_resource_reference(
-		index,
-		ctx,
-		key_span,
-		"localisation_modifier",
-		&format!("{key}_modifier"),
-	);
-}
-
-fn record_faction_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if is_top_level_named_block(index, scope_id, key, value) {
-		push_resource_reference(index, ctx, key_span, "localisation", key);
-		push_resource_reference(
-			index,
-			ctx,
-			key_span,
-			"localisation_influence",
-			&format!("{key}_influence"),
-		);
-		return;
-	}
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if key == "monarch_power" {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_hegemon_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if is_top_level_named_block(index, scope_id, key, value) {
-		push_resource_reference(index, ctx, key_span, "localisation", key);
-	}
-}
-
-fn record_personal_deity_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if !is_top_level_named_block(index, scope_id, key, value) {
-		return;
-	}
-	push_resource_reference(index, ctx, key_span, "localisation", key);
-	push_resource_reference(
-		index,
-		ctx,
-		key_span,
-		"localisation_desc",
-		&format!("{key}_desc"),
-	);
-}
-
-fn record_fetishist_cult_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if !is_top_level_named_block(index, scope_id, key, value) {
-		return;
-	}
-	push_resource_reference(index, ctx, key_span, "localisation", key);
-	push_resource_reference(
-		index,
-		ctx,
-		key_span,
-		"localisation_desc",
-		&format!("{key}_desc"),
-	);
-}
-
-fn record_peace_treaty_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if is_top_level_named_block(index, scope_id, key, value) {
-		push_resource_reference(
-			index,
-			ctx,
-			key_span,
-			"localisation_desc",
-			&format!("{key}_desc"),
-		);
-		push_resource_reference(
-			index,
-			ctx,
-			key_span,
-			"localisation_cb_allowed",
-			&format!("CB_ALLOWED_{key}"),
-		);
-		push_resource_reference(
-			index,
-			ctx,
-			key_span,
-			"localisation_peace",
-			&format!("PEACE_{key}"),
-		);
-	}
-
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_peace_treaty_scalar_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
 }
 
 fn is_top_level_named_block(
@@ -1253,1019 +763,6 @@ fn monarch_power_prefix(value: &str) -> Option<&'static str> {
 		"DIP" => Some("dip"),
 		"MIL" => Some("mil"),
 		_ => None,
-	}
-}
-
-fn record_bookmark_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_bookmark_localisation_reference_key(key)
-		|| (key == "country" && is_country_tag_text(&text))
-		|| (key == "center" && is_province_id_text(&text))
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_technology_definition_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &mut BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) == ScopeKind::File && key == "monarch_power" {
-		if let Some(text) = scalar_text(value) {
-			ctx.technology_monarch_power = Some(text.clone());
-			push_resource_reference(index, ctx, key_span, key, text.as_str());
-		}
-		return;
-	}
-	if scope_kind(index, scope_id) != ScopeKind::File || key != "technology" {
-		return;
-	}
-	let Some(prefix) = ctx
-		.technology_monarch_power
-		.as_deref()
-		.and_then(monarch_power_prefix)
-	else {
-		return;
-	};
-	let definition_key = format!("{prefix}_tech_{}", ctx.technology_definition_ordinal);
-	ctx.technology_definition_ordinal += 1;
-	push_resource_reference(
-		index,
-		ctx,
-		key_span,
-		"technology_definition",
-		definition_key.as_str(),
-	);
-	for year in extract_named_block_scalar_items(value, "year") {
-		push_resource_reference(index, ctx, key_span, "year", year.as_str());
-	}
-	for institution in extract_named_block_member_keys(value, "expects_institution") {
-		push_resource_reference(
-			index,
-			ctx,
-			key_span,
-			"expects_institution",
-			institution.as_str(),
-		);
-	}
-	for enable in extract_yes_assignment_keys(value) {
-		push_resource_reference(index, ctx, key_span, "enable", enable.as_str());
-	}
-}
-
-fn record_policy_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if is_top_level_named_block(index, scope_id, key, value) {
-		push_resource_reference(index, ctx, key_span, "localisation", key);
-		return;
-	}
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if key == "monarch_power" {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_technology_group_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if !is_named_block_in_top_level_block(index, scope_id, key, value) {
-		return;
-	}
-	push_resource_reference(index, ctx, key_span, "technology_group", key);
-	let AstValue::Block { items, .. } = value else {
-		return;
-	};
-	for field in [
-		"start_level",
-		"start_cost_modifier",
-		"nation_designer_unit_type",
-	] {
-		if let Some(text) = extract_assignment_scalar(items, field) {
-			push_resource_reference(index, ctx, key_span, field, text.as_str());
-		}
-	}
-	if let Some(cost_value) =
-		extract_nested_assignment_scalar(items, "nation_designer_cost", "value")
-	{
-		push_resource_reference(
-			index,
-			ctx,
-			key_span,
-			"nation_designer_cost_value",
-			cost_value.as_str(),
-		);
-	}
-}
-
-fn record_diplomacy_history_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) != ScopeKind::File {
-		return;
-	}
-	if is_diplomacy_relation_block(key, value) {
-		push_resource_reference(index, ctx, key_span, "relation_type", key);
-		let AstValue::Block { items, .. } = value else {
-			return;
-		};
-		for field in ["first", "second"] {
-			let Some(text) = extract_assignment_scalar(items, field) else {
-				continue;
-			};
-			if is_country_tag_text(&text) {
-				push_resource_reference(index, ctx, key_span, field, text.as_str());
-			}
-		}
-		return;
-	}
-	if !is_diplomacy_timeline_block(key, value) {
-		return;
-	}
-	let AstValue::Block { items, .. } = value else {
-		return;
-	};
-	for field in ["emperor", "celestial_emperor"] {
-		let Some(text) = extract_assignment_scalar(items, field) else {
-			continue;
-		};
-		if is_country_tag_text(&text) {
-			push_resource_reference(index, ctx, key_span, field, text.as_str());
-		}
-	}
-}
-
-fn record_province_name_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) != ScopeKind::File || !is_province_id_text(key) {
-		return;
-	}
-	let Some(name) = scalar_text(value) else {
-		return;
-	};
-	let Some(table) = province_name_table_id(ctx.path) else {
-		return;
-	};
-	push_resource_reference(index, ctx, key_span, "province_name_table", table.as_str());
-	push_resource_reference(index, ctx, key_span, "province_id", key);
-	push_resource_reference(index, ctx, key_span, "province_name_literal", name.as_str());
-}
-
-fn record_random_map_tile_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &mut BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) != ScopeKind::File {
-		return;
-	}
-	let Some(tile) = random_map_tile_id(ctx.path) else {
-		return;
-	};
-	if !ctx.random_map_tile_emitted {
-		push_resource_reference(index, ctx, key_span, "tile_definition", tile.as_str());
-		ctx.random_map_tile_emitted = true;
-	}
-	if key == "size" {
-		let values = extract_block_scalar_items(value);
-		if !values.is_empty() {
-			push_resource_reference(index, ctx, key_span, "tile_size", &values.join(","));
-		}
-		return;
-	}
-	let values = extract_block_scalar_items(value);
-	if values.len() == 3 && values.iter().all(|item| item.parse::<u16>().is_ok()) {
-		push_resource_reference(index, ctx, key_span, "tile_color_group", key);
-		push_resource_reference(index, ctx, key_span, "tile_color_rgb", &values.join(","));
-	}
-}
-
-fn record_random_map_name_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &mut BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) != ScopeKind::File || key != "random_names" {
-		return;
-	}
-	let Some(table) = random_name_table_id(ctx.path) else {
-		return;
-	};
-	if !ctx.random_name_table_emitted {
-		push_resource_reference(index, ctx, key_span, "random_name_table", table.as_str());
-		ctx.random_name_table_emitted = true;
-	}
-	for entry in extract_block_scalar_items(value) {
-		let (token, category) = entry
-			.split_once(':')
-			.map_or((entry.as_str(), None), |(token, category)| {
-				(token, Some(category))
-			});
-		push_resource_reference(index, ctx, key_span, "random_name_token", token);
-		if let Some(category) = category {
-			push_resource_reference(index, ctx, key_span, "random_name_category", category);
-		}
-	}
-}
-
-fn record_random_map_scenario_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) != ScopeKind::File {
-		return;
-	}
-	let AstValue::Block { items, .. } = value else {
-		return;
-	};
-	push_resource_reference(index, ctx, key_span, "random_map_scenario", key);
-	for field in [
-		"culture_group",
-		"religion",
-		"technology_group",
-		"government",
-		"graphical_culture",
-	] {
-		let Some(text) = extract_assignment_scalar(items, field) else {
-			continue;
-		};
-		push_resource_reference(index, ctx, key_span, field, text.as_str());
-	}
-	for name in extract_named_block_scalar_items(value, "names") {
-		push_resource_reference(index, ctx, key_span, "scenario_name_key", name.as_str());
-	}
-}
-
-fn record_advisor_history_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if scope_kind(index, scope_id) != ScopeKind::File || key != "advisor" {
-		return;
-	}
-	let AstValue::Block { items, .. } = value else {
-		return;
-	};
-	let Some(advisor_id) = extract_assignment_scalar(items, "advisor_id") else {
-		return;
-	};
-	push_resource_reference(
-		index,
-		ctx,
-		key_span,
-		"advisor_definition",
-		&format!("advisor_{advisor_id}"),
-	);
-	push_resource_reference(index, ctx, key_span, "advisor_id", advisor_id.as_str());
-	if let Some(location) = extract_assignment_scalar(items, "location")
-		&& is_province_id_text(&location)
-	{
-		push_resource_reference(index, ctx, key_span, "location", location.as_str());
-	}
-	if let Some(advisor_type) = extract_assignment_scalar(items, "type") {
-		push_resource_reference(index, ctx, key_span, "type", advisor_type.as_str());
-	}
-	if let Some(culture) = extract_assignment_scalar(items, "culture") {
-		push_resource_reference(index, ctx, key_span, "culture", culture.as_str());
-	}
-	if let Some(religion) = extract_assignment_scalar(items, "religion") {
-		push_resource_reference(index, ctx, key_span, "religion", religion.as_str());
-	}
-}
-
-struct NamedDefinitionTableConfig<'a> {
-	definition_key: &'a str,
-	scalar_reference_keys: &'a [&'a str],
-	block_reference_keys: &'a [&'a str],
-}
-
-fn record_named_definition_table_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-	config: NamedDefinitionTableConfig<'_>,
-) {
-	if is_top_level_named_block(index, scope_id, key, value) {
-		push_resource_reference(index, ctx, key_span, config.definition_key, key);
-	}
-	if let Some(text) = scalar_text(value)
-		&& config.scalar_reference_keys.contains(&key)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-	if config.block_reference_keys.contains(&key) {
-		for item in extract_block_scalar_items(value) {
-			push_resource_reference(index, ctx, key_span, key, item.as_str());
-		}
-	}
-}
-
-fn record_fervor_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "fervor_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_decree_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "decree_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_federation_advancement_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "federation_advancement_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"graphical_culture",
-				"government",
-				"icon",
-				"localization",
-				"religion",
-				"technology_group",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &["names"],
-		},
-	);
-	if let Some(text) = scalar_text(value)
-		&& key == "tag"
-		&& is_country_tag_text(&text)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_golden_bull_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "golden_bull_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &["mechanics"],
-		},
-	);
-}
-
-fn record_flagship_modification_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "flagship_modification_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_holy_order_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "holy_order_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_diplomatic_action_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "diplomatic_action_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_scripted_trigger_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "scripted_trigger_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_age_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "age_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_new_diplomatic_action_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if is_new_diplomatic_actions_container_key(key) {
-		return;
-	}
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "new_diplomatic_action_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_building_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "building_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_institution_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "institution_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_naval_doctrine_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "naval_doctrine_definition",
-			scalar_reference_keys: &[
-				"button_gfx",
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_defender_of_faith_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "defender_of_faith_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_isolationism_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "isolationism_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_professionalism_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "professionalism_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"marker_sprite",
-				"tooltip",
-				"custom_tooltip",
-				"unit_sprite_start",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_powerprojection_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "powerprojection_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_subject_type_upgrade_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "subject_type_upgrade_definition",
-			scalar_reference_keys: &[
-				"cost_type",
-				"gfx",
-				"icon",
-				"localization",
-				"tooltip",
-				"custom_tooltip",
-			],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_government_rank_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	record_named_definition_table_resource_semantics(
-		index,
-		scope_id,
-		ctx,
-		key,
-		key_span,
-		value,
-		NamedDefinitionTableConfig {
-			definition_key: "government_rank_definition",
-			scalar_reference_keys: &[],
-			block_reference_keys: &[],
-		},
-	);
-}
-
-fn record_mercenary_company_resource_semantics(
-	index: &mut SemanticIndex,
-	scope_id: usize,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if is_top_level_named_block(index, scope_id, key, value) {
-		push_resource_reference(index, ctx, key_span, "localisation", key);
-		return;
-	}
-	if let Some(text) = scalar_text(value)
-		&& is_mercenary_company_scalar_reference_key(key, text.as_str())
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-	if key != "sprites" {
-		return;
-	}
-	for item in extract_block_scalar_items(value) {
-		push_resource_reference(index, ctx, key_span, key, item.as_str());
-	}
-}
-
-fn record_estate_agenda_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_estate_agenda_scalar_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_estate_privilege_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if let Some(text) = scalar_text(value)
-		&& is_estate_privilege_scalar_reference_key(key)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-
-	if key != "mechanics" {
-		return;
-	}
-	for item in extract_block_scalar_items(value) {
-		push_resource_reference(index, ctx, key_span, key, item.as_str());
-	}
-}
-
-fn record_estate_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	if let Some(text) = scalar_text(value)
-		&& is_estate_scalar_reference_key(key)
-	{
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-
-	let Some(reference_key) = estate_block_reference_key(key) else {
-		return;
-	};
-	for item in extract_block_scalar_items(value) {
-		push_resource_reference(index, ctx, key_span, reference_key, item.as_str());
-	}
-}
-
-fn record_parliament_bribe_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_parliament_bribe_scalar_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_parliament_issue_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_parliament_issue_scalar_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
-	}
-}
-
-fn record_state_edict_resource_semantics(
-	index: &mut SemanticIndex,
-	ctx: &BuildContext<'_>,
-	key: &str,
-	key_span: &SpanRange,
-	value: &AstValue,
-) {
-	let Some(text) = scalar_text(value) else {
-		return;
-	};
-	if is_state_edict_scalar_reference_key(key) {
-		push_resource_reference(index, ctx, key_span, key, text.as_str());
 	}
 }
 
@@ -2350,40 +847,6 @@ fn extract_yes_assignment_keys(value: &AstValue) -> Vec<String> {
 		}
 	}
 	keys
-}
-
-fn is_diplomacy_relation_block(key: &str, value: &AstValue) -> bool {
-	matches!(
-		key,
-		"alliance" | "vassal" | "royal_marriage" | "union" | "dependency" | "guarantee" | "march"
-	) && matches!(value, AstValue::Block { .. })
-}
-
-fn is_diplomacy_timeline_block(key: &str, value: &AstValue) -> bool {
-	matches!(value, AstValue::Block { .. }) && is_clausewitz_date_key(key)
-}
-
-fn is_clausewitz_date_key(key: &str) -> bool {
-	let mut parts = key.split('.');
-	let Some(year) = parts.next() else {
-		return false;
-	};
-	let Some(month) = parts.next() else {
-		return false;
-	};
-	let Some(day) = parts.next() else {
-		return false;
-	};
-	if parts.next().is_some() {
-		return false;
-	}
-	year.parse::<u32>().is_ok()
-		&& month
-			.parse::<u32>()
-			.is_ok_and(|value| (1..=12).contains(&value))
-		&& day
-			.parse::<u32>()
-			.is_ok_and(|value| (1..=31).contains(&value))
 }
 
 fn extract_nested_assignment_scalar(
@@ -2535,7 +998,7 @@ fn top_level_symbol_kind(
 		}
 		ScriptFileKind::DiplomaticActions if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
 		ScriptFileKind::NewDiplomaticActions
-			if !is_keyword(key) && !is_new_diplomatic_actions_container_key(key) =>
+			if !is_keyword(key) && !matches!(key, "static_actions") =>
 		{
 			Some(SymbolKind::DiplomaticAction)
 		}
@@ -2562,10 +1025,6 @@ fn symbol_definition_kind(
 		return Some(SymbolKind::Decision);
 	}
 	None
-}
-
-fn is_new_diplomatic_actions_container_key(key: &str) -> bool {
-	matches!(key, "static_actions")
 }
 
 fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
@@ -3025,6 +1484,10 @@ fn is_country_tag_text(value: &str) -> bool {
 	value.len() == 3 && value.chars().all(|ch| ch.is_ascii_uppercase())
 }
 
+fn is_country_tag_selector(key: &str) -> bool {
+	key.len() == 3 && key.chars().all(|ch| ch.is_ascii_uppercase())
+}
+
 fn is_province_id_text(value: &str) -> bool {
 	value.parse::<u32>().is_ok_and(|id| id > 0)
 }
@@ -3048,156 +1511,6 @@ fn random_name_table_id(path: &Path) -> Option<String> {
 		Some("RandomLakeNames") => Some("random_lake_names".to_string()),
 		_ => None,
 	}
-}
-
-fn is_country_history_province_reference_key(key: &str) -> bool {
-	matches!(key, "capital")
-}
-
-fn is_country_history_country_reference_key(key: &str) -> bool {
-	matches!(key, "country_of_origin")
-}
-
-fn is_province_history_country_reference_key(key: &str) -> bool {
-	matches!(key, "add_core" | "owner" | "controller")
-}
-
-fn is_war_history_country_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"add_attacker" | "add_defender" | "rem_attacker" | "rem_defender" | "country"
-	)
-}
-
-fn is_war_history_province_reference_key(key: &str) -> bool {
-	matches!(key, "location")
-}
-
-fn is_country_tag_selector(key: &str) -> bool {
-	key.len() == 3 && key.chars().all(|ch| ch.is_ascii_uppercase())
-}
-
-fn is_country_metadata_scalar_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"graphical_culture" | "second_graphical_culture" | "preferred_religion"
-	)
-}
-
-fn country_metadata_block_reference_key(key: &str) -> Option<&'static str> {
-	match key {
-		"historical_idea_groups" => Some("historical_idea_groups"),
-		"historical_units" => Some("historical_units"),
-		_ => None,
-	}
-}
-
-fn is_unit_definition_reference_key(key: &str) -> bool {
-	matches!(key, "type" | "unit_type")
-}
-
-fn religion_block_reference_key(key: &str) -> Option<&'static str> {
-	match key {
-		"allowed_conversion" => Some("allowed_conversion"),
-		"heretic" => Some("heretic"),
-		_ => None,
-	}
-}
-
-fn is_subject_type_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"copy_from"
-			| "sprite"
-			| "diplomacy_overlord_sprite"
-			| "diplomacy_subject_sprite"
-			| "overlord_opinion_modifier"
-			| "subject_opinion_modifier"
-	)
-}
-
-fn is_rebel_type_reference_key(key: &str) -> bool {
-	matches!(key, "gfx_type" | "demands_description")
-}
-
-fn is_disaster_scalar_reference_key(key: &str) -> bool {
-	matches!(key, "on_start" | "on_end" | "has_disaster")
-}
-
-fn disaster_block_reference_key(key: &str) -> Option<&'static str> {
-	match key {
-		"events" => Some("event"),
-		"random_events" => Some("event"),
-		_ => None,
-	}
-}
-
-fn is_government_mechanic_scalar_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"gui" | "mechanic_type" | "power_type" | "custom_tooltip"
-	)
-}
-
-fn is_peace_treaty_scalar_reference_key(key: &str) -> bool {
-	matches!(key, "power_projection")
-}
-
-fn is_bookmark_localisation_reference_key(key: &str) -> bool {
-	matches!(key, "name" | "desc")
-}
-
-fn is_mercenary_company_scalar_reference_key(key: &str, value: &str) -> bool {
-	match key {
-		"home_province" => is_province_id_text(value),
-		"mercenary_desc_key" => true,
-		"tag" => is_country_tag_text(value),
-		_ => false,
-	}
-}
-
-fn is_estate_agenda_scalar_reference_key(key: &str) -> bool {
-	matches!(key, "estate" | "custom_tooltip" | "tooltip")
-}
-
-fn is_estate_privilege_scalar_reference_key(key: &str) -> bool {
-	matches!(key, "icon" | "custom_tooltip" | "estate")
-}
-
-fn is_estate_scalar_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"custom_name" | "custom_desc" | "starting_reform" | "independence_government"
-	)
-}
-
-fn estate_block_reference_key(key: &str) -> Option<&'static str> {
-	match key {
-		"privileges" => Some("privileges"),
-		"agendas" => Some("agendas"),
-		_ => None,
-	}
-}
-
-fn is_parliament_bribe_scalar_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"name" | "estate" | "mechanic_type" | "power_type" | "type"
-	)
-}
-
-fn is_parliament_issue_scalar_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"parliament_action" | "issue" | "estate" | "custom_tooltip"
-	)
-}
-
-fn is_state_edict_scalar_reference_key(key: &str) -> bool {
-	matches!(
-		key,
-		"tooltip" | "custom_trigger_tooltip" | "has_state_edict"
-	)
 }
 
 fn is_province_id_selector(key: &str) -> bool {
@@ -10176,6 +8489,120 @@ country_event = {
 				finding.rule_id == "S002" && finding.message.contains("missing_outer_effect")
 			}),
 			"generic block inside an event should not report S002"
+		);
+	}
+
+	#[test]
+	fn extractor_for_returns_none_for_families_without_extractors() {
+		use super::extractors;
+		use super::super::content_family::{
+			ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyPathMatcher,
+			ModuleNameRule,
+		};
+		use foch_core::model::ScopeType;
+		let descriptor = ContentFamilyDescriptor {
+			id: "events",
+			matcher: ContentFamilyPathMatcher::Prefix("events/"),
+			script_file_kind: ScriptFileKind::Events,
+			module_name_rule: ModuleNameRule::Static("events"),
+			scope_policy: super::super::content_family::ContentFamilyScopePolicy {
+				root_scope: ScopeType::Unknown,
+				from_alias: None,
+			},
+			capabilities: ContentFamilyCapabilities::default(),
+			extractor: super::super::content_family::ContentFamilyExtractor::None,
+		};
+		assert!(extractors::extractor_for(&descriptor).is_none());
+	}
+
+	#[test]
+	fn extractor_for_returns_some_for_registered_families() {
+		use super::extractors;
+		use super::super::content_family::GameProfile;
+		use super::super::eu4_profile::eu4_profile;
+		let profile = eu4_profile();
+		let descriptor = profile
+			.classify_content_family(std::path::Path::new("common/fervor/test.txt"))
+			.expect("fervor family");
+		assert!(extractors::extractor_for(descriptor).is_some());
+	}
+
+	#[test]
+	fn named_definition_table_extractor_emits_definition_reference() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("fervor")).expect("create fervor");
+		fs::write(
+			mod_root.join("common").join("fervor").join("test.txt"),
+			"test_fervor_aspect = {\n\tgfx = test_gfx\n}\n",
+		)
+		.expect("write fervor");
+		let parsed = [parse_script_file(
+			"1000",
+			&mod_root,
+			&mod_root.join("common").join("fervor").join("test.txt"),
+		)
+		.expect("parsed")];
+		let index = build_semantic_index(&parsed);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == "fervor_definition" && r.value == "test_fervor_aspect"),
+			"should emit fervor_definition reference"
+		);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == "gfx" && r.value == "test_gfx"),
+			"should emit gfx scalar reference"
+		);
+	}
+
+	#[test]
+	fn top_level_named_block_extractor_emits_localisation_references() {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		fs::create_dir_all(mod_root.join("common").join("church_aspects")).expect("create dir");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("church_aspects")
+				.join("test.txt"),
+			"test_aspect = {\n\teffect = { add_stability = 1 }\n}\n",
+		)
+		.expect("write");
+		let parsed = [parse_script_file(
+			"1000",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("church_aspects")
+				.join("test.txt"),
+		)
+		.expect("parsed")];
+		let index = build_semantic_index(&parsed);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == "localisation" && r.value == "test_aspect"),
+			"should emit localisation key"
+		);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == "localisation_desc" && r.value == "desc_test_aspect"),
+			"should emit localisation_desc with prefix"
+		);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == "localisation_modifier" && r.value == "test_aspect_modifier"),
+			"should emit localisation_modifier with suffix"
 		);
 	}
 }
