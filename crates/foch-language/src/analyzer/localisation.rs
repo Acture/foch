@@ -1,8 +1,4 @@
-use encoding_rs::{GBK, WINDOWS_1252};
-use foch_core::model::{
-	DecodedLocalisationValue, LocalisationDefinition, LocalisationDuplicate,
-	LocalisationValueEncoding, ParseIssue,
-};
+use foch_core::model::{LocalisationDefinition, LocalisationDuplicate, ParseIssue};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -10,8 +6,6 @@ use std::path::Path;
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedLocalisationEntryData {
 	pub definition: LocalisationDefinition,
-	#[allow(dead_code)]
-	pub decoded_value: DecodedLocalisationValue,
 }
 
 #[derive(Clone, Debug)]
@@ -130,10 +124,7 @@ pub(crate) fn parse_localisation_file(
 			});
 		}
 
-		entries.push(ParsedLocalisationEntryData {
-			definition,
-			decoded_value: decode_localisation_value(entry.raw_value),
-		});
+		entries.push(ParsedLocalisationEntryData { definition });
 	}
 
 	if saw_active_line && !header_seen && !header_issue_emitted {
@@ -210,9 +201,8 @@ pub(crate) fn collect_localisation_definitions_from_root(
 	definitions
 }
 
-struct ParsedLocalisationEntry<'a> {
+struct ParsedLocalisationEntry {
 	key: String,
-	raw_value: &'a [u8],
 }
 
 fn normalize_localisation_source(raw: &[u8]) -> Result<Vec<u8>, String> {
@@ -309,7 +299,7 @@ fn parse_localisation_header_bytes(line: &[u8]) -> Option<&str> {
 	Some(lang)
 }
 
-fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry<'_>> {
+fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry> {
 	let trimmed = trim_ascii_start(line);
 	let colon_idx = trimmed.iter().position(|byte| *byte == b':')?;
 	let key_bytes = &trimmed[..colon_idx];
@@ -337,152 +327,7 @@ fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry
 	if !trailing.is_empty() && trailing.first() != Some(&b'#') {
 		return None;
 	}
-	Some(ParsedLocalisationEntry {
-		key,
-		raw_value: &value_region[..value_end],
-	})
-}
-
-fn decode_localisation_value(raw: &[u8]) -> DecodedLocalisationValue {
-	if let Ok(decoded) = std::str::from_utf8(raw) {
-		return DecodedLocalisationValue {
-			raw_bytes: raw.to_vec(),
-			decoded_value: Some(decoded.to_string()),
-			decode_kind: LocalisationValueEncoding::Utf8,
-			decode_ok: true,
-		};
-	}
-
-	if looks_like_eu4dll_escape(raw)
-		&& let Some(decoded) = decode_eu4dll_escape(raw)
-	{
-		return DecodedLocalisationValue {
-			raw_bytes: raw.to_vec(),
-			decoded_value: Some(decoded),
-			decode_kind: LocalisationValueEncoding::Eu4DllEscape,
-			decode_ok: true,
-		};
-	}
-
-	let (decoded, _, had_errors) = GBK.decode(raw);
-	if !had_errors {
-		return DecodedLocalisationValue {
-			raw_bytes: raw.to_vec(),
-			decoded_value: Some(decoded.into_owned()),
-			decode_kind: LocalisationValueEncoding::Gb18030,
-			decode_ok: true,
-		};
-	}
-
-	let (decoded, _, had_errors) = WINDOWS_1252.decode(raw);
-	if !had_errors {
-		return DecodedLocalisationValue {
-			raw_bytes: raw.to_vec(),
-			decoded_value: Some(decoded.into_owned()),
-			decode_kind: LocalisationValueEncoding::Windows1252,
-			decode_ok: true,
-		};
-	}
-
-	if let Some(decoded) = decode_eu4dll_escape(raw) {
-		return DecodedLocalisationValue {
-			raw_bytes: raw.to_vec(),
-			decoded_value: Some(decoded),
-			decode_kind: LocalisationValueEncoding::Eu4DllEscape,
-			decode_ok: true,
-		};
-	}
-
-	DecodedLocalisationValue {
-		raw_bytes: raw.to_vec(),
-		decoded_value: None,
-		decode_kind: LocalisationValueEncoding::RawBytes,
-		decode_ok: false,
-	}
-}
-
-fn looks_like_eu4dll_escape(raw: &[u8]) -> bool {
-	let mut idx = 0usize;
-	let mut escapes = 0usize;
-	while idx < raw.len() {
-		match raw[idx] {
-			0x10..=0x13 => {
-				if idx + 2 >= raw.len() {
-					return false;
-				}
-				escapes += 1;
-				idx += 3;
-			}
-			_ => idx += 1,
-		}
-	}
-	escapes > 0
-}
-
-fn decode_eu4dll_escape(raw: &[u8]) -> Option<String> {
-	let mut out = String::new();
-	let mut idx = 0usize;
-	while idx < raw.len() {
-		let byte = raw[idx];
-		idx += 1;
-		let mut code_point = match byte {
-			0x10..=0x13 => {
-				if idx + 1 >= raw.len() {
-					return None;
-				}
-				let low = raw[idx] as u32;
-				let high = raw[idx + 1] as u32;
-				idx += 2;
-				let mut code = (high << 8) + low;
-				match byte {
-					0x11 => code = code.saturating_sub(0xE),
-					0x12 => code += 0x900,
-					0x13 => code += 0x8F2,
-					_ => {}
-				}
-				code
-			}
-			other => cp1252_to_ucs2(other),
-		};
-		if code_point > 0xFFFF || (code_point > 0x100 && code_point < 0x98F) {
-			code_point = 0x2026;
-		}
-		out.push(char::from_u32(code_point).unwrap_or('\u{2026}'));
-	}
-	Some(out)
-}
-
-fn cp1252_to_ucs2(cp: u8) -> u32 {
-	match cp {
-		0x80 => 0x20AC,
-		0x82 => 0x201A,
-		0x83 => 0x0192,
-		0x84 => 0x201E,
-		0x85 => 0x2026,
-		0x86 => 0x2020,
-		0x87 => 0x2021,
-		0x88 => 0x02C6,
-		0x89 => 0x2030,
-		0x8A => 0x0160,
-		0x8B => 0x2039,
-		0x8C => 0x0152,
-		0x8E => 0x017D,
-		0x91 => 0x2018,
-		0x92 => 0x2019,
-		0x93 => 0x201C,
-		0x94 => 0x201D,
-		0x95 => 0x2022,
-		0x96 => 0x2013,
-		0x97 => 0x2014,
-		0x98 => 0x02DC,
-		0x99 => 0x2122,
-		0x9A => 0x0161,
-		0x9B => 0x203A,
-		0x9C => 0x0153,
-		0x9E => 0x017E,
-		0x9F => 0x0178,
-		_ => cp as u32,
-	}
+	Some(ParsedLocalisationEntry { key })
 }
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -496,16 +341,10 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-	use super::{decode_eu4dll_escape, parse_localisation_file};
+	use super::parse_localisation_file;
 	use std::fs;
 	use std::path::PathBuf;
 	use tempfile::TempDir;
-
-	#[test]
-	fn eu4dll_escape_decode_handles_multibyte_escape_sequence() {
-		let decoded = decode_eu4dll_escape(&[0x10, 0x2d, 0x4e]).expect("decode escape");
-		assert_eq!(decoded, "中");
-	}
 
 	#[test]
 	fn parser_accepts_gbk_value_bytes_without_utf8_lossy() {

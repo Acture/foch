@@ -392,27 +392,6 @@ pub struct LocalisationDefinition {
 	pub column: usize,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LocalisationValueEncoding {
-	Utf8,
-	Utf16Le,
-	Utf16Be,
-	Gb18030,
-	Windows1252,
-	Eu4DllEscape,
-	RawBytes,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DecodedLocalisationValue {
-	pub raw_bytes: Vec<u8>,
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub decoded_value: Option<String>,
-	pub decode_kind: LocalisationValueEncoding,
-	pub decode_ok: bool,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalisationDuplicate {
 	pub key: String,

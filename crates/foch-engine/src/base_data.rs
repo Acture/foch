@@ -2636,15 +2636,6 @@ fn dedup_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 	result
 }
 
-#[allow(dead_code)]
-fn modified_nanos(metadata: &fs::Metadata) -> u128 {
-	metadata
-		.modified()
-		.ok()
-		.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-		.map_or(0, |duration| duration.as_nanos())
-}
-
 #[cfg(test)]
 mod tests {
 	use super::{
