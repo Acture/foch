@@ -1139,6 +1139,18 @@ static INSTITUTIONS: NamedDefinitionTable = NamedDefinitionTable {
 	block_reference_keys: &[],
 };
 
+static IDEAS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "idea_group_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static GOVERNMENT_REFORMS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "government_reform_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
 static NAVAL_DOCTRINES: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "naval_doctrine_definition",
 	scalar_reference_keys: &[
@@ -1359,6 +1371,8 @@ pub(super) fn extractor_for(
 		"common/ages" => Some(&AGES),
 		"common/buildings" => Some(&BUILDINGS),
 		"common/institutions" => Some(&INSTITUTIONS),
+		"common/ideas" => Some(&IDEAS),
+		"common/government_reforms" => Some(&GOVERNMENT_REFORMS),
 		"common/naval_doctrines" => Some(&NAVAL_DOCTRINES),
 		"common/defender_of_faith" => Some(&DEFENDER_OF_FAITH),
 		"common/isolationism" => Some(&ISOLATIONISM),

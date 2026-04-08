@@ -250,6 +250,12 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/ideas/00_ideas.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
 				path: PathBuf::from("common/technologies/adm.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
@@ -981,6 +987,14 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			column: 1,
 		},
 		ResourceReference {
+			key: "idea_group_definition".to_string(),
+			value: "coverage_ideas".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/ideas/00_ideas.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
 			key: "monarch_power".to_string(),
 			value: "ADM".to_string(),
 			mod_id: "__game__eu4".to_string(),
@@ -1554,6 +1568,13 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 		.find(|item| item.root_family == "common/institutions")
 		.expect("institutions coverage");
 	assert_eq!(institutions.coverage_class, CoverageClass::SemanticComplete);
+
+	let ideas = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/ideas")
+		.expect("ideas coverage");
+	assert_eq!(ideas.coverage_class, CoverageClass::SemanticComplete);
 
 	let country_tags = report
 		.roots

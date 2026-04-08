@@ -718,8 +718,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::Ideas,
 		ModuleNameRule::Static("ideas"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::Ideas,
 	),
 	prefix_descriptor(
 		"common/great_projects",
@@ -736,8 +736,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::GovernmentReforms,
 		ModuleNameRule::Static("government_reforms"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::GovernmentReforms,
 	),
 	prefix_descriptor(
 		"common/cultures",

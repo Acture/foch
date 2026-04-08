@@ -3930,6 +3930,101 @@ on_start = {
 }
 
 #[test]
+fn ideas_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("ideas")).expect("create ideas");
+	fs::write(
+		mod_root.join("common").join("ideas").join("ideas.txt"),
+		r#"
+coverage_ideas = {
+	start = {
+		add_prestige = 1
+	}
+	bonus = {
+		global_tax_modifier = 0.1
+	}
+	coverage_idea_1 = {
+		inflation_reduction = 0.05
+	}
+}
+"#,
+	)
+	.expect("write ideas");
+
+	let parsed = [parse_script_file(
+		"1012",
+		&mod_root,
+		&mod_root.join("common").join("ideas").join("ideas.txt"),
+	)
+	.expect("parsed ideas")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/ideas/ideas.txt")
+			&& reference.key == "idea_group_definition"
+			&& reference.value == "coverage_ideas"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "idea_group_definition" && reference.value == "start"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "idea_group_definition" && reference.value == "bonus"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "idea_group_definition" && reference.value == "coverage_idea_1"
+	}));
+}
+
+#[test]
+fn government_reforms_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("government_reforms"))
+		.expect("create government reforms");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("government_reforms")
+			.join("reforms.txt"),
+		r#"
+test_reform = {
+	ai_will_do = {
+		factor = 1
+	}
+	modifiers = {
+		global_tax_modifier = 0.1
+	}
+}
+"#,
+	)
+	.expect("write government reforms");
+
+	let parsed = [parse_script_file(
+		"1018",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("government_reforms")
+			.join("reforms.txt"),
+	)
+	.expect("parsed government reforms")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/government_reforms/reforms.txt")
+			&& reference.key == "government_reform_definition"
+			&& reference.value == "test_reform"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "government_reform_definition" && reference.value == "ai_will_do"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "government_reform_definition" && reference.value == "modifiers"
+	}));
+}
+
+#[test]
 fn scripted_triggers_emit_top_level_definition_resources() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
