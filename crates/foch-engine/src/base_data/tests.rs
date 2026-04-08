@@ -250,6 +250,24 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/advisortypes/00_advisortypes.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/government_names/00_coverage_government_names.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/event_modifiers/00_modifiers.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
 				path: PathBuf::from("common/province_triggered_modifiers/00_modifiers.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
@@ -999,6 +1017,30 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			column: 1,
 		},
 		ResourceReference {
+			key: "advisor_type_definition".to_string(),
+			value: "coverage_advisor".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/advisortypes/00_advisortypes.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
+			key: "government_name_definition".to_string(),
+			value: "coverage_government_names".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/government_names/00_coverage_government_names.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
+			key: "event_modifier_definition".to_string(),
+			value: "coverage_event_modifier".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/event_modifiers/00_modifiers.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
 			key: "province_triggered_modifier_definition".to_string(),
 			value: "coverage_ptm".to_string(),
 			mod_id: "__game__eu4".to_string(),
@@ -1596,6 +1638,33 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 		.find(|item| item.root_family == "common/institutions")
 		.expect("institutions coverage");
 	assert_eq!(institutions.coverage_class, CoverageClass::SemanticComplete);
+
+	let advisortypes = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/advisortypes")
+		.expect("advisortypes coverage");
+	assert_eq!(advisortypes.coverage_class, CoverageClass::SemanticComplete);
+
+	let government_names = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/government_names")
+		.expect("government names coverage");
+	assert_eq!(
+		government_names.coverage_class,
+		CoverageClass::SemanticComplete
+	);
+
+	let event_modifiers = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/event_modifiers")
+		.expect("event modifiers coverage");
+	assert_eq!(
+		event_modifiers.coverage_class,
+		CoverageClass::SemanticComplete
+	);
 
 	let province_triggered_modifiers = report
 		.roots
