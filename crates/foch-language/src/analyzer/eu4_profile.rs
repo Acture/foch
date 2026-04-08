@@ -709,8 +709,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::ProvinceTriggeredModifiers,
 		ModuleNameRule::Static("province_triggered_modifiers"),
 		scope(ScopeType::Province),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::ProvinceTriggeredModifiers,
 	),
 	prefix_descriptor(
 		"common/ideas",
@@ -781,8 +781,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::CbTypes,
 		ModuleNameRule::Static("cb_types"),
 		country_from_scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::CbTypes,
 	),
 	prefix_descriptor(
 		"common/government_names",

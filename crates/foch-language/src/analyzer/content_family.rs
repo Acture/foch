@@ -169,6 +169,8 @@ pub enum ContentFamilyExtractor {
 	StateEdicts,
 	Ages,
 	Institutions,
+	ProvinceTriggeredModifiers,
+	CbTypes,
 	Ideas,
 	GovernmentReforms,
 	DiplomaticActions,
