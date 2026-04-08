@@ -1,12 +1,13 @@
-use super::{
-	BuildContext, extract_assignment_scalar, extract_block_scalar_items, extract_named_block_member_keys,
-	extract_named_block_scalar_items, extract_nested_assignment_scalar, extract_yes_assignment_keys,
-	is_country_file_reference, is_country_tag_text, is_named_block_in_top_level_block,
-	is_province_id_text, is_top_level_named_block, monarch_power_prefix, province_name_table_id,
-	push_resource_reference, random_map_tile_id, random_name_table_id, scalar_text, scope_kind,
-};
 use super::super::content_family::ContentFamilyDescriptor;
 use super::super::parser::{AstValue, SpanRange};
+use super::{
+	BuildContext, extract_assignment_scalar, extract_block_scalar_items,
+	extract_named_block_member_keys, extract_named_block_scalar_items,
+	extract_nested_assignment_scalar, extract_yes_assignment_keys, is_country_file_reference,
+	is_country_tag_text, is_named_block_in_top_level_block, is_province_id_text,
+	is_top_level_named_block, monarch_power_prefix, province_name_table_id,
+	push_resource_reference, random_map_tile_id, random_name_table_id, scalar_text, scope_kind,
+};
 use foch_core::model::{ScopeKind, SemanticIndex};
 
 // ---------------------------------------------------------------------------
@@ -195,7 +196,13 @@ impl ResourceExtractor for CountryTagsExtractor {
 		{
 			return;
 		}
-		push_resource_reference(index, ctx, key_span, &format!("country_tag:{key}"), text.as_str());
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			&format!("country_tag:{key}"),
+			text.as_str(),
+		);
 	}
 }
 
@@ -379,7 +386,13 @@ impl ResourceExtractor for PeaceTreatiesExtractor {
 		value: &AstValue,
 	) {
 		if is_top_level_named_block(index, scope_id, key, value) {
-			push_resource_reference(index, ctx, key_span, "localisation_desc", &format!("{key}_desc"));
+			push_resource_reference(
+				index,
+				ctx,
+				key_span,
+				"localisation_desc",
+				&format!("{key}_desc"),
+			);
 			push_resource_reference(
 				index,
 				ctx,
@@ -486,12 +499,24 @@ impl ResourceExtractor for TechnologiesExtractor {
 		};
 		let definition_key = format!("{prefix}_tech_{}", ctx.technology_definition_ordinal);
 		ctx.technology_definition_ordinal += 1;
-		push_resource_reference(index, ctx, key_span, "technology_definition", definition_key.as_str());
+		push_resource_reference(
+			index,
+			ctx,
+			key_span,
+			"technology_definition",
+			definition_key.as_str(),
+		);
 		for year in extract_named_block_scalar_items(value, "year") {
 			push_resource_reference(index, ctx, key_span, "year", year.as_str());
 		}
 		for institution in extract_named_block_member_keys(value, "expects_institution") {
-			push_resource_reference(index, ctx, key_span, "expects_institution", institution.as_str());
+			push_resource_reference(
+				index,
+				ctx,
+				key_span,
+				"expects_institution",
+				institution.as_str(),
+			);
 		}
 		for enable in extract_yes_assignment_keys(value) {
 			push_resource_reference(index, ctx, key_span, "enable", enable.as_str());
@@ -517,14 +542,25 @@ impl ResourceExtractor for TechnologyGroupsExtractor {
 		let AstValue::Block { items, .. } = value else {
 			return;
 		};
-		for field in ["start_level", "start_cost_modifier", "nation_designer_unit_type"] {
+		for field in [
+			"start_level",
+			"start_cost_modifier",
+			"nation_designer_unit_type",
+		] {
 			if let Some(text) = extract_assignment_scalar(items, field) {
 				push_resource_reference(index, ctx, key_span, field, text.as_str());
 			}
 		}
-		if let Some(cost_value) = extract_nested_assignment_scalar(items, "nation_designer_cost", "value")
+		if let Some(cost_value) =
+			extract_nested_assignment_scalar(items, "nation_designer_cost", "value")
 		{
-			push_resource_reference(index, ctx, key_span, "nation_designer_cost_value", cost_value.as_str());
+			push_resource_reference(
+				index,
+				ctx,
+				key_span,
+				"nation_designer_cost_value",
+				cost_value.as_str(),
+			);
 		}
 	}
 }
@@ -768,7 +804,13 @@ impl ResourceExtractor for NewDiplomaticActionsExtractor {
 			return;
 		}
 		if is_top_level_named_block(index, scope_id, key, value) {
-			push_resource_reference(index, ctx, key_span, "new_diplomatic_action_definition", key);
+			push_resource_reference(
+				index,
+				ctx,
+				key_span,
+				"new_diplomatic_action_definition",
+				key,
+			);
 		}
 	}
 }
@@ -1004,31 +1046,66 @@ fn is_clausewitz_date_key(key: &str) -> bool {
 
 static FERVOR: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "fervor_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
 static DECREES: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "decree_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
 static GOLDEN_BULLS: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "golden_bull_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &["mechanics"],
 };
 
 static FLAGSHIP_MODIFICATIONS: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "flagship_modification_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
 static HOLY_ORDERS: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "holy_order_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
@@ -1064,19 +1141,41 @@ static INSTITUTIONS: NamedDefinitionTable = NamedDefinitionTable {
 
 static NAVAL_DOCTRINES: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "naval_doctrine_definition",
-	scalar_reference_keys: &["button_gfx", "cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"button_gfx",
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
 static DEFENDER_OF_FAITH: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "defender_of_faith_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
 static ISOLATIONISM: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "isolationism_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
@@ -1097,13 +1196,27 @@ static PROFESSIONALISM: NamedDefinitionTable = NamedDefinitionTable {
 
 static POWERPROJECTION: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "powerprojection_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
 static SUBJECT_TYPE_UPGRADES: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "subject_type_upgrade_definition",
-	scalar_reference_keys: &["cost_type", "gfx", "icon", "localization", "tooltip", "custom_tooltip"],
+	scalar_reference_keys: &[
+		"cost_type",
+		"gfx",
+		"icon",
+		"localization",
+		"tooltip",
+		"custom_tooltip",
+	],
 	block_reference_keys: &[],
 };
 
@@ -1153,48 +1266,77 @@ static ESTATES: ScalarBlockRefExtractor = ScalarBlockRefExtractor {
 
 static CHURCH_ASPECTS: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
 	localisation: &[
-		LocalisationSuffix { ref_key: "localisation", format: LocalisationFormat::Key },
-		LocalisationSuffix { ref_key: "localisation_desc", format: LocalisationFormat::Prefix("desc_") },
-		LocalisationSuffix { ref_key: "localisation_modifier", format: LocalisationFormat::Suffix("_modifier") },
+		LocalisationSuffix {
+			ref_key: "localisation",
+			format: LocalisationFormat::Key,
+		},
+		LocalisationSuffix {
+			ref_key: "localisation_desc",
+			format: LocalisationFormat::Prefix("desc_"),
+		},
+		LocalisationSuffix {
+			ref_key: "localisation_modifier",
+			format: LocalisationFormat::Suffix("_modifier"),
+		},
 	],
 	extra_scalar_keys: &[],
 };
 
 static HEGEMONS: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
-	localisation: &[
-		LocalisationSuffix { ref_key: "localisation", format: LocalisationFormat::Key },
-	],
+	localisation: &[LocalisationSuffix {
+		ref_key: "localisation",
+		format: LocalisationFormat::Key,
+	}],
 	extra_scalar_keys: &[],
 };
 
 static PERSONAL_DEITIES: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
 	localisation: &[
-		LocalisationSuffix { ref_key: "localisation", format: LocalisationFormat::Key },
-		LocalisationSuffix { ref_key: "localisation_desc", format: LocalisationFormat::Suffix("_desc") },
+		LocalisationSuffix {
+			ref_key: "localisation",
+			format: LocalisationFormat::Key,
+		},
+		LocalisationSuffix {
+			ref_key: "localisation_desc",
+			format: LocalisationFormat::Suffix("_desc"),
+		},
 	],
 	extra_scalar_keys: &[],
 };
 
 static FETISHIST_CULTS: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
 	localisation: &[
-		LocalisationSuffix { ref_key: "localisation", format: LocalisationFormat::Key },
-		LocalisationSuffix { ref_key: "localisation_desc", format: LocalisationFormat::Suffix("_desc") },
+		LocalisationSuffix {
+			ref_key: "localisation",
+			format: LocalisationFormat::Key,
+		},
+		LocalisationSuffix {
+			ref_key: "localisation_desc",
+			format: LocalisationFormat::Suffix("_desc"),
+		},
 	],
 	extra_scalar_keys: &[],
 };
 
 static FACTIONS: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
 	localisation: &[
-		LocalisationSuffix { ref_key: "localisation", format: LocalisationFormat::Key },
-		LocalisationSuffix { ref_key: "localisation_influence", format: LocalisationFormat::Suffix("_influence") },
+		LocalisationSuffix {
+			ref_key: "localisation",
+			format: LocalisationFormat::Key,
+		},
+		LocalisationSuffix {
+			ref_key: "localisation_influence",
+			format: LocalisationFormat::Suffix("_influence"),
+		},
 	],
 	extra_scalar_keys: &["monarch_power"],
 };
 
 static POLICIES: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
-	localisation: &[
-		LocalisationSuffix { ref_key: "localisation", format: LocalisationFormat::Key },
-	],
+	localisation: &[LocalisationSuffix {
+		ref_key: "localisation",
+		format: LocalisationFormat::Key,
+	}],
 	extra_scalar_keys: &["monarch_power"],
 };
 
@@ -1202,7 +1344,9 @@ static POLICIES: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
 // Lookup
 // ---------------------------------------------------------------------------
 
-pub(super) fn extractor_for(descriptor: &ContentFamilyDescriptor) -> Option<&'static dyn ResourceExtractor> {
+pub(super) fn extractor_for(
+	descriptor: &ContentFamilyDescriptor,
+) -> Option<&'static dyn ResourceExtractor> {
 	match descriptor.id {
 		// NamedDefinitionTable
 		"common/fervor" => Some(&FERVOR),
