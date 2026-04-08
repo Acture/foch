@@ -1139,6 +1139,24 @@ static INSTITUTIONS: NamedDefinitionTable = NamedDefinitionTable {
 	block_reference_keys: &[],
 };
 
+static ADVISOR_TYPES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "advisor_type_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static GOVERNMENT_NAMES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "government_name_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static EVENT_MODIFIERS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "event_modifier_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
 static PROVINCE_TRIGGERED_MODIFIERS: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "province_triggered_modifier_definition",
 	scalar_reference_keys: &[],
@@ -1383,6 +1401,9 @@ pub(super) fn extractor_for(
 		"common/ages" => Some(&AGES),
 		"common/buildings" => Some(&BUILDINGS),
 		"common/institutions" => Some(&INSTITUTIONS),
+		"common/advisortypes" => Some(&ADVISOR_TYPES),
+		"common/government_names" => Some(&GOVERNMENT_NAMES),
+		"common/event_modifiers" => Some(&EVENT_MODIFIERS),
 		"common/province_triggered_modifiers" => Some(&PROVINCE_TRIGGERED_MODIFIERS),
 		"common/cb_types" => Some(&CB_TYPES),
 		"common/ideas" => Some(&IDEAS),

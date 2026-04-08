@@ -3977,6 +3977,131 @@ coverage_ideas = {
 }
 
 #[test]
+fn advisortypes_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("advisortypes")).expect("create advisortypes");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("advisortypes")
+			.join("advisors.txt"),
+		r#"
+coverage_advisor = {
+	trigger = {
+		always = yes
+	}
+}
+"#,
+	)
+	.expect("write advisortypes");
+
+	let parsed = [parse_script_file(
+		"1013",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("advisortypes")
+			.join("advisors.txt"),
+	)
+	.expect("parsed advisortypes")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/advisortypes/advisors.txt")
+			&& reference.key == "advisor_type_definition"
+			&& reference.value == "coverage_advisor"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "advisor_type_definition" && reference.value == "trigger"
+	}));
+}
+
+#[test]
+fn government_names_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("government_names"))
+		.expect("create government names");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("government_names")
+			.join("names.txt"),
+		r#"
+coverage_government_names = {
+	trigger = {
+		always = yes
+	}
+}
+"#,
+	)
+	.expect("write government names");
+
+	let parsed = [parse_script_file(
+		"1014",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("government_names")
+			.join("names.txt"),
+	)
+	.expect("parsed government names")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/government_names/names.txt")
+			&& reference.key == "government_name_definition"
+			&& reference.value == "coverage_government_names"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "government_name_definition" && reference.value == "trigger"
+	}));
+}
+
+#[test]
+fn event_modifiers_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("event_modifiers"))
+		.expect("create event modifiers");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("event_modifiers")
+			.join("modifiers.txt"),
+		r#"
+coverage_event_modifier = {
+	trigger = {
+		always = yes
+	}
+}
+"#,
+	)
+	.expect("write event modifiers");
+
+	let parsed = [parse_script_file(
+		"1015",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("event_modifiers")
+			.join("modifiers.txt"),
+	)
+	.expect("parsed event modifiers")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/event_modifiers/modifiers.txt")
+			&& reference.key == "event_modifier_definition"
+			&& reference.value == "coverage_event_modifier"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "event_modifier_definition" && reference.value == "trigger"
+	}));
+}
+
+#[test]
 fn province_triggered_modifiers_emit_top_level_definition_resources() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");

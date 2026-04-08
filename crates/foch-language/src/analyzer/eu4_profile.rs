@@ -763,8 +763,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::AdvisorTypes,
 		ModuleNameRule::Static("advisortypes"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::AdvisorTypes,
 	),
 	prefix_descriptor(
 		"common/event_modifiers",
@@ -772,8 +772,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::EventModifiers,
 		ModuleNameRule::Static("event_modifiers"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::EventModifiers,
 	),
 	prefix_descriptor(
 		"common/cb_types",
@@ -790,8 +790,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::GovernmentNames,
 		ModuleNameRule::Static("government_names"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::GovernmentNames,
 	),
 	prefix_descriptor(
 		"customizable_localization",
