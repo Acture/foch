@@ -1,7 +1,6 @@
-guiTypes = {
-	coverage_window = {
-		visible = {
-			eu4_cov_country_trigger = yes
-		}
+custom_button = {
+	name = coverage_window
+	potential = {
+		eu4_cov_country_trigger = yes
 	}
 }

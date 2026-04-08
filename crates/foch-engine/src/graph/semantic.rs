@@ -1247,6 +1247,7 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"institution_definition" => Some("common/institutions"),
 		"advisor_type_definition" => Some("common/advisortypes"),
 		"government_name_definition" => Some("common/government_names"),
+		"custom_gui_definition" => Some("common/custom_gui"),
 		"event_modifier_definition" => Some("common/event_modifiers"),
 		"province_triggered_modifier_definition" => Some("common/province_triggered_modifiers"),
 		"cb_type_definition" => Some("common/cb_types"),
@@ -1794,6 +1795,10 @@ mod tests {
 		);
 		assert_eq!(
 			classify_reference_target("common/government_names", "government_name_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/custom_gui", "custom_gui_definition"),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(
