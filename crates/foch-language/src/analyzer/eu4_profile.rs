@@ -754,8 +754,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::CustomGui,
 		ModuleNameRule::Static("custom_gui"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::CustomGui,
 	),
 	prefix_descriptor(
 		"common/advisortypes",

@@ -815,6 +815,32 @@ impl ResourceExtractor for NewDiplomaticActionsExtractor {
 	}
 }
 
+struct CustomGuiExtractor;
+impl ResourceExtractor for CustomGuiExtractor {
+	fn extract(
+		&self,
+		index: &mut SemanticIndex,
+		scope_id: usize,
+		ctx: &mut BuildContext<'_>,
+		key: &str,
+		key_span: &SpanRange,
+		value: &AstValue,
+	) {
+		if scope_kind(index, scope_id) != ScopeKind::File || !key.starts_with("custom_") {
+			return;
+		}
+		let AstValue::Block { items, .. } = value else {
+			return;
+		};
+		let Some(name) = extract_assignment_scalar(items, "name") else {
+			return;
+		};
+		if !name.is_empty() {
+			push_resource_reference(index, ctx, key_span, "custom_gui_definition", name.as_str());
+		}
+	}
+}
+
 struct FederationAdvancementsExtractor;
 impl ResourceExtractor for FederationAdvancementsExtractor {
 	fn extract(
@@ -1403,6 +1429,7 @@ pub(super) fn extractor_for(
 		"common/institutions" => Some(&INSTITUTIONS),
 		"common/advisortypes" => Some(&ADVISOR_TYPES),
 		"common/government_names" => Some(&GOVERNMENT_NAMES),
+		"common/custom_gui" => Some(&CustomGuiExtractor),
 		"common/event_modifiers" => Some(&EVENT_MODIFIERS),
 		"common/province_triggered_modifiers" => Some(&PROVINCE_TRIGGERED_MODIFIERS),
 		"common/cb_types" => Some(&CB_TYPES),

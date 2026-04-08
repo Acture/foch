@@ -171,6 +171,7 @@ pub enum ContentFamilyExtractor {
 	Institutions,
 	AdvisorTypes,
 	GovernmentNames,
+	CustomGui,
 	EventModifiers,
 	ProvinceTriggeredModifiers,
 	CbTypes,

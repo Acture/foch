@@ -4018,6 +4018,53 @@ coverage_advisor = {
 }
 
 #[test]
+fn custom_gui_emit_definition_resources_from_top_level_custom_blocks() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("custom_gui")).expect("create custom gui");
+	fs::write(
+		mod_root.join("common").join("custom_gui").join("gui.txt"),
+		r#"custom_button = {
+	name = coverage_window
+	potential = {
+		always = yes
+	}
+	frame = {
+		number = 1
+		trigger = {
+			always = yes
+		}
+	}
+}
+"#,
+	)
+	.expect("write custom gui");
+
+	let parsed = [parse_script_file(
+		"1019",
+		&mod_root,
+		&mod_root.join("common").join("custom_gui").join("gui.txt"),
+	)
+	.expect("parsed custom gui")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/custom_gui/gui.txt")
+			&& reference.key == "custom_gui_definition"
+			&& reference.value == "coverage_window"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "custom_gui_definition" && reference.value == "custom_button"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "custom_gui_definition" && reference.value == "potential"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "custom_gui_definition" && reference.value == "frame"
+	}));
+}
+
+#[test]
 fn government_names_emit_top_level_definition_resources() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");

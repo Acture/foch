@@ -262,6 +262,12 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/custom_gui/00_coverage_gui.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
 				path: PathBuf::from("common/event_modifiers/00_modifiers.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
@@ -1033,6 +1039,14 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			column: 1,
 		},
 		ResourceReference {
+			key: "custom_gui_definition".to_string(),
+			value: "coverage_window".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/custom_gui/00_coverage_gui.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
 			key: "event_modifier_definition".to_string(),
 			value: "coverage_event_modifier".to_string(),
 			mod_id: "__game__eu4".to_string(),
@@ -1655,6 +1669,13 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 		government_names.coverage_class,
 		CoverageClass::SemanticComplete
 	);
+
+	let custom_gui = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/custom_gui")
+		.expect("custom gui coverage");
+	assert_eq!(custom_gui.coverage_class, CoverageClass::SemanticComplete);
 
 	let event_modifiers = report
 		.roots
