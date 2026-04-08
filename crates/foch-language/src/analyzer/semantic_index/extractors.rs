@@ -1183,6 +1183,12 @@ static INSTITUTIONS: NamedDefinitionTable = NamedDefinitionTable {
 	block_reference_keys: &[],
 };
 
+static GREAT_PROJECTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "great_project_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
 static ADVISOR_TYPES: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "advisor_type_definition",
 	scalar_reference_keys: &[],
@@ -1445,6 +1451,7 @@ pub(super) fn extractor_for(
 		"common/ages" => Some(&AGES),
 		"common/buildings" => Some(&BUILDINGS),
 		"common/institutions" => Some(&INSTITUTIONS),
+		"common/great_projects" => Some(&GREAT_PROJECTS),
 		"common/cultures" => Some(&CulturesExtractor),
 		"common/advisortypes" => Some(&ADVISOR_TYPES),
 		"common/government_names" => Some(&GOVERNMENT_NAMES),

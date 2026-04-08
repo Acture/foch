@@ -3930,6 +3930,130 @@ on_start = {
 }
 
 #[test]
+fn great_projects_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("great_projects"))
+		.expect("create great projects");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("great_projects")
+			.join("projects.txt"),
+		r#"
+coverage_project = {
+	build_trigger = {
+		always = yes
+	}
+	on_built = {
+		add_prestige = 1
+	}
+}
+"#,
+	)
+	.expect("write great projects");
+
+	let parsed = [parse_script_file(
+		"1021",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("great_projects")
+			.join("projects.txt"),
+	)
+	.expect("parsed great projects")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/great_projects/projects.txt")
+			&& reference.key == "great_project_definition"
+			&& reference.value == "coverage_project"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "great_project_definition" && reference.value == "build_trigger"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "great_project_definition" && reference.value == "on_built"
+	}));
+}
+
+#[test]
+fn great_projects_real_shape_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("great_projects"))
+		.expect("create great projects");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("great_projects")
+			.join("projects.txt"),
+		r#"
+coverage_canal = {
+	start = 1775
+	date = 1895.06.20
+	time = {
+		months = 120
+	}
+	build_cost = 10000
+	can_be_moved = no
+	starting_tier = 3
+	type = canal
+	build_trigger = {
+		FROM = {
+			owns_or_vassal_of = 1775
+		}
+	}
+	on_built = {
+		add_canal = coverage_canal
+	}
+	on_destroyed = {
+		remove_canal = coverage_canal
+	}
+	can_use_modifiers_trigger = {
+	}
+	tier_0 = {
+		upgrade_time = {
+			months = 0
+		}
+		on_upgraded = {
+		}
+	}
+}
+"#,
+	)
+	.expect("write real-shaped great projects");
+
+	let parsed = [parse_script_file(
+		"1022",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("great_projects")
+			.join("projects.txt"),
+	)
+	.expect("parsed real-shaped great projects")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/great_projects/projects.txt")
+			&& reference.key == "great_project_definition"
+			&& reference.value == "coverage_canal"
+	}));
+	for value in [
+		"build_trigger",
+		"on_built",
+		"on_destroyed",
+		"can_use_modifiers_trigger",
+		"tier_0",
+	] {
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "great_project_definition" && reference.value == value
+		}));
+	}
+}
+
+#[test]
 fn ideas_emit_top_level_definition_resources() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
