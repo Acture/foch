@@ -4065,6 +4065,52 @@ fn custom_gui_emit_definition_resources_from_top_level_custom_blocks() {
 }
 
 #[test]
+fn cultures_emit_nested_culture_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("cultures")).expect("create cultures");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("cultures")
+			.join("cultures.txt"),
+		r#"
+coverage_group = {
+	coverage_culture = {
+		primary = { 1 2 3 }
+		male_names = { "Alex" }
+		female_names = { "Alice" }
+	}
+}
+"#,
+	)
+	.expect("write cultures");
+
+	let parsed = [parse_script_file(
+		"1020",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("cultures")
+			.join("cultures.txt"),
+	)
+	.expect("parsed cultures")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/cultures/cultures.txt")
+			&& reference.key == "culture_definition"
+			&& reference.value == "coverage_culture"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "culture_definition" && reference.value == "coverage_group"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "culture_definition" && reference.value == "primary"
+	}));
+}
+
+#[test]
 fn government_names_emit_top_level_definition_resources() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
