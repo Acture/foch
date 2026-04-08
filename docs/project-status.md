@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-04-03
+Last updated: 2026-04-09
 
 ## Summary
 
@@ -88,7 +88,9 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/bookmarks`
 - `common/ages`
 - `common/buildings`
+- `common/cb_types`
 - `common/diplomatic_actions`
+- `common/event_modifiers`
 - `common/new_diplomatic_actions`
 - `common/church_aspects`
 - `common/decrees`
@@ -101,8 +103,10 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/flagship_modifications`
 - `common/golden_bulls`
 - `common/government_mechanics`
+- `common/government_reforms`
 - `common/hegemons`
 - `common/holy_orders`
+- `common/ideas`
 - `common/institutions`
 - `common/isolationism`
 - `common/estate_agendas`
@@ -117,6 +121,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/policies`
 - `common/professionalism`
 - `common/province_names`
+- `common/province_triggered_modifiers`
 - `common/rebel_types`
 - `common/religions`
 - `common/state_edicts`
@@ -129,6 +134,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `map/random/scenarios`
 - `map/random/tiles`
 - `map/random_names`
+- `common/scripted_triggers`
 - `history/advisors`
 - `history/countries`
 - `history/diplomacy`
@@ -138,7 +144,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 The latest verified real probe is:
 
 - `parse_only = 60`
-- `semantic_complete = 57`
+- `semantic_complete = 66`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -146,7 +152,7 @@ The latest verified real probe is:
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
 
-`common/government_ranks`, `common/buildings`, `common/diplomatic_actions`, `common/new_diplomatic_actions`, `common/ages`, and `common/institutions` are now complete, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 57`.
+The recent low-risk common-mechanics coverage slices now include `common/government_ranks`, `common/buildings`, `common/cb_types`, `common/diplomatic_actions`, `common/event_modifiers`, `common/new_diplomatic_actions`, `common/ages`, `common/institutions`, `common/scripted_triggers`, `common/government_reforms`, `common/ideas`, `common/province_triggered_modifiers`, `common/advisortypes`, `common/government_names`, and `common/custom_gui`, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 66`.
 
 The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
 
@@ -171,7 +177,23 @@ ACT-169 has now completed its full-probe acceptance gate. This slice promotes `c
 
 ACT-170 has now completed its full-probe acceptance gate. This slice promotes `common/institutions` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level institution entries emit `institution_definition`, nested trigger/effect and modifier-style structures remain context, and the existing typed handling attached to `ScriptFileKind::Institutions` stays intact. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 57` without regressing `parse_only`.
 
-ACT-171 is now implemented locally and waiting on its full-probe acceptance gate. This slice promotes `common/scripted_triggers` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level scripted trigger entries emit `scripted_trigger_definition`, nested `limit` and wrapper-style trigger containers remain context, and the existing typed handling attached to `ScriptFileKind::ScriptedTriggers` stays intact. The last verified baseline remains `parse_only = 60` / `semantic_complete = 57`; the acceptance expectation for the next full EU4 probe is `parse_only = 60` / `semantic_complete = 58`.
+ACT-171 has now completed its full-probe acceptance gate. This slice promotes `common/scripted_triggers` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level scripted trigger entries emit `scripted_trigger_definition`, nested `limit` and wrapper-style trigger containers remain context, and the existing typed handling attached to `ScriptFileKind::ScriptedTriggers` stays intact. A fresh full-EU4 probe moved the verified baseline to `parse_only = 60` / `semantic_complete = 58` without regressing `parse_only`.
+
+ACT-174 has now completed its full-probe acceptance gate. This slice promotes `common/government_reforms` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level reform entries emit `government_reform_definition`, nested `ai_will_do`, modifier-style structures, and other wrapper blocks remain context, and the existing typed handling attached to `ScriptFileKind::GovernmentReforms` stays intact. A fresh full-EU4 probe confirmed `common/government_reforms = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 59` without regressing the verified baseline.
+
+ACT-175 has now completed its full-probe acceptance gate. This slice promotes `common/ideas` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level idea groups emit `idea_group_definition`, nested `start`, `bonus`, and individual idea-entry blocks remain context, and the existing typed handling attached to `ScriptFileKind::Ideas` stays intact. A fresh full-EU4 probe confirmed `common/ideas = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 60` without regressing the verified baseline.
+
+ACT-180 has now completed its full-probe acceptance gate. This slice promotes `common/province_triggered_modifiers` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level modifier entries emit `province_triggered_modifier_definition`, nested `potential`, `trigger`, `on_activation`, and `on_deactivation` wrapper blocks remain context, and the existing typed handling attached to `ScriptFileKind::ProvinceTriggeredModifiers` stays intact. A fresh full-EU4 probe confirmed `common/province_triggered_modifiers = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 61` without regressing the verified baseline.
+
+ACT-181 has now completed its full-probe acceptance gate. This slice promotes `common/cb_types` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level CB entries emit `cb_type_definition`, nested `can_use` and `can_take_province` wrapper blocks remain context, and the existing typed handling attached to `ScriptFileKind::CbTypes` stays intact. A fresh full-EU4 probe confirmed `common/cb_types = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 62` without regressing the verified baseline.
+
+ACT-182 has now completed its full-probe acceptance gate. This slice promotes `common/event_modifiers` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level event-modifier entries emit `event_modifier_definition`, nested `trigger` wrapper blocks remain context, and the existing typed handling attached to `ScriptFileKind::EventModifiers` stays intact. A fresh full-EU4 probe confirmed `common/event_modifiers = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 63` without regressing the verified baseline.
+
+ACT-183 has now completed its full-probe acceptance gate. This slice promotes `common/advisortypes` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level adviser-type entries emit `advisor_type_definition`, nested `trigger` wrapper blocks remain context, and semantic graph classification maps the new definition key back to `common/advisortypes` without colliding with the existing `history/advisors` resource family. A fresh full-EU4 probe confirmed `common/advisortypes = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 64` without regressing the verified baseline.
+
+ACT-184 has now completed its full-probe acceptance gate. This slice promotes `common/government_names` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level government-name entries emit `government_name_definition`, nested `trigger` wrapper blocks remain context, and semantic graph classification maps the new definition key back to `common/government_names` instead of leaving those resources uncategorized. A fresh full-EU4 probe confirmed `common/government_names = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 65` without regressing the verified baseline.
+
+ACT-185 has now completed its full-probe acceptance gate. This slice promotes `common/custom_gui` from `graph_ready` to `semantic_complete`, but it required one mid-slice correction after the first acceptance probe exposed a bad local assumption about the real file shape. The shipped game data does not use a top-level `guiTypes` container here; instead it defines repeated top-level `custom_*` wrapper blocks whose semantic identity comes from the inner `name = ...` field. The extractor and coverage fixture were corrected to match that real layout: top-level `custom_*` blocks emit `custom_gui_definition` from their `name`, while the wrapper key itself and nested blocks such as `potential`, `trigger`, and `frame` remain context only. A fresh full-EU4 probe then confirmed `common/custom_gui = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 66` without regressing the verified baseline.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -215,6 +237,24 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 55 -> 56`
   - `parse_only: 60 -> 60`
   - `semantic_complete: 56 -> 57`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 57 -> 58`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 58 -> 59`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 59 -> 60`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 60 -> 61`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 61 -> 62`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 62 -> 63`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 63 -> 64`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 64 -> 65`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 65 -> 66`
 
 Verified locally during the workspace reorganization:
 
