@@ -177,6 +177,7 @@ pub enum ContentFamilyExtractor {
 	ProvinceTriggeredModifiers,
 	CbTypes,
 	Ideas,
+	GreatProjects,
 	GovernmentReforms,
 	DiplomaticActions,
 	ScriptedTriggers,

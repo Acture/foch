@@ -1245,6 +1245,7 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"government_rank_definition" => Some("common/government_ranks"),
 		"age_definition" => Some("common/ages"),
 		"institution_definition" => Some("common/institutions"),
+		"great_project_definition" => Some("common/great_projects"),
 		"culture_definition" => Some("common/cultures"),
 		"advisor_type_definition" => Some("common/advisortypes"),
 		"government_name_definition" => Some("common/government_names"),
@@ -1788,6 +1789,10 @@ mod tests {
 		);
 		assert_eq!(
 			classify_reference_target("common/institutions", "institution_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/great_projects", "great_project_definition"),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(

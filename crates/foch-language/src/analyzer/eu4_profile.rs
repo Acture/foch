@@ -727,8 +727,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::GreatProjects,
 		ModuleNameRule::Static("great_projects"),
 		scope(ScopeType::Province),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::GreatProjects,
 	),
 	prefix_descriptor(
 		"common/government_reforms",

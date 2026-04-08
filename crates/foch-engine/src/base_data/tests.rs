@@ -250,6 +250,12 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/great_projects/00_coverage_projects.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
 				path: PathBuf::from("common/advisortypes/00_advisortypes.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
@@ -1029,6 +1035,14 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			column: 1,
 		},
 		ResourceReference {
+			key: "great_project_definition".to_string(),
+			value: "coverage_project".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/great_projects/00_coverage_projects.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
 			key: "advisor_type_definition".to_string(),
 			value: "coverage_advisor".to_string(),
 			mod_id: "__game__eu4".to_string(),
@@ -1359,6 +1373,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			"common/new_diplomatic_actions/00_actions.txt".to_string(),
 			"common/buildings/buildings.txt".to_string(),
 			"common/institutions/institutions.txt".to_string(),
+			"common/great_projects/00_coverage_projects.txt".to_string(),
 			"common/technologies/adm.txt".to_string(),
 			"common/technology.txt".to_string(),
 			"common/estate_agendas/00_generic_agendas.txt".to_string(),
@@ -1493,6 +1508,16 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 		.find(|item| item.root_family == "history/diplomacy")
 		.expect("diplomacy history coverage");
 	assert_eq!(diplomacy.coverage_class, CoverageClass::SemanticComplete);
+
+	let great_projects = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/great_projects")
+		.expect("great projects coverage");
+	assert_eq!(
+		great_projects.coverage_class,
+		CoverageClass::SemanticComplete
+	);
 
 	let advisors = report
 		.roots

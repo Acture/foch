@@ -198,6 +198,8 @@ ACT-185 has now completed its full-probe acceptance gate. This slice promotes `c
 
 ACT-186 has now completed its full-probe acceptance gate. This slice promotes `common/cultures` from `graph_ready` to `semantic_complete` with a deliberately narrow extractor for the real EU4 file shape: top-level culture-group wrappers remain context, but named culture blocks nested one level under those groups emit `culture_definition`. Nested payload blocks such as `primary`, `male_names`, `female_names`, and similar data containers remain context only, and semantic graph classification now maps `culture_definition` back to `common/cultures` instead of leaving those resources uncategorized. A fresh full-EU4 probe confirmed `common/cultures = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 67` without regressing the verified baseline.
 
+ACT-187 has now completed its full-probe acceptance gate. This slice promotes `common/great_projects` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level project entries emit `great_project_definition`, nested `build_trigger` and `on_built` wrapper blocks remain context, and semantic graph classification maps `great_project_definition` back to `common/great_projects` instead of leaving those resources uncategorized. A fresh full-EU4 probe confirmed `common/great_projects = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 68` without regressing the verified baseline.
+
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
 ## Verification
