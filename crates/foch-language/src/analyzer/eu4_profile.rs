@@ -745,8 +745,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::Cultures,
 		ModuleNameRule::Static("cultures"),
 		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::Cultures,
 	),
 	prefix_descriptor(
 		"common/custom_gui",

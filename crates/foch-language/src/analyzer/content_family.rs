@@ -169,6 +169,7 @@ pub enum ContentFamilyExtractor {
 	StateEdicts,
 	Ages,
 	Institutions,
+	Cultures,
 	AdvisorTypes,
 	GovernmentNames,
 	CustomGui,

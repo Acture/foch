@@ -815,6 +815,24 @@ impl ResourceExtractor for NewDiplomaticActionsExtractor {
 	}
 }
 
+struct CulturesExtractor;
+impl ResourceExtractor for CulturesExtractor {
+	fn extract(
+		&self,
+		index: &mut SemanticIndex,
+		scope_id: usize,
+		ctx: &mut BuildContext<'_>,
+		key: &str,
+		key_span: &SpanRange,
+		value: &AstValue,
+	) {
+		if !is_named_block_in_top_level_block(index, scope_id, key, value) {
+			return;
+		}
+		push_resource_reference(index, ctx, key_span, "culture_definition", key);
+	}
+}
+
 struct CustomGuiExtractor;
 impl ResourceExtractor for CustomGuiExtractor {
 	fn extract(
@@ -1427,6 +1445,7 @@ pub(super) fn extractor_for(
 		"common/ages" => Some(&AGES),
 		"common/buildings" => Some(&BUILDINGS),
 		"common/institutions" => Some(&INSTITUTIONS),
+		"common/cultures" => Some(&CulturesExtractor),
 		"common/advisortypes" => Some(&ADVISOR_TYPES),
 		"common/government_names" => Some(&GOVERNMENT_NAMES),
 		"common/custom_gui" => Some(&CustomGuiExtractor),
