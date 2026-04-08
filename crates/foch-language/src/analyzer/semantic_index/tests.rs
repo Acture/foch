@@ -3977,6 +3977,98 @@ coverage_ideas = {
 }
 
 #[test]
+fn province_triggered_modifiers_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("province_triggered_modifiers"))
+		.expect("create province triggered modifiers");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("province_triggered_modifiers")
+			.join("modifiers.txt"),
+		r#"
+coverage_ptm = {
+	potential = {
+		owner = {
+			government = monarchy
+		}
+	}
+	on_activation = {
+		add_base_tax = 1
+	}
+}
+"#,
+	)
+	.expect("write province triggered modifiers");
+
+	let parsed = [parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("province_triggered_modifiers")
+			.join("modifiers.txt"),
+	)
+	.expect("parsed province triggered modifiers")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/province_triggered_modifiers/modifiers.txt")
+			&& reference.key == "province_triggered_modifier_definition"
+			&& reference.value == "coverage_ptm"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "province_triggered_modifier_definition" && reference.value == "potential"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "province_triggered_modifier_definition"
+			&& reference.value == "on_activation"
+	}));
+}
+
+#[test]
+fn cb_types_emit_top_level_definition_resources() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("cb_types")).expect("create cb types");
+	fs::write(
+		mod_root.join("common").join("cb_types").join("cb.txt"),
+		r#"
+coverage_cb = {
+	can_use = {
+		always = yes
+	}
+	can_take_province = {
+		always = yes
+	}
+}
+"#,
+	)
+	.expect("write cb types");
+
+	let parsed = [parse_script_file(
+		"1017",
+		&mod_root,
+		&mod_root.join("common").join("cb_types").join("cb.txt"),
+	)
+	.expect("parsed cb types")];
+	let index = build_semantic_index(&parsed);
+
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/cb_types/cb.txt")
+			&& reference.key == "cb_type_definition"
+			&& reference.value == "coverage_cb"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "cb_type_definition" && reference.value == "can_use"
+	}));
+	assert!(!index.resource_references.iter().any(|reference| {
+		reference.key == "cb_type_definition" && reference.value == "can_take_province"
+	}));
+}
+
+#[test]
 fn government_reforms_emit_top_level_definition_resources() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");

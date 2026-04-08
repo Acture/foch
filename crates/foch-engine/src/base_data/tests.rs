@@ -250,6 +250,18 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/province_triggered_modifiers/00_modifiers.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/cb_types/00_cb.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
 				path: PathBuf::from("common/ideas/00_ideas.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
@@ -987,6 +999,22 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			column: 1,
 		},
 		ResourceReference {
+			key: "province_triggered_modifier_definition".to_string(),
+			value: "coverage_ptm".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/province_triggered_modifiers/00_modifiers.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
+			key: "cb_type_definition".to_string(),
+			value: "coverage_cb".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/cb_types/00_cb.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
 			key: "idea_group_definition".to_string(),
 			value: "coverage_ideas".to_string(),
 			mod_id: "__game__eu4".to_string(),
@@ -1568,6 +1596,23 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 		.find(|item| item.root_family == "common/institutions")
 		.expect("institutions coverage");
 	assert_eq!(institutions.coverage_class, CoverageClass::SemanticComplete);
+
+	let province_triggered_modifiers = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/province_triggered_modifiers")
+		.expect("province triggered modifiers coverage");
+	assert_eq!(
+		province_triggered_modifiers.coverage_class,
+		CoverageClass::SemanticComplete
+	);
+
+	let cb_types = report
+		.roots
+		.iter()
+		.find(|item| item.root_family == "common/cb_types")
+		.expect("cb types coverage");
+	assert_eq!(cb_types.coverage_class, CoverageClass::SemanticComplete);
 
 	let ideas = report
 		.roots
