@@ -673,8 +673,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		ScriptFileKind::Achievements,
 		ModuleNameRule::Static("achievements"),
 		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
+		semantic_complete(),
+		ContentFamilyExtractor::Achievements,
 	),
 	prefix_descriptor(
 		"common/ages",

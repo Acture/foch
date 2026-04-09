@@ -1,0 +1,8 @@
+coverage_achievement = {
+	possible = {
+		always = yes
+	}
+	happened = {
+		always = yes
+	}
+}

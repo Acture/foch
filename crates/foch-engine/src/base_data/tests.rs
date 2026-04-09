@@ -214,6 +214,12 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			},
 			DocumentRecord {
 				mod_id: mod_id.clone(),
+				path: PathBuf::from("common/achievements.txt"),
+				family: DocumentFamily::Clausewitz,
+				parse_ok: true,
+			},
+			DocumentRecord {
+				mod_id: mod_id.clone(),
 				path: PathBuf::from("common/ages/00_ages.txt"),
 				family: DocumentFamily::Clausewitz,
 				parse_ok: true,
@@ -987,6 +993,14 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			column: 1,
 		},
 		ResourceReference {
+			key: "achievement_definition".to_string(),
+			value: "coverage_achievement".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/achievements.txt"),
+			line: 1,
+			column: 1,
+		},
+		ResourceReference {
 			key: "age_definition".to_string(),
 			value: "age_of_discovery".to_string(),
 			mod_id: "__game__eu4".to_string(),
@@ -1382,6 +1396,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			"common/parliament_bribes/administrative_support.txt".to_string(),
 			"common/parliament_issues/00_adm_parliament_issues.txt".to_string(),
 			"common/state_edicts/edict_of_governance.txt".to_string(),
+			"common/achievements.txt".to_string(),
 			"common/church_aspects/00_church_aspects.txt".to_string(),
 			"common/factions/00_factions.txt".to_string(),
 			"common/hegemons/0_economic_hegemon.txt".to_string(),
