@@ -1165,6 +1165,12 @@ static SCRIPTED_TRIGGERS: NamedDefinitionTable = NamedDefinitionTable {
 	block_reference_keys: &[],
 };
 
+static ACHIEVEMENTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "achievement_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
 static AGES: NamedDefinitionTable = NamedDefinitionTable {
 	definition_key: "age_definition",
 	scalar_reference_keys: &[],
@@ -1448,6 +1454,7 @@ pub(super) fn extractor_for(
 		"common/holy_orders" => Some(&HOLY_ORDERS),
 		"common/diplomatic_actions" => Some(&DIPLOMATIC_ACTIONS),
 		"common/scripted_triggers" => Some(&SCRIPTED_TRIGGERS),
+		"common/achievements" => Some(&ACHIEVEMENTS),
 		"common/ages" => Some(&AGES),
 		"common/buildings" => Some(&BUILDINGS),
 		"common/institutions" => Some(&INSTITUTIONS),

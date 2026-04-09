@@ -3008,6 +3008,23 @@ provinces_to_highlight = {
 	.expect("parsed script");
 
 	let index = build_semantic_index(&[parsed]);
+	assert!(index.resource_references.iter().any(|reference| {
+		reference.path == Path::new("common/achievements.txt")
+			&& reference.key == "achievement_definition"
+			&& reference.value == "achievement_example"
+	}));
+	for value in [
+		"possible",
+		"visible",
+		"happened",
+		"provinces_to_highlight",
+		"capital_scope",
+		"all_core_province",
+	] {
+		assert!(!index.resource_references.iter().any(|reference| {
+			reference.key == "achievement_definition" && reference.value == value
+		}));
+	}
 	for name in [
 		"possible",
 		"visible",

@@ -1243,6 +1243,7 @@ fn definition_reference_family(key: &str) -> Option<&'static str> {
 		"powerprojection_definition" => Some("common/powerprojection"),
 		"subject_type_upgrade_definition" => Some("common/subject_type_upgrades"),
 		"government_rank_definition" => Some("common/government_ranks"),
+		"achievement_definition" => Some("common/achievements"),
 		"age_definition" => Some("common/ages"),
 		"institution_definition" => Some("common/institutions"),
 		"great_project_definition" => Some("common/great_projects"),
@@ -1777,6 +1778,10 @@ mod tests {
 	fn classifier_keeps_same_family_definitions_separate_from_cross_family_refs() {
 		assert_eq!(
 			classify_reference_target("common/holy_orders", "holy_order_definition"),
+			ReferenceTargetClass::SameFamily
+		);
+		assert_eq!(
+			classify_reference_target("common/achievements", "achievement_definition"),
 			ReferenceTargetClass::SameFamily
 		);
 		assert_eq!(
