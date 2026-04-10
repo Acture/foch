@@ -87,6 +87,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/countries`
 - `common/cultures`
 - `common/bookmarks`
+- `common/achievements`
 - `common/ages`
 - `common/buildings`
 - `common/cb_types`
@@ -103,6 +104,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 - `common/fervor`
 - `common/flagship_modifications`
 - `common/golden_bulls`
+- `common/great_projects`
 - `common/government_mechanics`
 - `common/government_reforms`
 - `common/hegemons`
@@ -145,7 +147,7 @@ The current semantic-complete gameplay roots in the last verified real probe inc
 The latest verified real probe is:
 
 - `parse_only = 60`
-- `semantic_complete = 67`
+- `semantic_complete = 69`
 
 `map/random` is now split honestly instead of being treated as one mixed root:
 
@@ -153,7 +155,7 @@ The latest verified real probe is:
 - `map/random/tiles = semantic_complete`
 - `map/random_names = semantic_complete`
 
-The recent low-risk common-mechanics coverage slices now include `common/government_ranks`, `common/buildings`, `common/cb_types`, `common/diplomatic_actions`, `common/event_modifiers`, `common/new_diplomatic_actions`, `common/ages`, `common/institutions`, `common/scripted_triggers`, `common/government_reforms`, `common/ideas`, `common/province_triggered_modifiers`, `common/advisortypes`, `common/government_names`, `common/custom_gui`, and `common/cultures`, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 67`.
+The recent low-risk common-root coverage slices now include `common/government_ranks`, `common/buildings`, `common/cb_types`, `common/diplomatic_actions`, `common/event_modifiers`, `common/new_diplomatic_actions`, `common/ages`, `common/institutions`, `common/scripted_triggers`, `common/government_reforms`, `common/ideas`, `common/province_triggered_modifiers`, `common/advisortypes`, `common/government_names`, `common/custom_gui`, `common/cultures`, `common/great_projects`, and `common/achievements`, and the latest verified real-probe baseline is `parse_only = 60` / `semantic_complete = 69`.
 
 The static semantic viewer had one critical renderer regression immediately after ACT-157 landed: the generated `index.html` escaped CSS and JS braces incorrectly, which left the page shell visible but the graph tree blank. That regression is now fixed and covered by a renderer-level test in `foch-engine`.
 
@@ -199,6 +201,8 @@ ACT-185 has now completed its full-probe acceptance gate. This slice promotes `c
 ACT-186 has now completed its full-probe acceptance gate. This slice promotes `common/cultures` from `graph_ready` to `semantic_complete` with a deliberately narrow extractor for the real EU4 file shape: top-level culture-group wrappers remain context, but named culture blocks nested one level under those groups emit `culture_definition`. Nested payload blocks such as `primary`, `male_names`, `female_names`, and similar data containers remain context only, and semantic graph classification now maps `culture_definition` back to `common/cultures` instead of leaving those resources uncategorized. A fresh full-EU4 probe confirmed `common/cultures = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 67` without regressing the verified baseline.
 
 ACT-187 has now completed its full-probe acceptance gate. This slice promotes `common/great_projects` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level project entries emit `great_project_definition`, nested `build_trigger` and `on_built` wrapper blocks remain context, and semantic graph classification maps `great_project_definition` back to `common/great_projects` instead of leaving those resources uncategorized. A fresh full-EU4 probe confirmed `common/great_projects = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 68` without regressing the verified baseline.
+
+ACT-188 has now completed its full-probe acceptance gate. This slice promotes `common/achievements` from `graph_ready` to `semantic_complete` with the same narrow coverage pattern as the recent common-root waves: top-level achievement entries emit `achievement_definition`, nested wrappers such as `possible`, `visible`, `happened`, and `provinces_to_highlight` remain context, and semantic graph classification maps `achievement_definition` back to `common/achievements` instead of leaving those resources uncategorized. A fresh full-EU4 probe confirmed `common/achievements = semantic_complete`, kept `parse_only = 60`, and moved `semantic_complete = 69` without regressing the verified baseline.
 
 Finding-bucket tracks such as `ACT-32`, `ACT-31`, and `ACT-28` are now secondary observability loops. They remain useful for regression signals, but they no longer define the main plan.
 
@@ -262,6 +266,10 @@ Verified locally during the completed coverage waves:
   - `semantic_complete: 65 -> 66`
   - `parse_only: 60 -> 60`
   - `semantic_complete: 66 -> 67`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 67 -> 68`
+  - `parse_only: 60 -> 60`
+  - `semantic_complete: 68 -> 69`
 
 Verified locally during the workspace reorganization:
 
