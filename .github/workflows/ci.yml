@@ -83,4 +83,4 @@ jobs:
         working-directory: .
 
       - name: Smoke test extension
-        run: bun run smoke
+        run: bun run test

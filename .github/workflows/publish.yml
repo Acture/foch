@@ -14,7 +14,7 @@ permissions:
 jobs:
   homebrew-tap:
     name: Update Homebrew tap from release asset
-    if: ${{ vars.HOMEBREW_TAP_REPO != '' && secrets.HOMEBREW_TAP_TOKEN != '' }}
+    if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout current repository

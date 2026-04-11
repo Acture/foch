@@ -228,10 +228,11 @@ jobs:
               --title "Foch ${version}" \
               --generate-notes \
               "${extra_args[@]}"
+          fi
 
   homebrew-tap:
     name: Update Homebrew tap
-    if: ${{ vars.HOMEBREW_TAP_REPO != '' && secrets.HOMEBREW_TAP_TOKEN != '' }}
+    if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
     runs-on: ubuntu-latest
     needs:
       - github-release

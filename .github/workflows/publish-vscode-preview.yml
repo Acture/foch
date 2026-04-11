@@ -15,7 +15,6 @@ permissions:
 jobs:
   publish-preview:
     name: Publish VS Code preview (${{ matrix.target }})
-    if: ${{ secrets.VSCE_PAT != '' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
