@@ -49,6 +49,34 @@ cargo run --bin foch -- merge ./playlist.json --out ./merged-mod
 cargo run --bin foch -- graph ./playlist.json --out ./graphs
 ```
 
+## 结构化 merge 支持范围
+
+`merge-plan` / `merge` 目前有四种策略（完整合约见 [`docs/merge-design.md`](./docs/merge-design.md)）：
+
+- `StructuralMerge`：按命名定义合并，winner 与被 override 的 contributor 都记入 metadata
+- `CopyThrough`：只有一个 contributor，直接复制
+- `LastWriterOverlay`：多 contributor 的文本类文件（`.txt` / `.yml` / `.lua` / `.gui` / `.gfx` / `.mod` 等），取最高优先级 contributor 的整文件，**其它 contributor 的内容被静默丢弃**
+- `ManualConflict`：UI 路径 / 二进制 / 结构化校验失败时上报人工处理
+
+**当前获得 `StructuralMerge` 支持的路径前缀**（实现见 `crates/foch-engine/src/merge/plan.rs` 的 `is_structural_merge_path`）：
+
+- `events/` — 按 event `id` 字段合并
+- `decisions/` — 按单个 decision 名合并（容器 key 为 `country_decisions` / `province_decisions`）
+- `common/scripted_effects/`
+- `common/diplomatic_actions/`
+- `common/triggered_modifiers/`
+- `common/defines/`
+
+**尚未获得结构化合并支持的内容族**（当前走 `LastWriterOverlay`，存在静默数据丢失风险）：
+
+`common/ideas/`、`missions/`、`common/government_reforms/`、`common/cultures/`、`common/buildings/`、`common/institutions/`、`common/great_projects/`、`common/custom_gui/`、`common/advisortypes/`、`common/event_modifiers/`、`common/cb_types/`、`common/government_names/`、`common/province_triggered_modifiers/`，以及所有其它 `common/` 路径。
+
+**关于 `LastWriterOverlay` 的已知局限**
+
+当前的 `LastWriterOverlay` 行为和 [`docs/auto-merge-roadmap.md`](./docs/auto-merge-roadmap.md) 里写明的 v1 exit criterion **"unsupported overlaps fail as explicit manual conflicts instead of silent last-writer behavior"** 相矛盾。当一个文本文件（例如 `common/ideas/00_country_ideas.txt`）被多个 mod 同时提供时，当前实现只保留最高优先级 mod 的整文件内容，其它 mod 的贡献被静默丢弃——这对包含多条独立定义的文件（ideas 包含多个 idea set、missions 包含多个 mission slot 等）会产生明显的 merge loss。
+
+后续工作会：(1) 把 ideas、missions 等内容族逐步提升到 `StructuralMerge`；(2) 将剩余的 multi-contributor text overlap 从 `LastWriterOverlay` 改判为 `ManualConflict` 显式上报，与 roadmap 的 v1 acceptance criterion 对齐。
+
 ## 配置
 
 配置文件默认在 `~/.config/foch/config.toml`。

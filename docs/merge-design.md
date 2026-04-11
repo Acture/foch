@@ -344,10 +344,10 @@ V1 structural merging uses conservative, class-level rules:
 
 ### Events and decisions
 
-- merge by top-level object key
-- when a key exists in only one contributor, include it unchanged
-- when the same top-level key exists in multiple contributors, choose the highest-precedence full definition and record the overridden contributors in metadata
-- do not attempt deep field-wise reconciliation inside a shared top-level definition in v1
+- merge by individual definition name: an event is identified by its `id` field inside the event block; a decision is identified by its key inside the `country_decisions` / `province_decisions` wrapper
+- when a definition name exists in only one contributor, include it unchanged
+- when the same definition name exists in multiple contributors, choose the highest-precedence full definition and record the overridden contributors in metadata
+- do not attempt deep field-wise reconciliation (e.g. merging trigger blocks) inside a single winning definition in v1
 
 ### Scripted effects, diplomatic actions, and triggered modifiers
 
