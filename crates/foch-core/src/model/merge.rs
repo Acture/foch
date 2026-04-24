@@ -95,6 +95,14 @@ pub struct MergeReportValidation {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergeReportRename {
+	pub family_id: String,
+	pub original_key: String,
+	pub renamed_key: String,
+	pub mod_id: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
 	pub manual_conflict_count: usize,
@@ -102,4 +110,6 @@ pub struct MergeReport {
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,
 	pub validation: MergeReportValidation,
+	#[serde(default)]
+	pub renames: Vec<MergeReportRename>,
 }
