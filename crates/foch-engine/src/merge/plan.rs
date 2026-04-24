@@ -7,7 +7,10 @@ use crate::workspace::{
 use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy,
 };
+use foch_language::analyzer::content_family::GameProfile;
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::semantic_index::parse_script_file;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn run_merge_plan(request: CheckRequest) -> MergePlanResult {
@@ -51,16 +54,21 @@ pub(crate) fn build_merge_plan_from_workspace(
 	result.game = workspace.playlist.game.key().to_string();
 	result.playset_name = workspace.playlist.name.clone();
 
+	let profile = eu4_profile();
 	result.paths = workspace
 		.file_inventory
 		.iter()
-		.map(|(path, contributors)| classify_entry(path, contributors))
+		.map(|(path, contributors)| classify_entry(path, contributors, profile))
 		.collect();
 	result.strategies = summarize_paths(&result.paths);
 	result
 }
 
-fn classify_entry(path: &str, contributors: &[ResolvedFileContributor]) -> MergePlanEntry {
+fn classify_entry(
+	path: &str,
+	contributors: &[ResolvedFileContributor],
+	profile: &dyn GameProfile,
+) -> MergePlanEntry {
 	let contributors_out: Vec<MergePlanContributor> =
 		contributors.iter().map(to_merge_contributor).collect();
 	let mut winner = contributors_out.last().cloned();
@@ -71,7 +79,7 @@ fn classify_entry(path: &str, contributors: &[ResolvedFileContributor]) -> Merge
 	} else if is_ui_conflict_path(path) {
 		notes.push("ui path overlap is not rewritten in v1".to_string());
 		MergePlanStrategy::ManualConflict
-	} else if is_structural_merge_path(path) {
+	} else if is_structural_merge_path(path, profile) {
 		match validate_structural_merge_inputs(path, contributors) {
 			Ok(()) => MergePlanStrategy::StructuralMerge,
 			Err(err) => {
@@ -196,14 +204,11 @@ fn validate_structural_merge_inputs(
 	}
 }
 
-fn is_structural_merge_path(path: &str) -> bool {
-	let normalized = path.to_ascii_lowercase();
-	normalized.starts_with("events/")
-		|| normalized.starts_with("decisions/")
-		|| normalized.starts_with("common/scripted_effects/")
-		|| normalized.starts_with("common/diplomatic_actions/")
-		|| normalized.starts_with("common/triggered_modifiers/")
-		|| normalized.starts_with("common/defines/")
+fn is_structural_merge_path(path: &str, profile: &dyn GameProfile) -> bool {
+	profile
+		.classify_content_family(Path::new(path))
+		.and_then(|d| d.merge_key_source)
+		.is_some()
 }
 
 fn is_ui_conflict_path(path: &str) -> bool {

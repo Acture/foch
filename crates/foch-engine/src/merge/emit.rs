@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use super::error::MergeError;
-use super::ir::{MergeIrNode, MergeIrStructuralFile, MergeIrStructuralKind};
+use super::ir::{MergeIrNode, MergeIrStructuralFile};
+use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 use std::collections::BTreeMap;
 
@@ -12,13 +13,12 @@ struct DefinesEmitNode {
 }
 
 pub(crate) fn emit_structural_file(file: &MergeIrStructuralFile) -> Result<String, MergeError> {
-	match file.kind {
-		MergeIrStructuralKind::Events
-		| MergeIrStructuralKind::ScriptedEffects
-		| MergeIrStructuralKind::DiplomaticActions
-		| MergeIrStructuralKind::TriggeredModifiers => emit_top_level_nodes(&file.nodes),
-		MergeIrStructuralKind::Decisions => emit_decision_nodes(&file.nodes),
-		MergeIrStructuralKind::Defines => emit_defines_nodes(&file.nodes),
+	match file.merge_key_source {
+		MergeKeySource::BlockKey | MergeKeySource::InnerField(_) => {
+			emit_top_level_nodes(&file.nodes)
+		}
+		MergeKeySource::ContainerChild => emit_decision_nodes(&file.nodes),
+		MergeKeySource::DefinesPath => emit_defines_nodes(&file.nodes),
 	}
 }
 

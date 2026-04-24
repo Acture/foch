@@ -669,6 +669,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 			unresolved_references: 2,
 			missing_localisation: 5,
 		},
+		renames: Vec::new(),
 	};
 
 	let value = serde_json::to_value(&report).expect("serialize merge report");

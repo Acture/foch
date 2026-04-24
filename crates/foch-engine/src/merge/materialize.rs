@@ -532,17 +532,17 @@ mod tests {
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("events/shared.txt")).expect("read emitted events"),
-			"country_event = {\n\tid = test.1\n\ttitle = title_override\n}\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\n"
+			"country_event = {\n\tid = test.1\n\ttitle = title_a\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("decisions/shared.txt"))
 				.expect("read emitted decisions"),
-			"country_decisions = {\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
+			"country_decisions = {\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = a\n\t\t}\n\t}\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/scripted_effects/effects.txt"))
 				.expect("read emitted effects"),
-			"shared_effect = {\n\tlog = b\n}\nunique_effect = {\n\tlog = only_a\n}\n"
+			"shared_effect = {\n\tlog = a\n}\nshared_effect = {\n\tlog = b\n}\nunique_effect = {\n\tlog = only_a\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/defines/test.txt"))

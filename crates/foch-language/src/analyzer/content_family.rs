@@ -1,4 +1,5 @@
 use foch_core::model::ScopeType;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +84,19 @@ pub enum ScriptFileKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GameId {
 	Eu4,
+}
+
+/// How to handle conflicts when two unrelated mods define the same merge key.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictPolicy {
+	/// Rename conflicting definitions to `{key}_{mod_name}` (default for most families).
+	#[default]
+	Rename,
+	/// Merge leaf values (last-writer per leaf) — for defines-style nested config.
+	MergeLeaf,
+	/// Last writer wins silently — for families where override is expected.
+	LastWriter,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -187,6 +201,74 @@ pub enum ContentFamilyExtractor {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeKeySource {
+	/// Top-level named blocks are the merge units (e.g. `effect_name = { ... }`).
+	BlockKey,
+	/// Merge key is extracted from an inner field (e.g. `id` inside event blocks).
+	InnerField(&'static str),
+	/// Merge units are children of a known container block (e.g. decisions).
+	ContainerChild,
+	/// Leaf-level defines paths (e.g. `NGame.START_YEAR`).
+	DefinesPath,
+}
+
+impl Serialize for MergeKeySource {
+	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		match self {
+			MergeKeySource::BlockKey => serializer.serialize_str("block_key"),
+			MergeKeySource::InnerField(field) => {
+				use serde::ser::SerializeMap;
+				let mut map = serializer.serialize_map(Some(1))?;
+				map.serialize_entry("inner_field", field)?;
+				map.end()
+			}
+			MergeKeySource::ContainerChild => serializer.serialize_str("container_child"),
+			MergeKeySource::DefinesPath => serializer.serialize_str("defines_path"),
+		}
+	}
+}
+
+impl<'de> Deserialize<'de> for MergeKeySource {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		use serde::de;
+
+		struct MergeKeySourceVisitor;
+		impl<'de> de::Visitor<'de> for MergeKeySourceVisitor {
+			type Value = MergeKeySource;
+			fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+				write!(f, "a MergeKeySource string or map")
+			}
+			fn visit_str<E: de::Error>(self, v: &str) -> Result<MergeKeySource, E> {
+				match v {
+					"block_key" => Ok(MergeKeySource::BlockKey),
+					"container_child" => Ok(MergeKeySource::ContainerChild),
+					"defines_path" => Ok(MergeKeySource::DefinesPath),
+					_ => Err(E::unknown_variant(
+						v,
+						&["block_key", "container_child", "defines_path"],
+					)),
+				}
+			}
+			fn visit_map<A: de::MapAccess<'de>>(
+				self,
+				mut map: A,
+			) -> Result<MergeKeySource, A::Error> {
+				let key: String = map
+					.next_key()?
+					.ok_or_else(|| de::Error::custom("expected inner_field key"))?;
+				if key != "inner_field" {
+					return Err(de::Error::unknown_field(&key, &["inner_field"]));
+				}
+				let value: String = map.next_value()?;
+				let leaked: &'static str = Box::leak(value.into_boxed_str());
+				Ok(MergeKeySource::InnerField(leaked))
+			}
+		}
+		deserializer.deserialize_any(MergeKeySourceVisitor)
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentFamilyPathMatcher {
 	Prefix(&'static str),
 	Exact(&'static str),
@@ -202,6 +284,8 @@ pub struct ContentFamilyDescriptor {
 	pub scope_policy: ContentFamilyScopePolicy,
 	pub capabilities: ContentFamilyCapabilities,
 	pub extractor: ContentFamilyExtractor,
+	pub merge_key_source: Option<MergeKeySource>,
+	pub conflict_policy: ConflictPolicy,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -213,6 +297,8 @@ pub struct ContentFamilyDescriptorBuilder {
 	scope_policy: ContentFamilyScopePolicy,
 	capabilities: ContentFamilyCapabilities,
 	extractor: ContentFamilyExtractor,
+	merge_key_source: Option<MergeKeySource>,
+	conflict_policy: ConflictPolicy,
 }
 
 impl ContentFamilyDescriptorBuilder {
@@ -236,6 +322,14 @@ impl ContentFamilyDescriptorBuilder {
 		self.extractor = ext;
 		self
 	}
+	pub const fn merge_key(mut self, source: MergeKeySource) -> Self {
+		self.merge_key_source = Some(source);
+		self
+	}
+	pub const fn conflict_policy(mut self, policy: ConflictPolicy) -> Self {
+		self.conflict_policy = policy;
+		self
+	}
 	pub const fn build(self) -> ContentFamilyDescriptor {
 		ContentFamilyDescriptor {
 			id: self.id,
@@ -245,6 +339,8 @@ impl ContentFamilyDescriptorBuilder {
 			scope_policy: self.scope_policy,
 			capabilities: self.capabilities,
 			extractor: self.extractor,
+			merge_key_source: self.merge_key_source,
+			conflict_policy: self.conflict_policy,
 		}
 	}
 }
@@ -266,6 +362,8 @@ impl ContentFamilyDescriptor {
 				merge_ready: false,
 			},
 			extractor: ContentFamilyExtractor::None,
+			merge_key_source: None,
+			conflict_policy: ConflictPolicy::Rename,
 		}
 	}
 
@@ -288,6 +386,8 @@ impl ContentFamilyDescriptor {
 				merge_ready: false,
 			},
 			extractor: ContentFamilyExtractor::None,
+			merge_key_source: None,
+			conflict_policy: ConflictPolicy::Rename,
 		}
 	}
 }

@@ -6,25 +6,17 @@ use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
 };
 use foch_core::model::{MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy};
-use foch_language::analyzer::content_family::ScriptFileKind;
+use foch_language::analyzer::content_family::{
+	ConflictPolicy, ContentFamilyDescriptor, GameProfile, MergeKeySource,
+};
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, classify_script_file, is_decision_container_key, parse_script_file,
+	ParsedScriptFile, is_decision_container_key, parse_script_file,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MergeIrStructuralKind {
-	Events,
-	Decisions,
-	ScriptedEffects,
-	DiplomaticActions,
-	TriggeredModifiers,
-	Defines,
-}
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeIrResult {
@@ -57,7 +49,8 @@ pub struct MergeIrCopyThroughFile {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergeIrStructuralFile {
 	pub target_path: String,
-	pub kind: MergeIrStructuralKind,
+	pub family_id: String,
+	pub merge_key_source: MergeKeySource,
 	pub nodes: Vec<MergeIrNode>,
 }
 
@@ -73,6 +66,12 @@ pub struct MergeIrNode {
 	pub source_mod_order: Vec<MergePlanContributor>,
 	pub winning_statement: AstStatement,
 	pub source_fragments: Vec<MergeIrSourceFragment>,
+	/// Set when renamed due to conflict — holds the original merge key.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub original_merge_key: Option<String>,
+	/// Whether this node was renamed as part of conflict resolution.
+	#[serde(default)]
+	pub conflict_rename: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,6 +111,8 @@ struct NodeAccumulator {
 	source_mod_order: Vec<MergePlanContributor>,
 	winning_statement: AstStatement,
 	source_fragments: Vec<MergeIrSourceFragment>,
+	/// Set during conflict rename to track the original merge key.
+	original_merge_key: Option<String>,
 }
 
 pub fn run_merge_ir(request: CheckRequest) -> MergeIrResult {
@@ -212,17 +213,23 @@ fn append_structural_file(
 		}
 	};
 
-	let kind = classify_script_file(Path::new(&path_entry.path));
-	match structural_kind_for_file_kind(kind) {
-		Some(structural_kind) => {
-			match build_structural_file(&path_entry.path, structural_kind, contributors) {
+	let profile = eu4_profile();
+	let descriptor = profile.classify_content_family(Path::new(&path_entry.path));
+	let merge_key_source = descriptor.and_then(|d| d.merge_key_source);
+	match (descriptor, merge_key_source) {
+		(Some(descriptor), Some(merge_key_source)) => {
+			match build_structural_file(
+				&path_entry.path,
+				descriptor,
+				merge_key_source,
+				contributors,
+			) {
 				Ok(file) => result.structural_files.push(file),
 				Err(err) => result.push_fatal_error(err.to_string()),
 			}
 		}
-		None => result.push_fatal_error(format!(
-			"merge IR does not support structural root {} for {}",
-			describe_file_kind(kind),
+		_ => result.push_fatal_error(format!(
+			"merge IR has no merge_key_source for {}",
 			path_entry.path
 		)),
 	}
@@ -230,7 +237,8 @@ fn append_structural_file(
 
 fn build_structural_file(
 	target_path: &str,
-	kind: MergeIrStructuralKind,
+	descriptor: &ContentFamilyDescriptor,
+	merge_key_source: MergeKeySource,
 	contributors: &[ResolvedFileContributor],
 ) -> Result<MergeIrStructuralFile, MergeError> {
 	let mut nodes = BTreeMap::<String, NodeAccumulator>::new();
@@ -259,7 +267,7 @@ fn build_structural_file(
 			});
 		}
 
-		let fragments = extract_fragments(&parsed)?;
+		let fragments = extract_fragments(&parsed, merge_key_source)?;
 		if fragments.is_empty() {
 			return Err(MergeError::Parse {
 				path: Some(target_path.to_string()),
@@ -285,6 +293,7 @@ fn build_structural_file(
 						source_mod_order: Vec::new(),
 						winning_statement: fragment.statement.clone(),
 						source_fragments: Vec::new(),
+						original_merge_key: None,
 					});
 
 			push_unique_contributor(&mut entry.source_mod_order, &contributor_meta);
@@ -309,55 +318,136 @@ fn build_structural_file(
 		}
 	}
 
+	// --- Conflict detection and rename ---
+	let conflict_policy = descriptor.conflict_policy;
+	if conflict_policy == ConflictPolicy::Rename {
+		let conflicting_keys: Vec<String> = nodes
+			.iter()
+			.filter_map(|(key, accumulator)| {
+				let unique_non_base_mods: HashSet<&str> = accumulator
+					.source_mod_order
+					.iter()
+					.filter(|c| !c.is_base_game)
+					.map(|c| c.mod_id.as_str())
+					.collect();
+				if unique_non_base_mods.len() > 1 {
+					Some(key.clone())
+				} else {
+					None
+				}
+			})
+			.collect();
+
+		for key in conflicting_keys {
+			if let Some(accumulator) = nodes.remove(&key) {
+				// Base game fragments keep the original key
+				let base_fragments: Vec<&MergeIrSourceFragment> = accumulator
+					.source_fragments
+					.iter()
+					.filter(|f| f.contributor.is_base_game)
+					.collect();
+				if !base_fragments.is_empty() {
+					let base_contributor = base_fragments[0].contributor.clone();
+					let base_node = NodeAccumulator {
+						target_path: accumulator.target_path.clone(),
+						merge_key: key.clone(),
+						path_segments: accumulator.path_segments.clone(),
+						statement_key: accumulator.statement_key.clone(),
+						container_key: accumulator.container_key.clone(),
+						winner: base_contributor.clone(),
+						source_mod_order: vec![base_contributor],
+						winning_statement: base_fragments.last().unwrap().statement.clone(),
+						source_fragments: base_fragments.into_iter().cloned().collect(),
+						original_merge_key: None,
+					};
+					nodes.insert(key.clone(), base_node);
+				}
+
+				// Group non-base fragments by mod_id and create renamed nodes
+				let mut per_mod: BTreeMap<String, Vec<MergeIrSourceFragment>> = BTreeMap::new();
+				for fragment in &accumulator.source_fragments {
+					if fragment.contributor.is_base_game {
+						continue;
+					}
+					per_mod
+						.entry(fragment.contributor.mod_id.clone())
+						.or_default()
+						.push(fragment.clone());
+				}
+
+				for (mod_id, fragments) in per_mod {
+					let mod_suffix = sanitize_mod_name(&mod_id);
+					let renamed_key = format!("{}_{}", key, mod_suffix);
+					let last_fragment = fragments.last().unwrap();
+					let contributor = last_fragment.contributor.clone();
+					let renamed_node = NodeAccumulator {
+						target_path: accumulator.target_path.clone(),
+						merge_key: renamed_key.clone(),
+						path_segments: accumulator.path_segments.clone(),
+						statement_key: last_fragment.statement_key.clone(),
+						container_key: last_fragment.container_key.clone(),
+						winner: contributor.clone(),
+						source_mod_order: vec![contributor],
+						winning_statement: last_fragment.statement.clone(),
+						source_fragments: fragments,
+						original_merge_key: Some(key.clone()),
+					};
+					nodes.insert(renamed_key.clone(), renamed_node);
+				}
+			}
+		}
+	}
+	// For MergeLeaf and LastWriter, the existing accumulation behavior is correct.
+
 	let nodes = nodes
 		.into_values()
-		.map(|accumulator| MergeIrNode {
-			target_path: accumulator.target_path,
-			merge_key: accumulator.merge_key,
-			path_segments: accumulator.path_segments,
-			statement_key: accumulator.statement_key,
-			container_key: accumulator.container_key,
-			overridden_contributors: accumulator
-				.source_mod_order
-				.iter()
-				.filter(|item| item.source_path != accumulator.winner.source_path)
-				.cloned()
-				.collect(),
-			source_mod_order: accumulator.source_mod_order,
-			winner: accumulator.winner,
-			winning_statement: accumulator.winning_statement,
-			source_fragments: accumulator.source_fragments,
+		.map(|accumulator| {
+			let is_renamed = accumulator.original_merge_key.is_some();
+			MergeIrNode {
+				target_path: accumulator.target_path,
+				merge_key: accumulator.merge_key,
+				path_segments: accumulator.path_segments,
+				statement_key: accumulator.statement_key,
+				container_key: accumulator.container_key,
+				overridden_contributors: accumulator
+					.source_mod_order
+					.iter()
+					.filter(|item| item.source_path != accumulator.winner.source_path)
+					.cloned()
+					.collect(),
+				source_mod_order: accumulator.source_mod_order,
+				winner: accumulator.winner,
+				winning_statement: accumulator.winning_statement,
+				source_fragments: accumulator.source_fragments,
+				original_merge_key: accumulator.original_merge_key,
+				conflict_rename: is_renamed,
+			}
 		})
 		.collect();
 
 	Ok(MergeIrStructuralFile {
 		target_path: target_path.to_string(),
-		kind,
+		family_id: descriptor.id.to_string(),
+		merge_key_source,
 		nodes,
 	})
 }
 
-fn extract_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>, MergeError> {
-	match parsed.file_kind {
-		ScriptFileKind::Events => extract_event_fragments(parsed),
-		ScriptFileKind::Decisions => Ok(extract_decision_fragments(parsed)),
-		ScriptFileKind::ScriptedEffects
-		| ScriptFileKind::DiplomaticActions
-		| ScriptFileKind::TriggeredModifiers => Ok(extract_assignment_fragments(parsed)),
-		ScriptFileKind::Defines => extract_defines_fragments(parsed),
-		other => Err(MergeError::Parse {
-			path: Some(parsed.relative_path.display().to_string()),
-			message: format!(
-				"merge IR does not support extracting {} from {}",
-				describe_file_kind(other),
-				parsed.relative_path.display()
-			),
-		}),
+fn extract_fragments(
+	parsed: &ParsedScriptFile,
+	merge_key_source: MergeKeySource,
+) -> Result<Vec<ExtractedFragment>, MergeError> {
+	match merge_key_source {
+		MergeKeySource::BlockKey => Ok(extract_assignment_fragments(parsed)),
+		MergeKeySource::InnerField(field) => extract_inner_field_fragments(parsed, field),
+		MergeKeySource::ContainerChild => Ok(extract_decision_fragments(parsed)),
+		MergeKeySource::DefinesPath => extract_defines_fragments(parsed),
 	}
 }
 
-fn extract_event_fragments(
+fn extract_inner_field_fragments(
 	parsed: &ParsedScriptFile,
+	field: &str,
 ) -> Result<Vec<ExtractedFragment>, MergeError> {
 	let mut fragments = Vec::new();
 
@@ -371,13 +461,15 @@ fn extract_event_fragments(
 		let AstValue::Block { items, .. } = value else {
 			continue;
 		};
-		let Some(merge_key) = scalar_assignment_value(items, "id") else {
+		let Some(merge_key) = scalar_assignment_value(items, field) else {
 			return Err(MergeError::Parse {
 				path: Some(parsed.relative_path.display().to_string()),
 				message: format!(
-					"merge IR requires event id keys in {} but found a {} block without id",
+					"merge IR requires {} keys in {} but found a {} block without {}",
+					field,
 					parsed.relative_path.display(),
-					key
+					key,
+					field
 				),
 			});
 		};
@@ -513,103 +605,27 @@ fn to_merge_contributor(contributor: &ResolvedFileContributor) -> MergePlanContr
 	}
 }
 
-fn structural_kind_for_file_kind(kind: ScriptFileKind) -> Option<MergeIrStructuralKind> {
-	match kind {
-		ScriptFileKind::Events => Some(MergeIrStructuralKind::Events),
-		ScriptFileKind::Decisions => Some(MergeIrStructuralKind::Decisions),
-		ScriptFileKind::ScriptedEffects => Some(MergeIrStructuralKind::ScriptedEffects),
-		ScriptFileKind::DiplomaticActions => Some(MergeIrStructuralKind::DiplomaticActions),
-		ScriptFileKind::TriggeredModifiers => Some(MergeIrStructuralKind::TriggeredModifiers),
-		ScriptFileKind::Defines => Some(MergeIrStructuralKind::Defines),
-		_ => None,
-	}
-}
-
-fn describe_file_kind(kind: ScriptFileKind) -> &'static str {
-	match kind {
-		ScriptFileKind::Events => "events",
-		ScriptFileKind::OnActions => "on_actions",
-		ScriptFileKind::Decisions => "decisions",
-		ScriptFileKind::ScriptedEffects => "scripted_effects",
-		ScriptFileKind::ScriptedTriggers => "scripted_triggers",
-		ScriptFileKind::DiplomaticActions => "diplomatic_actions",
-		ScriptFileKind::TriggeredModifiers => "triggered_modifiers",
-		ScriptFileKind::Defines => "defines",
-		ScriptFileKind::Achievements => "achievements",
-		ScriptFileKind::Ages => "ages",
-		ScriptFileKind::Buildings => "buildings",
-		ScriptFileKind::Institutions => "institutions",
-		ScriptFileKind::ProvinceTriggeredModifiers => "province_triggered_modifiers",
-		ScriptFileKind::Ideas => "ideas",
-		ScriptFileKind::GreatProjects => "great_projects",
-		ScriptFileKind::GovernmentReforms => "government_reforms",
-		ScriptFileKind::Cultures => "cultures",
-		ScriptFileKind::CustomGui => "custom_gui",
-		ScriptFileKind::AdvisorTypes => "advisortypes",
-		ScriptFileKind::EventModifiers => "event_modifiers",
-		ScriptFileKind::CbTypes => "cb_types",
-		ScriptFileKind::GovernmentNames => "government_names",
-		ScriptFileKind::CustomizableLocalization => "customizable_localization",
-		ScriptFileKind::Missions => "missions",
-		ScriptFileKind::NewDiplomaticActions => "new_diplomatic_actions",
-		ScriptFileKind::CountryTags => "country_tags",
-		ScriptFileKind::Countries => "countries",
-		ScriptFileKind::CountryHistory => "history_countries",
-		ScriptFileKind::ProvinceHistory => "history_provinces",
-		ScriptFileKind::ProvinceNames => "province_names",
-		ScriptFileKind::RandomMapTiles => "random_map_tiles",
-		ScriptFileKind::RandomMapNames => "random_map_names",
-		ScriptFileKind::RandomMapScenarios => "random_map_scenarios",
-		ScriptFileKind::RandomMapTweaks => "random_map_tweaks",
-		ScriptFileKind::DiplomacyHistory => "history_diplomacy",
-		ScriptFileKind::AdvisorHistory => "history_advisors",
-		ScriptFileKind::Wars => "history_wars",
-		ScriptFileKind::Fervor => "fervor",
-		ScriptFileKind::Decrees => "decrees",
-		ScriptFileKind::FederationAdvancements => "federation_advancements",
-		ScriptFileKind::GoldenBulls => "golden_bulls",
-		ScriptFileKind::FlagshipModifications => "flagship_modifications",
-		ScriptFileKind::HolyOrders => "holy_orders",
-		ScriptFileKind::NavalDoctrines => "naval_doctrines",
-		ScriptFileKind::DefenderOfFaith => "defender_of_faith",
-		ScriptFileKind::Isolationism => "isolationism",
-		ScriptFileKind::Professionalism => "professionalism",
-		ScriptFileKind::PowerProjection => "powerprojection",
-		ScriptFileKind::SubjectTypeUpgrades => "subject_type_upgrades",
-		ScriptFileKind::GovernmentRanks => "government_ranks",
-		ScriptFileKind::Units => "units",
-		ScriptFileKind::Religions => "religions",
-		ScriptFileKind::SubjectTypes => "subject_types",
-		ScriptFileKind::RebelTypes => "rebel_types",
-		ScriptFileKind::Disasters => "disasters",
-		ScriptFileKind::GovernmentMechanics => "government_mechanics",
-		ScriptFileKind::PeaceTreaties => "peace_treaties",
-		ScriptFileKind::Bookmarks => "bookmarks",
-		ScriptFileKind::Policies => "policies",
-		ScriptFileKind::MercenaryCompanies => "mercenary_companies",
-		ScriptFileKind::Technologies => "technologies",
-		ScriptFileKind::TechnologyGroups => "technology_groups",
-		ScriptFileKind::EstateAgendas => "estate_agendas",
-		ScriptFileKind::EstatePrivileges => "estate_privileges",
-		ScriptFileKind::Estates => "estates",
-		ScriptFileKind::ParliamentBribes => "parliament_bribes",
-		ScriptFileKind::ParliamentIssues => "parliament_issues",
-		ScriptFileKind::StateEdicts => "state_edicts",
-		ScriptFileKind::ChurchAspects => "church_aspects",
-		ScriptFileKind::Factions => "factions",
-		ScriptFileKind::Hegemons => "hegemons",
-		ScriptFileKind::PersonalDeities => "personal_deities",
-		ScriptFileKind::FetishistCults => "fetishist_cults",
-		ScriptFileKind::Ui => "ui",
-		ScriptFileKind::Other => "other",
-	}
+/// Sanitize a mod identifier for use as a merge-key suffix.
+/// Replaces non-alphanumeric characters with underscores and lowercases.
+fn sanitize_mod_name(mod_id: &str) -> String {
+	mod_id
+		.chars()
+		.map(|c| {
+			if c.is_alphanumeric() {
+				c.to_ascii_lowercase()
+			} else {
+				'_'
+			}
+		})
+		.collect()
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{MergeIrStructuralKind, run_merge_ir_with_options};
+	use super::run_merge_ir_with_options;
 	use crate::config::Config;
 	use crate::request::{CheckRequest, MergePlanOptions};
+	use foch_language::analyzer::content_family::MergeKeySource;
 	use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 	use serde_json::json;
 	use std::fs;
@@ -732,19 +748,30 @@ mod tests {
 		assert!(result.fatal_errors.is_empty());
 		assert_eq!(result.structural_files.len(), 1);
 		let file = &result.structural_files[0];
-		assert_eq!(file.kind, MergeIrStructuralKind::Events);
-		assert_eq!(file.nodes.len(), 2);
-		let shared = file
+		assert_eq!(file.merge_key_source, MergeKeySource::InnerField("id"));
+		// Conflict rename splits test.1 into per-mod nodes
+		assert_eq!(file.nodes.len(), 3);
+		let renamed_a = file
 			.nodes
 			.iter()
-			.find(|node| node.merge_key == "test.1")
-			.expect("shared event");
-		assert_eq!(shared.statement_key, "country_event");
-		assert_eq!(shared.winner.mod_id, "9502");
-		assert_eq!(shared.overridden_contributors.len(), 1);
-		assert_eq!(shared.overridden_contributors[0].mod_id, "9501");
-		assert_eq!(shared.source_mod_order.len(), 2);
-		assert_eq!(shared.source_fragments.len(), 2);
+			.find(|node| node.merge_key == "test.1_9501")
+			.expect("renamed event for mod A");
+		assert_eq!(renamed_a.winner.mod_id, "9501");
+		assert!(renamed_a.conflict_rename);
+		assert_eq!(renamed_a.original_merge_key.as_deref(), Some("test.1"));
+		let renamed_b = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "test.1_9502")
+			.expect("renamed event for mod B");
+		assert_eq!(renamed_b.winner.mod_id, "9502");
+		assert!(renamed_b.conflict_rename);
+		let unique = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "test.2")
+			.expect("unique event");
+		assert!(!unique.conflict_rename);
 	}
 
 	#[test]
@@ -777,15 +804,27 @@ mod tests {
 		let result = run_merge_ir_no_base(request_for(&playlist_path));
 		assert!(result.fatal_errors.is_empty());
 		let file = &result.structural_files[0];
-		assert_eq!(file.kind, MergeIrStructuralKind::Decisions);
-		let node = file
+		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChild);
+		// Conflict rename splits test_decision into per-mod nodes
+		assert_eq!(file.nodes.len(), 3);
+		let renamed_a = file
 			.nodes
 			.iter()
-			.find(|node| node.merge_key == "test_decision")
-			.expect("merged decision");
-		assert_eq!(node.container_key.as_deref(), Some("country_decisions"));
-		assert_eq!(node.winner.mod_id, "9602");
-		assert_eq!(node.source_mod_order.len(), 2);
+			.find(|node| node.merge_key == "test_decision_9601")
+			.expect("renamed decision for mod A");
+		assert_eq!(
+			renamed_a.container_key.as_deref(),
+			Some("country_decisions")
+		);
+		assert_eq!(renamed_a.winner.mod_id, "9601");
+		assert!(renamed_a.conflict_rename);
+		let renamed_b = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "test_decision_9602")
+			.expect("renamed decision for mod B");
+		assert_eq!(renamed_b.winner.mod_id, "9602");
+		assert!(renamed_b.conflict_rename);
 	}
 
 	#[test]
@@ -818,21 +857,31 @@ mod tests {
 		let result = run_merge_ir_no_base(request_for(&playlist_path));
 		assert!(result.fatal_errors.is_empty());
 		let file = &result.structural_files[0];
-		assert_eq!(file.kind, MergeIrStructuralKind::ScriptedEffects);
-		let shared = file
+		assert_eq!(file.merge_key_source, MergeKeySource::BlockKey);
+		// Conflict rename splits shared_effect into per-mod nodes
+		assert_eq!(file.nodes.len(), 3);
+		let renamed_a = file
 			.nodes
 			.iter()
-			.find(|node| node.merge_key == "shared_effect")
-			.expect("shared effect");
+			.find(|node| node.merge_key == "shared_effect_9701")
+			.expect("renamed effect for mod A");
+		assert_eq!(renamed_a.winner.mod_id, "9701");
+		assert!(renamed_a.conflict_rename);
+		let renamed_b = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "shared_effect_9702")
+			.expect("renamed effect for mod B");
+		assert_eq!(renamed_b.winner.mod_id, "9702");
+		assert!(renamed_b.conflict_rename);
 		let unique = file
 			.nodes
 			.iter()
 			.find(|node| node.merge_key == "unique_effect")
 			.expect("unique effect");
-		assert_eq!(shared.winner.mod_id, "9702");
-		assert_eq!(shared.source_fragments.len(), 2);
 		assert_eq!(unique.winner.mod_id, "9701");
 		assert!(unique.overridden_contributors.is_empty());
+		assert!(!unique.conflict_rename);
 	}
 
 	#[test]
@@ -867,7 +916,7 @@ mod tests {
 		assert!(result.deferred_structural_paths.is_empty());
 		assert_eq!(result.structural_files.len(), 1);
 		let file = &result.structural_files[0];
-		assert_eq!(file.kind, MergeIrStructuralKind::Defines);
+		assert_eq!(file.merge_key_source, MergeKeySource::DefinesPath);
 		let start_year = file
 			.nodes
 			.iter()
