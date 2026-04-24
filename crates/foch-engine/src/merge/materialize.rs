@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use super::emit::emit_structural_file;
+use super::error::MergeError;
 use super::ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
 use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
@@ -35,7 +36,7 @@ pub(crate) fn materialize_merge_internal(
 	request: CheckRequest,
 	out_dir: &Path,
 	options: MergeMaterializeOptions,
-) -> io::Result<MergeReport> {
+) -> Result<MergeReport, MergeError> {
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
 
@@ -56,8 +57,7 @@ pub(crate) fn materialize_merge_internal(
 		return Ok(report);
 	}
 
-	let workspace = resolve_workspace(&request, options.include_game_base)
-		.map_err(|err| io::Error::other(err.message))?;
+	let workspace = resolve_workspace(&request, options.include_game_base)?;
 	let ir = build_merge_ir_from_workspace_and_plan(&workspace, &plan);
 	if ir.has_fatal_errors() {
 		report.status = MergeReportStatus::Fatal;
@@ -92,12 +92,13 @@ pub(crate) fn materialize_merge_internal(
 				report.overlay_file_count += 1;
 			}
 			MergePlanStrategy::StructuralMerge => {
-				let file = structural_files.get(&entry.path).ok_or_else(|| {
-					io::Error::other(format!(
-						"missing merge IR structural file for {}",
-						entry.path
-					))
-				})?;
+				let file =
+					structural_files
+						.get(&entry.path)
+						.ok_or_else(|| MergeError::Validation {
+							path: Some(entry.path.clone()),
+							message: format!("missing merge IR structural file for {}", entry.path),
+						})?;
 				write_structural_output(file, out_dir)?;
 				generated_paths.insert(entry.path.clone());
 				report.generated_file_count += 1;
@@ -136,28 +137,32 @@ fn write_metadata_only(
 	out_dir: &Path,
 	plan: &MergePlanResult,
 	report: &MergeReport,
-) -> io::Result<()> {
+) -> Result<(), MergeError> {
 	fs::create_dir_all(out_dir.join(".foch"))?;
 	write_json_artifact(&out_dir.join(MERGE_PLAN_ARTIFACT_PATH), plan)?;
 	write_json_artifact(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH), report)?;
 	Ok(())
 }
 
-fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> Result<(), MergeError> {
 	if let Some(parent) = path.parent() {
 		fs::create_dir_all(parent)?;
 	}
 	let bytes = serde_json::to_vec_pretty(value).map_err(|err| {
-		io::Error::other(format!("failed to serialize {}: {err}", path.display()))
+		MergeError::Io(io::Error::other(format!(
+			"failed to serialize {}: {err}",
+			path.display()
+		)))
 	})?;
-	fs::write(path, bytes)
+	fs::write(path, bytes)?;
+	Ok(())
 }
 
 fn copy_winner_file(
 	workspace: &ResolvedWorkspace,
 	entry: &MergePlanEntry,
 	out_dir: &Path,
-) -> io::Result<()> {
+) -> Result<(), MergeError> {
 	let source = winner_source_path(workspace, entry)?;
 	let target = out_dir.join(&entry.path);
 	if let Some(parent) = target.parent() {
@@ -167,17 +172,17 @@ fn copy_winner_file(
 	Ok(())
 }
 
-fn write_structural_output(file: &MergeIrStructuralFile, out_dir: &Path) -> io::Result<()> {
-	let rendered = emit_structural_file(file)
-		.map_err(|err| io::Error::other(format!("failed to emit {}: {err}", file.target_path)))?;
+fn write_structural_output(file: &MergeIrStructuralFile, out_dir: &Path) -> Result<(), MergeError> {
+	let rendered = emit_structural_file(file)?;
 	let target = out_dir.join(&file.target_path);
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
-	fs::write(target, rendered)
+	fs::write(target, rendered)?;
+	Ok(())
 }
 
-fn write_conflict_placeholder(entry: &MergePlanEntry, out_dir: &Path) -> io::Result<()> {
+fn write_conflict_placeholder(entry: &MergePlanEntry, out_dir: &Path) -> Result<(), MergeError> {
 	let target = out_dir.join(&entry.path);
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
@@ -197,7 +202,8 @@ fn write_conflict_placeholder(entry: &MergePlanEntry, out_dir: &Path) -> io::Res
 		));
 	}
 	lines.push(String::new());
-	fs::write(target, lines.join("\n"))
+	fs::write(target, lines.join("\n"))?;
+	Ok(())
 }
 
 fn write_generated_descriptor(
@@ -205,7 +211,7 @@ fn write_generated_descriptor(
 	playset_path: &Path,
 	playset_name: &str,
 	descriptor_path: &Path,
-) -> io::Result<()> {
+) -> Result<(), MergeError> {
 	if let Some(parent) = descriptor_path.parent() {
 		fs::create_dir_all(parent)?;
 	}
@@ -217,32 +223,40 @@ fn write_generated_descriptor(
 	let descriptor = format!(
 		"# Source playset: {escaped_playset}\nname=\"{escaped_name}\"\npath=\"{escaped_path}\"\n"
 	);
-	fs::write(descriptor_path, descriptor)
+	fs::write(descriptor_path, descriptor)?;
+	Ok(())
 }
 
 fn winner_source_path<'a>(
 	workspace: &'a ResolvedWorkspace,
 	entry: &MergePlanEntry,
-) -> io::Result<&'a Path> {
-	let winner = entry.winner.as_ref().ok_or_else(|| {
-		io::Error::other(format!(
-			"merge plan entry {} is missing a winner",
-			entry.path
-		))
-	})?;
-	let contributors = workspace.file_inventory.get(&entry.path).ok_or_else(|| {
-		io::Error::other(format!(
-			"workspace is missing contributor inventory for {}",
-			entry.path
-		))
-	})?;
+) -> Result<&'a Path, MergeError> {
+	let winner = entry
+		.winner
+		.as_ref()
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(entry.path.clone()),
+			message: format!("merge plan entry {} is missing a winner", entry.path),
+		})?;
+	let contributors =
+		workspace
+			.file_inventory
+			.get(&entry.path)
+			.ok_or_else(|| MergeError::Validation {
+				path: Some(entry.path.clone()),
+				message: format!(
+					"workspace is missing contributor inventory for {}",
+					entry.path
+				),
+			})?;
 	find_contributor_path(contributors, winner)
 		.map(|path| path.as_path())
-		.ok_or_else(|| {
-			io::Error::other(format!(
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(entry.path.clone()),
+			message: format!(
 				"winner source {} is missing from workspace inventory for {}",
 				winner.source_path, entry.path
-			))
+			),
 		})
 }
 

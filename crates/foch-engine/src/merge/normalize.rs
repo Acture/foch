@@ -1,3 +1,4 @@
+use super::error::MergeError;
 use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
@@ -12,7 +13,7 @@ pub(crate) struct DefinesAssignmentFragment {
 
 pub(crate) fn normalize_defines_file(
 	parsed: &ParsedScriptFile,
-) -> Result<Vec<DefinesAssignmentFragment>, String> {
+) -> Result<Vec<DefinesAssignmentFragment>, MergeError> {
 	let mut fragments = Vec::new();
 
 	for statement in &parsed.ast.statements {
@@ -20,10 +21,13 @@ pub(crate) fn normalize_defines_file(
 	}
 
 	if fragments.is_empty() {
-		return Err(format!(
-			"defines merge requires at least one leaf assignment in {}",
-			parsed.relative_path.display()
-		));
+		return Err(MergeError::Parse {
+			path: Some(parsed.relative_path.display().to_string()),
+			message: format!(
+				"defines merge requires at least one leaf assignment in {}",
+				parsed.relative_path.display()
+			),
+		});
 	}
 
 	Ok(fragments)
@@ -34,14 +38,17 @@ fn collect_defines_fragments(
 	parent_segments: &[String],
 	fragments: &mut Vec<DefinesAssignmentFragment>,
 	parsed: &ParsedScriptFile,
-) -> Result<(), String> {
+) -> Result<(), MergeError> {
 	match statement {
 		AstStatement::Comment { .. } => Ok(()),
-		AstStatement::Item { .. } => Err(format!(
-			"defines merge requires named assignments in {} at {}",
-			parsed.relative_path.display(),
-			describe_assignment_path(parent_segments)
-		)),
+		AstStatement::Item { .. } => Err(MergeError::Parse {
+			path: Some(parsed.relative_path.display().to_string()),
+			message: format!(
+				"defines merge requires named assignments in {} at {}",
+				parsed.relative_path.display(),
+				describe_assignment_path(parent_segments)
+			),
+		}),
 		AstStatement::Assignment {
 			key, value, span, ..
 		} => {
@@ -64,11 +71,14 @@ fn collect_defines_fragments(
 						collect_defines_fragments(item, &path_segments, fragments, parsed)?;
 					}
 					if fragments.len() == fragment_count {
-						return Err(format!(
-							"defines merge requires leaf assignments below {} in {}",
-							describe_assignment_path(&path_segments),
-							parsed.relative_path.display()
-						));
+						return Err(MergeError::Parse {
+							path: Some(parsed.relative_path.display().to_string()),
+							message: format!(
+								"defines merge requires leaf assignments below {} in {}",
+								describe_assignment_path(&path_segments),
+								parsed.relative_path.display()
+							),
+						});
 					}
 					Ok(())
 				}

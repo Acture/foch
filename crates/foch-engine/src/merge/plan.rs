@@ -1,3 +1,4 @@
+use super::error::MergeError;
 use super::normalize::normalize_defines_file;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{
@@ -73,8 +74,8 @@ fn classify_entry(path: &str, contributors: &[ResolvedFileContributor]) -> Merge
 	} else if is_structural_merge_path(path) {
 		match validate_structural_merge_inputs(path, contributors) {
 			Ok(()) => MergePlanStrategy::StructuralMerge,
-			Err(message) => {
-				notes.push(message);
+			Err(err) => {
+				notes.push(err.to_string());
 				MergePlanStrategy::ManualConflict
 			}
 		}
@@ -141,7 +142,7 @@ fn current_generated_at() -> String {
 fn validate_structural_merge_inputs(
 	path: &str,
 	contributors: &[ResolvedFileContributor],
-) -> Result<(), String> {
+) -> Result<(), MergeError> {
 	let mut failures = Vec::new();
 	let is_defines_path = path.to_ascii_lowercase().starts_with("common/defines/");
 
@@ -166,10 +167,10 @@ fn validate_structural_merge_inputs(
 			&contributor.absolute_path,
 		) {
 			Some(parsed) if parsed.parse_issues.is_empty() => {
-				if is_defines_path && let Err(message) = normalize_defines_file(&parsed) {
+				if is_defines_path && let Err(err) = normalize_defines_file(&parsed) {
 					failures.push(format!(
 						"non-normalizable defines in {}: {}",
-						contributor.mod_id, message
+						contributor.mod_id, err
 					));
 				}
 			}
@@ -185,10 +186,13 @@ fn validate_structural_merge_inputs(
 	if failures.is_empty() {
 		Ok(())
 	} else {
-		Err(format!(
-			"structural merge blocked by invalid contributors: {}",
-			failures.join(", ")
-		))
+		Err(MergeError::Validation {
+			path: Some(path.to_string()),
+			message: format!(
+				"structural merge blocked by invalid contributors: {}",
+				failures.join(", ")
+			),
+		})
 	}
 }
 

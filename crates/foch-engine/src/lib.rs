@@ -23,8 +23,8 @@ pub use graph::{
 	GraphRootSelector, GraphScopeSelection, SEMANTIC_GRAPH_PROGRESS_TARGET, run_graph_with_options,
 };
 pub use merge::{
-	MergeExecuteOptions, MergeExecutionResult, run_merge_plan, run_merge_plan_with_options,
-	run_merge_with_options,
+	MergeError, MergeExecuteOptions, MergeExecutionResult, run_merge_plan,
+	run_merge_plan_with_options, run_merge_with_options,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions};
 pub use run_checks::{run_checks, run_checks_with_options};

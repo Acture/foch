@@ -1,3 +1,4 @@
+use super::error::MergeError;
 use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
@@ -28,7 +29,7 @@ pub struct MergeExecutionResult {
 pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
-) -> io::Result<MergeExecutionResult> {
+) -> Result<MergeExecutionResult, MergeError> {
 	let mut report = materialize_merge_internal(
 		request.clone(),
 		&options.out_dir,
@@ -71,28 +72,34 @@ fn revalidate_generated_output(
 	request: &CheckRequest,
 	out_dir: &Path,
 	include_game_base: bool,
-) -> io::Result<MergeReportValidation> {
+) -> Result<MergeReportValidation, MergeError> {
 	let canonical_out_dir = out_dir
 		.canonicalize()
 		.unwrap_or_else(|_| out_dir.to_path_buf());
-	let parent_dir = canonical_out_dir.parent().ok_or_else(|| {
-		io::Error::other(format!(
-			"generated output {} has no parent directory",
-			canonical_out_dir.display()
-		))
-	})?;
+	let parent_dir = canonical_out_dir
+		.parent()
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(canonical_out_dir.display().to_string()),
+			message: format!(
+				"generated output {} has no parent directory",
+				canonical_out_dir.display()
+			),
+		})?;
 	let out_dir_name = canonical_out_dir
 		.file_name()
 		.and_then(|value| value.to_str())
-		.ok_or_else(|| {
-			io::Error::other(format!(
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(canonical_out_dir.display().to_string()),
+			message: format!(
 				"generated output {} has no terminal directory name",
 				canonical_out_dir.display()
-			))
+			),
 		})?;
-	let original_playlist = load_playlist(&request.playset_path).map_err(|err| {
-		io::Error::other(format!("failed to reload playset for validation: {err}"))
-	})?;
+	let original_playlist =
+		load_playlist(&request.playset_path).map_err(|err| MergeError::Validation {
+			path: Some(request.playset_path.display().to_string()),
+			message: format!("failed to reload playset for validation: {err}"),
+		})?;
 	let temp_playlist_path = validation_playlist_path(parent_dir);
 	let temp_playlist = json!({
 		"game": original_playlist.game.key(),
@@ -105,10 +112,10 @@ fn revalidate_generated_output(
 		}],
 	});
 	let temp_bytes = serde_json::to_vec_pretty(&temp_playlist).map_err(|err| {
-		io::Error::other(format!(
+		MergeError::Io(io::Error::other(format!(
 			"failed to serialize validation playset {}: {err}",
 			temp_playlist_path.display()
-		))
+		)))
 	})?;
 	fs::write(&temp_playlist_path, temp_bytes)?;
 
@@ -125,10 +132,10 @@ fn revalidate_generated_output(
 		},
 	);
 	if let Err(err) = fs::remove_file(&temp_playlist_path) {
-		cleanup_error = Some(io::Error::other(format!(
+		cleanup_error = Some(MergeError::Io(io::Error::other(format!(
 			"failed to remove validation playset {}: {err}",
 			temp_playlist_path.display()
-		)));
+		))));
 	}
 	if let Some(err) = cleanup_error {
 		return Err(err);
@@ -166,18 +173,19 @@ fn final_merge_status(report: &MergeReport) -> MergeReportStatus {
 	}
 }
 
-fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> io::Result<()> {
+fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> Result<(), MergeError> {
 	let path = out_dir.join(MERGE_REPORT_ARTIFACT_PATH);
 	if let Some(parent) = path.parent() {
 		fs::create_dir_all(parent)?;
 	}
 	let bytes = serde_json::to_vec_pretty(report).map_err(|err| {
-		io::Error::other(format!(
+		MergeError::Io(io::Error::other(format!(
 			"failed to serialize merge report {}: {err}",
 			path.display()
-		))
+		)))
 	})?;
-	fs::write(path, bytes)
+	fs::write(path, bytes)?;
+	Ok(())
 }
 
 fn validation_playlist_path(parent_dir: &Path) -> PathBuf {

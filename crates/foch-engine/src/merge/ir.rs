@@ -1,3 +1,4 @@
+use super::error::MergeError;
 use super::normalize::normalize_defines_file;
 use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
@@ -216,7 +217,7 @@ fn append_structural_file(
 		Some(structural_kind) => {
 			match build_structural_file(&path_entry.path, structural_kind, contributors) {
 				Ok(file) => result.structural_files.push(file),
-				Err(message) => result.push_fatal_error(message),
+				Err(err) => result.push_fatal_error(err.to_string()),
 			}
 		}
 		None => result.push_fatal_error(format!(
@@ -231,7 +232,7 @@ fn build_structural_file(
 	target_path: &str,
 	kind: MergeIrStructuralKind,
 	contributors: &[ResolvedFileContributor],
-) -> Result<MergeIrStructuralFile, String> {
+) -> Result<MergeIrStructuralFile, MergeError> {
 	let mut nodes = BTreeMap::<String, NodeAccumulator>::new();
 
 	for contributor in contributors {
@@ -240,26 +241,33 @@ fn build_structural_file(
 			&contributor.root_path,
 			&contributor.absolute_path,
 		)
-		.ok_or_else(|| {
-			format!(
+		.ok_or_else(|| MergeError::Parse {
+			path: Some(target_path.to_string()),
+			message: format!(
 				"merge IR could not parse {} from {}",
 				target_path,
 				contributor.absolute_path.display()
-			)
+			),
 		})?;
 		if !parsed.parse_issues.is_empty() {
-			return Err(format!(
-				"merge IR requires parse-clean contributors for {} but {} still has parse issues",
-				target_path, contributor.mod_id
-			));
+			return Err(MergeError::Parse {
+				path: Some(target_path.to_string()),
+				message: format!(
+					"merge IR requires parse-clean contributors for {} but {} still has parse issues",
+					target_path, contributor.mod_id
+				),
+			});
 		}
 
 		let fragments = extract_fragments(&parsed)?;
 		if fragments.is_empty() {
-			return Err(format!(
-				"merge IR found no mergeable blocks in {} for {}",
-				target_path, contributor.mod_id
-			));
+			return Err(MergeError::Parse {
+				path: Some(target_path.to_string()),
+				message: format!(
+					"merge IR found no mergeable blocks in {} for {}",
+					target_path, contributor.mod_id
+				),
+			});
 		}
 
 		let contributor_meta = to_merge_contributor(contributor);
@@ -329,7 +337,7 @@ fn build_structural_file(
 	})
 }
 
-fn extract_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>, String> {
+fn extract_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>, MergeError> {
 	match parsed.file_kind {
 		ScriptFileKind::Events => extract_event_fragments(parsed),
 		ScriptFileKind::Decisions => Ok(extract_decision_fragments(parsed)),
@@ -337,15 +345,20 @@ fn extract_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>
 		| ScriptFileKind::DiplomaticActions
 		| ScriptFileKind::TriggeredModifiers => Ok(extract_assignment_fragments(parsed)),
 		ScriptFileKind::Defines => extract_defines_fragments(parsed),
-		other => Err(format!(
-			"merge IR does not support extracting {} from {}",
-			describe_file_kind(other),
-			parsed.relative_path.display()
-		)),
+		other => Err(MergeError::Parse {
+			path: Some(parsed.relative_path.display().to_string()),
+			message: format!(
+				"merge IR does not support extracting {} from {}",
+				describe_file_kind(other),
+				parsed.relative_path.display()
+			),
+		}),
 	}
 }
 
-fn extract_event_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>, String> {
+fn extract_event_fragments(
+	parsed: &ParsedScriptFile,
+) -> Result<Vec<ExtractedFragment>, MergeError> {
 	let mut fragments = Vec::new();
 
 	for statement in &parsed.ast.statements {
@@ -359,11 +372,14 @@ fn extract_event_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFra
 			continue;
 		};
 		let Some(merge_key) = scalar_assignment_value(items, "id") else {
-			return Err(format!(
-				"merge IR requires event id keys in {} but found a {} block without id",
-				parsed.relative_path.display(),
-				key
-			));
+			return Err(MergeError::Parse {
+				path: Some(parsed.relative_path.display().to_string()),
+				message: format!(
+					"merge IR requires event id keys in {} but found a {} block without id",
+					parsed.relative_path.display(),
+					key
+				),
+			});
 		};
 		fragments.push(ExtractedFragment {
 			merge_key,
@@ -441,7 +457,9 @@ fn extract_assignment_fragments(parsed: &ParsedScriptFile) -> Vec<ExtractedFragm
 	fragments
 }
 
-fn extract_defines_fragments(parsed: &ParsedScriptFile) -> Result<Vec<ExtractedFragment>, String> {
+fn extract_defines_fragments(
+	parsed: &ParsedScriptFile,
+) -> Result<Vec<ExtractedFragment>, MergeError> {
 	Ok(normalize_defines_file(parsed)?
 		.into_iter()
 		.map(|fragment| ExtractedFragment {
