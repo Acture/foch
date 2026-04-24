@@ -1,8 +1,8 @@
 use super::content_family::{
-	BlockMergePolicy, ConflictPolicy, ContentFamilyCapabilities, ContentFamilyDescriptor,
-	ContentFamilyExtractor, ContentFamilyPathMatcher, ContentFamilyScopePolicy, GameId,
-	GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule, ScalarMergePolicy,
-	ScriptFileKind,
+	BlockMergePolicy, BooleanMergePolicy, ConflictPolicy, ContentFamilyCapabilities,
+	ContentFamilyDescriptor, ContentFamilyExtractor, ContentFamilyPathMatcher,
+	ContentFamilyScopePolicy, GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule,
+	ScalarMergePolicy, ScriptFileKind,
 };
 use foch_core::model::ScopeType;
 use std::path::Path;
@@ -68,6 +68,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::ContainerChildKey)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix("events", "events/")
 		.kind(ScriptFileKind::Events)
@@ -76,6 +77,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::FieldValue("id"))
 		.list_policy(ListMergePolicy::UnionWithRename)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix("decisions", "decisions/")
 		.kind(ScriptFileKind::Decisions)
@@ -83,6 +85,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::ContainerChildKey)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
 		.kind(ScriptFileKind::ScriptedEffects)
@@ -247,6 +250,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Disasters)
+		.scalar_policy(ScalarMergePolicy::Sum)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix(
 		"common/government_mechanics",
@@ -322,6 +327,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Policies)
+		.scalar_policy(ScalarMergePolicy::Sum)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/mercenary_companies", "common/mercenary_companies/")
 		.kind(ScriptFileKind::MercenaryCompanies)
@@ -330,6 +336,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::MercenaryCompanies)
+		.scalar_policy(ScalarMergePolicy::Sum)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/fervor", "common/fervor/")
 		.kind(ScriptFileKind::Fervor)
@@ -384,6 +391,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::HolyOrders)
+		.scalar_policy(ScalarMergePolicy::Sum)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/naval_doctrines", "common/naval_doctrines/")
 		.kind(ScriptFileKind::NavalDoctrines)
@@ -523,6 +531,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::EstatePrivileges)
+		.scalar_policy(ScalarMergePolicy::Sum)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/estates", "common/estates/")
 		.kind(ScriptFileKind::Estates)
@@ -571,6 +581,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Ages)
+		.scalar_policy(ScalarMergePolicy::Sum)
+		.list_policy(ListMergePolicy::OrderedUnion)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/buildings", "common/buildings/")
 		.kind(ScriptFileKind::Buildings)
@@ -588,6 +600,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Institutions)
+		.scalar_policy(ScalarMergePolicy::Sum)
 		.build(),
 	ContentFamilyDescriptor::prefix(
 		"common/province_triggered_modifiers",
@@ -607,6 +620,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Ideas)
+		.scalar_policy(ScalarMergePolicy::Sum)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/great_projects", "common/great_projects/")
 		.kind(ScriptFileKind::GreatProjects)
@@ -624,6 +638,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::GovernmentReforms)
 		.list_policy(ListMergePolicy::Replace)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/cultures", "common/cultures/")
 		.kind(ScriptFileKind::Cultures)
@@ -665,6 +680,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::CbTypes)
 		.list_policy(ListMergePolicy::Replace)
+		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/government_names", "common/government_names/")
 		.kind(ScriptFileKind::GovernmentNames)
@@ -808,6 +824,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Unknown))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
+		.list_policy(ListMergePolicy::OrderedUnion)
 		.build(),
 	ContentFamilyDescriptor::exact(
 		"common/graphicalculturetype",
@@ -960,6 +977,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Unknown))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
+		.block_policy(BlockMergePolicy::Replace)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/trading_policies", "common/trading_policies/")
 		.module_name(ModuleNameRule::Static("trading_policies"))
@@ -1046,7 +1064,6 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Unknown))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
-		.block_policy(BlockMergePolicy::Replace)
 		.build(),
 	ContentFamilyDescriptor::exact("map/trade_winds", "map/trade_winds.txt")
 		.module_name(ModuleNameRule::Static("trade_winds"))
@@ -1060,13 +1077,13 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.module_name(ModuleNameRule::Static("music"))
 		.scope(scope(ScopeType::Unknown))
 		.capabilities(semantic_complete_and_merge_ready())
-		.merge_key(MergeKeySource::AssignmentKey)
+		.merge_key(MergeKeySource::FieldValue("name"))
 		.build(),
 	ContentFamilyDescriptor::prefix("sound", "sound/")
 		.module_name(ModuleNameRule::Static("sound"))
 		.scope(scope(ScopeType::Unknown))
 		.capabilities(semantic_complete_and_merge_ready())
-		.merge_key(MergeKeySource::AssignmentKey)
+		.merge_key(MergeKeySource::FieldValue("name"))
 		.build(),
 	ContentFamilyDescriptor::exact("trigger_profile.txt", "trigger_profile.txt")
 		.module_name(ModuleNameRule::Static("trigger_profile"))
@@ -1078,7 +1095,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.module_name(ModuleNameRule::Static("tutorial"))
 		.scope(scope(ScopeType::Unknown))
 		.capabilities(semantic_complete_and_merge_ready())
-		.merge_key(MergeKeySource::AssignmentKey)
+		.merge_key(MergeKeySource::FieldValue("index"))
 		.build(),
 	ContentFamilyDescriptor::prefix("tweakergui_assets", "tweakergui_assets/")
 		.module_name(ModuleNameRule::Static("tweakergui_assets"))
