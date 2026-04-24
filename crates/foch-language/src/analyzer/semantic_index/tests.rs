@@ -6608,8 +6608,8 @@ option = {
 #[test]
 fn extractor_for_returns_none_for_families_without_extractors() {
 	use super::super::content_family::{
-		ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyPathMatcher,
-		ModuleNameRule,
+		ConflictPolicy, ContentFamilyCapabilities, ContentFamilyDescriptor,
+		ContentFamilyPathMatcher, ModuleNameRule,
 	};
 	use super::extractors;
 	use foch_core::model::ScopeType;
@@ -6624,6 +6624,8 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 		},
 		capabilities: ContentFamilyCapabilities::default(),
 		extractor: super::super::content_family::ContentFamilyExtractor::None,
+		merge_key_source: None,
+		conflict_policy: ConflictPolicy::default(),
 	};
 	assert!(extractors::extractor_for(&descriptor).is_none());
 }
@@ -7502,4 +7504,126 @@ objectTypes = {
 		}),
 		"should capture objectTypes as a gfx definition"
 	);
+}
+
+#[test]
+fn batch_promoted_roots_emit_definition_references() {
+	// (root_dir, def_key, block_name) — directory-based roots
+	let dir_cases: &[(&str, &str, &str)] = &[
+		("common/tradegoods", "tradegoods_definition", "grain"),
+		(
+			"common/colonial_regions",
+			"colonial_regions_definition",
+			"colonial_eastern_america",
+		),
+		(
+			"common/static_modifiers",
+			"static_modifiers_definition",
+			"war",
+		),
+		(
+			"common/wargoal_types",
+			"wargoal_types_definition",
+			"take_province",
+		),
+	];
+
+	for &(root, def_key, block_name) in dir_cases {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		let dir = mod_root.join(root);
+		fs::create_dir_all(&dir).expect("create dir");
+		fs::write(
+			dir.join("test.txt"),
+			format!("{block_name} = {{\n\tsome_key = some_value\n}}\n"),
+		)
+		.expect("write file");
+		let parsed = [parse_script_file("1000", &mod_root, &dir.join("test.txt")).expect("parsed")];
+		let index = build_semantic_index(&parsed);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == def_key && r.value == block_name),
+			"root {root} should emit {def_key} for '{block_name}'"
+		);
+	}
+
+	// (exact_file, def_key, block_name) — single-file roots
+	let exact_cases: &[(&str, &str, &str)] = &[
+		("map/region.txt", "region_definition", "france_region"),
+		("map/terrain.txt", "terrain_definition", "grasslands"),
+	];
+
+	for &(file_path, def_key, block_name) in exact_cases {
+		let tmp = TempDir::new().expect("temp dir");
+		let mod_root = tmp.path().join("mod");
+		let full_path = mod_root.join(file_path);
+		fs::create_dir_all(full_path.parent().unwrap()).expect("create dir");
+		fs::write(
+			&full_path,
+			format!("{block_name} = {{\n\tsome_key = some_value\n}}\n"),
+		)
+		.expect("write file");
+		let parsed = [parse_script_file("1000", &mod_root, &full_path).expect("parsed")];
+		let index = build_semantic_index(&parsed);
+		assert!(
+			index
+				.resource_references
+				.iter()
+				.any(|r| r.key == def_key && r.value == block_name),
+			"file {file_path} should emit {def_key} for '{block_name}'"
+		);
+	}
+}
+
+#[test]
+fn batch_promoted_roots_have_registered_extractors() {
+	use super::super::content_family::GameProfile;
+	use super::super::eu4_profile::eu4_profile;
+	use super::extractors;
+
+	let roots: &[(&str, &str)] = &[
+		("common/tradegoods/00_tradegoods.txt", "common/tradegoods"),
+		(
+			"common/colonial_regions/00_colonial_regions.txt",
+			"common/colonial_regions",
+		),
+		(
+			"common/opinion_modifiers/00_opinion_modifiers.txt",
+			"common/opinion_modifiers",
+		),
+		("map/region.txt", "map/region"),
+		("map/terrain.txt", "map/terrain"),
+		("map/area.txt", "map/area"),
+		("map/climate.txt", "map/climate"),
+		("map/continent.txt", "map/continent"),
+		("map/lakes.txt", "map/lakes"),
+		("map/positions.txt", "map/positions"),
+		("map/provincegroup.txt", "map/provincegroup"),
+		("map/seasons.txt", "map/seasons"),
+		("map/superregion.txt", "map/superregion"),
+		("map/trade_winds.txt", "map/trade_winds"),
+		("map/ambient_object.txt", "map/ambient_object"),
+		(
+			"common/graphicalculturetype.txt",
+			"common/graphicalculturetype",
+		),
+		("music/songs.txt", "music"),
+		("sound/sounds.txt", "sound"),
+		("tutorial/00_tutorial.txt", "tutorial"),
+		("userdir.txt", "userdir.txt"),
+	];
+
+	let profile = eu4_profile();
+	for &(path, expected_id) in roots {
+		let descriptor = profile
+			.classify_content_family(std::path::Path::new(path))
+			.unwrap_or_else(|| panic!("no descriptor for path {path}"));
+		assert_eq!(descriptor.id, expected_id, "wrong id for {path}");
+		assert!(
+			extractors::extractor_for(descriptor).is_some(),
+			"{expected_id} should have a registered extractor"
+		);
+	}
 }

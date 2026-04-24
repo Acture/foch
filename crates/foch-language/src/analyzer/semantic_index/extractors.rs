@@ -1342,6 +1342,368 @@ static CUSTOMIZABLE_LOCALIZATION: NamedDefinitionTable = NamedDefinitionTable {
 	block_reference_keys: &[],
 };
 
+// ---------------------------------------------------------------------------
+// Batch-promoted parse_only → semantic_complete (NamedDefinitionTable, empty refs)
+// ---------------------------------------------------------------------------
+
+static AI_ARMY: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "ai_army_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static AI_ATTITUDES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "ai_attitudes_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static AI_PERSONALITIES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "ai_personalities_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static ALERTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "alerts_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static ANCESTOR_PERSONALITIES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "ancestor_personalities_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CENTERS_OF_TRADE: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "centers_of_trade_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CLIENT_STATES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "client_states_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static COLONIAL_REGIONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "colonial_regions_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static COUNTRY_COLORS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "country_colors_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CUSTOM_COUNTRY_COLORS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "custom_country_colors_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CUSTOM_IDEAS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "custom_ideas_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static DYNASTY_COLORS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "dynasty_colors_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static ESTATE_CROWN_LAND: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "estate_crown_land_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static ESTATES_PRELOAD: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "estates_preload_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static GOVERNMENTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "governments_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static GRAPHICALCULTURETYPE: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "graphicalculturetype_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static HISTORIAL_LUCKY: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "historial_lucky_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static IMPERIAL_INCIDENTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "imperial_incidents_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static IMPERIAL_REFORMS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "imperial_reforms_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static INCIDENTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "incidents_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static INSULTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "insults_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static LEADER_PERSONALITIES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "leader_personalities_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static NATIVES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "natives_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static OPINION_MODIFIERS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "opinion_modifiers_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static PRICES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "prices_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static REGION_COLORS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "region_colors_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static RELIGIOUS_CONVERSIONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "religious_conversions_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static RELIGIOUS_REFORMS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "religious_reforms_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static REVOLT_TRIGGERS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "revolt_triggers_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static REVOLUTION: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "revolution_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static RULER_PERSONALITIES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "ruler_personalities_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static SCRIPTED_FUNCTIONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "scripted_functions_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static STATIC_MODIFIERS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "static_modifiers_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TIMED_MODIFIERS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "timed_modifiers_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRADE_COMPANIES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "trade_companies_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRADECOMPANY_INVESTMENTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "tradecompany_investments_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRADEGOODS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "tradegoods_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRADENODES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "tradenodes_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRADING_POLICIES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "trading_policies_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static UNITS_DISPLAY: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "units_display_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static WARGOAL_TYPES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "wargoal_types_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+// map/ roots
+
+static AMBIENT_OBJECT: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "ambient_object_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static AREA: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "area_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CLIMATE: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "climate_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CONTINENT: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "continent_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static LAKES: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "lakes_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static POSITIONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "positions_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static PROVINCEGROUP: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "provincegroup_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static REGION: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "region_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static SEASONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "seasons_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static SUPERREGION: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "superregion_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TERRAIN: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "terrain_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRADE_WINDS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "trade_winds_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+// misc roots
+
+static MUSIC: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "music_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static SOUND: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "sound_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TRIGGER_PROFILE: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "trigger_profile_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TUTORIAL: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "tutorial_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static TWEAKERGUI_ASSETS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "tweakergui_assets_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static USERDIR: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "userdir_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
 struct EventsExtractor;
 impl ResourceExtractor for EventsExtractor {
 	fn extract(
@@ -1624,6 +1986,67 @@ pub(super) fn extractor_for(
 		// Promoted content families
 		"common/triggered_modifiers" => Some(&TRIGGERED_MODIFIERS),
 		"common/scripted_effects" => Some(&SCRIPTED_EFFECTS),
+
+		// Batch-promoted parse_only → semantic_complete
+		"common/ai_army" => Some(&AI_ARMY),
+		"common/ai_attitudes" => Some(&AI_ATTITUDES),
+		"common/ai_personalities" => Some(&AI_PERSONALITIES),
+		"common/alerts" => Some(&ALERTS),
+		"common/ancestor_personalities" => Some(&ANCESTOR_PERSONALITIES),
+		"common/centers_of_trade" => Some(&CENTERS_OF_TRADE),
+		"common/client_states" => Some(&CLIENT_STATES),
+		"common/colonial_regions" => Some(&COLONIAL_REGIONS),
+		"common/country_colors" => Some(&COUNTRY_COLORS),
+		"common/custom_country_colors" => Some(&CUSTOM_COUNTRY_COLORS),
+		"common/custom_ideas" => Some(&CUSTOM_IDEAS),
+		"common/dynasty_colors" => Some(&DYNASTY_COLORS),
+		"common/estate_crown_land" => Some(&ESTATE_CROWN_LAND),
+		"common/estates_preload" => Some(&ESTATES_PRELOAD),
+		"common/governments" => Some(&GOVERNMENTS),
+		"common/graphicalculturetype" => Some(&GRAPHICALCULTURETYPE),
+		"common/historial_lucky" => Some(&HISTORIAL_LUCKY),
+		"common/imperial_incidents" => Some(&IMPERIAL_INCIDENTS),
+		"common/imperial_reforms" => Some(&IMPERIAL_REFORMS),
+		"common/incidents" => Some(&INCIDENTS),
+		"common/insults" => Some(&INSULTS),
+		"common/leader_personalities" => Some(&LEADER_PERSONALITIES),
+		"common/natives" => Some(&NATIVES),
+		"common/opinion_modifiers" => Some(&OPINION_MODIFIERS),
+		"common/prices" => Some(&PRICES),
+		"common/region_colors" => Some(&REGION_COLORS),
+		"common/religious_conversions" => Some(&RELIGIOUS_CONVERSIONS),
+		"common/religious_reforms" => Some(&RELIGIOUS_REFORMS),
+		"common/revolt_triggers" => Some(&REVOLT_TRIGGERS),
+		"common/revolution" => Some(&REVOLUTION),
+		"common/ruler_personalities" => Some(&RULER_PERSONALITIES),
+		"common/scripted_functions" => Some(&SCRIPTED_FUNCTIONS),
+		"common/static_modifiers" => Some(&STATIC_MODIFIERS),
+		"common/timed_modifiers" => Some(&TIMED_MODIFIERS),
+		"common/trade_companies" => Some(&TRADE_COMPANIES),
+		"common/tradecompany_investments" => Some(&TRADECOMPANY_INVESTMENTS),
+		"common/tradegoods" => Some(&TRADEGOODS),
+		"common/tradenodes" => Some(&TRADENODES),
+		"common/trading_policies" => Some(&TRADING_POLICIES),
+		"common/units_display" => Some(&UNITS_DISPLAY),
+		"common/wargoal_types" => Some(&WARGOAL_TYPES),
+		"map/ambient_object" => Some(&AMBIENT_OBJECT),
+		"map/area" => Some(&AREA),
+		"map/climate" => Some(&CLIMATE),
+		"map/continent" => Some(&CONTINENT),
+		"map/lakes" => Some(&LAKES),
+		"map/positions" => Some(&POSITIONS),
+		"map/provincegroup" => Some(&PROVINCEGROUP),
+		"map/region" => Some(&REGION),
+		"map/seasons" => Some(&SEASONS),
+		"map/superregion" => Some(&SUPERREGION),
+		"map/terrain" => Some(&TERRAIN),
+		"map/trade_winds" => Some(&TRADE_WINDS),
+		"music" => Some(&MUSIC),
+		"sound" => Some(&SOUND),
+		"trigger_profile.txt" => Some(&TRIGGER_PROFILE),
+		"tutorial" => Some(&TUTORIAL),
+		"tweakergui_assets" => Some(&TWEAKERGUI_ASSETS),
+		"userdir.txt" => Some(&USERDIR),
 
 		"customizable_localization" => Some(&CUSTOMIZABLE_LOCALIZATION),
 		"events" => Some(&EventsExtractor),

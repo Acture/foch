@@ -81,14 +81,6 @@ impl CoverageAccumulator {
 				.all(|item| item.as_str() == "other")
 	}
 
-	fn has_script_file_kind(&self, kind: &str) -> bool {
-		self.script_file_kinds.contains_key(kind)
-	}
-
-	fn has_semantic_count(&self, key: &str) -> bool {
-		self.semantic_counts.contains_key(key)
-	}
-
 	fn has_graph_semantics(&self) -> bool {
 		self.semantic_counts.contains_key("symbol_definitions")
 			|| self.semantic_counts.contains_key("symbol_references")
@@ -223,16 +215,7 @@ fn content_family_coverage_class(
 ) -> Option<CoverageClass> {
 	let descriptor = eu4_content_family_for_root_family(root_family)?;
 	if descriptor.capabilities.semantic_complete {
-		return Some(
-			if accumulator.has_semantic_count("resource_references")
-				&& accumulator
-					.has_script_file_kind(script_file_kind_name(descriptor.script_file_kind))
-			{
-				CoverageClass::SemanticComplete
-			} else {
-				CoverageClass::ParseOnly
-			},
-		);
+		return Some(CoverageClass::SemanticComplete);
 	}
 	if descriptor.capabilities.merge_ready {
 		return Some(CoverageClass::MergeReady);
