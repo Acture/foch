@@ -4,7 +4,7 @@ use super::error::MergeError;
 use super::ir::{MergeIrNode, MergeIrStructuralFile};
 use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Default)]
 struct DefinesEmitNode {
@@ -33,18 +33,17 @@ pub(crate) fn emit_clausewitz_statements(
 }
 
 fn emit_top_level_nodes(nodes: &[MergeIrNode]) -> Result<String, MergeError> {
-	let mut ordered = nodes.iter().collect::<Vec<_>>();
-	ordered.sort_by(|left, right| left.merge_key.cmp(&right.merge_key));
-
 	let mut out = String::new();
-	for node in ordered {
+	for node in nodes {
 		emit_statement(&node.merged_statement, 0, &mut out)?;
 	}
 	Ok(out)
 }
 
 fn emit_decision_nodes(nodes: &[MergeIrNode]) -> Result<String, MergeError> {
-	let mut grouped = BTreeMap::<String, Vec<&MergeIrNode>>::new();
+	// Group by container_key, preserving first-appearance order
+	let mut group_order: Vec<String> = Vec::new();
+	let mut grouped: HashMap<String, Vec<&MergeIrNode>> = HashMap::new();
 	for node in nodes {
 		let Some(container_key) = node.container_key.clone() else {
 			return Err(MergeError::Emit {
@@ -55,13 +54,16 @@ fn emit_decision_nodes(nodes: &[MergeIrNode]) -> Result<String, MergeError> {
 				),
 			});
 		};
+		if !grouped.contains_key(&container_key) {
+			group_order.push(container_key.clone());
+		}
 		grouped.entry(container_key).or_default().push(node);
 	}
 
 	let mut out = String::new();
-	for (container_key, mut group_nodes) in grouped {
-		group_nodes.sort_by(|left, right| left.merge_key.cmp(&right.merge_key));
-		out.push_str(&container_key);
+	for container_key in &group_order {
+		let group_nodes = &grouped[container_key];
+		out.push_str(container_key);
 		out.push_str(" = {\n");
 		for node in group_nodes {
 			emit_statement(&node.merged_statement, 1, &mut out)?;

@@ -112,6 +112,8 @@ pub enum ListMergePolicy {
 	Union,
 	/// Append all items; rename duplicates to `{item}_{mod_name}`.
 	UnionWithRename,
+	/// Preserve base order, append overlay's new items at end.
+	OrderedUnion,
 	/// Overlay's list replaces base entirely.
 	Replace,
 }
@@ -127,12 +129,26 @@ pub enum BlockMergePolicy {
 	Replace,
 }
 
+/// How to merge boolean condition blocks (triggers, potentials, etc.)
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BooleanMergePolicy {
+	/// Combine conditions with AND semantics (both must hold).
+	#[default]
+	And,
+	/// Combine conditions with OR semantics (either holds).
+	Or,
+	/// Overlay replaces base entirely.
+	Replace,
+}
+
 /// Bundle of policies that control how `deep_merge` resolves conflicts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergePolicies {
 	pub scalar: ScalarMergePolicy,
 	pub list: ListMergePolicy,
 	pub block: BlockMergePolicy,
+	pub boolean: BooleanMergePolicy,
 }
 
 /// How to handle conflicts when two unrelated mods define the same merge key.
@@ -397,6 +413,10 @@ impl ContentFamilyDescriptorBuilder {
 		self.merge_policies.block = policy;
 		self
 	}
+	pub const fn boolean_policy(mut self, policy: BooleanMergePolicy) -> Self {
+		self.merge_policies.boolean = policy;
+		self
+	}
 	pub const fn build(self) -> ContentFamilyDescriptor {
 		ContentFamilyDescriptor {
 			id: self.id,
@@ -436,6 +456,7 @@ impl ContentFamilyDescriptor {
 				scalar: ScalarMergePolicy::LastWriter,
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
+				boolean: BooleanMergePolicy::And,
 			},
 		}
 	}
@@ -465,6 +486,7 @@ impl ContentFamilyDescriptor {
 				scalar: ScalarMergePolicy::LastWriter,
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
+				boolean: BooleanMergePolicy::And,
 			},
 		}
 	}

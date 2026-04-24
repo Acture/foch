@@ -16,7 +16,7 @@ use foch_language::analyzer::semantic_index::{
 	ParsedScriptFile, is_decision_container_key, parse_script_file,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -28,6 +28,7 @@ pub struct MergeIrResult {
 	pub structural_files: Vec<MergeIrStructuralFile>,
 	pub deferred_structural_paths: Vec<MergeIrDeferredStructuralPath>,
 	pub fatal_errors: Vec<String>,
+	pub merge_warnings: Vec<String>,
 }
 
 impl MergeIrResult {
@@ -225,7 +226,10 @@ fn append_structural_file(
 				merge_key_source,
 				contributors,
 			) {
-				Ok(file) => result.structural_files.push(file),
+				Ok((file, warnings)) => {
+					result.structural_files.push(file);
+					result.merge_warnings.extend(warnings);
+				}
 				Err(err) => result.push_fatal_error(err.to_string()),
 			}
 		}
@@ -241,8 +245,10 @@ fn build_structural_file(
 	descriptor: &ContentFamilyDescriptor,
 	merge_key_source: MergeKeySource,
 	contributors: &[ResolvedFileContributor],
-) -> Result<MergeIrStructuralFile, MergeError> {
-	let mut nodes = BTreeMap::<String, NodeAccumulator>::new();
+) -> Result<(MergeIrStructuralFile, Vec<String>), MergeError> {
+	let mut node_vec: Vec<NodeAccumulator> = Vec::new();
+	let mut node_index: HashMap<String, usize> = HashMap::new();
+	let mut merge_warnings: Vec<String> = Vec::new();
 
 	for contributor in contributors {
 		let parsed = parse_script_file(
@@ -281,21 +287,26 @@ fn build_structural_file(
 
 		let contributor_meta = to_merge_contributor(contributor);
 		for fragment in fragments {
-			let entry =
-				nodes
-					.entry(fragment.merge_key.clone())
-					.or_insert_with(|| NodeAccumulator {
-						target_path: target_path.to_string(),
-						merge_key: fragment.merge_key.clone(),
-						path_segments: fragment.path_segments.clone(),
-						statement_key: fragment.statement_key.clone(),
-						container_key: fragment.container_key.clone(),
-						winner: contributor_meta.clone(),
-						source_mod_order: Vec::new(),
-						merged_statement: fragment.statement.clone(),
-						source_fragments: Vec::new(),
-						original_merge_key: None,
-					});
+			let acc_idx = if let Some(&idx) = node_index.get(&fragment.merge_key) {
+				idx
+			} else {
+				let idx = node_vec.len();
+				node_vec.push(NodeAccumulator {
+					target_path: target_path.to_string(),
+					merge_key: fragment.merge_key.clone(),
+					path_segments: fragment.path_segments.clone(),
+					statement_key: fragment.statement_key.clone(),
+					container_key: fragment.container_key.clone(),
+					winner: contributor_meta.clone(),
+					source_mod_order: Vec::new(),
+					merged_statement: fragment.statement.clone(),
+					source_fragments: Vec::new(),
+					original_merge_key: None,
+				});
+				node_index.insert(fragment.merge_key.clone(), idx);
+				idx
+			};
+			let entry = &mut node_vec[acc_idx];
 
 			push_unique_contributor(&mut entry.source_mod_order, &contributor_meta);
 			entry.source_fragments.push(MergeIrSourceFragment {
@@ -312,6 +323,7 @@ fn build_structural_file(
 				&fragment.statement,
 				&descriptor.merge_policies,
 				&contributor_meta.mod_id,
+				&mut merge_warnings,
 			);
 
 			// Track the highest-precedence contributor as "winner" for metadata
@@ -329,87 +341,92 @@ fn build_structural_file(
 
 	// --- Conflict detection and rename ---
 	let conflict_policy = descriptor.conflict_policy;
-	if conflict_policy == ConflictPolicy::Rename {
-		let conflicting_keys: Vec<String> = nodes
+	let node_vec = if conflict_policy == ConflictPolicy::Rename {
+		let conflicting_keys: HashSet<String> = node_vec
 			.iter()
-			.filter_map(|(key, accumulator)| {
-				let unique_non_base_mods: HashSet<&str> = accumulator
+			.filter_map(|acc| {
+				let unique_non_base_mods: HashSet<&str> = acc
 					.source_mod_order
 					.iter()
 					.filter(|c| !c.is_base_game)
 					.map(|c| c.mod_id.as_str())
 					.collect();
 				if unique_non_base_mods.len() > 1 {
-					Some(key.clone())
+					Some(acc.merge_key.clone())
 				} else {
 					None
 				}
 			})
 			.collect();
 
-		for key in conflicting_keys {
-			if let Some(accumulator) = nodes.remove(&key) {
-				// Base game fragments keep the original key
-				let base_fragments: Vec<&MergeIrSourceFragment> = accumulator
-					.source_fragments
-					.iter()
-					.filter(|f| f.contributor.is_base_game)
-					.collect();
-				if !base_fragments.is_empty() {
-					let base_contributor = base_fragments[0].contributor.clone();
-					let base_node = NodeAccumulator {
-						target_path: accumulator.target_path.clone(),
-						merge_key: key.clone(),
-						path_segments: accumulator.path_segments.clone(),
-						statement_key: accumulator.statement_key.clone(),
-						container_key: accumulator.container_key.clone(),
-						winner: base_contributor.clone(),
-						source_mod_order: vec![base_contributor],
-						merged_statement: base_fragments.last().unwrap().statement.clone(),
-						source_fragments: base_fragments.into_iter().cloned().collect(),
-						original_merge_key: None,
-					};
-					nodes.insert(key.clone(), base_node);
-				}
+		let mut renamed_vec: Vec<NodeAccumulator> = Vec::new();
+		for accumulator in node_vec {
+			if !conflicting_keys.contains(&accumulator.merge_key) {
+				renamed_vec.push(accumulator);
+				continue;
+			}
 
-				// Group non-base fragments by mod_id and create renamed nodes
-				let mut per_mod: BTreeMap<String, Vec<MergeIrSourceFragment>> = BTreeMap::new();
-				for fragment in &accumulator.source_fragments {
-					if fragment.contributor.is_base_game {
-						continue;
-					}
-					per_mod
-						.entry(fragment.contributor.mod_id.clone())
-						.or_default()
-						.push(fragment.clone());
-				}
+			// Base game fragments keep the original key
+			let base_fragments: Vec<&MergeIrSourceFragment> = accumulator
+				.source_fragments
+				.iter()
+				.filter(|f| f.contributor.is_base_game)
+				.collect();
+			if !base_fragments.is_empty() {
+				let base_contributor = base_fragments[0].contributor.clone();
+				renamed_vec.push(NodeAccumulator {
+					target_path: accumulator.target_path.clone(),
+					merge_key: accumulator.merge_key.clone(),
+					path_segments: accumulator.path_segments.clone(),
+					statement_key: accumulator.statement_key.clone(),
+					container_key: accumulator.container_key.clone(),
+					winner: base_contributor.clone(),
+					source_mod_order: vec![base_contributor],
+					merged_statement: base_fragments.last().unwrap().statement.clone(),
+					source_fragments: base_fragments.into_iter().cloned().collect(),
+					original_merge_key: None,
+				});
+			}
 
-				for (mod_id, fragments) in per_mod {
-					let mod_suffix = sanitize_mod_name(&mod_id);
-					let renamed_key = format!("{}_{}", key, mod_suffix);
-					let last_fragment = fragments.last().unwrap();
-					let contributor = last_fragment.contributor.clone();
-					let renamed_node = NodeAccumulator {
-						target_path: accumulator.target_path.clone(),
-						merge_key: renamed_key.clone(),
-						path_segments: accumulator.path_segments.clone(),
-						statement_key: last_fragment.statement_key.clone(),
-						container_key: last_fragment.container_key.clone(),
-						winner: contributor.clone(),
-						source_mod_order: vec![contributor],
-						merged_statement: last_fragment.statement.clone(),
-						source_fragments: fragments,
-						original_merge_key: Some(key.clone()),
-					};
-					nodes.insert(renamed_key.clone(), renamed_node);
+			// Group non-base fragments by mod_id and create renamed nodes
+			let mut per_mod: BTreeMap<String, Vec<MergeIrSourceFragment>> = BTreeMap::new();
+			for fragment in &accumulator.source_fragments {
+				if fragment.contributor.is_base_game {
+					continue;
 				}
+				per_mod
+					.entry(fragment.contributor.mod_id.clone())
+					.or_default()
+					.push(fragment.clone());
+			}
+
+			for (mod_id, fragments) in per_mod {
+				let mod_suffix = sanitize_contributor_id(&mod_id);
+				let renamed_key = format!("{}_{}", accumulator.merge_key, mod_suffix);
+				let last_fragment = fragments.last().unwrap();
+				let contributor = last_fragment.contributor.clone();
+				renamed_vec.push(NodeAccumulator {
+					target_path: accumulator.target_path.clone(),
+					merge_key: renamed_key,
+					path_segments: accumulator.path_segments.clone(),
+					statement_key: last_fragment.statement_key.clone(),
+					container_key: last_fragment.container_key.clone(),
+					winner: contributor.clone(),
+					source_mod_order: vec![contributor],
+					merged_statement: last_fragment.statement.clone(),
+					source_fragments: fragments,
+					original_merge_key: Some(accumulator.merge_key.clone()),
+				});
 			}
 		}
-	}
+		renamed_vec
+	} else {
+		node_vec
+	};
 	// For MergeLeaf and LastWriter, the existing accumulation behavior is correct.
 
-	let nodes = nodes
-		.into_values()
+	let nodes = node_vec
+		.into_iter()
 		.map(|accumulator| {
 			let is_renamed = accumulator.original_merge_key.is_some();
 			MergeIrNode {
@@ -434,12 +451,15 @@ fn build_structural_file(
 		})
 		.collect();
 
-	Ok(MergeIrStructuralFile {
-		target_path: target_path.to_string(),
-		family_id: descriptor.id.to_string(),
-		merge_key_source,
-		nodes,
-	})
+	Ok((
+		MergeIrStructuralFile {
+			target_path: target_path.to_string(),
+			family_id: descriptor.id.to_string(),
+			merge_key_source,
+			nodes,
+		},
+		merge_warnings,
+	))
 }
 
 /// Recursively merge two AST blocks.
@@ -447,11 +467,13 @@ fn build_structural_file(
 /// - Scalars with same key: apply `policies.scalar` (LastWriter/Sum/Avg/Max/Min)
 /// - Items (bare list entries): apply `policies.list` (Union/UnionWithRename/Replace)
 /// - New keys in overlay: append
+/// - Repeated keys (same key appearing multiple times) are treated as list items.
 fn deep_merge(
 	base: &AstStatement,
 	overlay: &AstStatement,
 	policies: &MergePolicies,
 	overlay_mod_id: &str,
+	warnings: &mut Vec<String>,
 ) -> AstStatement {
 	// Both must be assignments with block values to recurse
 	let (base_key, base_key_span, base_block, base_span) = match base {
@@ -461,24 +483,56 @@ fn deep_merge(
 			value: AstValue::Block { items, span },
 			..
 		} => (key, key_span, items, span),
-		_ => return overlay.clone(),
+		_ => {
+			// Detect type mismatch: base is scalar, overlay is block
+			if let (
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Scalar { .. },
+					..
+				},
+				AstStatement::Assignment {
+					value: AstValue::Block { .. },
+					..
+				},
+			) = (base, overlay)
+			{
+				warnings.push(format!(
+					"type mismatch for key '{}': base is scalar, overlay is block from mod {}",
+					key, overlay_mod_id
+				));
+			}
+			return overlay.clone();
+		}
 	};
 	let overlay_block = match overlay {
 		AstStatement::Assignment {
 			value: AstValue::Block { items, .. },
 			..
 		} => items,
-		_ => return overlay.clone(),
+		_ => {
+			// Detect type mismatch: base is block, overlay is scalar
+			if let AstStatement::Assignment {
+				value: AstValue::Scalar { .. },
+				..
+			} = overlay
+			{
+				warnings.push(format!(
+					"type mismatch for key '{}': base is block, overlay is scalar from mod {}",
+					base_key, overlay_mod_id
+				));
+			}
+			return overlay.clone();
+		}
 	};
 
 	let mut merged_items: Vec<AstStatement> = Vec::new();
-	let mut base_by_key: std::collections::HashMap<String, usize> =
-		std::collections::HashMap::new();
+	let mut base_by_key: HashMap<String, Vec<usize>> = HashMap::new();
 
 	// Seed merged_items with base entries; track keyed positions for lookup.
 	for (i, stmt) in base_block.iter().enumerate() {
 		if let AstStatement::Assignment { key, .. } = stmt {
-			base_by_key.insert(key.clone(), i);
+			base_by_key.entry(key.clone()).or_default().push(i);
 		}
 		merged_items.push(stmt.clone());
 	}
@@ -491,7 +545,7 @@ fn deep_merge(
 		base_by_key.clear();
 		for (i, stmt) in merged_items.iter().enumerate() {
 			if let AstStatement::Assignment { key, .. } = stmt {
-				base_by_key.insert(key.clone(), i);
+				base_by_key.entry(key.clone()).or_default().push(i);
 			}
 		}
 	}
@@ -503,18 +557,57 @@ fn deep_merge(
 				value: AstValue::Block { .. },
 				..
 			} => {
-				if let Some(&base_idx) = base_by_key.get(key) {
+				let count = base_by_key.get(key).map_or(0, |v| v.len());
+				if count == 1 {
+					let base_idx = base_by_key[key][0];
 					match policies.block {
 						BlockMergePolicy::Recursive => {
-							merged_items[base_idx] =
-								deep_merge(&merged_items[base_idx], stmt, policies, overlay_mod_id);
+							merged_items[base_idx] = deep_merge(
+								&merged_items[base_idx],
+								stmt,
+								policies,
+								overlay_mod_id,
+								warnings,
+							);
 						}
 						BlockMergePolicy::Replace => {
 							merged_items[base_idx] = stmt.clone();
 						}
 					}
+				} else if count > 1 {
+					// Multiple base entries with same key — treat as list items
+					let positions = base_by_key[key].clone();
+					let is_dup = positions.iter().any(|&idx| merged_items[idx] == *stmt);
+					match policies.list {
+						ListMergePolicy::Union | ListMergePolicy::OrderedUnion => {
+							if !is_dup {
+								base_by_key
+									.entry(key.clone())
+									.or_default()
+									.push(merged_items.len());
+								merged_items.push(stmt.clone());
+							}
+						}
+						ListMergePolicy::UnionWithRename => {
+							if is_dup {
+								merged_items.push(rename_item(stmt, overlay_mod_id));
+							} else {
+								merged_items.push(stmt.clone());
+							}
+						}
+						ListMergePolicy::Replace => {
+							base_by_key
+								.entry(key.clone())
+								.or_default()
+								.push(merged_items.len());
+							merged_items.push(stmt.clone());
+						}
+					}
 				} else {
-					base_by_key.insert(key.clone(), merged_items.len());
+					base_by_key
+						.entry(key.clone())
+						.or_default()
+						.push(merged_items.len());
 					merged_items.push(stmt.clone());
 				}
 			}
@@ -527,7 +620,9 @@ fn deep_merge(
 				},
 				span: s,
 			} => {
-				if let Some(&base_idx) = base_by_key.get(key) {
+				let count = base_by_key.get(key).map_or(0, |v| v.len());
+				if count == 1 {
+					let base_idx = base_by_key[key][0];
 					merged_items[base_idx] = resolve_scalar_conflict(
 						&merged_items[base_idx],
 						overlay_sv,
@@ -536,8 +631,40 @@ fn deep_merge(
 						s,
 						policies.scalar,
 					);
+				} else if count > 1 {
+					// Multiple base entries with same key — treat as list items
+					let positions = base_by_key[key].clone();
+					let is_dup = positions.iter().any(|&idx| merged_items[idx] == *stmt);
+					match policies.list {
+						ListMergePolicy::Union | ListMergePolicy::OrderedUnion => {
+							if !is_dup {
+								base_by_key
+									.entry(key.clone())
+									.or_default()
+									.push(merged_items.len());
+								merged_items.push(stmt.clone());
+							}
+						}
+						ListMergePolicy::UnionWithRename => {
+							if is_dup {
+								merged_items.push(rename_item(stmt, overlay_mod_id));
+							} else {
+								merged_items.push(stmt.clone());
+							}
+						}
+						ListMergePolicy::Replace => {
+							base_by_key
+								.entry(key.clone())
+								.or_default()
+								.push(merged_items.len());
+							merged_items.push(stmt.clone());
+						}
+					}
 				} else {
-					base_by_key.insert(key.clone(), merged_items.len());
+					base_by_key
+						.entry(key.clone())
+						.or_default()
+						.push(merged_items.len());
 					merged_items.push(stmt.clone());
 				}
 			}
@@ -545,7 +672,7 @@ fn deep_merge(
 				// Items / Comments: behaviour depends on list policy
 				let is_dup = merged_items.iter().any(|existing| existing == stmt);
 				match policies.list {
-					ListMergePolicy::Union => {
+					ListMergePolicy::Union | ListMergePolicy::OrderedUnion => {
 						if !is_dup {
 							merged_items.push(stmt.clone());
 						}
@@ -585,7 +712,7 @@ fn rename_item(stmt: &AstStatement, mod_id: &str) -> AstStatement {
 			value: AstValue::Scalar { value, span },
 			span: item_span,
 		} => {
-			let suffix = sanitize_mod_name(mod_id);
+			let suffix = sanitize_contributor_id(mod_id);
 			let renamed = match value {
 				ScalarValue::Identifier(s) => ScalarValue::Identifier(format!("{s}_{suffix}")),
 				ScalarValue::String(s) => ScalarValue::String(format!("{s}_{suffix}")),
@@ -872,17 +999,12 @@ fn to_merge_contributor(contributor: &ResolvedFileContributor) -> MergePlanContr
 }
 
 /// Sanitize a mod identifier for use as a merge-key suffix.
-/// Replaces non-alphanumeric characters with underscores and lowercases.
-fn sanitize_mod_name(mod_id: &str) -> String {
+/// Filters to ASCII alphanumeric and underscores, then lowercases.
+fn sanitize_contributor_id(mod_id: &str) -> String {
 	mod_id
+		.to_lowercase()
 		.chars()
-		.map(|c| {
-			if c.is_alphanumeric() {
-				c.to_ascii_lowercase()
-			} else {
-				'_'
-			}
-		})
+		.filter(|c| c.is_ascii_alphanumeric() || *c == '_')
 		.collect()
 }
 
@@ -892,7 +1014,7 @@ mod tests {
 	use crate::config::Config;
 	use crate::request::{CheckRequest, MergePlanOptions};
 	use foch_language::analyzer::content_family::MergeKeySource;
-	use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
+	use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 	use serde_json::json;
 	use std::fs;
 	use std::path::Path;
@@ -1219,5 +1341,639 @@ mod tests {
 		assert_eq!(value, &ScalarValue::Number("1600".to_string()));
 		assert_eq!(end_year.winner.mod_id, "9801");
 		assert_eq!(idea_groups.winner.mod_id, "9801");
+	}
+
+	fn corpus_playlist(name: &str) -> std::path::PathBuf {
+		let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+		manifest_dir
+			.join("../../tests/corpus")
+			.join(name)
+			.join("playlist.json")
+	}
+
+	fn request_for_corpus(playlist_path: &Path, temp: &TempDir) -> CheckRequest {
+		let game_root = temp.path().join("eu4-game");
+		fs::create_dir_all(&game_root).expect("create game root");
+		let mut game_path = std::collections::HashMap::new();
+		game_path.insert("eu4".to_string(), game_root);
+		CheckRequest {
+			playset_path: playlist_path.to_path_buf(),
+			config: Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+			},
+		}
+	}
+
+	#[test]
+	fn multi_mod_corpus_produces_structural_merges() {
+		let playlist_path = corpus_playlist("eu4_merge_test");
+		assert!(
+			playlist_path.exists(),
+			"corpus playlist missing: {playlist_path:?}"
+		);
+		let temp = TempDir::new().expect("temp dir");
+		let request = request_for_corpus(&playlist_path, &temp);
+		let result = run_merge_ir_no_base(request);
+
+		assert!(
+			result.fatal_errors.is_empty(),
+			"fatal errors: {:?}",
+			result.fatal_errors
+		);
+		assert!(
+			!result.structural_files.is_empty(),
+			"expected structural merges but got none"
+		);
+
+		// --- scripted_effects: AssignmentKey merge (3-way) ---
+		let effects_file = result
+			.structural_files
+			.iter()
+			.find(|f| f.target_path.contains("scripted_effects"))
+			.expect("scripted_effects structural file");
+		assert_eq!(effects_file.merge_key_source, MergeKeySource::AssignmentKey);
+		// effect_alpha contributed by mod-a and mod-b → conflict rename
+		let alpha_keys: Vec<&str> = effects_file
+			.nodes
+			.iter()
+			.filter(|n| n.merge_key.starts_with("effect_alpha"))
+			.map(|n| n.merge_key.as_str())
+			.collect();
+		assert!(
+			alpha_keys.len() >= 2,
+			"effect_alpha should have conflict-renamed nodes, got: {alpha_keys:?}"
+		);
+		// unique keys from each mod
+		assert!(
+			effects_file
+				.nodes
+				.iter()
+				.any(|n| n.merge_key == "effect_unique_a"),
+			"effect_unique_a should be present"
+		);
+		assert!(
+			effects_file
+				.nodes
+				.iter()
+				.any(|n| n.merge_key == "effect_beta"),
+			"effect_beta should be present"
+		);
+		assert!(
+			effects_file
+				.nodes
+				.iter()
+				.any(|n| n.merge_key == "effect_gamma"),
+			"effect_gamma should be present"
+		);
+
+		// --- events: FieldValue merge (3-way, distinct ids) ---
+		let events_file = result
+			.structural_files
+			.iter()
+			.find(|f| f.target_path.contains("events"))
+			.expect("events structural file");
+		assert_eq!(
+			events_file.merge_key_source,
+			MergeKeySource::FieldValue("id")
+		);
+		let event_keys: Vec<&str> = events_file
+			.nodes
+			.iter()
+			.map(|n| n.merge_key.as_str())
+			.collect();
+		assert!(
+			event_keys.contains(&"test.1"),
+			"test.1 event should be present, got: {event_keys:?}"
+		);
+		assert!(
+			event_keys.contains(&"test.2"),
+			"test.2 event should be present, got: {event_keys:?}"
+		);
+		assert!(
+			event_keys.contains(&"test.3"),
+			"test.3 event should be present, got: {event_keys:?}"
+		);
+
+		// --- decisions: ContainerChildKey merge ---
+		let decisions_file = result
+			.structural_files
+			.iter()
+			.find(|f| f.target_path.contains("decisions"))
+			.expect("decisions structural file");
+		assert_eq!(
+			decisions_file.merge_key_source,
+			MergeKeySource::ContainerChildKey
+		);
+		let decision_keys: Vec<&str> = decisions_file
+			.nodes
+			.iter()
+			.map(|n| n.merge_key.as_str())
+			.collect();
+		assert!(
+			decision_keys.contains(&"decision_a"),
+			"decision_a should be present, got: {decision_keys:?}"
+		);
+		assert!(
+			decision_keys.contains(&"decision_b"),
+			"decision_b should be present, got: {decision_keys:?}"
+		);
+
+		// --- ideas: AssignmentKey merge ---
+		let ideas_file = result
+			.structural_files
+			.iter()
+			.find(|f| f.target_path.contains("ideas"))
+			.expect("ideas structural file");
+		assert_eq!(ideas_file.merge_key_source, MergeKeySource::AssignmentKey);
+		let idea_keys: Vec<&str> = ideas_file
+			.nodes
+			.iter()
+			.map(|n| n.merge_key.as_str())
+			.collect();
+		assert!(
+			idea_keys.contains(&"test_idea_group_a"),
+			"test_idea_group_a should be present, got: {idea_keys:?}"
+		);
+		assert!(
+			idea_keys.contains(&"test_idea_group_b"),
+			"test_idea_group_b should be present, got: {idea_keys:?}"
+		);
+
+		// Verify we have at least 4 structural files (one per family)
+		assert!(
+			result.structural_files.len() >= 4,
+			"expected ≥4 structural files, got {}",
+			result.structural_files.len()
+		);
+	}
+
+	// ----------------------------------------------------------------
+	// deep_merge unit tests
+	// ----------------------------------------------------------------
+
+	mod deep_merge_unit {
+		use super::*;
+		use foch_language::analyzer::content_family::{
+			BlockMergePolicy, BooleanMergePolicy, ListMergePolicy, MergePolicies, ScalarMergePolicy,
+		};
+
+		fn dummy_span() -> SpanRange {
+			SpanRange {
+				start: Span {
+					line: 0,
+					column: 0,
+					offset: 0,
+				},
+				end: Span {
+					line: 0,
+					column: 0,
+					offset: 0,
+				},
+			}
+		}
+
+		fn scalar_num(key: &str, value: &str) -> AstStatement {
+			AstStatement::Assignment {
+				key: key.to_string(),
+				key_span: dummy_span(),
+				value: AstValue::Scalar {
+					value: ScalarValue::Number(value.to_string()),
+					span: dummy_span(),
+				},
+				span: dummy_span(),
+			}
+		}
+
+		fn scalar_ident(key: &str, value: &str) -> AstStatement {
+			AstStatement::Assignment {
+				key: key.to_string(),
+				key_span: dummy_span(),
+				value: AstValue::Scalar {
+					value: ScalarValue::Identifier(value.to_string()),
+					span: dummy_span(),
+				},
+				span: dummy_span(),
+			}
+		}
+
+		fn block_stmt(key: &str, items: Vec<AstStatement>) -> AstStatement {
+			AstStatement::Assignment {
+				key: key.to_string(),
+				key_span: dummy_span(),
+				value: AstValue::Block {
+					items,
+					span: dummy_span(),
+				},
+				span: dummy_span(),
+			}
+		}
+
+		fn bare_item(value: &str) -> AstStatement {
+			AstStatement::Item {
+				value: AstValue::Scalar {
+					value: ScalarValue::Identifier(value.to_string()),
+					span: dummy_span(),
+				},
+				span: dummy_span(),
+			}
+		}
+
+		fn policies(
+			scalar: ScalarMergePolicy,
+			list: ListMergePolicy,
+			block: BlockMergePolicy,
+		) -> MergePolicies {
+			MergePolicies {
+				scalar,
+				list,
+				block,
+				boolean: BooleanMergePolicy::default(),
+			}
+		}
+
+		fn default_policies() -> MergePolicies {
+			MergePolicies::default()
+		}
+
+		fn merged_items(result: &AstStatement) -> &[AstStatement] {
+			match result {
+				AstStatement::Assignment {
+					value: AstValue::Block { items, .. },
+					..
+				} => items,
+				_ => panic!("expected assignment with block value"),
+			}
+		}
+
+		fn extract_scalar(stmt: &AstStatement) -> &ScalarValue {
+			match stmt {
+				AstStatement::Assignment {
+					value: AstValue::Scalar { value, .. },
+					..
+				} => value,
+				_ => panic!("expected scalar assignment, got {:?}", stmt),
+			}
+		}
+
+		fn find_by_key<'a>(items: &'a [AstStatement], key: &str) -> &'a AstStatement {
+			items
+				.iter()
+				.find(|s| matches!(s, AstStatement::Assignment { key: k, .. } if k == key))
+				.unwrap_or_else(|| panic!("key '{}' not found in items", key))
+		}
+
+		fn call_deep_merge(
+			base: &AstStatement,
+			overlay: &AstStatement,
+			p: &MergePolicies,
+			warnings: &mut Vec<String>,
+		) -> AstStatement {
+			crate::merge::ir::deep_merge(base, overlay, p, "test_mod", warnings)
+		}
+
+		// ---- Scalar policies ----
+
+		#[test]
+		fn deep_merge_scalar_last_writer() {
+			let base = block_stmt("root", vec![scalar_ident("color", "red")]);
+			let overlay = block_stmt("root", vec![scalar_ident("color", "blue")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::LastWriter,
+				ListMergePolicy::default(),
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 1);
+			assert_eq!(
+				extract_scalar(&items[0]),
+				&ScalarValue::Identifier("blue".to_string())
+			);
+			assert!(warnings.is_empty());
+		}
+
+		#[test]
+		fn deep_merge_scalar_sum() {
+			let base = block_stmt("root", vec![scalar_num("bonus", "10")]);
+			let overlay = block_stmt("root", vec![scalar_num("bonus", "5")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::Sum,
+				ListMergePolicy::default(),
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 1);
+			assert_eq!(
+				extract_scalar(&items[0]),
+				&ScalarValue::Number("15".to_string())
+			);
+		}
+
+		#[test]
+		fn deep_merge_scalar_max() {
+			let base = block_stmt("root", vec![scalar_num("val", "3")]);
+			let overlay = block_stmt("root", vec![scalar_num("val", "7")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::Max,
+				ListMergePolicy::default(),
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			assert_eq!(
+				extract_scalar(&merged_items(&result)[0]),
+				&ScalarValue::Number("7".to_string())
+			);
+		}
+
+		#[test]
+		fn deep_merge_scalar_min() {
+			let base = block_stmt("root", vec![scalar_num("val", "3")]);
+			let overlay = block_stmt("root", vec![scalar_num("val", "7")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::Min,
+				ListMergePolicy::default(),
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			assert_eq!(
+				extract_scalar(&merged_items(&result)[0]),
+				&ScalarValue::Number("3".to_string())
+			);
+		}
+
+		#[test]
+		fn deep_merge_scalar_avg() {
+			let base = block_stmt("root", vec![scalar_num("val", "10")]);
+			let overlay = block_stmt("root", vec![scalar_num("val", "20")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::Avg,
+				ListMergePolicy::default(),
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			assert_eq!(
+				extract_scalar(&merged_items(&result)[0]),
+				&ScalarValue::Number("15".to_string())
+			);
+		}
+
+		#[test]
+		fn deep_merge_scalar_non_numeric_fallback() {
+			let base = block_stmt("root", vec![scalar_ident("tag", "alpha")]);
+			let overlay = block_stmt("root", vec![scalar_ident("tag", "beta")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::Sum,
+				ListMergePolicy::default(),
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			// Non-numeric identifiers fall back to last-writer
+			assert_eq!(
+				extract_scalar(&merged_items(&result)[0]),
+				&ScalarValue::Identifier("beta".to_string())
+			);
+		}
+
+		// ---- List policies ----
+
+		#[test]
+		fn deep_merge_list_union() {
+			let base = block_stmt("root", vec![bare_item("alpha"), bare_item("beta")]);
+			let overlay = block_stmt("root", vec![bare_item("beta"), bare_item("gamma")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::Union,
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 3); // alpha, beta, gamma — beta deduped
+			assert_eq!(items[0], bare_item("alpha"));
+			assert_eq!(items[1], bare_item("beta"));
+			assert_eq!(items[2], bare_item("gamma"));
+		}
+
+		#[test]
+		fn deep_merge_list_union_with_rename() {
+			let base = block_stmt("root", vec![bare_item("alpha"), bare_item("beta")]);
+			let overlay = block_stmt("root", vec![bare_item("beta"), bare_item("gamma")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::UnionWithRename,
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			// alpha, beta (base), beta_test_mod (renamed dup), gamma
+			assert_eq!(items.len(), 4);
+			assert_eq!(items[0], bare_item("alpha"));
+			assert_eq!(items[1], bare_item("beta"));
+			let renamed = match &items[2] {
+				AstStatement::Item {
+					value: AstValue::Scalar { value, .. },
+					..
+				} => value.clone(),
+				_ => panic!("expected renamed item"),
+			};
+			assert_eq!(
+				renamed,
+				ScalarValue::Identifier("beta_test_mod".to_string())
+			);
+			assert_eq!(items[3], bare_item("gamma"));
+		}
+
+		#[test]
+		fn deep_merge_list_replace() {
+			let base = block_stmt("root", vec![bare_item("old_a"), bare_item("old_b")]);
+			let overlay = block_stmt("root", vec![bare_item("new_c")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::Replace,
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			// Base bare items removed, only overlay items remain
+			assert_eq!(items.len(), 1);
+			assert_eq!(items[0], bare_item("new_c"));
+		}
+
+		#[test]
+		fn deep_merge_list_ordered_union() {
+			let base = block_stmt("root", vec![bare_item("first"), bare_item("second")]);
+			let overlay = block_stmt("root", vec![bare_item("second"), bare_item("third")]);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::OrderedUnion,
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			// Base order preserved, overlay new items appended
+			assert_eq!(items.len(), 3);
+			assert_eq!(items[0], bare_item("first"));
+			assert_eq!(items[1], bare_item("second"));
+			assert_eq!(items[2], bare_item("third"));
+		}
+
+		// ---- Block policies ----
+
+		#[test]
+		fn deep_merge_block_recursive() {
+			let base = block_stmt(
+				"root",
+				vec![block_stmt("inner", vec![scalar_ident("a", "1")])],
+			);
+			let overlay = block_stmt(
+				"root",
+				vec![block_stmt("inner", vec![scalar_ident("b", "2")])],
+			);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::default(),
+				BlockMergePolicy::Recursive,
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 1);
+			let inner_items = merged_items(&items[0]);
+			assert_eq!(inner_items.len(), 2);
+			assert_eq!(
+				extract_scalar(find_by_key(inner_items, "a")),
+				&ScalarValue::Identifier("1".to_string())
+			);
+			assert_eq!(
+				extract_scalar(find_by_key(inner_items, "b")),
+				&ScalarValue::Identifier("2".to_string())
+			);
+		}
+
+		#[test]
+		fn deep_merge_block_replace() {
+			let base = block_stmt(
+				"root",
+				vec![block_stmt("inner", vec![scalar_ident("a", "1")])],
+			);
+			let overlay = block_stmt(
+				"root",
+				vec![block_stmt("inner", vec![scalar_ident("b", "2")])],
+			);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::default(),
+				BlockMergePolicy::Replace,
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 1);
+			let inner_items = merged_items(&items[0]);
+			// Overlay block replaces entirely — only "b" present
+			assert_eq!(inner_items.len(), 1);
+			assert_eq!(
+				extract_scalar(find_by_key(inner_items, "b")),
+				&ScalarValue::Identifier("2".to_string())
+			);
+		}
+
+		// ---- Type mismatch ----
+
+		#[test]
+		fn deep_merge_type_mismatch_warns() {
+			// base is block, overlay is scalar → overlay wins, warning emitted
+			let base = block_stmt("root", vec![scalar_ident("a", "1")]);
+			let overlay = scalar_ident("root", "override_value");
+			let mut warnings = Vec::new();
+			let p = default_policies();
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			// Overlay wins outright
+			assert_eq!(result, overlay);
+			assert_eq!(warnings.len(), 1);
+			assert!(warnings[0].contains("type mismatch"));
+			assert!(warnings[0].contains("root"));
+		}
+
+		// ---- Repeated keys ----
+
+		#[test]
+		fn deep_merge_repeated_keys_treated_as_list() {
+			// base has two "option" blocks, overlay adds a third
+			let base = block_stmt(
+				"root",
+				vec![
+					block_stmt("option", vec![scalar_ident("a", "1")]),
+					block_stmt("option", vec![scalar_ident("b", "2")]),
+				],
+			);
+			let overlay = block_stmt(
+				"root",
+				vec![block_stmt("option", vec![scalar_ident("c", "3")])],
+			);
+			let mut warnings = Vec::new();
+			let p = policies(
+				ScalarMergePolicy::default(),
+				ListMergePolicy::Union,
+				BlockMergePolicy::default(),
+			);
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			// All three "option" blocks present (not a dup, Union appends)
+			let option_count = items
+				.iter()
+				.filter(|s| matches!(s, AstStatement::Assignment { key, .. } if key == "option"))
+				.count();
+			assert_eq!(option_count, 3);
+		}
+
+		// ---- New / base-only keys ----
+
+		#[test]
+		fn deep_merge_new_keys_appended() {
+			let base = block_stmt("root", vec![scalar_ident("a", "1")]);
+			let overlay = block_stmt("root", vec![scalar_ident("a", "1"), scalar_ident("b", "2")]);
+			let mut warnings = Vec::new();
+			let p = default_policies();
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 2);
+			assert_eq!(
+				extract_scalar(find_by_key(items, "b")),
+				&ScalarValue::Identifier("2".to_string())
+			);
+		}
+
+		#[test]
+		fn deep_merge_base_only_keys_preserved() {
+			let base = block_stmt(
+				"root",
+				vec![
+					scalar_ident("keep", "yes"),
+					scalar_ident("also_keep", "yes"),
+				],
+			);
+			let overlay = block_stmt("root", vec![scalar_ident("new_key", "val")]);
+			let mut warnings = Vec::new();
+			let p = default_policies();
+			let result = call_deep_merge(&base, &overlay, &p, &mut warnings);
+			let items = merged_items(&result);
+			assert_eq!(items.len(), 3);
+			find_by_key(items, "keep");
+			find_by_key(items, "also_keep");
+			find_by_key(items, "new_key");
+		}
 	}
 }

@@ -532,7 +532,7 @@ mod tests {
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("events/shared.txt")).expect("read emitted events"),
-			"country_event = {\n\tid = test.1\n\ttitle = title_a\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\n"
+			"country_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_a\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("decisions/shared.txt"))
