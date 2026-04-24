@@ -7,10 +7,11 @@ use crate::workspace::{
 };
 use foch_core::model::{MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy};
 use foch_language::analyzer::content_family::{
-	ConflictPolicy, ContentFamilyDescriptor, GameProfile, MergeKeySource,
+	BlockMergePolicy, ConflictPolicy, ContentFamilyDescriptor, GameProfile, ListMergePolicy,
+	MergeKeySource, MergePolicies, ScalarMergePolicy,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
+use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, SpanRange};
 use foch_language::analyzer::semantic_index::{
 	ParsedScriptFile, is_decision_container_key, parse_script_file,
 };
@@ -64,7 +65,7 @@ pub struct MergeIrNode {
 	pub winner: MergePlanContributor,
 	pub overridden_contributors: Vec<MergePlanContributor>,
 	pub source_mod_order: Vec<MergePlanContributor>,
-	pub winning_statement: AstStatement,
+	pub merged_statement: AstStatement,
 	pub source_fragments: Vec<MergeIrSourceFragment>,
 	/// Set when renamed due to conflict — holds the original merge key.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,7 +110,7 @@ struct NodeAccumulator {
 	container_key: Option<String>,
 	winner: MergePlanContributor,
 	source_mod_order: Vec<MergePlanContributor>,
-	winning_statement: AstStatement,
+	merged_statement: AstStatement,
 	source_fragments: Vec<MergeIrSourceFragment>,
 	/// Set during conflict rename to track the original merge key.
 	original_merge_key: Option<String>,
@@ -291,7 +292,7 @@ fn build_structural_file(
 						container_key: fragment.container_key.clone(),
 						winner: contributor_meta.clone(),
 						source_mod_order: Vec::new(),
-						winning_statement: fragment.statement.clone(),
+						merged_statement: fragment.statement.clone(),
 						source_fragments: Vec::new(),
 						original_merge_key: None,
 					});
@@ -305,6 +306,15 @@ fn build_structural_file(
 				statement: fragment.statement.clone(),
 			});
 
+			// Deep merge: fold overlay on top of current merged result
+			entry.merged_statement = deep_merge(
+				&entry.merged_statement,
+				&fragment.statement,
+				&descriptor.merge_policies,
+				&contributor_meta.mod_id,
+			);
+
+			// Track the highest-precedence contributor as "winner" for metadata
 			if contributor_meta.precedence > entry.winner.precedence
 				|| contributor_meta.precedence == entry.winner.precedence
 					&& contributor_meta.source_path == entry.winner.source_path
@@ -313,7 +323,6 @@ fn build_structural_file(
 				entry.path_segments = fragment.path_segments.clone();
 				entry.statement_key = fragment.statement_key.clone();
 				entry.container_key = fragment.container_key.clone();
-				entry.winning_statement = fragment.statement.clone();
 			}
 		}
 	}
@@ -356,7 +365,7 @@ fn build_structural_file(
 						container_key: accumulator.container_key.clone(),
 						winner: base_contributor.clone(),
 						source_mod_order: vec![base_contributor],
-						winning_statement: base_fragments.last().unwrap().statement.clone(),
+						merged_statement: base_fragments.last().unwrap().statement.clone(),
 						source_fragments: base_fragments.into_iter().cloned().collect(),
 						original_merge_key: None,
 					};
@@ -388,7 +397,7 @@ fn build_structural_file(
 						container_key: last_fragment.container_key.clone(),
 						winner: contributor.clone(),
 						source_mod_order: vec![contributor],
-						winning_statement: last_fragment.statement.clone(),
+						merged_statement: last_fragment.statement.clone(),
 						source_fragments: fragments,
 						original_merge_key: Some(key.clone()),
 					};
@@ -417,7 +426,7 @@ fn build_structural_file(
 					.collect(),
 				source_mod_order: accumulator.source_mod_order,
 				winner: accumulator.winner,
-				winning_statement: accumulator.winning_statement,
+				merged_statement: accumulator.merged_statement,
 				source_fragments: accumulator.source_fragments,
 				original_merge_key: accumulator.original_merge_key,
 				conflict_rename: is_renamed,
@@ -433,15 +442,272 @@ fn build_structural_file(
 	})
 }
 
+/// Recursively merge two AST blocks.
+/// - Sub-blocks with same key: apply `policies.block` (Recursive → recurse, Replace → overlay wins)
+/// - Scalars with same key: apply `policies.scalar` (LastWriter/Sum/Avg/Max/Min)
+/// - Items (bare list entries): apply `policies.list` (Union/UnionWithRename/Replace)
+/// - New keys in overlay: append
+fn deep_merge(
+	base: &AstStatement,
+	overlay: &AstStatement,
+	policies: &MergePolicies,
+	overlay_mod_id: &str,
+) -> AstStatement {
+	// Both must be assignments with block values to recurse
+	let (base_key, base_key_span, base_block, base_span) = match base {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value: AstValue::Block { items, span },
+			..
+		} => (key, key_span, items, span),
+		_ => return overlay.clone(),
+	};
+	let overlay_block = match overlay {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} => items,
+		_ => return overlay.clone(),
+	};
+
+	let mut merged_items: Vec<AstStatement> = Vec::new();
+	let mut base_by_key: std::collections::HashMap<String, usize> =
+		std::collections::HashMap::new();
+
+	// Seed merged_items with base entries; track keyed positions for lookup.
+	for (i, stmt) in base_block.iter().enumerate() {
+		if let AstStatement::Assignment { key, .. } = stmt {
+			base_by_key.insert(key.clone(), i);
+		}
+		merged_items.push(stmt.clone());
+	}
+
+	// When list policy is Replace, drop all non-keyed base items first so
+	// overlay's list entries become the sole set.
+	if policies.list == ListMergePolicy::Replace {
+		merged_items.retain(|stmt| matches!(stmt, AstStatement::Assignment { .. }));
+		// Rebuild index after removal
+		base_by_key.clear();
+		for (i, stmt) in merged_items.iter().enumerate() {
+			if let AstStatement::Assignment { key, .. } = stmt {
+				base_by_key.insert(key.clone(), i);
+			}
+		}
+	}
+
+	for stmt in overlay_block {
+		match stmt {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { .. },
+				..
+			} => {
+				if let Some(&base_idx) = base_by_key.get(key) {
+					match policies.block {
+						BlockMergePolicy::Recursive => {
+							merged_items[base_idx] =
+								deep_merge(&merged_items[base_idx], stmt, policies, overlay_mod_id);
+						}
+						BlockMergePolicy::Replace => {
+							merged_items[base_idx] = stmt.clone();
+						}
+					}
+				} else {
+					base_by_key.insert(key.clone(), merged_items.len());
+					merged_items.push(stmt.clone());
+				}
+			}
+			AstStatement::Assignment {
+				key,
+				key_span: ks,
+				value: AstValue::Scalar {
+					value: overlay_sv,
+					span: sv_span,
+				},
+				span: s,
+			} => {
+				if let Some(&base_idx) = base_by_key.get(key) {
+					merged_items[base_idx] = resolve_scalar_conflict(
+						&merged_items[base_idx],
+						overlay_sv,
+						ks,
+						sv_span,
+						s,
+						policies.scalar,
+					);
+				} else {
+					base_by_key.insert(key.clone(), merged_items.len());
+					merged_items.push(stmt.clone());
+				}
+			}
+			_ => {
+				// Items / Comments: behaviour depends on list policy
+				let is_dup = merged_items.iter().any(|existing| existing == stmt);
+				match policies.list {
+					ListMergePolicy::Union => {
+						if !is_dup {
+							merged_items.push(stmt.clone());
+						}
+					}
+					ListMergePolicy::UnionWithRename => {
+						if is_dup {
+							merged_items.push(rename_item(stmt, overlay_mod_id));
+						} else {
+							merged_items.push(stmt.clone());
+						}
+					}
+					ListMergePolicy::Replace => {
+						// Base non-keyed items were already removed above.
+						merged_items.push(stmt.clone());
+					}
+				}
+			}
+		}
+	}
+
+	AstStatement::Assignment {
+		key: base_key.clone(),
+		key_span: base_key_span.clone(),
+		value: AstValue::Block {
+			items: merged_items,
+			span: base_span.clone(),
+		},
+		span: base_span.clone(),
+	}
+}
+
+/// Produce a renamed copy of a list item by appending `_{mod_suffix}` to its
+/// scalar value text.  Non-scalar items are returned unchanged.
+fn rename_item(stmt: &AstStatement, mod_id: &str) -> AstStatement {
+	match stmt {
+		AstStatement::Item {
+			value: AstValue::Scalar { value, span },
+			span: item_span,
+		} => {
+			let suffix = sanitize_mod_name(mod_id);
+			let renamed = match value {
+				ScalarValue::Identifier(s) => ScalarValue::Identifier(format!("{s}_{suffix}")),
+				ScalarValue::String(s) => ScalarValue::String(format!("{s}_{suffix}")),
+				ScalarValue::Number(s) => ScalarValue::Identifier(format!("{s}_{suffix}")),
+				ScalarValue::Bool(b) => {
+					let text = if *b { "yes" } else { "no" };
+					ScalarValue::Identifier(format!("{text}_{suffix}"))
+				}
+			};
+			AstStatement::Item {
+				value: AstValue::Scalar {
+					value: renamed,
+					span: span.clone(),
+				},
+				span: item_span.clone(),
+			}
+		}
+		_ => stmt.clone(),
+	}
+}
+
+/// Apply `ScalarMergePolicy` to a same-key scalar conflict.
+/// If the policy is non-trivial and both values are numeric, compute the result;
+/// otherwise fall back to last-writer (overlay wins).
+fn resolve_scalar_conflict(
+	base_stmt: &AstStatement,
+	overlay_sv: &ScalarValue,
+	overlay_ks: &SpanRange,
+	overlay_sv_span: &SpanRange,
+	overlay_span: &SpanRange,
+	policy: ScalarMergePolicy,
+) -> AstStatement {
+	// Extract base scalar; if base isn't a scalar assignment, overlay wins outright.
+	let (base_key, base_sv) = match base_stmt {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Scalar { value, .. },
+			..
+		} => (key, value),
+		_ => {
+			return AstStatement::Assignment {
+				key: match base_stmt {
+					AstStatement::Assignment { key, .. } => key.clone(),
+					_ => String::new(),
+				},
+				key_span: overlay_ks.clone(),
+				value: AstValue::Scalar {
+					value: overlay_sv.clone(),
+					span: overlay_sv_span.clone(),
+				},
+				span: overlay_span.clone(),
+			};
+		}
+	};
+
+	if policy == ScalarMergePolicy::LastWriter {
+		return AstStatement::Assignment {
+			key: base_key.clone(),
+			key_span: overlay_ks.clone(),
+			value: AstValue::Scalar {
+				value: overlay_sv.clone(),
+				span: overlay_sv_span.clone(),
+			},
+			span: overlay_span.clone(),
+		};
+	}
+
+	// Try numeric merge
+	let base_num = match base_sv {
+		ScalarValue::Number(s) => s.parse::<f64>().ok(),
+		_ => None,
+	};
+	let overlay_num = match overlay_sv {
+		ScalarValue::Number(s) => s.parse::<f64>().ok(),
+		_ => None,
+	};
+
+	let merged_value = match (base_num, overlay_num) {
+		(Some(b), Some(o)) => {
+			let result = match policy {
+				ScalarMergePolicy::Sum => b + o,
+				ScalarMergePolicy::Avg => (b + o) / 2.0,
+				ScalarMergePolicy::Max => b.max(o),
+				ScalarMergePolicy::Min => b.min(o),
+				ScalarMergePolicy::LastWriter => o,
+			};
+			ScalarValue::Number(format_merged_number(result))
+		}
+		// Non-numeric: fall back to last-writer
+		_ => overlay_sv.clone(),
+	};
+
+	AstStatement::Assignment {
+		key: base_key.clone(),
+		key_span: overlay_ks.clone(),
+		value: AstValue::Scalar {
+			value: merged_value,
+			span: overlay_sv_span.clone(),
+		},
+		span: overlay_span.clone(),
+	}
+}
+
+/// Format a merged numeric result, preferring integer notation when the value
+/// is exact (no fractional part).
+fn format_merged_number(v: f64) -> String {
+	if v.fract() == 0.0 && v.abs() < i64::MAX as f64 {
+		format!("{}", v as i64)
+	} else {
+		format!("{v}")
+	}
+}
+
 fn extract_fragments(
 	parsed: &ParsedScriptFile,
 	merge_key_source: MergeKeySource,
 ) -> Result<Vec<ExtractedFragment>, MergeError> {
 	match merge_key_source {
-		MergeKeySource::BlockKey => Ok(extract_assignment_fragments(parsed)),
-		MergeKeySource::InnerField(field) => extract_inner_field_fragments(parsed, field),
-		MergeKeySource::ContainerChild => Ok(extract_decision_fragments(parsed)),
-		MergeKeySource::DefinesPath => extract_defines_fragments(parsed),
+		MergeKeySource::AssignmentKey => Ok(extract_assignment_fragments(parsed)),
+		MergeKeySource::FieldValue(field) => extract_inner_field_fragments(parsed, field),
+		MergeKeySource::ContainerChildKey => Ok(extract_decision_fragments(parsed)),
+		MergeKeySource::LeafPath => extract_defines_fragments(parsed),
 	}
 }
 
@@ -748,7 +1014,7 @@ mod tests {
 		assert!(result.fatal_errors.is_empty());
 		assert_eq!(result.structural_files.len(), 1);
 		let file = &result.structural_files[0];
-		assert_eq!(file.merge_key_source, MergeKeySource::InnerField("id"));
+		assert_eq!(file.merge_key_source, MergeKeySource::FieldValue("id"));
 		// Conflict rename splits test.1 into per-mod nodes
 		assert_eq!(file.nodes.len(), 3);
 		let renamed_a = file
@@ -804,7 +1070,7 @@ mod tests {
 		let result = run_merge_ir_no_base(request_for(&playlist_path));
 		assert!(result.fatal_errors.is_empty());
 		let file = &result.structural_files[0];
-		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChild);
+		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChildKey);
 		// Conflict rename splits test_decision into per-mod nodes
 		assert_eq!(file.nodes.len(), 3);
 		let renamed_a = file
@@ -857,7 +1123,7 @@ mod tests {
 		let result = run_merge_ir_no_base(request_for(&playlist_path));
 		assert!(result.fatal_errors.is_empty());
 		let file = &result.structural_files[0];
-		assert_eq!(file.merge_key_source, MergeKeySource::BlockKey);
+		assert_eq!(file.merge_key_source, MergeKeySource::AssignmentKey);
 		// Conflict rename splits shared_effect into per-mod nodes
 		assert_eq!(file.nodes.len(), 3);
 		let renamed_a = file
@@ -916,7 +1182,7 @@ mod tests {
 		assert!(result.deferred_structural_paths.is_empty());
 		assert_eq!(result.structural_files.len(), 1);
 		let file = &result.structural_files[0];
-		assert_eq!(file.merge_key_source, MergeKeySource::DefinesPath);
+		assert_eq!(file.merge_key_source, MergeKeySource::LeafPath);
 		let start_year = file
 			.nodes
 			.iter()
@@ -946,9 +1212,9 @@ mod tests {
 		let AstStatement::Assignment {
 			value: AstValue::Scalar { value, .. },
 			..
-		} = &start_year.winning_statement
+		} = &start_year.merged_statement
 		else {
-			panic!("winning defines statement should remain a scalar assignment");
+			panic!("merged defines statement should remain a scalar assignment");
 		};
 		assert_eq!(value, &ScalarValue::Number("1600".to_string()));
 		assert_eq!(end_year.winner.mod_id, "9801");

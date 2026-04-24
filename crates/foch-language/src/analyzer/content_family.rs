@@ -86,6 +86,55 @@ pub enum GameId {
 	Eu4,
 }
 
+/// How to resolve scalar conflicts during deep merge.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScalarMergePolicy {
+	/// Overlay value replaces base (default).
+	#[default]
+	LastWriter,
+	/// Parse both as f64 and sum them.
+	Sum,
+	/// Parse both as f64 and average them.
+	Avg,
+	/// Parse both as f64 and take the maximum.
+	Max,
+	/// Parse both as f64 and take the minimum.
+	Min,
+}
+
+/// How to merge bare list items (entries without assignment keys).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListMergePolicy {
+	/// Append unique items from overlay, dedup by value (default).
+	#[default]
+	Union,
+	/// Append all items; rename duplicates to `{item}_{mod_name}`.
+	UnionWithRename,
+	/// Overlay's list replaces base entirely.
+	Replace,
+}
+
+/// How to merge child blocks that share the same key.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockMergePolicy {
+	/// Deep merge child blocks by key (default).
+	#[default]
+	Recursive,
+	/// Overlay's block replaces base entirely.
+	Replace,
+}
+
+/// Bundle of policies that control how `deep_merge` resolves conflicts.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergePolicies {
+	pub scalar: ScalarMergePolicy,
+	pub list: ListMergePolicy,
+	pub block: BlockMergePolicy,
+}
+
 /// How to handle conflicts when two unrelated mods define the same merge key.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -202,28 +251,28 @@ pub enum ContentFamilyExtractor {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MergeKeySource {
-	/// Top-level named blocks are the merge units (e.g. `effect_name = { ... }`).
-	BlockKey,
-	/// Merge key is extracted from an inner field (e.g. `id` inside event blocks).
-	InnerField(&'static str),
+	/// Top-level named assignments are the merge units (e.g. `effect_name = { ... }`).
+	AssignmentKey,
+	/// Merge key is extracted from an inner field value (e.g. `id` inside event blocks).
+	FieldValue(&'static str),
 	/// Merge units are children of a known container block (e.g. decisions).
-	ContainerChild,
+	ContainerChildKey,
 	/// Leaf-level defines paths (e.g. `NGame.START_YEAR`).
-	DefinesPath,
+	LeafPath,
 }
 
 impl Serialize for MergeKeySource {
 	fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
 		match self {
-			MergeKeySource::BlockKey => serializer.serialize_str("block_key"),
-			MergeKeySource::InnerField(field) => {
+			MergeKeySource::AssignmentKey => serializer.serialize_str("assignment_key"),
+			MergeKeySource::FieldValue(field) => {
 				use serde::ser::SerializeMap;
 				let mut map = serializer.serialize_map(Some(1))?;
-				map.serialize_entry("inner_field", field)?;
+				map.serialize_entry("field_value", field)?;
 				map.end()
 			}
-			MergeKeySource::ContainerChild => serializer.serialize_str("container_child"),
-			MergeKeySource::DefinesPath => serializer.serialize_str("defines_path"),
+			MergeKeySource::ContainerChildKey => serializer.serialize_str("container_child_key"),
+			MergeKeySource::LeafPath => serializer.serialize_str("leaf_path"),
 		}
 	}
 }
@@ -240,12 +289,12 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 			}
 			fn visit_str<E: de::Error>(self, v: &str) -> Result<MergeKeySource, E> {
 				match v {
-					"block_key" => Ok(MergeKeySource::BlockKey),
-					"container_child" => Ok(MergeKeySource::ContainerChild),
-					"defines_path" => Ok(MergeKeySource::DefinesPath),
+					"assignment_key" => Ok(MergeKeySource::AssignmentKey),
+					"container_child_key" => Ok(MergeKeySource::ContainerChildKey),
+					"leaf_path" => Ok(MergeKeySource::LeafPath),
 					_ => Err(E::unknown_variant(
 						v,
-						&["block_key", "container_child", "defines_path"],
+						&["assignment_key", "container_child_key", "leaf_path"],
 					)),
 				}
 			}
@@ -255,13 +304,13 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 			) -> Result<MergeKeySource, A::Error> {
 				let key: String = map
 					.next_key()?
-					.ok_or_else(|| de::Error::custom("expected inner_field key"))?;
-				if key != "inner_field" {
-					return Err(de::Error::unknown_field(&key, &["inner_field"]));
+					.ok_or_else(|| de::Error::custom("expected field_value key"))?;
+				if key != "field_value" {
+					return Err(de::Error::unknown_field(&key, &["field_value"]));
 				}
 				let value: String = map.next_value()?;
 				let leaked: &'static str = Box::leak(value.into_boxed_str());
-				Ok(MergeKeySource::InnerField(leaked))
+				Ok(MergeKeySource::FieldValue(leaked))
 			}
 		}
 		deserializer.deserialize_any(MergeKeySourceVisitor)
@@ -286,6 +335,7 @@ pub struct ContentFamilyDescriptor {
 	pub extractor: ContentFamilyExtractor,
 	pub merge_key_source: Option<MergeKeySource>,
 	pub conflict_policy: ConflictPolicy,
+	pub merge_policies: MergePolicies,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -299,6 +349,7 @@ pub struct ContentFamilyDescriptorBuilder {
 	extractor: ContentFamilyExtractor,
 	merge_key_source: Option<MergeKeySource>,
 	conflict_policy: ConflictPolicy,
+	merge_policies: MergePolicies,
 }
 
 impl ContentFamilyDescriptorBuilder {
@@ -330,6 +381,22 @@ impl ContentFamilyDescriptorBuilder {
 		self.conflict_policy = policy;
 		self
 	}
+	pub const fn merge_policies(mut self, policies: MergePolicies) -> Self {
+		self.merge_policies = policies;
+		self
+	}
+	pub const fn scalar_policy(mut self, policy: ScalarMergePolicy) -> Self {
+		self.merge_policies.scalar = policy;
+		self
+	}
+	pub const fn list_policy(mut self, policy: ListMergePolicy) -> Self {
+		self.merge_policies.list = policy;
+		self
+	}
+	pub const fn block_policy(mut self, policy: BlockMergePolicy) -> Self {
+		self.merge_policies.block = policy;
+		self
+	}
 	pub const fn build(self) -> ContentFamilyDescriptor {
 		ContentFamilyDescriptor {
 			id: self.id,
@@ -341,6 +408,7 @@ impl ContentFamilyDescriptorBuilder {
 			extractor: self.extractor,
 			merge_key_source: self.merge_key_source,
 			conflict_policy: self.conflict_policy,
+			merge_policies: self.merge_policies,
 		}
 	}
 }
@@ -364,6 +432,11 @@ impl ContentFamilyDescriptor {
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
+			merge_policies: MergePolicies {
+				scalar: ScalarMergePolicy::LastWriter,
+				list: ListMergePolicy::Union,
+				block: BlockMergePolicy::Recursive,
+			},
 		}
 	}
 
@@ -388,6 +461,11 @@ impl ContentFamilyDescriptor {
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
+			merge_policies: MergePolicies {
+				scalar: ScalarMergePolicy::LastWriter,
+				list: ListMergePolicy::Union,
+				block: BlockMergePolicy::Recursive,
+			},
 		}
 	}
 }

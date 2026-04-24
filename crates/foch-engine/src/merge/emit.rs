@@ -14,11 +14,11 @@ struct DefinesEmitNode {
 
 pub(crate) fn emit_structural_file(file: &MergeIrStructuralFile) -> Result<String, MergeError> {
 	match file.merge_key_source {
-		MergeKeySource::BlockKey | MergeKeySource::InnerField(_) => {
+		MergeKeySource::AssignmentKey | MergeKeySource::FieldValue(_) => {
 			emit_top_level_nodes(&file.nodes)
 		}
-		MergeKeySource::ContainerChild => emit_decision_nodes(&file.nodes),
-		MergeKeySource::DefinesPath => emit_defines_nodes(&file.nodes),
+		MergeKeySource::ContainerChildKey => emit_decision_nodes(&file.nodes),
+		MergeKeySource::LeafPath => emit_defines_nodes(&file.nodes),
 	}
 }
 
@@ -38,7 +38,7 @@ fn emit_top_level_nodes(nodes: &[MergeIrNode]) -> Result<String, MergeError> {
 
 	let mut out = String::new();
 	for node in ordered {
-		emit_statement(&node.winning_statement, 0, &mut out)?;
+		emit_statement(&node.merged_statement, 0, &mut out)?;
 	}
 	Ok(out)
 }
@@ -64,7 +64,7 @@ fn emit_decision_nodes(nodes: &[MergeIrNode]) -> Result<String, MergeError> {
 		out.push_str(&container_key);
 		out.push_str(" = {\n");
 		for node in group_nodes {
-			emit_statement(&node.winning_statement, 1, &mut out)?;
+			emit_statement(&node.merged_statement, 1, &mut out)?;
 		}
 		out.push_str("}\n");
 	}
@@ -99,12 +99,12 @@ fn insert_defines_node(root: &mut DefinesEmitNode, node: &MergeIrNode) -> Result
 		key,
 		value: AstValue::Scalar { value, .. },
 		..
-	} = &node.winning_statement
+	} = &node.merged_statement
 	else {
 		return Err(MergeError::Emit {
 			path: None,
 			message: format!(
-				"defines node {} must use a scalar winning assignment",
+				"defines node {} must use a scalar merged assignment",
 				node.merge_key
 			),
 		});

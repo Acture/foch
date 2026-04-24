@@ -6609,7 +6609,7 @@ option = {
 fn extractor_for_returns_none_for_families_without_extractors() {
 	use super::super::content_family::{
 		ConflictPolicy, ContentFamilyCapabilities, ContentFamilyDescriptor,
-		ContentFamilyPathMatcher, ModuleNameRule,
+		ContentFamilyPathMatcher, MergePolicies, ModuleNameRule,
 	};
 	use super::extractors;
 	use foch_core::model::ScopeType;
@@ -6626,6 +6626,7 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 		extractor: super::super::content_family::ContentFamilyExtractor::None,
 		merge_key_source: None,
 		conflict_policy: ConflictPolicy::default(),
+		merge_policies: MergePolicies::default(),
 	};
 	assert!(extractors::extractor_for(&descriptor).is_none());
 }
