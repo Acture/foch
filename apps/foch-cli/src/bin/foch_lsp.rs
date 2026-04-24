@@ -1,4 +1,5 @@
 use foch_core::model::{AnalysisMode, Finding, SemanticIndex, Severity, SymbolKind};
+use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use foch_language::analyzer::eu4_builtin::{
 	alias_keywords, builtin_effect_names, builtin_trigger_names, contextual_keywords,
@@ -53,9 +54,7 @@ struct CompletionCandidate {
 #[derive(Clone, Debug, Default)]
 struct WorkspaceSnapshot {
 	candidates: Vec<CompletionCandidate>,
-	index: SemanticIndex,
-	file_paths: Vec<PathBuf>,
-	path_lookup: HashMap<String, PathBuf>,
+	session: Option<WorkspaceSession>,
 	diagnostics_by_path: HashMap<String, Vec<Diagnostic>>,
 }
 
@@ -138,7 +137,12 @@ impl Backend {
 	}
 
 	async fn publish_workspace_diagnostics(&self, snapshot: &WorkspaceSnapshot) {
-		for path in &snapshot.file_paths {
+		let file_paths = snapshot
+			.session
+			.as_ref()
+			.map(|s| s.file_paths.as_slice())
+			.unwrap_or(&[]);
+		for path in file_paths {
 			let Some(uri) = Url::from_file_path(path).ok() else {
 				continue;
 			};
@@ -481,25 +485,26 @@ fn build_workspace_snapshot(roots: &[ScanTarget]) -> WorkspaceSnapshot {
 	file_paths.sort();
 	file_paths.dedup();
 
+	let findings: Vec<Finding> = diagnostics
+		.strict
+		.into_iter()
+		.chain(diagnostics.advisory)
+		.collect();
+	let diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
+
+	let session = WorkspaceSession::from_analysis(index, file_paths, path_lookup, findings);
+
 	WorkspaceSnapshot {
 		candidates,
-		diagnostics_by_path: build_workspace_diagnostics(
-			&index,
-			&path_lookup,
-			&diagnostics.strict,
-			&diagnostics.advisory,
-		),
-		index,
-		file_paths,
-		path_lookup,
+		diagnostics_by_path,
+		session: Some(session),
 	}
 }
 
 fn build_workspace_diagnostics(
 	index: &SemanticIndex,
 	path_lookup: &HashMap<String, PathBuf>,
-	strict_findings: &[Finding],
-	advisory_findings: &[Finding],
+	findings: &[Finding],
 ) -> HashMap<String, Vec<Diagnostic>> {
 	let mut diagnostics_by_path = HashMap::<String, Vec<Diagnostic>>::new();
 
@@ -517,7 +522,7 @@ fn build_workspace_diagnostics(
 			));
 	}
 
-	for finding in strict_findings.iter().chain(advisory_findings.iter()) {
+	for finding in findings {
 		let Some(relative_path) = finding.path.as_ref() else {
 			continue;
 		};
@@ -739,6 +744,7 @@ fn resolve_definition_locations(
 	text: &str,
 	position: Position,
 ) -> Option<Vec<Location>> {
+	let session = snapshot.session.as_ref()?;
 	let path = uri.to_file_path().ok()?;
 	let (_, relative_path) = match_scan_target(targets, &path)?;
 	let line = text.lines().nth(position.line as usize)?;
@@ -750,7 +756,7 @@ fn resolve_definition_locations(
 
 	if !on_value_side && cursor >= key_start && cursor <= key_end {
 		let current_column = key_start + 1;
-		for reference in &snapshot.index.references {
+		for reference in &session.index.references {
 			if reference.kind != SymbolKind::ScriptedEffect {
 				continue;
 			}
@@ -761,10 +767,10 @@ fn resolve_definition_locations(
 			{
 				continue;
 			}
-			for target in resolve_scripted_effect_reference_targets(&snapshot.index, reference) {
-				if let Some(definition) = snapshot.index.definitions.get(target)
+			for target in resolve_scripted_effect_reference_targets(&session.index, reference) {
+				if let Some(definition) = session.index.definitions.get(target)
 					&& let Some(location) = definition_location(
-						snapshot,
+						session,
 						&definition.mod_id,
 						&definition.path,
 						definition.line,
@@ -776,12 +782,9 @@ fn resolve_definition_locations(
 		}
 	} else if on_value_side {
 		if assignment_key == "id" {
-			for definition in &snapshot.index.definitions {
-				if definition.kind != SymbolKind::Event || definition.name != token {
-					continue;
-				}
+			for definition in session.find_definitions(&token, Some(SymbolKind::Event)) {
 				if let Some(location) = definition_location(
-					snapshot,
+					session,
 					&definition.mod_id,
 					&definition.path,
 					definition.line,
@@ -791,12 +794,12 @@ fn resolve_definition_locations(
 				}
 			}
 		} else if is_localisation_reference_key(&assignment_key, &token) {
-			for definition in &snapshot.index.localisation_definitions {
+			for definition in &session.index.localisation_definitions {
 				if definition.key != token {
 					continue;
 				}
 				if let Some(location) = definition_location(
-					snapshot,
+					session,
 					&definition.mod_id,
 					&definition.path,
 					definition.line,
@@ -807,14 +810,14 @@ fn resolve_definition_locations(
 			}
 		} else if let Some(flag_kind) = flag_value_kind(assignment_key.as_str()) {
 			let mut found_definition = false;
-			for usage in &snapshot.index.scalar_assignments {
+			for usage in &session.index.scalar_assignments {
 				if usage.value != token || flag_value_kind(usage.key.as_str()) != Some(flag_kind) {
 					continue;
 				}
 				if is_flag_definition_key(usage.key.as_str()) {
 					found_definition = true;
 					if let Some(location) = definition_location(
-						snapshot,
+						session,
 						&usage.mod_id,
 						&usage.path,
 						usage.line,
@@ -825,14 +828,14 @@ fn resolve_definition_locations(
 				}
 			}
 			if !found_definition {
-				for usage in &snapshot.index.scalar_assignments {
+				for usage in &session.index.scalar_assignments {
 					if usage.value != token
 						|| flag_value_kind(usage.key.as_str()) != Some(flag_kind)
 					{
 						continue;
 					}
 					if let Some(location) = definition_location(
-						snapshot,
+						session,
 						&usage.mod_id,
 						&usage.path,
 						usage.line,
@@ -854,15 +857,13 @@ fn resolve_definition_locations(
 }
 
 fn definition_location(
-	snapshot: &WorkspaceSnapshot,
+	session: &WorkspaceSession,
 	mod_id: &str,
 	relative_path: &Path,
 	line: usize,
 	column: usize,
 ) -> Option<Location> {
-	let absolute_path = snapshot
-		.path_lookup
-		.get(&path_lookup_key(mod_id, relative_path))?;
+	let absolute_path = session.resolve_path(&path_lookup_key(mod_id, relative_path))?;
 	let uri = Url::from_file_path(absolute_path).ok()?;
 	Some(Location {
 		uri,
