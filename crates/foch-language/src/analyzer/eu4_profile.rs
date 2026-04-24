@@ -6,6 +6,7 @@ use super::content_family::{
 use foch_core::model::ScopeType;
 use std::path::Path;
 
+#[derive(Debug)]
 pub struct Eu4Profile;
 
 static EU4_PROFILE: Eu4Profile = Eu4Profile;
@@ -23,14 +24,6 @@ const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
 		semantic_complete: true,
 		graph_ready: false,
 		merge_ready: true,
-	}
-}
-
-const fn graph_ready() -> ContentFamilyCapabilities {
-	ContentFamilyCapabilities {
-		semantic_complete: false,
-		graph_ready: true,
-		merge_ready: false,
 	}
 }
 
@@ -56,788 +49,595 @@ const fn country_from_scope(root_scope: ScopeType) -> ContentFamilyScopePolicy {
 	}
 }
 
-const fn prefix_descriptor(
-	id: &'static str,
-	prefix: &'static str,
-	script_file_kind: ScriptFileKind,
-	module_name_rule: ModuleNameRule,
-	scope_policy: ContentFamilyScopePolicy,
-	capabilities: ContentFamilyCapabilities,
-	extractor: ContentFamilyExtractor,
-) -> ContentFamilyDescriptor {
-	ContentFamilyDescriptor {
-		id,
-		matcher: ContentFamilyPathMatcher::Prefix(prefix),
-		script_file_kind,
-		module_name_rule,
-		scope_policy,
-		capabilities,
-		extractor,
-	}
-}
-
-const fn exact_descriptor(
-	id: &'static str,
-	exact: &'static str,
-	script_file_kind: ScriptFileKind,
-	module_name_rule: ModuleNameRule,
-	scope_policy: ContentFamilyScopePolicy,
-	capabilities: ContentFamilyCapabilities,
-	extractor: ContentFamilyExtractor,
-) -> ContentFamilyDescriptor {
-	ContentFamilyDescriptor {
-		id,
-		matcher: ContentFamilyPathMatcher::Exact(exact),
-		script_file_kind,
-		module_name_rule,
-		scope_policy,
-		capabilities,
-		extractor,
-	}
-}
-
 static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
-	prefix_descriptor(
+	ContentFamilyDescriptor::prefix(
 		"events/common/new_diplomatic_actions",
 		"events/common/new_diplomatic_actions/",
-		ScriptFileKind::NewDiplomaticActions,
-		ModuleNameRule::Tail {
-			prefix_len: 2,
-			fallback: "new_diplomatic_actions",
-		},
-		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"common/on_actions",
-		"common/on_actions/",
-		ScriptFileKind::OnActions,
-		ModuleNameRule::Static("on_actions"),
-		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"events/common/on_actions",
-		"events/common/on_actions/",
-		ScriptFileKind::OnActions,
-		ModuleNameRule::Static("on_actions"),
-		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"events/decisions",
-		"events/decisions/",
-		ScriptFileKind::Decisions,
-		ModuleNameRule::Static("decisions"),
-		scope(ScopeType::Country),
-		merge_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"events",
-		"events/",
-		ScriptFileKind::Events,
-		ModuleNameRule::Static("events"),
-		scope(ScopeType::Unknown),
-		merge_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"decisions",
-		"decisions/",
-		ScriptFileKind::Decisions,
-		ModuleNameRule::Static("decisions"),
-		scope(ScopeType::Country),
-		merge_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"common/scripted_effects",
-		"common/scripted_effects/",
-		ScriptFileKind::ScriptedEffects,
-		ModuleNameRule::Tail {
+	)
+	.kind(ScriptFileKind::NewDiplomaticActions)
+	.module_name(ModuleNameRule::Tail {
+		prefix_len: 2,
+		fallback: "new_diplomatic_actions",
+	})
+	.scope(scope(ScopeType::Country))
+	.capabilities(semantic_complete())
+	.build(),
+	ContentFamilyDescriptor::prefix("common/on_actions", "common/on_actions/")
+		.kind(ScriptFileKind::OnActions)
+		.module_name(ModuleNameRule::Static("on_actions"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.build(),
+	ContentFamilyDescriptor::prefix("events/common/on_actions", "events/common/on_actions/")
+		.kind(ScriptFileKind::OnActions)
+		.module_name(ModuleNameRule::Static("on_actions"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.build(),
+	ContentFamilyDescriptor::prefix("events/decisions", "events/decisions/")
+		.kind(ScriptFileKind::Decisions)
+		.module_name(ModuleNameRule::Static("decisions"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete_and_merge_ready())
+		.build(),
+	ContentFamilyDescriptor::prefix("events", "events/")
+		.kind(ScriptFileKind::Events)
+		.module_name(ModuleNameRule::Static("events"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete_and_merge_ready())
+		.build(),
+	ContentFamilyDescriptor::prefix("decisions", "decisions/")
+		.kind(ScriptFileKind::Decisions)
+		.module_name(ModuleNameRule::Static("decisions"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete_and_merge_ready())
+		.build(),
+	ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
+		.kind(ScriptFileKind::ScriptedEffects)
+		.module_name(ModuleNameRule::Tail {
 			prefix_len: 2,
 			fallback: "scripted_effects",
-		},
-		scope(ScopeType::Unknown),
-		merge_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"common/scripted_triggers",
-		"common/scripted_triggers/",
-		ScriptFileKind::ScriptedTriggers,
-		ModuleNameRule::Tail {
+		})
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete_and_merge_ready())
+		.build(),
+	ContentFamilyDescriptor::prefix("common/scripted_triggers", "common/scripted_triggers/")
+		.kind(ScriptFileKind::ScriptedTriggers)
+		.module_name(ModuleNameRule::Tail {
 			prefix_len: 2,
 			fallback: "scripted_triggers",
-		},
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::ScriptedTriggers,
-	),
-	prefix_descriptor(
-		"common/triggered_modifiers",
-		"common/triggered_modifiers/",
-		ScriptFileKind::TriggeredModifiers,
-		ModuleNameRule::Tail {
+		})
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::ScriptedTriggers)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/triggered_modifiers", "common/triggered_modifiers/")
+		.kind(ScriptFileKind::TriggeredModifiers)
+		.module_name(ModuleNameRule::Tail {
 			prefix_len: 2,
 			fallback: "triggered_modifiers",
-		},
-		scope(ScopeType::Country),
-		merge_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"common/defines",
-		"common/defines/",
-		ScriptFileKind::Defines,
-		ModuleNameRule::Tail {
+		})
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete_and_merge_ready())
+		.build(),
+	ContentFamilyDescriptor::prefix("common/defines", "common/defines/")
+		.kind(ScriptFileKind::Defines)
+		.module_name(ModuleNameRule::Tail {
 			prefix_len: 2,
 			fallback: "defines",
-		},
-		scope(ScopeType::Unknown),
-		merge_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"common/diplomatic_actions",
-		"common/diplomatic_actions/",
-		ScriptFileKind::DiplomaticActions,
-		ModuleNameRule::Tail {
+		})
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(merge_ready())
+		.build(),
+	ContentFamilyDescriptor::prefix("common/diplomatic_actions", "common/diplomatic_actions/")
+		.kind(ScriptFileKind::DiplomaticActions)
+		.module_name(ModuleNameRule::Tail {
 			prefix_len: 2,
 			fallback: "diplomatic_actions",
-		},
-		country_from_scope(ScopeType::Country),
-		semantic_complete_and_merge_ready(),
-		ContentFamilyExtractor::DiplomaticActions,
-	),
-	prefix_descriptor(
+		})
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete_and_merge_ready())
+		.extractor(ContentFamilyExtractor::DiplomaticActions)
+		.build(),
+	ContentFamilyDescriptor::prefix(
 		"common/new_diplomatic_actions",
 		"common/new_diplomatic_actions/",
-		ScriptFileKind::NewDiplomaticActions,
-		ModuleNameRule::Tail {
-			prefix_len: 2,
-			fallback: "new_diplomatic_actions",
-		},
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::NewDiplomaticActions,
-	),
-	prefix_descriptor(
-		"common/country_tags",
-		"common/country_tags/",
-		ScriptFileKind::CountryTags,
-		ModuleNameRule::Static("country_tags"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::CountryTags,
-	),
-	prefix_descriptor(
-		"common/countries",
-		"common/countries/",
-		ScriptFileKind::Countries,
-		ModuleNameRule::Static("countries"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Countries,
-	),
-	prefix_descriptor(
-		"history/countries",
-		"history/countries/",
-		ScriptFileKind::CountryHistory,
-		ModuleNameRule::Static("country_history"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::CountryHistory,
-	),
-	prefix_descriptor(
-		"history/provinces",
-		"history/provinces/",
-		ScriptFileKind::ProvinceHistory,
-		ModuleNameRule::Static("province_history"),
-		scope(ScopeType::Province),
-		semantic_complete(),
-		ContentFamilyExtractor::ProvinceHistory,
-	),
-	prefix_descriptor(
-		"history/diplomacy",
-		"history/diplomacy/",
-		ScriptFileKind::DiplomacyHistory,
-		ModuleNameRule::Static("diplomacy_history"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::DiplomacyHistory,
-	),
-	prefix_descriptor(
-		"history/advisors",
-		"history/advisors/",
-		ScriptFileKind::AdvisorHistory,
-		ModuleNameRule::Static("advisor_history"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::AdvisorHistory,
-	),
-	prefix_descriptor(
-		"history/wars",
-		"history/wars/",
-		ScriptFileKind::Wars,
-		ModuleNameRule::Static("wars"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::Wars,
-	),
-	prefix_descriptor(
-		"common/units",
-		"common/units/",
-		ScriptFileKind::Units,
-		ModuleNameRule::Static("units"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::Units,
-	),
-	prefix_descriptor(
-		"common/religions",
-		"common/religions/",
-		ScriptFileKind::Religions,
-		ModuleNameRule::Static("religions"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::Religions,
-	),
-	prefix_descriptor(
-		"common/subject_types",
-		"common/subject_types/",
-		ScriptFileKind::SubjectTypes,
-		ModuleNameRule::Static("subject_types"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::SubjectTypes,
-	),
-	prefix_descriptor(
-		"common/rebel_types",
-		"common/rebel_types/",
-		ScriptFileKind::RebelTypes,
-		ModuleNameRule::Static("rebel_types"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::RebelTypes,
-	),
-	prefix_descriptor(
-		"common/disasters",
-		"common/disasters/",
-		ScriptFileKind::Disasters,
-		ModuleNameRule::Static("disasters"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::Disasters,
-	),
-	prefix_descriptor(
+	)
+	.kind(ScriptFileKind::NewDiplomaticActions)
+	.module_name(ModuleNameRule::Tail {
+		prefix_len: 2,
+		fallback: "new_diplomatic_actions",
+	})
+	.scope(country_from_scope(ScopeType::Country))
+	.capabilities(semantic_complete())
+	.extractor(ContentFamilyExtractor::NewDiplomaticActions)
+	.build(),
+	ContentFamilyDescriptor::prefix("common/country_tags", "common/country_tags/")
+		.kind(ScriptFileKind::CountryTags)
+		.module_name(ModuleNameRule::Static("country_tags"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::CountryTags)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/countries", "common/countries/")
+		.kind(ScriptFileKind::Countries)
+		.module_name(ModuleNameRule::Static("countries"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Countries)
+		.build(),
+	ContentFamilyDescriptor::prefix("history/countries", "history/countries/")
+		.kind(ScriptFileKind::CountryHistory)
+		.module_name(ModuleNameRule::Static("country_history"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::CountryHistory)
+		.build(),
+	ContentFamilyDescriptor::prefix("history/provinces", "history/provinces/")
+		.kind(ScriptFileKind::ProvinceHistory)
+		.module_name(ModuleNameRule::Static("province_history"))
+		.scope(scope(ScopeType::Province))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::ProvinceHistory)
+		.build(),
+	ContentFamilyDescriptor::prefix("history/diplomacy", "history/diplomacy/")
+		.kind(ScriptFileKind::DiplomacyHistory)
+		.module_name(ModuleNameRule::Static("diplomacy_history"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::DiplomacyHistory)
+		.build(),
+	ContentFamilyDescriptor::prefix("history/advisors", "history/advisors/")
+		.kind(ScriptFileKind::AdvisorHistory)
+		.module_name(ModuleNameRule::Static("advisor_history"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::AdvisorHistory)
+		.build(),
+	ContentFamilyDescriptor::prefix("history/wars", "history/wars/")
+		.kind(ScriptFileKind::Wars)
+		.module_name(ModuleNameRule::Static("wars"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Wars)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/units", "common/units/")
+		.kind(ScriptFileKind::Units)
+		.module_name(ModuleNameRule::Static("units"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Units)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/religions", "common/religions/")
+		.kind(ScriptFileKind::Religions)
+		.module_name(ModuleNameRule::Static("religions"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Religions)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/subject_types", "common/subject_types/")
+		.kind(ScriptFileKind::SubjectTypes)
+		.module_name(ModuleNameRule::Static("subject_types"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::SubjectTypes)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/rebel_types", "common/rebel_types/")
+		.kind(ScriptFileKind::RebelTypes)
+		.module_name(ModuleNameRule::Static("rebel_types"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::RebelTypes)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/disasters", "common/disasters/")
+		.kind(ScriptFileKind::Disasters)
+		.module_name(ModuleNameRule::Static("disasters"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Disasters)
+		.build(),
+	ContentFamilyDescriptor::prefix(
 		"common/government_mechanics",
 		"common/government_mechanics/",
-		ScriptFileKind::GovernmentMechanics,
-		ModuleNameRule::Static("government_mechanics"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::GovernmentMechanics,
-	),
-	prefix_descriptor(
-		"common/church_aspects",
-		"common/church_aspects/",
-		ScriptFileKind::ChurchAspects,
-		ModuleNameRule::Static("church_aspects"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::ChurchAspects,
-	),
-	prefix_descriptor(
-		"common/factions",
-		"common/factions/",
-		ScriptFileKind::Factions,
-		ModuleNameRule::Static("factions"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Factions,
-	),
-	prefix_descriptor(
-		"common/hegemons",
-		"common/hegemons/",
-		ScriptFileKind::Hegemons,
-		ModuleNameRule::Static("hegemons"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Hegemons,
-	),
-	prefix_descriptor(
-		"common/personal_deities",
-		"common/personal_deities/",
-		ScriptFileKind::PersonalDeities,
-		ModuleNameRule::Static("personal_deities"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::PersonalDeities,
-	),
-	prefix_descriptor(
-		"common/fetishist_cults",
-		"common/fetishist_cults/",
-		ScriptFileKind::FetishistCults,
-		ModuleNameRule::Static("fetishist_cults"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::FetishistCults,
-	),
-	prefix_descriptor(
-		"common/peace_treaties",
-		"common/peace_treaties/",
-		ScriptFileKind::PeaceTreaties,
-		ModuleNameRule::Static("peace_treaties"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::PeaceTreaties,
-	),
-	prefix_descriptor(
-		"common/bookmarks",
-		"common/bookmarks/",
-		ScriptFileKind::Bookmarks,
-		ModuleNameRule::Static("bookmarks"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::Bookmarks,
-	),
-	prefix_descriptor(
-		"common/policies",
-		"common/policies/",
-		ScriptFileKind::Policies,
-		ModuleNameRule::Static("policies"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Policies,
-	),
-	prefix_descriptor(
-		"common/mercenary_companies",
-		"common/mercenary_companies/",
-		ScriptFileKind::MercenaryCompanies,
-		ModuleNameRule::Static("mercenary_companies"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::MercenaryCompanies,
-	),
-	prefix_descriptor(
-		"common/fervor",
-		"common/fervor/",
-		ScriptFileKind::Fervor,
-		ModuleNameRule::Static("fervor"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Fervor,
-	),
-	prefix_descriptor(
-		"common/decrees",
-		"common/decrees/",
-		ScriptFileKind::Decrees,
-		ModuleNameRule::Static("decrees"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Decrees,
-	),
-	prefix_descriptor(
+	)
+	.kind(ScriptFileKind::GovernmentMechanics)
+	.module_name(ModuleNameRule::Static("government_mechanics"))
+	.scope(scope(ScopeType::Unknown))
+	.capabilities(semantic_complete())
+	.extractor(ContentFamilyExtractor::GovernmentMechanics)
+	.build(),
+	ContentFamilyDescriptor::prefix("common/church_aspects", "common/church_aspects/")
+		.kind(ScriptFileKind::ChurchAspects)
+		.module_name(ModuleNameRule::Static("church_aspects"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::ChurchAspects)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/factions", "common/factions/")
+		.kind(ScriptFileKind::Factions)
+		.module_name(ModuleNameRule::Static("factions"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Factions)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/hegemons", "common/hegemons/")
+		.kind(ScriptFileKind::Hegemons)
+		.module_name(ModuleNameRule::Static("hegemons"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Hegemons)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/personal_deities", "common/personal_deities/")
+		.kind(ScriptFileKind::PersonalDeities)
+		.module_name(ModuleNameRule::Static("personal_deities"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::PersonalDeities)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/fetishist_cults", "common/fetishist_cults/")
+		.kind(ScriptFileKind::FetishistCults)
+		.module_name(ModuleNameRule::Static("fetishist_cults"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::FetishistCults)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/peace_treaties", "common/peace_treaties/")
+		.kind(ScriptFileKind::PeaceTreaties)
+		.module_name(ModuleNameRule::Static("peace_treaties"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::PeaceTreaties)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/bookmarks", "common/bookmarks/")
+		.kind(ScriptFileKind::Bookmarks)
+		.module_name(ModuleNameRule::Static("bookmarks"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Bookmarks)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/policies", "common/policies/")
+		.kind(ScriptFileKind::Policies)
+		.module_name(ModuleNameRule::Static("policies"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Policies)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/mercenary_companies", "common/mercenary_companies/")
+		.kind(ScriptFileKind::MercenaryCompanies)
+		.module_name(ModuleNameRule::Static("mercenary_companies"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::MercenaryCompanies)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/fervor", "common/fervor/")
+		.kind(ScriptFileKind::Fervor)
+		.module_name(ModuleNameRule::Static("fervor"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Fervor)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/decrees", "common/decrees/")
+		.kind(ScriptFileKind::Decrees)
+		.module_name(ModuleNameRule::Static("decrees"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Decrees)
+		.build(),
+	ContentFamilyDescriptor::prefix(
 		"common/federation_advancements",
 		"common/federation_advancements/",
-		ScriptFileKind::FederationAdvancements,
-		ModuleNameRule::Static("federation_advancements"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::FederationAdvancements,
-	),
-	prefix_descriptor(
-		"common/golden_bulls",
-		"common/golden_bulls/",
-		ScriptFileKind::GoldenBulls,
-		ModuleNameRule::Static("golden_bulls"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::GoldenBulls,
-	),
-	prefix_descriptor(
+	)
+	.kind(ScriptFileKind::FederationAdvancements)
+	.module_name(ModuleNameRule::Static("federation_advancements"))
+	.scope(scope(ScopeType::Country))
+	.capabilities(semantic_complete())
+	.extractor(ContentFamilyExtractor::FederationAdvancements)
+	.build(),
+	ContentFamilyDescriptor::prefix("common/golden_bulls", "common/golden_bulls/")
+		.kind(ScriptFileKind::GoldenBulls)
+		.module_name(ModuleNameRule::Static("golden_bulls"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::GoldenBulls)
+		.build(),
+	ContentFamilyDescriptor::prefix(
 		"common/flagship_modifications",
 		"common/flagship_modifications/",
-		ScriptFileKind::FlagshipModifications,
-		ModuleNameRule::Static("flagship_modifications"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::FlagshipModifications,
-	),
-	prefix_descriptor(
-		"common/holy_orders",
-		"common/holy_orders/",
-		ScriptFileKind::HolyOrders,
-		ModuleNameRule::Static("holy_orders"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::HolyOrders,
-	),
-	prefix_descriptor(
-		"common/naval_doctrines",
-		"common/naval_doctrines/",
-		ScriptFileKind::NavalDoctrines,
-		ModuleNameRule::Static("naval_doctrines"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::NavalDoctrines,
-	),
-	prefix_descriptor(
-		"common/defender_of_faith",
-		"common/defender_of_faith/",
-		ScriptFileKind::DefenderOfFaith,
-		ModuleNameRule::Static("defender_of_faith"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::DefenderOfFaith,
-	),
-	prefix_descriptor(
-		"common/isolationism",
-		"common/isolationism/",
-		ScriptFileKind::Isolationism,
-		ModuleNameRule::Static("isolationism"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Isolationism,
-	),
-	prefix_descriptor(
-		"common/professionalism",
-		"common/professionalism/",
-		ScriptFileKind::Professionalism,
-		ModuleNameRule::Static("professionalism"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Professionalism,
-	),
-	prefix_descriptor(
-		"common/powerprojection",
-		"common/powerprojection/",
-		ScriptFileKind::PowerProjection,
-		ModuleNameRule::Static("powerprojection"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::PowerProjection,
-	),
-	prefix_descriptor(
+	)
+	.kind(ScriptFileKind::FlagshipModifications)
+	.module_name(ModuleNameRule::Static("flagship_modifications"))
+	.scope(scope(ScopeType::Country))
+	.capabilities(semantic_complete())
+	.extractor(ContentFamilyExtractor::FlagshipModifications)
+	.build(),
+	ContentFamilyDescriptor::prefix("common/holy_orders", "common/holy_orders/")
+		.kind(ScriptFileKind::HolyOrders)
+		.module_name(ModuleNameRule::Static("holy_orders"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::HolyOrders)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/naval_doctrines", "common/naval_doctrines/")
+		.kind(ScriptFileKind::NavalDoctrines)
+		.module_name(ModuleNameRule::Static("naval_doctrines"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::NavalDoctrines)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/defender_of_faith", "common/defender_of_faith/")
+		.kind(ScriptFileKind::DefenderOfFaith)
+		.module_name(ModuleNameRule::Static("defender_of_faith"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::DefenderOfFaith)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/isolationism", "common/isolationism/")
+		.kind(ScriptFileKind::Isolationism)
+		.module_name(ModuleNameRule::Static("isolationism"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Isolationism)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/professionalism", "common/professionalism/")
+		.kind(ScriptFileKind::Professionalism)
+		.module_name(ModuleNameRule::Static("professionalism"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Professionalism)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/powerprojection", "common/powerprojection/")
+		.kind(ScriptFileKind::PowerProjection)
+		.module_name(ModuleNameRule::Static("powerprojection"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::PowerProjection)
+		.build(),
+	ContentFamilyDescriptor::prefix(
 		"common/subject_type_upgrades",
 		"common/subject_type_upgrades/",
-		ScriptFileKind::SubjectTypeUpgrades,
-		ModuleNameRule::Static("subject_type_upgrades"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::SubjectTypeUpgrades,
-	),
-	prefix_descriptor(
-		"common/government_ranks",
-		"common/government_ranks/",
-		ScriptFileKind::GovernmentRanks,
-		ModuleNameRule::Static("government_ranks"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::GovernmentRanks,
-	),
-	prefix_descriptor(
-		"common/province_names",
-		"common/province_names/",
-		ScriptFileKind::ProvinceNames,
-		ModuleNameRule::Static("province_names"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::ProvinceNames,
-	),
-	prefix_descriptor(
-		"map/random/tiles",
-		"map/random/tiles/",
-		ScriptFileKind::RandomMapTiles,
-		ModuleNameRule::Static("random_map_tiles"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::RandomMapTiles,
-	),
-	exact_descriptor(
-		"map/random_names",
-		"map/random/RandomLandNames.txt",
-		ScriptFileKind::RandomMapNames,
-		ModuleNameRule::Static("random_map_names"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::RandomMapNames,
-	),
-	exact_descriptor(
-		"map/random_names",
-		"map/random/RandomSeaNames.txt",
-		ScriptFileKind::RandomMapNames,
-		ModuleNameRule::Static("random_map_names"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::RandomMapNames,
-	),
-	exact_descriptor(
-		"map/random_names",
-		"map/random/RandomLakeNames.txt",
-		ScriptFileKind::RandomMapNames,
-		ModuleNameRule::Static("random_map_names"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::RandomMapNames,
-	),
-	exact_descriptor(
-		"map/random/scenarios",
-		"map/random/RNWScenarios.txt",
-		ScriptFileKind::RandomMapScenarios,
-		ModuleNameRule::Static("random_map_scenarios"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::RandomMapScenarios,
-	),
-	prefix_descriptor(
-		"common/technologies",
-		"common/technologies/",
-		ScriptFileKind::Technologies,
-		ModuleNameRule::Static("technologies"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Technologies,
-	),
-	exact_descriptor(
-		"common/technology",
-		"common/technology.txt",
-		ScriptFileKind::TechnologyGroups,
-		ModuleNameRule::Static("technology_groups"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::TechnologyGroups,
-	),
-	prefix_descriptor(
-		"common/estate_agendas",
-		"common/estate_agendas/",
-		ScriptFileKind::EstateAgendas,
-		ModuleNameRule::Static("estate_agendas"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::EstateAgendas,
-	),
-	prefix_descriptor(
-		"common/estate_privileges",
-		"common/estate_privileges/",
-		ScriptFileKind::EstatePrivileges,
-		ModuleNameRule::Static("estate_privileges"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::EstatePrivileges,
-	),
-	prefix_descriptor(
-		"common/estates",
-		"common/estates/",
-		ScriptFileKind::Estates,
-		ModuleNameRule::Static("estates"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Estates,
-	),
-	prefix_descriptor(
-		"common/parliament_bribes",
-		"common/parliament_bribes/",
-		ScriptFileKind::ParliamentBribes,
-		ModuleNameRule::Static("parliament_bribes"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::ParliamentBribes,
-	),
-	prefix_descriptor(
-		"common/parliament_issues",
-		"common/parliament_issues/",
-		ScriptFileKind::ParliamentIssues,
-		ModuleNameRule::Static("parliament_issues"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::ParliamentIssues,
-	),
-	prefix_descriptor(
-		"common/state_edicts",
-		"common/state_edicts/",
-		ScriptFileKind::StateEdicts,
-		ModuleNameRule::Static("state_edicts"),
-		scope(ScopeType::Province),
-		semantic_complete(),
-		ContentFamilyExtractor::StateEdicts,
-	),
-	exact_descriptor(
-		"common/achievements",
-		"common/achievements.txt",
-		ScriptFileKind::Achievements,
-		ModuleNameRule::Static("achievements"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Achievements,
-	),
-	prefix_descriptor(
-		"common/ages",
-		"common/ages/",
-		ScriptFileKind::Ages,
-		ModuleNameRule::Static("ages"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Ages,
-	),
-	prefix_descriptor(
-		"common/buildings",
-		"common/buildings/",
-		ScriptFileKind::Buildings,
-		ModuleNameRule::Static("buildings"),
-		country_from_scope(ScopeType::Province),
-		semantic_complete(),
-		ContentFamilyExtractor::Buildings,
-	),
-	prefix_descriptor(
-		"common/institutions",
-		"common/institutions/",
-		ScriptFileKind::Institutions,
-		ModuleNameRule::Static("institutions"),
-		scope(ScopeType::Province),
-		semantic_complete(),
-		ContentFamilyExtractor::Institutions,
-	),
-	prefix_descriptor(
+	)
+	.kind(ScriptFileKind::SubjectTypeUpgrades)
+	.module_name(ModuleNameRule::Static("subject_type_upgrades"))
+	.scope(scope(ScopeType::Country))
+	.capabilities(semantic_complete())
+	.extractor(ContentFamilyExtractor::SubjectTypeUpgrades)
+	.build(),
+	ContentFamilyDescriptor::prefix("common/government_ranks", "common/government_ranks/")
+		.kind(ScriptFileKind::GovernmentRanks)
+		.module_name(ModuleNameRule::Static("government_ranks"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::GovernmentRanks)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/province_names", "common/province_names/")
+		.kind(ScriptFileKind::ProvinceNames)
+		.module_name(ModuleNameRule::Static("province_names"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::ProvinceNames)
+		.build(),
+	ContentFamilyDescriptor::prefix("map/random/tiles", "map/random/tiles/")
+		.kind(ScriptFileKind::RandomMapTiles)
+		.module_name(ModuleNameRule::Static("random_map_tiles"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::RandomMapTiles)
+		.build(),
+	ContentFamilyDescriptor::exact("map/random_names", "map/random/RandomLandNames.txt")
+		.kind(ScriptFileKind::RandomMapNames)
+		.module_name(ModuleNameRule::Static("random_map_names"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::RandomMapNames)
+		.build(),
+	ContentFamilyDescriptor::exact("map/random_names", "map/random/RandomSeaNames.txt")
+		.kind(ScriptFileKind::RandomMapNames)
+		.module_name(ModuleNameRule::Static("random_map_names"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::RandomMapNames)
+		.build(),
+	ContentFamilyDescriptor::exact("map/random_names", "map/random/RandomLakeNames.txt")
+		.kind(ScriptFileKind::RandomMapNames)
+		.module_name(ModuleNameRule::Static("random_map_names"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::RandomMapNames)
+		.build(),
+	ContentFamilyDescriptor::exact("map/random/scenarios", "map/random/RNWScenarios.txt")
+		.kind(ScriptFileKind::RandomMapScenarios)
+		.module_name(ModuleNameRule::Static("random_map_scenarios"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::RandomMapScenarios)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/technologies", "common/technologies/")
+		.kind(ScriptFileKind::Technologies)
+		.module_name(ModuleNameRule::Static("technologies"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Technologies)
+		.build(),
+	ContentFamilyDescriptor::exact("common/technology", "common/technology.txt")
+		.kind(ScriptFileKind::TechnologyGroups)
+		.module_name(ModuleNameRule::Static("technology_groups"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::TechnologyGroups)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/estate_agendas", "common/estate_agendas/")
+		.kind(ScriptFileKind::EstateAgendas)
+		.module_name(ModuleNameRule::Static("estate_agendas"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::EstateAgendas)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/estate_privileges", "common/estate_privileges/")
+		.kind(ScriptFileKind::EstatePrivileges)
+		.module_name(ModuleNameRule::Static("estate_privileges"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::EstatePrivileges)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/estates", "common/estates/")
+		.kind(ScriptFileKind::Estates)
+		.module_name(ModuleNameRule::Static("estates"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Estates)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/parliament_bribes", "common/parliament_bribes/")
+		.kind(ScriptFileKind::ParliamentBribes)
+		.module_name(ModuleNameRule::Static("parliament_bribes"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::ParliamentBribes)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/parliament_issues", "common/parliament_issues/")
+		.kind(ScriptFileKind::ParliamentIssues)
+		.module_name(ModuleNameRule::Static("parliament_issues"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::ParliamentIssues)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/state_edicts", "common/state_edicts/")
+		.kind(ScriptFileKind::StateEdicts)
+		.module_name(ModuleNameRule::Static("state_edicts"))
+		.scope(scope(ScopeType::Province))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::StateEdicts)
+		.build(),
+	ContentFamilyDescriptor::exact("common/achievements", "common/achievements.txt")
+		.kind(ScriptFileKind::Achievements)
+		.module_name(ModuleNameRule::Static("achievements"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Achievements)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/ages", "common/ages/")
+		.kind(ScriptFileKind::Ages)
+		.module_name(ModuleNameRule::Static("ages"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Ages)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/buildings", "common/buildings/")
+		.kind(ScriptFileKind::Buildings)
+		.module_name(ModuleNameRule::Static("buildings"))
+		.scope(country_from_scope(ScopeType::Province))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Buildings)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/institutions", "common/institutions/")
+		.kind(ScriptFileKind::Institutions)
+		.module_name(ModuleNameRule::Static("institutions"))
+		.scope(scope(ScopeType::Province))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Institutions)
+		.build(),
+	ContentFamilyDescriptor::prefix(
 		"common/province_triggered_modifiers",
 		"common/province_triggered_modifiers/",
-		ScriptFileKind::ProvinceTriggeredModifiers,
-		ModuleNameRule::Static("province_triggered_modifiers"),
-		scope(ScopeType::Province),
-		semantic_complete(),
-		ContentFamilyExtractor::ProvinceTriggeredModifiers,
-	),
-	prefix_descriptor(
-		"common/ideas",
-		"common/ideas/",
-		ScriptFileKind::Ideas,
-		ModuleNameRule::Static("ideas"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::Ideas,
-	),
-	prefix_descriptor(
-		"common/great_projects",
-		"common/great_projects/",
-		ScriptFileKind::GreatProjects,
-		ModuleNameRule::Static("great_projects"),
-		scope(ScopeType::Province),
-		semantic_complete(),
-		ContentFamilyExtractor::GreatProjects,
-	),
-	prefix_descriptor(
-		"common/government_reforms",
-		"common/government_reforms/",
-		ScriptFileKind::GovernmentReforms,
-		ModuleNameRule::Static("government_reforms"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::GovernmentReforms,
-	),
-	prefix_descriptor(
-		"common/cultures",
-		"common/cultures/",
-		ScriptFileKind::Cultures,
-		ModuleNameRule::Static("cultures"),
-		scope(ScopeType::Unknown),
-		semantic_complete(),
-		ContentFamilyExtractor::Cultures,
-	),
-	prefix_descriptor(
-		"common/custom_gui",
-		"common/custom_gui/",
-		ScriptFileKind::CustomGui,
-		ModuleNameRule::Static("custom_gui"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::CustomGui,
-	),
-	prefix_descriptor(
-		"common/advisortypes",
-		"common/advisortypes/",
-		ScriptFileKind::AdvisorTypes,
-		ModuleNameRule::Static("advisortypes"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::AdvisorTypes,
-	),
-	prefix_descriptor(
-		"common/event_modifiers",
-		"common/event_modifiers/",
-		ScriptFileKind::EventModifiers,
-		ModuleNameRule::Static("event_modifiers"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::EventModifiers,
-	),
-	prefix_descriptor(
-		"common/cb_types",
-		"common/cb_types/",
-		ScriptFileKind::CbTypes,
-		ModuleNameRule::Static("cb_types"),
-		country_from_scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::CbTypes,
-	),
-	prefix_descriptor(
-		"common/government_names",
-		"common/government_names/",
-		ScriptFileKind::GovernmentNames,
-		ModuleNameRule::Static("government_names"),
-		scope(ScopeType::Country),
-		semantic_complete(),
-		ContentFamilyExtractor::GovernmentNames,
-	),
-	prefix_descriptor(
-		"customizable_localization",
-		"customizable_localization/",
-		ScriptFileKind::CustomizableLocalization,
-		ModuleNameRule::Static("customizable_localization"),
-		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"missions",
-		"missions/",
-		ScriptFileKind::Missions,
-		ModuleNameRule::Static("missions"),
-		scope(ScopeType::Country),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"interface",
-		"interface/",
-		ScriptFileKind::Ui,
-		ModuleNameRule::Static("ui"),
-		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"common/interface",
-		"common/interface/",
-		ScriptFileKind::Ui,
-		ModuleNameRule::Static("ui"),
-		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
-	prefix_descriptor(
-		"gfx",
-		"gfx/",
-		ScriptFileKind::Ui,
-		ModuleNameRule::Static("ui"),
-		scope(ScopeType::Unknown),
-		graph_ready(),
-		ContentFamilyExtractor::None,
-	),
+	)
+	.kind(ScriptFileKind::ProvinceTriggeredModifiers)
+	.module_name(ModuleNameRule::Static("province_triggered_modifiers"))
+	.scope(scope(ScopeType::Province))
+	.capabilities(semantic_complete())
+	.extractor(ContentFamilyExtractor::ProvinceTriggeredModifiers)
+	.build(),
+	ContentFamilyDescriptor::prefix("common/ideas", "common/ideas/")
+		.kind(ScriptFileKind::Ideas)
+		.module_name(ModuleNameRule::Static("ideas"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Ideas)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/great_projects", "common/great_projects/")
+		.kind(ScriptFileKind::GreatProjects)
+		.module_name(ModuleNameRule::Static("great_projects"))
+		.scope(scope(ScopeType::Province))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::GreatProjects)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/government_reforms", "common/government_reforms/")
+		.kind(ScriptFileKind::GovernmentReforms)
+		.module_name(ModuleNameRule::Static("government_reforms"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::GovernmentReforms)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/cultures", "common/cultures/")
+		.kind(ScriptFileKind::Cultures)
+		.module_name(ModuleNameRule::Static("cultures"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::Cultures)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/custom_gui", "common/custom_gui/")
+		.kind(ScriptFileKind::CustomGui)
+		.module_name(ModuleNameRule::Static("custom_gui"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::CustomGui)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/advisortypes", "common/advisortypes/")
+		.kind(ScriptFileKind::AdvisorTypes)
+		.module_name(ModuleNameRule::Static("advisortypes"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::AdvisorTypes)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/event_modifiers", "common/event_modifiers/")
+		.kind(ScriptFileKind::EventModifiers)
+		.module_name(ModuleNameRule::Static("event_modifiers"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::EventModifiers)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/cb_types", "common/cb_types/")
+		.kind(ScriptFileKind::CbTypes)
+		.module_name(ModuleNameRule::Static("cb_types"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::CbTypes)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/government_names", "common/government_names/")
+		.kind(ScriptFileKind::GovernmentNames)
+		.module_name(ModuleNameRule::Static("government_names"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.extractor(ContentFamilyExtractor::GovernmentNames)
+		.build(),
+	ContentFamilyDescriptor::prefix("customizable_localization", "customizable_localization/")
+		.kind(ScriptFileKind::CustomizableLocalization)
+		.module_name(ModuleNameRule::Static("customizable_localization"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.build(),
+	ContentFamilyDescriptor::prefix("missions", "missions/")
+		.kind(ScriptFileKind::Missions)
+		.module_name(ModuleNameRule::Static("missions"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete())
+		.build(),
+	ContentFamilyDescriptor::prefix("interface", "interface/")
+		.kind(ScriptFileKind::Ui)
+		.module_name(ModuleNameRule::Static("ui"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.build(),
+	ContentFamilyDescriptor::prefix("common/interface", "common/interface/")
+		.kind(ScriptFileKind::Ui)
+		.module_name(ModuleNameRule::Static("ui"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.build(),
+	ContentFamilyDescriptor::prefix("gfx", "gfx/")
+		.kind(ScriptFileKind::Ui)
+		.module_name(ModuleNameRule::Static("ui"))
+		.scope(scope(ScopeType::Unknown))
+		.capabilities(semantic_complete())
+		.build(),
 ];
 
 impl GameProfile for Eu4Profile {

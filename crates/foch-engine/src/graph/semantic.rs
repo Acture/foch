@@ -678,10 +678,10 @@ fn collect_family_contributors(
 	let profile = eu4_profile();
 	let mut contributors = Vec::new();
 	for (relative_path, items) in &workspace.file_inventory {
-		let Some(descriptor) = profile.classify_content_family(Path::new(relative_path)) else {
+		let Some(fid) = profile.family_id_for(Path::new(relative_path)) else {
 			continue;
 		};
-		if descriptor.id != family_id {
+		if fid != family_id {
 			continue;
 		}
 		for item in items {
@@ -792,10 +792,10 @@ fn build_block_nodes(
 		}
 		let relative_path = normalize_relative_path(&scope.path);
 		let profile = eu4_profile();
-		let Some(descriptor) = profile.classify_content_family(Path::new(&relative_path)) else {
+		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
 			continue;
 		};
-		if descriptor.id != family_id {
+		if fid != family_id {
 			continue;
 		}
 		let Some(file_node_id) = contributor_ids
@@ -980,8 +980,8 @@ fn attachment_node_for_scoped_item(
 ) -> Option<String> {
 	let relative_path = normalize_relative_path(path);
 	let profile = eu4_profile();
-	let descriptor = profile.classify_content_family(Path::new(&relative_path))?;
-	if descriptor.id != family_id {
+	let fid = profile.family_id_for(Path::new(&relative_path))?;
+	if fid != family_id {
 		return None;
 	}
 	if let Some(node_id) = block_attachments.get(&scope_id) {
@@ -1010,10 +1010,10 @@ fn attach_resource_references(
 			continue;
 		};
 		let profile = eu4_profile();
-		let Some(descriptor) = profile.classify_content_family(Path::new(&relative_path)) else {
+		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
 			continue;
 		};
-		if descriptor.id != ctx.family_id {
+		if fid != ctx.family_id {
 			continue;
 		}
 		if definition_reference_family(&item.key) == Some(ctx.family_id) {

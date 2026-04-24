@@ -192,6 +192,7 @@ pub enum ContentFamilyPathMatcher {
 	Exact(&'static str),
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContentFamilyDescriptor {
 	pub id: &'static str,
@@ -203,13 +204,117 @@ pub struct ContentFamilyDescriptor {
 	pub extractor: ContentFamilyExtractor,
 }
 
-pub trait GameProfile {
+#[derive(Clone, Copy, Debug)]
+pub struct ContentFamilyDescriptorBuilder {
+	id: &'static str,
+	matcher: ContentFamilyPathMatcher,
+	script_file_kind: ScriptFileKind,
+	module_name_rule: ModuleNameRule,
+	scope_policy: ContentFamilyScopePolicy,
+	capabilities: ContentFamilyCapabilities,
+	extractor: ContentFamilyExtractor,
+}
+
+impl ContentFamilyDescriptorBuilder {
+	pub const fn kind(mut self, kind: ScriptFileKind) -> Self {
+		self.script_file_kind = kind;
+		self
+	}
+	pub const fn module_name(mut self, rule: ModuleNameRule) -> Self {
+		self.module_name_rule = rule;
+		self
+	}
+	pub const fn scope(mut self, policy: ContentFamilyScopePolicy) -> Self {
+		self.scope_policy = policy;
+		self
+	}
+	pub const fn capabilities(mut self, caps: ContentFamilyCapabilities) -> Self {
+		self.capabilities = caps;
+		self
+	}
+	pub const fn extractor(mut self, ext: ContentFamilyExtractor) -> Self {
+		self.extractor = ext;
+		self
+	}
+	pub const fn build(self) -> ContentFamilyDescriptor {
+		ContentFamilyDescriptor {
+			id: self.id,
+			matcher: self.matcher,
+			script_file_kind: self.script_file_kind,
+			module_name_rule: self.module_name_rule,
+			scope_policy: self.scope_policy,
+			capabilities: self.capabilities,
+			extractor: self.extractor,
+		}
+	}
+}
+
+impl ContentFamilyDescriptor {
+	pub const fn prefix(id: &'static str, prefix: &'static str) -> ContentFamilyDescriptorBuilder {
+		ContentFamilyDescriptorBuilder {
+			id,
+			matcher: ContentFamilyPathMatcher::Prefix(prefix),
+			script_file_kind: ScriptFileKind::Other,
+			module_name_rule: ModuleNameRule::FallbackParent,
+			scope_policy: ContentFamilyScopePolicy {
+				root_scope: ScopeType::Unknown,
+				from_alias: None,
+			},
+			capabilities: ContentFamilyCapabilities {
+				semantic_complete: false,
+				graph_ready: false,
+				merge_ready: false,
+			},
+			extractor: ContentFamilyExtractor::None,
+		}
+	}
+
+	pub const fn exact(
+		id: &'static str,
+		exact_path: &'static str,
+	) -> ContentFamilyDescriptorBuilder {
+		ContentFamilyDescriptorBuilder {
+			id,
+			matcher: ContentFamilyPathMatcher::Exact(exact_path),
+			script_file_kind: ScriptFileKind::Other,
+			module_name_rule: ModuleNameRule::FallbackParent,
+			scope_policy: ContentFamilyScopePolicy {
+				root_scope: ScopeType::Unknown,
+				from_alias: None,
+			},
+			capabilities: ContentFamilyCapabilities {
+				semantic_complete: false,
+				graph_ready: false,
+				merge_ready: false,
+			},
+			extractor: ContentFamilyExtractor::None,
+		}
+	}
+}
+
+pub trait GameProfile: std::fmt::Debug + Send + Sync {
 	fn game_id(&self) -> GameId;
 	fn classify_content_family(&self, relative: &Path) -> Option<&'static ContentFamilyDescriptor>;
 	fn descriptor_for_root_family(
 		&self,
 		root_family: &str,
 	) -> Option<&'static ContentFamilyDescriptor>;
+
+	/// Get the content family ID for a relative path.
+	fn family_id_for(&self, relative: &Path) -> Option<&'static str> {
+		self.classify_content_family(relative).map(|d| d.id)
+	}
+
+	/// Get the capabilities for a root family name.
+	fn capabilities_for_root(&self, root_family: &str) -> Option<ContentFamilyCapabilities> {
+		self.descriptor_for_root_family(root_family)
+			.map(|d| d.capabilities)
+	}
+
+	/// Get the content family ID for a root family name.
+	fn family_id_for_root(&self, root_family: &str) -> Option<&'static str> {
+		self.descriptor_for_root_family(root_family).map(|d| d.id)
+	}
 }
 
 pub fn module_name_for_descriptor(relative: &Path, descriptor: &ContentFamilyDescriptor) -> String {
