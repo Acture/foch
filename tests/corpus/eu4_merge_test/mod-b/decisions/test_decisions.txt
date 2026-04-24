@@ -1,0 +1,10 @@
+country_decisions = {
+	decision_b = {
+		potential = {
+			tag = FRA
+		}
+		effect = {
+			add_prestige = 10
+		}
+	}
+}

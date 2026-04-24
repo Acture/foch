@@ -1,0 +1,14 @@
+test_idea_group_b = {
+	start = {
+		land_morale = 0.1
+	}
+	bonus = {
+		discipline = 0.05
+	}
+	idea_b_1 = {
+		infantry_power = 0.1
+	}
+	idea_b_2 = {
+		army_tradition = 0.5
+	}
+}

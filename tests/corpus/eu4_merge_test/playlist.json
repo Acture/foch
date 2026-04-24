@@ -1,0 +1,24 @@
+{
+	"game": "eu4",
+	"name": "merge-test-multi-mod",
+	"mods": [
+		{
+			"displayName": "mod-a",
+			"enabled": true,
+			"position": 0,
+			"steamId": "local_mod_a"
+		},
+		{
+			"displayName": "mod-b",
+			"enabled": true,
+			"position": 1,
+			"steamId": "local_mod_b"
+		},
+		{
+			"displayName": "mod-c",
+			"enabled": true,
+			"position": 2,
+			"steamId": "local_mod_c"
+		}
+	]
+}

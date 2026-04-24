@@ -1,0 +1,9 @@
+effect_beta = {
+	set_country_flag = beta_from_mod_b
+	add_legitimacy = 5
+}
+
+effect_alpha = {
+	set_country_flag = alpha_from_mod_b
+	add_stability = 2
+}

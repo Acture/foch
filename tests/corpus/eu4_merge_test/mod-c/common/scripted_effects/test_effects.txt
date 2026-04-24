@@ -1,0 +1,4 @@
+effect_gamma = {
+	set_country_flag = gamma_from_mod_c
+	add_treasury = 100
+}

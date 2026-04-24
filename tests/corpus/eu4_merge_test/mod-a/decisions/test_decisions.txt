@@ -1,0 +1,10 @@
+country_decisions = {
+	decision_a = {
+		potential = {
+			tag = ENG
+		}
+		effect = {
+			add_stability = 1
+		}
+	}
+}

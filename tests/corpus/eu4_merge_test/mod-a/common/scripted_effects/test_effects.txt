@@ -1,0 +1,8 @@
+effect_alpha = {
+	set_country_flag = alpha_from_mod_a
+	add_stability = 1
+}
+
+effect_unique_a = {
+	add_prestige = 10
+}
