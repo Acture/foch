@@ -4,6 +4,7 @@ use super::semantic_index::{
 	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
 	resolve_scripted_effect_reference_targets,
 };
+use super::visibility::{should_flag_duplicates, should_flag_unresolved};
 use foch_core::model::{
 	AnalysisMode, Finding, FindingChannel, ScopeType, SemanticDiagnostics, SemanticIndex, Severity,
 	SymbolKind,
@@ -47,7 +48,7 @@ pub fn analyze_visibility(index: &SemanticIndex, _options: &AnalyzeOptions) -> S
 fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 	let mut grouped: HashMap<(SymbolKind, String), Vec<_>> = HashMap::new();
 	for def in &index.definitions {
-		if !matches!(def.kind, SymbolKind::Event | SymbolKind::ScriptedEffect) {
+		if !should_flag_duplicates(def.kind) {
 			continue;
 		}
 		grouped
@@ -104,10 +105,7 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 	let mut seen = HashSet::new();
 	let mut findings = Vec::new();
 	for reference in &index.references {
-		if !matches!(
-			reference.kind,
-			SymbolKind::Event | SymbolKind::ScriptedEffect
-		) {
+		if !should_flag_unresolved(reference.kind) {
 			continue;
 		}
 		match reference.kind {

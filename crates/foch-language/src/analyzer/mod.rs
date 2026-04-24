@@ -9,3 +9,4 @@ pub mod parser;
 pub mod report;
 pub mod rules;
 pub mod semantic_index;
+pub mod visibility;
