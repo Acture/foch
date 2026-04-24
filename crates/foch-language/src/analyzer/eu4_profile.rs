@@ -20,14 +20,6 @@ const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
 	}
 }
 
-const fn merge_ready() -> ContentFamilyCapabilities {
-	ContentFamilyCapabilities {
-		semantic_complete: false,
-		graph_ready: false,
-		merge_ready: true,
-	}
-}
-
 const fn scope(root_scope: ScopeType) -> ContentFamilyScopePolicy {
 	ContentFamilyScopePolicy {
 		root_scope,
@@ -130,7 +122,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "defines",
 		})
 		.scope(scope(ScopeType::Unknown))
-		.capabilities(merge_ready())
+		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::LeafPath)
 		.conflict_policy(ConflictPolicy::MergeLeaf)
 		.build(),

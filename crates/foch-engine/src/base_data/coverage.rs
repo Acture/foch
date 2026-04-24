@@ -480,6 +480,7 @@ fn is_excluded_non_gameplay_root(root_family: &str) -> bool {
 			| "dlc_metadata"
 			| "hints" | "tools"
 			| "tests" | "ThirdPartyLicenses.txt"
+			| "map/random"
 			| "checksum_manifest.txt"
 			| "clausewitz_branch.txt"
 			| "clausewitz_rev.txt"
