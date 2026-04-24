@@ -1352,6 +1352,14 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 			line: 1,
 			column: 1,
 		},
+		ResourceReference {
+			key: "scripted_effect_definition".to_string(),
+			value: "test_effect".to_string(),
+			mod_id: "__game__eu4".to_string(),
+			path: PathBuf::from("common/scripted_effects/test.txt"),
+			line: 1,
+			column: 1,
+		},
 	]);
 	BaseAnalysisSnapshot::from_semantic_index(
 		&Game::EuropaUniversalis4,
@@ -1468,7 +1476,10 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 		.iter()
 		.find(|item| item.root_family == "common/scripted_effects")
 		.expect("scripted effects coverage");
-	assert_eq!(scripted_effects.coverage_class, CoverageClass::MergeReady);
+	assert_eq!(
+		scripted_effects.coverage_class,
+		CoverageClass::SemanticComplete
+	);
 
 	let provinces = report
 		.roots

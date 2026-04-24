@@ -1,5 +1,5 @@
 use super::super::content_family::ContentFamilyDescriptor;
-use super::super::parser::{AstValue, SpanRange};
+use super::super::parser::{AstStatement, AstValue, SpanRange};
 use super::{
 	BuildContext, extract_assignment_scalar, extract_block_scalar_items,
 	extract_named_block_member_keys, extract_named_block_scalar_items,
@@ -1324,6 +1324,107 @@ static GOVERNMENT_RANKS: NamedDefinitionTable = NamedDefinitionTable {
 	block_reference_keys: &[],
 };
 
+static TRIGGERED_MODIFIERS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "triggered_modifier_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static SCRIPTED_EFFECTS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "scripted_effect_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static CUSTOMIZABLE_LOCALIZATION: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "customizable_localization_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+struct EventsExtractor;
+impl ResourceExtractor for EventsExtractor {
+	fn extract(
+		&self,
+		index: &mut SemanticIndex,
+		_scope_id: usize,
+		ctx: &mut BuildContext<'_>,
+		key: &str,
+		key_span: &SpanRange,
+		value: &AstValue,
+	) {
+		if key == "namespace" {
+			if let Some(text) = scalar_text(value) {
+				push_resource_reference(index, ctx, key_span, "event_namespace", text.as_str());
+			}
+			return;
+		}
+		if matches!(key, "country_event" | "province_event")
+			&& let AstValue::Block { items, .. } = value
+			&& let Some(id_text) = extract_assignment_scalar(items, "id")
+		{
+			push_resource_reference(index, ctx, key_span, "event_definition", &id_text);
+		}
+	}
+}
+
+struct DecisionsExtractor;
+impl ResourceExtractor for DecisionsExtractor {
+	fn extract(
+		&self,
+		index: &mut SemanticIndex,
+		_scope_id: usize,
+		ctx: &mut BuildContext<'_>,
+		key: &str,
+		key_span: &SpanRange,
+		value: &AstValue,
+	) {
+		if matches!(
+			key,
+			"country_decisions"
+				| "province_decisions"
+				| "religion_decisions"
+				| "government_decisions"
+		) && let AstValue::Block { items, .. } = value
+		{
+			for stmt in items {
+				if let AstStatement::Assignment {
+					key: child_key,
+					value: AstValue::Block { .. },
+					..
+				} = stmt
+				{
+					push_resource_reference(index, ctx, key_span, "decision_definition", child_key);
+				}
+			}
+		}
+	}
+}
+
+static MISSIONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "mission_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static ON_ACTIONS: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "on_action_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static INTERFACE: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "interface_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
+static GFX: NamedDefinitionTable = NamedDefinitionTable {
+	definition_key: "gfx_definition",
+	scalar_reference_keys: &[],
+	block_reference_keys: &[],
+};
+
 static UNITS: ScalarRefExtractor = ScalarRefExtractor {
 	check: is_unit_definition_reference_key,
 };
@@ -1519,6 +1620,22 @@ pub(super) fn extractor_for(
 		"map/random/tiles" => Some(&RandomMapTilesExtractor),
 		"map/random_names" => Some(&RandomMapNamesExtractor),
 		"map/random/scenarios" => Some(&RandomMapScenariosExtractor),
+
+		// Promoted content families
+		"common/triggered_modifiers" => Some(&TRIGGERED_MODIFIERS),
+		"common/scripted_effects" => Some(&SCRIPTED_EFFECTS),
+
+		"customizable_localization" => Some(&CUSTOMIZABLE_LOCALIZATION),
+		"events" => Some(&EventsExtractor),
+		"events/decisions" => Some(&DecisionsExtractor),
+		"decisions" => Some(&DecisionsExtractor),
+		"missions" => Some(&MISSIONS),
+		"common/on_actions" => Some(&ON_ACTIONS),
+		"events/common/on_actions" => Some(&ON_ACTIONS),
+		"events/common/new_diplomatic_actions" => Some(&NewDiplomaticActionsExtractor),
+		"interface" => Some(&INTERFACE),
+		"common/interface" => Some(&INTERFACE),
+		"gfx" => Some(&GFX),
 
 		_ => None,
 	}

@@ -299,6 +299,9 @@ fn walk_statements(
 				..
 			} => {
 				if is_top_level_event_definition(index, scope_id, key, value) {
+					record_foundation_resource_semantics(
+						index, scope_id, ctx, key, key_span, value,
+					);
 					handle_event_block(index, scope_id, ctx, key, value, current_namespace.clone());
 					continue;
 				}

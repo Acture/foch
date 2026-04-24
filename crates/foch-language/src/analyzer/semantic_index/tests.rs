@@ -6614,8 +6614,8 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 	use super::extractors;
 	use foch_core::model::ScopeType;
 	let descriptor = ContentFamilyDescriptor {
-		id: "events",
-		matcher: ContentFamilyPathMatcher::Prefix("events/"),
+		id: "unregistered_test_family",
+		matcher: ContentFamilyPathMatcher::Prefix("unregistered_test_family/"),
 		script_file_kind: ScriptFileKind::Events,
 		module_name_rule: ModuleNameRule::Static("events"),
 		scope_policy: super::super::content_family::ContentFamilyScopePolicy {
@@ -6716,5 +6716,790 @@ fn top_level_named_block_extractor_emits_localisation_references() {
 			.iter()
 			.any(|r| r.key == "localisation_modifier" && r.value == "test_aspect_modifier"),
 		"should emit localisation_modifier with suffix"
+	);
+}
+
+#[test]
+fn triggered_modifiers_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("triggered_modifiers"))
+		.expect("create triggered modifiers");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("triggered_modifiers")
+			.join("00_triggered_modifiers.txt"),
+		r#"
+legitimate_ruler = {
+	potential = {
+		has_dlc = "Res Publica"
+		government = republic
+		NOT = { has_reform = dutch_republic }
+	}
+	trigger = {
+		republican_tradition = 90
+	}
+	legitimacy = 1
+	republican_tradition = 0.5
+}
+
+march_modifier = {
+	potential = {
+		is_march = yes
+	}
+	trigger = {
+		always = yes
+	}
+	land_morale = 0.15
+	fort_defense = 0.15
+	manpower_recovery_speed = 0.30
+}
+"#,
+	)
+	.expect("write triggered modifiers");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("triggered_modifiers")
+			.join("00_triggered_modifiers.txt"),
+	)
+	.expect("parsed triggered modifiers");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/triggered_modifiers/00_triggered_modifiers.txt")
+				&& reference.key == "triggered_modifier_definition"
+				&& reference.value == "legitimate_ruler"
+		}),
+		"should capture legitimate_ruler as a triggered modifier definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/triggered_modifiers/00_triggered_modifiers.txt")
+				&& reference.key == "triggered_modifier_definition"
+				&& reference.value == "march_modifier"
+		}),
+		"should capture march_modifier as a triggered modifier definition"
+	);
+}
+
+#[test]
+fn scripted_effects_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+		.expect("create scripted effects");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("scripted_effects")
+			.join("00_scripted_effects.txt"),
+		r#"
+country_event_effect = {
+	random_owned_province = {
+		limit = {
+			is_core = ROOT
+		}
+		add_base_tax = 1
+	}
+}
+
+add_age_modifier_effect = {
+	if = {
+		limit = { has_dlc = "Mandate of Heaven" }
+		add_age_modifier = {
+			name = $name$
+			duration = $duration$
+		}
+	}
+}
+"#,
+	)
+	.expect("write scripted effects");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("scripted_effects")
+			.join("00_scripted_effects.txt"),
+	)
+	.expect("parsed scripted effects");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/scripted_effects/00_scripted_effects.txt")
+				&& reference.key == "scripted_effect_definition"
+				&& reference.value == "country_event_effect"
+		}),
+		"should capture country_event_effect as a scripted effect definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/scripted_effects/00_scripted_effects.txt")
+				&& reference.key == "scripted_effect_definition"
+				&& reference.value == "add_age_modifier_effect"
+		}),
+		"should capture add_age_modifier_effect as a scripted effect definition"
+	);
+}
+
+#[test]
+fn defines_have_no_extractor_and_no_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("defines")).expect("create defines");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("defines")
+			.join("00_defines.txt"),
+		r#"
+NCountry = {
+	KARMA_INCREASE_PEACE = 1
+	BASE_TAX_COST = 1
+}
+"#,
+	)
+	.expect("write defines");
+
+	use super::super::content_family::GameProfile;
+	use super::super::eu4_profile::eu4_profile;
+	use super::extractors;
+	let profile = eu4_profile();
+	let descriptor = profile
+		.classify_content_family(std::path::Path::new("common/defines/00_defines.txt"))
+		.expect("defines family");
+	assert!(
+		extractors::extractor_for(descriptor).is_none(),
+		"common/defines should have no registered extractor (files are .lua)"
+	);
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("defines")
+			.join("00_defines.txt"),
+	)
+	.expect("parser still returns a result for .txt content");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index
+			.resource_references
+			.iter()
+			.all(|r| r.key != "defines_definition"),
+		"should not emit any defines_definition resource references"
+	);
+}
+
+#[test]
+fn customizable_localization_records_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("customizable_localization"))
+		.expect("create customizable localization");
+	fs::write(
+		mod_root
+			.join("customizable_localization")
+			.join("00_custom_loc.txt"),
+		r#"
+defined_text = {
+	name = get_advisor_title
+	text = {
+		trigger = {
+			is_female = yes
+		}
+		localisation_key = advisor_female
+	}
+	text = {
+		localisation_key = advisor_male
+	}
+}
+"#,
+	)
+	.expect("write customizable localization");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("customizable_localization")
+			.join("00_custom_loc.txt"),
+	)
+	.expect("parsed customizable localization");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("customizable_localization/00_custom_loc.txt")
+				&& reference.key == "customizable_localization_definition"
+				&& reference.value == "defined_text"
+		}),
+		"should capture defined_text as a customizable localization definition"
+	);
+}
+
+#[test]
+fn events_extractor_is_registered() {
+	use super::super::content_family::GameProfile;
+	use super::super::eu4_profile::eu4_profile;
+	use super::extractors;
+	let profile = eu4_profile();
+	let descriptor = profile
+		.classify_content_family(std::path::Path::new("events/FlavorFRA.txt"))
+		.expect("events family");
+	assert!(
+		extractors::extractor_for(descriptor).is_some(),
+		"events family should have a registered extractor"
+	);
+}
+
+#[test]
+fn events_decisions_extractor_is_registered() {
+	use super::super::content_family::GameProfile;
+	use super::super::eu4_profile::eu4_profile;
+	use super::extractors;
+	let profile = eu4_profile();
+	let descriptor = profile
+		.classify_content_family(std::path::Path::new("events/decisions/00_decisions.txt"))
+		.expect("events/decisions family");
+	assert_eq!(descriptor.id, "events/decisions");
+	assert!(
+		extractors::extractor_for(descriptor).is_some(),
+		"events/decisions family should have a registered extractor"
+	);
+}
+
+#[test]
+fn decisions_extractor_is_registered() {
+	use super::super::content_family::GameProfile;
+	use super::super::eu4_profile::eu4_profile;
+	use super::extractors;
+	let profile = eu4_profile();
+	let descriptor = profile
+		.classify_content_family(std::path::Path::new("decisions/00_decisions.txt"))
+		.expect("decisions family");
+	assert_eq!(descriptor.id, "decisions");
+	assert!(
+		extractors::extractor_for(descriptor).is_some(),
+		"decisions family should have a registered extractor"
+	);
+}
+
+#[test]
+fn events_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("events")).expect("create events");
+	fs::write(
+		mod_root.join("events").join("FlavorFRA.txt"),
+		r#"
+namespace = flavor_fra
+
+country_event = {
+	id = flavor_fra.9100
+	title = "flavor_fra.EVTNAME9100"
+	trigger = { tag = FRA }
+	option = { name = "flavor_fra.EVTOPT9100A" }
+}
+
+province_event = {
+	id = flavor_fra.9200
+	trigger = { always = yes }
+	option = { name = "OK" }
+}
+"#,
+	)
+	.expect("write events");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root.join("events").join("FlavorFRA.txt"),
+	)
+	.expect("parsed events");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|r| {
+			r.path == Path::new("events/FlavorFRA.txt")
+				&& r.key == "event_namespace"
+				&& r.value == "flavor_fra"
+		}),
+		"should capture namespace as event_namespace"
+	);
+	assert!(
+		index.resource_references.iter().any(|r| {
+			r.path == Path::new("events/FlavorFRA.txt")
+				&& r.key == "event_definition"
+				&& r.value == "flavor_fra.9100"
+		}),
+		"should capture country_event id as event_definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|r| {
+			r.path == Path::new("events/FlavorFRA.txt")
+				&& r.key == "event_definition"
+				&& r.value == "flavor_fra.9200"
+		}),
+		"should capture province_event id as event_definition"
+	);
+}
+
+#[test]
+fn decisions_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("decisions")).expect("create decisions");
+	fs::write(
+		mod_root.join("decisions").join("00_decisions.txt"),
+		r#"
+country_decisions = {
+	restore_roman_empire = {
+		major = yes
+		potential = { tag = ROM }
+		allow = { is_at_war = no }
+		effect = { add_prestige = 100 }
+	}
+	form_prussia = {
+		potential = { tag = BRA }
+		allow = { is_at_war = no }
+		effect = { change_tag = PRU }
+	}
+}
+"#,
+	)
+	.expect("write decisions");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root.join("decisions").join("00_decisions.txt"),
+	)
+	.expect("parsed decisions");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|r| {
+			r.path == Path::new("decisions/00_decisions.txt")
+				&& r.key == "decision_definition"
+				&& r.value == "restore_roman_empire"
+		}),
+		"should capture restore_roman_empire as decision_definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|r| {
+			r.path == Path::new("decisions/00_decisions.txt")
+				&& r.key == "decision_definition"
+				&& r.value == "form_prussia"
+		}),
+		"should capture form_prussia as decision_definition"
+	);
+}
+
+#[test]
+fn missions_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("missions")).expect("create missions");
+	fs::write(
+		mod_root.join("missions").join("FRA_Missions.txt"),
+		r#"
+french_missions_1 = {
+	slot = 1
+	generic = no
+	ai = yes
+	potential = {
+		tag = FRA
+		NOT = { map_setup = map_setup_random }
+	}
+
+	french_grand_army = {
+		icon = mission_assemble_an_army
+		required_missions = { }
+		trigger = {
+			army_size = 80
+		}
+		effect = {
+			add_country_modifier = {
+				name = "grand_army"
+				duration = 7300
+			}
+		}
+	}
+}
+
+french_missions_2 = {
+	slot = 2
+	generic = no
+	ai = yes
+	potential = {
+		tag = FRA
+	}
+}
+"#,
+	)
+	.expect("write missions");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root.join("missions").join("FRA_Missions.txt"),
+	)
+	.expect("parsed missions");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("missions/FRA_Missions.txt")
+				&& reference.key == "mission_definition"
+				&& reference.value == "french_missions_1"
+		}),
+		"should capture french_missions_1 as a mission definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("missions/FRA_Missions.txt")
+				&& reference.key == "mission_definition"
+				&& reference.value == "french_missions_2"
+		}),
+		"should capture french_missions_2 as a mission definition"
+	);
+}
+
+#[test]
+fn on_actions_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("on_actions")).expect("create on actions");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("on_actions")
+			.join("00_on_actions.txt"),
+		r#"
+on_battle_won = {
+	random_events = {
+		100 = battle_event.1
+	}
+	events = {
+		flavor_fra.9401
+	}
+}
+
+on_startup = {
+	events = {
+		startup.1
+		startup.2
+	}
+}
+"#,
+	)
+	.expect("write on actions");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("on_actions")
+			.join("00_on_actions.txt"),
+	)
+	.expect("parsed on actions");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/on_actions/00_on_actions.txt")
+				&& reference.key == "on_action_definition"
+				&& reference.value == "on_battle_won"
+		}),
+		"should capture on_battle_won as an on_action definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/on_actions/00_on_actions.txt")
+				&& reference.key == "on_action_definition"
+				&& reference.value == "on_startup"
+		}),
+		"should capture on_startup as an on_action definition"
+	);
+}
+
+#[test]
+fn events_common_on_actions_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("events").join("common").join("on_actions"))
+		.expect("create events/common/on_actions");
+	fs::write(
+		mod_root
+			.join("events")
+			.join("common")
+			.join("on_actions")
+			.join("00_on_actions.txt"),
+		r#"
+on_war_declared = {
+	events = {
+		flavor_war.1
+	}
+}
+
+on_peace_signed = {
+	events = {
+		flavor_peace.1
+	}
+}
+"#,
+	)
+	.expect("write events/common/on_actions");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("events")
+			.join("common")
+			.join("on_actions")
+			.join("00_on_actions.txt"),
+	)
+	.expect("parsed events/common/on_actions");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("events/common/on_actions/00_on_actions.txt")
+				&& reference.key == "on_action_definition"
+				&& reference.value == "on_war_declared"
+		}),
+		"should capture on_war_declared via events/common/on_actions family"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("events/common/on_actions/00_on_actions.txt")
+				&& reference.key == "on_action_definition"
+				&& reference.value == "on_peace_signed"
+		}),
+		"should capture on_peace_signed via events/common/on_actions family"
+	);
+}
+
+#[test]
+fn events_common_new_diplomatic_actions_record_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(
+		mod_root
+			.join("events")
+			.join("common")
+			.join("new_diplomatic_actions"),
+	)
+	.expect("create events/common/new_diplomatic_actions");
+	fs::write(
+		mod_root
+			.join("events")
+			.join("common")
+			.join("new_diplomatic_actions")
+			.join("01_diplomatic_actions.txt"),
+		r#"
+static_actions = {
+	request_condottieri
+	knowledge_sharing
+}
+
+request_condottieri = {
+	category = 1
+	require_acceptance = yes
+	is_visible = {
+		has_dlc = "Mare Nostrum"
+	}
+	on_accept = {
+		add_trust = {
+			who = FROM
+			value = 10
+		}
+	}
+}
+
+knowledge_sharing = {
+	category = 1
+	require_acceptance = yes
+	is_visible = {
+		has_dlc = "Rule Britannia"
+	}
+}
+"#,
+	)
+	.expect("write new diplomatic actions");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("events")
+			.join("common")
+			.join("new_diplomatic_actions")
+			.join("01_diplomatic_actions.txt"),
+	)
+	.expect("parsed new diplomatic actions");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path
+				== Path::new("events/common/new_diplomatic_actions/01_diplomatic_actions.txt")
+				&& reference.key == "new_diplomatic_action_definition"
+				&& reference.value == "request_condottieri"
+		}),
+		"should capture request_condottieri as a new diplomatic action"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path
+				== Path::new("events/common/new_diplomatic_actions/01_diplomatic_actions.txt")
+				&& reference.key == "new_diplomatic_action_definition"
+				&& reference.value == "knowledge_sharing"
+		}),
+		"should capture knowledge_sharing as a new diplomatic action"
+	);
+	assert!(
+		!index
+			.resource_references
+			.iter()
+			.any(|reference| { reference.value == "static_actions" }),
+		"static_actions block should be excluded by NewDiplomaticActionsExtractor"
+	);
+}
+
+#[test]
+fn interface_records_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("interface")).expect("create interface");
+	fs::write(
+		mod_root.join("interface").join("core.gui"),
+		r#"
+guiTypes = {
+	windowType = {
+		name = "frontend_loading"
+		backGround = ""
+		position = { x = 0 y = 0 }
+		size = { x = 640 y = 480 }
+		dontRender = ""
+		moveable = 0
+	}
+}
+"#,
+	)
+	.expect("write interface");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root.join("interface").join("core.gui"),
+	)
+	.expect("parsed interface");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("interface/core.gui")
+				&& reference.key == "interface_definition"
+				&& reference.value == "guiTypes"
+		}),
+		"should capture guiTypes as an interface definition"
+	);
+}
+
+#[test]
+fn common_interface_records_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("common").join("interface")).expect("create common/interface");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("interface")
+			.join("country.gui"),
+		r#"
+guiTypes = {
+	windowType = {
+		name = "country_diplomacy"
+		backGround = ""
+		position = { x = 0 y = 0 }
+		size = { x = 510 y = 680 }
+		moveable = 1
+	}
+}
+"#,
+	)
+	.expect("write common/interface");
+
+	let parsed = parse_script_file(
+		"1016",
+		&mod_root,
+		&mod_root
+			.join("common")
+			.join("interface")
+			.join("country.gui"),
+	)
+	.expect("parsed common/interface");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("common/interface/country.gui")
+				&& reference.key == "interface_definition"
+				&& reference.value == "guiTypes"
+		}),
+		"should capture guiTypes as an interface definition via common/interface family"
+	);
+}
+
+#[test]
+fn gfx_records_resource_references() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("gfx")).expect("create gfx");
+	fs::write(
+		mod_root.join("gfx").join("FX.gfx"),
+		r#"
+spriteTypes = {
+	spriteType = {
+		name = "GFX_advisor_theologian"
+		texturefile = "gfx/interface/advisors/theologian.dds"
+	}
+	spriteType = {
+		name = "GFX_advisor_artist"
+		texturefile = "gfx/interface/advisors/artist.dds"
+	}
+}
+
+objectTypes = {
+	pdxmesh = {
+		name = "western_galleon_mesh"
+		file = "gfx/models/ships/western_galleon.mesh"
+	}
+}
+"#,
+	)
+	.expect("write gfx");
+
+	let parsed = parse_script_file("1016", &mod_root, &mod_root.join("gfx").join("FX.gfx"))
+		.expect("parsed gfx");
+	let index = build_semantic_index(&[parsed]);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("gfx/FX.gfx")
+				&& reference.key == "gfx_definition"
+				&& reference.value == "spriteTypes"
+		}),
+		"should capture spriteTypes as a gfx definition"
+	);
+	assert!(
+		index.resource_references.iter().any(|reference| {
+			reference.path == Path::new("gfx/FX.gfx")
+				&& reference.key == "gfx_definition"
+				&& reference.value == "objectTypes"
+		}),
+		"should capture objectTypes as a gfx definition"
 	);
 }
