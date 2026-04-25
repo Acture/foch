@@ -54,6 +54,10 @@ pub struct MergeIrStructuralFile {
 	pub family_id: String,
 	pub merge_key_source: MergeKeySource,
 	pub nodes: Vec<MergeIrNode>,
+	/// Top-level statements that don't match the merge-key pattern but should
+	/// be preserved in output (e.g. `namespace = xxx` in event files).
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub passthrough_statements: Vec<AstStatement>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -249,6 +253,7 @@ fn build_structural_file(
 	let mut node_vec: Vec<NodeAccumulator> = Vec::new();
 	let mut node_index: HashMap<String, usize> = HashMap::new();
 	let mut merge_warnings: Vec<String> = Vec::new();
+	let mut passthrough_acc: Vec<AstStatement> = Vec::new();
 
 	for contributor in contributors {
 		let parsed = parse_script_file(
@@ -274,19 +279,38 @@ fn build_structural_file(
 			});
 		}
 
-		let fragments = extract_fragments(&parsed, merge_key_source)?;
+		let (fragments, passthrough) = extract_fragments(&parsed, merge_key_source)?;
+
+		// Accumulate passthrough statements (last-writer wins per key)
+		for stmt in passthrough {
+			if let AstStatement::Assignment { key, .. } = &stmt {
+				if let Some(pos) = passthrough_acc
+					.iter()
+					.position(|s| matches!(s, AstStatement::Assignment { key: k, .. } if k == key))
+				{
+					passthrough_acc[pos] = stmt;
+				} else {
+					passthrough_acc.push(stmt);
+				}
+			}
+		}
+
 		if fragments.is_empty() {
-			return Err(MergeError::Parse {
-				path: Some(target_path.to_string()),
-				message: format!(
-					"merge IR found no mergeable blocks in {} for {}",
-					target_path, contributor.mod_id
-				),
-			});
+			if passthrough_acc.is_empty() {
+				return Err(MergeError::Parse {
+					path: Some(target_path.to_string()),
+					message: format!(
+						"merge IR found no mergeable blocks in {} for {}",
+						target_path, contributor.mod_id
+					),
+				});
+			}
+			continue;
 		}
 
 		let contributor_meta = to_merge_contributor(contributor);
 		for fragment in fragments {
+			let is_new = !node_index.contains_key(&fragment.merge_key);
 			let acc_idx = if let Some(&idx) = node_index.get(&fragment.merge_key) {
 				idx
 			} else {
@@ -317,14 +341,18 @@ fn build_structural_file(
 				statement: fragment.statement.clone(),
 			});
 
-			// Deep merge: fold overlay on top of current merged result
-			entry.merged_statement = deep_merge(
-				&entry.merged_statement,
-				&fragment.statement,
-				&descriptor.merge_policies,
-				&contributor_meta.mod_id,
-				&mut merge_warnings,
-			);
+			// Deep merge: fold overlay on top of current merged result.
+			// Skip for the first fragment — merging a statement with itself
+			// would incorrectly apply Sum/Avg policies (e.g. doubling values).
+			if !is_new {
+				entry.merged_statement = deep_merge(
+					&entry.merged_statement,
+					&fragment.statement,
+					&descriptor.merge_policies,
+					&contributor_meta.mod_id,
+					&mut merge_warnings,
+				);
+			}
 
 			// Track the highest-precedence contributor as "winner" for metadata
 			if contributor_meta.precedence > entry.winner.precedence
@@ -405,6 +433,11 @@ fn build_structural_file(
 				let renamed_key = format!("{}_{}", accumulator.merge_key, mod_suffix);
 				let last_fragment = fragments.last().unwrap();
 				let contributor = last_fragment.contributor.clone();
+				let renamed_statement = rename_merged_statement(
+					&last_fragment.statement,
+					merge_key_source,
+					&renamed_key,
+				);
 				renamed_vec.push(NodeAccumulator {
 					target_path: accumulator.target_path.clone(),
 					merge_key: renamed_key,
@@ -413,7 +446,7 @@ fn build_structural_file(
 					container_key: last_fragment.container_key.clone(),
 					winner: contributor.clone(),
 					source_mod_order: vec![contributor],
-					merged_statement: last_fragment.statement.clone(),
+					merged_statement: renamed_statement,
 					source_fragments: fragments,
 					original_merge_key: Some(accumulator.merge_key.clone()),
 				});
@@ -457,6 +490,7 @@ fn build_structural_file(
 			family_id: descriptor.id.to_string(),
 			merge_key_source,
 			nodes,
+			passthrough_statements: passthrough_acc,
 		},
 		merge_warnings,
 	))
@@ -540,7 +574,12 @@ fn deep_merge(
 	// When list policy is Replace, drop all non-keyed base items first so
 	// overlay's list entries become the sole set.
 	if policies.list == ListMergePolicy::Replace {
-		merged_items.retain(|stmt| matches!(stmt, AstStatement::Assignment { .. }));
+		merged_items.retain(|stmt| {
+			matches!(
+				stmt,
+				AstStatement::Assignment { .. } | AstStatement::Comment { .. }
+			)
+		});
 		// Rebuild index after removal
 		base_by_key.clear();
 		for (i, stmt) in merged_items.iter().enumerate() {
@@ -668,8 +707,15 @@ fn deep_merge(
 					merged_items.push(stmt.clone());
 				}
 			}
+			AstStatement::Comment { .. } => {
+				// Always append unique overlay comments regardless of list policy
+				let is_dup = merged_items.iter().any(|existing| existing == stmt);
+				if !is_dup {
+					merged_items.push(stmt.clone());
+				}
+			}
 			_ => {
-				// Items / Comments: behaviour depends on list policy
+				// Items: behaviour depends on list policy
 				let is_dup = merged_items.iter().any(|existing| existing == stmt);
 				match policies.list {
 					ListMergePolicy::Union | ListMergePolicy::OrderedUnion => {
@@ -829,20 +875,21 @@ fn format_merged_number(v: f64) -> String {
 fn extract_fragments(
 	parsed: &ParsedScriptFile,
 	merge_key_source: MergeKeySource,
-) -> Result<Vec<ExtractedFragment>, MergeError> {
+) -> Result<(Vec<ExtractedFragment>, Vec<AstStatement>), MergeError> {
 	match merge_key_source {
-		MergeKeySource::AssignmentKey => Ok(extract_assignment_fragments(parsed)),
+		MergeKeySource::AssignmentKey => Ok((extract_assignment_fragments(parsed), Vec::new())),
 		MergeKeySource::FieldValue(field) => extract_inner_field_fragments(parsed, field),
-		MergeKeySource::ContainerChildKey => Ok(extract_decision_fragments(parsed)),
-		MergeKeySource::LeafPath => extract_defines_fragments(parsed),
+		MergeKeySource::ContainerChildKey => Ok((extract_decision_fragments(parsed), Vec::new())),
+		MergeKeySource::LeafPath => Ok((extract_defines_fragments(parsed)?, Vec::new())),
 	}
 }
 
 fn extract_inner_field_fragments(
 	parsed: &ParsedScriptFile,
 	field: &str,
-) -> Result<Vec<ExtractedFragment>, MergeError> {
+) -> Result<(Vec<ExtractedFragment>, Vec<AstStatement>), MergeError> {
 	let mut fragments = Vec::new();
+	let mut passthrough = Vec::new();
 
 	for statement in &parsed.ast.statements {
 		let AstStatement::Assignment {
@@ -851,32 +898,37 @@ fn extract_inner_field_fragments(
 		else {
 			continue;
 		};
-		let AstValue::Block { items, .. } = value else {
-			continue;
-		};
-		let Some(merge_key) = scalar_assignment_value(items, field) else {
-			return Err(MergeError::Parse {
-				path: Some(parsed.relative_path.display().to_string()),
-				message: format!(
-					"merge IR requires {} keys in {} but found a {} block without {}",
-					field,
-					parsed.relative_path.display(),
-					key,
-					field
-				),
-			});
-		};
-		fragments.push(ExtractedFragment {
-			merge_key,
-			path_segments: Vec::new(),
-			statement_key: key.clone(),
-			container_key: None,
-			statement: statement.clone(),
-			statement_span: span.clone(),
-		});
+		match value {
+			AstValue::Block { items, .. } => {
+				let Some(merge_key) = scalar_assignment_value(items, field) else {
+					return Err(MergeError::Parse {
+						path: Some(parsed.relative_path.display().to_string()),
+						message: format!(
+							"merge IR requires {} keys in {} but found a {} block without {}",
+							field,
+							parsed.relative_path.display(),
+							key,
+							field
+						),
+					});
+				};
+				fragments.push(ExtractedFragment {
+					merge_key,
+					path_segments: Vec::new(),
+					statement_key: key.clone(),
+					container_key: None,
+					statement: statement.clone(),
+					statement_span: span.clone(),
+				});
+			}
+			AstValue::Scalar { .. } => {
+				// Preserve non-block top-level assignments (e.g. namespace = xxx)
+				passthrough.push(statement.clone());
+			}
+		}
 	}
 
-	Ok(fragments)
+	Ok((fragments, passthrough))
 }
 
 fn extract_decision_fragments(parsed: &ParsedScriptFile) -> Vec<ExtractedFragment> {
@@ -971,6 +1023,82 @@ fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option
 		}
 	}
 	None
+}
+
+/// Rename a statement to reflect a conflict-renamed merge key.
+/// For `AssignmentKey` / `ContainerChildKey`, renames the top-level key.
+/// For `FieldValue(field)`, updates the inner field value inside the block.
+fn rename_merged_statement(
+	statement: &AstStatement,
+	merge_key_source: MergeKeySource,
+	new_key: &str,
+) -> AstStatement {
+	match merge_key_source {
+		MergeKeySource::AssignmentKey | MergeKeySource::ContainerChildKey => {
+			rename_statement_key(statement, new_key)
+		}
+		MergeKeySource::FieldValue(field) => rename_inner_field(statement, field, new_key),
+		MergeKeySource::LeafPath => statement.clone(),
+	}
+}
+
+fn rename_statement_key(statement: &AstStatement, new_key: &str) -> AstStatement {
+	match statement {
+		AstStatement::Assignment {
+			key_span,
+			value,
+			span,
+			..
+		} => AstStatement::Assignment {
+			key: new_key.to_string(),
+			key_span: key_span.clone(),
+			value: value.clone(),
+			span: span.clone(),
+		},
+		other => other.clone(),
+	}
+}
+
+fn rename_inner_field(statement: &AstStatement, field: &str, new_value: &str) -> AstStatement {
+	match statement {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value: AstValue::Block { items, span },
+			span: stmt_span,
+		} => {
+			let new_items: Vec<AstStatement> = items
+				.iter()
+				.map(|item| match item {
+					AstStatement::Assignment {
+						key: k,
+						key_span: ks,
+						value: AstValue::Scalar { value: _, span: vs },
+						span: s,
+					} if k == field => AstStatement::Assignment {
+						key: k.clone(),
+						key_span: ks.clone(),
+						value: AstValue::Scalar {
+							value: ScalarValue::Identifier(new_value.to_string()),
+							span: vs.clone(),
+						},
+						span: s.clone(),
+					},
+					other => other.clone(),
+				})
+				.collect();
+			AstStatement::Assignment {
+				key: key.clone(),
+				key_span: key_span.clone(),
+				value: AstValue::Block {
+					items: new_items,
+					span: span.clone(),
+				},
+				span: stmt_span.clone(),
+			}
+		}
+		other => other.clone(),
+	}
 }
 
 fn push_unique_contributor(
