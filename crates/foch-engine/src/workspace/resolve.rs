@@ -11,6 +11,7 @@ use foch_core::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
 use foch_core::model::ModCandidate;
 use foch_core::utils::steam::steam_workshop_mod_path;
 use std::collections::{BTreeMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -301,7 +302,7 @@ pub(crate) fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
 		}
 
 		let path = entry.path();
-		if path.file_name().and_then(|name| name.to_str()) == Some("descriptor.mod") {
+		if path.file_name() == Some(OsStr::new("descriptor.mod")) {
 			continue;
 		}
 

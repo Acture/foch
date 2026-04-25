@@ -116,9 +116,10 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 				continue;
 			}
 			let path = entry.path();
-			let Some(ext) = path.extension().and_then(|x| x.to_str()) else {
+			let Some(ext) = path.extension() else {
 				continue;
 			};
+			let ext = ext.to_string_lossy();
 			if matches!(ext.to_ascii_lowercase().as_str(), "txt" | "lua") {
 				files.push(path.to_path_buf());
 			}

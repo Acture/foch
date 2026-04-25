@@ -87,14 +87,14 @@ fn revalidate_generated_output(
 		})?;
 	let out_dir_name = canonical_out_dir
 		.file_name()
-		.and_then(|value| value.to_str())
 		.ok_or_else(|| MergeError::Validation {
 			path: Some(canonical_out_dir.display().to_string()),
 			message: format!(
 				"generated output {} has no terminal directory name",
 				canonical_out_dir.display()
 			),
-		})?;
+		})?
+		.to_string_lossy();
 	let original_playlist =
 		load_playlist(&request.playset_path).map_err(|err| MergeError::Validation {
 			path: Some(request.playset_path.display().to_string()),

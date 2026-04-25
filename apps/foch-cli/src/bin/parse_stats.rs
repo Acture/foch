@@ -57,9 +57,10 @@ fn main() {
 			continue;
 		}
 		let path = entry.path();
-		let Some(ext) = path.extension().and_then(|x| x.to_str()) else {
+		let Some(ext) = path.extension() else {
 			continue;
 		};
+		let ext = ext.to_string_lossy();
 		let rel = path
 			.strip_prefix(&root)
 			.unwrap_or(path)
