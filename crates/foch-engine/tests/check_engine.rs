@@ -564,7 +564,7 @@ fn merge_plan_marks_invalid_structural_overlap_as_manual_conflict() {
 }
 
 #[test]
-fn merge_plan_marks_ui_overlap_as_manual_conflict() {
+fn merge_plan_routes_ui_overlap_through_structural_merge() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 	let mod_a = temp.path().join("9701");
@@ -584,10 +584,9 @@ fn merge_plan_marks_ui_overlap_as_manual_conflict() {
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "interface/main.gui");
-	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
-	assert!(entry.winner.is_none());
-	assert!(!entry.generated);
-	assert!(!entry.notes.is_empty());
+	// interface/ descriptors now have merge_key_source → structural merge
+	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
+	assert!(entry.winner.is_some());
 }
 
 #[test]
@@ -606,11 +605,12 @@ fn merge_plan_marks_binary_overlap_as_manual_conflict() {
 	);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
-	write_script_file(&mod_a, "gfx/flags/test.dds", "binary-a");
-	write_script_file(&mod_b, "gfx/flags/test.dds", "binary-b");
+	// Non-descriptor path + non-text extension → ManualConflict
+	write_script_file(&mod_a, "tools/overlap.bin", "binary-a");
+	write_script_file(&mod_b, "tools/overlap.bin", "binary-b");
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
-	let entry = plan_entry_for(&result, "gfx/flags/test.dds");
+	let entry = plan_entry_for(&result, "tools/overlap.bin");
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
 	assert!(entry.winner.is_none());
 	assert!(!entry.generated);

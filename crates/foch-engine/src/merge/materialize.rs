@@ -9,7 +9,7 @@ use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_works
 use foch_core::model::{
 	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportStatus,
+	MergeReportRename, MergeReportStatus,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,6 +63,22 @@ pub(crate) fn materialize_merge_internal(
 		report.status = MergeReportStatus::Fatal;
 		write_metadata_only(out_dir, &plan, &report)?;
 		return Ok(report);
+	}
+
+	// Collect conflict renames for the report
+	for file in &ir.structural_files {
+		for node in &file.nodes {
+			if node.conflict_rename
+				&& let Some(original) = &node.original_merge_key
+			{
+				report.renames.push(MergeReportRename {
+					family_id: file.family_id.clone(),
+					original_key: original.clone(),
+					renamed_key: node.merge_key.clone(),
+					mod_id: node.winner.mod_id.clone(),
+				});
+			}
+		}
 	}
 
 	if report.manual_conflict_count > 0 && !options.force {
@@ -532,17 +548,17 @@ mod tests {
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("events/shared.txt")).expect("read emitted events"),
-			"country_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_a\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\n"
+			"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1_3001\n\ttitle = title_a\n}\ncountry_event = {\n\tid = test.1_3002\n\ttitle = title_override\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("decisions/shared.txt"))
 				.expect("read emitted decisions"),
-			"country_decisions = {\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = a\n\t\t}\n\t}\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
+			"country_decisions = {\n\ttest_decision_3001 = {\n\t\teffect = {\n\t\t\tlog = a\n\t\t}\n\t}\n\ttest_decision_3002 = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/scripted_effects/effects.txt"))
 				.expect("read emitted effects"),
-			"shared_effect = {\n\tlog = a\n}\nshared_effect = {\n\tlog = b\n}\nunique_effect = {\n\tlog = only_a\n}\n"
+			"shared_effect_3001 = {\n\tlog = a\n}\nshared_effect_3002 = {\n\tlog = b\n}\nunique_effect = {\n\tlog = only_a\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/defines/test.txt"))
@@ -574,12 +590,9 @@ mod tests {
 		);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
-		write_file(&mod_a, "interface/shared.gui", "windowType = {}\n");
-		write_file(
-			&mod_b,
-			"interface/shared.gui",
-			"windowType = { name = override }\n",
-		);
+		// Non-descriptor binary overlap → ManualConflict
+		write_file(&mod_a, "tools/overlap.bin", [0u8, 1, 2, 3]);
+		write_file(&mod_b, "tools/overlap.bin", [4u8, 5, 6, 7]);
 
 		let report = materialize_merge_internal(
 			request_for(&playlist_path),
@@ -591,12 +604,12 @@ mod tests {
 		assert_eq!(report.manual_conflict_count, 1);
 		assert_eq!(report.generated_file_count, 0);
 		assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
-		assert!(!out_dir.join("interface/shared.gui").exists());
+		assert!(!out_dir.join("tools/overlap.bin").exists());
 		assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 		assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
 		let plan = read_plan(&out_dir);
-		let entry = plan_entry_for(&plan, "interface/shared.gui");
+		let entry = plan_entry_for(&plan, "tools/overlap.bin");
 		assert!(entry.winner.is_none());
 		assert!(!entry.generated);
 	}
@@ -618,18 +631,11 @@ mod tests {
 		);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
-		write_file(
-			&mod_a,
-			"interface/shared.gui",
-			"windowType = { name = a }\n",
-		);
-		write_file(
-			&mod_b,
-			"interface/shared.gui",
-			"windowType = { name = b }\n",
-		);
-		write_file(&mod_a, "gfx/flag.dds", [0u8, 1, 2, 3]);
-		write_file(&mod_b, "gfx/flag.dds", [4u8, 5, 6, 7]);
+		// Non-descriptor binary overlaps → ManualConflict
+		write_file(&mod_a, "tools/overlap.bin", [0u8, 1, 2, 3]);
+		write_file(&mod_b, "tools/overlap.bin", [4u8, 5, 6, 7]);
+		write_file(&mod_a, "tools/icon.png", [8u8, 9, 10]);
+		write_file(&mod_b, "tools/icon.png", [11u8, 12, 13]);
 		write_file(&mod_b, "common/safe.txt", "safe\n");
 
 		let report = materialize_merge_internal(
@@ -640,23 +646,20 @@ mod tests {
 		.expect("materialize");
 		assert_eq!(report.status, MergeReportStatus::Blocked);
 		assert_eq!(report.manual_conflict_count, 2);
-		assert_eq!(report.generated_file_count, 1);
+		assert_eq!(report.generated_file_count, 0);
 		assert_eq!(report.copied_file_count, 1);
 		assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 			"safe\n"
 		);
-		let placeholder =
-			fs::read_to_string(out_dir.join("interface/shared.gui")).expect("read placeholder");
-		assert!(placeholder.contains("FOCH_MERGE_CONFLICT"));
-		assert!(placeholder.contains("5001"));
-		assert!(placeholder.contains("5002"));
-		assert!(!out_dir.join("gfx/flag.dds").exists());
+		// Binary non-text conflicts not materialized (no placeholder for .bin/.png)
+		assert!(!out_dir.join("tools/overlap.bin").exists());
+		assert!(!out_dir.join("tools/icon.png").exists());
 
 		let plan = read_plan(&out_dir);
-		assert!(plan_entry_for(&plan, "interface/shared.gui").generated);
-		assert!(!plan_entry_for(&plan, "gfx/flag.dds").generated);
+		assert!(!plan_entry_for(&plan, "tools/overlap.bin").generated);
+		assert!(!plan_entry_for(&plan, "tools/icon.png").generated);
 		assert!(!plan_entry_for(&plan, "common/safe.txt").generated);
 	}
 }

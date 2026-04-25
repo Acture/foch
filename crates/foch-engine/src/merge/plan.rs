@@ -76,9 +76,6 @@ fn classify_entry(
 
 	let strategy = if contributors.len() == 1 {
 		MergePlanStrategy::CopyThrough
-	} else if is_ui_conflict_path(path) {
-		notes.push("ui path overlap is not rewritten in v1".to_string());
-		MergePlanStrategy::ManualConflict
 	} else if is_structural_merge_path(path, profile) {
 		match validate_structural_merge_inputs(path, contributors) {
 			Ok(()) => MergePlanStrategy::StructuralMerge,
@@ -209,13 +206,6 @@ fn is_structural_merge_path(path: &str, profile: &dyn GameProfile) -> bool {
 		.classify_content_family(Path::new(path))
 		.and_then(|d| d.merge_key_source)
 		.is_some()
-}
-
-fn is_ui_conflict_path(path: &str) -> bool {
-	let normalized = path.to_ascii_lowercase();
-	normalized.starts_with("interface/")
-		|| normalized.starts_with("common/interface/")
-		|| normalized.starts_with("gfx/")
 }
 
 fn is_text_like_overlay_path(path: &str) -> bool {

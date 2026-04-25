@@ -943,18 +943,19 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	);
 	write_descriptor(&tmp.path().join("7201"), "mod-a");
 	write_descriptor(&tmp.path().join("7202"), "mod-b");
-	fs::create_dir_all(tmp.path().join("7201").join("interface")).expect("create interface dir");
-	fs::create_dir_all(tmp.path().join("7202").join("interface")).expect("create interface dir");
+	// Non-descriptor path + non-text extension → ManualConflict
+	fs::create_dir_all(tmp.path().join("7201").join("tools")).expect("create dir");
+	fs::create_dir_all(tmp.path().join("7202").join("tools")).expect("create dir");
 	fs::write(
-		tmp.path().join("7201").join("interface").join("main.gui"),
-		"windowType = { name = a }\n",
+		tmp.path().join("7201").join("tools").join("overlap.bin"),
+		[0u8, 1, 2, 3],
 	)
-	.expect("write gui");
+	.expect("write bin");
 	fs::write(
-		tmp.path().join("7202").join("interface").join("main.gui"),
-		"windowType = { name = b }\n",
+		tmp.path().join("7202").join("tools").join("overlap.bin"),
+		[4u8, 5, 6, 7],
 	)
-	.expect("write gui");
+	.expect("write bin");
 
 	let playlist_str = playlist_path.display().to_string();
 	let (code, stdout, _stderr) = run_foch(
@@ -1107,18 +1108,19 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 	);
 	write_descriptor(&tmp.path().join("7411"), "mod-a");
 	write_descriptor(&tmp.path().join("7412"), "mod-b");
-	fs::create_dir_all(tmp.path().join("7411").join("interface")).expect("create interface dir");
-	fs::create_dir_all(tmp.path().join("7412").join("interface")).expect("create interface dir");
+	// Non-descriptor path + non-text extension → ManualConflict
+	fs::create_dir_all(tmp.path().join("7411").join("tools")).expect("create dir");
+	fs::create_dir_all(tmp.path().join("7412").join("tools")).expect("create dir");
 	fs::write(
-		tmp.path().join("7411").join("interface").join("main.gui"),
-		"windowType = { name = a }\n",
+		tmp.path().join("7411").join("tools").join("overlap.bin"),
+		[0u8, 1, 2, 3],
 	)
-	.expect("write gui");
+	.expect("write bin");
 	fs::write(
-		tmp.path().join("7412").join("interface").join("main.gui"),
-		"windowType = { name = b }\n",
+		tmp.path().join("7412").join("tools").join("overlap.bin"),
+		[4u8, 5, 6, 7],
 	)
-	.expect("write gui");
+	.expect("write bin");
 
 	let playlist_str = playlist_path.display().to_string();
 	let output_str = output_path.display().to_string();
@@ -1142,7 +1144,7 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == "interface/main.gui")
+		.find(|item| item["path"] == "tools/overlap.bin")
 		.expect("matching entry");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
@@ -1366,18 +1368,11 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
-	fs::create_dir_all(mod_a.join("interface")).expect("create interface dir");
-	fs::create_dir_all(mod_b.join("interface")).expect("create interface dir");
-	fs::write(
-		mod_a.join("interface").join("shared.gui"),
-		"windowType = { name = a }\n",
-	)
-	.expect("write gui");
-	fs::write(
-		mod_b.join("interface").join("shared.gui"),
-		"windowType = { name = b }\n",
-	)
-	.expect("write gui");
+	// Non-descriptor path + non-text extension → ManualConflict
+	fs::create_dir_all(mod_a.join("tools")).expect("create dir");
+	fs::create_dir_all(mod_b.join("tools")).expect("create dir");
+	fs::write(mod_a.join("tools").join("overlap.bin"), [0u8, 1, 2, 3]).expect("write bin");
+	fs::write(mod_b.join("tools").join("overlap.bin"), [4u8, 5, 6, 7]).expect("write bin");
 
 	let playlist_str = playlist_path.display().to_string();
 	let out_str = out_dir.display().to_string();
@@ -1394,7 +1389,7 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	assert_eq!(code, 2);
 	assert!(stdout.contains("status: BLOCKED"));
 	assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
-	assert!(!out_dir.join("interface/shared.gui").exists());
+	assert!(!out_dir.join("tools/overlap.bin").exists());
 	assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
@@ -1420,23 +1415,14 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 	);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
-	fs::create_dir_all(mod_a.join("interface")).expect("create interface dir");
-	fs::create_dir_all(mod_b.join("interface")).expect("create interface dir");
-	fs::create_dir_all(mod_a.join("gfx")).expect("create gfx dir");
-	fs::create_dir_all(mod_b.join("gfx")).expect("create gfx dir");
+	// Non-descriptor binary overlaps → ManualConflict
+	fs::create_dir_all(mod_a.join("assets")).expect("create dir");
+	fs::create_dir_all(mod_b.join("assets")).expect("create dir");
 	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
-	fs::write(
-		mod_a.join("interface").join("shared.gui"),
-		"windowType = { name = a }\n",
-	)
-	.expect("write gui");
-	fs::write(
-		mod_b.join("interface").join("shared.gui"),
-		"windowType = { name = b }\n",
-	)
-	.expect("write gui");
-	fs::write(mod_a.join("gfx").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
-	fs::write(mod_b.join("gfx").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
+	fs::write(mod_a.join("assets").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
+	fs::write(mod_b.join("assets").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
+	fs::write(mod_a.join("assets").join("icon.png"), [8u8, 9, 10]).expect("write png");
+	fs::write(mod_b.join("assets").join("icon.png"), [11u8, 12, 13]).expect("write png");
 	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
 
 	let playlist_str = playlist_path.display().to_string();
@@ -1459,15 +1445,14 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 		fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 		"safe\n"
 	);
-	let placeholder =
-		fs::read_to_string(out_dir.join("interface/shared.gui")).expect("read placeholder");
-	assert!(placeholder.contains("FOCH_MERGE_CONFLICT"));
-	assert!(!out_dir.join("gfx/flag.dds").exists());
+	// Binary non-text conflicts are not materialized (no placeholder for .dds/.png)
+	assert!(!out_dir.join("assets/flag.dds").exists());
+	assert!(!out_dir.join("assets/icon.png").exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "fatal");
 	assert_eq!(report["manual_conflict_count"], 2);
-	assert_eq!(report["generated_file_count"], 1);
+	assert_eq!(report["generated_file_count"], 0);
 	assert_eq!(report["copied_file_count"], 1);
 }
 
