@@ -2,7 +2,7 @@ use super::param_contracts::evaluate_param_contract;
 use super::semantic_index::{
 	build_inferred_callable_scope_map, collect_inferred_callable_masks,
 	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
-	resolve_scripted_effect_reference_targets,
+	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
 };
 use super::visibility::{should_flag_duplicates, should_flag_unresolved};
 use foch_core::model::{
@@ -116,6 +116,11 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 			}
 			SymbolKind::ScriptedEffect => {
 				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
+					continue;
+				}
+			}
+			SymbolKind::ScriptedTrigger => {
+				if !resolve_scripted_trigger_reference_targets(index, reference).is_empty() {
 					continue;
 				}
 			}

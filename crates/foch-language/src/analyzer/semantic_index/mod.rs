@@ -8,7 +8,7 @@ use super::content_family::{
 };
 use super::eu4_builtin::{
 	is_builtin_effect, is_builtin_iterator, is_builtin_scope_changer, is_builtin_special_block,
-	is_builtin_trigger, is_contextual_keyword, is_reserved_keyword,
+	is_builtin_trigger, is_contextual_keyword, is_game_only_candidate, is_reserved_keyword,
 };
 use super::eu4_profile::eu4_profile;
 use super::localisation::collect_localisation_definitions_from_root;
@@ -995,6 +995,7 @@ fn is_scripted_effect_call_candidate(
 		|| is_builtin_scope_changer(key)
 		|| is_builtin_iterator(key)
 		|| is_builtin_special_block(key)
+		|| is_game_only_candidate(key)
 	{
 		return false;
 	}
@@ -1051,6 +1052,7 @@ fn is_scripted_trigger_call_candidate(
 		|| is_builtin_scope_changer(key)
 		|| is_builtin_iterator(key)
 		|| is_builtin_special_block(key)
+		|| is_game_only_candidate(key)
 	{
 		return false;
 	}

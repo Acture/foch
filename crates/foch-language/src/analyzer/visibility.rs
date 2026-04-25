@@ -21,8 +21,8 @@ pub fn eu4_global_visibility_rules() -> &'static [GlobalVisibilityRule] {
 		},
 		GlobalVisibilityRule {
 			kind: SymbolKind::ScriptedTrigger,
-			flag_duplicates: false,
-			flag_unresolved: false,
+			flag_duplicates: true,
+			flag_unresolved: true,
 		},
 		GlobalVisibilityRule {
 			kind: SymbolKind::Event,
@@ -67,9 +67,10 @@ mod tests {
 	use super::*;
 
 	#[test]
-	fn events_and_scripted_effects_flag_duplicates() {
+	fn events_and_scripted_effects_and_triggers_flag_duplicates() {
 		assert!(should_flag_duplicates(SymbolKind::Event));
 		assert!(should_flag_duplicates(SymbolKind::ScriptedEffect));
+		assert!(should_flag_duplicates(SymbolKind::ScriptedTrigger));
 	}
 
 	#[test]
@@ -78,8 +79,9 @@ mod tests {
 	}
 
 	#[test]
-	fn events_and_scripted_effects_flag_unresolved() {
+	fn events_and_scripted_effects_and_triggers_flag_unresolved() {
 		assert!(should_flag_unresolved(SymbolKind::Event));
 		assert!(should_flag_unresolved(SymbolKind::ScriptedEffect));
+		assert!(should_flag_unresolved(SymbolKind::ScriptedTrigger));
 	}
 }

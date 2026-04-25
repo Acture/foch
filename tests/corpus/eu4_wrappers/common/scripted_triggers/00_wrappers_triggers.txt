@@ -1,3 +1,11 @@
 country_gate = {
 	always = yes
 }
+
+mission_weight_helper = {
+	always = yes
+}
+
+common_weight_helper = {
+	always = yes
+}

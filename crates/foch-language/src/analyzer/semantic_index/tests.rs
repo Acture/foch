@@ -3542,6 +3542,8 @@ fn mission_event_and_common_wrappers_do_not_become_scripted_effect_calls() {
 	fs::create_dir_all(mod_root.join("events")).expect("create events");
 	fs::create_dir_all(mod_root.join("common").join("government_reforms"))
 		.expect("create government reforms");
+	fs::create_dir_all(mod_root.join("common").join("scripted_triggers"))
+		.expect("create scripted triggers");
 	fs::write(
 		mod_root.join("missions").join("missions.txt"),
 		r#"
@@ -3580,6 +3582,18 @@ ai_will_do = {
 "#,
 	)
 	.expect("write government reforms");
+	fs::write(
+		mod_root
+			.join("common")
+			.join("scripted_triggers")
+			.join("helpers.txt"),
+		r#"
+mission_weight_helper = { always = yes }
+event_weight_helper = { always = yes }
+common_weight_helper = { always = yes }
+"#,
+	)
+	.expect("write scripted triggers");
 
 	let parsed = [
 		parse_script_file(
@@ -3603,6 +3617,15 @@ ai_will_do = {
 				.join("reforms.txt"),
 		)
 		.expect("parsed government reforms"),
+		parse_script_file(
+			"1012",
+			&mod_root,
+			&mod_root
+				.join("common")
+				.join("scripted_triggers")
+				.join("helpers.txt"),
+		)
+		.expect("parsed scripted triggers"),
 	];
 	let index = build_semantic_index(&parsed);
 	for name in [

@@ -23,6 +23,8 @@ struct BuiltinCatalog {
 	builtin_iterators: Vec<BuiltinSymbol>,
 	#[serde(default)]
 	builtin_special_blocks: Vec<BuiltinSymbol>,
+	#[serde(default)]
+	game_only_candidates: Vec<BuiltinSymbol>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +42,7 @@ struct BuiltinLookup {
 	scope_changers: HashSet<String>,
 	iterators: HashSet<String>,
 	special_blocks: HashSet<String>,
+	game_only: HashSet<String>,
 	reserved_list: Vec<String>,
 	contextual_list: Vec<String>,
 	aliases_list: Vec<String>,
@@ -110,6 +113,12 @@ fn load_lookup() -> &'static BuiltinLookup {
 		special_blocks_list.sort();
 		special_blocks_list.dedup();
 
+		let game_only: HashSet<String> = catalog
+			.game_only_candidates
+			.into_iter()
+			.map(|item| item.name)
+			.collect();
+
 		BuiltinLookup {
 			reserved: reserved_list.iter().cloned().collect(),
 			contextual: contextual_list.iter().cloned().collect(),
@@ -119,6 +128,7 @@ fn load_lookup() -> &'static BuiltinLookup {
 			scope_changers: scope_changers_list.iter().cloned().collect(),
 			iterators: iterators_list.iter().cloned().collect(),
 			special_blocks: special_blocks_list.iter().cloned().collect(),
+			game_only,
 			reserved_list,
 			contextual_list,
 			aliases_list,
@@ -161,6 +171,10 @@ pub fn is_builtin_iterator(key: &str) -> bool {
 
 pub fn is_builtin_special_block(key: &str) -> bool {
 	load_lookup().special_blocks.contains(key)
+}
+
+pub fn is_game_only_candidate(key: &str) -> bool {
+	load_lookup().game_only.contains(key)
 }
 
 pub fn reserved_keywords() -> &'static [String] {
