@@ -15,7 +15,7 @@ struct DefinesEmitNode {
 pub(crate) fn emit_structural_file(file: &MergeIrStructuralFile) -> Result<String, MergeError> {
 	match file.merge_key_source {
 		MergeKeySource::AssignmentKey | MergeKeySource::FieldValue(_) => {
-			emit_top_level_nodes(&file.nodes)
+			emit_top_level_nodes(&file.passthrough_statements, &file.nodes)
 		}
 		MergeKeySource::ContainerChildKey => emit_decision_nodes(&file.nodes),
 		MergeKeySource::LeafPath => emit_defines_nodes(&file.nodes),
@@ -32,8 +32,14 @@ pub(crate) fn emit_clausewitz_statements(
 	Ok(out)
 }
 
-fn emit_top_level_nodes(nodes: &[MergeIrNode]) -> Result<String, MergeError> {
+fn emit_top_level_nodes(
+	passthrough: &[AstStatement],
+	nodes: &[MergeIrNode],
+) -> Result<String, MergeError> {
 	let mut out = String::new();
+	for stmt in passthrough {
+		emit_statement(stmt, 0, &mut out)?;
+	}
 	for node in nodes {
 		emit_statement(&node.merged_statement, 0, &mut out)?;
 	}
@@ -194,7 +200,13 @@ fn emit_statement(
 			out.push('\n');
 			Ok(())
 		}
-		AstStatement::Comment { .. } => Ok(()),
+		AstStatement::Comment { text, .. } => {
+			indent_into(out, indent);
+			out.push_str("# ");
+			out.push_str(text);
+			out.push('\n');
+			Ok(())
+		}
 	}
 }
 
@@ -207,9 +219,6 @@ fn emit_value(value: &AstValue, indent: usize, out: &mut String) -> Result<(), M
 		AstValue::Block { items, .. } => {
 			out.push_str("{\n");
 			for item in items {
-				if matches!(item, AstStatement::Comment { .. }) {
-					continue;
-				}
 				emit_statement(item, indent + 1, out)?;
 			}
 			indent_into(out, indent);
