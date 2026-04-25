@@ -1,9 +1,14 @@
-pub(crate) mod emit;
+pub mod emit;
 pub mod error;
 pub(crate) mod execute;
 pub mod ir;
 pub(crate) mod materialize;
+pub mod namespace;
 pub(crate) mod normalize;
+pub mod patch;
+pub mod patch_apply;
+pub(crate) mod patch_deps;
+pub mod patch_merge;
 pub mod plan;
 
 pub use error::MergeError;
