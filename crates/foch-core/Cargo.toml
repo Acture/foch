@@ -11,6 +11,7 @@ repository.workspace = true
 home.workspace = true
 jomini.workspace = true
 regex.workspace = true
+rkyv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

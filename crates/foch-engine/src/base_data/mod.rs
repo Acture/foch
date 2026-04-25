@@ -28,6 +28,7 @@ use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -38,7 +39,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 5;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 7;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -748,14 +749,14 @@ impl BaseAnalysisSnapshot {
 	}
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseDocumentRecord {
 	pub path: String,
 	pub family: DocumentFamily,
 	pub parse_ok: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
@@ -765,7 +766,7 @@ pub struct BaseScopeNode {
 	pub span: SourceSpan,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseSymbolDefinition {
 	pub kind: SymbolKind,
 	pub name: String,
@@ -794,7 +795,7 @@ fn scope_type_mask(scope_type: ScopeType) -> u8 {
 	}
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseSymbolReference {
 	pub kind: SymbolKind,
 	pub name: String,
@@ -807,7 +808,7 @@ pub struct BaseSymbolReference {
 	pub param_bindings: Vec<ParamBinding>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseAliasUsage {
 	pub alias: String,
 	pub path: String,
@@ -816,7 +817,7 @@ pub struct BaseAliasUsage {
 	pub scope_id: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseKeyUsage {
 	pub key: String,
 	pub path: String,
@@ -826,7 +827,7 @@ pub struct BaseKeyUsage {
 	pub this_type: ScopeType,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseScalarAssignment {
 	pub key: String,
 	pub value: String,
@@ -836,7 +837,7 @@ pub struct BaseScalarAssignment {
 	pub scope_id: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseLocalisationDefinition {
 	pub key: String,
 	pub path: String,
@@ -844,7 +845,7 @@ pub struct BaseLocalisationDefinition {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseLocalisationDuplicate {
 	pub key: String,
 	pub path: String,
@@ -852,7 +853,7 @@ pub struct BaseLocalisationDuplicate {
 	pub duplicate_line: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseUiDefinition {
 	pub name: String,
 	pub path: String,
@@ -860,7 +861,7 @@ pub struct BaseUiDefinition {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseResourceReference {
 	pub key: String,
 	pub value: String,
@@ -869,7 +870,7 @@ pub struct BaseResourceReference {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseCsvRow {
 	pub identity: String,
 	pub path: String,
@@ -877,7 +878,7 @@ pub struct BaseCsvRow {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct BaseJsonProperty {
 	pub key_path: String,
 	pub path: String,
@@ -913,7 +914,7 @@ enum SnapshotWireSectionName {
 	StructuredData,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct SnapshotMetadataSection {
 	schema_version: u32,
 	game: String,
@@ -922,7 +923,7 @@ struct SnapshotMetadataSection {
 	generated_by_cli_version: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct SnapshotInventoryDocumentsSection {
 	inventory_paths: Vec<String>,
 	documents: Vec<BaseDocumentRecord>,
@@ -931,7 +932,7 @@ struct SnapshotInventoryDocumentsSection {
 	parse_stats: ParseFamilyStats,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct LegacySnapshotInventoryDocumentsSection {
 	inventory_paths: Vec<String>,
 	documents: Vec<BaseDocumentRecord>,
@@ -939,7 +940,7 @@ struct LegacySnapshotInventoryDocumentsSection {
 	parsed_files: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct SnapshotSymbolScopeSection {
 	scopes: Vec<BaseScopeNode>,
 	symbol_definitions: Vec<BaseSymbolDefinition>,
@@ -949,7 +950,7 @@ struct SnapshotSymbolScopeSection {
 	scalar_assignments: Vec<BaseScalarAssignment>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct SnapshotLocalisationUiResourcesSection {
 	localisation_definitions: Vec<BaseLocalisationDefinition>,
 	localisation_duplicates: Vec<BaseLocalisationDuplicate>,
@@ -957,7 +958,7 @@ struct SnapshotLocalisationUiResourcesSection {
 	resource_references: Vec<BaseResourceReference>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct SnapshotStructuredDataSection {
 	csv_rows: Vec<BaseCsvRow>,
 	json_properties: Vec<BaseJsonProperty>,
@@ -973,48 +974,6 @@ struct EncodedSnapshotBundle {
 struct SectionEncodeResult {
 	wire: SnapshotWireSection,
 	profile: BaseEncodedSectionProfile,
-}
-
-#[derive(Serialize)]
-struct SnapshotMetadataSectionRef<'a> {
-	schema_version: u32,
-	game: &'a str,
-	game_version: &'a str,
-	analysis_rules_version: &'a str,
-	generated_by_cli_version: &'a str,
-}
-
-#[derive(Serialize)]
-struct SnapshotInventoryDocumentsSectionRef<'a> {
-	inventory_paths: &'a [String],
-	documents: &'a [BaseDocumentRecord],
-	parse_error_count: usize,
-	parsed_files: usize,
-	parse_stats: &'a ParseFamilyStats,
-}
-
-#[derive(Serialize)]
-struct SnapshotSymbolScopeSectionRef<'a> {
-	scopes: &'a [BaseScopeNode],
-	symbol_definitions: &'a [BaseSymbolDefinition],
-	symbol_references: &'a [BaseSymbolReference],
-	alias_usages: &'a [BaseAliasUsage],
-	key_usages: &'a [BaseKeyUsage],
-	scalar_assignments: &'a [BaseScalarAssignment],
-}
-
-#[derive(Serialize)]
-struct SnapshotLocalisationUiResourcesSectionRef<'a> {
-	localisation_definitions: &'a [BaseLocalisationDefinition],
-	localisation_duplicates: &'a [BaseLocalisationDuplicate],
-	ui_definitions: &'a [BaseUiDefinition],
-	resource_references: &'a [BaseResourceReference],
-}
-
-#[derive(Serialize)]
-struct SnapshotStructuredDataSectionRef<'a> {
-	csv_rows: &'a [BaseCsvRow],
-	json_properties: &'a [BaseJsonProperty],
 }
 
 pub fn default_release_tag() -> String {
@@ -1051,7 +1010,7 @@ pub fn detect_game_version(game_root: &Path) -> Option<String> {
 		if !candidate.is_file() {
 			continue;
 		}
-		if candidate.file_name().and_then(|value| value.to_str()) == Some("version.txt") {
+		if candidate.file_name() == Some(OsStr::new("version.txt")) {
 			let version = fs::read_to_string(&candidate).ok()?;
 			let version = version.lines().next()?.trim();
 			if !version.is_empty() {
@@ -1716,13 +1675,19 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 			SNAPSHOT_WIRE_FORMAT_VERSION, bundle.format_version
 		));
 	}
+	if bundle.schema_version != BASE_DATA_SCHEMA_VERSION {
+		return Err(format!(
+			"基础数据 snapshot schema 不匹配: expected {}, found {}",
+			BASE_DATA_SCHEMA_VERSION, bundle.schema_version
+		));
+	}
 	let mut metadata = None;
 	let mut inventory = None;
 	let mut symbol_scope = None;
 	let mut localisation = None;
 	let mut structured = None;
 
-	for section in bundle.sections {
+	for section in bundle.sections.into_iter() {
 		match section.name {
 			SnapshotWireSectionName::Metadata => {
 				metadata = Some(decode_section_payload::<SnapshotMetadataSection>(&section)?);
@@ -1914,12 +1879,12 @@ fn resolve_installed_snapshot_path(install_dir: &Path) -> Option<PathBuf> {
 }
 
 fn encode_metadata_section(snapshot: &BaseAnalysisSnapshot) -> Result<SectionEncodeResult, String> {
-	let section = SnapshotMetadataSectionRef {
+	let section = SnapshotMetadataSection {
 		schema_version: snapshot.schema_version,
-		game: &snapshot.game,
-		game_version: &snapshot.game_version,
-		analysis_rules_version: &snapshot.analysis_rules_version,
-		generated_by_cli_version: &snapshot.generated_by_cli_version,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
+		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
 	};
 	encode_section_payload(SnapshotWireSectionName::Metadata, "metadata", &section)
 }
@@ -1927,12 +1892,12 @@ fn encode_metadata_section(snapshot: &BaseAnalysisSnapshot) -> Result<SectionEnc
 fn encode_inventory_documents_section(
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<SectionEncodeResult, String> {
-	let section = SnapshotInventoryDocumentsSectionRef {
-		inventory_paths: &snapshot.inventory_paths,
-		documents: &snapshot.documents,
+	let section = SnapshotInventoryDocumentsSection {
+		inventory_paths: snapshot.inventory_paths.clone(),
+		documents: snapshot.documents.clone(),
 		parse_error_count: snapshot.parse_error_count,
 		parsed_files: snapshot.parsed_files,
-		parse_stats: &snapshot.parse_stats,
+		parse_stats: snapshot.parse_stats.clone(),
 	};
 	encode_section_payload(
 		SnapshotWireSectionName::InventoryDocuments,
@@ -1944,13 +1909,13 @@ fn encode_inventory_documents_section(
 fn encode_symbol_scope_section(
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<SectionEncodeResult, String> {
-	let section = SnapshotSymbolScopeSectionRef {
-		scopes: &snapshot.scopes,
-		symbol_definitions: &snapshot.symbol_definitions,
-		symbol_references: &snapshot.symbol_references,
-		alias_usages: &snapshot.alias_usages,
-		key_usages: &snapshot.key_usages,
-		scalar_assignments: &snapshot.scalar_assignments,
+	let section = SnapshotSymbolScopeSection {
+		scopes: snapshot.scopes.clone(),
+		symbol_definitions: snapshot.symbol_definitions.clone(),
+		symbol_references: snapshot.symbol_references.clone(),
+		alias_usages: snapshot.alias_usages.clone(),
+		key_usages: snapshot.key_usages.clone(),
+		scalar_assignments: snapshot.scalar_assignments.clone(),
 	};
 	encode_section_payload(
 		SnapshotWireSectionName::SymbolScope,
@@ -1962,11 +1927,11 @@ fn encode_symbol_scope_section(
 fn encode_localisation_ui_resources_section(
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<SectionEncodeResult, String> {
-	let section = SnapshotLocalisationUiResourcesSectionRef {
-		localisation_definitions: &snapshot.localisation_definitions,
-		localisation_duplicates: &snapshot.localisation_duplicates,
-		ui_definitions: &snapshot.ui_definitions,
-		resource_references: &snapshot.resource_references,
+	let section = SnapshotLocalisationUiResourcesSection {
+		localisation_definitions: snapshot.localisation_definitions.clone(),
+		localisation_duplicates: snapshot.localisation_duplicates.clone(),
+		ui_definitions: snapshot.ui_definitions.clone(),
+		resource_references: snapshot.resource_references.clone(),
 	};
 	encode_section_payload(
 		SnapshotWireSectionName::LocalisationUiResources,
@@ -1978,9 +1943,9 @@ fn encode_localisation_ui_resources_section(
 fn encode_structured_data_section(
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<SectionEncodeResult, String> {
-	let section = SnapshotStructuredDataSectionRef {
-		csv_rows: &snapshot.csv_rows,
-		json_properties: &snapshot.json_properties,
+	let section = SnapshotStructuredDataSection {
+		csv_rows: snapshot.csv_rows.clone(),
+		json_properties: snapshot.json_properties.clone(),
 	};
 	encode_section_payload(
 		SnapshotWireSectionName::StructuredData,
@@ -1989,15 +1954,21 @@ fn encode_structured_data_section(
 	)
 }
 
-fn encode_section_payload<T: Serialize>(
+fn encode_section_payload<T>(
 	name: SnapshotWireSectionName,
 	display_name: &str,
 	payload: &T,
-) -> Result<SectionEncodeResult, String> {
+) -> Result<SectionEncodeResult, String>
+where
+	T: for<'a> rkyv::Serialize<
+		rkyv::api::high::HighSerializer<rkyv::util::AlignedVec, rkyv::ser::allocator::ArenaHandle<'a>, rkyv::rancor::Error>,
+	>,
+{
 	let started = Instant::now();
-	let raw = bincode::serialize(payload)
+	let aligned = rkyv::to_bytes::<rkyv::rancor::Error>(payload)
 		.map_err(|err| format!("无法序列化基础数据 section {display_name}: {err}"))?;
-	let payload = gzip_bytes(&raw)
+	let raw: &[u8] = &aligned;
+	let payload = gzip_bytes(raw)
 		.map_err(|err| format!("无法压缩基础数据 section {display_name}: {err}"))?;
 	let profile = BaseEncodedSectionProfile {
 		name: display_name.to_string(),
@@ -2028,9 +1999,14 @@ fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
 		.map_err(|err| format!("gzip finish failed: {err}"))
 }
 
-fn decode_section_payload<T: for<'de> Deserialize<'de>>(
+fn decode_section_payload<T>(
 	section: &SnapshotWireSection,
-) -> Result<T, String> {
+) -> Result<T, String>
+where
+	T: rkyv::Archive,
+	<T as rkyv::Archive>::Archived:
+		rkyv::Deserialize<T, rkyv::api::high::HighDeserializer<rkyv::rancor::Error>>,
+{
 	if sha256_hex(&section.payload) != section.sha256 {
 		return Err(format!(
 			"基础数据 section 校验失败: {}",
@@ -2038,8 +2014,24 @@ fn decode_section_payload<T: for<'de> Deserialize<'de>>(
 		));
 	}
 	let cursor = Cursor::new(&section.payload);
-	let decoder = GzDecoder::new(cursor);
-	bincode::deserialize_from(decoder).map_err(|err| {
+	let mut decoder = std::io::BufReader::new(GzDecoder::new(cursor));
+	let expected = section.uncompressed_bytes as usize;
+	let mut aligned = rkyv::util::AlignedVec::<16>::with_capacity(expected);
+	let mut chunk = [0u8; 65536];
+	loop {
+		let n = std::io::Read::read(&mut decoder, &mut chunk).map_err(|err| {
+			format!(
+				"无法解压基础数据 section {}: {err}",
+				snapshot_section_display_name(section.name)
+			)
+		})?;
+		if n == 0 {
+			break;
+		}
+		aligned.extend_from_slice(&chunk[..n]);
+	}
+	// SAFETY: We trust our own serialized data; the byte stream was produced by rkyv::to_bytes.
+	unsafe { rkyv::from_bytes_unchecked::<T, rkyv::rancor::Error>(&aligned) }.map_err(|err| {
 		format!(
 			"无法解析基础数据 section {}: {err}",
 			snapshot_section_display_name(section.name)
@@ -2100,7 +2092,7 @@ fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
 		}
 
 		let path = entry.path();
-		if path.file_name().and_then(|name| name.to_str()) == Some("descriptor.mod") {
+		if path.file_name() == Some(OsStr::new("descriptor.mod")) {
 			continue;
 		}
 
