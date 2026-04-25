@@ -1,17 +1,22 @@
+use crate::merge::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
 use crate::request::{CheckRequest, RunOptions};
 use crate::runtime::{build_overlap_findings, build_runtime_state_from_workspace};
 use crate::workspace::{
-	LoadedModSnapshot, WorkspaceResolveErrorKind, normalize_relative_path, resolve_workspace,
+	LoadedModSnapshot, ResolvedFileContributor, WorkspaceResolveErrorKind,
+	normalize_relative_path, resolve_workspace,
 };
 use foch_core::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
 	Finding, FindingChannel, ParseFamilyStats, ParseIssueReportItem, SemanticIndex, Severity,
 };
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
+use foch_language::analyzer::content_family::GameProfile;
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::rules::{
 	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
 	check_missing_dependency, check_missing_descriptor, check_required_fields,
 };
+use std::collections::{BTreeMap, HashMap};
 
 #[derive(Clone, Debug)]
 struct GameBaseSemanticSnapshot {
@@ -142,6 +147,10 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 				.filter(|finding| finding.rule_id != "A003"),
 		);
 		result.findings.extend(runtime_overlap_findings);
+		result.findings.extend(check_namespace_conflicts(
+			&resolved.file_inventory,
+			&ctx.mods,
+		));
 	}
 
 	result.analysis_meta = AnalysisMeta {
@@ -276,4 +285,90 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 			))
 	});
 	items
+}
+
+/// Target content families for cross-file key conflict detection.
+const NAMESPACE_CHECK_FAMILIES: &[&str] =
+	&["common/scripted_effects", "common/scripted_triggers"];
+
+/// Detect cross-file key conflicts in high-value content families.
+///
+/// Only checks `scripted_effects` and `scripted_triggers` — the families
+/// where two mods silently redefining the same key is a common source of
+/// broken gameplay.
+fn check_namespace_conflicts(
+	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
+	mods: &[foch_core::model::ModCandidate],
+) -> Vec<Finding> {
+	let profile = eu4_profile();
+	let families_by_id = group_by_family(file_inventory, profile);
+
+	let mod_names: HashMap<&str, &str> = mods
+		.iter()
+		.filter_map(|m| {
+			m.entry
+				.display_name
+				.as_deref()
+				.map(|name| (m.mod_id.as_str(), name))
+		})
+		.collect();
+
+	let mut findings = Vec::new();
+
+	for family_id in NAMESPACE_CHECK_FAMILIES {
+		let Some(family_files) = families_by_id.get(*family_id) else {
+			continue;
+		};
+		let Some(descriptor) = profile.descriptor_for_root_family(family_id) else {
+			continue;
+		};
+		let Some(merge_key_source) = descriptor.merge_key_source else {
+			continue;
+		};
+
+		let index = build_family_key_index(family_id, merge_key_source, family_files, profile);
+		let conflicts = detect_key_conflicts(&index);
+
+		for conflict in &conflicts {
+			let non_base: Vec<_> =
+				conflict.contributors.iter().filter(|c| !c.is_base_game).collect();
+			if non_base.len() < 2 {
+				continue;
+			}
+
+			for (i, contributor) in non_base.iter().enumerate() {
+				let others: Vec<String> = non_base
+					.iter()
+					.enumerate()
+					.filter(|(j, _)| *j != i)
+					.map(|(_, other)| {
+						let mod_name = mod_names
+							.get(other.mod_id.as_str())
+							.copied()
+							.unwrap_or(&other.mod_id);
+						format!("mod '{}' in {}", mod_name, other.file_path)
+					})
+					.collect();
+
+				findings.push(Finding {
+					rule_id: "N001".to_string(),
+					severity: Severity::Warning,
+					channel: FindingChannel::Advisory,
+					message: format!(
+						"Key '{}' is also defined by {}",
+						conflict.key,
+						others.join(", ")
+					),
+					mod_id: Some(contributor.mod_id.clone()),
+					path: Some(std::path::PathBuf::from(&contributor.file_path)),
+					evidence: None,
+					line: None,
+					column: None,
+					confidence: Some(0.9),
+				});
+			}
+		}
+	}
+
+	findings
 }
