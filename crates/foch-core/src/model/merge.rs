@@ -112,4 +112,6 @@ pub struct MergeReport {
 	pub validation: MergeReportValidation,
 	#[serde(default)]
 	pub renames: Vec<MergeReportRename>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub warnings: Vec<String>,
 }

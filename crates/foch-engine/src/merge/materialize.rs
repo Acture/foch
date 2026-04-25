@@ -1,8 +1,12 @@
 #![allow(dead_code)]
 
-use super::emit::emit_structural_file;
+use super::emit::{emit_clausewitz_statements, emit_structural_file};
 use super::error::MergeError;
 use super::ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
+use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
+use super::patch_apply::apply_patches;
+use super::patch_deps::compute_chained_patches;
+use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
 use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
@@ -11,6 +15,11 @@ use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
 	MergeReportRename, MergeReportStatus,
 };
+use foch_language::analyzer::content_family::{
+	ContentFamilyDescriptor, GameProfile, MergeKeySource,
+};
+use foch_language::analyzer::eu4_profile::eu4_profile;
+use foch_language::analyzer::semantic_index::parse_script_file;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -97,6 +106,8 @@ pub(crate) fn materialize_merge_internal(
 		.map(|file| (file.target_path.clone(), file))
 		.collect::<BTreeMap<_, _>>();
 
+	let profile = eu4_profile();
+
 	for entry in &plan.paths {
 		match entry.strategy {
 			MergePlanStrategy::CopyThrough => {
@@ -108,13 +119,53 @@ pub(crate) fn materialize_merge_internal(
 				report.overlay_file_count += 1;
 			}
 			MergePlanStrategy::StructuralMerge => {
-				let file =
-					structural_files
-						.get(&entry.path)
-						.ok_or_else(|| MergeError::Validation {
-							path: Some(entry.path.clone()),
-							message: format!("missing merge IR structural file for {}", entry.path),
-						})?;
+				let contributors = workspace.file_inventory.get(&entry.path);
+				let has_base_game = contributors
+					.map(|cs| cs.iter().any(|c| c.is_base_game))
+					.unwrap_or(false);
+
+				if has_base_game
+					&& let Some(contributors) = contributors
+				{
+					let descriptor =
+						profile.classify_content_family(Path::new(&entry.path));
+					let merge_key_source =
+						descriptor.and_then(|d| d.merge_key_source);
+
+					if let (Some(descriptor), Some(merge_key_source)) =
+						(descriptor, merge_key_source)
+					{
+						match patch_based_structural_merge(
+							&entry.path,
+							contributors,
+							descriptor,
+							merge_key_source,
+						) {
+							Ok(rendered) => {
+								write_rendered_output(
+									&entry.path, &rendered, out_dir,
+								)?;
+								generated_paths.insert(entry.path.clone());
+								report.generated_file_count += 1;
+								continue;
+							}
+							Err(_) => {
+								// Fall through to overlay IR path
+							}
+						}
+					}
+				}
+
+				// Fallback: use existing overlay IR merge
+				let file = structural_files
+					.get(&entry.path)
+					.ok_or_else(|| MergeError::Validation {
+						path: Some(entry.path.clone()),
+						message: format!(
+							"missing merge IR structural file for {}",
+							entry.path
+						),
+					})?;
 				write_structural_output(file, out_dir)?;
 				generated_paths.insert(entry.path.clone());
 				report.generated_file_count += 1;
@@ -125,6 +176,32 @@ pub(crate) fn materialize_merge_internal(
 					generated_paths.insert(entry.path.clone());
 					report.generated_file_count += 1;
 				}
+			}
+		}
+	}
+
+	// Namespace conflict warnings
+	let grouped = group_by_family(&workspace.file_inventory, profile);
+	for (family_id, paths_by_file) in &grouped {
+		let descriptor = profile.descriptor_for_root_family(family_id);
+		let merge_key_source = descriptor.and_then(|d| d.merge_key_source);
+		if let (Some(_descriptor), Some(merge_key_source)) = (descriptor, merge_key_source) {
+			let index =
+				build_family_key_index(family_id, merge_key_source, paths_by_file, profile);
+			let conflicts = detect_key_conflicts(&index);
+			for conflict in &conflicts {
+				let mod_ids: Vec<_> = conflict
+					.contributors
+					.iter()
+					.filter(|c| !c.is_base_game)
+					.map(|c| format!("{}({})", c.mod_id, c.file_path))
+					.collect();
+				report.warnings.push(format!(
+					"namespace conflict: key '{}' in family '{}' defined by multiple mods: {}",
+					conflict.key,
+					conflict.family_id,
+					mod_ids.join(", "),
+				));
 			}
 		}
 	}
@@ -147,6 +224,109 @@ pub(crate) fn materialize_merge_internal(
 	};
 	write_metadata_only(out_dir, &persisted_plan, &report)?;
 	Ok(report)
+}
+
+/// Patch-based structural merge: diff each mod against its predecessor,
+/// merge patch sets, apply to base.  Falls back to overlay merge if base
+/// game files are unavailable.
+fn patch_based_structural_merge(
+	target_path: &str,
+	contributors: &[ResolvedFileContributor],
+	descriptor: &ContentFamilyDescriptor,
+	merge_key_source: MergeKeySource,
+) -> Result<String, MergeError> {
+	// 1. Compute chained patches for every mod contributor
+	let mod_patches =
+		compute_chained_patches(target_path, contributors, merge_key_source).map_err(|err| {
+			MergeError::Validation {
+				path: Some(target_path.to_string()),
+				message: format!("patch computation failed: {err}"),
+			}
+		})?;
+
+	// 2. Merge all mod patch sets with the family's policies
+	let merge_result = merge_patch_sets(mod_patches, &descriptor.merge_policies);
+
+	// 3. Abort if unresolved conflicts exist
+	if !merge_result.conflicts.is_empty() {
+		let conflict_keys: Vec<_> = merge_result
+			.conflicts
+			.iter()
+			.filter_map(|r| match r {
+				PatchResolution::Conflict { address, reason, .. } => {
+					Some(format!("{}: {}", address.key, reason))
+				}
+				_ => None,
+			})
+			.collect();
+		return Err(MergeError::Validation {
+			path: Some(target_path.to_string()),
+			message: format!(
+				"patch merge has {} unresolved conflict(s): {}",
+				conflict_keys.len(),
+				conflict_keys.join("; "),
+			),
+		});
+	}
+
+	// 4. Parse the base (first contributor) file to get the base AST
+	let base_contributor = contributors
+		.iter()
+		.find(|c| c.is_base_game)
+		.or_else(|| contributors.first())
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(target_path.to_string()),
+			message: "no contributors for patch merge".to_string(),
+		})?;
+
+	let base_parsed = parse_script_file(
+		&base_contributor.mod_id,
+		&base_contributor.root_path,
+		&base_contributor.absolute_path,
+	)
+	.ok_or_else(|| MergeError::Validation {
+		path: Some(target_path.to_string()),
+		message: format!(
+			"failed to parse base file {} for patch merge",
+			base_contributor.absolute_path.display(),
+		),
+	})?;
+
+	// 5. Collect resolved patches
+	let resolved_patches = extract_resolved_patches(&merge_result);
+
+	// 6. Apply patches to base AST
+	let merged_statements =
+		apply_patches(&base_parsed.ast.statements, &resolved_patches, merge_key_source);
+
+	// 7. Emit Clausewitz output
+	emit_clausewitz_statements(&merged_statements)
+}
+
+/// Extract the resolved `ClausewitzPatch` operations from a `PatchMergeResult`.
+fn extract_resolved_patches(merge_result: &PatchMergeResult) -> Vec<super::patch::ClausewitzPatch> {
+	merge_result
+		.resolved
+		.iter()
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Resolved(patch) => Some(patch.clone()),
+			PatchResolution::AutoMerged { result, .. } => Some(result.clone()),
+			PatchResolution::Conflict { .. } => None,
+		})
+		.collect()
+}
+
+fn write_rendered_output(
+	target_path: &str,
+	rendered: &str,
+	out_dir: &Path,
+) -> Result<(), MergeError> {
+	let target = out_dir.join(target_path);
+	if let Some(parent) = target.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	fs::write(target, rendered)?;
+	Ok(())
 }
 
 fn write_metadata_only(
