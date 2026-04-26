@@ -122,6 +122,15 @@
   ],
   "builtin_triggers": [
     {
+      "name": "ARGS"
+    },
+    {
+      "name": "FLAG"
+    },
+    {
+      "name": "RELIGION"
+    },
+    {
       "name": "absolutism",
       "scopes": [
         "country"
@@ -175,6 +184,18 @@
         "Returns true if X is the current mission of the country."
       ],
       "game_count": 0
+    },
+    {
+      "name": "add_army_tradition_or_mil_power"
+    },
+    {
+      "name": "add_or_upgrade_fort_building"
+    },
+    {
+      "name": "add_or_upgrade_tax_building"
+    },
+    {
+      "name": "add_prestige_or_monarch_power"
     },
     {
       "name": "adm",
@@ -341,6 +362,9 @@
       "game_count": 2
     },
     {
+      "name": "alternative_trigger"
+    },
+    {
       "name": "always",
       "scopes": [
         "any"
@@ -380,6 +404,9 @@
         "Returns true if the country's army size is at least the size of X times the army size of the specified country (done by number of regiments)"
       ],
       "game_count": 30
+    },
+    {
+      "name": "army_construction"
     },
     {
       "name": "army_professionalism",
@@ -493,6 +520,9 @@
         "Returns true if the country is at war with any country of a different religion."
       ],
       "game_count": 7
+    },
+    {
+      "name": "attached_army"
     },
     {
       "name": "authority",
@@ -646,6 +676,9 @@
         "Returns true if distance between the borders of the countries is at least X."
       ],
       "game_count": 32
+    },
+    {
+      "name": "building_construction"
     },
     {
       "name": "calc_true_if",
@@ -933,6 +966,12 @@
       "game_count": 21
     },
     {
+      "name": "change_asha_vahishta"
+    },
+    {
+      "name": "change_ruler_stat"
+    },
+    {
       "name": "check_variable",
       "scopes": [
         "any",
@@ -946,6 +985,9 @@
         "Returns true if the specified variable is at least X."
       ],
       "game_count": 680
+    },
+    {
+      "name": "church_aspect"
     },
     {
       "name": "church_power",
@@ -1372,6 +1414,9 @@
         "Returns true if the percentage of the country's development that is held by the Crown Land is at least X."
       ],
       "game_count": 214
+    },
+    {
+      "name": "crusade_target"
     },
     {
       "name": "culture",
@@ -1844,6 +1889,9 @@
       "game_count": 584
     },
     {
+      "name": "embarked"
+    },
+    {
       "name": "empire_of_china_has_active_decree",
       "scopes": [
         "any",
@@ -1923,6 +1971,9 @@
         "Returns true if end game tags are block, which is the default behaviour"
       ],
       "game_count": 1
+    },
+    {
+      "name": "enemy_unit"
     },
     {
       "name": "estate_influence",
@@ -2060,6 +2111,12 @@
       ],
       "notes": [],
       "game_count": 5
+    },
+    {
+      "name": "expulsion_target"
+    },
+    {
+      "name": "extra_shortcut"
     },
     {
       "name": "faction_in_power",
@@ -3829,6 +3886,9 @@
       "game_count": 162
     },
     {
+      "name": "has_mission_and_key_mismatch"
+    },
+    {
       "name": "has_missionary",
       "scopes": [
         "province"
@@ -3933,6 +3993,9 @@
       ],
       "notes": [],
       "game_count": 0
+    },
+    {
+      "name": "has_office"
     },
     {
       "name": "has_opinion",
@@ -4706,6 +4769,9 @@
       "game_count": 38
     },
     {
+      "name": "has_transit"
+    },
+    {
       "name": "has_truce",
       "scopes": [
         "country"
@@ -5081,6 +5147,9 @@
       "game_count": 3
     },
     {
+      "name": "higher_than_influence"
+    },
+    {
       "name": "highest_supply_limit_in_area",
       "scopes": [
         "province"
@@ -5159,6 +5228,9 @@
         "Checks if the listed holy order is present in the province"
       ],
       "game_count": 101
+    },
+    {
+      "name": "home_province"
     },
     {
       "name": "home_trade_node",
@@ -5383,6 +5455,12 @@
       "game_count": 32
     },
     {
+      "name": "include_heir"
+    },
+    {
+      "name": "include_monarch"
+    },
+    {
       "name": "infantry_fraction",
       "scopes": [
         "country"
@@ -5453,6 +5531,9 @@
       "game_count": 9
     },
     {
+      "name": "integrated_personal_union"
+    },
+    {
       "name": "invasion_nation",
       "scopes": [
         "country"
@@ -5490,6 +5571,9 @@
         "Returns true if the ironman mode is enabled"
       ],
       "game_count": 374
+    },
+    {
+      "name": "is_admiral"
     },
     {
       "name": "is_advisor_employed",
@@ -6463,6 +6547,9 @@
         "Returns true if the province is looted."
       ],
       "game_count": 24
+    },
+    {
+      "name": "is_male"
     },
     {
       "name": "is_march",
@@ -7499,6 +7586,9 @@
       "game_count": 35
     },
     {
+      "name": "less_than"
+    },
+    {
       "name": "liberty_desire",
       "scopes": [
         "country"
@@ -7635,6 +7725,9 @@
         "Returns true if the country has a manpower level of at least X%."
       ],
       "game_count": 163
+    },
+    {
+      "name": "manuever"
     },
     {
       "name": "map_setup",
@@ -7984,6 +8077,9 @@
       "game_count": 9
     },
     {
+      "name": "most_province_trade_power"
+    },
+    {
       "name": "nation_designer_points",
       "scopes": [
         "country"
@@ -8094,6 +8190,9 @@
       "game_count": 46
     },
     {
+      "name": "native_sponsor_scope"
+    },
+    {
       "name": "naval_forcelimit",
       "scopes": [
         "country"
@@ -8164,6 +8263,9 @@
       "game_count": 12
     },
     {
+      "name": "navy_construction"
+    },
+    {
       "name": "navy_size",
       "scopes": [
         "country"
@@ -8217,6 +8319,9 @@
         "This is not documented and appears in government mechanics"
       ],
       "game_count": 1
+    },
+    {
+      "name": "neighboring_primitives"
     },
     {
       "name": "neighbors_tech_discount",
@@ -9803,6 +9908,9 @@
       "game_count": 7
     },
     {
+      "name": "open_window"
+    },
+    {
       "name": "overextension_percentage",
       "scopes": [
         "country"
@@ -10023,6 +10131,9 @@
         "Returns true if the country's patriarch authority is at least X."
       ],
       "game_count": 7
+    },
+    {
+      "name": "pause"
     },
     {
       "name": "percentage_backing_issue",
@@ -11023,6 +11134,15 @@
       "game_count": 1
     },
     {
+      "name": "select_army"
+    },
+    {
+      "name": "select_navy"
+    },
+    {
+      "name": "select_province"
+    },
+    {
       "name": "senior_union_with",
       "scopes": [
         "country"
@@ -11035,6 +11155,9 @@
         "Returns true if the country is the senior partner in a personal union over country X."
       ],
       "game_count": 76
+    },
+    {
+      "name": "set_great_project_tier_1"
     },
     {
       "name": "share_of_starting_income",
@@ -11060,6 +11183,9 @@
         "Returns true if the province is being besieged by country X."
       ],
       "game_count": 10
+    },
+    {
+      "name": "special_unit_category"
     },
     {
       "name": "splendor",
@@ -11396,6 +11522,9 @@
       "game_count": 35
     },
     {
+      "name": "total_pips"
+    },
+    {
       "name": "trade_company_region",
       "scopes": [
         "province"
@@ -11548,6 +11677,9 @@
       "game_count": 1
     },
     {
+      "name": "trade_patrol"
+    },
+    {
       "name": "trade_range",
       "scopes": [
         "any",
@@ -11576,6 +11708,9 @@
         "Returns true if the country controls at least X% of the trade in the specified trade node."
       ],
       "game_count": 174
+    },
+    {
+      "name": "tradecompany"
     },
     {
       "name": "trading_bonus",
@@ -11721,6 +11856,9 @@
       "game_count": 10
     },
     {
+      "name": "tributary_state"
+    },
+    {
       "name": "truce_with",
       "scopes": [
         "country"
@@ -11747,6 +11885,9 @@
         "Returns true if the current scope has a trust level of at least X with the specified tag. -1 for negative, 0 for netural and 1 for positive."
       ],
       "game_count": 23
+    },
+    {
+      "name": "tur_power_struggle_intesity"
     },
     {
       "name": "unit_has_leader",
@@ -12245,6 +12386,9 @@
       "game_count": 406
     },
     {
+      "name": "who_with"
+    },
+    {
       "name": "will_back_next_reform",
       "scopes": [
         "country"
@@ -12366,6 +12510,12 @@
         "Checks the number of years since there has been a Revolution Target without anyone taking it up. Returns false if there has never been a Revolution Target."
       ],
       "game_count": 7
+    },
+    {
+      "name": "zoom_in"
+    },
+    {
+      "name": "zoom_out"
     }
   ],
   "builtin_effects": [
@@ -12394,6 +12544,21 @@
         "Description"
       ],
       "game_count": 0
+    },
+    {
+      "name": "SUNm_disease"
+    },
+    {
+      "name": "SUNm_panama_canal"
+    },
+    {
+      "name": "SUNm_spain"
+    },
+    {
+      "name": "WoC_timurids_5_2"
+    },
+    {
+      "name": "WoC_timurids_5_2_nomad"
     },
     {
       "name": "add_absolutism",
@@ -14669,6 +14834,9 @@
       "game_count": 41
     },
     {
+      "name": "ai_weight"
+    },
+    {
       "name": "allow_federation_offensive_wars",
       "scopes": [
         "country"
@@ -16793,6 +16961,9 @@
       "game_count": 48
     },
     {
+      "name": "events"
+    },
+    {
       "name": "excommunicate",
       "scopes": [
         "country"
@@ -16919,6 +17090,12 @@
         "extend regency."
       ],
       "game_count": 11
+    },
+    {
+      "name": "feo_branching1"
+    },
+    {
+      "name": "feo_branching2"
     },
     {
       "name": "finish_council",
@@ -17177,6 +17354,9 @@
         "Applies the specified holy order to the province"
       ],
       "game_count": 101
+    },
+    {
+      "name": "home_trade_node_effect_scope"
     },
     {
       "name": "hre_inheritable",
@@ -17733,6 +17913,9 @@
         "Plays a sound file."
       ],
       "game_count": 0
+    },
+    {
+      "name": "position"
     },
     {
       "name": "province_event",
@@ -18649,6 +18832,9 @@
       "game_count": 87
     },
     {
+      "name": "required_missions"
+    },
+    {
       "name": "reset_golden_age",
       "scopes": [
         "country",
@@ -18794,6 +18980,9 @@
         "Removes an Imperial Reform. Imperial Reforms are found in /Europa Universalis IV/common/imperial_reforms/00_hre.txt."
       ],
       "game_count": 0
+    },
+    {
+      "name": "revolution_target"
     },
     {
       "name": "revolutionary_guard_artillery",
@@ -20038,6 +20227,9 @@
       "game_count": 0
     },
     {
+      "name": "trade_company_gulf_of_aden"
+    },
+    {
       "name": "transfer_papal_controller",
       "scopes": [
         "country"
@@ -20209,18 +20401,10 @@
   ],
   "builtin_scope_changers": [
     {
-      "name": "owner",
-      "scopes": [
-        "province"
-      ],
-      "sources": [
-        "game_scan",
-        "eu4wiki"
-      ],
-      "notes": [
-        "Changes THIS from a province-like scope to the owning country scope."
-      ],
-      "game_count": 3627
+      "name": "area_for_scope_province"
+    },
+    {
+      "name": "attacker_leader"
     },
     {
       "name": "capital_scope",
@@ -20236,9 +20420,56 @@
         "Changes THIS to the scoped country's capital province."
       ],
       "game_count": 1618
+    },
+    {
+      "name": "colonial_parent"
+    },
+    {
+      "name": "controller"
+    },
+    {
+      "name": "defender_leader"
+    },
+    {
+      "name": "emperor"
+    },
+    {
+      "name": "other_overlord"
+    },
+    {
+      "name": "owner",
+      "scopes": [
+        "province"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Changes THIS from a province-like scope to the owning country scope."
+      ],
+      "game_count": 3627
+    },
+    {
+      "name": "region_for_scope_province"
+    },
+    {
+      "name": "same_overlord"
+    },
+    {
+      "name": "sea_zone"
+    },
+    {
+      "name": "strongest_trade_power"
+    },
+    {
+      "name": "unit_owner"
     }
   ],
   "builtin_iterators": [
+    {
+      "name": "all_ally"
+    },
     {
       "name": "all_core_province",
       "scopes": [
@@ -20252,6 +20483,27 @@
         "Iterates all provinces that are core provinces of the current country scope."
       ],
       "game_count": 0
+    },
+    {
+      "name": "all_countries_including_self"
+    },
+    {
+      "name": "all_country"
+    },
+    {
+      "name": "all_elector"
+    },
+    {
+      "name": "all_federation_members"
+    },
+    {
+      "name": "all_known_country"
+    },
+    {
+      "name": "all_neighbor_country"
+    },
+    {
+      "name": "all_neighbor_province"
     },
     {
       "name": "all_owned_province",
@@ -20268,18 +20520,16 @@
       "game_count": 0
     },
     {
-      "name": "any_owned_province",
-      "scopes": [
-        "country"
-      ],
-      "sources": [
-        "game_scan",
-        "eu4wiki"
-      ],
-      "notes": [
-        "Iterates owned provinces in a trigger-like any-match context."
-      ],
-      "game_count": 2016
+      "name": "all_owned_province_cumulative"
+    },
+    {
+      "name": "all_province"
+    },
+    {
+      "name": "all_province_in_state"
+    },
+    {
+      "name": "all_rival_country"
     },
     {
       "name": "all_state_province",
@@ -20296,6 +20546,9 @@
       "game_count": 0
     },
     {
+      "name": "all_states"
+    },
+    {
       "name": "all_subject_country",
       "scopes": [
         "country"
@@ -20308,32 +20561,228 @@
         "Iterates subject countries of the current country scope."
       ],
       "game_count": 0
+    },
+    {
+      "name": "all_trade_node"
+    },
+    {
+      "name": "all_trade_node_member_province"
+    },
+    {
+      "name": "any_active_trade_node"
+    },
+    {
+      "name": "any_ally"
+    },
+    {
+      "name": "any_army"
+    },
+    {
+      "name": "any_core_country"
+    },
+    {
+      "name": "any_core_province"
+    },
+    {
+      "name": "any_country_active_in_node"
+    },
+    {
+      "name": "any_empty_neighbor_province"
+    },
+    {
+      "name": "any_enemy_country"
+    },
+    {
+      "name": "any_friendly_coast_border_province"
+    },
+    {
+      "name": "any_great_power"
+    },
+    {
+      "name": "any_heretic_province"
+    },
+    {
+      "name": "any_hired_mercenary_company"
+    },
+    {
+      "name": "any_known_country"
+    },
+    {
+      "name": "any_neighbor_country"
+    },
+    {
+      "name": "any_other_great_power"
+    },
+    {
+      "name": "any_owned_province",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan",
+        "eu4wiki"
+      ],
+      "notes": [
+        "Iterates owned provinces in a trigger-like any-match context."
+      ],
+      "game_count": 2016
+    },
+    {
+      "name": "any_privateering_country"
+    },
+    {
+      "name": "any_province"
+    },
+    {
+      "name": "any_province_in_state"
+    },
+    {
+      "name": "any_rival_country"
+    },
+    {
+      "name": "any_trade_node"
+    },
+    {
+      "name": "any_trade_node_member_country"
+    },
+    {
+      "name": "any_trade_node_member_province"
+    },
+    {
+      "name": "any_tribal_land"
+    },
+    {
+      "name": "any_war_enemy_country"
+    },
+    {
+      "name": "every_active_trade_node"
+    },
+    {
+      "name": "every_ally"
+    },
+    {
+      "name": "every_claimed_province"
+    },
+    {
+      "name": "every_core_country"
+    },
+    {
+      "name": "every_core_province"
+    },
+    {
+      "name": "every_country"
+    },
+    {
+      "name": "every_country_including_inactive"
+    },
+    {
+      "name": "every_elector"
+    },
+    {
+      "name": "every_empty_neighbor_province"
+    },
+    {
+      "name": "every_enemy_country"
+    },
+    {
+      "name": "every_federation_member"
+    },
+    {
+      "name": "every_heretic_province"
+    },
+    {
+      "name": "every_neighbor_country"
+    },
+    {
+      "name": "every_neighbor_province"
+    },
+    {
+      "name": "every_province_in_state"
+    },
+    {
+      "name": "every_rival_country"
+    },
+    {
+      "name": "every_trade_node_member_country"
+    },
+    {
+      "name": "every_trade_node_member_province"
+    },
+    {
+      "name": "every_tribal_land_province"
+    },
+    {
+      "name": "every_war_enemy_country"
+    },
+    {
+      "name": "random_active_trade_node"
+    },
+    {
+      "name": "random_ally"
+    },
+    {
+      "name": "random_area_province"
+    },
+    {
+      "name": "random_core_country"
+    },
+    {
+      "name": "random_core_province"
+    },
+    {
+      "name": "random_elector"
+    },
+    {
+      "name": "random_empty_neighbor_province"
+    },
+    {
+      "name": "random_enemy_country"
+    },
+    {
+      "name": "random_heretic_province"
+    },
+    {
+      "name": "random_hired_mercenary_company"
+    },
+    {
+      "name": "random_known_country"
+    },
+    {
+      "name": "random_neighbor_country"
+    },
+    {
+      "name": "random_neighbor_province"
+    },
+    {
+      "name": "random_province_in_state"
+    },
+    {
+      "name": "random_rival_country"
+    },
+    {
+      "name": "random_subject_country"
+    },
+    {
+      "name": "random_trade_node"
     }
   ],
   "builtin_special_blocks": [
     {
-      "name": "possible",
-      "scopes": [
-        "country"
-      ],
-      "sources": [
-        "game_scan"
-      ],
-      "notes": [
-        "Special trigger-like container block used by achievements and other structured definitions."
-      ],
-      "game_count": 373
+      "name": "and"
     },
     {
-      "name": "visible",
+      "name": "direction_pointer"
+    },
+    {
+      "name": "exclude_from_progress",
       "scopes": [
-        "country"
+        "province"
       ],
       "sources": [
         "game_scan"
       ],
       "notes": [
-        "Special trigger-like container block used by achievements and similar definitions."
+        "Special trigger-like container block used inside age progress iterators."
       ],
       "game_count": 0
     },
@@ -20351,6 +20800,28 @@
       "game_count": 373
     },
     {
+      "name": "not"
+    },
+    {
+      "name": "or"
+    },
+    {
+      "name": "possible",
+      "scopes": [
+        "country"
+      ],
+      "sources": [
+        "game_scan"
+      ],
+      "notes": [
+        "Special trigger-like container block used by achievements and other structured definitions."
+      ],
+      "game_count": 373
+    },
+    {
+      "name": "province_highlight"
+    },
+    {
       "name": "provinces_to_highlight",
       "scopes": [
         "country"
@@ -20364,430 +20835,269 @@
       "game_count": 539
     },
     {
-      "name": "exclude_from_progress",
+      "name": "random"
+    },
+    {
+      "name": "trigger_switch"
+    },
+    {
+      "name": "visible",
       "scopes": [
-        "province"
+        "country"
       ],
       "sources": [
         "game_scan"
       ],
       "notes": [
-        "Special trigger-like container block used inside age progress iterators."
+        "Special trigger-like container block used by achievements and similar definitions."
       ],
       "game_count": 0
     }
   ],
   "game_only_candidates": [
     {
-      "name": "factor",
-      "count": 18910
-    },
-    {
-      "name": "picture",
-      "count": 7057
-    },
-    {
-      "name": "estate",
-      "count": 6021
-    },
-    {
-      "name": "duration",
-      "count": 5742
-    },
-    {
-      "name": "value",
-      "count": 5673
-    },
-    {
-      "name": "type",
-      "count": 3849
-    },
-    {
-      "name": "is_triggered_only",
-      "count": 3704
-    },
-    {
-      "name": "owner",
-      "count": 3627
-    },
-    {
-      "name": "months",
-      "count": 3521
-    },
-    {
-      "name": "who",
-      "count": 3305
-    },
-    {
-      "name": "loyalty",
-      "count": 2849
-    },
-    {
-      "name": "days",
-      "count": 2782
-    },
-    {
-      "name": "which",
-      "count": 2436
-    },
-    {
-      "name": "random_owned_province",
-      "count": 2404
-    },
-    {
-      "name": "color",
-      "count": 2118
-    },
-    {
-      "name": "any_owned_province",
-      "count": 2016
-    },
-    {
-      "name": "influence",
-      "count": 1794
-    },
-    {
-      "name": "tooltip",
-      "count": 1758
-    },
-    {
-      "name": "fire_only_once",
-      "count": 1632
-    },
-    {
-      "name": "capital_scope",
-      "count": 1618
-    },
-    {
-      "name": "key",
-      "count": 1355
-    },
-    {
-      "name": "icon",
-      "count": 1257
-    },
-    {
-      "name": "graphical_culture",
-      "count": 1059
-    },
-    {
-      "name": "size",
-      "count": 1052
-    },
-    {
-      "name": "opinion",
-      "count": 1051
-    },
-    {
-      "name": "max_absolutism",
-      "count": 1036
-    },
-    {
-      "name": "mechanic_type",
-      "count": 1006
-    },
-    {
-      "name": "power_type",
-      "count": 1006
-    },
-    {
-      "name": "monarch_names",
-      "count": 979
-    },
-    {
-      "name": "leader_names",
-      "count": 979
-    },
-    {
-      "name": "historical_idea_groups",
-      "count": 978
-    },
-    {
-      "name": "ship_names",
-      "count": 978
-    },
-    {
-      "name": "historical_units",
-      "count": 975
-    },
-    {
-      "name": "yearly_decay",
-      "count": 974
-    },
-    {
-      "name": "revolutionary_colors",
-      "count": 798
-    },
-    {
-      "name": "conditional_modifier",
-      "count": 773
-    },
-    {
-      "name": "goto",
-      "count": 707
-    },
-    {
-      "name": "skill",
-      "count": 700
-    },
-    {
-      "name": "start",
-      "count": 675
-    },
-    {
-      "name": "modifiers",
-      "count": 672
-    },
-    {
-      "name": "any_neighbor_province",
-      "count": 659
-    },
-    {
-      "name": "allow_normal_conversion",
-      "count": 650
-    },
-    {
-      "name": "has_estate_agenda_auto_completion",
-      "count": 649
-    },
-    {
-      "name": "global_unrest",
-      "count": 642
-    },
-    {
-      "name": "event_target:agenda_province",
-      "count": 633
-    },
-    {
-      "name": "can_select",
-      "count": 613
-    },
-    {
-      "name": "discount",
-      "count": 599
-    },
-    {
-      "name": "major",
-      "count": 597
-    },
-    {
-      "name": "category",
-      "count": 593
-    },
-    {
-      "name": "batch",
-      "count": 588
-    },
-    {
-      "name": "amount",
-      "count": 585
-    },
-    {
-      "name": "bonus",
-      "count": 574
-    },
-    {
-      "name": "province_modifiers",
-      "count": 570
-    },
-    {
-      "name": "area_modifier",
-      "count": 570
-    },
-    {
-      "name": "upgrade_time",
-      "count": 564
-    },
-    {
-      "name": "cost_to_upgrade",
-      "count": 564
-    },
-    {
-      "name": "country_modifiers",
-      "count": 557
-    },
-    {
-      "name": "on_upgraded",
-      "count": 555
-    },
-    {
-      "name": "is_free_or_tributary_trigger",
-      "count": 552
-    },
-    {
-      "name": "free",
-      "count": 541
-    },
-    {
-      "name": "provinces_to_highlight",
-      "count": 539
-    },
-    {
-      "name": "tolerance_own",
-      "count": 527
-    },
-    {
-      "name": "hidden",
-      "count": 514
-    },
-    {
-      "name": "estate_action",
-      "count": 503
-    },
-    {
-      "name": "random_list",
-      "count": 492
-    },
-    {
-      "name": "share",
-      "count": 486
-    },
-    {
-      "name": "stability_cost_modifier",
-      "count": 471
-    },
-    {
-      "name": "global_tax_modifier",
-      "count": 442
-    },
-    {
       "name": "add_stability_or_adm_power",
       "count": 441
     },
     {
-      "name": "local_unrest",
-      "count": 412
+      "name": "adm_ideas"
     },
     {
-      "name": "years",
-      "count": 402
-    },
-    {
-      "name": "localization",
-      "count": 401
-    },
-    {
-      "name": "male_names",
-      "count": 399
-    },
-    {
-      "name": "female_names",
-      "count": 398
-    },
-    {
-      "name": "removed_effect",
-      "count": 386
-    },
-    {
-      "name": "possible",
-      "count": 373
-    },
-    {
-      "name": "happened",
-      "count": 373
-    },
-    {
-      "name": "is_valid",
-      "count": 371
-    },
-    {
-      "name": "global_manpower_modifier",
-      "count": 365
-    },
-    {
-      "name": "has_absolutism_reduction_for_estate_privileges",
-      "count": 363
-    },
-    {
-      "name": "local_development_cost",
-      "count": 359
-    },
-    {
-      "name": "global_missionary_strength",
-      "count": 356
-    },
-    {
-      "name": "attitude",
-      "count": 356
-    },
-    {
-      "name": "primary",
-      "count": 355
-    },
-    {
-      "name": "custom_attributes",
-      "count": 355
-    },
-    {
-      "name": "female",
-      "count": 349
-    },
-    {
-      "name": "root",
-      "count": 341
-    },
-    {
-      "name": "country",
-      "count": 340
-    },
-    {
-      "name": "flag",
-      "count": 340
-    },
-    {
-      "name": "nation_designer_cost",
-      "count": 339
-    },
-    {
-      "name": "build_cost",
-      "count": 338
-    },
-    {
-      "name": "dynasty_names",
-      "count": 337
+      "name": "admiral"
     },
     {
       "name": "age",
       "count": 331
     },
     {
-      "name": "enable",
-      "count": 328
+      "name": "allow_normal_conversion",
+      "count": 650
     },
     {
-      "name": "task_requirements",
-      "count": 322
+      "name": "amount",
+      "count": 585
     },
     {
-      "name": "task_completed_effect",
-      "count": 322
+      "name": "anglican"
     },
     {
-      "name": "failing_effect",
-      "count": 322
+      "name": "animism"
     },
     {
-      "name": "selection_weight",
-      "count": 320
+      "name": "any_country",
+      "count": 287
     },
     {
-      "name": "on_granted",
-      "count": 320
+      "name": "any_neighbor_province",
+      "count": 659
     },
     {
-      "name": "cost",
-      "count": 310
+      "name": "any_owned_province",
+      "count": 2016
+    },
+    {
+      "name": "any_subject_country",
+      "count": 287
+    },
+    {
+      "name": "area_modifier",
+      "count": 570
+    },
+    {
+      "name": "aristocracy_ideas"
+    },
+    {
+      "name": "army_organiser"
+    },
+    {
+      "name": "army_reformer"
+    },
+    {
+      "name": "artist"
+    },
+    {
+      "name": "attackers"
+    },
+    {
+      "name": "attitude",
+      "count": 356
+    },
+    {
+      "name": "barracks"
+    },
+    {
+      "name": "batch",
+      "count": 588
     },
     {
       "name": "benefits",
       "count": 305
     },
     {
-      "name": "maneuver",
-      "count": 304
+      "name": "bonus",
+      "count": 574
     },
     {
-      "name": "offensive_morale",
+      "name": "branch"
+    },
+    {
+      "name": "build_cost",
+      "count": 338
+    },
+    {
+      "name": "building"
+    },
+    {
+      "name": "can_select",
+      "count": 613
+    },
+    {
+      "name": "capital_scope",
+      "count": 1618
+    },
+    {
+      "name": "casualties"
+    },
+    {
+      "name": "casus_belli"
+    },
+    {
+      "name": "category",
+      "count": 593
+    },
+    {
+      "name": "cathedral"
+    },
+    {
+      "name": "catholic"
+    },
+    {
+      "name": "cause"
+    },
+    {
+      "name": "chinaware"
+    },
+    {
+      "name": "cloth"
+    },
+    {
+      "name": "clr_auto_complete_flag",
+      "count": 294
+    },
+    {
+      "name": "coal"
+    },
+    {
+      "name": "cocoa"
+    },
+    {
+      "name": "coffee"
+    },
+    {
+      "name": "colonial_alaska"
+    },
+    {
+      "name": "colonial_australia"
+    },
+    {
+      "name": "colonial_brazil"
+    },
+    {
+      "name": "colonial_california"
+    },
+    {
+      "name": "colonial_eastern_america"
+    },
+    {
+      "name": "colonial_governor"
+    },
+    {
+      "name": "colonial_region_for_scope_province"
+    },
+    {
+      "name": "colonial_region_nations"
+    },
+    {
+      "name": "colonial_the_carribean"
+    },
+    {
+      "name": "color",
+      "count": 2118
+    },
+    {
+      "name": "color1",
+      "count": 280
+    },
+    {
+      "name": "commandant"
+    },
+    {
+      "name": "conditional",
+      "count": 294
+    },
+    {
+      "name": "conditional_modifier",
+      "count": 773
+    },
+    {
+      "name": "confucianism"
+    },
+    {
+      "name": "consort_ADM"
+    },
+    {
+      "name": "consort_DIP"
+    },
+    {
+      "name": "consort_MIL"
+    },
+    {
+      "name": "copper"
+    },
+    {
+      "name": "coptic"
+    },
+    {
+      "name": "cost",
+      "count": 310
+    },
+    {
+      "name": "cost_to_upgrade",
+      "count": 564
+    },
+    {
+      "name": "cotton"
+    },
+    {
+      "name": "count"
+    },
+    {
+      "name": "counting_house"
+    },
+    {
+      "name": "country",
+      "count": 340
+    },
+    {
+      "name": "country_modifiers",
+      "count": 557
+    },
+    {
+      "name": "cult"
+    },
+    {
+      "name": "custom_attributes",
+      "count": 355
+    },
+    {
+      "name": "days",
+      "count": 2782
+    },
+    {
+      "name": "defenders"
+    },
+    {
+      "name": "defensive_fire",
       "count": 304
     },
     {
@@ -20795,36 +21105,447 @@
       "count": 304
     },
     {
-      "name": "offensive_fire",
-      "count": 304
-    },
-    {
-      "name": "defensive_fire",
-      "count": 304
-    },
-    {
-      "name": "offensive_shock",
-      "count": 304
-    },
-    {
       "name": "defensive_shock",
       "count": 304
     },
     {
-      "name": "overlord",
-      "count": 301
+      "name": "development_cost",
+      "count": 285
+    },
+    {
+      "name": "dip_ideas"
+    },
+    {
+      "name": "diplomat"
+    },
+    {
+      "name": "diplomatic_ideas"
+    },
+    {
+      "name": "disaster"
     },
     {
       "name": "discipline",
       "count": 298
     },
     {
-      "name": "clr_auto_complete_flag",
-      "count": 294
+      "name": "discount",
+      "count": 599
     },
     {
-      "name": "conditional",
-      "count": 294
+      "name": "distance"
+    },
+    {
+      "name": "duration",
+      "count": 5742
+    },
+    {
+      "name": "dyes"
+    },
+    {
+      "name": "dynasty_names",
+      "count": 337
+    },
+    {
+      "name": "economic_ideas"
+    },
+    {
+      "name": "enable",
+      "count": 328
+    },
+    {
+      "name": "enlightenment"
+    },
+    {
+      "name": "enlightenment_origin"
+    },
+    {
+      "name": "estate",
+      "count": 6021
+    },
+    {
+      "name": "estate_action",
+      "count": 503
+    },
+    {
+      "name": "estate_privilege"
+    },
+    {
+      "name": "event_target:agenda_province",
+      "count": 633
+    },
+    {
+      "name": "exploration_ideas"
+    },
+    {
+      "name": "faction"
+    },
+    {
+      "name": "factor",
+      "count": 18910
+    },
+    {
+      "name": "failing_effect",
+      "count": 322
+    },
+    {
+      "name": "farm_estate"
+    },
+    {
+      "name": "female",
+      "count": 349
+    },
+    {
+      "name": "female_names",
+      "count": 398
+    },
+    {
+      "name": "feudalism"
+    },
+    {
+      "name": "fire"
+    },
+    {
+      "name": "fire_only_once",
+      "count": 1632
+    },
+    {
+      "name": "fish"
+    },
+    {
+      "name": "flag",
+      "count": 340
+    },
+    {
+      "name": "fort_15th"
+    },
+    {
+      "name": "fort_16th"
+    },
+    {
+      "name": "fort_17th"
+    },
+    {
+      "name": "fort_18th"
+    },
+    {
+      "name": "fortification_expert"
+    },
+    {
+      "name": "free",
+      "count": 541
+    },
+    {
+      "name": "fur"
+    },
+    {
+      "name": "furnace"
+    },
+    {
+      "name": "gems"
+    },
+    {
+      "name": "general"
+    },
+    {
+      "name": "glass"
+    },
+    {
+      "name": "global_autonomy",
+      "count": 282
+    },
+    {
+      "name": "global_manpower_modifier",
+      "count": 365
+    },
+    {
+      "name": "global_missionary_strength",
+      "count": 356
+    },
+    {
+      "name": "global_tax_modifier",
+      "count": 442
+    },
+    {
+      "name": "global_trade"
+    },
+    {
+      "name": "global_unrest",
+      "count": 642
+    },
+    {
+      "name": "gold"
+    },
+    {
+      "name": "goto",
+      "count": 707
+    },
+    {
+      "name": "government_reform"
+    },
+    {
+      "name": "grain"
+    },
+    {
+      "name": "grand_captain"
+    },
+    {
+      "name": "grand_shipyard"
+    },
+    {
+      "name": "graphical_culture",
+      "count": 1059
+    },
+    {
+      "name": "group"
+    },
+    {
+      "name": "happened",
+      "count": 373
+    },
+    {
+      "name": "has_absolutism_reduction_for_estate_privileges",
+      "count": 363
+    },
+    {
+      "name": "has_estate_agenda_auto_completion",
+      "count": 649
+    },
+    {
+      "name": "heir_ADM"
+    },
+    {
+      "name": "heir_DIP"
+    },
+    {
+      "name": "heir_MIL"
+    },
+    {
+      "name": "hidden",
+      "count": 514
+    },
+    {
+      "name": "hinduism"
+    },
+    {
+      "name": "historical_idea_groups",
+      "count": 978
+    },
+    {
+      "name": "historical_units",
+      "count": 975
+    },
+    {
+      "name": "ibadi"
+    },
+    {
+      "name": "icon",
+      "count": 1257
+    },
+    {
+      "name": "impressment_offices"
+    },
+    {
+      "name": "incense"
+    },
+    {
+      "name": "incident"
+    },
+    {
+      "name": "independent_nations"
+    },
+    {
+      "name": "industrialization"
+    },
+    {
+      "name": "industrialization_origin"
+    },
+    {
+      "name": "influence",
+      "count": 1794
+    },
+    {
+      "name": "influence_ideas"
+    },
+    {
+      "name": "innovativeness_ideas"
+    },
+    {
+      "name": "inquisitor"
+    },
+    {
+      "name": "investment"
+    },
+    {
+      "name": "investor"
+    },
+    {
+      "name": "iron"
+    },
+    {
+      "name": "is_free_or_tributary_trigger",
+      "count": 552
+    },
+    {
+      "name": "is_triggered_only",
+      "count": 3704
+    },
+    {
+      "name": "is_valid",
+      "count": 371
+    },
+    {
+      "name": "issue"
+    },
+    {
+      "name": "ivory"
+    },
+    {
+      "name": "key",
+      "count": 1355
+    },
+    {
+      "name": "leader_names",
+      "count": 979
+    },
+    {
+      "name": "level"
+    },
+    {
+      "name": "livestock"
+    },
+    {
+      "name": "local_development_cost",
+      "count": 359
+    },
+    {
+      "name": "local_unrest",
+      "count": 412
+    },
+    {
+      "name": "localization",
+      "count": 401
+    },
+    {
+      "name": "location"
+    },
+    {
+      "name": "looser"
+    },
+    {
+      "name": "loyalty",
+      "count": 2849
+    },
+    {
+      "name": "mahayana"
+    },
+    {
+      "name": "major",
+      "count": 597
+    },
+    {
+      "name": "male_names",
+      "count": 399
+    },
+    {
+      "name": "maneuver",
+      "count": 304
+    },
+    {
+      "name": "manufactories"
+    },
+    {
+      "name": "manufactories_origin"
+    },
+    {
+      "name": "maritime_ideas"
+    },
+    {
+      "name": "marketplace"
+    },
+    {
+      "name": "master_of_mint"
+    },
+    {
+      "name": "max_absolutism",
+      "count": 1036
+    },
+    {
+      "name": "max_years_since"
+    },
+    {
+      "name": "mechanic_type",
+      "count": 1006
+    },
+    {
+      "name": "merc_company"
+    },
+    {
+      "name": "mil_ideas"
+    },
+    {
+      "name": "mills"
+    },
+    {
+      "name": "mission"
+    },
+    {
+      "name": "modifiers",
+      "count": 672
+    },
+    {
+      "name": "monarch_names",
+      "count": 979
+    },
+    {
+      "name": "months",
+      "count": 3521
+    },
+    {
+      "name": "nation_designer_cost",
+      "count": 339
+    },
+    {
+      "name": "native_ceremonial_fire_pit"
+    },
+    {
+      "name": "native_longhouse"
+    },
+    {
+      "name": "native_sweat_lodge"
+    },
+    {
+      "name": "natural_scientist"
+    },
+    {
+      "name": "naval_reformer"
+    },
+    {
+      "name": "naval_supplies"
+    },
+    {
+      "name": "navigator"
+    },
+    {
+      "name": "new_world_i"
+    },
+    {
+      "name": "node"
+    },
+    {
+      "name": "offensive_fire",
+      "count": 304
+    },
+    {
+      "name": "offensive_ideas"
+    },
+    {
+      "name": "offensive_morale",
+      "count": 304
+    },
+    {
+      "name": "offensive_shock",
+      "count": 304
     },
     {
       "name": "on_completed_agenda_effect",
@@ -20835,28 +21556,345 @@
       "count": 293
     },
     {
-      "name": "any_country",
-      "count": 287
+      "name": "on_granted",
+      "count": 320
     },
     {
-      "name": "any_subject_country",
-      "count": 287
+      "name": "on_upgraded",
+      "count": 555
     },
     {
-      "name": "development_cost",
-      "count": 285
+      "name": "opinion",
+      "count": 1051
     },
     {
-      "name": "global_autonomy",
-      "count": 282
+      "name": "orthodox"
+    },
+    {
+      "name": "overlord",
+      "count": 301
+    },
+    {
+      "name": "owner",
+      "count": 3627
+    },
+    {
+      "name": "page"
+    },
+    {
+      "name": "paper"
+    },
+    {
+      "name": "parliament_action"
     },
     {
       "name": "penalties",
       "count": 282
     },
     {
-      "name": "color1",
-      "count": 280
+      "name": "philosopher"
+    },
+    {
+      "name": "picture",
+      "count": 7057
+    },
+    {
+      "name": "plantations"
+    },
+    {
+      "name": "plutocracy_ideas"
+    },
+    {
+      "name": "policy"
+    },
+    {
+      "name": "possible",
+      "count": 373
+    },
+    {
+      "name": "power_type",
+      "count": 1006
+    },
+    {
+      "name": "prev"
+    },
+    {
+      "name": "primary",
+      "count": 355
+    },
+    {
+      "name": "printing_press"
+    },
+    {
+      "name": "protestant"
+    },
+    {
+      "name": "province"
+    },
+    {
+      "name": "province_modifiers",
+      "count": 570
+    },
+    {
+      "name": "provinces_to_highlight",
+      "count": 539
+    },
+    {
+      "name": "quartermaster"
+    },
+    {
+      "name": "ramparts"
+    },
+    {
+      "name": "random_list",
+      "count": 492
+    },
+    {
+      "name": "random_owned_province",
+      "count": 2404
+    },
+    {
+      "name": "recruitmaster"
+    },
+    {
+      "name": "reformed"
+    },
+    {
+      "name": "removed_effect",
+      "count": 386
+    },
+    {
+      "name": "renaissance"
+    },
+    {
+      "name": "revolutionary_colors",
+      "count": 798
+    },
+    {
+      "name": "root",
+      "count": 341
+    },
+    {
+      "name": "salt"
+    },
+    {
+      "name": "school"
+    },
+    {
+      "name": "secondary"
+    },
+    {
+      "name": "selection_weight",
+      "count": 320
+    },
+    {
+      "name": "shamanism"
+    },
+    {
+      "name": "share",
+      "count": 486
+    },
+    {
+      "name": "shiite"
+    },
+    {
+      "name": "shinto"
+    },
+    {
+      "name": "ship_names",
+      "count": 978
+    },
+    {
+      "name": "shipyard"
+    },
+    {
+      "name": "shock"
+    },
+    {
+      "name": "siege"
+    },
+    {
+      "name": "sikhism"
+    },
+    {
+      "name": "silk"
+    },
+    {
+      "name": "size",
+      "count": 1052
+    },
+    {
+      "name": "skill",
+      "count": 700
+    },
+    {
+      "name": "slaves"
+    },
+    {
+      "name": "soldier_households"
+    },
+    {
+      "name": "spices"
+    },
+    {
+      "name": "spy_ideas"
+    },
+    {
+      "name": "spymaster"
+    },
+    {
+      "name": "stability_cost_modifier",
+      "count": 471
+    },
+    {
+      "name": "start",
+      "count": 675
+    },
+    {
+      "name": "state_house"
+    },
+    {
+      "name": "statesman"
+    },
+    {
+      "name": "stock_exchange"
+    },
+    {
+      "name": "sugar"
+    },
+    {
+      "name": "sunni"
+    },
+    {
+      "name": "target"
+    },
+    {
+      "name": "task_completed_effect",
+      "count": 322
+    },
+    {
+      "name": "task_requirements",
+      "count": 322
+    },
+    {
+      "name": "tea"
+    },
+    {
+      "name": "tech"
+    },
+    {
+      "name": "temple"
+    },
+    {
+      "name": "territory"
+    },
+    {
+      "name": "textile"
+    },
+    {
+      "name": "theologian"
+    },
+    {
+      "name": "tier"
+    },
+    {
+      "name": "tobacco"
+    },
+    {
+      "name": "tolerance_own",
+      "count": 527
+    },
+    {
+      "name": "tooltip",
+      "count": 1758
+    },
+    {
+      "name": "totemism"
+    },
+    {
+      "name": "trade_company_coromandel"
+    },
+    {
+      "name": "trade_company_east_india"
+    },
+    {
+      "name": "trade_company_indonesia"
+    },
+    {
+      "name": "trade_company_moluccas"
+    },
+    {
+      "name": "trade_company_west_india"
+    },
+    {
+      "name": "trade_depot"
+    },
+    {
+      "name": "trade_ideas"
+    },
+    {
+      "name": "trader"
+    },
+    {
+      "name": "training_fields"
+    },
+    {
+      "name": "treasurer"
+    },
+    {
+      "name": "treaty"
+    },
+    {
+      "name": "type",
+      "count": 3849
+    },
+    {
+      "name": "university"
+    },
+    {
+      "name": "upgrade_time",
+      "count": 564
+    },
+    {
+      "name": "value",
+      "count": 5673
+    },
+    {
+      "name": "variable_name"
+    },
+    {
+      "name": "weapons"
+    },
+    {
+      "name": "wharf"
+    },
+    {
+      "name": "which",
+      "count": 2436
+    },
+    {
+      "name": "who",
+      "count": 3305
+    },
+    {
+      "name": "wine"
+    },
+    {
+      "name": "winner"
+    },
+    {
+      "name": "wool"
+    },
+    {
+      "name": "workshop"
+    },
+    {
+      "name": "yearly_decay",
+      "count": 974
+    },
+    {
+      "name": "years",
+      "count": 402
     }
   ]
 }
