@@ -216,6 +216,7 @@ fn build_file_index(
 		&file.mod_id,
 		&file.relative_path,
 		line_from_stmt(file.ast.statements.first()),
+		"",
 	);
 
 	let mut ctx = BuildContext {
@@ -450,6 +451,7 @@ fn walk_statements(
 						ctx.mod_id,
 						ctx.path,
 						span.start.line,
+						"",
 					);
 					walk_statements(
 						items,
@@ -496,6 +498,7 @@ fn handle_event_block(
 		ctx.mod_id,
 		ctx.path,
 		span.start.line,
+		key,
 	);
 
 	if let Some(id) = extract_assignment_scalar(items, "id") {
@@ -984,6 +987,9 @@ fn is_scripted_effect_call_candidate(
 	if scope_kind(index, scope_id) == ScopeKind::File {
 		return false;
 	}
+	if is_data_context(index, scope_id) {
+		return false;
+	}
 	if is_province_id_selector(key) {
 		return false;
 	}
@@ -1039,6 +1045,9 @@ fn is_scripted_trigger_call_candidate(
 		return false;
 	}
 	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
+	if is_data_context(index, scope_id) {
 		return false;
 	}
 	if is_province_id_selector(key) || is_country_tag_selector(key) {
@@ -1342,6 +1351,7 @@ fn create_child_scope(
 		ctx.mod_id,
 		ctx.path,
 		span.start.line,
+		key,
 	)
 }
 
@@ -1426,6 +1436,7 @@ fn push_scope(
 	mod_id: &str,
 	path: &Path,
 	line: usize,
+	key: &str,
 ) -> usize {
 	let id = index.scopes.len();
 	index.scopes.push(ScopeNode {
@@ -1437,6 +1448,7 @@ fn push_scope(
 		mod_id: mod_id.to_string(),
 		path: path.to_path_buf(),
 		span: SourceSpan { line, column: 1 },
+		key: key.to_string(),
 	});
 	id
 }
@@ -1447,6 +1459,49 @@ fn scope_kind(index: &SemanticIndex, scope_id: usize) -> ScopeKind {
 		.get(scope_id)
 		.map(|scope| scope.kind)
 		.unwrap_or(ScopeKind::Block)
+}
+
+/// Returns true if the current scope or any ancestor scope has a key that
+/// means its children are data identifiers (variable names, mission names,
+/// advisor types, etc.) rather than scripted effect/trigger calls.
+fn is_data_context(index: &SemanticIndex, scope_id: usize) -> bool {
+	const DATA_CONTEXT_KEYS: &[&str] = &[
+		// Variable operations — children are variable names
+		"check_variable",
+		"set_variable",
+		"change_variable",
+		"multiply_variable",
+		"divide_variable",
+		"subtract_variable",
+		"export_to_variable",
+		"is_variable_equal",
+		"had_recent_war",
+		// Mission structure — children are mission names
+		"required_missions",
+		// Advisor checks — children are advisor type names
+		"ME_has_mil_advisor",
+		"ME_has_dip_advisor",
+		"ME_has_adm_advisor",
+		// Define namespace — children are config keys
+		"define",
+		"defines",
+		// Scripted parameter blocks
+		"who",
+		"export_to_variable",
+	];
+	let mut current = scope_id;
+	loop {
+		let Some(scope) = index.scopes.get(current) else {
+			return false;
+		};
+		if DATA_CONTEXT_KEYS.contains(&scope.key.as_str()) {
+			return true;
+		}
+		let Some(parent) = scope.parent else {
+			return false;
+		};
+		current = parent;
+	}
 }
 
 fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> ScopeType {

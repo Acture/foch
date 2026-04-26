@@ -2149,6 +2149,7 @@ mod tests {
 				mod_id: "mod:test".to_string(),
 				path: PathBuf::from("common/holy_orders/orders.txt"),
 				span: SourceSpan { line: 1, column: 1 },
+				key: String::new(),
 			},
 			ScopeNode {
 				id: 1,
@@ -2159,6 +2160,7 @@ mod tests {
 				mod_id: "mod:test".to_string(),
 				path: PathBuf::from("common/holy_orders/orders.txt"),
 				span: SourceSpan { line: 2, column: 1 },
+				key: String::new(),
 			},
 		];
 		RuntimeState {

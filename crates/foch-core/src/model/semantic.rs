@@ -52,6 +52,10 @@ pub struct ScopeNode {
 	pub mod_id: String,
 	pub path: PathBuf,
 	pub span: SourceSpan,
+	/// The block key that created this scope (e.g. "multiply_variable", "OR").
+	/// Empty for file-level scopes.
+	#[serde(default)]
+	pub key: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -39,7 +39,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 7;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 8;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -393,6 +393,7 @@ impl BaseAnalysisSnapshot {
 					aliases: item.aliases.clone(),
 					path: normalize_path_str(&item.path),
 					span: item.span.clone(),
+					key: item.key.clone(),
 				})
 				.collect(),
 			symbol_definitions: index
@@ -555,6 +556,7 @@ impl BaseAnalysisSnapshot {
 					mod_id: mod_id.clone(),
 					path: PathBuf::from(&item.path),
 					span: item.span.clone(),
+					key: item.key.clone(),
 				})
 				.collect(),
 			definitions: self
@@ -764,6 +766,8 @@ pub struct BaseScopeNode {
 	pub aliases: HashMap<String, ScopeType>,
 	pub path: String,
 	pub span: SourceSpan,
+	#[serde(default)]
+	pub key: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
