@@ -972,7 +972,10 @@ fn is_scripted_effect_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
-	if is_template_param_placeholder_key(key) {
+	if is_template_param_placeholder_key(key) || key.contains('$') {
+		return false;
+	}
+	if key.parse::<u32>().is_ok() {
 		return false;
 	}
 	if is_dynamic_scope_reference_key(key) {
@@ -1026,7 +1029,10 @@ fn is_scripted_trigger_call_candidate(
 	if is_keyword(key) || is_alias_key(key) {
 		return false;
 	}
-	if is_template_param_placeholder_key(key) {
+	if is_template_param_placeholder_key(key) || key.contains('$') {
+		return false;
+	}
+	if key.parse::<u32>().is_ok() {
 		return false;
 	}
 	if is_dynamic_scope_reference_key(key) {

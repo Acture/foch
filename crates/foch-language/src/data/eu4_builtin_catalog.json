@@ -20764,6 +20764,9 @@
     },
     {
       "name": "random_trade_node"
+    },
+    {
+      "name": "random_trade_node_member_province"
     }
   ],
   "builtin_special_blocks": [
@@ -20838,6 +20841,9 @@
       "name": "random"
     },
     {
+      "name": "random_events"
+    },
+    {
       "name": "trigger_switch"
     },
     {
@@ -20864,6 +20870,9 @@
     },
     {
       "name": "admiral"
+    },
+    {
+      "name": "africa"
     },
     {
       "name": "age",
@@ -20914,6 +20923,9 @@
     },
     {
       "name": "artist"
+    },
+    {
+      "name": "asia"
     },
     {
       "name": "attackers"
@@ -21169,6 +21181,9 @@
     },
     {
       "name": "estate_privilege"
+    },
+    {
+      "name": "europe"
     },
     {
       "name": "event_target:agenda_province",
@@ -21533,6 +21548,12 @@
       "name": "node"
     },
     {
+      "name": "north_america"
+    },
+    {
+      "name": "oceania"
+    },
+    {
       "name": "offensive_fire",
       "count": 304
     },
@@ -21734,6 +21755,9 @@
       "name": "soldier_households"
     },
     {
+      "name": "south_america"
+    },
+    {
       "name": "spices"
     },
     {
@@ -21767,6 +21791,9 @@
     },
     {
       "name": "target"
+    },
+    {
+      "name": "target_region"
     },
     {
       "name": "task_completed_effect",
