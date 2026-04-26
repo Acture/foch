@@ -3,6 +3,7 @@
 use super::emit::{emit_clausewitz_statements, emit_structural_file};
 use super::error::MergeError;
 use super::ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
+#[allow(unused_imports)]
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
 use super::patch_apply::apply_patches;
 use super::patch_deps::compute_chained_patches;
@@ -150,7 +151,7 @@ pub(crate) fn materialize_merge_internal(
 						{
 							let target = entry.path.clone();
 							let contribs = contributors.clone();
-							let desc = descriptor.clone();
+							let desc = *descriptor;
 							let result = std::panic::catch_unwind(|| {
 								patch_based_structural_merge(
 									&target,

@@ -1706,22 +1706,11 @@ fn resolve_reference_targets_for_kind(
 			by_local.push(idx);
 		}
 	}
-	if by_local.len() == 1 {
+	// Scripted effects/triggers are global — if any definition matches by
+	// name+kind, the reference is resolved (EU4 uses last-loaded-wins for
+	// duplicate names, so having 1+ matches means the key exists).
+	if !by_local.is_empty() {
 		return by_local;
-	}
-
-	let by_mod: Vec<usize> = by_local
-		.into_iter()
-		.filter(|idx| {
-			index
-				.definitions
-				.get(*idx)
-				.map(|def| def.mod_id == reference.mod_id)
-				.unwrap_or(false)
-		})
-		.collect();
-	if by_mod.len() == 1 {
-		return by_mod;
 	}
 
 	Vec::new()
