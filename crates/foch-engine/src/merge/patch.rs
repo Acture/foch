@@ -61,8 +61,11 @@ pub fn diff_ast(
 ) -> Vec<ClausewitzPatch> {
 	let base_entries = extract_keyed_entries(&base.ast.statements, merge_key_source);
 	let overlay_entries = extract_keyed_entries(&overlay.ast.statements, merge_key_source);
-	diff_entry_maps(&base_entries, &overlay_entries, &[])
+	diff_entry_maps(&base_entries, &overlay_entries, &[], 0)
 }
+
+/// Maximum recursion depth for block diffing.  Beyond this, emit ReplaceBlock.
+const MAX_DIFF_DEPTH: usize = 12;
 
 // ---------------------------------------------------------------------------
 // Keyed entry extraction
@@ -198,6 +201,7 @@ fn diff_entry_maps(
 	base_entries: &[KeyedEntry],
 	overlay_entries: &[KeyedEntry],
 	parent_path: &[String],
+	depth: usize,
 ) -> Vec<ClausewitzPatch> {
 	let base_map = build_key_map(base_entries);
 	let overlay_map = build_key_map(overlay_entries);
@@ -266,6 +270,7 @@ fn diff_entry_maps(
 				overlay_stmts[0],
 				&path,
 				&mut patches,
+				depth,
 			);
 		} else {
 			diff_repeated_key(key, base_stmts, overlay_stmts, &path, &mut patches);
@@ -355,6 +360,7 @@ fn diff_single_statement(
 	overlay: &AstStatement,
 	path: &[String],
 	patches: &mut Vec<ClausewitzPatch>,
+	depth: usize,
 ) {
 	if statements_equal_ignoring_span(base, overlay) {
 		return;
@@ -385,7 +391,7 @@ fn diff_single_statement(
 				..
 			},
 		) => {
-			diff_blocks(key, base, overlay, base_items, overlay_items, path, patches);
+			diff_blocks(key, base, overlay, base_items, overlay_items, path, patches, depth);
 		}
 		// Type mismatch (scalar↔block) → replace.
 		_ => {
@@ -406,6 +412,7 @@ fn diff_single_statement(
 /// Threshold: if >80% of children changed, emit `ReplaceBlock`.
 const REPLACE_THRESHOLD: f64 = 0.8;
 
+#[allow(clippy::too_many_arguments)]
 fn diff_blocks(
 	key: &str,
 	base_stmt: &AstStatement,
@@ -414,7 +421,20 @@ fn diff_blocks(
 	overlay_items: &[AstStatement],
 	parent_path: &[String],
 	patches: &mut Vec<ClausewitzPatch>,
+	depth: usize,
 ) {
+	// Depth limit: emit ReplaceBlock instead of recursing further.
+	if depth >= MAX_DIFF_DEPTH {
+		if !statements_equal_ignoring_span(base_stmt, overlay_stmt) {
+			patches.push(ClausewitzPatch::ReplaceBlock {
+				path: parent_path.to_vec(),
+				key: key.to_string(),
+				old_statement: base_stmt.clone(),
+				new_statement: overlay_stmt.clone(),
+			});
+		}
+		return;
+	}
 	let child_path: Vec<String> = {
 		let mut p = parent_path.to_vec();
 		p.push(key.to_string());
@@ -467,7 +487,7 @@ fn diff_blocks(
 	// Produce per-child patches.
 	let base_child_entries: Vec<KeyedEntry> = child_keyed_entries(base_items);
 	let overlay_child_entries: Vec<KeyedEntry> = child_keyed_entries(overlay_items);
-	let child_patches = diff_entry_maps(&base_child_entries, &overlay_child_entries, &child_path);
+	let child_patches = diff_entry_maps(&base_child_entries, &overlay_child_entries, &child_path, depth + 1);
 	patches.extend(child_patches);
 }
 

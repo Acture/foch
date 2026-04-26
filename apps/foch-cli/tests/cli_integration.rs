@@ -1438,21 +1438,21 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 3);
-	assert!(stdout.contains("status: FATAL"));
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: PARTIAL_SUCCESS"));
 	assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
 	assert_eq!(
 		fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 		"safe\n"
 	);
-	// Binary non-text conflicts are not materialized (no placeholder for .dds/.png)
-	assert!(!out_dir.join("assets/flag.dds").exists());
-	assert!(!out_dir.join("assets/icon.png").exists());
+	// Binary conflicts resolved by copying highest-precedence mod's version
+	assert!(out_dir.join("assets/flag.dds").exists());
+	assert!(out_dir.join("assets/icon.png").exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "fatal");
+	assert_eq!(report["status"], "partial_success");
 	assert_eq!(report["manual_conflict_count"], 2);
-	assert_eq!(report["generated_file_count"], 0);
+	assert_eq!(report["generated_file_count"], 2);
 	assert_eq!(report["copied_file_count"], 1);
 }
 

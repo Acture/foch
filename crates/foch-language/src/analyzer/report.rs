@@ -153,6 +153,7 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 pub fn merge_report_exit_code(report: &MergeReport) -> i32 {
 	match report.status {
 		MergeReportStatus::Ready => 0,
+		MergeReportStatus::PartialSuccess => 0,
 		MergeReportStatus::Blocked => 2,
 		MergeReportStatus::Fatal => 1,
 	}
@@ -232,6 +233,7 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 fn render_merge_report_status(status: MergeReportStatus) -> &'static str {
 	match status {
 		MergeReportStatus::Ready => "READY",
+		MergeReportStatus::PartialSuccess => "PARTIAL_SUCCESS",
 		MergeReportStatus::Blocked => "BLOCKED",
 		MergeReportStatus::Fatal => "FATAL",
 	}

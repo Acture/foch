@@ -5,3 +5,4 @@ packages/vscode-foch/bin/*/foch_lsp
 packages/vscode-foch/bin/*/foch_lsp.exe
 packages/vscode-foch/*.vsix
 .direnv/
+output/

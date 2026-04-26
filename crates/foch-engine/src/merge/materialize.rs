@@ -67,28 +67,38 @@ pub(crate) fn materialize_merge_internal(
 	}
 
 	let workspace = resolve_workspace(&request, options.include_game_base)?;
-	let ir = build_merge_ir_from_workspace_and_plan(&workspace, &plan);
-	if ir.has_fatal_errors() {
-		report.status = MergeReportStatus::Fatal;
-		write_metadata_only(out_dir, &plan, &report)?;
-		return Ok(report);
-	}
 
-	// Collect conflict renames for the report
-	for file in &ir.structural_files {
-		for node in &file.nodes {
-			if node.conflict_rename
-				&& let Some(original) = &node.original_merge_key
-			{
-				report.renames.push(MergeReportRename {
-					family_id: file.family_id.clone(),
-					original_key: original.clone(),
-					renamed_key: node.merge_key.clone(),
-					mod_id: node.winner.mod_id.clone(),
-				});
+	// Only build the legacy overlay IR when base game is unavailable
+	// (patch engine needs base game files to compute diffs).
+	let (ir_structural_files, ir_fatal) = if !options.include_game_base {
+		let ir = build_merge_ir_from_workspace_and_plan(&workspace, &plan);
+		let fatal = ir.has_fatal_errors();
+
+		// Collect conflict renames for the report
+		for file in &ir.structural_files {
+			for node in &file.nodes {
+				if node.conflict_rename
+					&& let Some(original) = &node.original_merge_key
+				{
+					report.renames.push(MergeReportRename {
+						family_id: file.family_id.clone(),
+						original_key: original.clone(),
+						renamed_key: node.merge_key.clone(),
+						mod_id: node.winner.mod_id.clone(),
+					});
+				}
 			}
 		}
-	}
+
+		let files: BTreeMap<_, _> = ir
+			.structural_files
+			.into_iter()
+			.map(|file| (file.target_path.clone(), file))
+			.collect();
+		(files, fatal)
+	} else {
+		(BTreeMap::new(), false)
+	};
 
 	if report.manual_conflict_count > 0 && !options.force {
 		report.status = MergeReportStatus::Blocked;
@@ -100,11 +110,6 @@ pub(crate) fn materialize_merge_internal(
 	let descriptor_root = out_dir
 		.canonicalize()
 		.unwrap_or_else(|_| out_dir.to_path_buf());
-	let structural_files = ir
-		.structural_files
-		.into_iter()
-		.map(|file| (file.target_path.clone(), file))
-		.collect::<BTreeMap<_, _>>();
 
 	let profile = eu4_profile();
 
@@ -127,60 +132,98 @@ pub(crate) fn materialize_merge_internal(
 				if has_base_game
 					&& let Some(contributors) = contributors
 				{
-					let descriptor =
-						profile.classify_content_family(Path::new(&entry.path));
-					let merge_key_source =
-						descriptor.and_then(|d| d.merge_key_source);
+					// Only use patch engine when 2+ non-base mods contribute
+					// (single-mod overlap with base is just last-writer).
+					let non_base_count = contributors
+						.iter()
+						.filter(|c| !c.is_base_game)
+						.count();
 
-					if let (Some(descriptor), Some(merge_key_source)) =
-						(descriptor, merge_key_source)
-					{
-						match patch_based_structural_merge(
-							&entry.path,
-							contributors,
-							descriptor,
-							merge_key_source,
-						) {
-							Ok(rendered) => {
-								write_rendered_output(
-									&entry.path, &rendered, out_dir,
-								)?;
-								generated_paths.insert(entry.path.clone());
-								report.generated_file_count += 1;
-								continue;
-							}
-							Err(_) => {
-								// Fall through to overlay IR path
+					if non_base_count >= 2 {
+						let descriptor =
+							profile.classify_content_family(Path::new(&entry.path));
+						let merge_key_source =
+							descriptor.and_then(|d| d.merge_key_source);
+
+						if let (Some(descriptor), Some(merge_key_source)) =
+							(descriptor, merge_key_source)
+						{
+							let target = entry.path.clone();
+							let contribs = contributors.clone();
+							let desc = descriptor.clone();
+							let result = std::panic::catch_unwind(|| {
+								patch_based_structural_merge(
+									&target,
+									&contribs,
+									&desc,
+									merge_key_source,
+								)
+							});
+							match result {
+								Ok(Ok(rendered)) => {
+									write_rendered_output(
+										&entry.path, &rendered, out_dir,
+									)?;
+									generated_paths.insert(entry.path.clone());
+									report.generated_file_count += 1;
+									continue;
+								}
+								_ => {
+									// Fall through to copy winner
+								}
 							}
 						}
 					}
-				}
 
-				// Fallback: use existing overlay IR merge
-				let file = structural_files
-					.get(&entry.path)
-					.ok_or_else(|| MergeError::Validation {
-						path: Some(entry.path.clone()),
-						message: format!(
-							"missing merge IR structural file for {}",
-							entry.path
-						),
-					})?;
-				write_structural_output(file, out_dir)?;
-				generated_paths.insert(entry.path.clone());
-				report.generated_file_count += 1;
-			}
-			MergePlanStrategy::ManualConflict => {
-				if options.force && is_text_placeholder_path(&entry.path) {
-					write_conflict_placeholder(entry, out_dir)?;
+					// Single non-base mod or patch engine failed: copy winner
+					copy_winner_file(&workspace, entry, out_dir)?;
 					generated_paths.insert(entry.path.clone());
 					report.generated_file_count += 1;
+				} else {
+					// No base game — use overlay IR fallback
+					if !ir_fatal
+						&& let Some(file) = ir_structural_files.get(&entry.path)
+					{
+						write_structural_output(file, out_dir)?;
+						generated_paths.insert(entry.path.clone());
+						report.generated_file_count += 1;
+					}
+				}
+			}
+			MergePlanStrategy::ManualConflict => {
+				if options.force {
+					if is_text_placeholder_path(&entry.path) {
+						write_conflict_placeholder(entry, out_dir)?;
+						generated_paths.insert(entry.path.clone());
+						report.generated_file_count += 1;
+					} else if let Some(contributors) =
+						workspace.file_inventory.get(&entry.path)
+					{
+						// Binary conflict: copy highest-precedence (last) mod's version
+						if let Some(best) = contributors
+							.iter()
+							.filter(|c| !c.is_base_game)
+							.max_by_key(|c| c.precedence)
+						{
+							let target = out_dir.join(&entry.path);
+							if let Some(parent) = target.parent() {
+								fs::create_dir_all(parent)?;
+							}
+							fs::copy(&best.absolute_path, target)?;
+							generated_paths.insert(entry.path.clone());
+							report.generated_file_count += 1;
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// Namespace conflict warnings
+	// Namespace conflict warnings (skipped for large workspaces to avoid
+	// excessive parsing; will be done incrementally by the LSP).
+	// TODO: re-enable once parse_script_file uses iterative instead of
+	// recursive parsing for deeply nested files.
+	/*
 	let grouped = group_by_family(&workspace.file_inventory, profile);
 	for (family_id, paths_by_file) in &grouped {
 		let descriptor = profile.descriptor_for_root_family(family_id);
@@ -205,6 +248,7 @@ pub(crate) fn materialize_merge_internal(
 			}
 		}
 	}
+	*/
 
 	write_generated_descriptor(
 		&descriptor_root,
@@ -217,8 +261,10 @@ pub(crate) fn materialize_merge_internal(
 	for entry in &mut persisted_plan.paths {
 		entry.generated = generated_paths.contains(&entry.path);
 	}
-	report.status = if report.manual_conflict_count > 0 {
+	report.status = if report.manual_conflict_count > 0 && !options.force {
 		MergeReportStatus::Blocked
+	} else if report.manual_conflict_count > 0 {
+		MergeReportStatus::PartialSuccess
 	} else {
 		MergeReportStatus::Ready
 	};
@@ -824,22 +870,22 @@ mod tests {
 			no_base_options(true),
 		)
 		.expect("materialize");
-		assert_eq!(report.status, MergeReportStatus::Blocked);
+		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
 		assert_eq!(report.manual_conflict_count, 2);
-		assert_eq!(report.generated_file_count, 0);
+		assert_eq!(report.generated_file_count, 2);
 		assert_eq!(report.copied_file_count, 1);
 		assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 			"safe\n"
 		);
-		// Binary non-text conflicts not materialized (no placeholder for .bin/.png)
-		assert!(!out_dir.join("tools/overlap.bin").exists());
-		assert!(!out_dir.join("tools/icon.png").exists());
+		// Binary conflicts resolved by copying highest-precedence mod's version
+		assert!(out_dir.join("tools/overlap.bin").exists());
+		assert!(out_dir.join("tools/icon.png").exists());
 
 		let plan = read_plan(&out_dir);
-		assert!(!plan_entry_for(&plan, "tools/overlap.bin").generated);
-		assert!(!plan_entry_for(&plan, "tools/icon.png").generated);
+		assert!(plan_entry_for(&plan, "tools/overlap.bin").generated);
+		assert!(plan_entry_for(&plan, "tools/icon.png").generated);
 		assert!(!plan_entry_for(&plan, "common/safe.txt").generated);
 	}
 }

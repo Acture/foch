@@ -219,6 +219,8 @@ impl LanguageServer for Backend {
 					completion_item: None,
 				}),
 				definition_provider: Some(OneOf::Left(true)),
+				hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
+				references_provider: Some(OneOf::Left(true)),
 				..ServerCapabilities::default()
 			},
 		})

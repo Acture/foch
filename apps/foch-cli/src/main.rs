@@ -10,15 +10,22 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{fmt, registry};
 
 fn main() {
-	let exit_code = match run() {
-		Ok(code) => code,
-		Err(err) => {
-			eprintln!("错误: {err}");
-			1
-		}
-	};
-
-	std::process::exit(exit_code);
+	// Use a larger stack to handle deeply nested Clausewitz ASTs
+	// (some EU4 files have 20+ nesting levels).
+	let builder = std::thread::Builder::new().stack_size(64 * 1024 * 1024);
+	let handler = builder
+		.spawn(|| {
+			let exit_code = match run() {
+				Ok(code) => code,
+				Err(err) => {
+					eprintln!("错误: {err}");
+					1
+				}
+			};
+			std::process::exit(exit_code);
+		})
+		.expect("failed to spawn main thread with larger stack");
+	handler.join().expect("main thread panicked");
 }
 
 fn run() -> Result<i32, Box<dyn std::error::Error>> {

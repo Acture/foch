@@ -61,6 +61,7 @@ pub fn run_merge_with_options(
 
 	let exit_code = match report.status {
 		MergeReportStatus::Ready => 0,
+		MergeReportStatus::PartialSuccess => 0,
 		MergeReportStatus::Blocked => 2,
 		MergeReportStatus::Fatal => 3,
 	};
@@ -162,12 +163,19 @@ fn count_findings_for_rules(findings: &[Finding], rule_ids: &[&str]) -> usize {
 }
 
 fn final_merge_status(report: &MergeReport) -> MergeReportStatus {
-	if report.manual_conflict_count > 0
-		|| report.validation.fatal_errors > 0
+	let has_validation_errors = report.validation.fatal_errors > 0
 		|| report.validation.strict_findings > 0
-		|| report.validation.parse_errors > 0
-	{
+		|| report.validation.parse_errors > 0;
+
+	if has_validation_errors {
 		MergeReportStatus::Fatal
+	} else if report.manual_conflict_count > 0 {
+		// If materialize already set PartialSuccess (--force resolved conflicts),
+		// keep it.  Otherwise block.
+		match report.status {
+			MergeReportStatus::PartialSuccess => MergeReportStatus::PartialSuccess,
+			_ => MergeReportStatus::Fatal,
+		}
 	} else {
 		MergeReportStatus::Ready
 	}

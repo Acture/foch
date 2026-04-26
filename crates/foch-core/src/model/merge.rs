@@ -80,6 +80,8 @@ impl MergePlanResult {
 pub enum MergeReportStatus {
 	#[default]
 	Ready,
+	/// Some manual conflicts were resolved by --force (binary files copied from winner).
+	PartialSuccess,
 	Blocked,
 	Fatal,
 }
