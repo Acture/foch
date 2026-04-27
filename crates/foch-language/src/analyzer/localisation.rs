@@ -77,6 +77,11 @@ pub(crate) fn parse_localisation_file(
 
 		if parse_localisation_header_bytes(trimmed).is_some() {
 			header_seen = true;
+			// Localisation keys are scoped per language section. Resetting
+			// the seen-key map on each header avoids flagging the same key
+			// reused across e.g. l_english and l_german blocks (notably in
+			// vanilla `localisation/languages.yml`).
+			seen_keys.clear();
 			continue;
 		}
 
@@ -363,5 +368,43 @@ mod tests {
 		);
 		assert_eq!(parsed.entries.len(), 1);
 		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+	}
+
+	#[test]
+	fn duplicate_detection_resets_per_language_section() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("localisation").join("languages.yml");
+		fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+		let source = "l_english:\n l_english:0 \"English\"\n l_german:0 \"German\"\nl_german:\n l_english:0 \"Englisch\"\n l_german:0 \"Deutsch\"\n";
+		fs::write(&path, source).expect("write file");
+
+		let parsed = parse_localisation_file(
+			"mod",
+			&path,
+			PathBuf::from("localisation/languages.yml").as_path(),
+		);
+		assert_eq!(parsed.entries.len(), 4);
+		assert!(
+			parsed.duplicates.is_empty(),
+			"keys reused across sections must not be reported as duplicates: {:?}",
+			parsed.duplicates,
+		);
+	}
+
+	#[test]
+	fn duplicate_detection_still_flags_within_section() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp.path().join("localisation").join("dupes_l_english.yml");
+		fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+		let source = "l_english:\n FOO:0 \"first\"\n FOO:0 \"second\"\n";
+		fs::write(&path, source).expect("write file");
+
+		let parsed = parse_localisation_file(
+			"mod",
+			&path,
+			PathBuf::from("localisation/dupes_l_english.yml").as_path(),
+		);
+		assert_eq!(parsed.duplicates.len(), 1);
+		assert_eq!(parsed.duplicates[0].key, "FOO");
 	}
 }
