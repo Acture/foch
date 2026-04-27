@@ -991,7 +991,10 @@ fn is_scripted_effect_call_candidate(
 	if is_data_context(index, scope_id) {
 		return false;
 	}
-	if is_province_id_selector(key) {
+	if is_param_block_scope(index, scope_id) {
+		return false;
+	}
+	if is_province_id_selector(key) || is_country_tag_selector(key) {
 		return false;
 	}
 	if effect_context_scope_semantics(ctx, key, scope_id, index).is_some() {
@@ -1059,6 +1062,9 @@ fn is_scripted_trigger_call_candidate(
 		return false;
 	}
 	if is_data_context(index, scope_id) {
+		return false;
+	}
+	if is_param_block_scope(index, scope_id) {
 		return false;
 	}
 	if is_province_id_selector(key) || is_country_tag_selector(key) {
@@ -1539,6 +1545,38 @@ fn is_mission_slot_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 	// Parent must also be a generic Block (mission group) or File.
 	// If parent is Effect/Trigger, we're inside a mission's effect/trigger block.
 	matches!(parent.kind, ScopeKind::Block | ScopeKind::File)
+}
+
+/// Returns true if `scope_id` is a generic `Block` scope nested directly
+/// inside an effect/trigger/loop/scope-changer/scripted-effect context. Such
+/// blocks represent the parameter container of an outer call (builtin or
+/// mod-defined) — e.g. `has_imperial_privilege_available = { privilege = X }`
+/// or `province_can_auto_develop_tax = { val = 1000 }`. The keys inside are
+/// parameter bindings, not nested trigger/effect calls, and therefore must
+/// not be flagged as unresolved scripted calls.
+///
+/// Logic blocks (`AND`/`OR`/`NOT`), iterators, scope changers, special blocks
+/// and conditional helpers are assigned dedicated `ScopeKind`s by
+/// `create_child_scope`; only structurally-unmodelled call params survive as
+/// `ScopeKind::Block`, which makes this check both deterministic and safe.
+fn is_param_block_scope(index: &SemanticIndex, scope_id: usize) -> bool {
+	let Some(scope) = index.scopes.get(scope_id) else {
+		return false;
+	};
+	if scope.kind != ScopeKind::Block {
+		return false;
+	}
+	let Some(parent_id) = scope.parent else {
+		return false;
+	};
+	matches!(
+		scope_kind(index, parent_id),
+		ScopeKind::Effect
+			| ScopeKind::Trigger
+			| ScopeKind::Loop
+			| ScopeKind::AliasBlock
+			| ScopeKind::ScriptedEffect
+	)
 }
 
 /// Returns true if the current scope or any ancestor scope has a key that
