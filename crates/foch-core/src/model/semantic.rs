@@ -125,6 +125,13 @@ pub struct SymbolDefinition {
 	/// FROM aliases there.
 	#[serde(default)]
 	pub inferred_from_mask: u8,
+	/// Static caller-ROOT scope mask inferred from invocation sites. ROOT
+	/// propagates into scripted_effect / scripted_trigger bodies (the body
+	/// keeps the caller's outermost evaluation context). For events ROOT is
+	/// already pinned to the event scope, but we still record the mask for
+	/// downstream resolution and consistency.
+	#[serde(default)]
+	pub inferred_root_mask: u8,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub optional_params: Vec<String>,

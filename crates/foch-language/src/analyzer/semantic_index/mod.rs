@@ -188,7 +188,7 @@ pub fn build_semantic_index_with_profile(
 		build_file_index(file, &map_groups, &mut index);
 	}
 	infer_definition_scope_from_references(&mut index);
-	infer_definition_from_mask_from_references(&mut index);
+	infer_definition_dynamic_alias_masks_from_references(&mut index);
 	apply_registered_param_contracts(&mut index);
 	index
 }
@@ -397,6 +397,7 @@ fn walk_statements(
 							inferred_this_type: ScopeType::Unknown,
 							inferred_this_mask: 0,
 							inferred_from_mask: 0,
+							inferred_root_mask: 0,
 							required_params,
 							optional_params,
 							param_contract: registered_param_contract(key),
@@ -543,6 +544,7 @@ fn handle_event_block(
 			inferred_this_type: this_type,
 			inferred_this_mask: scope_type_mask(this_type),
 			inferred_from_mask: 0,
+			inferred_root_mask: 0,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,
@@ -2187,17 +2189,25 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	}
 }
 
-/// Propagate FROM scope-type from callsites into callable definitions
-/// (scripted_effects, scripted_triggers, events). For each invocation the
-/// caller's resolved FROM mask is unioned into the target's
-/// `inferred_from_mask`. After the fixed-point converges the resolved type
-/// is also injected into the body scope's alias map so that
-/// `is_alias_visible` and downstream rules see FROM as bound — eliminating
-/// S003 / A001 noise that was rooted in callable bodies inheriting FROM
-/// from their (statically resolvable) callers.
-fn infer_definition_from_mask_from_references(index: &mut SemanticIndex) {
+/// Propagate dynamic-scope aliases (FROM, ROOT) from invocation sites into
+/// callable definitions (scripted_effects, scripted_triggers, events). For
+/// each invocation the caller's resolved alias mask is unioned into the
+/// target's `inferred_from_mask` / `inferred_root_mask`. After the fixed
+/// point converges the resolved types are also injected into the body
+/// scope's alias map so that `is_alias_visible` and downstream rules see
+/// the alias as bound — eliminating S003 / A001 noise rooted in callable
+/// bodies that inherit dynamic scope from their (statically resolvable)
+/// callers.
+///
+/// FROM in event bodies is seeded by `handle_event_block` already; this
+/// pass mostly affects scripted_effect / scripted_trigger callees but we
+/// still walk events for consistency. ROOT in event bodies is pinned to
+/// the event scope at seed time, so the relevant case here is again
+/// scripted_effect / scripted_trigger inheriting the caller's ROOT.
+fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticIndex) {
 	let callable_scope_map = build_inferred_callable_scope_map(index);
 	let mut from_masks: Vec<u8> = vec![0; index.definitions.len()];
+	let mut root_masks: Vec<u8> = vec![0; index.definitions.len()];
 
 	let mut changed = true;
 	while changed {
@@ -2209,13 +2219,21 @@ fn infer_definition_from_mask_from_references(index: &mut SemanticIndex) {
 			) {
 				continue;
 			}
-			let caller_from = caller_from_mask_via_chain(
+			let caller_from = caller_alias_mask_via_chain(
 				index,
 				&callable_scope_map,
 				&from_masks,
 				reference.scope_id,
+				"FROM",
 			);
-			if caller_from == 0 {
+			let caller_root = caller_alias_mask_via_chain(
+				index,
+				&callable_scope_map,
+				&root_masks,
+				reference.scope_id,
+				"ROOT",
+			);
+			if caller_from == 0 && caller_root == 0 {
 				continue;
 			}
 			let target_defs = match reference.kind {
@@ -2229,16 +2247,21 @@ fn infer_definition_from_mask_from_references(index: &mut SemanticIndex) {
 				_ => Vec::new(),
 			};
 			for def_idx in target_defs {
-				let merged = from_masks[def_idx] | caller_from;
-				if merged != from_masks[def_idx] {
-					from_masks[def_idx] = merged;
+				let merged_from = from_masks[def_idx] | caller_from;
+				if merged_from != from_masks[def_idx] {
+					from_masks[def_idx] = merged_from;
+					changed = true;
+				}
+				let merged_root = root_masks[def_idx] | caller_root;
+				if merged_root != root_masks[def_idx] {
+					root_masks[def_idx] = merged_root;
 					changed = true;
 				}
 			}
 		}
 	}
 
-	let scope_updates: Vec<(usize, ScopeType)> = index
+	let scope_updates: Vec<(usize, Option<ScopeType>, Option<ScopeType>)> = index
 		.definitions
 		.iter()
 		.enumerate()
@@ -2249,15 +2272,22 @@ fn infer_definition_from_mask_from_references(index: &mut SemanticIndex) {
 			) {
 				return None;
 			}
-			if from_masks[idx] == 0 {
+			let from_ty = (from_masks[idx] != 0).then(|| scope_type_from_mask(from_masks[idx]));
+			let root_ty = (root_masks[idx] != 0).then(|| scope_type_from_mask(root_masks[idx]));
+			if from_ty.is_none() && root_ty.is_none() {
 				return None;
 			}
-			Some((def.scope_id, scope_type_from_mask(from_masks[idx])))
+			Some((def.scope_id, from_ty, root_ty))
 		})
 		.collect();
-	for (scope_id, ty) in scope_updates {
+	for (scope_id, from_ty, root_ty) in scope_updates {
 		if let Some(scope) = index.scopes.get_mut(scope_id) {
-			scope.aliases.entry("FROM".to_string()).or_insert(ty);
+			if let Some(ty) = from_ty {
+				scope.aliases.entry("FROM".to_string()).or_insert(ty);
+			}
+			if let Some(ty) = root_ty {
+				scope.aliases.entry("ROOT".to_string()).or_insert(ty);
+			}
 		}
 	}
 	for (idx, definition) in index.definitions.iter_mut().enumerate() {
@@ -2266,28 +2296,30 @@ fn infer_definition_from_mask_from_references(index: &mut SemanticIndex) {
 			SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger | SymbolKind::Event
 		) {
 			definition.inferred_from_mask = from_masks[idx];
+			definition.inferred_root_mask = root_masks[idx];
 		}
 	}
 }
 
-fn caller_from_mask_via_chain(
+fn caller_alias_mask_via_chain(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
-	observed_from_masks: &[u8],
+	observed_alias_masks: &[u8],
 	mut scope_id: usize,
+	alias: &str,
 ) -> u8 {
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
 			return 0;
 		};
-		if let Some(ty) = scope.aliases.get("FROM") {
+		if let Some(ty) = scope.aliases.get(alias) {
 			let mask = scope_type_mask(*ty);
 			if mask != 0 {
 				return mask;
 			}
 		}
 		if let Some(def_idx) = callable_scope_map.get(&scope_id)
-			&& let Some(mask) = observed_from_masks.get(*def_idx).copied()
+			&& let Some(mask) = observed_alias_masks.get(*def_idx).copied()
 			&& mask != 0
 		{
 			return mask;

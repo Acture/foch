@@ -33,6 +33,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 		inferred_this_type: ScopeType::Country,
 		inferred_this_mask: 0b01,
 		inferred_from_mask: 0,
+		inferred_root_mask: 0,
 		required_params: vec![
 			"age".to_string(),
 			"name".to_string(),
@@ -471,6 +472,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		inferred_this_type: ScopeType::Country,
 		inferred_this_mask: 0b01,
 		inferred_from_mask: 0,
+		inferred_root_mask: 0,
 		required_params: vec!["value".to_string()],
 		param_contract: None,
 		optional_params: Vec::new(),
