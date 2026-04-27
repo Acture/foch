@@ -113,21 +113,31 @@ fn load_lookup() -> &'static BuiltinLookup {
 		special_blocks_list.sort();
 		special_blocks_list.dedup();
 
+		// Clausewitz keyword/builtin matching is case-insensitive in the
+		// EU4 engine: vanilla writes `if`, `limit`, `OR`, `AND`, `NOT`,
+		// `ai`, `religion` etc. with one canonical casing, but mods
+		// freely use `IF`, `LIMIT`, `Or`, `And`, `AI`, `RELIGION`, …
+		// Lowercase every catalog entry once at load time and lowercase
+		// the lookup key so all variants resolve.
+		fn to_lower_set(items: &[String]) -> HashSet<String> {
+			items.iter().map(|s| s.to_ascii_lowercase()).collect()
+		}
+
 		let game_only: HashSet<String> = catalog
 			.game_only_candidates
 			.into_iter()
-			.map(|item| item.name)
+			.map(|item| item.name.to_ascii_lowercase())
 			.collect();
 
 		BuiltinLookup {
-			reserved: reserved_list.iter().cloned().collect(),
-			contextual: contextual_list.iter().cloned().collect(),
-			aliases: aliases_list.iter().cloned().collect(),
-			triggers: triggers_list.iter().cloned().collect(),
-			effects: effects_list.iter().cloned().collect(),
-			scope_changers: scope_changers_list.iter().cloned().collect(),
-			iterators: iterators_list.iter().cloned().collect(),
-			special_blocks: special_blocks_list.iter().cloned().collect(),
+			reserved: to_lower_set(&reserved_list),
+			contextual: to_lower_set(&contextual_list),
+			aliases: to_lower_set(&aliases_list),
+			triggers: to_lower_set(&triggers_list),
+			effects: to_lower_set(&effects_list),
+			scope_changers: to_lower_set(&scope_changers_list),
+			iterators: to_lower_set(&iterators_list),
+			special_blocks: to_lower_set(&special_blocks_list),
 			game_only,
 			reserved_list,
 			contextual_list,
@@ -141,40 +151,51 @@ fn load_lookup() -> &'static BuiltinLookup {
 	})
 }
 
+fn matches_lower(set: &HashSet<String>, key: &str) -> bool {
+	if set.contains(key) {
+		return true;
+	}
+	if key.bytes().any(|b| b.is_ascii_uppercase()) {
+		set.contains(&key.to_ascii_lowercase())
+	} else {
+		false
+	}
+}
+
 pub fn is_reserved_keyword(key: &str) -> bool {
-	load_lookup().reserved.contains(key)
+	matches_lower(&load_lookup().reserved, key)
 }
 
 pub fn is_contextual_keyword(key: &str) -> bool {
-	load_lookup().contextual.contains(key)
+	matches_lower(&load_lookup().contextual, key)
 }
 
 pub fn is_alias_keyword(key: &str) -> bool {
-	load_lookup().aliases.contains(key)
+	matches_lower(&load_lookup().aliases, key)
 }
 
 pub fn is_builtin_trigger(key: &str) -> bool {
-	load_lookup().triggers.contains(key)
+	matches_lower(&load_lookup().triggers, key)
 }
 
 pub fn is_builtin_effect(key: &str) -> bool {
-	load_lookup().effects.contains(key)
+	matches_lower(&load_lookup().effects, key)
 }
 
 pub fn is_builtin_scope_changer(key: &str) -> bool {
-	load_lookup().scope_changers.contains(key)
+	matches_lower(&load_lookup().scope_changers, key)
 }
 
 pub fn is_builtin_iterator(key: &str) -> bool {
-	load_lookup().iterators.contains(key)
+	matches_lower(&load_lookup().iterators, key)
 }
 
 pub fn is_builtin_special_block(key: &str) -> bool {
-	load_lookup().special_blocks.contains(key)
+	matches_lower(&load_lookup().special_blocks, key)
 }
 
 pub fn is_game_only_candidate(key: &str) -> bool {
-	load_lookup().game_only.contains(key)
+	matches_lower(&load_lookup().game_only, key)
 }
 
 pub fn reserved_keywords() -> &'static [String] {
@@ -252,5 +273,21 @@ mod tests {
 		assert!(is_builtin_special_block("possible"));
 		assert!(is_builtin_special_block("exclude_from_progress"));
 		assert!(!builtin_catalog_hash().is_empty());
+	}
+
+	#[test]
+	fn builtin_lookup_is_case_insensitive() {
+		// Clausewitz keyword matching is case-insensitive in EU4. Mods
+		// frequently write builtin triggers/effects/keywords with mixed
+		// or upper casing (e.g. `LIMIT = { ... }`, `AI = no`, `AND`,
+		// `RELIGION`). The analyzer must treat them the same as their
+		// canonical lowercase forms.
+		assert!(is_reserved_keyword("LIMIT"));
+		assert!(is_reserved_keyword("Limit"));
+		assert!(is_reserved_keyword("AND"));
+		assert!(is_builtin_trigger("AI"));
+		assert!(is_builtin_trigger("Ai"));
+		assert!(is_builtin_trigger("RELIGION"));
+		assert!(is_builtin_effect("ADD_COUNTRY_MODIFIER"));
 	}
 }

@@ -396,4 +396,5 @@ pub fn looks_like_map_group_key(key: &str) -> bool {
 		|| key.ends_with("_region")
 		|| key.ends_with("_superregion")
 		|| key.ends_with("_provincegroup")
+		|| key.starts_with("trade_company_")
 }

@@ -88,14 +88,15 @@ fn collect_map_groups(files: &[ParsedScriptFile]) -> MapGroupLookup {
 }
 
 fn is_map_group_file(relative_path: &Path) -> bool {
+	let normalized = relative_path.to_string_lossy().replace('\\', "/");
 	matches!(
-		relative_path.to_string_lossy().replace('\\', "/").as_str(),
+		normalized.as_str(),
 		"map/area.txt"
 			| "map/region.txt"
 			| "map/superregion.txt"
 			| "map/continent.txt"
 			| "map/provincegroup.txt"
-	)
+	) || normalized.starts_with("common/trade_companies/")
 }
 
 fn fallback_module_name(parts: &[&str]) -> String {
@@ -1432,14 +1433,21 @@ fn is_map_group_scope_key(
 	if ctx.map_groups.contains(key) {
 		return scope_kind(index, scope_id) != ScopeKind::File;
 	}
-	if is_explicit_effect_context_scope(index, scope_id) {
-		return looks_like_map_group_key(key);
+	if !looks_like_map_group_key(key) {
+		return false;
 	}
-	matches!(
-		ctx.file_kind,
-		ScriptFileKind::Missions | ScriptFileKind::CbTypes
-	) && scope_kind(index, scope_id) != ScopeKind::File
-		&& looks_like_map_group_key(key)
+	if scope_kind(index, scope_id) == ScopeKind::File {
+		return false;
+	}
+	// Map-group keys (areas/regions/superregions/provincegroups, plus
+	// content-derived `trade_company_*` keys whose definitions live in
+	// `common/trade_companies/` and therefore are usually invisible to a
+	// per-mod semantic index) act as province scope-changers in any
+	// non-file scope. Vanilla and mods alike use them in trigger blocks
+	// (e.g. `OR = { trade_company_west_africa = { owned_by = PREV } }`),
+	// effect blocks, mission triggers, CB types, and customizable
+	// localization. Accept them whenever we are inside a non-file scope.
+	true
 }
 
 fn province_name_table_id(path: &Path) -> Option<String> {
