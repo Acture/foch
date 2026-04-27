@@ -411,6 +411,7 @@ impl BaseAnalysisSnapshot {
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
 					inferred_this_mask: item.inferred_this_mask,
+					inferred_from_mask: item.inferred_from_mask,
 					required_params: item.required_params.clone(),
 					optional_params: item.optional_params.clone(),
 					param_contract: item.param_contract.clone(),
@@ -580,6 +581,7 @@ impl BaseAnalysisSnapshot {
 					} else {
 						scope_type_mask(item.inferred_this_type)
 					},
+					inferred_from_mask: item.inferred_from_mask,
 					required_params: item.required_params.clone(),
 					optional_params: item.optional_params.clone(),
 					param_contract: item.param_contract.clone(),
@@ -792,6 +794,8 @@ pub struct BaseSymbolDefinition {
 	pub inferred_this_type: ScopeType,
 	#[serde(default)]
 	pub inferred_this_mask: u8,
+	#[serde(default)]
+	pub inferred_from_mask: u8,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub optional_params: Vec<String>,

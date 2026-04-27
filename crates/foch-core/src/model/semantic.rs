@@ -118,6 +118,13 @@ pub struct SymbolDefinition {
 	pub inferred_this_type: ScopeType,
 	#[serde(default)]
 	pub inferred_this_mask: u8,
+	/// Static caller-FROM scope mask inferred from invocation sites. For
+	/// callables (scripted_effects, scripted_triggers, ...), this is the
+	/// union of FROM types observed at every callsite. Non-zero means FROM
+	/// is statically resolvable inside the body and S003 should not flag
+	/// FROM aliases there.
+	#[serde(default)]
+	pub inferred_from_mask: u8,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub optional_params: Vec<String>,

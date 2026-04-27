@@ -58,7 +58,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		prefix_len: 2,
 		fallback: "new_diplomatic_actions",
 	})
-	.scope(scope(ScopeType::Country))
+	.scope(country_from_scope(ScopeType::Country))
 	.capabilities(semantic_complete_and_merge_ready())
 	.merge_key(MergeKeySource::AssignmentKey)
 	.build(),

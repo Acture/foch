@@ -188,6 +188,7 @@ pub fn build_semantic_index_with_profile(
 		build_file_index(file, &map_groups, &mut index);
 	}
 	infer_definition_scope_from_references(&mut index);
+	infer_definition_from_mask_from_references(&mut index);
 	apply_registered_param_contracts(&mut index);
 	index
 }
@@ -395,6 +396,7 @@ fn walk_statements(
 							declared_this_type: scope_this_type(index, child_scope),
 							inferred_this_type: ScopeType::Unknown,
 							inferred_this_mask: 0,
+							inferred_from_mask: 0,
 							required_params,
 							optional_params,
 							param_contract: registered_param_contract(key),
@@ -540,6 +542,7 @@ fn handle_event_block(
 			declared_this_type: this_type,
 			inferred_this_type: this_type,
 			inferred_this_mask: scope_type_mask(this_type),
+			inferred_from_mask: 0,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,
@@ -2181,6 +2184,118 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 		}
 		definition.inferred_this_mask = observed_masks[idx];
 		definition.inferred_this_type = scope_type_from_mask(observed_masks[idx]);
+	}
+}
+
+/// Propagate FROM scope-type from callsites into callable definitions
+/// (scripted_effects, scripted_triggers, events). For each invocation the
+/// caller's resolved FROM mask is unioned into the target's
+/// `inferred_from_mask`. After the fixed-point converges the resolved type
+/// is also injected into the body scope's alias map so that
+/// `is_alias_visible` and downstream rules see FROM as bound — eliminating
+/// S003 / A001 noise that was rooted in callable bodies inheriting FROM
+/// from their (statically resolvable) callers.
+fn infer_definition_from_mask_from_references(index: &mut SemanticIndex) {
+	let callable_scope_map = build_inferred_callable_scope_map(index);
+	let mut from_masks: Vec<u8> = vec![0; index.definitions.len()];
+
+	let mut changed = true;
+	while changed {
+		changed = false;
+		for reference in &index.references {
+			if !matches!(
+				reference.kind,
+				SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger | SymbolKind::Event
+			) {
+				continue;
+			}
+			let caller_from = caller_from_mask_via_chain(
+				index,
+				&callable_scope_map,
+				&from_masks,
+				reference.scope_id,
+			);
+			if caller_from == 0 {
+				continue;
+			}
+			let target_defs = match reference.kind {
+				SymbolKind::ScriptedEffect => {
+					resolve_scripted_effect_reference_targets(index, reference)
+				}
+				SymbolKind::ScriptedTrigger => {
+					resolve_scripted_trigger_reference_targets(index, reference)
+				}
+				SymbolKind::Event => resolve_event_reference_targets(index, reference),
+				_ => Vec::new(),
+			};
+			for def_idx in target_defs {
+				let merged = from_masks[def_idx] | caller_from;
+				if merged != from_masks[def_idx] {
+					from_masks[def_idx] = merged;
+					changed = true;
+				}
+			}
+		}
+	}
+
+	let scope_updates: Vec<(usize, ScopeType)> = index
+		.definitions
+		.iter()
+		.enumerate()
+		.filter_map(|(idx, def)| {
+			if !matches!(
+				def.kind,
+				SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger | SymbolKind::Event
+			) {
+				return None;
+			}
+			if from_masks[idx] == 0 {
+				return None;
+			}
+			Some((def.scope_id, scope_type_from_mask(from_masks[idx])))
+		})
+		.collect();
+	for (scope_id, ty) in scope_updates {
+		if let Some(scope) = index.scopes.get_mut(scope_id) {
+			scope.aliases.entry("FROM".to_string()).or_insert(ty);
+		}
+	}
+	for (idx, definition) in index.definitions.iter_mut().enumerate() {
+		if matches!(
+			definition.kind,
+			SymbolKind::ScriptedEffect | SymbolKind::ScriptedTrigger | SymbolKind::Event
+		) {
+			definition.inferred_from_mask = from_masks[idx];
+		}
+	}
+}
+
+fn caller_from_mask_via_chain(
+	index: &SemanticIndex,
+	callable_scope_map: &HashMap<usize, usize>,
+	observed_from_masks: &[u8],
+	mut scope_id: usize,
+) -> u8 {
+	loop {
+		let Some(scope) = index.scopes.get(scope_id) else {
+			return 0;
+		};
+		if let Some(ty) = scope.aliases.get("FROM") {
+			let mask = scope_type_mask(*ty);
+			if mask != 0 {
+				return mask;
+			}
+		}
+		if let Some(def_idx) = callable_scope_map.get(&scope_id)
+			&& let Some(mask) = observed_from_masks.get(*def_idx).copied()
+			&& mask != 0
+		{
+			return mask;
+		}
+		let Some(parent) = scope.parent else {
+			return 0;
+		};
+		scope_id = parent;
 	}
 }
 

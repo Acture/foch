@@ -620,6 +620,7 @@ mod tests {
 			declared_this_type: ScopeType::Country,
 			inferred_this_type: ScopeType::Country,
 			inferred_this_mask: 0b01,
+			inferred_from_mask: 0,
 			required_params: Vec::new(),
 			param_contract: Some(ParamContract {
 				required_all: vec!["custom".to_string()],

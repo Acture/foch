@@ -2,7 +2,7 @@ use crate::analyzer::eu4_builtin::builtin_catalog_hash;
 use crate::analyzer::param_contracts::registered_param_contracts_hash;
 use std::sync::OnceLock;
 
-pub const ANALYSIS_RULES_VERSION: u32 = 13;
+pub const ANALYSIS_RULES_VERSION: u32 = 14;
 
 static ANALYSIS_RULES_ID: OnceLock<String> = OnceLock::new();
 
