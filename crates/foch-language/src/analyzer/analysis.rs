@@ -96,9 +96,15 @@ fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 
 fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 	let mut defined_events = HashSet::new();
+	// Also index bare event IDs (without namespace) for cross-reference
+	let mut defined_event_suffixes: HashSet<String> = HashSet::new();
 	for def in &index.definitions {
 		if def.kind == SymbolKind::Event {
 			defined_events.insert(def.name.clone());
+			// If the event has a namespace prefix, also register the bare ID
+			if let Some((_ns, bare_id)) = def.name.split_once('.') {
+				defined_event_suffixes.insert(bare_id.to_string());
+			}
 		}
 	}
 
@@ -108,9 +114,27 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 		if !should_flag_unresolved(reference.kind) {
 			continue;
 		}
+		// Skip template parameters — they resolve at runtime
+		if reference.name.contains('$') || reference.name.contains('[') {
+			continue;
+		}
 		match reference.kind {
 			SymbolKind::Event => {
-				if defined_events.contains(reference.name.as_str()) {
+				// Numeric event IDs are always valid — EU4 resolves them at runtime
+				if reference.name.chars().all(|c| c.is_ascii_digit()) {
+					continue;
+				}
+				// Try exact match first, then bare-ID match
+				if defined_events.contains(reference.name.as_str())
+					|| defined_event_suffixes.contains(reference.name.as_str())
+				{
+					continue;
+				}
+				// Also try matching reference as namespace.id against bare suffix
+				if let Some((_ns, bare)) = reference.name.split_once('.')
+					&& (defined_events.contains(bare)
+						|| defined_event_suffixes.contains(bare))
+				{
 					continue;
 				}
 			}
