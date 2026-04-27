@@ -256,12 +256,15 @@ fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
 			.iter()
 			.map(String::as_str)
 			.collect();
+		let optional: HashSet<&str> = def.optional_params.iter().map(String::as_str).collect();
 		let missing_messages = if let Some(contract) = def.param_contract.as_ref() {
 			evaluate_param_contract(contract, &reference.name, &provided)
 		} else {
 			def.required_params
 				.iter()
-				.filter(|required| !provided.contains(required.as_str()))
+				.filter(|required| {
+					!provided.contains(required.as_str()) && !optional.contains(required.as_str())
+				})
 				.map(|required| format!("参数未绑定: {} 缺失 {}", reference.name, required))
 				.collect()
 		};

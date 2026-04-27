@@ -627,6 +627,7 @@ mod tests {
 				one_of_groups: Vec::new(),
 				conditional_required: Vec::new(),
 			}),
+			optional_params: Vec::new(),
 			scope_param_names: Vec::new(),
 		});
 

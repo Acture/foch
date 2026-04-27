@@ -433,6 +433,7 @@ mod tests {
 			content_family: None,
 			file_kind: ScriptFileKind::Other,
 			module_name: "test".to_string(),
+			source: String::new(),
 			ast: AstFile {
 				path: PathBuf::from("test.txt"),
 				statements,

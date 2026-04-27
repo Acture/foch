@@ -35,6 +35,7 @@ pub struct ParsedScriptFile {
 	pub file_kind: ScriptFileKind,
 	pub module_name: String,
 	pub ast: AstFile,
+	pub source: String,
 	pub parse_issues: Vec<ParseIssue>,
 	pub parse_cache_hit: bool,
 }
@@ -134,6 +135,7 @@ pub fn parse_script_file_with_profile(
 		|descriptor| module_name_for_descriptor(&relative, descriptor).replace('-', "_"),
 	);
 	let (parsed, parse_cache_hit) = parse_clausewitz_file_cached(file);
+	let source = std::fs::read_to_string(file).unwrap_or_default();
 
 	let parse_issues = parsed
 		.diagnostics
@@ -155,6 +157,7 @@ pub fn parse_script_file_with_profile(
 		file_kind,
 		module_name,
 		ast: parsed.ast,
+		source,
 		parse_issues,
 		parse_cache_hit,
 	})
@@ -225,6 +228,7 @@ fn build_file_index(
 		content_family: file.content_family,
 		file_kind: file.file_kind,
 		module_name: &file.module_name,
+		source: &file.source,
 		map_groups,
 		technology_monarch_power: None,
 		technology_definition_ordinal: 0,
@@ -274,6 +278,7 @@ struct BuildContext<'a> {
 	content_family: Option<&'static ContentFamilyDescriptor>,
 	file_kind: ScriptFileKind,
 	module_name: &'a str,
+	source: &'a str,
 	map_groups: &'a MapGroupLookup,
 	technology_monarch_power: Option<String>,
 	technology_definition_ordinal: usize,
@@ -363,7 +368,17 @@ fn walk_statements(
 						symbol_definition_kind(ctx.file_kind, key, scope_id, index);
 					let child_scope = create_child_scope(index, scope_id, ctx, key, span, items);
 					if let Some(def_kind) = definition_kind {
-						let mut required_params = collect_required_params(items);
+						let optional_params = collect_optional_params_from_source(
+							ctx.source,
+							span.start.offset,
+							span.end.offset,
+						);
+						let optional_set: HashSet<&str> =
+							optional_params.iter().map(String::as_str).collect();
+						let mut required_params: Vec<String> = collect_required_params(items)
+							.into_iter()
+							.filter(|param| !optional_set.contains(param.as_str()))
+							.collect();
 						required_params.sort();
 						required_params.dedup();
 
@@ -381,6 +396,7 @@ fn walk_statements(
 							inferred_this_type: ScopeType::Unknown,
 							inferred_this_mask: 0,
 							required_params,
+							optional_params,
 							param_contract: registered_param_contract(key),
 							scope_param_names: collect_scope_param_names(items),
 						});
@@ -525,6 +541,7 @@ fn handle_event_block(
 			inferred_this_type: this_type,
 			inferred_this_mask: scope_type_mask(this_type),
 			required_params: Vec::new(),
+			optional_params: Vec::new(),
 			param_contract: None,
 			scope_param_names: Vec::new(),
 		});
@@ -536,6 +553,7 @@ fn handle_event_block(
 		content_family: ctx.content_family,
 		file_kind: ctx.file_kind,
 		module_name: ctx.module_name,
+		source: ctx.source,
 		map_groups: ctx.map_groups,
 		technology_monarch_power: ctx.technology_monarch_power.clone(),
 		technology_definition_ordinal: ctx.technology_definition_ordinal,
@@ -879,6 +897,7 @@ fn record_param_tokens(index: &mut SemanticIndex, def_idx: Option<usize>, value:
 				let param = param.as_str().to_string();
 				if let Some(def) = index.definitions.get_mut(def_idx)
 					&& !def.required_params.contains(&param)
+					&& !def.optional_params.contains(&param)
 				{
 					def.required_params.push(param);
 				}
@@ -1714,6 +1733,53 @@ fn collect_required_params(items: &[AstStatement]) -> Vec<String> {
 		}
 	}
 	params
+}
+
+/// Detect parameters that callers may legitimately omit.
+///
+/// Paradox script uses two markers to declare optional parameters in
+/// scripted_effects / scripted_triggers / similar callable bodies:
+///
+///   1. `[[NAME] ... ]` — the inner block is only emitted when `$NAME$` is
+///      provided; this is the canonical "optional block" syntax. Any
+///      `$NAME$` reference inside such a block is gated on `NAME` being
+///      bound.
+///   2. `$NAME|fallback$` — a default-value substitution; `NAME` is
+///      optional because the engine substitutes `fallback` when missing.
+///
+/// We scan the raw source slice covering the callable body and treat any
+/// name introduced via these markers as optional. Numbered series
+/// (`culture1`, `culture2`, ... `cultureN`) are handled implicitly because
+/// vanilla EU4 always wraps the higher-indexed slots in `[[cultureN] ... ]`
+/// blocks. This means we don't need an allowlist: a callable that uses
+/// `[[X]` to gate `$X$` automatically marks `X` as optional.
+fn collect_optional_params_from_source(
+	source: &str,
+	start_offset: usize,
+	end_offset: usize,
+) -> Vec<String> {
+	if source.is_empty() || end_offset <= start_offset || end_offset > source.len() {
+		return Vec::new();
+	}
+	let slice = &source[start_offset..end_offset];
+	let bracket_re =
+		Regex::new(r"\[\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]").expect("valid optional-block regex");
+	let default_re =
+		Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)\s*\|").expect("valid default-fallback regex");
+	let mut names: HashSet<String> = HashSet::new();
+	for cap in bracket_re.captures_iter(slice) {
+		if let Some(name) = cap.get(1) {
+			names.insert(name.as_str().to_string());
+		}
+	}
+	for cap in default_re.captures_iter(slice) {
+		if let Some(name) = cap.get(1) {
+			names.insert(name.as_str().to_string());
+		}
+	}
+	let mut collected: Vec<String> = names.into_iter().collect();
+	collected.sort();
+	collected
 }
 
 fn collect_params_from_value(value: &AstValue, re: &Regex, out: &mut Vec<String>) {

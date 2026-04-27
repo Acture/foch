@@ -120,6 +120,8 @@ pub struct SymbolDefinition {
 	pub inferred_this_mask: u8,
 	pub required_params: Vec<String>,
 	#[serde(default)]
+	pub optional_params: Vec<String>,
+	#[serde(default)]
 	pub param_contract: Option<ParamContract>,
 	#[serde(default)]
 	pub scope_param_names: Vec<String>,

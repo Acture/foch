@@ -47,6 +47,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 			one_of_groups: Vec::new(),
 			conditional_required: Vec::new(),
 		}),
+		optional_params: Vec::new(),
 		scope_param_names: Vec::new(),
 	});
 	BaseAnalysisSnapshot::from_semantic_index(
@@ -470,6 +471,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		inferred_this_mask: 0b01,
 		required_params: vec!["value".to_string()],
 		param_contract: None,
+		optional_params: Vec::new(),
 		scope_param_names: Vec::new(),
 	});
 	index.localisation_definitions.push(LocalisationDefinition {

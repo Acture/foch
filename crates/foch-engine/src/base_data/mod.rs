@@ -39,7 +39,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 8;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 9;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -412,6 +412,7 @@ impl BaseAnalysisSnapshot {
 					inferred_this_type: item.inferred_this_type,
 					inferred_this_mask: item.inferred_this_mask,
 					required_params: item.required_params.clone(),
+					optional_params: item.optional_params.clone(),
 					param_contract: item.param_contract.clone(),
 					scope_param_names: item.scope_param_names.clone(),
 				})
@@ -580,6 +581,7 @@ impl BaseAnalysisSnapshot {
 						scope_type_mask(item.inferred_this_type)
 					},
 					required_params: item.required_params.clone(),
+					optional_params: item.optional_params.clone(),
 					param_contract: item.param_contract.clone(),
 					scope_param_names: item.scope_param_names.clone(),
 				})
@@ -791,6 +793,8 @@ pub struct BaseSymbolDefinition {
 	#[serde(default)]
 	pub inferred_this_mask: u8,
 	pub required_params: Vec<String>,
+	#[serde(default)]
+	pub optional_params: Vec<String>,
 	#[serde(default)]
 	pub param_contract: Option<ParamContract>,
 	#[serde(default)]
