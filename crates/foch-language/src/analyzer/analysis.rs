@@ -464,13 +464,32 @@ struct FlagTemplateUsage {
 	kind: &'static str,
 	op_key: String,
 	param_name: String,
+	prefix: String,
+	suffix: String,
 	path: std::path::PathBuf,
 	line: usize,
 	column: usize,
 }
 
+/// Flags that are set or maintained by the EU4 engine itself (not via script
+/// `set_*_flag = ...`). Reading these via `has_*_flag` is legitimate even when
+/// no script setter exists, so we pre-seed them as defined to suppress A004
+/// false positives.
+const ENGINE_SET_FLAGS: &[(&str, &str)] = &[
+	("country", "vanilla_achievements_enabled"),
+	("country", "have_diploannexed"),
+	("country", "conquered_province"),
+	("country", "has_won_war"),
+	("country", "religious_league_war_on_winning_side"),
+	("country", "force_converted"),
+	("country", "gives_enlightenment_to_neighbors"),
+];
+
 fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 	let mut defined_flags: HashSet<(String, String)> = HashSet::new();
+	for (kind, flag) in ENGINE_SET_FLAGS {
+		defined_flags.insert(((*kind).to_string(), (*flag).to_string()));
+	}
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 
@@ -502,7 +521,8 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 		let Some(spec) = flag_op_spec(usage.key.as_str()) else {
 			continue;
 		};
-		let Some(param_name) = extract_param_name(usage.value.as_str()) else {
+		let Some((param_name, prefix, suffix)) = extract_param_template(usage.value.as_str())
+		else {
 			continue;
 		};
 		let Some(def_idx) =
@@ -514,6 +534,8 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 			kind: spec.kind,
 			op_key: usage.key.clone(),
 			param_name: param_name.to_string(),
+			prefix,
+			suffix,
 			path: usage.path.clone(),
 			line: usage.line,
 			column: usage.column,
@@ -549,7 +571,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 						let Some(bound_value) = bindings.get(template.param_name.as_str()) else {
 							continue;
 						};
-						let Some(flag) = normalized_static_symbol(bound_value) else {
+						let Some(flag) = apply_flag_template(template, bound_value) else {
 							continue;
 						};
 						let dedup_key = format!(
@@ -582,7 +604,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 							mod_id: Some(reference.mod_id.clone()),
 							path: Some(reference.path.clone()),
 							evidence: Some(format!(
-								"调用 {} 绑定 {}={}；模板 {}:{}:{} 中 {} = ${}$；推导值 {}",
+								"调用 {} 绑定 {}={}；模板 {}:{}:{} 中 {} = {}${}${}；推导值 {}",
 								def_name,
 								template.param_name,
 								bound_value,
@@ -590,7 +612,9 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 								template.line,
 								template.column,
 								template.op_key,
+								template.prefix,
 								template.param_name,
+								template.suffix,
 								flag
 							)),
 							line: Some(reference.line),
@@ -605,7 +629,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 				let Some(bound_value) = bindings.get(template.param_name.as_str()) else {
 					continue;
 				};
-				let Some(flag) = normalized_static_symbol(bound_value) else {
+				let Some(flag) = apply_flag_template(template, bound_value) else {
 					continue;
 				};
 				defined_flags.insert((template.kind.to_string(), flag));
@@ -615,7 +639,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 					let Some(bound_value) = bindings.get(template.param_name.as_str()) else {
 						continue;
 					};
-					let Some(flag) = normalized_static_symbol(bound_value) else {
+					let Some(flag) = apply_flag_template(template, bound_value) else {
 						continue;
 					};
 					if defined_flags.contains(&(template.kind.to_string(), flag.clone())) {
@@ -648,7 +672,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 						mod_id: Some(reference.mod_id.clone()),
 						path: Some(reference.path.clone()),
 						evidence: Some(format!(
-							"调用 {} 绑定 {}={}；模板 {}:{}:{} 中 {} = ${}$；推导值 {}",
+							"调用 {} 绑定 {}={}；模板 {}:{}:{} 中 {} = {}${}${}；推导值 {}",
 							def_name,
 							template.param_name,
 							bound_value,
@@ -656,7 +680,9 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 							template.line,
 							template.column,
 							template.op_key,
+							template.prefix,
 							template.param_name,
+							template.suffix,
 							flag
 						)),
 						line: Some(reference.line),
@@ -733,9 +759,7 @@ fn check_a005_missing_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
 		if is_non_localisation_literal(key.as_str()) {
 			continue;
 		}
-		if usage.key == "name"
-			&& !is_localisation_name_scope(index, usage.scope_id)
-		{
+		if usage.key == "name" && !is_localisation_name_scope(index, usage.scope_id) {
 			continue;
 		}
 		if defined_keys.contains(key.as_str()) {
@@ -876,20 +900,55 @@ fn scope_type_mask(scope_type: ScopeType) -> u8 {
 	}
 }
 
-fn extract_param_name(value: &str) -> Option<&str> {
+fn extract_param_template(value: &str) -> Option<(&str, String, String)> {
 	let value = value.trim();
-	if !(value.starts_with('$') && value.ends_with('$') && value.len() > 2) {
+	let bytes = value.as_bytes();
+	let mut idx = 0;
+	let mut found: Option<(usize, usize, &str)> = None;
+	while idx < bytes.len() {
+		if bytes[idx] == b'$' {
+			let start = idx;
+			let name_start = idx + 1;
+			let mut end = name_start;
+			while end < bytes.len() {
+				let ch = bytes[end];
+				if ch.is_ascii_alphanumeric() || ch == b'_' {
+					end += 1;
+				} else {
+					break;
+				}
+			}
+			if end < bytes.len() && bytes[end] == b'$' && end > name_start {
+				if found.is_some() {
+					return None;
+				}
+				let name = &value[name_start..end];
+				found = Some((start, end + 1, name));
+				idx = end + 1;
+				continue;
+			}
+			return None;
+		}
+		idx += 1;
+	}
+	let (start, after_end, name) = found?;
+	let prefix = &value[..start];
+	let suffix = &value[after_end..];
+	if !is_valid_flag_literal(prefix) || !is_valid_flag_literal(suffix) {
 		return None;
 	}
-	let param = &value[1..value.len() - 1];
-	if param
-		.chars()
-		.all(|ch| ch.is_ascii_uppercase() || ch == '_' || ch.is_ascii_digit())
-	{
-		Some(param)
-	} else {
-		None
-	}
+	Some((name, prefix.to_string(), suffix.to_string()))
+}
+
+fn is_valid_flag_literal(part: &str) -> bool {
+	part.chars()
+		.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | ':'))
+}
+
+fn apply_flag_template(template: &FlagTemplateUsage, bound_value: &str) -> Option<String> {
+	let bound = normalized_static_symbol(bound_value)?;
+	let candidate = format!("{}{}{}", template.prefix, bound, template.suffix);
+	normalized_static_symbol(&candidate)
 }
 
 fn normalized_static_symbol(value: &str) -> Option<String> {

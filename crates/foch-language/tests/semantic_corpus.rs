@@ -446,6 +446,92 @@ fn templated_flag_missing_reports_inference_evidence() {
 }
 
 #[test]
+fn embedded_template_flag_setter_resolves_dynamic_definition() {
+	// Validates the fix for A004 false positives where a scripted_effect sets a
+	// flag whose name embeds a `$param$` placeholder (e.g. `set_country_flag =
+	// is_$tag$_flag`). Calling `effect = { tag = EY0 }` should make
+	// `is_EY0_flag` count as defined and suppress the A004 read warning.
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::create_dir_all(root.join("common").join("scripted_effects")).expect("create effects dir");
+	fs::write(
+		root.join("events").join("test.txt"),
+		"namespace = test\ncountry_event = { id = test.1 option = { eyalet_effect = { tag = EY0 } limit = { has_country_flag = is_EY0_flag } } }\n",
+	)
+	.expect("write events");
+	fs::write(
+		root.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"eyalet_effect = { set_country_flag = is_$tag$_flag }\n",
+	)
+	.expect("write effects");
+
+	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
+		.expect("parse event");
+	let effect = parse_script_file(
+		"tmp",
+		&root,
+		&root
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+	)
+	.expect("parse effect");
+	let index = build_semantic_index(&[event, effect]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	assert!(
+		!diagnostics.advisory.iter().any(|finding| {
+			finding.rule_id == "A004" && finding.message.contains("is_EY0_flag")
+		}),
+		"embedded `set_country_flag = is_$tag$_flag` invoked with tag=EY0 should define is_EY0_flag",
+	);
+}
+
+#[test]
+fn engine_set_country_flags_are_pre_seeded() {
+	// Vanilla EU4 reads several country flags that are only ever set by the
+	// game engine (e.g. on diplomatic annexation, war victory). A004 should
+	// pre-seed those flags so reads do not warn.
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::write(
+		root.join("events").join("test.txt"),
+		"namespace = test\ncountry_event = { id = test.1 trigger = { has_country_flag = vanilla_achievements_enabled has_country_flag = have_diploannexed has_country_flag = has_won_war } }\n",
+	)
+	.expect("write events");
+	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
+		.expect("parse event");
+	let index = build_semantic_index(&[event]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	for engine_flag in [
+		"vanilla_achievements_enabled",
+		"have_diploannexed",
+		"has_won_war",
+	] {
+		assert!(
+			!diagnostics
+				.advisory
+				.iter()
+				.any(|finding| finding.rule_id == "A004" && finding.message.contains(engine_flag)),
+			"engine-set flag {engine_flag} should not produce A004",
+		);
+	}
+}
+
+#[test]
 fn corpus_priority_eu4_roots_do_not_emit_targeted_noise() {
 	let files = parsed_many(
 		"eu4_coverage",
