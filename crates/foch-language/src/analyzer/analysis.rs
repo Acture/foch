@@ -2,7 +2,8 @@ use super::param_contracts::evaluate_param_contract;
 use super::semantic_index::{
 	build_inferred_callable_scope_map, collect_inferred_callable_masks,
 	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
-	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
+	resolve_event_reference_targets, resolve_scripted_effect_reference_targets,
+	resolve_scripted_trigger_reference_targets,
 };
 use super::visibility::{should_flag_duplicates, should_flag_unresolved};
 use foch_core::model::{
@@ -95,19 +96,6 @@ fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 }
 
 fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
-	let mut defined_events = HashSet::new();
-	// Also index bare event IDs (without namespace) for cross-reference
-	let mut defined_event_suffixes: HashSet<String> = HashSet::new();
-	for def in &index.definitions {
-		if def.kind == SymbolKind::Event {
-			defined_events.insert(def.name.clone());
-			// If the event has a namespace prefix, also register the bare ID
-			if let Some((_ns, bare_id)) = def.name.split_once('.') {
-				defined_event_suffixes.insert(bare_id.to_string());
-			}
-		}
-	}
-
 	let mut seen = HashSet::new();
 	let mut findings = Vec::new();
 	for reference in &index.references {
@@ -120,21 +108,7 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 		}
 		match reference.kind {
 			SymbolKind::Event => {
-				// Numeric event IDs are always valid — EU4 resolves them at runtime
-				if reference.name.chars().all(|c| c.is_ascii_digit()) {
-					continue;
-				}
-				// Try exact match first, then bare-ID match
-				if defined_events.contains(reference.name.as_str())
-					|| defined_event_suffixes.contains(reference.name.as_str())
-				{
-					continue;
-				}
-				// Also try matching reference as namespace.id against bare suffix
-				if let Some((_ns, bare)) = reference.name.split_once('.')
-					&& (defined_events.contains(bare)
-						|| defined_event_suffixes.contains(bare))
-				{
+				if !resolve_event_reference_targets(index, reference).is_empty() {
 					continue;
 				}
 			}

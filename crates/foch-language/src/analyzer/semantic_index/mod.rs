@@ -1867,6 +1867,53 @@ pub fn resolve_scripted_trigger_reference_targets(
 	resolve_reference_targets_for_kind(index, reference, SymbolKind::ScriptedTrigger)
 }
 
+/// Resolve an event reference to its definition(s) in the index.
+///
+/// EU4 event IDs use `namespace.number` format, but references can be bare
+/// numbers. This resolver handles three cases:
+///   1. Exact match: reference name equals definition name
+///   2. Bare-ID ref → qualified def: ref "9073", def "hre_event.9073"
+///   3. Qualified ref → bare def: ref "hre_event.9073", def "9073"
+pub fn resolve_event_reference_targets(
+	index: &SemanticIndex,
+	reference: &SymbolReference,
+) -> Vec<usize> {
+	if reference.kind != SymbolKind::Event {
+		return Vec::new();
+	}
+
+	let ref_name = reference.name.as_str();
+	let mut matches = Vec::new();
+
+	for (idx, def) in index.definitions.iter().enumerate() {
+		if def.kind != SymbolKind::Event {
+			continue;
+		}
+		let def_name = def.name.as_str();
+
+		// 1. Exact match
+		if def_name == ref_name {
+			matches.push(idx);
+			continue;
+		}
+		// 2. Bare-ID ref against qualified def: def ends with ".{ref}"
+		if def_name.ends_with(ref_name)
+			&& def_name.as_bytes().get(def_name.len() - ref_name.len() - 1) == Some(&b'.')
+		{
+			matches.push(idx);
+			continue;
+		}
+		// 3. Qualified ref against bare def: ref ends with ".{def}"
+		if ref_name.ends_with(def_name)
+			&& ref_name.as_bytes().get(ref_name.len() - def_name.len() - 1) == Some(&b'.')
+		{
+			matches.push(idx);
+		}
+	}
+
+	matches
+}
+
 fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	let callable_scope_map = build_inferred_callable_scope_map(index);
 
