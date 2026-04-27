@@ -575,7 +575,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/state_edicts", "common/state_edicts/")
 		.kind(ScriptFileKind::StateEdicts)
 		.module_name(ModuleNameRule::Static("state_edicts"))
-		.scope(country_from_scope(ScopeType::Province))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::StateEdicts)
