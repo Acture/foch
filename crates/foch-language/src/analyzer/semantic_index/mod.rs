@@ -1327,22 +1327,32 @@ fn create_child_scope(
 		kind = ScopeKind::Loop;
 		this_type = ScopeType::Province;
 		aliases.insert("THIS".to_string(), ScopeType::Province);
-	} else if key == "ROOT" {
+	} else if key.eq_ignore_ascii_case("ROOT") {
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("ROOT").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
-	} else if key == "THIS" {
+	} else if key.eq_ignore_ascii_case("THIS") {
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
-	} else if key == "FROM" {
+	} else if key.eq_ignore_ascii_case("FROM") {
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("FROM").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
-	} else if key == "PREV" {
+	} else if key.eq_ignore_ascii_case("PREV") {
 		kind = ScopeKind::AliasBlock;
 		this_type = aliases.get("PREV").copied().unwrap_or(ScopeType::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
+	} else if is_dynamic_scope_reference_key(key) {
+		// `event_target:X = { ... }` switches the inner this scope to a
+		// dynamically saved target whose type is not statically known. Mark
+		// it Unknown so scope-sensitive advisories (e.g. A002) skip the
+		// inner block instead of inheriting the parent's province/country
+		// type, which produces false positives in vanilla idioms like
+		// `event_target:foo = { country_event = { ... } }`.
+		kind = ScopeKind::AliasBlock;
+		this_type = ScopeType::Unknown;
+		aliases.insert("THIS".to_string(), ScopeType::Unknown);
 	} else if let Some(event_this_type) = event_scope_type(key) {
 		kind = ScopeKind::Event;
 		this_type = event_this_type;

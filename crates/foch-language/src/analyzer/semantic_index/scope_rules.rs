@@ -334,8 +334,19 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 
 pub fn scope_changer_target_type(key: &str) -> Option<ScopeType> {
 	match key {
-		"capital_scope" => Some(ScopeType::Province),
-		"owner" => Some(ScopeType::Country),
+		"capital_scope" | "sea_zone" | "area_for_scope_province" | "region_for_scope_province" => {
+			Some(ScopeType::Province)
+		}
+		"owner"
+		| "controller"
+		| "attacker_leader"
+		| "defender_leader"
+		| "emperor"
+		| "colonial_parent"
+		| "other_overlord"
+		| "same_overlord"
+		| "strongest_trade_power"
+		| "unit_owner" => Some(ScopeType::Country),
 		_ => None,
 	}
 }

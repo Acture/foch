@@ -36,6 +36,19 @@ const fn country_from_scope(root_scope: ScopeType) -> ContentFamilyScopePolicy {
 	}
 }
 
+/// Scope policy for content families whose top-level keys are not themselves
+/// scoped (e.g. `common/religions` groups religions, religions in turn group
+/// nested trigger/effect blocks). Within those nested blocks the engine pushes
+/// the appropriate scope, but FROM is virtually always a country event source
+/// (e.g. `on_convert`, `religious_schools/*/can_invite_scholar`).
+const fn country_from_only() -> ContentFamilyScopePolicy {
+	ContentFamilyScopePolicy {
+		root_scope: ScopeType::Unknown,
+		from_alias: Some(ScopeType::Country),
+		dynamic_scope: false,
+	}
+}
+
 /// Scope policy for content families whose implicit scope is supplied by the
 /// runtime caller (callables, UI bindings, customizable localization,
 /// on_actions callbacks). A001 (uncertain-scope path) skips usages inside
@@ -235,7 +248,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/religions", "common/religions/")
 		.kind(ScriptFileKind::Religions)
 		.module_name(ModuleNameRule::Static("religions"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_only())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Religions)
