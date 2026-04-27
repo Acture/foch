@@ -1362,7 +1362,12 @@ fn create_child_scope(
 		kind = ScopeKind::ScriptedEffect;
 	}
 
-	if key == "if" || key == "else" {
+	// Clausewitz logic-block keywords are case-insensitive in EU4: vanilla
+	// uses lowercase `if/else` but mods routinely write `IF/ELSE/OR/AND/NOT`.
+	// Treat them uniformly so the resulting scope kind reflects their actual
+	// semantics (Trigger/Effect), which lets is_param_block_scope and the
+	// scripted-call candidate gates classify nested calls correctly.
+	if key.eq_ignore_ascii_case("if") || key.eq_ignore_ascii_case("else") {
 		if matches!(
 			enclosing_conditional_context,
 			Some(ScopeKind::Effect | ScopeKind::ScriptedEffect)
@@ -1374,7 +1379,10 @@ fn create_child_scope(
 		}
 	}
 
-	if key == "NOT" || key == "OR" || key == "AND" {
+	if key.eq_ignore_ascii_case("not")
+		|| key.eq_ignore_ascii_case("or")
+		|| key.eq_ignore_ascii_case("and")
+	{
 		kind = ScopeKind::Trigger;
 	}
 
