@@ -326,12 +326,14 @@ fn parse_localisation_entry_bytes(line: &[u8]) -> Option<ParsedLocalisationEntry
 		remainder = trim_ascii_start(&remainder[version_end..]);
 	}
 	let value_start = remainder.iter().position(|byte| *byte == b'"')?;
-	let value_region = &remainder[value_start + 1..];
-	let value_end = value_region.iter().rposition(|byte| *byte == b'"')?;
-	let trailing = trim_ascii_start(&value_region[value_end + 1..]);
-	if !trailing.is_empty() && trailing.first() != Some(&b'#') {
-		return None;
-	}
+	// EU4's own loader is permissive: it accepts (a) entries whose value has no
+	// closing quote on the same line (treats EOL as terminator) and (b) any
+	// trailing text after the closing quote (stray words, mid-line comments
+	// without `#`). Mods routinely ship both forms — see e.g. the unclosed
+	// quote on `ME_Mann_Events.5.d` and the trailing-prose comment on
+	// `FEE_Eranshahr_Events.4.OPT2`. Treat both as valid so the index records
+	// the key even though the value is technically malformed.
+	let _ = value_start;
 	Some(ParsedLocalisationEntry { key })
 }
 
@@ -406,5 +408,59 @@ mod tests {
 		);
 		assert_eq!(parsed.duplicates.len(), 1);
 		assert_eq!(parsed.duplicates[0].key, "FOO");
+	}
+
+	#[test]
+	fn parser_indexes_entry_with_unclosed_quote() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp
+			.path()
+			.join("localisation")
+			.join("unclosed_l_english.yml");
+		fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+		// EU4's loader treats EOL as the implicit string terminator, so mods
+		// that ship lines like `KEY: "value` (no closing quote) still get the
+		// key registered. Foch must match that behaviour or downstream
+		// references will be falsely flagged as missing localisation.
+		let source =
+			"l_english:\n EVT_5_d: \"Some prose without a closing quote\n EVT_5_a: \"Reply!\"\n";
+		fs::write(&path, source).expect("write file");
+
+		let parsed = parse_localisation_file(
+			"mod",
+			&path,
+			PathBuf::from("localisation/unclosed_l_english.yml").as_path(),
+		);
+		let keys: Vec<_> = parsed
+			.entries
+			.iter()
+			.map(|entry| entry.definition.key.clone())
+			.collect();
+		assert_eq!(keys, vec!["EVT_5_d".to_string(), "EVT_5_a".to_string()]);
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
+	}
+
+	#[test]
+	fn parser_indexes_entry_with_trailing_prose_after_closing_quote() {
+		let tmp = TempDir::new().expect("temp dir");
+		let path = tmp
+			.path()
+			.join("localisation")
+			.join("trailing_l_english.yml");
+		fs::create_dir_all(path.parent().expect("parent")).expect("create dir");
+		// EU4 ignores anything after the closing quote on a localisation line,
+		// so trailing prose comments without a leading `#` must not block
+		// indexing of the key.
+		let source = "l_english:\n OPT2: \"Short reply!\" was cut for making the option too long\n";
+		fs::write(&path, source).expect("write file");
+
+		let parsed = parse_localisation_file(
+			"mod",
+			&path,
+			PathBuf::from("localisation/trailing_l_english.yml").as_path(),
+		);
+		assert_eq!(parsed.entries.len(), 1);
+		assert_eq!(parsed.entries[0].definition.key, "OPT2");
+		assert!(parsed.parse_issues.is_empty(), "{:?}", parsed.parse_issues);
 	}
 }
