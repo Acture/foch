@@ -500,29 +500,6 @@ const ENGINE_SET_FLAGS: &[(&str, &str)] = &[
 	("country", "gives_enlightenment_to_neighbors"),
 ];
 
-/// Suffixes for cross-mod compatibility flags whose setter lives in a sibling
-/// mod that may or may not be present in the indexed playset. Reading
-/// `has_global_flag = some_mod_enabled` is a legitimate gate even when nobody
-/// in the workspace sets the flag.
-const MOD_DETECTION_SUFFIXES: &[&str] = &[
-	"_mod_enabled",
-	"_mod_active",
-	"_mod_compat",
-	"_mod_compatibility",
-	"_mod_disabled",
-	"_mod_loaded",
-	"_mod",
-];
-
-fn is_mod_detection_flag(kind: &str, flag: &str) -> bool {
-	if kind != "global" {
-		return false;
-	}
-	MOD_DETECTION_SUFFIXES
-		.iter()
-		.any(|suffix| flag.len() > suffix.len() && flag.ends_with(suffix))
-}
-
 /// Pattern derived from a `set_*_flag = prefix_$param$_suffix` setter inside
 /// some scripted_effect. Any read whose value matches `<prefix><alphanum_or_._->+<suffix>`
 /// is treated as possibly defined: we cannot always pin down every binding
@@ -665,9 +642,6 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 		}
 	}
 	let flag_is_allowlisted = |kind: &str, flag: &str| -> bool {
-		if is_mod_detection_flag(kind, flag) {
-			return true;
-		}
 		templated_flag_patterns
 			.iter()
 			.any(|pattern| pattern.matches(kind, flag))
@@ -821,48 +795,16 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 		}
 	}
 
-	for usage in &index.scalar_assignments {
-		let Some(spec) = flag_op_spec(usage.key.as_str()) else {
-			continue;
-		};
-		if !matches!(spec.usage, FlagUsageKind::Reference) {
-			continue;
-		}
-		let Some(flag) = normalized_static_symbol(usage.value.as_str()) else {
-			continue;
-		};
-		if defined_flags.contains(&(spec.kind.to_string(), flag.clone())) {
-			continue;
-		}
-		if flag_is_allowlisted(spec.kind, flag.as_str()) {
-			continue;
-		}
-		let dedup_key = format!(
-			"{}:{}:{}:{}",
-			usage.path.display(),
-			usage.line,
-			usage.column,
-			flag
-		);
-		if !seen.insert(dedup_key) {
-			continue;
-		}
-		findings.push(Finding {
-			rule_id: "A004".to_string(),
-			severity: Severity::Warning,
-			channel: FindingChannel::Advisory,
-			message: format!(
-				"flag 可能未声明: {}({}) 引用 {}",
-				usage.key, spec.kind, flag
-			),
-			mod_id: Some(usage.mod_id.clone()),
-			path: Some(usage.path.clone()),
-			evidence: Some(format!("直接引用 {} = {}", usage.key, flag)),
-			line: Some(usage.line),
-			column: Some(usage.column),
-			confidence: Some(0.7),
-		});
-	}
+	// NOTE: We deliberately do NOT scan `index.scalar_assignments` for
+	// literal `has_*_flag` / `had_*_flag` / `clr_*_flag` reads of unknown
+	// flags. By Clausewitz syntax these reads are only legal in trigger
+	// position (or, for `clr_*_flag`, in effect position), and an unresolved
+	// literal read is benign engine semantics: the gate stays closed, or the
+	// clear is a no-op. The canonical examples are cross-mod compat gates
+	// (`has_global_flag = extended_timeline_mod`) and dead-code branches.
+	// Real bugs surface through the templated-derivation paths above (sites
+	// 1 and 2), where a parameterized setter is expected by construction but
+	// missing.
 
 	findings
 }

@@ -532,41 +532,6 @@ fn engine_set_country_flags_are_pre_seeded() {
 }
 
 #[test]
-fn mod_detection_global_flags_are_allowlisted() {
-	let tmp = TempDir::new().expect("temp dir");
-	let root = tmp.path().join("mod");
-	fs::create_dir_all(root.join("events")).expect("create events");
-	fs::write(
-		root.join("events").join("test.txt"),
-		"namespace = test\ncountry_event = { id = test.1 trigger = { has_global_flag = extended_timeline_mod has_global_flag = beyond_typus_mod_enabled has_global_flag = some_compat_mod_active has_global_flag = other_thing_mod_compat } }\n",
-	)
-	.expect("write events");
-	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
-		.expect("parse event");
-	let index = build_semantic_index(&[event]);
-	let diagnostics = analyze_visibility(
-		&index,
-		&AnalyzeOptions {
-			mode: AnalysisMode::Semantic,
-		},
-	);
-	for flag in [
-		"extended_timeline_mod",
-		"beyond_typus_mod_enabled",
-		"some_compat_mod_active",
-		"other_thing_mod_compat",
-	] {
-		assert!(
-			!diagnostics
-				.advisory
-				.iter()
-				.any(|finding| finding.rule_id == "A004" && finding.message.contains(flag)),
-			"mod-detection flag {flag} should not produce A004",
-		);
-	}
-}
-
-#[test]
 fn templated_flag_pattern_allowlists_unbound_reads() {
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
@@ -615,20 +580,25 @@ fn templated_flag_pattern_allowlists_unbound_reads() {
 
 #[test]
 fn unrelated_flag_still_fires_with_template_present() {
+	// Validate that the templated-derivation path keeps firing when a setter
+	// is expected by parameterization but absent. The scripted_effect reads
+	// `has_country_flag = is_$tag$_flag` but never sets it; a caller binds
+	// `tag = FOO`, so we know the read resolves to `is_FOO_flag` and that
+	// flag has no setter anywhere. A004 must still fire (sites 1/2).
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
 	fs::create_dir_all(root.join("events")).expect("create events");
 	fs::create_dir_all(root.join("common").join("scripted_effects")).expect("create effects dir");
 	fs::write(
 		root.join("events").join("test.txt"),
-		"namespace = test\ncountry_event = { id = test.1 trigger = { has_country_flag = totally_unrelated_flag } }\n",
+		"namespace = test\ncountry_event = { id = test.1 option = { eyalet_check_effect = { tag = FOO } } }\n",
 	)
 	.expect("write events");
 	fs::write(
 		root.join("common")
 			.join("scripted_effects")
 			.join("effects.txt"),
-		"eyalet_effect = { set_country_flag = is_$tag$_flag }\n",
+		"eyalet_check_effect = { if = { limit = { has_country_flag = is_$tag$_flag } } }\n",
 	)
 	.expect("write effects");
 	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
@@ -653,9 +623,41 @@ fn unrelated_flag_still_fires_with_template_present() {
 		diagnostics
 			.advisory
 			.iter()
+			.any(|finding| finding.rule_id == "A004" && finding.message.contains("is_FOO_flag")),
+		"templated derivation must keep firing when no setter exists",
+	);
+}
+
+#[test]
+fn literal_unset_flag_in_trigger_position_is_suppressed() {
+	// `has_*_flag = X` inside a trigger context where X is never set anywhere
+	// is the canonical cross-mod compat gate (e.g. `has_global_flag =
+	// extended_timeline_mod`). Reading an unset flag in trigger position is
+	// benign — the gate just stays closed. A004 must not fire.
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::write(
+		root.join("events").join("test.txt"),
+		"namespace = test\ncountry_event = { id = test.1 trigger = { has_global_flag = totally_unrelated_flag } }\n",
+	)
+	.expect("write events");
+	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
+		.expect("parse event");
+	let index = build_semantic_index(&[event]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	assert!(
+		!diagnostics
+			.advisory
+			.iter()
 			.any(|finding| finding.rule_id == "A004"
 				&& finding.message.contains("totally_unrelated_flag")),
-		"flag that does not match the templated pattern must still raise A004",
+		"literal `has_*_flag` reads in trigger position must not raise A004",
 	);
 }
 

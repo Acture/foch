@@ -1519,12 +1519,12 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 	assert_eq!(report["validation"]["fatal_errors"], 0);
 	assert_eq!(report["validation"]["strict_findings"], 1);
 	assert_eq!(report["validation"]["parse_errors"], 0);
-	assert_eq!(report["validation"]["unresolved_references"], 2);
+	assert_eq!(report["validation"]["unresolved_references"], 1);
 	assert_eq!(report["validation"]["missing_localisation"], 1);
 	assert!(
 		report["validation"]["advisory_findings"]
 			.as_u64()
-			.is_some_and(|count| count >= 2)
+			.is_some_and(|count| count >= 1)
 	);
 }
 
