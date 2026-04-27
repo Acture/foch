@@ -20468,6 +20468,9 @@
   ],
   "builtin_iterators": [
     {
+      "name": "all_active_trade_node"
+    },
+    {
       "name": "all_ally"
     },
     {
@@ -20566,7 +20569,13 @@
       "name": "all_trade_node"
     },
     {
+      "name": "all_trade_node_member_country"
+    },
+    {
       "name": "all_trade_node_member_province"
+    },
+    {
+      "name": "all_war_enemy_countries"
     },
     {
       "name": "any_active_trade_node"
@@ -20585,6 +20594,9 @@
     },
     {
       "name": "any_country_active_in_node"
+    },
+    {
+      "name": "any_elector"
     },
     {
       "name": "any_empty_neighbor_province"
@@ -20697,6 +20709,9 @@
       "name": "every_neighbor_province"
     },
     {
+      "name": "every_neighbor_sea_zone"
+    },
+    {
       "name": "every_province_in_state"
     },
     {
@@ -20754,6 +20769,9 @@
       "name": "random_neighbor_province"
     },
     {
+      "name": "random_privateering_country"
+    },
+    {
       "name": "random_province_in_state"
     },
     {
@@ -20767,6 +20785,9 @@
     },
     {
       "name": "random_trade_node_member_province"
+    },
+    {
+      "name": "random_war_enemy_country"
     }
   ],
   "builtin_special_blocks": [
@@ -20862,6 +20883,1425 @@
   ],
   "game_only_candidates": [
     {
+      "name": "AAC_ideas"
+    },
+    {
+      "name": "ADA_ideas"
+    },
+    {
+      "name": "ADU_ideas"
+    },
+    {
+      "name": "AFG_ideas"
+    },
+    {
+      "name": "AIR_ideas"
+    },
+    {
+      "name": "AJU_ideas"
+    },
+    {
+      "name": "AKK_ideas"
+    },
+    {
+      "name": "AKS_ideas"
+    },
+    {
+      "name": "AKT_ideas"
+    },
+    {
+      "name": "ALA_ideas"
+    },
+    {
+      "name": "ALB_ideas"
+    },
+    {
+      "name": "ALH_ideas"
+    },
+    {
+      "name": "AMA_ideas"
+    },
+    {
+      "name": "ANH_ideas"
+    },
+    {
+      "name": "ANS_ideas"
+    },
+    {
+      "name": "ANT_ideas"
+    },
+    {
+      "name": "ANU_ideas"
+    },
+    {
+      "name": "ARA_ideas"
+    },
+    {
+      "name": "ARB_ideas"
+    },
+    {
+      "name": "ARK_ideas"
+    },
+    {
+      "name": "ARL_ideas"
+    },
+    {
+      "name": "ARM1_ideas"
+    },
+    {
+      "name": "ARM_ideas"
+    },
+    {
+      "name": "ASA_ideas"
+    },
+    {
+      "name": "ASH_ideas"
+    },
+    {
+      "name": "ASK_ideas"
+    },
+    {
+      "name": "ASS_ideas"
+    },
+    {
+      "name": "ASU_ideas"
+    },
+    {
+      "name": "ATH_ideas"
+    },
+    {
+      "name": "ATJ_ideas"
+    },
+    {
+      "name": "AUG_ideas"
+    },
+    {
+      "name": "AUH_ideas"
+    },
+    {
+      "name": "AUS_ideas"
+    },
+    {
+      "name": "AVA_ideas"
+    },
+    {
+      "name": "AVE_ideas"
+    },
+    {
+      "name": "AYB_ideas"
+    },
+    {
+      "name": "AYU_ideas"
+    },
+    {
+      "name": "AZT_ideas"
+    },
+    {
+      "name": "BAD_ideas"
+    },
+    {
+      "name": "BAH_ideas"
+    },
+    {
+      "name": "BAL_ideas"
+    },
+    {
+      "name": "BAM_ideas"
+    },
+    {
+      "name": "BAN_ideas"
+    },
+    {
+      "name": "BAV_ideas"
+    },
+    {
+      "name": "BEI_ideas"
+    },
+    {
+      "name": "BEN_ideas"
+    },
+    {
+      "name": "BHA_ideas"
+    },
+    {
+      "name": "BLG_ideas"
+    },
+    {
+      "name": "BLI_ideas"
+    },
+    {
+      "name": "BLO_ideas"
+    },
+    {
+      "name": "BNG_ideas"
+    },
+    {
+      "name": "BOH2_ideas"
+    },
+    {
+      "name": "BOH_ideas"
+    },
+    {
+      "name": "BOS_ideas"
+    },
+    {
+      "name": "BRA_ideas"
+    },
+    {
+      "name": "BRB_ideas"
+    },
+    {
+      "name": "BRE_ideas"
+    },
+    {
+      "name": "BRG_ideas"
+    },
+    {
+      "name": "BRI_ideas"
+    },
+    {
+      "name": "BRU_ideas"
+    },
+    {
+      "name": "BRZ_ideas"
+    },
+    {
+      "name": "BTI_ideas"
+    },
+    {
+      "name": "BTS_ideas"
+    },
+    {
+      "name": "BTU_ideas"
+    },
+    {
+      "name": "BUK_ideas"
+    },
+    {
+      "name": "BUL_ideas"
+    },
+    {
+      "name": "BUR_Ideas"
+    },
+    {
+      "name": "BYT_ideas"
+    },
+    {
+      "name": "BYZ_ideas"
+    },
+    {
+      "name": "CAB_ideas"
+    },
+    {
+      "name": "CAN_ideas"
+    },
+    {
+      "name": "CAS_ideas"
+    },
+    {
+      "name": "CAT_ideas"
+    },
+    {
+      "name": "CBA_ideas"
+    },
+    {
+      "name": "CDL_ideas"
+    },
+    {
+      "name": "CEB_ideas"
+    },
+    {
+      "name": "CEP_ideas"
+    },
+    {
+      "name": "CEY_ideas"
+    },
+    {
+      "name": "CHA_ideas"
+    },
+    {
+      "name": "CHE_ideas"
+    },
+    {
+      "name": "CHG_ideas"
+    },
+    {
+      "name": "CHICK_ideas"
+    },
+    {
+      "name": "CHI_ideas"
+    },
+    {
+      "name": "CHM_ideas"
+    },
+    {
+      "name": "CHR_ideas"
+    },
+    {
+      "name": "CIR_ideas"
+    },
+    {
+      "name": "CLI_ideas"
+    },
+    {
+      "name": "CMI_ideas"
+    },
+    {
+      "name": "CND_ideas"
+    },
+    {
+      "name": "CNN_ideas"
+    },
+    {
+      "name": "COR_ideas"
+    },
+    {
+      "name": "CRB_ideas"
+    },
+    {
+      "name": "CRE_ideas"
+    },
+    {
+      "name": "CRI_ideas"
+    },
+    {
+      "name": "CRN_ideas"
+    },
+    {
+      "name": "CRO_ideas"
+    },
+    {
+      "name": "CSC_ideas"
+    },
+    {
+      "name": "CSH_ideas"
+    },
+    {
+      "name": "CSK_ideas"
+    },
+    {
+      "name": "CUA_ideas"
+    },
+    {
+      "name": "CYA_ideas"
+    },
+    {
+      "name": "CYI_ideas"
+    },
+    {
+      "name": "CYP_ideas"
+    },
+    {
+      "name": "DAH_ideas"
+    },
+    {
+      "name": "DAI_ideas"
+    },
+    {
+      "name": "DAL_ideas"
+    },
+    {
+      "name": "DAN_ideas"
+    },
+    {
+      "name": "DEC_ideas"
+    },
+    {
+      "name": "DHU_ideas"
+    },
+    {
+      "name": "DLH_ideas"
+    },
+    {
+      "name": "DMS_ideas"
+    },
+    {
+      "name": "DNZ_ideas"
+    },
+    {
+      "name": "DTE_ideas"
+    },
+    {
+      "name": "DTT_ideas"
+    },
+    {
+      "name": "EE_plotter"
+    },
+    {
+      "name": "EFR_ideas"
+    },
+    {
+      "name": "EGY_ideas"
+    },
+    {
+      "name": "EIC_ideas"
+    },
+    {
+      "name": "ENG_ideas"
+    },
+    {
+      "name": "EOR_ideas"
+    },
+    {
+      "name": "EPI_ideas"
+    },
+    {
+      "name": "ERANSHAHR_ideas"
+    },
+    {
+      "name": "EST_ideas"
+    },
+    {
+      "name": "ETH_ideas"
+    },
+    {
+      "name": "FEO_ideas"
+    },
+    {
+      "name": "FER_ideas"
+    },
+    {
+      "name": "FIN_ideas"
+    },
+    {
+      "name": "FKN_ideas"
+    },
+    {
+      "name": "FLA_ideas"
+    },
+    {
+      "name": "FLY_ideas"
+    },
+    {
+      "name": "FRA_ideas"
+    },
+    {
+      "name": "FRA_ideas_2"
+    },
+    {
+      "name": "FRI_ideas"
+    },
+    {
+      "name": "FRN_ideas"
+    },
+    {
+      "name": "FRS_ideas"
+    },
+    {
+      "name": "FU2_ideas"
+    },
+    {
+      "name": "GAL_ideas"
+    },
+    {
+      "name": "GBR_ideas"
+    },
+    {
+      "name": "GEL_ideas"
+    },
+    {
+      "name": "GEN_Ideas"
+    },
+    {
+      "name": "GEO_ideas"
+    },
+    {
+      "name": "GER_ideas"
+    },
+    {
+      "name": "GHR_ideas"
+    },
+    {
+      "name": "GLH_ideas"
+    },
+    {
+      "name": "GMA_ideas"
+    },
+    {
+      "name": "GMI_ideas"
+    },
+    {
+      "name": "GNV_ideas"
+    },
+    {
+      "name": "GOS_ideas"
+    },
+    {
+      "name": "GOT_ideas"
+    },
+    {
+      "name": "GRA_alchemist"
+    },
+    {
+      "name": "GRA_andalusian_philosopher"
+    },
+    {
+      "name": "GRA_astronomer"
+    },
+    {
+      "name": "GRA_civil_engineer"
+    },
+    {
+      "name": "GRA_ideas"
+    },
+    {
+      "name": "GRA_mathematician"
+    },
+    {
+      "name": "GRA_military_writer"
+    },
+    {
+      "name": "GRA_muslim_scholar"
+    },
+    {
+      "name": "GRA_polymath"
+    },
+    {
+      "name": "GRA_translator"
+    },
+    {
+      "name": "GUA_ideas"
+    },
+    {
+      "name": "GUJ_ideas"
+    },
+    {
+      "name": "GZI_ideas"
+    },
+    {
+      "name": "HAB_ideas"
+    },
+    {
+      "name": "HAM_ideas"
+    },
+    {
+      "name": "HAN_ideas"
+    },
+    {
+      "name": "HDR_ideas"
+    },
+    {
+      "name": "HED_ideas"
+    },
+    {
+      "name": "HES_ideas"
+    },
+    {
+      "name": "HIN_ideas"
+    },
+    {
+      "name": "HJO_ideas"
+    },
+    {
+      "name": "HLR_ideas"
+    },
+    {
+      "name": "HRZ_ideas"
+    },
+    {
+      "name": "HSA_ideas"
+    },
+    {
+      "name": "HSK_ideas"
+    },
+    {
+      "name": "HSN_ideas"
+    },
+    {
+      "name": "HTK_ideas"
+    },
+    {
+      "name": "HUN_ideas"
+    },
+    {
+      "name": "HUR_ideas"
+    },
+    {
+      "name": "ICE_ideas"
+    },
+    {
+      "name": "IF"
+    },
+    {
+      "name": "ILK_ideas"
+    },
+    {
+      "name": "IMG_ideas"
+    },
+    {
+      "name": "INC_ideas"
+    },
+    {
+      "name": "IRO_ideas"
+    },
+    {
+      "name": "ISK_ideas"
+    },
+    {
+      "name": "ISR_ideas"
+    },
+    {
+      "name": "ITA_ideas"
+    },
+    {
+      "name": "ITO_ideas"
+    },
+    {
+      "name": "JAJ_ideas"
+    },
+    {
+      "name": "JAP_ideas"
+    },
+    {
+      "name": "JMN_ideas"
+    },
+    {
+      "name": "JNP_ideas"
+    },
+    {
+      "name": "JOL_ideas"
+    },
+    {
+      "name": "KAF_ideas"
+    },
+    {
+      "name": "KAR_ideas"
+    },
+    {
+      "name": "KAS_ideas"
+    },
+    {
+      "name": "KAU_ideas"
+    },
+    {
+      "name": "KAZ_ideas"
+    },
+    {
+      "name": "KBO_ideas"
+    },
+    {
+      "name": "KGR_ideas"
+    },
+    {
+      "name": "KHA_ideas"
+    },
+    {
+      "name": "KHI_ideas"
+    },
+    {
+      "name": "KHM_ideas"
+    },
+    {
+      "name": "KHO_ideas"
+    },
+    {
+      "name": "KIC_ideas"
+    },
+    {
+      "name": "KID_ideas"
+    },
+    {
+      "name": "KIE_ideas"
+    },
+    {
+      "name": "KIT_ideas"
+    },
+    {
+      "name": "KKC_ideas"
+    },
+    {
+      "name": "KLE_ideas"
+    },
+    {
+      "name": "KNI_ideas"
+    },
+    {
+      "name": "KNO_ideas"
+    },
+    {
+      "name": "KOI_ideas"
+    },
+    {
+      "name": "KOL_ideas"
+    },
+    {
+      "name": "KON_ideas"
+    },
+    {
+      "name": "KOR_ideas"
+    },
+    {
+      "name": "KRA_ideas"
+    },
+    {
+      "name": "KRL_ideas"
+    },
+    {
+      "name": "KTB_ideas"
+    },
+    {
+      "name": "KUB_ideas"
+    },
+    {
+      "name": "KUR_ideas"
+    },
+    {
+      "name": "KUT_ideas"
+    },
+    {
+      "name": "LAE_ideas"
+    },
+    {
+      "name": "LAR_ideas"
+    },
+    {
+      "name": "LAU_ideas"
+    },
+    {
+      "name": "LDK_ideas"
+    },
+    {
+      "name": "LEI_ideas"
+    },
+    {
+      "name": "LFA_ideas"
+    },
+    {
+      "name": "LIE_ideas"
+    },
+    {
+      "name": "LIG_ideas"
+    },
+    {
+      "name": "LIT2_ideas"
+    },
+    {
+      "name": "LIT_ideas"
+    },
+    {
+      "name": "LIV_ideas"
+    },
+    {
+      "name": "LNA_ideas"
+    },
+    {
+      "name": "LND_ideas"
+    },
+    {
+      "name": "LNS_ideas"
+    },
+    {
+      "name": "LON_ideas"
+    },
+    {
+      "name": "LOR_ideas"
+    },
+    {
+      "name": "LOT_ideas"
+    },
+    {
+      "name": "LRI_ideas"
+    },
+    {
+      "name": "LTG_ideas"
+    },
+    {
+      "name": "LUB_ideas"
+    },
+    {
+      "name": "LUC_ideas"
+    },
+    {
+      "name": "LUN_ideas"
+    },
+    {
+      "name": "LUX_ideas"
+    },
+    {
+      "name": "LVA_ideas"
+    },
+    {
+      "name": "LXA_ideas"
+    },
+    {
+      "name": "Leo_Africanus_Diplomat"
+    },
+    {
+      "name": "Leo_Africanus_Geographer"
+    },
+    {
+      "name": "MAI_ideas"
+    },
+    {
+      "name": "MAJ_ideas"
+    },
+    {
+      "name": "MAL_ideas"
+    },
+    {
+      "name": "MAM2_ideas"
+    },
+    {
+      "name": "MAM_ideas"
+    },
+    {
+      "name": "MAN_ideas"
+    },
+    {
+      "name": "MAR_ideas"
+    },
+    {
+      "name": "MAS_ideas"
+    },
+    {
+      "name": "MAZ_ideas"
+    },
+    {
+      "name": "MBZ_ideas"
+    },
+    {
+      "name": "MCA_ideas"
+    },
+    {
+      "name": "MCH_ideas"
+    },
+    {
+      "name": "MCM_ideas"
+    },
+    {
+      "name": "MDI_ideas"
+    },
+    {
+      "name": "MED_ideas"
+    },
+    {
+      "name": "MER_ideas"
+    },
+    {
+      "name": "MEX_ideas"
+    },
+    {
+      "name": "ME_banker"
+    },
+    {
+      "name": "ME_bard"
+    },
+    {
+      "name": "ME_colonial_governor"
+    },
+    {
+      "name": "ME_crusader_knight"
+    },
+    {
+      "name": "ME_economic_mercantilist"
+    },
+    {
+      "name": "ME_executioner"
+    },
+    {
+      "name": "ME_historian"
+    },
+    {
+      "name": "ME_impostor"
+    },
+    {
+      "name": "ME_land_reclaimer"
+    },
+    {
+      "name": "ME_mercenary_commander"
+    },
+    {
+      "name": "ME_philosopher_erasmus"
+    },
+    {
+      "name": "ME_pombal"
+    },
+    {
+      "name": "ME_siege_engineer"
+    },
+    {
+      "name": "ME_toison_dor"
+    },
+    {
+      "name": "ME_wahhabi_scholar"
+    },
+    {
+      "name": "MFA_ideas"
+    },
+    {
+      "name": "MHR_ideas"
+    },
+    {
+      "name": "MIR_ideas"
+    },
+    {
+      "name": "MJZ_ideas"
+    },
+    {
+      "name": "MLB_ideas"
+    },
+    {
+      "name": "MLC_ideas"
+    },
+    {
+      "name": "MLO_ideas"
+    },
+    {
+      "name": "MLW_ideas"
+    },
+    {
+      "name": "MNS_ideas"
+    },
+    {
+      "name": "MOL_ideas"
+    },
+    {
+      "name": "MON_ideas"
+    },
+    {
+      "name": "MOR_ideas"
+    },
+    {
+      "name": "MOS_ideas"
+    },
+    {
+      "name": "MPC_ideas"
+    },
+    {
+      "name": "MRA_ideas"
+    },
+    {
+      "name": "MRI_ideas"
+    },
+    {
+      "name": "MSA_ideas"
+    },
+    {
+      "name": "MSY_ideas"
+    },
+    {
+      "name": "MTH_ideas"
+    },
+    {
+      "name": "MUG_ideas"
+    },
+    {
+      "name": "MUN_ideas"
+    },
+    {
+      "name": "MVA_ideas"
+    },
+    {
+      "name": "MYS_ideas"
+    },
+    {
+      "name": "NAG_ideas"
+    },
+    {
+      "name": "NAJ_ideas"
+    },
+    {
+      "name": "NAP_ideas"
+    },
+    {
+      "name": "NAV_ideas"
+    },
+    {
+      "name": "NAX_ideas"
+    },
+    {
+      "name": "NBI_ideas"
+    },
+    {
+      "name": "NED_ideas"
+    },
+    {
+      "name": "NEV_ideas"
+    },
+    {
+      "name": "NOL_ideas"
+    },
+    {
+      "name": "NOR_ideas"
+    },
+    {
+      "name": "NOV_ideas"
+    },
+    {
+      "name": "NPL_ideas"
+    },
+    {
+      "name": "NRM_ideas"
+    },
+    {
+      "name": "NUM_ideas"
+    },
+    {
+      "name": "NZH_ideas"
+    },
+    {
+      "name": "NZL_ideas"
+    },
+    {
+      "name": "ODA_ideas"
+    },
+    {
+      "name": "OGS_ideas"
+    },
+    {
+      "name": "OIR_ideas"
+    },
+    {
+      "name": "OKA_ideas"
+    },
+    {
+      "name": "OMA_ideas"
+    },
+    {
+      "name": "ORD_ideas"
+    },
+    {
+      "name": "ORI_ideas"
+    },
+    {
+      "name": "ORL_ideas"
+    },
+    {
+      "name": "ORM_ideas"
+    },
+    {
+      "name": "OTM_ideas"
+    },
+    {
+      "name": "OUC_ideas"
+    },
+    {
+      "name": "OWNER"
+    },
+    {
+      "name": "OYO_ideas"
+    },
+    {
+      "name": "PAL_ideas"
+    },
+    {
+      "name": "PAP_ideas"
+    },
+    {
+      "name": "PAT_ideas"
+    },
+    {
+      "name": "PEG_ideas"
+    },
+    {
+      "name": "PER_ideas"
+    },
+    {
+      "name": "PGA_ideas"
+    },
+    {
+      "name": "PGR_ideas"
+    },
+    {
+      "name": "PIS_ideas"
+    },
+    {
+      "name": "PLB_ideas"
+    },
+    {
+      "name": "PLC_LIT_ideas"
+    },
+    {
+      "name": "PLC_ideas"
+    },
+    {
+      "name": "PLT_ideas"
+    },
+    {
+      "name": "PLW_ideas"
+    },
+    {
+      "name": "POL_ideas"
+    },
+    {
+      "name": "POM_ideas"
+    },
+    {
+      "name": "POR_ideas"
+    },
+    {
+      "name": "PRM_ideas"
+    },
+    {
+      "name": "PRO_ideas"
+    },
+    {
+      "name": "PRU_ideas"
+    },
+    {
+      "name": "PSK_ideas"
+    },
+    {
+      "name": "PUE_ideas"
+    },
+    {
+      "name": "PUN_ideas"
+    },
+    {
+      "name": "QAR_ideas"
+    },
+    {
+      "name": "QNG_ideas"
+    },
+    {
+      "name": "QOM_ideas"
+    },
+    {
+      "name": "QUE_ideas"
+    },
+    {
+      "name": "RAG_ideas"
+    },
+    {
+      "name": "RAS_ideas"
+    },
+    {
+      "name": "RFR_ideas"
+    },
+    {
+      "name": "RIG_ideas"
+    },
+    {
+      "name": "RJP_ideas"
+    },
+    {
+      "name": "RMN_ideas"
+    },
+    {
+      "name": "ROM_ideas"
+    },
+    {
+      "name": "ROT_ideas"
+    },
+    {
+      "name": "RSO_ideas"
+    },
+    {
+      "name": "RUM_ideas"
+    },
+    {
+      "name": "RUS_ideas"
+    },
+    {
+      "name": "RVA_ideas"
+    },
+    {
+      "name": "RYA_ideas"
+    },
+    {
+      "name": "RYU_ideas"
+    },
+    {
+      "name": "RZW_ideas"
+    },
+    {
+      "name": "SAR_ideas"
+    },
+    {
+      "name": "SAV_ideas"
+    },
+    {
+      "name": "SAX_ideas"
+    },
+    {
+      "name": "SBA_ideas"
+    },
+    {
+      "name": "SCA_ideas"
+    },
+    {
+      "name": "SCO_Ideas"
+    },
+    {
+      "name": "SDY_ideas"
+    },
+    {
+      "name": "SER_ideas"
+    },
+    {
+      "name": "SHA_ideas"
+    },
+    {
+      "name": "SHL_ideas"
+    },
+    {
+      "name": "SHN_ideas"
+    },
+    {
+      "name": "SIA_ideas"
+    },
+    {
+      "name": "SIC_ideas"
+    },
+    {
+      "name": "SIE_ideas"
+    },
+    {
+      "name": "SIL_ideas"
+    },
+    {
+      "name": "SIS_ideas"
+    },
+    {
+      "name": "SLN_ideas"
+    },
+    {
+      "name": "SLO_ideas"
+    },
+    {
+      "name": "SME_ideas"
+    },
+    {
+      "name": "SMI_ideas"
+    },
+    {
+      "name": "SMO_ideas"
+    },
+    {
+      "name": "SMZ_ideas"
+    },
+    {
+      "name": "SNA_ideas"
+    },
+    {
+      "name": "SND_ideas"
+    },
+    {
+      "name": "SOM_ideas"
+    },
+    {
+      "name": "SON_ideas"
+    },
+    {
+      "name": "SOO_ideas"
+    },
+    {
+      "name": "SOR_ideas"
+    },
+    {
+      "name": "SPA_ideas"
+    },
+    {
+      "name": "SPI_ideas"
+    },
+    {
+      "name": "SRV_ideas"
+    },
+    {
+      "name": "STK_ideas"
+    },
+    {
+      "name": "SUK_ideas"
+    },
+    {
+      "name": "SUL_ideas"
+    },
+    {
+      "name": "SUN_ideas"
+    },
+    {
+      "name": "SWA_ideas"
+    },
+    {
+      "name": "SWE_ideas"
+    },
+    {
+      "name": "SWI_ideas"
+    },
+    {
+      "name": "SYN_ideas"
+    },
+    {
+      "name": "SZO_ideas"
+    },
+    {
+      "name": "TAR_ideas"
+    },
+    {
+      "name": "TAU_ideas"
+    },
+    {
+      "name": "TBK_ideas"
+    },
+    {
+      "name": "TEU_ideas"
+    },
+    {
+      "name": "TEX_ideas"
+    },
+    {
+      "name": "THU_ideas"
+    },
+    {
+      "name": "TIB_ideas"
+    },
+    {
+      "name": "TIM_ideas"
+    },
+    {
+      "name": "TIW_ideas"
+    },
+    {
+      "name": "TKD_ideas"
+    },
+    {
+      "name": "TKG_ideas"
+    },
+    {
+      "name": "TKI_ideas"
+    },
+    {
+      "name": "TNT_ideas"
+    },
+    {
+      "name": "TPR_ideas"
+    },
+    {
+      "name": "TRA_ideas"
+    },
+    {
+      "name": "TRE_ideas"
+    },
+    {
+      "name": "TRI_ideas"
+    },
+    {
+      "name": "TRS_ideas"
+    },
+    {
+      "name": "TRT_ideas"
+    },
+    {
+      "name": "TRY_ideas"
+    },
+    {
+      "name": "TTI_ideas"
+    },
+    {
+      "name": "TTL_ideas"
+    },
+    {
+      "name": "TUA_ideas"
+    },
+    {
+      "name": "TUN_ideas"
+    },
+    {
+      "name": "TUR_ideas"
+    },
+    {
+      "name": "TUS_ideas"
+    },
+    {
+      "name": "TVE_ideas"
+    },
+    {
+      "name": "TYR_ideas"
+    },
+    {
+      "name": "UCN_ideas"
+    },
+    {
+      "name": "UES_ideas"
+    },
+    {
+      "name": "UKR_ideas"
+    },
+    {
+      "name": "ULM_ideas"
+    },
+    {
+      "name": "ULS_ideas"
+    },
+    {
+      "name": "URB_ideas"
+    },
+    {
+      "name": "USA_ideas"
+    },
+    {
+      "name": "UTN_ideas"
+    },
+    {
+      "name": "UTR_ideas"
+    },
+    {
+      "name": "VEN_ideas"
+    },
+    {
+      "name": "VEN_ideas_2"
+    },
+    {
+      "name": "VIJ_ideas"
+    },
+    {
+      "name": "VRM_ideas"
+    },
+    {
+      "name": "VRN_ideas"
+    },
+    {
+      "name": "WAL_ideas"
+    },
+    {
+      "name": "WBG_ideas"
+    },
+    {
+      "name": "WES_ideas"
+    },
+    {
+      "name": "WLS_ideas"
+    },
+    {
+      "name": "WSI_ideas"
+    },
+    {
+      "name": "WUR_ideas"
+    },
+    {
+      "name": "YAR_ideas"
+    },
+    {
+      "name": "YEM_ideas"
+    },
+    {
+      "name": "YMN_ideas"
+    },
+    {
+      "name": "YUA_ideas"
+    },
+    {
+      "name": "ZAN_ideas"
+    },
+    {
+      "name": "ZAZ_ideas"
+    },
+    {
+      "name": "ZIM_ideas"
+    },
+    {
+      "name": "ZUL_ideas"
+    },
+    {
+      "name": "abu_said_mirza"
+    },
+    {
+      "name": "adamawa_plateau_area"
+    },
+    {
+      "name": "add_fire"
+    },
+    {
       "name": "add_stability_or_adm_power",
       "count": 441
     },
@@ -20869,28 +22309,133 @@
       "name": "adm_ideas"
     },
     {
+      "name": "administrative_ideas"
+    },
+    {
       "name": "admiral"
     },
     {
+      "name": "aegean_archipelago_area"
+    },
+    {
       "name": "africa"
+    },
+    {
+      "name": "africa_superregion"
+    },
+    {
+      "name": "african_great_lakes_ideas"
     },
     {
       "name": "age",
       "count": 331
     },
     {
+      "name": "agenda"
+    },
+    {
+      "name": "ahmedabad_area"
+    },
+    {
+      "name": "ahmednagar_area"
+    },
+    {
+      "name": "ajuuran_area"
+    },
+    {
+      "name": "al_jazira_area"
+    },
+    {
+      "name": "al_wahat_area"
+    },
+    {
+      "name": "alabama_area"
+    },
+    {
+      "name": "alaska_area"
+    },
+    {
+      "name": "albania_area"
+    },
+    {
+      "name": "alentejo_area"
+    },
+    {
+      "name": "aleppo_area"
+    },
+    {
+      "name": "alfold_area"
+    },
+    {
+      "name": "algiers_area"
+    },
+    {
       "name": "allow_normal_conversion",
       "count": 650
+    },
+    {
+      "name": "alsace_area"
+    },
+    {
+      "name": "altai_sayan_area"
+    },
+    {
+      "name": "amapa_area"
+    },
+    {
+      "name": "amazon_area"
+    },
+    {
+      "name": "amdo_area"
+    },
+    {
+      "name": "american_east_coast_region"
+    },
+    {
+      "name": "american_georgia_area"
     },
     {
       "name": "amount",
       "count": 585
     },
     {
+      "name": "anatolia_region"
+    },
+    {
+      "name": "anatolian_beyliks_ideas"
+    },
+    {
+      "name": "andaman_sea_area"
+    },
+    {
+      "name": "andean_ideas"
+    },
+    {
+      "name": "andes_superregion"
+    },
+    {
+      "name": "andhra_area"
+    },
+    {
+      "name": "angkor_area"
+    },
+    {
       "name": "anglican"
     },
     {
+      "name": "angola_namibia_area"
+    },
+    {
+      "name": "anhui_area"
+    },
+    {
       "name": "animism"
+    },
+    {
+      "name": "ankara_area"
+    },
+    {
+      "name": "antisuyu_area"
     },
     {
       "name": "any_country",
@@ -20909,11 +22454,53 @@
       "count": 287
     },
     {
+      "name": "apacheria_area"
+    },
+    {
+      "name": "appalachia_area"
+    },
+    {
+      "name": "apulia_area"
+    },
+    {
+      "name": "aqmola_area"
+    },
+    {
+      "name": "arabia_region"
+    },
+    {
+      "name": "arabian_ideas"
+    },
+    {
+      "name": "arabian_sea_area"
+    },
+    {
+      "name": "arabian_sea_region"
+    },
+    {
+      "name": "aragon_area"
+    },
+    {
+      "name": "arakan_area"
+    },
+    {
       "name": "area_modifier",
       "count": 570
     },
     {
+      "name": "argentine_sea_area"
+    },
+    {
       "name": "aristocracy_ideas"
+    },
+    {
+      "name": "arizona_area"
+    },
+    {
+      "name": "arkhangelsk_area"
+    },
+    {
+      "name": "armenia_area"
     },
     {
       "name": "army_organiser"
@@ -20925,7 +22512,34 @@
       "name": "artist"
     },
     {
+      "name": "arys_area"
+    },
+    {
       "name": "asia"
+    },
+    {
+      "name": "asir_area"
+    },
+    {
+      "name": "assam_area"
+    },
+    {
+      "name": "assiniboia_area"
+    },
+    {
+      "name": "astrakhan_area"
+    },
+    {
+      "name": "asturias_area"
+    },
+    {
+      "name": "atacora_oueme_area"
+    },
+    {
+      "name": "athabasca_area"
+    },
+    {
+      "name": "atlantic_south_america_region"
     },
     {
       "name": "attackers"
@@ -20935,22 +22549,223 @@
       "count": 356
     },
     {
+      "name": "aussa_area"
+    },
+    {
+      "name": "australia_region"
+    },
+    {
+      "name": "austria_proper_area"
+    },
+    {
+      "name": "aydin_area"
+    },
+    {
+      "name": "aymaran_ideas"
+    },
+    {
+      "name": "azbin_area"
+    },
+    {
+      "name": "azerbaijan_area"
+    },
+    {
+      "name": "azov_area"
+    },
+    {
+      "name": "badlands_area"
+    },
+    {
+      "name": "baghelkhand_area"
+    },
+    {
+      "name": "baghena_area"
+    },
+    {
+      "name": "bahama_channel_area"
+    },
+    {
+      "name": "bahari_area"
+    },
+    {
+      "name": "bahia_area"
+    },
+    {
+      "name": "bahia_blanca_area"
+    },
+    {
+      "name": "bahrain_area"
+    },
+    {
+      "name": "baisi_rajya_area"
+    },
+    {
+      "name": "baja_california_area"
+    },
+    {
+      "name": "balchasj_area"
+    },
+    {
+      "name": "baleares_area"
+    },
+    {
+      "name": "balkan_region"
+    },
+    {
+      "name": "balkh_area"
+    },
+    {
+      "name": "baltic_area"
+    },
+    {
+      "name": "baltic_region"
+    },
+    {
+      "name": "baltic_sea_region"
+    },
+    {
+      "name": "banda_arafura_seas_area"
+    },
+    {
+      "name": "banda_oriental_area"
+    },
+    {
+      "name": "banjar_area"
+    },
+    {
+      "name": "banten_area"
+    },
+    {
+      "name": "barbary_coast_area"
+    },
+    {
+      "name": "barbary_pirate_ideas"
+    },
+    {
       "name": "barracks"
+    },
+    {
+      "name": "bashkiria_area"
+    },
+    {
+      "name": "basque_country"
+    },
+    {
+      "name": "basra_area"
+    },
+    {
+      "name": "batak_area"
     },
     {
       "name": "batch",
       "count": 588
     },
     {
+      "name": "bay_of_bengal_area"
+    },
+    {
+      "name": "bay_of_biscay_area"
+    },
+    {
+      "name": "beieras_area"
+    },
+    {
+      "name": "beloozero_area"
+    },
+    {
+      "name": "bendahara"
+    },
+    {
       "name": "benefits",
       "count": 305
+    },
+    {
+      "name": "bengal_region"
+    },
+    {
+      "name": "bengali_ideas"
+    },
+    {
+      "name": "beni_area"
+    },
+    {
+      "name": "benin_area"
+    },
+    {
+      "name": "berar_area"
+    },
+    {
+      "name": "berber_ideas"
+    },
+    {
+      "name": "berring_sea_area"
+    },
+    {
+      "name": "betsimasaraka_area"
+    },
+    {
+      "name": "bhutan_area"
+    },
+    {
+      "name": "bihar_area"
+    },
+    {
+      "name": "birjand_area"
+    },
+    {
+      "name": "black_sea_area"
+    },
+    {
+      "name": "blast_furnace"
+    },
+    {
+      "name": "bogota_area"
+    },
+    {
+      "name": "bohemia_area"
     },
     {
       "name": "bonus",
       "count": 574
     },
     {
+      "name": "bornu_area"
+    },
+    {
+      "name": "bosnia_area"
+    },
+    {
+      "name": "bothnia_area"
+    },
+    {
+      "name": "bourgogne_area"
+    },
+    {
+      "name": "brabant_area"
+    },
+    {
       "name": "branch"
+    },
+    {
+      "name": "braunschweig_area"
+    },
+    {
+      "name": "brazil_region"
+    },
+    {
+      "name": "british_isles_region"
+    },
+    {
+      "name": "brittany_area"
+    },
+    {
+      "name": "brunei_area"
+    },
+    {
+      "name": "buenos_aires_area"
+    },
+    {
+      "name": "buha_area"
     },
     {
       "name": "build_cost",
@@ -20960,18 +22775,108 @@
       "name": "building"
     },
     {
+      "name": "bulgaria_area"
+    },
+    {
+      "name": "bundelkhand_area"
+    },
+    {
+      "name": "bunyoro_area"
+    },
+    {
+      "name": "burma_region"
+    },
+    {
+      "name": "buryatia_area"
+    },
+    {
+      "name": "butua_area"
+    },
+    {
+      "name": "buzinza_area"
+    },
+    {
+      "name": "by"
+    },
+    {
+      "name": "cajamarca_area"
+    },
+    {
+      "name": "calabria_area"
+    },
+    {
+      "name": "california_area"
+    },
+    {
+      "name": "california_native_ideas"
+    },
+    {
+      "name": "california_region"
+    },
+    {
+      "name": "cambodia_area"
+    },
+    {
+      "name": "campeche_area"
+    },
+    {
       "name": "can_select",
       "count": 613
+    },
+    {
+      "name": "canada_region"
+    },
+    {
+      "name": "canton"
+    },
+    {
+      "name": "cap_verde_area"
+    },
+    {
+      "name": "cape_of_good_hope_area"
+    },
+    {
+      "name": "cape_of_storms_area"
     },
     {
       "name": "capital_scope",
       "count": 1618
     },
     {
+      "name": "caribbean_sea_area"
+    },
+    {
+      "name": "caribbean_sea_region"
+    },
+    {
+      "name": "carinthia_area"
+    },
+    {
+      "name": "carolinas_area"
+    },
+    {
+      "name": "carpathia_region"
+    },
+    {
+      "name": "carribeans_region"
+    },
+    {
+      "name": "cascadia_region"
+    },
+    {
+      "name": "caspian_ideas"
+    },
+    {
+      "name": "castille_area"
+    },
+    {
       "name": "casualties"
     },
     {
       "name": "casus_belli"
+    },
+    {
+      "name": "catalonia_area"
     },
     {
       "name": "category",
@@ -20984,13 +22889,166 @@
       "name": "catholic"
     },
     {
+      "name": "caucasia_region"
+    },
+    {
+      "name": "caucasus_ideas"
+    },
+    {
       "name": "cause"
+    },
+    {
+      "name": "ceara_area"
+    },
+    {
+      "name": "celebes_sea_area"
+    },
+    {
+      "name": "celtic_sea_area"
+    },
+    {
+      "name": "center"
+    },
+    {
+      "name": "central_africa_region"
+    },
+    {
+      "name": "central_algonquian_federation_ideas"
+    },
+    {
+      "name": "central_america_region"
+    },
+    {
+      "name": "central_america_superregion"
+    },
+    {
+      "name": "central_asia_region"
+    },
+    {
+      "name": "central_burma_area"
+    },
+    {
+      "name": "central_chile_area"
+    },
+    {
+      "name": "central_ethiopia_area"
+    },
+    {
+      "name": "central_heilongjiang_area"
+    },
+    {
+      "name": "central_indic_ideas"
+    },
+    {
+      "name": "central_italy_area"
+    },
+    {
+      "name": "central_java_area"
+    },
+    {
+      "name": "central_jilin_area"
+    },
+    {
+      "name": "central_llanos_area"
+    },
+    {
+      "name": "central_mongolia_area"
+    },
+    {
+      "name": "central_plains_area"
+    },
+    {
+      "name": "central_poland_area"
+    },
+    {
+      "name": "central_siberia_area"
+    },
+    {
+      "name": "central_sumatra_area"
+    },
+    {
+      "name": "central_swahili_coast_area"
+    },
+    {
+      "name": "central_thai_area"
+    },
+    {
+      "name": "central_valley_area"
+    },
+    {
+      "name": "chaco_area"
+    },
+    {
+      "name": "chahar_area"
+    },
+    {
+      "name": "champa_area"
+    },
+    {
+      "name": "champagne_area"
+    },
+    {
+      "name": "champasak_area"
+    },
+    {
+      "name": "chernigov_area"
+    },
+    {
+      "name": "chesapeake_area"
+    },
+    {
+      "name": "chiapas_area"
+    },
+    {
+      "name": "chihuahua_area"
+    },
+    {
+      "name": "chilean_sea_area"
+    },
+    {
+      "name": "chimor_area"
+    },
+    {
+      "name": "china_superregion"
     },
     {
       "name": "chinaware"
     },
     {
+      "name": "chindwin_area"
+    },
+    {
+      "name": "chinese_ideas"
+    },
+    {
+      "name": "choctaw_area"
+    },
+    {
+      "name": "chokwe_area"
+    },
+    {
+      "name": "chuanbei_area"
+    },
+    {
+      "name": "chuannan_area"
+    },
+    {
+      "name": "chubu_area"
+    },
+    {
+      "name": "cicigar_area"
+    },
+    {
+      "name": "circassia_area"
+    },
+    {
+      "name": "client_ideas"
+    },
+    {
       "name": "cloth"
+    },
+    {
+      "name": "cloves"
     },
     {
       "name": "clr_auto_complete_flag",
@@ -21000,10 +23058,34 @@
       "name": "coal"
     },
     {
+      "name": "coast_of_brazil_sea_area"
+    },
+    {
+      "name": "coast_of_guyana_area"
+    },
+    {
+      "name": "coastal_defence"
+    },
+    {
+      "name": "coastal_kongo"
+    },
+    {
+      "name": "coastal_prarie_area"
+    },
+    {
       "name": "cocoa"
     },
     {
+      "name": "cod"
+    },
+    {
       "name": "coffee"
+    },
+    {
+      "name": "colombia_region"
+    },
+    {
+      "name": "colombian_amazonas_area"
     },
     {
       "name": "colonial_alaska"
@@ -21018,10 +23100,94 @@
       "name": "colonial_california"
     },
     {
+      "name": "colonial_canada"
+    },
+    {
+      "name": "colonial_colombia"
+    },
+    {
       "name": "colonial_eastern_america"
     },
     {
       "name": "colonial_governor"
+    },
+    {
+      "name": "colonial_ideas"
+    },
+    {
+      "name": "colonial_la_plata"
+    },
+    {
+      "name": "colonial_louisiana"
+    },
+    {
+      "name": "colonial_mexico"
+    },
+    {
+      "name": "colonial_peru"
+    },
+    {
+      "name": "colonial_placeholder_1"
+    },
+    {
+      "name": "colonial_placeholder_10"
+    },
+    {
+      "name": "colonial_placeholder_11"
+    },
+    {
+      "name": "colonial_placeholder_12"
+    },
+    {
+      "name": "colonial_placeholder_13"
+    },
+    {
+      "name": "colonial_placeholder_14"
+    },
+    {
+      "name": "colonial_placeholder_15"
+    },
+    {
+      "name": "colonial_placeholder_16"
+    },
+    {
+      "name": "colonial_placeholder_17"
+    },
+    {
+      "name": "colonial_placeholder_18"
+    },
+    {
+      "name": "colonial_placeholder_19"
+    },
+    {
+      "name": "colonial_placeholder_2"
+    },
+    {
+      "name": "colonial_placeholder_20"
+    },
+    {
+      "name": "colonial_placeholder_21"
+    },
+    {
+      "name": "colonial_placeholder_3"
+    },
+    {
+      "name": "colonial_placeholder_4"
+    },
+    {
+      "name": "colonial_placeholder_5"
+    },
+    {
+      "name": "colonial_placeholder_6"
+    },
+    {
+      "name": "colonial_placeholder_7"
+    },
+    {
+      "name": "colonial_placeholder_8"
+    },
+    {
+      "name": "colonial_placeholder_9"
     },
     {
       "name": "colonial_region_for_scope_province"
@@ -21041,7 +23207,16 @@
       "count": 280
     },
     {
+      "name": "colorado_plateau_area"
+    },
+    {
+      "name": "columbia_river_area"
+    },
+    {
       "name": "commandant"
+    },
+    {
+      "name": "compatibility_127"
     },
     {
       "name": "conditional",
@@ -21055,6 +23230,18 @@
       "name": "confucianism"
     },
     {
+      "name": "congolese_minor_ideas"
+    },
+    {
+      "name": "connacht_area"
+    },
+    {
+      "name": "connecticut_valley_area"
+    },
+    {
+      "name": "conscription_center"
+    },
+    {
       "name": "consort_ADM"
     },
     {
@@ -21064,18 +23251,48 @@
       "name": "consort_MIL"
     },
     {
+      "name": "consort_on_shipwreck"
+    },
+    {
       "name": "copper"
     },
     {
       "name": "coptic"
     },
     {
+      "name": "coquivacoa_area"
+    },
+    {
+      "name": "coral_sea_area"
+    },
+    {
+      "name": "cordillera_occidental_area"
+    },
+    {
+      "name": "coromandel_region"
+    },
+    {
+      "name": "corsica_sardinia_area"
+    },
+    {
+      "name": "cossack_ideas"
+    },
+    {
       "name": "cost",
       "count": 310
     },
     {
+      "name": "cost_multiplier"
+    },
+    {
       "name": "cost_to_upgrade",
       "count": 564
+    },
+    {
+      "name": "costa_rica_area"
+    },
+    {
+      "name": "cote_nord_area"
     },
     {
       "name": "cotton"
@@ -21095,15 +23312,69 @@
       "count": 557
     },
     {
+      "name": "court_ideas"
+    },
+    {
+      "name": "courthouse"
+    },
+    {
+      "name": "crimea_area"
+    },
+    {
+      "name": "crimea_region"
+    },
+    {
+      "name": "croatia_area"
+    },
+    {
+      "name": "cuba_area"
+    },
+    {
+      "name": "cukurova_area"
+    },
+    {
       "name": "cult"
+    },
+    {
+      "name": "curonia_area"
     },
     {
       "name": "custom_attributes",
       "count": 355
     },
     {
+      "name": "cuyo_area"
+    },
+    {
+      "name": "cyrenaica_area"
+    },
+    {
+      "name": "dagestan_area"
+    },
+    {
+      "name": "daimyo_ideas"
+    },
+    {
+      "name": "dakota_area"
+    },
+    {
+      "name": "damot_area"
+    },
+    {
+      "name": "darfur_central_sahara_area"
+    },
+    {
       "name": "days",
       "count": 2782
+    },
+    {
+      "name": "deccan_region"
+    },
+    {
+      "name": "deccani_muslim_ideas"
+    },
+    {
+      "name": "default_ideas"
     },
     {
       "name": "defenders"
@@ -21111,6 +23382,9 @@
     {
       "name": "defensive_fire",
       "count": 304
+    },
+    {
+      "name": "defensive_ideas"
     },
     {
       "name": "defensive_morale",
@@ -21121,8 +23395,32 @@
       "count": 304
     },
     {
+      "name": "delaware_valley_area"
+    },
+    {
+      "name": "delta_area"
+    },
+    {
+      "name": "dendi_area"
+    },
+    {
+      "name": "denmark_area"
+    },
+    {
+      "name": "denmark_strait_area"
+    },
+    {
+      "name": "desh_area"
+    },
+    {
       "name": "development_cost",
       "count": 285
+    },
+    {
+      "name": "dhofar_area"
+    },
+    {
+      "name": "diamantina_area"
     },
     {
       "name": "dip_ideas"
@@ -21148,6 +23446,30 @@
       "name": "distance"
     },
     {
+      "name": "djerba_area"
+    },
+    {
+      "name": "dock"
+    },
+    {
+      "name": "dominica_area"
+    },
+    {
+      "name": "dongola_area"
+    },
+    {
+      "name": "dravidian_ideas"
+    },
+    {
+      "name": "drydock"
+    },
+    {
+      "name": "dulkadir_area"
+    },
+    {
+      "name": "durango_area"
+    },
+    {
       "name": "duration",
       "count": 5742
     },
@@ -21159,17 +23481,140 @@
       "count": 337
     },
     {
+      "name": "east_adriatic_coast_area"
+    },
+    {
+      "name": "east_africa_region"
+    },
+    {
+      "name": "east_african_sea_superregion"
+    },
+    {
+      "name": "east_alaska_area"
+    },
+    {
+      "name": "east_american_sea_superregion"
+    },
+    {
+      "name": "east_anglia_area"
+    },
+    {
+      "name": "east_azbin_area"
+    },
+    {
+      "name": "east_bavaria_area"
+    },
+    {
+      "name": "east_bengal_area"
+    },
+    {
+      "name": "east_china_sea_area"
+    },
+    {
+      "name": "east_china_sea_region"
+    },
+    {
+      "name": "east_cuba_area"
+    },
+    {
+      "name": "east_dniepr_area"
+    },
+    {
+      "name": "east_heilongjiang_area"
+    },
+    {
+      "name": "east_indian_ocean_region"
+    },
+    {
+      "name": "east_indies_superregion"
+    },
+    {
+      "name": "east_java_area"
+    },
+    {
+      "name": "east_midlands_area"
+    },
+    {
+      "name": "east_pacific_ocean_area"
+    },
+    {
+      "name": "east_prussia_area"
+    },
+    {
+      "name": "east_siberia_region"
+    },
+    {
+      "name": "east_yucatan_area"
+    },
+    {
+      "name": "eastern_algonquian_federation_ideas"
+    },
+    {
+      "name": "eastern_australia_area"
+    },
+    {
+      "name": "eastern_chubu_area"
+    },
+    {
+      "name": "eastern_europe_superregion"
+    },
+    {
+      "name": "eastern_indian_ocean_area"
+    },
+    {
+      "name": "eastern_kanto_area"
+    },
+    {
+      "name": "eastern_korea_area"
+    },
+    {
+      "name": "eastern_llanos"
+    },
+    {
+      "name": "eastern_maine_area"
+    },
+    {
+      "name": "eastern_mediterrenean_area"
+    },
+    {
+      "name": "eastern_mexico_area"
+    },
+    {
+      "name": "eastern_mongolia"
+    },
+    {
+      "name": "eastern_norway"
+    },
+    {
+      "name": "eastern_polynesia_area"
+    },
+    {
       "name": "economic_ideas"
+    },
+    {
+      "name": "egypt_region"
+    },
+    {
+      "name": "emilia_romagna_area"
     },
     {
       "name": "enable",
       "count": 328
     },
     {
+      "name": "english_channel_area"
+    },
+    {
       "name": "enlightenment"
     },
     {
       "name": "enlightenment_origin"
+    },
+    {
+      "name": "erzgebirge_area"
+    },
+    {
+      "name": "erzurum_area"
     },
     {
       "name": "estate",
@@ -21183,14 +23628,29 @@
       "name": "estate_privilege"
     },
     {
+      "name": "estonia_ingria_area"
+    },
+    {
       "name": "europe"
+    },
+    {
+      "name": "europe_superregion"
+    },
+    {
+      "name": "evenk_ideas"
     },
     {
       "name": "event_target:agenda_province",
       "count": 633
     },
     {
+      "name": "expansion_ideas"
+    },
+    {
       "name": "exploration_ideas"
+    },
+    {
+      "name": "extremadura_area"
     },
     {
       "name": "faction"
@@ -21204,7 +23664,16 @@
       "count": 322
     },
     {
+      "name": "far_east_superregion"
+    },
+    {
       "name": "farm_estate"
+    },
+    {
+      "name": "farsistan_area"
+    },
+    {
+      "name": "fatwa"
     },
     {
       "name": "female",
@@ -21215,7 +23684,22 @@
       "count": 398
     },
     {
+      "name": "ferghana_area"
+    },
+    {
       "name": "feudalism"
+    },
+    {
+      "name": "fezzan_area"
+    },
+    {
+      "name": "fiji_area"
+    },
+    {
+      "name": "fijian_ideas"
+    },
+    {
+      "name": "finland_area"
     },
     {
       "name": "fire"
@@ -21230,6 +23714,12 @@
     {
       "name": "flag",
       "count": 340
+    },
+    {
+      "name": "flanders_area"
+    },
+    {
+      "name": "florida_area"
     },
     {
       "name": "fort_15th"
@@ -21247,20 +23737,80 @@
       "name": "fortification_expert"
     },
     {
+      "name": "france_region"
+    },
+    {
+      "name": "franconia_area"
+    },
+    {
       "name": "free",
       "count": 541
+    },
+    {
+      "name": "french_culture_ideas"
+    },
+    {
+      "name": "frisia_area"
+    },
+    {
+      "name": "fujian_area"
+    },
+    {
+      "name": "fulani_jihad_ideas"
     },
     {
       "name": "fur"
     },
     {
+      "name": "furdan_area"
+    },
+    {
       "name": "furnace"
+    },
+    {
+      "name": "futa_jallon_area"
+    },
+    {
+      "name": "galich_area"
+    },
+    {
+      "name": "galicia_area"
+    },
+    {
+      "name": "gansu_area"
+    },
+    {
+      "name": "garjat_area"
+    },
+    {
+      "name": "garjati_ideas"
+    },
+    {
+      "name": "gaur_area"
     },
     {
       "name": "gems"
     },
     {
       "name": "general"
+    },
+    {
+      "name": "generic_aboriginal_ideas"
+    },
+    {
+      "name": "generic_federation_ideas"
+    },
+    {
+      "name": "german_ideas"
+    },
+    {
+      "name": "germiyan_area"
+    },
+    {
+      "name": "ghor_area"
+    },
+    {
+      "name": "gird_area"
     },
     {
       "name": "glass"
@@ -21289,7 +23839,19 @@
       "count": 642
     },
     {
+      "name": "goias_area"
+    },
+    {
+      "name": "golconda_area"
+    },
+    {
       "name": "gold"
+    },
+    {
+      "name": "gondwana_area"
+    },
+    {
+      "name": "gotaland_area"
     },
     {
       "name": "goto",
@@ -21302,17 +23864,122 @@
       "name": "grain"
     },
     {
+      "name": "gran_chichimeca_area"
+    },
+    {
       "name": "grand_captain"
     },
     {
       "name": "grand_shipyard"
     },
     {
+      "name": "grao_para_area"
+    },
+    {
       "name": "graphical_culture",
       "count": 1059
     },
     {
+      "name": "great_australian_bight_area"
+    },
+    {
+      "name": "great_lakes_region"
+    },
+    {
+      "name": "great_plains_region"
+    },
+    {
+      "name": "great_project"
+    },
+    {
+      "name": "great_valley_area"
+    },
+    {
+      "name": "great_woods_area"
+    },
+    {
+      "name": "greater_antilles_area"
+    },
+    {
+      "name": "greek_ideas"
+    },
+    {
+      "name": "greenland_area"
+    },
+    {
       "name": "group"
+    },
+    {
+      "name": "guajiro_ideas"
+    },
+    {
+      "name": "guanajuato_area"
+    },
+    {
+      "name": "guangdong_area"
+    },
+    {
+      "name": "guangxi_area"
+    },
+    {
+      "name": "guapore_area"
+    },
+    {
+      "name": "guatemala_area"
+    },
+    {
+      "name": "guatemala_lowlands_area"
+    },
+    {
+      "name": "guerrero_area"
+    },
+    {
+      "name": "guinea_coast_area"
+    },
+    {
+      "name": "guinea_region"
+    },
+    {
+      "name": "gujarati_ideas"
+    },
+    {
+      "name": "gulf_of_alaska_area"
+    },
+    {
+      "name": "gulf_of_arabia_area"
+    },
+    {
+      "name": "gulf_of_guinea_area"
+    },
+    {
+      "name": "gulf_of_guinea_sea_area"
+    },
+    {
+      "name": "gulf_of_mexico_area"
+    },
+    {
+      "name": "gulf_of_panama_area"
+    },
+    {
+      "name": "gulf_of_st_lawrence_area"
+    },
+    {
+      "name": "gulf_stream_area"
+    },
+    {
+      "name": "guyana_area"
+    },
+    {
+      "name": "guyenne_area"
+    },
+    {
+      "name": "hadiya_area"
+    },
+    {
+      "name": "hadramut_area"
+    },
+    {
+      "name": "hamgyeong_area"
     },
     {
       "name": "happened",
@@ -21327,6 +23994,27 @@
       "count": 649
     },
     {
+      "name": "hausa_area"
+    },
+    {
+      "name": "hausa_ideas"
+    },
+    {
+      "name": "hautes_plaines_area"
+    },
+    {
+      "name": "hawaiian_ideas"
+    },
+    {
+      "name": "hebei_area"
+    },
+    {
+      "name": "hecate_strait_area"
+    },
+    {
+      "name": "heilongjiang_area"
+    },
+    {
       "name": "heir_ADM"
     },
     {
@@ -21336,11 +24024,44 @@
       "name": "heir_MIL"
     },
     {
+      "name": "heir_on_shipwreck"
+    },
+    {
+      "name": "henan_area"
+    },
+    {
+      "name": "herat_area"
+    },
+    {
+      "name": "hesse_area"
+    },
+    {
       "name": "hidden",
       "count": 514
     },
     {
+      "name": "high_plains_area"
+    },
+    {
+      "name": "highland_scottish_ideas"
+    },
+    {
+      "name": "highlands_area"
+    },
+    {
+      "name": "himalayan_hills_area"
+    },
+    {
       "name": "hinduism"
+    },
+    {
+      "name": "hindusthan_region"
+    },
+    {
+      "name": "hinter_pommern_area"
+    },
+    {
+      "name": "hispaniola_area"
     },
     {
       "name": "historical_idea_groups",
@@ -21351,11 +24072,98 @@
       "count": 975
     },
     {
+      "name": "hokkaido_area"
+    },
+    {
+      "name": "hokuriku_area"
+    },
+    {
+      "name": "holland_area"
+    },
+    {
+      "name": "holstein_area"
+    },
+    {
+      "name": "home_counties_area"
+    },
+    {
+      "name": "honduras_area"
+    },
+    {
+      "name": "horde_gov_ideas"
+    },
+    {
+      "name": "horde_ideas"
+    },
+    {
+      "name": "horn_of_africa_region"
+    },
+    {
+      "name": "horn_of_african_ideas"
+    },
+    {
+      "name": "huanuco_area"
+    },
+    {
+      "name": "huasteca_area"
+    },
+    {
+      "name": "hudavendigar_area"
+    },
+    {
+      "name": "hudson_bay_area"
+    },
+    {
+      "name": "hudson_bay_region"
+    },
+    {
+      "name": "hudson_bay_sea_area"
+    },
+    {
+      "name": "hudson_valley_area"
+    },
+    {
+      "name": "huguang_area"
+    },
+    {
+      "name": "humanist_ideas"
+    },
+    {
+      "name": "hunan_area"
+    },
+    {
+      "name": "huronia_area"
+    },
+    {
       "name": "ibadi"
+    },
+    {
+      "name": "iberia_region"
+    },
+    {
+      "name": "iceland_area"
     },
     {
       "name": "icon",
       "count": 1257
+    },
+    {
+      "name": "ifat_area"
+    },
+    {
+      "name": "ilan_hala_area"
+    },
+    {
+      "name": "ile_de_france_area"
+    },
+    {
+      "name": "illawara_area"
+    },
+    {
+      "name": "illinois_country_area"
+    },
+    {
+      "name": "imereti_area"
     },
     {
       "name": "impressment_offices"
@@ -21368,6 +24176,30 @@
     },
     {
       "name": "independent_nations"
+    },
+    {
+      "name": "india_superregion"
+    },
+    {
+      "name": "indian_muslim_ideas"
+    },
+    {
+      "name": "indian_ocean_islands_area"
+    },
+    {
+      "name": "indian_pacific_sea_superregion"
+    },
+    {
+      "name": "indigenous_ideas"
+    },
+    {
+      "name": "indo_china_region"
+    },
+    {
+      "name": "indonesia_region"
+    },
+    {
+      "name": "indonesian_islands_area"
     },
     {
       "name": "industrialization"
@@ -21383,10 +24215,25 @@
       "name": "influence_ideas"
     },
     {
+      "name": "infrastructure_ideas"
+    },
+    {
+      "name": "inner_austria_area"
+    },
+    {
+      "name": "inner_mongolia_area"
+    },
+    {
+      "name": "inner_ontario_area"
+    },
+    {
       "name": "innovativeness_ideas"
     },
     {
       "name": "inquisitor"
+    },
+    {
+      "name": "interior_plateau_area"
     },
     {
       "name": "investment"
@@ -21395,7 +24242,31 @@
       "name": "investor"
     },
     {
+      "name": "iowa_area"
+    },
+    {
+      "name": "iquitos_area"
+    },
+    {
+      "name": "iraq_arabi_area"
+    },
+    {
+      "name": "iraq_e_ajam_area"
+    },
+    {
+      "name": "irish_ideas"
+    },
+    {
+      "name": "irkutsk_area"
+    },
+    {
       "name": "iron"
+    },
+    {
+      "name": "iroquoian_federation_ideas"
+    },
+    {
+      "name": "iroquoisia_area"
     },
     {
       "name": "is_free_or_tributary_trigger",
@@ -21410,24 +24281,315 @@
       "count": 371
     },
     {
+      "name": "isfahan_area"
+    },
+    {
+      "name": "ishim_area"
+    },
+    {
+      "name": "island_check_provinces"
+    },
+    {
       "name": "issue"
     },
     {
+      "name": "italy_region"
+    },
+    {
       "name": "ivory"
+    },
+    {
+      "name": "jaipur_area"
+    },
+    {
+      "name": "jalisco_area"
+    },
+    {
+      "name": "jambi_area"
+    },
+    {
+      "name": "james_bay_area"
+    },
+    {
+      "name": "jangladesh_area"
+    },
+    {
+      "name": "japan_region"
+    },
+    {
+      "name": "java_sea_area"
+    },
+    {
+      "name": "javan_ideas"
+    },
+    {
+      "name": "jean_baptiste"
+    },
+    {
+      "name": "jenne_area"
+    },
+    {
+      "name": "jerusalem_ideas"
+    },
+    {
+      "name": "jetysuu_area"
+    },
+    {
+      "name": "jharkhand_area"
+    },
+    {
+      "name": "jiangsu_area"
+    },
+    {
+      "name": "jiangxi_area"
+    },
+    {
+      "name": "jilin_area"
+    },
+    {
+      "name": "johor_area"
+    },
+    {
+      "name": "jolof_area"
+    },
+    {
+      "name": "jubba_area"
+    },
+    {
+      "name": "jujuy_area"
+    },
+    {
+      "name": "jutland_area"
+    },
+    {
+      "name": "kabulistan_area"
+    },
+    {
+      "name": "kabylia_area"
+    },
+    {
+      "name": "kachin_area"
+    },
+    {
+      "name": "kalat_area"
+    },
+    {
+      "name": "kalimantan_area"
+    },
+    {
+      "name": "kama_area"
+    },
+    {
+      "name": "kamchatka_area"
+    },
+    {
+      "name": "kanara_area"
+    },
+    {
+      "name": "kanem_area"
+    },
+    {
+      "name": "kansas_area"
+    },
+    {
+      "name": "kanto_area"
+    },
+    {
+      "name": "kara_area"
+    },
+    {
+      "name": "karaman_area"
+    },
+    {
+      "name": "karelia_area"
+    },
+    {
+      "name": "karenni_area"
+    },
+    {
+      "name": "kartli_kakheti_area"
+    },
+    {
+      "name": "kasai_area"
+    },
+    {
+      "name": "kashgaria_area"
+    },
+    {
+      "name": "kashmir_area"
+    },
+    {
+      "name": "kastamonu_area"
+    },
+    {
+      "name": "katanga_area"
+    },
+    {
+      "name": "katehar_area"
+    },
+    {
+      "name": "katsina_area"
+    },
+    {
+      "name": "kattegat_area"
+    },
+    {
+      "name": "kazakhstan_area"
+    },
+    {
+      "name": "kazan_area"
+    },
+    {
+      "name": "kentucky_area"
+    },
+    {
+      "name": "kenya_area"
+    },
+    {
+      "name": "kerman_area"
     },
     {
       "name": "key",
       "count": 1355
     },
     {
+      "name": "kham_area"
+    },
+    {
+      "name": "khandesh_area"
+    },
+    {
+      "name": "khiva_area"
+    },
+    {
+      "name": "khorasan_region"
+    },
+    {
+      "name": "khorat_area"
+    },
+    {
+      "name": "khuzestan_area"
+    },
+    {
+      "name": "kinai_area"
+    },
+    {
+      "name": "kingdom_of_the_isles_area"
+    },
+    {
+      "name": "kolyma_area"
+    },
+    {
+      "name": "kong_area"
+    },
+    {
+      "name": "kongo_area"
+    },
+    {
+      "name": "kongo_region"
+    },
+    {
+      "name": "kongu_area"
+    },
+    {
+      "name": "konkan_area"
+    },
+    {
+      "name": "korea_region"
+    },
+    {
+      "name": "kuntisuyu_area"
+    },
+    {
+      "name": "kurdish_ideas"
+    },
+    {
+      "name": "kurdufan_area"
+    },
+    {
+      "name": "kutai_area"
+    },
+    {
+      "name": "kuyavia_area"
+    },
+    {
+      "name": "kyushu_area"
+    },
+    {
+      "name": "kyzylkum_area"
+    },
+    {
+      "name": "la_plata_region"
+    },
+    {
+      "name": "labrador_area"
+    },
+    {
+      "name": "lahore_area"
+    },
+    {
+      "name": "lake_superior_area"
+    },
+    {
+      "name": "languedoc_area"
+    },
+    {
+      "name": "lanka_area"
+    },
+    {
+      "name": "laotian_ideas"
+    },
+    {
+      "name": "laponia_area"
+    },
+    {
+      "name": "latin_ideas"
+    },
+    {
+      "name": "laurentian_area"
+    },
+    {
+      "name": "lazio_area"
+    },
+    {
       "name": "leader_names",
       "count": 979
+    },
+    {
+      "name": "leeward_islands_area"
+    },
+    {
+      "name": "leinster_area"
+    },
+    {
+      "name": "leon_area"
+    },
+    {
+      "name": "lesser_sunda_islands_area"
     },
     {
       "name": "level"
     },
     {
+      "name": "liaoning_area"
+    },
+    {
+      "name": "liguria_area"
+    },
+    {
+      "name": "limpopo_area"
+    },
+    {
+      "name": "lithuania_area"
+    },
+    {
       "name": "livestock"
+    },
+    {
+      "name": "livonia_area"
+    },
+    {
+      "name": "llano_estacado_area"
     },
     {
       "name": "local_development_cost",
@@ -21445,26 +24607,185 @@
       "name": "location"
     },
     {
+      "name": "loire_area"
+    },
+    {
+      "name": "lombardy_area"
+    },
+    {
       "name": "looser"
+    },
+    {
+      "name": "lorraine_area"
+    },
+    {
+      "name": "low_countries_region"
+    },
+    {
+      "name": "lower_acadia_area"
+    },
+    {
+      "name": "lower_andalucia_area"
+    },
+    {
+      "name": "lower_bavaria_area"
+    },
+    {
+      "name": "lower_burma_area"
+    },
+    {
+      "name": "lower_canada_area"
+    },
+    {
+      "name": "lower_doab_area"
+    },
+    {
+      "name": "lower_don_area"
+    },
+    {
+      "name": "lower_kasai"
+    },
+    {
+      "name": "lower_louisiana_area"
+    },
+    {
+      "name": "lower_niger_area"
+    },
+    {
+      "name": "lower_nubia_area"
+    },
+    {
+      "name": "lower_plains_area"
+    },
+    {
+      "name": "lower_rhineland_area"
+    },
+    {
+      "name": "lower_saxony_area"
+    },
+    {
+      "name": "lower_swabia_area"
+    },
+    {
+      "name": "lower_volta_area"
+    },
+    {
+      "name": "lower_yik_area"
+    },
+    {
+      "name": "lower_zambezi_area"
+    },
+    {
+      "name": "lowlands_area"
     },
     {
       "name": "loyalty",
       "count": 2849
     },
     {
+      "name": "luba_area"
+    },
+    {
+      "name": "lucayan_area"
+    },
+    {
+      "name": "luristan_area"
+    },
+    {
+      "name": "lusatia_area"
+    },
+    {
+      "name": "luzon_area"
+    },
+    {
+      "name": "luzon_ideas"
+    },
+    {
+      "name": "macaronesia_area"
+    },
+    {
+      "name": "macedonia_area"
+    },
+    {
+      "name": "madagascar_highlands_area"
+    },
+    {
+      "name": "madura_area"
+    },
+    {
+      "name": "magadan_area"
+    },
+    {
+      "name": "maghreb_region"
+    },
+    {
       "name": "mahayana"
+    },
+    {
+      "name": "mahra_area"
+    },
+    {
+      "name": "maidan_area"
+    },
+    {
+      "name": "maine_area"
+    },
+    {
+      "name": "majarteen_area"
     },
     {
       "name": "major",
       "count": 597
     },
     {
+      "name": "makassar_area"
+    },
+    {
+      "name": "makran_area"
+    },
+    {
+      "name": "malabar_area"
+    },
+    {
+      "name": "malabari_ideas"
+    },
+    {
+      "name": "malacca_area"
+    },
+    {
+      "name": "malagasy_ideas"
+    },
+    {
+      "name": "malaya_area"
+    },
+    {
+      "name": "malaya_region"
+    },
+    {
+      "name": "malayan_ideas"
+    },
+    {
       "name": "male_names",
       "count": 399
     },
     {
+      "name": "malopolska_area"
+    },
+    {
+      "name": "malwa_area"
+    },
+    {
+      "name": "manchuria_region"
+    },
+    {
+      "name": "manding_area"
+    },
+    {
       "name": "maneuver",
       "count": 304
+    },
+    {
+      "name": "manitoba_area"
     },
     {
       "name": "manufactories"
@@ -21473,13 +24794,61 @@
       "name": "manufactories_origin"
     },
     {
+      "name": "manufactory"
+    },
+    {
+      "name": "maori_ideas"
+    },
+    {
+      "name": "maracaibo_area"
+    },
+    {
+      "name": "maranhao_area"
+    },
+    {
       "name": "maritime_ideas"
     },
     {
       "name": "marketplace"
     },
     {
+      "name": "marrekesh_area"
+    },
+    {
+      "name": "marwar_area"
+    },
+    {
+      "name": "maryland_area"
+    },
+    {
+      "name": "mascarenes_area"
+    },
+    {
+      "name": "mascat_area"
+    },
+    {
+      "name": "mashhad_area"
+    },
+    {
+      "name": "mashriq_region"
+    },
+    {
+      "name": "massachusetts_bay_area"
+    },
+    {
+      "name": "massif_central_area"
+    },
+    {
+      "name": "massina_area"
+    },
+    {
       "name": "master_of_mint"
+    },
+    {
+      "name": "matamba_area"
+    },
+    {
+      "name": "mato_grosso_area"
     },
     {
       "name": "max_absolutism",
@@ -21489,11 +24858,80 @@
       "name": "max_years_since"
     },
     {
+      "name": "mayan_ideas"
+    },
+    {
+      "name": "mayan_scribe"
+    },
+    {
+      "name": "mazovia_area"
+    },
+    {
+      "name": "me_land_reformer"
+    },
+    {
+      "name": "me_lyricist"
+    },
+    {
+      "name": "me_reformist"
+    },
+    {
+      "name": "me_regent"
+    },
+    {
+      "name": "mecca_area"
+    },
+    {
       "name": "mechanic_type",
       "count": 1006
     },
     {
+      "name": "mecklenburg_area"
+    },
+    {
+      "name": "medina_area"
+    },
+    {
+      "name": "mediterrenean_region"
+    },
+    {
+      "name": "mekong_area"
+    },
+    {
+      "name": "melanesia_area"
+    },
+    {
       "name": "merc_company"
+    },
+    {
+      "name": "mercenary_ideas"
+    },
+    {
+      "name": "merv_area"
+    },
+    {
+      "name": "mesoamerican_ideas"
+    },
+    {
+      "name": "mewar_area"
+    },
+    {
+      "name": "mexico_area"
+    },
+    {
+      "name": "mexico_region"
+    },
+    {
+      "name": "miami_river_area"
+    },
+    {
+      "name": "michigan_area"
+    },
+    {
+      "name": "michoacan_area"
+    },
+    {
+      "name": "micronesia_area"
     },
     {
       "name": "mil_ideas"
@@ -21502,19 +24940,133 @@
       "name": "mills"
     },
     {
+      "name": "minangkabau_area"
+    },
+    {
+      "name": "minas_gerais_area"
+    },
+    {
+      "name": "mindanao_area"
+    },
+    {
+      "name": "mindanao_ideas"
+    },
+    {
+      "name": "minnessota_area"
+    },
+    {
+      "name": "minsk_area"
+    },
+    {
+      "name": "misiones_area"
+    },
+    {
       "name": "mission"
+    },
+    {
+      "name": "mississippi_area"
+    },
+    {
+      "name": "mississippi_plain_area"
+    },
+    {
+      "name": "mississippi_region"
+    },
+    {
+      "name": "mithila_area"
+    },
+    {
+      "name": "mittelmark_area"
+    },
+    {
+      "name": "mixteca_area"
+    },
+    {
+      "name": "mod"
     },
     {
       "name": "modifiers",
       "count": 672
     },
     {
+      "name": "mogadishu_area"
+    },
+    {
+      "name": "mogostan_area"
+    },
+    {
+      "name": "moldavia_area"
+    },
+    {
+      "name": "molluca_area"
+    },
+    {
+      "name": "moluccan_ideas"
+    },
+    {
+      "name": "moluccas_region"
+    },
+    {
+      "name": "mombasa_area"
+    },
+    {
       "name": "monarch_names",
       "count": 979
     },
     {
+      "name": "monarch_on_shipwreck"
+    },
+    {
+      "name": "mongolia_region"
+    },
+    {
       "name": "months",
       "count": 3521
+    },
+    {
+      "name": "moravia_area"
+    },
+    {
+      "name": "morea_area"
+    },
+    {
+      "name": "moscow_area"
+    },
+    {
+      "name": "mossi_ideas"
+    },
+    {
+      "name": "moxos_area"
+    },
+    {
+      "name": "mozambique_area"
+    },
+    {
+      "name": "multan_area"
+    },
+    {
+      "name": "munster_area"
+    },
+    {
+      "name": "murray_river_area"
+    },
+    {
+      "name": "muscovy_architect"
+    },
+    {
+      "name": "muskogean_federation_ideas"
+    },
+    {
+      "name": "mysore_area"
+    },
+    {
+      "name": "nafud_area"
+    },
+    {
+      "name": "naga_hills_area"
+    },
+    {
+      "name": "naples_area"
     },
     {
       "name": "nation_designer_cost",
@@ -21524,13 +25076,43 @@
       "name": "native_ceremonial_fire_pit"
     },
     {
+      "name": "native_earthwork"
+    },
+    {
+      "name": "native_fortified_house"
+    },
+    {
+      "name": "native_great_trail"
+    },
+    {
+      "name": "native_ideas"
+    },
+    {
+      "name": "native_irrigation"
+    },
+    {
       "name": "native_longhouse"
+    },
+    {
+      "name": "native_palisade"
+    },
+    {
+      "name": "native_storehouse"
     },
     {
       "name": "native_sweat_lodge"
     },
     {
+      "name": "native_three_sisters_field"
+    },
+    {
       "name": "natural_scientist"
+    },
+    {
+      "name": "naval_battery"
+    },
+    {
+      "name": "naval_ideas"
     },
     {
       "name": "naval_reformer"
@@ -21542,16 +25124,244 @@
       "name": "navigator"
     },
     {
+      "name": "nayarit_area"
+    },
+    {
+      "name": "ne_native_ideas"
+    },
+    {
+      "name": "near_east_superregion"
+    },
+    {
+      "name": "nehuenken_area"
+    },
+    {
+      "name": "nepal_area"
+    },
+    {
+      "name": "nepalese_minor_ideas"
+    },
+    {
+      "name": "netherlands_area"
+    },
+    {
+      "name": "neumark_area"
+    },
+    {
+      "name": "new_mexico_area"
+    },
+    {
+      "name": "new_world"
+    },
+    {
       "name": "new_world_i"
+    },
+    {
+      "name": "new_world_superregion"
+    },
+    {
+      "name": "new_york_area"
+    },
+    {
+      "name": "newfoundland_area"
+    },
+    {
+      "name": "ngari_area"
+    },
+    {
+      "name": "ngonde_area"
+    },
+    {
+      "name": "nicaragua_area"
+    },
+    {
+      "name": "niger_bend_area"
+    },
+    {
+      "name": "niger_region"
+    },
+    {
+      "name": "ningguta_area"
     },
     {
       "name": "node"
     },
     {
+      "name": "nogai_area"
+    },
+    {
+      "name": "normandy_area"
+    },
+    {
+      "name": "norrland_area"
+    },
+    {
+      "name": "norse_ideas"
+    },
+    {
       "name": "north_america"
     },
     {
+      "name": "north_america_superregion"
+    },
+    {
+      "name": "north_atlantic_area"
+    },
+    {
+      "name": "north_atlantic_region"
+    },
+    {
+      "name": "north_bengal_area"
+    },
+    {
+      "name": "north_brabant_area"
+    },
+    {
+      "name": "north_carnatic_area"
+    },
+    {
+      "name": "north_china_region"
+    },
+    {
+      "name": "north_east_pacific_region"
+    },
+    {
+      "name": "north_european_sea_superregion"
+    },
+    {
+      "name": "north_florida_area"
+    },
+    {
+      "name": "north_german_region"
+    },
+    {
+      "name": "north_henan_area"
+    },
+    {
+      "name": "north_karelia"
+    },
+    {
+      "name": "north_kurdistan_area"
+    },
+    {
+      "name": "north_laos_area"
+    },
+    {
+      "name": "north_malaya_area"
+    },
+    {
+      "name": "north_pacific_area"
+    },
+    {
+      "name": "north_pacific_coast_area"
+    },
+    {
+      "name": "north_pacific_sea_superregion"
+    },
+    {
+      "name": "north_queensland_area"
+    },
+    {
+      "name": "north_rhine_area"
+    },
+    {
+      "name": "north_saharan_area"
+    },
+    {
+      "name": "north_sea_area"
+    },
+    {
+      "name": "north_sumatra_area"
+    },
+    {
+      "name": "north_tenasserim_area"
+    },
+    {
+      "name": "north_west_pacific_region"
+    },
+    {
+      "name": "north_westphalia_area"
+    },
+    {
+      "name": "north_zungaria"
+    },
+    {
+      "name": "northeast_america_region"
+    },
+    {
+      "name": "northeast_mexico_area"
+    },
+    {
+      "name": "northern_australia_area"
+    },
+    {
+      "name": "northern_california_area"
+    },
+    {
+      "name": "northern_chile_area"
+    },
+    {
+      "name": "northern_greece_area"
+    },
+    {
+      "name": "northern_kyushu"
+    },
+    {
+      "name": "northern_morocco_area"
+    },
+    {
+      "name": "northern_norway"
+    },
+    {
+      "name": "northern_polynesia_area"
+    },
+    {
+      "name": "northern_saxony_area"
+    },
+    {
+      "name": "northern_sindh_area"
+    },
+    {
+      "name": "northern_swahili_coast_area"
+    },
+    {
+      "name": "northern_thai_area"
+    },
+    {
+      "name": "norwegian_sea_area"
+    },
+    {
+      "name": "notre_dame_mountains_area"
+    },
+    {
+      "name": "novgorod_area"
+    },
+    {
+      "name": "nubian_ideas"
+    },
+    {
+      "name": "num"
+    },
+    {
+      "name": "nw_native_ideas"
+    },
+    {
+      "name": "oaxaca_area"
+    },
+    {
+      "name": "ob_area"
+    },
+    {
+      "name": "oceanea_region"
+    },
+    {
       "name": "oceania"
+    },
+    {
+      "name": "oceania_superregion"
+    },
+    {
+      "name": "ofaie_area"
     },
     {
       "name": "offensive_fire",
@@ -21569,27 +25379,828 @@
       "count": 304
     },
     {
+      "name": "ogaden_area"
+    },
+    {
+      "name": "ohio_country_area"
+    },
+    {
+      "name": "oka_area"
+    },
+    {
+      "name": "okhotsk_area"
+    },
+    {
+      "name": "oman_area"
+    },
+    {
+      "name": "on_abandon_colony"
+    },
+    {
+      "name": "on_accept_tribute"
+    },
+    {
+      "name": "on_add_pasha"
+    },
+    {
+      "name": "on_added_to_trade_company"
+    },
+    {
+      "name": "on_adm_advisor_hired"
+    },
+    {
+      "name": "on_adm_development"
+    },
+    {
+      "name": "on_adm_exploited"
+    },
+    {
+      "name": "on_adm_tech_taken"
+    },
+    {
+      "name": "on_admiral_recruited"
+    },
+    {
+      "name": "on_advisor_hired"
+    },
+    {
+      "name": "on_alliance_broken"
+    },
+    {
+      "name": "on_alliance_created"
+    },
+    {
+      "name": "on_annexed"
+    },
+    {
+      "name": "on_bankruptcy"
+    },
+    {
+      "name": "on_banner_raised"
+    },
+    {
+      "name": "on_barrage"
+    },
+    {
+      "name": "on_battle_lost_country"
+    },
+    {
+      "name": "on_battle_lost_province"
+    },
+    {
+      "name": "on_battle_lost_unit"
+    },
+    {
+      "name": "on_battle_won_country"
+    },
+    {
+      "name": "on_battle_won_province"
+    },
+    {
+      "name": "on_battle_won_unit"
+    },
+    {
+      "name": "on_become_free_city"
+    },
+    {
+      "name": "on_bi_yearly_pulse"
+    },
+    {
+      "name": "on_bi_yearly_pulse_2"
+    },
+    {
+      "name": "on_bi_yearly_pulse_3"
+    },
+    {
+      "name": "on_bi_yearly_pulse_4"
+    },
+    {
+      "name": "on_bi_yearly_pulse_5"
+    },
+    {
+      "name": "on_buy_religious_reform"
+    },
+    {
+      "name": "on_capital_moved"
+    },
+    {
+      "name": "on_caravel_raised"
+    },
+    {
+      "name": "on_carolean_raised"
+    },
+    {
+      "name": "on_cawa_raised"
+    },
+    {
+      "name": "on_center_of_trade_downgrade"
+    },
+    {
+      "name": "on_center_of_trade_upgrade"
+    },
+    {
+      "name": "on_centralized_state"
+    },
+    {
+      "name": "on_change_hre_religion"
+    },
+    {
+      "name": "on_change_revolution_target"
+    },
+    {
+      "name": "on_chinese_empire_dismantled"
+    },
+    {
+      "name": "on_circumnavigation"
+    },
+    {
+      "name": "on_colonial_liberation"
+    },
+    {
+      "name": "on_colonial_nation_established"
+    },
+    {
+      "name": "on_colonial_pulse"
+    },
+    {
+      "name": "on_colonial_reintegration"
+    },
+    {
+      "name": "on_colonial_type_change"
+    },
+    {
+      "name": "on_colonist_boosting_colony"
+    },
+    {
+      "name": "on_colony_established"
+    },
+    {
+      "name": "on_colony_finished"
+    },
+    {
+      "name": "on_company_chartered"
+    },
+    {
+      "name": "on_company_disolved"
+    },
+    {
+      "name": "on_company_formed"
+    },
+    {
       "name": "on_completed_agenda_effect",
       "count": 293
+    },
+    {
+      "name": "on_concentrate_development"
+    },
+    {
+      "name": "on_conquest"
+    },
+    {
+      "name": "on_conquistador_empty"
+    },
+    {
+      "name": "on_conquistador_native"
+    },
+    {
+      "name": "on_conquistador_recruited"
+    },
+    {
+      "name": "on_consecrate_patriarch"
+    },
+    {
+      "name": "on_convert_by_trade_policy"
+    },
+    {
+      "name": "on_core"
+    },
+    {
+      "name": "on_cossack_raised"
+    },
+    {
+      "name": "on_country_creation"
+    },
+    {
+      "name": "on_country_released"
+    },
+    {
+      "name": "on_create_client_state"
+    },
+    {
+      "name": "on_create_vassal"
+    },
+    {
+      "name": "on_culture_demoted"
+    },
+    {
+      "name": "on_culture_promoted"
+    },
+    {
+      "name": "on_death_election"
+    },
+    {
+      "name": "on_death_foreign_slave_ruler"
+    },
+    {
+      "name": "on_death_has_harem"
+    },
+    {
+      "name": "on_defender_of_faith_claim"
+    },
+    {
+      "name": "on_defender_of_faith_loss"
+    },
+    {
+      "name": "on_dependency_gained"
+    },
+    {
+      "name": "on_dependency_lost"
+    },
+    {
+      "name": "on_dip_advisor_hired"
+    },
+    {
+      "name": "on_dip_development"
+    },
+    {
+      "name": "on_dip_exploited"
+    },
+    {
+      "name": "on_dip_tech_taken"
+    },
+    {
+      "name": "on_diplomatic_annex"
+    },
+    {
+      "name": "on_dismantle_revolution"
+    },
+    {
+      "name": "on_embrace_revolution"
+    },
+    {
+      "name": "on_emperor_elected"
+    },
+    {
+      "name": "on_enforce_rebel_demands"
+    },
+    {
+      "name": "on_estate_led_regency"
+    },
+    {
+      "name": "on_estate_led_regency_surpassed"
+    },
+    {
+      "name": "on_estate_removed"
+    },
+    {
+      "name": "on_expanded_infrastructure"
+    },
+    {
+      "name": "on_expanded_infrastructure_removed"
+    },
+    {
+      "name": "on_explore_coast"
+    },
+    {
+      "name": "on_explorer_recruited"
+    },
+    {
+      "name": "on_extend_regency"
+    },
+    {
+      "name": "on_extended_regency"
     },
     {
       "name": "on_failed_agenda_effect",
       "count": 293
     },
     {
+      "name": "on_federation_leader_change"
+    },
+    {
+      "name": "on_fetishist_cult_change"
+    },
+    {
+      "name": "on_five_year_pulse"
+    },
+    {
+      "name": "on_five_year_pulse_2"
+    },
+    {
+      "name": "on_five_year_pulse_3"
+    },
+    {
+      "name": "on_five_year_pulse_4"
+    },
+    {
+      "name": "on_flagship_captured"
+    },
+    {
+      "name": "on_flagship_destroyed"
+    },
+    {
+      "name": "on_force_conversion"
+    },
+    {
+      "name": "on_four_year_pulse"
+    },
+    {
+      "name": "on_four_year_pulse_2"
+    },
+    {
+      "name": "on_four_year_pulse_3"
+    },
+    {
+      "name": "on_four_year_pulse_4"
+    },
+    {
+      "name": "on_gain_great_power_status"
+    },
+    {
+      "name": "on_galleass_raised"
+    },
+    {
+      "name": "on_galleon_raised"
+    },
+    {
+      "name": "on_general_recruited"
+    },
+    {
+      "name": "on_geobukseon_raised"
+    },
+    {
+      "name": "on_golden_bull_enacted"
+    },
+    {
+      "name": "on_government_change"
+    },
+    {
+      "name": "on_grant_estate_land"
+    },
+    {
       "name": "on_granted",
       "count": 320
+    },
+    {
+      "name": "on_great_project_constructed"
+    },
+    {
+      "name": "on_harmonized_buddhism"
+    },
+    {
+      "name": "on_harmonized_christian"
+    },
+    {
+      "name": "on_harmonized_dharmic"
+    },
+    {
+      "name": "on_harmonized_jewish_group"
+    },
+    {
+      "name": "on_harmonized_mahayana"
+    },
+    {
+      "name": "on_harmonized_muslim"
+    },
+    {
+      "name": "on_harmonized_pagan"
+    },
+    {
+      "name": "on_harmonized_shinto"
+    },
+    {
+      "name": "on_harmonized_vajrayana"
+    },
+    {
+      "name": "on_harmonized_zoroastrian_group"
+    },
+    {
+      "name": "on_heir_death"
+    },
+    {
+      "name": "on_heir_disinherited"
+    },
+    {
+      "name": "on_heir_needed_theocracy"
+    },
+    {
+      "name": "on_holy_order_established"
+    },
+    {
+      "name": "on_hre_defense"
+    },
+    {
+      "name": "on_hre_dismantled"
+    },
+    {
+      "name": "on_hre_member_annexed"
+    },
+    {
+      "name": "on_hre_member_false_religion"
+    },
+    {
+      "name": "on_hre_member_true_religion"
+    },
+    {
+      "name": "on_hre_non_defense"
+    },
+    {
+      "name": "on_hre_province_reconquest"
+    },
+    {
+      "name": "on_hre_reform_passed"
+    },
+    {
+      "name": "on_hre_released_vassal"
+    },
+    {
+      "name": "on_hre_religion_white_peace"
+    },
+    {
+      "name": "on_hre_transfered_vassal"
+    },
+    {
+      "name": "on_hre_wins_defensive_war"
+    },
+    {
+      "name": "on_hussars_raised"
+    },
+    {
+      "name": "on_institution_embracement"
+    },
+    {
+      "name": "on_integrate"
+    },
+    {
+      "name": "on_janissaries_raised"
+    },
+    {
+      "name": "on_leader_recruited"
+    },
+    {
+      "name": "on_loan_repaid"
+    },
+    {
+      "name": "on_lock_hre_religion"
+    },
+    {
+      "name": "on_lose_great_power_status"
+    },
+    {
+      "name": "on_main_war_lost"
+    },
+    {
+      "name": "on_main_war_won"
+    },
+    {
+      "name": "on_mamluks_raised"
+    },
+    {
+      "name": "on_man_of_war_raised"
+    },
+    {
+      "name": "on_mandate_of_heaven_gained"
+    },
+    {
+      "name": "on_mandate_of_heaven_lost"
+    },
+    {
+      "name": "on_mandate_reform_passed"
+    },
+    {
+      "name": "on_marine_raised"
+    },
+    {
+      "name": "on_mercenary_recruited"
+    },
+    {
+      "name": "on_mil_advisor_hired"
+    },
+    {
+      "name": "on_mil_development"
+    },
+    {
+      "name": "on_mil_exploited"
+    },
+    {
+      "name": "on_mil_tech_taken"
+    },
+    {
+      "name": "on_minority_expelled"
+    },
+    {
+      "name": "on_monarch_death"
+    },
+    {
+      "name": "on_monthly_pulse"
+    },
+    {
+      "name": "on_musketeer_raised"
+    },
+    {
+      "name": "on_national_focus_change"
+    },
+    {
+      "name": "on_native_change_government"
+    },
+    {
+      "name": "on_naval_barrage"
+    },
+    {
+      "name": "on_new_age"
+    },
+    {
+      "name": "on_new_consort"
+    },
+    {
+      "name": "on_new_heir"
+    },
+    {
+      "name": "on_new_monarch"
+    },
+    {
+      "name": "on_new_term_election"
+    },
+    {
+      "name": "on_overextension_pulse"
+    },
+    {
+      "name": "on_overrun"
+    },
+    {
+      "name": "on_parliament_debate_failed"
+    },
+    {
+      "name": "on_parliament_debate_reset"
+    },
+    {
+      "name": "on_parliament_debate_succeeded"
+    },
+    {
+      "name": "on_parliament_seat_given"
+    },
+    {
+      "name": "on_parliament_seat_lost"
+    },
+    {
+      "name": "on_peace_actor"
+    },
+    {
+      "name": "on_peace_recipient"
+    },
+    {
+      "name": "on_pillaged_capital"
+    },
+    {
+      "name": "on_post_adm_advisor_fired"
+    },
+    {
+      "name": "on_post_dip_advisor_fired"
+    },
+    {
+      "name": "on_post_mil_advisor_fired"
+    },
+    {
+      "name": "on_pre_adm_advisor_fired"
+    },
+    {
+      "name": "on_pre_dip_advisor_fired"
+    },
+    {
+      "name": "on_pre_mil_advisor_fired"
+    },
+    {
+      "name": "on_primary_culture_changed"
+    },
+    {
+      "name": "on_province_culture_changed"
+    },
+    {
+      "name": "on_province_culture_converted"
+    },
+    {
+      "name": "on_province_owner_change"
+    },
+    {
+      "name": "on_province_religion_changed"
+    },
+    {
+      "name": "on_province_religion_converted"
+    },
+    {
+      "name": "on_qizilbash_raised"
+    },
+    {
+      "name": "on_queen_death"
+    },
+    {
+      "name": "on_raid_coast"
+    },
+    {
+      "name": "on_rajput_raised"
+    },
+    {
+      "name": "on_raze"
+    },
+    {
+      "name": "on_rebels_break_country"
+    },
+    {
+      "name": "on_reform_changed"
+    },
+    {
+      "name": "on_reform_enacted"
+    },
+    {
+      "name": "on_refuse_tribute"
+    },
+    {
+      "name": "on_regent"
+    },
+    {
+      "name": "on_regiment_recruited"
+    },
+    {
+      "name": "on_released_hre_member"
+    },
+    {
+      "name": "on_religion_change"
+    },
+    {
+      "name": "on_remove_free_city"
+    },
+    {
+      "name": "on_remove_pasha"
+    },
+    {
+      "name": "on_removed_from_company"
+    },
+    {
+      "name": "on_replace_governor"
+    },
+    {
+      "name": "on_revoke_estate_land"
+    },
+    {
+      "name": "on_revoke_estate_land_ai"
+    },
+    {
+      "name": "on_revoke_estate_land_ai_post"
+    },
+    {
+      "name": "on_revoke_estate_land_post"
+    },
+    {
+      "name": "on_revolutionary_guard_raised"
+    },
+    {
+      "name": "on_royal_marriage"
+    },
+    {
+      "name": "on_royal_marriage_broken"
+    },
+    {
+      "name": "on_samurai_raised"
+    },
+    {
+      "name": "on_scorch_earth"
+    },
+    {
+      "name": "on_secondary_religion_change"
+    },
+    {
+      "name": "on_select_heir_from_harem"
+    },
+    {
+      "name": "on_separate_war_lost"
+    },
+    {
+      "name": "on_separate_war_won"
+    },
+    {
+      "name": "on_siberian_pulse"
+    },
+    {
+      "name": "on_siege_lost_country"
+    },
+    {
+      "name": "on_siege_lost_province"
+    },
+    {
+      "name": "on_siege_won_country"
+    },
+    {
+      "name": "on_siege_won_province"
+    },
+    {
+      "name": "on_slacken_start"
+    },
+    {
+      "name": "on_slacken_stop"
+    },
+    {
+      "name": "on_startup"
+    },
+    {
+      "name": "on_streltsy_raised"
+    },
+    {
+      "name": "on_successive_emperor"
+    },
+    {
+      "name": "on_tech_taken"
+    },
+    {
+      "name": "on_tercio_raised"
+    },
+    {
+      "name": "on_thri_yearly_pulse"
+    },
+    {
+      "name": "on_thri_yearly_pulse_2"
+    },
+    {
+      "name": "on_thri_yearly_pulse_3"
+    },
+    {
+      "name": "on_thri_yearly_pulse_4"
+    },
+    {
+      "name": "on_trade_company_investment"
+    },
+    {
+      "name": "on_trade_good_changed"
+    },
+    {
+      "name": "on_transfer_development"
     },
     {
       "name": "on_upgraded",
       "count": 555
     },
     {
+      "name": "on_voc_indiamen_raised"
+    },
+    {
+      "name": "on_war_ended"
+    },
+    {
+      "name": "on_war_lost"
+    },
+    {
+      "name": "on_war_won"
+    },
+    {
+      "name": "on_weak_heir_claim"
+    },
+    {
+      "name": "on_yearly_pulse"
+    },
+    {
+      "name": "on_yearly_pulse_2"
+    },
+    {
+      "name": "on_yearly_pulse_3"
+    },
+    {
+      "name": "on_yearly_pulse_4"
+    },
+    {
+      "name": "on_yearly_pulse_5"
+    },
+    {
       "name": "opinion",
       "count": 1051
     },
     {
+      "name": "ordos_area"
+    },
+    {
+      "name": "oregon_area"
+    },
+    {
+      "name": "orissa_area"
+    },
+    {
+      "name": "orleans_area"
+    },
+    {
       "name": "orthodox"
+    },
+    {
+      "name": "ostra_svealand_area"
+    },
+    {
+      "name": "ottawa_valley_area"
+    },
+    {
+      "name": "oudh_area"
+    },
+    {
+      "name": "ouled_nail_area"
+    },
+    {
+      "name": "outer_mongolia_area"
     },
     {
       "name": "overlord",
@@ -21600,24 +26211,117 @@
       "count": 3627
     },
     {
+      "name": "ozarks_area"
+    },
+    {
+      "name": "pacific_south_america_region"
+    },
+    {
       "name": "page"
+    },
+    {
+      "name": "palatinate_area"
+    },
+    {
+      "name": "palawan_area"
+    },
+    {
+      "name": "palestine_area"
+    },
+    {
+      "name": "panama_area"
+    },
+    {
+      "name": "papal_controller"
     },
     {
       "name": "paper"
     },
     {
+      "name": "papua_area"
+    },
+    {
+      "name": "paraguay_area"
+    },
+    {
       "name": "parliament_action"
+    },
+    {
+      "name": "participants"
+    },
+    {
+      "name": "patagonia_area"
+    },
+    {
+      "name": "patagonian_andes"
+    },
+    {
+      "name": "patan_area"
+    },
+    {
+      "name": "pecos_area"
     },
     {
       "name": "penalties",
       "count": 282
     },
     {
+      "name": "perm_area"
+    },
+    {
+      "name": "pernambuco_area"
+    },
+    {
+      "name": "persia_region"
+    },
+    {
+      "name": "persia_superregion"
+    },
+    {
+      "name": "persian_gulf_area"
+    },
+    {
+      "name": "persian_gulf_coast"
+    },
+    {
+      "name": "peru_region"
+    },
+    {
+      "name": "peruan_coast"
+    },
+    {
+      "name": "philipine_sea_area"
+    },
+    {
       "name": "philosopher"
+    },
+    {
+      "name": "piaui_area"
+    },
+    {
+      "name": "picardy_area"
     },
     {
       "name": "picture",
       "count": 7057
+    },
+    {
+      "name": "piedmont_area"
+    },
+    {
+      "name": "piedmont_north_america_area"
+    },
+    {
+      "name": "pilbara_area"
+    },
+    {
+      "name": "pirate_coast_area"
+    },
+    {
+      "name": "pirate_ideas"
+    },
+    {
+      "name": "plains_native_ideas"
     },
     {
       "name": "plantations"
@@ -21626,15 +26330,54 @@
       "name": "plutocracy_ideas"
     },
     {
+      "name": "po_valley_area"
+    },
+    {
+      "name": "podlasie_area"
+    },
+    {
+      "name": "podolia_volhynia_area"
+    },
+    {
+      "name": "poitou_area"
+    },
+    {
+      "name": "poland_region"
+    },
+    {
       "name": "policy"
+    },
+    {
+      "name": "polynesia_area"
+    },
+    {
+      "name": "polynesian_triangle_area"
+    },
+    {
+      "name": "pomerelia_area"
+    },
+    {
+      "name": "pomor_area"
+    },
+    {
+      "name": "pontal_area"
+    },
+    {
+      "name": "popayan_area"
     },
     {
       "name": "possible",
       "count": 373
     },
     {
+      "name": "potosi_area"
+    },
+    {
       "name": "power_type",
       "count": 1006
+    },
+    {
+      "name": "prairies_area"
     },
     {
       "name": "prev"
@@ -21647,7 +26390,13 @@
       "name": "printing_press"
     },
     {
+      "name": "pripyat_area"
+    },
+    {
       "name": "protestant"
+    },
+    {
+      "name": "provence_area"
     },
     {
       "name": "province"
@@ -21661,7 +26410,43 @@
       "count": 539
     },
     {
+      "name": "pskov_area"
+    },
+    {
+      "name": "puebla_area"
+    },
+    {
+      "name": "purvanchal_area"
+    },
+    {
+      "name": "pyongan_area"
+    },
+    {
+      "name": "pyrenees_area"
+    },
+    {
+      "name": "qasim_area"
+    },
+    {
+      "name": "quality_ideas"
+    },
+    {
+      "name": "quantity_ideas"
+    },
+    {
       "name": "quartermaster"
+    },
+    {
+      "name": "quelimane_area"
+    },
+    {
+      "name": "quito_area"
+    },
+    {
+      "name": "raichur_doab_area"
+    },
+    {
+      "name": "rajput_ideas"
     },
     {
       "name": "ramparts"
@@ -21671,14 +26456,44 @@
       "count": 492
     },
     {
+      "name": "random_new_world_region"
+    },
+    {
       "name": "random_owned_province",
       "count": 2404
+    },
+    {
+      "name": "rascia_area"
+    },
+    {
+      "name": "rayalaseema_area"
     },
     {
       "name": "recruitmaster"
     },
     {
+      "name": "red_river_area"
+    },
+    {
+      "name": "red_river_delta_area"
+    },
+    {
+      "name": "red_ruthenia_area"
+    },
+    {
+      "name": "red_sea_area"
+    },
+    {
+      "name": "red_sea_coast_area"
+    },
+    {
       "name": "reformed"
+    },
+    {
+      "name": "regimental_camp"
+    },
+    {
+      "name": "religious_ideas"
     },
     {
       "name": "removed_effect",
@@ -21692,14 +26507,140 @@
       "count": 798
     },
     {
+      "name": "rio_de_janeiro_area"
+    },
+    {
+      "name": "rio_grande_area"
+    },
+    {
+      "name": "rio_grande_do_sol_area"
+    },
+    {
+      "name": "rio_grande_region"
+    },
+    {
+      "name": "romandie_area"
+    },
+    {
       "name": "root",
       "count": 341
+    },
+    {
+      "name": "rum_area"
+    },
+    {
+      "name": "russia_region"
+    },
+    {
+      "name": "ruthenia_region"
+    },
+    {
+      "name": "ruthenian_ideas"
+    },
+    {
+      "name": "ruvuma_area"
+    },
+    {
+      "name": "rwanda_area"
+    },
+    {
+      "name": "ryazan_area"
+    },
+    {
+      "name": "sabah_area"
+    },
+    {
+      "name": "sahel_region"
+    },
+    {
+      "name": "said_area"
+    },
+    {
+      "name": "saigoku_area"
+    },
+    {
+      "name": "sakalava_area"
+    },
+    {
+      "name": "sakha_area"
+    },
+    {
+      "name": "sakhalin_area"
+    },
+    {
+      "name": "salish_sea_area"
     },
     {
       "name": "salt"
     },
     {
+      "name": "samara_area"
+    },
+    {
+      "name": "samoan_ideas"
+    },
+    {
+      "name": "samogitia_area"
+    },
+    {
+      "name": "samtskhe_area"
+    },
+    {
+      "name": "sandomierz_area"
+    },
+    {
+      "name": "sanindo_area"
+    },
+    {
+      "name": "sankuru_area"
+    },
+    {
+      "name": "sao_francisco_area"
+    },
+    {
+      "name": "sao_paolo_area"
+    },
+    {
+      "name": "sao_tome_area"
+    },
+    {
+      "name": "saratov_area"
+    },
+    {
+      "name": "sargasso_sea_area"
+    },
+    {
+      "name": "saskatchewan_area"
+    },
+    {
+      "name": "saurashtra_area"
+    },
+    {
+      "name": "savoy_dauphine_area"
+    },
+    {
+      "name": "scandinavia_region"
+    },
+    {
       "name": "school"
+    },
+    {
+      "name": "scottish_marches_area"
+    },
+    {
+      "name": "se_native_ideas"
+    },
+    {
+      "name": "sea_of_grau_area"
+    },
+    {
+      "name": "sea_of_japan_area"
+    },
+    {
+      "name": "sea_of_labrador_area"
+    },
+    {
+      "name": "sea_of_okhotsk_area"
     },
     {
       "name": "secondary"
@@ -21709,14 +26650,47 @@
       "count": 320
     },
     {
+      "name": "sennar_area"
+    },
+    {
+      "name": "serbia_area"
+    },
+    {
+      "name": "shaanxi_area"
+    },
+    {
+      "name": "shahrizor_area"
+    },
+    {
       "name": "shamanism"
+    },
+    {
+      "name": "shan_hill_area"
+    },
+    {
+      "name": "shan_ideas"
+    },
+    {
+      "name": "shandong_area"
+    },
+    {
+      "name": "shanshan_area"
+    },
+    {
+      "name": "shanxi_area"
     },
     {
       "name": "share",
       "count": 486
     },
     {
+      "name": "shewa_area"
+    },
+    {
       "name": "shiite"
+    },
+    {
+      "name": "shikoku_area"
     },
     {
       "name": "shinto"
@@ -21729,7 +26703,22 @@
       "name": "shipyard"
     },
     {
+      "name": "shire_area"
+    },
+    {
+      "name": "shirvan_area"
+    },
+    {
       "name": "shock"
+    },
+    {
+      "name": "siberian_ideas"
+    },
+    {
+      "name": "sichuan_area"
+    },
+    {
+      "name": "sicily_area"
     },
     {
       "name": "siege"
@@ -21738,11 +26727,38 @@
       "name": "sikhism"
     },
     {
+      "name": "silesia_area"
+    },
+    {
+      "name": "silistria_area"
+    },
+    {
       "name": "silk"
+    },
+    {
+      "name": "sind_sagar_area"
+    },
+    {
+      "name": "sindh_area"
+    },
+    {
+      "name": "siouan_federation_ideas"
+    },
+    {
+      "name": "sirhind_area"
+    },
+    {
+      "name": "sistan_area"
     },
     {
       "name": "size",
       "count": 1052
+    },
+    {
+      "name": "skaneland_area"
+    },
+    {
+      "name": "skeleton_coast_area"
     },
     {
       "name": "skill",
@@ -21752,10 +26768,169 @@
       "name": "slaves"
     },
     {
+      "name": "slavonia_area"
+    },
+    {
+      "name": "sloboda_ukraine_area"
+    },
+    {
+      "name": "slovakia_area"
+    },
+    {
+      "name": "smolensk_area"
+    },
+    {
+      "name": "snake_river_area"
+    },
+    {
       "name": "soldier_households"
     },
     {
+      "name": "somali_ideas"
+    },
+    {
+      "name": "somaliland_area"
+    },
+    {
+      "name": "sonora_area"
+    },
+    {
+      "name": "sonora_y_sinaloa_area"
+    },
+    {
+      "name": "south_africa_region"
+    },
+    {
+      "name": "south_african_plateau_area"
+    },
+    {
       "name": "south_america"
+    },
+    {
+      "name": "south_america_superregion"
+    },
+    {
+      "name": "south_anhui_area"
+    },
+    {
+      "name": "south_appalachia_area"
+    },
+    {
+      "name": "south_atlantic_area"
+    },
+    {
+      "name": "south_atlantic_islands_area"
+    },
+    {
+      "name": "south_atlantic_region"
+    },
+    {
+      "name": "south_carnatic_area"
+    },
+    {
+      "name": "south_carolina_area"
+    },
+    {
+      "name": "south_carolina_piedmont_area"
+    },
+    {
+      "name": "south_china_region"
+    },
+    {
+      "name": "south_china_sea_area"
+    },
+    {
+      "name": "south_china_sea_region"
+    },
+    {
+      "name": "south_dakota_area"
+    },
+    {
+      "name": "south_east_pacific_region"
+    },
+    {
+      "name": "south_european_sea_superregion"
+    },
+    {
+      "name": "south_german_region"
+    },
+    {
+      "name": "south_hebei_area"
+    },
+    {
+      "name": "south_indian_ocean_area"
+    },
+    {
+      "name": "south_indian_ocean_region"
+    },
+    {
+      "name": "south_iroquoisia_area"
+    },
+    {
+      "name": "south_jiangsu_area"
+    },
+    {
+      "name": "south_korea_area"
+    },
+    {
+      "name": "south_lanka_area"
+    },
+    {
+      "name": "south_laos_area"
+    },
+    {
+      "name": "south_pacific_area"
+    },
+    {
+      "name": "south_queensland_area"
+    },
+    {
+      "name": "south_saxony_area"
+    },
+    {
+      "name": "south_sulawesi_area"
+    },
+    {
+      "name": "south_sumatra_area"
+    },
+    {
+      "name": "south_west_pacific_region"
+    },
+    {
+      "name": "southeast_america_region"
+    },
+    {
+      "name": "southern_africa_superregion"
+    },
+    {
+      "name": "southern_australia_area"
+    },
+    {
+      "name": "southern_chile_area"
+    },
+    {
+      "name": "southern_ethiopia_area"
+    },
+    {
+      "name": "southern_illinois_area"
+    },
+    {
+      "name": "southern_luzon_area"
+    },
+    {
+      "name": "southern_madagascar"
+    },
+    {
+      "name": "southern_morocco_area"
+    },
+    {
+      "name": "southern_pampas_area"
+    },
+    {
+      "name": "southern_transylvania_area"
+    },
+    {
+      "name": "spice_islands_area"
     },
     {
       "name": "spices"
@@ -21765,6 +26940,9 @@
     },
     {
       "name": "spymaster"
+    },
+    {
+      "name": "st_john_valley_area"
     },
     {
       "name": "stability_cost_modifier",
@@ -21784,16 +26962,115 @@
       "name": "stock_exchange"
     },
     {
+      "name": "straits_of_georgia_area"
+    },
+    {
+      "name": "subarctic_islands_area"
+    },
+    {
+      "name": "sufi_scholar_advisor"
+    },
+    {
       "name": "sugar"
     },
     {
+      "name": "sukhothai_area"
+    },
+    {
+      "name": "sulawesi_area"
+    },
+    {
+      "name": "sulawesi_ideas"
+    },
+    {
+      "name": "sumatran_ideas"
+    },
+    {
       "name": "sunni"
+    },
+    {
+      "name": "surabaya_area"
+    },
+    {
+      "name": "suriname_area"
+    },
+    {
+      "name": "sus_area"
+    },
+    {
+      "name": "susquehanna_area"
+    },
+    {
+      "name": "suzdal_area"
+    },
+    {
+      "name": "svealand_area"
+    },
+    {
+      "name": "sw_native_ideas"
+    },
+    {
+      "name": "swabian_ideas"
+    },
+    {
+      "name": "swahili_coast_sea_area"
+    },
+    {
+      "name": "swahili_ideas"
+    },
+    {
+      "name": "switzerland_area"
+    },
+    {
+      "name": "syr_darya_area"
+    },
+    {
+      "name": "syria_area"
+    },
+    {
+      "name": "syrian_desert_area"
+    },
+    {
+      "name": "tabarestan_area"
+    },
+    {
+      "name": "tabriz_area"
+    },
+    {
+      "name": "tabuk_area"
+    },
+    {
+      "name": "tafilalt_area"
+    },
+    {
+      "name": "taiwan_area"
+    },
+    {
+      "name": "tambov_area"
+    },
+    {
+      "name": "tanjore_area"
+    },
+    {
+      "name": "tannu_uriankhai_area"
+    },
+    {
+      "name": "tanzania_area"
+    },
+    {
+      "name": "tapti_area"
     },
     {
       "name": "target"
     },
     {
       "name": "target_region"
+    },
+    {
+      "name": "tarim_basin_area"
+    },
+    {
+      "name": "tartary_superregion"
     },
     {
       "name": "task_completed_effect",
@@ -21804,39 +27081,126 @@
       "count": 322
     },
     {
+      "name": "tasman_sea_area"
+    },
+    {
+      "name": "tasmania_area"
+    },
+    {
+      "name": "tay_nguyen_area"
+    },
+    {
+      "name": "te_ika_a_maui_hauauru_area"
+    },
+    {
+      "name": "te_ika_a_maui_waho_area"
+    },
+    {
+      "name": "te_waipounamu_area"
+    },
+    {
       "name": "tea"
     },
     {
       "name": "tech"
     },
     {
+      "name": "tekrur_area"
+    },
+    {
+      "name": "telingana_area"
+    },
+    {
+      "name": "telugu_ideas"
+    },
+    {
       "name": "temple"
+    },
+    {
+      "name": "tenasserim_area"
+    },
+    {
+      "name": "termez_area"
     },
     {
       "name": "territory"
     },
     {
+      "name": "texas_area"
+    },
+    {
+      "name": "texas_plains_area"
+    },
+    {
       "name": "textile"
+    },
+    {
+      "name": "theocracy_gov_ideas"
+    },
+    {
+      "name": "theocracy_ideas"
     },
     {
       "name": "theologian"
     },
     {
+      "name": "thohoku_area"
+    },
+    {
+      "name": "thrace_area"
+    },
+    {
+      "name": "thuringia_area"
+    },
+    {
+      "name": "tibet_region"
+    },
+    {
       "name": "tier"
     },
     {
+      "name": "tierra_caliente_area"
+    },
+    {
+      "name": "tigray_area"
+    },
+    {
+      "name": "tihama_al_yemen_area"
+    },
+    {
+      "name": "timor_area"
+    },
+    {
+      "name": "tirol_area"
+    },
+    {
       "name": "tobacco"
+    },
+    {
+      "name": "toledo_area"
     },
     {
       "name": "tolerance_own",
       "count": 527
     },
     {
+      "name": "tongan_ideas"
+    },
+    {
       "name": "tooltip",
       "count": 1758
     },
     {
+      "name": "top_end_area"
+    },
+    {
+      "name": "total"
+    },
+    {
       "name": "totemism"
+    },
+    {
+      "name": "town_hall"
     },
     {
       "name": "trade_company_coromandel"
@@ -21863,7 +27227,31 @@
       "name": "trader"
     },
     {
+      "name": "trading_city_ideas"
+    },
+    {
       "name": "training_fields"
+    },
+    {
+      "name": "trans_jordan_area"
+    },
+    {
+      "name": "transcaspia_area"
+    },
+    {
+      "name": "transdanubia_area"
+    },
+    {
+      "name": "transoxiana_area"
+    },
+    {
+      "name": "transvaal_area"
+    },
+    {
+      "name": "transylvania_area"
+    },
+    {
+      "name": "travelling_merchant"
     },
     {
       "name": "treasurer"
@@ -21872,25 +27260,325 @@
       "name": "treaty"
     },
     {
+      "name": "tripolitania_area"
+    },
+    {
+      "name": "tripura_area"
+    },
+    {
+      "name": "trois_rivieres_area"
+    },
+    {
+      "name": "tropical_wood"
+    },
+    {
+      "name": "tsang_area"
+    },
+    {
+      "name": "tucuman_area"
+    },
+    {
+      "name": "tunguska_area"
+    },
+    {
+      "name": "tunisia_area"
+    },
+    {
+      "name": "tupi_ideas"
+    },
+    {
+      "name": "turpan_kumul_area"
+    },
+    {
+      "name": "tuscany_area"
+    },
+    {
+      "name": "tver_area"
+    },
+    {
       "name": "type",
       "count": 3849
     },
     {
+      "name": "ucayali_area"
+    },
+    {
+      "name": "uganda_area"
+    },
+    {
+      "name": "uliastai_area"
+    },
+    {
+      "name": "ulster_area"
+    },
+    {
       "name": "university"
+    },
+    {
+      "name": "unknown"
     },
     {
       "name": "upgrade_time",
       "count": 564
     },
     {
+      "name": "upper_acadia_area"
+    },
+    {
+      "name": "upper_american_georgia_area"
+    },
+    {
+      "name": "upper_andalucia_area"
+    },
+    {
+      "name": "upper_bavaria_area"
+    },
+    {
+      "name": "upper_burma_area"
+    },
+    {
+      "name": "upper_canada_area"
+    },
+    {
+      "name": "upper_doab_area"
+    },
+    {
+      "name": "upper_franconia_area"
+    },
+    {
+      "name": "upper_guyana_area"
+    },
+    {
+      "name": "upper_louisiana_area"
+    },
+    {
+      "name": "upper_mahanadi_area"
+    },
+    {
+      "name": "upper_missouri_area"
+    },
+    {
+      "name": "upper_nubia_area"
+    },
+    {
+      "name": "upper_ontario_area"
+    },
+    {
+      "name": "upper_peru"
+    },
+    {
+      "name": "upper_peru_region"
+    },
+    {
+      "name": "upper_rhineland_area"
+    },
+    {
+      "name": "upper_swabia_area"
+    },
+    {
+      "name": "upper_volta_area"
+    },
+    {
+      "name": "upper_yemen_area"
+    },
+    {
+      "name": "upper_zambezi_area"
+    },
+    {
+      "name": "ural_area"
+    },
+    {
+      "name": "ural_region"
+    },
+    {
+      "name": "usa_head_diplomat"
+    },
+    {
+      "name": "usa_secretary_of_the_treasury"
+    },
+    {
+      "name": "usa_secretary_of_war"
+    },
+    {
+      "name": "uticulo_makuana_area"
+    },
+    {
+      "name": "utsang_area"
+    },
+    {
+      "name": "valencia_area"
+    },
+    {
       "name": "value",
       "count": 5673
+    },
+    {
+      "name": "variable"
     },
     {
       "name": "variable_name"
     },
     {
+      "name": "vastra_gotaland_area"
+    },
+    {
+      "name": "venetia_area"
+    },
+    {
+      "name": "venezuela_area"
+    },
+    {
+      "name": "vientiane_area"
+    },
+    {
+      "name": "vietnam_area"
+    },
+    {
+      "name": "vindhyan_ideas"
+    },
+    {
+      "name": "visayas_area"
+    },
+    {
+      "name": "vladimir_area"
+    },
+    {
+      "name": "voc_ideas"
+    },
+    {
+      "name": "vogelkop_area"
+    },
+    {
+      "name": "volga_area"
+    },
+    {
+      "name": "volhynia_area"
+    },
+    {
+      "name": "vologda_area"
+    },
+    {
+      "name": "vorpommern_area"
+    },
+    {
+      "name": "vostani_area"
+    },
+    {
+      "name": "wales_area"
+    },
+    {
+      "name": "wallachia_area"
+    },
+    {
+      "name": "wallonia_area"
+    },
+    {
       "name": "weapons"
+    },
+    {
+      "name": "weser_area"
+    },
+    {
+      "name": "wessex_area"
+    },
+    {
+      "name": "west_africa_coast_area"
+    },
+    {
+      "name": "west_african_coast_sea_area"
+    },
+    {
+      "name": "west_african_ideas"
+    },
+    {
+      "name": "west_african_sea_region"
+    },
+    {
+      "name": "west_african_sea_superregion"
+    },
+    {
+      "name": "west_american_sea_superregion"
+    },
+    {
+      "name": "west_bengal_area"
+    },
+    {
+      "name": "west_burgundy_area"
+    },
+    {
+      "name": "west_dniepr_area"
+    },
+    {
+      "name": "west_florida_area"
+    },
+    {
+      "name": "west_gansu_area"
+    },
+    {
+      "name": "west_guangdong_area"
+    },
+    {
+      "name": "west_india_region"
+    },
+    {
+      "name": "west_indian_ocean_region"
+    },
+    {
+      "name": "west_java_area"
+    },
+    {
+      "name": "west_micronesia_area"
+    },
+    {
+      "name": "west_midlands_area"
+    },
+    {
+      "name": "west_mindanao_area"
+    },
+    {
+      "name": "west_prussia_area"
+    },
+    {
+      "name": "west_sao_paolo_area"
+    },
+    {
+      "name": "west_siberia_region"
+    },
+    {
+      "name": "western_australia_area"
+    },
+    {
+      "name": "western_indian_ocean_area"
+    },
+    {
+      "name": "western_kentucky_area"
+    },
+    {
+      "name": "western_korea_area"
+    },
+    {
+      "name": "western_llanos"
+    },
+    {
+      "name": "western_mediterrenean_area"
+    },
+    {
+      "name": "western_morocco_area"
+    },
+    {
+      "name": "western_norway"
+    },
+    {
+      "name": "western_sahara_area"
+    },
+    {
+      "name": "western_sicily_area"
+    },
+    {
+      "name": "westphalia_area"
+    },
+    {
+      "name": "westsylvania_area"
     },
     {
       "name": "wharf"
@@ -21900,8 +27588,20 @@
       "count": 2436
     },
     {
+      "name": "white_ruthenia_area"
+    },
+    {
+      "name": "white_sea_area"
+    },
+    {
       "name": "who",
       "count": 3305
+    },
+    {
+      "name": "wielkopolska_area"
+    },
+    {
+      "name": "windward_islands_area"
     },
     {
       "name": "wine"
@@ -21910,10 +27610,28 @@
       "name": "winner"
     },
     {
+      "name": "wisconsin_area"
+    },
+    {
       "name": "wool"
     },
     {
       "name": "workshop"
+    },
+    {
+      "name": "xilin_gol_area"
+    },
+    {
+      "name": "xinan_region"
+    },
+    {
+      "name": "yakutia_area"
+    },
+    {
+      "name": "yamamah_area"
+    },
+    {
+      "name": "yaroslavl_area"
     },
     {
       "name": "yearly_decay",
@@ -21922,6 +27640,51 @@
     {
       "name": "years",
       "count": 402
+    },
+    {
+      "name": "yedisan_area"
+    },
+    {
+      "name": "yemen_area"
+    },
+    {
+      "name": "yorkshire_area"
+    },
+    {
+      "name": "yrtesh_area"
+    },
+    {
+      "name": "yucatan_area"
+    },
+    {
+      "name": "yun_gui_area"
+    },
+    {
+      "name": "yun_gui_borderland_area"
+    },
+    {
+      "name": "zacatecas_area"
+    },
+    {
+      "name": "zambezi_ideas"
+    },
+    {
+      "name": "zambia_area"
+    },
+    {
+      "name": "zaporizhia_area"
+    },
+    {
+      "name": "zazzau_area"
+    },
+    {
+      "name": "zhejiang_area"
+    },
+    {
+      "name": "zimbabwe_area"
+    },
+    {
+      "name": "zungaria_area"
     }
   ]
 }
