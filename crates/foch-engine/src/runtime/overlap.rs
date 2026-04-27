@@ -1,6 +1,6 @@
 use super::binding::{DefinitionRecord, RuntimeState};
 use foch_core::model::{Finding, FindingChannel, Severity, SymbolKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,6 +42,19 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 			.filter(|(_, status)| *status != OverlapStatus::None)
 			.collect::<Vec<_>>();
 		if statuses.is_empty() {
+			continue;
+		}
+
+		// A003 ("跨 Mod 重合定义") only describes cross-mod overlaps. When all
+		// participating definitions come from a single mod (e.g. the same key
+		// appears under both `decisions/` and `events/decisions/` inside one
+		// mod) the finding is misleading and pure noise. Such intra-mod
+		// duplication is the responsibility of other rules (R005/R007).
+		let distinct_mods = defs
+			.iter()
+			.map(|definition| definition.mod_id.as_str())
+			.collect::<HashSet<_>>();
+		if distinct_mods.len() < 2 {
 			continue;
 		}
 
