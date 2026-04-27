@@ -1591,6 +1591,16 @@ fn is_mission_slot_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 /// and conditional helpers are assigned dedicated `ScopeKind`s by
 /// `create_child_scope`; only structurally-unmodelled call params survive as
 /// `ScopeKind::Block`, which makes this check both deterministic and safe.
+///
+/// To also cover nested call-arg blocks — e.g.
+/// `outer_call = { inner_call = { GOODS = grain } }` where the inner call's
+/// own param container has a `Block` parent rather than the outer
+/// effect/trigger context — we transparently walk up through chains of
+/// `Block` ancestors and treat the chain as a param container as long as the
+/// outermost non-`Block` ancestor is itself an effect/trigger/loop/scope-
+/// changer/scripted-effect context. This keeps the gate safe for File-rooted
+/// data containers (which would short-circuit on non-call ancestor kinds)
+/// while closing the gap on call-arg blocks at any depth.
 fn is_param_block_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 	let Some(scope) = index.scopes.get(scope_id) else {
 		return false;
@@ -1598,17 +1608,24 @@ fn is_param_block_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 	if scope.kind != ScopeKind::Block {
 		return false;
 	}
-	let Some(parent_id) = scope.parent else {
-		return false;
-	};
-	matches!(
-		scope_kind(index, parent_id),
-		ScopeKind::Effect
+	let mut cursor = scope.parent;
+	while let Some(parent_id) = cursor {
+		let Some(parent) = index.scopes.get(parent_id) else {
+			return false;
+		};
+		match parent.kind {
+			ScopeKind::Effect
 			| ScopeKind::Trigger
 			| ScopeKind::Loop
 			| ScopeKind::AliasBlock
-			| ScopeKind::ScriptedEffect
-	)
+			| ScopeKind::ScriptedEffect => return true,
+			ScopeKind::Block => {
+				cursor = parent.parent;
+			}
+			_ => return false,
+		}
+	}
+	false
 }
 
 /// Returns true if the current scope or any ancestor scope has a key that
