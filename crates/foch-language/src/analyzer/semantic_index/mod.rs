@@ -1491,8 +1491,9 @@ fn scope_depth(index: &SemanticIndex, scope_id: usize) -> usize {
 	depth
 }
 
-/// Check if a block's children indicate it's a mission slot definition.
-/// Mission slots contain structure keys: icon, position, required_missions, trigger, effect.
+/// Check if a block's children indicate it's a mission slot definition or
+/// a mission group definition.  Mission slots contain structure keys like
+/// icon, position, etc.  Mission groups contain slot, generic, ai, etc.
 fn is_mission_slot_definition(file_kind: ScriptFileKind, items: &[AstStatement]) -> bool {
 	if file_kind != ScriptFileKind::Missions {
 		return false;
@@ -1501,11 +1502,14 @@ fn is_mission_slot_definition(file_kind: ScriptFileKind, items: &[AstStatement])
 		if let AstStatement::Assignment { key, .. } = stmt {
 			matches!(
 				key.as_str(),
-				"icon" | "position"
-					| "required_missions"
+				// Mission slot (individual mission node) keys
+				"icon"
+					| "position" | "required_missions"
 					| "trigger" | "effect"
 					| "ai_weight" | "provinces_to_highlight"
 					| "completed_by"
+					// Mission group (tree container) keys
+					| "slot" | "generic" | "has_country_shield"
 			)
 		} else {
 			false
@@ -1561,9 +1565,20 @@ fn is_data_context(index: &SemanticIndex, scope_id: usize) -> bool {
 		// Define namespace — children are config keys
 		"define",
 		"defines",
-		// Scripted parameter blocks
+		// Scripted parameter blocks — children are parameter names
 		"who",
 		"export_to_variable",
+		// Parameterised scripted effects/triggers — children are parameter
+		// names (option_1, mod_1, first_limit, tradition, hook, etc.)
+		"country_event_with_option_insight",
+		"complex_dynamic_effect",
+		"create_general_with_pips",
+		"ME_create_flagship",
+		// Scripted trigger wrappers — children are parameter names
+		"ME_legitimacy_or_tribal_allegiance_trigger",
+		"NED_faction_is_superior_by",
+		// Aggregation trigger — children are scope/trigger blocks
+		"calc_true_if",
 	];
 	let mut current = scope_id;
 	loop {
@@ -1865,6 +1880,29 @@ pub fn resolve_scripted_trigger_reference_targets(
 	reference: &SymbolReference,
 ) -> Vec<usize> {
 	resolve_reference_targets_for_kind(index, reference, SymbolKind::ScriptedTrigger)
+}
+
+/// Search for definitions of `target_kind` that match `reference` by name,
+/// ignoring the reference's own kind.  Used for cross-kind resolution
+/// (e.g. a trigger-context key that is actually a scripted effect).
+pub fn resolve_cross_kind_reference_targets(
+	index: &SemanticIndex,
+	reference: &SymbolReference,
+	target_kind: SymbolKind,
+) -> Vec<usize> {
+	let mut by_local = Vec::new();
+	for (idx, def) in index.definitions.iter().enumerate() {
+		if def.kind != target_kind {
+			continue;
+		}
+		if def.module == reference.module && def.local_name == reference.name {
+			return vec![idx];
+		}
+		if def.local_name == reference.name {
+			by_local.push(idx);
+		}
+	}
+	by_local
 }
 
 /// Resolve an event reference to its definition(s) in the index.

@@ -1,9 +1,11 @@
+use super::content_family::GameProfile;
+use super::eu4_profile::eu4_profile;
 use super::param_contracts::evaluate_param_contract;
 use super::semantic_index::{
 	build_inferred_callable_scope_map, collect_inferred_callable_masks,
 	effective_alias_scope_mask_with_overrides, effective_scope_mask_with_overrides,
-	resolve_event_reference_targets, resolve_scripted_effect_reference_targets,
-	resolve_scripted_trigger_reference_targets,
+	resolve_cross_kind_reference_targets, resolve_event_reference_targets,
+	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
 };
 use super::visibility::{should_flag_duplicates, should_flag_unresolved};
 use foch_core::model::{
@@ -24,7 +26,9 @@ pub fn analyze_visibility(index: &SemanticIndex, _options: &AnalyzeOptions) -> S
 	diagnostics
 		.strict
 		.extend(check_s002_unresolved_calls(index));
-	diagnostics.strict.extend(check_s003_invisible_alias(index));
+	let (s003_strict, s003_advisory) = check_s003_invisible_alias(index);
+	diagnostics.strict.extend(s003_strict);
+	diagnostics.advisory.extend(s003_advisory);
 	diagnostics.strict.extend(check_s004_unbound_params(index));
 	diagnostics
 		.advisory
@@ -117,9 +121,14 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
 					continue;
 				}
-				// Also check trigger definitions — effects can be called from
-				// trigger-like contexts and vice versa
-				if !resolve_scripted_trigger_reference_targets(index, reference).is_empty() {
+				// Cross-kind: effect reference might resolve to a trigger def
+				if !resolve_cross_kind_reference_targets(
+					index,
+					reference,
+					SymbolKind::ScriptedTrigger,
+				)
+				.is_empty()
+				{
 					continue;
 				}
 			}
@@ -127,9 +136,14 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 				if !resolve_scripted_trigger_reference_targets(index, reference).is_empty() {
 					continue;
 				}
-				// Also check effect definitions — triggers might resolve to
-				// scripted effects (EU4 allows cross-kind calls)
-				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
+				// Cross-kind: trigger reference might resolve to an effect def
+				if !resolve_cross_kind_reference_targets(
+					index,
+					reference,
+					SymbolKind::ScriptedEffect,
+				)
+				.is_empty()
+				{
 					continue;
 				}
 			}
@@ -168,9 +182,10 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_s003_invisible_alias(index: &SemanticIndex) -> Vec<Finding> {
+fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Finding>) {
 	let mut seen = HashSet::new();
-	let mut findings = Vec::new();
+	let mut strict = Vec::new();
+	let mut advisory = Vec::new();
 	for usage in &index.alias_usages {
 		if is_alias_visible(index, usage.scope_id, usage.alias.as_str()) {
 			continue;
@@ -185,20 +200,40 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> Vec<Finding> {
 		if !seen.insert(dedup_key) {
 			continue;
 		}
-		findings.push(Finding {
+		// FROM and PREV are runtime-bound scope aliases. They are injected by
+		// callers (events, on_actions, scripted_effects/triggers invoked with an
+		// explicit scope, decision potentials/effects, mission triggers,
+		// custom_gui callbacks, ...). Static analysis cannot reliably determine
+		// their visibility without context-sensitive flow analysis, so flagging
+		// them as strict errors produces high-volume false positives. Demote
+		// such usages to advisory with low confidence; reserve strict S003 for
+		// THIS/ROOT, which are populated at file scope unconditionally and so
+		// only become invisible due to genuine indexing bugs.
+		let is_runtime_bound = matches!(usage.alias.as_str(), "FROM" | "PREV");
+		let (channel, severity, confidence) = if is_runtime_bound {
+			(FindingChannel::Advisory, Severity::Info, 0.3)
+		} else {
+			(FindingChannel::Strict, Severity::Error, 0.9)
+		};
+		let finding = Finding {
 			rule_id: "S003".to_string(),
-			severity: Severity::Error,
-			channel: FindingChannel::Strict,
+			severity,
+			channel,
 			message: format!("不可见别名引用: {}", usage.alias),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
 			line: Some(usage.line),
 			column: Some(usage.column),
-			confidence: Some(0.9),
-		});
+			confidence: Some(confidence),
+		};
+		if is_runtime_bound {
+			advisory.push(finding);
+		} else {
+			strict.push(finding);
+		}
 	}
-	findings
+	(strict, advisory)
 }
 
 fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
@@ -274,9 +309,19 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 
 	let callable_scope_map = build_inferred_callable_scope_map(index);
 	let inferred_masks = collect_inferred_callable_masks(index);
+	let profile = eu4_profile();
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
 		if !type_sensitive_keys.contains(usage.key.as_str()) {
+			continue;
+		}
+		// Skip files whose content family has no statically determinable
+		// implicit scope (callables, UI, customizable_localization,
+		// on_actions, scripted_functions). Unknown is by-design there.
+		if profile
+			.classify_content_family(usage.path.as_path())
+			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
+		{
 			continue;
 		}
 		let scope_mask = match usage.key.as_str() {

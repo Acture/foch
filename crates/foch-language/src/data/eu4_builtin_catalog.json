@@ -27685,6 +27685,27 @@
     },
     {
       "name": "zungaria_area"
+    },
+    {
+      "name": "all_coalition_member"
+    },
+    {
+      "name": "el_escorial"
+    },
+    {
+      "name": "num_of_owned_states_with"
+    },
+    {
+      "name": "prussian_vassal"
+    },
+    {
+      "name": "round_variable"
+    },
+    {
+      "name": "trade_company_polynesia"
+    },
+    {
+      "name": "white_house_building"
     }
   ]
 }
