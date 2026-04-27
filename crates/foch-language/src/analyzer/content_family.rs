@@ -175,6 +175,12 @@ pub struct ContentFamilyCapabilities {
 pub struct ContentFamilyScopePolicy {
 	pub root_scope: ScopeType,
 	pub from_alias: Option<ScopeType>,
+	/// True when this content family has no statically determinable implicit
+	/// scope at runtime (callables, UI bindings, customizable localization,
+	/// on_actions callbacks, etc.). Analyses that warn about Unknown scope
+	/// (A001) should suppress findings inside such files because the implicit
+	/// scope is supplied by the caller, not the file.
+	pub dynamic_scope: bool,
 }
 
 impl Default for ContentFamilyScopePolicy {
@@ -182,6 +188,7 @@ impl Default for ContentFamilyScopePolicy {
 		Self {
 			root_scope: ScopeType::Unknown,
 			from_alias: None,
+			dynamic_scope: false,
 		}
 	}
 }
@@ -443,6 +450,7 @@ impl ContentFamilyDescriptor {
 			scope_policy: ContentFamilyScopePolicy {
 				root_scope: ScopeType::Unknown,
 				from_alias: None,
+				dynamic_scope: false,
 			},
 			capabilities: ContentFamilyCapabilities {
 				semantic_complete: false,
@@ -473,6 +481,7 @@ impl ContentFamilyDescriptor {
 			scope_policy: ContentFamilyScopePolicy {
 				root_scope: ScopeType::Unknown,
 				from_alias: None,
+				dynamic_scope: false,
 			},
 			capabilities: ContentFamilyCapabilities {
 				semantic_complete: false,

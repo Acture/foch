@@ -6644,6 +6644,7 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 		scope_policy: super::super::content_family::ContentFamilyScopePolicy {
 			root_scope: ScopeType::Unknown,
 			from_alias: None,
+			dynamic_scope: false,
 		},
 		capabilities: ContentFamilyCapabilities::default(),
 		extractor: super::super::content_family::ContentFamilyExtractor::None,

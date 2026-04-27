@@ -24,6 +24,7 @@ const fn scope(root_scope: ScopeType) -> ContentFamilyScopePolicy {
 	ContentFamilyScopePolicy {
 		root_scope,
 		from_alias: None,
+		dynamic_scope: false,
 	}
 }
 
@@ -31,6 +32,19 @@ const fn country_from_scope(root_scope: ScopeType) -> ContentFamilyScopePolicy {
 	ContentFamilyScopePolicy {
 		root_scope,
 		from_alias: Some(ScopeType::Country),
+		dynamic_scope: false,
+	}
+}
+
+/// Scope policy for content families whose implicit scope is supplied by the
+/// runtime caller (callables, UI bindings, customizable localization,
+/// on_actions callbacks). A001 (uncertain-scope path) skips usages inside
+/// these files because Unknown is the by-design state.
+const fn dynamic_scope_policy() -> ContentFamilyScopePolicy {
+	ContentFamilyScopePolicy {
+		root_scope: ScopeType::Unknown,
+		from_alias: None,
+		dynamic_scope: true,
 	}
 }
 
@@ -51,14 +65,14 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/on_actions", "common/on_actions/")
 		.kind(ScriptFileKind::OnActions)
 		.module_name(ModuleNameRule::Static("on_actions"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
 	ContentFamilyDescriptor::prefix("events/common/on_actions", "events/common/on_actions/")
 		.kind(ScriptFileKind::OnActions)
 		.module_name(ModuleNameRule::Static("on_actions"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -93,7 +107,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			prefix_len: 2,
 			fallback: "scripted_effects",
 		})
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -103,7 +117,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			prefix_len: 2,
 			fallback: "scripted_triggers",
 		})
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::ScriptedTriggers)
@@ -230,7 +244,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/subject_types", "common/subject_types/")
 		.kind(ScriptFileKind::SubjectTypes)
 		.module_name(ModuleNameRule::Static("subject_types"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::SubjectTypes)
@@ -238,7 +252,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/rebel_types", "common/rebel_types/")
 		.kind(ScriptFileKind::RebelTypes)
 		.module_name(ModuleNameRule::Static("rebel_types"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::RebelTypes)
@@ -246,7 +260,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/disasters", "common/disasters/")
 		.kind(ScriptFileKind::Disasters)
 		.module_name(ModuleNameRule::Static("disasters"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Disasters)
@@ -561,7 +575,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/state_edicts", "common/state_edicts/")
 		.kind(ScriptFileKind::StateEdicts)
 		.module_name(ModuleNameRule::Static("state_edicts"))
-		.scope(scope(ScopeType::Province))
+		.scope(country_from_scope(ScopeType::Province))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::StateEdicts)
@@ -625,7 +639,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/great_projects", "common/great_projects/")
 		.kind(ScriptFileKind::GreatProjects)
 		.module_name(ModuleNameRule::Static("great_projects"))
-		.scope(scope(ScopeType::Province))
+		.scope(country_from_scope(ScopeType::Province))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::GreatProjects)
@@ -651,7 +665,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/custom_gui", "common/custom_gui/")
 		.kind(ScriptFileKind::CustomGui)
 		.module_name(ModuleNameRule::Static("custom_gui"))
-		.scope(scope(ScopeType::Country))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::CustomGui)
@@ -693,35 +707,35 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("customizable_localization", "customizable_localization/")
 		.kind(ScriptFileKind::CustomizableLocalization)
 		.module_name(ModuleNameRule::Static("customizable_localization"))
-		.scope(scope(ScopeType::Country))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
 	ContentFamilyDescriptor::prefix("missions", "missions/")
 		.kind(ScriptFileKind::Missions)
 		.module_name(ModuleNameRule::Static("missions"))
-		.scope(scope(ScopeType::Country))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
 	ContentFamilyDescriptor::prefix("interface", "interface/")
 		.kind(ScriptFileKind::Ui)
 		.module_name(ModuleNameRule::Static("ui"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/interface", "common/interface/")
 		.kind(ScriptFileKind::Ui)
 		.module_name(ModuleNameRule::Static("ui"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
 	ContentFamilyDescriptor::prefix("gfx", "gfx/")
 		.kind(ScriptFileKind::Ui)
 		.module_name(ModuleNameRule::Static("ui"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -797,7 +811,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	.build(),
 	ContentFamilyDescriptor::prefix("common/custom_ideas", "common/custom_ideas/")
 		.module_name(ModuleNameRule::Static("custom_ideas"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -861,7 +875,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.build(),
 	ContentFamilyDescriptor::prefix("common/insults", "common/insults/")
 		.module_name(ModuleNameRule::Static("insults"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -903,7 +917,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		"common/religious_conversions/",
 	)
 	.module_name(ModuleNameRule::Static("religious_conversions"))
-	.scope(scope(ScopeType::Unknown))
+	.scope(country_from_scope(ScopeType::Province))
 	.capabilities(semantic_complete_and_merge_ready())
 	.merge_key(MergeKeySource::AssignmentKey)
 	.build(),
@@ -933,7 +947,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.build(),
 	ContentFamilyDescriptor::prefix("common/scripted_functions", "common/scripted_functions/")
 		.module_name(ModuleNameRule::Static("scripted_functions"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -967,7 +981,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	.build(),
 	ContentFamilyDescriptor::prefix("common/tradegoods", "common/tradegoods/")
 		.module_name(ModuleNameRule::Static("tradegoods"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Province))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.list_policy(ListMergePolicy::Replace)
@@ -981,7 +995,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.build(),
 	ContentFamilyDescriptor::prefix("common/trading_policies", "common/trading_policies/")
 		.module_name(ModuleNameRule::Static("trading_policies"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
@@ -993,7 +1007,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.build(),
 	ContentFamilyDescriptor::prefix("common/wargoal_types", "common/wargoal_types/")
 		.module_name(ModuleNameRule::Static("wargoal_types"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
