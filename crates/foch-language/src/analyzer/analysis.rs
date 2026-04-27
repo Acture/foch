@@ -500,6 +500,74 @@ const ENGINE_SET_FLAGS: &[(&str, &str)] = &[
 	("country", "gives_enlightenment_to_neighbors"),
 ];
 
+/// Suffixes for cross-mod compatibility flags whose setter lives in a sibling
+/// mod that may or may not be present in the indexed playset. Reading
+/// `has_global_flag = some_mod_enabled` is a legitimate gate even when nobody
+/// in the workspace sets the flag.
+const MOD_DETECTION_SUFFIXES: &[&str] = &[
+	"_mod_enabled",
+	"_mod_active",
+	"_mod_compat",
+	"_mod_compatibility",
+	"_mod_disabled",
+	"_mod_loaded",
+	"_mod",
+];
+
+fn is_mod_detection_flag(kind: &str, flag: &str) -> bool {
+	if kind != "global" {
+		return false;
+	}
+	MOD_DETECTION_SUFFIXES
+		.iter()
+		.any(|suffix| flag.len() > suffix.len() && flag.ends_with(suffix))
+}
+
+/// Pattern derived from a `set_*_flag = prefix_$param$_suffix` setter inside
+/// some scripted_effect. Any read whose value matches `<prefix><alphanum_or_._->+<suffix>`
+/// is treated as possibly defined: we cannot always pin down every binding
+/// site (deeply-nested call chains, optional parameters, base-game callers
+/// the indexer does not capture), so suppressing the read is safer than
+/// emitting noise.
+#[derive(Clone)]
+struct TemplatedFlagPattern {
+	kind: &'static str,
+	prefix: String,
+	suffix: String,
+}
+
+impl TemplatedFlagPattern {
+	fn matches(&self, kind: &str, flag: &str) -> bool {
+		if self.kind != kind {
+			return false;
+		}
+		let Some(rest) = flag.strip_prefix(self.prefix.as_str()) else {
+			return false;
+		};
+		let Some(middle) = rest.strip_suffix(self.suffix.as_str()) else {
+			return false;
+		};
+		!middle.is_empty()
+			&& middle
+				.chars()
+				.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | ':'))
+	}
+}
+
+/// A templated setter is allowlist-eligible only if the surrounding literal
+/// fragments are specific enough that the resulting pattern is unlikely to
+/// match unrelated flags. Without this guard a setter like
+/// `set_country_flag = $param$` would silently allow every read.
+fn templated_pattern_is_specific(prefix: &str, suffix: &str) -> bool {
+	let literal = prefix.len() + suffix.len();
+	if literal < 4 {
+		return false;
+	}
+	let alpha = prefix.chars().filter(|ch| ch.is_ascii_alphabetic()).count()
+		+ suffix.chars().filter(|ch| ch.is_ascii_alphabetic()).count();
+	alpha >= 3
+}
+
 fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 	let mut defined_flags: HashSet<(String, String)> = HashSet::new();
 	for (kind, flag) in ENGINE_SET_FLAGS {
@@ -567,6 +635,44 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 		}
 	}
 
+	// Build a pattern allowlist from every templated setter found inside a
+	// scripted_effect body. We do not require the call site to be present in
+	// the index — base-game effects are sometimes invoked through optional
+	// parameters or nested scopes the indexer does not cross, so the binding
+	// expansion below misses those callers. The pattern check keeps reads of
+	// flags shaped like `<prefix><value><suffix>` from being flagged when a
+	// matching setter exists somewhere in the workspace.
+	let mut templated_flag_patterns: Vec<TemplatedFlagPattern> = Vec::new();
+	let mut seen_patterns: HashSet<(&'static str, String, String)> = HashSet::new();
+	for templates in templated_flag_defs.values() {
+		for template in templates {
+			if !templated_pattern_is_specific(&template.prefix, &template.suffix) {
+				continue;
+			}
+			let key = (
+				template.kind,
+				template.prefix.clone(),
+				template.suffix.clone(),
+			);
+			if !seen_patterns.insert(key) {
+				continue;
+			}
+			templated_flag_patterns.push(TemplatedFlagPattern {
+				kind: template.kind,
+				prefix: template.prefix.clone(),
+				suffix: template.suffix.clone(),
+			});
+		}
+	}
+	let flag_is_allowlisted = |kind: &str, flag: &str| -> bool {
+		if is_mod_detection_flag(kind, flag) {
+			return true;
+		}
+		templated_flag_patterns
+			.iter()
+			.any(|pattern| pattern.matches(kind, flag))
+	};
+
 	for reference in &index.references {
 		if reference.kind != SymbolKind::ScriptedEffect {
 			continue;
@@ -598,6 +704,9 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 							flag
 						);
 						if defined_flags.contains(&(template.kind.to_string(), flag.clone())) {
+							continue;
+						}
+						if flag_is_allowlisted(template.kind, flag.as_str()) {
 							continue;
 						}
 						if !seen.insert(dedup_key) {
@@ -660,6 +769,9 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 					if defined_flags.contains(&(template.kind.to_string(), flag.clone())) {
 						continue;
 					}
+					if flag_is_allowlisted(template.kind, flag.as_str()) {
+						continue;
+					}
 					let dedup_key = format!(
 						"{}:{}:{}:{}:{}",
 						reference.path.display(),
@@ -720,6 +832,9 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 			continue;
 		};
 		if defined_flags.contains(&(spec.kind.to_string(), flag.clone())) {
+			continue;
+		}
+		if flag_is_allowlisted(spec.kind, flag.as_str()) {
 			continue;
 		}
 		let dedup_key = format!(

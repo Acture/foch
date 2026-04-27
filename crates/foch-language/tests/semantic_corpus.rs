@@ -532,6 +532,134 @@ fn engine_set_country_flags_are_pre_seeded() {
 }
 
 #[test]
+fn mod_detection_global_flags_are_allowlisted() {
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::write(
+		root.join("events").join("test.txt"),
+		"namespace = test\ncountry_event = { id = test.1 trigger = { has_global_flag = extended_timeline_mod has_global_flag = beyond_typus_mod_enabled has_global_flag = some_compat_mod_active has_global_flag = other_thing_mod_compat } }\n",
+	)
+	.expect("write events");
+	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
+		.expect("parse event");
+	let index = build_semantic_index(&[event]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	for flag in [
+		"extended_timeline_mod",
+		"beyond_typus_mod_enabled",
+		"some_compat_mod_active",
+		"other_thing_mod_compat",
+	] {
+		assert!(
+			!diagnostics
+				.advisory
+				.iter()
+				.any(|finding| finding.rule_id == "A004" && finding.message.contains(flag)),
+			"mod-detection flag {flag} should not produce A004",
+		);
+	}
+}
+
+#[test]
+fn templated_flag_pattern_allowlists_unbound_reads() {
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::create_dir_all(root.join("common").join("scripted_effects")).expect("create effects dir");
+	fs::write(
+		root.join("events").join("test.txt"),
+		"namespace = test\ncountry_event = { id = test.1 trigger = { has_country_flag = is_FOO_flag has_country_flag = is_BAR_flag } }\n",
+	)
+	.expect("write events");
+	fs::write(
+		root.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"eyalet_effect = { set_country_flag = is_$tag$_flag }\n",
+	)
+	.expect("write effects");
+	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
+		.expect("parse event");
+	let effect = parse_script_file(
+		"tmp",
+		&root,
+		&root
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+	)
+	.expect("parse effect");
+	let index = build_semantic_index(&[event, effect]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	for flag in ["is_FOO_flag", "is_BAR_flag"] {
+		assert!(
+			!diagnostics
+				.advisory
+				.iter()
+				.any(|finding| finding.rule_id == "A004" && finding.message.contains(flag)),
+			"`is_$tag$_flag` template should pattern-suppress reads of {flag}",
+		);
+	}
+}
+
+#[test]
+fn unrelated_flag_still_fires_with_template_present() {
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("events")).expect("create events");
+	fs::create_dir_all(root.join("common").join("scripted_effects")).expect("create effects dir");
+	fs::write(
+		root.join("events").join("test.txt"),
+		"namespace = test\ncountry_event = { id = test.1 trigger = { has_country_flag = totally_unrelated_flag } }\n",
+	)
+	.expect("write events");
+	fs::write(
+		root.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"eyalet_effect = { set_country_flag = is_$tag$_flag }\n",
+	)
+	.expect("write effects");
+	let event = parse_script_file("tmp", &root, &root.join("events").join("test.txt"))
+		.expect("parse event");
+	let effect = parse_script_file(
+		"tmp",
+		&root,
+		&root
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+	)
+	.expect("parse effect");
+	let index = build_semantic_index(&[event, effect]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	assert!(
+		diagnostics
+			.advisory
+			.iter()
+			.any(|finding| finding.rule_id == "A004"
+				&& finding.message.contains("totally_unrelated_flag")),
+		"flag that does not match the templated pattern must still raise A004",
+	);
+}
+
+#[test]
 fn corpus_priority_eu4_roots_do_not_emit_targeted_noise() {
 	let files = parsed_many(
 		"eu4_coverage",
