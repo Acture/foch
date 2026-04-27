@@ -11,6 +11,7 @@ use foch_core::model::{
 	SymbolKind,
 };
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 #[derive(Clone, Debug, Default)]
 pub struct AnalyzeOptions {
@@ -675,10 +676,21 @@ fn check_a005_missing_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for usage in &index.scalar_assignments {
+		if path_disables_localisation_reference_check(usage.path.as_path()) {
+			continue;
+		}
 		let Some(key) = normalized_static_symbol(usage.value.as_str()) else {
 			continue;
 		};
 		if !is_localisation_reference_key(usage.key.as_str(), key.as_str()) {
+			continue;
+		}
+		if is_non_localisation_literal(key.as_str()) {
+			continue;
+		}
+		if usage.key == "name"
+			&& !is_localisation_name_scope(index, usage.scope_id)
+		{
 			continue;
 		}
 		if defined_keys.contains(key.as_str()) {
@@ -862,6 +874,48 @@ fn is_localisation_reference_key(key: &str, value: &str) -> bool {
 		"name" => looks_like_localisation_name(value),
 		_ => false,
 	}
+}
+
+/// Files whose `name`/`tooltip`/`title`/`desc` fields are structural identifiers
+/// (GUI element names, sprite names, customizable_localization macro IDs, map names),
+/// not Clausewitz localisation key references.
+fn path_disables_localisation_reference_check(path: &Path) -> bool {
+	if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
+		let lower = ext.to_ascii_lowercase();
+		if matches!(lower.as_str(), "gui" | "gfx") {
+			return true;
+		}
+	}
+	let normalized = path.to_string_lossy().replace('\\', "/");
+	let top = normalized.split('/').next().unwrap_or("");
+	if matches!(
+		top,
+		"interface" | "gfx" | "map" | "tweakergui_assets" | "customizable_localization"
+	) {
+		return true;
+	}
+	normalized.starts_with("common/custom_gui/")
+}
+
+/// Values that pass `is_localisation_reference_key` but are not loc keys:
+/// numeric template indices (`localisation_key = 0`, `custom_tooltip = 4`)
+/// and boolean tooltip toggles (`tooltip = yes`).
+fn is_non_localisation_literal(value: &str) -> bool {
+	if matches!(value, "yes" | "no") {
+		return true;
+	}
+	!value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
+/// `name = X` is only a localisation key reference inside event option blocks.
+/// Elsewhere (`monarch`, `heir`, `leader`, `define_advisor`, decision/modifier
+/// `name` fields, mission slot names, etc.) it is a character first name or
+/// a script identifier.
+fn is_localisation_name_scope(index: &SemanticIndex, scope_id: usize) -> bool {
+	index
+		.scopes
+		.get(scope_id)
+		.is_some_and(|scope| scope.key == "option")
 }
 
 fn looks_like_localisation_name(value: &str) -> bool {
