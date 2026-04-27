@@ -1025,3 +1025,50 @@ fn corpus_real_minimized_base_game_complex_effects_stay_clean() {
 				.any(|param| param == "first_custom_tooltip")
 	}));
 }
+
+#[test]
+fn a002_skips_dynamic_scope_content_families() {
+	// scripted_effects bodies have no statically-known caller scope. A002
+	// should not flag `set_country_flag` / `add_prestige` etc inside such
+	// files just because the analyzer happens to infer Province scope from
+	// a nested iterator. This mirrors the A001 dynamic_scope skip.
+	let tmp = TempDir::new().expect("temp dir");
+	let root = tmp.path().join("mod");
+	fs::create_dir_all(root.join("common").join("scripted_effects")).expect("create effects dir");
+	fs::write(
+		root.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+		"sample_effect = { every_owned_province = { set_country_flag = some_flag add_prestige = 1 } }\n",
+	)
+	.expect("write effects");
+
+	let effect = parse_script_file(
+		"tmp",
+		&root,
+		&root
+			.join("common")
+			.join("scripted_effects")
+			.join("effects.txt"),
+	)
+	.expect("parse effect");
+	let index = build_semantic_index(&[effect]);
+	let diagnostics = analyze_visibility(
+		&index,
+		&AnalyzeOptions {
+			mode: AnalysisMode::Semantic,
+		},
+	);
+	assert!(
+		!diagnostics
+			.advisory
+			.iter()
+			.any(|finding| finding.rule_id == "A002"),
+		"A002 must skip dynamic_scope content families: {:#?}",
+		diagnostics
+			.advisory
+			.iter()
+			.filter(|finding| finding.rule_id == "A002")
+			.collect::<Vec<_>>(),
+	);
+}

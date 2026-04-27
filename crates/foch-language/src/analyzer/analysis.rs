@@ -371,8 +371,23 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 
 	let callable_scope_map = build_inferred_callable_scope_map(index);
 	let inferred_masks = collect_inferred_callable_masks(index);
+	let profile = eu4_profile();
 	let mut findings = Vec::new();
 	for usage in &index.key_usages {
+		if !country_only_keys.contains(usage.key.as_str()) {
+			continue;
+		}
+		// Skip files whose content family has no statically determinable
+		// implicit scope (callables, UI, customizable_localization,
+		// on_actions, scripted_functions). The runtime caller's scope is
+		// unknown there, so flagging Province usage of country effects is
+		// noise — same skip applied by A001.
+		if profile
+			.classify_content_family(usage.path.as_path())
+			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
+		{
+			continue;
+		}
 		if effective_scope_mask_with_overrides(
 			index,
 			&callable_scope_map,
@@ -380,9 +395,6 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 			usage.scope_id,
 		) != scope_type_mask(ScopeType::Province)
 		{
-			continue;
-		}
-		if !country_only_keys.contains(usage.key.as_str()) {
 			continue;
 		}
 		findings.push(Finding {
