@@ -142,9 +142,19 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
 					continue;
 				}
+				// Also check trigger definitions — effects can be called from
+				// trigger-like contexts and vice versa
+				if !resolve_scripted_trigger_reference_targets(index, reference).is_empty() {
+					continue;
+				}
 			}
 			SymbolKind::ScriptedTrigger => {
 				if !resolve_scripted_trigger_reference_targets(index, reference).is_empty() {
+					continue;
+				}
+				// Also check effect definitions — triggers might resolve to
+				// scripted effects (EU4 allows cross-kind calls)
+				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
 					continue;
 				}
 			}

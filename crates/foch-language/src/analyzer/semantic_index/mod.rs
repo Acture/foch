@@ -1017,6 +1017,10 @@ fn is_scripted_effect_call_candidate(
 	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
 		return false;
 	}
+	// Mission files: blocks at depth ≤ 2 are mission slot definitions, not calls
+	if file_kind == ScriptFileKind::Missions && is_mission_slot_scope(index, scope_id) {
+		return false;
+	}
 	if file_kind == ScriptFileKind::ScriptedEffects
 		&& scope_kind(index, scope_id) == ScopeKind::File
 	{
@@ -1072,6 +1076,9 @@ fn is_scripted_trigger_call_candidate(
 		return false;
 	}
 	if !is_trigger_like_scope(index, scope_id) {
+		return false;
+	}
+	if file_kind == ScriptFileKind::Missions && is_mission_slot_scope(index, scope_id) {
 		return false;
 	}
 	if file_kind == ScriptFileKind::ScriptedTriggers
@@ -1459,6 +1466,46 @@ fn scope_kind(index: &SemanticIndex, scope_id: usize) -> ScopeKind {
 		.get(scope_id)
 		.map(|scope| scope.kind)
 		.unwrap_or(ScopeKind::Block)
+}
+
+/// Count the depth of a scope (how many parents up to the root).
+#[allow(dead_code)]
+fn scope_depth(index: &SemanticIndex, scope_id: usize) -> usize {
+	let mut depth = 0;
+	let mut current = scope_id;
+	while let Some(scope) = index.scopes.get(current) {
+		if let Some(parent) = scope.parent {
+			depth += 1;
+			current = parent;
+		} else {
+			break;
+		}
+	}
+	depth
+}
+
+/// Returns true if this scope is a mission slot definition context — i.e. the
+/// scope itself is a direct child of a mission group block (which is a direct
+/// child of the file scope).  Mission slots look like:
+///   mission_group = { my_mission = { icon = ... trigger = { } effect = { } } }
+/// The key `my_mission` is at depth 2 and should not be treated as a scripted call.
+fn is_mission_slot_scope(index: &SemanticIndex, scope_id: usize) -> bool {
+	let Some(scope) = index.scopes.get(scope_id) else {
+		return false;
+	};
+	// Must be a generic Block scope (not Effect/Trigger/Event).
+	if scope.kind != ScopeKind::Block {
+		return false;
+	}
+	let Some(parent_id) = scope.parent else {
+		return false;
+	};
+	let Some(parent) = index.scopes.get(parent_id) else {
+		return false;
+	};
+	// Parent must also be a generic Block (mission group) or File.
+	// If parent is Effect/Trigger, we're inside a mission's effect/trigger block.
+	matches!(parent.kind, ScopeKind::Block | ScopeKind::File)
 }
 
 /// Returns true if the current scope or any ancestor scope has a key that
