@@ -277,11 +277,27 @@ pub fn is_country_file_reference(value: &str) -> bool {
 }
 
 pub fn is_country_tag_text(value: &str) -> bool {
-	value.len() == 3 && value.chars().all(|ch| ch.is_ascii_uppercase())
+	is_country_tag_token(value)
 }
 
 pub fn is_country_tag_selector(key: &str) -> bool {
-	key.len() == 3 && key.chars().all(|ch| ch.is_ascii_uppercase())
+	is_country_tag_token(key)
+}
+
+/// EU4 country tags are exactly three ASCII characters: the first is an
+/// uppercase letter and the remaining characters are uppercase letters or
+/// ASCII digits. This matches both vanilla tags (FRA, ENG, KOR) and the
+/// digit-bearing tags commonly used by mods (X3E, Y1D, K01).
+fn is_country_tag_token(token: &str) -> bool {
+	if token.len() != 3 {
+		return false;
+	}
+	let mut chars = token.chars();
+	let first = chars.next().unwrap();
+	if !first.is_ascii_uppercase() {
+		return false;
+	}
+	chars.all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
 }
 
 pub fn is_province_id_text(value: &str) -> bool {
