@@ -228,8 +228,29 @@ fn duplicate_scripted_effect_creates_r007() {
 		"shared_effect = {\n\thidden_effect = { }\n}\n",
 	);
 
-	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R007"));
+	// In semantic mode the overlap module owns scripted-effect duplicates
+	// (A003 mergeable for `common/scripted_effects/`), so R007 is suppressed
+	// to avoid duplicate emissions.
+	let semantic = run_checks_no_base(request_for(&playlist_path));
+	assert!(
+		semantic
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "A003" && f.message.contains("shared_effect"))
+	);
+	assert!(!semantic.findings.iter().any(|f| f.rule_id == "R007"));
+
+	// In basic mode the overlap module is disabled, so R007 still surfaces
+	// the duplicate as a heuristic fallback.
+	let basic = run_checks_with_options(
+		request_for(&playlist_path),
+		RunOptions {
+			include_game_base: false,
+			analysis_mode: foch_core::model::AnalysisMode::Basic,
+			..RunOptions::default()
+		},
+	);
+	assert!(basic.findings.iter().any(|f| f.rule_id == "R007"));
 }
 
 #[test]
