@@ -13,6 +13,12 @@ pub struct Config {
 	pub paradox_data_path: Option<PathBuf>,
 	#[serde(default)]
 	pub game_path: HashMap<String, PathBuf>,
+	/// Additional glob patterns matched (case-insensitive) against the
+	/// slash-normalized relative path of every file discovered while walking
+	/// mod roots and the base game install. Files matching any pattern are
+	/// dropped before parsing, semantic indexing, or conflict detection.
+	#[serde(default)]
+	pub extra_ignore_patterns: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

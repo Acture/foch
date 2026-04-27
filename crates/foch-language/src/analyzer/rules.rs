@@ -173,13 +173,9 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 }
 
 pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
-	let game = &ctx.playlist.game;
 	let mut file_owners: HashMap<String, Vec<String>> = HashMap::new();
 	for mod_item in &ctx.mods {
 		for file in &mod_item.files {
-			if !game.is_loadable_content_path(file) {
-				continue;
-			}
 			let key = file.to_string_lossy().to_string();
 			file_owners
 				.entry(key)

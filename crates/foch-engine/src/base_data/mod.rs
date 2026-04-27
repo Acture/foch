@@ -39,7 +39,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 9;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 10;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -1269,15 +1269,17 @@ pub fn build_base_snapshot(
 	game: &Game,
 	game_root: &Path,
 	game_version: Option<&str>,
+	filter: &crate::workspace::FileFilter,
 ) -> Result<BaseSnapshotBuildResult, String> {
 	let mut observer = BaseBuildObserver::silent(game.key());
-	build_base_snapshot_with_observer(game, game_root, game_version, &mut observer)
+	build_base_snapshot_with_observer(game, game_root, game_version, filter, &mut observer)
 }
 
 pub fn build_base_snapshot_with_observer(
 	game: &Game,
 	game_root: &Path,
 	game_version: Option<&str>,
+	filter: &crate::workspace::FileFilter,
 	observer: &mut BaseBuildObserver,
 ) -> Result<BaseSnapshotBuildResult, String> {
 	let resolved_version = observer.run_stage("detect_version", |counts| {
@@ -1297,7 +1299,7 @@ pub fn build_base_snapshot_with_observer(
 	observer.set_game_version(&resolved_version);
 
 	let inventory_paths = observer.run_stage("collect_inventory", |counts| {
-		let paths: Vec<String> = collect_relative_files(game_root)
+		let paths: Vec<String> = collect_relative_files(game_root, filter)
 			.into_iter()
 			.map(|path| normalize_path(&path))
 			.collect();
@@ -2139,7 +2141,7 @@ fn decode_legacy_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapsho
 	}
 }
 
-fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
+fn collect_relative_files(root: &Path, filter: &crate::workspace::FileFilter) -> Vec<PathBuf> {
 	let mut files = Vec::new();
 
 	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
@@ -2153,6 +2155,9 @@ fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
 		}
 
 		if let Ok(relative) = path.strip_prefix(root) {
+			if !filter.accepts(relative) {
+				continue;
+			}
 			files.push(relative.to_path_buf());
 		}
 	}

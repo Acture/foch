@@ -1192,6 +1192,7 @@ mod tests {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
+				extra_ignore_patterns: Vec::new(),
 			},
 		}
 	}
@@ -1490,6 +1491,7 @@ mod tests {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
+				extra_ignore_patterns: Vec::new(),
 			},
 		}
 	}

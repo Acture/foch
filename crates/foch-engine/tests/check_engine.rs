@@ -69,6 +69,7 @@ fn request_for(playlist_path: &Path) -> CheckRequest {
 			steam_root_path: None,
 			paradox_data_path: None,
 			game_path,
+			extra_ignore_patterns: Vec::new(),
 		},
 	}
 }
@@ -409,6 +410,7 @@ fn resolves_mod_root_from_ugc_metadata_when_paradox_root_is_configured() {
 		steam_root_path: None,
 		paradox_data_path: Some(paradox_root),
 		game_path: std::collections::HashMap::new(),
+		extra_ignore_patterns: Vec::new(),
 	};
 
 	let result = run_checks_no_base(request_with_config(&playlist_path, config));
@@ -465,6 +467,7 @@ fn resolves_mod_root_from_non_default_steam_library_folder() {
 		steam_root_path: Some(steam_root),
 		paradox_data_path: None,
 		game_path: std::collections::HashMap::new(),
+		extra_ignore_patterns: Vec::new(),
 	};
 
 	let result = run_checks_no_base(request_with_config(&playlist_path, config));
@@ -659,11 +662,11 @@ fn merge_plan_marks_binary_overlap_as_manual_conflict() {
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	// Non-descriptor path + non-text extension → ManualConflict
-	write_script_file(&mod_a, "tools/overlap.bin", "binary-a");
-	write_script_file(&mod_b, "tools/overlap.bin", "binary-b");
+	write_script_file(&mod_a, "pdx_browser/overlap.bin", "binary-a");
+	write_script_file(&mod_b, "pdx_browser/overlap.bin", "binary-b");
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
-	let entry = plan_entry_for(&result, "tools/overlap.bin");
+	let entry = plan_entry_for(&result, "pdx_browser/overlap.bin");
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
 	assert!(entry.winner.is_none());
 	assert!(!entry.generated);

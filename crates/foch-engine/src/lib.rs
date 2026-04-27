@@ -29,4 +29,4 @@ pub use merge::{
 pub use request::{CheckRequest, MergePlanOptions, RunOptions};
 pub use run_checks::{run_checks, run_checks_with_options};
 pub use simplify::{SimplifyOptions, SimplifyReport, SimplifySummary, run_simplify_with_options};
-pub use workspace::WorkspaceSession;
+pub use workspace::{FileFilter, WorkspaceSession};

@@ -944,15 +944,21 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	write_descriptor(&tmp.path().join("7201"), "mod-a");
 	write_descriptor(&tmp.path().join("7202"), "mod-b");
 	// Non-descriptor path + non-text extension → ManualConflict
-	fs::create_dir_all(tmp.path().join("7201").join("tools")).expect("create dir");
-	fs::create_dir_all(tmp.path().join("7202").join("tools")).expect("create dir");
+	fs::create_dir_all(tmp.path().join("7201").join("pdx_browser")).expect("create dir");
+	fs::create_dir_all(tmp.path().join("7202").join("pdx_browser")).expect("create dir");
 	fs::write(
-		tmp.path().join("7201").join("tools").join("overlap.bin"),
+		tmp.path()
+			.join("7201")
+			.join("pdx_browser")
+			.join("overlap.bin"),
 		[0u8, 1, 2, 3],
 	)
 	.expect("write bin");
 	fs::write(
-		tmp.path().join("7202").join("tools").join("overlap.bin"),
+		tmp.path()
+			.join("7202")
+			.join("pdx_browser")
+			.join("overlap.bin"),
 		[4u8, 5, 6, 7],
 	)
 	.expect("write bin");
@@ -1109,15 +1115,21 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 	write_descriptor(&tmp.path().join("7411"), "mod-a");
 	write_descriptor(&tmp.path().join("7412"), "mod-b");
 	// Non-descriptor path + non-text extension → ManualConflict
-	fs::create_dir_all(tmp.path().join("7411").join("tools")).expect("create dir");
-	fs::create_dir_all(tmp.path().join("7412").join("tools")).expect("create dir");
+	fs::create_dir_all(tmp.path().join("7411").join("pdx_browser")).expect("create dir");
+	fs::create_dir_all(tmp.path().join("7412").join("pdx_browser")).expect("create dir");
 	fs::write(
-		tmp.path().join("7411").join("tools").join("overlap.bin"),
+		tmp.path()
+			.join("7411")
+			.join("pdx_browser")
+			.join("overlap.bin"),
 		[0u8, 1, 2, 3],
 	)
 	.expect("write bin");
 	fs::write(
-		tmp.path().join("7412").join("tools").join("overlap.bin"),
+		tmp.path()
+			.join("7412")
+			.join("pdx_browser")
+			.join("overlap.bin"),
 		[4u8, 5, 6, 7],
 	)
 	.expect("write bin");
@@ -1144,7 +1156,7 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == "tools/overlap.bin")
+		.find(|item| item["path"] == "pdx_browser/overlap.bin")
 		.expect("matching entry");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
@@ -1369,10 +1381,18 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	// Non-descriptor path + non-text extension → ManualConflict
-	fs::create_dir_all(mod_a.join("tools")).expect("create dir");
-	fs::create_dir_all(mod_b.join("tools")).expect("create dir");
-	fs::write(mod_a.join("tools").join("overlap.bin"), [0u8, 1, 2, 3]).expect("write bin");
-	fs::write(mod_b.join("tools").join("overlap.bin"), [4u8, 5, 6, 7]).expect("write bin");
+	fs::create_dir_all(mod_a.join("pdx_browser")).expect("create dir");
+	fs::create_dir_all(mod_b.join("pdx_browser")).expect("create dir");
+	fs::write(
+		mod_a.join("pdx_browser").join("overlap.bin"),
+		[0u8, 1, 2, 3],
+	)
+	.expect("write bin");
+	fs::write(
+		mod_b.join("pdx_browser").join("overlap.bin"),
+		[4u8, 5, 6, 7],
+	)
+	.expect("write bin");
 
 	let playlist_str = playlist_path.display().to_string();
 	let out_str = out_dir.display().to_string();
@@ -1389,7 +1409,7 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	assert_eq!(code, 2);
 	assert!(stdout.contains("status: BLOCKED"));
 	assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
-	assert!(!out_dir.join("tools/overlap.bin").exists());
+	assert!(!out_dir.join("pdx_browser/overlap.bin").exists());
 	assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
@@ -1416,13 +1436,13 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	// Non-descriptor binary overlaps → ManualConflict
-	fs::create_dir_all(mod_a.join("assets")).expect("create dir");
-	fs::create_dir_all(mod_b.join("assets")).expect("create dir");
+	fs::create_dir_all(mod_a.join("pdx_browser")).expect("create dir");
+	fs::create_dir_all(mod_b.join("pdx_browser")).expect("create dir");
 	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
-	fs::write(mod_a.join("assets").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
-	fs::write(mod_b.join("assets").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
-	fs::write(mod_a.join("assets").join("icon.png"), [8u8, 9, 10]).expect("write png");
-	fs::write(mod_b.join("assets").join("icon.png"), [11u8, 12, 13]).expect("write png");
+	fs::write(mod_a.join("pdx_browser").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
+	fs::write(mod_b.join("pdx_browser").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
+	fs::write(mod_a.join("pdx_browser").join("icon.png"), [8u8, 9, 10]).expect("write png");
+	fs::write(mod_b.join("pdx_browser").join("icon.png"), [11u8, 12, 13]).expect("write png");
 	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
 
 	let playlist_str = playlist_path.display().to_string();
@@ -1446,8 +1466,8 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 		"safe\n"
 	);
 	// Binary conflicts resolved by copying highest-precedence mod's version
-	assert!(out_dir.join("assets/flag.dds").exists());
-	assert!(out_dir.join("assets/icon.png").exists());
+	assert!(out_dir.join("pdx_browser/flag.dds").exists());
+	assert!(out_dir.join("pdx_browser/icon.png").exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "partial_success");
@@ -1969,7 +1989,7 @@ fn data_build_emits_progress_and_profile_output() {
 		);
 	}
 	assert!(profile["encoded_size_bytes"].as_u64().unwrap_or(0) > 0);
-	assert_eq!(profile["inventory_file_count"], 3);
+	assert_eq!(profile["inventory_file_count"], 2);
 	assert_eq!(profile["document_count"], 2);
 	assert_eq!(
 		profile["parse_stats"]["clausewitz_mainline"]["documents"],

@@ -14,7 +14,7 @@ use foch_engine::base_data::{
 pub fn handle_data(data_args: &DataArgs, config: Config) -> HandlerResult {
 	match &data_args.command {
 		FochCliDataCommands::Install(args) => handle_data_install(args, config),
-		FochCliDataCommands::Build(args) => handle_data_build(args),
+		FochCliDataCommands::Build(args) => handle_data_build(args, &config),
 		FochCliDataCommands::List(args) => handle_data_list(args),
 	}
 }
@@ -40,7 +40,7 @@ fn handle_data_install(args: &DataInstallArgs, config: Config) -> HandlerResult 
 	Ok(0)
 }
 
-fn handle_data_build(args: &DataBuildArgs) -> HandlerResult {
+fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 	if !args.install && args.output_dir.is_none() && !args.release_asset {
 		return Err("请至少指定 --install、--output-dir 或 --release-asset".into());
 	}
@@ -51,11 +51,15 @@ fn handle_data_build(args: &DataBuildArgs) -> HandlerResult {
 	} else {
 		Some(args.game_version.as_str())
 	};
+	let filter =
+		foch_engine::workspace::FileFilter::new(game.clone(), &config.extra_ignore_patterns)
+			.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 	let mut observer = BaseBuildObserver::stderr(game.key());
 	let build = build_base_snapshot_with_observer(
 		&game,
 		&args.from_game_path,
 		resolved_version,
+		&filter,
 		&mut observer,
 	)
 	.map_err(|err: String| -> Box<dyn std::error::Error> { err.into() })?;

@@ -582,6 +582,7 @@ mod tests {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
+				extra_ignore_patterns: Vec::new(),
 			},
 		}
 	}
@@ -806,8 +807,8 @@ mod tests {
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
 		// Non-descriptor binary overlap → ManualConflict
-		write_file(&mod_a, "tools/overlap.bin", [0u8, 1, 2, 3]);
-		write_file(&mod_b, "tools/overlap.bin", [4u8, 5, 6, 7]);
+		write_file(&mod_a, "pdx_browser/overlap.bin", [0u8, 1, 2, 3]);
+		write_file(&mod_b, "pdx_browser/overlap.bin", [4u8, 5, 6, 7]);
 
 		let report = materialize_merge_internal(
 			request_for(&playlist_path),
@@ -819,12 +820,12 @@ mod tests {
 		assert_eq!(report.manual_conflict_count, 1);
 		assert_eq!(report.generated_file_count, 0);
 		assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
-		assert!(!out_dir.join("tools/overlap.bin").exists());
+		assert!(!out_dir.join("pdx_browser/overlap.bin").exists());
 		assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 		assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
 		let plan = read_plan(&out_dir);
-		let entry = plan_entry_for(&plan, "tools/overlap.bin");
+		let entry = plan_entry_for(&plan, "pdx_browser/overlap.bin");
 		assert!(entry.winner.is_none());
 		assert!(!entry.generated);
 	}
@@ -847,10 +848,10 @@ mod tests {
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
 		// Non-descriptor binary overlaps → ManualConflict
-		write_file(&mod_a, "tools/overlap.bin", [0u8, 1, 2, 3]);
-		write_file(&mod_b, "tools/overlap.bin", [4u8, 5, 6, 7]);
-		write_file(&mod_a, "tools/icon.png", [8u8, 9, 10]);
-		write_file(&mod_b, "tools/icon.png", [11u8, 12, 13]);
+		write_file(&mod_a, "pdx_browser/overlap.bin", [0u8, 1, 2, 3]);
+		write_file(&mod_b, "pdx_browser/overlap.bin", [4u8, 5, 6, 7]);
+		write_file(&mod_a, "pdx_browser/icon.png", [8u8, 9, 10]);
+		write_file(&mod_b, "pdx_browser/icon.png", [11u8, 12, 13]);
 		write_file(&mod_b, "common/safe.txt", "safe\n");
 
 		let report = materialize_merge_internal(
@@ -869,12 +870,12 @@ mod tests {
 			"safe\n"
 		);
 		// Binary conflicts resolved by copying highest-precedence mod's version
-		assert!(out_dir.join("tools/overlap.bin").exists());
-		assert!(out_dir.join("tools/icon.png").exists());
+		assert!(out_dir.join("pdx_browser/overlap.bin").exists());
+		assert!(out_dir.join("pdx_browser/icon.png").exists());
 
 		let plan = read_plan(&out_dir);
-		assert!(plan_entry_for(&plan, "tools/overlap.bin").generated);
-		assert!(plan_entry_for(&plan, "tools/icon.png").generated);
+		assert!(plan_entry_for(&plan, "pdx_browser/overlap.bin").generated);
+		assert!(plan_entry_for(&plan, "pdx_browser/icon.png").generated);
 		assert!(!plan_entry_for(&plan, "common/safe.txt").generated);
 	}
 }

@@ -1,3 +1,4 @@
+use super::file_filter::FileFilter;
 use super::{LoadedModSnapshot, cache::load_or_build_mod_snapshot};
 use crate::base_data::{
 	InstalledBaseSnapshot, base_game_mod_id, detect_game_version, load_installed_base_snapshot,
@@ -145,6 +146,15 @@ pub(crate) fn build_mod_candidates(
 		.parent()
 		.map_or_else(|| PathBuf::from("."), PathBuf::from);
 
+	let filter = match FileFilter::new(playlist.game.clone(), &request.config.extra_ignore_patterns)
+	{
+		Ok(filter) => filter,
+		Err(message) => {
+			tracing::warn!(target: "foch::workspace::resolve", message, "回退到无额外忽略 glob 的过滤器");
+			FileFilter::for_game(playlist.game.clone())
+		}
+	};
+
 	let mut entries = playlist.mods.clone();
 	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
 
@@ -171,7 +181,7 @@ pub(crate) fn build_mod_candidates(
 
 			let files = root_path
 				.as_ref()
-				.map_or_else(Vec::new, |root| collect_relative_files(root));
+				.map_or_else(Vec::new, |root| collect_relative_files(root, &filter));
 
 			ModCandidate {
 				entry,
@@ -293,7 +303,7 @@ fn descriptor_path_candidates(game_data_dir: &Path, raw: &str) -> Vec<PathBuf> {
 	dedup_candidates(candidates)
 }
 
-pub(crate) fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> Vec<PathBuf> {
 	let mut files = Vec::new();
 
 	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
@@ -307,6 +317,9 @@ pub(crate) fn collect_relative_files(root: &Path) -> Vec<PathBuf> {
 		}
 
 		if let Ok(relative) = path.strip_prefix(root) {
+			if !filter.accepts(relative) {
+				continue;
+			}
 			files.push(relative.to_path_buf());
 		}
 	}
