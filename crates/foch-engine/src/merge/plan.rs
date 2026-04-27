@@ -84,13 +84,14 @@ fn classify_entry(
 				MergePlanStrategy::ManualConflict
 			}
 		}
-	} else if is_text_like_overlay_path(path) {
-		MergePlanStrategy::LastWriterOverlay
 	} else {
-		notes.push(
-			"overlapping binary or unknown-format path requires manual resolution".to_string(),
-		);
-		MergePlanStrategy::ManualConflict
+		// Text-like or binary content with no structural-merge handler:
+		// last-writer-overlay matches what the game's load order would do
+		// at runtime (later-precedence mod replaces earlier ones).
+		if !is_text_like_overlay_path(path) {
+			notes.push("binary overlap resolved by last-writer-overlay".to_string());
+		}
+		MergePlanStrategy::LastWriterOverlay
 	};
 
 	if strategy == MergePlanStrategy::ManualConflict {
@@ -202,6 +203,9 @@ fn validate_structural_merge_inputs(
 }
 
 fn is_structural_merge_path(path: &str, profile: &dyn GameProfile) -> bool {
+	if !is_text_like_overlay_path(path) {
+		return false;
+	}
 	profile
 		.classify_content_family(Path::new(path))
 		.and_then(|d| d.merge_key_source)

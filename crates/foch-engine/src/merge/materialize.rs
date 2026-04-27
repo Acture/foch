@@ -790,7 +790,7 @@ mod tests {
 	}
 
 	#[test]
-	fn manual_conflicts_without_force_write_only_sidecars_and_block_report() {
+	fn binary_overlap_resolved_by_last_writer_overlay() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let mod_a = temp.path().join("4001");
@@ -806,7 +806,8 @@ mod tests {
 		);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
-		// Non-descriptor binary overlap → ManualConflict
+		// Binary overlap → LastWriterOverlay (highest-precedence wins, mirroring
+		// the game's runtime load order)
 		write_file(&mod_a, "pdx_browser/overlap.bin", [0u8, 1, 2, 3]);
 		write_file(&mod_b, "pdx_browser/overlap.bin", [4u8, 5, 6, 7]);
 
@@ -816,22 +817,22 @@ mod tests {
 			no_base_options(false),
 		)
 		.expect("materialize");
-		assert_eq!(report.status, MergeReportStatus::Blocked);
-		assert_eq!(report.manual_conflict_count, 1);
-		assert_eq!(report.generated_file_count, 0);
-		assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
-		assert!(!out_dir.join("pdx_browser/overlap.bin").exists());
+		assert_eq!(report.manual_conflict_count, 0);
+		assert_eq!(report.overlay_file_count, 1);
+		assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+		// Last-writer wins: mod B's bytes
+		let copied = fs::read(out_dir.join("pdx_browser/overlap.bin")).expect("read overlay");
+		assert_eq!(copied, vec![4u8, 5, 6, 7]);
 		assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 		assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
 		let plan = read_plan(&out_dir);
 		let entry = plan_entry_for(&plan, "pdx_browser/overlap.bin");
-		assert!(entry.winner.is_none());
-		assert!(!entry.generated);
+		assert!(entry.winner.is_some());
 	}
 
 	#[test]
-	fn force_mode_writes_text_placeholders_skips_binary_conflicts_and_keeps_descriptor() {
+	fn force_mode_with_only_safe_overlaps_succeeds() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let mod_a = temp.path().join("5001");
@@ -847,7 +848,8 @@ mod tests {
 		);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
-		// Non-descriptor binary overlaps → ManualConflict
+		// Binary overlaps now resolve cleanly via LastWriterOverlay → no manual
+		// conflicts left for --force to handle.
 		write_file(&mod_a, "pdx_browser/overlap.bin", [0u8, 1, 2, 3]);
 		write_file(&mod_b, "pdx_browser/overlap.bin", [4u8, 5, 6, 7]);
 		write_file(&mod_a, "pdx_browser/icon.png", [8u8, 9, 10]);
@@ -860,22 +862,14 @@ mod tests {
 			no_base_options(true),
 		)
 		.expect("materialize");
-		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
-		assert_eq!(report.manual_conflict_count, 2);
-		assert_eq!(report.generated_file_count, 2);
-		assert_eq!(report.copied_file_count, 1);
+		assert_eq!(report.manual_conflict_count, 0);
+		assert_eq!(report.overlay_file_count, 2);
 		assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 			"safe\n"
 		);
-		// Binary conflicts resolved by copying highest-precedence mod's version
 		assert!(out_dir.join("pdx_browser/overlap.bin").exists());
 		assert!(out_dir.join("pdx_browser/icon.png").exists());
-
-		let plan = read_plan(&out_dir);
-		assert!(plan_entry_for(&plan, "pdx_browser/overlap.bin").generated);
-		assert!(plan_entry_for(&plan, "pdx_browser/icon.png").generated);
-		assert!(!plan_entry_for(&plan, "common/safe.txt").generated);
 	}
 }

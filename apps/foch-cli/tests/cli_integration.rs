@@ -42,6 +42,31 @@ fn write_descriptor_with_dependencies(mod_root: &Path, name: &str, dependencies:
 	fs::write(mod_root.join("descriptor.mod"), descriptor).expect("write descriptor");
 }
 
+/// Stage a structural-merge conflict: both mods contribute the same scripted
+/// triggers file, but mod_b's content is malformed Clausewitz so
+/// validate_structural_merge_inputs flags it and the merge plan downgrades the
+/// path to MergePlanStrategy::ManualConflict.
+const STRUCTURAL_CONFLICT_PATH: &str = "common/scripted_triggers/conflict.txt";
+
+fn stage_structural_manual_conflict(mod_a: &Path, mod_b: &Path) {
+	let dir_a = mod_a.join("common").join("scripted_triggers");
+	let dir_b = mod_b.join("common").join("scripted_triggers");
+	fs::create_dir_all(&dir_a).expect("create scripted_triggers dir (a)");
+	fs::create_dir_all(&dir_b).expect("create scripted_triggers dir (b)");
+	fs::write(
+		dir_a.join("conflict.txt"),
+		"my_trigger = { always = yes }\n",
+	)
+	.expect("write valid scripted_trigger");
+	// Malformed Clausewitz: produces a parse diagnostic ("无法解析的语句起始 token"),
+	// which downgrades the structural merge to ManualConflict.
+	fs::write(
+		dir_b.join("conflict.txt"),
+		"name { = invalid syntax with unclosed\nbraces\n",
+	)
+	.expect("write malformed scripted_trigger");
+}
+
 fn write_config(path: &Path, content: &str) {
 	fs::write(path.join("config.toml"), content).expect("write config");
 }
@@ -943,25 +968,7 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	);
 	write_descriptor(&tmp.path().join("7201"), "mod-a");
 	write_descriptor(&tmp.path().join("7202"), "mod-b");
-	// Non-descriptor path + non-text extension → ManualConflict
-	fs::create_dir_all(tmp.path().join("7201").join("pdx_browser")).expect("create dir");
-	fs::create_dir_all(tmp.path().join("7202").join("pdx_browser")).expect("create dir");
-	fs::write(
-		tmp.path()
-			.join("7201")
-			.join("pdx_browser")
-			.join("overlap.bin"),
-		[0u8, 1, 2, 3],
-	)
-	.expect("write bin");
-	fs::write(
-		tmp.path()
-			.join("7202")
-			.join("pdx_browser")
-			.join("overlap.bin"),
-		[4u8, 5, 6, 7],
-	)
-	.expect("write bin");
+	stage_structural_manual_conflict(&tmp.path().join("7201"), &tmp.path().join("7202"));
 
 	let playlist_str = playlist_path.display().to_string();
 	let (code, stdout, _stderr) = run_foch(
@@ -1114,25 +1121,7 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 	);
 	write_descriptor(&tmp.path().join("7411"), "mod-a");
 	write_descriptor(&tmp.path().join("7412"), "mod-b");
-	// Non-descriptor path + non-text extension → ManualConflict
-	fs::create_dir_all(tmp.path().join("7411").join("pdx_browser")).expect("create dir");
-	fs::create_dir_all(tmp.path().join("7412").join("pdx_browser")).expect("create dir");
-	fs::write(
-		tmp.path()
-			.join("7411")
-			.join("pdx_browser")
-			.join("overlap.bin"),
-		[0u8, 1, 2, 3],
-	)
-	.expect("write bin");
-	fs::write(
-		tmp.path()
-			.join("7412")
-			.join("pdx_browser")
-			.join("overlap.bin"),
-		[4u8, 5, 6, 7],
-	)
-	.expect("write bin");
+	stage_structural_manual_conflict(&tmp.path().join("7411"), &tmp.path().join("7412"));
 
 	let playlist_str = playlist_path.display().to_string();
 	let output_str = output_path.display().to_string();
@@ -1156,7 +1145,7 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == "pdx_browser/overlap.bin")
+		.find(|item| item["path"] == STRUCTURAL_CONFLICT_PATH)
 		.expect("matching entry");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
@@ -1380,19 +1369,7 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
-	// Non-descriptor path + non-text extension → ManualConflict
-	fs::create_dir_all(mod_a.join("pdx_browser")).expect("create dir");
-	fs::create_dir_all(mod_b.join("pdx_browser")).expect("create dir");
-	fs::write(
-		mod_a.join("pdx_browser").join("overlap.bin"),
-		[0u8, 1, 2, 3],
-	)
-	.expect("write bin");
-	fs::write(
-		mod_b.join("pdx_browser").join("overlap.bin"),
-		[4u8, 5, 6, 7],
-	)
-	.expect("write bin");
+	stage_structural_manual_conflict(&mod_a, &mod_b);
 
 	let playlist_str = playlist_path.display().to_string();
 	let out_str = out_dir.display().to_string();
@@ -1409,7 +1386,7 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	assert_eq!(code, 2);
 	assert!(stdout.contains("status: BLOCKED"));
 	assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
-	assert!(!out_dir.join("pdx_browser/overlap.bin").exists());
+	assert!(!out_dir.join(STRUCTURAL_CONFLICT_PATH).exists());
 	assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
@@ -1435,14 +1412,8 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 	);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
-	// Non-descriptor binary overlaps → ManualConflict
-	fs::create_dir_all(mod_a.join("pdx_browser")).expect("create dir");
-	fs::create_dir_all(mod_b.join("pdx_browser")).expect("create dir");
+	stage_structural_manual_conflict(&mod_a, &mod_b);
 	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
-	fs::write(mod_a.join("pdx_browser").join("flag.dds"), [0u8, 1, 2, 3]).expect("write dds");
-	fs::write(mod_b.join("pdx_browser").join("flag.dds"), [4u8, 5, 6, 7]).expect("write dds");
-	fs::write(mod_a.join("pdx_browser").join("icon.png"), [8u8, 9, 10]).expect("write png");
-	fs::write(mod_b.join("pdx_browser").join("icon.png"), [11u8, 12, 13]).expect("write png");
 	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
 
 	let playlist_str = playlist_path.display().to_string();
@@ -1465,14 +1436,13 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 		fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 		"safe\n"
 	);
-	// Binary conflicts resolved by copying highest-precedence mod's version
-	assert!(out_dir.join("pdx_browser/flag.dds").exists());
-	assert!(out_dir.join("pdx_browser/icon.png").exists());
+	// Manual-conflict structural file resolved by --force placeholder
+	assert!(out_dir.join(STRUCTURAL_CONFLICT_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "partial_success");
-	assert_eq!(report["manual_conflict_count"], 2);
-	assert_eq!(report["generated_file_count"], 2);
+	assert_eq!(report["manual_conflict_count"], 1);
+	assert_eq!(report["generated_file_count"], 1);
 	assert_eq!(report["copied_file_count"], 1);
 }
 

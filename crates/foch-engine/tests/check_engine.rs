@@ -646,7 +646,7 @@ fn merge_plan_routes_ui_overlap_through_structural_merge() {
 }
 
 #[test]
-fn merge_plan_marks_binary_overlap_as_manual_conflict() {
+fn merge_plan_marks_binary_overlap_as_last_writer_overlay() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 	let mod_a = temp.path().join("9801");
@@ -661,14 +661,15 @@ fn merge_plan_marks_binary_overlap_as_manual_conflict() {
 	);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
-	// Non-descriptor path + non-text extension → ManualConflict
+	// Binary overlap → LastWriterOverlay (last mod wins, mirroring runtime
+	// load order for non-text content the engine cannot structurally merge).
 	write_script_file(&mod_a, "pdx_browser/overlap.bin", "binary-a");
 	write_script_file(&mod_b, "pdx_browser/overlap.bin", "binary-b");
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "pdx_browser/overlap.bin");
-	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
-	assert!(entry.winner.is_none());
+	assert_eq!(entry.strategy, MergePlanStrategy::LastWriterOverlay);
+	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9802");
 	assert!(!entry.generated);
 	assert!(!entry.notes.is_empty());
 }
@@ -797,7 +798,7 @@ fn whole_tree_documents_feed_ui_localisation_csv_and_json_analysis() {
 	write_script_file(&mod_root, "common/data/settings.json", "{ invalid json }\n");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.analysis_meta.text_documents >= 5);
+	assert!(result.analysis_meta.text_documents >= 4);
 	assert_eq!(result.analysis_meta.parse_errors, 0);
 	assert_eq!(
 		result

@@ -329,7 +329,8 @@ mod tests {
 			},
 		);
 
-		let filter = super::super::FileFilter::for_game(foch_core::domain::game::Game::EuropaUniversalis4);
+		let filter =
+			super::super::FileFilter::for_game(foch_core::domain::game::Game::EuropaUniversalis4);
 		let loaded = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
 			.expect("rebuild snapshot");
 		assert_eq!(loaded.parsed_files, 1);
