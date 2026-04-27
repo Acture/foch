@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 pub const MOD_SNAPSHOT_CACHE_DIR_ENV: &str = "FOCH_MOD_SNAPSHOT_CACHE_DIR";
-const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 9;
+const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
@@ -48,9 +48,13 @@ pub(crate) fn load_or_build_mod_snapshot(
 	game_key: &str,
 	game_version: Option<&str>,
 	mod_item: &ModCandidate,
+	filter: &super::FileFilter,
 ) -> Option<LoadedModSnapshot> {
 	let root = mod_item.root_path.as_ref()?;
-	let documents = discover_text_documents(root);
+	let documents: Vec<DiscoveredTextDocument> = discover_text_documents(root)
+		.into_iter()
+		.filter(|doc| filter.accepts(&doc.relative_path))
+		.collect();
 	let manifest_hash = semantic_manifest_hash(&documents);
 	let mod_identity = mod_cache_identity(mod_item);
 	let resolved_game_version = game_version.map(str::to_string);
@@ -325,7 +329,8 @@ mod tests {
 			},
 		);
 
-		let loaded = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item)
+		let filter = super::super::FileFilter::for_game(foch_core::domain::game::Game::EuropaUniversalis4);
+		let loaded = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
 			.expect("rebuild snapshot");
 		assert_eq!(loaded.parsed_files, 1);
 

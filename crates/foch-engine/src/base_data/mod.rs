@@ -39,7 +39,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 10;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 11;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -1310,7 +1310,10 @@ pub fn build_base_snapshot_with_observer(
 
 	let discovered_documents: Vec<DiscoveredTextDocument> =
 		observer.run_stage("discover_documents", |counts| {
-			let docs = discover_text_documents(game_root);
+			let docs: Vec<DiscoveredTextDocument> = discover_text_documents(game_root)
+				.into_iter()
+				.filter(|doc| filter.accepts(&doc.relative_path))
+				.collect();
 			counts.insert("document_count".to_string(), docs.len() as u64);
 			for (key, value) in discover_family_counts(&docs) {
 				counts.insert(key, value);

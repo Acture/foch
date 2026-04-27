@@ -98,6 +98,14 @@ pub(crate) fn resolve_workspace(
 				.and_then(|game_root| detect_game_version(game_root)),
 		)
 	};
+	let snapshot_filter =
+		match FileFilter::new(playlist.game.clone(), &request.config.extra_ignore_patterns) {
+			Ok(filter) => filter,
+			Err(message) => {
+				tracing::warn!(target: "foch::workspace::resolve", message, "回退到无额外忽略 glob 的过滤器");
+				FileFilter::for_game(playlist.game.clone())
+			}
+		};
 	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
 		.iter()
 		.map(|mod_item| {
@@ -105,6 +113,7 @@ pub(crate) fn resolve_workspace(
 				playlist.game.key(),
 				mod_cache_game_version.as_deref(),
 				mod_item,
+				&snapshot_filter,
 			)
 		})
 		.collect();
