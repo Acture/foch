@@ -751,14 +751,18 @@ impl BaseAnalysisSnapshot {
 	}
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseDocumentRecord {
 	pub path: String,
 	pub family: DocumentFamily,
 	pub parse_ok: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
@@ -770,7 +774,9 @@ pub struct BaseScopeNode {
 	pub key: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseSymbolDefinition {
 	pub kind: SymbolKind,
 	pub name: String,
@@ -799,7 +805,9 @@ fn scope_type_mask(scope_type: ScopeType) -> u8 {
 	}
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseSymbolReference {
 	pub kind: SymbolKind,
 	pub name: String,
@@ -812,7 +820,9 @@ pub struct BaseSymbolReference {
 	pub param_bindings: Vec<ParamBinding>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseAliasUsage {
 	pub alias: String,
 	pub path: String,
@@ -821,7 +831,9 @@ pub struct BaseAliasUsage {
 	pub scope_id: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseKeyUsage {
 	pub key: String,
 	pub path: String,
@@ -831,7 +843,9 @@ pub struct BaseKeyUsage {
 	pub this_type: ScopeType,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseScalarAssignment {
 	pub key: String,
 	pub value: String,
@@ -841,7 +855,9 @@ pub struct BaseScalarAssignment {
 	pub scope_id: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseLocalisationDefinition {
 	pub key: String,
 	pub path: String,
@@ -849,7 +865,9 @@ pub struct BaseLocalisationDefinition {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseLocalisationDuplicate {
 	pub key: String,
 	pub path: String,
@@ -857,7 +875,9 @@ pub struct BaseLocalisationDuplicate {
 	pub duplicate_line: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseUiDefinition {
 	pub name: String,
 	pub path: String,
@@ -865,7 +885,9 @@ pub struct BaseUiDefinition {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseResourceReference {
 	pub key: String,
 	pub value: String,
@@ -874,7 +896,9 @@ pub struct BaseResourceReference {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseCsvRow {
 	pub identity: String,
 	pub path: String,
@@ -882,7 +906,9 @@ pub struct BaseCsvRow {
 	pub column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct BaseJsonProperty {
 	pub key_path: String,
 	pub path: String,
@@ -918,7 +944,9 @@ enum SnapshotWireSectionName {
 	StructuredData,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct SnapshotMetadataSection {
 	schema_version: u32,
 	game: String,
@@ -927,7 +955,9 @@ struct SnapshotMetadataSection {
 	generated_by_cli_version: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct SnapshotInventoryDocumentsSection {
 	inventory_paths: Vec<String>,
 	documents: Vec<BaseDocumentRecord>,
@@ -936,7 +966,9 @@ struct SnapshotInventoryDocumentsSection {
 	parse_stats: ParseFamilyStats,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct LegacySnapshotInventoryDocumentsSection {
 	inventory_paths: Vec<String>,
 	documents: Vec<BaseDocumentRecord>,
@@ -944,7 +976,9 @@ struct LegacySnapshotInventoryDocumentsSection {
 	parsed_files: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct SnapshotSymbolScopeSection {
 	scopes: Vec<BaseScopeNode>,
 	symbol_definitions: Vec<BaseSymbolDefinition>,
@@ -954,7 +988,9 @@ struct SnapshotSymbolScopeSection {
 	scalar_assignments: Vec<BaseScalarAssignment>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct SnapshotLocalisationUiResourcesSection {
 	localisation_definitions: Vec<BaseLocalisationDefinition>,
 	localisation_duplicates: Vec<BaseLocalisationDuplicate>,
@@ -962,7 +998,9 @@ struct SnapshotLocalisationUiResourcesSection {
 	resource_references: Vec<BaseResourceReference>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 struct SnapshotStructuredDataSection {
 	csv_rows: Vec<BaseCsvRow>,
 	json_properties: Vec<BaseJsonProperty>,
@@ -1965,15 +2003,19 @@ fn encode_section_payload<T>(
 ) -> Result<SectionEncodeResult, String>
 where
 	T: for<'a> rkyv::Serialize<
-		rkyv::api::high::HighSerializer<rkyv::util::AlignedVec, rkyv::ser::allocator::ArenaHandle<'a>, rkyv::rancor::Error>,
-	>,
+			rkyv::api::high::HighSerializer<
+				rkyv::util::AlignedVec,
+				rkyv::ser::allocator::ArenaHandle<'a>,
+				rkyv::rancor::Error,
+			>,
+		>,
 {
 	let started = Instant::now();
 	let aligned = rkyv::to_bytes::<rkyv::rancor::Error>(payload)
 		.map_err(|err| format!("无法序列化基础数据 section {display_name}: {err}"))?;
 	let raw: &[u8] = &aligned;
-	let payload = gzip_bytes(raw)
-		.map_err(|err| format!("无法压缩基础数据 section {display_name}: {err}"))?;
+	let payload =
+		gzip_bytes(raw).map_err(|err| format!("无法压缩基础数据 section {display_name}: {err}"))?;
 	let profile = BaseEncodedSectionProfile {
 		name: display_name.to_string(),
 		elapsed_ms: started.elapsed().as_millis() as u64,
@@ -2003,9 +2045,7 @@ fn gzip_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
 		.map_err(|err| format!("gzip finish failed: {err}"))
 }
 
-fn decode_section_payload<T>(
-	section: &SnapshotWireSection,
-) -> Result<T, String>
+fn decode_section_payload<T>(section: &SnapshotWireSection) -> Result<T, String>
 where
 	T: rkyv::Archive,
 	<T as rkyv::Archive>::Archived:

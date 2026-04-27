@@ -58,7 +58,9 @@ pub struct AnalysisMeta {
 	pub alias_usages: usize,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Default, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct ParseFamilyStats {
 	pub clausewitz_mainline: FamilyParseStats,
 	pub localisation: FamilyParseStats,
@@ -66,7 +68,9 @@ pub struct ParseFamilyStats {
 	pub json: FamilyParseStats,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Default, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 pub struct FamilyParseStats {
 	pub documents: usize,
 	pub parse_failed_documents: usize,

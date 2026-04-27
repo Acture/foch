@@ -3,8 +3,9 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 struct BenchScopeNode {
 	id: usize,
@@ -18,8 +19,9 @@ struct BenchScopeNode {
 	column: usize,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 struct BenchSymbolDef {
 	kind: u8,
@@ -34,8 +36,9 @@ struct BenchSymbolDef {
 	params: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
 #[rkyv(derive(Debug))]
 struct BenchPayload {
 	scopes: Vec<BenchScopeNode>,
@@ -84,7 +87,10 @@ fn generate_test_data() -> BenchPayload {
 		});
 	}
 
-	BenchPayload { scopes, definitions }
+	BenchPayload {
+		scopes,
+		definitions,
+	}
 }
 
 /// Serialization benchmark comparing bincode 1.x, bincode 2.x, bitcode, postcard,
@@ -201,8 +207,7 @@ fn benchmark_serde_libraries() {
 		let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&data).unwrap();
 
 		let start = Instant::now();
-		let archived =
-			rkyv::access::<ArchivedBenchPayload, rkyv::rancor::Error>(&bytes).unwrap();
+		let archived = rkyv::access::<ArchivedBenchPayload, rkyv::rancor::Error>(&bytes).unwrap();
 		let access_time = start.elapsed();
 
 		println!(

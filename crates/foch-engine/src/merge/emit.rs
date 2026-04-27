@@ -22,9 +22,7 @@ pub(crate) fn emit_structural_file(file: &MergeIrStructuralFile) -> Result<Strin
 	}
 }
 
-pub fn emit_clausewitz_statements(
-	statements: &[AstStatement],
-) -> Result<String, MergeError> {
+pub fn emit_clausewitz_statements(statements: &[AstStatement]) -> Result<String, MergeError> {
 	let mut out = String::new();
 	for statement in statements {
 		emit_statement(statement, 0, &mut out)?;

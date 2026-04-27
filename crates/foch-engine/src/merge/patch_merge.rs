@@ -193,10 +193,7 @@ fn resolve_address(
 	}
 
 	// --- Convergence: all patches identical ---
-	if attributed
-		.windows(2)
-		.all(|w| w[0].patch == w[1].patch)
-	{
+	if attributed.windows(2).all(|w| w[0].patch == w[1].patch) {
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
@@ -209,10 +206,7 @@ fn resolve_address(
 		stats.conflict_patches += 1;
 		return PatchResolution::Conflict {
 			address: addr,
-			reason: format!(
-				"mixed patch kinds at same address: {}",
-				kinds.join(", ")
-			),
+			reason: format!("mixed patch kinds at same address: {}", kinds.join(", ")),
 			patches: attributed,
 		};
 	}
@@ -337,9 +331,7 @@ fn resolve_set_values(
 		ScalarMergePolicy::Sum
 		| ScalarMergePolicy::Avg
 		| ScalarMergePolicy::Max
-		| ScalarMergePolicy::Min => {
-			resolve_numeric_set_values(addr, attributed, policies.scalar, stats)
-		}
+		| ScalarMergePolicy::Min => resolve_numeric_set_values(addr, attributed, policies.scalar, stats),
 	}
 }
 
@@ -388,7 +380,10 @@ fn resolve_numeric_set_values(
 
 	let result = match first.patch {
 		ClausewitzPatch::SetValue {
-			path, key, old_value, ..
+			path,
+			key,
+			old_value,
+			..
 		} => ClausewitzPatch::SetValue {
 			path,
 			key,
@@ -534,10 +529,7 @@ mod tests {
 			},
 		];
 
-		let result = merge_patch_sets(
-			vec![("mod_a".into(), 1, patches)],
-			&default_policies(),
-		);
+		let result = merge_patch_sets(vec![("mod_a".into(), 1, patches)], &default_policies());
 
 		assert_eq!(result.resolved.len(), 2);
 		assert_eq!(result.conflicts.len(), 0);
@@ -592,7 +584,11 @@ mod tests {
 		assert_eq!(result.conflicts.len(), 0);
 		assert_eq!(result.stats.auto_merged_patches, 1);
 		match &result.resolved[0] {
-			PatchResolution::AutoMerged { strategy, contributing_mods, .. } => {
+			PatchResolution::AutoMerged {
+				strategy,
+				contributing_mods,
+				..
+			} => {
 				assert_eq!(strategy, "compatible_inserts");
 				assert_eq!(contributing_mods.len(), 2);
 			}
@@ -689,10 +685,7 @@ mod tests {
 				// Highest precedence (mod_b at 2) wins.
 				match patch {
 					ClausewitzPatch::SetValue { new_value, .. } => {
-						assert_eq!(
-							*new_value,
-							number("15"),
-						);
+						assert_eq!(*new_value, number("15"),);
 					}
 					_ => panic!("expected SetValue"),
 				}
@@ -728,7 +721,9 @@ mod tests {
 		assert_eq!(result.conflicts.len(), 1);
 		assert_eq!(result.stats.conflict_patches, 1);
 		match &result.conflicts[0] {
-			PatchResolution::Conflict { reason, patches, .. } => {
+			PatchResolution::Conflict {
+				reason, patches, ..
+			} => {
 				assert!(reason.contains("replace the same block"));
 				assert_eq!(patches.len(), 2);
 			}
@@ -843,7 +838,11 @@ mod tests {
 		assert_eq!(result.resolved.len(), 1);
 		assert_eq!(result.stats.auto_merged_patches, 1);
 		match &result.resolved[0] {
-			PatchResolution::AutoMerged { result: patch, strategy, .. } => {
+			PatchResolution::AutoMerged {
+				result: patch,
+				strategy,
+				..
+			} => {
 				assert_eq!(strategy, "Sum");
 				match patch {
 					ClausewitzPatch::SetValue { new_value, .. } => {

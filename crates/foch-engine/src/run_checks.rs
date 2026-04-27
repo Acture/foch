@@ -2,8 +2,8 @@ use crate::merge::namespace::{build_family_key_index, detect_key_conflicts, grou
 use crate::request::{CheckRequest, RunOptions};
 use crate::runtime::{build_overlap_findings, build_runtime_state_from_workspace};
 use crate::workspace::{
-	LoadedModSnapshot, ResolvedFileContributor, WorkspaceResolveErrorKind,
-	normalize_relative_path, resolve_workspace,
+	LoadedModSnapshot, ResolvedFileContributor, WorkspaceResolveErrorKind, normalize_relative_path,
+	resolve_workspace,
 };
 use foch_core::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
@@ -288,8 +288,7 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 }
 
 /// Target content families for cross-file key conflict detection.
-const NAMESPACE_CHECK_FAMILIES: &[&str] =
-	&["common/scripted_effects", "common/scripted_triggers"];
+const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/scripted_triggers"];
 
 /// Detect cross-file key conflicts in high-value content families.
 ///
@@ -330,8 +329,11 @@ fn check_namespace_conflicts(
 		let conflicts = detect_key_conflicts(&index);
 
 		for conflict in &conflicts {
-			let non_base: Vec<_> =
-				conflict.contributors.iter().filter(|c| !c.is_base_game).collect();
+			let non_base: Vec<_> = conflict
+				.contributors
+				.iter()
+				.filter(|c| !c.is_base_game)
+				.collect();
 			if non_base.len() < 2 {
 				continue;
 			}

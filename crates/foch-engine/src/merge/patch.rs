@@ -106,10 +106,7 @@ fn extract_assignment_entries(statements: &[AstStatement]) -> Vec<KeyedEntry> {
 		.collect()
 }
 
-fn extract_field_value_entries(
-	statements: &[AstStatement],
-	field: &str,
-) -> Vec<KeyedEntry> {
+fn extract_field_value_entries(statements: &[AstStatement], field: &str) -> Vec<KeyedEntry> {
 	statements
 		.iter()
 		.filter_map(|stmt| {
@@ -146,10 +143,7 @@ fn extract_container_child_entries(statements: &[AstStatement]) -> Vec<KeyedEntr
 					return out;
 				}
 				for child in items {
-					if let AstStatement::Assignment {
-						key: child_key, ..
-					} = child
-					{
+					if let AstStatement::Assignment { key: child_key, .. } = child {
 						out.push(KeyedEntry {
 							merge_key: child_key.clone(),
 							statement: child.clone(),
@@ -391,7 +385,16 @@ fn diff_single_statement(
 				..
 			},
 		) => {
-			diff_blocks(key, base, overlay, base_items, overlay_items, path, patches, depth);
+			diff_blocks(
+				key,
+				base,
+				overlay,
+				base_items,
+				overlay_items,
+				path,
+				patches,
+				depth,
+			);
 		}
 		// Type mismatch (scalar↔block) → replace.
 		_ => {
@@ -445,7 +448,10 @@ fn diff_blocks(
 	let overlay_children = index_children(overlay_items);
 
 	let total_keys: usize = {
-		let mut all_keys: Vec<&String> = base_children.keys().chain(overlay_children.keys()).collect();
+		let mut all_keys: Vec<&String> = base_children
+			.keys()
+			.chain(overlay_children.keys())
+			.collect();
 		all_keys.sort();
 		all_keys.dedup();
 		all_keys.len()
@@ -487,7 +493,12 @@ fn diff_blocks(
 	// Produce per-child patches.
 	let base_child_entries: Vec<KeyedEntry> = child_keyed_entries(base_items);
 	let overlay_child_entries: Vec<KeyedEntry> = child_keyed_entries(overlay_items);
-	let child_patches = diff_entry_maps(&base_child_entries, &overlay_child_entries, &child_path, depth + 1);
+	let child_patches = diff_entry_maps(
+		&base_child_entries,
+		&overlay_child_entries,
+		&child_path,
+		depth + 1,
+	);
 	patches.extend(child_patches);
 }
 
@@ -538,9 +549,14 @@ fn diff_repeated_key(
 	path: &[String],
 	patches: &mut Vec<ClausewitzPatch>,
 ) {
-	let base_values: Vec<&AstValue> = base_stmts.iter().filter_map(|s| statement_value(s)).collect();
-	let overlay_values: Vec<&AstValue> =
-		overlay_stmts.iter().filter_map(|s| statement_value(s)).collect();
+	let base_values: Vec<&AstValue> = base_stmts
+		.iter()
+		.filter_map(|s| statement_value(s))
+		.collect();
+	let overlay_values: Vec<&AstValue> = overlay_stmts
+		.iter()
+		.filter_map(|s| statement_value(s))
+		.collect();
 
 	// Compare as sets using span-ignoring structural equality.
 	for bv in &base_values {
@@ -651,16 +667,16 @@ mod tests {
 					assignment("title", scalar("my_event")),
 				],
 			),
-			block(
-				"province_event",
-				vec![assignment("id", scalar("evt.2"))],
-			),
+			block("province_event", vec![assignment("id", scalar("evt.2"))]),
 		];
 		let base = make_parsed(stmts.clone());
 		let overlay = make_parsed(stmts);
 
 		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
-		assert!(patches.is_empty(), "identical files should produce no patches");
+		assert!(
+			patches.is_empty(),
+			"identical files should produce no patches"
+		);
 	}
 
 	#[test]

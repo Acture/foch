@@ -165,16 +165,12 @@ pub(crate) fn build_family_key_index(
 
 			let keys = extract_keys(&parsed, merge_key_source);
 			for key in keys {
-				index
-					.entries
-					.entry(key)
-					.or_default()
-					.push(KeyContributor {
-						mod_id: contributor.mod_id.clone(),
-						file_path: rel_path.clone(),
-						precedence: contributor.precedence,
-						is_base_game: contributor.is_base_game,
-					});
+				index.entries.entry(key).or_default().push(KeyContributor {
+					mod_id: contributor.mod_id.clone(),
+					file_path: rel_path.clone(),
+					precedence: contributor.precedence,
+					is_base_game: contributor.is_base_game,
+				});
 			}
 		}
 	}
@@ -261,19 +257,16 @@ mod tests {
 		let index = make_index(
 			"scripted_triggers",
 			vec![
-				(
-					"trigger_a",
-					vec![make_contributor("mod_a", 1, false)],
-				),
-				(
-					"trigger_b",
-					vec![make_contributor("mod_a", 1, false)],
-				),
+				("trigger_a", vec![make_contributor("mod_a", 1, false)]),
+				("trigger_b", vec![make_contributor("mod_a", 1, false)]),
 			],
 		);
 
 		let conflicts = detect_key_conflicts(&index);
-		assert!(conflicts.is_empty(), "single mod should produce no conflicts");
+		assert!(
+			conflicts.is_empty(),
+			"single mod should produce no conflicts"
+		);
 	}
 
 	#[test]
@@ -429,13 +422,17 @@ mod tests {
 		}
 
 		// scripted_triggers and scripted_effects should each have one entry
-		let trigger_family = grouped.values().find(|paths| paths.contains_key(trigger_path));
+		let trigger_family = grouped
+			.values()
+			.find(|paths| paths.contains_key(trigger_path));
 		assert!(
 			trigger_family.is_some(),
 			"scripted_triggers path should be grouped"
 		);
 
-		let effect_family = grouped.values().find(|paths| paths.contains_key(effect_path));
+		let effect_family = grouped
+			.values()
+			.find(|paths| paths.contains_key(effect_path));
 		assert!(
 			effect_family.is_some(),
 			"scripted_effects path should be grouped"

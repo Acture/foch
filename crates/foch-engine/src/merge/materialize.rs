@@ -130,21 +130,14 @@ pub(crate) fn materialize_merge_internal(
 					.map(|cs| cs.iter().any(|c| c.is_base_game))
 					.unwrap_or(false);
 
-				if has_base_game
-					&& let Some(contributors) = contributors
-				{
+				if has_base_game && let Some(contributors) = contributors {
 					// Only use patch engine when 2+ non-base mods contribute
 					// (single-mod overlap with base is just last-writer).
-					let non_base_count = contributors
-						.iter()
-						.filter(|c| !c.is_base_game)
-						.count();
+					let non_base_count = contributors.iter().filter(|c| !c.is_base_game).count();
 
 					if non_base_count >= 2 {
-						let descriptor =
-							profile.classify_content_family(Path::new(&entry.path));
-						let merge_key_source =
-							descriptor.and_then(|d| d.merge_key_source);
+						let descriptor = profile.classify_content_family(Path::new(&entry.path));
+						let merge_key_source = descriptor.and_then(|d| d.merge_key_source);
 
 						if let (Some(descriptor), Some(merge_key_source)) =
 							(descriptor, merge_key_source)
@@ -162,9 +155,7 @@ pub(crate) fn materialize_merge_internal(
 							});
 							match result {
 								Ok(Ok(rendered)) => {
-									write_rendered_output(
-										&entry.path, &rendered, out_dir,
-									)?;
+									write_rendered_output(&entry.path, &rendered, out_dir)?;
 									generated_paths.insert(entry.path.clone());
 									report.generated_file_count += 1;
 									continue;
@@ -182,9 +173,7 @@ pub(crate) fn materialize_merge_internal(
 					report.generated_file_count += 1;
 				} else {
 					// No base game — use overlay IR fallback
-					if !ir_fatal
-						&& let Some(file) = ir_structural_files.get(&entry.path)
-					{
+					if !ir_fatal && let Some(file) = ir_structural_files.get(&entry.path) {
 						write_structural_output(file, out_dir)?;
 						generated_paths.insert(entry.path.clone());
 						report.generated_file_count += 1;
@@ -197,9 +186,7 @@ pub(crate) fn materialize_merge_internal(
 						write_conflict_placeholder(entry, out_dir)?;
 						generated_paths.insert(entry.path.clone());
 						report.generated_file_count += 1;
-					} else if let Some(contributors) =
-						workspace.file_inventory.get(&entry.path)
-					{
+					} else if let Some(contributors) = workspace.file_inventory.get(&entry.path) {
 						// Binary conflict: copy highest-precedence (last) mod's version
 						if let Some(best) = contributors
 							.iter()
@@ -283,12 +270,10 @@ fn patch_based_structural_merge(
 	merge_key_source: MergeKeySource,
 ) -> Result<String, MergeError> {
 	// 1. Compute chained patches for every mod contributor
-	let mod_patches =
-		compute_chained_patches(target_path, contributors, merge_key_source).map_err(|err| {
-			MergeError::Validation {
-				path: Some(target_path.to_string()),
-				message: format!("patch computation failed: {err}"),
-			}
+	let mod_patches = compute_chained_patches(target_path, contributors, merge_key_source)
+		.map_err(|err| MergeError::Validation {
+			path: Some(target_path.to_string()),
+			message: format!("patch computation failed: {err}"),
 		})?;
 
 	// 2. Merge all mod patch sets with the family's policies
@@ -300,9 +285,9 @@ fn patch_based_structural_merge(
 			.conflicts
 			.iter()
 			.filter_map(|r| match r {
-				PatchResolution::Conflict { address, reason, .. } => {
-					Some(format!("{}: {}", address.key, reason))
-				}
+				PatchResolution::Conflict {
+					address, reason, ..
+				} => Some(format!("{}: {}", address.key, reason)),
 				_ => None,
 			})
 			.collect();
@@ -343,8 +328,11 @@ fn patch_based_structural_merge(
 	let resolved_patches = extract_resolved_patches(&merge_result);
 
 	// 6. Apply patches to base AST
-	let merged_statements =
-		apply_patches(&base_parsed.ast.statements, &resolved_patches, merge_key_source);
+	let merged_statements = apply_patches(
+		&base_parsed.ast.statements,
+		&resolved_patches,
+		merge_key_source,
+	);
 
 	// 7. Emit Clausewitz output
 	emit_clausewitz_statements(&merged_statements)

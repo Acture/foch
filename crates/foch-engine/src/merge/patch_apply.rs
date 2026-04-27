@@ -104,8 +104,12 @@ fn apply_at_level(
 				p.push(key.clone());
 				p
 			};
-			let new_items =
-				apply_at_level(items, &deeper_for_key, &child_path, MergeKeySource::AssignmentKey);
+			let new_items = apply_at_level(
+				items,
+				&deeper_for_key,
+				&child_path,
+				MergeKeySource::AssignmentKey,
+			);
 			new_stmt = replace_block_items(&new_stmt, new_items, span.clone());
 		}
 
@@ -161,7 +165,11 @@ fn partition_patches(
 }
 
 /// Collect deeper patches whose next path element (at `depth`) matches `key`.
-fn collect_deeper_patches(deeper: &[ClausewitzPatch], key: &str, depth: usize) -> Vec<ClausewitzPatch> {
+fn collect_deeper_patches(
+	deeper: &[ClausewitzPatch],
+	key: &str,
+	depth: usize,
+) -> Vec<ClausewitzPatch> {
 	deeper
 		.iter()
 		.filter(|p| {
@@ -236,8 +244,7 @@ fn field_value_key(stmt: &AstStatement, field: &str) -> Option<String> {
 				key,
 				value: AstValue::Scalar { value, .. },
 				..
-			} = item
-				&& key == field
+			} = item && key == field
 			{
 				return Some(value.as_text());
 			}
@@ -303,7 +310,6 @@ fn apply_local_patches(stmt: &mut AstStatement, patches: &[&ClausewitzPatch]) {
 		}
 	}
 }
-
 
 // ---------------------------------------------------------------------------
 // AST helpers
@@ -457,9 +463,7 @@ mod tests {
 		}];
 		let result = apply_patches(&base, &patches, MergeKeySource::AssignmentKey);
 		assert_eq!(result.len(), 2);
-		assert!(
-			matches!(&result[1], AstStatement::Assignment { key, .. } if key == "manpower")
-		);
+		assert!(matches!(&result[1], AstStatement::Assignment { key, .. } if key == "manpower"));
 	}
 
 	#[test]
@@ -475,9 +479,7 @@ mod tests {
 		}];
 		let result = apply_patches(&base, &patches, MergeKeySource::AssignmentKey);
 		assert_eq!(result.len(), 1);
-		assert!(
-			matches!(&result[0], AstStatement::Assignment { key, .. } if key == "tax")
-		);
+		assert!(matches!(&result[0], AstStatement::Assignment { key, .. } if key == "tax"));
 	}
 
 	#[test]
