@@ -16,7 +16,7 @@ use foch_language::analyzer::rules::{
 	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
 	check_missing_dependency, check_missing_descriptor, check_required_fields,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Clone, Debug)]
 struct GameBaseSemanticSnapshot {
@@ -123,11 +123,18 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	result.findings.extend(check_missing_descriptor(&ctx));
 	result.findings.extend(check_file_conflict(&ctx));
 	result.findings.extend(check_missing_dependency(&ctx));
-	result
-		.findings
-		.extend(check_duplicate_scripted_effect(&ctx));
 
 	if options.analysis_mode == AnalysisMode::Semantic {
+		// Names already covered by the runtime overlap module (A003 mergeable /
+		// discardable, S001 overshadow). R007 and N001 are redundant for these
+		// names — the overlap finding is more specific. Collect the covered
+		// names so we can suppress the duplicates downstream.
+		let overlap_covered_names: HashSet<String> = runtime_overlap_findings
+			.iter()
+			.filter(|finding| finding.rule_id == "S001" || finding.rule_id == "A003")
+			.filter_map(|finding| extract_overlap_symbol_name(&finding.message))
+			.collect();
+
 		let diagnostics = analyze_visibility(
 			&ctx.semantic_index,
 			&AnalyzeOptions {
@@ -147,10 +154,23 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 				.filter(|finding| finding.rule_id != "A003"),
 		);
 		result.findings.extend(runtime_overlap_findings);
-		result.findings.extend(check_namespace_conflicts(
-			&resolved.file_inventory,
-			&ctx.mods,
-		));
+		result.findings.extend(
+			check_namespace_conflicts(&resolved.file_inventory, &ctx.mods)
+				.into_iter()
+				.filter(|finding| {
+					!finding
+						.evidence
+						.as_deref()
+						.and_then(extract_namespace_key)
+						.is_some_and(|key| overlap_covered_names.contains(key))
+				}),
+		);
+	} else {
+		// Basic mode: no overlap module runs, so the heuristic R007 still
+		// provides value for scripted-effect duplicates.
+		result
+			.findings
+			.extend(check_duplicate_scripted_effect(&ctx));
 	}
 
 	result.analysis_meta = AnalysisMeta {
@@ -329,48 +349,79 @@ fn check_namespace_conflicts(
 		let conflicts = detect_key_conflicts(&index);
 
 		for conflict in &conflicts {
+			let mut seen_mods = HashSet::new();
 			let non_base: Vec<_> = conflict
 				.contributors
 				.iter()
 				.filter(|c| !c.is_base_game)
+				.filter(|c| seen_mods.insert(c.mod_id.as_str()))
 				.collect();
 			if non_base.len() < 2 {
 				continue;
 			}
 
-			for (i, contributor) in non_base.iter().enumerate() {
-				let others: Vec<String> = non_base
+			let primary = non_base[0];
+			let participants: Vec<String> = non_base
+				.iter()
+				.map(|contributor| {
+					let mod_name = mod_names
+						.get(contributor.mod_id.as_str())
+						.copied()
+						.unwrap_or(&contributor.mod_id);
+					format!("'{}' in {}", mod_name, contributor.file_path)
+				})
+				.collect();
+			let evidence = format!(
+				"key={}; mods=[{}]",
+				conflict.key,
+				non_base
 					.iter()
-					.enumerate()
-					.filter(|(j, _)| *j != i)
-					.map(|(_, other)| {
-						let mod_name = mod_names
-							.get(other.mod_id.as_str())
-							.copied()
-							.unwrap_or(&other.mod_id);
-						format!("mod '{}' in {}", mod_name, other.file_path)
-					})
-					.collect();
+					.map(|c| format!("{}:{}", c.mod_id, c.file_path))
+					.collect::<Vec<_>>()
+					.join(", ")
+			);
 
-				findings.push(Finding {
-					rule_id: "N001".to_string(),
-					severity: Severity::Warning,
-					channel: FindingChannel::Advisory,
-					message: format!(
-						"Key '{}' is also defined by {}",
-						conflict.key,
-						others.join(", ")
-					),
-					mod_id: Some(contributor.mod_id.clone()),
-					path: Some(std::path::PathBuf::from(&contributor.file_path)),
-					evidence: None,
-					line: None,
-					column: None,
-					confidence: Some(0.9),
-				});
-			}
+			findings.push(Finding {
+				rule_id: "N001".to_string(),
+				severity: Severity::Warning,
+				channel: FindingChannel::Advisory,
+				message: format!(
+					"Key '{}' is defined by {} mods: {}",
+					conflict.key,
+					non_base.len(),
+					participants.join(", ")
+				),
+				mod_id: Some(primary.mod_id.clone()),
+				path: Some(std::path::PathBuf::from(&primary.file_path)),
+				evidence: Some(evidence),
+				line: None,
+				column: None,
+				confidence: Some(0.9),
+			});
 		}
 	}
 
 	findings
+}
+
+/// Pull the symbol name out of an overlap finding message such as
+/// `跨 Mod 重合定义会改变解析目标: scripted_effect foo_bar` or
+/// `跨 Mod 重合定义可自动合并: scripted_trigger baz`.
+fn extract_overlap_symbol_name(message: &str) -> Option<String> {
+	let after_colon = message.rsplit_once(':')?.1.trim();
+	let (_kind, name) = after_colon.split_once(' ')?;
+	let name = name.trim();
+	if name.is_empty() {
+		None
+	} else {
+		Some(name.to_string())
+	}
+}
+
+/// Pull the conflict key from an N001 evidence string of the form
+/// `key=NAME; mods=[...]`.
+fn extract_namespace_key(evidence: &str) -> Option<&str> {
+	let rest = evidence.strip_prefix("key=")?;
+	let end = rest.find(';').unwrap_or(rest.len());
+	Some(rest[..end].trim())
 }
