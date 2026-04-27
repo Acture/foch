@@ -387,6 +387,7 @@ fn walk_statements(
 					}
 
 					if definition_kind.is_none()
+						&& !is_mission_slot_definition(ctx.file_kind, items)
 						&& is_scripted_effect_call_candidate(
 							ctx,
 							ctx.file_kind,
@@ -1014,6 +1015,12 @@ fn is_scripted_effect_call_candidate(
 	if !allows_generic_scripted_effect_fallback(scope_kind(index, scope_id)) {
 		return false;
 	}
+	if file_kind == ScriptFileKind::Missions {
+		// Mission slot definitions have structure keys like icon, position,
+		// required_missions, trigger, effect — these are NOT scripted effect calls.
+		// We cannot rely solely on scope kind because the scope classification
+		// may vary based on preceding siblings.
+	}
 	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
 		return false;
 	}
@@ -1482,6 +1489,28 @@ fn scope_depth(index: &SemanticIndex, scope_id: usize) -> usize {
 		}
 	}
 	depth
+}
+
+/// Check if a block's children indicate it's a mission slot definition.
+/// Mission slots contain structure keys: icon, position, required_missions, trigger, effect.
+fn is_mission_slot_definition(file_kind: ScriptFileKind, items: &[AstStatement]) -> bool {
+	if file_kind != ScriptFileKind::Missions {
+		return false;
+	}
+	items.iter().any(|stmt| {
+		if let AstStatement::Assignment { key, .. } = stmt {
+			matches!(
+				key.as_str(),
+				"icon" | "position"
+					| "required_missions"
+					| "trigger" | "effect"
+					| "ai_weight" | "provinces_to_highlight"
+					| "completed_by"
+			)
+		} else {
+			false
+		}
+	})
 }
 
 /// Returns true if this scope is a mission slot definition context — i.e. the
