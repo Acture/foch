@@ -186,8 +186,24 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Findi
 	let mut seen = HashSet::new();
 	let mut strict = Vec::new();
 	let mut advisory = Vec::new();
+	let callable_scope_map = build_inferred_callable_scope_map(index);
+	let inferred_masks = collect_inferred_callable_masks(index);
 	for usage in &index.alias_usages {
 		if is_alias_visible(index, usage.scope_id, usage.alias.as_str()) {
+			continue;
+		}
+		// Suppress noise when the surrounding scope is itself Unknown: we
+		// cannot tell whether the alias is invisible due to a real bug or
+		// simply because static analysis cannot resolve the enclosing scope
+		// (e.g. callable invoked from an unknown caller). Reserve S003 for
+		// determinate parent scopes where invisibility is actionable.
+		if effective_scope_mask_with_overrides(
+			index,
+			&callable_scope_map,
+			&inferred_masks,
+			usage.scope_id,
+		) == 0
+		{
 			continue;
 		}
 		let dedup_key = format!(
@@ -324,6 +340,24 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 		if profile
 			.classify_content_family(usage.path.as_path())
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
+		{
+			continue;
+		}
+		// Suppress noise when the parent scope is itself Unknown: a key
+		// resolving to Unknown there only tells us static analysis could not
+		// recover the enclosing scope (e.g. callable invoked from an unknown
+		// caller, dynamic scope policy missed by classification). Without a
+		// determinate parent we cannot tell whether the key is genuinely
+		// inappropriate, so the finding has no actionable signal. Genuine
+		// determinate-scope misuse — including non-alias keys that change
+		// scope to Unknown from a determinate parent — is still surfaced via
+		// the per-key resolution below.
+		if effective_scope_mask_with_overrides(
+			index,
+			&callable_scope_map,
+			&inferred_masks,
+			usage.scope_id,
+		) == 0
 		{
 			continue;
 		}
