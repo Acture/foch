@@ -533,7 +533,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix("common/estate_agendas", "common/estate_agendas/")
 		.kind(ScriptFileKind::EstateAgendas)
 		.module_name(ModuleNameRule::Static("estate_agendas"))
-		.scope(scope(ScopeType::Country))
+		.scope(country_from_scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::EstateAgendas)
@@ -547,6 +547,18 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.extractor(ContentFamilyExtractor::EstatePrivileges)
 		.scalar_policy(ScalarMergePolicy::Sum)
 		.boolean_policy(BooleanMergePolicy::And)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/estate_action", "common/estate_action/")
+		.module_name(ModuleNameRule::Static("estate_action"))
+		.scope(country_from_scope(ScopeType::Country))
+		.capabilities(semantic_complete_and_merge_ready())
+		.merge_key(MergeKeySource::AssignmentKey)
+		.build(),
+	ContentFamilyDescriptor::prefix("common/native_advancement", "common/native_advancement/")
+		.module_name(ModuleNameRule::Static("native_advancement"))
+		.scope(scope(ScopeType::Country))
+		.capabilities(semantic_complete_and_merge_ready())
+		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/estates", "common/estates/")
 		.kind(ScriptFileKind::Estates)
@@ -778,7 +790,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	.build(),
 	ContentFamilyDescriptor::prefix("common/centers_of_trade", "common/centers_of_trade/")
 		.module_name(ModuleNameRule::Static("centers_of_trade"))
-		.scope(scope(ScopeType::Unknown))
+		.scope(scope(ScopeType::Province))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
