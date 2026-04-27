@@ -186,8 +186,21 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Findi
 	let mut seen = HashSet::new();
 	let mut strict = Vec::new();
 	let mut advisory = Vec::new();
+	let profile = eu4_profile();
 	for usage in &index.alias_usages {
 		if is_alias_visible(index, usage.scope_id, usage.alias.as_str()) {
+			continue;
+		}
+		// Files belonging to a dynamic-scope content family (callables,
+		// scripted_effects/triggers/functions, on_actions, custom_gui,
+		// customizable_localization, UI) have no statically-known root or
+		// caller scope. THIS/ROOT/FROM/PREV are all by-design absent from
+		// the alias map there, so flagging them — even as advisory — is pure
+		// noise. The same skip is applied by A001 / A002.
+		if profile
+			.classify_content_family(usage.path.as_path())
+			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
+		{
 			continue;
 		}
 		let dedup_key = format!(
