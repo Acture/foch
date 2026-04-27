@@ -103,6 +103,22 @@ fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 	let mut seen = HashSet::new();
 	let mut findings = Vec::new();
+	// Some EU4 trigger keys are not scripted_triggers but the *names* of
+	// content definitions whose presence implicitly creates a trigger key
+	// (e.g. an advisor type name `idea_var_advisor_5 = 2` tests "country
+	// has hired an advisor of that type with skill ≥ 2"). These are routed
+	// to the analyzer as ScriptedTrigger references because they sit on
+	// the LHS of a scalar assignment in trigger context, but they will
+	// never resolve to a scripted_trigger definition. Build a set of such
+	// "implicit trigger key" names from the resource-reference index so
+	// the resolver can tolerate them. Names are stored lowercased to
+	// match the case-insensitive lookup convention used elsewhere.
+	let mut implicit_trigger_names: HashSet<String> = HashSet::new();
+	for resource in &index.resource_references {
+		if resource.key == "advisor_type_definition" {
+			implicit_trigger_names.insert(resource.value.to_ascii_lowercase());
+		}
+	}
 	for reference in &index.references {
 		if !should_flag_unresolved(reference.kind) {
 			continue;
@@ -144,6 +160,13 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 				)
 				.is_empty()
 				{
+					continue;
+				}
+				// Implicit trigger keys: advisor-type names act as trigger
+				// keys at runtime ("country has advisor of type X with
+				// skill ≥ N"). They never appear as scripted_trigger
+				// definitions.
+				if implicit_trigger_names.contains(&reference.name.to_ascii_lowercase()) {
 					continue;
 				}
 			}
