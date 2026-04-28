@@ -800,12 +800,12 @@ mod tests {
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("events/shared.txt")).expect("read emitted events"),
-			"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1_3001\n\ttitle = title_a\n}\ncountry_event = {\n\tid = test.1_3002\n\ttitle = title_override\n}\n"
+			"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("decisions/shared.txt"))
 				.expect("read emitted decisions"),
-			"country_decisions = {\n\ttest_decision_3001 = {\n\t\teffect = {\n\t\t\tlog = a\n\t\t}\n\t}\n\ttest_decision_3002 = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
+			"country_decisions = {\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/scripted_effects/effects.txt"))

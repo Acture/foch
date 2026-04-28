@@ -401,9 +401,30 @@ fn build_structural_file(
 			// children are homogeneous named items, merge children by their
 			// identity (name field or assignment key) instead of suffix-
 			// renaming the container itself.
-			if merge_key_source == MergeKeySource::AssignmentKey
+			//
+			// Different MergeKeySource variants need different fallback
+			// semantics. AssignmentKey allows child suffix renaming because
+			// child names like `windowType` happily accept a suffix. For
+			// ContainerChildKey (decisions) and FieldValue (events) we use
+			// strict mode: any unresolvable inner conflict aborts NCU and
+			// the caller falls back to whole-fragment suffix-rename, since
+			// renaming an inner `effect` or `trigger` block would corrupt
+			// game semantics. FieldValue additionally tolerates scalar
+			// passthrough inside the body (event headers like `id`,
+			// `title`, `is_triggered_only`).
+			//
+			// LeafPath fragments are scalar dotted-path leaves with no
+			// inner structure, so NCU cannot apply.
+			let ncu_config = match merge_key_source {
+				MergeKeySource::AssignmentKey => Some(NcuConfig::lenient()),
+				MergeKeySource::ContainerChildKey | MergeKeySource::FieldValue(_) => {
+					Some(NcuConfig::strict_with_scalars())
+				}
+				MergeKeySource::LeafPath => None,
+			};
+			if let Some(config) = ncu_config
 				&& let Some(merged_statement) =
-					try_named_container_union(&accumulator.source_fragments)
+					try_named_container_union(&accumulator.source_fragments, config)
 			{
 				let mut merged_acc = accumulator;
 				merged_acc.merged_statement = merged_statement;
@@ -797,7 +818,53 @@ fn child_identity(stmt: &AstStatement) -> Option<ChildIdentity> {
 /// Children with conflicting content but matching identity are kept and
 /// renamed using the existing per-mod suffix scheme so the EU4 engine still
 /// loads each one under a unique handle.
-fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstStatement> {
+/// Per-call configuration for [`try_named_container_union`] and the helpers
+/// it dispatches to.  The defaults match the original AssignmentKey-only
+/// behavior; new MergeKeySource variants pick stricter modes.
+#[derive(Clone, Copy)]
+struct NcuConfig {
+	/// When true, any unresolvable inner conflict that would otherwise
+	/// suffix-rename a same-identity child aborts the union and returns
+	/// `None`, letting the caller fall back to whole-fragment renaming.
+	/// Mutually exclusive with `overlay_wins_on_conflict`.
+	strict_no_rename: bool,
+	/// When true, scalar assignments inside a fragment body are tolerated
+	/// and merged with last-writer-wins semantics keyed on the assignment
+	/// name.  Used for FieldValue containers (events) whose bodies mix
+	/// scalar headers (`id`, `title`) with block children (`option`,
+	/// `trigger`).
+	allow_scalar_passthrough: bool,
+	/// When true, a same-identity block conflict that can't be recursed
+	/// into is resolved by overlay-wins (later contributor replaces the
+	/// existing entry) rather than suffix-renaming or aborting.  This
+	/// keeps decisions/events as a single merged entity even when one
+	/// inner block (e.g. `allow`, `effect`) cannot be union-merged
+	/// structurally.  Takes precedence over `strict_no_rename` for the
+	/// conflict outcome.
+	overlay_wins_on_conflict: bool,
+}
+
+impl NcuConfig {
+	const fn lenient() -> Self {
+		Self {
+			strict_no_rename: false,
+			allow_scalar_passthrough: false,
+			overlay_wins_on_conflict: false,
+		}
+	}
+	const fn strict_with_scalars() -> Self {
+		Self {
+			strict_no_rename: true,
+			allow_scalar_passthrough: true,
+			overlay_wins_on_conflict: true,
+		}
+	}
+}
+
+fn try_named_container_union(
+	fragments: &[MergeIrSourceFragment],
+	config: NcuConfig,
+) -> Option<AstStatement> {
 	if fragments.is_empty() {
 		return None;
 	}
@@ -831,7 +898,9 @@ fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstS
 
 	// Every non-comment child of every fragment must be a block assignment
 	// with a derivable identity.  Anything else (scalar assignments, bare
-	// items) means the container is heterogeneous and we bail out.
+	// items) means the container is heterogeneous and we bail out — unless
+	// `allow_scalar_passthrough` is set, in which case scalar assignments
+	// are accepted and handled by `merge_named_children_into`.
 	for fragment in fragments {
 		let AstStatement::Assignment {
 			value: AstValue::Block { items, .. },
@@ -843,6 +912,10 @@ fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstS
 		for item in items {
 			match item {
 				AstStatement::Comment { .. } => {}
+				AstStatement::Assignment {
+					value: AstValue::Scalar { .. },
+					..
+				} if config.allow_scalar_passthrough => {}
 				other => {
 					child_identity(other)?;
 				}
@@ -855,6 +928,7 @@ fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstS
 	// and suffix-rename on conflict.
 	let mut merged_items: Vec<AstStatement> = Vec::new();
 	let mut by_identity: HashMap<ChildIdentity, usize> = HashMap::new();
+	let mut by_scalar_key: HashMap<String, usize> = HashMap::new();
 
 	for fragment in fragments {
 		let AstStatement::Assignment {
@@ -865,7 +939,15 @@ fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstS
 			continue;
 		};
 		let mod_id = &fragment.contributor.mod_id;
-		merge_named_children_into(&mut merged_items, &mut by_identity, items, mod_id, 0)?;
+		merge_named_children_into(
+			&mut merged_items,
+			&mut by_identity,
+			&mut by_scalar_key,
+			items,
+			mod_id,
+			0,
+			config,
+		)?;
 	}
 
 	let key = container_key?;
@@ -891,13 +973,17 @@ const NCU_MAX_RECURSION_DEPTH: usize = 4;
 /// Inner driver of `try_named_container_union`: union the children of one
 /// contributor's container into `merged_items`, deduping by identity and
 /// suffix-renaming on conflict.  Returns `None` if any non-comment child
-/// lacks a derivable identity (caller must bail out of NCU).
+/// lacks a derivable identity (caller must bail out of NCU), or, when
+/// `config.strict_no_rename` is set, when a same-identity conflict would
+/// require suffix-renaming.
 fn merge_named_children_into(
 	merged_items: &mut Vec<AstStatement>,
 	by_identity: &mut HashMap<ChildIdentity, usize>,
+	by_scalar_key: &mut HashMap<String, usize>,
 	items: &[AstStatement],
 	mod_id: &str,
 	depth: usize,
+	config: NcuConfig,
 ) -> Option<()> {
 	for item in items {
 		match item {
@@ -909,6 +995,20 @@ fn merge_named_children_into(
 					merged_items.push(item.clone());
 				}
 			}
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Scalar { .. },
+				..
+			} if config.allow_scalar_passthrough => {
+				// Scalar passthrough: last-writer-wins keyed on assignment
+				// name. Used for event headers (id, title, ...).
+				if let Some(&idx) = by_scalar_key.get(key) {
+					merged_items[idx] = item.clone();
+				} else {
+					by_scalar_key.insert(key.clone(), merged_items.len());
+					merged_items.push(item.clone());
+				}
+			}
 			stmt => {
 				let identity = child_identity(stmt)?;
 				if let Some(&idx) = by_identity.get(&identity) {
@@ -916,11 +1016,25 @@ fn merge_named_children_into(
 						continue;
 					}
 					if depth < NCU_MAX_RECURSION_DEPTH
-						&& let Some(merged) =
-							try_recursive_named_merge(&merged_items[idx], stmt, mod_id, depth + 1)
-					{
+						&& let Some(merged) = try_recursive_named_merge(
+							&merged_items[idx],
+							stmt,
+							mod_id,
+							depth + 1,
+							config,
+						) {
 						merged_items[idx] = merged;
 						continue;
+					}
+					if config.overlay_wins_on_conflict {
+						// Single-decision/event merge: pick the later
+						// contributor's version of an unmergeable block
+						// child rather than abandoning the whole union.
+						merged_items[idx] = stmt.clone();
+						continue;
+					}
+					if config.strict_no_rename {
+						return None;
 					}
 					let renamed = rename_named_child(stmt, &identity, mod_id);
 					let renamed_identity = child_identity(&renamed)?;
@@ -939,12 +1053,14 @@ fn merge_named_children_into(
 /// When two same-identity children's bodies differ, try to merge them by
 /// recursively running the named-container union on the inner blocks.
 /// Returns `None` when either body isn't a homogeneous named container —
-/// the caller then falls back to suffix-renaming.
+/// the caller then falls back to suffix-renaming (or, in strict mode,
+/// aborts the whole union).
 fn try_recursive_named_merge(
 	existing: &AstStatement,
 	incoming: &AstStatement,
 	mod_id: &str,
 	depth: usize,
+	config: NcuConfig,
 ) -> Option<AstStatement> {
 	let AstStatement::Assignment {
 		key,
@@ -965,14 +1081,33 @@ fn try_recursive_named_merge(
 	else {
 		return None;
 	};
-	if !items_are_named_container(items_a) || !items_are_named_container(items_b) {
+	if !items_are_named_container(items_a, config.allow_scalar_passthrough)
+		|| !items_are_named_container(items_b, config.allow_scalar_passthrough)
+	{
 		return None;
 	}
 
 	let mut merged_items: Vec<AstStatement> = Vec::new();
 	let mut by_identity: HashMap<ChildIdentity, usize> = HashMap::new();
-	merge_named_children_into(&mut merged_items, &mut by_identity, items_a, mod_id, depth)?;
-	merge_named_children_into(&mut merged_items, &mut by_identity, items_b, mod_id, depth)?;
+	let mut by_scalar_key: HashMap<String, usize> = HashMap::new();
+	merge_named_children_into(
+		&mut merged_items,
+		&mut by_identity,
+		&mut by_scalar_key,
+		items_a,
+		mod_id,
+		depth,
+		config,
+	)?;
+	merge_named_children_into(
+		&mut merged_items,
+		&mut by_identity,
+		&mut by_scalar_key,
+		items_b,
+		mod_id,
+		depth,
+		config,
+	)?;
 
 	Some(AstStatement::Assignment {
 		key: key.clone(),
@@ -987,14 +1122,29 @@ fn try_recursive_named_merge(
 
 /// Heuristic: items qualify as a named-container body when every non-comment
 /// item is a block assignment with a derivable child identity, and at least
-/// one such child is present.
-fn items_are_named_container(items: &[AstStatement]) -> bool {
+/// one such child is present.  When `allow_scalars` is set, scalar
+/// assignments are also tolerated (without counting as the required child).
+///
+/// Bodies that repeat the same `(key, name)` identity (e.g. EU4 condition
+/// lists with multiple `OR = { ... }` siblings) are not treated as named
+/// containers — those are list-of-conditions, not deduplicable children —
+/// so the function returns `false` and the caller falls back to
+/// whole-block replacement (or suffix-rename in lenient mode).
+fn items_are_named_container(items: &[AstStatement], allow_scalars: bool) -> bool {
 	let mut has_child = false;
+	let mut seen: HashSet<ChildIdentity> = HashSet::new();
 	for item in items {
 		match item {
 			AstStatement::Comment { .. } => {}
+			AstStatement::Assignment {
+				value: AstValue::Scalar { .. },
+				..
+			} if allow_scalars => {}
 			other => {
-				if child_identity(other).is_none() {
+				let Some(identity) = child_identity(other) else {
+					return false;
+				};
+				if !seen.insert(identity) {
 					return false;
 				}
 				has_child = true;
@@ -1863,23 +2013,47 @@ mod tests {
 		assert_eq!(result.structural_files.len(), 1);
 		let file = &result.structural_files[0];
 		assert_eq!(file.merge_key_source, MergeKeySource::FieldValue("id"));
-		// Conflict rename splits test.1 into per-mod nodes
-		assert_eq!(file.nodes.len(), 3);
-		let renamed_a = file
+		// FieldValue conflicts with otherwise-mergeable bodies (here only
+		// the scalar `title` differs) are merged via NCU strict-with-scalars
+		// rather than suffix-renamed: scalar fields use last-writer-wins.
+		assert_eq!(file.nodes.len(), 2);
+		let merged = file
 			.nodes
 			.iter()
-			.find(|node| node.merge_key == "test.1_9501")
-			.expect("renamed event for mod A");
-		assert_eq!(renamed_a.winner.mod_id, "9501");
-		assert!(renamed_a.conflict_rename);
-		assert_eq!(renamed_a.original_merge_key.as_deref(), Some("test.1"));
-		let renamed_b = file
-			.nodes
+			.find(|node| node.merge_key == "test.1")
+			.expect("merged event for shared id");
+		assert!(!merged.conflict_rename);
+		// Both contributors' mod_ids should appear in the source order.
+		let mod_ids: Vec<&str> = merged
+			.source_mod_order
 			.iter()
-			.find(|node| node.merge_key == "test.1_9502")
-			.expect("renamed event for mod B");
-		assert_eq!(renamed_b.winner.mod_id, "9502");
-		assert!(renamed_b.conflict_rename);
+			.map(|c| c.mod_id.as_str())
+			.collect();
+		assert!(mod_ids.contains(&"9501") && mod_ids.contains(&"9502"));
+		// Overlay (mod B) wins for the conflicting `title` scalar.
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &merged.merged_statement
+		else {
+			panic!("merged event must be a block");
+		};
+		let title = items
+			.iter()
+			.find_map(|item| {
+				if let AstStatement::Assignment {
+					key,
+					value: AstValue::Scalar { value, .. },
+					..
+				} = item && key == "title"
+				{
+					Some(value.as_text())
+				} else {
+					None
+				}
+			})
+			.expect("title scalar");
+		assert_eq!(title, "title_override");
 		let unique = file
 			.nodes
 			.iter()
@@ -1919,26 +2093,29 @@ mod tests {
 		assert!(result.fatal_errors.is_empty());
 		let file = &result.structural_files[0];
 		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChildKey);
-		// Conflict rename splits test_decision into per-mod nodes
-		assert_eq!(file.nodes.len(), 3);
-		let renamed_a = file
+		// Shared `test_decision` with otherwise-mergeable bodies merges
+		// via NCU strict-with-scalars: the conflicting `effect` block is
+		// resolved by overlay-wins (mod B). Plus mod A's unique decision.
+		assert_eq!(file.nodes.len(), 2);
+		let merged = file
 			.nodes
 			.iter()
-			.find(|node| node.merge_key == "test_decision_9601")
-			.expect("renamed decision for mod A");
-		assert_eq!(
-			renamed_a.container_key.as_deref(),
-			Some("country_decisions")
-		);
-		assert_eq!(renamed_a.winner.mod_id, "9601");
-		assert!(renamed_a.conflict_rename);
-		let renamed_b = file
+			.find(|node| node.merge_key == "test_decision")
+			.expect("merged shared decision");
+		assert_eq!(merged.container_key.as_deref(), Some("country_decisions"));
+		assert!(!merged.conflict_rename);
+		let mod_ids: Vec<&str> = merged
+			.source_mod_order
+			.iter()
+			.map(|c| c.mod_id.as_str())
+			.collect();
+		assert!(mod_ids.contains(&"9601") && mod_ids.contains(&"9602"));
+		let unique = file
 			.nodes
 			.iter()
-			.find(|node| node.merge_key == "test_decision_9602")
-			.expect("renamed decision for mod B");
-		assert_eq!(renamed_b.winner.mod_id, "9602");
-		assert!(renamed_b.conflict_rename);
+			.find(|node| node.merge_key == "unique_decision")
+			.expect("unique decision");
+		assert!(!unique.conflict_rename);
 	}
 
 	#[test]
@@ -3530,5 +3707,271 @@ mod tests {
 				&& inner_names.contains(&"inner_b".to_string()),
 			"recursion must union inner windowTypes; got {inner_names:?}",
 		);
+	}
+
+	// ContainerChildKey: two `country_decisions` files with the same
+	// decision id whose body has a homogeneous named-container shape.
+	// Each mod adds disjoint inner blocks (mod_a contributes `potential`,
+	// mod_b contributes `allow`); both ship an identical `effect`. NCU
+	// strict mode must fold these into a single decision rather than
+	// suffix-renaming the whole decision per mod.
+	#[test]
+	fn ncu_recurses_container_child_key_decisions_with_disjoint_inner_blocks() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9881");
+		let mod_b = temp.path().join("9882");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9881"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9882"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"decisions/Pragmatic.txt",
+			"country_decisions = {\n\tpragmatic_sanction_decision = {\n\t\tpotential = { tag = HAB }\n\t\teffect = { add_stability = 1 }\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"decisions/Pragmatic.txt",
+			"country_decisions = {\n\tpragmatic_sanction_decision = {\n\t\tallow = { adm_power = 100 }\n\t\teffect = { add_stability = 1 }\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChildKey);
+		assert_eq!(
+			file.nodes.len(),
+			1,
+			"shared decision id with disjoint mergeable bodies must collapse to one node; got keys: {:?}",
+			file.nodes
+				.iter()
+				.map(|n| n.merge_key.as_str())
+				.collect::<Vec<_>>(),
+		);
+		let node = &file.nodes[0];
+		assert_eq!(node.merge_key, "pragmatic_sanction_decision");
+		assert!(!node.conflict_rename);
+		// Merged body must contain both `potential` (from A) and `allow`
+		// (from B), and exactly one deduped `effect`.
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &node.merged_statement
+		else {
+			panic!("merged decision must be a block");
+		};
+		let child_keys: Vec<&str> = items
+			.iter()
+			.filter_map(|item| match item {
+				AstStatement::Assignment { key, .. } => Some(key.as_str()),
+				_ => None,
+			})
+			.collect();
+		assert!(child_keys.contains(&"potential"), "got {child_keys:?}");
+		assert!(child_keys.contains(&"allow"), "got {child_keys:?}");
+		let effect_count = child_keys.iter().filter(|k| **k == "effect").count();
+		assert_eq!(effect_count, 1, "identical effect must dedupe");
+	}
+
+	// ContainerChildKey: when the same decision id has differing inner
+	// blocks at a position that NCU can't recurse into (e.g. a scalar-
+	// body `effect = { log = a }` vs `effect = { log = override }`),
+	// strict-with-scalars mode resolves the conflict via overlay-wins
+	// (later contributor's block replaces the earlier one) rather than
+	// suffix-renaming the inner `effect` or splitting the whole decision.
+	#[test]
+	fn ncu_overlay_wins_when_inner_block_unmergeable() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9883");
+		let mod_b = temp.path().join("9884");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9883"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9884"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"decisions/Conflict.txt",
+			"country_decisions = {\n\ttest_decision = {\n\t\teffect = { log = a }\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"decisions/Conflict.txt",
+			"country_decisions = {\n\ttest_decision = {\n\t\teffect = { log = override }\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChildKey);
+		// One merged decision, no rename — overlay (mod B) wins for the
+		// unmergeable `effect` block.
+		assert_eq!(file.nodes.len(), 1);
+		let node = &file.nodes[0];
+		assert_eq!(node.merge_key, "test_decision");
+		assert!(!node.conflict_rename);
+		// No leaked `effect_<modid>` rename inside the body.
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &node.merged_statement
+		else {
+			panic!("merged decision must be a block");
+		};
+		for item in items {
+			if let AstStatement::Assignment { key, .. } = item {
+				assert!(
+					!key.starts_with("effect_"),
+					"overlay-wins must not leak effect_<modid> renames; key={key}"
+				);
+			}
+		}
+		// Effect body is mod_b's (overlay).
+		let effect = items.iter().find_map(|item| {
+			if let AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items: ii, .. },
+				..
+			} = item && key == "effect"
+			{
+				Some(ii)
+			} else {
+				None
+			}
+		});
+		let effect = effect.expect("effect block present");
+		let log_value = effect.iter().find_map(|item| {
+			if let AstStatement::Assignment {
+				key,
+				value: AstValue::Scalar { value, .. },
+				..
+			} = item && key == "log"
+			{
+				Some(value.as_text())
+			} else {
+				None
+			}
+		});
+		assert_eq!(log_value.as_deref(), Some("override"));
+	}
+
+	// FieldValue: two events with the same `id` and otherwise-mergeable
+	// bodies — disjoint named `option` lists plus identical scalar
+	// headers. NCU strict-with-scalars must merge the body into a single
+	// event, unioning the options by `name` identity.
+	#[test]
+	fn ncu_recurses_field_value_events_with_disjoint_named_options() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9885");
+		let mod_b = temp.path().join("9886");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9885"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9886"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		// Both events share id = test.1 with identical scalar headers but
+		// add disjoint option lists keyed by `name`.
+		write_script_file(
+			&mod_a,
+			"events/shared.txt",
+			"namespace = test\ncountry_event = {\n\tid = test.1\n\ttitle = shared_title\n\toption = { name = \"opt_a\" }\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"events/shared.txt",
+			"namespace = test\ncountry_event = {\n\tid = test.1\n\ttitle = shared_title\n\toption = { name = \"opt_b\" }\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::FieldValue("id"));
+		assert_eq!(
+			file.nodes.len(),
+			1,
+			"shared event id with mergeable bodies must collapse to one node; got keys: {:?}",
+			file.nodes
+				.iter()
+				.map(|n| n.merge_key.as_str())
+				.collect::<Vec<_>>(),
+		);
+		let node = &file.nodes[0];
+		assert_eq!(node.merge_key, "test.1");
+		assert!(!node.conflict_rename);
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &node.merged_statement
+		else {
+			panic!("merged event must be a block");
+		};
+		// Both options must appear, deduped by `name`.
+		let option_names: Vec<String> = items
+			.iter()
+			.filter_map(|item| {
+				let AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items: ii, .. },
+					..
+				} = item
+				else {
+					return None;
+				};
+				if key != "option" {
+					return None;
+				}
+				ii.iter().find_map(|i| {
+					if let AstStatement::Assignment {
+						key: k,
+						value: AstValue::Scalar { value, .. },
+						..
+					} = i && k == "name"
+					{
+						Some(value.as_text())
+					} else {
+						None
+					}
+				})
+			})
+			.collect();
+		assert!(
+			option_names.contains(&"opt_a".to_string())
+				&& option_names.contains(&"opt_b".to_string()),
+			"unioned options must keep both names; got {option_names:?}",
+		);
+		// Scalar header (id) is preserved exactly once.
+		let id_count = items
+			.iter()
+			.filter(|item| {
+				matches!(
+					item,
+					AstStatement::Assignment {
+						key,
+						value: AstValue::Scalar { .. },
+						..
+					} if key == "id"
+				)
+			})
+			.count();
+		assert_eq!(id_count, 1);
 	}
 }
