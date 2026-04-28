@@ -394,6 +394,21 @@ fn build_structural_file(
 				continue;
 			}
 
+			// NamedContainerUnion: when both contributors define the same
+			// top-level container key (e.g. `guiTypes`, `spriteTypes`) whose
+			// children are homogeneous named items, merge children by their
+			// identity (name field or assignment key) instead of suffix-
+			// renaming the container itself.
+			if merge_key_source == MergeKeySource::AssignmentKey
+				&& let Some(merged_statement) =
+					try_named_container_union(&accumulator.source_fragments)
+			{
+				let mut merged_acc = accumulator;
+				merged_acc.merged_statement = merged_statement;
+				renamed_vec.push(merged_acc);
+				continue;
+			}
+
 			// Base game fragments keep the original key
 			let base_fragments: Vec<&MergeIrSourceFragment> = accumulator
 				.source_fragments
@@ -747,6 +762,214 @@ fn deep_merge(
 			span: base_span.clone(),
 		},
 		span: base_span.clone(),
+	}
+}
+
+/// Identity of a named-container child: the assignment key plus, when present,
+/// the scalar value of an inner `name = "..."` field.  Two children share an
+/// identity iff their assignment keys match AND their `name` fields agree
+/// (or both are absent).
+type ChildIdentity = (String, Option<String>);
+
+fn child_identity(stmt: &AstStatement) -> Option<ChildIdentity> {
+	let AstStatement::Assignment {
+		key,
+		value: AstValue::Block { items, .. },
+		..
+	} = stmt
+	else {
+		return None;
+	};
+	let name = scalar_assignment_value(items, "name");
+	Some((key.clone(), name))
+}
+
+/// Try to merge several `key = { ... }` containers into a single container by
+/// unioning their named children.  Returns `None` if the containers don't
+/// look like a homogeneous named-container family — in that case the caller
+/// falls back to per-mod suffix renaming.
+///
+/// Accepts containers whose non-comment children are all `Assignment` blocks.
+/// Children with conflicting content but matching identity are kept and
+/// renamed using the existing per-mod suffix scheme so the EU4 engine still
+/// loads each one under a unique handle.
+fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstStatement> {
+	if fragments.is_empty() {
+		return None;
+	}
+
+	// All fragments must be `key = { items... }` assignments and share a key.
+	let mut container_key: Option<String> = None;
+	let mut container_key_span: Option<SpanRange> = None;
+	let mut container_block_span: Option<SpanRange> = None;
+	let mut container_stmt_span: Option<SpanRange> = None;
+	for fragment in fragments {
+		let AstStatement::Assignment {
+			key,
+			key_span,
+			value: AstValue::Block { span, .. },
+			span: stmt_span,
+		} = &fragment.statement
+		else {
+			return None;
+		};
+		match &container_key {
+			Some(existing) if existing != key => return None,
+			Some(_) => {}
+			None => {
+				container_key = Some(key.clone());
+				container_key_span = Some(key_span.clone());
+				container_block_span = Some(span.clone());
+				container_stmt_span = Some(stmt_span.clone());
+			}
+		}
+	}
+
+	// Every non-comment child of every fragment must be a block assignment
+	// with a derivable identity.  Anything else (scalar assignments, bare
+	// items) means the container is heterogeneous and we bail out.
+	for fragment in fragments {
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &fragment.statement
+		else {
+			return None;
+		};
+		for item in items {
+			match item {
+				AstStatement::Comment { .. } => {}
+				other => {
+					child_identity(other)?;
+				}
+			}
+		}
+	}
+
+	// Walk fragments in their existing precedence order.  First contributor's
+	// children seed the merged list; later contributors dedupe by identity
+	// and suffix-rename on conflict.
+	let mut merged_items: Vec<AstStatement> = Vec::new();
+	let mut by_identity: HashMap<ChildIdentity, usize> = HashMap::new();
+
+	for fragment in fragments {
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &fragment.statement
+		else {
+			continue;
+		};
+		let mod_id = &fragment.contributor.mod_id;
+		for item in items {
+			match item {
+				AstStatement::Comment { .. } => {
+					if !merged_items.iter().any(|existing| existing == item) {
+						merged_items.push(item.clone());
+					}
+				}
+				stmt => {
+					let identity = child_identity(stmt)?;
+					if let Some(&idx) = by_identity.get(&identity) {
+						if &merged_items[idx] == stmt {
+							continue;
+						}
+						let renamed = rename_named_child(stmt, &identity, mod_id);
+						merged_items.push(renamed);
+					} else {
+						by_identity.insert(identity, merged_items.len());
+						merged_items.push(stmt.clone());
+					}
+				}
+			}
+		}
+	}
+
+	let key = container_key?;
+	let key_span = container_key_span?;
+	let block_span = container_block_span?;
+	let stmt_span = container_stmt_span?;
+	Some(AstStatement::Assignment {
+		key,
+		key_span,
+		value: AstValue::Block {
+			items: merged_items,
+			span: block_span,
+		},
+		span: stmt_span,
+	})
+}
+
+/// Rename a named-container child for conflict resolution.  When the child
+/// carries a `name = "..."` field the rename targets that value; otherwise
+/// the child's assignment key itself is suffixed.
+fn rename_named_child(stmt: &AstStatement, identity: &ChildIdentity, mod_id: &str) -> AstStatement {
+	let suffix = sanitize_contributor_id(mod_id);
+	let (_key, name) = identity;
+	if let Some(name_value) = name {
+		let new_name = format!("{name_value}_{suffix}");
+		rename_named_child_field(stmt, "name", &new_name)
+	} else {
+		match stmt {
+			AstStatement::Assignment { key, .. } => {
+				let renamed_key = format!("{key}_{suffix}");
+				rename_statement_key(stmt, &renamed_key)
+			}
+			other => other.clone(),
+		}
+	}
+}
+
+/// Like `rename_inner_field`, but preserves the original scalar kind so a
+/// quoted name stays quoted in the emitted output.
+fn rename_named_child_field(
+	statement: &AstStatement,
+	field: &str,
+	new_value: &str,
+) -> AstStatement {
+	let AstStatement::Assignment {
+		key,
+		key_span,
+		value: AstValue::Block { items, span },
+		span: stmt_span,
+	} = statement
+	else {
+		return statement.clone();
+	};
+	let new_items: Vec<AstStatement> = items
+		.iter()
+		.map(|item| match item {
+			AstStatement::Assignment {
+				key: k,
+				key_span: ks,
+				value: AstValue::Scalar { value, span: vs },
+				span: s,
+			} if k == field => {
+				let renamed = match value {
+					ScalarValue::String(_) => ScalarValue::String(new_value.to_string()),
+					_ => ScalarValue::Identifier(new_value.to_string()),
+				};
+				AstStatement::Assignment {
+					key: k.clone(),
+					key_span: ks.clone(),
+					value: AstValue::Scalar {
+						value: renamed,
+						span: vs.clone(),
+					},
+					span: s.clone(),
+				}
+			}
+			other => other.clone(),
+		})
+		.collect();
+	AstStatement::Assignment {
+		key: key.clone(),
+		key_span: key_span.clone(),
+		value: AstValue::Block {
+			items: new_items,
+			span: span.clone(),
+		},
+		span: stmt_span.clone(),
 	}
 }
 
@@ -2105,5 +2328,251 @@ mod tests {
 			find_by_key(items, "also_keep");
 			find_by_key(items, "new_key");
 		}
+	}
+
+	// ---- NamedContainerUnion ----
+
+	#[test]
+	fn named_container_union_merges_disjoint_gui_window_types() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9801");
+		let mod_b = temp.path().join("9802");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9801"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9802"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"interface/hre.gui",
+			"guiTypes = {\n\twindowType = {\n\t\tname = \"hre_window_a\"\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"interface/hre.gui",
+			"guiTypes = {\n\twindowType = {\n\t\tname = \"hre_window_b\"\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		assert_eq!(result.structural_files.len(), 1);
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::AssignmentKey);
+		assert_eq!(file.nodes.len(), 1, "container should not be split");
+		let node = &file.nodes[0];
+		assert_eq!(node.merge_key, "guiTypes");
+		assert!(!node.conflict_rename);
+
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &node.merged_statement
+		else {
+			panic!("merged guiTypes must be a block");
+		};
+		let window_names: Vec<String> = items
+			.iter()
+			.filter_map(|item| {
+				let AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items: inner, .. },
+					..
+				} = item
+				else {
+					return None;
+				};
+				if key != "windowType" {
+					return None;
+				}
+				inner.iter().find_map(|inner_item| {
+					if let AstStatement::Assignment {
+						key: k,
+						value: AstValue::Scalar { value, .. },
+						..
+					} = inner_item && k == "name"
+					{
+						Some(value.as_text())
+					} else {
+						None
+					}
+				})
+			})
+			.collect();
+		assert_eq!(window_names, vec!["hre_window_a", "hre_window_b"]);
+	}
+
+	#[test]
+	fn named_container_union_renames_conflicting_sprite_types() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9811");
+		let mod_b = temp.path().join("9812");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9811"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9812"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"interface/family.gfx",
+			"spriteTypes = {\n\tspriteType = {\n\t\tname = \"GFX_shared\"\n\t\ttexturefile = \"a.dds\"\n\t}\n\tspriteType = {\n\t\tname = \"GFX_only_a\"\n\t\ttexturefile = \"only_a.dds\"\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"interface/family.gfx",
+			"spriteTypes = {\n\tspriteType = {\n\t\tname = \"GFX_shared\"\n\t\ttexturefile = \"b.dds\"\n\t}\n\tspriteType = {\n\t\tname = \"GFX_only_b\"\n\t\ttexturefile = \"only_b.dds\"\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::AssignmentKey);
+		assert_eq!(file.nodes.len(), 1);
+		let node = &file.nodes[0];
+		assert_eq!(node.merge_key, "spriteTypes");
+		assert!(!node.conflict_rename);
+
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &node.merged_statement
+		else {
+			panic!("merged spriteTypes must be a block");
+		};
+		let sprite_names: Vec<String> = items
+			.iter()
+			.filter_map(|item| {
+				let AstStatement::Assignment {
+					value: AstValue::Block { items: inner, .. },
+					..
+				} = item
+				else {
+					return None;
+				};
+				inner.iter().find_map(|inner_item| {
+					if let AstStatement::Assignment {
+						key: k,
+						value: AstValue::Scalar { value, .. },
+						..
+					} = inner_item && k == "name"
+					{
+						Some(value.as_text())
+					} else {
+						None
+					}
+				})
+			})
+			.collect();
+		assert!(sprite_names.contains(&"GFX_shared".to_string()));
+		assert!(sprite_names.contains(&"GFX_only_a".to_string()));
+		assert!(sprite_names.contains(&"GFX_only_b".to_string()));
+		assert!(
+			sprite_names.iter().any(|n| n == "GFX_shared_9812"),
+			"conflicting GFX_shared from mod B should be suffix-renamed; got {sprite_names:?}",
+		);
+		assert_eq!(sprite_names.len(), 4);
+	}
+
+	#[test]
+	fn named_container_union_merges_disjoint_country_decisions() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9821");
+		let mod_b = temp.path().join("9822");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9821"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9822"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"decisions/PragmaticSanction.txt",
+			"country_decisions = {\n\tdecision_a = {\n\t\teffect = { log = a }\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"decisions/PragmaticSanction.txt",
+			"country_decisions = {\n\tdecision_b = {\n\t\teffect = { log = b }\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::ContainerChildKey);
+		// ContainerChildKey already fragments at the decision level so each
+		// decision is its own node — no container suffix to worry about.
+		let keys: Vec<&str> = file
+			.nodes
+			.iter()
+			.map(|node| node.merge_key.as_str())
+			.collect();
+		assert!(keys.contains(&"decision_a"));
+		assert!(keys.contains(&"decision_b"));
+		for node in &file.nodes {
+			assert_eq!(node.container_key.as_deref(), Some("country_decisions"));
+			assert!(!node.conflict_rename);
+		}
+	}
+
+	#[test]
+	fn named_container_union_skips_heterogeneous_blocks() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9831");
+		let mod_b = temp.path().join("9832");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9831"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9832"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		// Top-level container holds a mix of a scalar field and a child block,
+		// so we cannot derive a uniform child identity and must fall back to
+		// the existing per-contributor suffix rename.
+		write_script_file(
+			&mod_a,
+			"common/scripted_effects/effects.txt",
+			"shared_effect = {\n\tversion = 1\n\tinner = {\n\t\tlog = a\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"common/scripted_effects/effects.txt",
+			"shared_effect = {\n\tversion = 2\n\tinner = {\n\t\tlog = b\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::AssignmentKey);
+		// Heterogeneous container falls back to suffix rename: two nodes,
+		// neither retains the bare "shared_effect" key.
+		let keys: Vec<&str> = file
+			.nodes
+			.iter()
+			.map(|node| node.merge_key.as_str())
+			.collect();
+		assert!(!keys.contains(&"shared_effect"));
+		assert!(keys.iter().any(|k| k.starts_with("shared_effect_")));
+		assert!(file.nodes.iter().any(|node| node.conflict_rename));
 	}
 }
