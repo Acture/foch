@@ -6,8 +6,10 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use foch_language::analyzer::content_family::{MergePolicies, ScalarMergePolicy};
-use foch_language::analyzer::parser::{AstValue, ScalarValue};
+use foch_language::analyzer::content_family::{
+	MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
+};
+use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
 use super::patch::{AstPath, ClausewitzPatch};
 
@@ -219,7 +221,7 @@ fn resolve_address(
 		"SetValue" => resolve_set_values(addr, attributed, policies, stats),
 		"RemoveNode" => resolve_remove_convergent(addr, attributed, stats),
 		"RemoveListItem" => resolve_remove_list_items(addr, attributed, stats),
-		"ReplaceBlock" => resolve_replace_blocks(addr, attributed, stats),
+		"ReplaceBlock" => resolve_replace_blocks(addr, attributed, policies, stats),
 		_ => {
 			stats.conflict_patches += 1;
 			PatchResolution::Conflict {
@@ -445,19 +447,578 @@ fn resolve_remove_list_items(
 	}
 }
 
-/// Multiple mods replacing the same block → conflict unless identical.
+/// Multiple mods replacing the same block → try named-container 3-way merge first;
+/// fall back to conflict if that's not applicable.
 fn resolve_replace_blocks(
 	addr: PatchAddress,
 	attributed: Vec<AttributedPatch>,
+	policies: &MergePolicies,
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
-	// Identical replacements were already caught by convergence check above,
-	// so reaching here means different replacements → conflict.
+	if let Some(merged) = try_replace_block_named_container_merge(&attributed, policies) {
+		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+		stats.auto_merged_patches += 1;
+		return PatchResolution::AutoMerged {
+			result: merged,
+			strategy: "named_container_union".to_string(),
+			contributing_mods: mods,
+		};
+	}
+
 	stats.conflict_patches += 1;
 	PatchResolution::Conflict {
 		address: addr,
 		reason: "multiple mods replace the same block with different content".to_string(),
 		patches: attributed,
+	}
+}
+
+/// Attempt named-container merge across N mod ReplaceBlock patches at the same
+/// address. Returns the merged ReplaceBlock if applicable, else `None`.
+fn try_replace_block_named_container_merge(
+	attributed: &[AttributedPatch],
+	policies: &MergePolicies,
+) -> Option<ClausewitzPatch> {
+	if attributed.len() < 2 {
+		return None;
+	}
+
+	// All patches must be ReplaceBlock with a common `old_statement` (base).
+	let first = match &attributed[0].patch {
+		ClausewitzPatch::ReplaceBlock { .. } => &attributed[0].patch,
+		_ => return None,
+	};
+	let (path, key, base_old) = match first {
+		ClausewitzPatch::ReplaceBlock {
+			path,
+			key,
+			old_statement,
+			..
+		} => (path.clone(), key.clone(), old_statement.clone()),
+		_ => return None,
+	};
+	for a in attributed.iter().skip(1) {
+		match &a.patch {
+			ClausewitzPatch::ReplaceBlock { old_statement, .. } => {
+				if !ast_equal_ignoring_spans(&base_old, old_statement) {
+					return None;
+				}
+			}
+			_ => return None,
+		}
+	}
+
+	let base_body = statement_block_body(&base_old)?;
+	if !items_are_named_container(base_body, policy_allow_scalars(policies)) {
+		return None;
+	}
+
+	// Sort by precedence ascending so highest-precedence is last (used by OverlayWins).
+	let mut ordered: Vec<&AttributedPatch> = attributed.iter().collect();
+	ordered.sort_by(|a, b| a.precedence.cmp(&b.precedence));
+
+	let candidate_owned: Vec<(String, Vec<AstStatement>)> = ordered
+		.iter()
+		.map(|a| {
+			let stmt = match &a.patch {
+				ClausewitzPatch::ReplaceBlock { new_statement, .. } => new_statement,
+				_ => unreachable!(),
+			};
+			let body = statement_block_body(stmt).cloned().unwrap_or_default();
+			(a.mod_id.clone(), body)
+		})
+		.collect();
+
+	for (_id, body) in &candidate_owned {
+		if !items_are_named_container(body, policy_allow_scalars(policies)) {
+			return None;
+		}
+	}
+
+	let candidate_refs: Vec<(&str, &[AstStatement])> = candidate_owned
+		.iter()
+		.map(|(id, body)| (id.as_str(), body.as_slice()))
+		.collect();
+
+	let merged_body = merge_named_container_bodies(base_body, &candidate_refs, policies).ok()?;
+
+	let merged_stmt = with_block_body(&base_old, merged_body);
+
+	Some(ClausewitzPatch::ReplaceBlock {
+		path,
+		key,
+		old_statement: base_old,
+		new_statement: merged_stmt,
+	})
+}
+
+fn policy_allow_scalars(_policies: &MergePolicies) -> bool {
+	// Both SuffixRename and OverlayWins tolerate scalar passthrough at the body
+	// level; the gating is done per-child via items_are_named_container.
+	true
+}
+
+// ---------------------------------------------------------------------------
+// Named-container 3-way merge (used by ReplaceBlock resolution and exposed for
+// reuse). Operates directly on AST bodies; never reuses `merge/ir.rs`.
+// ---------------------------------------------------------------------------
+
+/// Identity of a child statement inside a named-container body.
+///
+/// `key` is the assignment key (e.g. `windowType`, `iconType`). `name` is the
+/// inner `name = "..."` field's value, when present — this is what
+/// distinguishes two `windowType` siblings inside a parent container.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ChildIdentity {
+	pub key: String,
+	pub name: Option<String>,
+}
+
+/// Errors from `merge_named_container_bodies`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NamedContainerMergeError {
+	/// Bodies do not look like a named container (failed gating heuristics).
+	NotNamedContainer,
+	/// Conflict that policy refused to resolve (e.g. OverlayWins requested but
+	/// candidates are unordered; reserved for future strict modes).
+	UnresolvableConflict,
+}
+
+/// Compute the identity of an `AstStatement` for named-container indexing.
+///
+/// Returns:
+/// - `Some({ key, name: Some(...) })` for `key = { name = "..." ... }` blocks
+/// - `Some({ key, name: None })` for any other `key = <value>` assignment
+/// - `None` for items / comments (no stable identity)
+pub fn child_identity(stmt: &AstStatement) -> Option<ChildIdentity> {
+	match stmt {
+		AstStatement::Assignment { key, value, .. } => {
+			let name = block_name_field(value);
+			Some(ChildIdentity {
+				key: key.clone(),
+				name,
+			})
+		}
+		_ => None,
+	}
+}
+
+/// Extract the inner `name = "..."` (or `name = identifier`) field from a block
+/// value, if present.
+fn block_name_field(value: &AstValue) -> Option<String> {
+	let items = match value {
+		AstValue::Block { items, .. } => items,
+		_ => return None,
+	};
+	for stmt in items {
+		if let AstStatement::Assignment {
+			key,
+			value: AstValue::Scalar { value: sv, .. },
+			..
+		} = stmt
+			&& key == "name"
+		{
+			return Some(sv.as_text());
+		}
+	}
+	None
+}
+
+/// Heuristic: is the given body shaped like a named-container body?
+///
+/// - At least one block-typed child is required.
+/// - Block-typed children must have unique `ChildIdentity` (or be exactly equal,
+///   which we tolerate as a duplicate definition).
+/// - When `allow_scalars` is `false`, the body must contain only block children
+///   (no scalar/assignment-with-scalar siblings).
+pub fn items_are_named_container(body: &[AstStatement], allow_scalars: bool) -> bool {
+	let mut block_children = 0usize;
+	let mut seen: Vec<(ChildIdentity, &AstStatement)> = Vec::new();
+	for stmt in body {
+		match stmt {
+			AstStatement::Comment { .. } => continue,
+			AstStatement::Item { .. } => {
+				if !allow_scalars {
+					return false;
+				}
+			}
+			AstStatement::Assignment { value, .. } => match value {
+				AstValue::Block { .. } => {
+					block_children += 1;
+					let id = match child_identity(stmt) {
+						Some(id) => id,
+						None => return false,
+					};
+					for (other_id, other_stmt) in &seen {
+						if other_id == &id && !ast_equal_ignoring_spans(other_stmt, stmt) {
+							return false;
+						}
+					}
+					seen.push((id, stmt));
+				}
+				AstValue::Scalar { .. } => {
+					if !allow_scalars {
+						return false;
+					}
+				}
+			},
+		}
+	}
+	block_children > 0
+}
+
+/// Span-stripped structural equality on statements. Two statements are equal
+/// here iff they would print identically modulo whitespace/positions.
+pub fn ast_equal_ignoring_spans(a: &AstStatement, b: &AstStatement) -> bool {
+	match (a, b) {
+		(
+			AstStatement::Assignment {
+				key: ka, value: va, ..
+			},
+			AstStatement::Assignment {
+				key: kb, value: vb, ..
+			},
+		) => ka == kb && ast_value_equal_ignoring_spans(va, vb),
+		(AstStatement::Item { value: va, .. }, AstStatement::Item { value: vb, .. }) => {
+			ast_value_equal_ignoring_spans(va, vb)
+		}
+		(AstStatement::Comment { text: ta, .. }, AstStatement::Comment { text: tb, .. }) => {
+			ta == tb
+		}
+		_ => false,
+	}
+}
+
+fn ast_value_equal_ignoring_spans(a: &AstValue, b: &AstValue) -> bool {
+	match (a, b) {
+		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
+		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
+			if ia.len() != ib.len() {
+				return false;
+			}
+			ia.iter()
+				.zip(ib.iter())
+				.all(|(x, y)| ast_equal_ignoring_spans(x, y))
+		}
+		_ => false,
+	}
+}
+
+/// Suffix-rename a named child by appending `_<sanitized_mod_id>` either to its
+/// inner `name = "..."` field (preferred) or to its assignment key (fallback).
+///
+/// Statements without an identity (items/comments) are returned unchanged.
+pub fn rename_named_child(stmt: &AstStatement, mod_id: &str) -> AstStatement {
+	let suffix = sanitize_mod_id(mod_id);
+	match stmt {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value,
+			span,
+		} => {
+			if let AstValue::Block { items, span: bspan } = value
+				&& items
+					.iter()
+					.any(|s| matches!(s, AstStatement::Assignment { key, .. } if key == "name"))
+			{
+				let renamed_items: Vec<AstStatement> = items
+					.iter()
+					.map(|s| match s {
+						AstStatement::Assignment {
+							key: k,
+							key_span,
+							value:
+								AstValue::Scalar {
+									value: sv,
+									span: ssp,
+								},
+							span,
+						} if k == "name" => {
+							let new_text = format!("{}_{}", sv.as_text(), suffix);
+							let new_scalar = match sv {
+								ScalarValue::Identifier(_) => ScalarValue::Identifier(new_text),
+								ScalarValue::String(_) => ScalarValue::String(new_text),
+								ScalarValue::Number(_) => ScalarValue::Identifier(new_text),
+								ScalarValue::Bool(_) => ScalarValue::Identifier(new_text),
+							};
+							AstStatement::Assignment {
+								key: k.clone(),
+								key_span: key_span.clone(),
+								value: AstValue::Scalar {
+									value: new_scalar,
+									span: ssp.clone(),
+								},
+								span: span.clone(),
+							}
+						}
+						other => other.clone(),
+					})
+					.collect();
+				return AstStatement::Assignment {
+					key: key.clone(),
+					key_span: key_span.clone(),
+					value: AstValue::Block {
+						items: renamed_items,
+						span: bspan.clone(),
+					},
+					span: span.clone(),
+				};
+			}
+			AstStatement::Assignment {
+				key: format!("{key}_{suffix}"),
+				key_span: key_span.clone(),
+				value: value.clone(),
+				span: span.clone(),
+			}
+		}
+		_ => stmt.clone(),
+	}
+}
+
+fn sanitize_mod_id(mod_id: &str) -> String {
+	mod_id
+		.chars()
+		.map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+		.collect()
+}
+
+/// 3-way merge a base named-container body with N candidate (post-modification)
+/// bodies from different mods, producing a unioned body.
+///
+/// `candidate_bodies` should be ordered by ascending precedence (higher
+/// precedence later) — this matters for `OverlayWins`.
+pub fn merge_named_container_bodies(
+	base_body: &[AstStatement],
+	candidate_bodies: &[(&str, &[AstStatement])],
+	policies: &MergePolicies,
+) -> Result<Vec<AstStatement>, NamedContainerMergeError> {
+	let allow_scalars = policy_allow_scalars(policies);
+	// Require that at least one of (base, candidates) is a recognizable
+	// named-container body, and that none of them contradicts the shape.
+	let any_qualifies = items_are_named_container(base_body, allow_scalars)
+		|| candidate_bodies
+			.iter()
+			.any(|(_, body)| items_are_named_container(body, allow_scalars));
+	if !any_qualifies {
+		return Err(NamedContainerMergeError::NotNamedContainer);
+	}
+	if !valid_named_container_shape(base_body, allow_scalars) {
+		return Err(NamedContainerMergeError::NotNamedContainer);
+	}
+	for (_, body) in candidate_bodies {
+		if !valid_named_container_shape(body, allow_scalars) {
+			return Err(NamedContainerMergeError::NotNamedContainer);
+		}
+	}
+
+	// Start from base; index identifiable children by identity for O(1) lookup.
+	let mut result: Vec<AstStatement> = base_body.to_vec();
+	let mut index: HashMap<ChildIdentity, usize> = HashMap::new();
+	for (i, stmt) in result.iter().enumerate() {
+		if let Some(id) = child_identity(stmt) {
+			index.insert(id, i);
+		}
+	}
+
+	for (mod_id, body) in candidate_bodies {
+		for stmt in *body {
+			let id = match child_identity(stmt) {
+				Some(id) => id,
+				None => {
+					if !result.iter().any(|s| ast_equal_ignoring_spans(s, stmt)) {
+						result.push(stmt.clone());
+					}
+					continue;
+				}
+			};
+			let is_block = matches!(
+				stmt,
+				AstStatement::Assignment {
+					value: AstValue::Block { .. },
+					..
+				}
+			);
+			if !is_block {
+				// Scalar assignment: last-writer at same identity.
+				match index.get(&id).copied() {
+					Some(idx) => {
+						if !ast_equal_ignoring_spans(&result[idx], stmt) {
+							result[idx] = stmt.clone();
+						}
+					}
+					None => {
+						let new_idx = result.len();
+						result.push(stmt.clone());
+						index.insert(id.clone(), new_idx);
+					}
+				}
+				continue;
+			}
+			match index.get(&id).copied() {
+				None => {
+					let new_idx = result.len();
+					result.push(stmt.clone());
+					index.insert(id.clone(), new_idx);
+				}
+				Some(idx) => {
+					if ast_equal_ignoring_spans(&result[idx], stmt) {
+						continue;
+					}
+					if let Some(merged) =
+						try_recursive_named_merge(&result[idx], stmt, mod_id, policies)
+					{
+						result[idx] = merged;
+					} else {
+						match policies.named_container {
+							NamedContainerPolicy::OverlayWins => {
+								result[idx] = stmt.clone();
+							}
+							NamedContainerPolicy::SuffixRename => {
+								let renamed = rename_named_child(stmt, mod_id);
+								if let Some(new_id) = child_identity(&renamed) {
+									let new_idx = result.len();
+									result.push(renamed);
+									index.entry(new_id).or_insert(new_idx);
+								} else {
+									result.push(renamed);
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	Ok(result)
+}
+
+/// Looser validity gate used during recursion: a body is acceptable if it has
+/// no scalars (when `!allow_scalars`) and no duplicate-identity block children
+/// — but it need not contain any blocks itself (it may be empty / scalar-only
+/// if `allow_scalars`).
+fn valid_named_container_shape(body: &[AstStatement], allow_scalars: bool) -> bool {
+	let mut seen: Vec<(ChildIdentity, &AstStatement)> = Vec::new();
+	for stmt in body {
+		match stmt {
+			AstStatement::Comment { .. } => continue,
+			AstStatement::Item { .. } => {
+				if !allow_scalars {
+					return false;
+				}
+			}
+			AstStatement::Assignment { value, .. } => match value {
+				AstValue::Block { .. } => {
+					let id = match child_identity(stmt) {
+						Some(id) => id,
+						None => return false,
+					};
+					for (other_id, other_stmt) in &seen {
+						if other_id == &id && !ast_equal_ignoring_spans(other_stmt, stmt) {
+							return false;
+						}
+					}
+					seen.push((id, stmt));
+				}
+				AstValue::Scalar { .. } => {
+					if !allow_scalars {
+						return false;
+					}
+				}
+			},
+		}
+	}
+	true
+}
+
+/// Attempt to merge two same-identity block children by recursing into their
+/// bodies as named-container bodies. Returns `Some(merged)` only when at least
+/// one side has nested block children (so we are confident the inner body is a
+/// real named container, not a trigger / position spec / scalar leaf block).
+fn try_recursive_named_merge(
+	existing: &AstStatement,
+	candidate: &AstStatement,
+	candidate_mod_id: &str,
+	policies: &MergePolicies,
+) -> Option<AstStatement> {
+	let existing_value = match existing {
+		AstStatement::Assignment { value, .. } => value,
+		_ => return None,
+	};
+	let candidate_value = match candidate {
+		AstStatement::Assignment { value, .. } => value,
+		_ => return None,
+	};
+	let existing_body = match existing_value {
+		AstValue::Block { items, .. } => items,
+		_ => return None,
+	};
+	let candidate_body = match candidate_value {
+		AstValue::Block { items, .. } => items,
+		_ => return None,
+	};
+	let allow_scalars = policy_allow_scalars(policies);
+	let either_has_blocks = items_are_named_container(existing_body, allow_scalars)
+		|| items_are_named_container(candidate_body, allow_scalars);
+	if !either_has_blocks {
+		return None;
+	}
+	if !valid_named_container_shape(existing_body, allow_scalars)
+		|| !valid_named_container_shape(candidate_body, allow_scalars)
+	{
+		return None;
+	}
+	let merged = merge_named_container_bodies(
+		existing_body,
+		&[(candidate_mod_id, candidate_body.as_slice())],
+		policies,
+	)
+	.ok()?;
+	Some(with_block_body(existing, merged))
+}
+
+fn statement_block_body(stmt: &AstStatement) -> Option<&Vec<AstStatement>> {
+	match stmt {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} => Some(items),
+		AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => Some(items),
+		_ => None,
+	}
+}
+
+fn with_block_body(stmt: &AstStatement, items: Vec<AstStatement>) -> AstStatement {
+	match stmt {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value: AstValue::Block { span, .. },
+			span: outer_span,
+		} => AstStatement::Assignment {
+			key: key.clone(),
+			key_span: key_span.clone(),
+			value: AstValue::Block {
+				items,
+				span: span.clone(),
+			},
+			span: outer_span.clone(),
+		},
+		AstStatement::Item {
+			value: AstValue::Block { span, .. },
+			span: outer_span,
+		} => AstStatement::Item {
+			value: AstValue::Block {
+				items,
+				span: span.clone(),
+			},
+			span: outer_span.clone(),
+		},
+		other => other.clone(),
 	}
 }
 
@@ -850,6 +1411,368 @@ mod tests {
 					}
 					_ => panic!("expected SetValue"),
 				}
+			}
+			other => panic!("expected AutoMerged, got: {other:?}"),
+		}
+	}
+
+	// -----------------------------------------------------------------------
+	// Named-container merge tests
+	// -----------------------------------------------------------------------
+
+	fn string_val(s: &str) -> AstValue {
+		AstValue::Scalar {
+			value: ScalarValue::String(s.to_string()),
+			span: span(),
+		}
+	}
+
+	fn block(items: Vec<AstStatement>) -> AstValue {
+		AstValue::Block {
+			items,
+			span: span(),
+		}
+	}
+
+	fn named_block(key: &str, name: &str, extras: Vec<AstStatement>) -> AstStatement {
+		let mut items = vec![assignment("name", string_val(name))];
+		items.extend(extras);
+		assignment(key, block(items))
+	}
+
+	#[test]
+	fn child_identity_named_block_returns_key_and_name() {
+		let stmt = named_block(
+			"windowType",
+			"hre_window",
+			vec![assignment("position", scalar("center"))],
+		);
+		let id = child_identity(&stmt).expect("identity");
+		assert_eq!(id.key, "windowType");
+		assert_eq!(id.name.as_deref(), Some("hre_window"));
+	}
+
+	#[test]
+	fn child_identity_block_without_name_returns_key_only() {
+		let stmt = assignment("position", block(vec![assignment("x", number("1"))]));
+		let id = child_identity(&stmt).expect("identity");
+		assert_eq!(id.key, "position");
+		assert_eq!(id.name, None);
+	}
+
+	#[test]
+	fn items_are_named_container_pure_blocks_true() {
+		let body = vec![
+			named_block("windowType", "a", vec![]),
+			named_block("windowType", "b", vec![]),
+		];
+		assert!(items_are_named_container(&body, false));
+		assert!(items_are_named_container(&body, true));
+	}
+
+	#[test]
+	fn items_are_named_container_mixed_with_scalars_strict_false_lenient_true() {
+		let body = vec![
+			assignment("position", scalar("center")), // bare scalar field
+			named_block("iconType", "icon_a", vec![]),
+		];
+		assert!(!items_are_named_container(&body, false));
+		assert!(items_are_named_container(&body, true));
+	}
+
+	#[test]
+	fn ast_equal_ignoring_spans_handles_different_filenames() {
+		// Two structurally identical statements with different spans (here we
+		// can only differ on offset/line/column) must compare equal.
+		let s1 = named_block(
+			"iconType",
+			"icon_a",
+			vec![assignment("texture", scalar("a.dds"))],
+		);
+		let mut s2 = s1.clone();
+		// Mutate inner spans to simulate a different parse origin.
+		if let AstStatement::Assignment { span, .. } = &mut s2 {
+			span.start.line = 42;
+			span.start.column = 7;
+			span.end.line = 99;
+		}
+		assert!(ast_equal_ignoring_spans(&s1, &s2));
+		assert_ne!(s1, s2, "raw PartialEq must differ — spans differ");
+	}
+
+	fn body_to_window_type_block(name: &str, body: Vec<AstStatement>) -> AstStatement {
+		named_block("windowType", name, body)
+	}
+
+	#[test]
+	fn merge_two_modded_windowtypes_unions_inner_icon_types() {
+		// Base: empty windowType "hre"
+		let base = vec![body_to_window_type_block("hre", vec![])];
+		// Mod A adds iconType "ico_a" inside windowType
+		let mod_a = vec![body_to_window_type_block(
+			"hre",
+			vec![named_block("iconType", "ico_a", vec![])],
+		)];
+		// Mod B adds iconType "ico_b" inside windowType
+		let mod_b = vec![body_to_window_type_block(
+			"hre",
+			vec![named_block("iconType", "ico_b", vec![])],
+		)];
+
+		let merged = merge_named_container_bodies(
+			&base,
+			&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+			&default_policies(),
+		)
+		.expect("merge");
+
+		assert_eq!(merged.len(), 1);
+		// Inspect inner body: should now have both iconType ico_a and ico_b.
+		let inner = match &merged[0] {
+			AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} => items,
+			other => panic!("expected windowType block, got {other:?}"),
+		};
+		// Filter only iconType children.
+		let icons: Vec<_> = inner
+			.iter()
+			.filter_map(child_identity)
+			.filter(|id| id.key == "iconType")
+			.map(|id| id.name.unwrap_or_default())
+			.collect();
+		assert!(
+			icons.contains(&"ico_a".to_string()),
+			"missing ico_a: {icons:?}"
+		);
+		assert!(
+			icons.contains(&"ico_b".to_string()),
+			"missing ico_b: {icons:?}"
+		);
+	}
+
+	#[test]
+	fn merge_two_modded_windowtypes_recursive_into_named_subblock() {
+		// Both mods modify the same iconType "ico_x", each adding distinct grandchild.
+		let base = vec![body_to_window_type_block(
+			"hre",
+			vec![named_block("iconType", "ico_x", vec![])],
+		)];
+		let mod_a = vec![body_to_window_type_block(
+			"hre",
+			vec![named_block(
+				"iconType",
+				"ico_x",
+				vec![named_block("hover", "h_a", vec![])],
+			)],
+		)];
+		let mod_b = vec![body_to_window_type_block(
+			"hre",
+			vec![named_block(
+				"iconType",
+				"ico_x",
+				vec![named_block("hover", "h_b", vec![])],
+			)],
+		)];
+
+		let merged = merge_named_container_bodies(
+			&base,
+			&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+			&default_policies(),
+		)
+		.expect("merge");
+
+		// Drill down: windowType.hre -> iconType.ico_x -> body should contain
+		// both hover.h_a and hover.h_b.
+		let window_body = match &merged[0] {
+			AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} => items,
+			_ => panic!("expected windowType block"),
+		};
+		let icon = window_body
+			.iter()
+			.find(|s| {
+				child_identity(s)
+					.map(|i| i.name.as_deref() == Some("ico_x"))
+					.unwrap_or(false)
+			})
+			.expect("ico_x present");
+		let icon_body = match icon {
+			AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} => items,
+			_ => panic!("ico_x should be a block"),
+		};
+		let hovers: Vec<_> = icon_body
+			.iter()
+			.filter_map(child_identity)
+			.filter(|id| id.key == "hover")
+			.map(|id| id.name.unwrap_or_default())
+			.collect();
+		assert!(
+			hovers.contains(&"h_a".to_string()),
+			"missing h_a: {hovers:?}"
+		);
+		assert!(
+			hovers.contains(&"h_b".to_string()),
+			"missing h_b: {hovers:?}"
+		);
+	}
+
+	#[test]
+	fn merge_conflict_suffix_renames_under_lenient() {
+		// Same identity, both leaves (no nested named-container body) → cannot
+		// recurse → SuffixRename keeps both via rename.
+		let base: Vec<AstStatement> = vec![named_block("iconType", "icon_x", vec![])];
+		let mod_a = vec![named_block(
+			"iconType",
+			"icon_x",
+			vec![assignment("texture", string_val("a.dds"))],
+		)];
+		let mod_b = vec![named_block(
+			"iconType",
+			"icon_x",
+			vec![assignment("texture", string_val("b.dds"))],
+		)];
+
+		let policies = MergePolicies {
+			named_container: NamedContainerPolicy::SuffixRename,
+			..Default::default()
+		};
+		let merged = merge_named_container_bodies(
+			&base,
+			&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+			&policies,
+		)
+		.expect("merge");
+
+		// First candidate replaced base via recursive (texture is a scalar
+		// passthrough — single-mod merge succeeds). Second candidate conflicts
+		// with the same texture key → SuffixRename appends a renamed copy.
+		let names: Vec<_> = merged
+			.iter()
+			.filter_map(child_identity)
+			.filter(|id| id.key == "iconType")
+			.map(|id| id.name.unwrap_or_default())
+			.collect();
+		assert!(names.iter().any(|n| n == "icon_x"), "names={names:?}");
+		assert!(
+			names
+				.iter()
+				.any(|n| n.starts_with("icon_x_") && n.contains("mod_b")),
+			"expected suffix-renamed icon_x_mod_b, got names={names:?}"
+		);
+	}
+
+	#[test]
+	fn merge_conflict_overlay_wins_under_overlay_policy() {
+		let base: Vec<AstStatement> = vec![named_block("iconType", "icon_x", vec![])];
+		let mod_a = vec![named_block(
+			"iconType",
+			"icon_x",
+			vec![assignment("texture", string_val("a.dds"))],
+		)];
+		let mod_b = vec![named_block(
+			"iconType",
+			"icon_x",
+			vec![assignment("texture", string_val("b.dds"))],
+		)];
+
+		let policies = MergePolicies {
+			named_container: NamedContainerPolicy::OverlayWins,
+			..Default::default()
+		};
+		let merged = merge_named_container_bodies(
+			&base,
+			&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+			&policies,
+		)
+		.expect("merge");
+
+		// Only one icon_x kept; its texture is mod_b's value (last in the list).
+		let icons: Vec<_> = merged
+			.iter()
+			.filter(|s| {
+				child_identity(s)
+					.map(|i| i.key == "iconType")
+					.unwrap_or(false)
+			})
+			.collect();
+		assert_eq!(icons.len(), 1, "OverlayWins must keep only one entry");
+		let inner = match icons[0] {
+			AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} => items,
+			_ => panic!("expected block"),
+		};
+		let texture = inner.iter().find_map(|s| match s {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Scalar { value: sv, .. },
+				..
+			} if key == "texture" => Some(sv.as_text()),
+			_ => None,
+		});
+		assert_eq!(texture.as_deref(), Some("b.dds"));
+	}
+
+	#[test]
+	fn replace_block_named_container_resolves_via_merge() {
+		// End-to-end: two mods produce ReplaceBlock for the same windowType
+		// with different inner additions; resolve_replace_blocks must auto-merge.
+		let base_stmt =
+			body_to_window_type_block("hre", vec![named_block("iconType", "ico_x", vec![])]);
+		let mod_a_stmt = body_to_window_type_block(
+			"hre",
+			vec![
+				named_block("iconType", "ico_x", vec![]),
+				named_block("iconType", "ico_a", vec![]),
+			],
+		);
+		let mod_b_stmt = body_to_window_type_block(
+			"hre",
+			vec![
+				named_block("iconType", "ico_x", vec![]),
+				named_block("iconType", "ico_b", vec![]),
+			],
+		);
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "windowType".into(),
+			old_statement: base_stmt.clone(),
+			new_statement: mod_a_stmt,
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "windowType".into(),
+			old_statement: base_stmt,
+			new_statement: mod_b_stmt,
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&default_policies(),
+		);
+
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"expected merge, got conflicts: {:?}",
+			result.conflicts
+		);
+		assert_eq!(result.resolved.len(), 1);
+		match &result.resolved[0] {
+			PatchResolution::AutoMerged { strategy, .. } => {
+				assert_eq!(strategy, "named_container_union");
 			}
 			other => panic!("expected AutoMerged, got: {other:?}"),
 		}
