@@ -1474,7 +1474,7 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 	.expect("write events a");
 	fs::write(
 		mod_b.join("events").join("shared.txt"),
-		"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = known_title\n}\n",
+		"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = missing_title\n\ttrigger = {\n\t\thas_global_flag = missing_flag\n\t}\n\timmediate = {\n\t\tmissing_effect = { }\n\t}\n}\ncountry_event = {\n\tid = test.3\n\ttitle = known_title\n}\n",
 	)
 	.expect("write events b");
 	fs::write(

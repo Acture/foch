@@ -47,8 +47,9 @@ pub(crate) fn resolve_diff_chain(
 	let mut prev: Option<&ResolvedFileContributor> = None;
 
 	for c in contributors {
-		if c.is_base_game {
-			// Base game is the anchor; it does not produce a patch itself.
+		if c.is_base_game || c.is_synthetic_base {
+			// Base (real or synthetic) is the anchor; it does not produce a
+			// patch itself.
 			prev = Some(c);
 			continue;
 		}

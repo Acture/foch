@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
-use super::emit::{emit_clausewitz_statements, emit_structural_file};
+use super::emit::emit_clausewitz_statements;
 use super::error::MergeError;
-use super::ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 #[allow(unused_imports)]
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
@@ -15,7 +14,7 @@ use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_works
 use foch_core::model::{
 	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportRename, MergeReportStatus,
+	MergeReportStatus,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
@@ -23,7 +22,7 @@ use foch_language::analyzer::content_family::{
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::semantic_index::parse_script_file;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -69,38 +68,6 @@ pub(crate) fn materialize_merge_internal(
 	}
 
 	let workspace = resolve_workspace(&request, options.include_game_base)?;
-
-	// Only build the legacy overlay IR when base game is unavailable
-	// (patch engine needs base game files to compute diffs).
-	let (ir_structural_files, ir_fatal) = if !options.include_game_base {
-		let ir = build_merge_ir_from_workspace_and_plan(&workspace, &plan);
-		let fatal = ir.has_fatal_errors();
-
-		// Collect conflict renames for the report
-		for file in &ir.structural_files {
-			for node in &file.nodes {
-				if node.conflict_rename
-					&& let Some(original) = &node.original_merge_key
-				{
-					report.renames.push(MergeReportRename {
-						family_id: file.family_id.clone(),
-						original_key: original.clone(),
-						renamed_key: node.merge_key.clone(),
-						mod_id: node.winner.mod_id.clone(),
-					});
-				}
-			}
-		}
-
-		let files: BTreeMap<_, _> = ir
-			.structural_files
-			.into_iter()
-			.map(|file| (file.target_path.clone(), file))
-			.collect();
-		(files, fatal)
-	} else {
-		(BTreeMap::new(), false)
-	};
 
 	if report.manual_conflict_count > 0 && !options.force {
 		report.status = MergeReportStatus::Blocked;
@@ -162,14 +129,17 @@ pub(crate) fn materialize_merge_internal(
 			}
 			MergePlanStrategy::StructuralMerge => {
 				let contributors = workspace.file_inventory.get(&entry.path);
-				let has_base_game = contributors
-					.map(|cs| cs.iter().any(|c| c.is_base_game))
+				let has_base = contributors
+					.map(|cs| cs.iter().any(|c| c.is_base_game || c.is_synthetic_base))
 					.unwrap_or(false);
 
-				if has_base_game && let Some(contributors) = contributors {
+				if has_base && let Some(contributors) = contributors {
 					// Only use patch engine when 2+ non-base mods contribute
 					// (single-mod overlap with base is just last-writer).
-					let non_base_count = contributors.iter().filter(|c| !c.is_base_game).count();
+					let non_base_count = contributors
+						.iter()
+						.filter(|c| !c.is_base_game && !c.is_synthetic_base)
+						.count();
 
 					if non_base_count >= 2 {
 						let descriptor = profile.classify_content_family(Path::new(&entry.path));
@@ -196,8 +166,17 @@ pub(crate) fn materialize_merge_internal(
 									report.generated_file_count += 1;
 									continue;
 								}
-								_ => {
-									// Fall through to copy winner
+								Ok(Err(err)) => {
+									report.warnings.push(format!(
+										"patch merge failed for {}: {err}; falling back to last-writer copy",
+										entry.path
+									));
+								}
+								Err(_) => {
+									report.warnings.push(format!(
+										"patch merge panicked for {}; falling back to last-writer copy",
+										entry.path
+									));
 								}
 							}
 						}
@@ -208,12 +187,11 @@ pub(crate) fn materialize_merge_internal(
 					generated_paths.insert(entry.path.clone());
 					report.generated_file_count += 1;
 				} else {
-					// No base game — use overlay IR fallback
-					if !ir_fatal && let Some(file) = ir_structural_files.get(&entry.path) {
-						write_structural_output(file, out_dir)?;
-						generated_paths.insert(entry.path.clone());
-						report.generated_file_count += 1;
-					}
+					// No base available at all (neither vanilla nor synthetic);
+					// fall back to last-writer copy.
+					copy_winner_file(&workspace, entry, out_dir)?;
+					generated_paths.insert(entry.path.clone());
+					report.generated_file_count += 1;
 				}
 			}
 			MergePlanStrategy::ManualConflict => {
@@ -436,16 +414,6 @@ fn copy_winner_file(
 		fs::create_dir_all(parent)?;
 	}
 	fs::copy(source, target)?;
-	Ok(())
-}
-
-fn write_structural_output(file: &MergeIrStructuralFile, out_dir: &Path) -> Result<(), MergeError> {
-	let rendered = emit_structural_file(file)?;
-	let target = out_dir.join(&file.target_path);
-	if let Some(parent) = target.parent() {
-		fs::create_dir_all(parent)?;
-	}
-	fs::write(target, rendered)?;
 	Ok(())
 }
 
@@ -727,102 +695,6 @@ mod tests {
 			fs::read_to_string(out_dir.join("common/overlay.txt")).expect("read overlay output"),
 			"from-b\n"
 		);
-	}
-
-	#[test]
-	fn structural_materialization_emits_normalized_outputs_and_marks_generated_paths() {
-		let temp = TempDir::new().expect("temp dir");
-		let playlist_path = temp.path().join("playlist.json");
-		let mod_a = temp.path().join("3001");
-		let mod_b = temp.path().join("3002");
-		let out_dir = temp.path().join("out");
-
-		write_playlist(
-			&playlist_path,
-			json!([
-				{ "displayName": "A", "enabled": true, "position": 0, "steamId": "3001" },
-				{ "displayName": "B", "enabled": true, "position": 1, "steamId": "3002" }
-			]),
-		);
-		write_descriptor(&mod_a, "mod-a");
-		write_descriptor(&mod_b, "mod-b");
-		write_file(
-			&mod_a,
-			"events/shared.txt",
-			"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_a\n}\n",
-		);
-		write_file(
-			&mod_b,
-			"events/shared.txt",
-			"namespace = test\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\n",
-		);
-		write_file(
-			&mod_a,
-			"decisions/shared.txt",
-			"country_decisions = {\n\ttest_decision = {\n\t\teffect = { log = a }\n\t}\n\tunique_decision = {\n\t\teffect = { log = b }\n\t}\n}\n",
-		);
-		write_file(
-			&mod_b,
-			"decisions/shared.txt",
-			"country_decisions = {\n\ttest_decision = {\n\t\teffect = { log = override }\n\t}\n}\n",
-		);
-		write_file(
-			&mod_a,
-			"common/scripted_effects/effects.txt",
-			"shared_effect = {\n\tlog = a\n}\nunique_effect = {\n\tlog = only_a\n}\n",
-		);
-		write_file(
-			&mod_b,
-			"common/scripted_effects/effects.txt",
-			"shared_effect = {\n\tlog = b\n}\n",
-		);
-		write_file(
-			&mod_a,
-			"common/defines/test.txt",
-			"NGame = {\n\tSTART_YEAR = 1444\n\tEND_YEAR = 1821\n\tNCountry = {\n\t\tMAX_IDEA_GROUPS = 8\n\t}\n}\n",
-		);
-		write_file(
-			&mod_b,
-			"common/defines/test.txt",
-			"NGame = {\n\tSTART_YEAR = 1600\n}\n",
-		);
-
-		let report = materialize_merge_internal(
-			request_for(&playlist_path),
-			&out_dir,
-			no_base_options(false),
-		)
-		.expect("materialize");
-		assert_eq!(report.status, MergeReportStatus::Ready);
-		assert_eq!(report.generated_file_count, 4);
-		assert_eq!(report.copied_file_count, 0);
-		assert_eq!(report.overlay_file_count, 0);
-
-		assert_eq!(
-			fs::read_to_string(out_dir.join("events/shared.txt")).expect("read emitted events"),
-			"namespace = test\ncountry_event = {\n\tid = test.2\n\ttitle = title_b\n}\ncountry_event = {\n\tid = test.1\n\ttitle = title_override\n}\n"
-		);
-		assert_eq!(
-			fs::read_to_string(out_dir.join("decisions/shared.txt"))
-				.expect("read emitted decisions"),
-			"country_decisions = {\n\ttest_decision = {\n\t\teffect = {\n\t\t\tlog = override\n\t\t}\n\t}\n\tunique_decision = {\n\t\teffect = {\n\t\t\tlog = b\n\t\t}\n\t}\n}\n"
-		);
-		assert_eq!(
-			fs::read_to_string(out_dir.join("common/scripted_effects/effects.txt"))
-				.expect("read emitted effects"),
-			"shared_effect_3001 = {\n\tlog = a\n}\nshared_effect_3002 = {\n\tlog = b\n}\nunique_effect = {\n\tlog = only_a\n}\n"
-		);
-		assert_eq!(
-			fs::read_to_string(out_dir.join("common/defines/test.txt"))
-				.expect("read emitted defines"),
-			"NGame = {\n\tEND_YEAR = 1821\n\tNCountry = {\n\t\tMAX_IDEA_GROUPS = 8\n\t}\n\tSTART_YEAR = 1600\n}\n"
-		);
-
-		let plan = read_plan(&out_dir);
-		assert!(plan_entry_for(&plan, "events/shared.txt").generated);
-		assert!(plan_entry_for(&plan, "decisions/shared.txt").generated);
-		assert!(plan_entry_for(&plan, "common/scripted_effects/effects.txt").generated);
-		assert!(plan_entry_for(&plan, "common/defines/test.txt").generated);
 	}
 
 	#[test]

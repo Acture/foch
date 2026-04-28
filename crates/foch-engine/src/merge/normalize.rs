@@ -3,6 +3,7 @@ use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub(crate) struct DefinesAssignmentFragment {
 	pub merge_key: String,
 	pub statement_key: String,
