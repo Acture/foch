@@ -3,6 +3,7 @@
 use super::emit::{emit_clausewitz_statements, emit_structural_file};
 use super::error::MergeError;
 use super::ir::{MergeIrStructuralFile, build_merge_ir_from_workspace_and_plan};
+use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 #[allow(unused_imports)]
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
 use super::patch_apply::apply_patches;
@@ -123,6 +124,41 @@ pub(crate) fn materialize_merge_internal(
 			MergePlanStrategy::LastWriterOverlay => {
 				copy_winner_file(&workspace, entry, out_dir)?;
 				report.overlay_file_count += 1;
+			}
+			MergePlanStrategy::LocalisationMerge => {
+				let contributors = workspace.file_inventory.get(&entry.path);
+				match contributors {
+					Some(contributors) => {
+						match merge_localisation_file(&entry.path, contributors) {
+							Ok(LocalisationMergeOutcome::Merged(bytes)) => {
+								let target = out_dir.join(&entry.path);
+								if let Some(parent) = target.parent() {
+									fs::create_dir_all(parent)?;
+								}
+								fs::write(target, bytes)?;
+								generated_paths.insert(entry.path.clone());
+								report.generated_file_count += 1;
+							}
+							Ok(LocalisationMergeOutcome::LanguageMismatch { warning }) => {
+								report.warnings.push(warning);
+								copy_winner_file(&workspace, entry, out_dir)?;
+								report.overlay_file_count += 1;
+							}
+							Err(err) => {
+								report.warnings.push(format!(
+									"localisation merge fallback for {}: {err}",
+									entry.path
+								));
+								copy_winner_file(&workspace, entry, out_dir)?;
+								report.overlay_file_count += 1;
+							}
+						}
+					}
+					None => {
+						copy_winner_file(&workspace, entry, out_dir)?;
+						report.overlay_file_count += 1;
+					}
+				}
 			}
 			MergePlanStrategy::StructuralMerge => {
 				let contributors = workspace.file_inventory.get(&entry.path);

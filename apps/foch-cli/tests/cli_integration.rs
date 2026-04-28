@@ -1092,14 +1092,14 @@ fn merge_plan_json_output_contains_strategy_contributors_and_winner() {
 	let content = fs::read_to_string(output_path).expect("read merge plan");
 	let parsed: serde_json::Value = serde_json::from_str(&content).expect("parse merge plan");
 	assert!(parsed["generated_at"].as_str().is_some());
-	assert_eq!(parsed["strategies"]["last_writer_overlay"], 1);
+	assert_eq!(parsed["strategies"]["localisation_merge"], 1);
 	let entry = parsed["paths"]
 		.as_array()
 		.expect("paths array")
 		.iter()
 		.find(|item| item["path"] == "localisation/english/test_l_english.yml")
 		.expect("matching entry");
-	assert_eq!(entry["strategy"], "last_writer_overlay");
+	assert_eq!(entry["strategy"], "localisation_merge");
 	assert!(entry["contributors"].is_array());
 	assert_eq!(entry["winner"]["mod_id"], "7402");
 	assert_eq!(entry["generated"], false);

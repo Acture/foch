@@ -86,6 +86,10 @@ pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
 		result.strategies.structural_merge
 	));
 	lines.push(format!(
+		"localisation_merge: {}",
+		result.strategies.localisation_merge
+	));
+	lines.push(format!(
 		"manual_conflict: {}",
 		result.strategies.manual_conflict
 	));
@@ -97,6 +101,7 @@ pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
 	for strategy in [
 		MergePlanStrategy::ManualConflict,
 		MergePlanStrategy::StructuralMerge,
+		MergePlanStrategy::LocalisationMerge,
 		MergePlanStrategy::LastWriterOverlay,
 	] {
 		for entry in result
@@ -205,6 +210,7 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 		MergePlanStrategy::CopyThrough => "COPY_THROUGH",
 		MergePlanStrategy::LastWriterOverlay => "LAST_WRITER_OVERLAY",
 		MergePlanStrategy::StructuralMerge => "STRUCTURAL_MERGE",
+		MergePlanStrategy::LocalisationMerge => "LOCALISATION_MERGE",
 		MergePlanStrategy::ManualConflict => "MANUAL_CONFLICT",
 	};
 	let contributors = entry

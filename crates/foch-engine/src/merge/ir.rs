@@ -171,7 +171,9 @@ pub(crate) fn build_merge_ir_from_workspace_and_plan(
 			MergePlanStrategy::StructuralMerge => {
 				append_structural_file(&mut result, workspace, path_entry)
 			}
-			MergePlanStrategy::LastWriterOverlay | MergePlanStrategy::ManualConflict => {}
+			MergePlanStrategy::LastWriterOverlay
+			| MergePlanStrategy::LocalisationMerge
+			| MergePlanStrategy::ManualConflict => {}
 		}
 	}
 

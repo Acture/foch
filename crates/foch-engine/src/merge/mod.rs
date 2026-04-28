@@ -2,6 +2,7 @@ pub mod emit;
 pub mod error;
 pub(crate) mod execute;
 pub mod ir;
+pub(crate) mod localisation_merge;
 pub(crate) mod materialize;
 pub mod namespace;
 pub(crate) mod normalize;
