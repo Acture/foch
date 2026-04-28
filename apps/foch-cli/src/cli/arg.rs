@@ -54,6 +54,8 @@ pub struct CheckArgs {
 	#[arg(long)]
 	pub parse_issue_report: Option<PathBuf>,
 
+	/// Skip loading vanilla game files; the lowest-precedence enabled mod
+	/// is treated as a synthetic base for diff-and-merge.
 	#[arg(long)]
 	pub no_game_base: bool,
 
@@ -81,6 +83,8 @@ pub struct MergePlanArgs {
 	#[arg(long)]
 	pub output: Option<PathBuf>,
 
+	/// Skip loading vanilla game files; the lowest-precedence enabled mod
+	/// is treated as a synthetic base for diff-and-merge.
 	#[arg(long)]
 	pub no_game_base: bool,
 }
@@ -105,6 +109,8 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub force: bool,
 
+	/// Skip loading vanilla game files; the lowest-precedence enabled mod
+	/// is treated as a synthetic base for diff-and-merge.
 	#[arg(long)]
 	pub no_game_base: bool,
 }
@@ -120,6 +126,8 @@ pub struct GraphArgs {
 	#[arg(long)]
 	pub out: PathBuf,
 
+	/// Skip loading vanilla game files; the lowest-precedence enabled mod
+	/// is treated as a synthetic base for diff-and-merge.
 	#[arg(long)]
 	pub no_game_base: bool,
 
@@ -177,6 +185,8 @@ pub struct SimplifyArgs {
 	#[arg(long)]
 	pub in_place: bool,
 
+	/// Skip loading vanilla game files; the lowest-precedence enabled mod
+	/// is treated as a synthetic base for diff-and-merge.
 	#[arg(long)]
 	pub no_game_base: bool,
 }
