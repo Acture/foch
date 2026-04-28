@@ -2112,6 +2112,7 @@ mod tests {
 					absolute_path: PathBuf::from("/base/common/holy_orders/orders.txt"),
 					precedence: 0,
 					is_base_game: true,
+					is_synthetic_base: false,
 					parse_ok_hint: Some(true),
 				},
 				ResolvedFileContributor {
@@ -2120,6 +2121,7 @@ mod tests {
 					absolute_path: PathBuf::from("/mod/common/holy_orders/orders.txt"),
 					precedence: 1,
 					is_base_game: false,
+					is_synthetic_base: false,
 					parse_ok_hint: Some(true),
 				},
 			],

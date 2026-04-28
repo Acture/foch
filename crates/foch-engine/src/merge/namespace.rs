@@ -392,6 +392,7 @@ mod tests {
 			absolute_path: PathBuf::from("/mods/test/common/scripted_triggers/my_mod.txt"),
 			precedence: 1,
 			is_base_game: false,
+			is_synthetic_base: false,
 			parse_ok_hint: None,
 		};
 

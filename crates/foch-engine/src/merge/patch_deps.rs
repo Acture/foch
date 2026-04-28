@@ -180,6 +180,7 @@ mod tests {
 			absolute_path: PathBuf::from(path),
 			precedence,
 			is_base_game,
+			is_synthetic_base: false,
 			parse_ok_hint: None,
 		}
 	}
