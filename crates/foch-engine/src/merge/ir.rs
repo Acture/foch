@@ -468,6 +468,8 @@ fn build_structural_file(
 			}
 		}
 		renamed_vec
+	} else if conflict_policy == ConflictPolicy::BooleanOr {
+		apply_boolean_or_policy(node_vec, merge_key_source)
 	} else {
 		node_vec
 	};
@@ -1324,6 +1326,173 @@ fn rename_inner_field(statement: &AstStatement, field: &str, new_value: &str) ->
 	}
 }
 
+/// Resolve same-name conflicts under `ConflictPolicy::BooleanOr` by wrapping
+/// each contributor's body in a single `OR = { <body_a> <body_b> ... }` block,
+/// preserving the original key. Used for `common/scripted_triggers/` so that
+/// callers referencing the unsuffixed trigger name keep working.
+///
+/// Falls back to the per-mod last-writer (no rename, no wrap) when:
+/// - only one unique non-base contributor defines the key, or
+/// - any contributor's body is not an `Assignment` with a `Block` value.
+///
+/// Identical bodies are de-duplicated; if only one unique body remains after
+/// dedup, the OR wrapper is omitted.
+fn apply_boolean_or_policy(
+	node_vec: Vec<NodeAccumulator>,
+	merge_key_source: MergeKeySource,
+) -> Vec<NodeAccumulator> {
+	let mut out: Vec<NodeAccumulator> = Vec::with_capacity(node_vec.len());
+	for accumulator in node_vec {
+		// Collect unique non-base mod ids contributing to this key.
+		let mut non_base_mods: Vec<&str> = Vec::new();
+		for contrib in &accumulator.source_mod_order {
+			if contrib.is_base_game {
+				continue;
+			}
+			if !non_base_mods.contains(&contrib.mod_id.as_str()) {
+				non_base_mods.push(contrib.mod_id.as_str());
+			}
+		}
+		if non_base_mods.len() < 2 {
+			out.push(accumulator);
+			continue;
+		}
+
+		// Per-mod last fragment (last writer per mod).
+		let mut per_mod: BTreeMap<String, MergeIrSourceFragment> = BTreeMap::new();
+		let mut mod_order: Vec<String> = Vec::new();
+		for fragment in &accumulator.source_fragments {
+			if fragment.contributor.is_base_game {
+				continue;
+			}
+			let mid = fragment.contributor.mod_id.clone();
+			if !mod_order.contains(&mid) {
+				mod_order.push(mid.clone());
+			}
+			per_mod.insert(mid, fragment.clone());
+		}
+
+		// Verify all are Assignment + Block bodies; otherwise fall back to the
+		// existing merged_statement (last-writer) without wrapping.
+		let all_blocks = mod_order.iter().all(|m| {
+			matches!(
+				per_mod.get(m).map(|f| &f.statement),
+				Some(AstStatement::Assignment {
+					value: AstValue::Block { .. },
+					..
+				})
+			)
+		});
+		if !all_blocks {
+			out.push(accumulator);
+			continue;
+		}
+
+		// Collect (key, key_span, outer_span, inner_span, items) tuples.
+		// Use the winner's outer key/spans for the synthesised assignment.
+		let winner_fragment = per_mod
+			.get(&accumulator.winner.mod_id)
+			.cloned()
+			.or_else(|| mod_order.last().and_then(|m| per_mod.get(m).cloned()));
+		let Some(winner_fragment) = winner_fragment else {
+			out.push(accumulator);
+			continue;
+		};
+		let (outer_key, outer_key_span, outer_span, body_span_template) =
+			match &winner_fragment.statement {
+				AstStatement::Assignment {
+					key,
+					key_span,
+					value: AstValue::Block { span, .. },
+					span: stmt_span,
+				} => (
+					key.clone(),
+					key_span.clone(),
+					stmt_span.clone(),
+					span.clone(),
+				),
+				_ => {
+					out.push(accumulator);
+					continue;
+				}
+			};
+
+		// Collect distinct bodies in mod_order; dedup by structural equality.
+		let mut distinct_bodies: Vec<Vec<AstStatement>> = Vec::new();
+		for mid in &mod_order {
+			let frag = &per_mod[mid];
+			if let AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} = &frag.statement
+				&& !distinct_bodies.iter().any(|b| b == items)
+			{
+				distinct_bodies.push(items.clone());
+			}
+		}
+
+		let new_body_items: Vec<AstStatement> = if distinct_bodies.len() == 1 {
+			distinct_bodies.into_iter().next().unwrap_or_default()
+		} else {
+			// Build OR = { <items_a> <items_b> ... } as a single assignment
+			// inside the outer block. If a body already consists of a single
+			// outer `OR = { ... }` (with no other siblings), lift its inner
+			// items to avoid nesting `OR = { OR = { ... } ... }`.
+			let mut or_inner: Vec<AstStatement> = Vec::new();
+			for body in &distinct_bodies {
+				let non_comment: Vec<&AstStatement> = body
+					.iter()
+					.filter(|s| !matches!(s, AstStatement::Comment { .. }))
+					.collect();
+				if non_comment.len() == 1
+					&& let AstStatement::Assignment {
+						key,
+						value: AstValue::Block { items: inner, .. },
+						..
+					} = non_comment[0]
+					&& key == "OR"
+				{
+					or_inner.extend(inner.clone());
+				} else {
+					or_inner.extend(body.clone());
+				}
+			}
+			let or_assignment = AstStatement::Assignment {
+				key: "OR".to_string(),
+				key_span: outer_key_span.clone(),
+				value: AstValue::Block {
+					items: or_inner,
+					span: body_span_template.clone(),
+				},
+				span: outer_span.clone(),
+			};
+			vec![or_assignment]
+		};
+
+		let new_statement = AstStatement::Assignment {
+			key: outer_key,
+			key_span: outer_key_span,
+			value: AstValue::Block {
+				items: new_body_items,
+				span: body_span_template,
+			},
+			span: outer_span,
+		};
+
+		// Honour the merge key source when synthesising the key (BooleanOr is
+		// only meaningful for `AssignmentKey`-keyed families today, but keep
+		// the call symmetric with the rename path for forward compatibility).
+		let new_statement =
+			rename_merged_statement(&new_statement, merge_key_source, &accumulator.merge_key);
+
+		out.push(NodeAccumulator {
+			merged_statement: new_statement,
+			..accumulator
+		});
+	}
+	out
+}
+
 fn push_unique_contributor(
 	contributors: &mut Vec<MergePlanContributor>,
 	contributor: &MergePlanContributor,
@@ -1622,6 +1791,186 @@ mod tests {
 		assert_eq!(unique.winner.mod_id, "9701");
 		assert!(unique.overridden_contributors.is_empty());
 		assert!(!unique.conflict_rename);
+	}
+
+	#[test]
+	fn scripted_trigger_ir_wraps_conflicting_bodies_in_or() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9711");
+		let mod_b = temp.path().join("9712");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9711"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9712"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"common/scripted_triggers/triggers.txt",
+			"is_active = {\n\thas_country_flag = flag_a\n}\nunique_trigger = {\n\thas_country_flag = only_a\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"common/scripted_triggers/triggers.txt",
+			"is_active = {\n\thas_country_flag = flag_b\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.merge_key_source, MergeKeySource::AssignmentKey);
+		// Single is_active node with OR-wrapped body, plus the unique trigger.
+		assert_eq!(file.nodes.len(), 2);
+		let merged = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "is_active")
+			.expect("merged is_active node");
+		assert!(!merged.conflict_rename);
+		assert!(merged.original_merge_key.is_none());
+
+		// Body should be `is_active = { OR = { has_country_flag=flag_a has_country_flag=flag_b } }`.
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &merged.merged_statement
+		else {
+			panic!(
+				"expected Assignment with Block body, got {:?}",
+				merged.merged_statement
+			);
+		};
+		assert_eq!(
+			items.len(),
+			1,
+			"outer body should contain a single OR block"
+		);
+		let AstStatement::Assignment {
+			key: or_key,
+			value: AstValue::Block {
+				items: or_items, ..
+			},
+			..
+		} = &items[0]
+		else {
+			panic!("expected OR Assignment, got {:?}", items[0]);
+		};
+		assert_eq!(or_key, "OR");
+		assert_eq!(or_items.len(), 2);
+		let flag_values: Vec<String> = or_items
+			.iter()
+			.filter_map(|s| match s {
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Scalar { value, .. },
+					..
+				} if key == "has_country_flag" => Some(value.as_text()),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(
+			flag_values,
+			vec!["flag_a".to_string(), "flag_b".to_string()]
+		);
+
+		let unique = file
+			.nodes
+			.iter()
+			.find(|node| node.merge_key == "unique_trigger")
+			.expect("unique trigger");
+		assert!(!unique.conflict_rename);
+	}
+
+	#[test]
+	fn scripted_trigger_ir_dedups_identical_bodies() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9721");
+		let mod_b = temp.path().join("9722");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9721"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9722"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		let body = "same_trigger = {\n\thas_country_flag = same\n}\n";
+		write_script_file(&mod_a, "common/scripted_triggers/t.txt", body);
+		write_script_file(&mod_b, "common/scripted_triggers/t.txt", body);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.nodes.len(), 1);
+		let merged = &file.nodes[0];
+		assert_eq!(merged.merge_key, "same_trigger");
+		// No OR wrapper since both bodies are identical.
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &merged.merged_statement
+		else {
+			panic!("expected Block body");
+		};
+		assert!(
+			items.iter().all(|s| !matches!(
+				s,
+				AstStatement::Assignment { key, .. } if key == "OR"
+			)),
+			"identical bodies should dedup without OR wrapper, got: {items:?}"
+		);
+	}
+
+	#[test]
+	fn scripted_effect_ir_still_uses_rename_policy() {
+		// Sanity: scripted_effects keeps Rename behavior; only triggers got BooleanOr.
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9731");
+		let mod_b = temp.path().join("9732");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9731"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9732"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"common/scripted_effects/e.txt",
+			"shared_effect = {\n\tlog = a\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"common/scripted_effects/e.txt",
+			"shared_effect = {\n\tlog = b\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		let file = &result.structural_files[0];
+		// Two renamed nodes, no merged unsuffixed key.
+		assert!(
+			file.nodes
+				.iter()
+				.any(|n| n.merge_key == "shared_effect_9731" && n.conflict_rename),
+		);
+		assert!(
+			file.nodes
+				.iter()
+				.any(|n| n.merge_key == "shared_effect_9732" && n.conflict_rename),
+		);
+		assert!(file.nodes.iter().all(|n| n.merge_key != "shared_effect"));
 	}
 
 	#[test]

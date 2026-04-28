@@ -133,6 +133,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
+		.conflict_policy(ConflictPolicy::BooleanOr)
 		.extractor(ContentFamilyExtractor::ScriptedTriggers)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/triggered_modifiers", "common/triggered_modifiers/")

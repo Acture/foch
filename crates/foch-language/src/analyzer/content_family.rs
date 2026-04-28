@@ -162,6 +162,10 @@ pub enum ConflictPolicy {
 	MergeLeaf,
 	/// Last writer wins silently — for families where override is expected.
 	LastWriter,
+	/// Wrap conflicting bodies in `OR = { <body_a> <body_b> }` (for boolean
+	/// trigger-style content where same-named definitions from different mods
+	/// should be combined disjunctively rather than suffix-renamed).
+	BooleanOr,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
