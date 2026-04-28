@@ -865,28 +865,7 @@ fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstS
 			continue;
 		};
 		let mod_id = &fragment.contributor.mod_id;
-		for item in items {
-			match item {
-				AstStatement::Comment { .. } => {
-					if !merged_items.iter().any(|existing| existing == item) {
-						merged_items.push(item.clone());
-					}
-				}
-				stmt => {
-					let identity = child_identity(stmt)?;
-					if let Some(&idx) = by_identity.get(&identity) {
-						if &merged_items[idx] == stmt {
-							continue;
-						}
-						let renamed = rename_named_child(stmt, &identity, mod_id);
-						merged_items.push(renamed);
-					} else {
-						by_identity.insert(identity, merged_items.len());
-						merged_items.push(stmt.clone());
-					}
-				}
-			}
-		}
+		merge_named_children_into(&mut merged_items, &mut by_identity, items, mod_id, 0)?;
 	}
 
 	let key = container_key?;
@@ -902,6 +881,165 @@ fn try_named_container_union(fragments: &[MergeIrSourceFragment]) -> Option<AstS
 		},
 		span: stmt_span,
 	})
+}
+
+/// Maximum recursion depth for merging nested named containers.  Prevents
+/// pathological inputs from exhausting the stack; reaching this depth falls
+/// back to suffix-renaming the conflicting child.
+const NCU_MAX_RECURSION_DEPTH: usize = 4;
+
+/// Inner driver of `try_named_container_union`: union the children of one
+/// contributor's container into `merged_items`, deduping by identity and
+/// suffix-renaming on conflict.  Returns `None` if any non-comment child
+/// lacks a derivable identity (caller must bail out of NCU).
+fn merge_named_children_into(
+	merged_items: &mut Vec<AstStatement>,
+	by_identity: &mut HashMap<ChildIdentity, usize>,
+	items: &[AstStatement],
+	mod_id: &str,
+	depth: usize,
+) -> Option<()> {
+	for item in items {
+		match item {
+			AstStatement::Comment { .. } => {
+				if !merged_items
+					.iter()
+					.any(|existing| ast_equal_ignoring_spans(existing, item))
+				{
+					merged_items.push(item.clone());
+				}
+			}
+			stmt => {
+				let identity = child_identity(stmt)?;
+				if let Some(&idx) = by_identity.get(&identity) {
+					if ast_equal_ignoring_spans(&merged_items[idx], stmt) {
+						continue;
+					}
+					if depth < NCU_MAX_RECURSION_DEPTH
+						&& let Some(merged) =
+							try_recursive_named_merge(&merged_items[idx], stmt, mod_id, depth + 1)
+					{
+						merged_items[idx] = merged;
+						continue;
+					}
+					let renamed = rename_named_child(stmt, &identity, mod_id);
+					let renamed_identity = child_identity(&renamed)?;
+					by_identity.insert(renamed_identity, merged_items.len());
+					merged_items.push(renamed);
+				} else {
+					by_identity.insert(identity, merged_items.len());
+					merged_items.push(stmt.clone());
+				}
+			}
+		}
+	}
+	Some(())
+}
+
+/// When two same-identity children's bodies differ, try to merge them by
+/// recursively running the named-container union on the inner blocks.
+/// Returns `None` when either body isn't a homogeneous named container —
+/// the caller then falls back to suffix-renaming.
+fn try_recursive_named_merge(
+	existing: &AstStatement,
+	incoming: &AstStatement,
+	mod_id: &str,
+	depth: usize,
+) -> Option<AstStatement> {
+	let AstStatement::Assignment {
+		key,
+		key_span,
+		value: AstValue::Block {
+			items: items_a,
+			span: block_span,
+		},
+		span: stmt_span,
+	} = existing
+	else {
+		return None;
+	};
+	let AstStatement::Assignment {
+		value: AstValue::Block { items: items_b, .. },
+		..
+	} = incoming
+	else {
+		return None;
+	};
+	if !items_are_named_container(items_a) || !items_are_named_container(items_b) {
+		return None;
+	}
+
+	let mut merged_items: Vec<AstStatement> = Vec::new();
+	let mut by_identity: HashMap<ChildIdentity, usize> = HashMap::new();
+	merge_named_children_into(&mut merged_items, &mut by_identity, items_a, mod_id, depth)?;
+	merge_named_children_into(&mut merged_items, &mut by_identity, items_b, mod_id, depth)?;
+
+	Some(AstStatement::Assignment {
+		key: key.clone(),
+		key_span: key_span.clone(),
+		value: AstValue::Block {
+			items: merged_items,
+			span: block_span.clone(),
+		},
+		span: stmt_span.clone(),
+	})
+}
+
+/// Heuristic: items qualify as a named-container body when every non-comment
+/// item is a block assignment with a derivable child identity, and at least
+/// one such child is present.
+fn items_are_named_container(items: &[AstStatement]) -> bool {
+	let mut has_child = false;
+	for item in items {
+		match item {
+			AstStatement::Comment { .. } => {}
+			other => {
+				if child_identity(other).is_none() {
+					return false;
+				}
+				has_child = true;
+			}
+		}
+	}
+	has_child
+}
+
+/// Structural equality for AST statements that ignores `Span`/`SpanRange`
+/// data.  Two byte-identical bodies parsed from different files compare
+/// equal, while the default derived `PartialEq` would not because of file
+/// paths/offsets in the spans.
+fn ast_equal_ignoring_spans(a: &AstStatement, b: &AstStatement) -> bool {
+	match (a, b) {
+		(AstStatement::Comment { text: ta, .. }, AstStatement::Comment { text: tb, .. }) => {
+			ta == tb
+		}
+		(
+			AstStatement::Assignment {
+				key: ka, value: va, ..
+			},
+			AstStatement::Assignment {
+				key: kb, value: vb, ..
+			},
+		) => ka == kb && ast_value_equal_ignoring_spans(va, vb),
+		(AstStatement::Item { value: va, .. }, AstStatement::Item { value: vb, .. }) => {
+			ast_value_equal_ignoring_spans(va, vb)
+		}
+		_ => false,
+	}
+}
+
+fn ast_value_equal_ignoring_spans(a: &AstValue, b: &AstValue) -> bool {
+	match (a, b) {
+		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
+		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
+			ia.len() == ib.len()
+				&& ia
+					.iter()
+					.zip(ib.iter())
+					.all(|(x, y)| ast_equal_ignoring_spans(x, y))
+		}
+		_ => false,
+	}
 }
 
 /// Rename a named-container child for conflict resolution.  When the child
@@ -2925,5 +3063,232 @@ mod tests {
 		assert!(!keys.contains(&"shared_effect"));
 		assert!(keys.iter().any(|k| k.starts_with("shared_effect_")));
 		assert!(file.nodes.iter().any(|node| node.conflict_rename));
+	}
+
+	// Helper: collect all child blocks (regardless of inner key) of a merged
+	// top-level container, returning each child's name field where present.
+	fn collect_named_children<'a>(
+		items: &'a [AstStatement],
+		expected_key: &str,
+	) -> Vec<(String, &'a Vec<AstStatement>)> {
+		items
+			.iter()
+			.filter_map(|item| {
+				let AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items: inner, .. },
+					..
+				} = item
+				else {
+					return None;
+				};
+				if key != expected_key {
+					return None;
+				}
+				let name = inner
+					.iter()
+					.find_map(|inner_item| {
+						if let AstStatement::Assignment {
+							key: k,
+							value: AstValue::Scalar { value, .. },
+							..
+						} = inner_item && k == "name"
+						{
+							Some(value.as_text())
+						} else {
+							None
+						}
+					})
+					.unwrap_or_default();
+				Some((name, inner))
+			})
+			.collect()
+	}
+
+	// Bug #2: byte-identical children from different mods should dedupe to
+	// one despite differing spans (different file paths/offsets).
+	#[test]
+	fn named_container_union_dedupes_byte_identical_children_across_mods() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9851");
+		let mod_b = temp.path().join("9852");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9851"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9852"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		// Identical bytes in both mods — they only differ in source path.
+		let identical = "guiTypes = {\n\twindowType = {\n\t\tname = \"shared_window\"\n\t\tposition = { x = 1 y = 2 }\n\t}\n}\n";
+		write_script_file(&mod_a, "interface/shared.gui", identical);
+		write_script_file(&mod_b, "interface/shared.gui", identical);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.nodes.len(), 1);
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &file.nodes[0].merged_statement
+		else {
+			panic!("merged guiTypes must be a block");
+		};
+		let children = collect_named_children(items, "windowType");
+		assert_eq!(
+			children.len(),
+			1,
+			"byte-identical windowTypes across mods must dedupe; got {:?}",
+			children.iter().map(|(n, _)| n).collect::<Vec<_>>()
+		);
+		assert_eq!(children[0].0, "shared_window");
+	}
+
+	// Bug #1: when a conflict-rename produces `name = "X_<modid>"`, the
+	// renamed identity must be tracked so a later contributor's child that
+	// happens to share that name doesn't sneak in as a duplicate.
+	#[test]
+	fn named_container_union_tracks_renamed_identity() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9861");
+		let mod_b = temp.path().join("9862");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9861"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9862"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"interface/family.gfx",
+			"spriteTypes = {\n\tspriteType = {\n\t\tname = \"GFX_clash\"\n\t\ttexturefile = \"a.dds\"\n\t}\n}\n",
+		);
+		// Mod B contributes both a clashing GFX_clash AND a standalone
+		// sprite already named GFX_clash_9862 — exactly the suffix the
+		// renamer would pick.
+		write_script_file(
+			&mod_b,
+			"interface/family.gfx",
+			"spriteTypes = {\n\tspriteType = {\n\t\tname = \"GFX_clash\"\n\t\ttexturefile = \"b.dds\"\n\t}\n\tspriteType = {\n\t\tname = \"GFX_clash_9862\"\n\t\ttexturefile = \"standalone.dds\"\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.nodes.len(), 1);
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &file.nodes[0].merged_statement
+		else {
+			panic!("merged spriteTypes must be a block");
+		};
+		let children = collect_named_children(items, "spriteType");
+		let names: Vec<&str> = children.iter().map(|(n, _)| n.as_str()).collect();
+		let count_clash_9862 = names.iter().filter(|n| **n == "GFX_clash_9862").count();
+		assert_eq!(
+			count_clash_9862, 1,
+			"renamed identity must be tracked so GFX_clash_9862 appears at most once; got {names:?}",
+		);
+	}
+
+	// Bug #3: when two same-identity children's bodies differ but each
+	// body's items themselves form a homogeneous named-container, NCU
+	// should recurse and merge instead of suffix-renaming the parent.
+	#[test]
+	fn named_container_union_recurses_into_conflicting_child_bodies() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9871");
+		let mod_b = temp.path().join("9872");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9871"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9872"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		// Top container: guiTypes.  Both mods define `containerWindowType`
+		// with no name field — identity is ("containerWindowType", None).
+		// Their bodies differ but each body is itself a homogeneous block
+		// of `windowType = { name = ... }` children, so NCU must recurse.
+		write_script_file(
+			&mod_a,
+			"interface/nested.gui",
+			"guiTypes = {\n\tcontainerWindowType = {\n\t\twindowType = { name = \"inner_a\" }\n\t}\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"interface/nested.gui",
+			"guiTypes = {\n\tcontainerWindowType = {\n\t\twindowType = { name = \"inner_b\" }\n\t}\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.nodes.len(), 1);
+		assert_eq!(file.nodes[0].merge_key, "guiTypes");
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &file.nodes[0].merged_statement
+		else {
+			panic!("merged guiTypes must be a block");
+		};
+		let containers = collect_named_children(items, "containerWindowType");
+		assert_eq!(
+			containers.len(),
+			1,
+			"conflicting containerWindowType siblings should recurse-merge into one; got {} entries",
+			containers.len(),
+		);
+		// The merged inner body must contain BOTH inner windowTypes.
+		let (_name, inner) = &containers[0];
+		let inner_names: Vec<String> = inner
+			.iter()
+			.filter_map(|item| {
+				let AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items: ii, .. },
+					..
+				} = item
+				else {
+					return None;
+				};
+				if key != "windowType" {
+					return None;
+				}
+				ii.iter().find_map(|i| {
+					if let AstStatement::Assignment {
+						key: k,
+						value: AstValue::Scalar { value, .. },
+						..
+					} = i && k == "name"
+					{
+						Some(value.as_text())
+					} else {
+						None
+					}
+				})
+			})
+			.collect();
+		assert!(
+			inner_names.contains(&"inner_a".to_string())
+				&& inner_names.contains(&"inner_b".to_string()),
+			"recursion must union inner windowTypes; got {inner_names:?}",
+		);
 	}
 }
