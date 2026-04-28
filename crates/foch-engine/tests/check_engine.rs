@@ -675,7 +675,7 @@ fn merge_plan_marks_binary_overlap_as_last_writer_overlay() {
 }
 
 #[test]
-fn merge_plan_marks_non_structural_text_overlap_as_last_writer_overlay() {
+fn merge_plan_marks_localisation_yaml_overlap_as_localisation_merge() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 	let mod_a = temp.path().join("9901");
@@ -703,8 +703,8 @@ fn merge_plan_marks_non_structural_text_overlap_as_last_writer_overlay() {
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
 	let entry = plan_entry_for(&result, "localisation/english/test_l_english.yml");
-	assert_eq!(result.strategies.last_writer_overlay, 1);
-	assert_eq!(entry.strategy, MergePlanStrategy::LastWriterOverlay);
+	assert_eq!(result.strategies.localisation_merge, 1);
+	assert_eq!(entry.strategy, MergePlanStrategy::LocalisationMerge);
 	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9902");
 	assert!(!entry.generated);
 	assert!(entry.notes.is_empty());

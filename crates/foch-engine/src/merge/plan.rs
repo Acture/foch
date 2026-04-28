@@ -84,6 +84,8 @@ fn classify_entry(
 				MergePlanStrategy::ManualConflict
 			}
 		}
+	} else if is_localisation_yml_path(path) {
+		MergePlanStrategy::LocalisationMerge
 	} else {
 		// Text-like or binary content with no structural-merge handler:
 		// last-writer-overlay matches what the game's load order would do
@@ -131,6 +133,7 @@ fn summarize_paths(paths: &[MergePlanEntry]) -> MergePlanStrategies {
 			MergePlanStrategy::CopyThrough => strategies.copy_through += 1,
 			MergePlanStrategy::LastWriterOverlay => strategies.last_writer_overlay += 1,
 			MergePlanStrategy::StructuralMerge => strategies.structural_merge += 1,
+			MergePlanStrategy::LocalisationMerge => strategies.localisation_merge += 1,
 			MergePlanStrategy::ManualConflict => strategies.manual_conflict += 1,
 		}
 	}
@@ -222,4 +225,21 @@ fn is_text_like_overlay_path(path: &str) -> bool {
 		ext,
 		"txt" | "lua" | "yml" | "yaml" | "csv" | "json" | "asset" | "gui" | "gfx" | "mod"
 	)
+}
+
+/// Localisation YAML files (`localisation/**.yml` and
+/// `common/localisation/**.yml`) follow the EU4 paradox-yaml format and can be
+/// merged at the key level: the union of all contributors' keys is preserved,
+/// with the highest-precedence contributor winning on collision.
+pub(crate) fn is_localisation_yml_path(path: &str) -> bool {
+	let normalized = path.to_ascii_lowercase();
+	let under_loc =
+		normalized.starts_with("localisation/") || normalized.starts_with("common/localisation/");
+	if !under_loc {
+		return false;
+	}
+	let Some(ext) = normalized.rsplit('.').next() else {
+		return false;
+	};
+	matches!(ext, "yml" | "yaml")
 }

@@ -17,6 +17,10 @@ pub enum MergePlanStrategy {
 	CopyThrough,
 	LastWriterOverlay,
 	StructuralMerge,
+	/// Key-level dedup merge for `localisation/**.yml` files. Each merged
+	/// file contains the union of keys from all contributors; on key
+	/// collision the highest-precedence contributor wins.
+	LocalisationMerge,
 	ManualConflict,
 }
 
@@ -46,6 +50,8 @@ pub struct MergePlanStrategies {
 	pub copy_through: usize,
 	pub last_writer_overlay: usize,
 	pub structural_merge: usize,
+	#[serde(default)]
+	pub localisation_merge: usize,
 	pub manual_conflict: usize,
 }
 
