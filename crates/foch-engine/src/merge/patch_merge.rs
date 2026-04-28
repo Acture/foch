@@ -6,8 +6,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use foch_language::analyzer::content_family::{MergePolicies, ScalarMergePolicy};
-use foch_language::analyzer::parser::{AstValue, ScalarValue};
+use foch_language::analyzer::content_family::{BlockPatchPolicy, MergePolicies, ScalarMergePolicy};
+use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use super::patch::{AstPath, ClausewitzPatch};
 
@@ -214,12 +214,12 @@ fn resolve_address(
 	// From here on, all patches have the same variant kind.
 	let kind = kinds[0];
 	match kind {
-		"InsertNode" => resolve_insert_nodes(addr, attributed, stats),
+		"InsertNode" => resolve_insert_nodes(addr, attributed, policies, stats),
 		"AppendListItem" => resolve_append_list_items(addr, attributed, stats),
 		"SetValue" => resolve_set_values(addr, attributed, policies, stats),
 		"RemoveNode" => resolve_remove_convergent(addr, attributed, stats),
 		"RemoveListItem" => resolve_remove_list_items(addr, attributed, stats),
-		"ReplaceBlock" => resolve_replace_blocks(addr, attributed, stats),
+		"ReplaceBlock" => resolve_replace_blocks(addr, attributed, policies, stats),
 		_ => {
 			stats.conflict_patches += 1;
 			PatchResolution::Conflict {
@@ -239,8 +239,9 @@ fn resolve_address(
 /// compatible if keys differ (both apply). Conflict if same key with
 /// different statements.
 fn resolve_insert_nodes(
-	_addr: PatchAddress,
+	addr: PatchAddress,
 	attributed: Vec<AttributedPatch>,
+	policies: &MergePolicies,
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
 	// Extract the inserted statements.
@@ -256,6 +257,21 @@ fn resolve_insert_nodes(
 	if stmts.windows(2).all(|w| w[0] == w[1]) {
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
+	}
+
+	// BooleanOr policy: when each contributor inserts a block-bodied
+	// statement under the same key, wrap each body inside `OR = { ... }`
+	// and emit a single synthesized InsertNode.
+	if policies.block_patch == BlockPatchPolicy::BooleanOr
+		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
+	{
+		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+		stats.auto_merged_patches += 1;
+		return PatchResolution::AutoMerged {
+			result: synth,
+			strategy: "boolean_or".to_string(),
+			contributing_mods: mods,
+		};
 	}
 
 	// Different statements → all insertions can coexist (they add distinct
@@ -445,12 +461,26 @@ fn resolve_remove_list_items(
 	}
 }
 
-/// Multiple mods replacing the same block → conflict unless identical.
+/// Multiple mods replacing the same block → conflict unless identical, or
+/// (under `BlockPatchPolicy::BooleanOr`) wrap each contributor's body in
+/// `OR = { ... }` and emit a single synthesized `ReplaceBlock`.
 fn resolve_replace_blocks(
 	addr: PatchAddress,
 	attributed: Vec<AttributedPatch>,
+	policies: &MergePolicies,
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
+	if policies.block_patch == BlockPatchPolicy::BooleanOr
+		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
+	{
+		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+		stats.auto_merged_patches += 1;
+		return PatchResolution::AutoMerged {
+			result: synth,
+			strategy: "boolean_or".to_string(),
+			contributing_mods: mods,
+		};
+	}
 	// Identical replacements were already caught by convergence check above,
 	// so reaching here means different replacements → conflict.
 	stats.conflict_patches += 1;
@@ -458,6 +488,118 @@ fn resolve_replace_blocks(
 		address: addr,
 		reason: "multiple mods replace the same block with different content".to_string(),
 		patches: attributed,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BooleanOr synthesis
+// ---------------------------------------------------------------------------
+
+/// Build a zero-length span placeholder for synthesized AST nodes.
+fn synthetic_span() -> SpanRange {
+	let zero = Span {
+		line: 0,
+		column: 0,
+		offset: 0,
+	};
+	SpanRange {
+		start: zero.clone(),
+		end: zero,
+	}
+}
+
+/// Extract the block-typed body of a statement of the form `key = { ... }`.
+/// Returns `None` if the statement is not an `Assignment` whose value is a
+/// `Block` — BooleanOr only makes sense for block-bodied keys.
+fn extract_block_body(stmt: &AstStatement) -> Option<Vec<AstStatement>> {
+	match stmt {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} => Some(items.clone()),
+		_ => None,
+	}
+}
+
+/// Build an `OR = { <items...> }` statement that wraps the supplied body.
+fn make_or_wrapper(items: Vec<AstStatement>) -> AstStatement {
+	AstStatement::Assignment {
+		key: "OR".to_string(),
+		key_span: synthetic_span(),
+		value: AstValue::Block {
+			items,
+			span: synthetic_span(),
+		},
+		span: synthetic_span(),
+	}
+}
+
+/// Pull the AST body that each contributor wants to install at `addr`,
+/// from either an `InsertNode` or a `ReplaceBlock` patch.
+fn contributor_body(patch: &ClausewitzPatch) -> Option<Vec<AstStatement>> {
+	match patch {
+		ClausewitzPatch::InsertNode { statement, .. } => extract_block_body(statement),
+		ClausewitzPatch::ReplaceBlock { new_statement, .. } => extract_block_body(new_statement),
+		_ => None,
+	}
+}
+
+/// Synthesize a single patch whose body is `{ OR = { body_0 } OR = { body_1 } ... }`,
+/// preserving the original key. Returns `None` (forcing fallback to the
+/// caller's default behavior) if any contributor isn't a block-bodied
+/// assignment.
+///
+/// One `OR =` wrapper is emitted per contributor in `attributed`'s order.
+/// No cross-contributor deduplication is performed: even byte-identical
+/// bodies (which would have already short-circuited via the convergence
+/// check upstream) are treated as separate disjuncts here, matching the
+/// caller's contract that `attributed.len() >= 2` and the bodies differ.
+fn synthesize_boolean_or(
+	addr: &PatchAddress,
+	attributed: &[AttributedPatch],
+) -> Option<ClausewitzPatch> {
+	let bodies: Option<Vec<Vec<AstStatement>>> = attributed
+		.iter()
+		.map(|a| contributor_body(&a.patch))
+		.collect();
+	let bodies = bodies?;
+	if bodies.len() < 2 {
+		return None;
+	}
+
+	let or_blocks: Vec<AstStatement> = bodies.into_iter().map(make_or_wrapper).collect();
+
+	let synthesized_value = AstValue::Block {
+		items: or_blocks,
+		span: synthetic_span(),
+	};
+	let synthesized_stmt = AstStatement::Assignment {
+		key: addr.key.clone(),
+		key_span: synthetic_span(),
+		value: synthesized_value,
+		span: synthetic_span(),
+	};
+
+	// Reuse the first attributed patch's variant + path/key so downstream
+	// consumers see a structurally equivalent operation.
+	match &attributed[0].patch {
+		ClausewitzPatch::InsertNode { path, key, .. } => Some(ClausewitzPatch::InsertNode {
+			path: path.clone(),
+			key: key.clone(),
+			statement: synthesized_stmt,
+		}),
+		ClausewitzPatch::ReplaceBlock {
+			path,
+			key,
+			old_statement,
+			..
+		} => Some(ClausewitzPatch::ReplaceBlock {
+			path: path.clone(),
+			key: key.clone(),
+			old_statement: old_statement.clone(),
+			new_statement: synthesized_stmt,
+		}),
+		_ => None,
 	}
 }
 
@@ -853,5 +995,224 @@ mod tests {
 			}
 			other => panic!("expected AutoMerged, got: {other:?}"),
 		}
+	}
+
+	fn block_value(items: Vec<AstStatement>) -> AstValue {
+		AstValue::Block {
+			items,
+			span: span(),
+		}
+	}
+
+	fn assignment_block(key: &str, items: Vec<AstStatement>) -> AstStatement {
+		AstStatement::Assignment {
+			key: key.to_string(),
+			key_span: span(),
+			value: block_value(items),
+			span: span(),
+		}
+	}
+
+	fn boolean_or_policies() -> MergePolicies {
+		MergePolicies {
+			block_patch: BlockPatchPolicy::BooleanOr,
+			..Default::default()
+		}
+	}
+
+	/// Helper: assert `stmt` is `key = { OR = { <body_0> } OR = { <body_1> } ... }`
+	/// with the supplied bodies in order, and return the OR'd bodies for further
+	/// inspection.
+	fn assert_or_wrapped(stmt: &AstStatement, expected_key: &str) -> Vec<Vec<AstStatement>> {
+		let (key, items) = match stmt {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} => (key.as_str(), items.as_slice()),
+			other => panic!("expected Assignment with Block value, got: {other:?}"),
+		};
+		assert_eq!(key, expected_key, "outer key mismatch");
+		items
+			.iter()
+			.map(|child| match child {
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items, .. },
+					..
+				} => {
+					assert_eq!(key, "OR", "expected OR wrapper, got key={key}");
+					items.clone()
+				}
+				other => panic!("expected `OR = {{ ... }}`, got: {other:?}"),
+			})
+			.collect()
+	}
+
+	#[test]
+	fn boolean_or_two_mods_modify_same_block_produces_or_or() {
+		let body_a = vec![assignment("tag", scalar("ABC"))];
+		let body_b = vec![assignment("culture", scalar("french"))];
+		let old = assignment_block("is_great_power", vec![assignment("tag", scalar("OLD"))]);
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "is_great_power".into(),
+			old_statement: old.clone(),
+			new_statement: assignment_block("is_great_power", body_a.clone()),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "is_great_power".into(),
+			old_statement: old,
+			new_statement: assignment_block("is_great_power", body_b.clone()),
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&boolean_or_policies(),
+		);
+
+		assert_eq!(result.resolved.len(), 1);
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.stats.auto_merged_patches, 1);
+
+		let merged_stmt = match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+				strategy,
+				contributing_mods,
+			} => {
+				assert_eq!(strategy, "boolean_or");
+				assert_eq!(contributing_mods.len(), 2);
+				new_statement
+			}
+			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
+		};
+
+		let or_bodies = assert_or_wrapped(merged_stmt, "is_great_power");
+		assert_eq!(or_bodies.len(), 2);
+		assert_eq!(or_bodies[0], body_a);
+		assert_eq!(or_bodies[1], body_b);
+	}
+
+	#[test]
+	fn boolean_or_three_mods_produces_three_or_blocks() {
+		let body_a = vec![assignment("tag", scalar("AAA"))];
+		let body_b = vec![assignment("tag", scalar("BBB"))];
+		let body_c = vec![assignment("tag", scalar("CCC"))];
+
+		let mk = |body: &[AstStatement]| ClausewitzPatch::InsertNode {
+			path: vec![],
+			key: "is_powerful".into(),
+			statement: assignment_block("is_powerful", body.to_vec()),
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![mk(&body_a)]),
+				("mod_b".into(), 2, vec![mk(&body_b)]),
+				("mod_c".into(), 3, vec![mk(&body_c)]),
+			],
+			&boolean_or_policies(),
+		);
+
+		assert_eq!(result.resolved.len(), 1);
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.stats.auto_merged_patches, 1);
+
+		let merged_stmt = match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::InsertNode { statement, .. },
+				strategy,
+				..
+			} => {
+				assert_eq!(strategy, "boolean_or");
+				statement
+			}
+			other => panic!("expected AutoMerged InsertNode, got: {other:?}"),
+		};
+
+		let or_bodies = assert_or_wrapped(merged_stmt, "is_powerful");
+		assert_eq!(or_bodies.len(), 3);
+		assert_eq!(or_bodies[0], body_a);
+		assert_eq!(or_bodies[1], body_b);
+		assert_eq!(or_bodies[2], body_c);
+	}
+
+	#[test]
+	fn boolean_or_single_modification_no_or_wrap() {
+		let body = vec![assignment("tag", scalar("XYZ"))];
+		let patch = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "is_lonely".into(),
+			old_statement: assignment_block("is_lonely", vec![]),
+			new_statement: assignment_block("is_lonely", body.clone()),
+		};
+
+		let result = merge_patch_sets(
+			vec![("mod_a".into(), 1, vec![patch])],
+			&boolean_or_policies(),
+		);
+
+		assert_eq!(result.resolved.len(), 1);
+		assert_eq!(result.stats.single_mod_patches, 1);
+		assert_eq!(result.stats.auto_merged_patches, 0);
+
+		match &result.resolved[0] {
+			PatchResolution::Resolved(ClausewitzPatch::ReplaceBlock { new_statement, .. }) => {
+				let items = match new_statement {
+					AstStatement::Assignment {
+						value: AstValue::Block { items, .. },
+						..
+					} => items,
+					other => panic!("expected Assignment block, got: {other:?}"),
+				};
+				assert_eq!(*items, body);
+				for child in items {
+					if let AstStatement::Assignment { key, .. } = child {
+						assert_ne!(key, "OR", "single-mod path must not introduce OR wrappers");
+					}
+				}
+			}
+			other => panic!("expected single-mod Resolved ReplaceBlock, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn last_writer_default_unaffected() {
+		let old = assignment_block("is_great_power", vec![]);
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "is_great_power".into(),
+			old_statement: old.clone(),
+			new_statement: assignment_block("is_great_power", vec![assignment("tag", scalar("A"))]),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "is_great_power".into(),
+			old_statement: old,
+			new_statement: assignment_block("is_great_power", vec![assignment("tag", scalar("B"))]),
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&default_policies(),
+		);
+
+		assert_eq!(result.resolved.len(), 0);
+		assert_eq!(result.conflicts.len(), 1);
+		assert_eq!(result.stats.conflict_patches, 1);
+		assert_eq!(
+			MergePolicies::default().block_patch,
+			BlockPatchPolicy::LastWriter,
+			"BlockPatchPolicy::default() must be LastWriter"
+		);
 	}
 }

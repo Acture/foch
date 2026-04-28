@@ -2849,6 +2849,7 @@ mod tests {
 				list,
 				block,
 				boolean: BooleanMergePolicy::default(),
+				..Default::default()
 			}
 		}
 
