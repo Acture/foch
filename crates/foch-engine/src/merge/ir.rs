@@ -2775,7 +2775,8 @@ mod tests {
 	mod deep_merge_unit {
 		use super::*;
 		use foch_language::analyzer::content_family::{
-			BlockMergePolicy, BooleanMergePolicy, ListMergePolicy, MergePolicies, ScalarMergePolicy,
+			BlockMergePolicy, BooleanMergePolicy, ListMergePolicy, MergePolicies,
+			NamedContainerPolicy, ScalarMergePolicy,
 		};
 
 		fn dummy_span() -> SpanRange {

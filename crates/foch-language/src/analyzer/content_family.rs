@@ -142,6 +142,20 @@ pub enum BooleanMergePolicy {
 	Replace,
 }
 
+/// How to resolve named-container body conflicts (e.g. `windowType { name = "x" ... }`)
+/// when multiple mods modify the same identity with non-recursively-mergeable content.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NamedContainerPolicy {
+	/// Lenient: keep both — rename the conflicting candidate's name field (or its
+	/// assignment key) with a `_<mod_id>` suffix so both definitions coexist.
+	#[default]
+	SuffixRename,
+	/// Strict-with-scalars: highest-precedence overlay wins; conflicting children
+	/// from earlier candidates are dropped.
+	OverlayWins,
+}
+
 /// Bundle of policies that control how `deep_merge` resolves conflicts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergePolicies {
@@ -150,6 +164,7 @@ pub struct MergePolicies {
 	pub block: BlockMergePolicy,
 	pub boolean: BooleanMergePolicy,
 	pub block_patch: BlockPatchPolicy,
+	pub named_container: NamedContainerPolicy,
 }
 
 /// How patch-level block conflicts are resolved by the patch merge engine
@@ -492,6 +507,7 @@ impl ContentFamilyDescriptor {
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
 				block_patch: BlockPatchPolicy::LastWriter,
+				named_container: NamedContainerPolicy::SuffixRename,
 			},
 		}
 	}
@@ -524,6 +540,7 @@ impl ContentFamilyDescriptor {
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
 				block_patch: BlockPatchPolicy::LastWriter,
+				named_container: NamedContainerPolicy::SuffixRename,
 			},
 		}
 	}
