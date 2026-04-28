@@ -1328,6 +1328,46 @@ fn rename_inner_field(statement: &AstStatement, field: &str, new_value: &str) ->
 	}
 }
 
+/// Structural AST equality ignoring `SpanRange` fields. Used by the
+/// `BooleanOr` policy to dedupe bodies and OR-leaves that come from different
+/// source files (where spans necessarily differ even when content matches).
+fn stmt_eq_ignore_span(a: &AstStatement, b: &AstStatement) -> bool {
+	match (a, b) {
+		(
+			AstStatement::Assignment {
+				key: ka, value: va, ..
+			},
+			AstStatement::Assignment {
+				key: kb, value: vb, ..
+			},
+		) => ka == kb && value_eq_ignore_span(va, vb),
+		(AstStatement::Item { value: va, .. }, AstStatement::Item { value: vb, .. }) => {
+			value_eq_ignore_span(va, vb)
+		}
+		(AstStatement::Comment { text: ta, .. }, AstStatement::Comment { text: tb, .. }) => {
+			ta == tb
+		}
+		_ => false,
+	}
+}
+
+fn value_eq_ignore_span(a: &AstValue, b: &AstValue) -> bool {
+	match (a, b) {
+		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
+		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
+			stmt_slice_eq_ignore_span(ia, ib)
+		}
+		_ => false,
+	}
+}
+
+fn stmt_slice_eq_ignore_span(a: &[AstStatement], b: &[AstStatement]) -> bool {
+	a.len() == b.len()
+		&& a.iter()
+			.zip(b.iter())
+			.all(|(x, y)| stmt_eq_ignore_span(x, y))
+}
+
 /// Resolve same-name conflicts under `ConflictPolicy::BooleanOr` by wrapping
 /// each contributor's body in a single `OR = { <body_a> <body_b> ... }` block,
 /// preserving the original key. Used for `common/scripted_triggers/` so that
@@ -1419,7 +1459,9 @@ fn apply_boolean_or_policy(
 				}
 			};
 
-		// Collect distinct bodies in mod_order; dedup by structural equality.
+		// Collect distinct bodies in mod_order; dedup by structural equality
+		// (ignoring spans, since identical bodies from different files have
+		// different source positions).
 		let mut distinct_bodies: Vec<Vec<AstStatement>> = Vec::new();
 		for mid in &mod_order {
 			let frag = &per_mod[mid];
@@ -1427,7 +1469,9 @@ fn apply_boolean_or_policy(
 				value: AstValue::Block { items, .. },
 				..
 			} = &frag.statement
-				&& !distinct_bodies.iter().any(|b| b == items)
+				&& !distinct_bodies
+					.iter()
+					.any(|b| stmt_slice_eq_ignore_span(b, items))
 			{
 				distinct_bodies.push(items.clone());
 			}
@@ -1439,7 +1483,11 @@ fn apply_boolean_or_policy(
 			// Build OR = { <items_a> <items_b> ... } as a single assignment
 			// inside the outer block. If a body already consists of a single
 			// outer `OR = { ... }` (with no other siblings), lift its inner
-			// items to avoid nesting `OR = { OR = { ... } ... }`.
+			// items to avoid nesting `OR = { OR = { ... } ... }`. Bodies with
+			// more than one non-comment statement are wrapped in a bare inner
+			// block so the implicit AND-conjunction between siblings is
+			// preserved (Clausewitz: `OR = { { A B } C }` means `(A AND B) OR C`,
+			// not `A OR B OR C`).
 			let mut or_inner: Vec<AstStatement> = Vec::new();
 			for body in &distinct_bodies {
 				let non_comment: Vec<&AstStatement> = body
@@ -1455,10 +1503,27 @@ fn apply_boolean_or_policy(
 					&& key == "OR"
 				{
 					or_inner.extend(inner.clone());
-				} else {
+				} else if non_comment.len() <= 1 {
 					or_inner.extend(body.clone());
+				} else {
+					or_inner.push(AstStatement::Item {
+						value: AstValue::Block {
+							items: body.clone(),
+							span: body_span_template.clone(),
+						},
+						span: body_span_template.clone(),
+					});
 				}
 			}
+			// Dedup leaf duplicates by structural equality (span-stripped),
+			// preserving insertion order; later duplicates are dropped.
+			let mut deduped: Vec<AstStatement> = Vec::with_capacity(or_inner.len());
+			for item in or_inner {
+				if !deduped.iter().any(|kept| stmt_eq_ignore_span(kept, &item)) {
+					deduped.push(item);
+				}
+			}
+			let or_inner = deduped;
 			let or_assignment = AstStatement::Assignment {
 				key: "OR".to_string(),
 				key_span: outer_key_span.clone(),
@@ -1928,6 +1993,181 @@ mod tests {
 				AstStatement::Assignment { key, .. } if key == "OR"
 			)),
 			"identical bodies should dedup without OR wrapper, got: {items:?}"
+		);
+	}
+
+	#[test]
+	fn scripted_trigger_ir_preserves_and_grouping_in_or() {
+		// Bug #4 regression: a multi-statement body must remain implicitly
+		// AND-grouped when wrapped into an `OR = { ... }`. Otherwise its
+		// statements would become OR-siblings of the other contributor's
+		// statements, changing the trigger's semantics.
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9741");
+		let mod_b = temp.path().join("9742");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9741"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9742"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_script_file(
+			&mod_a,
+			"common/scripted_triggers/t.txt",
+			"is_active = {\n\thas_country_flag = a\n\tnum_of_cities = 5\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"common/scripted_triggers/t.txt",
+			"is_active = {\n\thas_country_flag = b\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		assert_eq!(file.nodes.len(), 1);
+		let merged = &file.nodes[0];
+		assert_eq!(merged.merge_key, "is_active");
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &merged.merged_statement
+		else {
+			panic!("expected outer Assignment with Block body");
+		};
+		assert_eq!(items.len(), 1, "outer body should be a single OR block");
+		let AstStatement::Assignment {
+			key: or_key,
+			value: AstValue::Block {
+				items: or_items, ..
+			},
+			..
+		} = &items[0]
+		else {
+			panic!("expected OR Assignment, got {:?}", items[0]);
+		};
+		assert_eq!(or_key, "OR");
+		// First contributor's multi-statement body must be wrapped in a bare
+		// inner block (preserving the AND); second contributor's
+		// single-statement body is inlined as-is.
+		assert_eq!(
+			or_items.len(),
+			2,
+			"OR should hold the AND-group + the singleton, got: {or_items:?}"
+		);
+		let AstStatement::Item {
+			value: AstValue::Block {
+				items: and_group, ..
+			},
+			..
+		} = &or_items[0]
+		else {
+			panic!(
+				"expected first OR item to be a bare inner block (AND group), got: {:?}",
+				or_items[0]
+			);
+		};
+		assert_eq!(and_group.len(), 2);
+		assert!(matches!(
+			&and_group[0],
+			AstStatement::Assignment { key, .. } if key == "has_country_flag"
+		));
+		assert!(matches!(
+			&and_group[1],
+			AstStatement::Assignment { key, .. } if key == "num_of_cities"
+		));
+		assert!(matches!(
+			&or_items[1],
+			AstStatement::Assignment { key, value: AstValue::Scalar { value, .. }, .. }
+				if key == "has_country_flag" && value.as_text() == "b"
+		));
+	}
+
+	#[test]
+	fn scripted_trigger_ir_dedups_or_leaf_duplicates() {
+		// Bug #5 regression: a predicate that appears in multiple
+		// contributors' bodies should appear at most once inside the
+		// synthesised OR.
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("9751");
+		let mod_b = temp.path().join("9752");
+		let mod_c = temp.path().join("9753");
+
+		write_playlist(
+			&playlist_path,
+			json!([
+				{"displayName":"A", "enabled": true, "position": 0, "steamId":"9751"},
+				{"displayName":"B", "enabled": true, "position": 1, "steamId":"9752"},
+				{"displayName":"C", "enabled": true, "position": 2, "steamId":"9753"}
+			]),
+		);
+		write_descriptor(&mod_a, "mod-a");
+		write_descriptor(&mod_b, "mod-b");
+		write_descriptor(&mod_c, "mod-c");
+		write_script_file(
+			&mod_a,
+			"common/scripted_triggers/t.txt",
+			"is_active = {\n\thas_global_flag = shared\n}\n",
+		);
+		write_script_file(
+			&mod_b,
+			"common/scripted_triggers/t.txt",
+			"is_active = {\n\thas_global_flag = shared\n}\n# trailing\n",
+		);
+		write_script_file(
+			&mod_c,
+			"common/scripted_triggers/t.txt",
+			"is_active = {\n\thas_global_flag = different\n}\n",
+		);
+
+		let result = run_merge_ir_no_base(request_for(&playlist_path));
+		assert!(result.fatal_errors.is_empty());
+		let file = &result.structural_files[0];
+		let merged = file
+			.nodes
+			.iter()
+			.find(|n| n.merge_key == "is_active")
+			.expect("is_active node");
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &merged.merged_statement
+		else {
+			panic!("expected outer Block body");
+		};
+		assert_eq!(items.len(), 1, "outer body should be a single OR block");
+		let AstStatement::Assignment {
+			key: or_key,
+			value: AstValue::Block {
+				items: or_items, ..
+			},
+			..
+		} = &items[0]
+		else {
+			panic!("expected OR Assignment");
+		};
+		assert_eq!(or_key, "OR");
+		let flag_values: Vec<String> = or_items
+			.iter()
+			.filter_map(|s| match s {
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Scalar { value, .. },
+					..
+				} if key == "has_global_flag" => Some(value.as_text()),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(
+			flag_values,
+			vec!["shared".to_string(), "different".to_string()],
+			"shared predicate should appear exactly once inside OR"
 		);
 	}
 
