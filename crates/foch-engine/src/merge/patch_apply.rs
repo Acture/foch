@@ -635,6 +635,192 @@ mod tests {
 		assert_eq!(result[0], new_stmt);
 	}
 
+	// ---------------------------------------------------------------------
+	// Round-trip coverage for each MergeKeySource variant.
+	// ---------------------------------------------------------------------
+
+	fn ast_eq_modulo_span(a: &AstStatement, b: &AstStatement) -> bool {
+		match (a, b) {
+			(
+				AstStatement::Assignment {
+					key: ka, value: va, ..
+				},
+				AstStatement::Assignment {
+					key: kb, value: vb, ..
+				},
+			) => ka == kb && value_eq_modulo_span(va, vb),
+			(AstStatement::Item { value: va, .. }, AstStatement::Item { value: vb, .. }) => {
+				value_eq_modulo_span(va, vb)
+			}
+			(AstStatement::Comment { text: ta, .. }, AstStatement::Comment { text: tb, .. }) => {
+				ta == tb
+			}
+			_ => false,
+		}
+	}
+
+	fn value_eq_modulo_span(a: &AstValue, b: &AstValue) -> bool {
+		match (a, b) {
+			(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
+			(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
+				ia.len() == ib.len()
+					&& ia
+						.iter()
+						.zip(ib.iter())
+						.all(|(x, y)| ast_eq_modulo_span(x, y))
+			}
+			_ => false,
+		}
+	}
+
+	#[test]
+	fn field_value_diff_apply_round_trip_event_id() {
+		// Two `country_event` blocks; merge key is the inner `id` field.
+		let make_event = |id: &str, title: &str| {
+			block(
+				"country_event",
+				vec![
+					assignment("id", scalar(id)),
+					assignment("title", scalar(title)),
+				],
+			)
+		};
+
+		let base_stmts = vec![
+			make_event("test.1", "old_title_1"),
+			make_event("test.2", "title_2"),
+		];
+		let overlay_stmts = vec![
+			make_event("test.1", "new_title_1"),
+			make_event("test.2", "title_2"),
+		];
+
+		let key_source = MergeKeySource::FieldValue("id");
+
+		// No-op round-trip: applying base→base diff is a no-op.
+		let noop = merge_single_mod(
+			&make_parsed(base_stmts.clone()),
+			&make_parsed(base_stmts.clone()),
+			key_source,
+		);
+		assert_eq!(noop.len(), base_stmts.len());
+		for (a, b) in noop.iter().zip(base_stmts.iter()) {
+			assert!(ast_eq_modulo_span(a, b));
+		}
+
+		// Real change: only test.1's title flips.
+		let result = merge_single_mod(
+			&make_parsed(base_stmts.clone()),
+			&make_parsed(overlay_stmts.clone()),
+			key_source,
+		);
+		assert_eq!(result.len(), overlay_stmts.len());
+		for (a, b) in result.iter().zip(overlay_stmts.iter()) {
+			assert!(
+				ast_eq_modulo_span(a, b),
+				"FieldValue round-trip mismatch: {a:?} vs {b:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn container_child_key_diff_apply_round_trip_decision() {
+		// `country_decisions = { dec_a = {...} dec_b = {...} }`
+		// merge key is each child's assignment key.
+		let make_decisions = |children: Vec<AstStatement>| block("country_decisions", children);
+
+		let base = vec![make_decisions(vec![
+			block(
+				"pragmatic_sanction",
+				vec![assignment("potential", scalar("yes"))],
+			),
+			block(
+				"other_decision",
+				vec![assignment("potential", scalar("no"))],
+			),
+		])];
+		let overlay = vec![make_decisions(vec![
+			block(
+				"pragmatic_sanction",
+				vec![assignment("potential", scalar("always"))],
+			),
+			block(
+				"other_decision",
+				vec![assignment("potential", scalar("no"))],
+			),
+			block("new_decision", vec![assignment("potential", scalar("yes"))]),
+		])];
+
+		let key_source = MergeKeySource::ContainerChildKey;
+
+		// No-op round-trip.
+		let noop = merge_single_mod(
+			&make_parsed(base.clone()),
+			&make_parsed(base.clone()),
+			key_source,
+		);
+		assert_eq!(noop.len(), base.len());
+		for (a, b) in noop.iter().zip(base.iter()) {
+			assert!(ast_eq_modulo_span(a, b));
+		}
+
+		// Real change: pragmatic_sanction.potential flips, new_decision is added.
+		let result = merge_single_mod(
+			&make_parsed(base.clone()),
+			&make_parsed(overlay.clone()),
+			key_source,
+		);
+		assert_eq!(result.len(), overlay.len());
+		for (a, b) in result.iter().zip(overlay.iter()) {
+			assert!(
+				ast_eq_modulo_span(a, b),
+				"ContainerChildKey round-trip mismatch: {a:?} vs {b:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn leaf_path_diff_apply_round_trip_dotted_assignment() {
+		// Top-level dotted assignments (defines-style flat keys).
+		let base = vec![
+			assignment("NGame.START_YEAR", scalar("1444")),
+			assignment("NGame.END_YEAR", scalar("1821")),
+			assignment("NCountry.BASE_TAX", scalar("1")),
+		];
+		let overlay = vec![
+			assignment("NGame.START_YEAR", scalar("1356")),
+			assignment("NGame.END_YEAR", scalar("1821")),
+			assignment("NCountry.BASE_TAX", scalar("2")),
+		];
+
+		let key_source = MergeKeySource::LeafPath;
+
+		// No-op round-trip.
+		let noop = merge_single_mod(
+			&make_parsed(base.clone()),
+			&make_parsed(base.clone()),
+			key_source,
+		);
+		assert_eq!(noop.len(), base.len());
+		for (a, b) in noop.iter().zip(base.iter()) {
+			assert!(ast_eq_modulo_span(a, b));
+		}
+
+		// Real change.
+		let result = merge_single_mod(
+			&make_parsed(base.clone()),
+			&make_parsed(overlay.clone()),
+			key_source,
+		);
+		assert_eq!(result.len(), overlay.len());
+		for (a, b) in result.iter().zip(overlay.iter()) {
+			assert!(
+				ast_eq_modulo_span(a, b),
+				"LeafPath round-trip mismatch: {a:?} vs {b:?}"
+			);
+		}
+	}
+
 	#[test]
 	fn merge_single_mod_roundtrip() {
 		let base_stmts = vec![

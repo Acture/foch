@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
+	BlockPatchPolicy, MergeKeySource, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
@@ -1165,6 +1165,118 @@ fn synthesize_boolean_or(
 }
 
 // ---------------------------------------------------------------------------
+// Conflict-rename
+// ---------------------------------------------------------------------------
+
+/// Produce a copy of `stmt` whose merge identity is suffixed with `mod_id`,
+/// allowing two conflicting `InsertNode` patches at the same `PatchAddress` to
+/// coexist in the merged output. The "identity" location depends on which
+/// merge-key source the content family uses:
+///
+/// * `AssignmentKey` / `ContainerChildKey` — rename the top-level assignment
+///   key (e.g. `pragmatic_sanction` → `pragmatic_sanction_mod_a`).
+/// * `FieldValue(field)` — rename the inner scalar field that supplies the
+///   merge key (e.g. `id = test.1` → `id = test.1_mod_a`).
+/// * `LeafPath` — the path itself is the identity and cannot be safely
+///   suffixed without changing semantics, so the statement is returned
+///   unchanged. Callers should fall back to a last-writer policy in that
+///   case.
+///
+/// Comments and bare items are returned unchanged: they have no merge key
+/// to rename.
+pub fn rename_for_conflict(
+	stmt: &AstStatement,
+	key_source: MergeKeySource,
+	mod_id: &str,
+) -> AstStatement {
+	match key_source {
+		MergeKeySource::AssignmentKey | MergeKeySource::ContainerChildKey => {
+			rename_top_level_key(stmt, mod_id)
+		}
+		MergeKeySource::FieldValue(field) => rename_inner_field_value(stmt, field, mod_id),
+		MergeKeySource::LeafPath => stmt.clone(),
+	}
+}
+
+fn rename_top_level_key(stmt: &AstStatement, mod_id: &str) -> AstStatement {
+	match stmt {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value,
+			span,
+		} => AstStatement::Assignment {
+			key: format!("{key}_{mod_id}"),
+			key_span: key_span.clone(),
+			value: value.clone(),
+			span: span.clone(),
+		},
+		other => other.clone(),
+	}
+}
+
+fn rename_inner_field_value(stmt: &AstStatement, field: &str, mod_id: &str) -> AstStatement {
+	let AstStatement::Assignment {
+		key,
+		key_span,
+		value: AstValue::Block {
+			items,
+			span: block_span,
+		},
+		span,
+	} = stmt
+	else {
+		return stmt.clone();
+	};
+
+	let new_items: Vec<AstStatement> = items
+		.iter()
+		.map(|item| match item {
+			AstStatement::Assignment {
+				key: ikey,
+				key_span: iks,
+				value: AstValue::Scalar {
+					value: sv,
+					span: sspan,
+				},
+				span: ispan,
+			} if ikey == field => {
+				let new_text = format!("{}_{}", sv.as_text(), mod_id);
+				let renamed = match sv {
+					ScalarValue::Identifier(_) => ScalarValue::Identifier(new_text),
+					ScalarValue::String(_) => ScalarValue::String(new_text),
+					// Numbers and booleans become identifiers once suffixed —
+					// the result is no longer a valid number/bool literal.
+					ScalarValue::Number(_) | ScalarValue::Bool(_) => {
+						ScalarValue::Identifier(new_text)
+					}
+				};
+				AstStatement::Assignment {
+					key: ikey.clone(),
+					key_span: iks.clone(),
+					value: AstValue::Scalar {
+						value: renamed,
+						span: sspan.clone(),
+					},
+					span: ispan.clone(),
+				}
+			}
+			other => other.clone(),
+		})
+		.collect();
+
+	AstStatement::Assignment {
+		key: key.clone(),
+		key_span: key_span.clone(),
+		value: AstValue::Block {
+			items: new_items,
+			span: block_span.clone(),
+		},
+		span: span.clone(),
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1509,6 +1621,129 @@ mod tests {
 			}
 			other => panic!("expected Conflict, got: {other:?}"),
 		}
+	}
+
+	#[test]
+	fn rename_for_conflict_assignment_key_appends_mod_suffix() {
+		let stmt = assignment(
+			"pragmatic_sanction",
+			AstValue::Block {
+				items: vec![assignment("potential", scalar("yes"))],
+				span: span(),
+			},
+		);
+
+		let renamed = rename_for_conflict(&stmt, MergeKeySource::AssignmentKey, "mod_a");
+
+		match renamed {
+			AstStatement::Assignment { key, value, .. } => {
+				assert_eq!(key, "pragmatic_sanction_mod_a");
+				// Body is preserved as-is.
+				match value {
+					AstValue::Block { items, .. } => {
+						assert_eq!(items.len(), 1);
+						assert!(matches!(
+							&items[0],
+							AstStatement::Assignment { key, .. } if key == "potential"
+						));
+					}
+					_ => panic!("expected block body"),
+				}
+			}
+			_ => panic!("expected Assignment"),
+		}
+
+		// ContainerChildKey behaves identically (renames the top-level key).
+		let renamed_container =
+			rename_for_conflict(&stmt, MergeKeySource::ContainerChildKey, "mod_b");
+		match renamed_container {
+			AstStatement::Assignment { key, .. } => {
+				assert_eq!(key, "pragmatic_sanction_mod_b");
+			}
+			_ => panic!("expected Assignment"),
+		}
+	}
+
+	#[test]
+	fn rename_for_conflict_field_value_renames_inner_id() {
+		let stmt = assignment(
+			"country_event",
+			AstValue::Block {
+				items: vec![
+					assignment("id", scalar("test.1")),
+					assignment("title", scalar("evt_title")),
+				],
+				span: span(),
+			},
+		);
+
+		let renamed = rename_for_conflict(&stmt, MergeKeySource::FieldValue("id"), "mod_a");
+
+		match renamed {
+			AstStatement::Assignment { key, value, .. } => {
+				// Outer key is unchanged.
+				assert_eq!(key, "country_event");
+				match value {
+					AstValue::Block { items, .. } => {
+						assert_eq!(items.len(), 2);
+						// The `id` field has been renamed.
+						match &items[0] {
+							AstStatement::Assignment {
+								key: ikey,
+								value:
+									AstValue::Scalar {
+										value: ScalarValue::Identifier(v),
+										..
+									},
+								..
+							} => {
+								assert_eq!(ikey, "id");
+								assert_eq!(v, "test.1_mod_a");
+							}
+							other => panic!("expected scalar id field, got {other:?}"),
+						}
+						// Other fields are untouched.
+						match &items[1] {
+							AstStatement::Assignment {
+								key: ikey,
+								value:
+									AstValue::Scalar {
+										value: ScalarValue::Identifier(v),
+										..
+									},
+								..
+							} => {
+								assert_eq!(ikey, "title");
+								assert_eq!(v, "evt_title");
+							}
+							other => panic!("expected scalar title field, got {other:?}"),
+						}
+					}
+					_ => panic!("expected block body"),
+				}
+			}
+			_ => panic!("expected Assignment"),
+		}
+	}
+
+	#[test]
+	fn rename_for_conflict_leaf_path_returns_unchanged_or_lastwriter() {
+		// LeafPath identities are the dotted path itself, which cannot be
+		// suffix-renamed without changing semantics. The helper must return
+		// the statement unchanged so callers fall back to last-writer.
+		let stmt = assignment("NGame.START_YEAR", scalar("1444"));
+		let renamed = rename_for_conflict(&stmt, MergeKeySource::LeafPath, "mod_a");
+		assert_eq!(renamed, stmt);
+
+		// Comments and items are similarly left alone for any key source.
+		let comment = AstStatement::Comment {
+			text: "# header".to_string(),
+			span: span(),
+		};
+		assert_eq!(
+			rename_for_conflict(&comment, MergeKeySource::AssignmentKey, "mod_a"),
+			comment
+		);
 	}
 
 	#[test]
