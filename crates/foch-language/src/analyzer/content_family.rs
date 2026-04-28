@@ -149,6 +149,24 @@ pub struct MergePolicies {
 	pub list: ListMergePolicy,
 	pub block: BlockMergePolicy,
 	pub boolean: BooleanMergePolicy,
+	pub block_patch: BlockPatchPolicy,
+}
+
+/// How patch-level block conflicts are resolved by the patch merge engine
+/// (the successor to deep_merge / ir.rs). When two or more mods both modify
+/// the same block-valued node, this policy decides whether the last writer
+/// wins (default) or the bodies get wrapped in `OR = { ... }` blocks for
+/// boolean-OR trigger semantics.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockPatchPolicy {
+	/// Highest-precedence mod's replacement wins; others are reported as
+	/// conflicts in the existing patch merge flow.
+	#[default]
+	LastWriter,
+	/// Combine each mod's body inside an `OR = { ... }` wrapper so the
+	/// resulting trigger fires if any contributor's predicate holds.
+	BooleanOr,
 }
 
 /// How to handle conflicts when two unrelated mods define the same merge key.
@@ -428,6 +446,10 @@ impl ContentFamilyDescriptorBuilder {
 		self.merge_policies.boolean = policy;
 		self
 	}
+	pub const fn block_patch_policy(mut self, policy: BlockPatchPolicy) -> Self {
+		self.merge_policies.block_patch = policy;
+		self
+	}
 	pub const fn build(self) -> ContentFamilyDescriptor {
 		ContentFamilyDescriptor {
 			id: self.id,
@@ -469,6 +491,7 @@ impl ContentFamilyDescriptor {
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
+				block_patch: BlockPatchPolicy::LastWriter,
 			},
 		}
 	}
@@ -500,6 +523,7 @@ impl ContentFamilyDescriptor {
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
+				block_patch: BlockPatchPolicy::LastWriter,
 			},
 		}
 	}

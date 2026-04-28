@@ -1,8 +1,8 @@
 use super::content_family::{
-	BlockMergePolicy, BooleanMergePolicy, ConflictPolicy, ContentFamilyCapabilities,
-	ContentFamilyDescriptor, ContentFamilyExtractor, ContentFamilyPathMatcher,
-	ContentFamilyScopePolicy, GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule,
-	ScalarMergePolicy, ScriptFileKind,
+	BlockMergePolicy, BlockPatchPolicy, BooleanMergePolicy, ConflictPolicy,
+	ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyExtractor,
+	ContentFamilyPathMatcher, ContentFamilyScopePolicy, GameId, GameProfile, ListMergePolicy,
+	MergeKeySource, ModuleNameRule, ScalarMergePolicy, ScriptFileKind,
 };
 use foch_core::model::ScopeType;
 use std::path::Path;
@@ -123,6 +123,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
+		.block_patch_policy(BlockPatchPolicy::BooleanOr)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/scripted_triggers", "common/scripted_triggers/")
 		.kind(ScriptFileKind::ScriptedTriggers)
@@ -134,6 +135,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.conflict_policy(ConflictPolicy::BooleanOr)
+		.block_patch_policy(BlockPatchPolicy::BooleanOr)
 		.extractor(ContentFamilyExtractor::ScriptedTriggers)
 		.build(),
 	ContentFamilyDescriptor::prefix("common/triggered_modifiers", "common/triggered_modifiers/")
