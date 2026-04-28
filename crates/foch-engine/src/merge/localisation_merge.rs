@@ -213,6 +213,7 @@ mod tests {
 			absolute_path: path,
 			precedence,
 			is_base_game: false,
+			is_synthetic_base: false,
 			parse_ok_hint: None,
 		}
 	}

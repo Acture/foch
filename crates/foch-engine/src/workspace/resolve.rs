@@ -36,6 +36,7 @@ pub(crate) struct ResolvedFileContributor {
 	pub absolute_path: PathBuf,
 	pub precedence: usize,
 	pub is_base_game: bool,
+	pub is_synthetic_base: bool,
 	pub parse_ok_hint: Option<bool>,
 }
 
@@ -117,13 +118,14 @@ pub(crate) fn resolve_workspace(
 			)
 		})
 		.collect();
-	let file_inventory = build_file_inventory(
+	let mut file_inventory = build_file_inventory(
 		&playlist,
 		&mods,
 		&mod_snapshots,
 		base_game_root.as_ref(),
 		installed_base_snapshot.as_ref(),
 	);
+	inject_synthetic_bases(&mut file_inventory);
 
 	Ok(ResolvedWorkspace {
 		playlist_path: request.playset_path.clone(),
@@ -361,6 +363,7 @@ pub(crate) fn build_file_inventory(
 					absolute_path: root.join(relative),
 					precedence,
 					is_base_game: true,
+					is_synthetic_base: false,
 					parse_ok_hint: document.map(|(_family, parse_ok)| *parse_ok),
 				});
 		}
@@ -387,6 +390,7 @@ pub(crate) fn build_file_inventory(
 					absolute_path: root.join(relative),
 					precedence,
 					is_base_game: false,
+					is_synthetic_base: false,
 					parse_ok_hint,
 				});
 		}
@@ -398,4 +402,145 @@ pub(crate) fn build_file_inventory(
 
 pub(crate) fn normalize_relative_path(path: &Path) -> String {
 	path.to_string_lossy().replace('\\', "/")
+}
+
+/// 当 file_inventory 中某个文件没有 base game 贡献者，但有 ≥2 个 mod 贡献者时，
+/// 选取 precedence 最小的 mod（tie 用 mod_id 字典序）clone 一份作为合成 base，
+/// 插入到 contributors 最前面。这样下游的 patch 引擎可以把所有 mod 视为对该 base 的 patch。
+///
+/// 合成 base 的特征：`is_synthetic_base = true`，`is_base_game = false`，`precedence = 0`。
+/// 原贡献者保持不动。
+pub(crate) fn inject_synthetic_bases(
+	file_inventory: &mut BTreeMap<String, Vec<ResolvedFileContributor>>,
+) {
+	for contributors in file_inventory.values_mut() {
+		if contributors.iter().any(|c| c.is_base_game) {
+			continue;
+		}
+		let non_base_count = contributors.iter().filter(|c| !c.is_base_game).count();
+		if non_base_count < 2 {
+			continue;
+		}
+		let Some(seed) = contributors
+			.iter()
+			.filter(|c| !c.is_base_game)
+			.min_by(|a, b| {
+				a.precedence
+					.cmp(&b.precedence)
+					.then_with(|| a.mod_id.cmp(&b.mod_id))
+			})
+		else {
+			continue;
+		};
+		let mut synthetic = seed.clone();
+		synthetic.is_synthetic_base = true;
+		synthetic.is_base_game = false;
+		synthetic.precedence = 0;
+		contributors.insert(0, synthetic);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn make_contributor(
+		mod_id: &str,
+		precedence: usize,
+		is_base_game: bool,
+	) -> ResolvedFileContributor {
+		ResolvedFileContributor {
+			mod_id: mod_id.to_string(),
+			root_path: PathBuf::from(format!("/mods/{mod_id}")),
+			absolute_path: PathBuf::from(format!("/mods/{mod_id}/file.txt")),
+			precedence,
+			is_base_game,
+			is_synthetic_base: false,
+			parse_ok_hint: None,
+		}
+	}
+
+	#[test]
+	fn inject_synthetic_bases_no_base_two_mods_creates_synthetic() {
+		let mut inventory: BTreeMap<String, Vec<ResolvedFileContributor>> = BTreeMap::new();
+		inventory.insert(
+			"common/file.txt".to_string(),
+			vec![
+				make_contributor("mod_b", 5, false),
+				make_contributor("mod_a", 3, false),
+			],
+		);
+
+		inject_synthetic_bases(&mut inventory);
+
+		let contribs = &inventory["common/file.txt"];
+		assert_eq!(contribs.len(), 3, "synthetic base should be added");
+		let synth = &contribs[0];
+		assert!(synth.is_synthetic_base);
+		assert!(!synth.is_base_game);
+		assert_eq!(synth.precedence, 0);
+		assert_eq!(synth.mod_id, "mod_a", "lowest-precedence mod is mod_a (3)");
+		// originals preserved
+		assert!(!contribs[1].is_synthetic_base);
+		assert!(!contribs[2].is_synthetic_base);
+		assert_eq!(contribs[1].mod_id, "mod_b");
+		assert_eq!(contribs[2].mod_id, "mod_a");
+		assert_eq!(contribs[2].precedence, 3);
+	}
+
+	#[test]
+	fn inject_synthetic_bases_with_real_base_skipped() {
+		let mut inventory: BTreeMap<String, Vec<ResolvedFileContributor>> = BTreeMap::new();
+		inventory.insert(
+			"common/file.txt".to_string(),
+			vec![
+				make_contributor("base:eu4", 0, true),
+				make_contributor("mod_a", 1, false),
+				make_contributor("mod_b", 2, false),
+			],
+		);
+
+		inject_synthetic_bases(&mut inventory);
+
+		let contribs = &inventory["common/file.txt"];
+		assert_eq!(contribs.len(), 3, "no synthetic base should be added");
+		assert!(!contribs.iter().any(|c| c.is_synthetic_base));
+	}
+
+	#[test]
+	fn inject_synthetic_bases_single_mod_skipped() {
+		let mut inventory: BTreeMap<String, Vec<ResolvedFileContributor>> = BTreeMap::new();
+		inventory.insert(
+			"common/file.txt".to_string(),
+			vec![make_contributor("mod_a", 1, false)],
+		);
+
+		inject_synthetic_bases(&mut inventory);
+
+		let contribs = &inventory["common/file.txt"];
+		assert_eq!(contribs.len(), 1, "no synthetic base for single mod");
+		assert!(!contribs[0].is_synthetic_base);
+	}
+
+	#[test]
+	fn inject_synthetic_bases_tie_breaks_on_mod_id() {
+		let mut inventory: BTreeMap<String, Vec<ResolvedFileContributor>> = BTreeMap::new();
+		inventory.insert(
+			"common/file.txt".to_string(),
+			vec![
+				make_contributor("mod_z", 2, false),
+				make_contributor("mod_a", 2, false),
+			],
+		);
+
+		inject_synthetic_bases(&mut inventory);
+
+		let contribs = &inventory["common/file.txt"];
+		assert_eq!(contribs.len(), 3);
+		assert!(contribs[0].is_synthetic_base);
+		assert_eq!(
+			contribs[0].mod_id, "mod_a",
+			"tie on precedence resolved by mod_id lex"
+		);
+	}
 }
