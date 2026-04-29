@@ -50,6 +50,13 @@ pub enum ClausewitzPatch {
 		old_statement: AstStatement,
 		new_statement: AstStatement,
 	},
+	/// Append a bare-value `Item` inside a block (e.g. adding `TRE` to
+	/// `allowed_tags = { FRA ENG }`). `path` is the path including the parent
+	/// block's key; the item is added at the end of that block's body.
+	AppendBlockItem { path: AstPath, value: AstValue },
+	/// Remove a bare-value `Item` from a block. Matched by span-ignoring
+	/// structural equality on the value.
+	RemoveBlockItem { path: AstPath, value: AstValue },
 }
 
 /// Compute the structural diff between a base game file and a mod overlay,
@@ -304,7 +311,7 @@ fn statement_value(stmt: &AstStatement) -> Option<&AstValue> {
 // Span-ignoring comparison (ASTs from different files have different spans)
 // ---------------------------------------------------------------------------
 
-fn values_equal_ignoring_span(a: &AstValue, b: &AstValue) -> bool {
+pub(crate) fn values_equal_ignoring_span(a: &AstValue, b: &AstValue) -> bool {
 	match (a, b) {
 		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
 		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
@@ -457,7 +464,50 @@ fn diff_blocks(
 		all_keys.len()
 	};
 
-	if total_keys == 0 {
+	// Per-Item set diff for bare values (e.g. `allowed_tags = { FRA ENG }`).
+	// Items are matched across base/overlay by span-ignoring structural value
+	// equality. Items missing from overlay produce `RemoveBlockItem`; items
+	// new in overlay produce `AppendBlockItem`. Their count contributes to
+	// the ReplaceBlock threshold below.
+	let base_block_items: Vec<&AstValue> = base_items
+		.iter()
+		.filter_map(|s| match s {
+			AstStatement::Item { value, .. } => Some(value),
+			_ => None,
+		})
+		.collect();
+	let overlay_block_items: Vec<&AstValue> = overlay_items
+		.iter()
+		.filter_map(|s| match s {
+			AstStatement::Item { value, .. } => Some(value),
+			_ => None,
+		})
+		.collect();
+	let removed_items: Vec<AstValue> = base_block_items
+		.iter()
+		.copied()
+		.filter(|bv| {
+			!overlay_block_items
+				.iter()
+				.any(|ov| values_equal_ignoring_span(ov, bv))
+		})
+		.cloned()
+		.collect();
+	let added_items: Vec<AstValue> = overlay_block_items
+		.iter()
+		.copied()
+		.filter(|ov| {
+			!base_block_items
+				.iter()
+				.any(|bv| values_equal_ignoring_span(bv, ov))
+		})
+		.cloned()
+		.collect();
+	let item_change_count = removed_items.len() + added_items.len();
+	let total_item_units = base_block_items.len().max(overlay_block_items.len());
+
+	if total_keys == 0 && total_item_units == 0 {
+		// No keys and no Items on either side. Nothing to emit.
 		return;
 	}
 
@@ -479,7 +529,12 @@ fn diff_blocks(
 		}
 	}
 
-	let ratio = changed as f64 / total_keys as f64;
+	let total_units = total_keys + total_item_units;
+	let ratio = if total_units == 0 {
+		0.0
+	} else {
+		(changed + item_change_count) as f64 / total_units as f64
+	};
 	if ratio > REPLACE_THRESHOLD {
 		patches.push(ClausewitzPatch::ReplaceBlock {
 			path: parent_path.to_vec(),
@@ -490,7 +545,21 @@ fn diff_blocks(
 		return;
 	}
 
-	// Produce per-child patches.
+	// Emit per-Item add/remove patches (set semantics).
+	for v in removed_items {
+		patches.push(ClausewitzPatch::RemoveBlockItem {
+			path: child_path.clone(),
+			value: v,
+		});
+	}
+	for v in added_items {
+		patches.push(ClausewitzPatch::AppendBlockItem {
+			path: child_path.clone(),
+			value: v,
+		});
+	}
+
+	// Produce per-child patches for Assignment statements.
 	let base_child_entries: Vec<KeyedEntry> = child_keyed_entries(base_items);
 	let overlay_child_entries: Vec<KeyedEntry> = child_keyed_entries(overlay_items);
 	let child_patches = diff_entry_maps(
@@ -848,6 +917,91 @@ mod tests {
 			),
 			"expected ReplaceBlock for country_event, got {:?}",
 			patches[0]
+		);
+	}
+
+	fn item(value: AstValue) -> AstStatement {
+		AstStatement::Item {
+			value,
+			span: dummy_span(),
+		}
+	}
+
+	#[test]
+	fn block_item_addition_emits_append_block_item() {
+		// Base: allowed_tags = { FRA ENG }, Overlay: allowed_tags = { FRA ENG TRE }
+		let base = make_parsed(vec![block(
+			"allowed_tags",
+			vec![item(scalar("FRA")), item(scalar("ENG"))],
+		)]);
+		let overlay = make_parsed(vec![block(
+			"allowed_tags",
+			vec![
+				item(scalar("FRA")),
+				item(scalar("ENG")),
+				item(scalar("TRE")),
+			],
+		)]);
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		assert_eq!(patches.len(), 1, "got patches: {patches:?}");
+		match &patches[0] {
+			ClausewitzPatch::AppendBlockItem { path, value } => {
+				assert_eq!(path, &vec!["allowed_tags".to_string()]);
+				assert!(
+					matches!(value, AstValue::Scalar { value: ScalarValue::Identifier(s), .. } if s == "TRE")
+				);
+			}
+			other => panic!("expected AppendBlockItem, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn block_item_removal_emits_remove_block_item() {
+		let base = make_parsed(vec![block(
+			"allowed_tags",
+			vec![item(scalar("FRA")), item(scalar("ENG"))],
+		)]);
+		let overlay = make_parsed(vec![block("allowed_tags", vec![item(scalar("FRA"))])]);
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		assert_eq!(patches.len(), 1, "got patches: {patches:?}");
+		match &patches[0] {
+			ClausewitzPatch::RemoveBlockItem { path, value } => {
+				assert_eq!(path, &vec!["allowed_tags".to_string()]);
+				assert!(
+					matches!(value, AstValue::Scalar { value: ScalarValue::Identifier(s), .. } if s == "ENG")
+				);
+			}
+			other => panic!("expected RemoveBlockItem, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn block_with_mixed_items_and_assignments_diffs_both() {
+		// Base: { id = evt.1 FRA }, Overlay: { id = evt.1 FRA TRE }
+		let base = make_parsed(vec![block(
+			"country_event",
+			vec![assignment("id", scalar("evt.1")), item(scalar("FRA"))],
+		)]);
+		let overlay = make_parsed(vec![block(
+			"country_event",
+			vec![
+				assignment("id", scalar("evt.1")),
+				item(scalar("FRA")),
+				item(scalar("TRE")),
+			],
+		)]);
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		assert!(
+			patches
+				.iter()
+				.any(|p| matches!(p, ClausewitzPatch::AppendBlockItem { .. })),
+			"expected an AppendBlockItem, got {patches:?}"
+		);
+		assert!(
+			!patches
+				.iter()
+				.any(|p| matches!(p, ClausewitzPatch::ReplaceBlock { .. })),
+			"should not fall back to ReplaceBlock, got {patches:?}"
 		);
 	}
 }

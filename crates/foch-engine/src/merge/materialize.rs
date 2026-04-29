@@ -167,16 +167,35 @@ pub(crate) fn materialize_merge_internal(
 									continue;
 								}
 								Ok(Err(err)) => {
-									report.warnings.push(format!(
-										"patch merge failed for {}: {err}; falling back to last-writer copy",
-										entry.path
-									));
+									if options.force {
+										report.warnings.push(format!(
+											"patch merge failed for {}: {err}; --force enabled, falling back to last-writer copy",
+											entry.path
+										));
+									} else {
+										report.warnings.push(format!(
+											"patch merge failed for {}: {err}; refusing to silently emit last-writer output (re-run with --force to allow lossy fallback)",
+											entry.path
+										));
+										report.manual_conflict_count += 1;
+										// Skip writing this file entirely.
+										continue;
+									}
 								}
 								Err(_) => {
-									report.warnings.push(format!(
-										"patch merge panicked for {}; falling back to last-writer copy",
-										entry.path
-									));
+									if options.force {
+										report.warnings.push(format!(
+											"patch merge panicked for {}; --force enabled, falling back to last-writer copy",
+											entry.path
+										));
+									} else {
+										report.warnings.push(format!(
+											"patch merge panicked for {}; refusing to silently emit last-writer output (re-run with --force to allow lossy fallback)",
+											entry.path
+										));
+										report.manual_conflict_count += 1;
+										continue;
+									}
 								}
 							}
 						}

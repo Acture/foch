@@ -66,11 +66,31 @@ fn apply_at_level(
 
 	let mut result: Vec<AstStatement> = Vec::with_capacity(statements.len());
 
+	// Pre-collect Item-level remove patches so we can drop matching base Items.
+	let remove_block_items: Vec<&AstValue> = local
+		.iter()
+		.filter_map(|p| match p {
+			ClausewitzPatch::RemoveBlockItem { value, .. } => Some(value),
+			_ => None,
+		})
+		.collect();
+
 	for stmt in statements {
+		// Bare-value Items: match against RemoveBlockItem; otherwise pass through.
+		if let AstStatement::Item { value, .. } = stmt {
+			let dropped = remove_block_items
+				.iter()
+				.any(|rv| super::patch::values_equal_ignoring_span(rv, value));
+			if !dropped {
+				result.push(stmt.clone());
+			}
+			continue;
+		}
+
 		let key = statement_key(stmt, merge_key_source, current_path);
 
 		let Some(key) = key else {
-			// Comments and items without a recognisable key pass through.
+			// Comments and other unkeyed nodes pass through.
 			result.push(stmt.clone());
 			continue;
 		};
@@ -116,7 +136,7 @@ fn apply_at_level(
 		result.push(new_stmt);
 	}
 
-	// InsertNode and AppendListItem patches add statements not present in the base.
+	// InsertNode / AppendListItem / AppendBlockItem add new statements.
 	for patch in &local {
 		match patch {
 			ClausewitzPatch::InsertNode { statement, .. } => {
@@ -126,6 +146,12 @@ fn apply_at_level(
 				result.push(AstStatement::Assignment {
 					key: key.clone(),
 					key_span: dummy_span(),
+					value: value.clone(),
+					span: dummy_span(),
+				});
+			}
+			ClausewitzPatch::AppendBlockItem { value, .. } => {
+				result.push(AstStatement::Item {
 					value: value.clone(),
 					span: dummy_span(),
 				});
@@ -189,18 +215,22 @@ fn patch_path(patch: &ClausewitzPatch) -> &[String] {
 		ClausewitzPatch::AppendListItem { path, .. } => path,
 		ClausewitzPatch::RemoveListItem { path, .. } => path,
 		ClausewitzPatch::ReplaceBlock { path, .. } => path,
+		ClausewitzPatch::AppendBlockItem { path, .. } => path,
+		ClausewitzPatch::RemoveBlockItem { path, .. } => path,
 	}
 }
 
-/// Extract the key from a patch.
-fn patch_key(patch: &ClausewitzPatch) -> &str {
+/// Extract the key from a patch. Returns `None` for in-block item patches
+/// which do not carry a key (they target the block by `path`).
+fn patch_key(patch: &ClausewitzPatch) -> Option<&str> {
 	match patch {
-		ClausewitzPatch::SetValue { key, .. } => key,
-		ClausewitzPatch::RemoveNode { key, .. } => key,
-		ClausewitzPatch::InsertNode { key, .. } => key,
-		ClausewitzPatch::AppendListItem { key, .. } => key,
-		ClausewitzPatch::RemoveListItem { key, .. } => key,
-		ClausewitzPatch::ReplaceBlock { key, .. } => key,
+		ClausewitzPatch::SetValue { key, .. } => Some(key),
+		ClausewitzPatch::RemoveNode { key, .. } => Some(key),
+		ClausewitzPatch::InsertNode { key, .. } => Some(key),
+		ClausewitzPatch::AppendListItem { key, .. } => Some(key),
+		ClausewitzPatch::RemoveListItem { key, .. } => Some(key),
+		ClausewitzPatch::ReplaceBlock { key, .. } => Some(key),
+		ClausewitzPatch::AppendBlockItem { .. } | ClausewitzPatch::RemoveBlockItem { .. } => None,
 	}
 }
 
@@ -260,9 +290,9 @@ fn field_value_key(stmt: &AstStatement, field: &str) -> Option<String> {
 fn group_by_key(patches: &[ClausewitzPatch]) -> HashMap<String, Vec<&ClausewitzPatch>> {
 	let mut map: HashMap<String, Vec<&ClausewitzPatch>> = HashMap::new();
 	for patch in patches {
-		map.entry(patch_key(patch).to_string())
-			.or_default()
-			.push(patch);
+		if let Some(key) = patch_key(patch) {
+			map.entry(key.to_string()).or_default().push(patch);
+		}
 	}
 	map
 }
@@ -874,5 +904,86 @@ mod tests {
 		} else {
 			panic!("expected block trigger");
 		}
+	}
+
+	fn item(value: AstValue) -> AstStatement {
+		AstStatement::Item {
+			value,
+			span: test_span(),
+		}
+	}
+
+	#[test]
+	fn round_trip_block_item_addition() {
+		// Base:    allowed_tags = { FRA ENG }
+		// Overlay: allowed_tags = { FRA ENG TRE }
+		let base = make_parsed(vec![block(
+			"allowed_tags",
+			vec![item(scalar("FRA")), item(scalar("ENG"))],
+		)]);
+		let overlay = make_parsed(vec![block(
+			"allowed_tags",
+			vec![
+				item(scalar("FRA")),
+				item(scalar("ENG")),
+				item(scalar("TRE")),
+			],
+		)]);
+		let result = merge_single_mod(&base, &overlay, MergeKeySource::AssignmentKey);
+		// Result block should contain all three items (FRA, ENG, TRE).
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &result[0]
+		else {
+			panic!("expected block, got {:?}", result[0]);
+		};
+		let names: Vec<String> = items
+			.iter()
+			.filter_map(|s| match s {
+				AstStatement::Item {
+					value:
+						AstValue::Scalar {
+							value: ScalarValue::Identifier(n),
+							..
+						},
+					..
+				} => Some(n.clone()),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(names, vec!["FRA", "ENG", "TRE"]);
+	}
+
+	#[test]
+	fn round_trip_block_item_removal() {
+		let base = make_parsed(vec![block(
+			"allowed_tags",
+			vec![item(scalar("FRA")), item(scalar("ENG"))],
+		)]);
+		let overlay = make_parsed(vec![block("allowed_tags", vec![item(scalar("FRA"))])]);
+		let result = merge_single_mod(&base, &overlay, MergeKeySource::AssignmentKey);
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &result[0]
+		else {
+			panic!("expected block");
+		};
+		let names: Vec<String> = items
+			.iter()
+			.filter_map(|s| match s {
+				AstStatement::Item {
+					value:
+						AstValue::Scalar {
+							value: ScalarValue::Identifier(n),
+							..
+						},
+					..
+				} => Some(n.clone()),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(names, vec!["FRA"]);
 	}
 }

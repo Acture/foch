@@ -98,6 +98,56 @@ fn patch_address(patch: &ClausewitzPatch) -> PatchAddress {
 			path: path.clone(),
 			key: key.clone(),
 		},
+		ClausewitzPatch::AppendBlockItem { path, value } => PatchAddress {
+			path: path.clone(),
+			key: format!("__append_block_item__::{}", value_fingerprint(value)),
+		},
+		ClausewitzPatch::RemoveBlockItem { path, value } => PatchAddress {
+			path: path.clone(),
+			key: format!("__remove_block_item__::{}", value_fingerprint(value)),
+		},
+	}
+}
+
+/// Stable, span-ignoring fingerprint for an `AstValue`. Used to give each
+/// distinct `AppendBlockItem` / `RemoveBlockItem` its own `PatchAddress` so
+/// that multiple mods can append/remove different values inside the same
+/// block without one clobbering the others.
+fn value_fingerprint(v: &AstValue) -> String {
+	let mut out = String::new();
+	fingerprint_into(v, &mut out);
+	out
+}
+
+fn fingerprint_into(v: &AstValue, out: &mut String) {
+	match v {
+		AstValue::Scalar { value, .. } => {
+			out.push('s');
+			out.push(':');
+			out.push_str(&value.as_text());
+		}
+		AstValue::Block { items, .. } => {
+			out.push('b');
+			out.push('[');
+			for s in items {
+				match s {
+					AstStatement::Assignment { key, value, .. } => {
+						out.push('a');
+						out.push_str(key);
+						out.push('=');
+						fingerprint_into(value, out);
+						out.push(';');
+					}
+					AstStatement::Item { value, .. } => {
+						out.push('i');
+						fingerprint_into(value, out);
+						out.push(';');
+					}
+					AstStatement::Comment { .. } => {}
+				}
+			}
+			out.push(']');
+		}
 	}
 }
 
@@ -110,6 +160,8 @@ fn patch_kind(patch: &ClausewitzPatch) -> &'static str {
 		ClausewitzPatch::AppendListItem { .. } => "AppendListItem",
 		ClausewitzPatch::RemoveListItem { .. } => "RemoveListItem",
 		ClausewitzPatch::ReplaceBlock { .. } => "ReplaceBlock",
+		ClausewitzPatch::AppendBlockItem { .. } => "AppendBlockItem",
+		ClausewitzPatch::RemoveBlockItem { .. } => "RemoveBlockItem",
 	}
 }
 
@@ -222,6 +274,8 @@ fn resolve_address(
 		"RemoveNode" => resolve_remove_convergent(addr, attributed, stats),
 		"RemoveListItem" => resolve_remove_list_items(addr, attributed, stats),
 		"ReplaceBlock" => resolve_replace_blocks(addr, attributed, policies, stats),
+		"AppendBlockItem" => resolve_append_block_items(addr, attributed, stats),
+		"RemoveBlockItem" => resolve_remove_block_items(addr, attributed, stats),
 		_ => {
 			stats.conflict_patches += 1;
 			PatchResolution::Conflict {
@@ -461,6 +515,29 @@ fn resolve_remove_list_items(
 		strategy: "compatible_removals".to_string(),
 		contributing_mods: mods,
 	}
+}
+
+/// Multiple mods appending the same in-block Item value (e.g. both add `TRE`
+/// to `allowed_tags`). Because `patch_address` includes the value fingerprint,
+/// every patch in this group has identical `value` → always convergent.
+fn resolve_append_block_items(
+	_addr: PatchAddress,
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+) -> PatchResolution {
+	stats.convergent_patches += 1;
+	PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch)
+}
+
+/// Multiple mods removing the same in-block Item value. Same convergence
+/// reasoning as `resolve_append_block_items`.
+fn resolve_remove_block_items(
+	_addr: PatchAddress,
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+) -> PatchResolution {
+	stats.convergent_patches += 1;
+	PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch)
 }
 
 /// Multiple mods replacing the same block → if `BlockPatchPolicy::BooleanOr`,
@@ -1124,6 +1201,9 @@ fn synthesize_boolean_or(
 		.map(|a| contributor_body(&a.patch))
 		.collect();
 	let bodies = bodies?;
+	// Skip empty bodies: emitting `OR = {}` is meaningless and would
+	// short-circuit trigger evaluation in unintended ways.
+	let bodies: Vec<Vec<AstStatement>> = bodies.into_iter().filter(|b| !b.is_empty()).collect();
 	if bodies.len() < 2 {
 		return None;
 	}
