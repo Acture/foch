@@ -42,6 +42,14 @@ fn write_descriptor_with_dependencies(mod_root: &Path, name: &str, dependencies:
 	fs::write(mod_root.join("descriptor.mod"), descriptor).expect("write descriptor");
 }
 
+fn write_script_file(mod_root: &Path, relative_path: &str, content: &str) {
+	let path = mod_root.join(relative_path);
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent).expect("create parent");
+	}
+	fs::write(path, content).expect("write script file");
+}
+
 /// Stage a structural-merge conflict: both mods contribute the same scripted
 /// triggers file, but mod_b's content is malformed Clausewitz so
 /// validate_structural_merge_inputs flags it and the merge plan downgrades the
@@ -65,6 +73,38 @@ fn stage_structural_manual_conflict(mod_a: &Path, mod_b: &Path) {
 		"name { = invalid syntax with unclosed\nbraces\n",
 	)
 	.expect("write malformed scripted_trigger");
+}
+
+const DAG_FALLBACK_PATH: &str = "common/ideas/fallback.txt";
+
+fn idea_file(cost: &str) -> String {
+	format!("group = {{\n\tidea = {{\n\t\tcost = {cost}\n\t}}\n}}\n")
+}
+
+fn stage_dag_fallback_conflict(
+	playlist_path: &Path,
+	mod_base: &Path,
+	mod_a: &Path,
+	mod_b: &Path,
+	mod_c: &Path,
+) {
+	write_playlist(
+		playlist_path,
+		json!([
+			{"displayName":"Base", "enabled": true, "position": 0, "steamId":"9101"},
+			{"displayName":"A", "enabled": true, "position": 1, "steamId":"9102"},
+			{"displayName":"B", "enabled": true, "position": 2, "steamId":"9103"},
+			{"displayName":"C", "enabled": true, "position": 3, "steamId":"9104"}
+		]),
+	);
+	write_descriptor(mod_base, "fallback-base");
+	write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
+	write_descriptor_with_dependencies(mod_b, "fallback-b", &["fallback-base"]);
+	write_descriptor_with_dependencies(mod_c, "fallback-c", &["fallback-a", "fallback-b"]);
+	write_script_file(mod_base, DAG_FALLBACK_PATH, &idea_file("old"));
+	write_script_file(mod_a, DAG_FALLBACK_PATH, &idea_file("alpha"));
+	write_script_file(mod_b, DAG_FALLBACK_PATH, &idea_file("beta"));
+	write_script_file(mod_c, DAG_FALLBACK_PATH, &idea_file("gamma"));
 }
 
 fn write_config(path: &Path, content: &str) {
@@ -1350,6 +1390,97 @@ fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
 	assert_eq!(report["validation"]["fatal_errors"], 0);
 	assert_eq!(report["validation"]["strict_findings"], 0);
 	assert_eq!(report["validation"]["parse_errors"], 0);
+}
+
+#[test]
+fn merge_command_skips_unresolved_dag_conflict_without_fallback() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_fallback_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+		&tmp.path().join("9104"),
+	);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 2);
+	assert!(stdout.contains("status: BLOCKED"));
+	assert!(stdout.contains("fallback_resolved_count: 0"));
+	assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "blocked");
+	assert_eq!(report["manual_conflict_count"], 1);
+	assert_eq!(report["fallback_resolved_count"], 0);
+	assert_eq!(report["generated_file_count"], 0);
+	assert_eq!(
+		report["conflict_resolutions"][0]["kind"],
+		"true_conflict_skipped"
+	);
+}
+
+#[test]
+fn merge_command_fallback_writes_last_writer_marker() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_fallback_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+		&tmp.path().join("9104"),
+	);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+			"--fallback",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: READY"));
+	assert!(stdout.contains("fallback_resolved_count: 1"));
+	let output = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read fallback");
+	assert!(output.starts_with("# foch:conflict reason=\"patch merge failed:"));
+	assert!(output.contains("resolved=\"last-writer:9104:1.0.0\""));
+	assert!(output.ends_with(&idea_file("gamma")));
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "ready");
+	assert_eq!(report["manual_conflict_count"], 0);
+	assert_eq!(report["fallback_resolved_count"], 1);
+	assert_eq!(report["generated_file_count"], 1);
+	assert_eq!(
+		report["conflict_resolutions"][0]["kind"],
+		"last_writer_fallback"
+	);
+	assert_eq!(
+		report["conflict_resolutions"][0]["winning_mod"],
+		"9104:1.0.0"
+	);
+	assert_eq!(report["conflict_resolutions"][0]["marker_written"], true);
 }
 
 #[test]

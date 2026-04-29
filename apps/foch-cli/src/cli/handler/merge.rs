@@ -15,6 +15,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			include_game_base: !merge_args.no_game_base,
 			force: merge_args.force,
 			ignore_replace_path: merge_args.ignore_replace_path,
+			fallback: merge_args.fallback || merge_args.force,
 		},
 	)?;
 	println!("{}", render_merge_report_text(&execution.report));

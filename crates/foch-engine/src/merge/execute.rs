@@ -19,6 +19,7 @@ pub struct MergeExecuteOptions {
 	pub include_game_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
+	pub fallback: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -38,6 +39,7 @@ pub fn run_merge_with_options(
 			include_game_base: options.include_game_base,
 			force: options.force,
 			ignore_replace_path: options.ignore_replace_path,
+			fallback: options.fallback,
 		},
 	)?;
 

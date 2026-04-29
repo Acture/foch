@@ -110,16 +110,47 @@ pub struct MergeReportRename {
 	pub mod_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeReportConflictKind {
+	#[default]
+	LastWriterFallback,
+	TrueConflictSkipped,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergeReportConflictContributor {
+	pub mod_id: String,
+	pub mod_version: String,
+	pub precedence: usize,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergeReportConflictResolution {
+	pub path: String,
+	pub kind: MergeReportConflictKind,
+	pub reason: String,
+	pub winning_mod: String,
+	#[serde(default)]
+	pub marker_written: bool,
+	#[serde(default)]
+	pub contributors: Vec<MergeReportConflictContributor>,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
 	pub manual_conflict_count: usize,
+	#[serde(default)]
+	pub fallback_resolved_count: usize,
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,
 	pub validation: MergeReportValidation,
 	#[serde(default)]
 	pub renames: Vec<MergeReportRename>,
+	#[serde(default)]
+	pub conflict_resolutions: Vec<MergeReportConflictResolution>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
 }

@@ -138,6 +138,10 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.manual_conflict_count
 	));
 	lines.push(format!(
+		"fallback_resolved_count: {}",
+		report.fallback_resolved_count
+	));
+	lines.push(format!(
 		"generated_file_count: {}",
 		report.generated_file_count
 	));

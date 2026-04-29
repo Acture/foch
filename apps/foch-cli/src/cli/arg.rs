@@ -98,7 +98,7 @@ pub enum MergePlanOutputFormat {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Generate a merged mod directory and revalidate it",
-	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --force\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
+	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --fallback\n  foch merge ./playlist.json --out ./merged-mod --force  # implies --fallback\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
 	pub playset_path: PathBuf,
@@ -117,6 +117,12 @@ pub struct MergeArgs {
 	/// Treat replace_path declarations as no-ops; merge as if they were absent.
 	#[arg(long)]
 	pub ignore_replace_path: bool,
+
+	/// Enable last-writer fallback for unresolved structural merge conflicts.
+	///
+	/// `--force` also enables this fallback.
+	#[arg(long)]
+	pub fallback: bool,
 }
 
 #[derive(Parser, Debug)]
