@@ -11,7 +11,7 @@ use foch_language::analyzer::content_family::{
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
-use super::patch::{AstPath, ClausewitzPatch};
+use super::patch::{AstPath, ClausewitzPatch, patches_semantically_equal};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -246,8 +246,12 @@ fn resolve_address(
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
 
-	// --- Convergence: all patches identical ---
-	if attributed.windows(2).all(|w| w[0].patch == w[1].patch) {
+	// --- Convergence: all patches semantically equal (ignoring spans and
+	// comment/whitespace trivia) ---
+	if attributed
+		.windows(2)
+		.all(|w| patches_semantically_equal(&w[0].patch, &w[1].patch))
+	{
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
@@ -309,8 +313,11 @@ fn resolve_insert_nodes(
 		})
 		.collect();
 
-	// If all statements are identical → convergent.
-	if stmts.windows(2).all(|w| w[0] == w[1]) {
+	// If all statements are semantically equal → convergent.
+	if stmts
+		.windows(2)
+		.all(|w| super::patch::ast_statements_semantically_equal(w[0], w[1]))
+	{
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
@@ -361,8 +368,11 @@ fn resolve_append_list_items(
 		})
 		.collect();
 
-	// If all values are identical → convergent (dedup to one).
-	if values.windows(2).all(|w| w[0] == w[1]) {
+	// If all values are semantically equal → convergent (dedup to one).
+	if values
+		.windows(2)
+		.all(|w| super::patch::ast_values_semantically_equal(w[0], w[1]))
+	{
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
@@ -500,7 +510,10 @@ fn resolve_remove_list_items(
 		.collect();
 
 	// Identical removals → convergent.
-	if values.windows(2).all(|w| w[0] == w[1]) {
+	if values
+		.windows(2)
+		.all(|w| super::patch::ast_values_semantically_equal(w[0], w[1]))
+	{
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
@@ -550,6 +563,22 @@ fn resolve_replace_blocks(
 	policies: &MergePolicies,
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
+	// Defensive: although `resolve_address` already collapses semantically
+	// equal patches, callers may invoke this resolver directly. Treat
+	// format-only divergence (whitespace / comment trivia) as convergent.
+	if attributed
+		.windows(2)
+		.all(|w| patches_semantically_equal(&w[0].patch, &w[1].patch))
+	{
+		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+		stats.auto_merged_patches += 1;
+		return PatchResolution::AutoMerged {
+			result: attributed.into_iter().next().unwrap().patch,
+			strategy: "semantic_equivalence".to_string(),
+			contributing_mods: mods,
+		};
+	}
+
 	if policies.block_patch == BlockPatchPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{
@@ -572,8 +601,8 @@ fn resolve_replace_blocks(
 		};
 	}
 
-	// Identical replacements were already caught by convergence check above,
-	// so reaching here means different replacements → conflict.
+	// Identical or semantically-equivalent replacements were already caught
+	// above, so reaching here means different replacements → conflict.
 	stats.conflict_patches += 1;
 	PatchResolution::Conflict {
 		address: addr,
