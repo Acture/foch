@@ -489,6 +489,84 @@ impl FileDag {
 	}
 }
 
+fn topo_levels(parents: &BTreeSet<ModId>, file_dag: &FileDag) -> Vec<Vec<ModId>> {
+	if parents.is_empty() {
+		return Vec::new();
+	}
+
+	let parent_set: HashSet<ModId> = parents.iter().cloned().collect();
+	let mut indegree: HashMap<ModId, usize> =
+		parents.iter().cloned().map(|parent| (parent, 0)).collect();
+	let mut children: HashMap<ModId, Vec<ModId>> = HashMap::new();
+
+	for child in parents {
+		for ancestor in file_dag.ancestors_of(child) {
+			if !parent_set.contains(&ancestor) {
+				continue;
+			}
+			children
+				.entry(ancestor.clone())
+				.or_default()
+				.push(child.clone());
+			*indegree
+				.get_mut(child)
+				.expect("all parent nodes have indegree slots") += 1;
+		}
+	}
+
+	for children in children.values_mut() {
+		children.sort_by_key(|child| file_dag.precedence_of(child));
+		children.dedup();
+	}
+
+	let mut ready: Vec<ModId> = parents
+		.iter()
+		.filter(|parent| indegree.get(*parent).copied().unwrap_or(0) == 0)
+		.cloned()
+		.collect();
+	ready.sort_by_key(|parent| file_dag.precedence_of(parent));
+
+	let mut levels = Vec::new();
+	let mut placed: HashSet<ModId> = HashSet::new();
+	while !ready.is_empty() {
+		let level = ready;
+		for parent in &level {
+			placed.insert(parent.clone());
+		}
+
+		let mut next = Vec::new();
+		for parent in &level {
+			if let Some(children) = children.get(parent) {
+				for child in children {
+					let child_indegree = indegree
+						.get_mut(child)
+						.expect("child nodes have indegree slots");
+					*child_indegree -= 1;
+					if *child_indegree == 0 {
+						next.push(child.clone());
+					}
+				}
+			}
+		}
+		next.sort_by_key(|parent| file_dag.precedence_of(parent));
+		next.dedup();
+		levels.push(level);
+		ready = next;
+	}
+
+	if placed.len() < parents.len() {
+		let mut leftover: Vec<ModId> = parents
+			.iter()
+			.filter(|parent| !placed.contains(*parent))
+			.cloned()
+			.collect();
+		leftover.sort_by_key(|parent| file_dag.precedence_of(parent));
+		levels.push(leftover);
+	}
+
+	levels
+}
+
 /// Configuration for `replace_path` semantics. The merge CLI exposes the
 /// all-mods override as `--ignore-replace-path`.
 #[derive(Clone, Debug, Default)]
@@ -724,46 +802,66 @@ impl BaseResolver {
 		merge_key_source: MergeKeySource,
 		policies: &MergePolicies,
 	) -> Option<Rc<ParsedScriptFile>> {
-		let mut mod_patches = Vec::new();
-		let mut ordered: Vec<ModId> = parents.iter().cloned().collect();
-		ordered.sort_by_key(|m| file_dag.precedence_of(m));
-
-		for parent in ordered {
-			let Some(parent_ast) = contributors.get(&parent) else {
-				continue;
-			};
-			let parent_base = self.resolve_base(file_dag, &parent);
-			let base_ast = self.base_source_ast(
-				&parent_base,
-				file_dag,
-				vanilla,
-				contributors,
-				merge_key_source,
-				policies,
-			)?;
-			let patches = fold_renames(diff_ast(&base_ast, parent_ast, merge_key_source));
-			mod_patches.push((parent.0.clone(), file_dag.precedence_of(&parent), patches));
-		}
-
-		let merge_result = merge_patch_sets(mod_patches, policies);
-		if !merge_result.conflicts.is_empty() {
-			return None;
-		}
-		let resolved_patches = resolved_patches(&merge_result.resolved);
-		let base_statements = if parents.iter().any(|p| file_dag.replaces_path(p)) {
+		let mut current_statements = if parents.iter().any(|p| file_dag.replaces_path(p)) {
 			Vec::new()
 		} else {
 			vanilla
 				.map(|base| base.ast.statements.clone())
 				.unwrap_or_default()
 		};
-		let merged_statements =
-			apply_patches(&base_statements, &resolved_patches, merge_key_source);
+
+		for level in topo_levels(parents, file_dag) {
+			if level.len() == 1 {
+				let parent = &level[0];
+				let Some(parent_ast) = contributors.get(parent) else {
+					continue;
+				};
+				let parent_base = self.resolve_base(file_dag, parent);
+				let base_ast = self.base_source_ast(
+					&parent_base,
+					file_dag,
+					vanilla,
+					contributors,
+					merge_key_source,
+					policies,
+				)?;
+				let patches = fold_renames(diff_ast(&base_ast, parent_ast, merge_key_source));
+				current_statements = apply_patches(&current_statements, &patches, merge_key_source);
+				continue;
+			}
+
+			let mut mod_patches = Vec::new();
+			for parent in level {
+				let Some(parent_ast) = contributors.get(&parent) else {
+					continue;
+				};
+				let parent_base = self.resolve_base(file_dag, &parent);
+				let base_ast = self.base_source_ast(
+					&parent_base,
+					file_dag,
+					vanilla,
+					contributors,
+					merge_key_source,
+					policies,
+				)?;
+				let patches = fold_renames(diff_ast(&base_ast, parent_ast, merge_key_source));
+				mod_patches.push((parent.0.clone(), file_dag.precedence_of(&parent), patches));
+			}
+
+			let merge_result = merge_patch_sets(mod_patches, policies);
+			if !merge_result.conflicts.is_empty() {
+				return None;
+			}
+			let resolved_patches = resolved_patches(&merge_result.resolved);
+			current_statements =
+				apply_patches(&current_statements, &resolved_patches, merge_key_source);
+		}
+
 		let template = template_for(file_dag, vanilla, contributors);
 		Some(Rc::new(synthesized_parsed_file(
 			file_dag.file_path(),
 			template,
-			merged_statements,
+			current_statements,
 		)))
 	}
 
@@ -917,6 +1015,7 @@ mod tests {
 	use super::*;
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::PlaylistEntry;
+	use foch_language::analyzer::parser::AstValue;
 	use std::path::PathBuf;
 
 	fn mod_with(
@@ -1001,14 +1100,32 @@ mod tests {
 		keys
 	}
 
-	fn computed_base_keys(
+	fn top_level_scalar_values(parsed: &ParsedScriptFile) -> Vec<(String, String)> {
+		let mut values: Vec<_> = parsed
+			.ast
+			.statements
+			.iter()
+			.filter_map(|stmt| match stmt {
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Scalar { value, .. },
+					..
+				} => Some((key.clone(), value.as_text())),
+				_ => None,
+			})
+			.collect();
+		values.sort();
+		values
+	}
+
+	fn computed_base(
 		resolver: &mut BaseResolver,
 		parents: &BTreeSet<ModId>,
 		fdag: &FileDag,
 		vanilla: Option<&ParsedScriptFile>,
 		inventory: &HashMap<ModId, ParsedScriptFile>,
-	) -> Vec<String> {
-		let merged = resolver
+	) -> Rc<ParsedScriptFile> {
+		resolver
 			.compute_merged_base(
 				parents,
 				fdag,
@@ -1017,7 +1134,17 @@ mod tests {
 				MergeKeySource::AssignmentKey,
 				&MergePolicies::default(),
 			)
-			.expect("merged base");
+			.expect("merged base")
+	}
+
+	fn computed_base_keys(
+		resolver: &mut BaseResolver,
+		parents: &BTreeSet<ModId>,
+		fdag: &FileDag,
+		vanilla: Option<&ParsedScriptFile>,
+		inventory: &HashMap<ModId, ParsedScriptFile>,
+	) -> Vec<String> {
+		let merged = computed_base(resolver, parents, fdag, vanilla, inventory);
 		top_level_keys(&merged)
 	}
 
@@ -1477,6 +1604,227 @@ mod tests {
 			&inventory,
 		);
 		assert_eq!(keys, vec!["a", "b", "root"]);
+	}
+
+	#[test]
+	fn recursive_base_pure_chain_applies_levels_sequentially() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec!["B"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let parents = BTreeSet::from([mid("a"), mid("b"), mid("c")]);
+		assert_eq!(
+			topo_levels(&parents, &fdag),
+			vec![vec![mid("a")], vec![mid("b")], vec![mid("c")]]
+		);
+
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\na = yes\nb = yes\n"),
+			("c", "root = yes\na = yes\nb = yes\nc = yes\n"),
+		]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let keys = computed_base_keys(&mut resolver, &parents, &fdag, Some(&vanilla), &inventory);
+		assert_eq!(keys, vec!["a", "b", "c", "root"]);
+	}
+
+	#[test]
+	fn recursive_base_pure_antichain_merges_siblings() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec![], vec![]),
+			mod_with("c", "C", vec![], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let parents = BTreeSet::from([mid("c"), mid("a"), mid("b")]);
+		assert_eq!(
+			topo_levels(&parents, &fdag),
+			vec![vec![mid("a"), mid("b"), mid("c")]]
+		);
+
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\nb = yes\n"),
+			("c", "root = yes\nc = yes\n"),
+		]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let keys = computed_base_keys(&mut resolver, &parents, &fdag, Some(&vanilla), &inventory);
+		assert_eq!(keys, vec!["a", "b", "c", "root"]);
+	}
+
+	#[test]
+	fn topo_levels_diamond_groups_shared_ancestor_then_siblings() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec!["A"], vec![]),
+			mod_with("d", "D", vec!["B", "C"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+			file_contributor("d", 4),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let parents = BTreeSet::from([mid("a"), mid("b"), mid("c")]);
+		assert_eq!(
+			topo_levels(&parents, &fdag),
+			vec![vec![mid("a")], vec![mid("b"), mid("c")]]
+		);
+	}
+
+	#[test]
+	fn recursive_base_sibling_conflict_returns_none() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec![], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![file_contributor("a", 1), file_contributor("b", 2)];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let vanilla = parsed_file("__game__", "node = { a = 0 b = 0 c = 0 d = 0 e = 0 }\n");
+		let inventory = parsed_inventory(&[
+			("a", "node = { a = 1 b = 1 c = 1 d = 1 e = 1 }\n"),
+			("b", "node = { a = 2 b = 2 c = 2 d = 2 e = 2 }\n"),
+		]);
+		let parents = BTreeSet::from([mid("a"), mid("b")]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let merged = resolver.compute_merged_base(
+			&parents,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+			MergeKeySource::AssignmentKey,
+			&MergePolicies::default(),
+		);
+		assert!(merged.is_none());
+	}
+
+	#[test]
+	fn recursive_base_chain_insert_then_replace_is_sequential() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![file_contributor("a", 1), file_contributor("b", 2)];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let parents = BTreeSet::from([mid("a"), mid("b")]);
+		assert_eq!(
+			topo_levels(&parents, &fdag),
+			vec![vec![mid("a")], vec![mid("b")]]
+		);
+
+		let vanilla = parsed_file("__game__", "x = 0\n");
+		let inventory = parsed_inventory(&[("a", "x = 0\ny = 1\n"), ("b", "x = 0\ny = 2\n")]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let merged = computed_base(&mut resolver, &parents, &fdag, Some(&vanilla), &inventory);
+		assert_eq!(
+			top_level_scalar_values(&merged),
+			vec![
+				("x".to_string(), "0".to_string()),
+				("y".to_string(), "2".to_string())
+			]
+		);
+	}
+
+	#[test]
+	fn recursive_base_parent_order_is_deterministic() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec!["A"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\na = yes\nb = yes\n"),
+			("c", "root = yes\na = yes\nc = yes\n"),
+		]);
+
+		let mut parents_one = BTreeSet::new();
+		parents_one.insert(mid("c"));
+		parents_one.insert(mid("a"));
+		parents_one.insert(mid("b"));
+		let mut parents_two = BTreeSet::new();
+		parents_two.insert(mid("b"));
+		parents_two.insert(mid("c"));
+		parents_two.insert(mid("a"));
+
+		let mut resolver_one = BaseResolver::new(IgnoreReplacePath::None);
+		let mut resolver_two = BaseResolver::new(IgnoreReplacePath::None);
+		let merged_one = computed_base(
+			&mut resolver_one,
+			&parents_one,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		let merged_two = computed_base(
+			&mut resolver_two,
+			&parents_two,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		assert_eq!(top_level_keys(&merged_one), top_level_keys(&merged_two));
+	}
+
+	#[test]
+	fn recursive_base_memoization_preserves_subset_cache_key() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![file_contributor("a", 1), file_contributor("b", 2)];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\na = yes\nb = yes\n"),
+		]);
+		let parents = BTreeSet::from([mid("a"), mid("b")]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+
+		let first = computed_base(&mut resolver, &parents, &fdag, Some(&vanilla), &inventory);
+		let cache_size = resolver.cache_size();
+		let second = computed_base(&mut resolver, &parents, &fdag, Some(&vanilla), &inventory);
+
+		assert!(Rc::ptr_eq(&first, &second));
+		assert_eq!(resolver.cache_size(), cache_size);
 	}
 
 	// -----------------------------------------------------------------------
