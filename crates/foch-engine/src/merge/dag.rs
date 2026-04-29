@@ -1,9 +1,8 @@
 //! Per-(mod, file) dependency-graph base resolver.
 //!
-//! Phase 2 of the DAG-driven N-way merge migration (see
-//! `docs/dag-merge-design.md`). This module is **not yet wired** into the
-//! merge pipeline — Phase 3 will replace `patch_deps::resolve_diff_chain`
-//! with calls into [`BaseResolver`].
+//! DAG-driven N-way merge base resolution (see
+//! `docs/dag-merge-design.md`). The merge pipeline uses [`BaseResolver`] to
+//! replace linear chained-diff ancestry with per-(mod, file) recursive bases.
 //!
 //! Scope of this file:
 //! * Build a mod-level dependency DAG from declared `descriptor.mod`
@@ -15,24 +14,25 @@
 //! * Apply `replace_path` semantics: drop earlier contributors under the
 //!   replaced prefix and force the replacing mod's per-file base to
 //!   [`BaseSourceKind::Empty`].
-//! * Provide [`BaseResolver`] with `(parent_set, file_path)` memoization.
-//!
-//! What is **stubbed** for P3:
-//! * [`BaseResolver::compute_merged_base`] returns `None`. P3 will fill this
-//!   in by recursively diffing each parent against vanilla and aggregating
-//!   through the existing `merge_patch_sets` + `apply_patches` pipeline.
-//!   The memoization, topology, cycle handling, and replace_path machinery
-//!   are fully exercised by the tests below.
+//! * Provide [`BaseResolver`] with `(parent_set, file_path)` memoization and
+//!   recursive merged-base synthesis through the existing `merge_patch_sets` +
+//!   `apply_patches` pipeline.
 
 #![allow(dead_code)]
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use foch_core::domain::dep_resolution::ModIdentityIndex;
 use foch_core::model::ModCandidate;
+use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, ScriptFileKind};
+use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
+use super::patch::{diff_ast, fold_renames};
+use super::patch_apply::apply_patches;
+use super::patch_merge::{PatchResolution, merge_patch_sets};
 use crate::workspace::ResolvedFileContributor;
 
 // ---------------------------------------------------------------------------
@@ -462,6 +462,25 @@ impl FileDag {
 			.map(|v| v.as_slice())
 			.unwrap_or(&[])
 	}
+	pub fn ancestors_of(&self, mod_id: &ModId) -> Vec<ModId> {
+		let mut out = Vec::new();
+		let mut seen = HashSet::new();
+		self.collect_ancestors(mod_id, &mut seen, &mut out);
+		out.sort_by_key(|m| self.precedence_of(m));
+		out.dedup();
+		out
+	}
+	fn collect_ancestors(&self, mod_id: &ModId, seen: &mut HashSet<ModId>, out: &mut Vec<ModId>) {
+		for parent in self.parents_of(mod_id) {
+			if seen.insert(parent.clone()) {
+				self.collect_ancestors(parent, seen, out);
+				out.push(parent.clone());
+			}
+		}
+	}
+	pub fn precedence_of(&self, mod_id: &ModId) -> usize {
+		self.position.get(mod_id).copied().unwrap_or(usize::MAX)
+	}
 	pub fn ships(&self, mod_id: &ModId) -> bool {
 		self.contributor_set.contains(mod_id)
 	}
@@ -616,12 +635,12 @@ pub enum BaseSourceKind {
 #[derive(Clone, Debug)]
 pub struct ResolvedBase {
 	pub kind: BaseSourceKind,
-	/// For [`BaseSourceKind::Synthesized`], the parent set whose merged AST
-	/// serves as the diff base. Empty for `Vanilla` and `Empty`.
+	/// For [`BaseSourceKind::Synthesized`], the transitive contributor set whose
+	/// merged AST serves as the diff base. Empty for `Vanilla` and `Empty`.
 	pub parents: BTreeSet<ModId>,
 }
 
-/// Concrete payload for a resolved base. P3 will populate `Synthesized`.
+/// Concrete payload for a resolved base.
 #[derive(Clone, Debug)]
 pub enum BaseSource {
 	Vanilla,
@@ -650,8 +669,8 @@ impl BaseResolver {
 
 	/// Compute the base classification for `mod_id`'s view of the file
 	/// described by `file_dag`. This does not synthesize any AST — it
-	/// merely identifies the kind of base and the parent set that P3's
-	/// recursive merge will need to consume.
+	/// identifies the kind of base and the transitive parent set that recursive
+	/// merge will need to consume.
 	pub fn resolve_base(&self, file_dag: &FileDag, mod_id: &ModId) -> ResolvedBase {
 		if file_dag.replaces_path(mod_id) {
 			return ResolvedBase {
@@ -659,7 +678,7 @@ impl BaseResolver {
 				parents: BTreeSet::new(),
 			};
 		}
-		let parents: BTreeSet<ModId> = file_dag.parents_of(mod_id).iter().cloned().collect();
+		let parents: BTreeSet<ModId> = file_dag.ancestors_of(mod_id).into_iter().collect();
 		if parents.is_empty() {
 			ResolvedBase {
 				kind: BaseSourceKind::Vanilla,
@@ -673,27 +692,117 @@ impl BaseResolver {
 		}
 	}
 
-	/// Memoized merged-base computation.
-	///
-	/// **STUB**: P3 will replace the inner closure with a real recursive
-	/// merge of the parent set's per-file ASTs against vanilla. Today this
-	/// always returns `None`, but the cache is fully exercised by tests
-	/// via [`Self::merged_base_or_compute`].
+	/// Memoized recursive merge of `parents` for `file_dag.file_path()`.
 	pub fn compute_merged_base(
 		&mut self,
 		parents: &BTreeSet<ModId>,
-		file_path: &str,
+		file_dag: &FileDag,
+		vanilla: Option<&ParsedScriptFile>,
+		contributors: &HashMap<ModId, ParsedScriptFile>,
+		merge_key_source: MergeKeySource,
+		policies: &MergePolicies,
 	) -> Option<Rc<ParsedScriptFile>> {
-		// TODO(P3): wire `merge_patch_sets` + `apply_patches` here.
-		self.merged_base_or_compute(parents, file_path, || None)
+		let file_path = file_dag.file_path();
+		self.merged_base_or_compute(parents, file_path, |resolver| {
+			resolver.compute_merged_base_uncached(
+				parents,
+				file_dag,
+				vanilla,
+				contributors,
+				merge_key_source,
+				policies,
+			)
+		})
+	}
+
+	fn compute_merged_base_uncached(
+		&mut self,
+		parents: &BTreeSet<ModId>,
+		file_dag: &FileDag,
+		vanilla: Option<&ParsedScriptFile>,
+		contributors: &HashMap<ModId, ParsedScriptFile>,
+		merge_key_source: MergeKeySource,
+		policies: &MergePolicies,
+	) -> Option<Rc<ParsedScriptFile>> {
+		let mut mod_patches = Vec::new();
+		let mut ordered: Vec<ModId> = parents.iter().cloned().collect();
+		ordered.sort_by_key(|m| file_dag.precedence_of(m));
+
+		for parent in ordered {
+			let Some(parent_ast) = contributors.get(&parent) else {
+				continue;
+			};
+			let parent_base = self.resolve_base(file_dag, &parent);
+			let base_ast = self.base_source_ast(
+				&parent_base,
+				file_dag,
+				vanilla,
+				contributors,
+				merge_key_source,
+				policies,
+			)?;
+			let patches = fold_renames(diff_ast(&base_ast, parent_ast, merge_key_source));
+			mod_patches.push((parent.0.clone(), file_dag.precedence_of(&parent), patches));
+		}
+
+		let merge_result = merge_patch_sets(mod_patches, policies);
+		if !merge_result.conflicts.is_empty() {
+			return None;
+		}
+		let resolved_patches = resolved_patches(&merge_result.resolved);
+		let base_statements = if parents.iter().any(|p| file_dag.replaces_path(p)) {
+			Vec::new()
+		} else {
+			vanilla
+				.map(|base| base.ast.statements.clone())
+				.unwrap_or_default()
+		};
+		let merged_statements =
+			apply_patches(&base_statements, &resolved_patches, merge_key_source);
+		let template = template_for(file_dag, vanilla, contributors);
+		Some(Rc::new(synthesized_parsed_file(
+			file_dag.file_path(),
+			template,
+			merged_statements,
+		)))
+	}
+
+	fn base_source_ast(
+		&mut self,
+		resolved: &ResolvedBase,
+		file_dag: &FileDag,
+		vanilla: Option<&ParsedScriptFile>,
+		contributors: &HashMap<ModId, ParsedScriptFile>,
+		merge_key_source: MergeKeySource,
+		policies: &MergePolicies,
+	) -> Option<Rc<ParsedScriptFile>> {
+		match resolved.kind {
+			BaseSourceKind::Vanilla => Some(Rc::new(match vanilla {
+				Some(base) => base.clone(),
+				None => synthesized_parsed_file(
+					file_dag.file_path(),
+					template_for(file_dag, vanilla, contributors),
+					Vec::new(),
+				),
+			})),
+			BaseSourceKind::Empty => Some(Rc::new(synthesized_parsed_file(
+				file_dag.file_path(),
+				template_for(file_dag, vanilla, contributors),
+				Vec::new(),
+			))),
+			BaseSourceKind::Synthesized => self.compute_merged_base(
+				&resolved.parents,
+				file_dag,
+				vanilla,
+				contributors,
+				merge_key_source,
+				policies,
+			),
+		}
 	}
 
 	/// Cache primitive: returns the cached value for `(parents, file_path)`
 	/// if present, otherwise calls `f`, caches the result, and returns it.
-	///
-	/// Tests use this with a counter closure to verify that the cache
-	/// suppresses duplicate computations. P3 will likely call this directly
-	/// with a closure that drives the actual merge.
 	pub fn merged_base_or_compute<F>(
 		&mut self,
 		parents: &BTreeSet<ModId>,
@@ -701,13 +810,13 @@ impl BaseResolver {
 		f: F,
 	) -> Option<Rc<ParsedScriptFile>>
 	where
-		F: FnOnce() -> Option<Rc<ParsedScriptFile>>,
+		F: FnOnce(&mut Self) -> Option<Rc<ParsedScriptFile>>,
 	{
 		let key = (parents.clone(), file_path.to_string());
 		if let Some(v) = self.cache_subset.get(&key) {
 			return v.clone();
 		}
-		let v = f();
+		let v = f(self);
 		self.cache_subset.insert(key, v.clone());
 		v
 	}
@@ -716,6 +825,62 @@ impl BaseResolver {
 	pub(crate) fn cache_size(&self) -> usize {
 		self.cache_subset.len()
 	}
+}
+
+fn resolved_patches(resolutions: &[PatchResolution]) -> Vec<super::patch::ClausewitzPatch> {
+	resolutions
+		.iter()
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Resolved(patch) => Some(patch.clone()),
+			PatchResolution::AutoMerged { result, .. } => Some(result.clone()),
+			PatchResolution::Conflict { .. } => None,
+		})
+		.collect()
+}
+
+fn template_for<'a>(
+	file_dag: &FileDag,
+	vanilla: Option<&'a ParsedScriptFile>,
+	contributors: &'a HashMap<ModId, ParsedScriptFile>,
+) -> Option<&'a ParsedScriptFile> {
+	vanilla.or_else(|| {
+		file_dag
+			.contributors()
+			.iter()
+			.find_map(|mod_id| contributors.get(mod_id))
+	})
+}
+
+fn synthesized_parsed_file(
+	file_path: &str,
+	template: Option<&ParsedScriptFile>,
+	statements: Vec<AstStatement>,
+) -> ParsedScriptFile {
+	let path = PathBuf::from(file_path);
+	let mut parsed = template.cloned().unwrap_or_else(|| ParsedScriptFile {
+		mod_id: "__foch_dag_base__".to_string(),
+		path: path.clone(),
+		relative_path: path.clone(),
+		content_family: None,
+		file_kind: ScriptFileKind::Other,
+		module_name: "dag_base".to_string(),
+		ast: AstFile {
+			path: path.clone(),
+			statements: Vec::new(),
+		},
+		source: String::new(),
+		parse_issues: Vec::new(),
+		parse_cache_hit: false,
+	});
+	parsed.mod_id = "__foch_dag_base__".to_string();
+	parsed.path = path.clone();
+	parsed.relative_path = path.clone();
+	parsed.ast.path = path;
+	parsed.ast.statements = statements;
+	parsed.source.clear();
+	parsed.parse_issues.clear();
+	parsed.parse_cache_hit = false;
+	parsed
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +935,65 @@ mod tests {
 			is_synthetic_base: false,
 			parse_ok_hint: None,
 		}
+	}
+
+	fn parsed_file(mod_id: &str, source: &str) -> ParsedScriptFile {
+		let path = PathBuf::from("common/foo.txt");
+		let parsed =
+			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+		ParsedScriptFile {
+			mod_id: mod_id.to_string(),
+			path: path.clone(),
+			relative_path: path,
+			content_family: None,
+			file_kind: ScriptFileKind::Other,
+			module_name: "test".to_string(),
+			ast: parsed.ast,
+			source: source.to_string(),
+			parse_issues: Vec::new(),
+			parse_cache_hit: false,
+		}
+	}
+
+	fn parsed_inventory(entries: &[(&str, &str)]) -> HashMap<ModId, ParsedScriptFile> {
+		entries
+			.iter()
+			.map(|(mod_id, source)| (mid(mod_id), parsed_file(mod_id, source)))
+			.collect()
+	}
+
+	fn top_level_keys(parsed: &ParsedScriptFile) -> Vec<String> {
+		let mut keys: Vec<_> = parsed
+			.ast
+			.statements
+			.iter()
+			.filter_map(|stmt| match stmt {
+				AstStatement::Assignment { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	fn computed_base_keys(
+		resolver: &mut BaseResolver,
+		parents: &BTreeSet<ModId>,
+		fdag: &FileDag,
+		vanilla: Option<&ParsedScriptFile>,
+		inventory: &HashMap<ModId, ParsedScriptFile>,
+	) -> Vec<String> {
+		let merged = resolver
+			.compute_merged_base(
+				parents,
+				fdag,
+				vanilla,
+				inventory,
+				MergeKeySource::AssignmentKey,
+				&MergePolicies::default(),
+			)
+			.expect("merged base");
+		top_level_keys(&merged)
 	}
 
 	// -----------------------------------------------------------------------
@@ -1054,6 +1278,182 @@ mod tests {
 		assert!(rb.parents.is_empty());
 	}
 
+	#[test]
+	fn recursive_base_two_deep_chain_includes_transitive_parent() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec!["B"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\na = yes\nb = yes\n"),
+			("c", "root = yes\na = yes\nb = yes\nc = yes\n"),
+		]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let c_base = resolver.resolve_base(&fdag, &mid("c"));
+		assert_eq!(c_base.parents, BTreeSet::from([mid("a"), mid("b")]));
+
+		let keys = computed_base_keys(
+			&mut resolver,
+			&c_base.parents,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		assert_eq!(keys, vec!["a", "b", "root"]);
+	}
+
+	#[test]
+	fn recursive_base_diamond_merges_shared_ancestor_once() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec!["A"], vec![]),
+			mod_with("d", "D", vec!["B", "C"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+			file_contributor("d", 4),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\na = yes\nb = yes\n"),
+			("c", "root = yes\na = yes\nc = yes\n"),
+			("d", "root = yes\na = yes\nb = yes\nc = yes\nd = yes\n"),
+		]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let d_base = resolver.resolve_base(&fdag, &mid("d"));
+		assert_eq!(
+			d_base.parents,
+			BTreeSet::from([mid("a"), mid("b"), mid("c")])
+		);
+
+		let keys = computed_base_keys(
+			&mut resolver,
+			&d_base.parents,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		assert_eq!(keys, vec!["a", "b", "c", "root"]);
+	}
+
+	#[test]
+	fn recursive_base_lifts_through_missing_file_dep() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec!["B"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![file_contributor("a", 1), file_contributor("c", 3)];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("c", "root = yes\na = yes\nc = yes\n"),
+		]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let c_base = resolver.resolve_base(&fdag, &mid("c"));
+		assert_eq!(c_base.parents, BTreeSet::from([mid("a")]));
+
+		let keys = computed_base_keys(
+			&mut resolver,
+			&c_base.parents,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		assert_eq!(keys, vec!["a", "root"]);
+	}
+
+	#[test]
+	fn replace_path_parent_forces_empty_recursive_foundation() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec!["common"]),
+			mod_with("c", "C", vec!["B"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::None);
+		assert_eq!(fdag.contributors(), &[mid("b"), mid("c")]);
+		assert!(fdag.replaces_path(&mid("b")));
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[("b", "b = yes\n"), ("c", "b = yes\nc = yes\n")]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
+		let c_base = resolver.resolve_base(&fdag, &mid("c"));
+		assert_eq!(c_base.parents, BTreeSet::from([mid("b")]));
+
+		let keys = computed_base_keys(
+			&mut resolver,
+			&c_base.parents,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		assert_eq!(keys, vec!["b"]);
+	}
+
+	#[test]
+	fn ignore_replace_path_restores_recursive_vanilla_foundation() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec!["common"]),
+			mod_with("c", "C", vec!["B"], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &IgnoreReplacePath::All);
+		assert_eq!(fdag.contributors(), &[mid("a"), mid("b"), mid("c")]);
+		assert!(!fdag.replaces_path(&mid("b")));
+		let vanilla = parsed_file("__game__", "root = yes\n");
+		let inventory = parsed_inventory(&[
+			("a", "root = yes\na = yes\n"),
+			("b", "root = yes\na = yes\nb = yes\n"),
+			("c", "root = yes\na = yes\nb = yes\nc = yes\n"),
+		]);
+		let mut resolver = BaseResolver::new(IgnoreReplacePath::All);
+		let c_base = resolver.resolve_base(&fdag, &mid("c"));
+		assert_eq!(c_base.parents, BTreeSet::from([mid("a"), mid("b")]));
+
+		let keys = computed_base_keys(
+			&mut resolver,
+			&c_base.parents,
+			&fdag,
+			Some(&vanilla),
+			&inventory,
+		);
+		assert_eq!(keys, vec!["a", "b", "root"]);
+	}
+
 	// -----------------------------------------------------------------------
 	// Memoization / determinism / replace_path-ignore extras
 	// -----------------------------------------------------------------------
@@ -1063,11 +1463,11 @@ mod tests {
 		let mut resolver = BaseResolver::new(IgnoreReplacePath::None);
 		let parents: BTreeSet<ModId> = BTreeSet::from([mid("a"), mid("b")]);
 		let count = std::cell::Cell::new(0u32);
-		let _ = resolver.merged_base_or_compute(&parents, "common/foo.txt", || {
+		let _ = resolver.merged_base_or_compute(&parents, "common/foo.txt", |_| {
 			count.set(count.get() + 1);
 			None
 		});
-		let _ = resolver.merged_base_or_compute(&parents, "common/foo.txt", || {
+		let _ = resolver.merged_base_or_compute(&parents, "common/foo.txt", |_| {
 			count.set(count.get() + 1);
 			None
 		});
@@ -1076,14 +1476,14 @@ mod tests {
 
 		// Different parent set → separate compute.
 		let other: BTreeSet<ModId> = BTreeSet::from([mid("a")]);
-		let _ = resolver.merged_base_or_compute(&other, "common/foo.txt", || {
+		let _ = resolver.merged_base_or_compute(&other, "common/foo.txt", |_| {
 			count.set(count.get() + 1);
 			None
 		});
 		assert_eq!(count.get(), 2);
 
 		// Different file path → separate compute.
-		let _ = resolver.merged_base_or_compute(&parents, "common/bar.txt", || {
+		let _ = resolver.merged_base_or_compute(&parents, "common/bar.txt", |_| {
 			count.set(count.get() + 1);
 			None
 		});
