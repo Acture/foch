@@ -679,6 +679,12 @@ fn resolve_replace_blocks(
 		};
 	}
 
+	if policies.block_patch == BlockPatchPolicy::Recurse
+		&& let Some(resolution) = try_recursive_block_merge(&addr, &attributed, policies, stats)
+	{
+		return resolution;
+	}
+
 	if let Some(merged) = try_replace_block_named_container_merge(&attributed, policies) {
 		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
 		stats.auto_merged_patches += 1;
@@ -697,6 +703,153 @@ fn resolve_replace_blocks(
 		reason: "multiple mods replace the same block with different content".to_string(),
 		patches: attributed,
 	}
+}
+
+/// Attempt to deep-merge multiple mods' `ReplaceBlock` patches at the same
+/// address by re-running the diff/merge pipeline against the bodies. Used by
+/// `BlockPatchPolicy::Recurse` to handle date-keyed history blocks where each
+/// mod typically modifies a different field inside the same date container.
+///
+/// Returns:
+/// - `Some(AutoMerged)` when nested resolution is fully clean
+/// - `Some(Conflict)` when nested resolution surfaces sub-conflicts (the
+///   original block-level address is preserved with sub-conflict reasons)
+/// - `None` when the heuristic does not apply (e.g. patches are not all
+///   `ReplaceBlock` with a common base, or bodies are not blocks)
+fn try_recursive_block_merge(
+	addr: &PatchAddress,
+	attributed: &[AttributedPatch],
+	policies: &MergePolicies,
+	stats: &mut PatchMergeStats,
+) -> Option<PatchResolution> {
+	if attributed.len() < 2 {
+		return None;
+	}
+
+	// All patches must be ReplaceBlock. Each mod's `old_statement` is its
+	// diff base — for chained diffs against playlist predecessors these
+	// differ across mods. The lowest-precedence mod's `old_statement` is
+	// the closest available approximation of the common ancestor (it
+	// diffed against base game / synthetic base directly).
+	let mut overlays: Vec<(String, usize, &AstStatement, &AstStatement, AstPath, String)> =
+		Vec::with_capacity(attributed.len());
+	for a in attributed {
+		match &a.patch {
+			ClausewitzPatch::ReplaceBlock {
+				old_statement,
+				new_statement,
+				path,
+				key,
+			} => overlays.push((
+				a.mod_id.clone(),
+				a.precedence,
+				old_statement,
+				new_statement,
+				path.clone(),
+				key.clone(),
+			)),
+			_ => return None,
+		}
+	}
+
+	// Pick the lowest-precedence mod as the ancestor source. Its `old`
+	// reflects the deepest base reachable from this address.
+	let ancestor_idx = overlays
+		.iter()
+		.enumerate()
+		.min_by_key(|(_, t)| t.1)
+		.map(|(i, _)| i)?;
+	let ancestor_stmt: &AstStatement = overlays[ancestor_idx].2;
+	let ancestor_body = statement_block_body(ancestor_stmt)?;
+
+	// Re-derive each mod's intent against the common ancestor by diffing
+	// the ancestor body against the mod's `new` body. This avoids leaking
+	// chained-predecessor edits into a mod's apparent intent.
+	let mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)> =
+		Vec::with_capacity(overlays.len());
+	for (mod_id, prec, _old, new_stmt, _path, _key) in &overlays {
+		let new_body = statement_block_body(new_stmt)?;
+		let patches = super::patch::diff_block_bodies(
+			ancestor_body,
+			new_body,
+			&[],
+			0,
+			MergeKeySource::AssignmentKey,
+		);
+		mod_patches.push((mod_id.clone(), *prec, patches));
+	}
+
+	// Recursively resolve nested patches with the same policies.
+	let nested = merge_patch_sets(mod_patches, policies);
+
+	if !nested.conflicts.is_empty() {
+		// Bubble up as a single conflict with detailed sub-reasons so users
+		// can see exactly which fields inside the date block diverged.
+		let reasons: Vec<String> = nested
+			.conflicts
+			.iter()
+			.filter_map(|c| match c {
+				PatchResolution::Conflict {
+					address, reason, ..
+				} => Some(format!("{}: {}", address.key, reason)),
+				_ => None,
+			})
+			.collect();
+		stats.conflict_patches += 1;
+		return Some(PatchResolution::Conflict {
+			address: addr.clone(),
+			reason: format!(
+				"deep merge of replaced block has {} unresolved sub-conflict(s): {}",
+				nested.conflicts.len(),
+				reasons.join("; ")
+			),
+			patches: attributed.to_vec(),
+		});
+	}
+
+	// Apply resolved nested patches to the base body to synthesize the merged
+	// body. Use `apply_patches` from `patch_apply` (paths are relative).
+	let resolved_patches: Vec<ClausewitzPatch> = nested
+		.resolved
+		.into_iter()
+		.filter_map(|r| match r {
+			PatchResolution::Resolved(p) => Some(p),
+			PatchResolution::AutoMerged { result, .. } => Some(result),
+			PatchResolution::Conflict { .. } => None,
+		})
+		.collect();
+
+	let merged_body = super::patch_apply::apply_patches(
+		ancestor_body,
+		&resolved_patches,
+		MergeKeySource::AssignmentKey,
+	);
+	let merged_stmt = with_block_body(ancestor_stmt, merged_body);
+
+	// Use the highest-precedence patch's (path, key) as the representative.
+	// Preserve the highest-precedence mod's `old_statement` so downstream
+	// `apply_patches` finds the same base it expects.
+	let representative = overlays
+		.iter()
+		.max_by_key(|(_, prec, _, _, _, _)| *prec)
+		.unwrap();
+	let path = representative.4.clone();
+	let key = representative.5.clone();
+	let representative_old = representative.2.clone();
+
+	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	stats.auto_merged_patches += 1;
+	let _ = policies; // silence unused warnings if added later
+	Some(PatchResolution::AutoMerged {
+		result: ClausewitzPatch::ReplaceBlock {
+			path,
+			key,
+			old_statement: representative_old,
+			new_statement: merged_stmt,
+		},
+		strategy: "recursive_block_merge".to_string(),
+		contributing_mods: mods,
+	})
 }
 
 /// Attempt named-container merge across N mod ReplaceBlock patches at the same
@@ -2854,5 +3007,218 @@ mod tests {
 		);
 		assert_eq!(result.conflicts.len(), 0);
 		assert_eq!(result.resolved.len(), 1);
+	}
+
+	// -----------------------------------------------------------------------
+	// BlockPatchPolicy::Recurse — date-keyed history deep merge
+	// -----------------------------------------------------------------------
+
+	fn recurse_policies() -> MergePolicies {
+		MergePolicies {
+			block_patch: BlockPatchPolicy::Recurse,
+			..Default::default()
+		}
+	}
+
+	#[test]
+	fn recurse_merges_disjoint_date_block_changes() {
+		// Vanilla:    1444.11.11 = { owner = BYZ }
+		// mod_a:      1444.11.11 = { owner = OTT }                        (changes owner)
+		// mod_b:      1444.11.11 = { owner = BYZ controller = OTT }       (adds controller)
+		//
+		// Each mod's diff is against vanilla (chained predecessor at this
+		// address only has vanilla). Expected: deep-merge produces
+		// `{ owner = OTT controller = OTT }`.
+		let vanilla_body = vec![assignment("owner", scalar("BYZ"))];
+		let a_body = vec![assignment("owner", scalar("OTT"))];
+		let b_body = vec![
+			assignment("owner", scalar("BYZ")),
+			assignment("controller", scalar("OTT")),
+		];
+
+		let vanilla_stmt = assignment_block("1444.11.11", vanilla_body);
+		let a_stmt = assignment_block("1444.11.11", a_body);
+		let b_stmt = assignment_block("1444.11.11", b_body);
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: vanilla_stmt.clone(),
+			new_statement: a_stmt,
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			// mod_b's chained diff base is mod_a's new content; carry that
+			// to mirror how `compute_chained_patches` produces patches.
+			old_statement: assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]),
+			new_statement: b_stmt,
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&recurse_policies(),
+		);
+
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"got conflicts: {:?}",
+			result.conflicts
+		);
+		assert_eq!(result.resolved.len(), 1);
+		match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+				strategy,
+				..
+			} => {
+				assert_eq!(strategy, "recursive_block_merge");
+				let body = match new_statement {
+					AstStatement::Assignment {
+						value: AstValue::Block { items, .. },
+						..
+					} => items,
+					other => panic!("expected block, got {other:?}"),
+				};
+				// mod_a contributes owner=OTT (vs vanilla owner=BYZ).
+				// mod_b contributes controller=OTT addition.
+				let has_owner_ott = body.iter().any(|s| matches!(s,
+					AstStatement::Assignment { key, value: AstValue::Scalar { value: ScalarValue::Identifier(v), .. }, .. }
+					if key == "owner" && v == "OTT"));
+				let has_controller_ott = body.iter().any(|s| matches!(s,
+					AstStatement::Assignment { key, value: AstValue::Scalar { value: ScalarValue::Identifier(v), .. }, .. }
+					if key == "controller" && v == "OTT"));
+				assert!(
+					has_owner_ott,
+					"expected merged body to keep owner=OTT, got {body:?}"
+				);
+				assert!(
+					has_controller_ott,
+					"expected merged body to add controller=OTT, got {body:?}"
+				);
+			}
+			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn recurse_auto_resolves_scalar_overlap_via_last_writer() {
+		// Both mods change `owner` inside the same date block to different
+		// tags. Deep merge should auto-resolve via the scalar last-writer
+		// policy (highest-precedence mod wins) rather than block on the
+		// outer ReplaceBlock collision.
+		let vanilla_body = vec![assignment("owner", scalar("BYZ"))];
+		let vanilla_stmt = assignment_block("1444.11.11", vanilla_body);
+		let a_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]);
+		let b_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("MAM"))]);
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: vanilla_stmt.clone(),
+			new_statement: a_stmt.clone(),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: a_stmt, // chained diff base
+			new_statement: b_stmt,
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&recurse_policies(),
+		);
+
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"got conflicts: {:?}",
+			result.conflicts
+		);
+		assert_eq!(result.resolved.len(), 1);
+		match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+				strategy,
+				..
+			} => {
+				assert_eq!(strategy, "recursive_block_merge");
+				let body = match new_statement {
+					AstStatement::Assignment {
+						value: AstValue::Block { items, .. },
+						..
+					} => items,
+					other => panic!("expected block, got {other:?}"),
+				};
+				let owner_val = body.iter().find_map(|s| match s {
+					AstStatement::Assignment {
+						key,
+						value:
+							AstValue::Scalar {
+								value: ScalarValue::Identifier(v),
+								..
+							},
+						..
+					} if key == "owner" => Some(v.clone()),
+					_ => None,
+				});
+				assert_eq!(
+					owner_val.as_deref(),
+					Some("MAM"),
+					"highest-precedence mod_b should win owner"
+				);
+			}
+			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn recurse_default_policy_still_emits_replace_block_conflict() {
+		// Sanity check: with default LastWriter policy, the existing
+		// "multiple mods replace the same block" conflict is preserved so
+		// non-history families don't regress.
+		let vanilla_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("BYZ"))]);
+		let a_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]);
+		let b_stmt = assignment_block("1444.11.11", vec![assignment("controller", scalar("OTT"))]);
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: vanilla_stmt.clone(),
+			new_statement: a_stmt,
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: vanilla_stmt,
+			new_statement: b_stmt,
+		};
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&default_policies(),
+		);
+
+		assert_eq!(result.conflicts.len(), 1);
+		match &result.conflicts[0] {
+			PatchResolution::Conflict { reason, .. } => {
+				assert!(
+					reason.contains("multiple mods replace"),
+					"unexpected reason: {reason}"
+				);
+			}
+			other => panic!("expected Conflict, got: {other:?}"),
+		}
 	}
 }

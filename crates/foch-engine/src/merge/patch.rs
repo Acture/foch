@@ -172,6 +172,80 @@ pub fn diff_ast(
 	diff_entry_maps(&base_entries, &overlay_entries, &[], 0)
 }
 
+/// Diff two block bodies (children of a parent block) and produce a flat
+/// list of `ClausewitzPatch` operations. Used by
+/// `BlockPatchPolicy::Recurse` to deep-merge multiple mods' replacements
+/// of the same block.
+///
+/// Patch paths are emitted relative to `parent_path`. Pass `&[]` to make
+/// patches addressable directly against the body via `apply_patches`.
+/// `merge_key_source` is currently always `AssignmentKey`; included for
+/// symmetry with `diff_ast`.
+pub fn diff_block_bodies(
+	base_items: &[AstStatement],
+	overlay_items: &[AstStatement],
+	parent_path: &[String],
+	depth: usize,
+	merge_key_source: MergeKeySource,
+) -> Vec<ClausewitzPatch> {
+	// Bare-Item set diff (e.g. `{ FRA ENG }`).
+	let base_block_items: Vec<&AstValue> = base_items
+		.iter()
+		.filter_map(|s| match s {
+			AstStatement::Item { value, .. } => Some(value),
+			_ => None,
+		})
+		.collect();
+	let overlay_block_items: Vec<&AstValue> = overlay_items
+		.iter()
+		.filter_map(|s| match s {
+			AstStatement::Item { value, .. } => Some(value),
+			_ => None,
+		})
+		.collect();
+	let removed_items: Vec<AstValue> = base_block_items
+		.iter()
+		.copied()
+		.filter(|bv| {
+			!overlay_block_items
+				.iter()
+				.any(|ov| values_equal_ignoring_span(ov, bv))
+		})
+		.cloned()
+		.collect();
+	let added_items: Vec<AstValue> = overlay_block_items
+		.iter()
+		.copied()
+		.filter(|ov| {
+			!base_block_items
+				.iter()
+				.any(|bv| values_equal_ignoring_span(bv, ov))
+		})
+		.cloned()
+		.collect();
+
+	let mut patches = Vec::new();
+	for v in removed_items {
+		patches.push(ClausewitzPatch::RemoveBlockItem {
+			path: parent_path.to_vec(),
+			value: v,
+		});
+	}
+	for v in added_items {
+		patches.push(ClausewitzPatch::AppendBlockItem {
+			path: parent_path.to_vec(),
+			value: v,
+		});
+	}
+
+	// Per-key Assignment diff (recurses through nested blocks via diff_blocks).
+	let base_entries = extract_keyed_entries(base_items, merge_key_source);
+	let overlay_entries = extract_keyed_entries(overlay_items, merge_key_source);
+	let child_patches = diff_entry_maps(&base_entries, &overlay_entries, parent_path, depth);
+	patches.extend(child_patches);
+	patches
+}
+
 /// Maximum recursion depth for block diffing.  Beyond this, emit ReplaceBlock.
 const MAX_DIFF_DEPTH: usize = 12;
 

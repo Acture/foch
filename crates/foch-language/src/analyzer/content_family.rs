@@ -182,6 +182,14 @@ pub enum BlockPatchPolicy {
 	/// Combine each mod's body inside an `OR = { ... }` wrapper so the
 	/// resulting trigger fires if any contributor's predicate holds.
 	BooleanOr,
+	/// Recursively deep-merge multiple mods' replacements of the same block.
+	/// When N mods all emit `ReplaceBlock` against a common base block, the
+	/// patch engine re-runs its diff/merge pipeline on the bodies and
+	/// synthesizes a single merged `ReplaceBlock`. Used for date-keyed
+	/// containers in EU4 history files (`history/countries/*`,
+	/// `history/provinces/*`) where each mod typically alters a different
+	/// year and same-date+same-field collisions are rare.
+	Recurse,
 }
 
 /// How to handle conflicts when two unrelated mods define the same merge key.

@@ -206,6 +206,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Country))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
+		.block_patch_policy(BlockPatchPolicy::Recurse)
 		.extractor(ContentFamilyExtractor::CountryHistory)
 		.build(),
 	ContentFamilyDescriptor::prefix("history/provinces", "history/provinces/")
@@ -214,6 +215,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.scope(scope(ScopeType::Province))
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
+		.block_patch_policy(BlockPatchPolicy::Recurse)
 		.extractor(ContentFamilyExtractor::ProvinceHistory)
 		.build(),
 	ContentFamilyDescriptor::prefix("history/diplomacy", "history/diplomacy/")
