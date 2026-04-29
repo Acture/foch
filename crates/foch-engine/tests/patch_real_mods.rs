@@ -99,6 +99,7 @@ fn patch_variant_name(p: &ClausewitzPatch) -> &'static str {
 		ClausewitzPatch::ReplaceBlock { .. } => "ReplaceBlock",
 		ClausewitzPatch::AppendBlockItem { .. } => "AppendBlockItem",
 		ClausewitzPatch::RemoveBlockItem { .. } => "RemoveBlockItem",
+		ClausewitzPatch::Rename { .. } => "Rename",
 	}
 }
 
@@ -146,6 +147,11 @@ fn patch_p3_ee_compatch_scripted_triggers() {
 					format!("{path:?} / item={value:?}"),
 				ClausewitzPatch::RemoveBlockItem { path, value } =>
 					format!("{path:?} / item={value:?}"),
+				ClausewitzPatch::Rename {
+					path,
+					old_key,
+					new_key,
+				} => format!("{path:?} / {old_key} -> {new_key}"),
 			}
 		);
 	}

@@ -57,6 +57,107 @@ pub enum ClausewitzPatch {
 	/// Remove a bare-value `Item` from a block. Matched by span-ignoring
 	/// structural equality on the value.
 	RemoveBlockItem { path: AstPath, value: AstValue },
+	/// Synthesized from a same-file `RemoveNode { key: X }` +
+	/// `InsertNode { key: Y }` pair (X != Y) where the removed body and the
+	/// inserted statement body are AST-semantically equal. Marks an in-place
+	/// rename; subsequent patches addressed at X (or any path that traverses
+	/// X) are rewritten to Y during merge resolution.
+	Rename {
+		path: AstPath,
+		old_key: String,
+		new_key: String,
+	},
+}
+
+/// Detect zero-cost renames within a single mod's patch list for one file.
+///
+/// Pairs `RemoveNode { path, key: X }` with `InsertNode { path, key: Y }` at
+/// the same parent path when X != Y and their bodies are AST-semantically
+/// equal. Emits a `Rename` patch and removes the paired Remove/Insert from
+/// the original list. Patches that do not pair are left untouched.
+///
+/// Mirrors git's hash-equal blob rename detection: only exact body equality
+/// counts, so there are no fuzzy false positives.
+pub fn fold_renames(patches: Vec<ClausewitzPatch>) -> Vec<ClausewitzPatch> {
+	use std::collections::{HashMap as Map, HashSet as Set};
+
+	let mut removes_at: Map<AstPath, Vec<usize>> = Map::new();
+	let mut inserts_at: Map<AstPath, Vec<usize>> = Map::new();
+
+	for (i, p) in patches.iter().enumerate() {
+		match p {
+			ClausewitzPatch::RemoveNode { path, .. } => {
+				removes_at.entry(path.clone()).or_default().push(i);
+			}
+			ClausewitzPatch::InsertNode { path, .. } => {
+				inserts_at.entry(path.clone()).or_default().push(i);
+			}
+			_ => {}
+		}
+	}
+
+	let mut consumed: Set<usize> = Set::new();
+	let mut renames: Vec<(AstPath, String, String)> = Vec::new();
+
+	for (path, rem_indices) in &removes_at {
+		let Some(ins_indices) = inserts_at.get(path) else {
+			continue;
+		};
+		for &ri in rem_indices {
+			if consumed.contains(&ri) {
+				continue;
+			}
+			let (rkey, rbody) = match &patches[ri] {
+				ClausewitzPatch::RemoveNode {
+					key,
+					removed: AstStatement::Assignment { value, .. },
+					..
+				} => (key.clone(), value),
+				_ => continue,
+			};
+			for &ii in ins_indices {
+				if consumed.contains(&ii) {
+					continue;
+				}
+				let (ikey, ibody) = match &patches[ii] {
+					ClausewitzPatch::InsertNode {
+						key,
+						statement: AstStatement::Assignment { value, .. },
+						..
+					} => (key.clone(), value),
+					_ => continue,
+				};
+				if ikey == rkey {
+					continue;
+				}
+				if ast_values_semantically_equal(rbody, ibody) {
+					consumed.insert(ri);
+					consumed.insert(ii);
+					renames.push((path.clone(), rkey.clone(), ikey));
+					break;
+				}
+			}
+		}
+	}
+
+	if renames.is_empty() {
+		return patches;
+	}
+
+	let mut out: Vec<ClausewitzPatch> = Vec::with_capacity(patches.len());
+	for (i, p) in patches.into_iter().enumerate() {
+		if !consumed.contains(&i) {
+			out.push(p);
+		}
+	}
+	for (path, old_key, new_key) in renames {
+		out.push(ClausewitzPatch::Rename {
+			path,
+			old_key,
+			new_key,
+		});
+	}
+	out
 }
 
 /// Compute the structural diff between a base game file and a mod overlay,
@@ -1315,5 +1416,144 @@ mod tests {
 			removed: stmt,
 		};
 		assert!(!patches_semantically_equal(&insert, &remove));
+	}
+
+	// ---- fold_renames -----------------------------------------------------
+
+	fn body() -> AstStatement {
+		assignment(
+			"reform",
+			AstValue::Block {
+				items: vec![
+					assignment("modifier", scalar("centralization")),
+					assignment("cost", scalar("100")),
+				],
+				span: dummy_span(),
+			},
+		)
+	}
+
+	fn body_with(extra: &str) -> AstStatement {
+		assignment(
+			"reform",
+			AstValue::Block {
+				items: vec![
+					assignment("modifier", scalar("centralization")),
+					assignment("cost", scalar(extra)),
+				],
+				span: dummy_span(),
+			},
+		)
+	}
+
+	#[test]
+	fn fold_renames_pairs_remove_and_insert_with_equal_bodies() {
+		let stmt_old = body();
+		let stmt_new = body();
+		let patches = vec![
+			ClausewitzPatch::RemoveNode {
+				path: vec![],
+				key: "feudalism_reform".into(),
+				removed: stmt_old,
+			},
+			ClausewitzPatch::InsertNode {
+				path: vec![],
+				key: "EE_feudalism_reform".into(),
+				statement: stmt_new,
+			},
+		];
+		let folded = fold_renames(patches);
+		assert_eq!(folded.len(), 1);
+		match &folded[0] {
+			ClausewitzPatch::Rename {
+				path,
+				old_key,
+				new_key,
+			} => {
+				assert!(path.is_empty());
+				assert_eq!(old_key, "feudalism_reform");
+				assert_eq!(new_key, "EE_feudalism_reform");
+			}
+			other => panic!("expected Rename, got {other:?}"),
+		}
+	}
+
+	#[test]
+	fn fold_renames_does_not_pair_when_keys_match() {
+		let stmt_old = body();
+		let stmt_new = body();
+		let patches = vec![
+			ClausewitzPatch::RemoveNode {
+				path: vec![],
+				key: "x".into(),
+				removed: stmt_old,
+			},
+			ClausewitzPatch::InsertNode {
+				path: vec![],
+				key: "x".into(),
+				statement: stmt_new,
+			},
+		];
+		let folded = fold_renames(patches.clone());
+		assert_eq!(folded.len(), 2);
+		assert!(
+			folded
+				.iter()
+				.all(|p| !matches!(p, ClausewitzPatch::Rename { .. }))
+		);
+	}
+
+	#[test]
+	fn fold_renames_does_not_pair_when_bodies_differ() {
+		let patches = vec![
+			ClausewitzPatch::RemoveNode {
+				path: vec![],
+				key: "feudalism_reform".into(),
+				removed: body_with("100"),
+			},
+			ClausewitzPatch::InsertNode {
+				path: vec![],
+				key: "EE_feudalism_reform".into(),
+				statement: body_with("200"),
+			},
+		];
+		let folded = fold_renames(patches);
+		assert_eq!(folded.len(), 2);
+		assert!(
+			folded
+				.iter()
+				.all(|p| !matches!(p, ClausewitzPatch::Rename { .. }))
+		);
+	}
+
+	#[test]
+	fn fold_renames_round_trip_via_diff_and_apply() {
+		// base has X with a body; overlay renames X→Y with same body.
+		let base = make_parsed(vec![body()]);
+		let overlay = {
+			let renamed = match body() {
+				AstStatement::Assignment {
+					value,
+					key_span,
+					span,
+					..
+				} => AstStatement::Assignment {
+					key: "EE_reform".into(),
+					key_span,
+					value,
+					span,
+				},
+				_ => unreachable!(),
+			};
+			make_parsed(vec![renamed])
+		};
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		let folded = fold_renames(patches);
+		assert!(
+			folded
+				.iter()
+				.any(|p| matches!(p, ClausewitzPatch::Rename { old_key, new_key, .. } if old_key == "reform" && new_key == "EE_reform")),
+			"expected Rename, got {folded:?}"
+		);
 	}
 }

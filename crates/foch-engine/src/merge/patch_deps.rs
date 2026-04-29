@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::semantic_index::parse_script_file;
 
-use super::patch::{ClausewitzPatch, diff_ast};
+use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use crate::workspace::ResolvedFileContributor;
 
 /// Describes how to compute a single mod's patch for one file: which earlier
@@ -126,6 +126,8 @@ pub(crate) fn compute_chained_patches(
 			// No base exists — everything in this file is new content.
 			None => diff_ast_as_inserts(&mod_parsed, merge_key_source),
 		};
+		// Fold zero-cost renames per (mod, file) before cross-mod merge.
+		let patches = fold_renames(patches);
 
 		result.push((pair.mod_id.clone(), pair.precedence, patches));
 	}

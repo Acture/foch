@@ -11,7 +11,7 @@ use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
-use super::patch::{ClausewitzPatch, diff_ast};
+use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -36,6 +36,7 @@ pub fn merge_single_mod(
 	merge_key_source: MergeKeySource,
 ) -> Vec<AstStatement> {
 	let patches = diff_ast(base, overlay, merge_key_source);
+	let patches = fold_renames(patches);
 	apply_patches(&base.ast.statements, &patches, merge_key_source)
 }
 
@@ -217,6 +218,7 @@ fn patch_path(patch: &ClausewitzPatch) -> &[String] {
 		ClausewitzPatch::ReplaceBlock { path, .. } => path,
 		ClausewitzPatch::AppendBlockItem { path, .. } => path,
 		ClausewitzPatch::RemoveBlockItem { path, .. } => path,
+		ClausewitzPatch::Rename { path, .. } => path,
 	}
 }
 
@@ -231,6 +233,7 @@ fn patch_key(patch: &ClausewitzPatch) -> Option<&str> {
 		ClausewitzPatch::RemoveListItem { key, .. } => Some(key),
 		ClausewitzPatch::ReplaceBlock { key, .. } => Some(key),
 		ClausewitzPatch::AppendBlockItem { .. } | ClausewitzPatch::RemoveBlockItem { .. } => None,
+		ClausewitzPatch::Rename { old_key, .. } => Some(old_key),
 	}
 }
 
@@ -335,6 +338,11 @@ fn apply_local_patches(stmt: &mut AstStatement, patches: &[&ClausewitzPatch]) {
 			}
 			ClausewitzPatch::ReplaceBlock { new_statement, .. } => {
 				*stmt = new_statement.clone();
+			}
+			ClausewitzPatch::Rename { new_key, .. } => {
+				if let AstStatement::Assignment { key, .. } = stmt {
+					*key = new_key.clone();
+				}
 			}
 			_ => {}
 		}

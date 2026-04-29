@@ -106,6 +106,10 @@ fn patch_address(patch: &ClausewitzPatch) -> PatchAddress {
 			path: path.clone(),
 			key: format!("__remove_block_item__::{}", value_fingerprint(value)),
 		},
+		ClausewitzPatch::Rename { path, old_key, .. } => PatchAddress {
+			path: path.clone(),
+			key: format!("__rename__::{old_key}"),
+		},
 	}
 }
 
@@ -162,6 +166,7 @@ fn patch_kind(patch: &ClausewitzPatch) -> &'static str {
 		ClausewitzPatch::ReplaceBlock { .. } => "ReplaceBlock",
 		ClausewitzPatch::AppendBlockItem { .. } => "AppendBlockItem",
 		ClausewitzPatch::RemoveBlockItem { .. } => "RemoveBlockItem",
+		ClausewitzPatch::Rename { .. } => "Rename",
 	}
 }
 
@@ -203,6 +208,25 @@ pub fn merge_patch_sets(
 	policies: &MergePolicies,
 ) -> PatchMergeResult {
 	let mut result = PatchMergeResult::default();
+
+	// --- Pre-pass: collect renames and rewrite cross-mod addresses ---
+	//
+	// For each `Rename { path, old_key, new_key }` emitted by any mod, every
+	// other mod's patches whose `(path, key)` match — or whose path traverses
+	// `old_key` at that location — must be rewritten so they target the new
+	// key instead. Otherwise the renaming mod's RemoveNode would conflict
+	// with the modifier mod's edits at the old key.
+	let rename_map = build_rename_map(&mod_patches);
+	let mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)> = mod_patches
+		.into_iter()
+		.map(|(mod_id, prec, patches)| {
+			let rewritten = patches
+				.into_iter()
+				.map(|p| rewrite_patch_for_renames(p, &rename_map))
+				.collect();
+			(mod_id, prec, rewritten)
+		})
+		.collect();
 
 	// Group patches by address, preserving attribution.
 	let mut by_address: HashMap<PatchAddress, Vec<AttributedPatch>> = HashMap::new();
@@ -280,6 +304,7 @@ fn resolve_address(
 		"ReplaceBlock" => resolve_replace_blocks(addr, attributed, policies, stats),
 		"AppendBlockItem" => resolve_append_block_items(addr, attributed, stats),
 		"RemoveBlockItem" => resolve_remove_block_items(addr, attributed, stats),
+		"Rename" => resolve_renames(addr, attributed, stats),
 		_ => {
 			stats.conflict_patches += 1;
 			PatchResolution::Conflict {
@@ -1389,6 +1414,164 @@ fn rename_inner_field_value(stmt: &AstStatement, field: &str, mod_id: &str) -> A
 // Tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Rename pre-pass helpers
+// ---------------------------------------------------------------------------
+
+fn build_rename_map(
+	mod_patches: &[(String, usize, Vec<ClausewitzPatch>)],
+) -> HashMap<(AstPath, String), String> {
+	let mut candidate: HashMap<(AstPath, String), Vec<String>> = HashMap::new();
+	for (_mod_id, _prec, patches) in mod_patches {
+		for p in patches {
+			if let ClausewitzPatch::Rename {
+				path,
+				old_key,
+				new_key,
+			} = p
+			{
+				candidate
+					.entry((path.clone(), old_key.clone()))
+					.or_default()
+					.push(new_key.clone());
+			}
+		}
+	}
+	candidate
+		.into_iter()
+		.filter_map(|(k, news)| {
+			let first = news.first().cloned()?;
+			if news.iter().all(|n| n == &first) {
+				Some((k, first))
+			} else {
+				None
+			}
+		})
+		.collect()
+}
+
+fn rewrite_patch_for_renames(
+	mut patch: ClausewitzPatch,
+	rename_map: &HashMap<(AstPath, String), String>,
+) -> ClausewitzPatch {
+	if matches!(patch, ClausewitzPatch::Rename { .. }) {
+		return patch;
+	}
+	if rename_map.is_empty() {
+		return patch;
+	}
+	loop {
+		let path = rn_patch_path_clone(&patch);
+		let mut changed = false;
+		for split in 0..path.len() {
+			let prefix = path[..split].to_vec();
+			let seg = path[split].clone();
+			if let Some(new_key) = rename_map.get(&(prefix, seg)) {
+				rn_replace_path_segment(&mut patch, split, new_key.clone());
+				changed = true;
+				break;
+			}
+		}
+		if !changed {
+			break;
+		}
+	}
+	if let Some(k) = rn_patch_key(&patch).map(|s| s.to_string()) {
+		let p = rn_patch_path_clone(&patch);
+		if let Some(new_key) = rename_map.get(&(p, k)) {
+			rn_set_patch_key(&mut patch, new_key.clone());
+		}
+	}
+	patch
+}
+
+fn rn_patch_path_clone(p: &ClausewitzPatch) -> AstPath {
+	match p {
+		ClausewitzPatch::SetValue { path, .. }
+		| ClausewitzPatch::RemoveNode { path, .. }
+		| ClausewitzPatch::InsertNode { path, .. }
+		| ClausewitzPatch::AppendListItem { path, .. }
+		| ClausewitzPatch::RemoveListItem { path, .. }
+		| ClausewitzPatch::ReplaceBlock { path, .. }
+		| ClausewitzPatch::AppendBlockItem { path, .. }
+		| ClausewitzPatch::RemoveBlockItem { path, .. }
+		| ClausewitzPatch::Rename { path, .. } => path.clone(),
+	}
+}
+
+fn rn_replace_path_segment(p: &mut ClausewitzPatch, idx: usize, new_seg: String) {
+	let path = match p {
+		ClausewitzPatch::SetValue { path, .. }
+		| ClausewitzPatch::RemoveNode { path, .. }
+		| ClausewitzPatch::InsertNode { path, .. }
+		| ClausewitzPatch::AppendListItem { path, .. }
+		| ClausewitzPatch::RemoveListItem { path, .. }
+		| ClausewitzPatch::ReplaceBlock { path, .. }
+		| ClausewitzPatch::AppendBlockItem { path, .. }
+		| ClausewitzPatch::RemoveBlockItem { path, .. }
+		| ClausewitzPatch::Rename { path, .. } => path,
+	};
+	path[idx] = new_seg;
+}
+
+fn rn_patch_key(p: &ClausewitzPatch) -> Option<&str> {
+	match p {
+		ClausewitzPatch::SetValue { key, .. }
+		| ClausewitzPatch::RemoveNode { key, .. }
+		| ClausewitzPatch::InsertNode { key, .. }
+		| ClausewitzPatch::AppendListItem { key, .. }
+		| ClausewitzPatch::RemoveListItem { key, .. }
+		| ClausewitzPatch::ReplaceBlock { key, .. } => Some(key),
+		ClausewitzPatch::AppendBlockItem { .. }
+		| ClausewitzPatch::RemoveBlockItem { .. }
+		| ClausewitzPatch::Rename { .. } => None,
+	}
+}
+
+fn rn_set_patch_key(p: &mut ClausewitzPatch, new: String) {
+	match p {
+		ClausewitzPatch::SetValue { key, .. }
+		| ClausewitzPatch::RemoveNode { key, .. }
+		| ClausewitzPatch::InsertNode { key, .. }
+		| ClausewitzPatch::AppendListItem { key, .. }
+		| ClausewitzPatch::RemoveListItem { key, .. }
+		| ClausewitzPatch::ReplaceBlock { key, .. } => *key = new,
+		_ => {}
+	}
+}
+
+/// Multiple mods renaming the same `(path, old_key)`. Convergent if all pick
+/// the same `new_key`; conflict otherwise (we will not silently pick one —
+/// that risks corrupting whichever mod's downstream patches were rewritten
+/// to the *other* `new_key`).
+fn resolve_renames(
+	addr: PatchAddress,
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+) -> PatchResolution {
+	let new_keys: Vec<String> = attributed
+		.iter()
+		.map(|a| match &a.patch {
+			ClausewitzPatch::Rename { new_key, .. } => new_key.clone(),
+			_ => unreachable!(),
+		})
+		.collect();
+	let first = new_keys[0].clone();
+	if new_keys.iter().all(|k| k == &first) {
+		stats.convergent_patches += 1;
+		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
+	}
+	stats.conflict_patches += 1;
+	PatchResolution::Conflict {
+		address: addr,
+		reason: format!(
+			"conflicting renames for same key: {}",
+			new_keys.join(" vs ")
+		),
+		patches: attributed,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -2481,5 +2664,138 @@ mod tests {
 			}
 			other => panic!("expected AutoMerged, got: {other:?}"),
 		}
+	}
+
+	// ---- Rename cross-mod resolution ---------------------------------------
+
+	#[test]
+	fn rename_rewrites_set_value_at_old_key() {
+		// mod_a renames X→Y; mod_b sets a value at X.
+		// Expected: mod_b's SetValue is rewritten to address Y, no conflict.
+		let rename = ClausewitzPatch::Rename {
+			path: vec![],
+			old_key: "feudalism_reform".into(),
+			new_key: "EE_feudalism_reform".into(),
+		};
+		let set = ClausewitzPatch::SetValue {
+			path: vec![],
+			key: "feudalism_reform".into(),
+			old_value: scalar("a"),
+			new_value: scalar("b"),
+		};
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![rename]),
+				("mod_b".into(), 2, vec![set]),
+			],
+			&default_policies(),
+		);
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"expected no conflicts, got: {:?}",
+			result.conflicts
+		);
+		// Both the Rename and the rewritten SetValue should be resolved.
+		let has_rename = result
+			.resolved
+			.iter()
+			.any(|r| matches!(r, PatchResolution::Resolved(ClausewitzPatch::Rename { .. })));
+		let rewritten_set = result.resolved.iter().any(|r| match r {
+			PatchResolution::Resolved(ClausewitzPatch::SetValue { key, .. }) => {
+				key == "EE_feudalism_reform"
+			}
+			_ => false,
+		});
+		assert!(has_rename, "expected Rename in resolved");
+		assert!(rewritten_set, "expected SetValue rewritten to new key");
+	}
+
+	#[test]
+	fn rename_rewrites_nested_path_segment() {
+		// mod_a renames X→Y at root; mod_b inserts a node at path [X].
+		let rename = ClausewitzPatch::Rename {
+			path: vec![],
+			old_key: "feudalism_reform".into(),
+			new_key: "EE_feudalism_reform".into(),
+		};
+		let insert = ClausewitzPatch::InsertNode {
+			path: vec!["feudalism_reform".into()],
+			key: "modifier".into(),
+			statement: assignment("modifier", scalar("centralization_modifier")),
+		};
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![rename]),
+				("mod_b".into(), 2, vec![insert]),
+			],
+			&default_policies(),
+		);
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"expected no conflicts, got: {:?}",
+			result.conflicts
+		);
+		let rewritten = result.resolved.iter().any(|r| match r {
+			PatchResolution::Resolved(ClausewitzPatch::InsertNode { path, .. }) => {
+				path == &vec!["EE_feudalism_reform".to_string()]
+			}
+			_ => false,
+		});
+		assert!(rewritten, "expected nested InsertNode path rewritten");
+	}
+
+	#[test]
+	fn conflicting_renames_emit_conflict() {
+		// Two mods rename the same (path, X) to different new keys.
+		let rename_a = ClausewitzPatch::Rename {
+			path: vec![],
+			old_key: "X".into(),
+			new_key: "Y1".into(),
+		};
+		let rename_b = ClausewitzPatch::Rename {
+			path: vec![],
+			old_key: "X".into(),
+			new_key: "Y2".into(),
+		};
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![rename_a]),
+				("mod_b".into(), 2, vec![rename_b]),
+			],
+			&default_policies(),
+		);
+		assert_eq!(
+			result.conflicts.len(),
+			1,
+			"expected one conflict, got: {:?}",
+			result.conflicts
+		);
+		match &result.conflicts[0] {
+			PatchResolution::Conflict { reason, .. } => {
+				assert!(reason.contains("conflicting renames"));
+			}
+			other => panic!("expected Conflict, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn convergent_renames_resolve() {
+		// Two mods rename the same (path, X) to the same new key.
+		let mk = || ClausewitzPatch::Rename {
+			path: vec![],
+			old_key: "X".into(),
+			new_key: "Y".into(),
+		};
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![mk()]),
+				("mod_b".into(), 2, vec![mk()]),
+			],
+			&default_policies(),
+		);
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.resolved.len(), 1);
 	}
 }
