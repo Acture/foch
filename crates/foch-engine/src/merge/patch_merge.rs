@@ -86,13 +86,13 @@ fn patch_address(patch: &ClausewitzPatch) -> PatchAddress {
 			path: path.clone(),
 			key: key.clone(),
 		},
-		ClausewitzPatch::AppendListItem { path, key, .. } => PatchAddress {
+		ClausewitzPatch::AppendListItem { path, key, value } => PatchAddress {
 			path: path.clone(),
-			key: key.clone(),
+			key: format!("__list_item__::{}::{}", key, value_fingerprint(value)),
 		},
-		ClausewitzPatch::RemoveListItem { path, key, .. } => PatchAddress {
+		ClausewitzPatch::RemoveListItem { path, key, value } => PatchAddress {
 			path: path.clone(),
-			key: key.clone(),
+			key: format!("__list_item__::{}::{}", key, value_fingerprint(value)),
 		},
 		ClausewitzPatch::ReplaceBlock { path, key, .. } => PatchAddress {
 			path: path.clone(),
@@ -1725,7 +1725,7 @@ mod tests {
 	}
 
 	#[test]
-	fn different_append_list_items_union() {
+	fn different_append_list_items_independent_addresses() {
 		let patch_a = ClausewitzPatch::AppendListItem {
 			path: vec!["root".into(), "or".into()],
 			key: "tag".into(),
@@ -1745,15 +1745,10 @@ mod tests {
 			&default_policies(),
 		);
 
-		assert_eq!(result.resolved.len(), 1);
+		// Distinct values land in independent address buckets and apply as
+		// single-mod patches; no conflict and no auto-merge needed.
+		assert_eq!(result.resolved.len(), 2);
 		assert_eq!(result.conflicts.len(), 0);
-		assert_eq!(result.stats.auto_merged_patches, 1);
-		match &result.resolved[0] {
-			PatchResolution::AutoMerged { strategy, .. } => {
-				assert_eq!(strategy, "list_union");
-			}
-			other => panic!("expected AutoMerged, got: {other:?}"),
-		}
 	}
 
 	#[test]
