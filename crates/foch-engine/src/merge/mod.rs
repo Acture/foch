@@ -1,3 +1,4 @@
+pub(crate) mod dag;
 pub mod emit;
 pub mod error;
 pub(crate) mod execute;
