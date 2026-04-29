@@ -18,6 +18,7 @@ pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
 	pub force: bool,
+	pub ignore_replace_path: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -36,6 +37,7 @@ pub fn run_merge_with_options(
 		MergeMaterializeOptions {
 			include_game_base: options.include_game_base,
 			force: options.force,
+			ignore_replace_path: options.ignore_replace_path,
 		},
 	)?;
 

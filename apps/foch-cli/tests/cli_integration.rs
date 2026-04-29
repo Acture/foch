@@ -1507,10 +1507,10 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 	assert_eq!(report["manual_conflict_count"], 0);
 	assert_eq!(report["generated_file_count"], 1);
 	assert_eq!(report["validation"]["fatal_errors"], 0);
-	assert_eq!(report["validation"]["strict_findings"], 1);
+	assert_eq!(report["validation"]["strict_findings"], 2);
 	assert_eq!(report["validation"]["parse_errors"], 0);
-	assert_eq!(report["validation"]["unresolved_references"], 1);
-	assert_eq!(report["validation"]["missing_localisation"], 1);
+	assert_eq!(report["validation"]["unresolved_references"], 2);
+	assert_eq!(report["validation"]["missing_localisation"], 2);
 	assert!(
 		report["validation"]["advisory_findings"]
 			.as_u64()

@@ -1,138 +1,180 @@
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::collections::HashMap;
 
-use foch_language::analyzer::content_family::MergeKeySource;
-use foch_language::analyzer::semantic_index::parse_script_file;
+use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
+use foch_language::analyzer::parser::AstStatement;
+use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
+use super::dag::{
+	BaseResolver, BaseSource, FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag,
+};
 use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use crate::workspace::ResolvedFileContributor;
 
-/// Describes how to compute a single mod's patch for one file: which earlier
-/// version of the file serves as the diff base.
 #[derive(Clone, Debug)]
-pub struct DiffPair {
-	pub mod_id: String,
-	pub mod_path: PathBuf,
-	pub precedence: usize,
-	/// Path to the file that serves as diff base for this mod.
-	/// `None` means the file is new (no prior version exists).
-	pub diff_base_path: Option<PathBuf>,
-	/// Which mod (or base game) provides the diff base.
-	pub diff_base_id: String,
+pub(crate) struct DagPatchComputation {
+	pub mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	pub base_statements: Vec<AstStatement>,
 }
 
-/// Determine the diff base for each mod's contribution to a file.
+/// Compute all patches for a single file using dependency-DAG bases.
 ///
-/// The diff base is the "previous state" that this mod is editing:
-/// - If no earlier mod touches this file → diff base = base game
-/// - If an earlier mod (lower position) also touches this file → diff base =
-///   that mod's version
-///
-/// This produces a chain: base → mod1 → mod2 → mod3 (each diffs against the
-/// previous contributor).
-///
-/// `contributors` must be sorted by precedence (playlist position).
-/// The base-game contributor (if any) is the chain anchor and is not itself
-/// included in the output.
-pub(crate) fn resolve_diff_chain(
-	_file_path: &str,
-	contributors: &[ResolvedFileContributor],
-) -> Vec<DiffPair> {
-	let mut pairs = Vec::new();
-
-	// Track the most-recent contributor so far (starts as None — no prior
-	// version at all).  When a base-game entry exists it becomes the first
-	// "previous" without producing a DiffPair of its own.
-	let mut prev: Option<&ResolvedFileContributor> = None;
-
-	for c in contributors {
-		if c.is_base_game || c.is_synthetic_base {
-			// Base (real or synthetic) is the anchor; it does not produce a
-			// patch itself.
-			prev = Some(c);
-			continue;
-		}
-
-		let (diff_base_path, diff_base_id) = match prev {
-			Some(p) => (Some(p.absolute_path.clone()), p.mod_id.clone()),
-			None => (None, String::new()),
-		};
-
-		pairs.push(DiffPair {
-			mod_id: c.mod_id.clone(),
-			mod_path: c.absolute_path.clone(),
-			precedence: c.precedence,
-			diff_base_path,
-			diff_base_id,
-		});
-
-		prev = Some(c);
-	}
-
-	pairs
-}
-
-/// Compute all patches for a single file across all contributing mods,
-/// respecting the dependency chain.
-///
-/// Returns `Vec<(mod_id, precedence, patches)>` ready for
-/// `merge_patch_sets()`.
-pub(crate) fn compute_chained_patches(
+/// Each active mod contributor is diffed against
+/// `recursive_merge(vanilla, transitive_deps_touching_this_file)` rather than
+/// against the previous contributor in load order.
+pub(crate) fn compute_dag_patches(
 	file_path: &str,
 	contributors: &[ResolvedFileContributor],
 	merge_key_source: MergeKeySource,
-) -> Result<Vec<(String, usize, Vec<ClausewitzPatch>)>, String> {
-	let chain = resolve_diff_chain(file_path, contributors);
-	let mut result = Vec::with_capacity(chain.len());
+	policies: &MergePolicies,
+	mod_dag: &ModDag,
+	ignore_replace_path: &IgnoreReplacePath,
+) -> Result<DagPatchComputation, String> {
+	let file_dag = induced_file_dag(mod_dag, file_path, contributors, ignore_replace_path);
+	let vanilla = parse_vanilla_contributor(file_path, contributors)?;
+	let parsed_contributors = parse_active_mod_contributors(file_path, contributors, &file_dag)?;
+	compute_dag_patches_from_parsed(
+		&file_dag,
+		vanilla.as_ref(),
+		&parsed_contributors,
+		merge_key_source,
+		policies,
+		ignore_replace_path.clone(),
+	)
+}
 
-	for pair in &chain {
-		let mod_parsed = parse_script_file(
-			&pair.mod_id,
-			// root = parent of the absolute path so that the relative path is
-			// just the filename — mirrors how callers elsewhere use
-			// `parse_script_file`.
-			pair.mod_path
-				.parent()
-				.ok_or_else(|| format!("invalid mod path: {}", pair.mod_path.display()))?,
-			&pair.mod_path,
+fn parse_vanilla_contributor(
+	file_path: &str,
+	contributors: &[ResolvedFileContributor],
+) -> Result<Option<ParsedScriptFile>, String> {
+	let Some(base) = contributors.iter().find(|c| c.is_base_game) else {
+		return Ok(None);
+	};
+	parse_script_file(&base.mod_id, &base.root_path, &base.absolute_path)
+		.map(Some)
+		.ok_or_else(|| {
+			format!(
+				"failed to parse vanilla file {} for {file_path}",
+				base.absolute_path.display()
+			)
+		})
+}
+
+fn parse_active_mod_contributors(
+	file_path: &str,
+	contributors: &[ResolvedFileContributor],
+	file_dag: &FileDag,
+) -> Result<HashMap<ModId, ParsedScriptFile>, String> {
+	let by_mod: HashMap<ModId, &ResolvedFileContributor> = contributors
+		.iter()
+		.filter(|c| !c.is_base_game && !c.is_synthetic_base)
+		.map(|c| (ModId(c.mod_id.clone()), c))
+		.collect();
+	let mut parsed = HashMap::new();
+	for mod_id in file_dag.contributors() {
+		let contributor = by_mod
+			.get(mod_id)
+			.ok_or_else(|| format!("missing contributor {} for {file_path}", mod_id.as_str()))?;
+		let parsed_file = parse_script_file(
+			&contributor.mod_id,
+			&contributor.root_path,
+			&contributor.absolute_path,
 		)
 		.ok_or_else(|| {
 			format!(
 				"failed to parse mod file {} for {}",
-				pair.mod_path.display(),
-				pair.mod_id,
+				contributor.absolute_path.display(),
+				contributor.mod_id,
 			)
 		})?;
+		parsed.insert(mod_id.clone(), parsed_file);
+	}
+	Ok(parsed)
+}
 
-		let patches = match &pair.diff_base_path {
-			Some(base_path) => {
-				let base_parsed = parse_script_file(
-					&pair.diff_base_id,
-					base_path
-						.parent()
-						.ok_or_else(|| format!("invalid base path: {}", base_path.display()))?,
-					base_path,
+fn compute_dag_patches_from_parsed(
+	file_dag: &FileDag,
+	vanilla: Option<&ParsedScriptFile>,
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+	merge_key_source: MergeKeySource,
+	policies: &MergePolicies,
+	ignore_replace_path: IgnoreReplacePath,
+) -> Result<DagPatchComputation, String> {
+	let mut resolver = BaseResolver::new(ignore_replace_path);
+	let mut mod_patches = Vec::new();
+
+	for mod_id in file_dag.contributors() {
+		let current = contributors.get(mod_id).ok_or_else(|| {
+			format!(
+				"missing parsed contributor {} for {}",
+				mod_id.as_str(),
+				file_dag.file_path()
+			)
+		})?;
+		let resolved = resolver.resolve_base(file_dag, mod_id);
+		let base_source = resolver
+			.resolve_base_source(
+				&resolved,
+				file_dag,
+				vanilla,
+				contributors,
+				merge_key_source,
+				policies,
+			)
+			.ok_or_else(|| {
+				format!(
+					"failed to synthesize DAG base for {} in {}",
+					mod_id.as_str(),
+					file_dag.file_path()
 				)
-				.ok_or_else(|| {
-					format!(
-						"failed to parse base file {} for diff base {}",
-						base_path.display(),
-						pair.diff_base_id,
-					)
-				})?;
-				diff_ast(&base_parsed, &mod_parsed, merge_key_source)
-			}
-			// No base exists — everything in this file is new content.
-			None => diff_ast_as_inserts(&mod_parsed, merge_key_source),
-		};
-		// Fold zero-cost renames per (mod, file) before cross-mod merge.
-		let patches = fold_renames(patches);
-
-		result.push((pair.mod_id.clone(), pair.precedence, patches));
+			})?;
+		let patches = fold_renames(diff_against_base_source(
+			base_source,
+			vanilla,
+			current,
+			merge_key_source,
+		));
+		mod_patches.push((mod_id.0.clone(), file_dag.precedence_of(mod_id), patches));
 	}
 
-	Ok(result)
+	Ok(DagPatchComputation {
+		mod_patches,
+		base_statements: final_base_statements(file_dag, vanilla),
+	})
+}
+
+fn diff_against_base_source(
+	base_source: BaseSource,
+	vanilla: Option<&ParsedScriptFile>,
+	current: &ParsedScriptFile,
+	merge_key_source: MergeKeySource,
+) -> Vec<ClausewitzPatch> {
+	match base_source {
+		BaseSource::Vanilla => match vanilla {
+			Some(base) => diff_ast(base, current, merge_key_source),
+			None => diff_ast_as_inserts(current, merge_key_source),
+		},
+		BaseSource::Empty => diff_ast_as_inserts(current, merge_key_source),
+		BaseSource::Synthesized(base) => diff_ast(&base, current, merge_key_source),
+	}
+}
+
+fn final_base_statements(
+	file_dag: &FileDag,
+	vanilla: Option<&ParsedScriptFile>,
+) -> Vec<AstStatement> {
+	if file_dag
+		.contributors()
+		.iter()
+		.any(|mod_id| file_dag.replaces_path(mod_id))
+	{
+		Vec::new()
+	} else {
+		vanilla
+			.map(|base| base.ast.statements.clone())
+			.unwrap_or_default()
+	}
 }
 
 /// When a file has no prior version, treat every top-level assignment as an
@@ -165,136 +207,330 @@ fn diff_ast_as_inserts(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use foch_core::domain::descriptor::ModDescriptor;
+	use foch_core::domain::playlist::PlaylistEntry;
+	use foch_core::model::ModCandidate;
+	use foch_language::analyzer::content_family::ScriptFileKind;
 	use std::path::PathBuf;
 
-	/// Helper: build a `ResolvedFileContributor`.
-	fn contributor(
+	fn mod_with(
 		mod_id: &str,
-		path: &str,
-		precedence: usize,
-		is_base_game: bool,
-	) -> ResolvedFileContributor {
+		name: &str,
+		deps: Vec<&str>,
+		replace_path: Vec<&str>,
+	) -> ModCandidate {
+		ModCandidate {
+			entry: PlaylistEntry {
+				steam_id: Some(mod_id.to_string()),
+				..PlaylistEntry::default()
+			},
+			mod_id: mod_id.to_string(),
+			root_path: None,
+			descriptor_path: None,
+			descriptor: Some(ModDescriptor {
+				name: name.to_string(),
+				dependencies: deps.into_iter().map(str::to_string).collect(),
+				replace_path: replace_path.into_iter().map(str::to_string).collect(),
+				..ModDescriptor::default()
+			}),
+			descriptor_error: None,
+			files: Vec::new(),
+		}
+	}
+
+	fn mid(s: &str) -> ModId {
+		ModId(s.to_string())
+	}
+
+	fn file_contributor(mod_id: &str, precedence: usize) -> ResolvedFileContributor {
 		ResolvedFileContributor {
 			mod_id: mod_id.to_string(),
-			root_path: PathBuf::from(path)
-				.parent()
-				.unwrap_or(&PathBuf::from("/"))
-				.to_path_buf(),
-			absolute_path: PathBuf::from(path),
+			root_path: PathBuf::from(format!("/mods/{mod_id}")),
+			absolute_path: PathBuf::from(format!("/mods/{mod_id}/common/foo.txt")),
 			precedence,
-			is_base_game,
+			is_base_game: false,
 			is_synthetic_base: false,
 			parse_ok_hint: None,
 		}
 	}
 
-	// -----------------------------------------------------------------------
-	// resolve_diff_chain tests
-	// -----------------------------------------------------------------------
+	fn parsed_file(mod_id: &str, source: &str) -> ParsedScriptFile {
+		let path = PathBuf::from("common/foo.txt");
+		let parsed =
+			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+		ParsedScriptFile {
+			mod_id: mod_id.to_string(),
+			path: path.clone(),
+			relative_path: path,
+			content_family: None,
+			file_kind: ScriptFileKind::Other,
+			module_name: "test".to_string(),
+			ast: parsed.ast,
+			source: source.to_string(),
+			parse_issues: Vec::new(),
+			parse_cache_hit: false,
+		}
+	}
 
-	#[test]
-	fn single_mod_no_base() {
-		let contribs = vec![contributor("mod_a", "/mods/a/file.txt", 1, false)];
-		let chain = resolve_diff_chain("common/file.txt", &contribs);
+	fn parsed_inventory(entries: &[(&str, &str)]) -> HashMap<ModId, ParsedScriptFile> {
+		entries
+			.iter()
+			.map(|(mod_id, source)| (mid(mod_id), parsed_file(mod_id, source)))
+			.collect()
+	}
 
-		assert_eq!(chain.len(), 1);
-		assert_eq!(chain[0].mod_id, "mod_a");
-		assert!(chain[0].diff_base_path.is_none(), "no base → None");
-		assert_eq!(chain[0].diff_base_id, "");
+	fn compute(
+		mods: Vec<ModCandidate>,
+		contribs: Vec<ResolvedFileContributor>,
+		vanilla_source: Option<&str>,
+		inventory: HashMap<ModId, ParsedScriptFile>,
+		ignore: IgnoreReplacePath,
+	) -> DagPatchComputation {
+		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
+		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &ignore);
+		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
+		compute_dag_patches_from_parsed(
+			&fdag,
+			vanilla.as_ref(),
+			&inventory,
+			MergeKeySource::AssignmentKey,
+			&MergePolicies::default(),
+			ignore,
+		)
+		.expect("compute DAG patches")
+	}
+
+	fn patches_for<'a>(result: &'a DagPatchComputation, mod_id: &str) -> &'a Vec<ClausewitzPatch> {
+		&result
+			.mod_patches
+			.iter()
+			.find(|(id, _, _)| id == mod_id)
+			.unwrap_or_else(|| panic!("missing patches for {mod_id}"))
+			.2
+	}
+
+	fn inserted_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
+		let mut keys: Vec<_> = patches
+			.iter()
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::InsertNode { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	fn set_value_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
+		let mut keys: Vec<_> = patches
+			.iter()
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::SetValue { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	fn base_keys(result: &DagPatchComputation) -> Vec<String> {
+		let mut keys: Vec<_> = result
+			.base_statements
+			.iter()
+			.filter_map(|stmt| match stmt {
+				AstStatement::Assignment { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
 	}
 
 	#[test]
-	fn base_plus_one_mod() {
-		let contribs = vec![
-			contributor("__game__eu4", "/game/file.txt", 0, true),
-			contributor("mod_a", "/mods/a/file.txt", 1, false),
-		];
-		let chain = resolve_diff_chain("common/file.txt", &contribs);
-
-		assert_eq!(chain.len(), 1);
-		assert_eq!(chain[0].mod_id, "mod_a");
-		assert_eq!(
-			chain[0].diff_base_path.as_deref(),
-			Some(PathBuf::from("/game/file.txt").as_path()),
+	fn independent_mods_diff_against_vanilla_not_previous_mod() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("flag = no\n"),
+			parsed_inventory(&[("a", "flag = yes\n"), ("b", "flag = no\n")]),
+			IgnoreReplacePath::None,
 		);
-		assert_eq!(chain[0].diff_base_id, "__game__eu4");
+
+		assert_eq!(set_value_keys(patches_for(&result, "a")), vec!["flag"]);
+		assert!(
+			patches_for(&result, "b").is_empty(),
+			"independent vanilla-equivalent mod must not remove mod A's changes"
+		);
 	}
 
 	#[test]
-	fn base_plus_two_mods() {
-		let contribs = vec![
-			contributor("__game__eu4", "/game/file.txt", 0, true),
-			contributor("mod_a", "/mods/a/file.txt", 1, false),
-			contributor("mod_b", "/mods/b/file.txt", 2, false),
-		];
-		let chain = resolve_diff_chain("common/file.txt", &contribs);
-
-		assert_eq!(chain.len(), 2);
-
-		// mod_a diffs against base game
-		assert_eq!(chain[0].mod_id, "mod_a");
-		assert_eq!(
-			chain[0].diff_base_path.as_deref(),
-			Some(PathBuf::from("/game/file.txt").as_path()),
+	fn declared_dep_uses_synthesized_parent_base() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\na = yes\n"),
+				("b", "root = yes\na = yes\nb = yes\n"),
+			]),
+			IgnoreReplacePath::None,
 		);
-		assert_eq!(chain[0].diff_base_id, "__game__eu4");
 
-		// mod_b diffs against mod_a (not base game!)
-		assert_eq!(chain[1].mod_id, "mod_b");
-		assert_eq!(
-			chain[1].diff_base_path.as_deref(),
-			Some(PathBuf::from("/mods/a/file.txt").as_path()),
-		);
-		assert_eq!(chain[1].diff_base_id, "mod_a");
+		assert_eq!(inserted_keys(patches_for(&result, "a")), vec!["a"]);
+		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
 	}
 
 	#[test]
-	fn two_mods_no_base() {
-		let contribs = vec![
-			contributor("mod_a", "/mods/a/file.txt", 1, false),
-			contributor("mod_b", "/mods/b/file.txt", 2, false),
-		];
-		let chain = resolve_diff_chain("common/file.txt", &contribs);
-
-		assert_eq!(chain.len(), 2);
-
-		// mod_a: no prior contributor → diff_base_path = None
-		assert_eq!(chain[0].mod_id, "mod_a");
-		assert!(chain[0].diff_base_path.is_none());
-
-		// mod_b: diffs against mod_a
-		assert_eq!(chain[1].mod_id, "mod_b");
-		assert_eq!(
-			chain[1].diff_base_path.as_deref(),
-			Some(PathBuf::from("/mods/a/file.txt").as_path()),
+	fn transitive_chain_base_contains_all_ancestors() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+				mod_with("c", "C", vec!["B"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+			],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\na = yes\n"),
+				("b", "root = yes\na = yes\nb = yes\n"),
+				("c", "root = yes\na = yes\nb = yes\nc = yes\n"),
+			]),
+			IgnoreReplacePath::None,
 		);
-		assert_eq!(chain[1].diff_base_id, "mod_a");
+
+		assert_eq!(inserted_keys(patches_for(&result, "c")), vec!["c"]);
 	}
 
 	#[test]
-	fn base_plus_three_mods_with_gap() {
-		// mod_b does NOT touch this file.  The contributors list only
-		// contains mods that *do* touch the file, so mod_b is absent.
-		let contribs = vec![
-			contributor("__game__eu4", "/game/file.txt", 0, true),
-			contributor("mod_a", "/mods/a/file.txt", 1, false),
-			// mod_b (precedence 2) is absent — it doesn't touch this file
-			contributor("mod_c", "/mods/c/file.txt", 3, false),
-		];
-		let chain = resolve_diff_chain("common/file.txt", &contribs);
-
-		assert_eq!(chain.len(), 2);
-
-		// mod_a diffs against base game
-		assert_eq!(chain[0].mod_id, "mod_a");
-		assert_eq!(chain[0].diff_base_id, "__game__eu4");
-
-		// mod_c diffs against mod_a (skipping the absent mod_b)
-		assert_eq!(chain[1].mod_id, "mod_c");
-		assert_eq!(
-			chain[1].diff_base_path.as_deref(),
-			Some(PathBuf::from("/mods/a/file.txt").as_path()),
+	fn diamond_base_merges_both_branches() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+				mod_with("c", "C", vec!["A"], vec![]),
+				mod_with("d", "D", vec!["B", "C"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+				file_contributor("d", 4),
+			],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\na = yes\n"),
+				("b", "root = yes\na = yes\nb = yes\n"),
+				("c", "root = yes\na = yes\nc = yes\n"),
+				("d", "root = yes\na = yes\nb = yes\nc = yes\nd = yes\n"),
+			]),
+			IgnoreReplacePath::None,
 		);
-		assert_eq!(chain[1].diff_base_id, "mod_a");
+
+		assert_eq!(inserted_keys(patches_for(&result, "d")), vec!["d"]);
+	}
+
+	#[test]
+	fn missing_intermediate_file_dep_lifts_to_shipping_ancestor() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+				mod_with("c", "C", vec!["B"], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("c", 3)],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\na = yes\n"),
+				("c", "root = yes\na = yes\nc = yes\n"),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		assert_eq!(inserted_keys(patches_for(&result, "c")), vec!["c"]);
+	}
+
+	#[test]
+	fn replace_path_drops_prior_contributors_and_uses_empty_base() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec!["common"]),
+				mod_with("c", "C", vec!["B"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+			],
+			Some("root = yes\n"),
+			parsed_inventory(&[("b", "b = yes\n"), ("c", "b = yes\nc = yes\n")]),
+			IgnoreReplacePath::None,
+		);
+
+		assert!(
+			result
+				.mod_patches
+				.iter()
+				.all(|(mod_id, _, _)| mod_id != "a")
+		);
+		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
+		assert_eq!(inserted_keys(patches_for(&result, "c")), vec!["c"]);
+		assert!(base_keys(&result).is_empty());
+	}
+
+	#[test]
+	fn ignore_replace_path_keeps_prior_contributors() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec!["common"]),
+				mod_with("c", "C", vec!["B"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+			],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\na = yes\n"),
+				("b", "root = yes\na = yes\nb = yes\n"),
+				("c", "root = yes\na = yes\nb = yes\nc = yes\n"),
+			]),
+			IgnoreReplacePath::All,
+		);
+
+		assert_eq!(result.mod_patches.len(), 3);
+		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
+		assert_eq!(base_keys(&result), vec!["root"]);
+	}
+
+	#[test]
+	fn no_vanilla_file_diffs_each_mod_against_empty() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			None,
+			parsed_inventory(&[("a", "a = yes\n"), ("b", "b = yes\n")]),
+			IgnoreReplacePath::None,
+		);
+
+		assert_eq!(inserted_keys(patches_for(&result, "a")), vec!["a"]);
+		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
+		assert!(base_keys(&result).is_empty());
 	}
 }

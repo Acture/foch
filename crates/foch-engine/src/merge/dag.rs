@@ -489,8 +489,8 @@ impl FileDag {
 	}
 }
 
-/// Configuration for `replace_path` semantics. P3 will plumb this through
-/// the merge CLI as `--ignore-replace-path[=mod_id|=all]`.
+/// Configuration for `replace_path` semantics. The merge CLI exposes the
+/// all-mods override as `--ignore-replace-path`.
 #[derive(Clone, Debug, Default)]
 pub enum IgnoreReplacePath {
 	#[default]
@@ -765,6 +765,31 @@ impl BaseResolver {
 			template,
 			merged_statements,
 		)))
+	}
+
+	pub fn resolve_base_source(
+		&mut self,
+		resolved: &ResolvedBase,
+		file_dag: &FileDag,
+		vanilla: Option<&ParsedScriptFile>,
+		contributors: &HashMap<ModId, ParsedScriptFile>,
+		merge_key_source: MergeKeySource,
+		policies: &MergePolicies,
+	) -> Option<BaseSource> {
+		match resolved.kind {
+			BaseSourceKind::Vanilla => Some(BaseSource::Vanilla),
+			BaseSourceKind::Empty => Some(BaseSource::Empty),
+			BaseSourceKind::Synthesized => self
+				.compute_merged_base(
+					&resolved.parents,
+					file_dag,
+					vanilla,
+					contributors,
+					merge_key_source,
+					policies,
+				)
+				.map(BaseSource::Synthesized),
+		}
 	}
 
 	fn base_source_ast(

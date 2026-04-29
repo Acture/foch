@@ -1,12 +1,13 @@
 #![allow(dead_code)]
 
+use super::dag::{DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, build_mod_dag};
 use super::emit::emit_clausewitz_statements;
 use super::error::MergeError;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 #[allow(unused_imports)]
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
 use super::patch_apply::apply_patches;
-use super::patch_deps::compute_chained_patches;
+use super::patch_deps::compute_dag_patches;
 use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
 use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
@@ -20,7 +21,6 @@ use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::semantic_index::parse_script_file;
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
 	pub force: bool,
+	pub ignore_replace_path: bool,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -38,6 +39,7 @@ impl Default for MergeMaterializeOptions {
 		Self {
 			include_game_base: true,
 			force: false,
+			ignore_replace_path: false,
 		}
 	}
 }
@@ -68,6 +70,13 @@ pub(crate) fn materialize_merge_internal(
 	}
 
 	let workspace = resolve_workspace(&request, options.include_game_base)?;
+	let (mod_dag, dag_diagnostics) = build_mod_dag(&workspace.mods);
+	record_dag_diagnostics(&mut report, &dag_diagnostics);
+	let ignore_replace_path = if options.ignore_replace_path {
+		IgnoreReplacePath::All
+	} else {
+		IgnoreReplacePath::None
+	};
 
 	if report.manual_conflict_count > 0 && !options.force {
 		report.status = MergeReportStatus::Blocked;
@@ -151,12 +160,16 @@ pub(crate) fn materialize_merge_internal(
 							let target = entry.path.clone();
 							let contribs = contributors.clone();
 							let desc = *descriptor;
+							let dag = mod_dag.clone();
+							let ignore = ignore_replace_path.clone();
 							let result = std::panic::catch_unwind(|| {
 								patch_based_structural_merge(
 									&target,
 									&contribs,
 									&desc,
 									merge_key_source,
+									&dag,
+									&ignore,
 								)
 							});
 							match result {
@@ -293,26 +306,64 @@ pub(crate) fn materialize_merge_internal(
 	Ok(report)
 }
 
-/// Patch-based structural merge: diff each mod against its predecessor,
-/// merge patch sets, apply to base.  Falls back to overlay merge if base
-/// game files are unavailable.
+fn record_dag_diagnostics(report: &mut MergeReport, diagnostics: &[DagDiagnostic]) {
+	for diagnostic in diagnostics {
+		if let Some(warning) = dag_diagnostic_warning(diagnostic) {
+			report.warnings.push(warning);
+		}
+	}
+}
+
+fn dag_diagnostic_warning(diagnostic: &DagDiagnostic) -> Option<String> {
+	match &diagnostic.kind {
+		DagDiagnosticKind::MissingDependency { mod_id, dep_token } => Some(format!(
+			"Mod {} declares dep on {} not in playset; treating as absent",
+			mod_id.as_str(),
+			dep_token
+		)),
+		DagDiagnosticKind::DependencyCycle { members } => {
+			let mods = members
+				.iter()
+				.map(|mod_id| mod_id.as_str())
+				.collect::<Vec<_>>()
+				.join(", ");
+			Some(format!(
+				"Dependency cycle detected among mods {mods}; breaking deterministically by playlist position"
+			))
+		}
+		DagDiagnosticKind::BrokenCycleEdge { .. } => None,
+	}
+}
+
+/// Patch-based structural merge: diff each mod against its dependency-DAG
+/// base, merge patch sets, and apply the resolved patches to the appropriate
+/// file foundation (vanilla, empty for new files, or empty after replace_path).
 fn patch_based_structural_merge(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	descriptor: &ContentFamilyDescriptor,
 	merge_key_source: MergeKeySource,
+	mod_dag: &ModDag,
+	ignore_replace_path: &IgnoreReplacePath,
 ) -> Result<String, MergeError> {
-	// 1. Compute chained patches for every mod contributor
-	let mod_patches = compute_chained_patches(target_path, contributors, merge_key_source)
-		.map_err(|err| MergeError::Validation {
-			path: Some(target_path.to_string()),
-			message: format!("patch computation failed: {err}"),
-		})?;
+	// 1. Compute DAG-based patches for every active mod contributor.
+	let dag_patches = compute_dag_patches(
+		target_path,
+		contributors,
+		merge_key_source,
+		&descriptor.merge_policies,
+		mod_dag,
+		ignore_replace_path,
+	)
+	.map_err(|err| MergeError::Validation {
+		path: Some(target_path.to_string()),
+		message: format!("patch computation failed: {err}"),
+	})?;
 
-	// 2. Merge all mod patch sets with the family's policies
-	let merge_result = merge_patch_sets(mod_patches, &descriptor.merge_policies);
+	// 2. Merge all mod patch sets with the family's policies.
+	let merge_result = merge_patch_sets(dag_patches.mod_patches, &descriptor.merge_policies);
 
-	// 3. Abort if unresolved conflicts exist
+	// 3. Abort if unresolved conflicts exist.
 	if !merge_result.conflicts.is_empty() {
 		let conflict_keys: Vec<_> = merge_result
 			.conflicts
@@ -334,40 +385,15 @@ fn patch_based_structural_merge(
 		});
 	}
 
-	// 4. Parse the base (first contributor) file to get the base AST
-	let base_contributor = contributors
-		.iter()
-		.find(|c| c.is_base_game)
-		.or_else(|| contributors.first())
-		.ok_or_else(|| MergeError::Validation {
-			path: Some(target_path.to_string()),
-			message: "no contributors for patch merge".to_string(),
-		})?;
-
-	let base_parsed = parse_script_file(
-		&base_contributor.mod_id,
-		&base_contributor.root_path,
-		&base_contributor.absolute_path,
-	)
-	.ok_or_else(|| MergeError::Validation {
-		path: Some(target_path.to_string()),
-		message: format!(
-			"failed to parse base file {} for patch merge",
-			base_contributor.absolute_path.display(),
-		),
-	})?;
-
-	// 5. Collect resolved patches
+	// 4. Collect resolved patches and apply them to the DAG-selected base.
 	let resolved_patches = extract_resolved_patches(&merge_result);
-
-	// 6. Apply patches to base AST
 	let merged_statements = apply_patches(
-		&base_parsed.ast.statements,
+		&dag_patches.base_statements,
 		&resolved_patches,
 		merge_key_source,
 	);
 
-	// 7. Emit Clausewitz output
+	// 5. Emit Clausewitz output.
 	emit_clausewitz_statements(&merged_statements)
 }
 
@@ -614,6 +640,7 @@ mod tests {
 		MergeMaterializeOptions {
 			include_game_base: false,
 			force,
+			ignore_replace_path: false,
 		}
 	}
 

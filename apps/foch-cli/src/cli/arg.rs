@@ -113,6 +113,10 @@ pub struct MergeArgs {
 	/// is treated as a synthetic base for diff-and-merge.
 	#[arg(long)]
 	pub no_game_base: bool,
+
+	/// Treat replace_path declarations as no-ops; merge as if they were absent.
+	#[arg(long)]
+	pub ignore_replace_path: bool,
 }
 
 #[derive(Parser, Debug)]
