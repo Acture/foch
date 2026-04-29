@@ -294,6 +294,7 @@ mod tests {
 				path: None,
 				tags: Vec::new(),
 				dependencies: Vec::new(),
+				replace_path: Vec::new(),
 				version: None,
 				remote_file_id: Some("9001".to_string()),
 				supported_version: None,

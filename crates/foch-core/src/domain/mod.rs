@@ -1,3 +1,4 @@
+pub mod dep_resolution;
 pub mod descriptor;
 pub mod game;
 pub mod playlist;

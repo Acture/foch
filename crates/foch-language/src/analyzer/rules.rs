@@ -248,14 +248,7 @@ fn is_structurally_mergeable_path(path: &str) -> bool {
 }
 
 pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
-	let mut available_ids = HashSet::new();
-	let mut available_names = HashSet::new();
-	for mod_item in &ctx.mods {
-		available_ids.insert(mod_item.mod_id.clone());
-		if let Some(descriptor) = mod_item.descriptor.as_ref() {
-			available_names.insert(descriptor.name.clone());
-		}
-	}
+	let identity = foch_core::domain::dep_resolution::ModIdentityIndex::from_mods(&ctx.mods);
 
 	let mut findings = Vec::new();
 	for mod_item in &ctx.mods {
@@ -264,7 +257,7 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 		};
 
 		for dependency in &descriptor.dependencies {
-			if available_ids.contains(dependency) || available_names.contains(dependency) {
+			if identity.contains(dependency) {
 				continue;
 			}
 
