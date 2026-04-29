@@ -72,20 +72,53 @@ pub struct PatchMergeStats {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn patch_address(patch: &ClausewitzPatch) -> PatchAddress {
+fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddress {
+	// Only fingerprint InsertNode / RemoveNode bodies when the content
+	// family's block policy is *not* BooleanOr. BooleanOr families
+	// (scripted_triggers, scripted_effects) treat the top-level key as a
+	// genuinely unique definition and rely on multiple inserts at the same
+	// `(path, key)` colliding so `synthesize_boolean_or` can fold their
+	// bodies into one `OR { ... }` block. For everything else, the diff
+	// only emits `InsertNode` when a key was absent from base, so two mods
+	// inserting different bodies under the same key generally mean
+	// independent additions into a parent that allows repeated keys
+	// (triggers, effects, OR/AND blocks, etc.) — fingerprinting prevents
+	// false-positive mixed-kind conflicts and silent precedence-based
+	// drops in those cases.
+	let fingerprint_nodes = !matches!(policies.block_patch, BlockPatchPolicy::BooleanOr);
 	match patch {
 		ClausewitzPatch::SetValue { path, key, .. } => PatchAddress {
 			path: path.clone(),
 			key: key.clone(),
 		},
-		ClausewitzPatch::RemoveNode { path, key, .. } => PatchAddress {
-			path: path.clone(),
-			key: key.clone(),
-		},
-		ClausewitzPatch::InsertNode { path, key, .. } => PatchAddress {
-			path: path.clone(),
-			key: key.clone(),
-		},
+		ClausewitzPatch::RemoveNode {
+			path, key, removed, ..
+		} => {
+			let key = if fingerprint_nodes {
+				format!("__node__::{}::{}", key, statement_fingerprint(removed))
+			} else {
+				key.clone()
+			};
+			PatchAddress {
+				path: path.clone(),
+				key,
+			}
+		}
+		ClausewitzPatch::InsertNode {
+			path,
+			key,
+			statement,
+		} => {
+			let key = if fingerprint_nodes {
+				format!("__node__::{}::{}", key, statement_fingerprint(statement))
+			} else {
+				key.clone()
+			};
+			PatchAddress {
+				path: path.clone(),
+				key,
+			}
+		}
 		ClausewitzPatch::AppendListItem { path, key, value } => PatchAddress {
 			path: path.clone(),
 			key: format!("__list_item__::{}::{}", key, value_fingerprint(value)),
@@ -120,6 +153,36 @@ fn patch_address(patch: &ClausewitzPatch) -> PatchAddress {
 fn value_fingerprint(v: &AstValue) -> String {
 	let mut out = String::new();
 	fingerprint_into(v, &mut out);
+	out
+}
+
+/// Span-ignoring fingerprint for an `AstStatement`, used to disambiguate
+/// `InsertNode` / `RemoveNode` patches that share the same `(path, key)`
+/// but carry different bodies. This matters whenever the parent block is
+/// allowed to contain repeated keys (triggers, effects, lists like `OR`,
+/// `AND`, `tooltip` blocks, etc.): two mods inserting `has_country_flag = X`
+/// and `has_country_flag = Y` must each map to a distinct address so they
+/// can both apply, instead of either colliding (mixed-kind false positive
+/// when paired with an unrelated `RemoveNode`) or silently losing one
+/// payload via `compatible_inserts` highest-precedence selection.
+///
+/// `InsertNode` is only emitted by the diff when a key was absent in base
+/// and present (exactly once) in overlay, so it is always semantically
+/// "add a fresh statement". Including the body fingerprint therefore
+/// preserves the merge intent for both repeated-key parents and
+/// genuinely-unique keys: convergent inserts still share one address;
+/// distinct inserts each get their own.
+fn statement_fingerprint(stmt: &AstStatement) -> String {
+	let mut out = String::new();
+	match stmt {
+		AstStatement::Assignment { value, .. } => fingerprint_into(value, &mut out),
+		AstStatement::Item { value, .. } => fingerprint_into(value, &mut out),
+		AstStatement::Comment { text, .. } => {
+			out.push('c');
+			out.push(':');
+			out.push_str(text);
+		}
+	}
 	out
 }
 
@@ -234,7 +297,7 @@ pub fn merge_patch_sets(
 	for (mod_id, precedence, patches) in mod_patches {
 		for patch in patches {
 			result.stats.total_patches += 1;
-			let addr = patch_address(&patch);
+			let addr = patch_address(&patch, policies);
 			by_address.entry(addr).or_default().push(AttributedPatch {
 				mod_id: mod_id.clone(),
 				precedence,
@@ -1667,7 +1730,13 @@ mod tests {
 	}
 
 	#[test]
-	fn different_insert_nodes_both_apply() {
+	fn different_insert_nodes_independent_addresses() {
+		// Two mods inserting the same key with different bodies — e.g.
+		// `has_country_flag = a` and `has_country_flag = b` into the same
+		// `OR` block — now get distinct addresses thanks to the body
+		// fingerprint, so both apply independently instead of one being
+		// silently dropped via "compatible_inserts" highest-precedence
+		// selection.
 		let patch_a = ClausewitzPatch::InsertNode {
 			path: vec!["root".into()],
 			key: "ideas".into(),
@@ -1687,20 +1756,9 @@ mod tests {
 			&default_policies(),
 		);
 
-		assert_eq!(result.resolved.len(), 1);
+		assert_eq!(result.resolved.len(), 2);
 		assert_eq!(result.conflicts.len(), 0);
-		assert_eq!(result.stats.auto_merged_patches, 1);
-		match &result.resolved[0] {
-			PatchResolution::AutoMerged {
-				strategy,
-				contributing_mods,
-				..
-			} => {
-				assert_eq!(strategy, "compatible_inserts");
-				assert_eq!(contributing_mods.len(), 2);
-			}
-			other => panic!("expected AutoMerged, got: {other:?}"),
-		}
+		assert_eq!(result.stats.single_mod_patches, 2);
 	}
 
 	#[test]
@@ -1881,15 +1939,19 @@ mod tests {
 
 	#[test]
 	fn mixed_kinds_at_same_address_conflict() {
+		// Insert + Remove at the same `(path, key)` AND same body still
+		// share a `PatchAddress` (the body fingerprint is included for
+		// both kinds), so a real Insert-X / Remove-X collision continues
+		// to surface as a mixed-kind conflict.
 		let insert = ClausewitzPatch::InsertNode {
 			path: vec!["root".into()],
 			key: "thing".into(),
-			statement: assignment("thing", scalar("new")),
+			statement: assignment("thing", scalar("same")),
 		};
 		let remove = ClausewitzPatch::RemoveNode {
 			path: vec!["root".into()],
 			key: "thing".into(),
-			removed: assignment("thing", scalar("old")),
+			removed: assignment("thing", scalar("same")),
 		};
 
 		let result = merge_patch_sets(
