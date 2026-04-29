@@ -352,6 +352,180 @@ fn scalar_values_equal(a: &ScalarValue, b: &ScalarValue) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Semantic equality (ignores spans AND comments)
+// ---------------------------------------------------------------------------
+//
+// `values_equal_ignoring_span` and friends above compare comment text. That
+// is too strict for *patch convergence*: when two mods produce the same
+// `ReplaceBlock` content but differ only in comments, blank lines, or
+// formatting, we still want them to converge.
+//
+// The helpers below compare AST nodes for semantic equivalence:
+//   * spans are ignored (every value/statement carries spans, never compared);
+//   * `AstStatement::Comment` is filtered out of block bodies before zipping;
+//   * order of remaining (non-comment) statements is preserved — a different
+//     order is treated as a real difference.
+
+/// Semantic equality on `AstValue` — ignores spans and (inside blocks) any
+/// `Comment` statements. Order of the remaining statements matters.
+pub(crate) fn ast_values_semantically_equal(a: &AstValue, b: &AstValue) -> bool {
+	match (a, b) {
+		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
+		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
+			let ia: Vec<&AstStatement> = ia
+				.iter()
+				.filter(|s| !matches!(s, AstStatement::Comment { .. }))
+				.collect();
+			let ib: Vec<&AstStatement> = ib
+				.iter()
+				.filter(|s| !matches!(s, AstStatement::Comment { .. }))
+				.collect();
+			ia.len() == ib.len()
+				&& ia
+					.iter()
+					.zip(ib.iter())
+					.all(|(sa, sb)| ast_statements_semantically_equal(sa, sb))
+		}
+		_ => false,
+	}
+}
+
+/// Semantic equality on `AstStatement`. Comments compared at the top level
+/// (i.e. when the caller hands two `Comment` statements directly) are
+/// considered equal — convergence at that granularity treats comment-only
+/// patches as equivalent. Inside blocks, comments are filtered out by
+/// `ast_values_semantically_equal` and never reach this function.
+pub(crate) fn ast_statements_semantically_equal(a: &AstStatement, b: &AstStatement) -> bool {
+	match (a, b) {
+		(
+			AstStatement::Assignment {
+				key: ka, value: va, ..
+			},
+			AstStatement::Assignment {
+				key: kb, value: vb, ..
+			},
+		) => ka == kb && ast_values_semantically_equal(va, vb),
+		(AstStatement::Item { value: va, .. }, AstStatement::Item { value: vb, .. }) => {
+			ast_values_semantically_equal(va, vb)
+		}
+		(AstStatement::Comment { .. }, AstStatement::Comment { .. }) => true,
+		_ => false,
+	}
+}
+
+/// Semantic equality on `ClausewitzPatch`. Compares the patch variant, path,
+/// key, and embedded AST nodes via the span/comment-tolerant helpers above.
+pub(crate) fn patches_semantically_equal(a: &ClausewitzPatch, b: &ClausewitzPatch) -> bool {
+	match (a, b) {
+		(
+			ClausewitzPatch::SetValue {
+				path: pa,
+				key: ka,
+				old_value: oa,
+				new_value: na,
+			},
+			ClausewitzPatch::SetValue {
+				path: pb,
+				key: kb,
+				old_value: ob,
+				new_value: nb,
+			},
+		) => {
+			pa == pb
+				&& ka == kb && ast_values_semantically_equal(oa, ob)
+				&& ast_values_semantically_equal(na, nb)
+		}
+		(
+			ClausewitzPatch::RemoveNode {
+				path: pa,
+				key: ka,
+				removed: ra,
+			},
+			ClausewitzPatch::RemoveNode {
+				path: pb,
+				key: kb,
+				removed: rb,
+			},
+		) => pa == pb && ka == kb && ast_statements_semantically_equal(ra, rb),
+		(
+			ClausewitzPatch::InsertNode {
+				path: pa,
+				key: ka,
+				statement: sa,
+			},
+			ClausewitzPatch::InsertNode {
+				path: pb,
+				key: kb,
+				statement: sb,
+			},
+		) => pa == pb && ka == kb && ast_statements_semantically_equal(sa, sb),
+		(
+			ClausewitzPatch::AppendListItem {
+				path: pa,
+				key: ka,
+				value: va,
+			},
+			ClausewitzPatch::AppendListItem {
+				path: pb,
+				key: kb,
+				value: vb,
+			},
+		) => pa == pb && ka == kb && ast_values_semantically_equal(va, vb),
+		(
+			ClausewitzPatch::RemoveListItem {
+				path: pa,
+				key: ka,
+				value: va,
+			},
+			ClausewitzPatch::RemoveListItem {
+				path: pb,
+				key: kb,
+				value: vb,
+			},
+		) => pa == pb && ka == kb && ast_values_semantically_equal(va, vb),
+		(
+			ClausewitzPatch::ReplaceBlock {
+				path: pa,
+				key: ka,
+				old_statement: oa,
+				new_statement: na,
+			},
+			ClausewitzPatch::ReplaceBlock {
+				path: pb,
+				key: kb,
+				old_statement: ob,
+				new_statement: nb,
+			},
+		) => {
+			pa == pb
+				&& ka == kb && ast_statements_semantically_equal(oa, ob)
+				&& ast_statements_semantically_equal(na, nb)
+		}
+		(
+			ClausewitzPatch::AppendBlockItem {
+				path: pa,
+				value: va,
+			},
+			ClausewitzPatch::AppendBlockItem {
+				path: pb,
+				value: vb,
+			},
+		) => pa == pb && ast_values_semantically_equal(va, vb),
+		(
+			ClausewitzPatch::RemoveBlockItem {
+				path: pa,
+				value: va,
+			},
+			ClausewitzPatch::RemoveBlockItem {
+				path: pb,
+				value: vb,
+			},
+		) => pa == pb && ast_values_semantically_equal(va, vb),
+		_ => false,
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Single-statement diff
 // ---------------------------------------------------------------------------
 
@@ -1003,5 +1177,143 @@ mod tests {
 				.any(|p| matches!(p, ClausewitzPatch::ReplaceBlock { .. })),
 			"should not fall back to ReplaceBlock, got {patches:?}"
 		);
+	}
+
+	// -----------------------------------------------------------------------
+	// Semantic equality (ignores spans and comment trivia)
+	// -----------------------------------------------------------------------
+
+	fn span_at(line: usize, column: usize) -> SpanRange {
+		SpanRange {
+			start: Span {
+				line,
+				column,
+				offset: 0,
+			},
+			end: Span {
+				line,
+				column,
+				offset: 0,
+			},
+		}
+	}
+
+	fn comment(text: &str) -> AstStatement {
+		AstStatement::Comment {
+			text: text.to_string(),
+			span: dummy_span(),
+		}
+	}
+
+	fn replace_block(key: &str, old: AstStatement, new: AstStatement) -> ClausewitzPatch {
+		ClausewitzPatch::ReplaceBlock {
+			path: Vec::new(),
+			key: key.to_string(),
+			old_statement: old,
+			new_statement: new,
+		}
+	}
+
+	#[test]
+	fn semantic_equality_ignores_comments_inside_blocks() {
+		let a = block(
+			"reform",
+			vec![
+				assignment("id", scalar("evt.1")),
+				assignment("title", scalar("hello")),
+			],
+		);
+		let b = block(
+			"reform",
+			vec![
+				comment("# leading note"),
+				assignment("id", scalar("evt.1")),
+				comment("# inline note"),
+				assignment("title", scalar("hello")),
+				comment("# trailing note"),
+			],
+		);
+		let pa = replace_block("reform", a.clone(), a);
+		let pb = replace_block("reform", b.clone(), b);
+		assert!(patches_semantically_equal(&pa, &pb));
+		assert_ne!(
+			pa, pb,
+			"derived PartialEq should still see them as different"
+		);
+	}
+
+	#[test]
+	fn semantic_equality_ignores_spans() {
+		let stmt_a = AstStatement::Assignment {
+			key: "k".into(),
+			key_span: span_at(1, 1),
+			value: AstValue::Scalar {
+				value: ScalarValue::Identifier("v".into()),
+				span: span_at(1, 5),
+			},
+			span: span_at(1, 1),
+		};
+		let stmt_b = AstStatement::Assignment {
+			key: "k".into(),
+			key_span: span_at(42, 7),
+			value: AstValue::Scalar {
+				value: ScalarValue::Identifier("v".into()),
+				span: span_at(42, 11),
+			},
+			span: span_at(42, 7),
+		};
+		let pa = replace_block("k", stmt_a.clone(), stmt_a);
+		let pb = replace_block("k", stmt_b.clone(), stmt_b);
+		assert!(patches_semantically_equal(&pa, &pb));
+	}
+
+	#[test]
+	fn semantic_equality_detects_different_scalar_values() {
+		let a = block("reform", vec![assignment("id", scalar("evt.1"))]);
+		let b = block("reform", vec![assignment("id", scalar("evt.2"))]);
+		let pa = replace_block("reform", a.clone(), a);
+		let pb = replace_block("reform", b.clone(), b);
+		assert!(!patches_semantically_equal(&pa, &pb));
+	}
+
+	#[test]
+	fn semantic_equality_is_order_sensitive() {
+		let a = block(
+			"reform",
+			vec![assignment("a", scalar("1")), assignment("b", scalar("2"))],
+		);
+		let b = block(
+			"reform",
+			vec![assignment("b", scalar("2")), assignment("a", scalar("1"))],
+		);
+		let pa = replace_block("reform", a.clone(), a);
+		let pb = replace_block("reform", b.clone(), b);
+		assert!(!patches_semantically_equal(&pa, &pb));
+	}
+
+	#[test]
+	fn semantic_equality_handles_extra_comment_only_in_one_side() {
+		let a = block("reform", vec![assignment("id", scalar("x"))]);
+		let b = block(
+			"reform",
+			vec![comment("# extra"), assignment("id", scalar("x"))],
+		);
+		assert!(ast_statements_semantically_equal(&a, &b));
+	}
+
+	#[test]
+	fn semantic_equality_distinguishes_patch_variants() {
+		let stmt = assignment("id", scalar("x"));
+		let insert = ClausewitzPatch::InsertNode {
+			path: Vec::new(),
+			key: "id".into(),
+			statement: stmt.clone(),
+		};
+		let remove = ClausewitzPatch::RemoveNode {
+			path: Vec::new(),
+			key: "id".into(),
+			removed: stmt,
+		};
+		assert!(!patches_semantically_equal(&insert, &remove));
 	}
 }
