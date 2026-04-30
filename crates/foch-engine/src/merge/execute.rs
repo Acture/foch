@@ -2,6 +2,7 @@ use super::error::MergeError;
 use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
+use foch_core::config::AppliedDepOverride;
 use foch_core::domain::playlist::load_playlist;
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_REPORT_ARTIFACT_PATH, MergeReport, MergeReportStatus,
@@ -20,6 +21,7 @@ pub struct MergeExecuteOptions {
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub fallback: bool,
+	pub dep_overrides: Vec<AppliedDepOverride>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +42,7 @@ pub fn run_merge_with_options(
 			force: options.force,
 			ignore_replace_path: options.ignore_replace_path,
 			fallback: options.fallback,
+			dep_overrides: options.dep_overrides.clone(),
 		},
 	)?;
 

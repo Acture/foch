@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::AppliedDepOverride;
+
 pub const MERGED_MOD_DESCRIPTOR_PATH: &str = "descriptor.mod";
 pub const MERGE_PLAN_ARTIFACT_PATH: &str = ".foch/foch-merge-plan.json";
 pub const MERGE_REPORT_ARTIFACT_PATH: &str = ".foch/foch-merge-report.json";
@@ -170,4 +172,7 @@ pub struct MergeReport {
 	pub dep_misuse: Vec<DepMisuseFinding>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
+	// D2 local dependency overrides applied during DAG-based merge.
+	#[serde(default)]
+	pub dep_overrides_applied: Vec<AppliedDepOverride>,
 }

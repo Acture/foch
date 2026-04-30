@@ -8,12 +8,14 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+dirs.workspace = true
 home.workspace = true
 jomini.workspace = true
 regex.workspace = true
 rkyv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 winreg.workspace = true

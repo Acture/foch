@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -118,11 +119,47 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub ignore_replace_path: bool,
 
+	/// Drop one declared dependency edge from the local merge DAG (format: mod:dep).
+	#[arg(long = "ignore-dep", value_name = "MOD:DEP")]
+	pub ignore_dep: Vec<IgnoreDepArg>,
+
+	/// Load local foch.toml overrides from this file instead of the default search path.
+	#[arg(long, value_name = "PATH")]
+	pub config: Option<PathBuf>,
+
 	/// Enable last-writer fallback for unresolved structural merge conflicts.
 	///
 	/// `--force` also enables this fallback.
 	#[arg(long)]
 	pub fallback: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IgnoreDepArg {
+	pub mod_id: String,
+	pub dep_id: String,
+}
+
+impl FromStr for IgnoreDepArg {
+	type Err = String;
+
+	fn from_str(value: &str) -> Result<Self, Self::Err> {
+		if value.matches(':').count() != 1 {
+			return Err("expected exactly one ':' in MOD:DEP".to_string());
+		}
+		let (mod_id, dep_id) = value
+			.split_once(':')
+			.expect("exactly one ':' was validated above");
+		let mod_id = mod_id.trim();
+		let dep_id = dep_id.trim();
+		if mod_id.is_empty() || dep_id.is_empty() {
+			return Err("MOD and DEP must both be non-empty".to_string());
+		}
+		Ok(Self {
+			mod_id: mod_id.to_string(),
+			dep_id: dep_id.to_string(),
+		})
+	}
 }
 
 #[derive(Parser, Debug)]
@@ -312,4 +349,58 @@ pub struct PathArgs {
 pub struct GamePathArgs {
 	pub game_name: String,
 	pub path: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use clap::Parser;
+
+	#[test]
+	fn ignore_dep_arg_parses_mod_dep_pair() {
+		let parsed = IgnoreDepArg::from_str("3378403419:1999055990").expect("parse pair");
+
+		assert_eq!(parsed.mod_id, "3378403419");
+		assert_eq!(parsed.dep_id, "1999055990");
+	}
+
+	#[test]
+	fn ignore_dep_arg_rejects_invalid_format() {
+		assert!(IgnoreDepArg::from_str("3378403419").is_err());
+		assert!(IgnoreDepArg::from_str("3378403419:1999055990:extra").is_err());
+		assert!(IgnoreDepArg::from_str("3378403419:").is_err());
+	}
+
+	#[test]
+	fn merge_command_accepts_repeatable_ignore_dep_flags() {
+		let cli = FochCli::try_parse_from([
+			"foch",
+			"merge",
+			"playlist.json",
+			"--out",
+			"merged",
+			"--ignore-dep",
+			"a:b",
+			"--ignore-dep",
+			"c:d",
+		])
+		.expect("parse cli");
+
+		let FochCliCommands::Merge(args) = cli.command else {
+			panic!("expected merge command");
+		};
+		assert_eq!(
+			args.ignore_dep,
+			vec![
+				IgnoreDepArg {
+					mod_id: "a".to_string(),
+					dep_id: "b".to_string(),
+				},
+				IgnoreDepArg {
+					mod_id: "c".to_string(),
+					dep_id: "d".to_string(),
+				},
+			]
+		);
+	}
 }

@@ -2,12 +2,14 @@
 
 use std::collections::HashMap;
 
+use foch_core::config::DepOverride;
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::AstStatement;
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
 use super::dag::{
-	BaseResolver, BaseSource, FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag,
+	BaseResolver, BaseSource, FileDag, IgnoreReplacePath, ModDag, ModId,
+	induced_file_dag_with_overrides,
 };
 use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use crate::workspace::ResolvedFileContributor;
@@ -30,8 +32,15 @@ pub(crate) fn compute_dag_patches(
 	policies: &MergePolicies,
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
+	dep_overrides: &[DepOverride],
 ) -> Result<DagPatchComputation, String> {
-	let file_dag = induced_file_dag(mod_dag, file_path, contributors, ignore_replace_path);
+	let file_dag = induced_file_dag_with_overrides(
+		mod_dag,
+		file_path,
+		contributors,
+		ignore_replace_path,
+		dep_overrides,
+	);
 	let vanilla = parse_vanilla_contributor(file_path, contributors)?;
 	let parsed_contributors = parse_active_mod_contributors(file_path, contributors, &file_dag)?;
 	compute_dag_patches_from_parsed(
@@ -286,9 +295,26 @@ mod tests {
 		inventory: HashMap<ModId, ParsedScriptFile>,
 		ignore: IgnoreReplacePath,
 	) -> DagPatchComputation {
+		compute_with_overrides(mods, contribs, vanilla_source, inventory, ignore, &[])
+	}
+
+	fn compute_with_overrides(
+		mods: Vec<ModCandidate>,
+		contribs: Vec<ResolvedFileContributor>,
+		vanilla_source: Option<&str>,
+		inventory: HashMap<ModId, ParsedScriptFile>,
+		ignore: IgnoreReplacePath,
+		dep_overrides: &[DepOverride],
+	) -> DagPatchComputation {
 		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-		let fdag = induced_file_dag(&dag, "common/foo.txt", &contribs, &ignore);
+		let fdag = induced_file_dag_with_overrides(
+			&dag,
+			"common/foo.txt",
+			&contribs,
+			&ignore,
+			dep_overrides,
+		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
 		compute_dag_patches_from_parsed(
 			&fdag,
@@ -315,6 +341,18 @@ mod tests {
 			.iter()
 			.filter_map(|patch| match patch {
 				ClausewitzPatch::InsertNode { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	fn removed_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
+		let mut keys: Vec<_> = patches
+			.iter()
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::RemoveNode { key, .. } => Some(key.clone()),
 				_ => None,
 			})
 			.collect();
@@ -385,6 +423,27 @@ mod tests {
 
 		assert_eq!(inserted_keys(patches_for(&result, "a")), vec!["a"]);
 		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
+	}
+
+	#[test]
+	fn dep_override_diffs_child_against_vanilla_not_declared_parent() {
+		let result = compute_with_overrides(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\na = yes\n"),
+				("b", "root = yes\nb = yes\n"),
+			]),
+			IgnoreReplacePath::None,
+			&[DepOverride::new("b", "a")],
+		);
+
+		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
+		assert!(removed_keys(patches_for(&result, "b")).is_empty());
 	}
 
 	#[test]

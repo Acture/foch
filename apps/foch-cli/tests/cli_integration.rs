@@ -1393,6 +1393,53 @@ fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
 }
 
 #[test]
+fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let mod_a = tmp.path().join("7901");
+	let mod_b = tmp.path().join("7902");
+	let relative_path = "common/scripted_effects/effects.txt";
+
+	write_playlist(
+		&playlist_path,
+		json!([
+			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7901"},
+			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7902"}
+		]),
+	);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor_with_dependencies(&mod_b, "mod-b", &["mod-a"]);
+	write_script_file(&mod_a, relative_path, "effect_a = { log = a }\n");
+	write_script_file(&mod_b, relative_path, "effect_b = { log = b }\n");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+			"--ignore-dep",
+			"7902:7901",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(stdout.contains("status: READY"));
+	let output = fs::read_to_string(out_dir.join(relative_path)).expect("read merged output");
+	assert!(output.contains("effect_a"), "output: {output}");
+	assert!(output.contains("effect_b"), "output: {output}");
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["dep_overrides_applied"][0]["mod_id"], "7902");
+	assert_eq!(report["dep_overrides_applied"][0]["dep_id"], "7901");
+	assert_eq!(report["dep_overrides_applied"][0]["source"], "cli");
+}
+
+#[test]
 fn merge_command_skips_unresolved_dag_conflict_without_fallback() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");

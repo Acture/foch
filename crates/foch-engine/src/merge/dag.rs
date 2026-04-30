@@ -24,6 +24,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use foch_core::config::DepOverride;
 use foch_core::domain::dep_resolution::ModIdentityIndex;
 use foch_core::model::ModCandidate;
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, ScriptFileKind};
@@ -597,6 +598,16 @@ pub fn induced_file_dag(
 	contributors: &[ResolvedFileContributor],
 	ignore: &IgnoreReplacePath,
 ) -> FileDag {
+	induced_file_dag_with_overrides(global, file_path, contributors, ignore, &[])
+}
+
+pub fn induced_file_dag_with_overrides(
+	global: &ModDag,
+	file_path: &str,
+	contributors: &[ResolvedFileContributor],
+	ignore: &IgnoreReplacePath,
+	dep_overrides: &[DepOverride],
+) -> FileDag {
 	let normalized_file = normalize_path_prefix(file_path);
 
 	// Initial contributor list (mod ids only — base-game/synthetic dropped).
@@ -642,6 +653,7 @@ pub fn induced_file_dag(
 	}
 
 	// Lift edges through skipped (non-contributing) ancestors.
+	let dep_override_set = DepOverrideSet::new(dep_overrides);
 	let mut parents: HashMap<ModId, Vec<ModId>> = HashMap::new();
 	for child in &contributors_ordered {
 		if replace_path_owners.contains(child) {
@@ -649,7 +661,7 @@ pub fn induced_file_dag(
 			parents.insert(child.clone(), Vec::new());
 			continue;
 		}
-		let lifted = lift_ancestor_edges(global, child, &contributor_set);
+		let lifted = lift_ancestor_edges(global, child, &contributor_set, &dep_override_set);
 		parents.insert(child.clone(), lifted);
 	}
 
@@ -663,23 +675,56 @@ pub fn induced_file_dag(
 	}
 }
 
+#[derive(Clone, Debug, Default)]
+struct DepOverrideSet {
+	edges: HashSet<(ModId, ModId)>,
+}
+
+impl DepOverrideSet {
+	fn new(overrides: &[DepOverride]) -> Self {
+		Self {
+			edges: overrides
+				.iter()
+				.map(|item| (ModId(item.mod_id.clone()), ModId(item.dep_id.clone())))
+				.collect(),
+		}
+	}
+
+	fn contains(&self, child: &ModId, parent: &ModId) -> bool {
+		self.edges.contains(&(child.clone(), parent.clone()))
+	}
+}
+
 /// Walk up `child`'s ancestors in the global DAG. For each ancestor that is
 /// also a contributor, record it as a (lifted) parent and stop. For
 /// non-contributing ancestors, recurse through *their* parents — this
 /// implements the transitive ancestor closure restricted to `members`.
-fn lift_ancestor_edges(global: &ModDag, child: &ModId, members: &HashSet<ModId>) -> Vec<ModId> {
+fn lift_ancestor_edges(
+	global: &ModDag,
+	child: &ModId,
+	members: &HashSet<ModId>,
+	dep_overrides: &DepOverrideSet,
+) -> Vec<ModId> {
 	let mut out: Vec<ModId> = Vec::new();
 	let mut seen: HashSet<ModId> = HashSet::new();
-	let mut stack: Vec<ModId> = global.parents_of(child).to_vec();
-	while let Some(p) = stack.pop() {
-		if !seen.insert(p.clone()) {
+	let mut stack: Vec<(ModId, ModId)> = global
+		.parents_of(child)
+		.iter()
+		.cloned()
+		.map(|parent| (child.clone(), parent))
+		.collect();
+	while let Some((edge_child, parent)) = stack.pop() {
+		if dep_overrides.contains(&edge_child, &parent) {
 			continue;
 		}
-		if members.contains(&p) {
-			out.push(p);
+		if !seen.insert(parent.clone()) {
+			continue;
+		}
+		if members.contains(&parent) {
+			out.push(parent);
 		} else {
-			for pp in global.parents_of(&p) {
-				stack.push(pp.clone());
+			for grandparent in global.parents_of(&parent) {
+				stack.push((parent.clone(), grandparent.clone()));
 			}
 		}
 	}
@@ -1200,6 +1245,39 @@ mod tests {
 		let rb = resolver.resolve_base(&fdag, &mid("b"));
 		assert_eq!(rb.kind, BaseSourceKind::Synthesized);
 		assert_eq!(rb.parents, BTreeSet::from([mid("a")]));
+	}
+
+	#[test]
+	fn dep_override_drops_file_edge_and_restores_vanilla_base() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec!["A"], vec![]),
+			mod_with("c", "C", vec![], vec![]),
+		];
+		let (dag, diags) = build_mod_dag(&mods);
+		assert!(diags.is_empty());
+		assert_eq!(dag.parents_of(&mid("b")), &[mid("a")]);
+
+		let contribs = vec![
+			file_contributor("a", 1),
+			file_contributor("b", 2),
+			file_contributor("c", 3),
+		];
+		let overrides = vec![DepOverride::new("b", "a")];
+		let fdag = induced_file_dag_with_overrides(
+			&dag,
+			"common/foo.txt",
+			&contribs,
+			&IgnoreReplacePath::None,
+			&overrides,
+		);
+
+		assert_eq!(fdag.parents_of(&mid("b")), &[] as &[ModId]);
+		let resolver = BaseResolver::new(IgnoreReplacePath::None);
+		assert_eq!(
+			resolver.resolve_base(&fdag, &mid("b")).kind,
+			BaseSourceKind::Vanilla
+		);
 	}
 
 	#[test]

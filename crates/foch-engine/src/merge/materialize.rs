@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
-use super::dag::{DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, build_mod_dag};
+use super::dag::{
+	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
+};
 use super::emit::emit_clausewitz_statements;
 use super::error::MergeError;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
@@ -13,6 +15,7 @@ use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
 use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
+use foch_core::config::{AppliedDepOverride, DepOverride};
 use foch_core::model::{
 	CheckContext, DepMisuseFinding, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 	MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult,
@@ -30,12 +33,13 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub fallback: bool,
+	pub dep_overrides: Vec<AppliedDepOverride>,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -45,6 +49,7 @@ impl Default for MergeMaterializeOptions {
 			force: false,
 			ignore_replace_path: false,
 			fallback: false,
+			dep_overrides: Vec::new(),
 		}
 	}
 }
@@ -78,6 +83,12 @@ pub(crate) fn materialize_merge_internal(
 	let (mod_dag, dag_diagnostics) = build_mod_dag(&workspace.mods);
 	record_dag_diagnostics(&mut report, &dag_diagnostics);
 	report.dep_misuse = detect_dependency_misuse(&dependency_misuse_context(&workspace));
+	report.dep_overrides_applied = filter_applied_dep_overrides(&mod_dag, &options.dep_overrides);
+	let dep_overrides: Vec<DepOverride> = report
+		.dep_overrides_applied
+		.iter()
+		.map(DepOverride::from)
+		.collect();
 	let ignore_replace_path = if options.ignore_replace_path {
 		IgnoreReplacePath::All
 	} else {
@@ -169,16 +180,18 @@ pub(crate) fn materialize_merge_internal(
 							let desc = *descriptor;
 							let dag = mod_dag.clone();
 							let ignore = ignore_replace_path.clone();
+							let dep_overrides = dep_overrides.clone();
+							let dep_misuse = report.dep_misuse.clone();
 							let result = std::panic::catch_unwind(|| {
-								patch_based_structural_merge(
-									&target,
-									&contribs,
-									&desc,
+								let context = PatchBasedMergeContext {
+									descriptor: &desc,
 									merge_key_source,
-									&dag,
-									&ignore,
-									&report.dep_misuse,
-								)
+									mod_dag: &dag,
+									ignore_replace_path: &ignore,
+									dep_overrides: &dep_overrides,
+									dep_misuse_findings: &dep_misuse,
+								};
+								patch_based_structural_merge(&target, &contribs, context)
 							});
 							match result {
 								Ok(Ok(merge_output)) => {
@@ -202,7 +215,7 @@ pub(crate) fn materialize_merge_internal(
 										entry,
 										out_dir,
 										&reason,
-										options,
+										&options,
 										&mut report,
 										&mut generated_paths,
 									)? {
@@ -216,7 +229,7 @@ pub(crate) fn materialize_merge_internal(
 										entry,
 										out_dir,
 										&reason,
-										options,
+										&options,
 										&mut report,
 										&mut generated_paths,
 									)? {
@@ -387,6 +400,24 @@ fn record_dag_diagnostics(report: &mut MergeReport, diagnostics: &[DagDiagnostic
 	}
 }
 
+fn filter_applied_dep_overrides(
+	mod_dag: &ModDag,
+	overrides: &[AppliedDepOverride],
+) -> Vec<AppliedDepOverride> {
+	let mut applied = Vec::new();
+	for dep_override in overrides {
+		let child = ModId(dep_override.mod_id.clone());
+		let has_edge = mod_dag
+			.parents_of(&child)
+			.iter()
+			.any(|parent| parent.as_str() == dep_override.dep_id);
+		if has_edge && !applied.contains(dep_override) {
+			applied.push(dep_override.clone());
+		}
+	}
+	applied
+}
+
 fn dag_diagnostic_warning(diagnostic: &DagDiagnostic) -> Option<String> {
 	match &diagnostic.kind {
 		DagDiagnosticKind::MissingDependency { mod_id, dep_token } => Some(format!(
@@ -429,7 +460,7 @@ fn resolve_structural_merge_failure(
 	entry: &MergePlanEntry,
 	out_dir: &Path,
 	reason: &str,
-	options: MergeMaterializeOptions,
+	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
 ) -> Result<bool, MergeError> {
@@ -673,39 +704,47 @@ struct DepMisuseRemoveCount {
 	count: u32,
 }
 
+#[derive(Clone, Copy)]
+struct PatchBasedMergeContext<'a> {
+	descriptor: &'a ContentFamilyDescriptor,
+	merge_key_source: MergeKeySource,
+	mod_dag: &'a ModDag,
+	ignore_replace_path: &'a IgnoreReplacePath,
+	dep_overrides: &'a [DepOverride],
+	dep_misuse_findings: &'a [DepMisuseFinding],
+}
+
 /// Patch-based structural merge: diff each mod against its dependency-DAG
 /// base, merge patch sets, and apply the resolved patches to the appropriate
 /// file foundation (vanilla, empty for new files, or empty after replace_path).
 fn patch_based_structural_merge(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
-	descriptor: &ContentFamilyDescriptor,
-	merge_key_source: MergeKeySource,
-	mod_dag: &ModDag,
-	ignore_replace_path: &IgnoreReplacePath,
-	dep_misuse_findings: &[DepMisuseFinding],
+	context: PatchBasedMergeContext<'_>,
 ) -> Result<PatchBasedMergeOutput, MergeError> {
 	// 1. Compute DAG-based patches for every active mod contributor.
 	let dag_patches = compute_dag_patches(
 		target_path,
 		contributors,
-		merge_key_source,
-		&descriptor.merge_policies,
-		mod_dag,
-		ignore_replace_path,
+		context.merge_key_source,
+		&context.descriptor.merge_policies,
+		context.mod_dag,
+		context.ignore_replace_path,
+		context.dep_overrides,
 	)
 	.map_err(|err| MergeError::Validation {
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
 	})?;
 	let dep_remove_counts = collect_dep_misuse_remove_counts(
-		dep_misuse_findings,
+		context.dep_misuse_findings,
 		contributors,
 		&dag_patches.mod_patches,
 	);
 
 	// 2. Merge all mod patch sets with the family's policies.
-	let merge_result = merge_patch_sets(dag_patches.mod_patches, &descriptor.merge_policies);
+	let merge_result =
+		merge_patch_sets(dag_patches.mod_patches, &context.descriptor.merge_policies);
 
 	// 3. Abort if unresolved conflicts exist.
 	if !merge_result.conflicts.is_empty() {
@@ -734,7 +773,7 @@ fn patch_based_structural_merge(
 	let merged_statements = apply_patches(
 		&dag_patches.base_statements,
 		&resolved_patches,
-		merge_key_source,
+		context.merge_key_source,
 	);
 
 	// 5. Emit Clausewitz output.
@@ -1069,6 +1108,7 @@ mod tests {
 			force,
 			ignore_replace_path: false,
 			fallback: false,
+			dep_overrides: Vec::new(),
 		}
 	}
 
@@ -1078,6 +1118,7 @@ mod tests {
 			force,
 			ignore_replace_path: false,
 			fallback,
+			dep_overrides: Vec::new(),
 		}
 	}
 

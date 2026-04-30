@@ -731,6 +731,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		conflict_resolutions: Vec::new(),
 		dep_misuse: Vec::new(),
 		warnings: Vec::new(),
+		dep_overrides_applied: Vec::new(),
 	};
 
 	let value = serde_json::to_value(&report).expect("serialize merge report");
@@ -742,6 +743,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	assert_eq!(value["overlay_file_count"], 1);
 	assert_eq!(value["conflict_resolutions"].as_array().unwrap().len(), 0);
 	assert_eq!(value["dep_misuse"].as_array().unwrap().len(), 0);
+	assert_eq!(value["dep_overrides_applied"].as_array().unwrap().len(), 0);
 	assert_eq!(value["validation"]["fatal_errors"], 0);
 	assert_eq!(value["validation"]["strict_findings"], 4);
 	assert_eq!(value["validation"]["advisory_findings"], 7);
