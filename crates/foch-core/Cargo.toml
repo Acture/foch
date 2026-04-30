@@ -8,6 +8,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3 = "1.5.5"
 dirs.workspace = true
 home.workspace = true
 jomini.workspace = true
