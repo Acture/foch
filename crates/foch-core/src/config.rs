@@ -386,11 +386,15 @@ impl FochConfig {
 			push_unique_path(&mut paths, &mut seen, cwd.join("foch.toml"));
 		}
 		push_unique_path(&mut paths, &mut seen, playset_root.join("foch.toml"));
+		// 注意:不要扫 ~/.config/foch/config.toml — 那个文件归
+		// foch_engine::config::Config(steam_root_path / game_path / extra_ignore_patterns),
+		// 跟此处的本地 foch.toml(overrides / resolutions)是两个不同 schema。
+		// 用户级 foch.toml 用 ~/.config/foch/foch.toml 隔离开。
 		if let Some(home) = dirs::home_dir() {
 			push_unique_path(
 				&mut paths,
 				&mut seen,
-				home.join(".config").join("foch").join("config.toml"),
+				home.join(".config").join("foch").join("foch.toml"),
 			);
 		}
 		paths
@@ -642,5 +646,20 @@ prefer_mod = "conflict-mod"
 			config.overrides,
 			vec![DepOverride::new("a", "b"), DepOverride::new("c", "d")]
 		);
+	}
+
+	#[test]
+	fn search_paths_excludes_engine_config_toml() {
+		let temp = TempDir::new().expect("temp dir");
+		let paths = FochConfig::search_paths(temp.path());
+		// FochConfig (overrides/resolutions) 不能撞到 foch_engine::Config
+		// 占用的 ~/.config/foch/config.toml 文件,否则两个 schema 互相 deny_unknown_fields。
+		for path in &paths {
+			assert!(
+				!path.ends_with("config.toml"),
+				"FochConfig 不应扫描 config.toml 文件名(归 foch_engine::Config 所有);命中:{:?}",
+				path
+			);
+		}
 	}
 }
