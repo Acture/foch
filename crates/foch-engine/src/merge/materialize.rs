@@ -27,7 +27,7 @@ use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::rules::detect_dependency_misuse;
+use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -83,7 +83,11 @@ pub(crate) fn materialize_merge_internal(
 	let workspace = resolve_workspace(&request, options.include_game_base)?;
 	let (mod_dag, dag_diagnostics) = build_mod_dag(&workspace.mods);
 	record_dag_diagnostics(&mut report, &dag_diagnostics);
-	report.dep_misuse = detect_dependency_misuse(&dependency_misuse_context(&workspace));
+	let analyzer_context = dependency_misuse_context(&workspace);
+	report.dep_misuse = detect_dependency_misuse(&analyzer_context);
+	if let Some(game_version) = workspace_game_version(&workspace) {
+		report.version_mismatch = detect_version_mismatch(&analyzer_context, game_version);
+	}
 	report.dep_overrides_applied = filter_applied_dep_overrides(&mod_dag, &options.dep_overrides);
 	let dep_overrides: Vec<DepOverride> = report
 		.dep_overrides_applied
@@ -340,6 +344,13 @@ fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
 		mods: workspace.mods.clone(),
 		semantic_index: workspace_mod_semantic_index(workspace),
 	}
+}
+
+fn workspace_game_version(workspace: &ResolvedWorkspace) -> Option<&str> {
+	workspace
+		.installed_base_snapshot
+		.as_ref()
+		.map(|installed| installed.snapshot.game_version.as_str())
 }
 
 fn workspace_mod_semantic_index(workspace: &ResolvedWorkspace) -> SemanticIndex {

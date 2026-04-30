@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use super::analysis::Severity;
 use crate::config::AppliedDepOverride;
 
 pub const MERGED_MOD_DESCRIPTOR_PATH: &str = "descriptor.mod";
@@ -154,6 +155,17 @@ pub struct DepMisuseFinding {
 	pub evidence: DepMisuseEvidence,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VersionMismatchFinding {
+	pub tag: String,
+	pub severity: Severity,
+	pub mod_id: String,
+	pub mod_display_name: String,
+	pub supported_version: String,
+	pub game_version: String,
+	pub message: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
@@ -170,6 +182,8 @@ pub struct MergeReport {
 	pub conflict_resolutions: Vec<MergeReportConflictResolution>,
 	#[serde(default)]
 	pub dep_misuse: Vec<DepMisuseFinding>,
+	#[serde(default)]
+	pub version_mismatch: Vec<VersionMismatchFinding>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
 	// D2 local dependency overrides applied during DAG-based merge.

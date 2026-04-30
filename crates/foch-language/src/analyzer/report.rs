@@ -157,7 +157,39 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.validation.missing_localisation
 	));
 	append_dep_misuse_section(&mut lines, report);
+	append_version_mismatch_section(&mut lines, report);
 	lines.join("\n")
+}
+
+fn append_version_mismatch_section(lines: &mut Vec<String>, report: &MergeReport) {
+	if report.version_mismatch.is_empty() {
+		return;
+	}
+
+	lines.push(String::new());
+	lines.push(format!(
+		"⚠ Mod supported_version mismatch detected ({} findings):",
+		report.version_mismatch.len()
+	));
+	for finding in &report.version_mismatch {
+		let marker = match finding.severity {
+			Severity::Info => "ℹ",
+			Severity::Warning => "⚠",
+			Severity::Error => "✖",
+		};
+		lines.push(String::new());
+		lines.push(format!(
+			"  {marker} mod {} ({}) declares supported_version = {}",
+			finding.mod_id,
+			quote(&finding.mod_display_name),
+			quote(&finding.supported_version)
+		));
+		lines.push(format!(
+			"  but vanilla game version is {}.",
+			quote(&finding.game_version)
+		));
+		lines.push(format!("  {}", finding.message));
+	}
 }
 
 fn append_dep_misuse_section(lines: &mut Vec<String>, report: &MergeReport) {

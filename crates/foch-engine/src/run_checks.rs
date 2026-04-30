@@ -15,6 +15,7 @@ use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::rules::{
 	check_dependency_misuse, check_duplicate_mod_identity, check_duplicate_scripted_effect,
 	check_file_conflict, check_missing_dependency, check_missing_descriptor, check_required_fields,
+	check_version_mismatch,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -103,6 +104,10 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
 		None => mod_semantic_index,
 	};
+	let game_version = resolved
+		.installed_base_snapshot
+		.as_ref()
+		.map(|installed| installed.snapshot.game_version.clone());
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
 		build_runtime_state_from_workspace(&resolved)
 			.ok()
@@ -123,6 +128,11 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	result.findings.extend(check_missing_descriptor(&ctx));
 	result.findings.extend(check_file_conflict(&ctx));
 	result.findings.extend(check_missing_dependency(&ctx));
+	if let Some(game_version) = game_version.as_deref() {
+		result
+			.findings
+			.extend(check_version_mismatch(&ctx, game_version));
+	}
 
 	if options.analysis_mode == AnalysisMode::Semantic {
 		// Names already covered by the runtime overlap module (A003 mergeable /

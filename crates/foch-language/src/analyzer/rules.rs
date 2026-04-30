@@ -1,8 +1,9 @@
 use super::semantic_index::count_symbol_references_resolving_to_mod;
 use foch_core::model::{
 	CheckContext, DepMisuseEvidence, DepMisuseFinding, Finding, FindingChannel, Severity,
-	SymbolKind,
+	SymbolKind, VersionMismatchFinding,
 };
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
 pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
@@ -328,6 +329,84 @@ pub fn detect_dependency_misuse(ctx: &CheckContext) -> Vec<DepMisuseFinding> {
 	findings
 }
 
+pub fn detect_version_mismatch(
+	ctx: &CheckContext,
+	game_version: &str,
+) -> Vec<VersionMismatchFinding> {
+	let Some(vanilla_version) = parse_game_version(game_version) else {
+		return Vec::new();
+	};
+	let game_version = game_version.trim();
+
+	let mut findings = Vec::new();
+	for mod_item in ctx.mods.iter().filter(|item| item.entry.enabled) {
+		let Some(descriptor) = mod_item.descriptor.as_ref() else {
+			continue;
+		};
+		let Some(supported_version) = descriptor.supported_version.as_deref() else {
+			continue;
+		};
+		let supported_version = supported_version.trim();
+		if supported_version.is_empty() || supported_version == "*" {
+			continue;
+		}
+
+		let Some(parsed_supported_version) = parse_game_version(supported_version) else {
+			continue;
+		};
+		let severity = match parsed_supported_version.cmp_major_minor(&vanilla_version) {
+			Ordering::Less => Severity::Info,
+			Ordering::Equal => continue,
+			Ordering::Greater => Severity::Warning,
+		};
+		let message = match severity {
+			Severity::Info => "mod targets older game version, may have stale references",
+			Severity::Warning => {
+				"mod targets newer game version (likely beta branch), may use unsupported features"
+			}
+			Severity::Error => unreachable!("version mismatch never emits error severity"),
+		};
+
+		findings.push(VersionMismatchFinding {
+			tag: "version_mismatch".to_string(),
+			severity,
+			mod_id: mod_item.mod_id.clone(),
+			mod_display_name: display_name_for_mod(mod_item),
+			supported_version: supported_version.to_string(),
+			game_version: game_version.to_string(),
+			message: message.to_string(),
+		});
+	}
+
+	findings
+}
+
+pub fn check_version_mismatch(ctx: &CheckContext, game_version: &str) -> Vec<Finding> {
+	detect_version_mismatch(ctx, game_version)
+		.into_iter()
+		.map(|finding| {
+			new_finding(
+				"V001",
+				finding.severity,
+				FindingChannel::Advisory,
+				finding.message.clone(),
+				Some(finding.mod_id.clone()),
+				ctx.mods
+					.iter()
+					.find(|mod_item| mod_item.mod_id == finding.mod_id)
+					.and_then(|mod_item| mod_item.descriptor_path.clone()),
+				Some(format!(
+					"tag={} supported_version={} game_version={}",
+					finding.tag, finding.supported_version, finding.game_version
+				)),
+				None,
+				None,
+				Some(0.8),
+			)
+		})
+		.collect()
+}
+
 pub fn check_dependency_misuse(ctx: &CheckContext) -> Vec<Finding> {
 	detect_dependency_misuse(ctx)
 		.into_iter()
@@ -358,6 +437,54 @@ pub fn check_dependency_misuse(ctx: &CheckContext) -> Vec<Finding> {
 			)
 		})
 		.collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ParsedGameVersion {
+	major: u32,
+	minor: u32,
+}
+
+impl ParsedGameVersion {
+	fn cmp_major_minor(&self, other: &Self) -> Ordering {
+		self.major
+			.cmp(&other.major)
+			.then_with(|| self.minor.cmp(&other.minor))
+	}
+}
+
+fn parse_game_version(value: &str) -> Option<ParsedGameVersion> {
+	let value = value.trim().trim_matches('"').trim();
+	if value.is_empty() || value == "*" {
+		return None;
+	}
+	let value = value
+		.strip_prefix('v')
+		.or_else(|| value.strip_prefix('V'))
+		.unwrap_or(value);
+
+	let mut parts = value.split('.');
+	let major = parse_version_component(parts.next()?)?;
+	let minor = parse_version_component(parts.next()?)?;
+	if let Some(patch) = parts.next() {
+		let patch = patch.trim();
+		if patch != "*" {
+			parse_version_component(patch)?;
+		}
+	}
+	if parts.next().is_some() {
+		return None;
+	}
+
+	Some(ParsedGameVersion { major, minor })
+}
+
+fn parse_version_component(value: &str) -> Option<u32> {
+	let value = value.trim();
+	if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+		return None;
+	}
+	value.parse().ok()
 }
 
 fn display_name_for_mod(mod_item: &foch_core::model::ModCandidate) -> String {
@@ -487,6 +614,14 @@ mod tests {
 		}
 	}
 
+	fn version_candidate(mod_id: &str, supported_version: Option<&str>) -> ModCandidate {
+		let mut mod_item = candidate(mod_id, "Versioned Mod", "Versioned Mod", &[]);
+		if let Some(descriptor) = mod_item.descriptor.as_mut() {
+			descriptor.supported_version = supported_version.map(str::to_string);
+		}
+		mod_item
+	}
+
 	fn definition(mod_id: &str, local_name: &str) -> SymbolDefinition {
 		SymbolDefinition {
 			kind: SymbolKind::ScriptedEffect,
@@ -535,6 +670,64 @@ mod tests {
 			mods,
 			semantic_index,
 		}
+	}
+
+	#[test]
+	fn supported_version_wildcard_matching_minor_has_no_finding() {
+		let ctx = context(
+			vec![version_candidate("100", Some("1.37.*"))],
+			SemanticIndex::default(),
+		);
+
+		let findings = detect_version_mismatch(&ctx, "1.37.5");
+
+		assert!(findings.is_empty());
+	}
+
+	#[test]
+	fn supported_version_older_minor_is_info() {
+		let ctx = context(
+			vec![version_candidate("100", Some("1.36.*"))],
+			SemanticIndex::default(),
+		);
+
+		let findings = detect_version_mismatch(&ctx, "1.37.5");
+
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].tag, "version_mismatch");
+		assert_eq!(findings[0].severity, Severity::Info);
+		assert_eq!(findings[0].supported_version, "1.36.*");
+		assert_eq!(findings[0].game_version, "1.37.5");
+		assert_eq!(check_version_mismatch(&ctx, "1.37.5")[0].rule_id, "V001");
+	}
+
+	#[test]
+	fn supported_version_newer_minor_is_warning() {
+		let ctx = context(
+			vec![version_candidate("100", Some("1.38.*"))],
+			SemanticIndex::default(),
+		);
+
+		let findings = detect_version_mismatch(&ctx, "1.37.5");
+
+		assert_eq!(findings.len(), 1);
+		assert_eq!(findings[0].severity, Severity::Warning);
+		assert!(findings[0].message.contains("newer game version"));
+	}
+
+	#[test]
+	fn loose_supported_version_is_ignored() {
+		let ctx = context(
+			vec![
+				version_candidate("100", None),
+				version_candidate("200", Some("*")),
+			],
+			SemanticIndex::default(),
+		);
+
+		let findings = detect_version_mismatch(&ctx, "1.37.5");
+
+		assert!(findings.is_empty());
 	}
 
 	#[test]
