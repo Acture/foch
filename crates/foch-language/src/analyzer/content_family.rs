@@ -164,14 +164,25 @@ pub struct MergePolicies {
 	pub block: BlockMergePolicy,
 	pub boolean: BooleanMergePolicy,
 	pub block_patch: BlockPatchPolicy,
+	#[serde(skip)]
+	pub block_patch_policies: &'static [(&'static str, BlockPatchPolicy)],
 	pub named_container: NamedContainerPolicy,
+}
+
+impl MergePolicies {
+	pub fn block_patch_policy_for_key(&self, key: &str) -> BlockPatchPolicy {
+		self.block_patch_policies
+			.iter()
+			.find_map(|(policy_key, policy)| (*policy_key == key).then_some(*policy))
+			.unwrap_or(self.block_patch)
+	}
 }
 
 /// How patch-level block conflicts are resolved by the patch merge engine
 /// (the successor to deep_merge / ir.rs). When two or more mods both modify
 /// the same block-valued node, this policy decides whether the last writer
-/// wins (default) or the bodies get wrapped in `OR = { ... }` blocks for
-/// boolean-OR trigger semantics.
+/// wins (default), the bodies get wrapped in `OR = { ... }` blocks for
+/// boolean-OR trigger semantics, or block list contents are unioned.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockPatchPolicy {
@@ -182,6 +193,9 @@ pub enum BlockPatchPolicy {
 	/// Combine each mod's body inside an `OR = { ... }` wrapper so the
 	/// resulting trigger fires if any contributor's predicate holds.
 	BooleanOr,
+	/// Union the base block's list-like items with every replacement body,
+	/// de-duplicating by content fingerprint while preserving first-seen order.
+	Union,
 	/// Recursively deep-merge multiple mods' replacements of the same block.
 	/// When N mods all emit `ReplaceBlock` against a common base block, the
 	/// patch engine re-runs its diff/merge pipeline on the bodies and
@@ -473,6 +487,13 @@ impl ContentFamilyDescriptorBuilder {
 		self.merge_policies.block_patch = policy;
 		self
 	}
+	pub const fn block_patch_policies(
+		mut self,
+		policies: &'static [(&'static str, BlockPatchPolicy)],
+	) -> Self {
+		self.merge_policies.block_patch_policies = policies;
+		self
+	}
 	pub const fn build(self) -> ContentFamilyDescriptor {
 		ContentFamilyDescriptor {
 			id: self.id,
@@ -515,6 +536,7 @@ impl ContentFamilyDescriptor {
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
 				block_patch: BlockPatchPolicy::LastWriter,
+				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::SuffixRename,
 			},
 		}
@@ -548,6 +570,7 @@ impl ContentFamilyDescriptor {
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
 				block_patch: BlockPatchPolicy::LastWriter,
+				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::SuffixRename,
 			},
 		}

@@ -2,7 +2,7 @@
 // them into a single resolved patch set with conflict detection.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -73,19 +73,6 @@ pub struct PatchMergeStats {
 // ---------------------------------------------------------------------------
 
 fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddress {
-	// Only fingerprint InsertNode / RemoveNode bodies when the content
-	// family's block policy is *not* BooleanOr. BooleanOr families
-	// (scripted_triggers, scripted_effects) treat the top-level key as a
-	// genuinely unique definition and rely on multiple inserts at the same
-	// `(path, key)` colliding so `synthesize_boolean_or` can fold their
-	// bodies into one `OR { ... }` block. For everything else, the diff
-	// only emits `InsertNode` when a key was absent from base, so two mods
-	// inserting different bodies under the same key generally mean
-	// independent additions into a parent that allows repeated keys
-	// (triggers, effects, OR/AND blocks, etc.) — fingerprinting prevents
-	// false-positive mixed-kind conflicts and silent precedence-based
-	// drops in those cases.
-	let fingerprint_nodes = !matches!(policies.block_patch, BlockPatchPolicy::BooleanOr);
 	match patch {
 		ClausewitzPatch::SetValue { path, key, .. } => PatchAddress {
 			path: path.clone(),
@@ -94,6 +81,13 @@ fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddr
 		ClausewitzPatch::RemoveNode {
 			path, key, removed, ..
 		} => {
+			// Only fingerprint InsertNode / RemoveNode bodies when the target block
+			// policy is *not* BooleanOr. BooleanOr definitions intentionally collide
+			// at `(path, key)` so synthesis can fold their bodies into one OR block.
+			let fingerprint_nodes = !matches!(
+				policies.block_patch_policy_for_key(key),
+				BlockPatchPolicy::BooleanOr
+			);
 			let key = if fingerprint_nodes {
 				format!("__node__::{}::{}", key, statement_fingerprint(removed))
 			} else {
@@ -109,6 +103,10 @@ fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddr
 			key,
 			statement,
 		} => {
+			let fingerprint_nodes = !matches!(
+				policies.block_patch_policy_for_key(key),
+				BlockPatchPolicy::BooleanOr
+			);
 			let key = if fingerprint_nodes {
 				format!("__node__::{}::{}", key, statement_fingerprint(statement))
 			} else {
@@ -413,7 +411,7 @@ fn resolve_insert_nodes(
 	// BooleanOr policy: when each contributor inserts a block-bodied
 	// statement under the same key, wrap each body inside `OR = { ... }`
 	// and emit a single synthesized InsertNode.
-	if policies.block_patch == BlockPatchPolicy::BooleanOr
+	if policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{
 		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
@@ -667,7 +665,8 @@ fn resolve_replace_blocks(
 		};
 	}
 
-	if policies.block_patch == BlockPatchPolicy::BooleanOr
+	let block_policy = policies.block_patch_policy_for_key(&addr.key);
+	if block_policy == BlockPatchPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{
 		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
@@ -679,7 +678,19 @@ fn resolve_replace_blocks(
 		};
 	}
 
-	if policies.block_patch == BlockPatchPolicy::Recurse
+	if block_policy == BlockPatchPolicy::Union
+		&& let Some(merged) = try_union_block_merge(&attributed)
+	{
+		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+		stats.auto_merged_patches += 1;
+		return PatchResolution::AutoMerged {
+			result: merged,
+			strategy: "union_block".to_string(),
+			contributing_mods: mods,
+		};
+	}
+
+	if block_policy == BlockPatchPolicy::Recurse
 		&& let Some(resolution) = try_recursive_block_merge(&addr, &attributed, policies, stats)
 	{
 		return resolution;
@@ -702,6 +713,92 @@ fn resolve_replace_blocks(
 		address: addr,
 		reason: "multiple mods replace the same block with different content".to_string(),
 		patches: attributed,
+	}
+}
+
+/// Attempt to union list-like block replacements by keeping the base body's
+/// first occurrence of each item, then appending unique items from every
+/// replacement body in precedence order.
+fn try_union_block_merge(attributed: &[AttributedPatch]) -> Option<ClausewitzPatch> {
+	if attributed.len() < 2 {
+		return None;
+	}
+
+	let mut replacements: Vec<(String, usize, &AstStatement, &AstStatement, AstPath, String)> =
+		Vec::with_capacity(attributed.len());
+	for a in attributed {
+		match &a.patch {
+			ClausewitzPatch::ReplaceBlock {
+				old_statement,
+				new_statement,
+				path,
+				key,
+			} => replacements.push((
+				a.mod_id.clone(),
+				a.precedence,
+				old_statement,
+				new_statement,
+				path.clone(),
+				key.clone(),
+			)),
+			_ => return None,
+		}
+	}
+
+	let ancestor_idx = replacements
+		.iter()
+		.enumerate()
+		.min_by_key(|(_, (_, prec, _, _, _, _))| *prec)
+		.map(|(i, _)| i)?;
+	let ancestor_body = statement_block_body(replacements[ancestor_idx].2)?;
+
+	let mut seen: HashSet<String> = HashSet::new();
+	let mut union_body: Vec<AstStatement> = Vec::new();
+	push_unique_block_items(ancestor_body, &mut seen, &mut union_body);
+
+	replacements.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+	for (_, _, _, new_statement, _, _) in &replacements {
+		let body = statement_block_body(new_statement)?;
+		push_unique_block_items(body, &mut seen, &mut union_body);
+	}
+
+	let representative = replacements
+		.iter()
+		.max_by_key(|(_, prec, _, _, _, _)| *prec)
+		.unwrap();
+	Some(ClausewitzPatch::ReplaceBlock {
+		path: representative.4.clone(),
+		key: representative.5.clone(),
+		old_statement: representative.2.clone(),
+		new_statement: with_block_body(representative.3, union_body),
+	})
+}
+
+fn push_unique_block_items(
+	items: &[AstStatement],
+	seen: &mut HashSet<String>,
+	out: &mut Vec<AstStatement>,
+) {
+	for item in items {
+		let fingerprint = union_item_fingerprint(item);
+		if seen.insert(fingerprint) {
+			out.push(item.clone());
+		}
+	}
+}
+
+fn union_item_fingerprint(item: &AstStatement) -> String {
+	match item {
+		AstStatement::Item { value, .. } => value_fingerprint(value),
+		AstStatement::Assignment { key, value, .. } => {
+			let mut out = String::new();
+			out.push('a');
+			out.push_str(key);
+			out.push('=');
+			fingerprint_into(value, &mut out);
+			out
+		}
+		AstStatement::Comment { .. } => statement_fingerprint(item),
 	}
 }
 
@@ -2318,6 +2415,81 @@ mod tests {
 		}
 	}
 
+	const COUNTRY_NAME_BLOCK_POLICIES: &[(&str, BlockPatchPolicy)] = &[
+		("monarch_names", BlockPatchPolicy::Union),
+		("leader_names", BlockPatchPolicy::Union),
+		("ship_names", BlockPatchPolicy::Union),
+		("army_names", BlockPatchPolicy::Union),
+	];
+
+	fn union_policies() -> MergePolicies {
+		MergePolicies {
+			block_patch: BlockPatchPolicy::Union,
+			..Default::default()
+		}
+	}
+
+	fn country_history_name_union_policies() -> MergePolicies {
+		MergePolicies {
+			block_patch: BlockPatchPolicy::Recurse,
+			block_patch_policies: COUNTRY_NAME_BLOCK_POLICIES,
+			..Default::default()
+		}
+	}
+
+	fn bare_item(value: &str) -> AstStatement {
+		AstStatement::Item {
+			value: scalar(value),
+			span: span(),
+		}
+	}
+
+	fn replace_block_patch(
+		key: &str,
+		old_items: Vec<AstStatement>,
+		new_items: Vec<AstStatement>,
+	) -> ClausewitzPatch {
+		ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: key.to_string(),
+			old_statement: assignment_block(key, old_items),
+			new_statement: assignment_block(key, new_items),
+		}
+	}
+
+	fn block_items(stmt: &AstStatement) -> &[AstStatement] {
+		match stmt {
+			AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} => items,
+			other => panic!("expected block assignment, got {other:?}"),
+		}
+	}
+
+	fn item_texts(items: &[AstStatement]) -> Vec<String> {
+		items
+			.iter()
+			.map(|item| match item {
+				AstStatement::Item {
+					value: AstValue::Scalar { value, .. },
+					..
+				} => value.as_text(),
+				other => panic!("expected scalar item, got {other:?}"),
+			})
+			.collect()
+	}
+
+	fn assignment_keys(items: &[AstStatement]) -> Vec<String> {
+		items
+			.iter()
+			.map(|item| match item {
+				AstStatement::Assignment { key, .. } => key.clone(),
+				other => panic!("expected assignment item, got {other:?}"),
+			})
+			.collect()
+	}
+
 	/// Helper: assert `stmt` is `key = { OR = { <body_0> } OR = { <body_1> } ... }`
 	/// with the supplied bodies in order, and return the OR'd bodies for further
 	/// inspection.
@@ -2512,6 +2684,207 @@ mod tests {
 			BlockPatchPolicy::LastWriter,
 			"BlockPatchPolicy::default() must be LastWriter"
 		);
+	}
+
+	#[test]
+	fn union_block_collects_two_overlay_items_via_fingerprint() {
+		let base = vec![bare_item("Base")];
+		let patch_a = replace_block_patch(
+			"leader_names",
+			base.clone(),
+			vec![bare_item("Base"), bare_item("Afonso")],
+		);
+		let patch_b = replace_block_patch(
+			"leader_names",
+			base,
+			vec![bare_item("Base"), bare_item("Bernat")],
+		);
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&union_policies(),
+		);
+
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"got conflicts: {:?}",
+			result.conflicts
+		);
+		assert_eq!(result.resolved.len(), 1);
+		match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+				strategy,
+				..
+			} => {
+				assert_eq!(strategy, "union_block");
+				assert_eq!(
+					item_texts(block_items(new_statement)),
+					vec!["Base", "Afonso", "Bernat"]
+				);
+			}
+			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
+		}
+	}
+
+	#[test]
+	fn union_block_collects_three_overlay_items_and_dedups_assignments() {
+		let base = vec![assignment("Base #0", number("10"))];
+		let patch_a = replace_block_patch(
+			"monarch_names",
+			base.clone(),
+			vec![
+				assignment("Base #0", number("10")),
+				assignment("Afonso #0", number("0")),
+			],
+		);
+		let patch_b = replace_block_patch(
+			"monarch_names",
+			base.clone(),
+			vec![
+				assignment("Base #0", number("10")),
+				assignment("Bernat #0", number("0")),
+			],
+		);
+		let patch_c = replace_block_patch(
+			"monarch_names",
+			base,
+			vec![
+				assignment("Base #0", number("10")),
+				assignment("Afonso #0", number("0")),
+				assignment("Carles #0", number("0")),
+			],
+		);
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+				("mod_c".into(), 3, vec![patch_c]),
+			],
+			&union_policies(),
+		);
+
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"got conflicts: {:?}",
+			result.conflicts
+		);
+		assert_eq!(result.resolved.len(), 1);
+		let new_statement = match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+				strategy,
+				..
+			} => {
+				assert_eq!(strategy, "union_block");
+				new_statement
+			}
+			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
+		};
+		assert_eq!(
+			assignment_keys(block_items(new_statement)),
+			vec!["Base #0", "Afonso #0", "Bernat #0", "Carles #0"]
+		);
+	}
+
+	#[test]
+	fn union_block_policy_coexists_with_recurse_for_other_blocks() {
+		let vanilla_date = assignment_block("1444.11.11", vec![assignment("owner", scalar("BYZ"))]);
+		let date_a = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: vanilla_date.clone(),
+			new_statement: assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]),
+		};
+		let date_b = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "1444.11.11".into(),
+			old_statement: assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]),
+			new_statement: assignment_block(
+				"1444.11.11",
+				vec![
+					assignment("owner", scalar("BYZ")),
+					assignment("controller", scalar("OTT")),
+				],
+			),
+		};
+		let base_names = vec![bare_item("Base")];
+		let names_a = replace_block_patch(
+			"leader_names",
+			base_names.clone(),
+			vec![bare_item("Base"), bare_item("Afonso")],
+		);
+		let names_b = replace_block_patch(
+			"leader_names",
+			base_names,
+			vec![bare_item("Base"), bare_item("Bernat")],
+		);
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![date_a, names_a]),
+				("mod_b".into(), 2, vec![date_b, names_b]),
+			],
+			&country_history_name_union_policies(),
+		);
+
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"got conflicts: {:?}",
+			result.conflicts
+		);
+		let mut strategies: Vec<&str> = result
+			.resolved
+			.iter()
+			.filter_map(|resolution| match resolution {
+				PatchResolution::AutoMerged { strategy, .. } => Some(strategy.as_str()),
+				_ => None,
+			})
+			.collect();
+		strategies.sort_unstable();
+		assert_eq!(strategies, vec!["recursive_block_merge", "union_block"]);
+	}
+
+	#[test]
+	fn default_replace_block_conflict_still_conflicts_without_union() {
+		let base = vec![bare_item("Base")];
+		let patch_a = replace_block_patch(
+			"leader_names",
+			base.clone(),
+			vec![bare_item("Base"), bare_item("Afonso")],
+		);
+		let patch_b = replace_block_patch(
+			"leader_names",
+			base,
+			vec![bare_item("Base"), bare_item("Bernat")],
+		);
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&default_policies(),
+		);
+
+		assert_eq!(result.resolved.len(), 0);
+		assert_eq!(result.conflicts.len(), 1);
+		match &result.conflicts[0] {
+			PatchResolution::Conflict { reason, .. } => {
+				assert!(
+					reason.contains("multiple mods replace"),
+					"unexpected reason: {reason}"
+				);
+			}
+			other => panic!("expected Conflict, got: {other:?}"),
+		}
 	}
 
 	// -----------------------------------------------------------------------

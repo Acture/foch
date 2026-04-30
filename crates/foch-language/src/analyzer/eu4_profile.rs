@@ -61,6 +61,13 @@ const fn dynamic_scope_policy() -> ContentFamilyScopePolicy {
 	}
 }
 
+const COUNTRY_HISTORY_BLOCK_PATCH_POLICIES: &[(&str, BlockPatchPolicy)] = &[
+	("monarch_names", BlockPatchPolicy::Union),
+	("leader_names", BlockPatchPolicy::Union),
+	("ship_names", BlockPatchPolicy::Union),
+	("army_names", BlockPatchPolicy::Union),
+];
+
 static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix(
 		"events/common/new_diplomatic_actions",
@@ -207,6 +214,7 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.block_patch_policy(BlockPatchPolicy::Recurse)
+		.block_patch_policies(COUNTRY_HISTORY_BLOCK_PATCH_POLICIES)
 		.extractor(ContentFamilyExtractor::CountryHistory)
 		.build(),
 	ContentFamilyDescriptor::prefix("history/provinces", "history/provinces/")
