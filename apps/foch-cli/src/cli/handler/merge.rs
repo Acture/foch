@@ -1,6 +1,7 @@
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::HandlerResult;
 use foch_core::config::{AppliedDepOverride, FochConfig};
+use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use foch_language::analyzer::report::render_merge_report_text;
 use std::path::Path;
@@ -10,6 +11,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		playset_path: merge_args.playset_path.clone(),
 		config,
 	};
+	let fallback_enabled = merge_args.fallback || merge_args.force;
 	let dep_overrides = load_dep_overrides(merge_args)?;
 	let execution = run_merge_with_options(
 		request,
@@ -18,12 +20,55 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			include_game_base: !merge_args.no_game_base,
 			force: merge_args.force,
 			ignore_replace_path: merge_args.ignore_replace_path,
-			fallback: merge_args.fallback || merge_args.force,
+			fallback: fallback_enabled,
 			dep_overrides,
 		},
 	)?;
 	println!("{}", render_merge_report_text(&execution.report));
+	if let Some(tip) = render_unresolved_conflict_tip(
+		&execution.report,
+		merge_args.out.as_path(),
+		fallback_enabled,
+	) {
+		eprintln!("{tip}");
+	}
 	Ok(execution.exit_code)
+}
+
+fn render_unresolved_conflict_tip(
+	report: &MergeReport,
+	out_dir: &Path,
+	fallback_enabled: bool,
+) -> Option<String> {
+	let unresolved_conflicts = report.manual_conflict_count;
+	if fallback_enabled || unresolved_conflicts == 0 {
+		return None;
+	}
+
+	let report_path = out_dir.join(MERGE_REPORT_ARTIFACT_PATH);
+	let plural = if unresolved_conflicts == 1 { "" } else { "s" };
+	let mut lines = vec![
+		format!(
+			"Tip: {unresolved_conflicts} unresolved merge conflict{plural} were SKIPPED (not written to {}).",
+			out_dir.display()
+		),
+		format!("  1. Inspect {} for details.", report_path.display()),
+		"  2. Re-run with --fallback to materialize last-writer output with conflict markers."
+			.to_string(),
+	];
+	if let Some(finding) = report.dep_misuse.first() {
+		lines.push(format!(
+			"  3. Possible spurious dep: {} -> {}; try --ignore-dep {}:{}.",
+			finding.mod_display_name,
+			finding.suspicious_dep_display_name,
+			finding.mod_id,
+			finding.suspicious_dep_id
+		));
+	} else {
+		lines.push("  3. Resolve skipped files manually, then re-run merge.".to_string());
+	}
+	lines.push("Foch kept your output safe; use --fallback when you're ready.".to_string());
+	Some(lines.join("\n"))
 }
 
 fn load_dep_overrides(
