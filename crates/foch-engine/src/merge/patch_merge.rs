@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,8 @@ use foch_language::analyzer::content_family::{
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
+use super::conflict_handler::{ConflictDecision, ConflictHandler, DeferHandler};
+use super::error::MergeError;
 use super::patch::{AstPath, ClausewitzPatch, patches_semantically_equal};
 
 // ---------------------------------------------------------------------------
@@ -25,15 +28,21 @@ pub struct PatchAddress {
 }
 
 /// A patch attributed to a specific mod.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttributedPatch {
 	pub mod_id: String,
 	pub precedence: usize,
 	pub patch: ClausewitzPatch,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PatchConflict {
+	pub patches: Vec<AttributedPatch>,
+	pub reason: String,
+}
+
 /// Result of merging patches at a single address.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PatchResolution {
 	/// Single mod or all mods agree — apply this patch.
 	Resolved(ClausewitzPatch),
@@ -52,14 +61,17 @@ pub enum PatchResolution {
 }
 
 /// Result of merging all patch sets.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PatchMergeResult {
 	pub resolved: Vec<PatchResolution>,
 	pub conflicts: Vec<PatchResolution>,
 	pub stats: PatchMergeStats,
+	pub handler_resolved_count: usize,
+	pub external_file_resolutions: HashMap<PathBuf, PathBuf>,
+	pub keep_existing_paths: HashSet<PathBuf>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PatchMergeStats {
 	pub total_patches: usize,
 	pub single_mod_patches: usize,
@@ -267,7 +279,8 @@ fn make_number_value(n: f64, reference_span: &AstValue) -> AstValue {
 pub fn merge_patch_sets(
 	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
-) -> PatchMergeResult {
+	handler: &mut dyn ConflictHandler,
+) -> Result<PatchMergeResult, MergeError> {
 	let mut result = PatchMergeResult::default();
 
 	// --- Pre-pass: collect renames and rewrite cross-mod addresses ---
@@ -306,13 +319,88 @@ pub fn merge_patch_sets(
 
 	for (addr, attributed) in by_address {
 		let resolution = resolve_address(addr, attributed, policies, &mut result.stats);
-		match &resolution {
-			PatchResolution::Conflict { .. } => result.conflicts.push(resolution),
-			_ => result.resolved.push(resolution),
+		match resolution {
+			PatchResolution::Conflict {
+				address,
+				patches,
+				reason,
+			} => {
+				apply_conflict_decision(&mut result, handler, address, patches, reason)?;
+			}
+			resolution => result.resolved.push(resolution),
 		}
 	}
 
-	result
+	Ok(result)
+}
+
+fn apply_conflict_decision(
+	result: &mut PatchMergeResult,
+	handler: &mut dyn ConflictHandler,
+	address: PatchAddress,
+	patches: Vec<AttributedPatch>,
+	reason: String,
+) -> Result<(), MergeError> {
+	let conflict_path = conflict_path_for_handler(&address);
+	let conflict = PatchConflict { patches, reason };
+
+	match handler.on_conflict(&conflict_path, &address, &conflict) {
+		ConflictDecision::Defer => result.conflicts.push(PatchResolution::Conflict {
+			address,
+			patches: conflict.patches,
+			reason: conflict.reason,
+		}),
+		ConflictDecision::PickMod(mod_id) => {
+			let Some(chosen) = conflict
+				.patches
+				.iter()
+				.find(|patch| patch.mod_id == mod_id)
+				.cloned()
+			else {
+				return Err(MergeError::Validation {
+					path: Some(conflict_path),
+					message: format!("conflict handler picked unknown mod `{mod_id}`"),
+				});
+			};
+			result.handler_resolved_count += 1;
+			result
+				.resolved
+				.push(PatchResolution::Resolved(chosen.patch));
+		}
+		ConflictDecision::UseFile(source_path) => {
+			result.handler_resolved_count += 1;
+			result
+				.external_file_resolutions
+				.insert(PathBuf::from(conflict_path), source_path);
+		}
+		ConflictDecision::KeepExisting => {
+			result.handler_resolved_count += 1;
+			result
+				.keep_existing_paths
+				.insert(PathBuf::from(conflict_path));
+		}
+		ConflictDecision::Abort => {
+			return Err(MergeError::Validation {
+				path: Some(conflict_path),
+				message: format!("conflict handler aborted merge: {}", conflict.reason),
+			});
+		}
+	}
+
+	Ok(())
+}
+
+fn conflict_path_for_handler(address: &PatchAddress) -> String {
+	if address.path.is_empty() {
+		return address.key.clone();
+	}
+
+	let mut path = address.path.join("/");
+	if !address.key.is_empty() {
+		path.push('/');
+		path.push_str(&address.key);
+	}
+	path
 }
 
 // ---------------------------------------------------------------------------
@@ -877,7 +965,8 @@ fn try_recursive_block_merge(
 	}
 
 	// Recursively resolve nested patches with the same policies.
-	let nested = merge_patch_sets(mod_patches, policies);
+	let mut handler = DeferHandler;
+	let nested = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
 
 	if !nested.conflicts.is_empty() {
 		// Bubble up as a single conflict with detailed sub-reasons so users
@@ -1888,6 +1977,7 @@ fn resolve_renames(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::merge::conflict_handler::ChainHandler;
 	use foch_language::analyzer::content_family::MergePolicies;
 	use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
@@ -1933,6 +2023,118 @@ mod tests {
 		MergePolicies::default()
 	}
 
+	fn merge_patch_sets_with_defer(
+		mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+		policies: &MergePolicies,
+	) -> PatchMergeResult {
+		let mut handler = DeferHandler;
+		merge_patch_sets(mod_patches, policies, &mut handler)
+			.expect("defer handler should not abort")
+	}
+
+	#[test]
+	fn merge_patch_sets_with_defer_handler_preserves_current_behavior() {
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("alpha")),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("beta")),
+		};
+
+		let mut handler = DeferHandler;
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a.clone()]),
+				("mod_b".into(), 2, vec![patch_b.clone()]),
+			],
+			&default_policies(),
+			&mut handler,
+		)
+		.expect("defer handler should not abort");
+
+		let expected = PatchMergeResult {
+			conflicts: vec![PatchResolution::Conflict {
+				address: PatchAddress {
+					path: vec!["root".into()],
+					key: "decisions".into(),
+				},
+				patches: vec![
+					AttributedPatch {
+						mod_id: "mod_a".into(),
+						precedence: 1,
+						patch: patch_a,
+					},
+					AttributedPatch {
+						mod_id: "mod_b".into(),
+						precedence: 2,
+						patch: patch_b,
+					},
+				],
+				reason: "multiple mods replace the same block with different content".into(),
+			}],
+			stats: PatchMergeStats {
+				total_patches: 2,
+				conflict_patches: 1,
+				..PatchMergeStats::default()
+			},
+			..PatchMergeResult::default()
+		};
+		assert_eq!(result, expected);
+	}
+
+	#[test]
+	fn chain_handler_falls_through_to_second_on_defer() {
+		struct MockPickHandler;
+
+		impl ConflictHandler for MockPickHandler {
+			fn on_conflict(
+				&mut self,
+				_: &str,
+				_: &PatchAddress,
+				_: &PatchConflict,
+			) -> ConflictDecision {
+				ConflictDecision::PickMod("mod_b".to_string())
+			}
+		}
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("alpha")),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("beta")),
+		};
+
+		let mut handler = ChainHandler {
+			first: DeferHandler,
+			second: MockPickHandler,
+		};
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b.clone()]),
+			],
+			&default_policies(),
+			&mut handler,
+		)
+		.expect("mock pick handler should not abort");
+
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.handler_resolved_count, 1);
+		assert_eq!(result.resolved, vec![PatchResolution::Resolved(patch_b)]);
+	}
+
 	#[test]
 	fn single_mod_patches_all_resolved() {
 		let patches = vec![
@@ -1949,7 +2151,8 @@ mod tests {
 			},
 		];
 
-		let result = merge_patch_sets(vec![("mod_a".into(), 1, patches)], &default_policies());
+		let result =
+			merge_patch_sets_with_defer(vec![("mod_a".into(), 1, patches)], &default_policies());
 
 		assert_eq!(result.resolved.len(), 2);
 		assert_eq!(result.conflicts.len(), 0);
@@ -1966,7 +2169,7 @@ mod tests {
 			new_value: number("10"),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch.clone()]),
 				("mod_b".into(), 2, vec![patch]),
@@ -1998,7 +2201,7 @@ mod tests {
 			statement: assignment("ideas", scalar("beta")),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2019,7 +2222,7 @@ mod tests {
 			value: scalar("ERS"),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch.clone()]),
 				("mod_b".into(), 2, vec![patch]),
@@ -2045,7 +2248,7 @@ mod tests {
 			value: scalar("FRA"),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2074,7 +2277,7 @@ mod tests {
 			new_value: number("15"),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2119,7 +2322,7 @@ mod tests {
 			new_statement: assignment("decisions", scalar("beta")),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2167,7 +2370,7 @@ mod tests {
 			new_statement: assignment("block", scalar("b_ver")),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				(
 					"mod_a".into(),
@@ -2204,7 +2407,7 @@ mod tests {
 			removed: assignment("thing", scalar("same")),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![insert]),
 				("mod_b".into(), 2, vec![remove]),
@@ -2364,7 +2567,7 @@ mod tests {
 			new_value: number("3"),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2538,7 +2741,7 @@ mod tests {
 			new_statement: assignment_block("is_great_power", body_b.clone()),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2581,7 +2784,7 @@ mod tests {
 			statement: assignment_block("is_powerful", body.to_vec()),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![mk(&body_a)]),
 				("mod_b".into(), 2, vec![mk(&body_b)]),
@@ -2623,7 +2826,7 @@ mod tests {
 			new_statement: assignment_block("is_lonely", body.clone()),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![("mod_a".into(), 1, vec![patch])],
 			&boolean_or_policies(),
 		);
@@ -2668,7 +2871,7 @@ mod tests {
 			new_statement: assignment_block("is_great_power", vec![assignment("tag", scalar("B"))]),
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2700,7 +2903,7 @@ mod tests {
 			vec![bare_item("Base"), bare_item("Bernat")],
 		);
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2760,7 +2963,7 @@ mod tests {
 			],
 		);
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -2826,7 +3029,7 @@ mod tests {
 			vec![bare_item("Base"), bare_item("Bernat")],
 		);
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![date_a, names_a]),
 				("mod_b".into(), 2, vec![date_b, names_b]),
@@ -2866,7 +3069,7 @@ mod tests {
 			vec![bare_item("Base"), bare_item("Bernat")],
 		);
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -3226,7 +3429,7 @@ mod tests {
 			new_statement: mod_b_stmt,
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -3266,7 +3469,7 @@ mod tests {
 			old_value: scalar("a"),
 			new_value: scalar("b"),
 		};
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![rename]),
 				("mod_b".into(), 2, vec![set]),
@@ -3307,7 +3510,7 @@ mod tests {
 			key: "modifier".into(),
 			statement: assignment("modifier", scalar("centralization_modifier")),
 		};
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![rename]),
 				("mod_b".into(), 2, vec![insert]),
@@ -3342,7 +3545,7 @@ mod tests {
 			old_key: "X".into(),
 			new_key: "Y2".into(),
 		};
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![rename_a]),
 				("mod_b".into(), 2, vec![rename_b]),
@@ -3371,7 +3574,7 @@ mod tests {
 			old_key: "X".into(),
 			new_key: "Y".into(),
 		};
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![mk()]),
 				("mod_b".into(), 2, vec![mk()]),
@@ -3428,7 +3631,7 @@ mod tests {
 			new_statement: b_stmt,
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -3502,7 +3705,7 @@ mod tests {
 			new_statement: b_stmt,
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
@@ -3575,7 +3778,7 @@ mod tests {
 			new_statement: b_stmt,
 		};
 
-		let result = merge_patch_sets(
+		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),

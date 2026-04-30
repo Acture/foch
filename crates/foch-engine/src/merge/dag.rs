@@ -31,6 +31,7 @@ use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, Scr
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
+use super::conflict_handler::DeferHandler;
 use super::patch::{diff_ast, fold_renames};
 use super::patch_apply::apply_patches;
 use super::patch_merge::{PatchResolution, merge_patch_sets};
@@ -893,7 +894,8 @@ impl BaseResolver {
 				mod_patches.push((parent.0.clone(), file_dag.precedence_of(&parent), patches));
 			}
 
-			let merge_result = merge_patch_sets(mod_patches, policies);
+			let mut handler = DeferHandler;
+			let merge_result = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
 			if !merge_result.conflicts.is_empty() {
 				return None;
 			}

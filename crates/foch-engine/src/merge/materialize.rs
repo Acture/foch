@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use super::conflict_handler::DeferHandler;
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
@@ -743,8 +744,12 @@ fn patch_based_structural_merge(
 	);
 
 	// 2. Merge all mod patch sets with the family's policies.
-	let merge_result =
-		merge_patch_sets(dag_patches.mod_patches, &context.descriptor.merge_policies);
+	let mut handler = DeferHandler;
+	let merge_result = merge_patch_sets(
+		dag_patches.mod_patches,
+		&context.descriptor.merge_policies,
+		&mut handler,
+	)?;
 
 	// 3. Abort if unresolved conflicts exist.
 	if !merge_result.conflicts.is_empty() {
