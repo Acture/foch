@@ -4,6 +4,8 @@ use super::{
 	scope_kind,
 };
 use crate::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
+use crate::analyzer::content_family::{GameProfile, MergeKeySource};
+use crate::analyzer::eu4_profile::eu4_profile;
 use foch_core::model::{AnalysisMode, ScopeKind, ScopeType, SymbolKind};
 use std::fs;
 use std::path::Path;
@@ -313,6 +315,28 @@ fn fourth_wave_s004_messages(call_rel_path: &[&str], call_source: &str) -> Vec<S
 	.filter(|finding| finding.rule_id == "S004")
 	.map(|finding| finding.message)
 	.collect()
+}
+
+#[test]
+fn interface_content_family_keys_gui_types_children_by_name() {
+	let descriptor = eu4_profile()
+		.classify_content_family(Path::new("interface/topbar.gui"))
+		.expect("interface descriptor");
+	match descriptor.merge_key_source.expect("merge key source") {
+		MergeKeySource::ContainerChildFieldValue {
+			container,
+			child_key_field,
+			child_types,
+		} => {
+			assert_eq!(container, "guiTypes");
+			assert_eq!(child_key_field, "name");
+			assert!(child_types.contains(&"windowType"));
+			assert!(child_types.contains(&"containerWindowType"));
+			assert!(child_types.contains(&"instantTextBoxType"));
+			assert!(child_types.contains(&"guiButtonType"));
+		}
+		other => panic!("unexpected interface merge key source: {other:?}"),
+	}
 }
 
 #[test]

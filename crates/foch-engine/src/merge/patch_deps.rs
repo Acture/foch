@@ -343,6 +343,9 @@ fn extend_merge_result(target: &mut PatchMergeResult, source: PatchMergeResult) 
 	target.stats.conflict_patches += source.stats.conflict_patches;
 	target.handler_resolved_count += source.handler_resolved_count;
 	target
+		.handler_resolutions
+		.extend(source.handler_resolutions);
+	target
 		.external_file_resolutions
 		.extend(source.external_file_resolutions);
 	target
@@ -492,6 +495,26 @@ mod tests {
 		ignore: IgnoreReplacePath,
 		dep_overrides: &[DepOverride],
 	) -> DagPatchComputation {
+		compute_with_merge_key(
+			mods,
+			contribs,
+			vanilla_source,
+			inventory,
+			ignore,
+			dep_overrides,
+			MergeKeySource::AssignmentKey,
+		)
+	}
+
+	fn compute_with_merge_key(
+		mods: Vec<ModCandidate>,
+		contribs: Vec<ResolvedFileContributor>,
+		vanilla_source: Option<&str>,
+		inventory: HashMap<ModId, ParsedScriptFile>,
+		ignore: IgnoreReplacePath,
+		dep_overrides: &[DepOverride],
+		merge_key_source: MergeKeySource,
+	) -> DagPatchComputation {
 		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 		let fdag = induced_file_dag_with_overrides(
@@ -507,7 +530,7 @@ mod tests {
 			&fdag,
 			vanilla.as_ref(),
 			&inventory,
-			MergeKeySource::AssignmentKey,
+			merge_key_source,
 			&MergePolicies::default(),
 			&mut handler,
 		)
@@ -732,6 +755,135 @@ mod tests {
 			patches_for(&result, "b").is_empty(),
 			"independent vanilla-equivalent mod must not remove mod A's changes"
 		);
+	}
+
+	#[test]
+	fn gui_named_children_let_sibling_mods_edit_different_widgets() {
+		const GUI_CHILD_TYPES: &[&str] = &["windowType"];
+		let key_source = MergeKeySource::ContainerChildFieldValue {
+			container: "guiTypes",
+			child_key_field: "name",
+			child_types: GUI_CHILD_TYPES,
+		};
+		let vanilla = r#"
+			guiTypes = {
+				windowType = { name = "left_widget" position = { x = 0 y = 0 } }
+				windowType = { name = "right_widget" position = { x = 0 y = 0 } }
+			}
+		"#;
+		let result = compute_with_merge_key(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some(vanilla),
+			parsed_inventory(&[
+				(
+					"a",
+					r#"guiTypes = {
+						windowType = { name = "left_widget" position = { x = 1 y = 0 } }
+						windowType = { name = "right_widget" position = { x = 0 y = 0 } }
+					}"#,
+				),
+				(
+					"b",
+					r#"guiTypes = {
+						windowType = { name = "left_widget" position = { x = 0 y = 0 } }
+						windowType = { name = "right_widget" position = { x = 2 y = 0 } }
+					}"#,
+				),
+			]),
+			IgnoreReplacePath::None,
+			&[],
+			key_source,
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		let addresses = result
+			.mod_patches
+			.iter()
+			.flat_map(|(_, _, patches)| patches)
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::SetValue { path, key, .. } => Some((path.clone(), key.clone())),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		assert!(addresses.contains(&(
+			vec![
+				"guiTypes".to_string(),
+				"windowType:left_widget".to_string(),
+				"position".to_string(),
+			],
+			"x".to_string(),
+		)));
+		assert!(addresses.contains(&(
+			vec![
+				"guiTypes".to_string(),
+				"windowType:right_widget".to_string(),
+				"position".to_string(),
+			],
+			"x".to_string(),
+		)));
+	}
+
+	#[test]
+	fn gui_named_children_conflict_same_widget_sibling_overwrites() {
+		const GUI_CHILD_TYPES: &[&str] = &["windowType"];
+		let key_source = MergeKeySource::ContainerChildFieldValue {
+			container: "guiTypes",
+			child_key_field: "name",
+			child_types: GUI_CHILD_TYPES,
+		};
+		let vanilla = r#"
+			guiTypes = {
+				windowType = { name = "left_widget" position = { x = 0 y = 0 } }
+			}
+		"#;
+		let result = compute_with_merge_key(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some(vanilla),
+			parsed_inventory(&[
+				(
+					"a",
+					r#"guiTypes = {
+						windowType = { name = "left_widget" position = { x = 1 y = 0 } }
+					}"#,
+				),
+				(
+					"b",
+					r#"guiTypes = {
+						windowType = { name = "left_widget" position = { x = 2 y = 0 } }
+					}"#,
+				),
+			]),
+			IgnoreReplacePath::None,
+			&[],
+			key_source,
+		);
+
+		assert_eq!(result.merge_result.conflicts.len(), 1);
+		match &result.merge_result.conflicts[0] {
+			PatchResolution::Conflict {
+				address, reason, ..
+			} => {
+				assert_eq!(
+					address.path,
+					vec![
+						"guiTypes".to_string(),
+						"windowType:left_widget".to_string(),
+						"position".to_string(),
+					]
+				);
+				assert_eq!(address.key, "x");
+				assert!(reason.contains("sibling overwrite"));
+			}
+			other => panic!("expected sibling overwrite conflict, got {other:?}"),
+		}
 	}
 
 	#[test]

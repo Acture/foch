@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use super::conflict_handler::DeferHandler;
+use super::conflict_handler::{DeferHandler, DepImpliesResolutionHandler};
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
@@ -754,6 +754,7 @@ struct PatchBasedMergeOutput {
 	rendered: String,
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
 	stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
+	handler_resolutions: Vec<HandlerResolutionRecord>,
 	external_file_resolutions: HashMap<PathBuf, PathBuf>,
 	keep_existing_paths: HashSet<PathBuf>,
 }
@@ -791,7 +792,14 @@ fn patch_based_structural_merge(
 			context.resolution_map,
 			PathBuf::from(target_path),
 		),
-		second: DeferHandler,
+		second: super::conflict_handler::ChainHandler {
+			first: DepImpliesResolutionHandler::from_mod_dag(
+				PathBuf::from(target_path),
+				context.mod_dag,
+				context.dep_overrides,
+			),
+			second: DeferHandler,
+		},
 	};
 	let dag_patches = compute_dag_patches_with_handler(
 		target_path,
@@ -851,6 +859,7 @@ fn patch_based_structural_merge(
 		rendered,
 		dep_remove_counts,
 		stale_vanilla_targets,
+		handler_resolutions: merge_result.handler_resolutions,
 		external_file_resolutions: merge_result.external_file_resolutions,
 		keep_existing_paths: merge_result.keep_existing_paths,
 	})
@@ -999,6 +1008,7 @@ fn write_patch_merge_output(
 				path: target_path.to_string(),
 				action: "kept_existing".to_string(),
 				source: None,
+				rationale: None,
 			});
 			return Ok(PatchOutputMaterialization::KeptExisting);
 		}
@@ -1031,11 +1041,15 @@ fn write_patch_merge_output(
 			path: target_path.to_string(),
 			action: "external".to_string(),
 			source: Some(source_path.display().to_string()),
+			rationale: None,
 		});
 		return Ok(PatchOutputMaterialization::ExternalWrite);
 	}
 
 	write_rendered_output(target_path, &merge_output.rendered, out_dir)?;
+	report
+		.handler_resolutions
+		.extend(merge_output.handler_resolutions.iter().cloned());
 	Ok(PatchOutputMaterialization::NormalWrite)
 }
 
@@ -1212,9 +1226,9 @@ mod tests {
 	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
 	use foch_core::model::{
-		MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
-		MergePlanEntry, MergePlanResult, MergeReport, MergeReportConflictKind, MergeReportStatus,
-		ModCandidate,
+		HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
+		MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergeReport,
+		MergeReportConflictKind, MergeReportStatus, ModCandidate,
 	};
 	use serde_json::json;
 	use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1325,6 +1339,7 @@ mod tests {
 			rendered: rendered.to_string(),
 			dep_remove_counts: Vec::new(),
 			stale_vanilla_targets: Vec::new(),
+			handler_resolutions: Vec::new(),
 			external_file_resolutions: HashMap::new(),
 			keep_existing_paths: HashSet::new(),
 		}
@@ -1395,6 +1410,42 @@ mod tests {
 		assert_eq!(report.warnings.len(), 1);
 		assert!(report.warnings[0].contains("keep_existing_failed"));
 		assert!(report.warnings[0].contains(relative_path));
+	}
+
+	#[test]
+	fn materialize_normal_write_records_handler_resolutions() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let relative_path = "common/ideas/dep.txt";
+		let mut merge_output = patch_merge_output("merged\n");
+		merge_output
+			.handler_resolutions
+			.push(HandlerResolutionRecord {
+				path: relative_path.to_string(),
+				action: "dep_implied".to_string(),
+				source: Some("mod_a".to_string()),
+				rationale: Some("mod mod_a declares dep on mod_b".to_string()),
+			});
+		let mut report = MergeReport::default();
+
+		let materialization =
+			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
+				.expect("materialize normal write");
+
+		assert_eq!(
+			materialization,
+			super::PatchOutputMaterialization::NormalWrite
+		);
+		assert_eq!(
+			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
+			"merged\n"
+		);
+		assert_eq!(report.handler_resolutions.len(), 1);
+		assert_eq!(report.handler_resolutions[0].action, "dep_implied");
+		assert_eq!(
+			report.handler_resolutions[0].rationale.as_deref(),
+			Some("mod mod_a declares dep on mod_b")
+		);
 	}
 
 	#[test]

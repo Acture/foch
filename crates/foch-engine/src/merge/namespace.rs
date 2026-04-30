@@ -48,6 +48,16 @@ fn extract_keys(parsed: &ParsedScriptFile, merge_key_source: MergeKeySource) -> 
 		MergeKeySource::AssignmentKey => extract_assignment_keys(parsed),
 		MergeKeySource::FieldValue(field) => extract_field_value_keys(parsed, field),
 		MergeKeySource::ContainerChildKey => extract_container_child_keys(parsed),
+		MergeKeySource::ContainerChildFieldValue {
+			container,
+			child_key_field,
+			child_types,
+		} => extract_container_child_field_value_keys(
+			parsed,
+			container,
+			child_key_field,
+			child_types,
+		),
 		MergeKeySource::LeafPath => extract_defines_keys(parsed),
 	}
 }
@@ -112,6 +122,51 @@ fn extract_container_child_keys(parsed: &ParsedScriptFile) -> Vec<String> {
 		}
 	}
 	keys
+}
+
+fn extract_container_child_field_value_keys(
+	parsed: &ParsedScriptFile,
+	container: &str,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Vec<String> {
+	let mut keys = Vec::new();
+	for stmt in &parsed.ast.statements {
+		let AstStatement::Assignment { key, value, .. } = stmt else {
+			continue;
+		};
+		if key != container {
+			keys.push(key.clone());
+			continue;
+		}
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		for child in items {
+			if let Some(key) = container_child_field_value_key(child, child_key_field, child_types)
+			{
+				keys.push(key);
+			}
+		}
+	}
+	keys
+}
+
+fn container_child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
 }
 
 fn extract_defines_keys(parsed: &ParsedScriptFile) -> Vec<String> {

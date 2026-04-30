@@ -34,7 +34,7 @@ pub(crate) fn detect_stale_vanilla_targets(
 				(None, _) => MISSING_PATH_NOTE,
 				(Some(_), None) => return None,
 				(Some(statements), Some(key))
-					if contains_key(statements, key, target.path.is_empty(), merge_key_source) =>
+					if contains_key(statements, key, target.path.len(), merge_key_source) =>
 				{
 					return None;
 				}
@@ -94,7 +94,7 @@ fn statements_at_path<'a>(
 	for (depth, segment) in path.iter().enumerate() {
 		let statement = current
 			.iter()
-			.find(|stmt| statement_matches_key(stmt, segment, depth == 0, merge_key_source))?;
+			.find(|stmt| statement_matches_key(stmt, segment, depth, merge_key_source))?;
 		current = block_items(statement)?;
 	}
 	Some(current)
@@ -103,24 +103,35 @@ fn statements_at_path<'a>(
 fn contains_key(
 	statements: &[AstStatement],
 	key: &str,
-	root_level: bool,
+	parent_depth: usize,
 	merge_key_source: MergeKeySource,
 ) -> bool {
 	statements
 		.iter()
-		.any(|stmt| statement_matches_key(stmt, key, root_level, merge_key_source))
+		.any(|stmt| statement_matches_key(stmt, key, parent_depth, merge_key_source))
 }
 
 fn statement_matches_key(
 	stmt: &AstStatement,
 	key: &str,
-	root_level: bool,
+	depth: usize,
 	merge_key_source: MergeKeySource,
 ) -> bool {
-	if root_level && let MergeKeySource::FieldValue(field) = merge_key_source {
-		return field_value(stmt, field).is_some_and(|value| value == key);
+	match merge_key_source {
+		MergeKeySource::FieldValue(field) if depth == 0 => {
+			field_value(stmt, field).is_some_and(|value| value == key)
+		}
+		MergeKeySource::ContainerChildFieldValue { container, .. } if depth == 0 => {
+			assignment_key(stmt).is_some_and(|candidate| candidate == container && key == container)
+		}
+		MergeKeySource::ContainerChildFieldValue {
+			child_key_field,
+			child_types,
+			..
+		} if depth == 1 => container_child_field_value_key(stmt, child_key_field, child_types)
+			.is_some_and(|candidate| candidate == key),
+		_ => assignment_key(stmt).is_some_and(|candidate| candidate == key),
 	}
-	assignment_key(stmt).is_some_and(|candidate| candidate == key)
 }
 
 fn assignment_key(stmt: &AstStatement) -> Option<&str> {
@@ -138,12 +149,33 @@ fn field_value(stmt: &AstStatement, field: &str) -> Option<String> {
 	else {
 		return None;
 	};
+	scalar_assignment_value(items, field)
+}
+
+fn container_child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
+}
+
+fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option<String> {
 	items.iter().find_map(|item| match item {
 		AstStatement::Assignment {
 			key,
 			value: AstValue::Scalar { value, .. },
 			..
-		} if key == field => Some(value.as_text()),
+		} if key == expected_key => Some(value.as_text()),
 		_ => None,
 	})
 }

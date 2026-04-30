@@ -125,12 +125,9 @@ fn apply_at_level(
 				p.push(key.clone());
 				p
 			};
-			let new_items = apply_at_level(
-				items,
-				&deeper_for_key,
-				&child_path,
-				MergeKeySource::AssignmentKey,
-			);
+			let child_merge_key_source = child_merge_key_source(merge_key_source, &child_path);
+			let new_items =
+				apply_at_level(items, &deeper_for_key, &child_path, child_merge_key_source);
 			new_stmt = replace_block_items(&new_stmt, new_items, span.clone());
 		}
 
@@ -247,15 +244,41 @@ fn statement_key(
 	merge_key_source: MergeKeySource,
 	current_path: &[String],
 ) -> Option<String> {
-	// When recursing into blocks, children always use AssignmentKey semantics.
-	// At the top level, we honour the configured merge_key_source.
+	if let MergeKeySource::ContainerChildFieldValue {
+		container,
+		child_key_field,
+		child_types,
+	} = merge_key_source
+		&& current_path.len() == 1
+		&& current_path[0] == *container
+	{
+		return container_child_field_value_key(stmt, child_key_field, child_types);
+	}
+
+	// Outside configured named containers, nested children use AssignmentKey semantics.
 	if !current_path.is_empty() {
 		return assignment_key(stmt);
 	}
 	match merge_key_source {
-		MergeKeySource::AssignmentKey | MergeKeySource::LeafPath => assignment_key(stmt),
+		MergeKeySource::AssignmentKey
+		| MergeKeySource::LeafPath
+		| MergeKeySource::ContainerChildKey
+		| MergeKeySource::ContainerChildFieldValue { .. } => assignment_key(stmt),
 		MergeKeySource::FieldValue(field) => field_value_key(stmt, field),
-		MergeKeySource::ContainerChildKey => assignment_key(stmt),
+	}
+}
+
+fn child_merge_key_source(
+	merge_key_source: MergeKeySource,
+	child_path: &[String],
+) -> MergeKeySource {
+	match merge_key_source {
+		MergeKeySource::ContainerChildFieldValue { container, .. }
+			if child_path.len() == 1 && child_path[0] == container =>
+		{
+			merge_key_source
+		}
+		_ => MergeKeySource::AssignmentKey,
 	}
 }
 
@@ -272,15 +295,37 @@ fn field_value_key(stmt: &AstStatement, field: &str) -> Option<String> {
 		..
 	} = stmt
 	{
-		for item in items {
-			if let AstStatement::Assignment {
-				key,
-				value: AstValue::Scalar { value, .. },
-				..
-			} = item && key == field
-			{
-				return Some(value.as_text());
-			}
+		return scalar_assignment_value(items, field);
+	}
+	None
+}
+
+fn container_child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
+}
+
+fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option<String> {
+	for item in items {
+		if let AstStatement::Assignment {
+			key,
+			value: AstValue::Scalar { value, .. },
+			..
+		} = item && key == expected_key
+		{
+			return Some(value.as_text());
 		}
 	}
 	None
@@ -438,6 +483,13 @@ mod tests {
 	fn scalar(value: &str) -> AstValue {
 		AstValue::Scalar {
 			value: ScalarValue::Identifier(value.to_string()),
+			span: test_span(),
+		}
+	}
+
+	fn string_scalar(value: &str) -> AstValue {
+		AstValue::Scalar {
+			value: ScalarValue::String(value.to_string()),
 			span: test_span(),
 		}
 	}
@@ -813,6 +865,53 @@ mod tests {
 			assert!(
 				ast_eq_modulo_span(a, b),
 				"ContainerChildKey round-trip mismatch: {a:?} vs {b:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn container_child_field_value_diff_apply_round_trip_gui_types() {
+		const GUI_CHILD_TYPES: &[&str] = &["windowType", "containerWindowType"];
+
+		let make_gui = |children: Vec<AstStatement>| block("guiTypes", children);
+		let make_window = |name: &str, x: &str, y: &str| {
+			block(
+				"windowType",
+				vec![
+					assignment("name", string_scalar(name)),
+					block(
+						"position",
+						vec![assignment("x", scalar(x)), assignment("y", scalar(y))],
+					),
+				],
+			)
+		};
+
+		let base = vec![make_gui(vec![
+			make_window("country_court_view", "0", "0"),
+			make_window("topbar_panel", "10", "0"),
+		])];
+		let overlay = vec![make_gui(vec![
+			make_window("country_court_view", "1", "0"),
+			make_window("topbar_panel", "10", "2"),
+		])];
+
+		let key_source = MergeKeySource::ContainerChildFieldValue {
+			container: "guiTypes",
+			child_key_field: "name",
+			child_types: GUI_CHILD_TYPES,
+		};
+		let result = merge_single_mod(
+			&make_parsed(base),
+			&make_parsed(overlay.clone()),
+			key_source,
+		);
+
+		assert_eq!(result.len(), overlay.len());
+		for (a, b) in result.iter().zip(overlay.iter()) {
+			assert!(
+				ast_eq_modulo_span(a, b),
+				"ContainerChildFieldValue round-trip mismatch: {a:?} vs {b:?}"
 			);
 		}
 	}

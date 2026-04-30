@@ -267,6 +267,16 @@ fn extract_keyed_entries(
 		MergeKeySource::AssignmentKey => extract_assignment_entries(statements),
 		MergeKeySource::FieldValue(field) => extract_field_value_entries(statements, field),
 		MergeKeySource::ContainerChildKey => extract_container_child_entries(statements),
+		MergeKeySource::ContainerChildFieldValue {
+			container,
+			child_key_field,
+			child_types,
+		} => extract_container_child_field_value_entries(
+			statements,
+			container,
+			child_key_field,
+			child_types,
+		),
 		MergeKeySource::LeafPath => extract_leaf_entries(statements),
 	}
 }
@@ -337,6 +347,61 @@ fn extract_container_child_entries(statements: &[AstStatement]) -> Vec<KeyedEntr
 			out
 		})
 		.collect()
+}
+
+fn extract_container_child_field_value_entries(
+	statements: &[AstStatement],
+	container: &str,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Vec<KeyedEntry> {
+	let mut out = Vec::new();
+	for stmt in statements {
+		let AstStatement::Assignment { key, value, .. } = stmt else {
+			continue;
+		};
+		if key != container {
+			out.push(KeyedEntry {
+				merge_key: key.clone(),
+				statement: stmt.clone(),
+				path_prefix: Vec::new(),
+			});
+			continue;
+		}
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		for child in items {
+			let Some(merge_key) =
+				container_child_field_value_key(child, child_key_field, child_types)
+			else {
+				continue;
+			};
+			out.push(KeyedEntry {
+				merge_key,
+				statement: child.clone(),
+				path_prefix: vec![key.clone()],
+			});
+		}
+	}
+	out
+}
+
+fn container_child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
 }
 
 fn extract_leaf_entries(statements: &[AstStatement]) -> Vec<KeyedEntry> {

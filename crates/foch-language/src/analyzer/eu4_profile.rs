@@ -68,6 +68,36 @@ const COUNTRY_HISTORY_BLOCK_PATCH_POLICIES: &[(&str, BlockPatchPolicy)] = &[
 	("army_names", BlockPatchPolicy::Union),
 ];
 
+const GUI_TYPES_NAMED_CHILD_TYPES: &[&str] = &[
+	"windowType",
+	"WindowType",
+	"containerWindowType",
+	"instantTextBoxType",
+	"instantTextboxType",
+	"iconType",
+	"spriteType",
+	"OverlappingElementsBoxType",
+	"overlappingElementsBoxType",
+	"lineChartType",
+	"guiButtonType",
+	"buttonType",
+	"ButtonType",
+	"editBoxType",
+	"textBoxType",
+	"scrollbarType",
+	"extendedScrollbarType",
+	"barType",
+	"tabType",
+	"positionType",
+	"checkboxType",
+	"listBoxType",
+	"listboxType",
+	"smoothListBoxType",
+	"smoothListboxType",
+	"gridBoxType",
+	"eu3dialogtype",
+];
+
 static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 	ContentFamilyDescriptor::prefix(
 		"events/common/new_diplomatic_actions",
@@ -756,19 +786,31 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.capabilities(semantic_complete_and_merge_ready())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.build(),
+	// GUI files store repeated widget blocks under `guiTypes`; the listed
+	// widget types are keyed by their inner `name` field so different widgets
+	// in the same file merge independently. Unlisted children fall back to their
+	// assignment key inside `guiTypes` rather than being dropped.
 	ContentFamilyDescriptor::prefix("interface", "interface/")
 		.kind(ScriptFileKind::Ui)
 		.module_name(ModuleNameRule::Static("ui"))
 		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
-		.merge_key(MergeKeySource::AssignmentKey)
+		.merge_key(MergeKeySource::ContainerChildFieldValue {
+			container: "guiTypes",
+			child_key_field: "name",
+			child_types: GUI_TYPES_NAMED_CHILD_TYPES,
+		})
 		.build(),
 	ContentFamilyDescriptor::prefix("common/interface", "common/interface/")
 		.kind(ScriptFileKind::Ui)
 		.module_name(ModuleNameRule::Static("ui"))
 		.scope(dynamic_scope_policy())
 		.capabilities(semantic_complete_and_merge_ready())
-		.merge_key(MergeKeySource::AssignmentKey)
+		.merge_key(MergeKeySource::ContainerChildFieldValue {
+			container: "guiTypes",
+			child_key_field: "name",
+			child_types: GUI_TYPES_NAMED_CHILD_TYPES,
+		})
 		.build(),
 	ContentFamilyDescriptor::prefix("gfx", "gfx/")
 		.kind(ScriptFileKind::Ui)

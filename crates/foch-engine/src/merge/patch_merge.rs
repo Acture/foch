@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use foch_core::model::HandlerResolutionRecord;
 use foch_language::analyzer::content_family::{
 	BlockPatchPolicy, MergeKeySource, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
 };
@@ -67,6 +68,7 @@ pub struct PatchMergeResult {
 	pub conflicts: Vec<PatchResolution>,
 	pub stats: PatchMergeStats,
 	pub handler_resolved_count: usize,
+	pub handler_resolutions: Vec<HandlerResolutionRecord>,
 	pub external_file_resolutions: HashMap<PathBuf, PathBuf>,
 	pub keep_existing_paths: HashSet<PathBuf>,
 }
@@ -363,6 +365,24 @@ fn apply_conflict_decision(
 				});
 			};
 			result.handler_resolved_count += 1;
+			result
+				.resolved
+				.push(PatchResolution::Resolved(chosen.patch));
+		}
+		ConflictDecision::PickModWithRecord { mod_id, record } => {
+			let Some(chosen) = conflict
+				.patches
+				.iter()
+				.find(|patch| patch.mod_id == mod_id)
+				.cloned()
+			else {
+				return Err(MergeError::Validation {
+					path: Some(conflict_path),
+					message: format!("conflict handler picked unknown mod `{mod_id}`"),
+				});
+			};
+			result.handler_resolved_count += 1;
+			result.handler_resolutions.push(record);
 			result
 				.resolved
 				.push(PatchResolution::Resolved(chosen.patch));
@@ -1711,6 +1731,8 @@ fn synthesize_boolean_or(
 ///
 /// * `AssignmentKey` / `ContainerChildKey` — rename the top-level assignment
 ///   key (e.g. `pragmatic_sanction` → `pragmatic_sanction_mod_a`).
+/// * `ContainerChildFieldValue` — rename the child assignment's inner identity
+///   field when present (e.g. `name = widget` → `name = widget_mod_a`).
 /// * `FieldValue(field)` — rename the inner scalar field that supplies the
 ///   merge key (e.g. `id = test.1` → `id = test.1_mod_a`).
 /// * `LeafPath` — the path itself is the identity and cannot be safely
@@ -1729,6 +1751,9 @@ pub fn rename_for_conflict(
 		MergeKeySource::AssignmentKey | MergeKeySource::ContainerChildKey => {
 			rename_top_level_key(stmt, mod_id)
 		}
+		MergeKeySource::ContainerChildFieldValue {
+			child_key_field, ..
+		} => rename_inner_field_value(stmt, child_key_field, mod_id),
 		MergeKeySource::FieldValue(field) => rename_inner_field_value(stmt, field, mod_id),
 		MergeKeySource::LeafPath => stmt.clone(),
 	}
@@ -1979,6 +2004,7 @@ mod tests {
 	use super::*;
 	use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
 	use foch_core::config::{ResolutionDecision, ResolutionMap, compute_conflict_id};
+	use foch_core::model::HandlerResolutionRecord;
 	use foch_language::analyzer::content_family::MergePolicies;
 	use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
@@ -2126,6 +2152,64 @@ mod tests {
 		assert_eq!(result.handler_resolved_count, 1);
 		assert_eq!(result.resolved, vec![PatchResolution::Resolved(patch_a)]);
 		assert_eq!(result.stats.conflict_patches, 1);
+	}
+
+	#[test]
+	fn merge_patch_sets_records_pick_mod_handler_metadata() {
+		struct MockRecordedPickHandler;
+
+		impl ConflictHandler for MockRecordedPickHandler {
+			fn on_conflict(
+				&mut self,
+				_: &str,
+				_: &PatchAddress,
+				_: &PatchConflict,
+			) -> ConflictDecision {
+				ConflictDecision::PickModWithRecord {
+					mod_id: "mod_b".to_string(),
+					record: HandlerResolutionRecord {
+						path: "common/ideas/dep.txt".to_string(),
+						action: "dep_implied".to_string(),
+						source: Some("mod_b".to_string()),
+						rationale: Some("mod mod_b declares dep on mod_a".to_string()),
+					},
+				}
+			}
+		}
+
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("alpha")),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("beta")),
+		};
+		let mut handler = MockRecordedPickHandler;
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b.clone()]),
+			],
+			&default_policies(),
+			&mut handler,
+		)
+		.expect("mock recorded pick should not abort");
+
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.handler_resolved_count, 1);
+		assert_eq!(result.resolved, vec![PatchResolution::Resolved(patch_b)]);
+		assert_eq!(result.handler_resolutions.len(), 1);
+		assert_eq!(result.handler_resolutions[0].action, "dep_implied");
+		assert_eq!(
+			result.handler_resolutions[0].rationale.as_deref(),
+			Some("mod mod_b declares dep on mod_a")
+		);
 	}
 
 	#[test]

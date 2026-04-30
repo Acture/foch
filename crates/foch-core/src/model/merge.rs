@@ -140,12 +140,14 @@ pub struct MergeReportConflictResolution {
 	pub contributors: Vec<MergeReportConflictContributor>,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HandlerResolutionRecord {
 	pub path: String,
 	pub action: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub source: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub rationale: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

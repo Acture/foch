@@ -1,12 +1,17 @@
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use foch_core::config::{ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id};
+use foch_core::config::{
+	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
+};
+use foch_core::model::HandlerResolutionRecord;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
+use crate::merge::dag::ModDag;
 use crate::merge::patch_merge::{PatchAddress, PatchConflict};
 
 static INTERACTIVE_CONFIG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -40,6 +45,11 @@ pub trait ConflictHandler {
 pub enum ConflictDecision {
 	/// Pick this mod's patch only; drop the others.
 	PickMod(String),
+	/// Pick this mod's patch and record a handler-specific report entry.
+	PickModWithRecord {
+		mod_id: String,
+		record: HandlerResolutionRecord,
+	},
 	/// Use this external file's content (handled at materialize time).
 	UseFile(PathBuf),
 	/// Keep whatever already exists at output dir (handled at materialize time).
@@ -56,6 +66,194 @@ pub struct DeferHandler;
 impl ConflictHandler for DeferHandler {
 	fn on_conflict(&mut self, _: &str, _: &PatchAddress, _: &PatchConflict) -> ConflictDecision {
 		ConflictDecision::Defer
+	}
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DepResolutionGraph {
+	parents: HashMap<String, Vec<String>>,
+}
+
+impl DepResolutionGraph {
+	pub(crate) fn from_mod_dag(mod_dag: &ModDag, dep_overrides: &[DepOverride]) -> Self {
+		let ignored_edges: HashSet<(String, String)> = dep_overrides
+			.iter()
+			.map(|item| (item.mod_id.clone(), item.dep_id.clone()))
+			.collect();
+		let parents = mod_dag
+			.topo()
+			.iter()
+			.map(|mod_id| {
+				let child = mod_id.as_str().to_string();
+				let parents = mod_dag
+					.parents_of(mod_id)
+					.iter()
+					.filter(|parent| {
+						!ignored_edges.contains(&(child.clone(), parent.as_str().to_string()))
+					})
+					.map(|parent| parent.as_str().to_string())
+					.collect();
+				(child, parents)
+			})
+			.collect();
+		Self { parents }
+	}
+
+	#[cfg(test)]
+	fn from_edges(edges: &[(&str, &str)]) -> Self {
+		let mut parents: HashMap<String, Vec<String>> = HashMap::new();
+		for (child, parent) in edges {
+			parents
+				.entry((*child).to_string())
+				.or_default()
+				.push((*parent).to_string());
+			parents.entry((*parent).to_string()).or_default();
+		}
+		Self { parents }
+	}
+
+	fn direct_depends_on(&self, downstream: &str, upstream: &str) -> bool {
+		self.parents
+			.get(downstream)
+			.is_some_and(|parents| parents.iter().any(|parent| parent == upstream))
+	}
+
+	fn depends_on(&self, downstream: &str, upstream: &str) -> bool {
+		let mut seen = HashSet::new();
+		let mut stack = self.parents.get(downstream).cloned().unwrap_or_default();
+		while let Some(parent) = stack.pop() {
+			if !seen.insert(parent.clone()) {
+				continue;
+			}
+			if parent == upstream {
+				return true;
+			}
+			if let Some(grandparents) = self.parents.get(&parent) {
+				stack.extend(grandparents.iter().cloned());
+			}
+		}
+		false
+	}
+}
+
+pub(crate) struct DepImpliesResolutionHandler {
+	current_file: PathBuf,
+	dep_graph: DepResolutionGraph,
+}
+
+impl DepImpliesResolutionHandler {
+	pub(crate) fn from_mod_dag(
+		current_file: PathBuf,
+		mod_dag: &ModDag,
+		dep_overrides: &[DepOverride],
+	) -> Self {
+		Self::new(
+			current_file,
+			DepResolutionGraph::from_mod_dag(mod_dag, dep_overrides),
+		)
+	}
+
+	pub(crate) fn new(current_file: PathBuf, dep_graph: DepResolutionGraph) -> Self {
+		Self {
+			current_file,
+			dep_graph,
+		}
+	}
+
+	fn conflict_mods(&self, conflict: &PatchConflict) -> Vec<String> {
+		let mut seen = HashSet::new();
+		conflict
+			.patches
+			.iter()
+			.filter_map(|patch| {
+				if seen.insert(patch.mod_id.clone()) {
+					Some(patch.mod_id.clone())
+				} else {
+					None
+				}
+			})
+			.collect()
+	}
+
+	fn cycle_pair(&self, mods: &[String]) -> Option<(String, String)> {
+		for (index, left) in mods.iter().enumerate() {
+			for right in mods.iter().skip(index + 1) {
+				if self.dep_graph.depends_on(left, right) && self.dep_graph.depends_on(right, left)
+				{
+					return Some((left.clone(), right.clone()));
+				}
+			}
+		}
+		None
+	}
+
+	fn winner(&self, mods: &[String]) -> Option<String> {
+		if mods.len() < 2 {
+			return None;
+		}
+		if let Some((left, right)) = self.cycle_pair(mods) {
+			eprintln!(
+				"[foch] dep_implied skipped for {}: dependency cycle between {} and {}",
+				self.current_file.display(),
+				left,
+				right
+			);
+			return None;
+		}
+
+		let winners: Vec<_> = mods
+			.iter()
+			.filter(|candidate| {
+				let candidate = candidate.as_str();
+				mods.iter().all(|other| {
+					other.as_str() == candidate || self.dep_graph.depends_on(candidate, other)
+				})
+			})
+			.cloned()
+			.collect();
+		if winners.len() == 1 {
+			winners.into_iter().next()
+		} else {
+			None
+		}
+	}
+
+	fn rationale(&self, winner: &str, mods: &[String]) -> String {
+		for other in mods.iter().filter(|other| other.as_str() != winner) {
+			if self.dep_graph.direct_depends_on(winner, other) {
+				return format!("mod {winner} declares dep on {other}");
+			}
+		}
+		for other in mods.iter().filter(|other| other.as_str() != winner) {
+			if self.dep_graph.depends_on(winner, other) {
+				return format!("mod {winner} transitively depends on {other}");
+			}
+		}
+		format!("mod {winner} is downstream of all conflicting contributors")
+	}
+}
+
+impl ConflictHandler for DepImpliesResolutionHandler {
+	fn on_conflict(
+		&mut self,
+		_: &str,
+		_: &PatchAddress,
+		conflict: &PatchConflict,
+	) -> ConflictDecision {
+		let mods = self.conflict_mods(conflict);
+		let Some(winner) = self.winner(&mods) else {
+			return ConflictDecision::Defer;
+		};
+		let rationale = self.rationale(&winner, &mods);
+		ConflictDecision::PickModWithRecord {
+			mod_id: winner.clone(),
+			record: HandlerResolutionRecord {
+				path: self.current_file.to_string_lossy().replace('\\', "/"),
+				action: "dep_implied".to_string(),
+				source: Some(winner),
+				rationale: Some(rationale),
+			},
+		}
 	}
 }
 
@@ -411,15 +609,17 @@ fn resolution_entry_for_decision(
 	let address_path = address.path.join("/");
 	let conflict_id = compute_conflict_id(current_file, &address_path, &address.key);
 	match decision {
-		ConflictDecision::PickMod(mod_id) => Some(ResolutionEntry {
-			file: None,
-			conflict_id: Some(conflict_id),
-			mod_id: None,
-			prefer_mod: Some(mod_id.clone()),
-			use_file: None,
-			keep_existing: None,
-			priority_boost: None,
-		}),
+		ConflictDecision::PickMod(mod_id) | ConflictDecision::PickModWithRecord { mod_id, .. } => {
+			Some(ResolutionEntry {
+				file: None,
+				conflict_id: Some(conflict_id),
+				mod_id: None,
+				prefer_mod: Some(mod_id.clone()),
+				use_file: None,
+				keep_existing: None,
+				priority_boost: None,
+			})
+		}
 		ConflictDecision::UseFile(path) => Some(ResolutionEntry {
 			file: None,
 			conflict_id: Some(conflict_id),
@@ -486,6 +686,9 @@ mod tests {
 	use std::rc::Rc;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
+	use foch_core::domain::descriptor::ModDescriptor;
+	use foch_core::domain::playlist::PlaylistEntry;
+	use foch_core::model::ModCandidate;
 	use foch_language::analyzer::parser::{AstValue, ScalarValue, Span, SpanRange};
 
 	use super::*;
@@ -542,12 +745,55 @@ mod tests {
 	}
 
 	fn conflict_with_patches() -> PatchConflict {
+		conflict_with_mods(&[("mod_a", 1, "alpha"), ("mod_b", 2, "beta")])
+	}
+
+	fn conflict_with_mods(mods: &[(&str, usize, &str)]) -> PatchConflict {
 		PatchConflict {
-			patches: vec![
-				attributed_patch("mod_a", 1, "alpha"),
-				attributed_patch("mod_b", 2, "beta"),
-			],
+			patches: mods
+				.iter()
+				.map(|(mod_id, precedence, value)| attributed_patch(mod_id, *precedence, value))
+				.collect(),
 			reason: "mods disagree".to_string(),
+		}
+	}
+
+	fn dep_handler(edges: &[(&str, &str)]) -> DepImpliesResolutionHandler {
+		DepImpliesResolutionHandler::new(
+			PathBuf::from("common/ideas/dep.txt"),
+			DepResolutionGraph::from_edges(edges),
+		)
+	}
+
+	fn assert_dep_pick(decision: ConflictDecision, expected_mod: &str, expected_rationale: &str) {
+		match decision {
+			ConflictDecision::PickModWithRecord { mod_id, record } => {
+				assert_eq!(mod_id, expected_mod);
+				assert_eq!(record.path, "common/ideas/dep.txt");
+				assert_eq!(record.action, "dep_implied");
+				assert_eq!(record.source.as_deref(), Some(expected_mod));
+				assert_eq!(record.rationale.as_deref(), Some(expected_rationale));
+			}
+			other => panic!("expected dep-implied pick, got {other:?}"),
+		}
+	}
+
+	fn mod_candidate(mod_id: &str, name: &str, dependencies: &[&str]) -> ModCandidate {
+		ModCandidate {
+			entry: PlaylistEntry {
+				steam_id: Some(mod_id.to_string()),
+				..PlaylistEntry::default()
+			},
+			mod_id: mod_id.to_string(),
+			root_path: None,
+			descriptor_path: None,
+			descriptor: Some(ModDescriptor {
+				name: name.to_string(),
+				dependencies: dependencies.iter().map(|dep| (*dep).to_string()).collect(),
+				..ModDescriptor::default()
+			}),
+			descriptor_error: None,
+			files: Vec::new(),
 		}
 	}
 
@@ -648,6 +894,96 @@ mod tests {
 
 		assert_eq!(resolved, ConflictDecision::PickMod("mod-a".to_string()));
 		assert_eq!(deferred, ConflictDecision::Defer);
+	}
+
+	#[test]
+	fn dep_implies_resolution_picks_two_mod_downstream() {
+		let mut handler = dep_handler(&[("mod_a", "mod_b")]);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+
+		assert_dep_pick(decision, "mod_a", "mod mod_a declares dep on mod_b");
+	}
+
+	#[test]
+	fn dep_implies_resolution_picks_downstream_over_two_upstreams() {
+		let mut handler = dep_handler(&[("mod_a", "mod_b"), ("mod_a", "mod_c")]);
+		let conflict = conflict_with_mods(&[
+			("mod_a", 3, "alpha"),
+			("mod_b", 1, "beta"),
+			("mod_c", 2, "gamma"),
+		]);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict);
+
+		assert_dep_pick(decision, "mod_a", "mod mod_a declares dep on mod_b");
+	}
+
+	#[test]
+	fn dep_implies_resolution_picks_most_downstream_in_chain() {
+		let mut handler =
+			dep_handler(&[("mod_a", "mod_b"), ("mod_a", "mod_c"), ("mod_b", "mod_c")]);
+		let conflict = conflict_with_mods(&[
+			("mod_a", 3, "alpha"),
+			("mod_b", 2, "beta"),
+			("mod_c", 1, "gamma"),
+		]);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict);
+
+		assert_dep_pick(decision, "mod_a", "mod mod_a declares dep on mod_b");
+	}
+
+	#[test]
+	fn dep_implies_resolution_defers_independent_mods() {
+		let mut handler = dep_handler(&[]);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+
+		assert_eq!(decision, ConflictDecision::Defer);
+	}
+
+	#[test]
+	fn dep_implies_resolution_defers_when_any_contributor_is_independent() {
+		let mut handler = dep_handler(&[("mod_a", "mod_b")]);
+		let conflict = conflict_with_mods(&[
+			("mod_a", 3, "alpha"),
+			("mod_b", 1, "beta"),
+			("mod_c", 2, "gamma"),
+		]);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict);
+
+		assert_eq!(decision, ConflictDecision::Defer);
+	}
+
+	#[test]
+	fn dep_implies_resolution_defers_on_cycle() {
+		let mut handler = dep_handler(&[("mod_a", "mod_b"), ("mod_b", "mod_a")]);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+
+		assert_eq!(decision, ConflictDecision::Defer);
+	}
+
+	#[test]
+	fn dep_implies_resolution_respects_dep_overrides() {
+		let mods = vec![
+			mod_candidate("mod_b", "Mod B", &[]),
+			mod_candidate("mod_a", "Mod A", &["Mod B"]),
+		];
+		let (dag, diagnostics) = crate::merge::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty());
+		let graph = DepResolutionGraph::from_mod_dag(
+			&dag,
+			&[foch_core::config::DepOverride::new("mod_a", "mod_b")],
+		);
+		let mut handler =
+			DepImpliesResolutionHandler::new(PathBuf::from("common/ideas/dep.txt"), graph);
+
+		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+
+		assert_eq!(decision, ConflictDecision::Defer);
 	}
 
 	#[test]

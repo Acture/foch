@@ -339,8 +339,32 @@ pub enum MergeKeySource {
 	FieldValue(&'static str),
 	/// Merge units are children of a known container block (e.g. decisions).
 	ContainerChildKey,
+	/// Merge units are child assignments inside a named container, keyed by an
+	/// inner scalar field. `child_types = []` means any child assignment with the
+	/// field participates; otherwise unmatched children fall back to assignment-key
+	/// semantics inside the container.
+	ContainerChildFieldValue {
+		container: &'static str,
+		child_key_field: &'static str,
+		child_types: &'static [&'static str],
+	},
 	/// Leaf-level defines paths (e.g. `NGame.START_YEAR`).
 	LeafPath,
+}
+
+#[derive(Serialize)]
+struct ContainerChildFieldValueSerde<'a> {
+	container: &'a str,
+	child_key_field: &'a str,
+	child_types: &'a [&'a str],
+}
+
+#[derive(Deserialize)]
+struct ContainerChildFieldValueOwned {
+	container: String,
+	child_key_field: String,
+	#[serde(default)]
+	child_types: Vec<String>,
 }
 
 impl Serialize for MergeKeySource {
@@ -354,6 +378,21 @@ impl Serialize for MergeKeySource {
 				map.end()
 			}
 			MergeKeySource::ContainerChildKey => serializer.serialize_str("container_child_key"),
+			MergeKeySource::ContainerChildFieldValue {
+				container,
+				child_key_field,
+				child_types,
+			} => {
+				use serde::ser::SerializeMap;
+				let spec = ContainerChildFieldValueSerde {
+					container,
+					child_key_field,
+					child_types,
+				};
+				let mut map = serializer.serialize_map(Some(1))?;
+				map.serialize_entry("container_child_field_value", &spec)?;
+				map.end()
+			}
 			MergeKeySource::LeafPath => serializer.serialize_str("leaf_path"),
 		}
 	}
@@ -384,15 +423,38 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 				self,
 				mut map: A,
 			) -> Result<MergeKeySource, A::Error> {
-				let key: String = map
-					.next_key()?
-					.ok_or_else(|| de::Error::custom("expected field_value key"))?;
-				if key != "field_value" {
-					return Err(de::Error::unknown_field(&key, &["field_value"]));
+				let key: String = map.next_key()?.ok_or_else(|| {
+					de::Error::custom("expected field_value or container_child_field_value key")
+				})?;
+				match key.as_str() {
+					"field_value" => {
+						let value: String = map.next_value()?;
+						let leaked: &'static str = Box::leak(value.into_boxed_str());
+						Ok(MergeKeySource::FieldValue(leaked))
+					}
+					"container_child_field_value" => {
+						let spec: ContainerChildFieldValueOwned = map.next_value()?;
+						let container = Box::leak(spec.container.into_boxed_str());
+						let child_key_field = Box::leak(spec.child_key_field.into_boxed_str());
+						let child_types = spec
+							.child_types
+							.into_iter()
+							.map(|child_type| {
+								Box::leak(child_type.into_boxed_str()) as &'static str
+							})
+							.collect::<Vec<_>>();
+						let child_types = Box::leak(child_types.into_boxed_slice());
+						Ok(MergeKeySource::ContainerChildFieldValue {
+							container,
+							child_key_field,
+							child_types,
+						})
+					}
+					_ => Err(de::Error::unknown_field(
+						&key,
+						&["field_value", "container_child_field_value"],
+					)),
 				}
-				let value: String = map.next_value()?;
-				let leaked: &'static str = Box::leak(value.into_boxed_str());
-				Ok(MergeKeySource::FieldValue(leaked))
 			}
 		}
 		deserializer.deserialize_any(MergeKeySourceVisitor)
