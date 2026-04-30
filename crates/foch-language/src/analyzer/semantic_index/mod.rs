@@ -2034,6 +2034,51 @@ pub fn resolve_scripted_trigger_reference_targets(
 	resolve_reference_targets_for_kind(index, reference, SymbolKind::ScriptedTrigger)
 }
 
+pub fn resolve_symbol_reference_targets(
+	index: &SemanticIndex,
+	reference: &SymbolReference,
+) -> Vec<usize> {
+	match reference.kind {
+		SymbolKind::Event => resolve_event_reference_targets(index, reference),
+		SymbolKind::ScriptedEffect => {
+			let targets = resolve_scripted_effect_reference_targets(index, reference);
+			if targets.is_empty() {
+				resolve_cross_kind_reference_targets(index, reference, SymbolKind::ScriptedTrigger)
+			} else {
+				targets
+			}
+		}
+		SymbolKind::ScriptedTrigger => {
+			let targets = resolve_scripted_trigger_reference_targets(index, reference);
+			if targets.is_empty() {
+				resolve_cross_kind_reference_targets(index, reference, SymbolKind::ScriptedEffect)
+			} else {
+				targets
+			}
+		}
+		_ => Vec::new(),
+	}
+}
+
+pub fn count_symbol_references_resolving_to_mod(
+	index: &SemanticIndex,
+	source_mod_id: &str,
+	target_mod_id: &str,
+) -> u32 {
+	let count = index
+		.references
+		.iter()
+		.filter(|reference| reference.mod_id == source_mod_id)
+		.filter(|reference| {
+			resolve_symbol_reference_targets(index, reference)
+				.into_iter()
+				.filter_map(|target| index.definitions.get(target))
+				.any(|definition| definition.mod_id == target_mod_id)
+		})
+		.count();
+	count.min(u32::MAX as usize) as u32
+}
+
 /// Search for definitions of `target_kind` that match `reference` by name,
 /// ignoring the reference's own kind.  Used for cross-kind resolution
 /// (e.g. a trigger-context key that is actually a scripted effect).

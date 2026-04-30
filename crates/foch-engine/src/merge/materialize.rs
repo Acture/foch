@@ -6,6 +6,7 @@ use super::error::MergeError;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 #[allow(unused_imports)]
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
+use super::patch::ClausewitzPatch;
 use super::patch_apply::apply_patches;
 use super::patch_deps::compute_dag_patches;
 use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
@@ -13,17 +14,18 @@ use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
 use foch_core::model::{
-	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
-	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportConflictContributor, MergeReportConflictKind, MergeReportConflictResolution,
-	MergeReportStatus,
+	CheckContext, DepMisuseFinding, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
+	MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult,
+	MergePlanStrategy, MergeReport, MergeReportConflictContributor, MergeReportConflictKind,
+	MergeReportConflictResolution, MergeReportStatus, SemanticIndex,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
+use foch_language::analyzer::rules::detect_dependency_misuse;
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -75,6 +77,7 @@ pub(crate) fn materialize_merge_internal(
 	let workspace = resolve_workspace(&request, options.include_game_base)?;
 	let (mod_dag, dag_diagnostics) = build_mod_dag(&workspace.mods);
 	record_dag_diagnostics(&mut report, &dag_diagnostics);
+	report.dep_misuse = detect_dependency_misuse(&dependency_misuse_context(&workspace));
 	let ignore_replace_path = if options.ignore_replace_path {
 		IgnoreReplacePath::All
 	} else {
@@ -174,11 +177,20 @@ pub(crate) fn materialize_merge_internal(
 									merge_key_source,
 									&dag,
 									&ignore,
+									&report.dep_misuse,
 								)
 							});
 							match result {
-								Ok(Ok(rendered)) => {
-									write_rendered_output(&entry.path, &rendered, out_dir)?;
+								Ok(Ok(merge_output)) => {
+									apply_dep_misuse_remove_counts(
+										&mut report.dep_misuse,
+										merge_output.dep_remove_counts,
+									);
+									write_rendered_output(
+										&entry.path,
+										&merge_output.rendered,
+										out_dir,
+									)?;
 									generated_paths.insert(entry.path.clone());
 									report.generated_file_count += 1;
 									continue;
@@ -305,6 +317,66 @@ pub(crate) fn materialize_merge_internal(
 	};
 	write_metadata_only(out_dir, &persisted_plan, &report)?;
 	Ok(report)
+}
+
+fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
+	CheckContext {
+		playlist_path: workspace.playlist_path.clone(),
+		playlist: workspace.playlist.clone(),
+		mods: workspace.mods.clone(),
+		semantic_index: workspace_mod_semantic_index(workspace),
+	}
+}
+
+fn workspace_mod_semantic_index(workspace: &ResolvedWorkspace) -> SemanticIndex {
+	let mut merged = SemanticIndex::default();
+	for snapshot in workspace.mod_snapshots.iter().flatten() {
+		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
+	}
+	merged
+}
+
+fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
+	let offset = base.scopes.len();
+	for scope in &mut overlay.scopes {
+		scope.id += offset;
+		if let Some(parent) = scope.parent {
+			scope.parent = Some(parent + offset);
+		}
+	}
+	for definition in &mut overlay.definitions {
+		definition.scope_id += offset;
+	}
+	for reference in &mut overlay.references {
+		reference.scope_id += offset;
+	}
+	for alias in &mut overlay.alias_usages {
+		alias.scope_id += offset;
+	}
+	for usage in &mut overlay.key_usages {
+		usage.scope_id += offset;
+	}
+	for assignment in &mut overlay.scalar_assignments {
+		assignment.scope_id += offset;
+	}
+
+	base.scopes.extend(overlay.scopes);
+	base.definitions.extend(overlay.definitions);
+	base.references.extend(overlay.references);
+	base.alias_usages.extend(overlay.alias_usages);
+	base.key_usages.extend(overlay.key_usages);
+	base.scalar_assignments.extend(overlay.scalar_assignments);
+	base.documents.extend(overlay.documents);
+	base.localisation_definitions
+		.extend(overlay.localisation_definitions);
+	base.localisation_duplicates
+		.extend(overlay.localisation_duplicates);
+	base.ui_definitions.extend(overlay.ui_definitions);
+	base.resource_references.extend(overlay.resource_references);
+	base.csv_rows.extend(overlay.csv_rows);
+	base.json_properties.extend(overlay.json_properties);
+	base.parse_issues.extend(overlay.parse_issues);
+	base
 }
 
 fn record_dag_diagnostics(report: &mut MergeReport, diagnostics: &[DagDiagnostic]) {
@@ -588,6 +660,19 @@ fn contributor_version(workspace: &ResolvedWorkspace, mod_id: &str) -> String {
 		.to_string()
 }
 
+#[derive(Clone, Debug)]
+struct PatchBasedMergeOutput {
+	rendered: String,
+	dep_remove_counts: Vec<DepMisuseRemoveCount>,
+}
+
+#[derive(Clone, Debug)]
+struct DepMisuseRemoveCount {
+	mod_id: String,
+	dep_id: String,
+	count: u32,
+}
+
 /// Patch-based structural merge: diff each mod against its dependency-DAG
 /// base, merge patch sets, and apply the resolved patches to the appropriate
 /// file foundation (vanilla, empty for new files, or empty after replace_path).
@@ -598,7 +683,8 @@ fn patch_based_structural_merge(
 	merge_key_source: MergeKeySource,
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
-) -> Result<String, MergeError> {
+	dep_misuse_findings: &[DepMisuseFinding],
+) -> Result<PatchBasedMergeOutput, MergeError> {
 	// 1. Compute DAG-based patches for every active mod contributor.
 	let dag_patches = compute_dag_patches(
 		target_path,
@@ -612,6 +698,11 @@ fn patch_based_structural_merge(
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
 	})?;
+	let dep_remove_counts = collect_dep_misuse_remove_counts(
+		dep_misuse_findings,
+		contributors,
+		&dag_patches.mod_patches,
+	);
 
 	// 2. Merge all mod patch sets with the family's policies.
 	let merge_result = merge_patch_sets(dag_patches.mod_patches, &descriptor.merge_policies);
@@ -647,7 +738,76 @@ fn patch_based_structural_merge(
 	);
 
 	// 5. Emit Clausewitz output.
-	emit_clausewitz_statements(&merged_statements)
+	let rendered = emit_clausewitz_statements(&merged_statements)?;
+	Ok(PatchBasedMergeOutput {
+		rendered,
+		dep_remove_counts,
+	})
+}
+
+fn collect_dep_misuse_remove_counts(
+	findings: &[DepMisuseFinding],
+	contributors: &[ResolvedFileContributor],
+	mod_patches: &[(String, usize, Vec<ClausewitzPatch>)],
+) -> Vec<DepMisuseRemoveCount> {
+	if findings.is_empty() {
+		return Vec::new();
+	}
+
+	let contributor_mods = contributors
+		.iter()
+		.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
+		.map(|contributor| contributor.mod_id.as_str())
+		.collect::<HashSet<_>>();
+	let mut counts = Vec::new();
+	for finding in findings {
+		if !contributor_mods.contains(finding.mod_id.as_str())
+			|| !contributor_mods.contains(finding.suspicious_dep_id.as_str())
+		{
+			continue;
+		}
+
+		let count = mod_patches
+			.iter()
+			.filter(|(mod_id, _, _)| mod_id == &finding.mod_id)
+			.flat_map(|(_, _, patches)| patches)
+			.filter(|patch| is_remove_patch(patch))
+			.count();
+		if count == 0 {
+			continue;
+		}
+		counts.push(DepMisuseRemoveCount {
+			mod_id: finding.mod_id.clone(),
+			dep_id: finding.suspicious_dep_id.clone(),
+			count: count.min(u32::MAX as usize) as u32,
+		});
+	}
+	counts
+}
+
+fn is_remove_patch(patch: &ClausewitzPatch) -> bool {
+	matches!(
+		patch,
+		ClausewitzPatch::RemoveNode { .. }
+			| ClausewitzPatch::RemoveListItem { .. }
+			| ClausewitzPatch::RemoveBlockItem { .. }
+	)
+}
+
+fn apply_dep_misuse_remove_counts(
+	findings: &mut [DepMisuseFinding],
+	counts: Vec<DepMisuseRemoveCount>,
+) {
+	for count in counts {
+		if let Some(finding) = findings.iter_mut().find(|finding| {
+			finding.mod_id == count.mod_id && finding.suspicious_dep_id == count.dep_id
+		}) {
+			finding.evidence.false_remove_count = finding
+				.evidence
+				.false_remove_count
+				.saturating_add(count.count);
+		}
+	}
 }
 
 /// Extract the resolved `ClausewitzPatch` operations from a `PatchMergeResult`.

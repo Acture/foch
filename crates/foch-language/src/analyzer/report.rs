@@ -156,7 +156,60 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.validation.unresolved_references,
 		report.validation.missing_localisation
 	));
+	append_dep_misuse_section(&mut lines, report);
 	lines.join("\n")
+}
+
+fn append_dep_misuse_section(lines: &mut Vec<String>, report: &MergeReport) {
+	if report.dep_misuse.is_empty() {
+		return;
+	}
+
+	lines.push(String::new());
+	lines.push(format!(
+		"⚠ Dependency misuse detected ({} findings):",
+		report.dep_misuse.len()
+	));
+	for finding in &report.dep_misuse {
+		lines.push(String::new());
+		lines.push(format!(
+			"  mod {} ({}) declares",
+			finding.mod_id,
+			quote(&finding.mod_display_name)
+		));
+		lines.push(format!(
+			"    dependencies = {{ {} }}",
+			quote(&finding.suspicious_dep_display_name)
+		));
+		lines.push("  in its descriptor.mod, but its source does not reference any".to_string());
+		lines.push("  symbols defined by that mod.".to_string());
+		if finding.evidence.false_remove_count > 0 {
+			lines.push(format!(
+				"  This caused {} false-positive deletion patches.",
+				finding.evidence.false_remove_count
+			));
+		} else {
+			lines.push(
+                "  No deletion patches were observed in this merge run, but the dependency still looks non-semantic."
+                    .to_string(),
+            );
+		}
+		lines.push(String::new());
+		lines.push(
+			"  Recommendation: contact the mod author and ask them to remove this".to_string(),
+		);
+		lines.push(
+			"  entry from dependencies={}, or override locally with foch.toml when supported:"
+				.to_string(),
+		);
+		lines.push("    [[overrides]]".to_string());
+		lines.push(format!("    mod = {}", quote(&finding.mod_id)));
+		lines.push(format!("    dep = {}", quote(&finding.suspicious_dep_id)));
+	}
+}
+
+fn quote(value: &str) -> String {
+	format!("\"{}\"", value.replace('"', "\\\""))
 }
 
 pub fn merge_report_exit_code(report: &MergeReport) -> i32 {

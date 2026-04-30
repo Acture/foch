@@ -13,8 +13,8 @@ use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use foch_language::analyzer::content_family::GameProfile;
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::rules::{
-	check_duplicate_mod_identity, check_duplicate_scripted_effect, check_file_conflict,
-	check_missing_dependency, check_missing_descriptor, check_required_fields,
+	check_dependency_misuse, check_duplicate_mod_identity, check_duplicate_scripted_effect,
+	check_file_conflict, check_missing_dependency, check_missing_descriptor, check_required_fields,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -154,6 +154,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 				.filter(|finding| finding.rule_id != "A003"),
 		);
 		result.findings.extend(runtime_overlap_findings);
+		result.findings.extend(check_dependency_misuse(&ctx));
 		result.findings.extend(
 			check_namespace_conflicts(&resolved.file_inventory, &ctx.mods)
 				.into_iter()

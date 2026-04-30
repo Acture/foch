@@ -138,6 +138,21 @@ pub struct MergeReportConflictResolution {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DepMisuseEvidence {
+	pub semantic_refs_to_dep: u32,
+	pub false_remove_count: u32,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DepMisuseFinding {
+	pub mod_id: String,
+	pub mod_display_name: String,
+	pub suspicious_dep_id: String,
+	pub suspicious_dep_display_name: String,
+	pub evidence: DepMisuseEvidence,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
 	pub manual_conflict_count: usize,
@@ -151,6 +166,8 @@ pub struct MergeReport {
 	pub renames: Vec<MergeReportRename>,
 	#[serde(default)]
 	pub conflict_resolutions: Vec<MergeReportConflictResolution>,
+	#[serde(default)]
+	pub dep_misuse: Vec<DepMisuseFinding>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
 }
