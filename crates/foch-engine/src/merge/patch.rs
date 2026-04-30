@@ -526,6 +526,30 @@ fn scalar_values_equal(a: &ScalarValue, b: &ScalarValue) -> bool {
 	a == b
 }
 
+fn scalar_values_semantically_equal(a: &ScalarValue, b: &ScalarValue) -> bool {
+	match (a, b) {
+		(ScalarValue::Identifier(a), ScalarValue::String(b))
+		| (ScalarValue::String(b), ScalarValue::Identifier(a)) => {
+			a == b && is_valid_bare_identifier_text(a)
+		}
+		_ => a == b,
+	}
+}
+
+fn is_valid_bare_identifier_text(value: &str) -> bool {
+	let Some(&first) = value.as_bytes().first() else {
+		return false;
+	};
+	!matches!(first, b'"' | b'-' | b'0'..=b'9')
+		&& !matches!(value.to_ascii_lowercase().as_str(), "yes" | "no")
+		&& !value.bytes().any(|byte| {
+			matches!(
+				byte,
+				b' ' | b'\t' | b'\r' | b'\n' | b'=' | b'{' | b'}' | b'#'
+			)
+		})
+}
+
 // ---------------------------------------------------------------------------
 // Semantic equality (ignores spans AND comments)
 // ---------------------------------------------------------------------------
@@ -545,7 +569,9 @@ fn scalar_values_equal(a: &ScalarValue, b: &ScalarValue) -> bool {
 /// `Comment` statements. Order of the remaining statements matters.
 pub(crate) fn ast_values_semantically_equal(a: &AstValue, b: &AstValue) -> bool {
 	match (a, b) {
-		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => va == vb,
+		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => {
+			scalar_values_semantically_equal(va, vb)
+		}
 		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
 			let ia: Vec<&AstStatement> = ia
 				.iter()
@@ -1040,6 +1066,20 @@ mod tests {
 		}
 	}
 
+	fn string_scalar(value: &str) -> AstValue {
+		AstValue::Scalar {
+			value: ScalarValue::String(value.to_string()),
+			span: dummy_span(),
+		}
+	}
+
+	fn number_scalar(value: &str) -> AstValue {
+		AstValue::Scalar {
+			value: ScalarValue::Number(value.to_string()),
+			span: dummy_span(),
+		}
+	}
+
 	fn assignment(key: &str, value: AstValue) -> AstStatement {
 		AstStatement::Assignment {
 			key: key.to_string(),
@@ -1452,6 +1492,56 @@ mod tests {
 		let pa = replace_block("reform", a.clone(), a);
 		let pb = replace_block("reform", b.clone(), b);
 		assert!(!patches_semantically_equal(&pa, &pb));
+	}
+
+	#[test]
+	fn semantic_equality_normalizes_matching_identifier_and_string_scalars() {
+		assert!(ast_values_semantically_equal(
+			&scalar("foo"),
+			&string_scalar("foo")
+		));
+		assert!(ast_values_semantically_equal(
+			&string_scalar("foo"),
+			&scalar("foo")
+		));
+	}
+
+	#[test]
+	fn semantic_equality_keeps_different_identifier_and_string_scalars_distinct() {
+		assert!(!ast_values_semantically_equal(
+			&scalar("foo"),
+			&string_scalar("bar")
+		));
+	}
+
+	#[test]
+	fn semantic_equality_keeps_number_and_string_scalars_distinct() {
+		assert!(!ast_values_semantically_equal(
+			&number_scalar("1"),
+			&string_scalar("1")
+		));
+	}
+
+	#[test]
+	fn semantic_equality_does_not_normalize_invalid_identifier_text() {
+		assert!(!ast_values_semantically_equal(
+			&scalar("foo bar"),
+			&string_scalar("foo bar")
+		));
+	}
+
+	#[test]
+	fn semantic_equality_normalizes_identifier_and_string_inside_blocks() {
+		let bare = AstValue::Block {
+			items: vec![assignment("localisation_key", scalar("RolandBook1"))],
+			span: dummy_span(),
+		};
+		let quoted = AstValue::Block {
+			items: vec![assignment("localisation_key", string_scalar("RolandBook1"))],
+			span: dummy_span(),
+		};
+
+		assert!(ast_values_semantically_equal(&bare, &quoted));
 	}
 
 	#[test]
