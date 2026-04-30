@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 
 use foch_core::config::DepOverride;
+use foch_core::model::HandlerResolutionRecord;
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, ScriptFileKind};
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
@@ -149,13 +150,23 @@ fn compute_dag_patches_from_parsed(
 	let mut merge_result = PatchMergeResult::default();
 	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
 
-	for level in topo_levels(&all_contributors, file_dag) {
+	// Track per-level overwrite addresses so a later level can override
+	// an earlier level's pending conflict at the same leaf address.
+	let mut level_addresses: Vec<HashSet<(Vec<String>, String)>> = Vec::new();
+	// Conflicts deferred to post-pass, paired with the originating level index.
+	let mut pending_conflicts: Vec<(usize, PatchResolution)> = Vec::new();
+
+	for (level_idx, level) in topo_levels(&all_contributors, file_dag)
+		.into_iter()
+		.enumerate()
+	{
 		let current_base = synthesized_parsed_file(
 			file_dag.file_path(),
 			template_for(file_dag, vanilla, contributors),
 			current_statements.clone(),
 		);
 		let mut level_patches = Vec::new();
+		let mut addresses_in_level: HashSet<(Vec<String>, String)> = HashSet::new();
 		for mod_id in level {
 			let current = contributors.get(&mod_id).ok_or_else(|| {
 				format!(
@@ -165,25 +176,89 @@ fn compute_dag_patches_from_parsed(
 				)
 			})?;
 			let patches = fold_renames(diff_ast(&current_base, current, merge_key_source));
+			for patch in &patches {
+				if let Some(addr) = overwrite_address(patch) {
+					addresses_in_level.insert(addr);
+				}
+			}
 			level_patches.push((mod_id.0.clone(), file_dag.precedence_of(&mod_id), patches));
 		}
+		level_addresses.push(addresses_in_level);
 
 		let sibling_overwrite_conflicts = divergent_sibling_overwrite_conflicts(&level_patches);
 		mod_patches.extend(level_patches.clone());
 		let mut level_result =
 			merge_patch_sets(level_patches, policies, handler).map_err(|err| err.to_string())?;
 		add_sibling_overwrite_conflicts(&mut level_result, sibling_overwrite_conflicts);
-		let level_resolved_patches = resolved_patches(&level_result);
-		let level_has_conflicts = !level_result.conflicts.is_empty();
-		extend_merge_result(&mut merge_result, level_result);
-		if level_has_conflicts {
-			break;
+
+		// Detach this level's conflicts; they go through the post-pass to be
+		// either confirmed real or dropped because a downstream level overrode them.
+		let level_conflicts = std::mem::take(&mut level_result.conflicts);
+		for conflict in level_conflicts {
+			pending_conflicts.push((level_idx, conflict));
 		}
+
+		let level_resolved_patches = resolved_patches(&level_result);
+		extend_merge_result(&mut merge_result, level_result);
+		// Always advance the running state with this level's resolved patches so the
+		// next level diffs against post-merge content. Conflicting leaves stay at
+		// their pre-level value, allowing a downstream mod's diff to produce a
+		// fresh patch at that address.
 		current_statements = apply_patches(
 			&current_statements,
 			&level_resolved_patches,
 			merge_key_source,
 		);
+	}
+
+	// Post-pass: any pending conflict whose address shows up in a strictly later
+	// level's overwrite set is already resolved by that downstream contributor —
+	// drop the conflict and record the override. Whatever remains is a true
+	// conflict (no downstream resolution available).
+	for (level_idx, conflict) in pending_conflicts {
+		match conflict {
+			PatchResolution::Conflict {
+				address,
+				patches,
+				reason,
+			} => {
+				let key = (address.path.clone(), address.key.clone());
+				let overridden_at = level_addresses
+					.iter()
+					.enumerate()
+					.skip(level_idx + 1)
+					.find_map(|(li, addrs)| if addrs.contains(&key) { Some(li) } else { None });
+				if overridden_at.is_some() {
+					let contributor_summary: Vec<String> =
+						patches.iter().map(|p| p.mod_id.clone()).collect();
+					merge_result
+						.handler_resolutions
+						.push(HandlerResolutionRecord {
+							path: file_dag.file_path().to_string(),
+							action: "downstream_override".to_string(),
+							source: Some(format!("{}::{}", address.path.join("/"), address.key)),
+							rationale: Some(format!(
+								"upstream conflict between {} resolved by downstream contributor at level {} > {}",
+								contributor_summary.join(", "),
+								overridden_at.unwrap_or(level_idx + 1),
+								level_idx,
+							)),
+						});
+					merge_result.handler_resolved_count += 1;
+					// Account for the conflict as resolved by reducing the residual count.
+					if merge_result.stats.conflict_patches > 0 {
+						merge_result.stats.conflict_patches -= 1;
+					}
+				} else {
+					merge_result.conflicts.push(PatchResolution::Conflict {
+						address,
+						patches,
+						reason,
+					});
+				}
+			}
+			other => merge_result.conflicts.push(other),
+		}
 	}
 
 	Ok(DagPatchComputation {

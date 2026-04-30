@@ -1535,6 +1535,31 @@ mod tests {
 		write_file(mod_c, DAG_FALLBACK_PATH, idea_file("gamma"));
 	}
 
+	/// Same as `stage_dag_fallback_conflict` but without the downstream resolver
+	/// mod C. Yields a genuine sibling-overwrite conflict between mods A and B
+	/// that the DAG topo walk cannot auto-resolve, so the fallback path applies.
+	fn stage_dag_genuine_conflict(
+		playlist_path: &Path,
+		mod_base: &Path,
+		mod_a: &Path,
+		mod_b: &Path,
+	) {
+		write_playlist(
+			playlist_path,
+			json!([
+				{ "displayName": "Base", "enabled": true, "position": 0, "steamId": "9101" },
+				{ "displayName": "A", "enabled": true, "position": 1, "steamId": "9102" },
+				{ "displayName": "B", "enabled": true, "position": 2, "steamId": "9103" }
+			]),
+		);
+		write_descriptor(mod_base, "fallback-base");
+		write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
+		write_descriptor_with_dependencies(mod_b, "fallback-b", &["fallback-base"]);
+		write_file(mod_base, DAG_FALLBACK_PATH, idea_file("old"));
+		write_file(mod_a, DAG_FALLBACK_PATH, idea_file("alpha"));
+		write_file(mod_b, DAG_FALLBACK_PATH, idea_file("beta"));
+	}
+
 	fn fallback_mod_candidate(mod_id: &str, name: &str, version: &str) -> ModCandidate {
 		ModCandidate {
 			entry: PlaylistEntry {
@@ -1734,12 +1759,11 @@ mod tests {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
-		stage_dag_fallback_conflict(
+		stage_dag_genuine_conflict(
 			&playlist_path,
 			&temp.path().join("9101"),
 			&temp.path().join("9102"),
 			&temp.path().join("9103"),
-			&temp.path().join("9104"),
 		);
 
 		let report = materialize_merge_internal(
@@ -1755,16 +1779,16 @@ mod tests {
 		assert_eq!(report.generated_file_count, 1);
 		let output = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read fallback");
 		assert!(output.starts_with("# foch:conflict reason=\"patch merge failed:"));
-		assert!(output.contains("resolved=\"last-writer:9104:1.0.0\""));
-		assert!(output.contains(
-			"# foch:conflict contributors=[9101:1.0.0, 9102:1.0.0, 9103:1.0.0, 9104:1.0.0]"
-		));
-		assert!(output.ends_with(&idea_file("gamma")));
+		assert!(output.contains("resolved=\"last-writer:9103:1.0.0\""));
+		assert!(
+			output.contains("# foch:conflict contributors=[9101:1.0.0, 9102:1.0.0, 9103:1.0.0]")
+		);
+		assert!(output.ends_with(&idea_file("beta")));
 		assert_eq!(report.conflict_resolutions.len(), 1);
 		let resolution = &report.conflict_resolutions[0];
 		assert_eq!(resolution.kind, MergeReportConflictKind::LastWriterFallback);
 		assert_eq!(resolution.path, DAG_FALLBACK_PATH);
-		assert_eq!(resolution.winning_mod, "9104:1.0.0");
+		assert_eq!(resolution.winning_mod, "9103:1.0.0");
 		assert!(resolution.marker_written);
 	}
 
@@ -1799,12 +1823,11 @@ mod tests {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
-		stage_dag_fallback_conflict(
+		stage_dag_genuine_conflict(
 			&playlist_path,
 			&temp.path().join("9101"),
 			&temp.path().join("9102"),
 			&temp.path().join("9103"),
-			&temp.path().join("9104"),
 		);
 
 		let report = materialize_merge_internal(
@@ -1830,12 +1853,11 @@ mod tests {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
-		stage_dag_fallback_conflict(
+		stage_dag_genuine_conflict(
 			&playlist_path,
 			&temp.path().join("9101"),
 			&temp.path().join("9102"),
 			&temp.path().join("9103"),
-			&temp.path().join("9104"),
 		);
 
 		let report = materialize_merge_internal(
@@ -1849,6 +1871,54 @@ mod tests {
 		assert_eq!(report.manual_conflict_count, 0);
 		assert_eq!(report.fallback_resolved_count, 1);
 		assert!(out_dir.join(DAG_FALLBACK_PATH).exists());
+	}
+
+	#[test]
+	fn downstream_mod_resolves_upstream_sibling_conflict() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let out_dir = temp.path().join("out");
+		// Mod C declares deps on both A and B and writes its own value at the
+		// same address. The DAG topo walk should recognize C as a downstream
+		// override of the A/B sibling-overwrite conflict and emit C's value
+		// without invoking fallback.
+		stage_dag_fallback_conflict(
+			&playlist_path,
+			&temp.path().join("9101"),
+			&temp.path().join("9102"),
+			&temp.path().join("9103"),
+			&temp.path().join("9104"),
+		);
+
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		)
+		.expect("materialize");
+
+		assert_eq!(report.status, MergeReportStatus::Ready);
+		assert_eq!(report.manual_conflict_count, 0);
+		assert_eq!(report.fallback_resolved_count, 0);
+		assert_eq!(report.generated_file_count, 1);
+		let output =
+			fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read merged output");
+		// C's value wins via downstream override, no foch:conflict marker.
+		assert!(
+			output.contains("cost = gamma"),
+			"expected mod C's gamma value to win, got:\n{output}"
+		);
+		assert!(!output.contains("# foch:conflict"));
+		// One downstream-override resolution should be recorded.
+		let downstream = report
+			.handler_resolutions
+			.iter()
+			.find(|r| r.action == "downstream_override");
+		assert!(
+			downstream.is_some(),
+			"expected downstream_override handler resolution, got {:?}",
+			report.handler_resolutions
+		);
 	}
 
 	#[test]
