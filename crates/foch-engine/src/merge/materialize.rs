@@ -10,9 +10,8 @@ use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_fil
 #[allow(unused_imports)]
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
 use super::patch::ClausewitzPatch;
-use super::patch_apply::apply_patches;
-use super::patch_deps::compute_dag_patches;
-use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
+use super::patch_deps::compute_dag_patches_with_handler;
+use super::patch_merge::PatchResolution;
 use super::plan::build_merge_plan_from_workspace;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
@@ -736,16 +735,22 @@ struct PatchBasedMergeContext<'a> {
 	resolution_map: &'a foch_core::config::ResolutionMap,
 }
 
-/// Patch-based structural merge: diff each mod against its dependency-DAG
-/// base, merge patch sets, and apply the resolved patches to the appropriate
-/// file foundation (vanilla, empty for new files, or empty after replace_path).
+/// Patch-based structural merge: walk the dependency DAG level by level, diff
+/// every mod in a level against the same running base, sibling-merge that
+/// level's patches, then apply the resolved level to advance the running state.
 fn patch_based_structural_merge(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: PatchBasedMergeContext<'_>,
 ) -> Result<PatchBasedMergeOutput, MergeError> {
-	// 1. Compute DAG-based patches for every active mod contributor.
-	let dag_patches = compute_dag_patches(
+	let mut handler = super::conflict_handler::ChainHandler {
+		first: super::conflict_handler::LookupHandler::new(
+			context.resolution_map,
+			PathBuf::from(target_path),
+		),
+		second: DeferHandler,
+	};
+	let dag_patches = compute_dag_patches_with_handler(
 		target_path,
 		contributors,
 		context.merge_key_source,
@@ -753,6 +758,7 @@ fn patch_based_structural_merge(
 		context.mod_dag,
 		context.ignore_replace_path,
 		context.dep_overrides,
+		&mut handler,
 	)
 	.map_err(|err| MergeError::Validation {
 		path: Some(target_path.to_string()),
@@ -763,22 +769,8 @@ fn patch_based_structural_merge(
 		contributors,
 		&dag_patches.mod_patches,
 	);
+	let merge_result = dag_patches.merge_result;
 
-	// 2. Merge all mod patch sets with the family's policies.
-	let mut handler = super::conflict_handler::ChainHandler {
-		first: super::conflict_handler::LookupHandler::new(
-			context.resolution_map,
-			PathBuf::from(target_path),
-		),
-		second: DeferHandler,
-	};
-	let merge_result = merge_patch_sets(
-		dag_patches.mod_patches,
-		&context.descriptor.merge_policies,
-		&mut handler,
-	)?;
-
-	// 3. Abort if unresolved conflicts exist.
 	if !merge_result.conflicts.is_empty() {
 		let conflict_keys: Vec<_> = merge_result
 			.conflicts
@@ -800,16 +792,7 @@ fn patch_based_structural_merge(
 		});
 	}
 
-	// 4. Collect resolved patches and apply them to the DAG-selected base.
-	let resolved_patches = extract_resolved_patches(&merge_result);
-	let merged_statements = apply_patches(
-		&dag_patches.base_statements,
-		&resolved_patches,
-		context.merge_key_source,
-	);
-
-	// 5. Emit Clausewitz output.
-	let rendered = emit_clausewitz_statements(&merged_statements)?;
+	let rendered = emit_clausewitz_statements(&dag_patches.merged_statements)?;
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
@@ -881,19 +864,6 @@ fn apply_dep_misuse_remove_counts(
 				.saturating_add(count.count);
 		}
 	}
-}
-
-/// Extract the resolved `ClausewitzPatch` operations from a `PatchMergeResult`.
-fn extract_resolved_patches(merge_result: &PatchMergeResult) -> Vec<super::patch::ClausewitzPatch> {
-	merge_result
-		.resolved
-		.iter()
-		.filter_map(|resolution| match resolution {
-			PatchResolution::Resolved(patch) => Some(patch.clone()),
-			PatchResolution::AutoMerged { result, .. } => Some(result.clone()),
-			PatchResolution::Conflict { .. } => None,
-		})
-		.collect()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

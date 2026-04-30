@@ -491,7 +491,7 @@ impl FileDag {
 	}
 }
 
-fn topo_levels(parents: &BTreeSet<ModId>, file_dag: &FileDag) -> Vec<Vec<ModId>> {
+pub(crate) fn topo_levels(parents: &BTreeSet<ModId>, file_dag: &FileDag) -> Vec<Vec<ModId>> {
 	if parents.is_empty() {
 		return Vec::new();
 	}

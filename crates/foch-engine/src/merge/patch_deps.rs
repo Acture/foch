@@ -1,30 +1,39 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 
 use foch_core::config::DepOverride;
-use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
-use foch_language::analyzer::parser::AstStatement;
+use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, ScriptFileKind};
+use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
+use super::conflict_handler::{ConflictHandler, DeferHandler};
 use super::dag::{
-	BaseResolver, BaseSource, FileDag, IgnoreReplacePath, ModDag, ModId,
-	induced_file_dag_with_overrides,
+	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
-use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
+use super::patch::{
+	ClausewitzPatch, ast_values_semantically_equal, diff_ast, fold_renames,
+	patches_semantically_equal,
+};
+use super::patch_apply::apply_patches;
+use super::patch_merge::{
+	AttributedPatch, PatchAddress, PatchMergeResult, PatchResolution, merge_patch_sets,
+};
 use crate::workspace::ResolvedFileContributor;
 
 #[derive(Clone, Debug)]
 pub(crate) struct DagPatchComputation {
 	pub mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	pub base_statements: Vec<AstStatement>,
+	pub merged_statements: Vec<AstStatement>,
+	pub merge_result: PatchMergeResult,
 }
 
-/// Compute all patches for a single file using dependency-DAG bases.
+/// Compute all patches for a single file using dependency-DAG topo levels.
 ///
-/// Each active mod contributor is diffed against
-/// `recursive_merge(vanilla, transitive_deps_touching_this_file)` rather than
-/// against the previous contributor in load order.
+/// Each level is diffed against the running merged state, sibling patch sets are
+/// merged together, then their resolved patches advance the running state.
 pub(crate) fn compute_dag_patches(
 	file_path: &str,
 	contributors: &[ResolvedFileContributor],
@@ -33,6 +42,30 @@ pub(crate) fn compute_dag_patches(
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
+) -> Result<DagPatchComputation, String> {
+	let mut handler = DeferHandler;
+	compute_dag_patches_with_handler(
+		file_path,
+		contributors,
+		merge_key_source,
+		policies,
+		mod_dag,
+		ignore_replace_path,
+		dep_overrides,
+		&mut handler,
+	)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_dag_patches_with_handler(
+	file_path: &str,
+	contributors: &[ResolvedFileContributor],
+	merge_key_source: MergeKeySource,
+	policies: &MergePolicies,
+	mod_dag: &ModDag,
+	ignore_replace_path: &IgnoreReplacePath,
+	dep_overrides: &[DepOverride],
+	handler: &mut dyn ConflictHandler,
 ) -> Result<DagPatchComputation, String> {
 	let file_dag = induced_file_dag_with_overrides(
 		mod_dag,
@@ -49,7 +82,7 @@ pub(crate) fn compute_dag_patches(
 		&parsed_contributors,
 		merge_key_source,
 		policies,
-		ignore_replace_path.clone(),
+		handler,
 	)
 }
 
@@ -108,65 +141,57 @@ fn compute_dag_patches_from_parsed(
 	contributors: &HashMap<ModId, ParsedScriptFile>,
 	merge_key_source: MergeKeySource,
 	policies: &MergePolicies,
-	ignore_replace_path: IgnoreReplacePath,
+	handler: &mut dyn ConflictHandler,
 ) -> Result<DagPatchComputation, String> {
-	let mut resolver = BaseResolver::new(ignore_replace_path);
+	let base_statements = final_base_statements(file_dag, vanilla);
+	let mut current_statements = base_statements.clone();
 	let mut mod_patches = Vec::new();
+	let mut merge_result = PatchMergeResult::default();
+	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
 
-	for mod_id in file_dag.contributors() {
-		let current = contributors.get(mod_id).ok_or_else(|| {
-			format!(
-				"missing parsed contributor {} for {}",
-				mod_id.as_str(),
-				file_dag.file_path()
-			)
-		})?;
-		let resolved = resolver.resolve_base(file_dag, mod_id);
-		let base_source = resolver
-			.resolve_base_source(
-				&resolved,
-				file_dag,
-				vanilla,
-				contributors,
-				merge_key_source,
-				policies,
-			)
-			.ok_or_else(|| {
+	for level in topo_levels(&all_contributors, file_dag) {
+		let current_base = synthesized_parsed_file(
+			file_dag.file_path(),
+			template_for(file_dag, vanilla, contributors),
+			current_statements.clone(),
+		);
+		let mut level_patches = Vec::new();
+		for mod_id in level {
+			let current = contributors.get(&mod_id).ok_or_else(|| {
 				format!(
-					"failed to synthesize DAG base for {} in {}",
+					"missing parsed contributor {} for {}",
 					mod_id.as_str(),
 					file_dag.file_path()
 				)
 			})?;
-		let patches = fold_renames(diff_against_base_source(
-			base_source,
-			vanilla,
-			current,
+			let patches = fold_renames(diff_ast(&current_base, current, merge_key_source));
+			level_patches.push((mod_id.0.clone(), file_dag.precedence_of(&mod_id), patches));
+		}
+
+		let sibling_overwrite_conflicts = divergent_sibling_overwrite_conflicts(&level_patches);
+		mod_patches.extend(level_patches.clone());
+		let mut level_result =
+			merge_patch_sets(level_patches, policies, handler).map_err(|err| err.to_string())?;
+		add_sibling_overwrite_conflicts(&mut level_result, sibling_overwrite_conflicts);
+		let level_resolved_patches = resolved_patches(&level_result);
+		let level_has_conflicts = !level_result.conflicts.is_empty();
+		extend_merge_result(&mut merge_result, level_result);
+		if level_has_conflicts {
+			break;
+		}
+		current_statements = apply_patches(
+			&current_statements,
+			&level_resolved_patches,
 			merge_key_source,
-		));
-		mod_patches.push((mod_id.0.clone(), file_dag.precedence_of(mod_id), patches));
+		);
 	}
 
 	Ok(DagPatchComputation {
 		mod_patches,
-		base_statements: final_base_statements(file_dag, vanilla),
+		base_statements,
+		merged_statements: current_statements,
+		merge_result,
 	})
-}
-
-fn diff_against_base_source(
-	base_source: BaseSource,
-	vanilla: Option<&ParsedScriptFile>,
-	current: &ParsedScriptFile,
-	merge_key_source: MergeKeySource,
-) -> Vec<ClausewitzPatch> {
-	match base_source {
-		BaseSource::Vanilla => match vanilla {
-			Some(base) => diff_ast(base, current, merge_key_source),
-			None => diff_ast_as_inserts(current, merge_key_source),
-		},
-		BaseSource::Empty => diff_ast_as_inserts(current, merge_key_source),
-		BaseSource::Synthesized(base) => diff_ast(&base, current, merge_key_source),
-	}
 }
 
 fn final_base_statements(
@@ -186,27 +211,188 @@ fn final_base_statements(
 	}
 }
 
-/// When a file has no prior version, treat every top-level assignment as an
-/// `InsertNode` patch.
-fn diff_ast_as_inserts(
-	parsed: &foch_language::analyzer::semantic_index::ParsedScriptFile,
-	_merge_key_source: MergeKeySource,
-) -> Vec<ClausewitzPatch> {
-	use foch_language::analyzer::parser::AstStatement;
-
-	parsed
-		.ast
-		.statements
+fn resolved_patches(merge_result: &PatchMergeResult) -> Vec<ClausewitzPatch> {
+	merge_result
+		.resolved
 		.iter()
-		.filter_map(|stmt| match stmt {
-			AstStatement::Assignment { key, .. } => Some(ClausewitzPatch::InsertNode {
-				path: vec![],
-				key: key.clone(),
-				statement: stmt.clone(),
-			}),
-			_ => None,
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Resolved(patch) => Some(patch.clone()),
+			PatchResolution::AutoMerged { result, .. } => Some(result.clone()),
+			PatchResolution::Conflict { .. } => None,
 		})
 		.collect()
+}
+
+fn divergent_sibling_overwrite_conflicts(
+	level_patches: &[(String, usize, Vec<ClausewitzPatch>)],
+) -> Vec<PatchResolution> {
+	if level_patches.len() < 2 {
+		return Vec::new();
+	}
+
+	let mut by_address: HashMap<(Vec<String>, String), Vec<AttributedPatch>> = HashMap::new();
+	for (mod_id, precedence, patches) in level_patches {
+		for patch in patches {
+			let Some((path, key)) = overwrite_address(patch) else {
+				continue;
+			};
+			by_address
+				.entry((path, key))
+				.or_default()
+				.push(AttributedPatch {
+					mod_id: mod_id.clone(),
+					precedence: *precedence,
+					patch: patch.clone(),
+				});
+		}
+	}
+
+	by_address
+		.into_iter()
+		.filter_map(|((path, key), patches)| {
+			if patches.len() < 2 || overwrite_patches_converge(&patches) {
+				return None;
+			}
+			Some(PatchResolution::Conflict {
+				address: PatchAddress { path, key },
+				patches,
+				reason: "divergent sibling overwrite patches at same address".to_string(),
+			})
+		})
+		.collect()
+}
+
+fn add_sibling_overwrite_conflicts(
+	merge_result: &mut PatchMergeResult,
+	conflicts: Vec<PatchResolution>,
+) {
+	if conflicts.is_empty() {
+		return;
+	}
+
+	let conflict_addresses: HashSet<(Vec<String>, String)> = conflicts
+		.iter()
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Conflict { address, .. } => {
+				Some((address.path.clone(), address.key.clone()))
+			}
+			_ => None,
+		})
+		.collect();
+	merge_result
+		.resolved
+		.retain(|resolution| !resolution_targets_any(resolution, &conflict_addresses));
+	merge_result.stats.conflict_patches += conflicts.len();
+	merge_result.conflicts.extend(conflicts);
+}
+
+fn resolution_targets_any(
+	resolution: &PatchResolution,
+	addresses: &HashSet<(Vec<String>, String)>,
+) -> bool {
+	match resolution {
+		PatchResolution::Resolved(patch) | PatchResolution::AutoMerged { result: patch, .. } => {
+			overwrite_address(patch).is_some_and(|address| addresses.contains(&address))
+		}
+		PatchResolution::Conflict { .. } => false,
+	}
+}
+
+fn overwrite_address(patch: &ClausewitzPatch) -> Option<(Vec<String>, String)> {
+	match patch {
+		ClausewitzPatch::SetValue { path, key, .. }
+		| ClausewitzPatch::ReplaceBlock { path, key, .. } => Some((path.clone(), key.clone())),
+		_ => None,
+	}
+}
+
+fn overwrite_patches_converge(patches: &[AttributedPatch]) -> bool {
+	let Some(first) = patches.first().map(|patch| &patch.patch) else {
+		return true;
+	};
+	patches
+		.iter()
+		.skip(1)
+		.all(|patch| overwrite_patch_converges(first, &patch.patch))
+}
+
+fn overwrite_patch_converges(first: &ClausewitzPatch, next: &ClausewitzPatch) -> bool {
+	match (first, next) {
+		(
+			ClausewitzPatch::SetValue {
+				new_value: first, ..
+			},
+			ClausewitzPatch::SetValue {
+				new_value: next, ..
+			},
+		) => ast_values_semantically_equal(first, next),
+		(ClausewitzPatch::ReplaceBlock { .. }, ClausewitzPatch::ReplaceBlock { .. }) => {
+			patches_semantically_equal(first, next)
+		}
+		_ => false,
+	}
+}
+
+fn extend_merge_result(target: &mut PatchMergeResult, source: PatchMergeResult) {
+	target.resolved.extend(source.resolved);
+	target.conflicts.extend(source.conflicts);
+	target.stats.total_patches += source.stats.total_patches;
+	target.stats.single_mod_patches += source.stats.single_mod_patches;
+	target.stats.convergent_patches += source.stats.convergent_patches;
+	target.stats.auto_merged_patches += source.stats.auto_merged_patches;
+	target.stats.conflict_patches += source.stats.conflict_patches;
+	target.handler_resolved_count += source.handler_resolved_count;
+	target
+		.external_file_resolutions
+		.extend(source.external_file_resolutions);
+	target
+		.keep_existing_paths
+		.extend(source.keep_existing_paths);
+}
+
+fn template_for<'a>(
+	file_dag: &FileDag,
+	vanilla: Option<&'a ParsedScriptFile>,
+	contributors: &'a HashMap<ModId, ParsedScriptFile>,
+) -> Option<&'a ParsedScriptFile> {
+	vanilla.or_else(|| {
+		file_dag
+			.contributors()
+			.iter()
+			.find_map(|mod_id| contributors.get(mod_id))
+	})
+}
+
+fn synthesized_parsed_file(
+	file_path: &str,
+	template: Option<&ParsedScriptFile>,
+	statements: Vec<AstStatement>,
+) -> ParsedScriptFile {
+	let path = PathBuf::from(file_path);
+	let mut parsed = template.cloned().unwrap_or_else(|| ParsedScriptFile {
+		mod_id: "__foch_running_base__".to_string(),
+		path: path.clone(),
+		relative_path: path.clone(),
+		content_family: None,
+		file_kind: ScriptFileKind::Other,
+		module_name: "running_base".to_string(),
+		ast: AstFile {
+			path: path.clone(),
+			statements: Vec::new(),
+		},
+		source: String::new(),
+		parse_issues: Vec::new(),
+		parse_cache_hit: false,
+	});
+	parsed.mod_id = "__foch_running_base__".to_string();
+	parsed.path = path.clone();
+	parsed.relative_path = path.clone();
+	parsed.ast.path = path;
+	parsed.ast.statements = statements;
+	parsed.source.clear();
+	parsed.parse_issues.clear();
+	parsed.parse_cache_hit = false;
+	parsed
 }
 
 // ---------------------------------------------------------------------------
@@ -316,13 +502,14 @@ mod tests {
 			dep_overrides,
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
+		let mut handler = DeferHandler;
 		compute_dag_patches_from_parsed(
 			&fdag,
 			vanilla.as_ref(),
 			&inventory,
 			MergeKeySource::AssignmentKey,
 			&MergePolicies::default(),
-			ignore,
+			&mut handler,
 		)
 		.expect("compute DAG patches")
 	}
@@ -383,6 +570,148 @@ mod tests {
 			.collect();
 		keys.sort();
 		keys
+	}
+
+	fn rendered(statements: &[AstStatement]) -> String {
+		super::super::emit::emit_clausewitz_statements(statements).expect("emit statements")
+	}
+
+	fn append_list_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
+		let mut keys: Vec<_> = patches
+			.iter()
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::AppendListItem { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	fn remove_list_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
+		let mut keys: Vec<_> = patches
+			.iter()
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::RemoveListItem { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	fn replace_block_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
+		let mut keys: Vec<_> = patches
+			.iter()
+			.filter_map(|patch| match patch {
+				ClausewitzPatch::ReplaceBlock { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+		keys.sort();
+		keys
+	}
+
+	#[test]
+	fn single_mod_no_deps_preserves_direct_output() {
+		let mod_source = "root = yes\nnew_block = {\n\tvalue = 1\n}\n";
+		let result = compute(
+			vec![mod_with("a", "A", vec![], vec![])],
+			vec![file_contributor("a", 1)],
+			Some("root = no\n"),
+			parsed_inventory(&[("a", mod_source)]),
+			IgnoreReplacePath::None,
+		);
+		let direct = parsed_file("a", mod_source);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		assert_eq!(
+			rendered(&result.merged_statements),
+			rendered(&direct.ast.statements)
+		);
+	}
+
+	#[test]
+	fn dependency_chain_applies_parent_before_child_without_mixed_kind_conflict() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("tag = ROOT\n"),
+			parsed_inventory(&[
+				("a", "tag = ROOT\ntag = AAA\n"),
+				("b", "tag = ROOT\ntag = AAA\ntag = BBB\n"),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		assert_eq!(append_list_keys(patches_for(&result, "a")), vec!["tag"]);
+		assert_eq!(append_list_keys(patches_for(&result, "b")), vec!["tag"]);
+		assert!(remove_list_keys(patches_for(&result, "b")).is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(output.contains("tag = AAA"));
+		assert!(output.contains("tag = BBB"));
+	}
+
+	#[test]
+	fn sibling_fork_merges_same_base_patches_in_one_level() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("flag = no\n"),
+			parsed_inventory(&[("a", "flag = yes\n"), ("b", "flag = yes\n")]),
+			IgnoreReplacePath::None,
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		assert_eq!(set_value_keys(patches_for(&result, "a")), vec!["flag"]);
+		assert_eq!(set_value_keys(patches_for(&result, "b")), vec!["flag"]);
+		assert_eq!(result.merge_result.stats.convergent_patches, 1);
+		assert!(rendered(&result.merged_statements).contains("flag = yes"));
+	}
+
+	#[test]
+	fn three_level_translation_chain_replaces_inherited_block_without_remove_append() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+				mod_with("c", "C", vec!["B"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+			],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\npirate = {\n\tname = \"Pirates\"\n}\n"),
+				(
+					"b",
+					"root = yes\npirate = {\n\tname = \"海盗\"\n\tflag = yes\n}\n",
+				),
+				(
+					"c",
+					"root = yes\npirate = {\n\tname = \"海盗\"\n\tflag = yes\n}\nc = yes\n",
+				),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		let b_patches = patches_for(&result, "b");
+		assert!(result.merge_result.conflicts.is_empty());
+		assert_eq!(replace_block_keys(b_patches), vec!["pirate"]);
+		assert!(append_list_keys(b_patches).is_empty());
+		assert!(remove_list_keys(b_patches).is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(output.contains("name = \"海盗\""));
+		assert!(output.contains("c = yes"));
 	}
 
 	#[test]
