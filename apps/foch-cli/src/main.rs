@@ -66,7 +66,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 
 	let (mut config, config_file) = load_or_init_config()?;
 
-	match &cliargs.command {
+	let result = match &cliargs.command {
 		arg::FochCliCommands::Check(check_args) => handler::check::handle_check(check_args, config),
 		arg::FochCliCommands::MergePlan(merge_plan_args) => {
 			handler::merge_plan::handle_merge_plan(merge_plan_args, config)
@@ -77,8 +77,25 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 			handler::simplify::handle_simplify(simplify_args, config)
 		}
 		arg::FochCliCommands::Data(data_args) => handler::data::handle_data(data_args, config),
+		arg::FochCliCommands::Cache(cache_args) => handler::cache::handle_cache(cache_args),
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
 		}
+	};
+
+	if matches!(&result, Ok(0)) && should_run_parse_cache_gc(&cliargs.command) {
+		handler::cache::run_auto_gc();
+	}
+
+	result
+}
+
+fn should_run_parse_cache_gc(command: &arg::FochCliCommands) -> bool {
+	match command {
+		arg::FochCliCommands::Check(_) | arg::FochCliCommands::Merge(_) => true,
+		arg::FochCliCommands::Data(data_args) => {
+			matches!(data_args.command, arg::FochCliDataCommands::Build(_))
+		}
+		_ => false,
 	}
 }

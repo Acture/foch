@@ -26,6 +26,7 @@ pub enum FochCliCommands {
 	Graph(GraphArgs),
 	Simplify(SimplifyArgs),
 	Data(DataArgs),
+	Cache(FochCliCacheArgs),
 	Config(ConfigArgs),
 }
 
@@ -297,6 +298,29 @@ pub struct DataBuildArgs {
 pub struct DataListArgs {
 	#[arg(long)]
 	pub json: bool,
+}
+
+#[derive(Parser, Debug)]
+#[command(
+	about = "Inspect and maintain the local parse cache",
+	after_help = "Examples:\n  foch cache stats\n  foch cache gc\n  foch cache gc --cap-bytes 536870912\n  foch cache clean"
+)]
+pub struct FochCliCacheArgs {
+	#[command(subcommand)]
+	pub command: FochCliCacheCommands,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum FochCliCacheCommands {
+	Stats,
+	Gc(FochCliCacheGcArgs),
+	Clean,
+}
+
+#[derive(Parser, Debug)]
+pub struct FochCliCacheGcArgs {
+	#[arg(long)]
+	pub cap_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

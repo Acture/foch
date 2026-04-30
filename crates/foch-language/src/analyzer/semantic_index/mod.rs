@@ -1,5 +1,5 @@
 mod extractors;
-mod parse_cache;
+pub mod parse_cache;
 mod scope_rules;
 
 use super::content_family::{

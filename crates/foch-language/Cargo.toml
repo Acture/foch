@@ -12,6 +12,7 @@ console.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true
 foch-core = { path = "../foch-core" }
+filetime = "0.2"
 rayon.workspace = true
 regex.workspace = true
 serde.workspace = true
