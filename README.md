@@ -20,83 +20,138 @@ cargo build --bin foch
 
 ## 快速开始
 
+以下假设你在仓库根目录，并已经准备好 Paradox Launcher 导出的 `playlist.json`。把 EU4 路径替换成你的本机安装目录。
+
 ```bash
-# 查看帮助
-cargo run --bin foch -- --help
+# 1. 安装当前 alpha CLI（暂未发布到 crates.io）
+cargo install --path apps/foch-cli
 
-# 检查 playset
-cargo run --bin foch -- check ./playlist.json
+# 2. 配置 EU4 基础游戏目录
+foch config set game-path eu4 "/path/to/Europa Universalis IV"
 
-# 严格模式（有 strict finding 则返回退出码 2）
-cargo run --bin foch -- check ./playlist.json --strict
+# 3. 分析 playset：解析脚本、构建语义索引、检查跨 mod overlap / D1 / V2
+foch check ./playlist.json
 
-# 输出 JSON
-cargo run --bin foch -- check ./playlist.json --format json --output result.json
+# 4. 生成 deterministic merged mod 目录
+foch merge ./playlist.json --out ./merged
+```
 
-# 语义分析模式（默认 semantic）
-cargo run --bin foch -- check ./playlist.json --analysis-mode semantic
+常见成功输出形态：
 
-# 仅输出 strict 通道
-cargo run --bin foch -- check ./playlist.json --channel strict
+> `Foch Check Report`
+> `fatal_errors: 0`
+> `strict_findings: 0`
 
-# 生成 deterministic merge plan
-cargo run --bin foch -- merge-plan ./playlist.json --format json --output merge-plan.json
+> `Foch Merge Report`
+> `status: READY`
+> `manual_conflict_count: 0`
 
-# 生成 merged mod 并重新校验输出
-cargo run --bin foch -- merge ./playlist.json --out ./merged-mod
+如果默认 merge 报告 unresolved conflicts，按风险从低到高选择一种继续方式：
 
-# 导出语义图
-cargo run --bin foch -- graph ./playlist.json --out ./graphs
+```bash
+# TTY 下逐个仲裁，并把决定写入 foch.toml；非 TTY 会自动 defer
+foch merge ./playlist.json --out ./merged --interactive
+
+# 或手写 foch.toml [[resolutions]] 后重跑默认 merge
+foch merge ./playlist.json --out ./merged
+
+# 或显式接受 last-writer fallback（可写冲突标记时会写入 marker）
+foch merge ./playlist.json --out ./merged --fallback
 ```
 
 ## 结构化 merge 支持范围
 
-`merge-plan` / `merge` 目前有四种策略（完整合约见 [`docs/merge-design.md`](./docs/merge-design.md)）：
+从 post-F6c 开始，EU4 `GameProfile` 通过 `ContentFamilyDescriptor` 注册的内容族默认进入结构化 merge：解析、语义索引、DAG 排序和 level-by-level patch apply 使用同一套 mod → vanilla 依赖图，不再把跨 base 的 diff artifact 扁平化到同一层。
 
-- `StructuralMerge`：按命名定义合并，winner 与被 override 的 contributor 都记入 metadata
-- `CopyThrough`：只有一个 contributor，直接复制
-- `LastWriterOverlay`：多 contributor 的文本类文件（`.txt` / `.yml` / `.lua` / `.gui` / `.gfx` / `.mod` 等），取最高优先级 contributor 的整文件，**其它 contributor 的内容被静默丢弃**
-- `ManualConflict`：UI 路径 / 二进制 / 结构化校验失败时上报人工处理
+README 不再手工枚举内容族，避免与实现漂移。当前 canonical 列表在 [`crates/foch-language/src/analyzer/eu4_profile.rs`](./crates/foch-language/src/analyzer/eu4_profile.rs) 的 `EU4_CONTENT_FAMILIES`；新增 EU4 root 时以该文件中的 `ContentFamilyDescriptor` 为准。
 
-**当前获得 `StructuralMerge` 支持的路径前缀**（实现见 `crates/foch-engine/src/merge/plan.rs` 的 `is_structural_merge_path`）：
+残余的 sibling-overwrite、replace-block、true list-item rename 等结构性分歧需要用户仲裁。foch 不再静默丢弃这类贡献：默认输出会显式阻塞 / 跳过相关路径；只有用户配置 `[[resolutions]]`、使用 `--interactive`，或显式传入 `--fallback` 时才会继续。
 
-- `events/` — 按 event `id` 字段合并
-- `decisions/` — 按单个 decision 名合并（容器 key 为 `country_decisions` / `province_decisions`）
-- `common/scripted_effects/`
-- `common/diplomatic_actions/`
-- `common/triggered_modifiers/`
-- `common/defines/`
+## 冲突仲裁工作流
 
-**尚未获得结构化合并支持的内容族**（当前走 `LastWriterOverlay`，存在静默数据丢失风险）：
+默认 `foch merge ./playlist.json --out ./merged` 遇到无法安全选择的结构冲突时，会把相关输出路径跳过，并在 `./merged/.foch/foch-merge-report.json` 写入 `conflict_resolutions[]`。此时可选：用 `--interactive` 在 TTY 中逐个选择；手写 `foch.toml [[resolutions]]` 后重跑；或用 `--fallback` 生成 last-writer 输出。
 
-`common/ideas/`、`missions/`、`common/government_reforms/`、`common/cultures/`、`common/buildings/`、`common/institutions/`、`common/great_projects/`、`common/custom_gui/`、`common/advisortypes/`、`common/event_modifiers/`、`common/cb_types/`、`common/government_names/`、`common/province_triggered_modifiers/`，以及所有其它 `common/` 路径。
+`foch.toml` 的 `[[resolutions]]` 每条规则只能选一个 selector 和一个 action。字段速查（YAML 风格；不要把所有字段放进同一个 TOML block）：
 
-**关于 `LastWriterOverlay` 的已知局限**
+> `file: "events/PirateEvents.txt"` — 按输出路径匹配
+> `conflict_id: "ab12cd34"` — 按具体结构冲突匹配
+> `prefer_mod: "3378403419"` — 选某个 mod 的 patch
+> `use_file: "manual/events/PirateEvents.txt"` — 用外部文件替换输出
+> `keep_existing: true` — 保留 out 目录已有文件
+> `priority_boost: 100` — 给某个 `mod` 增加局部优先级
 
-当前的 `LastWriterOverlay` 行为和 [`docs/auto-merge-roadmap.md`](./docs/auto-merge-roadmap.md) 里写明的 v1 exit criterion **"unsupported overlaps fail as explicit manual conflicts instead of silent last-writer behavior"** 相矛盾。当一个文本文件（例如 `common/ideas/00_country_ideas.txt`）被多个 mod 同时提供时，当前实现只保留最高优先级 mod 的整文件内容，其它 mod 的贡献被静默丢弃——这对包含多条独立定义的文件（ideas 包含多个 idea set、missions 包含多个 mission slot 等）会产生明显的 merge loss。
+可直接粘贴的 TOML 示例：
 
-后续工作会：(1) 把 ideas、missions 等内容族逐步提升到 `StructuralMerge`；(2) 将剩余的 multi-contributor text overlap 从 `LastWriterOverlay` 改判为 `ManualConflict` 显式上报，与 roadmap 的 v1 acceptance criterion 对齐。
+```toml
+[[resolutions]]
+conflict_id = "ab12cd34"
+prefer_mod = "3378403419"
+
+[[resolutions]]
+file = "events/PirateEvents.txt"
+use_file = "manual/events/PirateEvents.txt"
+
+[[resolutions]]
+file = "common/ideas/00_country_ideas.txt"
+keep_existing = true
+
+[[resolutions]]
+mod = "3378403419"
+priority_boost = 100
+```
+
+`--interactive` 的选择项是候选 mod 编号、`d` defer、`s` use file path、`k` keep existing、`q` abort；确认后会把可持久化决定追加到 `foch.toml`。如果 stdin/stderr 不是 TTY，interactive 会自动降级为 defer，不会卡住 CI。
+
+`conflict_id` 是稳定哈希：输入为报告里的 `conflict_resolutions[].path`（输出文件路径）加该冲突的结构地址（interactive 输出中的 `address:`，即 address path + key）。同一个 id 可直接写回 `foch.toml` 的 `conflict_id` selector。
+
+一次典型闭环：先运行 merge，看 `Foch Merge Report` 和 `.foch/foch-merge-report.json`；定位到 `events/PirateEvents.txt` 的冲突后，在仓库根目录写入一个 `[[resolutions]]`：
+
+```toml
+[[resolutions]]
+conflict_id = "ab12cd34"
+prefer_mod = "3378403419"
+```
+
+然后重跑：
+
+```bash
+foch merge ./playlist.json --out ./merged
+```
+
+期望输出回到：
+
+> `status: READY`
+> `manual_conflict_count: 0`
 
 ## 配置
 
-配置文件默认在 `~/.config/foch/config.toml`。
+配置分成两个 schema，路径相近但用途不同：
 
-可通过环境变量覆盖配置目录：
+- `~/.config/foch/config.toml` 是 `foch_engine::Config`：`steam_root_path`、`paradox_data_path`、`game_path` map、`extra_ignore_patterns`。它由 `foch config set` / `show` / `validate` 管理，通常不手写。
+- 项目根目录或 playset 旁边的 `foch.toml`，以及用户级 `~/.config/foch/foch.toml`，是 `foch_core::FochConfig`：手写 `[[overrides]]`（D2，本地忽略错误依赖边）和 `[[resolutions]]`（R1，冲突仲裁）。`foch merge --config PATH` 可显式指定该文件。
+
+可通过环境变量覆盖 engine 配置目录：
 
 ```bash
-export FOCH_CONFIG_DIR=/tmp/foch-config
+export FOCH_CONFIG_DIR="$HOME/.config/foch-alpha"
 ```
 
 配置命令示例：
 
 ```bash
-cargo run --bin foch -- config show
-cargo run --bin foch -- config show --json
-cargo run --bin foch -- config validate
-cargo run --bin foch -- config set steam-path /path/to/steam
-cargo run --bin foch -- config set paradox-data-path /path/to/paradox
-cargo run --bin foch -- config set game-path eu4 /path/to/game
+foch config show
+foch config show --json
+foch config validate
+foch config set steam-path /path/to/steam
+foch config set paradox-data-path /path/to/paradox
+foch config set game-path eu4 "/path/to/Europa Universalis IV"
 ```
+
+## 当前噪音水平 (alpha)
+
+最新 N=37 EU4 probe baseline：post-F1b-comments（HEAD `8c5aa66`）仍有 26 个 unresolved structural conflicts，低于 F4 baseline / pre-F6c 的 181。
+
+这 26 个 residual 分解为 20 个 sibling overwrite、5 个 replace-block、1 个真实 list-item rename。它们都是跨 mod 内容分歧，需要用户仲裁；不是 comment diff 或 DAG flattening 造成的 foch false positive。完整限制清单见后续维护的 [`KNOWN_LIMITATIONS.md`](./KNOWN_LIMITATIONS.md)。
 
 ## 退出码
 
