@@ -18,10 +18,10 @@ use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
 use foch_core::config::{AppliedDepOverride, DepOverride};
 use foch_core::model::{
-	CheckContext, DepMisuseFinding, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
-	MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult,
-	MergePlanStrategy, MergeReport, MergeReportConflictContributor, MergeReportConflictKind,
-	MergeReportConflictResolution, MergeReportStatus, SemanticIndex,
+	CheckContext, DepMisuseFinding, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
+	MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry,
+	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportConflictContributor,
+	MergeReportConflictKind, MergeReportConflictResolution, MergeReportStatus, SemanticIndex,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
@@ -29,7 +29,7 @@ use foch_language::analyzer::content_family::{
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 use serde::Serialize;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -41,6 +41,7 @@ pub(crate) struct MergeMaterializeOptions {
 	pub ignore_replace_path: bool,
 	pub fallback: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
+	pub resolution_map: foch_core::config::ResolutionMap,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -51,6 +52,7 @@ impl Default for MergeMaterializeOptions {
 			ignore_replace_path: false,
 			fallback: false,
 			dep_overrides: Vec::new(),
+			resolution_map: foch_core::config::ResolutionMap::default(),
 		}
 	}
 }
@@ -187,6 +189,7 @@ pub(crate) fn materialize_merge_internal(
 							let ignore = ignore_replace_path.clone();
 							let dep_overrides = dep_overrides.clone();
 							let dep_misuse = report.dep_misuse.clone();
+							let resolution_map = options.resolution_map.clone();
 							let result = std::panic::catch_unwind(|| {
 								let context = PatchBasedMergeContext {
 									descriptor: &desc,
@@ -195,22 +198,26 @@ pub(crate) fn materialize_merge_internal(
 									ignore_replace_path: &ignore,
 									dep_overrides: &dep_overrides,
 									dep_misuse_findings: &dep_misuse,
+									resolution_map: &resolution_map,
 								};
 								patch_based_structural_merge(&target, &contribs, context)
 							});
 							match result {
-								Ok(Ok(merge_output)) => {
+								Ok(Ok(mut merge_output)) => {
 									apply_dep_misuse_remove_counts(
 										&mut report.dep_misuse,
-										merge_output.dep_remove_counts,
+										std::mem::take(&mut merge_output.dep_remove_counts),
 									);
-									write_rendered_output(
+									let materialization = write_patch_merge_output(
 										&entry.path,
-										&merge_output.rendered,
+										&merge_output,
 										out_dir,
+										&mut report,
 									)?;
-									generated_paths.insert(entry.path.clone());
-									report.generated_file_count += 1;
+									if materialization.counts_as_generated() {
+										generated_paths.insert(entry.path.clone());
+										report.generated_file_count += 1;
+									}
 									continue;
 								}
 								Ok(Err(err)) => {
@@ -707,6 +714,8 @@ fn contributor_version(workspace: &ResolvedWorkspace, mod_id: &str) -> String {
 struct PatchBasedMergeOutput {
 	rendered: String,
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
+	external_file_resolutions: HashMap<PathBuf, PathBuf>,
+	keep_existing_paths: HashSet<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -724,6 +733,7 @@ struct PatchBasedMergeContext<'a> {
 	ignore_replace_path: &'a IgnoreReplacePath,
 	dep_overrides: &'a [DepOverride],
 	dep_misuse_findings: &'a [DepMisuseFinding],
+	resolution_map: &'a foch_core::config::ResolutionMap,
 }
 
 /// Patch-based structural merge: diff each mod against its dependency-DAG
@@ -755,7 +765,13 @@ fn patch_based_structural_merge(
 	);
 
 	// 2. Merge all mod patch sets with the family's policies.
-	let mut handler = DeferHandler;
+	let mut handler = super::conflict_handler::ChainHandler {
+		first: super::conflict_handler::LookupHandler::new(
+			context.resolution_map,
+			PathBuf::from(target_path),
+		),
+		second: DeferHandler,
+	};
 	let merge_result = merge_patch_sets(
 		dag_patches.mod_patches,
 		&context.descriptor.merge_policies,
@@ -797,6 +813,8 @@ fn patch_based_structural_merge(
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
+		external_file_resolutions: merge_result.external_file_resolutions,
+		keep_existing_paths: merge_result.keep_existing_paths,
 	})
 }
 
@@ -876,6 +894,77 @@ fn extract_resolved_patches(merge_result: &PatchMergeResult) -> Vec<super::patch
 			PatchResolution::Conflict { .. } => None,
 		})
 		.collect()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PatchOutputMaterialization {
+	NormalWrite,
+	ExternalWrite,
+	KeptExisting,
+}
+
+impl PatchOutputMaterialization {
+	fn counts_as_generated(self) -> bool {
+		matches!(self, Self::NormalWrite | Self::ExternalWrite)
+	}
+}
+
+fn write_patch_merge_output(
+	target_path: &str,
+	merge_output: &PatchBasedMergeOutput,
+	out_dir: &Path,
+	report: &mut MergeReport,
+) -> Result<PatchOutputMaterialization, MergeError> {
+	let output_relative_path = PathBuf::from(target_path);
+	let target = out_dir.join(target_path);
+
+	if merge_output
+		.keep_existing_paths
+		.contains(&output_relative_path)
+	{
+		if target.exists() {
+			report.handler_resolutions.push(HandlerResolutionRecord {
+				path: target_path.to_string(),
+				action: "kept_existing".to_string(),
+				source: None,
+			});
+			return Ok(PatchOutputMaterialization::KeptExisting);
+		}
+
+		report.warnings.push(format!(
+			"keep_existing_failed: file does not exist at output dir: {}",
+			target.display()
+		));
+	}
+
+	if let Some(source_path) = merge_output
+		.external_file_resolutions
+		.get(&output_relative_path)
+	{
+		let bytes = fs::read(source_path).map_err(|err| {
+			MergeError::Io(io::Error::new(
+				err.kind(),
+				format!(
+					"failed to read external resolution source {} for {}: {err}",
+					source_path.display(),
+					target_path
+				),
+			))
+		})?;
+		if let Some(parent) = target.parent() {
+			fs::create_dir_all(parent)?;
+		}
+		fs::write(&target, bytes)?;
+		report.handler_resolutions.push(HandlerResolutionRecord {
+			path: target_path.to_string(),
+			action: "external".to_string(),
+			source: Some(source_path.display().to_string()),
+		});
+		return Ok(PatchOutputMaterialization::ExternalWrite);
+	}
+
+	write_rendered_output(target_path, &merge_output.rendered, out_dir)?;
+	Ok(PatchOutputMaterialization::NormalWrite)
 }
 
 fn write_rendered_output(
@@ -1056,9 +1145,9 @@ mod tests {
 		ModCandidate,
 	};
 	use serde_json::json;
-	use std::collections::BTreeMap;
+	use std::collections::{BTreeMap, HashMap, HashSet};
 	use std::fs;
-	use std::path::Path;
+	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 
 	fn write_playlist(path: &Path, mods: serde_json::Value) {
@@ -1125,6 +1214,7 @@ mod tests {
 			ignore_replace_path: false,
 			fallback: false,
 			dep_overrides: Vec::new(),
+			resolution_map: foch_core::config::ResolutionMap::default(),
 		}
 	}
 
@@ -1135,6 +1225,7 @@ mod tests {
 			ignore_replace_path: false,
 			fallback,
 			dep_overrides: Vec::new(),
+			resolution_map: foch_core::config::ResolutionMap::default(),
 		}
 	}
 
@@ -1157,10 +1248,141 @@ mod tests {
 			.expect("merge plan entry exists")
 	}
 
+	fn patch_merge_output(rendered: &str) -> super::PatchBasedMergeOutput {
+		super::PatchBasedMergeOutput {
+			rendered: rendered.to_string(),
+			dep_remove_counts: Vec::new(),
+			external_file_resolutions: HashMap::new(),
+			keep_existing_paths: HashSet::new(),
+		}
+	}
+
 	const DAG_FALLBACK_PATH: &str = "common/ideas/fallback.txt";
 
 	fn idea_file(cost: &str) -> String {
 		format!("group = {{\n\tidea = {{\n\t\tcost = {cost}\n\t}}\n}}\n")
+	}
+
+	#[test]
+	fn materialize_keep_existing_skips_write_when_output_exists() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let relative_path = "common/ideas/handler.txt";
+		write_file(&out_dir, relative_path, "existing\n");
+
+		let mut merge_output = patch_merge_output("merged\n");
+		merge_output
+			.keep_existing_paths
+			.insert(PathBuf::from(relative_path));
+		let mut report = MergeReport::default();
+
+		let materialization =
+			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
+				.expect("materialize keep existing");
+
+		assert_eq!(
+			materialization,
+			super::PatchOutputMaterialization::KeptExisting
+		);
+		assert_eq!(
+			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
+			"existing\n"
+		);
+		assert!(report.warnings.is_empty());
+		assert_eq!(report.handler_resolutions.len(), 1);
+		assert_eq!(report.handler_resolutions[0].path, relative_path);
+		assert_eq!(report.handler_resolutions[0].action, "kept_existing");
+		assert_eq!(report.handler_resolutions[0].source.as_deref(), None);
+	}
+
+	#[test]
+	fn materialize_keep_existing_falls_through_when_output_missing() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let relative_path = "common/ideas/missing.txt";
+		let mut merge_output = patch_merge_output("merged\n");
+		merge_output
+			.keep_existing_paths
+			.insert(PathBuf::from(relative_path));
+		let mut report = MergeReport::default();
+
+		let materialization =
+			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
+				.expect("materialize fallback write");
+
+		assert_eq!(
+			materialization,
+			super::PatchOutputMaterialization::NormalWrite
+		);
+		assert_eq!(
+			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
+			"merged\n"
+		);
+		assert_eq!(report.handler_resolutions.len(), 0);
+		assert_eq!(report.warnings.len(), 1);
+		assert!(report.warnings[0].contains("keep_existing_failed"));
+		assert!(report.warnings[0].contains(relative_path));
+	}
+
+	#[test]
+	fn materialize_external_file_writes_external_content() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let external_path = temp.path().join("external.txt");
+		let relative_path = "common/ideas/external.txt";
+		fs::write(&external_path, "external\n").expect("write external source");
+
+		let mut merge_output = patch_merge_output("merged\n");
+		merge_output
+			.external_file_resolutions
+			.insert(PathBuf::from(relative_path), external_path.clone());
+		let mut report = MergeReport::default();
+
+		let materialization =
+			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
+				.expect("materialize external file");
+
+		assert_eq!(
+			materialization,
+			super::PatchOutputMaterialization::ExternalWrite
+		);
+		assert_eq!(
+			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
+			"external\n"
+		);
+		assert!(report.warnings.is_empty());
+		assert_eq!(report.handler_resolutions.len(), 1);
+		assert_eq!(report.handler_resolutions[0].path, relative_path);
+		assert_eq!(report.handler_resolutions[0].action, "external");
+		let external_source = external_path.display().to_string();
+		assert_eq!(
+			report.handler_resolutions[0].source.as_deref(),
+			Some(external_source.as_str())
+		);
+	}
+
+	#[test]
+	fn materialize_external_file_errors_when_external_missing() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let external_path = temp.path().join("missing-external.txt");
+		let relative_path = "common/ideas/missing-external.txt";
+		let mut merge_output = patch_merge_output("merged\n");
+		merge_output
+			.external_file_resolutions
+			.insert(PathBuf::from(relative_path), external_path.clone());
+		let mut report = MergeReport::default();
+
+		let err =
+			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
+				.expect_err("missing external source should error");
+
+		assert!(
+			err.to_string()
+				.contains("failed to read external resolution source")
+		);
+		assert!(!out_dir.join(relative_path).exists());
+		assert!(report.handler_resolutions.is_empty());
 	}
 
 	fn stage_dag_fallback_conflict(

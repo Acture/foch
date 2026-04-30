@@ -141,6 +141,14 @@ pub struct MergeReportConflictResolution {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct HandlerResolutionRecord {
+	pub path: String,
+	pub action: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DepMisuseEvidence {
 	pub semantic_refs_to_dep: u32,
 	pub false_remove_count: u32,
@@ -180,6 +188,8 @@ pub struct MergeReport {
 	pub renames: Vec<MergeReportRename>,
 	#[serde(default)]
 	pub conflict_resolutions: Vec<MergeReportConflictResolution>,
+	#[serde(default)]
+	pub handler_resolutions: Vec<HandlerResolutionRecord>,
 	#[serde(default)]
 	pub dep_misuse: Vec<DepMisuseFinding>,
 	#[serde(default)]
