@@ -175,6 +175,17 @@ pub struct VersionMismatchFinding {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct StaleVanillaTargetDescriptor {
+	pub mod_id: String,
+	pub mod_version: String,
+	pub file_path: String,
+	pub patch_kind: String,
+	pub target_path: Vec<String>,
+	pub target_key: Option<String>,
+	pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
 	pub manual_conflict_count: usize,
@@ -194,6 +205,8 @@ pub struct MergeReport {
 	pub dep_misuse: Vec<DepMisuseFinding>,
 	#[serde(default)]
 	pub version_mismatch: Vec<VersionMismatchFinding>,
+	#[serde(default)]
+	pub stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	#[serde(default, skip_serializing_if = "Vec::is_empty")]
 	pub warnings: Vec<String>,
 	// D2 local dependency overrides applied during DAG-based merge.

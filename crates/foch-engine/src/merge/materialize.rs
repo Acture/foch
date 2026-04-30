@@ -13,6 +13,7 @@ use super::patch::ClausewitzPatch;
 use super::patch_deps::compute_dag_patches_with_handler;
 use super::patch_merge::PatchResolution;
 use super::plan::build_merge_plan_from_workspace;
+use super::stale_vanilla::detect_stale_vanilla_targets;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
 use foch_core::config::{AppliedDepOverride, DepOverride};
@@ -21,12 +22,14 @@ use foch_core::model::{
 	MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry,
 	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportConflictContributor,
 	MergeReportConflictKind, MergeReportConflictResolution, MergeReportStatus, SemanticIndex,
+	StaleVanillaTargetDescriptor,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
+use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -114,6 +117,7 @@ pub(crate) fn materialize_merge_internal(
 		.unwrap_or_else(|_| out_dir.to_path_buf());
 
 	let profile = eu4_profile();
+	let mod_versions = workspace_mod_versions(&workspace);
 
 	for entry in &plan.paths {
 		match entry.strategy {
@@ -198,11 +202,15 @@ pub(crate) fn materialize_merge_internal(
 									dep_overrides: &dep_overrides,
 									dep_misuse_findings: &dep_misuse,
 									resolution_map: &resolution_map,
+									mod_versions: &mod_versions,
 								};
 								patch_based_structural_merge(&target, &contribs, context)
 							});
 							match result {
 								Ok(Ok(mut merge_output)) => {
+									report
+										.stale_vanilla_targets
+										.append(&mut merge_output.stale_vanilla_targets);
 									apply_dep_misuse_remove_counts(
 										&mut report.dep_misuse,
 										std::mem::take(&mut merge_output.dep_remove_counts),
@@ -357,6 +365,24 @@ fn workspace_game_version(workspace: &ResolvedWorkspace) -> Option<&str> {
 		.installed_base_snapshot
 		.as_ref()
 		.map(|installed| installed.snapshot.game_version.as_str())
+}
+
+fn workspace_mod_versions(workspace: &ResolvedWorkspace) -> HashMap<String, String> {
+	workspace
+		.mods
+		.iter()
+		.map(|candidate| {
+			let version = candidate
+				.descriptor
+				.as_ref()
+				.and_then(|descriptor| descriptor.version.as_deref())
+				.map(str::trim)
+				.filter(|version| !version.is_empty())
+				.unwrap_or("unknown")
+				.to_string();
+			(candidate.mod_id.clone(), version)
+		})
+		.collect()
 }
 
 fn workspace_mod_semantic_index(workspace: &ResolvedWorkspace) -> SemanticIndex {
@@ -713,6 +739,7 @@ fn contributor_version(workspace: &ResolvedWorkspace, mod_id: &str) -> String {
 struct PatchBasedMergeOutput {
 	rendered: String,
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
+	stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	external_file_resolutions: HashMap<PathBuf, PathBuf>,
 	keep_existing_paths: HashSet<PathBuf>,
 }
@@ -733,6 +760,7 @@ struct PatchBasedMergeContext<'a> {
 	dep_overrides: &'a [DepOverride],
 	dep_misuse_findings: &'a [DepMisuseFinding],
 	resolution_map: &'a foch_core::config::ResolutionMap,
+	mod_versions: &'a HashMap<String, String>,
 }
 
 /// Patch-based structural merge: walk the dependency DAG level by level, diff
@@ -764,6 +792,14 @@ fn patch_based_structural_merge(
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
 	})?;
+	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
+	let stale_vanilla_targets = collect_stale_vanilla_targets(
+		target_path,
+		&dag_patches.mod_patches,
+		vanilla.as_ref(),
+		context.merge_key_source,
+		context.mod_versions,
+	);
 	let dep_remove_counts = collect_dep_misuse_remove_counts(
 		context.dep_misuse_findings,
 		contributors,
@@ -796,9 +832,57 @@ fn patch_based_structural_merge(
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
+		stale_vanilla_targets,
 		external_file_resolutions: merge_result.external_file_resolutions,
 		keep_existing_paths: merge_result.keep_existing_paths,
 	})
+}
+
+fn parse_vanilla_for_stale_detection(
+	file_path: &str,
+	contributors: &[ResolvedFileContributor],
+) -> Result<Option<ParsedScriptFile>, MergeError> {
+	let Some(base) = contributors
+		.iter()
+		.find(|contributor| contributor.is_base_game)
+	else {
+		return Ok(None);
+	};
+	parse_script_file(&base.mod_id, &base.root_path, &base.absolute_path)
+		.map(Some)
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(file_path.to_string()),
+			message: format!(
+				"failed to parse vanilla file {} for stale target detection",
+				base.absolute_path.display()
+			),
+		})
+}
+
+fn collect_stale_vanilla_targets(
+	file_path: &str,
+	mod_patches: &[(String, usize, Vec<ClausewitzPatch>)],
+	vanilla: Option<&ParsedScriptFile>,
+	merge_key_source: MergeKeySource,
+	mod_versions: &HashMap<String, String>,
+) -> Vec<StaleVanillaTargetDescriptor> {
+	mod_patches
+		.iter()
+		.flat_map(|(mod_id, _, patches)| {
+			let mod_version = mod_versions
+				.get(mod_id)
+				.map(String::as_str)
+				.unwrap_or("unknown");
+			detect_stale_vanilla_targets(
+				patches,
+				file_path,
+				mod_id,
+				mod_version,
+				vanilla,
+				merge_key_source,
+			)
+		})
+		.collect()
 }
 
 fn collect_dep_misuse_remove_counts(
@@ -1222,6 +1306,7 @@ mod tests {
 		super::PatchBasedMergeOutput {
 			rendered: rendered.to_string(),
 			dep_remove_counts: Vec::new(),
+			stale_vanilla_targets: Vec::new(),
 			external_file_resolutions: HashMap::new(),
 			keep_existing_paths: HashSet::new(),
 		}

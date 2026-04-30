@@ -732,6 +732,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		handler_resolutions: Vec::new(),
 		dep_misuse: Vec::new(),
 		version_mismatch: Vec::new(),
+		stale_vanilla_targets: Vec::new(),
 		warnings: Vec::new(),
 		dep_overrides_applied: Vec::new(),
 	};
@@ -747,6 +748,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	assert_eq!(value["handler_resolutions"].as_array().unwrap().len(), 0);
 	assert_eq!(value["dep_misuse"].as_array().unwrap().len(), 0);
 	assert_eq!(value["version_mismatch"].as_array().unwrap().len(), 0);
+	assert_eq!(value["stale_vanilla_targets"].as_array().unwrap().len(), 0);
 	assert_eq!(value["dep_overrides_applied"].as_array().unwrap().len(), 0);
 	assert_eq!(value["validation"]["fatal_errors"], 0);
 	assert_eq!(value["validation"]["strict_findings"], 4);
