@@ -5,12 +5,23 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const DEFAULT_EMIT_INDENT: &str = "\t";
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct FochConfig {
 	#[serde(default)]
 	pub overrides: Vec<DepOverride>,
 	#[serde(default)]
 	pub resolutions: Vec<ResolutionEntry>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub emit: Option<EmitConfig>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmitConfig {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub indent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -20,6 +31,8 @@ struct RawFochConfig {
 	overrides: Vec<DepOverride>,
 	#[serde(default)]
 	resolutions: Vec<ResolutionEntry>,
+	#[serde(default)]
+	emit: Option<EmitConfig>,
 }
 
 impl<'de> Deserialize<'de> for FochConfig {
@@ -32,6 +45,7 @@ impl<'de> Deserialize<'de> for FochConfig {
 		Ok(Self {
 			overrides: raw.overrides,
 			resolutions: raw.resolutions,
+			emit: raw.emit,
 		})
 	}
 }
@@ -341,6 +355,13 @@ impl FochConfig {
 		toml::from_str(content)
 	}
 
+	pub fn emit_indent(&self) -> &str {
+		self.emit
+			.as_ref()
+			.and_then(|emit| emit.indent.as_deref())
+			.unwrap_or(DEFAULT_EMIT_INDENT)
+	}
+
 	pub fn load(playset_root: &Path) -> Self {
 		Self::try_load(playset_root).unwrap_or_default()
 	}
@@ -360,6 +381,9 @@ impl FochConfig {
 				let config = Self::load_file(&path)?;
 				merged.overrides.extend(config.overrides);
 				merged.resolutions.extend(config.resolutions);
+				if config.emit.is_some() {
+					merged.emit = config.emit;
+				}
 			}
 		}
 		Ok(merged)
@@ -436,6 +460,40 @@ dep = "def"
 			Some("not a git parent")
 		);
 		assert_eq!(config.overrides[1], DepOverride::new("abc", "def"));
+	}
+
+	#[test]
+	fn parses_emit_indent_config() {
+		let config = FochConfig::from_toml_str(
+			r#"
+[emit]
+indent = "  "
+"#,
+		)
+		.expect("parse config");
+
+		assert_eq!(
+			config.emit,
+			Some(EmitConfig {
+				indent: Some("  ".to_string()),
+			})
+		);
+		assert_eq!(config.emit_indent(), "  ");
+	}
+
+	#[test]
+	fn missing_emit_config_uses_default_indent() {
+		let config = FochConfig::from_toml_str(
+			r#"
+[[overrides]]
+mod = "abc"
+dep = "def"
+"#,
+		)
+		.expect("parse config");
+
+		assert_eq!(config.emit, None);
+		assert_eq!(config.emit_indent(), DEFAULT_EMIT_INDENT);
 	}
 
 	#[test]

@@ -128,7 +128,7 @@ foch merge ./playlist.json --out ./merged
 配置分成两个 schema，路径相近但用途不同：
 
 - `~/.config/foch/config.toml` 是 `foch_engine::Config`：`steam_root_path`、`paradox_data_path`、`game_path` map、`extra_ignore_patterns`。它由 `foch config set` / `show` / `validate` 管理，通常不手写。
-- 项目根目录或 playset 旁边的 `foch.toml`，以及用户级 `~/.config/foch/foch.toml`，是 `foch_core::FochConfig`：手写 `[[overrides]]`（D2，本地忽略错误依赖边）和 `[[resolutions]]`（R1，冲突仲裁）。`foch merge --config PATH` 可显式指定该文件。
+- 项目根目录或 playset 旁边的 `foch.toml`，以及用户级 `~/.config/foch/foch.toml`，是 `foch_core::FochConfig`：手写 `[[overrides]]`（D2，本地忽略错误依赖边）、`[[resolutions]]`（R1，冲突仲裁）和 `[emit] indent`（合并输出缩进，默认 tab）。`foch merge --config PATH` 可显式指定该文件。
 
 可通过环境变量覆盖 engine 配置目录：
 

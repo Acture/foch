@@ -4,7 +4,7 @@ use super::conflict_handler::DeferHandler;
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
-use super::emit::emit_clausewitz_statements;
+use super::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use super::error::MergeError;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 #[allow(unused_imports)]
@@ -16,7 +16,7 @@ use super::plan::build_merge_plan_from_workspace;
 use super::stale_vanilla::detect_stale_vanilla_targets;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
-use foch_core::config::{AppliedDepOverride, DepOverride};
+use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig};
 use foch_core::model::{
 	CheckContext, DepMisuseFinding, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
 	MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry,
@@ -118,6 +118,7 @@ pub(crate) fn materialize_merge_internal(
 
 	let profile = eu4_profile();
 	let mod_versions = workspace_mod_versions(&workspace);
+	let emit_options = load_emit_options(&request)?;
 
 	for entry in &plan.paths {
 		match entry.strategy {
@@ -203,6 +204,7 @@ pub(crate) fn materialize_merge_internal(
 									dep_misuse_findings: &dep_misuse,
 									resolution_map: &resolution_map,
 									mod_versions: &mod_versions,
+									emit_options: &emit_options,
 								};
 								patch_based_structural_merge(&target, &contribs, context)
 							});
@@ -358,6 +360,18 @@ fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
 		mods: workspace.mods.clone(),
 		semantic_index: workspace_mod_semantic_index(workspace),
 	}
+}
+
+fn load_emit_options(request: &CheckRequest) -> Result<EmitOptions, MergeError> {
+	let playset_root = request
+		.playset_path
+		.parent()
+		.unwrap_or_else(|| Path::new("."));
+	let config = FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
+		path: Some(playset_root.display().to_string()),
+		message: err.to_string(),
+	})?;
+	Ok(EmitOptions::with_indent(config.emit_indent()))
 }
 
 fn workspace_game_version(workspace: &ResolvedWorkspace) -> Option<&str> {
@@ -761,6 +775,7 @@ struct PatchBasedMergeContext<'a> {
 	dep_misuse_findings: &'a [DepMisuseFinding],
 	resolution_map: &'a foch_core::config::ResolutionMap,
 	mod_versions: &'a HashMap<String, String>,
+	emit_options: &'a EmitOptions,
 }
 
 /// Patch-based structural merge: walk the dependency DAG level by level, diff
@@ -828,7 +843,10 @@ fn patch_based_structural_merge(
 		});
 	}
 
-	let rendered = emit_clausewitz_statements(&dag_patches.merged_statements)?;
+	let rendered = emit_clausewitz_statements_with_options(
+		&dag_patches.merged_statements,
+		context.emit_options,
+	)?;
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
