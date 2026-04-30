@@ -99,7 +99,7 @@ pub enum MergePlanOutputFormat {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Generate a merged mod directory and revalidate it",
-	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --fallback\n  foch merge ./playlist.json --out ./merged-mod --force  # implies --fallback\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
+	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --interactive\n  foch merge ./playlist.json --out ./merged-mod --fallback\n  foch merge ./playlist.json --out ./merged-mod --force  # implies --fallback\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
 	pub playset_path: PathBuf,
@@ -126,6 +126,10 @@ pub struct MergeArgs {
 	/// Load local foch.toml overrides from this file instead of the default search path.
 	#[arg(long, value_name = "PATH")]
 	pub config: Option<PathBuf>,
+
+	/// Prompt for unresolved structural conflicts and persist decisions to foch.toml.
+	#[arg(short = 'i', long)]
+	pub interactive: bool,
 
 	/// Enable last-writer fallback for unresolved structural merge conflicts.
 	///
@@ -402,5 +406,23 @@ mod tests {
 				},
 			]
 		);
+	}
+
+	#[test]
+	fn merge_command_accepts_interactive_flag() {
+		let cli = FochCli::try_parse_from([
+			"foch",
+			"merge",
+			"playlist.json",
+			"--out",
+			"merged",
+			"--interactive",
+		])
+		.expect("parse cli");
+
+		let FochCliCommands::Merge(args) = cli.command else {
+			panic!("expected merge command");
+		};
+		assert!(args.interactive);
 	}
 }
