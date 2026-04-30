@@ -1,3 +1,4 @@
+use foch_core::config::{ConfigError, FochConfig, ResolutionMap};
 use foch_core::model::{Finding, SemanticIndex, SymbolDefinition, SymbolKind};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,6 +10,7 @@ pub struct WorkspaceSession {
 	pub file_paths: Vec<PathBuf>,
 	pub path_lookup: HashMap<String, PathBuf>,
 	pub findings: Vec<Finding>,
+	resolution_map: ResolutionMap,
 }
 
 impl WorkspaceSession {
@@ -23,12 +25,50 @@ impl WorkspaceSession {
 		path_lookup: HashMap<String, PathBuf>,
 		findings: Vec<Finding>,
 	) -> Self {
+		Self::from_analysis_with_resolution_map(
+			index,
+			file_paths,
+			path_lookup,
+			findings,
+			ResolutionMap::default(),
+		)
+	}
+
+	pub fn from_analysis_with_config(
+		index: SemanticIndex,
+		file_paths: Vec<PathBuf>,
+		path_lookup: HashMap<String, PathBuf>,
+		findings: Vec<Finding>,
+		config: &FochConfig,
+	) -> Result<Self, ConfigError> {
+		let resolution_map = ResolutionMap::from_entries(&config.resolutions)?;
+		Ok(Self::from_analysis_with_resolution_map(
+			index,
+			file_paths,
+			path_lookup,
+			findings,
+			resolution_map,
+		))
+	}
+
+	pub fn from_analysis_with_resolution_map(
+		index: SemanticIndex,
+		file_paths: Vec<PathBuf>,
+		path_lookup: HashMap<String, PathBuf>,
+		findings: Vec<Finding>,
+		resolution_map: ResolutionMap,
+	) -> Self {
 		Self {
 			index,
 			file_paths,
 			path_lookup,
 			findings,
+			resolution_map,
 		}
+	}
+
+	pub fn resolution_map(&self) -> &ResolutionMap {
+		&self.resolution_map
 	}
 
 	/// Get symbol definitions matching a name and optional kind filter.
@@ -43,5 +83,44 @@ impl WorkspaceSession {
 	/// Look up the absolute path for a composite `"{mod_id}|{relative_path}"` key.
 	pub fn resolve_path(&self, key: &str) -> Option<&PathBuf> {
 		self.path_lookup.get(key)
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::collections::HashMap;
+	use std::path::Path;
+
+	use foch_core::config::{FochConfig, ResolutionDecision};
+	use foch_core::model::SemanticIndex;
+
+	use super::WorkspaceSession;
+
+	#[test]
+	fn workspace_session_loads_foch_toml_resolutions() {
+		let config = FochConfig::from_toml_str(
+			r#"
+[[resolutions]]
+file = "common/ideas/resolved.txt"
+prefer_mod = "mod-a"
+"#,
+		)
+		.expect("parse foch.toml");
+
+		let session = WorkspaceSession::from_analysis_with_config(
+			SemanticIndex::default(),
+			Vec::new(),
+			HashMap::new(),
+			Vec::new(),
+			&config,
+		)
+		.expect("build session");
+
+		assert_eq!(
+			session
+				.resolution_map()
+				.lookup(Path::new("common/ideas/resolved.txt"), "missing"),
+			Some(&ResolutionDecision::PreferMod("mod-a".to_string()))
+		);
 	}
 }

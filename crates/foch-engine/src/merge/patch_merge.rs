@@ -1977,7 +1977,8 @@ fn resolve_renames(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::merge::conflict_handler::ChainHandler;
+	use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
+	use foch_core::config::{ResolutionDecision, ResolutionMap, compute_conflict_id};
 	use foch_language::analyzer::content_family::MergePolicies;
 	use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
@@ -2086,6 +2087,45 @@ mod tests {
 			..PatchMergeResult::default()
 		};
 		assert_eq!(result, expected);
+	}
+
+	#[test]
+	fn merge_patch_sets_with_resolution_picks_correct_mod_patch() {
+		let current_file = PathBuf::from("common/ideas/resolved.txt");
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("alpha")),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("beta")),
+		};
+		let conflict_id = compute_conflict_id(&current_file, "root", "decisions");
+		let mut resolution_map = ResolutionMap::default();
+		resolution_map.by_conflict_id.insert(
+			conflict_id,
+			ResolutionDecision::PreferMod("mod_a".to_string()),
+		);
+		let mut handler = LookupHandler::new(&resolution_map, current_file);
+
+		let result = merge_patch_sets(
+			vec![
+				("mod_a".into(), 1, vec![patch_a.clone()]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&default_policies(),
+			&mut handler,
+		)
+		.expect("resolution map should pick mod_a");
+
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.handler_resolved_count, 1);
+		assert_eq!(result.resolved, vec![PatchResolution::Resolved(patch_a)]);
+		assert_eq!(result.stats.conflict_patches, 1);
 	}
 
 	#[test]

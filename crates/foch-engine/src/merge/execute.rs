@@ -2,7 +2,7 @@ use super::error::MergeError;
 use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
-use foch_core::config::AppliedDepOverride;
+use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
 use foch_core::domain::playlist::load_playlist;
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_REPORT_ARTIFACT_PATH, MergeReport, MergeReportStatus,
@@ -34,6 +34,7 @@ pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<MergeExecutionResult, MergeError> {
+	let resolution_map = load_resolution_map(&request)?;
 	let mut report = materialize_merge_internal(
 		request.clone(),
 		&options.out_dir,
@@ -43,6 +44,7 @@ pub fn run_merge_with_options(
 			ignore_replace_path: options.ignore_replace_path,
 			fallback: options.fallback,
 			dep_overrides: options.dep_overrides.clone(),
+			resolution_map,
 		},
 	)?;
 
@@ -74,6 +76,21 @@ pub fn run_merge_with_options(
 	};
 
 	Ok(MergeExecutionResult { report, exit_code })
+}
+
+fn load_resolution_map(request: &CheckRequest) -> Result<ResolutionMap, MergeError> {
+	let playset_root = request
+		.playset_path
+		.parent()
+		.unwrap_or_else(|| Path::new("."));
+	let config = FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
+		path: Some(playset_root.display().to_string()),
+		message: err.to_string(),
+	})?;
+	ResolutionMap::from_entries(&config.resolutions).map_err(|err| MergeError::Validation {
+		path: Some(playset_root.display().to_string()),
+		message: err.to_string(),
+	})
 }
 
 fn revalidate_generated_output(
