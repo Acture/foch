@@ -209,7 +209,7 @@ pub fn diff_block_bodies(
 		.filter(|bv| {
 			!overlay_block_items
 				.iter()
-				.any(|ov| values_equal_ignoring_span(ov, bv))
+				.any(|ov| ast_values_semantically_equal(ov, bv))
 		})
 		.cloned()
 		.collect();
@@ -219,7 +219,7 @@ pub fn diff_block_bodies(
 		.filter(|ov| {
 			!base_block_items
 				.iter()
-				.any(|bv| values_equal_ignoring_span(bv, ov))
+				.any(|bv| ast_values_semantically_equal(bv, ov))
 		})
 		.cloned()
 		.collect();
@@ -838,7 +838,7 @@ fn diff_blocks(
 		.filter(|bv| {
 			!overlay_block_items
 				.iter()
-				.any(|ov| values_equal_ignoring_span(ov, bv))
+				.any(|ov| ast_values_semantically_equal(ov, bv))
 		})
 		.cloned()
 		.collect();
@@ -848,7 +848,7 @@ fn diff_blocks(
 		.filter(|ov| {
 			!base_block_items
 				.iter()
-				.any(|bv| values_equal_ignoring_span(bv, ov))
+				.any(|bv| ast_values_semantically_equal(bv, ov))
 		})
 		.cloned()
 		.collect();
@@ -866,7 +866,7 @@ fn diff_blocks(
 		match overlay_children.get(k) {
 			None => changed += 1,
 			Some(overlay_vals) => {
-				if !value_lists_equal_ignoring_span(base_vals, overlay_vals) {
+				if !value_lists_semantically_equal(base_vals, overlay_vals) {
 					changed += 1;
 				}
 			}
@@ -931,11 +931,11 @@ fn index_children(items: &[AstStatement]) -> HashMap<String, Vec<&AstValue>> {
 	map
 }
 
-fn value_lists_equal_ignoring_span(a: &[&AstValue], b: &[&AstValue]) -> bool {
+fn value_lists_semantically_equal(a: &[&AstValue], b: &[&AstValue]) -> bool {
 	a.len() == b.len()
 		&& a.iter()
 			.zip(b.iter())
-			.all(|(va, vb)| values_equal_ignoring_span(va, vb))
+			.all(|(va, vb)| ast_values_semantically_equal(va, vb))
 }
 
 /// Convert child statements into keyed entries using `AssignmentKey` semantics.
@@ -976,11 +976,14 @@ fn diff_repeated_key(
 		.filter_map(|s| statement_value(s))
 		.collect();
 
-	// Compare as sets using span-ignoring structural equality.
+	// Compare as sets using semantic equality (ignores spans AND comments).
+	// Comment-only differences must NOT trigger spurious Remove+Append pairs:
+	// the patch_merge address layer fingerprints values without comments, so
+	// such pairs land at the same address and surface as mixed-kind conflicts.
 	for bv in &base_values {
 		if !overlay_values
 			.iter()
-			.any(|ov| values_equal_ignoring_span(ov, bv))
+			.any(|ov| ast_values_semantically_equal(ov, bv))
 		{
 			patches.push(ClausewitzPatch::RemoveListItem {
 				path: path.to_vec(),
@@ -993,7 +996,7 @@ fn diff_repeated_key(
 	for ov in &overlay_values {
 		if !base_values
 			.iter()
-			.any(|bv| values_equal_ignoring_span(bv, ov))
+			.any(|bv| ast_values_semantically_equal(bv, ov))
 		{
 			patches.push(ClausewitzPatch::AppendListItem {
 				path: path.to_vec(),
