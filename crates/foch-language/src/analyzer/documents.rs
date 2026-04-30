@@ -1,6 +1,5 @@
 use super::localisation::parse_localisation_file;
 use super::semantic_index::{ParsedScriptFile, build_semantic_index, parse_script_file};
-use encoding_rs::WINDOWS_1252;
 use foch_core::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
 	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
@@ -371,13 +370,7 @@ fn parse_csv_document(
 }
 
 fn decode_csv_bytes(raw: &[u8]) -> String {
-	match std::str::from_utf8(raw) {
-		Ok(content) => content.to_string(),
-		Err(_) => {
-			let (decoded, _, _) = WINDOWS_1252.decode(raw);
-			decoded.into_owned()
-		}
-	}
+	foch_core::decode_paradox_bytes(raw).into_owned()
 }
 
 fn csv_schema_for(relative_path: &Path) -> CsvSchema {

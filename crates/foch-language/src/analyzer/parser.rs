@@ -663,7 +663,7 @@ impl ParserState {
 pub fn parse_clausewitz_file(path: &Path) -> ParseResult {
 	match std::fs::read(path) {
 		Ok(bytes) => {
-			let content = String::from_utf8_lossy(&bytes);
+			let content = foch_core::decode_paradox_bytes(&bytes);
 			parse_clausewitz_content(path.to_path_buf(), &content)
 		}
 		Err(err) => ParseResult {

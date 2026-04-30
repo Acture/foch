@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 blake3 = "1.5.5"
 dirs.workspace = true
+encoding_rs.workspace = true
 home.workspace = true
 jomini.workspace = true
 regex.workspace = true
