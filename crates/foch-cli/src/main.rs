@@ -1,7 +1,7 @@
 use clap::Parser;
 use foch_cli::cli::arg;
 use foch_cli::cli::handler;
-use foch_engine::{SEMANTIC_GRAPH_PROGRESS_TARGET, load_or_init_config};
+use foch_engine::{CHECK_PROGRESS_TARGET, SEMANTIC_GRAPH_PROGRESS_TARGET, load_or_init_config};
 use std::io;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::Layer;
@@ -32,7 +32,18 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	let cliargs = arg::FochCli::parse();
 	let verbose_level = cliargs.verbose.tracing_level_filter();
 	let show_semantic_graph_progress = matches!(&cliargs.command, arg::FochCliCommands::Graph(graph_args) if graph_args.mode == arg::GraphModeArg::Semantic);
-	let progress_level = if show_semantic_graph_progress {
+	let show_check_progress = matches!(
+		&cliargs.command,
+		arg::FochCliCommands::Check(_)
+			| arg::FochCliCommands::Merge(_)
+			| arg::FochCliCommands::MergePlan(_)
+	);
+	let semantic_graph_progress_level = if show_semantic_graph_progress {
+		LevelFilter::INFO
+	} else {
+		LevelFilter::OFF
+	};
+	let check_progress_level = if show_check_progress {
 		LevelFilter::INFO
 	} else {
 		LevelFilter::OFF
@@ -46,8 +57,20 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 				.with_filter(
 					Targets::new()
 						.with_default(verbose_level)
-						.with_target(SEMANTIC_GRAPH_PROGRESS_TARGET, LevelFilter::OFF),
+						.with_target(SEMANTIC_GRAPH_PROGRESS_TARGET, LevelFilter::OFF)
+						.with_target(CHECK_PROGRESS_TARGET, LevelFilter::OFF),
 				),
+		)
+		.with(
+			fmt::layer()
+				.with_writer(io::stderr)
+				.with_target(false)
+				.without_time()
+				.with_level(false)
+				.with_filter(Targets::new().with_default(LevelFilter::OFF).with_target(
+					SEMANTIC_GRAPH_PROGRESS_TARGET,
+					semantic_graph_progress_level,
+				)),
 		)
 		.with(
 			fmt::layer()
@@ -58,7 +81,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 				.with_filter(
 					Targets::new()
 						.with_default(LevelFilter::OFF)
-						.with_target(SEMANTIC_GRAPH_PROGRESS_TARGET, progress_level),
+						.with_target(CHECK_PROGRESS_TARGET, check_progress_level),
 				),
 		);
 

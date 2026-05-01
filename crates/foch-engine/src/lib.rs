@@ -27,6 +27,6 @@ pub use merge::{
 	run_merge_plan_with_options, run_merge_with_options,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions};
-pub use run_checks::{run_checks, run_checks_with_options};
+pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};
 pub use simplify::{SimplifyOptions, SimplifyReport, SimplifySummary, run_simplify_with_options};
 pub use workspace::{FileFilter, WorkspaceSession};

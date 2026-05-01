@@ -18,6 +18,36 @@ use foch_language::analyzer::rules::{
 	check_version_mismatch,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::Instant;
+
+/// Tracing target for `foch check` (and `foch merge`'s revalidation pass)
+/// progress events. The CLI enables INFO-level output for this target on the
+/// relevant commands so users see a stage-by-stage progress trail instead of
+/// staring at a silent terminal during the 30-second-plus end-to-end run.
+pub const CHECK_PROGRESS_TARGET: &str = "foch::check::progress";
+
+fn run_progress_stage<T, F, S>(stage: &'static str, f: F, summarize: S) -> T
+where
+	F: FnOnce() -> T,
+	S: FnOnce(&T) -> String,
+{
+	tracing::info!(target: CHECK_PROGRESS_TARGET, "check {stage}: start");
+	let started = Instant::now();
+	let value = f();
+	let elapsed_ms = started.elapsed().as_millis() as u64;
+	let summary = summarize(&value);
+	if summary.is_empty() {
+		tracing::info!(target: CHECK_PROGRESS_TARGET, elapsed_ms, "check {stage}: done");
+	} else {
+		tracing::info!(
+			target: CHECK_PROGRESS_TARGET,
+			elapsed_ms,
+			summary = %summary,
+			"check {stage}: done",
+		);
+	}
+	value
+}
 
 #[derive(Clone, Debug)]
 struct GameBaseSemanticSnapshot {
@@ -34,7 +64,19 @@ pub fn run_checks(request: CheckRequest) -> CheckResult {
 pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> CheckResult {
 	let mut result = CheckResult::default();
 
-	let resolved = match resolve_workspace(&request, options.include_game_base) {
+	let resolved = run_progress_stage(
+		"resolve workspace",
+		|| resolve_workspace(&request, options.include_game_base),
+		|res| match res {
+			Ok(workspace) => format!(
+				"mods={} inventory_files={}",
+				workspace.mods.len(),
+				workspace.file_inventory.len()
+			),
+			Err(_) => "failed".to_string(),
+		},
+	);
+	let resolved = match resolved {
 		Ok(workspace) => workspace,
 		Err(err) => {
 			if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
@@ -100,19 +142,36 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		.map_or(mod_parse_stats.clone(), |snapshot| {
 			sum_parse_family_stats(snapshot.parse_stats.clone(), mod_parse_stats.clone())
 		});
-	let semantic_index = match base_semantic {
-		Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
-		None => mod_semantic_index,
-	};
+	let semantic_index = run_progress_stage(
+		"merge semantic indexes",
+		|| match base_semantic {
+			Some(snapshot) => merge_semantic_indexes(snapshot.index, mod_semantic_index),
+			None => mod_semantic_index,
+		},
+		|index| {
+			format!(
+				"definitions={} references={} scopes={}",
+				index.definitions.len(),
+				index.references.len(),
+				index.scopes.len()
+			)
+		},
+	);
 	let game_version = resolved
 		.installed_base_snapshot
 		.as_ref()
 		.map(|installed| installed.snapshot.game_version.clone());
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
-		build_runtime_state_from_workspace(&resolved)
-			.ok()
-			.map(|state| build_overlap_findings(&state))
-			.unwrap_or_default()
+		run_progress_stage(
+			"runtime overlap",
+			|| {
+				build_runtime_state_from_workspace(&resolved)
+					.ok()
+					.map(|state| build_overlap_findings(&state))
+					.unwrap_or_default()
+			},
+			|findings| format!("findings={}", findings.len()),
+		)
 	} else {
 		Vec::new()
 	};
@@ -123,16 +182,22 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		semantic_index,
 	};
 
-	result.findings.extend(check_required_fields(&ctx));
-	result.findings.extend(check_duplicate_mod_identity(&ctx));
-	result.findings.extend(check_missing_descriptor(&ctx));
-	result.findings.extend(check_file_conflict(&ctx));
-	result.findings.extend(check_missing_dependency(&ctx));
-	if let Some(game_version) = game_version.as_deref() {
-		result
-			.findings
-			.extend(check_version_mismatch(&ctx, game_version));
-	}
+	run_progress_stage(
+		"structural rules",
+		|| {
+			result.findings.extend(check_required_fields(&ctx));
+			result.findings.extend(check_duplicate_mod_identity(&ctx));
+			result.findings.extend(check_missing_descriptor(&ctx));
+			result.findings.extend(check_file_conflict(&ctx));
+			result.findings.extend(check_missing_dependency(&ctx));
+			if let Some(game_version) = game_version.as_deref() {
+				result
+					.findings
+					.extend(check_version_mismatch(&ctx, game_version));
+			}
+		},
+		|_| String::new(),
+	);
 
 	if options.analysis_mode == AnalysisMode::Semantic {
 		// Names already covered by the runtime overlap module (A003 mergeable /
@@ -145,11 +210,17 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 			.filter_map(|finding| extract_overlap_symbol_name(&finding.message))
 			.collect();
 
-		let diagnostics = analyze_visibility(
-			&ctx.semantic_index,
-			&AnalyzeOptions {
-				mode: options.analysis_mode,
+		let diagnostics = run_progress_stage(
+			"semantic visibility",
+			|| {
+				analyze_visibility(
+					&ctx.semantic_index,
+					&AnalyzeOptions {
+						mode: options.analysis_mode,
+					},
+				)
 			},
+			|d| format!("strict={} advisory={}", d.strict.len(), d.advisory.len()),
 		);
 		result.findings.extend(
 			diagnostics
