@@ -21,7 +21,7 @@ The shipped product surface includes:
 
 The repository now has these first-class packages:
 
-- `apps/foch-cli`
+- `crates/foch-cli`
 - `crates/foch-core`
 - `crates/foch-language`
 - `crates/foch-engine`

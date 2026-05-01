@@ -17,7 +17,7 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
 
 ### `apps/`
 
-- `apps/foch-cli`
+- `crates/foch-cli`
   - Rust binary package for:
     - `foch` (main CLI; the `lsp` subcommand runs the language server on stdio)
     - `parse_stats` and `symbol_dump` (gated behind `--features dev-tools`;
@@ -55,13 +55,13 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
   - Bun workspace package
 - `packages/vscode-foch`
   - VS Code extension
-  - bundles `foch` from `apps/foch-cli` and launches it as `foch lsp`
+  - bundles `foch` from `crates/foch-cli` and launches it as `foch lsp`
 
 ## Dependency Direction
 
 The intended dependency flow is:
 
-- `apps/foch-cli -> foch-engine`
+- `crates/foch-cli -> foch-engine`
 - `foch-engine -> foch-language + foch-core`
 - `foch-language -> foch-core`
 

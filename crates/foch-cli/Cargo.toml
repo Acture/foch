@@ -29,7 +29,7 @@ tiny_http.workspace = true
 
 [features]
 # Opt-in build flag for parser/semantic-index dev tools.
-# `cargo install --path apps/foch-cli` (the default user path) installs only
+# `cargo install --path crates/foch-cli` (the default user path) installs only
 # `foch`; pass `--features dev-tools` to also build `parse_stats` and
 # `symbol_dump`, which are debugging utilities for the parser and
 # semantic-index maintainers (raw-directory inputs, ad-hoc arg parsing, no

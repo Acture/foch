@@ -24,7 +24,7 @@ cargo build --bin foch
 
 ```bash
 # 1. 安装当前 alpha CLI（暂未发布到 crates.io）
-cargo install --path apps/foch-cli
+cargo install --path crates/foch-cli
 
 # 2. 配置 EU4 基础游戏目录
 foch config set game-path eu4 "/path/to/Europa Universalis IV"
@@ -238,7 +238,7 @@ python3 scripts/eu4_real_smoke_compare.py \
 
 ## LSP 与 VS Code
 
-项目包含 `foch_lsp` language server，以及位于 `packages/vscode-foch/` 的 VS Code 扩展。
+项目包含 language server(`foch lsp` 子命令),以及位于 `packages/vscode-foch/` 的 VS Code 扩展。
 
 当前已实现：
 
@@ -265,7 +265,7 @@ python3 scripts/eu4_real_smoke_compare.py \
 启动方式：
 
 ```bash
-cargo run --bin foch_lsp
+cargo run --bin foch -- lsp
 ```
 
 VS Code 本地开发：

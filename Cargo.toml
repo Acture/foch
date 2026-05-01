@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-	"apps/foch-cli",
+	"crates/foch-cli",
 	"crates/foch-core",
 	"crates/foch-engine",
 	"crates/foch-language",
