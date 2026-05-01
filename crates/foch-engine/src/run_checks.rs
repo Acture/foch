@@ -87,7 +87,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 					rule_id: "playset-parse-error".to_string(),
 					severity: Severity::Error,
 					channel: FindingChannel::Strict,
-					message: "Playset JSON 无法解析".to_string(),
+					message: "failed to parse Playset JSON".to_string(),
 					mod_id: None,
 					path: Some(err.path),
 					evidence: Some(err.message),
@@ -244,7 +244,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		result.findings.extend(runtime_overlap_findings);
 		result.findings.extend(check_dependency_misuse(&ctx));
 		result.findings.extend(
-			check_namespace_conflicts(&resolved.file_inventory, &ctx.mods, &mod_dag)
+			check_namespace_conflicts(&resolved.file_inventory, &mod_dag)
 				.into_iter()
 				.filter(|finding| {
 					!finding
@@ -407,21 +407,10 @@ const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/s
 /// broken gameplay.
 fn check_namespace_conflicts(
 	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
-	mods: &[foch_core::model::ModCandidate],
 	mod_dag: &ModDag,
 ) -> Vec<Finding> {
 	let profile = eu4_profile();
 	let families_by_id = group_by_family(file_inventory, profile);
-
-	let mod_names: HashMap<&str, &str> = mods
-		.iter()
-		.filter_map(|m| {
-			m.entry
-				.display_name
-				.as_deref()
-				.map(|name| (m.mod_id.as_str(), name))
-		})
-		.collect();
 
 	let mut findings = Vec::new();
 
@@ -457,16 +446,6 @@ fn check_namespace_conflicts(
 			}
 
 			let primary = leaves[0];
-			let participants: Vec<String> = leaves
-				.iter()
-				.map(|contributor| {
-					let mod_name = mod_names
-						.get(contributor.mod_id.as_str())
-						.copied()
-						.unwrap_or(&contributor.mod_id);
-					format!("'{}' in {}", mod_name, contributor.file_path)
-				})
-				.collect();
 			let evidence = format!(
 				"key={}; mods=[{}]",
 				conflict.key,
@@ -481,12 +460,7 @@ fn check_namespace_conflicts(
 				rule_id: "cross-file-duplicate-symbol".to_string(),
 				severity: Severity::Warning,
 				channel: FindingChannel::Advisory,
-				message: format!(
-					"Key '{}' is defined by {} sibling mods: {}",
-					conflict.key,
-					leaves.len(),
-					participants.join(", ")
-				),
+				message: format!("duplicate key is defined by {} sibling mods", leaves.len()),
 				mod_id: Some(primary.mod_id.clone()),
 				path: Some(std::path::PathBuf::from(&primary.file_path)),
 				evidence: Some(evidence),

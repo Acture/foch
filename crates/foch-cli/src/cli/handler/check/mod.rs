@@ -36,7 +36,7 @@ pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 
 	if let Some(path) = check_args.output.as_ref() {
 		std::fs::write(path, rendered)?;
-		println!("检查结果已写入: {}", path.display());
+		println!("check result written to: {}", path.display());
 	} else {
 		println!("{rendered}");
 	}

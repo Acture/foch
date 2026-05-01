@@ -32,7 +32,7 @@ fn handle_data_install(args: &DataInstallArgs, config: Config) -> HandlerResult 
 		install_snapshot_from_release(&game, &resolved_version, args.release_tag.as_deref())
 			.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 	println!(
-		"已安装基础数据: game={} version={} source=download path={}",
+		"installed base data: game={} version={} source=download path={}",
 		installed.metadata.game,
 		installed.metadata.game_version,
 		installed.install_dir.display()
@@ -42,7 +42,9 @@ fn handle_data_install(args: &DataInstallArgs, config: Config) -> HandlerResult 
 
 fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 	if !args.install && args.output_dir.is_none() && !args.release_asset {
-		return Err("请至少指定 --install、--output-dir 或 --release-asset".into());
+		return Err(
+			"please specify at least one of --install, --output-dir, or --release-asset".into(),
+		);
 	}
 
 	let game = parse_game(&args.game_name)?;
@@ -86,7 +88,7 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 							.unwrap_or_default();
 					counts.insert("install_coverage_bytes".to_string(), coverage_bytes);
 					println!(
-						"已构建并安装基础数据: game={} version={} path={}",
+						"built and installed base data: game={} version={} path={}",
 						installed.metadata.game,
 						installed.metadata.game_version,
 						installed.install_dir.display()
@@ -95,7 +97,7 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 
 				if args.release_asset {
 					let output_dir = args.output_dir.as_ref().ok_or_else(|| {
-						"使用 --release-asset 时必须提供 --output-dir".to_string()
+						"--output-dir is required when using --release-asset".to_string()
 					})?;
 					let release_output = write_release_artifacts(
 						&build.snapshot,
@@ -116,7 +118,7 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 					counts.insert("release_manifest_bytes".to_string(), manifest_bytes);
 					counts.insert("release_coverage_bytes".to_string(), coverage_bytes);
 					println!(
-						"已写入 release 数据资产: snapshot={} manifest={} coverage={}",
+						"wrote release data asset: snapshot={} manifest={} coverage={}",
 						release_output.snapshot_path.display(),
 						release_output.manifest_path.display(),
 						release_output.coverage_path.display()
@@ -143,7 +145,7 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 					counts.insert("bundle_metadata_bytes".to_string(), metadata_bytes);
 					counts.insert("bundle_coverage_bytes".to_string(), coverage_bytes);
 					println!(
-						"已写入 snapshot bundle: snapshot={} metadata={} coverage={}",
+						"wrote snapshot bundle: snapshot={} metadata={} coverage={}",
 						bundle.snapshot_path.display(),
 						bundle.metadata_path.display(),
 						bundle.coverage_path.display()
@@ -162,7 +164,7 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 			std::fs::create_dir_all(parent)?;
 		}
 		std::fs::write(path, serde_json::to_vec_pretty(&profile)?)?;
-		println!("已写入 profiling 结果: {}", path.display());
+		println!("wrote profiling result: {}", path.display());
 	}
 
 	Ok(0)
@@ -192,5 +194,5 @@ fn handle_data_list(args: &DataListArgs) -> HandlerResult {
 }
 
 fn parse_game(value: &str) -> Result<Game, Box<dyn std::error::Error>> {
-	Game::from_key(value).ok_or_else(|| format!("不支持的游戏标识: {value}").into())
+	Game::from_key(value).ok_or_else(|| format!("unsupported game key: {value}").into())
 }

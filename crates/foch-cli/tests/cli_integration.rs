@@ -298,7 +298,9 @@ fn serve_directory(root: &Path) -> StaticServer {
 				Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
 					thread::sleep(Duration::from_millis(25));
 				}
-				Err(_err) => break,
+				Err(_err) => {
+					thread::sleep(Duration::from_millis(25));
+				}
 			}
 		}
 	});

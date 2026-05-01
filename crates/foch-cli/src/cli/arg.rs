@@ -7,7 +7,7 @@ use std::str::FromStr;
 #[command(
 	author,
 	version,
-	about = "Foch: Paradox Mod 分析与合并工具",
+	about = "Foch: Paradox mod analysis and merge toolkit",
 	long_about = None
 )]
 pub struct FochCli {
@@ -47,8 +47,8 @@ pub struct LspArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "检查 playset 并输出规则发现",
-	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
+	about = "Check a playset and report findings",
+	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
 	#[arg(default_value = None)]
@@ -265,7 +265,7 @@ pub struct SimplifyArgs {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "管理可分发的基础游戏数据",
+	about = "Manage distributable base game data",
 	after_help = "Examples:\n  foch data list\n  foch data install eu4 --game-version auto\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --install\n  foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --profile-out ./build-profile.json --output-dir ./dist/data --release-asset"
 )]
 pub struct DataArgs {
@@ -356,7 +356,7 @@ pub enum CheckChannelArg {
 }
 
 #[derive(Parser, Debug)]
-#[command(about = "查看和维护本地配置")]
+#[command(about = "Inspect and maintain local configuration")]
 pub struct ConfigArgs {
 	#[command(subcommand)]
 	pub command: FochCliConfigCommands,

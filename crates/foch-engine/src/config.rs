@@ -49,7 +49,7 @@ pub fn get_config_dir_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 		return Ok(PathBuf::from(path));
 	}
 
-	let home = dirs::home_dir().ok_or("无法获取 $HOME 目录")?;
+	let home = dirs::home_dir().ok_or("failed to get $HOME directory")?;
 	Ok(home.join(".config").join("foch"))
 }
 
@@ -75,17 +75,18 @@ impl Config {
 			Some(path) if path.exists() => items.push(ValidationItem {
 				key: "steam_root_path".to_string(),
 				status: ValidationStatus::Ok,
-				message: format!("Steam 路径可用: {}", path.display()),
+				message: format!("Steam path is available: {}", path.display()),
 			}),
 			Some(path) => items.push(ValidationItem {
 				key: "steam_root_path".to_string(),
 				status: ValidationStatus::Error,
-				message: format!("Steam 路径不存在: {}", path.display()),
+				message: format!("Steam path does not exist: {}", path.display()),
 			}),
 			None => items.push(ValidationItem {
 				key: "steam_root_path".to_string(),
 				status: ValidationStatus::Warning,
-				message: "Steam 路径未设置，工坊 Mod 自动定位可能失败".to_string(),
+				message: "Steam path is not set; automatic Workshop mod discovery may fail"
+					.to_string(),
 			}),
 		}
 
@@ -93,17 +94,18 @@ impl Config {
 			Some(path) if path.exists() => items.push(ValidationItem {
 				key: "paradox_data_path".to_string(),
 				status: ValidationStatus::Ok,
-				message: format!("Paradox 数据目录可用: {}", path.display()),
+				message: format!("Paradox data directory is available: {}", path.display()),
 			}),
 			Some(path) => items.push(ValidationItem {
 				key: "paradox_data_path".to_string(),
 				status: ValidationStatus::Error,
-				message: format!("Paradox 数据目录不存在: {}", path.display()),
+				message: format!("Paradox data directory does not exist: {}", path.display()),
 			}),
 			None => items.push(ValidationItem {
 				key: "paradox_data_path".to_string(),
 				status: ValidationStatus::Warning,
-				message: "Paradox 数据目录未设置，本地 Mod 解析可能失败".to_string(),
+				message: "Paradox data directory is not set; local mod resolution may fail"
+					.to_string(),
 			}),
 		}
 
@@ -111,7 +113,7 @@ impl Config {
 			items.push(ValidationItem {
 				key: "game_path".to_string(),
 				status: ValidationStatus::Warning,
-				message: "尚未配置任何游戏安装路径".to_string(),
+				message: "no game install paths are configured".to_string(),
 			});
 		} else {
 			for (game, path) in &self.game_path {
@@ -121,9 +123,9 @@ impl Config {
 					ValidationStatus::Error
 				};
 				let message = if path.exists() {
-					format!("游戏 {game} 路径可用: {}", path.display())
+					format!("game {game} path is available: {}", path.display())
 				} else {
-					format!("游戏 {game} 路径不存在: {}", path.display())
+					format!("game {game} path does not exist: {}", path.display())
 				};
 
 				items.push(ValidationItem {

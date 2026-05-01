@@ -1,6 +1,6 @@
 use foch_core::model::{
 	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportStatus, MergeReportValidation,
+	MergeReportStatus, MergeReportValidation, Severity,
 };
 use foch_engine::{
 	CheckRequest, Config, MergePlanOptions, RunOptions, run_checks, run_checks_with_options,
@@ -390,9 +390,6 @@ fn namespace_conflict_reports_only_diamond_leaf_siblings() {
 	assert_eq!(namespace_findings.len(), 1);
 	let message = &namespace_findings[0].message;
 	assert!(message.contains("2 sibling mods"));
-	assert!(!message.contains("'A' in"));
-	assert!(message.contains("'B' in"));
-	assert!(message.contains("'C' in"));
 	let evidence = namespace_findings[0]
 		.evidence
 		.as_deref()
@@ -426,12 +423,11 @@ fn mergeable_cross_mod_overlap_reports_mergeable_overlap_without_overshadow() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| { f.rule_id == "mergeable-overlap" && f.message.contains("可自动合并") })
-	);
+	assert!(result.findings.iter().any(|f| {
+		f.rule_id == "mergeable-overlap"
+			&& f.severity == Severity::Info
+			&& f.message.contains("can be auto-merged")
+	}));
 	assert!(
 		!result
 			.findings
@@ -465,7 +461,8 @@ fn non_mergeable_cross_mod_overlap_reports_cross_mod_overshadow() {
 
 	let result = run_checks_no_base(request_for(&playlist_path));
 	assert!(result.findings.iter().any(|f| {
-		f.rule_id == "cross-mod-overshadow" && f.message.contains("跨 Mod 重合定义")
+		f.rule_id == "cross-mod-overshadow"
+			&& f.message.contains("cross-mod overlapping definition")
 	}));
 }
 
@@ -866,7 +863,7 @@ fn check_defaults_to_base_game_and_fails_when_missing() {
 		result
 			.fatal_errors
 			.iter()
-			.any(|message| message.contains("基础游戏目录"))
+			.any(|message| message.contains("base game directory"))
 	);
 }
 

@@ -2100,7 +2100,7 @@ fn load_installed_base_snapshot_rejects_old_schema_version() {
 
 	let err = load_installed_base_snapshot("eu4", "schema-test")
 		.expect_err("old schema should be rejected");
-	assert!(err.contains("基础数据 schema 不匹配"));
+	assert!(err.contains("base data schema mismatch"));
 
 	unsafe {
 		std::env::remove_var(BASE_DATA_DIR_ENV);
@@ -2153,8 +2153,8 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 
 	let err = load_installed_base_snapshot("eu4", "schema-test")
 		.expect_err("stale metadata should short-circuit before decode");
-	assert!(err.contains("基础数据 schema 不匹配"));
-	assert!(!err.contains("无法解析基础数据 snapshot"));
+	assert!(err.contains("base data schema mismatch"));
+	assert!(!err.contains("failed to parse base data snapshot"));
 
 	unsafe {
 		std::env::remove_var(BASE_DATA_DIR_ENV);

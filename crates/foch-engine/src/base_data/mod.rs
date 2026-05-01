@@ -1091,14 +1091,14 @@ pub fn resolve_game_root_and_version(
 ) -> Result<(PathBuf, String), String> {
 	let game_root = resolve_game_root(config, game).ok_or_else(|| {
 		format!(
-			"无法定位 {} 基础游戏目录；请配置 game_path.{} 或 Steam 路径，或使用 --no-game-base",
+			"failed to locate {} base game directory; configure game_path.{} or the Steam path, or use --no-game-base",
 			game.key(),
 			game.key()
 		)
 	})?;
 	let version = detect_game_version(&game_root).ok_or_else(|| {
 		format!(
-			"无法检测 {} 版本；请确认 {} 下存在 launcher-settings.json 或 version.txt",
+			"failed to detect {} version; make sure launcher-settings.json or version.txt exists under {}",
 			game.key(),
 			game_root.display()
 		)
@@ -1134,16 +1134,25 @@ pub fn load_installed_base_snapshot(
 	}
 	let snapshot_path = snapshot_path.expect("checked snapshot path");
 
-	let metadata_raw = fs::read_to_string(&metadata_path)
-		.map_err(|err| format!("无法读取基础数据元数据 {}: {err}", metadata_path.display()))?;
-	let metadata: InstalledBaseDataMetadata = serde_json::from_str(&metadata_raw)
-		.map_err(|err| format!("无法解析基础数据元数据 {}: {err}", metadata_path.display()))?;
+	let metadata_raw = fs::read_to_string(&metadata_path).map_err(|err| {
+		format!(
+			"failed to read base data metadata {}: {err}",
+			metadata_path.display()
+		)
+	})?;
+	let metadata: InstalledBaseDataMetadata =
+		serde_json::from_str(&metadata_raw).map_err(|err| {
+			format!(
+				"failed to parse base data metadata {}: {err}",
+				metadata_path.display()
+			)
+		})?;
 	if metadata.schema_version != BASE_DATA_SCHEMA_VERSION {
 		return Err(stale_installed_base_data_message(
 			game_key,
 			game_version,
 			&format!(
-				"基础数据 schema 不匹配: expected {}, found {}",
+				"base data schema mismatch: expected {}, found {}",
 				BASE_DATA_SCHEMA_VERSION, metadata.schema_version
 			),
 		));
@@ -1153,7 +1162,7 @@ pub fn load_installed_base_snapshot(
 			game_key,
 			game_version,
 			&format!(
-				"基础数据分析规则版本不匹配: expected {}, found {}",
+				"base data analysis rules version mismatch: expected {}, found {}",
 				analysis_rules_version(),
 				metadata.analysis_rules_version
 			),
@@ -1165,7 +1174,7 @@ pub fn load_installed_base_snapshot(
 			game_key,
 			game_version,
 			&format!(
-				"无法解析基础数据 snapshot {}: {message}",
+				"failed to parse base data snapshot {}: {message}",
 				snapshot_path.display()
 			),
 		)
@@ -1175,14 +1184,14 @@ pub fn load_installed_base_snapshot(
 			game_key,
 			game_version,
 			&format!(
-				"基础数据 snapshot schema 不匹配: expected {}, found {}",
+				"base data snapshot schema mismatch: expected {}, found {}",
 				BASE_DATA_SCHEMA_VERSION, snapshot.schema_version
 			),
 		));
 	}
 	if snapshot.game != game_key || snapshot.game_version != game_version {
 		return Err(format!(
-			"基础数据内容与请求不匹配: requested {game_key}@{game_version}, found {}@{}",
+			"base data content does not match request: requested {game_key}@{game_version}, found {}@{}",
 			snapshot.game, snapshot.game_version
 		));
 	}
@@ -1191,7 +1200,7 @@ pub fn load_installed_base_snapshot(
 			game_key,
 			game_version,
 			&format!(
-				"基础数据 snapshot 分析规则版本不匹配: expected {}, found {}",
+				"base data snapshot analysis rules version mismatch: expected {}, found {}",
 				analysis_rules_version(),
 				snapshot.analysis_rules_version
 			),
@@ -1207,7 +1216,7 @@ pub fn load_installed_base_snapshot(
 
 fn stale_installed_base_data_message(game_key: &str, game_version: &str, reason: &str) -> String {
 	format!(
-		"{reason}；已安装基础数据已过期，请重新运行 `foch data install {game_key} --game-version {game_version}`，或重新执行 `foch data build {game_key} --from-game-path <game_root> --game-version {game_version} --install`"
+		"{reason}; installed base data is stale, rerun `foch data install {game_key} --game-version {game_version}` or `foch data build {game_key} --from-game-path <game_root> --game-version {game_version} --install`"
 	)
 }
 
@@ -1218,18 +1227,24 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 	}
 
 	let mut entries = Vec::new();
-	for game_dir in fs::read_dir(&root)
-		.map_err(|err| format!("无法读取基础数据目录 {}: {err}", root.display()))?
-	{
+	for game_dir in fs::read_dir(&root).map_err(|err| {
+		format!(
+			"failed to read base data directory {}: {err}",
+			root.display()
+		)
+	})? {
 		let Ok(game_dir) = game_dir else {
 			continue;
 		};
 		if !game_dir.path().is_dir() {
 			continue;
 		}
-		for version_dir in fs::read_dir(game_dir.path())
-			.map_err(|err| format!("无法读取基础数据目录 {}: {err}", game_dir.path().display()))?
-		{
+		for version_dir in fs::read_dir(game_dir.path()).map_err(|err| {
+			format!(
+				"failed to read base data directory {}: {err}",
+				game_dir.path().display()
+			)
+		})? {
 			let Ok(version_dir) = version_dir else {
 				continue;
 			};
@@ -1238,11 +1253,17 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 				continue;
 			}
 			let raw = fs::read_to_string(&metadata_path).map_err(|err| {
-				format!("无法读取基础数据元数据 {}: {err}", metadata_path.display())
+				format!(
+					"failed to read base data metadata {}: {err}",
+					metadata_path.display()
+				)
 			})?;
 			let metadata: InstalledBaseDataMetadata =
 				serde_json::from_str(&raw).map_err(|err| {
-					format!("无法解析基础数据元数据 {}: {err}", metadata_path.display())
+					format!(
+						"failed to parse base data metadata {}: {err}",
+						metadata_path.display()
+					)
 				})?;
 			entries.push(InstalledBaseDataEntry {
 				schema_version: metadata.schema_version,
@@ -1287,7 +1308,7 @@ pub fn build_base_snapshot_with_observer(
 			Some(version) => version.to_string(),
 			None => detect_game_version(game_root).ok_or_else(|| {
 				format!(
-					"无法检测 {} 版本；请提供 --game-version 或确认 {} 下存在版本文件",
+					"failed to detect {} version; provide --game-version or make sure a version file exists under {}",
 					game.key(),
 					game_root.display()
 				)
@@ -1450,14 +1471,18 @@ pub fn write_release_artifacts(
 	output_dir: &Path,
 	release_tag: &str,
 ) -> Result<ReleaseArtifactOutput, String> {
-	fs::create_dir_all(output_dir)
-		.map_err(|err| format!("无法创建输出目录 {}: {err}", output_dir.display()))?;
+	fs::create_dir_all(output_dir).map_err(|err| {
+		format!(
+			"failed to create output directory {}: {err}",
+			output_dir.display()
+		)
+	})?;
 	let sha256 = sha256_hex(encoded_snapshot);
 	let asset_name = snapshot_asset_name(&snapshot.game, &snapshot.game_version);
 	let snapshot_path = output_dir.join(&asset_name);
 	fs::write(&snapshot_path, encoded_snapshot).map_err(|err| {
 		format!(
-			"无法写入 release snapshot {}: {err}",
+			"failed to write release snapshot {}: {err}",
 			snapshot_path.display()
 		)
 	})?;
@@ -1475,10 +1500,10 @@ pub fn write_release_artifacts(
 	};
 	let manifest_path = output_dir.join(RELEASE_MANIFEST_FILE_NAME);
 	let manifest_raw = serde_json::to_string_pretty(&manifest)
-		.map_err(|err| format!("无法序列化 release manifest: {err}"))?;
+		.map_err(|err| format!("failed to serialize release manifest: {err}"))?;
 	fs::write(&manifest_path, manifest_raw).map_err(|err| {
 		format!(
-			"无法写入 release manifest {}: {err}",
+			"failed to write release manifest {}: {err}",
 			manifest_path.display()
 		)
 	})?;
@@ -1502,8 +1527,12 @@ pub fn write_snapshot_bundle(
 	asset_name: Option<String>,
 	sha256: Option<String>,
 ) -> Result<SnapshotBundleOutput, String> {
-	fs::create_dir_all(output_dir)
-		.map_err(|err| format!("无法创建输出目录 {}: {err}", output_dir.display()))?;
+	fs::create_dir_all(output_dir).map_err(|err| {
+		format!(
+			"failed to create output directory {}: {err}",
+			output_dir.display()
+		)
+	})?;
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
@@ -1515,19 +1544,19 @@ pub fn write_snapshot_bundle(
 		sha256,
 	};
 	let metadata_raw = serde_json::to_string_pretty(&metadata)
-		.map_err(|err| format!("无法序列化基础数据元数据: {err}"))?;
+		.map_err(|err| format!("failed to serialize base data metadata: {err}"))?;
 	let snapshot_path = output_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	let metadata_path = output_dir.join(INSTALLED_METADATA_FILE_NAME);
 	let coverage_path = output_dir.join(INSTALLED_COVERAGE_FILE_NAME);
 	fs::write(&snapshot_path, encoded_snapshot).map_err(|err| {
 		format!(
-			"无法写入 snapshot bundle {}: {err}",
+			"failed to write snapshot bundle {}: {err}",
 			snapshot_path.display()
 		)
 	})?;
 	fs::write(&metadata_path, metadata_raw).map_err(|err| {
 		format!(
-			"无法写入 snapshot metadata {}: {err}",
+			"failed to write snapshot metadata {}: {err}",
 			metadata_path.display()
 		)
 	})?;
@@ -1552,18 +1581,18 @@ pub fn install_snapshot_from_release(
 	}
 	let client = client_builder
 		.build()
-		.map_err(|err| format!("无法初始化下载客户端: {err}"))?;
+		.map_err(|err| format!("failed to initialize download client: {err}"))?;
 	let manifest_url = format!("{base_url}/{}", RELEASE_MANIFEST_FILE_NAME);
 	let manifest = client
 		.get(&manifest_url)
 		.send()
 		.and_then(|resp| resp.error_for_status())
-		.map_err(|err| format!("无法下载 release manifest {manifest_url}: {err}"))?
+		.map_err(|err| format!("failed to download release manifest {manifest_url}: {err}"))?
 		.json::<ReleaseDataManifest>()
-		.map_err(|err| format!("无法解析 release manifest {manifest_url}: {err}"))?;
+		.map_err(|err| format!("failed to parse release manifest {manifest_url}: {err}"))?;
 	if manifest.schema_version != BASE_DATA_SCHEMA_VERSION {
 		return Err(format!(
-			"release manifest schema 不匹配: expected {}, found {}",
+			"release manifest schema mismatch: expected {}, found {}",
 			BASE_DATA_SCHEMA_VERSION, manifest.schema_version
 		));
 	}
@@ -1575,14 +1604,14 @@ pub fn install_snapshot_from_release(
 		.cloned()
 		.ok_or_else(|| {
 			format!(
-				"release {release_tag} 中找不到 {} {} 的基础数据资产",
+				"release {release_tag} does not contain a base data asset for {} {}",
 				game.key(),
 				game_version
 			)
 		})?;
 	if asset.analysis_rules_version != analysis_rules_version() {
 		return Err(format!(
-			"release 基础数据分析规则版本不匹配: expected {}, found {}",
+			"release base data analysis rules version mismatch: expected {}, found {}",
 			analysis_rules_version(),
 			asset.analysis_rules_version
 		));
@@ -1592,14 +1621,14 @@ pub fn install_snapshot_from_release(
 		.get(&asset_url)
 		.send()
 		.and_then(|resp| resp.error_for_status())
-		.map_err(|err| format!("无法下载基础数据资产 {asset_url}: {err}"))?
+		.map_err(|err| format!("failed to download base data asset {asset_url}: {err}"))?
 		.bytes()
-		.map_err(|err| format!("无法读取基础数据资产响应 {asset_url}: {err}"))?
+		.map_err(|err| format!("failed to read base data asset response {asset_url}: {err}"))?
 		.to_vec();
 	let digest = sha256_hex(&asset_bytes);
 	if digest != asset.sha256 {
 		return Err(format!(
-			"基础数据资产 SHA256 校验失败: expected {}, found {}",
+			"base data asset SHA256 verification failed: expected {}, found {}",
 			asset.sha256, digest
 		));
 	}
@@ -1607,7 +1636,7 @@ pub fn install_snapshot_from_release(
 	let snapshot = decode_snapshot_from_bytes(&asset_bytes)?;
 	if snapshot.game != game.key() || snapshot.game_version != game_version {
 		return Err(format!(
-			"下载的基础数据资产内容不匹配: expected {}@{}, found {}@{}",
+			"downloaded base data asset content mismatch: expected {}@{}, found {}@{}",
 			game.key(),
 			game_version,
 			snapshot.game,
@@ -1616,7 +1645,7 @@ pub fn install_snapshot_from_release(
 	}
 	if snapshot.analysis_rules_version != asset.analysis_rules_version {
 		return Err(format!(
-			"下载的基础数据分析规则版本不匹配: manifest {}, snapshot {}",
+			"downloaded base data analysis rules version mismatch: manifest {}, snapshot {}",
 			asset.analysis_rules_version, snapshot.analysis_rules_version
 		));
 	}
@@ -1640,17 +1669,25 @@ fn write_installed_snapshot(
 	encoded_snapshot: &[u8],
 ) -> Result<InstalledBaseSnapshot, String> {
 	let install_dir = installed_data_dir(&snapshot.game, &snapshot.game_version);
-	fs::create_dir_all(&install_dir)
-		.map_err(|err| format!("无法创建基础数据安装目录 {}: {err}", install_dir.display()))?;
+	fs::create_dir_all(&install_dir).map_err(|err| {
+		format!(
+			"failed to create base data install directory {}: {err}",
+			install_dir.display()
+		)
+	})?;
 	let metadata_path = install_dir.join(INSTALLED_METADATA_FILE_NAME);
 	let snapshot_path = install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	let metadata_raw = serde_json::to_string_pretty(metadata)
-		.map_err(|err| format!("无法序列化基础数据元数据: {err}"))?;
-	fs::write(&metadata_path, metadata_raw)
-		.map_err(|err| format!("无法写入基础数据元数据 {}: {err}", metadata_path.display()))?;
+		.map_err(|err| format!("failed to serialize base data metadata: {err}"))?;
+	fs::write(&metadata_path, metadata_raw).map_err(|err| {
+		format!(
+			"failed to write base data metadata {}: {err}",
+			metadata_path.display()
+		)
+	})?;
 	fs::write(&snapshot_path, encoded_snapshot).map_err(|err| {
 		format!(
-			"无法写入基础数据 snapshot {}: {err}",
+			"failed to write base data snapshot {}: {err}",
 			snapshot_path.display()
 		)
 	})?;
@@ -1664,10 +1701,18 @@ fn write_installed_snapshot(
 }
 
 fn load_snapshot_from_file(path: &Path) -> Result<BaseAnalysisSnapshot, String> {
-	let raw = fs::read(path)
-		.map_err(|err| format!("无法打开基础数据 snapshot {}: {err}", path.display()))?;
-	decode_snapshot_from_bytes(&raw)
-		.map_err(|err| format!("无法解析基础数据 snapshot {}: {err}", path.display()))
+	let raw = fs::read(path).map_err(|err| {
+		format!(
+			"failed to open base data snapshot {}: {err}",
+			path.display()
+		)
+	})?;
+	decode_snapshot_from_bytes(&raw).map_err(|err| {
+		format!(
+			"failed to parse base data snapshot {}: {err}",
+			path.display()
+		)
+	})
 }
 
 fn encode_snapshot_to_bytes(
@@ -1711,7 +1756,7 @@ fn encode_snapshot_to_bytes(
 			.collect(),
 	};
 	let bytes = bincode::serialize(&bundle)
-		.map_err(|err| format!("无法序列化基础数据 snapshot bundle: {err}"))?;
+		.map_err(|err| format!("failed to serialize base data snapshot bundle: {err}"))?;
 	Ok(EncodedSnapshotBundle {
 		bytes,
 		sections: section_results
@@ -1727,16 +1772,16 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 	}
 
 	let bundle: SnapshotWireBundle = bincode::deserialize(bytes)
-		.map_err(|err| format!("无法解析基础数据 snapshot bundle: {err}"))?;
+		.map_err(|err| format!("failed to parse base data snapshot bundle: {err}"))?;
 	if bundle.format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
 		return Err(format!(
-			"基础数据 bundle 版本不匹配: expected {}, found {}",
+			"base data bundle version mismatch: expected {}, found {}",
 			SNAPSHOT_WIRE_FORMAT_VERSION, bundle.format_version
 		));
 	}
 	if bundle.schema_version != BASE_DATA_SCHEMA_VERSION {
 		return Err(format!(
-			"基础数据 snapshot schema 不匹配: expected {}, found {}",
+			"base data snapshot schema mismatch: expected {}, found {}",
 			BASE_DATA_SCHEMA_VERSION, bundle.schema_version
 		));
 	}
@@ -1772,15 +1817,17 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 		}
 	}
 
-	let metadata = metadata.ok_or_else(|| "基础数据 snapshot 缺少 metadata section".to_string())?;
+	let metadata =
+		metadata.ok_or_else(|| "base data snapshot is missing metadata section".to_string())?;
 	let inventory = inventory
-		.ok_or_else(|| "基础数据 snapshot 缺少 inventory_documents section".to_string())?;
-	let symbol_scope =
-		symbol_scope.ok_or_else(|| "基础数据 snapshot 缺少 symbol_scope section".to_string())?;
-	let localisation = localisation
-		.ok_or_else(|| "基础数据 snapshot 缺少 localisation_ui_resources section".to_string())?;
-	let structured =
-		structured.ok_or_else(|| "基础数据 snapshot 缺少 structured_data section".to_string())?;
+		.ok_or_else(|| "base data snapshot is missing inventory_documents section".to_string())?;
+	let symbol_scope = symbol_scope
+		.ok_or_else(|| "base data snapshot is missing symbol_scope section".to_string())?;
+	let localisation = localisation.ok_or_else(|| {
+		"base data snapshot is missing localisation_ui_resources section".to_string()
+	})?;
+	let structured = structured
+		.ok_or_else(|| "base data snapshot is missing structured_data section".to_string())?;
 
 	Ok(BaseAnalysisSnapshot {
 		schema_version: metadata.schema_version,
@@ -2029,10 +2076,10 @@ where
 {
 	let started = Instant::now();
 	let aligned = rkyv::to_bytes::<rkyv::rancor::Error>(payload)
-		.map_err(|err| format!("无法序列化基础数据 section {display_name}: {err}"))?;
+		.map_err(|err| format!("failed to serialize base data section {display_name}: {err}"))?;
 	let raw: &[u8] = &aligned;
-	let payload =
-		gzip_bytes(raw).map_err(|err| format!("无法压缩基础数据 section {display_name}: {err}"))?;
+	let payload = gzip_bytes(raw)
+		.map_err(|err| format!("failed to compress base data section {display_name}: {err}"))?;
 	let profile = BaseEncodedSectionProfile {
 		name: display_name.to_string(),
 		elapsed_ms: started.elapsed().as_millis() as u64,
@@ -2070,7 +2117,7 @@ where
 {
 	if sha256_hex(&section.payload) != section.sha256 {
 		return Err(format!(
-			"基础数据 section 校验失败: {}",
+			"base data section verification failed: {}",
 			sanitize_metric_key(snapshot_section_display_name(section.name))
 		));
 	}
@@ -2082,7 +2129,7 @@ where
 	loop {
 		let n = std::io::Read::read(&mut decoder, &mut chunk).map_err(|err| {
 			format!(
-				"无法解压基础数据 section {}: {err}",
+				"failed to decompress base data section {}: {err}",
 				snapshot_section_display_name(section.name)
 			)
 		})?;
@@ -2094,7 +2141,7 @@ where
 	// SAFETY: We trust our own serialized data; the byte stream was produced by rkyv::to_bytes.
 	unsafe { rkyv::from_bytes_unchecked::<T, rkyv::rancor::Error>(&aligned) }.map_err(|err| {
 		format!(
-			"无法解析基础数据 section {}: {err}",
+			"failed to parse base data section {}: {err}",
 			snapshot_section_display_name(section.name)
 		)
 	})
@@ -2138,7 +2185,7 @@ fn decode_legacy_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapsho
 			let cursor = Cursor::new(bytes);
 			let decoder = GzDecoder::new(cursor);
 			let snapshot = bincode::deserialize_from::<_, LegacyBaseAnalysisSnapshot>(decoder)
-				.map_err(|err| format!("无法解析 legacy 基础数据 snapshot: {err}"))?;
+				.map_err(|err| format!("failed to parse legacy base data snapshot: {err}"))?;
 			Ok(snapshot.into())
 		}
 	}

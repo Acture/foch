@@ -23,7 +23,7 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 				"missing-playset-field",
 				Severity::Error,
 				FindingChannel::Strict,
-				format!("mod 条目 {idx} 缺失 displayName"),
+				format!("mod entry {idx} missing displayName"),
 				mod_id.clone(),
 				Some(ctx.playlist_path.clone()),
 				None,
@@ -44,7 +44,7 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 				"missing-playset-field",
 				Severity::Error,
 				FindingChannel::Strict,
-				format!("mod 条目 {idx} 缺失 steamId"),
+				format!("mod entry {idx} missing steamId"),
 				None,
 				Some(ctx.playlist_path.clone()),
 				None,
@@ -59,7 +59,7 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 				"missing-playset-field",
 				Severity::Error,
 				FindingChannel::Strict,
-				format!("mod 条目 {idx} 缺失 position"),
+				format!("mod entry {idx} missing position"),
 				mod_id,
 				Some(ctx.playlist_path.clone()),
 				None,
@@ -85,10 +85,10 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 					"duplicate-playset-entry",
 					Severity::Error,
 					FindingChannel::Strict,
-					format!("steamId 冲突: {steam_id} (首次出现于索引 {first_idx})"),
+					format!("steamId conflict: {steam_id} (first seen at index {first_idx})"),
 					Some(steam_id.clone()),
 					Some(ctx.playlist_path.clone()),
-					Some(format!("重复条目索引: {idx}")),
+					Some(format!("duplicate entry index: {idx}")),
 					None,
 					None,
 					Some(1.0),
@@ -104,10 +104,10 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 					"duplicate-playset-entry",
 					Severity::Error,
 					FindingChannel::Strict,
-					format!("position 冲突: {position} (首次出现于索引 {first_idx})"),
+					format!("position conflict: {position} (first seen at index {first_idx})"),
 					entry.steam_id.clone(),
 					Some(ctx.playlist_path.clone()),
-					Some(format!("重复条目索引: {idx}")),
+					Some(format!("duplicate entry index: {idx}")),
 					None,
 					None,
 					Some(1.0),
@@ -138,7 +138,7 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				"mod-descriptor-error",
 				Severity::Error,
 				FindingChannel::Strict,
-				"无法定位 descriptor.mod".to_string(),
+				"failed to locate descriptor.mod".to_string(),
 				Some(mod_item.mod_id.clone()),
 				mod_item.root_path.clone(),
 				None,
@@ -150,7 +150,7 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				"mod-descriptor-error",
 				Severity::Error,
 				FindingChannel::Strict,
-				"descriptor.mod 解析失败".to_string(),
+				"failed to parse descriptor.mod".to_string(),
 				Some(mod_item.mod_id.clone()),
 				Some(path.clone()),
 				Some(err.clone()),
@@ -162,7 +162,7 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				"mod-descriptor-error",
 				Severity::Error,
 				FindingChannel::Strict,
-				"descriptor.mod 不存在".to_string(),
+				"descriptor.mod does not exist".to_string(),
 				Some(mod_item.mod_id.clone()),
 				Some(path.clone()),
 				None,
@@ -205,9 +205,9 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 
 		let mergeable = is_structurally_mergeable_path(&path);
 		let message = if mergeable {
-			format!("文件覆盖冲突（可结构化自动合并候选）: {path}")
+			format!("file overwrite conflict (structural auto-merge candidate): {path}")
 		} else {
-			format!("文件覆盖冲突: {path}")
+			format!("file overwrite conflict: {path}")
 		};
 		let evidence = if mergeable {
 			format!("{} | merge_hint=structural", unique.join(" -> "))
@@ -270,10 +270,10 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 				"missing-mod-dependency",
 				Severity::Warning,
 				FindingChannel::Advisory,
-				format!("缺失依赖: {dependency}"),
+				"missing dependency".to_string(),
 				Some(mod_item.mod_id.clone()),
 				mod_item.descriptor_path.clone(),
-				Some(format!("{} 依赖 {dependency}", descriptor.name)),
+				Some(format!("{} depends on {dependency}", descriptor.name)),
 				None,
 				None,
 				Some(0.9),
@@ -538,7 +538,7 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 			"duplicate-scripted-effect",
 			Severity::Warning,
 			FindingChannel::Advisory,
-			format!("scripted effect 重复定义: {name}"),
+			format!("duplicate scripted effect: {name}"),
 			Some(last.mod_id.clone()),
 			Some(last.path.clone()),
 			Some(evidence),

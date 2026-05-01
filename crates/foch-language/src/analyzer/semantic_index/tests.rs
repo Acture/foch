@@ -5167,7 +5167,8 @@ immediate = {
 
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "missing-effect-parameter" && finding.message.contains("缺失 area")
+			finding.rule_id == "missing-effect-parameter"
+				&& finding.message.contains("missing area")
 		}),
 		"one-of contract should not expand into per-parameter missing messages"
 	);
@@ -5177,9 +5178,9 @@ immediate = {
 			.iter()
 			.filter(|finding| {
 				finding.rule_id == "missing-effect-parameter"
-					&& finding
-						.message
-						.contains("ME_give_claims 至少需要一个参数: area|region|province|id")
+					&& finding.message.contains(
+						"ME_give_claims requires at least one of: area|region|province|id",
+					)
 			})
 			.count(),
 		1,
@@ -5707,14 +5708,14 @@ immediate = {
 		.map(|finding| finding.message.clone())
 		.collect();
 	for snippet in [
-		"add_age_modifier 缺失 else",
-		"country_event_with_effect_insight 缺失 days",
-		"country_event_with_effect_insight 缺失 tooltip",
-		"ME_distribute_development 缺失 limit",
-		"ME_distribute_development 缺失 tooltip",
-		"pick_best_provinces 缺失 scope",
-		"create_general_with_pips 缺失 add_fire",
-		"create_general_with_pips 缺失 culture",
+		"add_age_modifier missing else",
+		"country_event_with_effect_insight missing days",
+		"country_event_with_effect_insight missing tooltip",
+		"ME_distribute_development missing limit",
+		"ME_distribute_development missing tooltip",
+		"pick_best_provinces missing scope",
+		"create_general_with_pips missing add_fire",
+		"create_general_with_pips missing culture",
 	] {
 		assert!(
 			!contract_findings
@@ -6088,30 +6089,30 @@ immediate = {
 	);
 
 	for snippet in [
-		"unlock_estate_privilege 缺失 estate_privilege",
-		"HAB_change_habsburg_glory 至少需要一个参数: amount|remove",
-		"add_legitimacy_or_reform_progress 至少需要一个参数: amount|value",
-		"EE_change_variable 至少需要一个参数: add|subtract|divide|multiply",
-		"EE_change_variable 缺失 which",
-		"ME_tim_add_spoils_of_war 至少需要一个参数: add|remove",
-		"ME_add_power_projection 至少需要一个参数: amount|value",
-		"ME_automatic_colonization_effect_module 至少需要一个参数: region|superregion",
-		"ME_automatic_colonization_effect_module 缺失 target_region_effect",
-		"country_event_with_insight 缺失 insight_tooltip",
-		"country_event_with_insight 缺失 id",
-		"define_and_hire_grand_vizier 缺失 type",
-		"ME_override_country_name 至少需要一个参数: country_name|name|country|value|string",
-		"persia_indian_hegemony_decision_march_effect 缺失 province",
-		"persia_indian_hegemony_decision_march_effect 缺失 tag_1",
-		"persia_indian_hegemony_decision_march_effect 缺失 trade_company_region",
-		"persia_indian_hegemony_decision_coup_effect 缺失 province",
-		"persia_indian_hegemony_decision_coup_effect 缺失 tag_1",
-		"build_as_many_as_possible 缺失 pick_best_function",
-		"give_claims 至少需要一个参数: area|region|province|id",
-		"pick_best_tags 缺失 scale",
-		"pick_best_tags 缺失 event_target_name",
-		"pick_best_tags 缺失 global_trigger",
-		"ME_add_years_of_trade_income 至少需要一个参数: years|value|amount",
+		"unlock_estate_privilege missing estate_privilege",
+		"HAB_change_habsburg_glory requires at least one of: amount|remove",
+		"add_legitimacy_or_reform_progress requires at least one of: amount|value",
+		"EE_change_variable requires at least one of: add|subtract|divide|multiply",
+		"EE_change_variable missing which",
+		"ME_tim_add_spoils_of_war requires at least one of: add|remove",
+		"ME_add_power_projection requires at least one of: amount|value",
+		"ME_automatic_colonization_effect_module requires at least one of: region|superregion",
+		"ME_automatic_colonization_effect_module missing target_region_effect",
+		"country_event_with_insight missing insight_tooltip",
+		"country_event_with_insight missing id",
+		"define_and_hire_grand_vizier missing type",
+		"ME_override_country_name requires at least one of: country_name|name|country|value|string",
+		"persia_indian_hegemony_decision_march_effect missing province",
+		"persia_indian_hegemony_decision_march_effect missing tag_1",
+		"persia_indian_hegemony_decision_march_effect missing trade_company_region",
+		"persia_indian_hegemony_decision_coup_effect missing province",
+		"persia_indian_hegemony_decision_coup_effect missing tag_1",
+		"build_as_many_as_possible missing pick_best_function",
+		"give_claims requires at least one of: area|region|province|id",
+		"pick_best_tags missing scale",
+		"pick_best_tags missing event_target_name",
+		"pick_best_tags missing global_trigger",
+		"ME_add_years_of_trade_income requires at least one of: years|value|amount",
 	] {
 		assert!(
 			missing_parameter_messages

@@ -64,7 +64,7 @@ pub(crate) fn resolve_workspace(
 			path: err.path.clone(),
 			message: match err.kind {
 				ParseErrorKind::Format => err.message,
-				ParseErrorKind::Io => format!("无法读取 Playset: {err}"),
+				ParseErrorKind::Io => format!("failed to read Playset: {err}"),
 			},
 		})?;
 
@@ -100,14 +100,16 @@ pub(crate) fn resolve_workspace(
 				.and_then(|game_root| detect_game_version(game_root)),
 		)
 	};
-	let snapshot_filter =
-		match FileFilter::new(playlist.game.clone(), &request.config.extra_ignore_patterns) {
-			Ok(filter) => filter,
-			Err(message) => {
-				tracing::warn!(target: "foch::workspace::resolve", message, "回退到无额外忽略 glob 的过滤器");
-				FileFilter::for_game(playlist.game.clone())
-			}
-		};
+	let snapshot_filter = match FileFilter::new(
+		playlist.game.clone(),
+		&request.config.extra_ignore_patterns,
+	) {
+		Ok(filter) => filter,
+		Err(message) => {
+			tracing::warn!(target: "foch::workspace::resolve", message, "falling back to filter without extra ignore globs");
+			FileFilter::for_game(playlist.game.clone())
+		}
+	};
 	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
 		.iter()
 		.map(|mod_item| {
@@ -140,7 +142,7 @@ pub(crate) fn resolve_workspace(
 
 fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) -> String {
 	format!(
-		"缺少 {} {} 的已安装基础数据；请运行 `foch data install {} --game-version auto` 或 `foch data build {} --from-game-path {} --game-version auto --install`，或使用 --no-game-base",
+		"missing installed base data for {} {}; run `foch data install {} --game-version auto` or `foch data build {} --from-game-path {} --game-version auto --install`, or use --no-game-base",
 		game.key(),
 		game_version,
 		game.key(),
@@ -162,7 +164,7 @@ pub(crate) fn build_mod_candidates(
 	{
 		Ok(filter) => filter,
 		Err(message) => {
-			tracing::warn!(target: "foch::workspace::resolve", message, "回退到无额外忽略 glob 的过滤器");
+			tracing::warn!(target: "foch::workspace::resolve", message, "falling back to filter without extra ignore globs");
 			FileFilter::for_game(playlist.game.clone())
 		}
 	};
@@ -187,7 +189,7 @@ pub(crate) fn build_mod_candidates(
 					Ok(descriptor) => (Some(descriptor), None),
 					Err(err) => (None, Some(err.to_string())),
 				},
-				Some(path) => (None, Some(format!("{} 不存在", path.display()))),
+				Some(path) => (None, Some(format!("{} does not exist", path.display()))),
 				None => (None, None),
 			};
 

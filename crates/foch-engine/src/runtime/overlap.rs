@@ -75,10 +75,10 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 		match status {
 			OverlapStatus::DiscardableBaseCopy => findings.push(Finding {
 				rule_id: "mergeable-overlap".to_string(),
-				severity: Severity::Warning,
+				severity: Severity::Info,
 				channel: FindingChannel::Advisory,
 				message: format!(
-					"与 base game 等价的覆盖定义可清理: {} {}",
+					"base game-equivalent override can be cleaned up: {} {}",
 					symbol_kind_text(kind),
 					name
 				),
@@ -91,10 +91,10 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 			}),
 			OverlapStatus::MergeCandidate => findings.push(Finding {
 				rule_id: "mergeable-overlap".to_string(),
-				severity: Severity::Warning,
+				severity: Severity::Info,
 				channel: FindingChannel::Advisory,
 				message: format!(
-					"跨 Mod 重合定义可自动合并: {} {}",
+					"cross-mod overlapping definition can be auto-merged: {} {}",
 					symbol_kind_text(kind),
 					name
 				),
@@ -110,7 +110,7 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 				severity: Severity::Error,
 				channel: FindingChannel::Strict,
 				message: format!(
-					"跨 Mod 重合定义会改变解析目标: {} {}",
+					"cross-mod overlapping definition changes resolution target: {} {}",
 					symbol_kind_text(kind),
 					name
 				),

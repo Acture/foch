@@ -505,7 +505,11 @@ pub fn document_family_name(family: DocumentFamily) -> &'static str {
 pub fn write_coverage_report(path: &Path, snapshot: &BaseAnalysisSnapshot) -> Result<(), String> {
 	let coverage = build_coverage_report(snapshot);
 	let raw = serde_json::to_string_pretty(&coverage)
-		.map_err(|err| format!("无法序列化基础数据 coverage: {err}"))?;
-	fs::write(path, raw)
-		.map_err(|err| format!("无法写入基础数据 coverage {}: {err}", path.display()))
+		.map_err(|err| format!("failed to serialize base data coverage: {err}"))?;
+	fs::write(path, raw).map_err(|err| {
+		format!(
+			"failed to write base data coverage {}: {err}",
+			path.display()
+		)
+	})
 }

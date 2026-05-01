@@ -90,7 +90,7 @@ fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 			rule_id: "cross-mod-overshadow".to_string(),
 			severity: Severity::Error,
 			channel: FindingChannel::Strict,
-			message: format!("重复定义: {} {}", symbol_kind_text(kind), name),
+			message: format!("duplicate definition: {} {}", symbol_kind_text(kind), name),
 			mod_id: Some(last.mod_id.clone()),
 			path: Some(last.path.clone()),
 			evidence: Some(evidence),
@@ -192,7 +192,7 @@ fn check_unresolved_call_targets(index: &SemanticIndex) -> Vec<Finding> {
 			severity: Severity::Error,
 			channel: FindingChannel::Strict,
 			message: format!(
-				"未解析调用: {} {}",
+				"unresolved call: {} {}",
 				symbol_kind_text(reference.kind),
 				reference.name
 			),
@@ -259,7 +259,7 @@ fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Fi
 			rule_id: "invisible-scope-alias".to_string(),
 			severity,
 			channel,
-			message: format!("不可见别名引用: {}", usage.alias),
+			message: format!("invisible alias reference: {}", usage.alias),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
@@ -305,7 +305,9 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 				.filter(|required| {
 					!provided.contains(required.as_str()) && !optional.contains(required.as_str())
 				})
-				.map(|required| format!("参数未绑定: {} 缺失 {}", reference.name, required))
+				.map(|required| {
+					format!("unbound parameter: {} missing {}", reference.name, required)
+				})
 				.collect()
 		};
 		for message in missing_messages {
@@ -326,7 +328,11 @@ fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 				message,
 				mod_id: Some(reference.mod_id.clone()),
 				path: Some(reference.path.clone()),
-				evidence: Some(format!("定义位置 {}:{}", def.path.display(), def.line)),
+				evidence: Some(format!(
+					"definition location {}:{}",
+					def.path.display(),
+					def.line
+				)),
 				line: Some(reference.line),
 				column: Some(reference.column),
 				confidence: Some(0.88),
@@ -389,7 +395,7 @@ fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 			rule_id: "unknown-scope-type".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
-			message: format!("类型不确定路径: key={} 在 Unknown scope", usage.key),
+			message: format!("unknown-scope path: key={} in Unknown scope", usage.key),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
@@ -444,7 +450,10 @@ fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 			rule_id: "scope-type-mismatch".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
-			message: format!("潜在类型弱冲突: Province scope 使用 {}", usage.key),
+			message: format!(
+				"potential weak type conflict: Province scope uses {}",
+				usage.key
+			),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
 			evidence: Some(format!("scope_id={}", usage.scope_id)),
@@ -484,10 +493,10 @@ fn check_cross_mod_overlap_advisories(index: &SemanticIndex) -> Vec<Finding> {
 			.join(" -> ");
 		findings.push(Finding {
 			rule_id: "mergeable-overlap".to_string(),
-			severity: Severity::Warning,
+			severity: Severity::Info,
 			channel: FindingChannel::Advisory,
 			message: format!(
-				"跨 Mod 同名定义可能改变解析目标: {} {}",
+				"cross-mod same-name definition may change resolution target: {} {}",
 				symbol_kind_text(kind),
 				name
 			),
@@ -736,13 +745,13 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 							severity: Severity::Warning,
 							channel: FindingChannel::Advisory,
 							message: format!(
-								"flag 可能未声明: {}({}) 引用 {}",
+								"flag may be undeclared: {}({}) references {}",
 								template.op_key, template.kind, flag
 							),
 							mod_id: Some(reference.mod_id.clone()),
 							path: Some(reference.path.clone()),
 							evidence: Some(format!(
-								"调用 {} 绑定 {}={}；模板 {}:{}:{} 中 {} = {}${}${}；推导值 {}",
+								"call {} binds {}={}; template {}:{}:{} has {} = {}${}${}; inferred value {}",
 								def_name,
 								template.param_name,
 								bound_value,
@@ -807,13 +816,13 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 						severity: Severity::Warning,
 						channel: FindingChannel::Advisory,
 						message: format!(
-							"flag 可能未声明: {}({}) 引用 {}",
+							"flag may be undeclared: {}({}) references {}",
 							template.op_key, template.kind, flag
 						),
 						mod_id: Some(reference.mod_id.clone()),
 						path: Some(reference.path.clone()),
 						evidence: Some(format!(
-							"调用 {} 绑定 {}={}；模板 {}:{}:{} 中 {} = {}${}${}；推导值 {}",
+							"call {} binds {}={}; template {}:{}:{} has {} = {}${}${}; inferred value {}",
 							def_name,
 							template.param_name,
 							bound_value,
@@ -891,10 +900,10 @@ fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			rule_id: "missing-localisation".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
-			message: format!("localisation key 未找到: {}", key),
+			message: format!("localisation key not found: {}", key),
 			mod_id: Some(usage.mod_id.clone()),
 			path: Some(usage.path.clone()),
-			evidence: Some(format!("引用字段 {} = {}", usage.key, key)),
+			evidence: Some(format!("reference field {} = {}", usage.key, key)),
 			line: Some(usage.line),
 			column: Some(usage.column),
 			confidence: Some(0.68),
@@ -920,7 +929,7 @@ fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 			rule_id: "duplicate-localisation".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
-			message: format!("重复 localisation key: {}", duplicate.key),
+			message: format!("duplicate localisation key: {}", duplicate.key),
 			mod_id: Some(duplicate.mod_id.clone()),
 			path: Some(duplicate.path.clone()),
 			evidence: Some(format!(

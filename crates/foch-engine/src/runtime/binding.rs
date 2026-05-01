@@ -54,7 +54,7 @@ pub(crate) fn build_runtime_state_for_request(
 ) -> Result<RuntimeState, String> {
 	let workspace = resolve_workspace(request, include_game_base).map_err(|err| {
 		if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
-			"无法解析 Playset JSON".to_string()
+			"failed to parse Playset JSON".to_string()
 		} else {
 			err.message
 		}

@@ -22,7 +22,7 @@ pub fn handle_merge_plan(merge_plan_args: &MergePlanArgs, config: Config) -> Han
 
 	if let Some(path) = merge_plan_args.output.as_ref() {
 		std::fs::write(path, rendered)?;
-		println!("合并计划已写入: {}", path.display());
+		println!("merge plan written to: {}", path.display());
 	} else {
 		println!("{rendered}");
 	}

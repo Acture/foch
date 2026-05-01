@@ -29,13 +29,13 @@ impl FileFilter {
 				.literal_separator(false)
 				.build()
 				.map_err(|err| {
-					format!("无法解析 extra_ignore_patterns 模式 \"{pattern}\": {err}")
+					format!("failed to parse extra_ignore_patterns pattern \"{pattern}\": {err}")
 				})?;
 			builder.add(glob);
 		}
 		let extra_ignore = builder
 			.build()
-			.map_err(|err| format!("无法构建 extra_ignore_patterns GlobSet: {err}"))?;
+			.map_err(|err| format!("failed to build extra_ignore_patterns GlobSet: {err}"))?;
 		Ok(Self {
 			game,
 			extra_ignore,

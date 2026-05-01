@@ -6,7 +6,7 @@ pub fn handle_show(config: &Config, show_args: &ShowConfigArgs) -> HandlerResult
 	if show_args.json {
 		println!("{}", serde_json::to_string_pretty(config)?);
 	} else {
-		println!("当前配置:");
+		println!("current configuration:");
 		println!(
 			"  steam_root_path: {}",
 			display_opt_path(config.steam_root_path.as_deref())

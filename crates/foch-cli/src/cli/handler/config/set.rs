@@ -9,7 +9,7 @@ pub fn handle_set(
 	config: &mut Config,
 	config_file: &Path,
 ) -> HandlerResult {
-	tracing::info!("设置配置: {:?}", set_args);
+	tracing::info!("setting configuration: {:?}", set_args);
 
 	match &set_args.command {
 		arg::FochCliSetCommands::SteamPath(path_args) => {
@@ -17,7 +17,7 @@ pub fn handle_set(
 				.path
 				.canonicalize()
 				.unwrap_or_else(|_| path_args.path.clone());
-			println!("设置 Steam 路径: {}", path.display());
+			println!("set Steam path: {}", path.display());
 			config.steam_root_path = Some(path);
 		}
 		arg::FochCliSetCommands::ParadoxDataPath(path_args) => {
@@ -25,7 +25,7 @@ pub fn handle_set(
 				.path
 				.canonicalize()
 				.unwrap_or_else(|_| path_args.path.clone());
-			println!("设置 Paradox 数据路径: {}", path.display());
+			println!("set Paradox data path: {}", path.display());
 			config.paradox_data_path = Some(path);
 		}
 		arg::FochCliSetCommands::GamePath(game_path_args) => {
@@ -34,7 +34,7 @@ pub fn handle_set(
 				.canonicalize()
 				.unwrap_or_else(|_| game_path_args.path.clone());
 			println!(
-				"设置游戏 '{}' 路径: {}",
+				"set game '{}' path: {}",
 				game_path_args.game_name,
 				path.display()
 			);

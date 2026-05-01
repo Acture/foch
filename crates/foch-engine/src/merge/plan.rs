@@ -30,7 +30,7 @@ pub fn run_merge_plan_with_options(
 				..MergePlanResult::default()
 			};
 			if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
-				result.push_fatal_error("无法解析 Playset JSON");
+				result.push_fatal_error("failed to parse Playset JSON");
 			} else {
 				result.push_fatal_error(err.message);
 			}

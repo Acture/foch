@@ -558,7 +558,7 @@ pub(crate) fn evaluate_param_contract(
 
 	for required in &contract.required_all {
 		if !provided.contains(required.as_str()) {
-			messages.push(format!("参数未绑定: {name} 缺失 {required}"));
+			messages.push(format!("unbound parameter: {name} missing {required}"));
 		}
 	}
 
@@ -570,7 +570,7 @@ pub(crate) fn evaluate_param_contract(
 			continue;
 		}
 		messages.push(format!(
-			"参数未绑定: {name} 至少需要一个参数: {}",
+			"unbound parameter: {name} requires at least one of: {}",
 			group.join("|")
 		));
 	}
@@ -590,7 +590,7 @@ pub(crate) fn evaluate_param_contract(
 			continue;
 		}
 		messages.push(format!(
-			"参数未绑定: {name} 在提供 {when_present} 时至少需要一个参数: {}",
+			"unbound parameter: {name} requires at least one of these when {when_present} is provided: {}",
 			requires_any_of.join("|")
 		));
 	}

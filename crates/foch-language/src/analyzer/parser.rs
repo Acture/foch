@@ -546,7 +546,7 @@ impl ParserState {
 			TokenKind::RBrace | TokenKind::Eof => None,
 			_ => {
 				self.diagnostics.push(ParseDiagnostic {
-					message: "无法解析的语句起始 token".to_string(),
+					message: "could not parse statement start token".to_string(),
 					span: first.span,
 				});
 				None
@@ -622,7 +622,7 @@ impl ParserState {
 			},
 			_ => {
 				self.diagnostics.push(ParseDiagnostic {
-					message: "值解析失败，已降级为空标识符".to_string(),
+					message: "value parse failed; downgraded to empty identifier".to_string(),
 					span: token.span.clone(),
 				});
 				AstValue::Scalar {
@@ -672,7 +672,7 @@ pub fn parse_clausewitz_file(path: &Path) -> ParseResult {
 				statements: Vec::new(),
 			},
 			diagnostics: vec![ParseDiagnostic {
-				message: format!("读取文件失败: {err}"),
+				message: format!("failed to read file: {err}"),
 				span: SpanRange {
 					start: Span {
 						line: 1,
