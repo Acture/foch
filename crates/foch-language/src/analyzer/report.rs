@@ -354,13 +354,7 @@ fn append_dep_misuse_section(lines: &mut Vec<String>, report: &MergeReport) {
             );
 		}
 		lines.push(String::new());
-		lines.push(
-			"  Recommendation: contact the mod author and ask them to remove this".to_string(),
-		);
-		lines.push(
-			"  entry from dependencies={}, or override locally with foch.toml when supported:"
-				.to_string(),
-		);
+		lines.push("  Override locally in foch.toml at your playset root:".to_string());
 		lines.push("    [[overrides]]".to_string());
 		lines.push(format!("    mod = {}", quote(&finding.mod_id)));
 		lines.push(format!("    dep = {}", quote(&finding.suspicious_dep_id)));

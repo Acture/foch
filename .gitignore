@@ -7,3 +7,4 @@ packages/vscode-foch/*.vsix
 .direnv/
 output/
 crates/foch-engine/src/base_data/eu4_data.bin
+test_merge
