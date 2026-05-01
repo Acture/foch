@@ -1,7 +1,8 @@
 use foch_core::model::{
-	ChannelMode, CheckResult, Finding, MergePlanEntry, MergePlanResult, MergePlanStrategy,
-	MergeReport, MergeReportStatus, Severity,
+	ChannelMode, CheckResult, Finding, FindingChannel, MergePlanEntry, MergePlanResult,
+	MergePlanStrategy, MergeReport, MergeReportStatus, Severity,
 };
+use std::collections::BTreeMap;
 
 pub fn render_text(result: &CheckResult, color: bool, channel: ChannelMode) -> String {
 	let findings = result.filtered_findings(channel);
@@ -60,11 +61,133 @@ pub fn render_text(result: &CheckResult, color: bool, channel: ChannelMode) -> S
 		lines.push(format!("[FATAL] {fatal}"));
 	}
 
-	for finding in findings {
-		lines.push(render_finding(&finding, color));
+	for finding in &findings {
+		lines.push(render_finding(finding, color));
 	}
 
+	append_findings_by_rule_summary(&mut lines, &findings, color);
+
 	lines.join("\n")
+}
+
+fn append_findings_by_rule_summary(lines: &mut Vec<String>, findings: &[Finding], color: bool) {
+	lines.push(String::new());
+
+	if findings.is_empty() {
+		lines.push("Findings by rule: (no findings)".to_string());
+		return;
+	}
+
+	let mut counts: BTreeMap<(String, u8, u8), usize> = BTreeMap::new();
+	for finding in findings {
+		*counts
+			.entry((
+				finding.rule_id.clone(),
+				severity_order(finding.severity),
+				channel_order(finding.channel),
+			))
+			.or_insert(0) += 1;
+	}
+
+	let mut sorted = counts.into_iter().collect::<Vec<_>>();
+	sorted.sort_by(
+		|((rule_a, severity_a, channel_a), count_a), ((rule_b, severity_b, channel_b), count_b)| {
+			count_b
+				.cmp(count_a)
+				.then_with(|| rule_a.cmp(rule_b))
+				.then_with(|| severity_a.cmp(severity_b))
+				.then_with(|| channel_a.cmp(channel_b))
+		},
+	);
+
+	let count_width = sorted
+		.iter()
+		.map(|(_, count)| count.to_string().len())
+		.max()
+		.unwrap_or("count".len())
+		.max("count".len());
+
+	lines.push("Findings by rule:".to_string());
+	lines.push(format!(
+		"  {:>count_width$}  {:<7}  {:<9}  {}",
+		"count", "severity", "channel", "rule_id"
+	));
+	lines.push(format!(
+		"  {:>count_width$}  {:<7}  {:<9}  {}",
+		"-".repeat(count_width),
+		"--------",
+		"---------",
+		"-------"
+	));
+
+	for ((rule_id, severity, channel), count) in sorted {
+		lines.push(format!(
+			"  {:>count_width$}  {}  {:<9}  {}",
+			count,
+			render_summary_severity(severity_from_order(severity), color),
+			channel_label(channel_from_order(channel)),
+			rule_id
+		));
+	}
+	lines.push(format!("  (total: {})", findings.len()));
+}
+
+fn severity_order(severity: Severity) -> u8 {
+	match severity {
+		Severity::Error => 0,
+		Severity::Warning => 1,
+		Severity::Info => 2,
+	}
+}
+
+fn severity_from_order(order: u8) -> Severity {
+	match order {
+		0 => Severity::Error,
+		1 => Severity::Warning,
+		_ => Severity::Info,
+	}
+}
+
+fn channel_order(channel: FindingChannel) -> u8 {
+	match channel {
+		FindingChannel::Strict => 0,
+		FindingChannel::Advisory => 1,
+	}
+}
+
+fn channel_from_order(order: u8) -> FindingChannel {
+	match order {
+		0 => FindingChannel::Strict,
+		_ => FindingChannel::Advisory,
+	}
+}
+
+fn severity_label(severity: Severity) -> &'static str {
+	match severity {
+		Severity::Error => "Error",
+		Severity::Warning => "Warning",
+		Severity::Info => "Info",
+	}
+}
+
+fn channel_label(channel: FindingChannel) -> &'static str {
+	match channel {
+		FindingChannel::Strict => "Strict",
+		FindingChannel::Advisory => "Advisory",
+	}
+}
+
+fn render_summary_severity(severity: Severity, color: bool) -> String {
+	let padded = format!("{:<7}", severity_label(severity));
+	if color {
+		match severity {
+			Severity::Error => console::style(padded).red().bold().to_string(),
+			Severity::Warning => console::style(padded).yellow().bold().to_string(),
+			Severity::Info => console::style(padded).cyan().bold().to_string(),
+		}
+	} else {
+		padded
+	}
 }
 
 pub fn render_merge_plan_text(result: &MergePlanResult) -> String {
@@ -335,5 +458,73 @@ fn render_merge_report_status(status: MergeReportStatus) -> &'static str {
 		MergeReportStatus::PartialSuccess => "PARTIAL_SUCCESS",
 		MergeReportStatus::Blocked => "BLOCKED",
 		MergeReportStatus::Fatal => "FATAL",
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn finding(rule_id: &str, severity: Severity, channel: FindingChannel) -> Finding {
+		Finding {
+			rule_id: rule_id.to_string(),
+			severity,
+			channel,
+			message: "synthetic finding".to_string(),
+			mod_id: None,
+			path: None,
+			evidence: None,
+			line: None,
+			column: None,
+			confidence: None,
+		}
+	}
+
+	#[test]
+	fn render_text_appends_findings_by_rule_summary() {
+		let mut result = CheckResult {
+			findings: vec![
+				finding("alpha-rule", Severity::Warning, FindingChannel::Advisory),
+				finding("beta-rule", Severity::Error, FindingChannel::Strict),
+				finding("alpha-rule", Severity::Warning, FindingChannel::Advisory),
+			],
+			..Default::default()
+		};
+		result.recompute_channels();
+
+		let output = render_text(&result, false, ChannelMode::All);
+		let summary = output
+			.split("Findings by rule:")
+			.nth(1)
+			.expect("summary section should be present");
+
+		assert!(summary.contains("alpha-rule"));
+		assert!(summary.contains("beta-rule"));
+		assert!(summary.contains("Warning"));
+		assert!(summary.contains("Advisory"));
+		assert!(summary.contains("Error"));
+		assert!(summary.contains("Strict"));
+		assert!(summary.contains("(total: 3)"));
+		assert!(summary.lines().any(|line| {
+			line.contains('2')
+				&& line.contains("Warning")
+				&& line.contains("Advisory")
+				&& line.contains("alpha-rule")
+		}));
+		assert!(summary.lines().any(|line| {
+			line.contains('1')
+				&& line.contains("Error")
+				&& line.contains("Strict")
+				&& line.contains("beta-rule")
+		}));
+		assert!(summary.find("alpha-rule") < summary.find("beta-rule"));
+	}
+
+	#[test]
+	fn render_text_appends_empty_findings_summary() {
+		let output = render_text(&CheckResult::default(), false, ChannelMode::All);
+
+		assert!(output.contains("\nFindings by rule: (no findings)"));
+		assert!(!output.contains("  count  severity"));
 	}
 }
