@@ -3,12 +3,10 @@ use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
-use foch_core::domain::playlist::load_playlist;
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_REPORT_ARTIFACT_PATH, MergeReport, MergeReportStatus,
 	MergeReportValidation,
 };
-use serde_json::json;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -120,34 +118,36 @@ fn revalidate_generated_output(
 			),
 		})?
 		.to_string_lossy();
-	let original_playlist =
-		load_playlist(&request.playset_path).map_err(|err| MergeError::Validation {
-			path: Some(request.playset_path.display().to_string()),
-			message: format!("failed to reload playset for validation: {err}"),
-		})?;
-	let temp_playlist_path = validation_playlist_path(parent_dir);
-	let temp_playlist = json!({
-		"game": original_playlist.game.key(),
-		"name": format!("{out_dir_name} validation"),
-		"mods": [{
-			"displayName": out_dir_name,
-			"enabled": true,
-			"position": 0,
-			"steamId": out_dir_name,
-		}],
-	});
-	let temp_bytes = serde_json::to_vec_pretty(&temp_playlist).map_err(|err| {
+	let validation_dir = validation_playlist_dir(parent_dir);
+	fs::create_dir_all(validation_dir.join("mod")).map_err(|err| {
 		MergeError::Io(io::Error::other(format!(
-			"failed to serialize validation playset {}: {err}",
-			temp_playlist_path.display()
+			"failed to create validation playset dir {}: {err}",
+			validation_dir.display()
 		)))
 	})?;
-	fs::write(&temp_playlist_path, temp_bytes)?;
+	let synthetic_steam_id = format!("validation_{out_dir_name}");
+	let descriptor_rel = format!("mod/ugc_{synthetic_steam_id}.mod");
+	let dlc_load = serde_json::json!({
+		"enabled_mods": [descriptor_rel.clone()],
+		"disabled_dlcs": Vec::<String>::new(),
+	});
+	let dlc_load_bytes = serde_json::to_vec_pretty(&dlc_load).map_err(|err| {
+		MergeError::Io(io::Error::other(format!(
+			"failed to serialize validation dlc_load.json: {err}"
+		)))
+	})?;
+	let dlc_load_path = validation_dir.join("dlc_load.json");
+	fs::write(&dlc_load_path, dlc_load_bytes)?;
+	let descriptor_body = format!(
+		"name=\"{out_dir_name}\"\npath=\"{}\"\nremote_file_id=\"{synthetic_steam_id}\"\n",
+		canonical_out_dir.display()
+	);
+	fs::write(validation_dir.join(&descriptor_rel), descriptor_body)?;
 
 	let mut cleanup_error = None;
 	let result = run_checks_with_options(
 		CheckRequest {
-			playset_path: temp_playlist_path.clone(),
+			playset_path: dlc_load_path.clone(),
 			config: request.config.clone(),
 		},
 		RunOptions {
@@ -156,10 +156,10 @@ fn revalidate_generated_output(
 			include_game_base,
 		},
 	);
-	if let Err(err) = fs::remove_file(&temp_playlist_path) {
+	if let Err(err) = fs::remove_dir_all(&validation_dir) {
 		cleanup_error = Some(MergeError::Io(io::Error::other(format!(
-			"failed to remove validation playset {}: {err}",
-			temp_playlist_path.display()
+			"failed to remove validation playset dir {}: {err}",
+			validation_dir.display()
 		))));
 	}
 	if let Some(err) = cleanup_error {
@@ -220,11 +220,11 @@ fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> Result<(
 	Ok(())
 }
 
-fn validation_playlist_path(parent_dir: &Path) -> PathBuf {
+fn validation_playlist_dir(parent_dir: &Path) -> PathBuf {
 	let pid = std::process::id();
 	let nanos = SystemTime::now()
 		.duration_since(UNIX_EPOCH)
 		.map(|duration| duration.as_nanos())
 		.unwrap_or_default();
-	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}.json"))
+	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}"))
 }

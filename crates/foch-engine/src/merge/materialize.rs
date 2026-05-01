@@ -1274,17 +1274,31 @@ mod tests {
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 
-	fn write_playlist(path: &Path, mods: serde_json::Value) {
-		let playlist = json!({
-			"game": "eu4",
-			"name": "materialize-playset",
-			"mods": mods,
+	fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
+		let parent = path.parent().expect("playset path has parent");
+		fs::create_dir_all(parent.join("mod")).expect("create mod metadata dir");
+		let enabled_mods: Vec<String> = mods
+			.iter()
+			.map(|(steam_id, _)| format!("mod/ugc_{steam_id}.mod"))
+			.collect();
+		let dlc_load = json!({
+			"enabled_mods": enabled_mods,
+			"disabled_dlcs": Vec::<String>::new(),
 		});
 		fs::write(
 			path,
-			serde_json::to_string_pretty(&playlist).expect("serialize playlist"),
+			serde_json::to_string_pretty(&dlc_load).expect("serialize dlc_load"),
 		)
-		.expect("write playlist");
+		.expect("write dlc_load.json");
+		for (steam_id, display_name) in mods {
+			let mod_root = parent.join(steam_id);
+			let body = format!(
+				"name=\"{display_name}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
+				mod_root.display()
+			);
+			fs::write(parent.join("mod").join(format!("ugc_{steam_id}.mod")), body)
+				.expect("write ugc descriptor");
+		}
 	}
 
 	fn write_descriptor(mod_root: &Path, name: &str) {
@@ -1555,14 +1569,14 @@ mod tests {
 		mod_b: &Path,
 		mod_c: &Path,
 	) {
-		write_playlist(
+		write_dlc_load(
 			playlist_path,
-			json!([
-				{ "displayName": "Base", "enabled": true, "position": 0, "steamId": "9101" },
-				{ "displayName": "A", "enabled": true, "position": 1, "steamId": "9102" },
-				{ "displayName": "B", "enabled": true, "position": 2, "steamId": "9103" },
-				{ "displayName": "C", "enabled": true, "position": 3, "steamId": "9104" }
-			]),
+			&[
+				("9101", "Base"),
+				("9102", "A"),
+				("9103", "B"),
+				("9104", "C"),
+			],
 		);
 		write_descriptor(mod_base, "fallback-base");
 		write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
@@ -1583,13 +1597,9 @@ mod tests {
 		mod_a: &Path,
 		mod_b: &Path,
 	) {
-		write_playlist(
+		write_dlc_load(
 			playlist_path,
-			json!([
-				{ "displayName": "Base", "enabled": true, "position": 0, "steamId": "9101" },
-				{ "displayName": "A", "enabled": true, "position": 1, "steamId": "9102" },
-				{ "displayName": "B", "enabled": true, "position": 2, "steamId": "9103" }
-			]),
+			&[("9101", "Base"), ("9102", "A"), ("9103", "B")],
 		);
 		write_descriptor(mod_base, "fallback-base");
 		write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
@@ -1678,10 +1688,7 @@ mod tests {
 		let mod_root = temp.path().join("1001");
 		let out_dir = temp.path().join("out");
 
-		write_playlist(
-			&playlist_path,
-			json!([{ "displayName": "A", "enabled": true, "position": 0, "steamId": "1001" }]),
-		);
+		write_dlc_load(&playlist_path, &[("1001", "A")]);
 		write_descriptor(&mod_root, "mod-a");
 		write_file(&mod_root, "common/only.txt", "from-a\n");
 
@@ -1699,7 +1706,7 @@ mod tests {
 
 		let descriptor =
 			fs::read_to_string(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH)).expect("read descriptor");
-		assert!(descriptor.contains("name=\"materialize-playset (Merged)\""));
+		assert!(descriptor.contains("name=\"playlist (active) (Merged)\""));
 		assert!(descriptor.contains("# Source playset: "));
 		assert!(!descriptor.contains("remote_file_id"));
 		assert!(!descriptor.contains("supported_version"));
@@ -1723,13 +1730,7 @@ mod tests {
 		let mod_b = temp.path().join("2002");
 		let out_dir = temp.path().join("out");
 
-		write_playlist(
-			&playlist_path,
-			json!([
-				{ "displayName": "A", "enabled": true, "position": 0, "steamId": "2001" },
-				{ "displayName": "B", "enabled": true, "position": 1, "steamId": "2002" }
-			]),
-		);
+		write_dlc_load(&playlist_path, &[("2001", "A"), ("2002", "B")]);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
 		write_file(&mod_a, "common/overlay.txt", "from-a\n");
@@ -1759,13 +1760,7 @@ mod tests {
 		let mod_b = temp.path().join("4002");
 		let out_dir = temp.path().join("out");
 
-		write_playlist(
-			&playlist_path,
-			json!([
-				{ "displayName": "A", "enabled": true, "position": 0, "steamId": "4001" },
-				{ "displayName": "B", "enabled": true, "position": 1, "steamId": "4002" }
-			]),
-		);
+		write_dlc_load(&playlist_path, &[("4001", "A"), ("4002", "B")]);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
 		// Binary overlap → LastWriterOverlay (highest-precedence wins, mirroring
@@ -1968,13 +1963,7 @@ mod tests {
 		let mod_b = temp.path().join("5002");
 		let out_dir = temp.path().join("out");
 
-		write_playlist(
-			&playlist_path,
-			json!([
-				{ "displayName": "A", "enabled": true, "position": 0, "steamId": "5001" },
-				{ "displayName": "B", "enabled": true, "position": 1, "steamId": "5002" }
-			]),
-		);
+		write_dlc_load(&playlist_path, &[("5001", "A"), ("5002", "B")]);
 		write_descriptor(&mod_a, "mod-a");
 		write_descriptor(&mod_b, "mod-b");
 		// Binary overlaps now resolve cleanly via LastWriterOverlay → no manual

@@ -8,7 +8,7 @@ use crate::request::CheckRequest;
 use foch_core::domain::ParseErrorKind;
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::game::Game;
-use foch_core::domain::playlist::{Playlist, PlaylistEntry, load_playlist};
+use foch_core::domain::playlist::{Playlist, PlaylistEntry};
 use foch_core::model::ModCandidate;
 use foch_core::utils::steam::steam_workshop_mod_path;
 use std::collections::{BTreeMap, HashSet};
@@ -54,18 +54,19 @@ pub(crate) fn resolve_workspace(
 	request: &CheckRequest,
 	include_game_base: bool,
 ) -> Result<ResolvedWorkspace, WorkspaceResolveError> {
-	let playlist = load_playlist(&request.playset_path).map_err(|err| WorkspaceResolveError {
-		kind: if matches!(err.kind, ParseErrorKind::Format) {
-			WorkspaceResolveErrorKind::PlaylistFormat
-		} else {
-			WorkspaceResolveErrorKind::Io
-		},
-		path: err.path.clone(),
-		message: match err.kind {
-			ParseErrorKind::Format => err.message,
-			ParseErrorKind::Io => format!("无法读取 Playset: {err}"),
-		},
-	})?;
+	let playlist =
+		Playlist::from_dlc_load(&request.playset_path).map_err(|err| WorkspaceResolveError {
+			kind: if matches!(err.kind, ParseErrorKind::Format) {
+				WorkspaceResolveErrorKind::PlaylistFormat
+			} else {
+				WorkspaceResolveErrorKind::Io
+			},
+			path: err.path.clone(),
+			message: match err.kind {
+				ParseErrorKind::Format => err.message,
+				ParseErrorKind::Io => format!("无法读取 Playset: {err}"),
+			},
+		})?;
 
 	let mods = build_mod_candidates(request, &playlist);
 	let optional_game_root = resolve_game_root(&request.config, &playlist.game);
@@ -218,6 +219,18 @@ fn resolve_mod_root(
 	if let Some(steam_id) = entry.steam_id.as_ref() {
 		candidates.push(playset_dir.join(steam_id));
 		candidates.push(playset_dir.join(format!("mod_{steam_id}")));
+
+		// The dlc_load.json's parent directory IS the paradox game data
+		// directory by construction, so the sibling `mod/ugc_<id>.mod`
+		// descriptor is always a valid lookup root regardless of whether the
+		// user has separately configured `paradox_data_path`. This makes
+		// playset discovery work end-to-end without forcing every test fixture
+		// to additionally pin a config field.
+		if let Some(root) = resolve_mod_from_ugc_descriptor(playset_dir, steam_id) {
+			candidates.push(root);
+		}
+		candidates.push(playset_dir.join("mod").join(steam_id));
+		candidates.push(playset_dir.join("mod").join(format!("ugc_{steam_id}")));
 
 		if let Some(path) = request.config.paradox_data_path.as_ref() {
 			for game_data_dir in paradox_game_data_dirs(path, &playlist.game) {

@@ -12,17 +12,31 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tempfile::TempDir;
 
-fn write_playlist(path: &Path, mods: serde_json::Value) {
-	let playlist = json!({
-		"game": "eu4",
-		"name": "cli-playset",
-		"mods": mods,
+fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
+	let parent = path.parent().expect("playset path has parent");
+	fs::create_dir_all(parent.join("mod")).expect("create mod metadata dir");
+	let enabled_mods: Vec<String> = mods
+		.iter()
+		.map(|(steam_id, _)| format!("mod/ugc_{steam_id}.mod"))
+		.collect();
+	let dlc_load = json!({
+		"enabled_mods": enabled_mods,
+		"disabled_dlcs": Vec::<String>::new(),
 	});
 	fs::write(
 		path,
-		serde_json::to_string_pretty(&playlist).expect("serialize playlist"),
+		serde_json::to_string_pretty(&dlc_load).expect("serialize dlc_load"),
 	)
-	.expect("write playlist");
+	.expect("write dlc_load.json");
+	for (steam_id, display_name) in mods {
+		let mod_root = parent.join(steam_id);
+		let body = format!(
+			"name=\"{display_name}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
+			mod_root.display()
+		);
+		fs::write(parent.join("mod").join(format!("ugc_{steam_id}.mod")), body)
+			.expect("write ugc descriptor");
+	}
 }
 
 fn write_descriptor(mod_root: &Path, name: &str) {
@@ -89,14 +103,14 @@ fn stage_dag_fallback_conflict(
 	mod_b: &Path,
 	mod_c: &Path,
 ) {
-	write_playlist(
+	write_dlc_load(
 		playlist_path,
-		json!([
-			{"displayName":"Base", "enabled": true, "position": 0, "steamId":"9101"},
-			{"displayName":"A", "enabled": true, "position": 1, "steamId":"9102"},
-			{"displayName":"B", "enabled": true, "position": 2, "steamId":"9103"},
-			{"displayName":"C", "enabled": true, "position": 3, "steamId":"9104"}
-		]),
+		&[
+			("9101", "Base"),
+			("9102", "A"),
+			("9103", "B"),
+			("9104", "C"),
+		],
 	);
 	write_descriptor(mod_base, "fallback-base");
 	write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
@@ -112,13 +126,9 @@ fn stage_dag_fallback_conflict(
 /// resolver. The DAG topo walk cannot auto-resolve this; the fallback path
 /// is the only way to produce output.
 fn stage_dag_genuine_conflict(playlist_path: &Path, mod_base: &Path, mod_a: &Path, mod_b: &Path) {
-	write_playlist(
+	write_dlc_load(
 		playlist_path,
-		json!([
-			{"displayName":"Base", "enabled": true, "position": 0, "steamId":"9101"},
-			{"displayName":"A", "enabled": true, "position": 1, "steamId":"9102"},
-			{"displayName":"B", "enabled": true, "position": 2, "steamId":"9103"}
-		]),
+		&[("9101", "Base"), ("9102", "A"), ("9103", "B")],
 	);
 	write_descriptor(mod_base, "fallback-base");
 	write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
@@ -341,13 +351,7 @@ fn strict_mode_returns_exit_2_when_findings_exist() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"4001"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"4001"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("4001", "A"), ("4001", "B")]);
 	write_descriptor(&tmp.path().join("4001"), "mod-a");
 
 	let playlist_str = playlist_path.display().to_string();
@@ -364,12 +368,7 @@ fn check_json_output_can_be_deserialized() {
 	let playlist_path = tmp.path().join("playlist.json");
 	let output_path = tmp.path().join("result.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"5001"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("5001", "A")]);
 	write_descriptor(&tmp.path().join("5001"), "mod-a");
 
 	let playlist_str = playlist_path.display().to_string();
@@ -396,7 +395,7 @@ fn check_json_output_can_be_deserialized() {
 fn check_rejects_removed_graph_flags() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
-	write_playlist(&playlist_path, json!([]));
+	write_dlc_load(&playlist_path, &[]);
 
 	let playlist_str = playlist_path.display().to_string();
 	let args = ["check", playlist_str.as_str(), "--graph-out", "graph.json"];
@@ -414,13 +413,7 @@ fn graph_command_resolves_runtime_calls_even_without_declared_dependency() {
 	let mod_a = tmp.path().join("9001");
 	let mod_b = tmp.path().join("9002");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9001"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9002"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9001", "A"), ("9002", "B")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
@@ -496,13 +489,7 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 	let mod_a = tmp.path().join("9011");
 	let mod_b = tmp.path().join("9012");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9011"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9012"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9011", "A"), ("9012", "B")]);
 	write_descriptor_with_dependencies(&mod_a, "mod-a", &["mod-b"]);
 	write_descriptor(&mod_b, "mod-b");
 	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
@@ -586,7 +573,7 @@ fn semantic_graph_requires_family_argument() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("graphs");
-	write_playlist(&playlist_path, json!([]));
+	write_dlc_load(&playlist_path, &[]);
 
 	let playlist_str = playlist_path.display().to_string();
 	let out_str = out_dir.display().to_string();
@@ -613,12 +600,7 @@ fn semantic_graph_writes_family_json_and_html() {
 	let out_dir = tmp.path().join("graphs");
 	let mod_a = tmp.path().join("9101");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9101"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9101", "A")]);
 	write_descriptor(&mod_a, "mod-a");
 	fs::create_dir_all(mod_a.join("common").join("holy_orders")).expect("create holy orders dir");
 	fs::write(
@@ -785,13 +767,7 @@ fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_ca
 	let mod_a = tmp.path().join("9021");
 	let mod_b = tmp.path().join("9022");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9021"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9022"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9021", "A"), ("9022", "B")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	write_game_version(&game_root, "12.1.0-test");
@@ -879,12 +855,7 @@ fn simplify_command_in_place_removes_empty_files() {
 		.join("scripted_effects")
 		.join("effects.txt");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9031"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9031", "A")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_game_version(&game_root, "12.2.0-test");
 	fs::create_dir_all(game_root.join("common").join("scripted_effects"))
@@ -944,13 +915,7 @@ fn merge_plan_json_output_can_be_deserialized() {
 	let playlist_path = tmp.path().join("playlist.json");
 	let output_path = tmp.path().join("plan.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7101"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7102"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7101", "A"), ("7102", "B")]);
 	write_descriptor(&tmp.path().join("7101"), "mod-a");
 	write_descriptor(&tmp.path().join("7102"), "mod-b");
 	fs::create_dir_all(
@@ -1020,13 +985,7 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7201"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7202"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7201", "A"), ("7202", "B")]);
 	write_descriptor(&tmp.path().join("7201"), "mod-a");
 	write_descriptor(&tmp.path().join("7202"), "mod-b");
 	stage_structural_manual_conflict(&tmp.path().join("7201"), &tmp.path().join("7202"));
@@ -1046,13 +1005,7 @@ fn merge_plan_returns_exit_0_when_no_manual_conflict_exists() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7301"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7302"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7301", "A"), ("7302", "B")]);
 	write_descriptor(&tmp.path().join("7301"), "mod-a");
 	write_descriptor(&tmp.path().join("7302"), "mod-b");
 	fs::create_dir_all(
@@ -1103,13 +1056,7 @@ fn merge_plan_json_output_contains_strategy_contributors_and_winner() {
 	let playlist_path = tmp.path().join("playlist.json");
 	let output_path = tmp.path().join("plan.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7401"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7402"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7401", "A"), ("7402", "B")]);
 	write_descriptor(&tmp.path().join("7401"), "mod-a");
 	write_descriptor(&tmp.path().join("7402"), "mod-b");
 	fs::create_dir_all(tmp.path().join("7401").join("localisation").join("english"))
@@ -1173,13 +1120,7 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 	let playlist_path = tmp.path().join("playlist.json");
 	let output_path = tmp.path().join("plan.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7411"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7412"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7411", "A"), ("7412", "B")]);
 	write_descriptor(&tmp.path().join("7411"), "mod-a");
 	write_descriptor(&tmp.path().join("7412"), "mod-b");
 	stage_structural_manual_conflict(&tmp.path().join("7411"), &tmp.path().join("7412"));
@@ -1224,13 +1165,7 @@ fn merge_plan_json_output_marks_non_normalizable_defines_as_manual_conflict() {
 	let playlist_path = tmp.path().join("playlist.json");
 	let output_path = tmp.path().join("plan.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7421"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7422"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7421", "A"), ("7422", "B")]);
 	write_descriptor(&tmp.path().join("7421"), "mod-a");
 	write_descriptor(&tmp.path().join("7422"), "mod-b");
 	fs::create_dir_all(tmp.path().join("7421").join("common").join("defines"))
@@ -1298,12 +1233,7 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 	let output_path = tmp.path().join("plan.json");
 	let game_root = tmp.path().join("eu4-game");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7501"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7501", "A")]);
 	write_descriptor(&tmp.path().join("7501"), "mod-a");
 	fs::create_dir_all(game_root.join("common").join("scripted_effects")).expect("create effects");
 	fs::create_dir_all(
@@ -1371,12 +1301,7 @@ fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
 	let out_dir = tmp.path().join("merged-out");
 	let mod_root = tmp.path().join("7805");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7805"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7805", "A")]);
 	write_descriptor(&mod_root, "mod-a");
 	fs::create_dir_all(mod_root.join("common")).expect("create common dir");
 	fs::write(mod_root.join("common").join("only.txt"), "from-a\n").expect("write file");
@@ -1422,13 +1347,7 @@ fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
 	let mod_b = tmp.path().join("7902");
 	let relative_path = "common/scripted_effects/effects.txt";
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7901"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7902"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7901", "A"), ("7902", "B")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor_with_dependencies(&mod_b, "mod-b", &["mod-a"]);
 	write_script_file(&mod_a, relative_path, "effect_a = { log = a }\n");
@@ -1637,13 +1556,7 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	let mod_a = tmp.path().join("7811");
 	let mod_b = tmp.path().join("7812");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7811"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7812"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7811", "A"), ("7812", "B")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	stage_structural_manual_conflict(&mod_a, &mod_b);
@@ -1680,13 +1593,7 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 	let mod_a = tmp.path().join("7821");
 	let mod_b = tmp.path().join("7822");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7821"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7822"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7821", "A"), ("7822", "B")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	stage_structural_manual_conflict(&mod_a, &mod_b);
@@ -1731,13 +1638,7 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 	let mod_a = tmp.path().join("7831");
 	let mod_b = tmp.path().join("7832");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7831"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7832"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7831", "A"), ("7832", "B")]);
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	fs::create_dir_all(mod_a.join("events")).expect("create events dir");
@@ -1799,12 +1700,7 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 fn default_base_game_mode_fails_when_game_root_is_missing() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7601"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7601", "A")]);
 	write_descriptor(&tmp.path().join("7601"), "mod-a");
 
 	let config_dir = tmp.path().join("config-missing-game");
@@ -1822,12 +1718,7 @@ fn default_base_game_mode_fails_when_game_root_is_missing() {
 fn no_game_base_opt_out_allows_check_without_game_root() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7701"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7701", "A")]);
 	write_descriptor(&tmp.path().join("7701"), "mod-a");
 
 	let config_dir = tmp.path().join("config-no-game");
@@ -1851,12 +1742,7 @@ fn check_parse_issue_report_writes_family_annotated_json() {
 	let mod_root = tmp.path().join("7705");
 	let report_path = tmp.path().join("parse-issues.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7705"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7705", "A")]);
 	write_descriptor(&mod_root, "mod-a");
 	fs::create_dir_all(mod_root.join("localisation")).expect("create localisation dir");
 	fs::write(
@@ -1896,12 +1782,7 @@ fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
 	let mod_root = tmp.path().join("7706");
 	let cache_dir = tmp.path().join("mod-cache");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7706"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7706", "A")]);
 	write_descriptor(&mod_root, "mod-a");
 	fs::create_dir_all(mod_root.join("events")).expect("create events");
 	fs::write(
@@ -1929,12 +1810,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	let cache_dir = tmp.path().join("mod-cache");
 	write_game_version(&tmp.path().join("eu4-game"), "11.0.0-test");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7711"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7711", "A")]);
 	write_descriptor(&mod_root, "mod-a");
 	fs::create_dir_all(mod_root.join("events")).expect("create events");
 	fs::write(
@@ -1989,13 +1865,7 @@ fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 	let cache_dir = tmp.path().join("mod-cache");
 	write_game_version(&tmp.path().join("eu4-game"), "11.1.0-test");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7721"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7722"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7721", "A"), ("7722", "B")]);
 	write_descriptor(&tmp.path().join("7721"), "mod-a");
 	write_descriptor(&tmp.path().join("7722"), "mod-b");
 	fs::create_dir_all(
@@ -2083,12 +1953,7 @@ fn check_uses_installed_base_data_to_resolve_base_symbols() {
 	let mod_root = tmp.path().join("7801");
 	let output_path = tmp.path().join("result.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7801"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7801", "A")]);
 	write_descriptor(&mod_root, "mod-a");
 	fs::create_dir_all(game_root.join("events")).expect("create events");
 	fs::write(

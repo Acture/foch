@@ -11,17 +11,31 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
-fn write_playlist(path: &Path, mods: serde_json::Value) {
-	let playlist = json!({
-		"game": "eu4",
-		"name": "test-playset",
-		"mods": mods,
+fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
+	let parent = path.parent().expect("playset path has parent");
+	fs::create_dir_all(parent.join("mod")).expect("create mod metadata dir");
+	let enabled_mods: Vec<String> = mods
+		.iter()
+		.map(|(steam_id, _)| format!("mod/ugc_{steam_id}.mod"))
+		.collect();
+	let dlc_load = json!({
+		"enabled_mods": enabled_mods,
+		"disabled_dlcs": Vec::<String>::new(),
 	});
 	fs::write(
 		path,
-		serde_json::to_string_pretty(&playlist).expect("serialize playlist"),
+		serde_json::to_string_pretty(&dlc_load).expect("serialize dlc_load"),
 	)
-	.expect("write playlist");
+	.expect("write dlc_load.json");
+	for (steam_id, display_name) in mods {
+		let mod_root = parent.join(steam_id);
+		let body = format!(
+			"name=\"{display_name}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
+			mod_root.display()
+		);
+		fs::write(parent.join("mod").join(format!("ugc_{steam_id}.mod")), body)
+			.expect("write ugc descriptor");
+	}
 }
 
 fn write_descriptor(mod_root: &Path, name: &str, dependencies: &[&str]) {
@@ -123,13 +137,7 @@ fn duplicate_steam_id_creates_r003() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"1001"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"1001"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("1001", "A"), ("1001", "B")]);
 
 	write_descriptor(&temp.path().join("1001"), "mod-a", &[]);
 
@@ -142,12 +150,7 @@ fn missing_descriptor_creates_r004() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"1002"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("1002", "A")]);
 	fs::create_dir_all(temp.path().join("1002")).expect("create mod dir");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
@@ -159,13 +162,7 @@ fn file_conflict_creates_r005() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"2001"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"2002"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("2001", "A"), ("2002", "B")]);
 
 	let mod_a = temp.path().join("2001");
 	write_descriptor(&mod_a, "mod-a", &[]);
@@ -186,12 +183,7 @@ fn missing_dependency_creates_r006() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"3001"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("3001", "A")]);
 
 	let mod_a = temp.path().join("3001");
 	write_descriptor(&mod_a, "mod-a", &["mod-b"]);
@@ -205,13 +197,7 @@ fn duplicate_scripted_effect_creates_r007() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7001"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7002"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7001", "A"), ("7002", "B")]);
 
 	let mod_a = temp.path().join("7001");
 	write_descriptor(&mod_a, "mod-a", &[]);
@@ -259,13 +245,7 @@ fn mergeable_cross_mod_overlap_reports_a003_without_s001() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7011"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7012"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7011", "A"), ("7012", "B")]);
 
 	let mod_a = temp.path().join("7011");
 	write_descriptor(&mod_a, "mod-a", &[]);
@@ -298,13 +278,7 @@ fn non_mergeable_cross_mod_overlap_reports_s001() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7021"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"7022"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7021", "A"), ("7022", "B")]);
 
 	let mod_a = temp.path().join("7021");
 	write_descriptor(&mod_a, "mod-a", &[]);
@@ -336,12 +310,7 @@ fn intra_mod_overlap_does_not_emit_a003() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"7031"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("7031", "A")]);
 
 	// One mod defines the same scripted_effect twice (e.g. duplicated under
 	// two file names that both classify into the same content family). A003
@@ -368,12 +337,7 @@ fn unresolved_scripted_effect_reports_only_s002() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"8001"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("8001", "A")]);
 
 	let mod_a = temp.path().join("8001");
 	write_descriptor(&mod_a, "mod-a", &[]);
@@ -393,12 +357,7 @@ fn resolves_mod_root_from_ugc_metadata_when_paradox_root_is_configured() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9101"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9101", "A")]);
 
 	let paradox_root = temp.path().join("Paradox Interactive");
 	let paradox_game_dir = paradox_root.join("Europa Universalis IV");
@@ -425,12 +384,7 @@ fn resolves_mod_root_from_non_default_steam_library_folder() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9201"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9201", "A")]);
 
 	let steam_root = temp.path().join("Steam");
 	let lib2 = temp.path().join("SteamLibrary2");
@@ -483,12 +437,7 @@ fn merge_plan_marks_single_contributor_path_as_copy_through() {
 	let playlist_path = temp.path().join("playlist.json");
 	let mod_root = temp.path().join("9401");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9401"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9401", "A")]);
 	write_descriptor(&mod_root, "mod-a", &[]);
 	write_script_file(
 		&mod_root,
@@ -513,13 +462,7 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 	let mod_a = temp.path().join("9501");
 	let mod_b = temp.path().join("9502");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9501"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9502"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9501", "A"), ("9502", "B")]);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	write_script_file(
@@ -553,13 +496,7 @@ fn merge_plan_marks_non_normalizable_defines_overlap_as_manual_conflict() {
 	let mod_a = temp.path().join("9551");
 	let mod_b = temp.path().join("9552");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9551"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9552"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9551", "A"), ("9552", "B")]);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	write_script_file(
@@ -590,13 +527,7 @@ fn merge_plan_marks_invalid_structural_overlap_as_manual_conflict() {
 	let mod_a = temp.path().join("9601");
 	let mod_b = temp.path().join("9602");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9601"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9602"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9601", "A"), ("9602", "B")]);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	write_script_file(
@@ -626,13 +557,7 @@ fn merge_plan_routes_ui_overlap_through_structural_merge() {
 	let mod_a = temp.path().join("9701");
 	let mod_b = temp.path().join("9702");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9701"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9702"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9701", "A"), ("9702", "B")]);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	write_script_file(&mod_a, "interface/main.gui", "windowType = { name = x }\n");
@@ -652,13 +577,7 @@ fn merge_plan_marks_binary_overlap_as_last_writer_overlay() {
 	let mod_a = temp.path().join("9801");
 	let mod_b = temp.path().join("9802");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9801"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9802"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9801", "A"), ("9802", "B")]);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	// Binary overlap → LastWriterOverlay (last mod wins, mirroring runtime
@@ -681,13 +600,7 @@ fn merge_plan_marks_localisation_yaml_overlap_as_localisation_merge() {
 	let mod_a = temp.path().join("9901");
 	let mod_b = temp.path().join("9902");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9901"},
-			{"displayName":"B", "enabled": true, "position": 1, "steamId":"9902"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9901", "A"), ("9902", "B")]);
 	write_descriptor(&mod_a, "mod-a", &[]);
 	write_descriptor(&mod_b, "mod-b", &[]);
 	write_script_file(
@@ -765,12 +678,7 @@ fn check_defaults_to_base_game_and_fails_when_missing() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9921"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9921", "A")]);
 	write_descriptor(&temp.path().join("9921"), "mod-a", &[]);
 
 	let result = run_checks(request_with_config(&playlist_path, Config::default()));
@@ -789,12 +697,7 @@ fn whole_tree_documents_feed_ui_localisation_csv_and_json_analysis() {
 	let playlist_path = temp.path().join("playlist.json");
 	let mod_root = temp.path().join("9931");
 
-	write_playlist(
-		&playlist_path,
-		json!([
-			{"displayName":"A", "enabled": true, "position": 0, "steamId":"9931"}
-		]),
-	);
+	write_dlc_load(&playlist_path, &[("9931", "A")]);
 	write_descriptor(&mod_root, "mod-a", &[]);
 	write_script_file(
 		&mod_root,
