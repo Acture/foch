@@ -148,6 +148,10 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 	lines.push(format!("copied_file_count: {}", report.copied_file_count));
 	lines.push(format!("overlay_file_count: {}", report.overlay_file_count));
 	lines.push(format!(
+		"noop_skipped_file_count: {}",
+		report.noop_skipped_file_count
+	));
+	lines.push(format!(
 		"validation: fatal_errors={} strict_findings={} advisory_findings={} parse_errors={} unresolved_references={} missing_localisation={}",
 		report.validation.fatal_errors,
 		report.validation.strict_findings,

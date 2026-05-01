@@ -679,6 +679,28 @@ pub(crate) fn ast_statements_semantically_equal(a: &AstStatement, b: &AstStateme
 	}
 }
 
+/// Semantic equality on a top-level statement list — compares two file
+/// bodies (or any sequence of `AstStatement`) ignoring spans, with
+/// comments filtered out at every level so cosmetic-only differences do
+/// not register. Used by the file-level NoOp detector to recognize when a
+/// patch-merged output is byte-equivalent to the vanilla base, in which
+/// case shipping it would just shadow the game's own copy.
+pub fn ast_statement_lists_semantically_equal(a: &[AstStatement], b: &[AstStatement]) -> bool {
+	let a_filtered: Vec<&AstStatement> = a
+		.iter()
+		.filter(|s| !matches!(s, AstStatement::Comment { .. }))
+		.collect();
+	let b_filtered: Vec<&AstStatement> = b
+		.iter()
+		.filter(|s| !matches!(s, AstStatement::Comment { .. }))
+		.collect();
+	a_filtered.len() == b_filtered.len()
+		&& a_filtered
+			.iter()
+			.zip(b_filtered.iter())
+			.all(|(sa, sb)| ast_statements_semantically_equal(sa, sb))
+}
+
 /// Semantic equality on `ClausewitzPatch`. Compares the patch variant, path,
 /// key, and embedded AST nodes via the span/comment-tolerant helpers above.
 pub(crate) fn patches_semantically_equal(a: &ClausewitzPatch, b: &ClausewitzPatch) -> bool {

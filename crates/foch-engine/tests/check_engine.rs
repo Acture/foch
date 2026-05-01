@@ -719,6 +719,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		generated_file_count: 0,
 		copied_file_count: 3,
 		overlay_file_count: 1,
+		noop_skipped_file_count: 0,
 		validation: MergeReportValidation {
 			fatal_errors: 0,
 			strict_findings: 4,
@@ -744,6 +745,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	assert_eq!(value["generated_file_count"], 0);
 	assert_eq!(value["copied_file_count"], 3);
 	assert_eq!(value["overlay_file_count"], 1);
+	assert_eq!(value["noop_skipped_file_count"], 0);
 	assert_eq!(value["conflict_resolutions"].as_array().unwrap().len(), 0);
 	assert_eq!(value["handler_resolutions"].as_array().unwrap().len(), 0);
 	assert_eq!(value["dep_misuse"].as_array().unwrap().len(), 0);

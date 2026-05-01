@@ -226,6 +226,8 @@ pub(crate) fn materialize_merge_internal(
 									if materialization.counts_as_generated() {
 										generated_paths.insert(entry.path.clone());
 										report.generated_file_count += 1;
+									} else if materialization.counts_as_noop_skipped() {
+										report.noop_skipped_file_count += 1;
 									}
 									continue;
 								}
@@ -757,6 +759,10 @@ struct PatchBasedMergeOutput {
 	handler_resolutions: Vec<HandlerResolutionRecord>,
 	external_file_resolutions: HashMap<PathBuf, PathBuf>,
 	keep_existing_paths: HashSet<PathBuf>,
+	/// True when the patch-merged statement list is AST-equal (modulo
+	/// span / comment trivia) to the vanilla base — shipping the file
+	/// would just shadow the game's own copy with the same content.
+	noop_vs_vanilla: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -855,6 +861,15 @@ fn patch_based_structural_merge(
 		&dag_patches.merged_statements,
 		context.emit_options,
 	)?;
+	let noop_vs_vanilla = vanilla
+		.as_ref()
+		.map(|base| {
+			super::patch::ast_statement_lists_semantically_equal(
+				&base.ast.statements,
+				&dag_patches.merged_statements,
+			)
+		})
+		.unwrap_or(false);
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
@@ -862,6 +877,7 @@ fn patch_based_structural_merge(
 		handler_resolutions: merge_result.handler_resolutions,
 		external_file_resolutions: merge_result.external_file_resolutions,
 		keep_existing_paths: merge_result.keep_existing_paths,
+		noop_vs_vanilla,
 	})
 }
 
@@ -982,11 +998,16 @@ enum PatchOutputMaterialization {
 	NormalWrite,
 	ExternalWrite,
 	KeptExisting,
+	NoopSkippedVsVanilla,
 }
 
 impl PatchOutputMaterialization {
 	fn counts_as_generated(self) -> bool {
 		matches!(self, Self::NormalWrite | Self::ExternalWrite)
+	}
+
+	fn counts_as_noop_skipped(self) -> bool {
+		matches!(self, Self::NoopSkippedVsVanilla)
 	}
 }
 
@@ -1044,6 +1065,23 @@ fn write_patch_merge_output(
 			rationale: None,
 		});
 		return Ok(PatchOutputMaterialization::ExternalWrite);
+	}
+
+	if merge_output.noop_vs_vanilla {
+		// The patch-merged result is AST-equivalent to the vanilla base
+		// (modulo whitespace and comments). Shipping it would just shadow
+		// the game's own copy with byte-for-byte equivalent content, so
+		// skip the write and record the skip in the report instead of
+		// inflating `generated_file_count` with NoOp files.
+		report.handler_resolutions.push(HandlerResolutionRecord {
+			path: target_path.to_string(),
+			action: "noop_skipped_vs_vanilla".to_string(),
+			source: None,
+			rationale: Some(
+				"merged content is AST-equal to vanilla; not shipping a redundant copy".to_string(),
+			),
+		});
+		return Ok(PatchOutputMaterialization::NoopSkippedVsVanilla);
 	}
 
 	write_rendered_output(target_path, &merge_output.rendered, out_dir)?;
@@ -1342,6 +1380,7 @@ mod tests {
 			handler_resolutions: Vec::new(),
 			external_file_resolutions: HashMap::new(),
 			keep_existing_paths: HashSet::new(),
+			noop_vs_vanilla: false,
 		}
 	}
 

@@ -196,6 +196,12 @@ pub struct MergeReport {
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,
+	/// Files whose patch-merge result was AST-equal to the vanilla base
+	/// (modulo whitespace and comments) and were therefore skipped: shipping
+	/// them would just shadow the game's own copy with byte-for-byte
+	/// equivalent content.
+	#[serde(default)]
+	pub noop_skipped_file_count: usize,
 	pub validation: MergeReportValidation,
 	#[serde(default)]
 	pub renames: Vec<MergeReportRename>,
