@@ -241,6 +241,127 @@ fn duplicate_scripted_effect_creates_r007() {
 }
 
 #[test]
+fn namespace_conflict_reports_sibling_scripted_effects() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_dlc_load(&playlist_path, &[("7101", "A"), ("7102", "B")]);
+
+	let mod_a = temp.path().join("7101");
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_script_file(
+		&mod_a,
+		"common/scripted_effects/a_effects.txt",
+		"my_effect = { log = a }\n",
+	);
+
+	let mod_b = temp.path().join("7102");
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(
+		&mod_b,
+		"common/scripted_effects/b_effects.txt",
+		"my_effect = { log = b }\n",
+	);
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	let n001: Vec<_> = result
+		.findings
+		.iter()
+		.filter(|finding| finding.rule_id == "N001")
+		.collect();
+	assert_eq!(n001.len(), 1);
+	assert!(n001[0].message.contains("2 sibling mods"));
+	let evidence = n001[0].evidence.as_deref().expect("N001 evidence");
+	assert!(evidence.contains("7101:"));
+	assert!(evidence.contains("7102:"));
+}
+
+#[test]
+fn namespace_conflict_ignores_dependency_chain_override() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_dlc_load(&playlist_path, &[("7111", "A"), ("7112", "B")]);
+
+	let mod_a = temp.path().join("7111");
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_script_file(
+		&mod_a,
+		"common/scripted_effects/a_effects.txt",
+		"my_effect = { log = a }\n",
+	);
+
+	let mod_b = temp.path().join("7112");
+	write_descriptor(&mod_b, "mod-b", &["mod-a"]);
+	write_script_file(
+		&mod_b,
+		"common/scripted_effects/b_effects.txt",
+		"my_effect = { log = b }\n",
+	);
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	assert!(!result.findings.iter().any(|finding| {
+		finding.rule_id == "N001"
+			&& finding
+				.evidence
+				.as_deref()
+				.is_some_and(|evidence| evidence.contains("key=my_effect;"))
+	}));
+}
+
+#[test]
+fn namespace_conflict_reports_only_diamond_leaf_siblings() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+
+	write_dlc_load(
+		&playlist_path,
+		&[("7121", "A"), ("7122", "B"), ("7123", "C")],
+	);
+
+	let mod_a = temp.path().join("7121");
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_script_file(
+		&mod_a,
+		"common/scripted_effects/a_effects.txt",
+		"my_effect = { log = a }\n",
+	);
+
+	let mod_b = temp.path().join("7122");
+	write_descriptor(&mod_b, "mod-b", &["mod-a"]);
+	write_script_file(
+		&mod_b,
+		"common/scripted_effects/b_effects.txt",
+		"my_effect = { log = b }\n",
+	);
+
+	let mod_c = temp.path().join("7123");
+	write_descriptor(&mod_c, "mod-c", &["mod-a"]);
+	write_script_file(
+		&mod_c,
+		"common/scripted_effects/c_effects.txt",
+		"my_effect = { log = c }\n",
+	);
+
+	let result = run_checks_no_base(request_for(&playlist_path));
+	let n001: Vec<_> = result
+		.findings
+		.iter()
+		.filter(|finding| finding.rule_id == "N001")
+		.collect();
+	assert_eq!(n001.len(), 1);
+	let message = &n001[0].message;
+	assert!(message.contains("2 sibling mods"));
+	assert!(!message.contains("'A' in"));
+	assert!(message.contains("'B' in"));
+	assert!(message.contains("'C' in"));
+	let evidence = n001[0].evidence.as_deref().expect("N001 evidence");
+	assert!(!evidence.contains("7121:"));
+	assert!(evidence.contains("7122:"));
+	assert!(evidence.contains("7123:"));
+}
+
+#[test]
 fn mergeable_cross_mod_overlap_reports_a003_without_s001() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");

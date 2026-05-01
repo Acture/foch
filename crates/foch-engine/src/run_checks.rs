@@ -1,4 +1,7 @@
-use crate::merge::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
+use crate::merge::dag::{ModDag, ModId, build_mod_dag};
+use crate::merge::namespace::{
+	KeyContributor, build_family_key_index, detect_key_conflicts, group_by_family,
+};
 use crate::request::{CheckRequest, RunOptions};
 use crate::runtime::{build_overlap_findings, build_runtime_state_from_workspace};
 use crate::workspace::{
@@ -161,6 +164,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		.installed_base_snapshot
 		.as_ref()
 		.map(|installed| installed.snapshot.game_version.clone());
+	let (mod_dag, _dag_diagnostics) = build_mod_dag(&resolved.mods);
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
 		run_progress_stage(
 			"runtime overlap",
@@ -237,7 +241,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		result.findings.extend(runtime_overlap_findings);
 		result.findings.extend(check_dependency_misuse(&ctx));
 		result.findings.extend(
-			check_namespace_conflicts(&resolved.file_inventory, &ctx.mods)
+			check_namespace_conflicts(&resolved.file_inventory, &ctx.mods, &mod_dag)
 				.into_iter()
 				.filter(|finding| {
 					!finding
@@ -400,6 +404,7 @@ const NAMESPACE_CHECK_FAMILIES: &[&str] = &["common/scripted_effects", "common/s
 fn check_namespace_conflicts(
 	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
 	mods: &[foch_core::model::ModCandidate],
+	mod_dag: &ModDag,
 ) -> Vec<Finding> {
 	let profile = eu4_profile();
 	let families_by_id = group_by_family(file_inventory, profile);
@@ -442,8 +447,13 @@ fn check_namespace_conflicts(
 				continue;
 			}
 
-			let primary = non_base[0];
-			let participants: Vec<String> = non_base
+			let leaves = leaf_namespace_contributors(&non_base, mod_dag);
+			if leaves.len() < 2 {
+				continue;
+			}
+
+			let primary = leaves[0];
+			let participants: Vec<String> = leaves
 				.iter()
 				.map(|contributor| {
 					let mod_name = mod_names
@@ -456,7 +466,7 @@ fn check_namespace_conflicts(
 			let evidence = format!(
 				"key={}; mods=[{}]",
 				conflict.key,
-				non_base
+				leaves
 					.iter()
 					.map(|c| format!("{}:{}", c.mod_id, c.file_path))
 					.collect::<Vec<_>>()
@@ -468,9 +478,9 @@ fn check_namespace_conflicts(
 				severity: Severity::Warning,
 				channel: FindingChannel::Advisory,
 				message: format!(
-					"Key '{}' is defined by {} mods: {}",
+					"Key '{}' is defined by {} sibling mods: {}",
 					conflict.key,
-					non_base.len(),
+					leaves.len(),
 					participants.join(", ")
 				),
 				mod_id: Some(primary.mod_id.clone()),
@@ -484,6 +494,49 @@ fn check_namespace_conflicts(
 	}
 
 	findings
+}
+
+fn leaf_namespace_contributors<'a>(
+	contributors: &[&'a KeyContributor],
+	mod_dag: &ModDag,
+) -> Vec<&'a KeyContributor> {
+	let ancestor_sets: HashMap<&str, HashSet<ModId>> = contributors
+		.iter()
+		.map(|contributor| {
+			let mod_id = ModId(contributor.mod_id.clone());
+			(
+				contributor.mod_id.as_str(),
+				transitive_mod_ancestors(mod_dag, &mod_id),
+			)
+		})
+		.collect();
+
+	contributors
+		.iter()
+		.copied()
+		.filter(|candidate| {
+			let candidate_id = ModId(candidate.mod_id.clone());
+			!contributors.iter().any(|other| {
+				other.mod_id != candidate.mod_id
+					&& ancestor_sets
+						.get(other.mod_id.as_str())
+						.is_some_and(|ancestors| ancestors.contains(&candidate_id))
+			})
+		})
+		.collect()
+}
+
+fn transitive_mod_ancestors(mod_dag: &ModDag, mod_id: &ModId) -> HashSet<ModId> {
+	let mut ancestors = HashSet::new();
+	let mut pending: Vec<ModId> = mod_dag.parents_of(mod_id).to_vec();
+
+	while let Some(parent) = pending.pop() {
+		if ancestors.insert(parent.clone()) {
+			pending.extend(mod_dag.parents_of(&parent).iter().cloned());
+		}
+	}
+
+	ancestors
 }
 
 /// Pull the symbol name out of an overlap finding message such as
