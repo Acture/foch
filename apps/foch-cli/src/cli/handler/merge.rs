@@ -1,5 +1,5 @@
 use crate::cli::arg::MergeArgs;
-use crate::cli::handler::HandlerResult;
+use crate::cli::handler::{HandlerResult, resolve_playset_path};
 use foch_core::config::{AppliedDepOverride, FochConfig};
 use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
 use foch_engine::merge::conflict_handler::set_interactive_config_path;
@@ -8,17 +8,18 @@ use foch_language::analyzer::report::render_merge_report_text;
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
+	let playset_path = resolve_playset_path(merge_args.playset_path.as_deref(), &config)?;
 	let request = CheckRequest {
-		playset_path: merge_args.playset_path.clone(),
+		playset_path: playset_path.clone(),
 		config,
 	};
 	let fallback_enabled = merge_args.fallback || merge_args.force;
-	let dep_overrides = load_dep_overrides(merge_args)?;
+	let dep_overrides = load_dep_overrides(merge_args, &playset_path)?;
 	let interactive_config_path = if merge_args.interactive {
 		eprintln!(
 			"[foch] interactive mode: prompts will appear for unresolved conflicts. Press q to abort, d to defer."
 		);
-		Some(resolve_resolution_config_path(merge_args))
+		Some(resolve_resolution_config_path(merge_args, &playset_path))
 	} else {
 		None
 	};
@@ -83,11 +84,12 @@ fn render_unresolved_conflict_tip(
 
 fn load_dep_overrides(
 	merge_args: &MergeArgs,
+	playset_path: &Path,
 ) -> Result<Vec<AppliedDepOverride>, Box<dyn std::error::Error>> {
 	let local_config = if let Some(path) = merge_args.config.as_ref() {
 		FochConfig::load_from_path(path)?
 	} else {
-		let playset_root = playset_root_for(&merge_args.playset_path);
+		let playset_root = playset_root_for(playset_path);
 		FochConfig::try_load(&playset_root)?
 	};
 
@@ -105,7 +107,7 @@ fn load_dep_overrides(
 	Ok(overrides)
 }
 
-fn resolve_resolution_config_path(merge_args: &MergeArgs) -> PathBuf {
+fn resolve_resolution_config_path(merge_args: &MergeArgs, playset_path: &Path) -> PathBuf {
 	if let Some(path) = merge_args.config.as_ref() {
 		return path.clone();
 	}
@@ -117,7 +119,7 @@ fn resolve_resolution_config_path(merge_args: &MergeArgs) -> PathBuf {
 		}
 	}
 
-	playset_root_for(&merge_args.playset_path).join("foch.toml")
+	playset_root_for(playset_path).join("foch.toml")
 }
 
 fn playset_root_for(playset_path: &Path) -> PathBuf {

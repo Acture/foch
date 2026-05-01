@@ -1,12 +1,13 @@
 use crate::cli::arg::{MergePlanArgs, MergePlanOutputFormat};
-use crate::cli::handler::HandlerResult;
+use crate::cli::handler::{HandlerResult, resolve_playset_path};
 use foch_core::model::MergePlanFormat;
 use foch_engine::{CheckRequest, Config, MergePlanOptions, run_merge_plan_with_options};
 use foch_language::analyzer::report::{merge_plan_exit_code, render_merge_plan_text};
 
 pub fn handle_merge_plan(merge_plan_args: &MergePlanArgs, config: Config) -> HandlerResult {
+	let playset_path = resolve_playset_path(merge_plan_args.playset_path.as_deref(), &config)?;
 	let request = CheckRequest {
-		playset_path: merge_plan_args.playset_path.clone(),
+		playset_path,
 		config,
 	};
 	let options = MergePlanOptions {

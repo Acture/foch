@@ -1,5 +1,5 @@
 use crate::cli::arg::{GraphArgs, GraphArtifactFormatArg, GraphModeArg, GraphScopeArg};
-use crate::cli::handler::HandlerResult;
+use crate::cli::handler::{HandlerResult, resolve_playset_path};
 use foch_core::model::SymbolKind;
 use foch_engine::{
 	CheckRequest, Config, GraphArtifactFormat, GraphBuildOptions, GraphModeSelection,
@@ -22,8 +22,9 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 		}
 	}
 
+	let playset_path = resolve_playset_path(graph_args.playset_path.as_deref(), &config)?;
 	let request = CheckRequest {
-		playset_path: graph_args.playset_path.clone(),
+		playset_path,
 		config,
 	};
 	let summary = run_graph_with_options(

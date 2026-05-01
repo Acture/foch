@@ -1,5 +1,5 @@
 use crate::cli::arg::SimplifyArgs;
-use crate::cli::handler::HandlerResult;
+use crate::cli::handler::{HandlerResult, resolve_playset_path};
 use foch_engine::{CheckRequest, Config, SimplifyOptions, run_simplify_with_options};
 
 pub fn handle_simplify(simplify_args: &SimplifyArgs, config: Config) -> HandlerResult {
@@ -8,8 +8,9 @@ pub fn handle_simplify(simplify_args: &SimplifyArgs, config: Config) -> HandlerR
 	{
 		return Err("simplify requires exactly one of --out or --in-place".into());
 	}
+	let playset_path = resolve_playset_path(simplify_args.playset_path.as_deref(), &config)?;
 	let request = CheckRequest {
-		playset_path: simplify_args.playset_path.clone(),
+		playset_path,
 		config,
 	};
 	let summary = run_simplify_with_options(

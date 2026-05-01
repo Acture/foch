@@ -36,7 +36,8 @@ pub enum FochCliCommands {
 	after_help = "示例:\n  foch check ./playlist.json\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
-	pub playset_path: PathBuf,
+	#[arg(default_value = None)]
+	pub playset_path: Option<PathBuf>,
 
 	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
 	pub format: CheckOutputFormat,
@@ -77,7 +78,8 @@ pub enum CheckOutputFormat {
 	after_help = "Examples:\n  foch merge-plan ./playlist.json\n  foch merge-plan ./playlist.json --format json --output plan.json\n  foch merge-plan ./playlist.json --no-game-base"
 )]
 pub struct MergePlanArgs {
-	pub playset_path: PathBuf,
+	#[arg(default_value = None)]
+	pub playset_path: Option<PathBuf>,
 
 	#[arg(long, value_enum, default_value_t = MergePlanOutputFormat::Text)]
 	pub format: MergePlanOutputFormat,
@@ -103,7 +105,8 @@ pub enum MergePlanOutputFormat {
 	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --interactive\n  foch merge ./playlist.json --out ./merged-mod --fallback\n  foch merge ./playlist.json --out ./merged-mod --force  # implies --fallback\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
-	pub playset_path: PathBuf,
+	#[arg(default_value = None)]
+	pub playset_path: Option<PathBuf>,
 
 	#[arg(long)]
 	pub out: PathBuf,
@@ -173,7 +176,8 @@ impl FromStr for IgnoreDepArg {
 	after_help = "Examples:\n  foch graph ./playlist.json --out ./graphs\n  foch graph ./playlist.json --out ./graphs --scope mods --format both\n  foch graph ./playlist.json --out ./graphs --root scripted_effect:shared_effect\n  foch graph ./playlist.json --out ./graphs --mode semantic --family common/client_states"
 )]
 pub struct GraphArgs {
-	pub playset_path: PathBuf,
+	#[arg(default_value = None)]
+	pub playset_path: Option<PathBuf>,
 
 	#[arg(long)]
 	pub out: PathBuf,
@@ -226,7 +230,8 @@ pub enum GraphArtifactFormatArg {
 	after_help = "Examples:\n  foch simplify ./playlist.json --target 1234 --out ./mod-clean\n  foch simplify ./playlist.json --target 1234 --in-place"
 )]
 pub struct SimplifyArgs {
-	pub playset_path: PathBuf,
+	#[arg(default_value = None)]
+	pub playset_path: Option<PathBuf>,
 
 	#[arg(long)]
 	pub target: String,
