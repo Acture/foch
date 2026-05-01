@@ -264,7 +264,7 @@ pub struct ContentFamilyScopePolicy {
 	/// True when this content family has no statically determinable implicit
 	/// scope at runtime (callables, UI bindings, customizable localization,
 	/// on_actions callbacks, etc.). Analyses that warn about Unknown scope
-	/// (A001) should suppress findings inside such files because the implicit
+	/// (unknown-scope-type) should suppress findings inside such files because the implicit
 	/// scope is supplied by the caller, not the file.
 	pub dynamic_scope: bool,
 }

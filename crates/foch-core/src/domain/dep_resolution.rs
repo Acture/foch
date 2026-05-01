@@ -7,7 +7,7 @@ use std::collections::HashMap;
 ///
 /// Paradox launcher accepts either the human-readable mod `name` (the value of
 /// the `name = "..."` field in `descriptor.mod`) or, occasionally, the
-/// workshop steam id. We index both so the consumer (R006 missing-dep
+/// workshop steam id. We index both so the consumer (missing-mod-dependency missing-dep
 /// diagnostic and the upcoming DAG builder) can ask a single question.
 ///
 /// Lookups are exact-match for now. The launcher's own behavior around case is

@@ -173,9 +173,13 @@ fn revalidate_generated_output(
 		parse_errors: result.analysis_meta.parse_errors,
 		unresolved_references: count_findings_for_rules(
 			&result.findings,
-			&["S002", "S004", "A004"],
+			&[
+				"unresolved-call-target",
+				"missing-effect-parameter",
+				"unresolved-flag-reference",
+			],
 		),
-		missing_localisation: count_findings_for_rules(&result.findings, &["A005"]),
+		missing_localisation: count_findings_for_rules(&result.findings, &["missing-localisation"]),
 	})
 }
 

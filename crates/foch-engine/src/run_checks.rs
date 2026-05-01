@@ -84,7 +84,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		Err(err) => {
 			if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
 				result.findings.push(Finding {
-					rule_id: "R001".to_string(),
+					rule_id: "playset-parse-error".to_string(),
 					severity: Severity::Error,
 					channel: FindingChannel::Strict,
 					message: "Playset JSON 无法解析".to_string(),
@@ -204,13 +204,16 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	);
 
 	if options.analysis_mode == AnalysisMode::Semantic {
-		// Names already covered by the runtime overlap module (A003 mergeable /
-		// discardable, S001 overshadow). R007 and N001 are redundant for these
-		// names — the overlap finding is more specific. Collect the covered
-		// names so we can suppress the duplicates downstream.
+		// Names already covered by the runtime overlap module (`mergeable-overlap`
+		// or `cross-mod-overshadow`). `duplicate-scripted-effect` and
+		// `cross-file-duplicate-symbol` are redundant for these names — the
+		// overlap finding is more specific. Collect the covered names so we can
+		// suppress the duplicates downstream.
 		let overlap_covered_names: HashSet<String> = runtime_overlap_findings
 			.iter()
-			.filter(|finding| finding.rule_id == "S001" || finding.rule_id == "A003")
+			.filter(|finding| {
+				finding.rule_id == "cross-mod-overshadow" || finding.rule_id == "mergeable-overlap"
+			})
 			.filter_map(|finding| extract_overlap_symbol_name(&finding.message))
 			.collect();
 
@@ -230,13 +233,13 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 			diagnostics
 				.strict
 				.into_iter()
-				.filter(|finding| finding.rule_id != "S001"),
+				.filter(|finding| finding.rule_id != "cross-mod-overshadow"),
 		);
 		result.findings.extend(
 			diagnostics
 				.advisory
 				.into_iter()
-				.filter(|finding| finding.rule_id != "A003"),
+				.filter(|finding| finding.rule_id != "mergeable-overlap"),
 		);
 		result.findings.extend(runtime_overlap_findings);
 		result.findings.extend(check_dependency_misuse(&ctx));
@@ -252,8 +255,9 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 				}),
 		);
 	} else {
-		// Basic mode: no overlap module runs, so the heuristic R007 still
-		// provides value for scripted-effect duplicates.
+		// Basic mode: no overlap module runs, so the heuristic
+		// `duplicate-scripted-effect` still provides value for scripted-effect
+		// duplicates.
 		result
 			.findings
 			.extend(check_duplicate_scripted_effect(&ctx));
@@ -474,7 +478,7 @@ fn check_namespace_conflicts(
 			);
 
 			findings.push(Finding {
-				rule_id: "N001".to_string(),
+				rule_id: "cross-file-duplicate-symbol".to_string(),
 				severity: Severity::Warning,
 				channel: FindingChannel::Advisory,
 				message: format!(
@@ -553,8 +557,8 @@ fn extract_overlap_symbol_name(message: &str) -> Option<String> {
 	}
 }
 
-/// Pull the conflict key from an N001 evidence string of the form
-/// `key=NAME; mods=[...]`.
+/// Pull the conflict key from a `cross-file-duplicate-symbol` evidence string
+/// of the form `key=NAME; mods=[...]`.
 fn extract_namespace_key(evidence: &str) -> Option<&str> {
 	let rest = evidence.strip_prefix("key=")?;
 	let end = rest.find(';').unwrap_or(rest.len());

@@ -123,17 +123,22 @@ fn run_merge_plan_no_base(request: CheckRequest) -> MergePlanResult {
 }
 
 #[test]
-fn invalid_json_creates_r001() {
+fn invalid_json_creates_playset_parse_error() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 	fs::write(&playlist_path, "{broken").expect("write broken json");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R001"));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "playset-parse-error")
+	);
 }
 
 #[test]
-fn duplicate_steam_id_creates_r003() {
+fn duplicate_steam_id_creates_duplicate_playset_entry() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -142,11 +147,16 @@ fn duplicate_steam_id_creates_r003() {
 	write_descriptor(&temp.path().join("1001"), "mod-a", &[]);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R003"));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "duplicate-playset-entry")
+	);
 }
 
 #[test]
-fn missing_descriptor_creates_r004() {
+fn missing_descriptor_creates_mod_descriptor_error() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -154,11 +164,16 @@ fn missing_descriptor_creates_r004() {
 	fs::create_dir_all(temp.path().join("1002")).expect("create mod dir");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R004"));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "mod-descriptor-error")
+	);
 }
 
 #[test]
-fn file_conflict_creates_r005() {
+fn file_conflict_creates_file_overwrite_conflict() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -175,11 +190,16 @@ fn file_conflict_creates_r005() {
 	fs::write(mod_b.join("common").join("shared.txt"), "from-b").expect("write file");
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R005"));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "file-overwrite-conflict")
+	);
 }
 
 #[test]
-fn missing_dependency_creates_r006() {
+fn missing_dependency_creates_missing_mod_dependency() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -189,11 +209,16 @@ fn missing_dependency_creates_r006() {
 	write_descriptor(&mod_a, "mod-a", &["mod-b"]);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "R006"));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "missing-mod-dependency")
+	);
 }
 
 #[test]
-fn duplicate_scripted_effect_creates_r007() {
+fn duplicate_scripted_effect_creates_duplicate_scripted_effect() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -216,19 +241,24 @@ fn duplicate_scripted_effect_creates_r007() {
 	);
 
 	// In semantic mode the overlap module owns scripted-effect duplicates
-	// (A003 mergeable for `common/scripted_effects/`), so R007 is suppressed
-	// to avoid duplicate emissions.
+	// (`mergeable-overlap` for `common/scripted_effects/`), so
+	// `duplicate-scripted-effect` is suppressed to avoid duplicate emissions.
 	let semantic = run_checks_no_base(request_for(&playlist_path));
 	assert!(
 		semantic
 			.findings
 			.iter()
-			.any(|f| f.rule_id == "A003" && f.message.contains("shared_effect"))
+			.any(|f| f.rule_id == "mergeable-overlap" && f.message.contains("shared_effect"))
 	);
-	assert!(!semantic.findings.iter().any(|f| f.rule_id == "R007"));
+	assert!(
+		!semantic
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "duplicate-scripted-effect")
+	);
 
-	// In basic mode the overlap module is disabled, so R007 still surfaces
-	// the duplicate as a heuristic fallback.
+	// In basic mode the overlap module is disabled, so
+	// `duplicate-scripted-effect` still surfaces the duplicate as a heuristic fallback.
 	let basic = run_checks_with_options(
 		request_for(&playlist_path),
 		RunOptions {
@@ -237,7 +267,12 @@ fn duplicate_scripted_effect_creates_r007() {
 			..RunOptions::default()
 		},
 	);
-	assert!(basic.findings.iter().any(|f| f.rule_id == "R007"));
+	assert!(
+		basic
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "duplicate-scripted-effect")
+	);
 }
 
 #[test]
@@ -264,14 +299,17 @@ fn namespace_conflict_reports_sibling_scripted_effects() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	let n001: Vec<_> = result
+	let namespace_findings: Vec<_> = result
 		.findings
 		.iter()
-		.filter(|finding| finding.rule_id == "N001")
+		.filter(|finding| finding.rule_id == "cross-file-duplicate-symbol")
 		.collect();
-	assert_eq!(n001.len(), 1);
-	assert!(n001[0].message.contains("2 sibling mods"));
-	let evidence = n001[0].evidence.as_deref().expect("N001 evidence");
+	assert_eq!(namespace_findings.len(), 1);
+	assert!(namespace_findings[0].message.contains("2 sibling mods"));
+	let evidence = namespace_findings[0]
+		.evidence
+		.as_deref()
+		.expect("cross-file-duplicate-symbol evidence");
 	assert!(evidence.contains("7101:"));
 	assert!(evidence.contains("7102:"));
 }
@@ -301,7 +339,7 @@ fn namespace_conflict_ignores_dependency_chain_override() {
 
 	let result = run_checks_no_base(request_for(&playlist_path));
 	assert!(!result.findings.iter().any(|finding| {
-		finding.rule_id == "N001"
+		finding.rule_id == "cross-file-duplicate-symbol"
 			&& finding
 				.evidence
 				.as_deref()
@@ -344,25 +382,28 @@ fn namespace_conflict_reports_only_diamond_leaf_siblings() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	let n001: Vec<_> = result
+	let namespace_findings: Vec<_> = result
 		.findings
 		.iter()
-		.filter(|finding| finding.rule_id == "N001")
+		.filter(|finding| finding.rule_id == "cross-file-duplicate-symbol")
 		.collect();
-	assert_eq!(n001.len(), 1);
-	let message = &n001[0].message;
+	assert_eq!(namespace_findings.len(), 1);
+	let message = &namespace_findings[0].message;
 	assert!(message.contains("2 sibling mods"));
 	assert!(!message.contains("'A' in"));
 	assert!(message.contains("'B' in"));
 	assert!(message.contains("'C' in"));
-	let evidence = n001[0].evidence.as_deref().expect("N001 evidence");
+	let evidence = namespace_findings[0]
+		.evidence
+		.as_deref()
+		.expect("cross-file-duplicate-symbol evidence");
 	assert!(!evidence.contains("7121:"));
 	assert!(evidence.contains("7122:"));
 	assert!(evidence.contains("7123:"));
 }
 
 #[test]
-fn mergeable_cross_mod_overlap_reports_a003_without_s001() {
+fn mergeable_cross_mod_overlap_reports_mergeable_overlap_without_overshadow() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -389,13 +430,18 @@ fn mergeable_cross_mod_overlap_reports_a003_without_s001() {
 		result
 			.findings
 			.iter()
-			.any(|f| { f.rule_id == "A003" && f.message.contains("可自动合并") })
+			.any(|f| { f.rule_id == "mergeable-overlap" && f.message.contains("可自动合并") })
 	);
-	assert!(!result.findings.iter().any(|f| f.rule_id == "S001"));
+	assert!(
+		!result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "cross-mod-overshadow")
+	);
 }
 
 #[test]
-fn non_mergeable_cross_mod_overlap_reports_s001() {
+fn non_mergeable_cross_mod_overlap_reports_cross_mod_overshadow() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -418,23 +464,20 @@ fn non_mergeable_cross_mod_overlap_reports_s001() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(
-		result
-			.findings
-			.iter()
-			.any(|f| { f.rule_id == "S001" && f.message.contains("跨 Mod 重合定义") })
-	);
+	assert!(result.findings.iter().any(|f| {
+		f.rule_id == "cross-mod-overshadow" && f.message.contains("跨 Mod 重合定义")
+	}));
 }
 
 #[test]
-fn intra_mod_overlap_does_not_emit_a003() {
+fn intra_mod_overlap_does_not_emit_mergeable_overlap() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
 	write_dlc_load(&playlist_path, &[("7031", "A")]);
 
 	// One mod defines the same scripted_effect twice (e.g. duplicated under
-	// two file names that both classify into the same content family). A003
+	// two file names that both classify into the same content family). mergeable-overlap
 	// only describes cross-mod overlaps, so it must not fire here.
 	let mod_a = temp.path().join("7031");
 	write_descriptor(&mod_a, "mod-a", &[]);
@@ -450,11 +493,16 @@ fn intra_mod_overlap_does_not_emit_a003() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(!result.findings.iter().any(|f| f.rule_id == "A003"));
+	assert!(
+		!result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "mergeable-overlap")
+	);
 }
 
 #[test]
-fn unresolved_scripted_effect_reports_only_s002() {
+fn unresolved_scripted_effect_reports_unresolved_call_target() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
 
@@ -469,8 +517,12 @@ fn unresolved_scripted_effect_reports_only_s002() {
 	);
 
 	let result = run_checks_no_base(request_for(&playlist_path));
-	assert!(result.findings.iter().any(|f| f.rule_id == "S002"));
-	assert!(!result.findings.iter().any(|f| f.rule_id == "R008"));
+	assert!(
+		result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "unresolved-call-target")
+	);
 }
 
 #[test]
@@ -495,7 +547,10 @@ fn resolves_mod_root_from_ugc_metadata_when_paradox_root_is_configured() {
 
 	let result = run_checks_no_base(request_with_config(&playlist_path, config));
 	assert!(
-		!result.findings.iter().any(|f| f.rule_id == "R004"),
+		!result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "mod-descriptor-error"),
 		"should resolve descriptor.mod through ugc metadata"
 	);
 }
@@ -547,7 +602,10 @@ fn resolves_mod_root_from_non_default_steam_library_folder() {
 
 	let result = run_checks_no_base(request_with_config(&playlist_path, config));
 	assert!(
-		!result.findings.iter().any(|f| f.rule_id == "R004"),
+		!result
+			.findings
+			.iter()
+			.any(|f| f.rule_id == "mod-descriptor-error"),
 		"should resolve descriptor.mod from steam libraryfolders path"
 	);
 }
@@ -854,12 +912,14 @@ fn whole_tree_documents_feed_ui_localisation_csv_and_json_analysis() {
 		result
 			.findings
 			.iter()
-			.any(|finding| finding.rule_id == "A006" && finding.message.contains("TEST_WINDOW_TT"))
+			.any(|finding| finding.rule_id == "duplicate-localisation"
+				&& finding.message.contains("TEST_WINDOW_TT"))
 	);
 	assert!(
 		!result
 			.findings
 			.iter()
-			.any(|finding| finding.rule_id == "A005" && finding.message.contains("TEST_WINDOW_TT"))
+			.any(|finding| finding.rule_id == "missing-localisation"
+				&& finding.message.contains("TEST_WINDOW_TT"))
 	);
 }

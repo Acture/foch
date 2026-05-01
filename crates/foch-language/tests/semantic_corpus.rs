@@ -99,7 +99,8 @@ fn corpus_events_are_indexed_and_calls_resolve() {
 		},
 	);
 	assert!(!diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S002" && finding.message.contains("event CTRLMA_config_events")
+		finding.rule_id == "unresolved-call-target"
+			&& finding.message.contains("event CTRLMA_config_events")
 	}));
 }
 
@@ -124,7 +125,8 @@ fn corpus_scripted_effect_param_binding_is_resolved() {
 	);
 
 	assert!(!diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S004" && finding.message.contains("CTRLMA_enable_or_disable_effects")
+		finding.rule_id == "missing-effect-parameter"
+			&& finding.message.contains("CTRLMA_enable_or_disable_effects")
 	}));
 }
 
@@ -146,7 +148,7 @@ fn corpus_scope_inference_tracks_root_and_province_scope() {
 		},
 	);
 	assert!(!diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S003"
+		finding.rule_id == "invisible-scope-alias"
 			&& finding
 				.path
 				.as_ref()
@@ -176,7 +178,7 @@ fn corpus_diplomatic_actions_keep_aliases_visible() {
 	);
 
 	assert!(!diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S003"
+		finding.rule_id == "invisible-scope-alias"
 			&& finding
 				.path
 				.as_ref()
@@ -235,7 +237,7 @@ fn corpus_flag_reference_is_resolved_from_param_binding() {
 	);
 
 	assert!(!diagnostics.advisory.iter().any(|finding| {
-		finding.rule_id == "A004"
+		finding.rule_id == "unresolved-flag-reference"
 			&& finding
 				.message
 				.contains("CTRLMA_non_war_leader_cannot_ask_military_access_enabled_global_flag")
@@ -263,7 +265,8 @@ fn direct_country_flag_definition_resolves_cross_file_references() {
 	);
 
 	assert!(!diagnostics.advisory.iter().any(|finding| {
-		finding.rule_id == "A004" && finding.message.contains("CTRLMA_open_config_menu_flag")
+		finding.rule_id == "unresolved-flag-reference"
+			&& finding.message.contains("CTRLMA_open_config_menu_flag")
 	}));
 }
 
@@ -288,7 +291,7 @@ fn corpus_tooltip_key_is_resolved_from_localisation_files() {
 	);
 
 	assert!(!diagnostics.advisory.iter().any(|finding| {
-		finding.rule_id == "A005"
+		finding.rule_id == "missing-localisation"
 			&& finding
 				.message
 				.contains("CTRLMA_ALLIES_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE")
@@ -296,7 +299,7 @@ fn corpus_tooltip_key_is_resolved_from_localisation_files() {
 }
 
 #[test]
-fn missing_localisation_definition_creates_a005() {
+fn missing_localisation_definition_creates_missing_localisation() {
 	let action = parsed(
 		"control_military_access",
 		"ctrlma",
@@ -312,7 +315,7 @@ fn missing_localisation_definition_creates_a005() {
 	);
 
 	assert!(diagnostics.advisory.iter().any(|finding| {
-		finding.rule_id == "A005"
+		finding.rule_id == "missing-localisation"
 			&& finding
 				.message
 				.contains("CTRLMA_ALLIES_CANNOT_BE_ASKED_MILITARY_ACCESS_BY_OPPOSING_SIDE")
@@ -344,17 +347,14 @@ fn corpus_name_title_desc_keys_are_resolved_from_localisation_files() {
 		"CTRLMA_config_events.desc",
 		"CTRLMA.confirm",
 	] {
-		assert!(
-			!diagnostics
-				.advisory
-				.iter()
-				.any(|finding| { finding.rule_id == "A005" && finding.message.contains(key) })
-		);
+		assert!(!diagnostics.advisory.iter().any(|finding| {
+			finding.rule_id == "missing-localisation" && finding.message.contains(key)
+		}));
 	}
 }
 
 #[test]
-fn missing_name_title_desc_localisation_creates_a005() {
+fn missing_name_title_desc_localisation_creates_missing_localisation() {
 	let event = parsed(
 		"control_military_access",
 		"ctrlma",
@@ -374,12 +374,9 @@ fn missing_name_title_desc_localisation_creates_a005() {
 		"CTRLMA_config_events.desc",
 		"CTRLMA.confirm",
 	] {
-		assert!(
-			diagnostics
-				.advisory
-				.iter()
-				.any(|finding| { finding.rule_id == "A005" && finding.message.contains(key) })
-		);
+		assert!(diagnostics.advisory.iter().any(|finding| {
+			finding.rule_id == "missing-localisation" && finding.message.contains(key)
+		}));
 	}
 }
 
@@ -426,7 +423,7 @@ fn templated_flag_missing_reports_inference_evidence() {
 		.advisory
 		.iter()
 		.find(|finding| {
-			finding.rule_id == "A004"
+			finding.rule_id == "unresolved-flag-reference"
 				&& finding.message.contains("unresolved_global_flag")
 				&& finding
 					.evidence
@@ -447,10 +444,10 @@ fn templated_flag_missing_reports_inference_evidence() {
 
 #[test]
 fn embedded_template_flag_setter_resolves_dynamic_definition() {
-	// Validates the fix for A004 false positives where a scripted_effect sets a
+	// Validates the fix for unresolved-flag-reference false positives where a scripted_effect sets a
 	// flag whose name embeds a `$param$` placeholder (e.g. `set_country_flag =
 	// is_$tag$_flag`). Calling `effect = { tag = EY0 }` should make
-	// `is_EY0_flag` count as defined and suppress the A004 read warning.
+	// `is_EY0_flag` count as defined and suppress the unresolved-flag-reference read warning.
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
 	fs::create_dir_all(root.join("events")).expect("create events");
@@ -488,7 +485,8 @@ fn embedded_template_flag_setter_resolves_dynamic_definition() {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A004" && finding.message.contains("is_EY0_flag")
+			finding.rule_id == "unresolved-flag-reference"
+				&& finding.message.contains("is_EY0_flag")
 		}),
 		"embedded `set_country_flag = is_$tag$_flag` invoked with tag=EY0 should define is_EY0_flag",
 	);
@@ -497,7 +495,7 @@ fn embedded_template_flag_setter_resolves_dynamic_definition() {
 #[test]
 fn engine_set_country_flags_are_pre_seeded() {
 	// Vanilla EU4 reads several country flags that are only ever set by the
-	// game engine (e.g. on diplomatic annexation, war victory). A004 should
+	// game engine (e.g. on diplomatic annexation, war victory). unresolved-flag-reference should
 	// pre-seed those flags so reads do not warn.
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
@@ -525,8 +523,9 @@ fn engine_set_country_flags_are_pre_seeded() {
 			!diagnostics
 				.advisory
 				.iter()
-				.any(|finding| finding.rule_id == "A004" && finding.message.contains(engine_flag)),
-			"engine-set flag {engine_flag} should not produce A004",
+				.any(|finding| finding.rule_id == "unresolved-flag-reference"
+					&& finding.message.contains(engine_flag)),
+			"engine-set flag {engine_flag} should not produce unresolved-flag-reference",
 		);
 	}
 }
@@ -572,7 +571,8 @@ fn templated_flag_pattern_allowlists_unbound_reads() {
 			!diagnostics
 				.advisory
 				.iter()
-				.any(|finding| finding.rule_id == "A004" && finding.message.contains(flag)),
+				.any(|finding| finding.rule_id == "unresolved-flag-reference"
+					&& finding.message.contains(flag)),
 			"`is_$tag$_flag` template should pattern-suppress reads of {flag}",
 		);
 	}
@@ -584,7 +584,7 @@ fn unrelated_flag_still_fires_with_template_present() {
 	// is expected by parameterization but absent. The scripted_effect reads
 	// `has_country_flag = is_$tag$_flag` but never sets it; a caller binds
 	// `tag = FOO`, so we know the read resolves to `is_FOO_flag` and that
-	// flag has no setter anywhere. A004 must still fire (sites 1/2).
+	// flag has no setter anywhere. unresolved-flag-reference must still fire (sites 1/2).
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
 	fs::create_dir_all(root.join("events")).expect("create events");
@@ -623,7 +623,8 @@ fn unrelated_flag_still_fires_with_template_present() {
 		diagnostics
 			.advisory
 			.iter()
-			.any(|finding| finding.rule_id == "A004" && finding.message.contains("is_FOO_flag")),
+			.any(|finding| finding.rule_id == "unresolved-flag-reference"
+				&& finding.message.contains("is_FOO_flag")),
 		"templated derivation must keep firing when no setter exists",
 	);
 }
@@ -633,7 +634,7 @@ fn literal_unset_flag_in_trigger_position_is_suppressed() {
 	// `has_*_flag = X` inside a trigger context where X is never set anywhere
 	// is the canonical cross-mod compat gate (e.g. `has_global_flag =
 	// extended_timeline_mod`). Reading an unset flag in trigger position is
-	// benign — the gate just stays closed. A004 must not fire.
+	// benign — the gate just stays closed. unresolved-flag-reference must not fire.
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
 	fs::create_dir_all(root.join("events")).expect("create events");
@@ -655,9 +656,9 @@ fn literal_unset_flag_in_trigger_position_is_suppressed() {
 		!diagnostics
 			.advisory
 			.iter()
-			.any(|finding| finding.rule_id == "A004"
+			.any(|finding| finding.rule_id == "unresolved-flag-reference"
 				&& finding.message.contains("totally_unrelated_flag")),
-		"literal `has_*_flag` reads in trigger position must not raise A004",
+		"literal `has_*_flag` reads in trigger position must not raise unresolved-flag-reference",
 	);
 }
 
@@ -701,7 +702,13 @@ fn corpus_priority_eu4_roots_do_not_emit_targeted_noise() {
 		"common/ideas/00_coverage_ideas.txt",
 		"common/new_diplomatic_actions/00_coverage_actions.txt",
 	];
-	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+	let targeted_rules = [
+		"unknown-scope-type",
+		"unresolved-call-target",
+		"invisible-scope-alias",
+		"missing-effect-parameter",
+		"unresolved-flag-reference",
+	];
 
 	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
 		finding,
@@ -749,7 +756,13 @@ fn corpus_metadata_eu4_roots_do_not_emit_targeted_noise() {
 		"common/advisortypes/00_coverage_advisortypes.txt",
 		"common/custom_gui/00_coverage_gui.txt",
 	];
-	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+	let targeted_rules = [
+		"unknown-scope-type",
+		"unresolved-call-target",
+		"invisible-scope-alias",
+		"missing-effect-parameter",
+		"unresolved-flag-reference",
+	];
 
 	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
 		finding,
@@ -811,7 +824,13 @@ fn corpus_wrapper_heavy_roots_keep_callbacks_and_helpers_clean() {
 		"common/cb_types/00_wrappers_cb.txt",
 		"common/on_actions/00_wrappers_on_actions.txt",
 	];
-	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+	let targeted_rules = [
+		"unknown-scope-type",
+		"unresolved-call-target",
+		"invisible-scope-alias",
+		"missing-effect-parameter",
+		"unresolved-flag-reference",
+	];
 
 	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
 		finding,
@@ -852,7 +871,7 @@ fn corpus_real_minimized_ages_reformed_patterns_stay_clean() {
 		"common/triggered_modifiers/00_ages_reformed_modifiers.txt",
 		"common/ages/00_ages_reformed_ages.txt",
 	];
-	let targeted_rules = ["A001", "S004"];
+	let targeted_rules = ["unknown-scope-type", "missing-effect-parameter"];
 
 	assert!(!diagnostics.strict.iter().any(|finding| is_targeted_noise(
 		finding,
@@ -911,7 +930,13 @@ fn corpus_real_minimized_more_favor_actions_patterns_stay_clean() {
 		"common/diplomatic_actions/000_more_favor_actions_diplomatic_actions.txt",
 		"events/00_more_favor_actions_events.txt",
 	];
-	let targeted_rules = ["A001", "S002", "S003", "S004", "A004"];
+	let targeted_rules = [
+		"unknown-scope-type",
+		"unresolved-call-target",
+		"invisible-scope-alias",
+		"missing-effect-parameter",
+		"unresolved-flag-reference",
+	];
 	let strict_noise: Vec<String> = diagnostics
 		.strict
 		.iter()
@@ -998,7 +1023,7 @@ fn corpus_real_minimized_europa_expanded_building_params_stay_clean() {
 		"common/scripted_effects/00_europa_expanded_effects.txt",
 		"common/buildings/00_europa_expanded_buildings.txt",
 	];
-	let targeted_rules = ["S004"];
+	let targeted_rules = ["missing-effect-parameter"];
 	let strict_noise: Vec<String> = diagnostics
 		.strict
 		.iter()
@@ -1054,7 +1079,7 @@ fn corpus_real_minimized_europa_expanded_complex_effects_stay_clean() {
 		"common/scripted_effects/01_europa_expanded_complex_effects.txt",
 		"missions/00_europa_expanded_complex_effects.txt",
 	];
-	let targeted_rules = ["S004"];
+	let targeted_rules = ["missing-effect-parameter"];
 	let strict_noise: Vec<String> = diagnostics
 		.strict
 		.iter()
@@ -1114,7 +1139,7 @@ fn corpus_real_minimized_base_game_complex_effects_stay_clean() {
 		"missions/00_base_game_complex_effects.txt",
 		"decisions/00_base_game_complex_effects.txt",
 	];
-	let targeted_rules = ["S004"];
+	let targeted_rules = ["missing-effect-parameter"];
 	let strict_noise: Vec<String> = diagnostics
 		.strict
 		.iter()
@@ -1157,11 +1182,11 @@ fn corpus_real_minimized_base_game_complex_effects_stay_clean() {
 }
 
 #[test]
-fn a002_skips_dynamic_scope_content_families() {
-	// scripted_effects bodies have no statically-known caller scope. A002
+fn scope_type_mismatch_skips_dynamic_scope_content_families() {
+	// scripted_effects bodies have no statically-known caller scope. scope-type-mismatch
 	// should not flag `set_country_flag` / `add_prestige` etc inside such
 	// files just because the analyzer happens to infer Province scope from
-	// a nested iterator. This mirrors the A001 dynamic_scope skip.
+	// a nested iterator. This mirrors the unknown-scope-type dynamic_scope skip.
 	let tmp = TempDir::new().expect("temp dir");
 	let root = tmp.path().join("mod");
 	fs::create_dir_all(root.join("common").join("scripted_effects")).expect("create effects dir");
@@ -1193,12 +1218,12 @@ fn a002_skips_dynamic_scope_content_families() {
 		!diagnostics
 			.advisory
 			.iter()
-			.any(|finding| finding.rule_id == "A002"),
-		"A002 must skip dynamic_scope content families: {:#?}",
+			.any(|finding| finding.rule_id == "scope-type-mismatch"),
+		"scope-type-mismatch must skip dynamic_scope content families: {:#?}",
 		diagnostics
 			.advisory
 			.iter()
-			.filter(|finding| finding.rule_id == "A002")
+			.filter(|finding| finding.rule_id == "scope-type-mismatch")
 			.collect::<Vec<_>>(),
 	);
 }

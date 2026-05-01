@@ -228,8 +228,8 @@ python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json --out-dir targ
 python3 scripts/eu4_real_smoke_compare.py \
 	target/eu4-real-smoke/baseline/<slug>-summary.json \
 	target/eu4-real-smoke/act-32-post/<slug>-summary.json \
-	--rule S004 \
-	--gate-rule S004 \
+	--rule missing-effect-parameter \
+	--gate-rule missing-effect-parameter \
 	--min-absolute-drop 250 \
 	--min-relative-drop 0.08
 ```

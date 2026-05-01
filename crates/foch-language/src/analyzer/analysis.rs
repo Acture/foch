@@ -22,36 +22,38 @@ pub struct AnalyzeOptions {
 
 pub fn analyze_visibility(index: &SemanticIndex, _options: &AnalyzeOptions) -> SemanticDiagnostics {
 	let mut diagnostics = SemanticDiagnostics::default();
-	diagnostics.strict.extend(check_s001_duplicates(index));
 	diagnostics
 		.strict
-		.extend(check_s002_unresolved_calls(index));
-	let (s003_strict, s003_advisory) = check_s003_invisible_alias(index);
-	diagnostics.strict.extend(s003_strict);
-	diagnostics.advisory.extend(s003_advisory);
-	diagnostics.strict.extend(check_s004_unbound_params(index));
+		.extend(check_duplicate_definitions(index));
+	diagnostics
+		.strict
+		.extend(check_unresolved_call_targets(index));
+	let (invisible_alias_strict, invisible_alias_advisory) = check_invisible_scope_aliases(index);
+	diagnostics.strict.extend(invisible_alias_strict);
+	diagnostics.advisory.extend(invisible_alias_advisory);
+	diagnostics
+		.strict
+		.extend(check_missing_effect_parameters(index));
+	diagnostics.advisory.extend(check_unknown_scope_type(index));
 	diagnostics
 		.advisory
-		.extend(check_a001_unknown_scope_type(index));
+		.extend(check_scope_type_mismatch(index));
 	diagnostics
 		.advisory
-		.extend(check_a002_weak_type_conflict(index));
+		.extend(check_cross_mod_overlap_advisories(index));
 	diagnostics
 		.advisory
-		.extend(check_a003_cross_mod_override(index));
+		.extend(check_unresolved_flag_references(index));
 	diagnostics
 		.advisory
-		.extend(check_a004_unresolved_flag_symbol(index));
+		.extend(check_missing_localisation_keys(index));
 	diagnostics
 		.advisory
-		.extend(check_a005_missing_localisation_key(index));
-	diagnostics
-		.advisory
-		.extend(check_a006_duplicate_localisation_key(index));
+		.extend(check_duplicate_localisation_keys(index));
 	diagnostics
 }
 
-fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
+fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 	let mut grouped: HashMap<(SymbolKind, String), Vec<_>> = HashMap::new();
 	for def in &index.definitions {
 		if !should_flag_duplicates(def.kind) {
@@ -85,7 +87,7 @@ fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 			continue;
 		};
 		findings.push(Finding {
-			rule_id: "S001".to_string(),
+			rule_id: "cross-mod-overshadow".to_string(),
 			severity: Severity::Error,
 			channel: FindingChannel::Strict,
 			message: format!("重复定义: {} {}", symbol_kind_text(kind), name),
@@ -100,7 +102,7 @@ fn check_s001_duplicates(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
+fn check_unresolved_call_targets(index: &SemanticIndex) -> Vec<Finding> {
 	let mut seen = HashSet::new();
 	let mut findings = Vec::new();
 	// Some EU4 trigger keys are not scripted_triggers but the *names* of
@@ -186,7 +188,7 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 		}
 
 		findings.push(Finding {
-			rule_id: "S002".to_string(),
+			rule_id: "unresolved-call-target".to_string(),
 			severity: Severity::Error,
 			channel: FindingChannel::Strict,
 			message: format!(
@@ -205,7 +207,7 @@ fn check_s002_unresolved_calls(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Finding>) {
+fn check_invisible_scope_aliases(index: &SemanticIndex) -> (Vec<Finding>, Vec<Finding>) {
 	let mut seen = HashSet::new();
 	let mut strict = Vec::new();
 	let mut advisory = Vec::new();
@@ -219,7 +221,8 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Findi
 		// customizable_localization, UI) have no statically-known root or
 		// caller scope. THIS/ROOT/FROM/PREV are all by-design absent from
 		// the alias map there, so flagging them — even as advisory — is pure
-		// noise. The same skip is applied by A001 / A002.
+		// noise. The same skip is applied by `unknown-scope-type` and
+		// `scope-type-mismatch`.
 		if profile
 			.classify_content_family(usage.path.as_path())
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
@@ -242,9 +245,10 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Findi
 		// custom_gui callbacks, ...). Static analysis cannot reliably determine
 		// their visibility without context-sensitive flow analysis, so flagging
 		// them as strict errors produces high-volume false positives. Demote
-		// such usages to advisory with low confidence; reserve strict S003 for
-		// THIS/ROOT, which are populated at file scope unconditionally and so
-		// only become invisible due to genuine indexing bugs.
+		// such usages to advisory with low confidence; reserve strict
+		// `invisible-scope-alias` for THIS/ROOT, which are populated at file
+		// scope unconditionally and so only become invisible due to genuine
+		// indexing bugs.
 		let is_runtime_bound = matches!(usage.alias.as_str(), "FROM" | "PREV");
 		let (channel, severity, confidence) = if is_runtime_bound {
 			(FindingChannel::Advisory, Severity::Info, 0.3)
@@ -252,7 +256,7 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Findi
 			(FindingChannel::Strict, Severity::Error, 0.9)
 		};
 		let finding = Finding {
-			rule_id: "S003".to_string(),
+			rule_id: "invisible-scope-alias".to_string(),
 			severity,
 			channel,
 			message: format!("不可见别名引用: {}", usage.alias),
@@ -272,7 +276,7 @@ fn check_s003_invisible_alias(index: &SemanticIndex) -> (Vec<Finding>, Vec<Findi
 	(strict, advisory)
 }
 
-fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
+fn check_missing_effect_parameters(index: &SemanticIndex) -> Vec<Finding> {
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for reference in &index.references {
@@ -316,7 +320,7 @@ fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
 				continue;
 			}
 			findings.push(Finding {
-				rule_id: "S004".to_string(),
+				rule_id: "missing-effect-parameter".to_string(),
 				severity: Severity::Error,
 				channel: FindingChannel::Strict,
 				message,
@@ -332,7 +336,7 @@ fn check_s004_unbound_params(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
+fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 	let type_sensitive_keys: HashSet<&str> = [
 		"ROOT",
 		"FROM",
@@ -382,7 +386,7 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 			continue;
 		}
 		findings.push(Finding {
-			rule_id: "A001".to_string(),
+			rule_id: "unknown-scope-type".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
 			message: format!("类型不确定路径: key={} 在 Unknown scope", usage.key),
@@ -397,7 +401,7 @@ fn check_a001_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
+fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 	let country_only_keys: HashSet<&str> = [
 		"country_event",
 		"set_country_flag",
@@ -420,7 +424,7 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 		// implicit scope (callables, UI, customizable_localization,
 		// on_actions, scripted_functions). The runtime caller's scope is
 		// unknown there, so flagging Province usage of country effects is
-		// noise — same skip applied by A001.
+		// noise — same skip applied by unknown-scope-type.
 		if profile
 			.classify_content_family(usage.path.as_path())
 			.is_some_and(|descriptor| descriptor.scope_policy.dynamic_scope)
@@ -437,7 +441,7 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 			continue;
 		}
 		findings.push(Finding {
-			rule_id: "A002".to_string(),
+			rule_id: "scope-type-mismatch".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
 			message: format!("潜在类型弱冲突: Province scope 使用 {}", usage.key),
@@ -452,7 +456,7 @@ fn check_a002_weak_type_conflict(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_a003_cross_mod_override(index: &SemanticIndex) -> Vec<Finding> {
+fn check_cross_mod_overlap_advisories(index: &SemanticIndex) -> Vec<Finding> {
 	let mut grouped: HashMap<(SymbolKind, String), Vec<_>> = HashMap::new();
 	for def in &index.definitions {
 		grouped
@@ -479,7 +483,7 @@ fn check_a003_cross_mod_override(index: &SemanticIndex) -> Vec<Finding> {
 			.collect::<Vec<_>>()
 			.join(" -> ");
 		findings.push(Finding {
-			rule_id: "A003".to_string(),
+			rule_id: "mergeable-overlap".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
 			message: format!(
@@ -524,8 +528,8 @@ struct FlagTemplateUsage {
 
 /// Flags that are set or maintained by the EU4 engine itself (not via script
 /// `set_*_flag = ...`). Reading these via `has_*_flag` is legitimate even when
-/// no script setter exists, so we pre-seed them as defined to suppress A004
-/// false positives.
+/// no script setter exists, so we pre-seed them as defined to suppress
+/// `unresolved-flag-reference` false positives.
 const ENGINE_SET_FLAGS: &[(&str, &str)] = &[
 	("country", "vanilla_achievements_enabled"),
 	("country", "have_diploannexed"),
@@ -581,7 +585,7 @@ fn templated_pattern_is_specific(prefix: &str, suffix: &str) -> bool {
 	alpha >= 3
 }
 
-fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
+fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 	let mut defined_flags: HashSet<(String, String)> = HashSet::new();
 	for (kind, flag) in ENGINE_SET_FLAGS {
 		defined_flags.insert(((*kind).to_string(), (*flag).to_string()));
@@ -728,7 +732,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 							.map(|item| item.name.as_str())
 							.unwrap_or(reference.name.as_str());
 						findings.push(Finding {
-							rule_id: "A004".to_string(),
+							rule_id: "unresolved-flag-reference".to_string(),
 							severity: Severity::Warning,
 							channel: FindingChannel::Advisory,
 							message: format!(
@@ -799,7 +803,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 						.map(|item| item.name.as_str())
 						.unwrap_or(reference.name.as_str());
 					findings.push(Finding {
-						rule_id: "A004".to_string(),
+						rule_id: "unresolved-flag-reference".to_string(),
 						severity: Severity::Warning,
 						channel: FindingChannel::Advisory,
 						message: format!(
@@ -845,7 +849,7 @@ fn check_a004_unresolved_flag_symbol(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_a005_missing_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
+fn check_missing_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	let defined_keys: HashSet<&str> = index
 		.localisation_definitions
 		.iter()
@@ -884,7 +888,7 @@ fn check_a005_missing_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
 			continue;
 		}
 		findings.push(Finding {
-			rule_id: "A005".to_string(),
+			rule_id: "missing-localisation".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
 			message: format!("localisation key 未找到: {}", key),
@@ -899,7 +903,7 @@ fn check_a005_missing_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_a006_duplicate_localisation_key(index: &SemanticIndex) -> Vec<Finding> {
+fn check_duplicate_localisation_keys(index: &SemanticIndex) -> Vec<Finding> {
 	let mut findings = Vec::new();
 	let mut seen = HashSet::new();
 	for duplicate in &index.localisation_duplicates {
@@ -913,7 +917,7 @@ fn check_a006_duplicate_localisation_key(index: &SemanticIndex) -> Vec<Finding> 
 			continue;
 		}
 		findings.push(Finding {
-			rule_id: "A006".to_string(),
+			rule_id: "duplicate-localisation".to_string(),
 			severity: Severity::Warning,
 			channel: FindingChannel::Advisory,
 			message: format!("重复 localisation key: {}", duplicate.key),

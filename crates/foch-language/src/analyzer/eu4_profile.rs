@@ -51,7 +51,7 @@ const fn country_from_only() -> ContentFamilyScopePolicy {
 
 /// Scope policy for content families whose implicit scope is supplied by the
 /// runtime caller (callables, UI bindings, customizable localization,
-/// on_actions callbacks). A001 (uncertain-scope path) skips usages inside
+/// on_actions callbacks). unknown-scope-type (uncertain-scope path) skips usages inside
 /// these files because Unknown is the by-design state.
 const fn dynamic_scope_policy() -> ContentFamilyScopePolicy {
 	ContentFamilyScopePolicy {

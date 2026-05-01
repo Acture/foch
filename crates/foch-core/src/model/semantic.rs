@@ -121,7 +121,7 @@ pub struct SymbolDefinition {
 	/// Static caller-FROM scope mask inferred from invocation sites. For
 	/// callables (scripted_effects, scripted_triggers, ...), this is the
 	/// union of FROM types observed at every callsite. Non-zero means FROM
-	/// is statically resolvable inside the body and S003 should not flag
+	/// is statically resolvable inside the body and invisible-scope-alias should not flag
 	/// FROM aliases there.
 	#[serde(default)]
 	pub inferred_from_mask: u8,

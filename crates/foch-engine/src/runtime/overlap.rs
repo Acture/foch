@@ -45,11 +45,12 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 			continue;
 		}
 
-		// A003 ("跨 Mod 重合定义") only describes cross-mod overlaps. When all
+		// Runtime overlap findings only describe cross-mod overlaps. When all
 		// participating definitions come from a single mod (e.g. the same key
 		// appears under both `decisions/` and `events/decisions/` inside one
 		// mod) the finding is misleading and pure noise. Such intra-mod
-		// duplication is the responsibility of other rules (R005/R007).
+		// duplication is the responsibility of other rules such as
+		// `file-overwrite-conflict` or `duplicate-scripted-effect`.
 		let distinct_mods = defs
 			.iter()
 			.map(|definition| definition.mod_id.as_str())
@@ -73,7 +74,7 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 		};
 		match status {
 			OverlapStatus::DiscardableBaseCopy => findings.push(Finding {
-				rule_id: "A003".to_string(),
+				rule_id: "mergeable-overlap".to_string(),
 				severity: Severity::Warning,
 				channel: FindingChannel::Advisory,
 				message: format!(
@@ -89,7 +90,7 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 				confidence: Some(0.9),
 			}),
 			OverlapStatus::MergeCandidate => findings.push(Finding {
-				rule_id: "A003".to_string(),
+				rule_id: "mergeable-overlap".to_string(),
 				severity: Severity::Warning,
 				channel: FindingChannel::Advisory,
 				message: format!(
@@ -105,7 +106,7 @@ pub(crate) fn build_overlap_findings(state: &RuntimeState) -> Vec<Finding> {
 				confidence: Some(0.8),
 			}),
 			OverlapStatus::OvershadowConflict => findings.push(Finding {
-				rule_id: "S001".to_string(),
+				rule_id: "cross-mod-overshadow".to_string(),
 				severity: Severity::Error,
 				channel: FindingChannel::Strict,
 				message: format!(

@@ -20,7 +20,7 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 			.is_empty()
 		{
 			findings.push(new_finding(
-				"R002",
+				"missing-playset-field",
 				Severity::Error,
 				FindingChannel::Strict,
 				format!("mod 条目 {idx} 缺失 displayName"),
@@ -41,7 +41,7 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 			.is_empty()
 		{
 			findings.push(new_finding(
-				"R002",
+				"missing-playset-field",
 				Severity::Error,
 				FindingChannel::Strict,
 				format!("mod 条目 {idx} 缺失 steamId"),
@@ -56,7 +56,7 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 
 		if entry.position.is_none() {
 			findings.push(new_finding(
-				"R002",
+				"missing-playset-field",
 				Severity::Error,
 				FindingChannel::Strict,
 				format!("mod 条目 {idx} 缺失 position"),
@@ -82,7 +82,7 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 		if let Some(steam_id) = entry.steam_id.as_ref() {
 			if let Some(first_idx) = seen_steam_ids.get(steam_id) {
 				findings.push(new_finding(
-					"R003",
+					"duplicate-playset-entry",
 					Severity::Error,
 					FindingChannel::Strict,
 					format!("steamId 冲突: {steam_id} (首次出现于索引 {first_idx})"),
@@ -101,7 +101,7 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 		if let Some(position) = entry.position {
 			if let Some(first_idx) = seen_positions.get(&position) {
 				findings.push(new_finding(
-					"R003",
+					"duplicate-playset-entry",
 					Severity::Error,
 					FindingChannel::Strict,
 					format!("position 冲突: {position} (首次出现于索引 {first_idx})"),
@@ -135,7 +135,7 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 			&mod_item.descriptor_error,
 		) {
 			(None, _, _) => findings.push(new_finding(
-				"R004",
+				"mod-descriptor-error",
 				Severity::Error,
 				FindingChannel::Strict,
 				"无法定位 descriptor.mod".to_string(),
@@ -147,7 +147,7 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				Some(1.0),
 			)),
 			(Some(path), None, Some(err)) => findings.push(new_finding(
-				"R004",
+				"mod-descriptor-error",
 				Severity::Error,
 				FindingChannel::Strict,
 				"descriptor.mod 解析失败".to_string(),
@@ -159,7 +159,7 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 				Some(1.0),
 			)),
 			(Some(path), None, None) => findings.push(new_finding(
-				"R004",
+				"mod-descriptor-error",
 				Severity::Error,
 				FindingChannel::Strict,
 				"descriptor.mod 不存在".to_string(),
@@ -216,7 +216,7 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 		};
 
 		findings.push(new_finding(
-			"R005",
+			"file-overwrite-conflict",
 			Severity::Warning,
 			FindingChannel::Advisory,
 			message,
@@ -267,7 +267,7 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 			}
 
 			findings.push(new_finding(
-				"R006",
+				"missing-mod-dependency",
 				Severity::Warning,
 				FindingChannel::Advisory,
 				format!("缺失依赖: {dependency}"),
@@ -386,7 +386,7 @@ pub fn check_version_mismatch(ctx: &CheckContext, game_version: &str) -> Vec<Fin
 		.into_iter()
 		.map(|finding| {
 			new_finding(
-				"V001",
+				"mod-version-mismatch",
 				finding.severity,
 				FindingChannel::Advisory,
 				finding.message.clone(),
@@ -412,7 +412,7 @@ pub fn check_dependency_misuse(ctx: &CheckContext) -> Vec<Finding> {
 		.into_iter()
 		.map(|finding| {
 			new_finding(
-				"D001",
+				"unused-mod-dependency",
 				Severity::Warning,
 				FindingChannel::Advisory,
 				format!(
@@ -535,7 +535,7 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 			continue;
 		};
 		findings.push(new_finding(
-			"R007",
+			"duplicate-scripted-effect",
 			Severity::Warning,
 			FindingChannel::Advisory,
 			format!("scripted effect 重复定义: {name}"),
@@ -698,7 +698,10 @@ mod tests {
 		assert_eq!(findings[0].severity, Severity::Info);
 		assert_eq!(findings[0].supported_version, "1.36.*");
 		assert_eq!(findings[0].game_version, "1.37.5");
-		assert_eq!(check_version_mismatch(&ctx, "1.37.5")[0].rule_id, "V001");
+		assert_eq!(
+			check_version_mismatch(&ctx, "1.37.5")[0].rule_id,
+			"mod-version-mismatch"
+		);
 	}
 
 	#[test]
@@ -746,7 +749,10 @@ mod tests {
 		assert_eq!(findings[0].mod_id, "100");
 		assert_eq!(findings[0].suspicious_dep_id, "200");
 		assert_eq!(findings[0].evidence.semantic_refs_to_dep, 0);
-		assert_eq!(check_dependency_misuse(&ctx)[0].rule_id, "D001");
+		assert_eq!(
+			check_dependency_misuse(&ctx)[0].rule_id,
+			"unused-mod-dependency"
+		);
 	}
 
 	#[test]

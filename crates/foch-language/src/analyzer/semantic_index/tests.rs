@@ -275,7 +275,10 @@ $tag_1$ = {
 "#
 }
 
-fn fourth_wave_s004_messages(call_rel_path: &[&str], call_source: &str) -> Vec<String> {
+fn fourth_wave_missing_effect_parameter_messages(
+	call_rel_path: &[&str],
+	call_source: &str,
+) -> Vec<String> {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
 	let scripted_effects_dir = mod_root.join("common").join("scripted_effects");
@@ -312,7 +315,7 @@ fn fourth_wave_s004_messages(call_rel_path: &[&str], call_source: &str) -> Vec<S
 	)
 	.strict
 	.into_iter()
-	.filter(|finding| finding.rule_id == "S004")
+	.filter(|finding| finding.rule_id == "missing-effect-parameter")
 	.map(|finding| finding.message)
 	.collect()
 }
@@ -2982,7 +2985,7 @@ immediate = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001" && finding.path == Some("events/x.txt".into())
+			finding.rule_id == "unknown-scope-type" && finding.path == Some("events/x.txt".into())
 		}),
 		"typed event roots should not stay in Unknown scope"
 	);
@@ -3089,18 +3092,17 @@ provinces_to_highlight = {
 		"all_core_province",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
-			"{name} should not produce S002"
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
+			"{name} should not produce unresolved-call-target"
 		);
 	}
 	assert!(
 		!diagnostics
 			.advisory
 			.iter()
-			.any(|finding| finding.rule_id == "A001"
+			.any(|finding| finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/achievements.txt".into())),
 		"achievements root scope should no longer stay Unknown"
 	);
@@ -3312,10 +3314,9 @@ trigger = {
 		"interface/main.gui",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.path == Some(path.into()) }),
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.path == Some(path.into())
+			}),
 			"{path} should not report top-level scripted effect fallback"
 		);
 	}
@@ -3326,10 +3327,9 @@ trigger = {
 		"common/province_triggered_modifiers/modifiers.txt",
 	] {
 		assert!(
-			!diagnostics
-				.advisory
-				.iter()
-				.any(|finding| { finding.rule_id == "A001" && finding.path == Some(path.into()) }),
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "unknown-scope-type" && finding.path == Some(path.into())
+			}),
 			"{path} should have a typed root scope"
 		);
 	}
@@ -3421,10 +3421,9 @@ test_decision = {
 		"events/decisions/decisions.txt",
 	] {
 		assert!(
-			!diagnostics
-				.advisory
-				.iter()
-				.any(|finding| { finding.rule_id == "A001" && finding.path == Some(path.into()) }),
+			!diagnostics.advisory.iter().any(|finding| {
+				finding.rule_id == "unknown-scope-type" && finding.path == Some(path.into())
+			}),
 			"{path} should reuse typed DSL semantics"
 		);
 	}
@@ -3436,18 +3435,18 @@ test_decision = {
 		"test_decision",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
 			"{name} should not be treated as a scripted effect"
 		);
 	}
 	assert!(diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S002" && finding.message.contains("missing_effect")
+		finding.rule_id == "unresolved-call-target" && finding.message.contains("missing_effect")
 	}));
 	assert!(diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S002" && finding.message.contains("missing_decision_effect")
+		finding.rule_id == "unresolved-call-target"
+			&& finding.message.contains("missing_decision_effect")
 	}));
 }
 
@@ -3546,15 +3545,14 @@ mos_rus_window_on_the_west = {
 		"ai_weight",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
-			"{name} should not produce S002"
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
+			"{name} should not produce unresolved-call-target"
 		);
 	}
 	assert!(diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S002" && finding.message.contains("missing_effect")
+		finding.rule_id == "unresolved-call-target" && finding.message.contains("missing_effect")
 	}));
 }
 
@@ -3683,11 +3681,10 @@ common_weight_helper = { always = yes }
 		"common_weight_helper",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
-			"{name} should not produce S002"
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
+			"{name} should not produce unresolved-call-target"
 		);
 	}
 }
@@ -3778,20 +3775,16 @@ ai_acceptance = {
 		"royal_marriage",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
-			"{name} should not produce S002"
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
+			"{name} should not produce unresolved-call-target"
 		);
 	}
 	for name in ["missing_effect", "missing_inner_effect"] {
-		assert!(
-			diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) })
-		);
+		assert!(diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+		}));
 	}
 }
 
@@ -3886,7 +3879,7 @@ $who$ = {
 	);
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "S002"
+			finding.rule_id == "unresolved-call-target"
 				&& finding
 					.path
 					.as_ref()
@@ -3897,7 +3890,7 @@ $who$ = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding
 					.path
 					.as_ref()
@@ -4720,7 +4713,7 @@ on_accept = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding
 					.path
 					.as_ref()
@@ -4778,13 +4771,15 @@ can_use = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001" && finding.path == Some("common/cb_types/cb.txt".into())
+			finding.rule_id == "unknown-scope-type"
+				&& finding.path == Some("common/cb_types/cb.txt".into())
 		}),
 		"cb types should no longer keep ROOT/FROM/owner/capital_scope under Unknown scope"
 	);
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "S002" && finding.path == Some("common/cb_types/cb.txt".into())
+			finding.rule_id == "unresolved-call-target"
+				&& finding.path == Some("common/cb_types/cb.txt".into())
 		}),
 		"cb type trigger containers should not become scripted effect calls"
 	);
@@ -4924,11 +4919,10 @@ immediate = {
 		"overlord",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
-			"{name} should not produce S002"
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
+			"{name} should not produce unresolved-call-target"
 		);
 	}
 	for name in [
@@ -4938,12 +4932,9 @@ immediate = {
 		"missing_if_effect",
 		"missing_else_if_effect",
 	] {
-		assert!(
-			diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) })
-		);
+		assert!(diagnostics.strict.iter().any(|finding| {
+			finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+		}));
 	}
 }
 
@@ -5061,7 +5052,7 @@ while = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/on_actions/callbacks.txt".into())
 		}),
 		"on_actions callbacks should no longer start from Unknown scope"
@@ -5074,16 +5065,16 @@ while = {
 	] {
 		assert!(
 			!diagnostics.strict.iter().any(|finding| {
-				finding.rule_id == "S002"
+				finding.rule_id == "unresolved-call-target"
 					&& finding.path == Some("common/on_actions/callbacks.txt".into())
 					&& finding.message.contains(name)
 			}),
-			"{name} should not produce S002 in on_actions callbacks"
+			"{name} should not produce unresolved-call-target in on_actions callbacks"
 		);
 	}
 	for name in ["missing_province_effect", "missing_country_effect"] {
 		assert!(diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "S002"
+			finding.rule_id == "unresolved-call-target"
 				&& finding.path == Some("common/on_actions/callbacks.txt".into())
 				&& finding.message.contains(name)
 		}));
@@ -5091,7 +5082,7 @@ while = {
 }
 
 #[test]
-fn scripted_effect_param_contracts_reduce_s004_noise() {
+fn scripted_effect_param_contracts_reduce_missing_parameter_noise() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
 	fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
@@ -5176,7 +5167,7 @@ immediate = {
 
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "S004" && finding.message.contains("缺失 area")
+			finding.rule_id == "missing-effect-parameter" && finding.message.contains("缺失 area")
 		}),
 		"one-of contract should not expand into per-parameter missing messages"
 	);
@@ -5185,7 +5176,7 @@ immediate = {
 			.strict
 			.iter()
 			.filter(|finding| {
-				finding.rule_id == "S004"
+				finding.rule_id == "missing-effect-parameter"
 					&& finding
 						.message
 						.contains("ME_give_claims 至少需要一个参数: area|region|province|id")
@@ -5200,10 +5191,9 @@ immediate = {
 		"create_or_add_center_of_trade_level",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S004" && finding.message.contains(name) }),
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "missing-effect-parameter" && finding.message.contains(name)
+			}),
 			"{name} should satisfy its explicit param contract"
 		);
 	}
@@ -5391,10 +5381,9 @@ effect = {
 		"complex_dynamic_effect_without_alternative",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S004" && finding.message.contains(name) }),
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "missing-effect-parameter" && finding.message.contains(name)
+			}),
 			"{name} should treat later dynamic slots as optional"
 		);
 	}
@@ -5570,7 +5559,7 @@ on_built = {
 	);
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "S004"
+			finding.rule_id == "missing-effect-parameter"
 				&& finding
 					.message
 					.contains("update_improved_military_buildings_modifier")
@@ -5714,7 +5703,7 @@ immediate = {
 	let contract_findings: Vec<String> = diagnostics
 		.strict
 		.iter()
-		.filter(|finding| finding.rule_id == "S004")
+		.filter(|finding| finding.rule_id == "missing-effect-parameter")
 		.map(|finding| finding.message.clone())
 		.collect();
 	for snippet in [
@@ -5853,18 +5842,17 @@ immediate = {
 		"estate_influence",
 	] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S004" && finding.message.contains(name) }),
-			"{name} should not produce S004"
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "missing-effect-parameter" && finding.message.contains(name)
+			}),
+			"{name} should not produce missing-effect-parameter"
 		);
 	}
 }
 
 #[test]
 fn fourth_wave_param_contracts_cover_real_corpus_hotspots() {
-	let s004_messages = fourth_wave_s004_messages(
+	let missing_parameter_messages = fourth_wave_missing_effect_parameter_messages(
 		&["events", "fourth_wave_contracts.txt"],
 		r#"
 namespace = test
@@ -6014,15 +6002,17 @@ immediate = {
 		"ME_add_years_of_trade_income",
 	] {
 		assert!(
-			!s004_messages.iter().any(|message| message.contains(name)),
-			"{name} should not produce S004: {s004_messages:?}"
+			!missing_parameter_messages
+				.iter()
+				.any(|message| message.contains(name)),
+			"{name} should not produce missing-effect-parameter: {missing_parameter_messages:?}"
 		);
 	}
 }
 
 #[test]
 fn fourth_wave_param_contracts_preserve_required_and_one_of_constraints() {
-	let s004_messages = fourth_wave_s004_messages(
+	let missing_parameter_messages = fourth_wave_missing_effect_parameter_messages(
 		&["events", "fourth_wave_contract_failures.txt"],
 		r#"
 namespace = test
@@ -6124,16 +6114,16 @@ immediate = {
 		"ME_add_years_of_trade_income 至少需要一个参数: years|value|amount",
 	] {
 		assert!(
-			s004_messages
+			missing_parameter_messages
 				.iter()
 				.any(|message| message.contains(snippet)),
-			"missing expected S004 snippet {snippet}: {s004_messages:?}"
+			"missing expected missing-effect-parameter snippet {snippet}: {missing_parameter_messages:?}"
 		);
 	}
 }
 
 #[test]
-fn for_control_flow_does_not_emit_s002_or_s004() {
+fn for_control_flow_does_not_emit_unresolved_call_or_missing_parameter() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
 	fs::create_dir_all(mod_root.join("events")).expect("create events");
@@ -6178,13 +6168,14 @@ immediate = {
 	);
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			(finding.rule_id == "S002" || finding.rule_id == "S004")
+			(finding.rule_id == "unresolved-call-target"
+				|| finding.rule_id == "missing-effect-parameter")
 				&& finding.message.contains("for")
 		}),
-		"for control flow should not produce S002 or S004"
+		"for control flow should not produce unresolved-call-target or missing-effect-parameter"
 	);
 	assert!(diagnostics.strict.iter().any(|finding| {
-		finding.rule_id == "S002" && finding.message.contains("missing_effect")
+		finding.rule_id == "unresolved-call-target" && finding.message.contains("missing_effect")
 	}));
 }
 
@@ -6259,7 +6250,7 @@ capital_scope = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/scripted_effects/wrappers.txt".into())
 		}),
 		"wrapper-heavy scripted effects should not stay unknown"
@@ -6313,7 +6304,7 @@ hidden_effect = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/scripted_effects/province_ids.txt".into())
 		}),
 		"province id selector should seed Province scope for nested owner blocks"
@@ -6426,7 +6417,7 @@ immediate = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/scripted_effects/effects.txt".into())
 				&& finding.line == Some(14)
 		}),
@@ -6434,10 +6425,10 @@ immediate = {
 	);
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/scripted_effects/effects.txt".into())
 		}),
-		"mixed scripted effects should stay usable via mask-aware A001 checks"
+		"mixed scripted effects should stay usable via mask-aware unknown-scope-type checks"
 	);
 }
 
@@ -6560,16 +6551,15 @@ trigger = {
 	);
 	for name in ["province_only", "mixed_trigger"] {
 		assert!(
-			!diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
+			!diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
 			"{name} should not participate in scripted-effect unresolved-call reporting"
 		);
 	}
 	assert!(
 		!diagnostics.advisory.iter().any(|finding| {
-			finding.rule_id == "A001"
+			finding.rule_id == "unknown-scope-type"
 				&& finding.path == Some("common/scripted_triggers/triggers.txt".into())
 		}),
 		"scripted triggers should use propagated masks for owner/capital_scope checks"
@@ -6637,18 +6627,18 @@ option = {
 			"{name} should still be recorded inside an explicit effect-ish scope"
 		);
 		assert!(
-			diagnostics
-				.strict
-				.iter()
-				.any(|finding| { finding.rule_id == "S002" && finding.message.contains(name) }),
+			diagnostics.strict.iter().any(|finding| {
+				finding.rule_id == "unresolved-call-target" && finding.message.contains(name)
+			}),
 			"{name} should still report unresolved scripted-effect usage"
 		);
 	}
 	assert!(
 		!diagnostics.strict.iter().any(|finding| {
-			finding.rule_id == "S002" && finding.message.contains("missing_outer_effect")
+			finding.rule_id == "unresolved-call-target"
+				&& finding.message.contains("missing_outer_effect")
 		}),
-		"generic block inside an event should not report S002"
+		"generic block inside an event should not report unresolved-call-target"
 	);
 }
 

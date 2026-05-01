@@ -359,7 +359,7 @@ fn strict_mode_returns_exit_2_when_findings_exist() {
 	let (code, stdout, _stderr) = run_foch(&args, tmp.path());
 
 	assert_eq!(code, 2);
-	assert!(stdout.contains("R003"));
+	assert!(stdout.contains("duplicate-playset-entry"));
 }
 
 #[test]
@@ -1994,7 +1994,8 @@ fn check_uses_installed_base_data_to_resolve_base_symbols() {
 	let findings = parsed["findings"].as_array().expect("findings array");
 	assert!(
 		!findings.iter().any(|item| {
-			item["rule_id"] == "S002" && item["message"].as_str().unwrap_or("").contains("base.1")
+			item["rule_id"] == "unresolved-call-target"
+				&& item["message"].as_str().unwrap_or("").contains("base.1")
 		}),
 		"base event reference should resolve through installed snapshot"
 	);

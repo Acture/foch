@@ -1346,7 +1346,7 @@ fn create_child_scope(
 	} else if is_dynamic_scope_reference_key(key) {
 		// `event_target:X = { ... }` switches the inner this scope to a
 		// dynamically saved target whose type is not statically known. Mark
-		// it Unknown so scope-sensitive advisories (e.g. A002) skip the
+		// it Unknown so scope-sensitive advisories (e.g. scope-type-mismatch) skip the
 		// inner block instead of inheriting the parent's province/country
 		// type, which produces false positives in vanilla idioms like
 		// `event_target:foo = { country_event = { ... } }`.
@@ -2283,7 +2283,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 /// target's `inferred_from_mask` / `inferred_root_mask`. After the fixed
 /// point converges the resolved types are also injected into the body
 /// scope's alias map so that `is_alias_visible` and downstream rules see
-/// the alias as bound — eliminating S003 / A001 noise rooted in callable
+/// the alias as bound — eliminating invisible-scope-alias / unknown-scope-type noise rooted in callable
 /// bodies that inherit dynamic scope from their (statically resolvable)
 /// callers.
 ///
