@@ -14,7 +14,7 @@ const sourcePath = path.join(releaseDir, binaryName);
 
 const build = spawnSync(
 	'cargo',
-	['build', '--release', '--bin', 'foch_lsp'],
+	['build', '--release', '--bin', 'foch'],
 	{
 		cwd: repoRoot,
 		stdio: 'inherit'

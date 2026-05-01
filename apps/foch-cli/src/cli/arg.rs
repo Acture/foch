@@ -28,6 +28,21 @@ pub enum FochCliCommands {
 	Data(DataArgs),
 	Cache(FochCliCacheArgs),
 	Config(ConfigArgs),
+	Lsp(LspArgs),
+}
+
+/// Run the foch language server on stdio. The subcommand intentionally
+/// accepts (and ignores) any trailing arguments so that LSP clients which
+/// append transport-mode hints like `--stdio` to the spawn command line do
+/// not trip clap's unknown-argument check.
+#[derive(Parser, Debug)]
+#[command(
+	about = "Run the foch language server on stdio",
+	after_help = "VS Code extension and other LSP clients spawn this with stdio transport.\nNo arguments are required; trailing args (e.g. `--stdio`) are accepted and ignored."
+)]
+pub struct LspArgs {
+	#[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+	pub _passthrough: Vec<String>,
 }
 
 #[derive(Parser, Debug)]

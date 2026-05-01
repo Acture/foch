@@ -19,10 +19,9 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
 
 - `apps/foch-cli`
   - Rust binary package for:
-    - `foch`
-    - `foch_lsp`
-    - `parse_stats`
-    - `symbol_dump`
+    - `foch` (main CLI; the `lsp` subcommand runs the language server on stdio)
+    - `parse_stats` and `symbol_dump` (gated behind `--features dev-tools`;
+      parser / semantic-index debugging utilities, not user-facing)
   - owns CLI parsing, command dispatch, and binary entrypoints
 
 ### `crates/`
@@ -56,7 +55,7 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
   - Bun workspace package
 - `packages/vscode-foch`
   - VS Code extension
-  - bundles `foch_lsp` from `apps/foch-cli`
+  - bundles `foch` from `apps/foch-cli` and launches it as `foch lsp`
 
 ## Dependency Direction
 
@@ -119,7 +118,7 @@ Behavior is attached to `ContentFamily`, not to giant central matches. That lets
 
 ### VS Code
 
-`packages/vscode-foch` is a standalone extension package. It prefers a bundled `foch_lsp` binary under `bin/<platform>-<arch>/`, and its packaging scripts build that binary from the workspace root before packaging the VSIX.
+`packages/vscode-foch` is a standalone extension package. It prefers a bundled `foch` binary under `bin/<platform>-<arch>/` and launches it as `foch lsp`; its packaging scripts build that binary from the workspace root before packaging the VSIX.
 
 ### Tree-sitter
 

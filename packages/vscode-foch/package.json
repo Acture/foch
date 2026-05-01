@@ -1,7 +1,7 @@
 {
 	"name": "foch",
 	"displayName": "Foch",
-	"description": "Preview VS Code client for EU4 Script powered by foch_lsp",
+	"description": "Preview VS Code client for EU4 Script powered by foch lsp",
 	"version": "0.1.0",
 	"publisher": "acturea",
 	"preview": true,
@@ -55,7 +55,7 @@
 				"fochLsp.serverPath": {
 					"type": "string",
 					"default": "",
-					"description": "Optional server command override. Empty means prefer the bundled foch_lsp binary, then fall back to cargo in a repo checkout."
+					"description": "Optional server command override. Empty means prefer the bundled foch binary (invoked as `foch lsp`), then fall back to cargo in a repo checkout."
 				},
 				"fochLsp.serverArgs": {
 					"type": "array",

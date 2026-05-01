@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
-const { bundledServerPath } = require('../server-paths');
+const { bundledServerArgs, bundledServerPath } = require('../server-paths');
 
 const extensionRoot = path.resolve(__dirname, '..');
 const packageJson = JSON.parse(
@@ -19,7 +19,7 @@ if (!fs.existsSync(serverPath)) {
 	process.exit(1);
 }
 
-const child = spawn(serverPath, [], {
+const child = spawn(serverPath, bundledServerArgs(), {
 	stdio: 'pipe'
 });
 

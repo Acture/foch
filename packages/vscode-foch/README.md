@@ -1,6 +1,7 @@
 # Foch for VS Code
 
-Preview VS Code extension for EU4 scripting, backed by `foch_lsp`.
+Preview VS Code extension for EU4 scripting, backed by the merged `foch`
+binary's `lsp` subcommand.
 
 Marketplace pre-release builds use `version = 0.1.0` plus the pre-release publish flag. VS Code Marketplace does not support semver prerelease suffixes such as `0.1.0-preview.1`.
 
@@ -24,13 +25,18 @@ Current non-goals for this preview build:
 
 ## Runtime model
 
-The extension now prefers a bundled `foch_lsp` binary.
+The extension launches the bundled `foch` binary with the `lsp` subcommand
+(previously a separate `foch_lsp` binary; merged in 0.1.0-alpha so a single
+`cargo install` ships everything).
 
-- If `fochLsp.serverPath` is set, that command is used.
-- Otherwise, the extension looks for a bundled binary under `bin/<platform>-<arch>/`.
-- If no bundled binary exists, it falls back to `cargo run --quiet --bin foch_lsp --`.
+- If `fochLsp.serverPath` is set, that command is used as-is.
+- Otherwise, the extension looks for a bundled binary under
+  `bin/<platform>-<arch>/foch[.exe]` and invokes it as `foch lsp`.
+- If no bundled binary exists, it falls back to
+  `cargo run --quiet --bin foch -- lsp` (development checkout only).
 
-The fallback is useful for local development, but bundled binaries are the intended runtime model for release builds.
+The fallback is useful for local development, but bundled binaries are the
+intended runtime model for release builds.
 
 ## Local development
 
@@ -50,23 +56,24 @@ Then press `F5`.
 
 ## Build a bundled server
 
-Build and copy the host-platform `foch_lsp` binary into the extension:
+Build and copy the host-platform `foch` binary into the extension:
 
 ```bash
 bun run prepare:server
 ```
 
-This runs `cargo build --release --bin foch_lsp` in the repo root and copies the result to:
+This runs `cargo build --release --bin foch` in the repo root and copies the
+result to:
 
 ```text
-bin/<platform>-<arch>/foch_lsp[.exe]
+bin/<platform>-<arch>/foch[.exe]
 ```
 
 Examples:
 
-- `bin/darwin-arm64/foch_lsp`
-- `bin/darwin-x64/foch_lsp`
-- `bin/win32-x64/foch_lsp.exe`
+- `bin/darwin-arm64/foch`
+- `bin/darwin-x64/foch`
+- `bin/win32-x64/foch.exe`
 
 For the first public release, build the VSIX on the matching target OS/arch so the packaged binary is correct for that platform.
 

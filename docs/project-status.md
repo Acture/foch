@@ -15,7 +15,7 @@ The shipped product surface includes:
 - `foch simplify`
 - `foch data`
 - `foch config`
-- `foch_lsp`
+- `foch lsp`
 
 ## Current Repository Shape
 

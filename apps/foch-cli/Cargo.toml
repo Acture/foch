@@ -27,19 +27,27 @@ walkdir.workspace = true
 tempfile.workspace = true
 tiny_http.workspace = true
 
+[features]
+# Opt-in build flag for parser/semantic-index dev tools.
+# `cargo install --path apps/foch-cli` (the default user path) installs only
+# `foch`; pass `--features dev-tools` to also build `parse_stats` and
+# `symbol_dump`, which are debugging utilities for the parser and
+# semantic-index maintainers (raw-directory inputs, ad-hoc arg parsing, no
+# playset/config plumbing). Keeping them off by default avoids polluting
+# the user-facing `~/.cargo/bin/` namespace.
+dev-tools = []
+
 [[bin]]
 name = "foch"
 path = "src/main.rs"
 
 [[bin]]
-name = "foch_lsp"
-path = "src/bin/foch_lsp.rs"
-
-[[bin]]
 name = "parse_stats"
 path = "src/bin/parse_stats.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "symbol_dump"
 path = "src/bin/symbol_dump.rs"
+required-features = ["dev-tools"]
 

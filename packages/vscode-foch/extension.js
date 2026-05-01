@@ -2,7 +2,7 @@ const path = require('path');
 const fs = require('fs');
 const vscode = require('vscode');
 const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
-const { bundledServerPath } = require('./server-paths');
+const { bundledServerArgs, bundledServerPath } = require('./server-paths');
 
 let client;
 
@@ -179,12 +179,12 @@ function resolveServerCommand(cfg, extensionPath) {
 	if (existingFile(bundledPath)) {
 		return {
 			command: bundledPath,
-			args: [],
+			args: bundledServerArgs(),
 			mode: 'bundled'
 		};
 	}
 
-	const cargoArgs = ['run', '--quiet', '--bin', 'foch_lsp', '--'];
+	const cargoArgs = ['run', '--quiet', '--bin', 'foch', '--', 'lsp'];
 	return {
 		command: 'cargo',
 		args: normalizeServerInvocation('cargo', cargoArgs),
@@ -256,7 +256,7 @@ async function activate(context) {
 	}
 	if (server.mode === 'cargo-fallback') {
 		void vscode.window.showWarningMessage(
-			'Foch is using cargo fallback. Bundle foch_lsp before publishing the extension.'
+			'Foch is using cargo fallback. Bundle the foch binary before publishing the extension.'
 		);
 	}
 }

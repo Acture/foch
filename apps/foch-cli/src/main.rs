@@ -81,6 +81,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
 		}
+		arg::FochCliCommands::Lsp(_lsp_args) => Ok(foch_cli::lsp::run()),
 	};
 
 	if matches!(&result, Ok(0)) && should_run_parse_cache_gc(&cliargs.command) {

@@ -325,12 +325,24 @@ impl LanguageServer for Backend {
 	}
 }
 
-#[tokio::main]
-async fn main() {
-	let stdin = tokio::io::stdin();
-	let stdout = tokio::io::stdout();
-	let (service, socket) = LspService::new(Backend::new);
-	Server::new(stdin, stdout, socket).serve(service).await;
+/// Run the foch LSP server on stdio. Wrapper around the `tower_lsp` server
+/// loop that spins up its own tokio runtime so the synchronous CLI dispatch
+/// in `cli::handler::lsp` can call into it without becoming async itself.
+pub fn run() -> i32 {
+	let runtime = match tokio::runtime::Runtime::new() {
+		Ok(rt) => rt,
+		Err(err) => {
+			eprintln!("foch lsp: failed to start tokio runtime: {err}");
+			return 1;
+		}
+	};
+	runtime.block_on(async {
+		let stdin = tokio::io::stdin();
+		let stdout = tokio::io::stdout();
+		let (service, socket) = LspService::new(Backend::new);
+		Server::new(stdin, stdout, socket).serve(service).await;
+	});
+	0
 }
 
 fn build_static_candidates() -> Vec<CompletionCandidate> {

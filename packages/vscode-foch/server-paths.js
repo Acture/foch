@@ -1,7 +1,7 @@
 const path = require('path');
 
 function serverExecutableName(platform = process.platform) {
-	return platform === 'win32' ? 'foch_lsp.exe' : 'foch_lsp';
+	return platform === 'win32' ? 'foch.exe' : 'foch';
 }
 
 function bundledServerFolder(platform = process.platform, arch = process.arch) {
@@ -15,6 +15,12 @@ function bundledServerPath(extensionRoot, platform = process.platform, arch = pr
 		bundledServerFolder(platform, arch),
 		serverExecutableName(platform)
 	);
+}
+
+/// Args appended after the server binary name when launching it as an LSP
+/// server. The merged `foch` binary dispatches LSP via the `lsp` subcommand.
+function bundledServerArgs() {
+	return ['lsp'];
 }
 
 function vsceTarget(platform = process.platform, arch = process.arch) {
@@ -33,6 +39,7 @@ function vsceTarget(platform = process.platform, arch = process.arch) {
 }
 
 module.exports = {
+	bundledServerArgs,
 	bundledServerFolder,
 	bundledServerPath,
 	serverExecutableName,
