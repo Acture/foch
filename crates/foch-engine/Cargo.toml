@@ -26,6 +26,8 @@ toml.workspace = true
 toml_edit = "0.23"
 tracing.workspace = true
 walkdir.workspace = true
+ratatui = "0.30.0"
+crossterm = "0.29.0"
 
 [dev-dependencies]
 bincode2 = { package = "bincode", version = "2.0.0-rc.3", features = ["serde"] }

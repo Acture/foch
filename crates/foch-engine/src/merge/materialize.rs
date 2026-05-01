@@ -118,6 +118,7 @@ pub(crate) fn materialize_merge_internal(
 
 	let profile = eu4_profile();
 	let mod_versions = workspace_mod_versions(&workspace);
+	let mod_display_names = workspace_mod_display_names(&workspace);
 	let emit_options = load_emit_options(&request)?;
 
 	for entry in &plan.paths {
@@ -204,6 +205,7 @@ pub(crate) fn materialize_merge_internal(
 									dep_misuse_findings: &dep_misuse,
 									resolution_map: &resolution_map,
 									mod_versions: &mod_versions,
+									mod_display_names: &mod_display_names,
 									emit_options: &emit_options,
 								};
 								patch_based_structural_merge(&target, &contribs, context)
@@ -397,6 +399,32 @@ fn workspace_mod_versions(workspace: &ResolvedWorkspace) -> HashMap<String, Stri
 				.unwrap_or("unknown")
 				.to_string();
 			(candidate.mod_id.clone(), version)
+		})
+		.collect()
+}
+
+fn workspace_mod_display_names(workspace: &ResolvedWorkspace) -> HashMap<String, String> {
+	workspace
+		.mods
+		.iter()
+		.map(|candidate| {
+			let display_name = candidate
+				.descriptor
+				.as_ref()
+				.map(|descriptor| descriptor.name.trim())
+				.filter(|name| !name.is_empty())
+				.map(str::to_string)
+				.or_else(|| {
+					candidate
+						.entry
+						.display_name
+						.as_deref()
+						.map(str::trim)
+						.filter(|name| !name.is_empty())
+						.map(str::to_string)
+				})
+				.unwrap_or_else(|| candidate.mod_id.clone());
+			(candidate.mod_id.clone(), display_name)
 		})
 		.collect()
 }
@@ -782,6 +810,7 @@ struct PatchBasedMergeContext<'a> {
 	dep_misuse_findings: &'a [DepMisuseFinding],
 	resolution_map: &'a foch_core::config::ResolutionMap,
 	mod_versions: &'a HashMap<String, String>,
+	mod_display_names: &'a HashMap<String, String>,
 	emit_options: &'a EmitOptions,
 }
 
@@ -794,9 +823,10 @@ fn patch_based_structural_merge(
 	context: PatchBasedMergeContext<'_>,
 ) -> Result<PatchBasedMergeOutput, MergeError> {
 	let mut handler = super::conflict_handler::ChainHandler {
-		first: super::conflict_handler::LookupHandler::new(
+		first: super::conflict_handler::LookupHandler::with_display_names(
 			context.resolution_map,
 			PathBuf::from(target_path),
+			(*context.mod_display_names).clone(),
 		),
 		second: super::conflict_handler::ChainHandler {
 			first: DepImpliesResolutionHandler::from_mod_dag(

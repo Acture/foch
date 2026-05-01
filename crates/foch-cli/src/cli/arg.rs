@@ -150,6 +150,10 @@ pub struct MergeArgs {
 	#[arg(long, alias = "no-interactive")]
 	pub non_interactive: bool,
 
+	/// Use the simple stdin/stderr prompt instead of the ratatui interactive UI.
+	#[arg(long)]
+	pub cli_prompt: bool,
+
 	/// Enable last-writer fallback for unresolved structural merge conflicts.
 	///
 	/// `--force` also enables this fallback.
@@ -486,5 +490,23 @@ mod tests {
 			panic!("expected merge command");
 		};
 		assert!(args.non_interactive);
+	}
+
+	#[test]
+	fn merge_command_accepts_cli_prompt_flag() {
+		let cli = FochCli::try_parse_from([
+			"foch",
+			"merge",
+			"playlist.json",
+			"--out",
+			"merged",
+			"--cli-prompt",
+		])
+		.expect("parse cli");
+
+		let FochCliCommands::Merge(args) = cli.command else {
+			panic!("expected merge command");
+		};
+		assert!(args.cli_prompt);
 	}
 }

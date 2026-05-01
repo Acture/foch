@@ -13,6 +13,7 @@ pub(crate) mod patch_deps;
 pub mod patch_merge;
 pub mod plan;
 pub(crate) mod stale_vanilla;
+pub mod tui_conflict_handler;
 
 pub use conflict_handler::{ChainHandler, ConflictDecision, ConflictHandler, DeferHandler};
 pub use error::MergeError;

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -14,22 +14,54 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use crate::merge::dag::ModDag;
 use crate::merge::patch_merge::{PatchAddress, PatchConflict};
 
-static INTERACTIVE_CONFIG_PATH: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+use super::tui_conflict_handler::InteractiveTuiHandler;
 
-pub fn set_interactive_config_path(path: Option<PathBuf>) {
-	let mut slot = INTERACTIVE_CONFIG_PATH
-		.get_or_init(|| Mutex::new(None))
-		.lock()
-		.expect("interactive config path lock poisoned");
-	*slot = path;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InteractiveMode {
+	Cli,
+	Tui,
+	Auto,
 }
 
-fn interactive_config_path() -> Option<PathBuf> {
-	INTERACTIVE_CONFIG_PATH
-		.get_or_init(|| Mutex::new(None))
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InteractiveSettings {
+	mode: InteractiveMode,
+	config_path: Option<PathBuf>,
+}
+
+impl Default for InteractiveSettings {
+	fn default() -> Self {
+		Self {
+			mode: InteractiveMode::Auto,
+			config_path: None,
+		}
+	}
+}
+
+static INTERACTIVE_SETTINGS: OnceLock<Mutex<InteractiveSettings>> = OnceLock::new();
+
+pub fn set_interactive_config_path(path: Option<PathBuf>) {
+	set_interactive_mode_and_config(InteractiveMode::Auto, path);
+}
+
+pub fn set_interactive_mode_and_config(mode: InteractiveMode, config_path: Option<PathBuf>) {
+	let mut slot = INTERACTIVE_SETTINGS
+		.get_or_init(|| Mutex::new(InteractiveSettings::default()))
 		.lock()
-		.expect("interactive config path lock poisoned")
+		.expect("interactive settings lock poisoned");
+	*slot = InteractiveSettings { mode, config_path };
+}
+
+fn interactive_settings() -> InteractiveSettings {
+	INTERACTIVE_SETTINGS
+		.get_or_init(|| Mutex::new(InteractiveSettings::default()))
+		.lock()
+		.expect("interactive settings lock poisoned")
 		.clone()
+}
+
+fn interactive_tui_available() -> bool {
+	io::stdin().is_terminal() && io::stdout().is_terminal()
 }
 
 pub trait ConflictHandler {
@@ -39,6 +71,8 @@ pub trait ConflictHandler {
 		address: &PatchAddress,
 		conflict: &PatchConflict,
 	) -> ConflictDecision;
+
+	fn set_conflict_progress(&mut self, _current: usize, _total: usize) {}
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -260,13 +294,27 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
 	pub current_file: PathBuf,
+	mod_displayname_lookup: HashMap<String, String>,
+	current_conflict_index: usize,
+	total_conflicts: usize,
 }
 
 impl<'a> LookupHandler<'a> {
 	pub fn new(map: &'a ResolutionMap, file: PathBuf) -> Self {
+		Self::with_display_names(map, file, HashMap::new())
+	}
+
+	pub fn with_display_names(
+		map: &'a ResolutionMap,
+		file: PathBuf,
+		mod_displayname_lookup: HashMap<String, String>,
+	) -> Self {
 		Self {
 			map,
 			current_file: file,
+			mod_displayname_lookup,
+			current_conflict_index: 1,
+			total_conflicts: 1,
 		}
 	}
 }
@@ -287,23 +335,49 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
 			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
 			None => {
-				if let Some(config_path) = interactive_config_path() {
-					let mut handler = ChainHandler {
-						first: InteractiveCliHandler::new(
-							self.current_file.clone(),
-							Box::new(FilesystemConfigWriter::new(config_path)),
-						),
-						second: DeferHandler,
-					};
-					handler.on_conflict(path, address, conflict)
-				} else {
-					ConflictDecision::Defer
+				let settings = interactive_settings();
+				let Some(config_path) = settings.config_path else {
+					return ConflictDecision::Defer;
+				};
+				let mode = match settings.mode {
+					InteractiveMode::Auto if interactive_tui_available() => InteractiveMode::Tui,
+					InteractiveMode::Auto => InteractiveMode::Cli,
+					mode => mode,
+				};
+				match mode {
+					InteractiveMode::Tui => {
+						let mut handler = ChainHandler {
+							first: InteractiveTuiHandler::new(
+								self.current_file.clone(),
+								Box::new(FilesystemConfigWriter::new(config_path)),
+								self.mod_displayname_lookup.clone(),
+								self.current_conflict_index,
+								self.total_conflicts,
+							),
+							second: DeferHandler,
+						};
+						handler.on_conflict(path, address, conflict)
+					}
+					InteractiveMode::Cli | InteractiveMode::Auto => {
+						let mut handler = ChainHandler {
+							first: InteractiveCliHandler::new(
+								self.current_file.clone(),
+								Box::new(FilesystemConfigWriter::new(config_path)),
+							),
+							second: DeferHandler,
+						};
+						handler.on_conflict(path, address, conflict)
+					}
 				}
 			}
 		}
 	}
-}
 
+	fn set_conflict_progress(&mut self, current: usize, total: usize) {
+		self.current_conflict_index = current;
+		self.total_conflicts = total;
+	}
+}
 pub trait ConfigWriter {
 	fn append_resolution(&mut self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>>;
 }
@@ -599,9 +673,14 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 			other => other,
 		}
 	}
+
+	fn set_conflict_progress(&mut self, current: usize, total: usize) {
+		self.first.set_conflict_progress(current, total);
+		self.second.set_conflict_progress(current, total);
+	}
 }
 
-fn resolution_entry_for_decision(
+pub(crate) fn resolution_entry_for_decision(
 	current_file: &Path,
 	address: &PatchAddress,
 	decision: &ConflictDecision,

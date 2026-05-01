@@ -364,14 +364,32 @@ pub fn merge_patch_sets(
 		by_address.remove(addr);
 	}
 
+	let mut pending_resolutions = Vec::new();
 	for (addr, attributed) in by_address {
-		let resolution = resolve_address(addr, attributed, policies, &mut result.stats);
+		pending_resolutions.push(resolve_address(
+			addr,
+			attributed,
+			policies,
+			&mut result.stats,
+		));
+	}
+
+	let total_conflicts = pending_resolutions
+		.iter()
+		.filter(|resolution| matches!(resolution, PatchResolution::Conflict { .. }))
+		.count()
+		+ cross_kind_conflicts.len();
+	let mut current_conflict = 0;
+
+	for resolution in pending_resolutions {
 		match resolution {
 			PatchResolution::Conflict {
 				address,
 				patches,
 				reason,
 			} => {
+				current_conflict += 1;
+				handler.set_conflict_progress(current_conflict, total_conflicts);
 				apply_conflict_decision(&mut result, handler, address, patches, reason)?;
 			}
 			resolution => result.resolved.push(resolution),
@@ -379,6 +397,8 @@ pub fn merge_patch_sets(
 	}
 
 	for cross_kind in cross_kind_conflicts {
+		current_conflict += 1;
+		handler.set_conflict_progress(current_conflict, total_conflicts);
 		apply_conflict_decision(
 			&mut result,
 			handler,
