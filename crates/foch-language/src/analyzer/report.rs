@@ -1,6 +1,6 @@
 use foch_core::model::{
-	ChannelMode, CheckResult, Finding, FindingChannel, MergePlanEntry, MergePlanResult,
-	MergePlanStrategy, MergeReport, MergeReportStatus, Severity,
+	ChannelMode, CheckResult, DepMisuseFinding, Finding, FindingChannel, MergePlanEntry,
+	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus, Severity,
 };
 use std::collections::BTreeMap;
 
@@ -324,40 +324,119 @@ fn append_dep_misuse_section(lines: &mut Vec<String>, report: &MergeReport) {
 		return;
 	}
 
+	let mut groups: BTreeMap<String, Vec<&DepMisuseFinding>> = BTreeMap::new();
+	for finding in &report.dep_misuse {
+		groups
+			.entry(finding.suspicious_dep_id.clone())
+			.or_default()
+			.push(finding);
+	}
+	for findings in groups.values_mut() {
+		findings.sort_by(|left, right| {
+			left.mod_id
+				.cmp(&right.mod_id)
+				.then_with(|| left.mod_display_name.cmp(&right.mod_display_name))
+		});
+	}
+
 	lines.push(String::new());
 	lines.push(format!(
-		"⚠ Dependency misuse detected ({} findings):",
+		"⚠ Dependency misuse detected ({} declarations to non-referenced mods):",
 		report.dep_misuse.len()
 	));
-	for finding in &report.dep_misuse {
-		lines.push(String::new());
-		lines.push(format!(
-			"  mod {} ({}) declares",
-			finding.mod_id,
-			quote(&finding.mod_display_name)
-		));
-		lines.push(format!(
-			"    dependencies = {{ {} }}",
-			quote(&finding.suspicious_dep_display_name)
-		));
-		lines.push("  in its descriptor.mod, but its source does not reference any".to_string());
-		lines.push("  symbols defined by that mod.".to_string());
-		if finding.evidence.false_remove_count > 0 {
-			lines.push(format!(
-				"  This caused {} false-positive deletion patches.",
-				finding.evidence.false_remove_count
-			));
-		} else {
-			lines.push(
-                "  No deletion patches were observed in this merge run, but the dependency still looks non-semantic."
-                    .to_string(),
-            );
+
+	let mut singleton_findings = Vec::new();
+	let mut rendered_findings = Vec::new();
+	for (dep_id, findings) in &groups {
+		if findings.len() == 1 {
+			singleton_findings.push(findings[0]);
+			continue;
 		}
+
+		let dep_display = &findings[0].suspicious_dep_display_name;
+		let (mod_id_width, mod_name_width) = dep_misuse_mod_widths(findings);
 		lines.push(String::new());
-		lines.push("  Override locally in foch.toml at your playset root:".to_string());
-		lines.push("    [[overrides]]".to_string());
-		lines.push(format!("    mod = {}", quote(&finding.mod_id)));
-		lines.push(format!("    dep = {}", quote(&finding.suspicious_dep_id)));
+		lines.push(format!(
+			"  {} mods declare dependencies on {} ({}):",
+			findings.len(),
+			quote(dep_display),
+			dep_id
+		));
+		for finding in findings.iter().copied() {
+			lines.push(format!(
+				"    {:<mod_id_width$}  {:<mod_name_width$}  {}",
+				finding.mod_id,
+				finding.mod_display_name,
+				dep_misuse_false_delete_annotation(finding.evidence.false_remove_count)
+			));
+			rendered_findings.push(finding);
+		}
+	}
+
+	if !singleton_findings.is_empty() {
+		let (mod_id_width, mod_name_width, dep_width) =
+			dep_misuse_other_widths(&singleton_findings);
+		lines.push(String::new());
+		lines.push("  Other declarations:".to_string());
+		for finding in singleton_findings {
+			let dep_display = format!(
+				"{} {}",
+				finding.suspicious_dep_id, finding.suspicious_dep_display_name
+			);
+			lines.push(format!(
+				"    {:<mod_id_width$}  {:<mod_name_width$}  → {:<dep_width$}  {}",
+				finding.mod_id,
+				finding.mod_display_name,
+				dep_display,
+				dep_misuse_false_delete_annotation(finding.evidence.false_remove_count)
+			));
+			rendered_findings.push(finding);
+		}
+	}
+
+	lines.push(String::new());
+	lines.push(
+		"  Override locally — copy this block into foch.toml at your playset root:".to_string(),
+	);
+	for finding in rendered_findings {
+		lines.push(String::new());
+		lines.push("  [[overrides]]".to_string());
+		lines.push(format!("  mod = {}", quote(&finding.mod_id)));
+		lines.push(format!("  dep = {}", quote(&finding.suspicious_dep_id)));
+	}
+}
+
+fn dep_misuse_mod_widths(findings: &[&DepMisuseFinding]) -> (usize, usize) {
+	let mod_id_width = findings
+		.iter()
+		.map(|finding| finding.mod_id.len())
+		.max()
+		.unwrap_or(0);
+	let mod_name_width = findings
+		.iter()
+		.map(|finding| finding.mod_display_name.len())
+		.max()
+		.unwrap_or(0);
+	(mod_id_width, mod_name_width)
+}
+
+fn dep_misuse_other_widths(findings: &[&DepMisuseFinding]) -> (usize, usize, usize) {
+	let (mod_id_width, mod_name_width) = dep_misuse_mod_widths(findings);
+	let dep_width = findings
+		.iter()
+		.map(|finding| {
+			finding.suspicious_dep_id.len() + 1 + finding.suspicious_dep_display_name.len()
+		})
+		.max()
+		.unwrap_or(0);
+	(mod_id_width, mod_name_width, dep_width)
+}
+
+fn dep_misuse_false_delete_annotation(false_remove_count: u32) -> String {
+	match false_remove_count {
+		0 => "(no false-positive deletes)".to_string(),
+		1 => "(1 false-positive delete!)".to_string(),
+		count => format!("({count} false-positive deletes!)"),
 	}
 }
 
@@ -520,5 +599,58 @@ mod tests {
 
 		assert!(output.contains("\nFindings by rule: (no findings)"));
 		assert!(!output.contains("  count  severity"));
+	}
+
+	fn dep_misuse_finding(
+		mod_id: &str,
+		mod_display_name: &str,
+		dep_id: &str,
+		dep_display_name: &str,
+		false_remove_count: u32,
+	) -> DepMisuseFinding {
+		DepMisuseFinding {
+			mod_id: mod_id.to_string(),
+			mod_display_name: mod_display_name.to_string(),
+			suspicious_dep_id: dep_id.to_string(),
+			suspicious_dep_display_name: dep_display_name.to_string(),
+			evidence: foch_core::model::DepMisuseEvidence {
+				semantic_refs_to_dep: 0,
+				false_remove_count,
+			},
+		}
+	}
+
+	#[test]
+	fn render_merge_report_clusters_dep_misuse_by_target_dep() {
+		let report = MergeReport {
+			dep_misuse: vec![
+				dep_misuse_finding("200", "Mod B", "100", "Shared Mod", 0),
+				dep_misuse_finding("300", "Mod C", "100", "Shared Mod", 2),
+				dep_misuse_finding("400", "Mod D", "150", "Solo Mod", 1),
+			],
+			..MergeReport::default()
+		};
+
+		let output = render_merge_report_text(&report);
+
+		assert!(
+			output
+				.contains("⚠ Dependency misuse detected (3 declarations to non-referenced mods):")
+		);
+		assert!(output.contains("  2 mods declare dependencies on \"Shared Mod\" (100):"));
+		assert!(output.contains("    200  Mod B  (no false-positive deletes)"));
+		assert!(output.contains("    300  Mod C  (2 false-positive deletes!)"));
+		assert!(output.contains("  Other declarations:"));
+		assert!(output.contains("400  Mod D  → 150 Solo Mod  (1 false-positive delete!)"));
+		assert!(
+			output.contains(
+				"  Override locally — copy this block into foch.toml at your playset root:"
+			)
+		);
+		assert_eq!(output.matches("[[overrides]]").count(), 3);
+		assert_eq!(output.matches("Override locally").count(), 1);
+		assert!(!output.contains("symbols defined by that mod"));
+		assert!(output.find("Shared Mod").unwrap() < output.find("Other declarations").unwrap());
+		assert!(output.find("Other declarations").unwrap() < output.find("[[overrides]]").unwrap());
 	}
 }

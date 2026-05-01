@@ -49,11 +49,11 @@ foch merge ./playlist.json --out ./merged
 如果默认 merge 报告 unresolved conflicts，按风险从低到高选择一种继续方式：
 
 ```bash
-# TTY 下逐个仲裁，并把决定写入 foch.toml；非 TTY 会自动 defer
-foch merge ./playlist.json --out ./merged --interactive
-
-# 或手写 foch.toml [[resolutions]] 后重跑默认 merge
+# TTY 下默认逐个仲裁，并把决定写入 foch.toml；非 TTY 会自动 defer
 foch merge ./playlist.json --out ./merged
+
+# CI / batch 中显式关闭 TTY 交互
+foch merge ./playlist.json --out ./merged --non-interactive
 
 # 或显式接受 last-writer fallback（可写冲突标记时会写入 marker）
 foch merge ./playlist.json --out ./merged --fallback
@@ -65,11 +65,11 @@ foch merge ./playlist.json --out ./merged --fallback
 
 README 不再手工枚举内容族，避免与实现漂移。当前 canonical 列表在 [`crates/foch-language/src/analyzer/eu4_profile.rs`](./crates/foch-language/src/analyzer/eu4_profile.rs) 的 `EU4_CONTENT_FAMILIES`；新增 EU4 root 时以该文件中的 `ContentFamilyDescriptor` 为准。
 
-残余的 sibling-overwrite、replace-block、true list-item rename 等结构性分歧需要用户仲裁。foch 不再静默丢弃这类贡献：默认输出会显式阻塞 / 跳过相关路径；只有用户配置 `[[resolutions]]`、使用 `--interactive`，或显式传入 `--fallback` 时才会继续。
+残余的 sibling-overwrite、replace-block、true list-item rename 等结构性分歧需要用户仲裁。foch 不再静默丢弃这类贡献：TTY 下默认交互仲裁，非 TTY 输出会显式阻塞 / 跳过相关路径；只有用户配置 `[[resolutions]]` 或显式传入 `--fallback` 时才会无交互继续。
 
 ## 冲突仲裁工作流
 
-默认 `foch merge ./playlist.json --out ./merged` 遇到无法安全选择的结构冲突时，会把相关输出路径跳过，并在 `./merged/.foch/foch-merge-report.json` 写入 `conflict_resolutions[]`。此时可选：用 `--interactive` 在 TTY 中逐个选择；手写 `foch.toml [[resolutions]]` 后重跑；或用 `--fallback` 生成 last-writer 输出。
+默认 `foch merge ./playlist.json --out ./merged` 在 TTY 中遇到无法安全选择的结构冲突时会逐个提示；非 TTY 或 `--non-interactive` 下会把相关输出路径跳过，并在 `./merged/.foch/foch-merge-report.json` 写入 `conflict_resolutions[]`。此时可选：在 TTY 中重跑并逐个选择；手写 `foch.toml [[resolutions]]` 后重跑；或用 `--fallback` 生成 last-writer 输出。
 
 `foch.toml` 的 `[[resolutions]]` 每条规则只能选一个 selector 和一个 action。字段速查（YAML 风格；不要把所有字段放进同一个 TOML block）：
 
@@ -100,7 +100,7 @@ mod = "3378403419"
 priority_boost = 100
 ```
 
-`--interactive` 的选择项是候选 mod 编号、`d` defer、`s` use file path、`k` keep existing、`q` abort；确认后会把可持久化决定追加到 `foch.toml`。如果 stdin/stderr 不是 TTY，interactive 会自动降级为 defer，不会卡住 CI。
+TTY 交互模式的选择项是候选 mod 编号、`d` defer、`s` use file path、`k` keep existing、`q` abort；确认后会把可持久化决定追加到 `foch.toml`。如果 stdin 不是 TTY，或传入 `--non-interactive`，merge 会自动 defer，不会卡住 CI。
 
 `conflict_id` 是稳定哈希：输入为报告里的 `conflict_resolutions[].path`（输出文件路径）加该冲突的结构地址（interactive 输出中的 `address:`，即 address path + key）。同一个 id 可直接写回 `foch.toml` 的 `conflict_id` selector。
 

@@ -5,6 +5,7 @@ use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
 use foch_engine::merge::conflict_handler::set_interactive_config_path;
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use foch_language::analyzer::report::render_merge_report_text;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
@@ -15,7 +16,8 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	};
 	let fallback_enabled = merge_args.fallback || merge_args.force;
 	let dep_overrides = load_dep_overrides(merge_args, &playset_path)?;
-	let interactive_config_path = if merge_args.interactive {
+	let interactive_enabled = !merge_args.non_interactive && std::io::stdin().is_terminal();
+	let interactive_config_path = if interactive_enabled {
 		eprintln!(
 			"[foch] interactive mode: prompts will appear for unresolved conflicts. Press q to abort, d to defer."
 		);

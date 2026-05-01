@@ -529,7 +529,7 @@ impl ConflictHandler for InteractiveCliHandler {
 		if !self.stdin_stderr_are_tty() {
 			let _ = writeln!(
 				self.stderr,
-				"[foch] --interactive requested but stdin/stderr is not a TTY; downgrading to defer"
+				"[foch] interactive mode could not be entered because stdin/stderr is not a TTY; downgrading to defer"
 			);
 			return ConflictDecision::Defer;
 		}
@@ -1078,7 +1078,7 @@ mod tests {
 	}
 
 	#[test]
-	fn merge_command_with_interactive_flag_chains_handlers_correctly() {
+	fn merge_command_with_interactive_handler_chains_handlers_correctly() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = HashMap::new();
