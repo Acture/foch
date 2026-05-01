@@ -1,10 +1,13 @@
-use super::semantic_index::count_symbol_references_resolving_to_mod;
+use super::content_family::{GameProfile, MergeKeySource};
+use super::eu4_profile::eu4_profile;
+use super::semantic_index::{count_symbol_references_resolving_to_mod, is_decision_container_key};
 use foch_core::model::{
-	CheckContext, DepMisuseEvidence, DepMisuseFinding, Finding, FindingChannel, Severity,
-	SymbolKind, VersionMismatchFinding,
+	CheckContext, DepMisuseEvidence, DepMisuseFinding, Finding, FindingChannel, ModCandidate,
+	ScopeKind, ScopeNode, SemanticIndex, Severity, SymbolKind, VersionMismatchFinding,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 	let mut findings = Vec::new();
@@ -286,6 +289,7 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 
 pub fn detect_dependency_misuse(ctx: &CheckContext) -> Vec<DepMisuseFinding> {
 	let identity = foch_core::domain::dep_resolution::ModIdentityIndex::from_mods(&ctx.mods);
+	let semantic_signals = DependencySemanticSignals::from_context(ctx);
 	let mut findings = Vec::new();
 
 	for mod_item in ctx.mods.iter().filter(|item| item.entry.enabled) {
@@ -309,7 +313,12 @@ pub fn detect_dependency_misuse(ctx: &CheckContext) -> Vec<DepMisuseFinding> {
 				&mod_item.mod_id,
 				&dep_mod.mod_id,
 			);
-			if semantic_refs_to_dep > 0 {
+			if has_declared_dependency_semantic_signal(
+				&semantic_signals,
+				mod_item,
+				dep_mod,
+				semantic_refs_to_dep,
+			) {
 				continue;
 			}
 
@@ -327,6 +336,232 @@ pub fn detect_dependency_misuse(ctx: &CheckContext) -> Vec<DepMisuseFinding> {
 	}
 
 	findings
+}
+
+#[derive(Default)]
+struct DependencySemanticSignals {
+	localisation_keys_by_mod: HashMap<String, HashSet<String>>,
+	family_keys_by_mod: HashMap<String, HashSet<(String, String)>>,
+}
+
+impl DependencySemanticSignals {
+	fn from_context(ctx: &CheckContext) -> Self {
+		let mut signals = Self::default();
+
+		for definition in &ctx.semantic_index.localisation_definitions {
+			signals
+				.localisation_keys_by_mod
+				.entry(definition.mod_id.clone())
+				.or_default()
+				.insert(definition.key.clone());
+		}
+
+		signals.family_keys_by_mod = collect_content_family_merge_keys(&ctx.semantic_index);
+		signals
+	}
+
+	fn has_localisation_key_overlap(&self, mod_id: &str, dep_mod_id: &str) -> bool {
+		let (Some(mod_keys), Some(dep_keys)) = (
+			self.localisation_keys_by_mod.get(mod_id),
+			self.localisation_keys_by_mod.get(dep_mod_id),
+		) else {
+			return false;
+		};
+		sets_overlap(mod_keys, dep_keys)
+	}
+
+	fn has_content_family_merge_key_overlap(&self, mod_id: &str, dep_mod_id: &str) -> bool {
+		let (Some(mod_keys), Some(dep_keys)) = (
+			self.family_keys_by_mod.get(mod_id),
+			self.family_keys_by_mod.get(dep_mod_id),
+		) else {
+			return false;
+		};
+		sets_overlap(mod_keys, dep_keys)
+	}
+}
+
+fn collect_content_family_merge_keys(
+	index: &SemanticIndex,
+) -> HashMap<String, HashSet<(String, String)>> {
+	let mut keys_by_mod = HashMap::<String, HashSet<(String, String)>>::new();
+	let scalar_values = scalar_values_by_scope(index);
+
+	for scope in &index.scopes {
+		let Some(parent) = parent_scope(index, scope) else {
+			continue;
+		};
+		let Some((family_id, merge_key_source)) = dependency_merge_key_source_for_path(&scope.path)
+		else {
+			continue;
+		};
+
+		match merge_key_source {
+			MergeKeySource::AssignmentKey if parent.kind == ScopeKind::File => {
+				insert_family_key(
+					&mut keys_by_mod,
+					&scope.mod_id,
+					family_id,
+					scope.key.clone(),
+				);
+			}
+			MergeKeySource::FieldValue(field) if parent.kind == ScopeKind::File => {
+				if let Some(value) = scalar_values.get(&(scope.id, field.to_string())) {
+					insert_family_key(&mut keys_by_mod, &scope.mod_id, family_id, value.clone());
+				}
+			}
+			MergeKeySource::ContainerChildKey => {
+				if is_container_child_scope(index, parent) {
+					insert_family_key(
+						&mut keys_by_mod,
+						&scope.mod_id,
+						family_id,
+						scope.key.clone(),
+					);
+				}
+			}
+			MergeKeySource::ContainerChildFieldValue {
+				container,
+				child_key_field,
+				child_types,
+			} => {
+				if parent.kind == ScopeKind::File {
+					if scope.key != container {
+						insert_family_key(
+							&mut keys_by_mod,
+							&scope.mod_id,
+							family_id,
+							scope.key.clone(),
+						);
+					}
+				} else if parent.key == container && parent_parent_is_file(index, parent) {
+					let key = if (child_types.is_empty()
+						|| child_types.contains(&scope.key.as_str()))
+						&& let Some(value) =
+							scalar_values.get(&(scope.id, child_key_field.to_string()))
+					{
+						format!("{}:{value}", scope.key)
+					} else {
+						scope.key.clone()
+					};
+					insert_family_key(&mut keys_by_mod, &scope.mod_id, family_id, key);
+				}
+			}
+			_ => {}
+		}
+	}
+
+	keys_by_mod
+}
+
+fn dependency_merge_key_source_for_path(path: &Path) -> Option<(&'static str, MergeKeySource)> {
+	let descriptor = eu4_profile().classify_content_family(path)?;
+	let source = descriptor.merge_key_source?;
+	is_dependency_merge_key_source(source).then_some((descriptor.id, source))
+}
+
+fn scalar_values_by_scope(index: &SemanticIndex) -> HashMap<(usize, String), String> {
+	let mut values = HashMap::new();
+	for assignment in &index.scalar_assignments {
+		values
+			.entry((assignment.scope_id, assignment.key.clone()))
+			.or_insert_with(|| assignment.value.clone());
+	}
+	values
+}
+
+fn insert_family_key(
+	keys_by_mod: &mut HashMap<String, HashSet<(String, String)>>,
+	mod_id: &str,
+	family_id: &str,
+	key: String,
+) {
+	if key.is_empty() {
+		return;
+	}
+	keys_by_mod
+		.entry(mod_id.to_string())
+		.or_default()
+		.insert((family_id.to_string(), key));
+}
+
+fn parent_scope<'a>(index: &'a SemanticIndex, scope: &ScopeNode) -> Option<&'a ScopeNode> {
+	index.scopes.get(scope.parent?)
+}
+
+fn parent_parent_is_file(index: &SemanticIndex, scope: &ScopeNode) -> bool {
+	parent_scope(index, scope).is_some_and(|parent| parent.kind == ScopeKind::File)
+}
+
+fn is_container_child_scope(index: &SemanticIndex, parent: &ScopeNode) -> bool {
+	is_decision_container_key(&parent.key) && parent_parent_is_file(index, parent)
+}
+
+fn has_declared_dependency_semantic_signal(
+	signals: &DependencySemanticSignals,
+	mod_item: &ModCandidate,
+	dep_mod: &ModCandidate,
+	semantic_refs_to_dep: u32,
+) -> bool {
+	semantic_refs_to_dep > 0
+		|| signals.has_localisation_key_overlap(&mod_item.mod_id, &dep_mod.mod_id)
+		|| signals.has_content_family_merge_key_overlap(&mod_item.mod_id, &dep_mod.mod_id)
+		|| replace_path_covers_dependency_content(mod_item, dep_mod)
+}
+
+fn replace_path_covers_dependency_content(mod_item: &ModCandidate, dep_mod: &ModCandidate) -> bool {
+	let Some(descriptor) = mod_item.descriptor.as_ref() else {
+		return false;
+	};
+	let prefixes: Vec<String> = descriptor
+		.replace_path
+		.iter()
+		.map(|path| normalize_path_prefix(path))
+		.filter(|path| !path.is_empty())
+		.collect();
+	if prefixes.is_empty() {
+		return false;
+	}
+
+	dep_mod.files.iter().any(|file| {
+		let normalized = normalize_path_prefix(&normalize_relative_path(file));
+		prefixes
+			.iter()
+			.any(|prefix| path_is_under_prefix(&normalized, prefix))
+	})
+}
+
+fn normalize_path_prefix(raw: &str) -> String {
+	raw.trim().trim_matches('/').replace('\\', "/")
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+	path.to_string_lossy().replace('\\', "/")
+}
+
+fn path_is_under_prefix(normalized_file: &str, prefix: &str) -> bool {
+	normalized_file == prefix || normalized_file.starts_with(&format!("{prefix}/"))
+}
+
+fn is_dependency_merge_key_source(source: MergeKeySource) -> bool {
+	matches!(
+		source,
+		MergeKeySource::AssignmentKey
+			| MergeKeySource::FieldValue(_)
+			| MergeKeySource::ContainerChildKey
+			| MergeKeySource::ContainerChildFieldValue { .. }
+	)
+}
+
+fn sets_overlap<T>(lhs: &HashSet<T>, rhs: &HashSet<T>) -> bool
+where
+	T: Eq + std::hash::Hash,
+{
+	if lhs.len() <= rhs.len() {
+		lhs.iter().any(|item| rhs.contains(item))
+	} else {
+		rhs.iter().any(|item| lhs.contains(item))
+	}
 }
 
 pub fn detect_version_mismatch(
@@ -581,12 +816,15 @@ fn new_finding(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::analyzer::semantic_index::{build_semantic_index, parse_script_file};
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
 	use foch_core::model::{
-		ModCandidate, ScopeType, SemanticIndex, SymbolDefinition, SymbolReference,
+		LocalisationDefinition, ModCandidate, ScopeType, SemanticIndex, SymbolDefinition,
+		SymbolReference,
 	};
-	use std::path::PathBuf;
+	use std::fs;
+	use std::path::{Path, PathBuf};
 
 	fn candidate(
 		mod_id: &str,
@@ -669,6 +907,37 @@ mod tests {
 			},
 			mods,
 			semantic_index,
+		}
+	}
+
+	fn with_files(mut mod_item: ModCandidate, root: PathBuf, files: &[&str]) -> ModCandidate {
+		mod_item.root_path = Some(root);
+		mod_item.files = files.iter().map(PathBuf::from).collect();
+		mod_item
+	}
+
+	fn write_fixture(root: &Path, relative: &str, contents: &str) {
+		let path = root.join(relative);
+		fs::create_dir_all(path.parent().expect("fixture parent")).expect("fixture dirs");
+		fs::write(path, contents).expect("fixture file");
+	}
+
+	fn tempdir_in_target() -> tempfile::TempDir {
+		let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/rules-tests");
+		fs::create_dir_all(&target).expect("rules test target dir");
+		tempfile::Builder::new()
+			.prefix("dep-misuse-")
+			.tempdir_in(target)
+			.expect("rules test temp dir")
+	}
+
+	fn localisation_definition(mod_id: &str, key: &str) -> LocalisationDefinition {
+		LocalisationDefinition {
+			key: key.to_string(),
+			mod_id: mod_id.to_string(),
+			path: PathBuf::from("localisation/test_l_english.yml"),
+			line: 2,
+			column: 2,
 		}
 	}
 
@@ -767,6 +1036,83 @@ mod tests {
 			],
 			index,
 		);
+
+		let findings = detect_dependency_misuse(&ctx);
+
+		assert!(findings.is_empty());
+	}
+
+	#[test]
+	fn does_not_flag_dependency_with_localisation_key_overlap() {
+		let mut index = SemanticIndex::default();
+		index
+			.localisation_definitions
+			.push(localisation_definition("100", "shared_loc_key"));
+		index
+			.localisation_definitions
+			.push(localisation_definition("200", "shared_loc_key"));
+		let ctx = context(
+			vec![
+				candidate("100", "Main Mod", "main", &["Dependency Mod"]),
+				candidate("200", "Dependency Mod", "Dependency Mod", &[]),
+			],
+			index,
+		);
+
+		let findings = detect_dependency_misuse(&ctx);
+
+		assert!(findings.is_empty());
+	}
+
+	#[test]
+	fn does_not_flag_dependency_with_content_family_merge_key_overlap() {
+		let tempdir = tempdir_in_target();
+		let main_root = tempdir.path().join("main");
+		let dep_root = tempdir.path().join("dep");
+		let relative = "common/static_modifiers/shared.txt";
+		write_fixture(
+			&main_root,
+			relative,
+			"shared_modifier = { global_tax_modifier = 0.20 }\n",
+		);
+		write_fixture(
+			&dep_root,
+			relative,
+			"shared_modifier = { global_tax_modifier = 0.10 }\n",
+		);
+		let parsed = vec![
+			parse_script_file("100", &main_root, &main_root.join(relative)).expect("main parsed"),
+			parse_script_file("200", &dep_root, &dep_root.join(relative)).expect("dep parsed"),
+		];
+		let semantic_index = build_semantic_index(&parsed);
+		let ctx = context(
+			vec![
+				with_files(
+					candidate("100", "Main Mod", "main", &["Dependency Mod"]),
+					main_root,
+					&[relative],
+				),
+				with_files(
+					candidate("200", "Dependency Mod", "Dependency Mod", &[]),
+					dep_root,
+					&[relative],
+				),
+			],
+			semantic_index,
+		);
+
+		let findings = detect_dependency_misuse(&ctx);
+
+		assert!(findings.is_empty());
+	}
+
+	#[test]
+	fn does_not_flag_dependency_with_replace_path_coverage() {
+		let mut main = candidate("100", "Main Mod", "main", &["Dependency Mod"]);
+		main.descriptor.as_mut().unwrap().replace_path = vec!["common/missions".to_string()];
+		let mut dep = candidate("200", "Dependency Mod", "Dependency Mod", &[]);
+		dep.files = vec![PathBuf::from("common/missions/dep_missions.txt")];
+		let ctx = context(vec![main, dep], SemanticIndex::default());
 
 		let findings = detect_dependency_misuse(&ctx);
 
