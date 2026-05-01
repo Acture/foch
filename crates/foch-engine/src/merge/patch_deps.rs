@@ -13,14 +13,9 @@ use super::conflict_handler::{ConflictHandler, DeferHandler};
 use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
-use super::patch::{
-	ClausewitzPatch, ast_values_semantically_equal, diff_ast, fold_renames,
-	patches_semantically_equal,
-};
+use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use super::patch_apply::apply_patches;
-use super::patch_merge::{
-	AttributedPatch, PatchAddress, PatchMergeResult, PatchResolution, merge_patch_sets,
-};
+use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
 use crate::workspace::ResolvedFileContributor;
 
 #[derive(Clone, Debug)]
@@ -185,11 +180,9 @@ fn compute_dag_patches_from_parsed(
 		}
 		level_addresses.push(addresses_in_level);
 
-		let sibling_overwrite_conflicts = divergent_sibling_overwrite_conflicts(&level_patches);
 		mod_patches.extend(level_patches.clone());
 		let mut level_result =
 			merge_patch_sets(level_patches, policies, handler).map_err(|err| err.to_string())?;
-		add_sibling_overwrite_conflicts(&mut level_result, sibling_overwrite_conflicts);
 
 		// Detach this level's conflicts; they go through the post-pass to be
 		// either confirmed real or dropped because a downstream level overrode them.
@@ -298,113 +291,11 @@ fn resolved_patches(merge_result: &PatchMergeResult) -> Vec<ClausewitzPatch> {
 		.collect()
 }
 
-fn divergent_sibling_overwrite_conflicts(
-	level_patches: &[(String, usize, Vec<ClausewitzPatch>)],
-) -> Vec<PatchResolution> {
-	if level_patches.len() < 2 {
-		return Vec::new();
-	}
-
-	let mut by_address: HashMap<(Vec<String>, String), Vec<AttributedPatch>> = HashMap::new();
-	for (mod_id, precedence, patches) in level_patches {
-		for patch in patches {
-			let Some((path, key)) = overwrite_address(patch) else {
-				continue;
-			};
-			by_address
-				.entry((path, key))
-				.or_default()
-				.push(AttributedPatch {
-					mod_id: mod_id.clone(),
-					precedence: *precedence,
-					patch: patch.clone(),
-				});
-		}
-	}
-
-	by_address
-		.into_iter()
-		.filter_map(|((path, key), patches)| {
-			if patches.len() < 2 || overwrite_patches_converge(&patches) {
-				return None;
-			}
-			Some(PatchResolution::Conflict {
-				address: PatchAddress { path, key },
-				patches,
-				reason: "divergent sibling overwrite patches at same address".to_string(),
-			})
-		})
-		.collect()
-}
-
-fn add_sibling_overwrite_conflicts(
-	merge_result: &mut PatchMergeResult,
-	conflicts: Vec<PatchResolution>,
-) {
-	if conflicts.is_empty() {
-		return;
-	}
-
-	let conflict_addresses: HashSet<(Vec<String>, String)> = conflicts
-		.iter()
-		.filter_map(|resolution| match resolution {
-			PatchResolution::Conflict { address, .. } => {
-				Some((address.path.clone(), address.key.clone()))
-			}
-			_ => None,
-		})
-		.collect();
-	merge_result
-		.resolved
-		.retain(|resolution| !resolution_targets_any(resolution, &conflict_addresses));
-	merge_result.stats.conflict_patches += conflicts.len();
-	merge_result.conflicts.extend(conflicts);
-}
-
-fn resolution_targets_any(
-	resolution: &PatchResolution,
-	addresses: &HashSet<(Vec<String>, String)>,
-) -> bool {
-	match resolution {
-		PatchResolution::Resolved(patch) | PatchResolution::AutoMerged { result: patch, .. } => {
-			overwrite_address(patch).is_some_and(|address| addresses.contains(&address))
-		}
-		PatchResolution::Conflict { .. } => false,
-	}
-}
-
 fn overwrite_address(patch: &ClausewitzPatch) -> Option<(Vec<String>, String)> {
 	match patch {
 		ClausewitzPatch::SetValue { path, key, .. }
 		| ClausewitzPatch::ReplaceBlock { path, key, .. } => Some((path.clone(), key.clone())),
 		_ => None,
-	}
-}
-
-fn overwrite_patches_converge(patches: &[AttributedPatch]) -> bool {
-	let Some(first) = patches.first().map(|patch| &patch.patch) else {
-		return true;
-	};
-	patches
-		.iter()
-		.skip(1)
-		.all(|patch| overwrite_patch_converges(first, &patch.patch))
-}
-
-fn overwrite_patch_converges(first: &ClausewitzPatch, next: &ClausewitzPatch) -> bool {
-	match (first, next) {
-		(
-			ClausewitzPatch::SetValue {
-				new_value: first, ..
-			},
-			ClausewitzPatch::SetValue {
-				new_value: next, ..
-			},
-		) => ast_values_semantically_equal(first, next),
-		(ClausewitzPatch::ReplaceBlock { .. }, ClausewitzPatch::ReplaceBlock { .. }) => {
-			patches_semantically_equal(first, next)
-		}
-		_ => false,
 	}
 }
 
@@ -955,9 +846,12 @@ mod tests {
 					]
 				);
 				assert_eq!(address.key, "x");
-				assert!(reason.contains("sibling overwrite"));
+				assert!(
+					reason.contains("sibling mods set the same scalar to divergent values"),
+					"unexpected reason: {reason}"
+				);
 			}
-			other => panic!("expected sibling overwrite conflict, got {other:?}"),
+			other => panic!("expected sibling scalar conflict, got {other:?}"),
 		}
 	}
 

@@ -158,6 +158,26 @@ fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddr
 	}
 }
 
+/// "Raw" address used to detect cross-kind sibling conflicts at the same
+/// `(path, key)`. Unlike `patch_address`, this never fingerprints — so two
+/// patches of *different* kinds (e.g. `SetValue(owner)` and `RemoveNode(owner)`)
+/// produced by sibling mods land in the same group and can be reported as a
+/// single mixed-kinds conflict.
+///
+/// Returns `None` for kinds that target a value rather than a named child
+/// (`AppendListItem`, `RemoveListItem`, `AppendBlockItem`, `RemoveBlockItem`)
+/// or that operate on a different conceptual axis (`Rename`). Cross-kind
+/// detection is restricted to the four "named-key replacement" variants.
+fn patch_raw_address(patch: &ClausewitzPatch) -> Option<(AstPath, String)> {
+	match patch {
+		ClausewitzPatch::SetValue { path, key, .. }
+		| ClausewitzPatch::RemoveNode { path, key, .. }
+		| ClausewitzPatch::InsertNode { path, key, .. }
+		| ClausewitzPatch::ReplaceBlock { path, key, .. } => Some((path.clone(), key.clone())),
+		_ => None,
+	}
+}
+
 /// Stable, span-ignoring fingerprint for an `AstValue`. Used to give each
 /// distinct `AppendBlockItem` / `RemoveBlockItem` its own `PatchAddress` so
 /// that multiple mods can append/remove different values inside the same
@@ -319,6 +339,31 @@ pub fn merge_patch_sets(
 		}
 	}
 
+	// Cross-kind sibling conflict pre-check.
+	//
+	// `patch_address` fingerprints `RemoveNode` / `InsertNode` (and lists)
+	// with the body content so that two mods inserting different nodes under
+	// the same key in a repeated-key block (e.g. multiple `has_country_flag`
+	// entries inside an OR) coexist as distinct addresses. That fingerprinting
+	// also has the side effect of separating same-(path, key) patches of
+	// *different* kinds — for example `SetValue(owner)` lands at `(path, "owner")`
+	// while `RemoveNode(owner)` lands at `(path, "__node__::owner::<fp>")`.
+	// Without this pre-pass the per-address `has_mixed_kinds` check inside
+	// `resolve_address` never fires for these split groups and the conflicting
+	// intents (set vs remove the same key) silently both apply.
+	//
+	// Bucket by the kind-agnostic raw `(path, key)` and, when sibling mods
+	// produced patches of multiple kinds, surface a single mixed-kinds
+	// conflict that supersedes the per-fingerprint resolutions.
+	let cross_kind_conflicts = detect_cross_kind_sibling_conflicts(&by_address, &mut result.stats);
+	let cross_kind_addresses: HashSet<PatchAddress> = cross_kind_conflicts
+		.iter()
+		.flat_map(|conflict| conflict.split_addresses.iter().cloned())
+		.collect();
+	for addr in &cross_kind_addresses {
+		by_address.remove(addr);
+	}
+
 	for (addr, attributed) in by_address {
 		let resolution = resolve_address(addr, attributed, policies, &mut result.stats);
 		match resolution {
@@ -333,7 +378,93 @@ pub fn merge_patch_sets(
 		}
 	}
 
+	for cross_kind in cross_kind_conflicts {
+		apply_conflict_decision(
+			&mut result,
+			handler,
+			cross_kind.address,
+			cross_kind.patches,
+			cross_kind.reason,
+		)?;
+	}
+
 	Ok(result)
+}
+
+/// Cross-kind sibling conflict detected before per-address dispatch.
+///
+/// `split_addresses` lists every fingerprinted `PatchAddress` whose patches
+/// fed into this conflict — the caller drops them from the per-address map so
+/// they aren't double-resolved alongside the synthesized conflict.
+struct CrossKindConflict {
+	address: PatchAddress,
+	patches: Vec<AttributedPatch>,
+	reason: String,
+	split_addresses: Vec<PatchAddress>,
+}
+
+fn detect_cross_kind_sibling_conflicts(
+	by_address: &HashMap<PatchAddress, Vec<AttributedPatch>>,
+	stats: &mut PatchMergeStats,
+) -> Vec<CrossKindConflict> {
+	// Group fingerprinted addresses by their underlying raw (path, key).
+	let mut by_raw: HashMap<(AstPath, String), Vec<&PatchAddress>> = HashMap::new();
+	for addr in by_address.keys() {
+		let Some(first) = by_address.get(addr).and_then(|patches| patches.first()) else {
+			continue;
+		};
+		let Some(raw) = patch_raw_address(&first.patch) else {
+			continue;
+		};
+		by_raw.entry(raw).or_default().push(addr);
+	}
+
+	let mut conflicts = Vec::new();
+	for ((path, key), addrs) in by_raw {
+		if addrs.len() < 2 {
+			continue;
+		}
+
+		let mut kinds: HashSet<&'static str> = HashSet::new();
+		let mut contributors: HashSet<&str> = HashSet::new();
+		for addr in &addrs {
+			for patch in by_address.get(*addr).into_iter().flatten() {
+				kinds.insert(patch_kind(&patch.patch));
+				contributors.insert(patch.mod_id.as_str());
+			}
+		}
+
+		// Multiple kinds at the same (path, key) from sibling mods → ambiguous;
+		// must escalate to a real conflict instead of silently applying both.
+		if kinds.len() > 1 && contributors.len() > 1 {
+			let mut combined: Vec<AttributedPatch> = addrs
+				.iter()
+				.flat_map(|a| by_address.get(*a).cloned().unwrap_or_default())
+				.collect();
+			combined.sort_by(|a, b| {
+				a.precedence
+					.cmp(&b.precedence)
+					.then_with(|| a.mod_id.cmp(&b.mod_id))
+			});
+			let mut kind_list: Vec<&str> = kinds.iter().copied().collect();
+			kind_list.sort_unstable();
+			stats.conflict_patches += 1;
+			conflicts.push(CrossKindConflict {
+				address: PatchAddress {
+					path: path.clone(),
+					key: key.clone(),
+				},
+				patches: combined,
+				reason: format!(
+					"sibling mods produced incompatible patch kinds at the same key: {}",
+					kind_list.join(", ")
+				),
+				split_addresses: addrs.into_iter().cloned().collect(),
+			});
+		}
+	}
+
+	conflicts
 }
 
 fn apply_conflict_decision(
@@ -593,21 +724,43 @@ fn resolve_set_values(
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
 	match policies.scalar {
-		ScalarMergePolicy::LastWriter => {
-			let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
-			let mut sorted = attributed;
-			sorted.sort_by(|a, b| b.precedence.cmp(&a.precedence));
-			stats.auto_merged_patches += 1;
-			PatchResolution::AutoMerged {
-				result: sorted.into_iter().next().unwrap().patch,
-				strategy: "last_writer".to_string(),
-				contributing_mods: mods,
+		ScalarMergePolicy::Conflict => {
+			// Sibling mods at the same scalar leaf cannot be silently
+			// merged: there is no dependency-graph signal saying which
+			// mod's value should win. Surface a conflict so the user (or
+			// `[[resolutions]]`) can pick.
+			let new_values: Vec<String> = attributed
+				.iter()
+				.map(|a| match &a.patch {
+					ClausewitzPatch::SetValue { new_value, .. } => {
+						format!("`{}` from `{}`", value_text_for_reason(new_value), a.mod_id)
+					}
+					_ => unreachable!(),
+				})
+				.collect();
+			stats.conflict_patches += 1;
+			PatchResolution::Conflict {
+				address: addr,
+				reason: format!(
+					"sibling mods set the same scalar to divergent values: {}",
+					new_values.join(", ")
+				),
+				patches: attributed,
 			}
 		}
 		ScalarMergePolicy::Sum
 		| ScalarMergePolicy::Avg
 		| ScalarMergePolicy::Max
 		| ScalarMergePolicy::Min => resolve_numeric_set_values(addr, attributed, policies.scalar, stats),
+	}
+}
+
+/// Best-effort textual rendering of an `AstValue` for human-readable conflict
+/// messages. Falls back to a structural marker when the value is a block.
+fn value_text_for_reason(value: &AstValue) -> String {
+	match value {
+		AstValue::Scalar { value, .. } => value.as_text(),
+		AstValue::Block { .. } => "<block>".to_string(),
 	}
 }
 
@@ -1454,6 +1607,13 @@ pub fn merge_named_container_bodies(
 						result[idx] = merged;
 					} else {
 						match policies.named_container {
+							NamedContainerPolicy::Conflict => {
+								// Sibling mods target the same named identity
+								// with bodies that cannot be merged structurally
+								// → defer to the user instead of silently
+								// renaming or overwriting.
+								return Err(NamedContainerMergeError::UnresolvableConflict);
+							}
 							NamedContainerPolicy::OverlayWins => {
 								result[idx] = stmt.clone();
 							}
@@ -2387,7 +2547,10 @@ mod tests {
 	}
 
 	#[test]
-	fn different_set_value_last_writer() {
+	fn different_set_value_sibling_conflict() {
+		// Sibling mods (no dependency edge) writing the same scalar leaf to
+		// divergent values must surface a manual conflict — there is no
+		// dependency-graph signal saying which value should win.
 		let patch_a = ClausewitzPatch::SetValue {
 			path: vec!["root".into()],
 			key: "tax".into(),
@@ -2409,25 +2572,19 @@ mod tests {
 			&default_policies(),
 		);
 
-		assert_eq!(result.resolved.len(), 1);
-		assert_eq!(result.conflicts.len(), 0);
-		assert_eq!(result.stats.auto_merged_patches, 1);
-		match &result.resolved[0] {
-			PatchResolution::AutoMerged {
-				result: patch,
-				strategy,
-				..
-			} => {
-				assert_eq!(strategy, "last_writer");
-				// Highest precedence (mod_b at 2) wins.
-				match patch {
-					ClausewitzPatch::SetValue { new_value, .. } => {
-						assert_eq!(*new_value, number("15"),);
-					}
-					_ => panic!("expected SetValue"),
-				}
+		assert_eq!(result.resolved.len(), 0);
+		assert_eq!(result.conflicts.len(), 1);
+		assert_eq!(result.stats.conflict_patches, 1);
+		match &result.conflicts[0] {
+			PatchResolution::Conflict { reason, .. } => {
+				assert!(
+					reason.contains("sibling mods set the same scalar"),
+					"unexpected reason: {reason}"
+				);
+				assert!(reason.contains("10"));
+				assert!(reason.contains("15"));
 			}
-			other => panic!("expected AutoMerged, got: {other:?}"),
+			other => panic!("expected Conflict, got: {other:?}"),
 		}
 	}
 
@@ -2980,7 +3137,13 @@ mod tests {
 	}
 
 	#[test]
-	fn last_writer_default_unaffected() {
+	fn explicit_last_writer_block_policy_falls_through_to_conflict() {
+		// `BlockPatchPolicy::LastWriter` is a deliberate escape hatch: it does
+		// not actually silently pick a winner — it just sidesteps Recurse /
+		// Union / BooleanOr / named-container so the final fallback in
+		// `resolve_replace_blocks` reports the divergent ReplaceBlock as a
+		// manual conflict. This keeps families that explicitly opt into
+		// LastWriter from getting auto-merged behind their backs.
 		let old = assignment_block("is_great_power", vec![]);
 		let patch_a = ClausewitzPatch::ReplaceBlock {
 			path: vec![],
@@ -2995,12 +3158,14 @@ mod tests {
 			new_statement: assignment_block("is_great_power", vec![assignment("tag", scalar("B"))]),
 		};
 
+		let mut policies = default_policies();
+		policies.block_patch = BlockPatchPolicy::LastWriter;
 		let result = merge_patch_sets_with_defer(
 			vec![
 				("mod_a".into(), 1, vec![patch_a]),
 				("mod_b".into(), 2, vec![patch_b]),
 			],
-			&default_policies(),
+			&policies,
 		);
 
 		assert_eq!(result.resolved.len(), 0);
@@ -3008,8 +3173,8 @@ mod tests {
 		assert_eq!(result.stats.conflict_patches, 1);
 		assert_eq!(
 			MergePolicies::default().block_patch,
-			BlockPatchPolicy::LastWriter,
-			"BlockPatchPolicy::default() must be LastWriter"
+			BlockPatchPolicy::Recurse,
+			"BlockPatchPolicy::default() must be Recurse"
 		);
 	}
 
@@ -3180,7 +3345,12 @@ mod tests {
 	}
 
 	#[test]
-	fn default_replace_block_conflict_still_conflicts_without_union() {
+	fn default_recurse_policy_unions_compatible_appends() {
+		// Two sibling mods append distinct bare items to the same list-shaped
+		// block. Recurse re-diffs the bodies and produces independent
+		// `AppendBlockItem` patches at fingerprinted addresses; both apply
+		// without a conflict (the user explicitly endorsed list-append
+		// coexistence: "list 追加合并我觉得没什么问题").
 		let base = vec![bare_item("Base")];
 		let patch_a = replace_block_patch(
 			"leader_names",
@@ -3201,16 +3371,31 @@ mod tests {
 			&default_policies(),
 		);
 
-		assert_eq!(result.resolved.len(), 0);
-		assert_eq!(result.conflicts.len(), 1);
-		match &result.conflicts[0] {
-			PatchResolution::Conflict { reason, .. } => {
+		assert_eq!(
+			result.conflicts.len(),
+			0,
+			"got conflicts: {:?}",
+			result.conflicts
+		);
+		assert_eq!(result.resolved.len(), 1);
+		match &result.resolved[0] {
+			PatchResolution::AutoMerged {
+				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+				strategy,
+				..
+			} => {
+				assert_eq!(strategy, "recursive_block_merge");
+				let names = item_texts(block_items(new_statement));
 				assert!(
-					reason.contains("multiple mods replace"),
-					"unexpected reason: {reason}"
+					names.contains(&"Afonso".to_string()),
+					"missing Afonso: {names:?}"
+				);
+				assert!(
+					names.contains(&"Bernat".to_string()),
+					"missing Bernat: {names:?}"
 				);
 			}
-			other => panic!("expected Conflict, got: {other:?}"),
+			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
 		}
 	}
 
@@ -3522,7 +3707,9 @@ mod tests {
 	#[test]
 	fn replace_block_named_container_resolves_via_merge() {
 		// End-to-end: two mods produce ReplaceBlock for the same windowType
-		// with different inner additions; resolve_replace_blocks must auto-merge.
+		// with different inner additions. Default Recurse re-diffs each body
+		// and the additive iconType inserts at distinct identities coexist —
+		// no conflict, single auto-merged ReplaceBlock.
 		let base_stmt =
 			body_to_window_type_block("hre", vec![named_block("iconType", "ico_x", vec![])]);
 		let mod_a_stmt = body_to_window_type_block(
@@ -3570,7 +3757,13 @@ mod tests {
 		assert_eq!(result.resolved.len(), 1);
 		match &result.resolved[0] {
 			PatchResolution::AutoMerged { strategy, .. } => {
-				assert_eq!(strategy, "named_container_union");
+				assert!(
+					matches!(
+						strategy.as_str(),
+						"recursive_block_merge" | "named_container_union"
+					),
+					"unexpected strategy: {strategy}"
+				);
 			}
 			other => panic!("expected AutoMerged, got: {other:?}"),
 		}
@@ -3806,11 +3999,12 @@ mod tests {
 	}
 
 	#[test]
-	fn recurse_auto_resolves_scalar_overlap_via_last_writer() {
-		// Both mods change `owner` inside the same date block to different
-		// tags. Deep merge should auto-resolve via the scalar last-writer
-		// policy (highest-precedence mod wins) rather than block on the
-		// outer ReplaceBlock collision.
+	fn recurse_sibling_scalar_conflict_bubbles_up() {
+		// Both sibling mods change the same `owner` scalar inside the same
+		// date block to *different* tags. Recurse re-diffs each body against
+		// the common ancestor, producing two SetValues at the nested address
+		// — and per `ScalarMergePolicy::Conflict` the engine must surface a
+		// conflict instead of silently choosing the highest-precedence value.
 		let vanilla_body = vec![assignment("owner", scalar("BYZ"))];
 		let vanilla_stmt = assignment_block("1444.11.11", vanilla_body);
 		let a_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]);
@@ -3839,52 +4033,30 @@ mod tests {
 
 		assert_eq!(
 			result.conflicts.len(),
-			0,
-			"got conflicts: {:?}",
-			result.conflicts
+			1,
+			"expected one bubbled sub-conflict, got resolved={:?} conflicts={:?}",
+			result.resolved,
+			result.conflicts,
 		);
-		assert_eq!(result.resolved.len(), 1);
-		match &result.resolved[0] {
-			PatchResolution::AutoMerged {
-				result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
-				strategy,
-				..
-			} => {
-				assert_eq!(strategy, "recursive_block_merge");
-				let body = match new_statement {
-					AstStatement::Assignment {
-						value: AstValue::Block { items, .. },
-						..
-					} => items,
-					other => panic!("expected block, got {other:?}"),
-				};
-				let owner_val = body.iter().find_map(|s| match s {
-					AstStatement::Assignment {
-						key,
-						value:
-							AstValue::Scalar {
-								value: ScalarValue::Identifier(v),
-								..
-							},
-						..
-					} if key == "owner" => Some(v.clone()),
-					_ => None,
-				});
-				assert_eq!(
-					owner_val.as_deref(),
-					Some("MAM"),
-					"highest-precedence mod_b should win owner"
+		match &result.conflicts[0] {
+			PatchResolution::Conflict { reason, .. } => {
+				assert!(
+					reason.contains("unresolved sub-conflict")
+						|| reason.contains("sibling mods set the same scalar"),
+					"unexpected reason: {reason}"
 				);
 			}
-			other => panic!("expected AutoMerged ReplaceBlock, got: {other:?}"),
+			other => panic!("expected Conflict, got: {other:?}"),
 		}
 	}
 
 	#[test]
-	fn recurse_default_policy_still_emits_replace_block_conflict() {
-		// Sanity check: with default LastWriter policy, the existing
-		// "multiple mods replace the same block" conflict is preserved so
-		// non-history families don't regress.
+	fn recurse_default_policy_emits_cross_kind_conflict_on_owner() {
+		// mod_a sets `owner` to a new value while mod_b removes `owner`
+		// entirely and adds a sibling `controller`. Recurse re-diffs each
+		// body and the cross-kind detector surfaces the conflicting intent
+		// at `owner` as a sub-conflict (SetValue vs RemoveNode at the same
+		// raw key) which bubbles up to the outer ReplaceBlock.
 		let vanilla_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("BYZ"))]);
 		let a_stmt = assignment_block("1444.11.11", vec![assignment("owner", scalar("OTT"))]);
 		let b_stmt = assignment_block("1444.11.11", vec![assignment("controller", scalar("OTT"))]);
@@ -3914,9 +4086,11 @@ mod tests {
 		match &result.conflicts[0] {
 			PatchResolution::Conflict { reason, .. } => {
 				assert!(
-					reason.contains("multiple mods replace"),
+					reason.contains("incompatible patch kinds")
+						|| reason.contains("unresolved sub-conflict"),
 					"unexpected reason: {reason}"
 				);
+				assert!(reason.contains("owner"), "reason missing key: {reason}");
 			}
 			other => panic!("expected Conflict, got: {other:?}"),
 		}

@@ -90,9 +90,20 @@ pub enum GameId {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScalarMergePolicy {
-	/// Overlay value replaces base (default).
+	/// Sibling mods that change the same scalar to different values must be
+	/// reported as a manual conflict rather than silently choosing one. This
+	/// is the **baseline** for any family without an explicit numeric policy:
+	/// when sibling mods disagree on a scalar leaf there is no signal in the
+	/// dependency graph that says which value should win, so the merge engine
+	/// must defer the choice to the user (or a `[[resolutions]]` decision)
+	/// instead of falling back to an implicit precedence-based pick. The
+	/// cross-level dependency-chain "later level overrides earlier" semantics
+	/// are handled separately by `patch_deps.rs::compute_dag_patches_*`, which
+	/// applies each level's resolved patches into the running base before
+	/// diffing the next level — so a downstream mod that *does* explicitly
+	/// depend on an upstream mod still wins without invoking this policy.
 	#[default]
-	LastWriter,
+	Conflict,
 	/// Parse both as f64 and sum them.
 	Sum,
 	/// Parse both as f64 and average them.
@@ -147,12 +158,24 @@ pub enum BooleanMergePolicy {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NamedContainerPolicy {
+	/// Sibling mods that target the same named identity (e.g. two mods both
+	/// modify `windowType { name = "left_widget" }`) with non-recursively
+	/// mergeable bodies must be reported as a manual conflict. This is the
+	/// **baseline** for any family without an explicit silent-strategy
+	/// override: like `ScalarMergePolicy::Conflict`, when there is no
+	/// dependency-graph signal saying which mod's named child should win the
+	/// engine defers the choice to the user instead of fabricating a merge
+	/// (e.g. by renaming one side, which produces a *different* game entity
+	/// rather than the merged result the user was asking for).
+	#[default]
+	Conflict,
 	/// Lenient: keep both — rename the conflicting candidate's name field (or its
 	/// assignment key) with a `_<mod_id>` suffix so both definitions coexist.
-	#[default]
+	/// Useful for GUI / icon families where multiple mods can ship parallel
+	/// widgets without conflict, but explicitly opted into per family.
 	SuffixRename,
 	/// Strict-with-scalars: highest-precedence overlay wins; conflicting children
-	/// from earlier candidates are dropped.
+	/// from earlier candidates are dropped. Explicit per family.
 	OverlayWins,
 }
 
@@ -187,8 +210,9 @@ impl MergePolicies {
 #[serde(rename_all = "snake_case")]
 pub enum BlockPatchPolicy {
 	/// Highest-precedence mod's replacement wins; others are reported as
-	/// conflicts in the existing patch merge flow.
-	#[default]
+	/// conflicts in the existing patch merge flow. Explicit per family —
+	/// rarely useful now that `Recurse` is the baseline and the leaf-level
+	/// merge engine itself enforces sibling conflicts.
 	LastWriter,
 	/// Combine each mod's body inside an `OR = { ... }` wrapper so the
 	/// resulting trigger fires if any contributor's predicate holds.
@@ -197,12 +221,15 @@ pub enum BlockPatchPolicy {
 	/// de-duplicating by content fingerprint while preserving first-seen order.
 	Union,
 	/// Recursively deep-merge multiple mods' replacements of the same block.
-	/// When N mods all emit `ReplaceBlock` against a common base block, the
-	/// patch engine re-runs its diff/merge pipeline on the bodies and
-	/// synthesizes a single merged `ReplaceBlock`. Used for date-keyed
-	/// containers in EU4 history files (`history/countries/*`,
-	/// `history/provinces/*`) where each mod typically alters a different
-	/// year and same-date+same-field collisions are rare.
+	/// This is the **default baseline** for any family/key without an explicit
+	/// override. When N mods all emit `ReplaceBlock` against a common base
+	/// block, the patch engine re-runs its diff/merge pipeline on the bodies
+	/// and synthesizes a single merged `ReplaceBlock`; sub-conflicts surface
+	/// as real conflicts via the leaf resolvers (`ScalarMergePolicy::Conflict`,
+	/// `NamedContainerPolicy::Conflict`, etc.). Cross-level explicit-dependency
+	/// override semantics are handled separately by the `patch_deps.rs`
+	/// post-pass — `Recurse` only governs same-level sibling dispatch.
+	#[default]
 	Recurse,
 }
 
@@ -593,13 +620,13 @@ impl ContentFamilyDescriptor {
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
 			merge_policies: MergePolicies {
-				scalar: ScalarMergePolicy::LastWriter,
+				scalar: ScalarMergePolicy::Conflict,
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
-				block_patch: BlockPatchPolicy::LastWriter,
+				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
-				named_container: NamedContainerPolicy::SuffixRename,
+				named_container: NamedContainerPolicy::Conflict,
 			},
 		}
 	}
@@ -627,13 +654,13 @@ impl ContentFamilyDescriptor {
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
 			merge_policies: MergePolicies {
-				scalar: ScalarMergePolicy::LastWriter,
+				scalar: ScalarMergePolicy::Conflict,
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
-				block_patch: BlockPatchPolicy::LastWriter,
+				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
-				named_container: NamedContainerPolicy::SuffixRename,
+				named_container: NamedContainerPolicy::Conflict,
 			},
 		}
 	}
