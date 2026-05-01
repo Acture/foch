@@ -71,13 +71,24 @@ pub enum ClausewitzPatch {
 
 /// Detect zero-cost renames within a single mod's patch list for one file.
 ///
-/// Pairs `RemoveNode { path, key: X }` with `InsertNode { path, key: Y }` at
-/// the same parent path when X != Y and their bodies are AST-semantically
-/// equal. Emits a `Rename` patch and removes the paired Remove/Insert from
-/// the original list. Patches that do not pair are left untouched.
+/// Two-pass detection:
 ///
-/// Mirrors git's hash-equal blob rename detection: only exact body equality
-/// counts, so there are no fuzzy false positives.
+/// 1. **Strict pass** — pairs `RemoveNode { path, key: X }` with
+///    `InsertNode { path, key: Y }` (X != Y) when the bodies are AST-equal.
+///    Mirrors git's hash-equal blob rename detection: zero false positives,
+///    but misses common "moved + edited" cases like a country-history monarch
+///    block relocated to a different date with stat tweaks.
+/// 2. **Fuzzy pass** — for any remaining unpaired Remove/Insert at the same
+///    path, compute a tiered similarity score (cheap shape filter → key-path
+///    Jaccard → value-match ratio) and pair the highest-scoring survivors
+///    above `FUZZY_RENAME_THRESHOLD`. The fuzzy pair emits a `Rename` plus a
+///    `ReplaceBlock` carrying the residual body diff so downstream sibling
+///    patches at the old key get redirected to the new key by the rename
+///    pre-pass and then merge with the body edit naturally.
+///
+/// All fuzzy candidates are scored with a single deterministic heuristic; ties
+/// are broken by `(score, insert_index)` ordering and matched greedily so the
+/// fold is reproducible.
 pub fn fold_renames(patches: Vec<ClausewitzPatch>) -> Vec<ClausewitzPatch> {
 	use std::collections::{HashMap as Map, HashSet as Set};
 
@@ -97,8 +108,9 @@ pub fn fold_renames(patches: Vec<ClausewitzPatch>) -> Vec<ClausewitzPatch> {
 	}
 
 	let mut consumed: Set<usize> = Set::new();
-	let mut renames: Vec<(AstPath, String, String)> = Vec::new();
+	let mut renames: Vec<RenameFold> = Vec::new();
 
+	// --- Pass 1: strict body-equal pairs (cheap, no body-diff residue). ---
 	for (path, rem_indices) in &removes_at {
 		let Some(ins_indices) = inserts_at.get(path) else {
 			continue;
@@ -133,10 +145,102 @@ pub fn fold_renames(patches: Vec<ClausewitzPatch>) -> Vec<ClausewitzPatch> {
 				if ast_values_semantically_equal(rbody, ibody) {
 					consumed.insert(ri);
 					consumed.insert(ii);
-					renames.push((path.clone(), rkey.clone(), ikey));
+					renames.push(RenameFold {
+						path: path.clone(),
+						old_key: rkey.clone(),
+						new_key: ikey,
+						body_diff: None,
+					});
 					break;
 				}
 			}
+		}
+	}
+
+	// --- Pass 2: fuzzy match on the remaining same-path Remove/Insert. ---
+	for (path, rem_indices) in &removes_at {
+		let Some(ins_indices) = inserts_at.get(path) else {
+			continue;
+		};
+		// Score every (remove, insert) pair that survived pass 1, then
+		// greedily pair by descending score. Below-threshold candidates are
+		// dropped — they stay as plain RemoveNode + InsertNode and feed the
+		// regular cross-mod conflict resolver.
+		let mut candidates: Vec<(f32, usize, usize)> = Vec::new();
+		for &ri in rem_indices {
+			if consumed.contains(&ri) {
+				continue;
+			}
+			let removed_stmt = match &patches[ri] {
+				ClausewitzPatch::RemoveNode {
+					removed: stmt @ AstStatement::Assignment { .. },
+					..
+				} => stmt,
+				_ => continue,
+			};
+			let removed_body = match removed_stmt {
+				AstStatement::Assignment { value, .. } => value,
+				_ => continue,
+			};
+			for &ii in ins_indices {
+				if consumed.contains(&ii) {
+					continue;
+				}
+				let insert_stmt = match &patches[ii] {
+					ClausewitzPatch::InsertNode {
+						statement: stmt @ AstStatement::Assignment { .. },
+						key: ikey,
+						..
+					} => match &patches[ri] {
+						ClausewitzPatch::RemoveNode { key: rkey, .. } if ikey == rkey => continue,
+						_ => stmt,
+					},
+					_ => continue,
+				};
+				let inserted_body = match insert_stmt {
+					AstStatement::Assignment { value, .. } => value,
+					_ => continue,
+				};
+				if let Some(score) = fuzzy_rename_similarity(removed_body, inserted_body)
+					&& score >= FUZZY_RENAME_THRESHOLD
+				{
+					candidates.push((score, ri, ii));
+				}
+			}
+		}
+		// Stable greedy pairing: highest score first, deterministic on ties
+		// via the source patch indices.
+		candidates.sort_by(|a, b| {
+			b.0.partial_cmp(&a.0)
+				.unwrap_or(std::cmp::Ordering::Equal)
+				.then_with(|| a.1.cmp(&b.1))
+				.then_with(|| a.2.cmp(&b.2))
+		});
+		for (_, ri, ii) in candidates {
+			if consumed.contains(&ri) || consumed.contains(&ii) {
+				continue;
+			}
+			let (rkey, removed_stmt) = match &patches[ri] {
+				ClausewitzPatch::RemoveNode { key, removed, .. } => (key.clone(), removed.clone()),
+				_ => continue,
+			};
+			let (ikey, insert_stmt) = match &patches[ii] {
+				ClausewitzPatch::InsertNode { key, statement, .. } => {
+					(key.clone(), statement.clone())
+				}
+				_ => continue,
+			};
+			consumed.insert(ri);
+			consumed.insert(ii);
+			renames.push(RenameFold {
+				path: path.clone(),
+				old_key: rkey.clone(),
+				new_key: ikey.clone(),
+				body_diff: Some(FuzzyBodyDiff {
+					old_after_rename: rekey_assignment(&removed_stmt, &ikey),
+					new: insert_stmt,
+				}),
+			});
 		}
 	}
 
@@ -150,14 +254,211 @@ pub fn fold_renames(patches: Vec<ClausewitzPatch>) -> Vec<ClausewitzPatch> {
 			out.push(p);
 		}
 	}
-	for (path, old_key, new_key) in renames {
+	for fold in renames {
 		out.push(ClausewitzPatch::Rename {
-			path,
-			old_key,
-			new_key,
+			path: fold.path.clone(),
+			old_key: fold.old_key,
+			new_key: fold.new_key.clone(),
 		});
+		if let Some(body_diff) = fold.body_diff {
+			out.push(ClausewitzPatch::ReplaceBlock {
+				path: fold.path,
+				key: fold.new_key,
+				old_statement: body_diff.old_after_rename,
+				new_statement: body_diff.new,
+			});
+		}
 	}
 	out
+}
+
+/// Minimum combined score for a fuzzy rename pair to fold. The score blends
+/// key-path Jaccard (`0.5 *`) and matched-leaf value ratio (`0.5 *`); 0.55 is
+/// strict enough to reject "different entities that happen to share a schema"
+/// (where every key matches but no values do — score 0.5) while still
+/// accepting "renamed entity with body edits" cases like the EU4 country
+/// history monarch-block-moved-and-buffed pattern (score ≈ 0.625).
+const FUZZY_RENAME_THRESHOLD: f32 = 0.55;
+/// Hard size-ratio gate before any deeper scoring runs. A removed body and an
+/// inserted body whose flattened-leaf counts differ by more than 2× are very
+/// unlikely to be a rename of the same entity, so skip the expensive Jaccard
+/// pass on them entirely.
+const FUZZY_SIZE_RATIO_MIN: f32 = 0.5;
+const FUZZY_SIZE_RATIO_MAX: f32 = 2.0;
+/// Cheap key-path Jaccard floor that filters out "pair has nothing in common
+/// structurally" candidates before computing the matched-leaf ratio.
+const FUZZY_KEYPATH_JACCARD_MIN: f32 = 0.3;
+
+#[derive(Clone, Debug)]
+struct RenameFold {
+	path: AstPath,
+	old_key: String,
+	new_key: String,
+	body_diff: Option<FuzzyBodyDiff>,
+}
+
+#[derive(Clone, Debug)]
+struct FuzzyBodyDiff {
+	/// The removed entity's body re-keyed to the new name; matches the
+	/// post-rename pre-edit AST shape so the synthesized `ReplaceBlock`'s
+	/// `old_statement` aligns with what `apply_patches` will see after the
+	/// `Rename` patch has already moved the value.
+	old_after_rename: AstStatement,
+	new: AstStatement,
+}
+
+/// Combined similarity score in `[0, 1]` — higher means more rename-like.
+/// Returns `None` for candidates that fail the cheap shape / Jaccard pre-gates
+/// so the caller can short-circuit without paying the leaf-pair scan.
+fn fuzzy_rename_similarity(removed: &AstValue, inserted: &AstValue) -> Option<f32> {
+	let removed_pairs = collect_keypath_value_pairs(removed);
+	let inserted_pairs = collect_keypath_value_pairs(inserted);
+
+	let removed_size = removed_pairs.len();
+	let inserted_size = inserted_pairs.len();
+	if removed_size == 0 || inserted_size == 0 {
+		return None;
+	}
+
+	let ratio = removed_size as f32 / inserted_size as f32;
+	if !(FUZZY_SIZE_RATIO_MIN..=FUZZY_SIZE_RATIO_MAX).contains(&ratio) {
+		return None;
+	}
+
+	let removed_keys: std::collections::HashSet<&String> =
+		removed_pairs.iter().map(|(k, _)| k).collect();
+	let inserted_keys: std::collections::HashSet<&String> =
+		inserted_pairs.iter().map(|(k, _)| k).collect();
+	let key_intersect = removed_keys.intersection(&inserted_keys).count();
+	let key_union = removed_keys.union(&inserted_keys).count();
+	if key_union == 0 {
+		return None;
+	}
+	let key_jaccard = key_intersect as f32 / key_union as f32;
+	if key_jaccard < FUZZY_KEYPATH_JACCARD_MIN {
+		return None;
+	}
+
+	let removed_pair_set: std::collections::HashSet<&(String, String)> =
+		removed_pairs.iter().collect();
+	let pair_match = inserted_pairs
+		.iter()
+		.filter(|pair| removed_pair_set.contains(*pair))
+		.count();
+	let value_match = if key_intersect > 0 {
+		pair_match as f32 / key_intersect as f32
+	} else {
+		0.0
+	};
+
+	Some(0.5 * key_jaccard + 0.5 * value_match)
+}
+
+/// Flatten an `AstValue` into a list of `(key_path, normalized_value)` leaf
+/// records. Block children are walked recursively with their key path joined
+/// by `::`; bare items are addressed by their fingerprinted value so two
+/// item-only blocks can still produce stable comparable leaves. Comments are
+/// dropped at every level so cosmetic-only differences do not perturb the
+/// score.
+fn collect_keypath_value_pairs(value: &AstValue) -> Vec<(String, String)> {
+	let mut out = Vec::new();
+	collect_keypath_value_pairs_into(value, "", &mut out);
+	out
+}
+
+fn collect_keypath_value_pairs_into(
+	value: &AstValue,
+	prefix: &str,
+	out: &mut Vec<(String, String)>,
+) {
+	match value {
+		AstValue::Scalar { value: scalar, .. } => {
+			out.push((prefix.to_string(), scalar.as_text()));
+		}
+		AstValue::Block { items, .. } => {
+			for stmt in items {
+				match stmt {
+					AstStatement::Assignment {
+						key, value: child, ..
+					} => {
+						let next_prefix = if prefix.is_empty() {
+							key.clone()
+						} else {
+							format!("{prefix}::{key}")
+						};
+						collect_keypath_value_pairs_into(child, &next_prefix, out);
+					}
+					AstStatement::Item { value: child, .. } => {
+						let mut item_value = String::new();
+						fingerprint_value_into(child, &mut item_value);
+						let key_path = if prefix.is_empty() {
+							format!("__item__::{item_value}")
+						} else {
+							format!("{prefix}::__item__::{item_value}")
+						};
+						out.push((key_path, item_value));
+					}
+					AstStatement::Comment { .. } => {}
+				}
+			}
+		}
+	}
+}
+
+/// Span-stripped fingerprint helper used by `collect_keypath_value_pairs_into`
+/// to give bare items a stable comparable key. Mirrors the structural fields
+/// of `AstValue` while ignoring spans and skipping comments inside blocks.
+fn fingerprint_value_into(value: &AstValue, out: &mut String) {
+	match value {
+		AstValue::Scalar { value: scalar, .. } => {
+			out.push('s');
+			out.push(':');
+			out.push_str(&scalar.as_text());
+		}
+		AstValue::Block { items, .. } => {
+			out.push('b');
+			out.push('[');
+			for stmt in items {
+				match stmt {
+					AstStatement::Assignment { key, value, .. } => {
+						out.push('a');
+						out.push_str(key);
+						out.push('=');
+						fingerprint_value_into(value, out);
+						out.push(';');
+					}
+					AstStatement::Item { value, .. } => {
+						out.push('i');
+						fingerprint_value_into(value, out);
+						out.push(';');
+					}
+					AstStatement::Comment { .. } => {}
+				}
+			}
+			out.push(']');
+		}
+	}
+}
+
+/// Replace the assignment key on a statement so the rename + body-diff pair
+/// emitted by the fuzzy fold can carry an `old_statement` that matches the
+/// AST shape `apply_patches` will see *after* the `Rename` has already moved
+/// the value to the new key.
+fn rekey_assignment(stmt: &AstStatement, new_key: &str) -> AstStatement {
+	match stmt {
+		AstStatement::Assignment {
+			key_span,
+			value,
+			span,
+			..
+		} => AstStatement::Assignment {
+			key: new_key.to_string(),
+			key_span: key_span.clone(),
+			value: value.clone(),
+			span: span.clone(),
+		},
+		other => other.clone(),
+	}
 }
 
 /// Compute the structural diff between a base game file and a mod overlay,
@@ -1758,7 +2059,12 @@ mod tests {
 	}
 
 	#[test]
-	fn fold_renames_does_not_pair_when_bodies_differ() {
+	fn fold_renames_fuzzy_pairs_remove_and_insert_with_similar_bodies() {
+		// Same shape, same key path, single scalar leaf changed → high
+		// fuzzy-rename score (key_jaccard=1.0, value_match=0.5 → score=0.75)
+		// → folded into a Rename plus a residual ReplaceBlock that carries the
+		// body diff. The model: the mod renamed `feudalism_reform` to
+		// `EE_feudalism_reform` and tweaked its cost in the same edit.
 		let patches = vec![
 			ClausewitzPatch::RemoveNode {
 				path: vec![],
@@ -1769,6 +2075,67 @@ mod tests {
 				path: vec![],
 				key: "EE_feudalism_reform".into(),
 				statement: body_with("200"),
+			},
+		];
+		let folded = fold_renames(patches);
+		assert_eq!(folded.len(), 2, "got: {folded:?}");
+		let mut saw_rename = false;
+		let mut saw_replace = false;
+		for patch in &folded {
+			match patch {
+				ClausewitzPatch::Rename {
+					old_key, new_key, ..
+				} => {
+					assert_eq!(old_key, "feudalism_reform");
+					assert_eq!(new_key, "EE_feudalism_reform");
+					saw_rename = true;
+				}
+				ClausewitzPatch::ReplaceBlock { key, .. } => {
+					assert_eq!(key, "EE_feudalism_reform");
+					saw_replace = true;
+				}
+				other => panic!("unexpected patch: {other:?}"),
+			}
+		}
+		assert!(saw_rename && saw_replace, "got: {folded:?}");
+	}
+
+	#[test]
+	fn fold_renames_does_not_pair_when_bodies_completely_differ() {
+		// No structural overlap — bodies share no key paths, so the fuzzy
+		// pre-gate (key_jaccard ≥ 0.3) rejects the candidate and the
+		// Remove/Insert pair stays separate to feed the regular conflict
+		// resolver.
+		let removed = assignment(
+			"old_entity",
+			AstValue::Block {
+				items: vec![
+					assignment("alpha", scalar("aaa")),
+					assignment("beta", scalar("bbb")),
+				],
+				span: dummy_span(),
+			},
+		);
+		let inserted = assignment(
+			"new_entity",
+			AstValue::Block {
+				items: vec![
+					assignment("zeta", scalar("zzz")),
+					assignment("omega", scalar("ooo")),
+				],
+				span: dummy_span(),
+			},
+		);
+		let patches = vec![
+			ClausewitzPatch::RemoveNode {
+				path: vec![],
+				key: "old_entity".into(),
+				removed,
+			},
+			ClausewitzPatch::InsertNode {
+				path: vec![],
+				key: "new_entity".into(),
+				statement: inserted,
 			},
 		];
 		let folded = fold_renames(patches);
