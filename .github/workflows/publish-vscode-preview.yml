@@ -53,6 +53,9 @@ jobs:
         run: bun install --frozen-lockfile
         working-directory: .
 
+      - name: Build bundled server
+        run: bun run prepare:server
+
       - name: Publish pre-release extension
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}

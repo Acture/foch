@@ -55,7 +55,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release binaries
-        run: cargo build --release --locked --bin foch --bin foch_lsp
+        run: cargo build --release --locked --bin foch
 
       - name: Package Unix archive
         if: runner.os != 'Windows'
@@ -63,8 +63,7 @@ jobs:
         run: |
           mkdir -p dist/bin
           cp target/release/foch dist/bin/
-          cp target/release/foch_lsp dist/bin/
-          tar -C dist/bin -czf "dist/foch-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}" foch foch_lsp
+          tar -C dist/bin -czf "dist/foch-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}" foch
 
       - name: Package Windows archive
         if: runner.os == 'Windows'
@@ -73,7 +72,6 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           New-Item -ItemType Directory -Force dist/bin | Out-Null
           Copy-Item target/release/foch.exe dist/bin/
-          Copy-Item target/release/foch_lsp.exe dist/bin/
           Compress-Archive -Path dist/bin/* -DestinationPath "dist/foch-${{ steps.meta.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}" -Force
 
       - name: Upload CLI artifact
