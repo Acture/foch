@@ -2,11 +2,10 @@
 //!
 //! Paradox engines historically write `.txt` (and `.csv` / `.yml`) files
 //! in **windows-1252** for the bundled vanilla content, while modern mods
-//! often save files as **UTF-8** (with or without BOM). A few translation
-//! mods (notably Chinese ones) emit GBK / GB18030, which we decode
-//! self-consistently as windows-1252 — readability is the localiser's
-//! responsibility; what matters here is that the same bytes always
-//! produce the same logical string so AST equivalence checks converge.
+//! often save files as **UTF-8** (with or without BOM). Chinese
+//! translation mods commonly emit **GBK** / **GB18030**; we detect those
+//! before falling back to windows-1252 so the rendered output matches the
+//! original characters in-game instead of producing mojibake.
 //!
 //! `decode_paradox_bytes` is the single funnel for all
 //! Paradox-script-flavoured byte → string conversion in the workspace.
@@ -15,7 +14,7 @@
 
 use std::borrow::Cow;
 
-use encoding_rs::WINDOWS_1252;
+use encoding_rs::{GB18030, WINDOWS_1252};
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 const UTF16_LE_BOM: [u8; 2] = [0xFF, 0xFE];
@@ -25,16 +24,13 @@ const UTF16_BE_BOM: [u8; 2] = [0xFE, 0xFF];
 ///
 /// Algorithm:
 /// 1. Strip a leading UTF-8 BOM and decode as strict UTF-8.
-/// 2. Strip a leading UTF-16 BOM and decode via `encoding_rs`
-///    (replacement-char fallback on invalid sequences).
-/// 3. Try strict UTF-8 (the modern mod default) and return borrowed
-///    if successful — this is the hot path and avoids allocation.
-/// 4. Fall back to **windows-1252**, the canonical Paradox encoding.
-///
-/// Step 4 is intentionally lossless for any byte sequence: every byte
-/// 0x00..=0xFF maps to a defined codepoint in windows-1252, so the
-/// returned `String` is well-formed and the function never returns
-/// replacement characters from the fallback path.
+/// 2. Strip a leading UTF-16 BOM and decode via `encoding_rs`.
+/// 3. Try strict UTF-8 (the modern mod default) — borrowed if successful.
+/// 4. If the byte stream looks like GBK / GB18030 (plausible
+///    double-byte CJK sequences without invalid combinations), decode
+///    accordingly. GB18030 is a strict superset of GBK so the same
+///    decoder handles both.
+/// 5. Fall back to **windows-1252**, the canonical Paradox encoding.
 pub fn decode_paradox_bytes(bytes: &[u8]) -> Cow<'_, str> {
 	if let Some(rest) = bytes.strip_prefix(UTF8_BOM.as_slice()) {
 		return Cow::Owned(String::from_utf8_lossy(rest).into_owned());
@@ -50,8 +46,45 @@ pub fn decode_paradox_bytes(bytes: &[u8]) -> Cow<'_, str> {
 	if let Ok(text) = std::str::from_utf8(bytes) {
 		return Cow::Borrowed(text);
 	}
+	if looks_like_gb18030(bytes) {
+		let (decoded, _, had_errors) = GB18030.decode(bytes);
+		if !had_errors {
+			return Cow::Owned(decoded.into_owned());
+		}
+	}
 	let (decoded, _, _) = WINDOWS_1252.decode(bytes);
 	Cow::Owned(decoded.into_owned())
+}
+
+/// Heuristic: are the high-byte sequences in `bytes` overwhelmingly
+/// plausible GBK / GB18030 double-byte CJK pairs? Requires every high byte
+/// to start a valid double-byte (lead 0x81..=0xFE, trail 0x40..=0xFE
+/// excluding 0x7F) AND at least two such pairs to be present, so a
+/// windows-1252 sentence with a single accented character (e.g.
+/// "Bragança" — bytes `\xe7\x61`) doesn't get mis-routed to GBK and
+/// rendered as "閺癨".
+fn looks_like_gb18030(bytes: &[u8]) -> bool {
+	let mut i = 0;
+	let mut double_byte_pairs = 0usize;
+	while i < bytes.len() {
+		let byte = bytes[i];
+		if byte < 0x80 {
+			i += 1;
+			continue;
+		}
+		if !(0x81..=0xFE).contains(&byte) {
+			return false;
+		}
+		let Some(&trail) = bytes.get(i + 1) else {
+			return false;
+		};
+		if !(0x40..=0xFE).contains(&trail) || trail == 0x7F {
+			return false;
+		}
+		double_byte_pairs += 1;
+		i += 2;
+	}
+	double_byte_pairs >= 2
 }
 
 #[cfg(test)]
@@ -112,13 +145,24 @@ mod tests {
 	}
 
 	#[test]
-	fn gbk_bytes_round_trip_self_consistently() {
-		// GBK encoding for "凯瑟琳" — invalid UTF-8, falls back to
-		// windows-1252. We only assert idempotence: same bytes always
-		// produce the same string.
+	fn gbk_bytes_decode_to_chinese_characters() {
+		// GBK encoding for "凯瑟琳". Strict UTF-8 fails; we now detect the
+		// double-byte CJK shape and decode via GB18030 instead of letting
+		// the windows-1252 fallback emit mojibake.
 		let bytes = b"\xbf\xad\xc9\xaa\xc1\xd5";
-		let first = decode_paradox_bytes(bytes).into_owned();
-		let second = decode_paradox_bytes(bytes).into_owned();
-		assert_eq!(first, second);
+		let decoded = decode_paradox_bytes(bytes);
+		assert_eq!(decoded, "凯瑟琳");
+		// Idempotence: re-decoding the same bytes always yields the same
+		// string (downstream AST-equality checks rely on this).
+		assert_eq!(decode_paradox_bytes(bytes), decoded);
+	}
+
+	#[test]
+	fn windows_1252_only_path_still_falls_back() {
+		// Bytes that are NOT plausible GBK leads (e.g. a single 0xE7 with
+		// no trail byte fitting GBK) must still decode losslessly via
+		// windows-1252.
+		let bytes = b"\xe7";
+		assert_eq!(decode_paradox_bytes(bytes), "ç");
 	}
 }
