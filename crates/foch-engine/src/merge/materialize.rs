@@ -31,13 +31,17 @@ use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
+use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
+use std::io::IsTerminal;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Clone, Debug)]
 pub(crate) struct MergeMaterializeOptions {
@@ -70,15 +74,27 @@ pub(crate) fn materialize_merge_internal(
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
 
-	let plan = match resolve_workspace(&request, options.include_game_base) {
-		Ok(workspace) => build_merge_plan_from_workspace(&workspace, options.include_game_base),
-		Err(_) => crate::run_merge_plan_with_options(
-			request.clone(),
-			MergePlanOptions {
-				include_game_base: options.include_game_base,
-			},
-		),
-	};
+	let plan = stage_log_with("build_merge_plan", || {
+		let plan = match resolve_workspace(&request, options.include_game_base) {
+			Ok(workspace) => build_merge_plan_from_workspace(&workspace, options.include_game_base),
+			Err(_) => crate::run_merge_plan_with_options(
+				request.clone(),
+				MergePlanOptions {
+					include_game_base: options.include_game_base,
+				},
+			),
+		};
+		let summary = format!(
+			"total_paths={} copy_through={} last_writer_overlay={} structural_merge={} localisation_merge={} manual_conflict={}",
+			plan.strategies.total_paths,
+			plan.strategies.copy_through,
+			plan.strategies.last_writer_overlay,
+			plan.strategies.structural_merge,
+			plan.strategies.localisation_merge,
+			plan.strategies.manual_conflict,
+		);
+		(plan, Some(summary))
+	});
 	report.manual_conflict_count = plan.strategies.manual_conflict;
 
 	if plan.has_fatal_errors() {
@@ -87,11 +103,26 @@ pub(crate) fn materialize_merge_internal(
 		return Ok(report);
 	}
 
-	let workspace = resolve_workspace(&request, options.include_game_base)?;
-	let (mod_dag, dag_diagnostics) = build_mod_dag(&workspace.mods);
+	let workspace = stage_log_with("resolve_workspace", || {
+		let workspace = resolve_workspace(&request, options.include_game_base);
+		let summary = workspace
+			.as_ref()
+			.ok()
+			.map(|w| format!("mods={} files={}", w.mods.len(), w.file_inventory.len()));
+		(workspace, summary)
+	})?;
+	let (mod_dag, dag_diagnostics) = stage_log_with("build_mod_dag", || {
+		let (dag, diags) = build_mod_dag(&workspace.mods);
+		let summary = format!("nodes={} diagnostics={}", dag.topo().len(), diags.len());
+		((dag, diags), Some(summary))
+	});
 	record_dag_diagnostics(&mut report, &dag_diagnostics);
 	let analyzer_context = dependency_misuse_context(&workspace);
-	report.dep_misuse = detect_dependency_misuse(&analyzer_context);
+	report.dep_misuse = stage_log_with("dependency_misuse_detection", || {
+		let findings = detect_dependency_misuse(&analyzer_context);
+		let summary = format!("findings={}", findings.len());
+		(findings, Some(summary))
+	});
 	if let Some(game_version) = workspace_game_version(&workspace) {
 		report.version_mismatch = detect_version_mismatch(&analyzer_context, game_version);
 	}
@@ -124,7 +155,13 @@ pub(crate) fn materialize_merge_internal(
 	let mod_display_names = workspace_mod_display_names(&workspace);
 	let emit_options = load_emit_options(&request)?;
 
+	let materialize_started = Instant::now();
+	let total_paths = plan.paths.len();
+	eprintln!("[merge] materialize: start (total_paths={total_paths})");
+	let mut materialize_progress = MaterializeProgress::new(total_paths);
+
 	for entry in &plan.paths {
+		materialize_progress.tick();
 		match entry.strategy {
 			MergePlanStrategy::CopyThrough => {
 				copy_winner_file(&workspace, entry, out_dir)?;
@@ -306,6 +343,15 @@ pub(crate) fn materialize_merge_internal(
 			}
 		}
 	}
+	materialize_progress.finish();
+	eprintln!(
+		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} noop_skipped={}",
+		materialize_started.elapsed().as_millis(),
+		report.generated_file_count,
+		report.copied_file_count,
+		report.overlay_file_count,
+		report.noop_skipped_file_count
+	);
 
 	// Namespace conflict warnings (skipped for large workspaces to avoid
 	// excessive parsing; will be done incrementally by the LSP).
@@ -833,6 +879,7 @@ fn patch_based_structural_merge(
 	let mut effective_map = context.resolution_map.clone();
 	let mut dag_patches =
 		run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
+	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
 
 	if !dag_patches.merge_result.conflicts.is_empty() && interactive_prompt_enabled() {
 		let survivors: Vec<(PatchAddress, PatchConflict)> = dag_patches
@@ -855,10 +902,14 @@ fn patch_based_structural_merge(
 			})
 			.collect();
 		if !survivors.is_empty() {
+			let vanilla_lookup = |address: &PatchAddress| -> Option<String> {
+				vanilla_snippet_for_address(vanilla.as_ref(), address, context.emit_options)
+			};
 			let prompt = prompt_survivors_and_persist(
 				Path::new(target_path),
 				&survivors,
 				context.mod_display_names,
+				&vanilla_lookup,
 			);
 			let mut new_picks = 0usize;
 			for outcome in prompt.outcomes {
@@ -882,7 +933,6 @@ fn patch_based_structural_merge(
 		}
 	}
 
-	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
 	let stale_vanilla_targets = collect_stale_vanilla_targets(
 		target_path,
 		&dag_patches.mod_patches,
@@ -977,6 +1027,73 @@ fn run_patch_merge_engine(
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
 	})
+}
+
+fn vanilla_snippet_for_address(
+	vanilla: Option<&ParsedScriptFile>,
+	address: &PatchAddress,
+	emit_options: &EmitOptions,
+) -> Option<String> {
+	let vanilla = vanilla?;
+	let statements = vanilla_statements_at_address(&vanilla.ast.statements, address);
+	Some(match statements {
+		Some(statements) if !statements.is_empty() => {
+			emit_clausewitz_statements_with_options(&statements, emit_options)
+				.unwrap_or_else(|err| format!("(failed to render vanilla snippet: {err})"))
+		}
+		_ => "(key not present in vanilla)".to_string(),
+	})
+}
+
+fn vanilla_statements_at_address(
+	statements: &[AstStatement],
+	address: &PatchAddress,
+) -> Option<Vec<AstStatement>> {
+	let mut current = statements;
+	for segment in &address.path {
+		current = current.iter().find_map(|statement| match statement {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} if key == segment => Some(items.as_slice()),
+			_ => None,
+		})?;
+	}
+
+	let Some(key) = vanilla_address_lookup_key(&address.key) else {
+		return Some(current.to_vec());
+	};
+	if key.is_empty() {
+		return Some(current.to_vec());
+	}
+
+	let matches = current
+		.iter()
+		.filter(|statement| {
+			matches!(statement, AstStatement::Assignment { key: statement_key, .. } if statement_key == key)
+		})
+		.cloned()
+		.collect::<Vec<_>>();
+	(!matches.is_empty()).then_some(matches)
+}
+
+fn vanilla_address_lookup_key(address_key: &str) -> Option<&str> {
+	if let Some(rest) = address_key.strip_prefix("__node__::") {
+		return rest.split("::").next();
+	}
+	if let Some(rest) = address_key.strip_prefix("__list_item__::") {
+		return rest.split("::").next();
+	}
+	if let Some(rest) = address_key.strip_prefix("__rename__::") {
+		return Some(rest);
+	}
+	if address_key.starts_with("__append_block_item__::")
+		|| address_key.starts_with("__remove_block_item__::")
+	{
+		return None;
+	}
+	Some(address_key)
 }
 
 fn parse_vanilla_for_stale_detection(
@@ -1352,6 +1469,83 @@ fn is_text_placeholder_path(path: &str) -> bool {
 	)
 }
 
+/// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
+/// on stderr. The closure can return `(value, Option<summary>)`; the summary, if
+/// any, is appended to the `done` line as space-separated `kv=value` pairs.
+fn stage_log_with<F, T>(name: &str, f: F) -> T
+where
+	F: FnOnce() -> (T, Option<String>),
+{
+	eprintln!("[merge] {name}: start");
+	let started = Instant::now();
+	let (value, summary) = f();
+	let elapsed_ms = started.elapsed().as_millis();
+	match summary {
+		Some(s) => eprintln!("[merge] {name}: done elapsed_ms={elapsed_ms} {s}"),
+		None => eprintln!("[merge] {name}: done elapsed_ms={elapsed_ms}"),
+	}
+	value
+}
+
+/// In-place per-file counter for the materialize loop. On a TTY, refreshes the
+/// same line via `\r`; off a TTY, prints a fresh line every `TICK_EVERY` items
+/// so piped logs stay readable.
+struct MaterializeProgress {
+	total: usize,
+	current: usize,
+	tty: bool,
+	last_tick: Instant,
+}
+
+impl MaterializeProgress {
+	const TICK_EVERY: usize = 200;
+	const TICK_INTERVAL_MS: u128 = 200;
+
+	fn new(total: usize) -> Self {
+		Self {
+			total,
+			current: 0,
+			tty: io::stderr().is_terminal(),
+			last_tick: Instant::now(),
+		}
+	}
+
+	fn tick(&mut self) {
+		self.current += 1;
+		let last_ms = self.last_tick.elapsed().as_millis();
+		let due_by_count = self.current.is_multiple_of(Self::TICK_EVERY);
+		let due_by_time = last_ms >= Self::TICK_INTERVAL_MS;
+		if !(due_by_count || due_by_time) {
+			return;
+		}
+		self.last_tick = Instant::now();
+		let pct = (self.current * 100).checked_div(self.total).unwrap_or(100);
+		let stderr = io::stderr();
+		let mut handle = stderr.lock();
+		if self.tty {
+			let _ = write!(
+				handle,
+				"\r[merge] materialize: {}/{} files ({pct}%)        ",
+				self.current, self.total
+			);
+		} else {
+			let _ = writeln!(
+				handle,
+				"[merge] materialize: {}/{} files ({pct}%)",
+				self.current, self.total
+			);
+		}
+		let _ = handle.flush();
+	}
+
+	fn finish(&mut self) {
+		if self.tty {
+			// Clear the in-place line so the trailing `done` line starts fresh.
+			let _ = writeln!(io::stderr());
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{MergeMaterializeOptions, materialize_merge_internal};
@@ -1367,10 +1561,22 @@ mod tests {
 		MergeReportConflictKind, MergeReportStatus, ModCandidate,
 	};
 	use serde_json::json;
+	use std::cell::Cell;
 	use std::collections::{BTreeMap, HashMap, HashSet};
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
+
+	#[test]
+	fn stage_log_with_invokes_closure_exactly_once_and_returns_value() {
+		let calls = Cell::new(0u32);
+		let value = super::stage_log_with("test_stage", || {
+			calls.set(calls.get() + 1);
+			(42i32, Some("k=v".to_string()))
+		});
+		assert_eq!(calls.get(), 1, "closure must run exactly once");
+		assert_eq!(value, 42, "stage_log_with must return the closure's value");
+	}
 
 	fn descriptor_path_value(path: &Path) -> String {
 		path.to_string_lossy()

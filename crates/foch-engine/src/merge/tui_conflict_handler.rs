@@ -9,7 +9,7 @@ use crossterm::terminal::{
 	EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use foch_core::config::compute_conflict_id;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
+use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -22,6 +22,7 @@ use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 use super::conflict_handler::{
 	ConfigWriter, ConflictDecision, ConflictHandler, resolution_entry_for_decision,
 };
+use super::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use super::patch::ClausewitzPatch;
 use super::patch_merge::{PatchAddress, PatchConflict};
 
@@ -29,6 +30,11 @@ const ACTION_COUNT: usize = 4;
 const MAX_SUMMARY_CHARS: usize = 80;
 const MAX_CHILD_PREVIEW_ENTRIES: usize = 3;
 const MAX_RENDERED_SUMMARY_LINES: usize = 4;
+const MAX_SNIPPET_LINES: usize = 8;
+const MAX_SNIPPET_LINE_CHARS: usize = 80;
+const MAX_SNIPPET_SECTION_HEIGHT: u16 = 10;
+const MIN_SNIPPET_SECTION_HEIGHT: u16 = 3;
+const NO_VANILLA_SNIPPET: &str = "(no vanilla file at this address)";
 /// Cap how many wrapped lines `reason: …` may consume in the conflict header.
 /// Long sibling-conflict messages that enumerate every divergent value can run
 /// hundreds of characters; capping keeps the candidate list visible on small
@@ -50,6 +56,7 @@ struct ConflictCandidate {
 	display_name: String,
 	precedence: usize,
 	summary: Vec<String>,
+	projected_snippet: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -61,6 +68,7 @@ pub struct ConflictResolver {
 	address_path: Vec<String>,
 	reason: String,
 	conflict_id: String,
+	vanilla_snippet: Option<String>,
 	candidates: Vec<ConflictCandidate>,
 	selected_index: usize,
 }
@@ -76,6 +84,7 @@ impl ConflictResolver {
 		current_idx: usize,
 		total: usize,
 		deferred_so_far: usize,
+		vanilla_snippet: Option<String>,
 	) -> Self {
 		let candidates: Vec<ConflictCandidate> = conflict
 			.patches
@@ -89,6 +98,7 @@ impl ConflictResolver {
 					.unwrap_or_else(|| patch.mod_id.clone()),
 				precedence: patch.precedence,
 				summary: concise_patch_summary(&patch.patch),
+				projected_snippet: projected_patch_snippet(&patch.patch),
 			})
 			.collect();
 		let mut address_path = address.path.clone();
@@ -107,6 +117,9 @@ impl ConflictResolver {
 			address_path,
 			reason: conflict.reason.clone(),
 			conflict_id: conflict_id.to_string(),
+			vanilla_snippet: vanilla_snippet.map(|snippet| {
+				truncate_rendered_snippet(&snippet, MAX_SNIPPET_LINES, MAX_SNIPPET_LINE_CHARS)
+			}),
 			candidates,
 			selected_index: default_selected,
 		}
@@ -262,7 +275,7 @@ impl Widget for &ConflictResolver {
 				width: inner.width,
 				height: bottom_separator_y.saturating_sub(top_separator_y + 1),
 			};
-			render_choice_list(self, buf, list_area);
+			render_context_sections_and_actions(self, buf, list_area);
 		}
 
 		draw_separator(buf, area, bottom_separator_y);
@@ -283,6 +296,7 @@ pub struct InteractiveTuiHandler {
 	current_conflict_index: usize,
 	total_conflicts: usize,
 	deferred_so_far: usize,
+	vanilla_snippet: Option<String>,
 }
 
 impl InteractiveTuiHandler {
@@ -293,6 +307,7 @@ impl InteractiveTuiHandler {
 		current_conflict_index: usize,
 		total_conflicts: usize,
 		deferred_so_far: usize,
+		vanilla_snippet: Option<String>,
 	) -> Self {
 		Self {
 			current_file,
@@ -301,6 +316,7 @@ impl InteractiveTuiHandler {
 			current_conflict_index,
 			total_conflicts,
 			deferred_so_far,
+			vanilla_snippet,
 		}
 	}
 
@@ -352,6 +368,7 @@ impl ConflictHandler for InteractiveTuiHandler {
 			self.current_conflict_index,
 			self.total_conflicts,
 			self.deferred_so_far,
+			self.vanilla_snippet.clone(),
 		);
 
 		let action = match run_resolver(&mut resolver) {
@@ -508,6 +525,192 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 	horizontal[1]
 }
 
+fn render_context_sections_and_actions(resolver: &ConflictResolver, buf: &mut Buffer, area: Rect) {
+	if area.height == 0 {
+		return;
+	}
+
+	let action_height = (ACTION_COUNT as u16 + 1).min(area.height);
+	let sections_height = area.height.saturating_sub(action_height);
+	if sections_height > 0 {
+		let sections_area = Rect {
+			x: area.x,
+			y: area.y,
+			width: area.width,
+			height: sections_height,
+		};
+		render_snippet_sections(resolver, buf, sections_area);
+	}
+
+	if action_height > 0 {
+		let action_area = Rect {
+			x: area.x,
+			y: area.y + sections_height,
+			width: area.width,
+			height: action_height,
+		};
+		render_action_rows(resolver, buf, action_area);
+	}
+}
+
+#[derive(Debug)]
+struct SnippetSection {
+	title: String,
+	body: String,
+	body_style: Style,
+	border_style: Style,
+	height: u16,
+}
+
+fn render_snippet_sections(resolver: &ConflictResolver, buf: &mut Buffer, area: Rect) {
+	if area.height == 0 {
+		return;
+	}
+
+	let mut sections = Vec::new();
+	let mut remaining = area.height;
+	let mut hidden_candidates = 0usize;
+
+	if remaining >= MIN_SNIPPET_SECTION_HEIGHT {
+		let vanilla_absent = resolver.vanilla_snippet.is_none();
+		let body = resolver
+			.vanilla_snippet
+			.clone()
+			.unwrap_or_else(|| NO_VANILLA_SNIPPET.to_string());
+		let height = snippet_section_height(&body).min(remaining);
+		sections.push(SnippetSection {
+			title: "vanilla baseline".to_string(),
+			body,
+			body_style: if vanilla_absent {
+				Style::default().fg(Color::DarkGray)
+			} else {
+				Style::default()
+			},
+			border_style: Style::default(),
+			height,
+		});
+		remaining = remaining.saturating_sub(height);
+	} else {
+		hidden_candidates = resolver.candidates.len();
+	}
+
+	if hidden_candidates == 0 {
+		for (index, candidate) in resolver.candidates.iter().enumerate() {
+			if remaining < MIN_SNIPPET_SECTION_HEIGHT {
+				hidden_candidates = resolver.candidates.len().saturating_sub(index);
+				break;
+			}
+
+			let desired_height = snippet_section_height(&candidate.projected_snippet);
+			if index + 1 < resolver.candidates.len() && remaining <= desired_height {
+				hidden_candidates = resolver.candidates.len().saturating_sub(index);
+				break;
+			}
+
+			let selected = resolver.selected_index == index;
+			let height = desired_height.min(remaining);
+			sections.push(SnippetSection {
+				title: format!(
+					"[{}] {} ({}, prec {})",
+					index + 1,
+					candidate.display_name,
+					candidate.mod_id,
+					candidate.precedence
+				),
+				body: candidate.projected_snippet.clone(),
+				body_style: Style::default(),
+				border_style: if selected {
+					Style::default()
+						.fg(Color::Cyan)
+						.add_modifier(Modifier::BOLD)
+				} else {
+					Style::default()
+				},
+				height,
+			});
+			remaining = remaining.saturating_sub(height);
+		}
+	}
+
+	let hidden_line_height = u16::from(hidden_candidates > 0 && remaining > 0);
+	let layout_height = sections
+		.iter()
+		.map(|section| section.height)
+		.sum::<u16>()
+		.saturating_add(hidden_line_height);
+	if layout_height == 0 {
+		return;
+	}
+
+	let constraints = sections
+		.iter()
+		.map(|section| Constraint::Min(section.height))
+		.chain((hidden_line_height > 0).then_some(Constraint::Length(1)))
+		.collect::<Vec<_>>();
+	let layout_area = Rect {
+		x: area.x,
+		y: area.y,
+		width: area.width,
+		height: layout_height.min(area.height),
+	};
+	let chunks = Layout::default()
+		.direction(Direction::Vertical)
+		.constraints(constraints)
+		.split(layout_area);
+
+	for (section, chunk) in sections.iter().zip(chunks.iter()) {
+		render_snippet_section(section, buf, *chunk);
+	}
+	if hidden_candidates > 0
+		&& hidden_line_height > 0
+		&& let Some(chunk) = chunks.get(sections.len())
+	{
+		write_line(
+			buf,
+			*chunk,
+			chunk.y,
+			&format!("({hidden_candidates} more candidates not shown — resize terminal)"),
+			Style::default().fg(Color::DarkGray),
+		);
+	}
+}
+
+fn snippet_section_height(snippet: &str) -> u16 {
+	let line_count = snippet.lines().count().max(1) as u16;
+	line_count
+		.saturating_add(2)
+		.clamp(MIN_SNIPPET_SECTION_HEIGHT, MAX_SNIPPET_SECTION_HEIGHT)
+}
+
+fn render_snippet_section(section: &SnippetSection, buf: &mut Buffer, area: Rect) {
+	if area.width == 0 || area.height == 0 {
+		return;
+	}
+	let block = Block::default()
+		.title(format!(" {} ", section.title))
+		.borders(Borders::ALL)
+		.border_style(section.border_style);
+	let inner = block.inner(area);
+	block.render(area, buf);
+	if inner.width == 0 || inner.height == 0 {
+		return;
+	}
+	Paragraph::new(section.body.clone())
+		.style(section.body_style)
+		.render(inner, buf);
+}
+
+fn render_action_rows(resolver: &ConflictResolver, buf: &mut Buffer, area: Rect) {
+	for (row, line) in action_choice_lines(resolver)
+		.into_iter()
+		.take(area.height as usize)
+		.enumerate()
+	{
+		write_line(buf, area, area.y + row as u16, &line.text, line.style);
+	}
+}
+
+#[allow(dead_code)]
 fn render_choice_list(resolver: &ConflictResolver, buf: &mut Buffer, area: Rect) {
 	let lines = choice_lines(resolver);
 	let selected_line = lines
@@ -562,11 +765,19 @@ fn choice_lines(resolver: &ConflictResolver) -> Vec<ChoiceLine> {
 			});
 		}
 	}
-	lines.push(ChoiceLine {
+	lines.extend(action_choice_lines(resolver));
+	lines
+}
+
+fn action_choice_lines(resolver: &ConflictResolver) -> Vec<ChoiceLine> {
+	let selected_style = Style::default()
+		.fg(Color::Yellow)
+		.add_modifier(Modifier::BOLD);
+	let mut lines = vec![ChoiceLine {
 		item_index: None,
 		text: "  ─────".to_string(),
 		style: Style::default().fg(Color::DarkGray),
-	});
+	}];
 	for (offset, label) in [
 		"[d] defer (skip; record in report)",
 		"[s] use external file (paste a path)",
@@ -682,6 +893,125 @@ fn estimate_wrapped_line_count(text: &str, width: u16) -> usize {
 		total = total.saturating_add(segment_lines);
 	}
 	total.max(1)
+}
+
+fn projected_patch_snippet(patch: &ClausewitzPatch) -> String {
+	let rendered = match render_projected_patch_snippet(patch) {
+		Ok(rendered) => rendered,
+		Err(err) => format!("(failed to render patch: {err})"),
+	};
+	truncate_rendered_snippet(&rendered, MAX_SNIPPET_LINES, MAX_SNIPPET_LINE_CHARS)
+}
+
+fn render_projected_patch_snippet(
+	patch: &ClausewitzPatch,
+) -> Result<String, super::error::MergeError> {
+	match patch {
+		ClausewitzPatch::SetValue { key, new_value, .. } => {
+			emit_statement_snippet(&assignment(key, new_value.clone()))
+		}
+		ClausewitzPatch::ReplaceBlock { new_statement, .. } => {
+			emit_statement_snippet(new_statement)
+		}
+		ClausewitzPatch::InsertNode { statement, .. } => emit_statement_snippet(statement),
+		ClausewitzPatch::RemoveNode { .. } => Ok("(removed)".to_string()),
+		ClausewitzPatch::AppendListItem { value, .. }
+		| ClausewitzPatch::AppendBlockItem { value, .. } => render_prefixed_value("(appends)", value),
+		ClausewitzPatch::RemoveListItem { value, .. }
+		| ClausewitzPatch::RemoveBlockItem { value, .. } => render_prefixed_value("(removes)", value),
+		ClausewitzPatch::Rename {
+			old_key, new_key, ..
+		} => Ok(format!("(renames \"{old_key}\" -> \"{new_key}\")")),
+	}
+}
+
+fn emit_statement_snippet(statement: &AstStatement) -> Result<String, super::error::MergeError> {
+	emit_clausewitz_statements_with_options(
+		std::slice::from_ref(statement),
+		&EmitOptions::default(),
+	)
+}
+
+fn render_prefixed_value(
+	prefix: &str,
+	value: &AstValue,
+) -> Result<String, super::error::MergeError> {
+	let rendered = emit_clausewitz_statements_with_options(
+		&[AstStatement::Item {
+			value: value.clone(),
+			span: synthetic_span(),
+		}],
+		&EmitOptions::default(),
+	)?;
+	Ok(format!("{prefix} {}", rendered.trim_end()))
+}
+
+fn assignment(key: &str, value: AstValue) -> AstStatement {
+	AstStatement::Assignment {
+		key: key.to_string(),
+		key_span: synthetic_span(),
+		value,
+		span: synthetic_span(),
+	}
+}
+
+fn synthetic_span() -> SpanRange {
+	SpanRange {
+		start: Span {
+			line: 0,
+			column: 0,
+			offset: 0,
+		},
+		end: Span {
+			line: 0,
+			column: 0,
+			offset: 0,
+		},
+	}
+}
+
+fn truncate_rendered_snippet(input: &str, max_lines: usize, max_chars: usize) -> String {
+	if max_lines == 0 {
+		return String::new();
+	}
+	let trimmed = input.trim_end_matches(['\r', '\n']);
+	let lines = trimmed.lines().collect::<Vec<_>>();
+	if lines.is_empty() {
+		return String::new();
+	}
+
+	let exceeds_lines = lines.len() > max_lines;
+	let keep_lines = if exceeds_lines {
+		max_lines.saturating_sub(1)
+	} else {
+		lines.len()
+	};
+	let mut rendered = lines
+		.iter()
+		.take(keep_lines)
+		.map(|line| truncate_snippet_line(line, max_chars))
+		.collect::<Vec<_>>();
+	if exceeds_lines {
+		rendered.push(format!(
+			"… ({} more lines)",
+			lines.len().saturating_sub(keep_lines)
+		));
+	}
+	rendered.join("\n")
+}
+
+fn truncate_snippet_line(line: &str, max_chars: usize) -> String {
+	if max_chars == 0 {
+		return "…".to_string();
+	}
+	if line.chars().count() <= max_chars {
+		return line.to_string();
+	}
+	let truncated = line
+		.chars()
+		.take(max_chars.saturating_sub(1))
+		.collect::<String>();
+	format!("{truncated}…")
 }
 
 fn concise_patch_summary(patch: &ClausewitzPatch) -> Vec<String> {
@@ -998,6 +1328,14 @@ mod tests {
 			.collect()
 	}
 
+	fn assert_line_contains(lines: &[String], expected: &str) {
+		assert!(
+			lines.iter().any(|line| line.contains(expected)),
+			"expected a rendered line to contain {expected:?}; got:\n{}",
+			lines.join("\n")
+		);
+	}
+
 	#[test]
 	fn render_conflict_resolver_into_buffer() {
 		let resolver = ConflictResolver::new(
@@ -1009,70 +1347,172 @@ mod tests {
 			1,
 			30,
 			0,
+			Some("name = \"old\"\n".to_string()),
 		);
-		let area = Rect::new(0, 0, 76, 19);
+		let area = Rect::new(0, 0, 76, 30);
 		let mut actual = Buffer::empty(area);
 		Widget::render(&resolver, area, &mut actual);
 		let actual_lines = buffer_lines(&actual);
 
-		// Gauge content (line 1) is checked separately via render_progress_gauge_*
-		// tests because its exact block-fill symbols are sensitive to ratatui's
-		// internal partial-cell glyph table. Confirm the structural rest.
-		let rest = [
-			actual_lines[0].as_str(),
-			actual_lines[2].as_str(),
-			actual_lines[3].as_str(),
-			actual_lines[4].as_str(),
-			actual_lines[5].as_str(),
-			actual_lines[6].as_str(),
-			actual_lines[7].as_str(),
-			actual_lines[8].as_str(),
-			actual_lines[9].as_str(),
-			actual_lines[10].as_str(),
-			actual_lines[11].as_str(),
-			actual_lines[12].as_str(),
-			actual_lines[13].as_str(),
-			actual_lines[14].as_str(),
-			actual_lines[15].as_str(),
-			actual_lines[16].as_str(),
-			actual_lines[17].as_str(),
-			actual_lines[18].as_str(),
-		];
-		let expected = [
-			"┌ foch merge: conflict 1/30 ───────────────────────────────────────────────┐",
-			"│events/FlavorFRA.txt                                                      │",
-			"│  flavor_fra.3135 / option / define_advisor / name                        │",
-			"│                                                                          │",
-			"│reason: sibling mods set the same scalar to divergent values              │",
-			"├──────────────────────────────────────────────────────────────────────────┤",
-			"│  [1] Europa Expanded (2164202838, prec 0)                                │",
-			"│      set \"name\": \"old\" → \"Charles-Francois de Broglie\"                   │",
-			"│  [2] Chinese Language Supp. (1999055990, prec 2)                         │",
-			"│      set \"name\": \"old\" → \"Chinese localization\"                          │",
-			"│  ─────                                                                   │",
-			"│❯ [d] defer (skip; record in report)                                      │",
-			"│  [s] use external file (paste a path)                                    │",
-			"│  [k] keep existing file in out dir (don't overwrite)                     │",
-			"│  [q] abort merge                                                         │",
-			"├──────────────────────────────────────────────────────────────────────────┤",
-			"│↑↓ select  Enter confirm  Esc/d defer  Q abort  S file  K keep            │",
-			"└──────────────────────────────────────────────────────────────────────────┘",
-		];
-		assert_eq!(rest, expected);
-
-		// Gauge line shape: starts with │, ends with │, contains the textual label.
-		let gauge_line = actual_lines[1].as_str();
-		assert!(
-			gauge_line.starts_with('│') && gauge_line.ends_with('│'),
-			"gauge line not bordered: {gauge_line:?}"
+		assert_eq!(
+			actual_lines[0],
+			"┌ foch merge: conflict 1/30 ───────────────────────────────────────────────┐"
 		);
+		let gauge_line = actual_lines[1].as_str();
 		assert!(
 			gauge_line.contains("conflict 1/30"),
 			"gauge missing label: {gauge_line:?}"
 		);
+		assert_line_contains(&actual_lines, "name = \"old\"");
+		assert_line_contains(&actual_lines, "[1] Europa Expanded");
+		assert_line_contains(&actual_lines, "[2] Chinese Language Supp.");
+		assert_line_contains(&actual_lines, "name = \"Charles-Francois de Broglie\"");
+		assert_line_contains(&actual_lines, "name = \"Chinese localization\"");
+		assert_line_contains(&actual_lines, "[d] defer (skip; record in report)");
+		assert_line_contains(&actual_lines, "[s] use external file (paste a path)");
+		assert_line_contains(
+			&actual_lines,
+			"[k] keep existing file in out dir (don't overwrite)",
+		);
+		assert_line_contains(&actual_lines, "[q] abort merge");
+	}
+
+	#[test]
+	fn render_conflict_resolver_without_vanilla_shows_placeholder() {
+		let resolver = ConflictResolver::new(
+			&sample_conflict(),
+			Path::new("events/FlavorFRA.txt"),
+			&sample_address(),
+			"conflict-id",
+			&display_names(),
+			1,
+			2,
+			0,
+			None,
+		);
+		let area = Rect::new(0, 0, 76, 30);
+		let mut actual = Buffer::empty(area);
+		Widget::render(&resolver, area, &mut actual);
+
+		assert_line_contains(&buffer_lines(&actual), NO_VANILLA_SNIPPET);
+	}
+
+	#[test]
+	fn projected_patch_snippet_covers_patch_variants() {
+		let replace_statement = assignment(
+			"option",
+			block(vec![
+				assignment("name", string("A")),
+				assignment("ai_chance", ident("B")),
+			]),
+		);
+		let variants = vec![
+			(
+				ClausewitzPatch::SetValue {
+					path: vec![],
+					key: "name".to_string(),
+					old_value: string("old"),
+					new_value: string("new"),
+				},
+				vec!["name = \"new\""],
+			),
+			(
+				ClausewitzPatch::RemoveNode {
+					path: vec![],
+					key: "owner".to_string(),
+					removed: assignment("owner", ident("FRA")),
+				},
+				vec!["(removed)"],
+			),
+			(
+				ClausewitzPatch::InsertNode {
+					path: vec![],
+					key: "owner".to_string(),
+					statement: assignment("owner", ident("FRA")),
+				},
+				vec!["owner = FRA"],
+			),
+			(
+				ClausewitzPatch::ReplaceBlock {
+					path: vec![],
+					key: "option".to_string(),
+					old_statement: assignment("option", block(vec![])),
+					new_statement: replace_statement,
+				},
+				vec!["option = {", "name = \"A\"", "ai_chance = B"],
+			),
+			(
+				ClausewitzPatch::AppendListItem {
+					path: vec![],
+					key: "tag".to_string(),
+					value: ident("FRA"),
+				},
+				vec!["(appends) FRA"],
+			),
+			(
+				ClausewitzPatch::RemoveListItem {
+					path: vec![],
+					key: "tag".to_string(),
+					value: ident("ENG"),
+				},
+				vec!["(removes) ENG"],
+			),
+			(
+				ClausewitzPatch::AppendBlockItem {
+					path: vec![],
+					value: ident("FRA"),
+				},
+				vec!["(appends) FRA"],
+			),
+			(
+				ClausewitzPatch::RemoveBlockItem {
+					path: vec![],
+					value: ident("ENG"),
+				},
+				vec!["(removes) ENG"],
+			),
+			(
+				ClausewitzPatch::Rename {
+					path: vec![],
+					old_key: "old".to_string(),
+					new_key: "new".to_string(),
+				},
+				vec!["(renames \"old\" -> \"new\")"],
+			),
+		];
+
+		for (patch, expected_parts) in variants {
+			let snippet = projected_patch_snippet(&patch);
+			for expected in expected_parts {
+				assert!(
+					snippet.contains(expected),
+					"snippet {snippet:?} should contain {expected:?}"
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn projected_patch_snippet_truncates_long_blocks() {
+		let items = (0..12)
+			.map(|index| assignment(&format!("entry_{index}"), ident("yes")))
+			.collect::<Vec<_>>();
+		let patch = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "root".to_string(),
+			old_statement: assignment("root", block(vec![])),
+			new_statement: assignment("root", block(items)),
+		};
+
+		let snippet = projected_patch_snippet(&patch);
+		let lines = snippet.lines().collect::<Vec<_>>();
+
+		assert_eq!(lines.len(), MAX_SNIPPET_LINES);
 		assert!(
-			gauge_line.contains("(3%, 0 deferred)"),
-			"gauge missing percent/deferred count: {gauge_line:?}"
+			lines
+				.last()
+				.is_some_and(|line| line.contains("… (") && line.contains("more lines)")),
+			"long snippet should end with a hidden-line count: {snippet:?}"
 		);
 	}
 
@@ -1115,6 +1555,7 @@ mod tests {
 			1,
 			2,
 			0,
+			None,
 		);
 		let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
 		let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
@@ -1153,6 +1594,7 @@ mod tests {
 			1,
 			2,
 			0,
+			None,
 		);
 		let rendered_actions: Vec<String> = choice_lines(&resolver)
 			.into_iter()

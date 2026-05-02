@@ -758,6 +758,7 @@ pub fn prompt_survivors_and_persist(
 	target_path: &Path,
 	survivors: &[(PatchAddress, PatchConflict)],
 	mod_displayname_lookup: &HashMap<String, String>,
+	vanilla_lookup: &dyn Fn(&PatchAddress) -> Option<String>,
 ) -> PromptSurvivorsResult {
 	let settings = interactive_settings();
 	let Some(config_path) = settings.config_path.clone() else {
@@ -775,6 +776,7 @@ pub fn prompt_survivors_and_persist(
 	for (idx, (address, conflict)) in survivors.iter().enumerate() {
 		let current = idx + 1;
 		let conflict_id = compute_conflict_id(target_path, &address.path.join("/"), &address.key);
+		let vanilla_snippet = vanilla_lookup(address);
 		let decision = match mode {
 			InteractiveMode::Tui => {
 				let mut handler = InteractiveTuiHandler::new(
@@ -784,6 +786,7 @@ pub fn prompt_survivors_and_persist(
 					current,
 					total,
 					deferred_so_far,
+					vanilla_snippet,
 				);
 				handler.on_conflict("", address, conflict)
 			}
