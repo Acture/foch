@@ -8,3 +8,4 @@ packages/vscode-foch/*.vsix
 output/
 crates/foch-engine/src/base_data/eu4_data.bin
 test_merge
+local_merge/

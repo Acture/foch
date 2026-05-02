@@ -7,6 +7,12 @@
 			"include": "#comment"
 		},
 		{
+			"include": "#comment_double_dash_block"
+		},
+		{
+			"include": "#comment_double_dash_line"
+		},
+		{
 			"include": "#string"
 		},
 		{
@@ -45,6 +51,15 @@
 					"match": "#.*$"
 				}
 			]
+		},
+		"comment_double_dash_line": {
+			"name": "comment.line.double-dash.foch-eu4",
+			"match": "--.*$"
+		},
+		"comment_double_dash_block": {
+			"name": "comment.block.double-dash.foch-eu4",
+			"begin": "--\\[\\[",
+			"end": "\\]\\]"
 		},
 		"string": {
 			"patterns": [

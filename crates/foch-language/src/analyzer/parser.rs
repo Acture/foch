@@ -122,17 +122,25 @@ struct Lexer<'a> {
 	index: usize,
 	line: usize,
 	column: usize,
+	lua_mode: bool,
+	diagnostics: Vec<ParseDiagnostic>,
 }
 
 impl<'a> Lexer<'a> {
-	fn new(source: &'a str) -> Self {
+	fn new(source: &'a str, lua_mode: bool) -> Self {
 		Self {
 			source,
 			bytes: source.as_bytes(),
 			index: 0,
 			line: 1,
 			column: 1,
+			lua_mode,
+			diagnostics: Vec::new(),
 		}
+	}
+
+	fn take_diagnostics(&mut self) -> Vec<ParseDiagnostic> {
+		std::mem::take(&mut self.diagnostics)
 	}
 
 	fn next_token(&mut self) -> Token {
@@ -207,6 +215,20 @@ impl<'a> Lexer<'a> {
 					},
 				}
 			}
+			b'-' if self.lua_mode && self.peek_byte_at(1) == Some(b'-') => {
+				self.advance_byte();
+				self.advance_byte();
+				let text_start = self.index;
+				self.consume_lua_comment_body(start.clone());
+				let text = self.source[text_start..self.index].trim().to_string();
+				Token {
+					kind: TokenKind::Comment(text),
+					span: SpanRange {
+						start: start.clone(),
+						end: self.current_span(),
+					},
+				}
+			}
 			b'"' => {
 				self.advance_byte();
 				let text_start = self.index;
@@ -253,6 +275,9 @@ impl<'a> Lexer<'a> {
 					if is_token_delimiter(next) {
 						break;
 					}
+					if self.lua_mode && next == b'-' && self.peek_byte_at(1) == Some(b'-') {
+						break;
+					}
 					self.advance_byte();
 				}
 				let text = self.source[text_start..self.index].trim().to_string();
@@ -285,6 +310,78 @@ impl<'a> Lexer<'a> {
 
 	fn peek_byte(&self) -> Option<u8> {
 		self.bytes.get(self.index).copied()
+	}
+
+	fn peek_byte_at(&self, offset: usize) -> Option<u8> {
+		self.bytes.get(self.index + offset).copied()
+	}
+
+	fn consume_lua_comment_body(&mut self, start: Span) {
+		// Caller has already consumed the opening `--`.
+		// Detect block comment opener `[=*[` (Lua long-bracket comment).
+		if self.peek_byte() == Some(b'[') {
+			let mut probe_index = self.index;
+			probe_index += 1;
+			let mut level: usize = 0;
+			while self.bytes.get(probe_index).copied() == Some(b'=') {
+				level += 1;
+				probe_index += 1;
+			}
+			if self.bytes.get(probe_index).copied() == Some(b'[') {
+				// Confirmed block comment open: --[<eq*>[
+				// Advance past the opener.
+				self.advance_byte(); // first '['
+				for _ in 0..level {
+					self.advance_byte();
+				}
+				self.advance_byte(); // second '['
+
+				loop {
+					let Some(byte) = self.peek_byte() else {
+						self.diagnostics.push(ParseDiagnostic {
+							message: format!(
+								"unterminated Lua block comment --[{}[",
+								"=".repeat(level)
+							),
+							span: SpanRange {
+								start: start.clone(),
+								end: self.current_span(),
+							},
+						});
+						return;
+					};
+					if byte == b']' {
+						let mut close_probe = self.index + 1;
+						let mut close_level: usize = 0;
+						while self.bytes.get(close_probe).copied() == Some(b'=') {
+							close_level += 1;
+							close_probe += 1;
+						}
+						if close_level == level
+							&& self.bytes.get(close_probe).copied() == Some(b']')
+						{
+							self.advance_byte();
+							for _ in 0..level {
+								self.advance_byte();
+							}
+							self.advance_byte();
+							return;
+						}
+						self.advance_byte();
+					} else {
+						self.advance_byte();
+					}
+				}
+			}
+		}
+
+		// Plain `--` line comment: consume until newline.
+		while let Some(next) = self.peek_byte() {
+			if next == b'\n' {
+				break;
+			}
+			self.advance_byte();
+		}
 	}
 
 	fn advance_byte(&mut self) {
@@ -691,7 +788,11 @@ pub fn parse_clausewitz_file(path: &Path) -> ParseResult {
 }
 
 pub fn parse_clausewitz_content(path: PathBuf, content: &str) -> ParseResult {
-	let mut lexer = Lexer::new(content);
+	let lua_mode = path
+		.extension()
+		.and_then(|ext| ext.to_str())
+		.is_some_and(|ext| ext.eq_ignore_ascii_case("lua"));
+	let mut lexer = Lexer::new(content, lua_mode);
 	let mut tokens = Vec::new();
 	loop {
 		let token = lexer.next_token();
@@ -701,13 +802,16 @@ pub fn parse_clausewitz_content(path: PathBuf, content: &str) -> ParseResult {
 			break;
 		}
 	}
+	let lexer_diagnostics = lexer.take_diagnostics();
 
-	ParserState::new(tokens).parse_file(path)
+	let mut result = ParserState::new(tokens).parse_file(path);
+	result.diagnostics.extend(lexer_diagnostics);
+	result
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{AstStatement, AstValue, parse_clausewitz_content};
+	use super::{AstStatement, AstValue, ScalarValue, parse_clausewitz_content};
 	use std::path::PathBuf;
 
 	#[test]
@@ -765,5 +869,307 @@ mod tests {
 			panic!("expected block value");
 		};
 		assert!(!items.is_empty());
+	}
+
+	#[test]
+	fn lua_mode_recognizes_double_dash_line_comment() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "-- foo\nbar=1\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 2);
+
+		let AstStatement::Comment { text, .. } = &parsed.ast.statements[0] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("foo"));
+
+		let AstStatement::Assignment { key, .. } = &parsed.ast.statements[1] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "bar");
+	}
+
+	#[test]
+	fn lua_mode_recognizes_inline_comment_after_value() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = 1 -- trail\ny = 2\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 3);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "x");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("1".to_string()));
+
+		let AstStatement::Comment { text, .. } = &parsed.ast.statements[1] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("trail"));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[2] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "y");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("2".to_string()));
+	}
+
+	#[test]
+	fn lua_mode_recognizes_inline_comment_after_identifier_no_space() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = yes--c\ny = 2\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 3);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "x");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Bool(true));
+
+		let AstStatement::Comment { text, .. } = &parsed.ast.statements[1] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("c"));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[2] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "y");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("2".to_string()));
+	}
+
+	#[test]
+	fn lua_mode_recognizes_inline_comment_after_number_no_space() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = 60--c\ny = 2\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 3);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "x");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("60".to_string()));
+
+		let AstStatement::Comment { text, .. } = &parsed.ast.statements[1] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("c"));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[2] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "y");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("2".to_string()));
+	}
+
+	#[test]
+	fn lua_mode_recognizes_inline_comment_after_string_no_space() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "x = \"a\"--c\ny = 2\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 3);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "x");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::String("a".to_string()));
+
+		let AstStatement::Comment { text, .. } = &parsed.ast.statements[1] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("c"));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[2] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "y");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("2".to_string()));
+	}
+
+	#[test]
+	fn lua_mode_negative_number_still_works() {
+		let parsed =
+			parse_clausewitz_content(PathBuf::from("test.lua"), "a = -1\nb = -0.5\nc = -\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 3);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "a");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("-1".to_string()));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[1] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "b");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("-0.5".to_string()));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[2] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "c");
+		let AstValue::Scalar { .. } = value else {
+			panic!("expected scalar value");
+		};
+	}
+
+	#[test]
+	fn lua_mode_block_comment_level_zero() {
+		let parsed = parse_clausewitz_content(
+			PathBuf::from("test.lua"),
+			"--[[ first line\nsecond line ]]\nx = 1\n",
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 2);
+
+		let AstStatement::Comment { text, span } = &parsed.ast.statements[0] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("first line"));
+		assert!(text.contains("second line"));
+		assert_eq!(span.end.line, 2);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[1] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "x");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("1".to_string()));
+	}
+
+	#[test]
+	fn lua_mode_block_comment_level_two() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "--[==[ a ]==]\nx = 1\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 2);
+
+		let AstStatement::Comment { text, .. } = &parsed.ast.statements[0] else {
+			panic!("expected comment");
+		};
+		assert!(text.contains("a"));
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[1] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "x");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("1".to_string()));
+	}
+
+	#[test]
+	fn lua_mode_unterminated_block_comment_emits_diagnostic() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.lua"), "--[[ no end\n");
+		assert!(!parsed.diagnostics.is_empty());
+		assert!(parsed.diagnostics.iter().any(|diagnostic| {
+			diagnostic
+				.message
+				.to_ascii_lowercase()
+				.contains("unterminated")
+		}));
+		assert!(
+			parsed
+				.ast
+				.statements
+				.iter()
+				.any(|statement| matches!(statement, AstStatement::Comment { .. }))
+		);
+	}
+
+	#[test]
+	fn lua_mode_dotted_keys_normalize_to_assignment() {
+		let parsed =
+			parse_clausewitz_content(PathBuf::from("test.lua"), "NDefines.NCountry.X = 0.5\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 1);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected assignment");
+		};
+		assert_eq!(key, "NDefines.NCountry.X");
+		let AstValue::Scalar { value, .. } = value else {
+			panic!("expected scalar value");
+		};
+		assert_eq!(value, &ScalarValue::Number("0.5".to_string()));
+	}
+
+	#[test]
+	fn non_lua_mode_treats_double_dash_as_numbers() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), "-- foo\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert!(parsed.ast.statements.len() >= 2);
+		assert!(
+			parsed
+				.ast
+				.statements
+				.iter()
+				.all(|statement| !matches!(statement, AstStatement::Comment { .. }))
+		);
+		assert!(parsed.ast.statements.iter().any(|statement| matches!(
+			statement,
+			AstStatement::Item {
+				value: AstValue::Scalar {
+					value: ScalarValue::Number(number),
+					..
+				},
+				..
+			} if number.as_str() == "-"
+		)));
+	}
+
+	#[test]
+	fn lua_mode_off_for_unknown_extension() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.gui"), "-- foo\n");
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert!(parsed.ast.statements.len() >= 2);
+		assert!(
+			parsed
+				.ast
+				.statements
+				.iter()
+				.all(|statement| !matches!(statement, AstStatement::Comment { .. }))
+		);
+		assert!(parsed.ast.statements.iter().any(|statement| matches!(
+			statement,
+			AstStatement::Item {
+				value: AstValue::Scalar {
+					value: ScalarValue::Number(number),
+					..
+				},
+				..
+			} if number.as_str() == "-"
+		)));
 	}
 }

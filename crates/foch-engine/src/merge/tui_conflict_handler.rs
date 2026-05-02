@@ -196,8 +196,8 @@ impl Widget for &ConflictResolver {
 		let reason_paragraph = Paragraph::new(Text::raw(reason_text.clone()))
 			.style(Style::default().fg(Color::Yellow))
 			.wrap(Wrap { trim: false });
-		let reason_height = estimate_wrapped_line_count(&reason_text, inner.width)
-			.clamp(1, MAX_REASON_HEIGHT);
+		let reason_height =
+			estimate_wrapped_line_count(&reason_text, inner.width).clamp(1, MAX_REASON_HEIGHT);
 		let header_height = 3u16.saturating_add(reason_height as u16);
 		let top_separator_y = inner
 			.y
