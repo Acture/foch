@@ -78,10 +78,8 @@ fn contains_assignment(statements: &[AstStatement], target_key: &str, target_val
 			AstStatement::Item {
 				value: AstValue::Block { items, .. },
 				..
-			} => {
-				if contains_assignment(items, target_key, target_val) {
-					return true;
-				}
+			} if contains_assignment(items, target_key, target_val) => {
+				return true;
 			}
 			_ => {}
 		}
