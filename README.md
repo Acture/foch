@@ -1,86 +1,151 @@
 # Foch
 
-`foch` 是一个面向 Paradox mod playset 的分析与合并工具包。当前版本已经提供 `check`、`merge-plan`、`merge`、`graph`、`simplify`、`data` 与 `config` 命令；其中 `merge-plan` / `merge` 可以生成并复验 EU4 merged mod 输出，而 `check` / `graph` / `simplify` 继续承担分析、可视化与清理工作流。
+**Foch is a static-analysis and structural-merge toolkit for Paradox mod playsets.**
+It parses every script file across your enabled mods, builds a cross-mod semantic graph,
+and produces a single deterministic merged mod that you can drop into `mod/` — without
+the silent overrides that ad-hoc load-order workflows leave behind.
+
+EU4 is the first fully-supported game; the architecture is game-agnostic via the
+`GameProfile` + `ContentFamilyDescriptor` abstraction, with other Paradox titles
+slotting in behind the same pipeline.
+
+> Status: alpha, but actively shipping. The merge pipeline produced **36 885 files**
+> from a real 118-mod EU4 playset on the latest probe. Roughly 20 unresolved
+> structural conflicts per such playset are real cross-mod disagreements that the
+> interactive arbitration UI surfaces explicitly — never silently dropped.
 
 Additional documentation lives in [`docs/`](./docs/README.md):
 
-- [`docs/project-status.md`](./docs/project-status.md): current repository status, verified checks, and completion estimates under different goal definitions
-- [`docs/auto-merge-roadmap.md`](./docs/auto-merge-roadmap.md): milestone-oriented roadmap from analyzer foundation to auto-merge workflow
-- [`docs/merge-design.md`](./docs/merge-design.md): implementation-grade merge specification for commands, artifact layout, strategies, and validation
+- [`docs/project-status.md`](./docs/project-status.md) — current shipped surface and ongoing work
+- [`docs/auto-merge-roadmap.md`](./docs/auto-merge-roadmap.md) — milestones from analyzer foundation to full auto-merge
+- [`docs/merge-design.md`](./docs/merge-design.md) — implementation-grade merge specification
+- [`docs/architecture.md`](./docs/architecture.md) — subsystem layout and internals
 
-## 安装
+## Why Foch
+
+- **Structural merge, not patchwork overlay.** Foch reads each contributing mod's
+  AST, resolves the mod-dependency DAG, and applies patches level-by-level. The
+  output is a real merged mod — not a stack of `replace_path` overlays praying that
+  load order doesn't reorder under you.
+- **Honest about real conflicts.** When two mods make incompatible structural
+  changes Foch refuses to silently pick a winner. You get a TTY arbitration UI,
+  a deterministic `[[resolutions]]` file format, or an explicit `--fallback` flag
+  — and the choice is recorded in the merge report.
+- **Zero hidden work.** Every file in the output is traceable back to the
+  contributing mod via `.foch/foch-merge-report.json`. Same playset + same
+  `foch.toml` ⇒ byte-identical output.
+- **One toolchain end-to-end.** A single `foch` binary delivers `check`,
+  `merge-plan`, `merge`, `graph`, `simplify`, `data`, `config`, and `lsp` — no
+  separate analyzer / formatter / language-server processes.
+
+## Install
 
 ```bash
-# 从 crates.io 安装
+# From crates.io (when published)
 cargo install foch
 
-# 或本地构建
-cargo build --bin foch
+# From a checkout (current alpha — recommended today)
+cargo install --path crates/foch-cli
 ```
 
-## 快速开始
+Homebrew tap is wired up via `release.yml`; once a tag is pushed the formula is
+synced automatically.
 
-以下假设你在仓库根目录，并已经准备好 Paradox Launcher 导出的 `playlist.json`。把 EU4 路径替换成你的本机安装目录。
+## Quick start
+
+The example assumes you have a Paradox Launcher–exported `dlc_load.json` (the
+launcher's currently-active playset) and a local EU4 install.
 
 ```bash
-# 1. 安装当前 alpha CLI（暂未发布到 crates.io）
-cargo install --path crates/foch-cli
-
-# 2. 配置 EU4 基础游戏目录
+# 1. Tell foch where EU4 lives
 foch config set game-path eu4 "/path/to/Europa Universalis IV"
 
-# 3. 分析 playset：解析脚本、构建语义索引、检查跨 mod overlap / D1 / V2
+# 2. (One-time) build the base-game data snapshot
+foch data build eu4 --from-game-path "/path/to/Europa Universalis IV" \
+    --game-version auto --install
+
+# 3. Analyze a playset: parse, semantic index, cross-mod overlap / dep / version checks
 foch check ./playlist.json
 
-# 4. 生成 deterministic merged mod 目录
+# 4. Produce a deterministic merged mod
 foch merge ./playlist.json --out ./merged
 ```
 
-常见成功输出形态：
+A clean run looks like:
 
-> `Foch Check Report`
-> `fatal_errors: 0`
+> `Foch Check Report`  
+> `fatal_errors: 0`  
 > `strict_findings: 0`
 
-> `Foch Merge Report`
-> `status: READY`
+> `Foch Merge Report`  
+> `status: READY`  
 > `manual_conflict_count: 0`
 
-如果默认 merge 报告 unresolved conflicts，按风险从低到高选择一种继续方式：
+## Command surface
+
+| Command       | Purpose                                                                  |
+|---------------|--------------------------------------------------------------------------|
+| `check`       | Static analysis: parse errors, unresolved references, cross-mod overlap  |
+| `merge-plan`  | Compute the per-path merge strategy; write artifacts without touching FS |
+| `merge`       | Materialize the merged mod tree and revalidate it                        |
+| `graph`       | Export runtime call graph and content-family semantic graph reports      |
+| `simplify`    | Drop base-game-equivalent definitions from a target mod                  |
+| `data`        | Build, install, and list distributable base-game data snapshots          |
+| `config`      | Inspect and manage `~/.config/foch/config.toml` (engine config)          |
+| `lsp`         | Start the language server on stdio (used by the VS Code extension)       |
+
+## Structural merge coverage
+
+Every content family registered in `crates/foch-language/src/analyzer/eu4_profile.rs`
+(`EU4_CONTENT_FAMILIES`) goes through the structural pipeline by default. Parsing,
+the semantic index, DAG ordering, and level-by-level patch application share a
+single mod → vanilla dependency graph; cross-base diff artifacts are no longer
+flattened into one layer.
+
+Special handling worth calling out:
+
+- **`common/defines/*.lua`** — the lexer recognizes Lua `--` line comments and
+  `--[[ ... ]]` block comments; empty defines files are treated as zero-contribution
+  contributors (matching Lua runtime semantics).
+- **Localisation YAML** (`localisation/**.yml`) — merged per-key, not per-file.
+- **Sibling overwrite / replace-block / true list-item rename** — these remain
+  user-arbitrated. Foch does not silently drop them; non-TTY runs explicitly skip
+  the affected paths and report them.
+
+## Conflict arbitration workflow
+
+By default, `foch merge ./playlist.json --out ./merged` opens a ratatui TUI for
+each unresolvable conflict; non-TTY environments (CI) skip and report. From there:
 
 ```bash
-# TTY 下默认逐个仲裁，并把决定写入 foch.toml；非 TTY 会自动 defer
+# Re-run interactively in a TTY
 foch merge ./playlist.json --out ./merged
 
-# CI / batch 中显式关闭 TTY 交互
+# CI / batch — skip prompts, write conflicts to the report
 foch merge ./playlist.json --out ./merged --non-interactive
 
-# 或显式接受 last-writer fallback（可写冲突标记时会写入 marker）
+# Accept last-writer-wins for any unresolved conflict (writes a marker into the file)
 foch merge ./playlist.json --out ./merged --fallback
 ```
 
-## 结构化 merge 支持范围
+### `foch.toml` `[[resolutions]]`
 
-从 post-F6c 开始，EU4 `GameProfile` 通过 `ContentFamilyDescriptor` 注册的内容族默认进入结构化 merge：解析、语义索引、DAG 排序和 level-by-level patch apply 使用同一套 mod → vanilla 依赖图，不再把跨 base 的 diff artifact 扁平化到同一层。
+Each entry has exactly one selector and one action. Selectors:
 
-README 不再手工枚举内容族，避免与实现漂移。当前 canonical 列表在 [`crates/foch-language/src/analyzer/eu4_profile.rs`](./crates/foch-language/src/analyzer/eu4_profile.rs) 的 `EU4_CONTENT_FAMILIES`；新增 EU4 root 时以该文件中的 `ContentFamilyDescriptor` 为准。
+| Field         | Match by                                                       |
+|---------------|----------------------------------------------------------------|
+| `file`        | Output path (e.g., `events/PirateEvents.txt`)                  |
+| `conflict_id` | Stable hash of `(output path, structural address)`             |
+| `mod`         | Mod id (only valid with the `priority_boost` action)           |
 
-残余的 sibling-overwrite、replace-block、true list-item rename 等结构性分歧需要用户仲裁。foch 不再静默丢弃这类贡献：TTY 下默认交互仲裁，非 TTY 输出会显式阻塞 / 跳过相关路径；只有用户配置 `[[resolutions]]` 或显式传入 `--fallback` 时才会无交互继续。
+Actions:
 
-## 冲突仲裁工作流
-
-默认 `foch merge ./playlist.json --out ./merged` 在 TTY 中遇到无法安全选择的结构冲突时会逐个提示；非 TTY 或 `--non-interactive` 下会把相关输出路径跳过，并在 `./merged/.foch/foch-merge-report.json` 写入 `conflict_resolutions[]`。此时可选：在 TTY 中重跑并逐个选择；手写 `foch.toml [[resolutions]]` 后重跑；或用 `--fallback` 生成 last-writer 输出。
-
-`foch.toml` 的 `[[resolutions]]` 每条规则只能选一个 selector 和一个 action。字段速查（YAML 风格；不要把所有字段放进同一个 TOML block）：
-
-> `file: "events/PirateEvents.txt"` — 按输出路径匹配
-> `conflict_id: "ab12cd34"` — 按具体结构冲突匹配
-> `prefer_mod: "3378403419"` — 选某个 mod 的 patch
-> `use_file: "manual/events/PirateEvents.txt"` — 用外部文件替换输出
-> `keep_existing: true` — 保留 out 目录已有文件
-> `priority_boost: 100` — 给某个 `mod` 增加局部优先级
-
-可直接粘贴的 TOML 示例：
+| Field             | Effect                                                              |
+|-------------------|---------------------------------------------------------------------|
+| `prefer_mod`      | Pick this mod's contribution                                        |
+| `use_file`        | Replace the merged output with an external file                     |
+| `keep_existing`   | Preserve whatever is already at the destination path                |
+| `priority_boost`  | Bump a mod's local precedence by `n`                                |
 
 ```toml
 [[resolutions]]
@@ -100,108 +165,80 @@ mod = "3378403419"
 priority_boost = 100
 ```
 
-TTY 交互模式的选择项是候选 mod 编号、`d` defer、`s` use file path、`k` keep existing、`q` abort；确认后会把可持久化决定追加到 `foch.toml`。如果 stdin 不是 TTY，或传入 `--non-interactive`，merge 会自动 defer，不会卡住 CI。
+The TUI's per-conflict choices (mod number, `d` defer, `s` use file path,
+`k` keep existing, `q` abort) are persisted back into `foch.toml` on confirmation.
+Non-TTY runs auto-defer.
 
-`conflict_id` 是稳定哈希：输入为报告里的 `conflict_resolutions[].path`（输出文件路径）加该冲突的结构地址（interactive 输出中的 `address:`，即 address path + key）。同一个 id 可直接写回 `foch.toml` 的 `conflict_id` selector。
+`conflict_id` is a deterministic hash of the merge report's `path` plus the
+structural address printed in the TUI; pasting it into `foch.toml` resolves the
+same conflict on every subsequent run.
 
-一次典型闭环：先运行 merge，看 `Foch Merge Report` 和 `.foch/foch-merge-report.json`；定位到 `events/PirateEvents.txt` 的冲突后，在仓库根目录写入一个 `[[resolutions]]`：
+## Configuration
 
-```toml
-[[resolutions]]
-conflict_id = "ab12cd34"
-prefer_mod = "3378403419"
-```
+Two TOML schemas, two purposes:
 
-然后重跑：
+- `~/.config/foch/config.toml` — `foch_engine::Config`: `steam_root_path`,
+  `paradox_data_path`, the per-game `game_path` map, `extra_ignore_patterns`.
+  Managed by `foch config set` / `show` / `validate`. You usually don't hand-edit
+  this.
+- A `foch.toml` next to your playset (or at `~/.config/foch/foch.toml`) —
+  `foch_core::FochConfig`: `[[overrides]]` (silence specific dependency edges in
+  the local DAG), `[[resolutions]]` (conflict arbitration), and `[emit] indent`
+  (merged-output indentation, default tab). Pass `--config PATH` to point at a
+  specific file.
 
-```bash
-foch merge ./playlist.json --out ./merged
-```
-
-期望输出回到：
-
-> `status: READY`
-> `manual_conflict_count: 0`
-
-## 配置
-
-配置分成两个 schema，路径相近但用途不同：
-
-- `~/.config/foch/config.toml` 是 `foch_engine::Config`：`steam_root_path`、`paradox_data_path`、`game_path` map、`extra_ignore_patterns`。它由 `foch config set` / `show` / `validate` 管理，通常不手写。
-- 项目根目录或 playset 旁边的 `foch.toml`，以及用户级 `~/.config/foch/foch.toml`，是 `foch_core::FochConfig`：手写 `[[overrides]]`（D2，本地忽略错误依赖边）、`[[resolutions]]`（R1，冲突仲裁）和 `[emit] indent`（合并输出缩进，默认 tab）。`foch merge --config PATH` 可显式指定该文件。
-
-可通过环境变量覆盖 engine 配置目录：
+Override the engine config directory via:
 
 ```bash
 export FOCH_CONFIG_DIR="$HOME/.config/foch-alpha"
 ```
 
-配置命令示例：
+Common config commands:
 
 ```bash
 foch config show
 foch config show --json
 foch config validate
 foch config set steam-path /path/to/steam
-foch config set paradox-data-path /path/to/paradox
+foch config set paradox-data-path "/path/to/Paradox Interactive/Europa Universalis IV"
 foch config set game-path eu4 "/path/to/Europa Universalis IV"
 ```
 
-## 当前噪音水平 (alpha)
+> `paradox-data-path` should point at the **game-specific** subdirectory under
+> `Documents/Paradox Interactive/`, not the parent folder — that's where the
+> launcher writes `dlc_load.json`.
 
-最新 N=37 EU4 probe baseline：post-F1b-comments（HEAD `8c5aa66`）仍有 26 个 unresolved structural conflicts，低于 F4 baseline / pre-F6c 的 181。
+## Current alpha noise floor
 
-这 26 个 residual 分解为 20 个 sibling overwrite、5 个 replace-block、1 个真实 list-item rename。它们都是跨 mod 内容分歧，需要用户仲裁；不是 comment diff 或 DAG flattening 造成的 foch false positive。完整限制清单见后续维护的 [`KNOWN_LIMITATIONS.md`](./KNOWN_LIMITATIONS.md)。
+On the latest 118-mod EU4 probe, `foch merge` writes 36 885 files and surfaces
+roughly 20 residual structural conflicts: cross-mod sibling overwrites,
+replace-blocks, and the occasional true list-item rename. These are real disagreements
+between mods, not parser false positives. The full known-limitations inventory lives
+in [`KNOWN_LIMITATIONS.md`](./KNOWN_LIMITATIONS.md).
 
-## 退出码
+## Exit codes
 
-- `0`: 成功（无系统错误；非 strict 模式下 finding 不影响退出码）
-- `1`: 系统错误（例如文件不可读）
-- `2`: `--strict` 且存在 strict findings
+- `0` — success (in non-strict mode, findings do not affect the exit code)
+- `1` — system error (e.g., unreadable file)
+- `2` — `--strict` and at least one strict finding present
+- `3` — `merge` produced a `BLOCKED` or `FATAL` report (unresolved conflicts)
 
-## 开发质量闸门
+## Local parse cache
+
+`check` and `merge-plan` keep two layers of local cache:
+
+- File-level parser cache (game + mod, in the system cache directory)
+- Mod semantic snapshot cache (keyed by `game + mod identity + manifest hash`)
+
+The base game is no longer scanned implicitly; install the data snapshot first:
 
 ```bash
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+foch data install eu4 --game-version auto
+# or, from a local install:
+foch data build eu4 --from-game-path "/path/to/eu4" --game-version auto --install
 ```
 
-JS workspace（`packages/tree-sitter-paradox`、`packages/vscode-foch`）默认使用仓库根目录的 `.envrc` 把 Homebrew 的 `node@22` 放到 `PATH` 前面。先执行 `brew install node@22`，然后在仓库根目录运行一次 `direnv allow`。当前要求 `node >=22 <25` 与 Bun 1.2+；`node@25` 下 `tree-sitter` 原生依赖当前无法稳定构建，不属于支持环境。
-
-## 发布自动化
-
-仓库内置四条 GitHub Actions 工作流：
-
-- `ci.yml`: Rust 质量闸门 + `tree-sitter-paradox` / VS Code 扩展 smoke
-- `release.yml`: 为 tag 构建 CLI 压缩包、VSIX、带 submodule 内容的 source tarball，发布 GitHub Release，并同步 Homebrew tap
-- `publish.yml`: 手动从现有 GitHub Release source asset 重新同步 Homebrew tap
-- `publish-vscode-preview.yml`: 手动发布 VS Code preview 扩展
-
-发布所需的 GitHub secrets / variables：
-
-- `VSCE_PAT`: VS Code Marketplace token
-- `HOMEBREW_TAP_TOKEN`: 用于推送 tap 仓库
-- `HOMEBREW_TAP_REPO`: repository variable，例如 `Acture/homebrew-tap`
-
-说明：
-
-- Homebrew formula 现在使用 `release.yml` 产出的 source tarball，而不是 GitHub 自动生成的 tag archive；这样 source 包会包含 `packages/tree-sitter-paradox` submodule 内容
-- `publish.yml` 只是 Homebrew tap 的手动重同步入口，不承担 crates.io 发布
-
-## 解析缓存（本地）
-
-`check` / `merge-plan` 现在会缓存两层本地数据：
-
-- 文件级 parser cache（game + mod 通用，位于系统 cache 目录）
-- mod semantic snapshot cache（按 `game + mod identity + manifest hash` 命中，位于系统 cache 目录）
-
-基础游戏不再走隐式本地扫描缓存。默认行为是加载已安装的 base data；缺失时需要显式运行：
-
-- `foch data install eu4 --game-version auto`
-- `foch data build eu4 --from-game-path /path/to/eu4 --game-version auto --install`
-
-可选环境变量：
+Optional environment overrides:
 
 ```bash
 export FOCH_PARSE_CACHE_DIR=/tmp/foch-parse-cache
@@ -209,115 +246,97 @@ export FOCH_MOD_SNAPSHOT_CACHE_DIR=/tmp/foch-mod-snapshot-cache
 export FOCH_DATA_DIR=/tmp/foch-data
 ```
 
-## 真实语料解析统计（本地工具）
+## VS Code & LSP
 
-```bash
-# 统计某目录下 .txt 解析成功率
-cargo run --bin parse_stats -- "/path/to/eu4" --exts txt
-
-# 排除非脚本文本目录（例如 license / patchnotes）
-cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --exclude-prefixes licenses,patchnotes
-```
-
-## 真实语料 smoke 对比（本地工具）
-
-```fish
-python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json --out-dir target/eu4-real-smoke/baseline
-python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json --out-dir target/eu4-real-smoke/act-32-post
-
-python3 scripts/eu4_real_smoke_compare.py \
-	target/eu4-real-smoke/baseline/<slug>-summary.json \
-	target/eu4-real-smoke/act-32-post/<slug>-summary.json \
-	--rule missing-effect-parameter \
-	--gate-rule missing-effect-parameter \
-	--min-absolute-drop 250 \
-	--min-relative-drop 0.08
-```
-
-这里的 `playset.json` 只是你本机上的实际 playset 路径，不是仓库约定文件名。第一条脚本生成真实语料 summary；第二条脚本输出 rule delta、热点路径变化，并在 gate 失败时返回非零退出码，适合收口 `ACT-32` / `ACT-31` / `ACT-28` 这类真实语料清噪任务。阈值参数按具体 issue 调整，不要把示例值当成固定标准。
-
-## LSP 与 VS Code
-
-项目包含 language server(`foch lsp` 子命令),以及位于 `packages/vscode-foch/` 的 VS Code 扩展。
-
-当前已实现：
-
-- `EU4 Script` 文件类型与语法高亮
-- reserved/contextual/alias 关键字补全
-- builtin trigger/effect 补全
-- 工作区符号补全（event id / scripted effect / decision / flag value）
-- `goto definition`
-  - scripted effect 调用
-  - event id 引用
-  - flag value 引用
-  - localisation key 引用
-- 编辑器 diagnostics
-  - 当前文档 parse errors
-  - 工作区语义 findings（例如 unresolved call / invisible alias / missing localisation / unresolved flag）
-
-当前仍未实现：
-
-- `hover`
-- `find references`
-- `rename`
-- code action
-
-启动方式：
-
-```bash
-cargo run --bin foch -- lsp
-```
-
-VS Code 本地开发：
+The `foch lsp` subcommand is a stdio language server. The
+[`packages/vscode-foch`](./packages/vscode-foch) extension bundles it; install the
+preview build from the VS Code Marketplace, or build locally:
 
 ```bash
 cd packages/vscode-foch
 bun install
-bun run prepare:server
+bun run prepare:server   # cargo build --release --bin foch + copy
 code .
 ```
 
-然后在 Extension Development Host 里测试扩展。
+Currently shipped LSP features: parse diagnostics, workspace semantic findings,
+builtin trigger / effect completion, workspace symbol completion, go-to-definition
+for scripted effects / event ids / flag values / localisation keys. `hover`,
+`find references`, `rename`, and code actions are tracked but not yet shipped.
 
-可选：通过环境变量指定 LSP 仅扫描哪些目录（优先于 workspace folders）：
+## Real-corpus tooling
+
+For maintainers running probes against a real EU4 install:
 
 ```bash
-export FOCH_LSP_TARGETS_JSON='[
-	{"path":"/path/to/Europa Universalis IV","role":"game"},
-	{"path":"/path/to/my_mod","role":"mod"}
-]'
+# Parse-success rate for a directory tree
+cargo run --bin parse_stats -- "/path/to/eu4" --exts txt --features dev-tools
+
+# A/B comparison between two probe outputs
+python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json \
+    --out-dir target/eu4-real-smoke/baseline
+python3 scripts/eu4_real_smoke.py --playset /path/to/playset.json \
+    --out-dir target/eu4-real-smoke/post-change
+
+python3 scripts/eu4_real_smoke_compare.py \
+    target/eu4-real-smoke/baseline/<slug>-summary.json \
+    target/eu4-real-smoke/post-change/<slug>-summary.json \
+    --rule missing-effect-parameter \
+    --gate-rule missing-effect-parameter \
+    --min-absolute-drop 250 \
+    --min-relative-drop 0.08
 ```
 
-`role` 目前支持 `game` 与 `mod`。
+`parse_stats` and `symbol_dump` live behind the `dev-tools` feature so they don't
+pollute `~/.cargo/bin/` for normal users.
 
-如果不设置 `FOCH_LSP_TARGETS_JSON`，VS Code 扩展会：
+## EU4 builtin catalog
 
-- 读取 `fochLsp.gamePath`
-- 读取 `fochLsp.modPaths`
-- 通过 `descriptor.mod` 自动发现 mod 根目录
-
-语义扫描目录当前覆盖：
-
-- `events/`
-- `decisions/`
-- `common/scripted_effects/`
-- `common/diplomatic_actions/`
-- `common/triggered_modifiers/`
-- `common/defines/`
-- `interface/`
-- `common/interface/`
-- `gfx/`
-
-其中 UI 目录当前主要用于解析与 diagnostics，不参与完整 scope/symbol 语义推导。
-
-## EU4 内建符号表
-
-仓库内置 `crates/foch-language/src/data/eu4_builtin_catalog.json`，用于识别内建 trigger/effect，降低把引擎内建语句误判为 scripted effect 调用的概率。
-
-如需重建该表（CWTools + eu4wiki 镜像 + 本机 EU4 文件频次）：
+`crates/foch-language/src/data/eu4_builtin_catalog.json` lists every engine
+trigger / effect Foch knows about, used to suppress false-positive
+"unresolved scripted effect" findings. Rebuild with:
 
 ```bash
 python3 scripts/build_eu4_builtin_catalog.py
 ```
 
-默认会读取 `/tmp/foch-sources` 下缓存资料，并自动探测本机 EU4 目录。可通过 `FOCH_EU4_PATH` 覆盖。
+The script reads cached source material from `/tmp/foch-sources` and auto-detects
+the local EU4 install; override with `FOCH_EU4_PATH=...`.
+
+## Quality gates
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+```
+
+The JS workspace (`packages/tree-sitter-paradox`, `packages/vscode-foch`) needs
+Bun 1.2+ and Node `>=22 <25`. The `.envrc` at the repo root prepends Homebrew's
+`node@22` to `PATH`; run `direnv allow` after `brew install node@22`. Node 25 is
+not supported because `tree-sitter`'s native build is currently unstable on it.
+
+## Release automation
+
+Four GitHub Actions workflows ship the project:
+
+- `ci.yml` — Rust quality gates plus `tree-sitter-paradox` and VS Code extension smoke tests
+- `release.yml` — on tag: builds the CLI tarball, the VSIX, a source tarball that
+  embeds the `tree-sitter-paradox` submodule contents, publishes the GitHub
+  Release, and syncs the Homebrew tap
+- `publish.yml` — manual re-sync of the Homebrew tap from an existing release asset
+- `publish-vscode-preview.yml` — manual VS Code preview-channel publish
+
+Required secrets / variables:
+
+- `VSCE_PAT` — VS Code Marketplace token
+- `HOMEBREW_TAP_TOKEN` — push token for the tap repo
+- `HOMEBREW_TAP_REPO` — repository variable, e.g. `Acture/homebrew-tap`
+
+The Homebrew formula uses the source tarball produced by `release.yml` rather
+than GitHub's auto-generated tag archive, so the source bundle includes the
+`packages/tree-sitter-paradox` submodule contents.
+
+## License
+
+AGPL-3.0-only. See [`LICENSE`](./LICENSE).

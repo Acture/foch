@@ -1,33 +1,31 @@
 # Foch for VS Code
 
-Preview VS Code extension for EU4 scripting, backed by the merged `foch`
-binary's `lsp` subcommand.
+**Foch for VS Code brings Foch's EU4 analyzer into the editor.**
+The extension wraps the bundled `foch` binary's `lsp` subcommand, so editor diagnostics, completion, and navigation run on the same parser and semantic index as the CLI.
 
 Marketplace pre-release builds use `version = 0.1.0` plus the pre-release publish flag. VS Code Marketplace does not support semver prerelease suffixes such as `0.1.0-preview.1`.
 
-This extension provides:
+## What ships today
 
-- `EU4 Script` language association and syntax highlighting
-- Completion for builtin trigger/effect names
-- Completion for workspace symbols and flag values
-- `goto definition` for scripted effects, event ids, flag values, and localisation keys
-- Diagnostics for current-file parse errors
-- Diagnostics for workspace semantic findings
-- Multi-root scanning for `game` + multiple `mod` directories
-- Auto-detection of mod roots via `descriptor.mod`
+| Capability | Coverage |
+| --- | --- |
+| Language mode | `EU4 Script` association for Paradox script files |
+| Syntax highlighting | TextMate grammar for Paradox assignments, blocks, `#` comments, Lua `--` line comments, and level-0 `--[[ ... ]]` block comments, so `common/defines/*.lua` highlights correctly |
+| Diagnostics | current-file parse diagnostics and workspace semantic findings |
+| Completion | builtin trigger/effect names plus workspace symbols: event ids, scripted effects, decisions, and flag values |
+| Navigation | goto-definition for scripted effects, event ids, flag values, and localisation keys |
+| Workspace loading | multi-root scanning across the game directory and multiple mod directories, with mod-root auto-detection via `descriptor.mod` |
 
-Current non-goals for this preview build:
+## Not yet shipped
 
-- No `hover`
-- No `find references`
-- No `rename`
-- No code actions yet
+- `hover`
+- `find references`
+- `rename`
+- code actions
 
 ## Runtime model
 
-The extension launches the bundled `foch` binary with the `lsp` subcommand
-(previously a separate `foch_lsp` binary; merged in 0.1.0-alpha so a single
-`cargo install` ships everything).
+The extension launches the bundled `foch` binary with the `lsp` subcommand.
 
 - If `fochLsp.serverPath` is set, that command is used as-is.
 - Otherwise, the extension looks for a bundled binary under
@@ -35,35 +33,29 @@ The extension launches the bundled `foch` binary with the `lsp` subcommand
 - If no bundled binary exists, it falls back to
   `cargo run --quiet --bin foch -- lsp` (development checkout only).
 
-The fallback is useful for local development, but bundled binaries are the
-intended runtime model for release builds.
+The fallback keeps local development simple; bundled binaries are the intended runtime model for release builds.
 
 ## Local development
 
-Install dependencies:
+From `packages/vscode-foch`:
 
 ```bash
 bun install
+bun run prepare:server
+code .
 ```
 
-Run the extension in an Extension Development Host:
-
-```bash
-code /path/to/foch/packages/vscode-foch
-```
-
-Then press `F5`.
+Then press `F5` to open an Extension Development Host.
 
 ## Build a bundled server
 
-Build and copy the host-platform `foch` binary into the extension:
+`prepare:server` builds and copies the host-platform `foch` binary into the extension:
 
 ```bash
 bun run prepare:server
 ```
 
-This runs `cargo build --release --bin foch` in the repo root and copies the
-result to:
+It runs `cargo build --release --bin foch` in the repo root and copies the result to:
 
 ```text
 bin/<platform>-<arch>/foch[.exe]
@@ -75,7 +67,7 @@ Examples:
 - `bin/darwin-x64/foch`
 - `bin/win32-x64/foch.exe`
 
-For the first public release, build the VSIX on the matching target OS/arch so the packaged binary is correct for that platform.
+For public VSIX builds, build on the matching target OS/arch so the packaged binary matches the Marketplace artifact.
 
 ## Smoke test
 
@@ -121,15 +113,15 @@ Example settings for local development:
 
 ```json
 {
-	"fochLsp.serverPath": "",
-	"fochLsp.serverArgs": [],
-	"fochLsp.serverCwd": "/path/to/foch",
-	"fochLsp.gamePath": "/Users/acture/Library/Application Support/Steam/steamapps/common/Europa Universalis IV",
-	"fochLsp.modPaths": [
-		"/path/to/foch/tests/corpus/control_military_access"
-	],
-	"fochLsp.autoDetectMods": true,
-	"fochLsp.autoDetectModsMax": 300
+  "fochLsp.serverPath": "",
+  "fochLsp.serverArgs": [],
+  "fochLsp.serverCwd": "/path/to/foch",
+  "fochLsp.gamePath": "/Users/acture/Library/Application Support/Steam/steamapps/common/Europa Universalis IV",
+  "fochLsp.modPaths": [
+    "/path/to/foch/tests/corpus/control_military_access"
+  ],
+  "fochLsp.autoDetectMods": true,
+  "fochLsp.autoDetectModsMax": 300
 }
 ```
 
@@ -137,7 +129,7 @@ The client automatically sets matching files to the `EU4 Script` language (inter
 
 Current semantic coverage:
 
-- script roots: `events`, `decisions`, `common/scripted_effects`, `common/diplomatic_actions`, `common/triggered_modifiers`, `common/defines`
-- UI parsing roots: `interface`, `common/interface`, `gfx`
-
-UI files currently contribute parse diagnostics, but not full scope/symbol inference.
+| Root family | Coverage |
+| --- | --- |
+| `events`, `decisions`, `common/scripted_effects`, `common/diplomatic_actions`, `common/triggered_modifiers`, `common/defines` | parse diagnostics, symbols, and semantic inference |
+| `interface`, `common/interface`, `gfx` | parse diagnostics; full scope/symbol inference is not yet enabled |
