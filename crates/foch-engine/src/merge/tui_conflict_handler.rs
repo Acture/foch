@@ -412,6 +412,14 @@ fn run_resolver(resolver: &mut ConflictResolver) -> io::Result<ConflictAction> {
 	let backend = CrosstermBackend::new(stdout);
 	let mut terminal = Terminal::new(backend)?;
 
+	// Drain any stale events queued before we entered raw mode (typically a
+	// stray Enter left over from the shell-cooked overwrite prompt earlier
+	// in the merge command, which would otherwise be read instantly as the
+	// first keypress and dismiss the TUI before it's even visible).
+	while event::poll(std::time::Duration::ZERO)? {
+		let _ = event::read()?;
+	}
+
 	loop {
 		terminal.draw(|frame| resolver.render(frame, frame.area()))?;
 		if let Event::Key(key) = event::read()? {
