@@ -982,7 +982,12 @@ fn truncate_rendered_snippet(input: &str, max_lines: usize, max_chars: usize) ->
 	if max_lines == 0 {
 		return String::new();
 	}
-	let trimmed = input.trim_end_matches(['\r', '\n']);
+	// ratatui's Paragraph widget renders tab characters as zero-width on most
+	// terminals, so the emit_clausewitz_statements_with_options output (which
+	// uses tab indentation by default) shows up flat. Expand tabs to 2 spaces
+	// so the structure of the snippet is preserved on screen.
+	let expanded = input.replace('\t', "  ");
+	let trimmed = expanded.trim_end_matches(['\r', '\n']);
 	let lines = trimmed.lines().collect::<Vec<_>>();
 	if lines.is_empty() {
 		return String::new();
