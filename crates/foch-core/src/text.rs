@@ -3,9 +3,9 @@
 //! Paradox engines historically write `.txt` (and `.csv` / `.yml`) files
 //! in **windows-1252** for the bundled vanilla content, while modern mods
 //! often save files as **UTF-8** (with or without BOM). Chinese
-//! translation mods commonly emit **GBK** / **GB18030**; we detect those
-//! before falling back to windows-1252 so the rendered output matches the
-//! original characters in-game instead of producing mojibake.
+//! translation mods commonly emit **GBK** / **GB18030**; we delegate
+//! charset detection to Mozilla's `chardetng` so the rendered output
+//! matches the original characters in-game instead of producing mojibake.
 //!
 //! `decode_paradox_bytes` is the single funnel for all
 //! Paradox-script-flavoured byte → string conversion in the workspace.
@@ -14,7 +14,8 @@
 
 use std::borrow::Cow;
 
-use encoding_rs::{GB18030, WINDOWS_1252};
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use encoding_rs::{Encoding, WINDOWS_1252};
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 const UTF16_LE_BOM: [u8; 2] = [0xFF, 0xFE];
@@ -26,11 +27,11 @@ const UTF16_BE_BOM: [u8; 2] = [0xFE, 0xFF];
 /// 1. Strip a leading UTF-8 BOM and decode as strict UTF-8.
 /// 2. Strip a leading UTF-16 BOM and decode via `encoding_rs`.
 /// 3. Try strict UTF-8 (the modern mod default) — borrowed if successful.
-/// 4. If the byte stream looks like GBK / GB18030 (plausible
-///    double-byte CJK sequences without invalid combinations), decode
-///    accordingly. GB18030 is a strict superset of GBK so the same
-///    decoder handles both.
-/// 5. Fall back to **windows-1252**, the canonical Paradox encoding.
+/// 4. Run `chardetng` over the byte stream. If the detector picks a
+///    legacy CJK encoding (GB18030 / GBK / Big5) and that decoder
+///    succeeds without errors, use the result. The detector itself can
+///    return windows-1252 for Latin-1 content; we accept that too.
+/// 5. Fall back to **windows-1252**.
 pub fn decode_paradox_bytes(bytes: &[u8]) -> Cow<'_, str> {
 	if let Some(rest) = bytes.strip_prefix(UTF8_BOM.as_slice()) {
 		return Cow::Owned(String::from_utf8_lossy(rest).into_owned());
@@ -46,45 +47,39 @@ pub fn decode_paradox_bytes(bytes: &[u8]) -> Cow<'_, str> {
 	if let Ok(text) = std::str::from_utf8(bytes) {
 		return Cow::Borrowed(text);
 	}
-	if looks_like_gb18030(bytes) {
-		let (decoded, _, had_errors) = GB18030.decode(bytes);
-		if !had_errors {
-			return Cow::Owned(decoded.into_owned());
-		}
+	if let Some(decoded) = decode_via_chardet(bytes) {
+		return Cow::Owned(decoded);
 	}
 	let (decoded, _, _) = WINDOWS_1252.decode(bytes);
 	Cow::Owned(decoded.into_owned())
 }
 
-/// Heuristic: are the high-byte sequences in `bytes` overwhelmingly
-/// plausible GBK / GB18030 double-byte CJK pairs? Requires every high byte
-/// to start a valid double-byte (lead 0x81..=0xFE, trail 0x40..=0xFE
-/// excluding 0x7F) AND at least two such pairs to be present, so a
-/// windows-1252 sentence with a single accented character (e.g.
-/// "Bragança" — bytes `\xe7\x61`) doesn't get mis-routed to GBK and
-/// rendered as "閺癨".
-fn looks_like_gb18030(bytes: &[u8]) -> bool {
-	let mut i = 0;
-	let mut double_byte_pairs = 0usize;
-	while i < bytes.len() {
-		let byte = bytes[i];
-		if byte < 0x80 {
-			i += 1;
-			continue;
-		}
-		if !(0x81..=0xFE).contains(&byte) {
-			return false;
-		}
-		let Some(&trail) = bytes.get(i + 1) else {
-			return false;
-		};
-		if !(0x40..=0xFE).contains(&trail) || trail == 0x7F {
-			return false;
-		}
-		double_byte_pairs += 1;
-		i += 2;
+/// Run `chardetng` and accept the chosen encoding only when it's
+/// a legacy CJK / Cyrillic / Greek codepage that wouldn't decode
+/// losslessly through the windows-1252 fallback. windows-1252 itself,
+/// macintosh, and any picky single-byte encoding fall through to the
+/// caller's fallback path so we never lose round-trip stability.
+fn decode_via_chardet(bytes: &[u8]) -> Option<String> {
+	let mut detector = EncodingDetector::new(Iso2022JpDetection::Deny);
+	detector.feed(bytes, true);
+	let encoding = detector.guess(None, Utf8Detection::Deny);
+	if !is_legacy_double_byte(encoding) {
+		return None;
 	}
-	double_byte_pairs >= 2
+	let (decoded, _, had_errors) = encoding.decode(bytes);
+	if had_errors {
+		return None;
+	}
+	Some(decoded.into_owned())
+}
+
+fn is_legacy_double_byte(encoding: &'static Encoding) -> bool {
+	encoding == encoding_rs::GB18030
+		|| encoding == encoding_rs::GBK
+		|| encoding == encoding_rs::BIG5
+		|| encoding == encoding_rs::EUC_JP
+		|| encoding == encoding_rs::SHIFT_JIS
+		|| encoding == encoding_rs::EUC_KR
 }
 
 #[cfg(test)]
