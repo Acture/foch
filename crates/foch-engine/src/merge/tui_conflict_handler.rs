@@ -17,7 +17,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 
 use super::conflict_handler::{
 	ConfigWriter, ConflictDecision, ConflictHandler, resolution_entry_for_decision,
@@ -72,7 +72,7 @@ impl ConflictResolver {
 		current_idx: usize,
 		total: usize,
 	) -> Self {
-		let candidates = conflict
+		let candidates: Vec<ConflictCandidate> = conflict
 			.patches
 			.iter()
 			.map(|patch| ConflictCandidate {
@@ -90,6 +90,10 @@ impl ConflictResolver {
 		if !address.key.is_empty() {
 			address_path.push(address.key.clone());
 		}
+		// Default the cursor to "Defer" (the first action right after the
+		// candidate list) so an accidental Enter doesn't pick an arbitrary
+		// mod's patch. Users can still arrow up to candidates explicitly.
+		let default_selected = candidates.len();
 		Self {
 			current_conflict_index: current_idx,
 			total_conflicts: total,
@@ -98,7 +102,7 @@ impl ConflictResolver {
 			reason: conflict.reason.clone(),
 			conflict_id: conflict_id.to_string(),
 			candidates,
-			selected_index: 0,
+			selected_index: default_selected,
 		}
 	}
 
@@ -187,40 +191,52 @@ impl Widget for &ConflictResolver {
 		let hint_y = inner.y + inner.height.saturating_sub(1);
 		let bottom_separator_y = hint_y.saturating_sub(1);
 
-		// Header rows: file path (1 row), address path (1 row), blank (1 row),
-		// reason (variable rows — word-wrapped so long messages don't get
-		// truncated by the right border). Compute reason height from the
-		// available inner width with a hard cap so the choice list always has
-		// at least a couple of rows on small terminals.
+		// Header rows: progress gauge (1 row), file path (1 row), address
+		// path (1 row), blank (1 row), reason (variable rows — word-wrapped
+		// so long messages don't get truncated by the right border). Compute
+		// reason height from the available inner width with a hard cap so the
+		// choice list always has at least a couple of rows on small terminals.
 		let reason_text = format!("reason: {}", self.reason);
 		let reason_paragraph = Paragraph::new(Text::raw(reason_text.clone()))
 			.style(Style::default().fg(Color::Yellow))
 			.wrap(Wrap { trim: false });
 		let reason_height =
 			estimate_wrapped_line_count(&reason_text, inner.width).clamp(1, MAX_REASON_HEIGHT);
-		let header_height = 3u16.saturating_add(reason_height as u16);
+		let header_height = 4u16.saturating_add(reason_height as u16);
 		let top_separator_y = inner
 			.y
 			.saturating_add(header_height)
 			.min(bottom_separator_y);
 
+		let gauge_rect = Rect {
+			x: inner.x,
+			y: inner.y,
+			width: inner.width,
+			height: 1,
+		};
+		render_progress_gauge(
+			gauge_rect,
+			buf,
+			self.current_conflict_index,
+			self.total_conflicts,
+		);
 		write_line(
 			buf,
 			inner,
-			inner.y,
+			inner.y.saturating_add(1),
 			&self.file_path.to_string_lossy(),
 			Style::default(),
 		);
 		write_line(
 			buf,
 			inner,
-			inner.y.saturating_add(1),
+			inner.y.saturating_add(2),
 			&format!("  {}", self.address_path.join(" / ")),
 			Style::default().fg(Color::Cyan),
 		);
-		// reason starts at inner.y + 3, claims `reason_height` rows of the
+		// reason starts at inner.y + 4, claims `reason_height` rows of the
 		// header band so the rest of the layout flows below it.
-		let reason_y = inner.y.saturating_add(3);
+		let reason_y = inner.y.saturating_add(4);
 		let reason_rect = Rect {
 			x: inner.x,
 			y: reason_y,
@@ -578,6 +594,22 @@ fn write_line(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
 	buf.set_stringn(area.x, y, text, area.width as usize, style);
 }
 
+fn render_progress_gauge(area: Rect, buf: &mut Buffer, current: usize, total: usize) {
+	if area.width == 0 || area.height == 0 {
+		return;
+	}
+	let total = total.max(1);
+	let current = current.min(total);
+	let ratio = current as f64 / total as f64;
+	let percent = (ratio * 100.0).round() as u16;
+	let label = format!("conflict {current}/{total}  ({percent}%)");
+	Gauge::default()
+		.gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+		.ratio(ratio.clamp(0.0, 1.0))
+		.label(label)
+		.render(area, buf);
+}
+
 /// Conservative estimate of how many terminal rows a `Paragraph::wrap`
 /// rendering of `text` will consume at `width` columns. Counts each `\n`
 /// as a hard break and divides each segment by `width` rounded up. Uses
@@ -837,31 +869,98 @@ mod tests {
 			1,
 			30,
 		);
-		let area = Rect::new(0, 0, 76, 18);
+		let area = Rect::new(0, 0, 76, 19);
 		let mut actual = Buffer::empty(area);
 		Widget::render(&resolver, area, &mut actual);
-		let expected = Buffer::with_lines([
+		let actual_lines = buffer_lines(&actual);
+
+		// Gauge content (line 1) is checked separately via render_progress_gauge_*
+		// tests because its exact block-fill symbols are sensitive to ratatui's
+		// internal partial-cell glyph table. Confirm the structural rest.
+		let rest = [
+			actual_lines[0].as_str(),
+			actual_lines[2].as_str(),
+			actual_lines[3].as_str(),
+			actual_lines[4].as_str(),
+			actual_lines[5].as_str(),
+			actual_lines[6].as_str(),
+			actual_lines[7].as_str(),
+			actual_lines[8].as_str(),
+			actual_lines[9].as_str(),
+			actual_lines[10].as_str(),
+			actual_lines[11].as_str(),
+			actual_lines[12].as_str(),
+			actual_lines[13].as_str(),
+			actual_lines[14].as_str(),
+			actual_lines[15].as_str(),
+			actual_lines[16].as_str(),
+			actual_lines[17].as_str(),
+			actual_lines[18].as_str(),
+		];
+		let expected = [
 			"┌ foch merge: conflict 1/30 ───────────────────────────────────────────────┐",
 			"│events/FlavorFRA.txt                                                      │",
 			"│  flavor_fra.3135 / option / define_advisor / name                        │",
 			"│                                                                          │",
 			"│reason: sibling mods set the same scalar to divergent values              │",
 			"├──────────────────────────────────────────────────────────────────────────┤",
-			"│❯ [1] Europa Expanded (2164202838, prec 0)                                │",
+			"│  [1] Europa Expanded (2164202838, prec 0)                                │",
 			"│      set \"name\" = \"Charles-Francois de Broglie\"                          │",
 			"│  [2] Chinese Language Supp. (1999055990, prec 2)                         │",
 			"│      set \"name\" = \"Chinese localization\"                                 │",
 			"│  ─────                                                                   │",
-			"│  [d] defer                                                               │",
+			"│❯ [d] defer                                                               │",
 			"│  [s] external file                                                       │",
 			"│  [k] keep existing                                                       │",
 			"│  [q] abort                                                               │",
 			"├──────────────────────────────────────────────────────────────────────────┤",
 			"│↑↓ select  Enter confirm  Esc/d defer  Q abort  S file  K keep            │",
 			"└──────────────────────────────────────────────────────────────────────────┘",
-		]);
+		];
+		assert_eq!(rest, expected);
 
-		assert_eq!(buffer_lines(&actual), buffer_lines(&expected));
+		// Gauge line shape: starts with │, ends with │, contains the textual label.
+		let gauge_line = actual_lines[1].as_str();
+		assert!(
+			gauge_line.starts_with('│') && gauge_line.ends_with('│'),
+			"gauge line not bordered: {gauge_line:?}"
+		);
+		assert!(
+			gauge_line.contains("conflict 1/30"),
+			"gauge missing label: {gauge_line:?}"
+		);
+		assert!(
+			gauge_line.contains("(3%)"),
+			"gauge missing percent: {gauge_line:?}"
+		);
+	}
+
+	#[test]
+	fn render_progress_gauge_renders_empty_at_zero() {
+		let area = Rect::new(0, 0, 30, 1);
+		let mut buf = Buffer::empty(area);
+		render_progress_gauge(area, &mut buf, 0, 10);
+		let line: String = (0..area.width)
+			.map(|x| buf[(area.x + x, area.y)].symbol())
+			.collect::<String>();
+		assert!(
+			line.contains("conflict 0/10") && line.contains("(0%)"),
+			"unexpected gauge line: {line:?}"
+		);
+	}
+
+	#[test]
+	fn render_progress_gauge_handles_zero_total_safely() {
+		let area = Rect::new(0, 0, 30, 1);
+		let mut buf = Buffer::empty(area);
+		render_progress_gauge(area, &mut buf, 0, 0);
+		let line: String = (0..area.width)
+			.map(|x| buf[(area.x + x, area.y)].symbol())
+			.collect::<String>();
+		assert!(
+			line.contains("conflict 0/1") && line.contains("(0%)"),
+			"gauge must clamp zero total to 1 to avoid div-by-zero: {line:?}"
+		);
 	}
 
 	#[test]
@@ -875,19 +974,27 @@ mod tests {
 			1,
 			2,
 		);
+		let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
 		let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
 		let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-		assert_eq!(
-			resolver.handle_key(enter),
-			Some(ConflictAction::PickCandidate(0))
-		);
-		assert_eq!(resolver.handle_key(down), None);
+		// Cursor defaults to "[d] defer" so accidental Enter never picks
+		// an arbitrary mod's patch.
+		assert_eq!(resolver.handle_key(enter), Some(ConflictAction::Defer));
+		// Up moves into the candidate list (last candidate first).
+		assert_eq!(resolver.handle_key(up), None);
 		assert_eq!(
 			resolver.handle_key(enter),
 			Some(ConflictAction::PickCandidate(1))
 		);
-		for _ in 0..4 {
+		assert_eq!(resolver.handle_key(up), None);
+		assert_eq!(
+			resolver.handle_key(enter),
+			Some(ConflictAction::PickCandidate(0))
+		);
+		// Now navigate down past the candidate list and through the action
+		// rows to the final Abort entry.
+		for _ in 0..5 {
 			resolver.handle_key(down);
 		}
 		assert_eq!(resolver.handle_key(enter), Some(ConflictAction::Abort));
