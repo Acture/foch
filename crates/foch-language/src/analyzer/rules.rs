@@ -410,15 +410,13 @@ fn collect_content_family_merge_keys(
 					insert_family_key(&mut keys_by_mod, &scope.mod_id, family_id, value.clone());
 				}
 			}
-			MergeKeySource::ContainerChildKey => {
-				if is_container_child_scope(index, parent) {
-					insert_family_key(
-						&mut keys_by_mod,
-						&scope.mod_id,
-						family_id,
-						scope.key.clone(),
-					);
-				}
+			MergeKeySource::ContainerChildKey if is_container_child_scope(index, parent) => {
+				insert_family_key(
+					&mut keys_by_mod,
+					&scope.mod_id,
+					family_id,
+					scope.key.clone(),
+				);
 			}
 			MergeKeySource::ContainerChildFieldValue {
 				container,

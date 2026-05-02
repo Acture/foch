@@ -130,10 +130,10 @@ fn check_unresolved_call_targets(index: &SemanticIndex) -> Vec<Finding> {
 			continue;
 		}
 		match reference.kind {
-			SymbolKind::Event => {
-				if !resolve_event_reference_targets(index, reference).is_empty() {
-					continue;
-				}
+			SymbolKind::Event
+				if !resolve_event_reference_targets(index, reference).is_empty() =>
+			{
+				continue;
 			}
 			SymbolKind::ScriptedEffect => {
 				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {

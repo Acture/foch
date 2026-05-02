@@ -58,7 +58,10 @@ jobs:
       - name: Verify generated parser is up to date
         run: |
           bunx tree-sitter generate
-          git diff --exit-code src/
+          # Only check grammar-deterministic files; src/parser.c and
+          # src/tree_sitter/* drift between tree-sitter-cli versions
+          # even without grammar.js changes.
+          git diff --exit-code src/grammar.json src/node-types.json
 
       - name: Test grammar package
         run: bun run test
