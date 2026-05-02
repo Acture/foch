@@ -27,6 +27,8 @@ use super::patch_merge::{PatchAddress, PatchConflict};
 
 const ACTION_COUNT: usize = 4;
 const MAX_SUMMARY_CHARS: usize = 80;
+const MAX_CHILD_PREVIEW_ENTRIES: usize = 3;
+const MAX_RENDERED_SUMMARY_LINES: usize = 4;
 /// Cap how many wrapped lines `reason: …` may consume in the conflict header.
 /// Long sibling-conflict messages that enumerate every divergent value can run
 /// hundreds of characters; capping keeps the candidate list visible on small
@@ -47,13 +49,14 @@ struct ConflictCandidate {
 	mod_id: String,
 	display_name: String,
 	precedence: usize,
-	summary: String,
+	summary: Vec<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ConflictResolver {
 	pub current_conflict_index: usize,
 	pub total_conflicts: usize,
+	pub deferred_so_far: usize,
 	file_path: PathBuf,
 	address_path: Vec<String>,
 	reason: String,
@@ -63,6 +66,7 @@ pub struct ConflictResolver {
 }
 
 impl ConflictResolver {
+	#[allow(clippy::too_many_arguments)]
 	pub fn new(
 		conflict: &PatchConflict,
 		file: &Path,
@@ -71,6 +75,7 @@ impl ConflictResolver {
 		mod_displayname_lookup: &HashMap<String, String>,
 		current_idx: usize,
 		total: usize,
+		deferred_so_far: usize,
 	) -> Self {
 		let candidates: Vec<ConflictCandidate> = conflict
 			.patches
@@ -97,6 +102,7 @@ impl ConflictResolver {
 		Self {
 			current_conflict_index: current_idx,
 			total_conflicts: total,
+			deferred_so_far,
 			file_path: file.to_path_buf(),
 			address_path,
 			reason: conflict.reason.clone(),
@@ -219,6 +225,7 @@ impl Widget for &ConflictResolver {
 			buf,
 			self.current_conflict_index,
 			self.total_conflicts,
+			self.deferred_so_far,
 		);
 		write_line(
 			buf,
@@ -275,6 +282,7 @@ pub struct InteractiveTuiHandler {
 	mod_displayname_lookup: HashMap<String, String>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
+	deferred_so_far: usize,
 }
 
 impl InteractiveTuiHandler {
@@ -284,6 +292,7 @@ impl InteractiveTuiHandler {
 		mod_displayname_lookup: HashMap<String, String>,
 		current_conflict_index: usize,
 		total_conflicts: usize,
+		deferred_so_far: usize,
 	) -> Self {
 		Self {
 			current_file,
@@ -291,6 +300,7 @@ impl InteractiveTuiHandler {
 			mod_displayname_lookup,
 			current_conflict_index,
 			total_conflicts,
+			deferred_so_far,
 		}
 	}
 
@@ -341,6 +351,7 @@ impl ConflictHandler for InteractiveTuiHandler {
 			&self.mod_displayname_lookup,
 			self.current_conflict_index,
 			self.total_conflicts,
+			self.deferred_so_far,
 		);
 
 		let action = match run_resolver(&mut resolver) {
@@ -369,6 +380,10 @@ impl ConflictHandler for InteractiveTuiHandler {
 			ConflictAction::Abort => ConflictDecision::Abort,
 		};
 		self.persist_decision(address, decision)
+	}
+
+	fn set_deferred_so_far(&mut self, count: usize) {
+		self.deferred_so_far = count;
 	}
 }
 
@@ -539,11 +554,13 @@ fn choice_lines(resolver: &ConflictResolver) -> Vec<ChoiceLine> {
 				Style::default()
 			},
 		});
-		lines.push(ChoiceLine {
-			item_index: None,
-			text: format!("      {}", candidate.summary),
-			style: Style::default().fg(Color::Gray),
-		});
+		for summary_line in rendered_summary_lines(&candidate.summary) {
+			lines.push(ChoiceLine {
+				item_index: None,
+				text: format!("      {summary_line}"),
+				style: Style::default().fg(Color::Gray),
+			});
+		}
 	}
 	lines.push(ChoiceLine {
 		item_index: None,
@@ -551,10 +568,10 @@ fn choice_lines(resolver: &ConflictResolver) -> Vec<ChoiceLine> {
 		style: Style::default().fg(Color::DarkGray),
 	});
 	for (offset, label) in [
-		"[d] defer",
-		"[s] external file",
-		"[k] keep existing",
-		"[q] abort",
+		"[d] defer (skip; record in report)",
+		"[s] use external file (paste a path)",
+		"[k] keep existing file in out dir (don't overwrite)",
+		"[q] abort merge",
 	]
 	.iter()
 	.enumerate()
@@ -573,6 +590,36 @@ fn choice_lines(resolver: &ConflictResolver) -> Vec<ChoiceLine> {
 		});
 	}
 	lines
+}
+
+fn rendered_summary_lines(summary: &[String]) -> Vec<String> {
+	if summary.len() <= MAX_RENDERED_SUMMARY_LINES {
+		return summary.to_vec();
+	}
+
+	let keep_prefix = MAX_RENDERED_SUMMARY_LINES.saturating_sub(1);
+	let mut rendered: Vec<String> = summary.iter().take(keep_prefix).cloned().collect();
+	let hidden_between = summary.len().saturating_sub(keep_prefix + 1);
+	let overflow_line = summary
+		.last()
+		.and_then(|line| adjusted_more_line(line, hidden_between))
+		.unwrap_or_else(|| "  …".to_string());
+	rendered.push(overflow_line);
+	rendered
+}
+
+fn adjusted_more_line(line: &str, hidden_between: usize) -> Option<String> {
+	for prefix in ["  + … (", "  - … ("] {
+		let Some(rest) = line.strip_prefix(prefix) else {
+			continue;
+		};
+		let Some(count) = rest.strip_suffix(" more)") else {
+			continue;
+		};
+		let count = count.parse::<usize>().ok()?;
+		return Some(format!("{prefix}{} more)", count + hidden_between));
+	}
+	None
 }
 
 fn draw_separator(buf: &mut Buffer, area: Rect, y: u16) {
@@ -594,7 +641,13 @@ fn write_line(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
 	buf.set_stringn(area.x, y, text, area.width as usize, style);
 }
 
-fn render_progress_gauge(area: Rect, buf: &mut Buffer, current: usize, total: usize) {
+fn render_progress_gauge(
+	area: Rect,
+	buf: &mut Buffer,
+	current: usize,
+	total: usize,
+	deferred_so_far: usize,
+) {
 	if area.width == 0 || area.height == 0 {
 		return;
 	}
@@ -602,7 +655,7 @@ fn render_progress_gauge(area: Rect, buf: &mut Buffer, current: usize, total: us
 	let current = current.min(total);
 	let ratio = current as f64 / total as f64;
 	let percent = (ratio * 100.0).round() as u16;
-	let label = format!("conflict {current}/{total}  ({percent}%)");
+	let label = format!("conflict {current}/{total}  ({percent}%, {deferred_so_far} deferred)");
 	Gauge::default()
 		.gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
 		.ratio(ratio.clamp(0.0, 1.0))
@@ -631,36 +684,123 @@ fn estimate_wrapped_line_count(text: &str, width: u16) -> usize {
 	total.max(1)
 }
 
-fn concise_patch_summary(patch: &ClausewitzPatch) -> String {
+fn concise_patch_summary(patch: &ClausewitzPatch) -> Vec<String> {
 	match patch {
-		ClausewitzPatch::SetValue { key, new_value, .. } => {
-			format!("set \"{key}\" = {}", value_summary(new_value))
-		}
-		ClausewitzPatch::RemoveNode { key, .. } => format!("remove \"{key}\""),
-		ClausewitzPatch::InsertNode { key, statement, .. } => {
-			format!("insert \"{key}\" = {}", statement_value_summary(statement))
-		}
+		ClausewitzPatch::SetValue {
+			key,
+			old_value,
+			new_value,
+			..
+		} => vec![format!(
+			"set \"{key}\": {} → {}",
+			value_summary(old_value),
+			value_summary(new_value)
+		)],
+		ClausewitzPatch::RemoveNode { key, removed, .. } => remove_node_summary(key, removed),
+		ClausewitzPatch::InsertNode { key, statement, .. } => insert_node_summary(key, statement),
 		ClausewitzPatch::ReplaceBlock {
 			key, new_statement, ..
-		} => format!(
-			"replace block \"{key}\" with {} entries",
-			statement_entry_count(new_statement)
-		),
+		} => block_patch_summary(format!("replace block \"{key}\""), new_statement, '+'),
 		ClausewitzPatch::AppendListItem { key, value, .. } => {
-			format!("append to list \"{key}\": {}", value_summary(value))
+			vec![format!(
+				"append to list \"{key}\": {}",
+				value_summary(value)
+			)]
 		}
 		ClausewitzPatch::RemoveListItem { key, value, .. } => {
-			format!("remove from list \"{key}\": {}", value_summary(value))
+			vec![format!(
+				"remove from list \"{key}\": {}",
+				value_summary(value)
+			)]
 		}
 		ClausewitzPatch::AppendBlockItem { value, .. } => {
-			format!("append item: {}", value_summary(value))
+			vec![format!("append item: {}", value_summary(value))]
 		}
 		ClausewitzPatch::RemoveBlockItem { value, .. } => {
-			format!("remove item: {}", value_summary(value))
+			vec![format!("remove item: {}", value_summary(value))]
 		}
 		ClausewitzPatch::Rename {
 			old_key, new_key, ..
-		} => format!("rename \"{old_key}\" → \"{new_key}\""),
+		} => vec![format!("rename \"{old_key}\" → \"{new_key}\"")],
+	}
+}
+
+fn remove_node_summary(key: &str, removed: &AstStatement) -> Vec<String> {
+	let mut lines = vec![format!(
+		"remove \"{key}\" (was: {})",
+		statement_value_summary(removed)
+	)];
+	if let AstStatement::Assignment {
+		value: AstValue::Block { items, .. },
+		..
+	} = removed
+	{
+		lines.extend(child_preview_lines(items, '-'));
+	}
+	lines
+}
+
+fn insert_node_summary(key: &str, statement: &AstStatement) -> Vec<String> {
+	if statement_block_items(statement).is_some() {
+		return block_patch_summary(format!("insert \"{key}\""), statement, '+');
+	}
+	vec![format!(
+		"insert \"{key}\" = {}",
+		statement_value_summary(statement)
+	)]
+}
+
+fn block_patch_summary(prefix: String, statement: &AstStatement, marker: char) -> Vec<String> {
+	let mut lines = vec![format!(
+		"{prefix} ({} entries)",
+		statement_entry_count(statement)
+	)];
+	if let Some(items) = statement_block_items(statement) {
+		lines.extend(child_preview_lines(items, marker));
+	}
+	lines
+}
+
+fn statement_block_items(statement: &AstStatement) -> Option<&[AstStatement]> {
+	match statement {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		}
+		| AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => Some(items),
+		AstStatement::Assignment { .. }
+		| AstStatement::Item { .. }
+		| AstStatement::Comment { .. } => None,
+	}
+}
+
+fn child_preview_lines(items: &[AstStatement], marker: char) -> Vec<String> {
+	let entries: Vec<String> = items
+		.iter()
+		.filter_map(|statement| child_preview_line(statement, marker))
+		.collect();
+	let mut lines: Vec<String> = entries
+		.iter()
+		.take(MAX_CHILD_PREVIEW_ENTRIES)
+		.cloned()
+		.collect();
+	let remaining = entries.len().saturating_sub(MAX_CHILD_PREVIEW_ENTRIES);
+	if remaining > 0 {
+		lines.push(format!("  {marker} … ({remaining} more)"));
+	}
+	lines
+}
+
+fn child_preview_line(statement: &AstStatement, marker: char) -> Option<String> {
+	match statement {
+		AstStatement::Assignment { key, value, .. } => {
+			Some(format!("  {marker} {key} = {}", value_summary(value)))
+		}
+		AstStatement::Item { value, .. } => Some(format!("  {marker} {}", value_summary(value))),
+		AstStatement::Comment { .. } => None,
 	}
 }
 
@@ -868,6 +1008,7 @@ mod tests {
 			&display_names(),
 			1,
 			30,
+			0,
 		);
 		let area = Rect::new(0, 0, 76, 19);
 		let mut actual = Buffer::empty(area);
@@ -905,14 +1046,14 @@ mod tests {
 			"│reason: sibling mods set the same scalar to divergent values              │",
 			"├──────────────────────────────────────────────────────────────────────────┤",
 			"│  [1] Europa Expanded (2164202838, prec 0)                                │",
-			"│      set \"name\" = \"Charles-Francois de Broglie\"                          │",
+			"│      set \"name\": \"old\" → \"Charles-Francois de Broglie\"                   │",
 			"│  [2] Chinese Language Supp. (1999055990, prec 2)                         │",
-			"│      set \"name\" = \"Chinese localization\"                                 │",
+			"│      set \"name\": \"old\" → \"Chinese localization\"                          │",
 			"│  ─────                                                                   │",
-			"│❯ [d] defer                                                               │",
-			"│  [s] external file                                                       │",
-			"│  [k] keep existing                                                       │",
-			"│  [q] abort                                                               │",
+			"│❯ [d] defer (skip; record in report)                                      │",
+			"│  [s] use external file (paste a path)                                    │",
+			"│  [k] keep existing file in out dir (don't overwrite)                     │",
+			"│  [q] abort merge                                                         │",
 			"├──────────────────────────────────────────────────────────────────────────┤",
 			"│↑↓ select  Enter confirm  Esc/d defer  Q abort  S file  K keep            │",
 			"└──────────────────────────────────────────────────────────────────────────┘",
@@ -930,35 +1071,35 @@ mod tests {
 			"gauge missing label: {gauge_line:?}"
 		);
 		assert!(
-			gauge_line.contains("(3%)"),
-			"gauge missing percent: {gauge_line:?}"
+			gauge_line.contains("(3%, 0 deferred)"),
+			"gauge missing percent/deferred count: {gauge_line:?}"
 		);
 	}
 
 	#[test]
 	fn render_progress_gauge_renders_empty_at_zero() {
-		let area = Rect::new(0, 0, 30, 1);
+		let area = Rect::new(0, 0, 50, 1);
 		let mut buf = Buffer::empty(area);
-		render_progress_gauge(area, &mut buf, 0, 10);
+		render_progress_gauge(area, &mut buf, 0, 10, 2);
 		let line: String = (0..area.width)
 			.map(|x| buf[(area.x + x, area.y)].symbol())
 			.collect::<String>();
 		assert!(
-			line.contains("conflict 0/10") && line.contains("(0%)"),
+			line.contains("conflict 0/10") && line.contains("(0%, 2 deferred)"),
 			"unexpected gauge line: {line:?}"
 		);
 	}
 
 	#[test]
 	fn render_progress_gauge_handles_zero_total_safely() {
-		let area = Rect::new(0, 0, 30, 1);
+		let area = Rect::new(0, 0, 50, 1);
 		let mut buf = Buffer::empty(area);
-		render_progress_gauge(area, &mut buf, 0, 0);
+		render_progress_gauge(area, &mut buf, 0, 0, 0);
 		let line: String = (0..area.width)
 			.map(|x| buf[(area.x + x, area.y)].symbol())
 			.collect::<String>();
 		assert!(
-			line.contains("conflict 0/1") && line.contains("(0%)"),
+			line.contains("conflict 0/1") && line.contains("(0%, 0 deferred)"),
 			"gauge must clamp zero total to 1 to avoid div-by-zero: {line:?}"
 		);
 	}
@@ -973,6 +1114,7 @@ mod tests {
 			&display_names(),
 			1,
 			2,
+			0,
 		);
 		let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
 		let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
@@ -1010,6 +1152,21 @@ mod tests {
 			&display_names(),
 			1,
 			2,
+			0,
+		);
+		let rendered_actions: Vec<String> = choice_lines(&resolver)
+			.into_iter()
+			.filter_map(|line| line.item_index.map(|_| line.text))
+			.skip(resolver.candidates.len())
+			.collect();
+		assert_eq!(
+			rendered_actions,
+			vec![
+				"❯ [d] defer (skip; record in report)",
+				"  [s] use external file (paste a path)",
+				"  [k] keep existing file in out dir (don't overwrite)",
+				"  [q] abort merge",
+			]
 		);
 
 		assert_eq!(
@@ -1040,7 +1197,7 @@ mod tests {
 					old_value: ident("old"),
 					new_value: string("new\nvalue"),
 				},
-				"set \"name\" = \"new\\nvalue\"",
+				vec!["set \"name\": old → \"new\\nvalue\""],
 			),
 			(
 				ClausewitzPatch::RemoveNode {
@@ -1048,7 +1205,7 @@ mod tests {
 					key: "owner".to_string(),
 					removed: assignment("owner", ident("FRA")),
 				},
-				"remove \"owner\"",
+				vec!["remove \"owner\" (was: FRA)"],
 			),
 			(
 				ClausewitzPatch::InsertNode {
@@ -1056,7 +1213,7 @@ mod tests {
 					key: "owner".to_string(),
 					statement: assignment("owner", ident("FRA")),
 				},
-				"insert \"owner\" = FRA",
+				vec!["insert \"owner\" = FRA"],
 			),
 			(
 				ClausewitzPatch::ReplaceBlock {
@@ -1071,7 +1228,11 @@ mod tests {
 						]),
 					),
 				},
-				"replace block \"option\" with 2 entries",
+				vec![
+					"replace block \"option\" (2 entries)",
+					"  + name = \"A\"",
+					"  + ai_chance = B",
+				],
 			),
 			(
 				ClausewitzPatch::AppendListItem {
@@ -1079,7 +1240,7 @@ mod tests {
 					key: "tag".to_string(),
 					value: ident("FRA"),
 				},
-				"append to list \"tag\": FRA",
+				vec!["append to list \"tag\": FRA"],
 			),
 			(
 				ClausewitzPatch::RemoveListItem {
@@ -1087,21 +1248,21 @@ mod tests {
 					key: "tag".to_string(),
 					value: ident("ENG"),
 				},
-				"remove from list \"tag\": ENG",
+				vec!["remove from list \"tag\": ENG"],
 			),
 			(
 				ClausewitzPatch::AppendBlockItem {
 					path: vec![],
 					value: ident("FRA"),
 				},
-				"append item: FRA",
+				vec!["append item: FRA"],
 			),
 			(
 				ClausewitzPatch::RemoveBlockItem {
 					path: vec![],
 					value: ident("ENG"),
 				},
-				"remove item: ENG",
+				vec!["remove item: ENG"],
 			),
 			(
 				ClausewitzPatch::Rename {
@@ -1109,14 +1270,60 @@ mod tests {
 					old_key: "old".to_string(),
 					new_key: "new".to_string(),
 				},
-				"rename \"old\" → \"new\"",
+				vec!["rename \"old\" → \"new\""],
 			),
 		];
 
 		for (patch, expected) in patches {
+			let expected = expected.into_iter().map(str::to_string).collect::<Vec<_>>();
 			assert_eq!(concise_patch_summary(&patch), expected);
 		}
 		Ok(())
+	}
+
+	#[test]
+	fn concise_patch_summary_replace_block_lists_first_three_children() {
+		let patch = ClausewitzPatch::ReplaceBlock {
+			path: vec![],
+			key: "X".to_string(),
+			old_statement: assignment("X", block(vec![])),
+			new_statement: assignment(
+				"X",
+				block(vec![
+					assignment("a", ident("A")),
+					assignment("b", ident("B")),
+					assignment("c", ident("C")),
+					assignment("d", ident("D")),
+					assignment("e", ident("E")),
+				]),
+			),
+		};
+
+		assert_eq!(
+			concise_patch_summary(&patch),
+			vec![
+				"replace block \"X\" (5 entries)",
+				"  + a = A",
+				"  + b = B",
+				"  + c = C",
+				"  + … (2 more)",
+			]
+		);
+	}
+
+	#[test]
+	fn set_value_summary_shows_old_arrow_new() {
+		let patch = ClausewitzPatch::SetValue {
+			path: vec![],
+			key: "key".to_string(),
+			old_value: ident("old"),
+			new_value: string("new"),
+		};
+
+		assert_eq!(
+			concise_patch_summary(&patch),
+			vec!["set \"key\": old → \"new\""]
+		);
 	}
 
 	#[test]
@@ -1130,8 +1337,9 @@ mod tests {
 
 		let summary = concise_patch_summary(&patch);
 
-		assert!(summary.ends_with('…'));
-		assert!(!summary.contains('\n'));
+		assert_eq!(summary.len(), 1);
+		assert!(summary[0].ends_with('…'));
+		assert!(!summary[0].contains('\n'));
 	}
 
 	#[test]

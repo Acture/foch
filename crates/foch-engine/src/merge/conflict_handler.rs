@@ -73,6 +73,8 @@ pub trait ConflictHandler {
 	) -> ConflictDecision;
 
 	fn set_conflict_progress(&mut self, _current: usize, _total: usize) {}
+
+	fn set_deferred_so_far(&mut self, _count: usize) {}
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -417,6 +419,9 @@ pub struct InteractiveCliHandler {
 	input: Box<dyn BufRead>,
 	stderr: Box<dyn Write>,
 	tty_available: Option<bool>,
+	current_conflict_index: usize,
+	total_conflicts: usize,
+	deferred_so_far: usize,
 }
 
 impl InteractiveCliHandler {
@@ -427,6 +432,9 @@ impl InteractiveCliHandler {
 			input: Box::new(BufReader::new(io::stdin())),
 			stderr: Box::new(io::stderr()),
 			tty_available: None,
+			current_conflict_index: 1,
+			total_conflicts: 1,
+			deferred_so_far: 0,
 		}
 	}
 
@@ -444,6 +452,9 @@ impl InteractiveCliHandler {
 			input,
 			stderr,
 			tty_available: Some(tty_available),
+			current_conflict_index: 1,
+			total_conflicts: 1,
+			deferred_so_far: 0,
 		}
 	}
 
@@ -460,7 +471,11 @@ impl InteractiveCliHandler {
 		conflict_id: &str,
 	) {
 		let address_path = address.path.join("/");
-		let _ = writeln!(self.stderr, "[foch] unresolved structural merge conflict");
+		let _ = writeln!(
+			self.stderr,
+			"[foch] unresolved structural merge conflict (conflict {}/{}) ({} deferred)",
+			self.current_conflict_index, self.total_conflicts, self.deferred_so_far
+		);
 		let _ = writeln!(self.stderr, "  file: {}", self.current_file.display());
 		let _ = writeln!(self.stderr, "  path: {path}");
 		let _ = writeln!(self.stderr, "  address: {address_path}/{}", address.key);
@@ -616,6 +631,15 @@ impl ConflictHandler for InteractiveCliHandler {
 		);
 		ConflictDecision::Defer
 	}
+
+	fn set_conflict_progress(&mut self, current: usize, total: usize) {
+		self.current_conflict_index = current;
+		self.total_conflicts = total;
+	}
+
+	fn set_deferred_so_far(&mut self, count: usize) {
+		self.deferred_so_far = count;
+	}
 }
 
 /// Chain combinator: returns the second handler's decision when the first defers.
@@ -640,6 +664,11 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 	fn set_conflict_progress(&mut self, current: usize, total: usize) {
 		self.first.set_conflict_progress(current, total);
 		self.second.set_conflict_progress(current, total);
+	}
+
+	fn set_deferred_so_far(&mut self, count: usize) {
+		self.first.set_deferred_so_far(count);
+		self.second.set_deferred_so_far(count);
 	}
 }
 
@@ -741,6 +770,7 @@ pub fn prompt_survivors_and_persist(
 	};
 
 	let total = survivors.len();
+	let mut deferred_so_far = 0usize;
 	let mut result = PromptSurvivorsResult::default();
 	for (idx, (address, conflict)) in survivors.iter().enumerate() {
 		let current = idx + 1;
@@ -753,6 +783,7 @@ pub fn prompt_survivors_and_persist(
 					mod_displayname_lookup.clone(),
 					current,
 					total,
+					deferred_so_far,
 				);
 				handler.on_conflict("", address, conflict)
 			}
@@ -762,6 +793,7 @@ pub fn prompt_survivors_and_persist(
 					Box::new(FilesystemConfigWriter::new(config_path.clone())),
 				);
 				handler.set_conflict_progress(current, total);
+				handler.set_deferred_so_far(deferred_so_far);
 				handler.on_conflict("", address, conflict)
 			}
 		};
@@ -781,10 +813,13 @@ pub fn prompt_survivors_and_persist(
 				conflict_id,
 				kind: PromptOutcomeKind::Picked(ResolutionDecision::KeepExisting),
 			}),
-			ConflictDecision::Defer => result.outcomes.push(PromptOutcome {
-				conflict_id,
-				kind: PromptOutcomeKind::Deferred,
-			}),
+			ConflictDecision::Defer => {
+				result.outcomes.push(PromptOutcome {
+					conflict_id,
+					kind: PromptOutcomeKind::Deferred,
+				});
+				deferred_so_far += 1;
+			}
 			ConflictDecision::Abort => {
 				result.aborted = true;
 				break;
