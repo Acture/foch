@@ -308,7 +308,8 @@ fn install_launcher_stub(
 	let slug = launcher_stub_slug(out_dir);
 	let stub_path = mod_dir.join(format!("foch_{slug}.mod"));
 	let display_name = format!("foch merge ({slug})");
-	let descriptor_value = absolute_out.to_string_lossy().replace('\\', "/");
+	let descriptor_value =
+		strip_extended_length_prefix(&absolute_out.to_string_lossy()).replace('\\', "/");
 	let body = format!(
 		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
 		out_dir.display(),
@@ -316,11 +317,29 @@ fn install_launcher_stub(
 		escape_descriptor(&descriptor_value)
 	);
 	fs::write(&stub_path, body)?;
+	let display_stub = strip_extended_length_prefix(&stub_path.to_string_lossy());
 	eprintln!(
-		"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
-		stub_path.display()
+		"[foch] launcher stub installed at {display_stub}; enable it in the Paradox Launcher and disable the source mods to use the merge."
 	);
 	Ok(())
+}
+
+/// Strip Windows extended-length path prefixes (`\\?\` / `\\?\UNC\`) so paths
+/// written into Paradox descriptors and printed to the user are loadable by
+/// the launcher and shell-friendly. Non-Windows / non-prefixed paths are
+/// returned verbatim.
+fn strip_extended_length_prefix(path: &str) -> String {
+	if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+		format!(r"\\{rest}")
+	} else if let Some(rest) = path.strip_prefix(r"\\?\") {
+		rest.to_string()
+	} else if let Some(rest) = path.strip_prefix("//?/UNC/") {
+		format!("//{rest}")
+	} else if let Some(rest) = path.strip_prefix("//?/") {
+		rest.to_string()
+	} else {
+		path.to_string()
+	}
 }
 
 fn launcher_stub_slug(out_dir: &Path) -> String {

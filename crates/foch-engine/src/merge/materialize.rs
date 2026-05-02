@@ -1457,7 +1457,26 @@ fn normalized_contributor_path(contributor: &ResolvedFileContributor) -> String 
 }
 
 fn normalize_path_string(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
+	let raw = path.to_string_lossy();
+	let stripped = strip_extended_length_prefix(&raw);
+	stripped.replace('\\', "/")
+}
+
+/// Strip Windows `\\?\` / `\\?\UNC\` extended-length prefixes (and their
+/// forward-slash twins) so the value embedded in a Paradox descriptor is
+/// loadable by the launcher and the game.
+fn strip_extended_length_prefix(path: &str) -> String {
+	if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+		format!(r"\\{rest}")
+	} else if let Some(rest) = path.strip_prefix(r"\\?\") {
+		rest.to_string()
+	} else if let Some(rest) = path.strip_prefix("//?/UNC/") {
+		format!("//{rest}")
+	} else if let Some(rest) = path.strip_prefix("//?/") {
+		rest.to_string()
+	} else {
+		path.to_string()
+	}
 }
 
 fn escape_descriptor_value(value: &str) -> String {
