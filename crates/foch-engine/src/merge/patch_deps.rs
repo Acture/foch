@@ -172,9 +172,7 @@ fn compute_dag_patches_from_parsed(
 			})?;
 			let patches = fold_renames(diff_ast(&current_base, current, merge_key_source));
 			for patch in &patches {
-				if let Some(addr) = overwrite_address(patch) {
-					addresses_in_level.insert(addr);
-				}
+				addresses_in_level.extend(overwrite_addresses(patch));
 			}
 			level_patches.push((mod_id.0.clone(), file_dag.precedence_of(&mod_id), patches));
 		}
@@ -291,11 +289,32 @@ fn resolved_patches(merge_result: &PatchMergeResult) -> Vec<ClausewitzPatch> {
 		.collect()
 }
 
-fn overwrite_address(patch: &ClausewitzPatch) -> Option<(Vec<String>, String)> {
+/// Addresses that this patch semantically "overwrites" at the given level.
+///
+/// A downstream level whose patch set touches any of these (path, key) pairs
+/// makes a sibling-conflict at that same address moot: whatever the upstream
+/// disagreement was, the downstream contributor decided what the final state
+/// should be. Returning a Vec lets `Rename` contribute both endpoints.
+fn overwrite_addresses(patch: &ClausewitzPatch) -> Vec<(Vec<String>, String)> {
 	match patch {
 		ClausewitzPatch::SetValue { path, key, .. }
-		| ClausewitzPatch::ReplaceBlock { path, key, .. } => Some((path.clone(), key.clone())),
-		_ => None,
+		| ClausewitzPatch::ReplaceBlock { path, key, .. }
+		| ClausewitzPatch::RemoveNode { path, key, .. }
+		| ClausewitzPatch::InsertNode { path, key, .. } => {
+			vec![(path.clone(), key.clone())]
+		}
+		ClausewitzPatch::Rename {
+			path,
+			old_key,
+			new_key,
+		} => vec![
+			(path.clone(), old_key.clone()),
+			(path.clone(), new_key.clone()),
+		],
+		ClausewitzPatch::AppendListItem { .. }
+		| ClausewitzPatch::RemoveListItem { .. }
+		| ClausewitzPatch::AppendBlockItem { .. }
+		| ClausewitzPatch::RemoveBlockItem { .. } => Vec::new(),
 	}
 }
 
@@ -1041,5 +1060,76 @@ mod tests {
 		assert_eq!(inserted_keys(patches_for(&result, "a")), vec!["a"]);
 		assert_eq!(inserted_keys(patches_for(&result, "b")), vec!["b"]);
 		assert!(base_keys(&result).is_empty());
+	}
+
+	#[test]
+	fn downstream_remove_collapses_sibling_set_value_conflict() {
+		// a and b are independent siblings that disagree on `flag`; c declares
+		// dependencies on both and removes `flag` outright. The upstream
+		// disagreement is moot — the post-pass must collapse it.
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+				mod_with("c", "C", vec!["A", "B"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+			],
+			Some("flag = no\n"),
+			parsed_inventory(&[("a", "flag = yes\n"), ("b", "flag = maybe\n"), ("c", "")]),
+			IgnoreReplacePath::None,
+		);
+
+		assert!(
+			result.merge_result.conflicts.is_empty(),
+			"downstream RemoveNode should collapse sibling SetValue/SetValue conflict, got {:?}",
+			result.merge_result.conflicts
+		);
+		assert!(
+			result
+				.merge_result
+				.handler_resolutions
+				.iter()
+				.any(|r| r.action == "downstream_override"),
+			"expected a downstream_override handler resolution"
+		);
+	}
+
+	#[test]
+	fn downstream_insert_collapses_sibling_remove_set_conflict() {
+		// a removes `flag`, b sets `flag`; c declares deps on both and re-inserts
+		// the key fresh. The upstream RemoveNode/SetValue disagreement is moot.
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+				mod_with("c", "C", vec!["A", "B"], vec![]),
+			],
+			vec![
+				file_contributor("a", 1),
+				file_contributor("b", 2),
+				file_contributor("c", 3),
+			],
+			Some("flag = no\n"),
+			parsed_inventory(&[("a", ""), ("b", "flag = yes\n"), ("c", "flag = forced\n")]),
+			IgnoreReplacePath::None,
+		);
+
+		assert!(
+			result.merge_result.conflicts.is_empty(),
+			"downstream re-insert should collapse sibling RemoveNode/SetValue conflict, got {:?}",
+			result.merge_result.conflicts
+		);
+		assert!(
+			result
+				.merge_result
+				.handler_resolutions
+				.iter()
+				.any(|r| r.action == "downstream_override"),
+			"expected a downstream_override handler resolution"
+		);
 	}
 }
