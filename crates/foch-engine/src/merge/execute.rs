@@ -199,19 +199,23 @@ fn count_findings_for_rules(findings: &[Finding], rule_ids: &[&str]) -> usize {
 }
 
 fn final_merge_status(report: &MergeReport) -> MergeReportStatus {
-	let has_validation_errors = report.validation.fatal_errors > 0
-		|| report.validation.strict_findings > 0
-		|| report.validation.parse_errors > 0;
+	// Only true I/O / fatal-class issues drop the merge to Fatal. Strict /
+	// advisory / parse / unresolved-reference / missing-localisation findings
+	// are surfaced separately; they're often present in each individual mod
+	// already and should not silently demote a successful merge to Fatal.
+	let has_fatal_errors = report.validation.fatal_errors > 0;
 
-	if has_validation_errors {
+	if has_fatal_errors {
 		MergeReportStatus::Fatal
 	} else if report.manual_conflict_count > 0 {
 		// If materialize already set PartialSuccess (--force resolved conflicts),
 		// keep it.  Otherwise block.
 		match report.status {
 			MergeReportStatus::PartialSuccess => MergeReportStatus::PartialSuccess,
-			_ => MergeReportStatus::Fatal,
+			_ => MergeReportStatus::Blocked,
 		}
+	} else if !report.handler_resolutions.is_empty() || report.fallback_resolved_count > 0 {
+		MergeReportStatus::PartialSuccess
 	} else {
 		MergeReportStatus::Ready
 	}

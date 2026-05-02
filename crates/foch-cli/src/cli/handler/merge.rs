@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let playset_path = resolve_playset_path(merge_args.playset_path.as_deref(), &config)?;
+	let paradox_data_path = config.paradox_data_path.clone();
 	let request = CheckRequest {
 		playset_path: playset_path.clone(),
 		config,
@@ -63,6 +64,15 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		fallback_enabled,
 	) {
 		eprintln!("{tip}");
+	}
+	if matches!(
+		execution.report.status,
+		foch_core::model::MergeReportStatus::Ready
+			| foch_core::model::MergeReportStatus::PartialSuccess
+	) && let Some(paradox_dir) = paradox_data_path.as_ref()
+		&& let Err(err) = install_launcher_stub(&merge_args.out, paradox_dir)
+	{
+		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
 }
@@ -278,4 +288,57 @@ fn merge_report_exit_code(report: &MergeReport) -> i32 {
 		MergeReportStatus::Blocked => 2,
 		MergeReportStatus::Fatal => 3,
 	}
+}
+
+/// Drop a `<paradox_data_path>/mod/foch_<slug>.mod` stub pointing at the
+/// freshly-merged `out_dir` so the Paradox launcher lists the merge under
+/// "Mods" without the user having to hand-write a descriptor.
+///
+/// The launcher only enumerates `.mod` files inside its game-specific mod
+/// directory; the in-`out_dir` `descriptor.mod` we already write isn't
+/// enough on its own. The user still has to open the launcher and toggle
+/// the merge on (and disable the source mods to avoid double-loading).
+fn install_launcher_stub(
+	out_dir: &Path,
+	paradox_data_path: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let mod_dir = paradox_data_path.join("mod");
+	fs::create_dir_all(&mod_dir)?;
+	let absolute_out = fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
+	let slug = launcher_stub_slug(out_dir);
+	let stub_path = mod_dir.join(format!("foch_{slug}.mod"));
+	let display_name = format!("foch merge ({slug})");
+	let descriptor_value = absolute_out.to_string_lossy().replace('\\', "/");
+	let body = format!(
+		"# foch-managed launcher stub for {}\nname=\"{}\"\npath=\"{}\"\nsupported_version=\"*\"\n",
+		out_dir.display(),
+		escape_descriptor(&display_name),
+		escape_descriptor(&descriptor_value)
+	);
+	fs::write(&stub_path, body)?;
+	eprintln!(
+		"[foch] launcher stub installed at {}; enable it in the Paradox Launcher and disable the source mods to use the merge.",
+		stub_path.display()
+	);
+	Ok(())
+}
+
+fn launcher_stub_slug(out_dir: &Path) -> String {
+	let raw = out_dir
+		.file_name()
+		.map(|s| s.to_string_lossy().into_owned())
+		.unwrap_or_else(|| "merge".to_string());
+	raw.chars()
+		.map(|c| {
+			if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+				c
+			} else {
+				'_'
+			}
+		})
+		.collect()
+}
+
+fn escape_descriptor(value: &str) -> String {
+	value.replace('\\', "\\\\").replace('"', "\\\"")
 }
