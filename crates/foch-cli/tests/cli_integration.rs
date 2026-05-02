@@ -12,6 +12,12 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tempfile::TempDir;
 
+fn descriptor_path_value(path: &Path) -> String {
+	path.to_string_lossy()
+		.replace('\\', "/")
+		.replace('"', "\\\"")
+}
+
 fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
 	let parent = path.parent().expect("playset path has parent");
 	fs::create_dir_all(parent.join("mod")).expect("create mod metadata dir");
@@ -32,7 +38,7 @@ fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
 		let mod_root = parent.join(steam_id);
 		let body = format!(
 			"name=\"{display_name}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
-			mod_root.display()
+			descriptor_path_value(&mod_root)
 		);
 		fs::write(parent.join("mod").join(format!("ugc_{steam_id}.mod")), body)
 			.expect("write ugc descriptor");
@@ -142,6 +148,37 @@ fn write_config(path: &Path, content: &str) {
 	fs::write(path.join("config.toml"), content).expect("write config");
 }
 
+fn game_path_config(game_root: &Path) -> String {
+	let mut config = toml::Table::new();
+	let mut game_path = toml::Table::new();
+	game_path.insert(
+		"eu4".into(),
+		toml::Value::String(game_root.to_string_lossy().into_owned()),
+	);
+	config.insert("game_path".into(), toml::Value::Table(game_path));
+	toml::to_string(&config).expect("serialize game path config")
+}
+
+fn write_game_path_config(config_dir: &Path, game_root: &Path) {
+	write_config(config_dir, &game_path_config(game_root));
+}
+
+fn steam_root_config(steam_root: &Path) -> String {
+	let mut config = toml::Table::new();
+	config.insert(
+		"steam_root_path".into(),
+		toml::Value::String(steam_root.to_string_lossy().into_owned()),
+	);
+	toml::to_string(&config).expect("serialize steam root config")
+}
+
+fn write_no_auto_detect_config(config_dir: &Path) {
+	write_config(
+		config_dir,
+		&steam_root_config(&config_dir.join("missing-steam")),
+	);
+}
+
 fn write_game_version(game_root: &Path, version: &str) {
 	fs::create_dir_all(game_root).expect("create game root");
 	fs::write(
@@ -158,10 +195,7 @@ fn ensure_default_game_config(config_dir: &Path) {
 	}
 	let game_root = config_dir.join("eu4-game");
 	fs::create_dir_all(&game_root).expect("create default game root");
-	write_config(
-		config_dir,
-		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
-	);
+	write_game_path_config(config_dir, &game_root);
 }
 
 fn run_foch(args: &[&str], config_dir: &Path) -> (i32, String, String) {
@@ -807,10 +841,7 @@ fn simplify_command_out_removes_base_equivalent_definitions_and_reports_merge_ca
 		"merge_me = { log = b }\n",
 	)
 	.expect("write mod b effects");
-	write_config(
-		tmp.path(),
-		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
-	);
+	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = playlist_path.display().to_string();
@@ -873,10 +904,7 @@ fn simplify_command_in_place_removes_empty_files() {
 	)
 	.expect("write base effect");
 	fs::write(&target_file, "shared_effect = { log = base }\n").expect("write mod effect");
-	write_config(
-		tmp.path(),
-		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
-	);
+	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = playlist_path.display().to_string();
@@ -1263,10 +1291,7 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 		"shared_effect = { log = mod }\n",
 	)
 	.expect("write mod effect");
-	write_config(
-		tmp.path(),
-		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
-	);
+	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = playlist_path.display().to_string();
@@ -1707,7 +1732,7 @@ fn default_base_game_mode_fails_when_game_root_is_missing() {
 
 	let config_dir = tmp.path().join("config-missing-game");
 	fs::create_dir_all(&config_dir).expect("create config dir");
-	write_config(&config_dir, "");
+	write_no_auto_detect_config(&config_dir);
 
 	let playlist_str = playlist_path.display().to_string();
 	let (code, stdout, _stderr) =
@@ -1725,7 +1750,7 @@ fn no_game_base_opt_out_allows_check_without_game_root() {
 
 	let config_dir = tmp.path().join("config-no-game");
 	fs::create_dir_all(&config_dir).expect("create config dir");
-	write_config(&config_dir, "");
+	write_no_auto_detect_config(&config_dir);
 
 	let playlist_str = playlist_path.display().to_string();
 	let (code, stdout, _stderr) = run_foch_with_env(
@@ -1970,10 +1995,7 @@ fn check_uses_installed_base_data_to_resolve_base_symbols() {
 	)
 	.expect("write mod event");
 	write_game_version(&game_root, "8.2.0-test");
-	write_config(
-		tmp.path(),
-		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
-	);
+	write_game_path_config(tmp.path(), &game_root);
 	build_base_data_install(tmp.path(), &game_root);
 
 	let playlist_str = playlist_path.display().to_string();
@@ -2015,10 +2037,7 @@ fn data_install_downloads_release_asset_from_manifest() {
 		"namespace = base\ncountry_event = { id = base.1 }\n",
 	)
 	.expect("write base event");
-	write_config(
-		tmp.path(),
-		format!("[game_path]\neu4 = \"{}\"\n", game_root.display()).as_str(),
-	);
+	write_game_path_config(tmp.path(), &game_root);
 	build_release_assets(tmp.path(), &game_root, &release_dir);
 
 	let server = serve_directory(&release_dir);

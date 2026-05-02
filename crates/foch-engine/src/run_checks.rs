@@ -364,16 +364,19 @@ fn build_parse_issue_report(index: &SemanticIndex) -> Vec<ParseIssueReportItem> 
 	let mut items: Vec<ParseIssueReportItem> = index
 		.parse_issues
 		.iter()
-		.map(|issue| ParseIssueReportItem {
-			family: family_lookup
-				.get(&(issue.mod_id.clone(), normalize_relative_path(&issue.path)))
-				.copied()
-				.unwrap_or(DocumentFamily::Clausewitz),
-			mod_id: issue.mod_id.clone(),
-			path: issue.path.clone(),
-			line: issue.line,
-			column: issue.column,
-			message: issue.message.clone(),
+		.map(|issue| {
+			let normalized_path = normalize_relative_path(&issue.path);
+			ParseIssueReportItem {
+				family: family_lookup
+					.get(&(issue.mod_id.clone(), normalized_path.clone()))
+					.copied()
+					.unwrap_or(DocumentFamily::Clausewitz),
+				mod_id: issue.mod_id.clone(),
+				path: normalized_path.into(),
+				line: issue.line,
+				column: issue.column,
+				message: issue.message.clone(),
+			}
 		})
 		.collect();
 	items.sort_by(|lhs, rhs| {

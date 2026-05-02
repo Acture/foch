@@ -139,8 +139,10 @@ fn revalidate_generated_output(
 	let dlc_load_path = validation_dir.join("dlc_load.json");
 	fs::write(&dlc_load_path, dlc_load_bytes)?;
 	let descriptor_body = format!(
-		"name=\"{out_dir_name}\"\npath=\"{}\"\nremote_file_id=\"{synthetic_steam_id}\"\n",
-		canonical_out_dir.display()
+		"name=\"{}\"\npath=\"{}\"\nremote_file_id=\"{}\"\n",
+		escape_descriptor_value(&out_dir_name),
+		escape_descriptor_value(&normalize_descriptor_path(&canonical_out_dir)),
+		escape_descriptor_value(&synthetic_steam_id)
 	);
 	fs::write(validation_dir.join(&descriptor_rel), descriptor_body)?;
 
@@ -231,4 +233,12 @@ fn validation_playlist_dir(parent_dir: &Path) -> PathBuf {
 		.map(|duration| duration.as_nanos())
 		.unwrap_or_default();
 	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}"))
+}
+
+fn normalize_descriptor_path(path: &Path) -> String {
+	path.to_string_lossy().replace('\\', "/")
+}
+
+fn escape_descriptor_value(value: &str) -> String {
+	value.replace('\\', "\\\\").replace('"', "\\\"")
 }

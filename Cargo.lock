@@ -853,6 +853,7 @@ dependencies = [
  "tempfile",
  "tiny_http",
  "tokio",
+ "toml",
  "tower-lsp",
  "tracing",
  "tracing-subscriber",

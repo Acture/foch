@@ -7,7 +7,11 @@ on:
 
 jobs:
   rust-checks:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,6 +54,11 @@ jobs:
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
         working-directory: .
+
+      - name: Verify generated parser is up to date
+        run: |
+          bunx tree-sitter generate
+          git diff --exit-code src/
 
       - name: Test grammar package
         run: bun run test

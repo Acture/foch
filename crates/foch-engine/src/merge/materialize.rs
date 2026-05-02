@@ -1372,6 +1372,12 @@ mod tests {
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 
+	fn descriptor_path_value(path: &Path) -> String {
+		path.to_string_lossy()
+			.replace('\\', "/")
+			.replace('"', "\\\"")
+	}
+
 	fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
 		let parent = path.parent().expect("playset path has parent");
 		fs::create_dir_all(parent.join("mod")).expect("create mod metadata dir");
@@ -1392,7 +1398,7 @@ mod tests {
 			let mod_root = parent.join(steam_id);
 			let body = format!(
 				"name=\"{display_name}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
-				mod_root.display()
+				descriptor_path_value(&mod_root)
 			);
 			fs::write(parent.join("mod").join(format!("ugc_{steam_id}.mod")), body)
 				.expect("write ugc descriptor");
