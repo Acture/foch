@@ -688,7 +688,7 @@ fn resolve_insert_nodes(
 	// Pick the highest-precedence mod's patch as the "primary" result but
 	// record all contributing mods.
 	let mut sorted = attributed;
-	sorted.sort_by(|a, b| b.precedence.cmp(&a.precedence));
+	sorted.sort_by_key(|a| std::cmp::Reverse(a.precedence));
 	stats.auto_merged_patches += 1;
 	PatchResolution::AutoMerged {
 		result: sorted.into_iter().next().unwrap().patch,
@@ -726,7 +726,7 @@ fn resolve_append_list_items(
 	// precedence patch as the representative result.
 	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
 	let mut sorted = attributed;
-	sorted.sort_by(|a, b| b.precedence.cmp(&a.precedence));
+	sorted.sort_by_key(|a| std::cmp::Reverse(a.precedence));
 	stats.auto_merged_patches += 1;
 	PatchResolution::AutoMerged {
 		result: sorted.into_iter().next().unwrap().patch,
@@ -888,7 +888,7 @@ fn resolve_remove_list_items(
 	// Different items being removed → both apply.
 	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
 	let mut sorted = attributed;
-	sorted.sort_by(|a, b| b.precedence.cmp(&a.precedence));
+	sorted.sort_by_key(|a| std::cmp::Reverse(a.precedence));
 	stats.auto_merged_patches += 1;
 	PatchResolution::AutoMerged {
 		result: sorted.into_iter().next().unwrap().patch,
@@ -1273,7 +1273,7 @@ fn try_replace_block_named_container_merge(
 
 	// Sort by precedence ascending so highest-precedence is last (used by OverlayWins).
 	let mut ordered: Vec<&AttributedPatch> = attributed.iter().collect();
-	ordered.sort_by(|a, b| a.precedence.cmp(&b.precedence));
+	ordered.sort_by_key(|a| a.precedence);
 
 	let candidate_owned: Vec<(String, Vec<AstStatement>)> = ordered
 		.iter()

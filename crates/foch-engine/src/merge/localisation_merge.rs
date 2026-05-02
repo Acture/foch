@@ -33,7 +33,7 @@ pub(crate) fn merge_localisation_file(
 ) -> Result<LocalisationMergeOutcome, String> {
 	// Highest precedence first so "first writer wins" gives us the winner.
 	let mut sorted: Vec<&ResolvedFileContributor> = contributors.iter().collect();
-	sorted.sort_by(|a, b| b.precedence.cmp(&a.precedence));
+	sorted.sort_by_key(|c| std::cmp::Reverse(c.precedence));
 
 	let mut language: Option<(String, String)> = None; // (lang, mod_id)
 	let mut entries: BTreeMap<String, Vec<u8>> = BTreeMap::new();
