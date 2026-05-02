@@ -20,6 +20,11 @@ pub struct MergeExecuteOptions {
 	pub ignore_replace_path: bool,
 	pub fallback: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
+	/// Caller-computed playset fingerprint to stamp on the merge report so
+	/// subsequent runs can detect "same mod set, reuse the cached output".
+	/// `None` skips the stamp (e.g., merge invoked from a context where
+	/// computing it isn't possible).
+	pub playset_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +50,7 @@ pub fn run_merge_with_options(
 			resolution_map,
 		},
 	)?;
+	report.playset_fingerprint = options.playset_fingerprint.clone();
 
 	if report.status == MergeReportStatus::Fatal {
 		return Ok(MergeExecutionResult {

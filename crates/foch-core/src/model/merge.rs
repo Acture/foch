@@ -220,4 +220,12 @@ pub struct MergeReport {
 	// D2 local dependency overrides applied during DAG-based merge.
 	#[serde(default)]
 	pub dep_overrides_applied: Vec<AppliedDepOverride>,
+	/// SHA-256 fingerprint of the playset state that produced this report —
+	/// the ordered enabled-mods list with each mod's version, plus the
+	/// sorted local foch.toml [[overrides]] and [[resolutions]] entries.
+	/// Re-running `foch merge --out X` against a directory whose existing
+	/// report has the same fingerprint can skip the merge entirely and
+	/// reuse the previous result.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub playset_fingerprint: Option<String>,
 }

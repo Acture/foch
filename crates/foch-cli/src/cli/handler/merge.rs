@@ -1,11 +1,15 @@
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::{HandlerResult, resolve_playset_path};
 use foch_core::config::{AppliedDepOverride, FochConfig};
+use foch_core::domain::descriptor::load_descriptor;
+use foch_core::domain::playlist::Playlist;
+use foch_core::fingerprint::compute_playset_fingerprint;
 use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
 use foch_engine::merge::conflict_handler::{InteractiveMode, set_interactive_mode_and_config};
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use foch_language::analyzer::report::render_merge_report_text;
-use std::io::IsTerminal;
+use std::fs;
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
@@ -15,7 +19,12 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		config,
 	};
 	let fallback_enabled = merge_args.fallback || merge_args.force;
-	let dep_overrides = load_dep_overrides(merge_args, &playset_path)?;
+	let local_config = load_local_foch_config(merge_args, &playset_path)?;
+	let fingerprint = compute_fingerprint_for_playset(&playset_path, &local_config);
+	if let Some(exit) = handle_existing_out_dir(&merge_args.out, fingerprint.as_deref())? {
+		return Ok(exit);
+	}
+	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
 	let interactive_enabled = !merge_args.non_interactive && std::io::stdin().is_terminal();
 	let interactive_mode = if interactive_enabled && !merge_args.cli_prompt {
 		InteractiveMode::Tui
@@ -44,6 +53,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			ignore_replace_path: merge_args.ignore_replace_path,
 			fallback: fallback_enabled,
 			dep_overrides,
+			playset_fingerprint: fingerprint,
 		},
 	)?;
 	println!("{}", render_merge_report_text(&execution.report));
@@ -93,17 +103,22 @@ fn render_unresolved_conflict_tip(
 	Some(lines.join("\n"))
 }
 
-fn load_dep_overrides(
+fn load_local_foch_config(
 	merge_args: &MergeArgs,
 	playset_path: &Path,
-) -> Result<Vec<AppliedDepOverride>, Box<dyn std::error::Error>> {
-	let local_config = if let Some(path) = merge_args.config.as_ref() {
-		FochConfig::load_from_path(path)?
+) -> Result<FochConfig, Box<dyn std::error::Error>> {
+	if let Some(path) = merge_args.config.as_ref() {
+		Ok(FochConfig::load_from_path(path)?)
 	} else {
 		let playset_root = playset_root_for(playset_path);
-		FochConfig::try_load(&playset_root)?
-	};
+		Ok(FochConfig::try_load(&playset_root)?)
+	}
+}
 
+fn applied_dep_overrides(
+	merge_args: &MergeArgs,
+	local_config: &FochConfig,
+) -> Vec<AppliedDepOverride> {
 	let mut overrides: Vec<AppliedDepOverride> = local_config
 		.overrides
 		.iter()
@@ -115,7 +130,42 @@ fn load_dep_overrides(
 			.iter()
 			.map(|item| AppliedDepOverride::cli(item.mod_id.clone(), item.dep_id.clone())),
 	);
-	Ok(overrides)
+	overrides
+}
+
+/// Compute the playset fingerprint without doing a full workspace resolve.
+///
+/// Reads `dlc_load.json` for the ordered enabled-mods list, then loads each
+/// mod's descriptor file at `<playset_root>/mod/ugc_<steam_id>.mod` to pull
+/// the version field. Combines that with the foch.toml overrides /
+/// resolutions. Returns `None` if anything required is missing — the caller
+/// then treats the run as un-fingerprintable and skips the cache check.
+fn compute_fingerprint_for_playset(
+	playset_path: &Path,
+	local_config: &FochConfig,
+) -> Option<String> {
+	let playlist = Playlist::from_dlc_load(playset_path).ok()?;
+	let playset_root = playset_path.parent().unwrap_or_else(|| Path::new("."));
+	let mut mods: Vec<(String, String)> = Vec::new();
+	for entry in &playlist.mods {
+		if !entry.enabled {
+			continue;
+		}
+		let Some(steam_id) = entry.steam_id.clone() else {
+			continue;
+		};
+		let descriptor_path = playset_root.join("mod").join(format!("ugc_{steam_id}.mod"));
+		let version = load_descriptor(&descriptor_path)
+			.ok()
+			.and_then(|d| d.version)
+			.unwrap_or_default();
+		mods.push((steam_id, version));
+	}
+	Some(compute_playset_fingerprint(
+		&mods,
+		&local_config.overrides,
+		&local_config.resolutions,
+	))
 }
 
 fn resolve_resolution_config_path(merge_args: &MergeArgs, playset_path: &Path) -> PathBuf {
@@ -138,4 +188,94 @@ fn playset_root_for(playset_path: &Path) -> PathBuf {
 		.parent()
 		.unwrap_or_else(|| Path::new("."))
 		.to_path_buf()
+}
+
+/// Refuse to silently overwrite a non-empty existing output directory.
+///
+/// If the existing report's `playset_fingerprint` matches the current run's,
+/// the merge is short-circuited: the previous report is printed and the saved
+/// exit code is returned. Otherwise the user is prompted to overwrite (or the
+/// run is aborted on a non-TTY).
+///
+/// Returns:
+/// - `Ok(None)` to proceed with a fresh merge (directory absent, empty, or
+///   user confirmed at the prompt — the directory is wiped first)
+/// - `Ok(Some(exit_code))` to abort early without invoking the merge engine
+/// - `Err(_)` for filesystem or IO errors
+fn handle_existing_out_dir(
+	out_dir: &Path,
+	current_fingerprint: Option<&str>,
+) -> Result<Option<i32>, Box<dyn std::error::Error>> {
+	if !out_dir.exists() {
+		return Ok(None);
+	}
+	if !out_dir.is_dir() {
+		return Err(format!(
+			"--out path {} exists and is not a directory; refusing to overwrite",
+			out_dir.display()
+		)
+		.into());
+	}
+	let has_entries = fs::read_dir(out_dir)?.next().is_some();
+	if !has_entries {
+		return Ok(None);
+	}
+
+	if let Some(current) = current_fingerprint
+		&& let Some(cached) = read_cached_report(out_dir)
+		&& cached.playset_fingerprint.as_deref() == Some(current)
+	{
+		eprintln!(
+			"[foch] {} matches the prior merge fingerprint; reusing the existing output.",
+			out_dir.display()
+		);
+		println!("{}", render_merge_report_text(&cached));
+		return Ok(Some(merge_report_exit_code(&cached)));
+	}
+
+	let stdin = std::io::stdin();
+	let stderr = std::io::stderr();
+	if !stdin.is_terminal() || !stderr.is_terminal() {
+		eprintln!(
+			"[foch] --out {} already exists and is non-empty (and the prior merge has a different mod set or no recorded fingerprint); refusing to overwrite without an interactive confirmation. Delete it manually or run from a TTY.",
+			out_dir.display()
+		);
+		return Ok(Some(1));
+	}
+
+	let mut handle = stderr.lock();
+	write!(
+		handle,
+		"[foch] --out {} already exists and the prior merge differs (or has no recorded fingerprint). Overwrite? [y/N] ",
+		out_dir.display()
+	)?;
+	handle.flush()?;
+	drop(handle);
+
+	let mut answer = String::new();
+	stdin.lock().read_line(&mut answer)?;
+	let answer = answer.trim().to_ascii_lowercase();
+	if answer != "y" && answer != "yes" {
+		eprintln!("[foch] aborted; output directory not modified");
+		return Ok(Some(1));
+	}
+
+	fs::remove_dir_all(out_dir)?;
+	Ok(None)
+}
+
+fn read_cached_report(out_dir: &Path) -> Option<MergeReport> {
+	let report_path = out_dir.join(MERGE_REPORT_ARTIFACT_PATH);
+	let raw = fs::read_to_string(&report_path).ok()?;
+	serde_json::from_str(&raw).ok()
+}
+
+fn merge_report_exit_code(report: &MergeReport) -> i32 {
+	use foch_core::model::MergeReportStatus;
+	match report.status {
+		MergeReportStatus::Ready => 0,
+		MergeReportStatus::PartialSuccess => 0,
+		MergeReportStatus::Blocked => 2,
+		MergeReportStatus::Fatal => 3,
+	}
 }
