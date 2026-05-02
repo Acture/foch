@@ -129,12 +129,16 @@ fn check_unresolved_call_targets(index: &SemanticIndex) -> Vec<Finding> {
 		if reference.name.contains('$') || reference.name.contains('[') {
 			continue;
 		}
+		// Event references resolve via a dedicated lookup; if it produces
+		// any target the call is satisfied. Handling Event before the main
+		// match keeps the per-kind dispatch focused on the multi-step
+		// scripted-effect / scripted-trigger logic below.
+		if reference.kind == SymbolKind::Event
+			&& !resolve_event_reference_targets(index, reference).is_empty()
+		{
+			continue;
+		}
 		match reference.kind {
-			SymbolKind::Event
-				if !resolve_event_reference_targets(index, reference).is_empty() =>
-			{
-				continue;
-			}
 			SymbolKind::ScriptedEffect => {
 				if !resolve_scripted_effect_reference_targets(index, reference).is_empty() {
 					continue;
