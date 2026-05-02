@@ -8,8 +8,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PARSE_CACHE_VERSION: u32 = 6;
-const CACHE_VERSION_DIR: &str = "v6";
+const PARSE_CACHE_VERSION: u32 = 7;
+const CACHE_VERSION_DIR: &str = "v7";
 const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
 
 #[cfg(test)]
