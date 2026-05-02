@@ -510,10 +510,21 @@ fn apply_conflict_decision(
 				.find(|patch| patch.mod_id == mod_id)
 				.cloned()
 			else {
-				return Err(MergeError::Validation {
-					path: Some(conflict_path),
-					message: format!("conflict handler picked unknown mod `{mod_id}`"),
+				// Stale pick: the conflict_id matches an earlier resolution
+				// whose target mod is no longer a contributor at this address
+				// (typical after a prior pick reshapes the parent block).
+				// Defer instead of erroring so the user can re-arbitrate on
+				// the next interactive pass; the surviving conflict still
+				// surfaces in the report.
+				eprintln!(
+					"[foch] stale pick for {conflict_path}: mod `{mod_id}` is no longer a contributor; deferring"
+				);
+				result.conflicts.push(PatchResolution::Conflict {
+					address,
+					patches: conflict.patches,
+					reason: conflict.reason,
 				});
+				return Ok(());
 			};
 			result.handler_resolved_count += 1;
 			result
@@ -527,10 +538,15 @@ fn apply_conflict_decision(
 				.find(|patch| patch.mod_id == mod_id)
 				.cloned()
 			else {
-				return Err(MergeError::Validation {
-					path: Some(conflict_path),
-					message: format!("conflict handler picked unknown mod `{mod_id}`"),
+				eprintln!(
+					"[foch] stale pick for {conflict_path}: mod `{mod_id}` is no longer a contributor; deferring"
+				);
+				result.conflicts.push(PatchResolution::Conflict {
+					address,
+					patches: conflict.patches,
+					reason: conflict.reason,
 				});
+				return Ok(());
 			};
 			result.handler_resolved_count += 1;
 			result.handler_resolutions.push(record);

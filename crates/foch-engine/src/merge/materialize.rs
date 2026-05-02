@@ -74,9 +74,22 @@ pub(crate) fn materialize_merge_internal(
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
 
+	// Resolve once and reuse: build_merge_plan_from_workspace and the rest of
+	// the pipeline both consume the same ResolvedWorkspace. The legacy
+	// run_merge_plan_with_options fallback is kept for the case where
+	// resolution itself failed (it may still produce a fatal-only plan).
+	let workspace_result = stage_log_with("resolve_workspace", || {
+		let result = resolve_workspace(&request, options.include_game_base);
+		let summary = result
+			.as_ref()
+			.ok()
+			.map(|w| format!("mods={} files={}", w.mods.len(), w.file_inventory.len()));
+		(result, summary)
+	});
+
 	let plan = stage_log_with("build_merge_plan", || {
-		let plan = match resolve_workspace(&request, options.include_game_base) {
-			Ok(workspace) => build_merge_plan_from_workspace(&workspace, options.include_game_base),
+		let plan = match &workspace_result {
+			Ok(workspace) => build_merge_plan_from_workspace(workspace, options.include_game_base),
 			Err(_) => crate::run_merge_plan_with_options(
 				request.clone(),
 				MergePlanOptions {
@@ -103,14 +116,7 @@ pub(crate) fn materialize_merge_internal(
 		return Ok(report);
 	}
 
-	let workspace = stage_log_with("resolve_workspace", || {
-		let workspace = resolve_workspace(&request, options.include_game_base);
-		let summary = workspace
-			.as_ref()
-			.ok()
-			.map(|w| format!("mods={} files={}", w.mods.len(), w.file_inventory.len()));
-		(workspace, summary)
-	})?;
+	let workspace = workspace_result?;
 	let (mod_dag, dag_diagnostics) = stage_log_with("build_mod_dag", || {
 		let (dag, diags) = build_mod_dag(&workspace.mods);
 		let summary = format!("nodes={} diagnostics={}", dag.topo().len(), diags.len());
