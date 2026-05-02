@@ -16,7 +16,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
+use ratatui::text::Text;
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use super::conflict_handler::{
 	ConfigWriter, ConflictDecision, ConflictHandler, resolution_entry_for_decision,
@@ -26,6 +27,11 @@ use super::patch_merge::{PatchAddress, PatchConflict};
 
 const ACTION_COUNT: usize = 4;
 const MAX_SUMMARY_CHARS: usize = 80;
+/// Cap how many wrapped lines `reason: …` may consume in the conflict header.
+/// Long sibling-conflict messages that enumerate every divergent value can run
+/// hundreds of characters; capping keeps the candidate list visible on small
+/// terminals while still giving short reasons their natural single-line look.
+const MAX_REASON_HEIGHT: usize = 4;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ConflictAction {
@@ -120,7 +126,7 @@ impl ConflictResolver {
 				None
 			}
 			KeyCode::Enter => Some(self.action_for_index(self.selected_index)),
-			KeyCode::Esc => Some(ConflictAction::Abort),
+			KeyCode::Esc => Some(ConflictAction::Defer),
 			KeyCode::Char(value) => self.handle_char(value),
 			_ => None,
 		}
@@ -180,7 +186,23 @@ impl Widget for &ConflictResolver {
 		};
 		let hint_y = inner.y + inner.height.saturating_sub(1);
 		let bottom_separator_y = hint_y.saturating_sub(1);
-		let top_separator_y = inner.y.saturating_add(4).min(bottom_separator_y);
+
+		// Header rows: file path (1 row), address path (1 row), blank (1 row),
+		// reason (variable rows — word-wrapped so long messages don't get
+		// truncated by the right border). Compute reason height from the
+		// available inner width with a hard cap so the choice list always has
+		// at least a couple of rows on small terminals.
+		let reason_text = format!("reason: {}", self.reason);
+		let reason_paragraph = Paragraph::new(Text::raw(reason_text.clone()))
+			.style(Style::default().fg(Color::Yellow))
+			.wrap(Wrap { trim: false });
+		let reason_height = estimate_wrapped_line_count(&reason_text, inner.width)
+			.clamp(1, MAX_REASON_HEIGHT);
+		let header_height = 3u16.saturating_add(reason_height as u16);
+		let top_separator_y = inner
+			.y
+			.saturating_add(header_height)
+			.min(bottom_separator_y);
 
 		write_line(
 			buf,
@@ -196,13 +218,18 @@ impl Widget for &ConflictResolver {
 			&format!("  {}", self.address_path.join(" / ")),
 			Style::default().fg(Color::Cyan),
 		);
-		write_line(
-			buf,
-			inner,
-			inner.y.saturating_add(3),
-			&format!("reason: {}", self.reason),
-			Style::default().fg(Color::Yellow),
-		);
+		// reason starts at inner.y + 3, claims `reason_height` rows of the
+		// header band so the rest of the layout flows below it.
+		let reason_y = inner.y.saturating_add(3);
+		let reason_rect = Rect {
+			x: inner.x,
+			y: reason_y,
+			width: inner.width,
+			height: top_separator_y.saturating_sub(reason_y),
+		};
+		if reason_rect.height > 0 {
+			reason_paragraph.render(reason_rect, buf);
+		}
 		draw_separator(buf, area, top_separator_y);
 
 		if bottom_separator_y > top_separator_y {
@@ -220,7 +247,7 @@ impl Widget for &ConflictResolver {
 			buf,
 			inner,
 			hint_y,
-			"↑↓ select  Enter confirm  Esc/q quit  D defer  S file  K keep",
+			"↑↓ select  Enter confirm  Esc/d defer  Q abort  S file  K keep",
 			Style::default().fg(Color::DarkGray),
 		);
 	}
@@ -551,6 +578,27 @@ fn write_line(buf: &mut Buffer, area: Rect, y: u16, text: &str, style: Style) {
 	buf.set_stringn(area.x, y, text, area.width as usize, style);
 }
 
+/// Conservative estimate of how many terminal rows a `Paragraph::wrap`
+/// rendering of `text` will consume at `width` columns. Counts each `\n`
+/// as a hard break and divides each segment by `width` rounded up. Uses
+/// `chars().count()` for the per-segment length: this overcounts CJK
+/// (full-width) glyphs that ratatui would render as 2 cells, which is the
+/// safe direction — we'd rather reserve a row that ends up blank than
+/// truncate the wrap.
+fn estimate_wrapped_line_count(text: &str, width: u16) -> usize {
+	if width == 0 {
+		return 1;
+	}
+	let width = width as usize;
+	let mut total = 0usize;
+	for segment in text.split('\n') {
+		let chars = segment.chars().count();
+		let segment_lines = if chars == 0 { 1 } else { chars.div_ceil(width) };
+		total = total.saturating_add(segment_lines);
+	}
+	total.max(1)
+}
+
 fn concise_patch_summary(patch: &ClausewitzPatch) -> String {
 	match patch {
 		ClausewitzPatch::SetValue { key, new_value, .. } => {
@@ -809,7 +857,7 @@ mod tests {
 			"│  [k] keep existing                                                       │",
 			"│  [q] abort                                                               │",
 			"├──────────────────────────────────────────────────────────────────────────┤",
-			"│↑↓ select  Enter confirm  Esc/q quit  D defer  S file  K keep             │",
+			"│↑↓ select  Enter confirm  Esc/d defer  Q abort  S file  K keep            │",
 			"└──────────────────────────────────────────────────────────────────────────┘",
 		]);
 
@@ -871,7 +919,7 @@ mod tests {
 		);
 		assert_eq!(
 			resolver.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-			Some(ConflictAction::Abort)
+			Some(ConflictAction::Defer)
 		);
 	}
 

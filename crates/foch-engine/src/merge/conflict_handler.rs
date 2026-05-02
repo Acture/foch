@@ -294,7 +294,6 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
 	pub current_file: PathBuf,
-	mod_displayname_lookup: HashMap<String, String>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 }
@@ -307,12 +306,11 @@ impl<'a> LookupHandler<'a> {
 	pub fn with_display_names(
 		map: &'a ResolutionMap,
 		file: PathBuf,
-		mod_displayname_lookup: HashMap<String, String>,
+		_mod_displayname_lookup: HashMap<String, String>,
 	) -> Self {
 		Self {
 			map,
 			current_file: file,
-			mod_displayname_lookup,
 			current_conflict_index: 1,
 			total_conflicts: 1,
 		}
@@ -322,9 +320,9 @@ impl<'a> LookupHandler<'a> {
 impl<'a> ConflictHandler for LookupHandler<'a> {
 	fn on_conflict(
 		&mut self,
-		path: &str,
+		_path: &str,
 		address: &PatchAddress,
-		conflict: &PatchConflict,
+		_conflict: &PatchConflict,
 	) -> ConflictDecision {
 		let address_path = address.path.join("/");
 		let conflict_id = compute_conflict_id(&self.current_file, &address_path, &address.key);
@@ -334,42 +332,7 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 			}
 			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
 			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
-			None => {
-				let settings = interactive_settings();
-				let Some(config_path) = settings.config_path else {
-					return ConflictDecision::Defer;
-				};
-				let mode = match settings.mode {
-					InteractiveMode::Auto if interactive_tui_available() => InteractiveMode::Tui,
-					InteractiveMode::Auto => InteractiveMode::Cli,
-					mode => mode,
-				};
-				match mode {
-					InteractiveMode::Tui => {
-						let mut handler = ChainHandler {
-							first: InteractiveTuiHandler::new(
-								self.current_file.clone(),
-								Box::new(FilesystemConfigWriter::new(config_path)),
-								self.mod_displayname_lookup.clone(),
-								self.current_conflict_index,
-								self.total_conflicts,
-							),
-							second: DeferHandler,
-						};
-						handler.on_conflict(path, address, conflict)
-					}
-					InteractiveMode::Cli | InteractiveMode::Auto => {
-						let mut handler = ChainHandler {
-							first: InteractiveCliHandler::new(
-								self.current_file.clone(),
-								Box::new(FilesystemConfigWriter::new(config_path)),
-							),
-							second: DeferHandler,
-						};
-						handler.on_conflict(path, address, conflict)
-					}
-				}
-			}
+			None => ConflictDecision::Defer,
 		}
 	}
 
@@ -719,6 +682,116 @@ pub(crate) fn resolution_entry_for_decision(
 		}),
 		ConflictDecision::Defer | ConflictDecision::Abort => None,
 	}
+}
+
+/// Outcome from prompting the user about a single surviving conflict.
+#[derive(Debug, Clone)]
+pub enum PromptOutcomeKind {
+	Picked(ResolutionDecision),
+	Deferred,
+}
+
+#[derive(Debug, Clone)]
+pub struct PromptOutcome {
+	pub conflict_id: String,
+	pub kind: PromptOutcomeKind,
+}
+
+/// Result of running the post-pass interactive resolver.
+#[derive(Debug, Clone, Default)]
+pub struct PromptSurvivorsResult {
+	pub outcomes: Vec<PromptOutcome>,
+	pub aborted: bool,
+}
+
+/// Returns true when interactive prompting is configured and feasible.
+pub fn interactive_prompt_enabled() -> bool {
+	let settings = interactive_settings();
+	settings.config_path.is_some()
+		&& match settings.mode {
+			InteractiveMode::Auto => interactive_tui_available(),
+			InteractiveMode::Tui => interactive_tui_available(),
+			InteractiveMode::Cli => io::stdin().is_terminal() && io::stderr().is_terminal(),
+		}
+}
+
+/// Prompts the user interactively for each surviving conflict (the post-pass
+/// path: only invoked once the merge engine has finished and downstream
+/// overrides have already pruned transient conflicts). Persists every Picked
+/// decision to foch.toml as a side effect.
+///
+/// `survivors` should be the list of `(address, conflict)` extracted from
+/// `PatchResolution::Conflict` survivors. The returned outcomes carry the
+/// resolution-map decision the caller should fold into the in-memory map
+/// before re-running the merge engine. If the user aborts, `aborted` is set
+/// and any outcomes already collected are still returned.
+pub fn prompt_survivors_and_persist(
+	target_path: &Path,
+	survivors: &[(PatchAddress, PatchConflict)],
+	mod_displayname_lookup: &HashMap<String, String>,
+) -> PromptSurvivorsResult {
+	let settings = interactive_settings();
+	let Some(config_path) = settings.config_path.clone() else {
+		return PromptSurvivorsResult::default();
+	};
+	let mode = match settings.mode {
+		InteractiveMode::Auto if interactive_tui_available() => InteractiveMode::Tui,
+		InteractiveMode::Auto => InteractiveMode::Cli,
+		other => other,
+	};
+
+	let total = survivors.len();
+	let mut result = PromptSurvivorsResult::default();
+	for (idx, (address, conflict)) in survivors.iter().enumerate() {
+		let current = idx + 1;
+		let conflict_id = compute_conflict_id(target_path, &address.path.join("/"), &address.key);
+		let decision = match mode {
+			InteractiveMode::Tui => {
+				let mut handler = InteractiveTuiHandler::new(
+					target_path.to_path_buf(),
+					Box::new(FilesystemConfigWriter::new(config_path.clone())),
+					mod_displayname_lookup.clone(),
+					current,
+					total,
+				);
+				handler.on_conflict("", address, conflict)
+			}
+			InteractiveMode::Cli | InteractiveMode::Auto => {
+				let mut handler = InteractiveCliHandler::new(
+					target_path.to_path_buf(),
+					Box::new(FilesystemConfigWriter::new(config_path.clone())),
+				);
+				handler.set_conflict_progress(current, total);
+				handler.on_conflict("", address, conflict)
+			}
+		};
+		match decision {
+			ConflictDecision::PickMod(mod_id)
+			| ConflictDecision::PickModWithRecord { mod_id, .. } => {
+				result.outcomes.push(PromptOutcome {
+					conflict_id,
+					kind: PromptOutcomeKind::Picked(ResolutionDecision::PreferMod(mod_id)),
+				});
+			}
+			ConflictDecision::UseFile(path) => result.outcomes.push(PromptOutcome {
+				conflict_id,
+				kind: PromptOutcomeKind::Picked(ResolutionDecision::UseFile(path)),
+			}),
+			ConflictDecision::KeepExisting => result.outcomes.push(PromptOutcome {
+				conflict_id,
+				kind: PromptOutcomeKind::Picked(ResolutionDecision::KeepExisting),
+			}),
+			ConflictDecision::Defer => result.outcomes.push(PromptOutcome {
+				conflict_id,
+				kind: PromptOutcomeKind::Deferred,
+			}),
+			ConflictDecision::Abort => {
+				result.aborted = true;
+				break;
+			}
+		}
+	}
+	result
 }
 
 fn render_resolution_entry(entry: &ResolutionEntry) -> String {

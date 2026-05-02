@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use super::conflict_handler::{DeferHandler, DepImpliesResolutionHandler};
+use super::conflict_handler::{
+	DeferHandler, DepImpliesResolutionHandler, PromptOutcomeKind, interactive_prompt_enabled,
+	prompt_survivors_and_persist,
+};
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
@@ -11,7 +14,7 @@ use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_fil
 use super::namespace::{build_family_key_index, detect_key_conflicts, group_by_family};
 use super::patch::ClausewitzPatch;
 use super::patch_deps::compute_dag_patches_with_handler;
-use super::patch_merge::PatchResolution;
+use super::patch_merge::{PatchAddress, PatchConflict, PatchResolution};
 use super::plan::build_merge_plan_from_workspace;
 use super::stale_vanilla::detect_stale_vanilla_targets;
 use crate::request::{CheckRequest, MergePlanOptions};
@@ -822,35 +825,63 @@ fn patch_based_structural_merge(
 	contributors: &[ResolvedFileContributor],
 	context: PatchBasedMergeContext<'_>,
 ) -> Result<PatchBasedMergeOutput, MergeError> {
-	let mut handler = super::conflict_handler::ChainHandler {
-		first: super::conflict_handler::LookupHandler::with_display_names(
-			context.resolution_map,
-			PathBuf::from(target_path),
-			(*context.mod_display_names).clone(),
-		),
-		second: super::conflict_handler::ChainHandler {
-			first: DepImpliesResolutionHandler::from_mod_dag(
-				PathBuf::from(target_path),
-				context.mod_dag,
-				context.dep_overrides,
-			),
-			second: DeferHandler,
-		},
-	};
-	let dag_patches = compute_dag_patches_with_handler(
-		target_path,
-		contributors,
-		context.merge_key_source,
-		&context.descriptor.merge_policies,
-		context.mod_dag,
-		context.ignore_replace_path,
-		context.dep_overrides,
-		&mut handler,
-	)
-	.map_err(|err| MergeError::Validation {
-		path: Some(target_path.to_string()),
-		message: format!("patch computation failed: {err}"),
-	})?;
+	// Hold an owned, mutable resolution map so that any post-pass interactive
+	// resolutions can be folded back in before we re-run the merge engine
+	// below. The merge engine itself never invokes interactive prompts — every
+	// surviving conflict that reaches the user has already been pruned by the
+	// downstream-override post-pass inside `compute_dag_patches_with_handler`.
+	let mut effective_map = context.resolution_map.clone();
+	let mut dag_patches =
+		run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
+
+	if !dag_patches.merge_result.conflicts.is_empty() && interactive_prompt_enabled() {
+		let survivors: Vec<(PatchAddress, PatchConflict)> = dag_patches
+			.merge_result
+			.conflicts
+			.iter()
+			.filter_map(|resolution| match resolution {
+				PatchResolution::Conflict {
+					address,
+					patches,
+					reason,
+				} => Some((
+					address.clone(),
+					PatchConflict {
+						patches: patches.clone(),
+						reason: reason.clone(),
+					},
+				)),
+				_ => None,
+			})
+			.collect();
+		if !survivors.is_empty() {
+			let prompt = prompt_survivors_and_persist(
+				Path::new(target_path),
+				&survivors,
+				context.mod_display_names,
+			);
+			let mut new_picks = 0usize;
+			for outcome in prompt.outcomes {
+				if let PromptOutcomeKind::Picked(decision) = outcome.kind {
+					effective_map
+						.by_conflict_id
+						.insert(outcome.conflict_id, decision);
+					new_picks += 1;
+				}
+			}
+			if prompt.aborted {
+				return Err(MergeError::Validation {
+					path: Some(target_path.to_string()),
+					message: "merge aborted by user".to_string(),
+				});
+			}
+			if new_picks > 0 {
+				dag_patches =
+					run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
+			}
+		}
+	}
+
 	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
 	let stale_vanilla_targets = collect_stale_vanilla_targets(
 		target_path,
@@ -908,6 +939,43 @@ fn patch_based_structural_merge(
 		external_file_resolutions: merge_result.external_file_resolutions,
 		keep_existing_paths: merge_result.keep_existing_paths,
 		noop_vs_vanilla,
+	})
+}
+
+fn run_patch_merge_engine(
+	target_path: &str,
+	contributors: &[ResolvedFileContributor],
+	context: &PatchBasedMergeContext<'_>,
+	resolution_map: &foch_core::config::ResolutionMap,
+) -> Result<super::patch_deps::DagPatchComputation, MergeError> {
+	let mut handler = super::conflict_handler::ChainHandler {
+		first: super::conflict_handler::LookupHandler::with_display_names(
+			resolution_map,
+			PathBuf::from(target_path),
+			(*context.mod_display_names).clone(),
+		),
+		second: super::conflict_handler::ChainHandler {
+			first: DepImpliesResolutionHandler::from_mod_dag(
+				PathBuf::from(target_path),
+				context.mod_dag,
+				context.dep_overrides,
+			),
+			second: DeferHandler,
+		},
+	};
+	compute_dag_patches_with_handler(
+		target_path,
+		contributors,
+		context.merge_key_source,
+		&context.descriptor.merge_policies,
+		context.mod_dag,
+		context.ignore_replace_path,
+		context.dep_overrides,
+		&mut handler,
+	)
+	.map_err(|err| MergeError::Validation {
+		path: Some(target_path.to_string()),
+		message: format!("patch computation failed: {err}"),
 	})
 }
 
