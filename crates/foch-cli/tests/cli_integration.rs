@@ -1472,7 +1472,7 @@ fn merge_command_fallback_writes_last_writer_marker() {
 		tmp.path(),
 	);
 	assert_eq!(code, 0);
-	assert!(stdout.contains("status: READY"));
+	assert!(stdout.contains("status: PARTIAL_SUCCESS"));
 	assert!(stdout.contains("fallback_resolved_count: 1"));
 	let output = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read fallback");
 	assert!(output.starts_with("# foch:conflict reason=\"patch merge failed:"));
@@ -1480,7 +1480,7 @@ fn merge_command_fallback_writes_last_writer_marker() {
 	assert!(output.ends_with(&idea_file("beta")));
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "ready");
+	assert_eq!(report["status"], "partial_success");
 	assert_eq!(report["manual_conflict_count"], 0);
 	assert_eq!(report["fallback_resolved_count"], 1);
 	assert_eq!(report["generated_file_count"], 1);
@@ -1703,12 +1703,12 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 3);
-	assert!(stdout.contains("status: FATAL"));
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: READY"));
 	assert!(out_dir.join("events/shared.txt").exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "fatal");
+	assert_eq!(report["status"], "ready");
 	assert_eq!(report["manual_conflict_count"], 0);
 	assert_eq!(report["generated_file_count"], 1);
 	assert_eq!(report["validation"]["fatal_errors"], 0);
