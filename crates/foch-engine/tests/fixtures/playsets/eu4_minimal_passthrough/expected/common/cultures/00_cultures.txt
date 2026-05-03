@@ -1,0 +1,9 @@
+minimal_group = {
+graphical_culture = westerngfx
+minimal_culture = {
+primary = AAA
+male_names = { "Aedan" }
+female_names = { "Mab" }
+dynasty_names = { "Fixture" }
+}
+}

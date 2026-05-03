@@ -1,0 +1,72 @@
+CRN_missions_1 = {
+ slot = 5
+ generic = no
+ ai = yes
+ potential = {
+ tag = CRN
+ }
+ has_country_shield = yes
+
+ CRN_support_bards = {
+ icon = mission_have_culture
+ required_missions = { }
+ position = 1
+ provinces_to_highlight = {
+ culture = cornish
+ }
+ trigger = {
+ num_of_owned_provinces_with = {
+ culture = cornish
+ value = 3
+ }
+ }
+ effect = {
+ add_country_modifier = {
+ name = CRN_cornish_revival
+ duration = -1
+ }
+ if = {
+ limit = {
+ has_estate = estate_church
+ }
+ complex_dynamic_effect = {
+ first_custom_tooltip = CRN_if_the_clergy_supports_cornish
+ first_limit = "
+ has_estate_privilege = estate_church_religious_culture
+ "
+ first_effect = "
+ change_estate_land_share = {
+ estate = estate_church
+ share = -5
+ }
+ "
+ }
+ }
+ }
+ }
+
+ CRN_cornish_renaissance = {
+ icon = mission_court
+ required_missions = { CRN_support_bards }
+ position = 3
+ provinces_to_highlight = {
+ owned_by = ROOT
+ culture = cornish
+ }
+ trigger = {
+ prestige = 50
+ }
+ effect = {
+ add_prestige = 10
+ if = {
+ limit = {
+ has_dlc = "Mandate of Heaven"
+ }
+ add_splendor = 200
+ }
+ else = {
+ add_prestige = 25
+ }
+ }
+ }
+}
