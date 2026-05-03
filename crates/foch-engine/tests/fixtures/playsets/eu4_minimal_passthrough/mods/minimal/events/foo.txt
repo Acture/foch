@@ -1,0 +1,13 @@
+namespace = minimal_fixture
+
+country_event = {
+id = minimal_fixture.1
+title = minimal_event_title
+desc = minimal_event_desc
+picture = DIPLOMACY_eventPicture
+is_triggered_only = yes
+
+option = {
+name = minimal_event_option
+}
+}

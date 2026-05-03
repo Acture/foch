@@ -1,0 +1,4 @@
+l_english:
+ minimal_event_title:0 "A Small Fixture"
+ minimal_event_desc:0 "This localisation file must be copied byte-for-byte."
+ minimal_event_option:0 "Excellent"
