@@ -1317,10 +1317,12 @@ mod tests {
 
 	#[test]
 	fn env_targets_parse_json() {
-		let targets = parse_scan_targets_json(
-			r#"[{"path":"/tmp","role":"game"},{"path":"/Users/nope","role":"mod"}]"#,
-		)
-		.expect("parse targets json");
+		let tmp = TempDir::new().expect("temp dir");
+		let tmp_path = tmp.path().to_string_lossy().replace('\\', "/");
+		let json = format!(
+			r#"[{{"path":"{tmp_path}","role":"game"}},{{"path":"/nonexistent/nope","role":"mod"}}]"#
+		);
+		let targets = parse_scan_targets_json(&json).expect("parse targets json");
 		assert!(!targets.is_empty());
 		assert_eq!(targets[0].role, TargetRole::Game);
 	}
