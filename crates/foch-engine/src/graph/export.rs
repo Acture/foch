@@ -125,6 +125,7 @@ pub fn run_graph_with_options(
 	let state = build_runtime_state_for_request(&request, options.include_game_base)?;
 	let workspace_calls = build_workspace_calls_graph(&state);
 	let workspace_deps = build_workspace_mod_deps_graph(&state, &request);
+	let workspace_def_deps = build_workspace_definition_deps_artifact(&state);
 	let mut summary = GraphBuildSummary {
 		out_dir: out_dir.to_path_buf(),
 		..GraphBuildSummary::default()
@@ -144,6 +145,13 @@ pub fn run_graph_with_options(
 				"mod-deps",
 				&workspace_deps,
 				render_mod_deps_dot(&workspace_deps),
+				options.format,
+			)?;
+			write_graph_pair(
+				&out_dir.join("workspace"),
+				"definition-deps",
+				&workspace_def_deps,
+				render_definition_deps_dot(&workspace_def_deps),
 				options.format,
 			)?;
 			summary.workspace_written = true;
@@ -460,6 +468,187 @@ fn build_workspace_mod_deps_graph(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Definition-level mod dependency artifact.
+//
+// Existing `mod-deps.json` only records edges declared in `descriptor.mod`'s
+// `dependencies={}` block. That misses the much richer signal of which
+// definitions one mod actually references in another mod (e.g. mod A's
+// event triggers mod B's scripted_effect).
+//
+// This artifact emits one node per provider definition that some other
+// enabled mod references, plus one edge per (referencing-mod,
+// provider-definition) pair, aggregating each call site so the user can
+// trace exactly what made the dependency real.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
+struct DefinitionDepsRefSite {
+	path: String,
+	line: usize,
+	column: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DefinitionDepsNode {
+	id: String,
+	mod_id: String,
+	symbol_kind: String,
+	name: String,
+	path: String,
+	line: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct DefinitionDepsEdge {
+	from_mod_id: String,
+	to_node_id: String,
+	to_mod_id: String,
+	symbol_kind: String,
+	name: String,
+	sites: Vec<DefinitionDepsRefSite>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+struct DefinitionDepsArtifact {
+	nodes: Vec<DefinitionDepsNode>,
+	edges: Vec<DefinitionDepsEdge>,
+}
+
+fn definition_deps_node_id(mod_id: &str, kind: SymbolKind, name: &str) -> String {
+	format!("{mod_id}:{}:{name}", symbol_kind_text(kind))
+}
+
+fn build_workspace_definition_deps_artifact(
+	state: &crate::runtime::RuntimeState,
+) -> DefinitionDepsArtifact {
+	let mut nodes = BTreeMap::<String, DefinitionDepsNode>::new();
+	let mut edges = BTreeMap::<(String, String), DefinitionDepsEdge>::new();
+
+	let mut by_symbol = HashMap::<(SymbolKind, String), Vec<usize>>::new();
+	for (idx, def) in state.semantic_index.definitions.iter().enumerate() {
+		by_symbol
+			.entry((def.kind, def.name.clone()))
+			.or_default()
+			.push(idx);
+	}
+
+	for reference in &state.semantic_index.references {
+		if !state.enabled_mod_ids.contains(&reference.mod_id) {
+			continue;
+		}
+		let key = (reference.kind, reference.name.clone());
+		let candidates = match by_symbol.get(&key) {
+			Some(indices) if !indices.is_empty() => indices,
+			_ => continue,
+		};
+		let provider_idx = state
+			.winner_by_symbol
+			.get(&key)
+			.copied()
+			.unwrap_or(candidates[0]);
+		let Some(provider) = state.semantic_index.definitions.get(provider_idx) else {
+			continue;
+		};
+		if provider.mod_id == reference.mod_id {
+			continue;
+		}
+		if !state.enabled_mod_ids.contains(&provider.mod_id) {
+			continue;
+		}
+
+		let node_id = definition_deps_node_id(&provider.mod_id, provider.kind, &provider.name);
+		nodes
+			.entry(node_id.clone())
+			.or_insert_with(|| DefinitionDepsNode {
+				id: node_id.clone(),
+				mod_id: provider.mod_id.clone(),
+				symbol_kind: symbol_kind_text(provider.kind).to_string(),
+				name: provider.name.clone(),
+				path: provider.path.to_string_lossy().replace('\\', "/"),
+				line: provider.line,
+			});
+
+		let edge = edges
+			.entry((reference.mod_id.clone(), node_id.clone()))
+			.or_insert_with(|| DefinitionDepsEdge {
+				from_mod_id: reference.mod_id.clone(),
+				to_node_id: node_id.clone(),
+				to_mod_id: provider.mod_id.clone(),
+				symbol_kind: symbol_kind_text(provider.kind).to_string(),
+				name: provider.name.clone(),
+				sites: Vec::new(),
+			});
+		let site = DefinitionDepsRefSite {
+			path: reference.path.to_string_lossy().replace('\\', "/"),
+			line: reference.line,
+			column: reference.column,
+		};
+		if !edge.sites.iter().any(|existing| existing == &site) {
+			edge.sites.push(site);
+		}
+	}
+
+	for edge in edges.values_mut() {
+		edge.sites
+			.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+	}
+
+	DefinitionDepsArtifact {
+		nodes: nodes.into_values().collect(),
+		edges: edges.into_values().collect(),
+	}
+}
+
+fn render_definition_deps_dot(graph: &DefinitionDepsArtifact) -> String {
+	let mut lines = vec!["digraph foch_definition_deps {".to_string()];
+	lines.push("  rankdir=LR;".to_string());
+
+	let mut by_mod: BTreeMap<&str, Vec<&DefinitionDepsNode>> = BTreeMap::new();
+	for node in &graph.nodes {
+		by_mod.entry(node.mod_id.as_str()).or_default().push(node);
+	}
+	for (mod_id, mod_nodes) in &by_mod {
+		lines.push(format!(
+			"  subgraph \"cluster_{mod_id}\" {{ label=\"{mod_id}\"; style=dashed;"
+		));
+		for node in mod_nodes {
+			lines.push(format!(
+				"    \"{}\" [label=\"{}: {}\", shape=box];",
+				node.id, node.symbol_kind, node.name
+			));
+		}
+		lines.push("  }".to_string());
+	}
+
+	let referencing_mods: BTreeSet<&str> = graph
+		.edges
+		.iter()
+		.map(|edge| edge.from_mod_id.as_str())
+		.filter(|mod_id| !by_mod.contains_key(mod_id))
+		.collect();
+	for mod_id in referencing_mods {
+		lines.push(format!(
+			"  \"mod:{mod_id}\" [label=\"{mod_id}\", shape=ellipse, style=dashed];"
+		));
+	}
+
+	for edge in &graph.edges {
+		let from = format!("mod:{}", edge.from_mod_id);
+		let count_label = if edge.sites.len() > 1 {
+			format!(" ×{}", edge.sites.len())
+		} else {
+			String::new()
+		};
+		lines.push(format!(
+			"  \"{from}\" -> \"{}\" [label=\"refs{count_label}\"];",
+			edge.to_node_id
+		));
+	}
+	lines.push("}".to_string());
+	lines.join("\n")
+}
+
 fn filter_calls_graph_by_mod(graph: &CallsGraphArtifact, mod_id: &str) -> CallsGraphArtifact {
 	let seed = graph
 		.nodes
@@ -760,4 +949,296 @@ fn normalize_path(path: &Path) -> String {
 
 fn escape_dot(value: &str) -> String {
 	value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod definition_deps_tests {
+	use super::*;
+	use crate::runtime::RuntimeState;
+	use foch_core::model::{ScopeType, SymbolDefinition, SymbolKind, SymbolReference};
+	use std::collections::{HashMap, HashSet};
+	use std::path::PathBuf;
+
+	fn definition(
+		mod_id: &str,
+		kind: SymbolKind,
+		name: &str,
+		path: &str,
+		line: usize,
+	) -> SymbolDefinition {
+		SymbolDefinition {
+			kind,
+			name: name.to_string(),
+			module: "test".to_string(),
+			local_name: name.to_string(),
+			mod_id: mod_id.to_string(),
+			path: PathBuf::from(path),
+			line,
+			column: 1,
+			scope_id: 0,
+			declared_this_type: ScopeType::Unknown,
+			inferred_this_type: ScopeType::Unknown,
+			inferred_this_mask: 0,
+			inferred_from_mask: 0,
+			inferred_root_mask: 0,
+			required_params: Vec::new(),
+			optional_params: Vec::new(),
+			param_contract: None,
+			scope_param_names: Vec::new(),
+		}
+	}
+
+	fn reference(
+		mod_id: &str,
+		kind: SymbolKind,
+		name: &str,
+		path: &str,
+		line: usize,
+	) -> SymbolReference {
+		SymbolReference {
+			kind,
+			name: name.to_string(),
+			module: "test".to_string(),
+			mod_id: mod_id.to_string(),
+			path: PathBuf::from(path),
+			line,
+			column: 1,
+			scope_id: 0,
+			provided_params: Vec::new(),
+			param_bindings: Vec::new(),
+		}
+	}
+
+	fn state_with(
+		definitions: Vec<SymbolDefinition>,
+		references: Vec<SymbolReference>,
+		enabled_mod_ids: Vec<&str>,
+		winners: Vec<((SymbolKind, &str), usize)>,
+	) -> RuntimeState {
+		let semantic_index = foch_core::model::SemanticIndex {
+			definitions,
+			references,
+			..Default::default()
+		};
+		let enabled_mod_ids: HashSet<String> =
+			enabled_mod_ids.into_iter().map(|s| s.to_string()).collect();
+		let winner_by_symbol: HashMap<(SymbolKind, String), usize> = winners
+			.into_iter()
+			.map(|((kind, name), idx)| ((kind, name.to_string()), idx))
+			.collect();
+		RuntimeState {
+			semantic_index,
+			definitions: Vec::new(),
+			overlap_status_by_def: HashMap::new(),
+			winner_by_symbol,
+			dependency_hints: HashMap::new(),
+			scope_definition_map: HashMap::new(),
+			enabled_mod_ids,
+			base_game_mod_id: None,
+		}
+	}
+
+	#[test]
+	fn definition_deps_emits_cross_mod_edge_with_call_site() {
+		// mod-a defines my_effect; mod-b references it.
+		let state = state_with(
+			vec![definition(
+				"mod-a",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"common/scripted_effects/a.txt",
+				10,
+			)],
+			vec![reference(
+				"mod-b",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"events/b_event.txt",
+				42,
+			)],
+			vec!["mod-a", "mod-b"],
+			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		assert_eq!(artifact.nodes.len(), 1);
+		let node = &artifact.nodes[0];
+		assert_eq!(node.mod_id, "mod-a");
+		assert_eq!(node.symbol_kind, "scripted_effect");
+		assert_eq!(node.name, "my_effect");
+		assert_eq!(artifact.edges.len(), 1);
+		let edge = &artifact.edges[0];
+		assert_eq!(edge.from_mod_id, "mod-b");
+		assert_eq!(edge.to_mod_id, "mod-a");
+		assert_eq!(edge.symbol_kind, "scripted_effect");
+		assert_eq!(edge.name, "my_effect");
+		assert_eq!(edge.sites.len(), 1);
+		assert_eq!(edge.sites[0].path, "events/b_event.txt");
+		assert_eq!(edge.sites[0].line, 42);
+	}
+
+	#[test]
+	fn definition_deps_skips_intra_mod_references() {
+		let state = state_with(
+			vec![definition(
+				"mod-a",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"common/scripted_effects/a.txt",
+				10,
+			)],
+			vec![reference(
+				"mod-a",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"events/a_event.txt",
+				42,
+			)],
+			vec!["mod-a"],
+			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		assert!(artifact.nodes.is_empty());
+		assert!(artifact.edges.is_empty());
+	}
+
+	#[test]
+	fn definition_deps_skips_unresolved_references() {
+		let state = state_with(
+			Vec::new(),
+			vec![reference(
+				"mod-b",
+				SymbolKind::Event,
+				"missing.event",
+				"events/b.txt",
+				1,
+			)],
+			vec!["mod-b"],
+			Vec::new(),
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		assert!(artifact.nodes.is_empty());
+		assert!(artifact.edges.is_empty());
+	}
+
+	#[test]
+	fn definition_deps_skips_disabled_mod_references() {
+		let state = state_with(
+			vec![definition(
+				"mod-a",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"a.txt",
+				1,
+			)],
+			vec![reference(
+				"mod-disabled",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"x.txt",
+				1,
+			)],
+			vec!["mod-a"], // mod-disabled NOT in enabled set
+			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		assert!(artifact.edges.is_empty());
+	}
+
+	#[test]
+	fn definition_deps_aggregates_multiple_sites_per_edge() {
+		let state = state_with(
+			vec![definition(
+				"mod-a",
+				SymbolKind::ScriptedEffect,
+				"shared",
+				"a.txt",
+				1,
+			)],
+			vec![
+				reference("mod-b", SymbolKind::ScriptedEffect, "shared", "b1.txt", 5),
+				reference("mod-b", SymbolKind::ScriptedEffect, "shared", "b1.txt", 22),
+				reference("mod-b", SymbolKind::ScriptedEffect, "shared", "b2.txt", 99),
+				// duplicate site should be deduped
+				reference("mod-b", SymbolKind::ScriptedEffect, "shared", "b1.txt", 5),
+			],
+			vec!["mod-a", "mod-b"],
+			vec![((SymbolKind::ScriptedEffect, "shared"), 0)],
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		assert_eq!(artifact.edges.len(), 1);
+		let edge = &artifact.edges[0];
+		assert_eq!(edge.sites.len(), 3);
+		// stable ordering: by path then line
+		assert_eq!(edge.sites[0].path, "b1.txt");
+		assert_eq!(edge.sites[0].line, 5);
+		assert_eq!(edge.sites[1].path, "b1.txt");
+		assert_eq!(edge.sites[1].line, 22);
+		assert_eq!(edge.sites[2].path, "b2.txt");
+		assert_eq!(edge.sites[2].line, 99);
+	}
+
+	#[test]
+	fn definition_deps_uses_winner_when_definition_overridden() {
+		// mod-a and mod-b both define `same_effect`; mod-c references it.
+		// winner_by_symbol points at mod-b (precedence 1) — edge should
+		// terminate at mod-b's node, not mod-a's.
+		let state = state_with(
+			vec![
+				definition(
+					"mod-a",
+					SymbolKind::ScriptedEffect,
+					"same_effect",
+					"a.txt",
+					1,
+				),
+				definition(
+					"mod-b",
+					SymbolKind::ScriptedEffect,
+					"same_effect",
+					"b.txt",
+					1,
+				),
+			],
+			vec![reference(
+				"mod-c",
+				SymbolKind::ScriptedEffect,
+				"same_effect",
+				"c.txt",
+				9,
+			)],
+			vec!["mod-a", "mod-b", "mod-c"],
+			vec![((SymbolKind::ScriptedEffect, "same_effect"), 1)],
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		assert_eq!(artifact.edges.len(), 1);
+		assert_eq!(artifact.edges[0].to_mod_id, "mod-b");
+	}
+
+	#[test]
+	fn render_definition_deps_dot_emits_cluster_per_provider_mod() {
+		let state = state_with(
+			vec![definition(
+				"mod-a",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"a.txt",
+				1,
+			)],
+			vec![reference(
+				"mod-b",
+				SymbolKind::ScriptedEffect,
+				"my_effect",
+				"b.txt",
+				5,
+			)],
+			vec!["mod-a", "mod-b"],
+			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
+		);
+		let artifact = build_workspace_definition_deps_artifact(&state);
+		let dot = render_definition_deps_dot(&artifact);
+		assert!(dot.starts_with("digraph foch_definition_deps {"));
+		assert!(dot.contains("subgraph \"cluster_mod-a\""));
+		assert!(dot.contains("scripted_effect: my_effect"));
+		assert!(dot.contains("\"mod:mod-b\" -> \"mod-a:scripted_effect:my_effect\""));
+	}
 }
