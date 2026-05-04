@@ -32,6 +32,31 @@ fn expected_path(name: &str, rel: &str) -> PathBuf {
 // Reads a fixture playset from `crates/foch-engine/tests/fixtures/playsets/<name>/`,
 // runs the production merge pipeline into a tempdir, returns the output dir path.
 fn run_merge_fixture(name: &str) -> PathBuf {
+	let (result, out_dir) =
+		run_merge_for_fixture(name, /*force=*/ true, /*fallback=*/ false);
+	assert_eq!(
+		result.exit_code, 0,
+		"merge fixture {name} should exit cleanly; report: {:#?}",
+		result.report
+	);
+	assert_ne!(
+		result.report.status,
+		MergeReportStatus::Fatal,
+		"merge fixture {name} produced a fatal report: {:#?}",
+		result.report
+	);
+	out_dir
+}
+
+/// Lower-level harness used by both the strict copy-through tests and the
+/// conflict-scenario tests. Returns the full [`MergeExecutionResult`] plus
+/// the output dir so tests can assert on report fields, status, and the
+/// produced tree without the wrapper enforcing its own success contract.
+fn run_merge_for_fixture(
+	name: &str,
+	force: bool,
+	fallback: bool,
+) -> (foch_engine::MergeExecutionResult, PathBuf) {
 	let fixture = fixture_dir(name);
 	assert!(
 		fixture.is_dir(),
@@ -66,26 +91,14 @@ fn run_merge_fixture(name: &str) -> PathBuf {
 		MergeExecuteOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
-			force: true,
+			force,
 			ignore_replace_path: false,
-			fallback: false,
+			fallback,
 			dep_overrides: Vec::new(),
 			playset_fingerprint: None,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture {name} failed: {err}"));
-
-	assert_eq!(
-		result.exit_code, 0,
-		"merge fixture {name} should exit cleanly; report: {:#?}",
-		result.report
-	);
-	assert_ne!(
-		result.report.status,
-		MergeReportStatus::Fatal,
-		"merge fixture {name} produced a fatal report: {:#?}",
-		result.report
-	);
 
 	MERGE_TEMP_DIRS
 		.get_or_init(|| Mutex::new(Vec::new()))
@@ -93,7 +106,7 @@ fn run_merge_fixture(name: &str) -> PathBuf {
 		.expect("merge tempdir registry lock")
 		.push(temp_dir);
 
-	out_dir
+	(result, out_dir)
 }
 
 // Recursively scans output dir and asserts every structural EU4 .txt script file
@@ -335,4 +348,113 @@ fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Pat
 		actual_bytes, input_bytes,
 		"copy-through output for {rel} should be byte-identical to fixture input"
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Two-mod conflict fixture: exercises the resolution DSL end-to-end.
+//
+// `eu4_two_mod_conflict` ships three contributors that all redefine the same
+// country-history file `history/countries/TES - Test.txt`. The two
+// downstream contributors (conflict_a at precedence 1, conflict_b at
+// precedence 2) each set `religion` to a different value relative to the
+// baseline contributor's `catholic`. Once leaf-level resolvers stop
+// silently picking the highest-precedence patch this should produce a
+// per-key SetValue conflict at `religion`.
+//
+// Both tests are currently `#[ignore]` because the engine's leaf resolvers
+// (resolve_set_values default branch in patch_merge.rs) silently fall back
+// to LastWriter on same-key sibling conflicts, so the engine reports
+// `manual_conflict_count = 0` and never invokes the handler chain. Once the
+// `rec-default-step1` / leaf-conflict-fix slice lands these should turn
+// green automatically:
+//   - eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict
+//     verifies the strict path (no foch.toml override) reports the
+//     conflict instead of silently picking conflict_b's religion.
+//   - eu4_two_mod_conflict_resolved_via_last_writer_handler verifies the
+//     `[[resolutions]] match = "history/**" handler = "last_writer"` route
+//     records a HandlerResolutionRecord and lands conflict_b's religion
+//     in the merged output.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "blocked on leaf-conflict-fix: engine currently silent-LastWriter for same-key SetValue (see plan.md and rec-default-step1)"]
+fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict", false, false);
+	assert_ne!(
+		result.report.status,
+		MergeReportStatus::Fatal,
+		"strict merge should not be Fatal; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"strict two-mod conflict must surface at least one manual_conflict; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.fallback_resolved_count, 0,
+		"strict merge must not silently fall back; report: {:#?}",
+		result.report
+	);
+	assert!(out_dir.exists(), "out dir should still be materialized");
+}
+
+#[test]
+#[ignore = "blocked on leaf-conflict-fix: engine currently silent-LastWriter for same-key SetValue (see plan.md and rec-default-step1)"]
+fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict_resolved", false, false);
+	assert_eq!(
+		result.exit_code, 0,
+		"DSL-resolved merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_ne!(
+		result.report.status,
+		MergeReportStatus::Fatal,
+		"DSL-resolved merge should not be Fatal; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"last_writer handler must clear all manual conflicts; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.fallback_resolved_count, 0,
+		"resolution should be attributed to the handler, not the fallback path; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result
+			.report
+			.handler_resolutions
+			.iter()
+			.any(|record| record.action.eq_ignore_ascii_case("last_writer")),
+		"handler_resolutions must record at least one last_writer entry; report: {:#?}",
+		result.report
+	);
+	let merged_history_path = out_dir
+		.join("history")
+		.join("countries")
+		.join("TES - Test.txt");
+	assert!(
+		merged_history_path.is_file(),
+		"merged country-history file must be materialized at {}",
+		merged_history_path.display()
+	);
+	let merged_text =
+		fs::read_to_string(&merged_history_path).expect("read merged country history");
+	assert!(
+		merged_text.contains("religion = protestant"),
+		"merged history should carry conflict_b's religion (protestant); got:\n{merged_text}"
+	);
+	assert!(
+		!merged_text.contains("religion = orthodox"),
+		"merged history must not retain conflict_a's religion; got:\n{merged_text}"
+	);
+	assert!(
+		!merged_text.contains("religion = catholic"),
+		"merged history must not retain baseline's religion; got:\n{merged_text}"
+	);
+	assert_structurally_sound(&out_dir);
 }

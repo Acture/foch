@@ -1,0 +1,6 @@
+# End-to-end fixture: resolution DSL routes the country-history conflict to
+# last_writer, which picks the higher-precedence contributor (conflict_b at
+# position 2).
+[[resolutions]]
+match = "history/**"
+handler = "last_writer"
