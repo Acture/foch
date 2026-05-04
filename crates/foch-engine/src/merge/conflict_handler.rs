@@ -324,16 +324,30 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 		&mut self,
 		_path: &str,
 		address: &PatchAddress,
-		_conflict: &PatchConflict,
+		conflict: &PatchConflict,
 	) -> ConflictDecision {
 		let address_path = address.path.join("/");
 		let conflict_id = compute_conflict_id(&self.current_file, &address_path, &address.key);
-		match self.map.lookup(&self.current_file, &conflict_id) {
+		let leaf_address = if address_path.is_empty() {
+			address.key.clone()
+		} else {
+			format!("{address_path}/{}", address.key)
+		};
+		match self
+			.map
+			.lookup(&self.current_file, &conflict_id, &leaf_address)
+		{
 			Some(ResolutionDecision::PreferMod(mod_id)) => {
 				ConflictDecision::PickMod(mod_id.clone())
 			}
 			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
 			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
+			Some(ResolutionDecision::Handler(name)) => crate::merge::handler_registry::dispatch(
+				name,
+				&self.current_file,
+				address,
+				conflict,
+			),
 			None => ConflictDecision::Defer,
 		}
 	}
@@ -685,29 +699,35 @@ pub(crate) fn resolution_entry_for_decision(
 				file: None,
 				conflict_id: Some(conflict_id),
 				mod_id: None,
+				r#match: None,
 				prefer_mod: Some(mod_id.clone()),
 				use_file: None,
 				keep_existing: None,
 				priority_boost: None,
+				handler: None,
 			})
 		}
 		ConflictDecision::UseFile(path) => Some(ResolutionEntry {
 			file: None,
 			conflict_id: Some(conflict_id),
 			mod_id: None,
+			r#match: None,
 			prefer_mod: None,
 			use_file: Some(path.clone()),
 			keep_existing: None,
 			priority_boost: None,
+			handler: None,
 		}),
 		ConflictDecision::KeepExisting => Some(ResolutionEntry {
 			file: Some(current_file.to_path_buf()),
 			conflict_id: None,
 			mod_id: None,
+			r#match: None,
 			prefer_mod: None,
 			use_file: None,
 			keep_existing: Some(true),
 			priority_boost: None,
+			handler: None,
 		}),
 		ConflictDecision::Defer | ConflictDecision::Abort => None,
 	}
@@ -1320,10 +1340,12 @@ dep = "b"
 				file: None,
 				conflict_id: Some("abc12345".to_string()),
 				mod_id: None,
+				r#match: None,
 				prefer_mod: Some("mod_a".to_string()),
 				use_file: None,
 				keep_existing: None,
 				priority_boost: None,
+				handler: None,
 			})
 			.expect("append resolution");
 

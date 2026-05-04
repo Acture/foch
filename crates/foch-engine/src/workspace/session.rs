@@ -119,7 +119,7 @@ prefer_mod = "mod-a"
 		assert_eq!(
 			session
 				.resolution_map()
-				.lookup(Path::new("common/ideas/resolved.txt"), "missing"),
+				.lookup(Path::new("common/ideas/resolved.txt"), "missing", ""),
 			Some(&ResolutionDecision::PreferMod("mod-a".to_string()))
 		);
 	}

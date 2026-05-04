@@ -3,6 +3,7 @@ pub(crate) mod dag;
 pub mod emit;
 pub mod error;
 pub(crate) mod execute;
+pub mod handler_registry;
 pub(crate) mod localisation_merge;
 pub(crate) mod materialize;
 pub mod namespace;

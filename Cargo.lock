@@ -879,6 +879,7 @@ dependencies = [
  "chardetng",
  "dirs",
  "encoding_rs",
+ "globset",
  "home",
  "jomini",
  "regex",

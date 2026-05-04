@@ -133,19 +133,23 @@ mod tests {
 			file: None,
 			conflict_id: Some("abc".to_string()),
 			mod_id: None,
+			r#match: None,
 			prefer_mod: Some("X".to_string()),
 			use_file: None,
 			keep_existing: None,
 			priority_boost: None,
+			handler: None,
 		};
 		let entry_b = ResolutionEntry {
 			file: None,
 			conflict_id: Some("abc".to_string()),
 			mod_id: None,
+			r#match: None,
 			prefer_mod: Some("Y".to_string()),
 			use_file: None,
 			keep_existing: None,
 			priority_boost: None,
+			handler: None,
 		};
 		let a = compute_playset_fingerprint(&[], &[], &[entry_a]);
 		let b = compute_playset_fingerprint(&[], &[], &[entry_b]);

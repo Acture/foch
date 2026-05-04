@@ -12,6 +12,7 @@ blake3 = "1.5.5"
 chardetng = "1.0.0"
 dirs.workspace = true
 encoding_rs.workspace = true
+globset.workspace = true
 home.workspace = true
 jomini.workspace = true
 regex.workspace = true
