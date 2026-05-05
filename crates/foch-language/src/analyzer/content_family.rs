@@ -260,6 +260,11 @@ pub struct ContentFamilyCapabilities {
 	/// identical key/value definition. The merge materializer uses this to prune
 	/// generated files whose keys are already provided identically elsewhere.
 	pub cross_file_dedup_safe: bool,
+	/// True only for content families where omitting a same-file entry whose
+	/// merged value is identical to vanilla leaves the vanilla definition active
+	/// with the same runtime meaning. The merge materializer uses this to prune
+	/// redundant generated entries without changing load semantics.
+	pub per_entry_dedup_safe: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -545,6 +550,10 @@ impl ContentFamilyDescriptorBuilder {
 		self.capabilities = caps;
 		self
 	}
+	pub const fn per_entry_dedup_safe(mut self) -> Self {
+		self.capabilities.per_entry_dedup_safe = true;
+		self
+	}
 	pub const fn extractor(mut self, ext: ContentFamilyExtractor) -> Self {
 		self.extractor = ext;
 		self
@@ -621,6 +630,7 @@ impl ContentFamilyDescriptor {
 				graph_ready: false,
 				merge_ready: false,
 				cross_file_dedup_safe: false,
+				per_entry_dedup_safe: false,
 			},
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
@@ -656,6 +666,7 @@ impl ContentFamilyDescriptor {
 				graph_ready: false,
 				merge_ready: false,
 				cross_file_dedup_safe: false,
+				per_entry_dedup_safe: false,
 			},
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,

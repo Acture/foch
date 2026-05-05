@@ -276,6 +276,10 @@ pub(crate) fn materialize_merge_internal(
 										out_dir,
 										&mut report,
 									)?;
+									if materialization.uses_patch_merge_rendered_output() {
+										report.per_entry_noop_skipped_count +=
+											merge_output.per_entry_noop_skipped_count;
+									}
 									if materialization.counts_as_generated() {
 										generated_paths.insert(entry.path.clone());
 										report.generated_file_count += 1;
@@ -378,13 +382,14 @@ pub(crate) fn materialize_merge_internal(
 	let mod_diff_cache_stats = crate::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::cache::dag_base_cache_stats();
 	eprintln!(
-		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} noop_skipped={} cross_file_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={} dag_base_cache_hits={} dag_base_cache_misses={}",
+		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} noop_skipped={} cross_file_noop_skipped={} per_entry_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={} dag_base_cache_hits={} dag_base_cache_misses={}",
 		materialize_started.elapsed().as_millis(),
 		report.generated_file_count,
 		report.copied_file_count,
 		report.overlay_file_count,
 		report.noop_skipped_file_count,
 		report.cross_file_noop_skipped_file_count,
+		report.per_entry_noop_skipped_count,
 		mod_diff_cache_stats.hits,
 		mod_diff_cache_stats.misses,
 		dag_base_cache_stats.hits,
@@ -1159,6 +1164,9 @@ struct PatchBasedMergeOutput {
 	/// span / comment trivia) to the vanilla base — shipping the file
 	/// would just shadow the game's own copy with the same content.
 	noop_vs_vanilla: bool,
+	/// Entries removed because an opted-in family already has an identical
+	/// vanilla definition at the same key in the same file.
+	per_entry_noop_skipped_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -1176,6 +1184,242 @@ enum PatchBasedMergeFailure {
 impl From<MergeError> for PatchBasedMergeFailure {
 	fn from(err: MergeError) -> Self {
 		Self::Merge(err)
+	}
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct PerEntryNoopLookupKey {
+	path: Vec<String>,
+	key: String,
+}
+
+fn drop_per_entry_noop_duplicates(
+	merged_statements: Vec<AstStatement>,
+	vanilla_statements: &[AstStatement],
+	descriptor: &ContentFamilyDescriptor,
+) -> (Vec<AstStatement>, usize) {
+	if !descriptor.capabilities.per_entry_dedup_safe {
+		return (merged_statements, 0);
+	}
+	let Some(merge_key_source) = descriptor.merge_key_source else {
+		return (merged_statements, 0);
+	};
+	if matches!(merge_key_source, MergeKeySource::LeafPath) {
+		return (merged_statements, 0);
+	}
+
+	let vanilla_lookup = build_per_entry_noop_lookup(vanilla_statements, merge_key_source);
+	if vanilla_lookup.is_empty() {
+		return (merged_statements, 0);
+	}
+
+	filter_per_entry_noop_statements(merged_statements, merge_key_source, &vanilla_lookup)
+}
+
+fn build_per_entry_noop_lookup(
+	statements: &[AstStatement],
+	merge_key_source: MergeKeySource,
+) -> HashMap<PerEntryNoopLookupKey, Vec<AstStatement>> {
+	let mut lookup: HashMap<PerEntryNoopLookupKey, Vec<AstStatement>> = HashMap::new();
+	for statement in statements {
+		if let Some(key) = per_entry_noop_top_level_key(statement, merge_key_source) {
+			lookup.entry(key).or_default().push(statement.clone());
+		}
+		for (key, child) in per_entry_noop_child_entries(statement, merge_key_source) {
+			lookup.entry(key).or_default().push(child.clone());
+		}
+	}
+	lookup
+}
+
+fn filter_per_entry_noop_statements(
+	statements: Vec<AstStatement>,
+	merge_key_source: MergeKeySource,
+	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
+) -> (Vec<AstStatement>, usize) {
+	let mut filtered = Vec::with_capacity(statements.len());
+	let mut dropped = 0usize;
+	for statement in statements {
+		if let Some(key) = per_entry_noop_top_level_key(&statement, merge_key_source)
+			&& per_entry_noop_matches_vanilla(&key, &statement, vanilla_lookup)
+		{
+			dropped += 1;
+			continue;
+		}
+
+		let (statement, child_dropped) =
+			filter_per_entry_noop_child_statements(statement, merge_key_source, vanilla_lookup);
+		dropped += child_dropped;
+		filtered.push(statement);
+	}
+	(filtered, dropped)
+}
+
+fn filter_per_entry_noop_child_statements(
+	statement: AstStatement,
+	merge_key_source: MergeKeySource,
+	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
+) -> (AstStatement, usize) {
+	match statement {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value: AstValue::Block {
+				items,
+				span: value_span,
+			},
+			span,
+		} if per_entry_noop_container_is_filterable(&key, merge_key_source) => {
+			let mut filtered_items = Vec::with_capacity(items.len());
+			let mut dropped = 0usize;
+			for item in items {
+				if let Some(lookup_key) = per_entry_noop_child_key(&key, &item, merge_key_source)
+					&& per_entry_noop_matches_vanilla(&lookup_key, &item, vanilla_lookup)
+				{
+					dropped += 1;
+					continue;
+				}
+				filtered_items.push(item);
+			}
+			(
+				AstStatement::Assignment {
+					key,
+					key_span,
+					value: AstValue::Block {
+						items: filtered_items,
+						span: value_span,
+					},
+					span,
+				},
+				dropped,
+			)
+		}
+		other => (other, 0),
+	}
+}
+
+fn per_entry_noop_matches_vanilla(
+	key: &PerEntryNoopLookupKey,
+	statement: &AstStatement,
+	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
+) -> bool {
+	vanilla_lookup.get(key).is_some_and(|vanilla_entries| {
+		vanilla_entries
+			.iter()
+			.any(|vanilla| super::patch::ast_statements_semantically_equal(vanilla, statement))
+	})
+}
+
+fn per_entry_noop_top_level_key(
+	statement: &AstStatement,
+	merge_key_source: MergeKeySource,
+) -> Option<PerEntryNoopLookupKey> {
+	match merge_key_source {
+		MergeKeySource::AssignmentKey => match statement {
+			AstStatement::Assignment { key, .. } => Some(PerEntryNoopLookupKey {
+				path: Vec::new(),
+				key: key.clone(),
+			}),
+			_ => None,
+		},
+		MergeKeySource::FieldValue(field) => {
+			let AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} = statement
+			else {
+				return None;
+			};
+			scalar_assignment_value(items, field).map(|key| PerEntryNoopLookupKey {
+				path: Vec::new(),
+				key,
+			})
+		}
+		MergeKeySource::ContainerChildFieldValue { container, .. } => {
+			let AstStatement::Assignment { key, .. } = statement else {
+				return None;
+			};
+			(key != container).then(|| PerEntryNoopLookupKey {
+				path: Vec::new(),
+				key: key.clone(),
+			})
+		}
+		MergeKeySource::ContainerChildKey | MergeKeySource::LeafPath => None,
+	}
+}
+
+fn per_entry_noop_child_entries(
+	statement: &AstStatement,
+	merge_key_source: MergeKeySource,
+) -> Vec<(PerEntryNoopLookupKey, &AstStatement)> {
+	let AstStatement::Assignment {
+		key,
+		value: AstValue::Block { items, .. },
+		..
+	} = statement
+	else {
+		return Vec::new();
+	};
+	if !per_entry_noop_container_is_filterable(key, merge_key_source) {
+		return Vec::new();
+	}
+	items
+		.iter()
+		.filter_map(|item| {
+			per_entry_noop_child_key(key, item, merge_key_source)
+				.map(|lookup_key| (lookup_key, item))
+		})
+		.collect()
+}
+
+fn per_entry_noop_container_is_filterable(
+	container: &str,
+	merge_key_source: MergeKeySource,
+) -> bool {
+	match merge_key_source {
+		MergeKeySource::ContainerChildKey => is_decision_container_key(container),
+		MergeKeySource::ContainerChildFieldValue {
+			container: expected,
+			..
+		} => container == expected,
+		_ => false,
+	}
+}
+
+fn per_entry_noop_child_key(
+	container: &str,
+	child: &AstStatement,
+	merge_key_source: MergeKeySource,
+) -> Option<PerEntryNoopLookupKey> {
+	match merge_key_source {
+		MergeKeySource::ContainerChildKey => {
+			if !is_decision_container_key(container) {
+				return None;
+			}
+			let AstStatement::Assignment { key, .. } = child else {
+				return None;
+			};
+			Some(PerEntryNoopLookupKey {
+				path: vec![container.to_string()],
+				key: key.clone(),
+			})
+		}
+		MergeKeySource::ContainerChildFieldValue {
+			container: expected,
+			child_key_field,
+			child_types,
+		} => {
+			if container != expected {
+				return None;
+			}
+			container_child_field_value_key(child, child_key_field, child_types).map(|key| {
+				PerEntryNoopLookupKey {
+					path: vec![container.to_string()],
+					key,
+				}
+			})
+		}
+		_ => None,
 	}
 }
 
@@ -1363,10 +1607,6 @@ fn patch_based_structural_merge(
 		}));
 	}
 
-	let rendered = emit_clausewitz_statements_with_options(
-		&dag_patches.merged_statements,
-		context.emit_options,
-	)?;
 	let noop_vs_vanilla = vanilla
 		.as_ref()
 		.map(|base| {
@@ -1376,6 +1616,14 @@ fn patch_based_structural_merge(
 			)
 		})
 		.unwrap_or(false);
+	let merged_statements = dag_patches.merged_statements;
+	let (merged_statements, per_entry_noop_skipped_count) = if let Some(base) = vanilla.as_ref() {
+		drop_per_entry_noop_duplicates(merged_statements, &base.ast.statements, context.descriptor)
+	} else {
+		(merged_statements, 0)
+	};
+	let rendered =
+		emit_clausewitz_statements_with_options(&merged_statements, context.emit_options)?;
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
@@ -1384,6 +1632,7 @@ fn patch_based_structural_merge(
 		external_file_resolutions: merge_result.external_file_resolutions,
 		keep_existing_paths: merge_result.keep_existing_paths,
 		noop_vs_vanilla,
+		per_entry_noop_skipped_count,
 	})
 }
 
@@ -1618,6 +1867,10 @@ impl PatchOutputMaterialization {
 
 	fn counts_as_noop_skipped(self) -> bool {
 		matches!(self, Self::NoopSkippedVsVanilla)
+	}
+
+	fn uses_patch_merge_rendered_output(self) -> bool {
+		matches!(self, Self::NormalWrite | Self::NoopSkippedVsVanilla)
 	}
 }
 
@@ -1973,6 +2226,8 @@ mod tests {
 		MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergeReport,
 		MergeReportStatus,
 	};
+	use foch_language::analyzer::content_family::{ContentFamilyDescriptor, MergeKeySource};
+	use foch_language::analyzer::parser::{AstStatement, parse_clausewitz_content};
 	use serde_json::json;
 	use std::cell::Cell;
 	use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1989,6 +2244,92 @@ mod tests {
 		});
 		assert_eq!(calls.get(), 1, "closure must run exactly once");
 		assert_eq!(value, 42, "stage_log_with must return the closure's value");
+	}
+
+	fn per_entry_noop_descriptor(opted_in: bool) -> ContentFamilyDescriptor {
+		let builder = ContentFamilyDescriptor::prefix("test", "test/")
+			.merge_key(MergeKeySource::AssignmentKey);
+		if opted_in {
+			builder.per_entry_dedup_safe().build()
+		} else {
+			builder.build()
+		}
+	}
+
+	fn parse_test_statements(content: &str) -> Vec<AstStatement> {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), content);
+		assert!(
+			parsed.diagnostics.is_empty(),
+			"test content should parse without diagnostics: {:?}",
+			parsed.diagnostics
+		);
+		parsed.ast.statements
+	}
+
+	fn assignment_keys(statements: &[AstStatement]) -> Vec<String> {
+		statements
+			.iter()
+			.filter_map(|statement| match statement {
+				AstStatement::Assignment { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect()
+	}
+
+	#[test]
+	fn per_entry_noop_drops_entries_equal_to_vanilla_when_opted_in() {
+		let descriptor = per_entry_noop_descriptor(true);
+		let vanilla = parse_test_statements(
+			"same = {\n\tadd_prestige = 1\n}\nchanged = {\n\tadd_legitimacy = 1\n}\n",
+		);
+		let merged = parse_test_statements(
+			"same = {\n\tadd_prestige = 1\n}\nchanged = {\n\tadd_legitimacy = 2\n}\n",
+		);
+
+		let (filtered, count) =
+			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+
+		assert_eq!(count, 1);
+		assert_eq!(assignment_keys(&filtered), vec!["changed".to_string()]);
+	}
+
+	#[test]
+	fn per_entry_noop_keeps_entries_with_different_value() {
+		let descriptor = per_entry_noop_descriptor(true);
+		let vanilla = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
+		let merged = parse_test_statements("same = {\n\tadd_prestige = 2\n}\n");
+
+		let (filtered, count) =
+			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+
+		assert_eq!(count, 0);
+		assert_eq!(assignment_keys(&filtered), vec!["same".to_string()]);
+	}
+
+	#[test]
+	fn per_entry_noop_keeps_entries_when_family_not_opted_in() {
+		let descriptor = per_entry_noop_descriptor(false);
+		let vanilla = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
+		let merged = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
+
+		let (filtered, count) =
+			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+
+		assert_eq!(count, 0);
+		assert_eq!(assignment_keys(&filtered), vec!["same".to_string()]);
+	}
+
+	#[test]
+	fn per_entry_noop_keeps_entries_with_no_vanilla_counterpart() {
+		let descriptor = per_entry_noop_descriptor(true);
+		let vanilla = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
+		let merged = parse_test_statements("unique = {\n\tadd_legitimacy = 1\n}\n");
+
+		let (filtered, count) =
+			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+
+		assert_eq!(count, 0);
+		assert_eq!(assignment_keys(&filtered), vec!["unique".to_string()]);
 	}
 
 	fn descriptor_path_value(path: &Path) -> String {
@@ -2106,6 +2447,7 @@ mod tests {
 			external_file_resolutions: HashMap::new(),
 			keep_existing_paths: HashSet::new(),
 			noop_vs_vanilla: false,
+			per_entry_noop_skipped_count: 0,
 		}
 	}
 

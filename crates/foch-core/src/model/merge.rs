@@ -203,6 +203,10 @@ pub struct MergeReport {
 	/// pruning reason remains auditable.
 	#[serde(default)]
 	pub cross_file_noop_skipped_file_count: usize,
+	/// Individual generated entries removed because the same file's vanilla base
+	/// already defines the key with an identical value in an opted-in family.
+	#[serde(default)]
+	pub per_entry_noop_skipped_count: usize,
 	pub validation: MergeReportValidation,
 	#[serde(default)]
 	pub renames: Vec<MergeReportRename>,

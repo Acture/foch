@@ -18,6 +18,7 @@ const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
 		graph_ready: false,
 		merge_ready: true,
 		cross_file_dedup_safe: false,
+		per_entry_dedup_safe: false,
 	}
 }
 
@@ -30,6 +31,7 @@ const fn semantic_complete_merge_ready_cross_file_dedup_safe() -> ContentFamilyC
 		graph_ready: false,
 		merge_ready: true,
 		cross_file_dedup_safe: true,
+		per_entry_dedup_safe: false,
 	}
 }
 
@@ -143,8 +145,10 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Decisions)
 		.module_name(ModuleNameRule::Static("decisions"))
 		.scope(scope(ScopeType::Country))
-		// Safe: decision ids are global within the decisions namespace, not file-bound.
+		// Safe: decision ids are global within the decisions namespace, not file-bound;
+		// omitting a vanilla-equivalent generated decision leaves the vanilla decision active.
 		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
+		.per_entry_dedup_safe()
 		.merge_key(MergeKeySource::ContainerChildKey)
 		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
@@ -152,8 +156,10 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Events)
 		.module_name(ModuleNameRule::Static("events"))
 		.scope(scope(ScopeType::Unknown))
-		// Safe: event ids are global across event files; path does not affect identity.
+		// Safe: event ids are global across event files; path does not affect identity;
+		// omitting a vanilla-equivalent generated event leaves the vanilla event active.
 		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
+		.per_entry_dedup_safe()
 		.merge_key(MergeKeySource::FieldValue("id"))
 		.list_policy(ListMergePolicy::UnionWithRename)
 		.boolean_policy(BooleanMergePolicy::And)
@@ -162,8 +168,10 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Decisions)
 		.module_name(ModuleNameRule::Static("decisions"))
 		.scope(scope(ScopeType::Country))
-		// Safe: decision ids are global within the decisions namespace, not file-bound.
+		// Safe: decision ids are global within the decisions namespace, not file-bound;
+		// omitting a vanilla-equivalent generated decision leaves the vanilla decision active.
 		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
+		.per_entry_dedup_safe()
 		.merge_key(MergeKeySource::ContainerChildKey)
 		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
@@ -174,8 +182,10 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "scripted_effects",
 		})
 		.scope(dynamic_scope_policy())
-		// Safe: scripted effect names are global call targets across files.
+		// Safe: scripted effect names are global call targets across files;
+		// omitting a vanilla-equivalent generated effect leaves the vanilla effect active.
 		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
+		.per_entry_dedup_safe()
 		.merge_key(MergeKeySource::AssignmentKey)
 		.block_patch_policy(BlockPatchPolicy::BooleanOr)
 		.build(),
@@ -186,8 +196,10 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "scripted_triggers",
 		})
 		.scope(dynamic_scope_policy())
-		// Safe: scripted trigger names are global call targets across files.
+		// Safe: scripted trigger names are global call targets across files;
+		// omitting a vanilla-equivalent generated trigger leaves the vanilla trigger active.
 		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
+		.per_entry_dedup_safe()
 		.merge_key(MergeKeySource::AssignmentKey)
 		.conflict_policy(ConflictPolicy::BooleanOr)
 		.block_patch_policy(BlockPatchPolicy::BooleanOr)
@@ -715,7 +727,10 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Ideas)
 		.module_name(ModuleNameRule::Static("ideas"))
 		.scope(scope(ScopeType::Country))
+		// Safe: idea group ids are global; omitting a vanilla-equivalent generated
+		// group leaves the vanilla idea group active.
 		.capabilities(semantic_complete_and_merge_ready())
+		.per_entry_dedup_safe()
 		.merge_key(MergeKeySource::AssignmentKey)
 		.extractor(ContentFamilyExtractor::Ideas)
 		.scalar_policy(ScalarMergePolicy::Sum)

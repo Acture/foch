@@ -301,6 +301,10 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.cross_file_noop_skipped_file_count
 	));
 	lines.push(format!(
+		"per_entry_noop_skipped_count: {}",
+		report.per_entry_noop_skipped_count
+	));
+	lines.push(format!(
 		"validation: fatal_errors={} strict_findings={} advisory_findings={} parse_errors={} unresolved_references={} missing_localisation={}",
 		report.validation.fatal_errors,
 		report.validation.strict_findings,
