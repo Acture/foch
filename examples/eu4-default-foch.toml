@@ -1,0 +1,65 @@
+# Default foch.toml resolutions for an EU4 mod playset.
+#
+# Run `foch merge` against this template if you want a no-prompt batch
+# merge that resolves every known recurring conflict by picking the
+# highest-precedence (last-loaded) mod for the file. Per the foch
+# project rule, this is an *explicit* opt-in to last-writer semantics —
+# the engine will not silently auto-merge ambiguous leaves.
+#
+# Each entry below was derived from a real N=37 EU4 active playset
+# probe at `054af69`; the leaf-conflict fix in commit `212d2df`
+# surfaced 9 distinct files where sibling mods produced divergent
+# InsertNode bodies that the engine refuses to reconcile silently.
+# A global `match = "**" handler = "last_writer"` rule clears all 9 but
+# also overrides every otherwise-correct downstream-override decision
+# (1664 last_writer entries instead of 1589 downstream_override + the
+# 9 explicit picks), losing valuable per-leaf provenance. Prefer the
+# narrow per-path entries below.
+#
+# Place this file at one of:
+#   - `<playset_dir>/foch.toml` (next to dlc_load.json)
+#   - `$XDG_CONFIG_HOME/foch/foch.toml`
+#   - `$PWD/foch.toml`
+#
+# See `docs/foch-toml-resolutions.md` for the full DSL reference.
+
+# --- common/ideas: idea-group rebalances collide on the same group ---
+[[resolutions]]
+match = "common/ideas/00_country_ideas.txt"
+handler = "last_writer"
+
+# --- common/governments: localized vs gameplay overhauls ---
+[[resolutions]]
+match = "common/governments/zzz_00_governments.txt"
+handler = "last_writer"
+
+# --- common/countries: tag-specific colour / flag overrides ---
+[[resolutions]]
+match = "common/countries/AngevinEmpire.txt"
+handler = "last_writer"
+
+[[resolutions]]
+match = "common/countries/Portugal.txt"
+handler = "last_writer"
+
+# --- common/disasters: opaque modifier-list shape blocks recursion ---
+[[resolutions]]
+match = "common/disasters/war_of_the_roses.txt"
+handler = "last_writer"
+
+# --- interface: GUI overlays from translation mods overlap layout mods ---
+[[resolutions]]
+match = "interface/hre.gui"
+handler = "last_writer"
+
+[[resolutions]]
+match = "interface/countrysubjectsview.gui"
+handler = "last_writer"
+
+[[resolutions]]
+match = "interface/countrystabilityview.gui"
+handler = "last_writer"
+
+[[resolutions]]
+match = "interface/countryestatesview.gui"
+handler = "last_writer"

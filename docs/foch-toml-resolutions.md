@@ -282,13 +282,17 @@ Avoid duplicate exact `file` or `conflict_id` keys. The current map uses `HashMa
 
 ### Global last writer
 
-Use this only when you have decided that load-order semantics are acceptable for every structural conflict that reaches lookup. It is intentionally broad.
+Use this only when you have decided that load-order semantics are acceptable for every structural conflict that reaches lookup. It is intentionally broad — and on a real EU4 playset it routes ~1700 handler decisions through `last_writer`, overriding `downstream_override` on the ~1600 conflicts the engine could resolve from dependency order alone. Prefer the narrow per-path template below in `examples/eu4-default-foch.toml` unless you genuinely want this behavior.
 
 ```toml
 [[resolutions]]
 match = "**"
 handler = "last_writer"
 ```
+
+### Narrow EU4 alpha defaults
+
+`examples/eu4-default-foch.toml` ships a hand-curated set of `last_writer` rules for the 9 files that surfaced as manual conflicts on a real N=37 playset (idea overhauls, government tables, country-tag overrides, disaster modifier lists, GUI overlays). Copy it next to your `dlc_load.json` for a no-prompt batch merge that preserves every otherwise-correct `downstream_override` decision.
 
 ### Per-path policy
 
