@@ -202,6 +202,12 @@ pub struct MergeReport {
 	/// equivalent content.
 	#[serde(default)]
 	pub noop_skipped_file_count: usize,
+	/// Generated files removed because every merge key already exists with
+	/// identical content in a different file in the same opted-in family
+	/// namespace. Tracked separately from same-path vanilla NoOp skips so the
+	/// pruning reason remains auditable.
+	#[serde(default)]
+	pub cross_file_noop_skipped_file_count: usize,
 	pub validation: MergeReportValidation,
 	#[serde(default)]
 	pub renames: Vec<MergeReportRename>,

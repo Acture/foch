@@ -255,6 +255,11 @@ pub struct ContentFamilyCapabilities {
 	pub semantic_complete: bool,
 	pub graph_ready: bool,
 	pub merge_ready: bool,
+	/// True only for content families where the game builds a global key
+	/// namespace and file location does not affect the runtime meaning of an
+	/// identical key/value definition. The merge materializer uses this to prune
+	/// generated files whose keys are already provided identically elsewhere.
+	pub cross_file_dedup_safe: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -615,6 +620,7 @@ impl ContentFamilyDescriptor {
 				semantic_complete: false,
 				graph_ready: false,
 				merge_ready: false,
+				cross_file_dedup_safe: false,
 			},
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
@@ -649,6 +655,7 @@ impl ContentFamilyDescriptor {
 				semantic_complete: false,
 				graph_ready: false,
 				merge_ready: false,
+				cross_file_dedup_safe: false,
 			},
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,

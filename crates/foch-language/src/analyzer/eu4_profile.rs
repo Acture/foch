@@ -17,6 +17,19 @@ const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
 		semantic_complete: true,
 		graph_ready: false,
 		merge_ready: true,
+		cross_file_dedup_safe: false,
+	}
+}
+
+/// Safe for EU4 families whose definitions live in a global runtime namespace:
+/// event ids, decision ids, scripted effect names, and scripted trigger names
+/// are resolved by key, not by the file that provided an identical body.
+const fn semantic_complete_merge_ready_cross_file_dedup_safe() -> ContentFamilyCapabilities {
+	ContentFamilyCapabilities {
+		semantic_complete: true,
+		graph_ready: false,
+		merge_ready: true,
+		cross_file_dedup_safe: true,
 	}
 }
 
@@ -130,7 +143,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Decisions)
 		.module_name(ModuleNameRule::Static("decisions"))
 		.scope(scope(ScopeType::Country))
-		.capabilities(semantic_complete_and_merge_ready())
+		// Safe: decision ids are global within the decisions namespace, not file-bound.
+		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 		.merge_key(MergeKeySource::ContainerChildKey)
 		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
@@ -138,7 +152,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Events)
 		.module_name(ModuleNameRule::Static("events"))
 		.scope(scope(ScopeType::Unknown))
-		.capabilities(semantic_complete_and_merge_ready())
+		// Safe: event ids are global across event files; path does not affect identity.
+		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 		.merge_key(MergeKeySource::FieldValue("id"))
 		.list_policy(ListMergePolicy::UnionWithRename)
 		.boolean_policy(BooleanMergePolicy::And)
@@ -147,7 +162,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 		.kind(ScriptFileKind::Decisions)
 		.module_name(ModuleNameRule::Static("decisions"))
 		.scope(scope(ScopeType::Country))
-		.capabilities(semantic_complete_and_merge_ready())
+		// Safe: decision ids are global within the decisions namespace, not file-bound.
+		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 		.merge_key(MergeKeySource::ContainerChildKey)
 		.boolean_policy(BooleanMergePolicy::And)
 		.build(),
@@ -158,7 +174,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "scripted_effects",
 		})
 		.scope(dynamic_scope_policy())
-		.capabilities(semantic_complete_and_merge_ready())
+		// Safe: scripted effect names are global call targets across files.
+		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.block_patch_policy(BlockPatchPolicy::BooleanOr)
 		.build(),
@@ -169,7 +186,8 @@ static EU4_CONTENT_FAMILIES: &[ContentFamilyDescriptor] = &[
 			fallback: "scripted_triggers",
 		})
 		.scope(dynamic_scope_policy())
-		.capabilities(semantic_complete_and_merge_ready())
+		// Safe: scripted trigger names are global call targets across files.
+		.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 		.merge_key(MergeKeySource::AssignmentKey)
 		.conflict_policy(ConflictPolicy::BooleanOr)
 		.block_patch_policy(BlockPatchPolicy::BooleanOr)
