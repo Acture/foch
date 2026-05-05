@@ -6,8 +6,8 @@ use crate::workspace::{ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_wor
 use foch_core::model::{SemanticIndex, SymbolKind, SymbolReference};
 use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, build_semantic_index, parse_script_file,
-	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
+	ParsedScriptFile, parse_script_file, resolve_scripted_effect_reference_targets,
+	resolve_scripted_trigger_reference_targets,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -77,7 +77,8 @@ pub(crate) fn build_runtime_state_from_workspace(
 		.map(|_| base_game_mod_id(workspace.playlist.game.key()));
 	let parsed_scripts =
 		collect_workspace_scripts(workspace, &enabled_mod_ids, base_mod_id.as_deref());
-	let semantic_index = build_semantic_index(&parsed_scripts);
+	let semantic_index =
+		collect_workspace_semantic_index(workspace, &enabled_mod_ids, base_mod_id.as_deref());
 	let precedence_by_mod = build_precedence_map(workspace, base_mod_id.as_deref());
 	let definitions =
 		collect_definition_records(&semantic_index, &parsed_scripts, &precedence_by_mod)?;
@@ -180,6 +181,32 @@ pub(crate) fn dependency_hint_for_edge(
 	(hint != DependencyMatchKind::None, hint)
 }
 
+fn collect_workspace_semantic_index(
+	workspace: &ResolvedWorkspace,
+	enabled_mod_ids: &HashSet<String>,
+	base_mod_id: Option<&str>,
+) -> SemanticIndex {
+	let mut merged = SemanticIndex::default();
+	if let (Some(base), Some(installed)) = (base_mod_id, workspace.installed_base_snapshot.as_ref())
+	{
+		let mut base_index = installed.snapshot.to_semantic_index();
+		for document in &mut base_index.documents {
+			document.mod_id = base.to_string();
+		}
+		merged = merge_semantic_indexes(merged, base_index);
+	}
+	for (mod_item, snapshot) in workspace.mods.iter().zip(workspace.mod_snapshots.iter()) {
+		if !enabled_mod_ids.contains(&mod_item.mod_id) {
+			continue;
+		}
+		let Some(snapshot) = snapshot.as_ref() else {
+			continue;
+		};
+		merged = merge_semantic_indexes(merged, snapshot.semantic_index.clone());
+	}
+	merged
+}
+
 fn collect_workspace_scripts(
 	workspace: &ResolvedWorkspace,
 	enabled_mod_ids: &HashSet<String>,
@@ -187,8 +214,32 @@ fn collect_workspace_scripts(
 ) -> Vec<ParsedScriptFile> {
 	let mut seen = HashSet::new();
 	let mut parsed = Vec::new();
+	let mut cached_mod_ids = HashSet::new();
+	for (mod_item, snapshot) in workspace.mods.iter().zip(workspace.mod_snapshots.iter()) {
+		if !enabled_mod_ids.contains(&mod_item.mod_id) {
+			continue;
+		}
+		let Some(snapshot) = snapshot.as_ref() else {
+			continue;
+		};
+		cached_mod_ids.insert(mod_item.mod_id.clone());
+		for document in &snapshot.parsed_documents {
+			let key = format!(
+				"{}::{}",
+				document.mod_id,
+				normalize_path(document.relative_path.as_path())
+			);
+			if seen.insert(key) {
+				parsed.push(document.clone());
+			}
+		}
+	}
+
 	for contributors in workspace.file_inventory.values() {
 		for contributor in contributors {
+			if cached_mod_ids.contains(&contributor.mod_id) {
+				continue;
+			}
 			if !(enabled_mod_ids.contains(&contributor.mod_id)
 				|| base_mod_id.is_some_and(|base| contributor.mod_id == base))
 			{
@@ -216,6 +267,49 @@ fn collect_workspace_scripts(
 			.cmp(&(rhs.mod_id.as_str(), rhs.relative_path.as_os_str()))
 	});
 	parsed
+}
+
+fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
+	let offset = base.scopes.len();
+	for scope in &mut overlay.scopes {
+		scope.id += offset;
+		if let Some(parent) = scope.parent {
+			scope.parent = Some(parent + offset);
+		}
+	}
+	for definition in &mut overlay.definitions {
+		definition.scope_id += offset;
+	}
+	for reference in &mut overlay.references {
+		reference.scope_id += offset;
+	}
+	for alias in &mut overlay.alias_usages {
+		alias.scope_id += offset;
+	}
+	for usage in &mut overlay.key_usages {
+		usage.scope_id += offset;
+	}
+	for assignment in &mut overlay.scalar_assignments {
+		assignment.scope_id += offset;
+	}
+
+	base.scopes.extend(overlay.scopes);
+	base.definitions.extend(overlay.definitions);
+	base.references.extend(overlay.references);
+	base.alias_usages.extend(overlay.alias_usages);
+	base.key_usages.extend(overlay.key_usages);
+	base.scalar_assignments.extend(overlay.scalar_assignments);
+	base.documents.extend(overlay.documents);
+	base.localisation_definitions
+		.extend(overlay.localisation_definitions);
+	base.localisation_duplicates
+		.extend(overlay.localisation_duplicates);
+	base.ui_definitions.extend(overlay.ui_definitions);
+	base.resource_references.extend(overlay.resource_references);
+	base.csv_rows.extend(overlay.csv_rows);
+	base.json_properties.extend(overlay.json_properties);
+	base.parse_issues.extend(overlay.parse_issues);
+	base
 }
 
 fn build_precedence_map(

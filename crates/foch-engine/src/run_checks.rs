@@ -71,11 +71,27 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		"resolve workspace",
 		|| resolve_workspace(&request, options.include_game_base),
 		|res| match res {
-			Ok(workspace) => format!(
-				"mods={} inventory_files={}",
-				workspace.mods.len(),
-				workspace.file_inventory.len()
-			),
+			Ok(workspace) => {
+				let cache_hits = workspace
+					.mod_snapshots
+					.iter()
+					.flatten()
+					.filter(|snapshot| snapshot.cache_hit)
+					.count();
+				let cache_misses = workspace
+					.mod_snapshots
+					.iter()
+					.flatten()
+					.filter(|snapshot| !snapshot.cache_hit)
+					.count();
+				format!(
+					"mods={} inventory_files={} cache_hits={} cache_misses={}",
+					workspace.mods.len(),
+					workspace.file_inventory.len(),
+					cache_hits,
+					cache_misses
+				)
+			}
 			Err(_) => "failed".to_string(),
 		},
 	);

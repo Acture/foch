@@ -1,47 +1,25 @@
-use flate2::Compression;
-use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
-use foch_core::model::{ModCandidate, ParseFamilyStats, SemanticIndex};
-use foch_language::analysis_version::analysis_rules_version;
+use crate::cache::{CachedModData, ModParseCache, compute_mod_hash_with_filter};
+use foch_core::model::{
+	DocumentFamily, FamilyParseStats, ModCandidate, ParseFamilyStats, SemanticIndex,
+};
 use foch_language::analyzer::documents::{
-	DiscoveredTextDocument, build_semantic_index_from_documents, discover_text_documents,
+	ParsedTextDocument, build_semantic_index_from_documents, discover_text_documents,
 	parse_discovered_text_documents,
 };
 use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
-use serde::{Deserialize, Serialize};
+use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::fs;
-use std::hash::{Hash, Hasher};
-use std::io::BufReader;
-use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
-
-pub const MOD_SNAPSHOT_CACHE_DIR_ENV: &str = "FOCH_MOD_SNAPSHOT_CACHE_DIR";
-const MOD_SNAPSHOT_SCHEMA_VERSION: u32 = 10;
+use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
 	pub semantic_index: SemanticIndex,
+	pub parsed_documents: Vec<ParsedScriptFile>,
 	pub parsed_files: usize,
 	pub parse_error_count: usize,
 	pub parse_stats: ParseFamilyStats,
 	pub document_parse_hints: HashMap<String, bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct StoredModSemanticSnapshot {
-	schema_version: u32,
-	game: String,
-	game_version: String,
-	analysis_rules_version: String,
-	mod_identity: String,
-	manifest_hash: u64,
-	generated_by_cli_version: String,
-	parsed_files: usize,
-	parse_error_count: usize,
-	parse_stats: ParseFamilyStats,
-	semantic_index: SemanticIndex,
+	pub cache_hit: bool,
 }
 
 pub(crate) fn load_or_build_mod_snapshot(
@@ -51,71 +29,84 @@ pub(crate) fn load_or_build_mod_snapshot(
 	filter: &super::FileFilter,
 ) -> Option<LoadedModSnapshot> {
 	let root = mod_item.root_path.as_ref()?;
-	let documents: Vec<DiscoveredTextDocument> = discover_text_documents(root)
+	let cache_game_version = game_version.map(|version| format!("{game_key} {version}"));
+	let cache = cache_game_version
+		.as_ref()
+		.map(|_| ModParseCache::open_default());
+	let mod_hash = cache
+		.as_ref()
+		.and_then(|_| compute_mod_hash_with_filter(root, filter).ok());
+
+	if let (Some(cache), Some(mod_hash), Some(cache_game_version)) = (
+		cache.as_ref(),
+		mod_hash.as_ref(),
+		cache_game_version.as_ref(),
+	) && let Some(mut cached) =
+		cache.lookup(mod_hash, env!("CARGO_PKG_VERSION"), cache_game_version)
+	{
+		rebase_parsed_documents(root, &mut cached.parsed_documents);
+		return Some(to_loaded_snapshot(cached, true));
+	}
+
+	let documents = discover_text_documents(root)
 		.into_iter()
 		.filter(|doc| filter.accepts(&doc.relative_path))
-		.collect();
-	let manifest_hash = semantic_manifest_hash(&documents);
-	let mod_identity = mod_cache_identity(mod_item);
-	let resolved_game_version = game_version.map(str::to_string);
-	let cache_path = resolved_game_version.as_ref().map(|version| {
-		mod_snapshot_cache_file(
-			game_key,
-			version,
-			analysis_rules_version(),
-			&mod_identity,
-			manifest_hash,
-		)
-	});
-
-	if let (Some(cache_path), Some(game_version)) =
-		(cache_path.as_ref(), resolved_game_version.as_ref())
-		&& let Some(entry) = load_mod_snapshot(cache_path)
-		&& entry.schema_version == MOD_SNAPSHOT_SCHEMA_VERSION
-		&& entry.game == game_key
-		&& entry.game_version == *game_version
-		&& entry.analysis_rules_version == analysis_rules_version()
-		&& entry.mod_identity == mod_identity
-		&& entry.manifest_hash == manifest_hash
-	{
-		return Some(to_loaded_snapshot(entry));
-	}
-
+		.collect::<Vec<_>>();
 	let parsed = parse_discovered_text_documents(&mod_item.mod_id, root, &documents);
 	let semantic_index = build_semantic_index_from_documents(&parsed.documents);
-	let parse_error_count = parsed.parse_stats.clausewitz_mainline.parse_issue_count;
-	let parsed_files = parsed.documents.len();
-	let entry = StoredModSemanticSnapshot {
-		schema_version: MOD_SNAPSHOT_SCHEMA_VERSION,
-		game: game_key.to_string(),
-		game_version: resolved_game_version.clone().unwrap_or_default(),
-		analysis_rules_version: analysis_rules_version().to_string(),
-		mod_identity,
-		manifest_hash,
-		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
-		parsed_files,
-		parse_error_count,
-		parse_stats: parsed.parse_stats,
+	let parsed_documents = parsed
+		.documents
+		.iter()
+		.filter_map(|doc| match doc {
+			ParsedTextDocument::Clausewitz(file) => Some(file.clone()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	let parse_stats = parsed.parse_stats;
+	let parse_error_count = parse_stats.clausewitz_mainline.parse_issue_count;
+	let data = CachedModData {
 		semantic_index,
+		parsed_documents,
 	};
-	if let Some(cache_path) = cache_path.as_ref() {
-		store_mod_snapshot(cache_path, &entry);
+	if let (Some(cache), Some(mod_hash), Some(cache_game_version)) = (
+		cache.as_ref(),
+		mod_hash.as_ref(),
+		cache_game_version.as_ref(),
+	) && let Err(err) = cache.store(
+		mod_hash,
+		env!("CARGO_PKG_VERSION"),
+		cache_game_version,
+		&data,
+	) {
+		tracing::warn!(
+			target: "foch::workspace::resolve",
+			mod_id = %mod_item.mod_id,
+			error = %err,
+			"failed to store mod parse cache entry"
+		);
 	}
-	Some(to_loaded_snapshot(entry))
+
+	Some(to_loaded_snapshot_with_stats(
+		data,
+		parse_stats,
+		parse_error_count,
+		false,
+	))
 }
 
-pub(crate) fn mod_snapshot_cache_root() -> PathBuf {
-	if let Ok(override_dir) = std::env::var(MOD_SNAPSHOT_CACHE_DIR_ENV) {
-		return PathBuf::from(override_dir);
-	}
-	dirs::cache_dir()
-		.unwrap_or_else(std::env::temp_dir)
-		.join("foch")
-		.join("mod_snapshots")
+fn to_loaded_snapshot(data: CachedModData, cache_hit: bool) -> LoadedModSnapshot {
+	let parse_stats = parse_stats_from_index(&data.semantic_index);
+	let parse_error_count = parse_stats.clausewitz_mainline.parse_issue_count;
+	to_loaded_snapshot_with_stats(data, parse_stats, parse_error_count, cache_hit)
 }
 
-fn to_loaded_snapshot(entry: StoredModSemanticSnapshot) -> LoadedModSnapshot {
-	let mut semantic_index = entry.semantic_index;
+fn to_loaded_snapshot_with_stats(
+	data: CachedModData,
+	parse_stats: ParseFamilyStats,
+	parse_error_count: usize,
+	cache_hit: bool,
+) -> LoadedModSnapshot {
+	let mut semantic_index = data.semantic_index;
 	apply_registered_param_contracts(&mut semantic_index);
 	let document_parse_hints = semantic_index
 		.documents
@@ -123,120 +114,62 @@ fn to_loaded_snapshot(entry: StoredModSemanticSnapshot) -> LoadedModSnapshot {
 		.map(|item| (normalize_relative_path(&item.path), item.parse_ok))
 		.collect();
 	LoadedModSnapshot {
+		parsed_files: semantic_index.documents.len(),
 		semantic_index,
-		parsed_files: entry.parsed_files,
-		parse_error_count: entry.parse_error_count,
-		parse_stats: entry.parse_stats,
+		parsed_documents: data.parsed_documents,
+		parse_error_count,
+		parse_stats,
 		document_parse_hints,
+		cache_hit,
 	}
 }
 
-fn mod_cache_identity(mod_item: &ModCandidate) -> String {
-	if mod_item.mod_id != "<missing-steam-id>" {
-		return sanitize_component(&mod_item.mod_id);
-	}
-	if let Some(descriptor) = mod_item.descriptor.as_ref() {
-		return sanitize_component(&descriptor.name);
-	}
-	if let Some(name) = mod_item.entry.display_name.as_ref() {
-		return sanitize_component(name);
-	}
-	if let Some(root) = mod_item.root_path.as_ref() {
-		let mut hasher = DefaultHasher::new();
-		root.to_string_lossy().replace('\\', "/").hash(&mut hasher);
-		return format!("root-{:016x}", hasher.finish());
-	}
-	"unknown".to_string()
-}
-
-fn mod_snapshot_cache_file(
-	game_key: &str,
-	game_version: &str,
-	analysis_rules_version: &str,
-	mod_identity: &str,
-	manifest_hash: u64,
-) -> PathBuf {
-	mod_snapshot_cache_root()
-		.join(game_key)
-		.join(sanitize_component(game_version))
-		.join(sanitize_component(analysis_rules_version))
-		.join(mod_identity)
-		.join(format!("{manifest_hash:016x}.bin.gz"))
-}
-
-fn load_mod_snapshot(path: &Path) -> Option<StoredModSemanticSnapshot> {
-	let file = fs::File::open(path).ok()?;
-	let reader = BufReader::new(file);
-	let decoder = GzDecoder::new(reader);
-	bincode::deserialize_from(decoder).ok()
-}
-
-fn store_mod_snapshot(path: &Path, entry: &StoredModSemanticSnapshot) {
-	let Some(parent) = path.parent() else {
-		return;
-	};
-	if fs::create_dir_all(parent).is_err() {
-		return;
-	}
-	let tmp = path.with_extension("bin.gz.tmp");
-	let Ok(file) = fs::File::create(&tmp) else {
-		return;
-	};
-	let mut encoder = GzEncoder::new(file, Compression::default());
-	if bincode::serialize_into(&mut encoder, entry).is_err() {
-		let _ = fs::remove_file(&tmp);
-		return;
-	}
-	if encoder.finish().is_err() {
-		let _ = fs::remove_file(&tmp);
-		return;
-	}
-	let _ = fs::rename(tmp, path);
-}
-
-fn semantic_manifest_hash(files: &[DiscoveredTextDocument]) -> u64 {
-	let mut entries: Vec<String> = Vec::new();
-	for file in files {
-		let relative = normalize_relative_path(&file.relative_path);
-		let mut entry = relative;
-		if let Ok(metadata) = fs::metadata(&file.absolute_path) {
-			entry.push('|');
-			entry.push_str(&metadata.len().to_string());
-			entry.push('|');
-			entry.push_str(&modified_nanos(&metadata).to_string());
-		}
-		entries.push(entry);
-	}
-	entries.sort();
-
-	let mut hasher = DefaultHasher::new();
-	for entry in entries {
-		entry.hash(&mut hasher);
-	}
-	hasher.finish()
-}
-
-fn modified_nanos(metadata: &fs::Metadata) -> u128 {
-	metadata
-		.modified()
-		.ok()
-		.and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-		.map_or(0, |duration| duration.as_nanos())
-}
-
-fn sanitize_component(value: &str) -> String {
-	let mut out = String::with_capacity(value.len());
-	for ch in value.chars() {
-		if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
-			out.push(ch);
-		} else {
-			out.push('_');
+fn parse_stats_from_index(index: &SemanticIndex) -> ParseFamilyStats {
+	let family_lookup = index
+		.documents
+		.iter()
+		.map(|document| {
+			(
+				(
+					document.mod_id.clone(),
+					normalize_relative_path(&document.path),
+				),
+				document.family,
+			)
+		})
+		.collect::<HashMap<_, _>>();
+	let mut stats = ParseFamilyStats::default();
+	for document in &index.documents {
+		let family_stats = family_stats_mut(&mut stats, document.family);
+		family_stats.documents += 1;
+		if !document.parse_ok {
+			family_stats.parse_failed_documents += 1;
 		}
 	}
-	if out.is_empty() {
-		"unknown".to_string()
-	} else {
-		out
+	for issue in &index.parse_issues {
+		let key = (issue.mod_id.clone(), normalize_relative_path(&issue.path));
+		let family = family_lookup
+			.get(&key)
+			.copied()
+			.unwrap_or(DocumentFamily::Clausewitz);
+		family_stats_mut(&mut stats, family).parse_issue_count += 1;
+	}
+	stats
+}
+
+fn family_stats_mut(stats: &mut ParseFamilyStats, family: DocumentFamily) -> &mut FamilyParseStats {
+	match family {
+		DocumentFamily::Clausewitz => &mut stats.clausewitz_mainline,
+		DocumentFamily::Localisation => &mut stats.localisation,
+		DocumentFamily::Csv => &mut stats.csv,
+		DocumentFamily::Json => &mut stats.json,
+	}
+}
+
+fn rebase_parsed_documents(root: &Path, documents: &mut [ParsedScriptFile]) {
+	for document in documents {
+		document.path = root.join(&document.relative_path);
+		document.parse_cache_hit = true;
 	}
 }
 
@@ -246,31 +179,24 @@ fn normalize_relative_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::{
-		MOD_SNAPSHOT_CACHE_DIR_ENV, MOD_SNAPSHOT_SCHEMA_VERSION, StoredModSemanticSnapshot,
-		load_or_build_mod_snapshot, mod_snapshot_cache_file, store_mod_snapshot,
-	};
+	use super::*;
 	use foch_core::domain::descriptor::ModDescriptor;
+	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::PlaylistEntry;
-	use foch_core::model::{ModCandidate, ParseFamilyStats};
-	use foch_language::analysis_version::analysis_rules_version;
-	use std::sync::Mutex;
+	use std::fs;
 	use tempfile::TempDir;
 
-	static MOD_CACHE_ENV_LOCK: Mutex<()> = Mutex::new(());
-
 	#[test]
-	fn load_or_build_mod_snapshot_rejects_old_schema_version() {
-		let _guard = MOD_CACHE_ENV_LOCK.lock().expect("env lock");
+	fn load_or_build_mod_snapshot_reuses_content_addressed_cache() {
 		let temp = TempDir::new().expect("temp dir");
+		let cache_dir = temp.path().join("cache");
 		unsafe {
-			std::env::set_var(MOD_SNAPSHOT_CACHE_DIR_ENV, temp.path());
+			std::env::set_var("FOCH_MOD_PARSE_CACHE_DIR", &cache_dir);
 		}
-
 		let mod_root = temp.path().join("9001");
-		std::fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
 			.expect("create mod root");
-		std::fs::write(
+		fs::write(
 			mod_root
 				.join("common")
 				.join("scripted_effects")
@@ -278,19 +204,18 @@ mod tests {
 			"ME_give_claims = { add_prestige = 1 }\n",
 		)
 		.expect("write scripted effect");
-
 		let mod_item = ModCandidate {
 			entry: PlaylistEntry {
 				enabled: true,
 				position: Some(0),
 				steam_id: Some("9001".to_string()),
-				display_name: Some("schema-test".to_string()),
+				display_name: Some("cache-test".to_string()),
 			},
 			mod_id: "9001".to_string(),
 			root_path: Some(mod_root.clone()),
 			descriptor_path: Some(mod_root.join("descriptor.mod")),
 			descriptor: Some(ModDescriptor {
-				name: "schema-test".to_string(),
+				name: "cache-test".to_string(),
 				path: None,
 				tags: Vec::new(),
 				dependencies: Vec::new(),
@@ -302,60 +227,19 @@ mod tests {
 			descriptor_error: None,
 			files: Vec::new(),
 		};
+		let filter = super::super::FileFilter::for_game(Game::EuropaUniversalis4);
 
-		let documents =
-			super::discover_text_documents(mod_item.root_path.as_ref().expect("mod root"));
-		let manifest_hash = super::semantic_manifest_hash(&documents);
-		let cache_path = mod_snapshot_cache_file(
-			"eu4",
-			"1.0.0-test",
-			analysis_rules_version(),
-			"9001",
-			manifest_hash,
-		);
-		store_mod_snapshot(
-			&cache_path,
-			&StoredModSemanticSnapshot {
-				schema_version: MOD_SNAPSHOT_SCHEMA_VERSION - 1,
-				game: "eu4".to_string(),
-				game_version: "1.0.0-test".to_string(),
-				analysis_rules_version: analysis_rules_version().to_string(),
-				mod_identity: "9001".to_string(),
-				manifest_hash,
-				generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
-				parsed_files: 0,
-				parse_error_count: 0,
-				parse_stats: ParseFamilyStats::default(),
-				semantic_index: Default::default(),
-			},
-		);
+		let cold = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
+			.expect("cold snapshot");
+		let warm = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
+			.expect("warm snapshot");
 
-		let filter =
-			super::super::FileFilter::for_game(foch_core::domain::game::Game::EuropaUniversalis4);
-		let loaded = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
-			.expect("rebuild snapshot");
-		assert_eq!(loaded.parsed_files, 1);
-
-		let rebuilt_path = mod_snapshot_cache_file(
-			"eu4",
-			"1.0.0-test",
-			analysis_rules_version(),
-			"9001",
-			manifest_hash,
-		);
-		let rebuilt = super::load_mod_snapshot(&rebuilt_path).expect("load rebuilt snapshot");
-		assert_eq!(rebuilt.schema_version, MOD_SNAPSHOT_SCHEMA_VERSION);
-		assert!(
-			rebuilt
-				.semantic_index
-				.definitions
-				.first()
-				.and_then(|definition| definition.param_contract.as_ref())
-				.is_some()
-		);
-
+		assert!(!cold.cache_hit);
+		assert!(warm.cache_hit);
+		assert_eq!(warm.parsed_files, 1);
+		assert_eq!(warm.parsed_documents.len(), 1);
 		unsafe {
-			std::env::remove_var(MOD_SNAPSHOT_CACHE_DIR_ENV);
+			std::env::remove_var("FOCH_MOD_PARSE_CACHE_DIR");
 		}
 	}
 }

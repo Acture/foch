@@ -2,7 +2,7 @@ use foch_core::model::ScopeType;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ScriptFileKind {
 	Events,
 	OnActions,

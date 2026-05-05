@@ -46,6 +46,7 @@ The analyzer pipeline can:
 - resolve a playset into an effective workspace
 - load optional installed base-game snapshots
 - parse Clausewitz, localisation, CSV, and JSON families
+- reuse a per-mod content-addressed parse cache for unchanged mod AST and semantic-index artifacts
 - build semantic indexes across base game and enabled mods
 - emit strict and advisory findings
 - surface overlap diagnostics through the shared runtime overlap classifier

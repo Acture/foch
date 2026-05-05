@@ -1,4 +1,5 @@
 pub mod base_data;
+pub mod cache;
 pub mod config;
 pub mod graph;
 pub mod merge;
@@ -13,6 +14,10 @@ pub use base_data::{
 	InstalledBaseDataEntry, ReleaseDataManifest, build_base_snapshot, default_release_tag,
 	install_built_snapshot, install_snapshot_from_release, list_installed_base_data,
 	write_snapshot_bundle,
+};
+pub use cache::{
+	CacheError, CachedModData, MOD_PARSE_CACHE_VERSION, ModParseCache, compute_mod_hash,
+	compute_mod_hash_with_filter, default_mod_parse_cache_dir,
 };
 pub use config::{
 	CONFIG_DIR_ENV, Config, ValidationItem, ValidationStatus, get_config_dir_path,

@@ -8,6 +8,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3 = "1.5.5"
 bincode.workspace = true
 rkyv.workspace = true
 console.workspace = true
