@@ -371,6 +371,28 @@ fn read_json_file(path: &Path) -> serde_json::Value {
 }
 
 #[test]
+fn cache_commands_stats_where_and_clean_noop() {
+	let tmp = TempDir::new().expect("temp dir");
+
+	let (where_code, where_stdout, where_stderr) = run_foch(&["cache", "where"], tmp.path());
+	assert_eq!(where_code, 0, "stderr: {where_stderr}");
+	assert!(where_stdout.contains("foch"), "stdout: {where_stdout}");
+
+	let (stats_code, stats_stdout, stats_stderr) = run_foch(&["cache", "stats"], tmp.path());
+	assert_eq!(stats_code, 0, "stderr: {stats_stderr}");
+	assert!(stats_stdout.contains("cache root:"));
+	assert!(stats_stdout.contains("mods"));
+	assert!(stats_stdout.contains("diffs"));
+	assert!(stats_stdout.contains("dag-base"));
+	assert!(stats_stdout.contains("modsets"));
+
+	let (clean_code, clean_stdout, clean_stderr) =
+		run_foch(&["cache", "clean", "--older-than", "9999"], tmp.path());
+	assert_eq!(clean_code, 0, "stderr: {clean_stderr}");
+	assert!(clean_stdout.contains("removed: 0 entries"));
+}
+
+#[test]
 fn missing_playset_path_returns_exit_1() {
 	let tmp = TempDir::new().expect("temp dir");
 	let missing = tmp.path().join("missing.json");

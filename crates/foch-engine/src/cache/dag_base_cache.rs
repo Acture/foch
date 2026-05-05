@@ -5,7 +5,7 @@
 //! index rewrites while allowing independent invalidation per file and upstream
 //! dependency set.
 
-use super::mod_parse_cache::{CacheError, default_mod_parse_cache_dir};
+use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
 use foch_language::analyzer::parser::AstStatement;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -127,7 +127,7 @@ pub fn default_dag_base_cache_dir() -> PathBuf {
 	if let Ok(override_dir) = std::env::var(CACHE_ENV) {
 		return PathBuf::from(override_dir);
 	}
-	default_mod_parse_cache_dir().join("dag-base")
+	default_foch_cache_dir().join("dag-base")
 }
 
 pub fn dag_base_cache_stats() -> DagBaseCacheStats {

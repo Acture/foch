@@ -276,6 +276,9 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		"status: {}",
 		render_merge_report_status(report.status)
 	));
+	if let Some(cache_source) = report.cache_source.as_deref() {
+		lines.push(format!("cache_source: {cache_source}"));
+	}
 	if !cross_tagged_mods.is_empty() {
 		lines.push(format!(
 			"cross_tagged_mods: {} (mods with both V1 stale-target AND V2 version-mismatch — likely outdated or unmaintained)",

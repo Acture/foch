@@ -6,6 +6,7 @@
 mod dag_base_cache;
 mod mod_diff_cache;
 mod mod_parse_cache;
+mod modset_cache;
 
 pub use dag_base_cache::{
 	DAG_BASE_CACHE_VERSION, DagBaseCache, DagBaseCacheStats, dag_base_cache_stats,
@@ -17,5 +18,10 @@ pub use mod_diff_cache::{
 };
 pub use mod_parse_cache::{
 	CacheError, CachedModData, MOD_PARSE_CACHE_VERSION, ModParseCache, compute_mod_hash,
-	compute_mod_hash_with_filter, default_mod_parse_cache_dir,
+	compute_mod_hash_with_filter, default_foch_cache_dir, default_mod_parse_cache_dir,
+};
+pub use modset_cache::{
+	CacheEntryInfo, CacheStats, CachedModsetResult, ModsetCache, compute_modset_cache_key,
+	compute_resolution_map_hash, default_modset_cache_dir, default_modset_cache_root_dir,
+	unpack_modset_tarball,
 };

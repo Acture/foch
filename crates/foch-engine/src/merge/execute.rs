@@ -1,8 +1,15 @@
 use super::error::MergeError;
 use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
+use crate::base_data::{detect_game_version, resolve_game_root, resolve_game_root_and_version};
+use crate::cache::{
+	ModsetCache, compute_mod_hash, compute_modset_cache_key, compute_resolution_map_hash,
+	unpack_modset_tarball,
+};
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
+use crate::workspace::resolve::build_mod_candidates;
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
+use foch_core::domain::playlist::Playlist;
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_REPORT_ARTIFACT_PATH, MergeReport, MergeReportStatus,
 	MergeReportValidation,
@@ -19,6 +26,8 @@ pub struct MergeExecuteOptions {
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
+	/// Optional explicit foch.toml path supplied by the CLI.
+	pub resolution_config_path: Option<PathBuf>,
 	/// Caller-computed playset fingerprint to stamp on the merge report so
 	/// subsequent runs can detect "same mod set, reuse the cached output".
 	/// `None` skips the stamp (e.g., merge invoked from a context where
@@ -36,7 +45,38 @@ pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<MergeExecutionResult, MergeError> {
-	let resolution_map = load_resolution_map(&request)?;
+	let modset_cache = build_modset_cache_context(
+		&request,
+		options.include_game_base,
+		options.resolution_config_path.as_deref(),
+	);
+	if let Some(cache_context) = modset_cache.as_ref() {
+		if let Some(cached) = cache_context.cache.lookup(&cache_context.key) {
+			eprintln!(
+				"[merge] modset_cache_hits=1 modset_cache_misses=0 key={}",
+				short_key(&cache_context.key)
+			);
+			unpack_modset_tarball(&cached.tarball_path, &options.out_dir).map_err(|err| {
+				MergeError::Io(io::Error::other(format!(
+					"failed to unpack modset cache entry {} into {}: {err}",
+					cached.tarball_path.display(),
+					options.out_dir.display()
+				)))
+			})?;
+			let mut report = cached.report;
+			report.cache_source = Some("modset".to_string());
+			report.playset_fingerprint = options.playset_fingerprint.clone();
+			write_merge_report_artifact(&options.out_dir, &report)?;
+			let exit_code = merge_report_exit_code(&report);
+			return Ok(MergeExecutionResult { report, exit_code });
+		}
+		eprintln!(
+			"[merge] modset_cache_hits=0 modset_cache_misses=1 key={}",
+			short_key(&cache_context.key)
+		);
+	}
+
+	let resolution_map = load_resolution_map(&request, options.resolution_config_path.as_deref())?;
 	let mut report = materialize_merge_internal(
 		request.clone(),
 		&options.out_dir,
@@ -51,6 +91,8 @@ pub fn run_merge_with_options(
 	report.playset_fingerprint = options.playset_fingerprint.clone();
 
 	if report.status == MergeReportStatus::Fatal {
+		write_merge_report_artifact(&options.out_dir, &report)?;
+		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &report);
 		return Ok(MergeExecutionResult {
 			report,
 			exit_code: 1,
@@ -58,6 +100,8 @@ pub fn run_merge_with_options(
 	}
 
 	if report.status == MergeReportStatus::Blocked && !options.force {
+		write_merge_report_artifact(&options.out_dir, &report)?;
+		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &report);
 		return Ok(MergeExecutionResult {
 			report,
 			exit_code: 2,
@@ -69,28 +113,174 @@ pub fn run_merge_with_options(
 	report.validation = validation;
 	report.status = final_merge_status(&report);
 	write_merge_report_artifact(&options.out_dir, &report)?;
+	store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &report);
 
-	let exit_code = match report.status {
-		MergeReportStatus::Ready => 0,
-		MergeReportStatus::PartialSuccess => 0,
-		MergeReportStatus::Blocked => 2,
-		MergeReportStatus::Fatal => 3,
-	};
+	let exit_code = merge_report_exit_code(&report);
 
 	Ok(MergeExecutionResult { report, exit_code })
 }
 
-fn load_resolution_map(request: &CheckRequest) -> Result<ResolutionMap, MergeError> {
+#[derive(Clone, Debug)]
+struct ModsetCacheContext {
+	cache: ModsetCache,
+	key: String,
+}
+
+fn build_modset_cache_context(
+	request: &CheckRequest,
+	include_game_base: bool,
+	resolution_config_path: Option<&Path>,
+) -> Option<ModsetCacheContext> {
+	if resolution_config_path.is_some_and(|path| !path.is_file()) {
+		return None;
+	}
+	let playlist = Playlist::from_dlc_load(&request.playset_path).ok()?;
+	let game_version = modset_cache_game_version(request, &playlist, include_game_base)?;
+	let candidates = build_mod_candidates(request, &playlist);
+	let mut mod_hashes = Vec::new();
+	for candidate in candidates
+		.iter()
+		.filter(|candidate| candidate.entry.enabled)
+	{
+		let root = candidate.root_path.as_ref()?;
+		mod_hashes.push(compute_mod_hash(root).ok()?);
+	}
 	let playset_root = request
 		.playset_path
 		.parent()
 		.unwrap_or_else(|| Path::new("."));
-	let config = FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
-		path: Some(playset_root.display().to_string()),
-		message: err.to_string(),
-	})?;
+	let resolution_map_hash = compute_resolution_map_hash(&resolution_config_bytes(
+		playset_root,
+		resolution_config_path,
+	));
+	let key = compute_modset_cache_key(
+		&mod_hashes,
+		&resolution_map_hash,
+		env!("CARGO_PKG_VERSION"),
+		&game_version,
+	);
+	Some(ModsetCacheContext {
+		cache: ModsetCache::open_default(),
+		key,
+	})
+}
+
+fn modset_cache_game_version(
+	request: &CheckRequest,
+	playlist: &Playlist,
+	include_game_base: bool,
+) -> Option<String> {
+	let version = if include_game_base {
+		resolve_game_root_and_version(&request.config, &playlist.game)
+			.ok()
+			.map(|(_, version)| version)?
+	} else {
+		resolve_game_root(&request.config, &playlist.game)
+			.as_ref()
+			.and_then(|root| detect_game_version(root))
+			.unwrap_or_else(|| "unknown".to_string())
+	};
+	Some(format!("{} {version}", playlist.game.key()))
+}
+
+fn resolution_config_bytes(playset_root: &Path, explicit_path: Option<&Path>) -> Vec<u8> {
+	let mut bytes = Vec::new();
+	let paths = explicit_path
+		.map(|path| vec![path.to_path_buf()])
+		.unwrap_or_else(|| resolution_config_search_paths(playset_root));
+	for path in paths {
+		let Ok(raw) = fs::read(&path) else {
+			continue;
+		};
+		let normalized_path = path.to_string_lossy().replace('\\', "/");
+		bytes.extend_from_slice(&(normalized_path.len() as u64).to_le_bytes());
+		bytes.extend_from_slice(normalized_path.as_bytes());
+		bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+		bytes.extend_from_slice(&raw);
+	}
+	bytes
+}
+
+fn resolution_config_search_paths(playset_root: &Path) -> Vec<PathBuf> {
+	let mut paths = Vec::new();
+	let mut seen = std::collections::HashSet::new();
+	if let Ok(cwd) = std::env::current_dir() {
+		push_unique_path(&mut paths, &mut seen, cwd.join("foch.toml"));
+	}
+	push_unique_path(&mut paths, &mut seen, playset_root.join("foch.toml"));
+	if let Some(home) = dirs::home_dir() {
+		push_unique_path(
+			&mut paths,
+			&mut seen,
+			home.join(".config").join("foch").join("foch.toml"),
+		);
+	}
+	paths
+}
+
+fn push_unique_path(
+	paths: &mut Vec<PathBuf>,
+	seen: &mut std::collections::HashSet<PathBuf>,
+	path: PathBuf,
+) {
+	if seen.insert(path.clone()) {
+		paths.push(path);
+	}
+}
+
+fn store_modset_cache_entry(
+	cache_context: Option<&ModsetCacheContext>,
+	out_dir: &Path,
+	report: &MergeReport,
+) {
+	let Some(cache_context) = cache_context else {
+		return;
+	};
+	if let Err(err) = cache_context
+		.cache
+		.store(&cache_context.key, out_dir, report)
+	{
+		eprintln!(
+			"[merge] warning: failed to store modset cache entry {}: {err}",
+			short_key(&cache_context.key)
+		);
+	}
+}
+
+fn short_key(key: &str) -> &str {
+	key.get(..16).unwrap_or(key)
+}
+
+fn merge_report_exit_code(report: &MergeReport) -> i32 {
+	match report.status {
+		MergeReportStatus::Ready => 0,
+		MergeReportStatus::PartialSuccess => 0,
+		MergeReportStatus::Blocked => 2,
+		MergeReportStatus::Fatal => 3,
+	}
+}
+
+fn load_resolution_map(
+	request: &CheckRequest,
+	explicit_path: Option<&Path>,
+) -> Result<ResolutionMap, MergeError> {
+	let playset_root = request
+		.playset_path
+		.parent()
+		.unwrap_or_else(|| Path::new("."));
+	let config = if let Some(path) = explicit_path {
+		FochConfig::load_from_path(path).map_err(|err| MergeError::Validation {
+			path: Some(path.display().to_string()),
+			message: err.to_string(),
+		})?
+	} else {
+		FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
+			path: Some(playset_root.display().to_string()),
+			message: err.to_string(),
+		})?
+	};
 	ResolutionMap::from_entries(&config.resolutions).map_err(|err| MergeError::Validation {
-		path: Some(playset_root.display().to_string()),
+		path: Some(explicit_path.unwrap_or(playset_root).display().to_string()),
 		message: err.to_string(),
 	})
 }

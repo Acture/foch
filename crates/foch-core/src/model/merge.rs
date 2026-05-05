@@ -187,6 +187,8 @@ pub struct StaleVanillaTargetDescriptor {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub cache_source: Option<String>,
 	pub manual_conflict_count: usize,
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,

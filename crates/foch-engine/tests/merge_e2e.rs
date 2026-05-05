@@ -89,6 +89,7 @@ fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutio
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
+			resolution_config_path: None,
 			playset_fingerprint: None,
 		},
 	)

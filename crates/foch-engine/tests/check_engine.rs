@@ -809,6 +809,7 @@ fn merge_plan_marks_localisation_yaml_overlap_as_localisation_merge() {
 fn merge_report_serializes_frozen_contract_buckets() {
 	let report = MergeReport {
 		status: MergeReportStatus::Blocked,
+		cache_source: None,
 		manual_conflict_count: 2,
 		generated_file_count: 0,
 		copied_file_count: 3,

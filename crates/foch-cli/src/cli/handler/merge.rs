@@ -52,6 +52,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			force: merge_args.force,
 			ignore_replace_path: merge_args.ignore_replace_path,
 			dep_overrides,
+			resolution_config_path: merge_args.config.clone(),
 			playset_fingerprint: fingerprint,
 		},
 	)?;

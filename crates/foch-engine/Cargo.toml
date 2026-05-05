@@ -23,6 +23,7 @@ reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tar.workspace = true
 toml.workspace = true
 toml_edit = "0.23"
 tracing.workspace = true
@@ -32,6 +33,7 @@ crossterm = "0.29.0"
 
 [dev-dependencies]
 bincode2 = { package = "bincode", version = "2.0.0-rc.3", features = ["serde"] }
+filetime = "0.2"
 bitcode = { version = "0.6", features = ["serde"] }
 postcard = { version = "1", features = ["alloc"] }
 tempfile.workspace = true

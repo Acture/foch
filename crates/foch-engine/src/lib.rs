@@ -16,8 +16,9 @@ pub use base_data::{
 	write_snapshot_bundle,
 };
 pub use cache::{
-	CacheError, CachedModData, MOD_PARSE_CACHE_VERSION, ModParseCache, compute_mod_hash,
-	compute_mod_hash_with_filter, default_mod_parse_cache_dir,
+	CacheError, CachedModData, MOD_PARSE_CACHE_VERSION, ModParseCache, ModsetCache,
+	compute_mod_hash, compute_mod_hash_with_filter, default_foch_cache_dir,
+	default_mod_parse_cache_dir, default_modset_cache_dir, default_modset_cache_root_dir,
 };
 pub use config::{
 	CONFIG_DIR_ENV, Config, ValidationItem, ValidationStatus, get_config_dir_path,

@@ -5,7 +5,7 @@
 //! vanilla_hash)` key to avoid rewriting a shared per-mod index and to keep
 //! failed writes isolated.
 
-use super::mod_parse_cache::{CacheError, default_mod_parse_cache_dir};
+use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
 use crate::merge::patch::ClausewitzPatch;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -143,7 +143,7 @@ pub fn default_mod_diff_cache_dir() -> PathBuf {
 	if let Ok(override_dir) = std::env::var(CACHE_ENV) {
 		return PathBuf::from(override_dir);
 	}
-	default_mod_parse_cache_dir().join("diffs")
+	default_foch_cache_dir().join("diffs")
 }
 
 pub fn mod_diff_cache_stats() -> ModDiffCacheStats {
