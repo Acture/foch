@@ -28,6 +28,19 @@ pub enum SymbolKind {
 	TriggeredModifier,
 }
 
+impl SymbolKind {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			SymbolKind::ScriptedEffect => "scripted_effect",
+			SymbolKind::ScriptedTrigger => "scripted_trigger",
+			SymbolKind::Event => "event",
+			SymbolKind::Decision => "decision",
+			SymbolKind::DiplomaticAction => "diplomatic_action",
+			SymbolKind::TriggeredModifier => "triggered_modifier",
+		}
+	}
+}
+
 #[derive(
 	Clone,
 	Copy,

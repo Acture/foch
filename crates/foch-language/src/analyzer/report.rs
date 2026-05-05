@@ -1,6 +1,7 @@
 use foch_core::model::{
 	ChannelMode, CheckResult, DepMisuseFinding, Finding, FindingChannel, MergePlanEntry,
-	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus, Severity,
+	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus,
+	STALE_VANILLA_FALLBACK_RULE_ID, Severity,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -126,10 +127,17 @@ fn append_findings_by_rule_summary(lines: &mut Vec<String>, findings: &[Finding]
 			count,
 			render_summary_severity(severity_from_order(severity), color),
 			channel_label(channel_from_order(channel)),
-			rule_id
+			summary_rule_label(rule_id.as_str())
 		));
 	}
 	lines.push(format!("  (total: {})", findings.len()));
+}
+
+fn summary_rule_label(rule_id: &str) -> String {
+	match rule_id {
+		STALE_VANILLA_FALLBACK_RULE_ID => "S002B  stale-vanilla-fallback".to_string(),
+		_ => rule_id.to_string(),
+	}
 }
 
 fn severity_order(severity: Severity) -> u8 {
@@ -690,6 +698,23 @@ mod tests {
 
 		assert!(output.contains("\nFindings by rule: (no findings)"));
 		assert!(!output.contains("  count  severity"));
+	}
+
+	#[test]
+	fn render_text_labels_stale_vanilla_fallback_summary_row() {
+		let mut result = CheckResult {
+			findings: vec![finding(
+				STALE_VANILLA_FALLBACK_RULE_ID,
+				Severity::Error,
+				FindingChannel::Strict,
+			)],
+			..Default::default()
+		};
+		result.recompute_channels();
+
+		let output = render_text(&result, false, ChannelMode::All);
+
+		assert!(output.contains("S002B  stale-vanilla-fallback"));
 	}
 
 	fn stale_vanilla_target(mod_id: &str) -> foch_core::model::StaleVanillaTargetDescriptor {

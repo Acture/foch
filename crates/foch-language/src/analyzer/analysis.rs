@@ -7,6 +7,7 @@ use super::semantic_index::{
 	resolve_cross_kind_reference_targets, resolve_event_reference_targets,
 	resolve_scripted_effect_reference_targets, resolve_scripted_trigger_reference_targets,
 };
+use super::vanilla_index::VanillaSymbolIndex;
 use super::visibility::{should_flag_duplicates, should_flag_unresolved};
 use foch_core::model::{
 	AnalysisMode, Finding, FindingChannel, ScopeType, SemanticDiagnostics, SemanticIndex, Severity,
@@ -20,14 +21,22 @@ pub struct AnalyzeOptions {
 	pub mode: AnalysisMode,
 }
 
-pub fn analyze_visibility(index: &SemanticIndex, _options: &AnalyzeOptions) -> SemanticDiagnostics {
+pub fn analyze_visibility(index: &SemanticIndex, options: &AnalyzeOptions) -> SemanticDiagnostics {
+	analyze_visibility_with_vanilla_index(index, options, None)
+}
+
+pub fn analyze_visibility_with_vanilla_index(
+	index: &SemanticIndex,
+	_options: &AnalyzeOptions,
+	vanilla_index: Option<&VanillaSymbolIndex>,
+) -> SemanticDiagnostics {
 	let mut diagnostics = SemanticDiagnostics::default();
 	diagnostics
 		.strict
 		.extend(check_duplicate_definitions(index));
 	diagnostics
 		.strict
-		.extend(check_unresolved_call_targets(index));
+		.extend(check_unresolved_call_targets(index, vanilla_index));
 	let (invisible_alias_strict, invisible_alias_advisory) = check_invisible_scope_aliases(index);
 	diagnostics.strict.extend(invisible_alias_strict);
 	diagnostics.advisory.extend(invisible_alias_advisory);
@@ -102,7 +111,10 @@ fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
 	findings
 }
 
-fn check_unresolved_call_targets(index: &SemanticIndex) -> Vec<Finding> {
+fn check_unresolved_call_targets(
+	index: &SemanticIndex,
+	vanilla_index: Option<&VanillaSymbolIndex>,
+) -> Vec<Finding> {
 	let mut seen = HashSet::new();
 	let mut findings = Vec::new();
 	// Some EU4 trigger keys are not scripted_triggers but the *names* of
@@ -188,6 +200,21 @@ fn check_unresolved_call_targets(index: &SemanticIndex) -> Vec<Finding> {
 			reference.name
 		);
 		if !seen.insert(dedup_key) {
+			continue;
+		}
+
+		if vanilla_index
+			.is_some_and(|index| index.contains(reference.kind, reference.name.as_str()))
+		{
+			findings.push(Finding::stale_vanilla_fallback(
+				reference.mod_id.clone(),
+				reference.path.clone(),
+				reference.kind,
+				reference.name.clone(),
+				reference.line,
+				reference.column,
+				"resolves to vanilla symbol; would break if vanilla file is removed",
+			));
 			continue;
 		}
 
@@ -1173,12 +1200,5 @@ fn is_alias_visible(index: &SemanticIndex, mut scope_id: usize, alias: &str) -> 
 }
 
 fn symbol_kind_text(kind: SymbolKind) -> &'static str {
-	match kind {
-		SymbolKind::ScriptedEffect => "scripted_effect",
-		SymbolKind::ScriptedTrigger => "scripted_trigger",
-		SymbolKind::Event => "event",
-		SymbolKind::Decision => "decision",
-		SymbolKind::DiplomaticAction => "diplomatic_action",
-		SymbolKind::TriggeredModifier => "triggered_modifier",
-	}
+	kind.as_str()
 }

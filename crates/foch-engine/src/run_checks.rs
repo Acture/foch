@@ -5,14 +5,15 @@ use crate::merge::namespace::{
 use crate::request::{CheckRequest, RunOptions};
 use crate::runtime::{build_overlap_findings, build_runtime_state_from_workspace};
 use crate::workspace::{
-	LoadedModSnapshot, ResolvedFileContributor, WorkspaceResolveErrorKind, normalize_relative_path,
-	resolve_workspace,
+	LoadedModSnapshot, ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind,
+	normalize_relative_path, resolve_workspace,
 };
 use foch_core::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
 	Finding, FindingChannel, ParseFamilyStats, ParseIssueReportItem, SemanticIndex, Severity,
+	SymbolDefinition,
 };
-use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
+use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility_with_vanilla_index};
 use foch_language::analyzer::content_family::GameProfile;
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::rules::{
@@ -20,6 +21,7 @@ use foch_language::analyzer::rules::{
 	check_file_conflict, check_missing_dependency, check_missing_descriptor, check_required_fields,
 	check_version_mismatch,
 };
+use foch_language::analyzer::vanilla_index::{VanillaSymbolIndex, VanillaSymbolSource};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
@@ -58,6 +60,18 @@ struct GameBaseSemanticSnapshot {
 	parsed_files: usize,
 	parse_error_count: usize,
 	parse_stats: ParseFamilyStats,
+}
+
+impl VanillaSymbolSource for ResolvedWorkspace {
+	fn visit_vanilla_definitions(&self, visit: &mut dyn FnMut(&SymbolDefinition)) {
+		let Some(installed) = self.installed_base_snapshot.as_ref() else {
+			return;
+		};
+		let index = installed.snapshot.to_semantic_index();
+		for definition in &index.definitions {
+			visit(definition);
+		}
+	}
 }
 
 pub fn run_checks(request: CheckRequest) -> CheckResult {
@@ -180,6 +194,7 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		.installed_base_snapshot
 		.as_ref()
 		.map(|installed| installed.snapshot.game_version.clone());
+	let vanilla_symbol_index = VanillaSymbolIndex::build(&resolved);
 	let (mod_dag, _dag_diagnostics) = build_mod_dag(&resolved.mods);
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
 		run_progress_stage(
@@ -236,11 +251,12 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 		let diagnostics = run_progress_stage(
 			"semantic visibility",
 			|| {
-				analyze_visibility(
+				analyze_visibility_with_vanilla_index(
 					&ctx.semantic_index,
 					&AnalyzeOptions {
 						mode: options.analysis_mode,
 					},
+					Some(&vanilla_symbol_index),
 				)
 			},
 			|d| format!("strict={} advisory={}", d.strict.len(), d.advisory.len()),

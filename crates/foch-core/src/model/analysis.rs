@@ -1,5 +1,5 @@
 use super::document::DocumentFamily;
-use super::semantic::SemanticIndex;
+use super::semantic::{SemanticIndex, SymbolKind};
 use super::workspace::ModCandidate;
 use crate::domain::playlist::Playlist;
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,8 @@ pub enum ChannelMode {
 	All,
 }
 
+pub const STALE_VANILLA_FALLBACK_RULE_ID: &str = "stale-vanilla-fallback";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
 	pub rule_id: String,
@@ -44,6 +46,41 @@ pub struct Finding {
 	pub line: Option<usize>,
 	pub column: Option<usize>,
 	pub confidence: Option<f32>,
+}
+
+impl Finding {
+	pub fn stale_vanilla_fallback(
+		mod_id: String,
+		file_path: PathBuf,
+		reference_kind: SymbolKind,
+		reference_name: String,
+		line: usize,
+		column: usize,
+		rationale: impl Into<String>,
+	) -> Self {
+		let rationale = rationale.into();
+		Self {
+			rule_id: STALE_VANILLA_FALLBACK_RULE_ID.to_string(),
+			severity: Severity::Error,
+			channel: FindingChannel::Strict,
+			message: format!(
+				"stale vanilla fallback: {} {}",
+				reference_kind.as_str(),
+				reference_name
+			),
+			mod_id: Some(mod_id),
+			path: Some(file_path),
+			evidence: Some(format!(
+				"reference_kind={} reference_name={} rationale={}",
+				reference_kind.as_str(),
+				reference_name,
+				rationale
+			)),
+			line: Some(line),
+			column: Some(column),
+			confidence: Some(0.95),
+		}
+	}
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
