@@ -118,7 +118,7 @@ pub enum MergePlanOutputFormat {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Generate a merged mod directory and revalidate it",
-	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # CI / batch mode\n  foch merge ./playlist.json --out ./merged-mod --fallback\n  foch merge ./playlist.json --out ./merged-mod --force  # implies --fallback\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
+	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # CI / batch mode\n  foch merge ./playlist.json --out ./merged-mod --force\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
 	#[arg(default_value = None)]
@@ -154,12 +154,6 @@ pub struct MergeArgs {
 	/// Use the simple stdin/stderr prompt instead of the ratatui interactive UI.
 	#[arg(long)]
 	pub cli_prompt: bool,
-
-	/// Enable last-writer fallback for unresolved structural merge conflicts.
-	///
-	/// `--force` also enables this fallback.
-	#[arg(long)]
-	pub fallback: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

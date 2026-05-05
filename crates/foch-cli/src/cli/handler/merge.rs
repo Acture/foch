@@ -19,7 +19,6 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		playset_path: playset_path.clone(),
 		config,
 	};
-	let fallback_enabled = merge_args.fallback || merge_args.force;
 	let local_config = load_local_foch_config(merge_args, &playset_path)?;
 	let fingerprint = compute_fingerprint_for_playset(&playset_path, &local_config);
 	if let Some(exit) = handle_existing_out_dir(&merge_args.out, fingerprint.as_deref())? {
@@ -52,17 +51,12 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			include_game_base: !merge_args.no_game_base,
 			force: merge_args.force,
 			ignore_replace_path: merge_args.ignore_replace_path,
-			fallback: fallback_enabled,
 			dep_overrides,
 			playset_fingerprint: fingerprint,
 		},
 	)?;
 	println!("{}", render_merge_report_text(&execution.report));
-	if let Some(tip) = render_unresolved_conflict_tip(
-		&execution.report,
-		merge_args.out.as_path(),
-		fallback_enabled,
-	) {
+	if let Some(tip) = render_unresolved_conflict_tip(&execution.report, merge_args.out.as_path()) {
 		eprintln!("{tip}");
 	}
 	if matches!(
@@ -77,13 +71,9 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	Ok(execution.exit_code)
 }
 
-fn render_unresolved_conflict_tip(
-	report: &MergeReport,
-	out_dir: &Path,
-	fallback_enabled: bool,
-) -> Option<String> {
+fn render_unresolved_conflict_tip(report: &MergeReport, out_dir: &Path) -> Option<String> {
 	let unresolved_conflicts = report.manual_conflict_count;
-	if fallback_enabled || unresolved_conflicts == 0 {
+	if unresolved_conflicts == 0 {
 		return None;
 	}
 
@@ -95,7 +85,7 @@ fn render_unresolved_conflict_tip(
 			out_dir.display()
 		),
 		format!("  1. Inspect {} for details.", report_path.display()),
-		"  2. Re-run with --fallback to materialize last-writer output with conflict markers."
+		"  2. Add a foch.toml [[resolutions]] entry with handler = \"last_writer\" for the reviewed conflict."
 			.to_string(),
 	];
 	if let Some(finding) = report.dep_misuse.first() {
@@ -109,7 +99,9 @@ fn render_unresolved_conflict_tip(
 	} else {
 		lines.push("  3. Resolve skipped files manually, then re-run merge.".to_string());
 	}
-	lines.push("Foch kept your output safe; use --fallback when you're ready.".to_string());
+	lines.push(
+		"Foch kept your output safe; use an explicit resolution when you're ready.".to_string(),
+	);
 	Some(lines.join("\n"))
 }
 

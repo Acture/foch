@@ -53,7 +53,6 @@ pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
-	pub fallback: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	pub resolution_map: foch_core::config::ResolutionMap,
 }
@@ -64,7 +63,6 @@ impl Default for MergeMaterializeOptions {
 			include_game_base: true,
 			force: false,
 			ignore_replace_path: false,
-			fallback: false,
 			dep_overrides: Vec::new(),
 			resolution_map: foch_core::config::ResolutionMap::default(),
 		}
@@ -2067,18 +2065,6 @@ mod tests {
 			include_game_base: false,
 			force,
 			ignore_replace_path: false,
-			fallback: false,
-			dep_overrides: Vec::new(),
-			resolution_map: foch_core::config::ResolutionMap::default(),
-		}
-	}
-
-	fn no_base_options_with_fallback(force: bool, fallback: bool) -> MergeMaterializeOptions {
-		MergeMaterializeOptions {
-			include_game_base: false,
-			force,
-			ignore_replace_path: false,
-			fallback,
 			dep_overrides: Vec::new(),
 			resolution_map: foch_core::config::ResolutionMap::default(),
 		}
@@ -2594,37 +2580,6 @@ mod tests {
 		let plan = read_plan(&out_dir);
 		let entry = plan_entry_for(&plan, "pdx_browser/overlap.bin");
 		assert!(entry.winner.is_some());
-	}
-
-	#[test]
-	fn unresolved_structural_merge_stays_manual_when_fallback_requested() {
-		let temp = TempDir::new().expect("temp dir");
-		let playlist_path = temp.path().join("playlist.json");
-		let out_dir = temp.path().join("out");
-		stage_dag_genuine_conflict(
-			&playlist_path,
-			&temp.path().join("9101"),
-			&temp.path().join("9102"),
-			&temp.path().join("9103"),
-		);
-
-		let report = materialize_merge_internal(
-			request_for(&playlist_path),
-			&out_dir,
-			no_base_options_with_fallback(false, true),
-		)
-		.expect("materialize");
-
-		assert_eq!(report.status, MergeReportStatus::Blocked);
-		assert_eq!(report.manual_conflict_count, 1);
-		assert_eq!(report.generated_file_count, 0);
-		assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
-		assert_eq!(report.conflict_resolutions.len(), 1);
-		let resolution = &report.conflict_resolutions[0];
-		assert!(resolution.reason.contains("unresolved conflict"));
-		assert_eq!(resolution.leaf_conflicts.len(), 1);
-		assert_eq!(resolution.leaf_conflicts[0].address_key, "group");
-		assert_eq!(resolution.leaf_conflicts[0].contributors.len(), 2);
 	}
 
 	#[test]

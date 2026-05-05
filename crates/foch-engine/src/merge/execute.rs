@@ -18,7 +18,6 @@ pub struct MergeExecuteOptions {
 	pub include_game_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
-	pub fallback: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	/// Caller-computed playset fingerprint to stamp on the merge report so
 	/// subsequent runs can detect "same mod set, reuse the cached output".
@@ -45,7 +44,6 @@ pub fn run_merge_with_options(
 			include_game_base: options.include_game_base,
 			force: options.force,
 			ignore_replace_path: options.ignore_replace_path,
-			fallback: options.fallback,
 			dep_overrides: options.dep_overrides.clone(),
 			resolution_map,
 		},

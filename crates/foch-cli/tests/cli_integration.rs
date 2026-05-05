@@ -1407,7 +1407,7 @@ fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
 }
 
 #[test]
-fn merge_command_skips_unresolved_dag_conflict_without_fallback() {
+fn merge_command_skips_unresolved_dag_conflict_by_default() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -1446,47 +1446,7 @@ fn merge_command_skips_unresolved_dag_conflict_without_fallback() {
 }
 
 #[test]
-fn merge_command_fallback_no_longer_writes_last_writer_marker() {
-	let tmp = TempDir::new().expect("temp dir");
-	let playlist_path = tmp.path().join("playlist.json");
-	let out_dir = tmp.path().join("merged-out");
-	stage_dag_genuine_conflict(
-		&playlist_path,
-		&tmp.path().join("9101"),
-		&tmp.path().join("9102"),
-		&tmp.path().join("9103"),
-	);
-
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
-	let (code, stdout, _stderr) = run_foch(
-		&[
-			"merge",
-			playlist_str.as_str(),
-			"--out",
-			out_str.as_str(),
-			"--no-game-base",
-			"--fallback",
-		],
-		tmp.path(),
-	);
-	assert_eq!(code, 2);
-	assert!(stdout.contains("status: BLOCKED"));
-	assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
-
-	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "blocked");
-	assert_eq!(report["manual_conflict_count"], 1);
-	assert_eq!(report["generated_file_count"], 0);
-	assert!(
-		report["conflict_resolutions"][0]["leaf_conflicts"]
-			.as_array()
-			.is_some_and(|items| !items.is_empty())
-	);
-}
-
-#[test]
-fn merge_command_default_unresolved_conflict_prints_fallback_tip_to_stderr() {
+fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -1521,47 +1481,12 @@ fn merge_command_default_unresolved_conflict_prints_fallback_tip_to_stderr() {
 		stderr.contains(".foch/foch-merge-report.json"),
 		"stderr: {stderr}"
 	);
-	assert!(stderr.contains("--fallback"), "stderr: {stderr}");
-	assert!(stderr.contains("last-writer"), "stderr: {stderr}");
-	assert!(stderr.contains("conflict markers"), "stderr: {stderr}");
+	assert!(stderr.contains("foch.toml"), "stderr: {stderr}");
+	assert!(
+		stderr.contains("handler = \"last_writer\""),
+		"stderr: {stderr}"
+	);
 	assert!(stderr.contains("Foch kept"), "stderr: {stderr}");
-}
-
-#[test]
-fn merge_command_fallback_unresolved_scenario_still_blocks_without_tip() {
-	let tmp = TempDir::new().expect("temp dir");
-	let playlist_path = tmp.path().join("playlist.json");
-	let out_dir = tmp.path().join("merged-out");
-	stage_dag_genuine_conflict(
-		&playlist_path,
-		&tmp.path().join("9101"),
-		&tmp.path().join("9102"),
-		&tmp.path().join("9103"),
-	);
-
-	let playlist_str = playlist_path.display().to_string();
-	let out_str = out_dir.display().to_string();
-	let (code, stdout, stderr) = run_foch(
-		&[
-			"merge",
-			playlist_str.as_str(),
-			"--out",
-			out_str.as_str(),
-			"--no-game-base",
-			"--fallback",
-		],
-		tmp.path(),
-	);
-	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
-	assert!(!stderr.contains("Tip:"), "stderr: {stderr}");
-	assert!(
-		!stderr.contains("unresolved merge conflict"),
-		"stderr: {stderr}"
-	);
-	assert!(
-		!stderr.contains("--fallback to materialize"),
-		"stderr: {stderr}"
-	);
 }
 
 #[test]

@@ -32,8 +32,7 @@ fn expected_path(name: &str, rel: &str) -> PathBuf {
 // Reads a fixture playset from `crates/foch-engine/tests/fixtures/playsets/<name>/`,
 // runs the production merge pipeline into a tempdir, returns the output dir path.
 fn run_merge_fixture(name: &str) -> PathBuf {
-	let (result, out_dir) =
-		run_merge_for_fixture(name, /*force=*/ true, /*fallback=*/ false);
+	let (result, out_dir) = run_merge_for_fixture(name, /*force=*/ true);
 	assert_eq!(
 		result.exit_code, 0,
 		"merge fixture {name} should exit cleanly; report: {:#?}",
@@ -52,11 +51,7 @@ fn run_merge_fixture(name: &str) -> PathBuf {
 /// conflict-scenario tests. Returns the full [`MergeExecutionResult`] plus
 /// the output dir so tests can assert on report fields, status, and the
 /// produced tree without the wrapper enforcing its own success contract.
-fn run_merge_for_fixture(
-	name: &str,
-	force: bool,
-	fallback: bool,
-) -> (foch_engine::MergeExecutionResult, PathBuf) {
+fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutionResult, PathBuf) {
 	let fixture = fixture_dir(name);
 	assert!(
 		fixture.is_dir(),
@@ -93,7 +88,6 @@ fn run_merge_for_fixture(
 			include_game_base: false,
 			force,
 			ignore_replace_path: false,
-			fallback,
 			dep_overrides: Vec::new(),
 			playset_fingerprint: None,
 		},
@@ -364,7 +358,7 @@ fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Pat
 
 #[test]
 fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
-	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict", false, false);
+	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict", false);
 	assert_ne!(
 		result.report.status,
 		MergeReportStatus::Fatal,
@@ -381,7 +375,7 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 
 #[test]
 fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
-	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict_resolved", false, false);
+	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict_resolved", false);
 	assert_eq!(
 		result.exit_code, 0,
 		"DSL-resolved merge should exit 0; report: {:#?}",
@@ -435,7 +429,7 @@ fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 
 #[test]
 fn eu4_union_policy_lets_distinct_monarch_names_coexist() {
-	let (result, out_dir) = run_merge_for_fixture("eu4_union_monarch_names_coexist", false, false);
+	let (result, out_dir) = run_merge_for_fixture("eu4_union_monarch_names_coexist", false);
 	assert_eq!(
 		result.exit_code, 0,
 		"union merge should exit 0; report: {:#?}",
@@ -470,7 +464,7 @@ fn eu4_union_policy_lets_distinct_monarch_names_coexist() {
 
 #[test]
 fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
-	let (result, out_dir) = run_merge_for_fixture("eu4_boolean_or_scripted_trigger", false, false);
+	let (result, out_dir) = run_merge_for_fixture("eu4_boolean_or_scripted_trigger", false);
 	assert_eq!(
 		result.exit_code, 0,
 		"BooleanOr merge should exit 0; report: {:#?}",
@@ -518,7 +512,7 @@ fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
 
 #[test]
 fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
-	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false, false);
+	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false);
 	assert_eq!(
 		result.exit_code, 2,
 		"strict mixed-kinds merge should block; report: {:#?}",
@@ -549,7 +543,7 @@ fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
 
 #[test]
 fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
-	let (result, out_dir) = run_merge_for_fixture("eu4_recurse_block_conflict", false, false);
+	let (result, out_dir) = run_merge_for_fixture("eu4_recurse_block_conflict", false);
 	assert_eq!(
 		result.exit_code, 2,
 		"strict recurse merge should block; report: {:#?}",
