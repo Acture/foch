@@ -203,9 +203,10 @@ impl MergePolicies {
 
 /// How patch-level block conflicts are resolved by the patch merge engine
 /// (the successor to deep_merge / ir.rs). When two or more mods both modify
-/// the same block-valued node, this policy decides whether the last writer
-/// wins (default), the bodies get wrapped in `OR = { ... }` blocks for
-/// boolean-OR trigger semantics, or block list contents are unioned.
+/// the same block-valued node, this policy decides whether the bodies are
+/// recursively merged (default), wrapped in `OR = { ... }` blocks for
+/// boolean-OR trigger semantics, unioned as list-like contents, or left as
+/// explicit manual conflicts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockPatchPolicy {

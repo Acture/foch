@@ -193,22 +193,12 @@ fn value_fingerprint(v: &AstValue) -> String {
 	out
 }
 
-/// Span-ignoring fingerprint for an `AstStatement`, used to disambiguate
-/// `InsertNode` / `RemoveNode` patches that share the same `(path, key)`
-/// but carry different bodies. This matters whenever the parent block is
-/// allowed to contain repeated keys (triggers, effects, lists like `OR`,
-/// `AND`, `tooltip` blocks, etc.): two mods inserting `has_country_flag = X`
-/// and `has_country_flag = Y` must each map to a distinct address so they
-/// can both apply, instead of either colliding (mixed-kind false positive
-/// when paired with an unrelated `RemoveNode`) or silently losing one
-/// payload via `compatible_inserts` highest-precedence selection.
-///
-/// `InsertNode` is only emitted by the diff when a key was absent in base
-/// and present (exactly once) in overlay, so it is always semantically
-/// "add a fresh statement". Including the body fingerprint therefore
-/// preserves the merge intent for both repeated-key parents and
-/// genuinely-unique keys: convergent inserts still share one address;
-/// distinct inserts each get their own.
+/// Span-ignoring fingerprint for an `AstStatement`, used by Union-policy
+/// `InsertNode` / `RemoveNode` addresses that share the same `(path, key)`
+/// but carry different bodies. Repeated-key parents can then keep distinct
+/// insert/remove payloads at distinct addresses, while Recurse and other
+/// unique-key policies deliberately collide at `(path, key)` so leaf
+/// resolvers surface sibling conflicts.
 fn statement_fingerprint(stmt: &AstStatement) -> String {
 	let mut out = String::new();
 	match stmt {
@@ -346,20 +336,13 @@ pub fn merge_patch_sets(
 
 	// Cross-kind sibling conflict pre-check.
 	//
-	// `patch_address` fingerprints `RemoveNode` / `InsertNode` (and lists)
-	// with the body content so that two mods inserting different nodes under
-	// the same key in a repeated-key block (e.g. multiple `has_country_flag`
-	// entries inside an OR) coexist as distinct addresses. That fingerprinting
-	// also has the side effect of separating same-(path, key) patches of
-	// *different* kinds — for example `SetValue(owner)` lands at `(path, "owner")`
-	// while `RemoveNode(owner)` lands at `(path, "__node__::owner::<fp>")`.
-	// Without this pre-pass the per-address `has_mixed_kinds` check inside
-	// `resolve_address` never fires for these split groups and the conflicting
-	// intents (set vs remove the same key) silently both apply.
-	//
-	// Bucket by the kind-agnostic raw `(path, key)` and, when sibling mods
-	// produced patches of multiple kinds, surface a single mixed-kinds
-	// conflict that supersedes the per-fingerprint resolutions.
+	// `patch_address` fingerprints `RemoveNode` / `InsertNode` only for
+	// Union-policy keys, where repeated named children are allowed to coexist.
+	// That can split same-(path, key) patches of different kinds across
+	// addresses — for example a fingerprinted `RemoveNode(owner)` versus an
+	// unfingerprinted `SetValue(owner)`. Bucket by the kind-agnostic raw
+	// `(path, key)` so these ambiguous sibling intents surface as one conflict
+	// instead of applying independently.
 	let cross_kind_conflicts = detect_cross_kind_sibling_conflicts(&by_address, &mut result.stats);
 	let cross_kind_addresses: HashSet<PatchAddress> = cross_kind_conflicts
 		.iter()
@@ -710,7 +693,6 @@ fn resolve_insert_nodes(
 	// must escalate instead of silently picking the highest-precedence
 	// patch. Per the project rule, ambiguous merges must surface as
 	// conflicts rather than fall back to LastWriter behind the user's back.
-	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
 	let summaries: Vec<String> = attributed
 		.iter()
 		.map(|a| match &a.patch {
@@ -723,7 +705,6 @@ fn resolve_insert_nodes(
 		})
 		.collect();
 	stats.conflict_patches += 1;
-	let _ = mods;
 	PatchResolution::Conflict {
 		address: addr,
 		reason: format!(
@@ -734,42 +715,16 @@ fn resolve_insert_nodes(
 	}
 }
 
-/// Multiple mods appending items to the same list → union (dedup identical
-/// values, keep all distinct ones).
+/// Multiple mods appending the same list item. Because `patch_address`
+/// includes the value fingerprint, every patch in this group has identical
+/// `value` → always convergent.
 fn resolve_append_list_items(
 	_addr: PatchAddress,
 	attributed: Vec<AttributedPatch>,
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
-	// Collect all appended values.
-	let values: Vec<&AstValue> = attributed
-		.iter()
-		.map(|a| match &a.patch {
-			ClausewitzPatch::AppendListItem { value, .. } => value,
-			_ => unreachable!(),
-		})
-		.collect();
-
-	// If all values are semantically equal → convergent (dedup to one).
-	if values
-		.windows(2)
-		.all(|w| super::patch::ast_values_semantically_equal(w[0], w[1]))
-	{
-		stats.convergent_patches += 1;
-		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
-	}
-
-	// Different values → union: keep all distinct items. Use the highest-
-	// precedence patch as the representative result.
-	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
-	let mut sorted = attributed;
-	sorted.sort_by_key(|a| std::cmp::Reverse(a.precedence));
-	stats.auto_merged_patches += 1;
-	PatchResolution::AutoMerged {
-		result: sorted.into_iter().next().unwrap().patch,
-		strategy: "list_union".to_string(),
-		contributing_mods: mods,
-	}
+	stats.convergent_patches += 1;
+	PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch)
 }
 
 /// Multiple mods setting the same scalar to different values. Resolve via
@@ -909,39 +864,16 @@ fn resolve_remove_convergent(
 	PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch)
 }
 
-/// Multiple mods removing different items from a list.
+/// Multiple mods removing the same list item. Because `patch_address`
+/// includes the value fingerprint, every patch in this group has identical
+/// `value` → always convergent.
 fn resolve_remove_list_items(
 	_addr: PatchAddress,
 	attributed: Vec<AttributedPatch>,
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
-	let values: Vec<&AstValue> = attributed
-		.iter()
-		.map(|a| match &a.patch {
-			ClausewitzPatch::RemoveListItem { value, .. } => value,
-			_ => unreachable!(),
-		})
-		.collect();
-
-	// Identical removals → convergent.
-	if values
-		.windows(2)
-		.all(|w| super::patch::ast_values_semantically_equal(w[0], w[1]))
-	{
-		stats.convergent_patches += 1;
-		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
-	}
-
-	// Different items being removed → both apply.
-	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
-	let mut sorted = attributed;
-	sorted.sort_by_key(|a| std::cmp::Reverse(a.precedence));
-	stats.auto_merged_patches += 1;
-	PatchResolution::AutoMerged {
-		result: sorted.into_iter().next().unwrap().patch,
-		strategy: "compatible_removals".to_string(),
-		contributing_mods: mods,
-	}
+	stats.convergent_patches += 1;
+	PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch)
 }
 
 /// Multiple mods appending the same in-block Item value (e.g. both add `TRE`
