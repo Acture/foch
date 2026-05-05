@@ -95,12 +95,17 @@ fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddr
 		ClausewitzPatch::RemoveNode {
 			path, key, removed, ..
 		} => {
-			// Only fingerprint InsertNode / RemoveNode bodies when the target block
-			// policy is *not* BooleanOr. BooleanOr definitions intentionally collide
-			// at `(path, key)` so synthesis can fold their bodies into one OR block.
-			let fingerprint_nodes = !matches!(
+			// Fingerprint InsertNode / RemoveNode bodies only when the target
+			// block's policy explicitly opts in to list-like coexistence
+			// (Union). For Recurse / LastWriter the top-level key is
+			// unique-by-convention and sibling mods touching the same key
+			// must collide so the leaf resolvers can surface a conflict
+			// instead of silently allowing N divergent values to coexist.
+			// BooleanOr also keeps no fingerprint so synthesis can fold
+			// bodies into a single OR block at the same address.
+			let fingerprint_nodes = matches!(
 				policies.block_patch_policy_for_key(key),
-				BlockPatchPolicy::BooleanOr
+				BlockPatchPolicy::Union
 			);
 			let key = if fingerprint_nodes {
 				format!("__node__::{}::{}", key, statement_fingerprint(removed))
@@ -117,9 +122,9 @@ fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddr
 			key,
 			statement,
 		} => {
-			let fingerprint_nodes = !matches!(
+			let fingerprint_nodes = matches!(
 				policies.block_patch_policy_for_key(key),
-				BlockPatchPolicy::BooleanOr
+				BlockPatchPolicy::Union
 			);
 			let key = if fingerprint_nodes {
 				format!("__node__::{}::{}", key, statement_fingerprint(statement))
@@ -698,18 +703,34 @@ fn resolve_insert_nodes(
 		};
 	}
 
-	// Different statements → all insertions can coexist (they add distinct
-	// content at the same path).
+	// Different statements at the same (path, key) from sibling mods → real
+	// conflict. The fingerprint scheme already routed list-like content
+	// (Union policy) through distinct addresses earlier; anything that
+	// reaches this default branch is a unique-key collision the engine
+	// must escalate instead of silently picking the highest-precedence
+	// patch. Per the project rule, ambiguous merges must surface as
+	// conflicts rather than fall back to LastWriter behind the user's back.
 	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
-	// Pick the highest-precedence mod's patch as the "primary" result but
-	// record all contributing mods.
-	let mut sorted = attributed;
-	sorted.sort_by_key(|a| std::cmp::Reverse(a.precedence));
-	stats.auto_merged_patches += 1;
-	PatchResolution::AutoMerged {
-		result: sorted.into_iter().next().unwrap().patch,
-		strategy: "compatible_inserts".to_string(),
-		contributing_mods: mods,
+	let summaries: Vec<String> = attributed
+		.iter()
+		.map(|a| match &a.patch {
+			ClausewitzPatch::InsertNode { statement, .. } => format!(
+				"`{}` from `{}`",
+				statement_text_for_reason(statement),
+				a.mod_id
+			),
+			_ => unreachable!(),
+		})
+		.collect();
+	stats.conflict_patches += 1;
+	let _ = mods;
+	PatchResolution::Conflict {
+		address: addr,
+		reason: format!(
+			"sibling mods inserted divergent statements at the same key: {}",
+			summaries.join(", ")
+		),
+		patches: attributed,
 	}
 }
 
@@ -797,6 +818,16 @@ fn value_text_for_reason(value: &AstValue) -> String {
 	match value {
 		AstValue::Scalar { value, .. } => value.as_text(),
 		AstValue::Block { .. } => "<block>".to_string(),
+	}
+}
+
+fn statement_text_for_reason(stmt: &AstStatement) -> String {
+	match stmt {
+		AstStatement::Assignment { key, value, .. } => {
+			format!("{key} = {}", value_text_for_reason(value))
+		}
+		AstStatement::Item { value, .. } => value_text_for_reason(value),
+		AstStatement::Comment { .. } => "<comment>".to_string(),
 	}
 }
 
@@ -2503,13 +2534,43 @@ mod tests {
 	}
 
 	#[test]
-	fn different_insert_nodes_independent_addresses() {
-		// Two mods inserting the same key with different bodies — e.g.
-		// `has_country_flag = a` and `has_country_flag = b` into the same
-		// `OR` block — now get distinct addresses thanks to the body
-		// fingerprint, so both apply independently instead of one being
-		// silently dropped via "compatible_inserts" highest-precedence
-		// selection.
+	fn different_insert_nodes_under_union_policy_coexist() {
+		// Two mods inserting the same key with different bodies under a
+		// list-like Union policy (e.g. `monarch_names = "..."` lines inside
+		// a country history names block) get distinct addresses via the
+		// body fingerprint and apply independently. This is the only
+		// policy that opts into list-like coexistence; Recurse / LastWriter
+		// keep the (path, key) collision so the resolver can escalate it.
+		let patch_a = ClausewitzPatch::InsertNode {
+			path: vec!["root".into()],
+			key: "ideas".into(),
+			statement: assignment("ideas", scalar("alpha")),
+		};
+		let patch_b = ClausewitzPatch::InsertNode {
+			path: vec!["root".into()],
+			key: "ideas".into(),
+			statement: assignment("ideas", scalar("beta")),
+		};
+
+		let result = merge_patch_sets_with_defer(
+			vec![
+				("mod_a".into(), 1, vec![patch_a]),
+				("mod_b".into(), 2, vec![patch_b]),
+			],
+			&union_policies(),
+		);
+
+		assert_eq!(result.resolved.len(), 2);
+		assert_eq!(result.conflicts.len(), 0);
+		assert_eq!(result.stats.single_mod_patches, 2);
+	}
+
+	#[test]
+	fn different_insert_nodes_under_recurse_policy_emit_conflict() {
+		// Same shape as the Union case above, but under the default Recurse
+		// policy the engine treats `(path, "ideas")` as unique-key and
+		// surfaces the divergent inserts as a sibling conflict instead of
+		// silently picking the highest-precedence patch.
 		let patch_a = ClausewitzPatch::InsertNode {
 			path: vec!["root".into()],
 			key: "ideas".into(),
@@ -2529,9 +2590,17 @@ mod tests {
 			&default_policies(),
 		);
 
-		assert_eq!(result.resolved.len(), 2);
-		assert_eq!(result.conflicts.len(), 0);
-		assert_eq!(result.stats.single_mod_patches, 2);
+		assert_eq!(result.resolved.len(), 0);
+		assert_eq!(result.conflicts.len(), 1);
+		match &result.conflicts[0] {
+			PatchResolution::Conflict { reason, .. } => {
+				assert!(
+					reason.contains("sibling mods inserted divergent statements"),
+					"unexpected conflict reason: {reason}"
+				);
+			}
+			other => panic!("expected Conflict, got {other:?}"),
+		}
 	}
 
 	#[test]

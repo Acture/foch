@@ -299,14 +299,12 @@ fn assert_matches_golden(name: &str, out_dir: &Path, rel: &str) {
 }
 
 #[test]
-#[ignore = "unignore after fix/string-corruption-emit is rebased; master currently corrupts string scalar emission"]
 fn eu4_string_corruption_fixture_is_structurally_sound() {
 	let out = run_merge_fixture("eu4_string_corruption");
 	assert_structurally_sound(&out);
 }
 
 #[test]
-#[ignore = "unignore after fix/string-corruption-emit is rebased and the golden snapshot is blessed"]
 fn eu4_string_corruption_cornwall_matches_golden() {
 	let out = run_merge_fixture("eu4_string_corruption");
 	let rel = "missions/ME_Cornwall_Missions.txt";
@@ -357,27 +355,14 @@ fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Pat
 // country-history file `history/countries/TES - Test.txt`. The two
 // downstream contributors (conflict_a at precedence 1, conflict_b at
 // precedence 2) each set `religion` to a different value relative to the
-// baseline contributor's `catholic`. Once leaf-level resolvers stop
-// silently picking the highest-precedence patch this should produce a
-// per-key SetValue conflict at `religion`.
-//
-// Both tests are currently `#[ignore]` because the engine's leaf resolvers
-// (resolve_set_values default branch in patch_merge.rs) silently fall back
-// to LastWriter on same-key sibling conflicts, so the engine reports
-// `manual_conflict_count = 0` and never invokes the handler chain. Once the
-// `rec-default-step1` / leaf-conflict-fix slice lands these should turn
-// green automatically:
-//   - eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict
-//     verifies the strict path (no foch.toml override) reports the
-//     conflict instead of silently picking conflict_b's religion.
-//   - eu4_two_mod_conflict_resolved_via_last_writer_handler verifies the
-//     `[[resolutions]] match = "history/**" handler = "last_writer"` route
-//     records a HandlerResolutionRecord and lands conflict_b's religion
-//     in the merged output.
+// baseline contributor's `catholic`. The patch engine surfaces this as a
+// per-key sibling SetValue conflict that the user — or the resolution DSL
+// — must arbitrate; without `foch.toml` the engine reports
+// `manual_conflict_count >= 1`, with `[[resolutions]] match = "history/**"
+// handler = "last_writer"` it routes the pick through the handler registry.
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "blocked on leaf-conflict-fix: engine currently silent-LastWriter for same-key SetValue (see plan.md and rec-default-step1)"]
 fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict", false, false);
 	assert_ne!(
@@ -400,7 +385,6 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 }
 
 #[test]
-#[ignore = "blocked on leaf-conflict-fix: engine currently silent-LastWriter for same-key SetValue (see plan.md and rec-default-step1)"]
 fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict_resolved", false, false);
 	assert_eq!(
