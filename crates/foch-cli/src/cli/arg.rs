@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
+use foch_core::model::SymbolKind;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -220,6 +221,35 @@ pub struct GraphArgs {
 
 	#[arg(long)]
 	pub family: Option<String>,
+
+	#[arg(long = "definition-kinds", value_delimiter = ',', value_parser = parse_definition_kind_arg)]
+	pub definition_kinds: Vec<SymbolKind>,
+}
+
+const DEFINITION_KIND_VALUES: &[&str] = &[
+	"event",
+	"scripted_effect",
+	"scripted_trigger",
+	"decision",
+	"diplomatic_action",
+	"triggered_modifier",
+];
+
+fn parse_definition_kind_arg(value: &str) -> Result<SymbolKind, String> {
+	let normalized = value.trim().to_ascii_lowercase();
+	match normalized.as_str() {
+		"event" => Ok(SymbolKind::Event),
+		"scripted_effect" => Ok(SymbolKind::ScriptedEffect),
+		"scripted_trigger" => Ok(SymbolKind::ScriptedTrigger),
+		"decision" => Ok(SymbolKind::Decision),
+		"diplomatic_action" => Ok(SymbolKind::DiplomaticAction),
+		"triggered_modifier" => Ok(SymbolKind::TriggeredModifier),
+		"" => Err("definition kind must not be empty".to_string()),
+		_ => Err(format!(
+			"unsupported definition kind '{value}'; expected one of: {}",
+			DEFINITION_KIND_VALUES.join(", ")
+		)),
+	}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -508,5 +538,50 @@ mod tests {
 			panic!("expected merge command");
 		};
 		assert!(args.cli_prompt);
+	}
+
+	#[test]
+	fn graph_command_accepts_definition_kinds_flag() {
+		let cli = FochCli::try_parse_from([
+			"foch",
+			"graph",
+			"playlist.json",
+			"--out",
+			"graphs",
+			"--definition-kinds=event,scripted_effect",
+			"--definition-kinds",
+			"triggered_modifier",
+		])
+		.expect("parse cli");
+
+		let FochCliCommands::Graph(args) = cli.command else {
+			panic!("expected graph command");
+		};
+		assert_eq!(
+			args.definition_kinds,
+			vec![
+				SymbolKind::Event,
+				SymbolKind::ScriptedEffect,
+				SymbolKind::TriggeredModifier,
+			]
+		);
+	}
+
+	#[test]
+	fn graph_command_rejects_unknown_definition_kind() {
+		let err = FochCli::try_parse_from([
+			"foch",
+			"graph",
+			"playlist.json",
+			"--out",
+			"graphs",
+			"--definition-kinds=garbage",
+		])
+		.expect_err("garbage kind should fail");
+		let message = err.to_string();
+		assert!(
+			message.contains("unsupported definition kind 'garbage'"),
+			"error: {message}"
+		);
 	}
 }

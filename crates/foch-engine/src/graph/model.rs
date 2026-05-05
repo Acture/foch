@@ -30,6 +30,7 @@ pub struct GraphBuildOptions {
 	pub format: GraphArtifactFormat,
 	pub root: Option<GraphRootSelector>,
 	pub family: Option<String>,
+	pub definition_kinds: Vec<SymbolKind>,
 }
 
 impl Default for GraphBuildOptions {
@@ -41,6 +42,7 @@ impl Default for GraphBuildOptions {
 			format: GraphArtifactFormat::Both,
 			root: None,
 			family: None,
+			definition_kinds: Vec::new(),
 		}
 	}
 }

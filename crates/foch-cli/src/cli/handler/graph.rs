@@ -41,6 +41,7 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 				.map(parse_root_selector)
 				.transpose()?,
 			family: graph_args.family.clone(),
+			definition_kinds: graph_args.definition_kinds.clone(),
 		},
 	)?;
 	println!("graph artifacts written to {}", summary.out_dir.display());

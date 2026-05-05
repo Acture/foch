@@ -125,7 +125,8 @@ pub fn run_graph_with_options(
 	let state = build_runtime_state_for_request(&request, options.include_game_base)?;
 	let workspace_calls = build_workspace_calls_graph(&state);
 	let workspace_deps = build_workspace_mod_deps_graph(&state, &request);
-	let workspace_def_deps = build_workspace_definition_deps_artifact(&state);
+	let workspace_def_deps =
+		build_workspace_definition_deps_artifact(&state, &options.definition_kinds);
 	let mut summary = GraphBuildSummary {
 		out_dir: out_dir.to_path_buf(),
 		..GraphBuildSummary::default()
@@ -166,6 +167,7 @@ pub fn run_graph_with_options(
 	{
 		let base_calls = filter_calls_graph_by_mod(&workspace_calls, base_mod_id);
 		let base_deps = filter_mod_deps_graph_by_mod(&workspace_deps, base_mod_id);
+		let base_def_deps = filter_definition_deps_graph_by_mod(&workspace_def_deps, base_mod_id);
 		write_graph_pair(
 			&out_dir.join("base-game"),
 			"calls",
@@ -180,6 +182,13 @@ pub fn run_graph_with_options(
 			render_mod_deps_dot(&base_deps),
 			options.format,
 		)?;
+		write_graph_pair(
+			&out_dir.join("base-game"),
+			"definition-deps",
+			&base_def_deps,
+			render_definition_deps_dot(&base_def_deps),
+			options.format,
+		)?;
 		summary.base_written = true;
 	}
 
@@ -192,6 +201,7 @@ pub fn run_graph_with_options(
 		for mod_id in mod_ids {
 			let calls = filter_calls_graph_by_mod(&workspace_calls, &mod_id);
 			let deps = filter_mod_deps_graph_by_mod(&workspace_deps, &mod_id);
+			let def_deps = filter_definition_deps_graph_by_mod(&workspace_def_deps, &mod_id);
 			write_graph_pair(
 				&out_dir.join("mods").join(&mod_id),
 				"calls",
@@ -204,6 +214,13 @@ pub fn run_graph_with_options(
 				"mod-deps",
 				&deps,
 				render_mod_deps_dot(&deps),
+				options.format,
+			)?;
+			write_graph_pair(
+				&out_dir.join("mods").join(&mod_id),
+				"definition-deps",
+				&def_deps,
+				render_definition_deps_dot(&def_deps),
 				options.format,
 			)?;
 			summary.mod_count += 1;
@@ -521,6 +538,7 @@ fn definition_deps_node_id(mod_id: &str, kind: SymbolKind, name: &str) -> String
 
 fn build_workspace_definition_deps_artifact(
 	state: &crate::runtime::RuntimeState,
+	definition_kinds: &[SymbolKind],
 ) -> DefinitionDepsArtifact {
 	let mut nodes = BTreeMap::<String, DefinitionDepsNode>::new();
 	let mut edges = BTreeMap::<(String, String), DefinitionDepsEdge>::new();
@@ -554,6 +572,9 @@ fn build_workspace_definition_deps_artifact(
 			continue;
 		}
 		if !state.enabled_mod_ids.contains(&provider.mod_id) {
+			continue;
+		}
+		if !definition_kinds.is_empty() && !definition_kinds.contains(&provider.kind) {
 			continue;
 		}
 
@@ -647,6 +668,36 @@ fn render_definition_deps_dot(graph: &DefinitionDepsArtifact) -> String {
 	}
 	lines.push("}".to_string());
 	lines.join("\n")
+}
+
+fn filter_definition_deps_graph_by_mod(
+	graph: &DefinitionDepsArtifact,
+	mod_id: &str,
+) -> DefinitionDepsArtifact {
+	let mut related_node_ids = graph
+		.nodes
+		.iter()
+		.filter(|node| node.mod_id == mod_id)
+		.map(|node| node.id.clone())
+		.collect::<HashSet<_>>();
+	let edges = graph
+		.edges
+		.iter()
+		.filter(|edge| edge.from_mod_id == mod_id || edge.to_mod_id == mod_id)
+		.cloned()
+		.collect::<Vec<_>>();
+	for edge in &edges {
+		related_node_ids.insert(edge.to_node_id.clone());
+	}
+	DefinitionDepsArtifact {
+		nodes: graph
+			.nodes
+			.iter()
+			.filter(|node| related_node_ids.contains(&node.id))
+			.cloned()
+			.collect(),
+		edges,
+	}
 }
 
 fn filter_calls_graph_by_mod(graph: &CallsGraphArtifact, mod_id: &str) -> CallsGraphArtifact {
@@ -1038,6 +1089,126 @@ mod definition_deps_tests {
 		}
 	}
 
+	fn three_mod_definition_fixture() -> RuntimeState {
+		state_with(
+			vec![
+				definition("A", SymbolKind::Event, "e1", "events/a.txt", 1),
+				definition("B", SymbolKind::Event, "e2", "events/b.txt", 1),
+			],
+			vec![
+				reference("C", SymbolKind::Event, "e1", "events/c.txt", 10),
+				reference("C", SymbolKind::Event, "e2", "events/c.txt", 20),
+			],
+			vec!["A", "B", "C"],
+			vec![
+				((SymbolKind::Event, "e1"), 0),
+				((SymbolKind::Event, "e2"), 1),
+			],
+		)
+	}
+
+	fn mixed_kind_state() -> RuntimeState {
+		state_with(
+			vec![
+				definition("A", SymbolKind::Event, "e1", "events/a.txt", 1),
+				definition(
+					"B",
+					SymbolKind::ScriptedEffect,
+					"shared_effect",
+					"common/scripted_effects/b.txt",
+					1,
+				),
+			],
+			vec![
+				reference("C", SymbolKind::Event, "e1", "events/c.txt", 10),
+				reference(
+					"C",
+					SymbolKind::ScriptedEffect,
+					"shared_effect",
+					"events/c.txt",
+					20,
+				),
+			],
+			vec!["A", "B", "C"],
+			vec![
+				((SymbolKind::Event, "e1"), 0),
+				((SymbolKind::ScriptedEffect, "shared_effect"), 1),
+			],
+		)
+	}
+
+	#[test]
+	fn filter_definition_deps_by_mod_keeps_provider_node_and_inbound_edges() {
+		let state = three_mod_definition_fixture();
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
+		let filtered = filter_definition_deps_graph_by_mod(&artifact, "B");
+
+		assert_eq!(filtered.nodes.len(), 1);
+		assert_eq!(filtered.nodes[0].mod_id, "B");
+		assert_eq!(filtered.nodes[0].name, "e2");
+		assert_eq!(filtered.edges.len(), 1);
+		assert_eq!(filtered.edges[0].from_mod_id, "C");
+		assert_eq!(filtered.edges[0].to_mod_id, "B");
+		assert_eq!(filtered.edges[0].name, "e2");
+	}
+
+	#[test]
+	fn filter_definition_deps_by_mod_keeps_self_references_outbound() {
+		let state = three_mod_definition_fixture();
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
+		let filtered = filter_definition_deps_graph_by_mod(&artifact, "C");
+
+		let mut node_mods = filtered
+			.nodes
+			.iter()
+			.map(|node| node.mod_id.as_str())
+			.collect::<Vec<_>>();
+		node_mods.sort();
+		assert_eq!(node_mods, vec!["A", "B"]);
+
+		let mut edges = filtered
+			.edges
+			.iter()
+			.map(|edge| {
+				(
+					edge.from_mod_id.as_str(),
+					edge.to_mod_id.as_str(),
+					edge.name.as_str(),
+				)
+			})
+			.collect::<Vec<_>>();
+		edges.sort();
+		assert_eq!(edges, vec![("C", "A", "e1"), ("C", "B", "e2")]);
+	}
+
+	#[test]
+	fn definition_kinds_filter_drops_unrelated_kinds() {
+		let state = mixed_kind_state();
+		let artifact = build_workspace_definition_deps_artifact(&state, &[SymbolKind::Event]);
+
+		assert_eq!(artifact.nodes.len(), 1);
+		assert_eq!(artifact.nodes[0].symbol_kind, "event");
+		assert_eq!(artifact.nodes[0].name, "e1");
+		assert_eq!(artifact.edges.len(), 1);
+		assert_eq!(artifact.edges[0].symbol_kind, "event");
+		assert_eq!(artifact.edges[0].name, "e1");
+	}
+
+	#[test]
+	fn definition_kinds_filter_with_empty_vec_means_all_kinds() {
+		let state = mixed_kind_state();
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
+
+		assert_eq!(artifact.nodes.len(), 2);
+		let mut edge_kinds = artifact
+			.edges
+			.iter()
+			.map(|edge| edge.symbol_kind.as_str())
+			.collect::<Vec<_>>();
+		edge_kinds.sort();
+		assert_eq!(edge_kinds, vec!["event", "scripted_effect"]);
+	}
+
 	#[test]
 	fn definition_deps_emits_cross_mod_edge_with_call_site() {
 		// mod-a defines my_effect; mod-b references it.
@@ -1059,7 +1230,7 @@ mod definition_deps_tests {
 			vec!["mod-a", "mod-b"],
 			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		assert_eq!(artifact.nodes.len(), 1);
 		let node = &artifact.nodes[0];
 		assert_eq!(node.mod_id, "mod-a");
@@ -1096,7 +1267,7 @@ mod definition_deps_tests {
 			vec!["mod-a"],
 			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		assert!(artifact.nodes.is_empty());
 		assert!(artifact.edges.is_empty());
 	}
@@ -1115,7 +1286,7 @@ mod definition_deps_tests {
 			vec!["mod-b"],
 			Vec::new(),
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		assert!(artifact.nodes.is_empty());
 		assert!(artifact.edges.is_empty());
 	}
@@ -1140,7 +1311,7 @@ mod definition_deps_tests {
 			vec!["mod-a"], // mod-disabled NOT in enabled set
 			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		assert!(artifact.edges.is_empty());
 	}
 
@@ -1164,7 +1335,7 @@ mod definition_deps_tests {
 			vec!["mod-a", "mod-b"],
 			vec![((SymbolKind::ScriptedEffect, "shared"), 0)],
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		assert_eq!(artifact.edges.len(), 1);
 		let edge = &artifact.edges[0];
 		assert_eq!(edge.sites.len(), 3);
@@ -1209,7 +1380,7 @@ mod definition_deps_tests {
 			vec!["mod-a", "mod-b", "mod-c"],
 			vec![((SymbolKind::ScriptedEffect, "same_effect"), 1)],
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		assert_eq!(artifact.edges.len(), 1);
 		assert_eq!(artifact.edges[0].to_mod_id, "mod-b");
 	}
@@ -1234,7 +1405,7 @@ mod definition_deps_tests {
 			vec!["mod-a", "mod-b"],
 			vec![((SymbolKind::ScriptedEffect, "my_effect"), 0)],
 		);
-		let artifact = build_workspace_definition_deps_artifact(&state);
+		let artifact = build_workspace_definition_deps_artifact(&state, &[]);
 		let dot = render_definition_deps_dot(&artifact);
 		assert!(dot.starts_with("digraph foch_definition_deps {"));
 		assert!(dot.contains("subgraph \"cluster_mod-a\""));

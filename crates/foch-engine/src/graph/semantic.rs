@@ -1880,6 +1880,7 @@ mod tests {
 				format: GraphArtifactFormat::Both,
 				root: None,
 				family: None,
+				definition_kinds: Vec::new(),
 			},
 		);
 		assert!(result.is_err());
