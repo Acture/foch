@@ -79,7 +79,7 @@ pub(crate) fn materialize_merge_internal(
 
 	// Resolve once and reuse: build_merge_plan_from_workspace and the rest of
 	// the pipeline both consume the same ResolvedWorkspace. The legacy
-	// run_merge_plan_with_options fallback is kept for the case where
+	// run_merge_plan_with_options recovery path is kept for the case where
 	// resolution itself failed (it may still produce a fatal-only plan).
 	let workspace_result = stage_log_with("resolve_workspace", || {
 		let result = resolve_workspace(&request, options.include_game_base);
@@ -201,7 +201,7 @@ pub(crate) fn materialize_merge_internal(
 							}
 							Err(err) => {
 								report.warnings.push(format!(
-									"localisation merge fallback for {}: {err}",
+									"localisation merge overlay for {}: {err}",
 									entry.path
 								));
 								copy_winner_file(&workspace, entry, out_dir)?;
@@ -2264,7 +2264,7 @@ mod tests {
 		assert_eq!(report.cross_file_noop_skipped_file_count, 0);
 	}
 
-	const DAG_FALLBACK_PATH: &str = "common/ideas/fallback.txt";
+	const DAG_CONFLICT_PATH: &str = "common/ideas/conflict.txt";
 
 	fn idea_file(cost: &str) -> String {
 		format!("group = {{\n\tidea = {{\n\t\tcost = {cost}\n\t}}\n}}\n")
@@ -2315,7 +2315,7 @@ mod tests {
 
 		let materialization =
 			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
-				.expect("materialize fallback write");
+				.expect("materialize normal write");
 
 		assert_eq!(
 			materialization,
@@ -2428,7 +2428,7 @@ mod tests {
 		assert!(report.handler_resolutions.is_empty());
 	}
 
-	fn stage_dag_fallback_conflict(
+	fn stage_dag_downstream_conflict(
 		playlist_path: &Path,
 		mod_base: &Path,
 		mod_a: &Path,
@@ -2444,19 +2444,19 @@ mod tests {
 				("9104", "C"),
 			],
 		);
-		write_descriptor(mod_base, "fallback-base");
-		write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
-		write_descriptor_with_dependencies(mod_b, "fallback-b", &["fallback-base"]);
-		write_descriptor_with_dependencies(mod_c, "fallback-c", &["fallback-a", "fallback-b"]);
-		write_file(mod_base, DAG_FALLBACK_PATH, idea_file("old"));
-		write_file(mod_a, DAG_FALLBACK_PATH, idea_file("alpha"));
-		write_file(mod_b, DAG_FALLBACK_PATH, idea_file("beta"));
-		write_file(mod_c, DAG_FALLBACK_PATH, idea_file("gamma"));
+		write_descriptor(mod_base, "conflict-base");
+		write_descriptor_with_dependencies(mod_a, "conflict-a", &["conflict-base"]);
+		write_descriptor_with_dependencies(mod_b, "conflict-b", &["conflict-base"]);
+		write_descriptor_with_dependencies(mod_c, "conflict-c", &["conflict-a", "conflict-b"]);
+		write_file(mod_base, DAG_CONFLICT_PATH, idea_file("old"));
+		write_file(mod_a, DAG_CONFLICT_PATH, idea_file("alpha"));
+		write_file(mod_b, DAG_CONFLICT_PATH, idea_file("beta"));
+		write_file(mod_c, DAG_CONFLICT_PATH, idea_file("gamma"));
 	}
 
-	/// Same as `stage_dag_fallback_conflict` but without the downstream resolver
+	/// Same as `stage_dag_downstream_conflict` but without the downstream resolver
 	/// mod C. Yields a genuine sibling-overwrite conflict between mods A and B
-	/// that the DAG topo walk cannot auto-resolve, so the fallback path applies.
+	/// that the DAG topo walk cannot auto-resolve.
 	fn stage_dag_genuine_conflict(
 		playlist_path: &Path,
 		mod_base: &Path,
@@ -2467,12 +2467,12 @@ mod tests {
 			playlist_path,
 			&[("9101", "Base"), ("9102", "A"), ("9103", "B")],
 		);
-		write_descriptor(mod_base, "fallback-base");
-		write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
-		write_descriptor_with_dependencies(mod_b, "fallback-b", &["fallback-base"]);
-		write_file(mod_base, DAG_FALLBACK_PATH, idea_file("old"));
-		write_file(mod_a, DAG_FALLBACK_PATH, idea_file("alpha"));
-		write_file(mod_b, DAG_FALLBACK_PATH, idea_file("beta"));
+		write_descriptor(mod_base, "conflict-base");
+		write_descriptor_with_dependencies(mod_a, "conflict-a", &["conflict-base"]);
+		write_descriptor_with_dependencies(mod_b, "conflict-b", &["conflict-base"]);
+		write_file(mod_base, DAG_CONFLICT_PATH, idea_file("old"));
+		write_file(mod_a, DAG_CONFLICT_PATH, idea_file("alpha"));
+		write_file(mod_b, DAG_CONFLICT_PATH, idea_file("beta"));
 	}
 
 	#[test]
@@ -2583,7 +2583,7 @@ mod tests {
 	}
 
 	#[test]
-	fn unresolved_structural_merge_skips_without_fallback_by_default() {
+	fn unresolved_structural_merge_skips_by_default() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
@@ -2603,7 +2603,7 @@ mod tests {
 
 		assert_eq!(report.status, MergeReportStatus::Blocked);
 		assert_eq!(report.manual_conflict_count, 1);
-		assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
+		assert!(!out_dir.join(DAG_CONFLICT_PATH).exists());
 		assert_eq!(report.conflict_resolutions.len(), 1);
 		let resolution = &report.conflict_resolutions[0];
 		assert!(resolution.reason.contains("unresolved conflict"));
@@ -2633,7 +2633,7 @@ mod tests {
 		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
 		assert_eq!(report.manual_conflict_count, 1);
 		assert_eq!(report.generated_file_count, 1);
-		let marker = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read marker");
+		let marker = fs::read_to_string(out_dir.join(DAG_CONFLICT_PATH)).expect("read marker");
 		assert!(marker.starts_with("FOCH_MERGE_CONFLICT"));
 		assert!(marker.contains("unresolved conflict"));
 	}
@@ -2646,8 +2646,8 @@ mod tests {
 		// Mod C declares deps on both A and B and writes its own value at the
 		// same address. The DAG topo walk should recognize C as a downstream
 		// override of the A/B sibling-overwrite conflict and emit C's value
-		// without invoking fallback.
-		stage_dag_fallback_conflict(
+		// without invoking a manual marker.
+		stage_dag_downstream_conflict(
 			&playlist_path,
 			&temp.path().join("9101"),
 			&temp.path().join("9102"),
@@ -2666,7 +2666,7 @@ mod tests {
 		assert_eq!(report.manual_conflict_count, 0);
 		assert_eq!(report.generated_file_count, 1);
 		let output =
-			fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read merged output");
+			fs::read_to_string(out_dir.join(DAG_CONFLICT_PATH)).expect("read merged output");
 		// C's value wins via downstream override, no foch:conflict marker.
 		assert!(
 			output.contains("cost = gamma"),

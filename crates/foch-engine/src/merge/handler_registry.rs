@@ -10,7 +10,7 @@
 //!
 //! New handlers should be added to [`dispatch`] (case-insensitive name match)
 //! and accompanied by a unit test exercising the conflict-classification
-//! logic. Handlers must never resort to silent last-writer fallbacks for
+//! logic. Handlers must never resort to silent last-writer choices for
 //! ambiguous cases — explicit named handlers like `last_writer` make the
 //! choice the user's, not the engine's.
 //!

@@ -26,7 +26,7 @@ algebra (Darcs/Pijul) while being far more precise than the current overlay syst
 
 | System | Core Idea | Applicability to Clausewitz |
 |--------|-----------|----------------------------|
-| **FSTMerge** (Apel et al., ICSE 2011) | Parse into Feature Structure Trees; merge by superimposing nodes matched by key; fall back to line-based merge for method bodies | **High**. Clausewitz blocks map directly to FST nodes. Key-matching is the natural merge strategy. Fallback to text merge handles unparseable edge cases. |
+| **FSTMerge** (Apel et al., ICSE 2011) | Parse into Feature Structure Trees; merge by superimposing nodes matched by key; use line-based merge for method bodies when needed | **High**. Clausewitz blocks map directly to FST nodes. Key-matching is the natural merge strategy. Text merge handles unparseable edge cases. |
 | **JDime** | Java-specific AST 3-way merge with fine/coarse granularity | Medium. The architecture (AST → match → merge) applies, but it is deeply Java-specific. |
 | **IntelliMerge** | Uses IDE's PSI model; detects refactorings (renames, moves) | Low direct applicability. Clausewitz doesn't have refactoring patterns. The refactoring detection is unnecessary. |
 

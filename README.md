@@ -29,8 +29,8 @@ Additional documentation lives in [`docs/`](./docs/README.md):
   load order doesn't reorder under you.
 - **Honest about real conflicts.** When two mods make incompatible structural
   changes Foch refuses to silently pick a winner. You get a TTY arbitration UI,
-  a deterministic `[[resolutions]]` file format, or an explicit `--fallback` flag
-  — and the choice is recorded in the merge report.
+  a deterministic `[[resolutions]]` file format, and the choice is recorded in
+  the merge report.
 - **Zero hidden work.** Every file in the output is traceable back to the
   contributing mod via `.foch/foch-merge-report.json`. Same playset + same
   `foch.toml` ⇒ byte-identical output.
@@ -123,9 +123,6 @@ foch merge ./playlist.json --out ./merged
 
 # CI / batch — skip prompts, write conflicts to the report
 foch merge ./playlist.json --out ./merged --non-interactive
-
-# Accept last-writer-wins for any unresolved conflict (writes a marker into the file)
-foch merge ./playlist.json --out ./merged --fallback
 ```
 
 ### `foch.toml` `[[resolutions]]`

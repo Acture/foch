@@ -264,7 +264,7 @@ fn duplicate_scripted_effect_creates_duplicate_scripted_effect() {
 	);
 
 	// In basic mode the overlap module is disabled, so
-	// `duplicate-scripted-effect` still surfaces the duplicate as a heuristic fallback.
+	// `duplicate-scripted-effect` still surfaces the duplicate as a heuristic duplicate check.
 	let basic = run_checks_with_options(
 		request_for(&playlist_path),
 		RunOptions {

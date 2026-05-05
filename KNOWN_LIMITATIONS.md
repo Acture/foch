@@ -16,11 +16,11 @@
 
 | Bucket | 数量 | 含义 | 为什么不自动解 | 现在可做 | 跟踪 |
 |---|---:|---|---|---|---|
-| sibling-overwrite | 20 | 多个 mod 在同一 AST 地址下改了相邻字段 / 子块，且结果不同。常见于 mission effect、history date block、GUI layout。 | foch 能定位同一结构位置，但不知道作者意图：应合并、择一、还是保持两个互斥版本。静默 last-writer 会丢贡献。 | TTY 下默认逐条选；或在 `foch.toml [[resolutions]]` 里 `prefer_mod` / `use_file` / `keep_existing`；或显式 `--fallback` 接受 last-writer 风险。 | UI1 / family policy refinements |
+| sibling-overwrite | 20 | 多个 mod 在同一 AST 地址下改了相邻字段 / 子块，且结果不同。常见于 mission effect、history date block、GUI layout。 | foch 能定位同一结构位置，但不知道作者意图：应合并、择一、还是保持两个互斥版本。静默 last-writer 会丢贡献。 | TTY 下默认逐条选；或在 `foch.toml [[resolutions]]` 里 `prefer_mod` / `use_file` / `keep_existing`；或显式配置 `handler = "last_writer"` 并接受择一风险。 | UI1 / family policy refinements |
 | replace-block | 5 | 多个 mod 替换同一个命名块，块内容不等价。 | 这是有意重写的强信号。没有内容族规则时，foch 不能证明 BooleanOr / union / recursive merge 安全。 | 手工审阅块语义；为该 conflict 写 resolution；必要时提交更窄的 ContentFamily policy。 | F-family policy work |
 | list-item rename | 1 | 当前表现为 `RemoveListItem + AppendListItem`，逻辑上可能是同一列表项被改名 / 改 stable id。 | F1b 只消除了 comment-only diff；还没有按 `name=`、`id=` 等 stable identity key 匹配 rename。 | 手工选择或用 `use_file`；若确认是纯 rename，可在后续 issue 里提供最小 fixture。 | F1b-rename（低 ROI，暂排 UI1 后） |
 
-这些 residual 不是 comment diff，也不是旧 DAG flattening 造成的主要 false positive。默认 `foch merge` 在 TTY 下会提示仲裁；非 TTY 会阻塞 / 跳过相关路径。只有用户明确配置 resolution 或传入 `--fallback` 时才会无交互继续。
+这些 residual 不是 comment diff，也不是旧 DAG flattening 造成的主要 false positive。默认 `foch merge` 在 TTY 下会提示仲裁；非 TTY 会阻塞 / 跳过相关路径。只有用户明确配置 resolution 或写入明确 resolution 时才会无交互继续。
 
 ## 2. ContentFamily 覆盖
 
@@ -62,14 +62,14 @@ foch 的 analyzer 与 merge 覆盖由 EU4 `GameProfile` 中的 `ContentFamilyDes
 | TUI conflict resolver | 未随 HEAD 发布。UI1 alpha P0 仍待完成。 | 不能像 Irony Merge Viewer 那样在树形 UI 中逐块 copy / edit / resolve。 | 在 TTY 中运行 `foch merge` 使用默认交互；或手写 `foch.toml [[resolutions]]`。 | UI1 |
 | VS Code merge UI | [`packages/vscode-foch`](./packages/vscode-foch) 已存在，主要是 LSP / diagnostics / completion / goto definition。未接入 merge conflict workflow。 | 可编辑与诊断脚本，但不能在 VS Code 内完成 merge 仲裁闭环。 | 用 CLI 生成报告，再在编辑器里人工查看相关文件。 | VS Code merge UI |
 | GUI / desktop app | 未实现。 | 没有 collection manager、drag/drop load order、图形化 patch mod 管理。 | 继续使用 Paradox Launcher / Irony 管理 playset；用 foch 做分析与 deterministic merge。 | GUI backlog |
-| 非 TTY 场景 | 默认交互只在 TTY 下启用；非 TTY 或 `--non-interactive` 会 defer，不会卡住 CI。 | CI 中 unresolved conflict 仍需预置 resolution。 | 预写 `foch.toml`，显式 `--fallback`，或在有 TTY 时传 `--non-interactive` 强制批处理。 | UI1 / CI workflow |
+| 非 TTY 场景 | 默认交互只在 TTY 下启用；非 TTY 或 `--non-interactive` 会 defer，不会卡住 CI。 | CI 中 unresolved conflict 仍需预置 resolution。 | 预写 `foch.toml` resolution，或在有 TTY 时传 `--non-interactive` 强制批处理。 | UI1 / CI workflow |
 
 ## 7. 与 Irony / CWTools 的对比
 
 | 维度 | foch 当前强项 | Irony / CWTools 当前强项 | 取舍 |
 |---|---|---|---|
 | Merge 理论 | deterministic structural merge、AST-level diff / patch、dependency DAG level-by-level apply、EU4-specific merge policy。 | GUI merge viewer、手工 patch 工作流、成熟 collection 管理。 | foch 更适合可复现 pipeline；Irony 更适合人工操作。 |
-| Schema 覆盖 | sparse schema：只为已验证 EU4 root 写 ContentFamily policy。 | dense `.cwt` schema 生态，多游戏覆盖更广，尤其 Stellaris / CWTools 经验。 | foch 故意少而准；代价是未注册 root 会保守 fallback。 |
+| Schema 覆盖 | sparse schema：只为已验证 EU4 root 写 ContentFamily policy。 | dense `.cwt` schema 生态，多游戏覆盖更广，尤其 Stellaris / CWTools 经验。 | foch 故意少而准；代价是未注册 root 会保守降级。 |
 | IDE / UX | CLI、JSON artifact、LSP / VS Code 基础功能。 | GUI polish、可视 conflict navigation、外部 merge tool 集成。 | foch 还缺 UI1 / GUI。 |
 | EU4 精度 | EU4 `GameProfile`、semantic index、DAG-aware merge 是主线目标。 | Irony 的完整 conflict solver 主要强在其支持最完整的游戏生态；EU4 自动结构 merge 不是同一定位。 | EU4 power user 可以用 foch 补足 deterministic merge，但仍可能保留 Irony 管理 playset。 |
 

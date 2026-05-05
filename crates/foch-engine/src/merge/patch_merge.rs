@@ -1509,7 +1509,7 @@ fn ast_value_equal_ignoring_spans(a: &AstValue, b: &AstValue) -> bool {
 }
 
 /// Suffix-rename a named child by appending `_<sanitized_mod_id>` either to its
-/// inner `name = "..."` field (preferred) or to its assignment key (fallback).
+/// inner `name = "..."` field (preferred) or otherwise to its assignment key.
 ///
 /// Statements without an identity (items/comments) are returned unchanged.
 pub fn rename_named_child(stmt: &AstStatement, mod_id: &str) -> AstStatement {
@@ -1886,7 +1886,7 @@ fn contributor_body(patch: &ClausewitzPatch) -> Option<Vec<AstStatement>> {
 }
 
 /// Synthesize a single patch whose body is `{ OR = { body_0 } OR = { body_1 } ... }`,
-/// preserving the original key. Returns `None` (forcing fallback to the
+/// preserving the original key. Returns `None` (leaving resolution to the
 /// caller's default behavior) if any contributor isn't a block-bodied
 /// assignment.
 ///
@@ -3245,7 +3245,7 @@ mod tests {
 	fn explicit_last_writer_block_policy_falls_through_to_conflict() {
 		// `BlockPatchPolicy::LastWriter` is a deliberate escape hatch: it does
 		// not actually silently pick a winner — it just sidesteps Recurse /
-		// Union / BooleanOr / named-container so the final fallback in
+		// Union / BooleanOr / named-container so the final branch in
 		// `resolve_replace_blocks` reports the divergent ReplaceBlock as a
 		// manual conflict. This keeps families that explicitly opt into
 		// LastWriter from getting auto-merged behind their backs.

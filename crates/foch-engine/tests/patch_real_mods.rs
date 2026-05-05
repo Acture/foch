@@ -249,13 +249,13 @@ fn patch_p1_funding_event_modifiers() {
 
 	if !funding_file.exists() || !simplified_file.exists() {
 		// Try to find *any* overlapping file in common/event_modifiers
-		let fallback = find_first_overlapping_file(
+		let alternate = find_first_overlapping_file(
 			funding_steam_id,
 			simplified_steam_id,
 			"common/event_modifiers",
 		);
-		if let Some(fb) = &fallback {
-			println!("Primary file not found; using fallback: {fb}");
+		if let Some(fb) = &alternate {
+			println!("Primary file not found; using alternate: {fb}");
 			run_funding_convergence_test(funding_steam_id, simplified_steam_id, fb);
 		} else {
 			panic!(

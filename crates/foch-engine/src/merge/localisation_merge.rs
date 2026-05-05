@@ -87,7 +87,7 @@ pub(crate) fn merge_localisation_file(
 			Some((existing, existing_mod)) => {
 				return Ok(LocalisationMergeOutcome::LanguageMismatch {
 					warning: format!(
-						"localisation merge fallback for {}: language mismatch ({} declares l_{}, {} declares l_{})",
+						"localisation merge overlay for {}: language mismatch ({} declares l_{}, {} declares l_{})",
 						target_path, existing_mod, existing, contributor.mod_id, lang,
 					),
 				});

@@ -95,14 +95,14 @@ fn stage_structural_manual_conflict(mod_a: &Path, mod_b: &Path) {
 	.expect("write malformed scripted_trigger");
 }
 
-const DAG_FALLBACK_PATH: &str = "common/ideas/fallback.txt";
+const DAG_CONFLICT_PATH: &str = "common/ideas/conflict.txt";
 
 fn idea_file(cost: &str) -> String {
 	format!("group = {{\n\tidea = {{\n\t\tcost = {cost}\n\t}}\n}}\n")
 }
 
 #[allow(dead_code)]
-fn stage_dag_fallback_conflict(
+fn stage_dag_downstream_conflict(
 	playlist_path: &Path,
 	mod_base: &Path,
 	mod_a: &Path,
@@ -118,30 +118,30 @@ fn stage_dag_fallback_conflict(
 			("9104", "C"),
 		],
 	);
-	write_descriptor(mod_base, "fallback-base");
-	write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
-	write_descriptor_with_dependencies(mod_b, "fallback-b", &["fallback-base"]);
-	write_descriptor_with_dependencies(mod_c, "fallback-c", &["fallback-a", "fallback-b"]);
-	write_script_file(mod_base, DAG_FALLBACK_PATH, &idea_file("old"));
-	write_script_file(mod_a, DAG_FALLBACK_PATH, &idea_file("alpha"));
-	write_script_file(mod_b, DAG_FALLBACK_PATH, &idea_file("beta"));
-	write_script_file(mod_c, DAG_FALLBACK_PATH, &idea_file("gamma"));
+	write_descriptor(mod_base, "conflict-base");
+	write_descriptor_with_dependencies(mod_a, "conflict-a", &["conflict-base"]);
+	write_descriptor_with_dependencies(mod_b, "conflict-b", &["conflict-base"]);
+	write_descriptor_with_dependencies(mod_c, "conflict-c", &["conflict-a", "conflict-b"]);
+	write_script_file(mod_base, DAG_CONFLICT_PATH, &idea_file("old"));
+	write_script_file(mod_a, DAG_CONFLICT_PATH, &idea_file("alpha"));
+	write_script_file(mod_b, DAG_CONFLICT_PATH, &idea_file("beta"));
+	write_script_file(mod_c, DAG_CONFLICT_PATH, &idea_file("gamma"));
 }
 
 /// Genuine sibling-overwrite conflict between A and B with no downstream
-/// resolver. The DAG topo walk cannot auto-resolve this; the fallback path
-/// is the only way to produce output.
+/// resolver. The DAG topo walk cannot auto-resolve this; an explicit
+/// resolution is required to produce merged output.
 fn stage_dag_genuine_conflict(playlist_path: &Path, mod_base: &Path, mod_a: &Path, mod_b: &Path) {
 	write_dlc_load(
 		playlist_path,
 		&[("9101", "Base"), ("9102", "A"), ("9103", "B")],
 	);
-	write_descriptor(mod_base, "fallback-base");
-	write_descriptor_with_dependencies(mod_a, "fallback-a", &["fallback-base"]);
-	write_descriptor_with_dependencies(mod_b, "fallback-b", &["fallback-base"]);
-	write_script_file(mod_base, DAG_FALLBACK_PATH, &idea_file("old"));
-	write_script_file(mod_a, DAG_FALLBACK_PATH, &idea_file("alpha"));
-	write_script_file(mod_b, DAG_FALLBACK_PATH, &idea_file("beta"));
+	write_descriptor(mod_base, "conflict-base");
+	write_descriptor_with_dependencies(mod_a, "conflict-a", &["conflict-base"]);
+	write_descriptor_with_dependencies(mod_b, "conflict-b", &["conflict-base"]);
+	write_script_file(mod_base, DAG_CONFLICT_PATH, &idea_file("old"));
+	write_script_file(mod_a, DAG_CONFLICT_PATH, &idea_file("alpha"));
+	write_script_file(mod_b, DAG_CONFLICT_PATH, &idea_file("beta"));
 }
 
 fn write_config(path: &Path, content: &str) {
@@ -356,7 +356,7 @@ fn collect_gzip_files(root: &Path) -> Vec<std::path::PathBuf> {
 		.filter_map(Result::ok)
 	{
 		if entry.file_type().is_file()
-			&& entry.path().extension().and_then(|value| value.to_str()) == Some("gz")
+			&& entry.path().extension().and_then(|value| value.to_str()) == Some("rkyv")
 		{
 			files.push(entry.path().to_path_buf());
 		}
@@ -1432,7 +1432,7 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 	);
 	assert_eq!(code, 2);
 	assert!(stdout.contains("status: BLOCKED"));
-	assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
+	assert!(!out_dir.join(DAG_CONFLICT_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "blocked");
@@ -1737,7 +1737,7 @@ fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
 		tmp.path(),
-		&[("FOCH_MOD_SNAPSHOT_CACHE_DIR", cache_dir_str.as_str())],
+		&[("FOCH_MOD_PARSE_CACHE_DIR", cache_dir_str.as_str())],
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	assert!(collect_gzip_files(&cache_dir).is_empty());
@@ -1762,7 +1762,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 
 	let playlist_str = playlist_path.display().to_string();
 	let cache_dir_str = cache_dir.display().to_string();
-	let envs = [("FOCH_MOD_SNAPSHOT_CACHE_DIR", cache_dir_str.as_str())];
+	let envs = [("FOCH_MOD_PARSE_CACHE_DIR", cache_dir_str.as_str())];
 
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
@@ -1772,7 +1772,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	assert_eq!(code, 0, "stderr: {stderr}");
 	let first_files = collect_gzip_files(&cache_dir);
 	assert_eq!(first_files.len(), 1);
-	assert!(first_files[0].to_string_lossy().contains("rules-v"));
+	assert!(first_files[0].to_string_lossy().contains("__cv"));
 
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
@@ -1847,7 +1847,7 @@ fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["merge-plan", playlist_str.as_str(), "--no-game-base"],
 		tmp.path(),
-		&[("FOCH_MOD_SNAPSHOT_CACHE_DIR", cache_dir_str.as_str())],
+		&[("FOCH_MOD_PARSE_CACHE_DIR", cache_dir_str.as_str())],
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	assert_eq!(collect_gzip_files(&cache_dir).len(), 2);

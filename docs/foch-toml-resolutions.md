@@ -252,7 +252,7 @@ To find a conflict id:
 Worked example:
 
 ```toml
-# Layer 3, declaration order position 1: global fallback policy.
+# Layer 3, declaration order position 1: global resolution policy.
 [[resolutions]]
 match = "**"
 handler = "last_writer"
