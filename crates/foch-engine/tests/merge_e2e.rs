@@ -376,11 +376,6 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 		"strict two-mod conflict must surface at least one manual_conflict; report: {:#?}",
 		result.report
 	);
-	assert_eq!(
-		result.report.fallback_resolved_count, 0,
-		"strict merge must not silently fall back; report: {:#?}",
-		result.report
-	);
 	assert!(out_dir.exists(), "out dir should still be materialized");
 }
 
@@ -401,11 +396,6 @@ fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 	assert_eq!(
 		result.report.manual_conflict_count, 0,
 		"last_writer handler must clear all manual conflicts; report: {:#?}",
-		result.report
-	);
-	assert_eq!(
-		result.report.fallback_resolved_count, 0,
-		"resolution should be attributed to the handler, not the fallback path; report: {:#?}",
 		result.report
 	);
 	assert!(
@@ -462,11 +452,6 @@ fn eu4_union_policy_lets_distinct_monarch_names_coexist() {
 		"union merge should not surface manual conflicts; report: {:#?}",
 		result.report
 	);
-	assert_eq!(
-		result.report.fallback_resolved_count, 0,
-		"strict union merge must not use fallback; report: {:#?}",
-		result.report
-	);
 
 	let merged_history_path = out_dir
 		.join("history")
@@ -500,11 +485,6 @@ fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
 	assert_eq!(
 		result.report.manual_conflict_count, 0,
 		"BooleanOr merge should not surface manual conflicts; report: {:#?}",
-		result.report
-	);
-	assert_eq!(
-		result.report.fallback_resolved_count, 0,
-		"strict BooleanOr merge must not use fallback; report: {:#?}",
 		result.report
 	);
 
@@ -555,11 +535,6 @@ fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
 		"mixed SetValue/RemoveNode edits must surface a manual conflict; report: {:#?}",
 		result.report
 	);
-	assert_eq!(
-		result.report.fallback_resolved_count, 0,
-		"strict mixed-kinds merge must not use fallback; report: {:#?}",
-		result.report
-	);
 	assert!(
 		result
 			.report
@@ -589,11 +564,6 @@ fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
 	assert!(
 		result.report.manual_conflict_count >= 1,
 		"divergent Recurse sub-block edits must surface a manual conflict; report: {:#?}",
-		result.report
-	);
-	assert_eq!(
-		result.report.fallback_resolved_count, 0,
-		"strict recurse merge must not use fallback; report: {:#?}",
 		result.report
 	);
 	assert!(out_dir.exists(), "out dir should still be materialized");

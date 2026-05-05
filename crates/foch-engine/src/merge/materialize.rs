@@ -17,18 +17,18 @@ use super::namespace::{
 use super::normalize::normalize_defines_file;
 use super::patch::ClausewitzPatch;
 use super::patch_deps::compute_dag_patches_with_handler;
-use super::patch_merge::{PatchAddress, PatchConflict, PatchResolution};
+use super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict, PatchResolution};
 use super::plan::build_merge_plan_from_workspace;
 use super::stale_vanilla::detect_stale_vanilla_targets;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
-use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig};
+use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, compute_conflict_id};
 use foch_core::model::{
-	CheckContext, DepMisuseFinding, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
-	MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry,
-	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportConflictContributor,
-	MergeReportConflictKind, MergeReportConflictResolution, MergeReportStatus, SemanticIndex,
-	StaleVanillaTargetDescriptor,
+	CheckContext, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
+	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
+	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
+	MergeReportConflictContributor, MergeReportConflictResolution, MergeReportStatus,
+	SemanticIndex, StaleVanillaTargetDescriptor,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
@@ -284,13 +284,26 @@ pub(crate) fn materialize_merge_internal(
 									}
 									continue;
 								}
-								Ok(Err(err)) => {
+								Ok(Err(PatchBasedMergeFailure::Unresolved(conflict))) => {
+									if resolve_structural_merge_failure(
+										entry,
+										out_dir,
+										&conflict.reason,
+										conflict.leaf_conflicts,
+										&options,
+										&mut report,
+										&mut generated_paths,
+									)? {
+										continue;
+									}
+								}
+								Ok(Err(PatchBasedMergeFailure::Merge(err))) => {
 									let reason = format!("patch merge failed: {err}");
 									if resolve_structural_merge_failure(
-										&workspace,
 										entry,
 										out_dir,
 										&reason,
+										Vec::new(),
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -301,10 +314,10 @@ pub(crate) fn materialize_merge_internal(
 								Err(_) => {
 									let reason = "patch merge panicked".to_string();
 									if resolve_structural_merge_failure(
-										&workspace,
 										entry,
 										out_dir,
 										&reason,
+										Vec::new(),
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -1070,10 +1083,10 @@ fn record_plan_manual_conflicts(report: &mut MergeReport, plan: &MergePlanResult
 }
 
 fn resolve_structural_merge_failure(
-	workspace: &ResolvedWorkspace,
 	entry: &MergePlanEntry,
 	out_dir: &Path,
 	reason: &str,
+	leaf_conflicts: Vec<LeafConflictDetail>,
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
@@ -1098,29 +1111,22 @@ fn resolve_structural_merge_failure(
 	report
 		.conflict_resolutions
 		.push(workspace_conflict_skipped_resolution(
-			workspace, entry, reason,
+			entry,
+			reason,
+			leaf_conflicts,
 		));
 	Ok(true)
 }
 
 fn workspace_conflict_skipped_resolution(
-	workspace: &ResolvedWorkspace,
 	entry: &MergePlanEntry,
 	reason: &str,
+	leaf_conflicts: Vec<LeafConflictDetail>,
 ) -> MergeReportConflictResolution {
-	let contributors = workspace.file_inventory.get(&entry.path);
-	let winner = contributors.and_then(|items| last_writer_contributor(items));
 	MergeReportConflictResolution {
 		path: entry.path.clone(),
-		kind: MergeReportConflictKind::TrueConflictSkipped,
 		reason: reason.to_string(),
-		winning_mod: winner
-			.map(|contributor| contributor_label(workspace, contributor))
-			.unwrap_or_default(),
-		marker_written: false,
-		contributors: contributors
-			.map(|items| report_contributors(workspace, items))
-			.unwrap_or_default(),
+		leaf_conflicts,
 	}
 }
 
@@ -1130,91 +1136,9 @@ fn plan_conflict_skipped_resolution(
 ) -> MergeReportConflictResolution {
 	MergeReportConflictResolution {
 		path: entry.path.clone(),
-		kind: MergeReportConflictKind::TrueConflictSkipped,
 		reason: reason.to_string(),
-		winning_mod: entry
-			.winner
-			.as_ref()
-			.map(|winner| format!("{}:unknown", winner.mod_id))
-			.unwrap_or_default(),
-		marker_written: false,
-		contributors: entry
-			.contributors
-			.iter()
-			.filter(|contributor| !contributor.is_base_game)
-			.map(|contributor| MergeReportConflictContributor {
-				mod_id: contributor.mod_id.clone(),
-				mod_version: "unknown".to_string(),
-				precedence: contributor.precedence,
-			})
-			.collect(),
+		leaf_conflicts: Vec::new(),
 	}
-}
-
-fn last_writer_contributor(
-	contributors: &[ResolvedFileContributor],
-) -> Option<&ResolvedFileContributor> {
-	contributors
-		.iter()
-		.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
-		.max_by(|a, b| {
-			a.precedence
-				.cmp(&b.precedence)
-				.then_with(|| a.mod_id.cmp(&b.mod_id))
-		})
-}
-
-fn active_mod_contributors(
-	contributors: &[ResolvedFileContributor],
-) -> Vec<&ResolvedFileContributor> {
-	let mut active = contributors
-		.iter()
-		.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
-		.collect::<Vec<_>>();
-	active.sort_by(|a, b| {
-		a.precedence
-			.cmp(&b.precedence)
-			.then_with(|| a.mod_id.cmp(&b.mod_id))
-	});
-	active
-}
-
-fn report_contributors(
-	workspace: &ResolvedWorkspace,
-	contributors: &[ResolvedFileContributor],
-) -> Vec<MergeReportConflictContributor> {
-	active_mod_contributors(contributors)
-		.into_iter()
-		.map(|contributor| MergeReportConflictContributor {
-			mod_id: contributor.mod_id.clone(),
-			mod_version: contributor_version(workspace, &contributor.mod_id),
-			precedence: contributor.precedence,
-		})
-		.collect()
-}
-
-fn contributor_label(
-	workspace: &ResolvedWorkspace,
-	contributor: &ResolvedFileContributor,
-) -> String {
-	format!(
-		"{}:{}",
-		contributor.mod_id,
-		contributor_version(workspace, &contributor.mod_id)
-	)
-}
-
-fn contributor_version(workspace: &ResolvedWorkspace, mod_id: &str) -> String {
-	workspace
-		.mods
-		.iter()
-		.find(|candidate| candidate.mod_id == mod_id)
-		.and_then(|candidate| candidate.descriptor.as_ref())
-		.and_then(|descriptor| descriptor.version.as_deref())
-		.map(str::trim)
-		.filter(|version| !version.is_empty())
-		.unwrap_or("unknown")
-		.to_string()
 }
 
 #[derive(Clone, Debug)]
@@ -1229,6 +1153,24 @@ struct PatchBasedMergeOutput {
 	/// span / comment trivia) to the vanilla base — shipping the file
 	/// would just shadow the game's own copy with the same content.
 	noop_vs_vanilla: bool,
+}
+
+#[derive(Clone, Debug)]
+struct PatchConflictReport {
+	reason: String,
+	leaf_conflicts: Vec<LeafConflictDetail>,
+}
+
+#[derive(Debug)]
+enum PatchBasedMergeFailure {
+	Merge(MergeError),
+	Unresolved(PatchConflictReport),
+}
+
+impl From<MergeError> for PatchBasedMergeFailure {
+	fn from(err: MergeError) -> Self {
+		Self::Merge(err)
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -1252,6 +1194,59 @@ struct PatchBasedMergeContext<'a> {
 	emit_options: &'a EmitOptions,
 }
 
+fn leaf_conflicts_for_unresolved(
+	target_path: &str,
+	conflicts: &[PatchResolution],
+	mod_versions: &HashMap<String, String>,
+) -> Vec<LeafConflictDetail> {
+	conflicts
+		.iter()
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Conflict {
+				address, patches, ..
+			} => {
+				let address_path = address.path.join("/");
+				Some(LeafConflictDetail {
+					address_path: address_path.clone(),
+					address_key: address.key.clone(),
+					conflict_id: compute_conflict_id(
+						Path::new(target_path),
+						&address_path,
+						&address.key,
+					),
+					contributors: leaf_conflict_contributors(patches, mod_versions),
+				})
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+fn leaf_conflict_contributors(
+	patches: &[AttributedPatch],
+	mod_versions: &HashMap<String, String>,
+) -> Vec<MergeReportConflictContributor> {
+	let mut contributors = patches
+		.iter()
+		.map(|patch| MergeReportConflictContributor {
+			mod_id: patch.mod_id.clone(),
+			mod_version: mod_versions
+				.get(&patch.mod_id)
+				.cloned()
+				.unwrap_or_else(|| "unknown".to_string()),
+			precedence: patch.precedence,
+		})
+		.collect::<Vec<_>>();
+	contributors.sort_by(|left, right| {
+		left.precedence
+			.cmp(&right.precedence)
+			.then_with(|| left.mod_id.cmp(&right.mod_id))
+	});
+	contributors
+		.dedup_by(|left, right| left.mod_id == right.mod_id && left.precedence == right.precedence);
+	contributors
+}
+
 /// Patch-based structural merge: walk the dependency DAG level by level, diff
 /// every mod in a level against the same running base, sibling-merge that
 /// level's patches, then apply the resolved level to advance the running state.
@@ -1259,7 +1254,7 @@ fn patch_based_structural_merge(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: PatchBasedMergeContext<'_>,
-) -> Result<PatchBasedMergeOutput, MergeError> {
+) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
 	// Hold an owned, mutable resolution map so that any post-pass interactive
 	// resolutions can be folded back in before we re-run the merge engine
 	// below. The merge engine itself never invokes interactive prompts — every
@@ -1310,10 +1305,10 @@ fn patch_based_structural_merge(
 				}
 			}
 			if prompt.aborted {
-				return Err(MergeError::Validation {
+				return Err(PatchBasedMergeFailure::Merge(MergeError::Validation {
 					path: Some(target_path.to_string()),
 					message: "merge aborted by user".to_string(),
-				});
+				}));
 			}
 			if new_picks > 0 {
 				dag_patches =
@@ -1347,14 +1342,19 @@ fn patch_based_structural_merge(
 				_ => None,
 			})
 			.collect();
-		return Err(MergeError::Validation {
-			path: Some(target_path.to_string()),
-			message: format!(
-				"patch merge has {} unresolved conflict(s): {}",
-				conflict_keys.len(),
-				conflict_keys.join("; "),
+		let reason = format!(
+			"patch merge has {} unresolved conflict(s): {}",
+			conflict_keys.len(),
+			conflict_keys.join("; "),
+		);
+		return Err(PatchBasedMergeFailure::Unresolved(PatchConflictReport {
+			reason,
+			leaf_conflicts: leaf_conflicts_for_unresolved(
+				target_path,
+				&merge_result.conflicts,
+				context.mod_versions,
 			),
-		});
+		}));
 	}
 
 	let rendered = emit_clausewitz_statements_with_options(
@@ -1965,7 +1965,7 @@ mod tests {
 	use foch_core::model::{
 		HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 		MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergeReport,
-		MergeReportConflictKind, MergeReportStatus,
+		MergeReportStatus,
 	};
 	use serde_json::json;
 	use std::cell::Cell;
@@ -2617,19 +2617,14 @@ mod tests {
 
 		assert_eq!(report.status, MergeReportStatus::Blocked);
 		assert_eq!(report.manual_conflict_count, 1);
-		assert_eq!(report.fallback_resolved_count, 0);
 		assert_eq!(report.generated_file_count, 0);
 		assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
 		assert_eq!(report.conflict_resolutions.len(), 1);
-		assert_eq!(
-			report.conflict_resolutions[0].kind,
-			MergeReportConflictKind::TrueConflictSkipped
-		);
-		assert!(
-			report.conflict_resolutions[0]
-				.reason
-				.contains("unresolved conflict")
-		);
+		let resolution = &report.conflict_resolutions[0];
+		assert!(resolution.reason.contains("unresolved conflict"));
+		assert_eq!(resolution.leaf_conflicts.len(), 1);
+		assert_eq!(resolution.leaf_conflicts[0].address_key, "group");
+		assert_eq!(resolution.leaf_conflicts[0].contributors.len(), 2);
 	}
 
 	#[test]
@@ -2653,13 +2648,12 @@ mod tests {
 
 		assert_eq!(report.status, MergeReportStatus::Blocked);
 		assert_eq!(report.manual_conflict_count, 1);
-		assert_eq!(report.fallback_resolved_count, 0);
 		assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
 		assert_eq!(report.conflict_resolutions.len(), 1);
-		assert_eq!(
-			report.conflict_resolutions[0].kind,
-			MergeReportConflictKind::TrueConflictSkipped
-		);
+		let resolution = &report.conflict_resolutions[0];
+		assert!(resolution.reason.contains("unresolved conflict"));
+		assert_eq!(resolution.leaf_conflicts.len(), 1);
+		assert_eq!(resolution.leaf_conflicts[0].address_key, "group");
 	}
 
 	#[test]
@@ -2683,11 +2677,10 @@ mod tests {
 
 		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
 		assert_eq!(report.manual_conflict_count, 1);
-		assert_eq!(report.fallback_resolved_count, 0);
 		assert_eq!(report.generated_file_count, 1);
 		let marker = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read marker");
 		assert!(marker.starts_with("FOCH_MERGE_CONFLICT"));
-		assert!(marker.contains("patch merge failed"));
+		assert!(marker.contains("unresolved conflict"));
 	}
 
 	#[test]
@@ -2716,7 +2709,6 @@ mod tests {
 
 		assert_eq!(report.status, MergeReportStatus::Ready);
 		assert_eq!(report.manual_conflict_count, 0);
-		assert_eq!(report.fallback_resolved_count, 0);
 		assert_eq!(report.generated_file_count, 1);
 		let output =
 			fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read merged output");

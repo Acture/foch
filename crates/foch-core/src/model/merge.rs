@@ -113,14 +113,6 @@ pub struct MergeReportRename {
 	pub mod_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MergeReportConflictKind {
-	#[default]
-	LastWriterFallback,
-	TrueConflictSkipped,
-}
-
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReportConflictContributor {
 	pub mod_id: String,
@@ -129,15 +121,20 @@ pub struct MergeReportConflictContributor {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct MergeReportConflictResolution {
-	pub path: String,
-	pub kind: MergeReportConflictKind,
-	pub reason: String,
-	pub winning_mod: String,
-	#[serde(default)]
-	pub marker_written: bool,
+pub struct LeafConflictDetail {
+	pub address_path: String,
+	pub address_key: String,
+	pub conflict_id: String,
 	#[serde(default)]
 	pub contributors: Vec<MergeReportConflictContributor>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MergeReportConflictResolution {
+	pub path: String,
+	pub reason: String,
+	#[serde(default)]
+	pub leaf_conflicts: Vec<LeafConflictDetail>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -191,8 +188,6 @@ pub struct StaleVanillaTargetDescriptor {
 pub struct MergeReport {
 	pub status: MergeReportStatus,
 	pub manual_conflict_count: usize,
-	#[serde(default)]
-	pub fallback_resolved_count: usize,
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,

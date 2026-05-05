@@ -214,7 +214,7 @@ fn final_merge_status(report: &MergeReport) -> MergeReportStatus {
 			MergeReportStatus::PartialSuccess => MergeReportStatus::PartialSuccess,
 			_ => MergeReportStatus::Blocked,
 		}
-	} else if !report.handler_resolutions.is_empty() || report.fallback_resolved_count > 0 {
+	} else if !report.handler_resolutions.is_empty() {
 		MergeReportStatus::PartialSuccess
 	} else {
 		MergeReportStatus::Ready

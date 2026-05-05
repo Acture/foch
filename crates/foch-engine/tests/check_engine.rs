@@ -810,7 +810,6 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	let report = MergeReport {
 		status: MergeReportStatus::Blocked,
 		manual_conflict_count: 2,
-		fallback_resolved_count: 0,
 		generated_file_count: 0,
 		copied_file_count: 3,
 		overlay_file_count: 1,
@@ -838,7 +837,6 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	let value = serde_json::to_value(&report).expect("serialize merge report");
 	assert_eq!(value["status"], "blocked");
 	assert_eq!(value["manual_conflict_count"], 2);
-	assert_eq!(value["fallback_resolved_count"], 0);
 	assert_eq!(value["generated_file_count"], 0);
 	assert_eq!(value["copied_file_count"], 3);
 	assert_eq!(value["overlay_file_count"], 1);

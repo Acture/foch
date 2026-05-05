@@ -1432,17 +1432,16 @@ fn merge_command_skips_unresolved_dag_conflict_without_fallback() {
 	);
 	assert_eq!(code, 2);
 	assert!(stdout.contains("status: BLOCKED"));
-	assert!(stdout.contains("fallback_resolved_count: 0"));
 	assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "blocked");
 	assert_eq!(report["manual_conflict_count"], 1);
-	assert_eq!(report["fallback_resolved_count"], 0);
 	assert_eq!(report["generated_file_count"], 0);
-	assert_eq!(
-		report["conflict_resolutions"][0]["kind"],
-		"true_conflict_skipped"
+	assert!(
+		report["conflict_resolutions"][0]["leaf_conflicts"]
+			.as_array()
+			.is_some_and(|items| !items.is_empty())
 	);
 }
 
@@ -1473,17 +1472,16 @@ fn merge_command_fallback_no_longer_writes_last_writer_marker() {
 	);
 	assert_eq!(code, 2);
 	assert!(stdout.contains("status: BLOCKED"));
-	assert!(stdout.contains("fallback_resolved_count: 0"));
 	assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "blocked");
 	assert_eq!(report["manual_conflict_count"], 1);
-	assert_eq!(report["fallback_resolved_count"], 0);
 	assert_eq!(report["generated_file_count"], 0);
-	assert_eq!(
-		report["conflict_resolutions"][0]["kind"],
-		"true_conflict_skipped"
+	assert!(
+		report["conflict_resolutions"][0]["leaf_conflicts"]
+			.as_array()
+			.is_some_and(|items| !items.is_empty())
 	);
 }
 
@@ -1555,7 +1553,6 @@ fn merge_command_fallback_unresolved_scenario_still_blocks_without_tip() {
 		tmp.path(),
 	);
 	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
-	assert!(stdout.contains("fallback_resolved_count: 0"));
 	assert!(!stderr.contains("Tip:"), "stderr: {stderr}");
 	assert!(
 		!stderr.contains("unresolved merge conflict"),

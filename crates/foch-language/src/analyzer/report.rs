@@ -261,10 +261,6 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.manual_conflict_count
 	));
 	lines.push(format!(
-		"fallback_resolved_count: {}",
-		report.fallback_resolved_count
-	));
-	lines.push(format!(
 		"generated_file_count: {}",
 		report.generated_file_count
 	));
@@ -287,9 +283,47 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.validation.unresolved_references,
 		report.validation.missing_localisation
 	));
+	append_conflict_resolutions_section(&mut lines, report);
 	append_dep_misuse_section(&mut lines, report);
 	append_version_mismatch_section(&mut lines, report);
 	lines.join("\n")
+}
+
+fn append_conflict_resolutions_section(lines: &mut Vec<String>, report: &MergeReport) {
+	if report.conflict_resolutions.is_empty() {
+		return;
+	}
+
+	lines.push(String::new());
+	lines.push(format!(
+		"conflict_resolutions: {}",
+		report.conflict_resolutions.len()
+	));
+	for resolution in &report.conflict_resolutions {
+		lines.push(format!("  - path: {}", resolution.path));
+		lines.push(format!("    reason: {}", resolution.reason));
+		if resolution.leaf_conflicts.is_empty() {
+			continue;
+		}
+		lines.push("    leaf_conflicts:".to_string());
+		for leaf in &resolution.leaf_conflicts {
+			let address = if leaf.address_path.is_empty() {
+				leaf.address_key.clone()
+			} else {
+				format!("{}/{}", leaf.address_path, leaf.address_key)
+			};
+			lines.push(format!(
+				"      - address: {} conflict_id: {}",
+				address, leaf.conflict_id
+			));
+			for contributor in &leaf.contributors {
+				lines.push(format!(
+					"          - {}:{} precedence={}",
+					contributor.mod_id, contributor.mod_version, contributor.precedence
+				));
+			}
+		}
+	}
 }
 
 fn append_version_mismatch_section(lines: &mut Vec<String>, report: &MergeReport) {
