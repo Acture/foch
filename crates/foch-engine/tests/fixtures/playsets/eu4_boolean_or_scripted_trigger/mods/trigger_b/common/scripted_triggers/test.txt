@@ -1,0 +1,3 @@
+is_test_country = {
+    num_of_cities = 1
+}

@@ -1,0 +1,3 @@
+is_test_country = {
+    has_country_flag = test_flag_a
+}

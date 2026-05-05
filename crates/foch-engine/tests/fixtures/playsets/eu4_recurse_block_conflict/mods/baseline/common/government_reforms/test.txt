@@ -1,0 +1,5 @@
+test_reform = {
+    trigger = {
+        has_country_flag = baseline_flag
+    }
+}

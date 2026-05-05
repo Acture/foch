@@ -442,3 +442,159 @@ fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 	);
 	assert_structurally_sound(&out_dir);
 }
+
+#[test]
+fn eu4_union_policy_lets_distinct_monarch_names_coexist() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_union_monarch_names_coexist", false, false);
+	assert_eq!(
+		result.exit_code, 0,
+		"union merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"union merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"union merge should not surface manual conflicts; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.fallback_resolved_count, 0,
+		"strict union merge must not use fallback; report: {:#?}",
+		result.report
+	);
+
+	let merged_history_path = out_dir
+		.join("history")
+		.join("countries")
+		.join("TES - Test.txt");
+	let merged_text = fs::read_to_string(&merged_history_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_history_path.display()));
+	for monarch_name in ["Aldus", "Berta", "Cedric"] {
+		assert!(
+			merged_text.contains(&format!("monarch_names = \"{monarch_name}\"")),
+			"merged history should retain monarch name {monarch_name}; got:\n{merged_text}"
+		);
+	}
+	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_boolean_or_scripted_trigger", false, false);
+	assert_eq!(
+		result.exit_code, 0,
+		"BooleanOr merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"BooleanOr merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"BooleanOr merge should not surface manual conflicts; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.fallback_resolved_count, 0,
+		"strict BooleanOr merge must not use fallback; report: {:#?}",
+		result.report
+	);
+
+	let merged_trigger_path = out_dir
+		.join("common")
+		.join("scripted_triggers")
+		.join("test.txt");
+	let merged_text = fs::read_to_string(&merged_trigger_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_trigger_path.display()));
+	assert!(
+		merged_text.contains("is_test_country = {"),
+		"merged scripted trigger should retain trigger key; got:\n{merged_text}"
+	);
+	assert_eq!(
+		merged_text.matches("OR = {").count(),
+		3,
+		"BooleanOr should wrap each contributor body in an OR block; got:\n{merged_text}"
+	);
+	for predicate in [
+		"tag = TES",
+		"has_country_flag = test_flag_a",
+		"num_of_cities = 1",
+	] {
+		assert!(
+			merged_text.contains(predicate),
+			"merged scripted trigger should retain predicate {predicate}; got:\n{merged_text}"
+		);
+	}
+	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false, false);
+	assert_eq!(
+		result.exit_code, 2,
+		"strict mixed-kinds merge should block; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Blocked,
+		"strict mixed-kinds merge should be blocked; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"mixed SetValue/RemoveNode edits must surface a manual conflict; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.fallback_resolved_count, 0,
+		"strict mixed-kinds merge must not use fallback; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result
+			.report
+			.conflict_resolutions
+			.iter()
+			.any(|resolution| resolution.reason.contains("mixed patch kinds")),
+		"mixed-kinds conflict reason should mention mixed patch kinds; report: {:#?}",
+		result.report
+	);
+	assert!(out_dir.exists(), "out dir should still be materialized");
+}
+
+#[test]
+fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_recurse_block_conflict", false, false);
+	assert_eq!(
+		result.exit_code, 2,
+		"strict recurse merge should block; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Blocked,
+		"strict recurse merge should be blocked; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"divergent Recurse sub-block edits must surface a manual conflict; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.fallback_resolved_count, 0,
+		"strict recurse merge must not use fallback; report: {:#?}",
+		result.report
+	);
+	assert!(out_dir.exists(), "out dir should still be materialized");
+}

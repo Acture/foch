@@ -1,0 +1,6 @@
+government = monarchy
+primary_culture = english
+religion = catholic
+technology_group = western
+capital = 236
+monarch_names = "Berta"
