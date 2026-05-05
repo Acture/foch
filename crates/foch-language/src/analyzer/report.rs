@@ -2,7 +2,7 @@ use foch_core::model::{
 	ChannelMode, CheckResult, DepMisuseFinding, Finding, FindingChannel, MergePlanEntry,
 	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus, Severity,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub fn render_text(result: &CheckResult, color: bool, channel: ChannelMode) -> String {
 	let findings = result.filtered_findings(channel);
@@ -249,13 +249,39 @@ pub fn merge_plan_exit_code(result: &MergePlanResult) -> i32 {
 	}
 }
 
+/// Returns the set of mod_ids that have both a V1 stale-target finding
+/// and a V2 version-mismatch finding in the same merge report.
+pub fn cross_tagged_mod_ids(report: &MergeReport) -> BTreeSet<String> {
+	let v1_mods: BTreeSet<&str> = report
+		.stale_vanilla_targets
+		.iter()
+		.map(|target| target.mod_id.as_str())
+		.collect();
+	let v2_mods: BTreeSet<&str> = report
+		.version_mismatch
+		.iter()
+		.map(|finding| finding.mod_id.as_str())
+		.collect();
+	v1_mods
+		.intersection(&v2_mods)
+		.map(|mod_id| (*mod_id).to_string())
+		.collect()
+}
+
 pub fn render_merge_report_text(report: &MergeReport) -> String {
+	let cross_tagged_mods = cross_tagged_mod_ids(report);
 	let mut lines = Vec::new();
 	lines.push("Foch Merge Report".to_string());
 	lines.push(format!(
 		"status: {}",
 		render_merge_report_status(report.status)
 	));
+	if !cross_tagged_mods.is_empty() {
+		lines.push(format!(
+			"cross_tagged_mods: {} (mods with both V1 stale-target AND V2 version-mismatch — likely outdated or unmaintained)",
+			cross_tagged_mods.len()
+		));
+	}
 	lines.push(format!(
 		"manual_conflict_count: {}",
 		report.manual_conflict_count
@@ -286,6 +312,7 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 	append_conflict_resolutions_section(&mut lines, report);
 	append_dep_misuse_section(&mut lines, report);
 	append_version_mismatch_section(&mut lines, report);
+	append_cross_tagged_mods_section(&mut lines, &cross_tagged_mods);
 	lines.join("\n")
 }
 
@@ -354,6 +381,25 @@ fn append_version_mismatch_section(lines: &mut Vec<String>, report: &MergeReport
 			quote(&finding.game_version)
 		));
 		lines.push(format!("  {}", finding.message));
+	}
+}
+
+fn append_cross_tagged_mods_section(lines: &mut Vec<String>, mod_ids: &BTreeSet<String>) {
+	if mod_ids.is_empty() {
+		return;
+	}
+
+	let mod_label = if mod_ids.len() == 1 { "mod" } else { "mods" };
+	lines.push(String::new());
+	lines.push(format!(
+		"⚠ Cross-tagged mods ({} {} with both V1 stale-target AND V2 version-mismatch):",
+		mod_ids.len(),
+		mod_label
+	));
+	for mod_id in mod_ids {
+		lines.push(format!(
+			"  - {mod_id}: has both V1 stale-target and V2 version-mismatch findings in this report"
+		));
 	}
 }
 
@@ -637,6 +683,98 @@ mod tests {
 
 		assert!(output.contains("\nFindings by rule: (no findings)"));
 		assert!(!output.contains("  count  severity"));
+	}
+
+	fn stale_vanilla_target(mod_id: &str) -> foch_core::model::StaleVanillaTargetDescriptor {
+		foch_core::model::StaleVanillaTargetDescriptor {
+			mod_id: mod_id.to_string(),
+			mod_version: "1.0".to_string(),
+			file_path: "common/example.txt".to_string(),
+			patch_kind: "replace".to_string(),
+			target_path: vec!["root".to_string()],
+			target_key: None,
+			note: None,
+		}
+	}
+
+	fn version_mismatch_finding(mod_id: &str) -> foch_core::model::VersionMismatchFinding {
+		foch_core::model::VersionMismatchFinding {
+			tag: "version_mismatch".to_string(),
+			severity: Severity::Warning,
+			mod_id: mod_id.to_string(),
+			mod_display_name: format!("Mod {mod_id}"),
+			supported_version: "1.36.*".to_string(),
+			game_version: "1.37.5".to_string(),
+			message: "supported_version does not match game version".to_string(),
+		}
+	}
+
+	fn mod_set(mod_ids: &[&str]) -> BTreeSet<String> {
+		mod_ids.iter().map(|mod_id| (*mod_id).to_string()).collect()
+	}
+
+	#[test]
+	fn cross_tagged_mod_ids_empty_when_disjoint() {
+		let report = MergeReport {
+			stale_vanilla_targets: vec![stale_vanilla_target("A"), stale_vanilla_target("B")],
+			version_mismatch: vec![version_mismatch_finding("C"), version_mismatch_finding("D")],
+			..MergeReport::default()
+		};
+
+		assert!(cross_tagged_mod_ids(&report).is_empty());
+	}
+
+	#[test]
+	fn cross_tagged_mod_ids_returns_intersection() {
+		let report = MergeReport {
+			stale_vanilla_targets: vec![
+				stale_vanilla_target("A"),
+				stale_vanilla_target("B"),
+				stale_vanilla_target("C"),
+			],
+			version_mismatch: vec![
+				version_mismatch_finding("B"),
+				version_mismatch_finding("C"),
+				version_mismatch_finding("D"),
+			],
+			..MergeReport::default()
+		};
+
+		assert_eq!(cross_tagged_mod_ids(&report), mod_set(&["B", "C"]));
+	}
+
+	#[test]
+	fn cross_tagged_mod_ids_dedups_per_mod() {
+		let report = MergeReport {
+			stale_vanilla_targets: vec![
+				stale_vanilla_target("A"),
+				stale_vanilla_target("A"),
+				stale_vanilla_target("B"),
+			],
+			version_mismatch: vec![version_mismatch_finding("A"), version_mismatch_finding("C")],
+			..MergeReport::default()
+		};
+
+		assert_eq!(cross_tagged_mod_ids(&report), mod_set(&["A"]));
+	}
+
+	#[test]
+	fn render_merge_report_text_emits_cross_tag_section_when_intersection_nonempty() {
+		let report = MergeReport {
+			stale_vanilla_targets: vec![stale_vanilla_target("A"), stale_vanilla_target("B")],
+			version_mismatch: vec![version_mismatch_finding("B"), version_mismatch_finding("C")],
+			..MergeReport::default()
+		};
+
+		let output = render_merge_report_text(&report);
+
+		assert!(output.contains(
+			"cross_tagged_mods: 1 (mods with both V1 stale-target AND V2 version-mismatch"
+		));
+		assert!(output.contains(
+			"⚠ Cross-tagged mods (1 mod with both V1 stale-target AND V2 version-mismatch):"
+		));
+		assert!(output.contains("  - B:"));
 	}
 
 	fn dep_misuse_finding(
