@@ -1447,7 +1447,7 @@ fn merge_command_skips_unresolved_dag_conflict_without_fallback() {
 }
 
 #[test]
-fn merge_command_fallback_writes_last_writer_marker() {
+fn merge_command_fallback_no_longer_writes_last_writer_marker() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -1471,28 +1471,20 @@ fn merge_command_fallback_writes_last_writer_marker() {
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 0);
-	assert!(stdout.contains("status: PARTIAL_SUCCESS"));
-	assert!(stdout.contains("fallback_resolved_count: 1"));
-	let output = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read fallback");
-	assert!(output.starts_with("# foch:conflict reason=\"patch merge failed:"));
-	assert!(output.contains("resolved=\"last-writer:9103:1.0.0\""));
-	assert!(output.ends_with(&idea_file("beta")));
+	assert_eq!(code, 2);
+	assert!(stdout.contains("status: BLOCKED"));
+	assert!(stdout.contains("fallback_resolved_count: 0"));
+	assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "partial_success");
-	assert_eq!(report["manual_conflict_count"], 0);
-	assert_eq!(report["fallback_resolved_count"], 1);
-	assert_eq!(report["generated_file_count"], 1);
+	assert_eq!(report["status"], "blocked");
+	assert_eq!(report["manual_conflict_count"], 1);
+	assert_eq!(report["fallback_resolved_count"], 0);
+	assert_eq!(report["generated_file_count"], 0);
 	assert_eq!(
 		report["conflict_resolutions"][0]["kind"],
-		"last_writer_fallback"
+		"true_conflict_skipped"
 	);
-	assert_eq!(
-		report["conflict_resolutions"][0]["winning_mod"],
-		"9103:1.0.0"
-	);
-	assert_eq!(report["conflict_resolutions"][0]["marker_written"], true);
 }
 
 #[test]
@@ -1538,7 +1530,7 @@ fn merge_command_default_unresolved_conflict_prints_fallback_tip_to_stderr() {
 }
 
 #[test]
-fn merge_command_fallback_unresolved_scenario_suppresses_fallback_tip() {
+fn merge_command_fallback_unresolved_scenario_still_blocks_without_tip() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -1562,8 +1554,8 @@ fn merge_command_fallback_unresolved_scenario_suppresses_fallback_tip() {
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
-	assert!(stdout.contains("fallback_resolved_count: 1"));
+	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(stdout.contains("fallback_resolved_count: 0"));
 	assert!(!stderr.contains("Tip:"), "stderr: {stderr}");
 	assert!(
 		!stderr.contains("unresolved merge conflict"),

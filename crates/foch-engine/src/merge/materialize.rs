@@ -1078,79 +1078,29 @@ fn resolve_structural_merge_failure(
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
 ) -> Result<bool, MergeError> {
-	if options.fallback || options.force {
-		let resolution = write_last_writer_fallback(workspace, entry, out_dir, reason)?;
-		report.fallback_resolved_count += 1;
+	report.manual_conflict_count += 1;
+	if options.force && is_text_placeholder_path(&entry.path) {
+		let mut marker_entry = entry.clone();
+		marker_entry.notes.push(reason.to_string());
+		write_conflict_placeholder(&marker_entry, out_dir)?;
 		report.generated_file_count += 1;
 		generated_paths.insert(entry.path.clone());
 		report.warnings.push(format!(
-			"{}; using last-writer fallback for {}",
+			"{} for {}; wrote manual conflict marker",
 			reason, entry.path
 		));
-		report.conflict_resolutions.push(resolution);
-		return Ok(true);
+	} else {
+		report.warnings.push(format!(
+			"{} for {}; manual resolution required, skipping output",
+			reason, entry.path
+		));
 	}
-
-	report.warnings.push(format!(
-		"{} for {}; fallback disabled, skipping output",
-		reason, entry.path
-	));
-	report.manual_conflict_count += 1;
 	report
 		.conflict_resolutions
 		.push(workspace_conflict_skipped_resolution(
 			workspace, entry, reason,
 		));
 	Ok(true)
-}
-
-fn write_last_writer_fallback(
-	workspace: &ResolvedWorkspace,
-	entry: &MergePlanEntry,
-	out_dir: &Path,
-	reason: &str,
-) -> Result<MergeReportConflictResolution, MergeError> {
-	let contributors =
-		workspace
-			.file_inventory
-			.get(&entry.path)
-			.ok_or_else(|| MergeError::Validation {
-				path: Some(entry.path.clone()),
-				message: format!(
-					"workspace is missing contributor inventory for {}",
-					entry.path
-				),
-			})?;
-	let winner = last_writer_contributor(contributors).ok_or_else(|| MergeError::Validation {
-		path: Some(entry.path.clone()),
-		message: format!("no mod contributor available for {}", entry.path),
-	})?;
-	let winner_bytes = fs::read(&winner.absolute_path)?;
-	let marker_prefix = conflict_comment_prefix_for_path(&entry.path);
-	let marker_written = marker_prefix.is_some();
-
-	let target = out_dir.join(&entry.path);
-	if let Some(parent) = target.parent() {
-		fs::create_dir_all(parent)?;
-	}
-
-	if let Some(prefix) = marker_prefix {
-		let marker = fallback_marker(workspace, contributors, winner, reason, prefix);
-		let mut output = marker.into_bytes();
-		output.extend_from_slice(&winner_bytes);
-		fs::write(target, output)?;
-	} else {
-		fs::write(target, winner_bytes)?;
-	}
-
-	Ok(MergeReportConflictResolution {
-		path: entry.path.clone(),
-		kind: MergeReportConflictKind::LastWriterFallback,
-		reason: reason.to_string(),
-		winning_mod: contributor_label(workspace, winner),
-		marker_written,
-		contributors: report_contributors(workspace, contributors),
-	})
 }
 
 fn workspace_conflict_skipped_resolution(
@@ -1199,44 +1149,6 @@ fn plan_conflict_skipped_resolution(
 			})
 			.collect(),
 	}
-}
-
-fn fallback_marker(
-	workspace: &ResolvedWorkspace,
-	contributors: &[ResolvedFileContributor],
-	winner: &ResolvedFileContributor,
-	reason: &str,
-	prefix: &str,
-) -> String {
-	let contributors = active_mod_contributors(contributors)
-		.into_iter()
-		.map(|contributor| contributor_label(workspace, contributor))
-		.collect::<Vec<_>>()
-		.join(", ");
-	format!(
-		"{prefix} foch:conflict reason=\"{}\" resolved=\"last-writer:{}\"\n{prefix} foch:conflict contributors=[{}]\n",
-		short_marker_reason(reason),
-		contributor_label(workspace, winner),
-		contributors
-	)
-}
-
-fn conflict_comment_prefix_for_path(path: &str) -> Option<&'static str> {
-	let normalized = path.to_ascii_lowercase();
-	let ext = normalized.rsplit('.').next()?;
-	match ext {
-		"txt" | "gui" | "yml" | "yaml" | "gfx" | "asset" | "mod" => Some("#"),
-		_ => None,
-	}
-}
-
-fn short_marker_reason(reason: &str) -> String {
-	let normalized = reason.split_whitespace().collect::<Vec<_>>().join(" ");
-	let mut shortened = normalized.chars().take(160).collect::<String>();
-	if normalized.chars().count() > 160 {
-		shortened.push('…');
-	}
-	shortened.replace('"', "'")
 }
 
 fn last_writer_contributor(
@@ -2048,13 +1960,12 @@ mod tests {
 	use crate::config::Config;
 	use crate::request::CheckRequest;
 	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
-	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
+	use foch_core::domain::playlist::Playlist;
 	use foch_core::model::{
 		HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 		MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergeReport,
-		MergeReportConflictKind, MergeReportStatus, ModCandidate,
+		MergeReportConflictKind, MergeReportStatus,
 	};
 	use serde_json::json;
 	use std::cell::Cell;
@@ -2578,78 +2489,6 @@ mod tests {
 		write_file(mod_b, DAG_FALLBACK_PATH, idea_file("beta"));
 	}
 
-	fn fallback_mod_candidate(mod_id: &str, name: &str, version: &str) -> ModCandidate {
-		ModCandidate {
-			entry: PlaylistEntry {
-				steam_id: Some(mod_id.to_string()),
-				..PlaylistEntry::default()
-			},
-			mod_id: mod_id.to_string(),
-			root_path: None,
-			descriptor_path: None,
-			descriptor: Some(ModDescriptor {
-				name: name.to_string(),
-				version: Some(version.to_string()),
-				..ModDescriptor::default()
-			}),
-			descriptor_error: None,
-			files: Vec::new(),
-		}
-	}
-
-	fn fallback_workspace(
-		test_root: &Path,
-		relative_path: &str,
-		mod_a_content: impl AsRef<[u8]>,
-		mod_b_content: impl AsRef<[u8]>,
-	) -> ResolvedWorkspace {
-		let mod_a = test_root.join("9201");
-		let mod_b = test_root.join("9202");
-		write_file(&mod_a, relative_path, mod_a_content);
-		write_file(&mod_b, relative_path, mod_b_content);
-
-		let mut file_inventory = BTreeMap::new();
-		file_inventory.insert(
-			relative_path.to_string(),
-			vec![
-				ResolvedFileContributor {
-					mod_id: "9201".to_string(),
-					root_path: mod_a.clone(),
-					absolute_path: mod_a.join(relative_path),
-					precedence: 1,
-					is_base_game: false,
-					is_synthetic_base: false,
-					parse_ok_hint: None,
-				},
-				ResolvedFileContributor {
-					mod_id: "9202".to_string(),
-					root_path: mod_b.clone(),
-					absolute_path: mod_b.join(relative_path),
-					precedence: 2,
-					is_base_game: false,
-					is_synthetic_base: false,
-					parse_ok_hint: None,
-				},
-			],
-		);
-
-		ResolvedWorkspace {
-			playlist_path: test_root.join("playlist.json"),
-			playlist: Playlist {
-				game: Game::EuropaUniversalis4,
-				name: "fallback-workspace".to_string(),
-				mods: Vec::new(),
-			},
-			mods: vec![
-				fallback_mod_candidate("9201", "fallback-a", "1.0.0"),
-				fallback_mod_candidate("9202", "fallback-b", "2.0.0"),
-			],
-			installed_base_snapshot: None,
-			mod_snapshots: Vec::new(),
-			file_inventory,
-		}
-	}
-
 	#[test]
 	fn copy_through_materialization_writes_descriptor_sidecars_and_source_file() {
 		let temp = TempDir::new().expect("temp dir");
@@ -2758,7 +2597,7 @@ mod tests {
 	}
 
 	#[test]
-	fn last_writer_fallback_writes_file_with_marker() {
+	fn unresolved_structural_merge_stays_manual_when_fallback_requested() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
@@ -2776,49 +2615,21 @@ mod tests {
 		)
 		.expect("materialize");
 
-		assert_eq!(report.status, MergeReportStatus::Ready);
-		assert_eq!(report.manual_conflict_count, 0);
-		assert_eq!(report.fallback_resolved_count, 1);
-		assert_eq!(report.generated_file_count, 1);
-		let output = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read fallback");
-		assert!(output.starts_with("# foch:conflict reason=\"patch merge failed:"));
-		assert!(output.contains("resolved=\"last-writer:9103:1.0.0\""));
-		assert!(
-			output.contains("# foch:conflict contributors=[9101:1.0.0, 9102:1.0.0, 9103:1.0.0]")
-		);
-		assert!(output.ends_with(&idea_file("beta")));
+		assert_eq!(report.status, MergeReportStatus::Blocked);
+		assert_eq!(report.manual_conflict_count, 1);
+		assert_eq!(report.fallback_resolved_count, 0);
+		assert_eq!(report.generated_file_count, 0);
+		assert!(!out_dir.join(DAG_FALLBACK_PATH).exists());
 		assert_eq!(report.conflict_resolutions.len(), 1);
-		let resolution = &report.conflict_resolutions[0];
-		assert_eq!(resolution.kind, MergeReportConflictKind::LastWriterFallback);
-		assert_eq!(resolution.path, DAG_FALLBACK_PATH);
-		assert_eq!(resolution.winning_mod, "9103:1.0.0");
-		assert!(resolution.marker_written);
-	}
-
-	#[test]
-	fn last_writer_fallback_binary_file_no_marker() {
-		let temp = TempDir::new().expect("temp dir");
-		let out_dir = temp.path().join("out");
-		let relative_path = "gfx/interface/icon.dds";
-		let workspace = fallback_workspace(temp.path(), relative_path, [0u8, 1, 2], [3u8, 4, 5]);
-		let entry = MergePlanEntry {
-			path: relative_path.to_string(),
-			..MergePlanEntry::default()
-		};
-
-		let resolution = super::write_last_writer_fallback(
-			&workspace,
-			&entry,
-			&out_dir,
-			"synthetic binary conflict",
-		)
-		.expect("fallback");
-
-		let output = fs::read(out_dir.join(relative_path)).expect("read binary fallback");
-		assert_eq!(output, vec![3u8, 4, 5]);
-		assert_eq!(resolution.kind, MergeReportConflictKind::LastWriterFallback);
-		assert_eq!(resolution.winning_mod, "9202:2.0.0");
-		assert!(!resolution.marker_written);
+		assert_eq!(
+			report.conflict_resolutions[0].kind,
+			MergeReportConflictKind::TrueConflictSkipped
+		);
+		assert!(
+			report.conflict_resolutions[0]
+				.reason
+				.contains("unresolved conflict")
+		);
 	}
 
 	#[test]
@@ -2852,7 +2663,7 @@ mod tests {
 	}
 
 	#[test]
-	fn force_mode_implies_last_writer_fallback() {
+	fn force_mode_writes_manual_marker_for_unresolved_structural_merge() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
@@ -2870,10 +2681,13 @@ mod tests {
 		)
 		.expect("materialize");
 
-		assert_eq!(report.status, MergeReportStatus::Ready);
-		assert_eq!(report.manual_conflict_count, 0);
-		assert_eq!(report.fallback_resolved_count, 1);
-		assert!(out_dir.join(DAG_FALLBACK_PATH).exists());
+		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
+		assert_eq!(report.manual_conflict_count, 1);
+		assert_eq!(report.fallback_resolved_count, 0);
+		assert_eq!(report.generated_file_count, 1);
+		let marker = fs::read_to_string(out_dir.join(DAG_FALLBACK_PATH)).expect("read marker");
+		assert!(marker.starts_with("FOCH_MERGE_CONFLICT"));
+		assert!(marker.contains("patch merge failed"));
 	}
 
 	#[test]
