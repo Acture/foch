@@ -17,7 +17,7 @@ use super::dag::{
 use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use super::patch_apply::apply_patches;
 use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
-use crate::cache::{ModDiffCache, compute_mod_hash};
+use crate::cache::{DagBaseCache, ModDiffCache, compute_mod_hash};
 use crate::workspace::ResolvedFileContributor;
 
 #[derive(Clone, Debug)]
@@ -174,6 +174,19 @@ fn hash_ast_statements(statements: &[AstStatement]) -> Option<String> {
 	Some(blake3::hash(&encoded).to_hex()[..16].to_string())
 }
 
+fn hash_dep_mod_hashes(hashes: &BTreeSet<String>) -> String {
+	let mut hasher = blake3::Hasher::new();
+	for hash in hashes {
+		update_hash_part(&mut hasher, hash.as_bytes());
+	}
+	hasher.finalize().to_hex()[..16].to_string()
+}
+
+fn update_hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+	hasher.update(&(bytes.len() as u64).to_le_bytes());
+	hasher.update(bytes);
+}
+
 fn cached_or_diff_patches(
 	cache: Option<&ModDiffCache>,
 	target_path: &str,
@@ -212,6 +225,32 @@ fn cached_or_diff_patches(
 	patches
 }
 
+fn cached_or_apply_base(
+	cache: Option<&DagBaseCache>,
+	deps_hash: Option<&str>,
+	file_path: &str,
+	current_statements: &[AstStatement],
+	level_resolved_patches: &[ClausewitzPatch],
+	merge_key_source: MergeKeySource,
+) -> Vec<AstStatement> {
+	let (Some(cache), Some(deps_hash)) = (cache, deps_hash) else {
+		return apply_patches(current_statements, level_resolved_patches, merge_key_source);
+	};
+	if let Some(statements) = cache.lookup(deps_hash, file_path, env!("CARGO_PKG_VERSION")) {
+		return statements;
+	}
+	let statements = apply_patches(current_statements, level_resolved_patches, merge_key_source);
+	if let Err(err) = cache.store(deps_hash, file_path, env!("CARGO_PKG_VERSION"), &statements) {
+		tracing::warn!(
+			target: "foch::merge::patch_deps",
+			path = %file_path,
+			error = %err,
+			"failed to store DAG base cache entry"
+		);
+	}
+	statements
+}
+
 fn compute_dag_patches_from_parsed(
 	file_dag: &FileDag,
 	vanilla: Option<&ParsedScriptFile>,
@@ -248,6 +287,10 @@ fn compute_dag_patches_from_parsed_with_cache(
 	let diff_cache = mod_hashes
 		.filter(|hashes| !hashes.is_empty())
 		.map(|_| ModDiffCache::open_default());
+	let dag_base_cache = mod_hashes
+		.filter(|hashes| !hashes.is_empty())
+		.map(|_| DagBaseCache::open_default());
+	let mut processed_mod_hashes = dag_base_cache.as_ref().map(|_| BTreeSet::<String>::new());
 
 	// Track per-level overwrite addresses so a later level can override
 	// an earlier level's pending conflict at the same leaf address.
@@ -267,8 +310,8 @@ fn compute_dag_patches_from_parsed_with_cache(
 		let vanilla_hash = hash_ast_statements(&current_base.ast.statements);
 		let mut level_patches = Vec::new();
 		let mut addresses_in_level: HashSet<(Vec<String>, String)> = HashSet::new();
-		for mod_id in level {
-			let current = contributors.get(&mod_id).ok_or_else(|| {
+		for mod_id in &level {
+			let current = contributors.get(mod_id).ok_or_else(|| {
 				format!(
 					"missing parsed contributor {} for {}",
 					mod_id.as_str(),
@@ -278,7 +321,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 			let patches = cached_or_diff_patches(
 				diff_cache.as_ref(),
 				file_dag.file_path(),
-				mod_hashes.and_then(|hashes| hashes.get(&mod_id).map(String::as_str)),
+				mod_hashes.and_then(|hashes| hashes.get(mod_id).map(String::as_str)),
 				vanilla_hash.as_deref(),
 				&current_base,
 				current,
@@ -287,7 +330,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 			for patch in &patches {
 				addresses_in_level.extend(overwrite_addresses(patch));
 			}
-			level_patches.push((mod_id.0.clone(), file_dag.precedence_of(&mod_id), patches));
+			level_patches.push((mod_id.0.clone(), file_dag.precedence_of(mod_id), patches));
 		}
 		level_addresses.push(addresses_in_level);
 
@@ -304,11 +347,37 @@ fn compute_dag_patches_from_parsed_with_cache(
 
 		let level_resolved_patches = resolved_patches(&level_result);
 		extend_merge_result(&mut merge_result, level_result);
+		let missing_level_hash = if let Some(processed_hashes) = processed_mod_hashes.as_mut() {
+			match mod_hashes {
+				Some(mod_hashes) => {
+					let mut missing = false;
+					for mod_id in &level {
+						if let Some(hash) = mod_hashes.get(mod_id) {
+							processed_hashes.insert(hash.clone());
+						} else {
+							missing = true;
+							break;
+						}
+					}
+					missing
+				}
+				None => true,
+			}
+		} else {
+			false
+		};
+		if missing_level_hash {
+			processed_mod_hashes = None;
+		}
+		let deps_hash = processed_mod_hashes.as_ref().map(hash_dep_mod_hashes);
 		// Always advance the running state with this level's resolved patches so the
 		// next level diffs against post-merge content. Conflicting leaves stay at
 		// their pre-level value, allowing a downstream mod's diff to produce a
 		// fresh patch at that address.
-		current_statements = apply_patches(
+		current_statements = cached_or_apply_base(
+			dag_base_cache.as_ref(),
+			deps_hash.as_deref(),
+			file_dag.file_path(),
 			&current_statements,
 			&level_resolved_patches,
 			merge_key_source,
