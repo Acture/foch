@@ -1,10 +1,29 @@
 # Project Status
 
-Last updated: 2026-04-09
+Last updated: 2026-05-05
 
 ## Summary
 
-`foch` is a shipped EU4 analyzer-plus-merge toolkit, and the repository is now organized as a workspace monorepo instead of a single root crate.
+`foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is now organized as a workspace monorepo instead of a single root crate.
+
+## Alpha-1 readiness
+
+The alpha-1 release-prep slice has landed the user-facing deliverables and engine surface needed for first public testers:
+
+- Resolution DSL: `[[resolutions]]` with `match` / `handler` syntax and built-in `last_writer`, `defer`, and `keep_existing` handlers. The reference lives in [`foch-toml-resolutions.md`](./foch-toml-resolutions.md).
+- E2E merge fixture harness: 9 tests covering Union, BooleanOr, mixed-kind, recursive, and conflict-resolution scenarios.
+- Graph artifacts: `definition-deps` alongside `mod-deps`, with workspace/base/per-mod scopes and `SymbolKind` filtering.
+- Opt-in NoOp dedup: cross-file and per-entry NoOp dedup are available per `ContentFamily` after load-semantics verification.
+- Cache pipeline: C1/C2/C3/C4 cache layers are inspectable through the `foch cache` CLI.
+- DSL cleanup: the old `--fallback` surface and fallback wording are gone; `MergeReport` is slimmer and now records V1/V2 cross-tag information.
+- Drift analysis: v1a vanilla symbol indexing and S002B stale-fallback distinction are in place.
+- Audit/status cleanup: the p5 compensation-hack audit, p6 decoupled `merge_status` / `analysis_status` views, and CWT mapping design doc are recorded.
+
+Current EU4 active-playset merge baseline:
+
+- N=37 probe after the leaf-conflict fix: `manual_conflict_count = 9`.
+- [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) ships narrow per-path defaults that clear all 9 manual conflicts without enabling global last-writer behavior.
+- Warm cache-backed iterations are seconds; cold debug runs remain around 25-30 minutes, while release+cache has been observed around 40 seconds for this baseline.
 
 The shipped product surface includes:
 
@@ -14,6 +33,7 @@ The shipped product surface includes:
 - `foch graph`
 - `foch simplify`
 - `foch data`
+- `foch cache`
 - `foch config`
 - `foch lsp`
 
