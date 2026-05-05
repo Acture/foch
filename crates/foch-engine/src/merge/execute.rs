@@ -38,7 +38,27 @@ pub struct MergeExecuteOptions {
 #[derive(Clone, Debug)]
 pub struct MergeExecutionResult {
 	pub report: MergeReport,
+	pub merge_status: MergeStatusView,
+	pub analysis_status: AnalysisStatusView,
 	pub exit_code: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MergeStatusView {
+	pub status: MergeReportStatus,
+	pub manual_conflict_count: usize,
+	pub handler_resolution_count: usize,
+	pub generated_file_count: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AnalysisStatusView {
+	pub fatal_errors: usize,
+	pub strict_findings: usize,
+	pub advisory_findings: usize,
+	pub parse_errors: usize,
+	pub unresolved_references: usize,
+	pub missing_localisation: usize,
 }
 
 pub fn run_merge_with_options(
@@ -66,9 +86,9 @@ pub fn run_merge_with_options(
 			let mut report = cached.report;
 			report.cache_source = Some("modset".to_string());
 			report.playset_fingerprint = options.playset_fingerprint.clone();
-			write_merge_report_artifact(&options.out_dir, &report)?;
-			let exit_code = merge_report_exit_code(&report);
-			return Ok(MergeExecutionResult { report, exit_code });
+			let execution = merge_execution_result(report);
+			write_merge_report_artifact(&options.out_dir, &execution.report)?;
+			return Ok(execution);
 		}
 		eprintln!(
 			"[merge] modset_cache_hits=0 modset_cache_misses=1 key={}",
@@ -91,33 +111,27 @@ pub fn run_merge_with_options(
 	report.playset_fingerprint = options.playset_fingerprint.clone();
 
 	if report.status == MergeReportStatus::Fatal {
-		write_merge_report_artifact(&options.out_dir, &report)?;
-		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &report);
-		return Ok(MergeExecutionResult {
-			report,
-			exit_code: 1,
-		});
+		let execution = merge_execution_result(report);
+		write_merge_report_artifact(&options.out_dir, &execution.report)?;
+		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
+		return Ok(execution);
 	}
 
 	if report.status == MergeReportStatus::Blocked && !options.force {
-		write_merge_report_artifact(&options.out_dir, &report)?;
-		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &report);
-		return Ok(MergeExecutionResult {
-			report,
-			exit_code: 2,
-		});
+		let execution = merge_execution_result(report);
+		write_merge_report_artifact(&options.out_dir, &execution.report)?;
+		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
+		return Ok(execution);
 	}
 
 	let validation =
 		revalidate_generated_output(&request, &options.out_dir, options.include_game_base)?;
 	report.validation = validation;
-	report.status = final_merge_status(&report);
-	write_merge_report_artifact(&options.out_dir, &report)?;
-	store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &report);
+	let execution = merge_execution_result(report);
+	write_merge_report_artifact(&options.out_dir, &execution.report)?;
+	store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
 
-	let exit_code = merge_report_exit_code(&report);
-
-	Ok(MergeExecutionResult { report, exit_code })
+	Ok(execution)
 }
 
 #[derive(Clone, Debug)]
@@ -251,12 +265,62 @@ fn short_key(key: &str) -> &str {
 	key.get(..16).unwrap_or(key)
 }
 
-fn merge_report_exit_code(report: &MergeReport) -> i32 {
-	match report.status {
-		MergeReportStatus::Ready => 0,
-		MergeReportStatus::PartialSuccess => 0,
-		MergeReportStatus::Blocked => 2,
-		MergeReportStatus::Fatal => 3,
+fn merge_execution_result(mut report: MergeReport) -> MergeExecutionResult {
+	let merge_status = compute_merge_status(&report);
+	report.status = merge_status.status;
+	let analysis_status = compute_analysis_status(&report);
+	let exit_code = merge_execution_exit_code(&merge_status, &analysis_status);
+	MergeExecutionResult {
+		report,
+		merge_status,
+		analysis_status,
+		exit_code,
+	}
+}
+
+fn compute_merge_status(report: &MergeReport) -> MergeStatusView {
+	let status = if report.status == MergeReportStatus::Fatal {
+		MergeReportStatus::Fatal
+	} else if report.manual_conflict_count > 0 {
+		match report.status {
+			MergeReportStatus::PartialSuccess => MergeReportStatus::PartialSuccess,
+			_ => MergeReportStatus::Blocked,
+		}
+	} else if !report.handler_resolutions.is_empty() {
+		MergeReportStatus::PartialSuccess
+	} else {
+		MergeReportStatus::Ready
+	};
+
+	MergeStatusView {
+		status,
+		manual_conflict_count: report.manual_conflict_count,
+		handler_resolution_count: report.handler_resolutions.len(),
+		generated_file_count: report.generated_file_count,
+	}
+}
+
+fn compute_analysis_status(report: &MergeReport) -> AnalysisStatusView {
+	AnalysisStatusView {
+		fatal_errors: report.validation.fatal_errors,
+		strict_findings: report.validation.strict_findings,
+		advisory_findings: report.validation.advisory_findings,
+		parse_errors: report.validation.parse_errors,
+		unresolved_references: report.validation.unresolved_references,
+		missing_localisation: report.validation.missing_localisation,
+	}
+}
+
+fn merge_execution_exit_code(
+	merge_status: &MergeStatusView,
+	analysis_status: &AnalysisStatusView,
+) -> i32 {
+	if merge_status.status == MergeReportStatus::Fatal || analysis_status.fatal_errors > 0 {
+		1
+	} else if merge_status.status == MergeReportStatus::Blocked {
+		2
+	} else {
+		0
 	}
 }
 
@@ -386,29 +450,6 @@ fn count_findings_for_rules(findings: &[Finding], rule_ids: &[&str]) -> usize {
 		.count()
 }
 
-fn final_merge_status(report: &MergeReport) -> MergeReportStatus {
-	// Only true I/O / fatal-class issues drop the merge to Fatal. Strict /
-	// advisory / parse / unresolved-reference / missing-localisation findings
-	// are surfaced separately; they're often present in each individual mod
-	// already and should not silently demote a successful merge to Fatal.
-	let has_fatal_errors = report.validation.fatal_errors > 0;
-
-	if has_fatal_errors {
-		MergeReportStatus::Fatal
-	} else if report.manual_conflict_count > 0 {
-		// If materialize already set PartialSuccess (--force resolved conflicts),
-		// keep it.  Otherwise block.
-		match report.status {
-			MergeReportStatus::PartialSuccess => MergeReportStatus::PartialSuccess,
-			_ => MergeReportStatus::Blocked,
-		}
-	} else if !report.handler_resolutions.is_empty() {
-		MergeReportStatus::PartialSuccess
-	} else {
-		MergeReportStatus::Ready
-	}
-}
-
 fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> Result<(), MergeError> {
 	let path = out_dir.join(MERGE_REPORT_ARTIFACT_PATH);
 	if let Some(parent) = path.parent() {
@@ -439,4 +480,127 @@ fn normalize_descriptor_path(path: &Path) -> String {
 
 fn escape_descriptor_value(value: &str) -> String {
 	value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use foch_core::model::HandlerResolutionRecord;
+
+	fn report_with(mut update: impl FnMut(&mut MergeReport)) -> MergeReport {
+		let mut report = MergeReport::default();
+		update(&mut report);
+		report
+	}
+
+	#[test]
+	fn compute_merge_status_blocked_on_manual_conflict() {
+		let report = report_with(|report| {
+			report.manual_conflict_count = 1;
+			report.generated_file_count = 7;
+		});
+
+		assert_eq!(
+			compute_merge_status(&report),
+			MergeStatusView {
+				status: MergeReportStatus::Blocked,
+				manual_conflict_count: 1,
+				handler_resolution_count: 0,
+				generated_file_count: 7,
+			}
+		);
+	}
+
+	#[test]
+	fn compute_merge_status_partial_on_handler_resolutions() {
+		let report = report_with(|report| {
+			report.handler_resolutions.push(HandlerResolutionRecord {
+				path: "common/test.txt".to_string(),
+				action: "last_writer".to_string(),
+				source: None,
+				rationale: None,
+			});
+		});
+
+		assert_eq!(
+			compute_merge_status(&report),
+			MergeStatusView {
+				status: MergeReportStatus::PartialSuccess,
+				manual_conflict_count: 0,
+				handler_resolution_count: 1,
+				generated_file_count: 0,
+			}
+		);
+	}
+
+	#[test]
+	fn compute_merge_status_ready_on_clean_merge() {
+		let report = MergeReport::default();
+
+		assert_eq!(
+			compute_merge_status(&report),
+			MergeStatusView {
+				status: MergeReportStatus::Ready,
+				manual_conflict_count: 0,
+				handler_resolution_count: 0,
+				generated_file_count: 0,
+			}
+		);
+	}
+
+	#[test]
+	fn compute_analysis_status_fatal_on_fatal_errors() {
+		let report = report_with(|report| {
+			report.validation.fatal_errors = 2;
+			report.validation.strict_findings = 3;
+			report.validation.advisory_findings = 4;
+			report.validation.parse_errors = 5;
+			report.validation.unresolved_references = 6;
+			report.validation.missing_localisation = 7;
+		});
+
+		assert_eq!(
+			compute_analysis_status(&report),
+			AnalysisStatusView {
+				fatal_errors: 2,
+				strict_findings: 3,
+				advisory_findings: 4,
+				parse_errors: 5,
+				unresolved_references: 6,
+				missing_localisation: 7,
+			}
+		);
+	}
+
+	#[test]
+	fn compute_analysis_status_clean_when_no_findings() {
+		let report = MergeReport::default();
+
+		assert_eq!(
+			compute_analysis_status(&report),
+			AnalysisStatusView::default()
+		);
+	}
+
+	#[test]
+	fn merge_status_ignores_analysis_buckets() {
+		let report = report_with(|report| {
+			report.validation.strict_findings = 5;
+		});
+
+		assert_eq!(
+			compute_merge_status(&report).status,
+			MergeReportStatus::Ready
+		);
+	}
+
+	#[test]
+	fn analysis_status_ignores_merge_state() {
+		let report = report_with(|report| {
+			report.manual_conflict_count = 3;
+			report.status = MergeReportStatus::Blocked;
+		});
+
+		assert_eq!(compute_analysis_status(&report).fatal_errors, 0);
+	}
 }

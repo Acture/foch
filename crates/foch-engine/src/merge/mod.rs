@@ -18,5 +18,8 @@ pub mod tui_conflict_handler;
 
 pub use conflict_handler::{ChainHandler, ConflictDecision, ConflictHandler, DeferHandler};
 pub use error::MergeError;
-pub use execute::{MergeExecuteOptions, MergeExecutionResult, run_merge_with_options};
+pub use execute::{
+	AnalysisStatusView, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
+	run_merge_with_options,
+};
 pub use plan::{run_merge_plan, run_merge_plan_with_options};

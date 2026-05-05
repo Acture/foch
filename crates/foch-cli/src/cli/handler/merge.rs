@@ -61,7 +61,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		eprintln!("{tip}");
 	}
 	if matches!(
-		execution.report.status,
+		execution.merge_status.status,
 		foch_core::model::MergeReportStatus::Ready
 			| foch_core::model::MergeReportStatus::PartialSuccess
 	) && let Some(paradox_dir) = paradox_data_path.as_ref()
@@ -275,11 +275,14 @@ fn read_cached_report(out_dir: &Path) -> Option<MergeReport> {
 
 fn merge_report_exit_code(report: &MergeReport) -> i32 {
 	use foch_core::model::MergeReportStatus;
+	if report.validation.fatal_errors > 0 {
+		return 1;
+	}
 	match report.status {
 		MergeReportStatus::Ready => 0,
 		MergeReportStatus::PartialSuccess => 0,
 		MergeReportStatus::Blocked => 2,
-		MergeReportStatus::Fatal => 3,
+		MergeReportStatus::Fatal => 1,
 	}
 }
 
