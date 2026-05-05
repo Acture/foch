@@ -164,6 +164,7 @@ pub(crate) fn materialize_merge_internal(
 	let mod_display_names = workspace_mod_display_names(&workspace);
 	let emit_options = load_emit_options(&request)?;
 
+	crate::cache::reset_mod_diff_cache_stats();
 	let materialize_started = Instant::now();
 	let total_paths = plan.paths.len();
 	eprintln!("[merge] materialize: start (total_paths={total_paths})");
@@ -373,14 +374,17 @@ pub(crate) fn materialize_merge_internal(
 		profile,
 		&mut report,
 	)?;
+	let mod_diff_cache_stats = crate::cache::mod_diff_cache_stats();
 	eprintln!(
-		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} noop_skipped={} cross_file_noop_skipped={}",
+		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} noop_skipped={} cross_file_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={}",
 		materialize_started.elapsed().as_millis(),
 		report.generated_file_count,
 		report.copied_file_count,
 		report.overlay_file_count,
 		report.noop_skipped_file_count,
-		report.cross_file_noop_skipped_file_count
+		report.cross_file_noop_skipped_file_count,
+		mod_diff_cache_stats.hits,
+		mod_diff_cache_stats.misses
 	);
 
 	// Namespace conflict warnings (skipped for large workspaces to avoid

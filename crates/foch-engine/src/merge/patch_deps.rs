@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use foch_core::config::DepOverride;
 use foch_core::model::HandlerResolutionRecord;
@@ -16,6 +17,7 @@ use super::dag::{
 use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use super::patch_apply::apply_patches;
 use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
+use crate::cache::{ModDiffCache, compute_mod_hash};
 use crate::workspace::ResolvedFileContributor;
 
 #[derive(Clone, Debug)]
@@ -25,6 +27,8 @@ pub(crate) struct DagPatchComputation {
 	pub merged_statements: Vec<AstStatement>,
 	pub merge_result: PatchMergeResult,
 }
+
+static MOD_ROOT_HASHES: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = OnceLock::new();
 
 /// Compute all patches for a single file using dependency-DAG topo levels.
 ///
@@ -72,13 +76,15 @@ pub(crate) fn compute_dag_patches_with_handler(
 	);
 	let vanilla = parse_vanilla_contributor(file_path, contributors)?;
 	let parsed_contributors = parse_active_mod_contributors(file_path, contributors, &file_dag)?;
-	compute_dag_patches_from_parsed(
+	let mod_hashes = contributor_mod_hashes(contributors, &file_dag);
+	compute_dag_patches_from_parsed_with_cache(
 		&file_dag,
 		vanilla.as_ref(),
 		&parsed_contributors,
 		merge_key_source,
 		policies,
 		handler,
+		Some(&mod_hashes),
 	)
 }
 
@@ -131,6 +137,81 @@ fn parse_active_mod_contributors(
 	Ok(parsed)
 }
 
+fn contributor_mod_hashes(
+	contributors: &[ResolvedFileContributor],
+	file_dag: &FileDag,
+) -> HashMap<ModId, String> {
+	let by_mod: HashMap<ModId, &ResolvedFileContributor> = contributors
+		.iter()
+		.filter(|c| !c.is_base_game && !c.is_synthetic_base)
+		.map(|c| (ModId(c.mod_id.clone()), c))
+		.collect();
+	let mut hashes = HashMap::new();
+	for mod_id in file_dag.contributors() {
+		let Some(contributor) = by_mod.get(mod_id) else {
+			continue;
+		};
+		if let Some(hash) = cached_mod_root_hash(&contributor.root_path) {
+			hashes.insert(mod_id.clone(), hash);
+		}
+	}
+	hashes
+}
+
+fn cached_mod_root_hash(root: &Path) -> Option<String> {
+	let key = root.to_path_buf();
+	let cache = MOD_ROOT_HASHES.get_or_init(|| Mutex::new(HashMap::new()));
+	if let Some(hash) = cache.lock().ok()?.get(&key).cloned() {
+		return hash;
+	}
+	let hash = compute_mod_hash(root).ok();
+	cache.lock().ok()?.insert(key, hash.clone());
+	hash
+}
+
+fn hash_ast_statements(statements: &[AstStatement]) -> Option<String> {
+	let encoded = bincode::serialize(statements).ok()?;
+	Some(blake3::hash(&encoded).to_hex()[..16].to_string())
+}
+
+fn cached_or_diff_patches(
+	cache: Option<&ModDiffCache>,
+	target_path: &str,
+	mod_hash: Option<&str>,
+	vanilla_hash: Option<&str>,
+	current_base: &ParsedScriptFile,
+	current: &ParsedScriptFile,
+	merge_key_source: MergeKeySource,
+) -> Vec<ClausewitzPatch> {
+	let (Some(cache), Some(mod_hash), Some(vanilla_hash)) = (cache, mod_hash, vanilla_hash) else {
+		return fold_renames(diff_ast(current_base, current, merge_key_source));
+	};
+	if let Some(patches) = cache.lookup(
+		target_path,
+		mod_hash,
+		vanilla_hash,
+		env!("CARGO_PKG_VERSION"),
+	) {
+		return patches;
+	}
+	let patches = fold_renames(diff_ast(current_base, current, merge_key_source));
+	if let Err(err) = cache.store(
+		target_path,
+		mod_hash,
+		vanilla_hash,
+		env!("CARGO_PKG_VERSION"),
+		&patches,
+	) {
+		tracing::warn!(
+			target: "foch::merge::patch_deps",
+			path = %target_path,
+			error = %err,
+			"failed to store mod diff cache entry"
+		);
+	}
+	patches
+}
+
 fn compute_dag_patches_from_parsed(
 	file_dag: &FileDag,
 	vanilla: Option<&ParsedScriptFile>,
@@ -139,11 +220,34 @@ fn compute_dag_patches_from_parsed(
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<DagPatchComputation, String> {
+	compute_dag_patches_from_parsed_with_cache(
+		file_dag,
+		vanilla,
+		contributors,
+		merge_key_source,
+		policies,
+		handler,
+		None,
+	)
+}
+
+fn compute_dag_patches_from_parsed_with_cache(
+	file_dag: &FileDag,
+	vanilla: Option<&ParsedScriptFile>,
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+	merge_key_source: MergeKeySource,
+	policies: &MergePolicies,
+	handler: &mut dyn ConflictHandler,
+	mod_hashes: Option<&HashMap<ModId, String>>,
+) -> Result<DagPatchComputation, String> {
 	let base_statements = final_base_statements(file_dag, vanilla);
 	let mut current_statements = base_statements.clone();
 	let mut mod_patches = Vec::new();
 	let mut merge_result = PatchMergeResult::default();
 	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
+	let diff_cache = mod_hashes
+		.filter(|hashes| !hashes.is_empty())
+		.map(|_| ModDiffCache::open_default());
 
 	// Track per-level overwrite addresses so a later level can override
 	// an earlier level's pending conflict at the same leaf address.
@@ -160,6 +264,7 @@ fn compute_dag_patches_from_parsed(
 			template_for(file_dag, vanilla, contributors),
 			current_statements.clone(),
 		);
+		let vanilla_hash = hash_ast_statements(&current_base.ast.statements);
 		let mut level_patches = Vec::new();
 		let mut addresses_in_level: HashSet<(Vec<String>, String)> = HashSet::new();
 		for mod_id in level {
@@ -170,7 +275,15 @@ fn compute_dag_patches_from_parsed(
 					file_dag.file_path()
 				)
 			})?;
-			let patches = fold_renames(diff_ast(&current_base, current, merge_key_source));
+			let patches = cached_or_diff_patches(
+				diff_cache.as_ref(),
+				file_dag.file_path(),
+				mod_hashes.and_then(|hashes| hashes.get(&mod_id).map(String::as_str)),
+				vanilla_hash.as_deref(),
+				&current_base,
+				current,
+				merge_key_source,
+			);
 			for patch in &patches {
 				addresses_in_level.extend(overwrite_addresses(patch));
 			}
