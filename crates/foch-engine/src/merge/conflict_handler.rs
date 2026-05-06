@@ -800,7 +800,7 @@ fn path_to_toml_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
 	use std::cell::Cell;
-	use std::collections::HashMap;
+	use std::collections::{BTreeMap, HashMap};
 	use std::io::Cursor;
 	use std::path::PathBuf;
 	use std::rc::Rc;
@@ -946,7 +946,7 @@ mod tests {
 	fn lookup_handler_returns_pick_mod_when_resolution_map_has_entry() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
-		let mut by_conflict_id = HashMap::new();
+		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
 			conflict_id,
 			ResolutionDecision::PreferMod("mod-a".to_string()),
@@ -976,7 +976,7 @@ mod tests {
 	fn lookup_handler_chained_with_defer_uses_resolution_then_defers() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
-		let mut by_conflict_id = HashMap::new();
+		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
 			conflict_id,
 			ResolutionDecision::PreferMod("mod-a".to_string()),
@@ -1188,7 +1188,7 @@ mod tests {
 	fn merge_command_with_interactive_handler_chains_handlers_correctly() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
-		let mut by_conflict_id = HashMap::new();
+		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
 			conflict_id,
 			ResolutionDecision::PreferMod("mod_a".to_string()),

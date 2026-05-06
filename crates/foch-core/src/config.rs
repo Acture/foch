@@ -1,7 +1,7 @@
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -112,9 +112,15 @@ pub struct ResolutionEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct ResolutionMap {
-	pub by_file: HashMap<PathBuf, ResolutionDecision>,
-	pub by_conflict_id: HashMap<String, ResolutionDecision>,
-	pub mod_priority_boost: HashMap<String, i32>,
+	/// Indexed by file path. BTreeMap (not HashMap) for deterministic iteration
+	/// order across runs — important for foch.toml dumps and diagnostic output.
+	pub by_file: BTreeMap<PathBuf, ResolutionDecision>,
+	/// Indexed by conflict ID. BTreeMap (not HashMap) for deterministic iteration
+	/// order across runs — important for foch.toml dumps and diagnostic output.
+	pub by_conflict_id: BTreeMap<String, ResolutionDecision>,
+	/// Indexed by mod ID. BTreeMap (not HashMap) for deterministic iteration
+	/// order across runs — important for foch.toml dumps and diagnostic output.
+	pub mod_priority_boost: BTreeMap<String, i32>,
 	pub pattern_rules: Vec<PatternRule>,
 }
 
@@ -736,6 +742,101 @@ priority_boost = 100
 			Some(&ResolutionDecision::PreferMod("9876543210".to_owned()))
 		);
 		assert_eq!(map.mod_priority_boost.get("1234567890"), Some(&100));
+	}
+
+	#[test]
+	fn lookup_iteration_is_deterministic_across_processes() {
+		let entries = FochConfig::from_toml_str(
+			r#"
+[[resolutions]]
+file = "events/zulu.txt"
+prefer_mod = "zulu-mod"
+
+[[resolutions]]
+conflict_id = "ff00aa11"
+prefer_mod = "late-conflict-mod"
+
+[[resolutions]]
+mod = "7777777777"
+priority_boost = 70
+
+[[resolutions]]
+file = "events/alpha.txt"
+use_file = "manual/alpha.txt"
+
+[[resolutions]]
+conflict_id = "0011aaff"
+use_file = "manual/conflict.txt"
+
+[[resolutions]]
+mod = "1111111111"
+priority_boost = 10
+"#,
+		)
+		.expect("parse config")
+		.resolutions;
+		let first = ResolutionMap::from_entries(&entries).expect("build first map");
+		let second = ResolutionMap::from_entries(&entries).expect("build second map");
+
+		let collect_by_file = |map: &ResolutionMap| {
+			map.by_file
+				.iter()
+				.map(|(path, decision)| (path.clone(), decision.clone()))
+				.collect::<Vec<_>>()
+		};
+		let by_file = collect_by_file(&first);
+		assert_eq!(by_file, collect_by_file(&second));
+		assert_eq!(
+			by_file,
+			vec![
+				(
+					PathBuf::from("events/alpha.txt"),
+					ResolutionDecision::UseFile(PathBuf::from("manual/alpha.txt")),
+				),
+				(
+					PathBuf::from("events/zulu.txt"),
+					ResolutionDecision::PreferMod("zulu-mod".to_string()),
+				),
+			]
+		);
+
+		let collect_by_conflict_id = |map: &ResolutionMap| {
+			map.by_conflict_id
+				.iter()
+				.map(|(conflict_id, decision)| (conflict_id.clone(), decision.clone()))
+				.collect::<Vec<_>>()
+		};
+		let by_conflict_id = collect_by_conflict_id(&first);
+		assert_eq!(by_conflict_id, collect_by_conflict_id(&second));
+		assert_eq!(
+			by_conflict_id,
+			vec![
+				(
+					"0011aaff".to_string(),
+					ResolutionDecision::UseFile(PathBuf::from("manual/conflict.txt")),
+				),
+				(
+					"ff00aa11".to_string(),
+					ResolutionDecision::PreferMod("late-conflict-mod".to_string()),
+				),
+			]
+		);
+
+		let collect_mod_priority_boost = |map: &ResolutionMap| {
+			map.mod_priority_boost
+				.iter()
+				.map(|(mod_id, boost)| (mod_id.clone(), *boost))
+				.collect::<Vec<_>>()
+		};
+		let mod_priority_boost = collect_mod_priority_boost(&first);
+		assert_eq!(mod_priority_boost, collect_mod_priority_boost(&second));
+		assert_eq!(
+			mod_priority_boost,
+			vec![
+				("1111111111".to_string(), 10),
+				("7777777777".to_string(), 70),
+			]
+		);
 	}
 
 	#[test]
