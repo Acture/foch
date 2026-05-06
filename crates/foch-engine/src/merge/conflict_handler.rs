@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use foch_core::config::{
 	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
@@ -13,56 +12,6 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::merge::dag::ModDag;
 use crate::merge::patch_merge::{PatchAddress, PatchConflict};
-
-use super::tui_conflict_handler::InteractiveTuiHandler;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InteractiveMode {
-	Cli,
-	Tui,
-	Auto,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct InteractiveSettings {
-	mode: InteractiveMode,
-	config_path: Option<PathBuf>,
-}
-
-impl Default for InteractiveSettings {
-	fn default() -> Self {
-		Self {
-			mode: InteractiveMode::Auto,
-			config_path: None,
-		}
-	}
-}
-
-static INTERACTIVE_SETTINGS: OnceLock<Mutex<InteractiveSettings>> = OnceLock::new();
-
-pub fn set_interactive_config_path(path: Option<PathBuf>) {
-	set_interactive_mode_and_config(InteractiveMode::Auto, path);
-}
-
-pub fn set_interactive_mode_and_config(mode: InteractiveMode, config_path: Option<PathBuf>) {
-	let mut slot = INTERACTIVE_SETTINGS
-		.get_or_init(|| Mutex::new(InteractiveSettings::default()))
-		.lock()
-		.expect("interactive settings lock poisoned");
-	*slot = InteractiveSettings { mode, config_path };
-}
-
-fn interactive_settings() -> InteractiveSettings {
-	INTERACTIVE_SETTINGS
-		.get_or_init(|| Mutex::new(InteractiveSettings::default()))
-		.lock()
-		.expect("interactive settings lock poisoned")
-		.clone()
-}
-
-fn interactive_tui_available() -> bool {
-	io::stdin().is_terminal() && io::stdout().is_terminal()
-}
 
 pub trait ConflictHandler {
 	fn on_conflict(
@@ -75,6 +24,14 @@ pub trait ConflictHandler {
 	fn set_conflict_progress(&mut self, _current: usize, _total: usize) {}
 
 	fn set_deferred_so_far(&mut self, _count: usize) {}
+
+	fn set_conflict_context(
+		&mut self,
+		_current_file: &Path,
+		_mod_displayname_lookup: &HashMap<String, String>,
+		_vanilla_snippet: Option<String>,
+	) {
+	}
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -428,8 +385,6 @@ impl ConfigWriter for FilesystemConfigWriter {
 }
 
 pub struct InteractiveCliHandler {
-	pub current_file: PathBuf,
-	pub config_writer: Box<dyn ConfigWriter>,
 	input: Box<dyn BufRead>,
 	stderr: Box<dyn Write>,
 	tty_available: Option<bool>,
@@ -439,10 +394,8 @@ pub struct InteractiveCliHandler {
 }
 
 impl InteractiveCliHandler {
-	pub fn new(current_file: PathBuf, config_writer: Box<dyn ConfigWriter>) -> Self {
+	pub fn new() -> Self {
 		Self {
-			current_file,
-			config_writer,
 			input: Box::new(BufReader::new(io::stdin())),
 			stderr: Box::new(io::stderr()),
 			tty_available: None,
@@ -453,16 +406,8 @@ impl InteractiveCliHandler {
 	}
 
 	#[cfg(test)]
-	fn with_io(
-		current_file: PathBuf,
-		config_writer: Box<dyn ConfigWriter>,
-		input: Box<dyn BufRead>,
-		stderr: Box<dyn Write>,
-		tty_available: bool,
-	) -> Self {
+	fn with_io(input: Box<dyn BufRead>, stderr: Box<dyn Write>, tty_available: bool) -> Self {
 		Self {
-			current_file,
-			config_writer,
 			input,
 			stderr,
 			tty_available: Some(tty_available),
@@ -490,7 +435,7 @@ impl InteractiveCliHandler {
 			"[foch] unresolved structural merge conflict (conflict {}/{}) ({} deferred)",
 			self.current_conflict_index, self.total_conflicts, self.deferred_so_far
 		);
-		let _ = writeln!(self.stderr, "  file: {}", self.current_file.display());
+		let _ = writeln!(self.stderr, "  file: {path}");
 		let _ = writeln!(self.stderr, "  path: {path}");
 		let _ = writeln!(self.stderr, "  address: {address_path}/{}", address.key);
 		let _ = writeln!(self.stderr, "  conflict_id: {conflict_id}");
@@ -562,26 +507,11 @@ impl InteractiveCliHandler {
 			Some(PathBuf::from(value))
 		}
 	}
+}
 
-	fn persist_decision(
-		&mut self,
-		address: &PatchAddress,
-		decision: ConflictDecision,
-	) -> ConflictDecision {
-		let Some(entry) = resolution_entry_for_decision(&self.current_file, address, &decision)
-		else {
-			return decision;
-		};
-		match self.config_writer.append_resolution(entry) {
-			Ok(()) => decision,
-			Err(err) => {
-				let _ = writeln!(
-					self.stderr,
-					"[foch] failed to persist interactive resolution: {err}"
-				);
-				ConflictDecision::Abort
-			}
-		}
+impl Default for InteractiveCliHandler {
+	fn default() -> Self {
+		Self::new()
 	}
 }
 
@@ -601,7 +531,7 @@ impl ConflictHandler for InteractiveCliHandler {
 		}
 
 		let address_path = address.path.join("/");
-		let conflict_id = compute_conflict_id(&self.current_file, &address_path, &address.key);
+		let conflict_id = compute_conflict_id(Path::new(path), &address_path, &address.key);
 		self.write_conflict_summary(path, address, conflict, &conflict_id);
 
 		for attempt in 1..=3 {
@@ -613,12 +543,10 @@ impl ConflictHandler for InteractiveCliHandler {
 			match choice.as_str() {
 				"d" | "defer" => return ConflictDecision::Defer,
 				"q" | "quit" | "abort" => return ConflictDecision::Abort,
-				"k" | "keep" => {
-					return self.persist_decision(address, ConflictDecision::KeepExisting);
-				}
+				"k" | "keep" => return ConflictDecision::KeepExisting,
 				"s" | "file" | "use-file" => {
 					if let Some(path) = self.prompt_for_external_path() {
-						return self.persist_decision(address, ConflictDecision::UseFile(path));
+						return ConflictDecision::UseFile(path);
 					}
 				}
 				_ => {
@@ -627,10 +555,7 @@ impl ConflictHandler for InteractiveCliHandler {
 							.checked_sub(1)
 							.and_then(|index| conflict.patches.get(index))
 					{
-						return self.persist_decision(
-							address,
-							ConflictDecision::PickMod(candidate.mod_id.clone()),
-						);
+						return ConflictDecision::PickMod(candidate.mod_id.clone());
 					}
 				}
 			}
@@ -683,6 +608,21 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 	fn set_deferred_so_far(&mut self, count: usize) {
 		self.first.set_deferred_so_far(count);
 		self.second.set_deferred_so_far(count);
+	}
+
+	fn set_conflict_context(
+		&mut self,
+		current_file: &Path,
+		mod_displayname_lookup: &HashMap<String, String>,
+		vanilla_snippet: Option<String>,
+	) {
+		self.first.set_conflict_context(
+			current_file,
+			mod_displayname_lookup,
+			vanilla_snippet.clone(),
+		);
+		self.second
+			.set_conflict_context(current_file, mod_displayname_lookup, vanilla_snippet);
 	}
 }
 
@@ -753,17 +693,6 @@ pub struct PromptSurvivorsResult {
 	pub aborted: bool,
 }
 
-/// Returns true when interactive prompting is configured and feasible.
-pub fn interactive_prompt_enabled() -> bool {
-	let settings = interactive_settings();
-	settings.config_path.is_some()
-		&& match settings.mode {
-			InteractiveMode::Auto => interactive_tui_available(),
-			InteractiveMode::Tui => interactive_tui_available(),
-			InteractiveMode::Cli => io::stdin().is_terminal() && io::stderr().is_terminal(),
-		}
-}
-
 /// Prompts the user interactively for each surviving conflict (the post-pass
 /// path: only invoked once the merge engine has finished and downstream
 /// overrides have already pruned transient conflicts). Persists every Picked
@@ -777,49 +706,30 @@ pub fn interactive_prompt_enabled() -> bool {
 pub fn prompt_survivors_and_persist(
 	target_path: &Path,
 	survivors: &[(PatchAddress, PatchConflict)],
+	handler: &mut dyn ConflictHandler,
+	config_path: &Path,
 	mod_displayname_lookup: &HashMap<String, String>,
 	vanilla_lookup: &dyn Fn(&PatchAddress) -> Option<String>,
 ) -> PromptSurvivorsResult {
-	let settings = interactive_settings();
-	let Some(config_path) = settings.config_path.clone() else {
-		return PromptSurvivorsResult::default();
-	};
-	let mode = match settings.mode {
-		InteractiveMode::Auto if interactive_tui_available() => InteractiveMode::Tui,
-		InteractiveMode::Auto => InteractiveMode::Cli,
-		other => other,
-	};
-
 	let total = survivors.len();
 	let mut deferred_so_far = 0usize;
 	let mut result = PromptSurvivorsResult::default();
+	let mut config_writer = FilesystemConfigWriter::new(config_path.to_path_buf());
 	for (idx, (address, conflict)) in survivors.iter().enumerate() {
 		let current = idx + 1;
 		let conflict_id = compute_conflict_id(target_path, &address.path.join("/"), &address.key);
 		let vanilla_snippet = vanilla_lookup(address);
-		let decision = match mode {
-			InteractiveMode::Tui => {
-				let mut handler = InteractiveTuiHandler::new(
-					target_path.to_path_buf(),
-					Box::new(FilesystemConfigWriter::new(config_path.clone())),
-					mod_displayname_lookup.clone(),
-					current,
-					total,
-					deferred_so_far,
-					vanilla_snippet,
-				);
-				handler.on_conflict("", address, conflict)
-			}
-			InteractiveMode::Cli | InteractiveMode::Auto => {
-				let mut handler = InteractiveCliHandler::new(
-					target_path.to_path_buf(),
-					Box::new(FilesystemConfigWriter::new(config_path.clone())),
-				);
-				handler.set_conflict_progress(current, total);
-				handler.set_deferred_so_far(deferred_so_far);
-				handler.on_conflict("", address, conflict)
-			}
-		};
+		handler.set_conflict_context(target_path, mod_displayname_lookup, vanilla_snippet);
+		handler.set_conflict_progress(current, total);
+		handler.set_deferred_so_far(deferred_so_far);
+		let decision = handler.on_conflict(&target_path.to_string_lossy(), address, conflict);
+		if let Some(entry) = resolution_entry_for_decision(target_path, address, &decision)
+			&& let Err(err) = config_writer.append_resolution(entry)
+		{
+			eprintln!("[foch] failed to persist interactive resolution: {err}");
+			result.aborted = true;
+			break;
+		}
 		match decision {
 			ConflictDecision::PickMod(mod_id)
 			| ConflictDecision::PickModWithRecord { mod_id, .. } => {
@@ -889,7 +799,7 @@ fn path_to_toml_string(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::cell::RefCell;
+	use std::cell::Cell;
 	use std::collections::HashMap;
 	use std::io::Cursor;
 	use std::path::PathBuf;
@@ -1007,44 +917,29 @@ mod tests {
 		}
 	}
 
-	#[derive(Clone, Default)]
-	struct RecordingWriter {
-		entries: Rc<RefCell<Vec<ResolutionEntry>>>,
-	}
-
-	impl RecordingWriter {
-		fn new() -> (Self, Rc<RefCell<Vec<ResolutionEntry>>>) {
-			let entries = Rc::new(RefCell::new(Vec::new()));
-			(
-				Self {
-					entries: Rc::clone(&entries),
-				},
-				entries,
-			)
-		}
-	}
-
-	impl ConfigWriter for RecordingWriter {
-		fn append_resolution(&mut self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>> {
-			self.entries.borrow_mut().push(entry);
-			Ok(())
-		}
-	}
-
-	fn handler_with_input(
-		current_file: PathBuf,
-		input: &str,
-		tty_available: bool,
-	) -> (InteractiveCliHandler, Rc<RefCell<Vec<ResolutionEntry>>>) {
-		let (writer, entries) = RecordingWriter::new();
-		let handler = InteractiveCliHandler::with_io(
-			current_file,
-			Box::new(writer),
+	fn handler_with_input(input: &str, tty_available: bool) -> InteractiveCliHandler {
+		InteractiveCliHandler::with_io(
 			Box::new(Cursor::new(input.as_bytes().to_vec())),
 			Box::new(io::sink()),
 			tty_available,
-		);
-		(handler, entries)
+		)
+	}
+
+	#[derive(Clone, Default)]
+	struct CountingHandler {
+		calls: Rc<Cell<usize>>,
+	}
+
+	impl ConflictHandler for CountingHandler {
+		fn on_conflict(
+			&mut self,
+			_: &str,
+			_: &PatchAddress,
+			_: &PatchConflict,
+		) -> ConflictDecision {
+			self.calls.set(self.calls.get() + 1);
+			ConflictDecision::PickMod("mod_b".to_string())
+		}
 	}
 
 	#[test]
@@ -1198,92 +1093,94 @@ mod tests {
 
 	#[test]
 	fn interactive_handler_returns_defer_on_non_tty() {
-		let (mut handler, entries) =
-			handler_with_input(PathBuf::from("events/PirateEvents.txt"), "1\n", false);
+		let mut handler = handler_with_input("1\n", false);
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		);
 
 		assert_eq!(decision, ConflictDecision::Defer);
-		assert!(entries.borrow().is_empty());
 	}
 
 	#[test]
 	fn interactive_handler_returns_pick_mod_on_user_choice() {
-		let (mut handler, _) =
-			handler_with_input(PathBuf::from("events/PirateEvents.txt"), "2\n", true);
+		let mut handler = handler_with_input("2\n", true);
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		);
 
 		assert_eq!(decision, ConflictDecision::PickMod("mod_b".to_string()));
 	}
 
 	#[test]
-	fn interactive_handler_writes_resolution_to_config_writer() {
+	fn prompt_survivors_persists_resolution_to_config_writer() {
+		let root = project_test_dir("prompt_survivors_persists_resolution_to_config_writer");
+		let config_path = root.join("foch.toml");
 		let current_file = PathBuf::from("events/PirateEvents.txt");
-		let (mut handler, entries) = handler_with_input(current_file.clone(), "1\n", true);
+		let mut handler = handler_with_input("1\n", true);
+		let survivors = vec![(address(), conflict_with_patches())];
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
-
-		assert_eq!(decision, ConflictDecision::PickMod("mod_a".to_string()));
-		let entries = entries.borrow();
-		assert_eq!(entries.len(), 1);
-		assert_eq!(
-			entries[0].conflict_id,
-			Some(compute_conflict_id(&current_file, "root/event", "id"))
+		let result = prompt_survivors_and_persist(
+			&current_file,
+			&survivors,
+			&mut handler,
+			&config_path,
+			&HashMap::new(),
+			&|_| None,
 		);
-		assert_eq!(entries[0].prefer_mod.as_deref(), Some("mod_a"));
+
+		assert!(!result.aborted);
+		assert_eq!(result.outcomes.len(), 1);
+		let content = fs::read_to_string(&config_path).expect("read config");
+		assert!(content.contains("[[resolutions]]"));
+		assert!(content.contains("prefer_mod = \"mod_a\""));
+		assert!(content.contains(&compute_conflict_id(&current_file, "root/event", "id")));
 	}
 
 	#[test]
 	fn interactive_handler_returns_keep_existing_on_user_choice_k() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
-		let (mut handler, entries) = handler_with_input(current_file.clone(), "k\n", true);
+		let mut handler = handler_with_input("k\n", true);
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		);
 
 		assert_eq!(decision, ConflictDecision::KeepExisting);
-		let entries = entries.borrow();
-		assert_eq!(entries.len(), 1);
-		assert_eq!(entries[0].file.as_ref(), Some(&current_file));
-		assert_eq!(entries[0].keep_existing, Some(true));
-		assert_eq!(entries[0].conflict_id, None);
 	}
 
 	#[test]
 	fn interactive_handler_invalid_input_eventually_defers() {
-		let (mut handler, entries) =
-			handler_with_input(PathBuf::from("events/PirateEvents.txt"), "x\ny\n0\n", true);
+		let mut handler = handler_with_input("x\ny\n0\n", true);
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		);
 
 		assert_eq!(decision, ConflictDecision::Defer);
-		assert!(entries.borrow().is_empty());
 	}
 
 	#[test]
-	fn interactive_handler_writes_use_file_resolution_to_config_writer() {
-		let current_file = PathBuf::from("events/PirateEvents.txt");
-		let (mut handler, entries) = handler_with_input(
-			current_file.clone(),
-			"s\nresolutions/PirateEvents.txt\n",
-			true,
-		);
+	fn interactive_handler_returns_use_file_resolution() {
+		let mut handler = handler_with_input("s\nresolutions/PirateEvents.txt\n", true);
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		);
 
 		assert_eq!(
 			decision,
 			ConflictDecision::UseFile(PathBuf::from("resolutions/PirateEvents.txt"))
-		);
-		let entries = entries.borrow();
-		assert_eq!(entries.len(), 1);
-		assert_eq!(
-			entries[0].conflict_id,
-			Some(compute_conflict_id(&current_file, "root/event", "id"))
-		);
-		assert_eq!(
-			entries[0].use_file.as_ref(),
-			Some(&PathBuf::from("resolutions/PirateEvents.txt"))
 		);
 	}
 
@@ -1300,7 +1197,10 @@ mod tests {
 			by_conflict_id,
 			..ResolutionMap::default()
 		};
-		let (interactive, entries) = handler_with_input(current_file.clone(), "2\n", true);
+		let calls = Rc::new(Cell::new(0));
+		let interactive = CountingHandler {
+			calls: Rc::clone(&calls),
+		};
 		let mut handler = ChainHandler {
 			first: LookupHandler::new(&map, current_file),
 			second: ChainHandler {
@@ -1312,9 +1212,10 @@ mod tests {
 		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
 
 		assert_eq!(decision, ConflictDecision::PickMod("mod_a".to_string()));
-		assert!(
-			entries.borrow().is_empty(),
-			"lookup hit should not invoke interactive writer"
+		assert_eq!(
+			calls.get(),
+			0,
+			"lookup hit should not invoke interactive handler"
 		);
 	}
 

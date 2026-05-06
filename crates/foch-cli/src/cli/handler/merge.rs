@@ -5,8 +5,10 @@ use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::playlist::Playlist;
 use foch_core::fingerprint::compute_playset_fingerprint;
 use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
-use foch_engine::merge::conflict_handler::{InteractiveMode, set_interactive_mode_and_config};
+use foch_engine::merge::conflict_handler::{ConflictHandler, InteractiveCliHandler};
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
+
+use crate::tui::conflict_handler::InteractiveTuiHandler;
 use foch_language::analyzer::report::render_merge_report_text;
 use std::fs;
 use std::io::{BufRead, IsTerminal, Write};
@@ -25,25 +27,8 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		return Ok(exit);
 	}
 	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
-	let interactive_enabled = !merge_args.non_interactive && std::io::stdin().is_terminal();
-	let interactive_mode = if interactive_enabled && !merge_args.cli_prompt {
-		InteractiveMode::Tui
-	} else {
-		InteractiveMode::Cli
-	};
-	let interactive_config_path = if interactive_enabled {
-		let prompt_kind = match interactive_mode {
-			InteractiveMode::Tui => "ratatui UI",
-			InteractiveMode::Cli | InteractiveMode::Auto => "simple prompt",
-		};
-		eprintln!(
-			"[foch] interactive mode: {prompt_kind} will appear for unresolved conflicts. Press q to abort, d to defer."
-		);
-		Some(resolve_resolution_config_path(merge_args, &playset_path))
-	} else {
-		None
-	};
-	set_interactive_mode_and_config(interactive_mode, interactive_config_path);
+	let (interactive_conflict_handler, interactive_resolution_config_path) =
+		build_interactive_conflict_handler(merge_args, &playset_path);
 	let execution = run_merge_with_options(
 		request,
 		MergeExecuteOptions {
@@ -53,6 +38,8 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			ignore_replace_path: merge_args.ignore_replace_path,
 			dep_overrides,
 			resolution_config_path: merge_args.config.clone(),
+			interactive_conflict_handler,
+			interactive_resolution_config_path,
 			playset_fingerprint: fingerprint,
 		},
 	)?;
@@ -70,6 +57,37 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+fn build_interactive_conflict_handler(
+	merge_args: &MergeArgs,
+	playset_path: &Path,
+) -> (Option<Box<dyn ConflictHandler>>, Option<PathBuf>) {
+	if merge_args.non_interactive {
+		return (None, None);
+	}
+
+	if merge_args.cli_prompt {
+		eprintln!(
+			"[foch] interactive mode: simple prompt will appear for unresolved conflicts. Press q to abort, d to defer."
+		);
+		return (
+			Some(Box::new(InteractiveCliHandler::new())),
+			Some(resolve_resolution_config_path(merge_args, playset_path)),
+		);
+	}
+
+	if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+		eprintln!(
+			"[foch] interactive mode: ratatui UI will appear for unresolved conflicts. Press q to abort, d to defer."
+		);
+		return (
+			Some(Box::new(InteractiveTuiHandler::new())),
+			Some(resolve_resolution_config_path(merge_args, playset_path)),
+		);
+	}
+
+	(None, None)
 }
 
 fn render_unresolved_conflict_tip(report: &MergeReport, out_dir: &Path) -> Option<String> {

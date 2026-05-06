@@ -90,6 +90,8 @@ fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutio
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_config_path: None,
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 		},
 	)
@@ -649,6 +651,8 @@ religion = sentinel
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_config_path: Some(config_path),
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 		},
 	)

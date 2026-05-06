@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use super::conflict_handler::{
-	DeferHandler, DepImpliesResolutionHandler, PromptOutcomeKind, interactive_prompt_enabled,
+	ConflictHandler, DeferHandler, DepImpliesResolutionHandler, PromptOutcomeKind,
 	prompt_survivors_and_persist,
 };
 use super::dag::{
@@ -48,13 +48,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-#[derive(Clone, Debug)]
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	pub resolution_map: foch_core::config::ResolutionMap,
+	pub interactive_conflict_handler: Option<Box<dyn ConflictHandler>>,
+	pub interactive_resolution_config_path: Option<PathBuf>,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -65,6 +66,8 @@ impl Default for MergeMaterializeOptions {
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_map: foch_core::config::ResolutionMap::default(),
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
 		}
 	}
 }
@@ -72,7 +75,7 @@ impl Default for MergeMaterializeOptions {
 pub(crate) fn materialize_merge_internal(
 	request: CheckRequest,
 	out_dir: &Path,
-	options: MergeMaterializeOptions,
+	mut options: MergeMaterializeOptions,
 ) -> Result<MergeReport, MergeError> {
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
@@ -247,22 +250,33 @@ pub(crate) fn materialize_merge_internal(
 							let dep_overrides = dep_overrides.clone();
 							let dep_misuse = report.dep_misuse.clone();
 							let resolution_map = options.resolution_map.clone();
-							let result = std::panic::catch_unwind(|| {
-								let context = PatchBasedMergeContext {
-									descriptor: &desc,
-									merge_key_source,
-									mod_dag: &dag,
-									ignore_replace_path: &ignore,
-									dep_overrides: &dep_overrides,
-									dep_misuse_findings: &dep_misuse,
-									resolution_map: &resolution_map,
-									mod_versions: &mod_versions,
-									mod_display_names: &mod_display_names,
-									cache_game_version: &cache_game_version,
-									emit_options: &emit_options,
-								};
-								patch_based_structural_merge(&target, &contribs, context)
-							});
+							let interactive_config_path =
+								options.interactive_resolution_config_path.clone();
+							let interactive_handler =
+								options.interactive_conflict_handler.as_deref_mut();
+							let result =
+								std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+									let context = PatchBasedMergeContext {
+										descriptor: &desc,
+										merge_key_source,
+										mod_dag: &dag,
+										ignore_replace_path: &ignore,
+										dep_overrides: &dep_overrides,
+										dep_misuse_findings: &dep_misuse,
+										resolution_map: &resolution_map,
+										mod_versions: &mod_versions,
+										mod_display_names: &mod_display_names,
+										cache_game_version: &cache_game_version,
+										emit_options: &emit_options,
+									};
+									patch_based_structural_merge(
+										&target,
+										&contribs,
+										context,
+										interactive_handler,
+										interactive_config_path.as_deref(),
+									)
+								}));
 							match result {
 								Ok(Ok(mut merge_output)) => {
 									report
@@ -1514,6 +1528,8 @@ fn patch_based_structural_merge(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: PatchBasedMergeContext<'_>,
+	mut interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
+	interactive_config_path: Option<&Path>,
 ) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
 	// Hold an owned, mutable resolution map so that any post-pass interactive
 	// resolutions can be folded back in before we re-run the merge engine
@@ -1525,7 +1541,10 @@ fn patch_based_structural_merge(
 		run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
 	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
 
-	if !dag_patches.merge_result.conflicts.is_empty() && interactive_prompt_enabled() {
+	if !dag_patches.merge_result.conflicts.is_empty()
+		&& let (Some(handler), Some(config_path)) =
+			(interactive_handler.as_mut(), interactive_config_path)
+	{
 		let survivors: Vec<(PatchAddress, PatchConflict)> = dag_patches
 			.merge_result
 			.conflicts
@@ -1552,6 +1571,8 @@ fn patch_based_structural_merge(
 			let prompt = prompt_survivors_and_persist(
 				Path::new(target_path),
 				&survivors,
+				&mut **handler,
+				config_path,
 				context.mod_display_names,
 				&vanilla_lookup,
 			);
@@ -2427,6 +2448,8 @@ mod tests {
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_map: foch_core::config::ResolutionMap::default(),
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
 		}
 	}
 

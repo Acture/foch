@@ -1,3 +1,4 @@
+use super::conflict_handler::ConflictHandler;
 use super::error::MergeError;
 use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
 use crate::base_data::{detect_game_version, resolve_game_root, resolve_game_root_and_version};
@@ -19,7 +20,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Clone, Debug)]
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
@@ -28,6 +28,10 @@ pub struct MergeExecuteOptions {
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	/// Optional explicit foch.toml path supplied by the CLI.
 	pub resolution_config_path: Option<PathBuf>,
+	/// Optional frontend-provided handler for post-pass conflict prompts.
+	pub interactive_conflict_handler: Option<Box<dyn ConflictHandler>>,
+	/// foch.toml path where interactive prompt decisions should be persisted.
+	pub interactive_resolution_config_path: Option<PathBuf>,
 	/// Caller-computed playset fingerprint to stamp on the merge report so
 	/// subsequent runs can detect "same mod set, reuse the cached output".
 	/// `None` skips the stamp (e.g., merge invoked from a context where
@@ -97,6 +101,8 @@ pub fn run_merge_with_options(
 	}
 
 	let resolution_map = load_resolution_map(&request, options.resolution_config_path.as_deref())?;
+	let interactive_conflict_handler = options.interactive_conflict_handler;
+	let interactive_resolution_config_path = options.interactive_resolution_config_path;
 	let mut report = materialize_merge_internal(
 		request.clone(),
 		&options.out_dir,
@@ -106,6 +112,8 @@ pub fn run_merge_with_options(
 			ignore_replace_path: options.ignore_replace_path,
 			dep_overrides: options.dep_overrides.clone(),
 			resolution_map,
+			interactive_conflict_handler,
+			interactive_resolution_config_path,
 		},
 	)?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();

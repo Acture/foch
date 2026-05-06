@@ -1468,6 +1468,76 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 }
 
 #[test]
+fn merge_command_non_interactive_does_not_enable_tui_prompting() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+			"--non-interactive",
+		],
+		tmp.path(),
+	);
+
+	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(!stderr.contains("interactive mode:"), "stderr: {stderr}");
+	assert!(!stderr.contains("interactive TUI"), "stderr: {stderr}");
+}
+
+#[test]
+fn merge_command_cli_prompt_selects_simple_prompt_handler() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+			"--cli-prompt",
+		],
+		tmp.path(),
+	);
+
+	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(
+		stderr.contains("interactive mode: simple prompt"),
+		"stderr: {stderr}"
+	);
+	assert!(
+		stderr.contains("stdin/stderr is not a TTY"),
+		"stderr: {stderr}"
+	);
+	assert!(!stderr.contains("ratatui UI"), "stderr: {stderr}");
+	assert!(!stderr.contains("interactive TUI"), "stderr: {stderr}");
+}
+
+#[test]
 fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");

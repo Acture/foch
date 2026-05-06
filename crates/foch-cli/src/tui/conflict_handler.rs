@@ -19,12 +19,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 
-use super::conflict_handler::{
-	ConfigWriter, ConflictDecision, ConflictHandler, resolution_entry_for_decision,
-};
-use super::emit::{EmitOptions, emit_clausewitz_statements_with_options};
-use super::patch::ClausewitzPatch;
-use super::patch_merge::{PatchAddress, PatchConflict};
+use foch_engine::merge::conflict_handler::{ConflictDecision, ConflictHandler};
+use foch_engine::merge::emit::{EmitOptions, emit_clausewitz_statements_with_options};
+use foch_engine::merge::patch::ClausewitzPatch;
+use foch_engine::merge::patch_merge::{PatchAddress, PatchConflict};
 
 const ACTION_COUNT: usize = 4;
 const MAX_SUMMARY_CHARS: usize = 80;
@@ -290,8 +288,7 @@ impl Widget for &ConflictResolver {
 }
 
 pub struct InteractiveTuiHandler {
-	pub current_file: PathBuf,
-	pub config_writer: Box<dyn ConfigWriter>,
+	current_file: PathBuf,
 	mod_displayname_lookup: HashMap<String, String>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
@@ -300,41 +297,14 @@ pub struct InteractiveTuiHandler {
 }
 
 impl InteractiveTuiHandler {
-	pub fn new(
-		current_file: PathBuf,
-		config_writer: Box<dyn ConfigWriter>,
-		mod_displayname_lookup: HashMap<String, String>,
-		current_conflict_index: usize,
-		total_conflicts: usize,
-		deferred_so_far: usize,
-		vanilla_snippet: Option<String>,
-	) -> Self {
+	pub fn new() -> Self {
 		Self {
-			current_file,
-			config_writer,
-			mod_displayname_lookup,
-			current_conflict_index,
-			total_conflicts,
-			deferred_so_far,
-			vanilla_snippet,
-		}
-	}
-
-	fn persist_decision(
-		&mut self,
-		address: &PatchAddress,
-		decision: ConflictDecision,
-	) -> ConflictDecision {
-		let Some(entry) = resolution_entry_for_decision(&self.current_file, address, &decision)
-		else {
-			return decision;
-		};
-		match self.config_writer.append_resolution(entry) {
-			Ok(()) => decision,
-			Err(err) => {
-				eprintln!("[foch] failed to persist interactive resolution: {err}");
-				ConflictDecision::Abort
-			}
+			current_file: PathBuf::new(),
+			mod_displayname_lookup: HashMap::new(),
+			current_conflict_index: 1,
+			total_conflicts: 1,
+			deferred_so_far: 0,
+			vanilla_snippet: None,
 		}
 	}
 
@@ -343,10 +313,16 @@ impl InteractiveTuiHandler {
 	}
 }
 
+impl Default for InteractiveTuiHandler {
+	fn default() -> Self {
+		Self::new()
+	}
+}
+
 impl ConflictHandler for InteractiveTuiHandler {
 	fn on_conflict(
 		&mut self,
-		_path: &str,
+		path: &str,
 		address: &PatchAddress,
 		conflict: &PatchConflict,
 	) -> ConflictDecision {
@@ -357,11 +333,16 @@ impl ConflictHandler for InteractiveTuiHandler {
 			return ConflictDecision::Defer;
 		}
 
+		let current_file = if self.current_file.as_os_str().is_empty() {
+			PathBuf::from(path)
+		} else {
+			self.current_file.clone()
+		};
 		let address_path = address.path.join("/");
-		let conflict_id = compute_conflict_id(&self.current_file, &address_path, &address.key);
+		let conflict_id = compute_conflict_id(&current_file, &address_path, &address.key);
 		let mut resolver = ConflictResolver::new(
 			conflict,
-			&self.current_file,
+			&current_file,
 			address,
 			&conflict_id,
 			&self.mod_displayname_lookup,
@@ -379,7 +360,7 @@ impl ConflictHandler for InteractiveTuiHandler {
 			}
 		};
 
-		let decision = match action {
+		match action {
 			ConflictAction::PickCandidate(index) => conflict
 				.patches
 				.get(index)
@@ -395,12 +376,27 @@ impl ConflictHandler for InteractiveTuiHandler {
 			}
 			ConflictAction::KeepExisting => ConflictDecision::KeepExisting,
 			ConflictAction::Abort => ConflictDecision::Abort,
-		};
-		self.persist_decision(address, decision)
+		}
+	}
+
+	fn set_conflict_progress(&mut self, current: usize, total: usize) {
+		self.current_conflict_index = current;
+		self.total_conflicts = total;
 	}
 
 	fn set_deferred_so_far(&mut self, count: usize) {
 		self.deferred_so_far = count;
+	}
+
+	fn set_conflict_context(
+		&mut self,
+		current_file: &Path,
+		mod_displayname_lookup: &HashMap<String, String>,
+		vanilla_snippet: Option<String>,
+	) {
+		self.current_file = current_file.to_path_buf();
+		self.mod_displayname_lookup = mod_displayname_lookup.clone();
+		self.vanilla_snippet = vanilla_snippet;
 	}
 }
 
@@ -913,7 +909,7 @@ fn projected_patch_snippet(patch: &ClausewitzPatch) -> String {
 
 fn render_projected_patch_snippet(
 	patch: &ClausewitzPatch,
-) -> Result<String, super::error::MergeError> {
+) -> Result<String, foch_engine::MergeError> {
 	match patch {
 		ClausewitzPatch::SetValue { key, new_value, .. } => {
 			emit_statement_snippet(&assignment(key, new_value.clone()))
@@ -933,7 +929,7 @@ fn render_projected_patch_snippet(
 	}
 }
 
-fn emit_statement_snippet(statement: &AstStatement) -> Result<String, super::error::MergeError> {
+fn emit_statement_snippet(statement: &AstStatement) -> Result<String, foch_engine::MergeError> {
 	emit_clausewitz_statements_with_options(
 		std::slice::from_ref(statement),
 		&EmitOptions::default(),
@@ -943,7 +939,7 @@ fn emit_statement_snippet(statement: &AstStatement) -> Result<String, super::err
 fn render_prefixed_value(
 	prefix: &str,
 	value: &AstValue,
-) -> Result<String, super::error::MergeError> {
+) -> Result<String, foch_engine::MergeError> {
 	let rendered = emit_clausewitz_statements_with_options(
 		&[AstStatement::Item {
 			value: value.clone(),
@@ -1226,6 +1222,7 @@ fn truncate_summary(value: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use foch_engine::merge::patch_merge::AttributedPatch;
 	use foch_language::analyzer::parser::{Span, SpanRange};
 	type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1285,7 +1282,7 @@ mod tests {
 	fn sample_conflict() -> PatchConflict {
 		PatchConflict {
 			patches: vec![
-				super::super::patch_merge::AttributedPatch {
+				AttributedPatch {
 					mod_id: "2164202838".to_string(),
 					precedence: 0,
 					patch: ClausewitzPatch::SetValue {
@@ -1295,7 +1292,7 @@ mod tests {
 						new_value: string("Charles-Francois de Broglie"),
 					},
 				},
-				super::super::patch_merge::AttributedPatch {
+				AttributedPatch {
 					mod_id: "1999055990".to_string(),
 					precedence: 2,
 					patch: ClausewitzPatch::SetValue {
