@@ -1,0 +1,5 @@
+country_event = {
+	id = foch.1
+	title = "Fuzz"
+	option = { name = "OK" }
+}

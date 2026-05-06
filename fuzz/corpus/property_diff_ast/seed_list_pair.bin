@@ -1,0 +1,3 @@
+allowed_tags = { FRA ENG }
+---
+allowed_tags = { FRA ENG CAS }

@@ -1,0 +1,3 @@
+allowed_tags = { FRA ENG CAS }
+flag = yes
+modifier = { factor = 1 }

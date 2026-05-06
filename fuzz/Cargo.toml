@@ -1,0 +1,53 @@
+[package]
+name = "foch-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1.4", features = ["derive"] }
+foch-core = { path = "../crates/foch-core" }
+foch-engine = { path = "../crates/foch-engine" }
+foch-language = { path = "../crates/foch-language" }
+libfuzzer-sys = "0.4"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "property_clausewitz_parser"
+path = "fuzz_targets/property_clausewitz_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "property_decode_paradox_bytes"
+path = "fuzz_targets/property_decode_paradox_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "property_diff_ast"
+path = "fuzz_targets/property_diff_ast.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "property_merge_patch_sets"
+path = "fuzz_targets/property_merge_patch_sets.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "property_apply_patches"
+path = "fuzz_targets/property_apply_patches.rs"
+test = false
+doc = false
+bench = false

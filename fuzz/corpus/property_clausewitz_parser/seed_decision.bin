@@ -1,0 +1,6 @@
+country_decisions = {
+	fuzz_decision = {
+		potential = { tag = FRA }
+		allow = { stability = 1 }
+	}
+}

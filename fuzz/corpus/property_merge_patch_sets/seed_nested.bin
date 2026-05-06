@@ -1,0 +1,5 @@
+country_event = { id = fuzz.1 title = "A" }
+---
+country_event = { id = fuzz.1 title = "B" }
+---
+country_event = { id = fuzz.1 option = { name = "C" } }
