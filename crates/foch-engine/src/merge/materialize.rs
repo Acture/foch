@@ -216,6 +216,8 @@ pub(crate) fn materialize_merge_internal(
 	let mod_versions = workspace_mod_versions(&workspace);
 	let mod_display_names = workspace_mod_display_names(&workspace);
 	let cache_game_version = workspace_cache_game_version(&workspace);
+	let cache_game_version =
+		cache_game_version_with_resolution_salt(&cache_game_version, &options.resolution_map);
 	let emit_options = load_emit_options(&request)?;
 
 	crate::cache::reset_mod_diff_cache_stats();
@@ -1008,6 +1010,37 @@ fn workspace_cache_game_version(workspace: &ResolvedWorkspace) -> String {
 		.cache_game_version
 		.clone()
 		.unwrap_or_else(|| format!("{} unknown", workspace.playlist.game.key()))
+}
+
+fn cache_game_version_with_resolution_salt(base: &str, resolution_map: &ResolutionMap) -> String {
+	let Some(salt) = resolution_map_cache_salt(resolution_map) else {
+		return base.to_string();
+	};
+	format!("{base} resolutions:{salt}")
+}
+
+fn resolution_map_cache_salt(resolution_map: &ResolutionMap) -> Option<String> {
+	if resolution_map.by_file.is_empty()
+		&& resolution_map.by_conflict_id.is_empty()
+		&& resolution_map.mod_priority_boost.is_empty()
+		&& resolution_map.pattern_rules.is_empty()
+	{
+		return None;
+	}
+
+	let pattern_rules = resolution_map
+		.pattern_rules
+		.iter()
+		.map(|rule| (&rule.dsl, &rule.decision))
+		.collect::<Vec<_>>();
+	let raw = format!(
+		"by_file={:?};by_conflict_id={:?};mod_priority_boost={:?};pattern_rules={:?}",
+		resolution_map.by_file,
+		resolution_map.by_conflict_id,
+		resolution_map.mod_priority_boost,
+		pattern_rules
+	);
+	Some(blake3::hash(raw.as_bytes()).to_hex().to_string())
 }
 
 fn workspace_mod_versions(workspace: &ResolvedWorkspace) -> HashMap<String, String> {
