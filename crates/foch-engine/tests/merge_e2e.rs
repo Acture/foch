@@ -685,11 +685,9 @@ religion = sentinel
 }
 
 #[test]
-#[ignore = "blocked on wave1-finding-priority-boost-unwired"]
 fn eu4_priority_boost_overrides_load_order_winner() {
-	// priority_boost is currently parsed into ResolutionMap::mod_priority_boost,
-	// but the merge engine does not consume that map when ordering contributors
-	// or recording handler_resolutions. Keep this fixture as the e2e contract.
+	// priority_boost is the e2e contract that an explicit mod-level precedence
+	// override affects structural merge arbitration.
 	let (result, out_dir) = run_merge_for_fixture("eu4_priority_boost", false);
 	assert_eq!(
 		result.exit_code, 0,

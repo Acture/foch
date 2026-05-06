@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use super::conflict_handler::{
-	ConflictHandler, DeferHandler, DepImpliesResolutionHandler, PromptOutcomeKind,
-	prompt_survivors_and_persist,
+	ConflictHandler, DeferHandler, DepImpliesResolutionHandler, PriorityBoostResolutionHandler,
+	PromptOutcomeKind, prompt_survivors_and_persist,
 };
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
@@ -75,6 +75,48 @@ impl Default for MergeMaterializeOptions {
 	}
 }
 
+fn apply_mod_priority_boosts(workspace: &mut ResolvedWorkspace, boosts: &BTreeMap<String, i32>) {
+	if boosts.is_empty() {
+		return;
+	}
+
+	for contributors in workspace.file_inventory.values_mut() {
+		for contributor in contributors.iter_mut() {
+			if contributor.is_base_game || contributor.is_synthetic_base {
+				continue;
+			}
+			let Some(boost) = boosts.get(&contributor.mod_id) else {
+				continue;
+			};
+			contributor.precedence = boosted_precedence(contributor.precedence, *boost);
+		}
+		contributors.sort_by(|left, right| {
+			left.precedence
+				.cmp(&right.precedence)
+				.then_with(|| {
+					contributor_priority_rank(left).cmp(&contributor_priority_rank(right))
+				})
+				.then_with(|| left.mod_id.cmp(&right.mod_id))
+		});
+	}
+}
+
+fn boosted_precedence(precedence: usize, boost: i32) -> usize {
+	if boost >= 0 {
+		precedence.saturating_add(boost as usize)
+	} else {
+		precedence.saturating_sub(boost.saturating_abs() as usize)
+	}
+}
+
+fn contributor_priority_rank(contributor: &ResolvedFileContributor) -> u8 {
+	if contributor.is_base_game || contributor.is_synthetic_base {
+		0
+	} else {
+		1
+	}
+}
+
 pub(crate) fn materialize_merge_internal(
 	request: CheckRequest,
 	out_dir: &Path,
@@ -87,7 +129,7 @@ pub(crate) fn materialize_merge_internal(
 	// the pipeline both consume the same ResolvedWorkspace. The legacy
 	// run_merge_plan_with_options recovery path is kept for the case where
 	// resolution itself failed (it may still produce a fatal-only plan).
-	let workspace_result = stage_log_with("resolve_workspace", || {
+	let mut workspace_result = stage_log_with("resolve_workspace", || {
 		let result = resolve_workspace(&request, options.include_game_base);
 		let summary = result
 			.as_ref()
@@ -95,6 +137,11 @@ pub(crate) fn materialize_merge_internal(
 			.map(|w| format!("mods={} files={}", w.mods.len(), w.file_inventory.len()));
 		(result, summary)
 	});
+	if let Ok(workspace) = &mut workspace_result {
+		// The merge resolution map is loaded after generic workspace resolution,
+		// so priority_boost is a merge-only post-processing pass here.
+		apply_mod_priority_boosts(workspace, &options.resolution_map.mod_priority_boost);
+	}
 
 	let plan = stage_log_with("build_merge_plan", || {
 		let plan = match &workspace_result {
@@ -1691,12 +1738,18 @@ fn run_patch_merge_engine(
 			(*context.mod_display_names).clone(),
 		),
 		second: super::conflict_handler::ChainHandler {
-			first: DepImpliesResolutionHandler::from_mod_dag(
+			first: PriorityBoostResolutionHandler::new(
 				PathBuf::from(target_path),
-				context.mod_dag,
-				context.dep_overrides,
+				&resolution_map.mod_priority_boost,
 			),
-			second: DeferHandler,
+			second: super::conflict_handler::ChainHandler {
+				first: DepImpliesResolutionHandler::from_mod_dag(
+					PathBuf::from(target_path),
+					context.mod_dag,
+					context.dep_overrides,
+				),
+				second: DeferHandler,
+			},
 		},
 	};
 	compute_dag_patches_with_handler(
@@ -2542,6 +2595,28 @@ mod tests {
 			mod_snapshots: Vec::new(),
 			file_inventory,
 		}
+	}
+
+	#[test]
+	fn mod_priority_boost_reorders_workspace_contributors_by_effective_precedence() {
+		let temp = TempDir::new().expect("temp dir");
+		let mut workspace = cross_file_workspace(
+			temp.path(),
+			&[
+				("mod_a", "events/test.txt", "a", 1, false),
+				("mod_b", "events/test.txt", "b", 2, false),
+			],
+		);
+		let mut boosts = BTreeMap::new();
+		boosts.insert("mod_a".to_string(), 100);
+
+		super::apply_mod_priority_boosts(&mut workspace, &boosts);
+
+		let contributors = &workspace.file_inventory["events/test.txt"];
+		assert_eq!(contributors[0].mod_id, "mod_b");
+		assert_eq!(contributors[0].precedence, 2);
+		assert_eq!(contributors[1].mod_id, "mod_a");
+		assert_eq!(contributors[1].precedence, 101);
 	}
 
 	fn prune_single_generated_path(

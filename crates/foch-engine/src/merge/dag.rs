@@ -649,8 +649,8 @@ pub fn induced_file_dag_with_overrides(
 	let contributor_set: HashSet<ModId> = active.iter().map(|(m, _)| m.clone()).collect();
 	let contributors_ordered: Vec<ModId> = active.iter().map(|(m, _)| m.clone()).collect();
 	let mut position: HashMap<ModId, usize> = HashMap::new();
-	for (i, m) in contributors_ordered.iter().enumerate() {
-		position.insert(m.clone(), i);
+	for (m, precedence) in &active {
+		position.insert(m.clone(), *precedence);
 	}
 
 	// Lift edges through skipped (non-contributing) ancestors.

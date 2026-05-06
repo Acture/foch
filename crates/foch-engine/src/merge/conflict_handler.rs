@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
@@ -247,6 +247,70 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 				action: "dep_implied".to_string(),
 				source: Some(winner),
 				rationale: Some(rationale),
+			},
+		}
+	}
+}
+
+pub(crate) struct PriorityBoostResolutionHandler<'a> {
+	current_file: PathBuf,
+	boosts: &'a BTreeMap<String, i32>,
+}
+
+impl<'a> PriorityBoostResolutionHandler<'a> {
+	pub(crate) fn new(current_file: PathBuf, boosts: &'a BTreeMap<String, i32>) -> Self {
+		Self {
+			current_file,
+			boosts,
+		}
+	}
+
+	fn winner(&self, conflict: &PatchConflict) -> Option<(String, usize)> {
+		let winner = conflict.patches.iter().max_by(|left, right| {
+			left.precedence
+				.cmp(&right.precedence)
+				.then_with(|| left.mod_id.cmp(&right.mod_id))
+		})?;
+		if self.boosts.get(&winner.mod_id).copied().unwrap_or(0) == 0 {
+			return None;
+		}
+		let tied_winners = conflict
+			.patches
+			.iter()
+			.filter(|patch| patch.precedence == winner.precedence)
+			.count();
+		if tied_winners != 1 {
+			return None;
+		}
+		Some((winner.mod_id.clone(), winner.precedence))
+	}
+}
+
+impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
+	fn on_conflict(
+		&mut self,
+		_: &str,
+		_: &PatchAddress,
+		conflict: &PatchConflict,
+	) -> ConflictDecision {
+		let Some((winner, precedence)) = self.winner(conflict) else {
+			return ConflictDecision::Defer;
+		};
+		let mod_ids: Vec<&str> = conflict
+			.patches
+			.iter()
+			.map(|patch| patch.mod_id.as_str())
+			.collect();
+		ConflictDecision::PickModWithRecord {
+			mod_id: winner.clone(),
+			record: HandlerResolutionRecord {
+				path: self.current_file.to_string_lossy().replace('\\', "/"),
+				action: "priority_boost".to_string(),
+				source: Some(winner.clone()),
+				rationale: Some(format!(
+					"priority_boost made `{winner}` the unique highest-precedence contributor ({precedence}) among [{}]",
+					mod_ids.join(", ")
+				)),
 			},
 		}
 	}
