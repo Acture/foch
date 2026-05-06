@@ -131,6 +131,8 @@ impl DepResolutionGraph {
 	}
 }
 
+/// Single-threaded only: holds &mut self per-conflict via the ConflictHandler trait.
+/// The merge engine drives this serially; do NOT share across threads.
 pub(crate) struct DepImpliesResolutionHandler {
 	current_file: PathBuf,
 	dep_graph: DepResolutionGraph,
@@ -316,6 +318,8 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 	}
 }
 
+/// Single-threaded only: holds &mut self per-conflict via current_conflict_index/total_conflicts.
+/// The merge engine drives this serially; do NOT share across threads.
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
 	pub current_file: PathBuf,
@@ -447,6 +451,9 @@ impl ConfigWriter for FilesystemConfigWriter {
 	}
 }
 
+/// Single-threaded only: holds &mut self per-conflict via prompt progress,
+/// deferred counters, and stdio handles. The merge engine drives this serially;
+/// do NOT share across threads.
 pub struct InteractiveCliHandler {
 	input: Box<dyn BufRead>,
 	stderr: Box<dyn Write>,
@@ -645,6 +652,9 @@ impl ConflictHandler for InteractiveCliHandler {
 }
 
 /// Chain combinator: returns the second handler's decision when the first defers.
+/// Single-threaded only: holds &mut self per-conflict while forwarding mutable
+/// state into child handlers. The merge engine drives this serially; do NOT share
+/// across threads.
 pub struct ChainHandler<H1: ConflictHandler, H2: ConflictHandler> {
 	pub first: H1,
 	pub second: H2,
