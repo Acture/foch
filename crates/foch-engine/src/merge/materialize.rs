@@ -359,9 +359,7 @@ pub(crate) fn materialize_merge_internal(
 									if resolve_structural_merge_failure(
 										entry,
 										out_dir,
-										&conflict.reason,
-										conflict.leaf_conflicts,
-										conflict.handler_resolutions,
+										conflict,
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -370,13 +368,13 @@ pub(crate) fn materialize_merge_internal(
 									}
 								}
 								Ok(Err(PatchBasedMergeFailure::Merge(err))) => {
-									let reason = format!("patch merge failed: {err}");
+									let conflict = PatchConflictReport::without_details(format!(
+										"patch merge failed: {err}"
+									));
 									if resolve_structural_merge_failure(
 										entry,
 										out_dir,
-										&reason,
-										Vec::new(),
-										Vec::new(),
+										conflict,
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -385,13 +383,13 @@ pub(crate) fn materialize_merge_internal(
 									}
 								}
 								Err(_) => {
-									let reason = "patch merge panicked".to_string();
+									let conflict = PatchConflictReport::without_details(
+										"patch merge panicked".to_string(),
+									);
 									if resolve_structural_merge_failure(
 										entry,
 										out_dir,
-										&reason,
-										Vec::new(),
-										Vec::new(),
+										conflict,
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -1173,18 +1171,19 @@ fn record_plan_manual_conflicts(report: &mut MergeReport, plan: &MergePlanResult
 fn resolve_structural_merge_failure(
 	entry: &MergePlanEntry,
 	out_dir: &Path,
-	reason: &str,
-	leaf_conflicts: Vec<LeafConflictDetail>,
-	handler_resolutions: Vec<HandlerResolutionRecord>,
+	conflict: PatchConflictReport,
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
 ) -> Result<bool, MergeError> {
+	let reason = conflict.reason;
 	report.manual_conflict_count += 1;
-	report.handler_resolutions.extend(handler_resolutions);
+	report
+		.handler_resolutions
+		.extend(conflict.handler_resolutions);
 	if options.force && is_text_placeholder_path(&entry.path) {
 		let mut marker_entry = entry.clone();
-		marker_entry.notes.push(reason.to_string());
+		marker_entry.notes.push(reason.clone());
 		write_conflict_placeholder(&marker_entry, out_dir)?;
 		report.generated_file_count += 1;
 		generated_paths.insert(entry.path.clone());
@@ -1202,8 +1201,8 @@ fn resolve_structural_merge_failure(
 		.conflict_resolutions
 		.push(workspace_conflict_skipped_resolution(
 			entry,
-			reason,
-			leaf_conflicts,
+			&reason,
+			conflict.leaf_conflicts,
 		));
 	Ok(true)
 }
@@ -1253,6 +1252,16 @@ struct PatchConflictReport {
 	reason: String,
 	leaf_conflicts: Vec<LeafConflictDetail>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
+}
+
+impl PatchConflictReport {
+	fn without_details(reason: String) -> Self {
+		Self {
+			reason,
+			leaf_conflicts: Vec::new(),
+			handler_resolutions: Vec::new(),
+		}
+	}
 }
 
 #[derive(Debug)]
