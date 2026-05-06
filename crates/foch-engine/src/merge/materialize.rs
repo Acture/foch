@@ -310,6 +310,7 @@ pub(crate) fn materialize_merge_internal(
 										out_dir,
 										&conflict.reason,
 										conflict.leaf_conflicts,
+										conflict.handler_resolutions,
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -324,6 +325,7 @@ pub(crate) fn materialize_merge_internal(
 										out_dir,
 										&reason,
 										Vec::new(),
+										Vec::new(),
 										&options,
 										&mut report,
 										&mut generated_paths,
@@ -337,6 +339,7 @@ pub(crate) fn materialize_merge_internal(
 										entry,
 										out_dir,
 										&reason,
+										Vec::new(),
 										Vec::new(),
 										&options,
 										&mut report,
@@ -1121,11 +1124,13 @@ fn resolve_structural_merge_failure(
 	out_dir: &Path,
 	reason: &str,
 	leaf_conflicts: Vec<LeafConflictDetail>,
+	handler_resolutions: Vec<HandlerResolutionRecord>,
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
 ) -> Result<bool, MergeError> {
 	report.manual_conflict_count += 1;
+	report.handler_resolutions.extend(handler_resolutions);
 	if options.force && is_text_placeholder_path(&entry.path) {
 		let mut marker_entry = entry.clone();
 		marker_entry.notes.push(reason.to_string());
@@ -1196,6 +1201,7 @@ struct PatchBasedMergeOutput {
 struct PatchConflictReport {
 	reason: String,
 	leaf_conflicts: Vec<LeafConflictDetail>,
+	handler_resolutions: Vec<HandlerResolutionRecord>,
 }
 
 #[derive(Debug)]
@@ -1635,6 +1641,7 @@ fn patch_based_structural_merge(
 				&merge_result.conflicts,
 				context.mod_versions,
 			),
+			handler_resolutions: merge_result.handler_resolutions,
 		}));
 	}
 

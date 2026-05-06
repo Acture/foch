@@ -37,7 +37,7 @@ pub fn dispatch(
 ) -> ConflictDecision {
 	match name.to_ascii_lowercase().as_str() {
 		"last_writer" => last_writer(name, current_file, address, conflict),
-		"defer" => defer(),
+		"defer" => defer(current_file),
 		"keep_existing" => keep_existing(name, current_file, address),
 		other => {
 			eprintln!(
@@ -50,8 +50,15 @@ pub fn dispatch(
 	}
 }
 
-fn defer() -> ConflictDecision {
-	ConflictDecision::Defer
+fn defer(current_file: &Path) -> ConflictDecision {
+	ConflictDecision::DeferWithRecord {
+		record: HandlerResolutionRecord {
+			path: current_file.to_string_lossy().replace('\\', "/"),
+			action: "defer".to_string(),
+			source: None,
+			rationale: Some("matched DSL handler=defer rule".to_string()),
+		},
+	}
 }
 
 fn keep_existing(name: &str, current_file: &Path, address: &PatchAddress) -> ConflictDecision {
@@ -221,10 +228,21 @@ mod tests {
 	}
 
 	#[test]
-	fn defer_handler_returns_defer() {
+	fn defer_handler_returns_defer_with_record() {
 		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
 		let decision = dispatch("defer", &PathBuf::from("foo.txt"), &address(), &conflict);
-		assert!(matches!(decision, ConflictDecision::Defer));
+		match decision {
+			ConflictDecision::DeferWithRecord { record } => {
+				assert_eq!(record.path, "foo.txt");
+				assert_eq!(record.action, "defer");
+				assert_eq!(record.source, None);
+				assert_eq!(
+					record.rationale.as_deref(),
+					Some("matched DSL handler=defer rule")
+				);
+			}
+			other => panic!("expected DeferWithRecord, got {other:?}"),
+		}
 	}
 
 	#[test]
@@ -265,7 +283,7 @@ mod tests {
 		));
 		assert!(matches!(
 			dispatch("Defer", &PathBuf::from("x.txt"), &address(), &conflict),
-			ConflictDecision::Defer
+			ConflictDecision::DeferWithRecord { .. }
 		));
 	}
 }

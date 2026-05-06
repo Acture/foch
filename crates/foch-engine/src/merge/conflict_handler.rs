@@ -49,6 +49,8 @@ pub enum ConflictDecision {
 	KeepExisting,
 	/// Defer — log to report, leave for later resolution.
 	Defer,
+	/// Defer while recording a handler-specific report entry.
+	DeferWithRecord { record: HandlerResolutionRecord },
 	/// Abort the merge.
 	Abort,
 }
@@ -666,7 +668,9 @@ pub(crate) fn resolution_entry_for_decision(
 			priority_boost: None,
 			handler: None,
 		}),
-		ConflictDecision::Defer | ConflictDecision::Abort => None,
+		ConflictDecision::Defer
+		| ConflictDecision::DeferWithRecord { .. }
+		| ConflictDecision::Abort => None,
 	}
 }
 
@@ -743,7 +747,7 @@ pub fn prompt_survivors_and_persist(
 				conflict_id,
 				kind: PromptOutcomeKind::Picked(ResolutionDecision::KeepExisting),
 			}),
-			ConflictDecision::Defer => {
+			ConflictDecision::Defer | ConflictDecision::DeferWithRecord { .. } => {
 				result.outcomes.push(PromptOutcome {
 					conflict_id,
 					kind: PromptOutcomeKind::Deferred,

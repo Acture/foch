@@ -567,7 +567,6 @@ fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
 }
 
 #[test]
-#[ignore = "blocked on wave1-finding-defer-attribution"]
 fn eu4_defer_handler_keeps_manual_conflict_with_attribution() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_handler_defer", false);
 	assert_ne!(

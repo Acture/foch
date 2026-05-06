@@ -491,6 +491,14 @@ fn apply_conflict_decision(
 			patches: conflict.patches,
 			reason: conflict.reason,
 		}),
+		ConflictDecision::DeferWithRecord { record } => {
+			result.handler_resolutions.push(record);
+			result.conflicts.push(PatchResolution::Conflict {
+				address,
+				patches: conflict.patches,
+				reason: conflict.reason,
+			});
+		}
 		ConflictDecision::PickMod(mod_id) => {
 			let Some(chosen) = conflict
 				.patches
