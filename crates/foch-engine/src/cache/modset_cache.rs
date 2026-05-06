@@ -11,7 +11,8 @@ use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use foch_core::model::MergeReport;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder};
 use walkdir::WalkDir;
@@ -223,7 +224,124 @@ pub fn unpack_modset_tarball(tarball_path: &Path, out_dir: &Path) -> Result<(), 
 	let file = fs::File::open(tarball_path).map_err(CacheError::Io)?;
 	let decoder = GzDecoder::new(file);
 	let mut archive = Archive::new(decoder);
-	archive.unpack(out_dir).map_err(CacheError::Io)
+	for entry in archive.entries().map_err(CacheError::Io)? {
+		let mut entry = entry.map_err(CacheError::Io)?;
+		let entry_path = entry.path().map_err(CacheError::Io)?.into_owned();
+		let rel_path = validate_tar_entry_path(&entry_path)?;
+		validate_tar_link_target(&mut entry, &entry_path, &rel_path)?;
+		if !entry.unpack_in(out_dir).map_err(CacheError::Io)? {
+			return Err(invalid_tar_entry(format!(
+				"tarball entry path escapes output directory: {}",
+				entry_path.display()
+			)));
+		}
+	}
+	Ok(())
+}
+
+fn validate_tar_entry_path(path: &Path) -> Result<PathBuf, CacheError> {
+	if has_windows_absolute_prefix(path) {
+		return Err(invalid_tar_entry(format!(
+			"tarball entry path is absolute: {}",
+			path.display()
+		)));
+	}
+	let mut rel_path = PathBuf::new();
+	for component in path.components() {
+		match component {
+			Component::CurDir => {}
+			Component::Normal(part) => rel_path.push(part),
+			Component::ParentDir => {
+				return Err(invalid_tar_entry(format!(
+					"tarball entry path contains parent traversal: {}",
+					path.display()
+				)));
+			}
+			Component::RootDir | Component::Prefix(_) => {
+				return Err(invalid_tar_entry(format!(
+					"tarball entry path is absolute: {}",
+					path.display()
+				)));
+			}
+		}
+	}
+	Ok(rel_path)
+}
+
+fn validate_tar_link_target<R: io::Read>(
+	entry: &mut tar::Entry<'_, R>,
+	entry_path: &Path,
+	rel_path: &Path,
+) -> Result<(), CacheError> {
+	let entry_type = entry.header().entry_type();
+	if !(entry_type.is_symlink() || entry_type.is_hard_link()) {
+		return Ok(());
+	}
+	let link_name = entry.link_name().map_err(CacheError::Io)?.ok_or_else(|| {
+		invalid_tar_entry(format!(
+			"tarball link entry has no target: {}",
+			entry_path.display()
+		))
+	})?;
+	if link_name.as_os_str().is_empty() || has_windows_absolute_prefix(&link_name) {
+		return Err(invalid_tar_entry(format!(
+			"tarball link target escapes output directory: {} -> {}",
+			entry_path.display(),
+			link_name.display()
+		)));
+	}
+
+	let mut normalized = rel_path
+		.parent()
+		.map(path_normal_components)
+		.unwrap_or_default();
+	for component in link_name.components() {
+		match component {
+			Component::CurDir => {}
+			Component::Normal(part) => normalized.push(part.to_os_string()),
+			Component::ParentDir => {
+				if normalized.pop().is_none() {
+					return Err(invalid_tar_entry(format!(
+						"tarball link target escapes output directory: {} -> {}",
+						entry_path.display(),
+						link_name.display()
+					)));
+				}
+			}
+			Component::RootDir | Component::Prefix(_) => {
+				return Err(invalid_tar_entry(format!(
+					"tarball link target escapes output directory: {} -> {}",
+					entry_path.display(),
+					link_name.display()
+				)));
+			}
+		}
+	}
+	Ok(())
+}
+
+fn path_normal_components(path: &Path) -> Vec<std::ffi::OsString> {
+	path.components()
+		.filter_map(|component| match component {
+			Component::Normal(part) => Some(part.to_os_string()),
+			_ => None,
+		})
+		.collect()
+}
+
+fn has_windows_absolute_prefix(path: &Path) -> bool {
+	let text = path.to_string_lossy();
+	let bytes = text.as_bytes();
+	text.starts_with('\\')
+		|| bytes.get(0..3).is_some_and(|prefix| {
+			prefix[0].is_ascii_alphabetic()
+				&& prefix[1] == b':'
+				&& matches!(prefix[2], b'/' | b'\\')
+		})
+}
+
+fn invalid_tar_entry(message: String) -> CacheError {
+	CacheError::Io(io::Error::new(io::ErrorKind::InvalidData, message))
 }
 
 fn stats_from_entries(entries: &[CacheEntryInfo]) -> CacheStats {
@@ -363,6 +481,22 @@ mod tests {
 		fs::write(file, content).expect("write mod file");
 	}
 
+	fn write_tarball_entry(tarball_path: &Path, entry_path: &str, content: &[u8]) {
+		let tarball = fs::File::create(tarball_path).expect("create tarball");
+		let encoder = GzEncoder::new(tarball, Compression::default());
+		let mut builder = Builder::new(encoder);
+		let mut header = tar::Header::new_gnu();
+		let name = entry_path.as_bytes();
+		assert!(name.len() <= header.as_old().name.len());
+		header.as_old_mut().name[..name.len()].copy_from_slice(name);
+		header.set_size(content.len() as u64);
+		header.set_mode(0o644);
+		header.set_cksum();
+		builder.append(&header, content).expect("append tar entry");
+		let encoder = builder.into_inner().expect("finish tar");
+		encoder.finish().expect("finish gzip");
+	}
+
 	fn modset_key(
 		mod_hashes: &[String],
 		resolution_bytes: &[u8],
@@ -405,6 +539,59 @@ mod tests {
 		)
 		.expect("read restored output");
 		assert_eq!(restored, "effect = { add_prestige = 1 }\n");
+	}
+
+	#[test]
+	fn extract_rejects_parent_traversal_entry() {
+		let root = cache_root("modset-tar-parent-traversal");
+		let tarball = root.join("malicious.tar.gz");
+		write_tarball_entry(&tarball, "../../escape.txt", b"escape\n");
+		let out_dir = root.join("nested").join("out");
+
+		let err = unpack_modset_tarball(&tarball, &out_dir).expect_err("reject traversal");
+
+		assert!(err.to_string().contains("parent traversal"));
+		assert!(!root.join("escape.txt").exists());
+		assert!(!out_dir.join("escape.txt").exists());
+	}
+
+	#[test]
+	fn extract_rejects_absolute_path_entry() {
+		let root = cache_root("modset-tar-absolute");
+		let tarball = root.join("malicious.tar.gz");
+		let escape = root.join("absolute_escape.txt");
+		write_tarball_entry(&tarball, &escape.to_string_lossy(), b"escape\n");
+		let out_dir = root.join("out");
+
+		let err = unpack_modset_tarball(&tarball, &out_dir).expect_err("reject absolute path");
+
+		assert!(err.to_string().contains("absolute"));
+		assert!(!escape.exists());
+	}
+
+	#[test]
+	fn extract_accepts_normal_entry() {
+		let root = cache_root("modset-tar-normal");
+		let tarball = root.join("normal.tar.gz");
+		write_tarball_entry(
+			&tarball,
+			"common/scripted_effects/x.txt",
+			b"effect = { add_prestige = 1 }\n",
+		);
+		let out_dir = root.join("out");
+
+		unpack_modset_tarball(&tarball, &out_dir).expect("unpack normal entry");
+
+		assert_eq!(
+			fs::read_to_string(
+				out_dir
+					.join("common")
+					.join("scripted_effects")
+					.join("x.txt")
+			)
+			.expect("read extracted file"),
+			"effect = { add_prestige = 1 }\n"
+		);
 	}
 
 	#[test]
