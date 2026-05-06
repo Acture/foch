@@ -1,0 +1,5 @@
+# End-to-end fixture: priority_boost should make the middle-precedence mod win
+# over the later load-order contributor for the shared event id.
+[[resolutions]]
+mod = "300001"
+priority_boost = 100

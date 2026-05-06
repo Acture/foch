@@ -563,3 +563,158 @@ fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
 	);
 	assert!(out_dir.exists(), "out dir should still be materialized");
 }
+
+#[test]
+#[ignore = "blocked on wave1-finding-defer-attribution"]
+fn eu4_defer_handler_keeps_manual_conflict_with_attribution() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_handler_defer", false);
+	assert_ne!(
+		result.report.status,
+		MergeReportStatus::Fatal,
+		"defer handler merge should not be Fatal; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"defer handler must keep at least one manual conflict unresolved; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result
+			.report
+			.handler_resolutions
+			.iter()
+			.any(|record| record.action.eq_ignore_ascii_case("defer")),
+		"handler_resolutions must attribute the explicit defer decision; report: {:#?}",
+		result.report
+	);
+	assert!(out_dir.exists(), "out dir should still be tracked");
+}
+
+#[test]
+#[ignore = "blocked on wave1-finding-keep-existing-overwrite"]
+fn eu4_keep_existing_handler_preserves_existing_output_file() {
+	let fixture = fixture_dir("eu4_handler_keep_existing");
+	assert!(
+		fixture.is_dir(),
+		"fixture does not exist: {}",
+		fixture.display()
+	);
+
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_handler_keep_existing-prepopulated-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+
+	let sentinel_path = out_dir
+		.join("history")
+		.join("countries")
+		.join("TES - Test.txt");
+	fs::create_dir_all(sentinel_path.parent().expect("sentinel parent"))
+		.expect("create sentinel parent");
+	fs::write(
+		&sentinel_path,
+		"# pre-existing sentinel
+religion = sentinel
+",
+	)
+	.expect("write pre-existing sentinel");
+
+	let config_path = temp_dir.path().join("foch.keep-existing.toml");
+	fs::copy(fixture.join("foch.toml"), &config_path).expect("copy keep_existing foch.toml");
+
+	let mut game_path = HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+	let result = run_merge_with_options(
+		CheckRequest {
+			playset_path: fixture.join("dlc_load.json"),
+			config: Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		},
+		MergeExecuteOptions {
+			out_dir: out_dir.clone(),
+			include_game_base: false,
+			force: false,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path: Some(config_path),
+			playset_fingerprint: None,
+		},
+	)
+	.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));
+
+	assert_eq!(
+		result.exit_code, 0,
+		"keep_existing merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_ne!(
+		result.report.status,
+		MergeReportStatus::Fatal,
+		"keep_existing merge should not be Fatal; report: {:#?}",
+		result.report
+	);
+	let merged_text = fs::read_to_string(&sentinel_path).expect("read preserved sentinel");
+	assert!(
+		merged_text.contains("religion = sentinel"),
+		"keep_existing should preserve the pre-existing output file; got:
+{merged_text}"
+	);
+	assert!(
+		result
+			.report
+			.handler_resolutions
+			.iter()
+			.any(|record| record.action.eq_ignore_ascii_case("kept_existing")),
+		"handler_resolutions must record the keep_existing decision; report: {:#?}",
+		result.report
+	);
+}
+
+#[test]
+#[ignore = "blocked on wave1-finding-priority-boost-unwired"]
+fn eu4_priority_boost_overrides_load_order_winner() {
+	// priority_boost is currently parsed into ResolutionMap::mod_priority_boost,
+	// but the merge engine does not consume that map when ordering contributors
+	// or recording handler_resolutions. Keep this fixture as the e2e contract.
+	let (result, out_dir) = run_merge_for_fixture("eu4_priority_boost", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"priority_boost merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"priority_boost should resolve the shared event without manual conflicts; report: {:#?}",
+		result.report
+	);
+
+	let merged_event_path = out_dir.join("events").join("test_events.txt");
+	assert!(
+		merged_event_path.is_file(),
+		"merged event file must be materialized at {}",
+		merged_event_path.display()
+	);
+	let merged_text = fs::read_to_string(&merged_event_path).expect("read merged event file");
+	assert!(
+		merged_text.contains("foch_300001_title"),
+		"priority_boost should make mod 300001 win; got:
+{merged_text}"
+	);
+	assert!(
+		!merged_text.contains("foch_300002_title"),
+		"priority_boost should override the natural load-order winner 300002; got:
+{merged_text}"
+	);
+}

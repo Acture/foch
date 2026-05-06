@@ -1,0 +1,5 @@
+# End-to-end fixture: keep_existing is a file-scoped resolution that preserves
+# a pre-existing output file instead of materializing the merged content.
+[[resolutions]]
+file = "history/countries/TES - Test.txt"
+keep_existing = true

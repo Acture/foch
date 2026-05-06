@@ -1,0 +1,5 @@
+# End-to-end fixture: explicit defer handler must leave the country-history
+# scalar conflict unresolved and auditable instead of selecting a winner.
+[[resolutions]]
+match = "history/**"
+handler = "defer"
