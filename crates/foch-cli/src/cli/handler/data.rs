@@ -3,9 +3,8 @@ use crate::cli::arg::{
 };
 use crate::cli::handler::HandlerResult;
 use foch_core::domain::game::Game;
-use foch_engine::Config;
-use foch_engine::base_data::{
-	BaseBuildObserver, BaseDataSource, INSTALLED_COVERAGE_FILE_NAME,
+use foch_engine::{
+	BaseBuildObserver, BaseDataSource, Config, FileFilter, INSTALLED_COVERAGE_FILE_NAME,
 	build_base_snapshot_with_observer, default_release_tag, install_built_snapshot,
 	install_snapshot_from_release, list_installed_base_data, resolve_game_root_and_version,
 	write_release_artifacts, write_snapshot_bundle,
@@ -53,9 +52,8 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 	} else {
 		Some(args.game_version.as_str())
 	};
-	let filter =
-		foch_engine::workspace::FileFilter::new(game.clone(), &config.extra_ignore_patterns)
-			.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
+	let filter = FileFilter::new(game.clone(), &config.extra_ignore_patterns)
+		.map_err(|err| -> Box<dyn std::error::Error> { err.into() })?;
 	let mut observer = BaseBuildObserver::stderr(game.key());
 	let build = build_base_snapshot_with_observer(
 		&game,

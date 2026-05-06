@@ -1,23 +1,32 @@
-pub mod base_data;
-pub mod cache;
-pub mod config;
-pub mod graph;
-pub mod merge;
-pub mod request;
-pub mod run_checks;
-pub mod runtime;
-pub mod simplify;
-pub mod workspace;
+//! Public engine facade.
+//!
+//! `foch-cli` and downstream consumers should import engine functionality from
+//! this root module. Internal modules remain private so repository layout can
+//! change without becoming part of the API contract.
+
+mod base_data;
+mod cache;
+mod config;
+mod graph;
+mod merge;
+mod request;
+mod run_checks;
+mod runtime;
+mod simplify;
+mod workspace;
 
 pub use base_data::{
-	BASE_DATA_DIR_ENV, BASE_DATA_RELEASE_BASE_URL_ENV, BaseAnalysisSnapshot, BaseDataSource,
-	InstalledBaseDataEntry, ReleaseDataManifest, build_base_snapshot, default_release_tag,
-	install_built_snapshot, install_snapshot_from_release, list_installed_base_data,
+	BASE_DATA_DIR_ENV, BASE_DATA_RELEASE_BASE_URL_ENV, BaseAnalysisSnapshot, BaseBuildObserver,
+	BaseBuildProfile, BaseDataSource, BaseSnapshotBuildResult, INSTALLED_COVERAGE_FILE_NAME,
+	InstalledBaseDataEntry, InstalledBaseSnapshot, ReleaseArtifactOutput, ReleaseDataManifest,
+	SnapshotBundleOutput, build_base_snapshot, build_base_snapshot_with_observer,
+	default_release_tag, install_built_snapshot, install_snapshot_from_release,
+	list_installed_base_data, resolve_game_root_and_version, write_release_artifacts,
 	write_snapshot_bundle,
 };
 pub use cache::{
-	CacheError, CachedModData, MOD_PARSE_CACHE_VERSION, ModParseCache, ModsetCache,
-	compute_mod_hash, compute_mod_hash_with_filter, default_foch_cache_dir,
+	CacheEntryInfo, CacheError, CacheStats, CachedModsetResult, ModsetCache,
+	default_dag_base_cache_dir, default_foch_cache_dir, default_mod_diff_cache_dir,
 	default_mod_parse_cache_dir, default_modset_cache_dir, default_modset_cache_root_dir,
 };
 pub use config::{
@@ -29,7 +38,9 @@ pub use graph::{
 	GraphRootSelector, GraphScopeSelection, SEMANTIC_GRAPH_PROGRESS_TARGET, run_graph_with_options,
 };
 pub use merge::{
-	AnalysisStatusView, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
+	AnalysisStatusView, AttributedPatch, ClausewitzPatch, ConflictDecision, ConflictHandler,
+	EmitOptions, InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult,
+	MergeStatusView, PatchAddress, PatchConflict, emit_clausewitz_statements_with_options,
 	run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions};

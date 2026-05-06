@@ -1,9 +1,8 @@
 mod coverage;
 
-pub use coverage::{
-	BaseCoverageReport, CoverageClass, RootCoverageEntry, build_coverage_report,
-	coverage_class_name, document_family_name, script_file_kind_name, write_coverage_report,
-};
+#[cfg(test)]
+pub(crate) use coverage::{CoverageClass, build_coverage_report};
+pub(crate) use coverage::{document_family_name, write_coverage_report};
 
 use crate::config::Config;
 use flate2::Compression;

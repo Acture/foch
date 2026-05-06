@@ -3,7 +3,7 @@ use crate::cli::arg::{
 	FochCliCacheLayerArg, FochCliCacheListArgs,
 };
 use crate::cli::handler::HandlerResult;
-use foch_engine::cache::{
+use foch_engine::{
 	ModsetCache, default_dag_base_cache_dir, default_foch_cache_dir, default_mod_diff_cache_dir,
 	default_mod_parse_cache_dir,
 };

@@ -1,7 +1,7 @@
 pub(crate) mod cache;
-pub mod file_filter;
+pub(crate) mod file_filter;
 pub(crate) mod resolve;
-pub mod session;
+pub(crate) mod session;
 
 pub(crate) use cache::LoadedModSnapshot;
 pub use file_filter::FileFilter;

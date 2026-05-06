@@ -53,10 +53,6 @@ impl DagBaseCache {
 		Self::open(&default_dag_base_cache_dir())
 	}
 
-	pub fn root(&self) -> &Path {
-		&self.root
-	}
-
 	pub fn lookup(
 		&self,
 		deps_hash: &str,

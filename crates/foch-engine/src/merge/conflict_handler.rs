@@ -258,11 +258,12 @@ pub struct LookupHandler<'a> {
 }
 
 impl<'a> LookupHandler<'a> {
-	pub fn new(map: &'a ResolutionMap, file: PathBuf) -> Self {
+	#[cfg(test)]
+	pub(crate) fn new(map: &'a ResolutionMap, file: PathBuf) -> Self {
 		Self::with_display_names(map, file, HashMap::new())
 	}
 
-	pub fn with_display_names(
+	pub(crate) fn with_display_names(
 		map: &'a ResolutionMap,
 		file: PathBuf,
 		_mod_displayname_lookup: HashMap<String, String>,
@@ -314,22 +315,18 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 		self.total_conflicts = total;
 	}
 }
-pub trait ConfigWriter {
+pub(crate) trait ConfigWriter {
 	fn append_resolution(&mut self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>>;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct FilesystemConfigWriter {
+pub(crate) struct FilesystemConfigWriter {
 	path: PathBuf,
 }
 
 impl FilesystemConfigWriter {
-	pub fn new(path: PathBuf) -> Self {
+	pub(crate) fn new(path: PathBuf) -> Self {
 		Self { path }
-	}
-
-	pub fn path(&self) -> &Path {
-		&self.path
 	}
 
 	fn temporary_path(&self) -> PathBuf {

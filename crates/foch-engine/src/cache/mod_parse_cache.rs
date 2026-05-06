@@ -11,12 +11,10 @@ use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use rkyv::util::AlignedVec;
-use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
@@ -267,10 +265,6 @@ impl ModParseCache {
 		Self::open(&default_mod_parse_cache_dir())
 	}
 
-	pub fn root(&self) -> &Path {
-		&self.root
-	}
-
 	pub fn lookup(
 		&self,
 		mod_hash: &str,
@@ -299,31 +293,6 @@ impl ModParseCache {
 			game_version,
 			data,
 		)
-	}
-
-	pub fn purge_older_than(&self, days: u32) {
-		let cutoff = SystemTime::now()
-			.checked_sub(Duration::from_secs(days as u64 * 24 * 60 * 60))
-			.unwrap_or(SystemTime::UNIX_EPOCH);
-		for entry in WalkDir::new(&self.root)
-			.min_depth(1)
-			.into_iter()
-			.filter_map(Result::ok)
-		{
-			if !entry.file_type().is_file() {
-				continue;
-			}
-			let path = entry.path();
-			if path.extension() != Some(OsStr::new("rkyv")) {
-				continue;
-			}
-			let should_remove = fs::metadata(path)
-				.and_then(|metadata| metadata.modified())
-				.is_ok_and(|modified| modified < cutoff);
-			if should_remove {
-				let _ = fs::remove_file(path);
-			}
-		}
 	}
 
 	fn lookup_with_cache_version(
@@ -1195,6 +1164,7 @@ mod tests {
 	use super::*;
 	use foch_core::model::{DocumentFamily, DocumentRecord};
 	use std::thread;
+	use std::time::Duration;
 	use tempfile::TempDir;
 
 	fn write_loadable_file(root: &Path, relative: &str, contents: &str) {

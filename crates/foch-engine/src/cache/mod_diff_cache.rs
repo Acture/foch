@@ -54,10 +54,6 @@ impl ModDiffCache {
 		Self::open(&default_mod_diff_cache_dir())
 	}
 
-	pub fn root(&self) -> &Path {
-		&self.root
-	}
-
 	pub fn lookup(
 		&self,
 		target_path: &str,

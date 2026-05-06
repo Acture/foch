@@ -19,10 +19,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 
-use foch_engine::merge::conflict_handler::{ConflictDecision, ConflictHandler};
-use foch_engine::merge::emit::{EmitOptions, emit_clausewitz_statements_with_options};
-use foch_engine::merge::patch::ClausewitzPatch;
-use foch_engine::merge::patch_merge::{PatchAddress, PatchConflict};
+use foch_engine::{
+	ClausewitzPatch, ConflictDecision, ConflictHandler, EmitOptions, PatchAddress, PatchConflict,
+	emit_clausewitz_statements_with_options,
+};
 
 const ACTION_COUNT: usize = 4;
 const MAX_SUMMARY_CHARS: usize = 80;
@@ -1222,7 +1222,7 @@ fn truncate_summary(value: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_engine::merge::patch_merge::AttributedPatch;
+	use foch_engine::AttributedPatch;
 	use foch_language::analyzer::parser::{Span, SpanRange};
 	type TestResult = Result<(), Box<dyn std::error::Error>>;
 

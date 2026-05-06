@@ -5,8 +5,10 @@ use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::playlist::Playlist;
 use foch_core::fingerprint::compute_playset_fingerprint;
 use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
-use foch_engine::merge::conflict_handler::{ConflictHandler, InteractiveCliHandler};
-use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
+use foch_engine::{
+	CheckRequest, Config, ConflictHandler, InteractiveCliHandler, MergeExecuteOptions,
+	run_merge_with_options,
+};
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
 use foch_language::analyzer::report::render_merge_report_text;
