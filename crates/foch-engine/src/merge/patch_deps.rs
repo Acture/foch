@@ -28,25 +28,57 @@ pub(crate) struct DagPatchComputation {
 	pub merge_result: PatchMergeResult,
 }
 
+pub(crate) struct DagPatchRequest<'a> {
+	pub file_path: &'a str,
+	pub contributors: &'a [ResolvedFileContributor],
+	pub merge_key_source: MergeKeySource,
+	pub policies: &'a MergePolicies,
+	pub mod_dag: &'a ModDag,
+	pub ignore_replace_path: &'a IgnoreReplacePath,
+	pub dep_overrides: &'a [DepOverride],
+	pub game_version: &'a str,
+}
+
+struct DagPatchArgs<'a> {
+	file_dag: &'a FileDag,
+	vanilla: Option<&'a ParsedScriptFile>,
+	contributors: &'a HashMap<ModId, ParsedScriptFile>,
+	merge_key_source: MergeKeySource,
+	policies: &'a MergePolicies,
+	handler: &'a mut dyn ConflictHandler,
+	mod_hashes: Option<&'a HashMap<ModId, String>>,
+	game_version: &'a str,
+}
+
+struct CachedDiffArgs<'a> {
+	cache: Option<&'a ModDiffCache>,
+	target_path: &'a str,
+	mod_hash: Option<&'a str>,
+	vanilla_hash: Option<&'a str>,
+	current_base: &'a ParsedScriptFile,
+	current: &'a ParsedScriptFile,
+	merge_key_source: MergeKeySource,
+	game_version: &'a str,
+}
+
 static MOD_ROOT_HASHES: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = OnceLock::new();
 
 /// Compute all patches for a single file using dependency-DAG topo levels.
 ///
 /// Each level is diffed against the running merged state, sibling patch sets are
 /// merged together, then their resolved patches advance the running state.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_dag_patches(
-	file_path: &str,
-	contributors: &[ResolvedFileContributor],
-	merge_key_source: MergeKeySource,
-	policies: &MergePolicies,
-	mod_dag: &ModDag,
-	ignore_replace_path: &IgnoreReplacePath,
-	dep_overrides: &[DepOverride],
-	game_version: &str,
+	request: DagPatchRequest<'_>,
 ) -> Result<DagPatchComputation, String> {
 	let mut handler = DeferHandler;
-	compute_dag_patches_with_handler(
+	compute_dag_patches_with_handler(request, &mut handler)
+}
+
+pub(crate) fn compute_dag_patches_with_handler(
+	request: DagPatchRequest<'_>,
+	handler: &mut dyn ConflictHandler,
+) -> Result<DagPatchComputation, String> {
+	let DagPatchRequest {
 		file_path,
 		contributors,
 		merge_key_source,
@@ -55,22 +87,7 @@ pub(crate) fn compute_dag_patches(
 		ignore_replace_path,
 		dep_overrides,
 		game_version,
-		&mut handler,
-	)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_dag_patches_with_handler(
-	file_path: &str,
-	contributors: &[ResolvedFileContributor],
-	merge_key_source: MergeKeySource,
-	policies: &MergePolicies,
-	mod_dag: &ModDag,
-	ignore_replace_path: &IgnoreReplacePath,
-	dep_overrides: &[DepOverride],
-	game_version: &str,
-	handler: &mut dyn ConflictHandler,
-) -> Result<DagPatchComputation, String> {
+	} = request;
 	let file_dag = induced_file_dag_with_overrides(
 		mod_dag,
 		file_path,
@@ -81,16 +98,16 @@ pub(crate) fn compute_dag_patches_with_handler(
 	let vanilla = parse_vanilla_contributor(file_path, contributors)?;
 	let parsed_contributors = parse_active_mod_contributors(file_path, contributors, &file_dag)?;
 	let mod_hashes = contributor_mod_hashes(contributors, &file_dag);
-	compute_dag_patches_from_parsed_with_cache(
-		&file_dag,
-		vanilla.as_ref(),
-		&parsed_contributors,
+	compute_dag_patches_from_parsed_with_cache(DagPatchArgs {
+		file_dag: &file_dag,
+		vanilla: vanilla.as_ref(),
+		contributors: &parsed_contributors,
 		merge_key_source,
 		policies,
 		handler,
-		Some(&mod_hashes),
+		mod_hashes: Some(&mod_hashes),
 		game_version,
-	)
+	})
 }
 
 fn parse_vanilla_contributor(
@@ -192,17 +209,17 @@ fn update_hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 	hasher.update(bytes);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn cached_or_diff_patches(
-	cache: Option<&ModDiffCache>,
-	target_path: &str,
-	mod_hash: Option<&str>,
-	vanilla_hash: Option<&str>,
-	current_base: &ParsedScriptFile,
-	current: &ParsedScriptFile,
-	merge_key_source: MergeKeySource,
-	game_version: &str,
-) -> Vec<ClausewitzPatch> {
+fn cached_or_diff_patches(args: CachedDiffArgs<'_>) -> Vec<ClausewitzPatch> {
+	let CachedDiffArgs {
+		cache,
+		target_path,
+		mod_hash,
+		vanilla_hash,
+		current_base,
+		current,
+		merge_key_source,
+		game_version,
+	} = args;
 	let (Some(cache), Some(mod_hash), Some(vanilla_hash)) = (cache, mod_hash, vanilla_hash) else {
 		return fold_renames(diff_ast(current_base, current, merge_key_source));
 	};
@@ -280,29 +297,31 @@ fn compute_dag_patches_from_parsed(
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<DagPatchComputation, String> {
-	compute_dag_patches_from_parsed_with_cache(
+	compute_dag_patches_from_parsed_with_cache(DagPatchArgs {
 		file_dag,
 		vanilla,
 		contributors,
 		merge_key_source,
 		policies,
 		handler,
-		None,
-		"unknown",
-	)
+		mod_hashes: None,
+		game_version: "unknown",
+	})
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compute_dag_patches_from_parsed_with_cache(
-	file_dag: &FileDag,
-	vanilla: Option<&ParsedScriptFile>,
-	contributors: &HashMap<ModId, ParsedScriptFile>,
-	merge_key_source: MergeKeySource,
-	policies: &MergePolicies,
-	handler: &mut dyn ConflictHandler,
-	mod_hashes: Option<&HashMap<ModId, String>>,
-	game_version: &str,
+	args: DagPatchArgs<'_>,
 ) -> Result<DagPatchComputation, String> {
+	let DagPatchArgs {
+		file_dag,
+		vanilla,
+		contributors,
+		merge_key_source,
+		policies,
+		handler,
+		mod_hashes,
+		game_version,
+	} = args;
 	let base_statements = final_base_statements(file_dag, vanilla);
 	let mut current_statements = base_statements.clone();
 	let mut mod_patches = Vec::new();
@@ -342,16 +361,16 @@ fn compute_dag_patches_from_parsed_with_cache(
 					file_dag.file_path()
 				)
 			})?;
-			let patches = cached_or_diff_patches(
-				diff_cache.as_ref(),
-				file_dag.file_path(),
-				mod_hashes.and_then(|hashes| hashes.get(mod_id).map(String::as_str)),
-				vanilla_hash.as_deref(),
-				&current_base,
+			let patches = cached_or_diff_patches(CachedDiffArgs {
+				cache: diff_cache.as_ref(),
+				target_path: file_dag.file_path(),
+				mod_hash: mod_hashes.and_then(|hashes| hashes.get(mod_id).map(String::as_str)),
+				vanilla_hash: vanilla_hash.as_deref(),
+				current_base: &current_base,
 				current,
 				merge_key_source,
 				game_version,
-			);
+			});
 			for patch in &patches {
 				addresses_in_level.extend(overwrite_addresses(patch));
 			}

@@ -16,7 +16,7 @@ use super::namespace::{
 };
 use super::normalize::normalize_defines_file;
 use super::patch::ClausewitzPatch;
-use super::patch_deps::compute_dag_patches_with_handler;
+use super::patch_deps::{DagPatchRequest, compute_dag_patches_with_handler};
 use super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict, PatchResolution};
 use super::plan::build_merge_plan_from_workspace;
 use super::stale_vanilla::detect_stale_vanilla_targets;
@@ -359,12 +359,14 @@ pub(crate) fn materialize_merge_internal(
 								}
 								Ok(Err(PatchBasedMergeFailure::Unresolved(conflict))) => {
 									if resolve_structural_merge_failure(
-										entry,
-										out_dir,
-										conflict,
-										&options,
-										&mut report,
-										&mut generated_paths,
+										StructuralMergeFailureCtx {
+											entry,
+											out_dir,
+											conflict,
+											options: &options,
+											report: &mut report,
+											generated_paths: &mut generated_paths,
+										},
 									)? {
 										continue;
 									}
@@ -374,12 +376,14 @@ pub(crate) fn materialize_merge_internal(
 										"patch merge failed: {err}"
 									));
 									if resolve_structural_merge_failure(
-										entry,
-										out_dir,
-										conflict,
-										&options,
-										&mut report,
-										&mut generated_paths,
+										StructuralMergeFailureCtx {
+											entry,
+											out_dir,
+											conflict,
+											options: &options,
+											report: &mut report,
+											generated_paths: &mut generated_paths,
+										},
 									)? {
 										continue;
 									}
@@ -389,12 +393,14 @@ pub(crate) fn materialize_merge_internal(
 										"patch merge panicked".to_string(),
 									);
 									if resolve_structural_merge_failure(
-										entry,
-										out_dir,
-										conflict,
-										&options,
-										&mut report,
-										&mut generated_paths,
+										StructuralMergeFailureCtx {
+											entry,
+											out_dir,
+											conflict,
+											options: &options,
+											report: &mut report,
+											generated_paths: &mut generated_paths,
+										},
 									)? {
 										continue;
 									}
@@ -1201,14 +1207,26 @@ fn record_plan_manual_conflicts(report: &mut MergeReport, plan: &MergePlanResult
 	}
 }
 
-fn resolve_structural_merge_failure(
-	entry: &MergePlanEntry,
-	out_dir: &Path,
+struct StructuralMergeFailureCtx<'a> {
+	entry: &'a MergePlanEntry,
+	out_dir: &'a Path,
 	conflict: PatchConflictReport,
-	options: &MergeMaterializeOptions,
-	report: &mut MergeReport,
-	generated_paths: &mut BTreeSet<String>,
+	options: &'a MergeMaterializeOptions,
+	report: &'a mut MergeReport,
+	generated_paths: &'a mut BTreeSet<String>,
+}
+
+fn resolve_structural_merge_failure(
+	ctx: StructuralMergeFailureCtx<'_>,
 ) -> Result<bool, MergeError> {
+	let StructuralMergeFailureCtx {
+		entry,
+		out_dir,
+		conflict,
+		options,
+		report,
+		generated_paths,
+	} = ctx;
 	let reason = conflict.reason;
 	report.manual_conflict_count += 1;
 	report
@@ -1795,14 +1813,16 @@ fn run_patch_merge_engine(
 		},
 	};
 	compute_dag_patches_with_handler(
-		target_path,
-		contributors,
-		context.merge_key_source,
-		&context.descriptor.merge_policies,
-		context.mod_dag,
-		context.ignore_replace_path,
-		context.dep_overrides,
-		context.cache_game_version,
+		DagPatchRequest {
+			file_path: target_path,
+			contributors,
+			merge_key_source: context.merge_key_source,
+			policies: &context.descriptor.merge_policies,
+			mod_dag: context.mod_dag,
+			ignore_replace_path: context.ignore_replace_path,
+			dep_overrides: context.dep_overrides,
+			game_version: context.cache_game_version,
+		},
 		&mut handler,
 	)
 	.map_err(|err| MergeError::Validation {

@@ -1155,16 +1155,16 @@ fn diff_single_statement(
 				..
 			},
 		) => {
-			diff_blocks(
+			diff_blocks(DiffBlockArgs {
 				key,
-				base,
-				overlay,
+				base_stmt: base,
+				overlay_stmt: overlay,
 				base_items,
 				overlay_items,
-				path,
+				parent_path: path,
 				patches,
 				depth,
-			);
+			});
 		}
 		// Type mismatch (scalar↔block) → replace.
 		_ => {
@@ -1185,17 +1185,28 @@ fn diff_single_statement(
 /// Threshold: if >80% of children changed, emit `ReplaceBlock`.
 const REPLACE_THRESHOLD: f64 = 0.8;
 
-#[allow(clippy::too_many_arguments)]
-fn diff_blocks(
-	key: &str,
-	base_stmt: &AstStatement,
-	overlay_stmt: &AstStatement,
-	base_items: &[AstStatement],
-	overlay_items: &[AstStatement],
-	parent_path: &[String],
-	patches: &mut Vec<ClausewitzPatch>,
+struct DiffBlockArgs<'a> {
+	key: &'a str,
+	base_stmt: &'a AstStatement,
+	overlay_stmt: &'a AstStatement,
+	base_items: &'a [AstStatement],
+	overlay_items: &'a [AstStatement],
+	parent_path: &'a [String],
+	patches: &'a mut Vec<ClausewitzPatch>,
 	depth: usize,
-) {
+}
+
+fn diff_blocks(args: DiffBlockArgs<'_>) {
+	let DiffBlockArgs {
+		key,
+		base_stmt,
+		overlay_stmt,
+		base_items,
+		overlay_items,
+		parent_path,
+		patches,
+		depth,
+	} = args;
 	// Depth limit: emit ReplaceBlock instead of recursing further.
 	if depth >= MAX_DIFF_DEPTH {
 		if !statements_equal_ignoring_span(base_stmt, overlay_stmt) {

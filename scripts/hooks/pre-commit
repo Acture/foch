@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# foch pre-commit gate — runs the same fmt/clippy/build check as CI.
+# Override with FOCH_SKIP_PRE_COMMIT=1 in emergencies.
+set -e
+if [[ "${FOCH_SKIP_PRE_COMMIT:-0}" == "1" ]]; then
+  echo "[foch] FOCH_SKIP_PRE_COMMIT=1; skipping pre-commit gate."
+  exit 0
+fi
+cd "$(git rev-parse --show-toplevel)"
+echo "[foch] cargo fmt --all --check"
+cargo fmt --all --check
+echo "[foch] cargo clippy --workspace --all-targets --all-features -- -D warnings"
+cargo clippy --workspace --all-targets --all-features --quiet -- -D warnings
+echo "[foch] cargo build --workspace --tests"
+cargo build --workspace --tests --quiet
+echo "[foch] pre-commit OK"

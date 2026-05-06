@@ -7,7 +7,7 @@ use foch_core::model::{
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 	let mut findings = Vec::new();
@@ -22,18 +22,18 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 			.unwrap_or("")
 			.is_empty()
 		{
-			findings.push(new_finding(
-				"missing-playset-field",
-				Severity::Error,
-				FindingChannel::Strict,
-				format!("mod entry {idx} missing displayName"),
-				mod_id.clone(),
-				Some(ctx.playlist_path.clone()),
-				None,
-				None,
-				None,
-				Some(1.0),
-			));
+			findings.push(new_finding(FindingArgs {
+				rule_id: "missing-playset-field",
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: format!("mod entry {idx} missing displayName"),
+				mod_id: mod_id.clone(),
+				path: Some(ctx.playlist_path.clone()),
+				evidence: None,
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			}));
 		}
 
 		if entry
@@ -43,33 +43,33 @@ pub fn check_required_fields(ctx: &CheckContext) -> Vec<Finding> {
 			.unwrap_or("")
 			.is_empty()
 		{
-			findings.push(new_finding(
-				"missing-playset-field",
-				Severity::Error,
-				FindingChannel::Strict,
-				format!("mod entry {idx} missing steamId"),
-				None,
-				Some(ctx.playlist_path.clone()),
-				None,
-				None,
-				None,
-				Some(1.0),
-			));
+			findings.push(new_finding(FindingArgs {
+				rule_id: "missing-playset-field",
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: format!("mod entry {idx} missing steamId"),
+				mod_id: None,
+				path: Some(ctx.playlist_path.clone()),
+				evidence: None,
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			}));
 		}
 
 		if entry.position.is_none() {
-			findings.push(new_finding(
-				"missing-playset-field",
-				Severity::Error,
-				FindingChannel::Strict,
-				format!("mod entry {idx} missing position"),
+			findings.push(new_finding(FindingArgs {
+				rule_id: "missing-playset-field",
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: format!("mod entry {idx} missing position"),
 				mod_id,
-				Some(ctx.playlist_path.clone()),
-				None,
-				None,
-				None,
-				Some(1.0),
-			));
+				path: Some(ctx.playlist_path.clone()),
+				evidence: None,
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			}));
 		}
 	}
 
@@ -84,18 +84,20 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 	for (idx, entry) in ctx.playlist.mods.iter().enumerate() {
 		if let Some(steam_id) = entry.steam_id.as_ref() {
 			if let Some(first_idx) = seen_steam_ids.get(steam_id) {
-				findings.push(new_finding(
-					"duplicate-playset-entry",
-					Severity::Error,
-					FindingChannel::Strict,
-					format!("steamId conflict: {steam_id} (first seen at index {first_idx})"),
-					Some(steam_id.clone()),
-					Some(ctx.playlist_path.clone()),
-					Some(format!("duplicate entry index: {idx}")),
-					None,
-					None,
-					Some(1.0),
-				));
+				findings.push(new_finding(FindingArgs {
+					rule_id: "duplicate-playset-entry",
+					severity: Severity::Error,
+					channel: FindingChannel::Strict,
+					message: format!(
+						"steamId conflict: {steam_id} (first seen at index {first_idx})"
+					),
+					mod_id: Some(steam_id.clone()),
+					path: Some(ctx.playlist_path.clone()),
+					evidence: Some(format!("duplicate entry index: {idx}")),
+					line: None,
+					column: None,
+					confidence: Some(1.0),
+				}));
 			} else {
 				seen_steam_ids.insert(steam_id.clone(), idx);
 			}
@@ -103,18 +105,20 @@ pub fn check_duplicate_mod_identity(ctx: &CheckContext) -> Vec<Finding> {
 
 		if let Some(position) = entry.position {
 			if let Some(first_idx) = seen_positions.get(&position) {
-				findings.push(new_finding(
-					"duplicate-playset-entry",
-					Severity::Error,
-					FindingChannel::Strict,
-					format!("position conflict: {position} (first seen at index {first_idx})"),
-					entry.steam_id.clone(),
-					Some(ctx.playlist_path.clone()),
-					Some(format!("duplicate entry index: {idx}")),
-					None,
-					None,
-					Some(1.0),
-				));
+				findings.push(new_finding(FindingArgs {
+					rule_id: "duplicate-playset-entry",
+					severity: Severity::Error,
+					channel: FindingChannel::Strict,
+					message: format!(
+						"position conflict: {position} (first seen at index {first_idx})"
+					),
+					mod_id: entry.steam_id.clone(),
+					path: Some(ctx.playlist_path.clone()),
+					evidence: Some(format!("duplicate entry index: {idx}")),
+					line: None,
+					column: None,
+					confidence: Some(1.0),
+				}));
 			} else {
 				seen_positions.insert(position, idx);
 			}
@@ -137,42 +141,42 @@ pub fn check_missing_descriptor(ctx: &CheckContext) -> Vec<Finding> {
 			&mod_item.descriptor,
 			&mod_item.descriptor_error,
 		) {
-			(None, _, _) => findings.push(new_finding(
-				"mod-descriptor-error",
-				Severity::Error,
-				FindingChannel::Strict,
-				"failed to locate descriptor.mod".to_string(),
-				Some(mod_item.mod_id.clone()),
-				mod_item.root_path.clone(),
-				None,
-				None,
-				None,
-				Some(1.0),
-			)),
-			(Some(path), None, Some(err)) => findings.push(new_finding(
-				"mod-descriptor-error",
-				Severity::Error,
-				FindingChannel::Strict,
-				"failed to parse descriptor.mod".to_string(),
-				Some(mod_item.mod_id.clone()),
-				Some(path.clone()),
-				Some(err.clone()),
-				None,
-				None,
-				Some(1.0),
-			)),
-			(Some(path), None, None) => findings.push(new_finding(
-				"mod-descriptor-error",
-				Severity::Error,
-				FindingChannel::Strict,
-				"descriptor.mod does not exist".to_string(),
-				Some(mod_item.mod_id.clone()),
-				Some(path.clone()),
-				None,
-				None,
-				None,
-				Some(1.0),
-			)),
+			(None, _, _) => findings.push(new_finding(FindingArgs {
+				rule_id: "mod-descriptor-error",
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: "failed to locate descriptor.mod".to_string(),
+				mod_id: Some(mod_item.mod_id.clone()),
+				path: mod_item.root_path.clone(),
+				evidence: None,
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			})),
+			(Some(path), None, Some(err)) => findings.push(new_finding(FindingArgs {
+				rule_id: "mod-descriptor-error",
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: "failed to parse descriptor.mod".to_string(),
+				mod_id: Some(mod_item.mod_id.clone()),
+				path: Some(path.clone()),
+				evidence: Some(err.clone()),
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			})),
+			(Some(path), None, None) => findings.push(new_finding(FindingArgs {
+				rule_id: "mod-descriptor-error",
+				severity: Severity::Error,
+				channel: FindingChannel::Strict,
+				message: "descriptor.mod does not exist".to_string(),
+				mod_id: Some(mod_item.mod_id.clone()),
+				path: Some(path.clone()),
+				evidence: None,
+				line: None,
+				column: None,
+				confidence: Some(1.0),
+			})),
 			_ => {}
 		}
 	}
@@ -218,18 +222,18 @@ pub fn check_file_conflict(ctx: &CheckContext) -> Vec<Finding> {
 			unique.join(" -> ")
 		};
 
-		findings.push(new_finding(
-			"file-overwrite-conflict",
-			Severity::Warning,
-			FindingChannel::Advisory,
+		findings.push(new_finding(FindingArgs {
+			rule_id: "file-overwrite-conflict",
+			severity: Severity::Warning,
+			channel: FindingChannel::Advisory,
 			message,
-			unique.last().cloned(),
-			Some(path.into()),
-			Some(evidence),
-			None,
-			None,
-			Some(if mergeable { 0.75 } else { 0.85 }),
-		));
+			mod_id: unique.last().cloned(),
+			path: Some(path.into()),
+			evidence: Some(evidence),
+			line: None,
+			column: None,
+			confidence: Some(if mergeable { 0.75 } else { 0.85 }),
+		}));
 	}
 
 	findings
@@ -269,18 +273,18 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 				continue;
 			}
 
-			findings.push(new_finding(
-				"missing-mod-dependency",
-				Severity::Warning,
-				FindingChannel::Advisory,
-				"missing dependency".to_string(),
-				Some(mod_item.mod_id.clone()),
-				mod_item.descriptor_path.clone(),
-				Some(format!("{} depends on {dependency}", descriptor.name)),
-				None,
-				None,
-				Some(0.9),
-			));
+			findings.push(new_finding(FindingArgs {
+				rule_id: "missing-mod-dependency",
+				severity: Severity::Warning,
+				channel: FindingChannel::Advisory,
+				message: "missing dependency".to_string(),
+				mod_id: Some(mod_item.mod_id.clone()),
+				path: mod_item.descriptor_path.clone(),
+				evidence: Some(format!("{} depends on {dependency}", descriptor.name)),
+				line: None,
+				column: None,
+				confidence: Some(0.9),
+			}));
 		}
 	}
 
@@ -618,24 +622,25 @@ pub fn check_version_mismatch(ctx: &CheckContext, game_version: &str) -> Vec<Fin
 	detect_version_mismatch(ctx, game_version)
 		.into_iter()
 		.map(|finding| {
-			new_finding(
-				"mod-version-mismatch",
-				finding.severity,
-				FindingChannel::Advisory,
-				finding.message.clone(),
-				Some(finding.mod_id.clone()),
-				ctx.mods
+			new_finding(FindingArgs {
+				rule_id: "mod-version-mismatch",
+				severity: finding.severity,
+				channel: FindingChannel::Advisory,
+				message: finding.message.clone(),
+				mod_id: Some(finding.mod_id.clone()),
+				path: ctx
+					.mods
 					.iter()
 					.find(|mod_item| mod_item.mod_id == finding.mod_id)
 					.and_then(|mod_item| mod_item.descriptor_path.clone()),
-				Some(format!(
+				evidence: Some(format!(
 					"tag={} supported_version={} game_version={}",
 					finding.tag, finding.supported_version, finding.game_version
 				)),
-				None,
-				None,
-				Some(0.8),
-			)
+				line: None,
+				column: None,
+				confidence: Some(0.8),
+			})
 		})
 		.collect()
 }
@@ -644,30 +649,31 @@ pub fn check_dependency_misuse(ctx: &CheckContext) -> Vec<Finding> {
 	detect_dependency_misuse(ctx)
 		.into_iter()
 		.map(|finding| {
-			new_finding(
-				"unused-mod-dependency",
-				Severity::Warning,
-				FindingChannel::Advisory,
-				format!(
+			new_finding(FindingArgs {
+				rule_id: "unused-mod-dependency",
+				severity: Severity::Warning,
+				channel: FindingChannel::Advisory,
+				message: format!(
 					"descriptor.mod dependencies misuse suspected: {} declares {} without semantic references",
 					finding.mod_id, finding.suspicious_dep_id
 				),
-				Some(finding.mod_id.clone()),
-				ctx.mods
+				mod_id: Some(finding.mod_id.clone()),
+				path: ctx
+					.mods
 					.iter()
 					.find(|mod_item| mod_item.mod_id == finding.mod_id)
 					.and_then(|mod_item| mod_item.descriptor_path.clone()),
-				Some(format!(
+				evidence: Some(format!(
 					"dep_id={} dep_display_name={} semantic_refs_to_dep={} false_remove_count={}",
 					finding.suspicious_dep_id,
 					finding.suspicious_dep_display_name,
 					finding.evidence.semantic_refs_to_dep,
 					finding.evidence.false_remove_count
 				)),
-				None,
-				None,
-				Some(0.8),
-			)
+				line: None,
+				column: None,
+				confidence: Some(0.8),
+			})
 		})
 		.collect()
 }
@@ -767,36 +773,49 @@ pub fn check_duplicate_scripted_effect(ctx: &CheckContext) -> Vec<Finding> {
 		let Some(last) = defs.last() else {
 			continue;
 		};
-		findings.push(new_finding(
-			"duplicate-scripted-effect",
-			Severity::Warning,
-			FindingChannel::Advisory,
-			format!("duplicate scripted effect: {name}"),
-			Some(last.mod_id.clone()),
-			Some(last.path.clone()),
-			Some(evidence),
-			Some(last.line),
-			Some(last.column),
-			Some(0.8),
-		));
+		findings.push(new_finding(FindingArgs {
+			rule_id: "duplicate-scripted-effect",
+			severity: Severity::Warning,
+			channel: FindingChannel::Advisory,
+			message: format!("duplicate scripted effect: {name}"),
+			mod_id: Some(last.mod_id.clone()),
+			path: Some(last.path.clone()),
+			evidence: Some(evidence),
+			line: Some(last.line),
+			column: Some(last.column),
+			confidence: Some(0.8),
+		}));
 	}
 
 	findings
 }
 
-#[allow(clippy::too_many_arguments)]
-fn new_finding(
-	rule_id: &str,
+struct FindingArgs<'a> {
+	rule_id: &'a str,
 	severity: Severity,
 	channel: FindingChannel,
 	message: String,
 	mod_id: Option<String>,
-	path: Option<std::path::PathBuf>,
+	path: Option<PathBuf>,
 	evidence: Option<String>,
 	line: Option<usize>,
 	column: Option<usize>,
 	confidence: Option<f32>,
-) -> Finding {
+}
+
+fn new_finding(args: FindingArgs<'_>) -> Finding {
+	let FindingArgs {
+		rule_id,
+		severity,
+		channel,
+		message,
+		mod_id,
+		path,
+		evidence,
+		line,
+		column,
+		confidence,
+	} = args;
 	Finding {
 		rule_id: rule_id.to_string(),
 		severity,

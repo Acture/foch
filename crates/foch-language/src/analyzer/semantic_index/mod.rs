@@ -212,17 +212,17 @@ fn build_file_index(
 		aliases.insert("FROM".to_string(), from_alias);
 	}
 
-	let root_scope = push_scope(
+	let root_scope = push_scope(ScopeArgs {
 		index,
-		ScopeKind::File,
-		None,
-		aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown),
+		kind: ScopeKind::File,
+		parent: None,
+		this_type: aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown),
 		aliases,
-		&file.mod_id,
-		&file.relative_path,
-		line_from_stmt(file.ast.statements.first()),
-		"",
-	);
+		mod_id: &file.mod_id,
+		path: &file.relative_path,
+		line: line_from_stmt(file.ast.statements.first()),
+		key: "",
+	});
 
 	let mut ctx = BuildContext {
 		mod_id: &file.mod_id,
@@ -463,17 +463,19 @@ fn walk_statements(
 				record_alias_tokens_from_value(index, scope_id, ctx, value);
 				record_param_tokens(index, active_scripted_effect, value);
 				if let AstValue::Block { items, span } = value {
-					let child_scope = push_scope(
+					let this_type = scope_this_type(index, scope_id);
+					let aliases = scope_aliases(index, scope_id);
+					let child_scope = push_scope(ScopeArgs {
 						index,
-						ScopeKind::Block,
-						Some(scope_id),
-						scope_this_type(index, scope_id),
-						scope_aliases(index, scope_id),
-						ctx.mod_id,
-						ctx.path,
-						span.start.line,
-						"",
-					);
+						kind: ScopeKind::Block,
+						parent: Some(scope_id),
+						this_type,
+						aliases,
+						mod_id: ctx.mod_id,
+						path: ctx.path,
+						line: span.start.line,
+						key: "",
+					});
 					walk_statements(
 						items,
 						index,
@@ -510,17 +512,17 @@ fn handle_event_block(
 	aliases.insert("ROOT".to_string(), this_type);
 	aliases.insert("FROM".to_string(), from_type);
 	aliases.insert("PREV".to_string(), scope_this_type(index, scope_id));
-	let event_scope = push_scope(
+	let event_scope = push_scope(ScopeArgs {
 		index,
-		ScopeKind::Event,
-		Some(scope_id),
+		kind: ScopeKind::Event,
+		parent: Some(scope_id),
 		this_type,
 		aliases,
-		ctx.mod_id,
-		ctx.path,
-		span.start.line,
+		mod_id: ctx.mod_id,
+		path: ctx.path,
+		line: span.start.line,
 		key,
-	);
+	});
 
 	if let Some(id) = extract_assignment_scalar(items, "id") {
 		let full_id = if id.contains('.') {
@@ -1405,17 +1407,17 @@ fn create_child_scope(
 		kind = ScopeKind::Event;
 	}
 
-	push_scope(
+	push_scope(ScopeArgs {
 		index,
 		kind,
-		Some(parent_scope_id),
+		parent: Some(parent_scope_id),
 		this_type,
 		aliases,
-		ctx.mod_id,
-		ctx.path,
-		span.start.line,
+		mod_id: ctx.mod_id,
+		path: ctx.path,
+		line: span.start.line,
 		key,
-	)
+	})
 }
 
 fn nearest_conditional_context_kind(
@@ -1496,18 +1498,30 @@ fn numeric_effect_context_semantics(key: &str) -> Option<EffectContextScopeSeman
 	}
 }
 
-#[allow(clippy::too_many_arguments)]
-fn push_scope(
-	index: &mut SemanticIndex,
+struct ScopeArgs<'a> {
+	index: &'a mut SemanticIndex,
 	kind: ScopeKind,
 	parent: Option<usize>,
 	this_type: ScopeType,
 	aliases: HashMap<String, ScopeType>,
-	mod_id: &str,
-	path: &Path,
+	mod_id: &'a str,
+	path: &'a Path,
 	line: usize,
-	key: &str,
-) -> usize {
+	key: &'a str,
+}
+
+fn push_scope(args: ScopeArgs<'_>) -> usize {
+	let ScopeArgs {
+		index,
+		kind,
+		parent,
+		this_type,
+		aliases,
+		mod_id,
+		path,
+		line,
+		key,
+	} = args;
 	let id = index.scopes.len();
 	index.scopes.push(ScopeNode {
 		id,

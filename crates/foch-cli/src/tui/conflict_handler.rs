@@ -71,19 +71,31 @@ pub struct ConflictResolver {
 	selected_index: usize,
 }
 
+pub struct ConflictResolverArgs<'a> {
+	pub conflict: &'a PatchConflict,
+	pub file: &'a Path,
+	pub address: &'a PatchAddress,
+	pub conflict_id: &'a str,
+	pub mod_displayname_lookup: &'a HashMap<String, String>,
+	pub current_idx: usize,
+	pub total: usize,
+	pub deferred_so_far: usize,
+	pub vanilla_snippet: Option<String>,
+}
+
 impl ConflictResolver {
-	#[allow(clippy::too_many_arguments)]
-	pub fn new(
-		conflict: &PatchConflict,
-		file: &Path,
-		address: &PatchAddress,
-		conflict_id: &str,
-		mod_displayname_lookup: &HashMap<String, String>,
-		current_idx: usize,
-		total: usize,
-		deferred_so_far: usize,
-		vanilla_snippet: Option<String>,
-	) -> Self {
+	pub fn new(args: ConflictResolverArgs<'_>) -> Self {
+		let ConflictResolverArgs {
+			conflict,
+			file,
+			address,
+			conflict_id,
+			mod_displayname_lookup,
+			current_idx,
+			total,
+			deferred_so_far,
+			vanilla_snippet,
+		} = args;
 		let candidates: Vec<ConflictCandidate> = conflict
 			.patches
 			.iter()
@@ -340,17 +352,17 @@ impl ConflictHandler for InteractiveTuiHandler {
 		};
 		let address_path = address.path.join("/");
 		let conflict_id = compute_conflict_id(&current_file, &address_path, &address.key);
-		let mut resolver = ConflictResolver::new(
+		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
 			conflict,
-			&current_file,
+			file: &current_file,
 			address,
-			&conflict_id,
-			&self.mod_displayname_lookup,
-			self.current_conflict_index,
-			self.total_conflicts,
-			self.deferred_so_far,
-			self.vanilla_snippet.clone(),
-		);
+			conflict_id: &conflict_id,
+			mod_displayname_lookup: &self.mod_displayname_lookup,
+			current_idx: self.current_conflict_index,
+			total: self.total_conflicts,
+			deferred_so_far: self.deferred_so_far,
+			vanilla_snippet: self.vanilla_snippet.clone(),
+		});
 
 		let action = match run_resolver(&mut resolver) {
 			Ok(action) => action,
@@ -1348,17 +1360,17 @@ mod tests {
 
 	#[test]
 	fn render_conflict_resolver_into_buffer() {
-		let resolver = ConflictResolver::new(
-			&sample_conflict(),
-			Path::new("events/FlavorFRA.txt"),
-			&sample_address(),
-			"conflict-id",
-			&display_names(),
-			1,
-			30,
-			0,
-			Some("name = \"old\"\n".to_string()),
-		);
+		let resolver = ConflictResolver::new(ConflictResolverArgs {
+			conflict: &sample_conflict(),
+			file: Path::new("events/FlavorFRA.txt"),
+			address: &sample_address(),
+			conflict_id: "conflict-id",
+			mod_displayname_lookup: &display_names(),
+			current_idx: 1,
+			total: 30,
+			deferred_so_far: 0,
+			vanilla_snippet: Some("name = \"old\"\n".to_string()),
+		});
 		let area = Rect::new(0, 0, 76, 30);
 		let mut actual = Buffer::empty(area);
 		Widget::render(&resolver, area, &mut actual);
@@ -1389,17 +1401,17 @@ mod tests {
 
 	#[test]
 	fn render_conflict_resolver_without_vanilla_shows_placeholder() {
-		let resolver = ConflictResolver::new(
-			&sample_conflict(),
-			Path::new("events/FlavorFRA.txt"),
-			&sample_address(),
-			"conflict-id",
-			&display_names(),
-			1,
-			2,
-			0,
-			None,
-		);
+		let resolver = ConflictResolver::new(ConflictResolverArgs {
+			conflict: &sample_conflict(),
+			file: Path::new("events/FlavorFRA.txt"),
+			address: &sample_address(),
+			conflict_id: "conflict-id",
+			mod_displayname_lookup: &display_names(),
+			current_idx: 1,
+			total: 2,
+			deferred_so_far: 0,
+			vanilla_snippet: None,
+		});
 		let area = Rect::new(0, 0, 76, 30);
 		let mut actual = Buffer::empty(area);
 		Widget::render(&resolver, area, &mut actual);
@@ -1556,17 +1568,17 @@ mod tests {
 
 	#[test]
 	fn handle_key_selects_candidates_and_actions() {
-		let mut resolver = ConflictResolver::new(
-			&sample_conflict(),
-			Path::new("events/FlavorFRA.txt"),
-			&sample_address(),
-			"conflict-id",
-			&display_names(),
-			1,
-			2,
-			0,
-			None,
-		);
+		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
+			conflict: &sample_conflict(),
+			file: Path::new("events/FlavorFRA.txt"),
+			address: &sample_address(),
+			conflict_id: "conflict-id",
+			mod_displayname_lookup: &display_names(),
+			current_idx: 1,
+			total: 2,
+			deferred_so_far: 0,
+			vanilla_snippet: None,
+		});
 		let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
 		let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
 		let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
@@ -1595,17 +1607,17 @@ mod tests {
 
 	#[test]
 	fn handle_key_supports_action_shortcuts() {
-		let mut resolver = ConflictResolver::new(
-			&sample_conflict(),
-			Path::new("events/FlavorFRA.txt"),
-			&sample_address(),
-			"conflict-id",
-			&display_names(),
-			1,
-			2,
-			0,
-			None,
-		);
+		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
+			conflict: &sample_conflict(),
+			file: Path::new("events/FlavorFRA.txt"),
+			address: &sample_address(),
+			conflict_id: "conflict-id",
+			mod_displayname_lookup: &display_names(),
+			current_idx: 1,
+			total: 2,
+			deferred_so_far: 0,
+			vanilla_snippet: None,
+		});
 		let rendered_actions: Vec<String> = choice_lines(&resolver)
 			.into_iter()
 			.filter_map(|line| line.item_index.map(|_| line.text))
