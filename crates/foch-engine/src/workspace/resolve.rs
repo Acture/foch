@@ -46,6 +46,7 @@ pub(crate) struct ResolvedWorkspace {
 	pub playlist: Playlist,
 	pub mods: Vec<ModCandidate>,
 	pub installed_base_snapshot: Option<InstalledBaseSnapshot>,
+	pub cache_game_version: Option<String>,
 	pub mod_snapshots: Vec<Option<LoadedModSnapshot>>,
 	pub file_inventory: BTreeMap<String, Vec<ResolvedFileContributor>>,
 }
@@ -100,6 +101,9 @@ pub(crate) fn resolve_workspace(
 				.and_then(|game_root| detect_game_version(game_root)),
 		)
 	};
+	let cache_game_version = mod_cache_game_version
+		.as_ref()
+		.map(|version| format!("{} {version}", playlist.game.key()));
 	let snapshot_filter = match FileFilter::new(
 		playlist.game.clone(),
 		&request.config.extra_ignore_patterns,
@@ -135,6 +139,7 @@ pub(crate) fn resolve_workspace(
 		playlist,
 		mods,
 		installed_base_snapshot,
+		cache_game_version,
 		mod_snapshots,
 		file_inventory,
 	})

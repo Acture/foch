@@ -37,6 +37,7 @@ struct StoredDagBase {
 	deps_hash: String,
 	file_path: String,
 	foch_version: String,
+	game_version: String,
 	statements: Vec<AstStatement>,
 }
 
@@ -61,8 +62,9 @@ impl DagBaseCache {
 		deps_hash: &str,
 		file_path: &str,
 		foch_version: &str,
+		game_version: &str,
 	) -> Option<Vec<AstStatement>> {
-		let hit = self.lookup_inner(deps_hash, file_path, foch_version);
+		let hit = self.lookup_inner(deps_hash, file_path, foch_version, game_version);
 		if hit.is_some() {
 			DAG_BASE_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
 		} else {
@@ -76,6 +78,7 @@ impl DagBaseCache {
 		deps_hash: &str,
 		file_path: &str,
 		foch_version: &str,
+		game_version: &str,
 		statements: &[AstStatement],
 	) -> Result<(), CacheError> {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
@@ -84,11 +87,12 @@ impl DagBaseCache {
 			deps_hash: deps_hash.to_string(),
 			file_path: file_path.to_string(),
 			foch_version: foch_version.to_string(),
+			game_version: game_version.to_string(),
 			statements: statements.to_vec(),
 		};
 		let encoded =
 			bincode::serialize(&payload).map_err(|err| CacheError::Encode(err.to_string()))?;
-		let path = self.cache_file(deps_hash, file_path, foch_version);
+		let path = self.cache_file(deps_hash, file_path, foch_version, game_version);
 		let tmp = path.with_extension(format!("bin.{}.tmp", std::process::id()));
 		fs::write(&tmp, encoded).map_err(CacheError::Io)?;
 		fs::rename(&tmp, &path).map_err(|err| {
@@ -103,23 +107,35 @@ impl DagBaseCache {
 		deps_hash: &str,
 		file_path: &str,
 		foch_version: &str,
+		game_version: &str,
 	) -> Option<Vec<AstStatement>> {
-		let path = self.cache_file(deps_hash, file_path, foch_version);
+		let path = self.cache_file(deps_hash, file_path, foch_version, game_version);
 		let raw = fs::read(path).ok()?;
 		let stored = bincode::deserialize::<StoredDagBase>(&raw).ok()?;
 		if stored.cache_version != DAG_BASE_CACHE_VERSION
 			|| stored.deps_hash != deps_hash
 			|| stored.file_path != file_path
 			|| stored.foch_version != foch_version
+			|| stored.game_version != game_version
 		{
 			return None;
 		}
 		Some(stored.statements)
 	}
 
-	fn cache_file(&self, deps_hash: &str, file_path: &str, foch_version: &str) -> PathBuf {
-		self.root
-			.join(cache_filename(deps_hash, file_path, foch_version))
+	fn cache_file(
+		&self,
+		deps_hash: &str,
+		file_path: &str,
+		foch_version: &str,
+		game_version: &str,
+	) -> PathBuf {
+		self.root.join(cache_filename(
+			deps_hash,
+			file_path,
+			foch_version,
+			game_version,
+		))
 	}
 }
 
@@ -142,16 +158,22 @@ pub fn reset_dag_base_cache_stats() {
 	DAG_BASE_CACHE_MISSES.store(0, Ordering::Relaxed);
 }
 
-fn cache_filename(deps_hash: &str, file_path: &str, foch_version: &str) -> String {
-	let key = cache_key(deps_hash, file_path, foch_version);
+fn cache_filename(
+	deps_hash: &str,
+	file_path: &str,
+	foch_version: &str,
+	game_version: &str,
+) -> String {
+	let key = cache_key(deps_hash, file_path, foch_version, game_version);
 	format!("{}__{}.bin", compact_hash(deps_hash), key)
 }
 
-fn cache_key(deps_hash: &str, file_path: &str, foch_version: &str) -> String {
+fn cache_key(deps_hash: &str, file_path: &str, foch_version: &str, game_version: &str) -> String {
 	let mut hasher = blake3::Hasher::new();
 	update_hash_part(&mut hasher, deps_hash.as_bytes());
 	update_hash_part(&mut hasher, file_path.as_bytes());
 	update_hash_part(&mut hasher, foch_version.as_bytes());
+	update_hash_part(&mut hasher, game_version.as_bytes());
 	hasher.finalize().to_hex()[..HASH_HEX_LEN].to_string()
 }
 
@@ -241,14 +263,18 @@ mod tests {
 		let cache = DagBaseCache::open(&cache_dir("dag-base-hit"));
 		let statements = sample_statements();
 
-		assert!(cache.lookup("deps-a", "common/foo.txt", "0.1.0").is_none());
+		assert!(
+			cache
+				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.is_none()
+		);
 		cache
-			.store("deps-a", "common/foo.txt", "0.1.0", &statements)
+			.store("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37", &statements)
 			.expect("store base");
 
 		assert_eq!(
 			cache
-				.lookup("deps-a", "common/foo.txt", "0.1.0")
+				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
 				.expect("cache hit"),
 			statements
 		);
@@ -258,12 +284,18 @@ mod tests {
 	fn dag_base_cache_invalidates_when_dep_set_changes() {
 		let cache = DagBaseCache::open(&cache_dir("dag-base-deps"));
 		cache
-			.store("deps-a-b", "common/foo.txt", "0.1.0", &sample_statements())
+			.store(
+				"deps-a-b",
+				"common/foo.txt",
+				"0.1.0",
+				"eu4 1.37",
+				&sample_statements(),
+			)
 			.expect("store base");
 
 		assert!(
 			cache
-				.lookup("deps-a-c", "common/foo.txt", "0.1.0")
+				.lookup("deps-a-c", "common/foo.txt", "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 	}
@@ -276,13 +308,34 @@ mod tests {
 				"hash-before",
 				"common/foo.txt",
 				"0.1.0",
+				"eu4 1.37",
 				&sample_statements(),
 			)
 			.expect("store base");
 
 		assert!(
 			cache
-				.lookup("hash-after", "common/foo.txt", "0.1.0")
+				.lookup("hash-after", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn dag_base_cache_invalidates_when_game_version_changes() {
+		let cache = DagBaseCache::open(&cache_dir("dag-base-game-version"));
+		cache
+			.store(
+				"deps-a",
+				"common/foo.txt",
+				"0.1.0",
+				"eu4 1.36",
+				&sample_statements(),
+			)
+			.expect("store base");
+
+		assert!(
+			cache
+				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 	}
@@ -291,9 +344,19 @@ mod tests {
 	fn dag_base_cache_independent_per_file_path() {
 		let cache = DagBaseCache::open(&cache_dir("dag-base-path"));
 		cache
-			.store("deps-a", "common/foo.txt", "0.1.0", &sample_statements())
+			.store(
+				"deps-a",
+				"common/foo.txt",
+				"0.1.0",
+				"eu4 1.37",
+				&sample_statements(),
+			)
 			.expect("store base");
 
-		assert!(cache.lookup("deps-a", "common/bar.txt", "0.1.0").is_none());
+		assert!(
+			cache
+				.lookup("deps-a", "common/bar.txt", "0.1.0", "eu4 1.37")
+				.is_none()
+		);
 	}
 }

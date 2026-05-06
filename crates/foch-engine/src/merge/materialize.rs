@@ -162,6 +162,7 @@ pub(crate) fn materialize_merge_internal(
 	let profile = eu4_profile();
 	let mod_versions = workspace_mod_versions(&workspace);
 	let mod_display_names = workspace_mod_display_names(&workspace);
+	let cache_game_version = workspace_cache_game_version(&workspace);
 	let emit_options = load_emit_options(&request)?;
 
 	crate::cache::reset_mod_diff_cache_stats();
@@ -257,6 +258,7 @@ pub(crate) fn materialize_merge_internal(
 									resolution_map: &resolution_map,
 									mod_versions: &mod_versions,
 									mod_display_names: &mod_display_names,
+									cache_game_version: &cache_game_version,
 									emit_options: &emit_options,
 								};
 								patch_based_structural_merge(&target, &contribs, context)
@@ -935,6 +937,13 @@ fn workspace_game_version(workspace: &ResolvedWorkspace) -> Option<&str> {
 		.map(|installed| installed.snapshot.game_version.as_str())
 }
 
+fn workspace_cache_game_version(workspace: &ResolvedWorkspace) -> String {
+	workspace
+		.cache_game_version
+		.clone()
+		.unwrap_or_else(|| format!("{} unknown", workspace.playlist.game.key()))
+}
+
 fn workspace_mod_versions(workspace: &ResolvedWorkspace) -> HashMap<String, String> {
 	workspace
 		.mods
@@ -1441,6 +1450,7 @@ struct PatchBasedMergeContext<'a> {
 	resolution_map: &'a foch_core::config::ResolutionMap,
 	mod_versions: &'a HashMap<String, String>,
 	mod_display_names: &'a HashMap<String, String>,
+	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
 }
 
@@ -1665,6 +1675,7 @@ fn run_patch_merge_engine(
 		context.mod_dag,
 		context.ignore_replace_path,
 		context.dep_overrides,
+		context.cache_game_version,
 		&mut handler,
 	)
 	.map_err(|err| MergeError::Validation {
@@ -2482,6 +2493,7 @@ mod tests {
 			},
 			mods: Vec::new(),
 			installed_base_snapshot: None,
+			cache_game_version: None,
 			mod_snapshots: Vec::new(),
 			file_inventory,
 		}

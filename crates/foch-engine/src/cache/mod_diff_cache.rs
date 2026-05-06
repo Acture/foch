@@ -38,6 +38,7 @@ struct StoredModDiff {
 	mod_hash: String,
 	vanilla_hash: String,
 	foch_version: String,
+	game_version: String,
 	patches: Vec<ClausewitzPatch>,
 }
 
@@ -63,8 +64,15 @@ impl ModDiffCache {
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
+		game_version: &str,
 	) -> Option<Vec<ClausewitzPatch>> {
-		let hit = self.lookup_inner(target_path, mod_hash, vanilla_hash, foch_version);
+		let hit = self.lookup_inner(
+			target_path,
+			mod_hash,
+			vanilla_hash,
+			foch_version,
+			game_version,
+		);
 		if hit.is_some() {
 			MOD_DIFF_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
 		} else {
@@ -79,6 +87,7 @@ impl ModDiffCache {
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
+		game_version: &str,
 		patches: &[ClausewitzPatch],
 	) -> Result<(), CacheError> {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
@@ -88,11 +97,18 @@ impl ModDiffCache {
 			mod_hash: mod_hash.to_string(),
 			vanilla_hash: vanilla_hash.to_string(),
 			foch_version: foch_version.to_string(),
+			game_version: game_version.to_string(),
 			patches: patches.to_vec(),
 		};
 		let encoded =
 			bincode::serialize(&payload).map_err(|err| CacheError::Encode(err.to_string()))?;
-		let path = self.cache_file(target_path, mod_hash, vanilla_hash, foch_version);
+		let path = self.cache_file(
+			target_path,
+			mod_hash,
+			vanilla_hash,
+			foch_version,
+			game_version,
+		);
 		let tmp = path.with_extension(format!("bin.{}.tmp", std::process::id()));
 		fs::write(&tmp, encoded).map_err(CacheError::Io)?;
 		fs::rename(&tmp, &path).map_err(|err| {
@@ -108,8 +124,15 @@ impl ModDiffCache {
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
+		game_version: &str,
 	) -> Option<Vec<ClausewitzPatch>> {
-		let path = self.cache_file(target_path, mod_hash, vanilla_hash, foch_version);
+		let path = self.cache_file(
+			target_path,
+			mod_hash,
+			vanilla_hash,
+			foch_version,
+			game_version,
+		);
 		let raw = fs::read(path).ok()?;
 		let stored = bincode::deserialize::<StoredModDiff>(&raw).ok()?;
 		if stored.cache_version != MOD_DIFF_CACHE_VERSION
@@ -117,6 +140,7 @@ impl ModDiffCache {
 			|| stored.mod_hash != mod_hash
 			|| stored.vanilla_hash != vanilla_hash
 			|| stored.foch_version != foch_version
+			|| stored.game_version != game_version
 		{
 			return None;
 		}
@@ -129,12 +153,14 @@ impl ModDiffCache {
 		mod_hash: &str,
 		vanilla_hash: &str,
 		foch_version: &str,
+		game_version: &str,
 	) -> PathBuf {
 		self.root.join(cache_filename(
 			target_path,
 			mod_hash,
 			vanilla_hash,
 			foch_version,
+			game_version,
 		))
 	}
 }
@@ -163,8 +189,15 @@ fn cache_filename(
 	mod_hash: &str,
 	vanilla_hash: &str,
 	foch_version: &str,
+	game_version: &str,
 ) -> String {
-	let key = cache_key(target_path, mod_hash, vanilla_hash, foch_version);
+	let key = cache_key(
+		target_path,
+		mod_hash,
+		vanilla_hash,
+		foch_version,
+		game_version,
+	);
 	format!(
 		"{}__{}__{}.bin",
 		compact_hash(mod_hash),
@@ -173,12 +206,19 @@ fn cache_filename(
 	)
 }
 
-fn cache_key(target_path: &str, mod_hash: &str, vanilla_hash: &str, foch_version: &str) -> String {
+fn cache_key(
+	target_path: &str,
+	mod_hash: &str,
+	vanilla_hash: &str,
+	foch_version: &str,
+	game_version: &str,
+) -> String {
 	let mut hasher = blake3::Hasher::new();
 	update_hash_part(&mut hasher, target_path.as_bytes());
 	update_hash_part(&mut hasher, mod_hash.as_bytes());
 	update_hash_part(&mut hasher, vanilla_hash.as_bytes());
 	update_hash_part(&mut hasher, foch_version.as_bytes());
+	update_hash_part(&mut hasher, game_version.as_bytes());
 	hasher.finalize().to_hex()[..HASH_HEX_LEN].to_string()
 }
 
@@ -270,16 +310,23 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0")
+				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 		cache
-			.store("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", &patches)
+			.store(
+				"common/foo.txt",
+				"mod-a",
+				"vanilla-a",
+				"0.1.0",
+				"eu4 1.37",
+				&patches,
+			)
 			.expect("store patches");
 
 		assert_eq!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0")
+				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
 				.expect("cache hit"),
 			patches
 		);
@@ -294,13 +341,14 @@ mod tests {
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
+				"eu4 1.37",
 				&sample_patches(),
 			)
 			.expect("store patches");
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-a", "vanilla-b", "0.1.0")
+				.lookup("common/foo.txt", "mod-a", "vanilla-b", "0.1.0", "eu4 1.37")
 				.is_none()
 		);
 	}
@@ -314,13 +362,35 @@ mod tests {
 				"mod-a",
 				"vanilla-a",
 				"0.1.0",
+				"eu4 1.37",
 				&sample_patches(),
 			)
 			.expect("store patches");
 
 		assert!(
 			cache
-				.lookup("common/foo.txt", "mod-b", "vanilla-a", "0.1.0")
+				.lookup("common/foo.txt", "mod-b", "vanilla-a", "0.1.0", "eu4 1.37")
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn mod_diff_cache_invalidates_when_game_version_changes() {
+		let cache = ModDiffCache::open(&cache_dir("mod-diff-game-version"));
+		cache
+			.store(
+				"common/foo.txt",
+				"mod-a",
+				"vanilla-a",
+				"0.1.0",
+				"eu4 1.36",
+				&sample_patches(),
+			)
+			.expect("store patches");
+
+		assert!(
+			cache
+				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37",)
 				.is_none()
 		);
 	}
@@ -330,13 +400,20 @@ mod tests {
 		let dir = cache_dir("mod-diff-persist");
 		let patches = sample_patches();
 		ModDiffCache::open(&dir)
-			.store("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", &patches)
+			.store(
+				"common/foo.txt",
+				"mod-a",
+				"vanilla-a",
+				"0.1.0",
+				"eu4 1.37",
+				&patches,
+			)
 			.expect("store patches");
 
 		let reopened = ModDiffCache::open(&dir);
 		assert_eq!(
 			reopened
-				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0")
+				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37")
 				.expect("cache hit after reopen"),
 			patches
 		);

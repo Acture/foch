@@ -42,6 +42,7 @@ pub(crate) fn compute_dag_patches(
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
+	game_version: &str,
 ) -> Result<DagPatchComputation, String> {
 	let mut handler = DeferHandler;
 	compute_dag_patches_with_handler(
@@ -52,6 +53,7 @@ pub(crate) fn compute_dag_patches(
 		mod_dag,
 		ignore_replace_path,
 		dep_overrides,
+		game_version,
 		&mut handler,
 	)
 }
@@ -65,6 +67,7 @@ pub(crate) fn compute_dag_patches_with_handler(
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
+	game_version: &str,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<DagPatchComputation, String> {
 	let file_dag = induced_file_dag_with_overrides(
@@ -85,6 +88,7 @@ pub(crate) fn compute_dag_patches_with_handler(
 		policies,
 		handler,
 		Some(&mod_hashes),
+		game_version,
 	)
 }
 
@@ -195,6 +199,7 @@ fn cached_or_diff_patches(
 	current_base: &ParsedScriptFile,
 	current: &ParsedScriptFile,
 	merge_key_source: MergeKeySource,
+	game_version: &str,
 ) -> Vec<ClausewitzPatch> {
 	let (Some(cache), Some(mod_hash), Some(vanilla_hash)) = (cache, mod_hash, vanilla_hash) else {
 		return fold_renames(diff_ast(current_base, current, merge_key_source));
@@ -204,6 +209,7 @@ fn cached_or_diff_patches(
 		mod_hash,
 		vanilla_hash,
 		env!("CARGO_PKG_VERSION"),
+		game_version,
 	) {
 		return patches;
 	}
@@ -213,6 +219,7 @@ fn cached_or_diff_patches(
 		mod_hash,
 		vanilla_hash,
 		env!("CARGO_PKG_VERSION"),
+		game_version,
 		&patches,
 	) {
 		tracing::warn!(
@@ -232,15 +239,27 @@ fn cached_or_apply_base(
 	current_statements: &[AstStatement],
 	level_resolved_patches: &[ClausewitzPatch],
 	merge_key_source: MergeKeySource,
+	game_version: &str,
 ) -> Vec<AstStatement> {
 	let (Some(cache), Some(deps_hash)) = (cache, deps_hash) else {
 		return apply_patches(current_statements, level_resolved_patches, merge_key_source);
 	};
-	if let Some(statements) = cache.lookup(deps_hash, file_path, env!("CARGO_PKG_VERSION")) {
+	if let Some(statements) = cache.lookup(
+		deps_hash,
+		file_path,
+		env!("CARGO_PKG_VERSION"),
+		game_version,
+	) {
 		return statements;
 	}
 	let statements = apply_patches(current_statements, level_resolved_patches, merge_key_source);
-	if let Err(err) = cache.store(deps_hash, file_path, env!("CARGO_PKG_VERSION"), &statements) {
+	if let Err(err) = cache.store(
+		deps_hash,
+		file_path,
+		env!("CARGO_PKG_VERSION"),
+		game_version,
+		&statements,
+	) {
 		tracing::warn!(
 			target: "foch::merge::patch_deps",
 			path = %file_path,
@@ -267,6 +286,7 @@ fn compute_dag_patches_from_parsed(
 		policies,
 		handler,
 		None,
+		"unknown",
 	)
 }
 
@@ -278,6 +298,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 	mod_hashes: Option<&HashMap<ModId, String>>,
+	game_version: &str,
 ) -> Result<DagPatchComputation, String> {
 	let base_statements = final_base_statements(file_dag, vanilla);
 	let mut current_statements = base_statements.clone();
@@ -326,6 +347,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 				&current_base,
 				current,
 				merge_key_source,
+				game_version,
 			);
 			for patch in &patches {
 				addresses_in_level.extend(overwrite_addresses(patch));
@@ -381,6 +403,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 			&current_statements,
 			&level_resolved_patches,
 			merge_key_source,
+			game_version,
 		);
 	}
 
