@@ -593,7 +593,6 @@ fn eu4_defer_handler_keeps_manual_conflict_with_attribution() {
 }
 
 #[test]
-#[ignore = "blocked on wave1-finding-keep-existing-overwrite"]
 fn eu4_keep_existing_handler_preserves_existing_output_file() {
 	let fixture = fixture_dir("eu4_handler_keep_existing");
 	assert!(

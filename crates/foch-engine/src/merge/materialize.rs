@@ -22,7 +22,10 @@ use super::plan::build_merge_plan_from_workspace;
 use super::stale_vanilla::detect_stale_vanilla_targets;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
-use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, compute_conflict_id};
+use foch_core::config::{
+	AppliedDepOverride, DepOverride, FochConfig, ResolutionDecision, ResolutionMap,
+	compute_conflict_id,
+};
 use foch_core::model::{
 	CheckContext, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
 	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
@@ -288,8 +291,9 @@ pub(crate) fn materialize_merge_internal(
 									);
 									let materialization = write_patch_merge_output(
 										&entry.path,
-										&merge_output,
+										&mut merge_output,
 										out_dir,
+										&options.resolution_map,
 										&mut report,
 									)?;
 									if materialization.uses_patch_merge_rendered_output() {
@@ -1915,12 +1919,22 @@ impl PatchOutputMaterialization {
 
 fn write_patch_merge_output(
 	target_path: &str,
-	merge_output: &PatchBasedMergeOutput,
+	merge_output: &mut PatchBasedMergeOutput,
 	out_dir: &Path,
+	resolution_map: &ResolutionMap,
 	report: &mut MergeReport,
 ) -> Result<PatchOutputMaterialization, MergeError> {
 	let output_relative_path = PathBuf::from(target_path);
 	let target = out_dir.join(target_path);
+
+	if matches!(
+		resolution_map.lookup(Path::new(target_path), "", ""),
+		Some(ResolutionDecision::KeepExisting)
+	) {
+		merge_output
+			.keep_existing_paths
+			.insert(output_relative_path.clone());
+	}
 
 	if merge_output
 		.keep_existing_paths
@@ -2258,6 +2272,7 @@ mod tests {
 	use crate::config::Config;
 	use crate::request::CheckRequest;
 	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
+	use foch_core::config::{ResolutionDecision, ResolutionMap};
 	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::Playlist;
 	use foch_core::model::{
@@ -2675,9 +2690,14 @@ mod tests {
 			.insert(PathBuf::from(relative_path));
 		let mut report = MergeReport::default();
 
-		let materialization =
-			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
-				.expect("materialize keep existing");
+		let materialization = super::write_patch_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			&ResolutionMap::default(),
+			&mut report,
+		)
+		.expect("materialize keep existing");
 
 		assert_eq!(
 			materialization,
@@ -2695,6 +2715,47 @@ mod tests {
 	}
 
 	#[test]
+	fn materialize_file_level_keep_existing_resolution_skips_write_when_output_exists() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let relative_path = "common/ideas/file-level-handler.txt";
+		write_file(&out_dir, relative_path, "existing\n");
+
+		let mut merge_output = patch_merge_output("merged\n");
+		let mut resolution_map = ResolutionMap::default();
+		resolution_map.by_file.insert(
+			PathBuf::from(relative_path),
+			ResolutionDecision::KeepExisting,
+		);
+		let mut report = MergeReport::default();
+
+		let materialization = super::write_patch_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			&resolution_map,
+			&mut report,
+		)
+		.expect("materialize file-level keep existing");
+
+		assert_eq!(
+			materialization,
+			super::PatchOutputMaterialization::KeptExisting
+		);
+		assert_eq!(
+			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
+			"existing\n"
+		);
+		assert!(
+			merge_output
+				.keep_existing_paths
+				.contains(&PathBuf::from(relative_path))
+		);
+		assert_eq!(report.handler_resolutions.len(), 1);
+		assert_eq!(report.handler_resolutions[0].action, "kept_existing");
+	}
+
+	#[test]
 	fn materialize_keep_existing_falls_through_when_output_missing() {
 		let temp = TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("out");
@@ -2705,9 +2766,14 @@ mod tests {
 			.insert(PathBuf::from(relative_path));
 		let mut report = MergeReport::default();
 
-		let materialization =
-			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
-				.expect("materialize normal write");
+		let materialization = super::write_patch_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			&ResolutionMap::default(),
+			&mut report,
+		)
+		.expect("materialize normal write");
 
 		assert_eq!(
 			materialization,
@@ -2739,9 +2805,14 @@ mod tests {
 			});
 		let mut report = MergeReport::default();
 
-		let materialization =
-			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
-				.expect("materialize normal write");
+		let materialization = super::write_patch_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			&ResolutionMap::default(),
+			&mut report,
+		)
+		.expect("materialize normal write");
 
 		assert_eq!(
 			materialization,
@@ -2773,9 +2844,14 @@ mod tests {
 			.insert(PathBuf::from(relative_path), external_path.clone());
 		let mut report = MergeReport::default();
 
-		let materialization =
-			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
-				.expect("materialize external file");
+		let materialization = super::write_patch_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			&ResolutionMap::default(),
+			&mut report,
+		)
+		.expect("materialize external file");
 
 		assert_eq!(
 			materialization,
@@ -2808,9 +2884,14 @@ mod tests {
 			.insert(PathBuf::from(relative_path), external_path.clone());
 		let mut report = MergeReport::default();
 
-		let err =
-			super::write_patch_merge_output(relative_path, &merge_output, &out_dir, &mut report)
-				.expect_err("missing external source should error");
+		let err = super::write_patch_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			&ResolutionMap::default(),
+			&mut report,
+		)
+		.expect_err("missing external source should error");
 
 		assert!(
 			err.to_string()
