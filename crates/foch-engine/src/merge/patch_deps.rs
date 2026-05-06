@@ -34,6 +34,7 @@ static MOD_ROOT_HASHES: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = Once
 ///
 /// Each level is diffed against the running merged state, sibling patch sets are
 /// merged together, then their resolved patches advance the running state.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn compute_dag_patches(
 	file_path: &str,
 	contributors: &[ResolvedFileContributor],
@@ -191,6 +192,7 @@ fn update_hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 	hasher.update(bytes);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cached_or_diff_patches(
 	cache: Option<&ModDiffCache>,
 	target_path: &str,
@@ -290,6 +292,7 @@ fn compute_dag_patches_from_parsed(
 	)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_dag_patches_from_parsed_with_cache(
 	file_dag: &FileDag,
 	vanilla: Option<&ParsedScriptFile>,

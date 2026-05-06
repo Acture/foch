@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the cached DAG-base payload or synthesis behavior changes.
-pub const DAG_BASE_CACHE_VERSION: u32 = 1;
+pub const DAG_BASE_CACHE_VERSION: u32 = 2;
 const CACHE_ENV: &str = "FOCH_DAG_BASE_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
@@ -131,6 +131,7 @@ impl DagBaseCache {
 		game_version: &str,
 	) -> PathBuf {
 		self.root.join(cache_filename(
+			DAG_BASE_CACHE_VERSION,
 			deps_hash,
 			file_path,
 			foch_version,
@@ -159,13 +160,21 @@ pub fn reset_dag_base_cache_stats() {
 }
 
 fn cache_filename(
+	cache_version: u32,
 	deps_hash: &str,
 	file_path: &str,
 	foch_version: &str,
 	game_version: &str,
 ) -> String {
 	let key = cache_key(deps_hash, file_path, foch_version, game_version);
-	format!("{}__{}.bin", compact_hash(deps_hash), key)
+	format!(
+		"{}__cv{}__v{}__g{}__{}.bin",
+		compact_hash(deps_hash),
+		cache_version,
+		sanitize_component(foch_version),
+		sanitize_component(game_version),
+		key,
+	)
 }
 
 fn cache_key(deps_hash: &str, file_path: &str, foch_version: &str, game_version: &str) -> String {
@@ -338,6 +347,29 @@ mod tests {
 				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
 				.is_none()
 		);
+	}
+
+	#[test]
+	fn dag_base_cache_filename_encodes_cache_version() {
+		let current = cache_filename(
+			DAG_BASE_CACHE_VERSION,
+			"deps-a",
+			"common/foo.txt",
+			"0.1.0",
+			"eu4 1.37",
+		);
+		let bumped = cache_filename(
+			DAG_BASE_CACHE_VERSION + 1,
+			"deps-a",
+			"common/foo.txt",
+			"0.1.0",
+			"eu4 1.37",
+		);
+
+		assert_ne!(current, bumped);
+		assert!(current.contains(&format!("__cv{}__", DAG_BASE_CACHE_VERSION)));
+		assert!(current.contains("__v0.1.0__"));
+		assert!(current.contains("__geu4_1.37__"));
 	}
 
 	#[test]

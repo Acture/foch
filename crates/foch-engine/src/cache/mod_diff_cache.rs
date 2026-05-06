@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the cached patch payload or diff behavior becomes incompatible.
-pub const MOD_DIFF_CACHE_VERSION: u32 = 1;
+pub const MOD_DIFF_CACHE_VERSION: u32 = 2;
 const CACHE_ENV: &str = "FOCH_MOD_DIFF_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
@@ -156,6 +156,7 @@ impl ModDiffCache {
 		game_version: &str,
 	) -> PathBuf {
 		self.root.join(cache_filename(
+			MOD_DIFF_CACHE_VERSION,
 			target_path,
 			mod_hash,
 			vanilla_hash,
@@ -185,6 +186,7 @@ pub fn reset_mod_diff_cache_stats() {
 }
 
 fn cache_filename(
+	cache_version: u32,
 	target_path: &str,
 	mod_hash: &str,
 	vanilla_hash: &str,
@@ -199,9 +201,12 @@ fn cache_filename(
 		game_version,
 	);
 	format!(
-		"{}__{}__{}.bin",
+		"{}__{}__cv{}__v{}__g{}__{}.bin",
 		compact_hash(mod_hash),
 		compact_hash(vanilla_hash),
+		cache_version,
+		sanitize_component(foch_version),
+		sanitize_component(game_version),
 		key,
 	)
 }
@@ -393,6 +398,31 @@ mod tests {
 				.lookup("common/foo.txt", "mod-a", "vanilla-a", "0.1.0", "eu4 1.37",)
 				.is_none()
 		);
+	}
+
+	#[test]
+	fn mod_diff_cache_filename_encodes_cache_version() {
+		let current = cache_filename(
+			MOD_DIFF_CACHE_VERSION,
+			"common/foo.txt",
+			"mod-a",
+			"vanilla-a",
+			"0.1.0",
+			"eu4 1.37",
+		);
+		let bumped = cache_filename(
+			MOD_DIFF_CACHE_VERSION + 1,
+			"common/foo.txt",
+			"mod-a",
+			"vanilla-a",
+			"0.1.0",
+			"eu4 1.37",
+		);
+
+		assert_ne!(current, bumped);
+		assert!(current.contains(&format!("__cv{}__", MOD_DIFF_CACHE_VERSION)));
+		assert!(current.contains("__v0.1.0__"));
+		assert!(current.contains("__geu4_1.37__"));
 	}
 
 	#[test]
