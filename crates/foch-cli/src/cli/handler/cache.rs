@@ -1,13 +1,13 @@
 use crate::cli::arg::{
 	FochCliCacheArgs, FochCliCacheCleanArgs, FochCliCacheClearArgs, FochCliCacheCommands,
-	FochCliCacheLayerArg, FochCliCacheListArgs,
+	FochCliCacheLayerArg, FochCliCacheListArgs, FochCliCacheStatsArgs,
 };
 use crate::cli::handler::HandlerResult;
 use foch_engine::{
 	ModsetCache, default_dag_base_cache_dir, default_foch_cache_dir, default_mod_diff_cache_dir,
-	default_mod_parse_cache_dir,
+	default_mod_parse_cache_dir, default_modset_cache_dir, default_modset_cache_root_dir,
 };
-use foch_language::analyzer::semantic_index::parse_cache::{cache_cap_bytes, gc_with_cap};
+use foch_language::analyzer::semantic_index::parse_cache::{self, cache_cap_bytes, gc_with_cap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,6 +19,7 @@ enum CacheLayer {
 	Diffs,
 	DagBase,
 	Modsets,
+	Parse,
 }
 
 #[derive(Clone, Debug)]
@@ -40,12 +41,11 @@ struct LayerStats {
 
 pub fn handle_cache(cache_args: &FochCliCacheArgs) -> HandlerResult {
 	match &cache_args.command {
-		FochCliCacheCommands::Stats => handle_cache_stats(),
+		FochCliCacheCommands::Stats(args) => handle_cache_stats(args),
 		FochCliCacheCommands::List(args) => handle_cache_list(args),
 		FochCliCacheCommands::Clean(args) => handle_cache_clean(args),
 		FochCliCacheCommands::Clear(args) => handle_cache_clear(args),
 		FochCliCacheCommands::Where => handle_cache_where(),
-		FochCliCacheCommands::Gc(args) => handle_cache_gc(args.cap_bytes),
 	}
 }
 
@@ -63,8 +63,9 @@ pub fn run_auto_gc() {
 	);
 }
 
-fn handle_cache_stats() -> HandlerResult {
+fn handle_cache_stats(args: &FochCliCacheStatsArgs) -> HandlerResult {
 	let root = default_foch_cache_dir();
+	let layers = CacheLayer::selected(args.layer);
 	let mut total_size = 0_u64;
 	let mut total_entries = 0_usize;
 	let mut oldest = None;
@@ -72,7 +73,7 @@ fn handle_cache_stats() -> HandlerResult {
 
 	println!("cache root: {}", root.display());
 	println!("layer       entries  size       path");
-	for layer in CacheLayer::all() {
+	for layer in layers {
 		let stats = layer_stats(layer)?;
 		total_size = total_size.saturating_add(stats.total_bytes);
 		total_entries = total_entries.saturating_add(stats.entry_count);
@@ -97,11 +98,7 @@ fn handle_cache_stats() -> HandlerResult {
 }
 
 fn handle_cache_list(args: &FochCliCacheListArgs) -> HandlerResult {
-	let layers = args
-		.layer
-		.map(CacheLayer::from_arg)
-		.map(|layer| vec![layer])
-		.unwrap_or_else(CacheLayer::all);
+	let layers = CacheLayer::selected(args.layer);
 	let mut entries = Vec::new();
 	for layer in layers {
 		entries.extend(layer_entries(layer)?);
@@ -128,32 +125,47 @@ fn handle_cache_list(args: &FochCliCacheListArgs) -> HandlerResult {
 }
 
 fn handle_cache_clean(args: &FochCliCacheCleanArgs) -> HandlerResult {
+	let layers = CacheLayer::selected(args.layer);
+	if args.byte_cap.is_some() && !layers.contains(&CacheLayer::Parse) {
+		return Err("--byte-cap only applies when --layer includes parse".into());
+	}
+
 	let mut purged = 0_usize;
-	purged += purge_layer_older_than(CacheLayer::Mods, args.older_than)?;
-	purged += purge_layer_older_than(CacheLayer::Diffs, args.older_than)?;
-	purged += purge_layer_older_than(CacheLayer::DagBase, args.older_than)?;
-	purged += ModsetCache::open(&default_foch_cache_dir()).purge_older_than(args.older_than)?;
+	for layer in &layers {
+		purged += purge_layer_older_than(*layer, args.older_than)?;
+	}
 	println!(
 		"removed: {purged} entries older than {} days",
 		args.older_than
 	);
+
+	if let Some(cap) = args.byte_cap {
+		let stats = gc_with_cap(cap);
+		let evicted_bytes = stats.bytes_before.saturating_sub(stats.bytes_after);
+		println!(
+			"parse byte-cap: evicted {} files ({}) with cap {}",
+			stats.evicted,
+			format_bytes(evicted_bytes),
+			format_bytes(cap)
+		);
+	}
 	Ok(0)
 }
 
 fn handle_cache_clear(args: &FochCliCacheClearArgs) -> HandlerResult {
-	let root = default_foch_cache_dir();
 	if !args.yes {
 		return Err("refusing to clear cache without --yes".into());
 	}
-	let stats = combined_stats()?;
-	if root.exists() {
-		fs::remove_dir_all(&root)?;
+	let layers = CacheLayer::selected(args.layer);
+	let stats = combined_stats(&layers)?;
+	for layer in &layers {
+		clear_layer(*layer)?;
 	}
 	println!(
 		"removed: {} entries ({}) from {}",
 		stats.entry_count,
 		format_bytes(stats.total_bytes),
-		root.display()
+		format_layer_selection(args.layer)
 	);
 	Ok(0)
 }
@@ -163,39 +175,25 @@ fn handle_cache_where() -> HandlerResult {
 	Ok(0)
 }
 
-fn handle_cache_gc(cap_bytes: Option<u64>) -> HandlerResult {
-	let cap = cap_bytes.unwrap_or_else(cache_cap_bytes);
-	let stats = gc_with_cap(cap);
-	let evicted_bytes = stats.bytes_before.saturating_sub(stats.bytes_after);
-	println!(
-		"scanned:  {} files ({})",
-		stats.scanned,
-		format_bytes(stats.bytes_before)
-	);
-	println!(
-		"evicted:  {} files ({})",
-		stats.evicted,
-		format_bytes(evicted_bytes)
-	);
-	println!(
-		"kept:     {} files ({})",
-		stats.kept,
-		format_bytes(stats.bytes_after)
-	);
-	Ok(0)
-}
-
 impl CacheLayer {
 	fn all() -> Vec<Self> {
-		vec![Self::Mods, Self::Diffs, Self::DagBase, Self::Modsets]
+		vec![
+			Self::Mods,
+			Self::Diffs,
+			Self::DagBase,
+			Self::Modsets,
+			Self::Parse,
+		]
 	}
 
-	fn from_arg(arg: FochCliCacheLayerArg) -> Self {
-		match arg {
-			FochCliCacheLayerArg::Mods => Self::Mods,
-			FochCliCacheLayerArg::Diffs => Self::Diffs,
-			FochCliCacheLayerArg::DagBase => Self::DagBase,
-			FochCliCacheLayerArg::Modsets => Self::Modsets,
+	fn selected(arg: Option<FochCliCacheLayerArg>) -> Vec<Self> {
+		match arg.unwrap_or(FochCliCacheLayerArg::All) {
+			FochCliCacheLayerArg::Parse => vec![Self::Parse],
+			FochCliCacheLayerArg::Mods => vec![Self::Mods],
+			FochCliCacheLayerArg::Diffs => vec![Self::Diffs],
+			FochCliCacheLayerArg::DagBase => vec![Self::DagBase],
+			FochCliCacheLayerArg::Modsets => vec![Self::Modsets],
+			FochCliCacheLayerArg::All => Self::all(),
 		}
 	}
 
@@ -205,6 +203,7 @@ impl CacheLayer {
 			Self::Diffs => "diffs",
 			Self::DagBase => "dag-base",
 			Self::Modsets => "modsets",
+			Self::Parse => "parse",
 		}
 	}
 
@@ -213,7 +212,8 @@ impl CacheLayer {
 			Self::Mods => default_mod_parse_cache_dir(),
 			Self::Diffs => default_mod_diff_cache_dir(),
 			Self::DagBase => default_dag_base_cache_dir(),
-			Self::Modsets => default_foch_cache_dir().join("modsets"),
+			Self::Modsets => default_modset_cache_dir(),
+			Self::Parse => parse_cache::parser_cache_root(),
 		}
 	}
 
@@ -221,6 +221,7 @@ impl CacheLayer {
 		match self {
 			Self::Mods => Some("rkyv"),
 			Self::Diffs | Self::DagBase => Some("bin"),
+			Self::Parse => Some("json"),
 			Self::Modsets => None,
 		}
 	}
@@ -231,10 +232,10 @@ fn layer_stats(layer: CacheLayer) -> Result<LayerStats, Box<dyn std::error::Erro
 	Ok(stats_from_entries(&entries))
 }
 
-fn combined_stats() -> Result<LayerStats, Box<dyn std::error::Error>> {
+fn combined_stats(layers: &[CacheLayer]) -> Result<LayerStats, Box<dyn std::error::Error>> {
 	let mut entries = Vec::new();
-	for layer in CacheLayer::all() {
-		entries.extend(layer_entries(layer)?);
+	for layer in layers {
+		entries.extend(layer_entries(*layer)?);
 	}
 	Ok(stats_from_entries(&entries))
 }
@@ -254,8 +255,20 @@ fn stats_from_entries(entries: &[LayerEntry]) -> LayerStats {
 }
 
 fn layer_entries(layer: CacheLayer) -> Result<Vec<LayerEntry>, Box<dyn std::error::Error>> {
+	if layer == CacheLayer::Parse {
+		return Ok(parse_cache::list_entries()
+			.into_iter()
+			.map(|entry| LayerEntry {
+				layer,
+				key: entry.key,
+				path: entry.path,
+				size_bytes: entry.size_bytes,
+				modified: entry.modified,
+			})
+			.collect());
+	}
 	if layer == CacheLayer::Modsets {
-		return Ok(ModsetCache::open(&default_foch_cache_dir())
+		return Ok(ModsetCache::open(&default_modset_cache_root_dir())
 			.list_entries()?
 			.into_iter()
 			.map(|entry| LayerEntry {
@@ -308,8 +321,11 @@ fn purge_layer_older_than(
 	layer: CacheLayer,
 	days: u32,
 ) -> Result<usize, Box<dyn std::error::Error>> {
+	if layer == CacheLayer::Parse {
+		return Ok(parse_cache::purge_older_than(days)?);
+	}
 	if layer == CacheLayer::Modsets {
-		return Ok(ModsetCache::open(&default_foch_cache_dir()).purge_older_than(days)?);
+		return Ok(ModsetCache::open(&default_modset_cache_root_dir()).purge_older_than(days)?);
 	}
 	let cutoff = SystemTime::now()
 		.checked_sub(Duration::from_secs(days as u64 * 24 * 60 * 60))
@@ -327,6 +343,18 @@ fn purge_layer_older_than(
 	}
 	prune_empty_dirs(&layer.path());
 	Ok(purged)
+}
+
+fn clear_layer(layer: CacheLayer) -> Result<(), Box<dyn std::error::Error>> {
+	if layer == CacheLayer::Parse {
+		parse_cache::cache_clean()?;
+		return Ok(());
+	}
+	let path = layer.path();
+	if path.exists() {
+		fs::remove_dir_all(path)?;
+	}
+	Ok(())
 }
 
 fn prune_empty_dirs(root: &Path) {
@@ -361,6 +389,17 @@ fn max_time(current: Option<SystemTime>, candidate: Option<SystemTime>) -> Optio
 		(None, Some(candidate)) => Some(candidate),
 		(Some(current), None) => Some(current),
 		(None, None) => None,
+	}
+}
+
+fn format_layer_selection(layer: Option<FochCliCacheLayerArg>) -> String {
+	match layer.unwrap_or(FochCliCacheLayerArg::All) {
+		FochCliCacheLayerArg::All => default_foch_cache_dir().display().to_string(),
+		other => CacheLayer::selected(Some(other))
+			.into_iter()
+			.next()
+			.map(|layer| layer.path().display().to_string())
+			.unwrap_or_else(|| default_foch_cache_dir().display().to_string()),
 	}
 }
 

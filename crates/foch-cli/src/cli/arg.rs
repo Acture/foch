@@ -351,7 +351,7 @@ pub struct DataListArgs {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Inspect and maintain local foch caches",
-	after_help = "Examples:\n  foch cache stats\n  foch cache list --layer modsets\n  foch cache clean --older-than 30\n  foch cache clear --yes\n  foch cache where"
+	after_help = "Examples:\n  foch cache stats --layer all\n  foch cache list --layer modsets\n  foch cache clean --layer parse --byte-cap 1073741824\n  foch cache clear --layer all --yes\n  foch cache where"
 )]
 pub struct FochCliCacheArgs {
 	#[command(subcommand)]
@@ -360,13 +360,17 @@ pub struct FochCliCacheArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum FochCliCacheCommands {
-	Stats,
+	Stats(FochCliCacheStatsArgs),
 	List(FochCliCacheListArgs),
 	Clean(FochCliCacheCleanArgs),
 	Clear(FochCliCacheClearArgs),
 	Where,
-	#[command(hide = true)]
-	Gc(FochCliCacheGcArgs),
+}
+
+#[derive(Parser, Debug)]
+pub struct FochCliCacheStatsArgs {
+	#[arg(long, value_enum)]
+	pub layer: Option<FochCliCacheLayerArg>,
 }
 
 #[derive(Parser, Debug)]
@@ -377,28 +381,33 @@ pub struct FochCliCacheListArgs {
 
 #[derive(Parser, Debug)]
 pub struct FochCliCacheCleanArgs {
+	#[arg(long, value_enum)]
+	pub layer: Option<FochCliCacheLayerArg>,
+
 	#[arg(long, default_value_t = 30)]
 	pub older_than: u32,
+
+	#[arg(long)]
+	pub byte_cap: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
 pub struct FochCliCacheClearArgs {
+	#[arg(long, value_enum)]
+	pub layer: Option<FochCliCacheLayerArg>,
+
 	#[arg(long)]
 	pub yes: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum FochCliCacheLayerArg {
+	Parse,
 	Mods,
 	Diffs,
 	DagBase,
 	Modsets,
-}
-
-#[derive(Parser, Debug)]
-pub struct FochCliCacheGcArgs {
-	#[arg(long)]
-	pub cap_bytes: Option<u64>,
+	All,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

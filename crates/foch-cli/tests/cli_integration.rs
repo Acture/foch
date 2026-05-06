@@ -5,7 +5,7 @@ use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
@@ -363,6 +363,80 @@ fn collect_gzip_files(root: &Path) -> Vec<std::path::PathBuf> {
 	}
 	files.sort();
 	files
+}
+
+struct CacheLayerFixture {
+	mods: PathBuf,
+	diffs: PathBuf,
+	dag_base: PathBuf,
+	modset_tarball: PathBuf,
+	modset_report: PathBuf,
+	parse: PathBuf,
+}
+
+fn target_temp_dir() -> TempDir {
+	let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.and_then(Path::parent)
+		.expect("repo root")
+		.join("target")
+		.join("cli-integration-temp");
+	fs::create_dir_all(&root).expect("create target temp root");
+	TempDir::new_in(root).expect("temp dir in target")
+}
+
+fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
+	let fixture = CacheLayerFixture {
+		mods: root.join("mods").join("mods-entry.rkyv"),
+		diffs: root.join("diffs").join("diffs-entry.bin"),
+		dag_base: root.join("dag-base").join("dag-base-entry.bin"),
+		modset_tarball: root.join("modsets").join("modset-entry.tar.gz"),
+		modset_report: root.join("modsets").join("modset-entry.report.json"),
+		parse: root
+			.join("parse")
+			.join("v7")
+			.join("aa")
+			.join("bb")
+			.join("parse-entry.json"),
+	};
+	for path in [
+		&fixture.mods,
+		&fixture.diffs,
+		&fixture.dag_base,
+		&fixture.modset_tarball,
+		&fixture.modset_report,
+		&fixture.parse,
+	] {
+		fs::create_dir_all(path.parent().expect("cache parent")).expect("create cache parent");
+		fs::write(path, b"cache-entry").expect("write cache entry");
+	}
+	fixture
+}
+
+fn cache_env_values(root: &Path) -> Vec<(String, String)> {
+	vec![
+		("FOCH_CACHE_ROOT".to_string(), root.display().to_string()),
+		(
+			"FOCH_MOD_PARSE_CACHE_DIR".to_string(),
+			root.join("mods").display().to_string(),
+		),
+		(
+			"FOCH_MOD_DIFF_CACHE_DIR".to_string(),
+			root.join("diffs").display().to_string(),
+		),
+		(
+			"FOCH_DAG_BASE_CACHE_DIR".to_string(),
+			root.join("dag-base").display().to_string(),
+		),
+		(
+			"FOCH_MODSET_CACHE_DIR".to_string(),
+			root.display().to_string(),
+		),
+		(
+			"FOCH_PARSE_CACHE_DIR".to_string(),
+			root.join("parse").display().to_string(),
+		),
+	]
 }
 
 fn read_json_file(path: &Path) -> serde_json::Value {
@@ -1943,6 +2017,61 @@ fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	assert_eq!(collect_gzip_files(&cache_dir).len(), 2);
+}
+
+#[test]
+fn cache_clean_layer_filter_targets_only_specified_layer() {
+	let tmp = target_temp_dir();
+	let cache_root = tmp.path().join("cache");
+	let fixture = seed_cache_layers(&cache_root);
+	thread::sleep(Duration::from_millis(20));
+	let env_values = cache_env_values(&cache_root);
+	let env_refs = env_values
+		.iter()
+		.map(|(key, value)| (key.as_str(), value.as_str()))
+		.collect::<Vec<_>>();
+
+	let (code, stdout, stderr) = run_foch_with_env(
+		&["cache", "clean", "--layer", "mods", "--older-than", "0"],
+		tmp.path(),
+		&env_refs,
+	);
+
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(stdout.contains("removed:"));
+	assert!(!fixture.mods.exists());
+	assert!(fixture.diffs.exists());
+	assert!(fixture.dag_base.exists());
+	assert!(fixture.modset_tarball.exists());
+	assert!(fixture.modset_report.exists());
+	assert!(fixture.parse.exists());
+}
+
+#[test]
+fn cache_clear_all_wipes_every_layer() {
+	let tmp = target_temp_dir();
+	let cache_root = tmp.path().join("cache");
+	let fixture = seed_cache_layers(&cache_root);
+	let env_values = cache_env_values(&cache_root);
+	let env_refs = env_values
+		.iter()
+		.map(|(key, value)| (key.as_str(), value.as_str()))
+		.collect::<Vec<_>>();
+
+	let (code, stdout, stderr) = run_foch_with_env(
+		&["cache", "clear", "--layer", "all", "--yes"],
+		tmp.path(),
+		&env_refs,
+	);
+
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(stdout.contains("removed:"));
+	assert!(!fixture.mods.exists());
+	assert!(!fixture.diffs.exists());
+	assert!(!fixture.dag_base.exists());
+	assert!(!fixture.modset_tarball.exists());
+	assert!(!fixture.modset_report.exists());
+	assert!(!fixture.parse.exists());
 }
 
 #[test]

@@ -22,7 +22,6 @@ use walkdir::WalkDir;
 pub const MOD_PARSE_CACHE_VERSION: u32 = 1;
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const CACHE_ENV: &str = "FOCH_MOD_PARSE_CACHE_DIR";
-const ROOT_CACHE_ENV: &str = "FOCH_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
 
 #[derive(Clone, Debug)]
@@ -1010,18 +1009,7 @@ pub fn default_mod_parse_cache_dir() -> PathBuf {
 }
 
 pub fn default_foch_cache_dir() -> PathBuf {
-	if let Ok(override_dir) = std::env::var(ROOT_CACHE_ENV) {
-		return PathBuf::from(override_dir);
-	}
-
-	if let Some(cache_dir) = dirs::cache_dir() {
-		let candidate = cache_dir.join("foch");
-		if ensure_writable_dir(&candidate) {
-			return candidate;
-		}
-	}
-
-	repo_fallback_cache_root_dir()
+	foch_core::cache::default_foch_cache_dir()
 }
 
 pub fn compute_mod_hash(mod_root: &Path) -> Result<String, io::Error> {
@@ -1113,30 +1101,6 @@ fn should_descend(path: &Path, root: &Path) -> bool {
 		name,
 		".git" | ".hg" | ".svn" | ".jj" | ".direnv" | "target" | "node_modules"
 	)
-}
-
-fn ensure_writable_dir(path: &Path) -> bool {
-	if fs::create_dir_all(path).is_err() {
-		return false;
-	}
-	let probe = path.join(".foch-write-test");
-	match fs::write(&probe, b"") {
-		Ok(()) => {
-			let _ = fs::remove_file(probe);
-			true
-		}
-		Err(_) => false,
-	}
-}
-
-fn repo_fallback_cache_root_dir() -> PathBuf {
-	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.parent()
-		.and_then(Path::parent)
-		.map(Path::to_path_buf)
-		.unwrap_or_else(|| PathBuf::from("."))
-		.join("target")
-		.join("foch-cache")
 }
 
 fn sanitize_component(value: &str) -> String {

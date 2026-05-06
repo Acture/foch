@@ -1,20 +1,26 @@
 use super::super::parser::{ParseResult, parse_clausewitz_file};
 use filetime::{FileTime, set_file_mtime};
+use foch_core::cache::default_foch_cache_dir;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PARSE_CACHE_VERSION: u32 = 7;
 const CACHE_VERSION_DIR: &str = "v7";
+const PARSE_CACHE_DIR_NAME: &str = "parse";
+const LEGACY_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
+const PARSE_CACHE_ENV: &str = "FOCH_PARSE_CACHE_DIR";
 const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
 
 #[cfg(test)]
 thread_local! {
 	static TEST_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+	static TEST_LEGACY_CACHE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -32,6 +38,14 @@ pub struct CacheStats {
 	pub total_bytes: u64,
 	pub oldest_mtime: Option<SystemTime>,
 	pub newest_mtime: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheEntryInfo {
+	pub key: String,
+	pub path: PathBuf,
+	pub size_bytes: u64,
+	pub modified: SystemTime,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,15 +69,20 @@ pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
 	let signature = file_signature(path);
 	let cache_path = parser_cache_file(path);
 
-	if let Some((file_len, modified_nanos)) = signature
-		&& let Ok(raw) = fs::read_to_string(&cache_path)
-		&& let Ok(entry) = serde_json::from_str::<ParseCacheEntry>(&raw)
-		&& entry.version == PARSE_CACHE_VERSION
-		&& entry.file_len == file_len
-		&& entry.modified_nanos == modified_nanos
-	{
-		touch_cache_file(&cache_path);
-		return (entry.result, true);
+	if let Some(signature) = signature {
+		if let Some(result) = load_cache_hit(&cache_path, signature) {
+			touch_cache_file(&cache_path);
+			return (result, true);
+		}
+
+		let legacy_cache_path = legacy_parser_cache_file(path);
+		if legacy_cache_path != cache_path
+			&& let Some(result) = load_cache_hit(&legacy_cache_path, signature)
+		{
+			let active_path = migrate_legacy_cache_entry(&legacy_cache_path, &cache_path);
+			touch_cache_file(&active_path);
+			return (result, true);
+		}
 	}
 
 	let parsed = parse_clausewitz_file(path);
@@ -91,8 +110,43 @@ fn file_signature(path: &Path) -> Option<(u64, u128)> {
 	Some((metadata.len(), modified))
 }
 
+fn load_cache_hit(path: &Path, (file_len, modified_nanos): (u64, u128)) -> Option<ParseResult> {
+	let raw = fs::read_to_string(path).ok()?;
+	let entry = serde_json::from_str::<ParseCacheEntry>(&raw).ok()?;
+	if entry.version != PARSE_CACHE_VERSION
+		|| entry.file_len != file_len
+		|| entry.modified_nanos != modified_nanos
+	{
+		return None;
+	}
+	Some(entry.result)
+}
+
+fn migrate_legacy_cache_entry(legacy_path: &Path, cache_path: &Path) -> PathBuf {
+	let Some(parent) = cache_path.parent() else {
+		return legacy_path.to_path_buf();
+	};
+	if fs::create_dir_all(parent).is_err() {
+		return legacy_path.to_path_buf();
+	}
+
+	let _ = fs::remove_file(cache_path);
+	if fs::rename(legacy_path, cache_path).is_ok() {
+		return cache_path.to_path_buf();
+	}
+	if fs::copy(legacy_path, cache_path).is_ok() {
+		let _ = fs::remove_file(legacy_path);
+		return cache_path.to_path_buf();
+	}
+	legacy_path.to_path_buf()
+}
+
 pub fn parser_cache_root() -> PathBuf {
 	parse_cache_base_root().join(CACHE_VERSION_DIR)
+}
+
+fn legacy_parser_cache_root() -> PathBuf {
+	legacy_parse_cache_base_root().join(CACHE_VERSION_DIR)
 }
 
 fn parse_cache_base_root() -> PathBuf {
@@ -101,13 +155,26 @@ fn parse_cache_base_root() -> PathBuf {
 		return root;
 	}
 
-	if let Ok(override_dir) = std::env::var("FOCH_PARSE_CACHE_DIR") {
+	if let Ok(override_dir) = std::env::var(PARSE_CACHE_ENV) {
 		return PathBuf::from(override_dir);
 	}
-	dirs::cache_dir()
-		.unwrap_or_else(|| PathBuf::from(".").join(".cache"))
-		.join("foch")
-		.join("parse_cache")
+	default_foch_cache_dir().join(PARSE_CACHE_DIR_NAME)
+}
+
+fn legacy_parse_cache_base_root() -> PathBuf {
+	#[cfg(test)]
+	if let Some(root) = test_legacy_cache_root() {
+		return root;
+	}
+	#[cfg(test)]
+	if test_cache_root().is_some() {
+		return parse_cache_base_root();
+	}
+
+	if std::env::var(PARSE_CACHE_ENV).is_ok() {
+		return parse_cache_base_root();
+	}
+	default_foch_cache_dir().join(LEGACY_PARSE_CACHE_DIR_NAME)
 }
 
 #[cfg(test)]
@@ -120,13 +187,30 @@ fn set_test_cache_root(root: Option<PathBuf>) -> Option<PathBuf> {
 	TEST_CACHE_ROOT.with(|current| current.replace(root))
 }
 
+#[cfg(test)]
+fn test_legacy_cache_root() -> Option<PathBuf> {
+	TEST_LEGACY_CACHE_ROOT.with(|root| root.borrow().clone())
+}
+
+#[cfg(test)]
+fn set_test_legacy_cache_root(root: Option<PathBuf>) -> Option<PathBuf> {
+	TEST_LEGACY_CACHE_ROOT.with(|current| current.replace(root))
+}
+
 fn parser_cache_file(path: &Path) -> PathBuf {
+	cache_file_in_root(&parser_cache_root(), path)
+}
+
+fn legacy_parser_cache_file(path: &Path) -> PathBuf {
+	cache_file_in_root(&legacy_parser_cache_root(), path)
+}
+
+fn cache_file_in_root(root: &Path, path: &Path) -> PathBuf {
 	let normalized = path.to_string_lossy().replace('\\', "/");
 	let mut hasher = DefaultHasher::new();
 	normalized.hash(&mut hasher);
 	let key = format!("{:016x}", hasher.finish());
-	parser_cache_root()
-		.join(&key[0..2])
+	root.join(&key[0..2])
 		.join(&key[2..4])
 		.join(format!("{key}.json"))
 }
@@ -155,13 +239,9 @@ fn store_parse_cache_entry(path: &Path, entry: &ParseCacheEntry) {
 }
 
 pub fn cache_stats() -> CacheStats {
-	let root = parse_cache_base_root();
-	let current_root = parser_cache_root();
-	let mut files = Vec::new();
-	collect_cache_files(&root, &current_root, &mut files);
-
+	let files = collect_all_cache_files();
 	let mut stats = CacheStats {
-		root,
+		root: parser_cache_root(),
 		file_count: files.len() as u64,
 		total_bytes: files.iter().map(|file| file.size).sum(),
 		oldest_mtime: None,
@@ -180,11 +260,49 @@ pub fn cache_stats() -> CacheStats {
 	stats
 }
 
+pub fn list_entries() -> Vec<CacheEntryInfo> {
+	let mut entries = collect_all_cache_files()
+		.into_iter()
+		.map(|file| CacheEntryInfo {
+			key: file
+				.path
+				.file_name()
+				.and_then(|name| name.to_str())
+				.unwrap_or("<unknown>")
+				.to_string(),
+			path: file.path,
+			size_bytes: file.size,
+			modified: file.mtime,
+		})
+		.collect::<Vec<_>>();
+	entries.sort_by(|left, right| {
+		left.modified
+			.cmp(&right.modified)
+			.then_with(|| left.key.cmp(&right.key))
+			.then_with(|| left.path.cmp(&right.path))
+	});
+	entries
+}
+
+pub fn purge_older_than(days: u32) -> io::Result<usize> {
+	let cutoff = cutoff_for_days(days);
+	let mut purged = 0_usize;
+	for file in collect_all_cache_files() {
+		if file.mtime >= cutoff {
+			continue;
+		}
+		match fs::remove_file(&file.path) {
+			Ok(()) => purged += 1,
+			Err(err) if err.kind() == io::ErrorKind::NotFound => purged += 1,
+			Err(err) => return Err(err),
+		}
+	}
+	prune_cache_roots();
+	Ok(purged)
+}
+
 pub fn gc_with_cap(cap_bytes: u64) -> GcStats {
-	let root = parse_cache_base_root();
-	let current_root = parser_cache_root();
-	let mut files = Vec::new();
-	collect_cache_files(&root, &current_root, &mut files);
+	let files = collect_all_cache_files();
 
 	let scanned = files.len() as u64;
 	let bytes_before = files.iter().map(|file| file.size).sum();
@@ -228,10 +346,9 @@ pub fn gc_with_cap(cap_bytes: u64) -> GcStats {
 			),
 		}
 	}
-	prune_empty_dirs(&root);
+	prune_cache_roots();
 
-	let mut remaining = Vec::new();
-	collect_cache_files(&root, &current_root, &mut remaining);
+	let remaining = collect_all_cache_files();
 	GcStats {
 		scanned,
 		kept: remaining.len() as u64,
@@ -241,10 +358,11 @@ pub fn gc_with_cap(cap_bytes: u64) -> GcStats {
 	}
 }
 
-pub fn cache_clean() -> std::io::Result<()> {
-	let root = parse_cache_base_root();
-	if root.exists() {
-		fs::remove_dir_all(root)?;
+pub fn cache_clean() -> io::Result<()> {
+	for root in cache_base_roots() {
+		if root.exists() {
+			fs::remove_dir_all(root)?;
+		}
 	}
 	Ok(())
 }
@@ -256,7 +374,34 @@ pub fn cache_cap_bytes() -> u64 {
 		.unwrap_or(DEFAULT_CACHE_CAP_BYTES)
 }
 
-fn collect_cache_files(root: &Path, current_root: &Path, files: &mut Vec<CacheFile>) {
+fn collect_all_cache_files() -> Vec<CacheFile> {
+	let current_roots = cache_current_roots();
+	let mut files = Vec::new();
+	for root in cache_base_roots() {
+		collect_cache_files(&root, &current_roots, &mut files);
+	}
+	files
+}
+
+fn cache_base_roots() -> Vec<PathBuf> {
+	let mut roots = vec![parse_cache_base_root()];
+	let legacy = legacy_parse_cache_base_root();
+	if !roots.iter().any(|root| root == &legacy) {
+		roots.push(legacy);
+	}
+	roots
+}
+
+fn cache_current_roots() -> Vec<PathBuf> {
+	let mut roots = vec![parser_cache_root()];
+	let legacy = legacy_parser_cache_root();
+	if !roots.iter().any(|root| root == &legacy) {
+		roots.push(legacy);
+	}
+	roots
+}
+
+fn collect_cache_files(root: &Path, current_roots: &[PathBuf], files: &mut Vec<CacheFile>) {
 	let Ok(metadata) = fs::metadata(root) else {
 		return;
 	};
@@ -285,12 +430,24 @@ fn collect_cache_files(root: &Path, current_root: &Path, files: &mut Vec<CacheFi
 				continue;
 			};
 			files.push(CacheFile {
-				is_current_version: path.starts_with(current_root),
+				is_current_version: current_roots.iter().any(|root| path.starts_with(root)),
 				path,
 				size: metadata.len(),
 				mtime: metadata.modified().unwrap_or(UNIX_EPOCH),
 			});
 		}
+	}
+}
+
+fn cutoff_for_days(days: u32) -> SystemTime {
+	SystemTime::now()
+		.checked_sub(Duration::from_secs(days as u64 * 24 * 60 * 60))
+		.unwrap_or(UNIX_EPOCH)
+}
+
+fn prune_cache_roots() {
+	for root in cache_base_roots() {
+		prune_empty_dirs(&root);
 	}
 }
 
@@ -334,12 +491,21 @@ mod tests {
 
 	struct CacheEnvGuard {
 		previous: Option<PathBuf>,
+		previous_legacy: Option<PathBuf>,
 	}
 
 	impl CacheEnvGuard {
 		fn new(root: &Path) -> Self {
 			Self {
 				previous: set_test_cache_root(Some(root.to_path_buf())),
+				previous_legacy: set_test_legacy_cache_root(None),
+			}
+		}
+
+		fn new_with_legacy(root: &Path, legacy_root: &Path) -> Self {
+			Self {
+				previous: set_test_cache_root(Some(root.to_path_buf())),
+				previous_legacy: set_test_legacy_cache_root(Some(legacy_root.to_path_buf())),
 			}
 		}
 	}
@@ -347,6 +513,7 @@ mod tests {
 	impl Drop for CacheEnvGuard {
 		fn drop(&mut self) {
 			set_test_cache_root(self.previous.take());
+			set_test_legacy_cache_root(self.previous_legacy.take());
 		}
 	}
 
@@ -436,6 +603,37 @@ mod tests {
 		assert_eq!(stats.evicted, 0);
 		assert_eq!(stats.bytes_before, 0);
 		assert_eq!(stats.bytes_after, 0);
+	}
+
+	#[test]
+	fn migrates_legacy_parse_cache_entry_on_new_miss() {
+		let cache_temp = tempdir().expect("cache tempdir");
+		let source_temp = tempdir().expect("source tempdir");
+		let new_root = cache_temp.path().join(PARSE_CACHE_DIR_NAME);
+		let legacy_root = cache_temp.path().join(LEGACY_PARSE_CACHE_DIR_NAME);
+		let _env = CacheEnvGuard::new_with_legacy(&new_root, &legacy_root);
+		let source = source_temp.path().join("source.txt");
+		fs::write(&source, "root = { value = yes }\n").expect("write source");
+		let (file_len, modified_nanos) = file_signature(&source).expect("source signature");
+		let parsed = parse_clausewitz_file(&source);
+		let entry = ParseCacheEntry {
+			version: PARSE_CACHE_VERSION,
+			file_len,
+			modified_nanos,
+			result: parsed.clone(),
+		};
+		let legacy_path = legacy_parser_cache_file(&source);
+		let new_path = parser_cache_file(&source);
+		store_parse_cache_entry(&legacy_path, &entry);
+		assert!(legacy_path.exists());
+		assert!(!new_path.exists());
+
+		let (hit_result, hit) = parse_clausewitz_file_cached(&source);
+
+		assert!(hit);
+		assert_eq!(hit_result, parsed);
+		assert!(new_path.exists());
+		assert!(!legacy_path.exists());
 	}
 
 	#[test]
