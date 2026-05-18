@@ -3,7 +3,7 @@ pub mod parse_cache;
 mod scope_rules;
 
 use super::content_family::{
-	ContentFamilyDescriptor, ContentFamilyScopePolicy, GameProfile, ScriptFileKind,
+	ContentFamilyDescriptor, ContentFamilyScopePolicy, CwtType, GameProfile,
 	module_name_for_descriptor,
 };
 use super::eu4_builtin::{
@@ -32,7 +32,7 @@ pub struct ParsedScriptFile {
 	pub path: PathBuf,
 	pub relative_path: PathBuf,
 	pub content_family: Option<&'static ContentFamilyDescriptor>,
-	pub file_kind: ScriptFileKind,
+	pub file_kind: CwtType,
 	pub module_name: String,
 	pub ast: AstFile,
 	pub source: String,
@@ -48,11 +48,11 @@ use scope_rules::{
 	special_block_scope_kind,
 };
 
-pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
+pub fn classify_script_file(relative: &Path) -> CwtType {
 	eu4_profile()
 		.classify_content_family(relative)
-		.map_or(ScriptFileKind::Other, |descriptor| {
-			descriptor.script_file_kind
+		.map_or(CwtType::new("other"), |descriptor| {
+			descriptor.cwt_type.clone()
 		})
 }
 
@@ -128,8 +128,8 @@ pub fn parse_script_file_with_profile(
 ) -> Option<ParsedScriptFile> {
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
 	let content_family = profile.classify_content_family(&relative);
-	let file_kind = content_family.map_or(ScriptFileKind::Other, |descriptor| {
-		descriptor.script_file_kind
+	let file_kind = content_family.map_or(CwtType::new("other"), |descriptor| {
+		descriptor.cwt_type.clone()
 	});
 	let module_name = content_family.map_or_else(
 		|| fallback_module_name_from_relative(&relative),
@@ -228,7 +228,7 @@ fn build_file_index(
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
 		content_family: file.content_family,
-		file_kind: file.file_kind,
+		file_kind: file.file_kind.clone(),
 		module_name: &file.module_name,
 		source: &file.source,
 		map_groups,
@@ -278,7 +278,7 @@ struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a Path,
 	content_family: Option<&'static ContentFamilyDescriptor>,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	module_name: &'a str,
 	source: &'a str,
 	map_groups: &'a MapGroupLookup,
@@ -349,7 +349,13 @@ fn walk_statements(
 					});
 				}
 
-				if is_scripted_trigger_call_candidate(ctx, ctx.file_kind, key, scope_id, index) {
+				if is_scripted_trigger_call_candidate(
+					ctx,
+					ctx.file_kind.clone(),
+					key,
+					scope_id,
+					index,
+				) {
 					index.references.push(SymbolReference {
 						kind: SymbolKind::ScriptedTrigger,
 						name: key.clone(),
@@ -367,7 +373,7 @@ fn walk_statements(
 				if let AstValue::Block { items, span } = value {
 					record_ui_block_semantics(index, ctx, key, key_span, items);
 					let definition_kind =
-						symbol_definition_kind(ctx.file_kind, key, scope_id, index);
+						symbol_definition_kind(ctx.file_kind.clone(), key, scope_id, index);
 					let child_scope = create_child_scope(index, scope_id, ctx, key, span, items);
 					if let Some(def_kind) = definition_kind {
 						let optional_params = collect_optional_params_from_source(
@@ -407,10 +413,10 @@ fn walk_statements(
 					}
 
 					if definition_kind.is_none()
-						&& !is_mission_slot_definition(ctx.file_kind, items)
+						&& !is_mission_slot_definition(ctx.file_kind.clone(), items)
 						&& is_scripted_effect_call_candidate(
 							ctx,
-							ctx.file_kind,
+							ctx.file_kind.clone(),
 							key,
 							scope_id,
 							index,
@@ -441,7 +447,7 @@ fn walk_statements(
 
 					let next_scripted_effect = if event_scope_type(key).is_some() {
 						None
-					} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
+					} else if ctx.file_kind == CwtType::new("scripted_effects")
 						&& scope_kind(index, scope_id) == ScopeKind::File
 					{
 						find_scripted_effect_definition(index, ctx.mod_id, ctx.path, key)
@@ -559,7 +565,7 @@ fn handle_event_block(
 		mod_id: ctx.mod_id,
 		path: ctx.path,
 		content_family: ctx.content_family,
-		file_kind: ctx.file_kind,
+		file_kind: ctx.file_kind.clone(),
 		module_name: ctx.module_name,
 		source: ctx.source,
 		map_groups: ctx.map_groups,
@@ -619,7 +625,7 @@ fn record_ui_scalar_semantics(
 	key_span: &SpanRange,
 	value: &AstValue,
 ) {
-	if ctx.file_kind != ScriptFileKind::Ui {
+	if ctx.file_kind != CwtType::new("ui") {
 		return;
 	}
 	let Some(text) = scalar_text(value) else {
@@ -830,7 +836,7 @@ fn record_ui_block_semantics(
 	key_span: &SpanRange,
 	items: &[AstStatement],
 ) {
-	if ctx.file_kind != ScriptFileKind::Ui || !looks_like_ui_container_key(key) {
+	if ctx.file_kind != CwtType::new("ui") || !looks_like_ui_container_key(key) {
 		return;
 	}
 	let Some(name) = extract_assignment_scalar(items, "name") else {
@@ -935,7 +941,7 @@ fn param_capture_regex() -> &'static Regex {
 }
 
 fn top_level_symbol_kind(
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -943,35 +949,31 @@ fn top_level_symbol_kind(
 	if scope_kind(index, scope_id) != ScopeKind::File {
 		return None;
 	}
-	match file_kind {
-		ScriptFileKind::ScriptedEffects if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
-		ScriptFileKind::ScriptedTriggers if !is_keyword(key) => Some(SymbolKind::ScriptedTrigger),
-		ScriptFileKind::Decisions if !is_keyword(key) && !is_decision_container_key(key) => {
+	match file_kind.as_str() {
+		"scripted_effects" if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
+		"scripted_triggers" if !is_keyword(key) => Some(SymbolKind::ScriptedTrigger),
+		"decisions" if !is_keyword(key) && !is_decision_container_key(key) => {
 			Some(SymbolKind::Decision)
 		}
-		ScriptFileKind::DiplomaticActions if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
-		ScriptFileKind::NewDiplomaticActions
-			if !is_keyword(key) && !matches!(key, "static_actions") =>
-		{
+		"diplomatic_actions" if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
+		"new_diplomatic_actions" if !is_keyword(key) && !matches!(key, "static_actions") => {
 			Some(SymbolKind::DiplomaticAction)
 		}
-		ScriptFileKind::TriggeredModifiers if !is_keyword(key) => {
-			Some(SymbolKind::TriggeredModifier)
-		}
+		"triggered_modifiers" if !is_keyword(key) => Some(SymbolKind::TriggeredModifier),
 		_ => None,
 	}
 }
 
 fn symbol_definition_kind(
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
 ) -> Option<SymbolKind> {
-	if let Some(kind) = top_level_symbol_kind(file_kind, key, scope_id, index) {
+	if let Some(kind) = top_level_symbol_kind(file_kind.clone(), key, scope_id, index) {
 		return Some(kind);
 	}
-	if file_kind == ScriptFileKind::Decisions
+	if file_kind == CwtType::new("decisions")
 		&& is_decision_entry_scope(index, scope_id)
 		&& !is_keyword(key)
 	{
@@ -995,7 +997,7 @@ fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 
 fn is_scripted_effect_call_candidate(
 	ctx: &BuildContext<'_>,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -1045,20 +1047,20 @@ fn is_scripted_effect_call_candidate(
 	if !allows_generic_scripted_effect_fallback(scope_kind(index, scope_id)) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::Missions {
+	if file_kind == CwtType::new("missions") {
 		// Mission slot definitions have structure keys like icon, position,
 		// required_missions, trigger, effect — these are NOT scripted effect calls.
 		// We cannot rely solely on scope kind because the scope classification
 		// may vary based on preceding siblings.
 	}
-	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
+	if file_kind == CwtType::new("decisions") && is_decision_entry_scope(index, scope_id) {
 		return false;
 	}
 	// Mission files: blocks at depth ≤ 2 are mission slot definitions, not calls
-	if file_kind == ScriptFileKind::Missions && is_mission_slot_scope(index, scope_id) {
+	if file_kind == CwtType::new("missions") && is_mission_slot_scope(index, scope_id) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::ScriptedEffects
+	if file_kind == CwtType::new("scripted_effects")
 		&& scope_kind(index, scope_id) == ScopeKind::File
 	{
 		return false;
@@ -1068,7 +1070,7 @@ fn is_scripted_effect_call_candidate(
 
 fn is_scripted_trigger_call_candidate(
 	ctx: &BuildContext<'_>,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -1118,10 +1120,10 @@ fn is_scripted_trigger_call_candidate(
 	if !is_trigger_like_scope(index, scope_id) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::Missions && is_mission_slot_scope(index, scope_id) {
+	if file_kind == CwtType::new("missions") && is_mission_slot_scope(index, scope_id) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::ScriptedTriggers
+	if file_kind == CwtType::new("scripted_triggers")
 		&& scope_kind(index, scope_id) == ScopeKind::File
 	{
 		return false;
@@ -1226,12 +1228,12 @@ fn effect_context_scope_semantics(
 }
 
 fn is_on_actions_callback_root(
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	parent_scope_id: usize,
 	index: &SemanticIndex,
 	key: &str,
 ) -> bool {
-	file_kind == ScriptFileKind::OnActions
+	file_kind == CwtType::new("on_actions")
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& key.starts_with("on_")
 }
@@ -1262,7 +1264,7 @@ fn create_child_scope(
 	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
 
-	if is_on_actions_callback_root(ctx.file_kind, parent_scope_id, index, key) {
+	if is_on_actions_callback_root(ctx.file_kind.clone(), parent_scope_id, index, key) {
 		kind = ScopeKind::Effect;
 		this_type = on_actions_callback_this_type(key);
 		aliases.insert("THIS".to_string(), this_type);
@@ -1288,7 +1290,9 @@ fn create_child_scope(
 			| "on_monthly"
 	) {
 		kind = ScopeKind::Effect;
-	} else if let Some(file_kind_scope_kind) = file_kind_container_scope_kind(ctx.file_kind, key) {
+	} else if let Some(file_kind_scope_kind) =
+		file_kind_container_scope_kind(ctx.file_kind.clone(), key)
+	{
 		kind = file_kind_scope_kind;
 	} else if let Some(semantics) = effect_context_semantics {
 		match semantics {
@@ -1363,12 +1367,12 @@ fn create_child_scope(
 		if let Some(from_type) = event_from_type(key) {
 			aliases.insert("FROM".to_string(), from_type);
 		}
-	} else if ctx.file_kind == ScriptFileKind::ScriptedTriggers
+	} else if ctx.file_kind == CwtType::new("scripted_triggers")
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
 	{
 		kind = ScopeKind::Trigger;
-	} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
+	} else if ctx.file_kind == CwtType::new("scripted_effects")
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
 	{
@@ -1564,8 +1568,8 @@ fn scope_depth(index: &SemanticIndex, scope_id: usize) -> usize {
 /// Check if a block's children indicate it's a mission slot definition or
 /// a mission group definition.  Mission slots contain structure keys like
 /// icon, position, etc.  Mission groups contain slot, generic, ai, etc.
-fn is_mission_slot_definition(file_kind: ScriptFileKind, items: &[AstStatement]) -> bool {
-	if file_kind != ScriptFileKind::Missions {
+fn is_mission_slot_definition(file_kind: CwtType, items: &[AstStatement]) -> bool {
+	if file_kind != CwtType::new("missions") {
 		return false;
 	}
 	items.iter().any(|stmt| {

@@ -459,7 +459,7 @@ fn collect_content_family_merge_keys(
 fn dependency_merge_key_source_for_path(path: &Path) -> Option<(&'static str, MergeKeySource)> {
 	let descriptor = eu4_profile().classify_content_family(path)?;
 	let source = descriptor.merge_key_source?;
-	is_dependency_merge_key_source(source).then_some((descriptor.id, source))
+	is_dependency_merge_key_source(source).then_some((descriptor.id.as_str(), source))
 }
 
 fn scalar_values_by_scope(index: &SemanticIndex) -> HashMap<(usize, String), String> {

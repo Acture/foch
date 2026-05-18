@@ -1,4 +1,4 @@
-use super::super::content_family::ScriptFileKind;
+use super::super::content_family::CwtType;
 use foch_core::model::{ScopeKind, ScopeType};
 
 pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
@@ -99,9 +99,9 @@ pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	}
 }
 
-pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> Option<ScopeKind> {
-	match file_kind {
-		ScriptFileKind::Missions => match key {
+pub fn file_kind_container_scope_kind(file_kind: CwtType, key: &str) -> Option<ScopeKind> {
+	match file_kind.as_str() {
+		"missions" => match key {
 			"potential_on_load"
 			| "potential"
 			| "trigger"
@@ -111,23 +111,23 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			"effect" | "on_completed" | "on_cancelled" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::NewDiplomaticActions => match key {
+		"new_diplomatic_actions" => match key {
 			"is_visible" | "is_allowed" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"on_accept" | "on_decline" | "add_entry" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::Events => match key {
+		"events" => match key {
 			"mean_time_to_happen" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
-		ScriptFileKind::Ages => match key {
+		"ages" => match key {
 			"can_start" | "custom_trigger_tooltip" | "calc_true_if" | "ai_will_do" => {
 				Some(ScopeKind::Trigger)
 			}
 			"effect" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::Buildings => match key {
+		"buildings" => match key {
 			"ai_will_do" => Some(ScopeKind::Trigger),
 			"on_built"
 			| "on_destroyed"
@@ -136,7 +136,7 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			| "on_obsolete" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::Institutions => match key {
+		"institutions" => match key {
 			"history" | "can_embrace" | "potential" | "custom_trigger_tooltip" => {
 				Some(ScopeKind::Trigger)
 			}
@@ -144,26 +144,26 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			"embracement_speed" | "modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::ProvinceTriggeredModifiers => match key {
+		"province_triggered_modifiers" => match key {
 			"potential" | "trigger" => Some(ScopeKind::Trigger),
 			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::TriggeredModifiers => match key {
+		"triggered_modifiers" => match key {
 			"potential" | "trigger" => Some(ScopeKind::Trigger),
 			"on_activation" | "on_deactivation" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::ScriptedTriggers => match key {
+		"scripted_triggers" => match key {
 			"trigger" | "limit" | "custom_trigger_tooltip" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
-		ScriptFileKind::Ideas => match key {
+		"ideas" => match key {
 			"start" | "bonus" => Some(ScopeKind::Effect),
 			"trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
-		ScriptFileKind::GreatProjects => {
+		"great_projects" => {
 			if key.ends_with("_trigger") {
 				Some(ScopeKind::Trigger)
 			} else if matches!(
@@ -178,36 +178,36 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 				None
 			}
 		}
-		ScriptFileKind::GovernmentReforms => match key {
+		"government_reforms" => match key {
 			"on_enabled" | "on_disabled" | "on_enacted" | "on_removed" | "removed_effect" => {
 				Some(ScopeKind::Effect)
 			}
 			"ai_will_do" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
-		ScriptFileKind::CbTypes => match key {
+		"cb_types" => match key {
 			"prerequisites_self" | "prerequisites" | "can_use" | "can_take_province" => {
 				Some(ScopeKind::Trigger)
 			}
 			_ => None,
 		},
-		ScriptFileKind::GovernmentNames | ScriptFileKind::CustomizableLocalization => match key {
+		"government_names" | "customizable_localization" => match key {
 			"trigger" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
-		ScriptFileKind::Religions => match key {
+		"religions" => match key {
 			"potential" | "allow" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"effect" | "on_convert" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::SubjectTypes => match key {
+		"subject_types" => match key {
 			"is_potential_overlord" | "can_fight" | "can_rival" | "can_ally" | "can_marry" => {
 				Some(ScopeKind::Trigger)
 			}
 			"modifier_subject" | "modifier_overlord" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::RebelTypes => match key {
+		"rebel_types" => match key {
 			"spawn_chance"
 			| "movement_evaluation"
 			| "can_negotiate_trigger"
@@ -215,13 +215,13 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			"siege_won_effect" | "demands_enforced_effect" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::Disasters => match key {
+		"disasters" => match key {
 			"potential" | "can_start" | "can_stop" | "can_end" => Some(ScopeKind::Trigger),
 			"on_start" | "on_end" | "on_monthly" => Some(ScopeKind::Effect),
 			"progress" | "modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::GovernmentMechanics => match key {
+		"government_mechanics" => match key {
 			"available" | "trigger" => Some(ScopeKind::Trigger),
 			"on_max_reached" | "on_min_reached" => Some(ScopeKind::Effect),
 			"powers" | "scaled_modifier" | "reverse_scaled_modifier" | "modifier" => {
@@ -229,48 +229,48 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			}
 			_ => None,
 		},
-		ScriptFileKind::ChurchAspects => match key {
+		"church_aspects" => match key {
 			"potential" | "trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"effect" => Some(ScopeKind::Effect),
 			"modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::Factions => match key {
+		"factions" => match key {
 			"allow" => Some(ScopeKind::Trigger),
 			"modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::Hegemons => match key {
+		"hegemons" => match key {
 			"allow" => Some(ScopeKind::Trigger),
 			"base" | "scale" | "max" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::PersonalDeities => match key {
+		"personal_deities" => match key {
 			"potential" | "trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"effect" | "removed_effect" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::FetishistCults => match key {
+		"fetishist_cults" => match key {
 			"allow" | "ai_will_do" => Some(ScopeKind::Trigger),
 			_ => None,
 		},
-		ScriptFileKind::PeaceTreaties => match key {
+		"peace_treaties" => match key {
 			"is_visible" | "is_allowed" | "ai_weight" => Some(ScopeKind::Trigger),
 			"effect" => Some(ScopeKind::Effect),
 			"warscore_cost" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::Policies => match key {
+		"policies" => match key {
 			"potential" | "allow" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"effect" | "removed_effect" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::MercenaryCompanies => match key {
+		"mercenary_companies" => match key {
 			"trigger" => Some(ScopeKind::Trigger),
 			"modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::EstateAgendas => match key {
+		"estate_agendas" => match key {
 			"can_select"
 			| "task_requirements"
 			| "fail_if"
@@ -282,7 +282,7 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			}
 			_ => None,
 		},
-		ScriptFileKind::EstatePrivileges => match key {
+		"estate_privileges" => match key {
 			"is_valid" | "can_select" | "can_revoke" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"on_granted"
 			| "on_revoked"
@@ -300,7 +300,7 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			| "loyalty_scaled_conditional_modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::Estates => match key {
+		"estates" => match key {
 			"trigger" => Some(ScopeKind::Trigger),
 			"country_modifier_happy"
 			| "country_modifier_neutral"
@@ -312,18 +312,18 @@ pub fn file_kind_container_scope_kind(file_kind: ScriptFileKind, key: &str) -> O
 			| "influence_from_dev_modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::ParliamentBribes => match key {
+		"parliament_bribes" => match key {
 			"trigger" | "chance" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"effect" => Some(ScopeKind::Effect),
 			_ => None,
 		},
-		ScriptFileKind::ParliamentIssues => match key {
+		"parliament_issues" => match key {
 			"allow" | "chance" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"effect" | "on_issue_taken" => Some(ScopeKind::Effect),
 			"modifier" | "influence_scaled_modifier" => Some(ScopeKind::Block),
 			_ => None,
 		},
-		ScriptFileKind::StateEdicts => match key {
+		"state_edicts" => match key {
 			"potential" | "allow" | "notify_trigger" | "ai_will_do" => Some(ScopeKind::Trigger),
 			"modifier" => Some(ScopeKind::Block),
 			_ => None,

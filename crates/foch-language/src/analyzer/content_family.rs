@@ -1,84 +1,33 @@
 use foch_core::model::ScopeType;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum ScriptFileKind {
-	Events,
-	OnActions,
-	Decisions,
-	ScriptedEffects,
-	ScriptedTriggers,
-	DiplomaticActions,
-	TriggeredModifiers,
-	Defines,
-	Achievements,
-	Ages,
-	Buildings,
-	Institutions,
-	ProvinceTriggeredModifiers,
-	Ideas,
-	GreatProjects,
-	GovernmentReforms,
-	Cultures,
-	CustomGui,
-	AdvisorTypes,
-	GovernmentNames,
-	EventModifiers,
-	CbTypes,
-	CustomizableLocalization,
-	Missions,
-	NewDiplomaticActions,
-	CountryTags,
-	Countries,
-	CountryHistory,
-	ProvinceHistory,
-	ProvinceNames,
-	RandomMapTiles,
-	RandomMapNames,
-	RandomMapScenarios,
-	RandomMapTweaks,
-	DiplomacyHistory,
-	AdvisorHistory,
-	Wars,
-	Fervor,
-	Decrees,
-	FederationAdvancements,
-	GoldenBulls,
-	FlagshipModifications,
-	HolyOrders,
-	NavalDoctrines,
-	DefenderOfFaith,
-	Isolationism,
-	Professionalism,
-	PowerProjection,
-	SubjectTypeUpgrades,
-	GovernmentRanks,
-	Units,
-	Religions,
-	SubjectTypes,
-	RebelTypes,
-	Disasters,
-	GovernmentMechanics,
-	ChurchAspects,
-	Factions,
-	Hegemons,
-	PersonalDeities,
-	FetishistCults,
-	PeaceTreaties,
-	Bookmarks,
-	Policies,
-	MercenaryCompanies,
-	Technologies,
-	TechnologyGroups,
-	EstateAgendas,
-	EstatePrivileges,
-	Estates,
-	ParliamentBribes,
-	ParliamentIssues,
-	StateEdicts,
-	Ui,
-	Other,
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ContentFamilyId(Arc<str>);
+
+impl ContentFamilyId {
+	pub fn new(id: impl Into<Arc<str>>) -> Self {
+		Self(id.into())
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CwtType(Arc<str>);
+
+impl CwtType {
+	pub fn new(name: impl Into<Arc<str>>) -> Self {
+		Self(name.into())
+	}
+
+	pub fn as_str(&self) -> &str {
+		&self.0
+	}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -301,75 +250,6 @@ pub enum ModuleNameRule {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContentFamilyExtractor {
-	None,
-	CountryTags,
-	Countries,
-	CountryHistory,
-	ProvinceHistory,
-	ProvinceNames,
-	RandomMapTiles,
-	RandomMapNames,
-	RandomMapScenarios,
-	DiplomacyHistory,
-	AdvisorHistory,
-	Wars,
-	Fervor,
-	Decrees,
-	FederationAdvancements,
-	GoldenBulls,
-	FlagshipModifications,
-	HolyOrders,
-	NavalDoctrines,
-	DefenderOfFaith,
-	Isolationism,
-	Professionalism,
-	PowerProjection,
-	SubjectTypeUpgrades,
-	GovernmentRanks,
-	Units,
-	Religions,
-	SubjectTypes,
-	RebelTypes,
-	Disasters,
-	GovernmentMechanics,
-	ChurchAspects,
-	Factions,
-	Hegemons,
-	PersonalDeities,
-	FetishistCults,
-	PeaceTreaties,
-	Bookmarks,
-	Policies,
-	MercenaryCompanies,
-	Technologies,
-	TechnologyGroups,
-	EstateAgendas,
-	EstatePrivileges,
-	Estates,
-	ParliamentBribes,
-	ParliamentIssues,
-	StateEdicts,
-	Achievements,
-	Ages,
-	Institutions,
-	Cultures,
-	AdvisorTypes,
-	GovernmentNames,
-	CustomGui,
-	EventModifiers,
-	ProvinceTriggeredModifiers,
-	CbTypes,
-	Ideas,
-	GreatProjects,
-	GovernmentReforms,
-	DiplomaticActions,
-	ScriptedTriggers,
-	NewDiplomaticActions,
-	Buildings,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MergeKeySource {
 	/// Top-level named assignments are the merge units (e.g. `effect_name = { ... }`).
 	AssignmentKey,
@@ -506,107 +386,114 @@ pub enum ContentFamilyPathMatcher {
 }
 
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContentFamilyDescriptor {
-	pub id: &'static str,
+	pub id: ContentFamilyId,
 	pub matcher: ContentFamilyPathMatcher,
-	pub script_file_kind: ScriptFileKind,
+	pub cwt_type: CwtType,
 	pub module_name_rule: ModuleNameRule,
 	pub scope_policy: ContentFamilyScopePolicy,
 	pub capabilities: ContentFamilyCapabilities,
-	pub extractor: ContentFamilyExtractor,
 	pub merge_key_source: Option<MergeKeySource>,
 	pub conflict_policy: ConflictPolicy,
 	pub merge_policies: MergePolicies,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct ContentFamilyDescriptorBuilder {
-	id: &'static str,
+	id: ContentFamilyId,
 	matcher: ContentFamilyPathMatcher,
-	script_file_kind: ScriptFileKind,
+	cwt_type: CwtType,
 	module_name_rule: ModuleNameRule,
 	scope_policy: ContentFamilyScopePolicy,
 	capabilities: ContentFamilyCapabilities,
-	extractor: ContentFamilyExtractor,
 	merge_key_source: Option<MergeKeySource>,
 	conflict_policy: ConflictPolicy,
 	merge_policies: MergePolicies,
 }
 
 impl ContentFamilyDescriptorBuilder {
-	pub const fn kind(mut self, kind: ScriptFileKind) -> Self {
-		self.script_file_kind = kind;
+	pub fn kind(mut self, kind: CwtType) -> Self {
+		self.cwt_type = kind;
 		self
 	}
-	pub const fn module_name(mut self, rule: ModuleNameRule) -> Self {
+
+	pub fn module_name(mut self, rule: ModuleNameRule) -> Self {
 		self.module_name_rule = rule;
 		self
 	}
-	pub const fn scope(mut self, policy: ContentFamilyScopePolicy) -> Self {
+
+	pub fn scope(mut self, policy: ContentFamilyScopePolicy) -> Self {
 		self.scope_policy = policy;
 		self
 	}
-	pub const fn capabilities(mut self, caps: ContentFamilyCapabilities) -> Self {
+
+	pub fn capabilities(mut self, caps: ContentFamilyCapabilities) -> Self {
 		self.capabilities = caps;
 		self
 	}
-	pub const fn per_entry_dedup_safe(mut self) -> Self {
+
+	pub fn per_entry_dedup_safe(mut self) -> Self {
 		self.capabilities.per_entry_dedup_safe = true;
 		self
 	}
-	pub const fn extractor(mut self, ext: ContentFamilyExtractor) -> Self {
-		self.extractor = ext;
-		self
-	}
-	pub const fn merge_key(mut self, source: MergeKeySource) -> Self {
+
+	pub fn merge_key(mut self, source: MergeKeySource) -> Self {
 		self.merge_key_source = Some(source);
 		self
 	}
-	pub const fn conflict_policy(mut self, policy: ConflictPolicy) -> Self {
+
+	pub fn conflict_policy(mut self, policy: ConflictPolicy) -> Self {
 		self.conflict_policy = policy;
 		self
 	}
-	pub const fn merge_policies(mut self, policies: MergePolicies) -> Self {
+
+	pub fn merge_policies(mut self, policies: MergePolicies) -> Self {
 		self.merge_policies = policies;
 		self
 	}
-	pub const fn scalar_policy(mut self, policy: ScalarMergePolicy) -> Self {
+
+	pub fn scalar_policy(mut self, policy: ScalarMergePolicy) -> Self {
 		self.merge_policies.scalar = policy;
 		self
 	}
-	pub const fn list_policy(mut self, policy: ListMergePolicy) -> Self {
+
+	pub fn list_policy(mut self, policy: ListMergePolicy) -> Self {
 		self.merge_policies.list = policy;
 		self
 	}
-	pub const fn block_policy(mut self, policy: BlockMergePolicy) -> Self {
+
+	pub fn block_policy(mut self, policy: BlockMergePolicy) -> Self {
 		self.merge_policies.block = policy;
 		self
 	}
-	pub const fn boolean_policy(mut self, policy: BooleanMergePolicy) -> Self {
+
+	pub fn boolean_policy(mut self, policy: BooleanMergePolicy) -> Self {
 		self.merge_policies.boolean = policy;
 		self
 	}
-	pub const fn block_patch_policy(mut self, policy: BlockPatchPolicy) -> Self {
+
+	pub fn block_patch_policy(mut self, policy: BlockPatchPolicy) -> Self {
 		self.merge_policies.block_patch = policy;
 		self
 	}
-	pub const fn block_patch_policies(
+
+	pub fn block_patch_policies(
 		mut self,
 		policies: &'static [(&'static str, BlockPatchPolicy)],
 	) -> Self {
 		self.merge_policies.block_patch_policies = policies;
 		self
 	}
-	pub const fn build(self) -> ContentFamilyDescriptor {
+
+	pub fn build(self) -> ContentFamilyDescriptor {
 		ContentFamilyDescriptor {
 			id: self.id,
 			matcher: self.matcher,
-			script_file_kind: self.script_file_kind,
+			cwt_type: self.cwt_type,
 			module_name_rule: self.module_name_rule,
 			scope_policy: self.scope_policy,
 			capabilities: self.capabilities,
-			extractor: self.extractor,
 			merge_key_source: self.merge_key_source,
 			conflict_policy: self.conflict_policy,
 			merge_policies: self.merge_policies,
@@ -615,11 +502,11 @@ impl ContentFamilyDescriptorBuilder {
 }
 
 impl ContentFamilyDescriptor {
-	pub const fn prefix(id: &'static str, prefix: &'static str) -> ContentFamilyDescriptorBuilder {
+	pub fn prefix(id: &'static str, prefix: &'static str) -> ContentFamilyDescriptorBuilder {
 		ContentFamilyDescriptorBuilder {
-			id,
+			id: ContentFamilyId::new(id),
 			matcher: ContentFamilyPathMatcher::Prefix(prefix),
-			script_file_kind: ScriptFileKind::Other,
+			cwt_type: CwtType::new("other"),
 			module_name_rule: ModuleNameRule::FallbackParent,
 			scope_policy: ContentFamilyScopePolicy {
 				root_scope: ScopeType::Unknown,
@@ -633,7 +520,6 @@ impl ContentFamilyDescriptor {
 				cross_file_dedup_safe: false,
 				per_entry_dedup_safe: false,
 			},
-			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
 			merge_policies: MergePolicies {
@@ -648,14 +534,11 @@ impl ContentFamilyDescriptor {
 		}
 	}
 
-	pub const fn exact(
-		id: &'static str,
-		exact_path: &'static str,
-	) -> ContentFamilyDescriptorBuilder {
+	pub fn exact(id: &'static str, exact_path: &'static str) -> ContentFamilyDescriptorBuilder {
 		ContentFamilyDescriptorBuilder {
-			id,
+			id: ContentFamilyId::new(id),
 			matcher: ContentFamilyPathMatcher::Exact(exact_path),
-			script_file_kind: ScriptFileKind::Other,
+			cwt_type: CwtType::new("other"),
 			module_name_rule: ModuleNameRule::FallbackParent,
 			scope_policy: ContentFamilyScopePolicy {
 				root_scope: ScopeType::Unknown,
@@ -669,7 +552,6 @@ impl ContentFamilyDescriptor {
 				cross_file_dedup_safe: false,
 				per_entry_dedup_safe: false,
 			},
-			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
 			merge_policies: MergePolicies {
@@ -695,7 +577,8 @@ pub trait GameProfile: std::fmt::Debug + Send + Sync {
 
 	/// Get the content family ID for a relative path.
 	fn family_id_for(&self, relative: &Path) -> Option<&'static str> {
-		self.classify_content_family(relative).map(|d| d.id)
+		self.classify_content_family(relative)
+			.map(|d| d.id.as_str())
 	}
 
 	/// Get the capabilities for a root family name.
@@ -706,7 +589,8 @@ pub trait GameProfile: std::fmt::Debug + Send + Sync {
 
 	/// Get the content family ID for a root family name.
 	fn family_id_for_root(&self, root_family: &str) -> Option<&'static str> {
-		self.descriptor_for_root_family(root_family).map(|d| d.id)
+		self.descriptor_for_root_family(root_family)
+			.map(|d| d.id.as_str())
 	}
 }
 
@@ -740,4 +624,36 @@ fn fallback_module_name(parts: &[&str]) -> String {
 		return "other".to_string();
 	}
 	parts[..parts.len() - 1].join(".")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ContentFamilyId, CwtType};
+	use std::collections::hash_map::DefaultHasher;
+	use std::hash::{Hash, Hasher};
+	use std::sync::Arc;
+
+	#[test]
+	fn content_family_id_new_round_trips_str() {
+		assert_eq!(ContentFamilyId::new("foo").as_str(), "foo");
+	}
+
+	#[test]
+	fn cwt_type_equality_is_string_based() {
+		assert_eq!(CwtType::new("events"), CwtType::new("events"));
+	}
+
+	#[test]
+	fn content_family_id_hashes_match_for_equal_strings() {
+		let left = ContentFamilyId::new(Arc::<str>::from("family"));
+		let right = ContentFamilyId::new(Arc::<str>::from("family"));
+
+		let mut left_hasher = DefaultHasher::new();
+		left.hash(&mut left_hasher);
+
+		let mut right_hasher = DefaultHasher::new();
+		right.hash(&mut right_hasher);
+
+		assert_eq!(left_hasher.finish(), right_hasher.finish());
+	}
 }

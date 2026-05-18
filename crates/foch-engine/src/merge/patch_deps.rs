@@ -6,7 +6,7 @@ use std::sync::{Mutex, OnceLock};
 
 use foch_core::config::DepOverride;
 use foch_core::model::HandlerResolutionRecord;
-use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, ScriptFileKind};
+use foch_language::analyzer::content_family::{CwtType, MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
@@ -589,7 +589,7 @@ fn synthesized_parsed_file(
 		path: path.clone(),
 		relative_path: path.clone(),
 		content_family: None,
-		file_kind: ScriptFileKind::Other,
+		file_kind: CwtType::new("other"),
 		module_name: "running_base".to_string(),
 		ast: AstFile {
 			path: path.clone(),
@@ -620,7 +620,7 @@ mod tests {
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::PlaylistEntry;
 	use foch_core::model::ModCandidate;
-	use foch_language::analyzer::content_family::ScriptFileKind;
+	use foch_language::analyzer::content_family::CwtType;
 	use std::path::PathBuf;
 
 	fn mod_with(
@@ -673,7 +673,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: ScriptFileKind::Other,
+			file_kind: CwtType::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),

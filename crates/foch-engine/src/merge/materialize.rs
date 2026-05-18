@@ -296,7 +296,7 @@ pub(crate) fn materialize_merge_internal(
 						{
 							let target = entry.path.clone();
 							let contribs = contributors.clone();
-							let desc = *descriptor;
+							let desc = descriptor;
 							let dag = mod_dag.clone();
 							let ignore = ignore_replace_path.clone();
 							let dep_overrides = dep_overrides.clone();
@@ -309,7 +309,7 @@ pub(crate) fn materialize_merge_internal(
 							let result =
 								std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 									let context = PatchBasedMergeContext {
-										descriptor: &desc,
+										descriptor: desc,
 										merge_key_source,
 										mod_dag: &dag,
 										ignore_replace_path: &ignore,

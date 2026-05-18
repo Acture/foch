@@ -6,7 +6,7 @@ use foch_core::model::{
 	ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType, SemanticIndex,
 	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
-use foch_language::analyzer::content_family::{GameProfile, ScriptFileKind};
+use foch_language::analyzer::content_family::{CwtType, GameProfile};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
@@ -59,7 +59,7 @@ struct StoredParsedScriptFile {
 	mod_id: String,
 	path: String,
 	relative_path: String,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	module_name: String,
 	ast: StoredAstFile,
 	source: String,
@@ -432,7 +432,7 @@ impl StoredParsedScriptFile {
 			mod_id: file.mod_id.clone(),
 			path: path_to_string(&file.path),
 			relative_path: path_to_string(&file.relative_path),
-			file_kind: file.file_kind,
+			file_kind: file.file_kind.clone(),
 			module_name: file.module_name.clone(),
 			ast: StoredAstFile::from_ast_file(&file.ast),
 			source: file.source.clone(),
