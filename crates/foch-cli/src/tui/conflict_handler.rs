@@ -313,7 +313,7 @@ impl ConflictHandler for InteractiveTuiHandler {
 			eprintln!(
 				"[foch] interactive TUI could not be entered because stdin/stdout is not a TTY; downgrading to defer"
 			);
-			return ConflictDecision::Defer;
+			return ConflictDecision::Defer { record: None };
 		}
 
 		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
@@ -327,7 +327,7 @@ impl ConflictHandler for InteractiveTuiHandler {
 			Ok(action) => action,
 			Err(err) => {
 				eprintln!("[foch] interactive TUI failed: {err}; downgrading to defer");
-				return ConflictDecision::Defer;
+				return ConflictDecision::Defer { record: None };
 			}
 		};
 
@@ -335,12 +335,15 @@ impl ConflictHandler for InteractiveTuiHandler {
 			ConflictAction::PickCandidate(index) => view
 				.candidates
 				.get(index)
-				.map(|candidate| ConflictDecision::PickMod(candidate.mod_id.clone()))
-				.unwrap_or(ConflictDecision::Defer),
-			ConflictAction::Defer => ConflictDecision::Defer,
+				.map(|candidate| ConflictDecision::PickMod {
+					mod_id: candidate.mod_id.clone(),
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None }),
+			ConflictAction::Defer => ConflictDecision::Defer { record: None },
 			ConflictAction::ExternalFile(path) => {
 				if path.as_os_str().is_empty() {
-					ConflictDecision::Defer
+					ConflictDecision::Defer { record: None }
 				} else {
 					ConflictDecision::UseFile(path)
 				}
