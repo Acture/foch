@@ -71,7 +71,7 @@ Every entry must set exactly one action. For non-`mod` selectors, the allowed ac
 
 | Action | Type | Valid selectors | Runtime decision | Validation rules |
 | --- | --- | --- | --- | --- |
-| `prefer_mod` | String mod id | `file`, `conflict_id`, `match` | `PickMod(mod_id)` | Cannot combine with any other action (`crates/foch-core/src/config.rs:376-380`). If the mod is no longer a contributor at that conflict, the merge engine treats it as stale and defers (`crates/foch-engine/src/merge/patch_merge.rs:511-532`). |
+| `prefer_mod` | String mod id | `file`, `conflict_id`, `match` | `PickMod { mod_id, record: None }` | Cannot combine with any other action (`crates/foch-core/src/config.rs:376-380`). If the mod is no longer a contributor at that conflict, the merge engine treats it as stale and defers (`crates/foch-engine/src/merge/patch_merge.rs:511-532`). |
 | `use_file` | TOML string parsed as `PathBuf` | `file`, `conflict_id`, `match` | `UseFile(path)`; bytes are copied from that external path during materialization | Cannot combine with any other action. Materialization reads the source path and writes it to the target (`crates/foch-engine/src/merge/materialize.rs:1264-1288`). |
 | `keep_existing` | Boolean | `file` only | `KeepExisting`; preserve an existing output-dir file | Must be `true` when present, and requires `file` selector (`crates/foch-core/src/config.rs:343-347`, `crates/foch-core/src/config.rs:382-386`). If the output file does not exist, foch warns and falls through to normal output (`crates/foch-engine/src/merge/materialize.rs:1244-1262`). |
 | `priority_boost` | Integer (`i32`) | `mod` only | Stored in `ResolutionMap.mod_priority_boost` | `mod` requires `priority_boost`; `priority_boost` cannot combine with `prefer_mod`, `use_file`, `keep_existing`, or `handler`; `priority_boost` without `mod` is invalid (`crates/foch-core/src/config.rs:349-368`). |
@@ -194,8 +194,8 @@ A `handler` action names a built-in handler from the registry. Dispatch is case-
 
 | Handler | Decision | Behavior | Source |
 | --- | --- | --- | --- |
-| `last_writer` | `PickModWithRecord` | Chooses the patch with the largest `(precedence, mod_id)` pair; `mod_id` breaks equal-precedence ties lexicographically for deterministic output. If there are no patches, it defers. | `crates/foch-engine/src/merge/handler_registry.rs:62-100` |
-| `defer` | `Defer` | Passes the conflict to the next handler in the chain. In the default chain, dependency-implied resolution gets a chance next; if it also defers, the conflict can reach the interactive prompt/manual report. | `crates/foch-engine/src/merge/handler_registry.rs:38-55` |
+| `last_writer` | `PickMod { record: Some(...) }` | Chooses the patch with the largest `(precedence, mod_id)` pair; `mod_id` breaks equal-precedence ties lexicographically for deterministic output. If there are no patches, it defers. | `crates/foch-engine/src/merge/handler_registry.rs:62-100` |
+| `defer` | `Defer { record: Some(...) }` | Records a handler-attributed manual conflict and stops the handler chain; it does not fall through to `PriorityBoost` or `DepImplies`. | `crates/foch-engine/src/merge/handler_registry.rs:38-55` |
 | `keep_existing` | `KeepExisting` | Marks matching paths to keep the current output-dir file. If the target file exists, materialization records `kept_existing`; if it does not, foch warns and writes normal output. | `crates/foch-engine/src/merge/handler_registry.rs:38-60`, `crates/foch-engine/src/merge/materialize.rs:1244-1262` |
 
 Examples:

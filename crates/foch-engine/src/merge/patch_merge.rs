@@ -516,20 +516,17 @@ fn apply_conflict_decision(
 	);
 
 	match handler.on_conflict(&view) {
-		ConflictDecision::Defer => result.conflicts.push(PatchResolution::Conflict {
-			address,
-			patches: conflict.patches,
-			reason: conflict.reason,
-		}),
-		ConflictDecision::DeferWithRecord { record } => {
-			result.handler_resolutions.push(record);
+		ConflictDecision::Defer { record } => {
+			if let Some(record) = record {
+				result.handler_resolutions.push(record);
+			}
 			result.conflicts.push(PatchResolution::Conflict {
 				address,
 				patches: conflict.patches,
 				reason: conflict.reason,
 			});
 		}
-		ConflictDecision::PickMod(mod_id) => {
+		ConflictDecision::PickMod { mod_id, record } => {
 			let Some(chosen) = conflict
 				.patches
 				.iter()
@@ -553,29 +550,9 @@ fn apply_conflict_decision(
 				return Ok(());
 			};
 			result.handler_resolved_count += 1;
-			result
-				.resolved
-				.push(PatchResolution::Resolved(chosen.patch));
-		}
-		ConflictDecision::PickModWithRecord { mod_id, record } => {
-			let Some(chosen) = conflict
-				.patches
-				.iter()
-				.find(|patch| patch.mod_id == mod_id)
-				.cloned()
-			else {
-				eprintln!(
-					"[foch] stale pick for {conflict_path}: mod `{mod_id}` is no longer a contributor; deferring"
-				);
-				result.conflicts.push(PatchResolution::Conflict {
-					address,
-					patches: conflict.patches,
-					reason: conflict.reason,
-				});
-				return Ok(());
-			};
-			result.handler_resolved_count += 1;
-			result.handler_resolutions.push(record);
+			if let Some(record) = record {
+				result.handler_resolutions.push(record);
+			}
 			result
 				.resolved
 				.push(PatchResolution::Resolved(chosen.patch));
@@ -2365,14 +2342,14 @@ mod tests {
 				&mut self,
 				_: &crate::merge::conflict_view::ConflictView,
 			) -> ConflictDecision {
-				ConflictDecision::PickModWithRecord {
+				ConflictDecision::PickMod {
 					mod_id: "mod_b".to_string(),
-					record: HandlerResolutionRecord {
+					record: Some(HandlerResolutionRecord {
 						path: "common/ideas/dep.txt".to_string(),
 						action: "dep_implied".to_string(),
 						source: Some("mod_b".to_string()),
 						rationale: Some("mod mod_b declares dep on mod_a".to_string()),
-					},
+					}),
 				}
 			}
 		}
@@ -2421,7 +2398,10 @@ mod tests {
 				&mut self,
 				_: &crate::merge::conflict_view::ConflictView,
 			) -> ConflictDecision {
-				ConflictDecision::PickMod("mod_b".to_string())
+				ConflictDecision::PickMod {
+					mod_id: "mod_b".to_string(),
+					record: None,
+				}
 			}
 		}
 

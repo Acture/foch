@@ -382,8 +382,11 @@ mod tests {
 			view.candidates
 				.iter()
 				.max_by_key(|candidate| candidate.precedence)
-				.map(|candidate| ConflictDecision::PickMod(candidate.mod_id.clone()))
-				.unwrap_or(ConflictDecision::Defer)
+				.map(|candidate| ConflictDecision::PickMod {
+					mod_id: candidate.mod_id.clone(),
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None })
 		}
 	}
 
@@ -416,6 +419,12 @@ mod tests {
 
 		let decision = HighestPrecedenceHandler.on_conflict(&view);
 
-		assert_eq!(decision, ConflictDecision::PickMod("mod-high".to_string()));
+		assert_eq!(
+			decision,
+			ConflictDecision::PickMod {
+				mod_id: "mod-high".to_string(),
+				record: None
+			}
+		);
 	}
 }

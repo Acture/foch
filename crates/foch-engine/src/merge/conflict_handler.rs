@@ -24,21 +24,19 @@ pub trait ConflictHandler {
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ConflictDecision {
-	/// Pick this mod's patch only; drop the others.
-	PickMod(String),
-	/// Pick this mod's patch and record a handler-specific report entry.
-	PickModWithRecord {
+	/// Pick this mod's patch only; drop the others, optionally recording a handler-specific report entry.
+	PickMod {
 		mod_id: String,
-		record: HandlerResolutionRecord,
+		record: Option<HandlerResolutionRecord>,
 	},
 	/// Use this external file's content (handled at materialize time).
 	UseFile(PathBuf),
 	/// Keep whatever already exists at output dir (handled at materialize time).
 	KeepExisting,
-	/// Defer — log to report, leave for later resolution.
-	Defer,
-	/// Defer while recording a handler-specific report entry.
-	DeferWithRecord { record: HandlerResolutionRecord },
+	/// Defer — log to report, leave for later resolution, optionally recording a handler-specific report entry.
+	Defer {
+		record: Option<HandlerResolutionRecord>,
+	},
 	/// Abort the merge.
 	Abort,
 }
@@ -48,7 +46,7 @@ pub struct DeferHandler;
 
 impl ConflictHandler for DeferHandler {
 	fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
-		ConflictDecision::Defer
+		ConflictDecision::Defer { record: None }
 	}
 }
 
@@ -221,17 +219,17 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 		let mods = self.conflict_mods(view);
 		let Some(winner) = self.winner(&mods) else {
-			return ConflictDecision::Defer;
+			return ConflictDecision::Defer { record: None };
 		};
 		let rationale = self.rationale(&winner, &mods);
-		ConflictDecision::PickModWithRecord {
+		ConflictDecision::PickMod {
 			mod_id: winner.clone(),
-			record: HandlerResolutionRecord {
+			record: Some(HandlerResolutionRecord {
 				path: view.file_path.to_string_lossy().replace('\\', "/"),
 				action: "dep_implied".to_string(),
 				source: Some(winner),
 				rationale: Some(rationale),
-			},
+			}),
 		}
 	}
 }
@@ -273,16 +271,16 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 		let Some((winner, precedence)) = self.winner(view) else {
-			return ConflictDecision::Defer;
+			return ConflictDecision::Defer { record: None };
 		};
 		let mod_ids: Vec<&str> = view
 			.candidates
 			.iter()
 			.map(|candidate| candidate.mod_id.as_str())
 			.collect();
-		ConflictDecision::PickModWithRecord {
+		ConflictDecision::PickMod {
 			mod_id: winner.clone(),
-			record: HandlerResolutionRecord {
+			record: Some(HandlerResolutionRecord {
 				path: view.file_path.to_string_lossy().replace('\\', "/"),
 				action: "priority_boost".to_string(),
 				source: Some(winner.clone()),
@@ -290,7 +288,7 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 					"priority_boost made `{winner}` the unique highest-precedence contributor ({precedence}) among [{}]",
 					mod_ids.join(", ")
 				)),
-			},
+			}),
 		}
 	}
 }
@@ -339,15 +337,16 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 			format!("{address_path}/{}", view.address_key)
 		};
 		match self.map.lookup(lookup_file, &conflict_id, &leaf_address) {
-			Some(ResolutionDecision::PreferMod(mod_id)) => {
-				ConflictDecision::PickMod(mod_id.clone())
-			}
+			Some(ResolutionDecision::PreferMod(mod_id)) => ConflictDecision::PickMod {
+				mod_id: mod_id.clone(),
+				record: None,
+			},
 			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
 			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
 			Some(ResolutionDecision::Handler(name)) => {
 				crate::merge::handler_registry::dispatch(name, view)
 			}
-			None => ConflictDecision::Defer,
+			None => ConflictDecision::Defer { record: None },
 		}
 	}
 
@@ -570,7 +569,7 @@ impl ConflictHandler for InteractiveCliHandler {
 				self.stderr,
 				"[foch] interactive mode could not be entered because stdin/stderr is not a TTY; downgrading to defer"
 			);
-			return ConflictDecision::Defer;
+			return ConflictDecision::Defer { record: None };
 		}
 
 		self.write_conflict_summary(view);
@@ -578,11 +577,11 @@ impl ConflictHandler for InteractiveCliHandler {
 		for attempt in 1..=3 {
 			self.write_prompt(view);
 			let Some(choice) = self.read_trimmed_line() else {
-				return ConflictDecision::Defer;
+				return ConflictDecision::Defer { record: None };
 			};
 			let choice = choice.to_ascii_lowercase();
 			match choice.as_str() {
-				"d" | "defer" => return ConflictDecision::Defer,
+				"d" | "defer" => return ConflictDecision::Defer { record: None },
 				"q" | "quit" | "abort" => return ConflictDecision::Abort,
 				"k" | "keep" => return ConflictDecision::KeepExisting,
 				"s" | "file" | "use-file" => {
@@ -596,7 +595,10 @@ impl ConflictHandler for InteractiveCliHandler {
 							.checked_sub(1)
 							.and_then(|index| view.candidates.get(index))
 					{
-						return ConflictDecision::PickMod(candidate.mod_id.clone());
+						return ConflictDecision::PickMod {
+							mod_id: candidate.mod_id.clone(),
+							record: None,
+						};
 					}
 				}
 			}
@@ -609,7 +611,7 @@ impl ConflictHandler for InteractiveCliHandler {
 			self.stderr,
 			"[foch] invalid choice limit reached; deferring conflict"
 		);
-		ConflictDecision::Defer
+		ConflictDecision::Defer { record: None }
 	}
 
 	fn set_conflict_progress(&mut self, current: usize, total: usize) {
@@ -634,7 +636,7 @@ pub struct ChainHandler<H1: ConflictHandler, H2: ConflictHandler> {
 impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<H1, H2> {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 		match self.first.on_conflict(view) {
-			ConflictDecision::Defer => self.second.on_conflict(view),
+			ConflictDecision::Defer { record: None } => self.second.on_conflict(view),
 			other => other,
 		}
 	}
@@ -658,19 +660,17 @@ pub(crate) fn resolution_entry_for_decision(
 	let address_path = address.path.join("/");
 	let conflict_id = compute_conflict_id(current_file, &address_path, &address.key);
 	match decision {
-		ConflictDecision::PickMod(mod_id) | ConflictDecision::PickModWithRecord { mod_id, .. } => {
-			Some(ResolutionEntry {
-				file: None,
-				conflict_id: Some(conflict_id),
-				mod_id: None,
-				r#match: None,
-				prefer_mod: Some(mod_id.clone()),
-				use_file: None,
-				keep_existing: None,
-				priority_boost: None,
-				handler: None,
-			})
-		}
+		ConflictDecision::PickMod { mod_id, .. } => Some(ResolutionEntry {
+			file: None,
+			conflict_id: Some(conflict_id),
+			mod_id: None,
+			r#match: None,
+			prefer_mod: Some(mod_id.clone()),
+			use_file: None,
+			keep_existing: None,
+			priority_boost: None,
+			handler: None,
+		}),
 		ConflictDecision::UseFile(path) => Some(ResolutionEntry {
 			file: None,
 			conflict_id: Some(conflict_id),
@@ -693,9 +693,7 @@ pub(crate) fn resolution_entry_for_decision(
 			priority_boost: None,
 			handler: None,
 		}),
-		ConflictDecision::Defer
-		| ConflictDecision::DeferWithRecord { .. }
-		| ConflictDecision::Abort => None,
+		ConflictDecision::Defer { .. } | ConflictDecision::Abort => None,
 	}
 }
 
@@ -753,8 +751,7 @@ pub fn prompt_survivors_and_persist(
 			break;
 		}
 		match decision {
-			ConflictDecision::PickMod(mod_id)
-			| ConflictDecision::PickModWithRecord { mod_id, .. } => {
+			ConflictDecision::PickMod { mod_id, .. } => {
 				result.outcomes.push(PromptOutcome {
 					conflict_id,
 					kind: PromptOutcomeKind::Picked(ResolutionDecision::PreferMod(mod_id)),
@@ -768,7 +765,7 @@ pub fn prompt_survivors_and_persist(
 				conflict_id,
 				kind: PromptOutcomeKind::Picked(ResolutionDecision::KeepExisting),
 			}),
-			ConflictDecision::Defer | ConflictDecision::DeferWithRecord { .. } => {
+			ConflictDecision::Defer { .. } => {
 				result.outcomes.push(PromptOutcome {
 					conflict_id,
 					kind: PromptOutcomeKind::Deferred,
@@ -924,7 +921,10 @@ mod tests {
 
 	fn assert_dep_pick(decision: ConflictDecision, expected_mod: &str, expected_rationale: &str) {
 		match decision {
-			ConflictDecision::PickModWithRecord { mod_id, record } => {
+			ConflictDecision::PickMod {
+				mod_id,
+				record: Some(record),
+			} => {
 				assert_eq!(mod_id, expected_mod);
 				assert_eq!(record.path, "common/ideas/dep.txt");
 				assert_eq!(record.action, "dep_implied");
@@ -970,7 +970,25 @@ mod tests {
 	impl ConflictHandler for CountingHandler {
 		fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
 			self.calls.set(self.calls.get() + 1);
-			ConflictDecision::PickMod("mod_b".to_string())
+			ConflictDecision::PickMod {
+				mod_id: "mod_b".to_string(),
+				record: None,
+			}
+		}
+	}
+
+	struct RecordedDeferHandler;
+
+	impl ConflictHandler for RecordedDeferHandler {
+		fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+			ConflictDecision::Defer {
+				record: Some(HandlerResolutionRecord {
+					path: view.file_path.to_string_lossy().replace('\\', "/"),
+					action: "defer".to_string(),
+					source: None,
+					rationale: Some("matched DSL handler=defer rule".to_string()),
+				}),
+			}
 		}
 	}
 
@@ -995,7 +1013,13 @@ mod tests {
 			&conflict(),
 		));
 
-		assert_eq!(decision, ConflictDecision::PickMod("mod-a".to_string()));
+		assert_eq!(
+			decision,
+			ConflictDecision::PickMod {
+				mod_id: "mod-a".to_string(),
+				record: None
+			}
+		);
 	}
 
 	#[test]
@@ -1009,7 +1033,7 @@ mod tests {
 			&conflict(),
 		));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1042,8 +1066,39 @@ mod tests {
 		let deferred =
 			handler.on_conflict(&view_for("events/PirateEvents.txt", &miss, &conflict()));
 
-		assert_eq!(resolved, ConflictDecision::PickMod("mod-a".to_string()));
-		assert_eq!(deferred, ConflictDecision::Defer);
+		assert_eq!(
+			resolved,
+			ConflictDecision::PickMod {
+				mod_id: "mod-a".to_string(),
+				record: None
+			}
+		);
+		assert_eq!(deferred, ConflictDecision::Defer { record: None });
+	}
+
+	#[test]
+	fn chain_handler_does_not_fall_through_recorded_defer() {
+		let calls = Rc::new(Cell::new(0));
+		let mut handler = ChainHandler {
+			first: RecordedDeferHandler,
+			second: CountingHandler {
+				calls: Rc::clone(&calls),
+			},
+		};
+
+		let decision = handler.on_conflict(&view_for(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict(),
+		));
+
+		match decision {
+			ConflictDecision::Defer {
+				record: Some(record),
+			} => assert_eq!(record.action, "defer"),
+			other => panic!("expected recorded defer, got {other:?}"),
+		}
+		assert_eq!(calls.get(), 0);
 	}
 
 	#[test]
@@ -1100,7 +1155,7 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1115,7 +1170,7 @@ mod tests {
 		let decision =
 			handler.on_conflict(&view_for("common/ideas/dep.txt", &address(), &conflict));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1128,7 +1183,7 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1152,7 +1207,7 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1165,7 +1220,7 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1178,7 +1233,13 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::PickMod("mod_b".to_string()));
+		assert_eq!(
+			decision,
+			ConflictDecision::PickMod {
+				mod_id: "mod_b".to_string(),
+				record: None
+			}
+		);
 	}
 
 	#[test]
@@ -1232,7 +1293,7 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::Defer);
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
 	}
 
 	#[test]
@@ -1282,7 +1343,13 @@ mod tests {
 			&conflict_with_patches(),
 		));
 
-		assert_eq!(decision, ConflictDecision::PickMod("mod_a".to_string()));
+		assert_eq!(
+			decision,
+			ConflictDecision::PickMod {
+				mod_id: "mod_a".to_string(),
+				record: None
+			}
+		);
 		assert_eq!(
 			calls.get(),
 			0,
