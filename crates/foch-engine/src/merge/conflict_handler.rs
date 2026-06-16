@@ -10,28 +10,16 @@ use foch_core::config::{
 use foch_core::model::HandlerResolutionRecord;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
+use crate::merge::conflict_view::ConflictView;
 use crate::merge::dag::ModDag;
-use crate::merge::patch_merge::{PatchAddress, PatchConflict};
+use crate::merge::patch_merge::PatchAddress;
 
 pub trait ConflictHandler {
-	fn on_conflict(
-		&mut self,
-		path: &str,
-		address: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision;
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision;
 
 	fn set_conflict_progress(&mut self, _current: usize, _total: usize) {}
 
 	fn set_deferred_so_far(&mut self, _count: usize) {}
-
-	fn set_conflict_context(
-		&mut self,
-		_current_file: &Path,
-		_mod_displayname_lookup: &HashMap<String, String>,
-		_vanilla_snippet: Option<String>,
-	) {
-	}
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -59,7 +47,7 @@ pub enum ConflictDecision {
 pub struct DeferHandler;
 
 impl ConflictHandler for DeferHandler {
-	fn on_conflict(&mut self, _: &str, _: &PatchAddress, _: &PatchConflict) -> ConflictDecision {
+	fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
 		ConflictDecision::Defer
 	}
 }
@@ -157,14 +145,13 @@ impl DepImpliesResolutionHandler {
 		}
 	}
 
-	fn conflict_mods(&self, conflict: &PatchConflict) -> Vec<String> {
+	fn conflict_mods(&self, view: &ConflictView) -> Vec<String> {
 		let mut seen = HashSet::new();
-		conflict
-			.patches
+		view.candidates
 			.iter()
-			.filter_map(|patch| {
-				if seen.insert(patch.mod_id.clone()) {
-					Some(patch.mod_id.clone())
+			.filter_map(|candidate| {
+				if seen.insert(candidate.mod_id.clone()) {
+					Some(candidate.mod_id.clone())
 				} else {
 					None
 				}
@@ -231,13 +218,8 @@ impl DepImpliesResolutionHandler {
 }
 
 impl ConflictHandler for DepImpliesResolutionHandler {
-	fn on_conflict(
-		&mut self,
-		_: &str,
-		_: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision {
-		let mods = self.conflict_mods(conflict);
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		let mods = self.conflict_mods(view);
 		let Some(winner) = self.winner(&mods) else {
 			return ConflictDecision::Defer;
 		};
@@ -245,7 +227,7 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 		ConflictDecision::PickModWithRecord {
 			mod_id: winner.clone(),
 			record: HandlerResolutionRecord {
-				path: self.current_file.to_string_lossy().replace('\\', "/"),
+				path: view.file_path.to_string_lossy().replace('\\', "/"),
 				action: "dep_implied".to_string(),
 				source: Some(winner),
 				rationale: Some(rationale),
@@ -255,20 +237,20 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 }
 
 pub(crate) struct PriorityBoostResolutionHandler<'a> {
-	current_file: PathBuf,
+	_current_file: PathBuf,
 	boosts: &'a BTreeMap<String, i32>,
 }
 
 impl<'a> PriorityBoostResolutionHandler<'a> {
 	pub(crate) fn new(current_file: PathBuf, boosts: &'a BTreeMap<String, i32>) -> Self {
 		Self {
-			current_file,
+			_current_file: current_file,
 			boosts,
 		}
 	}
 
-	fn winner(&self, conflict: &PatchConflict) -> Option<(String, usize)> {
-		let winner = conflict.patches.iter().max_by(|left, right| {
+	fn winner(&self, view: &ConflictView) -> Option<(String, usize)> {
+		let winner = view.candidates.iter().max_by(|left, right| {
 			left.precedence
 				.cmp(&right.precedence)
 				.then_with(|| left.mod_id.cmp(&right.mod_id))
@@ -276,10 +258,10 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 		if self.boosts.get(&winner.mod_id).copied().unwrap_or(0) == 0 {
 			return None;
 		}
-		let tied_winners = conflict
-			.patches
+		let tied_winners = view
+			.candidates
 			.iter()
-			.filter(|patch| patch.precedence == winner.precedence)
+			.filter(|candidate| candidate.precedence == winner.precedence)
 			.count();
 		if tied_winners != 1 {
 			return None;
@@ -289,24 +271,19 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 }
 
 impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
-	fn on_conflict(
-		&mut self,
-		_: &str,
-		_: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision {
-		let Some((winner, precedence)) = self.winner(conflict) else {
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		let Some((winner, precedence)) = self.winner(view) else {
 			return ConflictDecision::Defer;
 		};
-		let mod_ids: Vec<&str> = conflict
-			.patches
+		let mod_ids: Vec<&str> = view
+			.candidates
 			.iter()
-			.map(|patch| patch.mod_id.as_str())
+			.map(|candidate| candidate.mod_id.as_str())
 			.collect();
 		ConflictDecision::PickModWithRecord {
 			mod_id: winner.clone(),
 			record: HandlerResolutionRecord {
-				path: self.current_file.to_string_lossy().replace('\\', "/"),
+				path: view.file_path.to_string_lossy().replace('\\', "/"),
 				action: "priority_boost".to_string(),
 				source: Some(winner.clone()),
 				rationale: Some(format!(
@@ -322,7 +299,7 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 /// The merge engine drives this serially; do NOT share across threads.
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
-	pub current_file: PathBuf,
+	pub _current_file: PathBuf,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 }
@@ -340,7 +317,7 @@ impl<'a> LookupHandler<'a> {
 	) -> Self {
 		Self {
 			map,
-			current_file: file,
+			_current_file: file,
 			current_conflict_index: 1,
 			total_conflicts: 1,
 		}
@@ -348,34 +325,28 @@ impl<'a> LookupHandler<'a> {
 }
 
 impl<'a> ConflictHandler for LookupHandler<'a> {
-	fn on_conflict(
-		&mut self,
-		_path: &str,
-		address: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision {
-		let address_path = address.path.join("/");
-		let conflict_id = compute_conflict_id(&self.current_file, &address_path, &address.key);
-		let leaf_address = if address_path.is_empty() {
-			address.key.clone()
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		let address_path = view.address_path.join("/");
+		let lookup_file = if self._current_file.as_os_str().is_empty() {
+			&view.file_path
 		} else {
-			format!("{address_path}/{}", address.key)
+			&self._current_file
 		};
-		match self
-			.map
-			.lookup(&self.current_file, &conflict_id, &leaf_address)
-		{
+		let conflict_id = compute_conflict_id(lookup_file, &address_path, &view.address_key);
+		let leaf_address = if address_path.is_empty() {
+			view.address_key.clone()
+		} else {
+			format!("{address_path}/{}", view.address_key)
+		};
+		match self.map.lookup(lookup_file, &conflict_id, &leaf_address) {
 			Some(ResolutionDecision::PreferMod(mod_id)) => {
 				ConflictDecision::PickMod(mod_id.clone())
 			}
 			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
 			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
-			Some(ResolutionDecision::Handler(name)) => crate::merge::handler_registry::dispatch(
-				name,
-				&self.current_file,
-				address,
-				conflict,
-			),
+			Some(ResolutionDecision::Handler(name)) => {
+				crate::merge::handler_registry::dispatch(name, view)
+			}
 			None => ConflictDecision::Defer,
 		}
 	}
@@ -492,26 +463,31 @@ impl InteractiveCliHandler {
 			.unwrap_or_else(|| atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stderr))
 	}
 
-	fn write_conflict_summary(
-		&mut self,
-		path: &str,
-		address: &PatchAddress,
-		conflict: &PatchConflict,
-		conflict_id: &str,
-	) {
-		let address_path = address.path.join("/");
+	fn write_conflict_summary(&mut self, view: &ConflictView) {
+		let address_path = view.address_path.join("/");
 		let _ = writeln!(
 			self.stderr,
 			"[foch] unresolved structural merge conflict (conflict {}/{}) ({} deferred)",
 			self.current_conflict_index, self.total_conflicts, self.deferred_so_far
 		);
+		let path = view.file_path.to_string_lossy();
 		let _ = writeln!(self.stderr, "  file: {path}");
 		let _ = writeln!(self.stderr, "  path: {path}");
-		let _ = writeln!(self.stderr, "  address: {address_path}/{}", address.key);
-		let _ = writeln!(self.stderr, "  conflict_id: {conflict_id}");
-		let _ = writeln!(self.stderr, "  reason: {}", conflict.reason);
+		let _ = writeln!(
+			self.stderr,
+			"  address: {address_path}/{}",
+			view.address_key
+		);
+		let _ = writeln!(self.stderr, "  conflict_id: {}", view.conflict_id);
+		let _ = writeln!(self.stderr, "  reason: {}", view.reason);
+		if let Some(snippet) = &view.vanilla_snippet {
+			let _ = writeln!(self.stderr, "  vanilla:");
+			for line in snippet.lines().take(20) {
+				let _ = writeln!(self.stderr, "      {line}");
+			}
+		}
 		let _ = writeln!(self.stderr, "  candidates:");
-		for (index, candidate) in conflict.patches.iter().enumerate() {
+		for (index, candidate) in view.candidates.iter().enumerate() {
 			let _ = writeln!(
 				self.stderr,
 				"    [{}] {} (precedence {})",
@@ -523,9 +499,11 @@ impl InteractiveCliHandler {
 		}
 	}
 
-	fn write_candidate_patch(&mut self, candidate: &crate::merge::patch_merge::AttributedPatch) {
-		let rendered = format!("{:#?}", candidate.patch);
-		let lines: Vec<&str> = rendered.lines().collect();
+	fn write_candidate_patch(&mut self, candidate: &crate::merge::conflict_view::CandidateView) {
+		for summary in &candidate.patch_summary {
+			let _ = writeln!(self.stderr, "      {summary}");
+		}
+		let lines: Vec<&str> = candidate.patch_rendered.lines().collect();
 		for line in lines.iter().take(20) {
 			let _ = writeln!(self.stderr, "      {line}");
 		}
@@ -535,12 +513,12 @@ impl InteractiveCliHandler {
 		}
 	}
 
-	fn write_prompt(&mut self, conflict: &PatchConflict) {
-		let mut choices = conflict
-			.patches
+	fn write_prompt(&mut self, view: &ConflictView) {
+		let mut choices = view
+			.candidates
 			.iter()
 			.enumerate()
-			.map(|(index, patch)| format!("[{}] {}", index + 1, patch.mod_id))
+			.map(|(index, candidate)| format!("[{}] {}", index + 1, candidate.mod_id))
 			.collect::<Vec<_>>();
 		choices.extend([
 			"[d] defer".to_string(),
@@ -586,12 +564,7 @@ impl Default for InteractiveCliHandler {
 }
 
 impl ConflictHandler for InteractiveCliHandler {
-	fn on_conflict(
-		&mut self,
-		path: &str,
-		address: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision {
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 		if !self.stdin_stderr_are_tty() {
 			let _ = writeln!(
 				self.stderr,
@@ -600,12 +573,10 @@ impl ConflictHandler for InteractiveCliHandler {
 			return ConflictDecision::Defer;
 		}
 
-		let address_path = address.path.join("/");
-		let conflict_id = compute_conflict_id(Path::new(path), &address_path, &address.key);
-		self.write_conflict_summary(path, address, conflict, &conflict_id);
+		self.write_conflict_summary(view);
 
 		for attempt in 1..=3 {
-			self.write_prompt(conflict);
+			self.write_prompt(view);
 			let Some(choice) = self.read_trimmed_line() else {
 				return ConflictDecision::Defer;
 			};
@@ -623,7 +594,7 @@ impl ConflictHandler for InteractiveCliHandler {
 					if let Ok(index) = choice.parse::<usize>()
 						&& let Some(candidate) = index
 							.checked_sub(1)
-							.and_then(|index| conflict.patches.get(index))
+							.and_then(|index| view.candidates.get(index))
 					{
 						return ConflictDecision::PickMod(candidate.mod_id.clone());
 					}
@@ -661,14 +632,9 @@ pub struct ChainHandler<H1: ConflictHandler, H2: ConflictHandler> {
 }
 
 impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<H1, H2> {
-	fn on_conflict(
-		&mut self,
-		path: &str,
-		address: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision {
-		match self.first.on_conflict(path, address, conflict) {
-			ConflictDecision::Defer => self.second.on_conflict(path, address, conflict),
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		match self.first.on_conflict(view) {
+			ConflictDecision::Defer => self.second.on_conflict(view),
 			other => other,
 		}
 	}
@@ -681,21 +647,6 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 	fn set_deferred_so_far(&mut self, count: usize) {
 		self.first.set_deferred_so_far(count);
 		self.second.set_deferred_so_far(count);
-	}
-
-	fn set_conflict_context(
-		&mut self,
-		current_file: &Path,
-		mod_displayname_lookup: &HashMap<String, String>,
-		vanilla_snippet: Option<String>,
-	) {
-		self.first.set_conflict_context(
-			current_file,
-			mod_displayname_lookup,
-			vanilla_snippet.clone(),
-		);
-		self.second
-			.set_conflict_context(current_file, mod_displayname_lookup, vanilla_snippet);
 	}
 }
 
@@ -780,24 +731,20 @@ pub struct PromptSurvivorsResult {
 /// and any outcomes already collected are still returned.
 pub fn prompt_survivors_and_persist(
 	target_path: &Path,
-	survivors: &[(PatchAddress, PatchConflict)],
+	survivors: &[(PatchAddress, ConflictView)],
 	handler: &mut dyn ConflictHandler,
 	config_path: &Path,
-	mod_displayname_lookup: &HashMap<String, String>,
-	vanilla_lookup: &dyn Fn(&PatchAddress) -> Option<String>,
 ) -> PromptSurvivorsResult {
 	let total = survivors.len();
 	let mut deferred_so_far = 0usize;
 	let mut result = PromptSurvivorsResult::default();
 	let mut config_writer = FilesystemConfigWriter::new(config_path.to_path_buf());
-	for (idx, (address, conflict)) in survivors.iter().enumerate() {
+	for (idx, (address, view)) in survivors.iter().enumerate() {
 		let current = idx + 1;
-		let conflict_id = compute_conflict_id(target_path, &address.path.join("/"), &address.key);
-		let vanilla_snippet = vanilla_lookup(address);
-		handler.set_conflict_context(target_path, mod_displayname_lookup, vanilla_snippet);
+		let conflict_id = view.conflict_id.clone();
 		handler.set_conflict_progress(current, total);
 		handler.set_deferred_so_far(deferred_so_far);
-		let decision = handler.on_conflict(&target_path.to_string_lossy(), address, conflict);
+		let decision = handler.on_conflict(view);
 		if let Some(entry) = resolution_entry_for_decision(target_path, address, &decision)
 			&& let Err(err) = config_writer.append_resolution(entry)
 		{
@@ -887,8 +834,10 @@ mod tests {
 	use foch_language::analyzer::parser::{AstValue, ScalarValue, Span, SpanRange};
 
 	use super::*;
+	use crate::emit::EmitOptions;
+	use crate::merge::conflict_view::build_conflict_view;
 	use crate::merge::patch::ClausewitzPatch;
-	use crate::merge::patch_merge::AttributedPatch;
+	use crate::merge::patch_merge::{AttributedPatch, PatchConflict};
 
 	fn address() -> PatchAddress {
 		PatchAddress {
@@ -953,6 +902,19 @@ mod tests {
 		}
 	}
 
+	fn view_for(file: &str, address: &PatchAddress, conflict: &PatchConflict) -> ConflictView {
+		build_conflict_view(
+			&PathBuf::from(file),
+			address,
+			conflict,
+			compute_conflict_id(&PathBuf::from(file), &address.path.join("/"), &address.key),
+			&HashMap::new(),
+			None,
+			&EmitOptions::default(),
+		)
+		.expect("build conflict view")
+	}
+
 	fn dep_handler(edges: &[(&str, &str)]) -> DepImpliesResolutionHandler {
 		DepImpliesResolutionHandler::new(
 			PathBuf::from("common/ideas/dep.txt"),
@@ -1006,12 +968,7 @@ mod tests {
 	}
 
 	impl ConflictHandler for CountingHandler {
-		fn on_conflict(
-			&mut self,
-			_: &str,
-			_: &PatchAddress,
-			_: &PatchConflict,
-		) -> ConflictDecision {
+		fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
 			self.calls.set(self.calls.get() + 1);
 			ConflictDecision::PickMod("mod_b".to_string())
 		}
@@ -1032,7 +989,11 @@ mod tests {
 		};
 		let mut handler = LookupHandler::new(&map, current_file);
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict());
+		let decision = handler.on_conflict(&view_for(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict(),
+		));
 
 		assert_eq!(decision, ConflictDecision::PickMod("mod-a".to_string()));
 	}
@@ -1042,7 +1003,11 @@ mod tests {
 		let map = ResolutionMap::default();
 		let mut handler = LookupHandler::new(&map, PathBuf::from("events/PirateEvents.txt"));
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict());
+		let decision = handler.on_conflict(&view_for(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict(),
+		));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1069,8 +1034,13 @@ mod tests {
 			key: "other".to_string(),
 		};
 
-		let resolved = handler.on_conflict("root/event/id", &address(), &conflict());
-		let deferred = handler.on_conflict("root/event/other", &miss, &conflict());
+		let resolved = handler.on_conflict(&view_for(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict(),
+		));
+		let deferred =
+			handler.on_conflict(&view_for("events/PirateEvents.txt", &miss, &conflict()));
 
 		assert_eq!(resolved, ConflictDecision::PickMod("mod-a".to_string()));
 		assert_eq!(deferred, ConflictDecision::Defer);
@@ -1080,7 +1050,11 @@ mod tests {
 	fn dep_implies_resolution_picks_two_mod_downstream() {
 		let mut handler = dep_handler(&[("mod_a", "mod_b")]);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(&view_for(
+			"common/ideas/dep.txt",
+			&address(),
+			&conflict_with_patches(),
+		));
 
 		assert_dep_pick(decision, "mod_a", "mod mod_a declares dep on mod_b");
 	}
@@ -1094,7 +1068,8 @@ mod tests {
 			("mod_c", 2, "gamma"),
 		]);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict);
+		let decision =
+			handler.on_conflict(&view_for("common/ideas/dep.txt", &address(), &conflict));
 
 		assert_dep_pick(decision, "mod_a", "mod mod_a declares dep on mod_b");
 	}
@@ -1109,7 +1084,8 @@ mod tests {
 			("mod_c", 1, "gamma"),
 		]);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict);
+		let decision =
+			handler.on_conflict(&view_for("common/ideas/dep.txt", &address(), &conflict));
 
 		assert_dep_pick(decision, "mod_a", "mod mod_a declares dep on mod_b");
 	}
@@ -1118,7 +1094,11 @@ mod tests {
 	fn dep_implies_resolution_defers_independent_mods() {
 		let mut handler = dep_handler(&[]);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(&view_for(
+			"common/ideas/dep.txt",
+			&address(),
+			&conflict_with_patches(),
+		));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1132,7 +1112,8 @@ mod tests {
 			("mod_c", 2, "gamma"),
 		]);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict);
+		let decision =
+			handler.on_conflict(&view_for("common/ideas/dep.txt", &address(), &conflict));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1141,7 +1122,11 @@ mod tests {
 	fn dep_implies_resolution_defers_on_cycle() {
 		let mut handler = dep_handler(&[("mod_a", "mod_b"), ("mod_b", "mod_a")]);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(&view_for(
+			"common/ideas/dep.txt",
+			&address(),
+			&conflict_with_patches(),
+		));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1161,7 +1146,11 @@ mod tests {
 		let mut handler =
 			DepImpliesResolutionHandler::new(PathBuf::from("common/ideas/dep.txt"), graph);
 
-		let decision = handler.on_conflict("root/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(&view_for(
+			"common/ideas/dep.txt",
+			&address(),
+			&conflict_with_patches(),
+		));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1170,11 +1159,11 @@ mod tests {
 	fn interactive_handler_returns_defer_on_non_tty() {
 		let mut handler = handler_with_input("1\n", false);
 
-		let decision = handler.on_conflict(
+		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
 			&conflict_with_patches(),
-		);
+		));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1183,11 +1172,11 @@ mod tests {
 	fn interactive_handler_returns_pick_mod_on_user_choice() {
 		let mut handler = handler_with_input("2\n", true);
 
-		let decision = handler.on_conflict(
+		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
 			&conflict_with_patches(),
-		);
+		));
 
 		assert_eq!(decision, ConflictDecision::PickMod("mod_b".to_string()));
 	}
@@ -1198,16 +1187,19 @@ mod tests {
 		let config_path = root.join("foch.toml");
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let mut handler = handler_with_input("1\n", true);
-		let survivors = vec![(address(), conflict_with_patches())];
+		let survivor_address = address();
+		let survivor_conflict = conflict_with_patches();
+		let survivors = vec![(
+			survivor_address.clone(),
+			view_for(
+				"events/PirateEvents.txt",
+				&survivor_address,
+				&survivor_conflict,
+			),
+		)];
 
-		let result = prompt_survivors_and_persist(
-			&current_file,
-			&survivors,
-			&mut handler,
-			&config_path,
-			&HashMap::new(),
-			&|_| None,
-		);
+		let result =
+			prompt_survivors_and_persist(&current_file, &survivors, &mut handler, &config_path);
 
 		assert!(!result.aborted);
 		assert_eq!(result.outcomes.len(), 1);
@@ -1221,11 +1213,11 @@ mod tests {
 	fn interactive_handler_returns_keep_existing_on_user_choice_k() {
 		let mut handler = handler_with_input("k\n", true);
 
-		let decision = handler.on_conflict(
+		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
 			&conflict_with_patches(),
-		);
+		));
 
 		assert_eq!(decision, ConflictDecision::KeepExisting);
 	}
@@ -1234,11 +1226,11 @@ mod tests {
 	fn interactive_handler_invalid_input_eventually_defers() {
 		let mut handler = handler_with_input("x\ny\n0\n", true);
 
-		let decision = handler.on_conflict(
+		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
 			&conflict_with_patches(),
-		);
+		));
 
 		assert_eq!(decision, ConflictDecision::Defer);
 	}
@@ -1247,11 +1239,11 @@ mod tests {
 	fn interactive_handler_returns_use_file_resolution() {
 		let mut handler = handler_with_input("s\nresolutions/PirateEvents.txt\n", true);
 
-		let decision = handler.on_conflict(
+		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
 			&conflict_with_patches(),
-		);
+		));
 
 		assert_eq!(
 			decision,
@@ -1284,7 +1276,11 @@ mod tests {
 			},
 		};
 
-		let decision = handler.on_conflict("root/event/id", &address(), &conflict_with_patches());
+		let decision = handler.on_conflict(&view_for(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		));
 
 		assert_eq!(decision, ConflictDecision::PickMod("mod_a".to_string()));
 		assert_eq!(

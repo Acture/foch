@@ -16,7 +16,7 @@ use super::dag::{
 };
 use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 use super::patch_apply::apply_patches;
-use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets};
+use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets_for_file};
 use crate::cache::{DagBaseCache, ModDiffCache, compute_mod_hash};
 use crate::workspace::ResolvedFileContributor;
 
@@ -379,8 +379,13 @@ fn compute_dag_patches_from_parsed_with_cache(
 		level_addresses.push(addresses_in_level);
 
 		mod_patches.extend(level_patches.clone());
-		let mut level_result =
-			merge_patch_sets(level_patches, policies, handler).map_err(|err| err.to_string())?;
+		let mut level_result = merge_patch_sets_for_file(
+			level_patches,
+			policies,
+			handler,
+			Some(Path::new(file_dag.file_path())),
+		)
+		.map_err(|err| err.to_string())?;
 
 		// Detach this level's conflicts; they go through the post-pass to be
 		// either confirmed real or dropped because a downstream level overrode them.

@@ -1,4 +1,5 @@
 pub(crate) mod conflict_handler;
+pub mod conflict_view;
 pub(crate) mod dag;
 pub(crate) mod error;
 pub(crate) mod execute;
@@ -17,11 +18,10 @@ pub(crate) mod plan;
 pub(crate) mod stale_vanilla;
 
 pub use conflict_handler::{ConflictDecision, ConflictHandler, InteractiveCliHandler};
+pub use conflict_view::{CandidateView, ConflictView};
 pub use error::MergeError;
 pub use execute::{
 	AnalysisStatusView, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
 	run_merge_with_options,
 };
-pub use patch::ClausewitzPatch;
-pub use patch_merge::{AttributedPatch, PatchAddress, PatchConflict};
 pub use plan::{run_merge_plan, run_merge_plan_with_options};
