@@ -211,11 +211,13 @@ fn run_foch_with_env(
 	ensure_default_game_config(config_dir);
 	let home_dir = config_dir.join(".home");
 	let xdg_data_home = config_dir.join(".xdg-data");
+	let cache_root = config_dir.join(".foch-cache");
 	fs::create_dir_all(&home_dir).expect("create isolated home");
 	fs::create_dir_all(&xdg_data_home).expect("create isolated xdg data");
 	let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));
 	command
 		.env("FOCH_CONFIG_DIR", config_dir)
+		.env("FOCH_CACHE_ROOT", &cache_root)
 		.env("HOME", &home_dir)
 		.env("XDG_DATA_HOME", &xdg_data_home);
 	for (key, value) in envs {

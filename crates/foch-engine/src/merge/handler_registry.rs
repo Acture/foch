@@ -8,9 +8,9 @@
 //! [`ConflictDecision`] paired with a [`HandlerResolutionRecord`] so the
 //! merge report can audit the chosen action.
 //!
-//! New handlers should be added to [`dispatch`] (case-insensitive name match)
-//! and accompanied by a unit test exercising the conflict-classification
-//! logic. Handlers must never resort to silent last-writer choices for
+//! New handlers should be added to [`builtin_registry`] and accompanied by a
+//! unit test exercising the conflict-classification logic. Handlers must never
+//! resort to silent last-writer choices for
 //! ambiguous cases — explicit named handlers like `last_writer` make the
 //! choice the user's, not the engine's.
 //!
@@ -18,51 +18,78 @@
 //! [`LookupHandler`]: super::conflict_handler::LookupHandler
 //! [`HandlerResolutionRecord`]: foch_core::model::HandlerResolutionRecord
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use foch_core::model::HandlerResolutionRecord;
 
 use super::conflict_handler::ConflictDecision;
-use super::patch_merge::{PatchAddress, PatchConflict};
+use super::conflict_view::ConflictView;
+
+type HandlerFn = fn(&ConflictView) -> ConflictDecision;
+
+pub struct HandlerRegistry {
+	handlers: BTreeMap<String, HandlerFn>,
+}
+
+impl HandlerRegistry {
+	pub fn dispatch(&self, name: &str, view: &ConflictView) -> ConflictDecision {
+		match self.handlers.get(&name.to_ascii_lowercase()) {
+			Some(handler) => handler(view),
+			None => {
+				eprintln!("{}", unknown_handler_diagnostic(name, view));
+				ConflictDecision::Defer { record: None }
+			}
+		}
+	}
+
+	#[allow(dead_code)]
+	pub fn names(&self) -> Vec<String> {
+		self.handlers.keys().cloned().collect()
+	}
+}
 
 /// Dispatch a named handler against a single conflict. Returns
 /// [`ConflictDecision::Defer`] when the handler name is unknown so that the
 /// surrounding chain (e.g. interactive prompt) can still take over instead
 /// of aborting; the unknown-handler diagnostic is logged on stderr.
-pub fn dispatch(
-	name: &str,
-	current_file: &Path,
-	address: &PatchAddress,
-	conflict: &PatchConflict,
-) -> ConflictDecision {
-	match name.to_ascii_lowercase().as_str() {
-		"last_writer" => last_writer(name, current_file, address, conflict),
-		"defer" => defer(current_file),
-		"keep_existing" => keep_existing(name, current_file, address),
-		other => {
-			eprintln!(
-				"[foch] unknown merge handler `{other}`; deferring conflict at {}::{}",
-				current_file.display(),
-				address.key
-			);
-			ConflictDecision::Defer
-		}
-	}
+pub fn dispatch(name: &str, view: &ConflictView) -> ConflictDecision {
+	builtin_registry().dispatch(name, view)
 }
 
-fn defer(current_file: &Path) -> ConflictDecision {
-	ConflictDecision::DeferWithRecord {
-		record: HandlerResolutionRecord {
-			path: current_file.to_string_lossy().replace('\\', "/"),
+pub fn builtin_registry() -> &'static HandlerRegistry {
+	static BUILTIN_REGISTRY: OnceLock<HandlerRegistry> = OnceLock::new();
+	BUILTIN_REGISTRY.get_or_init(|| {
+		let mut handlers: BTreeMap<String, HandlerFn> = BTreeMap::new();
+		handlers.insert("last_writer".to_string(), last_writer);
+		handlers.insert("defer".to_string(), defer);
+		handlers.insert("keep_existing".to_string(), keep_existing);
+		HandlerRegistry { handlers }
+	})
+}
+
+fn unknown_handler_diagnostic(name: &str, view: &ConflictView) -> String {
+	let lower_name = name.to_ascii_lowercase();
+	format!(
+		"[foch] unknown merge handler `{lower_name}`; deferring conflict at {}::{}",
+		view.file_path.display(),
+		view.address_key
+	)
+}
+
+fn defer(view: &ConflictView) -> ConflictDecision {
+	ConflictDecision::Defer {
+		record: Some(HandlerResolutionRecord {
+			path: view.file_path.to_string_lossy().replace('\\', "/"),
 			action: "defer".to_string(),
 			source: None,
 			rationale: Some("matched DSL handler=defer rule".to_string()),
-		},
+		}),
 	}
 }
 
-fn keep_existing(name: &str, current_file: &Path, address: &PatchAddress) -> ConflictDecision {
-	let _ = (name, current_file, address);
+fn keep_existing(view: &ConflictView) -> ConflictDecision {
+	let _ = view;
 	ConflictDecision::KeepExisting
 }
 
@@ -70,41 +97,36 @@ fn keep_existing(name: &str, current_file: &Path, address: &PatchAddress) -> Con
 /// on lexicographically larger `mod_id` so the result is fully deterministic
 /// even when two contributors land at the same precedence (an unusual case
 /// inside one DAG level, but possible across pre-collapsed siblings).
-fn last_writer(
-	name: &str,
-	current_file: &Path,
-	_address: &PatchAddress,
-	conflict: &PatchConflict,
-) -> ConflictDecision {
-	let Some(winner) = conflict
-		.patches
+fn last_writer(view: &ConflictView) -> ConflictDecision {
+	let Some(winner) = view
+		.candidates
 		.iter()
 		.max_by(|a, b| {
 			a.precedence
 				.cmp(&b.precedence)
 				.then_with(|| a.mod_id.cmp(&b.mod_id))
 		})
-		.map(|patch| patch.mod_id.clone())
+		.map(|candidate| candidate.mod_id.clone())
 	else {
-		return ConflictDecision::Defer;
+		return ConflictDecision::Defer { record: None };
 	};
-	let mod_ids: Vec<&str> = conflict
-		.patches
+	let mod_ids: Vec<&str> = view
+		.candidates
 		.iter()
-		.map(|patch| patch.mod_id.as_str())
+		.map(|candidate| candidate.mod_id.as_str())
 		.collect();
 	let rationale = format!(
 		"last_writer picked `{winner}` from contributors [{}] (highest precedence wins, mod_id ties broken lexicographically)",
 		mod_ids.join(", ")
 	);
-	ConflictDecision::PickModWithRecord {
+	ConflictDecision::PickMod {
 		mod_id: winner.clone(),
-		record: HandlerResolutionRecord {
-			path: current_file.to_string_lossy().replace('\\', "/"),
-			action: name.to_ascii_lowercase(),
+		record: Some(HandlerResolutionRecord {
+			path: view.file_path.to_string_lossy().replace('\\', "/"),
+			action: "last_writer".to_string(),
 			source: Some(winner),
 			rationale: Some(rationale),
-		},
+		}),
 	}
 }
 
@@ -113,8 +135,9 @@ mod tests {
 	use std::path::PathBuf;
 
 	use super::super::patch::ClausewitzPatch;
-	use super::super::patch_merge::AttributedPatch;
+	use super::super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict};
 	use super::*;
+	use crate::merge::conflict_view::{CandidateView, ConflictView};
 	use foch_language::analyzer::parser::{ScalarValue, Span, SpanRange};
 
 	fn span() -> SpanRange {
@@ -169,6 +192,28 @@ mod tests {
 		}
 	}
 
+	fn view_for(file: &str, address: &PatchAddress, conflict: &PatchConflict) -> ConflictView {
+		ConflictView {
+			file_path: PathBuf::from(file),
+			address_path: address.path.clone(),
+			address_key: address.key.clone(),
+			conflict_id: "test-conflict-id".to_string(),
+			reason: conflict.reason.clone(),
+			vanilla_snippet: None,
+			candidates: conflict
+				.patches
+				.iter()
+				.map(|patch| CandidateView {
+					mod_id: patch.mod_id.clone(),
+					mod_display_name: patch.mod_id.clone(),
+					precedence: patch.precedence,
+					patch_summary: Vec::new(),
+					patch_rendered: String::new(),
+				})
+				.collect(),
+		}
+	}
+
 	#[test]
 	fn last_writer_picks_highest_precedence() {
 		let conflict = conflict_with(vec![
@@ -176,21 +221,21 @@ mod tests {
 			attributed("mod-b", 5, "b"),
 			attributed("mod-c", 2, "c"),
 		]);
-		let decision = dispatch(
-			"last_writer",
-			&PathBuf::from("history/provinces/12-foo.txt"),
-			&address(),
-			&conflict,
-		);
+		let address = address();
+		let view = view_for("history/provinces/12-foo.txt", &address, &conflict);
+		let decision = dispatch("last_writer", &view);
 		match decision {
-			ConflictDecision::PickModWithRecord { mod_id, record } => {
+			ConflictDecision::PickMod {
+				mod_id,
+				record: Some(record),
+			} => {
 				assert_eq!(mod_id, "mod-b");
 				assert_eq!(record.action, "last_writer");
 				assert_eq!(record.source.as_deref(), Some("mod-b"));
 				assert!(record.rationale.unwrap().contains("mod-b"));
 				assert_eq!(record.path, "history/provinces/12-foo.txt");
 			}
-			other => panic!("expected PickModWithRecord, got {other:?}"),
+			other => panic!("expected PickMod with record, got {other:?}"),
 		}
 	}
 
@@ -201,38 +246,36 @@ mod tests {
 			attributed("mod-z", 3, "z"),
 			attributed("mod-m", 3, "m"),
 		]);
-		let decision = dispatch(
-			"last_writer",
-			&PathBuf::from("common/anything.txt"),
-			&address(),
-			&conflict,
-		);
+		let address = address();
+		let view = view_for("common/anything.txt", &address, &conflict);
+		let decision = dispatch("last_writer", &view);
 		match decision {
-			ConflictDecision::PickModWithRecord { mod_id, .. } => {
+			ConflictDecision::PickMod { mod_id, .. } => {
 				assert_eq!(mod_id, "mod-z");
 			}
-			other => panic!("expected PickModWithRecord, got {other:?}"),
+			other => panic!("expected PickMod, got {other:?}"),
 		}
 	}
 
 	#[test]
 	fn last_writer_handles_empty_patch_list_via_defer() {
 		let conflict = conflict_with(vec![]);
-		let decision = dispatch(
-			"last_writer",
-			&PathBuf::from("foo.txt"),
-			&address(),
-			&conflict,
-		);
-		assert!(matches!(decision, ConflictDecision::Defer));
+		let address = address();
+		let view = view_for("foo.txt", &address, &conflict);
+		let decision = dispatch("last_writer", &view);
+		assert!(matches!(decision, ConflictDecision::Defer { .. }));
 	}
 
 	#[test]
 	fn defer_handler_returns_defer_with_record() {
 		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
-		let decision = dispatch("defer", &PathBuf::from("foo.txt"), &address(), &conflict);
+		let address = address();
+		let view = view_for("foo.txt", &address, &conflict);
+		let decision = dispatch("defer", &view);
 		match decision {
-			ConflictDecision::DeferWithRecord { record } => {
+			ConflictDecision::Defer {
+				record: Some(record),
+			} => {
 				assert_eq!(record.path, "foo.txt");
 				assert_eq!(record.action, "defer");
 				assert_eq!(record.source, None);
@@ -241,49 +284,70 @@ mod tests {
 					Some("matched DSL handler=defer rule")
 				);
 			}
-			other => panic!("expected DeferWithRecord, got {other:?}"),
+			other => panic!("expected Defer with record, got {other:?}"),
 		}
 	}
 
 	#[test]
 	fn keep_existing_handler_returns_keep_existing() {
 		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
-		let decision = dispatch(
-			"keep_existing",
-			&PathBuf::from("foo.txt"),
-			&address(),
-			&conflict,
-		);
+		let address = address();
+		let view = view_for("foo.txt", &address, &conflict);
+		let decision = dispatch("keep_existing", &view);
 		assert!(matches!(decision, ConflictDecision::KeepExisting));
 	}
 
 	#[test]
 	fn unknown_handler_defers_with_warning() {
 		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
-		let decision = dispatch(
-			"made_up_handler",
-			&PathBuf::from("foo.txt"),
-			&address(),
-			&conflict,
-		);
-		assert!(matches!(decision, ConflictDecision::Defer));
+		let address = address();
+		let view = view_for("foo.txt", &address, &conflict);
+		let decision = dispatch("made_up_handler", &view);
+		assert!(matches!(decision, ConflictDecision::Defer { .. }));
+	}
+
+	#[test]
+	fn unknown_handler_diagnostic_lowercases_name() {
+		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
+		let address = address();
+		let view = view_for("foo.txt", &address, &conflict);
+
+		let diagnostic = unknown_handler_diagnostic("Made_Up_Handler", &view);
+
+		assert!(diagnostic.contains("`made_up_handler`"));
+		assert!(!diagnostic.contains("`Made_Up_Handler`"));
+	}
+
+	#[test]
+	fn registry_dispatch_unknown_defers() {
+		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
+		let address = address();
+		let view = view_for("foo.txt", &address, &conflict);
+		let registry = builtin_registry();
+		let decision = registry.dispatch("made_up_handler", &view);
+		assert!(matches!(decision, ConflictDecision::Defer { .. }));
+	}
+
+	#[test]
+	fn registry_lists_builtin_names() {
+		let names = builtin_registry().names();
+		assert!(names.contains(&"last_writer".to_string()));
+		assert!(names.contains(&"defer".to_string()));
+		assert!(names.contains(&"keep_existing".to_string()));
 	}
 
 	#[test]
 	fn dispatch_is_case_insensitive() {
 		let conflict = conflict_with(vec![attributed("mod-a", 0, "a")]);
+		let address = address();
+		let view = view_for("x.txt", &address, &conflict);
 		assert!(matches!(
-			dispatch(
-				"LAST_WRITER",
-				&PathBuf::from("x.txt"),
-				&address(),
-				&conflict
-			),
-			ConflictDecision::PickModWithRecord { .. }
+			dispatch("LAST_WRITER", &view),
+			ConflictDecision::PickMod { .. }
 		));
 		assert!(matches!(
-			dispatch("Defer", &PathBuf::from("x.txt"), &address(), &conflict),
-			ConflictDecision::DeferWithRecord { .. }
+			dispatch("Defer", &view),
+			ConflictDecision::Defer { .. }
 		));
 	}
 }

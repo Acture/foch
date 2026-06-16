@@ -1,5 +1,5 @@
 use crate::base_data::base_game_mod_id;
-use crate::merge::emit::emit_clausewitz_statements;
+use crate::emit::emit_clausewitz_statements;
 use crate::request::CheckRequest;
 use crate::runtime::overlap::{OverlapStatus, classify_definition_overlaps};
 use crate::workspace::{ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace};

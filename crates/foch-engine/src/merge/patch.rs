@@ -11,7 +11,7 @@ pub type AstPath = Vec<String>;
 
 /// A structural patch operation between a base game file and a mod overlay.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum ClausewitzPatch {
+pub(crate) enum ClausewitzPatch {
 	/// Set/change a scalar value at a path.
 	SetValue {
 		path: AstPath,

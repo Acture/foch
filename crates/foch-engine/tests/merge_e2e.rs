@@ -1,3 +1,4 @@
+use foch_core::config::compute_conflict_id;
 use foch_core::model::MergeReportStatus;
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use foch_language::analyzer::parser::parse_clausewitz_file;
@@ -104,6 +105,67 @@ fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutio
 		.push(temp_dir);
 
 	(result, out_dir)
+}
+
+fn run_merge_for_playset(
+	playset_path: &Path,
+	out_dir: PathBuf,
+	game_root: PathBuf,
+	force: bool,
+	resolution_config_path: Option<PathBuf>,
+) -> foch_engine::MergeExecutionResult {
+	let mut game_path = HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+	run_merge_with_options(
+		CheckRequest {
+			playset_path: playset_path.to_path_buf(),
+			config: Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		},
+		MergeExecuteOptions {
+			out_dir,
+			include_game_base: false,
+			force,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path,
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
+			playset_fingerprint: None,
+		},
+	)
+	.expect("run merge with custom playset")
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) {
+	fs::create_dir_all(destination)
+		.unwrap_or_else(|err| panic!("create {}: {err}", destination.display()));
+	for entry in
+		fs::read_dir(source).unwrap_or_else(|err| panic!("read_dir {}: {err}", source.display()))
+	{
+		let entry = entry.expect("read_dir entry");
+		let source_path = entry.path();
+		let destination_path = destination.join(entry.file_name());
+		if source_path.is_dir() {
+			copy_dir_recursive(&source_path, &destination_path);
+		} else {
+			fs::copy(&source_path, &destination_path).unwrap_or_else(|err| {
+				panic!(
+					"copy {} to {}: {err}",
+					source_path.display(),
+					destination_path.display()
+				)
+			});
+		}
+	}
+}
+
+fn toml_path(path: &Path) -> String {
+	path.to_string_lossy().replace('\\', "/")
 }
 
 // Recursively scans output dir and asserts every structural EU4 .txt script file
@@ -682,6 +744,197 @@ religion = sentinel
 		"handler_resolutions must record the keep_existing decision; report: {:#?}",
 		result.report
 	);
+}
+
+#[test]
+fn eu4_use_file_resolution_replaces_output_file_end_to_end() {
+	let fixture = fixture_dir("eu4_two_mod_conflict");
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_use_file_resolution-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+
+	let external_file = temp_dir.path().join("manual-resolution.txt");
+	let external_bytes =
+		b"# external whole-file resolution\nreligion = external_resolution\ncapital = 999\n";
+	fs::write(&external_file, external_bytes).expect("write external resolution file");
+	let config_path = temp_dir.path().join("foch.use-file.toml");
+	fs::write(
+		&config_path,
+		format!(
+			r#"[[resolutions]]
+file = "history/countries/TES - Test.txt"
+use_file = "{}"
+"#,
+			toml_path(&external_file)
+		),
+	)
+	.expect("write use_file config");
+
+	let result = run_merge_for_playset(
+		&fixture.join("dlc_load.json"),
+		out_dir.clone(),
+		game_root,
+		true,
+		Some(config_path),
+	);
+
+	assert_eq!(
+		result.exit_code, 0,
+		"use_file merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"use_file should resolve the file conflict; report: {:#?}",
+		result.report
+	);
+	let output_file = out_dir
+		.join("history")
+		.join("countries")
+		.join("TES - Test.txt");
+	assert_eq!(
+		fs::read(&output_file).expect("read use_file output"),
+		external_bytes,
+		"use_file should materialize the external file bytes verbatim"
+	);
+	let external_source = toml_path(&external_file);
+	assert!(
+		result.report.handler_resolutions.iter().any(|record| {
+			record.action == "external"
+				&& record.source.as_deref() == Some(external_source.as_str())
+		}),
+		"use_file materialization should be audited as an external handler resolution; report: {:#?}",
+		result.report
+	);
+
+	MERGE_TEMP_DIRS
+		.get_or_init(|| Mutex::new(Vec::new()))
+		.lock()
+		.expect("merge tempdir registry lock")
+		.push(temp_dir);
+}
+
+#[test]
+fn eu4_conflict_id_use_file_does_not_mask_second_unresolved_leaf_conflict() {
+	let source_fixture = fixture_dir("eu4_two_mod_conflict");
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_use_file_with_unresolved_leaf-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let playset = temp_dir.path().join("playset");
+	copy_dir_recursive(&source_fixture, &playset);
+
+	for (mod_dir, culture) in [("conflict_a", "french"), ("conflict_b", "german")] {
+		let file = playset
+			.join("mods")
+			.join(mod_dir)
+			.join("history")
+			.join("countries")
+			.join("TES - Test.txt");
+		let text = fs::read_to_string(&file).expect("read copied country file");
+		fs::write(
+			&file,
+			text.replace(
+				"primary_culture = english",
+				&format!("primary_culture = {culture}"),
+			),
+		)
+		.expect("write copied country file with second conflict");
+	}
+
+	let external_file = temp_dir.path().join("manual-resolution.txt");
+	fs::write(
+		&external_file,
+		"# external whole-file resolution\nreligion = external_resolution\n",
+	)
+	.expect("write external resolution file");
+	let target_rel = "history/countries/TES - Test.txt";
+	let religion_conflict_id = compute_conflict_id(Path::new(target_rel), "", "religion");
+	let config_path = temp_dir.path().join("foch.one-conflict-use-file.toml");
+	fs::write(
+		&config_path,
+		format!(
+			r#"[[resolutions]]
+conflict_id = "{religion_conflict_id}"
+use_file = "{}"
+"#,
+			toml_path(&external_file)
+		),
+	)
+	.expect("write conflict_id use_file config");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+
+	let result = run_merge_for_playset(
+		&playset.join("dlc_load.json"),
+		out_dir.clone(),
+		game_root,
+		true,
+		Some(config_path),
+	);
+
+	// A conflict_id-scoped use_file is a whole-file replacement only after the
+	// file has no remaining unresolved leaf conflicts. Otherwise it would hide
+	// unrelated manual work the user did not resolve with the external file.
+	assert_eq!(
+		result.exit_code, 0,
+		"partial merge with a manual conflict marker should still exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"the second leaf conflict must remain visible; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result
+			.report
+			.conflict_resolutions
+			.iter()
+			.flat_map(|resolution| resolution.leaf_conflicts.iter())
+			.any(|leaf| leaf.address_key == "primary_culture"),
+		"the unresolved leaf should be primary_culture; report: {:#?}",
+		result.report
+	);
+	assert!(
+		!result
+			.report
+			.handler_resolutions
+			.iter()
+			.any(|record| record.action == "external"),
+		"external write must not be audited before materialization; report: {:#?}",
+		result.report
+	);
+	assert!(
+		{
+			let output_text = fs::read_to_string(out_dir.join(rel_path(target_rel)))
+				.expect("read partial output file");
+			output_text.contains("FOCH_MERGE_CONFLICT")
+				&& output_text.contains("primary_culture")
+				&& !output_text.contains("external_resolution")
+		},
+		"partial output should contain a manual marker for the unresolved leaf, not the external whole-file resolution"
+	);
+
+	MERGE_TEMP_DIRS
+		.get_or_init(|| Mutex::new(Vec::new()))
+		.lock()
+		.expect("merge tempdir registry lock")
+		.push(temp_dir);
 }
 
 #[test]

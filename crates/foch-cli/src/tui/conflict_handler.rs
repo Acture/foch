@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use std::io::{self, IsTerminal, Stdout};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -8,8 +7,6 @@ use crossterm::execute;
 use crossterm::terminal::{
 	EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use foch_core::config::compute_conflict_id;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 use ratatui::Frame;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -19,14 +16,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 
-use foch_engine::{
-	ClausewitzPatch, ConflictDecision, ConflictHandler, EmitOptions, PatchAddress, PatchConflict,
-	emit_clausewitz_statements_with_options,
-};
+use foch_engine::{ConflictDecision, ConflictHandler, ConflictView};
 
 const ACTION_COUNT: usize = 4;
-const MAX_SUMMARY_CHARS: usize = 80;
-const MAX_CHILD_PREVIEW_ENTRIES: usize = 3;
 const MAX_RENDERED_SUMMARY_LINES: usize = 4;
 const MAX_SNIPPET_LINES: usize = 8;
 const MAX_SNIPPET_LINE_CHARS: usize = 80;
@@ -72,48 +64,38 @@ pub struct ConflictResolver {
 }
 
 pub struct ConflictResolverArgs<'a> {
-	pub conflict: &'a PatchConflict,
-	pub file: &'a Path,
-	pub address: &'a PatchAddress,
-	pub conflict_id: &'a str,
-	pub mod_displayname_lookup: &'a HashMap<String, String>,
+	pub view: &'a ConflictView,
 	pub current_idx: usize,
 	pub total: usize,
 	pub deferred_so_far: usize,
-	pub vanilla_snippet: Option<String>,
 }
 
 impl ConflictResolver {
 	pub fn new(args: ConflictResolverArgs<'_>) -> Self {
 		let ConflictResolverArgs {
-			conflict,
-			file,
-			address,
-			conflict_id,
-			mod_displayname_lookup,
+			view,
 			current_idx,
 			total,
 			deferred_so_far,
-			vanilla_snippet,
 		} = args;
-		let candidates: Vec<ConflictCandidate> = conflict
-			.patches
+		let candidates: Vec<ConflictCandidate> = view
+			.candidates
 			.iter()
-			.map(|patch| ConflictCandidate {
-				mod_id: patch.mod_id.clone(),
-				display_name: mod_displayname_lookup
-					.get(&patch.mod_id)
-					.filter(|name| !name.trim().is_empty())
-					.cloned()
-					.unwrap_or_else(|| patch.mod_id.clone()),
-				precedence: patch.precedence,
-				summary: concise_patch_summary(&patch.patch),
-				projected_snippet: projected_patch_snippet(&patch.patch),
+			.map(|candidate| ConflictCandidate {
+				mod_id: candidate.mod_id.clone(),
+				display_name: candidate.mod_display_name.clone(),
+				precedence: candidate.precedence,
+				summary: candidate.patch_summary.clone(),
+				projected_snippet: truncate_rendered_snippet(
+					&candidate.patch_rendered,
+					MAX_SNIPPET_LINES,
+					MAX_SNIPPET_LINE_CHARS,
+				),
 			})
 			.collect();
-		let mut address_path = address.path.clone();
-		if !address.key.is_empty() {
-			address_path.push(address.key.clone());
+		let mut address_path = view.address_path.clone();
+		if !view.address_key.is_empty() {
+			address_path.push(view.address_key.clone());
 		}
 		// Default the cursor to "Defer" (the first action right after the
 		// candidate list) so an accidental Enter doesn't pick an arbitrary
@@ -123,11 +105,11 @@ impl ConflictResolver {
 			current_conflict_index: current_idx,
 			total_conflicts: total,
 			deferred_so_far,
-			file_path: file.to_path_buf(),
+			file_path: view.file_path.clone(),
 			address_path,
-			reason: conflict.reason.clone(),
-			conflict_id: conflict_id.to_string(),
-			vanilla_snippet: vanilla_snippet.map(|snippet| {
+			reason: view.reason.clone(),
+			conflict_id: view.conflict_id.clone(),
+			vanilla_snippet: view.vanilla_snippet.clone().map(|snippet| {
 				truncate_rendered_snippet(&snippet, MAX_SNIPPET_LINES, MAX_SNIPPET_LINE_CHARS)
 			}),
 			candidates,
@@ -300,23 +282,17 @@ impl Widget for &ConflictResolver {
 }
 
 pub struct InteractiveTuiHandler {
-	current_file: PathBuf,
-	mod_displayname_lookup: HashMap<String, String>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 	deferred_so_far: usize,
-	vanilla_snippet: Option<String>,
 }
 
 impl InteractiveTuiHandler {
 	pub fn new() -> Self {
 		Self {
-			current_file: PathBuf::new(),
-			mod_displayname_lookup: HashMap::new(),
 			current_conflict_index: 1,
 			total_conflicts: 1,
 			deferred_so_far: 0,
-			vanilla_snippet: None,
 		}
 	}
 
@@ -332,56 +308,42 @@ impl Default for InteractiveTuiHandler {
 }
 
 impl ConflictHandler for InteractiveTuiHandler {
-	fn on_conflict(
-		&mut self,
-		path: &str,
-		address: &PatchAddress,
-		conflict: &PatchConflict,
-	) -> ConflictDecision {
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 		if !self.stdin_stdout_are_tty() {
 			eprintln!(
 				"[foch] interactive TUI could not be entered because stdin/stdout is not a TTY; downgrading to defer"
 			);
-			return ConflictDecision::Defer;
+			return ConflictDecision::Defer { record: None };
 		}
 
-		let current_file = if self.current_file.as_os_str().is_empty() {
-			PathBuf::from(path)
-		} else {
-			self.current_file.clone()
-		};
-		let address_path = address.path.join("/");
-		let conflict_id = compute_conflict_id(&current_file, &address_path, &address.key);
 		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
-			conflict,
-			file: &current_file,
-			address,
-			conflict_id: &conflict_id,
-			mod_displayname_lookup: &self.mod_displayname_lookup,
+			view,
 			current_idx: self.current_conflict_index,
 			total: self.total_conflicts,
 			deferred_so_far: self.deferred_so_far,
-			vanilla_snippet: self.vanilla_snippet.clone(),
 		});
 
 		let action = match run_resolver(&mut resolver) {
 			Ok(action) => action,
 			Err(err) => {
 				eprintln!("[foch] interactive TUI failed: {err}; downgrading to defer");
-				return ConflictDecision::Defer;
+				return ConflictDecision::Defer { record: None };
 			}
 		};
 
 		match action {
-			ConflictAction::PickCandidate(index) => conflict
-				.patches
+			ConflictAction::PickCandidate(index) => view
+				.candidates
 				.get(index)
-				.map(|patch| ConflictDecision::PickMod(patch.mod_id.clone()))
-				.unwrap_or(ConflictDecision::Defer),
-			ConflictAction::Defer => ConflictDecision::Defer,
+				.map(|candidate| ConflictDecision::PickMod {
+					mod_id: candidate.mod_id.clone(),
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None }),
+			ConflictAction::Defer => ConflictDecision::Defer { record: None },
 			ConflictAction::ExternalFile(path) => {
 				if path.as_os_str().is_empty() {
-					ConflictDecision::Defer
+					ConflictDecision::Defer { record: None }
 				} else {
 					ConflictDecision::UseFile(path)
 				}
@@ -398,17 +360,6 @@ impl ConflictHandler for InteractiveTuiHandler {
 
 	fn set_deferred_so_far(&mut self, count: usize) {
 		self.deferred_so_far = count;
-	}
-
-	fn set_conflict_context(
-		&mut self,
-		current_file: &Path,
-		mod_displayname_lookup: &HashMap<String, String>,
-		vanilla_snippet: Option<String>,
-	) {
-		self.current_file = current_file.to_path_buf();
-		self.mod_displayname_lookup = mod_displayname_lookup.clone();
-		self.vanilla_snippet = vanilla_snippet;
 	}
 }
 
@@ -911,89 +862,13 @@ fn estimate_wrapped_line_count(text: &str, width: u16) -> usize {
 	total.max(1)
 }
 
-fn projected_patch_snippet(patch: &ClausewitzPatch) -> String {
-	let rendered = match render_projected_patch_snippet(patch) {
-		Ok(rendered) => rendered,
-		Err(err) => format!("(failed to render patch: {err})"),
-	};
-	truncate_rendered_snippet(&rendered, MAX_SNIPPET_LINES, MAX_SNIPPET_LINE_CHARS)
-}
-
-fn render_projected_patch_snippet(
-	patch: &ClausewitzPatch,
-) -> Result<String, foch_engine::MergeError> {
-	match patch {
-		ClausewitzPatch::SetValue { key, new_value, .. } => {
-			emit_statement_snippet(&assignment(key, new_value.clone()))
-		}
-		ClausewitzPatch::ReplaceBlock { new_statement, .. } => {
-			emit_statement_snippet(new_statement)
-		}
-		ClausewitzPatch::InsertNode { statement, .. } => emit_statement_snippet(statement),
-		ClausewitzPatch::RemoveNode { .. } => Ok("(removed)".to_string()),
-		ClausewitzPatch::AppendListItem { value, .. }
-		| ClausewitzPatch::AppendBlockItem { value, .. } => render_prefixed_value("(appends)", value),
-		ClausewitzPatch::RemoveListItem { value, .. }
-		| ClausewitzPatch::RemoveBlockItem { value, .. } => render_prefixed_value("(removes)", value),
-		ClausewitzPatch::Rename {
-			old_key, new_key, ..
-		} => Ok(format!("(renames \"{old_key}\" -> \"{new_key}\")")),
-	}
-}
-
-fn emit_statement_snippet(statement: &AstStatement) -> Result<String, foch_engine::MergeError> {
-	emit_clausewitz_statements_with_options(
-		std::slice::from_ref(statement),
-		&EmitOptions::default(),
-	)
-}
-
-fn render_prefixed_value(
-	prefix: &str,
-	value: &AstValue,
-) -> Result<String, foch_engine::MergeError> {
-	let rendered = emit_clausewitz_statements_with_options(
-		&[AstStatement::Item {
-			value: value.clone(),
-			span: synthetic_span(),
-		}],
-		&EmitOptions::default(),
-	)?;
-	Ok(format!("{prefix} {}", rendered.trim_end()))
-}
-
-fn assignment(key: &str, value: AstValue) -> AstStatement {
-	AstStatement::Assignment {
-		key: key.to_string(),
-		key_span: synthetic_span(),
-		value,
-		span: synthetic_span(),
-	}
-}
-
-fn synthetic_span() -> SpanRange {
-	SpanRange {
-		start: Span {
-			line: 0,
-			column: 0,
-			offset: 0,
-		},
-		end: Span {
-			line: 0,
-			column: 0,
-			offset: 0,
-		},
-	}
-}
-
 fn truncate_rendered_snippet(input: &str, max_lines: usize, max_chars: usize) -> String {
 	if max_lines == 0 {
 		return String::new();
 	}
 	// ratatui's Paragraph widget renders tab characters as zero-width on most
-	// terminals, so the emit_clausewitz_statements_with_options output (which
-	// uses tab indentation by default) shows up flat. Expand tabs to 2 spaces
-	// so the structure of the snippet is preserved on screen.
+	// terminals, so engine-rendered Clausewitz text with tab indentation shows
+	// up flat. Expand tabs to 2 spaces so the snippet structure is preserved.
 	let expanded = input.replace('\t', "  ");
 	let trimmed = expanded.trim_end_matches(['\r', '\n']);
 	let lines = trimmed.lines().collect::<Vec<_>>();
@@ -1035,309 +910,44 @@ fn truncate_snippet_line(line: &str, max_chars: usize) -> String {
 	format!("{truncated}…")
 }
 
-fn concise_patch_summary(patch: &ClausewitzPatch) -> Vec<String> {
-	match patch {
-		ClausewitzPatch::SetValue {
-			key,
-			old_value,
-			new_value,
-			..
-		} => vec![format!(
-			"set \"{key}\": {} → {}",
-			value_summary(old_value),
-			value_summary(new_value)
-		)],
-		ClausewitzPatch::RemoveNode { key, removed, .. } => remove_node_summary(key, removed),
-		ClausewitzPatch::InsertNode { key, statement, .. } => insert_node_summary(key, statement),
-		ClausewitzPatch::ReplaceBlock {
-			key, new_statement, ..
-		} => block_patch_summary(format!("replace block \"{key}\""), new_statement, '+'),
-		ClausewitzPatch::AppendListItem { key, value, .. } => {
-			vec![format!(
-				"append to list \"{key}\": {}",
-				value_summary(value)
-			)]
-		}
-		ClausewitzPatch::RemoveListItem { key, value, .. } => {
-			vec![format!(
-				"remove from list \"{key}\": {}",
-				value_summary(value)
-			)]
-		}
-		ClausewitzPatch::AppendBlockItem { value, .. } => {
-			vec![format!("append item: {}", value_summary(value))]
-		}
-		ClausewitzPatch::RemoveBlockItem { value, .. } => {
-			vec![format!("remove item: {}", value_summary(value))]
-		}
-		ClausewitzPatch::Rename {
-			old_key, new_key, ..
-		} => vec![format!("rename \"{old_key}\" → \"{new_key}\"")],
-	}
-}
-
-fn remove_node_summary(key: &str, removed: &AstStatement) -> Vec<String> {
-	let mut lines = vec![format!(
-		"remove \"{key}\" (was: {})",
-		statement_value_summary(removed)
-	)];
-	if let AstStatement::Assignment {
-		value: AstValue::Block { items, .. },
-		..
-	} = removed
-	{
-		lines.extend(child_preview_lines(items, '-'));
-	}
-	lines
-}
-
-fn insert_node_summary(key: &str, statement: &AstStatement) -> Vec<String> {
-	if statement_block_items(statement).is_some() {
-		return block_patch_summary(format!("insert \"{key}\""), statement, '+');
-	}
-	vec![format!(
-		"insert \"{key}\" = {}",
-		statement_value_summary(statement)
-	)]
-}
-
-fn block_patch_summary(prefix: String, statement: &AstStatement, marker: char) -> Vec<String> {
-	let mut lines = vec![format!(
-		"{prefix} ({} entries)",
-		statement_entry_count(statement)
-	)];
-	if let Some(items) = statement_block_items(statement) {
-		lines.extend(child_preview_lines(items, marker));
-	}
-	lines
-}
-
-fn statement_block_items(statement: &AstStatement) -> Option<&[AstStatement]> {
-	match statement {
-		AstStatement::Assignment {
-			value: AstValue::Block { items, .. },
-			..
-		}
-		| AstStatement::Item {
-			value: AstValue::Block { items, .. },
-			..
-		} => Some(items),
-		AstStatement::Assignment { .. }
-		| AstStatement::Item { .. }
-		| AstStatement::Comment { .. } => None,
-	}
-}
-
-fn child_preview_lines(items: &[AstStatement], marker: char) -> Vec<String> {
-	let entries: Vec<String> = items
-		.iter()
-		.filter_map(|statement| child_preview_line(statement, marker))
-		.collect();
-	let mut lines: Vec<String> = entries
-		.iter()
-		.take(MAX_CHILD_PREVIEW_ENTRIES)
-		.cloned()
-		.collect();
-	let remaining = entries.len().saturating_sub(MAX_CHILD_PREVIEW_ENTRIES);
-	if remaining > 0 {
-		lines.push(format!("  {marker} … ({remaining} more)"));
-	}
-	lines
-}
-
-fn child_preview_line(statement: &AstStatement, marker: char) -> Option<String> {
-	match statement {
-		AstStatement::Assignment { key, value, .. } => {
-			Some(format!("  {marker} {key} = {}", value_summary(value)))
-		}
-		AstStatement::Item { value, .. } => Some(format!("  {marker} {}", value_summary(value))),
-		AstStatement::Comment { .. } => None,
-	}
-}
-
-fn statement_value_summary(statement: &AstStatement) -> String {
-	match statement {
-		AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. } => {
-			value_summary(value)
-		}
-		AstStatement::Comment { text, .. } => format!("# {}", sanitize_summary(text)),
-	}
-}
-
-fn statement_entry_count(statement: &AstStatement) -> usize {
-	match statement {
-		AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. } => {
-			value_entry_count(value)
-		}
-		AstStatement::Comment { .. } => 0,
-	}
-}
-
-fn value_entry_count(value: &AstValue) -> usize {
-	match value {
-		AstValue::Block { items, .. } => items.len(),
-		AstValue::Scalar { .. } => 1,
-	}
-}
-
-fn value_summary(value: &AstValue) -> String {
-	match value {
-		AstValue::Scalar { value, .. } => {
-			truncate_summary(&sanitize_summary(&scalar_summary(value)))
-		}
-		AstValue::Block { items, .. } => format!("{{ {} entries }}", items.len()),
-	}
-}
-
-fn scalar_summary(value: &ScalarValue) -> String {
-	match value {
-		ScalarValue::Identifier(value) | ScalarValue::Number(value) => value.clone(),
-		ScalarValue::String(value) => format!("\"{}\"", escape_string(value)),
-		ScalarValue::Bool(value) => {
-			if *value {
-				"yes".to_string()
-			} else {
-				"no".to_string()
-			}
-		}
-	}
-}
-
-fn escape_string(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn sanitize_summary(value: &str) -> String {
-	let mut out = String::new();
-	for c in value.chars() {
-		match c {
-			'\n' => out.push_str("\\n"),
-			'\r' => out.push_str("\\r"),
-			'\t' => out.push_str("\\t"),
-			c if c.is_control() => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
-			c => out.push(c),
-		}
-	}
-	out
-}
-
-fn truncate_summary(value: &str) -> String {
-	let mut chars = value.chars();
-	let truncated: String = chars.by_ref().take(MAX_SUMMARY_CHARS).collect();
-	if chars.next().is_some() {
-		format!("{truncated}…")
-	} else {
-		truncated
-	}
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_engine::AttributedPatch;
-	use foch_language::analyzer::parser::{Span, SpanRange};
-	type TestResult = Result<(), Box<dyn std::error::Error>>;
+	use foch_engine::CandidateView;
 
-	fn span() -> SpanRange {
-		SpanRange {
-			start: Span {
-				line: 0,
-				column: 0,
-				offset: 0,
-			},
-			end: Span {
-				line: 0,
-				column: 0,
-				offset: 0,
-			},
-		}
-	}
-
-	fn scalar(value: ScalarValue) -> AstValue {
-		AstValue::Scalar {
-			value,
-			span: span(),
-		}
-	}
-
-	fn ident(value: &str) -> AstValue {
-		scalar(ScalarValue::Identifier(value.to_string()))
-	}
-
-	fn string(value: &str) -> AstValue {
-		scalar(ScalarValue::String(value.to_string()))
-	}
-
-	fn block(items: Vec<AstStatement>) -> AstValue {
-		AstValue::Block {
-			items,
-			span: span(),
-		}
-	}
-
-	fn assignment(key: &str, value: AstValue) -> AstStatement {
-		AstStatement::Assignment {
-			key: key.to_string(),
-			key_span: span(),
-			value,
-			span: span(),
-		}
-	}
-
-	fn item(value: AstValue) -> AstStatement {
-		AstStatement::Item {
-			value,
-			span: span(),
-		}
-	}
-
-	fn sample_conflict() -> PatchConflict {
-		PatchConflict {
-			patches: vec![
-				AttributedPatch {
-					mod_id: "2164202838".to_string(),
-					precedence: 0,
-					patch: ClausewitzPatch::SetValue {
-						path: vec!["flavor_fra.3135".to_string(), "option".to_string()],
-						key: "name".to_string(),
-						old_value: string("old"),
-						new_value: string("Charles-Francois de Broglie"),
-					},
-				},
-				AttributedPatch {
-					mod_id: "1999055990".to_string(),
-					precedence: 2,
-					patch: ClausewitzPatch::SetValue {
-						path: vec!["flavor_fra.3135".to_string(), "option".to_string()],
-						key: "name".to_string(),
-						old_value: string("old"),
-						new_value: string("Chinese localization"),
-					},
-				},
-			],
-			reason: "sibling mods set the same scalar to divergent values".to_string(),
-		}
-	}
-
-	fn sample_address() -> PatchAddress {
-		PatchAddress {
-			path: vec![
+	fn sample_view() -> ConflictView {
+		ConflictView {
+			file_path: PathBuf::from("events/FlavorFRA.txt"),
+			address_path: vec![
 				"flavor_fra.3135".to_string(),
 				"option".to_string(),
 				"define_advisor".to_string(),
 			],
-			key: "name".to_string(),
+			address_key: "name".to_string(),
+			conflict_id: "conflict-id".to_string(),
+			reason: "sibling mods set the same scalar to divergent values".to_string(),
+			vanilla_snippet: Some("name = \"old\"\n".to_string()),
+			candidates: vec![
+				CandidateView {
+					mod_id: "2164202838".to_string(),
+					mod_display_name: "Europa Expanded".to_string(),
+					precedence: 0,
+					patch_summary: vec![
+						"set \"name\": \"old\" → \"Charles-Francois de Broglie\"".to_string(),
+					],
+					patch_rendered: "name = \"Charles-Francois de Broglie\"\n".to_string(),
+				},
+				CandidateView {
+					mod_id: "1999055990".to_string(),
+					mod_display_name: "Chinese Language Supp.".to_string(),
+					precedence: 2,
+					patch_summary: vec![
+						"set \"name\": \"old\" → \"Chinese localization\"".to_string(),
+					],
+					patch_rendered: "name = \"Chinese localization\"\n".to_string(),
+				},
+			],
 		}
-	}
-
-	fn display_names() -> HashMap<String, String> {
-		HashMap::from([
-			("2164202838".to_string(), "Europa Expanded".to_string()),
-			(
-				"1999055990".to_string(),
-				"Chinese Language Supp.".to_string(),
-			),
-		])
 	}
 
 	fn buffer_lines(buffer: &Buffer) -> Vec<String> {
@@ -1360,16 +970,12 @@ mod tests {
 
 	#[test]
 	fn render_conflict_resolver_into_buffer() {
+		let view = sample_view();
 		let resolver = ConflictResolver::new(ConflictResolverArgs {
-			conflict: &sample_conflict(),
-			file: Path::new("events/FlavorFRA.txt"),
-			address: &sample_address(),
-			conflict_id: "conflict-id",
-			mod_displayname_lookup: &display_names(),
+			view: &view,
 			current_idx: 1,
 			total: 30,
 			deferred_so_far: 0,
-			vanilla_snippet: Some("name = \"old\"\n".to_string()),
 		});
 		let area = Rect::new(0, 0, 76, 30);
 		let mut actual = Buffer::empty(area);
@@ -1401,16 +1007,13 @@ mod tests {
 
 	#[test]
 	fn render_conflict_resolver_without_vanilla_shows_placeholder() {
+		let mut view = sample_view();
+		view.vanilla_snippet = None;
 		let resolver = ConflictResolver::new(ConflictResolverArgs {
-			conflict: &sample_conflict(),
-			file: Path::new("events/FlavorFRA.txt"),
-			address: &sample_address(),
-			conflict_id: "conflict-id",
-			mod_displayname_lookup: &display_names(),
+			view: &view,
 			current_idx: 1,
 			total: 2,
 			deferred_so_far: 0,
-			vanilla_snippet: None,
 		});
 		let area = Rect::new(0, 0, 76, 30);
 		let mut actual = Buffer::empty(area);
@@ -1420,395 +1023,22 @@ mod tests {
 	}
 
 	#[test]
-	fn projected_patch_snippet_covers_patch_variants() {
-		let replace_statement = assignment(
-			"option",
-			block(vec![
-				assignment("name", string("A")),
-				assignment("ai_chance", ident("B")),
-			]),
-		);
-		let variants = vec![
-			(
-				ClausewitzPatch::SetValue {
-					path: vec![],
-					key: "name".to_string(),
-					old_value: string("old"),
-					new_value: string("new"),
-				},
-				vec!["name = \"new\""],
-			),
-			(
-				ClausewitzPatch::RemoveNode {
-					path: vec![],
-					key: "owner".to_string(),
-					removed: assignment("owner", ident("FRA")),
-				},
-				vec!["(removed)"],
-			),
-			(
-				ClausewitzPatch::InsertNode {
-					path: vec![],
-					key: "owner".to_string(),
-					statement: assignment("owner", ident("FRA")),
-				},
-				vec!["owner = FRA"],
-			),
-			(
-				ClausewitzPatch::ReplaceBlock {
-					path: vec![],
-					key: "option".to_string(),
-					old_statement: assignment("option", block(vec![])),
-					new_statement: replace_statement,
-				},
-				vec!["option = {", "name = \"A\"", "ai_chance = B"],
-			),
-			(
-				ClausewitzPatch::AppendListItem {
-					path: vec![],
-					key: "tag".to_string(),
-					value: ident("FRA"),
-				},
-				vec!["(appends) FRA"],
-			),
-			(
-				ClausewitzPatch::RemoveListItem {
-					path: vec![],
-					key: "tag".to_string(),
-					value: ident("ENG"),
-				},
-				vec!["(removes) ENG"],
-			),
-			(
-				ClausewitzPatch::AppendBlockItem {
-					path: vec![],
-					value: ident("FRA"),
-				},
-				vec!["(appends) FRA"],
-			),
-			(
-				ClausewitzPatch::RemoveBlockItem {
-					path: vec![],
-					value: ident("ENG"),
-				},
-				vec!["(removes) ENG"],
-			),
-			(
-				ClausewitzPatch::Rename {
-					path: vec![],
-					old_key: "old".to_string(),
-					new_key: "new".to_string(),
-				},
-				vec!["(renames \"old\" -> \"new\")"],
-			),
-		];
+	fn rendered_summary_lines_collapses_middle_overflow() {
+		let lines = rendered_summary_lines(&[
+			"one".to_string(),
+			"two".to_string(),
+			"three".to_string(),
+			"  + … (2 more)".to_string(),
+		]);
 
-		for (patch, expected_parts) in variants {
-			let snippet = projected_patch_snippet(&patch);
-			for expected in expected_parts {
-				assert!(
-					snippet.contains(expected),
-					"snippet {snippet:?} should contain {expected:?}"
-				);
-			}
-		}
-	}
-
-	#[test]
-	fn projected_patch_snippet_truncates_long_blocks() {
-		let items = (0..12)
-			.map(|index| assignment(&format!("entry_{index}"), ident("yes")))
-			.collect::<Vec<_>>();
-		let patch = ClausewitzPatch::ReplaceBlock {
-			path: vec![],
-			key: "root".to_string(),
-			old_statement: assignment("root", block(vec![])),
-			new_statement: assignment("root", block(items)),
-		};
-
-		let snippet = projected_patch_snippet(&patch);
-		let lines = snippet.lines().collect::<Vec<_>>();
-
-		assert_eq!(lines.len(), MAX_SNIPPET_LINES);
-		assert!(
-			lines
-				.last()
-				.is_some_and(|line| line.contains("… (") && line.contains("more lines)")),
-			"long snippet should end with a hidden-line count: {snippet:?}"
-		);
-	}
-
-	#[test]
-	fn render_progress_gauge_renders_empty_at_zero() {
-		let area = Rect::new(0, 0, 50, 1);
-		let mut buf = Buffer::empty(area);
-		render_progress_gauge(area, &mut buf, 0, 10, 2);
-		let line: String = (0..area.width)
-			.map(|x| buf[(area.x + x, area.y)].symbol())
-			.collect::<String>();
-		assert!(
-			line.contains("conflict 0/10") && line.contains("(0%, 2 deferred)"),
-			"unexpected gauge line: {line:?}"
-		);
-	}
-
-	#[test]
-	fn render_progress_gauge_handles_zero_total_safely() {
-		let area = Rect::new(0, 0, 50, 1);
-		let mut buf = Buffer::empty(area);
-		render_progress_gauge(area, &mut buf, 0, 0, 0);
-		let line: String = (0..area.width)
-			.map(|x| buf[(area.x + x, area.y)].symbol())
-			.collect::<String>();
-		assert!(
-			line.contains("conflict 0/1") && line.contains("(0%, 0 deferred)"),
-			"gauge must clamp zero total to 1 to avoid div-by-zero: {line:?}"
-		);
-	}
-
-	#[test]
-	fn handle_key_selects_candidates_and_actions() {
-		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
-			conflict: &sample_conflict(),
-			file: Path::new("events/FlavorFRA.txt"),
-			address: &sample_address(),
-			conflict_id: "conflict-id",
-			mod_displayname_lookup: &display_names(),
-			current_idx: 1,
-			total: 2,
-			deferred_so_far: 0,
-			vanilla_snippet: None,
-		});
-		let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-		let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-		let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-
-		// Cursor defaults to "[d] defer" so accidental Enter never picks
-		// an arbitrary mod's patch.
-		assert_eq!(resolver.handle_key(enter), Some(ConflictAction::Defer));
-		// Up moves into the candidate list (last candidate first).
-		assert_eq!(resolver.handle_key(up), None);
 		assert_eq!(
-			resolver.handle_key(enter),
-			Some(ConflictAction::PickCandidate(1))
-		);
-		assert_eq!(resolver.handle_key(up), None);
-		assert_eq!(
-			resolver.handle_key(enter),
-			Some(ConflictAction::PickCandidate(0))
-		);
-		// Now navigate down past the candidate list and through the action
-		// rows to the final Abort entry.
-		for _ in 0..5 {
-			resolver.handle_key(down);
-		}
-		assert_eq!(resolver.handle_key(enter), Some(ConflictAction::Abort));
-	}
-
-	#[test]
-	fn handle_key_supports_action_shortcuts() {
-		let mut resolver = ConflictResolver::new(ConflictResolverArgs {
-			conflict: &sample_conflict(),
-			file: Path::new("events/FlavorFRA.txt"),
-			address: &sample_address(),
-			conflict_id: "conflict-id",
-			mod_displayname_lookup: &display_names(),
-			current_idx: 1,
-			total: 2,
-			deferred_so_far: 0,
-			vanilla_snippet: None,
-		});
-		let rendered_actions: Vec<String> = choice_lines(&resolver)
-			.into_iter()
-			.filter_map(|line| line.item_index.map(|_| line.text))
-			.skip(resolver.candidates.len())
-			.collect();
-		assert_eq!(
-			rendered_actions,
+			lines,
 			vec![
-				"❯ [d] defer (skip; record in report)",
-				"  [s] use external file (paste a path)",
-				"  [k] keep existing file in out dir (don't overwrite)",
-				"  [q] abort merge",
+				"one".to_string(),
+				"two".to_string(),
+				"three".to_string(),
+				"  + … (2 more)".to_string(),
 			]
 		);
-
-		assert_eq!(
-			resolver.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
-			Some(ConflictAction::Defer)
-		);
-		assert_eq!(
-			resolver.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
-			Some(ConflictAction::ExternalFile(PathBuf::new()))
-		);
-		assert_eq!(
-			resolver.handle_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::SHIFT)),
-			Some(ConflictAction::KeepExisting)
-		);
-		assert_eq!(
-			resolver.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-			Some(ConflictAction::Defer)
-		);
-	}
-
-	#[test]
-	fn concise_patch_summary_covers_patch_variants() -> TestResult {
-		let patches = vec![
-			(
-				ClausewitzPatch::SetValue {
-					path: vec![],
-					key: "name".to_string(),
-					old_value: ident("old"),
-					new_value: string("new\nvalue"),
-				},
-				vec!["set \"name\": old → \"new\\nvalue\""],
-			),
-			(
-				ClausewitzPatch::RemoveNode {
-					path: vec![],
-					key: "owner".to_string(),
-					removed: assignment("owner", ident("FRA")),
-				},
-				vec!["remove \"owner\" (was: FRA)"],
-			),
-			(
-				ClausewitzPatch::InsertNode {
-					path: vec![],
-					key: "owner".to_string(),
-					statement: assignment("owner", ident("FRA")),
-				},
-				vec!["insert \"owner\" = FRA"],
-			),
-			(
-				ClausewitzPatch::ReplaceBlock {
-					path: vec![],
-					key: "option".to_string(),
-					old_statement: assignment("option", block(vec![])),
-					new_statement: assignment(
-						"option",
-						block(vec![
-							assignment("name", string("A")),
-							assignment("ai_chance", ident("B")),
-						]),
-					),
-				},
-				vec![
-					"replace block \"option\" (2 entries)",
-					"  + name = \"A\"",
-					"  + ai_chance = B",
-				],
-			),
-			(
-				ClausewitzPatch::AppendListItem {
-					path: vec![],
-					key: "tag".to_string(),
-					value: ident("FRA"),
-				},
-				vec!["append to list \"tag\": FRA"],
-			),
-			(
-				ClausewitzPatch::RemoveListItem {
-					path: vec![],
-					key: "tag".to_string(),
-					value: ident("ENG"),
-				},
-				vec!["remove from list \"tag\": ENG"],
-			),
-			(
-				ClausewitzPatch::AppendBlockItem {
-					path: vec![],
-					value: ident("FRA"),
-				},
-				vec!["append item: FRA"],
-			),
-			(
-				ClausewitzPatch::RemoveBlockItem {
-					path: vec![],
-					value: ident("ENG"),
-				},
-				vec!["remove item: ENG"],
-			),
-			(
-				ClausewitzPatch::Rename {
-					path: vec![],
-					old_key: "old".to_string(),
-					new_key: "new".to_string(),
-				},
-				vec!["rename \"old\" → \"new\""],
-			),
-		];
-
-		for (patch, expected) in patches {
-			let expected = expected.into_iter().map(str::to_string).collect::<Vec<_>>();
-			assert_eq!(concise_patch_summary(&patch), expected);
-		}
-		Ok(())
-	}
-
-	#[test]
-	fn concise_patch_summary_replace_block_lists_first_three_children() {
-		let patch = ClausewitzPatch::ReplaceBlock {
-			path: vec![],
-			key: "X".to_string(),
-			old_statement: assignment("X", block(vec![])),
-			new_statement: assignment(
-				"X",
-				block(vec![
-					assignment("a", ident("A")),
-					assignment("b", ident("B")),
-					assignment("c", ident("C")),
-					assignment("d", ident("D")),
-					assignment("e", ident("E")),
-				]),
-			),
-		};
-
-		assert_eq!(
-			concise_patch_summary(&patch),
-			vec![
-				"replace block \"X\" (5 entries)",
-				"  + a = A",
-				"  + b = B",
-				"  + c = C",
-				"  + … (2 more)",
-			]
-		);
-	}
-
-	#[test]
-	fn set_value_summary_shows_old_arrow_new() {
-		let patch = ClausewitzPatch::SetValue {
-			path: vec![],
-			key: "key".to_string(),
-			old_value: ident("old"),
-			new_value: string("new"),
-		};
-
-		assert_eq!(
-			concise_patch_summary(&patch),
-			vec!["set \"key\": old → \"new\""]
-		);
-	}
-
-	#[test]
-	fn concise_patch_summary_truncates_long_values() {
-		let patch = ClausewitzPatch::SetValue {
-			path: vec![],
-			key: "name".to_string(),
-			old_value: string("old"),
-			new_value: string(&"x".repeat(100)),
-		};
-
-		let summary = concise_patch_summary(&patch);
-
-		assert_eq!(summary.len(), 1);
-		assert!(summary[0].ends_with('…'));
-		assert!(!summary[0].contains('\n'));
-	}
-
-	#[test]
-	fn item_helper_builds_block_items() {
-		let statement = item(ident("FRA"));
-		assert_eq!(statement_value_summary(&statement), "FRA");
 	}
 }

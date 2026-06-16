@@ -1,22 +1,20 @@
-#![allow(dead_code)]
-
-use super::error::MergeError;
+use crate::merge::MergeError;
 use foch_core::config::DEFAULT_EMIT_INDENT;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct EmitOptions {
+pub(crate) struct EmitOptions {
 	indent: String,
 }
 
 impl EmitOptions {
-	pub fn with_indent(indent: impl Into<String>) -> Self {
+	pub(crate) fn with_indent(indent: impl Into<String>) -> Self {
 		Self {
 			indent: indent.into(),
 		}
 	}
 
-	pub fn indent(&self) -> &str {
+	pub(crate) fn indent(&self) -> &str {
 		&self.indent
 	}
 }
@@ -27,11 +25,13 @@ impl Default for EmitOptions {
 	}
 }
 
-pub fn emit_clausewitz_statements(statements: &[AstStatement]) -> Result<String, MergeError> {
+pub(crate) fn emit_clausewitz_statements(
+	statements: &[AstStatement],
+) -> Result<String, MergeError> {
 	emit_clausewitz_statements_with_options(statements, &EmitOptions::default())
 }
 
-pub fn emit_clausewitz_statements_with_options(
+pub(crate) fn emit_clausewitz_statements_with_options(
 	statements: &[AstStatement],
 	options: &EmitOptions,
 ) -> Result<String, MergeError> {
