@@ -27,9 +27,9 @@ pub use base_data::{
 };
 pub use cache::{
 	CacheEntryInfo, CacheError, CacheLayer, CacheLayerEntryInfo, CacheLayerOps, CacheStats,
-	CachedModsetResult, EvictionStats, ModsetCache, all_layers, default_dag_base_cache_dir,
-	default_foch_cache_dir, default_mod_diff_cache_dir, default_mod_parse_cache_dir,
-	default_modset_cache_dir, default_modset_cache_root_dir,
+	CachedModsetResult, EvictionStats, ModsetCache, all_layers, cache_cap_bytes,
+	default_dag_base_cache_dir, default_foch_cache_dir, default_mod_diff_cache_dir,
+	default_mod_parse_cache_dir, default_modset_cache_dir, default_modset_cache_root_dir,
 };
 pub use config::{
 	CONFIG_DIR_ENV, Config, ValidationItem, ValidationStatus, get_config_dir_path,
