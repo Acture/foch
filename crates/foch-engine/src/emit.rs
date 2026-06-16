@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-
-use super::error::MergeError;
+use crate::merge::MergeError;
 use foch_core::config::DEFAULT_EMIT_INDENT;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 

@@ -1,7 +1,7 @@
 use super::model::{
 	SimplifyKeptItem, SimplifyOptions, SimplifyRemovedItem, SimplifyReport, SimplifySummary,
 };
-use crate::merge::emit::emit_clausewitz_statements;
+use crate::emit::emit_clausewitz_statements;
 use crate::request::CheckRequest;
 use crate::runtime::{OverlapStatus, build_runtime_state_from_workspace};
 use crate::workspace::resolve_workspace;

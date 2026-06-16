@@ -7,6 +7,7 @@
 mod base_data;
 mod cache;
 mod config;
+mod emit;
 mod graph;
 mod merge;
 mod request;
@@ -33,15 +34,16 @@ pub use config::{
 	CONFIG_DIR_ENV, Config, ValidationItem, ValidationStatus, get_config_dir_path,
 	load_or_init_config,
 };
+pub use emit::{EmitOptions, emit_clausewitz_statements_with_options};
 pub use graph::{
 	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
 	GraphRootSelector, GraphScopeSelection, SEMANTIC_GRAPH_PROGRESS_TARGET, run_graph_with_options,
 };
 pub use merge::{
 	AnalysisStatusView, AttributedPatch, ClausewitzPatch, ConflictDecision, ConflictHandler,
-	EmitOptions, InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult,
-	MergeStatusView, PatchAddress, PatchConflict, emit_clausewitz_statements_with_options,
-	run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
+	InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
+	PatchAddress, PatchConflict, run_merge_plan, run_merge_plan_with_options,
+	run_merge_with_options,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions};
 pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};
