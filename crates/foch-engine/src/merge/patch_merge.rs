@@ -3,10 +3,11 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use foch_core::config::compute_conflict_id;
 use foch_core::model::HandlerResolutionRecord;
 use foch_language::analyzer::content_family::{
 	BlockPatchPolicy, MergeKeySource, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
@@ -14,6 +15,7 @@ use foch_language::analyzer::content_family::{
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use super::conflict_handler::{ConflictDecision, ConflictHandler, DeferHandler};
+use super::conflict_view::build_decision_conflict_view;
 use super::error::MergeError;
 use super::patch::{AstPath, ClausewitzPatch, patches_semantically_equal};
 
@@ -23,21 +25,21 @@ use super::patch::{AstPath, ClausewitzPatch, patches_semantically_equal};
 
 /// Address of a patch — uniquely identifies what AST node is being changed.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct PatchAddress {
+pub(crate) struct PatchAddress {
 	pub path: AstPath,
 	pub key: String,
 }
 
 /// A patch attributed to a specific mod.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AttributedPatch {
+pub(crate) struct AttributedPatch {
 	pub mod_id: String,
 	pub precedence: usize,
 	pub patch: ClausewitzPatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PatchConflict {
+pub(crate) struct PatchConflict {
 	pub patches: Vec<AttributedPatch>,
 	pub reason: String,
 }
@@ -298,6 +300,15 @@ pub fn merge_patch_sets(
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<PatchMergeResult, MergeError> {
+	merge_patch_sets_for_file(mod_patches, policies, handler, None)
+}
+
+pub(crate) fn merge_patch_sets_for_file(
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	policies: &MergePolicies,
+	handler: &mut dyn ConflictHandler,
+	current_file: Option<&Path>,
+) -> Result<PatchMergeResult, MergeError> {
 	let mut result = PatchMergeResult::default();
 
 	// --- Pre-pass: collect renames and rewrite cross-mod addresses ---
@@ -378,7 +389,14 @@ pub fn merge_patch_sets(
 			} => {
 				current_conflict += 1;
 				handler.set_conflict_progress(current_conflict, total_conflicts);
-				apply_conflict_decision(&mut result, handler, address, patches, reason)?;
+				apply_conflict_decision(
+					&mut result,
+					handler,
+					current_file,
+					address,
+					patches,
+					reason,
+				)?;
 			}
 			resolution => result.resolved.push(resolution),
 		}
@@ -390,6 +408,7 @@ pub fn merge_patch_sets(
 		apply_conflict_decision(
 			&mut result,
 			handler,
+			current_file,
 			cross_kind.address,
 			cross_kind.patches,
 			cross_kind.reason,
@@ -478,14 +497,25 @@ fn detect_cross_kind_sibling_conflicts(
 fn apply_conflict_decision(
 	result: &mut PatchMergeResult,
 	handler: &mut dyn ConflictHandler,
+	current_file: Option<&Path>,
 	address: PatchAddress,
 	patches: Vec<AttributedPatch>,
 	reason: String,
 ) -> Result<(), MergeError> {
 	let conflict_path = conflict_path_for_handler(&address);
+	let fallback_file = PathBuf::from(&conflict_path);
+	let conflict_file = current_file.unwrap_or(&fallback_file);
+	let conflict_id = compute_conflict_id(conflict_file, &address.path.join("/"), &address.key);
 	let conflict = PatchConflict { patches, reason };
+	let view = build_decision_conflict_view(
+		conflict_file,
+		&address,
+		&conflict,
+		conflict_id,
+		&HashMap::new(),
+	);
 
-	match handler.on_conflict(&conflict_path, &address, &conflict) {
+	match handler.on_conflict(&view) {
 		ConflictDecision::Defer => result.conflicts.push(PatchResolution::Conflict {
 			address,
 			patches: conflict.patches,
@@ -552,15 +582,20 @@ fn apply_conflict_decision(
 		}
 		ConflictDecision::UseFile(source_path) => {
 			result.handler_resolved_count += 1;
+			// Inline use_file is a whole-file materialization decision. Key it by
+			// the real target file so write_patch_merge_output can honor it; the
+			// old synthetic AST key was unreachable by the materializer.
 			result
 				.external_file_resolutions
-				.insert(PathBuf::from(conflict_path), source_path);
+				.insert(conflict_file.to_path_buf(), source_path);
 		}
 		ConflictDecision::KeepExisting => {
 			result.handler_resolved_count += 1;
+			// Same whole-file keying as use_file: the output writer checks by
+			// target path, not by a synthetic conflict address.
 			result
 				.keep_existing_paths
-				.insert(PathBuf::from(conflict_path));
+				.insert(conflict_file.to_path_buf());
 		}
 		ConflictDecision::Abort => {
 			return Err(MergeError::Validation {
@@ -2328,9 +2363,7 @@ mod tests {
 		impl ConflictHandler for MockRecordedPickHandler {
 			fn on_conflict(
 				&mut self,
-				_: &str,
-				_: &PatchAddress,
-				_: &PatchConflict,
+				_: &crate::merge::conflict_view::ConflictView,
 			) -> ConflictDecision {
 				ConflictDecision::PickModWithRecord {
 					mod_id: "mod_b".to_string(),
@@ -2386,9 +2419,7 @@ mod tests {
 		impl ConflictHandler for MockPickHandler {
 			fn on_conflict(
 				&mut self,
-				_: &str,
-				_: &PatchAddress,
-				_: &PatchConflict,
+				_: &crate::merge::conflict_view::ConflictView,
 			) -> ConflictDecision {
 				ConflictDecision::PickMod("mod_b".to_string())
 			}
@@ -2424,6 +2455,80 @@ mod tests {
 		assert_eq!(result.conflicts.len(), 0);
 		assert_eq!(result.handler_resolved_count, 1);
 		assert_eq!(result.resolved, vec![PatchResolution::Resolved(patch_b)]);
+	}
+
+	#[test]
+	fn file_level_conflict_decisions_are_keyed_by_current_file() {
+		struct MockFileDecisionHandler {
+			decision: ConflictDecision,
+		}
+
+		impl ConflictHandler for MockFileDecisionHandler {
+			fn on_conflict(
+				&mut self,
+				_: &crate::merge::conflict_view::ConflictView,
+			) -> ConflictDecision {
+				self.decision.clone()
+			}
+		}
+
+		let current_file = PathBuf::from("common/ideas/resolved.txt");
+		let patch_a = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("alpha")),
+		};
+		let patch_b = ClausewitzPatch::ReplaceBlock {
+			path: vec!["root".into()],
+			key: "decisions".into(),
+			old_statement: assignment("decisions", scalar("old")),
+			new_statement: assignment("decisions", scalar("beta")),
+		};
+		let mod_patches = vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b]),
+		];
+
+		let mut keep_handler = MockFileDecisionHandler {
+			decision: ConflictDecision::KeepExisting,
+		};
+		let keep_result = merge_patch_sets_for_file(
+			mod_patches.clone(),
+			&default_policies(),
+			&mut keep_handler,
+			Some(&current_file),
+		)
+		.expect("keep-existing handler should not abort");
+
+		assert!(keep_result.keep_existing_paths.contains(&current_file));
+		assert!(
+			!keep_result
+				.keep_existing_paths
+				.contains(&PathBuf::from("root/decisions"))
+		);
+
+		let external_file = PathBuf::from("resolutions/resolved.txt");
+		let mut file_handler = MockFileDecisionHandler {
+			decision: ConflictDecision::UseFile(external_file.clone()),
+		};
+		let file_result = merge_patch_sets_for_file(
+			mod_patches,
+			&default_policies(),
+			&mut file_handler,
+			Some(&current_file),
+		)
+		.expect("use-file handler should not abort");
+
+		assert_eq!(
+			file_result.external_file_resolutions.get(&current_file),
+			Some(&external_file)
+		);
+		assert!(
+			!file_result
+				.external_file_resolutions
+				.contains_key(&PathBuf::from("root/decisions"))
+		);
 	}
 
 	#[test]

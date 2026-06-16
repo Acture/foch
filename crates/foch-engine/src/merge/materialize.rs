@@ -4,6 +4,7 @@ use super::conflict_handler::{
 	ConflictHandler, DeferHandler, DepImpliesResolutionHandler, PriorityBoostResolutionHandler,
 	PromptOutcomeKind, prompt_survivors_and_persist,
 };
+use super::conflict_view::build_conflict_view;
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
@@ -1685,13 +1686,29 @@ fn patch_based_structural_merge(
 			let vanilla_lookup = |address: &PatchAddress| -> Option<String> {
 				vanilla_snippet_for_address(vanilla.as_ref(), address, context.emit_options)
 			};
+			let survivor_views = survivors
+				.iter()
+				.map(|(address, conflict)| {
+					let address_path = address.path.join("/");
+					let conflict_id =
+						compute_conflict_id(Path::new(target_path), &address_path, &address.key);
+					let view = build_conflict_view(
+						Path::new(target_path),
+						address,
+						conflict,
+						conflict_id,
+						context.mod_display_names,
+						vanilla_lookup(address),
+						context.emit_options,
+					)?;
+					Ok((address.clone(), view))
+				})
+				.collect::<Result<Vec<_>, MergeError>>()?;
 			let prompt = prompt_survivors_and_persist(
 				Path::new(target_path),
-				&survivors,
+				&survivor_views,
 				&mut **handler,
 				config_path,
-				context.mod_display_names,
-				&vanilla_lookup,
 			);
 			let mut new_picks = 0usize;
 			for outcome in prompt.outcomes {
