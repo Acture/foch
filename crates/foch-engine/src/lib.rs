@@ -26,7 +26,8 @@ pub use base_data::{
 	write_snapshot_bundle,
 };
 pub use cache::{
-	CacheEntryInfo, CacheError, CacheStats, CachedModsetResult, ModsetCache,
+	CacheEntryInfo, CacheError, CacheLayer, CacheLayerEntryInfo, CacheLayerOps, CacheStats,
+	CachedModsetResult, EvictionStats, ModsetCache, all_layers, cache_cap_bytes,
 	default_dag_base_cache_dir, default_foch_cache_dir, default_mod_diff_cache_dir,
 	default_mod_parse_cache_dir, default_modset_cache_dir, default_modset_cache_root_dir,
 };

@@ -4,12 +4,15 @@
 //! owns mod roots, user ignore patterns, and game-version selection.
 
 mod dag_base_cache;
+pub mod layer;
 mod mod_diff_cache;
 mod mod_parse_cache;
 mod modset_cache;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};
+pub use foch_language::analyzer::semantic_index::parse_cache::cache_cap_bytes;
+pub use layer::{CacheLayer, CacheLayerEntryInfo, CacheLayerOps, EvictionStats, all_layers};
 pub use mod_diff_cache::default_mod_diff_cache_dir;
 pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_diff_cache_stats};
 pub use mod_parse_cache::{CacheError, default_foch_cache_dir, default_mod_parse_cache_dir};
@@ -49,6 +52,7 @@ mod tests {
 				"FOCH_DAG_BASE_CACHE_DIR",
 				"FOCH_MODSET_CACHE_DIR",
 				"FOCH_PARSE_CACHE_DIR",
+				"FOCH_CACHE_MAX_BYTES",
 			];
 			let previous = keys
 				.into_iter()
@@ -109,5 +113,16 @@ mod tests {
 			parse_cache::parser_cache_root(),
 			root.join("parse").join("v7")
 		);
+	}
+
+	#[test]
+	fn cache_cap_bytes_uses_shared_env_setting() {
+		let root = cache_root("cache-cap");
+		let _env = EnvGuard::new(&root);
+		unsafe {
+			std::env::set_var("FOCH_CACHE_MAX_BYTES", "12345");
+		}
+
+		assert_eq!(cache_cap_bytes(), 12_345);
 	}
 }

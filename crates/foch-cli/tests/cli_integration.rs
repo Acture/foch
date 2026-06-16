@@ -219,7 +219,8 @@ fn run_foch_with_env(
 		.env("FOCH_CONFIG_DIR", config_dir)
 		.env("FOCH_CACHE_ROOT", &cache_root)
 		.env("HOME", &home_dir)
-		.env("XDG_DATA_HOME", &xdg_data_home);
+		.env("XDG_DATA_HOME", &xdg_data_home)
+		.env("FOCH_CACHE_ROOT", config_dir.join(".foch-cache"));
 	for (key, value) in envs {
 		command.env(key, value);
 	}
