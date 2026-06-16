@@ -7,7 +7,6 @@ use super::conflict_handler::{
 use super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
-use super::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use super::error::MergeError;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 #[allow(unused_imports)]
@@ -20,6 +19,7 @@ use super::patch_deps::{DagPatchRequest, compute_dag_patches_with_handler};
 use super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict, PatchResolution};
 use super::plan::build_merge_plan_from_workspace;
 use super::stale_vanilla::detect_stale_vanilla_targets;
+use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
 use foch_core::config::{

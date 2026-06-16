@@ -808,7 +808,7 @@ mod tests {
 	}
 
 	fn rendered(statements: &[AstStatement]) -> String {
-		super::super::emit::emit_clausewitz_statements(statements).expect("emit statements")
+		crate::emit::emit_clausewitz_statements(statements).expect("emit statements")
 	}
 
 	fn append_list_keys(patches: &[ClausewitzPatch]) -> Vec<String> {
