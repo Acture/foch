@@ -107,14 +107,14 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 		arg::FochCliCommands::Lsp(_lsp_args) => Ok(foch_cli::lsp::run()),
 	};
 
-	if matches!(&result, Ok(0)) && should_run_parse_cache_gc(&cliargs.command) {
-		handler::cache::run_auto_gc();
+	if matches!(&result, Ok(0)) && should_run_cache_gc(&cliargs.command) {
+		handler::cache::run_auto_cache_gc();
 	}
 
 	result
 }
 
-fn should_run_parse_cache_gc(command: &arg::FochCliCommands) -> bool {
+fn should_run_cache_gc(command: &arg::FochCliCommands) -> bool {
 	match command {
 		arg::FochCliCommands::Check(_) | arg::FochCliCommands::Merge(_) => true,
 		arg::FochCliCommands::Data(data_args) => {

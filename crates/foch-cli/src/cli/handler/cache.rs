@@ -4,7 +4,8 @@ use crate::cli::arg::{
 };
 use crate::cli::handler::HandlerResult;
 use foch_engine::{
-	CacheLayer, CacheLayerEntryInfo, CacheLayerOps, all_layers, default_foch_cache_dir,
+	CacheLayer, CacheLayerEntryInfo, CacheLayerOps, all_layers, cache_cap_bytes,
+	default_foch_cache_dir,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -26,7 +27,8 @@ pub fn handle_cache(cache_args: &FochCliCacheArgs) -> HandlerResult {
 	}
 }
 
-pub fn run_auto_gc() {
+/// Runs automatic post-command cache GC by byte-capping every cache layer.
+pub fn run_auto_cache_gc() {
 	let cap = cache_cap_bytes();
 	for layer in all_layers() {
 		match layer.evict_to_byte_cap(cap) {
@@ -157,14 +159,6 @@ fn handle_cache_clear(args: &FochCliCacheClearArgs) -> HandlerResult {
 fn handle_cache_where() -> HandlerResult {
 	println!("{}", default_foch_cache_dir().display());
 	Ok(0)
-}
-
-fn cache_cap_bytes() -> u64 {
-	const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
-	std::env::var("FOCH_CACHE_MAX_BYTES")
-		.ok()
-		.and_then(|value| value.trim().parse().ok())
-		.unwrap_or(DEFAULT_CACHE_CAP_BYTES)
 }
 
 fn selected_layers(arg: Option<FochCliCacheLayerArg>) -> Vec<Box<dyn CacheLayerOps>> {

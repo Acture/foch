@@ -26,6 +26,8 @@ Large-playset cold runs are expensive, especially in debug builds. The current N
 
 **Workaround:** use a release binary or `cargo install --path crates/foch-cli`, keep cache enabled, inspect it with `foch cache stats` / `foch cache list`, and reserve debug cold runs for engine debugging.
 
+Automatic post-command cache GC byte-caps every layer at 1 GiB by default via `FOCH_CACHE_MAX_BYTES`, so artifacts larger than the cap can be evicted immediately after creation. Raise `FOCH_CACHE_MAX_BYTES` when retaining very large cached outputs, such as modset tarballs, matters.
+
 ## TUI conflict resolver has limited Windows coverage
 
 The terminal conflict resolver works on Linux and macOS in regular TTYs. Windows terminal behavior has had less alpha testing.
