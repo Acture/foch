@@ -4,12 +4,14 @@
 //! owns mod roots, user ignore patterns, and game-version selection.
 
 mod dag_base_cache;
+pub mod layer;
 mod mod_diff_cache;
 mod mod_parse_cache;
 mod modset_cache;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};
+pub use layer::{CacheLayer, CacheLayerEntryInfo, CacheLayerOps, EvictionStats, all_layers};
 pub use mod_diff_cache::default_mod_diff_cache_dir;
 pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_diff_cache_stats};
 pub use mod_parse_cache::{CacheError, default_foch_cache_dir, default_mod_parse_cache_dir};
