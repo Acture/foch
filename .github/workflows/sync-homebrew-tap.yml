@@ -1,0 +1,84 @@
+name: reusable-sync-homebrew-tap
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing release tag to sync into Homebrew tap"
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to sync into Homebrew tap"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew-tap:
+    name: Update Homebrew tap from release asset
+    if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          tag="${{ inputs.tag }}"
+          version="${tag#v}"
+          repo="${GITHUB_REPOSITORY}"
+          url="https://github.com/${repo}/releases/download/${tag}/foch-${version}-source.tar.gz"
+          {
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "repo=${repo}"
+            echo "url=${url}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download release source tarball
+        shell: bash
+        run: |
+          curl -fsSL "${{ steps.meta.outputs.url }}" -o source.tar.gz
+          sha256="$(sha256sum source.tar.gz | cut -d' ' -f1)"
+          echo "sha256=${sha256}" >> "$GITHUB_OUTPUT"
+        id: archive
+
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HOMEBREW_TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Render formula
+        shell: bash
+        run: |
+          mkdir -p tap/Formula
+          ./scripts/render_homebrew_formula.sh \
+            "${{ steps.meta.outputs.repo }}" \
+            "${{ steps.meta.outputs.version }}" \
+            "${{ steps.meta.outputs.url }}" \
+            "${{ steps.archive.outputs.sha256 }}" \
+            > tap/Formula/foch.rb
+
+      - name: Commit and push formula update
+        shell: bash
+        working-directory: tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/foch.rb
+          if git diff --cached --quiet; then
+            echo "Formula already up to date"
+            exit 0
+          fi
+          git commit -m "foch ${{ steps.meta.outputs.version }}"
+          git push
