@@ -10,13 +10,13 @@ use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, Scr
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
-use super::conflict_handler::{ConflictHandler, DeferHandler};
+use super::super::conflict_handler::{ConflictHandler, DeferHandler};
+use super::super::patch::{ClausewitzPatch, diff_ast, fold_renames};
+use super::super::patch_apply::apply_patches;
+use super::super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets_for_file};
 use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
-use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
-use super::patch_apply::apply_patches;
-use super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_sets_for_file};
 use crate::cache::{DagBaseCache, ModDiffCache, compute_mod_hash};
 use crate::workspace::ResolvedFileContributor;
 

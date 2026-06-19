@@ -31,10 +31,10 @@ use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, Scr
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
-use super::conflict_handler::DeferHandler;
-use super::patch::{diff_ast, fold_renames};
-use super::patch_apply::apply_patches;
-use super::patch_merge::{PatchResolution, merge_patch_sets};
+use super::super::conflict_handler::DeferHandler;
+use super::super::patch::{diff_ast, fold_renames};
+use super::super::patch_apply::apply_patches;
+use super::super::patch_merge::{PatchResolution, merge_patch_sets};
 use crate::workspace::ResolvedFileContributor;
 
 // ---------------------------------------------------------------------------
@@ -997,7 +997,7 @@ impl BaseResolver {
 	}
 }
 
-fn resolved_patches(resolutions: &[PatchResolution]) -> Vec<super::patch::ClausewitzPatch> {
+fn resolved_patches(resolutions: &[PatchResolution]) -> Vec<super::super::patch::ClausewitzPatch> {
 	resolutions
 		.iter()
 		.filter_map(|resolution| match resolution {
