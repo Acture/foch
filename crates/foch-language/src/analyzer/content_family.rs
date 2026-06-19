@@ -252,8 +252,14 @@ pub enum ConflictPolicy {
 }
 
 /// Dedup safety for a content family, replacing the former
-/// `cross_file_dedup_safe` / `per_entry_dedup_safe` boolean pair. The four
-/// variants are exactly the four reachable boolean combinations.
+/// `cross_file_dedup_safe` / `per_entry_dedup_safe` boolean pair.
+///
+/// *Cross-file* dedup is safe only for content families where the game builds a global key
+/// namespace and file location does not affect the runtime meaning of an identical definition.
+/// *Per-entry* dedup is safe only for content families where omitting a same-file entry whose
+/// merged value is identical to vanilla leaves the vanilla definition active with the same runtime meaning.
+///
+/// The four variants are exactly the four reachable boolean combinations.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DedupPolicy {
 	#[default]
