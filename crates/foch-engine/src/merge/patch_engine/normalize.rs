@@ -1,4 +1,4 @@
-use super::error::MergeError;
+use super::super::error::MergeError;
 use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
