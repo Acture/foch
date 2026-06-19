@@ -278,7 +278,7 @@ impl DedupPolicy {
 		)
 	}
 
-	pub const fn with_per_entry(self) -> Self {
+	pub(crate) const fn with_per_entry(self) -> Self {
 		match self {
 			DedupPolicy::None => DedupPolicy::PerEntryOnly,
 			DedupPolicy::CrossFileOnly => DedupPolicy::CrossFileAndPerEntry,
