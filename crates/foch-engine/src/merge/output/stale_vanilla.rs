@@ -3,7 +3,7 @@ use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
-use super::patch::ClausewitzPatch;
+use super::super::patch::ClausewitzPatch;
 
 const MISSING_PATH_NOTE: &str = "vanilla snapshot for this file does not contain the target path; this remove-style patch may be cross-version drift, dependency-targeted, or intentionally guarded";
 const MISSING_KEY_NOTE: &str = "vanilla snapshot contains the parent path but not the target key; this remove-style patch may be cross-version drift, dependency-targeted, or intentionally guarded";

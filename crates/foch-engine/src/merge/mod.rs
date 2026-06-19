@@ -1,21 +1,21 @@
 pub(crate) mod error;
 pub(crate) mod execute;
-pub(crate) mod localisation_merge;
-pub(crate) mod materialize;
 pub(crate) mod namespace;
+pub(crate) mod output;
 pub(crate) mod patch_engine;
 #[cfg(test)]
 mod patch_real_mods;
 pub(crate) mod plan;
 pub(crate) mod planning;
 pub(crate) mod resolution;
-pub(crate) mod stale_vanilla;
 
 pub use error::MergeError;
 pub use execute::{
 	AnalysisStatusView, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
 	run_merge_with_options,
 };
+#[allow(unused_imports)]
+pub(crate) use output::{localisation_merge, materialize, stale_vanilla};
 pub(crate) use patch_engine::{normalize, patch, patch_apply, patch_merge};
 pub use plan::{run_merge_plan, run_merge_plan_with_options};
 pub(crate) use planning::{dag, patch_deps};
