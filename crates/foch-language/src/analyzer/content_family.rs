@@ -251,21 +251,48 @@ pub enum ConflictPolicy {
 	BooleanOr,
 }
 
+/// Dedup safety for a content family, replacing the former
+/// `cross_file_dedup_safe` / `per_entry_dedup_safe` boolean pair. The four
+/// variants are exactly the four reachable boolean combinations.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DedupPolicy {
+	#[default]
+	None,
+	PerEntryOnly,
+	CrossFileOnly,
+	CrossFileAndPerEntry,
+}
+
+impl DedupPolicy {
+	pub const fn cross_file_safe(self) -> bool {
+		matches!(
+			self,
+			DedupPolicy::CrossFileOnly | DedupPolicy::CrossFileAndPerEntry
+		)
+	}
+
+	pub const fn per_entry_safe(self) -> bool {
+		matches!(
+			self,
+			DedupPolicy::PerEntryOnly | DedupPolicy::CrossFileAndPerEntry
+		)
+	}
+
+	pub const fn with_per_entry(self) -> Self {
+		match self {
+			DedupPolicy::None => DedupPolicy::PerEntryOnly,
+			DedupPolicy::CrossFileOnly => DedupPolicy::CrossFileAndPerEntry,
+			other => other,
+		}
+	}
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ContentFamilyCapabilities {
 	pub semantic_complete: bool,
 	pub graph_ready: bool,
 	pub merge_ready: bool,
-	/// True only for content families where the game builds a global key
-	/// namespace and file location does not affect the runtime meaning of an
-	/// identical key/value definition. The merge materializer uses this to prune
-	/// generated files whose keys are already provided identically elsewhere.
-	pub cross_file_dedup_safe: bool,
-	/// True only for content families where omitting a same-file entry whose
-	/// merged value is identical to vanilla leaves the vanilla definition active
-	/// with the same runtime meaning. The merge materializer uses this to prune
-	/// redundant generated entries without changing load semantics.
-	pub per_entry_dedup_safe: bool,
+	pub dedup_policy: DedupPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -552,7 +579,7 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 	pub const fn per_entry_dedup_safe(mut self) -> Self {
-		self.capabilities.per_entry_dedup_safe = true;
+		self.capabilities.dedup_policy = self.capabilities.dedup_policy.with_per_entry();
 		self
 	}
 	pub const fn extractor(mut self, ext: ContentFamilyExtractor) -> Self {
@@ -630,8 +657,7 @@ impl ContentFamilyDescriptor {
 				semantic_complete: false,
 				graph_ready: false,
 				merge_ready: false,
-				cross_file_dedup_safe: false,
-				per_entry_dedup_safe: false,
+				dedup_policy: DedupPolicy::None,
 			},
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
@@ -666,8 +692,7 @@ impl ContentFamilyDescriptor {
 				semantic_complete: false,
 				graph_ready: false,
 				merge_ready: false,
-				cross_file_dedup_safe: false,
-				per_entry_dedup_safe: false,
+				dedup_policy: DedupPolicy::None,
 			},
 			extractor: ContentFamilyExtractor::None,
 			merge_key_source: None,
@@ -740,4 +765,57 @@ fn fallback_module_name(parts: &[&str]) -> String {
 		return "other".to_string();
 	}
 	parts[..parts.len() - 1].join(".")
+}
+
+#[cfg(test)]
+mod dedup_policy_tests {
+	use super::DedupPolicy;
+
+	#[test]
+	fn dedup_policy_maps_to_old_boolean_pairs() {
+		assert_eq!(
+			(
+				DedupPolicy::None.cross_file_safe(),
+				DedupPolicy::None.per_entry_safe()
+			),
+			(false, false)
+		);
+		assert_eq!(
+			(
+				DedupPolicy::PerEntryOnly.cross_file_safe(),
+				DedupPolicy::PerEntryOnly.per_entry_safe()
+			),
+			(false, true)
+		);
+		assert_eq!(
+			(
+				DedupPolicy::CrossFileOnly.cross_file_safe(),
+				DedupPolicy::CrossFileOnly.per_entry_safe()
+			),
+			(true, false)
+		);
+		assert_eq!(
+			(
+				DedupPolicy::CrossFileAndPerEntry.cross_file_safe(),
+				DedupPolicy::CrossFileAndPerEntry.per_entry_safe()
+			),
+			(true, true)
+		);
+		assert_eq!(
+			DedupPolicy::None.with_per_entry(),
+			DedupPolicy::PerEntryOnly
+		);
+		assert_eq!(
+			DedupPolicy::CrossFileOnly.with_per_entry(),
+			DedupPolicy::CrossFileAndPerEntry
+		);
+		assert_eq!(
+			DedupPolicy::PerEntryOnly.with_per_entry(),
+			DedupPolicy::PerEntryOnly
+		);
+		assert_eq!(
+			DedupPolicy::CrossFileAndPerEntry.with_per_entry(),
+			DedupPolicy::CrossFileAndPerEntry
+		);
+	}
 }
