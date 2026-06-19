@@ -14,9 +14,9 @@ use foch_language::analyzer::content_family::{
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
-use super::conflict_handler::{ConflictDecision, ConflictHandler, DeferHandler};
-use super::conflict_view::build_decision_conflict_view;
-use super::error::MergeError;
+use super::super::conflict_handler::{ConflictDecision, ConflictHandler, DeferHandler};
+use super::super::conflict_view::build_decision_conflict_view;
+use super::super::error::MergeError;
 use super::patch::{AstPath, ClausewitzPatch, patches_semantically_equal};
 
 // ---------------------------------------------------------------------------
