@@ -1,24 +1,24 @@
 #![allow(dead_code)]
 
-use super::conflict_handler::{
+use super::super::conflict_handler::{
 	ConflictHandler, DeferHandler, DepImpliesResolutionHandler, PriorityBoostResolutionHandler,
 	PromptOutcomeKind, prompt_survivors_and_persist,
 };
-use super::conflict_view::build_conflict_view;
-use super::dag::{
+use super::super::conflict_view::build_conflict_view;
+use super::super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
-use super::error::MergeError;
-use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
+use super::super::error::MergeError;
 #[allow(unused_imports)]
-use super::namespace::{
+use super::super::namespace::{
 	FamilyKeyIndex, build_family_key_index, detect_key_conflicts, group_by_family,
 };
-use super::normalize::normalize_defines_file;
-use super::patch::ClausewitzPatch;
-use super::patch_deps::{DagPatchRequest, compute_dag_patches_with_handler};
-use super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict, PatchResolution};
-use super::plan::build_merge_plan_from_workspace;
+use super::super::normalize::normalize_defines_file;
+use super::super::patch::ClausewitzPatch;
+use super::super::patch_deps::{DagPatchRequest, compute_dag_patches_with_handler};
+use super::super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict, PatchResolution};
+use super::super::plan::build_merge_plan_from_workspace;
+use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use super::stale_vanilla::detect_stale_vanilla_targets;
 use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::request::{CheckRequest, MergePlanOptions};
@@ -1445,9 +1445,9 @@ fn per_entry_noop_matches_vanilla(
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 ) -> bool {
 	vanilla_lookup.get(key).is_some_and(|vanilla_entries| {
-		vanilla_entries
-			.iter()
-			.any(|vanilla| super::patch::ast_statements_semantically_equal(vanilla, statement))
+		vanilla_entries.iter().any(|vanilla| {
+			super::super::patch::ast_statements_semantically_equal(vanilla, statement)
+		})
 	})
 }
 
@@ -1776,7 +1776,7 @@ fn patch_based_structural_merge(
 	let noop_vs_vanilla = vanilla
 		.as_ref()
 		.map(|base| {
-			super::patch::ast_statement_lists_semantically_equal(
+			super::super::patch::ast_statement_lists_semantically_equal(
 				&base.ast.statements,
 				&dag_patches.merged_statements,
 			)
@@ -1807,19 +1807,19 @@ fn run_patch_merge_engine(
 	contributors: &[ResolvedFileContributor],
 	context: &PatchBasedMergeContext<'_>,
 	resolution_map: &foch_core::config::ResolutionMap,
-) -> Result<super::patch_deps::DagPatchComputation, MergeError> {
-	let mut handler = super::conflict_handler::ChainHandler {
-		first: super::conflict_handler::LookupHandler::with_display_names(
+) -> Result<super::super::patch_deps::DagPatchComputation, MergeError> {
+	let mut handler = super::super::conflict_handler::ChainHandler {
+		first: super::super::conflict_handler::LookupHandler::with_display_names(
 			resolution_map,
 			PathBuf::from(target_path),
 			(*context.mod_display_names).clone(),
 		),
-		second: super::conflict_handler::ChainHandler {
+		second: super::super::conflict_handler::ChainHandler {
 			first: PriorityBoostResolutionHandler::new(
 				PathBuf::from(target_path),
 				&resolution_map.mod_priority_boost,
 			),
-			second: super::conflict_handler::ChainHandler {
+			second: super::super::conflict_handler::ChainHandler {
 				first: DepImpliesResolutionHandler::from_mod_dag(
 					PathBuf::from(target_path),
 					context.mod_dag,
