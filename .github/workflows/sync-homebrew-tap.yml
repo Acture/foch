@@ -7,6 +7,10 @@ on:
         description: "Existing release tag to sync into Homebrew tap"
         required: true
         type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        description: "Token with write access to the Homebrew tap repository"
+        required: true
   workflow_dispatch:
     inputs:
       tag:
