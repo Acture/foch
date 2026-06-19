@@ -5,6 +5,9 @@ on:
     branches: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust-fmt:
     name: Rust fmt
@@ -165,6 +168,7 @@ jobs:
     name: CI required
     runs-on: ubuntu-latest
     if: ${{ always() }}
+    permissions: {}
     needs:
       - rust-fmt
       - rust-clippy
