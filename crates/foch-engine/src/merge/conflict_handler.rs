@@ -471,7 +471,6 @@ impl InteractiveCliHandler {
 		);
 		let path = view.file_path.to_string_lossy();
 		let _ = writeln!(self.stderr, "  file: {path}");
-		let _ = writeln!(self.stderr, "  path: {path}");
 		let _ = writeln!(
 			self.stderr,
 			"  address: {address_path}/{}",
