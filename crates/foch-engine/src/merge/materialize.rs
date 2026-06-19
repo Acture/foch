@@ -557,7 +557,7 @@ fn prune_cross_file_noop_duplicates(
 		let Some(descriptor) = profile.descriptor_for_root_family(family_id) else {
 			continue;
 		};
-		if !descriptor.capabilities.cross_file_dedup_safe {
+		if !descriptor.capabilities.dedup_policy.cross_file_safe() {
 			continue;
 		}
 		let Some(merge_key_source) = descriptor.merge_key_source else {
@@ -1339,7 +1339,7 @@ fn drop_per_entry_noop_duplicates(
 	vanilla_statements: &[AstStatement],
 	descriptor: &ContentFamilyDescriptor,
 ) -> (Vec<AstStatement>, usize) {
-	if !descriptor.capabilities.per_entry_dedup_safe {
+	if !descriptor.capabilities.dedup_policy.per_entry_safe() {
 		return (merged_statements, 0);
 	}
 	let Some(merge_key_source) = descriptor.merge_key_source else {
