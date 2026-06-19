@@ -2,100 +2,107 @@ use super::super::content_family::ScriptFileKind;
 use foch_core::model::{ScopeKind, ScopeType};
 
 pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
-	match key {
-		// Province iterators (every_/any_/all_/random_<...>_province)
-		"all_core_province"
-		| "all_neighbor_province"
-		| "all_owned_province"
-		| "all_owned_province_cumulative"
-		| "all_province"
-		| "all_province_in_state"
-		| "all_state_province"
-		| "all_trade_node_member_province"
-		| "any_core_province"
-		| "any_empty_neighbor_province"
-		| "any_friendly_coast_border_province"
-		| "any_heretic_province"
-		| "any_owned_province"
-		| "any_province"
-		| "any_province_in_state"
-		| "any_trade_node_member_province"
-		| "every_claimed_province"
-		| "every_core_province"
-		| "every_empty_neighbor_province"
-		| "every_heretic_province"
-		| "every_neighbor_province"
-		| "every_owned_province"
-		| "every_province"
-		| "every_province_in_state"
-		| "every_trade_node_member_province"
-		| "every_tribal_land_province"
-		| "random_area_province"
-		| "random_core_province"
-		| "random_empty_neighbor_province"
-		| "random_heretic_province"
-		| "random_neighbor_province"
-		| "random_owned_province"
-		| "random_province"
-		| "random_province_in_state"
-		| "random_trade_node_member_province"
+	const PROVINCE_ITERATORS: &[&str] = &[
+		"all_core_province",
+		"all_neighbor_province",
+		"all_owned_province",
+		"all_owned_province_cumulative",
+		"all_province",
+		"all_province_in_state",
+		"all_state_province",
+		"all_trade_node_member_province",
+		"any_core_province",
+		"any_empty_neighbor_province",
+		"any_friendly_coast_border_province",
+		"any_heretic_province",
+		"any_owned_province",
+		"any_province",
+		"any_province_in_state",
+		"any_trade_node_member_province",
+		"every_claimed_province",
+		"every_core_province",
+		"every_empty_neighbor_province",
+		"every_heretic_province",
+		"every_neighbor_province",
+		"every_owned_province",
+		"every_province",
+		"every_province_in_state",
+		"every_trade_node_member_province",
+		"every_tribal_land_province",
+		"random_area_province",
+		"random_core_province",
+		"random_empty_neighbor_province",
+		"random_heretic_province",
+		"random_neighbor_province",
+		"random_owned_province",
+		"random_province",
+		"random_province_in_state",
+		"random_trade_node_member_province",
 		// Sea zones are provinces in EU4
-		| "every_neighbor_sea_zone"
+		"every_neighbor_sea_zone",
 		// Tribal land iterates over provinces
-		| "any_tribal_land" => Some(ScopeType::Province),
-		// Country iterators
-		"all_ally"
-		| "all_countries_including_self"
-		| "all_country"
-		| "all_elector"
-		| "all_federation_members"
-		| "all_known_country"
-		| "all_neighbor_country"
-		| "all_rival_country"
-		| "all_subject_country"
-		| "all_trade_node_member_country"
-		| "all_war_enemy_countries"
-		| "any_ally"
-		| "any_core_country"
-		| "any_country"
-		| "any_country_active_in_node"
-		| "any_elector"
-		| "any_enemy_country"
-		| "any_great_power"
-		| "any_hired_mercenary_company"
-		| "any_known_country"
-		| "any_neighbor_country"
-		| "any_other_great_power"
-		| "any_privateering_country"
-		| "any_rival_country"
-		| "any_trade_node_member_country"
-		| "any_war_enemy_country"
-		| "every_ally"
-		| "every_core_country"
-		| "every_country"
-		| "every_country_including_inactive"
-		| "every_elector"
-		| "every_enemy_country"
-		| "every_federation_member"
-		| "every_known_country"
-		| "every_neighbor_country"
-		| "every_rival_country"
-		| "every_subject_country"
-		| "every_trade_node_member_country"
-		| "every_war_enemy_country"
-		| "random_ally"
-		| "random_core_country"
-		| "random_country"
-		| "random_elector"
-		| "random_enemy_country"
-		| "random_hired_mercenary_company"
-		| "random_known_country"
-		| "random_neighbor_country"
-		| "random_privateering_country"
-		| "random_rival_country"
-		| "random_subject_country"
-		| "random_war_enemy_country" => Some(ScopeType::Country),
-		_ => None,
+		"any_tribal_land",
+	];
+	const COUNTRY_ITERATORS: &[&str] = &[
+		"all_ally",
+		"all_countries_including_self",
+		"all_country",
+		"all_elector",
+		"all_federation_members",
+		"all_known_country",
+		"all_neighbor_country",
+		"all_rival_country",
+		"all_subject_country",
+		"all_trade_node_member_country",
+		"all_war_enemy_countries",
+		"any_ally",
+		"any_core_country",
+		"any_country",
+		"any_country_active_in_node",
+		"any_elector",
+		"any_enemy_country",
+		"any_great_power",
+		"any_hired_mercenary_company",
+		"any_known_country",
+		"any_neighbor_country",
+		"any_other_great_power",
+		"any_privateering_country",
+		"any_rival_country",
+		"any_trade_node_member_country",
+		"any_war_enemy_country",
+		"every_ally",
+		"every_core_country",
+		"every_country",
+		"every_country_including_inactive",
+		"every_elector",
+		"every_enemy_country",
+		"every_federation_member",
+		"every_known_country",
+		"every_neighbor_country",
+		"every_rival_country",
+		"every_subject_country",
+		"every_trade_node_member_country",
+		"every_war_enemy_country",
+		"random_ally",
+		"random_core_country",
+		"random_country",
+		"random_elector",
+		"random_enemy_country",
+		"random_hired_mercenary_company",
+		"random_known_country",
+		"random_neighbor_country",
+		"random_privateering_country",
+		"random_rival_country",
+		"random_subject_country",
+		"random_war_enemy_country",
+	];
+
+	if PROVINCE_ITERATORS.contains(&key) {
+		Some(ScopeType::Province)
+	} else if COUNTRY_ITERATORS.contains(&key) {
+		Some(ScopeType::Country)
+	} else {
+		None
 	}
 }
 
@@ -408,4 +415,36 @@ pub fn looks_like_map_group_key(key: &str) -> bool {
 		|| key.ends_with("_superregion")
 		|| key.ends_with("_provincegroup")
 		|| key.starts_with("trade_company_")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::iterator_scope_type;
+	use foch_core::model::ScopeType;
+
+	#[test]
+	fn iterator_scope_type_classifies_known_iterators() {
+		for key in [
+			"all_core_province",
+			"any_owned_province",
+			"every_neighbor_province",
+			"random_province",
+			"every_neighbor_sea_zone",
+			"any_tribal_land",
+		] {
+			assert_eq!(iterator_scope_type(key), Some(ScopeType::Province), "{key}");
+		}
+		for key in [
+			"all_ally",
+			"any_country",
+			"every_subject_country",
+			"random_war_enemy_country",
+			"any_hired_mercenary_company",
+		] {
+			assert_eq!(iterator_scope_type(key), Some(ScopeType::Country), "{key}");
+		}
+		for key in ["", "not_an_iterator", "owner", "any_known_country_xyz"] {
+			assert_eq!(iterator_scope_type(key), None, "{key}");
+		}
+	}
 }
