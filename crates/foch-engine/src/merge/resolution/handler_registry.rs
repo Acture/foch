@@ -134,8 +134,8 @@ fn last_writer(view: &ConflictView) -> ConflictDecision {
 mod tests {
 	use std::path::PathBuf;
 
-	use super::super::patch::ClausewitzPatch;
-	use super::super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict};
+	use super::super::super::patch::ClausewitzPatch;
+	use super::super::super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict};
 	use super::*;
 	use crate::merge::conflict_view::{CandidateView, ConflictView};
 	use foch_language::analyzer::parser::{ScalarValue, Span, SpanRange};

@@ -5,9 +5,9 @@ use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span,
 
 use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 
-use super::error::MergeError;
-use super::patch::ClausewitzPatch;
-use super::patch_merge::{PatchAddress, PatchConflict};
+use super::super::error::MergeError;
+use super::super::patch::ClausewitzPatch;
+use super::super::patch_merge::{PatchAddress, PatchConflict};
 
 const MAX_SUMMARY_CHARS: usize = 80;
 const MAX_CHILD_PREVIEW_ENTRIES: usize = 3;
