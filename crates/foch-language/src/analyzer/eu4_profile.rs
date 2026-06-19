@@ -1,8 +1,8 @@
 use super::content_family::{
 	BlockMergePolicy, BlockPatchPolicy, BooleanMergePolicy, ConflictPolicy,
 	ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyExtractor,
-	ContentFamilyPathMatcher, ContentFamilyScopePolicy, GameId, GameProfile, ListMergePolicy,
-	MergeKeySource, ModuleNameRule, ScalarMergePolicy, ScriptFileKind,
+	ContentFamilyPathMatcher, ContentFamilyScopePolicy, DedupPolicy, GameId, GameProfile,
+	ListMergePolicy, MergeKeySource, ModuleNameRule, ScalarMergePolicy, ScriptFileKind,
 };
 use foch_core::model::ScopeType;
 use std::path::Path;
@@ -17,8 +17,7 @@ const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
 		semantic_complete: true,
 		graph_ready: false,
 		merge_ready: true,
-		cross_file_dedup_safe: false,
-		per_entry_dedup_safe: false,
+		dedup_policy: DedupPolicy::None,
 	}
 }
 
@@ -30,8 +29,7 @@ const fn semantic_complete_merge_ready_cross_file_dedup_safe() -> ContentFamilyC
 		semantic_complete: true,
 		graph_ready: false,
 		merge_ready: true,
-		cross_file_dedup_safe: true,
-		per_entry_dedup_safe: false,
+		dedup_policy: DedupPolicy::CrossFileOnly,
 	}
 }
 
