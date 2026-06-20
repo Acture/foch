@@ -1,5 +1,5 @@
 use foch_language::cwt::{
-	CwtAlias, CwtEnum, CwtOption, CwtScope, CwtSubtype, CwtType, load_cwt_schema,
+	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtScope, CwtSubtype, CwtType, load_cwt_schema,
 	parse_bracket_key,
 };
 
@@ -178,6 +178,48 @@ scopes = {
 			name: "Country".to_string(),
 			aliases: vec!["country".to_string(), "c".to_string()],
 		}]
+	);
+}
+
+#[test]
+fn loads_links_scope_transitions() {
+	let schema = load_cwt_schema(
+		r#"
+links = {
+	owner = {
+		input_scopes = { province }
+		output_scope = country
+	}
+	emperor = {
+		output_scope = country
+	}
+	capital = {
+		input_scopes = { country province }
+		output_scope = province
+	}
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.links,
+		vec![
+			CwtLink {
+				name: "owner".to_string(),
+				input_scopes: vec!["province".to_string()],
+				output_scope: Some("country".to_string()),
+			},
+			CwtLink {
+				name: "emperor".to_string(),
+				input_scopes: Vec::new(),
+				output_scope: Some("country".to_string()),
+			},
+			CwtLink {
+				name: "capital".to_string(),
+				input_scopes: vec!["country".to_string(), "province".to_string()],
+				output_scope: Some("province".to_string()),
+			},
+		]
 	);
 }
 

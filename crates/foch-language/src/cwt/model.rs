@@ -4,6 +4,7 @@ pub struct CwtSchema {
 	pub enums: Vec<CwtEnum>,
 	pub aliases: Vec<CwtAlias>,
 	pub scopes: Vec<CwtScope>,
+	pub links: Vec<CwtLink>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -43,6 +44,13 @@ pub struct CwtAlias {
 pub struct CwtScope {
 	pub name: String,
 	pub aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CwtLink {
+	pub name: String,
+	pub input_scopes: Vec<String>,
+	pub output_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
