@@ -259,7 +259,11 @@ impl CacheLayerOps for ParseCacheLayer {
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
-		evict_file_entries(self.list_entries()?, cap_bytes)
+		let stats = parse_cache::gc_with_cap(cap_bytes);
+		Ok(EvictionStats {
+			removed_entries: stats.evicted.min(usize::MAX as u64) as usize,
+			freed_bytes: stats.bytes_before.saturating_sub(stats.bytes_after),
+		})
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
