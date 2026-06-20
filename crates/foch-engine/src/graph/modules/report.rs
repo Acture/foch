@@ -1,5 +1,6 @@
 use super::model::{CollisionHotspot, ModSummary, ModulePartition, ModuleReport, SymbolGraph};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 pub fn build_module_report(graph: &SymbolGraph, partition: &ModulePartition) -> ModuleReport {
 	let module_of = &partition.module_of;
@@ -77,6 +78,11 @@ pub fn build_module_report(graph: &SymbolGraph, partition: &ModulePartition) -> 
 		mods,
 		collision_hotspots,
 	}
+}
+
+pub fn write_module_report(path: &Path, report: &ModuleReport) -> std::io::Result<()> {
+	let json = serde_json::to_string_pretty(report).map_err(std::io::Error::other)?;
+	std::fs::write(path, json)
 }
 
 #[cfg(test)]
