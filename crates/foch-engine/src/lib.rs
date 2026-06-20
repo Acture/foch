@@ -7,7 +7,7 @@
 mod base_data;
 mod cache;
 mod config;
-mod emit;
+pub(crate) mod emit;
 mod graph;
 mod merge;
 mod request;

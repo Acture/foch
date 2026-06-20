@@ -26,14 +26,14 @@ use foch_core::model::HandlerResolutionRecord;
 use super::conflict_handler::ConflictDecision;
 use super::conflict_view::ConflictView;
 
-type HandlerFn = fn(&ConflictView) -> ConflictDecision;
+pub(crate) type HandlerFn = fn(&ConflictView) -> ConflictDecision;
 
-pub struct HandlerRegistry {
+pub(crate) struct HandlerRegistry {
 	handlers: BTreeMap<String, HandlerFn>,
 }
 
 impl HandlerRegistry {
-	pub fn dispatch(&self, name: &str, view: &ConflictView) -> ConflictDecision {
+	pub(crate) fn dispatch(&self, name: &str, view: &ConflictView) -> ConflictDecision {
 		match self.handlers.get(&name.to_ascii_lowercase()) {
 			Some(handler) => handler(view),
 			None => {
@@ -44,7 +44,7 @@ impl HandlerRegistry {
 	}
 
 	#[allow(dead_code)]
-	pub fn names(&self) -> Vec<String> {
+	pub(crate) fn names(&self) -> Vec<String> {
 		self.handlers.keys().cloned().collect()
 	}
 }
@@ -53,11 +53,11 @@ impl HandlerRegistry {
 /// [`ConflictDecision::Defer`] when the handler name is unknown so that the
 /// surrounding chain (e.g. interactive prompt) can still take over instead
 /// of aborting; the unknown-handler diagnostic is logged on stderr.
-pub fn dispatch(name: &str, view: &ConflictView) -> ConflictDecision {
+pub(crate) fn dispatch(name: &str, view: &ConflictView) -> ConflictDecision {
 	builtin_registry().dispatch(name, view)
 }
 
-pub fn builtin_registry() -> &'static HandlerRegistry {
+pub(crate) fn builtin_registry() -> &'static HandlerRegistry {
 	static BUILTIN_REGISTRY: OnceLock<HandlerRegistry> = OnceLock::new();
 	BUILTIN_REGISTRY.get_or_init(|| {
 		let mut handlers: BTreeMap<String, HandlerFn> = BTreeMap::new();

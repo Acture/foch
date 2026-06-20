@@ -48,7 +48,7 @@ pub(crate) struct PatchConflict {
 
 /// Result of merging patches at a single address.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PatchResolution {
+pub(crate) enum PatchResolution {
 	/// Single mod or all mods agree — apply this patch.
 	Resolved(ClausewitzPatch),
 	/// Auto-resolved by policy (e.g., union of list items, highest precedence).
@@ -67,7 +67,7 @@ pub enum PatchResolution {
 
 /// Result of merging all patch sets.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PatchMergeResult {
+pub(crate) struct PatchMergeResult {
 	pub resolved: Vec<PatchResolution>,
 	pub conflicts: Vec<PatchResolution>,
 	pub stats: PatchMergeStats,
@@ -78,7 +78,7 @@ pub struct PatchMergeResult {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct PatchMergeStats {
+pub(crate) struct PatchMergeStats {
 	pub total_patches: usize,
 	pub single_mod_patches: usize,
 	pub convergent_patches: usize,

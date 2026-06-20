@@ -85,7 +85,7 @@ The intended dependency flow is:
 
 1. `foch-engine::merge::plan` freezes the merge plan.
 2. `foch-engine::merge::ir` lifts supported roots into merge IR.
-3. `foch-engine::merge::emit` produces deterministic Clausewitz output.
+3. `foch-engine::emit` produces deterministic Clausewitz output.
 4. `foch-engine::merge::materialize` writes the merged tree and `.foch/*` sidecars.
 5. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline.
 
