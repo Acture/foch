@@ -332,11 +332,16 @@ fn read_single_alias_assignment(key: &str, value: &AstValue) -> Option<CwtSingle
 	let ("single_alias", name) = parse_bracket_key(key)? else {
 		return None;
 	};
-	let rules = block_items(value).map(read_rules).unwrap_or_default();
+	let body = match value {
+		AstValue::Scalar { value, .. } => {
+			CwtRuleBody::Leaf(CwtValueType::from_token(&value.as_text()))
+		}
+		AstValue::Block { items, .. } => CwtRuleBody::Block(read_rules(items)),
+	};
 
 	Some(CwtSingleAlias {
 		name: name.to_string(),
-		rules,
+		body,
 	})
 }
 
