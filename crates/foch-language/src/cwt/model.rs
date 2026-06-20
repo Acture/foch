@@ -35,6 +35,8 @@ pub struct CwtEnum {
 pub struct CwtAlias {
 	pub category: String,
 	pub name: String,
+	pub scope: Vec<String>,
+	pub options: Vec<CwtOption>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
