@@ -8,7 +8,7 @@ mod base_data;
 mod cache;
 mod config;
 mod emit;
-pub mod graph;
+mod graph;
 mod merge;
 mod request;
 mod run_checks;
