@@ -237,13 +237,13 @@ fn drop_cross_file_noop_path(
 	report.generated_file_count = report.generated_file_count.saturating_sub(1);
 	report.cross_file_noop_skipped_file_count += 1;
 	report.handler_resolutions.push(HandlerResolutionRecord {
-        path: path.to_string(),
-        action: "cross_file_noop_skipped".to_string(),
-        source: None,
-        rationale: Some(format!(
-            "all merge keys are already defined identically in another kept file in the {family_id} namespace"
-        )),
-    });
+		path: path.to_string(),
+		action: "cross_file_noop_skipped".to_string(),
+		source: None,
+		rationale: Some(format!(
+			"all merge keys are already defined identically in another kept file in the {family_id} namespace"
+		)),
+	});
 	Ok(())
 }
 
