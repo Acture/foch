@@ -5,7 +5,7 @@ packages/vscode-foch/bin/*/foch_lsp
 packages/vscode-foch/bin/*/foch_lsp.exe
 packages/vscode-foch/*.vsix
 .direnv/
-output/
+/output/
 crates/foch-engine/src/base_data/eu4_data.bin
 test_merge
 local_merge/

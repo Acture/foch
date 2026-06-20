@@ -3,6 +3,7 @@ use super::{
 	default_mod_diff_cache_dir, default_mod_parse_cache_dir, default_modset_cache_dir,
 };
 use foch_language::analyzer::semantic_index::parse_cache;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -190,20 +191,24 @@ impl CacheLayerOps for ModsetCache {
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
 		let entries = ModsetCache::list_entries(self)?;
-		let mut keep = entries;
-		keep.sort_by(|left, right| {
-			right
-				.modified
-				.cmp(&left.modified)
-				.then_with(|| left.key.cmp(&right.key))
-		});
-		let mut kept_bytes = 0_u64;
+		let eviction_entries = entries
+			.iter()
+			.map(|entry| CacheLayerEntryInfo {
+				layer: CacheLayer::Modsets,
+				key: entry.key.clone(),
+				path: entry.tarball_path.clone(),
+				size_bytes: entry.size_bytes,
+				modified: entry.modified,
+			})
+			.collect::<Vec<_>>();
+		let evicted_keys = eviction_plan(eviction_entries, cap_bytes)
+			.into_iter()
+			.map(|entry| entry.key)
+			.collect::<HashSet<_>>();
 		let mut removed_entries = 0_usize;
 		let mut freed_bytes = 0_u64;
-		for entry in keep {
-			let fits = cap_bytes > 0 && kept_bytes.saturating_add(entry.size_bytes) <= cap_bytes;
-			if fits {
-				kept_bytes = kept_bytes.saturating_add(entry.size_bytes);
+		for entry in entries {
+			if !evicted_keys.contains(&entry.key) {
 				continue;
 			}
 			remove_if_exists(&entry.tarball_path)?;
@@ -244,7 +249,9 @@ impl CacheLayerOps for ParseCacheLayer {
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
-		Ok(parse_cache::cache_stats().total_bytes)
+		Ok(total_entry_bytes(&<Self as CacheLayerOps>::list_entries(
+			self,
+		)?))
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
@@ -254,7 +261,7 @@ impl CacheLayerOps for ParseCacheLayer {
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
 		let stats = parse_cache::gc_with_cap(cap_bytes);
 		Ok(EvictionStats {
-			removed_entries: stats.evicted as usize,
+			removed_entries: stats.evicted.min(usize::MAX as u64) as usize,
 			freed_bytes: stats.bytes_before.saturating_sub(stats.bytes_after),
 		})
 	}
@@ -330,26 +337,14 @@ fn purge_file_entries(
 }
 
 fn evict_file_entries(
-	mut entries: Vec<CacheLayerEntryInfo>,
+	entries: Vec<CacheLayerEntryInfo>,
 	cap_bytes: u64,
 ) -> Result<EvictionStats, CacheError> {
-	entries.sort_by(|left, right| {
-		right
-			.modified
-			.cmp(&left.modified)
-			.then_with(|| left.key.cmp(&right.key))
-			.then_with(|| left.path.cmp(&right.path))
-	});
-	let mut kept_bytes = 0_u64;
+	let entries = eviction_plan(entries, cap_bytes);
 	let mut removed_entries = 0_usize;
 	let mut freed_bytes = 0_u64;
 	let mut pruned_roots = Vec::new();
 	for entry in entries {
-		let fits = cap_bytes > 0 && kept_bytes.saturating_add(entry.size_bytes) <= cap_bytes;
-		if fits {
-			kept_bytes = kept_bytes.saturating_add(entry.size_bytes);
-			continue;
-		}
 		remove_if_exists(&entry.path)?;
 		if let Some(parent) = entry.path.parent() {
 			pruned_roots.push(parent.to_path_buf());
@@ -364,6 +359,30 @@ fn evict_file_entries(
 		removed_entries,
 		freed_bytes,
 	})
+}
+
+fn eviction_plan(
+	mut entries: Vec<CacheLayerEntryInfo>,
+	cap_bytes: u64,
+) -> Vec<CacheLayerEntryInfo> {
+	entries.sort_by(|left, right| {
+		right
+			.modified
+			.cmp(&left.modified)
+			.then_with(|| left.key.cmp(&right.key))
+			.then_with(|| left.path.cmp(&right.path))
+	});
+	let mut kept_bytes = 0_u64;
+	let mut evicted = Vec::new();
+	for entry in entries {
+		let fits = cap_bytes > 0 && kept_bytes.saturating_add(entry.size_bytes) <= cap_bytes;
+		if fits {
+			kept_bytes = kept_bytes.saturating_add(entry.size_bytes);
+			continue;
+		}
+		evicted.push(entry);
+	}
+	evicted
 }
 
 fn cutoff_for_days(days: u32) -> SystemTime {
@@ -415,5 +434,45 @@ mod tests {
 		for l in &layers {
 			let _ = l.total_bytes().unwrap_or(0);
 		}
+	}
+
+	#[test]
+	fn eviction_plan_uses_newest_first_byte_cap_policy() {
+		let entries = (0..4)
+			.map(|index| CacheLayerEntryInfo {
+				layer: CacheLayer::Mods,
+				key: format!("entry-{index}"),
+				path: PathBuf::from(format!("entry-{index}.rkyv")),
+				size_bytes: 10,
+				modified: UNIX_EPOCH + Duration::from_secs(index),
+			})
+			.collect::<Vec<_>>();
+
+		let evicted = eviction_plan(entries, 20);
+
+		assert_eq!(
+			evicted
+				.into_iter()
+				.map(|entry| entry.key)
+				.collect::<Vec<_>>(),
+			vec!["entry-1", "entry-0"]
+		);
+	}
+
+	#[test]
+	fn eviction_plan_with_zero_cap_evicts_every_entry() {
+		let entries = (0..2)
+			.map(|index| CacheLayerEntryInfo {
+				layer: CacheLayer::Parse,
+				key: format!("entry-{index}"),
+				path: PathBuf::from(format!("entry-{index}.json")),
+				size_bytes: 10,
+				modified: UNIX_EPOCH + Duration::from_secs(index),
+			})
+			.collect::<Vec<_>>();
+
+		let evicted = eviction_plan(entries, 0);
+
+		assert_eq!(evicted.len(), 2);
 	}
 }
