@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 
 use crate::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_content};
 
-use super::model::{CwtAlias, CwtEnum, CwtOption, CwtSchema, CwtScope, CwtSubtype, CwtType};
+use super::model::{
+	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtSchema, CwtScope, CwtSubtype, CwtType,
+};
 
 pub fn load_cwt_schema(content: &str) -> CwtSchema {
 	let parsed = parse_clausewitz_content(PathBuf::from("<in-memory>.cwt"), content);
@@ -47,6 +49,7 @@ fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 					"types" => schema.types.extend(read_types(value)),
 					"enums" => schema.enums.extend(read_enums(value)),
 					"scopes" => schema.scopes.extend(read_scopes(value)),
+					"links" => schema.links.extend(read_links(value)),
 					_ => {
 						if let Some(alias) =
 							read_alias_assignment(key, value, std::mem::take(&mut pending_options))
@@ -216,7 +219,9 @@ fn read_alias_assignment(
 	let mut scope = scope_values_from_options(&options);
 	let preceding_option_count = options.len();
 	options.extend(alias_body_options(value));
-	scope.extend(scope_values_from_options(&options[preceding_option_count..]));
+	scope.extend(scope_values_from_options(
+		&options[preceding_option_count..],
+	));
 
 	Some(CwtAlias {
 		category: category.to_string(),
@@ -290,6 +295,39 @@ fn read_scopes(value: &AstValue) -> Vec<CwtScope> {
 	}
 
 	scopes
+}
+
+fn read_links(value: &AstValue) -> Vec<CwtLink> {
+	let mut links = Vec::new();
+	let Some(items) = block_items(value) else {
+		return links;
+	};
+
+	for statement in items {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		let Some(link_items) = block_items(value) else {
+			continue;
+		};
+		let mut link = CwtLink {
+			name: key.clone(),
+			..Default::default()
+		};
+		for link_statement in link_items {
+			let AstStatement::Assignment { key, value, .. } = link_statement else {
+				continue;
+			};
+			match key.as_str() {
+				"input_scopes" => link.input_scopes.extend(value_texts(value)),
+				"output_scope" => link.output_scope = scalar_text(value),
+				_ => {}
+			}
+		}
+		links.push(link);
+	}
+
+	links
 }
 
 fn parse_cwt_option(text: &str) -> Option<CwtOption> {
