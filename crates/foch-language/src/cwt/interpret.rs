@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use crate::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_content};
 
 use super::model::{
-	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtSchema, CwtScope, CwtSubtype, CwtType,
+	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtRule, CwtRuleBody, CwtRuleBodyEntry, CwtSchema,
+	CwtScope, CwtSubtype, CwtType, CwtValueType, parse_bracket_key,
 };
 
 pub fn load_cwt_schema(content: &str) -> CwtSchema {
@@ -17,25 +18,10 @@ pub fn load_cwt_file(path: &Path) -> std::io::Result<CwtSchema> {
 	Ok(interpret_schema(&parsed.ast.statements))
 }
 
-pub fn parse_bracket_key(key: &str) -> Option<(&str, &str)> {
-	let open = key.find('[')?;
-	let close = key.rfind(']')?;
-	if close + 1 != key.len() {
-		return None;
-	}
-
-	let head = key[..open].trim();
-	let inner = key[open + 1..close].trim();
-	if head.is_empty() || inner.is_empty() {
-		return None;
-	}
-
-	Some((head, inner))
-}
-
 fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 	let mut schema = CwtSchema::default();
 	let mut pending_options = Vec::new();
+	let mut pending_rule_bodies = Vec::new();
 
 	for statement in statements {
 		match statement {
@@ -55,6 +41,11 @@ fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 							read_alias_assignment(key, value, std::mem::take(&mut pending_options))
 						{
 							schema.aliases.push(alias);
+						} else if let Some(rules) = read_rule_body(value) {
+							pending_rule_bodies.push(CwtRuleBodyEntry {
+								key: key.clone(),
+								rules,
+							});
 						}
 					}
 				}
@@ -64,7 +55,22 @@ fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 		}
 	}
 
+	attach_rule_bodies(&mut schema, pending_rule_bodies);
 	schema
+}
+
+fn attach_rule_bodies(schema: &mut CwtSchema, rule_bodies: Vec<CwtRuleBodyEntry>) {
+	for rule_body in rule_bodies {
+		if let Some(cwt_type) = schema
+			.types
+			.iter_mut()
+			.find(|cwt_type| cwt_type.name == rule_body.key)
+		{
+			cwt_type.rules.extend(rule_body.rules);
+		} else {
+			schema.rule_bodies.push(rule_body);
+		}
+	}
 }
 
 fn read_types(value: &AstValue) -> Vec<CwtType> {
@@ -328,6 +334,63 @@ fn read_links(value: &AstValue) -> Vec<CwtLink> {
 	}
 
 	links
+}
+
+fn read_rule_body(value: &AstValue) -> Option<Vec<CwtRule>> {
+	Some(read_rules(block_items(value)?))
+}
+
+fn read_rules(items: &[AstStatement]) -> Vec<CwtRule> {
+	let mut rules = Vec::new();
+	let mut pending_options = Vec::new();
+
+	for statement in items {
+		match statement {
+			AstStatement::Comment { text, .. } => {
+				if let Some(option) = parse_cwt_option(text) {
+					pending_options.push(option);
+				}
+			}
+			AstStatement::Assignment { key, value, .. } => {
+				let options = std::mem::take(&mut pending_options);
+				let cardinality = cardinality_from_options(&options);
+				let body = match value {
+					AstValue::Scalar { value, .. } => {
+						CwtRuleBody::Leaf(CwtValueType::from_token(&value.as_text()))
+					}
+					AstValue::Block { items, .. } => CwtRuleBody::Block(read_rules(items)),
+				};
+				rules.push(CwtRule {
+					key: key.clone(),
+					body,
+					cardinality,
+					options,
+				});
+			}
+			AstStatement::Item { value, .. } => {
+				let options = std::mem::take(&mut pending_options);
+				let Some(text) = scalar_text(value) else {
+					continue;
+				};
+				let cardinality = cardinality_from_options(&options);
+				rules.push(CwtRule {
+					key: text.clone(),
+					body: CwtRuleBody::Leaf(CwtValueType::from_token(&text)),
+					cardinality,
+					options,
+				});
+			}
+		}
+	}
+
+	rules
+}
+
+fn cardinality_from_options(options: &[CwtOption]) -> Option<String> {
+	options
+		.iter()
+		.find(|option| option.key == "cardinality")
+		.map(|option| option.value.clone())
 }
 
 fn parse_cwt_option(text: &str) -> Option<CwtOption> {
