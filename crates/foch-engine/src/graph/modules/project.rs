@@ -143,4 +143,22 @@ mod tests {
 		assert!(g.node_mods[&callee].contains("__base__"));
 		assert!(g.seeds.contains_key(&caller));
 	}
+
+	#[test]
+	fn run_module_report_end_to_end_from_index() {
+		let mut index = SemanticIndex::default();
+		index
+			.definitions
+			.push(def("a", "modA", "common/scripted_effects/f.txt", 1));
+		index
+			.definitions
+			.push(def("b", "modA", "common/scripted_effects/f.txt", 1));
+		index
+			.references
+			.push(reference("b", "modA", "common/scripted_effects/f.txt", 1));
+		let report = super::super::run_module_report(&index, 20);
+		assert!(report.node_count >= 2);
+		assert!(report.module_count >= 1);
+		assert!(report.mods.iter().any(|m| m.mod_id == "modA"));
+	}
 }
