@@ -165,6 +165,38 @@ types = {
 }
 
 #[test]
+fn captures_scalar_and_block_hash_hash_options() {
+	let schema = load_cwt_schema(
+		r#"
+types = {
+	type[event] = {
+		## scope = { country province }
+		picture = <event_picture>
+		## replace_scope = { this = country root = country }
+		subtype[country_event] = {
+		}
+	}
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.types[0].options,
+		vec![CwtOption {
+			key: "scope".to_string(),
+			value: "country province".to_string(),
+		}]
+	);
+	assert_eq!(
+		schema.types[0].subtypes[0].options,
+		vec![CwtOption {
+			key: "replace_scope".to_string(),
+			value: "this = country root = country".to_string(),
+		}]
+	);
+}
+
+#[test]
 fn promotes_type_key_filter_option_to_subtype_filter() {
 	let schema = load_cwt_schema(
 		r#"
