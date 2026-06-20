@@ -242,7 +242,7 @@ fn parse_cwt_option(text: &str) -> Option<CwtOption> {
 	let option_text = text.strip_prefix('#')?.trim();
 	let (key, value) = option_text.split_once('=')?;
 	let key = key.trim();
-	let value = value.trim();
+	let value = normalize_option_value(value.trim());
 	if key.is_empty() || value.is_empty() {
 		return None;
 	}
@@ -251,6 +251,14 @@ fn parse_cwt_option(text: &str) -> Option<CwtOption> {
 		key: key.to_string(),
 		value: value.to_string(),
 	})
+}
+
+fn normalize_option_value(value: &str) -> &str {
+	value
+		.strip_prefix('{')
+		.and_then(|value| value.strip_suffix('}'))
+		.map(str::trim)
+		.unwrap_or(value)
 }
 
 fn block_items(value: &AstValue) -> Option<&[AstStatement]> {
