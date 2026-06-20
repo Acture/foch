@@ -1,6 +1,7 @@
 use foch_language::cwt::{
-	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtRange, CwtRule, CwtRuleBody, CwtScope, CwtSubtype,
-	CwtType, CwtValueType, load_cwt_schema, parse_bracket_key,
+	CwtAlias, CwtComplexEnum, CwtEnum, CwtLink, CwtOption, CwtRange, CwtRule, CwtRuleBody,
+	CwtScope, CwtSingleAlias, CwtSubtype, CwtType, CwtValueSet, CwtValueType, load_cwt_schema,
+	parse_bracket_key,
 };
 
 #[test]
@@ -87,6 +88,152 @@ enums = {
 		vec![CwtEnum {
 			name: "power_categories".to_string(),
 			values: vec!["ADM".to_string(), "DIP".to_string(), "MIL".to_string()],
+		}]
+	);
+}
+
+#[test]
+fn loads_value_sets_from_values_block() {
+	let schema = load_cwt_schema(
+		r#"
+values = {
+	value[variable] = {
+		num_days
+		threat
+	}
+	value_set[cooldown_token] = {
+		parliament_debate
+	}
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.value_sets,
+		vec![
+			CwtValueSet {
+				name: "variable".to_string(),
+				values: vec!["num_days".to_string(), "threat".to_string()],
+			},
+			CwtValueSet {
+				name: "cooldown_token".to_string(),
+				values: vec!["parliament_debate".to_string()],
+			},
+		]
+	);
+}
+
+#[test]
+fn loads_top_level_value_set_definition() {
+	let schema = load_cwt_schema(
+		r#"
+value_set[scripted_token] = {
+	first
+	second
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.value_sets,
+		vec![CwtValueSet {
+			name: "scripted_token".to_string(),
+			values: vec!["first".to_string(), "second".to_string()],
+		}]
+	);
+}
+
+#[test]
+fn loads_top_level_single_alias_block() {
+	let schema = load_cwt_schema(
+		r#"
+single_alias[clause] = {
+	key = scalar
+	## cardinality = 0..inf
+	alias_name[trigger] = alias_match_left[trigger]
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.single_aliases,
+		vec![CwtSingleAlias {
+			name: "clause".to_string(),
+			rules: vec![
+				CwtRule {
+					key: "key".to_string(),
+					body: CwtRuleBody::Leaf(CwtValueType::Scalar),
+					cardinality: None,
+					options: Vec::new(),
+				},
+				CwtRule {
+					key: "alias_name[trigger]".to_string(),
+					body: CwtRuleBody::Leaf(CwtValueType::AliasMatchLeft("trigger".to_string())),
+					cardinality: Some("0..inf".to_string()),
+					options: vec![CwtOption {
+						key: "cardinality".to_string(),
+						value: "0..inf".to_string(),
+					}],
+				},
+			],
+		}]
+	);
+}
+
+#[test]
+fn loads_leaf_single_alias_as_empty_rule_set() {
+	let schema = load_cwt_schema(
+		r#"
+single_alias[array] = value[array]
+"#,
+	);
+
+	assert_eq!(
+		schema.single_aliases,
+		vec![CwtSingleAlias {
+			name: "array".to_string(),
+			rules: Vec::new(),
+		}]
+	);
+}
+
+#[test]
+fn loads_complex_enums_from_enums_block() {
+	let schema = load_cwt_schema(
+		r#"
+enums = {
+	complex_enum[building_tag] = {
+		path = "game/common/buildings"
+		name = {
+			name = scalar
+			enum_name
+		}
+		start_from_root = yes
+	}
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.complex_enums,
+		vec![CwtComplexEnum {
+			name: "building_tag".to_string(),
+			path: Some("game/common/buildings".to_string()),
+			start_from_root: true,
+			name_rules: vec![
+				CwtRule {
+					key: "name".to_string(),
+					body: CwtRuleBody::Leaf(CwtValueType::Scalar),
+					cardinality: None,
+					options: Vec::new(),
+				},
+				CwtRule {
+					key: "enum_name".to_string(),
+					body: CwtRuleBody::Leaf(CwtValueType::Literal("enum_name".to_string())),
+					cardinality: None,
+					options: Vec::new(),
+				},
+			],
 		}]
 	);
 }
@@ -321,6 +468,8 @@ fn ignores_unknown_and_malformed_constructs_without_losing_known_schema() {
 		r#"
 unknown = { definitely = ignored }
 alias[missing_separator] = yes
+single_alias[] = { key = scalar }
+value_set[] = { seed }
 types = {
 	type[event] = {
 		path = "game/events"
@@ -330,6 +479,8 @@ types = {
 }
 enums = {
 	enum[power_categories] = { ADM DIP MIL }
+	complex_enum[] = { path = "game/common" name = { enum_name } }
+	complex_enum[missing_name_block] = { path = "game/common" }
 }
 "#,
 	);
@@ -339,6 +490,9 @@ enums = {
 	assert_eq!(schema.types[0].path.as_deref(), Some("game/events"));
 	assert!(schema.types[0].subtypes.is_empty());
 	assert_eq!(schema.enums.len(), 1);
+	assert!(schema.value_sets.is_empty());
+	assert!(schema.single_aliases.is_empty());
+	assert!(schema.complex_enums.is_empty());
 	assert!(schema.aliases.is_empty());
 }
 
