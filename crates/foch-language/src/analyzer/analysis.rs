@@ -31,35 +31,153 @@ pub fn analyze_visibility_with_vanilla_index(
 	vanilla_index: Option<&VanillaSymbolIndex>,
 ) -> SemanticDiagnostics {
 	let mut diagnostics = SemanticDiagnostics::default();
+	for check in ANALYZER_CHECKS {
+		debug_assert!(!check.name.is_empty());
+		let output = (check.run)(index, vanilla_index);
+		diagnostics.strict.extend(output.strict);
+		diagnostics.advisory.extend(output.advisory);
+	}
 	diagnostics
-		.strict
-		.extend(check_duplicate_definitions(index));
-	diagnostics
-		.strict
-		.extend(check_unresolved_call_targets(index, vanilla_index));
-	let (invisible_alias_strict, invisible_alias_advisory) = check_invisible_scope_aliases(index);
-	diagnostics.strict.extend(invisible_alias_strict);
-	diagnostics.advisory.extend(invisible_alias_advisory);
-	diagnostics
-		.strict
-		.extend(check_missing_effect_parameters(index));
-	diagnostics.advisory.extend(check_unknown_scope_type(index));
-	diagnostics
-		.advisory
-		.extend(check_scope_type_mismatch(index));
-	diagnostics
-		.advisory
-		.extend(check_cross_mod_overlap_advisories(index));
-	diagnostics
-		.advisory
-		.extend(check_unresolved_flag_references(index));
-	diagnostics
-		.advisory
-		.extend(check_missing_localisation_keys(index));
-	diagnostics
-		.advisory
-		.extend(check_duplicate_localisation_keys(index));
-	diagnostics
+}
+
+type CheckRunner = fn(&SemanticIndex, Option<&VanillaSymbolIndex>) -> CheckOutput;
+
+struct AnalyzerCheck {
+	name: &'static str,
+	run: CheckRunner,
+}
+
+struct CheckOutput {
+	strict: Vec<Finding>,
+	advisory: Vec<Finding>,
+}
+
+const ANALYZER_CHECKS: &[AnalyzerCheck] = &[
+	AnalyzerCheck {
+		name: "duplicate_definitions",
+		run: run_duplicate_definitions_check,
+	},
+	AnalyzerCheck {
+		name: "unresolved_call_targets",
+		run: run_unresolved_call_targets_check,
+	},
+	AnalyzerCheck {
+		name: "invisible_scope_aliases",
+		run: run_invisible_scope_aliases_check,
+	},
+	AnalyzerCheck {
+		name: "missing_effect_parameters",
+		run: run_missing_effect_parameters_check,
+	},
+	AnalyzerCheck {
+		name: "unknown_scope_type",
+		run: run_unknown_scope_type_check,
+	},
+	AnalyzerCheck {
+		name: "scope_type_mismatch",
+		run: run_scope_type_mismatch_check,
+	},
+	AnalyzerCheck {
+		name: "cross_mod_overlap_advisories",
+		run: run_cross_mod_overlap_advisories_check,
+	},
+	AnalyzerCheck {
+		name: "unresolved_flag_references",
+		run: run_unresolved_flag_references_check,
+	},
+	AnalyzerCheck {
+		name: "missing_localisation_keys",
+		run: run_missing_localisation_keys_check,
+	},
+	AnalyzerCheck {
+		name: "duplicate_localisation_keys",
+		run: run_duplicate_localisation_keys_check,
+	},
+];
+
+fn strict_output(strict: Vec<Finding>) -> CheckOutput {
+	CheckOutput {
+		strict,
+		advisory: Vec::new(),
+	}
+}
+
+fn advisory_output(advisory: Vec<Finding>) -> CheckOutput {
+	CheckOutput {
+		strict: Vec::new(),
+		advisory,
+	}
+}
+
+fn run_duplicate_definitions_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	strict_output(check_duplicate_definitions(index))
+}
+
+fn run_unresolved_call_targets_check(
+	index: &SemanticIndex,
+	vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	strict_output(check_unresolved_call_targets(index, vanilla_index))
+}
+
+fn run_invisible_scope_aliases_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	let (strict, advisory) = check_invisible_scope_aliases(index);
+	CheckOutput { strict, advisory }
+}
+
+fn run_missing_effect_parameters_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	strict_output(check_missing_effect_parameters(index))
+}
+
+fn run_unknown_scope_type_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	advisory_output(check_unknown_scope_type(index))
+}
+
+fn run_scope_type_mismatch_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	advisory_output(check_scope_type_mismatch(index))
+}
+
+fn run_cross_mod_overlap_advisories_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	advisory_output(check_cross_mod_overlap_advisories(index))
+}
+
+fn run_unresolved_flag_references_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	advisory_output(check_unresolved_flag_references(index))
+}
+
+fn run_missing_localisation_keys_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	advisory_output(check_missing_localisation_keys(index))
+}
+
+fn run_duplicate_localisation_keys_check(
+	index: &SemanticIndex,
+	_vanilla_index: Option<&VanillaSymbolIndex>,
+) -> CheckOutput {
+	advisory_output(check_duplicate_localisation_keys(index))
 }
 
 fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
