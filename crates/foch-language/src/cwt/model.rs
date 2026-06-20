@@ -54,7 +54,7 @@ pub struct CwtAlias {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CwtSingleAlias {
 	pub name: String,
-	pub rules: Vec<CwtRule>,
+	pub body: CwtRuleBody,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

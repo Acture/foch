@@ -159,7 +159,7 @@ single_alias[clause] = {
 		schema.single_aliases,
 		vec![CwtSingleAlias {
 			name: "clause".to_string(),
-			rules: vec![
+			body: CwtRuleBody::Block(vec![
 				CwtRule {
 					key: "key".to_string(),
 					body: CwtRuleBody::Leaf(CwtValueType::Scalar),
@@ -175,13 +175,13 @@ single_alias[clause] = {
 						value: "0..inf".to_string(),
 					}],
 				},
-			],
+			]),
 		}]
 	);
 }
 
 #[test]
-fn loads_leaf_single_alias_as_empty_rule_set() {
+fn loads_leaf_single_alias_body() {
 	let schema = load_cwt_schema(
 		r#"
 single_alias[array] = value[array]
@@ -192,7 +192,7 @@ single_alias[array] = value[array]
 		schema.single_aliases,
 		vec![CwtSingleAlias {
 			name: "array".to_string(),
-			rules: Vec::new(),
+			body: CwtRuleBody::Leaf(CwtValueType::Value("array".to_string())),
 		}]
 	);
 }
@@ -234,6 +234,46 @@ enums = {
 					options: Vec::new(),
 				},
 			],
+		}]
+	);
+}
+
+#[test]
+fn loads_enum_and_complex_enum_from_same_enums_block() {
+	let schema = load_cwt_schema(
+		r#"
+enums = {
+	enum[power_categories] = { ADM DIP MIL }
+	complex_enum[graphical_cultures] = {
+		path = "game/common"
+		name = {
+			enum_name
+		}
+		start_from_root = yes
+	}
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.enums,
+		vec![CwtEnum {
+			name: "power_categories".to_string(),
+			values: vec!["ADM".to_string(), "DIP".to_string(), "MIL".to_string()],
+		}]
+	);
+	assert_eq!(
+		schema.complex_enums,
+		vec![CwtComplexEnum {
+			name: "graphical_cultures".to_string(),
+			path: Some("game/common".to_string()),
+			start_from_root: true,
+			name_rules: vec![CwtRule {
+				key: "enum_name".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Literal("enum_name".to_string())),
+				cardinality: None,
+				options: Vec::new(),
+			}],
 		}]
 	);
 }
