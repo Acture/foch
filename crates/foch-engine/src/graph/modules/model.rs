@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct SymbolNodeId(pub String);
 
 impl SymbolNodeId {
+	#[allow(dead_code)]
 	pub fn new(kind: &str, name: &str) -> Self {
 		SymbolNodeId(format!("{kind}:{name}"))
 	}
@@ -17,10 +18,13 @@ impl SymbolNodeId {
 pub struct SymbolGraph {
 	pub nodes: BTreeSet<SymbolNodeId>,
 	/// Directed reference edges (caller -> callee) with multiplicity weight.
+	#[allow(dead_code)]
 	pub edges: BTreeMap<(SymbolNodeId, SymbolNodeId), u32>,
 	/// Seed label per node (the content family of its defining file).
+	#[allow(dead_code)]
 	pub seeds: BTreeMap<SymbolNodeId, String>,
 	/// Which mod ids define or override each node (base game uses "__base__").
+	#[allow(dead_code)]
 	pub node_mods: BTreeMap<SymbolNodeId, BTreeSet<String>>,
 }
 
@@ -29,6 +33,7 @@ impl SymbolGraph {
 		self.nodes.insert(id.clone());
 	}
 
+	#[allow(dead_code)]
 	pub fn add_edge(&mut self, from: &SymbolNodeId, to: &SymbolNodeId, weight: u32) {
 		if from == to {
 			return;
@@ -38,11 +43,13 @@ impl SymbolGraph {
 		*self.edges.entry((from.clone(), to.clone())).or_insert(0) += weight;
 	}
 
+	#[allow(dead_code)]
 	pub fn set_seed(&mut self, id: &SymbolNodeId, label: &str) {
 		self.add_node(id);
 		self.seeds.insert(id.clone(), label.to_string());
 	}
 
+	#[allow(dead_code)]
 	pub fn add_mod(&mut self, id: &SymbolNodeId, mod_id: &str) {
 		self.add_node(id);
 		self.node_mods
@@ -52,6 +59,7 @@ impl SymbolGraph {
 	}
 
 	/// Collapse directed edges into a symmetric weighted adjacency map.
+	#[allow(dead_code)]
 	pub fn undirected_adjacency(&self) -> BTreeMap<SymbolNodeId, BTreeMap<SymbolNodeId, u64>> {
 		let mut adj: BTreeMap<SymbolNodeId, BTreeMap<SymbolNodeId, u64>> = BTreeMap::new();
 		for ((from, to), w) in &self.edges {
@@ -69,12 +77,14 @@ impl SymbolGraph {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+#[allow(dead_code)]
 pub struct ModulePartition {
 	/// Module label assigned to each node (deterministic).
 	pub module_of: BTreeMap<SymbolNodeId, String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[allow(dead_code)]
 pub struct ModSummary {
 	pub mod_id: String,
 	pub touched_nodes: usize,
@@ -84,6 +94,7 @@ pub struct ModSummary {
 }
 
 #[derive(Clone, Debug, Serialize)]
+#[allow(dead_code)]
 pub struct CollisionHotspot {
 	pub module: String,
 	pub collision_nodes: usize,
@@ -91,10 +102,37 @@ pub struct CollisionHotspot {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+#[allow(dead_code)]
 pub struct ModuleReport {
 	pub module_count: usize,
 	pub node_count: usize,
 	pub module_sizes: BTreeMap<String, usize>,
 	pub mods: Vec<ModSummary>,
 	pub collision_hotspots: Vec<CollisionHotspot>,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn symbol_graph_add_edge_is_undirected_weight_sum() {
+		let mut g = SymbolGraph::default();
+		let a = SymbolNodeId::new("scripted_effect", "add_happiness");
+		let b = SymbolNodeId::new("scripted_effect", "give_money");
+		g.add_edge(&a, &b, 2);
+		g.add_edge(&b, &a, 1);
+		let adj = g.undirected_adjacency();
+		assert_eq!(adj.get(&a).and_then(|m| m.get(&b)).copied(), Some(3));
+		assert_eq!(adj.get(&b).and_then(|m| m.get(&a)).copied(), Some(3));
+		assert!(g.nodes.contains(&a) && g.nodes.contains(&b));
+	}
+
+	#[test]
+	fn add_edge_ignores_self_loops() {
+		let mut g = SymbolGraph::default();
+		let a = SymbolNodeId::new("k", "a");
+		g.add_edge(&a, &a, 5);
+		assert!(g.edges.is_empty());
+	}
 }
