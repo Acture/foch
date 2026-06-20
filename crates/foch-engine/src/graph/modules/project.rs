@@ -30,7 +30,16 @@ fn strip_ext(value: &str) -> &str {
 pub fn project_symbol_graph(index: &SemanticIndex) -> SymbolGraph {
 	let mut graph = SymbolGraph::default();
 
-	let mut defs_by_path: BTreeMap<String, Vec<&SymbolDefinition>> = BTreeMap::new();
+	let mut scope_parent: BTreeMap<usize, Option<usize>> = BTreeMap::new();
+	for scope in &index.scopes {
+		scope_parent.insert(scope.id, scope.parent);
+	}
+
+	let mut scope_to_defs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+	for (i, def) in index.definitions.iter().enumerate() {
+		scope_to_defs.entry(def.scope_id).or_default().push(i);
+	}
+
 	for def in &index.definitions {
 		let id = node_id(def.kind, &def.name);
 		graph.add_node(&id);
@@ -41,24 +50,18 @@ pub fn project_symbol_graph(index: &SemanticIndex) -> SymbolGraph {
 			def.mod_id.as_str()
 		};
 		graph.add_mod(&id, mod_id);
-		defs_by_path
-			.entry(def.path.to_string_lossy().to_string())
-			.or_default()
-			.push(def);
 	}
 
 	for reference in &index.references {
-		let path_key = reference.path.to_string_lossy().to_string();
-		let Some(candidates) = defs_by_path.get(&path_key) else {
+		let Some(enclosing_idx) = nearest_enclosing_def(
+			reference.scope_id,
+			&scope_parent,
+			&scope_to_defs,
+			&index.definitions,
+		) else {
 			continue;
 		};
-		let enclosing = candidates
-			.iter()
-			.find(|d| d.scope_id == reference.scope_id)
-			.or_else(|| candidates.iter().min_by(|a, b| a.name.cmp(&b.name)));
-		let Some(enclosing) = enclosing else {
-			continue;
-		};
+		let enclosing = &index.definitions[enclosing_idx];
 		let from = node_id(enclosing.kind, &enclosing.name);
 		let to = node_id(reference.kind, &reference.name);
 		graph.add_edge(&from, &to, 1);
@@ -67,12 +70,37 @@ pub fn project_symbol_graph(index: &SemanticIndex) -> SymbolGraph {
 	graph
 }
 
+/// Walk up the scope parent chain from `scope_id` to the nearest scope that
+/// owns a definition; return that definition's index. Deterministic: among
+/// defs sharing one scope, pick the smallest by name. Returns None if the
+/// chain reaches the root without an owning definition.
+fn nearest_enclosing_def(
+	mut scope_id: usize,
+	scope_parent: &BTreeMap<usize, Option<usize>>,
+	scope_to_defs: &BTreeMap<usize, Vec<usize>>,
+	definitions: &[SymbolDefinition],
+) -> Option<usize> {
+	loop {
+		if let Some(defs) = scope_to_defs.get(&scope_id) {
+			return defs
+				.iter()
+				.copied()
+				.min_by(|&a, &b| definitions[a].name.cmp(&definitions[b].name));
+		}
+		match scope_parent.get(&scope_id).copied().flatten() {
+			Some(parent) => scope_id = parent,
+			None => return None,
+		}
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::super::model::SymbolNodeId;
 	use super::*;
 	use foch_core::model::{
-		ScopeType, SemanticIndex, SymbolDefinition, SymbolKind, SymbolReference,
+		ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
+		SymbolReference,
 	};
 	use std::path::PathBuf;
 
@@ -114,6 +142,20 @@ mod tests {
 		}
 	}
 
+	fn scope(id: usize, parent: Option<usize>, path: &str) -> ScopeNode {
+		ScopeNode {
+			id,
+			kind: ScopeKind::Block,
+			parent,
+			this_type: ScopeType::Unknown,
+			aliases: Default::default(),
+			mod_id: String::new(),
+			path: PathBuf::from(path),
+			span: SourceSpan { line: 1, column: 1 },
+			key: String::new(),
+		}
+	}
+
 	#[test]
 	fn projects_definitions_and_reference_edges() {
 		let mut index = SemanticIndex::default();
@@ -142,6 +184,59 @@ mod tests {
 		assert!(g.node_mods[&caller].contains("modA"));
 		assert!(g.node_mods[&callee].contains("__base__"));
 		assert!(g.seeds.contains_key(&caller));
+	}
+
+	#[test]
+	fn attributes_nested_reference_to_enclosing_definition() {
+		let path = "common/scripted_effects/f1.txt";
+		let mut index = SemanticIndex::default();
+		index.definitions.push(def("caller", "modA", path, 5));
+		index.definitions.push(def("aaa_other", "modA", path, 3));
+		index.scopes.push(scope(5, None, path));
+		index.scopes.push(scope(7, Some(5), path));
+		index.references.push(reference("callee", "modA", path, 7));
+
+		let g = project_symbol_graph(&index);
+		let kind = SymbolKind::ScriptedEffect.as_str();
+		let caller = SymbolNodeId::new(kind, "caller");
+		let other = SymbolNodeId::new(kind, "aaa_other");
+		let callee = SymbolNodeId::new(kind, "callee");
+		assert_eq!(g.edges.get(&(caller, callee.clone())).copied(), Some(1));
+		assert!(!g.edges.contains_key(&(other, callee)));
+	}
+
+	#[test]
+	fn drops_reference_with_no_enclosing_definition() {
+		let path = "common/scripted_effects/f1.txt";
+		let mut index = SemanticIndex::default();
+		index.definitions.push(def("caller", "modA", path, 5));
+		index.scopes.push(scope(1, None, path));
+		index.scopes.push(scope(2, Some(1), path));
+		index.references.push(reference("callee", "modA", path, 2));
+
+		let g = project_symbol_graph(&index);
+		assert!(g.edges.is_empty());
+	}
+
+	#[test]
+	fn seed_for_path_value() {
+		let mut index = SemanticIndex::default();
+		index
+			.definitions
+			.push(def("religion_def", "modA", "common/religions/x.txt", 1));
+		index
+			.definitions
+			.push(def("event_def", "modA", "events/y.txt", 2));
+
+		let g = project_symbol_graph(&index);
+		let kind = SymbolKind::ScriptedEffect.as_str();
+		let religion = SymbolNodeId::new(kind, "religion_def");
+		let event = SymbolNodeId::new(kind, "event_def");
+		assert_eq!(
+			g.seeds.get(&religion).map(String::as_str),
+			Some("common/religions")
+		);
+		assert_eq!(g.seeds.get(&event).map(String::as_str), Some("events"));
 	}
 
 	#[test]
