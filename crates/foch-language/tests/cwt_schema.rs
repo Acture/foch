@@ -106,6 +106,56 @@ alias[trigger:add_happiness] = {
 		vec![CwtAlias {
 			category: "trigger".to_string(),
 			name: "add_happiness".to_string(),
+			scope: vec!["country".to_string()],
+			options: vec![CwtOption {
+				key: "scope".to_string(),
+				value: "country".to_string(),
+			}],
+		}]
+	);
+}
+
+#[test]
+fn captures_alias_options_and_scope_from_comments_and_body() {
+	let schema = load_cwt_schema(
+		r#"
+## scope = { country province }
+## push_scope = country
+alias[effect:enum[country_tags]] = {
+	scope = state
+	push_scope = province
+}
+"#,
+	);
+
+	assert_eq!(
+		schema.aliases,
+		vec![CwtAlias {
+			category: "effect".to_string(),
+			name: "enum[country_tags]".to_string(),
+			scope: vec![
+				"country".to_string(),
+				"province".to_string(),
+				"state".to_string()
+			],
+			options: vec![
+				CwtOption {
+					key: "scope".to_string(),
+					value: "country province".to_string(),
+				},
+				CwtOption {
+					key: "push_scope".to_string(),
+					value: "country".to_string(),
+				},
+				CwtOption {
+					key: "scope".to_string(),
+					value: "state".to_string(),
+				},
+				CwtOption {
+					key: "push_scope".to_string(),
+					value: "province".to_string(),
+				}
+			],
 		}]
 	);
 }

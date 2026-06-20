@@ -33,21 +33,31 @@ pub fn parse_bracket_key(key: &str) -> Option<(&str, &str)> {
 
 fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 	let mut schema = CwtSchema::default();
+	let mut pending_options = Vec::new();
 
 	for statement in statements {
-		let AstStatement::Assignment { key, value, .. } = statement else {
-			continue;
-		};
-
-		match key.as_str() {
-			"types" => schema.types.extend(read_types(value)),
-			"enums" => schema.enums.extend(read_enums(value)),
-			"scopes" => schema.scopes.extend(read_scopes(value)),
-			_ => {
-				if let Some(alias) = read_alias_assignment(key) {
-					schema.aliases.push(alias);
+		match statement {
+			AstStatement::Comment { text, .. } => {
+				if let Some(option) = parse_cwt_option(text) {
+					pending_options.push(option);
 				}
 			}
+			AstStatement::Assignment { key, value, .. } => {
+				match key.as_str() {
+					"types" => schema.types.extend(read_types(value)),
+					"enums" => schema.enums.extend(read_enums(value)),
+					"scopes" => schema.scopes.extend(read_scopes(value)),
+					_ => {
+						if let Some(alias) =
+							read_alias_assignment(key, value, std::mem::take(&mut pending_options))
+						{
+							schema.aliases.push(alias);
+						}
+					}
+				}
+				pending_options.clear();
+			}
+			AstStatement::Item { .. } => pending_options.clear(),
 		}
 	}
 
@@ -188,7 +198,11 @@ fn read_enums(value: &AstValue) -> Vec<CwtEnum> {
 	enums
 }
 
-fn read_alias_assignment(key: &str) -> Option<CwtAlias> {
+fn read_alias_assignment(
+	key: &str,
+	value: &AstValue,
+	mut options: Vec<CwtOption>,
+) -> Option<CwtAlias> {
 	let ("alias", inner) = parse_bracket_key(key)? else {
 		return None;
 	};
@@ -199,10 +213,51 @@ fn read_alias_assignment(key: &str) -> Option<CwtAlias> {
 		return None;
 	}
 
+	let mut scope = scope_values_from_options(&options);
+	let preceding_option_count = options.len();
+	options.extend(alias_body_options(value));
+	scope.extend(scope_values_from_options(&options[preceding_option_count..]));
+
 	Some(CwtAlias {
 		category: category.to_string(),
 		name: name.to_string(),
+		scope,
+		options,
 	})
+}
+
+fn alias_body_options(value: &AstValue) -> Vec<CwtOption> {
+	let mut options = Vec::new();
+	let Some(items) = block_items(value) else {
+		return options;
+	};
+
+	for statement in items {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		if !matches!(key.as_str(), "scope" | "push_scope" | "replace_scope") {
+			continue;
+		}
+		let value = value_texts(value).join(" ");
+		if value.is_empty() {
+			continue;
+		}
+		options.push(CwtOption {
+			key: key.clone(),
+			value,
+		});
+	}
+
+	options
+}
+
+fn scope_values_from_options(options: &[CwtOption]) -> Vec<String> {
+	options
+		.iter()
+		.filter(|option| option.key == "scope")
+		.flat_map(|option| option.value.split_whitespace().map(str::to_string))
+		.collect()
 }
 
 fn read_scopes(value: &AstValue) -> Vec<CwtScope> {
