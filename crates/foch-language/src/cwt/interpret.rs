@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use crate::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_content};
 
 use super::model::{
-	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtRule, CwtRuleBody, CwtRuleBodyEntry, CwtSchema,
-	CwtScope, CwtSubtype, CwtType, CwtValueType, parse_bracket_key,
+	CwtAlias, CwtComplexEnum, CwtEnum, CwtLink, CwtOption, CwtRule, CwtRuleBody, CwtRuleBodyEntry,
+	CwtSchema, CwtScope, CwtSingleAlias, CwtSubtype, CwtType, CwtValueSet, CwtValueType,
+	parse_bracket_key,
 };
 
 pub fn load_cwt_schema(content: &str) -> CwtSchema {
@@ -33,7 +34,11 @@ fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 			AstStatement::Assignment { key, value, .. } => {
 				match key.as_str() {
 					"types" => schema.types.extend(read_types(value)),
-					"enums" => schema.enums.extend(read_enums(value)),
+					"enums" => {
+						schema.enums.extend(read_enums(value));
+						schema.complex_enums.extend(read_complex_enums(value));
+					}
+					"values" => schema.value_sets.extend(read_value_sets(value)),
 					"scopes" => schema.scopes.extend(read_scopes(value)),
 					"links" => schema.links.extend(read_links(value)),
 					_ => {
@@ -41,6 +46,11 @@ fn interpret_schema(statements: &[AstStatement]) -> CwtSchema {
 							read_alias_assignment(key, value, std::mem::take(&mut pending_options))
 						{
 							schema.aliases.push(alias);
+						} else if let Some(single_alias) = read_single_alias_assignment(key, value)
+						{
+							schema.single_aliases.push(single_alias);
+						} else if let Some(value_set) = read_value_set_assignment(key, value) {
+							schema.value_sets.push(value_set);
 						} else if let Some(rules) = read_rule_body(value) {
 							pending_rule_bodies.push(CwtRuleBodyEntry {
 								key: key.clone(),
@@ -207,6 +217,87 @@ fn read_enums(value: &AstValue) -> Vec<CwtEnum> {
 	enums
 }
 
+fn read_complex_enums(value: &AstValue) -> Vec<CwtComplexEnum> {
+	let mut complex_enums = Vec::new();
+	let Some(items) = block_items(value) else {
+		return complex_enums;
+	};
+
+	for statement in items {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		let Some(("complex_enum", name)) = parse_bracket_key(key) else {
+			continue;
+		};
+		let Some(complex_enum) = read_complex_enum(name, value) else {
+			continue;
+		};
+		complex_enums.push(complex_enum);
+	}
+
+	complex_enums
+}
+
+fn read_complex_enum(name: &str, value: &AstValue) -> Option<CwtComplexEnum> {
+	let items = block_items(value)?;
+	let name_rules = items.iter().find_map(|statement| match statement {
+		AstStatement::Assignment { key, value, .. } if key == "name" => {
+			Some(read_rules(block_items(value)?))
+		}
+		_ => None,
+	})?;
+
+	let mut complex_enum = CwtComplexEnum {
+		name: name.to_string(),
+		name_rules,
+		..Default::default()
+	};
+
+	for statement in items {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		match key.as_str() {
+			"path" => complex_enum.path = scalar_text(value),
+			"start_from_root" => complex_enum.start_from_root = is_yes(value),
+			_ => {}
+		}
+	}
+
+	Some(complex_enum)
+}
+
+fn read_value_sets(value: &AstValue) -> Vec<CwtValueSet> {
+	let mut value_sets = Vec::new();
+	let Some(items) = block_items(value) else {
+		return value_sets;
+	};
+
+	for statement in items {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		if let Some(value_set) = read_value_set_assignment(key, value) {
+			value_sets.push(value_set);
+		}
+	}
+
+	value_sets
+}
+
+fn read_value_set_assignment(key: &str, value: &AstValue) -> Option<CwtValueSet> {
+	let (head, name) = parse_bracket_key(key)?;
+	if !matches!(head, "value" | "value_set") {
+		return None;
+	}
+
+	Some(CwtValueSet {
+		name: name.to_string(),
+		values: value_texts(value),
+	})
+}
+
 fn read_alias_assignment(
 	key: &str,
 	value: &AstValue,
@@ -234,6 +325,18 @@ fn read_alias_assignment(
 		name: name.to_string(),
 		scope,
 		options,
+	})
+}
+
+fn read_single_alias_assignment(key: &str, value: &AstValue) -> Option<CwtSingleAlias> {
+	let ("single_alias", name) = parse_bracket_key(key)? else {
+		return None;
+	};
+	let rules = block_items(value).map(read_rules).unwrap_or_default();
+
+	Some(CwtSingleAlias {
+		name: name.to_string(),
+		rules,
 	})
 }
 

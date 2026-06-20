@@ -2,7 +2,10 @@
 pub struct CwtSchema {
 	pub types: Vec<CwtType>,
 	pub enums: Vec<CwtEnum>,
+	pub value_sets: Vec<CwtValueSet>,
 	pub aliases: Vec<CwtAlias>,
+	pub single_aliases: Vec<CwtSingleAlias>,
+	pub complex_enums: Vec<CwtComplexEnum>,
 	pub scopes: Vec<CwtScope>,
 	pub links: Vec<CwtLink>,
 	pub rule_bodies: Vec<CwtRuleBodyEntry>,
@@ -35,11 +38,31 @@ pub struct CwtEnum {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+pub struct CwtValueSet {
+	pub name: String,
+	pub values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CwtAlias {
 	pub category: String,
 	pub name: String,
 	pub scope: Vec<String>,
 	pub options: Vec<CwtOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CwtSingleAlias {
+	pub name: String,
+	pub rules: Vec<CwtRule>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CwtComplexEnum {
+	pub name: String,
+	pub path: Option<String>,
+	pub start_from_root: bool,
+	pub name_rules: Vec<CwtRule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
