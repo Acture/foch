@@ -2,13 +2,11 @@
 
 mod cross_file_dedup;
 mod io;
+mod patch_structural;
+mod per_entry_noop;
 mod stale_detect;
 
-use super::super::conflict_handler::{
-	ConflictHandler, DeferHandler, DepImpliesResolutionHandler, PriorityBoostResolutionHandler,
-	PromptOutcomeKind, prompt_survivors_and_persist,
-};
-use super::super::conflict_view::build_conflict_view;
+use super::super::conflict_handler::ConflictHandler;
 use super::super::dag::{
 	DagDiagnostic, DagDiagnosticKind, IgnoreReplacePath, ModDag, ModId, build_mod_dag,
 };
@@ -17,42 +15,31 @@ use super::super::error::MergeError;
 use super::super::namespace::{
 	FamilyKeyIndex, build_family_key_index, detect_key_conflicts, group_by_family,
 };
-use super::super::patch_deps::{DagPatchRequest, compute_dag_patches_with_handler};
-use super::super::patch_merge::{AttributedPatch, PatchAddress, PatchConflict, PatchResolution};
 use super::super::plan::build_merge_plan_from_workspace;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
-use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
+use crate::emit::EmitOptions;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
-use cross_file_dedup::{
-	container_child_field_value_key, prune_cross_file_noop_duplicates, scalar_assignment_value,
-};
-use foch_core::config::{
-	AppliedDepOverride, DepOverride, FochConfig, ResolutionMap, compute_conflict_id,
-};
+use cross_file_dedup::prune_cross_file_noop_duplicates;
+use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionMap};
 use foch_core::model::{
 	CheckContext, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
 	MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportConflictContributor, MergeReportConflictResolution, MergeReportStatus,
-	SemanticIndex, StaleVanillaTargetDescriptor,
+	MergeReportConflictResolution, MergeReportStatus, SemanticIndex, StaleVanillaTargetDescriptor,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
-use foch_language::analyzer::semantic_index::is_decision_container_key;
 #[cfg(test)]
 use io::PatchOutputMaterialization;
 use io::{
 	copy_winner_file, is_text_placeholder_path, write_conflict_placeholder,
 	write_generated_descriptor, write_metadata_only, write_patch_merge_output,
 };
-use stale_detect::{
-	apply_dep_misuse_remove_counts, collect_dep_misuse_remove_counts,
-	collect_stale_vanilla_targets, parse_vanilla_for_stale_detection, vanilla_snippet_for_address,
-};
+use patch_structural::patch_based_structural_merge;
+use stale_detect::apply_dep_misuse_remove_counts;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
@@ -878,242 +865,6 @@ impl From<MergeError> for PatchBasedMergeFailure {
 	}
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct PerEntryNoopLookupKey {
-	path: Vec<String>,
-	key: String,
-}
-
-fn drop_per_entry_noop_duplicates(
-	merged_statements: Vec<AstStatement>,
-	vanilla_statements: &[AstStatement],
-	descriptor: &ContentFamilyDescriptor,
-) -> (Vec<AstStatement>, usize) {
-	if !descriptor.capabilities.dedup_policy.per_entry_safe() {
-		return (merged_statements, 0);
-	}
-	let Some(merge_key_source) = descriptor.merge_key_source else {
-		return (merged_statements, 0);
-	};
-	if matches!(merge_key_source, MergeKeySource::LeafPath) {
-		return (merged_statements, 0);
-	}
-
-	let vanilla_lookup = build_per_entry_noop_lookup(vanilla_statements, merge_key_source);
-	if vanilla_lookup.is_empty() {
-		return (merged_statements, 0);
-	}
-
-	filter_per_entry_noop_statements(merged_statements, merge_key_source, &vanilla_lookup)
-}
-
-fn build_per_entry_noop_lookup(
-	statements: &[AstStatement],
-	merge_key_source: MergeKeySource,
-) -> HashMap<PerEntryNoopLookupKey, Vec<AstStatement>> {
-	let mut lookup: HashMap<PerEntryNoopLookupKey, Vec<AstStatement>> = HashMap::new();
-	for statement in statements {
-		if let Some(key) = per_entry_noop_top_level_key(statement, merge_key_source) {
-			lookup.entry(key).or_default().push(statement.clone());
-		}
-		for (key, child) in per_entry_noop_child_entries(statement, merge_key_source) {
-			lookup.entry(key).or_default().push(child.clone());
-		}
-	}
-	lookup
-}
-
-fn filter_per_entry_noop_statements(
-	statements: Vec<AstStatement>,
-	merge_key_source: MergeKeySource,
-	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
-) -> (Vec<AstStatement>, usize) {
-	let mut filtered = Vec::with_capacity(statements.len());
-	let mut dropped = 0usize;
-	for statement in statements {
-		if let Some(key) = per_entry_noop_top_level_key(&statement, merge_key_source)
-			&& per_entry_noop_matches_vanilla(&key, &statement, vanilla_lookup)
-		{
-			dropped += 1;
-			continue;
-		}
-
-		let (statement, child_dropped) =
-			filter_per_entry_noop_child_statements(statement, merge_key_source, vanilla_lookup);
-		dropped += child_dropped;
-		filtered.push(statement);
-	}
-	(filtered, dropped)
-}
-
-fn filter_per_entry_noop_child_statements(
-	statement: AstStatement,
-	merge_key_source: MergeKeySource,
-	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
-) -> (AstStatement, usize) {
-	match statement {
-		AstStatement::Assignment {
-			key,
-			key_span,
-			value: AstValue::Block {
-				items,
-				span: value_span,
-			},
-			span,
-		} if per_entry_noop_container_is_filterable(&key, merge_key_source) => {
-			let mut filtered_items = Vec::with_capacity(items.len());
-			let mut dropped = 0usize;
-			for item in items {
-				if let Some(lookup_key) = per_entry_noop_child_key(&key, &item, merge_key_source)
-					&& per_entry_noop_matches_vanilla(&lookup_key, &item, vanilla_lookup)
-				{
-					dropped += 1;
-					continue;
-				}
-				filtered_items.push(item);
-			}
-			(
-				AstStatement::Assignment {
-					key,
-					key_span,
-					value: AstValue::Block {
-						items: filtered_items,
-						span: value_span,
-					},
-					span,
-				},
-				dropped,
-			)
-		}
-		other => (other, 0),
-	}
-}
-
-fn per_entry_noop_matches_vanilla(
-	key: &PerEntryNoopLookupKey,
-	statement: &AstStatement,
-	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
-) -> bool {
-	vanilla_lookup.get(key).is_some_and(|vanilla_entries| {
-		vanilla_entries.iter().any(|vanilla| {
-			super::super::patch::ast_statements_semantically_equal(vanilla, statement)
-		})
-	})
-}
-
-fn per_entry_noop_top_level_key(
-	statement: &AstStatement,
-	merge_key_source: MergeKeySource,
-) -> Option<PerEntryNoopLookupKey> {
-	match merge_key_source {
-		MergeKeySource::AssignmentKey => match statement {
-			AstStatement::Assignment { key, .. } => Some(PerEntryNoopLookupKey {
-				path: Vec::new(),
-				key: key.clone(),
-			}),
-			_ => None,
-		},
-		MergeKeySource::FieldValue(field) => {
-			let AstStatement::Assignment {
-				value: AstValue::Block { items, .. },
-				..
-			} = statement
-			else {
-				return None;
-			};
-			scalar_assignment_value(items, field).map(|key| PerEntryNoopLookupKey {
-				path: Vec::new(),
-				key,
-			})
-		}
-		MergeKeySource::ContainerChildFieldValue { container, .. } => {
-			let AstStatement::Assignment { key, .. } = statement else {
-				return None;
-			};
-			(key != container).then(|| PerEntryNoopLookupKey {
-				path: Vec::new(),
-				key: key.clone(),
-			})
-		}
-		MergeKeySource::ContainerChildKey | MergeKeySource::LeafPath => None,
-	}
-}
-
-fn per_entry_noop_child_entries(
-	statement: &AstStatement,
-	merge_key_source: MergeKeySource,
-) -> Vec<(PerEntryNoopLookupKey, &AstStatement)> {
-	let AstStatement::Assignment {
-		key,
-		value: AstValue::Block { items, .. },
-		..
-	} = statement
-	else {
-		return Vec::new();
-	};
-	if !per_entry_noop_container_is_filterable(key, merge_key_source) {
-		return Vec::new();
-	}
-	items
-		.iter()
-		.filter_map(|item| {
-			per_entry_noop_child_key(key, item, merge_key_source)
-				.map(|lookup_key| (lookup_key, item))
-		})
-		.collect()
-}
-
-fn per_entry_noop_container_is_filterable(
-	container: &str,
-	merge_key_source: MergeKeySource,
-) -> bool {
-	match merge_key_source {
-		MergeKeySource::ContainerChildKey => is_decision_container_key(container),
-		MergeKeySource::ContainerChildFieldValue {
-			container: expected,
-			..
-		} => container == expected,
-		_ => false,
-	}
-}
-
-fn per_entry_noop_child_key(
-	container: &str,
-	child: &AstStatement,
-	merge_key_source: MergeKeySource,
-) -> Option<PerEntryNoopLookupKey> {
-	match merge_key_source {
-		MergeKeySource::ContainerChildKey => {
-			if !is_decision_container_key(container) {
-				return None;
-			}
-			let AstStatement::Assignment { key, .. } = child else {
-				return None;
-			};
-			Some(PerEntryNoopLookupKey {
-				path: vec![container.to_string()],
-				key: key.clone(),
-			})
-		}
-		MergeKeySource::ContainerChildFieldValue {
-			container: expected,
-			child_key_field,
-			child_types,
-		} => {
-			if container != expected {
-				return None;
-			}
-			container_child_field_value_key(child, child_key_field, child_types).map(|key| {
-				PerEntryNoopLookupKey {
-					path: vec![container.to_string()],
-					key,
-				}
-			})
-		}
-		_ => None,
-	}
-}
-
 #[derive(Clone, Debug)]
 struct DepMisuseRemoveCount {
 	mod_id: String,
@@ -1134,268 +885,6 @@ struct PatchBasedMergeContext<'a> {
 	mod_display_names: &'a HashMap<String, String>,
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
-}
-
-fn leaf_conflicts_for_unresolved(
-	target_path: &str,
-	conflicts: &[PatchResolution],
-	mod_versions: &HashMap<String, String>,
-) -> Vec<LeafConflictDetail> {
-	conflicts
-		.iter()
-		.filter_map(|resolution| match resolution {
-			PatchResolution::Conflict {
-				address, patches, ..
-			} => {
-				let address_path = address.path.join("/");
-				Some(LeafConflictDetail {
-					address_path: address_path.clone(),
-					address_key: address.key.clone(),
-					conflict_id: compute_conflict_id(
-						Path::new(target_path),
-						&address_path,
-						&address.key,
-					),
-					contributors: leaf_conflict_contributors(patches, mod_versions),
-				})
-			}
-			_ => None,
-		})
-		.collect()
-}
-
-fn leaf_conflict_contributors(
-	patches: &[AttributedPatch],
-	mod_versions: &HashMap<String, String>,
-) -> Vec<MergeReportConflictContributor> {
-	let mut contributors = patches
-		.iter()
-		.map(|patch| MergeReportConflictContributor {
-			mod_id: patch.mod_id.clone(),
-			mod_version: mod_versions
-				.get(&patch.mod_id)
-				.cloned()
-				.unwrap_or_else(|| "unknown".to_string()),
-			precedence: patch.precedence,
-		})
-		.collect::<Vec<_>>();
-	contributors.sort_by(|left, right| {
-		left.precedence
-			.cmp(&right.precedence)
-			.then_with(|| left.mod_id.cmp(&right.mod_id))
-	});
-	contributors
-		.dedup_by(|left, right| left.mod_id == right.mod_id && left.precedence == right.precedence);
-	contributors
-}
-
-/// Patch-based structural merge: walk the dependency DAG level by level, diff
-/// every mod in a level against the same running base, sibling-merge that
-/// level's patches, then apply the resolved level to advance the running state.
-fn patch_based_structural_merge(
-	target_path: &str,
-	contributors: &[ResolvedFileContributor],
-	context: PatchBasedMergeContext<'_>,
-	mut interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
-	interactive_config_path: Option<&Path>,
-) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
-	// Hold an owned, mutable resolution map so that any post-pass interactive
-	// resolutions can be folded back in before we re-run the merge engine
-	// below. The merge engine itself never invokes interactive prompts — every
-	// surviving conflict that reaches the user has already been pruned by the
-	// downstream-override post-pass inside `compute_dag_patches_with_handler`.
-	let mut effective_map = context.resolution_map.clone();
-	let mut dag_patches =
-		run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
-	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
-
-	if !dag_patches.merge_result.conflicts.is_empty()
-		&& let (Some(handler), Some(config_path)) =
-			(interactive_handler.as_mut(), interactive_config_path)
-	{
-		let survivors: Vec<(PatchAddress, PatchConflict)> = dag_patches
-			.merge_result
-			.conflicts
-			.iter()
-			.filter_map(|resolution| match resolution {
-				PatchResolution::Conflict {
-					address,
-					patches,
-					reason,
-				} => Some((
-					address.clone(),
-					PatchConflict {
-						patches: patches.clone(),
-						reason: reason.clone(),
-					},
-				)),
-				_ => None,
-			})
-			.collect();
-		if !survivors.is_empty() {
-			let vanilla_lookup = |address: &PatchAddress| -> Option<String> {
-				vanilla_snippet_for_address(vanilla.as_ref(), address, context.emit_options)
-			};
-			let survivor_views = survivors
-				.iter()
-				.map(|(address, conflict)| {
-					let address_path = address.path.join("/");
-					let conflict_id =
-						compute_conflict_id(Path::new(target_path), &address_path, &address.key);
-					let view = build_conflict_view(
-						Path::new(target_path),
-						address,
-						conflict,
-						conflict_id,
-						context.mod_display_names,
-						vanilla_lookup(address),
-						context.emit_options,
-					)?;
-					Ok((address.clone(), view))
-				})
-				.collect::<Result<Vec<_>, MergeError>>()?;
-			let prompt = prompt_survivors_and_persist(
-				Path::new(target_path),
-				&survivor_views,
-				&mut **handler,
-				config_path,
-			);
-			let mut new_picks = 0usize;
-			for outcome in prompt.outcomes {
-				if let PromptOutcomeKind::Picked(decision) = outcome.kind {
-					effective_map
-						.by_conflict_id
-						.insert(outcome.conflict_id, decision);
-					new_picks += 1;
-				}
-			}
-			if prompt.aborted {
-				return Err(PatchBasedMergeFailure::Merge(MergeError::Validation {
-					path: Some(target_path.to_string()),
-					message: "merge aborted by user".to_string(),
-				}));
-			}
-			if new_picks > 0 {
-				dag_patches =
-					run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
-			}
-		}
-	}
-
-	let stale_vanilla_targets = collect_stale_vanilla_targets(
-		target_path,
-		&dag_patches.mod_patches,
-		vanilla.as_ref(),
-		context.merge_key_source,
-		context.mod_versions,
-	);
-	let dep_remove_counts = collect_dep_misuse_remove_counts(
-		context.dep_misuse_findings,
-		contributors,
-		&dag_patches.mod_patches,
-	);
-	let merge_result = dag_patches.merge_result;
-
-	if !merge_result.conflicts.is_empty() {
-		let conflict_keys: Vec<_> = merge_result
-			.conflicts
-			.iter()
-			.filter_map(|r| match r {
-				PatchResolution::Conflict {
-					address, reason, ..
-				} => Some(format!("{}: {}", address.key, reason)),
-				_ => None,
-			})
-			.collect();
-		let reason = format!(
-			"patch merge has {} unresolved conflict(s): {}",
-			conflict_keys.len(),
-			conflict_keys.join("; "),
-		);
-		return Err(PatchBasedMergeFailure::Unresolved(PatchConflictReport {
-			reason,
-			leaf_conflicts: leaf_conflicts_for_unresolved(
-				target_path,
-				&merge_result.conflicts,
-				context.mod_versions,
-			),
-			handler_resolutions: merge_result.handler_resolutions,
-		}));
-	}
-
-	let noop_vs_vanilla = vanilla
-		.as_ref()
-		.map(|base| {
-			super::super::patch::ast_statement_lists_semantically_equal(
-				&base.ast.statements,
-				&dag_patches.merged_statements,
-			)
-		})
-		.unwrap_or(false);
-	let merged_statements = dag_patches.merged_statements;
-	let (merged_statements, per_entry_noop_skipped_count) = if let Some(base) = vanilla.as_ref() {
-		drop_per_entry_noop_duplicates(merged_statements, &base.ast.statements, context.descriptor)
-	} else {
-		(merged_statements, 0)
-	};
-	let rendered =
-		emit_clausewitz_statements_with_options(&merged_statements, context.emit_options)?;
-	Ok(PatchBasedMergeOutput {
-		rendered,
-		dep_remove_counts,
-		stale_vanilla_targets,
-		handler_resolutions: merge_result.handler_resolutions,
-		external_file_resolutions: merge_result.external_file_resolutions,
-		keep_existing_paths: merge_result.keep_existing_paths,
-		noop_vs_vanilla,
-		per_entry_noop_skipped_count,
-	})
-}
-
-fn run_patch_merge_engine(
-	target_path: &str,
-	contributors: &[ResolvedFileContributor],
-	context: &PatchBasedMergeContext<'_>,
-	resolution_map: &foch_core::config::ResolutionMap,
-) -> Result<super::super::patch_deps::DagPatchComputation, MergeError> {
-	let mut handler = super::super::conflict_handler::ChainHandler {
-		first: super::super::conflict_handler::LookupHandler::with_display_names(
-			resolution_map,
-			PathBuf::from(target_path),
-			(*context.mod_display_names).clone(),
-		),
-		second: super::super::conflict_handler::ChainHandler {
-			first: PriorityBoostResolutionHandler::new(
-				PathBuf::from(target_path),
-				&resolution_map.mod_priority_boost,
-			),
-			second: super::super::conflict_handler::ChainHandler {
-				first: DepImpliesResolutionHandler::from_mod_dag(
-					PathBuf::from(target_path),
-					context.mod_dag,
-					context.dep_overrides,
-				),
-				second: DeferHandler,
-			},
-		},
-	};
-	compute_dag_patches_with_handler(
-		DagPatchRequest {
-			file_path: target_path,
-			contributors,
-			merge_key_source: context.merge_key_source,
-			policies: &context.descriptor.merge_policies,
-			mod_dag: context.mod_dag,
-			ignore_replace_path: context.ignore_replace_path,
-			dep_overrides: context.dep_overrides,
-			game_version: context.cache_game_version,
-		},
-		&mut handler,
-	)
-	.map_err(|err| MergeError::Validation {
-		path: Some(target_path.to_string()),
-		message: format!("patch computation failed: {err}"),
-	})
 }
 
 /// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
@@ -1550,7 +1039,7 @@ mod tests {
 		);
 
 		let (filtered, count) =
-			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
 
 		assert_eq!(count, 1);
 		assert_eq!(assignment_keys(&filtered), vec!["changed".to_string()]);
@@ -1563,7 +1052,7 @@ mod tests {
 		let merged = parse_test_statements("same = {\n\tadd_prestige = 2\n}\n");
 
 		let (filtered, count) =
-			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
 
 		assert_eq!(count, 0);
 		assert_eq!(assignment_keys(&filtered), vec!["same".to_string()]);
@@ -1576,7 +1065,7 @@ mod tests {
 		let merged = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
 
 		let (filtered, count) =
-			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
 
 		assert_eq!(count, 0);
 		assert_eq!(assignment_keys(&filtered), vec!["same".to_string()]);
@@ -1589,7 +1078,7 @@ mod tests {
 		let merged = parse_test_statements("unique = {\n\tadd_legitimacy = 1\n}\n");
 
 		let (filtered, count) =
-			super::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
 
 		assert_eq!(count, 0);
 		assert_eq!(assignment_keys(&filtered), vec!["unique".to_string()]);
