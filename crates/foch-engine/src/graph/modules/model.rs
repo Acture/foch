@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct SymbolNodeId(pub String);
 
 impl SymbolNodeId {
-	#[allow(dead_code)]
 	pub fn new(kind: &str, name: &str) -> Self {
 		SymbolNodeId(format!("{kind}:{name}"))
 	}
@@ -18,13 +17,10 @@ impl SymbolNodeId {
 pub struct SymbolGraph {
 	pub nodes: BTreeSet<SymbolNodeId>,
 	/// Directed reference edges (caller -> callee) with multiplicity weight.
-	#[allow(dead_code)]
 	pub edges: BTreeMap<(SymbolNodeId, SymbolNodeId), u32>,
 	/// Seed label per node (the content family of its defining file).
-	#[allow(dead_code)]
 	pub seeds: BTreeMap<SymbolNodeId, String>,
 	/// Which mod ids define or override each node (base game uses "__base__").
-	#[allow(dead_code)]
 	pub node_mods: BTreeMap<SymbolNodeId, BTreeSet<String>>,
 }
 
@@ -33,7 +29,6 @@ impl SymbolGraph {
 		self.nodes.insert(id.clone());
 	}
 
-	#[allow(dead_code)]
 	pub fn add_edge(&mut self, from: &SymbolNodeId, to: &SymbolNodeId, weight: u32) {
 		if from == to {
 			return;
@@ -43,13 +38,11 @@ impl SymbolGraph {
 		*self.edges.entry((from.clone(), to.clone())).or_insert(0) += weight;
 	}
 
-	#[allow(dead_code)]
 	pub fn set_seed(&mut self, id: &SymbolNodeId, label: &str) {
 		self.add_node(id);
 		self.seeds.insert(id.clone(), label.to_string());
 	}
 
-	#[allow(dead_code)]
 	pub fn add_mod(&mut self, id: &SymbolNodeId, mod_id: &str) {
 		self.add_node(id);
 		self.node_mods
@@ -59,7 +52,6 @@ impl SymbolGraph {
 	}
 
 	/// Collapse directed edges into a symmetric weighted adjacency map.
-	#[allow(dead_code)]
 	pub fn undirected_adjacency(&self) -> BTreeMap<SymbolNodeId, BTreeMap<SymbolNodeId, u64>> {
 		let mut adj: BTreeMap<SymbolNodeId, BTreeMap<SymbolNodeId, u64>> = BTreeMap::new();
 		for ((from, to), w) in &self.edges {
@@ -75,16 +67,12 @@ impl SymbolGraph {
 		adj
 	}
 }
-
 #[derive(Clone, Debug, Default, Serialize)]
-#[allow(dead_code)]
 pub struct ModulePartition {
 	/// Module label assigned to each node (deterministic).
 	pub module_of: BTreeMap<SymbolNodeId, String>,
 }
-
 #[derive(Clone, Debug, Serialize)]
-#[allow(dead_code)]
 pub struct ModSummary {
 	pub mod_id: String,
 	pub touched_nodes: usize,
@@ -92,17 +80,13 @@ pub struct ModSummary {
 	/// share of touched nodes in this mod's single largest module (0.0..=1.0).
 	pub top_module_share: f64,
 }
-
 #[derive(Clone, Debug, Serialize)]
-#[allow(dead_code)]
 pub struct CollisionHotspot {
 	pub module: String,
 	pub collision_nodes: usize,
 	pub mods_involved: Vec<String>,
 }
-
 #[derive(Clone, Debug, Default, Serialize)]
-#[allow(dead_code)]
 pub struct ModuleReport {
 	pub module_count: usize,
 	pub node_count: usize,
