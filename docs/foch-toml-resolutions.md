@@ -196,7 +196,7 @@ A `handler` action names a built-in handler from the registry. Dispatch is case-
 | --- | --- | --- | --- |
 | `last_writer` | `PickMod { record: Some(...) }` | Chooses the patch with the largest `(precedence, mod_id)` pair; `mod_id` breaks equal-precedence ties lexicographically for deterministic output. If there are no patches, it defers. | `crates/foch-engine/src/merge/resolution/handler_registry.rs` |
 | `defer` | `Defer { record: Some(...) }` | Records a handler-attributed manual conflict and stops the handler chain; it does not fall through to `PriorityBoost` or `DepImplies`. | `crates/foch-engine/src/merge/resolution/handler_registry.rs` |
-| `keep_existing` | `KeepExisting` | Marks matching paths to keep the current output-dir file. If the target file exists, materialization records `kept_existing`; if it does not, foch warns and writes normal output. | `crates/foch-engine/src/merge/resolution/handler_registry.rs`, `crates/foch-engine/src/merge/output/materialize.rs` |
+| `keep_existing` | `KeepExisting` | Marks matching paths to keep the current output-dir file. If the target file exists, materialization records `kept_existing`; if it does not, foch warns and writes normal output. | `crates/foch-engine/src/merge/resolution/handler_registry.rs`, `crates/foch-engine/src/merge/output/materialize/io.rs` |
 
 Examples:
 
