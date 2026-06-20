@@ -15,7 +15,6 @@ const CACHE_VERSION_DIR: &str = "v7";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const LEGACY_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 const PARSE_CACHE_ENV: &str = "FOCH_PARSE_CACHE_DIR";
-const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
 
 #[cfg(test)]
 thread_local! {
@@ -365,13 +364,6 @@ pub fn cache_clean() -> io::Result<()> {
 		}
 	}
 	Ok(())
-}
-
-pub fn cache_cap_bytes() -> u64 {
-	std::env::var("FOCH_CACHE_MAX_BYTES")
-		.ok()
-		.and_then(|value| value.trim().parse().ok())
-		.unwrap_or(DEFAULT_CACHE_CAP_BYTES)
 }
 
 fn collect_all_cache_files() -> Vec<CacheFile> {
