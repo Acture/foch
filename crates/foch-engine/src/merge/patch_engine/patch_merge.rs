@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use foch_core::model::HandlerResolutionRecord;
-use foch_language::analyzer::content_family::{BlockPatchPolicy, MergePolicies, ScalarMergePolicy};
+use foch_language::analyzer::content_family::MergePolicies;
+#[cfg(test)]
+use foch_language::analyzer::content_family::{BlockPatchPolicy, ScalarMergePolicy};
 #[cfg(test)]
 use foch_language::analyzer::content_family::{MergeKeySource, NamedContainerPolicy};
 
