@@ -17,7 +17,7 @@ pub fn load_cwt_file(path: &Path) -> std::io::Result<CwtSchema> {
 
 pub fn parse_bracket_key(key: &str) -> Option<(&str, &str)> {
 	let open = key.find('[')?;
-	let close = key[open + 1..].find(']')? + open + 1;
+	let close = key.rfind(']')?;
 	if close + 1 != key.len() {
 		return None;
 	}

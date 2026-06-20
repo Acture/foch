@@ -1,6 +1,20 @@
 use foch_language::cwt::{
 	CwtAlias, CwtEnum, CwtOption, CwtScope, CwtSubtype, CwtType, load_cwt_schema,
+	parse_bracket_key,
 };
+
+#[test]
+fn parses_nested_bracket_keys_at_outermost_close() {
+	assert_eq!(
+		parse_bracket_key("alias[effect:enum[country_tags]]"),
+		Some(("alias", "effect:enum[country_tags]"))
+	);
+}
+
+#[test]
+fn rejects_non_bracket_keys() {
+	assert_eq!(parse_bracket_key("alias"), None);
+}
 
 #[test]
 fn loads_type_metadata_and_subtypes() {
