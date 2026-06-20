@@ -1,6 +1,6 @@
 use foch_language::cwt::{
-	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtScope, CwtSubtype, CwtType, load_cwt_schema,
-	parse_bracket_key,
+	CwtAlias, CwtEnum, CwtLink, CwtOption, CwtRange, CwtRule, CwtRuleBody, CwtScope, CwtSubtype,
+	CwtType, CwtValueType, load_cwt_schema, parse_bracket_key,
 };
 
 #[test]
@@ -340,4 +340,234 @@ enums = {
 	assert!(schema.types[0].subtypes.is_empty());
 	assert_eq!(schema.enums.len(), 1);
 	assert!(schema.aliases.is_empty());
+}
+
+#[test]
+fn classifies_cwt_value_type_tokens() {
+	assert_eq!(CwtValueType::from_token("scalar"), CwtValueType::Scalar);
+	assert_eq!(CwtValueType::from_token("bool"), CwtValueType::Bool);
+	assert_eq!(CwtValueType::from_token("int"), CwtValueType::Int(None));
+	assert_eq!(
+		CwtValueType::from_token("int[0..100]"),
+		CwtValueType::Int(Some(CwtRange {
+			min: "0".to_string(),
+			max: "100".to_string(),
+		}))
+	);
+	assert_eq!(
+		CwtValueType::from_token("float[0.0..1.0]"),
+		CwtValueType::Float(Some(CwtRange {
+			min: "0.0".to_string(),
+			max: "1.0".to_string(),
+		}))
+	);
+	assert_eq!(
+		CwtValueType::from_token("percentage_field"),
+		CwtValueType::Percentage
+	);
+	assert_eq!(
+		CwtValueType::from_token("date_field"),
+		CwtValueType::DateField
+	);
+	assert_eq!(
+		CwtValueType::from_token("localisation"),
+		CwtValueType::Localisation
+	);
+	assert_eq!(CwtValueType::from_token("filepath"), CwtValueType::Filepath);
+	assert_eq!(CwtValueType::from_token("colour"), CwtValueType::Colour);
+	assert_eq!(
+		CwtValueType::from_token("<event_target>"),
+		CwtValueType::TypeRef("event_target".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("enum[power_categories]"),
+		CwtValueType::Enum("power_categories".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("value[event_target]"),
+		CwtValueType::Value("event_target".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("value_set[cooldown_token]"),
+		CwtValueType::ValueSet("cooldown_token".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("scope[country]"),
+		CwtValueType::Scope("country".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("alias_name[trigger]"),
+		CwtValueType::AliasName("trigger".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("alias_match_left[trigger]"),
+		CwtValueType::AliasMatchLeft("trigger".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("single_alias_right[effect]"),
+		CwtValueType::SingleAliasRight("effect".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("yes"),
+		CwtValueType::Literal("yes".to_string())
+	);
+	assert_eq!(
+		CwtValueType::from_token("enum[]"),
+		CwtValueType::Unknown("enum[]".to_string())
+	);
+}
+
+#[test]
+fn attaches_top_level_rule_body_to_matching_type() {
+	let schema = load_cwt_schema(
+		r#"
+types = {
+	type[event] = {
+		path = "game/events"
+		name_field = "id"
+	}
+}
+
+event = {
+	id = scalar
+	title = localisation
+	goto = <event_target>
+	picture = enum[dlc_event_pictures]
+	factor = int[0..100]
+	## cardinality = 0..1
+	hidden = bool
+	trigger = {
+		alias_name[trigger] = alias_match_left[trigger]
+		chance = float[0.0..1.0]
+	}
+}
+"#,
+	);
+
+	assert!(schema.rule_bodies.is_empty());
+	assert_eq!(schema.types.len(), 1);
+	assert_eq!(
+		schema.types[0].rules,
+		vec![
+			CwtRule {
+				key: "id".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Scalar),
+				cardinality: None,
+				options: Vec::new(),
+			},
+			CwtRule {
+				key: "title".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Localisation),
+				cardinality: None,
+				options: Vec::new(),
+			},
+			CwtRule {
+				key: "goto".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::TypeRef("event_target".to_string())),
+				cardinality: None,
+				options: Vec::new(),
+			},
+			CwtRule {
+				key: "picture".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Enum("dlc_event_pictures".to_string())),
+				cardinality: None,
+				options: Vec::new(),
+			},
+			CwtRule {
+				key: "factor".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Int(Some(CwtRange {
+					min: "0".to_string(),
+					max: "100".to_string(),
+				}))),
+				cardinality: None,
+				options: Vec::new(),
+			},
+			CwtRule {
+				key: "hidden".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Bool),
+				cardinality: Some("0..1".to_string()),
+				options: vec![CwtOption {
+					key: "cardinality".to_string(),
+					value: "0..1".to_string(),
+				}],
+			},
+			CwtRule {
+				key: "trigger".to_string(),
+				body: CwtRuleBody::Block(vec![
+					CwtRule {
+						key: "alias_name[trigger]".to_string(),
+						body: CwtRuleBody::Leaf(CwtValueType::AliasMatchLeft(
+							"trigger".to_string()
+						)),
+						cardinality: None,
+						options: Vec::new(),
+					},
+					CwtRule {
+						key: "chance".to_string(),
+						body: CwtRuleBody::Leaf(CwtValueType::Float(Some(CwtRange {
+							min: "0.0".to_string(),
+							max: "1.0".to_string(),
+						}))),
+						cardinality: None,
+						options: Vec::new(),
+					},
+				]),
+				cardinality: None,
+				options: Vec::new(),
+			},
+		]
+	);
+}
+
+#[test]
+fn keeps_rule_body_without_matching_type_at_schema_level() {
+	let schema = load_cwt_schema(
+		r#"
+types = {
+	type[event] = {
+		path = "game/events"
+	}
+}
+
+decision = {
+	major = yes
+	color = {
+		## cardinality = 3..3
+		int[0..255]
+	}
+}
+"#,
+	);
+
+	assert!(schema.types[0].rules.is_empty());
+	assert_eq!(schema.rule_bodies.len(), 1);
+	assert_eq!(schema.rule_bodies[0].key, "decision");
+	assert_eq!(
+		schema.rule_bodies[0].rules,
+		vec![
+			CwtRule {
+				key: "major".to_string(),
+				body: CwtRuleBody::Leaf(CwtValueType::Literal("yes".to_string())),
+				cardinality: None,
+				options: Vec::new(),
+			},
+			CwtRule {
+				key: "color".to_string(),
+				body: CwtRuleBody::Block(vec![CwtRule {
+					key: "int[0..255]".to_string(),
+					body: CwtRuleBody::Leaf(CwtValueType::Int(Some(CwtRange {
+						min: "0".to_string(),
+						max: "255".to_string(),
+					}))),
+					cardinality: Some("3..3".to_string()),
+					options: vec![CwtOption {
+						key: "cardinality".to_string(),
+						value: "3..3".to_string(),
+					}],
+				}]),
+				cardinality: None,
+				options: Vec::new(),
+			},
+		]
+	);
 }
