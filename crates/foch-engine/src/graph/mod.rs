@@ -1,5 +1,6 @@
 pub(crate) mod export;
 pub(crate) mod model;
+pub mod modules;
 pub(crate) mod semantic;
 
 pub use export::run_graph_with_options;
