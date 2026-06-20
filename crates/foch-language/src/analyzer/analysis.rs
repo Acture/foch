@@ -31,35 +31,154 @@ pub fn analyze_visibility_with_vanilla_index(
 	vanilla_index: Option<&VanillaSymbolIndex>,
 ) -> SemanticDiagnostics {
 	let mut diagnostics = SemanticDiagnostics::default();
+	let context = AnalysisCheckContext {
+		index,
+		vanilla_index,
+	};
+	for check in ANALYSIS_CHECKS {
+		debug_assert!(!check.rule_ids.is_empty());
+		let findings = (check.run)(&context);
+		diagnostics.strict.extend(findings.strict);
+		diagnostics.advisory.extend(findings.advisory);
+	}
 	diagnostics
-		.strict
-		.extend(check_duplicate_definitions(index));
-	diagnostics
-		.strict
-		.extend(check_unresolved_call_targets(index, vanilla_index));
-	let (invisible_alias_strict, invisible_alias_advisory) = check_invisible_scope_aliases(index);
-	diagnostics.strict.extend(invisible_alias_strict);
-	diagnostics.advisory.extend(invisible_alias_advisory);
-	diagnostics
-		.strict
-		.extend(check_missing_effect_parameters(index));
-	diagnostics.advisory.extend(check_unknown_scope_type(index));
-	diagnostics
-		.advisory
-		.extend(check_scope_type_mismatch(index));
-	diagnostics
-		.advisory
-		.extend(check_cross_mod_overlap_advisories(index));
-	diagnostics
-		.advisory
-		.extend(check_unresolved_flag_references(index));
-	diagnostics
-		.advisory
-		.extend(check_missing_localisation_keys(index));
-	diagnostics
-		.advisory
-		.extend(check_duplicate_localisation_keys(index));
-	diagnostics
+}
+
+struct AnalysisCheck {
+	rule_ids: &'static [&'static str],
+	run: fn(&AnalysisCheckContext<'_>) -> AnalysisCheckFindings,
+}
+
+struct AnalysisCheckContext<'a> {
+	index: &'a SemanticIndex,
+	vanilla_index: Option<&'a VanillaSymbolIndex>,
+}
+
+#[derive(Default)]
+struct AnalysisCheckFindings {
+	strict: Vec<Finding>,
+	advisory: Vec<Finding>,
+}
+
+const ANALYSIS_CHECKS: &[AnalysisCheck] = &[
+	AnalysisCheck {
+		rule_ids: &["cross-mod-overshadow"],
+		run: run_duplicate_definitions_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["unresolved-call-target"],
+		run: run_unresolved_call_targets_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["invisible-scope-alias"],
+		run: run_invisible_scope_aliases_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["missing-effect-parameter"],
+		run: run_missing_effect_parameters_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["unknown-scope-type"],
+		run: run_unknown_scope_type_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["scope-type-mismatch"],
+		run: run_scope_type_mismatch_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["mergeable-overlap"],
+		run: run_cross_mod_overlap_advisories_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["unresolved-flag-reference"],
+		run: run_unresolved_flag_references_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["missing-localisation"],
+		run: run_missing_localisation_keys_check,
+	},
+	AnalysisCheck {
+		rule_ids: &["duplicate-localisation"],
+		run: run_duplicate_localisation_keys_check,
+	},
+];
+
+fn run_duplicate_definitions_check(context: &AnalysisCheckContext<'_>) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		strict: check_duplicate_definitions(context.index),
+		..Default::default()
+	}
+}
+
+fn run_unresolved_call_targets_check(context: &AnalysisCheckContext<'_>) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		strict: check_unresolved_call_targets(context.index, context.vanilla_index),
+		..Default::default()
+	}
+}
+
+fn run_invisible_scope_aliases_check(context: &AnalysisCheckContext<'_>) -> AnalysisCheckFindings {
+	let (strict, advisory) = check_invisible_scope_aliases(context.index);
+	AnalysisCheckFindings { strict, advisory }
+}
+
+fn run_missing_effect_parameters_check(
+	context: &AnalysisCheckContext<'_>,
+) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		strict: check_missing_effect_parameters(context.index),
+		..Default::default()
+	}
+}
+
+fn run_unknown_scope_type_check(context: &AnalysisCheckContext<'_>) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		advisory: check_unknown_scope_type(context.index),
+		..Default::default()
+	}
+}
+
+fn run_scope_type_mismatch_check(context: &AnalysisCheckContext<'_>) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		advisory: check_scope_type_mismatch(context.index),
+		..Default::default()
+	}
+}
+
+fn run_cross_mod_overlap_advisories_check(
+	context: &AnalysisCheckContext<'_>,
+) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		advisory: check_cross_mod_overlap_advisories(context.index),
+		..Default::default()
+	}
+}
+
+fn run_unresolved_flag_references_check(
+	context: &AnalysisCheckContext<'_>,
+) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		advisory: check_unresolved_flag_references(context.index),
+		..Default::default()
+	}
+}
+
+fn run_missing_localisation_keys_check(
+	context: &AnalysisCheckContext<'_>,
+) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		advisory: check_missing_localisation_keys(context.index),
+		..Default::default()
+	}
+}
+
+fn run_duplicate_localisation_keys_check(
+	context: &AnalysisCheckContext<'_>,
+) -> AnalysisCheckFindings {
+	AnalysisCheckFindings {
+		advisory: check_duplicate_localisation_keys(context.index),
+		..Default::default()
+	}
 }
 
 fn check_duplicate_definitions(index: &SemanticIndex) -> Vec<Finding> {
@@ -1201,4 +1320,47 @@ fn is_alias_visible(index: &SemanticIndex, mut scope_id: usize, alias: &str) -> 
 
 fn symbol_kind_text(kind: SymbolKind) -> &'static str {
 	kind.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::ANALYSIS_CHECKS;
+	use std::collections::HashSet;
+
+	#[test]
+	fn analysis_checks_keep_explicit_order() {
+		let rules = ANALYSIS_CHECKS
+			.iter()
+			.flat_map(|check| check.rule_ids.iter().copied())
+			.collect::<Vec<_>>();
+		assert_eq!(
+			rules,
+			[
+				"cross-mod-overshadow",
+				"unresolved-call-target",
+				"invisible-scope-alias",
+				"missing-effect-parameter",
+				"unknown-scope-type",
+				"scope-type-mismatch",
+				"mergeable-overlap",
+				"unresolved-flag-reference",
+				"missing-localisation",
+				"duplicate-localisation",
+			]
+		);
+	}
+
+	#[test]
+	fn analysis_check_rule_ids_are_unique() {
+		let mut seen = HashSet::new();
+		for check in ANALYSIS_CHECKS {
+			assert!(!check.rule_ids.is_empty());
+			for rule_id in check.rule_ids {
+				assert!(
+					seen.insert(*rule_id),
+					"duplicate analysis rule id {rule_id}"
+				);
+			}
+		}
+	}
 }
