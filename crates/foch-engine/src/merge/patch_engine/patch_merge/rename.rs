@@ -45,8 +45,14 @@ pub(super) fn rewrite_patch_for_renames(
 	if rename_map.is_empty() {
 		return patch;
 	}
+	let original = patch.clone();
+	let mut seen: std::collections::HashSet<AstPath> = std::collections::HashSet::new();
 	loop {
 		let path = rn_patch_path_clone(&patch);
+		if !seen.insert(path.clone()) {
+			// Cyclic rename graph (e.g. A→B and B→A at the same prefix) would otherwise loop forever.
+			return original;
+		}
 		let mut changed = false;
 		for split in 0..path.len() {
 			let prefix = path[..split].to_vec();
