@@ -47,11 +47,16 @@ pub fn check_unknown_keys(
 
 fn block_accepts_open_keys(rules: &[CwtRule]) -> bool {
 	rules.iter().any(|r| {
-		matches!(
-			&r.body,
-			CwtRuleBody::Leaf(CwtValueType::AliasName(_))
-				| CwtRuleBody::Leaf(CwtValueType::AliasMatchLeft(_))
-		)
+		// open-ended KEY pattern: <type>, scalar, enum[x], value[x], value_set[x],
+		// scope[x], alias_name[x], ... — anything from_token does not classify as a
+		// plain literal means the block accepts dynamic keys we cannot enumerate.
+		!matches!(CwtValueType::from_token(&r.key), CwtValueType::Literal(_))
+			// or a body that accepts open-ended aliased keys
+			|| matches!(
+				&r.body,
+				CwtRuleBody::Leaf(CwtValueType::AliasName(_))
+					| CwtRuleBody::Leaf(CwtValueType::AliasMatchLeft(_))
+			)
 	})
 }
 
@@ -129,5 +134,16 @@ mod tests {
 			suppressed: BTreeSet::new(),
 		};
 		assert!(check_unknown_keys(&rules, &ast("anything = 1\n"), &opts).is_empty());
+	}
+	#[test]
+	fn open_ended_key_pattern_disables_check() {
+		// a block whose rule KEY is a type-ref pattern accepts dynamic keys;
+		// unknown-key must not fire even when enabled.
+		let rules = vec![rule("<event_target>", CwtValueType::Scalar)];
+		let opts = UnknownKeyOptions {
+			enabled: true,
+			suppressed: BTreeSet::new(),
+		};
+		assert!(check_unknown_keys(&rules, &ast("some_target = 1\n"), &opts).is_empty());
 	}
 }

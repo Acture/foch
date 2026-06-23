@@ -46,6 +46,7 @@ mod tests {
 		};
 		assert!(ValidatorSeverity::Error > ValidatorSeverity::Warning);
 		assert!(ValidatorSeverity::Warning > ValidatorSeverity::Info);
-		assert!(err.sort_key() > warn.sort_key() || err.severity != warn.severity);
+		// sort_key orders by (line, column, rule_id): warn (line 2) precedes err (line 5)
+		assert!(warn.sort_key() < err.sort_key());
 	}
 }
