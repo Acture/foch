@@ -11,5 +11,5 @@ categories.workspace = true
 
 [dependencies]
 foch-core = { path = "../foch-core" }
-tree-sitter = "0.22"
+tree-sitter = "0.25"
 tree-sitter-paradox = { path = "../../packages/tree-sitter-paradox" }

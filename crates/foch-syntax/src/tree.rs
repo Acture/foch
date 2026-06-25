@@ -135,7 +135,7 @@ impl ParadoxTree {
 		let source = Arc::<str>::from(foch_core::decode_paradox_bytes(bytes).into_owned());
 		let mut parser = Parser::new();
 		parser
-			.set_language(&tree_sitter_paradox::language())
+			.set_language(&tree_sitter_paradox::LANGUAGE.into())
 			.map_err(|error| ParseError::Language(error.to_string()))?;
 		let tree = parser
 			.parse(source.as_ref(), None)
