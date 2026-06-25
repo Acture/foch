@@ -1,20 +1,25 @@
 use crate::schema::CwtSchemaGraph;
+use foch_core::model::base_scope;
 
 pub fn install_base_scopes(graph: &CwtSchemaGraph) {
-	let _ = graph
+	if base_scope::is_initialized() {
+		return;
+	}
+	let country = graph
 		.scope_definitions()
 		.iter()
 		.find_map(|scope| match scope.aliases.as_slice() {
-			[alias, ..] if alias == "country" => Some(alias),
+			[alias, ..] if alias == "country" => Some(alias.as_str()),
 			_ => None,
 		});
-	let _ = graph
+	let province = graph
 		.scope_definitions()
 		.iter()
 		.find_map(|scope| match scope.aliases.as_slice() {
-			[alias, ..] if alias == "province" => Some(alias),
+			[alias, ..] if alias == "province" => Some(alias.as_str()),
 			_ => None,
 		});
-	// TODO(T3): call foch_core::model::base_scope::init_base_scopes(country_name, province_name)
-	// once the scope registry lands in codex/foch-b0.
+	if let (Some(country), Some(province)) = (country, province) {
+		base_scope::init_base_scopes(country, province);
+	}
 }

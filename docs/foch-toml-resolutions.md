@@ -122,6 +122,10 @@ file = "common/estates_preload/test_modifiers.txt"
 policy = "cwt_suggested"
 ```
 
+> **Note:** The `cwt_suggested` policy is parsed and validated but merge-time application is not yet
+> implemented (tracked in [#42](https://github.com/Acture/foch/issues/42)). Adding this entry today
+> will pass validation but have no effect on merge output until #42 is resolved.
+
 ## 4. Match DSL syntax
 
 The `match` selector uses this DSL:

@@ -388,6 +388,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 	fn classifies_vendor_country_history_cardinality_conflict() {
 		let graph = eu4_cwt_schema_graph().expect("eu4 vendor graph");
 		assert_eq!(
@@ -402,6 +403,7 @@ mod tests {
 	}
 
 	#[test]
+	#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 	fn classifies_vendor_recursive_block_conflict_as_deep_mergeable() {
 		let graph = eu4_cwt_schema_graph().expect("eu4 vendor graph");
 		assert_eq!(
