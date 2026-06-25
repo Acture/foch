@@ -2065,6 +2065,52 @@ fn write_snapshot_bundle_emits_coverage_report() {
 }
 
 #[test]
+fn write_snapshot_bundle_emits_vocabulary_manifest() {
+	let temp = TempDir::new().expect("temp dir");
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	write_snapshot_bundle(
+		&snapshot,
+		&encoded.bytes,
+		temp.path(),
+		BaseDataSource::Build,
+		None,
+		None,
+	)
+	.expect("write bundle");
+
+	let manifest_path = temp
+		.path()
+		.join(super::INSTALLED_VOCABULARY_MANIFEST_FILE_NAME);
+	assert!(
+		manifest_path.is_file(),
+		"vocabulary manifest sidecar written"
+	);
+	let raw = std::fs::read_to_string(&manifest_path).expect("read manifest");
+	let manifest: super::VocabularyManifest = serde_json::from_str(&raw).expect("parse manifest");
+	assert!(
+		manifest
+			.entries
+			.iter()
+			.any(|entry| entry.name == "test.effect"),
+		"manifest lists the defined symbol"
+	);
+
+	// Deterministic: rebuilding the manifest reproduces byte-identical output.
+	let rebuilt = serde_json::to_string_pretty(&super::build_vocabulary_manifest(&snapshot))
+		.expect("serialize manifest");
+	assert_eq!(raw, rebuilt);
+
+	// The metadata records the sidecar digest for drift provenance.
+	let metadata_raw =
+		std::fs::read_to_string(temp.path().join(super::INSTALLED_METADATA_FILE_NAME))
+			.expect("read metadata");
+	let metadata: InstalledBaseDataMetadata =
+		serde_json::from_str(&metadata_raw).expect("parse metadata");
+	assert!(metadata.vocabulary_manifest_sha256.is_some());
+}
+
+#[test]
 fn load_installed_base_snapshot_rejects_old_schema_version() {
 	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
@@ -2083,6 +2129,7 @@ fn load_installed_base_snapshot_rejects_old_schema_version() {
 		source: BaseDataSource::Build,
 		asset_name: None,
 		sha256: None,
+		vocabulary_manifest_sha256: None,
 	};
 	let installed =
 		write_installed_snapshot(&snapshot, &metadata, &encoded.bytes).expect("install snapshot");
@@ -2133,6 +2180,7 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 		source: BaseDataSource::Build,
 		asset_name: None,
 		sha256: None,
+		vocabulary_manifest_sha256: None,
 	};
 	let installed =
 		write_installed_snapshot(&snapshot, &metadata, &encoded.bytes).expect("install snapshot");
