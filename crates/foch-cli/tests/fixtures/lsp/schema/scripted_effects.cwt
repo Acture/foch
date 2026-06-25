@@ -1,0 +1,11 @@
+types = {
+  type[effect] = {
+    path = "game/common/scripted_effects"
+  }
+}
+
+effect = {
+  ## cardinality = 0..1
+  ###Adds prestige directly from a scripted effect body.
+  add_prestige = scalar
+}

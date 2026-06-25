@@ -1,0 +1,1100 @@
+{
+  "alias_count": 0,
+  "enum_count": 0,
+  "file_count": 73,
+  "known_scopes": [
+    "country",
+    "province",
+    "trade_node"
+  ],
+  "pack_id": "8318509a3b26be8f29457a3dc3687393c23cbfe770c38e992eeb937514675fbf",
+  "schema_commit": "a85622d368bbb7afca938ed70fdd5eda44aec769",
+  "scope_count": 16,
+  "selected_aliases": [],
+  "selected_bindings": [
+    {
+      "node_id": "type:event:root",
+      "path": "events/example.txt",
+      "status": "bound",
+      "type_id": "event"
+    },
+    {
+      "node_id": "type:decision:root",
+      "path": "decisions/example.txt",
+      "status": "bound",
+      "type_id": "decision"
+    },
+    {
+      "path": "missions/example.txt",
+      "reason": "ambiguous-root-type",
+      "status": "dynamic"
+    },
+    {
+      "node_id": "type:opinion_modifier:root",
+      "path": "common/opinion_modifiers/example.txt",
+      "status": "bound",
+      "type_id": "opinion_modifier"
+    }
+  ],
+  "selected_types": [
+    {
+      "name": "decision",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "decisions",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "localisation",
+          "value": {
+            "fields": [
+              {
+                "key": "name",
+                "value": {
+                  "kind": "scalar",
+                  "value": "$_title"
+                }
+              },
+              {
+                "key": "desc",
+                "value": {
+                  "kind": "scalar",
+                  "value": "$_desc"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "major",
+          "value": {
+            "kind": "scalar",
+            "value": "yes"
+          }
+        },
+        {
+          "key": "potential",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "provinces_to_highlight",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "allow",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "effect",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[effect]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[effect]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "ai_will_do",
+          "value": {
+            "fields": [
+              {
+                "key": "factor",
+                "value": {
+                  "kind": "marker",
+                  "value": "int[0..400]"
+                }
+              },
+              {
+                "key": "alias_name[modifier_rule]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[modifier_rule]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "ai_importance",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "do_not_integrate",
+          "value": {
+            "kind": "marker",
+            "value": "enum[country_tags]"
+          }
+        },
+        {
+          "key": "do_not_core",
+          "value": {
+            "kind": "scalar",
+            "value": "<province_id>"
+          }
+        },
+        {
+          "key": "color",
+          "value": {
+            "fields": [],
+            "kind": "block"
+          }
+        }
+      ],
+      "skip_root_key": "country_decisions",
+      "subtypes": [],
+      "type_per_file": false
+    },
+    {
+      "name": "event",
+      "name_field": "id",
+      "name_from_file": false,
+      "path": "events",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "localisation",
+          "value": {
+            "fields": [
+              {
+                "key": "title",
+                "value": {
+                  "kind": "scalar",
+                  "value": "title"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "id",
+          "value": {
+            "kind": "scalar",
+            "value": "scalar"
+          }
+        },
+        {
+          "key": "hidden",
+          "value": {
+            "kind": "scalar",
+            "value": "yes"
+          }
+        },
+        {
+          "key": "major",
+          "value": {
+            "kind": "scalar",
+            "value": "bool"
+          }
+        },
+        {
+          "key": "major_trigger",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "is_triggered_only",
+          "value": {
+            "kind": "scalar",
+            "value": "bool"
+          }
+        },
+        {
+          "key": "fire_only_once",
+          "value": {
+            "kind": "scalar",
+            "value": "bool"
+          }
+        },
+        {
+          "key": "is_mtth_scaled_to_size",
+          "value": {
+            "kind": "scalar",
+            "value": "float"
+          }
+        },
+        {
+          "key": "trigger",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "immediate",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[effect]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[effect]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "option",
+          "value": {
+            "fields": [
+              {
+                "key": "subtype[hidden]",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "scalar"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "subtype[!hidden]",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "name",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "localisation"
+                      }
+                    },
+                    {
+                      "key": "goto",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "<province_id>"
+                      }
+                    },
+                    {
+                      "key": "goto",
+                      "value": {
+                        "kind": "marker",
+                        "value": "value[event_target]"
+                      }
+                    },
+                    {
+                      "key": "goto",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "root"
+                      }
+                    },
+                    {
+                      "key": "goto",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "from"
+                      }
+                    },
+                    {
+                      "key": "goto",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "<estate>"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "trigger",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "alias_name[trigger]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[trigger]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "alias_name[effect]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[effect]"
+                }
+              },
+              {
+                "key": "ai_chance",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "factor",
+                      "value": {
+                        "kind": "marker",
+                        "value": "float[0..10000]"
+                      }
+                    },
+                    {
+                      "key": "alias_name[modifier_rule]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[modifier_rule]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "required_personality",
+                "value": {
+                  "kind": "scalar",
+                  "value": "<ruler_personality>"
+                }
+              },
+              {
+                "key": "highlight",
+                "value": {
+                  "kind": "scalar",
+                  "value": "yes"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "after",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[effect]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[effect]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
+      "skip_root_key": null,
+      "subtypes": [
+        {
+          "name": "country",
+          "rules": []
+        },
+        {
+          "name": "province",
+          "rules": []
+        },
+        {
+          "name": "mean_time_to_happen",
+          "rules": [
+            {
+              "key": "mean_time_to_happen",
+              "value": {
+                "fields": [],
+                "kind": "block"
+              }
+            }
+          ]
+        },
+        {
+          "name": "hidden",
+          "rules": [
+            {
+              "key": "hidden",
+              "value": {
+                "kind": "scalar",
+                "value": "yes"
+              }
+            }
+          ]
+        },
+        {
+          "name": "triggered",
+          "rules": [
+            {
+              "key": "is_triggered_only",
+              "value": {
+                "kind": "scalar",
+                "value": "yes"
+              }
+            }
+          ]
+        },
+        {
+          "name": "hidden",
+          "rules": [
+            {
+              "key": "title",
+              "value": {
+                "kind": "scalar",
+                "value": "scalar"
+              }
+            },
+            {
+              "key": "desc",
+              "value": {
+                "kind": "scalar",
+                "value": "scalar"
+              }
+            },
+            {
+              "key": "picture",
+              "value": {
+                "kind": "scalar",
+                "value": "<sprite>"
+              }
+            },
+            {
+              "key": "picture",
+              "value": {
+                "kind": "marker",
+                "value": "enum[dlc_event_pictures]"
+              }
+            },
+            {
+              "key": "picture",
+              "value": {
+                "kind": "scalar",
+                "value": "none"
+              }
+            }
+          ]
+        },
+        {
+          "name": "!hidden",
+          "rules": [
+            {
+              "key": "title",
+              "value": {
+                "kind": "scalar",
+                "value": "localisation"
+              }
+            },
+            {
+              "key": "desc",
+              "value": {
+                "kind": "scalar",
+                "value": "localisation"
+              }
+            },
+            {
+              "key": "goto",
+              "value": {
+                "kind": "scalar",
+                "value": "<province_id>"
+              }
+            },
+            {
+              "key": "goto",
+              "value": {
+                "kind": "marker",
+                "value": "value[event_target]"
+              }
+            },
+            {
+              "key": "goto",
+              "value": {
+                "kind": "marker",
+                "value": "value[global_event_target]"
+              }
+            },
+            {
+              "key": "goto",
+              "value": {
+                "kind": "scalar",
+                "value": "root"
+              }
+            },
+            {
+              "key": "goto",
+              "value": {
+                "kind": "scalar",
+                "value": "from"
+              }
+            },
+            {
+              "key": "goto",
+              "value": {
+                "kind": "scalar",
+                "value": "<estate>"
+              }
+            },
+            {
+              "key": "desc",
+              "value": {
+                "fields": [
+                  {
+                    "key": "trigger",
+                    "value": {
+                      "fields": [
+                        {
+                          "key": "alias_name[trigger]",
+                          "value": {
+                            "kind": "marker",
+                            "value": "alias_match_left[trigger]"
+                          }
+                        }
+                      ],
+                      "kind": "block"
+                    }
+                  },
+                  {
+                    "key": "desc",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "localisation"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            },
+            {
+              "key": "picture",
+              "value": {
+                "kind": "scalar",
+                "value": "scalar"
+              }
+            },
+            {
+              "key": "picture",
+              "value": {
+                "fields": [
+                  {
+                    "key": "trigger",
+                    "value": {
+                      "fields": [
+                        {
+                          "key": "alias_name[trigger]",
+                          "value": {
+                            "kind": "marker",
+                            "value": "alias_match_left[trigger]"
+                          }
+                        }
+                      ],
+                      "kind": "block"
+                    }
+                  },
+                  {
+                    "key": "picture",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "scalar"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            }
+          ]
+        },
+        {
+          "name": "!mean_time_to_happen",
+          "rules": [
+            {
+              "key": "is_triggered_only",
+              "value": {
+                "kind": "scalar",
+                "value": "yes"
+              }
+            }
+          ]
+        },
+        {
+          "name": "triggered",
+          "rules": [
+            {
+              "key": "mean_time_to_happen",
+              "value": {
+                "fields": [
+                  {
+                    "key": "days",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "1"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            }
+          ]
+        },
+        {
+          "name": "!triggered",
+          "rules": [
+            {
+              "key": "mean_time_to_happen",
+              "value": {
+                "fields": [
+                  {
+                    "key": "enum[days_months_years]",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "int"
+                    }
+                  },
+                  {
+                    "key": "alias_name[modifier_rule]",
+                    "value": {
+                      "kind": "marker",
+                      "value": "alias_match_left[modifier_rule]"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            }
+          ]
+        },
+        {
+          "name": "triggered",
+          "rules": [
+            {
+              "key": "mean_time_to_happen",
+              "value": {
+                "fields": [
+                  {
+                    "key": "enum[days_months_years]",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "1"
+                    }
+                  },
+                  {
+                    "key": "alias_name[modifier_rule]",
+                    "value": {
+                      "kind": "marker",
+                      "value": "alias_match_left[modifier_rule]"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            }
+          ]
+        }
+      ],
+      "type_per_file": false
+    },
+    {
+      "name": "mission",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "missions",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "localisation",
+          "value": {
+            "fields": [
+              {
+                "key": "name",
+                "value": {
+                  "kind": "scalar",
+                  "value": "$_title"
+                }
+              },
+              {
+                "key": "desc",
+                "value": {
+                  "kind": "scalar",
+                  "value": "$_desc"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
+      "skip_root_key": "any",
+      "subtypes": [],
+      "type_per_file": false
+    },
+    {
+      "name": "mission_series",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "missions",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "slot",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "generic",
+          "value": {
+            "kind": "scalar",
+            "value": "bool"
+          }
+        },
+        {
+          "key": "ai",
+          "value": {
+            "kind": "scalar",
+            "value": "bool"
+          }
+        },
+        {
+          "key": "has_country_shield",
+          "value": {
+            "kind": "scalar",
+            "value": "bool"
+          }
+        },
+        {
+          "key": "potential_on_load",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "potential",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "<mission>",
+          "value": {
+            "fields": [
+              {
+                "key": "icon",
+                "value": {
+                  "kind": "scalar",
+                  "value": "<sprite>"
+                }
+              },
+              {
+                "key": "required_missions",
+                "value": {
+                  "fields": [],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "trigger",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "alias_name[trigger]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[trigger]"
+                      }
+                    },
+                    {
+                      "key": "has_completed_idea_group_of_category",
+                      "value": {
+                        "fields": [
+                          {
+                            "key": "mil_ideas",
+                            "value": {
+                              "kind": "scalar",
+                              "value": "yes"
+                            }
+                          }
+                        ],
+                        "kind": "block"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "effect",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "alias_name[effect]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[effect]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "provinces_to_highlight",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "alias_name[trigger]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[trigger]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "completed_by",
+                "value": {
+                  "kind": "scalar",
+                  "value": "date_field"
+                }
+              },
+              {
+                "key": "position",
+                "value": {
+                  "kind": "scalar",
+                  "value": "int"
+                }
+              },
+              {
+                "key": "ai_weight",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "factor",
+                      "value": {
+                        "kind": "scalar",
+                        "value": "float"
+                      }
+                    },
+                    {
+                      "key": "alias_name[modifier_rule]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[modifier_rule]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
+      "skip_root_key": null,
+      "subtypes": [],
+      "type_per_file": false
+    },
+    {
+      "name": "opinion_modifier",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "common/opinion_modifiers",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "localisation",
+          "value": {
+            "fields": [
+              {
+                "key": "name",
+                "value": {
+                  "kind": "scalar",
+                  "value": "$"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "opinion",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "yearly_decay",
+          "value": {
+            "kind": "scalar",
+            "value": "float"
+          }
+        },
+        {
+          "key": "years",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "max",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "months",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "max_vassal",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "max_in_other_direction",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        }
+      ],
+      "skip_root_key": null,
+      "subtypes": [
+        {
+          "name": "negative",
+          "rules": [
+            {
+              "key": "opinion",
+              "value": {
+                "kind": "marker",
+                "value": "int[-9999..-1]"
+              }
+            }
+          ]
+        },
+        {
+          "name": "positive",
+          "rules": [
+            {
+              "key": "opinion",
+              "value": {
+                "kind": "marker",
+                "value": "int[0..9999]"
+              }
+            }
+          ]
+        },
+        {
+          "name": "positive",
+          "rules": [
+            {
+              "key": "max",
+              "value": {
+                "kind": "scalar",
+                "value": "int"
+              }
+            }
+          ]
+        },
+        {
+          "name": "negative",
+          "rules": [
+            {
+              "key": "min",
+              "value": {
+                "kind": "scalar",
+                "value": "int"
+              }
+            }
+          ]
+        }
+      ],
+      "type_per_file": false
+    }
+  ],
+  "type_count": 158,
+  "value_set_count": 0
+}

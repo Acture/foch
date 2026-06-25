@@ -1,0 +1,26 @@
+types = {
+	type[event] = {
+		path = "game/events"
+		## type_key_filter = country_event
+		subtype[country] = {
+		}
+	}
+}
+
+event = {
+	trigger = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+
+	## scope = { country province }
+	## push_scope = country
+	## required
+	###Scopes to all countries.
+	every_country = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+}
+
+## scope = country
+## push_scope = country
+alias[trigger:is_year] = int

@@ -1,5 +1,5 @@
 use foch_core::config::compute_conflict_id;
-use foch_core::model::MergeReportStatus;
+use foch_core::model::{ConflictKind, MergeReportStatus};
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use foch_language::analyzer::parser::parse_clausewitz_file;
 use std::collections::HashMap;
@@ -439,6 +439,40 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 }
 
 #[test]
+fn eu4_schema_cardinality_conflict_is_tagged_from_cwt() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_schema_cardinality_conflict", false);
+	assert_eq!(
+		result.exit_code, 2,
+		"strict schema-cardinality merge should block; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Blocked,
+		"strict schema-cardinality merge should be blocked; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"schema-cardinality fixture must surface a manual conflict; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.conflict_resolutions[0].kind,
+		Some(ConflictKind::SchemaCardinalityViolation),
+		"country-history government_rank conflict should be tagged as a schema cardinality violation; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.conflict_resolutions[0].leaf_conflicts[0].kind,
+		Some(ConflictKind::SchemaCardinalityViolation),
+		"leaf conflict should carry the schema cardinality classification; report: {:#?}",
+		result.report
+	);
+	assert!(out_dir.exists(), "out dir should still be materialized");
+}
+
+#[test]
 fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_two_mod_conflict_resolved", false);
 	assert_eq!(
@@ -488,6 +522,84 @@ fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 	assert!(
 		!merged_text.contains("religion = catholic"),
 		"merged history must not retain baseline's religion; got:\n{merged_text}"
+	);
+	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_estates_preload_without_cwt_policy_keeps_duplicate_keyed_blocks() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_cwt_suggested_estates_preload", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"estates_preload merge without cwt policy should still complete; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"estates_preload merge without cwt policy should stay ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"estates_preload merge without cwt policy should not add manual conflicts; report: {:#?}",
+		result.report
+	);
+	let merged_path = out_dir
+		.join("common")
+		.join("estates_preload")
+		.join("test_modifiers.txt");
+	let merged_text = fs::read_to_string(&merged_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
+	assert_eq!(
+		merged_text.matches("key = estate_balance").count(),
+		2,
+		"without cwt_suggested the merge should keep duplicate keyed blocks; got:\n{merged_text}"
+	);
+}
+
+#[test]
+fn eu4_cwt_suggested_policy_merges_estates_preload_by_key() {
+	let (result, out_dir) =
+		run_merge_for_fixture("eu4_cwt_suggested_estates_preload_resolved", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"cwt_suggested merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"cwt_suggested merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"cwt_suggested merge should clear manual conflicts; report: {:#?}",
+		result.report
+	);
+	let merged_path = out_dir
+		.join("common")
+		.join("estates_preload")
+		.join("test_modifiers.txt");
+	let merged_text = fs::read_to_string(&merged_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
+	assert!(
+		merged_text.contains("key = estate_balance"),
+		"merged estates_preload output should retain the keyed modifier; got:\n{merged_text}"
+	);
+	assert!(
+		merged_text.contains("add_loyalty = 5"),
+		"merged estates_preload output should include loyalty patch; got:\n{merged_text}"
+	);
+	assert!(
+		merged_text.contains("add_influence = 10"),
+		"merged estates_preload output should include influence patch; got:\n{merged_text}"
+	);
+	assert_eq!(
+		merged_text.matches("key = estate_balance").count(),
+		1,
+		"cwt_suggested merge should produce exactly one keyed modifier body; got:\n{merged_text}"
 	);
 	assert_structurally_sound(&out_dir);
 }
@@ -623,6 +735,18 @@ fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
 	assert!(
 		result.report.manual_conflict_count >= 1,
 		"divergent Recurse sub-block edits must surface a manual conflict; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.conflict_resolutions[0].kind,
+		Some(ConflictKind::DeepMergeable),
+		"recursive block conflicts should be tagged as deep-mergeable; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.conflict_resolutions[0].leaf_conflicts[0].kind,
+		Some(ConflictKind::DeepMergeable),
+		"leaf conflict should carry the deep-mergeable classification; report: {:#?}",
 		result.report
 	);
 	assert!(out_dir.exists(), "out dir should still be materialized");

@@ -274,7 +274,7 @@ pub(crate) fn group_by_family(
 		let path = Path::new(rel_path);
 		if let Some(descriptor) = profile.classify_content_family(path) {
 			grouped
-				.entry(descriptor.id.to_string())
+				.entry(descriptor.id.as_str().to_string())
 				.or_default()
 				.insert(rel_path.clone(), contributors.clone());
 		}

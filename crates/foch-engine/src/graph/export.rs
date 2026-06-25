@@ -1006,7 +1006,9 @@ fn escape_dot(value: &str) -> String {
 mod definition_deps_tests {
 	use super::*;
 	use crate::runtime::RuntimeState;
-	use foch_core::model::{ScopeType, SymbolDefinition, SymbolKind, SymbolReference};
+	use foch_core::model::{
+		MaybeScope, ScopeSet, SymbolDefinition, SymbolKind, SymbolReference, test_support,
+	};
 	use std::collections::{HashMap, HashSet};
 	use std::path::PathBuf;
 
@@ -1017,6 +1019,7 @@ mod definition_deps_tests {
 		path: &str,
 		line: usize,
 	) -> SymbolDefinition {
+		test_support::install_defaults();
 		SymbolDefinition {
 			kind,
 			name: name.to_string(),
@@ -1027,11 +1030,11 @@ mod definition_deps_tests {
 			line,
 			column: 1,
 			scope_id: 0,
-			declared_this_type: ScopeType::Unknown,
-			inferred_this_type: ScopeType::Unknown,
-			inferred_this_mask: 0,
-			inferred_from_mask: 0,
-			inferred_root_mask: 0,
+			declared_this_type: MaybeScope::Unknown,
+			inferred_this_type: MaybeScope::Unknown,
+			inferred_this_mask: ScopeSet::EMPTY,
+			inferred_from_mask: ScopeSet::EMPTY,
+			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,

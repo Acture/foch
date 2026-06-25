@@ -1,0 +1,14 @@
+types = {
+  type[mission] = {
+    path = "game/missions"
+  }
+}
+
+mission = {
+  ## cardinality = 0..1
+  ## replace_scope = { this = province root = country }
+  ###Selects provinces relevant to the mission.
+  provinces_to_highlight = {
+    alias_name[trigger] = alias_match_left[trigger]
+  }
+}

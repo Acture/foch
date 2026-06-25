@@ -1,15 +1,53 @@
 use super::{
-	ScriptFileKind, build_inferred_callable_scope_map, build_semantic_index, classify_script_file,
-	collect_inferred_callable_masks, effective_alias_scope_mask_with_overrides, parse_script_file,
+	CwtType, build_inferred_callable_scope_map, build_semantic_index as raw_build_semantic_index,
+	classify_script_file, collect_inferred_callable_masks,
+	effective_alias_scope_mask_with_overrides, parse_script_file as raw_parse_script_file,
 	scope_kind,
 };
 use crate::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use crate::analyzer::content_family::{GameProfile, MergeKeySource};
-use crate::analyzer::eu4_profile::eu4_profile;
-use foch_core::model::{AnalysisMode, ScopeKind, ScopeType, SymbolKind};
+use crate::analyzer::eu4_profile::{Eu4Profile, eu4_profile as raw_eu4_profile};
+use foch_core::model::{
+	AnalysisMode, MaybeScope, ScopeKind, ScopeSet, SymbolKind, base_scope, test_support,
+};
 use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
+
+fn init_scopes() {
+	test_support::install_defaults();
+}
+
+fn parse_script_file(
+	mod_id: &str,
+	mod_root: &std::path::Path,
+	path: &std::path::Path,
+) -> Option<super::ParsedScriptFile> {
+	init_scopes();
+	raw_parse_script_file(mod_id, mod_root, path)
+}
+
+fn build_semantic_index(files: &[super::ParsedScriptFile]) -> foch_core::model::SemanticIndex {
+	init_scopes();
+	raw_build_semantic_index(files)
+}
+
+fn eu4_profile() -> &'static Eu4Profile {
+	init_scopes();
+	raw_eu4_profile()
+}
+
+fn country_mask() -> ScopeSet {
+	base_scope::country().into()
+}
+
+fn province_mask() -> ScopeSet {
+	base_scope::province().into()
+}
+
+fn mixed_mask() -> ScopeSet {
+	ScopeSet::from_scopes([base_scope::country(), base_scope::province()])
+}
 
 fn full_army_tradition_switch_effect(name: &str) -> String {
 	let branches: String = (0..=100)
@@ -346,333 +384,333 @@ fn interface_content_family_keys_gui_types_children_by_name() {
 fn classify_paths() {
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/on_actions/00_on_actions.txt")),
-		ScriptFileKind::OnActions
+		CwtType::new("on_actions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("events/common/on_actions/foo.txt")),
-		ScriptFileKind::OnActions
+		CwtType::new("on_actions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/scripted_effects/a.txt")),
-		ScriptFileKind::ScriptedEffects
+		CwtType::new("scripted_effects")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("events/a.txt")),
-		ScriptFileKind::Events
+		CwtType::new("events")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("interface/a.gui")),
-		ScriptFileKind::Ui
+		CwtType::new("ui")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/achievements.txt")),
-		ScriptFileKind::Achievements
+		CwtType::new("achievements")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/ages/00_default.txt")),
-		ScriptFileKind::Ages
+		CwtType::new("ages")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/buildings/00_buildings.txt")),
-		ScriptFileKind::Buildings
+		CwtType::new("buildings")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/ideas/00_country_ideas.txt")),
-		ScriptFileKind::Ideas
+		CwtType::new("ideas")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/great_projects/01_monuments.txt"
 		)),
-		ScriptFileKind::GreatProjects
+		CwtType::new("great_projects")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/government_reforms/01_government_reforms.txt"
 		)),
-		ScriptFileKind::GovernmentReforms
+		CwtType::new("government_reforms")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/cultures/00_cultures.txt")),
-		ScriptFileKind::Cultures
+		CwtType::new("cultures")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/custom_gui/AdvisorActionsGui.txt"
 		)),
-		ScriptFileKind::CustomGui
+		CwtType::new("custom_gui")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/advisortypes/00_advisortypes.txt"
 		)),
-		ScriptFileKind::AdvisorTypes
+		CwtType::new("advisortypes")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/event_modifiers/00_modifiers.txt"
 		)),
-		ScriptFileKind::EventModifiers
+		CwtType::new("event_modifiers")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/cb_types/00_cb_types.txt")),
-		ScriptFileKind::CbTypes
+		CwtType::new("cb_types")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/government_names/00_names.txt")),
-		ScriptFileKind::GovernmentNames
+		CwtType::new("government_names")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"customizable_localization/00_customizable_localization.txt"
 		)),
-		ScriptFileKind::CustomizableLocalization
+		CwtType::new("customizable_localization")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/new_diplomatic_actions/00_actions.txt"
 		)),
-		ScriptFileKind::NewDiplomaticActions
+		CwtType::new("new_diplomatic_actions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"events/common/new_diplomatic_actions/00_actions.txt"
 		)),
-		ScriptFileKind::NewDiplomaticActions
+		CwtType::new("new_diplomatic_actions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("missions/example.txt")),
-		ScriptFileKind::Missions
+		CwtType::new("missions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("events/decisions/example.txt")),
-		ScriptFileKind::Decisions
+		CwtType::new("decisions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/institutions/00.txt")),
-		ScriptFileKind::Institutions
+		CwtType::new("institutions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/province_triggered_modifiers/00.txt"
 		)),
-		ScriptFileKind::ProvinceTriggeredModifiers
+		CwtType::new("province_triggered_modifiers")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/scripted_triggers/00_triggers.txt"
 		)),
-		ScriptFileKind::ScriptedTriggers
+		CwtType::new("scripted_triggers")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/country_tags/00_countries.txt")),
-		ScriptFileKind::CountryTags
+		CwtType::new("country_tags")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/countries/00_countries.txt")),
-		ScriptFileKind::Countries
+		CwtType::new("countries")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("history/countries/FRA - France.txt")),
-		ScriptFileKind::CountryHistory
+		CwtType::new("country_history")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("history/provinces/1 - Stockholm.txt")),
-		ScriptFileKind::ProvinceHistory
+		CwtType::new("province_history")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/province_names/sorbian.txt")),
-		ScriptFileKind::ProvinceNames
+		CwtType::new("province_names")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("map/random/tiles/tile0.txt")),
-		ScriptFileKind::RandomMapTiles
+		CwtType::new("random_map_tiles")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("map/random/RandomLandNames.txt")),
-		ScriptFileKind::RandomMapNames
+		CwtType::new("random_map_names")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("map/random/RNWScenarios.txt")),
-		ScriptFileKind::RandomMapScenarios
+		CwtType::new("random_map_scenarios")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("map/random/tweaks.lua")),
-		ScriptFileKind::Other
+		CwtType::new("other")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("history/diplomacy/hre.txt")),
-		ScriptFileKind::DiplomacyHistory
+		CwtType::new("diplomacy_history")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("history/advisors/00_england.txt")),
-		ScriptFileKind::AdvisorHistory
+		CwtType::new("advisor_history")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("history/wars/100yearswar.txt")),
-		ScriptFileKind::Wars
+		CwtType::new("wars")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/units/00_units.txt")),
-		ScriptFileKind::Units
+		CwtType::new("units")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/religions/00_religion.txt")),
-		ScriptFileKind::Religions
+		CwtType::new("religions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/subject_types/00_subject_types.txt"
 		)),
-		ScriptFileKind::SubjectTypes
+		CwtType::new("subject_types")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/rebel_types/independence_rebels.txt"
 		)),
-		ScriptFileKind::RebelTypes
+		CwtType::new("rebel_types")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/disasters/civil_war.txt")),
-		ScriptFileKind::Disasters
+		CwtType::new("disasters")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/government_mechanics/18_parliament_vs_monarchy.txt"
 		)),
-		ScriptFileKind::GovernmentMechanics
+		CwtType::new("government_mechanics")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/church_aspects/00_church_aspects.txt"
 		)),
-		ScriptFileKind::ChurchAspects
+		CwtType::new("church_aspects")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/factions/00_factions.txt")),
-		ScriptFileKind::Factions
+		CwtType::new("factions")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/hegemons/0_economic_hegemon.txt"
 		)),
-		ScriptFileKind::Hegemons
+		CwtType::new("hegemons")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/personal_deities/00_hindu_deities.txt"
 		)),
-		ScriptFileKind::PersonalDeities
+		CwtType::new("personal_deities")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/fetishist_cults/00_fetishist_cults.txt"
 		)),
-		ScriptFileKind::FetishistCults
+		CwtType::new("fetishist_cults")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/estate_agendas/00_generic_agendas.txt"
 		)),
-		ScriptFileKind::EstateAgendas
+		CwtType::new("estate_agendas")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/estate_privileges/01_church_privileges.txt"
 		)),
-		ScriptFileKind::EstatePrivileges
+		CwtType::new("estate_privileges")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/estates/01_church.txt")),
-		ScriptFileKind::Estates
+		CwtType::new("estates")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/parliament_bribes/administrative_support.txt"
 		)),
-		ScriptFileKind::ParliamentBribes
+		CwtType::new("parliament_bribes")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/parliament_issues/00_adm_parliament_issues.txt"
 		)),
-		ScriptFileKind::ParliamentIssues
+		CwtType::new("parliament_issues")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/state_edicts/edict_of_governance.txt"
 		)),
-		ScriptFileKind::StateEdicts
+		CwtType::new("state_edicts")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/peace_treaties/00_peace_treaties.txt"
 		)),
-		ScriptFileKind::PeaceTreaties
+		CwtType::new("peace_treaties")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/bookmarks/a_new_world.txt")),
-		ScriptFileKind::Bookmarks
+		CwtType::new("bookmarks")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/policies/00_adm.txt")),
-		ScriptFileKind::Policies
+		CwtType::new("policies")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/mercenary_companies/00_mercenaries.txt"
 		)),
-		ScriptFileKind::MercenaryCompanies
+		CwtType::new("mercenary_companies")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/fervor/00_fervor.txt")),
-		ScriptFileKind::Fervor
+		CwtType::new("fervor")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/decrees/00_china.txt")),
-		ScriptFileKind::Decrees
+		CwtType::new("decrees")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/federation_advancements/00_default.txt"
 		)),
-		ScriptFileKind::FederationAdvancements
+		CwtType::new("federation_advancements")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/golden_bulls/00_golden_bulls.txt"
 		)),
-		ScriptFileKind::GoldenBulls
+		CwtType::new("golden_bulls")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/flagship_modifications/00_flagship_modifications.txt"
 		)),
-		ScriptFileKind::FlagshipModifications
+		CwtType::new("flagship_modifications")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/powerprojection/00_static.txt")),
-		ScriptFileKind::PowerProjection
+		CwtType::new("powerprojection")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/subject_type_upgrades/00_subject_type_upgrades.txt"
 		)),
-		ScriptFileKind::SubjectTypeUpgrades
+		CwtType::new("subject_type_upgrades")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new(
 			"common/government_ranks/00_government_ranks.txt"
 		)),
-		ScriptFileKind::GovernmentRanks
+		CwtType::new("government_ranks")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/technologies/adm.txt")),
-		ScriptFileKind::Technologies
+		CwtType::new("technologies")
 	);
 	assert_eq!(
 		classify_script_file(std::path::Path::new("common/technology.txt")),
-		ScriptFileKind::TechnologyGroups
+		CwtType::new("technology_groups")
 	);
 }
 
@@ -2967,7 +3005,7 @@ immediate = {
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.this_type == ScopeType::Province)
+			.any(|scope| scope.this_type == MaybeScope::Known(base_scope::province()))
 	);
 	assert!(
 		!index.key_usages.iter().any(|usage| {
@@ -3068,13 +3106,15 @@ provinces_to_highlight = {
 		);
 	}
 	assert!(index.scopes.iter().any(|scope| {
-		scope.kind == ScopeKind::AliasBlock && scope.this_type == ScopeType::Province
+		scope.kind == ScopeKind::AliasBlock
+			&& scope.this_type == MaybeScope::Known(base_scope::province())
 	}));
 	assert!(
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province)
+			.any(|scope| scope.kind == ScopeKind::Loop
+				&& scope.this_type == MaybeScope::Known(base_scope::province()))
 	);
 
 	let diagnostics = analyze_visibility(
@@ -3524,11 +3564,10 @@ mos_rus_window_on_the_west = {
 			"{name} should not be recorded as a scripted effect reference"
 		);
 	}
-	assert!(
-		index.scopes.iter().any(|scope| {
-			scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province
-		})
-	);
+	assert!(index.scopes.iter().any(|scope| {
+		scope.kind == ScopeKind::Loop
+			&& scope.this_type == MaybeScope::Known(base_scope::province())
+	}));
 
 	let diagnostics = analyze_visibility(
 		&index,
@@ -4701,7 +4740,7 @@ on_accept = {
 			nested_prev_usage.scope_id,
 			"PREV",
 		),
-		0,
+		ScopeSet::EMPTY,
 		"nested PREV aliases should no longer resolve to Unknown scope"
 	);
 
@@ -5016,32 +5055,36 @@ while = {
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.kind == ScopeKind::Effect && scope.this_type == ScopeType::Province)
+			.any(|scope| scope.kind == ScopeKind::Effect
+				&& scope.this_type == MaybeScope::Known(base_scope::province()))
 	);
 	assert!(
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.kind == ScopeKind::Effect && scope.this_type == ScopeType::Country)
+			.any(|scope| scope.kind == ScopeKind::Effect
+				&& scope.this_type == MaybeScope::Known(base_scope::country()))
 	);
 	assert!(
 		index
 			.scopes
 			.iter()
 			.any(|scope| scope.kind == ScopeKind::AliasBlock
-				&& scope.this_type == ScopeType::Country)
+				&& scope.this_type == MaybeScope::Known(base_scope::country()))
 	);
 	assert!(
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Province)
+			.any(|scope| scope.kind == ScopeKind::Loop
+				&& scope.this_type == MaybeScope::Known(base_scope::province()))
 	);
 	assert!(
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.kind == ScopeKind::Loop && scope.this_type == ScopeType::Country)
+			.any(|scope| scope.kind == ScopeKind::Loop
+				&& scope.this_type == MaybeScope::Known(base_scope::country()))
 	);
 
 	let diagnostics = analyze_visibility(
@@ -6236,12 +6279,21 @@ capital_scope = {
 		}
 	}
 
-	assert_eq!(inferred.get("country_wrapper"), Some(&ScopeType::Country));
-	assert_eq!(inferred.get("province_wrapper"), Some(&ScopeType::Province));
-	assert_eq!(inferred.get("shared_wrapper"), Some(&ScopeType::Unknown));
-	assert_eq!(inferred_masks.get("country_wrapper"), Some(&0b01));
-	assert_eq!(inferred_masks.get("province_wrapper"), Some(&0b10));
-	assert_eq!(inferred_masks.get("shared_wrapper"), Some(&0b11));
+	assert_eq!(
+		inferred.get("country_wrapper"),
+		Some(&MaybeScope::Known(base_scope::country()))
+	);
+	assert_eq!(
+		inferred.get("province_wrapper"),
+		Some(&MaybeScope::Known(base_scope::province()))
+	);
+	assert_eq!(inferred.get("shared_wrapper"), Some(&MaybeScope::Unknown));
+	assert_eq!(inferred_masks.get("country_wrapper"), Some(&country_mask()));
+	assert_eq!(
+		inferred_masks.get("province_wrapper"),
+		Some(&province_mask())
+	);
+	assert_eq!(inferred_masks.get("shared_wrapper"), Some(&mixed_mask()));
 
 	let diagnostics = analyze_visibility(
 		&index,
@@ -6399,16 +6451,31 @@ immediate = {
 			inferred_masks.insert(definition.local_name.clone(), definition.inferred_this_mask);
 		}
 	}
-	assert_eq!(inferred.get("country_wrapper"), Some(&ScopeType::Country));
-	assert_eq!(inferred.get("province_wrapper"), Some(&ScopeType::Province));
-	assert_eq!(inferred.get("chain_a"), Some(&ScopeType::Province));
-	assert_eq!(inferred.get("chain_b"), Some(&ScopeType::Province));
-	assert_eq!(inferred.get("conflict"), Some(&ScopeType::Unknown));
-	assert_eq!(inferred_masks.get("country_wrapper"), Some(&0b01));
-	assert_eq!(inferred_masks.get("province_wrapper"), Some(&0b10));
-	assert_eq!(inferred_masks.get("chain_a"), Some(&0b10));
-	assert_eq!(inferred_masks.get("chain_b"), Some(&0b10));
-	assert_eq!(inferred_masks.get("conflict"), Some(&0b11));
+	assert_eq!(
+		inferred.get("country_wrapper"),
+		Some(&MaybeScope::Known(base_scope::country()))
+	);
+	assert_eq!(
+		inferred.get("province_wrapper"),
+		Some(&MaybeScope::Known(base_scope::province()))
+	);
+	assert_eq!(
+		inferred.get("chain_a"),
+		Some(&MaybeScope::Known(base_scope::province()))
+	);
+	assert_eq!(
+		inferred.get("chain_b"),
+		Some(&MaybeScope::Known(base_scope::province()))
+	);
+	assert_eq!(inferred.get("conflict"), Some(&MaybeScope::Unknown));
+	assert_eq!(inferred_masks.get("country_wrapper"), Some(&country_mask()));
+	assert_eq!(
+		inferred_masks.get("province_wrapper"),
+		Some(&province_mask())
+	);
+	assert_eq!(inferred_masks.get("chain_a"), Some(&province_mask()));
+	assert_eq!(inferred_masks.get("chain_b"), Some(&province_mask()));
+	assert_eq!(inferred_masks.get("conflict"), Some(&mixed_mask()));
 
 	let diagnostics = analyze_visibility(
 		&index,
@@ -6514,25 +6581,25 @@ trigger = {
 		scripted_trigger_defs
 			.get("province_only")
 			.map(|d| d.inferred_this_mask),
-		Some(0b10)
+		Some(province_mask())
 	);
 	assert_eq!(
 		scripted_trigger_defs
 			.get("province_only")
 			.map(|d| d.inferred_this_type),
-		Some(ScopeType::Province)
+		Some(MaybeScope::Known(base_scope::province()))
 	);
 	assert_eq!(
 		scripted_trigger_defs
 			.get("mixed_trigger")
 			.map(|d| d.inferred_this_mask),
-		Some(0b11)
+		Some(mixed_mask())
 	);
 	assert_eq!(
 		scripted_trigger_defs
 			.get("mixed_trigger")
 			.map(|d| d.inferred_this_type),
-		Some(ScopeType::Unknown)
+		Some(MaybeScope::Unknown)
 	);
 
 	for name in ["province_only", "mixed_trigger"] {
@@ -6650,19 +6717,17 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 		ContentFamilyPathMatcher, MergePolicies, ModuleNameRule,
 	};
 	use super::extractors;
-	use foch_core::model::ScopeType;
 	let descriptor = ContentFamilyDescriptor {
-		id: "unregistered_test_family",
+		id: super::super::content_family::ContentFamilyId::new("unregistered_test_family"),
 		matcher: ContentFamilyPathMatcher::Prefix("unregistered_test_family/"),
-		script_file_kind: ScriptFileKind::Events,
+		cwt_type: CwtType::new("events"),
 		module_name_rule: ModuleNameRule::Static("events"),
 		scope_policy: super::super::content_family::ContentFamilyScopePolicy {
-			root_scope: ScopeType::Unknown,
+			root_scope: MaybeScope::Unknown,
 			from_alias: None,
 			dynamic_scope: false,
 		},
 		capabilities: ContentFamilyCapabilities::default(),
-		extractor: super::super::content_family::ContentFamilyExtractor::None,
 		merge_key_source: None,
 		conflict_policy: ConflictPolicy::default(),
 		merge_policies: MergePolicies::default(),
@@ -7011,7 +7076,7 @@ fn events_decisions_extractor_is_registered() {
 	let descriptor = profile
 		.classify_content_family(std::path::Path::new("events/decisions/00_decisions.txt"))
 		.expect("events/decisions family");
-	assert_eq!(descriptor.id, "events/decisions");
+	assert_eq!(descriptor.id.as_str(), "events/decisions");
 	assert!(
 		extractors::extractor_for(descriptor).is_some(),
 		"events/decisions family should have a registered extractor"
@@ -7027,7 +7092,7 @@ fn decisions_extractor_is_registered() {
 	let descriptor = profile
 		.classify_content_family(std::path::Path::new("decisions/00_decisions.txt"))
 		.expect("decisions family");
-	assert_eq!(descriptor.id, "decisions");
+	assert_eq!(descriptor.id.as_str(), "decisions");
 	assert!(
 		extractors::extractor_for(descriptor).is_some(),
 		"decisions family should have a registered extractor"
@@ -7660,7 +7725,7 @@ fn batch_promoted_roots_have_registered_extractors() {
 		let descriptor = profile
 			.classify_content_family(std::path::Path::new(path))
 			.unwrap_or_else(|| panic!("no descriptor for path {path}"));
-		assert_eq!(descriptor.id, expected_id, "wrong id for {path}");
+		assert_eq!(descriptor.id.as_str(), expected_id, "wrong id for {path}");
 		assert!(
 			extractors::extractor_for(descriptor).is_some(),
 			"{expected_id} should have a registered extractor"

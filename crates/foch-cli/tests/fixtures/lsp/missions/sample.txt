@@ -1,0 +1,5 @@
+demo_mission = {
+  provinces_to_highlight = {
+    is_year = 1444
+  }
+}

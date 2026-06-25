@@ -90,7 +90,7 @@ fn symbol_kind_order(kind: SymbolKind) -> u8 {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::model::ScopeType;
+	use foch_core::model::{MaybeScope, ScopeSet, test_support};
 	use std::path::PathBuf;
 
 	struct TestWorkspace {
@@ -109,6 +109,7 @@ mod tests {
 	}
 
 	fn definition(kind: SymbolKind, name: &str, local_name: &str) -> SymbolDefinition {
+		test_support::install_defaults();
 		SymbolDefinition {
 			kind,
 			name: name.to_string(),
@@ -119,11 +120,11 @@ mod tests {
 			line: 1,
 			column: 1,
 			scope_id: 0,
-			declared_this_type: ScopeType::Unknown,
-			inferred_this_type: ScopeType::Unknown,
-			inferred_this_mask: 0,
-			inferred_from_mask: 0,
-			inferred_root_mask: 0,
+			declared_this_type: MaybeScope::Unknown,
+			inferred_this_type: MaybeScope::Unknown,
+			inferred_this_mask: ScopeSet::EMPTY,
+			inferred_from_mask: ScopeSet::EMPTY,
+			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,

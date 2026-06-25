@@ -107,7 +107,7 @@ mod tests {
 			path: path_buf.clone(),
 			relative_path: path_buf,
 			content_family: None,
-			file_kind: foch_language::analyzer::content_family::ScriptFileKind::Other,
+			file_kind: foch_language::analyzer::content_family::CwtType::new("other"),
 			module_name: "test".to_string(),
 			ast: parse_result.ast,
 			source: content.to_string(),

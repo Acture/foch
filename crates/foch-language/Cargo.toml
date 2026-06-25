@@ -12,6 +12,7 @@ console.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true
 foch-core = { path = "../foch-core" }
+foch-cwt = { path = "../foch-cwt" }
 filetime = "0.2"
 rayon.workspace = true
 regex.workspace = true
@@ -21,4 +22,6 @@ sha2.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+foch-core = { path = "../foch-core", features = ["test-utils"] }
+foch-syntax = { path = "../foch-syntax" }
 tempfile.workspace = true

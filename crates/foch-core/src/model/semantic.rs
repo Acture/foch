@@ -2,6 +2,7 @@ use super::document::{
 	CsvRow, DocumentRecord, JsonProperty, LocalisationDefinition, LocalisationDuplicate,
 	ParseIssue, ResourceReference, UiDefinition,
 };
+use super::{MaybeScope, ScopeSet};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -39,25 +40,6 @@ impl SymbolKind {
 			SymbolKind::TriggeredModifier => "triggered_modifier",
 		}
 	}
-}
-
-#[derive(
-	Clone,
-	Copy,
-	Debug,
-	Eq,
-	PartialEq,
-	Hash,
-	Serialize,
-	Deserialize,
-	rkyv::Archive,
-	rkyv::Serialize,
-	rkyv::Deserialize,
-)]
-pub enum ScopeType {
-	Country,
-	Province,
-	Unknown,
 }
 
 #[derive(
@@ -105,8 +87,8 @@ pub struct ScopeNode {
 	pub id: usize,
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
-	pub this_type: ScopeType,
-	pub aliases: HashMap<String, ScopeType>,
+	pub this_type: MaybeScope,
+	pub aliases: HashMap<String, MaybeScope>,
 	pub mod_id: String,
 	pub path: PathBuf,
 	pub span: SourceSpan,
@@ -127,24 +109,24 @@ pub struct SymbolDefinition {
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
-	pub declared_this_type: ScopeType,
-	pub inferred_this_type: ScopeType,
+	pub declared_this_type: MaybeScope,
+	pub inferred_this_type: MaybeScope,
 	#[serde(default)]
-	pub inferred_this_mask: u8,
+	pub inferred_this_mask: ScopeSet,
 	/// Static caller-FROM scope mask inferred from invocation sites. For
 	/// callables (scripted_effects, scripted_triggers, ...), this is the
 	/// union of FROM types observed at every callsite. Non-zero means FROM
 	/// is statically resolvable inside the body and invisible-scope-alias should not flag
 	/// FROM aliases there.
 	#[serde(default)]
-	pub inferred_from_mask: u8,
+	pub inferred_from_mask: ScopeSet,
 	/// Static caller-ROOT scope mask inferred from invocation sites. ROOT
 	/// propagates into scripted_effect / scripted_trigger bodies (the body
 	/// keeps the caller's outermost evaluation context). For events ROOT is
 	/// already pinned to the event scope, but we still record the mask for
 	/// downstream resolution and consistency.
 	#[serde(default)]
-	pub inferred_root_mask: u8,
+	pub inferred_root_mask: ScopeSet,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub optional_params: Vec<String>,
@@ -236,7 +218,7 @@ pub struct KeyUsage {
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
-	pub this_type: ScopeType,
+	pub this_type: MaybeScope,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

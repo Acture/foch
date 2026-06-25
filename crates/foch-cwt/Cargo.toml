@@ -1,0 +1,20 @@
+[package]
+name = "foch-cwt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+foch-core = { path = "../foch-core" }
+foch-syntax = { path = "../foch-syntax" }
+sha2.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true

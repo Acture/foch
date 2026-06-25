@@ -1,3 +1,4 @@
+pub(crate) mod cwt_suggestions;
 pub(crate) mod error;
 pub(crate) mod execute;
 pub(crate) mod namespace;

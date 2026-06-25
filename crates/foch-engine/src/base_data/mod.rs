@@ -11,9 +11,10 @@ use flate2::write::GzEncoder;
 use foch_core::domain::game::Game;
 use foch_core::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
-	LocalisationDefinition, LocalisationDuplicate, ParamBinding, ParamContract, ParseFamilyStats,
-	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType,
-	SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
+	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
+	ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
+	ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
+	UiDefinition,
 };
 use foch_core::utils::steam::steam_game_install_path;
 use foch_language::analysis_version::analysis_rules_version;
@@ -38,7 +39,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 11;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 12;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -576,10 +577,10 @@ impl BaseAnalysisSnapshot {
 					scope_id: item.scope_id,
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
-					inferred_this_mask: if item.inferred_this_mask != 0 {
+					inferred_this_mask: if !item.inferred_this_mask.is_empty() {
 						item.inferred_this_mask
 					} else {
-						scope_type_mask(item.inferred_this_type)
+						scope_mask(item.inferred_this_type)
 					},
 					inferred_from_mask: item.inferred_from_mask,
 					inferred_root_mask: item.inferred_root_mask,
@@ -771,8 +772,8 @@ pub struct BaseDocumentRecord {
 pub struct BaseScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
-	pub this_type: ScopeType,
-	pub aliases: HashMap<String, ScopeType>,
+	pub this_type: MaybeScope,
+	pub aliases: HashMap<String, MaybeScope>,
 	pub path: String,
 	pub span: SourceSpan,
 	#[serde(default)]
@@ -791,14 +792,14 @@ pub struct BaseSymbolDefinition {
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
-	pub declared_this_type: ScopeType,
-	pub inferred_this_type: ScopeType,
+	pub declared_this_type: MaybeScope,
+	pub inferred_this_type: MaybeScope,
 	#[serde(default)]
-	pub inferred_this_mask: u8,
+	pub inferred_this_mask: ScopeSet,
 	#[serde(default)]
-	pub inferred_from_mask: u8,
+	pub inferred_from_mask: ScopeSet,
 	#[serde(default)]
-	pub inferred_root_mask: u8,
+	pub inferred_root_mask: ScopeSet,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub optional_params: Vec<String>,
@@ -808,12 +809,8 @@ pub struct BaseSymbolDefinition {
 	pub scope_param_names: Vec<String>,
 }
 
-fn scope_type_mask(scope_type: ScopeType) -> u8 {
-	match scope_type {
-		ScopeType::Country => 0b01,
-		ScopeType::Province => 0b10,
-		ScopeType::Unknown => 0,
-	}
+fn scope_mask(scope_type: impl Into<ScopeSet>) -> ScopeSet {
+	scope_type.into()
 }
 
 #[derive(
@@ -851,7 +848,7 @@ pub struct BaseKeyUsage {
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
-	pub this_type: ScopeType,
+	pub this_type: MaybeScope,
 }
 
 #[derive(

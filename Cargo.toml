@@ -2,9 +2,9 @@
 resolver = "2"
 members = [
 	"crates/foch-cli",
-	"crates/foch-core",
+	"crates/foch-core", "crates/foch-cwt",
 	"crates/foch-engine",
-	"crates/foch-language",
+	"crates/foch-language", "crates/foch-syntax",
 	"packages/tree-sitter-paradox",
 ]
 

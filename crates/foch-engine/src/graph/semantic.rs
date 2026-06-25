@@ -1768,8 +1768,8 @@ mod tests {
 	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::Playlist;
 	use foch_core::model::{
-		DocumentFamily, DocumentRecord, KeyUsage, ScalarAssignment, ScopeNode, ScopeType,
-		SemanticIndex, SourceSpan,
+		DocumentFamily, DocumentRecord, KeyUsage, MaybeScope, ScalarAssignment, ScopeNode,
+		SemanticIndex, SourceSpan, base_scope, test_support,
 	};
 	use std::collections::{BTreeMap, HashMap};
 	use std::path::PathBuf;
@@ -2143,12 +2143,13 @@ mod tests {
 	}
 
 	fn test_runtime_state() -> RuntimeState {
+		test_support::install_defaults();
 		let scopes = vec![
 			ScopeNode {
 				id: 0,
 				kind: ScopeKind::File,
 				parent: None,
-				this_type: ScopeType::Country,
+				this_type: MaybeScope::Known(base_scope::country()),
 				aliases: HashMap::new(),
 				mod_id: "mod:test".to_string(),
 				path: PathBuf::from("common/holy_orders/orders.txt"),
@@ -2159,7 +2160,7 @@ mod tests {
 				id: 1,
 				kind: ScopeKind::Block,
 				parent: Some(0),
-				this_type: ScopeType::Country,
+				this_type: MaybeScope::Known(base_scope::country()),
 				aliases: HashMap::new(),
 				mod_id: "mod:test".to_string(),
 				path: PathBuf::from("common/holy_orders/orders.txt"),
@@ -2186,7 +2187,7 @@ mod tests {
 					line: 3,
 					column: 2,
 					scope_id: 1,
-					this_type: ScopeType::Country,
+					this_type: MaybeScope::Known(base_scope::country()),
 				}],
 				scalar_assignments: vec![ScalarAssignment {
 					key: "cost".to_string(),

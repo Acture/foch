@@ -13,6 +13,7 @@ description = "Paradox mod static analysis toolkit with CLI and EU4-focused lang
 clap.workspace = true
 clap-verbosity-flag.workspace = true
 foch-core = { path = "../../crates/foch-core" }
+foch-cwt = { path = "../../crates/foch-cwt" }
 foch-engine = { path = "../../crates/foch-engine" }
 foch-language = { path = "../../crates/foch-language" }
 crossterm = "0.29.0"
@@ -26,6 +27,7 @@ tracing-subscriber.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+foch-core = { path = "../../crates/foch-core", features = ["test-utils"] }
 tempfile.workspace = true
 tiny_http.workspace = true
 toml.workspace = true

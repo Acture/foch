@@ -1,0 +1,3 @@
+[[resolutions]]
+file = "common/estates_preload/test_modifiers.txt"
+policy = "cwt_suggested"

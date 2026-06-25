@@ -1908,7 +1908,7 @@ static POLICIES: TopLevelNamedBlockExtractor = TopLevelNamedBlockExtractor {
 pub(super) fn extractor_for(
 	descriptor: &ContentFamilyDescriptor,
 ) -> Option<&'static dyn ResourceExtractor> {
-	match descriptor.id {
+	match descriptor.id.as_str() {
 		// NamedDefinitionTable
 		"common/fervor" => Some(&FERVOR),
 		"common/decrees" => Some(&DECREES),

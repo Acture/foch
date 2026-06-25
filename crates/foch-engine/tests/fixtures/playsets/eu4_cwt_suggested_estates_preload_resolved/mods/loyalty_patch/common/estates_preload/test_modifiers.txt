@@ -1,0 +1,10 @@
+modifier = {
+    key = estate_balance
+    add_loyalty = 5
+    add_influence = 0
+}
+modifier = {
+    key = estate_support
+    add_loyalty = 1
+    add_influence = 2
+}

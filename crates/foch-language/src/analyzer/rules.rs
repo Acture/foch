@@ -459,7 +459,7 @@ fn collect_content_family_merge_keys(
 fn dependency_merge_key_source_for_path(path: &Path) -> Option<(&'static str, MergeKeySource)> {
 	let descriptor = eu4_profile().classify_content_family(path)?;
 	let source = descriptor.merge_key_source?;
-	is_dependency_merge_key_source(source).then_some((descriptor.id, source))
+	is_dependency_merge_key_source(source).then_some((descriptor.id.as_str(), source))
 }
 
 fn scalar_values_by_scope(index: &SemanticIndex) -> HashMap<(usize, String), String> {
@@ -837,8 +837,8 @@ mod tests {
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
 	use foch_core::model::{
-		LocalisationDefinition, ModCandidate, ScopeType, SemanticIndex, SymbolDefinition,
-		SymbolReference,
+		LocalisationDefinition, MaybeScope, ModCandidate, ScopeSet, SemanticIndex,
+		SymbolDefinition, SymbolReference, test_support,
 	};
 	use std::fs;
 	use std::path::{Path, PathBuf};
@@ -878,6 +878,7 @@ mod tests {
 	}
 
 	fn definition(mod_id: &str, local_name: &str) -> SymbolDefinition {
+		test_support::install_defaults();
 		SymbolDefinition {
 			kind: SymbolKind::ScriptedEffect,
 			name: format!("eu4::common.scripted_effects::{local_name}"),
@@ -888,11 +889,11 @@ mod tests {
 			line: 1,
 			column: 1,
 			scope_id: 0,
-			declared_this_type: ScopeType::Unknown,
-			inferred_this_type: ScopeType::Unknown,
-			inferred_this_mask: 0,
-			inferred_from_mask: 0,
-			inferred_root_mask: 0,
+			declared_this_type: MaybeScope::Unknown,
+			inferred_this_type: MaybeScope::Unknown,
+			inferred_this_mask: ScopeSet::EMPTY,
+			inferred_from_mask: ScopeSet::EMPTY,
+			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,

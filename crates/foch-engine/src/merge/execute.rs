@@ -6,6 +6,9 @@ use crate::cache::{
 	ModsetCache, compute_mod_hash, compute_modset_cache_key, compute_resolution_map_hash,
 	unpack_modset_tarball,
 };
+
+// Bump when merge-report semantics change so cached artifacts don't hide new metadata.
+const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-cwt-conflict-kinds-v2";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
@@ -175,10 +178,14 @@ fn build_modset_cache_context(
 		playset_root,
 		resolution_config_path,
 	));
+	let foch_version = format!(
+		"{} {MODSET_CACHE_FORMAT_VERSION}",
+		env!("CARGO_PKG_VERSION")
+	);
 	let key = compute_modset_cache_key(
 		&mod_hashes,
 		&resolution_map_hash,
-		env!("CARGO_PKG_VERSION"),
+		&foch_version,
 		&game_version,
 	);
 	Some(ModsetCacheContext {

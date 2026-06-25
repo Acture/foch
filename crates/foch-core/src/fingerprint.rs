@@ -139,6 +139,7 @@ mod tests {
 			keep_existing: None,
 			priority_boost: None,
 			handler: None,
+			policy: None,
 		};
 		let entry_b = ResolutionEntry {
 			file: None,
@@ -150,6 +151,7 @@ mod tests {
 			keep_existing: None,
 			priority_boost: None,
 			handler: None,
+			policy: None,
 		};
 		let a = compute_playset_fingerprint(&[], &[], &[entry_a]);
 		let b = compute_playset_fingerprint(&[], &[], &[entry_b]);

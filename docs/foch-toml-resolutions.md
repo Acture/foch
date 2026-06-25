@@ -12,7 +12,7 @@ When the patch merge engine reaches a structural conflict, it asks a conflict-ha
 
 That order is constructed in `crates/foch-engine/src/merge/materialize.rs:1001-1021`. `ChainHandler` only invokes the next handler when the previous handler returns `ConflictDecision::Defer` (`crates/foch-engine/src/merge/conflict_handler.rs:659-687`). `LookupHandler` computes the per-conflict id and canonical leaf address, then dispatches `prefer_mod`, `use_file`, `keep_existing`, or named `handler` decisions (`crates/foch-engine/src/merge/conflict_handler.rs:322-352`).
 
-`[[resolutions]]` is therefore a local policy layer for conflicts you already understand: it can pin one exact conflict by id, apply a whole-file policy, apply a path/address pattern, or adjust mod priority metadata. The end-to-end fixture uses:
+`[[resolutions]]` is therefore a local policy layer for conflicts you already understand: it can pin one exact conflict by id, apply a whole-file policy, apply a path/address pattern, adjust mod priority metadata, or opt a structural root into `policy = "cwt_suggested"` merge-key discovery. The end-to-end fixture uses:
 
 ```toml
 [[resolutions]]
@@ -28,10 +28,10 @@ Every `[[resolutions]]` entry must set exactly one selector: `file`, `conflict_i
 
 | Selector | Type | Scope | Typical actions | Notes |
 | --- | --- | --- | --- | --- |
-| `file` | TOML string parsed as `PathBuf` | Exact merge target path, for example `events/PirateEvents.txt` | `prefer_mod`, `use_file`, `keep_existing` | Stored in `ResolutionMap.by_file`; lookup checks it after `conflict_id` and before patterns (`crates/foch-core/src/config.rs:285-289`, `crates/foch-core/src/config.rs:304-332`). |
-| `conflict_id` | String | One canonical conflict address | `prefer_mod`, `use_file` | Stored in `ResolutionMap.by_conflict_id`; highest lookup precedence (`crates/foch-core/src/config.rs:288-289`, `crates/foch-core/src/config.rs:322-324`). |
-| `mod` | String mod id | A mod-scoped priority entry | `priority_boost` only | Stored in `ResolutionMap.mod_priority_boost`, not returned by per-conflict `lookup` (`crates/foch-core/src/config.rs:276-282`). |
-| `match` | String pattern DSL | File glob/regex, optionally plus address glob/regex | `prefer_mod`, `use_file`, `handler` | Compiled into ordered `pattern_rules`; handler actions are only valid with this selector (`crates/foch-core/src/config.rs:290-298`, `crates/foch-core/src/config.rs:370-374`). |
+| `file` | TOML string parsed as `PathBuf` | Exact merge target path, for example `events/PirateEvents.txt` | `prefer_mod`, `use_file`, `keep_existing`, `policy` | Stored in `ResolutionMap.by_file`; lookup checks it after `conflict_id` and before patterns. File-scoped `policy = "cwt_suggested"` entries are stored separately in `ResolutionMap.policy_by_file`. |
+| `conflict_id` | String | One canonical conflict address | `prefer_mod`, `use_file` | Stored in `ResolutionMap.by_conflict_id`; highest lookup precedence. `policy` is not valid with this selector because merge-key overrides apply before per-conflict dispatch. |
+| `mod` | String mod id | A mod-scoped priority entry | `priority_boost` only | Stored in `ResolutionMap.mod_priority_boost`, not returned by per-conflict `lookup`. |
+| `match` | String pattern DSL | File glob/regex, optionally plus address glob/regex | `prefer_mod`, `use_file`, `handler`, `policy` | Decision rules compile into ordered `pattern_rules`. `policy = "cwt_suggested"` is only valid for file-only `match` patterns (no address side) because it overrides the file-level merge key before conflicts are computed. |
 
 Examples:
 
@@ -67,15 +67,16 @@ Paths should be written as foch merge target paths, usually relative paths with 
 
 ## 3. Actions
 
-Every entry must set exactly one action. For non-`mod` selectors, the allowed action fields are `prefer_mod`, `use_file`, `keep_existing`, and `handler`; for the `mod` selector, the only action is `priority_boost`. Validation is centralized in `ResolutionEntry::validate` (`crates/foch-core/src/config.rs:335-388`), and the action is converted into `ResolutionDecision` in `crates/foch-core/src/config.rs:409-421`.
+Every entry must set exactly one action. For non-`mod` selectors, the allowed action fields are `prefer_mod`, `use_file`, `keep_existing`, `handler`, and `policy`; for the `mod` selector, the only action is `priority_boost`. Validation is centralized in `ResolutionEntry::validate`, and conflict actions are converted into `ResolutionDecision` while merge-key overrides become `ResolutionPolicy` entries.
 
 | Action | Type | Valid selectors | Runtime decision | Validation rules |
 | --- | --- | --- | --- | --- |
 | `prefer_mod` | String mod id | `file`, `conflict_id`, `match` | `PickMod { mod_id, record: None }` | Cannot combine with any other action (`crates/foch-core/src/config.rs:376-380`). If the mod is no longer a contributor at that conflict, the merge engine treats it as stale and defers (`crates/foch-engine/src/merge/patch_merge.rs:511-532`). |
 | `use_file` | TOML string parsed as `PathBuf` | `file`, `conflict_id`, `match` | `UseFile(path)`; bytes are copied from that external path during materialization | Cannot combine with any other action. Materialization reads the source path and writes it to the target (`crates/foch-engine/src/merge/materialize.rs:1264-1288`). |
 | `keep_existing` | Boolean | `file` only | `KeepExisting`; preserve an existing output-dir file | Must be `true` when present, and requires `file` selector (`crates/foch-core/src/config.rs:343-347`, `crates/foch-core/src/config.rs:382-386`). If the output file does not exist, foch warns and falls through to normal output (`crates/foch-engine/src/merge/materialize.rs:1244-1262`). |
-| `priority_boost` | Integer (`i32`) | `mod` only | Stored in `ResolutionMap.mod_priority_boost` | `mod` requires `priority_boost`; `priority_boost` cannot combine with `prefer_mod`, `use_file`, `keep_existing`, or `handler`; `priority_boost` without `mod` is invalid (`crates/foch-core/src/config.rs:349-368`). |
-| `handler` | String handler name | `match` only | Registry dispatches to a built-in handler | Requires `match` selector and cannot combine with any other action (`crates/foch-core/src/config.rs:370-380`). Unknown names parse successfully but log a runtime warning and defer (`crates/foch-engine/src/merge/handler_registry.rs:42-49`). |
+| `priority_boost` | Integer (`i32`) | `mod` only | Stored in `ResolutionMap.mod_priority_boost` | `mod` requires `priority_boost`; `priority_boost` cannot combine with `prefer_mod`, `use_file`, `keep_existing`, `handler`, or `policy`; `priority_boost` without `mod` is invalid. |
+| `handler` | String handler name | `match` only | Registry dispatches to a built-in handler | Requires `match` selector and cannot combine with any other action. Unknown names parse successfully but log a runtime warning and defer. |
+| `policy` | String enum | `file`, file-only `match` | Overrides pre-conflict merge-key discovery | `policy = "cwt_suggested"` asks materialization to derive the file's `MergeKeySource` from CWTools schema metadata. Missing or ambiguous schema hints are hard validation errors; address-constrained `match` patterns are rejected because the override applies before per-leaf conflict dispatch. |
 
 Examples:
 
@@ -112,6 +113,13 @@ priority_boost = 100
 [[resolutions]]
 match = "common/ideas/**::xx_idea_*"
 handler = "last_writer"
+```
+
+```toml
+# policy: opt a file into CWT-derived merge-key discovery.
+[[resolutions]]
+file = "common/estates_preload/test_modifiers.txt"
+policy = "cwt_suggested"
 ```
 
 ## 4. Match DSL syntax

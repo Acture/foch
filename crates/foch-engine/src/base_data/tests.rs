@@ -7,8 +7,9 @@ use super::{
 };
 use foch_core::domain::game::Game;
 use foch_core::model::{
-	DocumentFamily, DocumentRecord, LocalisationDefinition, ParamContract, ResourceReference,
-	ScopeType, SemanticIndex, SymbolDefinition, SymbolKind,
+	DocumentFamily, DocumentRecord, LocalisationDefinition, MaybeScope, ParamContract,
+	ResourceReference, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind, base_scope,
+	test_support,
 };
 use foch_language::analysis_version::analysis_rules_version;
 use std::path::PathBuf;
@@ -17,7 +18,12 @@ use tempfile::TempDir;
 
 static BASE_DATA_ENV_LOCK: Mutex<()> = Mutex::new(());
 
+fn country_mask() -> ScopeSet {
+	base_scope::country().into()
+}
+
 fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
+	test_support::install_defaults();
 	let mut index = SemanticIndex::default();
 	index.definitions.push(SymbolDefinition {
 		kind: SymbolKind::ScriptedEffect,
@@ -29,11 +35,11 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 		line: 1,
 		column: 1,
 		scope_id: 0,
-		declared_this_type: ScopeType::Country,
-		inferred_this_type: ScopeType::Country,
-		inferred_this_mask: 0b01,
-		inferred_from_mask: 0,
-		inferred_root_mask: 0,
+		declared_this_type: MaybeScope::Known(base_scope::country()),
+		inferred_this_type: MaybeScope::Known(base_scope::country()),
+		inferred_this_mask: country_mask(),
+		inferred_from_mask: ScopeSet::EMPTY,
+		inferred_root_mask: ScopeSet::EMPTY,
 		required_params: vec![
 			"age".to_string(),
 			"name".to_string(),
@@ -62,6 +68,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 }
 
 fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
+	test_support::install_defaults();
 	let mod_id = "__game__eu4".to_string();
 	let mut index = SemanticIndex {
 		documents: vec![
@@ -468,11 +475,11 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		line: 1,
 		column: 1,
 		scope_id: 0,
-		declared_this_type: ScopeType::Country,
-		inferred_this_type: ScopeType::Country,
-		inferred_this_mask: 0b01,
-		inferred_from_mask: 0,
-		inferred_root_mask: 0,
+		declared_this_type: MaybeScope::Known(base_scope::country()),
+		inferred_this_type: MaybeScope::Known(base_scope::country()),
+		inferred_this_mask: country_mask(),
+		inferred_from_mask: ScopeSet::EMPTY,
+		inferred_root_mask: ScopeSet::EMPTY,
 		required_params: vec!["value".to_string()],
 		param_contract: None,
 		optional_params: Vec::new(),
@@ -1453,7 +1460,7 @@ fn base_snapshot_round_trip_preserves_param_contracts() {
 			.symbol_definitions
 			.first()
 			.map(|definition| definition.inferred_this_mask),
-		Some(0b01)
+		Some(country_mask())
 	);
 
 	let rehydrated = decoded.to_semantic_index();
@@ -1469,7 +1476,7 @@ fn base_snapshot_round_trip_preserves_param_contracts() {
 			.definitions
 			.first()
 			.map(|definition| definition.inferred_this_mask),
-		Some(0b01)
+		Some(country_mask())
 	);
 }
 
@@ -2163,6 +2170,7 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 
 #[test]
 fn base_symbol_definition_defaults_missing_param_contract() {
+	test_support::install_defaults();
 	let raw = serde_json::json!({
 		"kind": "ScriptedEffect",
 		"name": "test.effect",
@@ -2172,13 +2180,13 @@ fn base_symbol_definition_defaults_missing_param_contract() {
 		"line": 1,
 		"column": 1,
 		"scope_id": 0,
-		"declared_this_type": "Country",
-		"inferred_this_type": "Country",
-		"inferred_this_mask": 1,
+		"declared_this_type": MaybeScope::Known(base_scope::country()),
+		"inferred_this_type": MaybeScope::Known(base_scope::country()),
+		"inferred_this_mask": country_mask(),
 		"required_params": []
 	});
 	let decoded: BaseSymbolDefinition =
-		serde_json::from_value(raw).expect("deserialize legacy base symbol definition");
+		serde_json::from_value(raw).expect("deserialize base symbol definition");
 	assert!(decoded.param_contract.is_none());
-	assert_eq!(decoded.inferred_this_mask, 1);
+	assert_eq!(decoded.inferred_this_mask, country_mask());
 }

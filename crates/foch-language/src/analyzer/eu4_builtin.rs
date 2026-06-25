@@ -13,6 +13,7 @@ struct BuiltinCatalog {
 	contextual_keywords: Vec<String>,
 	#[serde(default)]
 	alias_keywords: Vec<String>,
+	base_scopes: BuiltinBaseScopes,
 	#[serde(default)]
 	builtin_triggers: Vec<BuiltinSymbol>,
 	#[serde(default)]
@@ -25,6 +26,12 @@ struct BuiltinCatalog {
 	builtin_special_blocks: Vec<BuiltinSymbol>,
 	#[serde(default)]
 	game_only_candidates: Vec<BuiltinSymbol>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BuiltinBaseScopes {
+	country: String,
+	province: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +50,7 @@ struct BuiltinLookup {
 	iterators: HashSet<String>,
 	special_blocks: HashSet<String>,
 	game_only: HashSet<String>,
+	base_scopes: BuiltinBaseScopes,
 	reserved_list: Vec<String>,
 	contextual_list: Vec<String>,
 	aliases_list: Vec<String>,
@@ -62,6 +70,7 @@ fn load_lookup() -> &'static BuiltinLookup {
 			.expect("valid crates/foch-language/src/data/eu4_builtin_catalog.json catalog");
 
 		let mut reserved_list = catalog.reserved_keywords;
+		let base_scopes = catalog.base_scopes;
 		reserved_list.sort();
 		reserved_list.dedup();
 
@@ -139,6 +148,7 @@ fn load_lookup() -> &'static BuiltinLookup {
 			iterators: to_lower_set(&iterators_list),
 			special_blocks: to_lower_set(&special_blocks_list),
 			game_only,
+			base_scopes,
 			reserved_list,
 			contextual_list,
 			aliases_list,
@@ -228,6 +238,11 @@ pub fn builtin_iterator_names() -> &'static [String] {
 
 pub fn builtin_special_block_names() -> &'static [String] {
 	&load_lookup().special_blocks_list
+}
+
+pub fn builtin_base_scope_names() -> (&'static str, &'static str) {
+	let base_scopes = &load_lookup().base_scopes;
+	(base_scopes.country.as_str(), base_scopes.province.as_str())
 }
 
 pub fn builtin_catalog_hash() -> &'static str {
