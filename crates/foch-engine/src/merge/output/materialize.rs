@@ -23,10 +23,11 @@ use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_works
 use cross_file_dedup::prune_cross_file_noop_duplicates;
 use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionMap};
 use foch_core::model::{
-	CheckContext, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
+	CheckContext, ConflictKind, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
 	MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
 	MergeReportConflictResolution, MergeReportStatus, SemanticIndex, StaleVanillaTargetDescriptor,
 };
+use foch_cwt::CwtSchemaGraph;
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
@@ -45,6 +46,7 @@ use std::fs;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 pub(crate) struct MergeMaterializeOptions {
@@ -292,7 +294,11 @@ pub(crate) fn materialize_merge_internal(
 						{
 							let target = entry.path.clone();
 							let contribs = contributors.clone();
-							let desc = *descriptor;
+							let desc = descriptor.clone();
+							let cwt_schema_graph =
+								crate::merge::cwt_suggestions::cwt_schema_graph_for_profile(
+									profile,
+								);
 							let dag = mod_dag.clone();
 							let ignore = ignore_replace_path.clone();
 							let dep_overrides = dep_overrides.clone();
@@ -306,6 +312,7 @@ pub(crate) fn materialize_merge_internal(
 								std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 									let context = PatchBasedMergeContext {
 										descriptor: &desc,
+										cwt_schema_graph: cwt_schema_graph.clone(),
 										merge_key_source,
 										mod_dag: &dag,
 										ignore_replace_path: &ignore,
@@ -804,6 +811,7 @@ fn workspace_conflict_skipped_resolution(
 	MergeReportConflictResolution {
 		path: entry.path.clone(),
 		reason: reason.to_string(),
+		kind: summarize_conflict_kind(&leaf_conflicts),
 		leaf_conflicts,
 	}
 }
@@ -815,8 +823,15 @@ fn plan_conflict_skipped_resolution(
 	MergeReportConflictResolution {
 		path: entry.path.clone(),
 		reason: reason.to_string(),
+		kind: None,
 		leaf_conflicts: Vec::new(),
 	}
+}
+
+fn summarize_conflict_kind(leaf_conflicts: &[LeafConflictDetail]) -> Option<ConflictKind> {
+	let mut kinds = leaf_conflicts.iter().filter_map(|leaf| leaf.kind);
+	let first = kinds.next()?;
+	kinds.all(|kind| kind == first).then_some(first)
 }
 
 #[derive(Clone, Debug)]
@@ -872,9 +887,10 @@ struct DepMisuseRemoveCount {
 	count: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PatchBasedMergeContext<'a> {
 	descriptor: &'a ContentFamilyDescriptor,
+	cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
 	merge_key_source: MergeKeySource,
 	mod_dag: &'a ModDag,
 	ignore_replace_path: &'a IgnoreReplacePath,

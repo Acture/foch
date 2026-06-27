@@ -194,7 +194,7 @@ fn block_items(stmt: &AstStatement) -> Option<&[AstStatement]> {
 mod tests {
 	use std::path::PathBuf;
 
-	use foch_language::analyzer::content_family::ScriptFileKind;
+	use foch_language::analyzer::content_family::CwtType;
 	use foch_language::analyzer::parser::parse_clausewitz_content;
 
 	use super::*;
@@ -209,7 +209,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path.clone(),
 			content_family: None,
-			file_kind: ScriptFileKind::Other,
+			file_kind: CwtType::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),

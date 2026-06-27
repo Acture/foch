@@ -20,6 +20,10 @@ foch merge dlc_load.json --out merged-mod
 
 When a crates.io package is published, the install line becomes `cargo install foch`. Until then, use the path install above or a release binary.
 
+## Schema vendor
+
+EU4 CWT schemas are vendored as a git submodule at `vendor/cwtools-eu4-config`. Refresh them manually with `git submodule update --remote vendor/cwtools-eu4-config`, then run `python scripts/cwt_snapshot_hash.py` to print the current schema pack identity. That SHA-256 digest is the content-addressed fingerprint used to spot upstream schema drift in CI and review.
+
 ## What works in the alpha
 
 | Command | Purpose |

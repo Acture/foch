@@ -1,6 +1,6 @@
 use foch_core::model::{
-	ChannelMode, CheckResult, DepMisuseFinding, Finding, FindingChannel, MergePlanEntry,
-	MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus,
+	ChannelMode, CheckResult, ConflictKind, DepMisuseFinding, Finding, FindingChannel,
+	MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus,
 	STALE_VANILLA_FALLBACK_RULE_ID, Severity,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -344,6 +344,9 @@ fn append_conflict_resolutions_section(lines: &mut Vec<String>, report: &MergeRe
 	for resolution in &report.conflict_resolutions {
 		lines.push(format!("  - path: {}", resolution.path));
 		lines.push(format!("    reason: {}", resolution.reason));
+		if let Some(kind) = resolution.kind {
+			lines.push(format!("    kind: {}", render_conflict_kind(kind)));
+		}
 		if resolution.leaf_conflicts.is_empty() {
 			continue;
 		}
@@ -358,6 +361,9 @@ fn append_conflict_resolutions_section(lines: &mut Vec<String>, report: &MergeRe
 				"      - address: {} conflict_id: {}",
 				address, leaf.conflict_id
 			));
+			if let Some(kind) = leaf.kind {
+				lines.push(format!("        kind: {}", render_conflict_kind(kind)));
+			}
 			for contributor in &leaf.contributors {
 				lines.push(format!(
 					"          - {}:{} precedence={}",
@@ -366,6 +372,10 @@ fn append_conflict_resolutions_section(lines: &mut Vec<String>, report: &MergeRe
 			}
 		}
 	}
+}
+
+fn render_conflict_kind(kind: ConflictKind) -> &'static str {
+	kind.as_str()
 }
 
 fn append_version_mismatch_section(lines: &mut Vec<String>, report: &MergeReport) {
@@ -826,6 +836,30 @@ mod tests {
 				false_remove_count,
 			},
 		}
+	}
+
+	#[test]
+	fn render_merge_report_text_includes_conflict_kinds() {
+		let report = MergeReport {
+			conflict_resolutions: vec![foch_core::model::MergeReportConflictResolution {
+				path: "history/countries/TES - Test.txt".to_string(),
+				reason: "manual resolution required".to_string(),
+				kind: Some(ConflictKind::SchemaCardinalityViolation),
+				leaf_conflicts: vec![foch_core::model::LeafConflictDetail {
+					address_path: String::new(),
+					address_key: "religion".to_string(),
+					conflict_id: "deadbeef".to_string(),
+					kind: Some(ConflictKind::SchemaCardinalityViolation),
+					contributors: Vec::new(),
+				}],
+			}],
+			..MergeReport::default()
+		};
+
+		let output = render_merge_report_text(&report);
+
+		assert!(output.contains("kind: schema_cardinality_violation"));
+		assert!(output.contains("address: religion conflict_id: deadbeef"));
 	}
 
 	#[test]

@@ -3,7 +3,7 @@ pub mod parse_cache;
 mod scope_rules;
 
 use super::content_family::{
-	ContentFamilyDescriptor, ContentFamilyScopePolicy, GameProfile, ScriptFileKind,
+	ContentFamilyDescriptor, ContentFamilyScopePolicy, CwtType, GameId, GameProfile,
 	module_name_for_descriptor,
 };
 use super::eu4_builtin::{
@@ -17,10 +17,12 @@ use super::param_contracts::{
 };
 use super::parser::{AstFile, AstStatement, AstValue, SpanRange};
 use foch_core::model::{
-	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, ParamBinding,
-	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType,
-	SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
+	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, MaybeScope,
+	ParamBinding, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet,
+	ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
+	UiDefinition, base_scope,
 };
+use foch_cwt::CwtSchemaGraph;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -32,7 +34,7 @@ pub struct ParsedScriptFile {
 	pub path: PathBuf,
 	pub relative_path: PathBuf,
 	pub content_family: Option<&'static ContentFamilyDescriptor>,
-	pub file_kind: ScriptFileKind,
+	pub file_kind: CwtType,
 	pub module_name: String,
 	pub ast: AstFile,
 	pub source: String,
@@ -41,18 +43,22 @@ pub struct ParsedScriptFile {
 }
 
 use parse_cache::parse_clausewitz_file_cached;
-use scope_rules::{
-	file_kind_container_scope_kind, is_country_file_reference, is_country_tag_selector,
-	is_country_tag_text, is_dynamic_scope_reference_key, is_province_id_selector,
-	is_province_id_text, iterator_scope_type, looks_like_map_group_key, scope_changer_target_type,
+pub use scope_rules::{
+	cwt_file_kind_container_scope_kind, cwt_iterator_scope_type, cwt_scope_changer_target_type,
+	cwt_special_block_scope_kind, iterator_scope_type, scope_changer_target_type,
 	special_block_scope_kind,
 };
+use scope_rules::{
+	hand_container_scope_fallback, is_country_file_reference, is_country_tag_selector,
+	is_country_tag_text, is_dynamic_scope_reference_key, is_province_id_selector,
+	is_province_id_text, looks_like_map_group_key,
+};
 
-pub fn classify_script_file(relative: &Path) -> ScriptFileKind {
+pub fn classify_script_file(relative: &Path) -> CwtType {
 	eu4_profile()
 		.classify_content_family(relative)
-		.map_or(ScriptFileKind::Other, |descriptor| {
-			descriptor.script_file_kind
+		.map_or(CwtType::new("other"), |descriptor| {
+			descriptor.cwt_type.clone()
 		})
 }
 
@@ -128,8 +134,8 @@ pub fn parse_script_file_with_profile(
 ) -> Option<ParsedScriptFile> {
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
 	let content_family = profile.classify_content_family(&relative);
-	let file_kind = content_family.map_or(ScriptFileKind::Other, |descriptor| {
-		descriptor.script_file_kind
+	let file_kind = content_family.map_or(CwtType::new("other"), |descriptor| {
+		descriptor.cwt_type.clone()
 	});
 	let module_name = content_family.map_or_else(
 		|| fallback_module_name_from_relative(&relative),
@@ -174,10 +180,11 @@ pub fn build_semantic_index(files: &[ParsedScriptFile]) -> SemanticIndex {
 
 pub fn build_semantic_index_with_profile(
 	files: &[ParsedScriptFile],
-	_profile: &dyn GameProfile,
+	profile: &dyn GameProfile,
 ) -> SemanticIndex {
 	let mut index = SemanticIndex::default();
 	let map_groups = collect_map_groups(files);
+	let cwt_schema_graph = cwt_schema_graph_for_profile(profile);
 	for file in files {
 		index.documents.push(DocumentRecord {
 			mod_id: file.mod_id.clone(),
@@ -186,7 +193,7 @@ pub fn build_semantic_index_with_profile(
 			parse_ok: file.parse_issues.is_empty(),
 		});
 		index.parse_issues.extend(file.parse_issues.clone());
-		build_file_index(file, &map_groups, &mut index);
+		build_file_index(file, &map_groups, cwt_schema_graph, &mut index);
 	}
 	infer_definition_scope_from_references(&mut index);
 	infer_definition_dynamic_alias_masks_from_references(&mut index);
@@ -194,9 +201,46 @@ pub fn build_semantic_index_with_profile(
 	index
 }
 
+fn cwt_schema_graph_for_profile(profile: &dyn GameProfile) -> Option<&'static CwtSchemaGraph> {
+	match profile.game_id() {
+		GameId::Eu4 => eu4_cwt_schema_graph(),
+	}
+}
+
+fn eu4_cwt_schema_graph() -> Option<&'static CwtSchemaGraph> {
+	static EU4_CWT_SCHEMA_GRAPH: OnceLock<Option<CwtSchemaGraph>> = OnceLock::new();
+	EU4_CWT_SCHEMA_GRAPH
+		.get_or_init(load_eu4_cwt_schema_graph)
+		.as_ref()
+}
+
+fn load_eu4_cwt_schema_graph() -> Option<CwtSchemaGraph> {
+	cwt_schema_search_roots()
+		.into_iter()
+		.find(|root| root.is_dir())
+		.and_then(|root| CwtSchemaGraph::from_directory(&root).ok())
+}
+
+fn cwt_schema_search_roots() -> Vec<PathBuf> {
+	let mut roots = std::env::var_os("FOCH_CWTOOLS_SCHEMA_DIR")
+		.map(PathBuf::from)
+		.into_iter()
+		.collect::<Vec<_>>();
+	let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.parent()
+		.expect("crates dir")
+		.parent()
+		.expect("workspace root")
+		.to_path_buf();
+	roots.push(workspace_root.join("vendor").join("cwtools-eu4-config"));
+	roots.push(workspace_root.join("output").join("cwtools-eu4-config"));
+	roots
+}
+
 fn build_file_index(
 	file: &ParsedScriptFile,
 	map_groups: &MapGroupLookup,
+	cwt_schema_graph: Option<&CwtSchemaGraph>,
 	index: &mut SemanticIndex,
 ) {
 	let mut aliases = HashMap::new();
@@ -209,14 +253,14 @@ fn build_file_index(
 	aliases.insert("THIS".to_string(), root_this_type);
 	aliases.insert("ROOT".to_string(), root_this_type);
 	if let Some(from_alias) = scope_policy.from_alias {
-		aliases.insert("FROM".to_string(), from_alias);
+		aliases.insert("FROM".to_string(), from_alias.into());
 	}
 
 	let root_scope = push_scope(ScopeArgs {
 		index,
 		kind: ScopeKind::File,
 		parent: None,
-		this_type: aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown),
+		this_type: aliases.get("THIS").copied().unwrap_or(MaybeScope::Unknown),
 		aliases,
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
@@ -228,7 +272,8 @@ fn build_file_index(
 		mod_id: &file.mod_id,
 		path: &file.relative_path,
 		content_family: file.content_family,
-		file_kind: file.file_kind,
+		file_kind: file.file_kind.clone(),
+		cwt_schema_graph,
 		module_name: &file.module_name,
 		source: &file.source,
 		map_groups,
@@ -250,15 +295,15 @@ fn build_file_index(
 
 fn event_scope_type(key: &str) -> Option<ScopeType> {
 	match key {
-		"country_event" => Some(ScopeType::Country),
-		"province_event" => Some(ScopeType::Province),
+		"country_event" => Some(base_scope::country()),
+		"province_event" => Some(base_scope::province()),
 		_ => None,
 	}
 }
 
 fn event_from_type(key: &str) -> Option<ScopeType> {
 	match key {
-		"country_event" | "province_event" => Some(ScopeType::Country),
+		"country_event" | "province_event" => Some(base_scope::country()),
 		_ => None,
 	}
 }
@@ -278,7 +323,8 @@ struct BuildContext<'a> {
 	mod_id: &'a str,
 	path: &'a Path,
 	content_family: Option<&'static ContentFamilyDescriptor>,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
+	cwt_schema_graph: Option<&'a CwtSchemaGraph>,
 	module_name: &'a str,
 	source: &'a str,
 	map_groups: &'a MapGroupLookup,
@@ -349,7 +395,13 @@ fn walk_statements(
 					});
 				}
 
-				if is_scripted_trigger_call_candidate(ctx, ctx.file_kind, key, scope_id, index) {
+				if is_scripted_trigger_call_candidate(
+					ctx,
+					ctx.file_kind.clone(),
+					key,
+					scope_id,
+					index,
+				) {
 					index.references.push(SymbolReference {
 						kind: SymbolKind::ScriptedTrigger,
 						name: key.clone(),
@@ -367,7 +419,7 @@ fn walk_statements(
 				if let AstValue::Block { items, span } = value {
 					record_ui_block_semantics(index, ctx, key, key_span, items);
 					let definition_kind =
-						symbol_definition_kind(ctx.file_kind, key, scope_id, index);
+						symbol_definition_kind(ctx.file_kind.clone(), key, scope_id, index);
 					let child_scope = create_child_scope(index, scope_id, ctx, key, span, items);
 					if let Some(def_kind) = definition_kind {
 						let optional_params = collect_optional_params_from_source(
@@ -395,10 +447,10 @@ fn walk_statements(
 							column: key_span.start.column,
 							scope_id: child_scope,
 							declared_this_type: scope_this_type(index, child_scope),
-							inferred_this_type: ScopeType::Unknown,
-							inferred_this_mask: 0,
-							inferred_from_mask: 0,
-							inferred_root_mask: 0,
+							inferred_this_type: MaybeScope::Unknown,
+							inferred_this_mask: ScopeSet::EMPTY,
+							inferred_from_mask: ScopeSet::EMPTY,
+							inferred_root_mask: ScopeSet::EMPTY,
 							required_params,
 							optional_params,
 							param_contract: registered_param_contract(key),
@@ -407,10 +459,10 @@ fn walk_statements(
 					}
 
 					if definition_kind.is_none()
-						&& !is_mission_slot_definition(ctx.file_kind, items)
+						&& !is_mission_slot_definition(ctx.file_kind.clone(), items)
 						&& is_scripted_effect_call_candidate(
 							ctx,
-							ctx.file_kind,
+							ctx.file_kind.clone(),
 							key,
 							scope_id,
 							index,
@@ -441,7 +493,7 @@ fn walk_statements(
 
 					let next_scripted_effect = if event_scope_type(key).is_some() {
 						None
-					} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
+					} else if ctx.file_kind == CwtType::new("scripted_effects")
 						&& scope_kind(index, scope_id) == ScopeKind::File
 					{
 						find_scripted_effect_definition(index, ctx.mod_id, ctx.path, key)
@@ -505,18 +557,20 @@ fn handle_event_block(
 	let Some(this_type) = event_scope_type(key) else {
 		return;
 	};
-	let from_type = event_from_type(key).unwrap_or(ScopeType::Unknown);
+	let from_type = event_from_type(key)
+		.map(MaybeScope::from)
+		.unwrap_or(MaybeScope::Unknown);
 
 	let mut aliases = scope_aliases(index, scope_id);
-	aliases.insert("THIS".to_string(), this_type);
-	aliases.insert("ROOT".to_string(), this_type);
+	aliases.insert("THIS".to_string(), MaybeScope::Known(this_type));
+	aliases.insert("ROOT".to_string(), MaybeScope::Known(this_type));
 	aliases.insert("FROM".to_string(), from_type);
 	aliases.insert("PREV".to_string(), scope_this_type(index, scope_id));
 	let event_scope = push_scope(ScopeArgs {
 		index,
 		kind: ScopeKind::Event,
 		parent: Some(scope_id),
-		this_type,
+		this_type: this_type.into(),
 		aliases,
 		mod_id: ctx.mod_id,
 		path: ctx.path,
@@ -543,11 +597,11 @@ fn handle_event_block(
 			line: span.start.line,
 			column: span.start.column,
 			scope_id: event_scope,
-			declared_this_type: this_type,
-			inferred_this_type: this_type,
-			inferred_this_mask: scope_type_mask(this_type),
-			inferred_from_mask: 0,
-			inferred_root_mask: 0,
+			declared_this_type: this_type.into(),
+			inferred_this_type: this_type.into(),
+			inferred_this_mask: scope_mask(this_type),
+			inferred_from_mask: ScopeSet::EMPTY,
+			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,
@@ -559,7 +613,8 @@ fn handle_event_block(
 		mod_id: ctx.mod_id,
 		path: ctx.path,
 		content_family: ctx.content_family,
-		file_kind: ctx.file_kind,
+		file_kind: ctx.file_kind.clone(),
+		cwt_schema_graph: ctx.cwt_schema_graph,
 		module_name: ctx.module_name,
 		source: ctx.source,
 		map_groups: ctx.map_groups,
@@ -619,7 +674,7 @@ fn record_ui_scalar_semantics(
 	key_span: &SpanRange,
 	value: &AstValue,
 ) {
-	if ctx.file_kind != ScriptFileKind::Ui {
+	if ctx.file_kind != CwtType::new("ui") {
 		return;
 	}
 	let Some(text) = scalar_text(value) else {
@@ -830,7 +885,7 @@ fn record_ui_block_semantics(
 	key_span: &SpanRange,
 	items: &[AstStatement],
 ) {
-	if ctx.file_kind != ScriptFileKind::Ui || !looks_like_ui_container_key(key) {
+	if ctx.file_kind != CwtType::new("ui") || !looks_like_ui_container_key(key) {
 		return;
 	}
 	let Some(name) = extract_assignment_scalar(items, "name") else {
@@ -935,7 +990,7 @@ fn param_capture_regex() -> &'static Regex {
 }
 
 fn top_level_symbol_kind(
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -943,35 +998,31 @@ fn top_level_symbol_kind(
 	if scope_kind(index, scope_id) != ScopeKind::File {
 		return None;
 	}
-	match file_kind {
-		ScriptFileKind::ScriptedEffects if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
-		ScriptFileKind::ScriptedTriggers if !is_keyword(key) => Some(SymbolKind::ScriptedTrigger),
-		ScriptFileKind::Decisions if !is_keyword(key) && !is_decision_container_key(key) => {
+	match file_kind.as_str() {
+		"scripted_effects" if !is_keyword(key) => Some(SymbolKind::ScriptedEffect),
+		"scripted_triggers" if !is_keyword(key) => Some(SymbolKind::ScriptedTrigger),
+		"decisions" if !is_keyword(key) && !is_decision_container_key(key) => {
 			Some(SymbolKind::Decision)
 		}
-		ScriptFileKind::DiplomaticActions if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
-		ScriptFileKind::NewDiplomaticActions
-			if !is_keyword(key) && !matches!(key, "static_actions") =>
-		{
+		"diplomatic_actions" if !is_keyword(key) => Some(SymbolKind::DiplomaticAction),
+		"new_diplomatic_actions" if !is_keyword(key) && !matches!(key, "static_actions") => {
 			Some(SymbolKind::DiplomaticAction)
 		}
-		ScriptFileKind::TriggeredModifiers if !is_keyword(key) => {
-			Some(SymbolKind::TriggeredModifier)
-		}
+		"triggered_modifiers" if !is_keyword(key) => Some(SymbolKind::TriggeredModifier),
 		_ => None,
 	}
 }
 
 fn symbol_definition_kind(
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
 ) -> Option<SymbolKind> {
-	if let Some(kind) = top_level_symbol_kind(file_kind, key, scope_id, index) {
+	if let Some(kind) = top_level_symbol_kind(file_kind.clone(), key, scope_id, index) {
 		return Some(kind);
 	}
-	if file_kind == ScriptFileKind::Decisions
+	if file_kind == CwtType::new("decisions")
 		&& is_decision_entry_scope(index, scope_id)
 		&& !is_keyword(key)
 	{
@@ -995,7 +1046,7 @@ fn is_decision_entry_scope(index: &SemanticIndex, scope_id: usize) -> bool {
 
 fn is_scripted_effect_call_candidate(
 	ctx: &BuildContext<'_>,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -1045,20 +1096,20 @@ fn is_scripted_effect_call_candidate(
 	if !allows_generic_scripted_effect_fallback(scope_kind(index, scope_id)) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::Missions {
+	if file_kind == CwtType::new("missions") {
 		// Mission slot definitions have structure keys like icon, position,
 		// required_missions, trigger, effect — these are NOT scripted effect calls.
 		// We cannot rely solely on scope kind because the scope classification
 		// may vary based on preceding siblings.
 	}
-	if file_kind == ScriptFileKind::Decisions && is_decision_entry_scope(index, scope_id) {
+	if file_kind == CwtType::new("decisions") && is_decision_entry_scope(index, scope_id) {
 		return false;
 	}
 	// Mission files: blocks at depth ≤ 2 are mission slot definitions, not calls
-	if file_kind == ScriptFileKind::Missions && is_mission_slot_scope(index, scope_id) {
+	if file_kind == CwtType::new("missions") && is_mission_slot_scope(index, scope_id) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::ScriptedEffects
+	if file_kind == CwtType::new("scripted_effects")
 		&& scope_kind(index, scope_id) == ScopeKind::File
 	{
 		return false;
@@ -1068,7 +1119,7 @@ fn is_scripted_effect_call_candidate(
 
 fn is_scripted_trigger_call_candidate(
 	ctx: &BuildContext<'_>,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	key: &str,
 	scope_id: usize,
 	index: &SemanticIndex,
@@ -1118,10 +1169,10 @@ fn is_scripted_trigger_call_candidate(
 	if !is_trigger_like_scope(index, scope_id) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::Missions && is_mission_slot_scope(index, scope_id) {
+	if file_kind == CwtType::new("missions") && is_mission_slot_scope(index, scope_id) {
 		return false;
 	}
-	if file_kind == ScriptFileKind::ScriptedTriggers
+	if file_kind == CwtType::new("scripted_triggers")
 		&& scope_kind(index, scope_id) == ScopeKind::File
 	{
 		return false;
@@ -1197,17 +1248,17 @@ fn effect_context_scope_semantics(
 		key,
 		"every_country" | "every_subject_country" | "every_known_country" | "random_country"
 	) {
-		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Country));
+		return Some(EffectContextScopeSemantics::Iterator(base_scope::country()));
 	}
 	if matches!(
 		key,
 		"random_owned_province" | "random_province" | "every_province"
 	) {
-		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Province));
+		return Some(EffectContextScopeSemantics::Iterator(base_scope::province()));
 	}
 	if key == "overlord" {
 		return Some(EffectContextScopeSemantics::ScopeChanger(
-			ScopeType::Country,
+			base_scope::country(),
 		));
 	}
 	if let Some(selector) = numeric_effect_context_semantics(key) {
@@ -1215,36 +1266,38 @@ fn effect_context_scope_semantics(
 	}
 	if is_country_tag_selector(key) {
 		return Some(EffectContextScopeSemantics::ScopeChanger(
-			ScopeType::Country,
+			base_scope::country(),
 		));
 	}
 	if is_map_group_scope_key(ctx, key, scope_id, index) {
-		return Some(EffectContextScopeSemantics::Iterator(ScopeType::Province));
+		return Some(EffectContextScopeSemantics::Iterator(base_scope::province()));
 	}
 
 	None
 }
 
 fn is_on_actions_callback_root(
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	parent_scope_id: usize,
 	index: &SemanticIndex,
 	key: &str,
 ) -> bool {
-	file_kind == ScriptFileKind::OnActions
+	file_kind == CwtType::new("on_actions")
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& key.starts_with("on_")
 }
 
 fn on_actions_callback_this_type(key: &str) -> ScopeType {
 	match key {
-		"on_adm_development" | "on_dip_development" | "on_mil_development" => ScopeType::Province,
-		_ => ScopeType::Country,
+		"on_adm_development" | "on_dip_development" | "on_mil_development" => {
+			base_scope::province()
+		}
+		_ => base_scope::country(),
 	}
 }
 
 fn on_actions_callback_from_type(_key: &str) -> ScopeType {
-	ScopeType::Country
+	base_scope::country()
 }
 
 fn create_child_scope(
@@ -1262,12 +1315,15 @@ fn create_child_scope(
 	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
 
-	if is_on_actions_callback_root(ctx.file_kind, parent_scope_id, index, key) {
+	if is_on_actions_callback_root(ctx.file_kind.clone(), parent_scope_id, index, key) {
 		kind = ScopeKind::Effect;
-		this_type = on_actions_callback_this_type(key);
+		this_type = on_actions_callback_this_type(key).into();
 		aliases.insert("THIS".to_string(), this_type);
 		aliases.insert("ROOT".to_string(), this_type);
-		aliases.insert("FROM".to_string(), on_actions_callback_from_type(key));
+		aliases.insert(
+			"FROM".to_string(),
+			on_actions_callback_from_type(key).into(),
+		);
 	} else if key == "trigger"
 		|| key == "limit"
 		|| key == "potential"
@@ -1288,7 +1344,10 @@ fn create_child_scope(
 			| "on_monthly"
 	) {
 		kind = ScopeKind::Effect;
-	} else if let Some(file_kind_scope_kind) = file_kind_container_scope_kind(ctx.file_kind, key) {
+	} else if let Some(file_kind_scope_kind) = ctx.cwt_schema_graph.map_or_else(
+		|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
+		|graph| cwt_file_kind_container_scope_kind(graph, ctx.file_kind.clone(), key),
+	) {
 		kind = file_kind_scope_kind;
 	} else if let Some(semantics) = effect_context_semantics {
 		match semantics {
@@ -1297,53 +1356,57 @@ fn create_child_scope(
 			}
 			EffectContextScopeSemantics::Iterator(target) => {
 				kind = ScopeKind::Loop;
-				this_type = target;
-				aliases.insert("THIS".to_string(), target);
+				this_type = target.into();
+				aliases.insert("THIS".to_string(), target.into());
 			}
 			EffectContextScopeSemantics::ScopeChanger(target) => {
 				kind = ScopeKind::AliasBlock;
-				this_type = target;
-				aliases.insert("THIS".to_string(), target);
+				this_type = target.into();
+				aliases.insert("THIS".to_string(), target.into());
 			}
 		}
 	} else if is_province_id_selector(key) && scope_kind(index, parent_scope_id) != ScopeKind::File
 	{
 		kind = ScopeKind::AliasBlock;
-		this_type = ScopeType::Province;
-		aliases.insert("THIS".to_string(), ScopeType::Province);
+		this_type = base_scope::province().into();
+		aliases.insert("THIS".to_string(), base_scope::province().into());
 	} else if is_map_group_scope_key(ctx, key, parent_scope_id, index) {
 		kind = ScopeKind::Loop;
-		this_type = ScopeType::Province;
-		aliases.insert("THIS".to_string(), ScopeType::Province);
+		this_type = base_scope::province().into();
+		aliases.insert("THIS".to_string(), base_scope::province().into());
 	} else if is_builtin_special_block(key) {
 		kind = special_block_scope_kind(key);
 	} else if is_builtin_iterator(key) {
 		kind = ScopeKind::Loop;
-		this_type = iterator_scope_type(key).unwrap_or(this_type);
+		this_type = iterator_scope_type(key)
+			.map(MaybeScope::from)
+			.unwrap_or(this_type);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if is_builtin_scope_changer(key) {
 		kind = ScopeKind::AliasBlock;
-		this_type = scope_changer_target_type(key).unwrap_or(this_type);
+		this_type = scope_changer_target_type(key)
+			.map(MaybeScope::from)
+			.unwrap_or(this_type);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if key == "every_owned_province" {
 		kind = ScopeKind::Loop;
-		this_type = ScopeType::Province;
-		aliases.insert("THIS".to_string(), ScopeType::Province);
+		this_type = base_scope::province().into();
+		aliases.insert("THIS".to_string(), base_scope::province().into());
 	} else if key.eq_ignore_ascii_case("ROOT") {
 		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("ROOT").copied().unwrap_or(ScopeType::Unknown);
+		this_type = aliases.get("ROOT").copied().unwrap_or(MaybeScope::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if key.eq_ignore_ascii_case("THIS") {
 		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("THIS").copied().unwrap_or(ScopeType::Unknown);
+		this_type = aliases.get("THIS").copied().unwrap_or(MaybeScope::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if key.eq_ignore_ascii_case("FROM") {
 		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("FROM").copied().unwrap_or(ScopeType::Unknown);
+		this_type = aliases.get("FROM").copied().unwrap_or(MaybeScope::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if key.eq_ignore_ascii_case("PREV") {
 		kind = ScopeKind::AliasBlock;
-		this_type = aliases.get("PREV").copied().unwrap_or(ScopeType::Unknown);
+		this_type = aliases.get("PREV").copied().unwrap_or(MaybeScope::Unknown);
 		aliases.insert("THIS".to_string(), this_type);
 	} else if is_dynamic_scope_reference_key(key) {
 		// `event_target:X = { ... }` switches the inner this scope to a
@@ -1353,22 +1416,22 @@ fn create_child_scope(
 		// type, which produces false positives in vanilla idioms like
 		// `event_target:foo = { country_event = { ... } }`.
 		kind = ScopeKind::AliasBlock;
-		this_type = ScopeType::Unknown;
-		aliases.insert("THIS".to_string(), ScopeType::Unknown);
+		this_type = MaybeScope::Unknown;
+		aliases.insert("THIS".to_string(), MaybeScope::Unknown);
 	} else if let Some(event_this_type) = event_scope_type(key) {
 		kind = ScopeKind::Event;
-		this_type = event_this_type;
-		aliases.insert("THIS".to_string(), event_this_type);
-		aliases.insert("ROOT".to_string(), event_this_type);
+		this_type = event_this_type.into();
+		aliases.insert("THIS".to_string(), event_this_type.into());
+		aliases.insert("ROOT".to_string(), event_this_type.into());
 		if let Some(from_type) = event_from_type(key) {
-			aliases.insert("FROM".to_string(), from_type);
+			aliases.insert("FROM".to_string(), from_type.into());
 		}
-	} else if ctx.file_kind == ScriptFileKind::ScriptedTriggers
+	} else if ctx.file_kind == CwtType::new("scripted_triggers")
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
 	{
 		kind = ScopeKind::Trigger;
-	} else if ctx.file_kind == ScriptFileKind::ScriptedEffects
+	} else if ctx.file_kind == CwtType::new("scripted_effects")
 		&& scope_kind(index, parent_scope_id) == ScopeKind::File
 		&& !is_keyword(key)
 	{
@@ -1493,7 +1556,7 @@ fn numeric_effect_context_semantics(key: &str) -> Option<EffectContextScopeSeman
 		Some(EffectContextScopeSemantics::EffectContainer)
 	} else {
 		Some(EffectContextScopeSemantics::ScopeChanger(
-			ScopeType::Province,
+			base_scope::province(),
 		))
 	}
 }
@@ -1502,8 +1565,8 @@ struct ScopeArgs<'a> {
 	index: &'a mut SemanticIndex,
 	kind: ScopeKind,
 	parent: Option<usize>,
-	this_type: ScopeType,
-	aliases: HashMap<String, ScopeType>,
+	this_type: MaybeScope,
+	aliases: HashMap<String, MaybeScope>,
 	mod_id: &'a str,
 	path: &'a Path,
 	line: usize,
@@ -1564,8 +1627,8 @@ fn scope_depth(index: &SemanticIndex, scope_id: usize) -> usize {
 /// Check if a block's children indicate it's a mission slot definition or
 /// a mission group definition.  Mission slots contain structure keys like
 /// icon, position, etc.  Mission groups contain slot, generic, ai, etc.
-fn is_mission_slot_definition(file_kind: ScriptFileKind, items: &[AstStatement]) -> bool {
-	if file_kind != ScriptFileKind::Missions {
+fn is_mission_slot_definition(file_kind: CwtType, items: &[AstStatement]) -> bool {
+	if file_kind != CwtType::new("missions") {
 		return false;
 	}
 	items.iter().any(|stmt| {
@@ -1714,15 +1777,15 @@ fn is_data_context(index: &SemanticIndex, scope_id: usize) -> bool {
 	}
 }
 
-fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> ScopeType {
+fn scope_this_type(index: &SemanticIndex, scope_id: usize) -> MaybeScope {
 	index
 		.scopes
 		.get(scope_id)
 		.map(|scope| scope.this_type)
-		.unwrap_or(ScopeType::Unknown)
+		.unwrap_or(MaybeScope::Unknown)
 }
 
-fn scope_aliases(index: &SemanticIndex, scope_id: usize) -> HashMap<String, ScopeType> {
+fn scope_aliases(index: &SemanticIndex, scope_id: usize) -> HashMap<String, MaybeScope> {
 	index
 		.scopes
 		.get(scope_id)
@@ -2166,14 +2229,14 @@ pub fn resolve_event_reference_targets(
 fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 	let callable_scope_map = build_inferred_callable_scope_map(index);
 
-	let mut observed_masks: Vec<u8> = index
+	let mut observed_masks: Vec<ScopeSet> = index
 		.definitions
 		.iter()
 		.map(|definition| {
 			if is_inferred_callable_kind(definition.kind) {
-				scope_type_mask(definition.declared_this_type)
+				scope_mask(definition.declared_this_type)
 			} else {
-				0
+				ScopeSet::EMPTY
 			}
 		})
 		.collect();
@@ -2191,7 +2254,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 				&observed_masks,
 				reference.scope_id,
 			);
-			if caller_mask == 0 {
+			if caller_mask.is_empty() {
 				continue;
 			}
 			let target_defs = match reference.kind {
@@ -2238,7 +2301,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 		.iter()
 		.enumerate()
 		.map(|(idx, definition)| {
-			definition.kind == SymbolKind::ScriptedEffect && observed_masks[idx] == 0
+			definition.kind == SymbolKind::ScriptedEffect && observed_masks[idx].is_empty()
 		})
 		.collect();
 	for scope_id in 0..index.scopes.len() {
@@ -2248,7 +2311,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 			&observed_masks,
 			scope_id,
 		);
-		if scope_mask == 0 {
+		if scope_mask.is_empty() {
 			continue;
 		}
 		let Some(def_idx) = nearest_enclosing_scripted_effect_definition_index(
@@ -2279,7 +2342,7 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 		if definition.kind != SymbolKind::ScriptedTrigger {
 			continue;
 		}
-		observed_masks[def_idx] |= scope_type_mask(ScopeType::Country);
+		observed_masks[def_idx] |= scope_mask(base_scope::country());
 	}
 
 	for (idx, definition) in index.definitions.iter_mut().enumerate() {
@@ -2308,8 +2371,8 @@ fn infer_definition_scope_from_references(index: &mut SemanticIndex) {
 /// scripted_effect / scripted_trigger inheriting the caller's ROOT.
 fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticIndex) {
 	let callable_scope_map = build_inferred_callable_scope_map(index);
-	let mut from_masks: Vec<u8> = vec![0; index.definitions.len()];
-	let mut root_masks: Vec<u8> = vec![0; index.definitions.len()];
+	let mut from_masks: Vec<ScopeSet> = vec![ScopeSet::EMPTY; index.definitions.len()];
+	let mut root_masks: Vec<ScopeSet> = vec![ScopeSet::EMPTY; index.definitions.len()];
 
 	let mut changed = true;
 	while changed {
@@ -2335,7 +2398,7 @@ fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticInde
 				reference.scope_id,
 				"ROOT",
 			);
-			if caller_from == 0 && caller_root == 0 {
+			if caller_from.is_empty() && caller_root.is_empty() {
 				continue;
 			}
 			let target_defs = match reference.kind {
@@ -2363,7 +2426,7 @@ fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticInde
 		}
 	}
 
-	let scope_updates: Vec<(usize, Option<ScopeType>, Option<ScopeType>)> = index
+	let scope_updates: Vec<(usize, Option<MaybeScope>, Option<MaybeScope>)> = index
 		.definitions
 		.iter()
 		.enumerate()
@@ -2374,8 +2437,10 @@ fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticInde
 			) {
 				return None;
 			}
-			let from_ty = (from_masks[idx] != 0).then(|| scope_type_from_mask(from_masks[idx]));
-			let root_ty = (root_masks[idx] != 0).then(|| scope_type_from_mask(root_masks[idx]));
+			let from_ty =
+				(!from_masks[idx].is_empty()).then(|| scope_type_from_mask(from_masks[idx]));
+			let root_ty =
+				(!root_masks[idx].is_empty()).then(|| scope_type_from_mask(root_masks[idx]));
 			if from_ty.is_none() && root_ty.is_none() {
 				return None;
 			}
@@ -2406,28 +2471,28 @@ fn infer_definition_dynamic_alias_masks_from_references(index: &mut SemanticInde
 fn caller_alias_mask_via_chain(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
-	observed_alias_masks: &[u8],
+	observed_alias_masks: &[ScopeSet],
 	mut scope_id: usize,
 	alias: &str,
-) -> u8 {
+) -> ScopeSet {
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
-			return 0;
+			return ScopeSet::EMPTY;
 		};
 		if let Some(ty) = scope.aliases.get(alias) {
-			let mask = scope_type_mask(*ty);
-			if mask != 0 {
+			let mask = scope_mask(*ty);
+			if !mask.is_empty() {
 				return mask;
 			}
 		}
 		if let Some(def_idx) = callable_scope_map.get(&scope_id)
 			&& let Some(mask) = observed_alias_masks.get(*def_idx).copied()
-			&& mask != 0
+			&& !mask.is_empty()
 		{
 			return mask;
 		}
 		let Some(parent) = scope.parent else {
-			return 0;
+			return ScopeSet::EMPTY;
 		};
 		scope_id = parent;
 	}
@@ -2444,7 +2509,7 @@ pub(crate) fn build_inferred_callable_scope_map(index: &SemanticIndex) -> HashMa
 		.collect()
 }
 
-pub(crate) fn collect_inferred_callable_masks(index: &SemanticIndex) -> Vec<u8> {
+pub(crate) fn collect_inferred_callable_masks(index: &SemanticIndex) -> Vec<ScopeSet> {
 	index
 		.definitions
 		.iter()
@@ -2455,13 +2520,13 @@ pub(crate) fn collect_inferred_callable_masks(index: &SemanticIndex) -> Vec<u8> 
 fn binding_value_scope_mask(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
-	observed_masks: &[u8],
+	observed_masks: &[ScopeSet],
 	scope_id: usize,
 	value: &str,
-) -> u8 {
+) -> ScopeSet {
 	let trimmed = value.trim();
 	if trimmed.is_empty() {
-		return 0;
+		return ScopeSet::EMPTY;
 	}
 	match trimmed {
 		"THIS" | "ROOT" | "FROM" | "PREV" => {
@@ -2473,54 +2538,60 @@ fn binding_value_scope_mask(
 				trimmed,
 			);
 		}
-		"owner" => return scope_type_mask(ScopeType::Country),
-		"capital_scope" => return scope_type_mask(ScopeType::Province),
+		"owner" => return scope_mask(base_scope::country()),
+		"capital_scope" => return scope_mask(base_scope::province()),
 		_ => {}
 	}
 	if is_country_tag_selector(trimmed) {
-		return scope_type_mask(ScopeType::Country);
+		return scope_mask(base_scope::country());
 	}
 	if is_province_id_selector(trimmed) {
-		return scope_type_mask(ScopeType::Province);
+		return scope_mask(base_scope::province());
 	}
-	0
+	ScopeSet::EMPTY
 }
 
 pub(crate) fn effective_alias_scope_mask_with_overrides(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
-	observed_masks: &[u8],
+	observed_masks: &[ScopeSet],
 	mut scope_id: usize,
 	alias: &str,
-) -> u8 {
-	let mut fallback_mask = 0;
+) -> ScopeSet {
+	let mut fallback_mask = ScopeSet::EMPTY;
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
 			return fallback_mask;
 		};
 		if alias == "THIS" {
-			let this_mask = scope_type_mask(scope.this_type);
-			if this_mask != 0 {
+			let this_mask = scope_mask(scope.this_type);
+			if !this_mask.is_empty() {
 				return this_mask;
 			}
 			if let Some(def_idx) = callable_scope_map.get(&scope_id) {
-				let inferred_mask = observed_masks.get(*def_idx).copied().unwrap_or(0);
-				if inferred_mask != 0 {
+				let inferred_mask = observed_masks
+					.get(*def_idx)
+					.copied()
+					.unwrap_or(ScopeSet::EMPTY);
+				if !inferred_mask.is_empty() {
 					return inferred_mask;
 				}
 			}
 		}
 		if let Some(alias_type) = scope.aliases.get(alias) {
-			let alias_mask = scope_type_mask(*alias_type);
-			if alias_mask != 0 {
+			let alias_mask = scope_mask(*alias_type);
+			if !alias_mask.is_empty() {
 				return alias_mask;
 			}
 		}
-		if fallback_mask == 0
+		if fallback_mask.is_empty()
 			&& let Some(def_idx) = callable_scope_map.get(&scope_id)
 		{
-			let inferred_mask = observed_masks.get(*def_idx).copied().unwrap_or(0);
-			if inferred_mask != 0 {
+			let inferred_mask = observed_masks
+				.get(*def_idx)
+				.copied()
+				.unwrap_or(ScopeSet::EMPTY);
+			if !inferred_mask.is_empty() {
 				fallback_mask = inferred_mask;
 			}
 		}
@@ -2563,43 +2634,40 @@ fn nearest_enclosing_scripted_effect_definition_index(
 		.map(|_| def_idx)
 }
 
-fn scope_type_mask(scope_type: ScopeType) -> u8 {
-	match scope_type {
-		ScopeType::Country => 0b01,
-		ScopeType::Province => 0b10,
-		ScopeType::Unknown => 0,
-	}
+fn scope_mask<T>(scope: T) -> ScopeSet
+where
+	T: Into<ScopeSet>,
+{
+	scope.into()
 }
 
-fn scope_type_from_mask(mask: u8) -> ScopeType {
-	match mask {
-		0b01 => ScopeType::Country,
-		0b10 => ScopeType::Province,
-		_ => ScopeType::Unknown,
-	}
+fn scope_type_from_mask(mask: ScopeSet) -> MaybeScope {
+	mask.as_single_scope()
+		.map(MaybeScope::Known)
+		.unwrap_or(MaybeScope::Unknown)
 }
 
 pub(crate) fn effective_scope_mask_with_overrides(
 	index: &SemanticIndex,
 	callable_scope_map: &HashMap<usize, usize>,
-	observed_masks: &[u8],
+	observed_masks: &[ScopeSet],
 	mut scope_id: usize,
-) -> u8 {
+) -> ScopeSet {
 	loop {
 		let Some(scope) = index.scopes.get(scope_id) else {
-			return 0;
+			return ScopeSet::EMPTY;
 		};
-		if scope.this_type != ScopeType::Unknown {
-			return scope_type_mask(scope.this_type);
+		if !scope.this_type.is_unknown() {
+			return scope_mask(scope.this_type);
 		}
 		if let Some(def_idx) = callable_scope_map.get(&scope_id)
 			&& let Some(inferred_mask) = observed_masks.get(*def_idx).copied()
-			&& inferred_mask != 0
+			&& !inferred_mask.is_empty()
 		{
 			return inferred_mask;
 		}
 		let Some(parent) = scope.parent else {
-			return 0;
+			return ScopeSet::EMPTY;
 		};
 		scope_id = parent;
 	}

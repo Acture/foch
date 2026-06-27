@@ -10,8 +10,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PARSE_CACHE_VERSION: u32 = 7;
-const CACHE_VERSION_DIR: &str = "v7";
+const PARSE_CACHE_VERSION: u32 = 8;
+const CACHE_VERSION_DIR: &str = "v8";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const LEGACY_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 const PARSE_CACHE_ENV: &str = "FOCH_PARSE_CACHE_DIR";

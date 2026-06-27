@@ -485,16 +485,45 @@ mod tests {
 		let tarball = fs::File::create(tarball_path).expect("create tarball");
 		let encoder = GzEncoder::new(tarball, Compression::default());
 		let mut builder = Builder::new(encoder);
-		let mut header = tar::Header::new_gnu();
-		let name = entry_path.as_bytes();
-		assert!(name.len() <= header.as_old().name.len());
-		header.as_old_mut().name[..name.len()].copy_from_slice(name);
+		let mut header = tar::Header::new_ustar();
+		set_raw_tar_path(&mut header, entry_path);
 		header.set_size(content.len() as u64);
 		header.set_mode(0o644);
 		header.set_cksum();
 		builder.append(&header, content).expect("append tar entry");
 		let encoder = builder.into_inner().expect("finish tar");
 		encoder.finish().expect("finish gzip");
+	}
+
+	fn set_raw_tar_path(header: &mut tar::Header, entry_path: &str) {
+		let name_len = header.as_old().name.len();
+		let prefix_len = header.as_ustar().expect("ustar header").prefix.len();
+		let path = entry_path.as_bytes();
+		let split = if path.len() <= name_len {
+			None
+		} else {
+			entry_path
+				.rfind('/')
+				.filter(|index| *index <= prefix_len && entry_path.len() - index - 1 <= name_len)
+		};
+
+		match split {
+			Some(index) => {
+				let (prefix, name_with_sep) = entry_path.split_at(index);
+				let name = &name_with_sep[1..];
+				let ustar = header.as_ustar_mut().expect("ustar header");
+				ustar.name.fill(0);
+				ustar.prefix.fill(0);
+				ustar.name[..name.len()].copy_from_slice(name.as_bytes());
+				ustar.prefix[..prefix.len()].copy_from_slice(prefix.as_bytes());
+			}
+			None => {
+				assert!(path.len() <= name_len, "entry path fits ustar header");
+				let old = header.as_old_mut();
+				old.name.fill(0);
+				old.name[..path.len()].copy_from_slice(path);
+			}
+		}
 	}
 
 	fn modset_key(

@@ -1,4 +1,8 @@
 use foch_core::model::{AnalysisMode, Finding, SemanticIndex, Severity, SymbolKind};
+use foch_cwt::{
+	AliasCategory, BindContext, BindFieldMatch, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
+	SchemaBinding, SchemaPack, SchemaSource, install_base_scopes,
+};
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use foch_language::analyzer::eu4_builtin::{
@@ -6,7 +10,7 @@ use foch_language::analyzer::eu4_builtin::{
 	reserved_keywords,
 };
 use foch_language::analyzer::parser::{
-	AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
+	AstStatement, AstValue, ScalarValue, SpanRange, parse_clausewitz_content,
 };
 use foch_language::analyzer::semantic_index::{
 	ParsedScriptFile, build_semantic_index, parse_script_file,
@@ -21,9 +25,10 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
 	CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
 	Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-	DidSaveTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, InitializeParams,
-	InitializeResult, InitializedParams, Location, MessageType, NumberOrString, OneOf, Position,
-	Range, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+	DidSaveTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
+	HoverParams, InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent,
+	MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, ServerCapabilities,
+	TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
@@ -32,6 +37,7 @@ use walkdir::WalkDir;
 enum CandidateSource {
 	Keyword,
 	Literal,
+	Schema,
 	Builtin,
 	Workspace,
 }
@@ -88,6 +94,7 @@ struct ServerState {
 struct Backend {
 	client: Client,
 	state: Arc<RwLock<ServerState>>,
+	schema_graph: Arc<RwLock<Option<Arc<CwtSchemaGraph>>>>,
 }
 
 impl Backend {
@@ -99,13 +106,18 @@ impl Backend {
 		Self {
 			client,
 			state: Arc::new(RwLock::new(state)),
+			schema_graph: Arc::new(RwLock::new(None)),
 		}
 	}
 
 	async fn refresh_workspace_snapshot(&self) {
 		let targets = { self.state.read().await.targets.clone() };
+		let schema_graph = self.schema_graph.read().await.clone();
 		let client = self.client.clone();
-		let built = tokio::task::spawn_blocking(move || build_workspace_snapshot(&targets)).await;
+		let built = tokio::task::spawn_blocking(move || {
+			build_workspace_snapshot_with_schema(&targets, schema_graph)
+		})
+		.await;
 		match built {
 			Ok(snapshot) => {
 				let candidate_count = snapshot.candidates.len();
@@ -163,10 +175,12 @@ impl Backend {
 			Ok(path) => path,
 			Err(_) => return,
 		};
-		let snapshot = {
+		let (snapshot, targets) = {
 			let state = self.state.read().await;
-			state.workspace.clone()
+			(state.workspace.clone(), state.targets.clone())
 		};
+		let schema_graph = self.schema_graph.read().await.clone();
+		let relative_path = match_scan_target(&targets, &path).map(|(_, relative)| relative);
 		let mut diagnostics = snapshot
 			.as_ref()
 			.and_then(|snapshot| {
@@ -177,14 +191,15 @@ impl Backend {
 			})
 			.unwrap_or_default();
 		diagnostics.extend(parse_diagnostics_for_text(&path, text));
-		diagnostics.sort_by(|lhs, rhs| {
-			range_start(&lhs.range)
-				.cmp(&range_start(&rhs.range))
-				.then_with(|| lhs.message.cmp(&rhs.message))
-		});
-		diagnostics.dedup_by(|lhs, rhs| {
-			lhs.range == rhs.range && lhs.code == rhs.code && lhs.message == rhs.message
-		});
+		if let (Some(graph), Some(relative_path)) = (schema_graph.as_ref(), relative_path.as_ref())
+		{
+			diagnostics.extend(schema_diagnostics_for_text(
+				graph.as_ref(),
+				relative_path,
+				text,
+			));
+		}
+		sort_and_dedup_diagnostics(&mut diagnostics);
 		self.client
 			.publish_diagnostics(uri.clone(), diagnostics, None)
 			.await;
@@ -195,11 +210,60 @@ impl Backend {
 impl LanguageServer for Backend {
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
 		let targets = resolve_scan_targets(&params);
+		let schema_graph = match find_vendored_schema_dir() {
+			Some(schema_dir) => {
+				let load_result =
+					tokio::task::spawn_blocking(move || load_schema_graph(&schema_dir)).await;
+				match load_result {
+					Ok(Ok(graph)) => {
+						self.client
+							.log_message(
+								MessageType::INFO,
+								format!(
+									"foch lsp loaded CWT schema graph: {} types, {} aliases",
+									graph.types.len(),
+									graph.aliases.len()
+								),
+							)
+							.await;
+						Some(graph)
+					}
+					Ok(Err(err)) => {
+						self.client
+							.log_message(
+								MessageType::ERROR,
+								format!("foch lsp failed to load CWT schema graph: {err}"),
+							)
+							.await;
+						None
+					}
+					Err(err) => {
+						self.client
+							.log_message(
+								MessageType::ERROR,
+								format!("foch lsp schema load task failed: {err}"),
+							)
+							.await;
+						None
+					}
+				}
+			}
+			None => {
+				self.client
+					.log_message(
+						MessageType::WARNING,
+						"foch lsp missing vendored CWT schema directory; schema-aware features disabled",
+					)
+					.await;
+				None
+			}
+		};
 
 		{
 			let mut state = self.state.write().await;
 			state.targets = targets;
 		}
+		*self.schema_graph.write().await = schema_graph;
 
 		Ok(InitializeResult {
 			server_info: None,
@@ -264,7 +328,37 @@ impl LanguageServer for Backend {
 		self.refresh_workspace_snapshot().await;
 	}
 
+	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+		let uri = &params.text_document_position_params.text_document.uri;
+		let position = params.text_document_position_params.position;
+		let targets = { self.state.read().await.targets.clone() };
+		let text = {
+			let state = self.state.read().await;
+			state.docs.get(uri).cloned()
+		};
+		let Some(text) = text else {
+			return Ok(None);
+		};
+		let Some(graph) = self.schema_graph.read().await.clone() else {
+			return Ok(None);
+		};
+		let path = match uri.to_file_path() {
+			Ok(path) => path,
+			Err(_) => return Ok(None),
+		};
+		let Some((_, relative_path)) = match_scan_target(&targets, &path) else {
+			return Ok(None);
+		};
+		Ok(schema_hover(
+			graph.as_ref(),
+			&relative_path,
+			&text,
+			position,
+		))
+	}
+
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+		let graph = self.schema_graph.read().await.clone();
 		let state = self.state.read().await;
 		let uri = &params.text_document_position.text_document.uri;
 		let position = params.text_document_position.position;
@@ -273,16 +367,29 @@ impl LanguageServer for Backend {
 		let context = detect_completion_context(text, position);
 		let prefix_lower = prefix.to_ascii_lowercase();
 
-		let mut candidates = select_completion_candidates(
-			&state.static_candidates,
-			state
-				.workspace
-				.as_ref()
-				.map(|snapshot| snapshot.candidates.as_slice())
-				.unwrap_or(&[]),
-			context,
-			&prefix_lower,
-		);
+		let mut candidates = if let Some(graph) = graph.as_ref()
+			&& let Ok(path) = uri.to_file_path()
+			&& let Some((_, relative_path)) = match_scan_target(&state.targets, &path)
+			&& let Some(candidates) = schema_completion_candidates(
+				graph.as_ref(),
+				&relative_path,
+				text,
+				position,
+				&prefix_lower,
+			) {
+			candidates
+		} else {
+			select_completion_candidates(
+				&state.static_candidates,
+				state
+					.workspace
+					.as_ref()
+					.map(|snapshot| snapshot.candidates.as_slice())
+					.unwrap_or(&[]),
+				context,
+				&prefix_lower,
+			)
+		};
 
 		candidates.sort_by(|a, b| a.source.cmp(&b.source).then_with(|| a.label.cmp(&b.label)));
 		candidates.truncate(200);
@@ -343,6 +450,532 @@ pub fn run() -> i32 {
 		Server::new(stdin, stdout, socket).serve(service).await;
 	});
 	0
+}
+
+fn find_vendored_schema_dir() -> Option<PathBuf> {
+	if let Ok(current_dir) = std::env::current_dir()
+		&& let Some(found) = find_vendored_schema_dir_from(&current_dir)
+	{
+		return Some(found);
+	}
+
+	let manifest_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+	find_vendored_schema_dir_from(&manifest_root)
+}
+
+fn find_vendored_schema_dir_from(start: &Path) -> Option<PathBuf> {
+	let mut current = Some(start);
+	while let Some(dir) = current {
+		let candidate = dir.join("vendor").join("cwtools-eu4-config");
+		if candidate.is_dir() {
+			return Some(candidate);
+		}
+		current = dir.parent();
+	}
+	None
+}
+
+fn load_schema_graph(schema_dir: &Path) -> std::result::Result<Arc<CwtSchemaGraph>, String> {
+	let pack = SchemaPack::load_from_dir(
+		schema_dir,
+		SchemaSource::UserProvided {
+			path: schema_dir.to_path_buf(),
+		},
+	)
+	.map_err(|err| err.to_string())?;
+	install_base_scopes(pack.graph.as_ref());
+	Ok(pack.graph)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct KeyPathTarget {
+	parent_path: Vec<String>,
+	key: String,
+	range: Range,
+}
+
+fn schema_hover(
+	graph: &CwtSchemaGraph,
+	file_path: &Path,
+	text: &str,
+	position: Position,
+) -> Option<Hover> {
+	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+	let target = find_hover_target(&parsed.ast.statements, position, &[])?;
+	let mut ast_path = target
+		.parent_path
+		.iter()
+		.map(String::as_str)
+		.collect::<Vec<_>>();
+	ast_path.push(target.key.as_str());
+	let SchemaBinding::Bound { .. } = graph.bind_chain(file_path, &ast_path) else {
+		return None;
+	};
+	let parent_path = target
+		.parent_path
+		.iter()
+		.map(String::as_str)
+		.collect::<Vec<_>>();
+	let parent_context = graph.bind_context(file_path, &parent_path)?;
+	let field_match = graph.bind_field_match(parent_context, &target.key)?;
+	Some(Hover {
+		contents: HoverContents::Markup(MarkupContent {
+			kind: MarkupKind::Markdown,
+			value: render_schema_hover_markdown(&target.key, &field_match),
+		}),
+		range: Some(target.range),
+	})
+}
+
+fn find_hover_target(
+	statements: &[AstStatement],
+	position: Position,
+	parent_path: &[String],
+) -> Option<KeyPathTarget> {
+	for statement in statements {
+		let AstStatement::Assignment {
+			key,
+			key_span,
+			value,
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if span_contains_position(key_span, position) {
+			return Some(KeyPathTarget {
+				parent_path: parent_path.to_vec(),
+				key: key.clone(),
+				range: lsp_range_from_span(key_span),
+			});
+		}
+		if let AstValue::Block { items, span } = value
+			&& span_contains_position(span, position)
+		{
+			let mut child_path = parent_path.to_vec();
+			child_path.push(key.clone());
+			if let Some(target) = find_hover_target(items, position, &child_path) {
+				return Some(target);
+			}
+		}
+	}
+	None
+}
+
+fn render_schema_hover_markdown(key: &str, field_match: &BindFieldMatch<'_>) -> String {
+	let field = field_match.field();
+	let mut sections = vec![
+		format!("**{key}**"),
+		format!("Type: `{}`", rule_value_kind(&field.value)),
+	];
+	if let Some(description) = schema_hover_description(field_match) {
+		sections.push(description.to_string());
+	}
+	if let Some(scope_context) = schema_hover_scope_context(field_match) {
+		sections.push(format!("Scope context: {scope_context}"));
+	}
+	if let Some(cardinality) = schema_hover_cardinality(field_match) {
+		sections.push(format!("Cardinality: `{cardinality}`"));
+	}
+	sections.join("\n\n")
+}
+
+fn rule_value_kind(value: &CwtRuleValue) -> &'static str {
+	match value {
+		CwtRuleValue::Scalar(_) => "Scalar",
+		CwtRuleValue::Block(_) => "Block",
+		CwtRuleValue::Marker(_) => "Marker",
+	}
+}
+
+fn schema_hover_description<'a>(field_match: &'a BindFieldMatch<'a>) -> Option<&'a str> {
+	field_match
+		.field()
+		.attributes
+		.description
+		.as_deref()
+		.or_else(|| {
+			field_match
+				.alias()
+				.and_then(|alias| alias.attributes.description.as_deref())
+		})
+}
+
+fn schema_hover_scope_context(field_match: &BindFieldMatch<'_>) -> Option<String> {
+	let field_attributes = &field_match.field().attributes;
+	let alias_attributes = field_match.alias().map(|alias| &alias.attributes);
+	let mut parts = Vec::new();
+	if let Some(push_scope) = field_attributes
+		.push_scope
+		.as_deref()
+		.or_else(|| alias_attributes.and_then(|attributes| attributes.push_scope.as_deref()))
+	{
+		parts.push(format!("push_scope=`{push_scope}`"));
+	}
+	let scope = if !field_attributes.scope.is_empty() {
+		Some(field_attributes.scope.as_slice())
+	} else {
+		alias_attributes.and_then(|attributes| {
+			(!attributes.scope.is_empty()).then_some(attributes.scope.as_slice())
+		})
+	};
+	if let Some(scope) = scope {
+		parts.push(format!("scope={}", format_scope_values(scope)));
+	}
+	let replace_scope = if !field_attributes.replace_scope.is_empty() {
+		Some(&field_attributes.replace_scope)
+	} else {
+		alias_attributes.and_then(|attributes| {
+			(!attributes.replace_scope.is_empty()).then_some(&attributes.replace_scope)
+		})
+	};
+	if let Some(replace_scope) = replace_scope {
+		let mut entries = replace_scope
+			.iter()
+			.map(|(source, target)| format!("`{source}`→`{target}`"))
+			.collect::<Vec<_>>();
+		entries.sort();
+		parts.push(format!("replace_scope={}", entries.join(", ")));
+	}
+	(!parts.is_empty()).then(|| parts.join("; "))
+}
+
+fn format_scope_values(values: &[String]) -> String {
+	values
+		.iter()
+		.map(|value| format!("`{value}`"))
+		.collect::<Vec<_>>()
+		.join(", ")
+}
+
+fn schema_hover_cardinality(field_match: &BindFieldMatch<'_>) -> Option<String> {
+	field_match
+		.field()
+		.attributes
+		.cardinality
+		.or_else(|| {
+			field_match
+				.alias()
+				.and_then(|alias| alias.attributes.cardinality)
+		})
+		.map(format_cardinality)
+}
+
+fn format_cardinality(cardinality: (u32, Option<u32>)) -> String {
+	match cardinality {
+		(minimum, Some(maximum)) => format!("{minimum}..{maximum}"),
+		(minimum, None) => format!("{minimum}..inf"),
+	}
+}
+
+fn lsp_range_from_span(span: &SpanRange) -> Range {
+	Range {
+		start: Position {
+			line: span.start.line.saturating_sub(1) as u32,
+			character: span.start.column.saturating_sub(1) as u32,
+		},
+		end: Position {
+			line: span.end.line.saturating_sub(1) as u32,
+			character: span.end.column.saturating_sub(1) as u32,
+		},
+	}
+}
+
+fn span_contains_position(span: &SpanRange, position: Position) -> bool {
+	let line = position.line as usize + 1;
+	let column = position.character as usize + 1;
+	(line > span.start.line || (line == span.start.line && column >= span.start.column))
+		&& (line < span.end.line || (line == span.end.line && column < span.end.column))
+}
+
+fn schema_completion_candidates(
+	graph: &CwtSchemaGraph,
+	file_path: &Path,
+	text: &str,
+	position: Position,
+	prefix_lower: &str,
+) -> Option<Vec<CompletionCandidate>> {
+	if !is_schema_key_completion_position(text, position) {
+		return None;
+	}
+	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
+	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
+	let parent_context = graph.bind_context(file_path, &parent_path)?;
+	let mut candidates = Vec::new();
+	for field in completion_rule_fields(parent_context) {
+		candidates.extend(schema_completion_entries_for_field(
+			graph,
+			field,
+			prefix_lower,
+		));
+	}
+	candidates.sort_by(|left, right| left.label.cmp(&right.label));
+	candidates.dedup_by(|left, right| left.label == right.label);
+	Some(candidates)
+}
+
+fn is_schema_key_completion_position(text: &str, position: Position) -> bool {
+	let line = text
+		.lines()
+		.nth(position.line as usize)
+		.map(str::to_string)
+		.unwrap_or_default();
+	let upto: String = line.chars().take(position.character as usize).collect();
+	current_assignment_key(&upto).is_none()
+}
+
+fn find_completion_parent_path(
+	statements: &[AstStatement],
+	position: Position,
+	parent_path: &[String],
+) -> Option<Vec<String>> {
+	for statement in statements {
+		match statement {
+			AstStatement::Assignment {
+				key,
+				key_span,
+				value,
+				span,
+			} => {
+				if span_contains_position(key_span, position) {
+					return Some(parent_path.to_vec());
+				}
+				if let AstValue::Block { items, span } = value
+					&& span_contains_position(span, position)
+				{
+					let mut child_path = parent_path.to_vec();
+					child_path.push(key.clone());
+					return find_completion_parent_path(items, position, &child_path)
+						.or(Some(child_path));
+				}
+				if span_contains_position(span, position) {
+					return Some(parent_path.to_vec());
+				}
+			}
+			AstStatement::Item { value, span } => {
+				if let AstValue::Block {
+					items,
+					span: block_span,
+				} = value && span_contains_position(block_span, position)
+				{
+					return find_completion_parent_path(items, position, parent_path)
+						.or_else(|| Some(parent_path.to_vec()));
+				}
+				if span_contains_position(span, position) {
+					return Some(parent_path.to_vec());
+				}
+			}
+			AstStatement::Comment { span, .. } => {
+				if span_contains_position(span, position) {
+					return Some(parent_path.to_vec());
+				}
+			}
+		}
+	}
+	Some(parent_path.to_vec())
+}
+
+fn completion_rule_fields(context: BindContext<'_>) -> Vec<&CwtRuleField> {
+	match context {
+		BindContext::RootType(root) => root.rules.iter().collect(),
+		BindContext::Subtype(root, subtype) => {
+			subtype.rules.iter().chain(root.rules.iter()).collect()
+		}
+		BindContext::RuleField(field) => match &field.value {
+			CwtRuleValue::Block(children) => children.iter().collect(),
+			_ => Vec::new(),
+		},
+		BindContext::AliasRules(rules) => rules.iter().collect(),
+	}
+}
+
+fn schema_completion_entries_for_field(
+	graph: &CwtSchemaGraph,
+	field: &CwtRuleField,
+	prefix_lower: &str,
+) -> Vec<CompletionCandidate> {
+	let Some((head, payload)) = parse_schema_marker(&field.key) else {
+		return direct_schema_completion_entry(field, prefix_lower)
+			.into_iter()
+			.collect();
+	};
+	if head != "alias_name" {
+		return direct_schema_completion_entry(field, prefix_lower)
+			.into_iter()
+			.collect();
+	}
+	let category = AliasCategory::from_name(payload);
+	let mut candidates = graph
+		.aliases
+		.iter()
+		.filter(|((alias_category, _), _)| *alias_category == category)
+		.filter_map(|((_, alias_name), alias)| {
+			let alias_name_lower = alias_name.to_ascii_lowercase();
+			if !prefix_lower.is_empty() && !alias_name_lower.starts_with(prefix_lower) {
+				return None;
+			}
+			Some(CompletionCandidate {
+				label: alias_name.clone(),
+				insert_text: alias_name.clone(),
+				kind: CompletionItemKind::FUNCTION,
+				detail: schema_completion_detail(
+					alias
+						.attributes
+						.description
+						.as_deref()
+						.or(field.attributes.description.as_deref()),
+				),
+				source: CandidateSource::Schema,
+			})
+		})
+		.collect::<Vec<_>>();
+	candidates.sort_by(|left, right| left.label.cmp(&right.label));
+	candidates
+}
+
+fn direct_schema_completion_entry(
+	field: &CwtRuleField,
+	prefix_lower: &str,
+) -> Option<CompletionCandidate> {
+	let field_key_lower = field.key.to_ascii_lowercase();
+	if !prefix_lower.is_empty() && !field_key_lower.starts_with(prefix_lower) {
+		return None;
+	}
+	Some(CompletionCandidate {
+		label: field.key.clone(),
+		insert_text: field.key.clone(),
+		kind: CompletionItemKind::FIELD,
+		detail: schema_completion_detail(field.attributes.description.as_deref()),
+		source: CandidateSource::Schema,
+	})
+}
+
+fn schema_completion_detail(description: Option<&str>) -> String {
+	description
+		.and_then(|text| text.lines().next())
+		.map(|line| format!("cwt: {line}"))
+		.unwrap_or_else(|| "cwt schema field".to_string())
+}
+
+fn parse_schema_marker(text: &str) -> Option<(&str, &str)> {
+	let (head, rest) = text.split_once('[')?;
+	Some((head, rest.strip_suffix(']')?))
+}
+
+fn schema_diagnostics_for_text(
+	graph: &CwtSchemaGraph,
+	file_path: &Path,
+	text: &str,
+) -> Vec<Diagnostic> {
+	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+	schema_diagnostics_for_ast(graph, file_path, &parsed.ast.statements)
+}
+
+fn schema_diagnostics_for_ast(
+	graph: &CwtSchemaGraph,
+	file_path: &Path,
+	statements: &[AstStatement],
+) -> Vec<Diagnostic> {
+	let mut diagnostics = Vec::new();
+	collect_schema_diagnostics(graph, file_path, statements, &[], &mut diagnostics);
+	sort_and_dedup_diagnostics(&mut diagnostics);
+	diagnostics
+}
+
+fn collect_schema_diagnostics(
+	graph: &CwtSchemaGraph,
+	file_path: &Path,
+	statements: &[AstStatement],
+	parent_path: &[String],
+	diagnostics: &mut Vec<Diagnostic>,
+) {
+	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
+	let parent_context = graph.bind_context(file_path, &context_path);
+	let skip_unknown = matches!(parent_context, Some(BindContext::AliasRules(_)));
+	let mut cardinality_ranges = HashMap::<String, (u32, Vec<Range>)>::new();
+	for statement in statements {
+		match statement {
+			AstStatement::Assignment {
+				key,
+				key_span,
+				value,
+				..
+			} => {
+				let key_range = lsp_range_from_span(key_span);
+				let field_match =
+					parent_context.and_then(|context| graph.bind_field_match(context, key));
+				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
+					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
+				}
+				if let Some(field_match) = field_match
+					&& let Some(upper_bound) = schema_cardinality_upper(&field_match)
+				{
+					let entry = cardinality_ranges
+						.entry(key.clone())
+						.or_insert_with(|| (upper_bound, Vec::new()));
+					entry.0 = entry.0.max(upper_bound);
+					entry.1.push(key_range);
+				}
+				if let AstValue::Block { items, .. } = value {
+					let mut child_path = parent_path.to_vec();
+					child_path.push(key.clone());
+					collect_schema_diagnostics(graph, file_path, items, &child_path, diagnostics);
+				}
+			}
+			AstStatement::Item {
+				value: AstValue::Block { items, .. },
+				..
+			} => collect_schema_diagnostics(graph, file_path, items, parent_path, diagnostics),
+			AstStatement::Item { .. } | AstStatement::Comment { .. } => {}
+		}
+	}
+	for (key, (upper_bound, ranges)) in cardinality_ranges {
+		if ranges.len() <= upper_bound as usize {
+			continue;
+		}
+		for range in ranges.into_iter().skip(upper_bound as usize) {
+			diagnostics.push(schema_cardinality_diagnostic(range, &key, upper_bound));
+		}
+	}
+}
+
+fn schema_cardinality_upper(field_match: &BindFieldMatch<'_>) -> Option<u32> {
+	field_match
+		.field()
+		.attributes
+		.cardinality
+		.and_then(|(_, upper_bound)| upper_bound)
+		.or_else(|| {
+			field_match.alias().and_then(|alias| {
+				alias
+					.attributes
+					.cardinality
+					.and_then(|(_, upper_bound)| upper_bound)
+			})
+		})
+}
+
+fn schema_unknown_key_diagnostic(range: Range, key: &str) -> Diagnostic {
+	Diagnostic {
+		range,
+		severity: Some(DiagnosticSeverity::WARNING),
+		code: Some(NumberOrString::String("V001".to_string())),
+		source: Some("foch".to_string()),
+		message: format!("schema does not allow key `{key}` in this context"),
+		..Diagnostic::default()
+	}
+}
+
+fn schema_cardinality_diagnostic(range: Range, key: &str, upper_bound: u32) -> Diagnostic {
+	Diagnostic {
+		range,
+		severity: Some(DiagnosticSeverity::WARNING),
+		code: Some(NumberOrString::String("V002".to_string())),
+		source: Some("foch".to_string()),
+		message: format!("key `{key}` exceeds schema cardinality upper bound of {upper_bound}"),
+		..Diagnostic::default()
+	}
 }
 
 fn build_static_candidates() -> Vec<CompletionCandidate> {
@@ -417,7 +1050,15 @@ fn build_static_candidates() -> Vec<CompletionCandidate> {
 	out
 }
 
+#[cfg(test)]
 fn build_workspace_snapshot(roots: &[ScanTarget]) -> WorkspaceSnapshot {
+	build_workspace_snapshot_with_schema(roots, None)
+}
+
+fn build_workspace_snapshot_with_schema(
+	roots: &[ScanTarget],
+	schema_graph: Option<Arc<CwtSchemaGraph>>,
+) -> WorkspaceSnapshot {
 	let mut parsed = Vec::new();
 	let mut file_paths = Vec::new();
 	let mut path_lookup = HashMap::new();
@@ -504,7 +1145,26 @@ fn build_workspace_snapshot(roots: &[ScanTarget]) -> WorkspaceSnapshot {
 		.into_iter()
 		.chain(diagnostics.advisory)
 		.collect();
-	let diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
+	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
+	if let Some(graph) = schema_graph.as_ref() {
+		for file in &parsed {
+			let schema_diagnostics = schema_diagnostics_for_ast(
+				graph.as_ref(),
+				&file.relative_path,
+				&file.ast.statements,
+			);
+			if schema_diagnostics.is_empty() {
+				continue;
+			}
+			diagnostics_by_path
+				.entry(normalize_path(&file.path))
+				.or_default()
+				.extend(schema_diagnostics);
+		}
+		for diagnostics in diagnostics_by_path.values_mut() {
+			sort_and_dedup_diagnostics(diagnostics);
+		}
+	}
 
 	let session = WorkspaceSession::from_analysis(index, file_paths, path_lookup, findings);
 
@@ -553,17 +1213,21 @@ fn build_workspace_diagnostics(
 	}
 
 	for diagnostics in diagnostics_by_path.values_mut() {
-		diagnostics.sort_by(|lhs, rhs| {
-			range_start(&lhs.range)
-				.cmp(&range_start(&rhs.range))
-				.then_with(|| lhs.message.cmp(&rhs.message))
-		});
-		diagnostics.dedup_by(|lhs, rhs| {
-			lhs.range == rhs.range && lhs.code == rhs.code && lhs.message == rhs.message
-		});
+		sort_and_dedup_diagnostics(diagnostics);
 	}
 
 	diagnostics_by_path
+}
+
+fn sort_and_dedup_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
+	diagnostics.sort_by(|lhs, rhs| {
+		range_start(&lhs.range)
+			.cmp(&range_start(&rhs.range))
+			.then_with(|| lhs.message.cmp(&rhs.message))
+	});
+	diagnostics.dedup_by(|lhs, rhs| {
+		lhs.range == rhs.range && lhs.code == rhs.code && lhs.message == rhs.message
+	});
 }
 
 fn scan_target_mod_id(target: &ScanTarget) -> String {
@@ -1280,14 +1944,18 @@ fn is_identifier_char(ch: char) -> bool {
 mod tests {
 	use super::{
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
-		assignment_key_on_line, build_workspace_snapshot, detect_completion_context,
-		extract_completion_prefix, parse_scan_targets_json, resolve_definition_locations,
+		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
+		detect_completion_context, extract_completion_prefix, find_vendored_schema_dir_from,
+		load_schema_graph, parse_scan_targets_json, resolve_definition_locations,
+		schema_completion_candidates, schema_diagnostics_for_text, schema_hover,
 		select_completion_candidates,
 	};
+	use foch_core::model::test_support;
 	use std::fs;
+	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 	use tower_lsp::lsp_types::CompletionItemKind;
-	use tower_lsp::lsp_types::{Position, Url};
+	use tower_lsp::lsp_types::{DiagnosticSeverity, HoverContents, NumberOrString, Position, Url};
 
 	#[test]
 	fn completion_prefix_extracts_identifier_tail() {
@@ -1388,8 +2056,13 @@ mod tests {
 		assert_eq!(eq, 18);
 	}
 
+	fn init_scopes() {
+		test_support::install_defaults();
+	}
+
 	#[test]
 	fn definition_resolves_flag_value_to_setter() {
+		init_scopes();
 		let tmp = TempDir::new().expect("temp dir");
 		let root = tmp.path();
 		fs::create_dir_all(root.join("decisions")).expect("create decisions");
@@ -1441,6 +2114,7 @@ mod tests {
 
 	#[test]
 	fn definition_resolves_scripted_effect_call_to_definition() {
+		init_scopes();
 		let tmp = TempDir::new().expect("temp dir");
 		let root = tmp.path();
 		fs::create_dir_all(root.join("common").join("scripted_effects"))
@@ -1487,5 +2161,257 @@ mod tests {
 			Url::from_file_path(root.join("common").join("scripted_effects").join("a.txt"))
 				.expect("effect uri")
 		);
+	}
+
+	#[test]
+	fn vendored_schema_dir_lookup_walks_to_repo_root() {
+		let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+		let found = find_vendored_schema_dir_from(&crate_root).expect("find vendored schema dir");
+		assert!(found.ends_with("vendor/cwtools-eu4-config"));
+	}
+
+	#[test]
+	fn schema_loader_reads_existing_fixture_pack() {
+		let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("..")
+			.join("foch-cwt")
+			.join("tests/fixtures/schema-pack");
+		let graph = load_schema_graph(&fixture_dir).expect("load fixture schema graph");
+		assert!(
+			graph
+				.types
+				.values()
+				.any(|definition| definition.name.as_str() == "event")
+		);
+		assert!(
+			graph
+				.types
+				.values()
+				.any(|definition| definition.name.as_str() == "mission")
+		);
+	}
+
+	fn lsp_fixture_dir() -> PathBuf {
+		PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("tests")
+			.join("fixtures")
+			.join("lsp")
+	}
+
+	fn load_lsp_hover_graph() -> std::sync::Arc<foch_cwt::CwtSchemaGraph> {
+		load_schema_graph(&lsp_fixture_dir().join("schema")).expect("load LSP schema graph")
+	}
+
+	fn fixture_text(relative_path: &str) -> String {
+		fs::read_to_string(lsp_fixture_dir().join(relative_path)).expect("read LSP fixture text")
+	}
+
+	fn position_for_token(text: &str, token: &str) -> Position {
+		for (line_index, line) in text.lines().enumerate() {
+			if let Some(character) = line.find(token) {
+				return Position {
+					line: line_index as u32,
+					character: character as u32,
+				};
+			}
+		}
+		panic!("token `{token}` not found");
+	}
+
+	fn hover_markdown(hover: tower_lsp::lsp_types::Hover) -> String {
+		let HoverContents::Markup(markup) = hover.contents else {
+			panic!("expected markdown hover contents");
+		};
+		markup.value
+	}
+
+	#[test]
+	fn hover_renders_event_field_from_schema() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("events/sample.txt");
+		let hover = schema_hover(
+			graph.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "immediate"),
+		)
+		.expect("event hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**immediate**"));
+		assert!(markdown.contains("Type: `Block`"));
+		assert!(markdown.contains("Immediate effects executed when the event fires."));
+		assert!(markdown.contains("push_scope=`country`"));
+		assert!(markdown.contains("scope=`country`, `province`"));
+	}
+
+	#[test]
+	fn hover_renders_mission_field_from_schema() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("missions/sample.txt");
+		let hover = schema_hover(
+			graph.as_ref(),
+			Path::new("missions/sample.txt"),
+			&text,
+			position_for_token(&text, "provinces_to_highlight"),
+		)
+		.expect("mission hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**provinces_to_highlight**"));
+		assert!(markdown.contains("Type: `Block`"));
+		assert!(markdown.contains("Selects provinces relevant to the mission."));
+		assert!(markdown.contains("Cardinality: `0..1`"));
+		assert!(markdown.contains("`root`→`country`"));
+		assert!(markdown.contains("`this`→`province`"));
+	}
+
+	#[test]
+	fn hover_renders_scripted_effect_field_from_schema() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("common/scripted_effects/sample.txt");
+		let hover = schema_hover(
+			graph.as_ref(),
+			Path::new("common/scripted_effects/sample.txt"),
+			&text,
+			position_for_token(&text, "add_prestige"),
+		)
+		.expect("scripted effect hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**add_prestige**"));
+		assert!(markdown.contains("Type: `Scalar`"));
+		assert!(markdown.contains("Adds prestige directly from a scripted effect body."));
+	}
+
+	#[test]
+	fn completion_suggests_event_children_from_schema() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates(
+			graph.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "trigger"),
+			"",
+		)
+		.expect("event schema completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"title"));
+		assert!(labels.contains(&"trigger"));
+		assert!(labels.contains(&"immediate"));
+		assert!(candidates.iter().any(|candidate| {
+			candidate.label == "immediate"
+				&& candidate
+					.detail
+					.starts_with("cwt: Immediate effects executed")
+		}));
+	}
+
+	#[test]
+	fn completion_expands_trigger_aliases_from_schema() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates(
+			graph.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "has_country_flag"),
+			"has",
+		)
+		.expect("trigger schema completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"has_country_flag"));
+		assert!(!labels.contains(&"is_year"));
+		assert!(
+			candidates
+				.iter()
+				.all(|candidate| candidate.kind == CompletionItemKind::FUNCTION)
+		);
+		assert!(candidates.iter().any(|candidate| {
+			candidate.label == "has_country_flag"
+				&& candidate
+					.detail
+					.starts_with("cwt: Checks whether the current country")
+		}));
+	}
+
+	#[test]
+	fn completion_suggests_scripted_effect_fields_from_schema() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("common/scripted_effects/sample.txt");
+		let candidates = schema_completion_candidates(
+			graph.as_ref(),
+			Path::new("common/scripted_effects/sample.txt"),
+			&text,
+			position_for_token(&text, "add_prestige"),
+			"add",
+		)
+		.expect("scripted effect schema completion");
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(candidates[0].label, "add_prestige");
+		assert_eq!(candidates[0].kind, CompletionItemKind::FIELD);
+		assert!(
+			candidates[0]
+				.detail
+				.starts_with("cwt: Adds prestige directly from a scripted effect body.")
+		);
+	}
+
+	#[test]
+	fn diagnostics_report_unknown_keys_and_cardinality_violations() {
+		let graph = load_lsp_hover_graph();
+		let text = fixture_text("events/diagnostics.txt");
+		let diagnostics =
+			schema_diagnostics_for_text(graph.as_ref(), Path::new("events/diagnostics.txt"), &text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("mystery_key")
+				&& diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V002".to_string()))
+				&& diagnostic.message.contains("title")
+				&& diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_skip_unknown_keys_inside_alias_bodies() {
+		let graph = load_lsp_hover_graph();
+		let text = "namespace = sample\ncountry_event = {\n  trigger = {\n    custom_trigger = {\n      mystery_key = yes\n    }\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(graph.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("mystery_key")
+		}));
+	}
+
+	#[test]
+	fn workspace_snapshot_includes_schema_diagnostics() {
+		let graph = load_lsp_hover_graph();
+		let root = lsp_fixture_dir();
+		let snapshot = build_workspace_snapshot_with_schema(
+			&[ScanTarget {
+				path: root.clone(),
+				role: TargetRole::Mod,
+			}],
+			Some(graph),
+		);
+		let key = root.join("events").join("diagnostics.txt");
+		let diagnostics = snapshot
+			.diagnostics_by_path
+			.get(&key.to_string_lossy().replace('\\', "/"))
+			.expect("workspace diagnostics for fixture");
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V002".to_string()))
+		}));
 	}
 }

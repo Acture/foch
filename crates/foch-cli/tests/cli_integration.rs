@@ -396,7 +396,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		modset_report: root.join("modsets").join("modset-entry.report.json"),
 		parse: root
 			.join("parse")
-			.join("v7")
+			.join("v8")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.json"),

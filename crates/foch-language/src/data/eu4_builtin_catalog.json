@@ -120,6 +120,10 @@
     "ROOT",
     "THIS"
   ],
+  "base_scopes": {
+    "country": "country",
+    "province": "province"
+  },
   "builtin_triggers": [
     {
       "name": "ARGS"

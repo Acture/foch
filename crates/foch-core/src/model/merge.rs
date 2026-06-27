@@ -120,11 +120,29 @@ pub struct MergeReportConflictContributor {
 	pub precedence: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConflictKind {
+	DeepMergeable,
+	SchemaCardinalityViolation,
+}
+
+impl ConflictKind {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::DeepMergeable => "deep_mergeable",
+			Self::SchemaCardinalityViolation => "schema_cardinality_violation",
+		}
+	}
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LeafConflictDetail {
 	pub address_path: String,
 	pub address_key: String,
 	pub conflict_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub kind: Option<ConflictKind>,
 	#[serde(default)]
 	pub contributors: Vec<MergeReportConflictContributor>,
 }
@@ -133,6 +151,8 @@ pub struct LeafConflictDetail {
 pub struct MergeReportConflictResolution {
 	pub path: String,
 	pub reason: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub kind: Option<ConflictKind>,
 	#[serde(default)]
 	pub leaf_conflicts: Vec<LeafConflictDetail>,
 }

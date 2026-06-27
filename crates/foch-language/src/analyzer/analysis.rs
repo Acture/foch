@@ -10,8 +10,8 @@ use super::semantic_index::{
 use super::vanilla_index::VanillaSymbolIndex;
 use super::visibility::{should_flag_duplicates, should_flag_unresolved};
 use foch_core::model::{
-	AnalysisMode, Finding, FindingChannel, ScopeType, SemanticDiagnostics, SemanticIndex, Severity,
-	SymbolKind,
+	AnalysisMode, Finding, FindingChannel, ScopeSet, SemanticDiagnostics, SemanticIndex, Severity,
+	SymbolKind, base_scope,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -538,7 +538,7 @@ fn check_unknown_scope_type(index: &SemanticIndex) -> Vec<Finding> {
 				usage.scope_id,
 			),
 		};
-		if scope_mask != 0 {
+		if !scope_mask.is_empty() {
 			continue;
 		}
 		findings.push(Finding {
@@ -592,7 +592,7 @@ fn check_scope_type_mismatch(index: &SemanticIndex) -> Vec<Finding> {
 			&callable_scope_map,
 			&inferred_masks,
 			usage.scope_id,
-		) != scope_type_mask(ScopeType::Province)
+		) != scope_mask(base_scope::province())
 		{
 			continue;
 		}
@@ -1163,12 +1163,8 @@ fn enclosing_scripted_effect_definition(
 	}
 }
 
-fn scope_type_mask(scope_type: ScopeType) -> u8 {
-	match scope_type {
-		ScopeType::Country => 0b01,
-		ScopeType::Province => 0b10,
-		ScopeType::Unknown => 0,
-	}
+fn scope_mask(scope_type: impl Into<ScopeSet>) -> ScopeSet {
+	scope_type.into()
 }
 
 fn extract_param_template(value: &str) -> Option<(&str, String, String)> {

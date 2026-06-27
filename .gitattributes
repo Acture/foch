@@ -1,0 +1,5 @@
+# CWT schema fixtures must stay LF so tree-sitter byte-spans match the
+# committed baselines on Windows runners (which default to core.autocrlf=true).
+# NOTE: *.txt mod fixtures are intentionally NOT normalized — Paradox mod data
+# is frequently CRLF and several tests exercise that, so it must stay as-is.
+*.cwt text eol=lf

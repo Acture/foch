@@ -119,7 +119,7 @@ mod tests {
 		assert_eq!(default_modset_cache_dir(), root.join("modsets"));
 		assert_eq!(
 			parse_cache::parser_cache_root(),
-			root.join("parse").join("v7")
+			root.join("parse").join("v8")
 		);
 	}
 

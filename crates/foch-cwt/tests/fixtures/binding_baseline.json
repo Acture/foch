@@ -1,0 +1,154 @@
+{
+  "aliases": [],
+  "bindings": [
+    {
+      "node_id": "type:event:root",
+      "path": "events/example.txt",
+      "status": "bound",
+      "type_id": "event"
+    },
+    {
+      "path": "missions/example.txt",
+      "reason": "ambiguous-root-type",
+      "status": "dynamic"
+    },
+    {
+      "path": "common/example.txt",
+      "reason": "no root type matches `common/example.txt`",
+      "status": "unbound"
+    }
+  ],
+  "enums": {
+    "power_categories": [
+      "ADM",
+      "DIP",
+      "MIL"
+    ]
+  },
+  "pack_id": "47928e9dc97399d4567d9658a9fcac7a61dff7fd7d0d70854f937c4576430009",
+  "scopes": [
+    "country",
+    "province"
+  ],
+  "types": [
+    {
+      "name": "event",
+      "name_field": "id",
+      "name_from_file": false,
+      "path": "events",
+      "push_scope": "country",
+      "rules": [],
+      "skip_root_key": null,
+      "subtypes": [
+        {
+          "name": "country_event",
+          "rules": [
+            {
+              "key": "trigger",
+              "value": {
+                "fields": [
+                  {
+                    "key": "alias_name[trigger]",
+                    "value": {
+                      "kind": "marker",
+                      "value": "alias_match_left[trigger]"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            },
+            {
+              "key": "immediate",
+              "value": {
+                "fields": [
+                  {
+                    "key": "alias_name[effect]",
+                    "value": {
+                      "kind": "marker",
+                      "value": "alias_match_left[effect]"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            },
+            {
+              "key": "option",
+              "value": {
+                "fields": [
+                  {
+                    "key": "name",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "scalar"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            }
+          ]
+        }
+      ],
+      "type_per_file": false
+    },
+    {
+      "name": "mission",
+      "name_field": "icon",
+      "name_from_file": false,
+      "path": "missions",
+      "push_scope": null,
+      "rules": [],
+      "skip_root_key": null,
+      "subtypes": [],
+      "type_per_file": false
+    },
+    {
+      "name": "mission_series",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "missions",
+      "push_scope": null,
+      "rules": [],
+      "skip_root_key": "any",
+      "subtypes": [
+        {
+          "name": "country_mission_series",
+          "rules": [
+            {
+              "key": "slot",
+              "value": {
+                "kind": "scalar",
+                "value": "scalar"
+              }
+            },
+            {
+              "key": "mission",
+              "value": {
+                "fields": [
+                  {
+                    "key": "icon",
+                    "value": {
+                      "kind": "scalar",
+                      "value": "scalar"
+                    }
+                  }
+                ],
+                "kind": "block"
+              }
+            }
+          ]
+        }
+      ],
+      "type_per_file": false
+    }
+  ],
+  "value_sets": {
+    "event_targets": [
+      "root",
+      "from",
+      "prev"
+    ]
+  }
+}

@@ -1439,7 +1439,7 @@ fn diff_repeated_key(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::content_family::ScriptFileKind;
+	use foch_language::analyzer::content_family::CwtType;
 	use foch_language::analyzer::parser::{AstFile, ScalarValue, Span, SpanRange};
 	use std::path::PathBuf;
 
@@ -1506,7 +1506,7 @@ mod tests {
 			path: PathBuf::from("test.txt"),
 			relative_path: PathBuf::from("test.txt"),
 			content_family: None,
-			file_kind: ScriptFileKind::Other,
+			file_kind: CwtType::new("other"),
 			module_name: "test".to_string(),
 			source: String::new(),
 			ast: AstFile {

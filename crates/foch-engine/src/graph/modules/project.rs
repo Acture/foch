@@ -99,8 +99,8 @@ mod tests {
 	use super::super::model::SymbolNodeId;
 	use super::*;
 	use foch_core::model::{
-		ScopeKind, ScopeNode, ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind,
-		SymbolReference,
+		MaybeScope, ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition,
+		SymbolKind, SymbolReference,
 	};
 	use std::path::PathBuf;
 
@@ -115,11 +115,11 @@ mod tests {
 			line: 1,
 			column: 1,
 			scope_id,
-			declared_this_type: ScopeType::Unknown,
-			inferred_this_type: ScopeType::Unknown,
-			inferred_this_mask: 0,
-			inferred_from_mask: 0,
-			inferred_root_mask: 0,
+			declared_this_type: MaybeScope::Unknown,
+			inferred_this_type: MaybeScope::Unknown,
+			inferred_this_mask: ScopeSet::EMPTY,
+			inferred_from_mask: ScopeSet::EMPTY,
+			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			optional_params: Vec::new(),
 			param_contract: None,
@@ -147,7 +147,7 @@ mod tests {
 			id,
 			kind: ScopeKind::Block,
 			parent,
-			this_type: ScopeType::Unknown,
+			this_type: MaybeScope::Unknown,
 			aliases: Default::default(),
 			mod_id: String::new(),
 			path: PathBuf::from(path),

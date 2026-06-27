@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use foch_core::decode_paradox_bytes;
 use foch_engine::merge::patch::{ClausewitzPatch, diff_ast};
-use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, ScriptFileKind};
+use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, CwtType};
 use foch_language::analyzer::parser::{ParseResult, parse_clausewitz_content};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
@@ -105,7 +105,7 @@ fn build_parsed_script(
 		path: path.clone(),
 		relative_path: path,
 		content_family: None,
-		file_kind: ScriptFileKind::Other,
+		file_kind: CwtType::new("other"),
 		module_name: "fuzz".to_string(),
 		ast: parsed.ast,
 		source,

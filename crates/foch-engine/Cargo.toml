@@ -16,6 +16,7 @@ dirs.workspace = true
 flate2.workspace = true
 globset.workspace = true
 foch-core = { path = "../foch-core" }
+foch-cwt = { path = "../foch-cwt" }
 foch-language = { path = "../foch-language" }
 atty = "0.2"
 rayon.workspace = true
@@ -31,7 +32,8 @@ walkdir.workspace = true
 
 [dev-dependencies]
 bincode2 = { package = "bincode", version = "2.0.0-rc.3", features = ["serde"] }
-filetime = "0.2"
 bitcode = { version = "0.6", features = ["serde"] }
+filetime = "0.2"
+foch-core = { path = "../foch-core", features = ["test-utils"] }
 postcard = { version = "1", features = ["alloc"] }
 tempfile.workspace = true

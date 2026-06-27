@@ -108,6 +108,8 @@ pub struct ResolutionEntry {
 	/// `defer`, `keep_existing`). Only valid alongside the `match` selector.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub handler: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub policy: Option<ResolutionPolicy>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -122,6 +124,8 @@ pub struct ResolutionMap {
 	/// order across runs — important for foch.toml dumps and diagnostic output.
 	pub mod_priority_boost: BTreeMap<String, i32>,
 	pub pattern_rules: Vec<PatternRule>,
+	pub policy_by_file: BTreeMap<PathBuf, ResolutionPolicy>,
+	pub policy_pattern_rules: Vec<PolicyPatternRule>,
 }
 
 impl PartialEq for ResolutionMap {
@@ -129,12 +133,19 @@ impl PartialEq for ResolutionMap {
 		self.by_file == other.by_file
 			&& self.by_conflict_id == other.by_conflict_id
 			&& self.mod_priority_boost == other.mod_priority_boost
+			&& self.policy_by_file == other.policy_by_file
 			&& self.pattern_rules.len() == other.pattern_rules.len()
+			&& self.policy_pattern_rules.len() == other.policy_pattern_rules.len()
 			&& self
 				.pattern_rules
 				.iter()
 				.zip(other.pattern_rules.iter())
 				.all(|(a, b)| a.dsl == b.dsl && a.decision == b.decision)
+			&& self
+				.policy_pattern_rules
+				.iter()
+				.zip(other.policy_pattern_rules.iter())
+				.all(|(a, b)| a.dsl == b.dsl && a.policy == b.policy)
 	}
 }
 
@@ -149,6 +160,12 @@ pub enum ResolutionDecision {
 	Handler(String),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionPolicy {
+	CwtSuggested,
+}
+
 /// Compiled pattern rule from a `[[resolutions]]` entry that uses the
 /// `match` selector. Holds the original DSL string for diagnostics plus the
 /// pre-compiled file/leaf matchers ready for lookup-time use.
@@ -158,6 +175,13 @@ pub struct PatternRule {
 	pub file_matcher: Matcher,
 	pub leaf_matcher: Option<Matcher>,
 	pub decision: ResolutionDecision,
+}
+
+#[derive(Clone, Debug)]
+pub struct PolicyPatternRule {
+	pub dsl: String,
+	pub file_matcher: Matcher,
+	pub policy: ResolutionPolicy,
 }
 
 impl PatternRule {
@@ -174,6 +198,13 @@ impl PatternRule {
 			None => true,
 			Some(matcher) => !leaf_address.is_empty() && matcher.is_match(leaf_address),
 		}
+	}
+}
+
+impl PolicyPatternRule {
+	pub fn matches(&self, file: &Path) -> bool {
+		let file_str = file.to_string_lossy().replace('\\', "/");
+		self.file_matcher.is_match(&file_str)
 	}
 }
 
@@ -288,7 +319,30 @@ impl ResolutionMap {
 				continue;
 			}
 
-			let decision = entry.decision();
+			if let Some(policy) = entry.policy_action() {
+				if let Some(file) = &entry.file {
+					map.policy_by_file.insert(file.clone(), policy);
+				} else if let Some(dsl) = &entry.r#match {
+					let (file_matcher, leaf_matcher) = parse_match_dsl(dsl)
+						.map_err(|err| ConfigError::resolution_entry(index, err.message()))?;
+					if leaf_matcher.is_some() {
+						return Err(ConfigError::resolution_entry(
+							index,
+							"policy action does not support address-constrained match selectors",
+						));
+					}
+					map.policy_pattern_rules.push(PolicyPatternRule {
+						dsl: dsl.clone(),
+						file_matcher,
+						policy,
+					});
+				}
+				continue;
+			}
+
+			let decision = entry
+				.decision_action()
+				.expect("validated non-policy resolution has a decision");
 			if let Some(file) = &entry.file {
 				map.by_file.insert(file.clone(), decision);
 			} else if let Some(conflict_id) = &entry.conflict_id {
@@ -336,6 +390,16 @@ impl ResolutionMap {
 			.find(|rule| rule.matches(file, leaf_address))
 			.map(|rule| &rule.decision)
 	}
+
+	pub fn lookup_policy(&self, file: &Path) -> Option<&ResolutionPolicy> {
+		if let Some(policy) = self.policy_by_file.get(file) {
+			return Some(policy);
+		}
+		self.policy_pattern_rules
+			.iter()
+			.find(|rule| rule.matches(file))
+			.map(|rule| &rule.policy)
+	}
 }
 
 impl ResolutionEntry {
@@ -362,7 +426,7 @@ impl ResolutionEntry {
 			if self.all_action_count() != 1 {
 				return Err(ConfigError::resolution_entry(
 					index,
-					"priority_boost cannot be combined with prefer_mod, use_file, keep_existing, or handler",
+					"priority_boost cannot be combined with prefer_mod, use_file, keep_existing, handler, or policy",
 				));
 			}
 			return Ok(());
@@ -379,10 +443,16 @@ impl ResolutionEntry {
 				"handler action requires match selector",
 			));
 		}
+		if self.policy.is_some() && !(self.file.is_some() || self.r#match.is_some()) {
+			return Err(ConfigError::resolution_entry(
+				index,
+				"policy action requires file selector or match selector",
+			));
+		}
 		if self.all_action_count() != 1 {
 			return Err(ConfigError::resolution_entry(
 				index,
-				"exactly one action (prefer_mod, use_file, keep_existing, handler) must be set",
+				"exactly one action (prefer_mod, use_file, keep_existing, handler, policy) must be set",
 			));
 		}
 		if self.keep_existing.is_some() && self.file.is_none() {
@@ -406,24 +476,29 @@ impl ResolutionEntry {
 			+ option_count(&self.use_file)
 			+ option_count(&self.keep_existing)
 			+ option_count(&self.handler)
+			+ option_count(&self.policy)
 	}
 
 	fn all_action_count(&self) -> usize {
 		self.standard_action_count() + option_count(&self.priority_boost)
 	}
 
-	fn decision(&self) -> ResolutionDecision {
+	fn decision_action(&self) -> Option<ResolutionDecision> {
 		if let Some(prefer_mod) = &self.prefer_mod {
-			ResolutionDecision::PreferMod(prefer_mod.clone())
+			Some(ResolutionDecision::PreferMod(prefer_mod.clone()))
 		} else if let Some(use_file) = &self.use_file {
-			ResolutionDecision::UseFile(use_file.clone())
+			Some(ResolutionDecision::UseFile(use_file.clone()))
 		} else if self.keep_existing.is_some() {
-			ResolutionDecision::KeepExisting
-		} else if let Some(handler) = &self.handler {
-			ResolutionDecision::Handler(handler.clone())
+			Some(ResolutionDecision::KeepExisting)
 		} else {
-			unreachable!("validated non-mod resolution has a decision")
+			self.handler
+				.as_ref()
+				.map(|handler| ResolutionDecision::Handler(handler.clone()))
 		}
+	}
+
+	fn policy_action(&self) -> Option<ResolutionPolicy> {
+		self.policy
 	}
 }
 
@@ -715,12 +790,16 @@ prefer_mod = "9876543210"
 [[resolutions]]
 mod = "1234567890"
 priority_boost = 100
+
+[[resolutions]]
+file = "common/estates_preload/test.txt"
+policy = "cwt_suggested"
 "#,
 		)
 		.expect("parse config");
 
 		assert_eq!(config.overrides, vec![DepOverride::new("abc", "def")]);
-		assert_eq!(config.resolutions.len(), 5);
+		assert_eq!(config.resolutions.len(), 6);
 
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build resolution map");
 		assert_eq!(
@@ -742,6 +821,10 @@ priority_boost = 100
 			Some(&ResolutionDecision::PreferMod("9876543210".to_owned()))
 		);
 		assert_eq!(map.mod_priority_boost.get("1234567890"), Some(&100));
+		assert_eq!(
+			map.lookup_policy(Path::new("common/estates_preload/test.txt")),
+			Some(&ResolutionPolicy::CwtSuggested)
+		);
 	}
 
 	#[test]
@@ -895,6 +978,24 @@ conflict_id = "ab12cd34"
 keep_existing = true
 "#,
 				"keep_existing action requires file selector",
+			),
+			(
+				"policy without file or match selector",
+				r#"
+[[resolutions]]
+conflict_id = "ab12cd34"
+policy = "cwt_suggested"
+"#,
+				"policy action requires file selector or match selector",
+			),
+			(
+				"policy with address-constrained match",
+				r#"
+[[resolutions]]
+match = "common/estates_preload/**::modifier"
+policy = "cwt_suggested"
+"#,
+				"does not support address-constrained match selectors",
 			),
 		];
 
@@ -1111,6 +1212,28 @@ prefer_mod = "ideas-mod"
 	}
 
 	#[test]
+	fn match_selector_supports_cwt_suggested_policy() {
+		let config = FochConfig::from_toml_str(
+			r#"
+[[resolutions]]
+match = "common/estates_preload/**"
+policy = "cwt_suggested"
+"#,
+		)
+		.expect("parse match+policy");
+		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
+		assert_eq!(map.policy_pattern_rules.len(), 1);
+		assert_eq!(
+			map.lookup_policy(Path::new("common/estates_preload/test.txt")),
+			Some(&ResolutionPolicy::CwtSuggested)
+		);
+		assert_eq!(
+			map.lookup_policy(Path::new("common/estate_privileges/test.txt")),
+			None
+		);
+	}
+
+	#[test]
 	fn rejects_match_combined_with_other_selectors() {
 		let cases = [
 			r#"
@@ -1223,6 +1346,29 @@ prefer_mod = "file-mod"
 		assert_eq!(
 			map.lookup(Path::new("events/bar.txt"), "no-id", "any/leaf"),
 			Some(&ResolutionDecision::Handler("last_writer".to_string()))
+		);
+	}
+
+	#[test]
+	fn file_and_match_policy_entries_round_trip_together() {
+		let config = FochConfig::from_toml_str(
+			r#"
+[[resolutions]]
+match = "common/estates_preload/**"
+policy = "cwt_suggested"
+
+[[resolutions]]
+file = "common/estates_preload/exact.txt"
+policy = "cwt_suggested"
+"#,
+		)
+		.expect("parse");
+		let map = ResolutionMap::from_entries(&config.resolutions).expect("build map");
+		assert_eq!(map.policy_pattern_rules.len(), 1);
+		assert_eq!(map.policy_by_file.len(), 1);
+		assert_eq!(
+			map.lookup_policy(Path::new("common/estates_preload/exact.txt")),
+			Some(&ResolutionPolicy::CwtSuggested)
 		);
 	}
 

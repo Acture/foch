@@ -601,11 +601,15 @@ pub(crate) fn evaluate_param_contract(
 #[cfg(test)]
 mod tests {
 	use super::{apply_registered_param_contracts, registered_param_contract};
-	use foch_core::model::{ParamContract, ScopeType, SemanticIndex, SymbolDefinition, SymbolKind};
+	use foch_core::model::{
+		MaybeScope, ParamContract, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind,
+		base_scope, test_support,
+	};
 	use std::path::PathBuf;
 
 	#[test]
 	fn apply_registered_param_contracts_preserves_existing_contracts() {
+		test_support::install_defaults();
 		let mut index = SemanticIndex::default();
 		index.definitions.push(SymbolDefinition {
 			kind: SymbolKind::ScriptedEffect,
@@ -617,11 +621,11 @@ mod tests {
 			line: 1,
 			column: 1,
 			scope_id: 0,
-			declared_this_type: ScopeType::Country,
-			inferred_this_type: ScopeType::Country,
-			inferred_this_mask: 0b01,
-			inferred_from_mask: 0,
-			inferred_root_mask: 0,
+			declared_this_type: MaybeScope::Known(base_scope::country()),
+			inferred_this_type: MaybeScope::Known(base_scope::country()),
+			inferred_this_mask: base_scope::country().into(),
+			inferred_from_mask: ScopeSet::EMPTY,
+			inferred_root_mask: ScopeSet::EMPTY,
 			required_params: Vec::new(),
 			param_contract: Some(ParamContract {
 				required_all: vec!["custom".to_string()],

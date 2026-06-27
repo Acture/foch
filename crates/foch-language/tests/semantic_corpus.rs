@@ -1,4 +1,4 @@
-use foch_core::model::{AnalysisMode, Finding, ScopeType, SymbolKind};
+use foch_core::model::{AnalysisMode, Finding, MaybeScope, SymbolKind, base_scope, test_support};
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use foch_language::analyzer::semantic_index::{
 	build_semantic_index, collect_localisation_definitions, parse_script_file,
@@ -16,11 +16,16 @@ fn corpus_root(mod_name: &str) -> PathBuf {
 		.join(mod_name)
 }
 
+fn init_scopes() {
+	test_support::install_defaults();
+}
+
 fn parsed(
 	mod_name: &str,
 	mod_id: &str,
 	relative: &str,
 ) -> foch_language::analyzer::semantic_index::ParsedScriptFile {
+	init_scopes();
 	let root = corpus_root(mod_name);
 	let file = root.join(relative);
 	parse_script_file(mod_id, &root, &file).expect("parse corpus file")
@@ -133,12 +138,13 @@ fn corpus_scripted_effect_param_binding_is_resolved() {
 #[test]
 fn corpus_scope_inference_tracks_root_and_province_scope() {
 	let player = parsed("defines", "defines", "common/scripted_effects/player.txt");
+	init_scopes();
 	let index = build_semantic_index(&[player]);
 	assert!(
 		index
 			.scopes
 			.iter()
-			.any(|scope| scope.this_type == ScopeType::Province)
+			.any(|scope| scope.this_type == MaybeScope::Known(base_scope::province()))
 	);
 
 	let diagnostics = analyze_visibility(

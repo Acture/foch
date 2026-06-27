@@ -1,0 +1,135 @@
+name: CWT snapshot refresh
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+
+      - name: Capture current schema state
+        id: before
+        run: |
+          set -euo pipefail
+          echo "submodule_sha=$(git -C vendor/cwtools-eu4-config rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "schema_hash=$(python scripts/cwt_snapshot_hash.py)" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh vendored schema
+        id: refresh
+        run: |
+          set -euo pipefail
+          git submodule update --remote --merge vendor/cwtools-eu4-config
+
+          before_sha="${{ steps.before.outputs.submodule_sha }}"
+          after_sha="$(git -C vendor/cwtools-eu4-config rev-parse HEAD)"
+          after_hash="$(python scripts/cwt_snapshot_hash.py)"
+          short_sha="${after_sha:0:12}"
+          changed=false
+
+          if [ "$before_sha" != "$after_sha" ]; then
+            changed=true
+          fi
+
+          {
+            echo "changed=$changed"
+            echo "submodule_sha=$after_sha"
+            echo "short_sha=$short_sha"
+            echo "schema_hash=$after_hash"
+            echo 'commit_log<<EOF'
+            if [ "$changed" = true ]; then
+              git -C vendor/cwtools-eu4-config --no-pager log --oneline "${before_sha}..${after_sha}"
+            else
+              echo "No upstream changes."
+            fi
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify GitHub CLI auth
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh auth status
+
+      - name: Run workspace tests
+        run: cargo test --workspace --quiet
+
+      - name: Create refresh pull request
+        if: steps.refresh.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          before_sha="${{ steps.before.outputs.submodule_sha }}"
+          before_hash="${{ steps.before.outputs.schema_hash }}"
+          after_sha="${{ steps.refresh.outputs.submodule_sha }}"
+          after_hash="${{ steps.refresh.outputs.schema_hash }}"
+          short_sha="${{ steps.refresh.outputs.short_sha }}"
+          branch="automation/cwt-snapshot-refresh-${short_sha}"
+          title="chore(schema): bump cwtools-eu4-config to ${short_sha}"
+          created=false
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git checkout -B "$branch"
+          git add .gitmodules vendor/cwtools-eu4-config
+
+          if git diff --cached --quiet; then
+            echo "No tracked changes to commit."
+            exit 0
+          fi
+
+          git commit -m "$title"
+          git push --force-with-lease origin "HEAD:$branch"
+
+          pr_url="$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // ""')"
+          if [ -z "$pr_url" ]; then
+            created=true
+            pr_url="$(gh pr create \
+              --base "${{ github.event.repository.default_branch }}" \
+              --head "$branch" \
+              --title "$title" \
+              --body-file - <<EOF
+## Summary
+
+- Update \`vendor/cwtools-eu4-config\` from \`${before_sha}\` to \`${after_sha}\`
+- Refresh schema pack identity from \`${before_hash}\` to \`${after_hash}\`
+- Re-run \`cargo test --workspace --quiet\` before opening this PR
+
+## Upstream commit log
+
+\`\`\`
+${{ steps.refresh.outputs.commit_log }}
+\`\`\`
+
+⚠️ Any baseline diff is a fixture failure and requires human review.
+EOF
+)"
+          fi
+
+          if [ "$created" = true ]; then
+            gh pr comment "$pr_url" --body "⚠️ Any baseline diff is a fixture failure and requires human review."
+          fi

@@ -11,9 +11,10 @@ use flate2::write::GzEncoder;
 use foch_core::domain::game::Game;
 use foch_core::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
-	LocalisationDefinition, LocalisationDuplicate, ParamBinding, ParamContract, ParseFamilyStats,
-	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType,
-	SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
+	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
+	ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
+	ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
+	UiDefinition,
 };
 use foch_core::utils::steam::steam_game_install_path;
 use foch_language::analysis_version::analysis_rules_version;
@@ -38,11 +39,12 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 11;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 12;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
 pub const INSTALLED_COVERAGE_FILE_NAME: &str = "coverage.json";
+pub const INSTALLED_VOCABULARY_MANIFEST_FILE_NAME: &str = "vocabulary-manifest.json";
 const LEGACY_INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin.gz";
 const SNAPSHOT_WIRE_FORMAT_VERSION: u32 = 1;
 
@@ -65,6 +67,10 @@ pub struct InstalledBaseDataMetadata {
 	pub asset_name: Option<String>,
 	#[serde(skip_serializing_if = "Option::is_none")]
 	pub sha256: Option<String>,
+	/// SHA-256 of the vocabulary-manifest sidecar emitted alongside this
+	/// snapshot, for cross-version existence-drift provenance (GH #35).
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub vocabulary_manifest_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -576,10 +582,10 @@ impl BaseAnalysisSnapshot {
 					scope_id: item.scope_id,
 					declared_this_type: item.declared_this_type,
 					inferred_this_type: item.inferred_this_type,
-					inferred_this_mask: if item.inferred_this_mask != 0 {
+					inferred_this_mask: if !item.inferred_this_mask.is_empty() {
 						item.inferred_this_mask
 					} else {
-						scope_type_mask(item.inferred_this_type)
+						scope_mask(item.inferred_this_type)
 					},
 					inferred_from_mask: item.inferred_from_mask,
 					inferred_root_mask: item.inferred_root_mask,
@@ -771,8 +777,8 @@ pub struct BaseDocumentRecord {
 pub struct BaseScopeNode {
 	pub kind: ScopeKind,
 	pub parent: Option<usize>,
-	pub this_type: ScopeType,
-	pub aliases: HashMap<String, ScopeType>,
+	pub this_type: MaybeScope,
+	pub aliases: HashMap<String, MaybeScope>,
 	pub path: String,
 	pub span: SourceSpan,
 	#[serde(default)]
@@ -791,14 +797,14 @@ pub struct BaseSymbolDefinition {
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
-	pub declared_this_type: ScopeType,
-	pub inferred_this_type: ScopeType,
+	pub declared_this_type: MaybeScope,
+	pub inferred_this_type: MaybeScope,
 	#[serde(default)]
-	pub inferred_this_mask: u8,
+	pub inferred_this_mask: ScopeSet,
 	#[serde(default)]
-	pub inferred_from_mask: u8,
+	pub inferred_from_mask: ScopeSet,
 	#[serde(default)]
-	pub inferred_root_mask: u8,
+	pub inferred_root_mask: ScopeSet,
 	pub required_params: Vec<String>,
 	#[serde(default)]
 	pub optional_params: Vec<String>,
@@ -808,12 +814,8 @@ pub struct BaseSymbolDefinition {
 	pub scope_param_names: Vec<String>,
 }
 
-fn scope_type_mask(scope_type: ScopeType) -> u8 {
-	match scope_type {
-		ScopeType::Country => 0b01,
-		ScopeType::Province => 0b10,
-		ScopeType::Unknown => 0,
-	}
+fn scope_mask(scope_type: impl Into<ScopeSet>) -> ScopeSet {
+	scope_type.into()
 }
 
 #[derive(
@@ -851,7 +853,7 @@ pub struct BaseKeyUsage {
 	pub line: usize,
 	pub column: usize,
 	pub scope_id: usize,
-	pub this_type: ScopeType,
+	pub this_type: MaybeScope,
 }
 
 #[derive(
@@ -1460,6 +1462,7 @@ pub fn install_built_snapshot(
 		source,
 		asset_name,
 		sha256,
+		vocabulary_manifest_sha256: None,
 	};
 	write_installed_snapshot(snapshot, &metadata, encoded_snapshot)
 }
@@ -1518,6 +1521,81 @@ pub fn write_release_artifacts(
 	})
 }
 
+/// Schema version of the vocabulary-manifest sidecar.
+pub const VOCABULARY_MANIFEST_VERSION: u32 = 1;
+
+/// One entry in the base-game vocabulary manifest: a defined symbol identified
+/// by kind, name, and originating module.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VocabularyManifestEntry {
+	pub kind: SymbolKind,
+	pub name: String,
+	pub module: String,
+}
+
+/// Deterministic, version-stamped manifest of the symbol vocabulary a base
+/// snapshot defines. Emitted as a sidecar so cross-version existence-drift can
+/// be diffed cheaply without deserializing the full snapshot (GH #35) — the
+/// induced-symbol-spec counterpart to the CWT declared spec.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct VocabularyManifest {
+	pub manifest_version: u32,
+	pub game: String,
+	pub game_version: String,
+	pub analysis_rules_version: String,
+	pub entries: Vec<VocabularyManifestEntry>,
+}
+
+fn sorted_vocabulary_entries(snapshot: &BaseAnalysisSnapshot) -> Vec<VocabularyManifestEntry> {
+	let mut entries: Vec<VocabularyManifestEntry> = snapshot
+		.symbol_definitions
+		.iter()
+		.map(|def| VocabularyManifestEntry {
+			kind: def.kind,
+			name: def.name.clone(),
+			module: def.module.clone(),
+		})
+		.collect();
+	entries.sort_by(|a, b| {
+		a.kind
+			.as_str()
+			.cmp(b.kind.as_str())
+			.then_with(|| a.name.cmp(&b.name))
+			.then_with(|| a.module.cmp(&b.module))
+	});
+	entries.dedup_by(|a, b| a.kind == b.kind && a.name == b.name && a.module == b.module);
+	entries
+}
+
+/// Build the deterministic vocabulary manifest for a base snapshot.
+pub fn build_vocabulary_manifest(snapshot: &BaseAnalysisSnapshot) -> VocabularyManifest {
+	VocabularyManifest {
+		manifest_version: VOCABULARY_MANIFEST_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
+		entries: sorted_vocabulary_entries(snapshot),
+	}
+}
+
+/// Write the vocabulary-manifest sidecar to `path` and return its SHA-256 digest.
+fn write_vocabulary_manifest(
+	path: &Path,
+	snapshot: &BaseAnalysisSnapshot,
+) -> Result<String, String> {
+	let manifest = build_vocabulary_manifest(snapshot);
+	let raw = serde_json::to_string_pretty(&manifest)
+		.map_err(|err| format!("failed to serialize vocabulary manifest: {err}"))?;
+	let digest = sha256_hex(raw.as_bytes());
+	fs::write(path, raw).map_err(|err| {
+		format!(
+			"failed to write vocabulary manifest {}: {err}",
+			path.display()
+		)
+	})?;
+	Ok(digest)
+}
+
 pub fn write_snapshot_bundle(
 	snapshot: &BaseAnalysisSnapshot,
 	encoded_snapshot: &[u8],
@@ -1532,6 +1610,9 @@ pub fn write_snapshot_bundle(
 			output_dir.display()
 		)
 	})?;
+	let vocabulary_manifest_path = output_dir.join(INSTALLED_VOCABULARY_MANIFEST_FILE_NAME);
+	let vocabulary_manifest_sha256 =
+		write_vocabulary_manifest(&vocabulary_manifest_path, snapshot)?;
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
@@ -1541,6 +1622,7 @@ pub fn write_snapshot_bundle(
 		source,
 		asset_name,
 		sha256,
+		vocabulary_manifest_sha256: Some(vocabulary_manifest_sha256),
 	};
 	let metadata_raw = serde_json::to_string_pretty(&metadata)
 		.map_err(|err| format!("failed to serialize base data metadata: {err}"))?;
@@ -1658,6 +1740,7 @@ pub fn install_snapshot_from_release(
 		source: BaseDataSource::Download,
 		asset_name: Some(asset.asset_name),
 		sha256: Some(asset.sha256),
+		vocabulary_manifest_sha256: None,
 	};
 	write_installed_snapshot(&snapshot, &metadata, &asset_bytes)
 }
@@ -1676,7 +1759,12 @@ fn write_installed_snapshot(
 	})?;
 	let metadata_path = install_dir.join(INSTALLED_METADATA_FILE_NAME);
 	let snapshot_path = install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
-	let metadata_raw = serde_json::to_string_pretty(metadata)
+	let vocabulary_manifest_path = install_dir.join(INSTALLED_VOCABULARY_MANIFEST_FILE_NAME);
+	let vocabulary_manifest_sha256 =
+		write_vocabulary_manifest(&vocabulary_manifest_path, snapshot)?;
+	let mut metadata = metadata.clone();
+	metadata.vocabulary_manifest_sha256 = Some(vocabulary_manifest_sha256);
+	let metadata_raw = serde_json::to_string_pretty(&metadata)
 		.map_err(|err| format!("failed to serialize base data metadata: {err}"))?;
 	fs::write(&metadata_path, metadata_raw).map_err(|err| {
 		format!(
@@ -1694,7 +1782,7 @@ fn write_installed_snapshot(
 	write_coverage_report(&coverage_path, snapshot)?;
 	Ok(InstalledBaseSnapshot {
 		install_dir,
-		metadata: metadata.clone(),
+		metadata,
 		snapshot: snapshot.clone(),
 	})
 }

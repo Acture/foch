@@ -4,7 +4,6 @@ use super::{
 	BaseScalarAssignment, BaseSymbolDefinition, BaseSymbolReference, BaseUiDefinition,
 };
 use foch_core::model::DocumentFamily;
-use foch_language::analyzer::content_family::ScriptFileKind;
 use foch_language::analyzer::eu4_profile::eu4_content_family_for_root_family;
 use foch_language::analyzer::semantic_index::classify_script_file;
 use serde::{Deserialize, Serialize};
@@ -126,7 +125,7 @@ pub fn build_coverage_report(snapshot: &BaseAnalysisSnapshot) -> BaseCoverageRep
 		entry.increment_document_family(document.family);
 		if document.family == DocumentFamily::Clausewitz {
 			let kind = classify_script_file(Path::new(&document.path));
-			entry.increment_script_file_kind(script_file_kind_name(kind));
+			entry.increment_script_file_kind(kind.as_str());
 		}
 	}
 	accumulate_semantic_counts(
@@ -237,86 +236,6 @@ pub fn coverage_class_name(classification: CoverageClass) -> &'static str {
 		CoverageClass::SemanticComplete => "semantic_complete",
 		CoverageClass::GraphReady => "graph_ready",
 		CoverageClass::MergeReady => "merge_ready",
-	}
-}
-
-pub fn script_file_kind_name(kind: ScriptFileKind) -> &'static str {
-	match kind {
-		ScriptFileKind::Events => "events",
-		ScriptFileKind::OnActions => "on_actions",
-		ScriptFileKind::Decisions => "decisions",
-		ScriptFileKind::ScriptedEffects => "scripted_effects",
-		ScriptFileKind::ScriptedTriggers => "scripted_triggers",
-		ScriptFileKind::DiplomaticActions => "diplomatic_actions",
-		ScriptFileKind::TriggeredModifiers => "triggered_modifiers",
-		ScriptFileKind::Defines => "defines",
-		ScriptFileKind::Achievements => "achievements",
-		ScriptFileKind::Ages => "ages",
-		ScriptFileKind::Buildings => "buildings",
-		ScriptFileKind::Institutions => "institutions",
-		ScriptFileKind::ProvinceTriggeredModifiers => "province_triggered_modifiers",
-		ScriptFileKind::Ideas => "ideas",
-		ScriptFileKind::GreatProjects => "great_projects",
-		ScriptFileKind::GovernmentReforms => "government_reforms",
-		ScriptFileKind::Cultures => "cultures",
-		ScriptFileKind::CustomGui => "custom_gui",
-		ScriptFileKind::AdvisorTypes => "advisortypes",
-		ScriptFileKind::EventModifiers => "event_modifiers",
-		ScriptFileKind::CbTypes => "cb_types",
-		ScriptFileKind::GovernmentNames => "government_names",
-		ScriptFileKind::CustomizableLocalization => "customizable_localization",
-		ScriptFileKind::Missions => "missions",
-		ScriptFileKind::NewDiplomaticActions => "new_diplomatic_actions",
-		ScriptFileKind::CountryTags => "country_tags",
-		ScriptFileKind::Countries => "countries",
-		ScriptFileKind::CountryHistory => "country_history",
-		ScriptFileKind::ProvinceHistory => "province_history",
-		ScriptFileKind::ProvinceNames => "province_names",
-		ScriptFileKind::RandomMapTiles => "random_map_tiles",
-		ScriptFileKind::RandomMapNames => "random_map_names",
-		ScriptFileKind::RandomMapScenarios => "random_map_scenarios",
-		ScriptFileKind::RandomMapTweaks => "random_map_tweaks",
-		ScriptFileKind::DiplomacyHistory => "diplomacy_history",
-		ScriptFileKind::AdvisorHistory => "advisor_history",
-		ScriptFileKind::Wars => "wars",
-		ScriptFileKind::Units => "units",
-		ScriptFileKind::Religions => "religions",
-		ScriptFileKind::SubjectTypes => "subject_types",
-		ScriptFileKind::RebelTypes => "rebel_types",
-		ScriptFileKind::Disasters => "disasters",
-		ScriptFileKind::GovernmentMechanics => "government_mechanics",
-		ScriptFileKind::ChurchAspects => "church_aspects",
-		ScriptFileKind::Factions => "factions",
-		ScriptFileKind::Hegemons => "hegemons",
-		ScriptFileKind::PersonalDeities => "personal_deities",
-		ScriptFileKind::FetishistCults => "fetishist_cults",
-		ScriptFileKind::PeaceTreaties => "peace_treaties",
-		ScriptFileKind::Bookmarks => "bookmarks",
-		ScriptFileKind::Policies => "policies",
-		ScriptFileKind::MercenaryCompanies => "mercenary_companies",
-		ScriptFileKind::Fervor => "fervor",
-		ScriptFileKind::Decrees => "decrees",
-		ScriptFileKind::FederationAdvancements => "federation_advancements",
-		ScriptFileKind::GoldenBulls => "golden_bulls",
-		ScriptFileKind::FlagshipModifications => "flagship_modifications",
-		ScriptFileKind::HolyOrders => "holy_orders",
-		ScriptFileKind::NavalDoctrines => "naval_doctrines",
-		ScriptFileKind::DefenderOfFaith => "defender_of_faith",
-		ScriptFileKind::Isolationism => "isolationism",
-		ScriptFileKind::Professionalism => "professionalism",
-		ScriptFileKind::PowerProjection => "powerprojection",
-		ScriptFileKind::SubjectTypeUpgrades => "subject_type_upgrades",
-		ScriptFileKind::GovernmentRanks => "government_ranks",
-		ScriptFileKind::Technologies => "technologies",
-		ScriptFileKind::TechnologyGroups => "technology_groups",
-		ScriptFileKind::EstateAgendas => "estate_agendas",
-		ScriptFileKind::EstatePrivileges => "estate_privileges",
-		ScriptFileKind::Estates => "estates",
-		ScriptFileKind::ParliamentBribes => "parliament_bribes",
-		ScriptFileKind::ParliamentIssues => "parliament_issues",
-		ScriptFileKind::StateEdicts => "state_edicts",
-		ScriptFileKind::Ui => "ui",
-		ScriptFileKind::Other => "other",
 	}
 }
 

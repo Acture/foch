@@ -13,7 +13,9 @@ use super::{
 	PatchBasedMergeContext, PatchBasedMergeFailure, PatchBasedMergeOutput, PatchConflictReport,
 };
 use crate::emit::emit_clausewitz_statements_with_options;
+use crate::merge::cwt_suggestions::classify_conflict_kind;
 use crate::workspace::ResolvedFileContributor;
+use foch_cwt::CwtSchemaGraph;
 
 use super::super::super::conflict_handler::{
 	ChainHandler, ConflictHandler, DeferHandler, DepImpliesResolutionHandler, LookupHandler,
@@ -32,14 +34,18 @@ fn leaf_conflicts_for_unresolved(
 	target_path: &str,
 	conflicts: &[PatchResolution],
 	mod_versions: &HashMap<String, String>,
+	cwt_schema_graph: Option<&CwtSchemaGraph>,
 ) -> Vec<LeafConflictDetail> {
 	conflicts
 		.iter()
 		.filter_map(|resolution| match resolution {
 			PatchResolution::Conflict {
-				address, patches, ..
+				address,
+				patches,
+				reason,
 			} => {
 				let address_path = address.path.join("/");
+				let ast_path = address.path.iter().map(String::as_str).collect::<Vec<_>>();
 				Some(LeafConflictDetail {
 					address_path: address_path.clone(),
 					address_key: address.key.clone(),
@@ -48,6 +54,9 @@ fn leaf_conflicts_for_unresolved(
 						&address_path,
 						&address.key,
 					),
+					kind: cwt_schema_graph.and_then(|graph| {
+						classify_conflict_kind(graph, Path::new(target_path), &ast_path, reason)
+					}),
 					contributors: leaf_conflict_contributors(patches, mod_versions),
 				})
 			}
@@ -210,6 +219,7 @@ pub(super) fn patch_based_structural_merge(
 				target_path,
 				&merge_result.conflicts,
 				context.mod_versions,
+				context.cwt_schema_graph.as_deref(),
 			),
 			handler_resolutions: merge_result.handler_resolutions,
 		}));
@@ -255,6 +265,7 @@ fn run_patch_merge_engine(
 			resolution_map,
 			PathBuf::from(target_path),
 			(*context.mod_display_names).clone(),
+			context.cwt_schema_graph.clone(),
 		),
 		second: ChainHandler {
 			first: PriorityBoostResolutionHandler::new(

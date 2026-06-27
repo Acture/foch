@@ -1,0 +1,43 @@
+types = {
+  type[event] = {
+    path = "game/events"
+    ## type_key_filter = country_event
+  }
+}
+
+event = {
+  subtype[country_event] = {
+    ## cardinality = 0..1
+    ###Event title localisation key.
+    title = scalar
+
+    ###Conditions that must be true for the event to fire.
+    trigger = {
+      alias_name[trigger] = alias_match_left[trigger]
+    }
+
+    ## push_scope = country
+    ## scope = { country province }
+    ###Immediate effects executed when the event fires.
+    immediate = {
+      alias_name[effect] = alias_match_left[effect]
+    }
+  }
+}
+
+## scope = country
+###Checks whether the current year matches.
+alias[trigger:is_year] = int
+
+## scope = country
+###Checks whether the current country has a flag.
+alias[trigger:has_country_flag] = scalar
+
+###Supports custom trigger bodies.
+alias[trigger:custom_trigger] = {
+  expected = scalar
+}
+
+## scope = country
+###Adds prestige to the current country.
+alias[effect:add_prestige] = scalar

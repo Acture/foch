@@ -1,0 +1,11 @@
+namespace = sample
+country_event = {
+  id = sample.1
+  title = sample.1.t
+  trigger = {
+    has_country_flag = demo_flag
+  }
+  immediate = {
+    add_prestige = 5
+  }
+}

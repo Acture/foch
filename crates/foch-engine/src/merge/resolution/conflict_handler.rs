@@ -3,11 +3,13 @@ use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use foch_core::config::{
 	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
 };
 use foch_core::model::HandlerResolutionRecord;
+use foch_cwt::CwtSchemaGraph;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::merge::conflict_view::ConflictView;
@@ -298,6 +300,7 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
 	pub _current_file: PathBuf,
+	cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 }
@@ -305,21 +308,53 @@ pub struct LookupHandler<'a> {
 impl<'a> LookupHandler<'a> {
 	#[cfg(test)]
 	pub(crate) fn new(map: &'a ResolutionMap, file: PathBuf) -> Self {
-		Self::with_display_names(map, file, HashMap::new())
+		Self::with_display_names(map, file, HashMap::new(), None)
 	}
 
 	pub(crate) fn with_display_names(
 		map: &'a ResolutionMap,
 		file: PathBuf,
 		_mod_displayname_lookup: HashMap<String, String>,
+		cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
 	) -> Self {
 		Self {
 			map,
 			_current_file: file,
+			cwt_schema_graph,
 			current_conflict_index: 1,
 			total_conflicts: 1,
 		}
 	}
+}
+
+fn log_cwt_suggestion_on_miss(
+	graph: Option<&CwtSchemaGraph>,
+	current_file: &Path,
+	address_path: &[String],
+	address_key: &str,
+) {
+	let Some(graph) = graph else {
+		return;
+	};
+	let ast_path = if address_path.is_empty() {
+		vec![address_key]
+	} else {
+		address_path.iter().map(String::as_str).collect::<Vec<_>>()
+	};
+	let Some(suggestion) =
+		crate::merge::cwt_suggestions::suggest_for_conflict(graph, current_file, &ast_path)
+	else {
+		return;
+	};
+	tracing::info!(
+		target: "foch_merge_cwt_suggest",
+		file = %current_file.display(),
+		ast_path = %ast_path.join("/"),
+		suggested_identity_source = ?suggestion.suggested_identity_source,
+		suggested_block_policy = ?suggestion.suggested_block_policy,
+		schema_provenance = %suggestion.schema_provenance,
+		"cwt merge suggestion"
+	);
 }
 
 impl<'a> ConflictHandler for LookupHandler<'a> {
@@ -346,7 +381,15 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 			Some(ResolutionDecision::Handler(name)) => {
 				crate::merge::handler_registry::dispatch(name, view)
 			}
-			None => ConflictDecision::Defer { record: None },
+			None => {
+				log_cwt_suggestion_on_miss(
+					self.cwt_schema_graph.as_deref(),
+					lookup_file,
+					&view.address_path,
+					&view.address_key,
+				);
+				ConflictDecision::Defer { record: None }
+			}
 		}
 	}
 
@@ -669,6 +712,7 @@ pub(crate) fn resolution_entry_for_decision(
 			keep_existing: None,
 			priority_boost: None,
 			handler: None,
+			policy: None,
 		}),
 		ConflictDecision::UseFile(path) => Some(ResolutionEntry {
 			file: None,
@@ -680,6 +724,7 @@ pub(crate) fn resolution_entry_for_decision(
 			keep_existing: None,
 			priority_boost: None,
 			handler: None,
+			policy: None,
 		}),
 		ConflictDecision::KeepExisting => Some(ResolutionEntry {
 			file: Some(current_file.to_path_buf()),
@@ -691,6 +736,7 @@ pub(crate) fn resolution_entry_for_decision(
 			keep_existing: Some(true),
 			priority_boost: None,
 			handler: None,
+			policy: None,
 		}),
 		ConflictDecision::Defer { .. } | ConflictDecision::Abort => None,
 	}
@@ -1384,6 +1430,7 @@ dep = "b"
 				keep_existing: None,
 				priority_boost: None,
 				handler: None,
+				policy: None,
 			})
 			.expect("append resolution");
 

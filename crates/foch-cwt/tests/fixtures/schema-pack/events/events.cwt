@@ -1,0 +1,34 @@
+types = {
+	type[event] = {
+		path = "game/events"
+		name_field = "id"
+		push_scope = country
+	}
+}
+
+event = {
+	subtype[country_event] = {
+		trigger = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+		immediate = {
+			alias_name[effect] = alias_match_left[effect]
+		}
+		option = {
+			name = scalar
+		}
+	}
+}
+
+enum[power_categories] = { ADM DIP MIL }
+value_set[event_targets] = { root from prev }
+
+scopes = {
+	country = {
+		aliases = { country }
+	}
+	province = {
+		aliases = { province }
+		is_subscope_of = { country }
+	}
+}

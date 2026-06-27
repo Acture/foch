@@ -2,11 +2,11 @@ use crate::workspace::FileFilter;
 use foch_core::domain::game::Game;
 use foch_core::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
-	LocalisationDefinition, LocalisationDuplicate, ParamBinding, ParamContract, ParseIssue,
-	ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeType, SemanticIndex,
+	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
+	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex,
 	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
-use foch_language::analyzer::content_family::{GameProfile, ScriptFileKind};
+use foch_language::analyzer::content_family::{CwtType, GameProfile};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
@@ -19,7 +19,7 @@ use walkdir::WalkDir;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_PARSE_CACHE_VERSION: u32 = 1;
+pub const MOD_PARSE_CACHE_VERSION: u32 = 2;
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const CACHE_ENV: &str = "FOCH_MOD_PARSE_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
@@ -59,7 +59,7 @@ struct StoredParsedScriptFile {
 	mod_id: String,
 	path: String,
 	relative_path: String,
-	file_kind: ScriptFileKind,
+	file_kind: CwtType,
 	module_name: String,
 	ast: StoredAstFile,
 	source: String,
@@ -104,8 +104,8 @@ struct StoredScopeNode {
 	id: usize,
 	kind: ScopeKind,
 	parent: Option<usize>,
-	this_type: ScopeType,
-	aliases: std::collections::HashMap<String, ScopeType>,
+	this_type: MaybeScope,
+	aliases: std::collections::HashMap<String, MaybeScope>,
 	mod_id: String,
 	path: String,
 	span: SourceSpan,
@@ -123,11 +123,11 @@ struct StoredSymbolDefinition {
 	line: usize,
 	column: usize,
 	scope_id: usize,
-	declared_this_type: ScopeType,
-	inferred_this_type: ScopeType,
-	inferred_this_mask: u8,
-	inferred_from_mask: u8,
-	inferred_root_mask: u8,
+	declared_this_type: MaybeScope,
+	inferred_this_type: MaybeScope,
+	inferred_this_mask: ScopeSet,
+	inferred_from_mask: ScopeSet,
+	inferred_root_mask: ScopeSet,
 	required_params: Vec<String>,
 	optional_params: Vec<String>,
 	param_contract: Option<ParamContract>,
@@ -166,7 +166,7 @@ struct StoredKeyUsage {
 	line: usize,
 	column: usize,
 	scope_id: usize,
-	this_type: ScopeType,
+	this_type: MaybeScope,
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -432,7 +432,7 @@ impl StoredParsedScriptFile {
 			mod_id: file.mod_id.clone(),
 			path: path_to_string(&file.path),
 			relative_path: path_to_string(&file.relative_path),
-			file_kind: file.file_kind,
+			file_kind: file.file_kind.clone(),
 			module_name: file.module_name.clone(),
 			ast: StoredAstFile::from_ast_file(&file.ast),
 			source: file.source.clone(),
