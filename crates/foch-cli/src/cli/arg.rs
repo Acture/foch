@@ -139,6 +139,10 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub include_base: bool,
 
+	/// Merge divergent same-name GUI containers into scroll-stack parents instead of manual conflicts.
+	#[arg(long)]
+	pub gui_scroll_merge: bool,
+
 	/// Treat replace_path declarations as no-ops; merge as if they were absent.
 	#[arg(long)]
 	pub ignore_replace_path: bool,

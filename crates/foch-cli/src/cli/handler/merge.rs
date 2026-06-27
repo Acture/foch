@@ -37,6 +37,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			out_dir: merge_args.out.clone(),
 			include_game_base: !merge_args.no_game_base,
 			include_base: merge_args.include_base,
+			gui_scroll_merge: merge_args.gui_scroll_merge,
 			force: merge_args.force,
 			ignore_replace_path: merge_args.ignore_replace_path,
 			dep_overrides,
