@@ -355,6 +355,15 @@ def classify_resolution(rel: str, base: Path, overlay: Path, compatch: Path) -> 
     hs, as_, bs = set(normalise(h)), set(normalise(a)), set(normalise(b))
     a_only = as_ - bs
     b_only = bs - as_
+    # contributor relationship (order-independent): how redundant are A and B?
+    inter, union_ab = as_ & bs, as_ | bs
+    jaccard = (len(inter) / len(union_ab)) if union_ab else 1.0
+    if not a_only or not b_only:
+        relationship = "subset"  # one contributor's unique content ⊆ the other
+    elif jaccard >= 0.5:
+        relationship = "redundant"  # mechanics overlap heavily (e.g. renamed dupes)
+    else:
+        relationship = "disjoint"  # genuinely additive content
     fa = (len(hs & a_only) / len(a_only)) if a_only else None
     fb = (len(hs & b_only) / len(b_only)) if b_only else None
     T = 0.5
@@ -379,6 +388,8 @@ def classify_resolution(rel: str, base: Path, overlay: Path, compatch: Path) -> 
         "rel": rel,
         "frac_base_kept": round(fa, 2) if fa is not None else None,
         "frac_overlay_kept": round(fb, 2) if fb is not None else None,
+        "ab_jaccard": round(jaccard, 2),
+        "relationship": relationship,
         "verdict": verdict,
     }
 
@@ -420,13 +431,31 @@ def cmd_learn(args) -> int:
 
     agg: dict[str, int] = {}
     agg_conflict: dict[str, int] = {}
+    crosstab: dict[str, dict[str, int]] = {}  # relationship -> verdict -> count
     for _, _, foch_v, res in rows:
         agg[res["verdict"]] = agg.get(res["verdict"], 0) + 1
+        rel_kind = res["relationship"]
+        crosstab.setdefault(rel_kind, {})
+        crosstab[rel_kind][res["verdict"]] = crosstab[rel_kind].get(res["verdict"], 0) + 1
         if foch_v == "conflict_withheld":
             agg_conflict[res["verdict"]] = agg_conflict.get(res["verdict"], 0) + 1
 
     out = ["# Human resolution rules (learned from compatches)", ""]
     out.append(f"Overlapping files analysed: **{len(rows)}**")
+    out.append("")
+    out.append("## Order-independent rule: contributor relationship -> human resolution")
+    out.append("")
+    out.append("The honest signal is the relationship between the two contributors (not which")
+    out.append("side won, which depends on load order). `disjoint`=additive, `redundant`=heavily")
+    out.append("overlapping mechanics (e.g. renamed dupes), `subset`=one contained in the other.")
+    out.append("")
+    out.append("| contributor relationship | human resolutions |")
+    out.append("|---|---|")
+    for rel_kind in sorted(crosstab, key=lambda k: -sum(crosstab[k].values())):
+        dist = ", ".join(
+            f"{v}:{n}" for v, n in sorted(crosstab[rel_kind].items(), key=lambda kv: -kv[1])
+        )
+        out.append(f"| `{rel_kind}` | {dist} |")
     out.append("")
     out.append("## How humans resolve overlaps (ALL overlapping files)")
     out.append("")
@@ -447,12 +476,12 @@ def cmd_learn(args) -> int:
     out.append("")
     out.append("## Per-file detail")
     out.append("")
-    out.append("| case | file | foch | human | base_kept | overlay_kept |")
-    out.append("|---|---|---|---|---|---|")
+    out.append("| case | file | foch | relationship | human | AB_sim | base_kept | overlay_kept |")
+    out.append("|---|---|---|---|---|---|---|---|")
     for title, rel, foch_v, res in rows:
         out.append(
-            f"| {title} | `{rel}` | {foch_v} | **{res['verdict']}** | "
-            f"{res['frac_base_kept']} | {res['frac_overlay_kept']} |"
+            f"| {title} | `{rel}` | {foch_v} | {res['relationship']} | **{res['verdict']}** | "
+            f"{res['ab_jaccard']} | {res['frac_base_kept']} | {res['frac_overlay_kept']} |"
         )
     report = "\n".join(out)
     (args.results_dir / "rules.md").write_text(report, encoding="utf-8")
