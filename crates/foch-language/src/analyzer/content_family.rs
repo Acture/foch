@@ -126,6 +126,13 @@ pub enum NamedContainerPolicy {
 	/// Strict-with-scalars: highest-precedence overlay wins; conflicting children
 	/// from earlier candidates are dropped. Explicit per family.
 	OverlayWins,
+	/// GUI keep-both: instead of conflicting, synthesize a single widget that
+	/// keeps the same `name` (so the engine still finds it) and nests BOTH
+	/// contributors' bodies as vertically-offset child `containerWindowType`s
+	/// inside a scrollable parent. Lossless — every widget from both sides
+	/// survives. Opt-in (the in-game scroll layout is best-effort). EU4-only
+	/// limitation: there is no scripted toggle/tab, so "keep both" = scroll.
+	ScrollStack,
 }
 
 /// Bundle of policies that control how `deep_merge` resolves conflicts.
