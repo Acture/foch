@@ -1,9 +1,27 @@
 # Merge Provenance — per-definition source attribution (Slice A)
 
-Status: proposed
+Status: implemented
 Date: 2026-06-28
 Scope: foundation + two non-invasive channels (sidecar, comments). Opt-in.
 Deferred to Slice B: `gui_tooltip`, `lsp_hover`.
+
+## Implementation notes (as built)
+
+- The adopted-set is computed over **all DAG contributors** (not only mods that
+  produced a patch). Iterating every contributor is what credits the
+  lowest-precedence mod when it acts as the synthetic base under `--no-game-base`
+  (it produces no patch yet founds the merge). A contributor is credited when one
+  of its blocks is emitted verbatim, or a child it added/changed vs **vanilla**
+  survives in the output; mods that only re-ship vanilla, and overridden losers,
+  are excluded.
+- Top-level keys can **repeat** at file root (a scripted-effect union emits
+  several `key = { … }` blocks that the game runs in sequence). Provenance
+  aggregates across all same-key blocks rather than keying off a single block.
+- The inline comment is ASCII (`# foch: <key> from <names>`) to stay safe across
+  Clausewitz file encodings; names are mod display names in precedence order.
+- `MODSET_CACHE_FORMAT_VERSION` bumped to `…-provenance-v6`; the modset key also
+  encodes `provenance={bool}`. Per-file `DAG_BASE`/`MOD_DIFF` caches unchanged
+  (provenance is derived after, from in-memory contributors).
 
 ## Problem
 

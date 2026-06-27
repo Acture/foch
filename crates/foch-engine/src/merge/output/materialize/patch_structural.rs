@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use foch_core::config::compute_conflict_id;
 use foch_core::model::{LeafConflictDetail, MergeReportConflictContributor};
+use foch_language::analyzer::parser::{AstStatement, Span, SpanRange};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
 use super::stale_detect::{
@@ -240,6 +241,16 @@ pub(super) fn patch_based_structural_merge(
 	} else {
 		(merged_statements, 0)
 	};
+	let definition_provenance = dag_patches.definition_provenance;
+	let merged_statements = if context.provenance {
+		inject_provenance_comments(
+			merged_statements,
+			&definition_provenance,
+			context.mod_display_names,
+		)
+	} else {
+		merged_statements
+	};
 	let rendered =
 		emit_clausewitz_statements_with_options(&merged_statements, context.emit_options)?;
 	Ok(PatchBasedMergeOutput {
@@ -251,7 +262,52 @@ pub(super) fn patch_based_structural_merge(
 		keep_existing_paths: merge_result.keep_existing_paths,
 		noop_vs_vanilla,
 		per_entry_noop_skipped_count,
+		definition_provenance,
 	})
+}
+
+/// Build a zero-width span for synthesized statements (provenance comments) that
+/// have no source location.
+fn synthetic_span() -> SpanRange {
+	let point = Span {
+		line: 0,
+		column: 0,
+		offset: 0,
+	};
+	SpanRange {
+		start: point.clone(),
+		end: point,
+	}
+}
+
+/// Insert a `# foch: <key> from <display names>` comment immediately before each
+/// top-level definition that has an adopted-provenance entry. Definitions with
+/// no entry (pure vanilla / unchanged) are left untouched.
+fn inject_provenance_comments(
+	statements: Vec<AstStatement>,
+	provenance: &BTreeMap<String, Vec<String>>,
+	display_names: &HashMap<String, String>,
+) -> Vec<AstStatement> {
+	if provenance.is_empty() {
+		return statements;
+	}
+	let mut out: Vec<AstStatement> = Vec::with_capacity(statements.len());
+	for stmt in statements {
+		if let AstStatement::Assignment { key, .. } = &stmt
+			&& let Some(mods) = provenance.get(key)
+		{
+			let names: Vec<String> = mods
+				.iter()
+				.map(|m| display_names.get(m).cloned().unwrap_or_else(|| m.clone()))
+				.collect();
+			out.push(AstStatement::Comment {
+				text: format!("foch: {key} from {}", names.join(", ")),
+				span: synthetic_span(),
+			});
+		}
+		out.push(stmt);
+	}
+	out
 }
 
 fn run_patch_merge_engine(
