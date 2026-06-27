@@ -1126,6 +1126,30 @@ fn synthesize_scroll_stack(
 	Some(block_assignment(&key, parent))
 }
 
+pub(super) fn synthesize_scroll_stacked_insert(
+	attributed: &[AttributedPatch],
+) -> Option<ClausewitzPatch> {
+	let mut inserts = attributed.iter().map(|a| match &a.patch {
+		ClausewitzPatch::InsertNode {
+			statement,
+			path,
+			key,
+		} => Some((statement, path, key)),
+		_ => None,
+	});
+	let (first_statement, path, key) = inserts.next()??;
+	let mut stacked = first_statement.clone();
+	for insert in inserts {
+		let (statement, _, _) = insert?;
+		stacked = synthesize_scroll_stack(&stacked, statement)?;
+	}
+	Some(ClausewitzPatch::InsertNode {
+		path: path.clone(),
+		key: key.clone(),
+		statement: stacked,
+	})
+}
+
 /// Build an `AND = { <items...> }` statement that wraps the supplied body,
 /// preserving the body's internal conjunction when it is used as a single
 /// disjunct of an `OR`.

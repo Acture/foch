@@ -38,7 +38,7 @@ pub use config::{
 pub use graph::{
 	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
 	GraphRootSelector, GraphScopeSelection, ModuleReport, SEMANTIC_GRAPH_PROGRESS_TARGET,
-	run_graph_with_options, run_module_report, write_module_report,
+	merge_trace_edges_from_trace, run_graph_with_options, run_module_report, write_module_report,
 };
 pub use merge::{
 	AnalysisStatusView, CandidateView, ConflictDecision, ConflictHandler, ConflictView,

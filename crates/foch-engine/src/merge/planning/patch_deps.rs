@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use foch_core::config::DepOverride;
-use foch_core::model::HandlerResolutionRecord;
+use foch_core::model::{HandlerResolutionRecord, MergeTraceContributor};
 use foch_language::analyzer::content_family::{CwtType, MergeKeySource, MergePolicies};
-use foch_language::analyzer::parser::{AstFile, AstStatement};
+use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
 use super::super::conflict_handler::{ConflictHandler, DeferHandler};
@@ -26,6 +26,14 @@ pub(crate) struct DagPatchComputation {
 	pub base_statements: Vec<AstStatement>,
 	pub merged_statements: Vec<AstStatement>,
 	pub merge_result: PatchMergeResult,
+	/// Per top-level definition key → mods whose content is **adopted** into the
+	/// final merged output, in ascending DAG-precedence order. Overridden losers
+	/// and no-op-vs-base contributors are excluded. Empty unless a mod changed a
+	/// key whose content survives in `merged_statements`.
+	pub definition_provenance: BTreeMap<String, Vec<String>>,
+	/// Per top-level definition key → all non-base mods that defined that key,
+	/// in DAG level / precedence order.
+	pub definition_participants: BTreeMap<String, Vec<MergeTraceContributor>>,
 }
 
 pub(crate) struct DagPatchRequest<'a> {
@@ -326,6 +334,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 	let mut current_statements = base_statements.clone();
 	let mut mod_patches = Vec::new();
 	let mut merge_result = PatchMergeResult::default();
+	let dag_base_game_version = format!("{game_version} policies={policies:?}");
 	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
 	let diff_cache = mod_hashes
 		.filter(|hashes| !hashes.is_empty())
@@ -430,7 +439,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 			&current_statements,
 			&level_resolved_patches,
 			merge_key_source,
-			game_version,
+			&dag_base_game_version,
 		);
 	}
 
@@ -484,12 +493,187 @@ fn compute_dag_patches_from_parsed_with_cache(
 		}
 	}
 
+	let definition_provenance =
+		compute_definition_provenance(&current_statements, vanilla, contributors, file_dag);
+	let definition_participants = compute_definition_participants(contributors, file_dag);
 	Ok(DagPatchComputation {
 		mod_patches,
 		base_statements,
 		merged_statements: current_statements,
 		merge_result,
+		definition_provenance,
+		definition_participants,
 	})
+}
+
+/// Canonical, span-free text signature of a single statement (used as a hashable
+/// identity for set operations on block children).
+fn statement_signature(stmt: &AstStatement) -> String {
+	crate::emit::emit_clausewitz_statements(std::slice::from_ref(stmt)).unwrap_or_default()
+}
+
+/// Signatures of the immediate children of a block-valued assignment (empty for
+/// scalars / non-blocks).
+fn block_child_signatures(stmt: &AstStatement) -> BTreeSet<String> {
+	match stmt {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} => items.iter().map(statement_signature).collect(),
+		_ => BTreeSet::new(),
+	}
+}
+
+/// All top-level `Assignment`s with the given key. A key can repeat at file root
+/// (e.g. a scripted-effect union emits several blocks under the same name, which
+/// the game runs in sequence), so provenance must aggregate across all of them.
+fn same_key_statements<'a>(statements: &'a [AstStatement], key: &str) -> Vec<&'a AstStatement> {
+	statements
+		.iter()
+		.filter(|stmt| matches!(stmt, AstStatement::Assignment { key: k, .. } if k == key))
+		.collect()
+}
+
+/// Whole-statement signatures for a set of same-key blocks.
+fn whole_signatures(statements: &[&AstStatement]) -> BTreeSet<String> {
+	statements
+		.iter()
+		.map(|stmt| statement_signature(stmt))
+		.collect()
+}
+
+/// Union of immediate child signatures across a set of same-key blocks.
+fn union_child_signatures(statements: &[&AstStatement]) -> BTreeSet<String> {
+	statements
+		.iter()
+		.flat_map(|stmt| block_child_signatures(stmt))
+		.collect()
+}
+
+/// Per top-level definition, the mods whose content is **adopted** into the final
+/// merged output, in ascending DAG-precedence order.
+///
+/// A contributor is credited for a key when its content actually survives in the
+/// output and it is not merely re-shipping the game's vanilla copy unchanged:
+///
+/// - mods one of whose blocks is emitted verbatim are credited (sole winner /
+///   identical / a member of a same-key union);
+/// - mods that added or changed at least one child (vs vanilla) that survives in
+///   the output are credited (single-block union / partial merge);
+/// - mods whose blocks are all identical to vanilla (no change) and overridden
+///   losers (none of their content survives) are excluded.
+///
+/// Keys can repeat at file root, so all same-key blocks are aggregated. Iterating
+/// every contributor — rather than only mods that produced a patch — lets the
+/// lowest-precedence mod be credited even when it acts as the synthetic base
+/// under `--no-game-base` (it produces no patch, yet its content founds the
+/// merge). Deterministic: `BTreeMap`/`BTreeSet` ordering + a precedence-ordered
+/// `Vec`.
+fn compute_definition_provenance(
+	merged_statements: &[AstStatement],
+	vanilla: Option<&ParsedScriptFile>,
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+	file_dag: &FileDag,
+) -> BTreeMap<String, Vec<String>> {
+	let mut ordered: Vec<ModId> = file_dag.contributors().to_vec();
+	ordered.sort_by_key(|mod_id| file_dag.precedence_of(mod_id));
+
+	let keys: BTreeSet<&str> = merged_statements
+		.iter()
+		.filter_map(|stmt| match stmt {
+			AstStatement::Assignment { key, .. } => Some(key.as_str()),
+			_ => None,
+		})
+		.collect();
+
+	let mut provenance: BTreeMap<String, Vec<String>> = BTreeMap::new();
+	for key in keys {
+		let final_blocks = same_key_statements(merged_statements, key);
+		let final_whole = whole_signatures(&final_blocks);
+		let final_children = union_child_signatures(&final_blocks);
+		let vanilla_blocks = vanilla
+			.map(|file| same_key_statements(&file.ast.statements, key))
+			.unwrap_or_default();
+		let vanilla_whole = whole_signatures(&vanilla_blocks);
+		let vanilla_children = union_child_signatures(&vanilla_blocks);
+
+		let mut adopted: Vec<String> = Vec::new();
+		for mod_id in &ordered {
+			let Some(parsed) = contributors.get(mod_id) else {
+				continue;
+			};
+			let mod_blocks = same_key_statements(&parsed.ast.statements, key);
+			if mod_blocks.is_empty() {
+				continue;
+			}
+			let mod_whole = whole_signatures(&mod_blocks);
+			// Only re-shipping vanilla's blocks unchanged is not a contribution.
+			if !vanilla_whole.is_empty() && mod_whole.is_subset(&vanilla_whole) {
+				continue;
+			}
+			// Whole-block adoption: one of the mod's blocks is emitted verbatim.
+			if mod_whole.intersection(&final_whole).next().is_some() {
+				adopted.push(mod_id.0.clone());
+				continue;
+			}
+			// Partial adoption: a child the mod added/changed (vs vanilla) survives.
+			let mod_unique: BTreeSet<String> = union_child_signatures(&mod_blocks)
+				.difference(&vanilla_children)
+				.cloned()
+				.collect();
+			if mod_unique.intersection(&final_children).next().is_some() {
+				adopted.push(mod_id.0.clone());
+			}
+		}
+		if !adopted.is_empty() {
+			provenance.insert(key.to_string(), adopted);
+		}
+	}
+	provenance
+}
+
+fn compute_definition_participants(
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+	file_dag: &FileDag,
+) -> BTreeMap<String, Vec<MergeTraceContributor>> {
+	let participant_set: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
+	let levels = topo_levels(&participant_set, file_dag);
+	let mut dag_level_by_mod: BTreeMap<ModId, usize> = BTreeMap::new();
+	for (level_idx, level) in levels.iter().enumerate() {
+		for mod_id in level {
+			dag_level_by_mod.insert(mod_id.clone(), level_idx);
+		}
+	}
+
+	let mut participants: BTreeMap<String, Vec<MergeTraceContributor>> = BTreeMap::new();
+	let mut ordered: Vec<ModId> = file_dag.contributors().to_vec();
+	ordered.sort_by_key(|mod_id| {
+		(
+			dag_level_by_mod.get(mod_id).copied().unwrap_or(usize::MAX),
+			file_dag.precedence_of(mod_id),
+			mod_id.0.clone(),
+		)
+	});
+	for mod_id in ordered {
+		let Some(parsed) = contributors.get(&mod_id) else {
+			continue;
+		};
+		for stmt in &parsed.ast.statements {
+			let AstStatement::Assignment { key, .. } = stmt else {
+				continue;
+			};
+			let entry = participants.entry(key.clone()).or_default();
+			if entry.iter().any(|item| item.mod_id == mod_id.0) {
+				continue;
+			}
+			entry.push(MergeTraceContributor {
+				mod_id: mod_id.0.clone(),
+				precedence: file_dag.precedence_of(&mod_id),
+				dag_level: dag_level_by_mod.get(&mod_id).copied().unwrap_or(usize::MAX),
+			});
+		}
+	}
+	participants
 }
 
 fn final_base_statements(
@@ -1363,5 +1547,98 @@ mod tests {
 				.any(|r| r.action == "downstream_override"),
 			"expected a downstream_override handler resolution"
 		);
+	}
+
+	fn prov(result: &DagPatchComputation, key: &str) -> Vec<String> {
+		result
+			.definition_provenance
+			.get(key)
+			.cloned()
+			.unwrap_or_default()
+	}
+
+	#[test]
+	fn provenance_credits_the_single_mod_that_adds_a_block() {
+		let result = compute(
+			vec![mod_with("a", "A", vec![], vec![])],
+			vec![file_contributor("a", 1)],
+			Some("root = yes\n"),
+			parsed_inventory(&[("a", "root = yes\nalpha = {\n\tx = 1\n}\n")]),
+			IgnoreReplacePath::None,
+		);
+		assert!(result.merge_result.conflicts.is_empty());
+		assert_eq!(prov(&result, "alpha"), vec!["a".to_string()]);
+		// Unchanged vanilla key gets no provenance entry.
+		assert!(prov(&result, "root").is_empty());
+	}
+
+	#[test]
+	fn provenance_excludes_a_mod_that_ships_a_block_identical_to_vanilla() {
+		let result = compute(
+			vec![mod_with("a", "A", vec![], vec![])],
+			vec![file_contributor("a", 1)],
+			Some("shared = {\n\tx = 1\n}\n"),
+			// `a` re-ships `shared` byte-identical and adds `extra`.
+			parsed_inventory(&[("a", "shared = {\n\tx = 1\n}\nextra = yes\n")]),
+			IgnoreReplacePath::None,
+		);
+		assert!(result.merge_result.conflicts.is_empty());
+		assert!(
+			prov(&result, "shared").is_empty(),
+			"no-op-vs-base must not be credited: {:?}",
+			result.definition_provenance
+		);
+		assert_eq!(prov(&result, "extra"), vec!["a".to_string()]);
+	}
+
+	#[test]
+	fn provenance_unions_credit_every_contributing_mod() {
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("block = {\n\ta = 1\n}\n"),
+			parsed_inventory(&[
+				("a", "block = {\n\ta = 1\n\tb = 2\n}\n"),
+				("b", "block = {\n\ta = 1\n\tc = 3\n}\n"),
+			]),
+			IgnoreReplacePath::None,
+		);
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(
+			output.contains("b = 2") && output.contains("c = 3"),
+			"{output}"
+		);
+		assert_eq!(
+			prov(&result, "block"),
+			vec!["a".to_string(), "b".to_string()]
+		);
+	}
+
+	#[test]
+	fn provenance_excludes_the_overridden_loser_in_a_dependency_chain() {
+		// `b` depends on `a` and replaces `a`'s block with an incompatible body.
+		let result = compute(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec!["A"], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some("root = yes\n"),
+			parsed_inventory(&[
+				("a", "root = yes\nthing = {\n\tname = \"old\"\n}\n"),
+				("b", "root = yes\nthing = {\n\tname = \"new\"\n}\n"),
+			]),
+			IgnoreReplacePath::None,
+		);
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(output.contains("name = \"new\""), "{output}");
+		assert!(!output.contains("name = \"old\""), "{output}");
+		// Only the adopted winner is credited; `a`'s overridden body is excluded.
+		assert_eq!(prov(&result, "thing"), vec!["b".to_string()]);
 	}
 }

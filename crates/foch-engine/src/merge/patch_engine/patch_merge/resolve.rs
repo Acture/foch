@@ -1,11 +1,13 @@
-use foch_language::analyzer::content_family::{BlockPatchPolicy, MergePolicies, ScalarMergePolicy};
+use foch_language::analyzer::content_family::{
+	BlockPatchPolicy, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
+};
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
 use super::super::patch::{ClausewitzPatch, patches_semantically_equal};
 use super::address::patch_kind;
 use super::block_merge::{
-	synthesize_boolean_or, try_recursive_block_merge, try_replace_block_named_container_merge,
-	try_union_block_merge,
+	synthesize_boolean_or, synthesize_scroll_stacked_insert, try_recursive_block_merge,
+	try_replace_block_named_container_merge, try_union_block_merge,
 };
 use super::rename::resolve_renames;
 use super::{AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution};
@@ -168,6 +170,18 @@ fn resolve_insert_nodes(
 	{
 		stats.convergent_patches += 1;
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
+	}
+
+	if policies.named_container == NamedContainerPolicy::ScrollStack
+		&& let Some(synth) = synthesize_scroll_stacked_insert(&attributed)
+	{
+		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+		stats.auto_merged_patches += 1;
+		return PatchResolution::AutoMerged {
+			result: synth,
+			strategy: "scroll_stack".to_string(),
+			contributing_mods: mods,
+		};
 	}
 
 	// BooleanOr policy: when each contributor inserts a block-bodied

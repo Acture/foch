@@ -8,15 +8,15 @@ use crate::cache::{
 };
 
 // Bump when merge-report semantics change so cached artifacts don't hide new metadata.
-const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-shared-base-union-empty-noop-v6";
+const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-include-base-gfx-effects-union-provenance-trace-gui-scroll-shared-base-union-empty-noop-v9";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
 use foch_core::domain::playlist::Playlist;
 use foch_core::model::{
-	AnalysisMode, ChannelMode, Finding, MERGE_REPORT_ARTIFACT_PATH, MergeReport, MergeReportStatus,
-	MergeReportValidation,
+	AnalysisMode, ChannelMode, Finding, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
+	MERGE_TRACE_ARTIFACT_PATH, MergeReport, MergeReportStatus, MergeReportValidation,
 };
 use std::fs;
 use std::io;
@@ -27,6 +27,7 @@ pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
 	pub include_base: bool,
+	pub gui_scroll_merge: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
@@ -41,6 +42,10 @@ pub struct MergeExecuteOptions {
 	/// `None` skips the stamp (e.g., merge invoked from a context where
 	/// computing it isn't possible).
 	pub playset_fingerprint: Option<String>,
+	/// Annotate merged definitions with their adopted source mods (inline
+	/// `# foch: …` comments + a `.foch/foch-provenance.json` sidecar). Off by
+	/// default; when off, emitted output is byte-identical to a normal merge.
+	pub provenance: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -77,6 +82,8 @@ pub fn run_merge_with_options(
 		&request,
 		options.include_game_base,
 		options.include_base,
+		options.gui_scroll_merge,
+		options.provenance,
 		options.resolution_config_path.as_deref(),
 	);
 	if let Some(cache_context) = modset_cache.as_ref() {
@@ -114,12 +121,14 @@ pub fn run_merge_with_options(
 		MergeMaterializeOptions {
 			include_game_base: options.include_game_base,
 			include_base: options.include_base,
+			gui_scroll_merge: options.gui_scroll_merge,
 			force: options.force,
 			ignore_replace_path: options.ignore_replace_path,
 			dep_overrides: options.dep_overrides.clone(),
 			resolution_map,
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
+			provenance: options.provenance,
 		},
 	)?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();
@@ -158,6 +167,8 @@ fn build_modset_cache_context(
 	request: &CheckRequest,
 	include_game_base: bool,
 	include_base: bool,
+	gui_scroll_merge: bool,
+	provenance: bool,
 	resolution_config_path: Option<&Path>,
 ) -> Option<ModsetCacheContext> {
 	if resolution_config_path.is_some_and(|path| !path.is_file()) {
@@ -183,7 +194,7 @@ fn build_modset_cache_context(
 		resolution_config_path,
 	));
 	let foch_version = format!(
-		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base}",
+		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base} provenance={provenance} gui_scroll_merge={gui_scroll_merge} shared_base_union=true empty_noop=true",
 		env!("CARGO_PKG_VERSION"),
 	);
 	let key = compute_modset_cache_key(
@@ -477,6 +488,54 @@ fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> Result<(
 	let bytes = serde_json::to_vec_pretty(report).map_err(|err| {
 		MergeError::Io(io::Error::other(format!(
 			"failed to serialize merge report {}: {err}",
+			path.display()
+		)))
+	})?;
+	fs::write(path, bytes)?;
+	write_provenance_artifact(out_dir, report)?;
+	write_merge_trace_artifact(out_dir, report)?;
+	Ok(())
+}
+
+/// Write the `.foch/foch-provenance.json` sidecar when provenance was collected
+/// (i.e. `--provenance` was on). When the map is empty the sidecar is omitted,
+/// and any stale relic from a previous provenance run is removed so toggling the
+/// flag off leaves a clean tree.
+fn write_provenance_artifact(out_dir: &Path, report: &MergeReport) -> Result<(), MergeError> {
+	let path = out_dir.join(MERGE_PROVENANCE_ARTIFACT_PATH);
+	if report.definition_provenance.is_empty() {
+		if path.exists() {
+			let _ = fs::remove_file(&path);
+		}
+		return Ok(());
+	}
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	let bytes = serde_json::to_vec_pretty(&report.definition_provenance).map_err(|err| {
+		MergeError::Io(io::Error::other(format!(
+			"failed to serialize provenance sidecar {}: {err}",
+			path.display()
+		)))
+	})?;
+	fs::write(path, bytes)?;
+	Ok(())
+}
+
+fn write_merge_trace_artifact(out_dir: &Path, report: &MergeReport) -> Result<(), MergeError> {
+	let path = out_dir.join(MERGE_TRACE_ARTIFACT_PATH);
+	if report.merge_trace.is_empty() {
+		if path.exists() {
+			let _ = fs::remove_file(&path);
+		}
+		return Ok(());
+	}
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	let bytes = serde_json::to_vec_pretty(&report.merge_trace).map_err(|err| {
+		MergeError::Io(io::Error::other(format!(
+			"failed to serialize merge trace sidecar {}: {err}",
 			path.display()
 		)))
 	})?;

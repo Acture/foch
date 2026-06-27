@@ -139,6 +139,10 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub include_base: bool,
 
+	/// Merge divergent same-name GUI containers into scroll-stack parents instead of manual conflicts.
+	#[arg(long)]
+	pub gui_scroll_merge: bool,
+
 	/// Treat replace_path declarations as no-ops; merge as if they were absent.
 	#[arg(long)]
 	pub ignore_replace_path: bool,
@@ -150,6 +154,13 @@ pub struct MergeArgs {
 	/// Load local foch.toml overrides from this file instead of the default search path.
 	#[arg(long, value_name = "PATH")]
 	pub config: Option<PathBuf>,
+
+	/// Annotate each merged definition with the mods it was adopted from:
+	/// inline `# foch: <key> from <mods>` comments plus a
+	/// `.foch/foch-provenance.json` sidecar. Off by default; output is
+	/// byte-identical to a normal merge when omitted.
+	#[arg(long)]
+	pub provenance: bool,
 
 	/// Disable TTY-detected interactive prompts; useful for CI and batch runs.
 	#[arg(long, alias = "no-interactive")]

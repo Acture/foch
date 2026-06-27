@@ -1,8 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use foch_core::config::compute_conflict_id;
-use foch_core::model::{LeafConflictDetail, MergeReportConflictContributor};
+use foch_core::model::{
+	LeafConflictDetail, MergeReportConflictContributor, MergeTraceContributor, MergeTraceDecision,
+	MergeTraceEntry, MergeTracePolicy,
+};
+use foch_language::analyzer::content_family::{
+	BlockPatchPolicy, MergePolicies, NamedContainerPolicy,
+};
+use foch_language::analyzer::parser::{AstStatement, Span, SpanRange};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
 use super::stale_detect::{
@@ -240,6 +247,22 @@ pub(super) fn patch_based_structural_merge(
 	} else {
 		(merged_statements, 0)
 	};
+	let definition_participants = dag_patches.definition_participants;
+	let definition_provenance = dag_patches.definition_provenance;
+	let merge_trace = build_merge_trace(
+		&definition_provenance,
+		&definition_participants,
+		context.descriptor,
+	);
+	let merged_statements = if context.provenance {
+		inject_provenance_comments(
+			merged_statements,
+			&definition_provenance,
+			context.mod_display_names,
+		)
+	} else {
+		merged_statements
+	};
 	let rendered =
 		emit_clausewitz_statements_with_options(&merged_statements, context.emit_options)?;
 	Ok(PatchBasedMergeOutput {
@@ -251,7 +274,134 @@ pub(super) fn patch_based_structural_merge(
 		keep_existing_paths: merge_result.keep_existing_paths,
 		noop_vs_vanilla,
 		per_entry_noop_skipped_count,
+		definition_provenance,
+		merge_trace,
 	})
+}
+
+fn build_merge_trace(
+	provenance: &BTreeMap<String, Vec<String>>,
+	participants: &BTreeMap<String, Vec<MergeTraceContributor>>,
+	descriptor: &foch_language::analyzer::content_family::ContentFamilyDescriptor,
+) -> BTreeMap<String, MergeTraceEntry> {
+	let mut trace = BTreeMap::new();
+	for (key, adopted_mods) in provenance {
+		let policy = trace_policy_for_key(descriptor, key);
+		let all_participants = participants.get(key).cloned().unwrap_or_default();
+		let mut contributors = Vec::new();
+		for mod_id in adopted_mods {
+			if let Some(participant) = all_participants
+				.iter()
+				.find(|participant| participant.mod_id == *mod_id)
+			{
+				contributors.push(participant.clone());
+			} else {
+				contributors.push(MergeTraceContributor {
+					mod_id: mod_id.clone(),
+					precedence: usize::MAX,
+					dag_level: usize::MAX,
+				});
+			}
+		}
+		contributors.sort_by(|left, right| {
+			left.dag_level
+				.cmp(&right.dag_level)
+				.then_with(|| left.precedence.cmp(&right.precedence))
+				.then_with(|| left.mod_id.cmp(&right.mod_id))
+		});
+		let decision = trace_decision(policy, &contributors, all_participants.len());
+		trace.insert(
+			key.clone(),
+			MergeTraceEntry {
+				contributors,
+				policy,
+				decision,
+			},
+		);
+	}
+	trace
+}
+
+fn trace_policy_for_key(
+	descriptor: &foch_language::analyzer::content_family::ContentFamilyDescriptor,
+	key: &str,
+) -> MergeTracePolicy {
+	match descriptor.merge_policies.block_patch_policy_for_key(key) {
+		BlockPatchPolicy::Union => MergeTracePolicy::Union,
+		BlockPatchPolicy::BooleanOr => MergeTracePolicy::BooleanOr,
+		BlockPatchPolicy::LastWriter => MergeTracePolicy::Overlay,
+		BlockPatchPolicy::Recurse => {
+			if descriptor.merge_policies.named_container != NamedContainerPolicy::Conflict {
+				MergeTracePolicy::NamedContainer
+			} else {
+				MergeTracePolicy::Conflict
+			}
+		}
+	}
+}
+
+fn trace_decision(
+	policy: MergeTracePolicy,
+	contributors: &[MergeTraceContributor],
+	participant_count: usize,
+) -> MergeTraceDecision {
+	if contributors.len() > 1
+		&& matches!(
+			policy,
+			MergeTracePolicy::Union
+				| MergeTracePolicy::BooleanOr
+				| MergeTracePolicy::NamedContainer
+		) {
+		return MergeTraceDecision::Unioned;
+	}
+	if contributors.len() == 1 && participant_count > 1 {
+		return MergeTraceDecision::Overridden;
+	}
+	MergeTraceDecision::Adopted
+}
+
+/// Build a zero-width span for synthesized statements (provenance comments) that
+/// have no source location.
+fn synthetic_span() -> SpanRange {
+	let point = Span {
+		line: 0,
+		column: 0,
+		offset: 0,
+	};
+	SpanRange {
+		start: point.clone(),
+		end: point,
+	}
+}
+
+/// Insert a `# foch: <key> from <display names>` comment immediately before each
+/// top-level definition that has an adopted-provenance entry. Definitions with
+/// no entry (pure vanilla / unchanged) are left untouched.
+fn inject_provenance_comments(
+	statements: Vec<AstStatement>,
+	provenance: &BTreeMap<String, Vec<String>>,
+	display_names: &HashMap<String, String>,
+) -> Vec<AstStatement> {
+	if provenance.is_empty() {
+		return statements;
+	}
+	let mut out: Vec<AstStatement> = Vec::with_capacity(statements.len());
+	for stmt in statements {
+		if let AstStatement::Assignment { key, .. } = &stmt
+			&& let Some(mods) = provenance.get(key)
+		{
+			let names: Vec<String> = mods
+				.iter()
+				.map(|m| display_names.get(m).cloned().unwrap_or_else(|| m.clone()))
+				.collect();
+			out.push(AstStatement::Comment {
+				text: format!("foch: {key} from {}", names.join(", ")),
+				span: synthetic_span(),
+			});
+		}
+		out.push(stmt);
+	}
+	out
 }
 
 fn run_patch_merge_engine(
@@ -282,12 +432,13 @@ fn run_patch_merge_engine(
 			},
 		},
 	};
+	let effective_policies = effective_merge_policies(context);
 	compute_dag_patches_with_handler(
 		DagPatchRequest {
 			file_path: target_path,
 			contributors,
 			merge_key_source: context.merge_key_source,
-			policies: &context.descriptor.merge_policies,
+			policies: &effective_policies,
 			mod_dag: context.mod_dag,
 			ignore_replace_path: context.ignore_replace_path,
 			dep_overrides: context.dep_overrides,
@@ -299,4 +450,82 @@ fn run_patch_merge_engine(
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
 	})
+}
+
+fn effective_merge_policies(context: &PatchBasedMergeContext<'_>) -> MergePolicies {
+	let mut policies = context.descriptor.merge_policies;
+	if context.gui_scroll_merge && is_gui_container_family(context) {
+		policies.named_container = NamedContainerPolicy::ScrollStack;
+	}
+	policies
+}
+
+fn is_gui_container_family(context: &PatchBasedMergeContext<'_>) -> bool {
+	matches!(
+		context.descriptor.id.as_str(),
+		"interface" | "common/interface"
+	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use foch_language::analyzer::content_family::{ContentFamilyDescriptor, MergeKeySource};
+
+	fn participant(mod_id: &str, precedence: usize, dag_level: usize) -> MergeTraceContributor {
+		MergeTraceContributor {
+			mod_id: mod_id.to_string(),
+			precedence,
+			dag_level,
+		}
+	}
+
+	#[test]
+	fn trace_derivation_marks_union_of_two_mods() {
+		let descriptor =
+			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
+				.merge_key(MergeKeySource::AssignmentKey)
+				.block_patch_policy(BlockPatchPolicy::Union)
+				.build();
+		let provenance = BTreeMap::from([(
+			"test_shared_effect".to_string(),
+			vec!["mod_a".to_string(), "mod_b".to_string()],
+		)]);
+		let participants = BTreeMap::from([(
+			"test_shared_effect".to_string(),
+			vec![participant("mod_a", 1, 0), participant("mod_b", 2, 0)],
+		)]);
+
+		let trace = build_merge_trace(&provenance, &participants, &descriptor);
+		let entry = trace.get("test_shared_effect").expect("trace entry");
+		assert_eq!(entry.policy, MergeTracePolicy::Union);
+		assert_eq!(entry.decision, MergeTraceDecision::Unioned);
+		assert_eq!(
+			entry
+				.contributors
+				.iter()
+				.map(|contributor| contributor.mod_id.as_str())
+				.collect::<Vec<_>>(),
+			vec!["mod_a", "mod_b"]
+		);
+	}
+
+	#[test]
+	fn trace_derivation_marks_overlay_winner_as_overridden() {
+		let descriptor = ContentFamilyDescriptor::prefix("common/test", "common/test/")
+			.merge_key(MergeKeySource::AssignmentKey)
+			.block_patch_policy(BlockPatchPolicy::LastWriter)
+			.build();
+		let provenance = BTreeMap::from([("shared_key".to_string(), vec!["mod_b".to_string()])]);
+		let participants = BTreeMap::from([(
+			"shared_key".to_string(),
+			vec![participant("mod_a", 1, 0), participant("mod_b", 2, 1)],
+		)]);
+
+		let trace = build_merge_trace(&provenance, &participants, &descriptor);
+		let entry = trace.get("shared_key").expect("trace entry");
+		assert_eq!(entry.policy, MergeTracePolicy::Overlay);
+		assert_eq!(entry.decision, MergeTraceDecision::Overridden);
+		assert_eq!(entry.contributors[0].mod_id, "mod_b");
+	}
 }
