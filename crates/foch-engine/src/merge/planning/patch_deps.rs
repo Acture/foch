@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use foch_core::config::DepOverride;
-use foch_core::model::HandlerResolutionRecord;
+use foch_core::model::{HandlerResolutionRecord, MergeTraceContributor};
 use foch_language::analyzer::content_family::{CwtType, MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
@@ -31,6 +31,9 @@ pub(crate) struct DagPatchComputation {
 	/// and no-op-vs-base contributors are excluded. Empty unless a mod changed a
 	/// key whose content survives in `merged_statements`.
 	pub definition_provenance: BTreeMap<String, Vec<String>>,
+	/// Per top-level definition key → all non-base mods that defined that key,
+	/// in DAG level / precedence order.
+	pub definition_participants: BTreeMap<String, Vec<MergeTraceContributor>>,
 }
 
 pub(crate) struct DagPatchRequest<'a> {
@@ -491,12 +494,14 @@ fn compute_dag_patches_from_parsed_with_cache(
 
 	let definition_provenance =
 		compute_definition_provenance(&current_statements, vanilla, contributors, file_dag);
+	let definition_participants = compute_definition_participants(contributors, file_dag);
 	Ok(DagPatchComputation {
 		mod_patches,
 		base_statements,
 		merged_statements: current_statements,
 		merge_result,
 		definition_provenance,
+		definition_participants,
 	})
 }
 
@@ -624,6 +629,50 @@ fn compute_definition_provenance(
 		}
 	}
 	provenance
+}
+
+fn compute_definition_participants(
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+	file_dag: &FileDag,
+) -> BTreeMap<String, Vec<MergeTraceContributor>> {
+	let participant_set: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
+	let levels = topo_levels(&participant_set, file_dag);
+	let mut dag_level_by_mod: BTreeMap<ModId, usize> = BTreeMap::new();
+	for (level_idx, level) in levels.iter().enumerate() {
+		for mod_id in level {
+			dag_level_by_mod.insert(mod_id.clone(), level_idx);
+		}
+	}
+
+	let mut participants: BTreeMap<String, Vec<MergeTraceContributor>> = BTreeMap::new();
+	let mut ordered: Vec<ModId> = file_dag.contributors().to_vec();
+	ordered.sort_by_key(|mod_id| {
+		(
+			dag_level_by_mod.get(mod_id).copied().unwrap_or(usize::MAX),
+			file_dag.precedence_of(mod_id),
+			mod_id.0.clone(),
+		)
+	});
+	for mod_id in ordered {
+		let Some(parsed) = contributors.get(&mod_id) else {
+			continue;
+		};
+		for stmt in &parsed.ast.statements {
+			let AstStatement::Assignment { key, .. } = stmt else {
+				continue;
+			};
+			let entry = participants.entry(key.clone()).or_default();
+			if entry.iter().any(|item| item.mod_id == mod_id.0) {
+				continue;
+			}
+			entry.push(MergeTraceContributor {
+				mod_id: mod_id.0.clone(),
+				precedence: file_dag.precedence_of(&mod_id),
+				dag_level: dag_level_by_mod.get(&mod_id).copied().unwrap_or(usize::MAX),
+			});
+		}
+	}
+	participants
 }
 
 fn final_base_statements(

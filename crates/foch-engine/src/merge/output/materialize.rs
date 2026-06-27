@@ -25,7 +25,8 @@ use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionM
 use foch_core::model::{
 	CheckContext, ConflictKind, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
 	MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportConflictResolution, MergeReportStatus, SemanticIndex, StaleVanillaTargetDescriptor,
+	MergeReportConflictResolution, MergeReportStatus, MergeTraceEntry, SemanticIndex,
+	StaleVanillaTargetDescriptor,
 };
 use foch_cwt::CwtSchemaGraph;
 use foch_language::analyzer::content_family::{
@@ -368,6 +369,13 @@ pub(crate) fn materialize_merge_internal(
 										generated_paths.insert(entry.path.clone());
 										report.generated_file_count += 1;
 										if options.provenance {
+											let trace =
+												std::mem::take(&mut merge_output.merge_trace);
+											if !trace.is_empty() {
+												report
+													.merge_trace
+													.insert(entry.path.clone(), trace);
+											}
 											let prov = std::mem::take(
 												&mut merge_output.definition_provenance,
 											);
@@ -905,6 +913,8 @@ struct PatchBasedMergeOutput {
 	/// Per top-level definition key → adopted-contributor mods (precedence
 	/// order). Always computed; surfaced only when `--provenance` is enabled.
 	definition_provenance: BTreeMap<String, Vec<String>>,
+	/// Per top-level definition key → merge audit trail.
+	merge_trace: BTreeMap<String, MergeTraceEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -1445,6 +1455,7 @@ mod tests {
 			noop_vs_vanilla: false,
 			per_entry_noop_skipped_count: 0,
 			definition_provenance: BTreeMap::new(),
+			merge_trace: BTreeMap::new(),
 		}
 	}
 

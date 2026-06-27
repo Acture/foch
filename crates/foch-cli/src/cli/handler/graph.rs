@@ -1,11 +1,12 @@
 use crate::cli::arg::{GraphArgs, GraphArtifactFormatArg, GraphModeArg, GraphScopeArg};
 use crate::cli::handler::{HandlerResult, resolve_playset_path};
-use foch_core::model::SymbolKind;
+use foch_core::model::{MERGE_TRACE_ARTIFACT_PATH, MergeTraceEntry, SymbolKind};
 use foch_engine::{
 	CheckRequest, Config, GraphArtifactFormat, GraphBuildOptions, GraphModeSelection,
 	GraphRootSelector, GraphScopeSelection, build_runtime_state_for_request,
-	run_graph_with_options, run_module_report, write_module_report,
+	merge_trace_edges_from_trace, run_graph_with_options, run_module_report, write_module_report,
 };
+use std::collections::BTreeMap;
 
 const MODULE_REPORT_MAX_ITERS: usize = 20;
 
@@ -17,7 +18,14 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 			config,
 		};
 		let state = build_runtime_state_for_request(&request, !graph_args.no_game_base)?;
-		let report = run_module_report(&state.semantic_index, MODULE_REPORT_MAX_ITERS);
+		let mut report = run_module_report(&state.semantic_index, MODULE_REPORT_MAX_ITERS);
+		let trace_path = graph_args.out.join(MERGE_TRACE_ARTIFACT_PATH);
+		if trace_path.is_file() {
+			let trace_text = std::fs::read_to_string(&trace_path)?;
+			let trace: BTreeMap<String, BTreeMap<String, MergeTraceEntry>> =
+				serde_json::from_str(&trace_text)?;
+			report.merge_trace_edges = merge_trace_edges_from_trace(&trace);
+		}
 		let report_path = graph_args.out.join(".foch").join("module-report.json");
 		if let Some(parent) = report_path.parent() {
 			std::fs::create_dir_all(parent)?;
@@ -115,6 +123,7 @@ fn to_format(format: GraphArtifactFormatArg) -> GraphArtifactFormat {
 mod tests {
 	use super::*;
 	use crate::cli::arg::{GraphArtifactFormatArg, GraphModeArg, GraphScopeArg};
+	use foch_core::model::{MergeTraceContributor, MergeTraceDecision, MergeTracePolicy};
 	use std::path::PathBuf;
 	use tempfile::Builder;
 
@@ -129,6 +138,29 @@ mod tests {
 			.tempdir_in(&scratch_root)
 			.expect("create graph handler tempdir");
 		let out = temp_dir.path().join("out");
+		let trace_path = out.join(MERGE_TRACE_ARTIFACT_PATH);
+		std::fs::create_dir_all(trace_path.parent().expect("trace path has parent"))
+			.expect("create trace dir");
+		let trace = BTreeMap::from([(
+			"common/scripted_effects/test.txt".to_string(),
+			BTreeMap::from([(
+				"test_shared_effect".to_string(),
+				MergeTraceEntry {
+					contributors: vec![MergeTraceContributor {
+						mod_id: "mod_a".to_string(),
+						precedence: 1,
+						dag_level: 0,
+					}],
+					policy: MergeTracePolicy::Union,
+					decision: MergeTraceDecision::Unioned,
+				},
+			)]),
+		)]);
+		std::fs::write(
+			&trace_path,
+			serde_json::to_string_pretty(&trace).expect("serialize trace"),
+		)
+		.expect("write trace");
 		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 			.parent()
 			.expect("cli crate has workspace crates dir")
@@ -141,7 +173,7 @@ mod tests {
 
 		let exit_code = handle_graph(
 			&GraphArgs {
-				playset_path: Some(fixture),
+				playset_path: Some(fixture.clone()),
 				out: out.clone(),
 				no_game_base: true,
 				modules: true,
@@ -164,5 +196,33 @@ mod tests {
 		assert!(parsed.get("module_count").is_some());
 		assert!(parsed.get("node_count").is_some());
 		assert!(parsed.get("mods").is_some());
+		let edges = parsed
+			.get("merge_trace_edges")
+			.and_then(|value| value.as_array())
+			.expect("module report exposes merge trace edges");
+		assert_eq!(edges.len(), 1);
+		assert_eq!(edges[0]["source_mod"], "mod_a");
+		assert_eq!(edges[0]["policy"], "union");
+
+		let first_report = report_json;
+		handle_graph(
+			&GraphArgs {
+				playset_path: Some(fixture),
+				out: out.clone(),
+				no_game_base: true,
+				modules: true,
+				mode: GraphModeArg::Calls,
+				scope: GraphScopeArg::All,
+				format: GraphArtifactFormatArg::Both,
+				root: None,
+				family: None,
+				definition_kinds: Vec::new(),
+			},
+			Config::default(),
+		)
+		.expect("second modules graph handler succeeds");
+		let second_report =
+			std::fs::read_to_string(&report_path).expect("read second module report");
+		assert_eq!(first_report, second_report);
 	}
 }

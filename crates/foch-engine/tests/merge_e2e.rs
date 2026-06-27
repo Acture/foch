@@ -1,5 +1,7 @@
 use foch_core::config::compute_conflict_id;
-use foch_core::model::{ConflictKind, MergeReportStatus};
+use foch_core::model::{
+	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
+};
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use foch_language::analyzer::parser::parse_clausewitz_file;
 use std::collections::HashMap;
@@ -818,6 +820,51 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 		sidecar_text.contains("test_shared_effect"),
 		"sidecar should record the merged definition; got:\n{sidecar_text}"
 	);
+
+	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_merge_trace_records_union_scripted_effect() {
+	let (result, out_dir) =
+		run_merge_for_fixture_with_provenance("eu4_union_scripted_effect", false);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"trace run should still merge cleanly; report: {:#?}",
+		result.report
+	);
+
+	let trace = result
+		.report
+		.merge_trace
+		.iter()
+		.find(|(path, _)| {
+			path.replace('\\', "/")
+				.ends_with("scripted_effects/test.txt")
+		})
+		.map(|(_, defs)| defs)
+		.expect("report has merge trace for the merged file");
+	let entry = trace
+		.get("test_shared_effect")
+		.expect("trace has test_shared_effect");
+	assert_eq!(entry.policy, MergeTracePolicy::Union);
+	assert_eq!(entry.decision, MergeTraceDecision::Unioned);
+	assert_eq!(entry.contributors.len(), 2);
+
+	let sidecar = out_dir.join(".foch").join("foch-merge-trace.json");
+	let sidecar_text = fs::read_to_string(&sidecar).expect("merge trace sidecar should be written");
+	let parsed: std::collections::BTreeMap<
+		String,
+		std::collections::BTreeMap<String, MergeTraceEntry>,
+	> = serde_json::from_str(&sidecar_text).expect("trace sidecar parses");
+	let sidecar_entry = parsed
+		.values()
+		.find_map(|defs| defs.get("test_shared_effect"))
+		.expect("sidecar trace has test_shared_effect");
+	assert_eq!(sidecar_entry.policy, MergeTracePolicy::Union);
+	assert_eq!(sidecar_entry.decision, MergeTraceDecision::Unioned);
+	assert_eq!(sidecar_entry.contributors.len(), 2);
 
 	assert_structurally_sound(&out_dir);
 }

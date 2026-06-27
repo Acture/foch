@@ -1,4 +1,5 @@
 use super::model::{CollisionHotspot, ModSummary, ModulePartition, ModuleReport, SymbolGraph};
+use foch_core::model::{MergeTraceEdge, MergeTraceEntry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -77,7 +78,37 @@ pub fn build_module_report(graph: &SymbolGraph, partition: &ModulePartition) -> 
 		module_sizes,
 		mods,
 		collision_hotspots,
+		merge_trace_edges: Vec::new(),
 	}
+}
+
+pub fn merge_trace_edges_from_trace(
+	trace: &BTreeMap<String, BTreeMap<String, MergeTraceEntry>>,
+) -> Vec<MergeTraceEdge> {
+	let mut edges = Vec::new();
+	for (path, definitions) in trace {
+		for (key, entry) in definitions {
+			let merged_definition = format!("{path}::{key}");
+			for contributor in &entry.contributors {
+				edges.push(MergeTraceEdge {
+					merged_definition: merged_definition.clone(),
+					source_mod: contributor.mod_id.clone(),
+					policy: entry.policy,
+					decision: entry.decision,
+					precedence: contributor.precedence,
+					dag_level: contributor.dag_level,
+				});
+			}
+		}
+	}
+	edges.sort_by(|left, right| {
+		left.merged_definition
+			.cmp(&right.merged_definition)
+			.then_with(|| left.source_mod.cmp(&right.source_mod))
+			.then_with(|| left.precedence.cmp(&right.precedence))
+			.then_with(|| left.dag_level.cmp(&right.dag_level))
+	});
+	edges
 }
 
 pub fn write_module_report(path: &Path, report: &ModuleReport) -> std::io::Result<()> {
@@ -126,5 +157,42 @@ mod tests {
 			hotspot.mods_involved,
 			vec!["modA".to_string(), "modB".to_string()]
 		);
+	}
+
+	#[test]
+	fn trace_edges_are_sorted_and_deterministic() {
+		use foch_core::model::{MergeTraceContributor, MergeTraceDecision, MergeTracePolicy};
+
+		let mut trace = BTreeMap::new();
+		trace.insert(
+			"common/scripted_effects/test.txt".to_string(),
+			BTreeMap::from([(
+				"test_shared_effect".to_string(),
+				MergeTraceEntry {
+					contributors: vec![
+						MergeTraceContributor {
+							mod_id: "mod_b".to_string(),
+							precedence: 2,
+							dag_level: 0,
+						},
+						MergeTraceContributor {
+							mod_id: "mod_a".to_string(),
+							precedence: 1,
+							dag_level: 0,
+						},
+					],
+					policy: MergeTracePolicy::Union,
+					decision: MergeTraceDecision::Unioned,
+				},
+			)]),
+		);
+
+		let first = merge_trace_edges_from_trace(&trace);
+		let second = merge_trace_edges_from_trace(&trace);
+		assert_eq!(first, second);
+		assert_eq!(first.len(), 2);
+		assert_eq!(first[0].source_mod, "mod_a");
+		assert_eq!(first[0].policy, MergeTracePolicy::Union);
+		assert_eq!(first[0].decision, MergeTraceDecision::Unioned);
 	}
 }
