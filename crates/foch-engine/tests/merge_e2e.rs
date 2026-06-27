@@ -87,6 +87,7 @@ fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutio
 		MergeExecuteOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
+			include_base: false,
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
@@ -129,6 +130,7 @@ fn run_merge_for_playset(
 		MergeExecuteOptions {
 			out_dir,
 			include_game_base: false,
+			include_base: false,
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
@@ -975,6 +977,7 @@ religion = sentinel
 		MergeExecuteOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
+			include_base: false,
 			force: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),

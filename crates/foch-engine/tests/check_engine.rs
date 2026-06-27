@@ -814,6 +814,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		generated_file_count: 0,
 		copied_file_count: 3,
 		overlay_file_count: 1,
+		base_passthrough_skipped_file_count: 0,
 		noop_skipped_file_count: 0,
 		cross_file_noop_skipped_file_count: 0,
 		per_entry_noop_skipped_count: 0,
@@ -842,6 +843,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	assert_eq!(value["generated_file_count"], 0);
 	assert_eq!(value["copied_file_count"], 3);
 	assert_eq!(value["overlay_file_count"], 1);
+	assert_eq!(value["base_passthrough_skipped_file_count"], 0);
 	assert_eq!(value["noop_skipped_file_count"], 0);
 	assert_eq!(value["cross_file_noop_skipped_file_count"], 0);
 	assert_eq!(value["per_entry_noop_skipped_count"], 0);

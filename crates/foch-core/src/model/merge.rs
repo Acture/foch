@@ -213,6 +213,10 @@ pub struct MergeReport {
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,
+	/// Unchanged vanilla base-game CopyThrough files intentionally not written
+	/// to the merged mod because the game already ships them.
+	#[serde(default)]
+	pub base_passthrough_skipped_file_count: usize,
 	/// Files whose patch-merge result was AST-equal to the vanilla base
 	/// (modulo whitespace and comments) and were therefore skipped: shipping
 	/// them would just shadow the game's own copy with byte-for-byte

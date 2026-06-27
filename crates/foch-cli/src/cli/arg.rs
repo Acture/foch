@@ -135,6 +135,10 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub no_game_base: bool,
 
+	/// Also write unchanged vanilla base-game files into the merged output (off by default; the game already ships them).
+	#[arg(long)]
+	pub include_base: bool,
+
 	/// Treat replace_path declarations as no-ops; merge as if they were absent.
 	#[arg(long)]
 	pub ignore_replace_path: bool,
