@@ -6,7 +6,7 @@ use foch_language::analyzer::content_family::{
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use super::super::super::conflict_handler::DeferHandler;
-use super::super::patch::{AstPath, ClausewitzPatch};
+use super::super::patch::{AstPath, ClausewitzPatch, ast_statements_semantically_equal};
 use super::fingerprint::{fingerprint_into, statement_fingerprint, value_fingerprint};
 use super::{AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution, merge_patch_sets};
 
@@ -584,8 +584,10 @@ pub fn merge_named_container_bodies(
 	// Start from base; index identifiable children by identity for O(1) lookup.
 	let mut result: Vec<AstStatement> = base_body.to_vec();
 	let mut index: HashMap<ChildIdentity, usize> = HashMap::new();
+	let mut base_index: HashMap<ChildIdentity, AstStatement> = HashMap::new();
 	for (i, stmt) in result.iter().enumerate() {
 		if let Some(id) = child_identity(stmt) {
+			base_index.insert(id.clone(), stmt.clone());
 			index.insert(id, i);
 		}
 	}
@@ -641,6 +643,14 @@ pub fn merge_named_container_bodies(
 					} else {
 						match policies.named_container {
 							NamedContainerPolicy::Conflict => {
+								if let Some(merged) = try_shared_base_or_subset_merge(
+									base_index.get(&id),
+									&result[idx],
+									stmt,
+								) {
+									result[idx] = merged;
+									continue;
+								}
 								// Sibling mods target the same named identity
 								// with bodies that cannot be merged structurally
 								// → defer to the user instead of silently
@@ -676,6 +686,114 @@ pub fn merge_named_container_bodies(
 	}
 
 	Ok(result)
+}
+
+fn try_shared_base_or_subset_merge(
+	base: Option<&AstStatement>,
+	existing: &AstStatement,
+	candidate: &AstStatement,
+) -> Option<AstStatement> {
+	if statement_contains_all_real_content(existing, candidate) {
+		return Some(existing.clone());
+	}
+	if statement_contains_all_real_content(candidate, existing) {
+		return Some(candidate.clone());
+	}
+
+	let base = base?;
+	let base_body = statement_block_body(base)?;
+	if !statements_have_real_content(base_body)
+		|| !statement_contains_all_real_content(existing, base)
+		|| !statement_contains_all_real_content(candidate, base)
+	{
+		return None;
+	}
+
+	let existing_body = statement_block_body(existing)?;
+	let candidate_body = statement_block_body(candidate)?;
+	let union_body = union_statement_bodies(base_body, existing_body, candidate_body);
+	if has_divergent_duplicate_identity(&union_body) {
+		return None;
+	}
+	Some(with_block_body(existing, union_body))
+}
+
+fn statement_contains_all_real_content(superset: &AstStatement, subset: &AstStatement) -> bool {
+	match (statement_block_body(superset), statement_block_body(subset)) {
+		(Some(superset_body), Some(subset_body)) => {
+			body_contains_all_real_content(superset_body, subset_body)
+		}
+		_ => ast_statements_semantically_equal(superset, subset),
+	}
+}
+
+fn body_contains_all_real_content(superset: &[AstStatement], subset: &[AstStatement]) -> bool {
+	subset
+		.iter()
+		.filter(|stmt| statement_has_real_content(stmt))
+		.all(|needle| {
+			superset
+				.iter()
+				.any(|candidate| ast_statements_semantically_equal(candidate, needle))
+		})
+}
+
+fn union_statement_bodies(
+	base_body: &[AstStatement],
+	existing_body: &[AstStatement],
+	candidate_body: &[AstStatement],
+) -> Vec<AstStatement> {
+	let mut union = Vec::new();
+	push_unique_statements(base_body, &mut union);
+	push_unique_statements(existing_body, &mut union);
+	push_unique_statements(candidate_body, &mut union);
+	union
+}
+
+fn push_unique_statements(source: &[AstStatement], out: &mut Vec<AstStatement>) {
+	for stmt in source {
+		if !out
+			.iter()
+			.any(|existing| ast_statements_semantically_equal(existing, stmt))
+		{
+			out.push(stmt.clone());
+		}
+	}
+}
+
+fn has_divergent_duplicate_identity(body: &[AstStatement]) -> bool {
+	let mut seen: Vec<(ChildIdentity, &AstStatement)> = Vec::new();
+	for stmt in body.iter().filter(|stmt| statement_has_real_content(stmt)) {
+		let Some(id) = child_identity(stmt) else {
+			continue;
+		};
+		for (other_id, other_stmt) in &seen {
+			if other_id == &id && !ast_statements_semantically_equal(other_stmt, stmt) {
+				return true;
+			}
+		}
+		seen.push((id, stmt));
+	}
+	false
+}
+
+fn statements_have_real_content(statements: &[AstStatement]) -> bool {
+	statements.iter().any(statement_has_real_content)
+}
+
+fn statement_has_real_content(statement: &AstStatement) -> bool {
+	match statement {
+		AstStatement::Comment { .. } => false,
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		}
+		| AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => statements_have_real_content(items),
+		AstStatement::Assignment { .. } | AstStatement::Item { .. } => true,
+	}
 }
 
 /// Looser validity gate used during recursion: a body is acceptable if it has

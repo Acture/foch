@@ -944,6 +944,38 @@ fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
 }
 
 #[test]
+fn eu4_comment_only_override_is_noop_and_keeps_sibling_content() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_comment_only_override_noop", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"comment-only override should not block; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"comment-only override should be treated as no-op; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"comment-only override should not surface a manual conflict; report: {:#?}",
+		result.report
+	);
+
+	let merged_path = out_dir
+		.join("common")
+		.join("governments")
+		.join("00_governments.txt");
+	let merged_text = fs::read_to_string(&merged_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
+	assert!(
+		merged_text.contains("monarchy = {") && merged_text.contains("preferred_reform"),
+		"real sibling content should survive comment-only override; got:\n{merged_text}"
+	);
+}
+
+#[test]
 fn eu4_gui_edit_wins_over_remove_keeps_the_edit() {
 	// One mod edits a widget property (orientation) while another removes it.
 	// GUI families opt into edit-wins, so the edit is kept and no manual

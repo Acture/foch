@@ -18,6 +18,7 @@ use super::super::namespace::{
 use super::super::plan::build_merge_plan_from_workspace;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
+use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
 use cross_file_dedup::prune_cross_file_noop_duplicates;
@@ -33,6 +34,7 @@ use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
+use foch_language::analyzer::parser::parse_clausewitz_file;
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 #[cfg(test)]
 use io::PatchOutputMaterialization;
@@ -108,6 +110,31 @@ fn apply_mod_priority_boosts(workspace: &mut ResolvedWorkspace, boosts: &BTreeMa
 	}
 }
 
+fn prune_noop_script_contributors(workspace: &mut ResolvedWorkspace, profile: &dyn GameProfile) {
+	workspace
+		.file_inventory
+		.retain(|relative_path, contributors| {
+			let is_structural_script = profile
+				.classify_content_family(Path::new(relative_path))
+				.and_then(|descriptor| descriptor.merge_key_source)
+				.is_some();
+			if !is_structural_script {
+				return true;
+			}
+			contributors.retain(|contributor| {
+				contributor.is_base_game
+					|| contributor.is_synthetic_base
+					|| !is_noop_script_contributor(contributor)
+			});
+			!contributors.is_empty()
+		});
+}
+
+fn is_noop_script_contributor(contributor: &ResolvedFileContributor) -> bool {
+	let parsed = parse_clausewitz_file(&contributor.absolute_path);
+	parsed.diagnostics.is_empty() && !ast_statement_list_has_real_content(&parsed.ast.statements)
+}
+
 fn boosted_precedence(precedence: usize, boost: i32) -> usize {
 	if boost >= 0 {
 		precedence.saturating_add(boost as usize)
@@ -148,6 +175,10 @@ pub(crate) fn materialize_merge_internal(
 		// The merge resolution map is loaded after generic workspace resolution,
 		// so priority_boost is a merge-only post-processing pass here.
 		apply_mod_priority_boosts(workspace, &options.resolution_map.mod_priority_boost);
+	}
+	let profile = eu4_profile();
+	if let Ok(workspace) = &mut workspace_result {
+		prune_noop_script_contributors(workspace, profile);
 	}
 
 	let plan = stage_log_with("build_merge_plan", || {
@@ -219,7 +250,6 @@ pub(crate) fn materialize_merge_internal(
 		.canonicalize()
 		.unwrap_or_else(|_| out_dir.to_path_buf());
 
-	let profile = eu4_profile();
 	let mod_versions = workspace_mod_versions(&workspace);
 	let mod_display_names = workspace_mod_display_names(&workspace);
 	let cache_game_version = workspace_cache_game_version(&workspace);
