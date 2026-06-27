@@ -35,6 +35,15 @@ fn make_number_value(n: f64, reference_span: &AstValue) -> AstValue {
 	}
 }
 
+/// Patch kinds that represent a mod *modifying an existing* property at an
+/// address (as opposed to adding, removing, or list/rename ops). Used by the
+/// edit-vs-remove resolution: a modification wins over a sibling `RemoveNode`.
+/// `InsertNode` is intentionally excluded — an add-vs-remove collision is a
+/// genuine presence disagreement and stays a conflict.
+fn is_edit_kind(kind: &str) -> bool {
+	matches!(kind, "SetValue" | "ReplaceBlock")
+}
+
 pub(super) fn resolve_address(
 	addr: PatchAddress,
 	attributed: Vec<AttributedPatch>,
@@ -57,11 +66,48 @@ pub(super) fn resolve_address(
 		return PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch);
 	}
 
-	// --- Mixed patch kinds (e.g. InsertNode + RemoveNode) → conflict ---
+	// --- Mixed patch kinds (e.g. InsertNode + RemoveNode) → conflict, EXCEPT
+	// edit-vs-remove which resolves edit-wins (see below). ---
 	let kinds: Vec<&str> = attributed.iter().map(|a| patch_kind(&a.patch)).collect();
 	let has_mixed_kinds = kinds.windows(2).any(|w| w[0] != w[1]);
 
 	if has_mixed_kinds {
+		// edit-wins: when the only divergence is one mod editing a property
+		// (SetValue / ReplaceBlock / InsertNode) while another removes it
+		// (RemoveNode), keep the edit and drop the removes. A "remove" at a GUI
+		// property is typically the mod simply not re-shipping that field (e.g.
+		// a trimmed widget copy), not an intentional delete that should veto
+		// another mod's edit. Only fires when the non-remove patches share a
+		// single edit kind; genuinely irreconcilable mixes still conflict, and
+		// edit-vs-edit (no removes) flows through the same-kind resolvers which
+		// preserve real scalar-disagreement conflicts.
+		let distinct: std::collections::BTreeSet<&str> = kinds.iter().copied().collect();
+		let edit_kinds: Vec<&str> = distinct
+			.iter()
+			.copied()
+			.filter(|kind| *kind != "RemoveNode")
+			.collect();
+		if distinct.contains("RemoveNode")
+			&& policies.edit_wins_over_remove
+			&& edit_kinds.len() == 1
+			&& is_edit_kind(edit_kinds[0])
+		{
+			let kept_kind = edit_kinds[0];
+			let edits: Vec<AttributedPatch> = attributed
+				.into_iter()
+				.filter(|a| patch_kind(&a.patch) != "RemoveNode")
+				.collect();
+			stats.edit_over_remove_resolved += 1;
+			if edits.len() == 1 {
+				return PatchResolution::Resolved(edits.into_iter().next().unwrap().patch);
+			}
+			return match kept_kind {
+				"SetValue" => resolve_set_values(addr, edits, policies, stats),
+				"ReplaceBlock" => resolve_replace_blocks(addr, edits, policies, stats),
+				_ => unreachable!("is_edit_kind restricts to the two handled kinds"),
+			};
+		}
+
 		stats.conflict_patches += 1;
 		return PatchResolution::Conflict {
 			address: addr,
@@ -125,8 +171,8 @@ fn resolve_insert_nodes(
 	}
 
 	// BooleanOr policy: when each contributor inserts a block-bodied
-	// statement under the same key, wrap each body inside `OR = { ... }`
-	// and emit a single synthesized InsertNode.
+	// statement under the same key, combine their bodies as a single
+	// `OR = { ... }` of disjuncts and emit one synthesized InsertNode.
 	if policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{

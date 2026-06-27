@@ -675,8 +675,8 @@ fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
 	);
 	assert_eq!(
 		merged_text.matches("OR = {").count(),
-		3,
-		"BooleanOr should wrap each contributor body in an OR block; got:\n{merged_text}"
+		1,
+		"BooleanOr should fold every contributor body into ONE shared OR (an OR of disjuncts); sibling OR blocks would be read as an implicit AND — the intersection — inverting the policy. got:\n{merged_text}"
 	);
 	for predicate in [
 		"tag = TES",
@@ -689,6 +689,148 @@ fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
 		);
 	}
 	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_union_policy_concatenates_scripted_effect_bodies() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_union_scripted_effect", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"scripted effect union merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"scripted effect union merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"scripted effect union should not surface manual conflicts; report: {:#?}",
+		result.report
+	);
+
+	let merged_effect_path = out_dir
+		.join("common")
+		.join("scripted_effects")
+		.join("test.txt");
+	let merged_text = fs::read_to_string(&merged_effect_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_effect_path.display()));
+	assert!(
+		merged_text.contains("test_shared_effect = {"),
+		"merged scripted effect should retain effect key; got:\n{merged_text}"
+	);
+	assert_eq!(
+		merged_text.matches("OR = {").count(),
+		0,
+		"effects are imperative and compose by doing both bodies, not by BooleanOr wrapping; got:\n{merged_text}"
+	);
+	for statement in ["set_country_flag = effect_a_ran", "add_prestige = 5"] {
+		assert!(
+			merged_text.contains(statement),
+			"merged scripted effect should retain statement {statement}; got:\n{merged_text}"
+		);
+	}
+	assert_structurally_sound(&out_dir);
+}
+
+#[test]
+fn eu4_gfx_sprite_types_union_different_names_without_conflict() {
+	let (result, out_dir) =
+		run_merge_for_fixture("eu4_gfx_sprite_types_union_named_children", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"gfx sprite union merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"gfx sprite union merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"different named spriteType children should not conflict; report: {:#?}",
+		result.report
+	);
+
+	let merged_gfx_path = out_dir.join("gfx").join("test.gfx");
+	let merged_text = fs::read_to_string(&merged_gfx_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_gfx_path.display()));
+	assert_eq!(
+		merged_text.matches("spriteTypes = {").count(),
+		1,
+		"different spriteType children should merge into one spriteTypes container; got:\n{merged_text}"
+	);
+	for sprite in ["GFX_test_sprite_a", "GFX_test_sprite_b"] {
+		assert!(
+			merged_text.contains(sprite),
+			"merged gfx should retain sprite {sprite}; got:\n{merged_text}"
+		);
+	}
+}
+
+#[test]
+fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
+	let (result, _out_dir) =
+		run_merge_for_fixture("eu4_gfx_sprite_types_same_name_conflict", false);
+	assert_eq!(
+		result.exit_code, 2,
+		"same-name divergent spriteType merge should block; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Blocked,
+		"same-name divergent spriteType merge should be blocked; report: {:#?}",
+		result.report
+	);
+	assert!(
+		result.report.manual_conflict_count >= 1,
+		"same-name divergent spriteType children must surface a manual conflict; report: {:#?}",
+		result.report
+	);
+}
+
+#[test]
+fn eu4_gui_edit_wins_over_remove_keeps_the_edit() {
+	// One mod edits a widget property (orientation) while another removes it.
+	// GUI families opt into edit-wins, so the edit is kept and no manual
+	// conflict is surfaced — a GUI "remove" is typically a trimmed widget copy
+	// not re-shipping a field, not an intentional delete that should veto a
+	// sibling mod's edit. Contrast eu4_mixed_kinds_conflict (history family,
+	// flag off), where the same SetValue-vs-RemoveNode shape stays a conflict.
+	let (result, out_dir) = run_merge_for_fixture("eu4_gui_edit_wins_over_remove", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"gui edit-wins merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"gui edit-wins merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"edit-vs-remove on a GUI property must not conflict; report: {:#?}",
+		result.report
+	);
+
+	let merged_gui_path = out_dir.join("interface").join("test.gui");
+	let merged_text = fs::read_to_string(&merged_gui_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_gui_path.display()));
+	assert!(
+		merged_text.contains("CENTER"),
+		"the edit (orientation = CENTER) must be kept; got:\n{merged_text}"
+	);
+	assert!(
+		merged_text.contains("position"),
+		"the untouched position block must remain; got:\n{merged_text}"
+	);
 }
 
 #[test]

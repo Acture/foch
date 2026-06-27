@@ -703,6 +703,59 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 }
 
 #[test]
+fn graph_modules_command_writes_module_report() {
+	let tmp = target_temp_dir();
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("graphs");
+	let mod_a = tmp.path().join("9021");
+	let mod_b = tmp.path().join("9022");
+
+	write_dlc_load(&playlist_path, &[("9021", "A"), ("9022", "B")]);
+	write_descriptor(&mod_a, "mod-a");
+	write_descriptor(&mod_b, "mod-b");
+	write_script_file(
+		&mod_a,
+		"events/ref.txt",
+		"namespace = test\ncountry_event = { id = test.1 immediate = { shared_effect = { } } }\n",
+	);
+	write_script_file(
+		&mod_b,
+		"common/scripted_effects/effects.txt",
+		"shared_effect = { log = provider }\n",
+	);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let report_path = out_dir.join(".foch").join("module-report.json");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"graph",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--modules",
+			"--mode",
+			"semantic",
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(
+		stdout.contains(&format!(
+			"module report written to {}",
+			report_path.display()
+		)),
+		"stdout: {stdout}"
+	);
+
+	let report = read_json_file(&report_path);
+	assert!(report["module_count"].as_u64().is_some());
+	assert!(report["node_count"].as_u64().is_some());
+	assert!(report["mods"].as_array().is_some());
+}
+
+#[test]
 fn semantic_graph_requires_family_argument() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");

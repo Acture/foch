@@ -1,0 +1,6 @@
+name="sprite_a"
+path="mods/sprite_a"
+remote_file_id="350001"
+dependencies={
+"Baseline"
+}

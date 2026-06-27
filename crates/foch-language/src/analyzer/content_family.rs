@@ -139,6 +139,14 @@ pub struct MergePolicies {
 	#[serde(skip)]
 	pub block_patch_policies: &'static [(&'static str, BlockPatchPolicy)],
 	pub named_container: NamedContainerPolicy,
+	/// When one mod edits a property (SetValue/ReplaceBlock) and a sibling mod
+	/// removes that same property, keep the edit and drop the remove instead of
+	/// reporting a mixed-kinds conflict. Opt-in per family (GUI/asset families),
+	/// where a "remove" is typically a trimmed widget copy not re-shipping a
+	/// field rather than an intentional delete. Off by default so game-logic
+	/// families (e.g. history) keep edit-vs-remove as an honest conflict.
+	#[serde(default)]
+	pub edit_wins_over_remove: bool,
 }
 
 impl MergePolicies {
@@ -295,7 +303,7 @@ pub enum MergeKeySource {
 	/// field participates; otherwise unmatched children fall back to assignment-key
 	/// semantics inside the container.
 	ContainerChildFieldValue {
-		container: &'static str,
+		containers: &'static [&'static str],
 		child_key_field: &'static str,
 		child_types: &'static [&'static str],
 	},
@@ -305,14 +313,14 @@ pub enum MergeKeySource {
 
 #[derive(Serialize)]
 struct ContainerChildFieldValueSerde<'a> {
-	container: &'a str,
+	containers: &'a [&'a str],
 	child_key_field: &'a str,
 	child_types: &'a [&'a str],
 }
 
 #[derive(Deserialize)]
 struct ContainerChildFieldValueOwned {
-	container: String,
+	containers: Vec<String>,
 	child_key_field: String,
 	#[serde(default)]
 	child_types: Vec<String>,
@@ -330,13 +338,13 @@ impl Serialize for MergeKeySource {
 			}
 			MergeKeySource::ContainerChildKey => serializer.serialize_str("container_child_key"),
 			MergeKeySource::ContainerChildFieldValue {
-				container,
+				containers,
 				child_key_field,
 				child_types,
 			} => {
 				use serde::ser::SerializeMap;
 				let spec = ContainerChildFieldValueSerde {
-					container,
+					containers,
 					child_key_field,
 					child_types,
 				};
@@ -385,7 +393,12 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 					}
 					"container_child_field_value" => {
 						let spec: ContainerChildFieldValueOwned = map.next_value()?;
-						let container = Box::leak(spec.container.into_boxed_str());
+						let containers = spec
+							.containers
+							.into_iter()
+							.map(|container| Box::leak(container.into_boxed_str()) as &'static str)
+							.collect::<Vec<_>>();
+						let containers = Box::leak(containers.into_boxed_slice());
 						let child_key_field = Box::leak(spec.child_key_field.into_boxed_str());
 						let child_types = spec
 							.child_types
@@ -396,7 +409,7 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 							.collect::<Vec<_>>();
 						let child_types = Box::leak(child_types.into_boxed_slice());
 						Ok(MergeKeySource::ContainerChildFieldValue {
-							container,
+							containers,
 							child_key_field,
 							child_types,
 						})
@@ -496,6 +509,13 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 
+	/// Opt this family into edit-wins-over-remove (GUI/asset families): a mod
+	/// editing a property beats a sibling mod removing it, instead of conflicting.
+	pub fn edit_wins_over_remove(mut self) -> Self {
+		self.merge_policies.edit_wins_over_remove = true;
+		self
+	}
+
 	pub fn block_policy(mut self, policy: BlockMergePolicy) -> Self {
 		self.merge_policies.block = policy;
 		self
@@ -562,6 +582,7 @@ impl ContentFamilyDescriptor {
 				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::Conflict,
+				edit_wins_over_remove: false,
 			},
 		}
 	}
@@ -593,6 +614,7 @@ impl ContentFamilyDescriptor {
 				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::Conflict,
+				edit_wins_over_remove: false,
 			},
 		}
 	}

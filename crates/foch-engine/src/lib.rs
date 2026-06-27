@@ -37,7 +37,8 @@ pub use config::{
 };
 pub use graph::{
 	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
-	GraphRootSelector, GraphScopeSelection, SEMANTIC_GRAPH_PROGRESS_TARGET, run_graph_with_options,
+	GraphRootSelector, GraphScopeSelection, ModuleReport, SEMANTIC_GRAPH_PROGRESS_TARGET,
+	run_graph_with_options, run_module_report, write_module_report,
 };
 pub use merge::{
 	AnalysisStatusView, CandidateView, ConflictDecision, ConflictHandler, ConflictView,
@@ -46,5 +47,6 @@ pub use merge::{
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions};
 pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};
+pub use runtime::{RuntimeState, build_runtime_state_for_request};
 pub use simplify::{SimplifyOptions, SimplifyReport, SimplifySummary, run_simplify_with_options};
 pub use workspace::{FileFilter, WorkspaceSession};

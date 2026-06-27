@@ -37,18 +37,18 @@ pub(crate) struct DefinitionRecord {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct RuntimeState {
+pub struct RuntimeState {
 	pub semantic_index: SemanticIndex,
-	pub definitions: Vec<DefinitionRecord>,
-	pub overlap_status_by_def: HashMap<usize, OverlapStatus>,
-	pub winner_by_symbol: HashMap<(SymbolKind, String), usize>,
-	pub dependency_hints: HashMap<(String, String), DependencyMatchKind>,
-	pub scope_definition_map: HashMap<usize, Vec<usize>>,
-	pub enabled_mod_ids: HashSet<String>,
-	pub base_game_mod_id: Option<String>,
+	pub(crate) definitions: Vec<DefinitionRecord>,
+	pub(crate) overlap_status_by_def: HashMap<usize, OverlapStatus>,
+	pub(crate) winner_by_symbol: HashMap<(SymbolKind, String), usize>,
+	pub(crate) dependency_hints: HashMap<(String, String), DependencyMatchKind>,
+	pub(crate) scope_definition_map: HashMap<usize, Vec<usize>>,
+	pub(crate) enabled_mod_ids: HashSet<String>,
+	pub(crate) base_game_mod_id: Option<String>,
 }
 
-pub(crate) fn build_runtime_state_for_request(
+pub fn build_runtime_state_for_request(
 	request: &CheckRequest,
 	include_game_base: bool,
 ) -> Result<RuntimeState, String> {

@@ -1,0 +1,3 @@
+test_shared_effect = {
+    add_prestige = 5
+}

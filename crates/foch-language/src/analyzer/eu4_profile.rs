@@ -107,9 +107,17 @@ const GUI_TYPES_NAMED_CHILD_TYPES: &[&str] = &[
 	"instantTextboxType",
 	"iconType",
 	"spriteType",
+	"textSpriteType",
+	"corneredTileSpriteType",
+	"progressbartype",
+	"frameAnimatedSpriteType",
+	"maskedShieldType",
 	"OverlappingElementsBoxType",
 	"overlappingElementsBoxType",
 	"lineChartType",
+	"LineChartType",
+	"PieChartType",
+	"arrowType",
 	"guiButtonType",
 	"buttonType",
 	"ButtonType",
@@ -127,6 +135,9 @@ const GUI_TYPES_NAMED_CHILD_TYPES: &[&str] = &[
 	"smoothListboxType",
 	"gridBoxType",
 	"eu3dialogtype",
+	"bitmapfont",
+	"objectType",
+	"cursorType",
 ];
 
 fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
@@ -210,7 +221,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::AssignmentKey)
-				.block_patch_policy(BlockPatchPolicy::BooleanOr)
+				.block_patch_policy(BlockPatchPolicy::Union)
 				.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/scripted_triggers",
@@ -816,8 +827,9 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("ui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
+				.edit_wins_over_remove()
 				.merge_key(MergeKeySource::ContainerChildFieldValue {
-					container: "guiTypes",
+					containers: &["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"],
 					child_key_field: "name",
 					child_types: GUI_TYPES_NAMED_CHILD_TYPES,
 				})
@@ -827,8 +839,9 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("ui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
+				.edit_wins_over_remove()
 				.merge_key(MergeKeySource::ContainerChildFieldValue {
-					container: "guiTypes",
+					containers: &["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"],
 					child_key_field: "name",
 					child_types: GUI_TYPES_NAMED_CHILD_TYPES,
 				})
@@ -838,7 +851,12 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("ui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
-				.merge_key(MergeKeySource::AssignmentKey)
+				.edit_wins_over_remove()
+				.merge_key(MergeKeySource::ContainerChildFieldValue {
+					containers: &["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"],
+					child_key_field: "name",
+					child_types: GUI_TYPES_NAMED_CHILD_TYPES,
+				})
 				.build(),
 			// ------------------------------------------------------------------
 			// Batch-promoted parse_only → semantic_complete (59 roots)

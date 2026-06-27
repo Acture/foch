@@ -1,0 +1,6 @@
+spriteTypes = {
+    spriteType = {
+        name = "GFX_shared_sprite"
+        texturefile = "gfx/test_sprite_b.dds"
+    }
+}

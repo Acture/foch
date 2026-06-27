@@ -365,11 +365,14 @@ fn interface_content_family_keys_gui_types_children_by_name() {
 		.expect("interface descriptor");
 	match descriptor.merge_key_source.expect("merge key source") {
 		MergeKeySource::ContainerChildFieldValue {
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		} => {
-			assert_eq!(container, "guiTypes");
+			assert_eq!(
+				containers,
+				&["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"]
+			);
 			assert_eq!(child_key_field, "name");
 			assert!(child_types.contains(&"windowType"));
 			assert!(child_types.contains(&"containerWindowType"));
