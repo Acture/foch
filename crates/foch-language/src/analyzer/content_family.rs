@@ -139,6 +139,14 @@ pub struct MergePolicies {
 	#[serde(skip)]
 	pub block_patch_policies: &'static [(&'static str, BlockPatchPolicy)],
 	pub named_container: NamedContainerPolicy,
+	/// When one mod edits a property (SetValue/ReplaceBlock) and a sibling mod
+	/// removes that same property, keep the edit and drop the remove instead of
+	/// reporting a mixed-kinds conflict. Opt-in per family (GUI/asset families),
+	/// where a "remove" is typically a trimmed widget copy not re-shipping a
+	/// field rather than an intentional delete. Off by default so game-logic
+	/// families (e.g. history) keep edit-vs-remove as an honest conflict.
+	#[serde(default)]
+	pub edit_wins_over_remove: bool,
 }
 
 impl MergePolicies {
@@ -496,6 +504,13 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 
+	/// Opt this family into edit-wins-over-remove (GUI/asset families): a mod
+	/// editing a property beats a sibling mod removing it, instead of conflicting.
+	pub fn edit_wins_over_remove(mut self) -> Self {
+		self.merge_policies.edit_wins_over_remove = true;
+		self
+	}
+
 	pub fn block_policy(mut self, policy: BlockMergePolicy) -> Self {
 		self.merge_policies.block = policy;
 		self
@@ -562,6 +577,7 @@ impl ContentFamilyDescriptor {
 				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::Conflict,
+				edit_wins_over_remove: false,
 			},
 		}
 	}
@@ -593,6 +609,7 @@ impl ContentFamilyDescriptor {
 				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::Conflict,
+				edit_wins_over_remove: false,
 			},
 		}
 	}
