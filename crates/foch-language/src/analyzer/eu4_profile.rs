@@ -827,6 +827,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("ui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
+				.edit_wins_over_remove()
 				.merge_key(MergeKeySource::ContainerChildFieldValue {
 					containers: &["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"],
 					child_key_field: "name",
@@ -838,6 +839,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("ui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
+				.edit_wins_over_remove()
 				.merge_key(MergeKeySource::ContainerChildFieldValue {
 					containers: &["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"],
 					child_key_field: "name",
@@ -849,6 +851,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("ui"))
 				.scope(dynamic_scope_policy())
 				.capabilities(semantic_complete_and_merge_ready())
+				.edit_wins_over_remove()
 				.merge_key(MergeKeySource::ContainerChildFieldValue {
 					containers: &["guiTypes", "spriteTypes", "bitmapfonts", "objectTypes"],
 					child_key_field: "name",

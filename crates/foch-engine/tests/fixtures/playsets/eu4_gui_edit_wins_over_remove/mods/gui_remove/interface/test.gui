@@ -1,0 +1,6 @@
+guiTypes = {
+	windowType = {
+		name = "test_window"
+		position = { x = 0 y = 0 }
+	}
+}

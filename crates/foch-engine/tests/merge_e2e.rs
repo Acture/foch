@@ -793,6 +793,45 @@ fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
 }
 
 #[test]
+fn eu4_gui_edit_wins_over_remove_keeps_the_edit() {
+	// One mod edits a widget property (orientation) while another removes it.
+	// GUI families opt into edit-wins, so the edit is kept and no manual
+	// conflict is surfaced — a GUI "remove" is typically a trimmed widget copy
+	// not re-shipping a field, not an intentional delete that should veto a
+	// sibling mod's edit. Contrast eu4_mixed_kinds_conflict (history family,
+	// flag off), where the same SetValue-vs-RemoveNode shape stays a conflict.
+	let (result, out_dir) = run_merge_for_fixture("eu4_gui_edit_wins_over_remove", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"gui edit-wins merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"gui edit-wins merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"edit-vs-remove on a GUI property must not conflict; report: {:#?}",
+		result.report
+	);
+
+	let merged_gui_path = out_dir.join("interface").join("test.gui");
+	let merged_text = fs::read_to_string(&merged_gui_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_gui_path.display()));
+	assert!(
+		merged_text.contains("CENTER"),
+		"the edit (orientation = CENTER) must be kept; got:\n{merged_text}"
+	);
+	assert!(
+		merged_text.contains("position"),
+		"the untouched position block must remain; got:\n{merged_text}"
+	);
+}
+
+#[test]
 fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false);
 	assert_eq!(
