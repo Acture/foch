@@ -201,6 +201,10 @@ pub struct GraphArgs {
 	#[arg(long)]
 	pub no_game_base: bool,
 
+	/// Write the dependency-graph module partition report instead of graph artifacts.
+	#[arg(long)]
+	pub modules: bool,
+
 	#[arg(long, value_enum, default_value_t = GraphModeArg::Calls)]
 	pub mode: GraphModeArg,
 
