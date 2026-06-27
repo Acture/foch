@@ -9,7 +9,7 @@ use crate::cache::{
 
 // Bump when merge-report semantics change so cached artifacts don't hide new metadata.
 const MODSET_CACHE_FORMAT_VERSION: &str =
-	"modset-cache-include-base-gfx-effects-union-provenance-v6";
+	"modset-cache-include-base-gfx-effects-union-provenance-gui-tooltip-v7";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
@@ -46,6 +46,9 @@ pub struct MergeExecuteOptions {
 	/// `# foch: …` comments + a `.foch/foch-provenance.json` sidecar). Off by
 	/// default; when off, emitted output is byte-identical to a normal merge.
 	pub provenance: bool,
+	/// Also inject additive EU4 GUI widget tooltips and generated localisation
+	/// from collected provenance. Off by default.
+	pub gui_tooltip: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -82,7 +85,8 @@ pub fn run_merge_with_options(
 		&request,
 		options.include_game_base,
 		options.include_base,
-		options.provenance,
+		options.provenance || options.gui_tooltip,
+		options.gui_tooltip,
 		options.resolution_config_path.as_deref(),
 	);
 	if let Some(cache_context) = modset_cache.as_ref() {
@@ -126,7 +130,8 @@ pub fn run_merge_with_options(
 			resolution_map,
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
-			provenance: options.provenance,
+			provenance: options.provenance || options.gui_tooltip,
+			gui_tooltip: options.gui_tooltip,
 		},
 	)?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();
@@ -166,6 +171,7 @@ fn build_modset_cache_context(
 	include_game_base: bool,
 	include_base: bool,
 	provenance: bool,
+	gui_tooltip: bool,
 	resolution_config_path: Option<&Path>,
 ) -> Option<ModsetCacheContext> {
 	if resolution_config_path.is_some_and(|path| !path.is_file()) {
@@ -191,7 +197,7 @@ fn build_modset_cache_context(
 		resolution_config_path,
 	));
 	let foch_version = format!(
-		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base} provenance={provenance}",
+		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base} provenance={provenance} gui_tooltip={gui_tooltip}",
 		env!("CARGO_PKG_VERSION"),
 	);
 	let key = compute_modset_cache_key(

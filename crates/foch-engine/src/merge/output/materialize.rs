@@ -61,6 +61,9 @@ pub(crate) struct MergeMaterializeOptions {
 	/// When set, annotate merged definitions with their adopted source mods
 	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
 	pub provenance: bool,
+	/// When set, add EU4 GUI widget tooltips and generated localisation for
+	/// adopted widget provenance. Existing tooltips are preserved.
+	pub gui_tooltip: bool,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -75,6 +78,7 @@ impl Default for MergeMaterializeOptions {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
+			gui_tooltip: false,
 		}
 	}
 }
@@ -121,6 +125,38 @@ fn contributor_priority_rank(contributor: &ResolvedFileContributor) -> u8 {
 	}
 }
 
+fn write_gui_tooltip_localisation(
+	out_dir: &Path,
+	generated_paths: &mut BTreeSet<String>,
+	report: &mut MergeReport,
+	entries: &BTreeMap<String, String>,
+) -> Result<(), MergeError> {
+	if entries.is_empty() {
+		return Ok(());
+	}
+	let rel_path = "localisation/foch_provenance_l_english.yml";
+	let target = out_dir.join(rel_path);
+	if let Some(parent) = target.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	let mut bytes = Vec::new();
+	bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+	bytes.extend_from_slice(b"l_english:\n");
+	for (key, value) in entries {
+		bytes
+			.extend_from_slice(format!(" {key}:0 \"{}\"\n", escape_localisation(value)).as_bytes());
+	}
+	fs::write(&target, bytes)?;
+	if generated_paths.insert(rel_path.to_string()) {
+		report.generated_file_count += 1;
+	}
+	Ok(())
+}
+
+fn escape_localisation(value: &str) -> String {
+	value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 pub(crate) fn materialize_merge_internal(
 	request: CheckRequest,
 	out_dir: &Path,
@@ -128,6 +164,7 @@ pub(crate) fn materialize_merge_internal(
 ) -> Result<MergeReport, MergeError> {
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
+	let mut gui_tooltip_localisation = BTreeMap::new();
 
 	// Resolve once and reuse: build_merge_plan_from_workspace and the rest of
 	// the pipeline both consume the same ResolvedWorkspace. The legacy
@@ -335,6 +372,7 @@ pub(crate) fn materialize_merge_internal(
 										cache_game_version: &cache_game_version,
 										emit_options: &emit_options,
 										provenance: options.provenance,
+										gui_tooltip: options.gui_tooltip,
 									};
 									patch_based_structural_merge(
 										&target,
@@ -365,6 +403,9 @@ pub(crate) fn materialize_merge_internal(
 											merge_output.per_entry_noop_skipped_count;
 									}
 									if materialization.counts_as_generated() {
+										gui_tooltip_localisation.extend(std::mem::take(
+											&mut merge_output.gui_tooltip_localisation,
+										));
 										generated_paths.insert(entry.path.clone());
 										report.generated_file_count += 1;
 										if options.provenance {
@@ -473,6 +514,12 @@ pub(crate) fn materialize_merge_internal(
 		}
 	}
 	materialize_progress.finish();
+	write_gui_tooltip_localisation(
+		out_dir,
+		&mut generated_paths,
+		&mut report,
+		&gui_tooltip_localisation,
+	)?;
 	prune_cross_file_noop_duplicates(
 		out_dir,
 		&mut generated_paths,
@@ -905,6 +952,7 @@ struct PatchBasedMergeOutput {
 	/// Per top-level definition key → adopted-contributor mods (precedence
 	/// order). Always computed; surfaced only when `--provenance` is enabled.
 	definition_provenance: BTreeMap<String, Vec<String>>,
+	gui_tooltip_localisation: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -958,6 +1006,7 @@ struct PatchBasedMergeContext<'a> {
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
 	provenance: bool,
+	gui_tooltip: bool,
 }
 
 /// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
@@ -1412,6 +1461,7 @@ mod tests {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
+			gui_tooltip: false,
 		}
 	}
 
@@ -1445,6 +1495,7 @@ mod tests {
 			noop_vs_vanilla: false,
 			per_entry_noop_skipped_count: 0,
 			definition_provenance: BTreeMap::new(),
+			gui_tooltip_localisation: BTreeMap::new(),
 		}
 	}
 

@@ -1,0 +1,11 @@
+guiTypes = {
+	containerWindowType = {
+		name = "shared_widget"
+		position = { x = 1 y = 0 }
+	}
+	containerWindowType = {
+		name = "keeps_tooltip"
+		tooltip = existing_tooltip
+		position = { x = 0 y = 0 }
+	}
+}

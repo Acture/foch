@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use foch_core::config::compute_conflict_id;
 use foch_core::model::{LeafConflictDetail, MergeReportConflictContributor};
-use foch_language::analyzer::parser::{AstStatement, Span, SpanRange};
+use foch_language::analyzer::content_family::MergeKeySource;
+use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
 use super::stale_detect::{
@@ -242,6 +243,18 @@ pub(super) fn patch_based_structural_merge(
 		(merged_statements, 0)
 	};
 	let definition_provenance = dag_patches.definition_provenance;
+	let mut gui_tooltip_localisation = BTreeMap::new();
+	let merged_statements = if context.gui_tooltip {
+		inject_gui_tooltips(
+			target_path,
+			merged_statements,
+			&definition_provenance,
+			&context,
+			&mut gui_tooltip_localisation,
+		)
+	} else {
+		merged_statements
+	};
 	let merged_statements = if context.provenance {
 		inject_provenance_comments(
 			merged_statements,
@@ -263,6 +276,7 @@ pub(super) fn patch_based_structural_merge(
 		noop_vs_vanilla,
 		per_entry_noop_skipped_count,
 		definition_provenance,
+		gui_tooltip_localisation,
 	})
 }
 
@@ -308,6 +322,140 @@ fn inject_provenance_comments(
 		out.push(stmt);
 	}
 	out
+}
+
+fn inject_gui_tooltips(
+	target_path: &str,
+	mut statements: Vec<AstStatement>,
+	provenance: &BTreeMap<String, Vec<String>>,
+	context: &PatchBasedMergeContext<'_>,
+	localisation: &mut BTreeMap<String, String>,
+) -> Vec<AstStatement> {
+	if provenance.is_empty() || !is_gui_family(context) {
+		return statements;
+	}
+	let MergeKeySource::ContainerChildFieldValue {
+		containers,
+		child_key_field,
+		child_types,
+	} = context.merge_key_source
+	else {
+		return statements;
+	};
+	for statement in &mut statements {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		if !containers.contains(&key.as_str()) {
+			continue;
+		}
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		for child in items {
+			let Some(widget_key) = gui_widget_merge_key(child, child_key_field, child_types) else {
+				continue;
+			};
+			let Some(mods) = provenance.get(&widget_key) else {
+				continue;
+			};
+			if mods.is_empty() || block_has_assignment(child, "tooltip") {
+				continue;
+			}
+			let loc_key = generated_gui_tooltip_key(target_path, &widget_key);
+			if append_tooltip_assignment(child, &loc_key) {
+				let names: Vec<String> = mods
+					.iter()
+					.map(|m| {
+						context
+							.mod_display_names
+							.get(m)
+							.cloned()
+							.unwrap_or_else(|| m.clone())
+					})
+					.collect();
+				localisation.insert(loc_key, format!("Merged from {}", names.join(", ")));
+			}
+		}
+	}
+	statements
+}
+
+fn is_gui_family(context: &PatchBasedMergeContext<'_>) -> bool {
+	matches!(
+		context.descriptor.id.as_str(),
+		"interface" | "common/interface"
+	)
+}
+
+fn gui_widget_merge_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
+}
+
+fn scalar_assignment_value(items: &[AstStatement], field: &str) -> Option<String> {
+	items.iter().find_map(|stmt| {
+		let AstStatement::Assignment { key, value, .. } = stmt else {
+			return None;
+		};
+		if key != field {
+			return None;
+		}
+		let AstValue::Scalar { value, .. } = value else {
+			return None;
+		};
+		Some(value.as_text())
+	})
+}
+
+fn block_has_assignment(stmt: &AstStatement, field: &str) -> bool {
+	let AstStatement::Assignment {
+		value: AstValue::Block { items, .. },
+		..
+	} = stmt
+	else {
+		return false;
+	};
+	items
+		.iter()
+		.any(|item| matches!(item, AstStatement::Assignment { key, .. } if key == field))
+}
+
+fn append_tooltip_assignment(stmt: &mut AstStatement, loc_key: &str) -> bool {
+	let AstStatement::Assignment {
+		value: AstValue::Block { items, .. },
+		..
+	} = stmt
+	else {
+		return false;
+	};
+	items.push(AstStatement::Assignment {
+		key: "tooltip".to_string(),
+		key_span: synthetic_span(),
+		value: AstValue::Scalar {
+			value: ScalarValue::Identifier(loc_key.to_string()),
+			span: synthetic_span(),
+		},
+		span: synthetic_span(),
+	});
+	true
+}
+
+fn generated_gui_tooltip_key(target_path: &str, widget_key: &str) -> String {
+	let hash = blake3::hash(format!("{target_path}\0{widget_key}").as_bytes());
+	format!("foch_provenance_{}", &hash.to_hex()[..16])
 }
 
 fn run_patch_merge_engine(

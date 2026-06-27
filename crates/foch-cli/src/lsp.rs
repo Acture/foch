@@ -1,4 +1,6 @@
-use foch_core::model::{AnalysisMode, Finding, SemanticIndex, Severity, SymbolKind};
+use foch_core::model::{
+	AnalysisMode, Finding, MERGE_PROVENANCE_ARTIFACT_PATH, SemanticIndex, Severity, SymbolKind,
+};
 use foch_cwt::{
 	AliasCategory, BindContext, BindFieldMatch, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
 	SchemaBinding, SchemaPack, SchemaSource, install_base_scopes,
@@ -17,7 +19,8 @@ use foch_language::analyzer::semantic_index::{
 	resolve_scripted_effect_reference_targets,
 };
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -331,7 +334,6 @@ impl LanguageServer for Backend {
 	async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let position = params.text_document_position_params.position;
-		let targets = { self.state.read().await.targets.clone() };
 		let text = {
 			let state = self.state.read().await;
 			state.docs.get(uri).cloned()
@@ -339,12 +341,16 @@ impl LanguageServer for Backend {
 		let Some(text) = text else {
 			return Ok(None);
 		};
-		let Some(graph) = self.schema_graph.read().await.clone() else {
-			return Ok(None);
-		};
 		let path = match uri.to_file_path() {
 			Ok(path) => path,
 			Err(_) => return Ok(None),
+		};
+		if let Some(hover) = provenance_hover(&path, &text, position) {
+			return Ok(Some(hover));
+		}
+		let targets = { self.state.read().await.targets.clone() };
+		let Some(graph) = self.schema_graph.read().await.clone() else {
+			return Ok(None);
 		};
 		let Some((_, relative_path)) = match_scan_target(&targets, &path) else {
 			return Ok(None);
@@ -525,6 +531,66 @@ fn schema_hover(
 		}),
 		range: Some(target.range),
 	})
+}
+
+fn provenance_hover(file_path: &Path, text: &str, position: Position) -> Option<Hover> {
+	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+	let target = find_top_level_hover_target(&parsed.ast.statements, position)?;
+	let (root, provenance_path) = find_nearest_provenance_sidecar(file_path)?;
+	let relative_path = normalize_relative_path(file_path.strip_prefix(root).ok()?);
+	let text = fs::read_to_string(provenance_path).ok()?;
+	let provenance: BTreeMap<String, BTreeMap<String, Vec<String>>> =
+		serde_json::from_str(&text).ok()?;
+	let defs = provenance.get(&relative_path)?;
+	let mods = defs.get(&target.key)?;
+	if mods.is_empty() {
+		return None;
+	}
+	Some(Hover {
+		contents: HoverContents::Markup(MarkupContent {
+			kind: MarkupKind::Markdown,
+			value: format!("Merged from {}", mods.join(", ")),
+		}),
+		range: Some(target.range),
+	})
+}
+
+fn find_top_level_hover_target(
+	statements: &[AstStatement],
+	position: Position,
+) -> Option<KeyPathTarget> {
+	for statement in statements {
+		let AstStatement::Assignment { key, key_span, .. } = statement else {
+			continue;
+		};
+		if span_contains_position(key_span, position) {
+			return Some(KeyPathTarget {
+				parent_path: Vec::new(),
+				key: key.clone(),
+				range: lsp_range_from_span(key_span),
+			});
+		}
+	}
+	None
+}
+
+fn find_nearest_provenance_sidecar(file_path: &Path) -> Option<(&Path, PathBuf)> {
+	let mut current = file_path.parent();
+	while let Some(dir) = current {
+		let candidate = dir.join(MERGE_PROVENANCE_ARTIFACT_PATH);
+		if candidate.is_file() {
+			return Some((dir, candidate));
+		}
+		current = dir.parent();
+	}
+	None
+}
+
+fn normalize_relative_path(path: &Path) -> String {
+	path.components()
+		.map(|component| component.as_os_str().to_string_lossy())
+		.collect::<Vec<_>>()
+		.join("/")
 }
 
 fn find_hover_target(
@@ -1946,7 +2012,7 @@ mod tests {
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
 		detect_completion_context, extract_completion_prefix, find_vendored_schema_dir_from,
-		load_schema_graph, parse_scan_targets_json, resolve_definition_locations,
+		load_schema_graph, parse_scan_targets_json, provenance_hover, resolve_definition_locations,
 		schema_completion_candidates, schema_diagnostics_for_text, schema_hover,
 		select_completion_candidates,
 	};
@@ -2223,6 +2289,39 @@ mod tests {
 			panic!("expected markdown hover contents");
 		};
 		markup.value
+	}
+
+	#[test]
+	fn hover_renders_definition_provenance_from_merged_sidecar() {
+		let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("target")
+			.join("lsp-provenance-hover")
+			.join(format!("{}", std::process::id()));
+		let _ = fs::remove_dir_all(&root);
+		let file_dir = root.join("common").join("scripted_effects");
+		fs::create_dir_all(&file_dir).expect("create merged file dir");
+		fs::create_dir_all(root.join(".foch")).expect("create sidecar dir");
+		let text = "test_shared_effect = {\n\tadd_prestige = 1\n}\n";
+		let file_path = file_dir.join("test.txt");
+		fs::write(&file_path, text).expect("write merged file");
+		fs::write(
+			root.join(".foch").join("foch-provenance.json"),
+			r#"{
+  "common/scripted_effects/test.txt": {
+    "test_shared_effect": ["Mod A", "Mod B"]
+  }
+}"#,
+		)
+		.expect("write provenance sidecar");
+
+		let hover = provenance_hover(
+			&file_path,
+			text,
+			position_for_token(text, "test_shared_effect"),
+		)
+		.expect("provenance hover");
+		assert_eq!(hover_markdown(hover), "Merged from Mod A, Mod B");
+		let _ = fs::remove_dir_all(&root);
 	}
 
 	#[test]

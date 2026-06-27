@@ -158,6 +158,12 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub provenance: bool,
 
+	/// With provenance enabled, inject additive EU4 GUI widget tooltips and
+	/// generated localisation saying which mods each adopted widget came from.
+	/// Existing widget tooltips are never overwritten.
+	#[arg(long)]
+	pub gui_tooltip: bool,
+
 	/// Disable TTY-detected interactive prompts; useful for CI and batch runs.
 	#[arg(long, alias = "no-interactive")]
 	pub non_interactive: bool,

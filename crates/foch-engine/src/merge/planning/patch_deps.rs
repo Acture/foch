@@ -489,8 +489,13 @@ fn compute_dag_patches_from_parsed_with_cache(
 		}
 	}
 
-	let definition_provenance =
-		compute_definition_provenance(&current_statements, vanilla, contributors, file_dag);
+	let definition_provenance = compute_definition_provenance(
+		&current_statements,
+		vanilla,
+		contributors,
+		file_dag,
+		merge_key_source,
+	);
 	Ok(DagPatchComputation {
 		mod_patches,
 		base_statements,
@@ -526,6 +531,119 @@ fn same_key_statements<'a>(statements: &'a [AstStatement], key: &str) -> Vec<&'a
 		.iter()
 		.filter(|stmt| matches!(stmt, AstStatement::Assignment { key: k, .. } if k == key))
 		.collect()
+}
+
+fn same_provenance_key_statements<'a>(
+	statements: &'a [AstStatement],
+	key: &str,
+	merge_key_source: MergeKeySource,
+) -> Vec<&'a AstStatement> {
+	let MergeKeySource::ContainerChildFieldValue {
+		containers,
+		child_key_field,
+		child_types,
+	} = merge_key_source
+	else {
+		return same_key_statements(statements, key);
+	};
+	let mut out = Vec::new();
+	for statement in statements {
+		let AstStatement::Assignment {
+			key: container_key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if !containers.contains(&container_key.as_str()) {
+			if container_key == key {
+				out.push(statement);
+			}
+			continue;
+		}
+		for child in items {
+			if container_child_field_value_key(child, child_key_field, child_types).as_deref()
+				== Some(key)
+			{
+				out.push(child);
+			}
+		}
+	}
+	out
+}
+
+fn provenance_keys(
+	statements: &[AstStatement],
+	merge_key_source: MergeKeySource,
+) -> BTreeSet<String> {
+	let MergeKeySource::ContainerChildFieldValue {
+		containers,
+		child_key_field,
+		child_types,
+	} = merge_key_source
+	else {
+		return statements
+			.iter()
+			.filter_map(|stmt| match stmt {
+				AstStatement::Assignment { key, .. } => Some(key.clone()),
+				_ => None,
+			})
+			.collect();
+	};
+	let mut keys = BTreeSet::new();
+	for statement in statements {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		if !containers.contains(&key.as_str()) {
+			keys.insert(key.clone());
+			continue;
+		}
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		for child in items {
+			if let Some(child_key) =
+				container_child_field_value_key(child, child_key_field, child_types)
+			{
+				keys.insert(child_key);
+			}
+		}
+	}
+	keys
+}
+
+fn container_child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
+}
+
+fn scalar_assignment_value(items: &[AstStatement], field: &str) -> Option<String> {
+	items.iter().find_map(|stmt| {
+		let AstStatement::Assignment { key, value, .. } = stmt else {
+			return None;
+		};
+		if key != field {
+			return None;
+		}
+		let AstValue::Scalar { value, .. } = value else {
+			return None;
+		};
+		Some(value.as_text())
+	})
 }
 
 /// Whole-statement signatures for a set of same-key blocks.
@@ -568,25 +686,23 @@ fn compute_definition_provenance(
 	vanilla: Option<&ParsedScriptFile>,
 	contributors: &HashMap<ModId, ParsedScriptFile>,
 	file_dag: &FileDag,
+	merge_key_source: MergeKeySource,
 ) -> BTreeMap<String, Vec<String>> {
 	let mut ordered: Vec<ModId> = file_dag.contributors().to_vec();
 	ordered.sort_by_key(|mod_id| file_dag.precedence_of(mod_id));
 
-	let keys: BTreeSet<&str> = merged_statements
-		.iter()
-		.filter_map(|stmt| match stmt {
-			AstStatement::Assignment { key, .. } => Some(key.as_str()),
-			_ => None,
-		})
-		.collect();
+	let keys = provenance_keys(merged_statements, merge_key_source);
 
 	let mut provenance: BTreeMap<String, Vec<String>> = BTreeMap::new();
 	for key in keys {
-		let final_blocks = same_key_statements(merged_statements, key);
+		let final_blocks =
+			same_provenance_key_statements(merged_statements, &key, merge_key_source);
 		let final_whole = whole_signatures(&final_blocks);
 		let final_children = union_child_signatures(&final_blocks);
 		let vanilla_blocks = vanilla
-			.map(|file| same_key_statements(&file.ast.statements, key))
+			.map(|file| {
+				same_provenance_key_statements(&file.ast.statements, &key, merge_key_source)
+			})
 			.unwrap_or_default();
 		let vanilla_whole = whole_signatures(&vanilla_blocks);
 		let vanilla_children = union_child_signatures(&vanilla_blocks);
@@ -596,7 +712,8 @@ fn compute_definition_provenance(
 			let Some(parsed) = contributors.get(mod_id) else {
 				continue;
 			};
-			let mod_blocks = same_key_statements(&parsed.ast.statements, key);
+			let mod_blocks =
+				same_provenance_key_statements(&parsed.ast.statements, &key, merge_key_source);
 			if mod_blocks.is_empty() {
 				continue;
 			}
@@ -620,7 +737,7 @@ fn compute_definition_provenance(
 			}
 		}
 		if !adopted.is_empty() {
-			provenance.insert(key.to_string(), adopted);
+			provenance.insert(key, adopted);
 		}
 	}
 	provenance

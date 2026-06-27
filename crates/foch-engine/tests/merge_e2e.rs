@@ -68,6 +68,15 @@ fn run_merge_for_fixture_inner(
 	force: bool,
 	provenance: bool,
 ) -> (foch_engine::MergeExecutionResult, PathBuf) {
+	run_merge_for_fixture_inner_with_gui_tooltip(name, force, provenance, false)
+}
+
+fn run_merge_for_fixture_inner_with_gui_tooltip(
+	name: &str,
+	force: bool,
+	provenance: bool,
+	gui_tooltip: bool,
+) -> (foch_engine::MergeExecutionResult, PathBuf) {
 	let fixture = fixture_dir(name);
 	assert!(
 		fixture.is_dir(),
@@ -111,6 +120,7 @@ fn run_merge_for_fixture_inner(
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance,
+			gui_tooltip,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture {name} failed: {err}"));
@@ -155,6 +165,7 @@ fn run_merge_for_playset(
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			gui_tooltip: false,
 		},
 	)
 	.expect("run merge with custom playset")
@@ -823,6 +834,72 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 }
 
 #[test]
+fn eu4_gui_provenance_tooltip_is_opt_in_and_preserves_existing_tooltips() {
+	let (off_result, off_dir) =
+		run_merge_for_fixture_with_provenance("eu4_gui_provenance_tooltip", false);
+	assert_eq!(
+		off_result.report.status,
+		MergeReportStatus::Ready,
+		"provenance-only GUI run should merge cleanly; report: {:#?}",
+		off_result.report
+	);
+	let off_gui_path = off_dir.join("interface").join("test.gui");
+	let off_gui_text = fs::read_to_string(&off_gui_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", off_gui_path.display()));
+	assert!(
+		!off_gui_text.contains("foch_provenance_"),
+		"gui tooltip flag off must not inject generated tooltip keys:\n{off_gui_text}"
+	);
+	assert!(
+		!off_dir
+			.join("localisation")
+			.join("foch_provenance_l_english.yml")
+			.exists(),
+		"gui tooltip flag off must not generate localisation"
+	);
+
+	let (on_result, on_dir) = run_merge_for_fixture_inner_with_gui_tooltip(
+		"eu4_gui_provenance_tooltip",
+		false,
+		true,
+		true,
+	);
+	assert_eq!(
+		on_result.report.status,
+		MergeReportStatus::Ready,
+		"GUI tooltip provenance run should merge cleanly; report: {:#?}",
+		on_result.report
+	);
+	let on_gui_path = on_dir.join("interface").join("test.gui");
+	let on_gui_text = fs::read_to_string(&on_gui_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", on_gui_path.display()));
+	let generated_tooltip_line = on_gui_text
+		.lines()
+		.find(|line| line.trim_start().starts_with("tooltip = foch_provenance_"))
+		.unwrap_or_else(|| panic!("expected generated tooltip; got:\n{on_gui_text}"));
+	let generated_key = generated_tooltip_line
+		.trim()
+		.strip_prefix("tooltip = ")
+		.expect("tooltip assignment")
+		.to_string();
+	assert_eq!(
+		on_gui_text.matches("tooltip = existing_tooltip").count(),
+		1,
+		"existing tooltip must remain untouched and not be duplicated:\n{on_gui_text}"
+	);
+
+	let loc_path = on_dir
+		.join("localisation")
+		.join("foch_provenance_l_english.yml");
+	let loc_text = fs::read_to_string(&loc_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", loc_path.display()));
+	assert!(
+		loc_text.contains(&format!("{generated_key}:0 \"Merged from GUI A\"")),
+		"generated localisation should name the source mod; got:\n{loc_text}"
+	);
+}
+
+#[test]
 fn eu4_gfx_sprite_types_union_different_names_without_conflict() {
 	let (result, out_dir) =
 		run_merge_for_fixture("eu4_gfx_sprite_types_union_named_children", false);
@@ -1073,6 +1150,7 @@ religion = sentinel
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			gui_tooltip: false,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));

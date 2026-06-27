@@ -1,0 +1,6 @@
+guiTypes = {
+	containerWindowType = {
+		name = "other_widget"
+		size = { x = 100 y = 50 }
+	}
+}
