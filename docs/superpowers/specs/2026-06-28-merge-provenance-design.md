@@ -29,53 +29,64 @@ output is byte-identical to today.
 
 - In-game tooltips (`gui_tooltip`) and LSP hover (`lsp_hover`) — Slice B, they
   consume the same foundation/sidecar.
-- Per-leaf (sub-definition) provenance. Granularity is **top-level definition**
-  (the named container / scripted entity), which is the unit users reason about.
+- Per-leaf (sub-definition) provenance, and descent into single-wrapper
+  container families (`guiTypes`/`spriteTypes`) for per-widget/per-sprite
+  granularity. Granularity is the **top-level block** the user named ("top
+  block"); container descent is a later refinement.
 - Provenance for copy-through / overlay (whole-file) outputs beyond what the
   merge report already records (single contributor). The value is in
   structural-merge files where multiple mods combine; this slice scopes the
   sidecar + comments to **structural-merge files**.
 
-## Foundation — deriving per-definition provenance
+## Foundation — deriving per-definition provenance (adopted-only)
 
-`patch_based_structural_merge` already computes a `DagPatchComputation`
-(`crates/foch-engine/src/merge/planning/patch_deps.rs`) carrying:
+Granularity is the **top-level block** (the named definition at file root —
+`scripted_trigger`/`effect`/event/etc.). A block is annotated **only when a
+mod's content is actually adopted into the final merged output** — mods whose
+version is identical to base (no change) or was fully overridden by a
+higher-precedence mod are **excluded**. This is computed in
+`compute_dag_patches_from_parsed_with_cache`
+(`crates/foch-engine/src/merge/planning/patch_deps.rs`) at the point it returns
+`DagPatchComputation`, where the final `merged_statements`, the `base_statements`,
+and every parsed contributor (`HashMap<ModId, ParsedScriptFile>`) are all in
+scope — independent of caching (caches only affect how the final statements are
+built, not their value).
 
-- `mod_patches: Vec<(String /*mod_id*/, usize /*precedence*/, Vec<ClausewitzPatch>)>`
-- `merged_statements: Vec<AstStatement>`
-
-Every `ClausewitzPatch` carries a `path: AstPath` (root→target keys) and, for
-node-level ops, a `key`. The **top-level definition key** a patch belongs to is:
-
-```
-top_key(patch) = patch.path.first().cloned()
-                 .unwrap_or_else(|| patch.key_or_empty())
-```
-
-(For a root-level `InsertNode`/`SetValue`/`ReplaceBlock`, `path` is empty and
-`key` is the definition name; for nested edits, `path[0]` is the enclosing
-definition.)
-
-Algorithm (deterministic, ordered):
+The adopted test uses **canonical text signatures** — `signature(stmt) =
+emit_clausewitz_statements(&[stmt])` (span-free, deterministic). For each
+top-level key `K` present in `merged_statements`:
 
 ```
-definition_provenance: BTreeMap<String /*key*/, Vec<String /*mod_id*/>>
-// mod_patches is already in ascending DAG-precedence order.
-for (mod_id, _prec, patches) in &mod_patches:
-    for patch in patches:
-        if let Some(k) = top_key(patch):
-            let mods = definition_provenance.entry(k).or_default()
-            if !mods.contains(mod_id): mods.push(mod_id.clone())  // insertion-order dedup
+final_K = merged statement for K
+base_K  = base statement for K (None if K is mod-introduced)
+adopted: Vec<mod_id> = []   // precedence order, low → high
+for M in contributors-with-K, ordered by file_dag precedence:
+    m_K = M's statement for K
+    if base_K is Some and signature(m_K) == signature(base_K):
+        continue                         // M did not change K
+    if signature(m_K) == signature(final_K):
+        adopted.push(M)                  // M's version is the output (sole winner / identical)
+    else:
+        // block case: did any child M added/changed (vs base) survive into final?
+        m_new   = children_sigs(m_K) - children_sigs(base_K)
+        if !(m_new ∩ children_sigs(final_K)).is_empty():
+            adopted.push(M)              // M contributed a surviving piece (union/merge)
+        // else: M's contribution was fully overridden → NOT adopted
+if !adopted.is_empty():
+    definition_provenance.insert(K, adopted)
 ```
 
-`BTreeMap` key ordering makes the map itself deterministic; the per-key `Vec`
-preserves the precedence order `mod_patches` is already sorted in (lowest →
-highest precedence), with insertion-order dedup so a mod that patches a key
-twice appears once. Base-game-only keys (no mod patch) carry no provenance entry
-and get no comment.
+`children_sigs(stmt)` = the set of `signature(child)` for each child of a
+`Block` value (empty for scalars; the scalar case is covered by the exact-match
+branch). `definition_provenance: BTreeMap<String, Vec<String>>` — `BTreeMap` key
+ordering + precedence-ordered `Vec` ⇒ deterministic. It is added to
+`DagPatchComputation` and consumed downstream.
 
-This needs **no re-parsing** and **no new tracking through the AST** — it reads
-data the patch engine already produced.
+This correctly credits: a block added by one mod (that mod), a union where
+several mods' children coexist (all of them), and an OverlayWins/last-writer
+replacement (only the winner — the loser's unique children are absent from
+`final_K`). It needs **no re-parsing** and **no provenance sink threaded through
+the merge functions**.
 
 ## Channels
 
@@ -94,9 +105,12 @@ data the patch engine already produced.
 
 - In `patch_based_structural_merge`, after `dag_patches` is computed and **after**
   the noop/dedup step, if provenance is enabled, walk `merged_statements` and for
-  each top-level `Assignment`/`Item` whose key has a provenance entry, insert an
-  `AstStatement::Comment { text: "foch: <key> — from <display names>" }`
-  immediately before it.
+  each top-level `Assignment` whose key has an **adopted** provenance entry,
+  insert an `AstStatement::Comment { text: "foch: <key> — from <display names>" }`
+  immediately before it. Top-level blocks with no adopted-mod entry (pure
+  vanilla, unchanged) get no comment.
+- Mod ids are rendered as **display names** (via `mod_display_names`), joined by
+  `, ` in precedence order.
 - The emitter already renders `Comment` as `# <text>` (`emit.rs:66`). No emitter
   change needed.
 - Comments are injected **after** the DAG/diff caches (they live inside
@@ -126,14 +140,19 @@ and `MOD_DIFF_CACHE` are **not** bumped — comments are post-cache.
 
 ## Testing
 
-- Unit (engine): a structural-merge fixture where mods A and B each add distinct
-  named definitions to the same file → assert `definition_provenance` maps each
-  key to the right mod, and (flag on) the emitted text contains the matching
-  `# foch: <key> — from <A|B>` line directly above each definition.
-- Determinism: re-run the same fixture twice (flag on) → byte-identical output
-  and identical `foch-provenance.json` (guards the BTree ordering).
-- Off-by-default: flag off → output byte-identical to a pre-change golden
-  (existing `merge_e2e` goldens already assert this — they must stay green).
+- **Adopted union** (engine unit): mods A and B each add a distinct child to the
+  same top-level block (Union policy) → `definition_provenance[K] == [A, B]`, and
+  (flag on) a `# foch: K — from <A>, <B>` line sits directly above the block.
+- **Overridden loser excluded**: mod A and higher-precedence mod B both define K
+  with incompatible bodies, resolved OverlayWins (B wins) → provenance[K] == [B]
+  only; A is **not** listed (its children are absent from the output).
+- **No-op vs base excluded**: a mod that ships K byte-identical to vanilla
+  produces no provenance entry / no comment for K.
+- **Added-by-one**: K introduced by a single mod → provenance[K] == [that mod].
+- **Determinism**: re-run the same fixture twice (flag on) → byte-identical
+  output and identical `foch-provenance.json`.
+- **Off-by-default**: flag off → output byte-identical to pre-change goldens
+  (existing `merge_e2e` goldens must stay green).
 
 ## Verification gates
 
