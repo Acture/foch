@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::analysis::Severity;
@@ -6,6 +8,8 @@ use crate::config::AppliedDepOverride;
 pub const MERGED_MOD_DESCRIPTOR_PATH: &str = "descriptor.mod";
 pub const MERGE_PLAN_ARTIFACT_PATH: &str = ".foch/foch-merge-plan.json";
 pub const MERGE_REPORT_ARTIFACT_PATH: &str = ".foch/foch-merge-report.json";
+pub const MERGE_PROVENANCE_ARTIFACT_PATH: &str = ".foch/foch-provenance.json";
+pub const MERGE_TRACE_ARTIFACT_PATH: &str = ".foch/foch-merge-trace.json";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MergePlanFormat {
@@ -167,6 +171,50 @@ pub struct HandlerResolutionRecord {
 	pub rationale: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeTraceContributor {
+	pub mod_id: String,
+	pub precedence: usize,
+	pub dag_level: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeTracePolicy {
+	CopyThrough,
+	Overlay,
+	Union,
+	BooleanOr,
+	NamedContainer,
+	Conflict,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeTraceDecision {
+	Adopted,
+	Overridden,
+	Unioned,
+	Conflict,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeTraceEntry {
+	pub contributors: Vec<MergeTraceContributor>,
+	pub policy: MergeTracePolicy,
+	pub decision: MergeTraceDecision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MergeTraceEdge {
+	pub merged_definition: String,
+	pub source_mod: String,
+	pub policy: MergeTracePolicy,
+	pub decision: MergeTraceDecision,
+	pub precedence: usize,
+	pub dag_level: usize,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct DepMisuseEvidence {
 	pub semantic_refs_to_dep: u32,
@@ -259,4 +307,15 @@ pub struct MergeReport {
 	/// reuse the previous result.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub playset_fingerprint: Option<String>,
+	/// Per merged file path → per top-level definition key → the mods whose
+	/// content is adopted into the output, in DAG-precedence order. Only
+	/// populated when `--provenance` is enabled. Diagnostic metadata only; it
+	/// does not affect the emitted game files, so it is omitted from the report
+	/// (and thus the report stays byte-identical) when the flag is off.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub definition_provenance: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+	/// Per merged file path → per top-level definition key → merge audit trail.
+	/// Populated with `definition_provenance` when `--provenance` is enabled.
+	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+	pub merge_trace: BTreeMap<String, BTreeMap<String, MergeTraceEntry>>,
 }

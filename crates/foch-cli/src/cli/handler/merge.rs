@@ -45,6 +45,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
 			playset_fingerprint: fingerprint,
+			provenance: merge_args.provenance,
 		},
 	)?;
 	println!("{}", render_merge_report_text(&execution.report));

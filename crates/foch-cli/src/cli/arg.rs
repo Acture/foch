@@ -155,6 +155,13 @@ pub struct MergeArgs {
 	#[arg(long, value_name = "PATH")]
 	pub config: Option<PathBuf>,
 
+	/// Annotate each merged definition with the mods it was adopted from:
+	/// inline `# foch: <key> from <mods>` comments plus a
+	/// `.foch/foch-provenance.json` sidecar. Off by default; output is
+	/// byte-identical to a normal merge when omitted.
+	#[arg(long)]
+	pub provenance: bool,
+
 	/// Disable TTY-detected interactive prompts; useful for CI and batch runs.
 	#[arg(long, alias = "no-interactive")]
 	pub non_interactive: bool,

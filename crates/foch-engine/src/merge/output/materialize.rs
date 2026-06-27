@@ -25,7 +25,8 @@ use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionM
 use foch_core::model::{
 	CheckContext, ConflictKind, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
 	MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
-	MergeReportConflictResolution, MergeReportStatus, SemanticIndex, StaleVanillaTargetDescriptor,
+	MergeReportConflictResolution, MergeReportStatus, MergeTraceEntry, SemanticIndex,
+	StaleVanillaTargetDescriptor,
 };
 use foch_cwt::CwtSchemaGraph;
 use foch_language::analyzer::content_family::{
@@ -59,6 +60,9 @@ pub(crate) struct MergeMaterializeOptions {
 	pub resolution_map: foch_core::config::ResolutionMap,
 	pub interactive_conflict_handler: Option<Box<dyn ConflictHandler>>,
 	pub interactive_resolution_config_path: Option<PathBuf>,
+	/// When set, annotate merged definitions with their adopted source mods
+	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
+	pub provenance: bool,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -73,6 +77,7 @@ impl Default for MergeMaterializeOptions {
 			resolution_map: foch_core::config::ResolutionMap::default(),
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
+			provenance: false,
 		}
 	}
 }
@@ -333,6 +338,7 @@ pub(crate) fn materialize_merge_internal(
 										mod_display_names: &mod_display_names,
 										cache_game_version: &cache_game_version,
 										emit_options: &emit_options,
+										provenance: options.provenance,
 									};
 									patch_based_structural_merge(
 										&target,
@@ -365,6 +371,23 @@ pub(crate) fn materialize_merge_internal(
 									if materialization.counts_as_generated() {
 										generated_paths.insert(entry.path.clone());
 										report.generated_file_count += 1;
+										if options.provenance {
+											let trace =
+												std::mem::take(&mut merge_output.merge_trace);
+											if !trace.is_empty() {
+												report
+													.merge_trace
+													.insert(entry.path.clone(), trace);
+											}
+											let prov = std::mem::take(
+												&mut merge_output.definition_provenance,
+											);
+											if !prov.is_empty() {
+												report
+													.definition_provenance
+													.insert(entry.path.clone(), prov);
+											}
+										}
 									} else if materialization.counts_as_noop_skipped() {
 										report.noop_skipped_file_count += 1;
 									}
@@ -890,6 +913,11 @@ struct PatchBasedMergeOutput {
 	/// Entries removed because an opted-in family already has an identical
 	/// vanilla definition at the same key in the same file.
 	per_entry_noop_skipped_count: usize,
+	/// Per top-level definition key → adopted-contributor mods (precedence
+	/// order). Always computed; surfaced only when `--provenance` is enabled.
+	definition_provenance: BTreeMap<String, Vec<String>>,
+	/// Per top-level definition key → merge audit trail.
+	merge_trace: BTreeMap<String, MergeTraceEntry>,
 }
 
 #[derive(Clone, Debug)]
@@ -943,6 +971,7 @@ struct PatchBasedMergeContext<'a> {
 	mod_display_names: &'a HashMap<String, String>,
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
+	provenance: bool,
 }
 
 /// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
@@ -1397,6 +1426,7 @@ mod tests {
 			resolution_map: foch_core::config::ResolutionMap::default(),
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
+			provenance: false,
 		}
 	}
 
@@ -1429,6 +1459,8 @@ mod tests {
 			keep_existing_paths: HashSet::new(),
 			noop_vs_vanilla: false,
 			per_entry_noop_skipped_count: 0,
+			definition_provenance: BTreeMap::new(),
+			merge_trace: BTreeMap::new(),
 		}
 	}
 
