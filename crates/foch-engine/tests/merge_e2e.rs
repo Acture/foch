@@ -53,6 +53,21 @@ fn run_merge_fixture(name: &str) -> PathBuf {
 /// the output dir so tests can assert on report fields, status, and the
 /// produced tree without the wrapper enforcing its own success contract.
 fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutionResult, PathBuf) {
+	run_merge_for_fixture_inner(name, force, /*provenance=*/ false)
+}
+
+fn run_merge_for_fixture_with_provenance(
+	name: &str,
+	force: bool,
+) -> (foch_engine::MergeExecutionResult, PathBuf) {
+	run_merge_for_fixture_inner(name, force, /*provenance=*/ true)
+}
+
+fn run_merge_for_fixture_inner(
+	name: &str,
+	force: bool,
+	provenance: bool,
+) -> (foch_engine::MergeExecutionResult, PathBuf) {
 	let fixture = fixture_dir(name);
 	assert!(
 		fixture.is_dir(),
@@ -95,6 +110,7 @@ fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutio
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
+			provenance,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture {name} failed: {err}"));
@@ -138,6 +154,7 @@ fn run_merge_for_playset(
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
+			provenance: false,
 		},
 	)
 	.expect("run merge with custom playset")
@@ -736,6 +753,76 @@ fn eu4_union_policy_concatenates_scripted_effect_bodies() {
 }
 
 #[test]
+fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
+	let (result, out_dir) =
+		run_merge_for_fixture_with_provenance("eu4_union_scripted_effect", false);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"provenance run should still merge cleanly; report: {:#?}",
+		result.report
+	);
+
+	let merged_effect_path = out_dir
+		.join("common")
+		.join("scripted_effects")
+		.join("test.txt");
+	let merged_text = fs::read_to_string(&merged_effect_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_effect_path.display()));
+
+	// The adopted top-level definition carries an inline provenance comment
+	// naming its source mods, directly above the definition.
+	let comment_line = merged_text
+		.lines()
+		.find(|line| {
+			line.trim_start()
+				.starts_with("# foch: test_shared_effect from ")
+		})
+		.unwrap_or_else(|| panic!("expected a provenance comment; got:\n{merged_text}"));
+	assert!(
+		comment_line.matches(',').count() >= 1,
+		"two mods contributed, so the comment should name both: {comment_line:?}"
+	);
+	let comment_idx = merged_text
+		.find("# foch: test_shared_effect")
+		.expect("comment present");
+	let def_idx = merged_text
+		.find("test_shared_effect = {")
+		.expect("definition present");
+	assert!(
+		comment_idx < def_idx,
+		"provenance comment must sit immediately above the definition; got:\n{merged_text}"
+	);
+
+	// The in-memory report and the on-disk sidecar both carry the same map.
+	let file_prov = result
+		.report
+		.definition_provenance
+		.iter()
+		.find(|(path, _)| {
+			path.replace('\\', "/")
+				.ends_with("scripted_effects/test.txt")
+		})
+		.map(|(_, defs)| defs)
+		.expect("report has provenance for the merged file");
+	assert_eq!(
+		file_prov.get("test_shared_effect").map(Vec::len),
+		Some(2),
+		"both contributing mods should be credited: {file_prov:?}"
+	);
+
+	let sidecar = out_dir.join(".foch").join("foch-provenance.json");
+	let sidecar_text =
+		fs::read_to_string(&sidecar).expect("provenance sidecar should be written when flag is on");
+	assert!(
+		sidecar_text.contains("test_shared_effect"),
+		"sidecar should record the merged definition; got:\n{sidecar_text}"
+	);
+
+	assert_structurally_sound(&out_dir);
+}
+
+#[test]
 fn eu4_gfx_sprite_types_union_different_names_without_conflict() {
 	let (result, out_dir) =
 		run_merge_for_fixture("eu4_gfx_sprite_types_union_named_children", false);
@@ -985,6 +1072,7 @@ religion = sentinel
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
+			provenance: false,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));

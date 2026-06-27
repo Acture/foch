@@ -835,6 +835,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		warnings: Vec::new(),
 		dep_overrides_applied: Vec::new(),
 		playset_fingerprint: None,
+		definition_provenance: std::collections::BTreeMap::new(),
 	};
 
 	let value = serde_json::to_value(&report).expect("serialize merge report");
