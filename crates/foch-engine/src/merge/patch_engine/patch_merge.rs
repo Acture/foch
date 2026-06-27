@@ -85,6 +85,10 @@ pub struct PatchMergeStats {
 	pub convergent_patches: usize,
 	pub auto_merged_patches: usize,
 	pub conflict_patches: usize,
+	/// One mod edited a property (SetValue/ReplaceBlock/InsertNode) while
+	/// another removed it (RemoveNode); the edit was kept and the remove
+	/// dropped, instead of reporting a mixed-kinds conflict.
+	pub edit_over_remove_resolved: usize,
 }
 
 // ---------------------------------------------------------------------------

@@ -121,8 +121,10 @@ fn statement_matches_key(
 		MergeKeySource::FieldValue(field) if depth == 0 => {
 			field_value(stmt, field).is_some_and(|value| value == key)
 		}
-		MergeKeySource::ContainerChildFieldValue { container, .. } if depth == 0 => {
-			assignment_key(stmt).is_some_and(|candidate| candidate == container && key == container)
+		MergeKeySource::ContainerChildFieldValue { containers, .. } if depth == 0 => {
+			assignment_key(stmt).is_some_and(|candidate| {
+				containers.contains(&candidate) && containers.contains(&key)
+			})
 		}
 		MergeKeySource::ContainerChildFieldValue {
 			child_key_field,

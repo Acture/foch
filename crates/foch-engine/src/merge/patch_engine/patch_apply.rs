@@ -134,6 +134,42 @@ fn apply_at_level(
 		result.push(new_stmt);
 	}
 
+	if current_path.is_empty()
+		&& let MergeKeySource::ContainerChildFieldValue { containers, .. } = merge_key_source
+	{
+		for container in containers {
+			let exists = result
+				.iter()
+				.any(|stmt| assignment_key(stmt).is_some_and(|key| key == *container));
+			if exists {
+				continue;
+			}
+			let container_path = vec![(*container).to_string()];
+			let deeper_for_container = collect_deeper_patches(&deeper, container, depth);
+			if deeper_for_container.is_empty() {
+				continue;
+			}
+			let child_merge_key_source = child_merge_key_source(merge_key_source, &container_path);
+			let items = apply_at_level(
+				&[],
+				&deeper_for_container,
+				&container_path,
+				child_merge_key_source,
+			);
+			if !items.is_empty() {
+				result.push(AstStatement::Assignment {
+					key: (*container).to_string(),
+					key_span: dummy_span(),
+					value: AstValue::Block {
+						items,
+						span: dummy_span(),
+					},
+					span: dummy_span(),
+				});
+			}
+		}
+	}
+
 	// InsertNode / AppendListItem / AppendBlockItem add new statements.
 	for patch in &local {
 		match patch {
@@ -245,12 +281,12 @@ fn statement_key(
 	current_path: &[String],
 ) -> Option<String> {
 	if let MergeKeySource::ContainerChildFieldValue {
-		container,
+		containers,
 		child_key_field,
 		child_types,
 	} = merge_key_source
 		&& current_path.len() == 1
-		&& current_path[0] == *container
+		&& containers.contains(&current_path[0].as_str())
 	{
 		return container_child_field_value_key(stmt, child_key_field, child_types);
 	}
@@ -273,8 +309,8 @@ fn child_merge_key_source(
 	child_path: &[String],
 ) -> MergeKeySource {
 	match merge_key_source {
-		MergeKeySource::ContainerChildFieldValue { container, .. }
-			if child_path.len() == 1 && child_path[0] == container =>
+		MergeKeySource::ContainerChildFieldValue { containers, .. }
+			if child_path.len() == 1 && containers.contains(&child_path[0].as_str()) =>
 		{
 			merge_key_source
 		}
@@ -897,7 +933,7 @@ mod tests {
 		])];
 
 		let key_source = MergeKeySource::ContainerChildFieldValue {
-			container: "guiTypes",
+			containers: &["guiTypes"],
 			child_key_field: "name",
 			child_types: GUI_CHILD_TYPES,
 		};
@@ -912,6 +948,47 @@ mod tests {
 			assert!(
 				ast_eq_modulo_span(a, b),
 				"ContainerChildFieldValue round-trip mismatch: {a:?} vs {b:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn container_child_field_value_diff_apply_round_trip_sprite_types() {
+		const GFX_CHILD_TYPES: &[&str] = &["spriteType"];
+
+		let make_sprites = |children: Vec<AstStatement>| block("spriteTypes", children);
+		let make_sprite = |name: &str, texture: &str| {
+			block(
+				"spriteType",
+				vec![
+					assignment("name", string_scalar(name)),
+					assignment("texturefile", string_scalar(texture)),
+				],
+			)
+		};
+
+		let base = vec![make_sprites(vec![])];
+		let overlay = vec![make_sprites(vec![
+			make_sprite("GFX_test_sprite_a", "gfx/test_sprite_a.dds"),
+			make_sprite("GFX_test_sprite_b", "gfx/test_sprite_b.dds"),
+		])];
+
+		let key_source = MergeKeySource::ContainerChildFieldValue {
+			containers: &["guiTypes", "spriteTypes"],
+			child_key_field: "name",
+			child_types: GFX_CHILD_TYPES,
+		};
+		let result = merge_single_mod(
+			&make_parsed(base),
+			&make_parsed(overlay.clone()),
+			key_source,
+		);
+
+		assert_eq!(result.len(), overlay.len());
+		for (a, b) in result.iter().zip(overlay.iter()) {
+			assert!(
+				ast_eq_modulo_span(a, b),
+				"ContainerChildFieldValue sprite round-trip mismatch: {a:?} vs {b:?}"
 			);
 		}
 	}

@@ -1,0 +1,7 @@
+guiTypes = {
+	windowType = {
+		name = "test_window"
+		orientation = "CENTER"
+		position = { x = 0 y = 0 }
+	}
+}

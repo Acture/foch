@@ -154,11 +154,11 @@ fn per_entry_noop_top_level_key(
 				key,
 			})
 		}
-		MergeKeySource::ContainerChildFieldValue { container, .. } => {
+		MergeKeySource::ContainerChildFieldValue { containers, .. } => {
 			let AstStatement::Assignment { key, .. } = statement else {
 				return None;
 			};
-			(key != container).then(|| PerEntryNoopLookupKey {
+			(!containers.contains(&key.as_str())).then(|| PerEntryNoopLookupKey {
 				path: Vec::new(),
 				key: key.clone(),
 			})
@@ -197,10 +197,9 @@ fn per_entry_noop_container_is_filterable(
 ) -> bool {
 	match merge_key_source {
 		MergeKeySource::ContainerChildKey => is_decision_container_key(container),
-		MergeKeySource::ContainerChildFieldValue {
-			container: expected,
-			..
-		} => container == expected,
+		MergeKeySource::ContainerChildFieldValue { containers, .. } => {
+			containers.contains(&container)
+		}
 		_ => false,
 	}
 }
@@ -224,11 +223,11 @@ fn per_entry_noop_child_key(
 			})
 		}
 		MergeKeySource::ContainerChildFieldValue {
-			container: expected,
+			containers,
 			child_key_field,
 			child_types,
 		} => {
-			if container != expected {
+			if !containers.contains(&container) {
 				return None;
 			}
 			container_child_field_value_key(child, child_key_field, child_types).map(|key| {

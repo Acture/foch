@@ -978,7 +978,7 @@ mod tests {
 	fn gui_named_children_let_sibling_mods_edit_different_widgets() {
 		const GUI_CHILD_TYPES: &[&str] = &["windowType"];
 		let key_source = MergeKeySource::ContainerChildFieldValue {
-			container: "guiTypes",
+			containers: &["guiTypes"],
 			child_key_field: "name",
 			child_types: GUI_CHILD_TYPES,
 		};
@@ -1048,7 +1048,7 @@ mod tests {
 	fn gui_named_children_conflict_same_widget_sibling_overwrites() {
 		const GUI_CHILD_TYPES: &[&str] = &["windowType"];
 		let key_source = MergeKeySource::ContainerChildFieldValue {
-			container: "guiTypes",
+			containers: &["guiTypes"],
 			child_key_field: "name",
 			child_types: GUI_CHILD_TYPES,
 		};

@@ -49,12 +49,12 @@ fn extract_keys(parsed: &ParsedScriptFile, merge_key_source: MergeKeySource) -> 
 		MergeKeySource::FieldValue(field) => extract_field_value_keys(parsed, field),
 		MergeKeySource::ContainerChildKey => extract_container_child_keys(parsed),
 		MergeKeySource::ContainerChildFieldValue {
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		} => extract_container_child_field_value_keys(
 			parsed,
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		),
@@ -126,7 +126,7 @@ fn extract_container_child_keys(parsed: &ParsedScriptFile) -> Vec<String> {
 
 fn extract_container_child_field_value_keys(
 	parsed: &ParsedScriptFile,
-	container: &str,
+	containers: &[&str],
 	child_key_field: &str,
 	child_types: &[&str],
 ) -> Vec<String> {
@@ -135,7 +135,7 @@ fn extract_container_child_field_value_keys(
 		let AstStatement::Assignment { key, value, .. } = stmt else {
 			continue;
 		};
-		if key != container {
+		if !containers.contains(&key.as_str()) {
 			keys.push(key.clone());
 			continue;
 		}

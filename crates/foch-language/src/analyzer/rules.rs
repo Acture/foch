@@ -423,12 +423,12 @@ fn collect_content_family_merge_keys(
 				);
 			}
 			MergeKeySource::ContainerChildFieldValue {
-				container,
+				containers,
 				child_key_field,
 				child_types,
 			} => {
 				if parent.kind == ScopeKind::File {
-					if scope.key != container {
+					if !containers.contains(&scope.key.as_str()) {
 						insert_family_key(
 							&mut keys_by_mod,
 							&scope.mod_id,
@@ -436,7 +436,9 @@ fn collect_content_family_merge_keys(
 							scope.key.clone(),
 						);
 					}
-				} else if parent.key == container && parent_parent_is_file(index, parent) {
+				} else if containers.contains(&parent.key.as_str())
+					&& parent_parent_is_file(index, parent)
+				{
 					let key = if (child_types.is_empty()
 						|| child_types.contains(&scope.key.as_str()))
 						&& let Some(value) =
