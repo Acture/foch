@@ -339,6 +339,128 @@ def score_case(case: Case, ws_root: Path, foch_bin: Path, keep: bool) -> dict:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------------------------------ learn rules
+def classify_resolution(rel: str, base: Path, overlay: Path, compatch: Path) -> dict | None:
+    """How did the human compatch resolve {base, overlay} for this file?
+
+    Uses unique-line sets: a file's distinctive content is the lines only it has.
+    Measures how much of each contributor's *unique* content survived into the
+    human's resolution -> kept base / kept overlay / unioned both / hand-edited.
+    """
+    h = read(compatch / rel)
+    a = read(base / rel)
+    b = read(overlay / rel)
+    if h is None or a is None or b is None:
+        return None
+    hs, as_, bs = set(normalise(h)), set(normalise(a)), set(normalise(b))
+    a_only = as_ - bs
+    b_only = bs - as_
+    fa = (len(hs & a_only) / len(a_only)) if a_only else None
+    fb = (len(hs & b_only) / len(b_only)) if b_only else None
+    T = 0.5
+    keep_a = fa is None or fa >= T
+    keep_b = fb is None or fb >= T
+    if not a_only and not b_only:
+        verdict = "identical"
+    elif a_only and b_only:
+        if keep_a and keep_b:
+            verdict = "union"
+        elif keep_a:
+            verdict = "took_base"
+        elif keep_b:
+            verdict = "took_overlay"
+        else:
+            verdict = "hand_edit"
+    elif a_only:  # overlay adds nothing unique
+        verdict = "took_base" if keep_a else "hand_edit"
+    else:  # base adds nothing unique
+        verdict = "took_overlay" if keep_b else "hand_edit"
+    return {
+        "rel": rel,
+        "frac_base_kept": round(fa, 2) if fa is not None else None,
+        "frac_overlay_kept": round(fb, 2) if fb is not None else None,
+        "verdict": verdict,
+    }
+
+
+RES_MEANING = {
+    "union": "human kept BOTH contributors' unique content (do-both)",
+    "took_base": "human kept the base (first) mod, dropped the overlay's unique content",
+    "took_overlay": "human kept the overlay (later) mod = load-order / last-writer",
+    "hand_edit": "human wrote something not derivable from either side",
+    "identical": "both contributors identical here (no real conflict)",
+}
+
+
+def cmd_learn(args) -> int:
+    """Classify how humans resolved each overlapping file -> look for a general rule."""
+    res_path = args.results_dir / "results.json"
+    if not res_path.is_file():
+        print(f"ERROR: {res_path} missing - run `run` first.", file=sys.stderr)
+        return 2
+    results = json.loads(res_path.read_text(encoding="utf-8"))
+    ws = args.workshop_dir
+
+    rows = []  # (case_title, rel, foch_verdict, res)
+    for r in results:
+        patched = r["patched"]
+        if len(patched) < 2:
+            continue
+        base, overlay, compatch = (
+            ws / patched[0],
+            ws / patched[1],
+            ws / r["compatch_id"],
+        )
+        for f in r["files"]:
+            if not f["overlap"]:
+                continue
+            res = classify_resolution(f["rel"], base, overlay, compatch)
+            if res:
+                rows.append((r["title"], f["rel"], f["verdict"], res))
+
+    agg: dict[str, int] = {}
+    agg_conflict: dict[str, int] = {}
+    for _, _, foch_v, res in rows:
+        agg[res["verdict"]] = agg.get(res["verdict"], 0) + 1
+        if foch_v == "conflict_withheld":
+            agg_conflict[res["verdict"]] = agg_conflict.get(res["verdict"], 0) + 1
+
+    out = ["# Human resolution rules (learned from compatches)", ""]
+    out.append(f"Overlapping files analysed: **{len(rows)}**")
+    out.append("")
+    out.append("## How humans resolve overlaps (ALL overlapping files)")
+    out.append("")
+    out.append("| human resolution | count | meaning |")
+    out.append("|---|---|---|")
+    for v in sorted(agg, key=lambda k: -agg[k]):
+        out.append(f"| `{v}` | {agg[v]} | {RES_MEANING.get(v, '')} |")
+    out.append("")
+    out.append("## How humans resolve the conflicts foch WITHHELD (the actionable set)")
+    out.append("")
+    if agg_conflict:
+        out.append("| human resolution | count |")
+        out.append("|---|---|")
+        for v in sorted(agg_conflict, key=lambda k: -agg_conflict[k]):
+            out.append(f"| `{v}` | {agg_conflict[v]} |")
+    else:
+        out.append("_(no conflict_withheld files in the corpus)_")
+    out.append("")
+    out.append("## Per-file detail")
+    out.append("")
+    out.append("| case | file | foch | human | base_kept | overlay_kept |")
+    out.append("|---|---|---|---|---|---|")
+    for title, rel, foch_v, res in rows:
+        out.append(
+            f"| {title} | `{rel}` | {foch_v} | **{res['verdict']}** | "
+            f"{res['frac_base_kept']} | {res['frac_overlay_kept']} |"
+        )
+    report = "\n".join(out)
+    (args.results_dir / "rules.md").write_text(report, encoding="utf-8")
+    print(report)
+    print(f"\nWrote {args.results_dir / 'rules.md'}")
+    return 0
+
+
 # ------------------------------------------------------------------------ report
 VERDICT_MEANING = {
     "matches_human": "foch's merge \u2248 the hand-written compatch (same defs, >=0.92 similar)",
@@ -472,8 +594,11 @@ def main() -> int:
     sub.add_parser("discover", parents=[common])
     sub.add_parser("run", parents=[common])
     sub.add_parser("all", parents=[common])
+    sub.add_parser("learn", parents=[common])
     args = p.parse_args()
 
+    if args.cmd == "learn":
+        return cmd_learn(args)
     if args.cmd in ("discover", "all"):
         rc = cmd_discover(args)
         if rc or args.cmd == "discover":

@@ -46,3 +46,15 @@ Env / flags: `STEAM_WORKSHOP_DIR` (default `G:\SteamLibrary\steamapps\workshop\c
 `FOCH_BIN`, `--corpus`, `--results-dir`, `--keep` (retain temp merge dirs).
 
 Output: `scripts/merge_quality/results/report.md` + `results.json` (both gitignored).
+
+## Learning resolution rules
+
+```bash
+python scripts/merge_quality/merge_quality.py learn   # classify how humans resolved each file
+```
+
+`learn` reads the last `run`'s `results.json` and, for every overlapping file, classifies what
+the **human compatch** did relative to the two contributors using unique-line sets:
+`union` (kept both), `took_base`, `took_overlay` (load-order/last-writer), or `hand_edit`.
+It aggregates over the corpus — and separately over just the files foch **withheld** as manual
+conflicts — to surface a general auto-resolution rule. Writes `results/rules.md`.
