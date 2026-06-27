@@ -125,8 +125,8 @@ fn resolve_insert_nodes(
 	}
 
 	// BooleanOr policy: when each contributor inserts a block-bodied
-	// statement under the same key, wrap each body inside `OR = { ... }`
-	// and emit a single synthesized InsertNode.
+	// statement under the same key, combine their bodies as a single
+	// `OR = { ... }` of disjuncts and emit one synthesized InsertNode.
 	if policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{

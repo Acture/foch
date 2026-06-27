@@ -673,8 +673,8 @@ fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
 	);
 	assert_eq!(
 		merged_text.matches("OR = {").count(),
-		3,
-		"BooleanOr should wrap each contributor body in an OR block; got:\n{merged_text}"
+		1,
+		"BooleanOr should fold every contributor body into ONE shared OR (an OR of disjuncts); sibling OR blocks would be read as an implicit AND — the intersection — inverting the policy. got:\n{merged_text}"
 	);
 	for predicate in [
 		"tag = TES",
