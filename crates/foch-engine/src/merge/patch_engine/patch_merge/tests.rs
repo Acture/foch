@@ -47,6 +47,13 @@ fn default_policies() -> MergePolicies {
 	MergePolicies::default()
 }
 
+fn edit_wins_policies() -> MergePolicies {
+	MergePolicies {
+		edit_wins_over_remove: true,
+		..Default::default()
+	}
+}
+
 fn merge_patch_sets_with_defer(
 	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
@@ -651,6 +658,115 @@ fn mixed_kinds_at_same_address_conflict() {
 		}
 		other => panic!("expected Conflict, got: {other:?}"),
 	}
+}
+
+#[test]
+fn set_value_wins_over_remove_edit_wins() {
+	// One mod edits a scalar property (Orientation); another removes it.
+	// edit-wins: keep the edit, drop the remove, no conflict.
+	let set = ClausewitzPatch::SetValue {
+		path: vec!["widget".into()],
+		key: "orientation".into(),
+		old_value: scalar("CENTER"),
+		new_value: scalar("UPPER_LEFT"),
+	};
+	let remove = ClausewitzPatch::RemoveNode {
+		path: vec!["widget".into()],
+		key: "orientation".into(),
+		removed: assignment("orientation", scalar("CENTER")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![set]),
+			("mod_b".into(), 2, vec![remove]),
+		],
+		&edit_wins_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0, "edit must win over remove");
+	assert_eq!(result.stats.conflict_patches, 0);
+	assert_eq!(result.stats.edit_over_remove_resolved, 1);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::Resolved(ClausewitzPatch::SetValue { key, .. }) => {
+			assert_eq!(key, "orientation");
+		}
+		other => panic!("expected resolved SetValue, got: {other:?}"),
+	}
+}
+
+#[test]
+fn replace_block_wins_over_remove_edit_wins() {
+	// One mod replaces a block property (position); another removes it.
+	let replace = ClausewitzPatch::ReplaceBlock {
+		path: vec!["widget".into()],
+		key: "position".into(),
+		old_statement: assignment("position", scalar("old")),
+		new_statement: assignment("position", scalar("moved")),
+	};
+	let remove = ClausewitzPatch::RemoveNode {
+		path: vec!["widget".into()],
+		key: "position".into(),
+		removed: assignment("position", scalar("old")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![replace]),
+			("mod_b".into(), 2, vec![remove]),
+		],
+		&edit_wins_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0, "block edit must win over remove");
+	assert_eq!(result.stats.edit_over_remove_resolved, 1);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::Resolved(ClausewitzPatch::ReplaceBlock { key, .. }) => {
+			assert_eq!(key, "position");
+		}
+		other => panic!("expected resolved ReplaceBlock, got: {other:?}"),
+	}
+}
+
+#[test]
+fn edit_vs_edit_still_conflicts_even_with_a_remove() {
+	// edit-wins drops removes, but two genuine divergent edits at the same leaf
+	// must STILL conflict — dropping the remove must not silently pick a winner.
+	let set_a = ClausewitzPatch::SetValue {
+		path: vec!["root".into()],
+		key: "tax".into(),
+		old_value: number("5"),
+		new_value: number("10"),
+	};
+	let set_b = ClausewitzPatch::SetValue {
+		path: vec!["root".into()],
+		key: "tax".into(),
+		old_value: number("5"),
+		new_value: number("15"),
+	};
+	let remove = ClausewitzPatch::RemoveNode {
+		path: vec!["root".into()],
+		key: "tax".into(),
+		removed: assignment("tax", number("5")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![set_a]),
+			("mod_b".into(), 2, vec![set_b]),
+			("mod_c".into(), 3, vec![remove]),
+		],
+		&edit_wins_policies(),
+	);
+
+	assert_eq!(
+		result.stats.edit_over_remove_resolved, 1,
+		"remove was dropped"
+	);
+	assert_eq!(result.conflicts.len(), 1, "divergent edits still conflict");
+	assert_eq!(result.stats.conflict_patches, 1);
 }
 
 #[test]
