@@ -8,7 +8,7 @@ use crate::cache::{
 };
 
 // Bump when merge-report semantics change so cached artifacts don't hide new metadata.
-const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-cwt-conflict-kinds-v2";
+const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-include-base-v1";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
@@ -26,6 +26,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
+	pub include_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
@@ -75,6 +76,7 @@ pub fn run_merge_with_options(
 	let modset_cache = build_modset_cache_context(
 		&request,
 		options.include_game_base,
+		options.include_base,
 		options.resolution_config_path.as_deref(),
 	);
 	if let Some(cache_context) = modset_cache.as_ref() {
@@ -111,6 +113,7 @@ pub fn run_merge_with_options(
 		&options.out_dir,
 		MergeMaterializeOptions {
 			include_game_base: options.include_game_base,
+			include_base: options.include_base,
 			force: options.force,
 			ignore_replace_path: options.ignore_replace_path,
 			dep_overrides: options.dep_overrides.clone(),
@@ -154,6 +157,7 @@ struct ModsetCacheContext {
 fn build_modset_cache_context(
 	request: &CheckRequest,
 	include_game_base: bool,
+	include_base: bool,
 	resolution_config_path: Option<&Path>,
 ) -> Option<ModsetCacheContext> {
 	if resolution_config_path.is_some_and(|path| !path.is_file()) {
@@ -179,8 +183,8 @@ fn build_modset_cache_context(
 		resolution_config_path,
 	));
 	let foch_version = format!(
-		"{} {MODSET_CACHE_FORMAT_VERSION}",
-		env!("CARGO_PKG_VERSION")
+		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base}",
+		env!("CARGO_PKG_VERSION"),
 	);
 	let key = compute_modset_cache_key(
 		&mod_hashes,

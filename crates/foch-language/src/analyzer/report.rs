@@ -304,6 +304,10 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 	lines.push(format!("copied_file_count: {}", report.copied_file_count));
 	lines.push(format!("overlay_file_count: {}", report.overlay_file_count));
 	lines.push(format!(
+		"base_passthrough_skipped_file_count: {}",
+		report.base_passthrough_skipped_file_count
+	));
+	lines.push(format!(
 		"noop_skipped_file_count: {}",
 		report.noop_skipped_file_count
 	));

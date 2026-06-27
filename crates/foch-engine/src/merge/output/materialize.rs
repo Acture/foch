@@ -51,6 +51,7 @@ use std::time::Instant;
 
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
+	pub include_base: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
@@ -63,6 +64,7 @@ impl Default for MergeMaterializeOptions {
 	fn default() -> Self {
 		Self {
 			include_game_base: true,
+			include_base: false,
 			force: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
@@ -229,8 +231,13 @@ pub(crate) fn materialize_merge_internal(
 		materialize_progress.tick();
 		match entry.strategy {
 			MergePlanStrategy::CopyThrough => {
-				copy_winner_file(&workspace, entry, out_dir)?;
-				report.copied_file_count += 1;
+				materialize_copy_through(
+					&workspace,
+					entry,
+					out_dir,
+					options.include_base,
+					&mut report,
+				)?;
 			}
 			MergePlanStrategy::LastWriterOverlay => {
 				copy_winner_file(&workspace, entry, out_dir)?;
@@ -461,11 +468,12 @@ pub(crate) fn materialize_merge_internal(
 	let mod_diff_cache_stats = crate::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::cache::dag_base_cache_stats();
 	eprintln!(
-		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} noop_skipped={} cross_file_noop_skipped={} per_entry_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={} dag_base_cache_hits={} dag_base_cache_misses={}",
+		"[merge] materialize: done elapsed_ms={} generated={} copied={} overlay={} base_passthrough_skipped={} noop_skipped={} cross_file_noop_skipped={} per_entry_noop_skipped={} mod_diff_cache_hits={} mod_diff_cache_misses={} dag_base_cache_hits={} dag_base_cache_misses={}",
 		materialize_started.elapsed().as_millis(),
 		report.generated_file_count,
 		report.copied_file_count,
 		report.overlay_file_count,
+		report.base_passthrough_skipped_file_count,
 		report.noop_skipped_file_count,
 		report.cross_file_noop_skipped_file_count,
 		report.per_entry_noop_skipped_count,
@@ -502,6 +510,7 @@ pub(crate) fn materialize_merge_internal(
 					mod_ids.join(", "),
 				));
 			}
+
 		}
 	}
 	*/
@@ -526,6 +535,35 @@ pub(crate) fn materialize_merge_internal(
 	};
 	write_metadata_only(out_dir, &persisted_plan, &report)?;
 	Ok(report)
+}
+
+fn should_skip_base_passthrough(
+	contributors: Option<&[ResolvedFileContributor]>,
+	include_base: bool,
+) -> bool {
+	if include_base {
+		return false;
+	}
+	contributors
+		.and_then(|contributors| contributors.last())
+		.is_some_and(|winner| winner.is_base_game && !winner.is_synthetic_base)
+}
+
+fn materialize_copy_through(
+	workspace: &ResolvedWorkspace,
+	entry: &MergePlanEntry,
+	out_dir: &Path,
+	include_base: bool,
+	report: &mut MergeReport,
+) -> Result<(), MergeError> {
+	let contributors = workspace.file_inventory.get(&entry.path);
+	if should_skip_base_passthrough(contributors.map(Vec::as_slice), include_base) {
+		report.base_passthrough_skipped_file_count += 1;
+	} else {
+		copy_winner_file(workspace, entry, out_dir)?;
+		report.copied_file_count += 1;
+	}
+	Ok(())
 }
 
 fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
@@ -991,8 +1029,8 @@ mod tests {
 	use foch_core::domain::playlist::Playlist;
 	use foch_core::model::{
 		HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
-		MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergeReport,
-		MergeReportStatus,
+		MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult,
+		MergePlanStrategy, MergeReport, MergeReportStatus,
 	};
 	use foch_language::analyzer::content_family::{ContentFamilyDescriptor, MergeKeySource};
 	use foch_language::analyzer::parser::{AstStatement, parse_clausewitz_content};
@@ -1012,6 +1050,173 @@ mod tests {
 		});
 		assert_eq!(calls.get(), 1, "closure must run exactly once");
 		assert_eq!(value, 42, "stage_log_with must return the closure's value");
+	}
+
+	#[test]
+	fn base_passthrough_skip_only_applies_to_true_base_without_include_base() {
+		let true_base = test_contributor("base", 0, true, false);
+		let synthetic_base = test_contributor("synthetic", 0, false, true);
+		let mod_winner = test_contributor("mod", 1, false, false);
+
+		assert!(super::should_skip_base_passthrough(
+			Some(&[true_base]),
+			false
+		));
+		assert!(!super::should_skip_base_passthrough(
+			Some(&[test_contributor("base", 0, true, false)]),
+			true
+		));
+		assert!(!super::should_skip_base_passthrough(
+			Some(&[synthetic_base]),
+			false
+		));
+		assert!(!super::should_skip_base_passthrough(
+			Some(&[test_contributor("base", 0, true, false), mod_winner]),
+			false
+		));
+		assert!(!super::should_skip_base_passthrough(None, false));
+	}
+
+	#[test]
+	fn copy_through_skips_true_base_by_default_but_writes_opted_in_or_synthetic_base() {
+		let temp = TempDir::new().expect("temp dir");
+		let true_base_source = temp.path().join("game").join("common").join("vanilla.txt");
+		let synthetic_source = temp
+			.path()
+			.join("synthetic")
+			.join("common")
+			.join("vanilla.txt");
+		fs::create_dir_all(true_base_source.parent().expect("true base parent"))
+			.expect("create true base parent");
+		fs::create_dir_all(synthetic_source.parent().expect("synthetic parent"))
+			.expect("create synthetic parent");
+		fs::write(&true_base_source, "vanilla\n").expect("write true base source");
+		fs::write(&synthetic_source, "synthetic\n").expect("write synthetic source");
+
+		let true_base = test_contributor_with_path("base", true_base_source, 0, true, false);
+		let synthetic_base =
+			test_contributor_with_path("synthetic", synthetic_source, 0, false, true);
+		let path = "common/vanilla.txt";
+
+		let mut skipped_report = MergeReport::default();
+		super::materialize_copy_through(
+			&workspace_with_contributor(path, true_base.clone()),
+			&copy_through_entry(path, &true_base),
+			&temp.path().join("skip"),
+			false,
+			&mut skipped_report,
+		)
+		.expect("skip true base");
+		assert!(!temp.path().join("skip").join(path).exists());
+		assert_eq!(skipped_report.base_passthrough_skipped_file_count, 1);
+		assert_eq!(skipped_report.copied_file_count, 0);
+
+		let mut included_report = MergeReport::default();
+		super::materialize_copy_through(
+			&workspace_with_contributor(path, true_base.clone()),
+			&copy_through_entry(path, &true_base),
+			&temp.path().join("include"),
+			true,
+			&mut included_report,
+		)
+		.expect("include true base");
+		assert_eq!(
+			fs::read_to_string(temp.path().join("include").join(path)).expect("read included"),
+			"vanilla\n"
+		);
+		assert_eq!(included_report.base_passthrough_skipped_file_count, 0);
+		assert_eq!(included_report.copied_file_count, 1);
+
+		let mut synthetic_report = MergeReport::default();
+		super::materialize_copy_through(
+			&workspace_with_contributor(path, synthetic_base.clone()),
+			&copy_through_entry(path, &synthetic_base),
+			&temp.path().join("synthetic-out"),
+			false,
+			&mut synthetic_report,
+		)
+		.expect("write synthetic base");
+		assert_eq!(
+			fs::read_to_string(temp.path().join("synthetic-out").join(path))
+				.expect("read synthetic"),
+			"synthetic\n"
+		);
+		assert_eq!(synthetic_report.base_passthrough_skipped_file_count, 0);
+		assert_eq!(synthetic_report.copied_file_count, 1);
+	}
+
+	fn test_contributor(
+		mod_id: &str,
+		precedence: usize,
+		is_base_game: bool,
+		is_synthetic_base: bool,
+	) -> ResolvedFileContributor {
+		test_contributor_with_path(
+			mod_id,
+			PathBuf::from(mod_id).join("common/test.txt"),
+			precedence,
+			is_base_game,
+			is_synthetic_base,
+		)
+	}
+
+	fn test_contributor_with_path(
+		mod_id: &str,
+		absolute_path: PathBuf,
+		precedence: usize,
+		is_base_game: bool,
+		is_synthetic_base: bool,
+	) -> ResolvedFileContributor {
+		ResolvedFileContributor {
+			mod_id: mod_id.to_string(),
+			root_path: PathBuf::from(mod_id),
+			absolute_path,
+			precedence,
+			is_base_game,
+			is_synthetic_base,
+			parse_ok_hint: None,
+		}
+	}
+
+	fn copy_through_entry(path: &str, contributor: &ResolvedFileContributor) -> MergePlanEntry {
+		let plan_contributor = MergePlanContributor {
+			mod_id: contributor.mod_id.clone(),
+			source_path: contributor
+				.absolute_path
+				.to_string_lossy()
+				.replace('\\', "/"),
+			precedence: contributor.precedence,
+			is_base_game: contributor.is_base_game,
+		};
+		MergePlanEntry {
+			path: path.to_string(),
+			strategy: MergePlanStrategy::CopyThrough,
+			contributors: vec![plan_contributor.clone()],
+			winner: Some(plan_contributor),
+			generated: false,
+			notes: Vec::new(),
+		}
+	}
+
+	fn workspace_with_contributor(
+		path: &str,
+		contributor: ResolvedFileContributor,
+	) -> ResolvedWorkspace {
+		let mut file_inventory = BTreeMap::new();
+		file_inventory.insert(path.to_string(), vec![contributor]);
+		ResolvedWorkspace {
+			playlist_path: PathBuf::from("playlist.json"),
+			playlist: Playlist {
+				game: Game::EuropaUniversalis4,
+				name: "test".to_string(),
+				mods: Vec::new(),
+			},
+			mods: Vec::new(),
+			installed_base_snapshot: None,
+			cache_game_version: None,
+			mod_snapshots: Vec::new(),
+			file_inventory,
+		}
 	}
 
 	fn per_entry_noop_descriptor(opted_in: bool) -> ContentFamilyDescriptor {
@@ -1180,6 +1385,7 @@ mod tests {
 	fn no_base_options(force: bool) -> MergeMaterializeOptions {
 		MergeMaterializeOptions {
 			include_game_base: false,
+			include_base: false,
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
