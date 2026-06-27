@@ -8,7 +8,7 @@ use crate::cache::{
 };
 
 // Bump when merge-report semantics change so cached artifacts don't hide new metadata.
-const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-boolean-or-disjuncts-v3";
+const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-gfx-union-effects-union-v4";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;

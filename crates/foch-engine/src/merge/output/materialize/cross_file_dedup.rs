@@ -256,12 +256,12 @@ fn extract_key_value_fingerprints(
 		MergeKeySource::FieldValue(field) => extract_field_value_key_values(parsed, field),
 		MergeKeySource::ContainerChildKey => extract_container_child_key_values(parsed),
 		MergeKeySource::ContainerChildFieldValue {
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		} => extract_container_child_field_value_key_values(
 			parsed,
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		),
@@ -355,7 +355,7 @@ fn extract_container_child_key_values(parsed: &ParsedScriptFile) -> Vec<CrossFil
 
 fn extract_container_child_field_value_key_values(
 	parsed: &ParsedScriptFile,
-	container: &str,
+	containers: &[&str],
 	child_key_field: &str,
 	child_types: &[&str],
 ) -> Vec<CrossFileKeyValue> {
@@ -364,7 +364,7 @@ fn extract_container_child_field_value_key_values(
 		let AstStatement::Assignment { key, value, .. } = stmt else {
 			continue;
 		};
-		if key != container {
+		if !containers.contains(&key.as_str()) {
 			entries.push(CrossFileKeyValue {
 				key: key.clone(),
 				fingerprint: statement_fingerprint(stmt),

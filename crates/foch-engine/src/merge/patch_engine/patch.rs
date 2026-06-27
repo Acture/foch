@@ -569,12 +569,12 @@ fn extract_keyed_entries(
 		MergeKeySource::FieldValue(field) => extract_field_value_entries(statements, field),
 		MergeKeySource::ContainerChildKey => extract_container_child_entries(statements),
 		MergeKeySource::ContainerChildFieldValue {
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		} => extract_container_child_field_value_entries(
 			statements,
-			container,
+			containers,
 			child_key_field,
 			child_types,
 		),
@@ -652,7 +652,7 @@ fn extract_container_child_entries(statements: &[AstStatement]) -> Vec<KeyedEntr
 
 fn extract_container_child_field_value_entries(
 	statements: &[AstStatement],
-	container: &str,
+	containers: &[&str],
 	child_key_field: &str,
 	child_types: &[&str],
 ) -> Vec<KeyedEntry> {
@@ -661,7 +661,7 @@ fn extract_container_child_field_value_entries(
 		let AstStatement::Assignment { key, value, .. } = stmt else {
 			continue;
 		};
-		if key != container {
+		if !containers.contains(&key.as_str()) {
 			out.push(KeyedEntry {
 				merge_key: key.clone(),
 				statement: stmt.clone(),

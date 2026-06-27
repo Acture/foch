@@ -1,0 +1,6 @@
+spriteTypes = {
+    spriteType = {
+        name = "GFX_baseline_anchor"
+        texturefile = "gfx/baseline_anchor.dds"
+    }
+}
