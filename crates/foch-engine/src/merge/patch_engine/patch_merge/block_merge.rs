@@ -650,6 +650,14 @@ pub fn merge_named_container_bodies(
 							NamedContainerPolicy::OverlayWins => {
 								result[idx] = stmt.clone();
 							}
+							NamedContainerPolicy::ScrollStack => {
+								match synthesize_scroll_stack(&result[idx], stmt) {
+									Some(stacked) => result[idx] = stacked,
+									None => {
+										return Err(NamedContainerMergeError::UnresolvableConflict);
+									}
+								}
+							}
 							NamedContainerPolicy::SuffixRename => {
 								let renamed = rename_named_child(stmt, mod_id);
 								if let Some(new_id) = child_identity(&renamed) {
@@ -839,6 +847,165 @@ fn make_or_wrapper(items: Vec<AstStatement>) -> AstStatement {
 		},
 		span: synthetic_span(),
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Scroll-stack synthesis (GUI keep-both)
+// ---------------------------------------------------------------------------
+
+const SCROLL_LAYER_PREFIX: &str = "foch_scroll_layer_";
+const SCROLL_LAYER_HEIGHT: i64 = 1000;
+const SCROLL_VIEWPORT_WIDTH: i64 = 1000;
+const SCROLL_VIEWPORT_HEIGHT: i64 = 600;
+const SCROLL_BAR_SPRITE: &str = "standardlistbox_slider";
+
+fn scalar_assignment(key: &str, value: ScalarValue) -> AstStatement {
+	AstStatement::Assignment {
+		key: key.to_string(),
+		key_span: synthetic_span(),
+		value: AstValue::Scalar {
+			value,
+			span: synthetic_span(),
+		},
+		span: synthetic_span(),
+	}
+}
+
+fn block_assignment(key: &str, items: Vec<AstStatement>) -> AstStatement {
+	AstStatement::Assignment {
+		key: key.to_string(),
+		key_span: synthetic_span(),
+		value: AstValue::Block {
+			items,
+			span: synthetic_span(),
+		},
+		span: synthetic_span(),
+	}
+}
+
+fn xy_block(key: &str, x: i64, y: i64) -> AstStatement {
+	block_assignment(
+		key,
+		vec![
+			scalar_assignment("x", ScalarValue::Number(x.to_string())),
+			scalar_assignment("y", ScalarValue::Number(y.to_string())),
+		],
+	)
+}
+
+/// The `name = "..."` value of a body, if present.
+fn body_name(body: &[AstStatement]) -> Option<String> {
+	body.iter().find_map(|s| match s {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Scalar { value, .. },
+			..
+		} if key == "name" => Some(value.as_text()),
+		_ => None,
+	})
+}
+
+/// Body with the top-level `name = ...` assignment removed, so it can be nested
+/// inside a freshly-named container without a duplicate identity.
+fn strip_name(body: &[AstStatement]) -> Vec<AstStatement> {
+	body.iter()
+		.filter(|s| !matches!(s, AstStatement::Assignment { key, .. } if key == "name"))
+		.cloned()
+		.collect()
+}
+
+/// True if `body` already contains foch scroll-stack layers (built by a
+/// previous pairwise merge), so further contributors append rather than nest.
+fn is_scroll_stack_body(body: &[AstStatement]) -> bool {
+	body.iter().any(|s| match s {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} if key == "containerWindowType" => {
+			body_name(items).is_some_and(|n| n.starts_with(SCROLL_LAYER_PREFIX))
+		}
+		_ => false,
+	})
+}
+
+fn make_layer(index: usize, widgets: Vec<AstStatement>) -> AstStatement {
+	let mut items = vec![
+		scalar_assignment(
+			"name",
+			ScalarValue::String(format!("{SCROLL_LAYER_PREFIX}{index}")),
+		),
+		xy_block("position", 0, index as i64 * SCROLL_LAYER_HEIGHT),
+	];
+	items.extend(widgets);
+	block_assignment("containerWindowType", items)
+}
+
+/// Synthesize a single same-name widget that keeps BOTH contributors' bodies as
+/// vertically-offset child containers inside a scrollable parent (GUI keep-both).
+///
+/// Lossless: every non-`name` widget from both sides survives, under its own
+/// `containerWindowType` namespace, offset so they don't overlap. The parent
+/// keeps the original `name` (so the engine still resolves it) plus a size and a
+/// `verticalScrollbar`. The scroll *behaviour* is best-effort and should be
+/// eyeballed in-game; the merge guarantee is only that no content is dropped.
+/// Returns `None` if either side isn't a block-bodied named widget.
+fn synthesize_scroll_stack(
+	existing: &AstStatement,
+	incoming: &AstStatement,
+) -> Option<AstStatement> {
+	let (key, existing_body) = match existing {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} => (key.clone(), items),
+		_ => return None,
+	};
+	let incoming_body = extract_block_body(incoming)?;
+	let name = body_name(existing_body)?;
+
+	let mut parent: Vec<AstStatement> = Vec::new();
+	let mut layers: Vec<AstStatement> = Vec::new();
+
+	if is_scroll_stack_body(existing_body) {
+		// Already a stack: keep its parent props + layers, append a new layer.
+		let existing_layers = existing_body
+			.iter()
+			.filter(
+				|s| matches!(s, AstStatement::Assignment { key, .. } if key == "containerWindowType"),
+			)
+			.count();
+		for s in existing_body {
+			match s {
+				AstStatement::Assignment { key, .. } if key == "containerWindowType" => {
+					layers.push(s.clone());
+				}
+				// size / verticalScrollbar are rebuilt below.
+				AstStatement::Assignment { key, .. }
+					if key == "size" || key == "verticalScrollbar" => {}
+				other => parent.push(other.clone()),
+			}
+		}
+		layers.push(make_layer(existing_layers, strip_name(&incoming_body)));
+	} else {
+		parent.push(scalar_assignment("name", ScalarValue::String(name)));
+		layers.push(make_layer(0, strip_name(existing_body)));
+		layers.push(make_layer(1, strip_name(&incoming_body)));
+	}
+
+	parent.push(xy_block(
+		"size",
+		SCROLL_VIEWPORT_WIDTH,
+		SCROLL_VIEWPORT_HEIGHT,
+	));
+	parent.push(scalar_assignment(
+		"verticalScrollbar",
+		ScalarValue::String(SCROLL_BAR_SPRITE.to_string()),
+	));
+	parent.extend(layers);
+
+	Some(block_assignment(&key, parent))
 }
 
 /// Build an `AND = { <items...> }` statement that wraps the supplied body,
@@ -1059,5 +1226,93 @@ fn rename_inner_field_value(stmt: &AstStatement, field: &str, mod_id: &str) -> A
 			span: block_span.clone(),
 		},
 		span: span.clone(),
+	}
+}
+
+#[cfg(test)]
+mod scroll_stack_tests {
+	use super::*;
+
+	fn name(value: &str) -> AstStatement {
+		scalar_assignment("name", ScalarValue::String(value.to_string()))
+	}
+
+	/// `windowType = { name="<id>" iconType = { name="<icon>" } }`
+	fn widget(id: &str, icon: &str) -> AstStatement {
+		block_assignment(
+			"windowType",
+			vec![name(id), block_assignment("iconType", vec![name(icon)])],
+		)
+	}
+
+	fn collect_names(stmts: &[AstStatement], out: &mut Vec<String>) {
+		for s in stmts {
+			if let AstStatement::Assignment { key, value, .. } = s {
+				if key == "name"
+					&& let AstValue::Scalar { value, .. } = value
+				{
+					out.push(value.as_text());
+				}
+				if let AstValue::Block { items, .. } = value {
+					collect_names(items, out);
+				}
+			}
+		}
+	}
+
+	fn names_in(stmt: &AstStatement) -> Vec<String> {
+		let mut out = Vec::new();
+		collect_names(std::slice::from_ref(stmt), &mut out);
+		out
+	}
+
+	#[test]
+	fn synthesize_scroll_stack_keeps_both_bodies_lossless() {
+		let a = widget("X", "icon_a");
+		let b = widget("X", "icon_b");
+		let stacked = synthesize_scroll_stack(&a, &b).expect("scroll-stack");
+		let names = names_in(&stacked);
+		assert!(
+			names.contains(&"X".to_string()),
+			"parent name kept: {names:?}"
+		);
+		assert!(
+			names.contains(&"icon_a".to_string()),
+			"mod A widget kept: {names:?}"
+		);
+		assert!(
+			names.contains(&"icon_b".to_string()),
+			"mod B widget kept: {names:?}"
+		);
+		assert_eq!(
+			names
+				.iter()
+				.filter(|n| n.starts_with(SCROLL_LAYER_PREFIX))
+				.count(),
+			2,
+			"two scroll layers: {names:?}"
+		);
+		// The parent keeps the original key + exactly one name = the engine still
+		// resolves it; the divergent bodies live in separate child namespaces.
+		assert!(matches!(&stacked, AstStatement::Assignment { key, .. } if key == "windowType"));
+	}
+
+	#[test]
+	fn synthesize_scroll_stack_appends_third_contributor_flat() {
+		let ab =
+			synthesize_scroll_stack(&widget("X", "icon_a"), &widget("X", "icon_b")).expect("ab");
+		let abc = synthesize_scroll_stack(&ab, &widget("X", "icon_c")).expect("abc");
+		let names = names_in(&abc);
+		for w in ["icon_a", "icon_b", "icon_c"] {
+			assert!(names.contains(&w.to_string()), "{w} kept: {names:?}");
+		}
+		assert_eq!(
+			names
+				.iter()
+				.filter(|n| n.starts_with(SCROLL_LAYER_PREFIX))
+				.count(),
+			3,
+			"three flat layers (not nested): {names:?}"
+		);
 	}
 }
