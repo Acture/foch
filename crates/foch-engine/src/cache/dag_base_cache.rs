@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the cached DAG-base payload or synthesis behavior changes.
-pub const DAG_BASE_CACHE_VERSION: u32 = 4;
+pub const DAG_BASE_CACHE_VERSION: u32 = 5;
 const CACHE_ENV: &str = "FOCH_DAG_BASE_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;

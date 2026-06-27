@@ -489,6 +489,9 @@ pub fn diff_block_bodies(
 	depth: usize,
 	merge_key_source: MergeKeySource,
 ) -> Vec<ClausewitzPatch> {
+	if !ast_statement_list_has_real_content(overlay_items) {
+		return Vec::new();
+	}
 	// Bare-Item set diff (e.g. `{ FRA ENG }`).
 	let base_block_items: Vec<&AstValue> = base_items
 		.iter()
@@ -779,6 +782,9 @@ fn diff_entry_maps(
 	// Keys in overlay but not base → inserted.
 	for (key, overlay_stmts) in &overlay_map {
 		if !base_map.contains_key(key) {
+			if !entries_have_real_content(overlay_stmts) {
+				continue;
+			}
 			if overlay_stmts.len() == 1 {
 				patches.push(ClausewitzPatch::InsertNode {
 					path: path.clone(),
@@ -804,6 +810,9 @@ fn diff_entry_maps(
 		let Some(overlay_stmts) = overlay_map.get(key) else {
 			continue;
 		};
+		if !entries_have_real_content(overlay_stmts) {
+			continue;
+		}
 
 		if base_stmts.len() == 1 && overlay_stmts.len() == 1 {
 			diff_single_statement(
@@ -820,6 +829,12 @@ fn diff_entry_maps(
 	}
 
 	patches
+}
+
+fn entries_have_real_content(entries: &[&AstStatement]) -> bool {
+	entries
+		.iter()
+		.any(|stmt| ast_statement_has_real_content(stmt))
 }
 
 fn resolve_path(
@@ -977,6 +992,25 @@ pub(crate) fn ast_statements_semantically_equal(a: &AstStatement, b: &AstStateme
 		}
 		(AstStatement::Comment { .. }, AstStatement::Comment { .. }) => true,
 		_ => false,
+	}
+}
+
+pub(crate) fn ast_statement_list_has_real_content(statements: &[AstStatement]) -> bool {
+	statements.iter().any(ast_statement_has_real_content)
+}
+
+pub(crate) fn ast_statement_has_real_content(statement: &AstStatement) -> bool {
+	match statement {
+		AstStatement::Comment { .. } => false,
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		}
+		| AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => ast_statement_list_has_real_content(items),
+		AstStatement::Assignment { .. } | AstStatement::Item { .. } => true,
 	}
 }
 
@@ -1516,6 +1550,24 @@ mod tests {
 			parse_issues: Vec::new(),
 			parse_cache_hit: false,
 		}
+	}
+
+	#[test]
+	fn comment_only_key_override_produces_no_remove_patch() {
+		let base = make_parsed(vec![
+			block("event_a", vec![assignment("id", scalar("a.1"))]),
+			block("event_b", vec![assignment("id", scalar("b.1"))]),
+		]);
+		let overlay = make_parsed(vec![
+			block("event_a", vec![comment("empty override")]),
+			block("event_b", vec![assignment("id", scalar("b.1"))]),
+		]);
+
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		assert!(
+			patches.is_empty(),
+			"comment-only key override should not remove sibling/base content, got {patches:#?}"
+		);
 	}
 
 	#[test]

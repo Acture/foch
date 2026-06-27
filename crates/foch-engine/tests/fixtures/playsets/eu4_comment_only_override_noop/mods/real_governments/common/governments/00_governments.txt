@@ -1,0 +1,3 @@
+monarchy = {
+	preferred_reform = feudalism
+}

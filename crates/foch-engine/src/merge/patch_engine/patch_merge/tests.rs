@@ -1,3 +1,4 @@
+use super::block_merge::NamedContainerMergeError;
 use super::*;
 use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
 use foch_core::config::{ResolutionDecision, ResolutionMap, compute_conflict_id};
@@ -1861,6 +1862,111 @@ fn merge_conflict_overlay_wins_under_overlay_policy() {
 		_ => None,
 	});
 	assert_eq!(texture.as_deref(), Some("b.dds"));
+}
+
+#[test]
+fn merge_conflict_policy_unions_sibling_blocks_that_share_non_empty_base() {
+	let base = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![assignment("monarchy", scalar("yes"))],
+	)];
+	let mod_a = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![
+			assignment("monarchy", scalar("yes")),
+			assignment("has_parliament", scalar("yes")),
+		],
+	)];
+	let mod_b = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![
+			assignment("monarchy", scalar("yes")),
+			assignment("has_states_general", scalar("yes")),
+		],
+	)];
+
+	let merged = merge_named_container_bodies(
+		&base,
+		&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+		&default_policies(),
+	)
+	.expect("shared-base extensions should union");
+
+	let body = block_items(&merged[0]);
+	for key in ["monarchy", "has_parliament", "has_states_general"] {
+		assert!(
+			body.iter().any(
+				|stmt| matches!(stmt, AstStatement::Assignment { key: found, .. } if found == key)
+			),
+			"missing {key}: {body:#?}"
+		);
+	}
+}
+
+#[test]
+fn merge_conflict_policy_takes_superset_sibling_block() {
+	let base = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![assignment("monarchy", scalar("yes"))],
+	)];
+	let mod_a = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![
+			assignment("monarchy", scalar("yes")),
+			assignment("has_parliament", scalar("yes")),
+		],
+	)];
+	let mod_b = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![
+			assignment("monarchy", scalar("yes")),
+			assignment("has_parliament", scalar("yes")),
+			assignment("has_states_general", scalar("yes")),
+		],
+	)];
+
+	let merged = merge_named_container_bodies(
+		&base,
+		&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+		&default_policies(),
+	)
+	.expect("strict superset should win");
+
+	let body = block_items(&merged[0]);
+	assert!(
+		body.iter().any(
+			|stmt| matches!(stmt, AstStatement::Assignment { key, .. } if key == "has_states_general")
+		),
+		"superset-only child should survive: {body:#?}"
+	);
+}
+
+#[test]
+fn merge_conflict_policy_keeps_disjoint_sibling_blocks_conflicting() {
+	let mod_a = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![assignment("has_parliament", scalar("yes"))],
+	)];
+	let mod_b = vec![named_block(
+		"government",
+		"shared_reform",
+		vec![assignment("has_states_general", scalar("yes"))],
+	)];
+
+	let result = merge_named_container_bodies(
+		&[],
+		&[("mod_a", mod_a.as_slice()), ("mod_b", mod_b.as_slice())],
+		&default_policies(),
+	);
+
+	assert_eq!(result, Err(NamedContainerMergeError::UnresolvableConflict));
 }
 
 #[test]
