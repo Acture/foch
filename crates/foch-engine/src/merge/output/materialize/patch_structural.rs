@@ -6,7 +6,9 @@ use foch_core::model::{
 	LeafConflictDetail, MergeReportConflictContributor, MergeTraceContributor, MergeTraceDecision,
 	MergeTraceEntry, MergeTracePolicy,
 };
-use foch_language::analyzer::content_family::{BlockPatchPolicy, NamedContainerPolicy};
+use foch_language::analyzer::content_family::{
+	BlockPatchPolicy, MergePolicies, NamedContainerPolicy,
+};
 use foch_language::analyzer::parser::{AstStatement, Span, SpanRange};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
@@ -430,12 +432,13 @@ fn run_patch_merge_engine(
 			},
 		},
 	};
+	let effective_policies = effective_merge_policies(context);
 	compute_dag_patches_with_handler(
 		DagPatchRequest {
 			file_path: target_path,
 			contributors,
 			merge_key_source: context.merge_key_source,
-			policies: &context.descriptor.merge_policies,
+			policies: &effective_policies,
 			mod_dag: context.mod_dag,
 			ignore_replace_path: context.ignore_replace_path,
 			dep_overrides: context.dep_overrides,
@@ -447,6 +450,21 @@ fn run_patch_merge_engine(
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
 	})
+}
+
+fn effective_merge_policies(context: &PatchBasedMergeContext<'_>) -> MergePolicies {
+	let mut policies = context.descriptor.merge_policies;
+	if context.gui_scroll_merge && is_gui_container_family(context) {
+		policies.named_container = NamedContainerPolicy::ScrollStack;
+	}
+	policies
+}
+
+fn is_gui_container_family(context: &PatchBasedMergeContext<'_>) -> bool {
+	matches!(
+		context.descriptor.id.as_str(),
+		"interface" | "common/interface"
+	)
 }
 
 #[cfg(test)]

@@ -55,20 +55,33 @@ fn run_merge_fixture(name: &str) -> PathBuf {
 /// the output dir so tests can assert on report fields, status, and the
 /// produced tree without the wrapper enforcing its own success contract.
 fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutionResult, PathBuf) {
-	run_merge_for_fixture_inner(name, force, /*provenance=*/ false)
+	run_merge_for_fixture_inner(
+		name, force, /*provenance=*/ false, /*gui_scroll_merge=*/ false,
+	)
+}
+
+fn run_merge_for_fixture_with_gui_scroll(
+	name: &str,
+	force: bool,
+	gui_scroll_merge: bool,
+) -> (foch_engine::MergeExecutionResult, PathBuf) {
+	run_merge_for_fixture_inner(name, force, /*provenance=*/ false, gui_scroll_merge)
 }
 
 fn run_merge_for_fixture_with_provenance(
 	name: &str,
 	force: bool,
 ) -> (foch_engine::MergeExecutionResult, PathBuf) {
-	run_merge_for_fixture_inner(name, force, /*provenance=*/ true)
+	run_merge_for_fixture_inner(
+		name, force, /*provenance=*/ true, /*gui_scroll_merge=*/ false,
+	)
 }
 
 fn run_merge_for_fixture_inner(
 	name: &str,
 	force: bool,
 	provenance: bool,
+	gui_scroll_merge: bool,
 ) -> (foch_engine::MergeExecutionResult, PathBuf) {
 	let fixture = fixture_dir(name);
 	assert!(
@@ -105,6 +118,7 @@ fn run_merge_for_fixture_inner(
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,
+			gui_scroll_merge,
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
@@ -149,6 +163,7 @@ fn run_merge_for_playset(
 			out_dir,
 			include_game_base: false,
 			include_base: false,
+			gui_scroll_merge: false,
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
@@ -968,6 +983,67 @@ fn eu4_gui_edit_wins_over_remove_keeps_the_edit() {
 }
 
 #[test]
+fn eu4_gui_scroll_merge_flag_stacks_divergent_same_name_container() {
+	let (blocked, _blocked_out_dir) =
+		run_merge_for_fixture("eu4_gui_scroll_stack_same_name_conflict", false);
+	assert_eq!(
+		blocked.exit_code, 2,
+		"same-name divergent GUI merge without flag should block; report: {:#?}",
+		blocked.report
+	);
+	assert_eq!(
+		blocked.report.status,
+		MergeReportStatus::Blocked,
+		"same-name divergent GUI merge without flag should be blocked; report: {:#?}",
+		blocked.report
+	);
+	assert!(
+		blocked.report.manual_conflict_count >= 1,
+		"same-name divergent GUI containers must surface a manual conflict without the flag; report: {:#?}",
+		blocked.report
+	);
+
+	let (result, out_dir) = run_merge_for_fixture_with_gui_scroll(
+		"eu4_gui_scroll_stack_same_name_conflict",
+		false,
+		true,
+	);
+	assert_eq!(
+		result.exit_code, 0,
+		"GUI scroll-stack merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"GUI scroll-stack merge should be ready; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.manual_conflict_count, 0,
+		"GUI scroll-stack merge should clear manual conflicts; report: {:#?}",
+		result.report
+	);
+
+	let merged_gui_path = out_dir.join("interface").join("test.gui");
+	let merged_text = fs::read_to_string(&merged_gui_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_gui_path.display()));
+	for expected in [
+		"shared_window",
+		"standardlistbox_slider",
+		"foch_scroll_layer_0",
+		"foch_scroll_layer_1",
+		"unique_icon_a",
+		"unique_icon_b",
+	] {
+		assert!(
+			merged_text.contains(expected),
+			"scroll-stack output should retain {expected}; got:\n{merged_text}"
+		);
+	}
+}
+
+#[test]
 fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false);
 	assert_eq!(
@@ -1112,6 +1188,7 @@ religion = sentinel
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,
+			gui_scroll_merge: false,
 			force: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),

@@ -334,6 +334,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 	let mut current_statements = base_statements.clone();
 	let mut mod_patches = Vec::new();
 	let mut merge_result = PatchMergeResult::default();
+	let dag_base_game_version = format!("{game_version} policies={policies:?}");
 	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
 	let diff_cache = mod_hashes
 		.filter(|hashes| !hashes.is_empty())
@@ -438,7 +439,7 @@ fn compute_dag_patches_from_parsed_with_cache(
 			&current_statements,
 			&level_resolved_patches,
 			merge_key_source,
-			game_version,
+			&dag_base_game_version,
 		);
 	}
 

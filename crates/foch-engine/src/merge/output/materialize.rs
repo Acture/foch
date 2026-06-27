@@ -53,6 +53,7 @@ use std::time::Instant;
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
 	pub include_base: bool,
+	pub gui_scroll_merge: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
@@ -69,6 +70,7 @@ impl Default for MergeMaterializeOptions {
 		Self {
 			include_game_base: true,
 			include_base: false,
+			gui_scroll_merge: false,
 			force: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
@@ -326,6 +328,7 @@ pub(crate) fn materialize_merge_internal(
 										descriptor: &desc,
 										cwt_schema_graph: cwt_schema_graph.clone(),
 										merge_key_source,
+										gui_scroll_merge: options.gui_scroll_merge,
 										mod_dag: &dag,
 										ignore_replace_path: &ignore,
 										dep_overrides: &dep_overrides,
@@ -958,6 +961,7 @@ struct PatchBasedMergeContext<'a> {
 	descriptor: &'a ContentFamilyDescriptor,
 	cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
 	merge_key_source: MergeKeySource,
+	gui_scroll_merge: bool,
 	mod_dag: &'a ModDag,
 	ignore_replace_path: &'a IgnoreReplacePath,
 	dep_overrides: &'a [DepOverride],
@@ -1415,6 +1419,7 @@ mod tests {
 		MergeMaterializeOptions {
 			include_game_base: false,
 			include_base: false,
+			gui_scroll_merge: false,
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),

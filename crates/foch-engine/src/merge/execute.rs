@@ -9,7 +9,7 @@ use crate::cache::{
 
 // Bump when merge-report semantics change so cached artifacts don't hide new metadata.
 const MODSET_CACHE_FORMAT_VERSION: &str =
-	"modset-cache-include-base-gfx-effects-union-provenance-trace-v7";
+	"modset-cache-include-base-gfx-effects-union-provenance-trace-gui-scroll-v8";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
@@ -28,6 +28,7 @@ pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
 	pub include_base: bool,
+	pub gui_scroll_merge: bool,
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
@@ -82,6 +83,7 @@ pub fn run_merge_with_options(
 		&request,
 		options.include_game_base,
 		options.include_base,
+		options.gui_scroll_merge,
 		options.provenance,
 		options.resolution_config_path.as_deref(),
 	);
@@ -120,6 +122,7 @@ pub fn run_merge_with_options(
 		MergeMaterializeOptions {
 			include_game_base: options.include_game_base,
 			include_base: options.include_base,
+			gui_scroll_merge: options.gui_scroll_merge,
 			force: options.force,
 			ignore_replace_path: options.ignore_replace_path,
 			dep_overrides: options.dep_overrides.clone(),
@@ -165,6 +168,7 @@ fn build_modset_cache_context(
 	request: &CheckRequest,
 	include_game_base: bool,
 	include_base: bool,
+	gui_scroll_merge: bool,
 	provenance: bool,
 	resolution_config_path: Option<&Path>,
 ) -> Option<ModsetCacheContext> {
@@ -191,7 +195,7 @@ fn build_modset_cache_context(
 		resolution_config_path,
 	));
 	let foch_version = format!(
-		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base} provenance={provenance}",
+		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base} provenance={provenance} gui_scroll_merge={gui_scroll_merge}",
 		env!("CARGO_PKG_VERSION"),
 	);
 	let key = compute_modset_cache_key(
