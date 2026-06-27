@@ -9,3 +9,12 @@ packages/vscode-foch/*.vsix
 crates/foch-engine/src/base_data/eu4_data.bin
 test_merge
 local_merge/
+
+# Local secrets (Steam Web API key for the merge-quality harness, etc.) — never commit
+.env
+.env.*
+!.env.example
+
+# merge-quality harness run artifacts (Steam-derived corpus + per-run reports)
+scripts/merge_quality/corpus.json
+scripts/merge_quality/results/
