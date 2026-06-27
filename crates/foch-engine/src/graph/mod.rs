@@ -8,4 +8,5 @@ pub use model::{
 	GraphArtifactFormat, GraphBuildOptions, GraphBuildSummary, GraphModeSelection,
 	GraphRootSelector, GraphScopeSelection,
 };
+pub use modules::{ModuleReport, run_module_report, write_module_report};
 pub use semantic::SEMANTIC_GRAPH_PROGRESS_TARGET;

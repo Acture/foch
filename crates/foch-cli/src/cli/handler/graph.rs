@@ -3,10 +3,30 @@ use crate::cli::handler::{HandlerResult, resolve_playset_path};
 use foch_core::model::SymbolKind;
 use foch_engine::{
 	CheckRequest, Config, GraphArtifactFormat, GraphBuildOptions, GraphModeSelection,
-	GraphRootSelector, GraphScopeSelection, run_graph_with_options,
+	GraphRootSelector, GraphScopeSelection, build_runtime_state_for_request,
+	run_graph_with_options, run_module_report, write_module_report,
 };
 
+const MODULE_REPORT_MAX_ITERS: usize = 20;
+
 pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
+	if graph_args.modules {
+		let playset_path = resolve_playset_path(graph_args.playset_path.as_deref(), &config)?;
+		let request = CheckRequest {
+			playset_path,
+			config,
+		};
+		let state = build_runtime_state_for_request(&request, !graph_args.no_game_base)?;
+		let report = run_module_report(&state.semantic_index, MODULE_REPORT_MAX_ITERS);
+		let report_path = graph_args.out.join(".foch").join("module-report.json");
+		if let Some(parent) = report_path.parent() {
+			std::fs::create_dir_all(parent)?;
+		}
+		write_module_report(&report_path, &report)?;
+		println!("module report written to {}", report_path.display());
+		return Ok(0);
+	}
+
 	if graph_args.mode == GraphModeArg::Semantic {
 		if graph_args.family.is_none() {
 			return Err("semantic graph mode requires --family".into());
@@ -88,5 +108,61 @@ fn to_format(format: GraphArtifactFormatArg) -> GraphArtifactFormat {
 		GraphArtifactFormatArg::Json => GraphArtifactFormat::Json,
 		GraphArtifactFormatArg::Dot => GraphArtifactFormat::Dot,
 		GraphArtifactFormatArg::Both => GraphArtifactFormat::Both,
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::cli::arg::{GraphArtifactFormatArg, GraphModeArg, GraphScopeArg};
+	use std::path::PathBuf;
+	use tempfile::Builder;
+
+	#[test]
+	fn modules_mode_writes_parseable_report_under_foch_dir() {
+		let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("target")
+			.join("graph-handler");
+		std::fs::create_dir_all(&scratch_root).expect("create graph handler scratch root");
+		let temp_dir = Builder::new()
+			.prefix("modules-mode-")
+			.tempdir_in(&scratch_root)
+			.expect("create graph handler tempdir");
+		let out = temp_dir.path().join("out");
+		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.parent()
+			.expect("cli crate has workspace crates dir")
+			.join("foch-engine")
+			.join("tests")
+			.join("fixtures")
+			.join("playsets")
+			.join("eu4_minimal_passthrough")
+			.join("dlc_load.json");
+
+		let exit_code = handle_graph(
+			&GraphArgs {
+				playset_path: Some(fixture),
+				out: out.clone(),
+				no_game_base: true,
+				modules: true,
+				mode: GraphModeArg::Calls,
+				scope: GraphScopeArg::All,
+				format: GraphArtifactFormatArg::Both,
+				root: None,
+				family: None,
+				definition_kinds: Vec::new(),
+			},
+			Config::default(),
+		)
+		.expect("modules graph handler succeeds");
+
+		assert_eq!(exit_code, 0);
+		let report_path = out.join(".foch").join("module-report.json");
+		let report_json = std::fs::read_to_string(&report_path).expect("read module report");
+		let parsed: serde_json::Value =
+			serde_json::from_str(&report_json).expect("module report is valid JSON");
+		assert!(parsed.get("module_count").is_some());
+		assert!(parsed.get("node_count").is_some());
+		assert!(parsed.get("mods").is_some());
 	}
 }
