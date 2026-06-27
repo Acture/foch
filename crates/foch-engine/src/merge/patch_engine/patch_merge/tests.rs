@@ -920,9 +920,11 @@ fn assignment_keys(items: &[AstStatement]) -> Vec<String> {
 		.collect()
 }
 
-/// Helper: assert `stmt` is `key = { OR = { <body_0> } OR = { <body_1> } ... }`
-/// with the supplied bodies in order, and return the OR'd bodies for further
-/// inspection.
+/// Helper: assert `stmt` is `key = { OR = { <d_0> <d_1> ... } }` — a single
+/// shared `OR` whose disjuncts are each contributor's body (inlined when the
+/// body is one statement, else wrapped in `AND = { ... }`). Returns the disjunct
+/// bodies in order. Enforces the single-OR structure so a regression back to
+/// sibling `OR` blocks (which would mean an implicit AND / intersection) fails.
 fn assert_or_wrapped(stmt: &AstStatement, expected_key: &str) -> Vec<Vec<AstStatement>> {
 	let (key, items) = match stmt {
 		AstStatement::Assignment {
@@ -933,24 +935,40 @@ fn assert_or_wrapped(stmt: &AstStatement, expected_key: &str) -> Vec<Vec<AstStat
 		other => panic!("expected Assignment with Block value, got: {other:?}"),
 	};
 	assert_eq!(key, expected_key, "outer key mismatch");
-	items
+	assert_eq!(
+		items.len(),
+		1,
+		"expected exactly one shared OR wrapper (OR of disjuncts), got {} children: {items:?}",
+		items.len()
+	);
+	let or_items = match &items[0] {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} => {
+			assert_eq!(key, "OR", "expected single OR wrapper, got key={key}");
+			items.as_slice()
+		}
+		other => panic!("expected `OR = {{ ... }}`, got: {other:?}"),
+	};
+	or_items
 		.iter()
-		.map(|child| match child {
+		.map(|disjunct| match disjunct {
+			// Multi-statement bodies are wrapped in `AND = { ... }`.
 			AstStatement::Assignment {
 				key,
 				value: AstValue::Block { items, .. },
 				..
-			} => {
-				assert_eq!(key, "OR", "expected OR wrapper, got key={key}");
-				items.clone()
-			}
-			other => panic!("expected `OR = {{ ... }}`, got: {other:?}"),
+			} if key == "AND" => items.clone(),
+			// Single-statement bodies are inlined verbatim.
+			other => vec![other.clone()],
 		})
 		.collect()
 }
 
 #[test]
-fn boolean_or_two_mods_modify_same_block_produces_or_or() {
+fn boolean_or_two_mods_modify_same_block_produces_single_or_of_disjuncts() {
 	let body_a = vec![assignment("tag", scalar("ABC"))];
 	let body_b = vec![assignment("culture", scalar("french"))];
 	let old = assignment_block("is_great_power", vec![assignment("tag", scalar("OLD"))]);
@@ -1000,7 +1018,7 @@ fn boolean_or_two_mods_modify_same_block_produces_or_or() {
 }
 
 #[test]
-fn boolean_or_three_mods_produces_three_or_blocks() {
+fn boolean_or_three_mods_produce_single_or_of_three_disjuncts() {
 	let body_a = vec![assignment("tag", scalar("AAA"))];
 	let body_b = vec![assignment("tag", scalar("BBB"))];
 	let body_c = vec![assignment("tag", scalar("CCC"))];
@@ -1041,6 +1059,85 @@ fn boolean_or_three_mods_produces_three_or_blocks() {
 	assert_eq!(or_bodies[0], body_a);
 	assert_eq!(or_bodies[1], body_b);
 	assert_eq!(or_bodies[2], body_c);
+}
+
+#[test]
+fn boolean_or_preserves_disjunction_semantics_and_conjunctive_bodies() {
+	// Regression for the semantic-inversion bug: two divergent same-key trigger
+	// definitions must merge to OR(body_a, body_b) — "holds if EITHER mod's body
+	// holds" — NOT to sibling `OR` blocks (which a trigger block reads as an
+	// implicit AND, i.e. the *intersection*, the opposite of BooleanOr's intent).
+	//
+	// mod_a contributes a MULTI-statement (conjunctive) body, so it must be
+	// `AND`-wrapped to stay a single disjunct; mod_b's single-statement body is
+	// inlined. Real-world shape: Europa Expanded + Flavour & Events Expanded both
+	// fully (re)define `is_expanded_mod_active`.
+	let body_a = vec![
+		assignment("has_global_flag", scalar("ee_active")),
+		assignment("has_global_flag", scalar("ee_active_typo")),
+	];
+	let body_b = vec![assignment("has_global_flag", scalar("fee_active"))];
+
+	let mk = |body: &[AstStatement]| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "is_expanded_mod_active".into(),
+		statement: assignment_block("is_expanded_mod_active", body.to_vec()),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![mk(&body_a)]),
+			("mod_b".into(), 2, vec![mk(&body_b)]),
+		],
+		&boolean_or_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.stats.auto_merged_patches, 1);
+
+	let merged_stmt = match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: ClausewitzPatch::InsertNode { statement, .. },
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "boolean_or");
+			statement
+		}
+		other => panic!("expected AutoMerged InsertNode, got: {other:?}"),
+	};
+
+	// Exactly one shared OR (asserted by the helper) with two disjuncts that
+	// recover each contributor's original body.
+	let or_bodies = assert_or_wrapped(merged_stmt, "is_expanded_mod_active");
+	assert_eq!(or_bodies.len(), 2, "expected exactly two OR disjuncts");
+	assert_eq!(
+		or_bodies[0], body_a,
+		"mod_a's conjunctive body must survive"
+	);
+	assert_eq!(or_bodies[1], body_b);
+
+	// The multi-statement disjunct must be `AND`-wrapped (not flattened into the
+	// OR, which would change AND(a1,a2) into OR(a1,a2)).
+	let or_children = match merged_stmt {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} => match &items[0] {
+			AstStatement::Assignment {
+				value: AstValue::Block { items, .. },
+				..
+			} => items,
+			other => panic!("expected OR block, got: {other:?}"),
+		},
+		other => panic!("expected Assignment block, got: {other:?}"),
+	};
+	match &or_children[0] {
+		AstStatement::Assignment { key, .. } => {
+			assert_eq!(key, "AND", "multi-statement body must be AND-wrapped")
+		}
+		other => panic!("expected AND-wrapped disjunct, got: {other:?}"),
+	}
 }
 
 #[test]

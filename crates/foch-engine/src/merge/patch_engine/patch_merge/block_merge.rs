@@ -841,6 +841,32 @@ fn make_or_wrapper(items: Vec<AstStatement>) -> AstStatement {
 	}
 }
 
+/// Build an `AND = { <items...> }` statement that wraps the supplied body,
+/// preserving the body's internal conjunction when it is used as a single
+/// disjunct of an `OR`.
+fn make_and_wrapper(items: Vec<AstStatement>) -> AstStatement {
+	AstStatement::Assignment {
+		key: "AND".to_string(),
+		key_span: synthetic_span(),
+		value: AstValue::Block {
+			items,
+			span: synthetic_span(),
+		},
+		span: synthetic_span(),
+	}
+}
+
+/// Turn a contributor body into a single `OR` disjunct. A one-statement body is
+/// inlined verbatim (its lone condition is already a disjunct); a multi-statement
+/// body is wrapped in `AND = { ... }` so its implicit conjunction is preserved.
+fn body_to_disjunct(mut body: Vec<AstStatement>) -> AstStatement {
+	if body.len() == 1 {
+		body.pop().expect("len checked")
+	} else {
+		make_and_wrapper(body)
+	}
+}
+
 /// Pull the AST body that each contributor wants to install at `addr`,
 /// from either an `InsertNode` or a `ReplaceBlock` patch.
 fn contributor_body(patch: &ClausewitzPatch) -> Option<Vec<AstStatement>> {
@@ -851,16 +877,22 @@ fn contributor_body(patch: &ClausewitzPatch) -> Option<Vec<AstStatement>> {
 	}
 }
 
-/// Synthesize a single patch whose body is `{ OR = { body_0 } OR = { body_1 } ... }`,
-/// preserving the original key. Returns `None` (leaving resolution to the
-/// caller's default behavior) if any contributor isn't a block-bodied
+/// Synthesize a single patch whose body is `{ OR = { <d_0> <d_1> ... } }`,
+/// where each disjunct `<d_i>` is contributor `i`'s body (inlined if it is a
+/// single statement, else wrapped in `AND = { ... }`). This expresses the
+/// intended Boolean-OR semantics — the merged key holds if *any* contributor's
+/// body holds — preserving the original key. Returns `None` (leaving resolution
+/// to the caller's default behavior) if any contributor isn't a block-bodied
 /// assignment.
 ///
-/// One `OR =` wrapper is emitted per contributor in `attributed`'s order.
-/// No cross-contributor deduplication is performed: even byte-identical
-/// bodies (which would have already short-circuited via the convergence
-/// check upstream) are treated as separate disjuncts here, matching the
-/// caller's contract that `attributed.len() >= 2` and the bodies differ.
+/// NOTE: the disjuncts live inside ONE shared `OR` (an OR of conjunctions). They
+/// must NOT be emitted as sibling `OR = { ... }` blocks, because trigger-block
+/// siblings are an implicit AND — that would invert the semantics to the
+/// intersection of the contributors. No cross-contributor deduplication is
+/// performed: even byte-identical bodies (which would have already
+/// short-circuited via the convergence check upstream) are treated as separate
+/// disjuncts here, matching the caller's contract that `attributed.len() >= 2`
+/// and the bodies differ.
 pub(super) fn synthesize_boolean_or(
 	addr: &PatchAddress,
 	attributed: &[AttributedPatch],
@@ -877,10 +909,10 @@ pub(super) fn synthesize_boolean_or(
 		return None;
 	}
 
-	let or_blocks: Vec<AstStatement> = bodies.into_iter().map(make_or_wrapper).collect();
+	let disjuncts: Vec<AstStatement> = bodies.into_iter().map(body_to_disjunct).collect();
 
 	let synthesized_value = AstValue::Block {
-		items: or_blocks,
+		items: vec![make_or_wrapper(disjuncts)],
 		span: synthetic_span(),
 	};
 	let synthesized_stmt = AstStatement::Assignment {
