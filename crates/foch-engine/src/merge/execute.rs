@@ -9,7 +9,7 @@ use crate::cache::{
 
 // Bump when merge-report semantics change so cached artifacts don't hide new metadata.
 const MODSET_CACHE_FORMAT_VERSION: &str =
-	"modset-cache-include-base-gfx-effects-union-provenance-v6";
+	"modset-cache-include-base-gfx-effects-union-provenance-trace-v7";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
@@ -17,7 +17,7 @@ use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
 use foch_core::domain::playlist::Playlist;
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
-	MergeReport, MergeReportStatus, MergeReportValidation,
+	MERGE_TRACE_ARTIFACT_PATH, MergeReport, MergeReportStatus, MergeReportValidation,
 };
 use std::fs;
 use std::io;
@@ -490,6 +490,7 @@ fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> Result<(
 	})?;
 	fs::write(path, bytes)?;
 	write_provenance_artifact(out_dir, report)?;
+	write_merge_trace_artifact(out_dir, report)?;
 	Ok(())
 }
 
@@ -511,6 +512,27 @@ fn write_provenance_artifact(out_dir: &Path, report: &MergeReport) -> Result<(),
 	let bytes = serde_json::to_vec_pretty(&report.definition_provenance).map_err(|err| {
 		MergeError::Io(io::Error::other(format!(
 			"failed to serialize provenance sidecar {}: {err}",
+			path.display()
+		)))
+	})?;
+	fs::write(path, bytes)?;
+	Ok(())
+}
+
+fn write_merge_trace_artifact(out_dir: &Path, report: &MergeReport) -> Result<(), MergeError> {
+	let path = out_dir.join(MERGE_TRACE_ARTIFACT_PATH);
+	if report.merge_trace.is_empty() {
+		if path.exists() {
+			let _ = fs::remove_file(&path);
+		}
+		return Ok(());
+	}
+	if let Some(parent) = path.parent() {
+		fs::create_dir_all(parent)?;
+	}
+	let bytes = serde_json::to_vec_pretty(&report.merge_trace).map_err(|err| {
+		MergeError::Io(io::Error::other(format!(
+			"failed to serialize merge trace sidecar {}: {err}",
 			path.display()
 		)))
 	})?;

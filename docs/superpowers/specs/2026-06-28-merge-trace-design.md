@@ -26,12 +26,13 @@ MergeTraceEntry:
 MergeTraceContributor:
   mod_id: String
   precedence: usize
+  dag_level: usize
 
 MergeTracePolicy: copy_through | overlay | union | boolean_or | named_container | conflict
 MergeTraceDecision: adopted | overridden | unioned | conflict
 ```
 
-`contributors` are the adopted mods from `definition_provenance`, augmented with the already-known DAG precedence from the file contributor set. `policy` is derived at the structural-merge point from the matched `ContentFamilyDescriptor.merge_policies`: `BlockPatchPolicy::Union` => `union`; `BooleanOr` => `boolean_or`; `LastWriter` => `overlay`; recursive merge with `NamedContainerPolicy` other than `Conflict` => `named_container`; otherwise `conflict` as the honest baseline. The copy-through policy is reserved for future non-structural file-level trace entries; this track records per-definition structural output.
+`contributors` are the adopted mods from `definition_provenance`, augmented with the already-known DAG precedence and topological DAG level from the file contributor set. `policy` is derived at the structural-merge point from the matched `ContentFamilyDescriptor.merge_policies`: `BlockPatchPolicy::Union` => `union`; `BooleanOr` => `boolean_or`; `LastWriter` => `overlay`; recursive merge with `NamedContainerPolicy` other than `Conflict` => `named_container`; otherwise `conflict` as the honest baseline. The copy-through policy is reserved for future non-structural file-level trace entries; this track records per-definition structural output.
 
 `decision` is derived from adopted contributors plus policy: multiple adopted contributors under `union`, `boolean_or`, or `named_container` means `unioned`; one adopted contributor when more than one mod defined the key means `overridden`; unresolved structural failures can record `conflict`; otherwise `adopted`.
 
@@ -51,9 +52,10 @@ source_mod: "<mod_id>"
 policy: <MergeTracePolicy>
 decision: <MergeTraceDecision>
 precedence: <usize>
+dag_level: <usize>
 ```
 
-Edges are sorted by merged definition, source mod, then precedence for deterministic bytes. If no trace artifact exists, the report remains useful with an empty `merge_trace_edges` list.
+Edges are sorted by merged definition, source mod, then precedence, then DAG level for deterministic bytes. If no trace artifact exists, the report remains useful with an empty `merge_trace_edges` list.
 
 ## Tests
 

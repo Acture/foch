@@ -1,3 +1,4 @@
+use foch_core::model::MergeTraceEdge;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -93,6 +94,8 @@ pub struct ModuleReport {
 	pub module_sizes: BTreeMap<String, usize>,
 	pub mods: Vec<ModSummary>,
 	pub collision_hotspots: Vec<CollisionHotspot>,
+	#[serde(default)]
+	pub merge_trace_edges: Vec<MergeTraceEdge>,
 }
 
 #[cfg(test)]
