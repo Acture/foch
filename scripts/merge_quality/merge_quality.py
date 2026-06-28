@@ -94,6 +94,23 @@ def resolve_steam_key() -> str | None:
     return out.stdout.strip() or None
 
 
+def resolve_steam_username() -> str | None:
+    """Steam login name for steamcmd: env STEAM_USERNAME, then keyring (steam/username)."""
+    u = os.environ.get("STEAM_USERNAME")
+    if u:
+        return u
+    try:
+        out = subprocess.run(
+            ["keyring", "get", "steam", "username"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return out.stdout.strip() or None
+
+
 def default_workshop_dir() -> str:
     """Best-guess EU4 Steam Workshop content dir per platform (override: STEAM_WORKSHOP_DIR)."""
     if sys.platform == "darwin":
@@ -249,6 +266,42 @@ def fetch_children(key: str, ids: list[str]) -> dict[str, list[str]]:
         log(f"    [children] {min(start + 50, total)}/{total}")
         time.sleep(0.2)
     return out
+
+
+def steamcmd_download(
+    user: str, app_id: int, ids: list[str], batch: int = 20, retries: int = 2
+) -> set[str]:
+    """Download workshop items via steamcmd using the cached login (no subscribe).
+
+    Files land in the standard workshop content dir. Batches several
+    +workshop_download_item per steamcmd invocation to amortize its ~15s startup,
+    and retries failed items (steamcmd download failures are often transient).
+    Returns the ids steamcmd reported as downloaded.
+    """
+    ok: set[str] = set()
+    pending = list(dict.fromkeys(ids))
+    for attempt in range(retries + 1):
+        if not pending:
+            break
+        if attempt:
+            log(f"  [fetch] retry {attempt}/{retries}: {len(pending)} item(s) left")
+        total = len(pending)
+        for start in range(0, total, batch):
+            chunk = pending[start : start + batch]
+            cmd = ["steamcmd", "+login", user]
+            for fid in chunk:
+                cmd += ["+workshop_download_item", str(app_id), fid]
+            cmd += ["+quit"]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            for fid in chunk:
+                if f"Downloaded item {fid}" in proc.stdout:
+                    ok.add(fid)
+            log(f"  [fetch] pass {attempt}: {min(start + batch, total)}/{total} ({len(ok)} ok)")
+        pending = [i for i in pending if i not in ok]
+    if pending:
+        head = ", ".join(pending[:8])
+        log(f"  [fetch] {len(pending)} unrecoverable after {retries} retries: {head}")
+    return ok
 
 
 # -------------------------------------------------------------------------- model
@@ -804,6 +857,54 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_fetch(args) -> int:
+    if not args.corpus.is_file():
+        print(f"ERROR: {args.corpus} missing - run `discover` first.", file=sys.stderr)
+        return 2
+    user = resolve_steam_username()
+    if not user:
+        print(
+            "ERROR: Steam username not found (env STEAM_USERNAME or keyring: "
+            "`keyring set steam username`). Log in once: `steamcmd +login <user>`.",
+            file=sys.stderr,
+        )
+        return 2
+    corpus = json.loads(args.corpus.read_text(encoding="utf-8"))
+    cases = [Case(**c) for c in corpus["cases"]]
+    # Curate: non-churn & popular, highest subscribers first -> top fetch_n.
+    prime = [c for c in cases if not c.mod_churned and c.subscriptions >= args.min_subs]
+    prime.sort(key=lambda c: c.subscriptions, reverse=True)
+    chosen = prime[: args.fetch_n]
+    ws = args.workshop_dir
+
+    needed: list[str] = []
+    seen: set[str] = set()
+    for c in chosen:
+        for fid in [c.compatch_id, *c.patched]:
+            if fid in seen:
+                continue
+            seen.add(fid)
+            if not (ws / fid).is_dir():  # skip what's already local
+                needed.append(fid)
+    log(
+        f"[fetch] {len(chosen)} compatches curated (non-churn, >={args.min_subs} subs); "
+        f"{len(needed)} items to download ({len(seen) - len(needed)} already local)"
+    )
+    if needed:
+        steamcmd_download(user, EU4_APPID, needed)
+
+    full = sum(
+        1
+        for c in chosen
+        if (ws / c.compatch_id).is_dir() and all((ws / m).is_dir() for m in c.patched)
+    )
+    print(
+        f"{full}/{len(chosen)} curated compatches now fully local and testable "
+        f"(workshop dir: {ws}). Next: `run`."
+    )
+    return 0
+
+
 def main() -> int:
     load_dotenv(REPO_ROOT)
     default_ws = Path(os.environ.get("STEAM_WORKSHOP_DIR", default_workshop_dir()))
@@ -819,13 +920,22 @@ def main() -> int:
     )
     common.add_argument("--limit", type=int, default=0, help="run: cap number of cases")
     common.add_argument("--keep", action="store_true", help="run: keep temp merge dirs")
+    common.add_argument(
+        "--fetch-n", type=int, default=15, help="fetch: number of curated compatches to download"
+    )
+    common.add_argument(
+        "--min-subs", type=int, default=100, help="fetch: min subscribers for the curated set"
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("discover", parents=[common])
+    sub.add_parser("fetch", parents=[common])
     sub.add_parser("run", parents=[common])
     sub.add_parser("all", parents=[common])
     sub.add_parser("learn", parents=[common])
     args = p.parse_args()
 
+    if args.cmd == "fetch":
+        return cmd_fetch(args)
     if args.cmd == "learn":
         return cmd_learn(args)
     if args.cmd in ("discover", "all"):
