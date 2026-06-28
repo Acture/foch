@@ -156,6 +156,11 @@ SEARCH_TERMS = [
     "unofficial patch",
     "merge",
     "fix",
+    # big EU4 mod ecosystems carry their own compatch clusters
+    "Anbennar",
+    "MEIOU",
+    "Voltaire",
+    "overhaul",
 ]
 
 
