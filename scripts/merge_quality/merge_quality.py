@@ -52,6 +52,11 @@ HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 
 
+def log(msg: str) -> None:
+    """Progress to stderr (stdout stays clean for the final summary)."""
+    print(msg, file=sys.stderr, flush=True)
+
+
 # --------------------------------------------------------------------------- env
 def load_dotenv(repo_root: Path) -> None:
     """Populate os.environ from repo-root .env (does not overwrite existing env)."""
@@ -65,6 +70,60 @@ def load_dotenv(repo_root: Path) -> None:
         key, _, val = line.partition("=")
         key, val = key.strip(), val.strip().strip('"').strip("'")
         os.environ.setdefault(key, val)
+
+
+def resolve_steam_key() -> str | None:
+    """Resolve the Steam Web API key: env/.env first, then the system keyring.
+
+    The keyring lookup matches `keyring set steam api_key` (service "steam",
+    username "api_key"). Shells out to the `keyring` CLI so the python keyring
+    package is not a hard dependency.
+    """
+    key = os.environ.get("STEAM_API_KEY")
+    if key:
+        return key
+    try:
+        out = subprocess.run(
+            ["keyring", "get", "steam", "api_key"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def default_workshop_dir() -> str:
+    """Best-guess EU4 Steam Workshop content dir per platform (override: STEAM_WORKSHOP_DIR)."""
+    if sys.platform == "darwin":
+        return str(
+            Path.home()
+            / "Library/Application Support/Steam/steamapps/workshop/content/236850"
+        )
+    if sys.platform.startswith("linux"):
+        return str(Path.home() / ".steam/steam/steamapps/workshop/content/236850")
+    return r"G:\SteamLibrary\steamapps\workshop\content\236850"
+
+
+def default_foch_bin() -> Path:
+    """Built foch binary path (override: FOCH_BIN)."""
+    name = "foch.exe" if sys.platform == "win32" else "foch"
+    return REPO_ROOT / "target" / "release" / name
+
+
+def tool_commit() -> str | None:
+    """Short git SHA of the repo at collection time, for corpus reproducibility."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    return out.stdout.strip() or None
 
 
 # ------------------------------------------------------------------------- steam
@@ -81,7 +140,27 @@ def steam_post(path: str, params: dict) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def discover_compatch_ids(key: str, max_items: int) -> list[str]:
+# Compatibility patches use many naming conventions; "Compatch" alone finds a
+# sliver. Broad recall here; precision comes from the >=2-mod-children filter in
+# build_corpus (a real inter-mod compatch *depends on* the mods it patches).
+SEARCH_TERMS = [
+    "Compatch",
+    "compatibility patch",
+    "compat patch",
+    "compatibility",
+    "compat",
+    # non-"compat" terms add genuinely new recall (the compat* variants overlap);
+    # the >=2-children filter keeps precision against their noise.
+    "addon",
+    "submod",
+    "unofficial patch",
+    "merge",
+    "fix",
+]
+
+
+def query_files(key: str, search_text: str, max_items: int) -> list[str]:
+    """Paginate QueryFiles for one search term -> published-file ids."""
     ids: list[str] = []
     cursor = "*"
     while len(ids) < max_items:
@@ -90,10 +169,9 @@ def discover_compatch_ids(key: str, max_items: int) -> list[str]:
             {
                 "key": key,
                 "appid": EU4_APPID,
-                "search_text": "Compatch",
+                "search_text": search_text,
                 "numperpage": 100,
                 "query_type": 12,
-                "return_metadata": 1,
                 "cursor": cursor,
             },
         ).get("response", {})
@@ -103,18 +181,25 @@ def discover_compatch_ids(key: str, max_items: int) -> list[str]:
         if not page or not nxt or nxt == cursor:
             break
         cursor = nxt
-    seen, out = set(), []
-    for i in ids:
-        if i not in seen:
-            seen.add(i)
-            out.append(i)
-    return out[:max_items]
+    return ids[:max_items]
 
 
-def fetch_details(ids: list[str]) -> dict[str, dict]:
+def discover_candidate_ids(key: str, terms: list[str], per_term: int) -> list[str]:
+    """Union candidate ids across several naming conventions (broad recall)."""
+    seen: dict[str, None] = {}
+    for term in terms:
+        term_ids = query_files(key, term, per_term)
+        for fid in term_ids:
+            seen.setdefault(fid, None)
+        log(f"    [discover] {term!r}: {len(term_ids)} ids (union {len(seen)})")
+    return list(seen)
+
+
+def fetch_details(ids: list[str], label: str = "details") -> dict[str, dict]:
     """Batch GetPublishedFileDetails; returns id -> detail dict."""
     out: dict[str, dict] = {}
-    for chunk_start in range(0, len(ids), 50):
+    total = len(ids)
+    for chunk_start in range(0, total, 50):
         chunk = ids[chunk_start : chunk_start + 50]
         params = {"itemcount": len(chunk)}
         for i, fid in enumerate(chunk):
@@ -124,6 +209,39 @@ def fetch_details(ids: list[str]) -> dict[str, dict]:
         ).get("response", {})
         for d in resp.get("publishedfiledetails", []) or []:
             out[str(d["publishedfileid"])] = d
+        log(f"    [{label}] {min(chunk_start + 50, total)}/{total}")
+        time.sleep(0.2)
+    return out
+
+
+def fetch_children(key: str, ids: list[str]) -> dict[str, list[str]]:
+    """compatch id -> its required-item mod ids (the authoritative patched set).
+
+    A compatch declares the mods it patches as Steam *required items*, exposed as
+    `children` by IPublishedFileService/GetDetails — far more reliable than
+    regexing workshop URLs out of the free-text description.
+    """
+    out: dict[str, list[str]] = {}
+    total = len(ids)
+    for start in range(0, total, 50):
+        chunk = ids[start : start + 50]
+        params: dict = {"key": key, "includechildren": "true"}
+        for i, fid in enumerate(chunk):
+            params[f"publishedfileids[{i}]"] = fid
+        url = (
+            "https://api.steampowered.com/IPublishedFileService/GetDetails/v1/?"
+            + urllib.parse.urlencode(params)
+        )
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            data = json.loads(resp.read().decode("utf-8")).get("response", {})
+        for d in data.get("publishedfiledetails", []) or []:
+            cid = str(d["publishedfileid"])
+            out[cid] = [
+                str(c["publishedfileid"])
+                for c in (d.get("children") or [])
+                if c.get("file_type") == 0 and str(c["publishedfileid"]) != cid
+            ]
+        log(f"    [children] {min(start + 50, total)}/{total}")
         time.sleep(0.2)
     return out
 
@@ -134,19 +252,87 @@ class Case:
     compatch_id: str
     title: str
     patched: list[str]  # workshop ids of the mods this compatch patches
+    # Version provenance: a compatch is ground truth ONLY for the (game x modA x
+    # modB) version triple it was authored against. The Workshop keeps only the
+    # latest version, so we pin every entry's last-updated timestamp at collection
+    # time (reproducibility + the staleness filter below).
+    time_created: int = 0  # compatch, unix
+    time_updated: int = 0  # compatch, unix
+    subscriptions: int = 0  # lifetime subscriptions (popularity, for curation)
+    patched_meta: dict = field(
+        default_factory=dict
+    )  # mod_id -> {title, time_created, time_updated}
+
+    @property
+    def mod_churned(self) -> bool:
+        """A patched mod changed AFTER the compatch. A *churn* signal only — NOT a
+        validity verdict: Paradox script is often forward-compatible, so this does
+        not mean the compatch is stale. Real validity = game-version compatibility
+        (descriptor `supported_version`), checked post-download."""
+        if not self.time_updated or not self.patched_meta:
+            return False
+        return any(
+            int(m.get("time_updated") or 0) > self.time_updated
+            for m in self.patched_meta.values()
+        )
 
 
-def build_corpus(key: str, max_items: int) -> list[Case]:
-    ids = discover_compatch_ids(key, max_items)
-    details = fetch_details(ids)
-    cases: list[Case] = []
-    for cid in ids:
+def build_corpus(key: str, per_term: int) -> list[Case]:
+    log(f"[1/5] discovering candidates across {len(SEARCH_TERMS)} search terms...")
+    cand = discover_candidate_ids(key, SEARCH_TERMS, per_term)
+    log(f"[2/5] {len(cand)} unique candidates; fetching metadata...")
+    details = fetch_details(cand, "compatch-meta")  # title/desc/time_*/subs/tags
+    log("[3/5] fetching required-items (children) for accurate pairs...")
+    children = fetch_children(key, cand)  # authoritative required-item mod ids
+
+    # Keep only genuine multi-mod compatches: >=2 patched mods, preferring the
+    # declared required-items, falling back to description URLs.
+    chosen: list[tuple[str, dict, list[str]]] = []
+    patched_all: set[str] = set()
+    for cid in cand:
         d = details.get(cid)
         if not d:
             continue
-        desc = d.get("description") or ""
-        patched = [m for m in dict.fromkeys(WORKSHOP_URL_RE.findall(desc)) if m != cid]
-        cases.append(Case(cid, d.get("title", ""), patched))
+        patched = children.get(cid) or []
+        if len(patched) < 2:
+            desc = d.get("description") or ""
+            patched = [
+                m for m in dict.fromkeys(WORKSHOP_URL_RE.findall(desc)) if m != cid
+            ]
+        if len(patched) < 2:
+            continue
+        chosen.append((cid, d, patched))
+        patched_all.update(patched)
+
+    log(
+        f"[4/5] {len(chosen)} multi-mod compatches; "
+        f"fetching {len(patched_all)} patched-mod details..."
+    )
+    mod_details = fetch_details(sorted(patched_all), "mod-meta") if patched_all else {}
+    cases: list[Case] = []
+    for cid, d, patched in chosen:
+        meta = {
+            m: {
+                "title": (mod_details.get(m) or {}).get("title", ""),
+                "time_created": int((mod_details.get(m) or {}).get("time_created", 0)),
+                "time_updated": int((mod_details.get(m) or {}).get("time_updated", 0)),
+            }
+            for m in patched
+        }
+        cases.append(
+            Case(
+                cid,
+                d.get("title", ""),
+                patched,
+                time_created=int(d.get("time_created", 0)),
+                time_updated=int(d.get("time_updated", 0)),
+                subscriptions=int(
+                    d.get("lifetime_subscriptions") or d.get("subscriptions") or 0
+                ),
+                patched_meta=meta,
+            )
+        )
+    log(f"[5/5] built {len(cases)} compatches")
     return cases
 
 
@@ -548,15 +734,29 @@ def render_report(results: list[dict]) -> str:
 
 # --------------------------------------------------------------------------- main
 def cmd_discover(args) -> int:
-    key = os.environ.get("STEAM_API_KEY")
+    key = resolve_steam_key()
     if not key:
-        print("ERROR: STEAM_API_KEY not set (env or repo-root .env).", file=sys.stderr)
+        print(
+            "ERROR: Steam API key not found (env STEAM_API_KEY, repo-root .env, "
+            "or keyring: `keyring set steam api_key`).",
+            file=sys.stderr,
+        )
         return 2
     cases = build_corpus(key, args.max_items)
-    out = {"generated_at": int(time.time()), "cases": [asdict(c) for c in cases]}
+    out = {
+        "generated_at": int(time.time()),
+        "tool_commit": tool_commit(),
+        "search_terms": SEARCH_TERMS,
+        "cases": [asdict(c) for c in cases],
+    }
     args.corpus.write_text(json.dumps(out, indent=2), encoding="utf-8")
-    paired = sum(1 for c in cases if len(c.patched) >= 2)
-    print(f"discovered {len(cases)} compatches ({paired} with >=2 patched mods) -> {args.corpus}")
+    multi = sum(1 for c in cases if len(c.patched) >= 3)
+    churned = sum(1 for c in cases if c.mod_churned)
+    print(
+        f"discovered {len(cases)} multi-mod compatches ({multi} patch >=3 mods); "
+        f"{churned} have a mod updated after the compatch (churn signal only, NOT a "
+        f"validity verdict) -> {args.corpus}"
+    )
     return 0
 
 
@@ -601,22 +801,17 @@ def cmd_run(args) -> int:
 
 def main() -> int:
     load_dotenv(REPO_ROOT)
-    default_ws = Path(
-        os.environ.get(
-            "STEAM_WORKSHOP_DIR",
-            r"G:\SteamLibrary\steamapps\workshop\content\236850",
-        )
-    )
-    default_foch = Path(
-        os.environ.get("FOCH_BIN", str(REPO_ROOT / "target" / "release" / "foch.exe"))
-    )
+    default_ws = Path(os.environ.get("STEAM_WORKSHOP_DIR", default_workshop_dir()))
+    default_foch = Path(os.environ.get("FOCH_BIN", str(default_foch_bin())))
     p = argparse.ArgumentParser(description="foch merge-quality harness")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--corpus", type=Path, default=HERE / "corpus.json")
     common.add_argument("--workshop-dir", type=Path, default=default_ws)
     common.add_argument("--foch-bin", type=Path, default=default_foch)
     common.add_argument("--results-dir", type=Path, default=HERE / "results")
-    common.add_argument("--max-items", type=int, default=300, help="discover: max compatches")
+    common.add_argument(
+        "--max-items", type=int, default=300, help="discover: max candidates per search term"
+    )
     common.add_argument("--limit", type=int, default=0, help="run: cap number of cases")
     common.add_argument("--keep", action="store_true", help="run: keep temp merge dirs")
     sub = p.add_subparsers(dest="cmd", required=True)
