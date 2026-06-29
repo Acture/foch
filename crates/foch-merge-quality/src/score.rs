@@ -345,3 +345,270 @@ pub fn score_file(
 		verdict,
 	}
 }
+
+// ------------------------------------------------------------------ classify_resolution
+
+/// Contributor relationship between two input mods (order-independent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Relationship {
+	Subset,
+	Redundant,
+	Disjoint,
+}
+
+impl Relationship {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Relationship::Subset => "subset",
+			Relationship::Redundant => "redundant",
+			Relationship::Disjoint => "disjoint",
+		}
+	}
+}
+
+/// How the human compatch resolved the overlap between two mods for one file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResVerdict {
+	Identical,
+	Union,
+	TookBase,
+	TookOverlay,
+	HandEdit,
+}
+
+impl ResVerdict {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			ResVerdict::Identical => "identical",
+			ResVerdict::Union => "union",
+			ResVerdict::TookBase => "took_base",
+			ResVerdict::TookOverlay => "took_overlay",
+			ResVerdict::HandEdit => "hand_edit",
+		}
+	}
+}
+
+/// Human resolution classification for one overlap file (output of [`classify_resolution`]).
+pub struct Resolution {
+	/// Fraction of `base`'s unique lines the compatch kept; `None` if base has no unique lines.
+	pub frac_base_kept: Option<f64>,
+	/// Fraction of `overlay`'s unique lines the compatch kept; `None` if overlay has no unique lines.
+	pub frac_overlay_kept: Option<f64>,
+	/// Jaccard similarity between A and B (rounded to 2 dp).
+	pub ab_jaccard: f64,
+	/// Order-independent contributor relationship.
+	pub relationship: Relationship,
+	/// How the human compatch resolved the overlap.
+	pub verdict: ResVerdict,
+}
+
+/// Faithful port of Python `classify_resolution`.
+///
+/// Reads `base/rel`, `overlay/rel`, `compatch/rel`; returns `None` if any file
+/// is missing or unreadable.  Fractions and jaccard are rounded to 2 dp for
+/// display; the `>= 0.5` threshold comparisons use the unrounded values.
+pub fn classify_resolution(
+	rel: &str,
+	base: &Path,
+	overlay: &Path,
+	compatch: &Path,
+) -> Option<Resolution> {
+	let h = read(&compatch.join(rel))?;
+	let a = read(&base.join(rel))?;
+	let b = read(&overlay.join(rel))?;
+
+	let hs: HashSet<String> = normalise(&h).into_iter().collect();
+	let as_: HashSet<String> = normalise(&a).into_iter().collect();
+	let bs: HashSet<String> = normalise(&b).into_iter().collect();
+
+	let a_only: HashSet<String> = as_.difference(&bs).cloned().collect();
+	let b_only: HashSet<String> = bs.difference(&as_).cloned().collect();
+
+	let inter_len = as_.intersection(&bs).count();
+	let union_len = as_.union(&bs).count();
+	let jaccard = if union_len == 0 {
+		1.0
+	} else {
+		inter_len as f64 / union_len as f64
+	};
+
+	let relationship = if a_only.is_empty() || b_only.is_empty() {
+		Relationship::Subset
+	} else if jaccard >= 0.5 {
+		Relationship::Redundant
+	} else {
+		Relationship::Disjoint
+	};
+
+	// Fraction of each side's unique lines that appear in the human compatch.
+	let fa = if a_only.is_empty() {
+		None
+	} else {
+		Some(a_only.iter().filter(|l| hs.contains(l.as_str())).count() as f64 / a_only.len() as f64)
+	};
+	let fb = if b_only.is_empty() {
+		None
+	} else {
+		Some(b_only.iter().filter(|l| hs.contains(l.as_str())).count() as f64 / b_only.len() as f64)
+	};
+
+	const T: f64 = 0.5;
+	// keep_a = fa is None OR fa >= T  (mirrors Python exactly)
+	let keep_a = fa.is_none_or(|f| f >= T);
+	let keep_b = fb.is_none_or(|f| f >= T);
+
+	let verdict = if a_only.is_empty() && b_only.is_empty() {
+		ResVerdict::Identical
+	} else if !a_only.is_empty() && !b_only.is_empty() {
+		match (keep_a, keep_b) {
+			(true, true) => ResVerdict::Union,
+			(true, false) => ResVerdict::TookBase,
+			(false, true) => ResVerdict::TookOverlay,
+			(false, false) => ResVerdict::HandEdit,
+		}
+	} else if !a_only.is_empty() {
+		// overlay adds nothing unique to a
+		if keep_a {
+			ResVerdict::TookBase
+		} else {
+			ResVerdict::HandEdit
+		}
+	} else {
+		// base adds nothing unique to b
+		if keep_b {
+			ResVerdict::TookOverlay
+		} else {
+			ResVerdict::HandEdit
+		}
+	};
+
+	let round2 = |v: f64| (v * 100.0).round() / 100.0;
+	Some(Resolution {
+		frac_base_kept: fa.map(round2),
+		frac_overlay_kept: fb.map(round2),
+		ab_jaccard: round2(jaccard),
+		relationship,
+		verdict,
+	})
+}
+
+// ------------------------------------------------------------------ tests
+
+#[cfg(test)]
+mod classify_tests {
+	use super::*;
+	use std::fs;
+	use tempfile::TempDir;
+
+	fn write_file(dir: &Path, rel: &str, content: &str) {
+		let path = dir.join(rel);
+		if let Some(p) = path.parent() {
+			fs::create_dir_all(p).unwrap();
+		}
+		fs::write(path, content).unwrap();
+	}
+
+	fn make_dirs() -> (TempDir, TempDir, TempDir) {
+		(
+			tempfile::tempdir().unwrap(),
+			tempfile::tempdir().unwrap(),
+			tempfile::tempdir().unwrap(),
+		)
+	}
+
+	#[test]
+	fn cr_identical() {
+		let (b, o, c) = make_dirs();
+		let content = "a = 1\nb = 2\n";
+		write_file(b.path(), "f.txt", content);
+		write_file(o.path(), "f.txt", content);
+		write_file(c.path(), "f.txt", content);
+		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		assert_eq!(res.verdict, ResVerdict::Identical, "verdict");
+		assert_eq!(res.relationship, Relationship::Subset, "relationship");
+		assert_eq!(res.ab_jaccard, 1.0, "jaccard");
+		assert_eq!(res.frac_base_kept, None, "fa");
+		assert_eq!(res.frac_overlay_kept, None, "fb");
+	}
+
+	#[test]
+	fn cr_union() {
+		let (b, o, c) = make_dirs();
+		write_file(b.path(), "f.txt", "common = 1\nx = 1\n");
+		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
+		// compatch keeps both unique lines
+		write_file(c.path(), "f.txt", "common = 1\nx = 1\ny = 2\n");
+		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		assert_eq!(res.verdict, ResVerdict::Union, "verdict");
+		assert_eq!(res.relationship, Relationship::Disjoint, "relationship");
+		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
+		assert_eq!(res.frac_overlay_kept, Some(1.0), "fb");
+	}
+
+	#[test]
+	fn cr_took_base() {
+		let (b, o, c) = make_dirs();
+		write_file(b.path(), "f.txt", "common = 1\nx = 1\n");
+		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
+		// compatch keeps only base's unique line
+		write_file(c.path(), "f.txt", "common = 1\nx = 1\n");
+		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		assert_eq!(res.verdict, ResVerdict::TookBase, "verdict");
+		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
+		assert_eq!(res.frac_overlay_kept, Some(0.0), "fb");
+	}
+
+	#[test]
+	fn cr_took_overlay() {
+		let (b, o, c) = make_dirs();
+		write_file(b.path(), "f.txt", "common = 1\nx = 1\n");
+		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
+		// compatch keeps only overlay's unique line
+		write_file(c.path(), "f.txt", "common = 1\ny = 2\n");
+		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		assert_eq!(res.verdict, ResVerdict::TookOverlay, "verdict");
+		assert_eq!(res.frac_base_kept, Some(0.0), "fa");
+		assert_eq!(res.frac_overlay_kept, Some(1.0), "fb");
+	}
+
+	#[test]
+	fn cr_hand_edit() {
+		let (b, o, c) = make_dirs();
+		write_file(b.path(), "f.txt", "common = 1\nx = 1\n");
+		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
+		// compatch keeps neither side's unique line
+		write_file(c.path(), "f.txt", "common = 1\nz = 3\n");
+		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		assert_eq!(res.verdict, ResVerdict::HandEdit, "verdict");
+		assert_eq!(res.frac_base_kept, Some(0.0), "fa");
+		assert_eq!(res.frac_overlay_kept, Some(0.0), "fb");
+	}
+
+	#[test]
+	fn cr_missing_file_returns_none() {
+		let (b, _o, c) = make_dirs();
+		write_file(b.path(), "f.txt", "a = 1\n");
+		// overlay file is absent → None
+		write_file(c.path(), "f.txt", "a = 1\n");
+		let res = classify_resolution("f.txt", b.path(), _o.path(), c.path());
+		assert!(res.is_none(), "expect None when a file is missing");
+	}
+
+	#[test]
+	fn cr_subset_relationship() {
+		let (b, o, c) = make_dirs();
+		// overlay is a subset of base (b_only is empty)
+		write_file(b.path(), "f.txt", "common = 1\nx = 1\n");
+		write_file(o.path(), "f.txt", "common = 1\n");
+		write_file(c.path(), "f.txt", "common = 1\nx = 1\n");
+		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		assert_eq!(res.relationship, Relationship::Subset, "relationship");
+		assert_eq!(
+			res.verdict,
+			ResVerdict::TookBase,
+			"verdict (subset, kept base unique)"
+		);
+		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
+		assert_eq!(res.frac_overlay_kept, None, "fb (no overlay unique lines)");
+	}
+}
