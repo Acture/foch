@@ -1,0 +1,5228 @@
+guiTypes = {
+
+	windowType = {
+		name = "countrycourtview"
+		#position = { x=0 y=140 }	
+		position = { x=-600 y=140 }	
+		show_position = { x=0 y =140 }
+		hide_position = { x=-600 y =140 }	
+		animation_type = "decelerated"
+		animation_time = 300	
+		size = { x=1024 y=100 }
+		moveable = 0
+		Orientation = "UPPER_LEFT"
+		upsound = tab_court
+		
+		iconType =
+		{
+			name ="background"
+			spriteType = "GFX_court_view_bg"
+			position = { x= -7 y = -10 }
+			Orientation = "UPPER_LEFT"
+
+		}	
+
+		iconType =
+		{
+			name ="heir_banner_green"
+			spriteType = "GFX_court_banner_green"
+			position = { x= 10 y = 178 }
+			Orientation = "UPPER_LEFT"
+		}		
+		
+		iconType =
+		{
+			name ="queen_banner_green"
+			spriteType = "GFX_court_banner_green"
+			position = { x= 10 y = 241 }
+			Orientation = "UPPER_LEFT"
+		}		
+		
+		guiButtonType = {
+			name = "close_button"
+			scripted = yes
+			position = { x = 514 y = -1 }
+			quadTextureSprite ="GFX_closebutton2"	
+			shortcut = "ESCAPE"
+			Orientation = "UPPER_LEFT"
+			clicksound = close_window
+		}		
+
+		instantTextBoxType = {
+			name = "window_title"
+			position = { x = 15 y = 78 }
+			textureFile = ""
+			font = "vic_29s"
+			borderSize = {x = 4 y = 4}	
+			text = "CATEGORY_COURT"	
+			maxWidth = 512
+			maxHeight = 32
+			format = centre
+		}
+		
+		
+		### ------- Ruler -------	
+		
+		iconType =
+		{
+			name ="monarch_gender"
+			spriteType = "GFX_gender_icon"
+			position = { x= 16 y = 120 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name = "abdicate_ruler_button"
+			position = { x= 486	y = 139 }
+			quadTextureSprite ="GFX_abdicate_button"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			clicksound = back_click
+		}			
+
+		guiButtonType = {
+			name = "extend_regency_button"
+			position = { x= 440	y = 139 }
+			quadTextureSprite ="GFX_abdicate_button"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			clicksound = back_click
+		}			
+
+		instantTextBoxType = {
+			name = "monarch_title"
+			position = { x = 35 y = 118 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "King Awesome"	
+			maxWidth = 400
+			maxHeight = 32
+			format = left
+			fixedsize = yes
+		}
+		
+		instantTextBoxType = {
+			name = "monarch_ruler_age"
+			position = { x = 450 y = 118 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}
+			text = ""
+			maxWidth = 60
+			maxHeight = 16
+			format = right
+			fixedsize = yes
+		}
+
+		
+		instantTextBoxType = {
+			name = "monarch_adm_value"
+			position = { x = 28 y = 148 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}	
+
+		iconType =
+		{
+			name ="monarch_adm_icon"
+			spriteType = "GFX_icon_powers_administrative"
+			position = { x= 14 y = 146 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_ruler"
+		}
+		
+		instantTextBoxType = {
+			name = "monarch_dip_value"
+			position = { x = 78 y = 148 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}
+
+		iconType =
+		{
+			name ="monarch_dip_icon"
+			spriteType = "GFX_icon_powers_diplomatic"
+			position = { x= 64 y = 146 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_ruler"
+		}
+
+		instantTextBoxType = {
+			name = "monarch_mil_value"
+			position = { x = 128 y = 148 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}
+
+		iconType =
+		{
+			name ="monarch_mil_icon"
+			spriteType = "GFX_icon_powers_military"
+			position = { x= 114 y = 146 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_ruler"
+		}
+
+		listboxType = 
+		{
+			name ="monarch_ruler_personality_list"
+			position = { x=170 y =138}
+			backGround=""
+			size = { x=250 y =300}
+			Orientation = "UPPER_LEFT"
+			horizontal = 1
+			spacing = 2
+			scrollbartype = "standardlistbox_slider"
+			borderSize = {x = 0 y = 0}
+		}
+
+		instantTextBoxType = {
+			name = "election_info"
+			position = { x = 80 y = 244 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 400
+			maxHeight = 16
+			format = centre
+		}			
+
+		### Heir ###
+		
+		iconType =
+		{
+			name ="heir_gender"
+			spriteType = "GFX_gender_icon"
+			position = { x= 16 y = 183 }
+			Orientation = "UPPER_LEFT"
+		}
+
+		instantTextBoxType = {
+			name = "monarch_heir_name"
+			position = { x = 35 y = 181 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 400
+			maxHeight = 32
+			format = left
+			fixedsize = yes
+		}		
+		
+		instantTextBoxType = {
+			name = "monarch_heir_age"
+			position = { x = 450 y = 181 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}
+			text = ""
+			maxWidth = 60
+			maxHeight = 16
+			format = right
+			fixedsize = yes
+		}
+
+		instantTextBoxType = {
+			name = "monarch_heir_claim"
+			position = { x = 240 y = 210 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 240
+			maxHeight = 16
+			format = right
+			fixedsize = yes
+		}
+
+		instantTextBoxType = {
+			name = "monarch_heir_adm_value"
+			position = { x = 28 y = 211 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}	
+
+		iconType =
+		{
+			name ="monarch_heir_adm_icon"
+			spriteType = "GFX_icon_powers_administrative"
+			position = { x= 14 y = 209 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_heir"
+		}
+		
+		instantTextBoxType = {
+			name = "monarch_heir_dip_value"
+			position = { x = 78 y = 211 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}
+
+		iconType =
+		{
+			name ="monarch_heir_dip_icon"
+			spriteType = "GFX_icon_powers_diplomatic"
+			position = { x= 64 y = 209 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_heir"
+		}
+
+		instantTextBoxType = {
+			name = "monarch_heir_mil_value"
+			position = { x = 128 y = 211 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}
+
+		iconType =
+		{
+			name ="monarch_heir_mil_icon"
+			spriteType = "GFX_icon_powers_military"
+			position = { x= 114 y = 209 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_heir"
+		}
+
+		iconType =
+		{
+			name = "monarch_heir_crown_icon"
+			spriteType = "GFX_monarch_heir_crown_icon"
+			position = { x = 430 y = 184 }
+			Orientation = "UPPER_LEFT"
+
+		}
+
+		listboxType = 
+		{
+			name ="monarch_heir_personality_list"
+			position = { x=170 y =203}
+			backGround=""
+			size = { x=220 y =100}
+			Orientation = "UPPER_LEFT"
+			horizontal = 0
+			spacing = 2
+			scrollbartype = "standardlistbox_slider"
+			borderSize = {x = 0 y = 0}
+		}
+				
+		guiButtonType = {
+			name = "support_heir_button"
+			position = { x= 490	y = 207 }
+			quadTextureSprite ="GFX_support_heir_button"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			
+			clicksound = back_click
+		}
+		guiButtonType = {
+			name = "disinherit_button"
+			position = { x= 486	y = 203 }
+			quadTextureSprite ="GFX_disinherit_button"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			clicksound = back_click
+		}	
+		
+		guiButtonType = {
+			name = "assign_heir_button"
+			position = { x= 486	y = 203 }
+			quadTextureSprite ="GFX_assign_heir_button"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			clicksound = back_click
+		}	
+
+		### Queen ###
+		
+		iconType =
+		{
+			name ="queen_gender"
+			spriteType = "GFX_gender_icon"
+			position = { x= 16 y = 246 }
+			Orientation = "UPPER_LEFT"
+		}
+
+		instantTextBoxType = {
+			name = "monarch_queen_name"
+			position = { x = 35 y = 244 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 400
+			maxHeight = 32
+			format = left
+			fixedsize = yes
+		}		
+		
+		instantTextBoxType = {
+			name = "monarch_queen_age"
+			position = { x = 450 y = 244 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}
+			text = ""
+			maxWidth = 60
+			maxHeight = 16
+			format = right
+			fixedsize = yes
+		}
+
+		instantTextBoxType = {
+			name = "monarch_queen_adm_value"
+			position = { x = 28 y = 274 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}	
+
+		iconType =
+		{
+			name ="monarch_queen_adm_icon"
+			spriteType = "GFX_icon_powers_administrative"
+			position = { x= 14 y = 272 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_heir"
+		}
+		
+		instantTextBoxType = {
+			name = "monarch_queen_dip_value"
+			position = { x = 78 y = 274 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}
+
+		iconType =
+		{
+			name ="monarch_queen_dip_icon"
+			spriteType = "GFX_icon_powers_diplomatic"
+			position = { x= 64 y = 272 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_heir"
+		}
+
+		instantTextBoxType = {
+			name = "monarch_queen_mil_value"
+			position = { x = 128 y = 274 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "?"	
+			maxWidth = 32
+			maxHeight = 16
+			format = centre
+		}
+
+		iconType =
+		{
+			name ="monarch_queen_mil_icon"
+			spriteType = "GFX_icon_powers_military"
+			position = { x= 114 y = 272 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_heir"
+		}
+
+		iconType =
+		{
+			name = "monarch_queen_crown_icon"
+			spriteType = "GFX_monarch_heir_crown_icon"
+			position = { x = 430 y = 247 }
+			Orientation = "UPPER_LEFT"
+
+		}
+
+		listboxType = 
+		{
+			name ="monarch_queen_personality_list"
+			position = { x=170 y =265}
+			backGround=""
+			size = { x=220 y =100}
+			Orientation = "UPPER_LEFT"
+			horizontal = 0
+			spacing = 2
+			scrollbartype = "standardlistbox_slider"
+			borderSize = {x = 0 y = 0}
+		}
+
+		### -----------
+		
+		listboxType = {
+			name = "abilities_listbox"
+			backGround = ""
+			position = { x=26 y=312 }
+			size = { x=345 y=420 }
+			Orientation = "UPPER_LEFT"
+			horizontal = 0
+			spacing = 2.5
+			scrollbartype = "standardlistbox_slider"
+			borderSize = {x = 0 y = 0}
+			alwaystransparent = yes
+		}
+
+		guiButtonType = {
+			name = "national_focus_ADM"
+			position = { x = 400	y = 315 }
+			quadTextureSprite ="GFX_icon_national_focus_adm"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			
+			clicksound = back_click
+		}			
+		
+		iconType = 
+		{
+			name ="icon_ADM"
+			spriteType = "GFX_icon_powers_administrative"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 447 y = 320 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_adm"
+		}
+		
+		guiButtonType = {
+			name = "national_focus_DIP"
+			position = { x= 400	y = 402 }
+			quadTextureSprite ="GFX_icon_national_focus_dip"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			
+			clicksound = back_click
+		}			
+		
+		iconType = 
+		{
+			name ="icon_DIP"
+			spriteType = "GFX_icon_powers_diplomatic"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 447 y = 407 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_dip"
+		}
+		
+		guiButtonType = {
+			name = "national_focus_MIL"
+			position = { x= 400	y = 489 }
+			quadTextureSprite ="GFX_icon_national_focus_mil"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+			
+			clicksound = back_click
+		}		
+		
+		iconType = 
+		{
+			name ="icon_MIL"
+			spriteType = "GFX_icon_powers_military"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 447 y = 494 }
+			Orientation = "UPPER_LEFT"
+			hint_tag = "hint_mil"
+		}
+
+		### custom
+		
+		###scuffed level 4 and 5 refresh
+		
+		iconType = {
+			name = "advisor_ability_skill_adm_scuff_coverup"
+			spriteType = "GFX_build_navy_bg"
+			scripted = yes
+			position = { x= 136 y = 315 }
+			scale = 0.048
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "advisor_ability_skill_adm_scuff"
+			scripted = yes
+			position = { x= 126 y = 312 }
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		instantTextBoxType = {
+			name = "advisor_ability_skill_adm_scuff_alt"
+			scripted = yes
+			position = { x= 126 y = 312 }
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_promote_adm_blocker"
+			scripted = yes
+			quadTextureSprite= "GFX_promote_advisor"
+			position = { x= 325 y = 311 }
+			Orientation = "UPPER_LEFT"
+		}
+		#
+		
+		iconType = {
+			name = "advisor_ability_skill_dip_scuff_coverup"
+			spriteType = "GFX_advisor_cover_light"
+			scripted = yes
+			position = { x= 133 y = 397 }
+			#scale = 0.048
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "advisor_ability_skill_dip_scuff"
+			scripted = yes
+			position = { x= 126 y = 398 }
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		instantTextBoxType = {
+			name = "advisor_ability_skill_dip_scuff_alt"
+			scripted = yes
+			position = { x= 126 y = 398 }
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_promote_dip_blocker"
+			scripted = yes
+			quadTextureSprite= "GFX_promote_advisor"
+			position = { x= 325 y = 397 }
+			Orientation = "UPPER_LEFT"
+		}
+		#
+		
+		iconType = {
+			name = "advisor_ability_skill_mil_scuff_coverup"
+			spriteType = "GFX_build_navy_bg"
+			scripted = yes
+			position = { x= 136 y = 487 }
+			scale = 0.048
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "advisor_ability_skill_mil_scuff"
+			scripted = yes
+			position = { x= 126 y = 484 }
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		instantTextBoxType = {
+			name = "advisor_ability_skill_mil_scuff_alt"
+			scripted = yes
+			position = { x= 126 y = 484 }
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_promote_mil_blocker"
+			scripted = yes
+			quadTextureSprite= "GFX_promote_advisor"
+			position = { x= 325 y = 483 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		###
+		
+		guiButtonType = {
+			name ="free_advisor_choice_button_adm"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_noAdvisorType"
+			position = { x= 29 y = 315 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="free_advisor_choice_button_dip"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_noAdvisorType"
+			position = { x= 29 y = 401 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="free_advisor_choice_button_mil"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_noAdvisorType"
+			position = { x= 29 y = 487 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="free_advisor_choice_button_toggle_adm"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_court_toggle"
+			position = { x= 8 y = 317 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="free_advisor_choice_button_toggle_adm_glow"
+			spriteType = "GFX_advisor_court_toggle_glow"
+			scripted = yes
+			position = { x= 5 y = 316 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.89
+		}
+		
+		guiButtonType = {
+			name ="free_advisor_choice_button_toggle_dip"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_court_toggle"
+			position = { x= 8 y = 403 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="free_advisor_choice_button_toggle_dip_glow"
+			spriteType = "GFX_advisor_court_toggle_glow"
+			scripted = yes
+			position = { x= 5 y = 402 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.89
+		}
+		
+		guiButtonType = {
+			name ="free_advisor_choice_button_toggle_mil"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_court_toggle"
+			position = { x= 8 y = 489 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="free_advisor_choice_button_toggle_mil_glow"
+			spriteType = "GFX_advisor_court_toggle_glow"
+			scripted = yes
+			position = { x= 5 y = 488 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.89
+		}
+		
+		iconType = {
+			name ="advisor_refresh_adm_blocker_icon"
+			spriteType = "GFX_dismiss_leader"
+			scripted = yes
+			position = { x= 352 y = 311 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_refresh_adm_blocker"
+			scripted = yes
+			quadTextureSprite= "GFX_dismiss_leader"
+			position = { x= 352 y = 311 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_refresh_adm"
+			scripted = yes
+			quadTextureSprite= "GFX_refresh_advisor"
+			position = { x= 352 y = 339 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="advisor_refresh_adm_glow"
+			spriteType = "GFX_unitpanel_button_large_glow"
+			scripted = yes
+			position = { x= 351 y = 338 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.64
+		}
+		
+		iconType = {
+			name ="advisor_refresh_dip_blocker_icon"
+			spriteType = "GFX_dismiss_leader"
+			scripted = yes
+			position = { x= 352 y = 397 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_refresh_dip_blocker"
+			scripted = yes
+			quadTextureSprite= "GFX_dismiss_leader"
+			position = { x= 352 y = 397 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_refresh_dip"
+			scripted = yes
+			quadTextureSprite= "GFX_refresh_advisor"
+			position = { x= 352 y = 425 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="advisor_refresh_dip_glow"
+			spriteType = "GFX_unitpanel_button_large_glow"
+			scripted = yes
+			position = { x= 351 y = 424 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.64
+		}
+		
+		iconType = {
+			name ="advisor_refresh_mil_blocker_icon"
+			spriteType = "GFX_dismiss_leader"
+			scripted = yes
+			position = { x= 352 y = 483 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_refresh_mil_blocker"
+			scripted = yes
+			quadTextureSprite= "GFX_dismiss_leader"
+			position = { x= 352 y = 483 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name ="advisor_refresh_mil"
+			scripted = yes
+			quadTextureSprite= "GFX_refresh_advisor"
+			position = { x= 352 y = 511 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="advisor_refresh_mil_glow"
+			spriteType = "GFX_unitpanel_button_large_glow"
+			scripted = yes
+			position = { x= 351 y = 510 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.64
+		}
+		
+		iconType = {
+			name ="free_advisor_choice_bg"
+			scripted = yes
+			if_resolution = {
+				max_height = 867
+				spriteType = "GFX_court_view_select_advisor_bg"#"GFX_court_view_bg"
+			}
+			if_resolution = {
+				min_height = 868
+				max_height = 1047
+				spriteType = "GFX_court_view_select_advisor_large_bg"#"GFX_court_view_bg"
+			}
+			if_resolution = {
+				min_height = 1048
+				spriteType = "GFX_court_view_select_advisor_huge_bg"#"GFX_court_view_bg"
+			}
+			
+			position = { x= -7 y = -10 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		## pseudo listbox lol
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_close"
+			scripted = yes
+			quadTextureSprite= "GFX_standard_button_224"
+			position = { x= 165 y = 128 }
+			buttonText = "choice_advisor_advisor_button_close"
+			buttonFont = "vic_18"
+			Orientation = "UPPER_LEFT"
+		}
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_philosopher"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 160 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_philosopher"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_philosopher"
+			position = { x= 70 y = 167 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_philosopher"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 169 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_philosopher"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 173 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_philosopher"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 194 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_philosopher"
+			scripted = yes
+			position = { x = 133 y = 170 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_philosopher"
+			scripted = yes
+			position = { x = 128 y = 188 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_philosopher"
+			scripted = yes
+			position = { x = 133 y = 204 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_philosopher"
+			scripted = yes
+			spriteType = "GFX_idea_prestige"
+			position = { x = 45 y = 218 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_philosopher"
+			scripted = yes
+			position = { x = 71 y = 224 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_natural_scientist"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 160 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_natural_scientist"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_natural_scientist"
+			position = { x= 313 y = 167 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_natural_scientist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 169 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_natural_scientist"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 173 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_natural_scientist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 194 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_natural_scientist"
+			scripted = yes
+			position = { x = 376 y = 170 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_natural_scientist"
+			scripted = yes
+			position = { x = 371 y = 188 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_natural_scientist"
+			scripted = yes
+			position = { x = 376 y = 204 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_natural_scientist"
+			scripted = yes
+			spriteType = "GFX_idea_production_efficiency"
+			position = { x = 288 y = 218 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_natural_scientist"
+			scripted = yes
+			position = { x = 314 y = 224 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_artist"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 236 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_artist"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_artist"
+			position = { x= 70 y = 243 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_artist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 245 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_artist"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 249 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_artist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 270 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_artist"
+			scripted = yes
+			position = { x = 133 y = 246 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_artist"
+			scripted = yes
+			position = { x = 128 y = 264 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_artist"
+			scripted = yes
+			position = { x = 133 y = 280 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_artist"
+			scripted = yes
+			spriteType = "GFX_idea_stability_cost_modifier"
+			position = { x = 45 y = 294 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_artist"
+			scripted = yes
+			position = { x = 71 y = 300 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_treasurer"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 236 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_treasurer"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_treasurer"
+			position = { x= 313 y = 243 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_treasurer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 245 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_treasurer"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 249 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_treasurer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 270 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_treasurer"
+			scripted = yes
+			position = { x = 376 y = 246 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_treasurer"
+			scripted = yes
+			position = { x = 371 y = 264 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_treasurer"
+			scripted = yes
+			position = { x = 376 y = 280 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_treasurer"
+			scripted = yes
+			spriteType = "GFX_idea_global_tax_modifier"
+			position = { x = 288 y = 294 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_treasurer"
+			scripted = yes
+			position = { x = 314 y = 300 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_theologian"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 312 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_theologian"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_theologian"
+			position = { x= 70 y = 319 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_theologian"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 321 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_theologian"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 325 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_theologian"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 346 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_theologian"
+			scripted = yes
+			position = { x = 133 y = 322 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_theologian"
+			scripted = yes
+			position = { x = 128 y = 340 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_theologian"
+			scripted = yes
+			position = { x = 133 y = 356 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_theologian"
+			scripted = yes
+			spriteType = "GFX_idea_global_unrest"
+			position = { x = 45 y = 370 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_theologian"
+			scripted = yes
+			position = { x = 71 y = 376 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_master_of_mint"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 312 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_master_of_mint"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_master_of_mint"
+			position = { x= 313 y = 319 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_master_of_mint"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 321 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_master_of_mint"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 325 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_master_of_mint"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 346 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_master_of_mint"
+			scripted = yes
+			position = { x = 376 y = 322 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_master_of_mint"
+			scripted = yes
+			position = { x = 371 y = 340 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_master_of_mint"
+			scripted = yes
+			position = { x = 376 y = 356 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_master_of_mint"
+			scripted = yes
+			spriteType = "GFX_idea_inflation_reduction"
+			position = { x = 288 y = 370 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_master_of_mint"
+			scripted = yes
+			position = { x = 314 y = 376 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_inquisitor"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 388 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_inquisitor"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_inquisitor"
+			position = { x= 70 y = 395 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_inquisitor"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 397 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_inquisitor"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 401 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_inquisitor"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 422 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_inquisitor"
+			scripted = yes
+			position = { x = 133 y = 398 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_inquisitor"
+			scripted = yes
+			position = { x = 128 y = 416 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_inquisitor"
+			scripted = yes
+			position = { x = 133 y = 432 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_inquisitor"
+			scripted = yes
+			spriteType = "GFX_idea_global_missionary_strength"
+			position = { x = 45 y = 446 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_inquisitor"
+			scripted = yes
+			position = { x = 71 y = 452 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_me_reformist"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 388 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_me_reformist"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_me_reformist"
+			position = { x= 313 y = 395 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_me_reformist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 397 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_me_reformist"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 401 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_me_reformist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 422 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_me_reformist"
+			scripted = yes
+			position = { x = 376 y = 398 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_me_reformist"
+			scripted = yes
+			position = { x = 371 y = 416 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_me_reformist"
+			scripted = yes
+			position = { x = 376 y = 432 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_me_reformist"
+			scripted = yes
+			spriteType = "GFX_idea_tolerance_heretic"
+			position = { x = 288 y = 446 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_me_reformist"
+			scripted = yes
+			position = { x = 314 y = 452 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_me_lyricist"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 464 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_me_lyricist"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_me_lyricist"
+			position = { x= 70 y = 471 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_me_lyricist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 473 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_me_lyricist"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 477 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_me_lyricist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 498 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_me_lyricist"
+			scripted = yes
+			position = { x = 133 y = 474 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_me_lyricist"
+			scripted = yes
+			position = { x = 128 y = 492 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_me_lyricist"
+			scripted = yes
+			position = { x = 133 y = 508 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_me_lyricist"
+			scripted = yes
+			spriteType = "GFX_idea_country_admin_power"
+			position = { x = 45 y = 522 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_me_lyricist"
+			scripted = yes
+			position = { x = 71 y = 528 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_GRA_polymath"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 464 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_GRA_polymath"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_GRA_polymath"
+			position = { x= 313 y = 471 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_GRA_polymath"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 473 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_GRA_polymath"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 477 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_GRA_polymath"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 498 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_GRA_polymath"
+			scripted = yes
+			position = { x = 376 y = 474 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_GRA_polymath"
+			scripted = yes
+			position = { x = 371 y = 492 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_GRA_polymath"
+			scripted = yes
+			position = { x = 376 y = 508 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_GRA_polymath"
+			scripted = yes
+			spriteType = "GFX_idea_technology_cost"
+			position = { x = 288 y = 522 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_GRA_polymath"
+			scripted = yes
+			position = { x = 314 y = 528 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		if_resolution = {
+			min_height = 868
+			iconType =
+			{
+				name ="choice_advisor_banner_sufi_scholar_advisor"
+				scripted = yes
+				spriteType = "GFX_choice_advisor_banner"
+				position = { x= 43 y = 540 }
+				Orientation = "UPPER_LEFT"
+			}
+				
+			guiButtonType =
+			{
+				name ="choice_advisor_advisor_button_sufi_scholar_advisor"
+				scripted = yes
+				quadTextureSprite= "GFX_advisor_sufi_scholar_advisor"
+				position = { x= 70 y = 547 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.8
+			}
+			
+			iconType ={
+				name ="choice_advisor_advisor_indicator_religion_sufi_scholar_advisor"
+				scripted = yes
+				spriteType = "GFX_advisor_indicator_religion"
+				position = { x= 43 y = 549 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.8
+			}
+
+			iconType ={
+				name ="choice_advisor_advisor_indicator_religion_icon_sufi_scholar_advisor"
+				scripted = yes
+				spriteType = "GFX_province_view_religion"
+				position = { x= 47 y = 553 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.7
+				alwaystransparent = yes
+				frame = 17
+			}
+
+			iconType ={
+				name ="choice_advisor_advisor_indicator_culture_sufi_scholar_advisor"
+				scripted = yes
+				spriteType = "GFX_advisor_indicator_culture"
+				position = { x= 43 y = 574 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.8
+			}		
+
+			instantTextBoxType = {
+				name = "choice_advisor_title_sufi_scholar_advisor"
+				scripted = yes
+				position = { x = 133 y = 550 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 180
+				maxHeight = 16	
+				Orientation = "UPPER_LEFT"
+				fixedsize = yes	
+			}
+			
+			instantTextBoxType = {
+				name = "choice_advisor_skill_value_sufi_scholar_advisor"
+				scripted = yes
+				position = { x = 128 y = 568 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 60
+				maxHeight = 16	
+				Orientation = "UPPER_LEFT"
+				fixedsize = yes	
+				format = left
+			}
+			
+			instantTextBoxType = {
+				name = "choice_advisor_purchase_cost_sufi_scholar_advisor"
+				scripted = yes
+				position = { x = 133 y = 584 }#position = { x = 142 y = 204 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 160
+				maxHeight = 32	
+				Orientation = "UPPER_LEFT"
+			}
+			
+			iconType = {
+				name ="choice_advisor_effect_icon_sufi_scholar_advisor"
+				scripted = yes
+				spriteType = "GFX_idea_adm_tech_cost_modifier"
+				position = { x = 45 y = 598 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.4
+			}
+			
+			instantTextBoxType = {
+				name = "choice_advisor_effect_sufi_scholar_advisor"
+				scripted = yes
+				position = { x = 71 y = 601 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 240
+				maxHeight = 32	
+				Orientation = "UPPER_LEFT"
+			}
+		}
+		
+		### end
+		
+		if_resolution = {
+			min_height = 868
+			iconType =
+			{
+				name ="choice_advisor_banner_ME_land_reclaimer"
+				scripted = yes
+				spriteType = "GFX_choice_advisor_banner"
+				position = { x= 286 y = 540 }
+				Orientation = "UPPER_LEFT"
+			}
+				
+			guiButtonType =
+			{
+				name ="choice_advisor_advisor_button_ME_land_reclaimer"
+				scripted = yes
+				quadTextureSprite= "GFX_advisor_natural_scientist"
+				position = { x= 313 y = 547 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.8
+			}
+			
+			iconType ={
+				name ="choice_advisor_advisor_indicator_religion_ME_land_reclaimer"
+				scripted = yes
+				spriteType = "GFX_advisor_indicator_religion"
+				position = { x= 286 y = 549 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.8
+			}
+
+			iconType ={
+				name ="choice_advisor_advisor_indicator_religion_icon_ME_land_reclaimer"
+				scripted = yes
+				spriteType = "GFX_province_view_religion"
+				position = { x= 290 y = 553 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.7
+				alwaystransparent = yes
+				frame = 17
+			}
+
+			iconType ={
+				name ="choice_advisor_advisor_indicator_culture_ME_land_reclaimer"
+				scripted = yes
+				spriteType = "GFX_advisor_indicator_culture"
+				position = { x= 286 y = 574 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.8
+			}		
+
+			instantTextBoxType = {
+				name = "choice_advisor_title_ME_land_reclaimer"
+				scripted = yes
+				position = { x = 376 y = 550 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 180
+				maxHeight = 16	
+				Orientation = "UPPER_LEFT"
+				fixedsize = yes	
+			}
+			
+			instantTextBoxType = {
+				name = "choice_advisor_skill_value_ME_land_reclaimer"
+				scripted = yes
+				position = { x = 371 y = 568 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 60
+				maxHeight = 16	
+				Orientation = "UPPER_LEFT"
+				fixedsize = yes	
+				format = left
+			}
+			
+			instantTextBoxType = {
+				name = "choice_advisor_purchase_cost_ME_land_reclaimer"
+				scripted = yes
+				position = { x = 376 y = 584 }#position = { x = 142 y = 204 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 160
+				maxHeight = 32	
+				Orientation = "UPPER_LEFT"
+			}
+			
+			iconType = {
+				name ="choice_advisor_effect_icon_ME_land_reclaimer"
+				scripted = yes
+				spriteType = "GFX_idea_development_cost"
+				position = { x = 288 y = 598 }
+				Orientation = "UPPER_LEFT"
+				scale = 0.4
+			}
+			
+			instantTextBoxType = {
+				name = "choice_advisor_effect_ME_land_reclaimer"
+				scripted = yes
+				position = { x = 314 y = 601 }
+				format = left
+				textureFile = ""
+				font = "vic_18"
+				borderSize = {x = 0 y = 0}
+				maxWidth = 240
+				maxHeight = 32	
+				Orientation = "UPPER_LEFT"
+			}
+		}
+		
+		###DIP THINGS
+		
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_statesman"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 160 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_statesman"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_statesman"
+			position = { x= 70 y = 167 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_statesman"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 169 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_statesman"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 173 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_statesman"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 194 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_statesman"
+			scripted = yes
+			position = { x = 133 y = 170 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_statesman"
+			scripted = yes
+			position = { x = 128 y = 188 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_statesman"
+			scripted = yes
+			position = { x = 133 y = 204 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_statesman"
+			scripted = yes
+			spriteType = "GFX_idea_diplomatic_reputation"
+			position = { x = 45 y = 218 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_statesman"
+			scripted = yes
+			position = { x = 71 y = 224 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_naval_reformer"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 160 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_naval_reformer"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_naval_reformer"
+			position = { x= 313 y = 167 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_naval_reformer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 169 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_naval_reformer"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 173 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_naval_reformer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 194 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_naval_reformer"
+			scripted = yes
+			position = { x = 376 y = 170 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_naval_reformer"
+			scripted = yes
+			position = { x = 371 y = 188 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_naval_reformer"
+			scripted = yes
+			position = { x = 376 y = 204 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_naval_reformer"
+			scripted = yes
+			spriteType = "GFX_idea_naval_morale"
+			position = { x = 288 y = 218 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_naval_reformer"
+			scripted = yes
+			position = { x = 314 y = 224 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_trader"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 236 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_trader"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_trader"
+			position = { x= 70 y = 243 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_trader"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 245 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_trader"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 249 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_trader"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 270 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_trader"
+			scripted = yes
+			position = { x = 133 y = 246 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_trader"
+			scripted = yes
+			position = { x = 128 y = 264 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_trader"
+			scripted = yes
+			position = { x = 133 y = 280 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_trader"
+			scripted = yes
+			spriteType = "GFX_idea_trade_efficiency"
+			position = { x = 45 y = 294 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_trader"
+			scripted = yes
+			position = { x = 71 y = 300 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_spymaster"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 236 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_spymaster"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_spymaster"
+			position = { x= 313 y = 243 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_spymaster"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 245 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_spymaster"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 249 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_spymaster"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 270 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_spymaster"
+			scripted = yes
+			position = { x = 376 y = 246 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_spymaster"
+			scripted = yes
+			position = { x = 371 y = 264 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_spymaster"
+			scripted = yes
+			position = { x = 376 y = 280 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_spymaster"
+			scripted = yes
+			spriteType = "GFX_idea_spy_offence"
+			position = { x = 288 y = 294 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_spymaster"
+			scripted = yes
+			position = { x = 314 y = 300 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_diplomat"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 312 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_diplomat"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_diplomat"
+			position = { x= 70 y = 319 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_diplomat"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 321 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_diplomat"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 325 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_diplomat"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 346 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_diplomat"
+			scripted = yes
+			position = { x = 133 y = 322 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_diplomat"
+			scripted = yes
+			position = { x = 128 y = 340 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_diplomat"
+			scripted = yes
+			position = { x = 133 y = 356 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_diplomat"
+			scripted = yes
+			spriteType = "GFX_idea_improve_relation_modifier"
+			position = { x = 45 y = 370 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_diplomat"
+			scripted = yes
+			position = { x = 71 y = 376 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 312 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_colonial_governor"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_colonial_governor"
+			position = { x= 313 y = 319 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 321 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 325 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 346 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_colonial_governor"
+			scripted = yes
+			position = { x = 376 y = 322 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_colonial_governor"
+			scripted = yes
+			position = { x = 371 y = 340 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_colonial_governor"
+			scripted = yes
+			position = { x = 376 y = 356 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_idea_global_tariffs"
+			position = { x = 288 y = 370 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_colonial_governor"
+			scripted = yes
+			position = { x = 314 y = 376 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_navigator"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 388 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_navigator"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_navigator"
+			position = { x= 70 y = 395 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_navigator"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 397 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_navigator"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 401 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_navigator"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 422 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_navigator"
+			scripted = yes
+			position = { x = 133 y = 398 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_navigator"
+			scripted = yes
+			position = { x = 128 y = 416 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_navigator"
+			scripted = yes
+			position = { x = 133 y = 432 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_navigator"
+			scripted = yes
+			spriteType = "GFX_idea_range"
+			position = { x = 45 y = 446 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_navigator"
+			scripted = yes
+			position = { x = 71 y = 452 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_travelling_merchant"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 388 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_travelling_merchant"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_travelling_merchant"
+			position = { x= 313 y = 395 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_travelling_merchant"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 397 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_travelling_merchant"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 401 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_travelling_merchant"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 422 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_travelling_merchant"
+			scripted = yes
+			position = { x = 376 y = 398 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_travelling_merchant"
+			scripted = yes
+			position = { x = 371 y = 416 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_travelling_merchant"
+			scripted = yes
+			position = { x = 376 y = 432 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_travelling_merchant"
+			scripted = yes
+			spriteType = "GFX_idea_global_trade_power"
+			position = { x = 288 y = 446 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_travelling_merchant"
+			scripted = yes
+			position = { x = 314 y = 452 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_ME_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 464 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_ME_colonial_governor"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_ME_colonial_governor"
+			position = { x= 70 y = 471 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_ME_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 473 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_ME_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 477 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_ME_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 498 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_ME_colonial_governor"
+			scripted = yes
+			position = { x = 133 y = 474 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_ME_colonial_governor"
+			scripted = yes
+			position = { x = 128 y = 492 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_ME_colonial_governor"
+			scripted = yes
+			position = { x = 133 y = 508 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_ME_colonial_governor"
+			scripted = yes
+			spriteType = "GFX_idea_global_colonial_growth"
+			position = { x = 45 y = 522 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_ME_colonial_governor"
+			scripted = yes
+			position = { x = 71 y = 528 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_ME_economic_mercantilist"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 464 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_ME_economic_mercantilist"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_ME_economic_mercantilist"
+			position = { x= 313 y = 471 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_ME_economic_mercantilist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 473 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_ME_economic_mercantilist"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 477 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_ME_economic_mercantilist"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 498 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_ME_economic_mercantilist"
+			scripted = yes
+			position = { x = 376 y = 474 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_ME_economic_mercantilist"
+			scripted = yes
+			position = { x = 371 y = 492 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_ME_economic_mercantilist"
+			scripted = yes
+			position = { x = 376 y = 508 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_ME_economic_mercantilist"
+			scripted = yes
+			spriteType = "GFX_idea_build_cost"
+			position = { x = 288 y = 522 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_ME_economic_mercantilist"
+			scripted = yes
+			position = { x = 314 y = 528 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		
+		#MIL THINGS
+		
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_army_reformer"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 160 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_army_reformer"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_army_reformer"
+			position = { x= 70 y = 167 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_army_reformer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 169 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_army_reformer"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 173 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_army_reformer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 194 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_army_reformer"
+			scripted = yes
+			position = { x = 133 y = 170 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_army_reformer"
+			scripted = yes
+			position = { x = 128 y = 188 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_army_reformer"
+			scripted = yes
+			position = { x = 133 y = 204 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_army_reformer"
+			scripted = yes
+			spriteType = "GFX_idea_land_morale"
+			position = { x = 45 y = 218 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_army_reformer"
+			scripted = yes
+			position = { x = 71 y = 224 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_army_organiser"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 160 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_army_organiser"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_army_organiser"
+			position = { x= 313 y = 167 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_army_organiser"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 169 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_army_organiser"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 173 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_army_organiser"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 194 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_army_organiser"
+			scripted = yes
+			position = { x = 376 y = 170 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_army_organiser"
+			scripted = yes
+			position = { x = 371 y = 188 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_army_organiser"
+			scripted = yes
+			position = { x = 376 y = 204 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_army_organiser"
+			scripted = yes
+			spriteType = "GFX_idea_land_forcelimit_modifier"
+			position = { x = 288 y = 218 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_army_organiser"
+			scripted = yes
+			position = { x = 314 y = 224 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_commandant"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 236 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_commandant"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_commandant"
+			position = { x= 70 y = 243 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_commandant"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 245 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_commandant"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 249 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_commandant"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 270 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_commandant"
+			scripted = yes
+			position = { x = 133 y = 246 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_commandant"
+			scripted = yes
+			position = { x = 128 y = 264 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_commandant"
+			scripted = yes
+			position = { x = 133 y = 280 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_commandant"
+			scripted = yes
+			spriteType = "GFX_idea_discipline"
+			position = { x = 45 y = 294 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_commandant"
+			scripted = yes
+			position = { x = 71 y = 300 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_quartermaster"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 236 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_quartermaster"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_quartermaster"
+			position = { x= 313 y = 243 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_quartermaster"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 245 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_quartermaster"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 249 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_quartermaster"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 270 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_quartermaster"
+			scripted = yes
+			position = { x = 376 y = 246 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_quartermaster"
+			scripted = yes
+			position = { x = 371 y = 264 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_quartermaster"
+			scripted = yes
+			position = { x = 376 y = 280 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_quartermaster"
+			scripted = yes
+			spriteType = "GFX_idea_reinforce_speed"
+			position = { x = 288 y = 294 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_quartermaster"
+			scripted = yes
+			position = { x = 314 y = 300 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_recruitmaster"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 312 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_recruitmaster"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_recruitmaster"
+			position = { x= 70 y = 319 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_recruitmaster"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 321 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_recruitmaster"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 325 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_recruitmaster"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 346 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_recruitmaster"
+			scripted = yes
+			position = { x = 133 y = 322 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_recruitmaster"
+			scripted = yes
+			position = { x = 128 y = 340 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_recruitmaster"
+			scripted = yes
+			position = { x = 133 y = 356 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_recruitmaster"
+			scripted = yes
+			spriteType = "GFX_idea_global_manpower_modifier"
+			position = { x = 45 y = 370 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_recruitmaster"
+			scripted = yes
+			position = { x = 71 y = 376 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_fortification_expert"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 312 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_fortification_expert"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_fortification_expert"
+			position = { x= 313 y = 319 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_fortification_expert"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 321 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_fortification_expert"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 325 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_fortification_expert"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 346 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_fortification_expert"
+			scripted = yes
+			position = { x = 376 y = 322 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_fortification_expert"
+			scripted = yes
+			position = { x = 371 y = 340 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_fortification_expert"
+			scripted = yes
+			position = { x = 376 y = 356 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_fortification_expert"
+			scripted = yes
+			spriteType = "GFX_idea_defensiveness"
+			position = { x = 288 y = 370 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_fortification_expert"
+			scripted = yes
+			position = { x = 314 y = 376 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		##
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_grand_captain"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 388 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_grand_captain"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_grand_captain"
+			position = { x= 70 y = 395 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_grand_captain"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 397 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_grand_captain"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 401 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_grand_captain"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 422 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_grand_captain"
+			scripted = yes
+			position = { x = 133 y = 398 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_grand_captain"
+			scripted = yes
+			position = { x = 128 y = 416 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_grand_captain"
+			scripted = yes
+			position = { x = 133 y = 432 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_grand_captain"
+			scripted = yes
+			spriteType = "GFX_idea_land_maintenance_modifier"
+			position = { x = 45 y = 446 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_grand_captain"
+			scripted = yes
+			position = { x = 71 y = 452 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_ME_mercenary_commander"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 388 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_ME_mercenary_commander"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_recruitmaster"
+			position = { x= 313 y = 395 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_ME_mercenary_commander"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 397 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_ME_mercenary_commander"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 401 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_ME_mercenary_commander"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 422 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_ME_mercenary_commander"
+			scripted = yes
+			position = { x = 376 y = 398 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_ME_mercenary_commander"
+			scripted = yes
+			position = { x = 371 y = 416 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_ME_mercenary_commander"
+			scripted = yes
+			position = { x = 376 y = 432 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_ME_mercenary_commander"
+			scripted = yes
+			spriteType = "GFX_idea_cavalry_power"
+			position = { x = 288 y = 446 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_ME_mercenary_commander"
+			scripted = yes
+			position = { x = 314 y = 452 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_ME_siege_engineer"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 286 y = 464 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_ME_siege_engineer"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_grand_captain"
+			position = { x= 313 y = 471 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_ME_siege_engineer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 286 y = 473 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_ME_siege_engineer"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 290 y = 477 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_ME_siege_engineer"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 286 y = 498 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_ME_siege_engineer"
+			scripted = yes
+			position = { x = 376 y = 474 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_ME_siege_engineer"
+			scripted = yes
+			position = { x = 371 y = 492 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_ME_siege_engineer"
+			scripted = yes
+			position = { x = 376 y = 508 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_ME_siege_engineer"
+			scripted = yes
+			spriteType = "GFX_idea_siege_ability"
+			position = { x = 288 y = 522 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_ME_siege_engineer"
+			scripted = yes
+			position = { x = 314 y = 528 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		## 243
+		
+		iconType =
+		{
+			name ="choice_advisor_banner_ME_crusader_knight"
+			scripted = yes
+			spriteType = "GFX_choice_advisor_banner"
+			position = { x= 43 y = 464 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="choice_advisor_advisor_button_ME_crusader_knight"
+			scripted = yes
+			quadTextureSprite= "GFX_advisor_commandant"
+			position = { x= 70 y = 471 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+		
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_ME_crusader_knight"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= 43 y = 473 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_religion_icon_ME_crusader_knight"
+			scripted = yes
+			spriteType = "GFX_province_view_religion"
+			position = { x= 47 y = 477 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="choice_advisor_advisor_indicator_culture_ME_crusader_knight"
+			scripted = yes
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= 43 y = 498 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.8
+		}		
+
+		instantTextBoxType = {
+			name = "choice_advisor_title_ME_crusader_knight"
+			scripted = yes
+			position = { x = 133 y = 474 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_skill_value_ME_crusader_knight"
+			scripted = yes
+			position = { x = 128 y = 492 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 60
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_purchase_cost_ME_crusader_knight"
+			scripted = yes
+			position = { x = 133 y = 508 }#position = { x = 142 y = 204 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 160
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = {
+			name ="choice_advisor_effect_icon_ME_crusader_knight"
+			scripted = yes
+			spriteType = "GFX_idea_cavalry_power"
+			position = { x = 45 y = 522 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "choice_advisor_effect_ME_crusader_knight"
+			scripted = yes
+			position = { x = 71 y = 528 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		### end 76
+		
+		### end
+		
+
+		### SELECT ADVISOR
+		windowType = {
+			name = "court_select"
+			backGround=""
+			position = { x=-7 y=0 }	
+			size = { x=1024 y=100 }
+			moveable = 0
+			dontRender = ""
+			horizontalBorder= ""
+			verticalBorder= ""
+			fullScreen = yes	
+	
+			
+			iconType =
+			{
+				name ="domesticpanel_overlay"
+				spriteType = "GFX_court_view_select_advisor_bg"
+				position = { x= 0 y = -10 }
+				Orientation = "UPPER_LEFT"
+				
+			}
+			
+			instantTextBoxType = {
+				name = "description"
+				position = { x = 70 y =139 }
+				format = centre
+				font = "vic_22"
+				maxWidth = 420
+				maxHeight = 32	
+				Orientation = "UPPER_LEFT"
+				text = "SELECT_ADVISOR"
+				format = center
+			}
+			
+			
+			
+			instantTextBoxType = {
+				name = "no_advisors_label"
+				position = { x = 132 y =284 }
+				format = left
+				textureFile = ""
+				font = "vic_22"
+				borderSize = {x = 0 y = 0}
+				text = "NO_ADVISORS"	
+				maxWidth = 300
+				maxHeight = 32	
+				Orientation = "UPPER_LEFT"
+				format = center
+				
+			}
+			
+			listboxType = 
+			{
+				name ="court_select_slider"
+				position = { x=86 y =170}
+				backGround=""
+				size = { x=382 y =350}
+				Orientation = "UPPER_LEFT"
+				horizontal = 0
+				spacing = 2
+				scrollbartype = "standardlistbox_slider"
+				borderSize = {x = 10 y = 10}
+			}
+			
+			guiButtonType = {
+				name = "back_button"
+				position = { x=240 y =531}
+				quadTextureSprite ="GFX_standard_button_71"	
+				tooltip = ""
+				tooltipText =""
+				delayedTooltipText = ""
+				buttonText = "DOMESTIC_BACK"
+				buttonFont = "vic_18"
+				shortcut = "z"			
+				extra_shortcut = "ESCAPE"
+				clicksound = back_click
+			}		
+		}
+		
+	}
+
+	################################################################################################
+	### --- Personality item
+	windowType = {
+		name = "countrycourtview_personalityitem"
+		backGround =""
+		position = { x=0 y=0 }	
+		size = { x=60 y=40 }
+		moveable = 0
+		dontRender = ""
+		horizontalBorder = ""
+		Orientation = "UPPER_LEFT"
+
+		iconType =
+		{
+			name = "personality_icon"
+			spriteType = "GFX_idea_unknown"
+			position = { x= 0 y = -10 }
+			Orientation = "UPPER_LEFT"
+		}
+		iconType =
+		{
+			name ="no_personality_icon"
+			spriteType = "GFX_no_personality_chart"
+			position = { x= 26 y = 3 }
+		}
+		iconType =
+		{
+			name ="no_personality_overlay"
+			spriteType = "GFX_no_provinceView_chart_overlay_0.9"
+			position = { x= 6 y = 2 }
+#			scale = 0.86
+		}
+
+	}
+	
+	################################################################################################
+	### --- Ability list item
+	windowType = {
+		name = "countrycourtview_abilitylistitem"
+		backGround =""
+		position = { x=0 y=0 }	
+		size = { x=170 y=86 }
+		moveable = 0
+		dontRender = ""
+		horizontalBorder = ""
+		Orientation = "UPPER_LEFT"
+
+		instantTextBoxType = {
+			name = "advisor_name"
+			position = { x = 136 y = 0 }
+			textureFile = ""
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}	
+			text = "Charles Darwin"	
+			maxWidth = 160
+			maxHeight = 32
+			format = center
+			fixedsize = yes
+		}
+
+		listboxType = {
+			name = "advisor_modifier_listbox"
+			backGround = ""
+			position = { x=82 y=28 }
+			size = { x=100 y=100 }
+			Orientation = "UPPER_LEFT"
+			horizontal = 1
+			spacing = 2.5
+			scrollbartype = "standardlistbox_slider"
+			borderSize = {x = 0 y = 0}
+		}
+		
+		instantTextBoxType = {
+			name = "advisor_cost"
+			position = { x=82 y=51 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 152
+			maxHeight = 30
+			format = left
+		}		
+
+		instantTextBoxType = {
+			name = "advisor_activefor"
+			position = { x = 271 y = 51 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 80
+			maxHeight = 30
+			format = right
+		}		
+		
+		guiButtonType =
+		{
+			name ="advisor_button"
+			quadTextureSprite= "GFX_advisor_noAdvisorType"
+			position = { x= 3 y = 3 }
+			Orientation = "UPPER_LEFT"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			hint_tag = "hint_advisor"
+		}		
+		
+
+
+
+		iconType ={
+			name ="advisor_indicator_religion"
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= -18 y = 5 }
+			Orientation = "UPPER_LEFT"
+		}
+
+		iconType ={
+			name ="advisor_indicator_religion_icon"
+			spriteType = "GFX_province_view_religion"
+			position = { x= -13 y = 10 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.9
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="advisor_indicator_culture"
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= -18 y = 39 }
+			Orientation = "UPPER_LEFT"
+			frame = 1
+		}		
+		
+
+
+		
+		
+		guiButtonType = {
+			name = "advisor_sack"
+			position = { x=326 y = -1 }
+			quadTextureSprite ="GFX_dismiss_leader"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			buttonFont = "vic_18"
+		}
+		
+		guiButtonType = {
+			name = "advisor_promote"
+			position = { x=299 y = -1 }
+			quadTextureSprite ="GFX_promote_advisor"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText= ""
+			buttonFont = "vic_18"
+		}
+
+		instantTextBoxType = {
+			name = "advisor_ability_skill"
+			position = { x = 100 y = 0 }
+			textureFile = ""
+			font = "vic_22"
+			borderSize = {x = 4 y = 4}	
+			text = "7"	
+			maxWidth = 30
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = 
+		{
+			name ="advisor_skill_icon"
+			spriteType = "GFX_icon_powers_administrative"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 80 y = 0 }
+			Orientation = "UPPER_LEFT"
+		}
+
+		instantTextBoxType = {
+			name = "ability_skill"
+			position = { x = 445 y = 4 }
+			textureFile = ""
+			font = "vic_36"
+			borderSize = {x = 4 y = 4}	
+			text = "7"	
+			maxWidth = 55
+			maxHeight = 32
+			format = center
+			Orientation = "UPPER_LEFT"
+		}
+
+		iconType =
+		{
+			name ="power_progress"
+			spriteType = "GFX_default_progressbar"
+			position = { x= 374 y = 50 }
+			Orientation = "UPPER_LEFT"
+		}
+
+		instantTextBoxType = {
+			name = "power"
+			position = { x = 370 y = 47 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = "325 power"	
+			maxWidth = 125
+			maxHeight = 32
+			format = center
+			alwaystransparent = yes
+		}	
+
+		guiButtonType = 
+		{
+			name ="progress_bar_frame"
+			spriteType = "GFX_progress_bar_frame"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 363 y = 46 }
+			Orientation = "UPPER_LEFT"
+		}
+	}
+
+	################################################################################################
+	### --- Advisor modifiers list item
+	windowType = {
+		name = "advisor_modifier_item"
+		backGround =""
+		position = { x=0 y=0 }	
+		size = { x=48 y=30 }
+		moveable = 0
+		dontRender = ""
+		horizontalBorder = ""
+		Orientation = "UPPER_LEFT"
+
+		instantTextBoxType = {
+			name = "advisor_desc"
+			position = { x = 30 y = 5 }
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 4 y = 4}	
+			text = ""	
+			maxWidth = 260
+			maxHeight = 25
+			format = left
+			truncate = yes
+			fixedsize = no
+		}
+
+		iconType = 
+		{
+			name ="advisor_modifier_icon"
+			spriteType = "GFX_idea_unknown"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= -7 y = -7 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.7
+		}
+	}
+		
+
+	################################################################################################
+	### --- Advisor selection list item
+	windowType = {
+		name = "advisor_selection_entry"
+		backGround=""
+		position = { x=0 y=0 }	
+		size = { x=150 y= 87 }
+		moveable = 0
+		dontRender = ""
+		horizontalBorder= ""
+		verticalBorder= ""
+		fullScreen = no	
+		
+		
+		
+		iconType =
+		{
+			name ="banner"
+			spriteType = "GFX_advisor_banner"
+			position = { x= -42 y = -10 }
+			Orientation = "UPPER_LEFT"
+		}
+			
+		guiButtonType =
+		{
+			name ="advisor_button"
+			quadTextureSprite= "GFX_greatmen_button"
+			position = { x= -15 y = 1 }
+			Orientation = "UPPER_LEFT"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+		}
+		
+		iconType ={
+			name ="advisor_indicator_religion"
+			spriteType = "GFX_advisor_indicator_religion"
+			position = { x= -42 y = 3 }
+			Orientation = "UPPER_LEFT"
+		}
+
+		iconType ={
+			name ="advisor_indicator_religion_icon"
+			spriteType = "GFX_province_view_religion"
+			position = { x= -37 y = 8 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.9
+			alwaystransparent = yes
+			frame = 17
+		}
+
+		iconType ={
+			name ="advisor_indicator_culture"
+			spriteType = "GFX_advisor_indicator_culture"
+			position = { x= -42 y = 37 }
+			Orientation = "UPPER_LEFT"
+			frame = 1
+		}		
+
+		instantTextBoxType = {
+			name = "name"
+			position = { x = 68 y =0 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 180
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+		}
+		
+		instantTextBoxType = {
+			name = "skill_value"
+			position = { x = 270 y =0 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = "0"	
+			maxWidth = 32
+			maxHeight = 16	
+			Orientation = "UPPER_LEFT"
+			fixedsize = yes	
+			format = left
+		}	
+		
+		iconType = 
+		{
+			name ="skill_icon_ADM"
+			spriteType = "GFX_icon_powers_administrative"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 240 y = -8 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = 
+		{
+			name ="skill_icon_DIP"
+			spriteType = "GFX_icon_powers_diplomatic"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 240 y = -8 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType = 
+		{
+			name ="skill_icon_MIL"
+			spriteType = "GFX_icon_powers_military"
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			position = { x= 240 y = -8 }
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "title"
+			position = { x = 203 y =34 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 124
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "value"
+			position = { x = 193 y =34 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 124
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "desc"
+			position = { x = 68 y =49 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 124
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "home"
+			position = { x = 193 y =49 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 168
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "purchase"
+			position = { x = 68 y =34 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 124
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		instantTextBoxType = {
+			name = "purchase_cost"
+			position = { x = 113 y =34 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 124
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		iconType =
+		{
+			name ="effect_icon"
+			spriteType = "GFX_idea_unknown"
+			position = { x= 62 y = 14 }
+			Orientation = "UPPER_LEFT"
+			scale = 0.4
+		}
+		
+		instantTextBoxType = {
+			name = "effect"
+			position = { x = 88 y =18 }
+			format = left
+			textureFile = ""
+			font = "vic_18"
+			borderSize = {x = 0 y = 0}
+			text = ""	
+			maxWidth = 240
+			maxHeight = 32	
+			Orientation = "UPPER_LEFT"
+		}
+		
+		guiButtonType = {
+			name = "dismiss_button"
+			position = { x = 330 y = -8}
+			quadTextureSprite ="GFX_dismiss_advisor"	
+			tooltip = ""
+			tooltipText =""
+			delayedTooltipText = ""
+			clicksound = back_click
+		}
+
+	}
+}

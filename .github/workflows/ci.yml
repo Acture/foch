@@ -67,6 +67,9 @@ jobs:
       - name: Cargo test
         run: cargo test --workspace
 
+      - name: Cargo test (merge-quality steam feature)
+        run: cargo test -p foch-merge-quality --features steam
+
   tree-sitter-smoke:
     name: Tree-sitter smoke
     runs-on: ubuntu-latest
