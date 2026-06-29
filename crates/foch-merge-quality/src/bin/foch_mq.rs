@@ -83,7 +83,7 @@ fn main() -> CmdResult {
 			limit,
 			keep,
 		}),
-		Cmd::Learn => orchestrate::learn(&cli.results_dir),
+		Cmd::Learn => orchestrate::learn(&cli.results_dir, &workshop),
 		Cmd::ExtractFixtures { out, ids } => fixtures::extract(&cli.corpus, &workshop, &out, &ids),
 		#[cfg(feature = "steam")]
 		Cmd::Discover { max_items } => foch_merge_quality::steam::discover(&cli.corpus, max_items),

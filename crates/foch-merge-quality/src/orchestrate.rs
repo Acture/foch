@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::CmdResult;
 use crate::corpus::Case;
-use crate::score::{conflict_rel_paths, ground_truth_files, run_merge, score_file, write_playset};
+use crate::score::{
+	classify_resolution, conflict_rel_paths, ground_truth_files, run_merge, score_file,
+	write_playset,
+};
 
 // ------------------------------------------------------------------ data model
 
@@ -47,6 +50,15 @@ pub struct CaseResult {
 	pub verdicts: BTreeMap<String, usize>,
 	/// Per-file scores for every ground-truth file.
 	pub files: Vec<FileRecord>,
+}
+
+/// One row in the per-file detail of `rules.md`: a classified overlap file.
+pub struct ResolutionRow {
+	pub title: String,
+	pub rel: String,
+	/// foch's verdict string for this file (e.g. `"conflict_withheld"`).
+	pub foch_verdict: String,
+	pub resolution: crate::score::Resolution,
 }
 
 // ------------------------------------------------------------------ public API
@@ -189,16 +201,42 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 	Ok(())
 }
 
-/// Read `results.json` from `results_dir`, aggregate foch verdict distribution,
-/// and write `rules.md`.
+/// Read `results.json` from `results_dir`, classify how humans resolved each
+/// overlap (using the mod + compatch files in `workshop_dir`), and write
+/// `rules.md`.
 ///
-/// Note: unlike the Python reference (which accesses the workshop directory to
-/// call `classify_resolution`), the Rust implementation works purely from the
-/// pre-computed `CaseResult` records in `results.json`. This is correct given
-/// the fixed `learn(&Path)` signature.
-pub fn learn(results_dir: &Path) -> CmdResult {
+/// Faithful port of the Python `cmd_learn`: for every overlap file in every
+/// case, calls [`classify_resolution`] to determine the human resolution
+/// strategy, then aggregates into relationship→verdict crosstab, overall
+/// verdict distribution, and the subset where foch withheld a conflict.
+pub fn learn(results_dir: &Path, workshop_dir: &Path) -> CmdResult {
 	let text = std::fs::read_to_string(results_dir.join("results.json"))?;
 	let results: Vec<CaseResult> = serde_json::from_str(&text)?;
-	crate::report::write_rules_md(results_dir, &results)?;
+
+	let mut rows: Vec<ResolutionRow> = Vec::new();
+	for r in &results {
+		if r.patched.len() < 2 {
+			continue;
+		}
+		let base = workshop_dir.join(&r.patched[0]);
+		let overlay = workshop_dir.join(&r.patched[1]);
+		let compatch = workshop_dir.join(&r.compatch_id);
+
+		for f in &r.files {
+			if !f.overlap {
+				continue;
+			}
+			if let Some(res) = classify_resolution(&f.rel, &base, &overlay, &compatch) {
+				rows.push(ResolutionRow {
+					title: r.title.clone(),
+					rel: f.rel.clone(),
+					foch_verdict: f.verdict.clone(),
+					resolution: res,
+				});
+			}
+		}
+	}
+
+	crate::report::write_rules_md(results_dir, &rows)?;
 	Ok(())
 }

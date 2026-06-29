@@ -137,45 +137,62 @@ fn run_writes_artifacts() {
 
 // ------------------------------------------------------------------ Test 3: learn
 
-/// `learn` reads results.json, writes rules.md containing verdict summaries.
+/// `learn` re-reads the mod + compatch files, classifies human resolutions, and
+/// writes a rules.md with the four canonical sections.
 #[test]
 fn learn_writes_rules_md() {
-	// Build a hand-crafted results.json with known verdict data
-	let results: Vec<serde_json::Value> = vec![serde_json::json!({
-		"compatch_id": "3630876155",
-		"title": "Test Case",
-		"patched": ["2164202838", "2185445645"],
-		"merge_status": "blocked",
-		"validation": null,
-		"ground_truth_files": 7,
-		"overlap_files": 7,
-		"verdicts": {
-			"conflict_withheld": 4,
-			"diverges_structure": 2,
-			"diverges_formatting": 1
-		},
-		"files": []
-	})];
+	// Use the real fixture workshop so classify_resolution can read the files.
+	let (_tmp, ws) = build_workshop_3630876155();
+	let case = case_3630876155();
 
-	let tmp = tempfile::tempdir().expect("learn tmp");
-	let results_dir = tmp.path();
-	std::fs::write(
-		results_dir.join("results.json"),
-		serde_json::to_string_pretty(&results).unwrap(),
-	)
-	.unwrap();
+	// Score first to obtain a CaseResult with real overlap file records.
+	let result = orchestrate::score_case(&case, &ws, false).expect("score_case");
 
-	orchestrate::learn(results_dir).expect("learn succeeds");
+	let results_tmp = tempfile::tempdir().expect("results tmp");
+	let results_dir = results_tmp.path();
+
+	// Write results.json with real file-level data.
+	let json = serde_json::to_string_pretty(&[result]).unwrap();
+	std::fs::write(results_dir.join("results.json"), json).unwrap();
+
+	// learn now takes workshop_dir as well.
+	orchestrate::learn(results_dir, &ws).expect("learn succeeds");
 
 	let rules = std::fs::read_to_string(results_dir.join("rules.md")).expect("rules.md written");
 
-	// Must mention the verdict names present in the data
+	// Must contain all four Python-compat section headers.
 	assert!(
-		rules.contains("conflict_withheld"),
-		"rules.md mentions conflict_withheld"
+		rules.contains("## Order-independent rule"),
+		"rules.md must have crosstab section"
 	);
 	assert!(
-		rules.contains("diverges_structure"),
-		"rules.md mentions diverges_structure"
+		rules.contains("## How humans resolve overlaps (ALL overlapping files)"),
+		"rules.md must have ALL section"
+	);
+	assert!(
+		rules.contains("## How humans resolve the conflicts foch WITHHELD"),
+		"rules.md must have conflict section"
+	);
+	assert!(
+		rules.contains("## Per-file detail"),
+		"rules.md must have per-file section"
+	);
+
+	// Per-file detail must have at least one classified row (7 overlap files).
+	let has_resolution = rules.contains("union")
+		|| rules.contains("took_base")
+		|| rules.contains("took_overlay")
+		|| rules.contains("hand_edit")
+		|| rules.contains("identical");
+	assert!(
+		has_resolution,
+		"rules.md must contain a human resolution verdict"
+	);
+
+	// The per-file table must mention at least one fixture file.
+	let has_file_row = rules.contains("interface/") || rules.contains("common/");
+	assert!(
+		has_file_row,
+		"rules.md per-file detail must list at least one overlap file"
 	);
 }

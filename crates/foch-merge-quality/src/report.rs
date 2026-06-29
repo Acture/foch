@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::orchestrate::CaseResult;
+use crate::orchestrate::{CaseResult, ResolutionRow};
 
 // ------------------------------------------------------------------ public API
 
@@ -27,11 +27,10 @@ pub fn write_report_md(results_dir: &Path, results: &[CaseResult]) -> std::io::R
 	fs::write(results_dir.join("report.md"), md)
 }
 
-/// Read `{results_dir}/results.json`, classify verdict distribution, write
-/// `{results_dir}/rules.md`.
-pub fn write_rules_md(results_dir: &Path, results: &[CaseResult]) -> std::io::Result<()> {
+/// Write `{results_dir}/rules.md` from pre-classified resolution rows.
+pub fn write_rules_md(results_dir: &Path, rows: &[ResolutionRow]) -> std::io::Result<()> {
 	fs::create_dir_all(results_dir)?;
-	let md = render_rules(results);
+	let md = render_rules(rows);
 	fs::write(results_dir.join("rules.md"), md)
 }
 
@@ -147,84 +146,158 @@ fn render_report(results: &[CaseResult]) -> String {
 	lines.join("\n")
 }
 
-fn render_rules(results: &[CaseResult]) -> String {
-	// Aggregate foch verdicts across all overlapping files in all cases.
-	let mut agg: BTreeMap<String, usize> = BTreeMap::new();
-	let mut total_overlap: usize = 0;
+const RES_MEANING: &[(&str, &str)] = &[
+	(
+		"union",
+		"human kept BOTH contributors' unique content (do-both)",
+	),
+	(
+		"took_base",
+		"human kept the base (first) mod, dropped the overlay's unique content",
+	),
+	(
+		"took_overlay",
+		"human kept the overlay (later) mod = load-order / last-writer",
+	),
+	(
+		"hand_edit",
+		"human wrote something not derivable from either side",
+	),
+	(
+		"identical",
+		"both contributors identical here (no real conflict)",
+	),
+];
 
-	for r in results {
-		for (v, n) in &r.verdicts {
-			*agg.entry(v.clone()).or_default() += n;
-			total_overlap += n;
+fn res_meaning(verdict: &str) -> &'static str {
+	RES_MEANING
+		.iter()
+		.find(|(k, _)| *k == verdict)
+		.map(|(_, v)| *v)
+		.unwrap_or("")
+}
+
+/// Render `rules.md` — port of Python `cmd_learn` output (four sections).
+fn render_rules(rows: &[ResolutionRow]) -> String {
+	// Aggregate (all use count-desc then name-asc for determinism).
+	let mut agg: BTreeMap<String, usize> = BTreeMap::new();
+	let mut agg_conflict: BTreeMap<String, usize> = BTreeMap::new();
+	let mut crosstab: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+
+	for row in rows {
+		let verdict = row.resolution.verdict.as_str().to_string();
+		let rel_kind = row.resolution.relationship.as_str().to_string();
+		*agg.entry(verdict.clone()).or_default() += 1;
+		*crosstab
+			.entry(rel_kind)
+			.or_default()
+			.entry(verdict.clone())
+			.or_default() += 1;
+		if row.foch_verdict == "conflict_withheld" {
+			*agg_conflict.entry(verdict).or_default() += 1;
 		}
 	}
 
+	let sort_desc = |map: &BTreeMap<String, usize>| -> Vec<(String, usize)> {
+		let mut v: Vec<(String, usize)> = map.iter().map(|(k, &n)| (k.clone(), n)).collect();
+		v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+		v
+	};
+
 	let mut lines = vec![
-		"# foch merge-quality: verdict summary (learned from corpus)".to_string(),
+		"# Human resolution rules (learned from compatches)".to_string(),
 		String::new(),
 	];
 
-	lines.push(format!(
-		"Corpus: **{}** case(s), **{}** overlapping ground-truth files.",
-		results.len(),
-		total_overlap
-	));
+	lines.push(format!("Overlapping files analysed: **{}**", rows.len()));
 	lines.push(String::new());
 
-	lines.push("## Verdict distribution (foch's output vs. human compatch)".to_string());
+	// --- Section 1: crosstab ---
+	lines.push(
+		"## Order-independent rule: contributor relationship -> human resolution".to_string(),
+	);
 	lines.push(String::new());
 	lines.push(
-		"Each file that both patched mods touch (overlap) is classified by how foch's merge \
-		 compares to the human-authored compatch."
+		"The honest signal is the relationship between the two contributors (not which".to_string(),
+	);
+	lines.push(
+		"side won, which depends on load order). `disjoint`=additive, `redundant`=heavily"
+			.to_string(),
+	);
+	lines.push(
+		"overlapping mechanics (e.g. renamed dupes), `subset`=one contained in the other."
 			.to_string(),
 	);
 	lines.push(String::new());
-	lines.push("| verdict | count | meaning |".to_string());
-	lines.push("|---|---|---|".to_string());
-
-	let mut agg_sorted: Vec<(String, usize)> = agg.iter().map(|(k, v)| (k.clone(), *v)).collect();
-	agg_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-	for (v, n) in &agg_sorted {
-		lines.push(format!("| `{}` | {} | {} |", v, n, verdict_meaning(v)));
-	}
-
-	lines.push(String::new());
-	lines.push("## Actionable set: `conflict_withheld`".to_string());
-	lines.push(String::new());
-	lines.push(
-		"Files foch declined to auto-merge (surfaced as manual conflicts). The human compatch \
-		 resolved each by hand — these are the cases where foch's merge strategy most clearly \
-		 diverges from the human author's intent and are the primary improvement target."
-			.to_string(),
-	);
-	lines.push(String::new());
-
-	let withheld = agg.get("conflict_withheld").copied().unwrap_or(0);
-	lines.push(format!(
-		"**{withheld}** of **{total_overlap}** overlapping files were withheld as conflicts \
-		 ({:.0}%).",
-		if total_overlap > 0 {
-			withheld as f64 / total_overlap as f64 * 100.0
-		} else {
-			0.0
-		}
-	));
-	lines.push(String::new());
-
-	lines.push("## Per-case summary".to_string());
-	lines.push(String::new());
-	lines.push("| case | compatch | overlap | verdicts |".to_string());
-	lines.push("|---|---|---|---|".to_string());
-	for r in results {
-		let v_summary = r
-			.verdicts
+	lines.push("| contributor relationship | human resolutions |".to_string());
+	lines.push("|---|---|".to_string());
+	let mut ct_sorted: Vec<(&String, &BTreeMap<String, usize>)> = crosstab.iter().collect();
+	ct_sorted.sort_by(|a, b| {
+		let sa: usize = a.1.values().sum();
+		let sb: usize = b.1.values().sum();
+		sb.cmp(&sa).then(a.0.cmp(b.0))
+	});
+	for (rel_kind, verdict_map) in &ct_sorted {
+		let dist = sort_desc(verdict_map)
 			.iter()
-			.map(|(k, v)| format!("{k}:{v}"))
+			.map(|(v, n)| format!("{v}:{n}"))
 			.collect::<Vec<_>>()
 			.join(", ");
+		lines.push(format!("| `{rel_kind}` | {dist} |"));
+	}
+	lines.push(String::new());
+
+	// --- Section 2: ALL overlaps ---
+	lines.push("## How humans resolve overlaps (ALL overlapping files)".to_string());
+	lines.push(String::new());
+	lines.push("| human resolution | count | meaning |".to_string());
+	lines.push("|---|---|---|".to_string());
+	for (v, n) in sort_desc(&agg) {
+		lines.push(format!("| `{v}` | {n} | {} |", res_meaning(&v)));
+	}
+	lines.push(String::new());
+
+	// --- Section 3: conflict_withheld subset ---
+	lines
+		.push("## How humans resolve the conflicts foch WITHHELD (the actionable set)".to_string());
+	lines.push(String::new());
+	if agg_conflict.is_empty() {
+		lines.push("_(no conflict_withheld files in the corpus)_".to_string());
+	} else {
+		lines.push("| human resolution | count |".to_string());
+		lines.push("|---|---|".to_string());
+		for (v, n) in sort_desc(&agg_conflict) {
+			lines.push(format!("| `{v}` | {n} |"));
+		}
+	}
+	lines.push(String::new());
+
+	// --- Section 4: per-file detail ---
+	lines.push("## Per-file detail".to_string());
+	lines.push(String::new());
+	lines.push(
+		"| case | file | foch | relationship | human | AB_sim | base_kept | overlay_kept |"
+			.to_string(),
+	);
+	lines.push("|---|---|---|---|---|---|---|---|".to_string());
+	for row in rows {
+		let r = &row.resolution;
+		let fbk = r
+			.frac_base_kept
+			.map_or_else(|| "None".to_string(), |v| v.to_string());
+		let fok = r
+			.frac_overlay_kept
+			.map_or_else(|| "None".to_string(), |v| v.to_string());
 		lines.push(format!(
-			"| {} | `{}` | {} | {} |",
-			r.title, r.compatch_id, r.overlap_files, v_summary
+			"| {} | `{}` | {} | {} | **{}** | {} | {} | {} |",
+			row.title,
+			row.rel,
+			row.foch_verdict,
+			r.relationship.as_str(),
+			r.verdict.as_str(),
+			r.ab_jaccard,
+			fbk,
+			fok,
 		));
 	}
 	lines.push(String::new());
