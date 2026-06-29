@@ -108,6 +108,35 @@ fn field_str(obj: &Value, key: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Per-entry children filter (shared by parse_children and parse_children_map)
+// ---------------------------------------------------------------------------
+
+/// Keep required-item children that are mods (`file_type == 0`) and are not
+/// the entry itself. Extracted so the logic tested via `parse_children` is
+/// identical to what `parse_children_map` (the HTTP shell path) uses.
+fn filter_children(entry: &Value, exclude_id: &str) -> Vec<String> {
+	entry
+		.get("children")
+		.and_then(|v| v.as_array())
+		.map(|children| {
+			children
+				.iter()
+				.filter_map(|c| {
+					if field_i64(c, "file_type") != 0 {
+						return None;
+					}
+					let fid = field_str(c, "publishedfileid");
+					if fid.is_empty() || fid == exclude_id {
+						return None;
+					}
+					Some(fid)
+				})
+				.collect()
+		})
+		.unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
 // Pure parsers (unit-tested without network)
 // ---------------------------------------------------------------------------
 
@@ -211,25 +240,7 @@ pub(crate) fn parse_children(json: &Value, compatch_id: &str) -> Vec<String> {
 		None => return vec![],
 	};
 
-	entry
-		.get("children")
-		.and_then(|v| v.as_array())
-		.map(|children| {
-			children
-				.iter()
-				.filter_map(|c| {
-					if field_i64(c, "file_type") != 0 {
-						return None;
-					}
-					let fid = field_str(c, "publishedfileid");
-					if fid.is_empty() || fid == compatch_id {
-						return None;
-					}
-					Some(fid)
-				})
-				.collect()
-		})
-		.unwrap_or_default()
+	filter_children(entry, compatch_id)
 }
 
 /// Parse the full batch into a `compatch_id → children` map.
@@ -246,25 +257,7 @@ fn parse_children_map(json: &Value) -> HashMap<String, Vec<String>> {
 	arr.iter()
 		.map(|d| {
 			let cid = field_str(d, "publishedfileid");
-			let children = d
-				.get("children")
-				.and_then(|v| v.as_array())
-				.map(|children| {
-					children
-						.iter()
-						.filter_map(|c| {
-							if field_i64(c, "file_type") != 0 {
-								return None;
-							}
-							let fid = field_str(c, "publishedfileid");
-							if fid.is_empty() || fid == cid {
-								return None;
-							}
-							Some(fid)
-						})
-						.collect()
-				})
-				.unwrap_or_default();
+			let children = filter_children(d, &cid);
 			(cid, children)
 		})
 		.collect()
@@ -319,6 +312,9 @@ pub(crate) fn build_cases(
 		});
 	}
 
+	// Sort by compatch_id so corpus.json is deterministic across runs
+	// (HashMap iteration order is randomized per process).
+	cases.sort_by(|a, b| a.compatch_id.cmp(&b.compatch_id));
 	cases
 }
 
