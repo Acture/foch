@@ -14,9 +14,14 @@ description = "Measures foch's merge quality against community compatibility pat
 default = []
 steam = ["dep:reqwest"]
 
+[[bin]]
+name = "foch-mq"
+path = "src/bin/foch_mq.rs"
+
 [dependencies]
 foch-engine = { path = "../foch-engine" }
 foch-core = { path = "../foch-core" }
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
