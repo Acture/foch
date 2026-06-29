@@ -1,11 +1,14 @@
-//! Reproducible, network-free merge-quality scoring over committed fixtures.
+//! Reproducible, network-free merge-quality scoring over the committed corpus.
 //!
 //! Each fixture under `tests/fixtures/<compatch_id>/` holds three slices —
 //! `a/`, `b/` (the two patched mods) and `compatch/` (the human ground truth) —
-//! containing only the scored files. Merging just those files reproduces the
-//! full-mod verdicts (foch's per-file merge is local), so this gates merge
-//! quality without shipping multi-GB mods. See `fixtures/CREDITS.md` for
-//! provenance and the takedown policy.
+//! containing only the scored OVERLAP files (those present in both mods).
+//! Merging just those reproduces the full-mod verdicts (foch's per-file merge is
+//! local), so this gates merge quality without shipping multi-GB mods.
+//!
+//! `tests/fixtures/expected.json` is the committed baseline: `compatch_id ->
+//! { verdict -> count }`. Regenerate it with `foch-mq run` + `extract-fixtures`
+//! when the corpus grows. See `fixtures/CREDITS.md` for provenance + takedown.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -20,29 +23,29 @@ fn fixtures_root() -> PathBuf {
 		.join("fixtures")
 }
 
-/// Merge `a`+`b`, score every ground-truth file against `compatch`, return the
-/// verdict tally keyed by verdict name.
-fn score_case(compatch_id: &str, mod_a: &str, mod_b: &str) -> BTreeMap<String, usize> {
-	let case_dir = fixtures_root().join(compatch_id);
+/// Merge `<case>/a` + `<case>/b` and tally foch's verdict over every scored file.
+fn verdict_tally(case_dir: &Path) -> BTreeMap<String, usize> {
 	let a_dir = case_dir.join("a");
 	let b_dir = case_dir.join("b");
 	let compatch_dir = case_dir.join("compatch");
-	assert!(a_dir.is_dir() && b_dir.is_dir() && compatch_dir.is_dir());
+	assert!(
+		a_dir.is_dir() && b_dir.is_dir() && compatch_dir.is_dir(),
+		"fixture {} must have a/ b/ compatch/",
+		case_dir.display()
+	);
 
 	let tmp = tempfile::tempdir().expect("scratch playset dir");
 	let out_dir = tmp.path().join("out");
 	let dlc = write_playset(
 		tmp.path(),
 		&[
-			(mod_a.to_string(), a_dir.clone()),
-			(mod_b.to_string(), b_dir.clone()),
+			("a".to_string(), a_dir.clone()),
+			("b".to_string(), b_dir.clone()),
 		],
 	)
 	.expect("write playset");
-
-	// force = false: foch withholds manual conflicts rather than picking a
-	// winner, so `conflict_withheld` stays a distinct signal from auto-merges.
-	let result = run_merge(&dlc, &out_dir, /*force=*/ false).expect("merge runs");
+	// force = false: foch withholds manual conflicts (a distinct signal from auto-merges).
+	let result = run_merge(&dlc, &out_dir, false).expect("merge runs");
 	let conflicts = conflict_rel_paths(&result.report);
 
 	let mut tally: BTreeMap<String, usize> = BTreeMap::new();
@@ -53,20 +56,22 @@ fn score_case(compatch_id: &str, mod_a: &str, mod_b: &str) -> BTreeMap<String, u
 	tally
 }
 
-/// Expanded Mod Family + a sibling overhaul: 7 overlapping files. foch
-/// auto-merges 3 (structurally diverging from the human) and withholds 4
-/// interface conflicts that the human compatch resolved by hand.
+/// Every committed fixture reproduces its baseline verdict tally. Data-driven:
+/// add a case by running `extract-fixtures` + regenerating `expected.json` —
+/// no test code change needed.
 #[test]
-fn expanded_family_compatch_3630876155() {
-	let tally = score_case("3630876155", "2164202838", "2185445645");
+fn committed_corpus_reproduces_baseline() {
+	let expected_text =
+		std::fs::read_to_string(fixtures_root().join("expected.json")).expect("read expected.json");
+	let expected: BTreeMap<String, BTreeMap<String, usize>> =
+		serde_json::from_str(&expected_text).expect("parse expected.json");
+	assert!(!expected.is_empty(), "baseline has at least one case");
 
-	let expected = BTreeMap::from([
-		("conflict_withheld".to_string(), 4usize),
-		("diverges_structure".to_string(), 2usize),
-		("diverges_formatting".to_string(), 1usize),
-	]);
-	assert_eq!(
-		tally, expected,
-		"merge-quality verdicts drifted for compatch 3630876155"
-	);
+	for (compatch_id, want) in &expected {
+		let got = verdict_tally(&fixtures_root().join(compatch_id));
+		assert_eq!(
+			&got, want,
+			"merge-quality verdicts drifted for compatch {compatch_id}"
+		);
+	}
 }

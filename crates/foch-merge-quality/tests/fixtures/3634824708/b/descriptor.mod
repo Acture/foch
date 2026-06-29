@@ -1,0 +1,25 @@
+version="1"
+tags={
+	"Gameplay"
+	"Trade"
+	"Expansion"
+	"Balance"
+}
+name="Trade Goods Expanded"
+picture="thumbnail.png"
+dependencies={
+	"Bigger Production UI V1.37"
+	"Bigger UI V1.37"
+	"Dark & Improved UI"
+	"UI a la Sulfuris"
+	"UI a la Artemis"
+	"Better UI 2"
+	"MRBM Font"
+	"Stellaris UI Font"
+	"Better Font Mod"
+	"Tooltip Font Mod"
+	"Another Stellaris Font"
+}
+supported_version="v1.37.1.0"
+path="C:/Users/Redux Gamer/Documents/Paradox Interactive/Europa Universalis IV/mod/Trade_Goods_Expanded"
+remote_file_id="1770950522"

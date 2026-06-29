@@ -51,52 +51,96 @@ pub fn extract(corpus: &Path, workshop_dir: &Path, out_dir: &Path, ids: &[String
 			.collect()
 	};
 
+	let (mut extracted, mut skipped) = (0usize, 0usize);
 	for case in cases {
 		if case.patched.len() < 2 {
 			eprintln!(
 				"  [extract] skip {}: fewer than 2 patched mods",
 				case.compatch_id
 			);
+			skipped += 1;
 			continue;
 		}
-
-		let compatch_dir = workshop_dir.join(&case.compatch_id);
-		let mod_a = workshop_dir.join(&case.patched[0]);
-		let mod_b = workshop_dir.join(&case.patched[1]);
-
-		let out_case = out_dir.join(&case.compatch_id);
-		let out_compatch = out_case.join("compatch");
-		let out_a = out_case.join("a");
-		let out_b = out_case.join("b");
-
-		let gt = crate::score::ground_truth_files(&compatch_dir);
-
-		for rel in &gt {
-			// Always copy the compatch's hand-merged version (source of truth)
-			let src = compatch_dir.join(rel);
-			if src.is_file() {
-				copy_file(&src, &out_compatch.join(rel))?;
+		// One bad case (e.g. a mod missing its descriptor) must not abort the
+		// whole corpus extraction — log it and carry on.
+		match extract_one(case, workshop_dir, out_dir) {
+			Ok(0) => {
+				// No files modified by BOTH mods → no conflict to score. Such a
+				// "compatch" resolves nothing here (often a discovery false
+				// positive / standalone mod); don't persist an empty case.
+				eprintln!(
+					"  [extract] skip {}: 0 overlap files (not a 2-mod conflict set)",
+					case.compatch_id
+				);
+				skipped += 1;
 			}
-			// Copy mod A's version of this file if it exists
-			let a_src = mod_a.join(rel);
-			if a_src.is_file() {
-				copy_file(&a_src, &out_a.join(rel))?;
+			Ok(n) => {
+				eprintln!("  [extract] {} — {n} overlap files", case.compatch_id);
+				extracted += 1;
 			}
-			// Copy mod B's version of this file if it exists
-			let b_src = mod_b.join(rel);
-			if b_src.is_file() {
-				copy_file(&b_src, &out_b.join(rel))?;
+			Err(err) => {
+				eprintln!("  [extract] skip {}: {err}", case.compatch_id);
+				skipped += 1;
 			}
 		}
+	}
+	eprintln!("[extract] done: {extracted} extracted, {skipped} skipped");
+	Ok(())
+}
 
-		// Each mod's descriptor is required by the scoring harness
-		copy_file(&mod_a.join("descriptor.mod"), &out_a.join("descriptor.mod"))?;
-		copy_file(&mod_b.join("descriptor.mod"), &out_b.join("descriptor.mod"))?;
+/// Extract one case's slices. Returns the ground-truth file count.
+fn extract_one(
+	case: &crate::corpus::Case,
+	workshop_dir: &Path,
+	out_dir: &Path,
+) -> std::io::Result<usize> {
+	let compatch_dir = workshop_dir.join(&case.compatch_id);
+	let mod_a = workshop_dir.join(&case.patched[0]);
+	let mod_b = workshop_dir.join(&case.patched[1]);
 
-		eprintln!("  [extract] {} — {} gt files", case.compatch_id, gt.len());
+	let out_case = out_dir.join(&case.compatch_id);
+	let out_compatch = out_case.join("compatch");
+	let out_a = out_case.join("a");
+	let out_b = out_case.join("b");
+
+	let gt = crate::score::ground_truth_files(&compatch_dir);
+
+	let mut copied = 0usize;
+	for rel in &gt {
+		let a_src = mod_a.join(rel);
+		let b_src = mod_b.join(rel);
+		// Only OVERLAP files — present in BOTH patched mods — are scored conflicts.
+		// A compatch can ship thousands of non-conflict glue/passthrough files;
+		// persisting the full ground-truth set would bloat the repo. The verdict
+		// tally is computed over overlaps only, so the overlap slice reproduces it.
+		if !(a_src.is_file() && b_src.is_file()) {
+			continue;
+		}
+		let src = compatch_dir.join(rel);
+		if src.is_file() {
+			copy_file(&src, &out_compatch.join(rel))?;
+		}
+		copy_file(&a_src, &out_a.join(rel))?;
+		copy_file(&b_src, &out_b.join(rel))?;
+		copied += 1;
 	}
 
-	Ok(())
+	// No overlaps → nothing scored → don't create an (effectively empty) case
+	// dir holding only descriptors.
+	if copied == 0 {
+		return Ok(0);
+	}
+
+	// descriptor.mod is useful metadata but not present in every mod — copy it
+	// when it exists, skip silently otherwise (the scorer tolerates its absence).
+	for (mod_dir, out) in [(&mod_a, &out_a), (&mod_b, &out_b)] {
+		let desc = mod_dir.join("descriptor.mod");
+		if desc.is_file() {
+			copy_file(&desc, &out.join("descriptor.mod"))?;
+		}
+	}
+
+	Ok(copied)
 }
 
 // ------------------------------------------------------------------ tests
@@ -166,38 +210,37 @@ mod tests {
 
 		let case_out = out_dir.join(compatch_id);
 
-		// compatch/ must contain every gt file
+		// x.txt is an OVERLAP (in both mods) → extracted to all three slices.
 		assert!(
 			case_out.join("compatch/common/x.txt").is_file(),
-			"compatch/common/x.txt must be extracted"
+			"compatch/common/x.txt (overlap) must be extracted"
 		);
-		assert!(
-			case_out.join("compatch/interface/y.gui").is_file(),
-			"compatch/interface/y.gui must be extracted"
-		);
-
-		// a/ must contain mod A's version of both gt files + descriptor.mod
 		assert!(
 			case_out.join("a/common/x.txt").is_file(),
 			"a/common/x.txt must be extracted"
 		);
 		assert!(
-			case_out.join("a/interface/y.gui").is_file(),
-			"a/interface/y.gui must be extracted"
-		);
-		assert!(
 			case_out.join("a/descriptor.mod").is_file(),
 			"a/descriptor.mod must be copied"
 		);
-
-		// b/ must contain mod B's version of x.txt but NOT y.gui + descriptor.mod
 		assert!(
 			case_out.join("b/common/x.txt").is_file(),
 			"b/common/x.txt must be extracted"
 		);
+
+		// y.gui is in the compatch + mod A but NOT mod B → NON-overlap → not a
+		// scored conflict → must not be extracted to ANY slice.
+		assert!(
+			!case_out.join("compatch/interface/y.gui").is_file(),
+			"non-overlap y.gui must NOT be extracted"
+		);
+		assert!(
+			!case_out.join("a/interface/y.gui").is_file(),
+			"non-overlap y.gui must NOT be extracted to a/"
+		);
 		assert!(
 			!case_out.join("b/interface/y.gui").is_file(),
-			"b/interface/y.gui must NOT be extracted (absent in mod b)"
+			"y.gui absent in mod b, and non-overlap → not extracted"
 		);
 		assert!(
 			case_out.join("b/descriptor.mod").is_file(),
@@ -215,5 +258,55 @@ mod tests {
 
 		let b_bytes = fs::read(case_out.join("b/common/x.txt")).unwrap();
 		assert_eq!(b_bytes, b"x in mod b\n", "b/x.txt content must be mod B's");
+	}
+
+	/// A mod without a root `descriptor.mod` must not abort extraction — the
+	/// descriptor copy is skipped and the case is still extracted. (Regression:
+	/// real Workshop mods sometimes lack a top-level descriptor.mod.)
+	#[test]
+	fn extract_tolerates_missing_descriptor() {
+		let ws = TempDir::new().unwrap();
+		let (compatch_id, mod_a_id, mod_b_id) = ("9999999999", "1111111111", "2222222222");
+
+		write_file(&ws.path().join(compatch_id), "common/x.txt", "x compatch\n");
+		write_file(&ws.path().join(mod_a_id), "common/x.txt", "x a\n");
+		write_file(&ws.path().join(mod_a_id), "descriptor.mod", "name=\"a\"\n");
+		// Mod B has the gt file but NO descriptor.mod.
+		write_file(&ws.path().join(mod_b_id), "common/x.txt", "x b\n");
+
+		let corpus = crate::corpus::Corpus {
+			cases: vec![crate::corpus::Case {
+				compatch_id: compatch_id.to_string(),
+				patched: vec![mod_a_id.to_string(), mod_b_id.to_string()],
+				..Default::default()
+			}],
+			..Default::default()
+		};
+		let corpus_dir = TempDir::new().unwrap();
+		let corpus_path = corpus_dir.path().join("corpus.json");
+		fs::write(&corpus_path, corpus.to_json_pretty().unwrap()).unwrap();
+		let out_tmp = TempDir::new().unwrap();
+
+		extract(
+			&corpus_path,
+			ws.path(),
+			out_tmp.path(),
+			&[compatch_id.to_string()],
+		)
+		.expect("extract must not abort on a mod missing descriptor.mod");
+
+		let case_out = out_tmp.path().join(compatch_id);
+		assert!(
+			case_out.join("b/common/x.txt").is_file(),
+			"b gt file still extracted"
+		);
+		assert!(
+			!case_out.join("b/descriptor.mod").exists(),
+			"absent descriptor is skipped, not fabricated"
+		);
+		assert!(
+			case_out.join("a/descriptor.mod").is_file(),
+			"present descriptor still copied"
+		);
 	}
 }
