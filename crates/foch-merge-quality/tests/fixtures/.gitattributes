@@ -1,0 +1,4 @@
+# Merge-quality fixtures are byte-exact excerpts of real Paradox mod files
+# (frequently CRLF). Treat them as binary so git never normalizes line endings
+# or encoding — the scoring test must see the same bytes foch would on disk.
+* -text

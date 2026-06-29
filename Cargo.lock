@@ -959,6 +959,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "foch-merge-quality"
+version = "0.1.0"
+dependencies = [
+ "foch-core",
+ "foch-engine",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
 name = "foch-syntax"
 version = "0.1.0"
 dependencies = [

@@ -513,8 +513,20 @@ def write_playset(tmp: Path, mods: list[tuple[str, Path]]) -> Path:
 
 
 def run_merge(foch_bin: Path, dlc_load: Path, out_dir: Path) -> dict:
+    # --no-game-base: emit the full union of the input mods (the complete merged
+    # tree) rather than a sparse diff-vs-vanilla. A compatch is a self-contained
+    # mod, so the full-union output is the comparable target; with the installed
+    # base, foch skips base-identical files and overlaps would read as not_emitted.
     proc = subprocess.run(
-        [str(foch_bin), "merge", str(dlc_load), "--out", str(out_dir), "--non-interactive"],
+        [
+            str(foch_bin),
+            "merge",
+            str(dlc_load),
+            "--out",
+            str(out_dir),
+            "--no-game-base",
+            "--non-interactive",
+        ],
         capture_output=True,
         text=True,
         timeout=1200,
