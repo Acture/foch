@@ -284,6 +284,9 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		"status: {}",
 		render_merge_report_status(report.status)
 	));
+	if let Some(reason) = report.fatal_reason.as_deref() {
+		lines.push(format!("[FATAL] {reason}"));
+	}
 	if let Some(cache_source) = report.cache_source.as_deref() {
 		lines.push(format!("cache_source: {cache_source}"));
 	}
@@ -821,6 +824,31 @@ mod tests {
 			"⚠ Cross-tagged mods (1 mod with both V1 stale-target AND V2 version-mismatch):"
 		));
 		assert!(output.contains("  - B:"));
+	}
+
+	#[test]
+	fn render_merge_report_text_emits_fatal_reason_line_when_present() {
+		let report = MergeReport {
+			status: MergeReportStatus::Fatal,
+			fatal_reason: Some(
+				"missing installed base data for eu4 1.37.0; run `foch data install eu4`"
+					.to_string(),
+			),
+			..MergeReport::default()
+		};
+
+		let output = render_merge_report_text(&report);
+
+		assert!(output.contains("status: FATAL"));
+		assert!(output.contains(
+			"[FATAL] missing installed base data for eu4 1.37.0; run `foch data install eu4`"
+		));
+	}
+
+	#[test]
+	fn render_merge_report_text_omits_fatal_reason_line_when_absent() {
+		let output = render_merge_report_text(&MergeReport::default());
+		assert!(!output.contains("[FATAL]"));
 	}
 
 	fn dep_misuse_finding(

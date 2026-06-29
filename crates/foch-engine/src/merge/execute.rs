@@ -136,7 +136,6 @@ pub fn run_merge_with_options(
 	if report.status == MergeReportStatus::Fatal {
 		let execution = merge_execution_result(report);
 		write_merge_report_artifact(&options.out_dir, &execution.report)?;
-		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
 		return Ok(execution);
 	}
 
