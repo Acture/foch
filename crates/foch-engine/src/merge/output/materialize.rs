@@ -206,6 +206,14 @@ pub(crate) fn materialize_merge_internal(
 
 	if plan.has_fatal_errors() {
 		report.status = MergeReportStatus::Fatal;
+		// Surface *why* resolution failed (e.g. missing/stale base data with the
+		// `foch data install` hint) so a fatal merge isn't an opaque `status:
+		// FATAL`, mirroring `foch check`. Only the Err path produces a fatal
+		// plan, so this stays `None` on success and the report is unchanged.
+		report.fatal_reason = workspace_result
+			.as_ref()
+			.err()
+			.map(|err| err.message.clone());
 		write_metadata_only(out_dir, &plan, &report)?;
 		return Ok(report);
 	}

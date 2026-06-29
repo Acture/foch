@@ -257,6 +257,13 @@ pub struct MergeReport {
 	pub status: MergeReportStatus,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_source: Option<String>,
+	/// When `status == Fatal` because workspace resolution failed, the
+	/// underlying cause (e.g. missing/stale installed base data with the
+	/// `foch data install` hint), mirroring what `foch check` surfaces.
+	/// `None` on success — omitted from the report JSON so a non-fatal
+	/// report stays byte-identical.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub fatal_reason: Option<String>,
 	pub manual_conflict_count: usize,
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
