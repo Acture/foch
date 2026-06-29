@@ -150,18 +150,12 @@ fn render_report(results: &[CaseResult]) -> String {
 fn render_rules(results: &[CaseResult]) -> String {
 	// Aggregate foch verdicts across all overlapping files in all cases.
 	let mut agg: BTreeMap<String, usize> = BTreeMap::new();
-	let mut conflict_agg: BTreeMap<String, usize> = BTreeMap::new();
 	let mut total_overlap: usize = 0;
 
 	for r in results {
 		for (v, n) in &r.verdicts {
 			*agg.entry(v.clone()).or_default() += n;
 			total_overlap += n;
-			if v == "conflict_withheld" {
-				// conflict_withheld is its own category — track separately
-				// for the "actionable set" section
-				*conflict_agg.entry(v.clone()).or_default() += n;
-			}
 		}
 	}
 
