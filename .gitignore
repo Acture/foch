@@ -16,5 +16,4 @@ local_merge/
 !.env.example
 
 # merge-quality harness run artifacts (Steam-derived corpus + per-run reports)
-scripts/merge_quality/corpus.json
 scripts/merge_quality/results/
