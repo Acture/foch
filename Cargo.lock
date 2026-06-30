@@ -963,12 +963,14 @@ name = "foch-merge-quality"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "flate2",
  "foch-core",
  "foch-engine",
  "regex",
  "reqwest",
  "serde",
  "serde_json",
+ "tar",
  "tempfile",
  "walkdir",
 ]

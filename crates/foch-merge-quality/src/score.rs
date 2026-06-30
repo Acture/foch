@@ -83,7 +83,25 @@ fn ratio(a: &[String], b: &[String]) -> f64 {
 	for (j, s) in b.iter().enumerate() {
 		b2j.entry(s.as_str()).or_default().push(j);
 	}
-	let matches = matching_total(a, &b2j, 0, a.len(), 0, b.len());
+	// Sum matching-block sizes the way CPython's get_matching_blocks does —
+	// iteratively over an explicit queue of ranges, NOT recursively. Recursion
+	// here overflows the stack on long files (deep left/right splits); the queue
+	// gives the identical total with bounded stack.
+	let mut matches = 0usize;
+	let mut queue = vec![(0usize, a.len(), 0usize, b.len())];
+	while let Some((alo, ahi, blo, bhi)) = queue.pop() {
+		let (i, j, k) = find_longest_match(a, &b2j, alo, ahi, blo, bhi);
+		if k == 0 {
+			continue;
+		}
+		matches += k;
+		if alo < i && blo < j {
+			queue.push((alo, i, blo, j));
+		}
+		if i + k < ahi && j + k < bhi {
+			queue.push((i + k, ahi, j + k, bhi));
+		}
+	}
 	2.0 * matches as f64 / total as f64
 }
 
@@ -120,21 +138,6 @@ fn find_longest_match(
 		j2len = newj2len;
 	}
 	(besti, bestj, bestsize)
-}
-
-fn matching_total(
-	a: &[String],
-	b2j: &HashMap<&str, Vec<usize>>,
-	alo: usize,
-	ahi: usize,
-	blo: usize,
-	bhi: usize,
-) -> usize {
-	let (i, j, k) = find_longest_match(a, b2j, alo, ahi, blo, bhi);
-	if k == 0 {
-		return 0;
-	}
-	k + matching_total(a, b2j, alo, i, blo, j) + matching_total(a, b2j, i + k, ahi, j + k, bhi)
 }
 
 /// Relative paths of every file the compatch hand-merged (the ground-truth set),
@@ -204,10 +207,34 @@ pub fn write_playset(tmp: &Path, mods: &[(String, PathBuf)]) -> io::Result<PathB
 	Ok(dlc_path)
 }
 
+/// Stack size for the merge worker thread. foch's merge planner recurses on
+/// definition nesting; deeply-nested community mod files can exceed the default
+/// ~8 MB main-thread stack (macOS caps it low), so we run the merge on a worker
+/// thread with a generous stack — a pathological file then degrades to a slow
+/// merge rather than aborting the whole harness process.
+const MERGE_STACK_BYTES: usize = 512 * 1024 * 1024;
+
 /// Run a merge of `playset` into `out_dir`, in-process, with the game base
 /// excluded (full-union output). `force` auto-resolves manual conflicts when
 /// true; when false, conflicting files are withheld and surface in the report.
+///
+/// Runs on a large-stack worker thread (see [`MERGE_STACK_BYTES`]).
 pub fn run_merge(
+	playset: &Path,
+	out_dir: &Path,
+	force: bool,
+) -> Result<MergeExecutionResult, MergeError> {
+	let playset = playset.to_path_buf();
+	let out_dir = out_dir.to_path_buf();
+	std::thread::Builder::new()
+		.stack_size(MERGE_STACK_BYTES)
+		.spawn(move || run_merge_inner(&playset, &out_dir, force))
+		.expect("spawn merge worker thread")
+		.join()
+		.expect("merge worker thread panicked")
+}
+
+fn run_merge_inner(
 	playset: &Path,
 	out_dir: &Path,
 	force: bool,

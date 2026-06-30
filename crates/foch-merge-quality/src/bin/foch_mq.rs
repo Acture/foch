@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use foch_merge_quality::{CmdResult, config, fixtures, orchestrate};
+use foch_merge_quality::{CmdResult, archive, config, fixtures, orchestrate};
 
 #[derive(Parser)]
 #[command(
@@ -40,10 +40,17 @@ enum Cmd {
 	},
 	/// Classify how humans resolved overlaps (results.json -> rules.md).
 	Learn,
-	/// Extract scored-file slices into the test fixture tree.
+	/// Score a single compatch, print its CaseResult JSON (internal: `run`
+	/// spawns this per case to isolate foch crashes).
+	#[command(hide = true)]
+	ScoreOne {
+		#[arg(long = "id")]
+		id: String,
+	},
+	/// Extract scored-file slices and pack them into the committed corpus archive.
 	ExtractFixtures {
-		/// Output fixtures dir.
-		#[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))]
+		/// Output archive (gzip-compressed tar of the slice tree).
+		#[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/corpus.tar.gz"))]
 		out: PathBuf,
 		/// Compatch id(s) to extract (repeat; empty = all fully-local).
 		#[arg(long = "id")]
@@ -82,9 +89,19 @@ fn main() -> CmdResult {
 			results_dir: &cli.results_dir,
 			limit,
 			keep,
+			isolate: true,
 		}),
 		Cmd::Learn => orchestrate::learn(&cli.results_dir, &workshop),
-		Cmd::ExtractFixtures { out, ids } => fixtures::extract(&cli.corpus, &workshop, &out, &ids),
+		Cmd::ScoreOne { id } => orchestrate::score_one(&cli.corpus, &workshop, &id),
+		Cmd::ExtractFixtures { out, ids } => {
+			// Stage the slices in a temp dir, then pack them into the single
+			// committed compressed archive (no loose third-party files in-repo).
+			let staging = tempfile::tempdir()?;
+			fixtures::extract(&cli.corpus, &workshop, staging.path(), &ids)?;
+			archive::pack_dir(staging.path(), &out)?;
+			eprintln!("[extract] packed corpus -> {}", out.display());
+			Ok(())
+		}
 		#[cfg(feature = "steam")]
 		Cmd::Discover { max_items } => foch_merge_quality::steam::discover(&cli.corpus, max_items),
 		#[cfg(feature = "steam")]
@@ -100,6 +117,7 @@ fn main() -> CmdResult {
 				results_dir: &cli.results_dir,
 				limit: 0,
 				keep: false,
+				isolate: true,
 			})
 		}
 	}

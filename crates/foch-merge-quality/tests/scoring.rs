@@ -1,13 +1,15 @@
 //! Reproducible, network-free merge-quality scoring over the committed corpus.
 //!
-//! Each fixture under `tests/fixtures/<compatch_id>/` holds three slices —
-//! `a/`, `b/` (the two patched mods) and `compatch/` (the human ground truth) —
-//! containing only the scored OVERLAP files (those present in both mods).
-//! Merging just those reproduces the full-mod verdicts (foch's per-file merge is
-//! local), so this gates merge quality without shipping multi-GB mods.
+//! The corpus is committed as a single compressed archive
+//! `tests/fixtures/corpus.tar.gz` — for each compatch it holds three slices,
+//! `<id>/a`, `<id>/b` (the two patched mods) and `<id>/compatch` (the human
+//! ground truth), containing only the scored OVERLAP files (those present in
+//! both mods). Merging just those reproduces the full-mod verdicts (foch's
+//! per-file merge is local), so this gates merge quality without shipping
+//! multi-GB mods, and as one binary instead of hundreds of loose files.
 //!
 //! `tests/fixtures/expected.json` is the committed baseline: `compatch_id ->
-//! { verdict -> count }`. Regenerate it with `foch-mq run` + `extract-fixtures`
+//! { verdict -> count }`. Regenerate both with `foch-mq run` + `extract-fixtures`
 //! when the corpus grows. See `fixtures/CREDITS.md` for provenance + takedown.
 
 use std::collections::BTreeMap;
@@ -67,8 +69,13 @@ fn committed_corpus_reproduces_baseline() {
 		serde_json::from_str(&expected_text).expect("parse expected.json");
 	assert!(!expected.is_empty(), "baseline has at least one case");
 
+	// Unpack the committed compressed corpus into a temp dir once.
+	let corpus = tempfile::tempdir().expect("corpus unpack dir");
+	foch_merge_quality::archive::unpack(&fixtures_root().join("corpus.tar.gz"), corpus.path())
+		.expect("unpack corpus.tar.gz");
+
 	for (compatch_id, want) in &expected {
-		let got = verdict_tally(&fixtures_root().join(compatch_id));
+		let got = verdict_tally(&corpus.path().join(compatch_id));
 		assert_eq!(
 			&got, want,
 			"merge-quality verdicts drifted for compatch {compatch_id}"

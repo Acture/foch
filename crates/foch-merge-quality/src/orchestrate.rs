@@ -75,6 +75,10 @@ pub struct RunOptions<'a> {
 	pub limit: usize,
 	/// Preserve per-case temp merge directories.
 	pub keep: bool,
+	/// Isolate each merge in a `score-one` child process (CLI over the live
+	/// corpus, where foch may crash). `false` scores in-process — for trusted
+	/// inputs / tests, and required when `current_exe` is not the `foch-mq` bin.
+	pub isolate: bool,
 }
 
 /// Score one compatch case against a flat workshop directory.
@@ -189,15 +193,67 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 		&local[..]
 	};
 
+	// Isolate each case's merge in a child process. foch can stack-overflow
+	// (unbounded recursion in build_merge_plan) on pathological community mods,
+	// which aborts the process uncatchably — so a crash must take down only that
+	// case, not the whole run. Each child is `foch-mq score-one --id <id>`.
+	let exe = std::env::current_exe()?;
+	let (mut ok, mut skipped) = (0usize, 0usize);
 	let mut results: Vec<CaseResult> = Vec::with_capacity(to_score.len());
 	for case in to_score {
-		let cr = score_case(case, opts.workshop_dir, opts.keep)?;
-		results.push(cr);
+		let scored: Option<CaseResult> = if opts.isolate {
+			let output = std::process::Command::new(&exe)
+				.arg("--corpus")
+				.arg(opts.corpus)
+				.arg("--workshop-dir")
+				.arg(opts.workshop_dir)
+				.arg("score-one")
+				.arg("--id")
+				.arg(&case.compatch_id)
+				.output()?;
+			if output.status.success() {
+				serde_json::from_slice::<CaseResult>(&output.stdout).ok()
+			} else {
+				eprintln!(
+					"  [run] skip {}: foch could not merge it (status {:?}) — likely a foch crash",
+					case.compatch_id,
+					output.status.code()
+				);
+				None
+			}
+		} else {
+			score_case(case, opts.workshop_dir, opts.keep).ok()
+		};
+		match scored {
+			Some(cr) => {
+				results.push(cr);
+				ok += 1;
+			}
+			None => skipped += 1,
+		}
 	}
+	eprintln!("[run] scored {ok}, skipped {skipped}");
 
 	crate::report::write_results_json(opts.results_dir, &results)?;
 	crate::report::write_report_md(opts.results_dir, &results)?;
 
+	Ok(())
+}
+
+/// Score a single case by id and print its [`CaseResult`] as JSON to stdout.
+/// This is the per-case worker that the crash-isolating [`run`] spawns as a
+/// child process; if foch aborts here, only this child dies.
+pub fn score_one(corpus: &Path, workshop_dir: &Path, id: &str) -> CmdResult {
+	let text = std::fs::read_to_string(corpus)?;
+	let corpus = crate::corpus::Corpus::from_json(&text)?;
+	let case = corpus
+		.cases
+		.iter()
+		.find(|c| c.compatch_id == id)
+		.ok_or_else(|| format!("compatch {id} not found in corpus"))?;
+	let result = score_case(case, workshop_dir, false)?;
+	// stdout = the JSON result (foch's [merge] logs go to stderr, kept separate).
+	println!("{}", serde_json::to_string(&result)?);
 	Ok(())
 }
 

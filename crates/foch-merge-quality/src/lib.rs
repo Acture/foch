@@ -15,6 +15,7 @@
 //! `steam` feature (network + external tooling); everything else is offline and
 //! runs over the committed fixtures / a local workshop directory.
 
+pub mod archive;
 pub mod config;
 pub mod corpus;
 pub mod fixtures;

@@ -1,3 +1,0 @@
-is_expanded_mod_active = {
-	has_global_flag = $mod$_expanded_mod_active
-}

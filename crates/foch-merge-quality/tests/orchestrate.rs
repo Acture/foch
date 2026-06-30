@@ -38,11 +38,15 @@ fn copy_dir_all(src: &Path, dst: &Path) {
 	}
 }
 
-/// Build a temp workshop dir from the fixture slice for compatch 3630876155.
+/// Build a temp workshop dir from the fixture slice for compatch 3630876155,
+/// unpacked from the committed compressed corpus archive.
 ///
 /// Returns (TempDir, workshop_path) — hold the TempDir alive for the test.
 fn build_workshop_3630876155() -> (tempfile::TempDir, PathBuf) {
-	let fixture = fixtures_root().join("3630876155");
+	let unpacked = tempfile::tempdir().expect("unpack dir");
+	foch_merge_quality::archive::unpack(&fixtures_root().join("corpus.tar.gz"), unpacked.path())
+		.expect("unpack corpus.tar.gz");
+	let fixture = unpacked.path().join("3630876155");
 	let tmp = tempfile::tempdir().expect("temp dir");
 	let ws = tmp.path().to_path_buf();
 
@@ -109,6 +113,7 @@ fn run_writes_artifacts() {
 		results_dir: &results_dir,
 		limit: 0,
 		keep: false,
+		isolate: false, // in-process: the test binary is not `foch-mq`
 	})
 	.expect("run succeeds");
 
