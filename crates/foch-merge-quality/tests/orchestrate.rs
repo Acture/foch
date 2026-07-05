@@ -52,7 +52,7 @@ fn score_case_verdict_tally() {
 	assert_eq!(result.overlap_files, 7, "overlap file count");
 
 	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("diverges_formatting".to_string(), 5),
+		("diverges_ast".to_string(), 5),
 		("matches_human".to_string(), 2),
 	]);
 	assert_eq!(result.verdicts, expected, "verdict tally");
@@ -100,7 +100,7 @@ fn run_writes_artifacts() {
 	assert_eq!(records[0].overlap_files, 7);
 
 	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("diverges_formatting".to_string(), 5),
+		("diverges_ast".to_string(), 5),
 		("matches_human".to_string(), 2),
 	]);
 	assert_eq!(records[0].verdicts, expected);
