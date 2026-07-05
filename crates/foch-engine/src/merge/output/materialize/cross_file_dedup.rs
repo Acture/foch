@@ -265,6 +265,7 @@ fn extract_key_value_fingerprints(
 			child_key_field,
 			child_types,
 		),
+		MergeKeySource::ChildFieldValue { .. } => extract_assignment_key_values(parsed),
 		MergeKeySource::LeafPath => normalize_defines_file(parsed)
 			.map(|fragments| {
 				fragments

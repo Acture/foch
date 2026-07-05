@@ -7,8 +7,10 @@ use crate::cache::{
 	unpack_modset_tarball,
 };
 
-// Bump when merge-report semantics change so cached artifacts don't hide new metadata.
-const MODSET_CACHE_FORMAT_VERSION: &str = "modset-cache-include-base-gfx-effects-union-provenance-trace-gui-scroll-shared-base-union-empty-noop-v9";
+// SemVer for the modset-cache schema/merge-semantics payload. Bump the major
+// version for incompatible output semantics so stale artifacts cannot hide a
+// changed merge engine.
+const MODSET_CACHE_VERSION: &str = "11.3.0";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;
@@ -193,7 +195,7 @@ fn build_modset_cache_context(
 		resolution_config_path,
 	));
 	let foch_version = format!(
-		"{} {MODSET_CACHE_FORMAT_VERSION} include_base={include_base} provenance={provenance} gui_scroll_merge={gui_scroll_merge} shared_base_union=true empty_noop=true",
+		"{} modset_cache={MODSET_CACHE_VERSION} include_base={include_base} provenance={provenance} gui_scroll_merge={gui_scroll_merge}",
 		env!("CARGO_PKG_VERSION"),
 	);
 	let key = compute_modset_cache_key(

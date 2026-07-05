@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use foch_merge_quality::{CmdResult, archive, config, fixtures, orchestrate};
+use foch_merge_quality::{CmdResult, archive, config, fixtures, orchestrate, symbols};
 
 #[derive(Parser)]
 #[command(
@@ -40,6 +40,12 @@ enum Cmd {
 	},
 	/// Classify how humans resolved overlaps (results.json -> rules.md).
 	Learn,
+	/// Scan full local mods for compatch-anchored cross-file symbol conflicts.
+	Symbols {
+		/// Cap on cases scanned (0 = all).
+		#[arg(long, default_value_t = 0)]
+		limit: usize,
+	},
 	/// Score a single compatch, print its CaseResult JSON (internal: `run`
 	/// spawns this per case to isolate foch crashes).
 	#[command(hide = true)]
@@ -47,9 +53,9 @@ enum Cmd {
 		#[arg(long = "id")]
 		id: String,
 	},
-	/// Extract scored-file slices and pack them into the committed corpus archive.
+	/// Extract full local cases and pack them into the committed corpus archive.
 	ExtractFixtures {
-		/// Output archive (gzip-compressed tar of the slice tree).
+		/// Output archive (gzip-compressed tar of the fixture tree).
 		#[arg(long, default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/corpus.tar.gz"))]
 		out: PathBuf,
 		/// Compatch id(s) to extract (repeat; empty = all fully-local).
@@ -92,6 +98,7 @@ fn main() -> CmdResult {
 			isolate: true,
 		}),
 		Cmd::Learn => orchestrate::learn(&cli.results_dir, &workshop),
+		Cmd::Symbols { limit } => symbols::run(&cli.corpus, &workshop, &cli.results_dir, limit),
 		Cmd::ScoreOne { id } => orchestrate::score_one(&cli.corpus, &workshop, &id),
 		Cmd::ExtractFixtures { out, ids } => {
 			// Stage the slices in a temp dir, then pack them into the single

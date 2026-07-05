@@ -61,6 +61,22 @@ pub enum ScalarMergePolicy {
 	Max,
 	/// Parse both as f64 and take the minimum.
 	Min,
+	/// Highest-precedence sibling assignment wins. Explicit opt-in for content
+	/// families where conflicting leaf assignments, including opaque
+	/// block-valued script/effect wrappers, are ordinary load-order overrides
+	/// inside an otherwise recursive structural merge.
+	LastWriter,
+	/// For GUI coordinate leaves only: numeric `x`/`y` scalar conflicts keep
+	/// the lowest-precedence contributor. Other scalar leaves still conflict.
+	/// This models compatibility patches that preserve the base layout anchor
+	/// while recursively unioning sibling GUI edits; it is intentionally much
+	/// narrower than `LastWriter`.
+	CoordinateFirstWriter,
+	/// GUI-specific scalar tie-breaker for same-name widgets: numeric layout
+	/// coordinates/bounds keep the lowest-precedence contributor, while sprite
+	/// references keep the highest-precedence contributor. Other scalar leaves
+	/// still conflict.
+	GuiWidget,
 }
 
 /// How to merge bare list items (entries without assignment keys).
@@ -138,6 +154,8 @@ pub enum NamedContainerPolicy {
 /// Bundle of policies that control how `deep_merge` resolves conflicts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergePolicies {
+	pub merge_key_source: MergeKeySource,
+	pub nested_merge_key_source: MergeKeySource,
 	pub scalar: ScalarMergePolicy,
 	pub list: ListMergePolicy,
 	pub block: BlockMergePolicy,
@@ -297,9 +315,10 @@ pub enum ModuleNameRule {
 	FallbackParent,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MergeKeySource {
 	/// Top-level named assignments are the merge units (e.g. `effect_name = { ... }`).
+	#[default]
 	AssignmentKey,
 	/// Merge key is extracted from an inner field value (e.g. `id` inside event blocks).
 	FieldValue(&'static str),
@@ -311,6 +330,14 @@ pub enum MergeKeySource {
 	/// semantics inside the container.
 	ContainerChildFieldValue {
 		containers: &'static [&'static str],
+		child_key_field: &'static str,
+		child_types: &'static [&'static str],
+	},
+	/// Merge units are direct child assignments in the current block, keyed by
+	/// an inner scalar field. Used for recursive merges inside a
+	/// `ContainerChildFieldValue` unit, where the outer container has already
+	/// been stripped from the local diff body.
+	ChildFieldValue {
 		child_key_field: &'static str,
 		child_types: &'static [&'static str],
 	},
@@ -328,6 +355,19 @@ struct ContainerChildFieldValueSerde<'a> {
 #[derive(Deserialize)]
 struct ContainerChildFieldValueOwned {
 	containers: Vec<String>,
+	child_key_field: String,
+	#[serde(default)]
+	child_types: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ChildFieldValueSerde<'a> {
+	child_key_field: &'a str,
+	child_types: &'a [&'a str],
+}
+
+#[derive(Deserialize)]
+struct ChildFieldValueOwned {
 	child_key_field: String,
 	#[serde(default)]
 	child_types: Vec<String>,
@@ -357,6 +397,19 @@ impl Serialize for MergeKeySource {
 				};
 				let mut map = serializer.serialize_map(Some(1))?;
 				map.serialize_entry("container_child_field_value", &spec)?;
+				map.end()
+			}
+			MergeKeySource::ChildFieldValue {
+				child_key_field,
+				child_types,
+			} => {
+				use serde::ser::SerializeMap;
+				let spec = ChildFieldValueSerde {
+					child_key_field,
+					child_types,
+				};
+				let mut map = serializer.serialize_map(Some(1))?;
+				map.serialize_entry("child_field_value", &spec)?;
 				map.end()
 			}
 			MergeKeySource::LeafPath => serializer.serialize_str("leaf_path"),
@@ -421,9 +474,29 @@ impl<'de> Deserialize<'de> for MergeKeySource {
 							child_types,
 						})
 					}
+					"child_field_value" => {
+						let spec: ChildFieldValueOwned = map.next_value()?;
+						let child_key_field = Box::leak(spec.child_key_field.into_boxed_str());
+						let child_types = spec
+							.child_types
+							.into_iter()
+							.map(|child_type| {
+								Box::leak(child_type.into_boxed_str()) as &'static str
+							})
+							.collect::<Vec<_>>();
+						let child_types = Box::leak(child_types.into_boxed_slice());
+						Ok(MergeKeySource::ChildFieldValue {
+							child_key_field,
+							child_types,
+						})
+					}
 					_ => Err(de::Error::unknown_field(
 						&key,
-						&["field_value", "container_child_field_value"],
+						&[
+							"field_value",
+							"container_child_field_value",
+							"child_field_value",
+						],
 					)),
 				}
 			}
@@ -493,6 +566,8 @@ impl ContentFamilyDescriptorBuilder {
 
 	pub fn merge_key(mut self, source: MergeKeySource) -> Self {
 		self.merge_key_source = Some(source);
+		self.merge_policies.merge_key_source = source;
+		self.merge_policies.nested_merge_key_source = nested_merge_key_source(source);
 		self
 	}
 
@@ -582,6 +657,8 @@ impl ContentFamilyDescriptor {
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
 			merge_policies: MergePolicies {
+				merge_key_source: MergeKeySource::AssignmentKey,
+				nested_merge_key_source: MergeKeySource::AssignmentKey,
 				scalar: ScalarMergePolicy::Conflict,
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
@@ -614,6 +691,8 @@ impl ContentFamilyDescriptor {
 			merge_key_source: None,
 			conflict_policy: ConflictPolicy::Rename,
 			merge_policies: MergePolicies {
+				merge_key_source: MergeKeySource::AssignmentKey,
+				nested_merge_key_source: MergeKeySource::AssignmentKey,
 				scalar: ScalarMergePolicy::Conflict,
 				list: ListMergePolicy::Union,
 				block: BlockMergePolicy::Recursive,
@@ -624,6 +703,20 @@ impl ContentFamilyDescriptor {
 				edit_wins_over_remove: false,
 			},
 		}
+	}
+}
+
+fn nested_merge_key_source(source: MergeKeySource) -> MergeKeySource {
+	match source {
+		MergeKeySource::ContainerChildFieldValue {
+			child_key_field,
+			child_types,
+			..
+		} => MergeKeySource::ChildFieldValue {
+			child_key_field,
+			child_types,
+		},
+		_ => MergeKeySource::AssignmentKey,
 	}
 }
 

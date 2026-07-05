@@ -1,9 +1,9 @@
 //! Pack/unpack the committed corpus as a single gzip-compressed tar archive, so
-//! the repo holds one compressed binary instead of hundreds of loose
-//! third-party mod-file excerpts.
+//! the repo holds one compressed binary instead of thousands of loose
+//! third-party mod files.
 //!
 //! Packing is **deterministic** — entries are sorted by path and all
-//! mtime/uid/gid/mode metadata is zeroed — so the same slice tree always
+//! mtime/uid/gid/mode metadata is zeroed — so the same fixture tree always
 //! produces byte-identical `corpus.tar.gz` (no git churn, verifiable diffs).
 
 use std::fs::File;

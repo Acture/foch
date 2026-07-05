@@ -165,7 +165,7 @@ pub(super) fn try_recursive_block_merge(
 			new_body,
 			&[],
 			0,
-			MergeKeySource::AssignmentKey,
+			policies.nested_merge_key_source,
 		);
 		mod_patches.push((mod_id.clone(), *prec, patches));
 	}
@@ -214,7 +214,7 @@ pub(super) fn try_recursive_block_merge(
 	let merged_body = super::super::patch_apply::apply_patches(
 		ancestor_body,
 		&resolved_patches,
-		MergeKeySource::AssignmentKey,
+		policies.nested_merge_key_source,
 	);
 	let merged_stmt = with_block_body(ancestor_stmt, merged_body);
 
@@ -240,6 +240,116 @@ pub(super) fn try_recursive_block_merge(
 			new_statement: merged_stmt,
 		},
 		strategy: "recursive_block_merge".to_string(),
+		contributing_mods: mods,
+	})
+}
+
+/// Attempt to deep-merge multiple mods' `InsertNode` patches at the same
+/// address by treating the inserted block bodies as edits from an empty
+/// ancestor. This covers full-union merges without game base where sibling
+/// mods both introduce the same top-level definition, but with complementary
+/// children. Scalar disagreements inside the inserted block still surface as
+/// nested conflicts through the normal leaf resolvers.
+pub(super) fn try_recursive_insert_merge(
+	addr: &PatchAddress,
+	attributed: &[AttributedPatch],
+	policies: &MergePolicies,
+	stats: &mut PatchMergeStats,
+) -> Option<PatchResolution> {
+	if attributed.len() < 2 {
+		return None;
+	}
+
+	let mut inserts: Vec<(String, usize, &AstStatement, AstPath, String)> =
+		Vec::with_capacity(attributed.len());
+	for a in attributed {
+		match &a.patch {
+			ClausewitzPatch::InsertNode {
+				statement,
+				path,
+				key,
+			} => inserts.push((
+				a.mod_id.clone(),
+				a.precedence,
+				statement,
+				path.clone(),
+				key.clone(),
+			)),
+			_ => return None,
+		}
+	}
+
+	let ancestor_body: Vec<AstStatement> = Vec::new();
+	let mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)> =
+		Vec::with_capacity(inserts.len());
+	for (mod_id, prec, statement, _path, _key) in &inserts {
+		let new_body = statement_block_body(statement)?;
+		let patches = super::super::patch::diff_block_bodies(
+			&ancestor_body,
+			new_body,
+			&[],
+			0,
+			policies.nested_merge_key_source,
+		);
+		mod_patches.push((mod_id.clone(), *prec, patches));
+	}
+
+	let mut handler = DeferHandler;
+	let nested = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
+
+	if !nested.conflicts.is_empty() {
+		let reasons: Vec<String> = nested
+			.conflicts
+			.iter()
+			.filter_map(|c| match c {
+				PatchResolution::Conflict {
+					address, reason, ..
+				} => Some(format!("{}: {}", address.key, reason)),
+				_ => None,
+			})
+			.collect();
+		stats.conflict_patches += 1;
+		return Some(PatchResolution::Conflict {
+			address: addr.clone(),
+			reason: format!(
+				"deep merge of inserted block has {} unresolved sub-conflict(s): {}",
+				nested.conflicts.len(),
+				reasons.join("; ")
+			),
+			patches: attributed.to_vec(),
+		});
+	}
+
+	let resolved_patches: Vec<ClausewitzPatch> = nested
+		.resolved
+		.into_iter()
+		.filter_map(|r| match r {
+			PatchResolution::Resolved(p) => Some(p),
+			PatchResolution::AutoMerged { result, .. } => Some(result),
+			PatchResolution::Conflict { .. } => None,
+		})
+		.collect();
+
+	let merged_body = super::super::patch_apply::apply_patches(
+		&ancestor_body,
+		&resolved_patches,
+		policies.nested_merge_key_source,
+	);
+	let representative = inserts
+		.iter()
+		.max_by_key(|(_, prec, _, _, _)| *prec)
+		.unwrap();
+	let merged_stmt = with_block_body(representative.2, merged_body);
+
+	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	stats.auto_merged_patches += 1;
+	Some(PatchResolution::AutoMerged {
+		result: ClausewitzPatch::InsertNode {
+			path: representative.3.clone(),
+			key: representative.4.clone(),
+			statement: merged_stmt,
+		},
+		strategy: "recursive_insert_merge".to_string(),
 		contributing_mods: mods,
 	})
 }
@@ -1265,8 +1375,9 @@ pub(super) fn synthesize_boolean_or(
 ///
 /// * `AssignmentKey` / `ContainerChildKey` — rename the top-level assignment
 ///   key (e.g. `pragmatic_sanction` → `pragmatic_sanction_mod_a`).
-/// * `ContainerChildFieldValue` — rename the child assignment's inner identity
-///   field when present (e.g. `name = widget` → `name = widget_mod_a`).
+/// * `ContainerChildFieldValue` / `ChildFieldValue` — rename the child
+///   assignment's inner identity field when present (e.g. `name = widget` →
+///   `name = widget_mod_a`).
 /// * `FieldValue(field)` — rename the inner scalar field that supplies the
 ///   merge key (e.g. `id = test.1` → `id = test.1_mod_a`).
 /// * `LeafPath` — the path itself is the identity and cannot be safely
@@ -1286,6 +1397,9 @@ pub fn rename_for_conflict(
 			rename_top_level_key(stmt, mod_id)
 		}
 		MergeKeySource::ContainerChildFieldValue {
+			child_key_field, ..
+		} => rename_inner_field_value(stmt, child_key_field, mod_id),
+		MergeKeySource::ChildFieldValue {
 			child_key_field, ..
 		} => rename_inner_field_value(stmt, child_key_field, mod_id),
 		MergeKeySource::FieldValue(field) => rename_inner_field_value(stmt, field, mod_id),

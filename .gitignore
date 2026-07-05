@@ -15,5 +15,9 @@ local_merge/
 .env.*
 !.env.example
 
-# merge-quality harness run artifacts (per-run reports; corpus.json is committed)
+# merge-quality harness run artifacts. Committed corpus fixtures live under
+# crates/foch-merge-quality/tests/fixtures/.
 crates/foch-merge-quality/results/
+scripts/merge_quality/corpus.json
+scripts/merge_quality/results/
+scripts/merge_quality/__pycache__/

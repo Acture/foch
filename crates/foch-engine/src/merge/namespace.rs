@@ -58,6 +58,7 @@ fn extract_keys(parsed: &ParsedScriptFile, merge_key_source: MergeKeySource) -> 
 			child_key_field,
 			child_types,
 		),
+		MergeKeySource::ChildFieldValue { .. } => extract_assignment_keys(parsed),
 		MergeKeySource::LeafPath => extract_defines_keys(parsed),
 	}
 }

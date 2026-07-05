@@ -310,7 +310,7 @@ struct FuzzyBodyDiff {
 /// Combined similarity score in `[0, 1]` — higher means more rename-like.
 /// Returns `None` for candidates that fail the cheap shape / Jaccard pre-gates
 /// so the caller can short-circuit without paying the leaf-pair scan.
-fn fuzzy_rename_similarity(removed: &AstValue, inserted: &AstValue) -> Option<f32> {
+pub(crate) fn fuzzy_rename_similarity(removed: &AstValue, inserted: &AstValue) -> Option<f32> {
 	let removed_pairs = collect_keypath_value_pairs(removed);
 	let inserted_pairs = collect_keypath_value_pairs(inserted);
 
@@ -581,6 +581,10 @@ fn extract_keyed_entries(
 			child_key_field,
 			child_types,
 		),
+		MergeKeySource::ChildFieldValue {
+			child_key_field,
+			child_types,
+		} => extract_child_field_value_entries(statements, child_key_field, child_types),
 		MergeKeySource::LeafPath => extract_leaf_entries(statements),
 	}
 }
@@ -689,6 +693,24 @@ fn extract_container_child_field_value_entries(
 		}
 	}
 	out
+}
+
+fn extract_child_field_value_entries(
+	statements: &[AstStatement],
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Vec<KeyedEntry> {
+	statements
+		.iter()
+		.filter_map(|stmt| {
+			let merge_key = container_child_field_value_key(stmt, child_key_field, child_types)?;
+			Some(KeyedEntry {
+				merge_key,
+				statement: stmt.clone(),
+				path_prefix: Vec::new(),
+			})
+		})
+		.collect()
 }
 
 fn container_child_field_value_key(

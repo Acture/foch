@@ -163,6 +163,13 @@ fn per_entry_noop_top_level_key(
 				key: key.clone(),
 			})
 		}
+		MergeKeySource::ChildFieldValue { .. } => match statement {
+			AstStatement::Assignment { key, .. } => Some(PerEntryNoopLookupKey {
+				path: Vec::new(),
+				key: key.clone(),
+			}),
+			_ => None,
+		},
 		MergeKeySource::ContainerChildKey | MergeKeySource::LeafPath => None,
 	}
 }

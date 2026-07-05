@@ -5,11 +5,11 @@
 //! `Vec<AstStatement>` that can be fed to `emit::emit_clausewitz_statements`.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
+use foch_language::analyzer::semantic_index::{ParsedScriptFile, is_decision_container_key};
 
 use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
 
@@ -170,6 +170,44 @@ fn apply_at_level(
 		}
 	}
 
+	if current_path.is_empty() && merge_key_source == MergeKeySource::ContainerChildKey {
+		let missing_containers: BTreeSet<String> = deeper
+			.iter()
+			.filter_map(|patch| patch_path(patch).first().cloned())
+			.filter(|key| is_decision_container_key(key))
+			.collect();
+		for container in missing_containers {
+			let exists = result
+				.iter()
+				.any(|stmt| assignment_key(stmt).is_some_and(|key| key == container));
+			if exists {
+				continue;
+			}
+			let container_path = vec![container.clone()];
+			let deeper_for_container = collect_deeper_patches(&deeper, &container, depth);
+			if deeper_for_container.is_empty() {
+				continue;
+			}
+			let items = apply_at_level(
+				&[],
+				&deeper_for_container,
+				&container_path,
+				MergeKeySource::AssignmentKey,
+			);
+			if !items.is_empty() {
+				result.push(AstStatement::Assignment {
+					key: container,
+					key_span: dummy_span(),
+					value: AstValue::Block {
+						items,
+						span: dummy_span(),
+					},
+					span: dummy_span(),
+				});
+			}
+		}
+	}
+
 	// InsertNode / AppendListItem / AppendBlockItem add new statements.
 	for patch in &local {
 		match patch {
@@ -291,6 +329,14 @@ fn statement_key(
 		return container_child_field_value_key(stmt, child_key_field, child_types);
 	}
 
+	if let MergeKeySource::ChildFieldValue {
+		child_key_field,
+		child_types,
+	} = merge_key_source
+	{
+		return container_child_field_value_key(stmt, child_key_field, child_types);
+	}
+
 	// Outside configured named containers, nested children use AssignmentKey semantics.
 	if !current_path.is_empty() {
 		return assignment_key(stmt);
@@ -300,6 +346,7 @@ fn statement_key(
 		| MergeKeySource::LeafPath
 		| MergeKeySource::ContainerChildKey
 		| MergeKeySource::ContainerChildFieldValue { .. } => assignment_key(stmt),
+		MergeKeySource::ChildFieldValue { .. } => unreachable!("handled before nested fallback"),
 		MergeKeySource::FieldValue(field) => field_value_key(stmt, field),
 	}
 }
@@ -901,6 +948,29 @@ mod tests {
 			assert!(
 				ast_eq_modulo_span(a, b),
 				"ContainerChildKey round-trip mismatch: {a:?} vs {b:?}"
+			);
+		}
+	}
+
+	#[test]
+	fn container_child_key_diff_apply_recreates_missing_decision_container() {
+		let decision = block(
+			"pragmatic_sanction_decision",
+			vec![assignment("potential", scalar("yes"))],
+		);
+		let overlay = vec![block("country_decisions", vec![decision])];
+
+		let result = merge_single_mod(
+			&make_parsed(Vec::new()),
+			&make_parsed(overlay.clone()),
+			MergeKeySource::ContainerChildKey,
+		);
+
+		assert_eq!(result.len(), overlay.len());
+		for (a, b) in result.iter().zip(overlay.iter()) {
+			assert!(
+				ast_eq_modulo_span(a, b),
+				"ContainerChildKey empty-base apply mismatch: {a:?} vs {b:?}"
 			);
 		}
 	}

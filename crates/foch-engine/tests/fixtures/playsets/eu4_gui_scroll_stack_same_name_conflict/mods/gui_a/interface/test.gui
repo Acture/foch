@@ -2,6 +2,7 @@ guiTypes = {
 	containerWindowType = {
 		name = "shared_window"
 		position = { x = 10 y = 20 }
+		Orientation = "UPPER_LEFT"
 		iconType = {
 			name = "unique_icon_a"
 			spriteType = "GFX_unique_a"

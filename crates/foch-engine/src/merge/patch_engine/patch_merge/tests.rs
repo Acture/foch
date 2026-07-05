@@ -55,6 +55,27 @@ fn edit_wins_policies() -> MergePolicies {
 	}
 }
 
+fn scalar_last_writer_policies() -> MergePolicies {
+	MergePolicies {
+		scalar: ScalarMergePolicy::LastWriter,
+		..Default::default()
+	}
+}
+
+fn coordinate_first_writer_policies() -> MergePolicies {
+	MergePolicies {
+		scalar: ScalarMergePolicy::CoordinateFirstWriter,
+		..Default::default()
+	}
+}
+
+fn gui_widget_policies() -> MergePolicies {
+	MergePolicies {
+		scalar: ScalarMergePolicy::GuiWidget,
+		..Default::default()
+	}
+}
+
 fn merge_patch_sets_with_defer(
 	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
@@ -453,6 +474,88 @@ fn different_insert_nodes_under_recurse_policy_emit_conflict() {
 	}
 }
 
+fn rebel_insert_patch(key: &str, prestige: &str, demand_key: &str) -> ClausewitzPatch {
+	ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: key.to_string(),
+		statement: assignment_block(
+			key,
+			vec![
+				assignment("gfx_type", scalar("culture_province")),
+				assignment("morale", number("1.1")),
+				assignment("demands_description", scalar(demand_key)),
+				assignment("add_prestige", number(prestige)),
+			],
+		),
+	}
+}
+
+#[test]
+fn prefixed_single_root_insert_rename_keeps_highest_precedence() {
+	let old = rebel_insert_patch("ita_monarchy_rebels", "-10", "ita_monarchy_rebels_demand");
+	let new = rebel_insert_patch(
+		"fee_ita_monarchy_rebels",
+		"-25",
+		"fee_ita_monarchy_rebels_demand",
+	);
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("expanded".into(), 0, vec![old]),
+			("family".into(), 1, vec![new.clone()]),
+		],
+		&default_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::Resolved(ClausewitzPatch::InsertNode { key, statement, .. }) => {
+			assert_eq!(key, "fee_ita_monarchy_rebels");
+			assert_eq!(
+				statement,
+				match &new {
+					ClausewitzPatch::InsertNode { statement, .. } => statement,
+					_ => unreachable!(),
+				}
+			);
+		}
+		other => panic!("expected single retained InsertNode, got: {other:?}"),
+	}
+}
+
+#[test]
+fn single_root_insert_dedup_requires_prefixed_key_pair() {
+	let alpha = rebel_insert_patch("alpha_monarchy_rebels", "-10", "alpha_rebels_demand");
+	let beta = rebel_insert_patch("beta_monarchy_rebels", "-25", "beta_rebels_demand");
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("alpha".into(), 0, vec![alpha]),
+			("beta".into(), 1, vec![beta]),
+		],
+		&default_policies(),
+	);
+
+	let mut keys: Vec<String> = result
+		.resolved
+		.iter()
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Resolved(ClausewitzPatch::InsertNode { key, .. }) => Some(key.clone()),
+			_ => None,
+		})
+		.collect();
+	keys.sort();
+	assert_eq!(
+		keys,
+		vec![
+			"alpha_monarchy_rebels".to_string(),
+			"beta_monarchy_rebels".to_string()
+		]
+	);
+	assert_eq!(result.conflicts.len(), 0);
+}
+
 #[test]
 fn same_append_list_item_deduplicated() {
 	let patch = ClausewitzPatch::AppendListItem {
@@ -540,6 +643,360 @@ fn different_set_value_sibling_conflict() {
 			assert!(reason.contains("15"));
 		}
 		other => panic!("expected Conflict, got: {other:?}"),
+	}
+}
+
+#[test]
+fn last_writer_set_value_policy_picks_highest_precedence() {
+	let patch_a = ClausewitzPatch::SetValue {
+		path: vec!["root".into()],
+		key: "tax".into(),
+		old_value: number("5"),
+		new_value: number("10"),
+	};
+	let patch_b = ClausewitzPatch::SetValue {
+		path: vec!["root".into()],
+		key: "tax".into(),
+		old_value: number("5"),
+		new_value: number("15"),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b.clone()]),
+		],
+		&scalar_last_writer_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			contributing_mods,
+		} => {
+			assert_eq!(strategy, "LastWriter");
+			assert_eq!(
+				contributing_mods,
+				&vec!["mod_a".to_string(), "mod_b".to_string()]
+			);
+			assert_eq!(patch, &patch_b);
+		}
+		other => panic!("expected LastWriter AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn coordinate_first_writer_set_value_policy_picks_lowest_precedence_for_xy() {
+	let patch_a = ClausewitzPatch::SetValue {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:provinceview".into(),
+			"hide_position".into(),
+		],
+		key: "x".into(),
+		old_value: number("0"),
+		new_value: number("-1000"),
+	};
+	let patch_b = ClausewitzPatch::SetValue {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:provinceview".into(),
+			"hide_position".into(),
+		],
+		key: "x".into(),
+		old_value: number("0"),
+		new_value: number("-8"),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a.clone()]),
+			("mod_b".into(), 2, vec![patch_b]),
+		],
+		&coordinate_first_writer_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "CoordinateFirstWriter");
+			assert_eq!(patch, &patch_a);
+		}
+		other => panic!("expected CoordinateFirstWriter AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn coordinate_first_writer_policy_keeps_non_coordinate_scalars_conflicting() {
+	let patch_a = ClausewitzPatch::SetValue {
+		path: vec!["guiTypes".into(), "windowType:provinceview".into()],
+		key: "orientation".into(),
+		old_value: scalar("LOWER_LEFT"),
+		new_value: scalar("LOWER_LEFT"),
+	};
+	let patch_b = ClausewitzPatch::SetValue {
+		path: vec!["guiTypes".into(), "windowType:provinceview".into()],
+		key: "orientation".into(),
+		old_value: scalar("LOWER_LEFT"),
+		new_value: scalar("CENTER"),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b]),
+		],
+		&coordinate_first_writer_policies(),
+	);
+
+	assert_eq!(result.resolved.len(), 0);
+	assert_eq!(result.conflicts.len(), 1);
+}
+
+#[test]
+fn gui_widget_policy_picks_lowest_precedence_for_layout_bounds() {
+	let patch_a = ClausewitzPatch::SetValue {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:provinceview".into(),
+			"instantTextBoxType:income_label".into(),
+		],
+		key: "maxWidth".into(),
+		old_value: number("100"),
+		new_value: number("150"),
+	};
+	let patch_b = ClausewitzPatch::SetValue {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:provinceview".into(),
+			"instantTextBoxType:income_label".into(),
+		],
+		key: "maxWidth".into(),
+		old_value: number("100"),
+		new_value: number("200"),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a.clone()]),
+			("mod_b".into(), 2, vec![patch_b]),
+		],
+		&gui_widget_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "GuiLayoutFirstWriter");
+			assert_eq!(patch, &patch_a);
+		}
+		other => panic!("expected GuiLayoutFirstWriter AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn gui_widget_policy_picks_highest_precedence_for_sprite_refs() {
+	let patch_a = ClausewitzPatch::InsertNode {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:dlc_entry".into(),
+			"iconType:dlc_icon_bg".into(),
+		],
+		key: "spriteType".into(),
+		statement: assignment("spriteType", scalar("GFX_dlc_icon_even_bg_flip")),
+	};
+	let patch_b = ClausewitzPatch::InsertNode {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:dlc_entry".into(),
+			"iconType:dlc_icon_bg".into(),
+		],
+		key: "spriteType".into(),
+		statement: assignment("spriteType", scalar("gfx_emptyness")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b.clone()]),
+		],
+		&gui_widget_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "GuiReferenceLastWriter");
+			assert_eq!(patch, &patch_b);
+		}
+		other => panic!("expected GuiReferenceLastWriter AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn gui_widget_policy_keeps_unlisted_scalars_conflicting() {
+	let patch_a = ClausewitzPatch::SetValue {
+		path: vec!["guiTypes".into(), "windowType:provinceview".into()],
+		key: "orientation".into(),
+		old_value: scalar("LOWER_LEFT"),
+		new_value: scalar("LOWER_LEFT"),
+	};
+	let patch_b = ClausewitzPatch::SetValue {
+		path: vec!["guiTypes".into(), "windowType:provinceview".into()],
+		key: "orientation".into(),
+		old_value: scalar("LOWER_LEFT"),
+		new_value: scalar("CENTER"),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b]),
+		],
+		&gui_widget_policies(),
+	);
+
+	assert_eq!(result.resolved.len(), 0);
+	assert_eq!(result.conflicts.len(), 1);
+}
+
+#[test]
+fn last_writer_scalar_insert_policy_picks_highest_precedence() {
+	let patch_a = ClausewitzPatch::InsertNode {
+		path: vec!["root".into()],
+		key: "factor".into(),
+		statement: assignment("factor", number("1")),
+	};
+	let patch_b = ClausewitzPatch::InsertNode {
+		path: vec!["root".into()],
+		key: "factor".into(),
+		statement: assignment("factor", number("1000")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b.clone()]),
+		],
+		&scalar_last_writer_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "LastWriter");
+			assert_eq!(patch, &patch_b);
+		}
+		other => panic!("expected LastWriter AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn coordinate_first_writer_scalar_insert_policy_picks_lowest_precedence_for_xy() {
+	let patch_a = ClausewitzPatch::InsertNode {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:provinceview".into(),
+			"hide_position".into(),
+		],
+		key: "x".into(),
+		statement: assignment("x", number("-1000")),
+	};
+	let patch_b = ClausewitzPatch::InsertNode {
+		path: vec![
+			"guiTypes".into(),
+			"windowType:provinceview".into(),
+			"hide_position".into(),
+		],
+		key: "x".into(),
+		statement: assignment("x", number("-8")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a.clone()]),
+			("mod_b".into(), 2, vec![patch_b]),
+		],
+		&coordinate_first_writer_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "CoordinateFirstWriter");
+			assert_eq!(patch, &patch_a);
+		}
+		other => panic!("expected CoordinateFirstWriter AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn last_writer_block_insert_policy_picks_highest_precedence() {
+	let patch_a = ClausewitzPatch::InsertNode {
+		path: vec!["root".into()],
+		key: "effect_tooltip".into(),
+		statement: assignment_block(
+			"effect_tooltip",
+			vec![assignment("add_prestige", number("5"))],
+		),
+	};
+	let patch_b = ClausewitzPatch::InsertNode {
+		path: vec!["root".into()],
+		key: "effect_tooltip".into(),
+		statement: assignment_block(
+			"effect_tooltip",
+			vec![assignment("add_prestige", number("10"))],
+		),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b.clone()]),
+		],
+		&scalar_last_writer_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: patch,
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "LastWriter");
+			assert_eq!(patch, &patch_b);
+		}
+		other => panic!("expected LastWriter AutoMerged, got: {other:?}"),
 	}
 }
 
@@ -936,6 +1393,46 @@ fn numeric_sum_policy() {
 			}
 		}
 		other => panic!("expected AutoMerged, got: {other:?}"),
+	}
+}
+
+#[test]
+fn numeric_sum_policy_applies_to_scalar_inserts() {
+	let policies = MergePolicies {
+		scalar: ScalarMergePolicy::Sum,
+		..Default::default()
+	};
+	let patch_a = ClausewitzPatch::InsertNode {
+		path: vec!["root".into()],
+		key: "bonus".into(),
+		statement: assignment("bonus", number("5")),
+	};
+	let patch_b = ClausewitzPatch::InsertNode {
+		path: vec!["root".into()],
+		key: "bonus".into(),
+		statement: assignment("bonus", number("3")),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![patch_a]),
+			("mod_b".into(), 2, vec![patch_b]),
+		],
+		&policies,
+	);
+
+	assert_eq!(result.resolved.len(), 1);
+	assert_eq!(result.stats.auto_merged_patches, 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: ClausewitzPatch::InsertNode { statement, .. },
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "Sum");
+			assert_eq!(statement, &assignment("bonus", number("8")));
+		}
+		other => panic!("expected AutoMerged scalar InsertNode, got: {other:?}"),
 	}
 }
 
@@ -2175,6 +2672,109 @@ fn recurse_policies() -> MergePolicies {
 	MergePolicies {
 		block_patch: BlockPatchPolicy::Recurse,
 		..Default::default()
+	}
+}
+
+#[test]
+fn recurse_merges_disjoint_inserted_block_bodies() {
+	let body_a = vec![
+		assignment("start", number("1530")),
+		assignment_block("objective_a", vec![assignment("type", scalar("alpha"))]),
+	];
+	let body_b = vec![
+		assignment("start", number("1530")),
+		assignment_block("objective_b", vec![assignment("type", scalar("beta"))]),
+	];
+
+	let mk = |body: Vec<AstStatement>| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "age_of_reformation".into(),
+		statement: assignment_block("age_of_reformation", body),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![mk(body_a)]),
+			("mod_b".into(), 2, vec![mk(body_b)]),
+		],
+		&recurse_policies(),
+	);
+
+	assert_eq!(
+		result.conflicts.len(),
+		0,
+		"got conflicts: {:?}",
+		result.conflicts
+	);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: ClausewitzPatch::InsertNode { statement, .. },
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "recursive_insert_merge");
+			let body = match statement {
+				AstStatement::Assignment {
+					value: AstValue::Block { items, .. },
+					..
+				} => items,
+				other => panic!("expected block, got {other:?}"),
+			};
+			let has_start = body.iter().any(|s| matches!(s,
+				AstStatement::Assignment { key, value: AstValue::Scalar { value: ScalarValue::Number(v), .. }, .. }
+				if key == "start" && v == "1530"));
+			let has_objective_a = body
+				.iter()
+				.any(|s| matches!(s, AstStatement::Assignment { key, .. } if key == "objective_a"));
+			let has_objective_b = body
+				.iter()
+				.any(|s| matches!(s, AstStatement::Assignment { key, .. } if key == "objective_b"));
+			assert!(has_start, "expected shared scalar to survive, got {body:?}");
+			assert!(
+				has_objective_a && has_objective_b,
+				"expected both disjoint block children, got {body:?}"
+			);
+		}
+		other => panic!("expected AutoMerged InsertNode, got: {other:?}"),
+	}
+}
+
+#[test]
+fn recurse_insert_scalar_conflict_bubbles_up() {
+	let mk = |start: &str| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "age_of_reformation".into(),
+		statement: assignment_block(
+			"age_of_reformation",
+			vec![assignment("start", number(start))],
+		),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![mk("1530")]),
+			("mod_b".into(), 2, vec![mk("1540")]),
+		],
+		&recurse_policies(),
+	);
+
+	assert_eq!(
+		result.conflicts.len(),
+		1,
+		"expected one bubbled sub-conflict, got resolved={:?} conflicts={:?}",
+		result.resolved,
+		result.conflicts,
+	);
+	match &result.conflicts[0] {
+		PatchResolution::Conflict { reason, .. } => {
+			assert!(
+				reason.contains("deep merge of inserted block")
+					&& reason.contains("sibling mods inserted divergent statements"),
+				"unexpected reason: {reason}"
+			);
+		}
+		other => panic!("expected Conflict, got: {other:?}"),
 	}
 }
 

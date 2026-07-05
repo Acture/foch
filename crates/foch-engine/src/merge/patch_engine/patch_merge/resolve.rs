@@ -7,7 +7,7 @@ use super::super::patch::{ClausewitzPatch, patches_semantically_equal};
 use super::address::patch_kind;
 use super::block_merge::{
 	synthesize_boolean_or, synthesize_scroll_stacked_insert, try_recursive_block_merge,
-	try_replace_block_named_container_merge, try_union_block_merge,
+	try_recursive_insert_merge, try_replace_block_named_container_merge, try_union_block_merge,
 };
 use super::rename::resolve_renames;
 use super::{AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution};
@@ -35,6 +35,24 @@ fn make_number_value(n: f64, reference_span: &AstValue) -> AstValue {
 		value: ScalarValue::Number(text),
 		span: reference_span.span().clone(),
 	}
+}
+
+fn is_coordinate_scalar_key(key: &str) -> bool {
+	matches!(key, "x" | "y")
+}
+
+fn is_gui_layout_scalar_key(key: &str) -> bool {
+	is_coordinate_scalar_key(key) || matches!(key, "maxWidth" | "maxHeight")
+}
+
+fn is_gui_reference_scalar_key(key: &str) -> bool {
+	matches!(key, "spriteType")
+}
+
+fn all_values_numeric(values: impl IntoIterator<Item = AstValue>) -> bool {
+	values
+		.into_iter()
+		.all(|value| try_parse_f64(&value).is_some())
 }
 
 /// Patch kinds that represent a mod *modifying an existing* property at an
@@ -184,6 +202,10 @@ fn resolve_insert_nodes(
 		};
 	}
 
+	if let Some(resolution) = resolve_assignment_insert_nodes(&addr, &attributed, policies, stats) {
+		return resolution;
+	}
+
 	// BooleanOr policy: when each contributor inserts a block-bodied
 	// statement under the same key, combine their bodies as a single
 	// `OR = { ... }` of disjuncts and emit one synthesized InsertNode.
@@ -197,6 +219,12 @@ fn resolve_insert_nodes(
 			strategy: "boolean_or".to_string(),
 			contributing_mods: mods,
 		};
+	}
+
+	if policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::Recurse
+		&& let Some(resolution) = try_recursive_insert_merge(&addr, &attributed, policies, stats)
+	{
+		return resolution;
 	}
 
 	// Different statements at the same (path, key) from sibling mods → real
@@ -228,6 +256,136 @@ fn resolve_insert_nodes(
 	}
 }
 
+fn resolve_assignment_insert_nodes(
+	_addr: &PatchAddress,
+	attributed: &[AttributedPatch],
+	policies: &MergePolicies,
+	stats: &mut PatchMergeStats,
+) -> Option<PatchResolution> {
+	let inserted: Vec<(&AttributedPatch, &AstValue)> = attributed
+		.iter()
+		.filter_map(|patch| match &patch.patch {
+			ClausewitzPatch::InsertNode {
+				statement: AstStatement::Assignment { value, .. },
+				..
+			} => Some((patch, value)),
+			_ => None,
+		})
+		.collect();
+	if inserted.len() != attributed.len() {
+		return None;
+	}
+
+	match policies.scalar {
+		ScalarMergePolicy::Conflict => None,
+		ScalarMergePolicy::LastWriter => {
+			let winner = inserted
+				.iter()
+				.max_by_key(|(patch, _)| (patch.precedence, patch.mod_id.clone()))?
+				.0;
+			stats.auto_merged_patches += 1;
+			Some(auto_merge_insert_winner(attributed, winner, "LastWriter"))
+		}
+		ScalarMergePolicy::CoordinateFirstWriter => {
+			if !is_coordinate_scalar_key(&_addr.key)
+				|| !inserted
+					.iter()
+					.all(|(_, value)| try_parse_f64(value).is_some())
+			{
+				return None;
+			}
+			let winner = inserted
+				.iter()
+				.min_by_key(|(patch, _)| (patch.precedence, patch.mod_id.clone()))?
+				.0;
+			let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+			stats.auto_merged_patches += 1;
+			Some(PatchResolution::AutoMerged {
+				result: winner.patch.clone(),
+				strategy: "CoordinateFirstWriter".to_string(),
+				contributing_mods: mods,
+			})
+		}
+		ScalarMergePolicy::GuiWidget => {
+			if is_gui_layout_scalar_key(&_addr.key)
+				&& inserted
+					.iter()
+					.all(|(_, value)| try_parse_f64(value).is_some())
+			{
+				let winner = inserted
+					.iter()
+					.min_by_key(|(patch, _)| (patch.precedence, patch.mod_id.clone()))?
+					.0;
+				stats.auto_merged_patches += 1;
+				return Some(auto_merge_insert_winner(
+					attributed,
+					winner,
+					"GuiLayoutFirstWriter",
+				));
+			}
+			if is_gui_reference_scalar_key(&_addr.key) {
+				let winner = inserted
+					.iter()
+					.max_by_key(|(patch, _)| (patch.precedence, patch.mod_id.clone()))?
+					.0;
+				stats.auto_merged_patches += 1;
+				return Some(auto_merge_insert_winner(
+					attributed,
+					winner,
+					"GuiReferenceLastWriter",
+				));
+			}
+			None
+		}
+		ScalarMergePolicy::Sum
+		| ScalarMergePolicy::Avg
+		| ScalarMergePolicy::Max
+		| ScalarMergePolicy::Min => {
+			let values: Vec<AstValue> =
+				inserted.iter().map(|(_, value)| (*value).clone()).collect();
+			let merged_value = merge_numeric_values(&values, policies.scalar)?;
+			let first = attributed.first()?;
+			let result = match &first.patch {
+				ClausewitzPatch::InsertNode {
+					path,
+					key,
+					statement: AstStatement::Assignment { key_span, span, .. },
+				} => ClausewitzPatch::InsertNode {
+					path: path.clone(),
+					key: key.clone(),
+					statement: AstStatement::Assignment {
+						key: key.clone(),
+						key_span: key_span.clone(),
+						value: merged_value,
+						span: span.clone(),
+					},
+				},
+				_ => return None,
+			};
+			let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+			stats.auto_merged_patches += 1;
+			Some(PatchResolution::AutoMerged {
+				result,
+				strategy: format!("{:?}", policies.scalar),
+				contributing_mods: mods,
+			})
+		}
+	}
+}
+
+fn auto_merge_insert_winner(
+	attributed: &[AttributedPatch],
+	winner: &AttributedPatch,
+	strategy: &str,
+) -> PatchResolution {
+	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	PatchResolution::AutoMerged {
+		result: winner.patch.clone(),
+		strategy: strategy.to_string(),
+		contributing_mods: mods,
+	}
+}
+
 /// Multiple mods appending the same list item. Because `patch_address`
 /// includes the value fingerprint, every patch in this group has identical
 /// `value` → always convergent.
@@ -249,34 +407,72 @@ fn resolve_set_values(
 	stats: &mut PatchMergeStats,
 ) -> PatchResolution {
 	match policies.scalar {
-		ScalarMergePolicy::Conflict => {
-			// Sibling mods at the same scalar leaf cannot be silently
-			// merged: there is no dependency-graph signal saying which
-			// mod's value should win. Surface a conflict so the user (or
-			// `[[resolutions]]`) can pick.
-			let new_values: Vec<String> = attributed
-				.iter()
-				.map(|a| match &a.patch {
-					ClausewitzPatch::SetValue { new_value, .. } => {
-						format!("`{}` from `{}`", value_text_for_reason(new_value), a.mod_id)
-					}
-					_ => unreachable!(),
-				})
-				.collect();
-			stats.conflict_patches += 1;
-			PatchResolution::Conflict {
-				address: addr,
-				reason: format!(
-					"sibling mods set the same scalar to divergent values: {}",
-					new_values.join(", ")
-				),
-				patches: attributed,
-			}
-		}
+		ScalarMergePolicy::Conflict => conflict_set_values(addr, attributed, stats),
 		ScalarMergePolicy::Sum
 		| ScalarMergePolicy::Avg
 		| ScalarMergePolicy::Max
 		| ScalarMergePolicy::Min => resolve_numeric_set_values(addr, attributed, policies.scalar, stats),
+		ScalarMergePolicy::LastWriter => resolve_last_writer_set_value(attributed, stats),
+		ScalarMergePolicy::CoordinateFirstWriter => {
+			let numeric = all_values_numeric(attributed.iter().map(|a| match &a.patch {
+				ClausewitzPatch::SetValue { new_value, .. } => new_value.clone(),
+				_ => unreachable!(),
+			}));
+			if is_coordinate_scalar_key(&addr.key) && numeric {
+				resolve_first_writer_set_value(attributed, stats)
+			} else {
+				conflict_set_values(addr, attributed, stats)
+			}
+		}
+		ScalarMergePolicy::GuiWidget => {
+			let numeric = all_values_numeric(attributed.iter().map(|a| match &a.patch {
+				ClausewitzPatch::SetValue { new_value, .. } => new_value.clone(),
+				_ => unreachable!(),
+			}));
+			if is_gui_layout_scalar_key(&addr.key) && numeric {
+				resolve_first_writer_set_value_with_strategy(
+					attributed,
+					stats,
+					"GuiLayoutFirstWriter",
+				)
+			} else if is_gui_reference_scalar_key(&addr.key) {
+				resolve_last_writer_set_value_with_strategy(
+					attributed,
+					stats,
+					"GuiReferenceLastWriter",
+				)
+			} else {
+				conflict_set_values(addr, attributed, stats)
+			}
+		}
+	}
+}
+
+fn conflict_set_values(
+	addr: PatchAddress,
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+) -> PatchResolution {
+	// Sibling mods at the same scalar leaf cannot be silently merged: there is
+	// no dependency-graph signal saying which mod's value should win. Surface a
+	// conflict so the user (or `[[resolutions]]`) can pick.
+	let new_values: Vec<String> = attributed
+		.iter()
+		.map(|a| match &a.patch {
+			ClausewitzPatch::SetValue { new_value, .. } => {
+				format!("`{}` from `{}`", value_text_for_reason(new_value), a.mod_id)
+			}
+			_ => unreachable!(),
+		})
+		.collect();
+	stats.conflict_patches += 1;
+	PatchResolution::Conflict {
+		address: addr,
+		reason: format!(
+			"sibling mods set the same scalar to divergent values: {}",
+			new_values.join(", ")
+		),
+		patches: attributed,
 	}
 }
 
@@ -314,9 +510,7 @@ fn resolve_numeric_set_values(
 		})
 		.collect();
 
-	let parsed: Vec<Option<f64>> = new_values.iter().map(try_parse_f64).collect();
-
-	if parsed.iter().any(|p| p.is_none()) {
+	let Some(merged_value) = merge_numeric_values(&new_values, policy) else {
 		stats.conflict_patches += 1;
 		return PatchResolution::Conflict {
 			address: addr,
@@ -326,18 +520,7 @@ fn resolve_numeric_set_values(
 			),
 			patches: attributed,
 		};
-	}
-
-	let nums: Vec<f64> = parsed.into_iter().map(|p| p.unwrap()).collect();
-	let merged = match policy {
-		ScalarMergePolicy::Sum => nums.iter().sum(),
-		ScalarMergePolicy::Avg => nums.iter().sum::<f64>() / nums.len() as f64,
-		ScalarMergePolicy::Max => nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-		ScalarMergePolicy::Min => nums.iter().cloned().fold(f64::INFINITY, f64::min),
-		_ => unreachable!(),
 	};
-
-	let merged_value = make_number_value(merged, &new_values[0]);
 	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
 	let first = attributed.into_iter().next().unwrap();
 	let strategy = format!("{policy:?}");
@@ -361,6 +544,72 @@ fn resolve_numeric_set_values(
 	PatchResolution::AutoMerged {
 		result,
 		strategy,
+		contributing_mods: mods,
+	}
+}
+
+fn merge_numeric_values(values: &[AstValue], policy: ScalarMergePolicy) -> Option<AstValue> {
+	let parsed: Vec<Option<f64>> = values.iter().map(try_parse_f64).collect();
+	if parsed.iter().any(|p| p.is_none()) {
+		return None;
+	}
+	let nums: Vec<f64> = parsed.into_iter().map(|p| p.unwrap()).collect();
+	let merged = match policy {
+		ScalarMergePolicy::Sum => nums.iter().sum(),
+		ScalarMergePolicy::Avg => nums.iter().sum::<f64>() / nums.len() as f64,
+		ScalarMergePolicy::Max => nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+		ScalarMergePolicy::Min => nums.iter().cloned().fold(f64::INFINITY, f64::min),
+		_ => return None,
+	};
+	Some(make_number_value(merged, &values[0]))
+}
+
+fn resolve_last_writer_set_value(
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+) -> PatchResolution {
+	resolve_last_writer_set_value_with_strategy(attributed, stats, "LastWriter")
+}
+
+fn resolve_last_writer_set_value_with_strategy(
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+	strategy: &str,
+) -> PatchResolution {
+	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	let winner = attributed
+		.into_iter()
+		.max_by_key(|patch| (patch.precedence, patch.mod_id.clone()))
+		.expect("at least one attributed patch");
+	stats.auto_merged_patches += 1;
+	PatchResolution::AutoMerged {
+		result: winner.patch,
+		strategy: strategy.to_string(),
+		contributing_mods: mods,
+	}
+}
+
+fn resolve_first_writer_set_value(
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+) -> PatchResolution {
+	resolve_first_writer_set_value_with_strategy(attributed, stats, "CoordinateFirstWriter")
+}
+
+fn resolve_first_writer_set_value_with_strategy(
+	attributed: Vec<AttributedPatch>,
+	stats: &mut PatchMergeStats,
+	strategy: &str,
+) -> PatchResolution {
+	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	let winner = attributed
+		.into_iter()
+		.min_by_key(|patch| (patch.precedence, patch.mod_id.clone()))
+		.expect("at least one attributed patch");
+	stats.auto_merged_patches += 1;
+	PatchResolution::AutoMerged {
+		result: winner.patch,
+		strategy: strategy.to_string(),
 		contributing_mods: mods,
 	}
 }

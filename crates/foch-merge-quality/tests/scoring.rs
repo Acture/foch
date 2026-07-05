@@ -1,12 +1,10 @@
 //! Reproducible, network-free merge-quality scoring over the committed corpus.
 //!
 //! The corpus is committed as a single compressed archive
-//! `tests/fixtures/corpus.tar.gz` — for each compatch it holds three slices,
-//! `<id>/a`, `<id>/b` (the two patched mods) and `<id>/compatch` (the human
-//! ground truth), containing only the scored OVERLAP files (those present in
-//! both mods). Merging just those reproduces the full-mod verdicts (foch's
-//! per-file merge is local), so this gates merge quality without shipping
-//! multi-GB mods, and as one binary instead of hundreds of loose files.
+//! `tests/fixtures/corpus.tar.gz`. It contains a deduplicated full Workshop-like
+//! layout (`workshop/<steam_id>/...`) plus a fixture-local `corpus.json`.
+//! Full context is required because foch's merge strategy depends on
+//! workspace-wide validation.
 //!
 //! `tests/fixtures/expected.json` is the committed baseline: `compatch_id ->
 //! { verdict -> count }`. Regenerate both with `foch-mq run` + `extract-fixtures`
@@ -15,47 +13,13 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use foch_merge_quality::score::{
-	conflict_rel_paths, ground_truth_files, run_merge, score_file, write_playset,
-};
+use foch_merge_quality::corpus::Corpus;
+use foch_merge_quality::orchestrate::score_case;
 
 fn fixtures_root() -> PathBuf {
 	Path::new(env!("CARGO_MANIFEST_DIR"))
 		.join("tests")
 		.join("fixtures")
-}
-
-/// Merge `<case>/a` + `<case>/b` and tally foch's verdict over every scored file.
-fn verdict_tally(case_dir: &Path) -> BTreeMap<String, usize> {
-	let a_dir = case_dir.join("a");
-	let b_dir = case_dir.join("b");
-	let compatch_dir = case_dir.join("compatch");
-	assert!(
-		a_dir.is_dir() && b_dir.is_dir() && compatch_dir.is_dir(),
-		"fixture {} must have a/ b/ compatch/",
-		case_dir.display()
-	);
-
-	let tmp = tempfile::tempdir().expect("scratch playset dir");
-	let out_dir = tmp.path().join("out");
-	let dlc = write_playset(
-		tmp.path(),
-		&[
-			("a".to_string(), a_dir.clone()),
-			("b".to_string(), b_dir.clone()),
-		],
-	)
-	.expect("write playset");
-	// force = false: foch withholds manual conflicts (a distinct signal from auto-merges).
-	let result = run_merge(&dlc, &out_dir, false).expect("merge runs");
-	let conflicts = conflict_rel_paths(&result.report);
-
-	let mut tally: BTreeMap<String, usize> = BTreeMap::new();
-	for rel in ground_truth_files(&compatch_dir) {
-		let fs = score_file(&rel, &a_dir, &b_dir, &compatch_dir, &out_dir, &conflicts);
-		*tally.entry(fs.verdict.as_str().to_string()).or_default() += 1;
-	}
-	tally
 }
 
 /// Every committed fixture reproduces its baseline verdict tally. Data-driven:
@@ -73,11 +37,20 @@ fn committed_corpus_reproduces_baseline() {
 	let corpus = tempfile::tempdir().expect("corpus unpack dir");
 	foch_merge_quality::archive::unpack(&fixtures_root().join("corpus.tar.gz"), corpus.path())
 		.expect("unpack corpus.tar.gz");
+	let fixture_corpus_text =
+		std::fs::read_to_string(corpus.path().join("corpus.json")).expect("read fixture corpus");
+	let fixture_corpus = Corpus::from_json(&fixture_corpus_text).expect("parse fixture corpus");
+	let workshop = corpus.path().join("workshop");
 
 	for (compatch_id, want) in &expected {
-		let got = verdict_tally(&corpus.path().join(compatch_id));
+		let case = fixture_corpus
+			.cases
+			.iter()
+			.find(|case| &case.compatch_id == compatch_id)
+			.unwrap_or_else(|| panic!("fixture corpus contains case {compatch_id}"));
+		let result = score_case(case, &workshop, false).expect("score full fixture case");
 		assert_eq!(
-			&got, want,
+			&result.verdicts, want,
 			"merge-quality verdicts drifted for compatch {compatch_id}"
 		);
 	}

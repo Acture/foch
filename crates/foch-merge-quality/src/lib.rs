@@ -9,7 +9,8 @@
 //! - [`orchestrate`] — `run` (score the locally-available corpus) and `learn`
 //!   (classify how humans resolved overlaps).
 //! - [`report`] — writers for `results.json` / `report.md` / `rules.md`.
-//! - [`fixtures`] — extract scored-file slices for the committed test corpus.
+//! - [`fixtures`] — extract full local cases for the committed test corpus.
+//! - [`symbols`] — full-local report for cross-file symbol conflicts.
 //!
 //! The Steam Workshop discovery + SteamCMD download pipeline lives behind the
 //! `steam` feature (network + external tooling); everything else is offline and
@@ -22,6 +23,7 @@ pub mod fixtures;
 pub mod orchestrate;
 pub mod report;
 pub mod score;
+pub mod symbols;
 
 #[cfg(feature = "steam")]
 pub mod fetch;

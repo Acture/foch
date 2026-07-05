@@ -1,8 +1,8 @@
 //! Integration tests for orchestrate::score_case / run / learn.
 //!
-//! The committed fixture at tests/fixtures/3630876155/{a,b,compatch} is
-//! reorganised into a temp "workshop directory" (flat by mod-id), which is
-//! exactly how a real Steam Workshop download looks.
+//! The committed fixture archive already contains a temp "workshop directory"
+//! (`workshop/<steam_id>/...`), which is exactly how a real Steam Workshop
+//! download looks.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,26 +18,6 @@ fn fixtures_root() -> PathBuf {
 		.join("fixtures")
 }
 
-/// Recursively copy src into dst (dst is created if absent).
-fn copy_dir_all(src: &Path, dst: &Path) {
-	std::fs::create_dir_all(dst).expect("create dst");
-	for entry in walkdir::WalkDir::new(src)
-		.into_iter()
-		.filter_map(Result::ok)
-	{
-		let rel = entry.path().strip_prefix(src).unwrap();
-		let dest = dst.join(rel);
-		if entry.file_type().is_dir() {
-			std::fs::create_dir_all(&dest).ok();
-		} else {
-			if let Some(p) = dest.parent() {
-				std::fs::create_dir_all(p).ok();
-			}
-			std::fs::copy(entry.path(), &dest).expect("copy file");
-		}
-	}
-}
-
 /// Build a temp workshop dir from the fixture slice for compatch 3630876155,
 /// unpacked from the committed compressed corpus archive.
 ///
@@ -46,15 +26,8 @@ fn build_workshop_3630876155() -> (tempfile::TempDir, PathBuf) {
 	let unpacked = tempfile::tempdir().expect("unpack dir");
 	foch_merge_quality::archive::unpack(&fixtures_root().join("corpus.tar.gz"), unpacked.path())
 		.expect("unpack corpus.tar.gz");
-	let fixture = unpacked.path().join("3630876155");
-	let tmp = tempfile::tempdir().expect("temp dir");
-	let ws = tmp.path().to_path_buf();
-
-	copy_dir_all(&fixture.join("a"), &ws.join("2164202838"));
-	copy_dir_all(&fixture.join("b"), &ws.join("2185445645"));
-	copy_dir_all(&fixture.join("compatch"), &ws.join("3630876155"));
-
-	(tmp, ws)
+	let ws = unpacked.path().join("workshop");
+	(unpacked, ws)
 }
 
 fn case_3630876155() -> Case {
@@ -79,9 +52,8 @@ fn score_case_verdict_tally() {
 	assert_eq!(result.overlap_files, 7, "overlap file count");
 
 	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("conflict_withheld".to_string(), 4),
-		("diverges_structure".to_string(), 2),
-		("diverges_formatting".to_string(), 1),
+		("diverges_formatting".to_string(), 5),
+		("matches_human".to_string(), 2),
 	]);
 	assert_eq!(result.verdicts, expected, "verdict tally");
 }
@@ -128,9 +100,8 @@ fn run_writes_artifacts() {
 	assert_eq!(records[0].overlap_files, 7);
 
 	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("conflict_withheld".to_string(), 4),
-		("diverges_structure".to_string(), 2),
-		("diverges_formatting".to_string(), 1),
+		("diverges_formatting".to_string(), 5),
+		("matches_human".to_string(), 2),
 	]);
 	assert_eq!(records[0].verdicts, expected);
 

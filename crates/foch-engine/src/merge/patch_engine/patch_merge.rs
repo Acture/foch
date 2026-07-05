@@ -13,6 +13,7 @@ use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::content_family::{BlockPatchPolicy, ScalarMergePolicy};
 #[cfg(test)]
 use foch_language::analyzer::content_family::{MergeKeySource, NamedContainerPolicy};
+use foch_language::analyzer::parser::{AstStatement, AstValue};
 
 #[cfg(test)]
 use super::super::conflict_handler::ConflictDecision;
@@ -20,7 +21,7 @@ use super::super::conflict_handler::ConflictHandler;
 #[cfg(test)]
 use super::super::conflict_handler::DeferHandler;
 use super::super::error::MergeError;
-use super::patch::{AstPath, ClausewitzPatch};
+use super::patch::{AstPath, ClausewitzPatch, fuzzy_rename_similarity};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,6 +147,7 @@ pub(crate) fn merge_patch_sets_for_file(
 			(mod_id, prec, rewritten)
 		})
 		.collect();
+	let mod_patches = drop_prefixed_rename_duplicate_inserts(mod_patches);
 
 	// Group patches by address, preserving attribution.
 	let mut by_address: HashMap<PatchAddress, Vec<AttributedPatch>> = HashMap::new();
@@ -233,6 +235,107 @@ pub(crate) fn merge_patch_sets_for_file(
 	}
 
 	Ok(result)
+}
+
+const CROSS_MOD_INSERT_RENAME_THRESHOLD: f32 = 0.70;
+
+fn drop_prefixed_rename_duplicate_inserts(
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+) -> Vec<(String, usize, Vec<ClausewitzPatch>)> {
+	let mut duplicate_losers: HashSet<usize> = HashSet::new();
+	for left_idx in 0..mod_patches.len() {
+		let Some(left) = single_root_insert(&mod_patches[left_idx].2) else {
+			continue;
+		};
+		for right_idx in (left_idx + 1)..mod_patches.len() {
+			let Some(right) = single_root_insert(&mod_patches[right_idx].2) else {
+				continue;
+			};
+			if !prefixed_rename_insert_pair(left, right) {
+				continue;
+			}
+			let loser = lower_precedence_insert(
+				(left_idx, &mod_patches[left_idx].0, mod_patches[left_idx].1),
+				(
+					right_idx,
+					&mod_patches[right_idx].0,
+					mod_patches[right_idx].1,
+				),
+			);
+			duplicate_losers.insert(loser);
+		}
+	}
+
+	if duplicate_losers.is_empty() {
+		return mod_patches;
+	}
+
+	mod_patches
+		.into_iter()
+		.enumerate()
+		.map(|(idx, (mod_id, precedence, patches))| {
+			if duplicate_losers.contains(&idx) {
+				(mod_id, precedence, Vec::new())
+			} else {
+				(mod_id, precedence, patches)
+			}
+		})
+		.collect()
+}
+
+fn single_root_insert(patches: &[ClausewitzPatch]) -> Option<(&str, &AstStatement)> {
+	let [
+		ClausewitzPatch::InsertNode {
+			path,
+			key,
+			statement,
+		},
+	] = patches
+	else {
+		return None;
+	};
+	if path.is_empty() {
+		Some((key, statement))
+	} else {
+		None
+	}
+}
+
+fn prefixed_rename_insert_pair(left: (&str, &AstStatement), right: (&str, &AstStatement)) -> bool {
+	let (left_key, left_stmt) = left;
+	let (right_key, right_stmt) = right;
+	if left_key == right_key || !prefixed_key_pair(left_key, right_key) {
+		return false;
+	}
+	let (Some(left_value), Some(right_value)) = (
+		assignment_statement_value(left_stmt),
+		assignment_statement_value(right_stmt),
+	) else {
+		return false;
+	};
+	fuzzy_rename_similarity(left_value, right_value)
+		.is_some_and(|score| score >= CROSS_MOD_INSERT_RENAME_THRESHOLD)
+}
+
+fn prefixed_key_pair(left: &str, right: &str) -> bool {
+	left.contains(right) || right.contains(left)
+}
+
+fn assignment_statement_value(stmt: &AstStatement) -> Option<&AstValue> {
+	match stmt {
+		AstStatement::Assignment { value, .. } => Some(value),
+		_ => None,
+	}
+}
+
+fn lower_precedence_insert(left: (usize, &str, usize), right: (usize, &str, usize)) -> usize {
+	let (left_idx, left_mod, left_precedence) = left;
+	let (right_idx, right_mod, right_precedence) = right;
+	if (left_precedence, left_mod) < (right_precedence, right_mod) {
+		left_idx
+	} else {
+		right_idx
+	}
 }
 
 // ---------------------------------------------------------------------------

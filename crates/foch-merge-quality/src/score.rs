@@ -172,6 +172,46 @@ pub fn ground_truth_files(compatch_dir: &Path) -> Vec<String> {
 	out
 }
 
+/// Syntactically index a mod's top-level definitions by `(content_directory,
+/// key)` -> the relative paths of the `.txt` files that define them.
+///
+/// This is a deliberately schema-free index for full-local symbol reports. It
+/// does not claim visibility or conflict authority; it only answers "which mod
+/// files define the same top-level key in the same content directory?"
+/// Restricted to `.txt`; `.gui`/`.gfx`/`.yml` are handled by file-path overlap.
+pub fn definition_index(mod_dir: &Path) -> HashMap<(String, String), Vec<String>> {
+	let mut index: HashMap<(String, String), Vec<String>> = HashMap::new();
+	for entry in walkdir::WalkDir::new(mod_dir)
+		.into_iter()
+		.filter_map(Result::ok)
+	{
+		if !entry.file_type().is_file() {
+			continue;
+		}
+		let path = entry.path();
+		if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+			continue;
+		}
+		let Ok(rel) = path.strip_prefix(mod_dir) else {
+			continue;
+		};
+		let rel_s = rel.to_string_lossy().replace('\\', "/");
+		let dir = rel
+			.parent()
+			.map(|p| p.to_string_lossy().replace('\\', "/"))
+			.unwrap_or_default();
+		if let Some(text) = read(path) {
+			for key in top_level_keys(&text) {
+				index
+					.entry((dir.clone(), key))
+					.or_default()
+					.push(rel_s.clone());
+			}
+		}
+	}
+	index
+}
+
 /// Paths foch surfaced as conflicts (it declined to auto-merge; a human did).
 pub fn conflict_rel_paths(report: &MergeReport) -> HashSet<String> {
 	let mut out = HashSet::new();

@@ -184,6 +184,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::ContainerChildKey)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("events", "events/")
@@ -195,6 +196,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::FieldValue("id"))
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::UnionWithRename)
 				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
@@ -207,6 +209,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::ContainerChildKey)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
@@ -354,6 +357,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(country_from_only())
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::Replace)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/subject_types", "common/subject_types/")
@@ -707,6 +711,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(country_from_scope(base_scope::province()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::Replace)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/institutions", "common/institutions/")
@@ -817,6 +822,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(country_from_scope(base_scope::country()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.build(),
 			// GUI files store repeated widget blocks under `guiTypes`; the listed
 			// widget types are keyed by their inner `name` field so different widgets
@@ -833,6 +839,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 					child_key_field: "name",
 					child_types: GUI_TYPES_NAMED_CHILD_TYPES,
 				})
+				.scalar_policy(ScalarMergePolicy::GuiWidget)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/interface", "common/interface/")
 				.kind(CwtType::new("ui"))
@@ -845,6 +852,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 					child_key_field: "name",
 					child_types: GUI_TYPES_NAMED_CHILD_TYPES,
 				})
+				.scalar_policy(ScalarMergePolicy::GuiWidget)
 				.build(),
 			ContentFamilyDescriptor::prefix("gfx", "gfx/")
 				.kind(CwtType::new("ui"))
@@ -857,6 +865,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 					child_key_field: "name",
 					child_types: GUI_TYPES_NAMED_CHILD_TYPES,
 				})
+				.scalar_policy(ScalarMergePolicy::GuiWidget)
 				.build(),
 			// ------------------------------------------------------------------
 			// Batch-promoted parse_only → semantic_complete (59 roots)
@@ -1121,6 +1130,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(country_from_scope(base_scope::province()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::Replace)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/tradenodes", "common/tradenodes/")
@@ -1299,4 +1309,47 @@ pub fn eu4_content_family_for_root_family(
 	root_family: &str,
 ) -> Option<&'static ContentFamilyDescriptor> {
 	eu4_profile().descriptor_for_root_family(root_family)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn decision_and_mission_families_use_last_writer_scalar_policy() {
+		let profile = eu4_profile();
+		for path in [
+			"events/decisions/00_decisions.txt",
+			"decisions/Ottoman.txt",
+			"missions/DOM_Ottoman_Missions.txt",
+		] {
+			let descriptor = profile
+				.classify_content_family(Path::new(path))
+				.expect("expected EU4 content family");
+			assert_eq!(
+				descriptor.merge_policies.scalar,
+				ScalarMergePolicy::LastWriter,
+				"{path}"
+			);
+		}
+	}
+
+	#[test]
+	fn ui_families_use_gui_widget_scalar_policy() {
+		let profile = eu4_profile();
+		for path in [
+			"interface/provinceview.gui",
+			"common/interface/example.gui",
+			"gfx/interface/example.gfx",
+		] {
+			let descriptor = profile
+				.classify_content_family(Path::new(path))
+				.expect("expected EU4 UI content family");
+			assert_eq!(
+				descriptor.merge_policies.scalar,
+				ScalarMergePolicy::GuiWidget,
+				"{path}"
+			);
+		}
+	}
 }
