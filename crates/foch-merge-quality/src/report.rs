@@ -39,11 +39,19 @@ pub fn write_rules_md(results_dir: &Path, rows: &[ResolutionRow]) -> std::io::Re
 const VERDICT_MEANING: &[(&str, &str)] = &[
 	(
 		"matches_human",
-		"foch's merge ≈ the hand-written compatch (same defs, ≥0.92 similar)",
+		"foch's merge is AST-equivalent and ≥0.92 text-similar to the hand-written compatch",
+	),
+	(
+		"matches_ast",
+		"foch's merge is AST-equivalent under the corpus ordering policy",
 	),
 	(
 		"diverges_formatting",
-		"same definitions, different text/formatting",
+		"AST comparison unavailable; same top-level definitions, different text",
+	),
+	(
+		"diverges_ast",
+		"same top-level definitions, but parsed AST differs under the corpus ordering policy",
 	),
 	(
 		"diverges_structure",
@@ -133,6 +141,9 @@ fn render_report(results: &[CaseResult]) -> String {
 			let mut extra = String::new();
 			if let Some(s) = f.similarity {
 				extra.push_str(&format!(" sim={s}"));
+			}
+			if let Some(ast_match) = f.ast_match {
+				extra.push_str(&format!(" ast_match={ast_match}"));
 			}
 			if !f.dropped_keys.is_empty() {
 				let shown: Vec<_> = f.dropped_keys.iter().take(4).cloned().collect();

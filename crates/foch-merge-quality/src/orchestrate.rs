@@ -28,6 +28,7 @@ pub struct FileRecord {
 	pub foch_conflict: bool,
 	pub similarity: Option<f64>,
 	pub keys_match: Option<bool>,
+	pub ast_match: Option<bool>,
 	pub dropped_keys: Vec<String>,
 	pub verdict: String,
 }
@@ -134,6 +135,7 @@ pub fn score_case(
 				foch_conflict: fs.foch_conflict,
 				similarity: fs.similarity,
 				keys_match: fs.keys_match,
+				ast_match: fs.ast_match,
 				dropped_keys: fs.dropped_keys,
 				verdict: fs.verdict.as_str().to_string(),
 			}

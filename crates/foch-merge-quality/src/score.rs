@@ -19,6 +19,7 @@ use foch_engine::{
 	CheckRequest, Config, MergeError, MergeExecuteOptions, MergeExecutionResult,
 	run_merge_with_options,
 };
+use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, parse_clausewitz_file};
 use regex::Regex;
 
 /// `^key = {` at a line start — a top-level Clausewitz definition.
@@ -315,10 +316,14 @@ pub enum Verdict {
 	NotEmitted,
 	/// same definitions, line-similarity ≥ 0.92 to the human merge.
 	MatchesHuman,
+	/// same parsed AST under the corpus ordering policy, but different text.
+	MatchesAst,
 	/// foch dropped top-level definitions present in either input mod.
 	DropsContent,
-	/// same definitions as the human, different text.
+	/// AST comparison was unavailable; same definitions as the human, different text.
 	DivergesFormatting,
+	/// same top-level definitions as the human, but different parsed AST.
+	DivergesAst,
 	/// different top-level definitions from the human merge.
 	DivergesStructure,
 }
@@ -329,8 +334,10 @@ impl Verdict {
 			Verdict::ConflictWithheld => "conflict_withheld",
 			Verdict::NotEmitted => "not_emitted",
 			Verdict::MatchesHuman => "matches_human",
+			Verdict::MatchesAst => "matches_ast",
 			Verdict::DropsContent => "drops_content",
 			Verdict::DivergesFormatting => "diverges_formatting",
+			Verdict::DivergesAst => "diverges_ast",
 			Verdict::DivergesStructure => "diverges_structure",
 		}
 	}
@@ -346,6 +353,7 @@ pub struct FileScore {
 	pub foch_conflict: bool,
 	pub similarity: Option<f64>,
 	pub keys_match: Option<bool>,
+	pub ast_match: Option<bool>,
 	pub dropped_keys: Vec<String>,
 	pub verdict: Verdict,
 }
@@ -371,12 +379,14 @@ pub fn score_file(
 
 	let mut sim = None;
 	let mut keys_match = None;
+	let mut ast_match = None;
 	let mut dropped: Vec<String> = Vec::new();
 	if let Some(ft) = foch_text.as_deref() {
 		sim = Some((similarity(ft, &compatch_text) * 1000.0).round() / 1000.0);
 		let fk = top_level_keys(ft);
 		let ck = top_level_keys(&compatch_text);
 		keys_match = Some(fk == ck);
+		ast_match = ast_match_for_path(rel, &foch_path, &compatch.join(rel));
 		let union_ab: HashSet<String> = top_level_keys(&read(&mod_a.join(rel)).unwrap_or_default())
 			.union(&top_level_keys(&read(&mod_b.join(rel)).unwrap_or_default()))
 			.cloned()
@@ -389,10 +399,14 @@ pub fn score_file(
 		Verdict::ConflictWithheld
 	} else if !foch_emitted {
 		Verdict::NotEmitted
-	} else if keys_match == Some(true) && sim.is_some_and(|s| s >= 0.92) {
+	} else if ast_match == Some(true) && sim.is_some_and(|s| s >= 0.92) {
 		Verdict::MatchesHuman
+	} else if ast_match == Some(true) {
+		Verdict::MatchesAst
 	} else if !dropped.is_empty() {
 		Verdict::DropsContent
+	} else if ast_match == Some(false) && keys_match == Some(true) {
+		Verdict::DivergesAst
 	} else if keys_match == Some(true) {
 		Verdict::DivergesFormatting
 	} else {
@@ -408,9 +422,138 @@ pub fn score_file(
 		foch_conflict,
 		similarity: sim,
 		keys_match,
+		ast_match,
 		dropped_keys: dropped,
 		verdict,
 	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AstOrderingPolicy {
+	OrderSensitive,
+	OrderInsensitive,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum CanonicalValue {
+	Scalar(String),
+	Block(Vec<CanonicalStatement>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum CanonicalStatement {
+	Assignment { key: String, value: CanonicalValue },
+	Item(CanonicalValue),
+}
+
+fn ast_match_for_path(rel: &str, foch_path: &Path, compatch_path: &Path) -> Option<bool> {
+	if !is_clausewitz_like_path(rel) {
+		return None;
+	}
+	let foch = parse_clausewitz_file(foch_path);
+	let compatch = parse_clausewitz_file(compatch_path);
+	if !foch.diagnostics.is_empty() || !compatch.diagnostics.is_empty() {
+		return None;
+	}
+	let ordering = if is_gui_like_path(rel) {
+		AstOrderingPolicy::OrderSensitive
+	} else {
+		AstOrderingPolicy::OrderInsensitive
+	};
+	Some(
+		canonical_statements(&foch.ast.statements, ordering)
+			== canonical_statements(&compatch.ast.statements, ordering),
+	)
+}
+
+fn is_clausewitz_like_path(rel: &str) -> bool {
+	let lower = rel.to_ascii_lowercase();
+	lower.ends_with(".txt")
+		|| lower.ends_with(".gui")
+		|| lower.ends_with(".gfx")
+		|| lower.ends_with(".lua")
+}
+
+fn is_gui_like_path(rel: &str) -> bool {
+	let lower = rel.to_ascii_lowercase();
+	lower.starts_with("interface/")
+		|| lower.starts_with("common/interface/")
+		|| lower.starts_with("gfx/")
+		|| lower.ends_with(".gui")
+		|| lower.ends_with(".gfx")
+}
+
+fn canonical_statements(
+	statements: &[AstStatement],
+	ordering: AstOrderingPolicy,
+) -> Vec<CanonicalStatement> {
+	let mut canonical = statements
+		.iter()
+		.filter_map(|statement| canonical_statement(statement, ordering))
+		.collect::<Vec<_>>();
+	if ordering == AstOrderingPolicy::OrderInsensitive {
+		canonical.sort();
+	}
+	canonical
+}
+
+fn canonical_statement(
+	statement: &AstStatement,
+	ordering: AstOrderingPolicy,
+) -> Option<CanonicalStatement> {
+	match statement {
+		AstStatement::Assignment { key, value, .. } => Some(CanonicalStatement::Assignment {
+			key: key.clone(),
+			value: canonical_value(value, ordering),
+		}),
+		AstStatement::Item { value, .. } => {
+			Some(CanonicalStatement::Item(canonical_value(value, ordering)))
+		}
+		AstStatement::Comment { .. } => None,
+	}
+}
+
+fn canonical_value(value: &AstValue, ordering: AstOrderingPolicy) -> CanonicalValue {
+	match value {
+		AstValue::Scalar { value, .. } => CanonicalValue::Scalar(canonical_scalar(value)),
+		AstValue::Block { items, .. } => {
+			CanonicalValue::Block(canonical_statements(items, ordering))
+		}
+	}
+}
+
+fn canonical_scalar(value: &ScalarValue) -> String {
+	match value {
+		ScalarValue::Identifier(value) | ScalarValue::String(value)
+			if is_valid_bare_identifier_text(value) =>
+		{
+			format!("text:{value}")
+		}
+		ScalarValue::Identifier(value) => format!("identifier:{value}"),
+		ScalarValue::String(value) => format!("string:{value}"),
+		ScalarValue::Number(value) => format!("number:{value}"),
+		ScalarValue::Bool(value) => {
+			if *value {
+				"bool:yes".to_string()
+			} else {
+				"bool:no".to_string()
+			}
+		}
+	}
+}
+
+fn is_valid_bare_identifier_text(value: &str) -> bool {
+	let Some(&first) = value.as_bytes().first() else {
+		return false;
+	};
+	!matches!(first, b'"' | b'-' | b'0'..=b'9')
+		&& !matches!(value.to_ascii_lowercase().as_str(), "yes" | "no")
+		&& !value.bytes().any(|byte| {
+			matches!(
+				byte,
+				b' ' | b'\t' | b'\r' | b'\n' | b'=' | b'{' | b'}' | b'#'
+			)
+		})
 }
 
 // ------------------------------------------------------------------ classify_resolution
@@ -677,5 +820,73 @@ mod classify_tests {
 		);
 		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
 		assert_eq!(res.frac_overlay_kept, None, "fb (no overlay unique lines)");
+	}
+
+	#[test]
+	fn ast_match_is_order_insensitive_for_non_gui_files() {
+		let (foch, compatch, _) = make_dirs();
+		write_file(
+			foch.path(),
+			"common/rebel_types/example.txt",
+			"b = { y = 2 x = 1 }\na = yes\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/rebel_types/example.txt",
+			"a = yes\nb = { x = 1 y = 2 }\n",
+		);
+
+		assert_eq!(
+			ast_match_for_path(
+				"common/rebel_types/example.txt",
+				&foch.path().join("common/rebel_types/example.txt"),
+				&compatch.path().join("common/rebel_types/example.txt"),
+			),
+			Some(true)
+		);
+	}
+
+	#[test]
+	fn ast_match_is_order_sensitive_for_gui_files() {
+		let (foch, compatch, _) = make_dirs();
+		write_file(
+			foch.path(),
+			"interface/example.gui",
+			"guiTypes = { a = yes b = yes }\n",
+		);
+		write_file(
+			compatch.path(),
+			"interface/example.gui",
+			"guiTypes = { b = yes a = yes }\n",
+		);
+
+		assert_eq!(
+			ast_match_for_path(
+				"interface/example.gui",
+				&foch.path().join("interface/example.gui"),
+				&compatch.path().join("interface/example.gui"),
+			),
+			Some(false)
+		);
+	}
+
+	#[test]
+	fn ast_match_treats_quoted_identifier_text_as_equivalent() {
+		let (foch, compatch, _) = make_dirs();
+		write_file(foch.path(), "events/example.txt", "id = foch_event\n");
+		write_file(
+			compatch.path(),
+			"events/example.txt",
+			"id = \"foch_event\"\n",
+		);
+
+		assert_eq!(
+			ast_match_for_path(
+				"events/example.txt",
+				&foch.path().join("events/example.txt"),
+				&compatch.path().join("events/example.txt"),
+			),
+			Some(true)
+		);
 	}
 }

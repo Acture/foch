@@ -2,20 +2,38 @@ use crate::merge::MergeError;
 use foch_core::config::DEFAULT_EMIT_INDENT;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum EmitOrdering {
+	#[default]
+	Preserve,
+	FixedTopLevel,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EmitOptions {
 	indent: String,
+	ordering: EmitOrdering,
 }
 
 impl EmitOptions {
 	pub(crate) fn with_indent(indent: impl Into<String>) -> Self {
 		Self {
 			indent: indent.into(),
+			ordering: EmitOrdering::default(),
 		}
 	}
 
 	pub(crate) fn indent(&self) -> &str {
 		&self.indent
+	}
+
+	pub(crate) fn ordering(&self) -> EmitOrdering {
+		self.ordering
+	}
+
+	pub(crate) fn with_ordering(mut self, ordering: EmitOrdering) -> Self {
+		self.ordering = ordering;
+		self
 	}
 }
 
@@ -36,35 +54,54 @@ pub(crate) fn emit_clausewitz_statements_with_options(
 	options: &EmitOptions,
 ) -> Result<String, MergeError> {
 	let mut out = String::new();
-	for statement in statements {
-		emit_statement(statement, 0, &mut out, options.indent())?;
-	}
+	emit_statements(statements, 0, &mut out, options)?;
 	Ok(out)
+}
+
+fn emit_statements(
+	statements: &[AstStatement],
+	indent: usize,
+	out: &mut String,
+	options: &EmitOptions,
+) -> Result<(), MergeError> {
+	if options.ordering() == EmitOrdering::FixedTopLevel && indent == 0 {
+		for group in ordered_statement_groups(statements) {
+			for statement in group {
+				emit_statement(statement, indent, out, options)?;
+			}
+		}
+		return Ok(());
+	}
+
+	for statement in statements {
+		emit_statement(statement, indent, out, options)?;
+	}
+	Ok(())
 }
 
 fn emit_statement(
 	statement: &AstStatement,
 	indent: usize,
 	out: &mut String,
-	indent_text: &str,
+	options: &EmitOptions,
 ) -> Result<(), MergeError> {
 	match statement {
 		AstStatement::Assignment { key, value, .. } => {
-			indent_into(out, indent, indent_text);
+			indent_into(out, indent, options.indent());
 			out.push_str(key);
 			out.push_str(" = ");
-			emit_value(value, indent, out, indent_text)?;
+			emit_value(value, indent, out, options)?;
 			out.push('\n');
 			Ok(())
 		}
 		AstStatement::Item { value, .. } => {
-			indent_into(out, indent, indent_text);
-			emit_value(value, indent, out, indent_text)?;
+			indent_into(out, indent, options.indent());
+			emit_value(value, indent, out, options)?;
 			out.push('\n');
 			Ok(())
 		}
 		AstStatement::Comment { text, .. } => {
-			indent_into(out, indent, indent_text);
+			indent_into(out, indent, options.indent());
 			out.push_str("# ");
 			out.push_str(text);
 			out.push('\n');
@@ -77,7 +114,7 @@ fn emit_value(
 	value: &AstValue,
 	indent: usize,
 	out: &mut String,
-	indent_text: &str,
+	options: &EmitOptions,
 ) -> Result<(), MergeError> {
 	match value {
 		AstValue::Scalar { value, .. } => {
@@ -86,10 +123,8 @@ fn emit_value(
 		}
 		AstValue::Block { items, .. } => {
 			out.push_str("{\n");
-			for item in items {
-				emit_statement(item, indent + 1, out, indent_text)?;
-			}
-			indent_into(out, indent, indent_text);
+			emit_statements(items, indent + 1, out, options)?;
+			indent_into(out, indent, options.indent());
 			out.push('}');
 			Ok(())
 		}
@@ -118,6 +153,105 @@ fn escape_string(value: &str) -> String {
 fn indent_into(out: &mut String, indent: usize, indent_text: &str) {
 	for _ in 0..indent {
 		out.push_str(indent_text);
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct StatementSortKey {
+	kind: u8,
+	key: String,
+	value: String,
+}
+
+fn ordered_statement_groups(statements: &[AstStatement]) -> Vec<Vec<&AstStatement>> {
+	let mut groups = Vec::new();
+	let mut leading_comments = Vec::new();
+
+	for statement in statements {
+		if matches!(statement, AstStatement::Comment { .. }) {
+			leading_comments.push(statement);
+			continue;
+		}
+
+		let mut group = std::mem::take(&mut leading_comments);
+		group.push(statement);
+		groups.push(group);
+	}
+
+	if !leading_comments.is_empty() {
+		groups.push(leading_comments);
+	}
+
+	groups.sort_by_key(|group| group_sort_key(group));
+	groups
+}
+
+fn group_sort_key(group: &[&AstStatement]) -> StatementSortKey {
+	group
+		.iter()
+		.find(|statement| !matches!(statement, AstStatement::Comment { .. }))
+		.map(|statement| statement_sort_key(statement))
+		.unwrap_or_else(|| {
+			let key = group
+				.iter()
+				.filter_map(|statement| match statement {
+					AstStatement::Comment { text, .. } => Some(text.as_str()),
+					_ => None,
+				})
+				.collect::<Vec<_>>()
+				.join("\n");
+			StatementSortKey {
+				kind: 2,
+				key,
+				value: String::new(),
+			}
+		})
+}
+
+fn statement_sort_key(statement: &AstStatement) -> StatementSortKey {
+	match statement {
+		AstStatement::Assignment { key, value, .. } => StatementSortKey {
+			kind: 0,
+			key: key.clone(),
+			value: value_sort_key(value),
+		},
+		AstStatement::Item { value, .. } => StatementSortKey {
+			kind: 1,
+			key: String::new(),
+			value: value_sort_key(value),
+		},
+		AstStatement::Comment { text, .. } => StatementSortKey {
+			kind: 2,
+			key: text.clone(),
+			value: String::new(),
+		},
+	}
+}
+
+fn value_sort_key(value: &AstValue) -> String {
+	match value {
+		AstValue::Scalar { value, .. } => scalar_sort_key(value),
+		AstValue::Block { items, .. } => {
+			let mut keys = items
+				.iter()
+				.filter(|item| !matches!(item, AstStatement::Comment { .. }))
+				.map(statement_sort_key)
+				.collect::<Vec<_>>();
+			keys.sort();
+			keys.into_iter()
+				.map(|key| format!("{}:{}={}", key.kind, key.key, key.value))
+				.collect::<Vec<_>>()
+				.join(";")
+		}
+	}
+}
+
+fn scalar_sort_key(value: &ScalarValue) -> String {
+	match value {
+		ScalarValue::Identifier(value) => format!("i:{value}"),
+		ScalarValue::String(value) => format!("s:{value}"),
+		ScalarValue::Number(value) => format!("n:{value}"),
+		ScalarValue::Bool(value) => format!("b:{value}"),
 	}
 }
 
@@ -153,6 +287,46 @@ mod tests {
 		assert_eq!(emitted, "root = {\n  child = {\n    leaf = yes\n  }\n}\n");
 	}
 
+	#[test]
+	fn fixed_top_level_order_sorts_definitions_and_keeps_nested_order() {
+		let statements = vec![
+			assignment(
+				"z_root",
+				block(vec![
+					assignment("b", scalar_id("2")),
+					assignment("a", scalar_id("1")),
+				]),
+			),
+			comment("foch: a_root from mod-a"),
+			assignment(
+				"a_root",
+				block(vec![
+					assignment("z", scalar_id("2")),
+					assignment("a", scalar_id("1")),
+				]),
+			),
+		];
+
+		let emitted = emit_clausewitz_statements_with_options(
+			&statements,
+			&EmitOptions::default().with_ordering(EmitOrdering::FixedTopLevel),
+		)
+		.expect("emit fixed order");
+
+		assert_eq!(
+			emitted,
+			"# foch: a_root from mod-a\n\
+a_root = {\n\
+\tz = 2\n\
+\ta = 1\n\
+}\n\
+z_root = {\n\
+\tb = 2\n\
+\ta = 1\n\
+}\n"
+		);
+	}
+
 	fn nested_statements() -> Vec<AstStatement> {
 		vec![assignment(
 			"root",
@@ -170,6 +344,17 @@ mod tests {
 			value,
 			span: span(),
 		}
+	}
+
+	fn comment(text: &str) -> AstStatement {
+		AstStatement::Comment {
+			text: text.to_string(),
+			span: span(),
+		}
+	}
+
+	fn scalar_id(value: &str) -> AstValue {
+		scalar(ScalarValue::Identifier(value.to_string()))
 	}
 
 	fn block(items: Vec<AstStatement>) -> AstValue {

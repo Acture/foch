@@ -966,6 +966,7 @@ dependencies = [
  "flate2",
  "foch-core",
  "foch-engine",
+ "foch-language",
  "regex",
  "reqwest",
  "serde",

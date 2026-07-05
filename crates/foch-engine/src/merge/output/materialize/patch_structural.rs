@@ -19,7 +19,7 @@ use super::stale_detect::{
 use super::{
 	PatchBasedMergeContext, PatchBasedMergeFailure, PatchBasedMergeOutput, PatchConflictReport,
 };
-use crate::emit::emit_clausewitz_statements_with_options;
+use crate::emit::{EmitOptions, EmitOrdering, emit_clausewitz_statements_with_options};
 use crate::merge::cwt_suggestions::classify_conflict_kind;
 use crate::workspace::ResolvedFileContributor;
 use foch_cwt::CwtSchemaGraph;
@@ -263,8 +263,8 @@ pub(super) fn patch_based_structural_merge(
 	} else {
 		merged_statements
 	};
-	let rendered =
-		emit_clausewitz_statements_with_options(&merged_statements, context.emit_options)?;
+	let emit_options = emit_options_for_descriptor(context.emit_options, context.descriptor);
+	let rendered = emit_clausewitz_statements_with_options(&merged_statements, &emit_options)?;
 	Ok(PatchBasedMergeOutput {
 		rendered,
 		dep_remove_counts,
@@ -277,6 +277,27 @@ pub(super) fn patch_based_structural_merge(
 		definition_provenance,
 		merge_trace,
 	})
+}
+
+fn emit_options_for_descriptor(
+	options: &EmitOptions,
+	descriptor: &foch_language::analyzer::content_family::ContentFamilyDescriptor,
+) -> EmitOptions {
+	let ordering = if descriptor_preserves_sibling_order(descriptor) {
+		EmitOrdering::Preserve
+	} else {
+		EmitOrdering::FixedTopLevel
+	};
+	options.clone().with_ordering(ordering)
+}
+
+fn descriptor_preserves_sibling_order(
+	descriptor: &foch_language::analyzer::content_family::ContentFamilyDescriptor,
+) -> bool {
+	matches!(
+		descriptor.id.as_str(),
+		"interface" | "common/interface" | "gfx"
+	)
 }
 
 fn build_merge_trace(
