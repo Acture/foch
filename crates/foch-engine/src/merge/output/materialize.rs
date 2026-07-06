@@ -20,7 +20,10 @@ use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_fil
 use crate::emit::EmitOptions;
 use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
-use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, resolve_workspace};
+use crate::workspace::{
+	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceScriptCache,
+	resolve_workspace,
+};
 use cross_file_dedup::prune_cross_file_noop_duplicates;
 use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionMap};
 use foch_core::model::{
@@ -154,16 +157,13 @@ fn contributor_priority_rank(contributor: &ResolvedFileContributor) -> u8 {
 pub(crate) fn materialize_merge_internal(
 	request: CheckRequest,
 	out_dir: &Path,
-	mut options: MergeMaterializeOptions,
+	options: MergeMaterializeOptions,
 ) -> Result<MergeReport, MergeError> {
-	let mut report = MergeReport::default();
-	let mut generated_paths = BTreeSet::new();
-
 	// Resolve once and reuse: build_merge_plan_from_workspace and the rest of
 	// the pipeline both consume the same ResolvedWorkspace. The legacy
 	// run_merge_plan_with_options recovery path is kept for the case where
 	// resolution itself failed (it may still produce a fatal-only plan).
-	let mut workspace_result = stage_log_with("resolve_workspace", || {
+	let workspace_result = stage_log_with("resolve_workspace", || {
 		let result = resolve_workspace(&request, options.include_game_base);
 		let summary = result
 			.as_ref()
@@ -171,6 +171,18 @@ pub(crate) fn materialize_merge_internal(
 			.map(|w| format!("mods={} files={}", w.mods.len(), w.file_inventory.len()));
 		(result, summary)
 	});
+	materialize_merge_with_workspace_result(request, out_dir, options, workspace_result)
+}
+
+pub(crate) fn materialize_merge_with_workspace_result(
+	request: CheckRequest,
+	out_dir: &Path,
+	mut options: MergeMaterializeOptions,
+	mut workspace_result: Result<ResolvedWorkspace, WorkspaceResolveError>,
+) -> Result<MergeReport, MergeError> {
+	let mut report = MergeReport::default();
+	let mut generated_paths = BTreeSet::new();
+
 	if let Ok(workspace) = &mut workspace_result {
 		// The merge resolution map is loaded after generic workspace resolution,
 		// so priority_boost is a merge-only post-processing pass here.
@@ -377,6 +389,7 @@ pub(crate) fn materialize_merge_internal(
 										cache_game_version: &cache_game_version,
 										emit_options: &emit_options,
 										provenance: options.provenance,
+										script_cache: &workspace.script_cache,
 									};
 									patch_based_structural_merge(
 										&target,
@@ -1010,6 +1023,7 @@ struct PatchBasedMergeContext<'a> {
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
 	provenance: bool,
+	script_cache: &'a WorkspaceScriptCache,
 }
 
 /// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
@@ -1246,6 +1260,11 @@ mod tests {
 			is_base_game,
 			is_synthetic_base,
 			parse_ok_hint: None,
+			mod_hash: if is_base_game {
+				None
+			} else {
+				Some(format!("hash-{mod_id}"))
+			},
 		}
 	}
 
@@ -1286,6 +1305,7 @@ mod tests {
 			installed_base_snapshot: None,
 			cache_game_version: None,
 			mod_snapshots: Vec::new(),
+			script_cache: Default::default(),
 			file_inventory,
 		}
 	}
@@ -1521,6 +1541,7 @@ mod tests {
 					is_base_game: *is_base_game,
 					is_synthetic_base: false,
 					parse_ok_hint: None,
+					mod_hash: None,
 				});
 		}
 
@@ -1535,6 +1556,7 @@ mod tests {
 			installed_base_snapshot: None,
 			cache_game_version: None,
 			mod_snapshots: Vec::new(),
+			script_cache: Default::default(),
 			file_inventory,
 		}
 	}

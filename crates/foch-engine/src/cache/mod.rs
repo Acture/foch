@@ -8,6 +8,7 @@ pub mod layer;
 mod mod_diff_cache;
 mod mod_parse_cache;
 mod modset_cache;
+pub(crate) mod parsed_scripts;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};
@@ -16,7 +17,7 @@ pub use mod_diff_cache::default_mod_diff_cache_dir;
 pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_diff_cache_stats};
 pub use mod_parse_cache::{CacheError, default_foch_cache_dir, default_mod_parse_cache_dir};
 pub(crate) use mod_parse_cache::{
-	CachedModData, ModParseCache, compute_mod_hash, compute_mod_hash_with_filter,
+	CachedModData, ModParseCache, compute_mod_hash_for_files, compute_mod_hash_with_filter,
 };
 pub use modset_cache::{
 	CacheEntryInfo, CacheStats, CachedModsetResult, ModsetCache, default_modset_cache_dir,

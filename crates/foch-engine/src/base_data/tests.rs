@@ -12,6 +12,9 @@ use foch_core::model::{
 	test_support,
 };
 use foch_language::analysis_version::analysis_rules_version;
+use foch_language::analyzer::content_family::CwtType;
+use foch_language::analyzer::parser::parse_clausewitz_content;
+use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tempfile::TempDir;
@@ -65,6 +68,62 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 		&index,
 		Default::default(),
 	)
+}
+
+#[test]
+fn base_snapshot_roundtrips_parsed_scripts_section() {
+	test_support::install_defaults();
+	let temp = TempDir::new().expect("temp dir");
+	let relative_path = PathBuf::from("common/scripted_effects/test.txt");
+	let absolute_path = temp.path().join(&relative_path);
+	let source = "test_effect = { add_prestige = 1 }\n";
+	let parsed = parse_clausewitz_content(absolute_path.clone(), source);
+	let parsed_script = ParsedScriptFile {
+		mod_id: "__game__eu4".to_string(),
+		path: absolute_path,
+		relative_path: relative_path.clone(),
+		content_family: None,
+		file_kind: CwtType::new("scripted_effects"),
+		module_name: "scripted_effects".to_string(),
+		ast: parsed.ast,
+		source: source.to_string(),
+		parse_issues: Vec::new(),
+		parse_cache_hit: false,
+	};
+	let parsed_scripts = crate::cache::parsed_scripts::encode_parsed_documents(&[parsed_script])
+		.expect("encode parsed script");
+	let mut index = SemanticIndex::default();
+	index.documents.push(DocumentRecord {
+		mod_id: "__game__eu4".to_string(),
+		path: relative_path.clone(),
+		family: DocumentFamily::Clausewitz,
+		parse_ok: true,
+	});
+	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
+		&Game::EuropaUniversalis4,
+		"parsed-script-test",
+		vec![relative_path.to_string_lossy().to_string()],
+		&index,
+		Default::default(),
+		parsed_scripts,
+	);
+
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let decoded = decode_snapshot_from_bytes(&encoded.bytes).expect("decode snapshot");
+	let decoded_scripts = decoded
+		.parsed_script_files(temp.path())
+		.expect("decode parsed scripts");
+
+	assert_eq!(decoded_scripts.len(), 1);
+	assert_eq!(decoded_scripts[0].mod_id, "__game__eu4");
+	assert_eq!(decoded_scripts[0].relative_path, relative_path);
+	assert_eq!(
+		decoded_scripts[0].path,
+		temp.path().join("common/scripted_effects/test.txt")
+	);
+	assert_eq!(decoded_scripts[0].source, source);
+	assert_eq!(decoded_scripts[0].ast.statements.len(), 1);
+	assert!(decoded_scripts[0].parse_cache_hit);
 }
 
 fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {

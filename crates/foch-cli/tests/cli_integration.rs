@@ -2322,11 +2322,14 @@ fn data_build_emits_progress_and_profile_output() {
 	assert_eq!(profile["parse_stats"]["localisation"]["documents"], 1);
 	assert_eq!(profile["parse_stats"]["csv"]["documents"], 0);
 	assert_eq!(profile["parse_stats"]["json"]["documents"], 0);
-	assert_eq!(
-		profile["encoded_sections"]
-			.as_array()
-			.expect("encoded sections array")
-			.len(),
-		5
+	let encoded_sections = profile["encoded_sections"]
+		.as_array()
+		.expect("encoded sections array");
+	assert_eq!(encoded_sections.len(), 6);
+	assert!(
+		encoded_sections
+			.iter()
+			.any(|section| section["name"] == "parsed_scripts"),
+		"missing parsed_scripts section: {profile_raw}"
 	);
 }

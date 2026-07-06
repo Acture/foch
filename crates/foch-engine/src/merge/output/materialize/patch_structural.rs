@@ -115,7 +115,8 @@ pub(super) fn patch_based_structural_merge(
 	let mut effective_map = context.resolution_map.clone();
 	let mut dag_patches =
 		run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
-	let vanilla = parse_vanilla_for_stale_detection(target_path, contributors)?;
+	let vanilla =
+		parse_vanilla_for_stale_detection(target_path, contributors, context.script_cache)?;
 
 	if !dag_patches.merge_result.conflicts.is_empty()
 		&& let (Some(handler), Some(config_path)) =
@@ -464,6 +465,7 @@ fn run_patch_merge_engine(
 			ignore_replace_path: context.ignore_replace_path,
 			dep_overrides: context.dep_overrides,
 			game_version: context.cache_game_version,
+			script_cache: Some(context.script_cache),
 		},
 		&mut handler,
 	)

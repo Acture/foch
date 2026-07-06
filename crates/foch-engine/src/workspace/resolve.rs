@@ -1,9 +1,10 @@
 use super::file_filter::FileFilter;
-use super::{LoadedModSnapshot, cache::load_or_build_mod_snapshot};
+use super::{LoadedModSnapshot, WorkspaceScriptCache, cache::load_or_build_mod_snapshot};
 use crate::base_data::{
 	InstalledBaseSnapshot, base_game_mod_id, detect_game_version, load_installed_base_snapshot,
 	resolve_game_root, resolve_game_root_and_version,
 };
+use crate::cache::compute_mod_hash_for_files;
 use crate::request::CheckRequest;
 use foch_core::domain::ParseErrorKind;
 use foch_core::domain::descriptor::load_descriptor;
@@ -38,6 +39,7 @@ pub(crate) struct ResolvedFileContributor {
 	pub is_base_game: bool,
 	pub is_synthetic_base: bool,
 	pub parse_ok_hint: Option<bool>,
+	pub mod_hash: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -48,13 +50,26 @@ pub(crate) struct ResolvedWorkspace {
 	pub installed_base_snapshot: Option<InstalledBaseSnapshot>,
 	pub cache_game_version: Option<String>,
 	pub mod_snapshots: Vec<Option<LoadedModSnapshot>>,
+	pub script_cache: WorkspaceScriptCache,
 	pub file_inventory: BTreeMap<String, Vec<ResolvedFileContributor>>,
 }
 
-pub(crate) fn resolve_workspace(
+#[derive(Clone, Debug)]
+pub(crate) struct WorkspaceInventory {
+	pub playlist_path: PathBuf,
+	pub playlist: Playlist,
+	pub mods: Vec<ModCandidate>,
+	pub base_game_root: Option<PathBuf>,
+	pub mod_cache_game_version: Option<String>,
+	pub cache_game_version: Option<String>,
+	pub snapshot_filter: FileFilter,
+	pub mod_hashes: Vec<Option<String>>,
+}
+
+pub(crate) fn build_workspace_inventory(
 	request: &CheckRequest,
 	include_game_base: bool,
-) -> Result<ResolvedWorkspace, WorkspaceResolveError> {
+) -> Result<WorkspaceInventory, WorkspaceResolveError> {
 	let playlist =
 		Playlist::from_dlc_load(&request.playset_path).map_err(|err| WorkspaceResolveError {
 			kind: if matches!(err.kind, ParseErrorKind::Format) {
@@ -69,41 +84,6 @@ pub(crate) fn resolve_workspace(
 			},
 		})?;
 
-	let mods = build_mod_candidates(request, &playlist);
-	let optional_game_root = resolve_game_root(&request.config, &playlist.game);
-	let (base_game_root, installed_base_snapshot, mod_cache_game_version) = if include_game_base {
-		let (game_root, game_version) =
-			resolve_game_root_and_version(&request.config, &playlist.game).map_err(|message| {
-				WorkspaceResolveError {
-					kind: WorkspaceResolveErrorKind::Io,
-					path: request.playset_path.clone(),
-					message,
-				}
-			})?;
-		let installed = load_installed_base_snapshot(playlist.game.key(), &game_version)
-			.map_err(|message| WorkspaceResolveError {
-				kind: WorkspaceResolveErrorKind::Io,
-				path: request.playset_path.clone(),
-				message,
-			})?
-			.ok_or_else(|| WorkspaceResolveError {
-				kind: WorkspaceResolveErrorKind::Io,
-				path: request.playset_path.clone(),
-				message: missing_base_data_message(&playlist.game, &game_version, &game_root),
-			})?;
-		(Some(game_root), Some(installed), Some(game_version))
-	} else {
-		(
-			None,
-			None,
-			optional_game_root
-				.as_ref()
-				.and_then(|game_root| detect_game_version(game_root)),
-		)
-	};
-	let cache_game_version = mod_cache_game_version
-		.as_ref()
-		.map(|version| format!("{} {version}", playlist.game.key()));
 	let snapshot_filter = match FileFilter::new(
 		playlist.game.clone(),
 		&request.config.extra_ignore_patterns,
@@ -114,14 +94,93 @@ pub(crate) fn resolve_workspace(
 			FileFilter::for_game(playlist.game.clone())
 		}
 	};
+	let mods = build_mod_candidates_with_filter(request, &playlist, &snapshot_filter);
+	let optional_game_root = resolve_game_root(&request.config, &playlist.game);
+	let (base_game_root, mod_cache_game_version) = if include_game_base {
+		let (game_root, game_version) =
+			resolve_game_root_and_version(&request.config, &playlist.game).map_err(|message| {
+				WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: request.playset_path.clone(),
+					message,
+				}
+			})?;
+		(Some(game_root), Some(game_version))
+	} else {
+		(
+			None,
+			optional_game_root
+				.as_ref()
+				.and_then(|game_root| detect_game_version(game_root)),
+		)
+	};
+	let cache_game_version = mod_cache_game_version
+		.as_ref()
+		.map(|version| format!("{} {version}", playlist.game.key()));
+	let mod_hashes = mods.iter().map(compute_candidate_hash).collect();
+
+	Ok(WorkspaceInventory {
+		playlist_path: request.playset_path.clone(),
+		playlist,
+		mods,
+		base_game_root,
+		mod_cache_game_version,
+		cache_game_version,
+		snapshot_filter,
+		mod_hashes,
+	})
+}
+
+pub(crate) fn resolve_workspace(
+	request: &CheckRequest,
+	include_game_base: bool,
+) -> Result<ResolvedWorkspace, WorkspaceResolveError> {
+	let inventory = build_workspace_inventory(request, include_game_base)?;
+	resolve_workspace_from_inventory(inventory)
+}
+
+pub(crate) fn resolve_workspace_from_inventory(
+	inventory: WorkspaceInventory,
+) -> Result<ResolvedWorkspace, WorkspaceResolveError> {
+	let WorkspaceInventory {
+		playlist_path,
+		playlist,
+		mods,
+		base_game_root,
+		mod_cache_game_version,
+		cache_game_version,
+		snapshot_filter,
+		mod_hashes,
+	} = inventory;
+	let installed_base_snapshot = if let (Some(game_root), Some(game_version)) =
+		(base_game_root.as_ref(), mod_cache_game_version.as_ref())
+	{
+		Some(
+			load_installed_base_snapshot(playlist.game.key(), game_version)
+				.map_err(|message| WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: playlist_path.clone(),
+					message,
+				})?
+				.ok_or_else(|| WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: playlist_path.clone(),
+					message: missing_base_data_message(&playlist.game, game_version, game_root),
+				})?,
+		)
+	} else {
+		None
+	};
 	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
 		.iter()
-		.map(|mod_item| {
+		.enumerate()
+		.map(|(idx, mod_item)| {
 			load_or_build_mod_snapshot(
 				playlist.game.key(),
 				mod_cache_game_version.as_deref(),
 				mod_item,
 				&snapshot_filter,
+				mod_hashes.get(idx).and_then(|hash| hash.as_deref()),
 			)
 		})
 		.collect();
@@ -131,16 +190,24 @@ pub(crate) fn resolve_workspace(
 		&mod_snapshots,
 		base_game_root.as_ref(),
 		installed_base_snapshot.as_ref(),
+		&mod_hashes,
 	);
 	inject_synthetic_bases(&mut file_inventory);
+	let script_cache = WorkspaceScriptCache::from_parts(
+		&mods,
+		&mod_snapshots,
+		installed_base_snapshot.as_ref(),
+		base_game_root.as_deref(),
+	);
 
 	Ok(ResolvedWorkspace {
-		playlist_path: request.playset_path.clone(),
+		playlist_path,
 		playlist,
 		mods,
 		installed_base_snapshot,
 		cache_game_version,
 		mod_snapshots,
+		script_cache,
 		file_inventory,
 	})
 }
@@ -156,23 +223,15 @@ fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) 
 	)
 }
 
-pub(crate) fn build_mod_candidates(
+pub(crate) fn build_mod_candidates_with_filter(
 	request: &CheckRequest,
 	playlist: &Playlist,
+	filter: &FileFilter,
 ) -> Vec<ModCandidate> {
 	let playset_dir = request
 		.playset_path
 		.parent()
 		.map_or_else(|| PathBuf::from("."), PathBuf::from);
-
-	let filter = match FileFilter::new(playlist.game.clone(), &request.config.extra_ignore_patterns)
-	{
-		Ok(filter) => filter,
-		Err(message) => {
-			tracing::warn!(target: "foch::workspace::resolve", message, "falling back to filter without extra ignore globs");
-			FileFilter::for_game(playlist.game.clone())
-		}
-	};
 
 	let mut entries = playlist.mods.clone();
 	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
@@ -200,7 +259,7 @@ pub(crate) fn build_mod_candidates(
 
 			let files = root_path
 				.as_ref()
-				.map_or_else(Vec::new, |root| collect_relative_files(root, &filter));
+				.map_or_else(Vec::new, |root| collect_relative_files(root, filter));
 
 			ModCandidate {
 				entry,
@@ -213,6 +272,21 @@ pub(crate) fn build_mod_candidates(
 			}
 		})
 		.collect()
+}
+
+fn compute_candidate_hash(mod_item: &ModCandidate) -> Option<String> {
+	let root = mod_item.root_path.as_ref()?;
+	let mut files = mod_item.files.clone();
+	if let Some(descriptor_path) = mod_item
+		.descriptor_path
+		.as_ref()
+		.filter(|path| path.is_file())
+		&& let Ok(relative) = descriptor_path.strip_prefix(root)
+		&& !files.iter().any(|path| path == relative)
+	{
+		files.push(relative.to_path_buf());
+	}
+	compute_mod_hash_for_files(root, &files).ok()
 }
 
 fn resolve_mod_root(
@@ -365,6 +439,7 @@ pub(crate) fn build_file_inventory(
 	mod_snapshots: &[Option<LoadedModSnapshot>],
 	base_game_root: Option<&PathBuf>,
 	installed_base_snapshot: Option<&InstalledBaseSnapshot>,
+	mod_hashes: &[Option<String>],
 ) -> BTreeMap<String, Vec<ResolvedFileContributor>> {
 	let mut inventory = BTreeMap::new();
 	let mut precedence = 0;
@@ -385,6 +460,7 @@ pub(crate) fn build_file_inventory(
 					is_base_game: true,
 					is_synthetic_base: false,
 					parse_ok_hint: document.map(|(_family, parse_ok)| *parse_ok),
+					mod_hash: None,
 				});
 		}
 		precedence += 1;
@@ -398,6 +474,11 @@ pub(crate) fn build_file_inventory(
 			.get(idx)
 			.and_then(|snapshot| snapshot.as_ref())
 			.map(|snapshot| &snapshot.document_parse_hints);
+		let mod_hash = mod_snapshots
+			.get(idx)
+			.and_then(|snapshot| snapshot.as_ref())
+			.and_then(|snapshot| snapshot.mod_hash.clone())
+			.or_else(|| mod_hashes.get(idx).cloned().flatten());
 		for relative in &mod_item.files {
 			let key = normalize_relative_path(relative);
 			let parse_ok_hint = parse_hints.and_then(|hints| hints.get(&key).copied());
@@ -412,6 +493,7 @@ pub(crate) fn build_file_inventory(
 					is_base_game: false,
 					is_synthetic_base: false,
 					parse_ok_hint,
+					mod_hash: mod_hash.clone(),
 				});
 		}
 		precedence += 1;
@@ -477,6 +559,7 @@ mod tests {
 			is_base_game,
 			is_synthetic_base: false,
 			parse_ok_hint: None,
+			mod_hash: Some(format!("hash-{mod_id}")),
 		}
 	}
 

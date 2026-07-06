@@ -15,6 +15,7 @@ use std::path::Path;
 pub(crate) struct LoadedModSnapshot {
 	pub semantic_index: SemanticIndex,
 	pub parsed_documents: Vec<ParsedScriptFile>,
+	pub mod_hash: Option<String>,
 	pub parsed_files: usize,
 	pub parse_error_count: usize,
 	pub parse_stats: ParseFamilyStats,
@@ -27,25 +28,28 @@ pub(crate) fn load_or_build_mod_snapshot(
 	game_version: Option<&str>,
 	mod_item: &ModCandidate,
 	filter: &super::FileFilter,
+	mod_hash: Option<&str>,
 ) -> Option<LoadedModSnapshot> {
 	let root = mod_item.root_path.as_ref()?;
 	let cache_game_version = game_version.map(|version| format!("{game_key} {version}"));
 	let cache = cache_game_version
 		.as_ref()
 		.map(|_| ModParseCache::open_default());
-	let mod_hash = cache
-		.as_ref()
-		.and_then(|_| compute_mod_hash_with_filter(root, filter).ok());
+	let owned_mod_hash = mod_hash.map(ToOwned::to_owned).or_else(|| {
+		cache
+			.as_ref()
+			.and_then(|_| compute_mod_hash_with_filter(root, filter).ok())
+	});
 
 	if let (Some(cache), Some(mod_hash), Some(cache_game_version)) = (
 		cache.as_ref(),
-		mod_hash.as_ref(),
+		owned_mod_hash.as_ref(),
 		cache_game_version.as_ref(),
 	) && let Some(mut cached) =
 		cache.lookup(mod_hash, env!("CARGO_PKG_VERSION"), cache_game_version)
 	{
-		rebase_parsed_documents(root, &mut cached.parsed_documents);
-		return Some(to_loaded_snapshot(cached, true));
+		crate::cache::parsed_scripts::rebase_parsed_documents(root, &mut cached.parsed_documents);
+		return Some(to_loaded_snapshot(cached, true, owned_mod_hash.clone()));
 	}
 
 	let documents = discover_text_documents(root)
@@ -70,7 +74,7 @@ pub(crate) fn load_or_build_mod_snapshot(
 	};
 	if let (Some(cache), Some(mod_hash), Some(cache_game_version)) = (
 		cache.as_ref(),
-		mod_hash.as_ref(),
+		owned_mod_hash.as_ref(),
 		cache_game_version.as_ref(),
 	) && let Err(err) = cache.store(
 		mod_hash,
@@ -91,13 +95,18 @@ pub(crate) fn load_or_build_mod_snapshot(
 		parse_stats,
 		parse_error_count,
 		false,
+		owned_mod_hash,
 	))
 }
 
-fn to_loaded_snapshot(data: CachedModData, cache_hit: bool) -> LoadedModSnapshot {
+fn to_loaded_snapshot(
+	data: CachedModData,
+	cache_hit: bool,
+	mod_hash: Option<String>,
+) -> LoadedModSnapshot {
 	let parse_stats = parse_stats_from_index(&data.semantic_index);
 	let parse_error_count = parse_stats.clausewitz_mainline.parse_issue_count;
-	to_loaded_snapshot_with_stats(data, parse_stats, parse_error_count, cache_hit)
+	to_loaded_snapshot_with_stats(data, parse_stats, parse_error_count, cache_hit, mod_hash)
 }
 
 fn to_loaded_snapshot_with_stats(
@@ -105,6 +114,7 @@ fn to_loaded_snapshot_with_stats(
 	parse_stats: ParseFamilyStats,
 	parse_error_count: usize,
 	cache_hit: bool,
+	mod_hash: Option<String>,
 ) -> LoadedModSnapshot {
 	let mut semantic_index = data.semantic_index;
 	apply_registered_param_contracts(&mut semantic_index);
@@ -117,6 +127,7 @@ fn to_loaded_snapshot_with_stats(
 		parsed_files: semantic_index.documents.len(),
 		semantic_index,
 		parsed_documents: data.parsed_documents,
+		mod_hash,
 		parse_error_count,
 		parse_stats,
 		document_parse_hints,
@@ -163,13 +174,6 @@ fn family_stats_mut(stats: &mut ParseFamilyStats, family: DocumentFamily) -> &mu
 		DocumentFamily::Localisation => &mut stats.localisation,
 		DocumentFamily::Csv => &mut stats.csv,
 		DocumentFamily::Json => &mut stats.json,
-	}
-}
-
-fn rebase_parsed_documents(root: &Path, documents: &mut [ParsedScriptFile]) {
-	for document in documents {
-		document.path = root.join(&document.relative_path);
-		document.parse_cache_hit = true;
 	}
 }
 
@@ -229,15 +233,48 @@ mod tests {
 		};
 		let filter = super::super::FileFilter::for_game(Game::EuropaUniversalis4);
 
-		let cold = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
+		let cold = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter, None)
 			.expect("cold snapshot");
-		let warm = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter)
+		let warm = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter, None)
 			.expect("warm snapshot");
 
 		assert!(!cold.cache_hit);
 		assert!(warm.cache_hit);
+		assert!(cold.mod_hash.is_some());
+		assert_eq!(warm.mod_hash, cold.mod_hash);
 		assert_eq!(warm.parsed_files, 1);
 		assert_eq!(warm.parsed_documents.len(), 1);
+		let cached_document = &warm.parsed_documents[0];
+		assert_eq!(
+			cached_document.relative_path,
+			std::path::PathBuf::from("common/scripted_effects/effects.txt")
+		);
+		assert_eq!(
+			cached_document.path,
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("effects.txt")
+		);
+		assert_eq!(
+			cached_document.source,
+			"ME_give_claims = { add_prestige = 1 }\n"
+		);
+
+		let script_cache = super::super::WorkspaceScriptCache::from_parts(
+			std::slice::from_ref(&mod_item),
+			&[Some(warm.clone())],
+			None,
+			None,
+		);
+		assert!(
+			script_cache
+				.get(
+					"9001",
+					std::path::Path::new("common/scripted_effects/effects.txt")
+				)
+				.is_some()
+		);
 		unsafe {
 			std::env::remove_var("FOCH_MOD_PARSE_CACHE_DIR");
 		}

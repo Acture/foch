@@ -2115,6 +2115,7 @@ mod tests {
 					is_base_game: true,
 					is_synthetic_base: false,
 					parse_ok_hint: Some(true),
+					mod_hash: None,
 				},
 				ResolvedFileContributor {
 					mod_id: "mod:test".to_string(),
@@ -2124,6 +2125,7 @@ mod tests {
 					is_base_game: false,
 					is_synthetic_base: false,
 					parse_ok_hint: Some(true),
+					mod_hash: Some("hash-mod-test".to_string()),
 				},
 			],
 		);
@@ -2138,6 +2140,7 @@ mod tests {
 			installed_base_snapshot: None,
 			cache_game_version: None,
 			mod_snapshots: Vec::new(),
+			script_cache: Default::default(),
 			file_inventory,
 		}
 	}

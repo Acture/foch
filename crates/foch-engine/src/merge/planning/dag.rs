@@ -1105,6 +1105,7 @@ mod tests {
 			is_base_game: false,
 			is_synthetic_base: false,
 			parse_ok_hint: None,
+			mod_hash: Some(format!("hash-{mod_id}")),
 		}
 	}
 

@@ -212,45 +212,43 @@ fn collect_workspace_scripts(
 	enabled_mod_ids: &HashSet<String>,
 	base_mod_id: Option<&str>,
 ) -> Vec<ParsedScriptFile> {
-	let mut seen = HashSet::new();
-	let mut parsed = Vec::new();
-	let mut cached_mod_ids = HashSet::new();
-	for (mod_item, snapshot) in workspace.mods.iter().zip(workspace.mod_snapshots.iter()) {
-		if !enabled_mod_ids.contains(&mod_item.mod_id) {
-			continue;
-		}
-		let Some(snapshot) = snapshot.as_ref() else {
-			continue;
-		};
-		cached_mod_ids.insert(mod_item.mod_id.clone());
-		for document in &snapshot.parsed_documents {
-			let key = format!(
+	let mut parsed = workspace
+		.script_cache
+		.documents_for_mods(enabled_mod_ids, base_mod_id);
+	let mut seen = parsed
+		.iter()
+		.map(|document| {
+			format!(
 				"{}::{}",
 				document.mod_id,
 				normalize_path(document.relative_path.as_path())
-			);
-			if seen.insert(key) {
-				parsed.push(document.clone());
-			}
-		}
-	}
+			)
+		})
+		.collect::<HashSet<_>>();
 
 	for contributors in workspace.file_inventory.values() {
 		for contributor in contributors {
-			if cached_mod_ids.contains(&contributor.mod_id) {
-				continue;
-			}
 			if !(enabled_mod_ids.contains(&contributor.mod_id)
 				|| base_mod_id.is_some_and(|base| contributor.mod_id == base))
 			{
 				continue;
 			}
-			let key = format!(
-				"{}::{}",
-				contributor.mod_id,
-				contributor.absolute_path.to_string_lossy()
-			);
+			let Ok(relative_path) = contributor
+				.absolute_path
+				.strip_prefix(&contributor.root_path)
+			else {
+				continue;
+			};
+			let key = format!("{}::{}", contributor.mod_id, normalize_path(relative_path));
 			if !seen.insert(key) || !looks_like_clausewitz_path(&contributor.absolute_path) {
+				continue;
+			}
+			if let Some(file) = workspace
+				.script_cache
+				.get(&contributor.mod_id, relative_path)
+				.cloned()
+			{
+				parsed.push(file);
 				continue;
 			}
 			if let Some(file) = parse_script_file(

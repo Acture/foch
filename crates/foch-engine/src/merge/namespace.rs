@@ -450,6 +450,7 @@ mod tests {
 			is_base_game: false,
 			is_synthetic_base: false,
 			parse_ok_hint: None,
+			mod_hash: Some("hash-test_mod".to_string()),
 		};
 
 		inventory.insert(trigger_path.to_string(), vec![dummy_contributor.clone()]);

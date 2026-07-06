@@ -19,10 +19,11 @@ use foch_core::model::{
 use foch_core::utils::steam::steam_game_install_path;
 use foch_language::analysis_version::analysis_rules_version;
 use foch_language::analyzer::documents::{
-	DiscoveredTextDocument, build_semantic_index_from_documents, discover_text_documents,
-	parse_discovered_text_documents,
+	DiscoveredTextDocument, ParsedTextDocument, build_semantic_index_from_documents,
+	discover_text_documents, parse_discovered_text_documents,
 };
 use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
+use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use rayon::join;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -39,7 +40,7 @@ const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
 // Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 12;
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 13;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
@@ -294,6 +295,7 @@ pub struct BaseAnalysisSnapshot {
 	pub parse_error_count: usize,
 	pub parsed_files: usize,
 	pub parse_stats: ParseFamilyStats,
+	pub parsed_scripts: Vec<u8>,
 	pub scopes: Vec<BaseScopeNode>,
 	pub symbol_definitions: Vec<BaseSymbolDefinition>,
 	pub symbol_references: Vec<BaseSymbolReference>,
@@ -345,6 +347,7 @@ impl From<LegacyBaseAnalysisSnapshot> for BaseAnalysisSnapshot {
 			parse_error_count: value.parse_error_count,
 			parsed_files: value.parsed_files,
 			parse_stats: ParseFamilyStats::default(),
+			parsed_scripts: Vec::new(),
 			scopes: value.scopes,
 			symbol_definitions: value.symbol_definitions,
 			symbol_references: value.symbol_references,
@@ -369,6 +372,24 @@ impl BaseAnalysisSnapshot {
 		index: &SemanticIndex,
 		parse_stats: ParseFamilyStats,
 	) -> Self {
+		Self::from_semantic_index_with_parsed_scripts(
+			game,
+			game_version,
+			inventory_paths,
+			index,
+			parse_stats,
+			Vec::new(),
+		)
+	}
+
+	pub fn from_semantic_index_with_parsed_scripts(
+		game: &Game,
+		game_version: &str,
+		inventory_paths: Vec<String>,
+		index: &SemanticIndex,
+		parse_stats: ParseFamilyStats,
+		parsed_scripts: Vec<u8>,
+	) -> Self {
 		Self {
 			schema_version: BASE_DATA_SCHEMA_VERSION,
 			game: game.key().to_string(),
@@ -388,6 +409,7 @@ impl BaseAnalysisSnapshot {
 			parse_error_count: parse_stats.clausewitz_mainline.parse_issue_count,
 			parsed_files: index.documents.len(),
 			parse_stats,
+			parsed_scripts,
 			scopes: index
 				.scopes
 				.iter()
@@ -722,6 +744,19 @@ impl BaseAnalysisSnapshot {
 		index
 	}
 
+	pub(crate) fn parsed_script_files(
+		&self,
+		game_root: &Path,
+	) -> Result<Vec<ParsedScriptFile>, String> {
+		if self.parsed_scripts.is_empty() {
+			return Ok(Vec::new());
+		}
+		let mut parsed =
+			crate::cache::parsed_scripts::decode_parsed_documents(&self.parsed_scripts)?;
+		crate::cache::parsed_scripts::rebase_parsed_documents(game_root, &mut parsed);
+		Ok(parsed)
+	}
+
 	pub fn document_lookup(&self) -> HashMap<&str, (&DocumentFamily, bool)> {
 		self.documents
 			.iter()
@@ -757,6 +792,10 @@ impl BaseAnalysisSnapshot {
 			(
 				"structured_data_items".to_string(),
 				self.csv_rows.len() + self.json_properties.len(),
+			),
+			(
+				"parsed_scripts_bytes".to_string(),
+				self.parsed_scripts.len(),
 			),
 		]
 	}
@@ -955,6 +994,7 @@ enum SnapshotWireSectionName {
 	SymbolScope,
 	LocalisationUiResources,
 	StructuredData,
+	ParsedScripts,
 }
 
 #[derive(
@@ -1017,6 +1057,13 @@ struct SnapshotLocalisationUiResourcesSection {
 struct SnapshotStructuredDataSection {
 	csv_rows: Vec<BaseCsvRow>,
 	json_properties: Vec<BaseJsonProperty>,
+}
+
+#[derive(
+	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+struct SnapshotParsedScriptsSection {
+	parsed_scripts: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -1402,12 +1449,28 @@ pub fn build_base_snapshot_with_observer(
 	);
 
 	let snapshot = observer.run_stage("materialize_snapshot", |counts| {
-		let snapshot = BaseAnalysisSnapshot::from_semantic_index(
+		let parsed_scripts = parsed_batch
+			.documents
+			.iter()
+			.filter_map(|document| match document {
+				ParsedTextDocument::Clausewitz(file) => Some(file.clone()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		let encoded_parsed_scripts =
+			crate::cache::parsed_scripts::encode_parsed_documents(&parsed_scripts)?;
+		counts.insert("parsed_scripts".to_string(), parsed_scripts.len() as u64);
+		counts.insert(
+			"parsed_scripts_bytes".to_string(),
+			encoded_parsed_scripts.len() as u64,
+		);
+		let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
 			game,
 			&resolved_version,
 			inventory_paths,
 			&index,
 			parsed_batch.parse_stats.clone(),
+			encoded_parsed_scripts,
 		);
 		for (key, value) in snapshot.section_item_counts() {
 			counts.insert(key, value as u64);
@@ -1824,6 +1887,7 @@ fn encode_snapshot_to_bytes(
 			)
 		},
 	);
+	let parsed_scripts_res = encode_parsed_scripts_section(snapshot);
 
 	let section_results = vec![
 		metadata_res?,
@@ -1831,6 +1895,7 @@ fn encode_snapshot_to_bytes(
 		symbol_res?,
 		localisation_res?,
 		structured_res?,
+		parsed_scripts_res?,
 	];
 	let bundle = SnapshotWireBundle {
 		format_version: SNAPSHOT_WIRE_FORMAT_VERSION,
@@ -1877,6 +1942,7 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 	let mut symbol_scope = None;
 	let mut localisation = None;
 	let mut structured = None;
+	let mut parsed_scripts = None;
 
 	for section in bundle.sections.into_iter() {
 		match section.name {
@@ -1901,6 +1967,11 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 					&section,
 				)?);
 			}
+			SnapshotWireSectionName::ParsedScripts => {
+				parsed_scripts = Some(decode_section_payload::<SnapshotParsedScriptsSection>(
+					&section,
+				)?);
+			}
 		}
 	}
 
@@ -1915,6 +1986,8 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 	})?;
 	let structured = structured
 		.ok_or_else(|| "base data snapshot is missing structured_data section".to_string())?;
+	let parsed_scripts = parsed_scripts
+		.ok_or_else(|| "base data snapshot is missing parsed_scripts section".to_string())?;
 
 	Ok(BaseAnalysisSnapshot {
 		schema_version: metadata.schema_version,
@@ -1927,6 +2000,7 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 		parse_error_count: inventory.parse_error_count,
 		parsed_files: inventory.parsed_files,
 		parse_stats: inventory.parse_stats,
+		parsed_scripts: parsed_scripts.parsed_scripts,
 		scopes: symbol_scope.scopes,
 		symbol_definitions: symbol_scope.symbol_definitions,
 		symbol_references: symbol_scope.symbol_references,
@@ -2147,6 +2221,19 @@ fn encode_structured_data_section(
 	)
 }
 
+fn encode_parsed_scripts_section(
+	snapshot: &BaseAnalysisSnapshot,
+) -> Result<SectionEncodeResult, String> {
+	let section = SnapshotParsedScriptsSection {
+		parsed_scripts: snapshot.parsed_scripts.clone(),
+	};
+	encode_section_payload(
+		SnapshotWireSectionName::ParsedScripts,
+		"parsed_scripts",
+		&section,
+	)
+}
+
 fn encode_section_payload<T>(
 	name: SnapshotWireSectionName,
 	display_name: &str,
@@ -2260,6 +2347,7 @@ fn snapshot_section_display_name(name: SnapshotWireSectionName) -> &'static str 
 		SnapshotWireSectionName::SymbolScope => "symbol_scope",
 		SnapshotWireSectionName::LocalisationUiResources => "localisation_ui_resources",
 		SnapshotWireSectionName::StructuredData => "structured_data",
+		SnapshotWireSectionName::ParsedScripts => "parsed_scripts",
 	}
 }
 

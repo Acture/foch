@@ -4,7 +4,7 @@ use super::super::super::patch_merge::PatchAddress;
 use super::super::stale_vanilla::detect_stale_vanilla_targets;
 use super::DepMisuseRemoveCount;
 use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
-use crate::workspace::ResolvedFileContributor;
+use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 use foch_core::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
 use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
@@ -81,6 +81,7 @@ fn vanilla_address_lookup_key(address_key: &str) -> Option<&str> {
 pub(super) fn parse_vanilla_for_stale_detection(
 	file_path: &str,
 	contributors: &[ResolvedFileContributor],
+	script_cache: &WorkspaceScriptCache,
 ) -> Result<Option<ParsedScriptFile>, MergeError> {
 	let Some(base) = contributors
 		.iter()
@@ -88,6 +89,11 @@ pub(super) fn parse_vanilla_for_stale_detection(
 	else {
 		return Ok(None);
 	};
+	if let Ok(relative) = base.absolute_path.strip_prefix(&base.root_path)
+		&& let Some(parsed) = script_cache.get(&base.mod_id, relative)
+	{
+		return Ok(Some(parsed.clone()));
+	}
 	parse_script_file(&base.mod_id, &base.root_path, &base.absolute_path)
 		.map(Some)
 		.ok_or_else(|| MergeError::Validation {

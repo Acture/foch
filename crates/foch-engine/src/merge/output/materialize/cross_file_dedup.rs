@@ -123,6 +123,7 @@ fn build_effective_merged_inventory(
 					is_base_game: false,
 					is_synthetic_base: false,
 					parse_ok_hint: None,
+					mod_hash: None,
 				}],
 			);
 			continue;

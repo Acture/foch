@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
 
 use foch_core::config::DepOverride;
 use foch_core::model::{HandlerResolutionRecord, MergeTraceContributor};
@@ -17,8 +16,8 @@ use super::super::patch_merge::{PatchMergeResult, PatchResolution, merge_patch_s
 use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
-use crate::cache::{DagBaseCache, ModDiffCache, compute_mod_hash};
-use crate::workspace::ResolvedFileContributor;
+use crate::cache::{DagBaseCache, ModDiffCache};
+use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
 pub(crate) struct DagPatchComputation {
@@ -45,6 +44,7 @@ pub(crate) struct DagPatchRequest<'a> {
 	pub ignore_replace_path: &'a IgnoreReplacePath,
 	pub dep_overrides: &'a [DepOverride],
 	pub game_version: &'a str,
+	pub script_cache: Option<&'a WorkspaceScriptCache>,
 }
 
 struct DagPatchArgs<'a> {
@@ -68,8 +68,6 @@ struct CachedDiffArgs<'a> {
 	merge_key_source: MergeKeySource,
 	game_version: &'a str,
 }
-
-static MOD_ROOT_HASHES: OnceLock<Mutex<HashMap<PathBuf, Option<String>>>> = OnceLock::new();
 
 /// Compute all patches for a single file using dependency-DAG topo levels.
 ///
@@ -95,6 +93,7 @@ pub(crate) fn compute_dag_patches_with_handler(
 		ignore_replace_path,
 		dep_overrides,
 		game_version,
+		script_cache,
 	} = request;
 	let file_dag = induced_file_dag_with_overrides(
 		mod_dag,
@@ -103,8 +102,9 @@ pub(crate) fn compute_dag_patches_with_handler(
 		ignore_replace_path,
 		dep_overrides,
 	);
-	let vanilla = parse_vanilla_contributor(file_path, contributors)?;
-	let parsed_contributors = parse_active_mod_contributors(file_path, contributors, &file_dag)?;
+	let vanilla = parse_vanilla_contributor(file_path, contributors, script_cache)?;
+	let parsed_contributors =
+		parse_active_mod_contributors(file_path, contributors, &file_dag, script_cache)?;
 	let mod_hashes = contributor_mod_hashes(contributors, &file_dag);
 	compute_dag_patches_from_parsed_with_cache(DagPatchArgs {
 		file_dag: &file_dag,
@@ -121,10 +121,14 @@ pub(crate) fn compute_dag_patches_with_handler(
 fn parse_vanilla_contributor(
 	file_path: &str,
 	contributors: &[ResolvedFileContributor],
+	script_cache: Option<&WorkspaceScriptCache>,
 ) -> Result<Option<ParsedScriptFile>, String> {
 	let Some(base) = contributors.iter().find(|c| c.is_base_game) else {
 		return Ok(None);
 	};
+	if let Some(parsed) = parsed_from_cache(base, script_cache) {
+		return Ok(Some(parsed));
+	}
 	parse_script_file(&base.mod_id, &base.root_path, &base.absolute_path)
 		.map(Some)
 		.ok_or_else(|| {
@@ -139,6 +143,7 @@ fn parse_active_mod_contributors(
 	file_path: &str,
 	contributors: &[ResolvedFileContributor],
 	file_dag: &FileDag,
+	script_cache: Option<&WorkspaceScriptCache>,
 ) -> Result<HashMap<ModId, ParsedScriptFile>, String> {
 	let by_mod: HashMap<ModId, &ResolvedFileContributor> = contributors
 		.iter()
@@ -150,21 +155,35 @@ fn parse_active_mod_contributors(
 		let contributor = by_mod
 			.get(mod_id)
 			.ok_or_else(|| format!("missing contributor {} for {file_path}", mod_id.as_str()))?;
-		let parsed_file = parse_script_file(
-			&contributor.mod_id,
-			&contributor.root_path,
-			&contributor.absolute_path,
-		)
-		.ok_or_else(|| {
-			format!(
-				"failed to parse mod file {} for {}",
-				contributor.absolute_path.display(),
-				contributor.mod_id,
-			)
-		})?;
+		let parsed_file = parsed_from_cache(contributor, script_cache)
+			.or_else(|| {
+				parse_script_file(
+					&contributor.mod_id,
+					&contributor.root_path,
+					&contributor.absolute_path,
+				)
+			})
+			.ok_or_else(|| {
+				format!(
+					"failed to parse mod file {} for {}",
+					contributor.absolute_path.display(),
+					contributor.mod_id,
+				)
+			})?;
 		parsed.insert(mod_id.clone(), parsed_file);
 	}
 	Ok(parsed)
+}
+
+fn parsed_from_cache(
+	contributor: &ResolvedFileContributor,
+	script_cache: Option<&WorkspaceScriptCache>,
+) -> Option<ParsedScriptFile> {
+	let relative = contributor
+		.absolute_path
+		.strip_prefix(&contributor.root_path)
+		.ok()?;
+	script_cache?.get(&contributor.mod_id, relative).cloned()
 }
 
 fn contributor_mod_hashes(
@@ -181,22 +200,11 @@ fn contributor_mod_hashes(
 		let Some(contributor) = by_mod.get(mod_id) else {
 			continue;
 		};
-		if let Some(hash) = cached_mod_root_hash(&contributor.root_path) {
-			hashes.insert(mod_id.clone(), hash);
+		if let Some(hash) = contributor.mod_hash.as_ref() {
+			hashes.insert(mod_id.clone(), hash.clone());
 		}
 	}
 	hashes
-}
-
-fn cached_mod_root_hash(root: &Path) -> Option<String> {
-	let key = root.to_path_buf();
-	let cache = MOD_ROOT_HASHES.get_or_init(|| Mutex::new(HashMap::new()));
-	if let Some(hash) = cache.lock().ok()?.get(&key).cloned() {
-		return hash;
-	}
-	let hash = compute_mod_hash(root).ok();
-	cache.lock().ok()?.insert(key, hash.clone());
-	hash
 }
 
 fn hash_ast_statements(statements: &[AstStatement]) -> Option<String> {
@@ -850,6 +858,7 @@ mod tests {
 			is_base_game: false,
 			is_synthetic_base: false,
 			parse_ok_hint: None,
+			mod_hash: Some(format!("hash-{mod_id}")),
 		}
 	}
 

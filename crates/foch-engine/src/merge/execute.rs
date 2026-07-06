@@ -1,10 +1,8 @@
 use super::conflict_handler::ConflictHandler;
 use super::error::MergeError;
-use super::materialize::{MergeMaterializeOptions, materialize_merge_internal};
-use crate::base_data::{detect_game_version, resolve_game_root, resolve_game_root_and_version};
+use super::materialize::{MergeMaterializeOptions, materialize_merge_with_workspace_result};
 use crate::cache::{
-	ModsetCache, compute_mod_hash, compute_modset_cache_key, compute_resolution_map_hash,
-	unpack_modset_tarball,
+	ModsetCache, compute_modset_cache_key, compute_resolution_map_hash, unpack_modset_tarball,
 };
 
 // SemVer for the modset-cache schema/merge-semantics payload. Bump the major
@@ -13,9 +11,10 @@ use crate::cache::{
 const MODSET_CACHE_VERSION: &str = "11.3.2";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
-use crate::workspace::resolve::build_mod_candidates;
+use crate::workspace::{
+	WorkspaceInventory, build_workspace_inventory, resolve_workspace_from_inventory,
+};
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
-use foch_core::domain::playlist::Playlist;
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 	MERGE_TRACE_ARTIFACT_PATH, MergeReport, MergeReportStatus, MergeReportValidation,
@@ -80,14 +79,17 @@ pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<MergeExecutionResult, MergeError> {
-	let modset_cache = build_modset_cache_context(
-		&request,
-		options.include_game_base,
-		options.include_base,
-		options.gui_scroll_merge,
-		options.provenance,
-		options.resolution_config_path.as_deref(),
-	);
+	let inventory_result = build_workspace_inventory(&request, options.include_game_base);
+	let modset_cache = inventory_result.as_ref().ok().and_then(|inventory| {
+		build_modset_cache_context(
+			&request,
+			inventory,
+			options.include_base,
+			options.gui_scroll_merge,
+			options.provenance,
+			options.resolution_config_path.as_deref(),
+		)
+	});
 	if let Some(cache_context) = modset_cache.as_ref() {
 		if let Some(cached) = cache_context.cache.lookup(&cache_context.key) {
 			eprintln!(
@@ -117,7 +119,8 @@ pub fn run_merge_with_options(
 	let resolution_map = load_resolution_map(&request, options.resolution_config_path.as_deref())?;
 	let interactive_conflict_handler = options.interactive_conflict_handler;
 	let interactive_resolution_config_path = options.interactive_resolution_config_path;
-	let mut report = materialize_merge_internal(
+	let workspace_result = inventory_result.and_then(resolve_workspace_from_inventory);
+	let mut report = materialize_merge_with_workspace_result(
 		request.clone(),
 		&options.out_dir,
 		MergeMaterializeOptions {
@@ -132,6 +135,7 @@ pub fn run_merge_with_options(
 			interactive_resolution_config_path,
 			provenance: options.provenance,
 		},
+		workspace_result,
 	)?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();
 
@@ -166,7 +170,7 @@ struct ModsetCacheContext {
 
 fn build_modset_cache_context(
 	request: &CheckRequest,
-	include_game_base: bool,
+	inventory: &WorkspaceInventory,
 	include_base: bool,
 	gui_scroll_merge: bool,
 	provenance: bool,
@@ -175,16 +179,18 @@ fn build_modset_cache_context(
 	if resolution_config_path.is_some_and(|path| !path.is_file()) {
 		return None;
 	}
-	let playlist = Playlist::from_dlc_load(&request.playset_path).ok()?;
-	let game_version = modset_cache_game_version(request, &playlist, include_game_base)?;
-	let candidates = build_mod_candidates(request, &playlist);
+	let game_version = inventory
+		.cache_game_version
+		.clone()
+		.unwrap_or_else(|| format!("{} unknown", inventory.playlist.game.key()));
 	let mut mod_hashes = Vec::new();
-	for candidate in candidates
+	for (_candidate, hash) in inventory
+		.mods
 		.iter()
-		.filter(|candidate| candidate.entry.enabled)
+		.zip(inventory.mod_hashes.iter())
+		.filter(|(candidate, _hash)| candidate.entry.enabled)
 	{
-		let root = candidate.root_path.as_ref()?;
-		mod_hashes.push(compute_mod_hash(root).ok()?);
+		mod_hashes.push(hash.clone()?);
 	}
 	let playset_root = request
 		.playset_path
@@ -208,24 +214,6 @@ fn build_modset_cache_context(
 		cache: ModsetCache::open_default(),
 		key,
 	})
-}
-
-fn modset_cache_game_version(
-	request: &CheckRequest,
-	playlist: &Playlist,
-	include_game_base: bool,
-) -> Option<String> {
-	let version = if include_game_base {
-		resolve_game_root_and_version(&request.config, &playlist.game)
-			.ok()
-			.map(|(_, version)| version)?
-	} else {
-		resolve_game_root(&request.config, &playlist.game)
-			.as_ref()
-			.and_then(|root| detect_game_version(root))
-			.unwrap_or_else(|| "unknown".to_string())
-	};
-	Some(format!("{} {version}", playlist.game.key()))
 }
 
 fn resolution_config_bytes(playset_root: &Path, explicit_path: Option<&Path>) -> Vec<u8> {
