@@ -137,6 +137,7 @@ pub fn score_case(
 				mod_b,
 				compatch: &compatch_dir,
 				out_dir: &out_dir,
+				basegame_root: None,
 				conflict_paths: &conflicts,
 				adjudications: &adjudications,
 			});

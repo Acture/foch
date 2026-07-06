@@ -8,7 +8,7 @@
 //! `include_game_base = false`, which emits the full union of the input mods —
 //! the comparable target for a self-contained compatch.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,10 @@ use foch_engine::{
 	CheckRequest, Config, MergeError, MergeExecuteOptions, MergeExecutionResult,
 	run_merge_with_options,
 };
+use foch_language::analyzer::content_family::{
+	ContentFamilyDescriptor, ContentFamilyPathMatcher, GameProfile, MergeKeySource, ModuleNameRule,
+};
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, parse_clausewitz_file};
 use regex::Regex;
 
@@ -438,6 +442,7 @@ pub struct ScoreFileRequest<'a> {
 	pub mod_b: &'a Path,
 	pub compatch: &'a Path,
 	pub out_dir: &'a Path,
+	pub basegame_root: Option<&'a Path>,
 	pub conflict_paths: &'a HashSet<String>,
 	pub adjudications: &'a Adjudications,
 }
@@ -459,6 +464,7 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 	let mut keys_match = None;
 	let mut ast_match = None;
 	let mut policy_equivalent = false;
+	let mut module_equivalent = false;
 	let mut dropped: Vec<String> = Vec::new();
 	if let Some(ft) = foch_text.as_deref() {
 		sim = Some((similarity(ft, &compatch_text) * 1000.0).round() / 1000.0);
@@ -468,6 +474,9 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 		ast_match = ast_match_for_path(rel, &foch_path, &request.compatch.join(rel));
 		policy_equivalent = ast_match == Some(false)
 			&& accepted_equivalent_for_path(rel, &foch_path, &request.compatch.join(rel));
+		module_equivalent = ast_match != Some(true)
+			&& keys_match != Some(true)
+			&& same_family_module_equivalent(rel, request.out_dir, request.compatch);
 		let union_ab: HashSet<String> =
 			top_level_keys(&read(&request.mod_a.join(rel)).unwrap_or_default())
 				.union(&top_level_keys(
@@ -491,6 +500,11 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 		(
 			Verdict::AcceptedEquivalent,
 			Some("gfx_order_insensitive_ast_equivalent".to_string()),
+		)
+	} else if module_equivalent {
+		(
+			Verdict::AcceptedEquivalent,
+			Some("same_family_module_equivalent".to_string()),
 		)
 	} else if let Some(adjudication) = request.adjudications.get(request.compatch_id, rel) {
 		match adjudication.verdict {
@@ -574,6 +588,107 @@ fn accepted_equivalent_for_path(rel: &str, foch_path: &Path, compatch_path: &Pat
 	) == Some(true)
 }
 
+fn same_family_module_equivalent(rel: &str, foch_root: &Path, compatch_root: &Path) -> bool {
+	let Some(descriptor) = eligible_module_family(rel) else {
+		return false;
+	};
+	let Some(prefix) = family_prefix(descriptor) else {
+		return false;
+	};
+	let Some(foch) = canonical_module_view(foch_root, prefix) else {
+		return false;
+	};
+	let Some(compatch) = canonical_module_view(compatch_root, prefix) else {
+		return false;
+	};
+	foch == compatch
+}
+
+fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor> {
+	if is_path_sensitive_for_module_scoring(rel) {
+		return None;
+	}
+	let descriptor = eu4_profile().classify_content_family(Path::new(rel))?;
+	if !matches!(descriptor.matcher, ContentFamilyPathMatcher::Prefix(_)) {
+		return None;
+	}
+	if !matches!(descriptor.module_name_rule, ModuleNameRule::Static(_)) {
+		return None;
+	}
+	if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
+		return None;
+	}
+	Some(descriptor)
+}
+
+fn family_prefix(descriptor: &ContentFamilyDescriptor) -> Option<&'static str> {
+	match descriptor.matcher {
+		ContentFamilyPathMatcher::Prefix(prefix) => Some(prefix),
+		ContentFamilyPathMatcher::Exact(_) => None,
+	}
+}
+
+fn canonical_module_view(
+	root: &Path,
+	family_prefix: &str,
+) -> Option<BTreeMap<String, CanonicalStatement>> {
+	let family_dir = root.join(family_prefix);
+	if !family_dir.is_dir() {
+		return Some(BTreeMap::new());
+	}
+	let mut files: Vec<PathBuf> = walkdir::WalkDir::new(&family_dir)
+		.into_iter()
+		.filter_map(Result::ok)
+		.filter(|entry| entry.file_type().is_file())
+		.map(|entry| entry.into_path())
+		.filter(|path| module_view_includes_file(path))
+		.collect();
+	files.sort_by(|left, right| {
+		relative_module_path(root, left).cmp(&relative_module_path(root, right))
+	});
+
+	let mut view = BTreeMap::new();
+	for path in files {
+		let parsed = parse_clausewitz_file(&path);
+		if !parsed.diagnostics.is_empty() {
+			return None;
+		}
+		for statement in &parsed.ast.statements {
+			if let Some((key, canonical)) = canonical_module_assignment(statement) {
+				view.insert(key, canonical);
+			}
+		}
+	}
+	Some(view)
+}
+
+fn module_view_includes_file(path: &Path) -> bool {
+	let rel = path.to_string_lossy().replace('\\', "/");
+	is_clausewitz_like_path(&rel)
+		&& !is_gui_like_path(&rel)
+		&& path.extension().and_then(|ext| ext.to_str()) == Some("txt")
+}
+
+fn relative_module_path(root: &Path, path: &Path) -> String {
+	path.strip_prefix(root)
+		.unwrap_or(path)
+		.to_string_lossy()
+		.replace('\\', "/")
+}
+
+fn canonical_module_assignment(statement: &AstStatement) -> Option<(String, CanonicalStatement)> {
+	let AstStatement::Assignment { key, value, .. } = statement else {
+		return None;
+	};
+	Some((
+		key.clone(),
+		CanonicalStatement::Assignment {
+			key: key.clone(),
+			value: canonical_value(value, AstOrderingPolicy::OrderInsensitive),
+		},
+	))
+}
+
 fn ast_match_for_path_with_ordering(
 	rel: &str,
 	foch_path: &Path,
@@ -613,6 +728,16 @@ fn is_gui_like_path(rel: &str) -> bool {
 
 fn is_gfx_path(rel: &str) -> bool {
 	rel.to_ascii_lowercase().ends_with(".gfx")
+}
+
+fn is_path_sensitive_for_module_scoring(rel: &str) -> bool {
+	let lower = rel.to_ascii_lowercase();
+	is_gui_like_path(&lower)
+		|| lower.starts_with("history/")
+		|| lower.starts_with("map/")
+		|| lower.starts_with("music/")
+		|| lower.starts_with("sound/")
+		|| lower.starts_with("tutorial/")
 }
 
 fn canonical_statements(
@@ -1055,6 +1180,7 @@ mod classify_tests {
 			mod_b: mod_b.path(),
 			compatch: compatch.path(),
 			out_dir: out.path(),
+			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &Adjudications::default(),
 		});
@@ -1084,6 +1210,7 @@ mod classify_tests {
 			mod_b: mod_b.path(),
 			compatch: compatch.path(),
 			out_dir: out.path(),
+			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &Adjudications::default(),
 		});
@@ -1091,6 +1218,83 @@ mod classify_tests {
 		assert_eq!(score.ast_match, Some(false));
 		assert_eq!(score.verdict, Verdict::DivergesAst);
 		assert_eq!(score.acceptance_reason, None);
+	}
+
+	#[test]
+	fn score_file_accepts_static_assignment_key_family_cross_file_equivalence() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "common/governments/00_governments.txt";
+		let full_module = "monarchy = { rank = 1 }\nrepublic = { rank = 2 }\n";
+		write_file(mod_a.path(), rel, full_module);
+		write_file(mod_b.path(), rel, full_module);
+		write_file(compatch.path(), rel, full_module);
+		write_file(out.path(), rel, "monarchy = { rank = 1 }\n");
+		write_file(
+			out.path(),
+			"common/governments/zzz_00_governments.txt",
+			"republic = { rank = 2 }\n",
+		);
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			mod_a: mod_a.path(),
+			mod_b: mod_b.path(),
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			basegame_root: None,
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
+		assert_eq!(
+			score.acceptance_reason.as_deref(),
+			Some("same_family_module_equivalent")
+		);
+	}
+
+	#[test]
+	fn score_file_keeps_gui_cross_file_difference_as_divergence() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "interface/example.gui";
+		let full_module = "guiTypes = { a = yes b = yes }\n";
+		write_file(mod_a.path(), rel, full_module);
+		write_file(mod_b.path(), rel, full_module);
+		write_file(compatch.path(), rel, full_module);
+		write_file(out.path(), rel, "guiTypes = { a = yes }\n");
+		write_file(
+			out.path(),
+			"interface/other.gui",
+			"guiTypes = { b = yes }\n",
+		);
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			mod_a: mod_a.path(),
+			mod_b: mod_b.path(),
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			basegame_root: None,
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.verdict, Verdict::DivergesAst);
+		assert_eq!(score.acceptance_reason, None);
+	}
+
+	#[test]
+	fn module_family_eligibility_keeps_path_sensitive_roots_out() {
+		assert!(eligible_module_family("common/governments/00_governments.txt").is_some());
+		assert!(eligible_module_family("interface/example.gui").is_none());
+		assert!(eligible_module_family("history/countries/FRA - France.txt").is_none());
+		assert!(eligible_module_family("common/technology.txt").is_none());
 	}
 
 	#[test]
@@ -1119,6 +1323,7 @@ mod classify_tests {
 			mod_b: mod_b.path(),
 			compatch: compatch.path(),
 			out_dir: out.path(),
+			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &adjudications,
 		});

@@ -8,6 +8,10 @@ ground-truth files. The comparison policy is the current corpus scorer:
 - `.gui` files: order-sensitive AST comparison.
 - `.gfx` files: order-sensitive exact AST comparison, plus an explicit
   order-insensitive `accepted_equivalent` policy for same-content sprite files.
+- Static `AssignmentKey` content families are eligible for same-family
+  module-level `accepted_equivalent` when top-level definitions are relocated
+  across files in the same family. UI/layout, history, map, media, and exact-path
+  families stay path-sensitive.
 - Non-GUI Clausewitz files: order-insensitive AST comparison.
 - Comments and spans are ignored.
 - Bare identifiers and quoted strings with the same valid identifier text are equivalent.
@@ -42,6 +46,7 @@ still misses real sprite content.
 | category | count | meaning |
 |---|---:|---|
 | `accepted_gfx_order_equivalent` | 5 | Same `.gfx` leaf multiset; counted by `accepted_equivalent` because sprite declaration order is not the same risk class as `.gui` layout order. |
+| `same_family_module_equivalent` | 0 | Same static `AssignmentKey` content-family module after cross-file relocation. The scorer supports this policy, but no current corpus divergence qualifies. |
 | `gui_order_only_remaining` | 3 | Same `.gui` leaf multiset, but sibling order differs. These remain divergences because GUI order can affect layout or rendering. |
 | `value_and_content` | 20 | Both scalar values and leaf inventory differ. This is real semantic divergence, not pretty-print noise. |
 | `content_mismatch` | 1 | Leaf inventory differs without simple same-path scalar diffs in the diagnostic sample. |
@@ -52,7 +57,11 @@ still misses real sprite content.
 2. `interface/frontend.gui` recurs as `value_and_content` across most cases. Typical differences are `dlc_icon_bg_empty` vs `dlc_icon_bg`, `gfx_emptyness` vs `GFX_dlc_icon_even_bg_flip`, doubled escaping in `textureFile`, and missing/extra `if_resolution` values.
 3. `interface/subscription_banner_view.gui` recurs as `value_and_content`. Foch keeps animated offset values (`1000`, `3000`, `5000`, etc.) while humans often keep static offsets (`0`, `75`) and different `Orientation`.
 4. Remaining `.gui` order-only files need a GUI-specific ordering/layout policy, not a global order-insensitive pass.
-5. Non-GUI gameplay files often reflect human policy choices, not formatter differences: taking one side, adding tooltips, changing values, or preserving manually curated lists.
+5. Same-family relocation is now a scorer-level equivalence policy for static
+   `AssignmentKey` families, but the current `common/governments` mismatch is
+   still a real nested-list/content difference under the implemented
+   top-level-definition module view.
+6. Non-GUI gameplay files often reflect human policy choices, not formatter differences: taking one side, adding tooltips, changing values, or preserving manually curated lists.
 
 ## Manual Inspection Notes
 
