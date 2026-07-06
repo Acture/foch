@@ -96,6 +96,7 @@ fn fatal_merge_is_not_cached() {
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			retained_paths: None,
 		}
 	};
 

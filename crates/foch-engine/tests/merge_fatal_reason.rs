@@ -78,6 +78,7 @@ fn fatal_merge_surfaces_resolve_error_reason() {
 		interactive_resolution_config_path: None,
 		playset_fingerprint: None,
 		provenance: false,
+		retained_paths: None,
 	};
 
 	let report = run_merge_with_options(request, options)

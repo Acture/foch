@@ -116,7 +116,13 @@ pub fn score_case(
 		.zip(mod_dirs.iter().cloned())
 		.collect();
 	let dlc = write_playset(tmp.path(), &mods)?;
-	let result = run_merge(&dlc, &out_dir, /* force= */ false)?;
+	let retained_paths = gt.iter().cloned().collect();
+	let result = run_merge(
+		&dlc,
+		&out_dir,
+		/* force= */ false,
+		Some(retained_paths),
+	)?;
 	let conflicts = conflict_rel_paths(&result.report);
 
 	let mod_a = &mod_dirs[0];

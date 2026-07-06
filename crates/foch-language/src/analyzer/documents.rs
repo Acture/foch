@@ -95,6 +95,32 @@ pub fn discover_text_documents(root: &Path) -> Vec<DiscoveredTextDocument> {
 	docs
 }
 
+pub fn discover_text_documents_from_paths(
+	root: &Path,
+	relative_paths: &[PathBuf],
+) -> Vec<DiscoveredTextDocument> {
+	let mut docs = Vec::new();
+	for relative_path in relative_paths {
+		if is_excluded_text_path(relative_path) {
+			continue;
+		}
+		let Some(family) = classify_document_family(relative_path) else {
+			continue;
+		};
+		let absolute_path = root.join(relative_path);
+		if !absolute_path.is_file() {
+			continue;
+		}
+		docs.push(DiscoveredTextDocument {
+			absolute_path,
+			relative_path: relative_path.clone(),
+			family,
+		});
+	}
+	docs.sort_by(|lhs, rhs| lhs.relative_path.cmp(&rhs.relative_path));
+	docs
+}
+
 pub fn parse_discovered_text_documents(
 	mod_id: &str,
 	root: &Path,

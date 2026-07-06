@@ -4,12 +4,13 @@ use foch_core::model::{
 };
 use foch_language::analyzer::documents::{
 	ParsedTextDocument, build_semantic_index_from_documents, discover_text_documents,
-	parse_discovered_text_documents,
+	discover_text_documents_from_paths, parse_discovered_text_documents,
 };
 use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
@@ -23,23 +24,50 @@ pub(crate) struct LoadedModSnapshot {
 	pub cache_hit: bool,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ProcessSnapshotCacheKey {
+	root: String,
+	mod_hash: String,
+	cache_game_version: String,
+	foch_version: String,
+}
+
+static PROCESS_SNAPSHOT_CACHE: OnceLock<
+	Mutex<HashMap<ProcessSnapshotCacheKey, LoadedModSnapshot>>,
+> = OnceLock::new();
+
 pub(crate) fn load_or_build_mod_snapshot(
 	game_key: &str,
 	game_version: Option<&str>,
 	mod_item: &ModCandidate,
 	filter: &super::FileFilter,
 	mod_hash: Option<&str>,
+	allow_persistent_cache: bool,
 ) -> Option<LoadedModSnapshot> {
 	let root = mod_item.root_path.as_ref()?;
 	let cache_game_version = game_version.map(|version| format!("{game_key} {version}"));
-	let cache = cache_game_version
-		.as_ref()
-		.map(|_| ModParseCache::open_default());
+	let cache = if allow_persistent_cache {
+		cache_game_version
+			.as_ref()
+			.map(|_| ModParseCache::open_default())
+	} else {
+		None
+	};
 	let owned_mod_hash = mod_hash.map(ToOwned::to_owned).or_else(|| {
 		cache
 			.as_ref()
 			.and_then(|_| compute_mod_hash_with_filter(root, filter).ok())
 	});
+	let process_cache_key = process_snapshot_cache_key(
+		root,
+		owned_mod_hash.as_deref(),
+		cache_game_version.as_deref(),
+	);
+	if let Some(key) = process_cache_key.as_ref()
+		&& let Some(snapshot) = load_process_snapshot(key)
+	{
+		return Some(snapshot);
+	}
 
 	if let (Some(cache), Some(mod_hash), Some(cache_game_version)) = (
 		cache.as_ref(),
@@ -49,13 +77,19 @@ pub(crate) fn load_or_build_mod_snapshot(
 		cache.lookup(mod_hash, env!("CARGO_PKG_VERSION"), cache_game_version)
 	{
 		crate::cache::parsed_scripts::rebase_parsed_documents(root, &mut cached.parsed_documents);
-		return Some(to_loaded_snapshot(cached, true, owned_mod_hash.clone()));
+		let snapshot = to_loaded_snapshot(cached, true, owned_mod_hash.clone());
+		store_process_snapshot(process_cache_key.as_ref(), &snapshot);
+		return Some(snapshot);
 	}
 
-	let documents = discover_text_documents(root)
-		.into_iter()
-		.filter(|doc| filter.accepts(&doc.relative_path))
-		.collect::<Vec<_>>();
+	let documents = if allow_persistent_cache {
+		discover_text_documents(root)
+			.into_iter()
+			.filter(|doc| filter.accepts(&doc.relative_path))
+			.collect::<Vec<_>>()
+	} else {
+		discover_text_documents_from_paths(root, &mod_item.files)
+	};
 	let parsed = parse_discovered_text_documents(&mod_item.mod_id, root, &documents);
 	let semantic_index = build_semantic_index_from_documents(&parsed.documents);
 	let parsed_documents = parsed
@@ -90,13 +124,43 @@ pub(crate) fn load_or_build_mod_snapshot(
 		);
 	}
 
-	Some(to_loaded_snapshot_with_stats(
-		data,
-		parse_stats,
-		parse_error_count,
-		false,
-		owned_mod_hash,
-	))
+	let snapshot =
+		to_loaded_snapshot_with_stats(data, parse_stats, parse_error_count, false, owned_mod_hash);
+	store_process_snapshot(process_cache_key.as_ref(), &snapshot);
+	Some(snapshot)
+}
+
+fn process_snapshot_cache_key(
+	root: &Path,
+	mod_hash: Option<&str>,
+	cache_game_version: Option<&str>,
+) -> Option<ProcessSnapshotCacheKey> {
+	if !cache_game_version.is_some_and(|version| version.ends_with(" unknown")) {
+		return None;
+	}
+	Some(ProcessSnapshotCacheKey {
+		root: normalize_relative_path(root),
+		mod_hash: mod_hash?.to_string(),
+		cache_game_version: cache_game_version?.to_string(),
+		foch_version: env!("CARGO_PKG_VERSION").to_string(),
+	})
+}
+
+fn load_process_snapshot(key: &ProcessSnapshotCacheKey) -> Option<LoadedModSnapshot> {
+	let cache = PROCESS_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+	let mut snapshot = cache.lock().ok()?.get(key)?.clone();
+	snapshot.cache_hit = true;
+	Some(snapshot)
+}
+
+fn store_process_snapshot(key: Option<&ProcessSnapshotCacheKey>, snapshot: &LoadedModSnapshot) {
+	let Some(key) = key else {
+		return;
+	};
+	let cache = PROCESS_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+	if let Ok(mut guard) = cache.lock() {
+		guard.insert(key.clone(), snapshot.clone());
+	}
 }
 
 fn to_loaded_snapshot(
@@ -233,10 +297,12 @@ mod tests {
 		};
 		let filter = super::super::FileFilter::for_game(Game::EuropaUniversalis4);
 
-		let cold = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter, None)
-			.expect("cold snapshot");
-		let warm = load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter, None)
-			.expect("warm snapshot");
+		let cold =
+			load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter, None, true)
+				.expect("cold snapshot");
+		let warm =
+			load_or_build_mod_snapshot("eu4", Some("1.0.0-test"), &mod_item, &filter, None, true)
+				.expect("warm snapshot");
 
 		assert!(!cold.cache_hit);
 		assert!(warm.cache_hit);

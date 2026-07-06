@@ -12,9 +12,12 @@ use foch_core::domain::game::Game;
 use foch_core::domain::playlist::{Playlist, PlaylistEntry};
 use foch_core::model::ModCandidate;
 use foch_core::utils::steam::steam_workshop_mod_path;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsStr;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -64,11 +67,21 @@ pub(crate) struct WorkspaceInventory {
 	pub cache_game_version: Option<String>,
 	pub snapshot_filter: FileFilter,
 	pub mod_hashes: Vec<Option<String>>,
+	pub retained_paths: Option<BTreeSet<String>>,
 }
 
 pub(crate) fn build_workspace_inventory(
 	request: &CheckRequest,
 	include_game_base: bool,
+) -> Result<WorkspaceInventory, WorkspaceResolveError> {
+	build_workspace_inventory_with_hash_cache(request, include_game_base, false, None)
+}
+
+pub(crate) fn build_workspace_inventory_with_hash_cache(
+	request: &CheckRequest,
+	include_game_base: bool,
+	use_process_hash_cache: bool,
+	retained_paths: Option<&BTreeSet<String>>,
 ) -> Result<WorkspaceInventory, WorkspaceResolveError> {
 	let playlist =
 		Playlist::from_dlc_load(&request.playset_path).map_err(|err| WorkspaceResolveError {
@@ -94,7 +107,8 @@ pub(crate) fn build_workspace_inventory(
 			FileFilter::for_game(playlist.game.clone())
 		}
 	};
-	let mods = build_mod_candidates_with_filter(request, &playlist, &snapshot_filter);
+	let mods =
+		build_mod_candidates_with_filter(request, &playlist, &snapshot_filter, retained_paths);
 	let optional_game_root = resolve_game_root(&request.config, &playlist.game);
 	let (base_game_root, mod_cache_game_version) = if include_game_base {
 		let (game_root, game_version) =
@@ -117,7 +131,16 @@ pub(crate) fn build_workspace_inventory(
 	let cache_game_version = mod_cache_game_version
 		.as_ref()
 		.map(|version| format!("{} {version}", playlist.game.key()));
-	let mod_hashes = mods.iter().map(compute_candidate_hash).collect();
+	let mod_hashes = mods
+		.iter()
+		.map(|mod_item| {
+			if use_process_hash_cache {
+				compute_candidate_hash_with_process_cache(mod_item)
+			} else {
+				compute_candidate_hash(mod_item)
+			}
+		})
+		.collect();
 
 	Ok(WorkspaceInventory {
 		playlist_path: request.playset_path.clone(),
@@ -128,6 +151,7 @@ pub(crate) fn build_workspace_inventory(
 		cache_game_version,
 		snapshot_filter,
 		mod_hashes,
+		retained_paths: retained_paths.cloned(),
 	})
 }
 
@@ -151,6 +175,7 @@ pub(crate) fn resolve_workspace_from_inventory(
 		cache_game_version,
 		snapshot_filter,
 		mod_hashes,
+		retained_paths,
 	} = inventory;
 	let installed_base_snapshot = if let (Some(game_root), Some(game_version)) =
 		(base_game_root.as_ref(), mod_cache_game_version.as_ref())
@@ -181,6 +206,7 @@ pub(crate) fn resolve_workspace_from_inventory(
 				mod_item,
 				&snapshot_filter,
 				mod_hashes.get(idx).and_then(|hash| hash.as_deref()),
+				retained_paths.is_none(),
 			)
 		})
 		.collect();
@@ -227,6 +253,7 @@ pub(crate) fn build_mod_candidates_with_filter(
 	request: &CheckRequest,
 	playlist: &Playlist,
 	filter: &FileFilter,
+	retained_paths: Option<&BTreeSet<String>>,
 ) -> Vec<ModCandidate> {
 	let playset_dir = request
 		.playset_path
@@ -257,9 +284,13 @@ pub(crate) fn build_mod_candidates_with_filter(
 				None => (None, None),
 			};
 
-			let files = root_path
+			let mut files = root_path
 				.as_ref()
 				.map_or_else(Vec::new, |root| collect_relative_files(root, filter));
+			if let Some(retained_paths) = retained_paths {
+				files
+					.retain(|relative| retained_paths.contains(&normalize_relative_path(relative)));
+			}
 
 			ModCandidate {
 				entry,
@@ -276,6 +307,46 @@ pub(crate) fn build_mod_candidates_with_filter(
 
 fn compute_candidate_hash(mod_item: &ModCandidate) -> Option<String> {
 	let root = mod_item.root_path.as_ref()?;
+	let files = candidate_hash_files(root, mod_item);
+	compute_mod_hash_for_files(root, &files).ok()
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CandidateHashCacheKey {
+	root: String,
+	files: Vec<CandidateFileFingerprint>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CandidateFileFingerprint {
+	path: String,
+	len: u64,
+	modified_ns: Option<u128>,
+}
+
+static CANDIDATE_HASH_CACHE: OnceLock<Mutex<HashMap<CandidateHashCacheKey, String>>> =
+	OnceLock::new();
+
+fn compute_candidate_hash_with_process_cache(mod_item: &ModCandidate) -> Option<String> {
+	let root = mod_item.root_path.as_ref()?;
+	let files = candidate_hash_files(root, mod_item);
+	let Some(key) = candidate_hash_cache_key(root, &files) else {
+		return compute_candidate_hash(mod_item);
+	};
+	let cache = CANDIDATE_HASH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+	if let Ok(guard) = cache.lock()
+		&& let Some(hash) = guard.get(&key)
+	{
+		return Some(hash.clone());
+	}
+	let hash = compute_mod_hash_for_files(root, &files).ok()?;
+	if let Ok(mut guard) = cache.lock() {
+		guard.insert(key, hash.clone());
+	}
+	Some(hash)
+}
+
+fn candidate_hash_files(root: &Path, mod_item: &ModCandidate) -> Vec<PathBuf> {
 	let mut files = mod_item.files.clone();
 	if let Some(descriptor_path) = mod_item
 		.descriptor_path
@@ -286,7 +357,29 @@ fn compute_candidate_hash(mod_item: &ModCandidate) -> Option<String> {
 	{
 		files.push(relative.to_path_buf());
 	}
-	compute_mod_hash_for_files(root, &files).ok()
+	files
+}
+
+fn candidate_hash_cache_key(root: &Path, files: &[PathBuf]) -> Option<CandidateHashCacheKey> {
+	let mut fingerprints = Vec::with_capacity(files.len());
+	for relative in files {
+		let metadata = fs::metadata(root.join(relative)).ok()?;
+		let modified_ns = metadata
+			.modified()
+			.ok()
+			.and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+			.map(|duration| duration.as_nanos());
+		fingerprints.push(CandidateFileFingerprint {
+			path: normalize_relative_path(relative),
+			len: metadata.len(),
+			modified_ns,
+		});
+	}
+	fingerprints.sort_by(|left, right| left.path.cmp(&right.path));
+	Some(CandidateHashCacheKey {
+		root: normalize_relative_path(root),
+		files: fingerprints,
+	})
 }
 
 fn resolve_mod_root(

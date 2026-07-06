@@ -127,6 +127,7 @@ fn run_merge_for_fixture_inner(
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance,
+			retained_paths: None,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture {name} failed: {err}"));
@@ -172,6 +173,7 @@ fn run_merge_for_playset(
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			retained_paths: None,
 		},
 	)
 	.expect("run merge with custom playset")
@@ -1229,6 +1231,7 @@ religion = sentinel
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			retained_paths: None,
 		},
 	)
 	.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));

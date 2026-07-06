@@ -68,6 +68,9 @@ pub(crate) struct MergeMaterializeOptions {
 	/// When set, annotate merged definitions with their adopted source mods
 	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
 	pub provenance: bool,
+	/// Optional relative-path retention set for callers that only need a subset
+	/// of copy-through output.
+	pub retained_paths: Option<BTreeSet<String>>,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -83,6 +86,7 @@ impl Default for MergeMaterializeOptions {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
+			retained_paths: None,
 		}
 	}
 }
@@ -283,6 +287,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	let total_paths = plan.paths.len();
 	eprintln!("[merge] materialize: start (total_paths={total_paths})");
 	let mut materialize_progress = MaterializeProgress::new(total_paths);
+	let mut pending_copy_through = Vec::new();
 
 	for entry in &plan.paths {
 		materialize_progress.tick();
@@ -294,6 +299,8 @@ pub(crate) fn materialize_merge_with_workspace_result(
 					out_dir,
 					options.include_base,
 					&mut report,
+					options.retained_paths.as_ref(),
+					&mut pending_copy_through,
 				)?;
 			}
 			MergePlanStrategy::LastWriterOverlay => {
@@ -542,6 +549,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 		profile,
 		&mut report,
 	)?;
+	flush_pending_copy_through(&workspace, out_dir, &pending_copy_through)?;
 	let mod_diff_cache_stats = crate::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::cache::dag_base_cache_stats();
 	eprintln!(
@@ -629,16 +637,31 @@ fn should_skip_base_passthrough(
 fn materialize_copy_through(
 	workspace: &ResolvedWorkspace,
 	entry: &MergePlanEntry,
-	out_dir: &Path,
+	_out_dir: &Path,
 	include_base: bool,
 	report: &mut MergeReport,
+	retained_paths: Option<&BTreeSet<String>>,
+	pending_copy_through: &mut Vec<MergePlanEntry>,
 ) -> Result<(), MergeError> {
 	let contributors = workspace.file_inventory.get(&entry.path);
 	if should_skip_base_passthrough(contributors.map(Vec::as_slice), include_base) {
 		report.base_passthrough_skipped_file_count += 1;
+	} else if retained_paths.is_some_and(|paths| !paths.contains(&entry.path)) {
+		return Ok(());
 	} else {
-		copy_winner_file(workspace, entry, out_dir)?;
+		pending_copy_through.push(entry.clone());
 		report.copied_file_count += 1;
+	}
+	Ok(())
+}
+
+fn flush_pending_copy_through(
+	workspace: &ResolvedWorkspace,
+	out_dir: &Path,
+	pending_copy_through: &[MergePlanEntry],
+) -> Result<(), MergeError> {
+	for entry in pending_copy_through {
+		copy_winner_file(workspace, entry, out_dir)?;
 	}
 	Ok(())
 }
@@ -1184,50 +1207,98 @@ mod tests {
 		let path = "common/vanilla.txt";
 
 		let mut skipped_report = MergeReport::default();
+		let mut skipped_pending = Vec::new();
 		super::materialize_copy_through(
 			&workspace_with_contributor(path, true_base.clone()),
 			&copy_through_entry(path, &true_base),
 			&temp.path().join("skip"),
 			false,
 			&mut skipped_report,
+			None,
+			&mut skipped_pending,
 		)
 		.expect("skip true base");
 		assert!(!temp.path().join("skip").join(path).exists());
+		assert!(skipped_pending.is_empty());
 		assert_eq!(skipped_report.base_passthrough_skipped_file_count, 1);
 		assert_eq!(skipped_report.copied_file_count, 0);
 
 		let mut included_report = MergeReport::default();
+		let mut included_pending = Vec::new();
+		let included_workspace = workspace_with_contributor(path, true_base.clone());
+		let included_out = temp.path().join("include");
 		super::materialize_copy_through(
-			&workspace_with_contributor(path, true_base.clone()),
+			&included_workspace,
 			&copy_through_entry(path, &true_base),
-			&temp.path().join("include"),
+			&included_out,
 			true,
 			&mut included_report,
+			None,
+			&mut included_pending,
 		)
 		.expect("include true base");
+		assert!(
+			!included_out.join(path).exists(),
+			"copy-through is deferred until flush"
+		);
+		super::flush_pending_copy_through(&included_workspace, &included_out, &included_pending)
+			.expect("flush included copy-through");
 		assert_eq!(
-			fs::read_to_string(temp.path().join("include").join(path)).expect("read included"),
+			fs::read_to_string(included_out.join(path)).expect("read included"),
 			"vanilla\n"
 		);
 		assert_eq!(included_report.base_passthrough_skipped_file_count, 0);
 		assert_eq!(included_report.copied_file_count, 1);
 
 		let mut synthetic_report = MergeReport::default();
+		let mut synthetic_pending = Vec::new();
+		let synthetic_workspace = workspace_with_contributor(path, synthetic_base.clone());
+		let synthetic_out = temp.path().join("synthetic-out");
 		super::materialize_copy_through(
-			&workspace_with_contributor(path, synthetic_base.clone()),
+			&synthetic_workspace,
 			&copy_through_entry(path, &synthetic_base),
-			&temp.path().join("synthetic-out"),
+			&synthetic_out,
 			false,
 			&mut synthetic_report,
+			None,
+			&mut synthetic_pending,
 		)
 		.expect("write synthetic base");
+		super::flush_pending_copy_through(&synthetic_workspace, &synthetic_out, &synthetic_pending)
+			.expect("flush synthetic copy-through");
 		assert_eq!(
-			fs::read_to_string(temp.path().join("synthetic-out").join(path))
-				.expect("read synthetic"),
+			fs::read_to_string(synthetic_out.join(path)).expect("read synthetic"),
 			"synthetic\n"
 		);
 		assert_eq!(synthetic_report.base_passthrough_skipped_file_count, 0);
 		assert_eq!(synthetic_report.copied_file_count, 1);
+	}
+
+	#[test]
+	fn copy_through_retained_paths_filters_deferred_copies() {
+		let temp = TempDir::new().expect("temp dir");
+		let source = temp.path().join("mod").join("common").join("keep.txt");
+		fs::create_dir_all(source.parent().expect("source parent")).expect("create source parent");
+		fs::write(&source, "kept\n").expect("write source");
+		let contributor = test_contributor_with_path("mod", source, 1, false, false);
+		let workspace = workspace_with_contributor("common/keep.txt", contributor.clone());
+		let mut report = MergeReport::default();
+		let mut pending = Vec::new();
+		let retained = BTreeSet::from(["common/other.txt".to_string()]);
+
+		super::materialize_copy_through(
+			&workspace,
+			&copy_through_entry("common/keep.txt", &contributor),
+			&temp.path().join("out"),
+			false,
+			&mut report,
+			Some(&retained),
+			&mut pending,
+		)
+		.expect("filter copy-through");
+
+		assert!(pending.is_empty());
+		assert_eq!(report.copied_file_count, 0);
 	}
 
 	fn test_contributor(
@@ -1485,6 +1556,7 @@ mod tests {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
+			retained_paths: None,
 		}
 	}
 

@@ -12,17 +12,18 @@ const MODSET_CACHE_VERSION: &str = "11.3.2";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
-	WorkspaceInventory, build_workspace_inventory, resolve_workspace_from_inventory,
+	WorkspaceInventory, build_workspace_inventory_with_hash_cache, resolve_workspace_from_inventory,
 };
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionMap};
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 	MERGE_TRACE_ARTIFACT_PATH, MergeReport, MergeReportStatus, MergeReportValidation,
 };
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
@@ -47,6 +48,9 @@ pub struct MergeExecuteOptions {
 	/// `# foch: …` comments + a `.foch/foch-provenance.json` sidecar). Off by
 	/// default; when off, emitted output is byte-identical to a normal merge.
 	pub provenance: bool,
+	/// Optional relative-path retention set for scoring callers that only need
+	/// target corpus paths. Full production merge leaves this unset.
+	pub retained_paths: Option<BTreeSet<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -79,8 +83,37 @@ pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<MergeExecutionResult, MergeError> {
-	let inventory_result = build_workspace_inventory(&request, options.include_game_base);
+	let inventory_started = Instant::now();
+	let mut inventory_result = build_workspace_inventory_with_hash_cache(
+		&request,
+		options.include_game_base,
+		options.retained_paths.is_some(),
+		options.retained_paths.as_ref(),
+	);
+	if let Ok(inventory) = inventory_result.as_ref() {
+		let hashed_mods = inventory
+			.mod_hashes
+			.iter()
+			.filter(|hash| hash.is_some())
+			.count();
+		eprintln!(
+			"[merge] build_workspace_inventory: done elapsed_ms={} mods={} hashed_mods={}",
+			inventory_started.elapsed().as_millis(),
+			inventory.mods.len(),
+			hashed_mods
+		);
+	}
+	if options.retained_paths.is_some()
+		&& let Ok(inventory) = inventory_result.as_mut()
+		&& inventory.mod_cache_game_version.is_none()
+	{
+		inventory.mod_cache_game_version = Some("unknown".to_string());
+		inventory.cache_game_version = Some(format!("{} unknown", inventory.playlist.game.key()));
+	}
 	let modset_cache = inventory_result.as_ref().ok().and_then(|inventory| {
+		if options.retained_paths.is_some() {
+			return None;
+		}
 		build_modset_cache_context(
 			&request,
 			inventory,
@@ -119,7 +152,30 @@ pub fn run_merge_with_options(
 	let resolution_map = load_resolution_map(&request, options.resolution_config_path.as_deref())?;
 	let interactive_conflict_handler = options.interactive_conflict_handler;
 	let interactive_resolution_config_path = options.interactive_resolution_config_path;
+	let resolve_started = Instant::now();
 	let workspace_result = inventory_result.and_then(resolve_workspace_from_inventory);
+	if let Ok(workspace) = workspace_result.as_ref() {
+		let cache_hits = workspace
+			.mod_snapshots
+			.iter()
+			.flatten()
+			.filter(|snapshot| snapshot.cache_hit)
+			.count();
+		let cache_misses = workspace
+			.mod_snapshots
+			.iter()
+			.flatten()
+			.filter(|snapshot| !snapshot.cache_hit)
+			.count();
+		eprintln!(
+			"[merge] resolve_workspace: done elapsed_ms={} mods={} files={} mod_parse_cache_hits={} mod_parse_cache_misses={}",
+			resolve_started.elapsed().as_millis(),
+			workspace.mods.len(),
+			workspace.file_inventory.len(),
+			cache_hits,
+			cache_misses
+		);
+	}
 	let mut report = materialize_merge_with_workspace_result(
 		request.clone(),
 		&options.out_dir,
@@ -134,6 +190,7 @@ pub fn run_merge_with_options(
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
 			provenance: options.provenance,
+			retained_paths: options.retained_paths.clone(),
 		},
 		workspace_result,
 	)?;
@@ -148,16 +205,22 @@ pub fn run_merge_with_options(
 	if report.status == MergeReportStatus::Blocked && !options.force {
 		let execution = merge_execution_result(report);
 		write_merge_report_artifact(&options.out_dir, &execution.report)?;
-		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
+		if options.retained_paths.is_none() {
+			store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
+		}
 		return Ok(execution);
 	}
 
-	let validation =
-		revalidate_generated_output(&request, &options.out_dir, options.include_game_base)?;
-	report.validation = validation;
+	if options.retained_paths.is_none() {
+		let validation =
+			revalidate_generated_output(&request, &options.out_dir, options.include_game_base)?;
+		report.validation = validation;
+	}
 	let execution = merge_execution_result(report);
 	write_merge_report_artifact(&options.out_dir, &execution.report)?;
-	store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
+	if options.retained_paths.is_none() {
+		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
+	}
 
 	Ok(execution)
 }

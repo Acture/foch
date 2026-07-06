@@ -5,10 +5,11 @@
 //! This is a faithful port of the Python harness's scoring so the verdicts are
 //! identical, with one deliberate change: the merge runs **in-process** via
 //! `foch_engine::run_merge_with_options` (no `foch` subprocess) with
-//! `include_game_base = false`, which emits the full union of the input mods —
-//! the comparable target for a self-contained compatch.
+//! `include_game_base = false` and a ground-truth retained-path set — the
+//! comparable target for a self-contained compatch without materializing or
+//! parsing unrelated mod files.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -260,20 +261,23 @@ pub fn write_playset(tmp: &Path, mods: &[(String, PathBuf)]) -> io::Result<PathB
 const MERGE_STACK_BYTES: usize = 512 * 1024 * 1024;
 
 /// Run a merge of `playset` into `out_dir`, in-process, with the game base
-/// excluded (full-union output). `force` auto-resolves manual conflicts when
-/// true; when false, conflicting files are withheld and surface in the report.
+/// excluded. When `retained_paths` is set, merge planning and output are
+/// limited to that ground-truth set. `force` auto-resolves manual conflicts
+/// when true; when false, conflicting files are withheld and surface in the
+/// report.
 ///
 /// Runs on a large-stack worker thread (see [`MERGE_STACK_BYTES`]).
 pub fn run_merge(
 	playset: &Path,
 	out_dir: &Path,
 	force: bool,
+	retained_paths: Option<BTreeSet<String>>,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let playset = playset.to_path_buf();
 	let out_dir = out_dir.to_path_buf();
 	std::thread::Builder::new()
 		.stack_size(MERGE_STACK_BYTES)
-		.spawn(move || run_merge_inner(&playset, &out_dir, force))
+		.spawn(move || run_merge_inner(&playset, &out_dir, force, retained_paths))
 		.expect("spawn merge worker thread")
 		.join()
 		.expect("merge worker thread panicked")
@@ -283,6 +287,7 @@ fn run_merge_inner(
 	playset: &Path,
 	out_dir: &Path,
 	force: bool,
+	retained_paths: Option<BTreeSet<String>>,
 ) -> Result<MergeExecutionResult, MergeError> {
 	run_merge_with_options(
 		CheckRequest {
@@ -307,6 +312,7 @@ fn run_merge_inner(
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			retained_paths,
 		},
 	)
 }
