@@ -318,6 +318,12 @@ pub enum Verdict {
 	MatchesHuman,
 	/// same parsed AST under the corpus ordering policy, but different text.
 	MatchesAst,
+	/// differs from the human AST under strict comparison, but is accepted by an
+	/// explicit corpus equivalence policy.
+	AcceptedEquivalent,
+	/// differs from the human AST, but a committed adjudication accepts foch's
+	/// output as better than the human compatch for this file.
+	AcceptedBetter,
 	/// foch dropped top-level definitions present in either input mod.
 	DropsContent,
 	/// AST comparison was unavailable; same definitions as the human, different text.
@@ -335,12 +341,78 @@ impl Verdict {
 			Verdict::NotEmitted => "not_emitted",
 			Verdict::MatchesHuman => "matches_human",
 			Verdict::MatchesAst => "matches_ast",
+			Verdict::AcceptedEquivalent => "accepted_equivalent",
+			Verdict::AcceptedBetter => "accepted_better",
 			Verdict::DropsContent => "drops_content",
 			Verdict::DivergesFormatting => "diverges_formatting",
 			Verdict::DivergesAst => "diverges_ast",
 			Verdict::DivergesStructure => "diverges_structure",
 		}
 	}
+
+	pub fn accepted_ok(self) -> bool {
+		matches!(
+			self,
+			Verdict::MatchesHuman
+				| Verdict::MatchesAst
+				| Verdict::AcceptedEquivalent
+				| Verdict::AcceptedBetter
+		)
+	}
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Adjudications {
+	records: HashMap<(String, String), AcceptedAdjudication>,
+}
+
+impl Adjudications {
+	pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+		let records: Vec<AcceptedAdjudicationRecord> = serde_json::from_str(text)?;
+		let records = records
+			.into_iter()
+			.map(|record| {
+				(
+					(record.compatch_id, record.rel),
+					AcceptedAdjudication {
+						verdict: record.verdict,
+						reason: record.reason,
+					},
+				)
+			})
+			.collect();
+		Ok(Self { records })
+	}
+
+	pub fn built_in() -> Self {
+		Self::from_json(include_str!("../tests/fixtures/adjudications.json"))
+			.expect("built-in adjudications fixture parses")
+	}
+
+	fn get(&self, compatch_id: &str, rel: &str) -> Option<&AcceptedAdjudication> {
+		self.records
+			.get(&(compatch_id.to_string(), rel.to_string()))
+	}
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
+struct AcceptedAdjudicationRecord {
+	compatch_id: String,
+	rel: String,
+	verdict: AcceptedAdjudicationVerdict,
+	reason: String,
+}
+
+#[derive(Clone, Debug)]
+struct AcceptedAdjudication {
+	verdict: AcceptedAdjudicationVerdict,
+	reason: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AcceptedAdjudicationVerdict {
+	AcceptedBetter,
 }
 
 #[derive(Clone, Debug)]
@@ -356,61 +428,84 @@ pub struct FileScore {
 	pub ast_match: Option<bool>,
 	pub dropped_keys: Vec<String>,
 	pub verdict: Verdict,
+	pub acceptance_reason: Option<String>,
+}
+
+pub struct ScoreFileRequest<'a> {
+	pub compatch_id: &'a str,
+	pub rel: &'a str,
+	pub mod_a: &'a Path,
+	pub mod_b: &'a Path,
+	pub compatch: &'a Path,
+	pub out_dir: &'a Path,
+	pub conflict_paths: &'a HashSet<String>,
+	pub adjudications: &'a Adjudications,
 }
 
 /// Classify foch's merged output for one ground-truth file against the compatch.
-pub fn score_file(
-	rel: &str,
-	mod_a: &Path,
-	mod_b: &Path,
-	compatch: &Path,
-	out_dir: &Path,
-	conflict_paths: &HashSet<String>,
-) -> FileScore {
-	let in_a = mod_a.join(rel).is_file();
-	let in_b = mod_b.join(rel).is_file();
+pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
+	let rel = request.rel;
+	let in_a = request.mod_a.join(rel).is_file();
+	let in_b = request.mod_b.join(rel).is_file();
 	let overlap = in_a && in_b;
-	let foch_path = out_dir.join(rel);
+	let foch_path = request.out_dir.join(rel);
 	let foch_emitted = foch_path.is_file();
-	let foch_conflict = conflict_paths.contains(rel);
+	let foch_conflict = request.conflict_paths.contains(rel);
 
-	let compatch_text = read(&compatch.join(rel)).unwrap_or_default();
+	let compatch_text = read(&request.compatch.join(rel)).unwrap_or_default();
 	let foch_text = if foch_emitted { read(&foch_path) } else { None };
 
 	let mut sim = None;
 	let mut keys_match = None;
 	let mut ast_match = None;
+	let mut policy_equivalent = false;
 	let mut dropped: Vec<String> = Vec::new();
 	if let Some(ft) = foch_text.as_deref() {
 		sim = Some((similarity(ft, &compatch_text) * 1000.0).round() / 1000.0);
 		let fk = top_level_keys(ft);
 		let ck = top_level_keys(&compatch_text);
 		keys_match = Some(fk == ck);
-		ast_match = ast_match_for_path(rel, &foch_path, &compatch.join(rel));
-		let union_ab: HashSet<String> = top_level_keys(&read(&mod_a.join(rel)).unwrap_or_default())
-			.union(&top_level_keys(&read(&mod_b.join(rel)).unwrap_or_default()))
-			.cloned()
-			.collect();
+		ast_match = ast_match_for_path(rel, &foch_path, &request.compatch.join(rel));
+		policy_equivalent = ast_match == Some(false)
+			&& accepted_equivalent_for_path(rel, &foch_path, &request.compatch.join(rel));
+		let union_ab: HashSet<String> =
+			top_level_keys(&read(&request.mod_a.join(rel)).unwrap_or_default())
+				.union(&top_level_keys(
+					&read(&request.mod_b.join(rel)).unwrap_or_default(),
+				))
+				.cloned()
+				.collect();
 		dropped = union_ab.difference(&fk).cloned().collect();
 		dropped.sort();
 	}
 
-	let verdict = if foch_conflict {
-		Verdict::ConflictWithheld
+	let (verdict, acceptance_reason) = if foch_conflict {
+		(Verdict::ConflictWithheld, None)
 	} else if !foch_emitted {
-		Verdict::NotEmitted
+		(Verdict::NotEmitted, None)
 	} else if ast_match == Some(true) && sim.is_some_and(|s| s >= 0.92) {
-		Verdict::MatchesHuman
+		(Verdict::MatchesHuman, None)
 	} else if ast_match == Some(true) {
-		Verdict::MatchesAst
+		(Verdict::MatchesAst, None)
+	} else if policy_equivalent {
+		(
+			Verdict::AcceptedEquivalent,
+			Some("gfx_order_insensitive_ast_equivalent".to_string()),
+		)
+	} else if let Some(adjudication) = request.adjudications.get(request.compatch_id, rel) {
+		match adjudication.verdict {
+			AcceptedAdjudicationVerdict::AcceptedBetter => {
+				(Verdict::AcceptedBetter, Some(adjudication.reason.clone()))
+			}
+		}
 	} else if !dropped.is_empty() {
-		Verdict::DropsContent
+		(Verdict::DropsContent, None)
 	} else if ast_match == Some(false) && keys_match == Some(true) {
-		Verdict::DivergesAst
+		(Verdict::DivergesAst, None)
 	} else if keys_match == Some(true) {
-		Verdict::DivergesFormatting
+		(Verdict::DivergesFormatting, None)
 	} else {
-		Verdict::DivergesStructure
+		(Verdict::DivergesStructure, None)
 	};
 
 	FileScore {
@@ -425,6 +520,7 @@ pub fn score_file(
 		ast_match,
 		dropped_keys: dropped,
 		verdict,
+		acceptance_reason,
 	}
 }
 
@@ -466,6 +562,38 @@ fn ast_match_for_path(rel: &str, foch_path: &Path, compatch_path: &Path) -> Opti
 	)
 }
 
+fn accepted_equivalent_for_path(rel: &str, foch_path: &Path, compatch_path: &Path) -> bool {
+	if !is_gfx_path(rel) {
+		return false;
+	}
+	ast_match_for_path_with_ordering(
+		rel,
+		foch_path,
+		compatch_path,
+		AstOrderingPolicy::OrderInsensitive,
+	) == Some(true)
+}
+
+fn ast_match_for_path_with_ordering(
+	rel: &str,
+	foch_path: &Path,
+	compatch_path: &Path,
+	ordering: AstOrderingPolicy,
+) -> Option<bool> {
+	if !is_clausewitz_like_path(rel) {
+		return None;
+	}
+	let foch = parse_clausewitz_file(foch_path);
+	let compatch = parse_clausewitz_file(compatch_path);
+	if !foch.diagnostics.is_empty() || !compatch.diagnostics.is_empty() {
+		return None;
+	}
+	Some(
+		canonical_statements(&foch.ast.statements, ordering)
+			== canonical_statements(&compatch.ast.statements, ordering),
+	)
+}
+
 fn is_clausewitz_like_path(rel: &str) -> bool {
 	let lower = rel.to_ascii_lowercase();
 	lower.ends_with(".txt")
@@ -481,6 +609,10 @@ fn is_gui_like_path(rel: &str) -> bool {
 		|| lower.starts_with("gfx/")
 		|| lower.ends_with(".gui")
 		|| lower.ends_with(".gfx")
+}
+
+fn is_gfx_path(rel: &str) -> bool {
+	rel.to_ascii_lowercase().ends_with(".gfx")
 }
 
 fn canonical_statements(
@@ -887,6 +1019,115 @@ mod classify_tests {
 				&compatch.path().join("events/example.txt"),
 			),
 			Some(true)
+		);
+	}
+
+	#[test]
+	fn score_file_accepts_gfx_order_only_as_equivalent() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "interface/example.gfx";
+		write_file(
+			mod_a.path(),
+			rel,
+			r#"spriteTypes = { spriteType = { name = "A" } spriteType = { name = "B" } }"#,
+		);
+		write_file(
+			mod_b.path(),
+			rel,
+			r#"spriteTypes = { spriteType = { name = "A" } spriteType = { name = "B" } }"#,
+		);
+		write_file(
+			compatch.path(),
+			rel,
+			r#"spriteTypes = { spriteType = { name = "A" } spriteType = { name = "B" } }"#,
+		);
+		write_file(
+			out.path(),
+			rel,
+			r#"spriteTypes = { spriteType = { name = "B" } spriteType = { name = "A" } }"#,
+		);
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			mod_a: mod_a.path(),
+			mod_b: mod_b.path(),
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
+		assert_eq!(
+			score.acceptance_reason.as_deref(),
+			Some("gfx_order_insensitive_ast_equivalent")
+		);
+	}
+
+	#[test]
+	fn score_file_keeps_gui_order_only_as_divergence() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "interface/example.gui";
+		write_file(mod_a.path(), rel, "guiTypes = { a = yes b = yes }\n");
+		write_file(mod_b.path(), rel, "guiTypes = { a = yes b = yes }\n");
+		write_file(compatch.path(), rel, "guiTypes = { a = yes b = yes }\n");
+		write_file(out.path(), rel, "guiTypes = { b = yes a = yes }\n");
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			mod_a: mod_a.path(),
+			mod_b: mod_b.path(),
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.verdict, Verdict::DivergesAst);
+		assert_eq!(score.acceptance_reason, None);
+	}
+
+	#[test]
+	fn score_file_applies_accepted_better_adjudication() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "common/scripted_triggers/example.txt";
+		write_file(mod_a.path(), rel, "trigger = { tag = FRA }\n");
+		write_file(mod_b.path(), rel, "trigger = { tag = FRA }\n");
+		write_file(compatch.path(), rel, "trigger = { tag = FRA }\n");
+		write_file(out.path(), rel, "trigger = { tag = ENG }\n");
+		let adjudications = Adjudications::from_json(
+			r#"[{
+				"compatch_id": "case",
+				"rel": "common/scripted_triggers/example.txt",
+				"verdict": "accepted_better",
+				"reason": "foch preserves the intended corrected country tag"
+			}]"#,
+		)
+		.unwrap();
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			mod_a: mod_a.path(),
+			mod_b: mod_b.path(),
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &adjudications,
+		});
+
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.verdict, Verdict::AcceptedBetter);
+		assert_eq!(
+			score.acceptance_reason.as_deref(),
+			Some("foch preserves the intended corrected country tag")
 		);
 	}
 }

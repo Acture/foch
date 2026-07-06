@@ -1275,6 +1275,41 @@ fn make_and_wrapper(items: Vec<AstStatement>) -> AstStatement {
 	}
 }
 
+fn statement_or_body(statement: &AstStatement) -> Option<Vec<AstStatement>> {
+	match statement {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} if key == "OR" => Some(items.clone()),
+		_ => None,
+	}
+}
+
+/// Turn a contributor body into one or more `OR` disjuncts.
+///
+/// A body that is already exactly `OR = { ... }` is flattened so BooleanOr
+/// merges do not emit nested ORs or duplicate an already-present branch. Other
+/// one-statement bodies are inlined verbatim, and multi-statement bodies are
+/// wrapped in `AND = { ... }` so their implicit conjunction is preserved.
+fn body_to_disjuncts(body: Vec<AstStatement>) -> Vec<AstStatement> {
+	if body.len() == 1
+		&& let Some(items) = statement_or_body(&body[0])
+	{
+		return items
+			.into_iter()
+			.flat_map(|item| {
+				if let Some(nested_items) = statement_or_body(&item) {
+					body_to_disjuncts(vec![make_or_wrapper(nested_items)])
+				} else {
+					vec![item]
+				}
+			})
+			.collect();
+	}
+	vec![body_to_disjunct(body)]
+}
+
 /// Turn a contributor body into a single `OR` disjunct. A one-statement body is
 /// inlined verbatim (its lone condition is already a disjunct); a multi-statement
 /// body is wrapped in `AND = { ... }` so its implicit conjunction is preserved.
@@ -1328,7 +1363,20 @@ pub(super) fn synthesize_boolean_or(
 		return None;
 	}
 
-	let disjuncts: Vec<AstStatement> = bodies.into_iter().map(body_to_disjunct).collect();
+	let mut disjuncts: Vec<AstStatement> = Vec::new();
+	for body in bodies {
+		for disjunct in body_to_disjuncts(body) {
+			if !disjuncts
+				.iter()
+				.any(|existing| ast_statements_semantically_equal(existing, &disjunct))
+			{
+				disjuncts.push(disjunct);
+			}
+		}
+	}
+	if disjuncts.is_empty() {
+		return None;
+	}
 
 	let synthesized_value = AstValue::Block {
 		items: vec![make_or_wrapper(disjuncts)],

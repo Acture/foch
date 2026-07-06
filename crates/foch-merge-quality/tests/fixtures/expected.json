@@ -1,21 +1,29 @@
 {
   "3630876155": {
-    "diverges_ast": 5,
-    "matches_human": 2
+    "accepted_equivalent": 1,
+    "diverges_ast": 3,
+    "matches_human": 3
   },
   "3630904821": {
-    "diverges_ast": 6
+    "accepted_equivalent": 1,
+    "diverges_ast": 4,
+    "matches_human": 1
   },
   "3630934157": {
-    "diverges_ast": 6
+    "accepted_equivalent": 1,
+    "diverges_ast": 5
   },
   "3634824708": {
     "diverges_ast": 5
   },
   "3634829839": {
-    "diverges_ast": 5
+    "accepted_equivalent": 1,
+    "diverges_ast": 3,
+    "matches_human": 1
   },
   "3635635014": {
-    "diverges_ast": 6
+    "accepted_equivalent": 1,
+    "diverges_ast": 4,
+    "matches_human": 1
   }
 }

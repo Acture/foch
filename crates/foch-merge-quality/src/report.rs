@@ -46,6 +46,14 @@ const VERDICT_MEANING: &[(&str, &str)] = &[
 		"foch's merge is AST-equivalent under the corpus ordering policy",
 	),
 	(
+		"accepted_equivalent",
+		"foch differs from the human AST but is equivalent under an explicit scorer policy",
+	),
+	(
+		"accepted_better",
+		"foch differs from the human AST but is manually adjudicated as better",
+	),
+	(
 		"diverges_formatting",
 		"AST comparison unavailable; same top-level definitions, different text",
 	),
@@ -82,16 +90,20 @@ fn render_report(results: &[CaseResult]) -> String {
 	// Aggregate across all cases (overlap files only, via the verdicts map)
 	let mut agg: BTreeMap<String, usize> = BTreeMap::new();
 	let mut total_overlap: usize = 0;
+	let mut accepted_ok: usize = 0;
 	for r in results {
 		for (v, n) in &r.verdicts {
 			*agg.entry(v.clone()).or_default() += n;
 			total_overlap += n;
 		}
+		accepted_ok += r.accepted_ok_files;
 	}
 
 	lines.push(format!(
-		"Cases scored: **{}**  ·  overlapping ground-truth files: **{}**",
+		"Cases scored: **{}**  ·  overlapping ground-truth files: **{}**  ·  accepted_ok: **{}/{}**",
 		results.len(),
+		total_overlap,
+		accepted_ok,
 		total_overlap
 	));
 	lines.push(String::new());
@@ -126,11 +138,12 @@ fn render_report(results: &[CaseResult]) -> String {
 			.map(|n| n.to_string())
 			.unwrap_or_else(|| "?".to_string());
 		lines.push(format!(
-			"- merge: status={} parse_errors={} · ground-truth files={} overlap={}",
+			"- merge: status={} parse_errors={} · ground-truth files={} overlap={} accepted_ok={}",
 			r.merge_status.as_deref().unwrap_or("?"),
 			val_parse_errors,
 			r.ground_truth_files,
-			r.overlap_files
+			r.overlap_files,
+			r.accepted_ok_files
 		));
 		lines.push(format!("- verdicts: {:?}", r.verdicts));
 
@@ -148,6 +161,9 @@ fn render_report(results: &[CaseResult]) -> String {
 			if !f.dropped_keys.is_empty() {
 				let shown: Vec<_> = f.dropped_keys.iter().take(4).cloned().collect();
 				extra.push_str(&format!(" dropped={shown:?}"));
+			}
+			if let Some(reason) = &f.acceptance_reason {
+				extra.push_str(&format!(" accepted_reason={reason:?}"));
 			}
 			lines.push(format!("  - `{}` → **{}**{}", f.rel, f.verdict, extra));
 		}

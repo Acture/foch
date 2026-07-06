@@ -10,7 +10,7 @@ use crate::cache::{
 // SemVer for the modset-cache schema/merge-semantics payload. Bump the major
 // version for incompatible output semantics so stale artifacts cannot hide a
 // changed merge engine.
-const MODSET_CACHE_VERSION: &str = "11.3.0";
+const MODSET_CACHE_VERSION: &str = "11.3.2";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::resolve::build_mod_candidates;

@@ -88,8 +88,17 @@ impl ModsetCache {
 
 		let tarball_path = self.tarball_path(key);
 		let report_path = self.report_path(key);
-		let tmp_tarball = tarball_path.with_extension(format!("tar.gz.{}.tmp", std::process::id()));
-		let tmp_report = report_path.with_extension(format!("json.{}.tmp", std::process::id()));
+		let temp_suffix = cache_temp_suffix();
+		let tmp_tarball = self
+			.entries_dir()
+			.join(format!("{key}.{temp_suffix}.tar.gz.tmp"));
+		let tmp_report = self
+			.entries_dir()
+			.join(format!("{key}.{temp_suffix}.report.json.tmp"));
+
+		let report_bytes =
+			serde_json::to_vec_pretty(report).map_err(|err| CacheError::Encode(err.to_string()))?;
+		fs::write(&tmp_report, report_bytes).map_err(CacheError::Io)?;
 
 		let tarball = fs::File::create(&tmp_tarball).map_err(CacheError::Io)?;
 		let encoder = GzEncoder::new(tarball, Compression::default());
@@ -100,10 +109,6 @@ impl ModsetCache {
 			.map_err(CacheError::Io)?;
 		let encoder = builder.into_inner().map_err(CacheError::Io)?;
 		encoder.finish().map_err(CacheError::Io)?;
-
-		let report_bytes =
-			serde_json::to_vec_pretty(report).map_err(|err| CacheError::Encode(err.to_string()))?;
-		fs::write(&tmp_report, report_bytes).map_err(CacheError::Io)?;
 
 		fs::rename(&tmp_tarball, &tarball_path).map_err(|err| {
 			let _ = fs::remove_file(&tmp_tarball);
@@ -392,6 +397,14 @@ fn tarball_key(path: &Path) -> Option<String> {
 fn update_hash_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 	hasher.update(&(bytes.len() as u64).to_le_bytes());
 	hasher.update(bytes);
+}
+
+fn cache_temp_suffix() -> String {
+	let nanos = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_nanos();
+	format!("{}.{}", std::process::id(), nanos)
 }
 
 fn prune_empty_dirs(root: &Path) {

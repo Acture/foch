@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
-	classify_resolution, conflict_rel_paths, ground_truth_files, run_merge, score_file,
-	write_playset,
+	Adjudications, ScoreFileRequest, classify_resolution, conflict_rel_paths, ground_truth_files,
+	run_merge, score_file, write_playset,
 };
 
 // ------------------------------------------------------------------ data model
@@ -31,6 +31,8 @@ pub struct FileRecord {
 	pub ast_match: Option<bool>,
 	pub dropped_keys: Vec<String>,
 	pub verdict: String,
+	pub accepted_ok: bool,
+	pub acceptance_reason: Option<String>,
 }
 
 /// Per-case scoring result — the unit element of `results.json`.
@@ -49,6 +51,8 @@ pub struct CaseResult {
 	pub overlap_files: usize,
 	/// Verdict counts over the overlap set (BTreeMap → deterministic JSON key order).
 	pub verdicts: BTreeMap<String, usize>,
+	/// Number of overlap files counted by the primary acceptance metric.
+	pub accepted_ok_files: usize,
 	/// Per-file scores for every ground-truth file.
 	pub files: Vec<FileRecord>,
 }
@@ -121,11 +125,21 @@ pub fn score_case(
 	} else {
 		&mod_dirs[0]
 	};
+	let adjudications = Adjudications::built_in();
 
 	let files: Vec<FileRecord> = gt
 		.iter()
 		.map(|rel| {
-			let fs = score_file(rel, mod_a, mod_b, &compatch_dir, &out_dir, &conflicts);
+			let fs = score_file(&ScoreFileRequest {
+				compatch_id: &case.compatch_id,
+				rel,
+				mod_a,
+				mod_b,
+				compatch: &compatch_dir,
+				out_dir: &out_dir,
+				conflict_paths: &conflicts,
+				adjudications: &adjudications,
+			});
 			FileRecord {
 				rel: fs.rel,
 				in_a: fs.in_a,
@@ -138,11 +152,14 @@ pub fn score_case(
 				ast_match: fs.ast_match,
 				dropped_keys: fs.dropped_keys,
 				verdict: fs.verdict.as_str().to_string(),
+				accepted_ok: fs.verdict.accepted_ok(),
+				acceptance_reason: fs.acceptance_reason,
 			}
 		})
 		.collect();
 
 	let overlap_count = files.iter().filter(|f| f.overlap).count();
+	let accepted_ok_files = files.iter().filter(|f| f.overlap && f.accepted_ok).count();
 	let mut verdicts: BTreeMap<String, usize> = BTreeMap::new();
 	for f in files.iter().filter(|f| f.overlap) {
 		*verdicts.entry(f.verdict.clone()).or_default() += 1;
@@ -170,6 +187,7 @@ pub fn score_case(
 		ground_truth_files: gt.len(),
 		overlap_files: overlap_count,
 		verdicts,
+		accepted_ok_files,
 		files,
 	})
 }

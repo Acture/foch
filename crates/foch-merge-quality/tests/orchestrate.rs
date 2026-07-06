@@ -52,10 +52,12 @@ fn score_case_verdict_tally() {
 	assert_eq!(result.overlap_files, 7, "overlap file count");
 
 	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("diverges_ast".to_string(), 5),
-		("matches_human".to_string(), 2),
+		("accepted_equivalent".to_string(), 1),
+		("diverges_ast".to_string(), 3),
+		("matches_human".to_string(), 3),
 	]);
 	assert_eq!(result.verdicts, expected, "verdict tally");
+	assert_eq!(result.accepted_ok_files, 4, "accepted_ok tally");
 }
 
 // ------------------------------------------------------------------ Test 2: run
@@ -100,10 +102,12 @@ fn run_writes_artifacts() {
 	assert_eq!(records[0].overlap_files, 7);
 
 	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("diverges_ast".to_string(), 5),
-		("matches_human".to_string(), 2),
+		("accepted_equivalent".to_string(), 1),
+		("diverges_ast".to_string(), 3),
+		("matches_human".to_string(), 3),
 	]);
 	assert_eq!(records[0].verdicts, expected);
+	assert_eq!(records[0].accepted_ok_files, 4);
 
 	// report.md must be non-empty
 	let report_md =

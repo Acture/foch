@@ -1755,6 +1755,51 @@ fn boolean_or_preserves_disjunction_semantics_and_conjunctive_bodies() {
 }
 
 #[test]
+fn boolean_or_flattens_existing_or_body_and_dedups_disjuncts() {
+	let active_flag = assignment("has_global_flag", scalar("$mod$_expanded_mod_active"));
+	let typo_flag = assignment("has_global_flag", scalar("$mod$_exapanded_mod_active"));
+	let body_a = vec![assignment_block(
+		"OR",
+		vec![active_flag.clone(), typo_flag.clone()],
+	)];
+	let body_b = vec![active_flag.clone()];
+
+	let mk = |body: &[AstStatement]| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "is_expanded_mod_active".into(),
+		statement: assignment_block("is_expanded_mod_active", body.to_vec()),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![mk(&body_a)]),
+			("mod_b".into(), 2, vec![mk(&body_b)]),
+		],
+		&boolean_or_policies(),
+	);
+
+	assert_eq!(result.conflicts.len(), 0);
+	assert_eq!(result.stats.auto_merged_patches, 1);
+
+	let merged_stmt = match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: ClausewitzPatch::InsertNode { statement, .. },
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "boolean_or");
+			statement
+		}
+		other => panic!("expected AutoMerged InsertNode, got: {other:?}"),
+	};
+
+	let or_bodies = assert_or_wrapped(merged_stmt, "is_expanded_mod_active");
+	assert_eq!(or_bodies.len(), 2);
+	assert_eq!(or_bodies[0], vec![active_flag]);
+	assert_eq!(or_bodies[1], vec![typo_flag]);
+}
+
+#[test]
 fn boolean_or_single_modification_no_or_wrap() {
 	let body = vec![assignment("tag", scalar("XYZ"))];
 	let patch = ClausewitzPatch::ReplaceBlock {
