@@ -453,8 +453,171 @@ pub struct ScoreFileRequest<'a> {
 	pub adjudications: &'a Adjudications,
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ContentKey(String);
+
+struct ContentEntry {
+	text: String,
+	normalized: Option<Vec<String>>,
+	keys: Option<HashSet<String>>,
+	canonical: HashMap<(String, AstOrderingPolicy), Option<Vec<CanonicalStatement>>>,
+}
+
+impl ContentEntry {
+	fn new(text: String) -> Self {
+		Self {
+			text,
+			normalized: None,
+			keys: None,
+			canonical: HashMap::new(),
+		}
+	}
+}
+
+#[derive(Default)]
+pub struct ScoreCache {
+	path_content: HashMap<PathBuf, Option<ContentKey>>,
+	content_entries: HashMap<ContentKey, ContentEntry>,
+	module_views: HashMap<(PathBuf, String), Option<BTreeMap<String, CanonicalStatement>>>,
+}
+
+impl ScoreCache {
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	fn content_key(&mut self, path: &Path) -> Option<ContentKey> {
+		let path = path.to_path_buf();
+		if !self.path_content.contains_key(&path) {
+			let content = match fs::read(&path) {
+				Ok(bytes) => {
+					let hash = blake3::hash(&bytes).to_hex().to_string();
+					let key = ContentKey(hash);
+					self.content_entries.entry(key.clone()).or_insert_with(|| {
+						ContentEntry::new(String::from_utf8_lossy(&bytes).into_owned())
+					});
+					Some(key)
+				}
+				Err(_) => None,
+			};
+			self.path_content.insert(path.clone(), content);
+		}
+		self.path_content
+			.get(&path)
+			.expect("path content cache inserted")
+			.clone()
+	}
+
+	fn content_entry(&mut self, path: &Path) -> Option<&mut ContentEntry> {
+		let key = self.content_key(path)?;
+		Some(
+			self.content_entries
+				.get_mut(&key)
+				.expect("content entry inserted"),
+		)
+	}
+
+	fn normalized_lines(&mut self, path: &Path) -> Vec<String> {
+		let Some(entry) = self.content_entry(path) else {
+			return Vec::new();
+		};
+		if entry.normalized.is_none() {
+			entry.normalized = Some(normalise(&entry.text));
+		}
+		entry
+			.normalized
+			.as_ref()
+			.expect("normalized lines inserted")
+			.clone()
+	}
+
+	fn top_level_keys(&mut self, path: &Path) -> HashSet<String> {
+		let Some(entry) = self.content_entry(path) else {
+			return HashSet::new();
+		};
+		if entry.keys.is_none() {
+			entry.keys = Some(top_level_keys(&entry.text));
+		}
+		entry
+			.keys
+			.as_ref()
+			.expect("top-level keys inserted")
+			.clone()
+	}
+
+	fn rounded_similarity(&mut self, left: &Path, right: &Path) -> Option<f64> {
+		if !left.is_file() || !right.is_file() {
+			return None;
+		}
+		let left_lines = self.normalized_lines(left);
+		let right_lines = self.normalized_lines(right);
+		Some((ratio(&left_lines, &right_lines) * 1000.0).round() / 1000.0)
+	}
+
+	fn canonical_ast(
+		&mut self,
+		rel: &str,
+		path: &Path,
+		ordering: AstOrderingPolicy,
+	) -> Option<Vec<CanonicalStatement>> {
+		if !is_clausewitz_like_path(rel) {
+			return None;
+		}
+		let content = self.content_key(path)?;
+		let key = (syntax_cache_key(path), ordering);
+		if !self
+			.content_entries
+			.get(&content)
+			.expect("content entry inserted")
+			.canonical
+			.contains_key(&key)
+		{
+			let parsed = parse_clausewitz_file(path);
+			let canonical = if parsed.diagnostics.is_empty() {
+				Some(canonical_statements(&parsed.ast.statements, ordering))
+			} else {
+				None
+			};
+			self.content_entries
+				.get_mut(&content)
+				.expect("content entry inserted")
+				.canonical
+				.insert(key.clone(), canonical);
+		}
+		self.content_entries
+			.get(&content)
+			.expect("content entry inserted")
+			.canonical
+			.get(&key)
+			.expect("canonical AST inserted")
+			.clone()
+	}
+
+	fn module_view(
+		&mut self,
+		root: &Path,
+		family_prefix: &str,
+	) -> Option<BTreeMap<String, CanonicalStatement>> {
+		let key = (root.to_path_buf(), family_prefix.to_string());
+		if !self.module_views.contains_key(&key) {
+			let view = canonical_module_view_uncached(root, family_prefix);
+			self.module_views.insert(key.clone(), view);
+		}
+		self.module_views
+			.get(&key)
+			.expect("module view inserted")
+			.clone()
+	}
+}
+
 /// Classify foch's merged output for one ground-truth file against the compatch.
 pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
+	let mut cache = ScoreCache::new();
+	score_file_with_cache(request, &mut cache)
+}
+
+/// Classify foch's merged output, reusing parsed/text artifacts across files.
+pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCache) -> FileScore {
 	let rel = request.rel;
 	let in_a = request.mod_a.join(rel).is_file();
 	let in_b = request.mod_b.join(rel).is_file();
@@ -463,8 +626,7 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 	let foch_emitted = foch_path.is_file();
 	let foch_conflict = request.conflict_paths.contains(rel);
 
-	let compatch_text = read(&request.compatch.join(rel)).unwrap_or_default();
-	let foch_text = if foch_emitted { read(&foch_path) } else { None };
+	let compatch_path = request.compatch.join(rel);
 
 	let mut sim = None;
 	let mut keys_match = None;
@@ -472,24 +634,22 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 	let mut policy_equivalent = false;
 	let mut module_equivalent = false;
 	let mut dropped: Vec<String> = Vec::new();
-	if let Some(ft) = foch_text.as_deref() {
-		sim = Some((similarity(ft, &compatch_text) * 1000.0).round() / 1000.0);
-		let fk = top_level_keys(ft);
-		let ck = top_level_keys(&compatch_text);
+	if foch_emitted {
+		let fk = cache.top_level_keys(&foch_path);
+		let ck = cache.top_level_keys(&compatch_path);
 		keys_match = Some(fk == ck);
-		ast_match = ast_match_for_path(rel, &foch_path, &request.compatch.join(rel));
+		ast_match = ast_match_for_path_cached(cache, rel, &foch_path, &compatch_path);
+		if ast_match == Some(true) {
+			sim = cache.rounded_similarity(&foch_path, &compatch_path);
+		}
 		policy_equivalent = ast_match == Some(false)
-			&& accepted_equivalent_for_path(rel, &foch_path, &request.compatch.join(rel));
+			&& accepted_equivalent_for_path(cache, rel, &foch_path, &compatch_path);
 		module_equivalent = ast_match != Some(true)
 			&& keys_match != Some(true)
-			&& same_family_module_equivalent(rel, request.out_dir, request.compatch);
-		let union_ab: HashSet<String> =
-			top_level_keys(&read(&request.mod_a.join(rel)).unwrap_or_default())
-				.union(&top_level_keys(
-					&read(&request.mod_b.join(rel)).unwrap_or_default(),
-				))
-				.cloned()
-				.collect();
+			&& same_family_module_equivalent(cache, rel, request.out_dir, request.compatch);
+		let mod_a_keys = cache.top_level_keys(&request.mod_a.join(rel));
+		let mod_b_keys = cache.top_level_keys(&request.mod_b.join(rel));
+		let union_ab: HashSet<String> = mod_a_keys.union(&mod_b_keys).cloned().collect();
 		dropped = union_ab.difference(&fk).cloned().collect();
 		dropped.sort();
 	}
@@ -544,7 +704,7 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 	}
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum AstOrderingPolicy {
 	OrderSensitive,
 	OrderInsensitive,
@@ -562,13 +722,19 @@ enum CanonicalStatement {
 	Item(CanonicalValue),
 }
 
+#[cfg(test)]
 fn ast_match_for_path(rel: &str, foch_path: &Path, compatch_path: &Path) -> Option<bool> {
+	let mut cache = ScoreCache::new();
+	ast_match_for_path_cached(&mut cache, rel, foch_path, compatch_path)
+}
+
+fn ast_match_for_path_cached(
+	cache: &mut ScoreCache,
+	rel: &str,
+	foch_path: &Path,
+	compatch_path: &Path,
+) -> Option<bool> {
 	if !is_clausewitz_like_path(rel) {
-		return None;
-	}
-	let foch = parse_clausewitz_file(foch_path);
-	let compatch = parse_clausewitz_file(compatch_path);
-	if !foch.diagnostics.is_empty() || !compatch.diagnostics.is_empty() {
 		return None;
 	}
 	let ordering = if is_gui_like_path(rel) {
@@ -576,17 +742,22 @@ fn ast_match_for_path(rel: &str, foch_path: &Path, compatch_path: &Path) -> Opti
 	} else {
 		AstOrderingPolicy::OrderInsensitive
 	};
-	Some(
-		canonical_statements(&foch.ast.statements, ordering)
-			== canonical_statements(&compatch.ast.statements, ordering),
-	)
+	let foch = cache.canonical_ast(rel, foch_path, ordering)?;
+	let compatch = cache.canonical_ast(rel, compatch_path, ordering)?;
+	Some(foch == compatch)
 }
 
-fn accepted_equivalent_for_path(rel: &str, foch_path: &Path, compatch_path: &Path) -> bool {
+fn accepted_equivalent_for_path(
+	cache: &mut ScoreCache,
+	rel: &str,
+	foch_path: &Path,
+	compatch_path: &Path,
+) -> bool {
 	if !is_gfx_path(rel) {
 		return false;
 	}
-	ast_match_for_path_with_ordering(
+	ast_match_for_path_with_ordering_cached(
+		cache,
 		rel,
 		foch_path,
 		compatch_path,
@@ -594,17 +765,22 @@ fn accepted_equivalent_for_path(rel: &str, foch_path: &Path, compatch_path: &Pat
 	) == Some(true)
 }
 
-fn same_family_module_equivalent(rel: &str, foch_root: &Path, compatch_root: &Path) -> bool {
+fn same_family_module_equivalent(
+	cache: &mut ScoreCache,
+	rel: &str,
+	foch_root: &Path,
+	compatch_root: &Path,
+) -> bool {
 	let Some(descriptor) = eligible_module_family(rel) else {
 		return false;
 	};
 	let Some(prefix) = family_prefix(descriptor) else {
 		return false;
 	};
-	let Some(foch) = canonical_module_view(foch_root, prefix) else {
+	let Some(foch) = cache.module_view(foch_root, prefix) else {
 		return false;
 	};
-	let Some(compatch) = canonical_module_view(compatch_root, prefix) else {
+	let Some(compatch) = cache.module_view(compatch_root, prefix) else {
 		return false;
 	};
 	foch == compatch
@@ -634,7 +810,7 @@ fn family_prefix(descriptor: &ContentFamilyDescriptor) -> Option<&'static str> {
 	}
 }
 
-fn canonical_module_view(
+fn canonical_module_view_uncached(
 	root: &Path,
 	family_prefix: &str,
 ) -> Option<BTreeMap<String, CanonicalStatement>> {
@@ -695,7 +871,8 @@ fn canonical_module_assignment(statement: &AstStatement) -> Option<(String, Cano
 	))
 }
 
-fn ast_match_for_path_with_ordering(
+fn ast_match_for_path_with_ordering_cached(
+	cache: &mut ScoreCache,
 	rel: &str,
 	foch_path: &Path,
 	compatch_path: &Path,
@@ -704,15 +881,16 @@ fn ast_match_for_path_with_ordering(
 	if !is_clausewitz_like_path(rel) {
 		return None;
 	}
-	let foch = parse_clausewitz_file(foch_path);
-	let compatch = parse_clausewitz_file(compatch_path);
-	if !foch.diagnostics.is_empty() || !compatch.diagnostics.is_empty() {
-		return None;
-	}
-	Some(
-		canonical_statements(&foch.ast.statements, ordering)
-			== canonical_statements(&compatch.ast.statements, ordering),
-	)
+	let foch = cache.canonical_ast(rel, foch_path, ordering)?;
+	let compatch = cache.canonical_ast(rel, compatch_path, ordering)?;
+	Some(foch == compatch)
+}
+
+fn syntax_cache_key(path: &Path) -> String {
+	path.extension()
+		.and_then(|ext| ext.to_str())
+		.unwrap_or_default()
+		.to_ascii_lowercase()
 }
 
 fn is_clausewitz_like_path(rel: &str) -> bool {

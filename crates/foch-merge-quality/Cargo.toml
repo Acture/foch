@@ -22,6 +22,7 @@ path = "src/bin/foch_mq.rs"
 foch-engine = { path = "../foch-engine" }
 foch-core = { path = "../foch-core" }
 foch-language = { path = "../foch-language" }
+blake3 = "1.5.5"
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

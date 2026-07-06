@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
-	Adjudications, ScoreFileRequest, classify_resolution, conflict_rel_paths, ground_truth_files,
-	run_merge, score_file, write_playset,
+	Adjudications, ScoreCache, ScoreFileRequest, classify_resolution, conflict_rel_paths,
+	ground_truth_files, run_merge, score_file_with_cache, write_playset,
 };
 
 // ------------------------------------------------------------------ data model
@@ -132,21 +132,25 @@ pub fn score_case(
 		&mod_dirs[0]
 	};
 	let adjudications = Adjudications::built_in();
+	let mut score_cache = ScoreCache::new();
 
 	let files: Vec<FileRecord> = gt
 		.iter()
 		.map(|rel| {
-			let fs = score_file(&ScoreFileRequest {
-				compatch_id: &case.compatch_id,
-				rel,
-				mod_a,
-				mod_b,
-				compatch: &compatch_dir,
-				out_dir: &out_dir,
-				basegame_root: None,
-				conflict_paths: &conflicts,
-				adjudications: &adjudications,
-			});
+			let fs = score_file_with_cache(
+				&ScoreFileRequest {
+					compatch_id: &case.compatch_id,
+					rel,
+					mod_a,
+					mod_b,
+					compatch: &compatch_dir,
+					out_dir: &out_dir,
+					basegame_root: None,
+					conflict_paths: &conflicts,
+					adjudications: &adjudications,
+				},
+				&mut score_cache,
+			);
 			FileRecord {
 				rel: fs.rel,
 				in_a: fs.in_a,
