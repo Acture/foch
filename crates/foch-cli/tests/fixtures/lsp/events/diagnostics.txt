@@ -3,5 +3,7 @@ country_event = {
   id = sample.2
   title = sample.2.t
   title = sample.2.extra
+  category = ECO
+  target = elsewhere
   mystery_key = yes
 }

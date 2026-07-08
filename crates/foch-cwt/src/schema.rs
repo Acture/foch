@@ -52,6 +52,7 @@ pub struct CwtAlias {
 	pub category: AliasCategory,
 	pub name: String,
 	pub attributes: CwtFieldAttributes,
+	pub value: CwtRuleValue,
 	pub rules: Vec<CwtRuleField>,
 }
 
@@ -288,6 +289,7 @@ impl CwtSchemaGraph {
 				category,
 				name: alias_name.to_string(),
 				attributes,
+				value: node_to_rule_value(value),
 				rules: block_to_rules(value),
 			},
 		);

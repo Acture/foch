@@ -61,6 +61,7 @@ fn compiled_engine_projects_field_and_alias_metadata() {
 	assert_eq!(alias_match.field().key, "alias_name[trigger]");
 	let alias = alias_match.alias().expect("alias metadata");
 	assert_eq!(alias.name, "is_year");
+	assert_eq!(alias.value, CompiledRuleValue::Scalar("int".to_string()));
 	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
 }
 

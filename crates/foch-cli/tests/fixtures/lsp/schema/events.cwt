@@ -11,6 +11,12 @@ event = {
     ###Event title localisation key.
     title = scalar
 
+    ###Event monarch power category.
+    category = enum[power_categories]
+
+    ###Named event target.
+    target = value_set[event_targets]
+
     ###Conditions that must be true for the event to fire.
     trigger = {
       alias_name[trigger] = alias_match_left[trigger]
@@ -41,3 +47,6 @@ alias[trigger:custom_trigger] = {
 ## scope = country
 ###Adds prestige to the current country.
 alias[effect:add_prestige] = scalar
+
+enum[power_categories] = { ADM DIP MIL }
+value_set[event_targets] = { root from prev }

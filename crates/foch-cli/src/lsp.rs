@@ -635,7 +635,7 @@ fn schema_hover(
 	Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: render_schema_hover_markdown(&target.key, &field_match),
+			value: render_schema_hover_markdown(engine, &target.key, &field_match),
 		}),
 		range: Some(target.range),
 	})
@@ -676,12 +676,27 @@ fn find_hover_target(
 	None
 }
 
-fn render_schema_hover_markdown(key: &str, field_match: &CompiledBindFieldMatch<'_>) -> String {
-	let field = field_match.field();
+fn render_schema_hover_markdown(
+	engine: &RuleEngine,
+	key: &str,
+	field_match: &CompiledBindFieldMatch<'_>,
+) -> String {
+	let value = schema_match_value(field_match);
 	let mut sections = vec![
 		format!("**{key}**"),
-		format!("Type: `{}`", rule_value_kind(&field.value)),
+		format!("Type: `{}`", rule_value_kind(value)),
 	];
+	if let Some(values) = schema_allowed_values(engine, value) {
+		sections.push(format!(
+			"Value set: `{}` `{}`",
+			values.kind.label(),
+			values.name
+		));
+		sections.push(format!(
+			"Allowed values: {}",
+			format_allowed_values(values.values)
+		));
+	}
 	if let Some(description) = schema_hover_description(field_match) {
 		sections.push(description.to_string());
 	}
@@ -698,6 +713,9 @@ fn rule_value_kind(value: &CompiledRuleValue) -> &'static str {
 	match value {
 		CompiledRuleValue::Scalar(_) => "Scalar",
 		CompiledRuleValue::Block(_) => "Block",
+		CompiledRuleValue::Marker(marker) if schema_allowed_value_marker(marker).is_some() => {
+			"Scalar"
+		}
 		CompiledRuleValue::Marker(_) => "Marker",
 	}
 }
@@ -810,7 +828,15 @@ fn schema_completion_candidates(
 	prefix_lower: &str,
 ) -> Option<Vec<CompletionCandidate>> {
 	if !is_schema_key_completion_position(text, position) {
-		return None;
+		let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+		return schema_value_completion_candidates(
+			engine,
+			file_path,
+			&parsed.ast.statements,
+			text,
+			position,
+			prefix_lower,
+		);
 	}
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
@@ -826,6 +852,44 @@ fn schema_completion_candidates(
 	}
 	candidates.sort_by(|left, right| left.label.cmp(&right.label));
 	candidates.dedup_by(|left, right| left.label == right.label);
+	Some(candidates)
+}
+
+fn schema_value_completion_candidates(
+	engine: &RuleEngine,
+	file_path: &Path,
+	statements: &[AstStatement],
+	text: &str,
+	position: Position,
+	prefix_lower: &str,
+) -> Option<Vec<CompletionCandidate>> {
+	let line = text.lines().nth(position.line as usize).unwrap_or_default();
+	let upto: String = line.chars().take(position.character as usize).collect();
+	let key = current_assignment_key(&upto)?;
+	let parent_path = find_completion_parent_path(statements, position, &[])?;
+	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
+	let parent_context = engine.bind_context(file_path, &parent_path)?;
+	let field_match = engine.bind_field_match(parent_context, key)?;
+	let values = schema_allowed_values(engine, schema_match_value(&field_match))?;
+	let kind = values.kind.completion_kind();
+	let mut candidates = values
+		.values
+		.iter()
+		.filter_map(|value| {
+			let value_lower = value.to_ascii_lowercase();
+			if !prefix_lower.is_empty() && !value_lower.starts_with(prefix_lower) {
+				return None;
+			}
+			Some(CompletionCandidate {
+				label: value.clone(),
+				insert_text: value.clone(),
+				kind,
+				detail: format!("cwt {} {}", values.kind.label(), values.name),
+				source: CandidateSource::Schema,
+			})
+		})
+		.collect::<Vec<_>>();
+	candidates.sort_by(|left, right| left.label.cmp(&right.label));
 	Some(candidates)
 }
 
@@ -1024,6 +1088,15 @@ fn collect_schema_diagnostics(
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
 				}
 				if let Some(field_match) = field_match
+					&& let AstValue::Scalar {
+						value: scalar,
+						span,
+					} = value && let Some(diagnostic) =
+					schema_invalid_value_diagnostic(engine, &field_match, key, scalar, span)
+				{
+					diagnostics.push(diagnostic);
+				}
+				if let Some(field_match) = field_match
 					&& let Some(upper_bound) = schema_cardinality_upper(&field_match)
 				{
 					let entry = cardinality_ranges
@@ -1069,6 +1142,110 @@ fn schema_cardinality_upper(field_match: &CompiledBindFieldMatch<'_>) -> Option<
 					.and_then(|(_, upper_bound)| upper_bound)
 			})
 		})
+}
+
+fn schema_invalid_value_diagnostic(
+	engine: &RuleEngine,
+	field_match: &CompiledBindFieldMatch<'_>,
+	key: &str,
+	scalar: &ScalarValue,
+	span: &SpanRange,
+) -> Option<Diagnostic> {
+	let values = schema_allowed_values(engine, schema_match_value(field_match))?;
+	let text = scalar.as_text();
+	if values.values.iter().any(|value| value == &text) {
+		return None;
+	}
+	Some(Diagnostic {
+		range: lsp_range_from_span(span),
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("V003".to_string())),
+		source: Some("foch".to_string()),
+		message: format!(
+			"value `{text}` for `{key}` is not in schema {} `{}` (allowed: {})",
+			values.kind.label(),
+			values.name,
+			format_allowed_values(values.values)
+		),
+		..Diagnostic::default()
+	})
+}
+
+fn schema_match_value<'p>(field_match: &CompiledBindFieldMatch<'p>) -> &'p CompiledRuleValue {
+	field_match
+		.alias()
+		.map(|alias| &alias.value)
+		.unwrap_or_else(|| &field_match.field().value)
+}
+
+fn schema_allowed_values<'a>(
+	engine: &'a RuleEngine,
+	value: &'a CompiledRuleValue,
+) -> Option<SchemaAllowedValues<'a>> {
+	let value = match value {
+		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value,
+		CompiledRuleValue::Block(_) => return None,
+	};
+	let (head, name) = schema_allowed_value_marker(value)?;
+	let (kind, values) = match head {
+		"enum" => (SchemaAllowedValueKind::Enum, engine.enum_values(name)?),
+		"value_set" => (
+			SchemaAllowedValueKind::ValueSet,
+			engine.value_set_values(name)?,
+		),
+		_ => return None,
+	};
+	(!values.is_empty()).then_some(SchemaAllowedValues { kind, name, values })
+}
+
+fn schema_allowed_value_marker(text: &str) -> Option<(&str, &str)> {
+	match parse_schema_marker(text) {
+		Some(("enum", name)) => Some(("enum", name)),
+		Some(("value_set", name)) => Some(("value_set", name)),
+		_ => None,
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SchemaAllowedValues<'a> {
+	kind: SchemaAllowedValueKind,
+	name: &'a str,
+	values: &'a [String],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchemaAllowedValueKind {
+	Enum,
+	ValueSet,
+}
+
+impl SchemaAllowedValueKind {
+	fn label(self) -> &'static str {
+		match self {
+			Self::Enum => "enum",
+			Self::ValueSet => "value_set",
+		}
+	}
+
+	fn completion_kind(self) -> CompletionItemKind {
+		match self {
+			Self::Enum => CompletionItemKind::ENUM_MEMBER,
+			Self::ValueSet => CompletionItemKind::VALUE,
+		}
+	}
+}
+
+fn format_allowed_values(values: &[String]) -> String {
+	const MAX_VALUES: usize = 12;
+	let mut formatted = values
+		.iter()
+		.take(MAX_VALUES)
+		.map(|value| format!("`{value}`"))
+		.collect::<Vec<_>>();
+	if values.len() > MAX_VALUES {
+		formatted.push(format!("... {} more", values.len() - MAX_VALUES));
+	}
+	formatted.join(", ")
 }
 
 fn schema_unknown_key_diagnostic(range: Range, key: &str) -> Diagnostic {
@@ -3119,6 +3296,12 @@ mod tests {
 		panic!("token `{token}` not found");
 	}
 
+	fn position_for_token_offset(text: &str, token: &str, offset: u32) -> Position {
+		let mut position = position_for_token(text, token);
+		position.character += offset;
+		position
+	}
+
 	fn hover_markdown(hover: tower_lsp::lsp_types::Hover) -> String {
 		let HoverContents::Markup(markup) = hover.contents else {
 			panic!("expected markdown hover contents");
@@ -3143,6 +3326,24 @@ mod tests {
 		assert!(markdown.contains("Immediate effects executed when the event fires."));
 		assert!(markdown.contains("push_scope=`country`"));
 		assert!(markdown.contains("scope=`country`, `province`"));
+	}
+
+	#[test]
+	fn hover_renders_enum_value_constraints_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = fixture_text("events/sample.txt");
+		let hover = schema_hover(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "category"),
+		)
+		.expect("category hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**category**"));
+		assert!(markdown.contains("Type: `Scalar`"));
+		assert!(markdown.contains("Value set: `enum` `power_categories`"));
+		assert!(markdown.contains("`ADM`, `DIP`, `MIL`"));
 	}
 
 	#[test]
@@ -3241,6 +3442,42 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_suggests_enum_values_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "ADM", 1),
+			"a",
+		)
+		.expect("enum value completion");
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(candidates[0].label, "ADM");
+		assert_eq!(candidates[0].kind, CompletionItemKind::ENUM_MEMBER);
+		assert_eq!(candidates[0].detail, "cwt enum power_categories");
+	}
+
+	#[test]
+	fn completion_suggests_value_set_values_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "root", 2),
+			"ro",
+		)
+		.expect("value_set value completion");
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(candidates[0].label, "root");
+		assert_eq!(candidates[0].kind, CompletionItemKind::VALUE);
+		assert_eq!(candidates[0].detail, "cwt value_set event_targets");
+	}
+
+	#[test]
 	fn completion_suggests_scripted_effect_fields_from_schema() {
 		let engine = load_lsp_rule_engine();
 		let text = fixture_text("common/scripted_effects/sample.txt");
@@ -3280,6 +3517,18 @@ mod tests {
 			diagnostic.code == Some(NumberOrString::String("V002".to_string()))
 				&& diagnostic.message.contains("title")
 				&& diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("ECO")
+				&& diagnostic.message.contains("power_categories")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("elsewhere")
+				&& diagnostic.message.contains("event_targets")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
 		}));
 	}
 

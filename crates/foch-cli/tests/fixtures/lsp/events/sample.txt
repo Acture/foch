@@ -2,6 +2,8 @@ namespace = sample
 country_event = {
   id = sample.1
   title = sample.1.t
+  category = ADM
+  target = root
   trigger = {
     has_country_flag = demo_flag
   }

@@ -15,7 +15,7 @@ use crate::schema::{
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.1.0";
+pub const PACK_FORMAT_VERSION: &str = "0.2.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,6 +257,7 @@ pub struct CompiledAlias {
 	pub category: CompiledAliasCategory,
 	pub name: String,
 	pub attributes: CompiledFieldAttributes,
+	pub value: CompiledRuleValue,
 	pub rules: Vec<CompiledRuleField>,
 }
 
@@ -266,6 +267,7 @@ impl CompiledAlias {
 			category: CompiledAliasCategory::from_schema(&alias.category),
 			name: alias.name.clone(),
 			attributes: CompiledFieldAttributes::from_attributes(&alias.attributes),
+			value: CompiledRuleValue::from_rule_value(&alias.value),
 			rules: alias
 				.rules
 				.iter()
@@ -424,6 +426,20 @@ impl RuleEngine {
 
 	pub fn aliases(&self) -> &[CompiledAlias] {
 		self.pack.aliases.as_slice()
+	}
+
+	pub fn enum_values(&self, name: &str) -> Option<&[String]> {
+		self.index
+			.enums
+			.get(name)
+			.map(|index| self.pack.enums[*index].values.as_slice())
+	}
+
+	pub fn value_set_values(&self, name: &str) -> Option<&[String]> {
+		self.index
+			.value_sets
+			.get(name)
+			.map(|index| self.pack.value_sets[*index].values.as_slice())
 	}
 
 	pub fn bind_root(&self, file_path: &Path) -> Option<&CompiledRoot> {
@@ -841,6 +857,8 @@ impl<'p> CompiledBindFieldMatch<'p> {
 
 struct RuntimeRuleIndex {
 	aliases: HashMap<(CompiledAliasCategory, String), usize>,
+	enums: HashMap<String, usize>,
+	value_sets: HashMap<String, usize>,
 }
 
 impl RuntimeRuleIndex {
@@ -851,7 +869,23 @@ impl RuntimeRuleIndex {
 			.enumerate()
 			.map(|(index, alias)| ((alias.category.clone(), alias.name.clone()), index))
 			.collect();
-		Self { aliases }
+		let enums = pack
+			.enums
+			.iter()
+			.enumerate()
+			.map(|(index, values)| (values.name.clone(), index))
+			.collect();
+		let value_sets = pack
+			.value_sets
+			.iter()
+			.enumerate()
+			.map(|(index, values)| (values.name.clone(), index))
+			.collect();
+		Self {
+			aliases,
+			enums,
+			value_sets,
+		}
 	}
 }
 

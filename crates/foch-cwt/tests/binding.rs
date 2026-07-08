@@ -67,6 +67,7 @@ fn bind_field_projects_attributes_and_alias_expansion() {
 		.aliases
 		.get(&(AliasCategory::Trigger, "is_year".to_string()))
 		.expect("lookup trigger alias");
+	assert_eq!(alias.value, CwtRuleValue::Scalar("int".to_string()));
 	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
 	assert_eq!(alias.attributes.push_scope.as_deref(), Some("country"));
 }
