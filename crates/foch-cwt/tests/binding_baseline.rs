@@ -19,6 +19,7 @@ struct FixtureBaseline {
 	aliases: Vec<AliasBaseline>,
 	enums: BTreeMap<String, Vec<String>>,
 	value_sets: BTreeMap<String, Vec<String>>,
+	complex_enums: BTreeMap<String, ComplexEnumBaseline>,
 	scopes: Vec<String>,
 	bindings: Vec<BindingBaseline>,
 }
@@ -32,6 +33,7 @@ struct VendorBaseline {
 	alias_count: usize,
 	enum_count: usize,
 	value_set_count: usize,
+	complex_enum_count: usize,
 	scope_count: usize,
 	selected_types: Vec<TypeBaseline>,
 	selected_aliases: Vec<AliasBaseline>,
@@ -67,6 +69,14 @@ struct AliasBaseline {
 	category: String,
 	name: String,
 	rules: Vec<RuleFieldBaseline>,
+}
+
+#[derive(Serialize)]
+struct ComplexEnumBaseline {
+	path: Option<String>,
+	path_file: Option<String>,
+	start_from_root: bool,
+	name_rules: Vec<RuleFieldBaseline>,
 }
 
 #[derive(Serialize)]
@@ -155,6 +165,7 @@ fn build_fixture_baseline(root: &Path) -> FixtureBaseline {
 		aliases: sorted_alias_baselines(graph),
 		enums: sorted_string_map(&graph.enums),
 		value_sets: sorted_string_map(&graph.value_sets),
+		complex_enums: sorted_complex_enum_baselines(graph),
 		scopes: graph.scopes.clone(),
 		bindings: vec![
 			binding_baseline(
@@ -184,6 +195,7 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		alias_count: graph.aliases.len(),
 		enum_count: graph.enums.len(),
 		value_set_count: graph.value_sets.len(),
+		complex_enum_count: graph.complex_enums.len(),
 		scope_count: graph.scopes.len(),
 		selected_types: [
 			"achievement",
@@ -274,6 +286,28 @@ fn sorted_alias_baselines(graph: &CwtSchemaGraph) -> Vec<AliasBaseline> {
 			.then_with(|| lhs.name.cmp(&rhs.name))
 	});
 	aliases
+}
+
+fn sorted_complex_enum_baselines(graph: &CwtSchemaGraph) -> BTreeMap<String, ComplexEnumBaseline> {
+	graph
+		.complex_enums
+		.iter()
+		.map(|(name, complex_enum)| {
+			(
+				name.clone(),
+				ComplexEnumBaseline {
+					path: complex_enum.path.clone(),
+					path_file: complex_enum.path_file.clone(),
+					start_from_root: complex_enum.start_from_root,
+					name_rules: complex_enum
+						.name_rules
+						.iter()
+						.map(rule_field_baseline)
+						.collect(),
+				},
+			)
+		})
+		.collect()
 }
 
 fn type_baseline(definition: &CwtTypeDef) -> TypeBaseline {

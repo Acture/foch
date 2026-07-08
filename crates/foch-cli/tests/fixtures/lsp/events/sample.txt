@@ -5,6 +5,7 @@ country_event = {
   category = ADM
   target = root
   goto = prev
+  ally = SWE
   days = 30
   chance = 0.5
   hidden = no

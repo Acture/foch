@@ -154,6 +154,35 @@ fn graph_loads_enums_and_values_blocks() {
 }
 
 #[test]
+fn graph_loads_complex_enums_from_enums_block() {
+	let schema = r#"
+	enums = {
+		complex_enum[country_tags] = {
+			path = "game/common/country_tags"
+			name = {
+				enum_name = scalar
+			}
+			start_from_root = yes
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let complex_enum = graph
+		.complex_enums
+		.get("country_tags")
+		.expect("country_tags complex enum");
+	assert_eq!(complex_enum.path.as_deref(), Some("common/country_tags"));
+	assert!(complex_enum.start_from_root);
+	assert_eq!(complex_enum.name_rules.len(), 1);
+	assert_eq!(complex_enum.name_rules[0].key, "enum_name");
+	assert_eq!(
+		complex_enum.name_rules[0].value,
+		CwtRuleValue::Scalar("scalar".to_string())
+	);
+}
+
+#[test]
 fn type_localisation_blocks_are_metadata_not_rule_fields() {
 	let schema = r#"
 	types = {

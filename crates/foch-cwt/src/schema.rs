@@ -167,12 +167,22 @@ pub struct CwtScope {
 	pub is_subscope_of: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CwtComplexEnum {
+	pub name: String,
+	pub path: Option<String>,
+	pub path_file: Option<String>,
+	pub start_from_root: bool,
+	pub name_rules: Vec<CwtRuleField>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CwtSchemaGraph {
 	pub types: HashMap<CwtType, CwtTypeDef>,
 	pub aliases: HashMap<(AliasCategory, String), CwtAlias>,
 	pub enums: HashMap<String, Vec<String>>,
 	pub value_sets: HashMap<String, Vec<String>>,
+	pub complex_enums: HashMap<String, CwtComplexEnum>,
 	pub scopes: Vec<String>,
 	scope_definitions: Vec<CwtScope>,
 }
@@ -329,8 +339,15 @@ impl CwtSchemaGraph {
 			let Some(marker) = ParsedMarker::parse(&key) else {
 				continue;
 			};
-			if marker.head == "enum" {
-				insert_enumeration(&mut self.enums, marker.payload, value);
+			match marker.head {
+				"enum" => insert_enumeration(&mut self.enums, marker.payload, value),
+				"complex_enum" => {
+					if let Some(complex_enum) = parse_complex_enum(marker.payload, value) {
+						self.complex_enums
+							.insert(marker.payload.to_string(), complex_enum);
+					}
+				}
+				_ => {}
 			}
 		}
 	}
@@ -923,6 +940,34 @@ fn insert_enumeration(
 		.entry(name.to_string())
 		.and_modify(|existing| merge_unique(existing, values.clone()))
 		.or_insert(values);
+}
+
+fn parse_complex_enum(name: &str, value: &ParadoxNode<'_>) -> Option<CwtComplexEnum> {
+	let items = block_items(value)?;
+	let mut complex_enum = CwtComplexEnum {
+		name: name.to_string(),
+		path: None,
+		path_file: None,
+		start_from_root: false,
+		name_rules: Vec::new(),
+	};
+	for item in items {
+		let Some((key, child_value)) = assignment_parts(item) else {
+			continue;
+		};
+		match key.as_str() {
+			"path" => complex_enum.path = scalar_text(child_value).map(normalize_schema_path),
+			"path_file" => {
+				complex_enum.path_file = scalar_text(child_value).map(normalize_schema_path)
+			}
+			"start_from_root" => {
+				complex_enum.start_from_root = scalar_bool(child_value).unwrap_or(false);
+			}
+			"name" => complex_enum.name_rules = block_to_rules(child_value),
+			_ => {}
+		}
+	}
+	(!complex_enum.name_rules.is_empty()).then_some(complex_enum)
 }
 
 fn merge_unique(values: &mut Vec<String>, incoming: Vec<String>) {

@@ -30,6 +30,9 @@ event = {
   ###Saved event target to navigate to.
   goto = value[event_targets]
 
+  ###Country tag referenced by fixture validation.
+  ally = enum[country_tags]
+
   ###How many days the event should use for fixture validation.
   days = int
 
@@ -93,6 +96,13 @@ alias[effect:province_only_effect] = int
 
 enums = {
   enum[power_categories] = { ADM DIP MIL }
+  complex_enum[country_tags] = {
+    path = "game/common/country_tags"
+    name = {
+      enum_name = scalar
+    }
+    start_from_root = yes
+  }
 }
 
 values = {

@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
-	AliasCategory, CwtAlias, CwtFieldAttributes, CwtRuleCondition, CwtRuleField, CwtRuleValue,
-	CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
+	AliasCategory, CwtAlias, CwtComplexEnum, CwtFieldAttributes, CwtRuleCondition, CwtRuleField,
+	CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.9.0";
+pub const PACK_FORMAT_VERSION: &str = "0.10.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +129,7 @@ pub struct CompiledRulePack {
 	pub aliases: Vec<CompiledAlias>,
 	pub enums: Vec<CompiledStringSet>,
 	pub value_sets: Vec<CompiledStringSet>,
+	pub complex_enums: Vec<CompiledComplexEnum>,
 	pub scopes: Vec<String>,
 	pub scope_definitions: Vec<CompiledScope>,
 }
@@ -161,6 +162,7 @@ impl CompiledRulePack {
 			aliases,
 			enums: sorted_string_sets(&graph.enums),
 			value_sets: sorted_string_sets(&graph.value_sets),
+			complex_enums: sorted_complex_enums(&graph.complex_enums),
 			scopes: graph.scopes.clone(),
 			scope_definitions: sorted_scope_definitions(graph.scope_definitions()),
 		}
@@ -210,6 +212,41 @@ pub struct CompiledRoot {
 	pub skip_root_keys: Vec<String>,
 	pub subtypes: Vec<CompiledSubtype>,
 	pub rules: Vec<CompiledRuleField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CompiledComplexEnum {
+	pub name: String,
+	pub path: Option<String>,
+	pub normalized_path: Option<String>,
+	pub path_file: Option<String>,
+	pub normalized_file_path: Option<String>,
+	pub start_from_root: bool,
+	pub name_rules: Vec<CompiledRuleField>,
+}
+
+impl CompiledComplexEnum {
+	fn from_complex_enum(complex_enum: &CwtComplexEnum) -> Self {
+		Self {
+			name: complex_enum.name.clone(),
+			path: complex_enum.path.clone(),
+			normalized_path: complex_enum.path.as_deref().map(normalize_schema_path),
+			path_file: complex_enum.path_file.clone(),
+			normalized_file_path: complex_enum
+				.path
+				.as_deref()
+				.zip(complex_enum.path_file.as_deref())
+				.map(|(path, path_file)| {
+					normalized_schema_file_path(&normalize_schema_path(path), path_file)
+				}),
+			start_from_root: complex_enum.start_from_root,
+			name_rules: complex_enum
+				.name_rules
+				.iter()
+				.map(CompiledRuleField::from_rule_field)
+				.collect(),
+		}
+	}
 }
 
 impl CompiledRoot {
@@ -544,6 +581,13 @@ impl RuleEngine {
 			.value_sets
 			.get(name)
 			.map(|index| self.pack.value_sets[*index].values.as_slice())
+	}
+
+	pub fn complex_enum(&self, name: &str) -> Option<&CompiledComplexEnum> {
+		self.index
+			.complex_enums
+			.get(name)
+			.map(|index| &self.pack.complex_enums[*index])
 	}
 
 	pub fn scope_matches(&self, required_scope: &str, active_scope: &str) -> bool {
@@ -1113,6 +1157,7 @@ struct RuntimeRuleIndex {
 	aliases: HashMap<(CompiledAliasCategory, String), usize>,
 	enums: HashMap<String, usize>,
 	value_sets: HashMap<String, usize>,
+	complex_enums: HashMap<String, usize>,
 	scope_labels: HashMap<String, usize>,
 }
 
@@ -1136,6 +1181,12 @@ impl RuntimeRuleIndex {
 			.enumerate()
 			.map(|(index, values)| (values.name.clone(), index))
 			.collect();
+		let complex_enums = pack
+			.complex_enums
+			.iter()
+			.enumerate()
+			.map(|(index, complex_enum)| (complex_enum.name.clone(), index))
+			.collect();
 		let mut scope_labels = HashMap::new();
 		for (index, scope) in pack.scope_definitions.iter().enumerate() {
 			scope_labels.entry(scope.name.clone()).or_insert(index);
@@ -1147,6 +1198,7 @@ impl RuntimeRuleIndex {
 			aliases,
 			enums,
 			value_sets,
+			complex_enums,
 			scope_labels,
 		}
 	}
@@ -1352,6 +1404,15 @@ fn sorted_string_sets(map: &HashMap<String, Vec<String>>) -> Vec<CompiledStringS
 		.collect::<Vec<_>>();
 	sets.sort_by(|left, right| left.name.cmp(&right.name));
 	sets
+}
+
+fn sorted_complex_enums(map: &HashMap<String, CwtComplexEnum>) -> Vec<CompiledComplexEnum> {
+	let mut complex_enums = map
+		.values()
+		.map(CompiledComplexEnum::from_complex_enum)
+		.collect::<Vec<_>>();
+	complex_enums.sort_by(|left, right| left.name.cmp(&right.name));
+	complex_enums
 }
 
 fn sorted_scope_definitions(definitions: &[CwtScope]) -> Vec<CompiledScope> {

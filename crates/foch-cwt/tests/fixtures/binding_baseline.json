@@ -18,6 +18,7 @@
       "status": "unbound"
     }
   ],
+  "complex_enums": {},
   "enums": {
     "power_categories": [
       "ADM",

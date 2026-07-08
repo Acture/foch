@@ -22,7 +22,7 @@ use foch_language::analyzer::semantic_index::{
 	resolve_symbol_reference_targets,
 };
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -202,10 +202,14 @@ impl Backend {
 		diagnostics.extend(parse_diagnostics_for_text(&path, text));
 		if let (Some(engine), Some(relative_path)) = (rule_engine.as_ref(), relative_path.as_ref())
 		{
-			diagnostics.extend(schema_diagnostics_for_text(
+			diagnostics.extend(schema_diagnostics_for_text_with_index(
 				engine.as_ref(),
 				relative_path,
 				text,
+				snapshot
+					.as_ref()
+					.and_then(|snapshot| snapshot.session.as_ref())
+					.map(|session| &session.index),
 			));
 			if let Some(session) = snapshot
 				.as_ref()
@@ -409,12 +413,17 @@ impl LanguageServer for Backend {
 		let mut candidates = if let Some(engine) = rule_engine.as_ref()
 			&& let Ok(path) = uri.to_file_path()
 			&& let Some((_, relative_path)) = match_scan_target(&state.targets, &path)
-			&& let Some(candidates) = schema_completion_candidates(
+			&& let Some(candidates) = schema_completion_candidates_with_index(
 				engine.as_ref(),
 				&relative_path,
 				text,
 				position,
 				&prefix_lower,
+				state
+					.workspace
+					.as_ref()
+					.and_then(|snapshot| snapshot.session.as_ref())
+					.map(|session| &session.index),
 			) {
 			candidates
 		} else {
@@ -703,7 +712,7 @@ fn render_schema_hover_markdown(
 		format!("**{key}**"),
 		format!("Type: `{}`", rule_value_kind(value)),
 	];
-	if let Some(values) = schema_allowed_values(engine, value) {
+	if let Some(values) = schema_allowed_values(engine, None, value) {
 		sections.push(format!(
 			"Value set: `{}` `{}`",
 			values.kind.label(),
@@ -711,7 +720,7 @@ fn render_schema_hover_markdown(
 		));
 		sections.push(format!(
 			"Allowed values: {}",
-			format_allowed_values(values.values)
+			format_allowed_values(&values.values)
 		));
 	}
 	if let Some(description) = schema_hover_description(field_match) {
@@ -836,6 +845,7 @@ fn span_contains_position(span: &SpanRange, position: Position) -> bool {
 		&& (line < span.end.line || (line == span.end.line && column < span.end.column))
 }
 
+#[cfg(test)]
 fn schema_completion_candidates(
 	engine: &RuleEngine,
 	file_path: &Path,
@@ -843,10 +853,22 @@ fn schema_completion_candidates(
 	position: Position,
 	prefix_lower: &str,
 ) -> Option<Vec<CompletionCandidate>> {
+	schema_completion_candidates_with_index(engine, file_path, text, position, prefix_lower, None)
+}
+
+fn schema_completion_candidates_with_index(
+	engine: &RuleEngine,
+	file_path: &Path,
+	text: &str,
+	position: Position,
+	prefix_lower: &str,
+	index: Option<&SemanticIndex>,
+) -> Option<Vec<CompletionCandidate>> {
 	if !is_schema_key_completion_position(text, position) {
 		let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 		return schema_value_completion_candidates(
 			engine,
+			index,
 			file_path,
 			&parsed.ast.statements,
 			text,
@@ -880,6 +902,7 @@ fn schema_completion_candidates(
 
 fn schema_value_completion_candidates(
 	engine: &RuleEngine,
+	index: Option<&SemanticIndex>,
 	file_path: &Path,
 	statements: &[AstStatement],
 	text: &str,
@@ -895,7 +918,7 @@ fn schema_value_completion_candidates(
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, statements, &parent_path);
 	let field_match = schema_bind_field_match(engine, parent_context, key, &active_subtypes)?;
-	let values = schema_allowed_values(engine, schema_match_value(&field_match))?;
+	let values = schema_allowed_values(engine, index, schema_match_value(&field_match))?;
 	let kind = values.kind.completion_kind();
 	let mut candidates = values
 		.values
@@ -1239,30 +1262,39 @@ fn is_schema_dynamic_key_marker(key: &str) -> bool {
 		&& !key.chars().any(char::is_whitespace)
 }
 
+#[cfg(test)]
 fn schema_diagnostics_for_text(
 	engine: &RuleEngine,
 	file_path: &Path,
 	text: &str,
 ) -> Vec<Diagnostic> {
-	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	schema_diagnostics_for_ast(engine, file_path, &parsed.ast.statements)
+	schema_diagnostics_for_text_with_index(engine, file_path, text, None)
 }
 
-fn schema_diagnostics_for_ast(
+fn schema_diagnostics_for_text_with_index(
+	engine: &RuleEngine,
+	file_path: &Path,
+	text: &str,
+	index: Option<&SemanticIndex>,
+) -> Vec<Diagnostic> {
+	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.ast.statements, index)
+}
+
+fn schema_diagnostics_for_ast_with_index(
 	engine: &RuleEngine,
 	file_path: &Path,
 	statements: &[AstStatement],
+	index: Option<&SemanticIndex>,
 ) -> Vec<Diagnostic> {
 	let mut diagnostics = Vec::new();
-	collect_schema_diagnostics(
+	let context = SchemaDiagnosticContext {
 		engine,
+		index,
 		file_path,
-		statements,
-		statements,
-		&[],
-		None,
-		&mut diagnostics,
-	);
+		document_statements: statements,
+	};
+	collect_schema_diagnostics(&context, statements, &[], None, &mut diagnostics);
 	sort_and_dedup_diagnostics(&mut diagnostics);
 	diagnostics
 }
@@ -1502,21 +1534,33 @@ fn schema_missing_localisation_diagnostic(range: Range, key: &str) -> Diagnostic
 	}
 }
 
+struct SchemaDiagnosticContext<'a> {
+	engine: &'a RuleEngine,
+	index: Option<&'a SemanticIndex>,
+	file_path: &'a Path,
+	document_statements: &'a [AstStatement],
+}
+
 fn collect_schema_diagnostics(
-	engine: &RuleEngine,
-	file_path: &Path,
+	context: &SchemaDiagnosticContext<'_>,
 	statements: &[AstStatement],
-	document_statements: &[AstStatement],
 	parent_path: &[String],
 	parent_range: Option<Range>,
 	diagnostics: &mut Vec<Diagnostic>,
 ) {
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = engine.bind_context(file_path, &context_path);
+	let parent_context = context
+		.engine
+		.bind_context(context.file_path, &context_path);
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
-	let active_scopes = schema_active_scopes_for_path(engine, file_path, &context_path);
-	let active_subtypes =
-		schema_active_subtypes_for_path(engine, file_path, document_statements, &context_path);
+	let active_scopes =
+		schema_active_scopes_for_path(context.engine, context.file_path, &context_path);
+	let active_subtypes = schema_active_subtypes_for_path(
+		context.engine,
+		context.file_path,
+		context.document_statements,
+		&context_path,
+	);
 	let mut cardinality_ranges = HashMap::<String, (u32, DiagnosticSeverity, Vec<Range>)>::new();
 	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
@@ -1528,15 +1572,15 @@ fn collect_schema_diagnostics(
 				..
 			} => {
 				let key_range = lsp_range_from_span(key_span);
-				let field_match = parent_context.and_then(|context| {
-					schema_bind_field_match(engine, context, key, &active_subtypes)
+				let field_match = parent_context.and_then(|rule_context| {
+					schema_bind_field_match(context.engine, rule_context, key, &active_subtypes)
 				});
 				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
 				}
 				if let Some(field_match) = field_match
 					&& let Some(diagnostic) = schema_alias_scope_diagnostic(
-						engine,
+						context.engine,
 						&field_match,
 						key_range,
 						key,
@@ -1556,9 +1600,14 @@ fn collect_schema_diagnostics(
 						span,
 					} = value
 				{
-					if let Some(diagnostic) =
-						schema_invalid_value_diagnostic(engine, &field_match, key, scalar, span)
-					{
+					if let Some(diagnostic) = schema_invalid_value_diagnostic(
+						context.engine,
+						context.index,
+						&field_match,
+						key,
+						scalar,
+						span,
+					) {
 						diagnostics.push(diagnostic);
 					}
 					if let Some(diagnostic) =
@@ -1594,10 +1643,8 @@ fn collect_schema_diagnostics(
 					let mut child_path = parent_path.to_vec();
 					child_path.push(key.clone());
 					collect_schema_diagnostics(
-						engine,
-						file_path,
+						context,
 						items,
-						document_statements,
 						&child_path,
 						Some(lsp_range_from_span(block_span)),
 						diagnostics,
@@ -1611,10 +1658,8 @@ fn collect_schema_diagnostics(
 				},
 				..
 			} => collect_schema_diagnostics(
-				engine,
-				file_path,
+				context,
 				items,
-				document_statements,
 				parent_path,
 				Some(lsp_range_from_span(block_span)),
 				diagnostics,
@@ -1777,12 +1822,13 @@ fn zero_range() -> Range {
 
 fn schema_invalid_value_diagnostic(
 	engine: &RuleEngine,
+	index: Option<&SemanticIndex>,
 	field_match: &CompiledBindFieldMatch<'_>,
 	key: &str,
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<Diagnostic> {
-	let values = schema_allowed_values(engine, schema_match_value(field_match))?;
+	let values = schema_allowed_values(engine, index, schema_match_value(field_match))?;
 	let text = scalar.as_text();
 	if values.values.iter().any(|value| value == &text) {
 		return None;
@@ -1799,7 +1845,7 @@ fn schema_invalid_value_diagnostic(
 			"value `{text}` for `{key}` is not in schema {} `{}` (allowed: {})",
 			values.kind.label(),
 			values.name,
-			format_allowed_values(values.values)
+			format_allowed_values(&values.values)
 		),
 		..Diagnostic::default()
 	})
@@ -2044,7 +2090,8 @@ fn schema_match_value<'p>(field_match: &CompiledBindFieldMatch<'p>) -> &'p Compi
 }
 
 fn schema_allowed_values<'a>(
-	engine: &'a RuleEngine,
+	engine: &RuleEngine,
+	index: Option<&SemanticIndex>,
 	value: &'a CompiledRuleValue,
 ) -> Option<SchemaAllowedValues<'a>> {
 	let value = match value {
@@ -2053,18 +2100,52 @@ fn schema_allowed_values<'a>(
 	};
 	let (head, name) = schema_allowed_value_marker(value)?;
 	let (kind, values) = match head {
-		"enum" => (SchemaAllowedValueKind::Enum, engine.enum_values(name)?),
+		"enum" => {
+			if let Some(values) = engine.enum_values(name) {
+				(SchemaAllowedValueKind::Enum, values.to_vec())
+			} else if let Some(complex_enum) = engine.complex_enum(name) {
+				(
+					SchemaAllowedValueKind::ComplexEnum,
+					schema_complex_enum_values(index?, complex_enum)?,
+				)
+			} else {
+				return None;
+			}
+		}
 		"value" => (
 			SchemaAllowedValueKind::Value,
-			engine.value_set_values(name)?,
+			engine.value_set_values(name)?.to_vec(),
 		),
 		"value_set" => (
 			SchemaAllowedValueKind::ValueSet,
-			engine.value_set_values(name)?,
+			engine.value_set_values(name)?.to_vec(),
 		),
 		_ => return None,
 	};
 	(!values.is_empty()).then_some(SchemaAllowedValues { kind, name, values })
+}
+
+fn schema_complex_enum_values(
+	index: &SemanticIndex,
+	complex_enum: &foch_cwt::CompiledComplexEnum,
+) -> Option<Vec<String>> {
+	match (
+		complex_enum.name.as_str(),
+		complex_enum.normalized_path.as_deref(),
+	) {
+		("country_tags", Some("common/country_tags")) => {
+			let values = index
+				.resource_references
+				.iter()
+				.filter_map(|reference| reference.key.strip_prefix("country_tag:"))
+				.map(str::to_string)
+				.collect::<BTreeSet<_>>()
+				.into_iter()
+				.collect::<Vec<_>>();
+			Some(values)
+		}
+		_ => None,
+	}
 }
 
 fn schema_allowed_value_marker(text: &str) -> Option<(&str, &str)> {
@@ -2076,16 +2157,17 @@ fn schema_allowed_value_marker(text: &str) -> Option<(&str, &str)> {
 	}
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct SchemaAllowedValues<'a> {
 	kind: SchemaAllowedValueKind,
 	name: &'a str,
-	values: &'a [String],
+	values: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SchemaAllowedValueKind {
 	Enum,
+	ComplexEnum,
 	Value,
 	ValueSet,
 }
@@ -2094,6 +2176,7 @@ impl SchemaAllowedValueKind {
 	fn label(self) -> &'static str {
 		match self {
 			Self::Enum => "enum",
+			Self::ComplexEnum => "complex_enum",
 			Self::Value => "value",
 			Self::ValueSet => "value_set",
 		}
@@ -2102,6 +2185,7 @@ impl SchemaAllowedValueKind {
 	fn completion_kind(self) -> CompletionItemKind {
 		match self {
 			Self::Enum => CompletionItemKind::ENUM_MEMBER,
+			Self::ComplexEnum => CompletionItemKind::ENUM_MEMBER,
 			Self::Value => CompletionItemKind::VALUE,
 			Self::ValueSet => CompletionItemKind::VALUE,
 		}
@@ -2359,10 +2443,11 @@ fn build_workspace_snapshot_with_schema(
 	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
 	if let Some(engine) = rule_engine.as_ref() {
 		for file in &parsed {
-			let schema_diagnostics = schema_diagnostics_for_ast(
+			let schema_diagnostics = schema_diagnostics_for_ast_with_index(
 				engine.as_ref(),
 				&file.relative_path,
 				&file.ast.statements,
+				Some(&index),
 			);
 			let localisation_diagnostics = schema_localisation_diagnostics_for_ast(
 				engine.as_ref(),
@@ -3529,6 +3614,7 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 		"common/diplomatic_actions",
 		"common/triggered_modifiers",
 		"common/defines",
+		"common/country_tags",
 		"interface",
 		"common/interface",
 		"gfx",
@@ -3678,12 +3764,14 @@ fn is_identifier_char(ch: char) -> bool {
 mod tests {
 	use super::{
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
-		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
-		detect_completion_context, document_symbols, extract_completion_prefix,
-		find_vendored_schema_dir_from, load_rule_engine_with_cache_dir,
+		WorkspaceSnapshot, assignment_key_on_line, build_workspace_snapshot,
+		build_workspace_snapshot_with_schema, detect_completion_context, document_symbols,
+		extract_completion_prefix, find_vendored_schema_dir_from, load_rule_engine_with_cache_dir,
 		localisation_stub_code_actions, parse_scan_targets_json, resolve_definition_locations,
-		resolve_reference_locations, schema_completion_candidates, schema_diagnostics_for_text,
-		schema_hover, select_completion_candidates, workspace_symbols,
+		resolve_reference_locations, schema_completion_candidates,
+		schema_completion_candidates_with_index, schema_diagnostics_for_text,
+		schema_diagnostics_for_text_with_index, schema_hover, select_completion_candidates,
+		workspace_symbols,
 	};
 	use foch_core::model::test_support;
 	use foch_cwt::{CwtSchemaGraph, RuleEngine};
@@ -4278,6 +4366,24 @@ mod tests {
 			.engine
 	}
 
+	fn complex_enum_workspace() -> WorkspaceSnapshot {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("country_tags")).expect("create country tags");
+		fs::write(
+			root.join("common")
+				.join("country_tags")
+				.join("00_countries.txt"),
+			"SWE = \"countries/Sweden.txt\"\nFRA = \"countries/France.txt\"\n",
+		)
+		.expect("write country tags");
+		build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}])
+	}
+
 	fn conditional_subtype_schema() -> &'static str {
 		r#"
 		types = {
@@ -4519,6 +4625,31 @@ mod tests {
 		assert_eq!(candidates[0].label, "prev");
 		assert_eq!(candidates[0].kind, CompletionItemKind::VALUE);
 		assert_eq!(candidates[0].detail, "cwt value event_targets");
+	}
+
+	#[test]
+	fn completion_suggests_complex_enum_values_from_workspace() {
+		let engine = load_lsp_rule_engine();
+		assert!(engine.complex_enum("country_tags").is_some());
+		let workspace = complex_enum_workspace();
+		let session = workspace.session.as_ref().expect("workspace session");
+		assert!(session.index.resource_references.iter().any(|reference| {
+			reference.key == "country_tag:SWE" && reference.value == "countries/Sweden.txt"
+		}));
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "SWE", 2),
+			"sw",
+			Some(&session.index),
+		)
+		.expect("complex enum completion");
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(candidates[0].label, "SWE");
+		assert_eq!(candidates[0].kind, CompletionItemKind::ENUM_MEMBER);
+		assert_eq!(candidates[0].detail, "cwt complex_enum country_tags");
 	}
 
 	#[test]
@@ -5054,6 +5185,33 @@ country_event = {
 				&& diagnostic.message.contains("much")
 				&& diagnostic.message.contains("add_prestige")
 				&& diagnostic.message.contains("int")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_validate_complex_enum_values_from_workspace() {
+		let engine = load_lsp_rule_engine();
+		assert!(engine.complex_enum("country_tags").is_some());
+		let workspace = complex_enum_workspace();
+		let session = workspace.session.as_ref().expect("workspace session");
+		assert!(session.index.resource_references.iter().any(|reference| {
+			reference.key == "country_tag:SWE" && reference.value == "countries/Sweden.txt"
+		}));
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  ally = XXX\n}\n";
+		let diagnostics = schema_diagnostics_for_text_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			Some(&session.index),
+		);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("XXX")
+				&& diagnostic.message.contains("ally")
+				&& diagnostic
+					.message
+					.contains("schema complex_enum `country_tags`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
 		}));
 	}
