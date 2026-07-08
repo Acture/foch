@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,11 +11,11 @@ use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
 	AliasCategory, CwtAlias, CwtFieldAttributes, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
-	CwtSubtype, CwtTypeDef,
+	CwtScope, CwtSubtype, CwtTypeDef,
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.2.0";
+pub const PACK_FORMAT_VERSION: &str = "0.3.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +130,7 @@ pub struct CompiledRulePack {
 	pub enums: Vec<CompiledStringSet>,
 	pub value_sets: Vec<CompiledStringSet>,
 	pub scopes: Vec<String>,
+	pub scope_definitions: Vec<CompiledScope>,
 }
 
 impl CompiledRulePack {
@@ -161,6 +162,7 @@ impl CompiledRulePack {
 			enums: sorted_string_sets(&graph.enums),
 			value_sets: sorted_string_sets(&graph.value_sets),
 			scopes: graph.scopes.clone(),
+			scope_definitions: sorted_scope_definitions(graph.scope_definitions()),
 		}
 	}
 
@@ -392,6 +394,13 @@ pub struct CompiledStringSet {
 	pub values: Vec<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CompiledScope {
+	pub name: String,
+	pub aliases: Vec<String>,
+	pub is_subscope_of: Vec<String>,
+}
+
 pub struct RuleEngine {
 	pack: Arc<CompiledRulePack>,
 	index: RuntimeRuleIndex,
@@ -440,6 +449,19 @@ impl RuleEngine {
 			.value_sets
 			.get(name)
 			.map(|index| self.pack.value_sets[*index].values.as_slice())
+	}
+
+	pub fn scope_matches(&self, required_scope: &str, active_scope: &str) -> bool {
+		if required_scope == active_scope {
+			return true;
+		}
+		let Some(required_index) = self.index.scope_labels.get(required_scope).copied() else {
+			return false;
+		};
+		let Some(active_index) = self.index.scope_labels.get(active_scope).copied() else {
+			return false;
+		};
+		self.scope_index_matches(required_index, active_index)
 	}
 
 	pub fn bind_root(&self, file_path: &Path) -> Option<&CompiledRoot> {
@@ -590,6 +612,35 @@ impl RuleEngine {
 			.filter(|(length, _, _)| *length == best_length)
 			.map(|(_, _, index)| index)
 			.collect()
+	}
+
+	fn scope_index_matches(&self, required_index: usize, active_index: usize) -> bool {
+		if required_index == active_index {
+			return true;
+		}
+		let mut stack = vec![active_index];
+		let mut visited = vec![false; self.pack.scope_definitions.len()];
+		while let Some(index) = stack.pop() {
+			let Some(visited_entry) = visited.get_mut(index) else {
+				continue;
+			};
+			if *visited_entry {
+				continue;
+			}
+			*visited_entry = true;
+			if index == required_index {
+				return true;
+			}
+			let Some(scope) = self.pack.scope_definitions.get(index) else {
+				continue;
+			};
+			for parent in &scope.is_subscope_of {
+				if let Some(parent_index) = self.index.scope_labels.get(parent).copied() {
+					stack.push(parent_index);
+				}
+			}
+		}
+		false
 	}
 
 	fn bind_chain_from_root(&self, root: &CompiledRoot, ast_path: &[&str]) -> BindAttempt {
@@ -859,6 +910,7 @@ struct RuntimeRuleIndex {
 	aliases: HashMap<(CompiledAliasCategory, String), usize>,
 	enums: HashMap<String, usize>,
 	value_sets: HashMap<String, usize>,
+	scope_labels: HashMap<String, usize>,
 }
 
 impl RuntimeRuleIndex {
@@ -881,10 +933,18 @@ impl RuntimeRuleIndex {
 			.enumerate()
 			.map(|(index, values)| (values.name.clone(), index))
 			.collect();
+		let mut scope_labels = HashMap::new();
+		for (index, scope) in pack.scope_definitions.iter().enumerate() {
+			scope_labels.entry(scope.name.clone()).or_insert(index);
+			for alias in &scope.aliases {
+				scope_labels.entry(alias.clone()).or_insert(index);
+			}
+		}
 		Self {
 			aliases,
 			enums,
 			value_sets,
+			scope_labels,
 		}
 	}
 }
@@ -1037,6 +1097,30 @@ fn sorted_string_sets(map: &HashMap<String, Vec<String>>) -> Vec<CompiledStringS
 		.collect::<Vec<_>>();
 	sets.sort_by(|left, right| left.name.cmp(&right.name));
 	sets
+}
+
+fn sorted_scope_definitions(definitions: &[CwtScope]) -> Vec<CompiledScope> {
+	let mut by_name = BTreeMap::<String, CompiledScope>::new();
+	for definition in definitions {
+		let scope = by_name
+			.entry(definition.name.clone())
+			.or_insert_with(|| CompiledScope {
+				name: definition.name.clone(),
+				aliases: Vec::new(),
+				is_subscope_of: Vec::new(),
+			});
+		scope.aliases.extend(definition.aliases.iter().cloned());
+		scope
+			.is_subscope_of
+			.extend(definition.is_subscope_of.iter().cloned());
+	}
+	for scope in by_name.values_mut() {
+		scope.aliases.sort();
+		scope.aliases.dedup();
+		scope.is_subscope_of.sort();
+		scope.is_subscope_of.dedup();
+	}
+	by_name.into_values().collect()
 }
 
 fn normalize_schema_path(path: &str) -> String {

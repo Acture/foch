@@ -991,7 +991,7 @@ fn schema_completion_entries_for_field(
 		.aliases()
 		.iter()
 		.filter(|alias| alias.category == category)
-		.filter(|alias| schema_alias_scope_matches(alias, active_scopes))
+		.filter(|alias| schema_alias_scope_matches(engine, alias, active_scopes))
 		.filter_map(|alias| {
 			let alias_name = &alias.name;
 			let alias_name_lower = alias_name.to_ascii_lowercase();
@@ -1033,15 +1033,19 @@ fn schema_completion_active_scopes(context: RuleContext<'_>) -> Vec<&str> {
 	}
 }
 
-fn schema_alias_scope_matches(alias: &CompiledAlias, active_scopes: &[&str]) -> bool {
+fn schema_alias_scope_matches(
+	engine: &RuleEngine,
+	alias: &CompiledAlias,
+	active_scopes: &[&str],
+) -> bool {
 	if active_scopes.is_empty() || alias.attributes.scope.is_empty() {
 		return true;
 	}
-	alias
-		.attributes
-		.scope
-		.iter()
-		.any(|scope| active_scopes.iter().any(|active| scope == active))
+	alias.attributes.scope.iter().any(|scope| {
+		active_scopes
+			.iter()
+			.any(|active| engine.scope_matches(scope, active))
+	})
 }
 
 fn direct_schema_completion_entry(
@@ -1124,9 +1128,13 @@ fn collect_schema_diagnostics(
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
 				}
 				if let Some(field_match) = field_match
-					&& let Some(diagnostic) =
-						schema_alias_scope_diagnostic(&field_match, key_range, key, &active_scopes)
-				{
+					&& let Some(diagnostic) = schema_alias_scope_diagnostic(
+						engine,
+						&field_match,
+						key_range,
+						key,
+						&active_scopes,
+					) {
 					diagnostics.push(diagnostic);
 				}
 				if let Some(field_match) = field_match
@@ -1383,13 +1391,14 @@ fn schema_value_shape_diagnostic(
 }
 
 fn schema_alias_scope_diagnostic(
+	engine: &RuleEngine,
 	field_match: &CompiledBindFieldMatch<'_>,
 	range: Range,
 	key: &str,
 	active_scopes: &[&str],
 ) -> Option<Diagnostic> {
 	let alias = field_match.alias()?;
-	if schema_alias_scope_matches(alias, active_scopes) {
+	if schema_alias_scope_matches(engine, alias, active_scopes) {
 		return None;
 	}
 	Some(Diagnostic {
@@ -3840,6 +3849,27 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_accepts_parent_scope_aliases_in_subscope_context() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    country_wide_effect = 1\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token(text, "country_wide_effect"),
+			"",
+		)
+		.expect("subscope effect schema completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"country_wide_effect"));
+		assert!(labels.contains(&"add_prestige"));
+		assert!(labels.contains(&"province_only_effect"));
+	}
+
+	#[test]
 	fn diagnostics_report_alias_scope_mismatches_when_scope_is_known() {
 		let engine = load_lsp_rule_engine();
 		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  immediate = {\n    province_only_effect = 1\n  }\n}\n";
@@ -3851,6 +3881,22 @@ mod tests {
 				&& diagnostic.message.contains("`province`")
 				&& diagnostic.message.contains("`country`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_accept_parent_scope_aliases_in_subscope_context() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    country_wide_effect = 1\n    province_only_effect = 1\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("country_wide_effect")
+		}));
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("province_only_effect")
 		}));
 	}
 

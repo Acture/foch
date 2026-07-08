@@ -39,6 +39,12 @@ event = {
     immediate = {
       alias_name[effect] = alias_match_left[effect]
     }
+
+    ## push_scope = province
+    ###Effects executed in a province scope.
+    province_effects = {
+      alias_name[effect] = alias_match_left[effect]
+    }
   }
 }
 
@@ -59,9 +65,23 @@ alias[trigger:custom_trigger] = {
 ###Adds prestige to the current country.
 alias[effect:add_prestige] = int
 
+## scope = country
+###Country-level effect usable from province subscopes.
+alias[effect:country_wide_effect] = int
+
 ## scope = province
 ###Province-only fixture effect.
 alias[effect:province_only_effect] = int
 
 enum[power_categories] = { ADM DIP MIL }
 value_set[event_targets] = { root from prev }
+
+scopes = {
+  country = {
+    aliases = { country root }
+  }
+  province = {
+    aliases = { province from }
+    is_subscope_of = { country }
+  }
+}

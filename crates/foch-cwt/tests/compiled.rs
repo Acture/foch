@@ -66,6 +66,22 @@ fn compiled_engine_projects_field_and_alias_metadata() {
 }
 
 #[test]
+fn compiled_engine_matches_scope_hierarchy_metadata() {
+	let graph = CwtSchemaGraph::from_directory(&schema_pack_fixture_dir())
+		.expect("load schema-pack fixture graph");
+	let engine = RuleEngine::from_graph(&graph);
+	assert_eq!(engine.pack().scope_definitions.len(), 2);
+
+	assert!(engine.scope_matches("country", "country"));
+	assert!(engine.scope_matches("province", "province"));
+	assert!(engine.scope_matches("country", "province"));
+	assert!(!engine.scope_matches("province", "country"));
+	assert!(engine.scope_matches("unknown", "unknown"));
+	assert!(!engine.scope_matches("country", "unknown"));
+	assert!(!engine.scope_matches("unknown", "country"));
+}
+
+#[test]
 fn compiled_binary_pack_roundtrips_and_keeps_binding_semantics() {
 	let graph = load_binding_graph();
 	let pack = CompiledRulePack::from_graph(&graph);
@@ -161,6 +177,12 @@ fn binding_fixture_dir() -> PathBuf {
 	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 		.join("tests/fixtures")
 		.join("binding")
+}
+
+fn schema_pack_fixture_dir() -> PathBuf {
+	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("tests/fixtures")
+		.join("schema-pack")
 }
 
 fn vendor_schema_dir() -> Option<PathBuf> {
