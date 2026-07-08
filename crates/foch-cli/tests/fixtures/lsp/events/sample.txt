@@ -5,6 +5,7 @@ country_event = {
   category = ADM
   target = root
   goto = prev
+  friend_scope = root
   ally = SWE
   gfx = westerngfx
   text_command = sample_defined_text

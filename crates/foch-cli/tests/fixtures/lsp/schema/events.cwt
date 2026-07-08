@@ -30,6 +30,9 @@ event = {
   ###Saved event target to navigate to.
   goto = value[event_targets]
 
+  ###Country-scope reference used by fixture validation.
+  friend_scope = scope[country]
+
   ###Country tag referenced by fixture validation.
   ally = enum[country_tags]
 

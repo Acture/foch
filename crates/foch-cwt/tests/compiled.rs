@@ -297,6 +297,47 @@ fn compiled_engine_roundtrips_links() {
 }
 
 #[test]
+fn compiled_engine_lists_scope_values_from_scope_hierarchy() {
+	let schema = r#"
+	scopes = {
+		country = {
+			aliases = { country root }
+		}
+		province = {
+			aliases = { province from }
+			is_subscope_of = { country }
+		}
+		sea = {
+			aliases = { sea }
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	assert_eq!(
+		engine.scope_values("country"),
+		vec![
+			"country".to_string(),
+			"from".to_string(),
+			"province".to_string(),
+			"root".to_string()
+		]
+	);
+	assert_eq!(
+		engine.scope_values("any"),
+		vec![
+			"country".to_string(),
+			"from".to_string(),
+			"province".to_string(),
+			"root".to_string(),
+			"sea".to_string()
+		]
+	);
+	assert!(engine.scope_values("unknown").is_empty());
+}
+
+#[test]
 fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let schema = r#"
 	types = {

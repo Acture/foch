@@ -2168,6 +2168,7 @@ fn schema_allowed_values<'a>(
 			SchemaAllowedValueKind::ValueSet,
 			engine.value_set_values(name)?.to_vec(),
 		),
+		"scope" => (SchemaAllowedValueKind::Scope, engine.scope_values(name)),
 		_ => return None,
 	};
 	(!values.is_empty()).then_some(SchemaAllowedValues { kind, name, values })
@@ -2178,6 +2179,7 @@ fn schema_allowed_value_marker(text: &str) -> Option<(&str, &str)> {
 		Some(("enum", name)) => Some(("enum", name)),
 		Some(("value", name)) => Some(("value", name)),
 		Some(("value_set", name)) => Some(("value_set", name)),
+		Some(("scope", name)) => Some(("scope", name)),
 		_ => None,
 	}
 }
@@ -2195,6 +2197,7 @@ enum SchemaAllowedValueKind {
 	ComplexEnum,
 	Value,
 	ValueSet,
+	Scope,
 }
 
 impl SchemaAllowedValueKind {
@@ -2204,6 +2207,7 @@ impl SchemaAllowedValueKind {
 			Self::ComplexEnum => "complex_enum",
 			Self::Value => "value",
 			Self::ValueSet => "value_set",
+			Self::Scope => "scope",
 		}
 	}
 
@@ -2213,6 +2217,7 @@ impl SchemaAllowedValueKind {
 			Self::ComplexEnum => CompletionItemKind::ENUM_MEMBER,
 			Self::Value => CompletionItemKind::VALUE,
 			Self::ValueSet => CompletionItemKind::VALUE,
+			Self::Scope => CompletionItemKind::REFERENCE,
 		}
 	}
 }
@@ -4707,6 +4712,24 @@ mod tests {
 	}
 
 	#[test]
+	fn hover_renders_scope_value_constraints_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = fixture_text("events/sample.txt");
+		let hover = schema_hover(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "friend_scope"),
+			None,
+		)
+		.expect("scope hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**friend_scope**"));
+		assert!(markdown.contains("Value set: `scope` `country`"));
+		assert!(markdown.contains("`country`, `from`, `province`, `root`"));
+	}
+
+	#[test]
 	fn hover_renders_complex_enum_values_from_workspace() {
 		let engine = load_lsp_rule_engine();
 		let workspace = complex_enum_workspace(engine.clone());
@@ -4875,6 +4898,24 @@ mod tests {
 		assert_eq!(candidates[0].label, "prev");
 		assert_eq!(candidates[0].kind, CompletionItemKind::VALUE);
 		assert_eq!(candidates[0].detail, "cwt value event_targets");
+	}
+
+	#[test]
+	fn completion_suggests_scope_values_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  friend_scope = ro\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token_offset(text, "ro", 2),
+			"ro",
+		)
+		.expect("scope value completion");
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(candidates[0].label, "root");
+		assert_eq!(candidates[0].kind, CompletionItemKind::REFERENCE);
+		assert_eq!(candidates[0].detail, "cwt scope country");
 	}
 
 	#[test]
@@ -5598,6 +5639,23 @@ country_event = {
 				&& diagnostic
 					.message
 					.contains("schema complex_enum `dynasty_name`")
+		}));
+	}
+
+	#[test]
+	fn diagnostics_validate_scope_values_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  friend_scope = root\n  friend_scope = sea\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("value `root`")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("value `sea`")
+				&& diagnostic.message.contains("schema scope `country`")
 		}));
 	}
 

@@ -641,6 +641,26 @@ impl RuleEngine {
 		self.scope_index_matches(required_index, active_index)
 	}
 
+	pub fn scope_values(&self, required_scope: &str) -> Vec<String> {
+		let mut values = self
+			.pack
+			.scope_definitions
+			.iter()
+			.filter(|scope| {
+				required_scope == "any"
+					|| self.scope_matches(required_scope, &scope.name)
+					|| scope
+						.aliases
+						.iter()
+						.any(|alias| self.scope_matches(required_scope, alias))
+			})
+			.flat_map(|scope| scope.aliases.iter().cloned())
+			.collect::<Vec<_>>();
+		values.sort();
+		values.dedup();
+		values
+	}
+
 	pub fn bind_root(&self, file_path: &Path) -> Option<&CompiledRoot> {
 		let SchemaBinding::Bound { type_id, .. } = self.root_binding(file_path) else {
 			return None;
