@@ -15,6 +15,7 @@ pub enum CacheLayer {
 	Diffs,
 	DagBase,
 	Modsets,
+	CwtRules,
 	Parse,
 }
 
@@ -25,6 +26,7 @@ impl CacheLayer {
 			Self::Diffs => "diffs",
 			Self::DagBase => "dag-base",
 			Self::Modsets => "modsets",
+			Self::CwtRules => "cwt-rules",
 			Self::Parse => "parse",
 		}
 	}
@@ -35,6 +37,7 @@ impl CacheLayer {
 			Self::Diffs => default_mod_diff_cache_dir(),
 			Self::DagBase => default_dag_base_cache_dir(),
 			Self::Modsets => default_modset_cache_dir(),
+			Self::CwtRules => foch_cwt::default_compiled_rule_cache_dir(),
 			Self::Parse => parse_cache::parser_cache_root(),
 		}
 	}
@@ -71,6 +74,7 @@ pub fn all_layers() -> Vec<Box<dyn CacheLayerOps>> {
 		Box::new(ModDiffCache::open_default()),
 		Box::new(DagBaseCache::open_default()),
 		Box::new(ModsetCache::open_default()),
+		Box::new(CwtRuleCacheLayer),
 		Box::new(ParseCacheLayer),
 	]
 }
@@ -225,6 +229,44 @@ impl CacheLayerOps for ModsetCache {
 
 	fn clear(&self) -> Result<(), super::CacheError> {
 		clear_dir(&default_modset_cache_dir())
+	}
+}
+
+struct CwtRuleCacheLayer;
+
+impl CacheLayerOps for CwtRuleCacheLayer {
+	fn layer(&self) -> super::CacheLayer {
+		CacheLayer::CwtRules
+	}
+
+	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
+		list_file_entries(
+			CacheLayer::CwtRules,
+			&foch_cwt::default_compiled_rule_cache_dir(),
+			"bin",
+		)
+	}
+
+	fn total_bytes(&self) -> Result<u64, super::CacheError> {
+		Ok(total_entry_bytes(&<Self as CacheLayerOps>::list_entries(
+			self,
+		)?))
+	}
+
+	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
+		purge_file_entries(
+			&foch_cwt::default_compiled_rule_cache_dir(),
+			self.list_entries()?,
+			days,
+		)
+	}
+
+	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
+		evict_file_entries(self.list_entries()?, cap_bytes)
+	}
+
+	fn clear(&self) -> Result<(), super::CacheError> {
+		clear_dir(&foch_cwt::default_compiled_rule_cache_dir())
 	}
 }
 
@@ -430,7 +472,7 @@ mod tests {
 	#[test]
 	fn all_layers_present_and_report_size() {
 		let layers = all_layers();
-		assert_eq!(layers.len(), 5);
+		assert_eq!(layers.len(), 6);
 		for l in &layers {
 			let _ = l.total_bytes().unwrap_or(0);
 		}

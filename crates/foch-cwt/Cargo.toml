@@ -12,9 +12,12 @@ categories.workspace = true
 [dependencies]
 foch-core = { path = "../foch-core" }
 foch-syntax = { path = "../foch-syntax" }
+bincode.workspace = true
+serde.workspace = true
 sha2.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true

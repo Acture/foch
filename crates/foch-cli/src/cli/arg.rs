@@ -426,6 +426,7 @@ pub enum FochCliCacheLayerArg {
 	Diffs,
 	DagBase,
 	Modsets,
+	CwtRules,
 	All,
 }
 

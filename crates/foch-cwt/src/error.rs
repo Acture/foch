@@ -16,6 +16,9 @@ pub enum CwtLoadError {
 		path: Option<PathBuf>,
 		message: String,
 	},
+	Codec {
+		message: String,
+	},
 }
 
 impl Display for CwtLoadError {
@@ -33,6 +36,7 @@ impl Display for CwtLoadError {
 					write!(f, "invalid schema: {message}")
 				}
 			}
+			Self::Codec { message } => write!(f, "compiled schema codec failed: {message}"),
 		}
 	}
 }
@@ -43,7 +47,7 @@ impl Error for CwtLoadError {
 			Self::Io { source, .. } => Some(source),
 			Self::Syntax(error) => Some(error),
 			Self::Projection(error) => Some(error),
-			Self::InvalidSchema { .. } => None,
+			Self::InvalidSchema { .. } | Self::Codec { .. } => None,
 		}
 	}
 }

@@ -1,5 +1,5 @@
 {
-  "alias_count": 0,
+  "alias_count": 2166,
   "enum_count": 0,
   "file_count": 73,
   "known_scopes": [
@@ -10,7 +10,38 @@
   "pack_id": "8318509a3b26be8f29457a3dc3687393c23cbfe770c38e992eeb937514675fbf",
   "schema_commit": "a85622d368bbb7afca938ed70fdd5eda44aec769",
   "scope_count": 16,
-  "selected_aliases": [],
+  "selected_aliases": [
+    {
+      "category": "trigger",
+      "name": "is_year",
+      "rules": []
+    },
+    {
+      "category": "effect",
+      "name": "add_prestige",
+      "rules": []
+    },
+    {
+      "category": "modifier_rule",
+      "name": "modifier",
+      "rules": [
+        {
+          "key": "factor",
+          "value": {
+            "kind": "scalar",
+            "value": "float"
+          }
+        },
+        {
+          "key": "alias_name[trigger]",
+          "value": {
+            "kind": "marker",
+            "value": "alias_match_left[trigger]"
+          }
+        }
+      ]
+    }
+  ],
   "selected_bindings": [
     {
       "node_id": "type:event:root",

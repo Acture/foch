@@ -130,9 +130,11 @@ fn fixture_root_binding_prefers_exact_path_and_reports_ambiguity() {
 }
 
 #[test]
-#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 fn cwtools_schema_pack_matches_baseline() {
-	let root = vendor_schema_dir().expect("locate cwtools schema directory");
+	let Some(root) = vendor_schema_dir() else {
+		eprintln!("skipping CWTools schema baseline: vendor schema directory not available");
+		return;
+	};
 	assert_schema_parses_cleanly(&root);
 	let actual = build_vendor_baseline(&root);
 	assert_json_fixture(&fixture_file("cwtools_binding_baseline.json"), &actual);
@@ -194,9 +196,12 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		.map(type_baseline)
 		.collect(),
 		selected_aliases: [
-			(AliasCategory::Trigger, "trigger"),
-			(AliasCategory::Effect, "effect"),
-			(AliasCategory::Modifier, "modifier_rule"),
+			(AliasCategory::Trigger, "is_year"),
+			(AliasCategory::Effect, "add_prestige"),
+			(
+				AliasCategory::Other("modifier_rule".to_string()),
+				"modifier",
+			),
 		]
 		.into_iter()
 		.filter_map(|(category, name)| graph.aliases.get(&(category, name.to_string())))

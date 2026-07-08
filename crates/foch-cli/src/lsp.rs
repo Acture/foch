@@ -2,8 +2,9 @@ use foch_core::model::{
 	AnalysisMode, Finding, SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
 };
 use foch_cwt::{
-	AliasCategory, BindContext, BindFieldMatch, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
-	SchemaBinding, SchemaPack, SchemaSource, install_base_scopes,
+	CompiledAliasCategory, CompiledBindFieldMatch, CompiledRuleField, CompiledRuleValue,
+	RuleContext, RuleEngine, RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
+	default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
@@ -21,6 +22,7 @@ use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
@@ -98,7 +100,7 @@ struct ServerState {
 struct Backend {
 	client: Client,
 	state: Arc<RwLock<ServerState>>,
-	schema_graph: Arc<RwLock<Option<Arc<CwtSchemaGraph>>>>,
+	rule_engine: Arc<RwLock<Option<Arc<RuleEngine>>>>,
 }
 
 impl Backend {
@@ -110,16 +112,16 @@ impl Backend {
 		Self {
 			client,
 			state: Arc::new(RwLock::new(state)),
-			schema_graph: Arc::new(RwLock::new(None)),
+			rule_engine: Arc::new(RwLock::new(None)),
 		}
 	}
 
 	async fn refresh_workspace_snapshot(&self) {
 		let targets = { self.state.read().await.targets.clone() };
-		let schema_graph = self.schema_graph.read().await.clone();
+		let rule_engine = self.rule_engine.read().await.clone();
 		let client = self.client.clone();
 		let built = tokio::task::spawn_blocking(move || {
-			build_workspace_snapshot_with_schema(&targets, schema_graph)
+			build_workspace_snapshot_with_schema(&targets, rule_engine)
 		})
 		.await;
 		match built {
@@ -183,7 +185,7 @@ impl Backend {
 			let state = self.state.read().await;
 			(state.workspace.clone(), state.targets.clone())
 		};
-		let schema_graph = self.schema_graph.read().await.clone();
+		let rule_engine = self.rule_engine.read().await.clone();
 		let relative_path = match_scan_target(&targets, &path).map(|(_, relative)| relative);
 		let mut diagnostics = snapshot
 			.as_ref()
@@ -195,10 +197,10 @@ impl Backend {
 			})
 			.unwrap_or_default();
 		diagnostics.extend(parse_diagnostics_for_text(&path, text));
-		if let (Some(graph), Some(relative_path)) = (schema_graph.as_ref(), relative_path.as_ref())
+		if let (Some(engine), Some(relative_path)) = (rule_engine.as_ref(), relative_path.as_ref())
 		{
 			diagnostics.extend(schema_diagnostics_for_text(
-				graph.as_ref(),
+				engine.as_ref(),
 				relative_path,
 				text,
 			));
@@ -214,23 +216,33 @@ impl Backend {
 impl LanguageServer for Backend {
 	async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
 		let targets = resolve_scan_targets(&params);
-		let schema_graph = match find_vendored_schema_dir() {
+		let rule_engine = match find_vendored_schema_dir() {
 			Some(schema_dir) => {
+				let started = Instant::now();
 				let load_result =
-					tokio::task::spawn_blocking(move || load_schema_graph(&schema_dir)).await;
+					tokio::task::spawn_blocking(move || load_rule_engine(&schema_dir)).await;
+				let elapsed = started.elapsed();
 				match load_result {
-					Ok(Ok(graph)) => {
+					Ok(Ok(loaded)) => {
+						let engine = loaded.engine.clone();
 						self.client
 							.log_message(
 								MessageType::INFO,
 								format!(
-									"foch lsp loaded CWT schema graph: {} types, {} aliases",
-									graph.types.len(),
-									graph.aliases.len()
+									"foch lsp loaded compiled CWT rule pack: {} roots, {} aliases, {}, source {}, hash {:.1} ms, cache {}, compile {}, total {:.1} ms, task {:.1} ms",
+									engine.root_count(),
+									engine.alias_count(),
+									rule_engine_load_status_label(loaded.status),
+									short_source_id(&loaded.source_id.to_hex()),
+									duration_ms(loaded.timings.source_hash),
+									optional_duration_ms(loaded.timings.cache_read),
+									optional_duration_ms(loaded.timings.source_compile),
+									duration_ms(loaded.timings.total),
+									elapsed.as_secs_f64() * 1000.0
 								),
 							)
 							.await;
-						Some(graph)
+						Some(engine)
 					}
 					Ok(Err(err)) => {
 						self.client
@@ -267,7 +279,7 @@ impl LanguageServer for Backend {
 			let mut state = self.state.write().await;
 			state.targets = targets;
 		}
-		*self.schema_graph.write().await = schema_graph;
+		*self.rule_engine.write().await = rule_engine;
 
 		Ok(InitializeResult {
 			server_info: None,
@@ -352,7 +364,7 @@ impl LanguageServer for Backend {
 		let Some(text) = text else {
 			return Ok(None);
 		};
-		let Some(graph) = self.schema_graph.read().await.clone() else {
+		let Some(engine) = self.rule_engine.read().await.clone() else {
 			return Ok(None);
 		};
 		let path = match uri.to_file_path() {
@@ -363,7 +375,7 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 		Ok(schema_hover(
-			graph.as_ref(),
+			engine.as_ref(),
 			&relative_path,
 			&text,
 			position,
@@ -371,7 +383,7 @@ impl LanguageServer for Backend {
 	}
 
 	async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
-		let graph = self.schema_graph.read().await.clone();
+		let rule_engine = self.rule_engine.read().await.clone();
 		let state = self.state.read().await;
 		let uri = &params.text_document_position.text_document.uri;
 		let position = params.text_document_position.position;
@@ -380,11 +392,11 @@ impl LanguageServer for Backend {
 		let context = detect_completion_context(text, position);
 		let prefix_lower = prefix.to_ascii_lowercase();
 
-		let mut candidates = if let Some(graph) = graph.as_ref()
+		let mut candidates = if let Some(engine) = rule_engine.as_ref()
 			&& let Ok(path) = uri.to_file_path()
 			&& let Some((_, relative_path)) = match_scan_target(&state.targets, &path)
 			&& let Some(candidates) = schema_completion_candidates(
-				graph.as_ref(),
+				engine.as_ref(),
 				&relative_path,
 				text,
 				position,
@@ -549,16 +561,44 @@ fn find_vendored_schema_dir_from(start: &Path) -> Option<PathBuf> {
 	None
 }
 
-fn load_schema_graph(schema_dir: &Path) -> std::result::Result<Arc<CwtSchemaGraph>, String> {
-	let pack = SchemaPack::load_from_dir(
+fn load_rule_engine(schema_dir: &Path) -> std::result::Result<RuleEngineLoad, String> {
+	let cache_dir = default_compiled_rule_cache_dir();
+	load_rule_engine_with_cache_dir(schema_dir, Some(&cache_dir))
+}
+
+fn load_rule_engine_with_cache_dir(
+	schema_dir: &Path,
+	cache_dir: Option<&Path>,
+) -> std::result::Result<RuleEngineLoad, String> {
+	load_rule_engine_from_dir(
 		schema_dir,
 		SchemaSource::UserProvided {
 			path: schema_dir.to_path_buf(),
 		},
+		cache_dir,
 	)
-	.map_err(|err| err.to_string())?;
-	install_base_scopes(pack.graph.as_ref());
-	Ok(pack.graph)
+	.map_err(|err| err.to_string())
+}
+
+fn rule_engine_load_status_label(status: RuleEngineLoadStatus) -> &'static str {
+	match status {
+		RuleEngineLoadStatus::CacheHit => "cache hit",
+		RuleEngineLoadStatus::CompiledFromSource => "compiled from source",
+	}
+}
+
+fn short_source_id(source_id: &str) -> &str {
+	source_id.get(..12).unwrap_or(source_id)
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+	duration.as_secs_f64() * 1000.0
+}
+
+fn optional_duration_ms(duration: Option<Duration>) -> String {
+	duration
+		.map(|duration| format!("{:.1} ms", duration_ms(duration)))
+		.unwrap_or_else(|| "n/a".to_string())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -569,7 +609,7 @@ struct KeyPathTarget {
 }
 
 fn schema_hover(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_path: &Path,
 	text: &str,
 	position: Position,
@@ -582,7 +622,7 @@ fn schema_hover(
 		.map(String::as_str)
 		.collect::<Vec<_>>();
 	ast_path.push(target.key.as_str());
-	let SchemaBinding::Bound { .. } = graph.bind_chain(file_path, &ast_path) else {
+	let SchemaBinding::Bound { .. } = engine.bind_chain(file_path, &ast_path) else {
 		return None;
 	};
 	let parent_path = target
@@ -590,8 +630,8 @@ fn schema_hover(
 		.iter()
 		.map(String::as_str)
 		.collect::<Vec<_>>();
-	let parent_context = graph.bind_context(file_path, &parent_path)?;
-	let field_match = graph.bind_field_match(parent_context, &target.key)?;
+	let parent_context = engine.bind_context(file_path, &parent_path)?;
+	let field_match = engine.bind_field_match(parent_context, &target.key)?;
 	Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
@@ -636,7 +676,7 @@ fn find_hover_target(
 	None
 }
 
-fn render_schema_hover_markdown(key: &str, field_match: &BindFieldMatch<'_>) -> String {
+fn render_schema_hover_markdown(key: &str, field_match: &CompiledBindFieldMatch<'_>) -> String {
 	let field = field_match.field();
 	let mut sections = vec![
 		format!("**{key}**"),
@@ -654,15 +694,15 @@ fn render_schema_hover_markdown(key: &str, field_match: &BindFieldMatch<'_>) -> 
 	sections.join("\n\n")
 }
 
-fn rule_value_kind(value: &CwtRuleValue) -> &'static str {
+fn rule_value_kind(value: &CompiledRuleValue) -> &'static str {
 	match value {
-		CwtRuleValue::Scalar(_) => "Scalar",
-		CwtRuleValue::Block(_) => "Block",
-		CwtRuleValue::Marker(_) => "Marker",
+		CompiledRuleValue::Scalar(_) => "Scalar",
+		CompiledRuleValue::Block(_) => "Block",
+		CompiledRuleValue::Marker(_) => "Marker",
 	}
 }
 
-fn schema_hover_description<'a>(field_match: &'a BindFieldMatch<'a>) -> Option<&'a str> {
+fn schema_hover_description<'a>(field_match: &'a CompiledBindFieldMatch<'a>) -> Option<&'a str> {
 	field_match
 		.field()
 		.attributes
@@ -675,7 +715,7 @@ fn schema_hover_description<'a>(field_match: &'a BindFieldMatch<'a>) -> Option<&
 		})
 }
 
-fn schema_hover_scope_context(field_match: &BindFieldMatch<'_>) -> Option<String> {
+fn schema_hover_scope_context(field_match: &CompiledBindFieldMatch<'_>) -> Option<String> {
 	let field_attributes = &field_match.field().attributes;
 	let alias_attributes = field_match.alias().map(|alias| &alias.attributes);
 	let mut parts = Vec::new();
@@ -722,7 +762,7 @@ fn format_scope_values(values: &[String]) -> String {
 		.join(", ")
 }
 
-fn schema_hover_cardinality(field_match: &BindFieldMatch<'_>) -> Option<String> {
+fn schema_hover_cardinality(field_match: &CompiledBindFieldMatch<'_>) -> Option<String> {
 	field_match
 		.field()
 		.attributes
@@ -763,7 +803,7 @@ fn span_contains_position(span: &SpanRange, position: Position) -> bool {
 }
 
 fn schema_completion_candidates(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_path: &Path,
 	text: &str,
 	position: Position,
@@ -775,11 +815,11 @@ fn schema_completion_candidates(
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = graph.bind_context(file_path, &parent_path)?;
+	let parent_context = engine.bind_context(file_path, &parent_path)?;
 	let mut candidates = Vec::new();
 	for field in completion_rule_fields(parent_context) {
 		candidates.extend(schema_completion_entries_for_field(
-			graph,
+			engine,
 			field,
 			prefix_lower,
 		));
@@ -850,23 +890,23 @@ fn find_completion_parent_path(
 	Some(parent_path.to_vec())
 }
 
-fn completion_rule_fields(context: BindContext<'_>) -> Vec<&CwtRuleField> {
+fn completion_rule_fields(context: RuleContext<'_>) -> Vec<&CompiledRuleField> {
 	match context {
-		BindContext::RootType(root) => root.rules.iter().collect(),
-		BindContext::Subtype(root, subtype) => {
+		RuleContext::RootType(root) => root.rules.iter().collect(),
+		RuleContext::Subtype(root, subtype) => {
 			subtype.rules.iter().chain(root.rules.iter()).collect()
 		}
-		BindContext::RuleField(field) => match &field.value {
-			CwtRuleValue::Block(children) => children.iter().collect(),
+		RuleContext::RuleField(field) => match &field.value {
+			CompiledRuleValue::Block(children) => children.iter().collect(),
 			_ => Vec::new(),
 		},
-		BindContext::AliasRules(rules) => rules.iter().collect(),
+		RuleContext::AliasRules(rules) => rules.iter().collect(),
 	}
 }
 
 fn schema_completion_entries_for_field(
-	graph: &CwtSchemaGraph,
-	field: &CwtRuleField,
+	engine: &RuleEngine,
+	field: &CompiledRuleField,
 	prefix_lower: &str,
 ) -> Vec<CompletionCandidate> {
 	let Some((head, payload)) = parse_schema_marker(&field.key) else {
@@ -879,12 +919,13 @@ fn schema_completion_entries_for_field(
 			.into_iter()
 			.collect();
 	}
-	let category = AliasCategory::from_name(payload);
-	let mut candidates = graph
-		.aliases
+	let category = CompiledAliasCategory::from_name(payload);
+	let mut candidates = engine
+		.aliases()
 		.iter()
-		.filter(|((alias_category, _), _)| *alias_category == category)
-		.filter_map(|((_, alias_name), alias)| {
+		.filter(|alias| alias.category == category)
+		.filter_map(|alias| {
+			let alias_name = &alias.name;
 			let alias_name_lower = alias_name.to_ascii_lowercase();
 			if !prefix_lower.is_empty() && !alias_name_lower.starts_with(prefix_lower) {
 				return None;
@@ -909,7 +950,7 @@ fn schema_completion_entries_for_field(
 }
 
 fn direct_schema_completion_entry(
-	field: &CwtRuleField,
+	field: &CompiledRuleField,
 	prefix_lower: &str,
 ) -> Option<CompletionCandidate> {
 	let field_key_lower = field.key.to_ascii_lowercase();
@@ -938,35 +979,35 @@ fn parse_schema_marker(text: &str) -> Option<(&str, &str)> {
 }
 
 fn schema_diagnostics_for_text(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_path: &Path,
 	text: &str,
 ) -> Vec<Diagnostic> {
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	schema_diagnostics_for_ast(graph, file_path, &parsed.ast.statements)
+	schema_diagnostics_for_ast(engine, file_path, &parsed.ast.statements)
 }
 
 fn schema_diagnostics_for_ast(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_path: &Path,
 	statements: &[AstStatement],
 ) -> Vec<Diagnostic> {
 	let mut diagnostics = Vec::new();
-	collect_schema_diagnostics(graph, file_path, statements, &[], &mut diagnostics);
+	collect_schema_diagnostics(engine, file_path, statements, &[], &mut diagnostics);
 	sort_and_dedup_diagnostics(&mut diagnostics);
 	diagnostics
 }
 
 fn collect_schema_diagnostics(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_path: &Path,
 	statements: &[AstStatement],
 	parent_path: &[String],
 	diagnostics: &mut Vec<Diagnostic>,
 ) {
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = graph.bind_context(file_path, &context_path);
-	let skip_unknown = matches!(parent_context, Some(BindContext::AliasRules(_)));
+	let parent_context = engine.bind_context(file_path, &context_path);
+	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
 	let mut cardinality_ranges = HashMap::<String, (u32, Vec<Range>)>::new();
 	for statement in statements {
 		match statement {
@@ -978,7 +1019,7 @@ fn collect_schema_diagnostics(
 			} => {
 				let key_range = lsp_range_from_span(key_span);
 				let field_match =
-					parent_context.and_then(|context| graph.bind_field_match(context, key));
+					parent_context.and_then(|context| engine.bind_field_match(context, key));
 				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
 				}
@@ -994,13 +1035,13 @@ fn collect_schema_diagnostics(
 				if let AstValue::Block { items, .. } = value {
 					let mut child_path = parent_path.to_vec();
 					child_path.push(key.clone());
-					collect_schema_diagnostics(graph, file_path, items, &child_path, diagnostics);
+					collect_schema_diagnostics(engine, file_path, items, &child_path, diagnostics);
 				}
 			}
 			AstStatement::Item {
 				value: AstValue::Block { items, .. },
 				..
-			} => collect_schema_diagnostics(graph, file_path, items, parent_path, diagnostics),
+			} => collect_schema_diagnostics(engine, file_path, items, parent_path, diagnostics),
 			AstStatement::Item { .. } | AstStatement::Comment { .. } => {}
 		}
 	}
@@ -1014,7 +1055,7 @@ fn collect_schema_diagnostics(
 	}
 }
 
-fn schema_cardinality_upper(field_match: &BindFieldMatch<'_>) -> Option<u32> {
+fn schema_cardinality_upper(field_match: &CompiledBindFieldMatch<'_>) -> Option<u32> {
 	field_match
 		.field()
 		.attributes
@@ -1131,7 +1172,7 @@ fn build_workspace_snapshot(roots: &[ScanTarget]) -> WorkspaceSnapshot {
 
 fn build_workspace_snapshot_with_schema(
 	roots: &[ScanTarget],
-	schema_graph: Option<Arc<CwtSchemaGraph>>,
+	rule_engine: Option<Arc<RuleEngine>>,
 ) -> WorkspaceSnapshot {
 	let mut parsed = Vec::new();
 	let mut file_paths = Vec::new();
@@ -1220,10 +1261,10 @@ fn build_workspace_snapshot_with_schema(
 		.chain(diagnostics.advisory)
 		.collect();
 	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
-	if let Some(graph) = schema_graph.as_ref() {
+	if let Some(engine) = rule_engine.as_ref() {
 		for file in &parsed {
 			let schema_diagnostics = schema_diagnostics_for_ast(
-				graph.as_ref(),
+				engine.as_ref(),
 				&file.relative_path,
 				&file.ast.statements,
 			);
@@ -2533,10 +2574,10 @@ mod tests {
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
 		detect_completion_context, document_symbols, extract_completion_prefix,
-		find_vendored_schema_dir_from, load_schema_graph, localisation_stub_code_actions,
-		parse_scan_targets_json, resolve_definition_locations, resolve_reference_locations,
-		schema_completion_candidates, schema_diagnostics_for_text, schema_hover,
-		select_completion_candidates, workspace_symbols,
+		find_vendored_schema_dir_from, load_rule_engine_with_cache_dir,
+		localisation_stub_code_actions, parse_scan_targets_json, resolve_definition_locations,
+		resolve_reference_locations, schema_completion_candidates, schema_diagnostics_for_text,
+		schema_hover, select_completion_candidates, workspace_symbols,
 	};
 	use foch_core::model::test_support;
 	use std::fs;
@@ -3040,19 +3081,12 @@ mod tests {
 			.join("..")
 			.join("foch-cwt")
 			.join("tests/fixtures/schema-pack");
-		let graph = load_schema_graph(&fixture_dir).expect("load fixture schema graph");
-		assert!(
-			graph
-				.types
-				.values()
-				.any(|definition| definition.name.as_str() == "event")
-		);
-		assert!(
-			graph
-				.types
-				.values()
-				.any(|definition| definition.name.as_str() == "mission")
-		);
+		let cache = TempDir::new().expect("create test CWT rule cache");
+		let engine = load_rule_engine_with_cache_dir(&fixture_dir, Some(cache.path()))
+			.expect("load fixture schema graph")
+			.engine;
+		assert!(engine.root_count() >= 2);
+		assert!(engine.bind_root(Path::new("events/example.txt")).is_some());
 	}
 
 	fn lsp_fixture_dir() -> PathBuf {
@@ -3062,8 +3096,11 @@ mod tests {
 			.join("lsp")
 	}
 
-	fn load_lsp_hover_graph() -> std::sync::Arc<foch_cwt::CwtSchemaGraph> {
-		load_schema_graph(&lsp_fixture_dir().join("schema")).expect("load LSP schema graph")
+	fn load_lsp_rule_engine() -> std::sync::Arc<foch_cwt::RuleEngine> {
+		let cache = TempDir::new().expect("create test CWT rule cache");
+		load_rule_engine_with_cache_dir(&lsp_fixture_dir().join("schema"), Some(cache.path()))
+			.expect("load LSP rule engine")
+			.engine
 	}
 
 	fn fixture_text(relative_path: &str) -> String {
@@ -3091,10 +3128,10 @@ mod tests {
 
 	#[test]
 	fn hover_renders_event_field_from_schema() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("events/sample.txt");
 		let hover = schema_hover(
-			graph.as_ref(),
+			engine.as_ref(),
 			Path::new("events/sample.txt"),
 			&text,
 			position_for_token(&text, "immediate"),
@@ -3110,10 +3147,10 @@ mod tests {
 
 	#[test]
 	fn hover_renders_mission_field_from_schema() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("missions/sample.txt");
 		let hover = schema_hover(
-			graph.as_ref(),
+			engine.as_ref(),
 			Path::new("missions/sample.txt"),
 			&text,
 			position_for_token(&text, "provinces_to_highlight"),
@@ -3130,10 +3167,10 @@ mod tests {
 
 	#[test]
 	fn hover_renders_scripted_effect_field_from_schema() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("common/scripted_effects/sample.txt");
 		let hover = schema_hover(
-			graph.as_ref(),
+			engine.as_ref(),
 			Path::new("common/scripted_effects/sample.txt"),
 			&text,
 			position_for_token(&text, "add_prestige"),
@@ -3147,10 +3184,10 @@ mod tests {
 
 	#[test]
 	fn completion_suggests_event_children_from_schema() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("events/sample.txt");
 		let candidates = schema_completion_candidates(
-			graph.as_ref(),
+			engine.as_ref(),
 			Path::new("events/sample.txt"),
 			&text,
 			position_for_token(&text, "trigger"),
@@ -3174,10 +3211,10 @@ mod tests {
 
 	#[test]
 	fn completion_expands_trigger_aliases_from_schema() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("events/sample.txt");
 		let candidates = schema_completion_candidates(
-			graph.as_ref(),
+			engine.as_ref(),
 			Path::new("events/sample.txt"),
 			&text,
 			position_for_token(&text, "has_country_flag"),
@@ -3205,10 +3242,10 @@ mod tests {
 
 	#[test]
 	fn completion_suggests_scripted_effect_fields_from_schema() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("common/scripted_effects/sample.txt");
 		let candidates = schema_completion_candidates(
-			graph.as_ref(),
+			engine.as_ref(),
 			Path::new("common/scripted_effects/sample.txt"),
 			&text,
 			position_for_token(&text, "add_prestige"),
@@ -3227,10 +3264,13 @@ mod tests {
 
 	#[test]
 	fn diagnostics_report_unknown_keys_and_cardinality_violations() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = fixture_text("events/diagnostics.txt");
-		let diagnostics =
-			schema_diagnostics_for_text(graph.as_ref(), Path::new("events/diagnostics.txt"), &text);
+		let diagnostics = schema_diagnostics_for_text(
+			engine.as_ref(),
+			Path::new("events/diagnostics.txt"),
+			&text,
+		);
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
 				&& diagnostic.message.contains("mystery_key")
@@ -3245,10 +3285,10 @@ mod tests {
 
 	#[test]
 	fn diagnostics_skip_unknown_keys_inside_alias_bodies() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let text = "namespace = sample\ncountry_event = {\n  trigger = {\n    custom_trigger = {\n      mystery_key = yes\n    }\n  }\n}\n";
 		let diagnostics =
-			schema_diagnostics_for_text(graph.as_ref(), Path::new("events/sample.txt"), text);
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
 		assert!(!diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
 				&& diagnostic.message.contains("mystery_key")
@@ -3257,14 +3297,14 @@ mod tests {
 
 	#[test]
 	fn workspace_snapshot_includes_schema_diagnostics() {
-		let graph = load_lsp_hover_graph();
+		let engine = load_lsp_rule_engine();
 		let root = lsp_fixture_dir();
 		let snapshot = build_workspace_snapshot_with_schema(
 			&[ScanTarget {
 				path: root.clone(),
 				role: TargetRole::Mod,
 			}],
-			Some(graph),
+			Some(engine),
 		);
 		let key = root.join("events").join("diagnostics.txt");
 		let diagnostics = snapshot

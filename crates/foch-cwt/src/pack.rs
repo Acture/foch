@@ -42,7 +42,15 @@ pub struct SchemaPack {
 
 impl SchemaPack {
 	pub fn load_from_dir(root: &Path, source: SchemaSource) -> Result<Self, CwtLoadError> {
-		let id = compute_pack_id(root)?;
+		let id = schema_pack_id_from_dir(root)?;
+		Self::load_from_dir_with_id(root, source, id)
+	}
+
+	pub(crate) fn load_from_dir_with_id(
+		root: &Path,
+		source: SchemaSource,
+		id: SchemaPackId,
+	) -> Result<Self, CwtLoadError> {
 		let graph = Arc::new(CwtSchemaGraph::from_directory(root)?);
 		install_base_scopes(&graph);
 		Ok(Self {
@@ -54,7 +62,7 @@ impl SchemaPack {
 	}
 }
 
-fn compute_pack_id(root: &Path) -> Result<SchemaPackId, CwtLoadError> {
+pub fn schema_pack_id_from_dir(root: &Path) -> Result<SchemaPackId, CwtLoadError> {
 	let mut files = WalkDir::new(root)
 		.into_iter()
 		.filter_map(Result::ok)
