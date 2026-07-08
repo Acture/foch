@@ -1,7 +1,7 @@
 //! Writers for the harness artifacts: `results.json`, `report.md`, `rules.md`.
 //!
-//! All output is deterministic (sorted keys, stable ordering) so diffs are
-//! meaningful and CI can gate on the content.
+//! Verdict output is deterministic (sorted keys, stable ordering) so scoring
+//! diffs are meaningful. Timing fields are current-run observations.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -91,12 +91,20 @@ fn render_report(results: &[CaseResult]) -> String {
 	let mut agg: BTreeMap<String, usize> = BTreeMap::new();
 	let mut total_overlap: usize = 0;
 	let mut accepted_ok: usize = 0;
+	let mut total_setup_ms: u64 = 0;
+	let mut total_merge_ms: u64 = 0;
+	let mut total_scoring_ms: u64 = 0;
+	let mut total_case_ms: u64 = 0;
 	for r in results {
 		for (v, n) in &r.verdicts {
 			*agg.entry(v.clone()).or_default() += n;
 			total_overlap += n;
 		}
 		accepted_ok += r.accepted_ok_files;
+		total_setup_ms = total_setup_ms.saturating_add(r.timings.setup_ms);
+		total_merge_ms = total_merge_ms.saturating_add(r.timings.merge_ms);
+		total_scoring_ms = total_scoring_ms.saturating_add(r.timings.scoring_ms);
+		total_case_ms = total_case_ms.saturating_add(r.timings.total_ms);
 	}
 
 	lines.push(format!(
@@ -105,6 +113,10 @@ fn render_report(results: &[CaseResult]) -> String {
 		total_overlap,
 		accepted_ok,
 		total_overlap
+	));
+	lines.push(format!(
+		"Timing: total={} ms · setup={} ms · merge={} ms · scoring={} ms",
+		total_case_ms, total_setup_ms, total_merge_ms, total_scoring_ms
 	));
 	lines.push(String::new());
 	lines.push("## Corpus verdicts (overlapping files)".to_string());
@@ -144,6 +156,10 @@ fn render_report(results: &[CaseResult]) -> String {
 			r.ground_truth_files,
 			r.overlap_files,
 			r.accepted_ok_files
+		));
+		lines.push(format!(
+			"- timings: total={} ms · setup={} ms · merge={} ms · scoring={} ms",
+			r.timings.total_ms, r.timings.setup_ms, r.timings.merge_ms, r.timings.scoring_ms
 		));
 		lines.push(format!("- verdicts: {:?}", r.verdicts));
 

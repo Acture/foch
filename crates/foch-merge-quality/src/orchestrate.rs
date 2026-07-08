@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +36,15 @@ pub struct FileRecord {
 	pub acceptance_reason: Option<String>,
 }
 
+/// Per-case wall-clock timings, in milliseconds.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CaseTimings {
+	pub setup_ms: u64,
+	pub merge_ms: u64,
+	pub scoring_ms: u64,
+	pub total_ms: u64,
+}
+
 /// Per-case scoring result — the unit element of `results.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CaseResult {
@@ -53,6 +63,9 @@ pub struct CaseResult {
 	pub verdicts: BTreeMap<String, usize>,
 	/// Number of overlap files counted by the primary acceptance metric.
 	pub accepted_ok_files: usize,
+	/// Wall-clock timing breakdown for this case.
+	#[serde(default)]
+	pub timings: CaseTimings,
 	/// Per-file scores for every ground-truth file.
 	pub files: Vec<FileRecord>,
 }
@@ -109,6 +122,8 @@ pub fn score_case_with_cache(
 	keep: bool,
 	score_cache: &mut ScoreCache,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
+	let total_started = Instant::now();
+	let setup_started = Instant::now();
 	let compatch_dir = workshop_dir.join(&case.compatch_id);
 	let mod_dirs: Vec<PathBuf> = case
 		.patched
@@ -128,14 +143,19 @@ pub fn score_case_with_cache(
 		.collect();
 	let dlc = write_playset(tmp.path(), &mods)?;
 	let retained_paths = gt.iter().cloned().collect();
+	let setup_ms = elapsed_ms(setup_started.elapsed());
+
+	let merge_started = Instant::now();
 	let result = run_merge(
 		&dlc,
 		&out_dir,
 		/* force= */ false,
 		Some(retained_paths),
 	)?;
-	let conflicts = conflict_rel_paths(&result.report);
+	let merge_ms = elapsed_ms(merge_started.elapsed());
 
+	let scoring_started = Instant::now();
+	let conflicts = conflict_rel_paths(&result.report);
 	let mod_a = &mod_dirs[0];
 	let mod_b = if mod_dirs.len() > 1 {
 		&mod_dirs[1]
@@ -178,6 +198,7 @@ pub fn score_case_with_cache(
 			}
 		})
 		.collect();
+	let scoring_ms = elapsed_ms(scoring_started.elapsed());
 
 	let overlap_count = files.iter().filter(|f| f.overlap).count();
 	let accepted_ok_files = files.iter().filter(|f| f.overlap && f.accepted_ok).count();
@@ -209,8 +230,18 @@ pub fn score_case_with_cache(
 		overlap_files: overlap_count,
 		verdicts,
 		accepted_ok_files,
+		timings: CaseTimings {
+			setup_ms,
+			merge_ms,
+			scoring_ms,
+			total_ms: elapsed_ms(total_started.elapsed()),
+		},
 		files,
 	})
+}
+
+fn elapsed_ms(duration: Duration) -> u64 {
+	u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Filter the corpus to fully-local cases (compatch + all patched mods present

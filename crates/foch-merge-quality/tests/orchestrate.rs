@@ -86,6 +86,10 @@ fn run_writes_artifacts() {
 	assert_eq!(records.len(), 1);
 	assert_eq!(records[0].compatch_id, "3630876155");
 	assert_eq!(records[0].overlap_files, 7);
+	assert!(
+		records[0].timings.total_ms >= records[0].timings.merge_ms,
+		"total timing covers merge timing"
+	);
 
 	let expected = common::expected_verdicts()
 		.remove("3630876155")
@@ -97,6 +101,14 @@ fn run_writes_artifacts() {
 	let report_md =
 		std::fs::read_to_string(results_dir.join("report.md")).expect("report.md written");
 	assert!(!report_md.trim().is_empty(), "report.md is non-empty");
+	assert!(
+		report_md.contains("Timing: total="),
+		"report.md includes aggregate timing"
+	);
+	assert!(
+		report_md.contains("- timings: total="),
+		"report.md includes per-case timing"
+	);
 }
 
 // ------------------------------------------------------------------ Test 3: learn
