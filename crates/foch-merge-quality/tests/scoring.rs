@@ -12,8 +12,6 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
 use foch_merge_quality::corpus::Corpus;
 use foch_merge_quality::orchestrate::score_case_with_cache;
 use foch_merge_quality::score::ScoreCache;
@@ -23,10 +21,7 @@ use foch_merge_quality::score::ScoreCache;
 /// no test code change needed.
 #[test]
 fn committed_corpus_reproduces_baseline() {
-	let expected_text = std::fs::read_to_string(common::fixtures_root().join("expected.json"))
-		.expect("read expected.json");
-	let expected: BTreeMap<String, BTreeMap<String, usize>> =
-		serde_json::from_str(&expected_text).expect("parse expected.json");
+	let expected = common::expected_verdicts();
 	assert!(!expected.is_empty(), "baseline has at least one case");
 
 	// Reuse the immutable committed corpus by archive hash. Re-inflating 100MB

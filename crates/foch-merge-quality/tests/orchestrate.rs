@@ -6,7 +6,6 @@
 
 mod common;
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use foch_merge_quality::corpus::{Case, Corpus};
@@ -40,11 +39,9 @@ fn score_case_verdict_tally() {
 
 	assert_eq!(result.overlap_files, 7, "overlap file count");
 
-	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("accepted_equivalent".to_string(), 1),
-		("diverges_ast".to_string(), 3),
-		("matches_human".to_string(), 3),
-	]);
+	let expected = common::expected_verdicts()
+		.remove("3630876155")
+		.expect("expected verdicts for fixture compatch");
 	assert_eq!(result.verdicts, expected, "verdict tally");
 	assert_eq!(result.accepted_ok_files, 4, "accepted_ok tally");
 }
@@ -90,11 +87,9 @@ fn run_writes_artifacts() {
 	assert_eq!(records[0].compatch_id, "3630876155");
 	assert_eq!(records[0].overlap_files, 7);
 
-	let expected: BTreeMap<String, usize> = BTreeMap::from([
-		("accepted_equivalent".to_string(), 1),
-		("diverges_ast".to_string(), 3),
-		("matches_human".to_string(), 3),
-	]);
+	let expected = common::expected_verdicts()
+		.remove("3630876155")
+		.expect("expected verdicts for fixture compatch");
 	assert_eq!(records[0].verdicts, expected);
 	assert_eq!(records[0].accepted_ok_files, 4);
 
