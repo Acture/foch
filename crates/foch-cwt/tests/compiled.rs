@@ -112,6 +112,63 @@ fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 }
 
 #[test]
+fn compiled_engine_matches_root_type_key_filter_exclusions() {
+	let schema = r#"
+	types = {
+		type[idea_group] = {
+			path = "game/common/ideas"
+			subtype[selectable] = {
+				category = scalar
+			}
+		}
+		## type_key_filter <> { start trigger bonus ai_will_do }
+		type[idea] = {
+			path = "game/common/ideas"
+			skip_root_key = any
+		}
+	}
+
+	idea_group = {
+		subtype[selectable] = {
+			category = scalar
+		}
+	}
+
+	idea = {
+		idea_only = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	let path = Path::new("common/ideas/example.txt");
+	let ast_path = ["sample_idea", "idea_only"];
+
+	assert_eq!(
+		engine.bind_chain(path, &ast_path),
+		graph.bind_chain(path, &ast_path)
+	);
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
+		panic!("expected compiled idea binding");
+	};
+	assert_eq!(type_id.as_str(), "idea");
+	assert_eq!(node_id.0, "type:idea:field:idea_only");
+
+	let excluded_path = ["start", "idea_only"];
+	assert_eq!(
+		engine.bind_chain(path, &excluded_path),
+		graph.bind_chain(path, &excluded_path)
+	);
+	assert!(
+		!matches!(
+			engine.bind_chain(path, &excluded_path),
+			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "idea"
+		),
+		"compiled engine must not bind excluded root key to idea type"
+	);
+}
+
+#[test]
 fn compiled_engine_matches_scope_hierarchy_metadata() {
 	let graph = CwtSchemaGraph::from_directory(&schema_pack_fixture_dir())
 		.expect("load schema-pack fixture graph");

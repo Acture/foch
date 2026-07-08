@@ -11,11 +11,11 @@ use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
 	AliasCategory, CwtAlias, CwtFieldAttributes, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
-	CwtScope, CwtSubtype, CwtTypeDef,
+	CwtScope, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.3.0";
+pub const PACK_FORMAT_VERSION: &str = "0.4.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,6 +200,7 @@ pub struct CompiledRoot {
 	pub path: Option<String>,
 	pub normalized_path: Option<String>,
 	pub name_field: Option<String>,
+	pub type_key_filter: Option<CompiledTypeKeyFilter>,
 	pub push_scope: Option<String>,
 	pub type_per_file: bool,
 	pub name_from_file: bool,
@@ -215,6 +216,10 @@ impl CompiledRoot {
 			path: definition.path.clone(),
 			normalized_path: definition.path.as_deref().map(normalize_schema_path),
 			name_field: definition.name_field.clone(),
+			type_key_filter: definition
+				.type_key_filter
+				.as_ref()
+				.map(CompiledTypeKeyFilter::from_schema),
 			push_scope: definition.push_scope.clone(),
 			type_per_file: definition.type_per_file,
 			name_from_file: definition.name_from_file,
@@ -236,7 +241,7 @@ impl CompiledRoot {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompiledSubtype {
 	pub name: String,
-	pub type_key_filters: Vec<String>,
+	pub type_key_filter: Option<CompiledTypeKeyFilter>,
 	pub rules: Vec<CompiledRuleField>,
 }
 
@@ -244,12 +249,44 @@ impl CompiledSubtype {
 	fn from_subtype(subtype: &CwtSubtype) -> Self {
 		Self {
 			name: subtype.name.clone(),
-			type_key_filters: subtype.type_key_filter.iter().cloned().collect::<Vec<_>>(),
+			type_key_filter: subtype
+				.type_key_filter
+				.as_ref()
+				.map(CompiledTypeKeyFilter::from_schema),
 			rules: subtype
 				.rules
 				.iter()
 				.map(CompiledRuleField::from_rule_field)
 				.collect(),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum CompiledTypeKeyFilter {
+	Exact(Vec<String>),
+	Exclude(Vec<String>),
+}
+
+impl CompiledTypeKeyFilter {
+	fn from_schema(filter: &CwtTypeKeyFilter) -> Self {
+		match filter {
+			CwtTypeKeyFilter::Exact(values) => Self::Exact(values.clone()),
+			CwtTypeKeyFilter::Exclude(values) => Self::Exclude(values.clone()),
+		}
+	}
+
+	fn matches(&self, key: &str) -> bool {
+		match self {
+			Self::Exact(values) => values.iter().any(|value| value == key),
+			Self::Exclude(values) => values.iter().all(|value| value != key),
+		}
+	}
+
+	fn primary_label(&self) -> Option<&str> {
+		match self {
+			Self::Exact(values) => values.first().map(String::as_str),
+			Self::Exclude(_) => None,
 		}
 	}
 }
@@ -712,7 +749,7 @@ impl RuleEngine {
 			}
 			if let ResolvedNode::Root(definition) = node
 				&& !root_instance_consumed
-				&& definition.subtypes.is_empty()
+				&& root_type_accepts_instance_key(definition, key)
 			{
 				root_instance_consumed = true;
 				consumed += 1;
@@ -781,7 +818,7 @@ impl RuleEngine {
 			}
 			if let ResolvedNode::Root(definition) = node
 				&& !root_instance_consumed
-				&& definition.subtypes.is_empty()
+				&& root_type_accepts_instance_key(definition, key)
 			{
 				root_instance_consumed = true;
 				if segments.peek().is_none() {
@@ -1085,15 +1122,26 @@ fn is_dynamic_key_marker(key: &str) -> bool {
 }
 
 fn subtype_matches(subtype: &CompiledSubtype, key: &str) -> bool {
-	subtype.name == key || subtype.type_key_filters.iter().any(|filter| filter == key)
+	subtype.name == key
+		|| subtype
+			.type_key_filter
+			.as_ref()
+			.is_some_and(|filter| filter.matches(key))
 }
 
 fn subtype_label(subtype: &CompiledSubtype) -> &str {
 	subtype
-		.type_key_filters
-		.first()
-		.map(String::as_str)
+		.type_key_filter
+		.as_ref()
+		.and_then(|filter| filter.primary_label())
 		.unwrap_or(&subtype.name)
+}
+
+fn root_type_accepts_instance_key(definition: &CompiledRoot, key: &str) -> bool {
+	definition.type_key_filter.as_ref().map_or_else(
+		|| definition.subtypes.is_empty(),
+		|filter| filter.matches(key),
+	)
 }
 
 fn describe_node(node: ResolvedNode<'_>) -> String {

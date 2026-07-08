@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use foch_cwt::{AliasCategory, BindContext, CwtRuleValue, CwtSchemaGraph, SchemaBinding};
+use foch_cwt::{
+	AliasCategory, BindContext, CwtRuleValue, CwtSchemaGraph, CwtTypeKeyFilter, SchemaBinding,
+};
 use foch_syntax::ParadoxTree;
 
 #[test]
@@ -26,8 +28,8 @@ fn bind_chain_binds_root_and_subtype() {
 		.expect("bind event root");
 	assert_eq!(event.subtypes.len(), 1);
 	assert_eq!(
-		event.subtypes[0].type_key_filter.as_deref(),
-		Some("country_event")
+		event.subtypes[0].type_key_filter,
+		Some(CwtTypeKeyFilter::Exact(vec!["country_event".to_string()]))
 	);
 }
 
@@ -227,6 +229,73 @@ fn bind_field_accepts_plural_replace_scopes_option() {
 }
 
 #[test]
+fn bind_chain_uses_root_type_key_filter_exclusions() {
+	let schema = r#"
+	types = {
+		type[idea_group] = {
+			path = "game/common/ideas"
+			subtype[selectable] = {
+				category = scalar
+			}
+		}
+		## type_key_filter <> { start trigger bonus ai_will_do }
+		type[idea] = {
+			path = "game/common/ideas"
+			skip_root_key = any
+		}
+	}
+
+	idea_group = {
+		subtype[selectable] = {
+			category = scalar
+		}
+	}
+
+	idea = {
+		idea_only = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let idea = graph
+		.types
+		.values()
+		.find(|definition| definition.name.as_str() == "idea")
+		.expect("idea type");
+	assert_eq!(
+		idea.type_key_filter,
+		Some(CwtTypeKeyFilter::Exclude(vec![
+			"start".to_string(),
+			"trigger".to_string(),
+			"bonus".to_string(),
+			"ai_will_do".to_string(),
+		]))
+	);
+
+	let binding = graph.bind_chain(
+		Path::new("common/ideas/example.txt"),
+		&["sample_idea", "idea_only"],
+	);
+	let SchemaBinding::Bound { type_id, node_id } = binding else {
+		panic!("expected idea root binding, got {binding:?}");
+	};
+	assert_eq!(type_id.as_str(), "idea");
+	assert_eq!(node_id.0, "type:idea:field:idea_only");
+
+	let excluded = graph.bind_chain(
+		Path::new("common/ideas/example.txt"),
+		&["start", "idea_only"],
+	);
+	assert!(
+		!matches!(
+			excluded,
+			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "idea"
+		),
+		"excluded key must not bind to idea type: {excluded:?}"
+	);
+}
+
+#[test]
 fn bind_context_tracks_subtypes_and_root_instances() {
 	let graph = load_binding_graph();
 
@@ -237,7 +306,10 @@ fn bind_context_tracks_subtypes_and_root_instances() {
 		panic!("expected subtype context, got {event_context:?}");
 	};
 	assert_eq!(event.name.as_str(), "event");
-	assert_eq!(subtype.type_key_filter.as_deref(), Some("country_event"));
+	assert_eq!(
+		subtype.type_key_filter,
+		Some(CwtTypeKeyFilter::Exact(vec!["country_event".to_string()]))
+	);
 
 	let mission_context = graph
 		.bind_context(Path::new("missions/example.txt"), &["my_mission"])

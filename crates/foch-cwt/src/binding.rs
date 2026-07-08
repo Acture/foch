@@ -305,7 +305,7 @@ impl CwtSchemaGraph {
 			}
 			if let ResolvedNode::Root(definition) = node
 				&& !root_instance_consumed
-				&& definition.subtypes.is_empty()
+				&& root_type_accepts_instance_key(definition, key)
 			{
 				root_instance_consumed = true;
 				consumed += 1;
@@ -378,7 +378,7 @@ impl CwtSchemaGraph {
 			}
 			if let ResolvedNode::Root(definition) = node
 				&& !root_instance_consumed
-				&& definition.subtypes.is_empty()
+				&& root_type_accepts_instance_key(definition, key)
 			{
 				root_instance_consumed = true;
 				if segments.peek().is_none() {
@@ -579,11 +579,26 @@ fn field_rules(field: &CwtRuleField) -> Option<&[CwtRuleField]> {
 }
 
 fn subtype_matches(subtype: &CwtSubtype, key: &str) -> bool {
-	subtype.name == key || subtype.type_key_filter.as_deref() == Some(key)
+	subtype.name == key
+		|| subtype
+			.type_key_filter
+			.as_ref()
+			.is_some_and(|filter| filter.matches(key))
 }
 
 fn subtype_label(subtype: &CwtSubtype) -> &str {
-	subtype.type_key_filter.as_deref().unwrap_or(&subtype.name)
+	subtype
+		.type_key_filter
+		.as_ref()
+		.and_then(|filter| filter.primary_label())
+		.unwrap_or(&subtype.name)
+}
+
+fn root_type_accepts_instance_key(definition: &CwtTypeDef, key: &str) -> bool {
+	definition.type_key_filter.as_ref().map_or_else(
+		|| definition.subtypes.is_empty(),
+		|filter| filter.matches(key),
+	)
 }
 
 fn describe_node(node: ResolvedNode<'_>) -> String {

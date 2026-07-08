@@ -59,8 +59,30 @@ pub struct CwtAlias {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CwtSubtype {
 	pub name: String,
-	pub type_key_filter: Option<String>,
+	pub type_key_filter: Option<CwtTypeKeyFilter>,
 	pub rules: Vec<CwtRuleField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CwtTypeKeyFilter {
+	Exact(Vec<String>),
+	Exclude(Vec<String>),
+}
+
+impl CwtTypeKeyFilter {
+	pub fn matches(&self, key: &str) -> bool {
+		match self {
+			Self::Exact(values) => values.iter().any(|value| value == key),
+			Self::Exclude(values) => values.iter().all(|value| value != key),
+		}
+	}
+
+	pub fn primary_label(&self) -> Option<&str> {
+		match self {
+			Self::Exact(values) => values.first().map(String::as_str),
+			Self::Exclude(_) => None,
+		}
+	}
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -92,6 +114,7 @@ pub struct CwtTypeDef {
 	pub name: CwtType,
 	pub path: Option<String>,
 	pub name_field: Option<String>,
+	pub type_key_filter: Option<CwtTypeKeyFilter>,
 	pub push_scope: Option<String>,
 	pub type_per_file: bool,
 	pub name_from_file: bool,
@@ -106,6 +129,7 @@ impl CwtTypeDef {
 			name,
 			path: None,
 			name_field: None,
+			type_key_filter: None,
 			push_scope: None,
 			type_per_file: false,
 			name_from_file: false,
@@ -219,7 +243,11 @@ impl CwtSchemaGraph {
 				}
 				"enum" => insert_enumeration(&mut self.enums, marker.payload, value),
 				"value_set" => insert_enumeration(&mut self.value_sets, marker.payload, value),
-				"type" => self.merge_type_header(marker.payload, value),
+				"type" => self.merge_type_header(
+					marker.payload,
+					value,
+					parse_type_key_filter(&doc_comments),
+				),
 				_ => {}
 			}
 			return;
@@ -230,24 +258,50 @@ impl CwtSchemaGraph {
 	}
 
 	fn ingest_types_block(&mut self, items: &[ParadoxNode<'_>]) {
+		let mut pending_doc_comments = Vec::new();
 		for item in items {
-			let Some((key, value)) = assignment_parts(item) else {
-				continue;
-			};
-			let Some(marker) = ParsedMarker::parse(&key) else {
-				continue;
-			};
-			if marker.head == "type" {
-				self.merge_type_header(marker.payload, value);
+			match item {
+				ParadoxNode::Comment {
+					text,
+					kind: CommentKind::DocAttribute,
+					..
+				} => pending_doc_comments.push((*text).to_string()),
+				ParadoxNode::Comment { .. } => pending_doc_comments.clear(),
+				_ => {
+					let Some((key, value)) = assignment_parts(item) else {
+						pending_doc_comments.clear();
+						continue;
+					};
+					let Some(marker) = ParsedMarker::parse(&key) else {
+						pending_doc_comments.clear();
+						continue;
+					};
+					if marker.head == "type" {
+						self.merge_type_header(
+							marker.payload,
+							value,
+							parse_type_key_filter(&pending_doc_comments),
+						);
+					}
+					pending_doc_comments.clear();
+				}
 			}
 		}
 	}
 
-	fn merge_type_header(&mut self, name: &str, value: &ParadoxNode<'_>) {
+	fn merge_type_header(
+		&mut self,
+		name: &str,
+		value: &ParadoxNode<'_>,
+		type_key_filter: Option<CwtTypeKeyFilter>,
+	) {
 		let entry = self
 			.types
 			.entry(CwtType::new(name))
 			.or_insert_with_key(|name| CwtTypeDef::new(name.clone()));
+		if let Some(type_key_filter) = type_key_filter {
+			entry.type_key_filter = Some(type_key_filter);
+		}
 		let Some(items) = block_items(value) else {
 			return;
 		};
@@ -582,25 +636,48 @@ fn parse_field_attributes(comments: Vec<String>) -> CwtFieldAttributes {
 	attributes
 }
 
-fn parse_type_key_filter(comments: &[String]) -> Option<String> {
+fn parse_type_key_filter(comments: &[String]) -> Option<CwtTypeKeyFilter> {
 	let mut filter = None;
 	for comment in comments {
-		let Some((key, raw_value)) = split_attribute_assignment(comment.trim()) else {
+		let text = comment.trim();
+		let Some((operator, raw_value)) = text
+			.strip_prefix("type_key_filter")
+			.map(str::trim_start)
+			.and_then(|rest| {
+				if let Some(value) = rest.strip_prefix("<>") {
+					Some(("<>", value))
+				} else {
+					rest.strip_prefix('=').map(|value| ("=", value))
+				}
+			})
+		else {
 			continue;
 		};
-		if key.trim() != "type_key_filter" {
+		let values = parse_type_key_filter_values(raw_value.trim());
+		if values.is_empty() {
 			continue;
 		}
-		let value = raw_value.trim();
-		if !value.is_empty()
-			&& !value.contains('{')
-			&& !value.contains('}')
-			&& !value.chars().any(char::is_whitespace)
-		{
-			filter = Some(value.to_string());
-		}
+		filter = Some(match operator {
+			"<>" => CwtTypeKeyFilter::Exclude(values),
+			"=" => CwtTypeKeyFilter::Exact(values),
+			_ => unreachable!("type_key_filter parser only emits known operators"),
+		});
 	}
 	filter
+}
+
+fn parse_type_key_filter_values(value: &str) -> Vec<String> {
+	let value = strip_braces(value);
+	if value.is_empty() {
+		return Vec::new();
+	}
+	value
+		.split_whitespace()
+		.filter_map(|token| {
+			let token = token.trim();
+			(!token.is_empty()).then(|| token.to_string())
+		})
+		.collect()
 }
 
 fn split_attribute_assignment(text: &str) -> Option<(&str, &str)> {

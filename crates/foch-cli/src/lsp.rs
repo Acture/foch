@@ -3100,6 +3100,7 @@ mod tests {
 		schema_hover, select_completion_candidates, workspace_symbols,
 	};
 	use foch_core::model::test_support;
+	use foch_cwt::{CwtSchemaGraph, RuleEngine};
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
@@ -3903,6 +3904,57 @@ mod tests {
 		assert!(labels.contains(&"has_country_flag"));
 		assert!(labels.contains(&"has_province_flag"));
 		assert!(!labels.contains(&"has_sea_flag"));
+	}
+
+	#[test]
+	fn completion_uses_root_type_key_filter_exclusion_for_schema_context() {
+		let schema = r#"
+		types = {
+			type[idea_group] = {
+				path = "game/common/ideas"
+				subtype[selectable] = {
+					category = scalar
+				}
+			}
+			## type_key_filter <> { start trigger bonus ai_will_do }
+			type[idea] = {
+				path = "game/common/ideas"
+				skip_root_key = any
+			}
+		}
+
+		idea_group = {
+			subtype[selectable] = {
+				category = scalar
+			}
+		}
+
+		idea = {
+			idea_only = bool
+		}
+		"#;
+		let schema_dir = TempDir::new().expect("create inline schema dir");
+		fs::write(schema_dir.path().join("ideas.cwt"), schema).expect("write inline schema");
+		let graph = CwtSchemaGraph::from_directory(schema_dir.path()).expect("load inline schema");
+		let engine = RuleEngine::from_graph(&graph);
+		let text = "sample_idea = {\n  \n}\n";
+		let candidates = schema_completion_candidates(
+			&engine,
+			Path::new("common/ideas/sample.txt"),
+			text,
+			Position {
+				line: 1,
+				character: 2,
+			},
+			"",
+		)
+		.expect("schema completion under filtered idea root");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"idea_only"));
+		assert!(!labels.contains(&"category"));
 	}
 
 	#[test]
