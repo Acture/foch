@@ -25,13 +25,29 @@
       "MIL"
     ]
   },
-  "pack_id": "e8b89ca32e89af68dd23af1ece9389d48e76c47db6fa9277b0518190f8580ae6",
+  "pack_id": "37a93ff77a136ecf2ccfd77dfc62df41b20e60125b09b22075b8a94ec7d41edf",
   "scopes": [
     "country",
     "province"
   ],
   "types": [
     {
+      "localisation": [
+        {
+          "key": "title",
+          "value": {
+            "kind": "scalar",
+            "value": "$_title"
+          }
+        },
+        {
+          "key": "desc",
+          "value": {
+            "kind": "scalar",
+            "value": "$_desc"
+          }
+        }
+      ],
       "name": "event",
       "name_field": "id",
       "name_from_file": false,
@@ -97,6 +113,7 @@
       "type_per_file": false
     },
     {
+      "localisation": [],
       "name": "mission",
       "name_field": "icon",
       "name_from_file": false,
@@ -109,6 +126,7 @@
       "type_per_file": false
     },
     {
+      "localisation": [],
       "name": "mission_series",
       "name_field": null,
       "name_from_file": false,

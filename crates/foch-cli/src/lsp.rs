@@ -4077,6 +4077,7 @@ mod tests {
 		assert!(labels.contains(&"title"));
 		assert!(labels.contains(&"trigger"));
 		assert!(labels.contains(&"immediate"));
+		assert!(!labels.contains(&"localisation"));
 		assert!(candidates.iter().any(|candidate| {
 			candidate.label == "immediate"
 				&& candidate
@@ -4537,6 +4538,23 @@ sample_event = {
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
 				&& diagnostic.message.contains("visible_only")
+		}));
+	}
+
+	#[test]
+	fn diagnostics_do_not_accept_type_localisation_metadata_as_script_field() {
+		let engine = load_lsp_rule_engine();
+		let text = "\
+country_event = {
+  id = sample.1
+  localisation = bad_key
+}
+";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("localisation")
 		}));
 	}
 

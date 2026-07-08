@@ -45,6 +45,7 @@ struct TypeBaseline {
 	path: Option<String>,
 	path_file: Option<String>,
 	name_field: Option<String>,
+	localisation: Vec<RuleFieldBaseline>,
 	push_scope: Option<String>,
 	type_per_file: bool,
 	name_from_file: bool,
@@ -281,6 +282,11 @@ fn type_baseline(definition: &CwtTypeDef) -> TypeBaseline {
 		path: definition.path.clone(),
 		path_file: definition.path_file.clone(),
 		name_field: definition.name_field.clone(),
+		localisation: definition
+			.localisation
+			.iter()
+			.map(rule_field_baseline)
+			.collect(),
 		push_scope: definition.push_scope.clone(),
 		type_per_file: definition.type_per_file,
 		name_from_file: definition.name_from_file,

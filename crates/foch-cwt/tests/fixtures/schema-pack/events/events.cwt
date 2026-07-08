@@ -6,6 +6,12 @@ types = {
 		## push_scope = country
 		subtype[country] = {
 		}
+		localisation = {
+			## required
+			title = "$_title"
+			## required
+			desc = "$_desc"
+		}
 	}
 }
 

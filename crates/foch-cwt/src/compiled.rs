@@ -15,7 +15,7 @@ use crate::schema::{
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.7.0";
+pub const PACK_FORMAT_VERSION: &str = "0.8.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,6 +202,7 @@ pub struct CompiledRoot {
 	pub path_file: Option<String>,
 	pub normalized_file_path: Option<String>,
 	pub name_field: Option<String>,
+	pub localisation: Vec<CompiledRuleField>,
 	pub type_key_filter: Option<CompiledTypeKeyFilter>,
 	pub push_scope: Option<String>,
 	pub type_per_file: bool,
@@ -226,6 +227,11 @@ impl CompiledRoot {
 					normalized_schema_file_path(&normalize_schema_path(path), path_file)
 				}),
 			name_field: definition.name_field.clone(),
+			localisation: definition
+				.localisation
+				.iter()
+				.map(CompiledRuleField::from_rule_field)
+				.collect(),
 			type_key_filter: definition
 				.type_key_filter
 				.as_ref()

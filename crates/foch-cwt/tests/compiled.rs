@@ -126,6 +126,50 @@ fn compiled_binary_pack_roundtrips_conditional_rule_fields() {
 }
 
 #[test]
+fn compiled_binary_pack_roundtrips_type_localisation_metadata() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			localisation = {
+				## required
+				title = "$_title"
+				desc = "$_desc"
+			}
+		}
+	}
+
+	event = {
+		title = scalar
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = RuleEngine::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	assert!(
+		event.rules.iter().all(|field| field.key != "localisation"),
+		"type header localisation metadata must not become a compiled script field"
+	);
+	assert_eq!(event.localisation.len(), 2);
+	assert_eq!(event.localisation[0].key, "title");
+	assert_eq!(
+		event.localisation[0].attributes.raw,
+		vec![("required".to_string(), String::new())]
+	);
+	assert_eq!(
+		event.localisation[0].value,
+		CompiledRuleValue::Scalar("$_title".to_string())
+	);
+	assert_eq!(event.localisation[1].key, "desc");
+}
+
+#[test]
 fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let schema = r#"
 	types = {

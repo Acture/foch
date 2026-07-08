@@ -75,6 +75,7 @@
   ],
   "selected_types": [
     {
+      "localisation": [],
       "name": "achievement",
       "name_field": null,
       "name_from_file": false,
@@ -162,6 +163,22 @@
       "type_per_file": false
     },
     {
+      "localisation": [
+        {
+          "key": "name",
+          "value": {
+            "kind": "scalar",
+            "value": "$_title"
+          }
+        },
+        {
+          "key": "desc",
+          "value": {
+            "kind": "scalar",
+            "value": "$_desc"
+          }
+        }
+      ],
       "name": "decision",
       "name_field": null,
       "name_from_file": false,
@@ -169,28 +186,6 @@
       "path_file": null,
       "push_scope": null,
       "rules": [
-        {
-          "key": "localisation",
-          "value": {
-            "fields": [
-              {
-                "key": "name",
-                "value": {
-                  "kind": "scalar",
-                  "value": "$_title"
-                }
-              },
-              {
-                "key": "desc",
-                "value": {
-                  "kind": "scalar",
-                  "value": "$_desc"
-                }
-              }
-            ],
-            "kind": "block"
-          }
-        },
         {
           "key": "major",
           "value": {
@@ -316,6 +311,15 @@
       "type_per_file": false
     },
     {
+      "localisation": [
+        {
+          "key": "title",
+          "value": {
+            "kind": "scalar",
+            "value": "title"
+          }
+        }
+      ],
       "name": "event",
       "name_field": "id",
       "name_from_file": false,
@@ -323,21 +327,6 @@
       "path_file": null,
       "push_scope": null,
       "rules": [
-        {
-          "key": "localisation",
-          "value": {
-            "fields": [
-              {
-                "key": "title",
-                "value": {
-                  "kind": "scalar",
-                  "value": "title"
-                }
-              }
-            ],
-            "kind": "block"
-          }
-        },
         {
           "key": "id",
           "value": {
@@ -921,29 +910,22 @@
       "type_per_file": false
     },
     {
+      "localisation": [
+        {
+          "key": "name",
+          "value": {
+            "kind": "scalar",
+            "value": "$"
+          }
+        }
+      ],
       "name": "game_age_ability",
       "name_field": null,
       "name_from_file": false,
       "path": "common/ages",
       "path_file": null,
       "push_scope": null,
-      "rules": [
-        {
-          "key": "localisation",
-          "value": {
-            "fields": [
-              {
-                "key": "name",
-                "value": {
-                  "kind": "scalar",
-                  "value": "$"
-                }
-              }
-            ],
-            "kind": "block"
-          }
-        }
-      ],
+      "rules": [],
       "skip_root_keys": [
         "any",
         "abilities"
@@ -952,36 +934,29 @@
       "type_per_file": false
     },
     {
+      "localisation": [
+        {
+          "key": "name",
+          "value": {
+            "kind": "scalar",
+            "value": "$_title"
+          }
+        },
+        {
+          "key": "desc",
+          "value": {
+            "kind": "scalar",
+            "value": "$_desc"
+          }
+        }
+      ],
       "name": "mission",
       "name_field": null,
       "name_from_file": false,
       "path": "missions",
       "path_file": null,
       "push_scope": null,
-      "rules": [
-        {
-          "key": "localisation",
-          "value": {
-            "fields": [
-              {
-                "key": "name",
-                "value": {
-                  "kind": "scalar",
-                  "value": "$_title"
-                }
-              },
-              {
-                "key": "desc",
-                "value": {
-                  "kind": "scalar",
-                  "value": "$_desc"
-                }
-              }
-            ],
-            "kind": "block"
-          }
-        }
-      ],
+      "rules": [],
       "skip_root_keys": [
         "any"
       ],
@@ -989,6 +964,7 @@
       "type_per_file": false
     },
     {
+      "localisation": [],
       "name": "mission_series",
       "name_field": null,
       "name_from_file": false,
@@ -1178,6 +1154,15 @@
       "type_per_file": false
     },
     {
+      "localisation": [
+        {
+          "key": "name",
+          "value": {
+            "kind": "scalar",
+            "value": "$"
+          }
+        }
+      ],
       "name": "opinion_modifier",
       "name_field": null,
       "name_from_file": false,
@@ -1185,21 +1170,6 @@
       "path_file": null,
       "push_scope": null,
       "rules": [
-        {
-          "key": "localisation",
-          "value": {
-            "fields": [
-              {
-                "key": "name",
-                "value": {
-                  "kind": "scalar",
-                  "value": "$"
-                }
-              }
-            ],
-            "kind": "block"
-          }
-        },
         {
           "key": "opinion",
           "value": {

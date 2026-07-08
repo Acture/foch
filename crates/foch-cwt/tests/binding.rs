@@ -118,6 +118,46 @@ fn bind_field_projects_severity_attributes() {
 }
 
 #[test]
+fn type_localisation_blocks_are_metadata_not_rule_fields() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			localisation = {
+				## required
+				title = "$_title"
+				desc = "$_desc"
+			}
+		}
+	}
+
+	event = {
+		title = scalar
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let event = graph
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	assert!(
+		event.rules.iter().all(|field| field.key != "localisation"),
+		"type header localisation metadata must not become a script field"
+	);
+	assert_eq!(event.localisation.len(), 2);
+	assert_eq!(event.localisation[0].key, "title");
+	assert_eq!(
+		event.localisation[0].attributes.raw,
+		vec![("required".to_string(), String::new())]
+	);
+	assert_eq!(
+		event.localisation[0].value,
+		CwtRuleValue::Scalar("$_title".to_string())
+	);
+	assert_eq!(event.localisation[1].key, "desc");
+}
+
+#[test]
 fn rule_subtype_blocks_project_conditional_fields() {
 	let schema = r#"
 	types = {
