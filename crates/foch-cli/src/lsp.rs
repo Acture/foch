@@ -781,6 +781,14 @@ fn format_scope_values(values: &[String]) -> String {
 		.join(", ")
 }
 
+fn format_scope_refs(values: &[&str]) -> String {
+	values
+		.iter()
+		.map(|value| format!("`{value}`"))
+		.collect::<Vec<_>>()
+		.join(", ")
+}
+
 fn schema_hover_cardinality(field_match: &CompiledBindFieldMatch<'_>) -> Option<String> {
 	schema_match_cardinality(field_match).map(format_cardinality)
 }
@@ -1096,6 +1104,9 @@ fn collect_schema_diagnostics(
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &context_path);
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
+	let active_scopes = parent_context
+		.map(schema_completion_active_scopes)
+		.unwrap_or_default();
 	let mut cardinality_ranges = HashMap::<String, (u32, Vec<Range>)>::new();
 	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
@@ -1111,6 +1122,12 @@ fn collect_schema_diagnostics(
 					parent_context.and_then(|context| engine.bind_field_match(context, key));
 				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
+				}
+				if let Some(field_match) = field_match
+					&& let Some(diagnostic) =
+						schema_alias_scope_diagnostic(&field_match, key_range, key, &active_scopes)
+				{
+					diagnostics.push(diagnostic);
 				}
 				if let Some(field_match) = field_match
 					&& let Some(diagnostic) =
@@ -1360,6 +1377,30 @@ fn schema_value_shape_diagnostic(
 			"value for `{key}` is a schema {}, but this assignment uses a {}",
 			expected.label(),
 			actual.label()
+		),
+		..Diagnostic::default()
+	})
+}
+
+fn schema_alias_scope_diagnostic(
+	field_match: &CompiledBindFieldMatch<'_>,
+	range: Range,
+	key: &str,
+	active_scopes: &[&str],
+) -> Option<Diagnostic> {
+	let alias = field_match.alias()?;
+	if schema_alias_scope_matches(alias, active_scopes) {
+		return None;
+	}
+	Some(Diagnostic {
+		range,
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("V007".to_string())),
+		source: Some("foch".to_string()),
+		message: format!(
+			"alias `{key}` is scoped to {}, but current schema scope is {}",
+			format_scope_values(&alias.attributes.scope),
+			format_scope_refs(active_scopes)
 		),
 		..Diagnostic::default()
 	})
@@ -3796,6 +3837,21 @@ mod tests {
 			.collect::<Vec<_>>();
 		assert!(labels.contains(&"add_prestige"));
 		assert!(!labels.contains(&"province_only_effect"));
+	}
+
+	#[test]
+	fn diagnostics_report_alias_scope_mismatches_when_scope_is_known() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  immediate = {\n    province_only_effect = 1\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("province_only_effect")
+				&& diagnostic.message.contains("`province`")
+				&& diagnostic.message.contains("`country`")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
 	}
 
 	#[test]
