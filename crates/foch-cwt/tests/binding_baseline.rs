@@ -43,6 +43,7 @@ struct VendorBaseline {
 struct TypeBaseline {
 	name: String,
 	path: Option<String>,
+	path_file: Option<String>,
 	name_field: Option<String>,
 	push_scope: Option<String>,
 	type_per_file: bool,
@@ -180,6 +181,7 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		value_set_count: graph.value_sets.len(),
 		scope_count: graph.scopes.len(),
 		selected_types: [
+			"achievement",
 			"decision",
 			"event",
 			"game_age_ability",
@@ -225,6 +227,10 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 				"common/opinion_modifiers/example.txt",
 				graph.root_binding(Path::new("common/opinion_modifiers/example.txt")),
 			),
+			binding_baseline(
+				"common/achievements.txt",
+				graph.root_binding(Path::new("common/achievements.txt")),
+			),
 		],
 		known_scopes: graph
 			.scopes
@@ -269,6 +275,7 @@ fn type_baseline(definition: &CwtTypeDef) -> TypeBaseline {
 	TypeBaseline {
 		name: definition.name.as_str().to_string(),
 		path: definition.path.clone(),
+		path_file: definition.path_file.clone(),
 		name_field: definition.name_field.clone(),
 		push_scope: definition.push_scope.clone(),
 		type_per_file: definition.type_per_file,

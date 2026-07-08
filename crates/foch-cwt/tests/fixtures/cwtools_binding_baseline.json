@@ -65,14 +65,108 @@
       "path": "common/opinion_modifiers/example.txt",
       "status": "bound",
       "type_id": "opinion_modifier"
+    },
+    {
+      "node_id": "type:achievement:root",
+      "path": "common/achievements.txt",
+      "status": "bound",
+      "type_id": "achievement"
     }
   ],
   "selected_types": [
+    {
+      "name": "achievement",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "common",
+      "path_file": "achievements.txt",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "id",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "key": "localization",
+          "value": {
+            "kind": "scalar",
+            "value": "scalar"
+          }
+        },
+        {
+          "key": "visible",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "possible",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "provinces_to_highlight",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "happened",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
+      "skip_root_keys": [],
+      "subtypes": [],
+      "type_per_file": false
+    },
     {
       "name": "decision",
       "name_field": null,
       "name_from_file": false,
       "path": "decisions",
+      "path_file": null,
       "push_scope": null,
       "rules": [
         {
@@ -226,6 +320,7 @@
       "name_field": "id",
       "name_from_file": false,
       "path": "events",
+      "path_file": null,
       "push_scope": null,
       "rules": [
         {
@@ -785,6 +880,7 @@
       "name_field": null,
       "name_from_file": false,
       "path": "common/ages",
+      "path_file": null,
       "push_scope": null,
       "rules": [
         {
@@ -815,6 +911,7 @@
       "name_field": null,
       "name_from_file": false,
       "path": "missions",
+      "path_file": null,
       "push_scope": null,
       "rules": [
         {
@@ -851,6 +948,7 @@
       "name_field": null,
       "name_from_file": false,
       "path": "missions",
+      "path_file": null,
       "push_scope": null,
       "rules": [
         {
@@ -1039,6 +1137,7 @@
       "name_field": null,
       "name_from_file": false,
       "path": "common/opinion_modifiers",
+      "path_file": null,
       "push_scope": null,
       "rules": [
         {

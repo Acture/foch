@@ -232,9 +232,12 @@ impl CwtSchemaGraph {
 			.filter_map(|definition| {
 				let path = definition.path.as_deref()?;
 				let normalized_path = normalize_schema_path(path);
-				(normalized == normalized_path
-					|| normalized.starts_with(&format!("{normalized_path}/")))
-				.then_some((normalized_path.len(), definition))
+				root_path_match_len(
+					&normalized,
+					&normalized_path,
+					definition.path_file.as_deref(),
+				)
+				.map(|match_len| (match_len, definition))
 			})
 			.collect::<Vec<_>>();
 		matches.sort_by(|lhs, rhs| rhs.0.cmp(&lhs.0).then_with(|| lhs.1.name.cmp(&rhs.1.name)));
@@ -631,6 +634,20 @@ fn field_rules(field: &CwtRuleField) -> Option<&[CwtRuleField]> {
 	Some(fields.as_slice())
 }
 
+fn root_path_match_len(
+	file_path: &str,
+	normalized_root_path: &str,
+	path_file: Option<&str>,
+) -> Option<usize> {
+	if let Some(path_file) = path_file {
+		let target = normalized_schema_file_path(normalized_root_path, path_file);
+		return (file_path == target).then_some(target.len());
+	}
+	(file_path == normalized_root_path
+		|| file_path.starts_with(&format!("{normalized_root_path}/")))
+	.then_some(normalized_root_path.len())
+}
+
 fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
 	skip_key == "any" || skip_key == key
 }
@@ -710,6 +727,15 @@ fn normalize_schema_path(path: &str) -> String {
 	path.trim_start_matches("game/")
 		.trim_matches('/')
 		.to_ascii_lowercase()
+}
+
+fn normalized_schema_file_path(normalized_root_path: &str, path_file: &str) -> String {
+	let path_file = normalize_schema_path(path_file);
+	if normalized_root_path.is_empty() {
+		path_file
+	} else {
+		format!("{normalized_root_path}/{path_file}")
+	}
 }
 
 fn normalize_path(path: &Path) -> String {

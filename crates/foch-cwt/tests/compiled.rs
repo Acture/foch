@@ -169,6 +169,81 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 }
 
 #[test]
+fn compiled_engine_matches_path_file_root_matching() {
+	let schema = r#"
+	types = {
+		type[map_fallback] = {
+			path = "game/map"
+		}
+		type[area] = {
+			path = "game/map"
+			path_file = "area.txt"
+		}
+		type[region] = {
+			path = "game/map"
+			path_file = "region.txt"
+		}
+	}
+
+	map_fallback = {
+		fallback_only = bool
+	}
+
+	area = {
+		area_only = bool
+	}
+
+	region = {
+		region_only = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	let area_path = Path::new("map/area.txt");
+	let area_ast_path = ["sample_area", "area_only"];
+
+	assert_eq!(
+		engine.bind_chain(area_path, &area_ast_path),
+		graph.bind_chain(area_path, &area_ast_path)
+	);
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(area_path, &area_ast_path)
+	else {
+		panic!("expected compiled area binding");
+	};
+	assert_eq!(type_id.as_str(), "area");
+	assert_eq!(node_id.0, "type:area:field:area_only");
+
+	let region_path = Path::new("map/region.txt");
+	let region_ast_path = ["sample_region", "region_only"];
+	assert_eq!(
+		engine.bind_chain(region_path, &region_ast_path),
+		graph.bind_chain(region_path, &region_ast_path)
+	);
+	let SchemaBinding::Bound { type_id, node_id } =
+		engine.bind_chain(region_path, &region_ast_path)
+	else {
+		panic!("expected compiled region binding");
+	};
+	assert_eq!(type_id.as_str(), "region");
+	assert_eq!(node_id.0, "type:region:field:region_only");
+
+	let fallback_path = Path::new("map/other.txt");
+	let fallback_ast_path = ["sample_map", "fallback_only"];
+	assert_eq!(
+		engine.bind_chain(fallback_path, &fallback_ast_path),
+		graph.bind_chain(fallback_path, &fallback_ast_path)
+	);
+	let SchemaBinding::Bound { type_id, node_id } =
+		engine.bind_chain(fallback_path, &fallback_ast_path)
+	else {
+		panic!("expected compiled fallback binding");
+	};
+	assert_eq!(type_id.as_str(), "map_fallback");
+	assert_eq!(node_id.0, "type:map_fallback:field:fallback_only");
+}
+
+#[test]
 fn compiled_engine_matches_ordered_skip_root_key_chain() {
 	let schema = r#"
 	types = {

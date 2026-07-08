@@ -4153,6 +4153,57 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_uses_cwt_path_file_for_root_matching() {
+		let schema = r#"
+		types = {
+			type[map_fallback] = {
+				path = "game/map"
+			}
+			type[area] = {
+				path = "game/map"
+				path_file = "area.txt"
+			}
+			type[region] = {
+				path = "game/map"
+				path_file = "region.txt"
+			}
+		}
+
+		map_fallback = {
+			fallback_only = bool
+		}
+
+		area = {
+			area_only = bool
+		}
+
+		region = {
+			region_only = bool
+		}
+		"#;
+		let engine = load_inline_lsp_rule_engine(schema);
+		let text = "sample_area = {\n  \n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("map/area.txt"),
+			text,
+			Position {
+				line: 1,
+				character: 2,
+			},
+			"",
+		)
+		.expect("path_file-specific area schema completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"area_only"));
+		assert!(!labels.contains(&"region_only"));
+		assert!(!labels.contains(&"fallback_only"));
+	}
+
+	#[test]
 	fn completion_binds_dynamic_cwt_marker_fields() {
 		let engine = load_lsp_rule_engine();
 		let text =

@@ -121,6 +121,7 @@ pub enum CwtRuleValue {
 pub struct CwtTypeDef {
 	pub name: CwtType,
 	pub path: Option<String>,
+	pub path_file: Option<String>,
 	pub name_field: Option<String>,
 	pub type_key_filter: Option<CwtTypeKeyFilter>,
 	pub push_scope: Option<String>,
@@ -136,6 +137,7 @@ impl CwtTypeDef {
 		Self {
 			name,
 			path: None,
+			path_file: None,
 			name_field: None,
 			type_key_filter: None,
 			push_scope: None,
@@ -434,6 +436,9 @@ fn merge_type_items(entry: &mut CwtTypeDef, items: &[ParadoxNode<'_>], header_fi
 				if header_fields {
 					match key.as_str() {
 						"path" => entry.path = scalar_text(child_value).map(normalize_schema_path),
+						"path_file" => {
+							entry.path_file = scalar_text(child_value).map(normalize_schema_path)
+						}
 						"name_field" => entry.name_field = scalar_text(child_value),
 						"push_scope" => entry.push_scope = scalar_text(child_value),
 						"type_per_file" => {
@@ -453,9 +458,9 @@ fn merge_type_items(entry: &mut CwtTypeDef, items: &[ParadoxNode<'_>], header_fi
 					if matches!(
 						key.as_str(),
 						"path"
-							| "name_field" | "push_scope"
-							| "type_per_file" | "name_from_file"
-							| "skip_root_key"
+							| "path_file" | "name_field"
+							| "push_scope" | "type_per_file"
+							| "name_from_file" | "skip_root_key"
 					) {
 						pending_doc_comments.clear();
 						continue;

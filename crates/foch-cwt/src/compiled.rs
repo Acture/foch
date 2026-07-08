@@ -15,7 +15,7 @@ use crate::schema::{
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.5.1";
+pub const PACK_FORMAT_VERSION: &str = "0.6.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -199,6 +199,8 @@ pub struct CompiledRoot {
 	pub name: String,
 	pub path: Option<String>,
 	pub normalized_path: Option<String>,
+	pub path_file: Option<String>,
+	pub normalized_file_path: Option<String>,
 	pub name_field: Option<String>,
 	pub type_key_filter: Option<CompiledTypeKeyFilter>,
 	pub push_scope: Option<String>,
@@ -215,6 +217,14 @@ impl CompiledRoot {
 			name: definition.name.as_str().to_string(),
 			path: definition.path.clone(),
 			normalized_path: definition.path.as_deref().map(normalize_schema_path),
+			path_file: definition.path_file.clone(),
+			normalized_file_path: definition
+				.path
+				.as_deref()
+				.zip(definition.path_file.as_deref())
+				.map(|(path, path_file)| {
+					normalized_schema_file_path(&normalize_schema_path(path), path_file)
+				}),
 			name_field: definition.name_field.clone(),
 			type_key_filter: definition
 				.type_key_filter
@@ -670,9 +680,12 @@ impl RuleEngine {
 			.enumerate()
 			.filter_map(|(index, root)| {
 				let normalized_path = root.normalized_path.as_deref()?;
-				(normalized == normalized_path
-					|| normalized.starts_with(&format!("{normalized_path}/")))
-				.then_some((normalized_path.len(), root.name.as_str(), index))
+				root_path_match_len(
+					&normalized,
+					normalized_path,
+					root.normalized_file_path.as_deref(),
+				)
+				.map(|match_len| (match_len, root.name.as_str(), index))
 			})
 			.collect::<Vec<_>>();
 		matches.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
@@ -1169,6 +1182,19 @@ fn field_rules(field: &CompiledRuleField) -> Option<&[CompiledRuleField]> {
 	Some(fields.as_slice())
 }
 
+fn root_path_match_len(
+	file_path: &str,
+	normalized_root_path: &str,
+	normalized_file_path: Option<&str>,
+) -> Option<usize> {
+	if let Some(normalized_file_path) = normalized_file_path {
+		return (file_path == normalized_file_path).then_some(normalized_file_path.len());
+	}
+	(file_path == normalized_root_path
+		|| file_path.starts_with(&format!("{normalized_root_path}/")))
+	.then_some(normalized_root_path.len())
+}
+
 fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
 	skip_key == "any" || skip_key == key
 }
@@ -1297,6 +1323,15 @@ fn normalize_schema_path(path: &str) -> String {
 	path.trim_start_matches("game/")
 		.trim_matches('/')
 		.to_ascii_lowercase()
+}
+
+fn normalized_schema_file_path(normalized_root_path: &str, path_file: &str) -> String {
+	let path_file = normalize_schema_path(path_file);
+	if normalized_root_path.is_empty() {
+		path_file
+	} else {
+		format!("{normalized_root_path}/{path_file}")
+	}
 }
 
 fn normalize_path(path: &Path) -> String {

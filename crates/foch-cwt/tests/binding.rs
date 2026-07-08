@@ -336,6 +336,70 @@ fn bind_chain_uses_root_type_key_filter_exclusions() {
 }
 
 #[test]
+fn bind_chain_uses_path_file_for_root_matching() {
+	let schema = r#"
+	types = {
+		type[map_fallback] = {
+			path = "game/map"
+		}
+		type[area] = {
+			path = "game/map"
+			path_file = "area.txt"
+		}
+		type[region] = {
+			path = "game/map"
+			path_file = "region.txt"
+		}
+	}
+
+	map_fallback = {
+		fallback_only = bool
+	}
+
+	area = {
+		area_only = bool
+	}
+
+	region = {
+		region_only = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let area = graph
+		.types
+		.values()
+		.find(|definition| definition.name.as_str() == "area")
+		.expect("area type");
+	assert_eq!(area.path_file.as_deref(), Some("area.txt"));
+
+	let area_binding = graph.bind_chain(Path::new("map/area.txt"), &["sample_area", "area_only"]);
+	let SchemaBinding::Bound { type_id, node_id } = area_binding else {
+		panic!("expected area binding, got {area_binding:?}");
+	};
+	assert_eq!(type_id.as_str(), "area");
+	assert_eq!(node_id.0, "type:area:field:area_only");
+
+	let region_binding = graph.bind_chain(
+		Path::new("map/region.txt"),
+		&["sample_region", "region_only"],
+	);
+	let SchemaBinding::Bound { type_id, node_id } = region_binding else {
+		panic!("expected region binding, got {region_binding:?}");
+	};
+	assert_eq!(type_id.as_str(), "region");
+	assert_eq!(node_id.0, "type:region:field:region_only");
+
+	let fallback_binding =
+		graph.bind_chain(Path::new("map/other.txt"), &["sample_map", "fallback_only"]);
+	let SchemaBinding::Bound { type_id, node_id } = fallback_binding else {
+		panic!("expected fallback map binding, got {fallback_binding:?}");
+	};
+	assert_eq!(type_id.as_str(), "map_fallback");
+	assert_eq!(node_id.0, "type:map_fallback:field:fallback_only");
+}
+
+#[test]
 fn bind_chain_uses_ordered_skip_root_key_chain() {
 	let schema = r#"
 	types = {

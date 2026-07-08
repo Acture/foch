@@ -36,6 +36,7 @@
       "name_field": "id",
       "name_from_file": false,
       "path": "events",
+      "path_file": null,
       "push_scope": "country",
       "rules": [],
       "skip_root_keys": [],
@@ -98,6 +99,7 @@
       "name_field": "icon",
       "name_from_file": false,
       "path": "missions",
+      "path_file": null,
       "push_scope": null,
       "rules": [],
       "skip_root_keys": [],
@@ -109,6 +111,7 @@
       "name_field": null,
       "name_from_file": false,
       "path": "missions",
+      "path_file": null,
       "push_scope": null,
       "rules": [],
       "skip_root_keys": [
