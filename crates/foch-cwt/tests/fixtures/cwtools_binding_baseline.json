@@ -576,14 +576,19 @@
       "subtypes": [
         {
           "name": "country",
-          "rules": []
+          "push_scope": "country",
+          "rules": [],
+          "scope": []
         },
         {
           "name": "province",
-          "rules": []
+          "push_scope": "province",
+          "rules": [],
+          "scope": []
         },
         {
           "name": "mean_time_to_happen",
+          "push_scope": null,
           "rules": [
             {
               "key": "mean_time_to_happen",
@@ -592,10 +597,12 @@
                 "kind": "block"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "hidden",
+          "push_scope": null,
           "rules": [
             {
               "key": "hidden",
@@ -604,10 +611,12 @@
                 "value": "yes"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "triggered",
+          "push_scope": null,
           "rules": [
             {
               "key": "is_triggered_only",
@@ -616,10 +625,12 @@
                 "value": "yes"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "hidden",
+          "push_scope": null,
           "rules": [
             {
               "key": "title",
@@ -656,10 +667,12 @@
                 "value": "none"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "!hidden",
+          "push_scope": null,
           "rules": [
             {
               "key": "title",
@@ -784,10 +797,12 @@
                 "kind": "block"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "!mean_time_to_happen",
+          "push_scope": null,
           "rules": [
             {
               "key": "is_triggered_only",
@@ -796,10 +811,12 @@
                 "value": "yes"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "triggered",
+          "push_scope": null,
           "rules": [
             {
               "key": "mean_time_to_happen",
@@ -816,10 +833,12 @@
                 "kind": "block"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "!triggered",
+          "push_scope": null,
           "rules": [
             {
               "key": "mean_time_to_happen",
@@ -843,10 +862,12 @@
                 "kind": "block"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "triggered",
+          "push_scope": null,
           "rules": [
             {
               "key": "mean_time_to_happen",
@@ -870,7 +891,8 @@
                 "kind": "block"
               }
             }
-          ]
+          ],
+          "scope": []
         }
       ],
       "type_per_file": false
@@ -1209,6 +1231,7 @@
       "subtypes": [
         {
           "name": "negative",
+          "push_scope": null,
           "rules": [
             {
               "key": "opinion",
@@ -1217,10 +1240,12 @@
                 "value": "int[-9999..-1]"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "positive",
+          "push_scope": null,
           "rules": [
             {
               "key": "opinion",
@@ -1229,10 +1254,12 @@
                 "value": "int[0..9999]"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "positive",
+          "push_scope": null,
           "rules": [
             {
               "key": "max",
@@ -1241,10 +1268,12 @@
                 "value": "int"
               }
             }
-          ]
+          ],
+          "scope": []
         },
         {
           "name": "negative",
+          "push_scope": null,
           "rules": [
             {
               "key": "min",
@@ -1253,7 +1282,8 @@
                 "value": "int"
               }
             }
-          ]
+          ],
+          "scope": []
         }
       ],
       "type_per_file": false

@@ -56,6 +56,8 @@ struct TypeBaseline {
 #[derive(Serialize)]
 struct SubtypeBaseline {
 	name: String,
+	push_scope: Option<String>,
+	scope: Vec<String>,
 	rules: Vec<RuleFieldBaseline>,
 }
 
@@ -289,6 +291,8 @@ fn type_baseline(definition: &CwtTypeDef) -> TypeBaseline {
 fn subtype_baseline(subtype: &CwtSubtype) -> SubtypeBaseline {
 	SubtypeBaseline {
 		name: subtype.name.clone(),
+		push_scope: subtype.attributes.push_scope.clone(),
+		scope: subtype.attributes.scope.clone(),
 		rules: subtype.rules.iter().map(rule_field_baseline).collect(),
 	}
 }

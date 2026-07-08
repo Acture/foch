@@ -2,6 +2,7 @@ types = {
 	type[event] = {
 		path = "game/events"
 		## type_key_filter = country_event
+		## push_scope = country
 		subtype[country] = {
 		}
 	}

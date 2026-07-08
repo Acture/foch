@@ -15,7 +15,7 @@ use crate::schema::{
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.6.0";
+pub const PACK_FORMAT_VERSION: &str = "0.6.1";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -251,6 +251,7 @@ impl CompiledRoot {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompiledSubtype {
 	pub name: String,
+	pub attributes: CompiledFieldAttributes,
 	pub type_key_filter: Option<CompiledTypeKeyFilter>,
 	pub rules: Vec<CompiledRuleField>,
 }
@@ -259,6 +260,7 @@ impl CompiledSubtype {
 	fn from_subtype(subtype: &CwtSubtype) -> Self {
 		Self {
 			name: subtype.name.clone(),
+			attributes: CompiledFieldAttributes::from_attributes(&subtype.attributes),
 			type_key_filter: subtype
 				.type_key_filter
 				.as_ref()

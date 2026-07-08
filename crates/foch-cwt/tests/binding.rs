@@ -32,6 +32,10 @@ fn bind_chain_binds_root_and_subtype() {
 		event.subtypes[0].type_key_filter,
 		Some(CwtTypeKeyFilter::Exact(vec!["country_event".to_string()]))
 	);
+	assert_eq!(
+		event.subtypes[0].attributes.push_scope.as_deref(),
+		Some("country")
+	);
 }
 
 #[test]

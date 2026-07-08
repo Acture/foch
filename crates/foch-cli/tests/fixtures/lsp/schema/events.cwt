@@ -6,6 +6,7 @@ types = {
 }
 
 event = {
+  ## push_scope = country
   subtype[country_event] = {
     ## cardinality = 0..1
     ###Event title localisation key.

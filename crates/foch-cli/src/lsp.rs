@@ -781,7 +781,7 @@ fn format_scope_values(values: &[String]) -> String {
 		.join(", ")
 }
 
-fn format_scope_refs(values: &[&str]) -> String {
+fn format_scope_refs(values: &[String]) -> String {
 	values
 		.iter()
 		.map(|value| format!("`{value}`"))
@@ -842,7 +842,7 @@ fn schema_completion_candidates(
 	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
-	let active_scopes = schema_completion_active_scopes(parent_context);
+	let active_scopes = schema_active_scopes_for_path(engine, file_path, &parent_path);
 	let mut candidates = Vec::new();
 	for field in completion_rule_fields(parent_context) {
 		candidates.extend(schema_completion_entries_for_field(
@@ -973,7 +973,7 @@ fn completion_rule_fields(context: RuleContext<'_>) -> Vec<&CompiledRuleField> {
 fn schema_completion_entries_for_field(
 	engine: &RuleEngine,
 	field: &CompiledRuleField,
-	active_scopes: &[&str],
+	active_scopes: &[String],
 	prefix_lower: &str,
 ) -> Vec<CompletionCandidate> {
 	let Some((head, payload)) = parse_schema_marker(&field.key) else {
@@ -1017,30 +1017,54 @@ fn schema_completion_entries_for_field(
 	candidates
 }
 
-fn schema_completion_active_scopes(context: RuleContext<'_>) -> Vec<&str> {
+fn schema_active_scopes_for_path(
+	engine: &RuleEngine,
+	file_path: &Path,
+	path: &[&str],
+) -> Vec<String> {
+	let mut active_scopes = Vec::new();
+	for index in 0..=path.len() {
+		let Some(context) = engine.bind_context(file_path, &path[..index]) else {
+			continue;
+		};
+		let scopes = schema_context_own_active_scopes(context);
+		if !scopes.is_empty() {
+			active_scopes = scopes;
+		}
+	}
+	active_scopes
+}
+
+fn schema_context_own_active_scopes(context: RuleContext<'_>) -> Vec<String> {
 	match context {
-		RuleContext::RootType(root) | RuleContext::Subtype(root, _) => {
-			root.push_scope.as_deref().into_iter().collect()
+		RuleContext::RootType(root) => root.push_scope.iter().cloned().collect(),
+		RuleContext::Subtype(root, subtype) => {
+			let scopes = schema_active_scopes_from_attributes(&subtype.attributes);
+			if scopes.is_empty() {
+				root.push_scope.iter().cloned().collect()
+			} else {
+				scopes
+			}
 		}
 		RuleContext::RuleField(field) => schema_active_scopes_from_attributes(&field.attributes),
 		RuleContext::AliasRules(_) => Vec::new(),
 	}
 }
 
-fn schema_active_scopes_from_attributes(attributes: &CompiledFieldAttributes) -> Vec<&str> {
-	if let Some(push_scope) = attributes.push_scope.as_deref() {
-		return vec![push_scope];
+fn schema_active_scopes_from_attributes(attributes: &CompiledFieldAttributes) -> Vec<String> {
+	if let Some(push_scope) = attributes.push_scope.as_ref() {
+		return vec![push_scope.clone()];
 	}
 	if let Some(this_scope) = attributes.replace_scope.get("this") {
-		return vec![this_scope.as_str()];
+		return vec![this_scope.clone()];
 	}
-	attributes.scope.iter().map(String::as_str).collect()
+	attributes.scope.clone()
 }
 
 fn schema_alias_scope_matches(
 	engine: &RuleEngine,
 	alias: &CompiledAlias,
-	active_scopes: &[&str],
+	active_scopes: &[String],
 ) -> bool {
 	if active_scopes.is_empty() || alias.attributes.scope.is_empty() {
 		return true;
@@ -1122,9 +1146,7 @@ fn collect_schema_diagnostics(
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &context_path);
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
-	let active_scopes = parent_context
-		.map(schema_completion_active_scopes)
-		.unwrap_or_default();
+	let active_scopes = schema_active_scopes_for_path(engine, file_path, &context_path);
 	let mut cardinality_ranges = HashMap::<String, (u32, DiagnosticSeverity, Vec<Range>)>::new();
 	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
@@ -1465,7 +1487,7 @@ fn schema_alias_scope_diagnostic(
 	field_match: &CompiledBindFieldMatch<'_>,
 	range: Range,
 	key: &str,
-	active_scopes: &[&str],
+	active_scopes: &[String],
 ) -> Option<Diagnostic> {
 	let alias = field_match.alias()?;
 	if schema_alias_scope_matches(engine, alias, active_scopes) {
@@ -4018,6 +4040,27 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_inherits_subtype_scope_for_alias_filtering() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  trigger = {\n    has\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token_offset(text, "has", 3),
+			"has",
+		)
+		.expect("subtype-scope-filtered trigger completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"has_country_flag"));
+		assert!(!labels.contains(&"has_province_flag"));
+		assert!(!labels.contains(&"has_sea_flag"));
+	}
+
+	#[test]
 	fn completion_accepts_parent_scope_aliases_in_subscope_context() {
 		let engine = load_lsp_rule_engine();
 		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    country_wide_effect = 1\n  }\n}\n";
@@ -4256,6 +4299,21 @@ mod tests {
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
 				&& diagnostic.message.contains("province_only_effect")
+				&& diagnostic.message.contains("`province`")
+				&& diagnostic.message.contains("`country`")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_inherit_subtype_scope_for_alias_mismatches() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  trigger = {\n    has_province_flag = demo_flag\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_province_flag")
 				&& diagnostic.message.contains("`province`")
 				&& diagnostic.message.contains("`country`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)

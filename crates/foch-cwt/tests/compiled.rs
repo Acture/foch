@@ -16,6 +16,14 @@ fn compiled_engine_matches_graph_root_and_chain_binding() {
 		engine.root_binding(root_path),
 		graph.root_binding(root_path)
 	);
+	let root = engine.bind_root(root_path).expect("bind event root");
+	assert_eq!(
+		root.subtypes
+			.iter()
+			.find(|subtype| subtype.name == "country")
+			.and_then(|subtype| subtype.attributes.push_scope.as_deref()),
+		Some("country")
+	);
 
 	let ast_path = ["country_event", "trigger", "is_year"];
 	assert_eq!(

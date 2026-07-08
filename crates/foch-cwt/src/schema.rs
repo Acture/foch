@@ -59,6 +59,7 @@ pub struct CwtAlias {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CwtSubtype {
 	pub name: String,
+	pub attributes: CwtFieldAttributes,
 	pub type_key_filter: Option<CwtTypeKeyFilter>,
 	pub rules: Vec<CwtRuleField>,
 }
@@ -469,9 +470,11 @@ fn merge_type_items(entry: &mut CwtTypeDef, items: &[ParadoxNode<'_>], header_fi
 				if let Some(marker) = ParsedMarker::parse(&key)
 					&& marker.head == "subtype"
 				{
+					let subtype_attributes = parse_subtype_attributes(&pending_doc_comments);
 					entry.subtypes.push(CwtSubtype {
 						name: marker.payload.to_string(),
 						type_key_filter: parse_type_key_filter(&pending_doc_comments),
+						attributes: subtype_attributes,
 						rules: block_to_rules(child_value),
 					});
 				} else {
@@ -659,6 +662,16 @@ fn parse_field_attributes(comments: Vec<String>) -> CwtFieldAttributes {
 		}
 	}
 	attributes
+}
+
+fn parse_subtype_attributes(comments: &[String]) -> CwtFieldAttributes {
+	parse_field_attributes(
+		comments
+			.iter()
+			.filter(|comment| !comment.trim().starts_with("type_key_filter"))
+			.cloned()
+			.collect(),
+	)
 }
 
 fn parse_type_key_filter(comments: &[String]) -> Option<CwtTypeKeyFilter> {
