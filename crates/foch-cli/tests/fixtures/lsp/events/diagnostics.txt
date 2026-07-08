@@ -5,5 +5,11 @@ country_event = {
   title = sample.2.extra
   category = ECO
   target = elsewhere
+  days = many
+  chance = heavy
+  hidden = maybe
+  immediate = {
+    add_prestige = much
+  }
   mystery_key = yes
 }

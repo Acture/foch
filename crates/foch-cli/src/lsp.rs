@@ -1084,10 +1084,18 @@ fn collect_schema_diagnostics(
 					&& let AstValue::Scalar {
 						value: scalar,
 						span,
-					} = value && let Some(diagnostic) =
-					schema_invalid_value_diagnostic(engine, &field_match, key, scalar, span)
+					} = value
 				{
-					diagnostics.push(diagnostic);
+					if let Some(diagnostic) =
+						schema_invalid_value_diagnostic(engine, &field_match, key, scalar, span)
+					{
+						diagnostics.push(diagnostic);
+					}
+					if let Some(diagnostic) =
+						schema_scalar_type_diagnostic(&field_match, key, scalar, span)
+					{
+						diagnostics.push(diagnostic);
+					}
 				}
 				if let Some(field_match) = field_match {
 					*present_key_counts
@@ -1269,6 +1277,74 @@ fn schema_invalid_value_diagnostic(
 		),
 		..Diagnostic::default()
 	})
+}
+
+fn schema_scalar_type_diagnostic(
+	field_match: &CompiledBindFieldMatch<'_>,
+	key: &str,
+	scalar: &ScalarValue,
+	span: &SpanRange,
+) -> Option<Diagnostic> {
+	let expected = schema_scalar_type(schema_match_value(field_match))?;
+	if expected.matches(scalar) {
+		return None;
+	}
+	Some(Diagnostic {
+		range: lsp_range_from_span(span),
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("V005".to_string())),
+		source: Some("foch".to_string()),
+		message: format!(
+			"value `{}` for `{key}` does not match schema type `{}`",
+			scalar.as_text(),
+			expected.label()
+		),
+		..Diagnostic::default()
+	})
+}
+
+fn schema_scalar_type(value: &CompiledRuleValue) -> Option<SchemaScalarType> {
+	let value = match value {
+		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value.as_str(),
+		CompiledRuleValue::Block(_) => return None,
+	};
+	match value {
+		"int" => Some(SchemaScalarType::Int),
+		"float" => Some(SchemaScalarType::Float),
+		"bool" => Some(SchemaScalarType::Bool),
+		_ => None,
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchemaScalarType {
+	Int,
+	Float,
+	Bool,
+}
+
+impl SchemaScalarType {
+	fn label(self) -> &'static str {
+		match self {
+			Self::Int => "int",
+			Self::Float => "float",
+			Self::Bool => "bool",
+		}
+	}
+
+	fn matches(self, scalar: &ScalarValue) -> bool {
+		match self {
+			Self::Int => match scalar {
+				ScalarValue::Number(value) => value.parse::<i64>().is_ok(),
+				_ => false,
+			},
+			Self::Float => match scalar {
+				ScalarValue::Number(value) => value.parse::<f64>().is_ok(),
+				_ => false,
+			},
+			Self::Bool => matches!(scalar, ScalarValue::Bool(_)),
+		}
+	}
 }
 
 fn schema_match_value<'p>(field_match: &CompiledBindFieldMatch<'p>) -> &'p CompiledRuleValue {
@@ -3640,6 +3716,34 @@ mod tests {
 			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
 				&& diagnostic.message.contains("elsewhere")
 				&& diagnostic.message.contains("event_targets")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("many")
+				&& diagnostic.message.contains("days")
+				&& diagnostic.message.contains("int")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("heavy")
+				&& diagnostic.message.contains("chance")
+				&& diagnostic.message.contains("float")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("maybe")
+				&& diagnostic.message.contains("hidden")
+				&& diagnostic.message.contains("bool")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("much")
+				&& diagnostic.message.contains("add_prestige")
+				&& diagnostic.message.contains("int")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
 		}));
 	}
