@@ -73,11 +73,14 @@ For normal use, prefer release binaries or `cargo install --path crates/foch-cli
 
 The extension is the first `0.1.0` preview surface and is versioned by editor usability, not by merge-engine maturity. Today it targets EU4 only and includes schema-aware hover/completion, goto-definition, find-references, document/workspace symbols, and a missing-localisation quick fix for the semantic families covered by the shared analyzer. The merge engine remains an experimental alpha feature.
 
+The acceptance scope, CWTools positioning, multi-game path, and proposed agent skill/MCP surfaces are tracked in [`docs/lsp-0.1-preview.md`](./docs/lsp-0.1-preview.md).
+
 ## Release and project status
 
 - Alpha release prep: [`ALPHA_ANNOUNCEMENT.md`](./ALPHA_ANNOUNCEMENT.md), [`docs/RELEASE_CHECKLIST.md`](./docs/RELEASE_CHECKLIST.md).
 - Known limitations: [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md).
 - Current engineering status: [`docs/project-status.md`](./docs/project-status.md).
+- LSP preview scope: [`docs/lsp-0.1-preview.md`](./docs/lsp-0.1-preview.md).
 - Resolution DSL: [`docs/foch-toml-resolutions.md`](./docs/foch-toml-resolutions.md).
 - CWT mapping notes: [`docs/cwt-content-family-mapping.md`](./docs/cwt-content-family-mapping.md).
 

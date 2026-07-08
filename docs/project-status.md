@@ -8,7 +8,7 @@ Last updated: 2026-07-08
 
 ## LSP-first 0.1 preview
 
-The VS Code extension and `foch lsp` server are the best candidate for the first user-facing `0.1.0` preview. Their version semantics are separate from merge-engine maturity, but they share the same EU4 semantic analyzer and CWT schema graph.
+The VS Code extension and `foch lsp` server are the best candidate for the first user-facing `0.1.0` preview. Their version semantics are separate from merge-engine maturity, but they share the same EU4 semantic analyzer and CWT schema graph. The acceptance scope, CWTools positioning, multi-game path, and proposed agent skill/MCP surfaces are specified in [`lsp-0.1-preview.md`](./lsp-0.1-preview.md).
 
 Current LSP/VS Code preview surface:
 

@@ -9,6 +9,8 @@ Marketplace pre-release builds use `version = 0.1.0` plus the pre-release publis
 
 The VS Code extension is the first `0.1.0` preview surface for Foch. It is versioned separately from the merge engine's maturity: the extension focuses on EU4 editing, diagnostics, and navigation, while automatic merge remains experimental.
 
+The release boundary and CWTools comparison are tracked in [`docs/lsp-0.1-preview.md`](../../docs/lsp-0.1-preview.md).
+
 ## What ships today
 
 | Capability | Coverage |

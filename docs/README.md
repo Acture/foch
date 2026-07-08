@@ -8,6 +8,7 @@ Read these documents in order if you are new to the project; each entry points a
 
 - [architecture.md](./architecture.md) - subsystem layout, analyzer/workspace internals, shared kernels, and public check-layer façades
 - [project-status.md](./project-status.md) - shipped surface, internal shape, and deferred work
+- [lsp-0.1-preview.md](./lsp-0.1-preview.md) - VS Code/LSP 0.1 scope, CWTools positioning, multi-game path, and agent skill/MCP design
 
 ## Roadmap
 
