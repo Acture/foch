@@ -1,10 +1,11 @@
 use foch_core::model::{
-	AnalysisMode, Finding, SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
+	AnalysisMode, DocumentFamily, DocumentRecord, Finding, LocalisationDefinition, SemanticIndex,
+	Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
 };
 use foch_cwt::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
-	CompiledRuleCondition, CompiledRuleField, CompiledRuleValue, CompiledSeverity, RuleContext,
-	RuleEngine, RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
+	CompiledRoot, CompiledRuleCondition, CompiledRuleField, CompiledRuleValue, CompiledSeverity,
+	RuleContext, RuleEngine, RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
 	default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
@@ -17,7 +18,8 @@ use foch_language::analyzer::parser::{
 	AstStatement, AstValue, ScalarValue, SpanRange, parse_clausewitz_content,
 };
 use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, build_semantic_index, parse_script_file, resolve_symbol_reference_targets,
+	ParsedScriptFile, build_semantic_index, collect_localisation_definitions, parse_script_file,
+	resolve_symbol_reference_targets,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -205,6 +207,17 @@ impl Backend {
 				relative_path,
 				text,
 			));
+			if let Some(session) = snapshot
+				.as_ref()
+				.and_then(|snapshot| snapshot.session.as_ref())
+			{
+				diagnostics.extend(schema_localisation_diagnostics_for_text(
+					engine.as_ref(),
+					relative_path,
+					text,
+					&session.index.localisation_definitions,
+				));
+			}
 		}
 		sort_and_dedup_diagnostics(&mut diagnostics);
 		self.client
@@ -1254,6 +1267,241 @@ fn schema_diagnostics_for_ast(
 	diagnostics
 }
 
+fn schema_localisation_diagnostics_for_text(
+	engine: &RuleEngine,
+	file_path: &Path,
+	text: &str,
+	definitions: &[LocalisationDefinition],
+) -> Vec<Diagnostic> {
+	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
+	schema_localisation_diagnostics_for_ast(engine, file_path, &parsed.ast.statements, definitions)
+}
+
+fn schema_localisation_diagnostics_for_ast(
+	engine: &RuleEngine,
+	file_path: &Path,
+	statements: &[AstStatement],
+	definitions: &[LocalisationDefinition],
+) -> Vec<Diagnostic> {
+	let defined_keys = definitions
+		.iter()
+		.map(|definition| definition.key.as_str())
+		.collect::<HashSet<_>>();
+	let mut diagnostics = schema_localisation_references_for_ast(engine, file_path, statements)
+		.into_iter()
+		.filter(|reference| !defined_keys.contains(reference.key.as_str()))
+		.map(|reference| schema_missing_localisation_diagnostic(reference.range, &reference.key))
+		.collect::<Vec<_>>();
+	sort_and_dedup_diagnostics(&mut diagnostics);
+	diagnostics
+}
+
+#[derive(Clone, Debug)]
+struct SchemaLocalisationReference {
+	key: String,
+	range: Range,
+}
+
+#[derive(Clone, Debug)]
+struct SchemaRootInstance<'a> {
+	path: Vec<String>,
+	items: &'a [AstStatement],
+	identity: String,
+	identity_range: Range,
+}
+
+fn schema_localisation_references_for_ast(
+	engine: &RuleEngine,
+	file_path: &Path,
+	statements: &[AstStatement],
+) -> Vec<SchemaLocalisationReference> {
+	let Some(root) = engine.bind_root(file_path) else {
+		return Vec::new();
+	};
+	if root.localisation.is_empty() {
+		return Vec::new();
+	}
+	let instances = schema_root_instances(root, statements, file_path);
+	let mut references = Vec::new();
+	for instance in instances {
+		let path = instance.path.iter().map(String::as_str).collect::<Vec<_>>();
+		let active_subtypes =
+			schema_active_subtypes_for_instance(engine, file_path, root, instance.items, &path);
+		for rule in &root.localisation {
+			if !schema_conditions_match(&rule.conditions, &active_subtypes) {
+				continue;
+			}
+			let Some(pattern) = schema_rule_scalar_pattern(&rule.value) else {
+				continue;
+			};
+			if pattern.contains('$') {
+				let key = pattern.replace('$', &instance.identity);
+				if !key.is_empty() {
+					references.push(SchemaLocalisationReference {
+						key,
+						range: instance.identity_range,
+					});
+				}
+				continue;
+			}
+			if let Some((key, range)) = scalar_assignment_in_statements(instance.items, pattern) {
+				references.push(SchemaLocalisationReference { key, range });
+			}
+		}
+	}
+	references.sort_by(|left, right| {
+		left.key
+			.cmp(&right.key)
+			.then_with(|| range_start(&left.range).cmp(&range_start(&right.range)))
+	});
+	references.dedup_by(|left, right| left.key == right.key && left.range == right.range);
+	references
+}
+
+fn schema_rule_scalar_pattern(value: &CompiledRuleValue) -> Option<&str> {
+	match value {
+		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => Some(value),
+		CompiledRuleValue::Block(_) => None,
+	}
+}
+
+fn schema_root_instances<'a>(
+	root: &CompiledRoot,
+	statements: &'a [AstStatement],
+	file_path: &Path,
+) -> Vec<SchemaRootInstance<'a>> {
+	let mut instances = Vec::new();
+	collect_schema_root_instances(
+		root,
+		statements,
+		&root.skip_root_keys,
+		Vec::new(),
+		file_path,
+		&mut instances,
+	);
+	instances
+}
+
+fn collect_schema_root_instances<'a>(
+	root: &CompiledRoot,
+	statements: &'a [AstStatement],
+	remaining_skip_keys: &[String],
+	path: Vec<String>,
+	file_path: &Path,
+	out: &mut Vec<SchemaRootInstance<'a>>,
+) {
+	if let Some((skip_key, rest)) = remaining_skip_keys.split_first() {
+		for statement in statements {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				continue;
+			};
+			if skip_key != "any" && key != skip_key {
+				continue;
+			}
+			let AstValue::Block { items, .. } = value else {
+				continue;
+			};
+			let mut child_path = path.clone();
+			child_path.push(key.clone());
+			collect_schema_root_instances(root, items, rest, child_path, file_path, out);
+		}
+		return;
+	}
+
+	for statement in statements {
+		let AstStatement::Assignment {
+			key,
+			key_span,
+			value,
+			..
+		} = statement
+		else {
+			continue;
+		};
+		let AstValue::Block { items, .. } = value else {
+			continue;
+		};
+		let mut instance_path = path.clone();
+		instance_path.push(key.clone());
+		let (identity, identity_range) =
+			schema_root_instance_identity(root, key, key_span, items, file_path);
+		out.push(SchemaRootInstance {
+			path: instance_path,
+			items,
+			identity,
+			identity_range,
+		});
+	}
+}
+
+fn schema_root_instance_identity(
+	root: &CompiledRoot,
+	key: &str,
+	key_span: &SpanRange,
+	items: &[AstStatement],
+	file_path: &Path,
+) -> (String, Range) {
+	if let Some(name_field) = root.name_field.as_deref()
+		&& let Some((value, range)) = scalar_assignment_in_statements(items, name_field)
+	{
+		return (value, range);
+	}
+	if root.name_from_file
+		&& let Some(stem) = file_path.file_stem().and_then(|value| value.to_str())
+	{
+		return (stem.to_string(), lsp_range_from_span(key_span));
+	}
+	(key.to_string(), lsp_range_from_span(key_span))
+}
+
+fn scalar_assignment_in_statements(
+	statements: &[AstStatement],
+	target_key: &str,
+) -> Option<(String, Range)> {
+	statements.iter().find_map(|statement| {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			return None;
+		};
+		if key != target_key {
+			return None;
+		}
+		let AstValue::Scalar { value, span } = value else {
+			return None;
+		};
+		Some((value.as_text(), lsp_range_from_span(span)))
+	})
+}
+
+fn schema_active_subtypes_for_instance(
+	engine: &RuleEngine,
+	file_path: &Path,
+	root: &CompiledRoot,
+	statements: &[AstStatement],
+	path: &[&str],
+) -> HashSet<String> {
+	let mut active = HashSet::new();
+	if let Some(RuleContext::Subtype(_, subtype)) = engine.bind_context(file_path, path) {
+		active.insert(subtype.name.clone());
+	}
+	for subtype in &root.subtypes {
+		if !subtype.rules.is_empty() && schema_rule_fields_match_ast(&subtype.rules, statements) {
+			active.insert(subtype.name.clone());
+		}
+	}
+	active
+}
+
+fn schema_missing_localisation_diagnostic(range: Range, key: &str) -> Diagnostic {
+	Diagnostic {
+		range,
+		severity: Some(DiagnosticSeverity::WARNING),
+		code: Some(NumberOrString::String("missing-localisation".to_string())),
+		source: Some("foch".to_string()),
+		message: format!("localisation key not found: {key}"),
+		..Diagnostic::default()
+	}
+}
+
 fn collect_schema_diagnostics(
 	engine: &RuleEngine,
 	file_path: &Path,
@@ -1992,6 +2240,7 @@ fn build_workspace_snapshot_with_schema(
 	let mut parsed = Vec::new();
 	let mut file_paths = Vec::new();
 	let mut path_lookup = HashMap::new();
+	let mut localisation_definitions = Vec::new();
 	for target in roots {
 		let files = collect_semantic_script_files(&target.path);
 		let mod_id = scan_target_mod_id(target);
@@ -2005,9 +2254,33 @@ fn build_workspace_snapshot_with_schema(
 				parsed.push(item);
 			}
 		}
+		let definitions = collect_localisation_definitions(&mod_id, &target.path);
+		for definition in &definitions {
+			let path = target.path.join(&definition.path);
+			file_paths.push(path.clone());
+			path_lookup.insert(
+				path_lookup_key(&definition.mod_id, &definition.path),
+				path.clone(),
+			);
+		}
+		localisation_definitions.extend(definitions);
 	}
 
-	let index = build_semantic_index(&parsed);
+	let mut index = build_semantic_index(&parsed);
+	let mut localisation_documents = HashSet::new();
+	for definition in &localisation_definitions {
+		if localisation_documents.insert(path_lookup_key(&definition.mod_id, &definition.path)) {
+			index.documents.push(DocumentRecord {
+				mod_id: definition.mod_id.clone(),
+				path: definition.path.clone(),
+				family: DocumentFamily::Localisation,
+				parse_ok: true,
+			});
+		}
+	}
+	index
+		.localisation_definitions
+		.extend(localisation_definitions);
 	let diagnostics = analyze_visibility(
 		&index,
 		&AnalyzeOptions {
@@ -2083,13 +2356,23 @@ fn build_workspace_snapshot_with_schema(
 				&file.relative_path,
 				&file.ast.statements,
 			);
-			if schema_diagnostics.is_empty() {
+			let localisation_diagnostics = schema_localisation_diagnostics_for_ast(
+				engine.as_ref(),
+				&file.relative_path,
+				&file.ast.statements,
+				&index.localisation_definitions,
+			);
+			if schema_diagnostics.is_empty() && localisation_diagnostics.is_empty() {
 				continue;
 			}
+			let diagnostics = schema_diagnostics
+				.into_iter()
+				.chain(localisation_diagnostics)
+				.collect::<Vec<_>>();
 			diagnostics_by_path
 				.entry(normalize_path(&file.path))
 				.or_default()
-				.extend(schema_diagnostics);
+				.extend(diagnostics);
 		}
 		for diagnostics in diagnostics_by_path.values_mut() {
 			sort_and_dedup_diagnostics(diagnostics);
@@ -3780,6 +4063,65 @@ mod tests {
 	}
 
 	#[test]
+	fn workspace_snapshot_indexes_localisation_files_for_navigation() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("events")).expect("create events");
+		fs::create_dir_all(root.join("localisation").join("english")).expect("create localisation");
+		let event_path = root.join("events").join("a.txt");
+		fs::write(
+			&event_path,
+			"namespace = test\ncountry_event = { id = test.1 title = TEST_EVENT_TITLE }\n",
+		)
+		.expect("write event");
+		let localisation_path = root
+			.join("localisation")
+			.join("english")
+			.join("test_l_english.yml");
+		fs::write(
+			&localisation_path,
+			"l_english:\n TEST_EVENT_TITLE:0 \"Title\"\n",
+		)
+		.expect("write localisation");
+
+		let target = ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		};
+		let snapshot = build_workspace_snapshot(std::slice::from_ref(&target));
+		assert!(snapshot.session.as_ref().is_some_and(|session| {
+			session
+				.index
+				.localisation_definitions
+				.iter()
+				.any(|definition| definition.key == "TEST_EVENT_TITLE")
+		}));
+
+		let text = fs::read_to_string(&event_path).expect("read event");
+		let uri = Url::from_file_path(&event_path).expect("event uri");
+		let line = text.lines().nth(1).expect("event line");
+		let column = line.find("TEST_EVENT_TITLE").expect("title token") as u32;
+		let locations = resolve_definition_locations(
+			&snapshot,
+			&[target],
+			&uri,
+			&text,
+			Position {
+				line: 1,
+				character: column,
+			},
+		)
+		.expect("localisation definition location");
+
+		assert_eq!(locations.len(), 1);
+		assert_eq!(
+			locations[0].uri,
+			Url::from_file_path(localisation_path).expect("localisation uri")
+		);
+	}
+
+	#[test]
 	fn code_action_creates_missing_localisation_stub_command() {
 		let tmp = TempDir::new().expect("temp dir");
 		let root = tmp.path();
@@ -4877,6 +5219,70 @@ sample = {
 		}));
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V002".to_string()))
+		}));
+	}
+
+	#[test]
+	fn workspace_snapshot_uses_cwt_localisation_metadata_for_missing_keys() {
+		let schema = r#"
+		types = {
+			type[event] = {
+				path = "game/events"
+				name_field = "id"
+				localisation = {
+					## required
+					custom = "$_custom"
+				}
+			}
+		}
+
+		event = {
+			id = scalar
+		}
+		"#;
+		let engine = load_inline_lsp_rule_engine(schema);
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("events")).expect("create events");
+		let event_path = root.join("events").join("a.txt");
+		fs::write(&event_path, "country_event = { id = test.1 }\n").expect("write event");
+
+		let target = ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		};
+		let snapshot = build_workspace_snapshot_with_schema(
+			std::slice::from_ref(&target),
+			Some(engine.clone()),
+		);
+		let diagnostics = snapshot
+			.diagnostics_by_path
+			.get(&event_path.to_string_lossy().replace('\\', "/"))
+			.expect("event diagnostics");
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("missing-localisation".to_string()))
+				&& diagnostic
+					.message
+					.contains("localisation key not found: test.1_custom")
+		}));
+
+		fs::create_dir_all(root.join("localisation").join("english")).expect("create localisation");
+		fs::write(
+			root.join("localisation")
+				.join("english")
+				.join("test_l_english.yml"),
+			"l_english:\n test.1_custom:0 \"Custom\"\n",
+		)
+		.expect("write localisation");
+		let snapshot = build_workspace_snapshot_with_schema(&[target], Some(engine));
+		let diagnostics = snapshot
+			.diagnostics_by_path
+			.get(&event_path.to_string_lossy().replace('\\', "/"))
+			.cloned()
+			.unwrap_or_default();
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("missing-localisation".to_string()))
+				&& diagnostic.message.contains("test.1_custom")
 		}));
 	}
 }
