@@ -13,6 +13,9 @@ country_event = {
   days = 30
   chance = 0.5
   hidden = no
+  dynamic_fields = {
+    alpha = 1
+  }
   trigger = {
     has_country_flag = demo_flag
   }

@@ -156,7 +156,7 @@ impl CwtSchemaGraph {
 			return matches;
 		}
 		for rules in &rule_sets {
-			match match_dynamic_key_rules(rules, key) {
+			match self.match_dynamic_key_rules(rules, key) {
 				Some(RuleMatch::Field(field)) => return vec![field],
 				Some(RuleMatch::Dynamic { .. }) => return Vec::new(),
 				_ => {}
@@ -206,7 +206,7 @@ impl CwtSchemaGraph {
 			}
 		}
 		for rules in &rule_sets {
-			match match_dynamic_key_rules(rules, key) {
+			match self.match_dynamic_key_rules(rules, key) {
 				Some(RuleMatch::Field(field)) => return Some(BindFieldMatch::Field(field)),
 				Some(RuleMatch::Dynamic { .. }) => return None,
 				_ => {}
@@ -481,7 +481,7 @@ impl CwtSchemaGraph {
 			}
 		}
 		for rules in rule_sets {
-			if let Some(dynamic_match) = match_dynamic_key_rules(rules, key) {
+			if let Some(dynamic_match) = self.match_dynamic_key_rules(rules, key) {
 				return Some(dynamic_match);
 			}
 		}
@@ -528,6 +528,112 @@ impl CwtSchemaGraph {
 		}
 	}
 
+	fn match_dynamic_key_rules<'g>(
+		&'g self,
+		rules: &'g [CwtRuleField],
+		key: &str,
+	) -> Option<RuleMatch<'g>> {
+		if is_dynamic_key_marker(key) {
+			return None;
+		}
+		let matches = rules
+			.iter()
+			.filter(|field| self.dynamic_key_rule_matches(&field.key, key))
+			.collect::<Vec<_>>();
+		match matches.as_slice() {
+			[] => None,
+			[field] => Some(RuleMatch::Field(field)),
+			_ => Some(RuleMatch::Dynamic {
+				reason: "ambiguous-dynamic-field-match",
+			}),
+		}
+	}
+
+	fn dynamic_key_rule_matches(&self, rule_key: &str, key: &str) -> bool {
+		if is_angle_dynamic_key_marker(rule_key) {
+			return true;
+		}
+		let Some((head, payload)) = parse_marker(rule_key) else {
+			return false;
+		};
+		match head {
+			"enum" => self
+				.enums
+				.get(payload)
+				.is_some_and(|values| values.iter().any(|value| value == key)),
+			"value" | "value_set" => self
+				.value_sets
+				.get(payload)
+				.is_some_and(|values| values.iter().any(|value| value == key)),
+			"scope" => self.scope_value_matches(payload, key),
+			_ => false,
+		}
+	}
+
+	fn scope_value_matches(&self, required_scope: &str, value: &str) -> bool {
+		self.scope_definitions().iter().any(|scope| {
+			scope.aliases.iter().any(|alias| alias == value)
+				&& (required_scope == "any"
+					|| self.scope_matches(required_scope, &scope.name)
+					|| scope
+						.aliases
+						.iter()
+						.any(|alias| self.scope_matches(required_scope, alias)))
+		})
+	}
+
+	fn scope_matches(&self, required_scope: &str, active_scope: &str) -> bool {
+		if required_scope == active_scope {
+			return true;
+		}
+		let Some(required_index) = self.scope_label_index(required_scope) else {
+			return false;
+		};
+		let Some(active_index) = self.scope_label_index(active_scope) else {
+			return false;
+		};
+		self.scope_index_matches(required_index, active_index)
+	}
+
+	fn scope_label_index(&self, label: &str) -> Option<usize> {
+		self.scope_definitions()
+			.iter()
+			.enumerate()
+			.find_map(|(index, scope)| {
+				(scope.name == label || scope.aliases.iter().any(|alias| alias == label))
+					.then_some(index)
+			})
+	}
+
+	fn scope_index_matches(&self, required_index: usize, active_index: usize) -> bool {
+		if required_index == active_index {
+			return true;
+		}
+		let mut stack = vec![active_index];
+		let mut visited = vec![false; self.scope_definitions().len()];
+		while let Some(index) = stack.pop() {
+			let Some(visited_entry) = visited.get_mut(index) else {
+				continue;
+			};
+			if *visited_entry {
+				continue;
+			}
+			*visited_entry = true;
+			if index == required_index {
+				return true;
+			}
+			let Some(scope) = self.scope_definitions().get(index) else {
+				continue;
+			};
+			for parent in &scope.is_subscope_of {
+				if let Some(parent_index) = self.scope_label_index(parent) {
+					stack.push(parent_index);
+				}
+			}
+		}
+		false
+	}
+
 	fn match_subtype<'g>(
 		&'g self,
 		definition: &'g CwtTypeDef,
@@ -546,24 +652,15 @@ impl CwtSchemaGraph {
 	}
 }
 
-fn match_dynamic_key_rules<'g>(rules: &'g [CwtRuleField], key: &str) -> Option<RuleMatch<'g>> {
-	if is_dynamic_key_marker(key) {
-		return None;
-	}
-	let matches = rules
-		.iter()
-		.filter(|field| is_dynamic_key_marker(&field.key))
-		.collect::<Vec<_>>();
-	match matches.as_slice() {
-		[] => None,
-		[field] => Some(RuleMatch::Field(field)),
-		_ => Some(RuleMatch::Dynamic {
-			reason: "ambiguous-dynamic-field-match",
-		}),
-	}
+fn is_dynamic_key_marker(key: &str) -> bool {
+	is_angle_dynamic_key_marker(key)
+		|| matches!(
+			parse_marker(key),
+			Some(("enum" | "value" | "value_set" | "scope", _))
+		)
 }
 
-fn is_dynamic_key_marker(key: &str) -> bool {
+fn is_angle_dynamic_key_marker(key: &str) -> bool {
 	key.len() > 2
 		&& key.starts_with('<')
 		&& key.ends_with('>')

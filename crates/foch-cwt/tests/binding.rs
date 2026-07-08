@@ -748,6 +748,83 @@ fn bind_fields_returns_all_direct_matches() {
 	);
 }
 
+#[test]
+fn bind_field_matches_static_dynamic_key_markers() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+		}
+	}
+
+	event = {
+		dynamic_fields = {
+			enum[dynamic_keys] = int
+			value[dynamic_value_key] = bool
+			value_set[dynamic_set_key] = float
+			scope[country] = yes
+		}
+	}
+
+	enums = {
+		enum[dynamic_keys] = { alpha beta }
+	}
+
+	values = {
+		value[dynamic_value_key] = { saved_key }
+		value_set[dynamic_set_key] = { reusable_key }
+	}
+
+	scopes = {
+		country = {
+			aliases = { country root }
+		}
+		province = {
+			aliases = { province from }
+			is_subscope_of = { country }
+		}
+		sea = {
+			aliases = { sea }
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let event = graph
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let dynamic_fields = graph
+		.bind_field(BindContext::RootType(event), "dynamic_fields")
+		.expect("bind dynamic_fields");
+	let context = BindContext::RuleField(dynamic_fields);
+	assert_eq!(
+		graph
+			.bind_field(context, "alpha")
+			.map(|field| field.key.as_str()),
+		Some("enum[dynamic_keys]")
+	);
+	assert_eq!(
+		graph
+			.bind_field(context, "saved_key")
+			.map(|field| field.key.as_str()),
+		Some("value[dynamic_value_key]")
+	);
+	assert_eq!(
+		graph
+			.bind_field(context, "reusable_key")
+			.map(|field| field.key.as_str()),
+		Some("value_set[dynamic_set_key]")
+	);
+	assert_eq!(
+		graph
+			.bind_field(context, "province")
+			.map(|field| field.key.as_str()),
+		Some("scope[country]")
+	);
+	assert!(graph.bind_field(context, "sea").is_none());
+	assert!(graph.bind_field(context, "missing_key").is_none());
+}
+
 fn load_binding_graph() -> CwtSchemaGraph {
 	CwtSchemaGraph::from_directory(&binding_fixture_dir()).expect("load binding fixture graph")
 }

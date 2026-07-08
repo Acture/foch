@@ -338,6 +338,87 @@ fn compiled_engine_lists_scope_values_from_scope_hierarchy() {
 }
 
 #[test]
+fn compiled_engine_matches_static_dynamic_key_markers() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+		}
+	}
+
+	event = {
+		dynamic_fields = {
+			enum[dynamic_keys] = int
+			value[dynamic_value_key] = bool
+			value_set[dynamic_set_key] = float
+			scope[country] = yes
+		}
+	}
+
+	enums = {
+		enum[dynamic_keys] = { alpha beta }
+	}
+
+	values = {
+		value[dynamic_value_key] = { saved_key }
+		value_set[dynamic_set_key] = { reusable_key }
+	}
+
+	scopes = {
+		country = {
+			aliases = { country root }
+		}
+		province = {
+			aliases = { province from }
+			is_subscope_of = { country }
+		}
+		sea = {
+			aliases = { sea }
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = RuleEngine::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let dynamic_fields = engine
+		.bind_field(RuleContext::RootType(event), "dynamic_fields")
+		.expect("bind dynamic_fields");
+	let context = RuleContext::RuleField(dynamic_fields);
+	assert_eq!(
+		engine
+			.bind_field(context, "alpha")
+			.map(|field| field.key.as_str()),
+		Some("enum[dynamic_keys]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "saved_key")
+			.map(|field| field.key.as_str()),
+		Some("value[dynamic_value_key]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "reusable_key")
+			.map(|field| field.key.as_str()),
+		Some("value_set[dynamic_set_key]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "province")
+			.map(|field| field.key.as_str()),
+		Some("scope[country]")
+	);
+	assert!(engine.bind_field(context, "sea").is_none());
+	assert!(engine.bind_field(context, "missing_key").is_none());
+}
+
+#[test]
 fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let schema = r#"
 	types = {

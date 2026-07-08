@@ -54,6 +54,12 @@ event = {
   ###Whether the event should stay hidden for fixture validation.
   hidden = bool
 
+  ###Dynamic field keys backed by CWT marker values.
+  dynamic_fields = {
+    enum[dynamic_event_fields] = int
+    value_set[dynamic_event_tokens] = scalar
+  }
+
   ###Conditions that must be true for the event to fire.
   trigger = {
     alias_name[trigger] = alias_match_left[trigger]
@@ -111,6 +117,7 @@ alias[effect:province_only_effect] = int
 
 enums = {
   enum[power_categories] = { ADM DIP MIL }
+  enum[dynamic_event_fields] = { alpha beta }
   complex_enum[country_tags] = {
     path = "game/common/country_tags"
     name = {
@@ -149,6 +156,7 @@ enums = {
 
 values = {
   value[event_targets] = { root from prev }
+  value_set[dynamic_event_tokens] = { reusable_token }
 }
 
 links = {

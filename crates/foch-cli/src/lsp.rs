@@ -904,6 +904,7 @@ fn schema_completion_candidates_with_index(
 	{
 		candidates.extend(schema_completion_entries_for_field(
 			engine,
+			dynamic_values,
 			field,
 			&active_scopes,
 			prefix_lower,
@@ -1032,6 +1033,7 @@ fn completion_rule_fields(context: RuleContext<'_>) -> Vec<&CompiledRuleField> {
 
 fn schema_completion_entries_for_field(
 	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	field: &CompiledRuleField,
 	active_scopes: &[String],
 	prefix_lower: &str,
@@ -1042,6 +1044,11 @@ fn schema_completion_entries_for_field(
 			.collect();
 	};
 	if head != "alias_name" {
+		if let Some(values) =
+			schema_allowed_values_for_marker(engine, dynamic_values, head, payload)
+		{
+			return schema_dynamic_key_completion_entries(&values, prefix_lower);
+		}
 		return direct_schema_completion_entry(field, prefix_lower)
 			.into_iter()
 			.collect();
@@ -1075,6 +1082,29 @@ fn schema_completion_entries_for_field(
 		.collect::<Vec<_>>();
 	candidates.sort_by(|left, right| left.label.cmp(&right.label));
 	candidates
+}
+
+fn schema_dynamic_key_completion_entries(
+	values: &SchemaAllowedValues<'_>,
+	prefix_lower: &str,
+) -> Vec<CompletionCandidate> {
+	values
+		.values
+		.iter()
+		.filter_map(|value| {
+			let value_lower = value.to_ascii_lowercase();
+			if !prefix_lower.is_empty() && !value_lower.starts_with(prefix_lower) {
+				return None;
+			}
+			Some(CompletionCandidate {
+				label: value.clone(),
+				insert_text: value.clone(),
+				kind: CompletionItemKind::FIELD,
+				detail: format!("cwt dynamic key {} {}", values.kind.label(), values.name),
+				source: CandidateSource::Schema,
+			})
+		})
+		.collect()
 }
 
 fn schema_active_scopes_for_path(
@@ -1301,6 +1331,14 @@ fn parse_schema_marker(text: &str) -> Option<(&str, &str)> {
 }
 
 fn is_schema_dynamic_key_marker(key: &str) -> bool {
+	is_schema_angle_dynamic_key_marker(key)
+		|| matches!(
+			parse_schema_marker(key),
+			Some(("enum" | "value" | "value_set" | "scope", _))
+		)
+}
+
+fn is_schema_angle_dynamic_key_marker(key: &str) -> bool {
 	key.len() > 2
 		&& key.starts_with('<')
 		&& key.ends_with('>')
@@ -2144,6 +2182,15 @@ fn schema_allowed_values<'a>(
 		CompiledRuleValue::Block(_) => return None,
 	};
 	let (head, name) = schema_allowed_value_marker(value)?;
+	schema_allowed_values_for_marker(engine, dynamic_values, head, name)
+}
+
+fn schema_allowed_values_for_marker<'a>(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	head: &'a str,
+	name: &'a str,
+) -> Option<SchemaAllowedValues<'a>> {
 	let (kind, values) = match head {
 		"enum" => {
 			if let Some(values) = engine.enum_values(name) {
@@ -4919,6 +4966,31 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_expands_static_dynamic_key_markers_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  dynamic_fields = {\n    al\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token_offset(text, "al", 2),
+			"al",
+		)
+		.expect("dynamic key completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"alpha"));
+		assert!(!labels.contains(&"enum[dynamic_event_fields]"));
+		assert!(candidates.iter().any(|candidate| {
+			candidate.label == "alpha"
+				&& candidate.kind == CompletionItemKind::FIELD
+				&& candidate.detail == "cwt dynamic key enum dynamic_event_fields"
+		}));
+	}
+
+	#[test]
 	fn completion_suggests_complex_enum_values_from_workspace() {
 		let engine = load_lsp_rule_engine();
 		assert!(engine.complex_enum("country_tags").is_some());
@@ -5595,6 +5667,34 @@ country_event = {
 				&& diagnostic.message.contains("add_prestige")
 				&& diagnostic.message.contains("int")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_accept_static_dynamic_key_markers_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = "\
+country_event = {
+  dynamic_fields = {
+    alpha = 1
+    reusable_token = ok
+    gamma = 1
+  }
+}
+";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("alpha")
+		}));
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("reusable_token")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("gamma")
 		}));
 	}
 

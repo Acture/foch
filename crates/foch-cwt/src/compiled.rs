@@ -754,7 +754,7 @@ impl RuleEngine {
 			return matches;
 		}
 		for rules in &rule_sets {
-			match match_dynamic_key_rules(rules, key) {
+			match self.match_dynamic_key_rules(rules, key) {
 				Some(RuleMatch::Field(field)) => return vec![field],
 				Some(RuleMatch::Dynamic { .. }) => return Vec::new(),
 				_ => {}
@@ -798,7 +798,7 @@ impl RuleEngine {
 			return field_matches;
 		}
 		for rules in &rule_sets {
-			match match_dynamic_key_rules(rules, key) {
+			match self.match_dynamic_key_rules(rules, key) {
 				Some(RuleMatch::Field(field)) => {
 					return vec![CompiledBindFieldMatch::Field(field)];
 				}
@@ -874,6 +874,18 @@ impl RuleEngine {
 			}
 		}
 		false
+	}
+
+	fn scope_value_matches(&self, required_scope: &str, value: &str) -> bool {
+		self.pack.scope_definitions.iter().any(|scope| {
+			scope.aliases.iter().any(|alias| alias == value)
+				&& (required_scope == "any"
+					|| self.scope_matches(required_scope, &scope.name)
+					|| scope
+						.aliases
+						.iter()
+						.any(|alias| self.scope_matches(required_scope, alias)))
+		})
 	}
 
 	fn bind_chain_from_root(&self, root: &CompiledRoot, ast_path: &[&str]) -> BindAttempt {
@@ -1097,7 +1109,7 @@ impl RuleEngine {
 			}
 		}
 		for rules in rule_sets {
-			if let Some(dynamic_match) = match_dynamic_key_rules(rules, key) {
+			if let Some(dynamic_match) = self.match_dynamic_key_rules(rules, key) {
 				return Some(dynamic_match);
 			}
 		}
@@ -1156,6 +1168,46 @@ impl RuleEngine {
 			});
 		}
 		matches
+	}
+
+	fn match_dynamic_key_rules<'p>(
+		&'p self,
+		rules: &'p [CompiledRuleField],
+		key: &str,
+	) -> Option<RuleMatch<'p>> {
+		if is_dynamic_key_marker(key) {
+			return None;
+		}
+		let matches = rules
+			.iter()
+			.filter(|field| self.dynamic_key_rule_matches(&field.key, key))
+			.collect::<Vec<_>>();
+		match matches.as_slice() {
+			[] => None,
+			[field] => Some(RuleMatch::Field(field)),
+			_ => Some(RuleMatch::Dynamic {
+				reason: "ambiguous-dynamic-field-match",
+			}),
+		}
+	}
+
+	fn dynamic_key_rule_matches(&self, rule_key: &str, key: &str) -> bool {
+		if is_angle_dynamic_key_marker(rule_key) {
+			return true;
+		}
+		let Some((head, payload)) = parse_marker(rule_key) else {
+			return false;
+		};
+		match head {
+			"enum" => self
+				.enum_values(payload)
+				.is_some_and(|values| values.iter().any(|value| value == key)),
+			"value" | "value_set" => self
+				.value_set_values(payload)
+				.is_some_and(|values| values.iter().any(|value| value == key)),
+			"scope" => self.scope_value_matches(payload, key),
+			_ => false,
+		}
 	}
 
 	fn match_subtype<'p>(
@@ -1376,24 +1428,15 @@ fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
 	skip_key == "any" || skip_key == key
 }
 
-fn match_dynamic_key_rules<'p>(rules: &'p [CompiledRuleField], key: &str) -> Option<RuleMatch<'p>> {
-	if is_dynamic_key_marker(key) {
-		return None;
-	}
-	let matches = rules
-		.iter()
-		.filter(|field| is_dynamic_key_marker(&field.key))
-		.collect::<Vec<_>>();
-	match matches.as_slice() {
-		[] => None,
-		[field] => Some(RuleMatch::Field(field)),
-		_ => Some(RuleMatch::Dynamic {
-			reason: "ambiguous-dynamic-field-match",
-		}),
-	}
+fn is_dynamic_key_marker(key: &str) -> bool {
+	is_angle_dynamic_key_marker(key)
+		|| matches!(
+			parse_marker(key),
+			Some(("enum" | "value" | "value_set" | "scope", _))
+		)
 }
 
-fn is_dynamic_key_marker(key: &str) -> bool {
+fn is_angle_dynamic_key_marker(key: &str) -> bool {
 	key.len() > 2
 		&& key.starts_with('<')
 		&& key.ends_with('>')
