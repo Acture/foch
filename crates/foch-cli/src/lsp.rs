@@ -1081,6 +1081,12 @@ fn collect_schema_diagnostics(
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
 				}
 				if let Some(field_match) = field_match
+					&& let Some(diagnostic) =
+						schema_value_shape_diagnostic(&field_match, key, value)
+				{
+					diagnostics.push(diagnostic);
+				}
+				if let Some(field_match) = field_match
 					&& let AstValue::Scalar {
 						value: scalar,
 						span,
@@ -1303,6 +1309,30 @@ fn schema_scalar_type_diagnostic(
 	})
 }
 
+fn schema_value_shape_diagnostic(
+	field_match: &CompiledBindFieldMatch<'_>,
+	key: &str,
+	value: &AstValue,
+) -> Option<Diagnostic> {
+	let expected = schema_value_shape(schema_match_value(field_match));
+	let actual = SchemaValueShape::from_ast_value(value);
+	if expected == actual {
+		return None;
+	}
+	Some(Diagnostic {
+		range: lsp_range_from_span(value.span()),
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("V006".to_string())),
+		source: Some("foch".to_string()),
+		message: format!(
+			"value for `{key}` is a schema {}, but this assignment uses a {}",
+			expected.label(),
+			actual.label()
+		),
+		..Diagnostic::default()
+	})
+}
+
 fn schema_scalar_type(value: &CompiledRuleValue) -> Option<SchemaScalarType> {
 	let value = match value {
 		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value.as_str(),
@@ -1344,6 +1374,35 @@ impl SchemaScalarType {
 			},
 			Self::Bool => matches!(scalar, ScalarValue::Bool(_)),
 		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SchemaValueShape {
+	Scalar,
+	Block,
+}
+
+impl SchemaValueShape {
+	fn from_ast_value(value: &AstValue) -> Self {
+		match value {
+			AstValue::Scalar { .. } => Self::Scalar,
+			AstValue::Block { .. } => Self::Block,
+		}
+	}
+
+	fn label(self) -> &'static str {
+		match self {
+			Self::Scalar => "scalar",
+			Self::Block => "block",
+		}
+	}
+}
+
+fn schema_value_shape(value: &CompiledRuleValue) -> SchemaValueShape {
+	match value {
+		CompiledRuleValue::Scalar(_) | CompiledRuleValue::Marker(_) => SchemaValueShape::Scalar,
+		CompiledRuleValue::Block(_) => SchemaValueShape::Block,
 	}
 }
 
@@ -3764,6 +3823,35 @@ mod tests {
 			diagnostic.code == Some(NumberOrString::String("V004".to_string()))
 				&& diagnostic.message.contains("target")
 				&& diagnostic.message.contains("at least 1")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_report_schema_value_shape_mismatches() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  trigger = yes\n  days = { value = 1 }\n  immediate = {\n    add_prestige = { amount = 5 }\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V006".to_string()))
+				&& diagnostic.message.contains("trigger")
+				&& diagnostic.message.contains("schema block")
+				&& diagnostic.message.contains("scalar")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V006".to_string()))
+				&& diagnostic.message.contains("days")
+				&& diagnostic.message.contains("schema scalar")
+				&& diagnostic.message.contains("block")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V006".to_string()))
+				&& diagnostic.message.contains("add_prestige")
+				&& diagnostic.message.contains("schema scalar")
+				&& diagnostic.message.contains("block")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
 		}));
 	}
