@@ -17,12 +17,13 @@ Current LSP/VS Code preview surface:
 - Schema-aware completion and hover for supported EU4 script contexts.
 - Goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys.
 - Document symbols and workspace symbol search backed by the semantic index.
+- A focused missing-localisation quick fix that creates or appends an English localisation stub in the current mod root.
 - Multi-root workspace loading with configured game/mod paths and `descriptor.mod` auto-detection.
 
 Still out of scope for this 0.1 preview unless implemented separately:
 
 - rename
-- code actions
+- broad code actions beyond missing-localisation stubs
 - formatter / pretty printer
 - semantic tokens
 - non-EU4 game profiles

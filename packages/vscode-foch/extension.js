@@ -97,6 +97,21 @@ function dedupTargets(targets) {
 	return Array.from(dedup.values());
 }
 
+function bestTargetForDocument(targets, fsPath) {
+	const docPath = normalizeFsPath(fsPath);
+	let best = undefined;
+	for (const target of targets) {
+		const root = normalizeFsPath(target.path);
+		if (!root || (docPath !== root && !docPath.startsWith(`${root}/`))) {
+			continue;
+		}
+		if (!best || root.length > normalizeFsPath(best.path).length) {
+			best = target;
+		}
+	}
+	return best;
+}
+
 async function buildTargets(cfg) {
 	let targets = buildConfiguredTargets(cfg);
 	const autoDetectMods = cfg.get('autoDetectMods', true);
@@ -166,6 +181,74 @@ function normalizeServerInvocation(serverPath, serverArgs) {
 	return args;
 }
 
+function parseCommandUri(rawUri) {
+	if (typeof rawUri === 'string') {
+		return vscode.Uri.parse(rawUri);
+	}
+	if (rawUri && typeof rawUri.fsPath === 'string') {
+		return rawUri;
+	}
+	return undefined;
+}
+
+function hasLocalisationKey(text, key) {
+	return text
+		.split(/\r?\n/)
+		.some((line) => line.trimStart().startsWith(`${key}:`));
+}
+
+async function createLocalisationStub(rawUri, key, targets) {
+	const documentUri = parseCommandUri(rawUri);
+	if (!documentUri || documentUri.scheme !== 'file') {
+		void vscode.window.showErrorMessage('Foch cannot create localisation: unsupported document URI.');
+		return;
+	}
+	if (!key || typeof key !== 'string' || !/^[A-Za-z0-9_.:-]+$/.test(key)) {
+		void vscode.window.showErrorMessage('Foch cannot create localisation: invalid key.');
+		return;
+	}
+
+	const target = bestTargetForDocument(targets, documentUri.fsPath);
+	if (!target || target.role !== 'mod') {
+		void vscode.window.showErrorMessage('Foch cannot create localisation: current file is not inside a mod root.');
+		return;
+	}
+
+	const localisationDir = vscode.Uri.file(path.join(target.path, 'localisation', 'english'));
+	const stubUri = vscode.Uri.file(path.join(localisationDir.fsPath, 'foch_lsp_l_english.yml'));
+	await vscode.workspace.fs.createDirectory(localisationDir);
+
+	let existing = '';
+	try {
+		const bytes = await vscode.workspace.fs.readFile(stubUri);
+		existing = Buffer.from(bytes).toString('utf8');
+	} catch (error) {
+		if (error && error.code !== 'FileNotFound') {
+			throw error;
+		}
+	}
+
+	if (hasLocalisationKey(existing, key)) {
+		const doc = await vscode.workspace.openTextDocument(stubUri);
+		await vscode.window.showTextDocument(doc);
+		return;
+	}
+
+	let next;
+	const entry = ` ${key}:0 "TODO"\n`;
+	if (!existing.trim()) {
+		next = `l_english:\n${entry}`;
+	} else {
+		const hasHeader = existing.split(/\r?\n/).some((line) => line.trim() === 'l_english:');
+		const prefix = hasHeader ? existing : `l_english:\n${existing}`;
+		next = `${prefix.endsWith('\n') ? prefix : `${prefix}\n`}${entry}`;
+	}
+
+	await vscode.workspace.fs.writeFile(stubUri, Buffer.from(next, 'utf8'));
+	const doc = await vscode.workspace.openTextDocument(stubUri);
+	await vscode.window.showTextDocument(doc);
+}
+
 function resolveServerCommand(cfg, extensionPath) {
 	const configuredPath = normalizePath(cfg.get('serverPath'));
 	if (configuredPath) {
@@ -204,6 +287,15 @@ async function activate(context) {
 	const server = resolveServerCommand(cfg, context.extensionPath);
 
 	const targets = await buildTargets(cfg);
+	context.subscriptions.push(
+		vscode.commands.registerCommand('foch.createLocalisationStub', (rawUri, key) => {
+			void createLocalisationStub(rawUri, key, targets).catch((error) => {
+				const message = error && error.message ? error.message : String(error);
+				void vscode.window.showErrorMessage(`Foch failed to create localisation: ${message}`);
+			});
+		})
+	);
+
 	const env = { ...process.env };
 	if (targets.length > 0) {
 		env.FOCH_LSP_TARGETS_JSON = JSON.stringify(targets);

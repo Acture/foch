@@ -20,12 +20,13 @@ The VS Code extension is the first `0.1.0` preview surface for Foch. It is versi
 | Hover | CWT schema hover for supported EU4 script contexts, including type, description, scope, and cardinality when available |
 | Navigation | goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys |
 | Symbols | document symbols and workspace symbol search from the semantic index |
+| Quick fixes | create or append an English localisation stub for `missing-localisation` diagnostics |
 | Workspace loading | multi-root scanning across the game directory and multiple mod directories, with mod-root auto-detection via `descriptor.mod` |
 
 ## Not yet shipped
 
 - `rename`
-- code actions
+- broad code actions beyond missing-localisation stubs
 - formatting / pretty print
 - semantic tokens
 - non-EU4 game profiles

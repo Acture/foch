@@ -24,13 +24,15 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
-	CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
-	Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-	DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
-	GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams, InitializeResult,
-	InitializedParams, Location, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
-	Position, Range, ReferenceParams, ServerCapabilities, SymbolInformation,
-	SymbolKind as LspSymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+	CodeAction, CodeActionKind, CodeActionOptions, CodeActionOrCommand, CodeActionParams,
+	CodeActionProviderCapability, CodeActionResponse, Command, CompletionItem, CompletionItemKind,
+	CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+	DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+	DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+	Hover, HoverContents, HoverParams, InitializeParams, InitializeResult, InitializedParams,
+	Location, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf, Position, Range,
+	ReferenceParams, ServerCapabilities, SymbolInformation, SymbolKind as LspSymbolKind,
+	TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
@@ -289,6 +291,13 @@ impl LanguageServer for Backend {
 				references_provider: Some(OneOf::Left(true)),
 				document_symbol_provider: Some(OneOf::Left(true)),
 				workspace_symbol_provider: Some(OneOf::Left(true)),
+				code_action_provider: Some(CodeActionProviderCapability::Options(
+					CodeActionOptions {
+						code_action_kinds: Some(vec![CodeActionKind::QUICKFIX]),
+						resolve_provider: Some(false),
+						work_done_progress_options: Default::default(),
+					},
+				)),
 				..ServerCapabilities::default()
 			},
 		})
@@ -477,6 +486,19 @@ impl LanguageServer for Backend {
 		};
 		let symbols = workspace_symbols(snapshot, &params.query);
 		Ok(Some(symbols))
+	}
+
+	async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+		if !code_action_context_allows_quickfix(&params) {
+			return Ok(None);
+		}
+		let state = self.state.read().await;
+		let actions = localisation_stub_code_actions(&state.targets, &params);
+		if actions.is_empty() {
+			Ok(None)
+		} else {
+			Ok(Some(actions))
+		}
 	}
 
 	async fn shutdown(&self) -> Result<()> {
@@ -1901,6 +1923,76 @@ fn workspace_symbols(snapshot: &WorkspaceSnapshot, query: &str) -> Vec<SymbolInf
 	symbols
 }
 
+fn code_action_context_allows_quickfix(params: &CodeActionParams) -> bool {
+	params
+		.context
+		.only
+		.as_ref()
+		.is_none_or(|kinds| kinds.contains(&CodeActionKind::QUICKFIX))
+}
+
+fn localisation_stub_code_actions(
+	targets: &[ScanTarget],
+	params: &CodeActionParams,
+) -> CodeActionResponse {
+	let Ok(path) = params.text_document.uri.to_file_path() else {
+		return Vec::new();
+	};
+	let Some((target, _relative_path)) = match_scan_target_with_role(targets, &path) else {
+		return Vec::new();
+	};
+	if target.role != TargetRole::Mod {
+		return Vec::new();
+	}
+
+	let mut actions = Vec::new();
+	let mut seen = HashSet::new();
+	for diagnostic in &params.context.diagnostics {
+		if !is_missing_localisation_diagnostic(diagnostic) {
+			continue;
+		}
+		let Some(key) = missing_localisation_key(diagnostic) else {
+			continue;
+		};
+		if !seen.insert(key.clone()) {
+			continue;
+		}
+		actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+			title: format!("Create localisation stub for `{key}`"),
+			kind: Some(CodeActionKind::QUICKFIX),
+			diagnostics: Some(vec![diagnostic.clone()]),
+			edit: None,
+			command: Some(Command::new(
+				format!("Create localisation stub for `{key}`"),
+				"foch.createLocalisationStub".to_string(),
+				Some(vec![
+					serde_json::json!(params.text_document.uri.as_str()),
+					serde_json::json!(key),
+				]),
+			)),
+			is_preferred: Some(true),
+			disabled: None,
+			data: None,
+		}));
+	}
+	actions
+}
+
+fn is_missing_localisation_diagnostic(diagnostic: &Diagnostic) -> bool {
+	matches!(
+		diagnostic.code.as_ref(),
+		Some(NumberOrString::String(code)) if code == "missing-localisation"
+	)
+}
+
+fn missing_localisation_key(diagnostic: &Diagnostic) -> Option<String> {
+	let key = diagnostic
+		.message
+		.strip_prefix("localisation key not found: ")?
+		.trim();
+	(!key.is_empty()).then(|| key.to_string())
+}
+
 fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformation> {
 	let mut symbols = Vec::new();
 	for definition in &session.index.definitions {
@@ -2042,6 +2134,13 @@ fn dedup_locations(locations: &mut Vec<Location>) {
 }
 
 fn match_scan_target(targets: &[ScanTarget], path: &Path) -> Option<(PathBuf, PathBuf)> {
+	match_scan_target_with_role(targets, path).map(|(target, relative)| (target.path, relative))
+}
+
+fn match_scan_target_with_role(
+	targets: &[ScanTarget],
+	path: &Path,
+) -> Option<(ScanTarget, PathBuf)> {
 	let mut best: Option<(usize, PathBuf, PathBuf)> = None;
 	for target in targets {
 		let Ok(relative) = path.strip_prefix(&target.path) else {
@@ -2055,7 +2154,13 @@ fn match_scan_target(targets: &[ScanTarget], path: &Path) -> Option<(PathBuf, Pa
 			}
 		}
 	}
-	best.map(|(_, root, relative)| (root, relative))
+	best.and_then(|(_, root, relative)| {
+		targets
+			.iter()
+			.find(|target| target.path == root)
+			.cloned()
+			.map(|target| (target, relative))
+	})
 }
 
 fn assignment_context_at_cursor(line: &str, cursor: usize) -> Option<(String, usize, usize, bool)> {
@@ -2428,16 +2533,21 @@ mod tests {
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
 		detect_completion_context, document_symbols, extract_completion_prefix,
-		find_vendored_schema_dir_from, load_schema_graph, parse_scan_targets_json,
-		resolve_definition_locations, resolve_reference_locations, schema_completion_candidates,
-		schema_diagnostics_for_text, schema_hover, select_completion_candidates, workspace_symbols,
+		find_vendored_schema_dir_from, load_schema_graph, localisation_stub_code_actions,
+		parse_scan_targets_json, resolve_definition_locations, resolve_reference_locations,
+		schema_completion_candidates, schema_diagnostics_for_text, schema_hover,
+		select_completion_candidates, workspace_symbols,
 	};
 	use foch_core::model::test_support;
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 	use tower_lsp::lsp_types::CompletionItemKind;
-	use tower_lsp::lsp_types::{DiagnosticSeverity, HoverContents, NumberOrString, Position, Url};
+	use tower_lsp::lsp_types::{
+		CodeActionContext, CodeActionOrCommand, CodeActionParams, Diagnostic, DiagnosticSeverity,
+		HoverContents, NumberOrString, PartialResultParams, Position, Range,
+		TextDocumentIdentifier, Url, WorkDoneProgressParams,
+	};
 
 	#[test]
 	fn completion_prefix_extracts_identifier_tail() {
@@ -2810,6 +2920,111 @@ mod tests {
 
 		assert_eq!(symbols.len(), 1);
 		assert_eq!(symbols[0].name, "my_effect");
+	}
+
+	#[test]
+	fn code_action_creates_missing_localisation_stub_command() {
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		let source_uri = Url::from_file_path(root.join("events").join("a.txt")).expect("uri");
+		let diagnostic = Diagnostic {
+			range: Range {
+				start: Position {
+					line: 0,
+					character: 0,
+				},
+				end: Position {
+					line: 0,
+					character: 1,
+				},
+			},
+			code: Some(NumberOrString::String("missing-localisation".to_string())),
+			message: "localisation key not found: TEST_EVENT_TITLE".to_string(),
+			..Diagnostic::default()
+		};
+		let params = CodeActionParams {
+			text_document: TextDocumentIdentifier {
+				uri: source_uri.clone(),
+			},
+			range: diagnostic.range,
+			context: CodeActionContext {
+				diagnostics: vec![diagnostic],
+				only: None,
+				trigger_kind: None,
+			},
+			work_done_progress_params: WorkDoneProgressParams::default(),
+			partial_result_params: PartialResultParams::default(),
+		};
+
+		let actions = localisation_stub_code_actions(
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			&params,
+		);
+
+		assert_eq!(actions.len(), 1);
+		let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+			panic!("expected code action");
+		};
+		assert_eq!(
+			action.title,
+			"Create localisation stub for `TEST_EVENT_TITLE`"
+		);
+		let command = action.command.as_ref().expect("quickfix command");
+		assert_eq!(command.command, "foch.createLocalisationStub");
+		assert_eq!(
+			command.arguments.as_ref().expect("arguments")[0],
+			serde_json::json!(source_uri.as_str())
+		);
+		assert_eq!(
+			command.arguments.as_ref().expect("arguments")[1],
+			serde_json::json!("TEST_EVENT_TITLE")
+		);
+	}
+
+	#[test]
+	fn code_action_skips_missing_localisation_for_game_targets() {
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		let source_uri = Url::from_file_path(root.join("events").join("a.txt")).expect("uri");
+		let diagnostic = Diagnostic {
+			range: Range {
+				start: Position {
+					line: 0,
+					character: 0,
+				},
+				end: Position {
+					line: 0,
+					character: 1,
+				},
+			},
+			code: Some(NumberOrString::String("missing-localisation".to_string())),
+			message: "localisation key not found: TEST_EVENT_TITLE".to_string(),
+			..Diagnostic::default()
+		};
+		let params = CodeActionParams {
+			text_document: TextDocumentIdentifier { uri: source_uri },
+			range: diagnostic.range,
+			context: CodeActionContext {
+				diagnostics: vec![diagnostic],
+				only: None,
+				trigger_kind: None,
+			},
+			work_done_progress_params: WorkDoneProgressParams::default(),
+			partial_result_params: PartialResultParams::default(),
+		};
+
+		let actions = localisation_stub_code_actions(
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Game,
+			}],
+			&params,
+		);
+
+		assert!(actions.is_empty());
 	}
 
 	#[test]

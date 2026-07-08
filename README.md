@@ -71,7 +71,7 @@ For normal use, prefer release binaries or `cargo install --path crates/foch-cli
 
 [`packages/vscode-foch`](./packages/vscode-foch) bundles the `foch lsp` server. It is useful for parse diagnostics, semantic findings, completions, and go-to-definition, but it is still a preview surface; expect bugs and report them.
 
-The extension is the first `0.1.0` preview surface and is versioned by editor usability, not by merge-engine maturity. Today it targets EU4 only and includes schema-aware hover/completion, goto-definition, find-references, and document/workspace symbols for the semantic families covered by the shared analyzer. The merge engine remains an experimental alpha feature.
+The extension is the first `0.1.0` preview surface and is versioned by editor usability, not by merge-engine maturity. Today it targets EU4 only and includes schema-aware hover/completion, goto-definition, find-references, document/workspace symbols, and a missing-localisation quick fix for the semantic families covered by the shared analyzer. The merge engine remains an experimental alpha feature.
 
 ## Release and project status
 
