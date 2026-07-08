@@ -3,6 +3,9 @@ packages/tree-sitter-paradox/target/
 packages/vscode-foch/node_modules/
 packages/vscode-foch/bin/*/foch_lsp
 packages/vscode-foch/bin/*/foch_lsp.exe
+packages/vscode-foch/bin/*/foch
+packages/vscode-foch/bin/*/foch.exe
+packages/vscode-foch/dist/
 packages/vscode-foch/*.vsix
 .direnv/
 /output/

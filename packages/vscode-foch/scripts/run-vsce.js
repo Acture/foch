@@ -28,9 +28,10 @@ const localVsce = path.join(
 );
 const hasLocalVsce = fs.existsSync(localVsce);
 const command = hasLocalVsce ? localVsce : 'npx';
+const commonArgs = [mode, '--pre-release', '--target', target, '--no-dependencies', ...extraArgs];
 const args = hasLocalVsce
-	? [mode, '--pre-release', '--target', target, ...extraArgs]
-	: ['@vscode/vsce', mode, '--pre-release', '--target', target, ...extraArgs];
+	? commonArgs
+	: ['@vscode/vsce', ...commonArgs];
 
 console.log(`running ${mode} for target ${target}`);
 const result = spawnSync(command, args, {

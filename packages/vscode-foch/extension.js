@@ -40,6 +40,7 @@ function buildDocumentSelector() {
 		{ scheme: 'file', pattern: '**/events/**/*.{txt,lua}' },
 		{ scheme: 'file', pattern: '**/decisions/**/*.{txt,lua}' },
 		{ scheme: 'file', pattern: '**/common/scripted_effects/**/*.{txt,lua}' },
+		{ scheme: 'file', pattern: '**/common/scripted_triggers/**/*.{txt,lua}' },
 		{ scheme: 'file', pattern: '**/common/diplomatic_actions/**/*.{txt,lua}' },
 		{ scheme: 'file', pattern: '**/common/triggered_modifiers/**/*.{txt,lua}' },
 		{ scheme: 'file', pattern: '**/common/defines/**/*.{txt,lua}' },
@@ -59,6 +60,7 @@ function isEu4ScriptPath(fsPath) {
 		p.includes('/events/') ||
 		p.includes('/decisions/') ||
 		p.includes('/common/scripted_effects/') ||
+		p.includes('/common/scripted_triggers/') ||
 		p.includes('/common/diplomatic_actions/') ||
 		p.includes('/common/triggered_modifiers/') ||
 		p.includes('/common/defines/') ||

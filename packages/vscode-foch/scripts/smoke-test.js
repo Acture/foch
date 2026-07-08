@@ -14,6 +14,12 @@ if (!packageJson.preview) {
 	process.exit(1);
 }
 
+const mainPath = path.resolve(extensionRoot, packageJson.main || '');
+if (!fs.existsSync(mainPath)) {
+	console.error(`bundled extension entry missing: ${mainPath}`);
+	process.exit(1);
+}
+
 if (!fs.existsSync(serverPath)) {
 	console.error(`bundled server missing: ${serverPath}`);
 	process.exit(1);

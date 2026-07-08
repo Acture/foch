@@ -1,4 +1,6 @@
-use foch_core::model::{AnalysisMode, Finding, SemanticIndex, Severity, SymbolKind};
+use foch_core::model::{
+	AnalysisMode, Finding, SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
+};
 use foch_cwt::{
 	AliasCategory, BindContext, BindFieldMatch, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
 	SchemaBinding, SchemaPack, SchemaSource, install_base_scopes,
@@ -13,8 +15,7 @@ use foch_language::analyzer::parser::{
 	AstStatement, AstValue, ScalarValue, SpanRange, parse_clausewitz_content,
 };
 use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, build_semantic_index, parse_script_file,
-	resolve_scripted_effect_reference_targets,
+	ParsedScriptFile, build_semantic_index, parse_script_file, resolve_symbol_reference_targets,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -25,10 +26,11 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::{
 	CompletionItem, CompletionItemKind, CompletionOptions, CompletionParams, CompletionResponse,
 	Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-	DidSaveTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents,
-	HoverParams, InitializeParams, InitializeResult, InitializedParams, Location, MarkupContent,
-	MarkupKind, MessageType, NumberOrString, OneOf, Position, Range, ServerCapabilities,
-	TextDocumentSyncCapability, TextDocumentSyncKind, Url,
+	DidSaveTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+	GotoDefinitionResponse, Hover, HoverContents, HoverParams, InitializeParams, InitializeResult,
+	InitializedParams, Location, MarkupContent, MarkupKind, MessageType, NumberOrString, OneOf,
+	Position, Range, ReferenceParams, ServerCapabilities, SymbolInformation,
+	SymbolKind as LspSymbolKind, TextDocumentSyncCapability, TextDocumentSyncKind, Url,
 };
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 use walkdir::WalkDir;
@@ -285,6 +287,8 @@ impl LanguageServer for Backend {
 				definition_provider: Some(OneOf::Left(true)),
 				hover_provider: Some(tower_lsp::lsp_types::HoverProviderCapability::Simple(true)),
 				references_provider: Some(OneOf::Left(true)),
+				document_symbol_provider: Some(OneOf::Left(true)),
+				workspace_symbol_provider: Some(OneOf::Left(true)),
 				..ServerCapabilities::default()
 			},
 		})
@@ -425,6 +429,54 @@ impl LanguageServer for Backend {
 			return Ok(None);
 		};
 		Ok(Some(GotoDefinitionResponse::Array(locations)))
+	}
+
+	async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+		let state = self.state.read().await;
+		let Some(snapshot) = state.workspace.as_ref() else {
+			return Ok(None);
+		};
+		let uri = &params.text_document_position.text_document.uri;
+		let position = params.text_document_position.position;
+		let text = state.docs.get(uri).map(String::as_str).unwrap_or_default();
+		let Some(locations) = resolve_reference_locations(
+			snapshot,
+			&state.targets,
+			uri,
+			text,
+			position,
+			params.context.include_declaration,
+		) else {
+			return Ok(None);
+		};
+		Ok(Some(locations))
+	}
+
+	async fn document_symbol(
+		&self,
+		params: DocumentSymbolParams,
+	) -> Result<Option<DocumentSymbolResponse>> {
+		let state = self.state.read().await;
+		let Some(snapshot) = state.workspace.as_ref() else {
+			return Ok(None);
+		};
+		let Some(symbols) = document_symbols(snapshot, &state.targets, &params.text_document.uri)
+		else {
+			return Ok(None);
+		};
+		Ok(Some(DocumentSymbolResponse::Flat(symbols)))
+	}
+
+	async fn symbol(
+		&self,
+		params: tower_lsp::lsp_types::WorkspaceSymbolParams,
+	) -> Result<Option<Vec<SymbolInformation>>> {
+		let state = self.state.read().await;
+		let Some(snapshot) = state.workspace.as_ref() else {
+			return Ok(None);
+		};
+		let symbols = workspace_symbols(snapshot, &params.query);
+		Ok(Some(symbols))
 	}
 
 	async fn shutdown(&self) -> Result<()> {
@@ -1435,9 +1487,6 @@ fn resolve_definition_locations(
 	if !on_value_side && cursor >= key_start && cursor <= key_end {
 		let current_column = key_start + 1;
 		for reference in &session.index.references {
-			if reference.kind != SymbolKind::ScriptedEffect {
-				continue;
-			}
 			if reference.path != relative_path
 				|| reference.line != position.line as usize + 1
 				|| reference.column != current_column
@@ -1445,7 +1494,7 @@ fn resolve_definition_locations(
 			{
 				continue;
 			}
-			for target in resolve_scripted_effect_reference_targets(&session.index, reference) {
+			for target in resolve_symbol_reference_targets(&session.index, reference) {
 				if let Some(definition) = session.index.definitions.get(target)
 					&& let Some(location) = definition_location(
 						session,
@@ -1460,7 +1509,7 @@ fn resolve_definition_locations(
 		}
 	} else if on_value_side {
 		if assignment_key == "id" {
-			for definition in session.find_definitions(&token, Some(SymbolKind::Event)) {
+			for definition in session.find_definitions(&token, Some(FochSymbolKind::Event)) {
 				if let Some(location) = definition_location(
 					session,
 					&definition.mod_id,
@@ -1532,6 +1581,438 @@ fn resolve_definition_locations(
 	} else {
 		Some(locations)
 	}
+}
+
+fn resolve_reference_locations(
+	snapshot: &WorkspaceSnapshot,
+	targets: &[ScanTarget],
+	uri: &Url,
+	text: &str,
+	position: Position,
+	include_declaration: bool,
+) -> Option<Vec<Location>> {
+	let session = snapshot.session.as_ref()?;
+	let path = uri.to_file_path().ok()?;
+	let (_, relative_path) = match_scan_target(targets, &path)?;
+	let line = text.lines().nth(position.line as usize)?;
+	let cursor = position.character as usize;
+	let (token, _token_start, _) = extract_token_at_cursor(line, cursor)?;
+	let assignment = assignment_context_at_cursor(line, cursor);
+
+	if let Some(locations) = flag_reference_locations(session, assignment.as_ref(), &token) {
+		return Some(locations);
+	}
+	if let Some(locations) =
+		localisation_reference_locations(session, assignment.as_ref(), &token, include_declaration)
+	{
+		return Some(locations);
+	}
+
+	let target_indices = symbol_target_indices_at_cursor(
+		session,
+		uri,
+		&relative_path,
+		position,
+		&token,
+		assignment.as_ref(),
+	)?;
+	let mut locations = Vec::new();
+	if include_declaration {
+		for target in &target_indices {
+			let Some(definition) = session.index.definitions.get(*target) else {
+				continue;
+			};
+			if let Some(location) = definition_location(
+				session,
+				&definition.mod_id,
+				&definition.path,
+				definition.line,
+				definition.column,
+			) {
+				locations.push(location);
+			}
+		}
+	}
+	for reference in &session.index.references {
+		let resolved = resolve_symbol_reference_targets(&session.index, reference);
+		if resolved
+			.iter()
+			.any(|target| target_indices.contains(target))
+			&& let Some(location) = definition_location(
+				session,
+				&reference.mod_id,
+				&reference.path,
+				reference.line,
+				reference.column,
+			) {
+			locations.push(location);
+		}
+	}
+	dedup_locations(&mut locations);
+	if locations.is_empty() {
+		None
+	} else {
+		Some(locations)
+	}
+}
+
+fn symbol_target_indices_at_cursor(
+	session: &WorkspaceSession,
+	uri: &Url,
+	relative_path: &Path,
+	position: Position,
+	token: &str,
+	assignment: Option<&(String, usize, usize, bool)>,
+) -> Option<HashSet<usize>> {
+	let line_number = position.line as usize + 1;
+	let cursor = position.character as usize;
+	if let Some((assignment_key, _key_start, _key_end, true)) = assignment
+		&& assignment_key == "id"
+	{
+		let targets = event_definition_indices(session, token);
+		return (!targets.is_empty()).then_some(targets);
+	}
+
+	let mut targets = HashSet::new();
+	for (idx, definition) in session.index.definitions.iter().enumerate() {
+		if !definition_matches_cursor(session, definition, uri, line_number, cursor) {
+			continue;
+		}
+		targets.insert(idx);
+	}
+	if !targets.is_empty() {
+		return Some(targets);
+	}
+
+	let Some((assignment_key, key_start, _key_end, false)) = assignment else {
+		return None;
+	};
+	let current_column = key_start + 1;
+	for reference in &session.index.references {
+		if reference.path != relative_path
+			|| reference.line != line_number
+			|| reference.column != current_column
+			|| reference.name != *assignment_key
+		{
+			continue;
+		}
+		for target in resolve_symbol_reference_targets(&session.index, reference) {
+			targets.insert(target);
+		}
+		if targets.is_empty() {
+			for target in fallback_symbol_targets(session, reference.kind, &reference.name) {
+				targets.insert(target);
+			}
+		}
+	}
+	(!targets.is_empty()).then_some(targets)
+}
+
+fn definition_matches_cursor(
+	session: &WorkspaceSession,
+	definition: &SymbolDefinition,
+	uri: &Url,
+	line_number: usize,
+	cursor: usize,
+) -> bool {
+	if definition.line != line_number {
+		return false;
+	}
+	let Some(location) = definition_location(
+		session,
+		&definition.mod_id,
+		&definition.path,
+		definition.line,
+		definition.column,
+	) else {
+		return false;
+	};
+	if &location.uri != uri {
+		return false;
+	}
+	let start = definition.column.saturating_sub(1);
+	let end = start.saturating_add(definition.local_name.len().max(1));
+	cursor >= start && cursor <= end
+}
+
+fn event_definition_indices(session: &WorkspaceSession, name: &str) -> HashSet<usize> {
+	let mut targets = HashSet::new();
+	for (idx, definition) in session.index.definitions.iter().enumerate() {
+		if definition.kind != FochSymbolKind::Event {
+			continue;
+		}
+		if event_name_matches(definition.name.as_str(), name) {
+			targets.insert(idx);
+		}
+	}
+	targets
+}
+
+fn event_name_matches(definition_name: &str, reference_name: &str) -> bool {
+	if definition_name == reference_name {
+		return true;
+	}
+	has_dotted_suffix(definition_name, reference_name)
+		|| has_dotted_suffix(reference_name, definition_name)
+}
+
+fn has_dotted_suffix(full_name: &str, bare_name: &str) -> bool {
+	full_name.len() > bare_name.len()
+		&& full_name.ends_with(bare_name)
+		&& full_name
+			.as_bytes()
+			.get(full_name.len() - bare_name.len() - 1)
+			== Some(&b'.')
+}
+
+fn fallback_symbol_targets(
+	session: &WorkspaceSession,
+	kind: FochSymbolKind,
+	name: &str,
+) -> Vec<usize> {
+	session
+		.index
+		.definitions
+		.iter()
+		.enumerate()
+		.filter_map(|(idx, definition)| {
+			(definition.kind == kind && (definition.local_name == name || definition.name == name))
+				.then_some(idx)
+		})
+		.collect()
+}
+
+fn flag_reference_locations(
+	session: &WorkspaceSession,
+	assignment: Option<&(String, usize, usize, bool)>,
+	token: &str,
+) -> Option<Vec<Location>> {
+	let Some((assignment_key, _, _, true)) = assignment else {
+		return None;
+	};
+	let flag_kind = flag_value_kind(assignment_key.as_str())?;
+	let mut locations = Vec::new();
+	for usage in &session.index.scalar_assignments {
+		if usage.value != token || flag_value_kind(usage.key.as_str()) != Some(flag_kind) {
+			continue;
+		}
+		if let Some(location) = definition_location(
+			session,
+			&usage.mod_id,
+			&usage.path,
+			usage.line,
+			usage.column,
+		) {
+			locations.push(location);
+		}
+	}
+	dedup_locations(&mut locations);
+	(!locations.is_empty()).then_some(locations)
+}
+
+fn localisation_reference_locations(
+	session: &WorkspaceSession,
+	assignment: Option<&(String, usize, usize, bool)>,
+	token: &str,
+	include_declaration: bool,
+) -> Option<Vec<Location>> {
+	let Some((assignment_key, _, _, true)) = assignment else {
+		return None;
+	};
+	if !is_localisation_reference_key(assignment_key, token) {
+		return None;
+	}
+	let mut locations = Vec::new();
+	if include_declaration {
+		for definition in &session.index.localisation_definitions {
+			if definition.key != token {
+				continue;
+			}
+			if let Some(location) = definition_location(
+				session,
+				&definition.mod_id,
+				&definition.path,
+				definition.line,
+				definition.column,
+			) {
+				locations.push(location);
+			}
+		}
+	}
+	for usage in &session.index.scalar_assignments {
+		if usage.value != token || !is_localisation_reference_key(&usage.key, token) {
+			continue;
+		}
+		if let Some(location) = definition_location(
+			session,
+			&usage.mod_id,
+			&usage.path,
+			usage.line,
+			usage.column,
+		) {
+			locations.push(location);
+		}
+	}
+	for reference in &session.index.resource_references {
+		if reference.value != token {
+			continue;
+		}
+		if let Some(location) = definition_location(
+			session,
+			&reference.mod_id,
+			&reference.path,
+			reference.line,
+			reference.column,
+		) {
+			locations.push(location);
+		}
+	}
+	dedup_locations(&mut locations);
+	(!locations.is_empty()).then_some(locations)
+}
+
+fn document_symbols(
+	snapshot: &WorkspaceSnapshot,
+	targets: &[ScanTarget],
+	uri: &Url,
+) -> Option<Vec<SymbolInformation>> {
+	let session = snapshot.session.as_ref()?;
+	let path = uri.to_file_path().ok()?;
+	match_scan_target(targets, &path)?;
+	let mut symbols = collect_symbol_information(session)
+		.into_iter()
+		.filter(|symbol| symbol.location.uri == *uri)
+		.collect::<Vec<_>>();
+	sort_symbol_information(&mut symbols);
+	Some(symbols)
+}
+
+fn workspace_symbols(snapshot: &WorkspaceSnapshot, query: &str) -> Vec<SymbolInformation> {
+	let Some(session) = snapshot.session.as_ref() else {
+		return Vec::new();
+	};
+	let query = query.to_ascii_lowercase();
+	let mut symbols = collect_symbol_information(session)
+		.into_iter()
+		.filter(|symbol| symbol_matches_query(symbol, &query))
+		.collect::<Vec<_>>();
+	sort_symbol_information(&mut symbols);
+	symbols.truncate(500);
+	symbols
+}
+
+fn collect_symbol_information(session: &WorkspaceSession) -> Vec<SymbolInformation> {
+	let mut symbols = Vec::new();
+	for definition in &session.index.definitions {
+		let Some(location) = definition_location(
+			session,
+			&definition.mod_id,
+			&definition.path,
+			definition.line,
+			definition.column,
+		) else {
+			continue;
+		};
+		symbols.push(make_symbol_information(
+			symbol_display_name(definition),
+			lsp_symbol_kind_for_foch(definition.kind),
+			location,
+			Some(definition.kind.as_str().to_string()),
+		));
+	}
+	for definition in &session.index.localisation_definitions {
+		let Some(location) = definition_location(
+			session,
+			&definition.mod_id,
+			&definition.path,
+			definition.line,
+			definition.column,
+		) else {
+			continue;
+		};
+		symbols.push(make_symbol_information(
+			definition.key.clone(),
+			LspSymbolKind::STRING,
+			location,
+			Some("localisation".to_string()),
+		));
+	}
+	for definition in &session.index.ui_definitions {
+		let Some(location) = definition_location(
+			session,
+			&definition.mod_id,
+			&definition.path,
+			definition.line,
+			definition.column,
+		) else {
+			continue;
+		};
+		symbols.push(make_symbol_information(
+			definition.name.clone(),
+			LspSymbolKind::OBJECT,
+			location,
+			Some("ui".to_string()),
+		));
+	}
+	symbols
+}
+
+#[allow(deprecated)]
+fn make_symbol_information(
+	name: String,
+	kind: LspSymbolKind,
+	location: Location,
+	container_name: Option<String>,
+) -> SymbolInformation {
+	SymbolInformation {
+		name,
+		kind,
+		tags: None,
+		deprecated: None,
+		location,
+		container_name,
+	}
+}
+
+fn lsp_symbol_kind_for_foch(kind: FochSymbolKind) -> LspSymbolKind {
+	match kind {
+		FochSymbolKind::ScriptedEffect | FochSymbolKind::ScriptedTrigger => LspSymbolKind::FUNCTION,
+		FochSymbolKind::Event => LspSymbolKind::EVENT,
+		FochSymbolKind::Decision | FochSymbolKind::DiplomaticAction => LspSymbolKind::METHOD,
+		FochSymbolKind::TriggeredModifier => LspSymbolKind::VARIABLE,
+	}
+}
+
+fn symbol_display_name(definition: &SymbolDefinition) -> String {
+	if definition.kind == FochSymbolKind::Event {
+		definition.name.clone()
+	} else {
+		definition.local_name.clone()
+	}
+}
+
+fn symbol_matches_query(symbol: &SymbolInformation, query: &str) -> bool {
+	if query.is_empty() {
+		return true;
+	}
+	symbol.name.to_ascii_lowercase().contains(query)
+		|| symbol
+			.container_name
+			.as_deref()
+			.unwrap_or_default()
+			.to_ascii_lowercase()
+			.contains(query)
+}
+
+fn sort_symbol_information(symbols: &mut [SymbolInformation]) {
+	symbols.sort_by(|left, right| {
+		left.name
+			.cmp(&right.name)
+			.then_with(|| left.location.uri.as_str().cmp(right.location.uri.as_str()))
+			.then_with(|| {
+				range_start(&left.location.range).cmp(&range_start(&right.location.range))
+			})
+	});
 }
 
 fn definition_location(
@@ -1749,37 +2230,37 @@ fn dedup_scan_targets(targets: Vec<ScanTarget>) -> Vec<ScanTarget> {
 }
 
 fn completion_from_definition(
-	kind: &SymbolKind,
+	kind: &FochSymbolKind,
 	local_name: &str,
 	full_name: &str,
 ) -> (String, CompletionItemKind, String) {
 	match kind {
-		SymbolKind::ScriptedEffect => (
+		FochSymbolKind::ScriptedEffect => (
 			local_name.to_string(),
 			CompletionItemKind::FUNCTION,
 			"workspace scripted effect".to_string(),
 		),
-		SymbolKind::ScriptedTrigger => (
+		FochSymbolKind::ScriptedTrigger => (
 			local_name.to_string(),
 			CompletionItemKind::FUNCTION,
 			"workspace scripted trigger".to_string(),
 		),
-		SymbolKind::Event => (
+		FochSymbolKind::Event => (
 			full_name.to_string(),
 			CompletionItemKind::EVENT,
 			"workspace event id".to_string(),
 		),
-		SymbolKind::Decision => (
+		FochSymbolKind::Decision => (
 			local_name.to_string(),
 			CompletionItemKind::FUNCTION,
 			"workspace decision".to_string(),
 		),
-		SymbolKind::DiplomaticAction => (
+		FochSymbolKind::DiplomaticAction => (
 			local_name.to_string(),
 			CompletionItemKind::FUNCTION,
 			"workspace diplomatic action".to_string(),
 		),
-		SymbolKind::TriggeredModifier => (
+		FochSymbolKind::TriggeredModifier => (
 			local_name.to_string(),
 			CompletionItemKind::VARIABLE,
 			"workspace triggered modifier".to_string(),
@@ -1792,6 +2273,7 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 		"events",
 		"decisions",
 		"common/scripted_effects",
+		"common/scripted_triggers",
 		"common/diplomatic_actions",
 		"common/triggered_modifiers",
 		"common/defines",
@@ -1945,10 +2427,10 @@ mod tests {
 	use super::{
 		CandidateSource, CompletionCandidate, CompletionContext, ScanTarget, TargetRole,
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
-		detect_completion_context, extract_completion_prefix, find_vendored_schema_dir_from,
-		load_schema_graph, parse_scan_targets_json, resolve_definition_locations,
-		schema_completion_candidates, schema_diagnostics_for_text, schema_hover,
-		select_completion_candidates,
+		detect_completion_context, document_symbols, extract_completion_prefix,
+		find_vendored_schema_dir_from, load_schema_graph, parse_scan_targets_json,
+		resolve_definition_locations, resolve_reference_locations, schema_completion_candidates,
+		schema_diagnostics_for_text, schema_hover, select_completion_candidates, workspace_symbols,
 	};
 	use foch_core::model::test_support;
 	use std::fs;
@@ -2161,6 +2643,173 @@ mod tests {
 			Url::from_file_path(root.join("common").join("scripted_effects").join("a.txt"))
 				.expect("effect uri")
 		);
+	}
+
+	#[test]
+	fn definition_resolves_scripted_trigger_call_to_definition() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_triggers"))
+			.expect("create scripted triggers");
+		fs::create_dir_all(root.join("events")).expect("create events");
+		fs::write(
+			root.join("common").join("scripted_triggers").join("a.txt"),
+			"my_trigger = { has_country_flag = TEST_FLAG }\n",
+		)
+		.expect("write trigger");
+		fs::write(
+			root.join("events").join("b.txt"),
+			"namespace = test\ncountry_event = { id = test.1 trigger = { my_trigger = yes } }\n",
+		)
+		.expect("write event");
+
+		let snapshot = build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}]);
+		let target_path = root.join("events").join("b.txt");
+		let text = fs::read_to_string(&target_path).expect("read event");
+		let line = text.lines().nth(1).expect("event line");
+		let uri = Url::from_file_path(&target_path).expect("uri");
+		let column = line.find("my_trigger").expect("trigger token") as u32;
+
+		let locations = resolve_definition_locations(
+			&snapshot,
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			&uri,
+			&text,
+			Position {
+				line: 1,
+				character: column,
+			},
+		)
+		.expect("definition locations");
+
+		assert_eq!(locations.len(), 1);
+		assert_eq!(
+			locations[0].uri,
+			Url::from_file_path(root.join("common").join("scripted_triggers").join("a.txt"))
+				.expect("trigger uri")
+		);
+	}
+
+	#[test]
+	fn references_resolve_scripted_effect_callsites() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(root.join("decisions")).expect("create decisions");
+		fs::write(
+			root.join("common").join("scripted_effects").join("a.txt"),
+			"my_effect = { set_country_flag = TEST_FLAG }\n",
+		)
+		.expect("write effect");
+		fs::write(
+			root.join("decisions").join("b.txt"),
+			"test_decision = { effect = { my_effect = { } } }\n",
+		)
+		.expect("write decision");
+
+		let snapshot = build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}]);
+		let target_path = root.join("decisions").join("b.txt");
+		let text = fs::read_to_string(&target_path).expect("read decision");
+		let uri = Url::from_file_path(&target_path).expect("uri");
+		let column = text.find("my_effect").expect("effect token") as u32;
+
+		let locations = resolve_reference_locations(
+			&snapshot,
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			&uri,
+			&text,
+			Position {
+				line: 0,
+				character: column,
+			},
+			true,
+		)
+		.expect("reference locations");
+
+		assert_eq!(locations.len(), 2);
+		assert!(locations.iter().any(|location| {
+			location.uri
+				== Url::from_file_path(root.join("common").join("scripted_effects").join("a.txt"))
+					.expect("effect uri")
+		}));
+		assert!(locations.iter().any(|location| location.uri == uri));
+	}
+
+	#[test]
+	fn document_symbols_include_current_file_definitions() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::create_dir_all(root.join("decisions")).expect("create decisions");
+		let effect_path = root.join("common").join("scripted_effects").join("a.txt");
+		fs::write(
+			&effect_path,
+			"my_effect = { set_country_flag = TEST_FLAG }\n",
+		)
+		.expect("write effect");
+		fs::write(
+			root.join("decisions").join("b.txt"),
+			"test_decision = { effect = { my_effect = { } } }\n",
+		)
+		.expect("write decision");
+
+		let snapshot = build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}]);
+		let uri = Url::from_file_path(&effect_path).expect("uri");
+		let symbols = document_symbols(
+			&snapshot,
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			&uri,
+		)
+		.expect("document symbols");
+
+		assert_eq!(symbols.len(), 1);
+		assert_eq!(symbols[0].name, "my_effect");
+	}
+
+	#[test]
+	fn workspace_symbols_filter_by_query() {
+		init_scopes();
+		let tmp = TempDir::new().expect("temp dir");
+		let root = tmp.path();
+		fs::create_dir_all(root.join("common").join("scripted_effects"))
+			.expect("create scripted effects");
+		fs::write(
+			root.join("common").join("scripted_effects").join("a.txt"),
+			"my_effect = { set_country_flag = TEST_FLAG }\nother_effect = { }\n",
+		)
+		.expect("write effect");
+
+		let snapshot = build_workspace_snapshot(&[ScanTarget {
+			path: root.to_path_buf(),
+			role: TargetRole::Mod,
+		}]);
+		let symbols = workspace_symbols(&snapshot, "my_");
+
+		assert_eq!(symbols.len(), 1);
+		assert_eq!(symbols[0].name, "my_effect");
 	}
 
 	#[test]

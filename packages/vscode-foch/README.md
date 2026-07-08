@@ -5,23 +5,30 @@ The extension wraps the bundled `foch` binary's `lsp` subcommand, so editor diag
 
 Marketplace pre-release builds use `version = 0.1.0` plus the pre-release publish flag. VS Code Marketplace does not support semver prerelease suffixes such as `0.1.0-preview.1`.
 
+## Version stance
+
+The VS Code extension is the first `0.1.0` preview surface for Foch. It is versioned separately from the merge engine's maturity: the extension focuses on EU4 editing, diagnostics, and navigation, while automatic merge remains experimental.
+
 ## What ships today
 
 | Capability | Coverage |
 | --- | --- |
 | Language mode | `EU4 Script` association for Paradox script files |
 | Syntax highlighting | TextMate grammar for Paradox assignments, blocks, `#` comments, Lua `--` line comments, and level-0 `--[[ ... ]]` block comments, so `common/defines/*.lua` highlights correctly |
-| Diagnostics | current-file parse diagnostics and workspace semantic findings |
-| Completion | builtin trigger/effect names plus workspace symbols: event ids, scripted effects, decisions, and flag values |
-| Navigation | goto-definition for scripted effects, event ids, flag values, and localisation keys |
+| Diagnostics | current-file parse diagnostics, workspace semantic findings, and CWT schema warnings for unknown keys/cardinality |
+| Completion | CWT schema-aware keys/aliases, builtin trigger/effect names, and workspace symbols: event ids, scripted effects, decisions, and flag values |
+| Hover | CWT schema hover for supported EU4 script contexts, including type, description, scope, and cardinality when available |
+| Navigation | goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys |
+| Symbols | document symbols and workspace symbol search from the semantic index |
 | Workspace loading | multi-root scanning across the game directory and multiple mod directories, with mod-root auto-detection via `descriptor.mod` |
 
 ## Not yet shipped
 
-- `hover`
-- `find references`
 - `rename`
 - code actions
+- formatting / pretty print
+- semantic tokens
+- non-EU4 game profiles
 
 ## Runtime model
 
@@ -41,6 +48,7 @@ From `packages/vscode-foch`:
 
 ```bash
 bun install
+bun run build:extension
 bun run prepare:server
 code .
 ```
@@ -82,6 +90,8 @@ Or run the full local packaging check:
 ```bash
 bun run test
 ```
+
+`build:extension` bundles `extension.js` into `dist/extension.js`, with `vscode` kept external and the language client dependency bundled into the extension entrypoint. It also vendors the language client's process-termination helper under `dist/vendor/`, avoiding Bun workspace symlinks or a runtime `node_modules` tree in the VSIX.
 
 ## Package a pre-release VSIX
 
@@ -131,5 +141,5 @@ Current semantic coverage:
 
 | Root family | Coverage |
 | --- | --- |
-| `events`, `decisions`, `common/scripted_effects`, `common/diplomatic_actions`, `common/triggered_modifiers`, `common/defines` | parse diagnostics, symbols, and semantic inference |
+| `events`, `decisions`, `common/scripted_effects`, `common/scripted_triggers`, `common/diplomatic_actions`, `common/triggered_modifiers`, `common/defines` | parse diagnostics, symbols, and semantic inference |
 | `interface`, `common/interface`, `gfx` | parse diagnostics; full scope/symbol inference is not yet enabled |

@@ -10,6 +10,7 @@ Use this checklist when cutting the alpha release. Do not run the tag or publish
 6. ☐ Push tags: `git push origin v0.1.0-alpha.1`
 7. ☐ Build release artifacts: `cargo build --release --workspace`
 8. ☐ Manually build the macOS Intel binary on an Intel Mac; this is not autopilot-safe because it requires the maintainer-side toolchain and hardware
-9. ☐ Build the VS Code extension package: `cd packages/vscode-foch && bun run package`
-10. ☐ Create the GitHub Release with binaries and the extension VSIX
-11. ☐ Post [`ALPHA_ANNOUNCEMENT.md`](../ALPHA_ANNOUNCEMENT.md) to Discord and/or the forum
+9. ☐ Smoke-test the VS Code extension package: `bun run --cwd packages/vscode-foch test`
+10. ☐ Build the VS Code extension package: `bun run --cwd packages/vscode-foch package:vsix`
+11. ☐ Create the GitHub Release with binaries and the extension VSIX
+12. ☐ Post [`ALPHA_ANNOUNCEMENT.md`](../ALPHA_ANNOUNCEMENT.md) to Discord and/or the forum

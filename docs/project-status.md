@@ -1,10 +1,32 @@
 # Project Status
 
-Last updated: 2026-05-05
+Last updated: 2026-07-08
 
 ## Summary
 
-`foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is now organized as a workspace monorepo instead of a single root crate.
+`foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is organized as a workspace monorepo. The near-term public surface is now LSP-first: VS Code/LSP can advance to a `0.1.0` preview on editor usability while the merge engine remains explicitly experimental.
+
+## LSP-first 0.1 preview
+
+The VS Code extension and `foch lsp` server are the best candidate for the first user-facing `0.1.0` preview. Their version semantics are separate from merge-engine maturity, but they share the same EU4 semantic analyzer and CWT schema graph.
+
+Current LSP/VS Code preview surface:
+
+- EU4-only language mode and TextMate highlighting for supported Paradox script paths.
+- Current-file parse diagnostics, workspace semantic findings, and CWT schema unknown-key/cardinality diagnostics.
+- Schema-aware completion and hover for supported EU4 script contexts.
+- Goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys.
+- Document symbols and workspace symbol search backed by the semantic index.
+- Multi-root workspace loading with configured game/mod paths and `descriptor.mod` auto-detection.
+
+Still out of scope for this 0.1 preview unless implemented separately:
+
+- rename
+- code actions
+- formatter / pretty printer
+- semantic tokens
+- non-EU4 game profiles
+- claiming automatic merge as reliable for arbitrary modlists
 
 ## Alpha-1 readiness
 
