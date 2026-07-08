@@ -11,9 +11,11 @@ event = {
     ###Event title localisation key.
     title = scalar
 
+    ## cardinality = 1..1
     ###Event monarch power category.
     category = enum[power_categories]
 
+    ## required
     ###Named event target.
     target = value_set[event_targets]
 

@@ -2,9 +2,9 @@ use foch_core::model::{
 	AnalysisMode, Finding, SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
 };
 use foch_cwt::{
-	CompiledAliasCategory, CompiledBindFieldMatch, CompiledRuleField, CompiledRuleValue,
-	RuleContext, RuleEngine, RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
-	default_compiled_rule_cache_dir, load_rule_engine_from_dir,
+	CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes, CompiledRuleField,
+	CompiledRuleValue, RuleContext, RuleEngine, RuleEngineLoad, RuleEngineLoadStatus,
+	SchemaBinding, SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
@@ -781,16 +781,7 @@ fn format_scope_values(values: &[String]) -> String {
 }
 
 fn schema_hover_cardinality(field_match: &CompiledBindFieldMatch<'_>) -> Option<String> {
-	field_match
-		.field()
-		.attributes
-		.cardinality
-		.or_else(|| {
-			field_match
-				.alias()
-				.and_then(|alias| alias.attributes.cardinality)
-		})
-		.map(format_cardinality)
+	schema_match_cardinality(field_match).map(format_cardinality)
 }
 
 fn format_cardinality(cardinality: (u32, Option<u32>)) -> String {
@@ -1057,7 +1048,7 @@ fn schema_diagnostics_for_ast(
 	statements: &[AstStatement],
 ) -> Vec<Diagnostic> {
 	let mut diagnostics = Vec::new();
-	collect_schema_diagnostics(engine, file_path, statements, &[], &mut diagnostics);
+	collect_schema_diagnostics(engine, file_path, statements, &[], None, &mut diagnostics);
 	sort_and_dedup_diagnostics(&mut diagnostics);
 	diagnostics
 }
@@ -1067,12 +1058,14 @@ fn collect_schema_diagnostics(
 	file_path: &Path,
 	statements: &[AstStatement],
 	parent_path: &[String],
+	parent_range: Option<Range>,
 	diagnostics: &mut Vec<Diagnostic>,
 ) {
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &context_path);
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
 	let mut cardinality_ranges = HashMap::<String, (u32, Vec<Range>)>::new();
+	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
 		match statement {
 			AstStatement::Assignment {
@@ -1096,6 +1089,11 @@ fn collect_schema_diagnostics(
 				{
 					diagnostics.push(diagnostic);
 				}
+				if let Some(field_match) = field_match {
+					*present_key_counts
+						.entry(field_match.field().key.clone())
+						.or_default() += 1;
+				}
 				if let Some(field_match) = field_match
 					&& let Some(upper_bound) = schema_cardinality_upper(&field_match)
 				{
@@ -1105,16 +1103,37 @@ fn collect_schema_diagnostics(
 					entry.0 = entry.0.max(upper_bound);
 					entry.1.push(key_range);
 				}
-				if let AstValue::Block { items, .. } = value {
+				if let AstValue::Block {
+					items,
+					span: block_span,
+				} = value
+				{
 					let mut child_path = parent_path.to_vec();
 					child_path.push(key.clone());
-					collect_schema_diagnostics(engine, file_path, items, &child_path, diagnostics);
+					collect_schema_diagnostics(
+						engine,
+						file_path,
+						items,
+						&child_path,
+						Some(lsp_range_from_span(block_span)),
+						diagnostics,
+					);
 				}
 			}
 			AstStatement::Item {
-				value: AstValue::Block { items, .. },
+				value: AstValue::Block {
+					items,
+					span: block_span,
+				},
 				..
-			} => collect_schema_diagnostics(engine, file_path, items, parent_path, diagnostics),
+			} => collect_schema_diagnostics(
+				engine,
+				file_path,
+				items,
+				parent_path,
+				Some(lsp_range_from_span(block_span)),
+				diagnostics,
+			),
 			AstStatement::Item { .. } | AstStatement::Comment { .. } => {}
 		}
 	}
@@ -1126,22 +1145,103 @@ fn collect_schema_diagnostics(
 			diagnostics.push(schema_cardinality_diagnostic(range, &key, upper_bound));
 		}
 	}
+	if let Some(parent_context) = parent_context
+		&& !skip_unknown
+	{
+		let range = schema_context_diagnostic_range(parent_range, statements);
+		for (field, minimum) in schema_required_fields(parent_context) {
+			let present = present_key_counts
+				.get(&field.key)
+				.copied()
+				.unwrap_or_default();
+			if present < minimum {
+				diagnostics.push(schema_required_key_diagnostic(range, &field.key, minimum));
+			}
+		}
+	}
 }
 
 fn schema_cardinality_upper(field_match: &CompiledBindFieldMatch<'_>) -> Option<u32> {
+	schema_match_cardinality(field_match).and_then(|(_, upper_bound)| upper_bound)
+}
+
+fn schema_match_cardinality(
+	field_match: &CompiledBindFieldMatch<'_>,
+) -> Option<(u32, Option<u32>)> {
 	field_match
 		.field()
 		.attributes
 		.cardinality
-		.and_then(|(_, upper_bound)| upper_bound)
+		.or_else(|| schema_required_cardinality(&field_match.field().attributes))
 		.or_else(|| {
-			field_match.alias().and_then(|alias| {
-				alias
-					.attributes
-					.cardinality
-					.and_then(|(_, upper_bound)| upper_bound)
-			})
+			field_match
+				.alias()
+				.and_then(|alias| schema_field_attributes_cardinality(&alias.attributes))
 		})
+}
+
+fn schema_required_fields(context: RuleContext<'_>) -> Vec<(&CompiledRuleField, u32)> {
+	let mut fields = completion_rule_fields(context)
+		.into_iter()
+		.filter(|field| parse_schema_marker(&field.key).is_none())
+		.filter_map(|field| {
+			schema_field_attributes_cardinality(&field.attributes)
+				.map(|(minimum, _)| (field, minimum))
+		})
+		.filter(|(_, minimum)| *minimum > 0)
+		.collect::<Vec<_>>();
+	fields.sort_by(|(left, _), (right, _)| left.key.cmp(&right.key));
+	fields.dedup_by(|(left, _), (right, _)| left.key == right.key);
+	fields
+}
+
+fn schema_field_attributes_cardinality(
+	attributes: &CompiledFieldAttributes,
+) -> Option<(u32, Option<u32>)> {
+	attributes
+		.cardinality
+		.or_else(|| schema_required_cardinality(attributes))
+}
+
+fn schema_required_cardinality(attributes: &CompiledFieldAttributes) -> Option<(u32, Option<u32>)> {
+	attributes
+		.raw
+		.iter()
+		.any(|(key, value)| key == "required" && value.is_empty())
+		.then_some((1, None))
+}
+
+fn schema_context_diagnostic_range(
+	parent_range: Option<Range>,
+	statements: &[AstStatement],
+) -> Range {
+	parent_range.unwrap_or_else(|| {
+		statements
+			.first()
+			.map(ast_statement_range)
+			.unwrap_or_else(zero_range)
+	})
+}
+
+fn ast_statement_range(statement: &AstStatement) -> Range {
+	match statement {
+		AstStatement::Assignment { span, .. }
+		| AstStatement::Item { span, .. }
+		| AstStatement::Comment { span, .. } => lsp_range_from_span(span),
+	}
+}
+
+fn zero_range() -> Range {
+	Range {
+		start: Position {
+			line: 0,
+			character: 0,
+		},
+		end: Position {
+			line: 0,
+			character: 0,
+		},
+	}
 }
 
 fn schema_invalid_value_diagnostic(
@@ -1266,6 +1366,17 @@ fn schema_cardinality_diagnostic(range: Range, key: &str, upper_bound: u32) -> D
 		code: Some(NumberOrString::String("V002".to_string())),
 		source: Some("foch".to_string()),
 		message: format!("key `{key}` exceeds schema cardinality upper bound of {upper_bound}"),
+		..Diagnostic::default()
+	}
+}
+
+fn schema_required_key_diagnostic(range: Range, key: &str, minimum: u32) -> Diagnostic {
+	Diagnostic {
+		range,
+		severity: Some(DiagnosticSeverity::ERROR),
+		code: Some(NumberOrString::String("V004".to_string())),
+		source: Some("foch".to_string()),
+		message: format!("schema requires key `{key}` at least {minimum} time(s) in this context"),
 		..Diagnostic::default()
 	}
 }
@@ -3344,6 +3455,7 @@ mod tests {
 		assert!(markdown.contains("Type: `Scalar`"));
 		assert!(markdown.contains("Value set: `enum` `power_categories`"));
 		assert!(markdown.contains("`ADM`, `DIP`, `MIL`"));
+		assert!(markdown.contains("Cardinality: `1..1`"));
 	}
 
 	#[test]
@@ -3528,6 +3640,26 @@ mod tests {
 			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
 				&& diagnostic.message.contains("elsewhere")
 				&& diagnostic.message.contains("event_targets")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_report_missing_required_schema_keys() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  title = sample_title\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V004".to_string()))
+				&& diagnostic.message.contains("category")
+				&& diagnostic.message.contains("at least 1")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V004".to_string()))
+				&& diagnostic.message.contains("target")
+				&& diagnostic.message.contains("at least 1")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
 		}));
 	}
