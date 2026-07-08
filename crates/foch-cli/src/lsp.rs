@@ -3,9 +3,9 @@ use foch_core::model::{
 };
 use foch_cwt::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
-	CompiledRuleField, CompiledRuleValue, RuleContext, RuleEngine, RuleEngineLoad,
-	RuleEngineLoadStatus, SchemaBinding, SchemaSource, default_compiled_rule_cache_dir,
-	load_rule_engine_from_dir,
+	CompiledRuleField, CompiledRuleValue, CompiledSeverity, RuleContext, RuleEngine,
+	RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
+	default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
@@ -1125,7 +1125,7 @@ fn collect_schema_diagnostics(
 	let active_scopes = parent_context
 		.map(schema_completion_active_scopes)
 		.unwrap_or_default();
-	let mut cardinality_ranges = HashMap::<String, (u32, Vec<Range>)>::new();
+	let mut cardinality_ranges = HashMap::<String, (u32, DiagnosticSeverity, Vec<Range>)>::new();
 	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
 		match statement {
@@ -1182,11 +1182,16 @@ fn collect_schema_diagnostics(
 				if let Some(field_match) = field_match
 					&& let Some(upper_bound) = schema_cardinality_upper(&field_match)
 				{
+					let severity =
+						schema_match_diagnostic_severity(&field_match, DiagnosticSeverity::WARNING);
 					let entry = cardinality_ranges
 						.entry(key.clone())
-						.or_insert_with(|| (upper_bound, Vec::new()));
-					entry.0 = entry.0.max(upper_bound);
-					entry.1.push(key_range);
+						.or_insert_with(|| (upper_bound, severity, Vec::new()));
+					if upper_bound > entry.0 {
+						entry.0 = upper_bound;
+						entry.1 = severity;
+					}
+					entry.2.push(key_range);
 				}
 				if let AstValue::Block {
 					items,
@@ -1222,12 +1227,17 @@ fn collect_schema_diagnostics(
 			AstStatement::Item { .. } | AstStatement::Comment { .. } => {}
 		}
 	}
-	for (key, (upper_bound, ranges)) in cardinality_ranges {
+	for (key, (upper_bound, severity, ranges)) in cardinality_ranges {
 		if ranges.len() <= upper_bound as usize {
 			continue;
 		}
 		for range in ranges.into_iter().skip(upper_bound as usize) {
-			diagnostics.push(schema_cardinality_diagnostic(range, &key, upper_bound));
+			diagnostics.push(schema_cardinality_diagnostic(
+				range,
+				&key,
+				upper_bound,
+				severity,
+			));
 		}
 	}
 	if let Some(parent_context) = parent_context
@@ -1240,7 +1250,13 @@ fn collect_schema_diagnostics(
 				.copied()
 				.unwrap_or_default();
 			if present < minimum {
-				diagnostics.push(schema_required_key_diagnostic(range, &field.key, minimum));
+				let severity = schema_attributes_diagnostic_severity(
+					&field.attributes,
+					DiagnosticSeverity::ERROR,
+				);
+				diagnostics.push(schema_required_key_diagnostic(
+					range, &field.key, minimum, severity,
+				));
 			}
 		}
 	}
@@ -1297,6 +1313,36 @@ fn schema_required_cardinality(attributes: &CompiledFieldAttributes) -> Option<(
 		.then_some((1, None))
 }
 
+fn schema_match_diagnostic_severity(
+	field_match: &CompiledBindFieldMatch<'_>,
+	default: DiagnosticSeverity,
+) -> DiagnosticSeverity {
+	field_match
+		.alias()
+		.and_then(|alias| alias.attributes.severity)
+		.or(field_match.field().attributes.severity)
+		.map(cwt_diagnostic_severity)
+		.unwrap_or(default)
+}
+
+fn schema_attributes_diagnostic_severity(
+	attributes: &CompiledFieldAttributes,
+	default: DiagnosticSeverity,
+) -> DiagnosticSeverity {
+	attributes
+		.severity
+		.map(cwt_diagnostic_severity)
+		.unwrap_or(default)
+}
+
+fn cwt_diagnostic_severity(severity: CompiledSeverity) -> DiagnosticSeverity {
+	match severity {
+		CompiledSeverity::Error => DiagnosticSeverity::ERROR,
+		CompiledSeverity::Warning => DiagnosticSeverity::WARNING,
+		CompiledSeverity::Info => DiagnosticSeverity::INFORMATION,
+	}
+}
+
 fn schema_context_diagnostic_range(
 	parent_range: Option<Range>,
 	statements: &[AstStatement],
@@ -1344,7 +1390,10 @@ fn schema_invalid_value_diagnostic(
 	}
 	Some(Diagnostic {
 		range: lsp_range_from_span(span),
-		severity: Some(DiagnosticSeverity::ERROR),
+		severity: Some(schema_match_diagnostic_severity(
+			field_match,
+			DiagnosticSeverity::ERROR,
+		)),
 		code: Some(NumberOrString::String("V003".to_string())),
 		source: Some("foch".to_string()),
 		message: format!(
@@ -1369,7 +1418,10 @@ fn schema_scalar_type_diagnostic(
 	}
 	Some(Diagnostic {
 		range: lsp_range_from_span(span),
-		severity: Some(DiagnosticSeverity::ERROR),
+		severity: Some(schema_match_diagnostic_severity(
+			field_match,
+			DiagnosticSeverity::ERROR,
+		)),
 		code: Some(NumberOrString::String("V005".to_string())),
 		source: Some("foch".to_string()),
 		message: format!(
@@ -1393,7 +1445,10 @@ fn schema_value_shape_diagnostic(
 	}
 	Some(Diagnostic {
 		range: lsp_range_from_span(value.span()),
-		severity: Some(DiagnosticSeverity::ERROR),
+		severity: Some(schema_match_diagnostic_severity(
+			field_match,
+			DiagnosticSeverity::ERROR,
+		)),
 		code: Some(NumberOrString::String("V006".to_string())),
 		source: Some("foch".to_string()),
 		message: format!(
@@ -1418,7 +1473,10 @@ fn schema_alias_scope_diagnostic(
 	}
 	Some(Diagnostic {
 		range,
-		severity: Some(DiagnosticSeverity::ERROR),
+		severity: Some(schema_match_diagnostic_severity(
+			field_match,
+			DiagnosticSeverity::ERROR,
+		)),
 		code: Some(NumberOrString::String("V007".to_string())),
 		source: Some("foch".to_string()),
 		message: format!(
@@ -1591,10 +1649,15 @@ fn schema_unknown_key_diagnostic(range: Range, key: &str) -> Diagnostic {
 	}
 }
 
-fn schema_cardinality_diagnostic(range: Range, key: &str, upper_bound: u32) -> Diagnostic {
+fn schema_cardinality_diagnostic(
+	range: Range,
+	key: &str,
+	upper_bound: u32,
+	severity: DiagnosticSeverity,
+) -> Diagnostic {
 	Diagnostic {
 		range,
-		severity: Some(DiagnosticSeverity::WARNING),
+		severity: Some(severity),
 		code: Some(NumberOrString::String("V002".to_string())),
 		source: Some("foch".to_string()),
 		message: format!("key `{key}` exceeds schema cardinality upper bound of {upper_bound}"),
@@ -1602,10 +1665,15 @@ fn schema_cardinality_diagnostic(range: Range, key: &str, upper_bound: u32) -> D
 	}
 }
 
-fn schema_required_key_diagnostic(range: Range, key: &str, minimum: u32) -> Diagnostic {
+fn schema_required_key_diagnostic(
+	range: Range,
+	key: &str,
+	minimum: u32,
+	severity: DiagnosticSeverity,
+) -> Diagnostic {
 	Diagnostic {
 		range,
-		severity: Some(DiagnosticSeverity::ERROR),
+		severity: Some(severity),
 		code: Some(NumberOrString::String("V004".to_string())),
 		source: Some("foch".to_string()),
 		message: format!("schema requires key `{key}` at least {minimum} time(s) in this context"),
@@ -3624,6 +3692,15 @@ mod tests {
 			.engine
 	}
 
+	fn load_inline_lsp_rule_engine(schema: &str) -> std::sync::Arc<foch_cwt::RuleEngine> {
+		let schema_dir = TempDir::new().expect("create inline CWT schema dir");
+		fs::write(schema_dir.path().join("inline.cwt"), schema).expect("write inline CWT schema");
+		let cache = TempDir::new().expect("create inline CWT rule cache");
+		load_rule_engine_with_cache_dir(schema_dir.path(), Some(cache.path()))
+			.expect("load inline LSP rule engine")
+			.engine
+	}
+
 	fn fixture_text(relative_path: &str) -> String {
 		fs::read_to_string(lsp_fixture_dir().join(relative_path)).expect("read LSP fixture text")
 	}
@@ -4138,6 +4215,77 @@ mod tests {
 				&& diagnostic.message.contains("add_prestige")
 				&& diagnostic.message.contains("int")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_use_cwt_severity_for_schema_findings() {
+		let schema = r#"
+		types = {
+			type[event] = {
+				path = "game/events"
+			}
+		}
+
+		event = {
+			## severity = warning
+			gentle_bool = bool
+
+			## required
+			## severity = info
+			soft_required = scalar
+
+			## cardinality = 1..1
+			## severity = info
+			singleton = scalar
+
+			## push_scope = country
+			trigger = {
+				alias_name[trigger] = alias_match_left[trigger]
+			}
+		}
+
+		## scope = sea
+		## severity = warning
+		alias[trigger:sea_only_trigger] = bool
+
+		scopes = {
+			country = { aliases = { country } }
+			sea = { aliases = { sea } }
+		}
+		"#;
+		let engine = load_inline_lsp_rule_engine(schema);
+		let text = "\
+sample = {
+  gentle_bool = maybe
+  singleton = first
+  singleton = second
+  trigger = {
+    sea_only_trigger = yes
+  }
+}
+";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("gentle_bool")
+				&& diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V002".to_string()))
+				&& diagnostic.message.contains("singleton")
+				&& diagnostic.severity == Some(DiagnosticSeverity::INFORMATION)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V004".to_string()))
+				&& diagnostic.message.contains("soft_required")
+				&& diagnostic.severity == Some(DiagnosticSeverity::INFORMATION)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("sea_only_trigger")
+				&& diagnostic.severity == Some(DiagnosticSeverity::WARNING)
 		}));
 	}
 

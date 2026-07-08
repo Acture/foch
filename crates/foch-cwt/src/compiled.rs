@@ -11,11 +11,11 @@ use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
 	AliasCategory, CwtAlias, CwtFieldAttributes, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
-	CwtScope, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
+	CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.4.0";
+pub const PACK_FORMAT_VERSION: &str = "0.5.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -369,6 +369,7 @@ pub struct CompiledFieldAttributes {
 	pub replace_scope: HashMap<String, String>,
 	pub scope: Vec<String>,
 	pub cardinality: Option<(u32, Option<u32>)>,
+	pub severity: Option<CompiledSeverity>,
 	pub description: Option<String>,
 	pub raw: Vec<(String, String)>,
 }
@@ -380,8 +381,26 @@ impl CompiledFieldAttributes {
 			replace_scope: attributes.replace_scope.clone(),
 			scope: attributes.scope.clone(),
 			cardinality: attributes.cardinality,
+			severity: attributes.severity.map(CompiledSeverity::from_schema),
 			description: attributes.description.clone(),
 			raw: attributes.raw.clone(),
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum CompiledSeverity {
+	Error,
+	Warning,
+	Info,
+}
+
+impl CompiledSeverity {
+	fn from_schema(severity: CwtSeverity) -> Self {
+		match severity {
+			CwtSeverity::Error => Self::Error,
+			CwtSeverity::Warning => Self::Warning,
+			CwtSeverity::Info => Self::Info,
 		}
 	}
 }

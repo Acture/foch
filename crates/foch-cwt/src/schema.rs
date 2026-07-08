@@ -63,6 +63,13 @@ pub struct CwtSubtype {
 	pub rules: Vec<CwtRuleField>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CwtSeverity {
+	Error,
+	Warning,
+	Info,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CwtTypeKeyFilter {
 	Exact(Vec<String>),
@@ -91,6 +98,7 @@ pub struct CwtFieldAttributes {
 	pub replace_scope: HashMap<String, String>,
 	pub scope: Vec<String>,
 	pub cardinality: Option<(u32, Option<u32>)>,
+	pub severity: Option<CwtSeverity>,
 	pub description: Option<String>,
 	pub raw: Vec<(String, String)>,
 }
@@ -622,6 +630,13 @@ fn parse_field_attributes(comments: Vec<String>) -> CwtFieldAttributes {
 						attributes.raw.push((key.to_string(), value.to_string()));
 					}
 				}
+				"severity" => {
+					if let Some(severity) = parse_severity(value) {
+						attributes.severity = Some(severity);
+					} else {
+						attributes.raw.push((key.to_string(), value.to_string()));
+					}
+				}
 				"description" => append_description(&mut attributes, value),
 				_ => attributes.raw.push((key.to_string(), value.to_string())),
 			}
@@ -722,6 +737,15 @@ fn parse_cardinality(value: &str) -> Option<(u32, Option<u32>)> {
 		value => Some(value.parse().ok()?),
 	};
 	Some((minimum, maximum))
+}
+
+fn parse_severity(value: &str) -> Option<CwtSeverity> {
+	match value.trim() {
+		"error" => Some(CwtSeverity::Error),
+		"warning" => Some(CwtSeverity::Warning),
+		"info" => Some(CwtSeverity::Info),
+		_ => None,
+	}
 }
 
 fn append_description(attributes: &mut CwtFieldAttributes, text: &str) {

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use foch_cwt::{
-	CompiledRulePack, CompiledRuleValue, CwtSchemaGraph, RuleContext, RuleEngine,
+	CompiledRulePack, CompiledRuleValue, CompiledSeverity, CwtSchemaGraph, RuleContext, RuleEngine,
 	RuleEngineLoadStatus, SchemaBinding, SchemaSource, load_rule_engine_from_dir,
 };
 use foch_syntax::ParadoxTree;
@@ -201,6 +201,53 @@ fn compiled_binary_pack_roundtrips_and_keeps_binding_semantics() {
 		.expect("bind mission field after roundtrip");
 	assert_eq!(field.attributes.cardinality, Some((0, Some(1))));
 	assert!(matches!(field.value, CompiledRuleValue::Block(_)));
+}
+
+#[test]
+fn compiled_binary_pack_roundtrips_severity_attributes() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+		}
+	}
+
+	event = {
+		## severity = warning
+		gentle_bool = bool
+		trigger = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+	}
+
+	## scope = country
+	## severity = info
+	alias[trigger:gentle_trigger] = bool
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = RuleEngine::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let field = engine
+		.bind_field(RuleContext::RootType(event), "gentle_bool")
+		.expect("bind severity field");
+	assert_eq!(field.attributes.severity, Some(CompiledSeverity::Warning));
+
+	let trigger = engine
+		.bind_field(RuleContext::RootType(event), "trigger")
+		.expect("bind trigger field");
+	let alias_match = engine
+		.bind_field_match(RuleContext::RuleField(trigger), "gentle_trigger")
+		.expect("bind severity alias");
+	assert_eq!(
+		alias_match.alias().map(|alias| alias.attributes.severity),
+		Some(Some(CompiledSeverity::Info))
+	);
 }
 
 #[test]

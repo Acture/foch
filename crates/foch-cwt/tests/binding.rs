@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use foch_cwt::{
-	AliasCategory, BindContext, CwtRuleValue, CwtSchemaGraph, CwtTypeKeyFilter, SchemaBinding,
+	AliasCategory, BindContext, CwtRuleValue, CwtSchemaGraph, CwtSeverity, CwtTypeKeyFilter,
+	SchemaBinding,
 };
 use foch_syntax::ParadoxTree;
 
@@ -72,6 +73,44 @@ fn bind_field_projects_attributes_and_alias_expansion() {
 	assert_eq!(alias.value, CwtRuleValue::Scalar("int".to_string()));
 	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
 	assert_eq!(alias.attributes.push_scope.as_deref(), Some("country"));
+}
+
+#[test]
+fn bind_field_projects_severity_attributes() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+		}
+	}
+
+	event = {
+		## severity = warning
+		gentle_bool = bool
+		trigger = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+	}
+
+	## scope = country
+	## severity = info
+	alias[trigger:gentle_trigger] = bool
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let event = graph
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let field = graph
+		.bind_field(BindContext::RootType(event), "gentle_bool")
+		.expect("bind severity field");
+	assert_eq!(field.attributes.severity, Some(CwtSeverity::Warning));
+
+	let alias = graph
+		.aliases
+		.get(&(AliasCategory::Trigger, "gentle_trigger".to_string()))
+		.expect("lookup severity alias");
+	assert_eq!(alias.attributes.severity, Some(CwtSeverity::Info));
 }
 
 #[test]
