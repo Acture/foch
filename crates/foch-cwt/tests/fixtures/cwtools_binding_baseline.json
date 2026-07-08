@@ -215,7 +215,9 @@
           }
         }
       ],
-      "skip_root_key": "country_decisions",
+      "skip_root_keys": [
+        "country_decisions"
+      ],
       "subtypes": [],
       "type_per_file": false
     },
@@ -475,7 +477,7 @@
           }
         }
       ],
-      "skip_root_key": null,
+      "skip_root_keys": [],
       "subtypes": [
         {
           "name": "country",
@@ -779,6 +781,36 @@
       "type_per_file": false
     },
     {
+      "name": "game_age_ability",
+      "name_field": null,
+      "name_from_file": false,
+      "path": "common/ages",
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "localisation",
+          "value": {
+            "fields": [
+              {
+                "key": "name",
+                "value": {
+                  "kind": "scalar",
+                  "value": "$"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
+      "skip_root_keys": [
+        "any",
+        "abilities"
+      ],
+      "subtypes": [],
+      "type_per_file": false
+    },
+    {
       "name": "mission",
       "name_field": null,
       "name_from_file": false,
@@ -808,7 +840,9 @@
           }
         }
       ],
-      "skip_root_key": "any",
+      "skip_root_keys": [
+        "any"
+      ],
       "subtypes": [],
       "type_per_file": false
     },
@@ -996,7 +1030,7 @@
           }
         }
       ],
-      "skip_root_key": null,
+      "skip_root_keys": [],
       "subtypes": [],
       "type_per_file": false
     },
@@ -1072,7 +1106,7 @@
           }
         }
       ],
-      "skip_root_key": null,
+      "skip_root_keys": [],
       "subtypes": [
         {
           "name": "negative",

@@ -4090,14 +4090,14 @@ mod tests {
 		fs::write(schema_dir.path().join("ideas.cwt"), schema).expect("write inline schema");
 		let graph = CwtSchemaGraph::from_directory(schema_dir.path()).expect("load inline schema");
 		let engine = RuleEngine::from_graph(&graph);
-		let text = "sample_idea = {\n  \n}\n";
+		let text = "sample_group = {\n  sample_idea = {\n    \n  }\n}\n";
 		let candidates = schema_completion_candidates(
 			&engine,
 			Path::new("common/ideas/sample.txt"),
 			text,
 			Position {
-				line: 1,
-				character: 2,
+				line: 2,
+				character: 4,
 			},
 			"",
 		)
@@ -4108,6 +4108,48 @@ mod tests {
 			.collect::<Vec<_>>();
 		assert!(labels.contains(&"idea_only"));
 		assert!(!labels.contains(&"category"));
+	}
+
+	#[test]
+	fn completion_uses_ordered_skip_root_key_chain_for_schema_context() {
+		let schema = r#"
+		types = {
+			type[game_age] = {
+				path = "game/common/ages"
+			}
+			type[game_age_ability] = {
+				path = "game/common/ages"
+				skip_root_key = { any abilities }
+			}
+		}
+
+		game_age = {
+			start = int
+		}
+
+		game_age_ability = {
+			ability_only = bool
+		}
+		"#;
+		let engine = load_inline_lsp_rule_engine(schema);
+		let text = "age_of_discovery = {\n  abilities = {\n    free_war_taxes = {\n      \n    }\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("common/ages/sample.txt"),
+			text,
+			Position {
+				line: 3,
+				character: 6,
+			},
+			"",
+		)
+		.expect("schema completion under ordered skip_root_key chain");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"ability_only"));
+		assert!(!labels.contains(&"start"));
 	}
 
 	#[test]

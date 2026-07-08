@@ -310,10 +310,11 @@ fn bind_chain_uses_root_type_key_filter_exclusions() {
 			"ai_will_do".to_string(),
 		]))
 	);
+	assert_eq!(idea.skip_root_keys, vec!["any".to_string()]);
 
 	let binding = graph.bind_chain(
 		Path::new("common/ideas/example.txt"),
-		&["sample_idea", "idea_only"],
+		&["sample_group", "sample_idea", "idea_only"],
 	);
 	let SchemaBinding::Bound { type_id, node_id } = binding else {
 		panic!("expected idea root binding, got {binding:?}");
@@ -323,7 +324,7 @@ fn bind_chain_uses_root_type_key_filter_exclusions() {
 
 	let excluded = graph.bind_chain(
 		Path::new("common/ideas/example.txt"),
-		&["start", "idea_only"],
+		&["sample_group", "start", "idea_only"],
 	);
 	assert!(
 		!matches!(
@@ -331,6 +332,62 @@ fn bind_chain_uses_root_type_key_filter_exclusions() {
 			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "idea"
 		),
 		"excluded key must not bind to idea type: {excluded:?}"
+	);
+}
+
+#[test]
+fn bind_chain_uses_ordered_skip_root_key_chain() {
+	let schema = r#"
+	types = {
+		type[game_age] = {
+			path = "game/common/ages"
+		}
+		type[game_age_ability] = {
+			path = "game/common/ages"
+			skip_root_key = { any abilities }
+		}
+	}
+
+	game_age = {
+		start = int
+	}
+
+	game_age_ability = {
+		power = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let ability = graph
+		.types
+		.values()
+		.find(|definition| definition.name.as_str() == "game_age_ability")
+		.expect("game_age_ability type");
+	assert_eq!(
+		ability.skip_root_keys,
+		vec!["any".to_string(), "abilities".to_string()]
+	);
+
+	let binding = graph.bind_chain(
+		Path::new("common/ages/example.txt"),
+		&["age_of_discovery", "abilities", "free_war_taxes", "power"],
+	);
+	let SchemaBinding::Bound { type_id, node_id } = binding else {
+		panic!("expected nested ability binding, got {binding:?}");
+	};
+	assert_eq!(type_id.as_str(), "game_age_ability");
+	assert_eq!(node_id.0, "type:game_age_ability:field:power");
+
+	let missing_fixed_wrapper = graph.bind_chain(
+		Path::new("common/ages/example.txt"),
+		&["age_of_discovery", "free_war_taxes", "power"],
+	);
+	assert!(
+		!matches!(
+			missing_fixed_wrapper,
+			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "game_age_ability"
+		),
+		"ability type must require the ordered skip_root_key chain: {missing_fixed_wrapper:?}"
 	);
 }
 

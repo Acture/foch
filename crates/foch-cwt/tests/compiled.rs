@@ -142,7 +142,7 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
 	let engine = RuleEngine::from_graph(&graph);
 	let path = Path::new("common/ideas/example.txt");
-	let ast_path = ["sample_idea", "idea_only"];
+	let ast_path = ["sample_group", "sample_idea", "idea_only"];
 
 	assert_eq!(
 		engine.bind_chain(path, &ast_path),
@@ -154,7 +154,7 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 	assert_eq!(type_id.as_str(), "idea");
 	assert_eq!(node_id.0, "type:idea:field:idea_only");
 
-	let excluded_path = ["start", "idea_only"];
+	let excluded_path = ["sample_group", "start", "idea_only"];
 	assert_eq!(
 		engine.bind_chain(path, &excluded_path),
 		graph.bind_chain(path, &excluded_path)
@@ -165,6 +165,57 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "idea"
 		),
 		"compiled engine must not bind excluded root key to idea type"
+	);
+}
+
+#[test]
+fn compiled_engine_matches_ordered_skip_root_key_chain() {
+	let schema = r#"
+	types = {
+		type[game_age] = {
+			path = "game/common/ages"
+		}
+		type[game_age_ability] = {
+			path = "game/common/ages"
+			skip_root_key = { any abilities }
+		}
+	}
+
+	game_age = {
+		start = int
+	}
+
+	game_age_ability = {
+		power = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	let path = Path::new("common/ages/example.txt");
+	let ast_path = ["age_of_discovery", "abilities", "free_war_taxes", "power"];
+
+	assert_eq!(
+		engine.bind_chain(path, &ast_path),
+		graph.bind_chain(path, &ast_path)
+	);
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
+		panic!("expected compiled game_age_ability binding");
+	};
+	assert_eq!(type_id.as_str(), "game_age_ability");
+	assert_eq!(node_id.0, "type:game_age_ability:field:power");
+
+	let missing_fixed_wrapper = ["age_of_discovery", "free_war_taxes", "power"];
+	assert_eq!(
+		engine.bind_chain(path, &missing_fixed_wrapper),
+		graph.bind_chain(path, &missing_fixed_wrapper)
+	);
+	assert!(
+		!matches!(
+			engine.bind_chain(path, &missing_fixed_wrapper),
+			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "game_age_ability"
+		),
+		"ability type must require the ordered skip_root_key chain"
 	);
 }
 

@@ -47,7 +47,7 @@ struct TypeBaseline {
 	push_scope: Option<String>,
 	type_per_file: bool,
 	name_from_file: bool,
-	skip_root_key: Option<String>,
+	skip_root_keys: Vec<String>,
 	subtypes: Vec<SubtypeBaseline>,
 	rules: Vec<RuleFieldBaseline>,
 }
@@ -182,6 +182,7 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		selected_types: [
 			"decision",
 			"event",
+			"game_age_ability",
 			"mission",
 			"mission_series",
 			"opinion_modifier",
@@ -272,7 +273,7 @@ fn type_baseline(definition: &CwtTypeDef) -> TypeBaseline {
 		push_scope: definition.push_scope.clone(),
 		type_per_file: definition.type_per_file,
 		name_from_file: definition.name_from_file,
-		skip_root_key: definition.skip_root_key.clone(),
+		skip_root_keys: definition.skip_root_keys.clone(),
 		subtypes: definition.subtypes.iter().map(subtype_baseline).collect(),
 		rules: definition.rules.iter().map(rule_field_baseline).collect(),
 	}

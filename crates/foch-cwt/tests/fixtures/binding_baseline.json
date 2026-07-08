@@ -38,7 +38,7 @@
       "path": "events",
       "push_scope": "country",
       "rules": [],
-      "skip_root_key": null,
+      "skip_root_keys": [],
       "subtypes": [
         {
           "name": "country_event",
@@ -100,7 +100,7 @@
       "path": "missions",
       "push_scope": null,
       "rules": [],
-      "skip_root_key": null,
+      "skip_root_keys": [],
       "subtypes": [],
       "type_per_file": false
     },
@@ -111,7 +111,9 @@
       "path": "missions",
       "push_scope": null,
       "rules": [],
-      "skip_root_key": "any",
+      "skip_root_keys": [
+        "any"
+      ],
       "subtypes": [
         {
           "name": "country_mission_series",

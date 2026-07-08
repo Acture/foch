@@ -15,7 +15,7 @@ use crate::schema::{
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.5.0";
+pub const PACK_FORMAT_VERSION: &str = "0.5.1";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,7 +223,7 @@ impl CompiledRoot {
 			push_scope: definition.push_scope.clone(),
 			type_per_file: definition.type_per_file,
 			name_from_file: definition.name_from_file,
-			skip_root_keys: definition.skip_root_key.iter().cloned().collect::<Vec<_>>(),
+			skip_root_keys: definition.skip_root_keys.clone(),
 			subtypes: definition
 				.subtypes
 				.iter()
@@ -721,9 +721,26 @@ impl RuleEngine {
 		let mut node_path = Vec::new();
 		let mut consumed = 0;
 		let mut root_instance_consumed = false;
+		let mut skip_root_index = 0;
 		let mut segments = ast_path.iter().copied().peekable();
 		while let Some(key) = segments.next() {
 			if let ResolvedNode::Root(definition) = node {
+				if let Some(skip_key) = definition.skip_root_keys.get(skip_root_index) {
+					if root_skip_key_matches(skip_key, key) {
+						skip_root_index += 1;
+						consumed += 1;
+						continue;
+					}
+					return BindAttempt {
+						consumed,
+						binding: SchemaBinding::Unbound {
+							reason: format!(
+								"expected schema skip_root_key `{skip_key}` under {}",
+								describe_node(node)
+							),
+						},
+					};
+				}
 				match self.match_subtype(definition, key) {
 					Some(Ok(subtype)) => {
 						node = ResolvedNode::Subtype(definition, subtype);
@@ -739,9 +756,27 @@ impl RuleEngine {
 					}
 					None => {}
 				}
-				if definition.skip_root_keys.iter().any(|item| item == key) {
-					consumed += 1;
-					continue;
+				if !definition.skip_root_keys.is_empty() && !root_instance_consumed {
+					if root_type_accepts_instance_key(definition, key) {
+						root_instance_consumed = true;
+						consumed += 1;
+						if segments.peek().is_none() {
+							return BindAttempt {
+								consumed,
+								binding: bound_node(root, node_path),
+							};
+						}
+						continue;
+					}
+					return BindAttempt {
+						consumed,
+						binding: SchemaBinding::Unbound {
+							reason: format!(
+								"expected root instance key under {}",
+								describe_node(node)
+							),
+						},
+					};
 				}
 			}
 			if let Some(rule_match) = self.match_rules_for_node(node, key) {
@@ -804,9 +839,17 @@ impl RuleEngine {
 		let mut node = ResolvedNode::Root(root);
 		let mut node_path = Vec::new();
 		let mut root_instance_consumed = false;
+		let mut skip_root_index = 0;
 		let mut segments = ast_path.iter().copied().peekable();
 		while let Some(key) = segments.next() {
 			if let ResolvedNode::Root(definition) = node {
+				if let Some(skip_key) = definition.skip_root_keys.get(skip_root_index) {
+					if root_skip_key_matches(skip_key, key) {
+						skip_root_index += 1;
+						continue;
+					}
+					return None;
+				}
 				match self.match_subtype(definition, key) {
 					Some(Ok(subtype)) => {
 						node = ResolvedNode::Subtype(definition, subtype);
@@ -816,8 +859,18 @@ impl RuleEngine {
 					Some(Err(_)) => return None,
 					None => {}
 				}
-				if definition.skip_root_keys.iter().any(|item| item == key) {
-					continue;
+				if !definition.skip_root_keys.is_empty() && !root_instance_consumed {
+					if root_type_accepts_instance_key(definition, key) {
+						root_instance_consumed = true;
+						if segments.peek().is_none() {
+							return Some((
+								RuleContext::RootType(root),
+								bound_node(root, node_path),
+							));
+						}
+						continue;
+					}
+					return None;
 				}
 			}
 			if let Some(rule_match) = self.match_rules_for_node(node, key) {
@@ -1114,6 +1167,10 @@ fn field_rules(field: &CompiledRuleField) -> Option<&[CompiledRuleField]> {
 		return None;
 	};
 	Some(fields.as_slice())
+}
+
+fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
+	skip_key == "any" || skip_key == key
 }
 
 fn match_dynamic_key_rules<'p>(rules: &'p [CompiledRuleField], key: &str) -> Option<RuleMatch<'p>> {

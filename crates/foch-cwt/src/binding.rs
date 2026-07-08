@@ -254,9 +254,26 @@ impl CwtSchemaGraph {
 		let mut node_path = Vec::new();
 		let mut consumed = 0;
 		let mut root_instance_consumed = false;
+		let mut skip_root_index = 0;
 		let mut segments = ast_path.iter().copied().peekable();
 		while let Some(key) = segments.next() {
 			if let ResolvedNode::Root(definition) = node {
+				if let Some(skip_key) = definition.skip_root_keys.get(skip_root_index) {
+					if root_skip_key_matches(skip_key, key) {
+						skip_root_index += 1;
+						consumed += 1;
+						continue;
+					}
+					return BindAttempt {
+						consumed,
+						binding: SchemaBinding::Unbound {
+							reason: format!(
+								"expected schema skip_root_key `{skip_key}` under {}",
+								describe_node(node)
+							),
+						},
+					};
+				}
 				match self.match_subtype(definition, key) {
 					Some(Ok(subtype)) => {
 						node = ResolvedNode::Subtype(definition, subtype);
@@ -272,9 +289,27 @@ impl CwtSchemaGraph {
 					}
 					None => {}
 				}
-				if definition.skip_root_key.as_deref() == Some(key) {
-					consumed += 1;
-					continue;
+				if !definition.skip_root_keys.is_empty() && !root_instance_consumed {
+					if root_type_accepts_instance_key(definition, key) {
+						root_instance_consumed = true;
+						consumed += 1;
+						if segments.peek().is_none() {
+							return BindAttempt {
+								consumed,
+								binding: bound_node(root, node_path),
+							};
+						}
+						continue;
+					}
+					return BindAttempt {
+						consumed,
+						binding: SchemaBinding::Unbound {
+							reason: format!(
+								"expected root instance key under {}",
+								describe_node(node)
+							),
+						},
+					};
 				}
 			}
 			if let Some(rule_match) = self.match_rules_for_node(node, key) {
@@ -341,9 +376,17 @@ impl CwtSchemaGraph {
 		let mut node = ResolvedNode::Root(root);
 		let mut node_path = Vec::new();
 		let mut root_instance_consumed = false;
+		let mut skip_root_index = 0;
 		let mut segments = ast_path.iter().copied().peekable();
 		while let Some(key) = segments.next() {
 			if let ResolvedNode::Root(definition) = node {
+				if let Some(skip_key) = definition.skip_root_keys.get(skip_root_index) {
+					if root_skip_key_matches(skip_key, key) {
+						skip_root_index += 1;
+						continue;
+					}
+					return None;
+				}
 				match self.match_subtype(definition, key) {
 					Some(Ok(subtype)) => {
 						node = ResolvedNode::Subtype(definition, subtype);
@@ -353,8 +396,18 @@ impl CwtSchemaGraph {
 					Some(Err(_)) => return None,
 					None => {}
 				}
-				if definition.skip_root_key.as_deref() == Some(key) {
-					continue;
+				if !definition.skip_root_keys.is_empty() && !root_instance_consumed {
+					if root_type_accepts_instance_key(definition, key) {
+						root_instance_consumed = true;
+						if segments.peek().is_none() {
+							return Some((
+								BindContext::RootType(root),
+								bound_node(root, node_path),
+							));
+						}
+						continue;
+					}
+					return None;
 				}
 			}
 			if let Some(rule_match) = self.match_rules_for_node(node, key) {
@@ -576,6 +629,10 @@ fn field_rules(field: &CwtRuleField) -> Option<&[CwtRuleField]> {
 		return None;
 	};
 	Some(fields.as_slice())
+}
+
+fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
+	skip_key == "any" || skip_key == key
 }
 
 fn subtype_matches(subtype: &CwtSubtype, key: &str) -> bool {

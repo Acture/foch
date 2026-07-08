@@ -126,7 +126,7 @@ pub struct CwtTypeDef {
 	pub push_scope: Option<String>,
 	pub type_per_file: bool,
 	pub name_from_file: bool,
-	pub skip_root_key: Option<String>,
+	pub skip_root_keys: Vec<String>,
 	pub subtypes: Vec<CwtSubtype>,
 	pub rules: Vec<CwtRuleField>,
 }
@@ -141,7 +141,7 @@ impl CwtTypeDef {
 			push_scope: None,
 			type_per_file: false,
 			name_from_file: false,
-			skip_root_key: None,
+			skip_root_keys: Vec::new(),
 			subtypes: Vec::new(),
 			rules: Vec::new(),
 		}
@@ -442,7 +442,12 @@ fn merge_type_items(entry: &mut CwtTypeDef, items: &[ParadoxNode<'_>], header_fi
 						"name_from_file" => {
 							entry.name_from_file = scalar_bool(child_value).unwrap_or(false)
 						}
-						"skip_root_key" => entry.skip_root_key = scalar_text(child_value),
+						"skip_root_key" => {
+							merge_unique(
+								&mut entry.skip_root_keys,
+								collect_scalar_items(child_value),
+							);
+						}
 						_ => {}
 					}
 					if matches!(
