@@ -4,30 +4,19 @@
 //! (`workshop/<steam_id>/...`), which is exactly how a real Steam Workshop
 //! download looks.
 
+mod common;
+
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use foch_merge_quality::corpus::{Case, Corpus};
 use foch_merge_quality::orchestrate::{self, CaseResult, RunOptions};
 
 // ------------------------------------------------------------------ helpers
 
-fn fixtures_root() -> PathBuf {
-	Path::new(env!("CARGO_MANIFEST_DIR"))
-		.join("tests")
-		.join("fixtures")
-}
-
-/// Build a temp workshop dir from the fixture slice for compatch 3630876155,
-/// unpacked from the committed compressed corpus archive.
-///
-/// Returns (TempDir, workshop_path) — hold the TempDir alive for the test.
-fn build_workshop_3630876155() -> (tempfile::TempDir, PathBuf) {
-	let unpacked = tempfile::tempdir().expect("unpack dir");
-	foch_merge_quality::archive::unpack(&fixtures_root().join("corpus.tar.gz"), unpacked.path())
-		.expect("unpack corpus.tar.gz");
-	let ws = unpacked.path().join("workshop");
-	(unpacked, ws)
+/// Reuse the archive-hash-addressed committed corpus fixture.
+fn workshop_3630876155() -> PathBuf {
+	common::cached_corpus_root().join("workshop")
 }
 
 fn case_3630876155() -> Case {
@@ -44,7 +33,7 @@ fn case_3630876155() -> Case {
 /// Validated ground truth: 7 overlapping files, verdicts exactly as below.
 #[test]
 fn score_case_verdict_tally() {
-	let (_tmp, ws) = build_workshop_3630876155();
+	let ws = workshop_3630876155();
 	let case = case_3630876155();
 
 	let result = orchestrate::score_case(&case, &ws, false).expect("score_case succeeds");
@@ -66,7 +55,7 @@ fn score_case_verdict_tally() {
 /// and a non-empty report.md.
 #[test]
 fn run_writes_artifacts() {
-	let (_tmp, ws) = build_workshop_3630876155();
+	let ws = workshop_3630876155();
 
 	// Build a minimal corpus.json
 	let corpus = Corpus {
@@ -122,7 +111,7 @@ fn run_writes_artifacts() {
 #[test]
 fn learn_writes_rules_md() {
 	// Use the real fixture workshop so classify_resolution can read the files.
-	let (_tmp, ws) = build_workshop_3630876155();
+	let ws = workshop_3630876155();
 	let case = case_3630876155();
 
 	// Score first to obtain a CaseResult with real overlap file records.

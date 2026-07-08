@@ -8,7 +8,7 @@ use crate::cache::{
 // SemVer for the modset-cache schema/merge-semantics payload. Bump the major
 // version for incompatible output semantics so stale artifacts cannot hide a
 // changed merge engine.
-const MODSET_CACHE_VERSION: &str = "11.3.2";
+const MODSET_CACHE_VERSION: &str = "11.4.0";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
@@ -111,9 +111,6 @@ pub fn run_merge_with_options(
 		inventory.cache_game_version = Some(format!("{} unknown", inventory.playlist.game.key()));
 	}
 	let modset_cache = inventory_result.as_ref().ok().and_then(|inventory| {
-		if options.retained_paths.is_some() {
-			return None;
-		}
 		build_modset_cache_context(
 			&request,
 			inventory,
@@ -121,6 +118,7 @@ pub fn run_merge_with_options(
 			options.gui_scroll_merge,
 			options.provenance,
 			options.resolution_config_path.as_deref(),
+			options.retained_paths.as_ref(),
 		)
 	});
 	if let Some(cache_context) = modset_cache.as_ref() {
@@ -205,9 +203,7 @@ pub fn run_merge_with_options(
 	if report.status == MergeReportStatus::Blocked && !options.force {
 		let execution = merge_execution_result(report);
 		write_merge_report_artifact(&options.out_dir, &execution.report)?;
-		if options.retained_paths.is_none() {
-			store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
-		}
+		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
 		return Ok(execution);
 	}
 
@@ -218,9 +214,7 @@ pub fn run_merge_with_options(
 	}
 	let execution = merge_execution_result(report);
 	write_merge_report_artifact(&options.out_dir, &execution.report)?;
-	if options.retained_paths.is_none() {
-		store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
-	}
+	store_modset_cache_entry(modset_cache.as_ref(), &options.out_dir, &execution.report);
 
 	Ok(execution)
 }
@@ -238,6 +232,7 @@ fn build_modset_cache_context(
 	gui_scroll_merge: bool,
 	provenance: bool,
 	resolution_config_path: Option<&Path>,
+	retained_paths: Option<&BTreeSet<String>>,
 ) -> Option<ModsetCacheContext> {
 	if resolution_config_path.is_some_and(|path| !path.is_file()) {
 		return None;
@@ -263,8 +258,9 @@ fn build_modset_cache_context(
 		playset_root,
 		resolution_config_path,
 	));
+	let retained_paths_label = retained_paths_cache_label(retained_paths);
 	let foch_version = format!(
-		"{} modset_cache={MODSET_CACHE_VERSION} include_base={include_base} provenance={provenance} gui_scroll_merge={gui_scroll_merge}",
+		"{} modset_cache={MODSET_CACHE_VERSION} include_base={include_base} provenance={provenance} gui_scroll_merge={gui_scroll_merge} retained_paths={retained_paths_label}",
 		env!("CARGO_PKG_VERSION"),
 	);
 	let key = compute_modset_cache_key(
@@ -277,6 +273,19 @@ fn build_modset_cache_context(
 		cache: ModsetCache::open_default(),
 		key,
 	})
+}
+
+fn retained_paths_cache_label(retained_paths: Option<&BTreeSet<String>>) -> String {
+	let Some(retained_paths) = retained_paths else {
+		return "full".to_string();
+	};
+	let mut hasher = blake3::Hasher::new();
+	for path in retained_paths {
+		let bytes = path.as_bytes();
+		hasher.update(&(bytes.len() as u64).to_le_bytes());
+		hasher.update(bytes);
+	}
+	format!("subset:{}", hasher.finalize().to_hex())
 }
 
 fn resolution_config_bytes(playset_root: &Path, explicit_path: Option<&Path>) -> Vec<u8> {
@@ -732,5 +741,28 @@ mod tests {
 		});
 
 		assert_eq!(compute_analysis_status(&report).fatal_errors, 0);
+	}
+
+	#[test]
+	fn retained_paths_cache_label_is_order_insensitive_and_subset_sensitive() {
+		let left = BTreeSet::from([
+			"common/scripted_effects/a.txt".to_string(),
+			"interface/frontend.gui".to_string(),
+		]);
+		let right = BTreeSet::from([
+			"interface/frontend.gui".to_string(),
+			"common/scripted_effects/a.txt".to_string(),
+		]);
+		let different = BTreeSet::from(["common/scripted_effects/a.txt".to_string()]);
+
+		assert_eq!(
+			retained_paths_cache_label(Some(&left)),
+			retained_paths_cache_label(Some(&right))
+		);
+		assert_ne!(
+			retained_paths_cache_label(Some(&left)),
+			retained_paths_cache_label(Some(&different))
+		);
+		assert_eq!(retained_paths_cache_label(None), "full");
 	}
 }

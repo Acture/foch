@@ -98,6 +98,17 @@ pub fn score_case(
 	workshop_dir: &Path,
 	keep: bool,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
+	let mut score_cache = ScoreCache::new();
+	score_case_with_cache(case, workshop_dir, keep, &mut score_cache)
+}
+
+/// Score one compatch case while reusing scorer artifacts from a larger corpus run.
+pub fn score_case_with_cache(
+	case: &Case,
+	workshop_dir: &Path,
+	keep: bool,
+	score_cache: &mut ScoreCache,
+) -> Result<CaseResult, Box<dyn std::error::Error>> {
 	let compatch_dir = workshop_dir.join(&case.compatch_id);
 	let mod_dirs: Vec<PathBuf> = case
 		.patched
@@ -132,7 +143,6 @@ pub fn score_case(
 		&mod_dirs[0]
 	};
 	let adjudications = Adjudications::built_in();
-	let mut score_cache = ScoreCache::new();
 
 	let files: Vec<FileRecord> = gt
 		.iter()
@@ -149,7 +159,7 @@ pub fn score_case(
 					conflict_paths: &conflicts,
 					adjudications: &adjudications,
 				},
-				&mut score_cache,
+				score_cache,
 			);
 			FileRecord {
 				rel: fs.rel,
@@ -231,6 +241,7 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 	let exe = std::env::current_exe()?;
 	let (mut ok, mut skipped) = (0usize, 0usize);
 	let mut results: Vec<CaseResult> = Vec::with_capacity(to_score.len());
+	let mut score_cache = ScoreCache::new();
 	for case in to_score {
 		let scored: Option<CaseResult> = if opts.isolate {
 			let output = std::process::Command::new(&exe)
@@ -253,7 +264,7 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 				None
 			}
 		} else {
-			score_case(case, opts.workshop_dir, opts.keep).ok()
+			score_case_with_cache(case, opts.workshop_dir, opts.keep, &mut score_cache).ok()
 		};
 		match scored {
 			Some(cr) => {

@@ -10,37 +10,33 @@
 //! { verdict -> count }`. Regenerate both with `foch-mq run` + `extract-fixtures`
 //! when the corpus grows. See `fixtures/CREDITS.md` for provenance + takedown.
 
+mod common;
+
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
 use foch_merge_quality::corpus::Corpus;
-use foch_merge_quality::orchestrate::score_case;
-
-fn fixtures_root() -> PathBuf {
-	Path::new(env!("CARGO_MANIFEST_DIR"))
-		.join("tests")
-		.join("fixtures")
-}
+use foch_merge_quality::orchestrate::score_case_with_cache;
+use foch_merge_quality::score::ScoreCache;
 
 /// Every committed fixture reproduces its baseline verdict tally. Data-driven:
 /// add a case by running `extract-fixtures` + regenerating `expected.json` —
 /// no test code change needed.
 #[test]
 fn committed_corpus_reproduces_baseline() {
-	let expected_text =
-		std::fs::read_to_string(fixtures_root().join("expected.json")).expect("read expected.json");
+	let expected_text = std::fs::read_to_string(common::fixtures_root().join("expected.json"))
+		.expect("read expected.json");
 	let expected: BTreeMap<String, BTreeMap<String, usize>> =
 		serde_json::from_str(&expected_text).expect("parse expected.json");
 	assert!(!expected.is_empty(), "baseline has at least one case");
 
-	// Unpack the committed compressed corpus into a temp dir once.
-	let corpus = tempfile::tempdir().expect("corpus unpack dir");
-	foch_merge_quality::archive::unpack(&fixtures_root().join("corpus.tar.gz"), corpus.path())
-		.expect("unpack corpus.tar.gz");
+	// Reuse the immutable committed corpus by archive hash. Re-inflating 100MB
+	// of gzip and 7700+ files dominates repeated local scoring runs.
+	let corpus = common::cached_corpus_root();
 	let fixture_corpus_text =
-		std::fs::read_to_string(corpus.path().join("corpus.json")).expect("read fixture corpus");
+		std::fs::read_to_string(corpus.join("corpus.json")).expect("read fixture corpus");
 	let fixture_corpus = Corpus::from_json(&fixture_corpus_text).expect("parse fixture corpus");
-	let workshop = corpus.path().join("workshop");
+	let workshop = corpus.join("workshop");
+	let mut score_cache = ScoreCache::new();
 
 	for (compatch_id, want) in &expected {
 		let case = fixture_corpus
@@ -48,7 +44,8 @@ fn committed_corpus_reproduces_baseline() {
 			.iter()
 			.find(|case| &case.compatch_id == compatch_id)
 			.unwrap_or_else(|| panic!("fixture corpus contains case {compatch_id}"));
-		let result = score_case(case, &workshop, false).expect("score full fixture case");
+		let result = score_case_with_cache(case, &workshop, false, &mut score_cache)
+			.expect("score full fixture case");
 		assert_eq!(
 			&result.verdicts, want,
 			"merge-quality verdicts drifted for compatch {compatch_id}"

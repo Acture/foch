@@ -13,12 +13,14 @@ use foch_core::model::MergeReport;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder};
 use walkdir::WalkDir;
 
 const CACHE_ENV: &str = "FOCH_MODSET_CACHE_DIR";
 const MODSETS_DIR_NAME: &str = "modsets";
+static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct ModsetCache {
@@ -404,7 +406,8 @@ fn cache_temp_suffix() -> String {
 		.duration_since(UNIX_EPOCH)
 		.unwrap_or_default()
 		.as_nanos();
-	format!("{}.{}", std::process::id(), nanos)
+	let counter = CACHE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+	format!("{}.{}.{}", std::process::id(), nanos, counter)
 }
 
 fn prune_empty_dirs(root: &Path) {
