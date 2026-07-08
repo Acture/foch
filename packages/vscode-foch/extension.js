@@ -121,13 +121,7 @@ async function buildTargets(cfg) {
 			const detected = await detectModRootsFromDescriptor(autoDetectMax);
 			targets = targets.concat(detected);
 		} catch (_) {
-			// keep startup resilient; falling back to configured/workspace targets
-		}
-	}
-
-	if (targets.length === 0 && vscode.workspace.workspaceFolders) {
-		for (const folder of vscode.workspace.workspaceFolders) {
-			targets.push({ path: folder.uri.fsPath, role: 'mod' });
+			// keep startup resilient; configured targets are still usable
 		}
 	}
 
@@ -151,8 +145,11 @@ function buildConfiguredTargets(cfg) {
 	return targets;
 }
 
-async function maybeSetEu4Language(document) {
+async function maybeSetEu4Language(document, targets) {
 	if (!document || document.uri.scheme !== 'file') {
+		return;
+	}
+	if (!bestTargetForDocument(targets, document.uri.fsPath)) {
 		return;
 	}
 	if (!isEu4ScriptPath(document.uri.fsPath)) {
@@ -166,6 +163,15 @@ async function maybeSetEu4Language(document) {
 	} catch (_) {
 		// ignore; some virtual/readonly docs may reject language changes
 	}
+}
+
+function hasOpenFochDocument() {
+	return vscode.workspace.textDocuments.some((document) => document.languageId === 'foch-eu4')
+		|| vscode.window.visibleTextEditors.some((editor) => editor.document.languageId === 'foch-eu4');
+}
+
+function shouldStartLanguageClient(targets) {
+	return targets.length > 0 || hasOpenFochDocument();
 }
 
 function normalizeServerInvocation(serverPath, serverArgs) {
@@ -285,6 +291,8 @@ async function activate(context) {
 		: process.cwd();
 	const cwd = configuredCwd || workspaceCwd;
 	const server = resolveServerCommand(cfg, context.extensionPath);
+	const outputChannel = vscode.window.createOutputChannel('Foch');
+	context.subscriptions.push(outputChannel);
 
 	const targets = await buildTargets(cfg);
 	context.subscriptions.push(
@@ -295,6 +303,32 @@ async function activate(context) {
 			});
 		})
 	);
+
+	context.subscriptions.push(
+		vscode.workspace.onDidOpenTextDocument((doc) => {
+			void maybeSetEu4Language(doc, targets);
+		})
+	);
+	context.subscriptions.push(
+		vscode.window.onDidChangeVisibleTextEditors((editors) => {
+			for (const editor of editors) {
+				void maybeSetEu4Language(editor.document, targets);
+			}
+		})
+	);
+	for (const doc of vscode.workspace.textDocuments) {
+		await maybeSetEu4Language(doc, targets);
+	}
+	for (const editor of vscode.window.visibleTextEditors) {
+		await maybeSetEu4Language(editor.document, targets);
+	}
+
+	if (!shouldStartLanguageClient(targets)) {
+		outputChannel.appendLine(
+			'Foch is inactive in this workspace: configure fochLsp.modPaths/gamePath or open a workspace containing descriptor.mod.'
+		);
+		return;
+	}
 
 	const env = { ...process.env };
 	if (targets.length > 0) {
@@ -318,7 +352,7 @@ async function activate(context) {
 
 	const clientOptions = {
 		documentSelector: buildDocumentSelector(),
-		outputChannelName: 'Foch'
+		outputChannel
 	};
 
 	client = new LanguageClient(
@@ -329,25 +363,6 @@ async function activate(context) {
 	);
 
 	context.subscriptions.push(client.start());
-
-	context.subscriptions.push(
-		vscode.workspace.onDidOpenTextDocument((doc) => {
-			void maybeSetEu4Language(doc);
-		})
-	);
-	context.subscriptions.push(
-		vscode.window.onDidChangeVisibleTextEditors((editors) => {
-			for (const editor of editors) {
-				void maybeSetEu4Language(editor.document);
-			}
-		})
-	);
-	for (const doc of vscode.workspace.textDocuments) {
-		await maybeSetEu4Language(doc);
-	}
-	for (const editor of vscode.window.visibleTextEditors) {
-		await maybeSetEu4Language(editor.document);
-	}
 	if (server.mode === 'cargo-fallback') {
 		void vscode.window.showWarningMessage(
 			'Foch is using cargo fallback. Bundle the foch binary before publishing the extension.'

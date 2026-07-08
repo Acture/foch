@@ -57,6 +57,7 @@ The `0.1.0` VS Code extension preview is acceptable when the repository can prov
   - TextMate highlighting for supported EU4 paths
   - configured game root and mod roots
   - descriptor-based mod-root auto-detection
+  - idle behavior in unrelated workspaces with no configured or detected mod roots
   - bundled-server, configured-server, and development cargo fallback launch modes
 - The shared analyzer provides:
   - current-file parse diagnostics

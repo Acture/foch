@@ -19,6 +19,7 @@ Current LSP/VS Code preview surface:
 - Document symbols and workspace symbol search backed by the semantic index.
 - A focused missing-localisation quick fix that creates or appends an English localisation stub in the current mod root.
 - Multi-root workspace loading with configured game/mod paths and `descriptor.mod` auto-detection.
+- Idle startup in unrelated workspaces with no configured or detected mod roots.
 
 Still out of scope for this 0.1 preview unless implemented separately:
 

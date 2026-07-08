@@ -23,7 +23,7 @@ The release boundary and CWTools comparison are tracked in [`docs/lsp-0.1-previe
 | Navigation | goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys |
 | Symbols | document symbols and workspace symbol search from the semantic index |
 | Quick fixes | create or append an English localisation stub for `missing-localisation` diagnostics |
-| Workspace loading | multi-root scanning across the game directory and multiple mod directories, with mod-root auto-detection via `descriptor.mod` |
+| Workspace loading | multi-root scanning across the configured game directory and detected/configured mod directories, with mod-root auto-detection via `descriptor.mod` |
 
 ## Not yet shipped
 
@@ -42,6 +42,7 @@ The extension launches the bundled `foch` binary with the `lsp` subcommand.
   `bin/<platform>-<arch>/foch[.exe]` and invokes it as `foch lsp`.
 - If no bundled binary exists, it falls back to
   `cargo run --quiet --bin foch -- lsp` (development checkout only).
+- If no configured or auto-detected mod roots exist, the extension stays idle instead of treating an arbitrary workspace folder as a mod root. Configure `fochLsp.modPaths` for loose fixture folders without `descriptor.mod`.
 
 The fallback keeps local development simple; bundled binaries are the intended runtime model for release builds.
 

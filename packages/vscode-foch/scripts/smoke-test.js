@@ -74,6 +74,10 @@ assert(
 	extensionEntry.includes('foch.createLocalisationStub'),
 	'extension bundle must register the missing-localisation quick fix command'
 );
+assert(
+	extensionEntry.includes('Foch is inactive in this workspace'),
+	'extension bundle must avoid starting the LSP in unrelated workspaces'
+);
 
 const languageClientHelper = path.join(
 	extensionRoot,
