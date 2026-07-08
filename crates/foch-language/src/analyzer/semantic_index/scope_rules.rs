@@ -764,9 +764,16 @@ pub(super) fn hand_container_scope_fallback(file_kind: CwtType, key: &str) -> Op
 		// cwtools-eu4-config gap: missions/missions.cwt declares `completed_by = date_field`
 		// without enough schema signal to preserve the legacy trigger classification.
 		("missions", "completed_by") => Some(ScopeKind::Trigger),
+		// cwtools-eu4-config gap: missions/missions.cwt models `ai_weight` through
+		// score/helper structure, but legacy behavior treats its children as trigger
+		// conditions rather than scripted effect calls.
+		("missions", "ai_weight") => Some(ScopeKind::Trigger),
 		// cwtools-eu4-config gap: missions/missions.cwt does not declare these mission
 		// lifecycle effect containers.
 		("missions", "on_completed" | "on_cancelled") => Some(ScopeKind::Effect),
+		// cwtools-eu4-config gap: events/events.cwt models MTTH as score/helper
+		// structure, but legacy behavior treats its children as trigger conditions.
+		("events", "mean_time_to_happen") => Some(ScopeKind::Trigger),
 		// cwtools-eu4-config gap: common/ages.cwt does not expose explicit fields for
 		// these trigger containers.
 		("ages", "custom_trigger_tooltip" | "calc_true_if") => Some(ScopeKind::Trigger),
