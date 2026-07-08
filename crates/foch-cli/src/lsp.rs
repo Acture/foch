@@ -1494,42 +1494,118 @@ fn schema_scalar_type(value: &CompiledRuleValue) -> Option<SchemaScalarType> {
 		CompiledRuleValue::Block(_) => return None,
 	};
 	match value {
-		"int" => Some(SchemaScalarType::Int),
-		"float" => Some(SchemaScalarType::Float),
+		"int" => Some(SchemaScalarType::Int { range: None }),
+		"float" => Some(SchemaScalarType::Float { range: None }),
 		"bool" => Some(SchemaScalarType::Bool),
-		_ => None,
+		_ => match parse_schema_marker(value) {
+			Some(("int", range)) => parse_schema_int_range(range)
+				.map(|range| SchemaScalarType::Int { range: Some(range) }),
+			Some(("float", range)) => parse_schema_float_range(range)
+				.map(|range| SchemaScalarType::Float { range: Some(range) }),
+			_ => None,
+		},
 	}
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SchemaScalarType {
-	Int,
-	Float,
+	Int { range: Option<SchemaIntRange> },
+	Float { range: Option<SchemaFloatRange> },
 	Bool,
 }
 
 impl SchemaScalarType {
-	fn label(self) -> &'static str {
+	fn label(&self) -> String {
 		match self {
-			Self::Int => "int",
-			Self::Float => "float",
-			Self::Bool => "bool",
+			Self::Int { range: None } => "int".to_string(),
+			Self::Int { range: Some(range) } => range.label("int"),
+			Self::Float { range: None } => "float".to_string(),
+			Self::Float { range: Some(range) } => range.label("float"),
+			Self::Bool => "bool".to_string(),
 		}
 	}
 
-	fn matches(self, scalar: &ScalarValue) -> bool {
+	fn matches(&self, scalar: &ScalarValue) -> bool {
 		match self {
-			Self::Int => match scalar {
-				ScalarValue::Number(value) => value.parse::<i64>().is_ok(),
+			Self::Int { range } => match scalar {
+				ScalarValue::Number(value) => value
+					.parse::<i64>()
+					.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
 				_ => false,
 			},
-			Self::Float => match scalar {
-				ScalarValue::Number(value) => value.parse::<f64>().is_ok(),
+			Self::Float { range } => match scalar {
+				ScalarValue::Number(value) => value
+					.parse::<f64>()
+					.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
 				_ => false,
 			},
 			Self::Bool => matches!(scalar, ScalarValue::Bool(_)),
 		}
 	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SchemaIntRange {
+	minimum: i64,
+	maximum: Option<i64>,
+}
+
+impl SchemaIntRange {
+	fn contains(self, value: i64) -> bool {
+		value >= self.minimum && self.maximum.is_none_or(|maximum| value <= maximum)
+	}
+
+	fn label(self, kind: &str) -> String {
+		format!(
+			"{kind}[{}..{}]",
+			self.minimum,
+			self.maximum
+				.map(|value| value.to_string())
+				.unwrap_or_else(|| "inf".to_string())
+		)
+	}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SchemaFloatRange {
+	minimum: f64,
+	maximum: Option<f64>,
+}
+
+impl SchemaFloatRange {
+	fn contains(self, value: f64) -> bool {
+		value >= self.minimum && self.maximum.is_none_or(|maximum| value <= maximum)
+	}
+
+	fn label(self, kind: &str) -> String {
+		format!(
+			"{kind}[{}..{}]",
+			self.minimum,
+			self.maximum
+				.map(|value| value.to_string())
+				.unwrap_or_else(|| "inf".to_string())
+		)
+	}
+}
+
+fn parse_schema_int_range(value: &str) -> Option<SchemaIntRange> {
+	let (minimum, maximum) = value.split_once("..")?;
+	let minimum = minimum.trim().parse::<i64>().ok()?;
+	let maximum = match maximum.trim() {
+		"inf" => None,
+		value => Some(value.parse::<i64>().ok()?),
+	};
+	Some(SchemaIntRange { minimum, maximum })
+}
+
+fn parse_schema_float_range(value: &str) -> Option<SchemaFloatRange> {
+	let (minimum, maximum) = value.split_once("..")?;
+	let minimum = minimum.trim().parse::<f64>().ok()?;
+	let maximum = match maximum.trim() {
+		"inf" => None,
+		value => Some(value.parse::<f64>().ok()?),
+	};
+	Some(SchemaFloatRange { minimum, maximum })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4286,6 +4362,47 @@ sample = {
 			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
 				&& diagnostic.message.contains("sea_only_trigger")
 				&& diagnostic.severity == Some(DiagnosticSeverity::WARNING)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_validate_cwt_ranged_scalar_types() {
+		let schema = r#"
+		types = {
+			type[event] = {
+				path = "game/events"
+			}
+		}
+
+		event = {
+			limited_int = int[1..3]
+			limited_float = float[-1.0..1.0]
+			open_int = int[0..inf]
+		}
+		"#;
+		let engine = load_inline_lsp_rule_engine(schema);
+		let text = "\
+sample = {
+  limited_int = 4
+  limited_float = -2.0
+  open_int = 99
+}
+";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("limited_int")
+				&& diagnostic.message.contains("int[1..3]")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("limited_float")
+				&& diagnostic.message.contains("float[-1..1]")
+		}));
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("open_int")
 		}));
 	}
 
