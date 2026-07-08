@@ -266,6 +266,37 @@ fn compiled_engine_roundtrips_complex_enums() {
 }
 
 #[test]
+fn compiled_engine_roundtrips_links() {
+	let schema = r#"
+	links = {
+		owner = {
+			input_scopes = { province country province }
+			output_scope = country
+		}
+		controller = {
+			input_scopes = { province }
+			output_scope = country
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = RuleEngine::new(decoded);
+	let owner = engine.link("owner").expect("owner link");
+	assert_eq!(owner.output_scope.as_deref(), Some("country"));
+	assert_eq!(
+		owner.input_scopes,
+		vec!["country".to_string(), "province".to_string()]
+	);
+	assert_eq!(engine.links().len(), 2);
+	assert_eq!(engine.links()[0].name, "controller");
+	assert_eq!(engine.links()[1].name, "owner");
+}
+
+#[test]
 fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let schema = r#"
 	types = {

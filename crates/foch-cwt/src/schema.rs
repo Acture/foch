@@ -176,6 +176,13 @@ pub struct CwtComplexEnum {
 	pub name_rules: Vec<CwtRuleField>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CwtLink {
+	pub name: String,
+	pub input_scopes: Vec<String>,
+	pub output_scope: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CwtSchemaGraph {
 	pub types: HashMap<CwtType, CwtTypeDef>,
@@ -183,6 +190,7 @@ pub struct CwtSchemaGraph {
 	pub enums: HashMap<String, Vec<String>>,
 	pub value_sets: HashMap<String, Vec<String>>,
 	pub complex_enums: HashMap<String, CwtComplexEnum>,
+	pub links: HashMap<String, CwtLink>,
 	pub scopes: Vec<String>,
 	scope_definitions: Vec<CwtScope>,
 }
@@ -269,6 +277,12 @@ impl CwtSchemaGraph {
 		if key == "values" {
 			if let Some(items) = block_items(value) {
 				self.ingest_values_block(items);
+			}
+			return;
+		}
+		if key == "links" {
+			if let Some(items) = block_items(value) {
+				self.ingest_links_block(items);
 			}
 			return;
 		}
@@ -363,6 +377,18 @@ impl CwtSchemaGraph {
 			if matches!(marker.head, "value" | "value_set") {
 				insert_enumeration(&mut self.value_sets, marker.payload, value);
 			}
+		}
+	}
+
+	fn ingest_links_block(&mut self, items: &[ParadoxNode<'_>]) {
+		for item in items {
+			let Some((name, value)) = assignment_parts(item) else {
+				continue;
+			};
+			let Some(link) = parse_link(name, value) else {
+				continue;
+			};
+			self.links.insert(link.name.clone(), link);
 		}
 	}
 
@@ -940,6 +966,26 @@ fn insert_enumeration(
 		.entry(name.to_string())
 		.and_modify(|existing| merge_unique(existing, values.clone()))
 		.or_insert(values);
+}
+
+fn parse_link(name: String, value: &ParadoxNode<'_>) -> Option<CwtLink> {
+	let items = block_items(value)?;
+	let mut link = CwtLink {
+		name,
+		input_scopes: Vec::new(),
+		output_scope: None,
+	};
+	for item in items {
+		let Some((key, child_value)) = assignment_parts(item) else {
+			continue;
+		};
+		match key.as_str() {
+			"input_scopes" => link.input_scopes.extend(collect_scalar_items(child_value)),
+			"output_scope" => link.output_scope = scalar_text(child_value),
+			_ => {}
+		}
+	}
+	Some(link)
 }
 
 fn parse_complex_enum(name: &str, value: &ParadoxNode<'_>) -> Option<CwtComplexEnum> {

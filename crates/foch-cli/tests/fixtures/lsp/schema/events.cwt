@@ -67,6 +67,9 @@ event = {
   ###Effects executed in a province scope.
   province_effects = {
     alias_name[effect] = alias_match_left[effect]
+    owner = {
+      alias_name[effect] = alias_match_left[effect]
+    }
   }
 }
 
@@ -143,6 +146,13 @@ enums = {
 
 values = {
   value[event_targets] = { root from prev }
+}
+
+links = {
+  owner = {
+    input_scopes = { province }
+    output_scope = country
+  }
 }
 
 scopes = {

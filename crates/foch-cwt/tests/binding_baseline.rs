@@ -34,6 +34,7 @@ struct VendorBaseline {
 	enum_count: usize,
 	value_set_count: usize,
 	complex_enum_count: usize,
+	link_count: usize,
 	scope_count: usize,
 	selected_types: Vec<TypeBaseline>,
 	selected_aliases: Vec<AliasBaseline>,
@@ -196,6 +197,7 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		enum_count: graph.enums.len(),
 		value_set_count: graph.value_sets.len(),
 		complex_enum_count: graph.complex_enums.len(),
+		link_count: graph.links.len(),
 		scope_count: graph.scopes.len(),
 		selected_types: [
 			"achievement",

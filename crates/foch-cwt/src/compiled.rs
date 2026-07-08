@@ -10,12 +10,13 @@ use serde::{Deserialize, Serialize};
 use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
-	AliasCategory, CwtAlias, CwtComplexEnum, CwtFieldAttributes, CwtRuleCondition, CwtRuleField,
-	CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
+	AliasCategory, CwtAlias, CwtComplexEnum, CwtFieldAttributes, CwtLink, CwtRuleCondition,
+	CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef,
+	CwtTypeKeyFilter,
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.10.0";
+pub const PACK_FORMAT_VERSION: &str = "0.11.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -130,6 +131,7 @@ pub struct CompiledRulePack {
 	pub enums: Vec<CompiledStringSet>,
 	pub value_sets: Vec<CompiledStringSet>,
 	pub complex_enums: Vec<CompiledComplexEnum>,
+	pub links: Vec<CompiledLink>,
 	pub scopes: Vec<String>,
 	pub scope_definitions: Vec<CompiledScope>,
 }
@@ -163,6 +165,7 @@ impl CompiledRulePack {
 			enums: sorted_string_sets(&graph.enums),
 			value_sets: sorted_string_sets(&graph.value_sets),
 			complex_enums: sorted_complex_enums(&graph.complex_enums),
+			links: sorted_links(&graph.links),
 			scopes: graph.scopes.clone(),
 			scope_definitions: sorted_scope_definitions(graph.scope_definitions()),
 		}
@@ -245,6 +248,26 @@ impl CompiledComplexEnum {
 				.iter()
 				.map(CompiledRuleField::from_rule_field)
 				.collect(),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CompiledLink {
+	pub name: String,
+	pub input_scopes: Vec<String>,
+	pub output_scope: Option<String>,
+}
+
+impl CompiledLink {
+	fn from_link(link: &CwtLink) -> Self {
+		let mut input_scopes = link.input_scopes.clone();
+		input_scopes.sort();
+		input_scopes.dedup();
+		Self {
+			name: link.name.clone(),
+			input_scopes,
+			output_scope: link.output_scope.clone(),
 		}
 	}
 }
@@ -592,6 +615,17 @@ impl RuleEngine {
 
 	pub fn complex_enums(&self) -> &[CompiledComplexEnum] {
 		self.pack.complex_enums.as_slice()
+	}
+
+	pub fn link(&self, name: &str) -> Option<&CompiledLink> {
+		self.index
+			.links
+			.get(name)
+			.map(|index| &self.pack.links[*index])
+	}
+
+	pub fn links(&self) -> &[CompiledLink] {
+		self.pack.links.as_slice()
 	}
 
 	pub fn scope_matches(&self, required_scope: &str, active_scope: &str) -> bool {
@@ -1162,6 +1196,7 @@ struct RuntimeRuleIndex {
 	enums: HashMap<String, usize>,
 	value_sets: HashMap<String, usize>,
 	complex_enums: HashMap<String, usize>,
+	links: HashMap<String, usize>,
 	scope_labels: HashMap<String, usize>,
 }
 
@@ -1191,6 +1226,12 @@ impl RuntimeRuleIndex {
 			.enumerate()
 			.map(|(index, complex_enum)| (complex_enum.name.clone(), index))
 			.collect();
+		let links = pack
+			.links
+			.iter()
+			.enumerate()
+			.map(|(index, link)| (link.name.clone(), index))
+			.collect();
 		let mut scope_labels = HashMap::new();
 		for (index, scope) in pack.scope_definitions.iter().enumerate() {
 			scope_labels.entry(scope.name.clone()).or_insert(index);
@@ -1203,6 +1244,7 @@ impl RuntimeRuleIndex {
 			enums,
 			value_sets,
 			complex_enums,
+			links,
 			scope_labels,
 		}
 	}
@@ -1417,6 +1459,15 @@ fn sorted_complex_enums(map: &HashMap<String, CwtComplexEnum>) -> Vec<CompiledCo
 		.collect::<Vec<_>>();
 	complex_enums.sort_by(|left, right| left.name.cmp(&right.name));
 	complex_enums
+}
+
+fn sorted_links(map: &HashMap<String, CwtLink>) -> Vec<CompiledLink> {
+	let mut links = map
+		.values()
+		.map(CompiledLink::from_link)
+		.collect::<Vec<_>>();
+	links.sort_by(|left, right| left.name.cmp(&right.name));
+	links
 }
 
 fn sorted_scope_definitions(definitions: &[CwtScope]) -> Vec<CompiledScope> {

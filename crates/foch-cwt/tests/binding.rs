@@ -207,6 +207,38 @@ fn graph_loads_complex_enums_from_enums_block() {
 }
 
 #[test]
+fn graph_loads_links_block() {
+	let schema = r#"
+	links = {
+		owner = {
+			input_scopes = { province country province }
+			output_scope = country
+		}
+		controller = {
+			input_scopes = { province }
+			output_scope = country
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let owner = graph.links.get("owner").expect("owner link");
+	assert_eq!(owner.name, "owner");
+	assert_eq!(
+		owner.input_scopes,
+		vec![
+			"province".to_string(),
+			"country".to_string(),
+			"province".to_string()
+		]
+	);
+	assert_eq!(owner.output_scope.as_deref(), Some("country"));
+	let controller = graph.links.get("controller").expect("controller link");
+	assert_eq!(controller.input_scopes, vec!["province".to_string()]);
+	assert_eq!(controller.output_scope.as_deref(), Some("country"));
+}
+
+#[test]
 fn type_localisation_blocks_are_metadata_not_rule_fields() {
 	let schema = r#"
 	types = {

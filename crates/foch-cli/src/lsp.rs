@@ -4,7 +4,7 @@ use foch_core::model::{
 };
 use foch_cwt::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledComplexEnum,
-	CompiledFieldAttributes, CompiledRoot, CompiledRuleCondition, CompiledRuleField,
+	CompiledFieldAttributes, CompiledLink, CompiledRoot, CompiledRuleCondition, CompiledRuleField,
 	CompiledRuleValue, CompiledSeverity, RuleContext, RuleEngine, RuleEngineLoad,
 	RuleEngineLoadStatus, SchemaBinding, SchemaSource, default_compiled_rule_cache_dir,
 	load_rule_engine_from_dir,
@@ -1084,12 +1084,16 @@ fn schema_active_scopes_for_path(
 ) -> Vec<String> {
 	let mut active_scopes = Vec::new();
 	for index in 0..=path.len() {
-		let Some(context) = engine.bind_context(file_path, &path[..index]) else {
-			continue;
-		};
-		let scopes = schema_context_own_active_scopes(context);
-		if !scopes.is_empty() {
-			active_scopes = scopes;
+		if let Some(context) = engine.bind_context(file_path, &path[..index]) {
+			let scopes = schema_context_own_active_scopes(context);
+			if !scopes.is_empty() {
+				active_scopes = scopes;
+			}
+		}
+		if let Some(component) = path.get(index)
+			&& let Some(output_scope) = schema_link_output_scope(engine, component, &active_scopes)
+		{
+			active_scopes = vec![output_scope.to_string()];
 		}
 	}
 	active_scopes
@@ -1119,6 +1123,33 @@ fn schema_active_scopes_from_attributes(attributes: &CompiledFieldAttributes) ->
 		return vec![this_scope.clone()];
 	}
 	attributes.scope.clone()
+}
+
+fn schema_link_output_scope<'a>(
+	engine: &'a RuleEngine,
+	key: &str,
+	active_scopes: &[String],
+) -> Option<&'a str> {
+	let link = engine.link(key)?;
+	if !schema_link_accepts_active_scope(engine, link, active_scopes) {
+		return None;
+	}
+	link.output_scope.as_deref()
+}
+
+fn schema_link_accepts_active_scope(
+	engine: &RuleEngine,
+	link: &CompiledLink,
+	active_scopes: &[String],
+) -> bool {
+	if active_scopes.is_empty() || link.input_scopes.is_empty() {
+		return true;
+	}
+	link.input_scopes.iter().any(|input_scope| {
+		active_scopes
+			.iter()
+			.any(|active_scope| engine.scope_matches(input_scope, active_scope))
+	})
 }
 
 fn schema_alias_scope_matches(
@@ -5035,6 +5066,27 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_uses_cwt_links_to_transition_active_scope() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    owner = {\n      country_wide_effect = 1\n    }\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token(text, "country_wide_effect"),
+			"",
+		)
+		.expect("scope-link effect schema completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"country_wide_effect"));
+		assert!(labels.contains(&"add_prestige"));
+		assert!(!labels.contains(&"province_only_effect"));
+	}
+
+	#[test]
 	fn completion_uses_replace_scope_this_for_alias_filtering() {
 		let engine = load_lsp_rule_engine();
 		let text = "demo_mission = {\n  provinces_to_highlight = {\n    has\n  }\n}\n";
@@ -5416,6 +5468,24 @@ country_event = {
 		assert!(!diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
 				&& diagnostic.message.contains("province_only_effect")
+		}));
+	}
+
+	#[test]
+	fn diagnostics_use_cwt_links_to_transition_active_scope() {
+		let engine = load_lsp_rule_engine();
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  province_effects = {\n    owner = {\n      country_wide_effect = 1\n      province_only_effect = 1\n    }\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("country_wide_effect")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("province_only_effect")
+				&& diagnostic.message.contains("`province`")
+				&& diagnostic.message.contains("`country`")
 		}));
 	}
 
