@@ -43,6 +43,7 @@ The extension launches the bundled `foch` binary with the `lsp` subcommand.
 - If no bundled binary exists, it falls back to
   `cargo run --quiet --bin foch -- lsp` (development checkout only).
 - If no configured or auto-detected mod roots exist, the extension stays idle instead of treating an arbitrary workspace folder as a mod root. Configure `fochLsp.modPaths` for loose fixture folders without `descriptor.mod`.
+- Changes to `fochLsp.*` settings require a window reload; the extension prompts for this when relevant settings change.
 
 The fallback keeps local development simple; bundled binaries are the intended runtime model for release builds.
 

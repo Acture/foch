@@ -8,4 +8,5 @@
 - Adds builtin trigger/effect completion and workspace symbol completion.
 - Adds CWT schema hover/completion diagnostics, goto-definition, find-references, document/workspace symbols, and a focused missing-localisation quick fix.
 - Avoids starting the language server in unrelated workspaces without configured or detected mod roots.
+- Prompts for a window reload after `fochLsp.*` settings change so target roots and server launch settings are rebuilt explicitly.
 - Adds a release smoke check for package metadata, bundle layout, and the bundled server's LSP initialize/shutdown handshake.

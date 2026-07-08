@@ -5,6 +5,15 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 const { bundledServerArgs, bundledServerPath } = require('./server-paths');
 
 let client;
+const RELOAD_REQUIRED_CONFIG_KEYS = [
+	'fochLsp.serverPath',
+	'fochLsp.serverArgs',
+	'fochLsp.serverCwd',
+	'fochLsp.gamePath',
+	'fochLsp.modPaths',
+	'fochLsp.autoDetectMods',
+	'fochLsp.autoDetectModsMax'
+];
 
 function normalizePath(p) {
 	if (!p || typeof p !== 'string') {
@@ -174,6 +183,26 @@ function shouldStartLanguageClient(targets) {
 	return targets.length > 0 || hasOpenFochDocument();
 }
 
+function configChangeRequiresReload(event) {
+	return RELOAD_REQUIRED_CONFIG_KEYS.some((key) => event.affectsConfiguration(key));
+}
+
+function promptReloadAfterConfigChange(event) {
+	if (!configChangeRequiresReload(event)) {
+		return;
+	}
+	void vscode.window
+		.showInformationMessage(
+			'Foch LSP settings changed. Reload the window to rebuild workspace targets and restart the language server.',
+			'Reload Window'
+		)
+		.then((choice) => {
+			if (choice === 'Reload Window') {
+				void vscode.commands.executeCommand('workbench.action.reloadWindow');
+			}
+		});
+}
+
 function normalizeServerInvocation(serverPath, serverArgs) {
 	const args = Array.isArray(serverArgs) ? [...serverArgs] : [];
 	const cmd = (serverPath || '').trim();
@@ -301,6 +330,11 @@ async function activate(context) {
 				const message = error && error.message ? error.message : String(error);
 				void vscode.window.showErrorMessage(`Foch failed to create localisation: ${message}`);
 			});
+		})
+	);
+	context.subscriptions.push(
+		vscode.workspace.onDidChangeConfiguration((event) => {
+			promptReloadAfterConfigChange(event);
 		})
 	);
 

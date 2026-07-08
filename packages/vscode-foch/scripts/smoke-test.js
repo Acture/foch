@@ -78,6 +78,11 @@ assert(
 	extensionEntry.includes('Foch is inactive in this workspace'),
 	'extension bundle must avoid starting the LSP in unrelated workspaces'
 );
+assert(
+	extensionEntry.includes('Foch LSP settings changed') &&
+		extensionEntry.includes('workbench.action.reloadWindow'),
+	'extension bundle must prompt for window reload after LSP settings change'
+);
 
 const languageClientHelper = path.join(
 	extensionRoot,
