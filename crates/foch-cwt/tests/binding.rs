@@ -140,6 +140,51 @@ fn bind_chain_binds_dynamic_mission_fields() {
 }
 
 #[test]
+fn bind_chain_binds_angle_bracket_dynamic_fields() {
+	let schema = r#"
+	types = {
+		type[mission] = {
+			path = "game/missions"
+		}
+	}
+
+	mission = {
+		mission_tree = {
+			<mission_stage> = {
+				trigger = bool
+			}
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+
+	let binding = graph.bind_chain(
+		Path::new("missions/example.txt"),
+		&["demo_mission", "mission_tree", "conquest", "trigger"],
+	);
+	let SchemaBinding::Bound { type_id, node_id } = binding else {
+		panic!("expected bound dynamic field, got {binding:?}");
+	};
+	assert_eq!(type_id.as_str(), "mission");
+	assert_eq!(
+		node_id.0,
+		"type:mission:field:mission_tree/field:<mission_stage>/field:trigger"
+	);
+
+	let context = graph
+		.bind_context(
+			Path::new("missions/example.txt"),
+			&["demo_mission", "mission_tree"],
+		)
+		.expect("bind mission tree context");
+	let field_match = graph
+		.bind_field_match(context, "conquest")
+		.expect("bind dynamic mission stage");
+	assert_eq!(field_match.field().key, "<mission_stage>");
+}
+
+#[test]
 fn bind_context_tracks_subtypes_and_root_instances() {
 	let graph = load_binding_graph();
 

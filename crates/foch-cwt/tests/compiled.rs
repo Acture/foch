@@ -4,6 +4,7 @@ use foch_cwt::{
 	CompiledRulePack, CompiledRuleValue, CwtSchemaGraph, RuleContext, RuleEngine,
 	RuleEngineLoadStatus, SchemaBinding, SchemaSource, load_rule_engine_from_dir,
 };
+use foch_syntax::ParadoxTree;
 
 #[test]
 fn compiled_engine_matches_graph_root_and_chain_binding() {
@@ -63,6 +64,51 @@ fn compiled_engine_projects_field_and_alias_metadata() {
 	assert_eq!(alias.name, "is_year");
 	assert_eq!(alias.value, CompiledRuleValue::Scalar("int".to_string()));
 	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
+}
+
+#[test]
+fn compiled_engine_binds_angle_bracket_dynamic_fields() {
+	let schema = r#"
+	types = {
+		type[mission] = {
+			path = "game/missions"
+		}
+	}
+
+	mission = {
+		mission_tree = {
+			<mission_stage> = {
+				trigger = bool
+			}
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	let path = Path::new("missions/example.txt");
+	let ast_path = ["demo_mission", "mission_tree", "conquest", "trigger"];
+
+	assert_eq!(
+		engine.bind_chain(path, &ast_path),
+		graph.bind_chain(path, &ast_path)
+	);
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
+		panic!("expected compiled dynamic field binding");
+	};
+	assert_eq!(type_id.as_str(), "mission");
+	assert_eq!(
+		node_id.0,
+		"type:mission:field:mission_tree/field:<mission_stage>/field:trigger"
+	);
+
+	let context = engine
+		.bind_context(path, &["demo_mission", "mission_tree"])
+		.expect("bind mission tree context");
+	let field_match = engine
+		.bind_field_match(context, "conquest")
+		.expect("bind dynamic mission stage");
+	assert_eq!(field_match.field().key, "<mission_stage>");
 }
 
 #[test]

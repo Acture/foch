@@ -1056,6 +1056,9 @@ fn direct_schema_completion_entry(
 	field: &CompiledRuleField,
 	prefix_lower: &str,
 ) -> Option<CompletionCandidate> {
+	if is_schema_dynamic_key_marker(&field.key) {
+		return None;
+	}
 	let field_key_lower = field.key.to_ascii_lowercase();
 	if !prefix_lower.is_empty() && !field_key_lower.starts_with(prefix_lower) {
 		return None;
@@ -1079,6 +1082,13 @@ fn schema_completion_detail(description: Option<&str>) -> String {
 fn parse_schema_marker(text: &str) -> Option<(&str, &str)> {
 	let (head, rest) = text.split_once('[')?;
 	Some((head, rest.strip_suffix(']')?))
+}
+
+fn is_schema_dynamic_key_marker(key: &str) -> bool {
+	key.len() > 2
+		&& key.starts_with('<')
+		&& key.ends_with('>')
+		&& !key.chars().any(char::is_whitespace)
 }
 
 fn schema_diagnostics_for_text(
@@ -1259,6 +1269,7 @@ fn schema_required_fields(context: RuleContext<'_>) -> Vec<(&CompiledRuleField, 
 	let mut fields = completion_rule_fields(context)
 		.into_iter()
 		.filter(|field| parse_schema_marker(&field.key).is_none())
+		.filter(|field| !is_schema_dynamic_key_marker(&field.key))
 		.filter_map(|field| {
 			schema_field_attributes_cardinality(&field.attributes)
 				.map(|(minimum, _)| (field, minimum))
@@ -3895,6 +3906,50 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_binds_dynamic_cwt_marker_fields() {
+		let engine = load_lsp_rule_engine();
+		let text =
+			"demo_mission = {\n  mission_tree = {\n    conquest = {\n      has\n    }\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("missions/sample.txt"),
+			text,
+			position_for_token_offset(text, "has", 3),
+			"has",
+		)
+		.expect("dynamic-field trigger completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"has_country_flag"));
+		assert!(labels.contains(&"has_province_flag"));
+		assert!(!labels.contains(&"has_sea_flag"));
+	}
+
+	#[test]
+	fn completion_does_not_suggest_dynamic_marker_literals() {
+		let engine = load_lsp_rule_engine();
+		let text = "demo_mission = {\n  mission_tree = {\n    \n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("missions/sample.txt"),
+			text,
+			Position {
+				line: 2,
+				character: 4,
+			},
+			"",
+		)
+		.expect("mission tree schema completion");
+		assert!(
+			!candidates
+				.iter()
+				.any(|candidate| candidate.label == "<mission_stage>")
+		);
+	}
+
+	#[test]
 	fn diagnostics_report_alias_scope_mismatches_when_scope_is_known() {
 		let engine = load_lsp_rule_engine();
 		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  immediate = {\n    province_only_effect = 1\n  }\n}\n";
@@ -3915,6 +3970,32 @@ mod tests {
 		let text = "demo_mission = {\n  provinces_to_highlight = {\n    has_country_flag = demo_flag\n    has_province_flag = demo_flag\n    has_sea_flag = demo_flag\n  }\n}\n";
 		let diagnostics =
 			schema_diagnostics_for_text(engine.as_ref(), Path::new("missions/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_country_flag")
+		}));
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_province_flag")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_sea_flag")
+				&& diagnostic.message.contains("`sea`")
+				&& diagnostic.message.contains("`province`")
+		}));
+	}
+
+	#[test]
+	fn diagnostics_bind_dynamic_cwt_marker_fields() {
+		let engine = load_lsp_rule_engine();
+		let text = "demo_mission = {\n  mission_tree = {\n    conquest = {\n      has_country_flag = demo_flag\n      has_province_flag = demo_flag\n      has_sea_flag = demo_flag\n    }\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("missions/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("conquest")
+		}));
 		assert!(!diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
 				&& diagnostic.message.contains("has_country_flag")

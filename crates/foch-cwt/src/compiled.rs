@@ -553,6 +553,16 @@ impl RuleEngine {
 				_ => {}
 			}
 		}
+		if !matches.is_empty() {
+			return matches;
+		}
+		for rules in &rule_sets {
+			match match_dynamic_key_rules(rules, key) {
+				Some(RuleMatch::Field(field)) => return vec![field],
+				Some(RuleMatch::Dynamic { .. }) => return Vec::new(),
+				_ => {}
+			}
+		}
 		matches
 	}
 
@@ -572,6 +582,13 @@ impl RuleEngine {
 				Some(RuleMatch::Alias { wildcard, alias }) => {
 					return Some(CompiledBindFieldMatch::Alias { wildcard, alias });
 				}
+				Some(RuleMatch::Dynamic { .. }) => return None,
+				_ => {}
+			}
+		}
+		for rules in &rule_sets {
+			match match_dynamic_key_rules(rules, key) {
+				Some(RuleMatch::Field(field)) => return Some(CompiledBindFieldMatch::Field(field)),
 				Some(RuleMatch::Dynamic { .. }) => return None,
 				_ => {}
 			}
@@ -810,6 +827,11 @@ impl RuleEngine {
 				return Some(alias_match);
 			}
 		}
+		for rules in rule_sets {
+			if let Some(dynamic_match) = match_dynamic_key_rules(rules, key) {
+				return Some(dynamic_match);
+			}
+		}
 		None
 	}
 
@@ -1036,6 +1058,30 @@ fn field_rules(field: &CompiledRuleField) -> Option<&[CompiledRuleField]> {
 		return None;
 	};
 	Some(fields.as_slice())
+}
+
+fn match_dynamic_key_rules<'p>(rules: &'p [CompiledRuleField], key: &str) -> Option<RuleMatch<'p>> {
+	if is_dynamic_key_marker(key) {
+		return None;
+	}
+	let matches = rules
+		.iter()
+		.filter(|field| is_dynamic_key_marker(&field.key))
+		.collect::<Vec<_>>();
+	match matches.as_slice() {
+		[] => None,
+		[field] => Some(RuleMatch::Field(field)),
+		_ => Some(RuleMatch::Dynamic {
+			reason: "ambiguous-dynamic-field-match",
+		}),
+	}
+}
+
+fn is_dynamic_key_marker(key: &str) -> bool {
+	key.len() > 2
+		&& key.starts_with('<')
+		&& key.ends_with('>')
+		&& !key.chars().any(char::is_whitespace)
 }
 
 fn subtype_matches(subtype: &CompiledSubtype, key: &str) -> bool {
