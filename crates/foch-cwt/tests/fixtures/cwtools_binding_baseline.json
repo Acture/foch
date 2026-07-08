@@ -1,6 +1,6 @@
 {
   "alias_count": 2166,
-  "enum_count": 0,
+  "enum_count": 66,
   "file_count": 73,
   "known_scopes": [
     "country",
@@ -1274,6 +1274,6 @@
       "type_per_file": false
     }
   ],
-  "type_count": 158,
+  "type_count": 157,
   "value_set_count": 0
 }

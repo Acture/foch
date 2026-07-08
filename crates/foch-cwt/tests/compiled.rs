@@ -170,6 +170,38 @@ fn compiled_binary_pack_roundtrips_type_localisation_metadata() {
 }
 
 #[test]
+fn compiled_engine_uses_enums_and_values_blocks() {
+	let schema = r#"
+	enums = {
+		enum[power_categories] = { ADM DIP MIL }
+	}
+
+	values = {
+		value[event_target] = { root from prev }
+		value_set[cooldown_token] = { parliament_debate }
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = RuleEngine::new(decoded);
+	assert_eq!(
+		engine.enum_values("power_categories"),
+		Some(&["ADM".to_string(), "DIP".to_string(), "MIL".to_string()][..])
+	);
+	assert_eq!(
+		engine.value_set_values("event_target"),
+		Some(&["from".to_string(), "prev".to_string(), "root".to_string()][..])
+	);
+	assert_eq!(
+		engine.value_set_values("cooldown_token"),
+		Some(&["parliament_debate".to_string()][..])
+	);
+}
+
+#[test]
 fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let schema = r#"
 	types = {

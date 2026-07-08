@@ -15,7 +15,7 @@ use crate::schema::{
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.8.0";
+pub const PACK_FORMAT_VERSION: &str = "0.9.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

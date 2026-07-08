@@ -250,6 +250,18 @@ impl CwtSchemaGraph {
 			}
 			return;
 		}
+		if key == "enums" {
+			if let Some(items) = block_items(value) {
+				self.ingest_enums_block(items);
+			}
+			return;
+		}
+		if key == "values" {
+			if let Some(items) = block_items(value) {
+				self.ingest_values_block(items);
+			}
+			return;
+		}
 		if key == "scopes" {
 			if let Some(items) = block_items(value) {
 				self.ingest_scopes_block(items);
@@ -305,6 +317,34 @@ impl CwtSchemaGraph {
 					}
 					pending_doc_comments.clear();
 				}
+			}
+		}
+	}
+
+	fn ingest_enums_block(&mut self, items: &[ParadoxNode<'_>]) {
+		for item in items {
+			let Some((key, value)) = assignment_parts(item) else {
+				continue;
+			};
+			let Some(marker) = ParsedMarker::parse(&key) else {
+				continue;
+			};
+			if marker.head == "enum" {
+				insert_enumeration(&mut self.enums, marker.payload, value);
+			}
+		}
+	}
+
+	fn ingest_values_block(&mut self, items: &[ParadoxNode<'_>]) {
+		for item in items {
+			let Some((key, value)) = assignment_parts(item) else {
+				continue;
+			};
+			let Some(marker) = ParsedMarker::parse(&key) else {
+				continue;
+			};
+			if matches!(marker.head, "value" | "value_set") {
+				insert_enumeration(&mut self.value_sets, marker.payload, value);
 			}
 		}
 	}

@@ -118,6 +118,42 @@ fn bind_field_projects_severity_attributes() {
 }
 
 #[test]
+fn graph_loads_enums_and_values_blocks() {
+	let schema = r#"
+	enums = {
+		enum[power_categories] = { ADM DIP MIL }
+	}
+
+	values = {
+		value[event_target] = { root from prev }
+		value_set[cooldown_token] = { parliament_debate }
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	assert_eq!(
+		graph.enums.get("power_categories"),
+		Some(&vec![
+			"ADM".to_string(),
+			"DIP".to_string(),
+			"MIL".to_string()
+		])
+	);
+	assert_eq!(
+		graph.value_sets.get("event_target"),
+		Some(&vec![
+			"root".to_string(),
+			"from".to_string(),
+			"prev".to_string()
+		])
+	);
+	assert_eq!(
+		graph.value_sets.get("cooldown_token"),
+		Some(&vec!["parliament_debate".to_string()])
+	);
+}
+
+#[test]
 fn type_localisation_blocks_are_metadata_not_rule_fields() {
 	let schema = r#"
 	types = {

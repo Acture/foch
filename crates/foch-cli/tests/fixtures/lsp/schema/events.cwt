@@ -91,8 +91,13 @@ alias[effect:country_wide_effect] = int
 ###Province-only fixture effect.
 alias[effect:province_only_effect] = int
 
-enum[power_categories] = { ADM DIP MIL }
-value_set[event_targets] = { root from prev }
+enums = {
+  enum[power_categories] = { ADM DIP MIL }
+}
+
+values = {
+  value[event_targets] = { root from prev }
+}
 
 scopes = {
   country = {
