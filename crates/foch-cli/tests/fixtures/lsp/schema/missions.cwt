@@ -13,7 +13,7 @@ mission = {
   }
 
   mission_tree = {
-    ## replace_scope = { this = province root = country }
+    ## replace_scopes = { this = province root = country }
     <mission_stage> = {
       alias_name[trigger] = alias_match_left[trigger]
     }

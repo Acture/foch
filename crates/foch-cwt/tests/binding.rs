@@ -185,6 +185,48 @@ fn bind_chain_binds_angle_bracket_dynamic_fields() {
 }
 
 #[test]
+fn bind_field_accepts_plural_replace_scopes_option() {
+	let schema = r#"
+	types = {
+		type[incident] = {
+			path = "game/common/incidents"
+		}
+	}
+
+	incident = {
+		## replace_scopes = { this = country root = country }
+		immediate = {
+			alias_name[effect] = alias_match_left[effect]
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let incident = graph
+		.bind_root(Path::new("common/incidents/example.txt"))
+		.expect("bind incident root");
+	let field = graph
+		.bind_field(BindContext::RootType(incident), "immediate")
+		.expect("bind immediate field");
+	assert_eq!(
+		field
+			.attributes
+			.replace_scope
+			.get("this")
+			.map(String::as_str),
+		Some("country")
+	);
+	assert_eq!(
+		field
+			.attributes
+			.replace_scope
+			.get("root")
+			.map(String::as_str),
+		Some("country")
+	);
+}
+
+#[test]
 fn bind_context_tracks_subtypes_and_root_instances() {
 	let graph = load_binding_graph();
 

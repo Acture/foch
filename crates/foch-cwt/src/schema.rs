@@ -546,7 +546,7 @@ fn parse_field_attributes(comments: Vec<String>) -> CwtFieldAttributes {
 			let value = raw_value.trim();
 			match key {
 				"push_scope" => attributes.push_scope = Some(value.to_string()),
-				"replace_scope" => {
+				"replace_scope" | "replace_scopes" => {
 					if let Some(replace_scope) = parse_scope_map(value) {
 						attributes.replace_scope = replace_scope;
 					} else {
