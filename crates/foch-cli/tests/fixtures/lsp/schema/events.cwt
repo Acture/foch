@@ -27,6 +27,9 @@ event = {
   ###Named event target.
   target = value_set[event_targets]
 
+  ###Saved event target to navigate to.
+  goto = value[event_targets]
+
   ###How many days the event should use for fixture validation.
   days = int
 

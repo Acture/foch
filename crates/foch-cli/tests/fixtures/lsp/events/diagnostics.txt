@@ -5,6 +5,7 @@ country_event = {
   title = sample.2.extra
   category = ECO
   target = elsewhere
+  goto = nowhere
   days = many
   chance = heavy
   hidden = maybe

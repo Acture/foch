@@ -2054,6 +2054,10 @@ fn schema_allowed_values<'a>(
 	let (head, name) = schema_allowed_value_marker(value)?;
 	let (kind, values) = match head {
 		"enum" => (SchemaAllowedValueKind::Enum, engine.enum_values(name)?),
+		"value" => (
+			SchemaAllowedValueKind::Value,
+			engine.value_set_values(name)?,
+		),
 		"value_set" => (
 			SchemaAllowedValueKind::ValueSet,
 			engine.value_set_values(name)?,
@@ -2066,6 +2070,7 @@ fn schema_allowed_values<'a>(
 fn schema_allowed_value_marker(text: &str) -> Option<(&str, &str)> {
 	match parse_schema_marker(text) {
 		Some(("enum", name)) => Some(("enum", name)),
+		Some(("value", name)) => Some(("value", name)),
 		Some(("value_set", name)) => Some(("value_set", name)),
 		_ => None,
 	}
@@ -2081,6 +2086,7 @@ struct SchemaAllowedValues<'a> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SchemaAllowedValueKind {
 	Enum,
+	Value,
 	ValueSet,
 }
 
@@ -2088,6 +2094,7 @@ impl SchemaAllowedValueKind {
 	fn label(self) -> &'static str {
 		match self {
 			Self::Enum => "enum",
+			Self::Value => "value",
 			Self::ValueSet => "value_set",
 		}
 	}
@@ -2095,6 +2102,7 @@ impl SchemaAllowedValueKind {
 	fn completion_kind(self) -> CompletionItemKind {
 		match self {
 			Self::Enum => CompletionItemKind::ENUM_MEMBER,
+			Self::Value => CompletionItemKind::VALUE,
 			Self::ValueSet => CompletionItemKind::VALUE,
 		}
 	}
@@ -4496,6 +4504,24 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_suggests_value_values_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "prev", 2),
+			"pr",
+		)
+		.expect("value completion");
+		assert_eq!(candidates.len(), 1);
+		assert_eq!(candidates[0].label, "prev");
+		assert_eq!(candidates[0].kind, CompletionItemKind::VALUE);
+		assert_eq!(candidates[0].detail, "cwt value event_targets");
+	}
+
+	#[test]
 	fn completion_suggests_scripted_effect_fields_from_schema() {
 		let engine = load_lsp_rule_engine();
 		let text = fixture_text("common/scripted_effects/sample.txt");
@@ -4993,6 +5019,13 @@ country_event = {
 			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
 				&& diagnostic.message.contains("elsewhere")
 				&& diagnostic.message.contains("event_targets")
+				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("nowhere")
+				&& diagnostic.message.contains("goto")
+				&& diagnostic.message.contains("schema value `event_targets`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
 		}));
 		assert!(diagnostics.iter().any(|diagnostic| {

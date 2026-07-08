@@ -4,6 +4,7 @@ country_event = {
   title = sample.1.t
   category = ADM
   target = root
+  goto = prev
   days = 30
   chance = 0.5
   hidden = no
