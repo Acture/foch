@@ -963,11 +963,53 @@ fn parse_complex_enum(name: &str, value: &ParadoxNode<'_>) -> Option<CwtComplexE
 			"start_from_root" => {
 				complex_enum.start_from_root = scalar_bool(child_value).unwrap_or(false);
 			}
-			"name" => complex_enum.name_rules = block_to_rules(child_value),
+			"name" => complex_enum.name_rules = complex_enum_name_rules(child_value),
 			_ => {}
 		}
 	}
 	(!complex_enum.name_rules.is_empty()).then_some(complex_enum)
+}
+
+fn complex_enum_name_rules(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
+	let Some(items) = block_items(node) else {
+		return Vec::new();
+	};
+	items
+		.iter()
+		.flat_map(complex_enum_name_statement_to_rule_fields)
+		.collect()
+}
+
+fn complex_enum_name_statement_to_rule_fields(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
+	match node {
+		ParadoxNode::Assignment { key, value, .. } => {
+			let value = match value.as_ref() {
+				ParadoxNode::Block { .. } | ParadoxNode::Array { .. } => {
+					CwtRuleValue::Block(complex_enum_name_rules(value))
+				}
+				value => node_to_rule_value(value),
+			};
+			vec![rule_field(key.as_text().into_owned(), value)]
+		}
+		ParadoxNode::Item { value, .. } => complex_enum_name_statement_to_rule_fields(value),
+		ParadoxNode::Scalar(value) => {
+			let key = value.as_text().into_owned();
+			vec![rule_field(key.clone(), CwtRuleValue::Marker(key))]
+		}
+		ParadoxNode::CwtMarker { payload, .. } => vec![rule_field(
+			(*payload).to_string(),
+			CwtRuleValue::Marker((*payload).to_string()),
+		)],
+		ParadoxNode::Block { items, .. } | ParadoxNode::Array { items, .. } => items
+			.iter()
+			.flat_map(complex_enum_name_statement_to_rule_fields)
+			.collect(),
+		ParadoxNode::Comment { .. }
+		| ParadoxNode::Condition { .. }
+		| ParadoxNode::Logical { .. }
+		| ParadoxNode::Scope { .. }
+		| ParadoxNode::MacroMap { .. } => statement_to_rule_fields(node),
+	}
 }
 
 fn merge_unique(values: &mut Vec<String>, incoming: Vec<String>) {

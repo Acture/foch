@@ -33,6 +33,15 @@ event = {
   ###Country tag referenced by fixture validation.
   ally = enum[country_tags]
 
+  ###Graphical culture referenced by fixture validation.
+  gfx = enum[graphical_cultures]
+
+  ###Custom localisation command referenced by fixture validation.
+  text_command = enum[defined_text_commands]
+
+  ###Dynasty name referenced by fixture validation.
+  dynasty = enum[dynasty_name]
+
   ###How many days the event should use for fixture validation.
   days = int
 
@@ -102,6 +111,33 @@ enums = {
       enum_name = scalar
     }
     start_from_root = yes
+  }
+  complex_enum[graphical_cultures] = {
+    path = "game/common"
+    path_file = "graphicalculturetype.txt"
+    name = {
+      enum_name
+    }
+    start_from_root = yes
+  }
+  complex_enum[defined_text_commands] = {
+    path = "game/customizable_localization"
+    name = {
+      name = scalar
+    }
+  }
+  complex_enum[dynasty_name] = {
+    path = "game/common/cultures"
+    name = {
+      dynasty_names = {
+        enum_name
+      }
+      name = {
+        dynasty_names = {
+          enum_name
+        }
+      }
+    }
   }
 }
 

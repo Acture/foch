@@ -3,10 +3,11 @@ use foch_core::model::{
 	Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
 };
 use foch_cwt::{
-	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
-	CompiledRoot, CompiledRuleCondition, CompiledRuleField, CompiledRuleValue, CompiledSeverity,
-	RuleContext, RuleEngine, RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
-	default_compiled_rule_cache_dir, load_rule_engine_from_dir,
+	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledComplexEnum,
+	CompiledFieldAttributes, CompiledRoot, CompiledRuleCondition, CompiledRuleField,
+	CompiledRuleValue, CompiledSeverity, RuleContext, RuleEngine, RuleEngineLoad,
+	RuleEngineLoadStatus, SchemaBinding, SchemaSource, default_compiled_rule_cache_dir,
+	load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
@@ -67,8 +68,14 @@ struct CompletionCandidate {
 }
 
 #[derive(Clone, Debug, Default)]
+struct DynamicSchemaValues {
+	complex_enums: HashMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct WorkspaceSnapshot {
 	candidates: Vec<CompletionCandidate>,
+	dynamic_schema_values: DynamicSchemaValues,
 	session: Option<WorkspaceSession>,
 	diagnostics_by_path: HashMap<String, Vec<Diagnostic>>,
 }
@@ -208,8 +215,7 @@ impl Backend {
 				text,
 				snapshot
 					.as_ref()
-					.and_then(|snapshot| snapshot.session.as_ref())
-					.map(|session| &session.index),
+					.map(|snapshot| &snapshot.dynamic_schema_values),
 			));
 			if let Some(session) = snapshot
 				.as_ref()
@@ -375,9 +381,15 @@ impl LanguageServer for Backend {
 		let uri = &params.text_document_position_params.text_document.uri;
 		let position = params.text_document_position_params.position;
 		let targets = { self.state.read().await.targets.clone() };
-		let text = {
+		let (text, dynamic_schema_values) = {
 			let state = self.state.read().await;
-			state.docs.get(uri).cloned()
+			(
+				state.docs.get(uri).cloned(),
+				state
+					.workspace
+					.as_ref()
+					.map(|snapshot| snapshot.dynamic_schema_values.clone()),
+			)
 		};
 		let Some(text) = text else {
 			return Ok(None);
@@ -397,6 +409,7 @@ impl LanguageServer for Backend {
 			&relative_path,
 			&text,
 			position,
+			dynamic_schema_values.as_ref(),
 		))
 	}
 
@@ -422,8 +435,7 @@ impl LanguageServer for Backend {
 				state
 					.workspace
 					.as_ref()
-					.and_then(|snapshot| snapshot.session.as_ref())
-					.map(|session| &session.index),
+					.map(|snapshot| &snapshot.dynamic_schema_values),
 			) {
 			candidates
 		} else {
@@ -636,6 +648,7 @@ fn schema_hover(
 	file_path: &Path,
 	text: &str,
 	position: Position,
+	dynamic_values: Option<&DynamicSchemaValues>,
 ) -> Option<Hover> {
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 	let target = find_hover_target(&parsed.ast.statements, position, &[])?;
@@ -661,7 +674,7 @@ fn schema_hover(
 	Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
-			value: render_schema_hover_markdown(engine, &target.key, &field_match),
+			value: render_schema_hover_markdown(engine, dynamic_values, &target.key, &field_match),
 		}),
 		range: Some(target.range),
 	})
@@ -704,6 +717,7 @@ fn find_hover_target(
 
 fn render_schema_hover_markdown(
 	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	key: &str,
 	field_match: &CompiledBindFieldMatch<'_>,
 ) -> String {
@@ -712,7 +726,7 @@ fn render_schema_hover_markdown(
 		format!("**{key}**"),
 		format!("Type: `{}`", rule_value_kind(value)),
 	];
-	if let Some(values) = schema_allowed_values(engine, None, value) {
+	if let Some(values) = schema_allowed_values(engine, dynamic_values, value) {
 		sections.push(format!(
 			"Value set: `{}` `{}`",
 			values.kind.label(),
@@ -862,13 +876,13 @@ fn schema_completion_candidates_with_index(
 	text: &str,
 	position: Position,
 	prefix_lower: &str,
-	index: Option<&SemanticIndex>,
+	dynamic_values: Option<&DynamicSchemaValues>,
 ) -> Option<Vec<CompletionCandidate>> {
 	if !is_schema_key_completion_position(text, position) {
 		let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 		return schema_value_completion_candidates(
 			engine,
-			index,
+			dynamic_values,
 			file_path,
 			&parsed.ast.statements,
 			text,
@@ -902,7 +916,7 @@ fn schema_completion_candidates_with_index(
 
 fn schema_value_completion_candidates(
 	engine: &RuleEngine,
-	index: Option<&SemanticIndex>,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	file_path: &Path,
 	statements: &[AstStatement],
 	text: &str,
@@ -918,7 +932,7 @@ fn schema_value_completion_candidates(
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, statements, &parent_path);
 	let field_match = schema_bind_field_match(engine, parent_context, key, &active_subtypes)?;
-	let values = schema_allowed_values(engine, index, schema_match_value(&field_match))?;
+	let values = schema_allowed_values(engine, dynamic_values, schema_match_value(&field_match))?;
 	let kind = values.kind.completion_kind();
 	let mut candidates = values
 		.values
@@ -1275,22 +1289,22 @@ fn schema_diagnostics_for_text_with_index(
 	engine: &RuleEngine,
 	file_path: &Path,
 	text: &str,
-	index: Option<&SemanticIndex>,
+	dynamic_values: Option<&DynamicSchemaValues>,
 ) -> Vec<Diagnostic> {
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
-	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.ast.statements, index)
+	schema_diagnostics_for_ast_with_index(engine, file_path, &parsed.ast.statements, dynamic_values)
 }
 
 fn schema_diagnostics_for_ast_with_index(
 	engine: &RuleEngine,
 	file_path: &Path,
 	statements: &[AstStatement],
-	index: Option<&SemanticIndex>,
+	dynamic_values: Option<&DynamicSchemaValues>,
 ) -> Vec<Diagnostic> {
 	let mut diagnostics = Vec::new();
 	let context = SchemaDiagnosticContext {
 		engine,
-		index,
+		dynamic_values,
 		file_path,
 		document_statements: statements,
 	};
@@ -1536,7 +1550,7 @@ fn schema_missing_localisation_diagnostic(range: Range, key: &str) -> Diagnostic
 
 struct SchemaDiagnosticContext<'a> {
 	engine: &'a RuleEngine,
-	index: Option<&'a SemanticIndex>,
+	dynamic_values: Option<&'a DynamicSchemaValues>,
 	file_path: &'a Path,
 	document_statements: &'a [AstStatement],
 }
@@ -1602,7 +1616,7 @@ fn collect_schema_diagnostics(
 				{
 					if let Some(diagnostic) = schema_invalid_value_diagnostic(
 						context.engine,
-						context.index,
+						context.dynamic_values,
 						&field_match,
 						key,
 						scalar,
@@ -1822,13 +1836,13 @@ fn zero_range() -> Range {
 
 fn schema_invalid_value_diagnostic(
 	engine: &RuleEngine,
-	index: Option<&SemanticIndex>,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	field_match: &CompiledBindFieldMatch<'_>,
 	key: &str,
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<Diagnostic> {
-	let values = schema_allowed_values(engine, index, schema_match_value(field_match))?;
+	let values = schema_allowed_values(engine, dynamic_values, schema_match_value(field_match))?;
 	let text = scalar.as_text();
 	if values.values.iter().any(|value| value == &text) {
 		return None;
@@ -2091,7 +2105,7 @@ fn schema_match_value<'p>(field_match: &CompiledBindFieldMatch<'p>) -> &'p Compi
 
 fn schema_allowed_values<'a>(
 	engine: &RuleEngine,
-	index: Option<&SemanticIndex>,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	value: &'a CompiledRuleValue,
 ) -> Option<SchemaAllowedValues<'a>> {
 	let value = match value {
@@ -2106,7 +2120,10 @@ fn schema_allowed_values<'a>(
 			} else if let Some(complex_enum) = engine.complex_enum(name) {
 				(
 					SchemaAllowedValueKind::ComplexEnum,
-					schema_complex_enum_values(index?, complex_enum)?,
+					dynamic_values?
+						.complex_enums
+						.get(&complex_enum.name)
+						.cloned()?,
 				)
 			} else {
 				return None;
@@ -2123,29 +2140,6 @@ fn schema_allowed_values<'a>(
 		_ => return None,
 	};
 	(!values.is_empty()).then_some(SchemaAllowedValues { kind, name, values })
-}
-
-fn schema_complex_enum_values(
-	index: &SemanticIndex,
-	complex_enum: &foch_cwt::CompiledComplexEnum,
-) -> Option<Vec<String>> {
-	match (
-		complex_enum.name.as_str(),
-		complex_enum.normalized_path.as_deref(),
-	) {
-		("country_tags", Some("common/country_tags")) => {
-			let values = index
-				.resource_references
-				.iter()
-				.filter_map(|reference| reference.key.strip_prefix("country_tag:"))
-				.map(str::to_string)
-				.collect::<BTreeSet<_>>()
-				.into_iter()
-				.collect::<Vec<_>>();
-			Some(values)
-		}
-		_ => None,
-	}
 }
 
 fn schema_allowed_value_marker(text: &str) -> Option<(&str, &str)> {
@@ -2440,6 +2434,10 @@ fn build_workspace_snapshot_with_schema(
 		.into_iter()
 		.chain(diagnostics.advisory)
 		.collect();
+	let dynamic_schema_values = rule_engine
+		.as_ref()
+		.map(|engine| build_dynamic_schema_values(engine.as_ref(), &parsed))
+		.unwrap_or_default();
 	let mut diagnostics_by_path = build_workspace_diagnostics(&index, &path_lookup, &findings);
 	if let Some(engine) = rule_engine.as_ref() {
 		for file in &parsed {
@@ -2447,7 +2445,7 @@ fn build_workspace_snapshot_with_schema(
 				engine.as_ref(),
 				&file.relative_path,
 				&file.ast.statements,
-				Some(&index),
+				Some(&dynamic_schema_values),
 			);
 			let localisation_diagnostics = schema_localisation_diagnostics_for_ast(
 				engine.as_ref(),
@@ -2476,8 +2474,174 @@ fn build_workspace_snapshot_with_schema(
 
 	WorkspaceSnapshot {
 		candidates,
+		dynamic_schema_values,
 		diagnostics_by_path,
 		session: Some(session),
+	}
+}
+
+fn build_dynamic_schema_values(
+	engine: &RuleEngine,
+	files: &[ParsedScriptFile],
+) -> DynamicSchemaValues {
+	let mut complex_enums = HashMap::new();
+	for complex_enum in engine.complex_enums() {
+		let mut values = BTreeSet::new();
+		for file in files {
+			if complex_enum_matches_file(complex_enum, file) {
+				collect_complex_enum_file_values(complex_enum, &file.ast.statements, &mut values);
+			}
+		}
+		if !values.is_empty() {
+			complex_enums.insert(complex_enum.name.clone(), values.into_iter().collect());
+		}
+	}
+	DynamicSchemaValues { complex_enums }
+}
+
+fn complex_enum_matches_file(complex_enum: &CompiledComplexEnum, file: &ParsedScriptFile) -> bool {
+	let normalized = normalize_schema_relative_path(&file.relative_path);
+	if let Some(path) = complex_enum.normalized_file_path.as_deref() {
+		return normalized == path;
+	}
+	complex_enum
+		.normalized_path
+		.as_deref()
+		.is_some_and(|path| normalized == path || normalized.starts_with(&format!("{path}/")))
+}
+
+fn normalize_schema_relative_path(path: &Path) -> String {
+	normalize_path(path).trim_matches('/').to_ascii_lowercase()
+}
+
+fn collect_complex_enum_file_values(
+	complex_enum: &CompiledComplexEnum,
+	statements: &[AstStatement],
+	out: &mut BTreeSet<String>,
+) {
+	if complex_enum.start_from_root {
+		collect_complex_enum_rule_values(&complex_enum.name_rules, statements, out);
+	} else {
+		collect_complex_enum_rule_values_recursive(&complex_enum.name_rules, statements, out);
+	}
+}
+
+fn collect_complex_enum_rule_values_recursive(
+	rules: &[CompiledRuleField],
+	statements: &[AstStatement],
+	out: &mut BTreeSet<String>,
+) {
+	collect_complex_enum_rule_values(rules, statements, out);
+	for statement in statements {
+		let Some(items) = statement_block_items(statement) else {
+			continue;
+		};
+		collect_complex_enum_rule_values_recursive(rules, items, out);
+	}
+}
+
+fn collect_complex_enum_rule_values(
+	rules: &[CompiledRuleField],
+	statements: &[AstStatement],
+	out: &mut BTreeSet<String>,
+) {
+	for rule in rules {
+		collect_complex_enum_rule_values_for_rule(rule, statements, out);
+	}
+}
+
+fn collect_complex_enum_rule_values_for_rule(
+	rule: &CompiledRuleField,
+	statements: &[AstStatement],
+	out: &mut BTreeSet<String>,
+) {
+	if rule.key == "enum_name" {
+		collect_complex_enum_name_values(&rule.value, statements, out);
+		return;
+	}
+	for statement in statements {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		if key != &rule.key {
+			continue;
+		}
+		match (&rule.value, value) {
+			(CompiledRuleValue::Block(child_rules), AstValue::Block { items, .. }) => {
+				collect_complex_enum_rule_values(child_rules, items, out);
+			}
+			(_, AstValue::Scalar { value, .. })
+				if complex_enum_rule_accepts_scalar(&rule.value) =>
+			{
+				insert_nonempty_dynamic_value(out, value.as_text());
+			}
+			_ => {}
+		}
+	}
+}
+
+fn collect_complex_enum_name_values(
+	rule_value: &CompiledRuleValue,
+	statements: &[AstStatement],
+	out: &mut BTreeSet<String>,
+) {
+	for statement in statements {
+		match statement {
+			AstStatement::Assignment { key, value, .. }
+				if complex_enum_rule_accepts_value(rule_value, value) =>
+			{
+				insert_nonempty_dynamic_value(out, key.clone());
+			}
+			AstStatement::Item {
+				value: AstValue::Scalar { value: scalar, .. },
+				..
+			} if complex_enum_rule_accepts_scalar(rule_value) => {
+				insert_nonempty_dynamic_value(out, scalar.as_text());
+			}
+			_ => {}
+		}
+	}
+}
+
+fn complex_enum_rule_accepts_value(rule_value: &CompiledRuleValue, value: &AstValue) -> bool {
+	match value {
+		AstValue::Scalar { .. } => complex_enum_rule_accepts_scalar(rule_value),
+		AstValue::Block { .. } => {
+			matches!(rule_value, CompiledRuleValue::Marker(marker) if marker == "enum_name")
+		}
+	}
+}
+
+fn complex_enum_rule_accepts_scalar(rule_value: &CompiledRuleValue) -> bool {
+	match rule_value {
+		CompiledRuleValue::Marker(marker) => marker == "enum_name",
+		CompiledRuleValue::Scalar(value) => matches!(
+			value.as_str(),
+			"scalar" | "localisation" | "localization" | "localisation_synced" | "any"
+		),
+		CompiledRuleValue::Block(_) => false,
+	}
+}
+
+fn statement_block_items(statement: &AstStatement) -> Option<&[AstStatement]> {
+	match statement {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		}
+		| AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => Some(items),
+		AstStatement::Assignment { .. }
+		| AstStatement::Item { .. }
+		| AstStatement::Comment { .. } => None,
+	}
+}
+
+fn insert_nonempty_dynamic_value(out: &mut BTreeSet<String>, value: String) {
+	if !value.is_empty() {
+		out.insert(value);
 	}
 }
 
@@ -3615,10 +3779,13 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 		"common/triggered_modifiers",
 		"common/defines",
 		"common/country_tags",
+		"common/cultures",
+		"customizable_localization",
 		"interface",
 		"common/interface",
 		"gfx",
 	];
+	let file_targets = ["common/graphicalculturetype.txt"];
 
 	let mut files = Vec::new();
 	for target in targets {
@@ -3638,6 +3805,12 @@ fn collect_semantic_script_files(root: &Path) -> Vec<PathBuf> {
 			if matches!(ext.to_ascii_lowercase().as_str(), "txt" | "lua") {
 				files.push(path.to_path_buf());
 			}
+		}
+	}
+	for target in file_targets {
+		let path = root.join(target);
+		if path.is_file() {
+			files.push(path);
 		}
 	}
 
@@ -3777,6 +3950,7 @@ mod tests {
 	use foch_cwt::{CwtSchemaGraph, RuleEngine};
 	use std::fs;
 	use std::path::{Path, PathBuf};
+	use std::sync::Arc;
 	use tempfile::TempDir;
 	use tower_lsp::lsp_types::CompletionItemKind;
 	use tower_lsp::lsp_types::{
@@ -4366,11 +4540,14 @@ mod tests {
 			.engine
 	}
 
-	fn complex_enum_workspace() -> WorkspaceSnapshot {
+	fn complex_enum_workspace(engine: Arc<RuleEngine>) -> WorkspaceSnapshot {
 		init_scopes();
 		let tmp = TempDir::new().expect("temp dir");
 		let root = tmp.path();
 		fs::create_dir_all(root.join("common").join("country_tags")).expect("create country tags");
+		fs::create_dir_all(root.join("common").join("cultures")).expect("create cultures");
+		fs::create_dir_all(root.join("customizable_localization"))
+			.expect("create customizable localization");
 		fs::write(
 			root.join("common")
 				.join("country_tags")
@@ -4378,10 +4555,29 @@ mod tests {
 			"SWE = \"countries/Sweden.txt\"\nFRA = \"countries/France.txt\"\n",
 		)
 		.expect("write country tags");
-		build_workspace_snapshot(&[ScanTarget {
-			path: root.to_path_buf(),
-			role: TargetRole::Mod,
-		}])
+		fs::write(
+			root.join("common").join("graphicalculturetype.txt"),
+			"westerngfx = {}\neasterngfx = {}\n",
+		)
+		.expect("write graphical cultures");
+		fs::write(
+			root.join("customizable_localization")
+				.join("sample_custom_locs.txt"),
+			"defined_text = {\n  name = sample_defined_text\n  text = { localisation_key = sample_defined_text_key }\n}\n",
+		)
+		.expect("write custom localisation commands");
+		fs::write(
+			root.join("common").join("cultures").join("00_cultures.txt"),
+			"latin = {\n  dynasty_names = { von_habsburg de_valois }\n  austrian = {\n    name = { dynasty_names = { von_luxembourg } }\n  }\n}\n",
+		)
+		.expect("write cultures");
+		build_workspace_snapshot_with_schema(
+			&[ScanTarget {
+				path: root.to_path_buf(),
+				role: TargetRole::Mod,
+			}],
+			Some(engine),
+		)
 	}
 
 	fn conditional_subtype_schema() -> &'static str {
@@ -4448,6 +4644,7 @@ mod tests {
 			Path::new("events/sample.txt"),
 			&text,
 			position_for_token(&text, "immediate"),
+			None,
 		)
 		.expect("event hover");
 		let markdown = hover_markdown(hover);
@@ -4467,6 +4664,7 @@ mod tests {
 			Path::new("events/sample.txt"),
 			&text,
 			position_for_token(&text, "category"),
+			None,
 		)
 		.expect("category hover");
 		let markdown = hover_markdown(hover);
@@ -4478,6 +4676,25 @@ mod tests {
 	}
 
 	#[test]
+	fn hover_renders_complex_enum_values_from_workspace() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = fixture_text("events/sample.txt");
+		let hover = schema_hover(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "gfx"),
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("complex enum hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**gfx**"));
+		assert!(markdown.contains("Value set: `complex_enum` `graphical_cultures`"));
+		assert!(markdown.contains("`easterngfx`, `westerngfx`"));
+	}
+
+	#[test]
 	fn hover_renders_mission_field_from_schema() {
 		let engine = load_lsp_rule_engine();
 		let text = fixture_text("missions/sample.txt");
@@ -4486,6 +4703,7 @@ mod tests {
 			Path::new("missions/sample.txt"),
 			&text,
 			position_for_token(&text, "provinces_to_highlight"),
+			None,
 		)
 		.expect("mission hover");
 		let markdown = hover_markdown(hover);
@@ -4506,6 +4724,7 @@ mod tests {
 			Path::new("common/scripted_effects/sample.txt"),
 			&text,
 			position_for_token(&text, "add_prestige"),
+			None,
 		)
 		.expect("scripted effect hover");
 		let markdown = hover_markdown(hover);
@@ -4631,25 +4850,104 @@ mod tests {
 	fn completion_suggests_complex_enum_values_from_workspace() {
 		let engine = load_lsp_rule_engine();
 		assert!(engine.complex_enum("country_tags").is_some());
-		let workspace = complex_enum_workspace();
+		assert!(engine.complex_enum("graphical_cultures").is_some());
+		assert!(engine.complex_enum("defined_text_commands").is_some());
+		assert!(engine.complex_enum("dynasty_name").is_some());
+		let workspace = complex_enum_workspace(engine.clone());
 		let session = workspace.session.as_ref().expect("workspace session");
 		assert!(session.index.resource_references.iter().any(|reference| {
 			reference.key == "country_tag:SWE" && reference.value == "countries/Sweden.txt"
 		}));
+		assert_eq!(
+			workspace
+				.dynamic_schema_values
+				.complex_enums
+				.get("country_tags")
+				.expect("country tags dynamic values"),
+			&vec!["FRA".to_string(), "SWE".to_string()]
+		);
+		assert_eq!(
+			workspace
+				.dynamic_schema_values
+				.complex_enums
+				.get("graphical_cultures")
+				.expect("graphical culture dynamic values"),
+			&vec!["easterngfx".to_string(), "westerngfx".to_string()]
+		);
+		assert_eq!(
+			workspace
+				.dynamic_schema_values
+				.complex_enums
+				.get("defined_text_commands")
+				.expect("defined text dynamic values"),
+			&vec!["sample_defined_text".to_string()]
+		);
+		assert_eq!(
+			workspace
+				.dynamic_schema_values
+				.complex_enums
+				.get("dynasty_name")
+				.expect("dynasty dynamic values"),
+			&vec![
+				"de_valois".to_string(),
+				"von_habsburg".to_string(),
+				"von_luxembourg".to_string()
+			]
+		);
 		let text = fixture_text("events/sample.txt");
-		let candidates = schema_completion_candidates_with_index(
+		let country_candidates = schema_completion_candidates_with_index(
 			engine.as_ref(),
 			Path::new("events/sample.txt"),
 			&text,
 			position_for_token_offset(&text, "SWE", 2),
 			"sw",
-			Some(&session.index),
+			Some(&workspace.dynamic_schema_values),
 		)
-		.expect("complex enum completion");
-		assert_eq!(candidates.len(), 1);
-		assert_eq!(candidates[0].label, "SWE");
-		assert_eq!(candidates[0].kind, CompletionItemKind::ENUM_MEMBER);
-		assert_eq!(candidates[0].detail, "cwt complex_enum country_tags");
+		.expect("country tag complex enum completion");
+		assert_eq!(country_candidates.len(), 1);
+		assert_eq!(country_candidates[0].label, "SWE");
+		assert_eq!(country_candidates[0].kind, CompletionItemKind::ENUM_MEMBER);
+		assert_eq!(
+			country_candidates[0].detail,
+			"cwt complex_enum country_tags"
+		);
+		let graphical_candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "westerngfx", 4),
+			"west",
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("graphical culture complex enum completion");
+		assert_eq!(graphical_candidates.len(), 1);
+		assert_eq!(graphical_candidates[0].label, "westerngfx");
+		assert_eq!(
+			graphical_candidates[0].detail,
+			"cwt complex_enum graphical_cultures"
+		);
+		let text_command_candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "sample_defined_text", 6),
+			"sample",
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("defined text complex enum completion");
+		assert_eq!(text_command_candidates.len(), 1);
+		assert_eq!(text_command_candidates[0].label, "sample_defined_text");
+		let dynasty_candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token_offset(&text, "von_habsburg", 5),
+			"von_h",
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("dynasty complex enum completion");
+		assert_eq!(dynasty_candidates.len(), 1);
+		assert_eq!(dynasty_candidates[0].label, "von_habsburg");
 	}
 
 	#[test]
@@ -5193,17 +5491,13 @@ country_event = {
 	fn diagnostics_validate_complex_enum_values_from_workspace() {
 		let engine = load_lsp_rule_engine();
 		assert!(engine.complex_enum("country_tags").is_some());
-		let workspace = complex_enum_workspace();
-		let session = workspace.session.as_ref().expect("workspace session");
-		assert!(session.index.resource_references.iter().any(|reference| {
-			reference.key == "country_tag:SWE" && reference.value == "countries/Sweden.txt"
-		}));
-		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  ally = XXX\n}\n";
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  ally = XXX\n  gfx = missinggfx\n  text_command = missing_text\n  dynasty = missing_dynasty\n}\n";
 		let diagnostics = schema_diagnostics_for_text_with_index(
 			engine.as_ref(),
 			Path::new("events/sample.txt"),
 			text,
-			Some(&session.index),
+			Some(&workspace.dynamic_schema_values),
 		);
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
@@ -5213,6 +5507,27 @@ country_event = {
 					.message
 					.contains("schema complex_enum `country_tags`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("missinggfx")
+				&& diagnostic
+					.message
+					.contains("schema complex_enum `graphical_cultures`")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("missing_text")
+				&& diagnostic
+					.message
+					.contains("schema complex_enum `defined_text_commands`")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V003".to_string()))
+				&& diagnostic.message.contains("missing_dynasty")
+				&& diagnostic
+					.message
+					.contains("schema complex_enum `dynasty_name`")
 		}));
 	}
 

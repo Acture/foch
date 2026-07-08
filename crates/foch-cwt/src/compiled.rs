@@ -590,6 +590,10 @@ impl RuleEngine {
 			.map(|index| &self.pack.complex_enums[*index])
 	}
 
+	pub fn complex_enums(&self) -> &[CompiledComplexEnum] {
+		self.pack.complex_enums.as_slice()
+	}
+
 	pub fn scope_matches(&self, required_scope: &str, active_scope: &str) -> bool {
 		if required_scope == active_scope {
 			return true;

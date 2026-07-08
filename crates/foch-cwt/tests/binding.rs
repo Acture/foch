@@ -164,6 +164,14 @@ fn graph_loads_complex_enums_from_enums_block() {
 			}
 			start_from_root = yes
 		}
+		complex_enum[graphical_cultures] = {
+			path = "game/common"
+			path_file = "graphicalculturetype.txt"
+			name = {
+				enum_name
+			}
+			start_from_root = yes
+		}
 	}
 	"#;
 	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
@@ -179,6 +187,22 @@ fn graph_loads_complex_enums_from_enums_block() {
 	assert_eq!(
 		complex_enum.name_rules[0].value,
 		CwtRuleValue::Scalar("scalar".to_string())
+	);
+	let graphical_cultures = graph
+		.complex_enums
+		.get("graphical_cultures")
+		.expect("graphical_cultures complex enum");
+	assert_eq!(graphical_cultures.path.as_deref(), Some("common"));
+	assert_eq!(
+		graphical_cultures.path_file.as_deref(),
+		Some("graphicalculturetype.txt")
+	);
+	assert!(graphical_cultures.start_from_root);
+	assert_eq!(graphical_cultures.name_rules.len(), 1);
+	assert_eq!(graphical_cultures.name_rules[0].key, "enum_name");
+	assert_eq!(
+		graphical_cultures.name_rules[0].value,
+		CwtRuleValue::Marker("enum_name".to_string())
 	);
 }
 
