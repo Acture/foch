@@ -2,9 +2,10 @@ use foch_core::model::{
 	AnalysisMode, Finding, SemanticIndex, Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
 };
 use foch_cwt::{
-	CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes, CompiledRuleField,
-	CompiledRuleValue, RuleContext, RuleEngine, RuleEngineLoad, RuleEngineLoadStatus,
-	SchemaBinding, SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,
+	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
+	CompiledRuleField, CompiledRuleValue, RuleContext, RuleEngine, RuleEngineLoad,
+	RuleEngineLoadStatus, SchemaBinding, SchemaSource, default_compiled_rule_cache_dir,
+	load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
@@ -833,11 +834,13 @@ fn schema_completion_candidates(
 	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
+	let active_scopes = schema_completion_active_scopes(parent_context);
 	let mut candidates = Vec::new();
 	for field in completion_rule_fields(parent_context) {
 		candidates.extend(schema_completion_entries_for_field(
 			engine,
 			field,
+			&active_scopes,
 			prefix_lower,
 		));
 	}
@@ -962,6 +965,7 @@ fn completion_rule_fields(context: RuleContext<'_>) -> Vec<&CompiledRuleField> {
 fn schema_completion_entries_for_field(
 	engine: &RuleEngine,
 	field: &CompiledRuleField,
+	active_scopes: &[&str],
 	prefix_lower: &str,
 ) -> Vec<CompletionCandidate> {
 	let Some((head, payload)) = parse_schema_marker(&field.key) else {
@@ -979,6 +983,7 @@ fn schema_completion_entries_for_field(
 		.aliases()
 		.iter()
 		.filter(|alias| alias.category == category)
+		.filter(|alias| schema_alias_scope_matches(alias, active_scopes))
 		.filter_map(|alias| {
 			let alias_name = &alias.name;
 			let alias_name_lower = alias_name.to_ascii_lowercase();
@@ -1002,6 +1007,33 @@ fn schema_completion_entries_for_field(
 		.collect::<Vec<_>>();
 	candidates.sort_by(|left, right| left.label.cmp(&right.label));
 	candidates
+}
+
+fn schema_completion_active_scopes(context: RuleContext<'_>) -> Vec<&str> {
+	match context {
+		RuleContext::RootType(root) | RuleContext::Subtype(root, _) => {
+			root.push_scope.as_deref().into_iter().collect()
+		}
+		RuleContext::RuleField(field) => {
+			if let Some(push_scope) = field.attributes.push_scope.as_deref() {
+				vec![push_scope]
+			} else {
+				field.attributes.scope.iter().map(String::as_str).collect()
+			}
+		}
+		RuleContext::AliasRules(_) => Vec::new(),
+	}
+}
+
+fn schema_alias_scope_matches(alias: &CompiledAlias, active_scopes: &[&str]) -> bool {
+	if active_scopes.is_empty() || alias.attributes.scope.is_empty() {
+		return true;
+	}
+	alias
+		.attributes
+		.scope
+		.iter()
+		.any(|scope| active_scopes.iter().any(|active| scope == active))
 }
 
 fn direct_schema_completion_entry(
@@ -3744,6 +3776,26 @@ mod tests {
 				.detail
 				.starts_with("cwt: Adds prestige directly from a scripted effect body.")
 		);
+	}
+
+	#[test]
+	fn completion_filters_aliases_by_active_scope_when_known() {
+		let engine = load_lsp_rule_engine();
+		let text = fixture_text("events/sample.txt");
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			&text,
+			position_for_token(&text, "add_prestige"),
+			"",
+		)
+		.expect("scope-filtered effect schema completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"add_prestige"));
+		assert!(!labels.contains(&"province_only_effect"));
 	}
 
 	#[test]
