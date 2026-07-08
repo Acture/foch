@@ -25,7 +25,7 @@
       "MIL"
     ]
   },
-  "pack_id": "47928e9dc97399d4567d9658a9fcac7a61dff7fd7d0d70854f937c4576430009",
+  "pack_id": "e8b89ca32e89af68dd23af1ece9389d48e76c47db6fa9277b0518190f8580ae6",
   "scopes": [
     "country",
     "province"
@@ -37,60 +37,60 @@
       "name_from_file": false,
       "path": "events",
       "path_file": null,
-      "push_scope": "country",
-      "rules": [],
+      "push_scope": null,
+      "rules": [
+        {
+          "key": "trigger",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[trigger]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[trigger]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "immediate",
+          "value": {
+            "fields": [
+              {
+                "key": "alias_name[effect]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[effect]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "key": "option",
+          "value": {
+            "fields": [
+              {
+                "key": "name",
+                "value": {
+                  "kind": "scalar",
+                  "value": "scalar"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
       "skip_root_keys": [],
       "subtypes": [
         {
-          "name": "country_event",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "trigger",
-              "value": {
-                "fields": [
-                  {
-                    "key": "alias_name[trigger]",
-                    "value": {
-                      "kind": "marker",
-                      "value": "alias_match_left[trigger]"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            },
-            {
-              "key": "immediate",
-              "value": {
-                "fields": [
-                  {
-                    "key": "alias_name[effect]",
-                    "value": {
-                      "kind": "marker",
-                      "value": "alias_match_left[effect]"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            },
-            {
-              "key": "option",
-              "value": {
-                "fields": [
-                  {
-                    "key": "name",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "scalar"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            }
-          ],
+          "name": "country",
+          "push_scope": "country",
+          "rules": [],
           "scope": []
         }
       ],
@@ -115,41 +115,40 @@
       "path": "missions",
       "path_file": null,
       "push_scope": null,
-      "rules": [],
+      "rules": [
+        {
+          "conditions": [
+            "subtype:country_mission_series"
+          ],
+          "key": "slot",
+          "value": {
+            "kind": "scalar",
+            "value": "scalar"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:country_mission_series"
+          ],
+          "key": "mission",
+          "value": {
+            "fields": [
+              {
+                "key": "icon",
+                "value": {
+                  "kind": "scalar",
+                  "value": "scalar"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        }
+      ],
       "skip_root_keys": [
         "any"
       ],
-      "subtypes": [
-        {
-          "name": "country_mission_series",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "slot",
-              "value": {
-                "kind": "scalar",
-                "value": "scalar"
-              }
-            },
-            {
-              "key": "mission",
-              "value": {
-                "fields": [
-                  {
-                    "key": "icon",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "scalar"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            }
-          ],
-          "scope": []
-        }
-      ],
+      "subtypes": [],
       "type_per_file": false
     }
   ],

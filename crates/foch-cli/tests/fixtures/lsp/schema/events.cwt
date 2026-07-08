@@ -2,50 +2,50 @@ types = {
   type[event] = {
     path = "game/events"
     ## type_key_filter = country_event
+    ## push_scope = country
+    subtype[country] = {
+    }
   }
 }
 
 event = {
+  ## cardinality = 0..1
+  ###Event title localisation key.
+  title = scalar
+
+  ## cardinality = 1..1
+  ###Event monarch power category.
+  category = enum[power_categories]
+
+  ## required
+  ###Named event target.
+  target = value_set[event_targets]
+
+  ###How many days the event should use for fixture validation.
+  days = int
+
+  ###Relative chance weight for fixture validation.
+  chance = float
+
+  ###Whether the event should stay hidden for fixture validation.
+  hidden = bool
+
+  ###Conditions that must be true for the event to fire.
+  trigger = {
+    alias_name[trigger] = alias_match_left[trigger]
+  }
+
   ## push_scope = country
-  subtype[country_event] = {
-    ## cardinality = 0..1
-    ###Event title localisation key.
-    title = scalar
+  ## scope = { country province }
+  ###Immediate effects executed when the event fires.
+  immediate = {
+    alias_name[effect] = alias_match_left[effect]
+  }
 
-    ## cardinality = 1..1
-    ###Event monarch power category.
-    category = enum[power_categories]
-
-    ## required
-    ###Named event target.
-    target = value_set[event_targets]
-
-    ###How many days the event should use for fixture validation.
-    days = int
-
-    ###Relative chance weight for fixture validation.
-    chance = float
-
-    ###Whether the event should stay hidden for fixture validation.
-    hidden = bool
-
-    ###Conditions that must be true for the event to fire.
-    trigger = {
-      alias_name[trigger] = alias_match_left[trigger]
-    }
-
-    ## push_scope = country
-    ## scope = { country province }
-    ###Immediate effects executed when the event fires.
-    immediate = {
-      alias_name[effect] = alias_match_left[effect]
-    }
-
-    ## push_scope = province
-    ###Effects executed in a province scope.
-    province_effects = {
-      alias_name[effect] = alias_match_left[effect]
-    }
+  ## push_scope = province
+  ###Effects executed in a province scope.
+  province_effects = {
+    alias_name[effect] = alias_match_left[effect]
   }
 }
 

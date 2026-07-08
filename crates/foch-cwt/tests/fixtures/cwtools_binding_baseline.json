@@ -346,6 +346,212 @@
           }
         },
         {
+          "conditions": [
+            "subtype:hidden"
+          ],
+          "key": "title",
+          "value": {
+            "kind": "scalar",
+            "value": "scalar"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:hidden"
+          ],
+          "key": "desc",
+          "value": {
+            "kind": "scalar",
+            "value": "scalar"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:hidden"
+          ],
+          "key": "picture",
+          "value": {
+            "kind": "scalar",
+            "value": "<sprite>"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:hidden"
+          ],
+          "key": "picture",
+          "value": {
+            "kind": "marker",
+            "value": "enum[dlc_event_pictures]"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:hidden"
+          ],
+          "key": "picture",
+          "value": {
+            "kind": "scalar",
+            "value": "none"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "title",
+          "value": {
+            "kind": "scalar",
+            "value": "localisation"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "desc",
+          "value": {
+            "kind": "scalar",
+            "value": "localisation"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "goto",
+          "value": {
+            "kind": "scalar",
+            "value": "<province_id>"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "goto",
+          "value": {
+            "kind": "marker",
+            "value": "value[event_target]"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "goto",
+          "value": {
+            "kind": "marker",
+            "value": "value[global_event_target]"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "goto",
+          "value": {
+            "kind": "scalar",
+            "value": "root"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "goto",
+          "value": {
+            "kind": "scalar",
+            "value": "from"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "goto",
+          "value": {
+            "kind": "scalar",
+            "value": "<estate>"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "desc",
+          "value": {
+            "fields": [
+              {
+                "key": "trigger",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "alias_name[trigger]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[trigger]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "desc",
+                "value": {
+                  "kind": "scalar",
+                  "value": "localisation"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "picture",
+          "value": {
+            "kind": "scalar",
+            "value": "scalar"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!hidden"
+          ],
+          "key": "picture",
+          "value": {
+            "fields": [
+              {
+                "key": "trigger",
+                "value": {
+                  "fields": [
+                    {
+                      "key": "alias_name[trigger]",
+                      "value": {
+                        "kind": "marker",
+                        "value": "alias_match_left[trigger]"
+                      }
+                    }
+                  ],
+                  "kind": "block"
+                }
+              },
+              {
+                "key": "picture",
+                "value": {
+                  "kind": "scalar",
+                  "value": "scalar"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
           "key": "hidden",
           "value": {
             "kind": "scalar",
@@ -382,10 +588,88 @@
           }
         },
         {
+          "conditions": [
+            "subtype:!mean_time_to_happen"
+          ],
+          "key": "is_triggered_only",
+          "value": {
+            "kind": "scalar",
+            "value": "yes"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:triggered"
+          ],
+          "key": "mean_time_to_happen",
+          "value": {
+            "fields": [
+              {
+                "key": "days",
+                "value": {
+                  "kind": "scalar",
+                  "value": "1"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
           "key": "fire_only_once",
           "value": {
             "kind": "scalar",
             "value": "bool"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:!triggered"
+          ],
+          "key": "mean_time_to_happen",
+          "value": {
+            "fields": [
+              {
+                "key": "enum[days_months_years]",
+                "value": {
+                  "kind": "scalar",
+                  "value": "int"
+                }
+              },
+              {
+                "key": "alias_name[modifier_rule]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[modifier_rule]"
+                }
+              }
+            ],
+            "kind": "block"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:triggered"
+          ],
+          "key": "mean_time_to_happen",
+          "value": {
+            "fields": [
+              {
+                "key": "enum[days_months_years]",
+                "value": {
+                  "kind": "scalar",
+                  "value": "1"
+                }
+              },
+              {
+                "key": "alias_name[modifier_rule]",
+                "value": {
+                  "kind": "marker",
+                  "value": "alias_match_left[modifier_rule]"
+                }
+              }
+            ],
+            "kind": "block"
           }
         },
         {
@@ -430,68 +714,73 @@
           "value": {
             "fields": [
               {
-                "key": "subtype[hidden]",
+                "conditions": [
+                  "subtype:hidden"
+                ],
+                "key": "name",
                 "value": {
-                  "fields": [
-                    {
-                      "key": "name",
-                      "value": {
-                        "kind": "scalar",
-                        "value": "scalar"
-                      }
-                    }
-                  ],
-                  "kind": "block"
+                  "kind": "scalar",
+                  "value": "scalar"
                 }
               },
               {
-                "key": "subtype[!hidden]",
+                "conditions": [
+                  "subtype:!hidden"
+                ],
+                "key": "name",
                 "value": {
-                  "fields": [
-                    {
-                      "key": "name",
-                      "value": {
-                        "kind": "scalar",
-                        "value": "localisation"
-                      }
-                    },
-                    {
-                      "key": "goto",
-                      "value": {
-                        "kind": "scalar",
-                        "value": "<province_id>"
-                      }
-                    },
-                    {
-                      "key": "goto",
-                      "value": {
-                        "kind": "marker",
-                        "value": "value[event_target]"
-                      }
-                    },
-                    {
-                      "key": "goto",
-                      "value": {
-                        "kind": "scalar",
-                        "value": "root"
-                      }
-                    },
-                    {
-                      "key": "goto",
-                      "value": {
-                        "kind": "scalar",
-                        "value": "from"
-                      }
-                    },
-                    {
-                      "key": "goto",
-                      "value": {
-                        "kind": "scalar",
-                        "value": "<estate>"
-                      }
-                    }
-                  ],
-                  "kind": "block"
+                  "kind": "scalar",
+                  "value": "localisation"
+                }
+              },
+              {
+                "conditions": [
+                  "subtype:!hidden"
+                ],
+                "key": "goto",
+                "value": {
+                  "kind": "scalar",
+                  "value": "<province_id>"
+                }
+              },
+              {
+                "conditions": [
+                  "subtype:!hidden"
+                ],
+                "key": "goto",
+                "value": {
+                  "kind": "marker",
+                  "value": "value[event_target]"
+                }
+              },
+              {
+                "conditions": [
+                  "subtype:!hidden"
+                ],
+                "key": "goto",
+                "value": {
+                  "kind": "scalar",
+                  "value": "root"
+                }
+              },
+              {
+                "conditions": [
+                  "subtype:!hidden"
+                ],
+                "key": "goto",
+                "value": {
+                  "kind": "scalar",
+                  "value": "from"
+                }
+              },
+              {
+                "conditions": [
+                  "subtype:!hidden"
+                ],
+                "key": "goto",
+                "value": {
+                  "kind": "scalar",
+                  "value": "<estate>"
                 }
               },
               {
@@ -623,272 +912,6 @@
               "value": {
                 "kind": "scalar",
                 "value": "yes"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "hidden",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "title",
-              "value": {
-                "kind": "scalar",
-                "value": "scalar"
-              }
-            },
-            {
-              "key": "desc",
-              "value": {
-                "kind": "scalar",
-                "value": "scalar"
-              }
-            },
-            {
-              "key": "picture",
-              "value": {
-                "kind": "scalar",
-                "value": "<sprite>"
-              }
-            },
-            {
-              "key": "picture",
-              "value": {
-                "kind": "marker",
-                "value": "enum[dlc_event_pictures]"
-              }
-            },
-            {
-              "key": "picture",
-              "value": {
-                "kind": "scalar",
-                "value": "none"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "!hidden",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "title",
-              "value": {
-                "kind": "scalar",
-                "value": "localisation"
-              }
-            },
-            {
-              "key": "desc",
-              "value": {
-                "kind": "scalar",
-                "value": "localisation"
-              }
-            },
-            {
-              "key": "goto",
-              "value": {
-                "kind": "scalar",
-                "value": "<province_id>"
-              }
-            },
-            {
-              "key": "goto",
-              "value": {
-                "kind": "marker",
-                "value": "value[event_target]"
-              }
-            },
-            {
-              "key": "goto",
-              "value": {
-                "kind": "marker",
-                "value": "value[global_event_target]"
-              }
-            },
-            {
-              "key": "goto",
-              "value": {
-                "kind": "scalar",
-                "value": "root"
-              }
-            },
-            {
-              "key": "goto",
-              "value": {
-                "kind": "scalar",
-                "value": "from"
-              }
-            },
-            {
-              "key": "goto",
-              "value": {
-                "kind": "scalar",
-                "value": "<estate>"
-              }
-            },
-            {
-              "key": "desc",
-              "value": {
-                "fields": [
-                  {
-                    "key": "trigger",
-                    "value": {
-                      "fields": [
-                        {
-                          "key": "alias_name[trigger]",
-                          "value": {
-                            "kind": "marker",
-                            "value": "alias_match_left[trigger]"
-                          }
-                        }
-                      ],
-                      "kind": "block"
-                    }
-                  },
-                  {
-                    "key": "desc",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "localisation"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            },
-            {
-              "key": "picture",
-              "value": {
-                "kind": "scalar",
-                "value": "scalar"
-              }
-            },
-            {
-              "key": "picture",
-              "value": {
-                "fields": [
-                  {
-                    "key": "trigger",
-                    "value": {
-                      "fields": [
-                        {
-                          "key": "alias_name[trigger]",
-                          "value": {
-                            "kind": "marker",
-                            "value": "alias_match_left[trigger]"
-                          }
-                        }
-                      ],
-                      "kind": "block"
-                    }
-                  },
-                  {
-                    "key": "picture",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "scalar"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "!mean_time_to_happen",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "is_triggered_only",
-              "value": {
-                "kind": "scalar",
-                "value": "yes"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "triggered",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "mean_time_to_happen",
-              "value": {
-                "fields": [
-                  {
-                    "key": "days",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "1"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "!triggered",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "mean_time_to_happen",
-              "value": {
-                "fields": [
-                  {
-                    "key": "enum[days_months_years]",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "int"
-                    }
-                  },
-                  {
-                    "key": "alias_name[modifier_rule]",
-                    "value": {
-                      "kind": "marker",
-                      "value": "alias_match_left[modifier_rule]"
-                    }
-                  }
-                ],
-                "kind": "block"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "triggered",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "mean_time_to_happen",
-              "value": {
-                "fields": [
-                  {
-                    "key": "enum[days_months_years]",
-                    "value": {
-                      "kind": "scalar",
-                      "value": "1"
-                    }
-                  },
-                  {
-                    "key": "alias_name[modifier_rule]",
-                    "value": {
-                      "kind": "marker",
-                      "value": "alias_match_left[modifier_rule]"
-                    }
-                  }
-                ],
-                "kind": "block"
               }
             }
           ],
@@ -1185,6 +1208,26 @@
           }
         },
         {
+          "conditions": [
+            "subtype:positive"
+          ],
+          "key": "max",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
+          "conditions": [
+            "subtype:negative"
+          ],
+          "key": "min",
+          "value": {
+            "kind": "scalar",
+            "value": "int"
+          }
+        },
+        {
           "key": "yearly_decay",
           "value": {
             "kind": "scalar",
@@ -1252,34 +1295,6 @@
               "value": {
                 "kind": "marker",
                 "value": "int[0..9999]"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "positive",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "max",
-              "value": {
-                "kind": "scalar",
-                "value": "int"
-              }
-            }
-          ],
-          "scope": []
-        },
-        {
-          "name": "negative",
-          "push_scope": null,
-          "rules": [
-            {
-              "key": "min",
-              "value": {
-                "kind": "scalar",
-                "value": "int"
               }
             }
           ],

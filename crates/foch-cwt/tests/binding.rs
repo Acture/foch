@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use foch_cwt::{
-	AliasCategory, BindContext, CwtRuleValue, CwtSchemaGraph, CwtSeverity, CwtTypeKeyFilter,
-	SchemaBinding,
+	AliasCategory, BindContext, CwtRuleCondition, CwtRuleValue, CwtSchemaGraph, CwtSeverity,
+	CwtTypeKeyFilter, SchemaBinding,
 };
 use foch_syntax::ParadoxTree;
 
@@ -115,6 +115,58 @@ fn bind_field_projects_severity_attributes() {
 		.get(&(AliasCategory::Trigger, "gentle_trigger".to_string()))
 		.expect("lookup severity alias");
 	assert_eq!(alias.attributes.severity, Some(CwtSeverity::Info));
+}
+
+#[test]
+fn rule_subtype_blocks_project_conditional_fields() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			subtype[hidden] = {
+				hidden = yes
+			}
+		}
+	}
+
+	event = {
+		subtype[hidden] = {
+			hidden_only = bool
+		}
+		subtype[!hidden] = {
+			visible_only = bool
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let event = graph
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	assert!(
+		event
+			.rules
+			.iter()
+			.all(|field| !field.key.starts_with("subtype["))
+	);
+	let hidden_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "hidden_only")
+		.expect("hidden-only conditional field");
+	assert_eq!(
+		hidden_only.conditions,
+		vec![CwtRuleCondition::SubtypeActive("hidden".to_string())]
+	);
+	let visible_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "visible_only")
+		.expect("visible-only conditional field");
+	assert_eq!(
+		visible_only.conditions,
+		vec![CwtRuleCondition::SubtypeInactive("hidden".to_string())]
+	);
 }
 
 #[test]

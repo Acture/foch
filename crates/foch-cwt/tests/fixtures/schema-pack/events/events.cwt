@@ -2,21 +2,22 @@ types = {
 	type[event] = {
 		path = "game/events"
 		name_field = "id"
-		push_scope = country
+		## type_key_filter = country_event
+		## push_scope = country
+		subtype[country] = {
+		}
 	}
 }
 
 event = {
-	subtype[country_event] = {
-		trigger = {
-			alias_name[trigger] = alias_match_left[trigger]
-		}
-		immediate = {
-			alias_name[effect] = alias_match_left[effect]
-		}
-		option = {
-			name = scalar
-		}
+	trigger = {
+		alias_name[trigger] = alias_match_left[trigger]
+	}
+	immediate = {
+		alias_name[effect] = alias_match_left[effect]
+	}
+	option = {
+		name = scalar
 	}
 }
 

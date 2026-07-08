@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
-	AliasCategory, CwtAlias, CwtFieldAttributes, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
-	CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
+	AliasCategory, CwtAlias, CwtFieldAttributes, CwtRuleCondition, CwtRuleField, CwtRuleValue,
+	CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef, CwtTypeKeyFilter,
 };
 use crate::{CwtNodeId, CwtType, SchemaBinding};
 
-pub const PACK_FORMAT_VERSION: &str = "0.6.1";
+pub const PACK_FORMAT_VERSION: &str = "0.7.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -422,6 +422,7 @@ pub struct CompiledRuleField {
 	pub key: String,
 	pub value: CompiledRuleValue,
 	pub attributes: CompiledFieldAttributes,
+	pub conditions: Vec<CompiledRuleCondition>,
 }
 
 impl CompiledRuleField {
@@ -430,6 +431,26 @@ impl CompiledRuleField {
 			key: field.key.clone(),
 			value: CompiledRuleValue::from_rule_value(&field.value),
 			attributes: CompiledFieldAttributes::from_attributes(&field.attributes),
+			conditions: field
+				.conditions
+				.iter()
+				.map(CompiledRuleCondition::from_schema)
+				.collect(),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum CompiledRuleCondition {
+	SubtypeActive(String),
+	SubtypeInactive(String),
+}
+
+impl CompiledRuleCondition {
+	fn from_schema(condition: &CwtRuleCondition) -> Self {
+		match condition {
+			CwtRuleCondition::SubtypeActive(label) => Self::SubtypeActive(label.clone()),
+			CwtRuleCondition::SubtypeInactive(label) => Self::SubtypeInactive(label.clone()),
 		}
 	}
 }
@@ -639,29 +660,45 @@ impl RuleEngine {
 		parent: RuleContext<'p>,
 		key: &str,
 	) -> Option<CompiledBindFieldMatch<'p>> {
-		let rule_sets = parent_rule_sets(parent)?;
+		self.bind_field_matches(parent, key).into_iter().next()
+	}
+
+	pub fn bind_field_matches<'p>(
+		&'p self,
+		parent: RuleContext<'p>,
+		key: &str,
+	) -> Vec<CompiledBindFieldMatch<'p>> {
+		let Some(rule_sets) = parent_rule_sets(parent) else {
+			return Vec::new();
+		};
+		let mut field_matches = Vec::new();
 		for rules in &rule_sets {
-			if let Some(field) = rules.iter().find(|field| field.key == key) {
-				return Some(CompiledBindFieldMatch::Field(field));
-			}
+			field_matches.extend(
+				rules
+					.iter()
+					.filter(|field| field.key == key)
+					.map(CompiledBindFieldMatch::Field),
+			);
+		}
+		if !field_matches.is_empty() {
+			return field_matches;
 		}
 		for rules in &rule_sets {
-			match self.match_alias_rules(rules, key) {
-				Some(RuleMatch::Alias { wildcard, alias }) => {
-					return Some(CompiledBindFieldMatch::Alias { wildcard, alias });
-				}
-				Some(RuleMatch::Dynamic { .. }) => return None,
-				_ => {}
-			}
+			field_matches.extend(self.match_alias_rule_fields(rules, key));
+		}
+		if !field_matches.is_empty() {
+			return field_matches;
 		}
 		for rules in &rule_sets {
 			match match_dynamic_key_rules(rules, key) {
-				Some(RuleMatch::Field(field)) => return Some(CompiledBindFieldMatch::Field(field)),
-				Some(RuleMatch::Dynamic { .. }) => return None,
+				Some(RuleMatch::Field(field)) => {
+					return vec![CompiledBindFieldMatch::Field(field)];
+				}
+				Some(RuleMatch::Dynamic { .. }) => return Vec::new(),
 				_ => {}
 			}
 		}
-		None
+		Vec::new()
 	}
 
 	pub fn bind_field<'p>(
@@ -976,6 +1013,23 @@ impl RuleEngine {
 		rules: &'p [CompiledRuleField],
 		key: &str,
 	) -> Option<RuleMatch<'p>> {
+		let matches = self.match_alias_rule_fields(rules, key);
+		match matches.as_slice() {
+			[] => None,
+			[CompiledBindFieldMatch::Alias { wildcard, alias }] => {
+				Some(RuleMatch::Alias { wildcard, alias })
+			}
+			_ => Some(RuleMatch::Dynamic {
+				reason: "ambiguous-alias-match",
+			}),
+		}
+	}
+
+	fn match_alias_rule_fields<'p>(
+		&'p self,
+		rules: &'p [CompiledRuleField],
+		key: &str,
+	) -> Vec<CompiledBindFieldMatch<'p>> {
 		let mut matches = Vec::new();
 		for field in rules {
 			let Some((head, payload)) = parse_marker(&field.key) else {
@@ -988,15 +1042,12 @@ impl RuleEngine {
 			let Some(alias_index) = self.index.aliases.get(&(category, key.to_string())) else {
 				continue;
 			};
-			matches.push((field, &self.pack.aliases[*alias_index]));
+			matches.push(CompiledBindFieldMatch::Alias {
+				wildcard: field,
+				alias: &self.pack.aliases[*alias_index],
+			});
 		}
-		match matches.as_slice() {
-			[] => None,
-			[(wildcard, alias)] => Some(RuleMatch::Alias { wildcard, alias }),
-			_ => Some(RuleMatch::Dynamic {
-				reason: "ambiguous-alias-match",
-			}),
-		}
+		matches
 	}
 
 	fn match_subtype<'p>(

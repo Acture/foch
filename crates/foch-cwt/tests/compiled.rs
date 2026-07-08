@@ -1,8 +1,9 @@
 use std::path::{Path, PathBuf};
 
 use foch_cwt::{
-	CompiledRulePack, CompiledRuleValue, CompiledSeverity, CwtSchemaGraph, RuleContext, RuleEngine,
-	RuleEngineLoadStatus, SchemaBinding, SchemaSource, load_rule_engine_from_dir,
+	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity, CwtSchemaGraph,
+	RuleContext, RuleEngine, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
+	load_rule_engine_from_dir,
 };
 use foch_syntax::ParadoxTree;
 
@@ -72,6 +73,56 @@ fn compiled_engine_projects_field_and_alias_metadata() {
 	assert_eq!(alias.name, "is_year");
 	assert_eq!(alias.value, CompiledRuleValue::Scalar("int".to_string()));
 	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
+}
+
+#[test]
+fn compiled_binary_pack_roundtrips_conditional_rule_fields() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			subtype[hidden] = {
+				hidden = yes
+			}
+		}
+	}
+
+	event = {
+		subtype[hidden] = {
+			hidden_only = bool
+		}
+		subtype[!hidden] = {
+			visible_only = bool
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = RuleEngine::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let hidden_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "hidden_only")
+		.expect("hidden-only conditional field");
+	assert_eq!(
+		hidden_only.conditions,
+		vec![CompiledRuleCondition::SubtypeActive("hidden".to_string())]
+	);
+	let visible_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "visible_only")
+		.expect("visible-only conditional field");
+	assert_eq!(
+		visible_only.conditions,
+		vec![CompiledRuleCondition::SubtypeInactive("hidden".to_string())]
+	);
 }
 
 #[test]

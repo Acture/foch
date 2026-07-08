@@ -109,6 +109,13 @@ pub struct CwtRuleField {
 	pub key: String,
 	pub value: CwtRuleValue,
 	pub attributes: CwtFieldAttributes,
+	pub conditions: Vec<CwtRuleCondition>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CwtRuleCondition {
+	SubtypeActive(String),
+	SubtypeInactive(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -467,7 +474,8 @@ fn merge_type_items(entry: &mut CwtTypeDef, items: &[ParadoxNode<'_>], header_fi
 						continue;
 					}
 				}
-				if let Some(marker) = ParsedMarker::parse(&key)
+				if header_fields
+					&& let Some(marker) = ParsedMarker::parse(&key)
 					&& marker.head == "subtype"
 				{
 					let subtype_attributes = parse_subtype_attributes(&pending_doc_comments);
@@ -529,6 +537,7 @@ fn rule_field(key: String, value: CwtRuleValue) -> CwtRuleField {
 		key,
 		value,
 		attributes: CwtFieldAttributes::default(),
+		conditions: Vec::new(),
 	}
 }
 
@@ -563,10 +572,15 @@ fn block_to_rules(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
 fn statement_to_rule_fields(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
 	match node {
 		ParadoxNode::Assignment { key, value, .. } => {
-			vec![rule_field(
-				key.as_text().into_owned(),
-				node_to_rule_value(value),
-			)]
+			let key = key.as_text();
+			if let Some(condition) = parse_rule_subtype_condition(key.as_ref()) {
+				let mut fields = block_to_rules(value);
+				for field in &mut fields {
+					field.conditions.push(condition.clone());
+				}
+				return fields;
+			}
+			vec![rule_field(key.into_owned(), node_to_rule_value(value))]
 		}
 		ParadoxNode::Condition { keyword, body, .. }
 		| ParadoxNode::Logical { keyword, body, .. }
@@ -583,6 +597,18 @@ fn statement_to_rule_fields(node: &ParadoxNode<'_>) -> Vec<CwtRuleField> {
 		| ParadoxNode::Block { .. }
 		| ParadoxNode::Array { .. }
 		| ParadoxNode::CwtMarker { .. } => Vec::new(),
+	}
+}
+
+fn parse_rule_subtype_condition(key: &str) -> Option<CwtRuleCondition> {
+	let marker = ParsedMarker::parse(key)?;
+	if marker.head != "subtype" {
+		return None;
+	}
+	if let Some(label) = marker.payload.strip_prefix('!') {
+		Some(CwtRuleCondition::SubtypeInactive(label.to_string()))
+	} else {
+		Some(CwtRuleCondition::SubtypeActive(marker.payload.to_string()))
 	}
 }
 

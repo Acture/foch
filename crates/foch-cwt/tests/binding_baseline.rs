@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use foch_cwt::{
-	AliasCategory, CwtAlias, CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtSubtype, CwtTypeDef,
-	SchemaBinding, SchemaPack, SchemaSource,
+	AliasCategory, CwtAlias, CwtRuleCondition, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
+	CwtSubtype, CwtTypeDef, SchemaBinding, SchemaPack, SchemaSource,
 };
 use foch_syntax::ParadoxTree;
 use serde::Serialize;
@@ -71,6 +71,8 @@ struct AliasBaseline {
 #[derive(Serialize)]
 struct RuleFieldBaseline {
 	key: String,
+	#[serde(skip_serializing_if = "Vec::is_empty")]
+	conditions: Vec<String>,
 	value: RuleValueBaseline,
 }
 
@@ -308,7 +310,19 @@ fn alias_baseline(alias: &CwtAlias) -> AliasBaseline {
 fn rule_field_baseline(field: &CwtRuleField) -> RuleFieldBaseline {
 	RuleFieldBaseline {
 		key: field.key.clone(),
+		conditions: field
+			.conditions
+			.iter()
+			.map(rule_condition_baseline)
+			.collect(),
 		value: rule_value_baseline(&field.value),
+	}
+}
+
+fn rule_condition_baseline(condition: &CwtRuleCondition) -> String {
+	match condition {
+		CwtRuleCondition::SubtypeActive(label) => format!("subtype:{label}"),
+		CwtRuleCondition::SubtypeInactive(label) => format!("subtype:!{label}"),
 	}
 }
 

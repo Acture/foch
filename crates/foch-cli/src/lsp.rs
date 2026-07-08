@@ -3,8 +3,8 @@ use foch_core::model::{
 };
 use foch_cwt::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
-	CompiledRuleField, CompiledRuleValue, CompiledSeverity, RuleContext, RuleEngine,
-	RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
+	CompiledRuleCondition, CompiledRuleField, CompiledRuleValue, CompiledSeverity, RuleContext,
+	RuleEngine, RuleEngineLoad, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
 	default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
@@ -632,7 +632,10 @@ fn schema_hover(
 		.map(String::as_str)
 		.collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
-	let field_match = engine.bind_field_match(parent_context, &target.key)?;
+	let active_subtypes =
+		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
+	let field_match =
+		schema_bind_field_match(engine, parent_context, &target.key, &active_subtypes)?;
 	Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
@@ -843,8 +846,13 @@ fn schema_completion_candidates(
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
 	let active_scopes = schema_active_scopes_for_path(engine, file_path, &parent_path);
+	let active_subtypes =
+		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
 	let mut candidates = Vec::new();
-	for field in completion_rule_fields(parent_context) {
+	for field in completion_rule_fields(parent_context)
+		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, &active_subtypes))
+	{
 		candidates.extend(schema_completion_entries_for_field(
 			engine,
 			field,
@@ -871,7 +879,9 @@ fn schema_value_completion_candidates(
 	let parent_path = find_completion_parent_path(statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
-	let field_match = engine.bind_field_match(parent_context, key)?;
+	let active_subtypes =
+		schema_active_subtypes_for_path(engine, file_path, statements, &parent_path);
+	let field_match = schema_bind_field_match(engine, parent_context, key, &active_subtypes)?;
 	let values = schema_allowed_values(engine, schema_match_value(&field_match))?;
 	let kind = values.kind.completion_kind();
 	let mut candidates = values
@@ -1076,6 +1086,107 @@ fn schema_alias_scope_matches(
 	})
 }
 
+fn schema_bind_field_match<'p>(
+	engine: &'p RuleEngine,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Option<CompiledBindFieldMatch<'p>> {
+	engine
+		.bind_field_matches(parent, key)
+		.into_iter()
+		.find(|field_match| {
+			schema_conditions_match(&field_match.field().conditions, active_subtypes)
+		})
+}
+
+fn schema_conditions_match(
+	conditions: &[CompiledRuleCondition],
+	active_subtypes: &HashSet<String>,
+) -> bool {
+	conditions.iter().all(|condition| match condition {
+		CompiledRuleCondition::SubtypeActive(label) => active_subtypes.contains(label),
+		CompiledRuleCondition::SubtypeInactive(label) => !active_subtypes.contains(label),
+	})
+}
+
+fn schema_active_subtypes_for_path(
+	engine: &RuleEngine,
+	file_path: &Path,
+	statements: &[AstStatement],
+	path: &[&str],
+) -> HashSet<String> {
+	let mut active = HashSet::new();
+	if let Some(root_key) = path.first()
+		&& let Some(RuleContext::Subtype(_, subtype)) = engine.bind_context(file_path, &[*root_key])
+	{
+		active.insert(subtype.name.clone());
+	}
+	let Some(root) = engine.bind_root(file_path) else {
+		return active;
+	};
+	let Some(root_statements) = schema_root_block_statements(statements, path) else {
+		return active;
+	};
+	for subtype in &root.subtypes {
+		if !subtype.rules.is_empty()
+			&& schema_rule_fields_match_ast(&subtype.rules, root_statements)
+		{
+			active.insert(subtype.name.clone());
+		}
+	}
+	active
+}
+
+fn schema_root_block_statements<'a>(
+	statements: &'a [AstStatement],
+	path: &[&str],
+) -> Option<&'a [AstStatement]> {
+	let Some(root_key) = path.first() else {
+		return Some(statements);
+	};
+	statements.iter().find_map(|statement| {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			return None;
+		};
+		if key != root_key {
+			return None;
+		}
+		let AstValue::Block { items, .. } = value else {
+			return None;
+		};
+		Some(items.as_slice())
+	})
+}
+
+fn schema_rule_fields_match_ast(rules: &[CompiledRuleField], statements: &[AstStatement]) -> bool {
+	rules.iter().all(|rule| {
+		statements
+			.iter()
+			.any(|statement| schema_rule_field_matches_ast(rule, statement))
+	})
+}
+
+fn schema_rule_field_matches_ast(rule: &CompiledRuleField, statement: &AstStatement) -> bool {
+	let AstStatement::Assignment { key, value, .. } = statement else {
+		return false;
+	};
+	key == &rule.key && schema_rule_value_matches_ast(&rule.value, value)
+}
+
+fn schema_rule_value_matches_ast(rule_value: &CompiledRuleValue, ast_value: &AstValue) -> bool {
+	match (rule_value, ast_value) {
+		(
+			CompiledRuleValue::Scalar(expected) | CompiledRuleValue::Marker(expected),
+			AstValue::Scalar { value, .. },
+		) => value.as_text() == *expected,
+		(CompiledRuleValue::Block(rules), AstValue::Block { items, .. }) => {
+			rules.is_empty() || schema_rule_fields_match_ast(rules, items)
+		}
+		_ => false,
+	}
+}
+
 fn direct_schema_completion_entry(
 	field: &CompiledRuleField,
 	prefix_lower: &str,
@@ -1130,7 +1241,15 @@ fn schema_diagnostics_for_ast(
 	statements: &[AstStatement],
 ) -> Vec<Diagnostic> {
 	let mut diagnostics = Vec::new();
-	collect_schema_diagnostics(engine, file_path, statements, &[], None, &mut diagnostics);
+	collect_schema_diagnostics(
+		engine,
+		file_path,
+		statements,
+		statements,
+		&[],
+		None,
+		&mut diagnostics,
+	);
 	sort_and_dedup_diagnostics(&mut diagnostics);
 	diagnostics
 }
@@ -1139,6 +1258,7 @@ fn collect_schema_diagnostics(
 	engine: &RuleEngine,
 	file_path: &Path,
 	statements: &[AstStatement],
+	document_statements: &[AstStatement],
 	parent_path: &[String],
 	parent_range: Option<Range>,
 	diagnostics: &mut Vec<Diagnostic>,
@@ -1147,6 +1267,8 @@ fn collect_schema_diagnostics(
 	let parent_context = engine.bind_context(file_path, &context_path);
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
 	let active_scopes = schema_active_scopes_for_path(engine, file_path, &context_path);
+	let active_subtypes =
+		schema_active_subtypes_for_path(engine, file_path, document_statements, &context_path);
 	let mut cardinality_ranges = HashMap::<String, (u32, DiagnosticSeverity, Vec<Range>)>::new();
 	let mut present_key_counts = HashMap::<String, u32>::new();
 	for statement in statements {
@@ -1158,8 +1280,9 @@ fn collect_schema_diagnostics(
 				..
 			} => {
 				let key_range = lsp_range_from_span(key_span);
-				let field_match =
-					parent_context.and_then(|context| engine.bind_field_match(context, key));
+				let field_match = parent_context.and_then(|context| {
+					schema_bind_field_match(engine, context, key, &active_subtypes)
+				});
 				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
 				}
@@ -1226,6 +1349,7 @@ fn collect_schema_diagnostics(
 						engine,
 						file_path,
 						items,
+						document_statements,
 						&child_path,
 						Some(lsp_range_from_span(block_span)),
 						diagnostics,
@@ -1242,6 +1366,7 @@ fn collect_schema_diagnostics(
 				engine,
 				file_path,
 				items,
+				document_statements,
 				parent_path,
 				Some(lsp_range_from_span(block_span)),
 				diagnostics,
@@ -1266,7 +1391,7 @@ fn collect_schema_diagnostics(
 		&& !skip_unknown
 	{
 		let range = schema_context_diagnostic_range(parent_range, statements);
-		for (field, minimum) in schema_required_fields(parent_context) {
+		for (field, minimum) in schema_required_fields(parent_context, &active_subtypes) {
 			let present = present_key_counts
 				.get(&field.key)
 				.copied()
@@ -1303,9 +1428,13 @@ fn schema_match_cardinality(
 		})
 }
 
-fn schema_required_fields(context: RuleContext<'_>) -> Vec<(&CompiledRuleField, u32)> {
+fn schema_required_fields<'p>(
+	context: RuleContext<'p>,
+	active_subtypes: &HashSet<String>,
+) -> Vec<(&'p CompiledRuleField, u32)> {
 	let mut fields = completion_rule_fields(context)
 		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
 		.filter(|field| parse_schema_marker(&field.key).is_none())
 		.filter(|field| !is_schema_dynamic_key_marker(&field.key))
 		.filter_map(|field| {
@@ -3799,6 +3928,32 @@ mod tests {
 			.engine
 	}
 
+	fn conditional_subtype_schema() -> &'static str {
+		r#"
+		types = {
+			type[event] = {
+				path = "game/events"
+				## type_key_filter = sample_event
+				subtype[sample] = {
+				}
+				subtype[hidden] = {
+					hidden = yes
+				}
+			}
+		}
+
+		event = {
+			hidden = bool
+			subtype[hidden] = {
+				hidden_only = bool
+			}
+			subtype[!hidden] = {
+				visible_only = bool
+			}
+		}
+		"#
+	}
+
 	fn fixture_text(relative_path: &str) -> String {
 		fs::read_to_string(lsp_fixture_dir().join(relative_path)).expect("read LSP fixture text")
 	}
@@ -4247,6 +4402,49 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_filters_cwt_rule_subtype_conditions() {
+		let engine = load_inline_lsp_rule_engine(conditional_subtype_schema());
+		let hidden_text = "sample_event = {\n  hidden = yes\n  \n}\n";
+		let hidden_candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			hidden_text,
+			Position {
+				line: 2,
+				character: 2,
+			},
+			"",
+		)
+		.expect("hidden event conditional completion");
+		let hidden_labels = hidden_candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(hidden_labels.contains(&"hidden_only"));
+		assert!(!hidden_labels.contains(&"visible_only"));
+		assert!(!hidden_labels.contains(&"subtype[hidden]"));
+
+		let visible_text = "sample_event = {\n  hidden = no\n  \n}\n";
+		let visible_candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			visible_text,
+			Position {
+				line: 2,
+				character: 2,
+			},
+			"",
+		)
+		.expect("visible event conditional completion");
+		let visible_labels = visible_candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(visible_labels.contains(&"visible_only"));
+		assert!(!visible_labels.contains(&"hidden_only"));
+	}
+
+	#[test]
 	fn completion_binds_dynamic_cwt_marker_fields() {
 		let engine = load_lsp_rule_engine();
 		let text =
@@ -4317,6 +4515,28 @@ mod tests {
 				&& diagnostic.message.contains("`province`")
 				&& diagnostic.message.contains("`country`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_filter_cwt_rule_subtype_conditions() {
+		let engine = load_inline_lsp_rule_engine(conditional_subtype_schema());
+		let text = "\
+sample_event = {
+  hidden = yes
+  hidden_only = yes
+  visible_only = yes
+}
+";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("events/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("hidden_only")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("visible_only")
 		}));
 	}
 
