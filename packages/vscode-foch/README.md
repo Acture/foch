@@ -80,7 +80,7 @@ For public VSIX builds, build on the matching target OS/arch so the packaged bin
 
 ## Smoke test
 
-Validate that the extension is marked as preview and that the bundled server can be spawned:
+Validate the packaged preview surface, bundled extension entry, bundled language-client helper, bundled server binary, and a real `initialize` / `shutdown` LSP handshake:
 
 ```bash
 bun run smoke

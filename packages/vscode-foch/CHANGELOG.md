@@ -6,3 +6,5 @@
 - Adds `EU4 Script` language association and syntax highlighting.
 - Adds bundled `foch lsp` subcommand startup with cargo fallback for development.
 - Adds builtin trigger/effect completion and workspace symbol completion.
+- Adds CWT schema hover/completion diagnostics, goto-definition, find-references, document/workspace symbols, and a focused missing-localisation quick fix.
+- Adds a release smoke check for package metadata, bundle layout, and the bundled server's LSP initialize/shutdown handshake.
