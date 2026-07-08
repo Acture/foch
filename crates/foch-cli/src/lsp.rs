@@ -1022,15 +1022,19 @@ fn schema_completion_active_scopes(context: RuleContext<'_>) -> Vec<&str> {
 		RuleContext::RootType(root) | RuleContext::Subtype(root, _) => {
 			root.push_scope.as_deref().into_iter().collect()
 		}
-		RuleContext::RuleField(field) => {
-			if let Some(push_scope) = field.attributes.push_scope.as_deref() {
-				vec![push_scope]
-			} else {
-				field.attributes.scope.iter().map(String::as_str).collect()
-			}
-		}
+		RuleContext::RuleField(field) => schema_active_scopes_from_attributes(&field.attributes),
 		RuleContext::AliasRules(_) => Vec::new(),
 	}
+}
+
+fn schema_active_scopes_from_attributes(attributes: &CompiledFieldAttributes) -> Vec<&str> {
+	if let Some(push_scope) = attributes.push_scope.as_deref() {
+		return vec![push_scope];
+	}
+	if let Some(this_scope) = attributes.replace_scope.get("this") {
+		return vec![this_scope.as_str()];
+	}
+	attributes.scope.iter().map(String::as_str).collect()
 }
 
 fn schema_alias_scope_matches(
@@ -3870,6 +3874,27 @@ mod tests {
 	}
 
 	#[test]
+	fn completion_uses_replace_scope_this_for_alias_filtering() {
+		let engine = load_lsp_rule_engine();
+		let text = "demo_mission = {\n  provinces_to_highlight = {\n    has\n  }\n}\n";
+		let candidates = schema_completion_candidates(
+			engine.as_ref(),
+			Path::new("missions/sample.txt"),
+			text,
+			position_for_token_offset(text, "has", 3),
+			"has",
+		)
+		.expect("replace_scope-filtered trigger completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"has_country_flag"));
+		assert!(labels.contains(&"has_province_flag"));
+		assert!(!labels.contains(&"has_sea_flag"));
+	}
+
+	#[test]
 	fn diagnostics_report_alias_scope_mismatches_when_scope_is_known() {
 		let engine = load_lsp_rule_engine();
 		let text = "namespace = sample\ncountry_event = {\n  category = ADM\n  target = root\n  immediate = {\n    province_only_effect = 1\n  }\n}\n";
@@ -3881,6 +3906,28 @@ mod tests {
 				&& diagnostic.message.contains("`province`")
 				&& diagnostic.message.contains("`country`")
 				&& diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+		}));
+	}
+
+	#[test]
+	fn diagnostics_use_replace_scope_this_for_alias_mismatches() {
+		let engine = load_lsp_rule_engine();
+		let text = "demo_mission = {\n  provinces_to_highlight = {\n    has_country_flag = demo_flag\n    has_province_flag = demo_flag\n    has_sea_flag = demo_flag\n  }\n}\n";
+		let diagnostics =
+			schema_diagnostics_for_text(engine.as_ref(), Path::new("missions/sample.txt"), text);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_country_flag")
+		}));
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_province_flag")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V007".to_string()))
+				&& diagnostic.message.contains("has_sea_flag")
+				&& diagnostic.message.contains("`sea`")
+				&& diagnostic.message.contains("`province`")
 		}));
 	}
 

@@ -56,6 +56,14 @@ alias[trigger:is_year] = int
 ###Checks whether the current country has a flag.
 alias[trigger:has_country_flag] = scalar
 
+## scope = province
+###Checks whether the current province has a flag.
+alias[trigger:has_province_flag] = scalar
+
+## scope = sea
+###Checks whether the current sea zone has a flag.
+alias[trigger:has_sea_flag] = scalar
+
 ###Supports custom trigger bodies.
 alias[trigger:custom_trigger] = {
   expected = scalar
@@ -83,5 +91,8 @@ scopes = {
   province = {
     aliases = { province from }
     is_subscope_of = { country }
+  }
+  sea = {
+    aliases = { sea }
   }
 }
