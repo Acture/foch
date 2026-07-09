@@ -104,6 +104,9 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
 		}
+		arg::FochCliCommands::Workspace(workspace_args) => {
+			handler::workspace::handle_workspace(workspace_args, config)
+		}
 		arg::FochCliCommands::Lsp(_lsp_args) => Ok(foch_cli::lsp::run()),
 	};
 

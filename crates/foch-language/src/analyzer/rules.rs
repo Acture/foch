@@ -857,6 +857,7 @@ mod tests {
 				enabled: true,
 				position: Some(0),
 				steam_id: Some(mod_id.to_string()),
+				..PlaylistEntry::default()
 			},
 			mod_id: mod_id.to_string(),
 			root_path: None,

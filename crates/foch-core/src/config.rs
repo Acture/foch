@@ -1,3 +1,4 @@
+use crate::domain::game::Game;
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -11,6 +12,8 @@ pub const DEFAULT_EMIT_INDENT: &str = "\t";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct FochConfig {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub workspace: Option<WorkspaceConfig>,
 	#[serde(default)]
 	pub overrides: Vec<DepOverride>,
 	#[serde(default)]
@@ -30,6 +33,8 @@ pub struct EmitConfig {
 #[serde(deny_unknown_fields)]
 struct RawFochConfig {
 	#[serde(default)]
+	workspace: Option<WorkspaceConfig>,
+	#[serde(default)]
 	overrides: Vec<DepOverride>,
 	#[serde(default)]
 	resolutions: Vec<ResolutionEntry>,
@@ -45,11 +50,59 @@ impl<'de> Deserialize<'de> for FochConfig {
 		let raw = RawFochConfig::deserialize(deserializer)?;
 		ResolutionMap::from_entries(&raw.resolutions).map_err(serde::de::Error::custom)?;
 		Ok(Self {
+			workspace: raw.workspace,
 			overrides: raw.overrides,
 			resolutions: raw.resolutions,
 			emit: raw.emit,
 		})
 	}
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceConfig {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub game: Option<Game>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub game_path: Option<PathBuf>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub paradox_data_path: Option<PathBuf>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub imports: Vec<WorkspaceImport>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub mods: Vec<WorkspaceMod>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceImport {
+	pub kind: WorkspaceImportKind,
+	pub path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceImportKind {
+	DlcLoad,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceMod {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub path: Option<PathBuf>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub steam_id: Option<String>,
+	#[serde(default = "default_workspace_mod_enabled")]
+	pub enabled: bool,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub position: Option<usize>,
+}
+
+fn default_workspace_mod_enabled() -> bool {
+	true
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
@@ -635,6 +688,9 @@ impl FochConfig {
 				let config = Self::load_file(&path)?;
 				merged.overrides.extend(config.overrides);
 				merged.resolutions.extend(config.resolutions);
+				if config.workspace.is_some() {
+					merged.workspace = config.workspace;
+				}
 				if config.emit.is_some() {
 					merged.emit = config.emit;
 				}
@@ -733,6 +789,43 @@ indent = "  "
 			})
 		);
 		assert_eq!(config.emit_indent(), "  ");
+	}
+
+	#[test]
+	fn parses_workspace_manifest_config() {
+		let config = FochConfig::from_toml_str(
+			r#"
+[workspace]
+game = "eu4"
+game_path = "/games/eu4"
+paradox_data_path = "/paradox/eu4"
+
+[[workspace.imports]]
+kind = "dlc_load"
+path = "/paradox/eu4/dlc_load.json"
+
+[[workspace.mods]]
+id = "local_patch"
+path = "../mods/local_patch"
+
+[[workspace.mods]]
+steam_id = "2164202838"
+enabled = false
+position = 4
+"#,
+		)
+		.expect("parse workspace manifest");
+
+		let workspace = config.workspace.expect("workspace config");
+		assert_eq!(workspace.game, Some(Game::EuropaUniversalis4));
+		assert_eq!(workspace.imports.len(), 1);
+		assert_eq!(workspace.imports[0].kind, WorkspaceImportKind::DlcLoad);
+		assert_eq!(workspace.mods.len(), 2);
+		assert_eq!(workspace.mods[0].id.as_deref(), Some("local_patch"));
+		assert!(workspace.mods[0].enabled);
+		assert_eq!(workspace.mods[1].steam_id.as_deref(), Some("2164202838"));
+		assert!(!workspace.mods[1].enabled);
+		assert_eq!(workspace.mods[1].position, Some(4));
 	}
 
 	#[test]

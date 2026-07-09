@@ -83,22 +83,19 @@ fn request_for(playlist_path: &Path) -> CheckRequest {
 	fs::create_dir_all(&game_root).expect("create default game root");
 	let mut game_path = std::collections::HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
-	CheckRequest {
-		playset_path: playlist_path.to_path_buf(),
-		config: Config {
+	CheckRequest::from_playset_path(
+		playlist_path.to_path_buf(),
+		Config {
 			steam_root_path: None,
 			paradox_data_path: None,
 			game_path,
 			extra_ignore_patterns: Vec::new(),
 		},
-	}
+	)
 }
 
 fn request_with_config(playlist_path: &Path, config: Config) -> CheckRequest {
-	CheckRequest {
-		playset_path: playlist_path.to_path_buf(),
-		config,
-	}
+	CheckRequest::from_playset_path(playlist_path.to_path_buf(), config)
 }
 
 fn plan_entry_for<'a>(result: &'a MergePlanResult, path: &str) -> &'a MergePlanEntry {

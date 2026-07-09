@@ -290,15 +290,15 @@ fn run_merge_inner(
 	retained_paths: Option<BTreeSet<String>>,
 ) -> Result<MergeExecutionResult, MergeError> {
 	run_merge_with_options(
-		CheckRequest {
-			playset_path: playset.to_path_buf(),
-			config: Config {
+		CheckRequest::from_playset_path(
+			playset.to_path_buf(),
+			Config {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path: HashMap::new(),
 				extra_ignore_patterns: Vec::new(),
 			},
-		},
+		),
 		MergeExecuteOptions {
 			out_dir: out_dir.to_path_buf(),
 			include_game_base: false,

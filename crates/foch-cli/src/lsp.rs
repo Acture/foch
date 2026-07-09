@@ -8,7 +8,10 @@ use foch_cwt::{
 	CompiledRuleValue, CompiledSeverity, RuleContext, RuleEngine, RuleEngineLoad,
 	RuleEngineLoadStatus, SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
-use foch_engine::WorkspaceSession;
+use foch_engine::{
+	CheckRequest, Config, WorkspaceSession, WorkspaceSource, WorkspaceTargetRole,
+	load_or_init_config, resolve_workspace_targets,
+};
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use foch_language::analyzer::eu4_builtin::{
 	alias_keywords, builtin_effect_names, builtin_trigger_names, contextual_keywords,
@@ -4026,10 +4029,51 @@ fn looks_like_localisation_name(value: &str) -> bool {
 }
 
 fn resolve_scan_targets(params: &InitializeParams) -> Vec<ScanTarget> {
+	if std::env::var_os("FOCH_LSP_WORKSPACE_MANIFEST").is_some() {
+		return scan_targets_from_manifest_env().unwrap_or_default();
+	}
+
 	match scan_targets_from_env() {
 		Ok(targets) if !targets.is_empty() => targets,
 		Ok(_) | Err(_) => scan_targets_from_workspace(params),
 	}
+}
+
+fn scan_targets_from_manifest_env() -> std::result::Result<Vec<ScanTarget>, String> {
+	let raw = match std::env::var("FOCH_LSP_WORKSPACE_MANIFEST") {
+		Ok(value) => value,
+		Err(std::env::VarError::NotPresent) => return Ok(Vec::new()),
+		Err(err) => return Err(format!("read FOCH_LSP_WORKSPACE_MANIFEST failed: {err}")),
+	};
+	let manifest_path = PathBuf::from(raw);
+	let config = load_or_init_config()
+		.map(|(config, _path)| config)
+		.unwrap_or_else(|_| Config::default());
+	scan_targets_from_manifest_path(manifest_path, config)
+}
+
+fn scan_targets_from_manifest_path(
+	manifest_path: PathBuf,
+	config: Config,
+) -> std::result::Result<Vec<ScanTarget>, String> {
+	let request = CheckRequest {
+		source: WorkspaceSource::Manifest(manifest_path),
+		config,
+	};
+	let targets = resolve_workspace_targets(&request, true)
+		.map_err(|err| format!("resolve FOCH_LSP_WORKSPACE_MANIFEST failed: {err}"))?;
+	Ok(dedup_scan_targets(
+		targets
+			.into_iter()
+			.map(|target| ScanTarget {
+				path: target.path,
+				role: match target.role {
+					WorkspaceTargetRole::Game => TargetRole::Game,
+					WorkspaceTargetRole::Mod => TargetRole::Mod,
+				},
+			})
+			.collect(),
+	))
 }
 
 fn scan_targets_from_env() -> std::result::Result<Vec<ScanTarget>, String> {
@@ -4308,13 +4352,14 @@ mod tests {
 		build_workspace_snapshot_with_schema, detect_completion_context, document_symbols,
 		extract_completion_prefix, find_vendored_schema_dir_from, load_rule_engine_with_cache_dir,
 		localisation_stub_code_actions, parse_scan_targets_json, resolve_definition_locations,
-		resolve_reference_locations, schema_completion_candidates,
+		resolve_reference_locations, scan_targets_from_manifest_path, schema_completion_candidates,
 		schema_completion_candidates_with_index, schema_diagnostics_for_text,
 		schema_diagnostics_for_text_with_index, schema_hover, select_completion_candidates,
 		workspace_symbols,
 	};
 	use foch_core::model::test_support;
 	use foch_cwt::{CwtSchemaGraph, RuleEngine};
+	use foch_engine::Config;
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use std::sync::Arc;
@@ -4362,6 +4407,41 @@ mod tests {
 		let targets = parse_scan_targets_json(&json).expect("parse targets json");
 		assert!(!targets.is_empty());
 		assert_eq!(targets[0].role, TargetRole::Game);
+	}
+
+	#[test]
+	fn manifest_targets_resolve_for_lsp() {
+		let tmp = TempDir::new().expect("temp dir");
+		let game_root = tmp.path().join("game-root");
+		let mod_root = tmp.path().join("local-mod");
+		fs::create_dir_all(&game_root).expect("create game root");
+		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
+			.expect("create mod root");
+		fs::write(
+			mod_root.join("descriptor.mod"),
+			format!("name=\"local-mod\"\npath=\"{}\"\n", mod_root.display()),
+		)
+		.expect("write descriptor");
+		let manifest = tmp.path().join("foch.toml");
+		fs::write(
+			&manifest,
+			r#"
+[workspace]
+game = "eu4"
+game_path = "game-root"
+
+[[workspace.mods]]
+id = "local_mod"
+path = "local-mod"
+"#,
+		)
+		.expect("write manifest");
+
+		let targets =
+			scan_targets_from_manifest_path(manifest, Config::default()).expect("resolve manifest");
+		assert_eq!(targets.len(), 2);
+		assert!(targets.iter().any(|target| target.role == TargetRole::Game));
+		assert!(targets.iter().any(|target| target.role == TargetRole::Mod));
 	}
 
 	#[test]

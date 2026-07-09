@@ -278,6 +278,7 @@ mod tests {
 				position: Some(0),
 				steam_id: Some("9001".to_string()),
 				display_name: Some("cache-test".to_string()),
+				..PlaylistEntry::default()
 			},
 			mod_id: "9001".to_string(),
 			root_path: Some(mod_root.clone()),

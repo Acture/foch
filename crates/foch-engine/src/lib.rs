@@ -45,8 +45,11 @@ pub use merge::{
 	InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
 	run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
 };
-pub use request::{CheckRequest, MergePlanOptions, RunOptions};
+pub use request::{CheckRequest, MergePlanOptions, RunOptions, WorkspaceSource};
 pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};
 pub use runtime::{RuntimeState, build_runtime_state_for_request};
 pub use simplify::{SimplifyOptions, SimplifyReport, SimplifySummary, run_simplify_with_options};
-pub use workspace::{FileFilter, WorkspaceSession};
+pub use workspace::{
+	FileFilter, WorkspaceResolveSummary, WorkspaceResolvedMod, WorkspaceSession, WorkspaceTarget,
+	WorkspaceTargetRole, resolve_workspace_summary, resolve_workspace_targets,
+};

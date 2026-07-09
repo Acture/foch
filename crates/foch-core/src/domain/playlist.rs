@@ -20,10 +20,12 @@ pub struct Playlist {
 
 #[derive(Debug, Clone, Default)]
 pub struct PlaylistEntry {
+	pub id: Option<String>,
 	pub display_name: Option<String>,
 	pub enabled: bool,
 	pub position: Option<usize>,
 	pub steam_id: Option<String>,
+	pub root_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,10 +106,12 @@ fn read_dlc_load_entry(paradox_data_dir: &Path, position: usize, rel: &str) -> P
 		.and_then(|d| (!d.name.trim().is_empty()).then(|| d.name.clone()))
 		.or_else(|| steam_id.as_ref().map(|id| format!("ugc_{id}")));
 	PlaylistEntry {
+		id: None,
 		display_name,
 		enabled: true,
 		position: Some(position),
 		steam_id,
+		root_path: None,
 	}
 }
 

@@ -1,5 +1,5 @@
 use crate::cli::arg::{GraphArgs, GraphArtifactFormatArg, GraphModeArg, GraphScopeArg};
-use crate::cli::handler::{HandlerResult, resolve_playset_path};
+use crate::cli::handler::{HandlerResult, resolve_workspace_source};
 use foch_core::model::{MERGE_TRACE_ARTIFACT_PATH, MergeTraceEntry, SymbolKind};
 use foch_engine::{
 	CheckRequest, Config, GraphArtifactFormat, GraphBuildOptions, GraphModeSelection,
@@ -12,9 +12,8 @@ const MODULE_REPORT_MAX_ITERS: usize = 20;
 
 pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 	if graph_args.modules {
-		let playset_path = resolve_playset_path(graph_args.playset_path.as_deref(), &config)?;
 		let request = CheckRequest {
-			playset_path,
+			source: resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
 			config,
 		};
 		let state = build_runtime_state_for_request(&request, !graph_args.no_game_base)?;
@@ -50,9 +49,8 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 		}
 	}
 
-	let playset_path = resolve_playset_path(graph_args.playset_path.as_deref(), &config)?;
 	let request = CheckRequest {
-		playset_path,
+		source: resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
 		config,
 	};
 	let summary = run_graph_with_options(

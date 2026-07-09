@@ -42,7 +42,8 @@ The extension launches the bundled `foch` binary with the `lsp` subcommand.
   `bin/<platform>-<arch>/foch[.exe]` and invokes it as `foch lsp`.
 - If no bundled binary exists, it falls back to
   `cargo run --quiet --bin foch -- lsp` (development checkout only).
-- If no configured or auto-detected mod roots exist, the extension stays idle instead of treating an arbitrary workspace folder as a mod root. Configure `fochLsp.modPaths` for loose fixture folders without `descriptor.mod`.
+- If `fochLsp.workspaceManifest` points at a `foch.toml`, the server resolves game and mod roots from that manifest instead of raw `gamePath` / `modPaths` targets.
+- If no manifest, configured root, or auto-detected mod root exists, the extension stays idle instead of treating an arbitrary workspace folder as a mod root. Configure `fochLsp.modPaths` for loose fixture folders without `descriptor.mod`.
 - Changes to `fochLsp.*` settings require a window reload; the extension prompts for this when relevant settings change.
 
 The fallback keeps local development simple; bundled binaries are the intended runtime model for release builds.
@@ -131,6 +132,7 @@ Example settings for local development:
   "fochLsp.serverPath": "",
   "fochLsp.serverArgs": [],
   "fochLsp.serverCwd": "/path/to/foch",
+  "fochLsp.workspaceManifest": "/path/to/mod-workspace/foch.toml",
   "fochLsp.gamePath": "/Users/acture/Library/Application Support/Steam/steamapps/common/Europa Universalis IV",
   "fochLsp.modPaths": [
     "/path/to/foch/tests/corpus/control_military_access"

@@ -251,7 +251,7 @@ fn build_modset_cache_context(
 		mod_hashes.push(hash.clone()?);
 	}
 	let playset_root = request
-		.playset_path
+		.source_path()
 		.parent()
 		.unwrap_or_else(|| Path::new("."));
 	let resolution_map_hash = compute_resolution_map_hash(&resolution_config_bytes(
@@ -420,7 +420,7 @@ fn load_resolution_map(
 	explicit_path: Option<&Path>,
 ) -> Result<ResolutionMap, MergeError> {
 	let playset_root = request
-		.playset_path
+		.source_path()
 		.parent()
 		.unwrap_or_else(|| Path::new("."));
 	let config = if let Some(path) = explicit_path {
@@ -498,7 +498,7 @@ fn revalidate_generated_output(
 	let mut cleanup_error = None;
 	let result = run_checks_with_options(
 		CheckRequest {
-			playset_path: dlc_load_path.clone(),
+			source: crate::request::WorkspaceSource::DlcLoad(dlc_load_path.clone()),
 			config: request.config.clone(),
 		},
 		RunOptions {

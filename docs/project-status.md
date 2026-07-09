@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-08
+Last updated: 2026-07-10
 
 ## Summary
 
@@ -18,7 +18,7 @@ Current LSP/VS Code preview surface:
 - Goto-definition and find-references for scripted effects/triggers, event ids, flag values, and localisation keys.
 - Document symbols and workspace symbol search backed by the semantic index.
 - A focused missing-localisation quick fix that creates or appends an English localisation stub in the current mod root.
-- Multi-root workspace loading with configured game/mod paths and `descriptor.mod` auto-detection.
+- Multi-root workspace loading with `foch.toml` manifests, configured game/mod paths, and `descriptor.mod` auto-detection.
 - Idle startup in unrelated workspaces with no configured or detected mod roots.
 - Reload prompt when `fochLsp.*` settings change so target roots and server launch settings are rebuilt explicitly.
 
@@ -36,6 +36,7 @@ Still out of scope for this 0.1 preview unless implemented separately:
 The alpha-1 release-prep slice has landed the user-facing deliverables and engine surface needed for first public testers:
 
 - Resolution DSL: `[[resolutions]]` with `match` / `handler` syntax and built-in `last_writer`, `defer`, and `keep_existing` handlers. The reference lives in [`foch-toml-resolutions.md`](./foch-toml-resolutions.md).
+- Workspace manifest: `[workspace]`, `[[workspace.imports]]`, and `[[workspace.mods]]` let CLI and LSP share one Cargo-like `foch.toml` source. The reference lives in [`foch-workspace-manifest.md`](./foch-workspace-manifest.md).
 - E2E merge fixture harness: 9 tests covering Union, BooleanOr, mixed-kind, recursive, and conflict-resolution scenarios.
 - Graph artifacts: `definition-deps` alongside `mod-deps`, with workspace/base/per-mod scopes and `SymbolKind` filtering.
 - Opt-in NoOp dedup: cross-file and per-entry NoOp dedup are available per `ContentFamily` after load-semantics verification.
@@ -60,6 +61,7 @@ The shipped product surface includes:
 - `foch data`
 - `foch cache`
 - `foch config`
+- `foch workspace`
 - `foch lsp`
 
 ## Current Repository Shape

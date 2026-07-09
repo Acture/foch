@@ -1,13 +1,12 @@
 use crate::cli::arg::{AnalysisModeArg, CheckArgs, CheckChannelArg, CheckOutputFormat};
-use crate::cli::handler::{HandlerResult, resolve_playset_path};
+use crate::cli::handler::{HandlerResult, resolve_workspace_source};
 use foch_core::model::{AnalysisMode, ChannelMode, CheckResult};
 use foch_engine::{CheckRequest, Config, RunOptions, run_checks_with_options};
 use foch_language::analyzer::report::render_text;
 
 pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
-	let playset_path = resolve_playset_path(check_args.playset_path.as_deref(), &config)?;
 	let request = CheckRequest {
-		playset_path,
+		source: resolve_workspace_source(check_args.playset_path.as_deref(), &config)?,
 		config,
 	};
 	let run_options = RunOptions {

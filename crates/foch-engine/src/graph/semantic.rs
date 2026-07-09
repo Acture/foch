@@ -1866,10 +1866,10 @@ mod tests {
 
 	#[test]
 	fn semantic_mode_requires_family_before_workspace_resolution() {
-		let request = CheckRequest {
-			playset_path: PathBuf::from("/definitely/missing.playset"),
-			config: crate::config::Config::default(),
-		};
+		let request = CheckRequest::from_playset_path(
+			PathBuf::from("/definitely/missing.playset"),
+			crate::config::Config::default(),
+		);
 		let result = run_semantic_graph_with_options(
 			request,
 			Path::new("/tmp/ignored"),

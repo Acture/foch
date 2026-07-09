@@ -69,15 +69,15 @@ fn fatal_merge_is_not_cached() {
 	let make_request = || {
 		let mut game_path = HashMap::new();
 		game_path.insert("eu4".to_string(), game_dir.path().to_path_buf());
-		CheckRequest {
-			playset_path: fixture.join("dlc_load.json"),
-			config: Config {
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
 				extra_ignore_patterns: Vec::new(),
 			},
-		}
+		)
 	};
 
 	let make_options = |suffix: &str| {

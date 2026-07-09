@@ -105,15 +105,15 @@ fn run_merge_for_fixture_inner(
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 	let result = run_merge_with_options(
-		CheckRequest {
-			playset_path: fixture.join("dlc_load.json"),
-			config: Config {
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
 				extra_ignore_patterns: Vec::new(),
 			},
-		},
+		),
 		MergeExecuteOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
@@ -151,15 +151,15 @@ fn run_merge_for_playset(
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 	run_merge_with_options(
-		CheckRequest {
-			playset_path: playset_path.to_path_buf(),
-			config: Config {
+		CheckRequest::from_playset_path(
+			playset_path.to_path_buf(),
+			Config {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
 				extra_ignore_patterns: Vec::new(),
 			},
-		},
+		),
 		MergeExecuteOptions {
 			out_dir,
 			include_game_base: false,
@@ -1209,15 +1209,15 @@ religion = sentinel
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 	let result = run_merge_with_options(
-		CheckRequest {
-			playset_path: fixture.join("dlc_load.json"),
-			config: Config {
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
 				extra_ignore_patterns: Vec::new(),
 			},
-		},
+		),
 		MergeExecuteOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,

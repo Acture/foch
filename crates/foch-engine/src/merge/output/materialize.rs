@@ -602,7 +602,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 
 	write_generated_descriptor(
 		&descriptor_root,
-		&request.playset_path,
+		request.source_path(),
 		&plan.playset_name,
 		&out_dir.join(MERGED_MOD_DESCRIPTOR_PATH),
 	)?;
@@ -677,7 +677,7 @@ fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
 
 fn load_emit_options(request: &CheckRequest) -> Result<EmitOptions, MergeError> {
 	let playset_root = request
-		.playset_path
+		.source_path()
 		.parent()
 		.unwrap_or_else(|| Path::new("."));
 	let config = FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
@@ -1533,15 +1533,15 @@ mod tests {
 		fs::create_dir_all(&game_root).expect("create game root");
 		let mut game_path = std::collections::HashMap::new();
 		game_path.insert("eu4".to_string(), game_root);
-		CheckRequest {
-			playset_path: playlist_path.to_path_buf(),
-			config: Config {
+		CheckRequest::from_playset_path(
+			playlist_path.to_path_buf(),
+			Config {
 				steam_root_path: None,
 				paradox_data_path: None,
 				game_path,
 				extra_ignore_patterns: Vec::new(),
 			},
-		}
+		)
 	}
 
 	fn no_base_options(force: bool) -> MergeMaterializeOptions {

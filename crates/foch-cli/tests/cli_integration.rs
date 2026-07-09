@@ -232,6 +232,36 @@ fn run_foch_with_env(
 	)
 }
 
+#[test]
+fn workspace_resolve_reads_manifest_path_mod() {
+	let tmp = TempDir::new().expect("tempdir");
+	let mod_root = tmp.path().join("local-mod");
+	write_descriptor(&mod_root, "Local Mod");
+	let manifest = tmp.path().join("foch.toml");
+	fs::write(
+		&manifest,
+		r#"
+[workspace]
+game = "eu4"
+
+[[workspace.mods]]
+id = "local_mod"
+path = "local-mod"
+"#,
+	)
+	.expect("write manifest");
+
+	let manifest_arg = manifest.to_string_lossy().to_string();
+	let (code, stdout, stderr) =
+		run_foch(&["workspace", "resolve", manifest_arg.as_str()], tmp.path());
+
+	assert_eq!(code, 0, "stderr: {stderr}");
+	assert!(stdout.contains("workspace:"));
+	assert!(stdout.contains("game: eu4"));
+	assert!(stdout.contains("id=local_mod"));
+	assert!(stdout.contains("path="));
+}
+
 fn build_base_data_install(config_dir: &Path, game_root: &Path) {
 	let game_root_str = game_root.display().to_string();
 	let (code, _stdout, stderr) = run_foch(
