@@ -6,8 +6,7 @@ use foch_cwt::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledComplexEnum,
 	CompiledFieldAttributes, CompiledLink, CompiledRoot, CompiledRuleCondition, CompiledRuleField,
 	CompiledRuleValue, CompiledSeverity, RuleContext, RuleEngine, RuleEngineLoad,
-	RuleEngineLoadStatus, SchemaBinding, SchemaSource, default_compiled_rule_cache_dir,
-	load_rule_engine_from_dir,
+	RuleEngineLoadStatus, SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,
 };
 use foch_engine::WorkspaceSession;
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
@@ -652,15 +651,6 @@ fn schema_hover(
 ) -> Option<Hover> {
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 	let target = find_hover_target(&parsed.ast.statements, position, &[])?;
-	let mut ast_path = target
-		.parent_path
-		.iter()
-		.map(String::as_str)
-		.collect::<Vec<_>>();
-	ast_path.push(target.key.as_str());
-	let SchemaBinding::Bound { .. } = engine.bind_chain(file_path, &ast_path) else {
-		return None;
-	};
 	let parent_path = target
 		.parent_path
 		.iter()
@@ -669,8 +659,13 @@ fn schema_hover(
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
-	let field_match =
-		schema_bind_field_match(engine, parent_context, &target.key, &active_subtypes)?;
+	let field_match = schema_bind_field_match(
+		engine,
+		dynamic_values,
+		parent_context,
+		&target.key,
+		&active_subtypes,
+	)?;
 	Some(Hover {
 		contents: HoverContents::Markup(MarkupContent {
 			kind: MarkupKind::Markdown,
@@ -726,6 +721,13 @@ fn render_schema_hover_markdown(
 		format!("**{key}**"),
 		format!("Type: `{}`", rule_value_kind(value)),
 	];
+	if let Some(values) = schema_dynamic_key_source(engine, dynamic_values, key, field_match) {
+		sections.push(format!(
+			"Dynamic key: `{}` `{}`",
+			values.kind.label(),
+			values.name
+		));
+	}
 	if let Some(values) = schema_allowed_values(engine, dynamic_values, value) {
 		sections.push(format!(
 			"Value set: `{}` `{}`",
@@ -747,6 +749,28 @@ fn render_schema_hover_markdown(
 		sections.push(format!("Cardinality: `{cardinality}`"));
 	}
 	sections.join("\n\n")
+}
+
+fn schema_dynamic_key_source<'a>(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	key: &str,
+	field_match: &'a CompiledBindFieldMatch<'a>,
+) -> Option<SchemaAllowedValues<'a>> {
+	let field = field_match.field();
+	if field.key == key {
+		return None;
+	}
+	let (head, name) = parse_schema_marker(&field.key)?;
+	if head == "alias_name" {
+		return None;
+	}
+	let values = schema_allowed_values_for_marker(engine, dynamic_values, head, name)?;
+	values
+		.values
+		.iter()
+		.any(|value| value == key)
+		.then_some(values)
 }
 
 fn rule_value_kind(value: &CompiledRuleValue) -> &'static str {
@@ -932,7 +956,13 @@ fn schema_value_completion_candidates(
 	let parent_context = engine.bind_context(file_path, &parent_path)?;
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, statements, &parent_path);
-	let field_match = schema_bind_field_match(engine, parent_context, key, &active_subtypes)?;
+	let field_match = schema_bind_field_match(
+		engine,
+		dynamic_values,
+		parent_context,
+		key,
+		&active_subtypes,
+	)?;
 	let values = schema_allowed_values(engine, dynamic_values, schema_match_value(&field_match))?;
 	let kind = values.kind.completion_kind();
 	let mut candidates = values
@@ -1199,16 +1229,57 @@ fn schema_alias_scope_matches(
 
 fn schema_bind_field_match<'p>(
 	engine: &'p RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	parent: RuleContext<'p>,
 	key: &str,
 	active_subtypes: &HashSet<String>,
 ) -> Option<CompiledBindFieldMatch<'p>> {
-	engine
+	let static_match = engine
 		.bind_field_matches(parent, key)
 		.into_iter()
 		.find(|field_match| {
 			schema_conditions_match(&field_match.field().conditions, active_subtypes)
-		})
+		});
+	static_match.or_else(|| {
+		schema_dynamic_key_field_match(engine, dynamic_values, parent, key, active_subtypes)
+	})
+}
+
+fn schema_dynamic_key_field_match<'p>(
+	engine: &'p RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Option<CompiledBindFieldMatch<'p>> {
+	if is_schema_dynamic_key_marker(key) {
+		return None;
+	}
+	let matches = completion_rule_fields(parent)
+		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
+		.filter(|field| schema_dynamic_key_field_matches(engine, dynamic_values, field, key))
+		.collect::<Vec<_>>();
+	match matches.as_slice() {
+		[field] => Some(CompiledBindFieldMatch::Field(field)),
+		_ => None,
+	}
+}
+
+fn schema_dynamic_key_field_matches(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	field: &CompiledRuleField,
+	key: &str,
+) -> bool {
+	let Some((head, name)) = parse_schema_marker(&field.key) else {
+		return false;
+	};
+	if head == "alias_name" {
+		return false;
+	}
+	schema_allowed_values_for_marker(engine, dynamic_values, head, name)
+		.is_some_and(|values| values.values.iter().any(|value| value == key))
 }
 
 fn schema_conditions_match(
@@ -1656,7 +1727,13 @@ fn collect_schema_diagnostics(
 			} => {
 				let key_range = lsp_range_from_span(key_span);
 				let field_match = parent_context.and_then(|rule_context| {
-					schema_bind_field_match(context.engine, rule_context, key, &active_subtypes)
+					schema_bind_field_match(
+						context.engine,
+						context.dynamic_values,
+						rule_context,
+						key,
+						&active_subtypes,
+					)
 				});
 				if parent_context.is_some() && field_match.is_none() && !skip_unknown {
 					diagnostics.push(schema_unknown_key_diagnostic(key_range, key));
@@ -4796,6 +4873,32 @@ mod tests {
 	}
 
 	#[test]
+	fn hover_renders_workspace_dynamic_key_source_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "\
+namespace = sample
+country_event = {
+  dynamic_fields = {
+    SWE = 1
+  }
+}
+";
+		let hover = schema_hover(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token(text, "SWE"),
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("workspace dynamic key hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**SWE**"));
+		assert!(markdown.contains("Type: `Scalar`"));
+		assert!(markdown.contains("Dynamic key: `complex_enum` `country_tags`"));
+	}
+
+	#[test]
 	fn hover_renders_mission_field_from_schema() {
 		let engine = load_lsp_rule_engine();
 		let text = fixture_text("missions/sample.txt");
@@ -4987,6 +5090,32 @@ mod tests {
 			candidate.label == "alpha"
 				&& candidate.kind == CompletionItemKind::FIELD
 				&& candidate.detail == "cwt dynamic key enum dynamic_event_fields"
+		}));
+	}
+
+	#[test]
+	fn completion_expands_workspace_dynamic_key_markers_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "namespace = sample\ncountry_event = {\n  dynamic_fields = {\n    SW\n  }\n}\n";
+		let candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token_offset(text, "SW", 2),
+			"sw",
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("workspace dynamic key completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert_eq!(labels, vec!["SWE"]);
+		assert!(candidates.iter().any(|candidate| {
+			candidate.label == "SWE"
+				&& candidate.kind == CompletionItemKind::FIELD
+				&& candidate.detail == "cwt dynamic key complex_enum country_tags"
 		}));
 	}
 
@@ -5695,6 +5824,34 @@ country_event = {
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
 				&& diagnostic.message.contains("gamma")
+		}));
+	}
+
+	#[test]
+	fn diagnostics_accept_workspace_dynamic_key_markers_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "\
+country_event = {
+  dynamic_fields = {
+    SWE = 1
+    XXX = 1
+  }
+}
+";
+		let diagnostics = schema_diagnostics_for_text_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			Some(&workspace.dynamic_schema_values),
+		);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("SWE")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("XXX")
 		}));
 	}
 

@@ -57,6 +57,7 @@ event = {
   ###Dynamic field keys backed by CWT marker values.
   dynamic_fields = {
     enum[dynamic_event_fields] = int
+    enum[country_tags] = int
     value_set[dynamic_event_tokens] = scalar
   }
 
