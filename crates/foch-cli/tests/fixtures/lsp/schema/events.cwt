@@ -104,6 +104,11 @@ alias[trigger:custom_trigger] = {
   expected = scalar
 }
 
+###Country tag trigger alias with a marker-backed dynamic alias name.
+alias[trigger:enum[country_tags]] = {
+  alias_name[trigger] = alias_match_left[trigger]
+}
+
 ## scope = country
 ###Adds prestige to the current country.
 alias[effect:add_prestige] = int
@@ -115,6 +120,11 @@ alias[effect:country_wide_effect] = int
 ## scope = province
 ###Province-only fixture effect.
 alias[effect:province_only_effect] = int
+
+###Country tag effect alias with a marker-backed dynamic alias name.
+alias[effect:enum[country_tags]] = {
+  alias_name[effect] = alias_match_left[effect]
+}
 
 enums = {
   enum[power_categories] = { ADM DIP MIL }

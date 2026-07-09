@@ -656,7 +656,13 @@ fn schema_hover(
 		.iter()
 		.map(String::as_str)
 		.collect::<Vec<_>>();
-	let parent_context = engine.bind_context(file_path, &parent_path)?;
+	let parent_context = schema_bind_context(
+		engine,
+		dynamic_values,
+		file_path,
+		&parsed.ast.statements,
+		&parent_path,
+	)?;
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
 	let field_match = schema_bind_field_match(
@@ -721,6 +727,13 @@ fn render_schema_hover_markdown(
 		format!("**{key}**"),
 		format!("Type: `{}`", rule_value_kind(value)),
 	];
+	if let Some(values) = schema_dynamic_alias_source(engine, dynamic_values, key, field_match) {
+		sections.push(format!(
+			"Dynamic alias: `{}` `{}`",
+			values.kind.label(),
+			values.name
+		));
+	}
 	if let Some(values) = schema_dynamic_key_source(engine, dynamic_values, key, field_match) {
 		sections.push(format!(
 			"Dynamic key: `{}` `{}`",
@@ -836,6 +849,24 @@ fn schema_hover_scope_context(field_match: &CompiledBindFieldMatch<'_>) -> Optio
 	(!parts.is_empty()).then(|| parts.join("; "))
 }
 
+fn schema_dynamic_alias_source<'a>(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	key: &str,
+	field_match: &'a CompiledBindFieldMatch<'a>,
+) -> Option<SchemaAllowedValues<'a>> {
+	let alias = field_match.alias()?;
+	if alias.name == key {
+		return None;
+	}
+	let values = schema_dynamic_alias_values(engine, dynamic_values, alias)?;
+	values
+		.values
+		.iter()
+		.any(|value| value == key)
+		.then_some(values)
+}
+
 fn format_scope_values(values: &[String]) -> String {
 	values
 		.iter()
@@ -917,8 +948,20 @@ fn schema_completion_candidates_with_index(
 	let parsed = parse_clausewitz_content(file_path.to_path_buf(), text);
 	let parent_path = find_completion_parent_path(&parsed.ast.statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = engine.bind_context(file_path, &parent_path)?;
-	let active_scopes = schema_active_scopes_for_path(engine, file_path, &parent_path);
+	let parent_context = schema_bind_context(
+		engine,
+		dynamic_values,
+		file_path,
+		&parsed.ast.statements,
+		&parent_path,
+	)?;
+	let active_scopes = schema_active_scopes_for_path(
+		engine,
+		dynamic_values,
+		file_path,
+		&parsed.ast.statements,
+		&parent_path,
+	);
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, &parsed.ast.statements, &parent_path);
 	let mut candidates = Vec::new();
@@ -953,7 +996,8 @@ fn schema_value_completion_candidates(
 	let key = current_assignment_key(&upto)?;
 	let parent_path = find_completion_parent_path(statements, position, &[])?;
 	let parent_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = engine.bind_context(file_path, &parent_path)?;
+	let parent_context =
+		schema_bind_context(engine, dynamic_values, file_path, statements, &parent_path)?;
 	let active_subtypes =
 		schema_active_subtypes_for_path(engine, file_path, statements, &parent_path);
 	let field_match = schema_bind_field_match(
@@ -1089,29 +1133,61 @@ fn schema_completion_entries_for_field(
 		.iter()
 		.filter(|alias| alias.category == category)
 		.filter(|alias| schema_alias_scope_matches(engine, alias, active_scopes))
-		.filter_map(|alias| {
-			let alias_name = &alias.name;
-			let alias_name_lower = alias_name.to_ascii_lowercase();
-			if !prefix_lower.is_empty() && !alias_name_lower.starts_with(prefix_lower) {
-				return None;
-			}
-			Some(CompletionCandidate {
-				label: alias_name.clone(),
-				insert_text: alias_name.clone(),
-				kind: CompletionItemKind::FUNCTION,
-				detail: schema_completion_detail(
-					alias
-						.attributes
-						.description
-						.as_deref()
-						.or(field.attributes.description.as_deref()),
-				),
-				source: CandidateSource::Schema,
-			})
+		.flat_map(|alias| {
+			schema_completion_entries_for_alias(engine, dynamic_values, field, alias, prefix_lower)
 		})
 		.collect::<Vec<_>>();
 	candidates.sort_by(|left, right| left.label.cmp(&right.label));
 	candidates
+}
+
+fn schema_completion_entries_for_alias(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	field: &CompiledRuleField,
+	alias: &CompiledAlias,
+	prefix_lower: &str,
+) -> Vec<CompletionCandidate> {
+	if schema_allowed_value_marker(&alias.name).is_some() {
+		let Some(values) = schema_dynamic_alias_values(engine, dynamic_values, alias) else {
+			return Vec::new();
+		};
+		return values
+			.values
+			.iter()
+			.filter_map(|value| {
+				let value_lower = value.to_ascii_lowercase();
+				if !prefix_lower.is_empty() && !value_lower.starts_with(prefix_lower) {
+					return None;
+				}
+				Some(CompletionCandidate {
+					label: value.clone(),
+					insert_text: value.clone(),
+					kind: CompletionItemKind::FUNCTION,
+					detail: format!("cwt dynamic alias {} {}", values.kind.label(), values.name),
+					source: CandidateSource::Schema,
+				})
+			})
+			.collect();
+	}
+	let alias_name = &alias.name;
+	let alias_name_lower = alias_name.to_ascii_lowercase();
+	if !prefix_lower.is_empty() && !alias_name_lower.starts_with(prefix_lower) {
+		return Vec::new();
+	}
+	vec![CompletionCandidate {
+		label: alias_name.clone(),
+		insert_text: alias_name.clone(),
+		kind: CompletionItemKind::FUNCTION,
+		detail: schema_completion_detail(
+			alias
+				.attributes
+				.description
+				.as_deref()
+				.or(field.attributes.description.as_deref()),
+		),
+		source: CandidateSource::Schema,
+	}]
 }
 
 fn schema_dynamic_key_completion_entries(
@@ -1139,12 +1215,20 @@ fn schema_dynamic_key_completion_entries(
 
 fn schema_active_scopes_for_path(
 	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
 	file_path: &Path,
+	document_statements: &[AstStatement],
 	path: &[&str],
 ) -> Vec<String> {
 	let mut active_scopes = Vec::new();
 	for index in 0..=path.len() {
-		if let Some(context) = engine.bind_context(file_path, &path[..index]) {
+		if let Some(context) = schema_bind_context(
+			engine,
+			dynamic_values,
+			file_path,
+			document_statements,
+			&path[..index],
+		) {
 			let scopes = schema_context_own_active_scopes(context);
 			if !scopes.is_empty() {
 				active_scopes = scopes;
@@ -1227,6 +1311,60 @@ fn schema_alias_scope_matches(
 	})
 }
 
+fn schema_bind_context<'p>(
+	engine: &'p RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	file_path: &Path,
+	document_statements: &[AstStatement],
+	path: &[&str],
+) -> Option<RuleContext<'p>> {
+	if let Some(context) = engine.bind_context(file_path, path) {
+		return Some(context);
+	}
+	for prefix_len in (0..path.len()).rev() {
+		let Some(mut context) = engine.bind_context(file_path, &path[..prefix_len]) else {
+			continue;
+		};
+		let mut resolved_path = path[..prefix_len]
+			.iter()
+			.map(|segment| (*segment).to_string())
+			.collect::<Vec<_>>();
+		let mut resolved_all = true;
+		for segment in &path[prefix_len..] {
+			let resolved_refs = resolved_path.iter().map(String::as_str).collect::<Vec<_>>();
+			let active_subtypes = schema_active_subtypes_for_path(
+				engine,
+				file_path,
+				document_statements,
+				&resolved_refs,
+			);
+			let Some(field_match) =
+				schema_bind_field_match(engine, dynamic_values, context, segment, &active_subtypes)
+			else {
+				resolved_all = false;
+				break;
+			};
+			context = schema_child_context_for_field_match(field_match);
+			resolved_path.push((*segment).to_string());
+		}
+		if resolved_all {
+			return Some(context);
+		}
+	}
+	None
+}
+
+fn schema_child_context_for_field_match<'p>(
+	field_match: CompiledBindFieldMatch<'p>,
+) -> RuleContext<'p> {
+	match field_match {
+		CompiledBindFieldMatch::Field(field) => RuleContext::RuleField(field),
+		CompiledBindFieldMatch::Alias { alias, .. } => {
+			RuleContext::AliasRules(alias.rules.as_slice())
+		}
+	}
+}
+
 fn schema_bind_field_match<'p>(
 	engine: &'p RuleEngine,
 	dynamic_values: Option<&DynamicSchemaValues>,
@@ -1240,9 +1378,50 @@ fn schema_bind_field_match<'p>(
 		.find(|field_match| {
 			schema_conditions_match(&field_match.field().conditions, active_subtypes)
 		});
-	static_match.or_else(|| {
-		schema_dynamic_key_field_match(engine, dynamic_values, parent, key, active_subtypes)
-	})
+	static_match
+		.or_else(|| {
+			schema_dynamic_alias_field_match(engine, dynamic_values, parent, key, active_subtypes)
+		})
+		.or_else(|| {
+			schema_dynamic_key_field_match(engine, dynamic_values, parent, key, active_subtypes)
+		})
+}
+
+fn schema_dynamic_alias_field_match<'p>(
+	engine: &'p RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	parent: RuleContext<'p>,
+	key: &str,
+	active_subtypes: &HashSet<String>,
+) -> Option<CompiledBindFieldMatch<'p>> {
+	if is_schema_dynamic_key_marker(key) {
+		return None;
+	}
+	let matches = completion_rule_fields(parent)
+		.into_iter()
+		.filter(|field| schema_conditions_match(&field.conditions, active_subtypes))
+		.filter_map(|field| {
+			let (head, payload) = parse_schema_marker(&field.key)?;
+			(head == "alias_name").then_some((field, CompiledAliasCategory::from_name(payload)))
+		})
+		.flat_map(|(field, category)| {
+			engine
+				.aliases()
+				.iter()
+				.filter(move |alias| alias.category == category)
+				.filter(move |alias| {
+					schema_dynamic_alias_matches(engine, dynamic_values, alias, key)
+				})
+				.map(move |alias| CompiledBindFieldMatch::Alias {
+					wildcard: field,
+					alias,
+				})
+		})
+		.collect::<Vec<_>>();
+	match matches.as_slice() {
+		[alias_match] => Some(*alias_match),
+		_ => None,
+	}
 }
 
 fn schema_dynamic_key_field_match<'p>(
@@ -1279,6 +1458,16 @@ fn schema_dynamic_key_field_matches(
 		return false;
 	}
 	schema_allowed_values_for_marker(engine, dynamic_values, head, name)
+		.is_some_and(|values| values.values.iter().any(|value| value == key))
+}
+
+fn schema_dynamic_alias_matches(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	alias: &CompiledAlias,
+	key: &str,
+) -> bool {
+	schema_dynamic_alias_values(engine, dynamic_values, alias)
 		.is_some_and(|values| values.values.iter().any(|value| value == key))
 }
 
@@ -1703,12 +1892,21 @@ fn collect_schema_diagnostics(
 	diagnostics: &mut Vec<Diagnostic>,
 ) {
 	let context_path = parent_path.iter().map(String::as_str).collect::<Vec<_>>();
-	let parent_context = context
-		.engine
-		.bind_context(context.file_path, &context_path);
+	let parent_context = schema_bind_context(
+		context.engine,
+		context.dynamic_values,
+		context.file_path,
+		context.document_statements,
+		&context_path,
+	);
 	let skip_unknown = matches!(parent_context, Some(RuleContext::AliasRules(_)));
-	let active_scopes =
-		schema_active_scopes_for_path(context.engine, context.file_path, &context_path);
+	let active_scopes = schema_active_scopes_for_path(
+		context.engine,
+		context.dynamic_values,
+		context.file_path,
+		context.document_statements,
+		&context_path,
+	);
 	let active_subtypes = schema_active_subtypes_for_path(
 		context.engine,
 		context.file_path,
@@ -2259,6 +2457,15 @@ fn schema_allowed_values<'a>(
 		CompiledRuleValue::Block(_) => return None,
 	};
 	let (head, name) = schema_allowed_value_marker(value)?;
+	schema_allowed_values_for_marker(engine, dynamic_values, head, name)
+}
+
+fn schema_dynamic_alias_values<'a>(
+	engine: &RuleEngine,
+	dynamic_values: Option<&DynamicSchemaValues>,
+	alias: &'a CompiledAlias,
+) -> Option<SchemaAllowedValues<'a>> {
+	let (head, name) = schema_allowed_value_marker(&alias.name)?;
 	schema_allowed_values_for_marker(engine, dynamic_values, head, name)
 }
 
@@ -4899,6 +5106,34 @@ country_event = {
 	}
 
 	#[test]
+	fn hover_renders_workspace_dynamic_alias_source_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "\
+namespace = sample
+country_event = {
+  immediate = {
+    SWE = {
+      add_prestige = 1
+    }
+  }
+}
+";
+		let hover = schema_hover(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token(text, "SWE"),
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("workspace dynamic alias hover");
+		let markdown = hover_markdown(hover);
+		assert!(markdown.contains("**SWE**"));
+		assert!(markdown.contains("Type: `Block`"));
+		assert!(markdown.contains("Dynamic alias: `complex_enum` `country_tags`"));
+	}
+
+	#[test]
 	fn hover_renders_mission_field_from_schema() {
 		let engine = load_lsp_rule_engine();
 		let text = fixture_text("missions/sample.txt");
@@ -5117,6 +5352,64 @@ country_event = {
 				&& candidate.kind == CompletionItemKind::FIELD
 				&& candidate.detail == "cwt dynamic key complex_enum country_tags"
 		}));
+	}
+
+	#[test]
+	fn completion_expands_workspace_dynamic_alias_names_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "namespace = sample\ncountry_event = {\n  immediate = {\n    SW\n  }\n}\n";
+		let candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token_offset(text, "SW", 2),
+			"sw",
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("workspace dynamic alias completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert_eq!(labels, vec!["SWE"]);
+		assert!(!labels.contains(&"enum[country_tags]"));
+		assert!(candidates.iter().any(|candidate| {
+			candidate.label == "SWE"
+				&& candidate.kind == CompletionItemKind::FUNCTION
+				&& candidate.detail == "cwt dynamic alias complex_enum country_tags"
+		}));
+	}
+
+	#[test]
+	fn completion_enters_workspace_dynamic_alias_body() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "\
+namespace = sample
+country_event = {
+  immediate = {
+    SWE = {
+      add
+    }
+  }
+}
+";
+		let candidates = schema_completion_candidates_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			position_for_token_offset(text, "add", 3),
+			"add",
+			Some(&workspace.dynamic_schema_values),
+		)
+		.expect("dynamic alias body completion");
+		let labels = candidates
+			.iter()
+			.map(|candidate| candidate.label.as_str())
+			.collect::<Vec<_>>();
+		assert!(labels.contains(&"add_prestige"));
+		assert!(!labels.contains(&"enum[country_tags]"));
 	}
 
 	#[test]
@@ -5852,6 +6145,53 @@ country_event = {
 		assert!(diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
 				&& diagnostic.message.contains("XXX")
+		}));
+	}
+
+	#[test]
+	fn diagnostics_accept_workspace_dynamic_alias_names_from_schema() {
+		let engine = load_lsp_rule_engine();
+		let workspace = complex_enum_workspace(engine.clone());
+		let text = "\
+namespace = sample
+country_event = {
+  category = ADM
+  target = root
+  trigger = {
+    SWE = {
+      has_country_flag = demo_flag
+    }
+  }
+  immediate = {
+    SWE = {
+      add_prestige = much
+    }
+    XXX = {}
+  }
+}
+";
+		let diagnostics = schema_diagnostics_for_text_with_index(
+			engine.as_ref(),
+			Path::new("events/sample.txt"),
+			text,
+			Some(&workspace.dynamic_schema_values),
+		);
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("SWE")
+		}));
+		assert!(!diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("has_country_flag")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V001".to_string()))
+				&& diagnostic.message.contains("XXX")
+		}));
+		assert!(diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some(NumberOrString::String("V005".to_string()))
+				&& diagnostic.message.contains("add_prestige")
+				&& diagnostic.message.contains("int")
 		}));
 	}
 
