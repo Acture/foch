@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
-	Adjudications, ScoreCache, ScoreFileRequest, classify_resolution, conflict_rel_paths,
-	ground_truth_files, run_merge, score_file_with_cache, write_playset,
+	Adjudications, ScoreCache, ScoreFileRequest, SourceMod, classify_resolution,
+	conflict_rel_paths, ground_truth_files, run_merge, score_file_with_cache, write_playset,
 };
 
 // ------------------------------------------------------------------ data model
@@ -22,9 +22,9 @@ use crate::score::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FileRecord {
 	pub rel: String,
-	pub in_a: bool,
-	pub in_b: bool,
-	pub overlap: bool,
+	pub source_mod_ids: Vec<String>,
+	pub source_count: usize,
+	pub multi_source: bool,
 	pub foch_emitted: bool,
 	pub foch_conflict: bool,
 	pub similarity: Option<f64>,
@@ -57,12 +57,14 @@ pub struct CaseResult {
 	pub validation: Option<serde_json::Value>,
 	/// Number of ground-truth files in the compatch.
 	pub ground_truth_files: usize,
-	/// Number of ground-truth files that appear in both patched mods (overlap).
-	pub overlap_files: usize,
-	/// Verdict counts over the overlap set (BTreeMap → deterministic JSON key order).
-	pub verdicts: BTreeMap<String, usize>,
-	/// Number of overlap files counted by the primary acceptance metric.
-	pub accepted_ok_files: usize,
+	/// Number of ground-truth files contributed by at least two source mods.
+	pub multi_source_files: usize,
+	/// Verdict counts over every ground-truth file.
+	pub all_ground_truth_verdicts: BTreeMap<String, usize>,
+	/// Verdict counts over files contributed by at least two source mods.
+	pub multi_source_verdicts: BTreeMap<String, usize>,
+	pub accepted_ground_truth_files: usize,
+	pub accepted_multi_source_files: usize,
 	/// Wall-clock timing breakdown for this case.
 	#[serde(default)]
 	pub timings: CaseTimings,
@@ -122,19 +124,44 @@ pub fn score_case_with_cache(
 	keep: bool,
 	score_cache: &mut ScoreCache,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
-	let total_started = Instant::now();
-	let setup_started = Instant::now();
 	let compatch_dir = workshop_dir.join(&case.compatch_id);
 	let mod_dirs: Vec<PathBuf> = case
 		.patched
 		.iter()
 		.map(|id| workshop_dir.join(id))
 		.collect();
-	let gt = ground_truth_files(&compatch_dir);
-
 	let tmp = tempfile::tempdir()?;
 	let out_dir = tmp.path().join("out");
+	let result =
+		score_case_from_paths_with_cache(case, &compatch_dir, &mod_dirs, &out_dir, score_cache)?;
+	if keep {
+		let _ = tmp.keep();
+	}
+	Ok(result)
+}
 
+/// Score a case from explicit immutable object roots and write the merged tree
+/// to a caller-owned directory. This is the baseline worker entry point.
+pub fn score_case_from_paths_with_cache(
+	case: &Case,
+	compatch_dir: &Path,
+	mod_dirs: &[PathBuf],
+	out_dir: &Path,
+	score_cache: &mut ScoreCache,
+) -> Result<CaseResult, Box<dyn std::error::Error>> {
+	if case.patched.len() != mod_dirs.len() {
+		return Err(format!(
+			"case {} declares {} source mods but {} roots were provided",
+			case.compatch_id,
+			case.patched.len(),
+			mod_dirs.len()
+		)
+		.into());
+	}
+	let total_started = Instant::now();
+	let setup_started = Instant::now();
+	let gt = ground_truth_files(compatch_dir);
+	let tmp = tempfile::tempdir()?;
 	let mods: Vec<(String, PathBuf)> = case
 		.patched
 		.iter()
@@ -146,22 +173,17 @@ pub fn score_case_with_cache(
 	let setup_ms = elapsed_ms(setup_started.elapsed());
 
 	let merge_started = Instant::now();
-	let result = run_merge(
-		&dlc,
-		&out_dir,
-		/* force= */ false,
-		Some(retained_paths),
-	)?;
+	let result = run_merge(&dlc, out_dir, /* force= */ false, Some(retained_paths))?;
 	let merge_ms = elapsed_ms(merge_started.elapsed());
 
 	let scoring_started = Instant::now();
 	let conflicts = conflict_rel_paths(&result.report);
-	let mod_a = &mod_dirs[0];
-	let mod_b = if mod_dirs.len() > 1 {
-		&mod_dirs[1]
-	} else {
-		&mod_dirs[0]
-	};
+	let source_mods: Vec<SourceMod<'_>> = case
+		.patched
+		.iter()
+		.zip(mod_dirs)
+		.map(|(id, root)| SourceMod { id, root })
+		.collect();
 	let adjudications = Adjudications::built_in();
 
 	let files: Vec<FileRecord> = gt
@@ -171,11 +193,9 @@ pub fn score_case_with_cache(
 				&ScoreFileRequest {
 					compatch_id: &case.compatch_id,
 					rel,
-					mod_a,
-					mod_b,
-					compatch: &compatch_dir,
-					out_dir: &out_dir,
-					basegame_root: None,
+					source_mods: &source_mods,
+					compatch: compatch_dir,
+					out_dir,
 					conflict_paths: &conflicts,
 					adjudications: &adjudications,
 				},
@@ -183,9 +203,9 @@ pub fn score_case_with_cache(
 			);
 			FileRecord {
 				rel: fs.rel,
-				in_a: fs.in_a,
-				in_b: fs.in_b,
-				overlap: fs.overlap,
+				source_mod_ids: fs.source_mod_ids,
+				source_count: fs.source_count,
+				multi_source: fs.multi_source,
 				foch_emitted: fs.foch_emitted,
 				foch_conflict: fs.foch_conflict,
 				similarity: fs.similarity,
@@ -200,11 +220,23 @@ pub fn score_case_with_cache(
 		.collect();
 	let scoring_ms = elapsed_ms(scoring_started.elapsed());
 
-	let overlap_count = files.iter().filter(|f| f.overlap).count();
-	let accepted_ok_files = files.iter().filter(|f| f.overlap && f.accepted_ok).count();
-	let mut verdicts: BTreeMap<String, usize> = BTreeMap::new();
-	for f in files.iter().filter(|f| f.overlap) {
-		*verdicts.entry(f.verdict.clone()).or_default() += 1;
+	let multi_source_files = files.iter().filter(|file| file.multi_source).count();
+	let accepted_ground_truth_files = files.iter().filter(|file| file.accepted_ok).count();
+	let accepted_multi_source_files = files
+		.iter()
+		.filter(|file| file.multi_source && file.accepted_ok)
+		.count();
+	let mut all_ground_truth_verdicts: BTreeMap<String, usize> = BTreeMap::new();
+	let mut multi_source_verdicts: BTreeMap<String, usize> = BTreeMap::new();
+	for file in &files {
+		*all_ground_truth_verdicts
+			.entry(file.verdict.clone())
+			.or_default() += 1;
+		if file.multi_source {
+			*multi_source_verdicts
+				.entry(file.verdict.clone())
+				.or_default() += 1;
+		}
 	}
 
 	// Serialise MergeReportStatus via serde → "ready" / "blocked" etc.
@@ -214,12 +246,6 @@ pub fn score_case_with_cache(
 
 	let validation = serde_json::to_value(result.report.validation).ok();
 
-	if keep {
-		// Preserve the temp directory (don't clean up).
-		let _ = tmp.keep();
-	}
-	// If !keep, `tmp` drops here and the directory is removed.
-
 	Ok(CaseResult {
 		compatch_id: case.compatch_id.clone(),
 		title: case.title.clone(),
@@ -227,9 +253,11 @@ pub fn score_case_with_cache(
 		merge_status,
 		validation,
 		ground_truth_files: gt.len(),
-		overlap_files: overlap_count,
-		verdicts,
-		accepted_ok_files,
+		multi_source_files,
+		all_ground_truth_verdicts,
+		multi_source_verdicts,
+		accepted_ground_truth_files,
+		accepted_multi_source_files,
 		timings: CaseTimings {
 			setup_ms,
 			merge_ms,
@@ -338,7 +366,7 @@ pub fn score_one(corpus: &Path, workshop_dir: &Path, id: &str) -> CmdResult {
 /// case, calls [`classify_resolution`] to determine the human resolution
 /// strategy, then aggregates into relationship→verdict crosstab, overall
 /// verdict distribution, and the subset where foch withheld a conflict.
-pub fn learn(results_dir: &Path, workshop_dir: &Path) -> CmdResult {
+pub fn learn(results_dir: &Path, workshop_dir: &Path, basegame_root: Option<&Path>) -> CmdResult {
 	let text = std::fs::read_to_string(results_dir.join("results.json"))?;
 	let results: Vec<CaseResult> = serde_json::from_str(&text)?;
 
@@ -347,15 +375,20 @@ pub fn learn(results_dir: &Path, workshop_dir: &Path) -> CmdResult {
 		if r.patched.len() < 2 {
 			continue;
 		}
-		let base = workshop_dir.join(&r.patched[0]);
-		let overlay = workshop_dir.join(&r.patched[1]);
+		let source_roots: Vec<PathBuf> = r.patched.iter().map(|id| workshop_dir.join(id)).collect();
+		let sources: Vec<SourceMod<'_>> = r
+			.patched
+			.iter()
+			.zip(&source_roots)
+			.map(|(id, root)| SourceMod { id, root })
+			.collect();
 		let compatch = workshop_dir.join(&r.compatch_id);
 
 		for f in &r.files {
-			if !f.overlap {
+			if !f.multi_source {
 				continue;
 			}
-			if let Some(res) = classify_resolution(&f.rel, &base, &overlay, &compatch) {
+			if let Some(res) = classify_resolution(&f.rel, &sources, &compatch, basegame_root) {
 				rows.push(ResolutionRow {
 					title: r.title.clone(),
 					rel: f.rel.clone(),

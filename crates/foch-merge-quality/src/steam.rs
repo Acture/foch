@@ -23,7 +23,9 @@ use serde_json::Value;
 
 use crate::CmdResult;
 use crate::config::{EU4_APPID, tool_commit};
-use crate::corpus::{Case, Corpus, PatchedMeta};
+use crate::corpus::{
+	Case, Corpus, PatchedMeta, RedistributionStatus, WorkshopAvailability, WorkshopProvenance,
+};
 use crate::secrets;
 
 // ---------------------------------------------------------------------------
@@ -60,6 +62,7 @@ const BATCH: usize = 50;
 // Internal record type
 // ---------------------------------------------------------------------------
 
+#[derive(Default)]
 pub(crate) struct DetailRecord {
 	pub(crate) id: String,
 	pub(crate) title: String,
@@ -67,6 +70,7 @@ pub(crate) struct DetailRecord {
 	pub(crate) time_updated: i64,
 	/// Lifetime subscriber count (prefers `lifetime_subscriptions` over `subscriptions`).
 	pub(crate) subscriptions: i64,
+	pub(crate) workshop: WorkshopProvenance,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,12 +206,26 @@ pub(crate) fn parse_details(json: &Value) -> Vec<DetailRecord> {
 				.and_then(coerce_i64)
 				.or_else(|| d.get("subscriptions").and_then(coerce_i64))
 				.unwrap_or(0);
+			let workshop_url =
+				format!("https://steamcommunity.com/sharedfiles/filedetails/?id={id}");
 			Some(DetailRecord {
 				id,
 				title,
 				time_created,
 				time_updated,
 				subscriptions,
+				workshop: WorkshopProvenance {
+					creator_steam_id: field_str(d, "creator"),
+					url: workshop_url,
+					visibility: d.get("visibility").and_then(coerce_i64),
+					detected_license: None,
+					redistribution_status: RedistributionStatus::Unknown,
+					availability: match d.get("result").and_then(coerce_i64) {
+						Some(1) => WorkshopAvailability::Active,
+						Some(_) => WorkshopAvailability::Unavailable,
+						None => WorkshopAvailability::Unknown,
+					},
+				},
 			})
 		})
 		.collect()
@@ -296,6 +314,7 @@ pub(crate) fn build_cases(
 						title: m.map(|r| r.title.clone()).unwrap_or_default(),
 						time_created: m.map(|r| r.time_created).unwrap_or(0),
 						time_updated: m.map(|r| r.time_updated).unwrap_or(0),
+						workshop: m.map(|record| record.workshop.clone()).unwrap_or_default(),
 					},
 				)
 			})
@@ -309,6 +328,7 @@ pub(crate) fn build_cases(
 			time_updated: d.time_updated,
 			subscriptions: d.subscriptions,
 			patched_meta,
+			workshop: d.workshop.clone(),
 		});
 	}
 
@@ -600,7 +620,10 @@ mod tests {
 				"time_created": 1_700_000_000_i64,
 				"time_updated": "1700001000",   // numeric string — coerce_i64 coverage
 				"lifetime_subscriptions": 500,
-				"subscriptions": 400
+				"subscriptions": 400,
+				"creator": "76561198000000000",
+				"visibility": 0,
+				"result": 1
 			}]
 		});
 		let recs = parse_details(&json);
@@ -611,6 +634,9 @@ mod tests {
 		assert_eq!(r.time_created, 1_700_000_000);
 		assert_eq!(r.time_updated, 1_700_001_000);
 		assert_eq!(r.subscriptions, 500); // lifetime_subscriptions wins
+		assert_eq!(r.workshop.creator_steam_id, "76561198000000000");
+		assert_eq!(r.workshop.visibility, Some(0));
+		assert_eq!(r.workshop.availability, WorkshopAvailability::Active);
 	}
 
 	/// Falls back to `subscriptions` when `lifetime_subscriptions` is absent.
@@ -683,6 +709,7 @@ mod tests {
 			time_created: tc,
 			time_updated: tu,
 			subscriptions: subs,
+			workshop: WorkshopProvenance::default(),
 		}
 	}
 

@@ -37,8 +37,10 @@ reqwest = { version = "0.12.24", default-features = false, features = ["blocking
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
+steamlocate = "2.1.0"
 tar = "0.4.44"
 tempfile = "3.15.0"
+time = { version = "0.3.47", features = ["formatting"] }
 tiny_http = "0.12.0"
 tokio = { version = "1.48.0", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
 toml = "0.9.8"
@@ -47,3 +49,4 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 walkdir = "2.5.0"
 winreg = "0.55.0"
+zstd = "0.13.3"

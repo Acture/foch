@@ -67,7 +67,7 @@ const VERDICT_MEANING: &[(&str, &str)] = &[
 	),
 	(
 		"drops_content",
-		"foch lost a top-level def present in mod A or B (load-order failure mode)",
+		"foch lost a top-level definition present in at least one source mod",
 	),
 	(
 		"conflict_withheld",
@@ -87,20 +87,27 @@ fn verdict_meaning(verdict: &str) -> &'static str {
 fn render_report(results: &[CaseResult]) -> String {
 	let mut lines = vec!["# foch merge-quality report".to_string(), String::new()];
 
-	// Aggregate across all cases (overlap files only, via the verdicts map)
-	let mut agg: BTreeMap<String, usize> = BTreeMap::new();
-	let mut total_overlap: usize = 0;
-	let mut accepted_ok: usize = 0;
+	let mut all_agg: BTreeMap<String, usize> = BTreeMap::new();
+	let mut multi_source_agg: BTreeMap<String, usize> = BTreeMap::new();
+	let mut total_ground_truth = 0_usize;
+	let mut total_multi_source = 0_usize;
+	let mut accepted_ground_truth = 0_usize;
+	let mut accepted_multi_source = 0_usize;
 	let mut total_setup_ms: u64 = 0;
 	let mut total_merge_ms: u64 = 0;
 	let mut total_scoring_ms: u64 = 0;
 	let mut total_case_ms: u64 = 0;
 	for r in results {
-		for (v, n) in &r.verdicts {
-			*agg.entry(v.clone()).or_default() += n;
-			total_overlap += n;
+		for (verdict, count) in &r.all_ground_truth_verdicts {
+			*all_agg.entry(verdict.clone()).or_default() += count;
 		}
-		accepted_ok += r.accepted_ok_files;
+		for (verdict, count) in &r.multi_source_verdicts {
+			*multi_source_agg.entry(verdict.clone()).or_default() += count;
+		}
+		total_ground_truth += r.ground_truth_files;
+		total_multi_source += r.multi_source_files;
+		accepted_ground_truth += r.accepted_ground_truth_files;
+		accepted_multi_source += r.accepted_multi_source_files;
 		total_setup_ms = total_setup_ms.saturating_add(r.timings.setup_ms);
 		total_merge_ms = total_merge_ms.saturating_add(r.timings.merge_ms);
 		total_scoring_ms = total_scoring_ms.saturating_add(r.timings.scoring_ms);
@@ -108,27 +115,41 @@ fn render_report(results: &[CaseResult]) -> String {
 	}
 
 	lines.push(format!(
-		"Cases scored: **{}**  ·  overlapping ground-truth files: **{}**  ·  accepted_ok: **{}/{}**",
+		"Cases scored: **{}** · all ground-truth accepted: **{}/{}** · multi-source accepted: **{}/{}**",
 		results.len(),
-		total_overlap,
-		accepted_ok,
-		total_overlap
+		accepted_ground_truth,
+		total_ground_truth,
+		accepted_multi_source,
+		total_multi_source,
 	));
 	lines.push(format!(
 		"Timing: total={} ms · setup={} ms · merge={} ms · scoring={} ms",
 		total_case_ms, total_setup_ms, total_merge_ms, total_scoring_ms
 	));
 	lines.push(String::new());
-	lines.push("## Corpus verdicts (overlapping files)".to_string());
+	lines.push("## Multi-source verdicts".to_string());
 	lines.push(String::new());
 	lines.push("| verdict | count | meaning |".to_string());
 	lines.push("|---|---|---|".to_string());
 
 	// Sort by count desc, then name asc for determinism
-	let mut agg_sorted: Vec<(String, usize)> = agg.into_iter().collect();
+	let mut agg_sorted: Vec<(String, usize)> = multi_source_agg.into_iter().collect();
 	agg_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 	for (v, n) in &agg_sorted {
 		lines.push(format!("| `{}` | {} | {} |", v, n, verdict_meaning(v)));
+	}
+	lines.push(String::new());
+	lines.push("## All ground-truth verdicts".to_string());
+	lines.push(String::new());
+	lines.push("| verdict | count | meaning |".to_string());
+	lines.push("|---|---|---|".to_string());
+	let mut all_sorted: Vec<(String, usize)> = all_agg.into_iter().collect();
+	all_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+	for (verdict, count) in &all_sorted {
+		lines.push(format!(
+			"| `{verdict}` | {count} | {} |",
+			verdict_meaning(verdict)
+		));
 	}
 
 	lines.push(String::new());
@@ -150,21 +171,25 @@ fn render_report(results: &[CaseResult]) -> String {
 			.map(|n| n.to_string())
 			.unwrap_or_else(|| "?".to_string());
 		lines.push(format!(
-			"- merge: status={} parse_errors={} · ground-truth files={} overlap={} accepted_ok={}",
+			"- merge: status={} parse_errors={} · ground-truth={}/{} accepted · multi-source={}/{} accepted",
 			r.merge_status.as_deref().unwrap_or("?"),
 			val_parse_errors,
+			r.accepted_ground_truth_files,
 			r.ground_truth_files,
-			r.overlap_files,
-			r.accepted_ok_files
+			r.accepted_multi_source_files,
+			r.multi_source_files,
 		));
 		lines.push(format!(
 			"- timings: total={} ms · setup={} ms · merge={} ms · scoring={} ms",
 			r.timings.total_ms, r.timings.setup_ms, r.timings.merge_ms, r.timings.scoring_ms
 		));
-		lines.push(format!("- verdicts: {:?}", r.verdicts));
+		lines.push(format!(
+			"- multi-source verdicts: {:?}",
+			r.multi_source_verdicts
+		));
 
 		for f in &r.files {
-			if !f.overlap {
+			if !f.multi_source {
 				continue;
 			}
 			let mut extra = String::new();
@@ -201,6 +226,10 @@ const RES_MEANING: &[(&str, &str)] = &[
 	(
 		"took_overlay",
 		"human kept the overlay (later) mod = load-order / last-writer",
+	),
+	(
+		"partial_union",
+		"human retained unique content from some, but not all, contributors",
 	),
 	(
 		"hand_edit",
@@ -319,28 +348,34 @@ fn render_rules(rows: &[ResolutionRow]) -> String {
 	lines.push("## Per-file detail".to_string());
 	lines.push(String::new());
 	lines.push(
-		"| case | file | foch | relationship | human | AB_sim | base_kept | overlay_kept |"
+		"| case | file | foch | relationship | human | source_sim | retention | human_only | base_removed |"
 			.to_string(),
 	);
-	lines.push("|---|---|---|---|---|---|---|---|".to_string());
+	lines.push("|---|---|---|---|---|---|---|---|---|".to_string());
 	for row in rows {
 		let r = &row.resolution;
-		let fbk = r
-			.frac_base_kept
-			.map_or_else(|| "None".to_string(), |v| v.to_string());
-		let fok = r
-			.frac_overlay_kept
-			.map_or_else(|| "None".to_string(), |v| v.to_string());
+		let retention = r
+			.contributors
+			.iter()
+			.map(|contributor| {
+				let fraction = contributor
+					.fraction_kept
+					.map_or_else(|| "n/a".to_string(), |value| value.to_string());
+				format!("{}:{fraction}", contributor.source_id)
+			})
+			.collect::<Vec<_>>()
+			.join(", ");
 		lines.push(format!(
-			"| {} | `{}` | {} | {} | **{}** | {} | {} | {} |",
+			"| {} | `{}` | {} | {} | **{}** | {} | {} | {} | {} |",
 			row.title,
 			row.rel,
 			row.foch_verdict,
 			r.relationship.as_str(),
 			r.verdict.as_str(),
-			r.ab_jaccard,
-			fbk,
-			fok,
+			r.source_jaccard,
+			retention,
+			r.human_only_atoms,
+			r.basegame_atoms_subtracted,
 		));
 	}
 	lines.push(String::new());

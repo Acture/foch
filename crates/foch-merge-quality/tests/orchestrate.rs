@@ -37,13 +37,13 @@ fn score_case_verdict_tally() {
 
 	let result = orchestrate::score_case(&case, &ws, false).expect("score_case succeeds");
 
-	assert_eq!(result.overlap_files, 7, "overlap file count");
+	assert_eq!(result.multi_source_files, 7, "multi-source file count");
 
 	let expected = common::expected_verdicts()
 		.remove("3630876155")
 		.expect("expected verdicts for fixture compatch");
-	assert_eq!(result.verdicts, expected, "verdict tally");
-	assert_eq!(result.accepted_ok_files, 4, "accepted_ok tally");
+	assert_eq!(result.multi_source_verdicts, expected, "verdict tally");
+	assert_eq!(result.accepted_multi_source_files, 4, "accepted tally");
 }
 
 // ------------------------------------------------------------------ Test 2: run
@@ -85,7 +85,7 @@ fn run_writes_artifacts() {
 
 	assert_eq!(records.len(), 1);
 	assert_eq!(records[0].compatch_id, "3630876155");
-	assert_eq!(records[0].overlap_files, 7);
+	assert_eq!(records[0].multi_source_files, 7);
 	assert!(
 		records[0].timings.total_ms >= records[0].timings.merge_ms,
 		"total timing covers merge timing"
@@ -94,8 +94,8 @@ fn run_writes_artifacts() {
 	let expected = common::expected_verdicts()
 		.remove("3630876155")
 		.expect("expected verdicts for fixture compatch");
-	assert_eq!(records[0].verdicts, expected);
-	assert_eq!(records[0].accepted_ok_files, 4);
+	assert_eq!(records[0].multi_source_verdicts, expected);
+	assert_eq!(records[0].accepted_multi_source_files, 4);
 
 	// report.md must be non-empty
 	let report_md =
@@ -132,7 +132,7 @@ fn learn_writes_rules_md() {
 	std::fs::write(results_dir.join("results.json"), json).unwrap();
 
 	// learn now takes workshop_dir as well.
-	orchestrate::learn(results_dir, &ws).expect("learn succeeds");
+	orchestrate::learn(results_dir, &ws, None).expect("learn succeeds");
 
 	let rules = std::fs::read_to_string(results_dir.join("rules.md")).expect("rules.md written");
 

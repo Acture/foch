@@ -19,6 +19,7 @@ regex.workspace = true
 rkyv.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+steamlocate.workspace = true
 toml.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -29,4 +30,3 @@ tempfile.workspace = true
 
 [features]
 test-utils = []
-

@@ -19,7 +19,10 @@
 pub mod archive;
 pub mod config;
 pub mod corpus;
+pub mod dataset;
 pub mod fixtures;
+pub mod lifecycle;
+pub mod object_store;
 pub mod orchestrate;
 pub mod report;
 pub mod score;

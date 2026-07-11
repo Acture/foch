@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-10
+Last updated: 2026-07-12
 
 ## Summary
 
@@ -50,6 +50,17 @@ Current EU4 active-playset merge baseline:
 - N=37 probe after the leaf-conflict fix: `manual_conflict_count = 9`.
 - [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) ships narrow per-path defaults that clear all 9 manual conflicts without enabling global last-writer behavior.
 - Warm cache-backed iterations are seconds; cold debug runs remain around 25-30 minutes, while release+cache has been observed around 40 seconds for this baseline.
+
+The compatch merge-quality harness now has a separate immutable baseline
+lifecycle. `foch-mq collect` archives complete local cases into a verified APFS
+copy-on-write object store; `measure` runs latest snapshots in timeout-bounded
+child processes and records crashes/fatals instead of skipping them; `report`
+emits all-ground-truth and multi-source metrics; and `export` produces metadata,
+semantic, or full deterministic exports. Scoring now uses every source mod and
+subtracts structured base-game atoms during human-resolution analysis. The
+implementation and small end-to-end fixture are green, but the full local
+23-case run is still a manual acceptance gate and is not yet recorded as a
+baseline. See [`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
 The shipped product surface includes:
 

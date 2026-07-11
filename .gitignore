@@ -21,6 +21,9 @@ local_merge/
 # merge-quality harness run artifacts. Committed corpus fixtures live under
 # crates/foch-merge-quality/tests/fixtures/.
 crates/foch-merge-quality/results/
+crates/foch-merge-quality/dataset/objects/
+crates/foch-merge-quality/dataset/.work/
+crates/foch-merge-quality/dataset/.lock/
 scripts/merge_quality/corpus.json
 scripts/merge_quality/results/
 scripts/merge_quality/__pycache__/

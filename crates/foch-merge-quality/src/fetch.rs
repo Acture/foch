@@ -219,6 +219,7 @@ mod tests {
 					time_created: 100,
 					// churned ⟺ mod updated AFTER the compatch
 					time_updated: if churned { 999 } else { 50 },
+					workshop: Default::default(),
 				},
 			);
 		}
@@ -230,6 +231,7 @@ mod tests {
 			time_updated: 500,
 			subscriptions: subs,
 			patched_meta,
+			workshop: Default::default(),
 		}
 	}
 

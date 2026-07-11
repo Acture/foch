@@ -42,7 +42,7 @@ fn committed_corpus_reproduces_baseline() {
 		let result = score_case_with_cache(case, &workshop, false, &mut score_cache)
 			.expect("score full fixture case");
 		assert_eq!(
-			&result.verdicts, want,
+			&result.multi_source_verdicts, want,
 			"merge-quality verdicts drifted for compatch {compatch_id}"
 		);
 	}

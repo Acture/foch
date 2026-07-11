@@ -31,4 +31,9 @@ walkdir.workspace = true
 tempfile.workspace = true
 tar.workspace = true
 flate2.workspace = true
+time.workspace = true
+zstd.workspace = true
 reqwest = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"

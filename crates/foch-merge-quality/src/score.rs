@@ -428,9 +428,9 @@ enum AcceptedAdjudicationVerdict {
 #[derive(Clone, Debug)]
 pub struct FileScore {
 	pub rel: String,
-	pub in_a: bool,
-	pub in_b: bool,
-	pub overlap: bool,
+	pub source_mod_ids: Vec<String>,
+	pub source_count: usize,
+	pub multi_source: bool,
 	pub foch_emitted: bool,
 	pub foch_conflict: bool,
 	pub similarity: Option<f64>,
@@ -441,14 +441,18 @@ pub struct FileScore {
 	pub acceptance_reason: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SourceMod<'a> {
+	pub id: &'a str,
+	pub root: &'a Path,
+}
+
 pub struct ScoreFileRequest<'a> {
 	pub compatch_id: &'a str,
 	pub rel: &'a str,
-	pub mod_a: &'a Path,
-	pub mod_b: &'a Path,
+	pub source_mods: &'a [SourceMod<'a>],
 	pub compatch: &'a Path,
 	pub out_dir: &'a Path,
-	pub basegame_root: Option<&'a Path>,
 	pub conflict_paths: &'a HashSet<String>,
 	pub adjudications: &'a Adjudications,
 }
@@ -619,9 +623,14 @@ pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
 /// Classify foch's merged output, reusing parsed/text artifacts across files.
 pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCache) -> FileScore {
 	let rel = request.rel;
-	let in_a = request.mod_a.join(rel).is_file();
-	let in_b = request.mod_b.join(rel).is_file();
-	let overlap = in_a && in_b;
+	let source_mod_ids: Vec<String> = request
+		.source_mods
+		.iter()
+		.filter(|source| source.root.join(rel).is_file())
+		.map(|source| source.id.to_string())
+		.collect();
+	let source_count = source_mod_ids.len();
+	let multi_source = source_count >= 2;
 	let foch_path = request.out_dir.join(rel);
 	let foch_emitted = foch_path.is_file();
 	let foch_conflict = request.conflict_paths.contains(rel);
@@ -647,10 +656,11 @@ pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCa
 		module_equivalent = ast_match != Some(true)
 			&& keys_match != Some(true)
 			&& same_family_module_equivalent(cache, rel, request.out_dir, request.compatch);
-		let mod_a_keys = cache.top_level_keys(&request.mod_a.join(rel));
-		let mod_b_keys = cache.top_level_keys(&request.mod_b.join(rel));
-		let union_ab: HashSet<String> = mod_a_keys.union(&mod_b_keys).cloned().collect();
-		dropped = union_ab.difference(&fk).cloned().collect();
+		let mut source_keys = HashSet::new();
+		for source in request.source_mods {
+			source_keys.extend(cache.top_level_keys(&source.root.join(rel)));
+		}
+		dropped = source_keys.difference(&fk).cloned().collect();
 		dropped.sort();
 	}
 
@@ -690,9 +700,9 @@ pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCa
 
 	FileScore {
 		rel: rel.to_string(),
-		in_a,
-		in_b,
-		overlap,
+		source_mod_ids,
+		source_count,
+		multi_source,
 		foch_emitted,
 		foch_conflict,
 		similarity: sim,
@@ -1000,7 +1010,8 @@ fn is_valid_bare_identifier_text(value: &str) -> bool {
 // ------------------------------------------------------------------ classify_resolution
 
 /// Contributor relationship between two input mods (order-independent).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Relationship {
 	Subset,
 	Redundant,
@@ -1018,12 +1029,14 @@ impl Relationship {
 }
 
 /// How the human compatch resolved the overlap between two mods for one file.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResVerdict {
 	Identical,
 	Union,
 	TookBase,
 	TookOverlay,
+	PartialUnion,
 	HandEdit,
 }
 
@@ -1034,56 +1047,88 @@ impl ResVerdict {
 			ResVerdict::Union => "union",
 			ResVerdict::TookBase => "took_base",
 			ResVerdict::TookOverlay => "took_overlay",
+			ResVerdict::PartialUnion => "partial_union",
 			ResVerdict::HandEdit => "hand_edit",
 		}
 	}
 }
 
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ContributorRetention {
+	pub source_id: String,
+	pub unique_atoms: usize,
+	pub retained_unique_atoms: usize,
+	pub fraction_kept: Option<f64>,
+}
+
 /// Human resolution classification for one overlap file (output of [`classify_resolution`]).
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Resolution {
-	/// Fraction of `base`'s unique lines the compatch kept; `None` if base has no unique lines.
-	pub frac_base_kept: Option<f64>,
-	/// Fraction of `overlay`'s unique lines the compatch kept; `None` if overlay has no unique lines.
-	pub frac_overlay_kept: Option<f64>,
-	/// Jaccard similarity between A and B (rounded to 2 dp).
-	pub ab_jaccard: f64,
+	pub contributors: Vec<ContributorRetention>,
+	/// Generalized multiset Jaccard across all source mods, rounded to 2 dp.
+	pub source_jaccard: f64,
+	/// Human atoms not present in any source after base-game subtraction.
+	pub human_only_atoms: usize,
+	/// Base-game atoms removed from the human target before classification.
+	pub basegame_atoms_subtracted: usize,
 	/// Order-independent contributor relationship.
 	pub relationship: Relationship,
 	/// How the human compatch resolved the overlap.
 	pub verdict: ResVerdict,
 }
 
-/// Faithful port of Python `classify_resolution`.
-///
-/// Reads `base/rel`, `overlay/rel`, `compatch/rel`; returns `None` if any file
-/// is missing or unreadable.  Fractions and jaccard are rounded to 2 dp for
-/// display; the `>= 0.5` threshold comparisons use the unrounded values.
+type AtomBag = BTreeMap<String, usize>;
+
+/// Classify how the human compatch resolved every source that contributes a
+/// file. Parseable Clausewitz files are compared as AST-derived semantic atoms;
+/// other formats use normalized records. Base-game atoms are subtracted from
+/// every source and the human target before contributor retention is measured.
 pub fn classify_resolution(
 	rel: &str,
-	base: &Path,
-	overlay: &Path,
+	sources: &[SourceMod<'_>],
 	compatch: &Path,
+	basegame_root: Option<&Path>,
 ) -> Option<Resolution> {
-	let h = read(&compatch.join(rel))?;
-	let a = read(&base.join(rel))?;
-	let b = read(&overlay.join(rel))?;
+	let human_original = semantic_atoms_for_path(rel, &compatch.join(rel))?;
+	let basegame = basegame_root
+		.map(|root| basegame_atoms_for_path(rel, root))
+		.unwrap_or_default();
+	let (human, basegame_atoms_subtracted) = subtract_bag(&human_original, &basegame);
+	let source_bags: Vec<(&SourceMod<'_>, AtomBag)> = sources
+		.iter()
+		.filter_map(|source| {
+			semantic_atoms_for_path(rel, &source.root.join(rel))
+				.map(|atoms| (source, subtract_bag(&atoms, &basegame).0))
+		})
+		.collect();
+	if source_bags.len() < 2 {
+		return None;
+	}
 
-	let hs: HashSet<String> = normalise(&h).into_iter().collect();
-	let as_: HashSet<String> = normalise(&a).into_iter().collect();
-	let bs: HashSet<String> = normalise(&b).into_iter().collect();
-
-	let a_only: HashSet<String> = as_.difference(&bs).cloned().collect();
-	let b_only: HashSet<String> = bs.difference(&as_).cloned().collect();
-
-	let inter_len = as_.intersection(&bs).count();
-	let union_len = as_.union(&bs).count();
-	let jaccard = if union_len == 0 {
+	let source_union = union_bags(source_bags.iter().map(|(_, atoms)| atoms));
+	let source_intersection = intersection_size(source_bags.iter().map(|(_, atoms)| atoms));
+	let union_size = bag_size(&source_union);
+	let jaccard = if union_size == 0 {
 		1.0
 	} else {
-		inter_len as f64 / union_len as f64
+		source_intersection as f64 / union_size as f64
 	};
 
-	let relationship = if a_only.is_empty() || b_only.is_empty() {
+	let unique_bags: Vec<AtomBag> = source_bags
+		.iter()
+		.enumerate()
+		.map(|(index, (_, atoms))| {
+			let others = union_bags(
+				source_bags
+					.iter()
+					.enumerate()
+					.filter(|(other_index, _)| *other_index != index)
+					.map(|(_, (_, other_atoms))| other_atoms),
+			);
+			subtract_bag(atoms, &others).0
+		})
+		.collect();
+	let relationship = if unique_bags.iter().any(BTreeMap::is_empty) {
 		Relationship::Subset
 	} else if jaccard >= 0.5 {
 		Relationship::Redundant
@@ -1091,56 +1136,379 @@ pub fn classify_resolution(
 		Relationship::Disjoint
 	};
 
-	// Fraction of each side's unique lines that appear in the human compatch.
-	let fa = if a_only.is_empty() {
-		None
-	} else {
-		Some(a_only.iter().filter(|l| hs.contains(l.as_str())).count() as f64 / a_only.len() as f64)
-	};
-	let fb = if b_only.is_empty() {
-		None
-	} else {
-		Some(b_only.iter().filter(|l| hs.contains(l.as_str())).count() as f64 / b_only.len() as f64)
-	};
-
 	const T: f64 = 0.5;
-	// keep_a = fa is None OR fa >= T  (mirrors Python exactly)
-	let keep_a = fa.is_none_or(|f| f >= T);
-	let keep_b = fb.is_none_or(|f| f >= T);
+	let contributors: Vec<ContributorRetention> = source_bags
+		.iter()
+		.zip(&unique_bags)
+		.map(|((source, _), unique)| {
+			let unique_atoms = bag_size(unique);
+			let retained_unique_atoms = intersection_bag_size(unique, &human);
+			let fraction_kept =
+				(unique_atoms > 0).then_some(retained_unique_atoms as f64 / unique_atoms as f64);
+			ContributorRetention {
+				source_id: source.id.to_string(),
+				unique_atoms,
+				retained_unique_atoms,
+				fraction_kept,
+			}
+		})
+		.collect();
+	let kept: Vec<bool> = contributors
+		.iter()
+		.map(|contributor| {
+			contributor
+				.fraction_kept
+				.is_none_or(|fraction| fraction >= T)
+		})
+		.collect();
+	let active: Vec<usize> = contributors
+		.iter()
+		.enumerate()
+		.filter(|(_, contributor)| contributor.unique_atoms > 0)
+		.map(|(index, _)| index)
+		.collect();
+	let active_kept: Vec<bool> = active.iter().map(|index| kept[*index]).collect();
 
-	let verdict = if a_only.is_empty() && b_only.is_empty() {
+	let verdict = if active.is_empty() {
 		ResVerdict::Identical
-	} else if !a_only.is_empty() && !b_only.is_empty() {
-		match (keep_a, keep_b) {
-			(true, true) => ResVerdict::Union,
+	} else if active_kept.iter().all(|kept| *kept) {
+		match active.as_slice() {
+			[0] if contributors.len() == 2 => ResVerdict::TookBase,
+			[1] if contributors.len() == 2 => ResVerdict::TookOverlay,
+			_ => ResVerdict::Union,
+		}
+	} else if active_kept.iter().all(|kept| !*kept) {
+		ResVerdict::HandEdit
+	} else if contributors.len() == 2 {
+		match (kept[0], kept[1]) {
 			(true, false) => ResVerdict::TookBase,
 			(false, true) => ResVerdict::TookOverlay,
-			(false, false) => ResVerdict::HandEdit,
-		}
-	} else if !a_only.is_empty() {
-		// overlay adds nothing unique to a
-		if keep_a {
-			ResVerdict::TookBase
-		} else {
-			ResVerdict::HandEdit
+			_ => unreachable!("all and none cases handled above"),
 		}
 	} else {
-		// base adds nothing unique to b
-		if keep_b {
-			ResVerdict::TookOverlay
-		} else {
-			ResVerdict::HandEdit
-		}
+		ResVerdict::PartialUnion
 	};
 
 	let round2 = |v: f64| (v * 100.0).round() / 100.0;
+	let contributors = contributors
+		.into_iter()
+		.map(|mut contributor| {
+			contributor.fraction_kept = contributor.fraction_kept.map(round2);
+			contributor
+		})
+		.collect();
+	let human_only_atoms = bag_size(&subtract_bag(&human, &source_union).0);
 	Some(Resolution {
-		frac_base_kept: fa.map(round2),
-		frac_overlay_kept: fb.map(round2),
-		ab_jaccard: round2(jaccard),
+		contributors,
+		source_jaccard: round2(jaccard),
+		human_only_atoms,
+		basegame_atoms_subtracted,
 		relationship,
 		verdict,
 	})
+}
+
+fn semantic_atoms_for_path(rel: &str, path: &Path) -> Option<AtomBag> {
+	if !path.is_file() {
+		return None;
+	}
+	let extension = path
+		.extension()
+		.and_then(|extension| extension.to_str())
+		.map(str::to_ascii_lowercase)
+		.unwrap_or_default();
+	match extension.as_str() {
+		"yml" | "yaml" => return localisation_atoms(path),
+		"csv" => return csv_atoms(path),
+		"json" => return json_atoms(path),
+		_ => {}
+	}
+	if is_clausewitz_like_path(rel) {
+		let parsed = parse_clausewitz_file(path);
+		if parsed.diagnostics.is_empty() {
+			let ordering = if is_gui_like_path(rel) {
+				AstOrderingPolicy::OrderSensitive
+			} else {
+				AstOrderingPolicy::OrderInsensitive
+			};
+			let mut atoms = AtomBag::new();
+			flatten_semantic_statements(&parsed.ast.statements, ordering, &[], &mut atoms);
+			return Some(atoms);
+		}
+	}
+	let text = read(path)?;
+	let mut atoms = AtomBag::new();
+	for record in normalise(&text) {
+		*atoms.entry(format!("record:{record}")).or_default() += 1;
+	}
+	Some(atoms)
+}
+
+fn localisation_atoms(path: &Path) -> Option<AtomBag> {
+	let raw = fs::read(path).ok()?;
+	let text = foch_core::decode_paradox_bytes(&raw);
+	let mut atoms = AtomBag::new();
+	for line in text.lines() {
+		let line = strip_comment_outside_quotes(line).trim();
+		let Some((key, raw_value)) = line.split_once(':') else {
+			continue;
+		};
+		let key = key.trim().trim_start_matches('\u{feff}');
+		if key.is_empty() {
+			continue;
+		}
+		let mut value = raw_value.trim();
+		let version_len = value.bytes().take_while(u8::is_ascii_digit).count();
+		if version_len > 0 {
+			value = value[version_len..].trim_start();
+		}
+		if value.is_empty() && key.starts_with("l_") {
+			continue;
+		}
+		let value = serde_json::from_str::<String>(value)
+			.unwrap_or_else(|_| value.trim_matches('"').to_string());
+		*atoms
+			.entry(format!("localisation:{key}={value}"))
+			.or_default() += 1;
+	}
+	Some(atoms)
+}
+
+fn csv_atoms(path: &Path) -> Option<AtomBag> {
+	let raw = fs::read(path).ok()?;
+	let text = foch_core::decode_paradox_bytes(&raw);
+	let delimiter = text
+		.lines()
+		.find(|line| !line.trim().is_empty())
+		.map(|line| {
+			if delimiter_count(line, ';') > delimiter_count(line, ',') {
+				';'
+			} else {
+				','
+			}
+		})
+		.unwrap_or(',');
+	let mut atoms = AtomBag::new();
+	for line in text.lines().filter(|line| !line.trim().is_empty()) {
+		let fields = parse_delimited_record(line.trim_start_matches('\u{feff}'), delimiter);
+		let record = serde_json::to_string(&fields).expect("CSV fields serialize");
+		*atoms.entry(format!("csv:{record}")).or_default() += 1;
+	}
+	Some(atoms)
+}
+
+fn json_atoms(path: &Path) -> Option<AtomBag> {
+	let value = serde_json::from_slice::<serde_json::Value>(&fs::read(path).ok()?).ok()?;
+	let mut atoms = AtomBag::new();
+	flatten_json_value(&value, "$", &mut atoms);
+	Some(atoms)
+}
+
+fn flatten_json_value(value: &serde_json::Value, path: &str, atoms: &mut AtomBag) {
+	match value {
+		serde_json::Value::Object(object) if object.is_empty() => {
+			*atoms.entry(format!("json:{path}={{}}")).or_default() += 1;
+		}
+		serde_json::Value::Object(object) => {
+			let mut keys: Vec<&String> = object.keys().collect();
+			keys.sort();
+			for key in keys {
+				flatten_json_value(&object[key], &format!("{path}.{key}"), atoms);
+			}
+		}
+		serde_json::Value::Array(array) if array.is_empty() => {
+			*atoms.entry(format!("json:{path}=[]")).or_default() += 1;
+		}
+		serde_json::Value::Array(array) => {
+			for (index, item) in array.iter().enumerate() {
+				flatten_json_value(item, &format!("{path}[{index}]"), atoms);
+			}
+		}
+		_ => {
+			*atoms.entry(format!("json:{path}={value}")).or_default() += 1;
+		}
+	}
+}
+
+fn strip_comment_outside_quotes(line: &str) -> &str {
+	let mut quoted = false;
+	let mut escaped = false;
+	for (index, character) in line.char_indices() {
+		if escaped {
+			escaped = false;
+			continue;
+		}
+		match character {
+			'\\' if quoted => escaped = true,
+			'"' => quoted = !quoted,
+			'#' if !quoted => return &line[..index],
+			_ => {}
+		}
+	}
+	line
+}
+
+fn delimiter_count(line: &str, delimiter: char) -> usize {
+	let mut count = 0_usize;
+	let mut quoted = false;
+	for character in line.chars() {
+		match character {
+			'"' => quoted = !quoted,
+			character if character == delimiter && !quoted => count += 1,
+			_ => {}
+		}
+	}
+	count
+}
+
+fn parse_delimited_record(line: &str, delimiter: char) -> Vec<String> {
+	let mut fields = Vec::new();
+	let mut field = String::new();
+	let mut characters = line.chars().peekable();
+	let mut quoted = false;
+	while let Some(character) = characters.next() {
+		match character {
+			'"' if quoted && characters.peek() == Some(&'"') => {
+				field.push('"');
+				characters.next();
+			}
+			'"' => quoted = !quoted,
+			character if character == delimiter && !quoted => {
+				fields.push(field.trim().to_string());
+				field.clear();
+			}
+			_ => field.push(character),
+		}
+	}
+	fields.push(field.trim().to_string());
+	fields
+}
+
+fn basegame_atoms_for_path(rel: &str, root: &Path) -> AtomBag {
+	let Some(descriptor) = eligible_module_family(rel) else {
+		return semantic_atoms_for_path(rel, &root.join(rel)).unwrap_or_default();
+	};
+	let Some(prefix) = family_prefix(descriptor) else {
+		return semantic_atoms_for_path(rel, &root.join(rel)).unwrap_or_default();
+	};
+	let family_root = root.join(prefix);
+	if !family_root.is_dir() {
+		return AtomBag::new();
+	}
+	union_bags(
+		walkdir::WalkDir::new(family_root)
+			.into_iter()
+			.filter_map(Result::ok)
+			.filter(|entry| entry.file_type().is_file())
+			.filter(|entry| module_view_includes_file(entry.path()))
+			.filter_map(|entry| {
+				let relative = entry.path().strip_prefix(root).ok()?;
+				let relative = relative.to_string_lossy().replace('\\', "/");
+				semantic_atoms_for_path(&relative, entry.path())
+			})
+			.collect::<Vec<_>>()
+			.iter(),
+	)
+}
+
+fn flatten_semantic_statements(
+	statements: &[AstStatement],
+	ordering: AstOrderingPolicy,
+	prefix: &[String],
+	atoms: &mut AtomBag,
+) {
+	for (index, statement) in statements.iter().enumerate() {
+		let position = (ordering == AstOrderingPolicy::OrderSensitive).then_some(index);
+		match statement {
+			AstStatement::Assignment { key, value, .. } => {
+				let mut path = prefix.to_vec();
+				path.push(match position {
+					Some(index) => format!("assignment:{key}@{index}"),
+					None => format!("assignment:{key}"),
+				});
+				flatten_semantic_value(value, ordering, &path, atoms);
+			}
+			AstStatement::Item { value, .. } => {
+				let mut path = prefix.to_vec();
+				path.push(match position {
+					Some(index) => format!("item@{index}"),
+					None => "item".to_string(),
+				});
+				flatten_semantic_value(value, ordering, &path, atoms);
+			}
+			AstStatement::Comment { .. } => {}
+		}
+	}
+}
+
+fn flatten_semantic_value(
+	value: &AstValue,
+	ordering: AstOrderingPolicy,
+	path: &[String],
+	atoms: &mut AtomBag,
+) {
+	match value {
+		AstValue::Scalar { value, .. } => {
+			*atoms
+				.entry(format!("{}={}", path.join("/"), canonical_scalar(value)))
+				.or_default() += 1;
+		}
+		AstValue::Block { items, .. } if items.is_empty() => {
+			*atoms.entry(format!("{}={{}}", path.join("/"))).or_default() += 1;
+		}
+		AstValue::Block { items, .. } => {
+			flatten_semantic_statements(items, ordering, path, atoms);
+		}
+	}
+}
+
+fn subtract_bag(left: &AtomBag, right: &AtomBag) -> (AtomBag, usize) {
+	let mut result = AtomBag::new();
+	let mut removed = 0_usize;
+	for (atom, left_count) in left {
+		let right_count = right.get(atom).copied().unwrap_or(0);
+		let kept = left_count.saturating_sub(right_count);
+		removed += left_count - kept;
+		if kept > 0 {
+			result.insert(atom.clone(), kept);
+		}
+	}
+	(result, removed)
+}
+
+fn union_bags<'a>(bags: impl Iterator<Item = &'a AtomBag>) -> AtomBag {
+	let mut union = AtomBag::new();
+	for bag in bags {
+		for (atom, count) in bag {
+			let slot = union.entry(atom.clone()).or_default();
+			*slot = (*slot).max(*count);
+		}
+	}
+	union
+}
+
+fn intersection_size<'a>(mut bags: impl Iterator<Item = &'a AtomBag>) -> usize {
+	let Some(first) = bags.next() else {
+		return 0;
+	};
+	let mut intersection = first.clone();
+	for bag in bags {
+		intersection.retain(|atom, count| {
+			*count = (*count).min(bag.get(atom).copied().unwrap_or(0));
+			*count > 0
+		});
+	}
+	bag_size(&intersection)
+}
+
+fn intersection_bag_size(left: &AtomBag, right: &AtomBag) -> usize {
+	left.iter()
+		.map(|(atom, count)| (*count).min(right.get(atom).copied().unwrap_or(0)))
+		.sum()
+}
+
+fn bag_size(bag: &AtomBag) -> usize {
+	bag.values().sum()
 }
 
 // ------------------------------------------------------------------ tests
@@ -1167,6 +1535,24 @@ mod classify_tests {
 		)
 	}
 
+	fn classify_two(rel: &str, base: &Path, overlay: &Path, compatch: &Path) -> Option<Resolution> {
+		let sources = two_sources(base, overlay);
+		classify_resolution(rel, &sources, compatch, None)
+	}
+
+	fn two_sources<'a>(base: &'a Path, overlay: &'a Path) -> [SourceMod<'a>; 2] {
+		[
+			SourceMod {
+				id: "base",
+				root: base,
+			},
+			SourceMod {
+				id: "overlay",
+				root: overlay,
+			},
+		]
+	}
+
 	#[test]
 	fn cr_identical() {
 		let (b, o, c) = make_dirs();
@@ -1174,12 +1560,12 @@ mod classify_tests {
 		write_file(b.path(), "f.txt", content);
 		write_file(o.path(), "f.txt", content);
 		write_file(c.path(), "f.txt", content);
-		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		let res = classify_two("f.txt", b.path(), o.path(), c.path()).unwrap();
 		assert_eq!(res.verdict, ResVerdict::Identical, "verdict");
 		assert_eq!(res.relationship, Relationship::Subset, "relationship");
-		assert_eq!(res.ab_jaccard, 1.0, "jaccard");
-		assert_eq!(res.frac_base_kept, None, "fa");
-		assert_eq!(res.frac_overlay_kept, None, "fb");
+		assert_eq!(res.source_jaccard, 1.0, "jaccard");
+		assert_eq!(res.contributors[0].fraction_kept, None, "fa");
+		assert_eq!(res.contributors[1].fraction_kept, None, "fb");
 	}
 
 	#[test]
@@ -1189,11 +1575,11 @@ mod classify_tests {
 		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
 		// compatch keeps both unique lines
 		write_file(c.path(), "f.txt", "common = 1\nx = 1\ny = 2\n");
-		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		let res = classify_two("f.txt", b.path(), o.path(), c.path()).unwrap();
 		assert_eq!(res.verdict, ResVerdict::Union, "verdict");
 		assert_eq!(res.relationship, Relationship::Disjoint, "relationship");
-		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
-		assert_eq!(res.frac_overlay_kept, Some(1.0), "fb");
+		assert_eq!(res.contributors[0].fraction_kept, Some(1.0), "fa");
+		assert_eq!(res.contributors[1].fraction_kept, Some(1.0), "fb");
 	}
 
 	#[test]
@@ -1203,10 +1589,10 @@ mod classify_tests {
 		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
 		// compatch keeps only base's unique line
 		write_file(c.path(), "f.txt", "common = 1\nx = 1\n");
-		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		let res = classify_two("f.txt", b.path(), o.path(), c.path()).unwrap();
 		assert_eq!(res.verdict, ResVerdict::TookBase, "verdict");
-		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
-		assert_eq!(res.frac_overlay_kept, Some(0.0), "fb");
+		assert_eq!(res.contributors[0].fraction_kept, Some(1.0), "fa");
+		assert_eq!(res.contributors[1].fraction_kept, Some(0.0), "fb");
 	}
 
 	#[test]
@@ -1216,10 +1602,10 @@ mod classify_tests {
 		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
 		// compatch keeps only overlay's unique line
 		write_file(c.path(), "f.txt", "common = 1\ny = 2\n");
-		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		let res = classify_two("f.txt", b.path(), o.path(), c.path()).unwrap();
 		assert_eq!(res.verdict, ResVerdict::TookOverlay, "verdict");
-		assert_eq!(res.frac_base_kept, Some(0.0), "fa");
-		assert_eq!(res.frac_overlay_kept, Some(1.0), "fb");
+		assert_eq!(res.contributors[0].fraction_kept, Some(0.0), "fa");
+		assert_eq!(res.contributors[1].fraction_kept, Some(1.0), "fb");
 	}
 
 	#[test]
@@ -1229,10 +1615,10 @@ mod classify_tests {
 		write_file(o.path(), "f.txt", "common = 1\ny = 2\n");
 		// compatch keeps neither side's unique line
 		write_file(c.path(), "f.txt", "common = 1\nz = 3\n");
-		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		let res = classify_two("f.txt", b.path(), o.path(), c.path()).unwrap();
 		assert_eq!(res.verdict, ResVerdict::HandEdit, "verdict");
-		assert_eq!(res.frac_base_kept, Some(0.0), "fa");
-		assert_eq!(res.frac_overlay_kept, Some(0.0), "fb");
+		assert_eq!(res.contributors[0].fraction_kept, Some(0.0), "fa");
+		assert_eq!(res.contributors[1].fraction_kept, Some(0.0), "fb");
 	}
 
 	#[test]
@@ -1241,7 +1627,7 @@ mod classify_tests {
 		write_file(b.path(), "f.txt", "a = 1\n");
 		// overlay file is absent → None
 		write_file(c.path(), "f.txt", "a = 1\n");
-		let res = classify_resolution("f.txt", b.path(), _o.path(), c.path());
+		let res = classify_two("f.txt", b.path(), _o.path(), c.path());
 		assert!(res.is_none(), "expect None when a file is missing");
 	}
 
@@ -1252,15 +1638,18 @@ mod classify_tests {
 		write_file(b.path(), "f.txt", "common = 1\nx = 1\n");
 		write_file(o.path(), "f.txt", "common = 1\n");
 		write_file(c.path(), "f.txt", "common = 1\nx = 1\n");
-		let res = classify_resolution("f.txt", b.path(), o.path(), c.path()).unwrap();
+		let res = classify_two("f.txt", b.path(), o.path(), c.path()).unwrap();
 		assert_eq!(res.relationship, Relationship::Subset, "relationship");
 		assert_eq!(
 			res.verdict,
 			ResVerdict::TookBase,
 			"verdict (subset, kept base unique)"
 		);
-		assert_eq!(res.frac_base_kept, Some(1.0), "fa");
-		assert_eq!(res.frac_overlay_kept, None, "fb (no overlay unique lines)");
+		assert_eq!(res.contributors[0].fraction_kept, Some(1.0), "fa");
+		assert_eq!(
+			res.contributors[1].fraction_kept, None,
+			"fb (no overlay unique atoms)"
+		);
 	}
 
 	#[test]
@@ -1356,15 +1745,14 @@ mod classify_tests {
 			rel,
 			r#"spriteTypes = { spriteType = { name = "B" } spriteType = { name = "A" } }"#,
 		);
+		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
 			compatch_id: "case",
 			rel,
-			mod_a: mod_a.path(),
-			mod_b: mod_b.path(),
+			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
-			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &Adjudications::default(),
 		});
@@ -1386,15 +1774,14 @@ mod classify_tests {
 		write_file(mod_b.path(), rel, "guiTypes = { a = yes b = yes }\n");
 		write_file(compatch.path(), rel, "guiTypes = { a = yes b = yes }\n");
 		write_file(out.path(), rel, "guiTypes = { b = yes a = yes }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
 			compatch_id: "case",
 			rel,
-			mod_a: mod_a.path(),
-			mod_b: mod_b.path(),
+			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
-			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &Adjudications::default(),
 		});
@@ -1419,15 +1806,14 @@ mod classify_tests {
 			"common/governments/zzz_00_governments.txt",
 			"republic = { rank = 2 }\n",
 		);
+		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
 			compatch_id: "case",
 			rel,
-			mod_a: mod_a.path(),
-			mod_b: mod_b.path(),
+			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
-			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &Adjudications::default(),
 		});
@@ -1455,15 +1841,14 @@ mod classify_tests {
 			"interface/other.gui",
 			"guiTypes = { b = yes }\n",
 		);
+		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
 			compatch_id: "case",
 			rel,
-			mod_a: mod_a.path(),
-			mod_b: mod_b.path(),
+			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
-			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &Adjudications::default(),
 		});
@@ -1499,15 +1884,14 @@ mod classify_tests {
 			}]"#,
 		)
 		.unwrap();
+		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
 			compatch_id: "case",
 			rel,
-			mod_a: mod_a.path(),
-			mod_b: mod_b.path(),
+			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
-			basegame_root: None,
 			conflict_paths: &HashSet::new(),
 			adjudications: &adjudications,
 		});
@@ -1518,5 +1902,133 @@ mod classify_tests {
 			score.acceptance_reason.as_deref(),
 			Some("foch preserves the intended corrected country tag")
 		);
+	}
+
+	#[test]
+	fn score_file_uses_every_source_mod_for_overlap_and_dropped_keys() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let mod_c = tempfile::tempdir().unwrap();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "common/governments/example.txt";
+		write_file(mod_a.path(), rel, "a = { rank = 1 }\n");
+		write_file(mod_b.path(), rel, "b = { rank = 2 }\n");
+		write_file(mod_c.path(), rel, "c = { rank = 3 }\n");
+		write_file(
+			compatch.path(),
+			rel,
+			"a = { rank = 1 }\nb = { rank = 2 }\nc = { rank = 3 }\n",
+		);
+		write_file(out.path(), rel, "a = { rank = 1 }\nb = { rank = 2 }\n");
+		let sources = [
+			SourceMod {
+				id: "a",
+				root: mod_a.path(),
+			},
+			SourceMod {
+				id: "b",
+				root: mod_b.path(),
+			},
+			SourceMod {
+				id: "c",
+				root: mod_c.path(),
+			},
+		];
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.source_mod_ids, vec!["a", "b", "c"]);
+		assert_eq!(score.source_count, 3);
+		assert!(score.multi_source);
+		assert_eq!(score.dropped_keys, vec!["c"]);
+		assert_eq!(score.verdict, Verdict::DropsContent);
+	}
+
+	#[test]
+	fn resolution_handles_three_sources_and_subtracts_basegame_atoms() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let mod_c = tempfile::tempdir().unwrap();
+		let basegame = tempfile::tempdir().unwrap();
+		let rel = "common/governments/example.txt";
+		let vanilla = "template = { vanilla = yes }\n";
+		write_file(
+			basegame.path(),
+			"common/governments/00_vanilla.txt",
+			vanilla,
+		);
+		write_file(mod_a.path(), rel, &format!("{vanilla}a = 1\n"));
+		write_file(mod_b.path(), rel, &format!("{vanilla}b = 2\n"));
+		write_file(mod_c.path(), rel, &format!("{vanilla}c = 3\n"));
+		write_file(
+			compatch.path(),
+			rel,
+			&format!("{vanilla}a = 1\nc = 3\nhuman_fix = yes\n"),
+		);
+		let sources = [
+			SourceMod {
+				id: "a",
+				root: mod_a.path(),
+			},
+			SourceMod {
+				id: "b",
+				root: mod_b.path(),
+			},
+			SourceMod {
+				id: "c",
+				root: mod_c.path(),
+			},
+		];
+
+		let resolution =
+			classify_resolution(rel, &sources, compatch.path(), Some(basegame.path())).unwrap();
+		assert_eq!(resolution.verdict, ResVerdict::PartialUnion);
+		assert_eq!(
+			resolution
+				.contributors
+				.iter()
+				.map(|contributor| contributor.fraction_kept)
+				.collect::<Vec<_>>(),
+			vec![Some(1.0), Some(0.0), Some(1.0)]
+		);
+		assert_eq!(resolution.human_only_atoms, 1);
+		assert!(resolution.basegame_atoms_subtracted > 0);
+	}
+
+	#[test]
+	fn structured_non_clausewitz_atoms_ignore_format_only_differences() {
+		let (left, right, _) = make_dirs();
+		write_file(
+			left.path(),
+			"localisation/test_l_english.yml",
+			"l_english:\n key:0 \"hello # world\" # note\n",
+		);
+		write_file(
+			right.path(),
+			"localisation/test_l_english.yml",
+			"l_english:\nkey:1 \"hello # world\"\n",
+		);
+		write_file(left.path(), "map/test.csv", "\"a,b\", c\n");
+		write_file(right.path(), "map/test.csv", "\"a,b\",c\n");
+		write_file(left.path(), "launcher/test.json", r#"{"b":2,"a":1}"#);
+		write_file(right.path(), "launcher/test.json", r#"{"a":1,"b":2}"#);
+
+		for rel in [
+			"localisation/test_l_english.yml",
+			"map/test.csv",
+			"launcher/test.json",
+		] {
+			assert_eq!(
+				semantic_atoms_for_path(rel, &left.path().join(rel)),
+				semantic_atoms_for_path(rel, &right.path().join(rel)),
+				"structured atoms drifted for {rel}"
+			);
+		}
 	}
 }

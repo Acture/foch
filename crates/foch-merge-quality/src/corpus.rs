@@ -9,6 +9,40 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RedistributionStatus {
+	#[default]
+	Unknown,
+	Permitted,
+	Restricted,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkshopAvailability {
+	#[default]
+	Unknown,
+	Active,
+	Unavailable,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct WorkshopProvenance {
+	#[serde(default)]
+	pub creator_steam_id: String,
+	#[serde(default)]
+	pub url: String,
+	#[serde(default)]
+	pub visibility: Option<i64>,
+	#[serde(default)]
+	pub detected_license: Option<String>,
+	#[serde(default)]
+	pub redistribution_status: RedistributionStatus,
+	#[serde(default)]
+	pub availability: WorkshopAvailability,
+}
+
 /// Per-patched-mod metadata captured at discovery time, used for version
 /// provenance: a compatch is ground truth only for the specific
 /// (game × modA × modB) version triple it was authored against. Keyed by
@@ -23,6 +57,8 @@ pub struct PatchedMeta {
 	/// Unix timestamp of the patched mod's last Workshop update.
 	#[serde(default)]
 	pub time_updated: i64,
+	#[serde(default)]
+	pub workshop: WorkshopProvenance,
 }
 
 /// One compatch and the mods it declares as required items (the mods it patches).
@@ -42,6 +78,8 @@ pub struct Case {
 	/// Per-patched-mod metadata, keyed by steam id.
 	#[serde(default)]
 	pub patched_meta: BTreeMap<String, PatchedMeta>,
+	#[serde(default)]
+	pub workshop: WorkshopProvenance,
 }
 
 impl Case {

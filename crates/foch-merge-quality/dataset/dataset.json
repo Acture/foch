@@ -1,0 +1,6 @@
+{
+	"schema": "1.0.0",
+	"format": "foch-merge-corpus",
+	"object_hash": "blake3",
+	"snapshot_backend": "apfs_clonefile"
+}
