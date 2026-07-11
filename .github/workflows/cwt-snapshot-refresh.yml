@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: recursive
@@ -113,21 +113,21 @@ jobs:
               --head "$branch" \
               --title "$title" \
               --body-file - <<EOF
-## Summary
+          ## Summary
 
-- Update \`vendor/cwtools-eu4-config\` from \`${before_sha}\` to \`${after_sha}\`
-- Refresh schema pack identity from \`${before_hash}\` to \`${after_hash}\`
-- Re-run \`cargo test --workspace --quiet\` before opening this PR
+          - Update \`vendor/cwtools-eu4-config\` from \`${before_sha}\` to \`${after_sha}\`
+          - Refresh schema pack identity from \`${before_hash}\` to \`${after_hash}\`
+          - Re-run \`cargo test --workspace --quiet\` before opening this PR
 
-## Upstream commit log
+          ## Upstream commit log
 
-\`\`\`
-${{ steps.refresh.outputs.commit_log }}
-\`\`\`
+          \`\`\`
+          ${{ steps.refresh.outputs.commit_log }}
+          \`\`\`
 
-⚠️ Any baseline diff is a fixture failure and requires human review.
-EOF
-)"
+          ⚠️ Any baseline diff is a fixture failure and requires human review.
+          EOF
+          )"
           fi
 
           if [ "$created" = true ]; then

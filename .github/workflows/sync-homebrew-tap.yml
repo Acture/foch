@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout current repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
 
@@ -56,7 +56,7 @@ jobs:
         id: archive
 
       - name: Checkout tap repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ vars.HOMEBREW_TAP_REPO }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

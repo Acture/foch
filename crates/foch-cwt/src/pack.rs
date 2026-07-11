@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::{self, Display, Formatter};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -77,9 +78,28 @@ pub fn schema_pack_id_from_dir(root: &Path) -> Result<SchemaPackId, CwtLoadError
 			path: path.clone(),
 			source,
 		})?;
-		hasher.update(bytes);
+		hasher.update(normalize_line_endings(&bytes));
 	}
 	Ok(SchemaPackId(hasher.finalize().into()))
+}
+
+fn normalize_line_endings(bytes: &[u8]) -> Cow<'_, [u8]> {
+	if !bytes.contains(&b'\r') {
+		return Cow::Borrowed(bytes);
+	}
+
+	let mut normalized = Vec::with_capacity(bytes.len());
+	let mut index = 0;
+	while index < bytes.len() {
+		if bytes[index] == b'\r' {
+			normalized.push(b'\n');
+			index += usize::from(bytes.get(index + 1) == Some(&b'\n'));
+		} else {
+			normalized.push(bytes[index]);
+		}
+		index += 1;
+	}
+	Cow::Owned(normalized)
 }
 
 fn normalize_path(path: &Path) -> String {
@@ -87,4 +107,32 @@ fn normalize_path(path: &Path) -> String {
 		.replace('\\', "/")
 		.trim_matches('/')
 		.to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+	use std::fs;
+
+	use super::schema_pack_id_from_dir;
+
+	#[test]
+	fn schema_pack_id_ignores_text_line_endings() {
+		let lf = tempfile::tempdir().unwrap();
+		let crlf = tempfile::tempdir().unwrap();
+		fs::write(
+			lf.path().join("rules.cwt"),
+			b"types = {\n  event = { }\n}\n",
+		)
+		.unwrap();
+		fs::write(
+			crlf.path().join("rules.cwt"),
+			b"types = {\r\n  event = { }\r\n}\r\n",
+		)
+		.unwrap();
+
+		assert_eq!(
+			schema_pack_id_from_dir(lf.path()).unwrap(),
+			schema_pack_id_from_dir(crlf.path()).unwrap()
+		);
+	}
 }
