@@ -53,8 +53,8 @@ jobs:
         run: bun install --frozen-lockfile
         working-directory: .
 
-      - name: Build bundled server
-        run: bun run prepare:server
+      - name: Run extension release smoke
+        run: bun run test
 
       - name: Publish pre-release extension
         env:
