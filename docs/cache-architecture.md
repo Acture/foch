@@ -7,7 +7,7 @@ Current layers:
 - `mods/` — engine mod snapshot cache.
 - `diffs/` — engine per-mod diff cache.
 - `dag-base/` — engine dependency-DAG base cache.
-- `modsets/` — engine full playset result cache.
+- `modsets/v<cache-semver>/` - engine full playset result cache.
 - `cwt-rules/` — compiled CWT rule-pack cache for schema-aware LSP features.
 - `parse/v7/` — legacy parser-file cache.
 
@@ -18,6 +18,14 @@ Layer-specific overrides (`FOCH_MOD_PARSE_CACHE_DIR`, `FOCH_MOD_DIFF_CACHE_DIR`,
 The cache layers do not currently share enough key/value shape for a useful generic trait. `mods` keys include mod content hash plus foch/game versions and store a large semantic snapshot; `diffs` and `dag-base` have multi-part keys and store patch or AST statement vectors; `modsets` stores a tarball plus report keyed by a precomputed playset hash; `parse` keys are source-file paths and file signatures with byte-cap GC. A trait with associated `Key` and `Value` types would not let the CLI iterate heterogeneous layers as `Box<dyn Cache>` without adding an erased wrapper, and forcing store/lookup signatures into one shape would hide important validation inputs.
 
 Instead, `foch-engine::cache::CacheLayerOps` is deliberately lifecycle-only: it lists on-disk entries and controls age purge, byte-cap eviction, total size, and clear operations without abstracting lookup or store semantics. The CLI iterates this seam across all layers, so every layer receives the same lifecycle control plane and byte-cap policy while each cache keeps its existing key format, value format, and validation rules.
+
+The modset output cache has a separate semantic version because it stores final
+merge artifacts rather than parser data. Opening a versioned modset cache first
+creates the active namespace, then removes legacy flat entries and every other
+version namespace before lookup. Reopening the same version preserves its
+entries. The version remains part of the content-addressed key as a second
+correctness guard; the namespace provides automatic storage reclamation when
+merge-output semantics change.
 
 The parser cache payloads still live in `foch-language`, including the `parse/v7` on-disk format and legacy `parse_cache/v7` migration path, but parser-cache lifecycle is now owned from the engine seam. `foch-language` exposes only the minimal filesystem lifecycle functions needed by the engine wrapper.
 

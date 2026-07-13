@@ -233,6 +233,17 @@ fn build_modset_cache_context(
 	resolution_config_path: Option<&Path>,
 	retained_paths: Option<&BTreeSet<String>>,
 ) -> Option<ModsetCacheContext> {
+	let cache = match ModsetCache::open_default_versioned(MODSET_CACHE_VERSION) {
+		Ok(cache) => cache,
+		Err(err) => {
+			tracing::warn!(
+				cache_version = MODSET_CACHE_VERSION,
+				error = %err,
+				"modset cache version cleanup failed; continuing without modset cache"
+			);
+			return None;
+		}
+	};
 	if resolution_config_path.is_some_and(|path| !path.is_file()) {
 		return None;
 	}
@@ -268,10 +279,7 @@ fn build_modset_cache_context(
 		&foch_version,
 		&game_version,
 	);
-	Some(ModsetCacheContext {
-		cache: ModsetCache::open_default(),
-		key,
-	})
+	Some(ModsetCacheContext { cache, key })
 }
 
 fn retained_paths_cache_label(retained_paths: Option<&BTreeSet<String>>) -> String {

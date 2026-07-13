@@ -205,14 +205,14 @@ impl CacheLayerOps for ModsetCache {
 				modified: entry.modified,
 			})
 			.collect::<Vec<_>>();
-		let evicted_keys = eviction_plan(eviction_entries, cap_bytes)
+		let evicted_paths = eviction_plan(eviction_entries, cap_bytes)
 			.into_iter()
-			.map(|entry| entry.key)
+			.map(|entry| entry.path)
 			.collect::<HashSet<_>>();
 		let mut removed_entries = 0_usize;
 		let mut freed_bytes = 0_u64;
 		for entry in entries {
-			if !evicted_keys.contains(&entry.key) {
+			if !evicted_paths.contains(&entry.tarball_path) {
 				continue;
 			}
 			remove_if_exists(&entry.tarball_path)?;

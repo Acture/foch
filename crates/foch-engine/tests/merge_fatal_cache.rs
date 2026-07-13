@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
+use walkdir::WalkDir;
 
 fn playsets_root() -> PathBuf {
 	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -27,13 +28,18 @@ fn scratch_root() -> PathBuf {
 	root
 }
 
-/// Count `.tar.gz` files directly inside `dir`; returns 0 when `dir` is absent.
+/// Count `.tar.gz` files under `dir`; returns 0 when `dir` is absent.
 fn count_tarballs(dir: &PathBuf) -> usize {
-	let Ok(rd) = fs::read_dir(dir) else {
+	if !dir.is_dir() {
 		return 0;
-	};
-	rd.flatten()
-		.filter(|e| e.file_name().to_string_lossy().ends_with(".tar.gz"))
+	}
+	WalkDir::new(dir)
+		.min_depth(1)
+		.into_iter()
+		.filter_map(Result::ok)
+		.filter(|entry| {
+			entry.file_type().is_file() && entry.file_name().to_string_lossy().ends_with(".tar.gz")
+		})
 		.count()
 }
 
@@ -48,6 +54,10 @@ fn fatal_merge_is_not_cached() {
 	let cache_dir = TempDir::new_in(&scratch).expect("cache temp dir");
 	let data_dir = TempDir::new_in(&scratch).expect("data temp dir (intentionally empty)");
 	let game_dir = TempDir::new_in(&scratch).expect("game temp dir");
+	let obsolete_cache = cache_dir.path().join("modsets").join("v11.4.0");
+	fs::create_dir_all(&obsolete_cache).expect("create obsolete cache namespace");
+	fs::write(obsolete_cache.join("obsolete.tar.gz"), b"obsolete").expect("seed obsolete tarball");
+	fs::write(obsolete_cache.join("obsolete.report.json"), b"{}").expect("seed obsolete report");
 
 	// `version.txt` lets `detect_game_version` succeed, so `modset_cache_game_version`
 	// returns `Some(...)` and a cache context is built.  But `FOCH_DATA_DIR` is an
@@ -113,7 +123,8 @@ fn fatal_merge_is_not_cached() {
 		result1.report.status,
 	);
 
-	// After a FATAL run, no tarball should exist in the cache.
+	// Version activation removes the obsolete namespace, and a FATAL run does
+	// not add a replacement entry under the current namespace.
 	let modsets_dir = cache_dir.path().join("modsets");
 	let tar_count = count_tarballs(&modsets_dir);
 	assert_eq!(

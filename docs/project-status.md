@@ -93,6 +93,12 @@ each recurring `interface/frontend.gui` output, 24 leaves total. Whole-file
 fixture totals remain 11/36 accepted because the same files still differ in GUI
 widget identity, content, and layout policy.
 
+Removing all 15 `.gui` files from the denominator leaves 11/21 accepted
+non-GUI files (52.4%). Only three GUI failures are proven order-only; treating
+the other 12 as layout-equivalent would hide missing widget, sprite, and button
+content. The next merge-quality work therefore prioritizes the ten remaining
+non-GUI failures rather than using GUI exclusion to inflate the headline rate.
+
 The shipped product surface includes:
 
 - `foch check`
