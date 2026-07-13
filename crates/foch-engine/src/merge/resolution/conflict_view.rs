@@ -331,7 +331,7 @@ fn value_summary(value: &AstValue) -> String {
 fn scalar_summary(value: &ScalarValue) -> String {
 	match value {
 		ScalarValue::Identifier(value) | ScalarValue::Number(value) => value.clone(),
-		ScalarValue::String(value) => format!("\"{}\"", escape_string(value)),
+		ScalarValue::String(value) => format!("\"{value}\""),
 		ScalarValue::Bool(value) => {
 			if *value {
 				"yes".to_string()
@@ -340,10 +340,6 @@ fn scalar_summary(value: &ScalarValue) -> String {
 			}
 		}
 	}
-}
-
-fn escape_string(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn sanitize_summary(value: &str) -> String {
@@ -425,6 +421,19 @@ mod tests {
 				mod_id: "mod-high".to_string(),
 				record: None
 			}
+		);
+	}
+
+	#[test]
+	fn string_summary_preserves_clausewitz_escape_text() {
+		let value = AstValue::Scalar {
+			value: ScalarValue::String(r#"gfx\\interface\\icon.dds: \"label\""#.to_string()),
+			span: synthetic_span(),
+		};
+
+		assert_eq!(
+			value_summary(&value),
+			r#""gfx\\interface\\icon.dds: \"label\"""#
 		);
 	}
 }

@@ -54,7 +54,7 @@ still misses real sprite content.
 ## Recurring Patterns
 
 1. BooleanOr flatten/dedup fixed the recurring `_expanded_family_scripted_triggers.txt` nested-`OR` problem for the four cases where it appeared.
-2. `interface/frontend.gui` recurs as `value_and_content` across most cases. Typical differences are `dlc_icon_bg_empty` vs `dlc_icon_bg`, `gfx_emptyness` vs `GFX_dlc_icon_even_bg_flip`, doubled escaping in `textureFile`, and missing/extra `if_resolution` values.
+2. `interface/frontend.gui` recurs as `value_and_content` across most cases. Typical remaining differences are `dlc_icon_bg_empty` vs `dlc_icon_bg`, `gfx_emptyness` vs `GFX_dlc_icon_even_bg_flip`, and missing/extra `if_resolution` values. The emitter's doubled `textureFile` backslashes were a separate output bug and are now fixed.
 3. `interface/subscription_banner_view.gui` recurs as `value_and_content`. Foch keeps animated offset values (`1000`, `3000`, `5000`, etc.) while humans often keep static offsets (`0`, `75`) and different `Orientation`.
 4. Remaining `.gui` order-only files need a GUI-specific ordering/layout policy, not a global order-insensitive pass.
 5. Same-family relocation is now a scorer-level equivalence policy for static
@@ -97,12 +97,15 @@ same-name widget as `name = "dlc_icon_bg"` with
 `dlc_icon_bg` child, so the current same-name merge key collapses a human split
 into a single widget.
 
-The same file also shows `textureFile` backslashes emitted as doubled escaping
-in foch output compared with the human/source strings.
+The same file exposed a separate emitter bug: parsed quoted token bodies already
+contained Clausewitz backslash sequences verbatim, but emission escaped them a
+second time. Preserving the token body repaired four semantic leaves in each of
+the six recurring `frontend.gui` files: shared leaves increased by 24 overall,
+from 19,703 to 19,727, while left-only leaves fell by 24.
 
-Judgment: this is a real GUI merge problem. Same-name GUI children sometimes
-need to be treated as colliding variants rather than one matched node. The
-backslash behavior also looks like a parser/emitter escaping bug.
+Judgment: the escaping defect is fixed, but the files still diverge because this
+is also a real GUI merge problem. Same-name GUI children sometimes need to be
+treated as colliding variants rather than one matched node.
 
 ### `interface/subscription_banner_view.gui`
 
@@ -122,7 +125,7 @@ recursive union will not reproduce this without GUI-specific policy.
 | `3630876155` | `common/scripted_triggers/_expanded_family_scripted_triggers.txt` | `subset/took_base` | `matches_human` | Fixed by BooleanOr flatten/dedup. |
 | `3630876155` | `interface/000_expanded_mod_family.gfx` | `redundant/union` | `accepted_equivalent` | Same 40 leaves; only `.gfx` sibling order differs. |
 | `3630876155` | `interface/countrycourtview.gui` | `disjoint/union` | `gui_order_only_remaining` | Same 4418 leaves; only GUI sibling order differs. |
-| `3630876155` | `interface/frontend.gui` | `redundant/union` | `value_and_content` | `dlc_icon_bg_empty`/`gfx_emptyness` missing on human side of the intended merge; foch keeps `dlc_icon_bg`/`GFX_dlc_icon_even_bg_flip`; `textureFile` escaping also differs. |
+| `3630876155` | `interface/frontend.gui` | `redundant/union` | `value_and_content` | `dlc_icon_bg_empty`/`gfx_emptyness` missing on human side of the intended merge; foch keeps `dlc_icon_bg`/`GFX_dlc_icon_even_bg_flip`. The independent `textureFile` escaping defect is fixed. |
 | `3630876155` | `interface/subscription_banner_view.gui` | `disjoint/took_overlay` | `value_and_content` | Human keeps `open_subscription_view_button_offset`, mostly `x = 0/75`, and `Orientation = LOWER_LEFT`; foch keeps animated offsets and `LOWER_RIGHT`. |
 | `3630904821` | `common/scripted_triggers/_expanded_family_scripted_triggers.txt` | `subset/took_base` | `matches_human` | Fixed by BooleanOr flatten/dedup. |
 | `3630904821` | `decisions/PragmaticSanction.txt` | `redundant/union` | `content_mismatch` | Human wraps conditions in `allow/OR/custom_trigger_tooltip`; foch keeps direct `has_female_heir`, `imperial_influence`, and effect cost leaves. |

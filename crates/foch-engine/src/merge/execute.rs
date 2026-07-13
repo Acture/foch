@@ -5,10 +5,9 @@ use crate::cache::{
 	ModsetCache, compute_modset_cache_key, compute_resolution_map_hash, unpack_modset_tarball,
 };
 
-// SemVer for the modset-cache schema/merge-semantics payload. Bump the major
-// version for incompatible output semantics so stale artifacts cannot hide a
-// changed merge engine.
-const MODSET_CACHE_VERSION: &str = "11.4.0";
+// SemVer identity for cached merge output. Bump patch for output bug fixes,
+// minor for additive semantics, and major for incompatible cache payloads.
+const MODSET_CACHE_VERSION: &str = "11.4.1";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{

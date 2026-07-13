@@ -134,7 +134,9 @@ fn emit_value(
 fn render_scalar(value: &ScalarValue) -> String {
 	match value {
 		ScalarValue::Identifier(value) => value.clone(),
-		ScalarValue::String(value) => format!("\"{}\"", escape_string(value)),
+		// The parser stores the quoted token body verbatim, including Clausewitz
+		// backslash sequences. Re-escaping it would mutate paths on every emit.
+		ScalarValue::String(value) => format!("\"{value}\""),
 		ScalarValue::Number(value) => value.clone(),
 		ScalarValue::Bool(value) => {
 			if *value {
@@ -144,10 +146,6 @@ fn render_scalar(value: &ScalarValue) -> String {
 			}
 		}
 	}
-}
-
-fn escape_string(value: &str) -> String {
-	value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn indent_into(out: &mut String, indent: usize, indent_text: &str) {
@@ -285,6 +283,31 @@ mod tests {
 		.expect("emit statements with custom options");
 
 		assert_eq!(emitted, "root = {\n  child = {\n    leaf = yes\n  }\n}\n");
+	}
+
+	#[test]
+	fn string_emission_preserves_clausewitz_escape_text() {
+		let statements = vec![
+			assignment(
+				"textureFile",
+				scalar(ScalarValue::String(
+					r"gfx\\interface\\small_tiles_dialog.dds".to_string(),
+				)),
+			),
+			assignment(
+				"tooltip",
+				scalar(ScalarValue::String(r#"say \"hello\""#.to_string())),
+			),
+		];
+
+		let emitted = emit_clausewitz_statements(&statements).expect("emit string values");
+
+		assert_eq!(
+			emitted,
+			r#"textureFile = "gfx\\interface\\small_tiles_dialog.dds"
+tooltip = "say \"hello\""
+"#
+		);
 	}
 
 	#[test]

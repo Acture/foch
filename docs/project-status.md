@@ -86,6 +86,13 @@ missed. A fresh full 23-candidate measurement is still required before quoting
 a scorer `1.1.0` full-local baseline. See
 [`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
+A bounded rerun of all six fixture cases also found and fixed an output-layer
+defect: the emitter re-escaped quoted Clausewitz token bodies, doubling
+backslashes in `textureFile` paths. The fix repaired four semantic leaves in
+each recurring `interface/frontend.gui` output, 24 leaves total. Whole-file
+fixture totals remain 11/36 accepted because the same files still differ in GUI
+widget identity, content, and layout policy.
+
 The shipped product surface includes:
 
 - `foch check`
