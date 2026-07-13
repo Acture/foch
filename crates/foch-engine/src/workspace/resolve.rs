@@ -990,9 +990,18 @@ mod tests {
 	use std::fs;
 	use tempfile::TempDir;
 
+	fn descriptor_path_value(path: &Path) -> String {
+		path.to_string_lossy()
+			.replace('\\', "/")
+			.replace('"', "\\\"")
+	}
+
 	fn write_descriptor(root: &Path, name: &str, steam_id: Option<&str>) {
 		fs::create_dir_all(root).expect("create descriptor root");
-		let mut body = format!("name=\"{name}\"\npath=\"{}\"\n", root.display());
+		let mut body = format!(
+			"name=\"{name}\"\npath=\"{}\"\n",
+			descriptor_path_value(root)
+		);
 		if let Some(steam_id) = steam_id {
 			body.push_str(&format!("remote_file_id=\"{steam_id}\"\n"));
 		}
@@ -1017,7 +1026,7 @@ mod tests {
 				paradox_dir.join("mod").join(format!("ugc_{steam_id}.mod")),
 				format!(
 					"name=\"ugc_{steam_id}\"\npath=\"{}\"\nremote_file_id=\"{steam_id}\"\n",
-					root.display()
+					descriptor_path_value(root)
 				),
 			)
 			.expect("write launcher descriptor");

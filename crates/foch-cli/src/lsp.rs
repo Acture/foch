@@ -4419,7 +4419,10 @@ mod tests {
 			.expect("create mod root");
 		fs::write(
 			mod_root.join("descriptor.mod"),
-			format!("name=\"local-mod\"\npath=\"{}\"\n", mod_root.display()),
+			format!(
+				"name=\"local-mod\"\npath=\"{}\"\n",
+				mod_root.to_string_lossy().replace('\\', "/")
+			),
 		)
 		.expect("write descriptor");
 		let manifest = tmp.path().join("foch.toml");
