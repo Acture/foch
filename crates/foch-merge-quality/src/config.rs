@@ -242,6 +242,10 @@ fn paths_equal(left: &Path, right: &Path) -> bool {
 mod tests {
 	use super::*;
 
+	fn vdf_path_value(path: &Path) -> String {
+		path.to_string_lossy().replace('\\', "\\\\")
+	}
+
 	fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
 		let temp = tempfile::tempdir().unwrap();
 		let steam = temp.path().join("Steam");
@@ -260,8 +264,8 @@ mod tests {
 	"0" {{ "path" "{}" }}
 	"1" {{ "path" "{}" }}
 }}"#,
-				steam.display(),
-				library.display()
+				vdf_path_value(&steam),
+				vdf_path_value(&library)
 			),
 		)
 		.unwrap();

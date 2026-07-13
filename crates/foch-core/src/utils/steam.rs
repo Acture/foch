@@ -94,7 +94,12 @@ mod tests {
 		locate_steam_app_from_root, steam_game_install_path, steam_library_paths,
 		steam_workshop_mod_path,
 	};
+	use std::path::Path;
 	use tempfile::TempDir;
+
+	fn vdf_path_value(path: &Path) -> String {
+		path.to_string_lossy().replace('\\', "\\\\")
+	}
 
 	fn write_steam_fixture() -> (TempDir, std::path::PathBuf, std::path::PathBuf) {
 		let tmp = TempDir::new().expect("temp dir");
@@ -110,8 +115,8 @@ mod tests {
 	"0" {{ "path" "{}" }}
 	"1" {{ "path" "{}" }}
 }}"#,
-				steam_root.display(),
-				lib2.display()
+				vdf_path_value(&steam_root),
+				vdf_path_value(&lib2)
 			),
 		)
 		.expect("write vdf");

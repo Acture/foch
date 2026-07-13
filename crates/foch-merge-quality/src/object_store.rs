@@ -1,3 +1,4 @@
+#[cfg(target_os = "macos")]
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, ErrorKind, Read};
@@ -564,11 +565,6 @@ fn path_c_string(path: &Path) -> io::Result<CString> {
 			format!("path contains NUL byte: {}", path.display()),
 		)
 	})
-}
-
-#[cfg(not(target_os = "macos"))]
-fn path_c_string(_path: &Path) -> io::Result<CString> {
-	unreachable!("path_c_string is only used by macOS clonefile")
 }
 
 #[cfg(unix)]

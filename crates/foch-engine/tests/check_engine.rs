@@ -17,6 +17,10 @@ fn descriptor_path_value(path: &Path) -> String {
 		.replace('"', "\\\"")
 }
 
+fn vdf_path_value(path: &Path) -> String {
+	path.to_string_lossy().replace('\\', "\\\\")
+}
+
 fn write_dlc_load(path: &Path, mods: &[(&str, &str)]) {
 	let parent = path.parent().expect("playset path has parent");
 	fs::create_dir_all(parent.join("mod")).expect("create mod metadata dir");
@@ -579,8 +583,8 @@ fn resolves_mod_root_from_non_default_steam_library_folder() {
 		"path"		"{}"
 	}}
 }}"#,
-			steam_root.display(),
-			lib2.display()
+			vdf_path_value(&steam_root),
+			vdf_path_value(&lib2)
 		),
 	)
 	.expect("write libraryfolders");
