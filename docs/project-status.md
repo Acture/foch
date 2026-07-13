@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-12
+Last updated: 2026-07-13
 
 ## Summary
 
@@ -56,11 +56,23 @@ lifecycle. `foch-mq collect` archives complete local cases into a verified APFS
 copy-on-write object store; `measure` runs latest snapshots in timeout-bounded
 child processes and records crashes/fatals instead of skipping them; `report`
 emits all-ground-truth and multi-source metrics; and `export` produces metadata,
-semantic, or full deterministic exports. Scoring now uses every source mod and
-subtracts structured base-game atoms during human-resolution analysis. The
-implementation and small end-to-end fixture are green, but the full local
-23-case run is still a manual acceptance gate and is not yet recorded as a
-baseline. See [`merge-quality-dataset.md`](./merge-quality-dataset.md).
+semantic, or full deterministic exports. Scoring uses every source mod and
+subtracts structured base-game atoms during human-resolution analysis.
+
+The first canonical full-local baseline completed on 2026-07-13 against source
+commit `4c98c9e`, EU4 `v1.37.5.0` / Steam build `15918133`, executable hash
+`16fcde0535ad3c759492f1aa76ad6164d466cb6fea8125a65f36c3bebb06ea91`, and
+scorer configuration hash
+`e2580bc8c745bf7aca520ce909f093028455a9745d5fae6f92b94424d2986393`.
+All 23 cases reached `completed`; referential integrity holds across 23 unique
+snapshots, 23 measurements, 30,739 file results, and 91 object records. The
+strict accepted totals are 43/30,739 over all compatch files and 28/269 over
+multi-source files. The all-file view is dominated by 30,293 `not_emitted`
+files, so it must not be read as an overlap-only merge success rate. The first
+data-driven repair target is `common/static_modifiers/00_static_modifiers.txt`:
+it accounts for `drops_content` in two independent cases, the widest impact
+among the 14 multi-source dropped-content failures. See
+[`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
 The shipped product surface includes:
 
