@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Measures foch's merge quality against community compatibility patches (compatches) as human ground truth."
+description = "Measures foch merge quality against evidence-qualified community compatch candidates."
 
 [features]
 # Network + SteamCMD orchestration (discovery/fetch). Off by default so the

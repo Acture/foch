@@ -1,9 +1,9 @@
 # Merge Quality AST Diff Snapshot
 
-Date: 2026-07-06
+Last updated: 2026-07-14
 
-Scope: committed `foch-merge-quality` corpus, 6 compatch cases, 35 overlapping
-ground-truth files. The comparison policy is the current corpus scorer:
+Scope: committed `foch-merge-quality` fixture, 6 proposed compatch cases, 36
+multi-source reference-output files. The comparison policy is scorer `1.1.0`:
 
 - `.gui` files: order-sensitive AST comparison.
 - `.gfx` files: order-sensitive exact AST comparison, plus an explicit
@@ -18,11 +18,11 @@ ground-truth files. The comparison policy is the current corpus scorer:
 
 Current result:
 
-- `accepted_ok`: 11/35
-- `matches_human`: 6/35
-- `accepted_equivalent`: 5/35
-- `accepted_better`: 0/35
-- `diverges_ast`: 24/35
+- `accepted_ok`: 11/36
+- `matches_human`: 6/36
+- `accepted_equivalent`: 5/36
+- `accepted_better`: 0/36
+- `diverges_ast`: 25/36
 - `conflict_withheld`: 0
 - `not_emitted`: 0
 - `drops_content`: 0
@@ -48,7 +48,7 @@ still misses real sprite content.
 | `accepted_gfx_order_equivalent` | 5 | Same `.gfx` leaf multiset; counted by `accepted_equivalent` because sprite declaration order is not the same risk class as `.gui` layout order. |
 | `same_family_module_equivalent` | 0 | Same static `AssignmentKey` content-family module after cross-file relocation. The scorer supports this policy, but no current corpus divergence qualifies. |
 | `gui_order_only_remaining` | 3 | Same `.gui` leaf multiset, but sibling order differs. These remain divergences because GUI order can affect layout or rendering. |
-| `value_and_content` | 20 | Both scalar values and leaf inventory differ. This is real semantic divergence, not pretty-print noise. |
+| `value_and_content` | 21 | Both scalar values and leaf inventory differ. This is real semantic divergence, not pretty-print noise. |
 | `content_mismatch` | 1 | Leaf inventory differs without simple same-path scalar diffs in the diagnostic sample. |
 
 ## Recurring Patterns
@@ -137,6 +137,7 @@ recursive union will not reproduce this without GUI-specific policy.
 | `3630934157` | `interface/subscription_banner_view.gui` | `disjoint/took_base` | `value_and_content` | Same recurring subscription banner offset/orientation mismatch. |
 | `3630934157` | `interface/topbar.gui` | `disjoint/union` | `gui_order_only_remaining` | Same 3469 leaves; only GUI sibling order differs. |
 | `3634824708` | `common/buildings/00_buildings.txt` | `redundant/union` | `value_and_content` | Human adds cathedral province modifiers (`EE_FRA_power_steam_tax`, `me_pap_buffed_churches`) and mission limits; foch also has extra shipyard `ai_will_do` leaves. |
+| `3634824708` | `common/institutions/00_ME_Override.txt` | cross-file module overlap | `value_and_content` | Europa Expanded and the compatch use `00_ME_Override.txt`; Trade Goods Expanded uses `00_Core.txt`, but all define the same eight institution keys. Scorer `1.1.0` now counts this as multi-source; foch preserves the keys but differs in nested AST. |
 | `3634824708` | `common/tradegoods/00_tradegoods.txt` | `disjoint/took_overlay` | `value_and_content` | `cloves` trade power is `0.1` vs human `0.15`; human has additional fur/slaves conditions and regions. |
 | `3634824708` | `events/PriceChanges.txt` | `redundant/union` | `value_and_content` | Human keeps `felt_hats_happened`, `copper = 1`, and conditional year structure; foch has direct duplicate `is_year = 1600`. |
 | `3634824708` | `interface/000_expanded_mod_family.gfx` | `redundant/union` | `value_and_content` | Human has the `religions_and_cultures_expanded` sprite/effect/texture; foch misses that sprite. |
@@ -155,8 +156,8 @@ recursive union will not reproduce this without GUI-specific policy.
 
 ## Immediate Implications
 
-- A pretty-printer alone cannot move the remaining 24 `diverges_ast` files to match. Only 3/24 are pure `.gui` ordering.
+- A pretty-printer alone cannot move the remaining 25 `diverges_ast` files to match. Only 3/25 are pure `.gui` ordering.
 - The highest-leverage correctness fixes are:
   1. Improve GUI named-child matching so recurring frontend/subscription-banner widgets do not choose the wrong sibling or scalar source.
-  2. Treat several gameplay roots as policy-sensitive rather than blindly unioning: `decisions`, `religions`, `buildings`, `tradegoods`, `ages`, `governments`, and `events`.
+  2. Treat several gameplay roots as policy-sensitive rather than blindly unioning: `decisions`, `religions`, `buildings`, `institutions`, `tradegoods`, `ages`, `governments`, and `events`.
   3. Add targeted corpus assertions for recurring files instead of relying only on aggregate verdict counts.

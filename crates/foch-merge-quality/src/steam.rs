@@ -4,9 +4,8 @@
 //!   1. `IPublishedFileService/QueryFiles/v1/`  — keyword search for candidates.
 //!   2. `ISteamRemoteStorage/GetPublishedFileDetails/v1/` — title / timestamps /
 //!      subscription counts (POST, batched ≤50).
-//!   3. `IPublishedFileService/GetDetails/v1/?includechildren=true` — required
-//!      items (the mods the compatch patches) — far more reliable than regexing
-//!      the free-text description.
+//!   3. `IPublishedFileService/GetDetails/v1/?includechildren=true` — child mod
+//!      references used as source candidates, not as proof of patch semantics.
 //!
 //! Testability: pure parsers (`parse_query_files`, `parse_details`,
 //! `parse_children`, `build_cases`) are unit-tested with inline JSON fixtures —
@@ -24,7 +23,7 @@ use serde_json::Value;
 use crate::CmdResult;
 use crate::config::{EU4_APPID, tool_commit};
 use crate::corpus::{
-	Case, Corpus, PatchedMeta, RedistributionStatus, WorkshopAvailability, WorkshopProvenance,
+	Case, Corpus, RedistributionStatus, ReferencedModMeta, WorkshopAvailability, WorkshopProvenance,
 };
 use crate::secrets;
 
@@ -32,9 +31,8 @@ use crate::secrets;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Workshop search terms that capture EU4 compatibility patches across naming
-/// conventions. Broad recall here; precision comes from the ≥2-mod-children
-/// filter in `build_cases`.
+/// Workshop search terms for broad recall. Oracle assessment provides the
+/// separate precision boundary used by scoring reports.
 const SEARCH_TERMS: &[&str] = &[
 	"Compatch",
 	"compatibility patch",
@@ -112,11 +110,11 @@ fn field_str(obj: &Value, key: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Per-entry children filter (shared by parse_children and parse_children_map)
+// Per-entry child-reference filter (shared parsers)
 // ---------------------------------------------------------------------------
 
-/// Keep required-item children that are mods (`file_type == 0`) and are not
-/// the entry itself. Extracted so the logic tested via `parse_children` is
+/// Keep child references that are mods (`file_type == 0`) and are not the entry
+/// itself. Extracted so the logic tested via `parse_children` is
 /// identical to what `parse_children_map` (the HTTP shell path) uses.
 fn filter_children(entry: &Value, exclude_id: &str) -> Vec<String> {
 	entry
@@ -236,8 +234,8 @@ pub(crate) fn parse_details(json: &Value) -> Vec<DetailRecord> {
 ///
 /// `json` is the inner `response` value (containing the full `publishedfiledetails`
 /// batch). This function locates the entry whose `publishedfileid == compatch_id`
-/// and returns required-item mod ids with `file_type == 0`, excluding the
-/// compatch itself.
+/// and returns referenced mod ids with `file_type == 0`, excluding the item
+/// itself.
 ///
 /// The HTTP shell uses `parse_children_map` (which processes all entries at once);
 /// this function is exposed for direct unit-testing.
@@ -281,14 +279,9 @@ fn parse_children_map(json: &Value) -> HashMap<String, Vec<String>> {
 		.collect()
 }
 
-/// Assemble [`Case`] entries from compatch details, children map, and patched-mod
-/// details. Drops candidates with fewer than 2 patched mods.
-///
-/// **Divergence from Python harness**: the Python implementation additionally
-/// falls back to regex-scanning the compatch description for Workshop URLs when
-/// the `children` list has fewer than 2 entries. This implementation uses
-/// children only, because the function signature does not receive description
-/// text. In practice the children-based approach is more reliable.
+/// Assemble broad [`Case`] entries from candidate details, child references,
+/// and referenced-mod details. Candidates with fewer than two references cannot
+/// describe a merge pair and are dropped. Oracle eligibility is assessed later.
 pub(crate) fn build_cases(
 	details: &HashMap<String, DetailRecord>,
 	children_map: &HashMap<String, Vec<String>>,
@@ -296,21 +289,21 @@ pub(crate) fn build_cases(
 ) -> Vec<Case> {
 	let mut cases = Vec::new();
 
-	for (cid, patched) in children_map {
-		if patched.len() < 2 {
+	for (cid, referenced_mods) in children_map {
+		if referenced_mods.len() < 2 {
 			continue;
 		}
 		let d = match details.get(cid) {
 			Some(d) => d,
 			None => continue,
 		};
-		let patched_meta: BTreeMap<String, PatchedMeta> = patched
+		let referenced_mod_meta: BTreeMap<String, ReferencedModMeta> = referenced_mods
 			.iter()
 			.map(|mid| {
 				let m = mod_details.get(mid);
 				(
 					mid.clone(),
-					PatchedMeta {
+					ReferencedModMeta {
 						title: m.map(|r| r.title.clone()).unwrap_or_default(),
 						time_created: m.map(|r| r.time_created).unwrap_or(0),
 						time_updated: m.map(|r| r.time_updated).unwrap_or(0),
@@ -323,11 +316,11 @@ pub(crate) fn build_cases(
 		cases.push(Case {
 			compatch_id: cid.clone(),
 			title: d.title.clone(),
-			patched: patched.clone(),
+			referenced_mods: referenced_mods.clone(),
 			time_created: d.time_created,
 			time_updated: d.time_updated,
 			subscriptions: d.subscriptions,
-			patched_meta,
+			referenced_mod_meta,
 			workshop: d.workshop.clone(),
 		});
 	}
@@ -517,13 +510,13 @@ pub fn discover(corpus_out: &Path, max_items: usize) -> CmdResult {
 	eprintln!("[3/5] fetching required-items (children) for accurate pairs…");
 	let children_map = fetch_children_all(&client, &key, &cand_ids)?;
 
-	// Collect patched-mod ids from multi-mod compatches only.
-	let patched_all: Vec<String> = {
+	// Collect referenced-mod ids from candidates that can describe a merge.
+	let referenced_all: Vec<String> = {
 		let mut seen: HashSet<String> = HashSet::new();
 		let mut order: Vec<String> = Vec::new();
-		for (cid, patched) in &children_map {
-			if patched.len() >= 2 {
-				for mid in patched {
+		for (cid, referenced_mods) in &children_map {
+			if referenced_mods.len() >= 2 {
+				for mid in referenced_mods {
 					if mid != cid && seen.insert(mid.clone()) {
 						order.push(mid.clone());
 					}
@@ -533,13 +526,17 @@ pub fn discover(corpus_out: &Path, max_items: usize) -> CmdResult {
 		order
 	};
 
-	eprintln!("[4/5] fetching {} patched-mod details…", patched_all.len());
-	let mod_details = fetch_details_all(&client, &patched_all)?;
+	eprintln!(
+		"[4/5] fetching {} referenced-mod details…",
+		referenced_all.len()
+	);
+	let mod_details = fetch_details_all(&client, &referenced_all)?;
 
 	let cases = build_cases(&details, &children_map, &mod_details);
-	eprintln!("[5/5] built {} multi-mod compatches", cases.len());
+	eprintln!("[5/5] built {} multi-reference candidates", cases.len());
 
 	let corpus = Corpus {
+		schema: crate::corpus::CORPUS_SCHEMA.to_string(),
 		// Wall-clock intentionally omitted per spec; 0 = "unknown".
 		generated_at: 0,
 		tool_commit: tool_commit().unwrap_or_default(),
@@ -713,7 +710,7 @@ mod tests {
 		}
 	}
 
-	/// ≥2 patched mods → one Case with populated `patched_meta`.
+	/// At least two referenced mods produce one candidate case with metadata.
 	#[test]
 	fn build_cases_multi_mod_included() {
 		let mut details = HashMap::new();
@@ -747,14 +744,14 @@ mod tests {
 		assert_eq!(c.time_created, 100);
 		assert_eq!(c.time_updated, 200);
 		assert_eq!(c.subscriptions, 1000);
-		assert_eq!(c.patched, vec!["100", "200"]);
-		assert_eq!(c.patched_meta["100"].title, "Mod A");
-		assert_eq!(c.patched_meta["100"].time_updated, 150);
-		assert_eq!(c.patched_meta["200"].title, "Mod B");
-		assert_eq!(c.patched_meta["200"].time_updated, 160);
+		assert_eq!(c.referenced_mods, vec!["100", "200"]);
+		assert_eq!(c.referenced_mod_meta["100"].title, "Mod A");
+		assert_eq!(c.referenced_mod_meta["100"].time_updated, 150);
+		assert_eq!(c.referenced_mod_meta["200"].title, "Mod B");
+		assert_eq!(c.referenced_mod_meta["200"].time_updated, 160);
 	}
 
-	/// <2 patched mods → dropped.
+	/// Fewer than two referenced mods are dropped.
 	#[test]
 	fn build_cases_single_mod_dropped() {
 		let mut details = HashMap::new();
@@ -770,7 +767,7 @@ mod tests {
 		assert!(cases.is_empty());
 	}
 
-	/// 0 patched mods → dropped.
+	/// A candidate with no referenced mods is dropped.
 	#[test]
 	fn build_cases_zero_mods_dropped() {
 		let mut details = HashMap::new();
@@ -796,7 +793,7 @@ mod tests {
 		assert!(cases.is_empty());
 	}
 
-	/// `patched_meta` is present even when `mod_details` doesn't have the entry
+	/// `referenced_mod_meta` is present even when `mod_details` doesn't have the entry
 	/// (title/timestamps default to empty/0).
 	#[test]
 	fn build_cases_missing_mod_detail_defaults() {
@@ -808,7 +805,7 @@ mod tests {
 
 		let cases = build_cases(&details, &children_map, &HashMap::new());
 		assert_eq!(cases.len(), 1);
-		assert_eq!(cases[0].patched_meta["A"].title, "");
-		assert_eq!(cases[0].patched_meta["B"].time_created, 0);
+		assert_eq!(cases[0].referenced_mod_meta["A"].title, "");
+		assert_eq!(cases[0].referenced_mod_meta["B"].time_created, 0);
 	}
 }

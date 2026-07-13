@@ -56,6 +56,9 @@ enum Cmd {
 	},
 	/// Render baseline.json and report.md from terminal measurement records.
 	Report {
+		/// Select the provisional oracle cohort or every broad candidate.
+		#[arg(long, value_enum, default_value_t = ReportCohortKind::Scorable)]
+		cohort: ReportCohortKind,
 		/// Restrict to measurements from this executable BLAKE3 hash.
 		#[arg(long)]
 		executable_hash: Option<String>,
@@ -116,6 +119,18 @@ enum Cmd {
 		#[arg(long)]
 		basegame_root: Option<PathBuf>,
 	},
+	/// Compare two files with the corpus scorer's semantic AST policy.
+	SemanticDiff {
+		#[arg(long)]
+		relative_path: String,
+		#[arg(long)]
+		left: PathBuf,
+		#[arg(long)]
+		right: PathBuf,
+		/// Compare sibling statements as an unordered multiset.
+		#[arg(long)]
+		ignore_order: bool,
+	},
 	/// Extract full local cases and pack them into the committed corpus archive.
 	ExtractFixtures {
 		/// Output archive (gzip-compressed tar of the fixture tree).
@@ -149,6 +164,21 @@ enum ExportKind {
 	Metadata,
 	Semantic,
 	Full,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ReportCohortKind {
+	Scorable,
+	AllCandidates,
+}
+
+impl From<ReportCohortKind> for lifecycle::ReportCohort {
+	fn from(value: ReportCohortKind) -> Self {
+		match value {
+			ReportCohortKind::Scorable => Self::Scorable,
+			ReportCohortKind::AllCandidates => Self::AllCandidates,
+		}
+	}
 }
 
 fn main() -> CmdResult {
@@ -197,6 +227,7 @@ fn main() -> CmdResult {
 			Ok(())
 		}
 		Cmd::Report {
+			cohort,
 			executable_hash,
 			config_hash,
 			limit,
@@ -205,6 +236,7 @@ fn main() -> CmdResult {
 			output_dir: &results_dir,
 			executable_hash: executable_hash.as_deref(),
 			config_hash: config_hash.as_deref(),
+			cohort: cohort.into(),
 			limit,
 		}),
 		Cmd::Baseline {
@@ -232,6 +264,7 @@ fn main() -> CmdResult {
 				output_dir: &results_dir,
 				executable_hash: Some(&measured.executable_hash),
 				config_hash: Some(&measured.config_hash),
+				cohort: lifecycle::ReportCohort::Scorable,
 				limit,
 			})
 		}
@@ -285,6 +318,22 @@ fn main() -> CmdResult {
 			&output_dir,
 			basegame_root.as_deref(),
 		),
+		Cmd::SemanticDiff {
+			relative_path,
+			left,
+			right,
+			ignore_order,
+		} => {
+			let diff = foch_merge_quality::score::semantic_atom_diff(
+				&relative_path,
+				&left,
+				&right,
+				ignore_order,
+			)
+			.ok_or("semantic comparison unavailable for one or both files")?;
+			println!("{}", serde_json::to_string_pretty(&diff)?);
+			Ok(())
+		}
 		Cmd::ExtractFixtures { out, ids } => {
 			// Stage the slices in a temp dir, then pack them into the single
 			// committed compressed archive (no loose third-party files in-repo).

@@ -1,10 +1,9 @@
 //! Full-local symbol-conflict report.
 //!
-//! The committed scoring corpus intentionally stores only same-path overlap
-//! files, because that slice has been verified to reproduce full-mod foch
-//! verdicts. Cross-file symbol conflicts need the full local workshop context;
-//! this module emits a small report over that context instead of adding
-//! validation-sensitive files to the fixture archive.
+//! Cross-file symbol conflicts are a separate analysis axis from reference-
+//! output scoring. This module scans the full local Workshop context and emits
+//! a focused report without treating every detected symbol overlap as human
+//! merge-oracle evidence.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -15,7 +14,7 @@ use serde::Serialize;
 
 use crate::CmdResult;
 use crate::corpus::{Case, Corpus};
-use crate::score::{definition_index, ground_truth_files, read, top_level_keys};
+use crate::score::{definition_index, read, reference_output_files, top_level_keys};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SymbolTotals {
@@ -46,7 +45,7 @@ pub struct SymbolConflict {
 pub struct SymbolCaseReport {
 	pub compatch_id: String,
 	pub title: String,
-	pub patched: Vec<String>,
+	pub referenced_mods: Vec<String>,
 	pub symbol_conflicts: usize,
 	pub cross_file_symbol_conflicts: usize,
 	pub same_path_symbol_conflicts: usize,
@@ -70,9 +69,14 @@ pub fn generate(
 	let local: Vec<&Case> = corpus
 		.cases
 		.iter()
-		.filter(|c| c.patched.len() >= 2)
+		.filter(|case| case.oracle_assessment().is_scorable())
+		.filter(|c| c.referenced_mods.len() >= 2)
 		.filter(|c| workshop_dir.join(&c.compatch_id).is_dir())
-		.filter(|c| c.patched.iter().all(|m| workshop_dir.join(m).is_dir()))
+		.filter(|c| {
+			c.referenced_mods
+				.iter()
+				.all(|m| workshop_dir.join(m).is_dir())
+		})
 		.collect();
 	let to_scan: &[&Case] = if limit > 0 {
 		&local[..limit.min(local.len())]
@@ -139,7 +143,7 @@ fn scan_case(
 ) -> SymbolCaseReport {
 	let compatch_dir = workshop_dir.join(&case.compatch_id);
 	let mods: Vec<(String, PathBuf)> = case
-		.patched
+		.referenced_mods
 		.iter()
 		.map(|id| (id.clone(), workshop_dir.join(id)))
 		.collect();
@@ -158,7 +162,7 @@ fn scan_case(
 	}
 
 	let mut compatch_defs: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-	for rel in ground_truth_files(&compatch_dir) {
+	for rel in reference_output_files(&compatch_dir) {
 		if !rel.ends_with(".txt") {
 			continue;
 		}
@@ -229,7 +233,7 @@ fn scan_case(
 	SymbolCaseReport {
 		compatch_id: case.compatch_id.clone(),
 		title: case.title.clone(),
-		patched: case.patched.clone(),
+		referenced_mods: case.referenced_mods.clone(),
 		symbol_conflicts,
 		cross_file_symbol_conflicts,
 		same_path_symbol_conflicts,
@@ -259,7 +263,7 @@ fn render_markdown(report: &SymbolReport) -> String {
 		String::new(),
 		"## Per-case".to_string(),
 		String::new(),
-		"| case | patched | symbol conflicts | cross-file | same-path |".to_string(),
+		"| case | referenced mods | symbol conflicts | cross-file | same-path |".to_string(),
 		"|---|---:|---:|---:|---:|".to_string(),
 	];
 	for case in &report.cases {
@@ -270,7 +274,7 @@ fn render_markdown(report: &SymbolReport) -> String {
 			"| `{}` {} | {} | {} | {} | {} |",
 			case.compatch_id,
 			case.title,
-			case.patched.len(),
+			case.referenced_mods.len(),
 			case.symbol_conflicts,
 			case.cross_file_symbol_conflicts,
 			case.same_path_symbol_conflicts
@@ -358,8 +362,8 @@ mod tests {
 		let corpus_path = corpus_dir.path().join("corpus.json");
 		let case = Case {
 			compatch_id: "9000".to_string(),
-			title: "Synthetic".to_string(),
-			patched: vec!["1000".to_string(), "2000".to_string()],
+			title: "Synthetic Compatch".to_string(),
+			referenced_mods: vec!["1000".to_string(), "2000".to_string()],
 			..Default::default()
 		};
 		let corpus = Corpus {

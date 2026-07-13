@@ -1,7 +1,9 @@
 # Merge-quality dataset
 
-The merge-quality corpus is an append-only research dataset built from local
-EU4 Workshop compatches and their declared source mods. The JSONL metadata is
+The merge-quality corpus is an append-only research dataset built from broad
+EU4 Workshop compatibility candidates and the mod items they reference. Steam
+child relationships are discovery evidence, not proof that an item is a
+compatch or that every child is a merge input. The JSONL metadata is
 repository-visible; full payload objects are repository-local and ignored.
 
 ## Identity
@@ -16,6 +18,10 @@ The dataset schema is semver `1.0.0`.
   observations and do not change snapshot identity.
 - Measurement identity: snapshot ID + the actual `foch-mq` executable hash +
   scorer semver + scorer-config hash.
+
+The candidate corpus also has its own semver schema. Oracle-policy semver is
+separate: changing candidate eligibility does not rewrite immutable snapshots
+or measurements.
 
 The append-only files under `crates/foch-merge-quality/dataset/` are:
 
@@ -51,8 +57,9 @@ target/release/foch-mq baseline --timeout-secs 600
 
 `EU4_ROOT` is optional. Resolution precedence is CLI override, environment,
 existing foch config, then `steamlocate`; Workshop items are searched across all
-Steam libraries. The command is resumable: existing objects and measurements
-with the same identities are cache hits.
+Steam libraries. Collection and measurement always cover the full locally
+available candidate corpus. The command is resumable: existing objects and
+measurements with the same identities are cache hits.
 
 For separate phases:
 
@@ -60,25 +67,39 @@ For separate phases:
 target/release/foch-mq collect
 target/release/foch-mq measure --timeout-secs 600
 target/release/foch-mq report
+target/release/foch-mq report --cohort all-candidates
 ```
 
-Every selected case must end as `completed`, `merge_failed`, `crashed`,
+The default report is the scorable oracle cohort. `--cohort all-candidates`
+keeps broad-search false positives visible for discovery and audit without
+mixing them into the quality denominator. The current automatic policy marks a
+case `proposed` only when its title states compatibility intent, it references
+exactly two mods, and neither referenced mod is newer than the candidate.
+Other cases remain collected and are labeled `excluded`; proposed evidence is
+not silently upgraded to accepted oracle evidence.
+
+Every measured case must end as `completed`, `merge_failed`, `crashed`,
 `timed_out`, or `fatal`. A report is baseline-complete only when every latest
-case snapshot has a terminal measurement. Failures remain in the case
-denominator; they are never skipped.
+snapshot in the selected report cohort has a terminal measurement for the
+current scorer semver. Failures remain in the denominator; they are never
+skipped, and measurements from an older scorer are never relabeled as current.
 
 ## Metrics
 
-Reports expose two co-equal views:
+Reports expose two co-equal views over the selected oracle cohort:
 
-- all ground-truth files in each human compatch
-- files contributed by at least two source mods
+- all files in each human reference output
+- files attributable to at least two referenced mods
 
-Scoring uses every declared source mod. Dropped definitions are computed from
-the union of all source keys. Human-resolution analysis uses AST-derived
-semantic atoms for parseable Clausewitz files and subtracts base-game atoms
-before labeling contributor retention or human-only content. GUI ordering stays
-significant; other Clausewitz families use order-insensitive AST comparison.
+Exact-path collisions count as contributions even when the two files define
+different keys. For static `AssignmentKey` content families, definitions that
+move between sibling filenames are also attributed and compared at module
+scope. VFS path masking still matters: same-path source definitions omitted by
+the later reference file are treated as a real human choice. Human-resolution
+analysis uses AST-derived semantic atoms for parseable Clausewitz files and
+subtracts base-game atoms before labeling contributor retention or human-only
+content. GUI ordering stays significant; other Clausewitz families use
+order-insensitive AST comparison.
 
 ## Export
 
@@ -94,5 +115,8 @@ input under `objects/` and per merged result under `outputs/`. `export.json` and
 research use unless Workshop redistribution rights have been reviewed
 separately; unknown rights never enter the default metadata-only profile.
 
-The first full local 23-case run remains a manual acceptance step because it
-archives roughly 13.6 GiB of logical Workshop payload and can run for hours.
+The first full local 23-candidate run remains preserved as scorer `1.0.0`
+history. Scorer `1.1.0` changes cross-file module attribution and therefore
+requires a fresh measurement pass rather than reusing those scores. Full local
+measurement remains a manual acceptance step because the dataset archives
+roughly 13.6 GiB of logical Workshop payload and a cold run can take hours.

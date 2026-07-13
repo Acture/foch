@@ -14,7 +14,7 @@ use crate::corpus::WorkshopProvenance;
 use crate::object_store::TreeStats;
 
 pub const SCHEMA: &str = "1.0.0";
-pub const SCORER_VERSION: &str = "1.0.0";
+pub const SCORER_VERSION: &str = "1.1.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]

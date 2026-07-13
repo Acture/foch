@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-13
+Last updated: 2026-07-14
 
 ## Summary
 
@@ -51,27 +51,39 @@ Current EU4 active-playset merge baseline:
 - [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) ships narrow per-path defaults that clear all 9 manual conflicts without enabling global last-writer behavior.
 - Warm cache-backed iterations are seconds; cold debug runs remain around 25-30 minutes, while release+cache has been observed around 40 seconds for this baseline.
 
-The compatch merge-quality harness now has a separate immutable baseline
+The merge-quality harness now has a separate immutable baseline
 lifecycle. `foch-mq collect` archives complete local cases into a verified APFS
 copy-on-write object store; `measure` runs latest snapshots in timeout-bounded
 child processes and records crashes/fatals instead of skipping them; `report`
-emits all-ground-truth and multi-source metrics; and `export` produces metadata,
-semantic, or full deterministic exports. Scoring uses every source mod and
-subtracts structured base-game atoms during human-resolution analysis.
+emits reference-output and multi-source metrics; and `export` produces metadata,
+semantic, or full deterministic exports. Broad Workshop candidates remain in
+the full collection, while a separately versioned oracle policy selects the
+provisional scoring cohort. Scoring uses every exact-path contributor, adds
+cross-filename attribution for static `AssignmentKey` modules, and subtracts
+structured base-game atoms during human-resolution analysis.
 
-The first canonical full-local baseline completed on 2026-07-13 against source
+The first canonical full-local baseline completed on 2026-07-13 with scorer
+`1.0.0` against source
 commit `4c98c9e`, EU4 `v1.37.5.0` / Steam build `15918133`, executable hash
 `16fcde0535ad3c759492f1aa76ad6164d466cb6fea8125a65f36c3bebb06ea91`, and
 scorer configuration hash
 `e2580bc8c745bf7aca520ce909f093028455a9745d5fae6f92b94424d2986393`.
-All 23 cases reached `completed`; referential integrity holds across 23 unique
+All 23 broad candidates reached `completed`; referential integrity holds across 23 unique
 snapshots, 23 measurements, 30,739 file results, and 91 object records. The
-strict accepted totals are 43/30,739 over all compatch files and 28/269 over
-multi-source files. The all-file view is dominated by 30,293 `not_emitted`
-files, so it must not be read as an overlap-only merge success rate. The first
-data-driven repair target is `common/static_modifiers/00_static_modifiers.txt`:
-it accounts for `drops_content` in two independent cases, the widest impact
-among the 14 multi-source dropped-content failures. See
+historical all-candidate totals are 43/30,739 over all reference-output files
+and 28/269 over multi-source files. That view is dominated by 30,293
+`not_emitted` files and includes broad-search false positives, so it is retained
+for audit rather than used as the current merge-success denominator.
+
+Scorer `1.1.0` now prevents old measurements from being relabeled after scoring
+semantics change. Its committed network-free fixture currently contains six
+`proposed` cases and 36 multi-source files: 11 accepted, comprising six
+`matches_human` and five `accepted_equivalent`; the other 25 are
+`diverges_ast`. The extra file versus scorer `1.0.0` is
+`common/institutions/00_ME_Override.txt`: both source mods define the same
+institution module under different filenames, which exact-path attribution had
+missed. A fresh full 23-candidate measurement is still required before quoting
+a scorer `1.1.0` full-local baseline. See
 [`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
 The shipped product surface includes:

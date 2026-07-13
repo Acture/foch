@@ -31,9 +31,13 @@ pub fn extract(corpus: &Path, workshop_dir: &Path, out_dir: &Path, ids: &[String
 		corpus
 			.cases
 			.iter()
+			.filter(|case| case.oracle_assessment().is_scorable())
 			.filter(|case| {
 				workshop_dir.join(&case.compatch_id).is_dir()
-					&& case.patched.iter().all(|p| workshop_dir.join(p).is_dir())
+					&& case
+						.referenced_mods
+						.iter()
+						.all(|p| workshop_dir.join(p).is_dir())
 			})
 			.collect()
 	} else {
@@ -47,9 +51,9 @@ pub fn extract(corpus: &Path, workshop_dir: &Path, out_dir: &Path, ids: &[String
 	let (mut extracted, mut skipped) = (0usize, 0usize);
 	let mut extracted_cases = Vec::new();
 	for case in cases {
-		if case.patched.len() < 2 {
+		if case.referenced_mods.len() < 2 {
 			eprintln!(
-				"  [extract] skip {}: fewer than 2 patched mods",
+				"  [extract] skip {}: fewer than 2 referenced mods",
 				case.compatch_id
 			);
 			skipped += 1;
@@ -74,6 +78,7 @@ pub fn extract(corpus: &Path, workshop_dir: &Path, out_dir: &Path, ids: &[String
 
 	if !extracted_cases.is_empty() {
 		let fixture_corpus = crate::corpus::Corpus {
+			schema: corpus.schema.clone(),
 			generated_at: corpus.generated_at,
 			tool_commit: corpus.tool_commit.clone(),
 			search_terms: corpus.search_terms.clone(),
@@ -94,9 +99,9 @@ fn extract_one(
 	workshop_dir: &Path,
 	out_dir: &Path,
 ) -> Result<usize, Box<dyn std::error::Error>> {
-	let mut ids = Vec::with_capacity(case.patched.len() + 1);
+	let mut ids = Vec::with_capacity(case.referenced_mods.len() + 1);
 	ids.push(case.compatch_id.clone());
-	ids.extend(case.patched.iter().cloned());
+	ids.extend(case.referenced_mods.iter().cloned());
 
 	let mut copied = 0usize;
 	for id in ids {
@@ -153,7 +158,7 @@ mod tests {
 		let corpus = crate::corpus::Corpus {
 			cases: vec![crate::corpus::Case {
 				compatch_id: compatch_id.to_string(),
-				patched: mods.iter().map(|s| s.to_string()).collect(),
+				referenced_mods: mods.iter().map(|s| s.to_string()).collect(),
 				..Default::default()
 			}],
 			..Default::default()

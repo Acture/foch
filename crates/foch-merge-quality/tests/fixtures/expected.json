@@ -13,9 +13,9 @@
     "accepted_equivalent": 1,
     "diverges_ast": 5
   },
-  "3634824708": {
-    "diverges_ast": 5
-  },
+	"3634824708": {
+		"diverges_ast": 6
+	},
   "3634829839": {
     "accepted_equivalent": 1,
     "diverges_ast": 3,

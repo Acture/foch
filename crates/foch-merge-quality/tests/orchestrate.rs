@@ -21,15 +21,15 @@ fn workshop_3630876155() -> PathBuf {
 fn case_3630876155() -> Case {
 	Case {
 		compatch_id: "3630876155".to_string(),
-		title: "Expanded Family + Italian Patchwork".to_string(),
-		patched: vec!["2164202838".to_string(), "2185445645".to_string()],
+		title: "Expanded Family Compatch".to_string(),
+		referenced_mods: vec!["2164202838".to_string(), "2185445645".to_string()],
 		..Default::default()
 	}
 }
 
 // ------------------------------------------------------------------ Test 1: score_case
 
-/// Validated ground truth: 7 overlapping files, verdicts exactly as below.
+/// Validated reference output: 7 overlapping files, verdicts exactly as below.
 #[test]
 fn score_case_verdict_tally() {
 	let ws = workshop_3630876155();

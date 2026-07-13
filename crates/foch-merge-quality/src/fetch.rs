@@ -1,4 +1,4 @@
-//! Download curated compatches + their patched mods via SteamCMD (no subscribe).
+//! Download curated compatch candidates and referenced mods via SteamCMD.
 //!
 //! Curates a prime set from the corpus (non-churn & ≥ min subscribers, top N by
 //! subs) and downloads via batched `steamcmd +login <user> +workshop_download_item
@@ -24,12 +24,13 @@ fn parse_downloaded(stdout: &str) -> HashSet<String> {
 		.collect()
 }
 
-/// Return non-churned cases with ≥ `min_subs` subscribers, sorted by subs
-/// descending, capped to `fetch_n`.
+/// Return scorable, non-churned cases with at least `min_subs` subscribers,
+/// sorted by subscriptions descending and capped to `fetch_n`.
 fn curate(corpus: &Corpus, min_subs: i64, fetch_n: usize) -> Vec<&Case> {
 	let mut prime: Vec<&Case> = corpus
 		.cases
 		.iter()
+		.filter(|case| case.oracle_assessment().is_scorable())
 		.filter(|c| !c.mod_churned() && c.subscriptions >= min_subs)
 		.collect();
 	prime.sort_by_key(|c| std::cmp::Reverse(c.subscriptions));
@@ -37,7 +38,7 @@ fn curate(corpus: &Corpus, min_subs: i64, fetch_n: usize) -> Vec<&Case> {
 	prime
 }
 
-/// Collect the compatch id and all patched mod ids for the selected cases
+/// Collect the candidate id and all referenced mod ids for the selected cases
 /// (deduped, in encounter order), minus ids whose directory already exists
 /// in `local`.
 fn download_targets(selected: &[&Case], local: &HashSet<String>) -> Vec<String> {
@@ -45,7 +46,7 @@ fn download_targets(selected: &[&Case], local: &HashSet<String>) -> Vec<String> 
 	let mut needed: Vec<String> = Vec::new();
 	for case in selected {
 		for id in std::iter::once(case.compatch_id.as_str())
-			.chain(case.patched.iter().map(String::as_str))
+			.chain(case.referenced_mods.iter().map(String::as_str))
 		{
 			if seen.insert(id) && !local.contains(id) {
 				needed.push(id.to_string());
@@ -133,8 +134,8 @@ fn steamcmd_download(
 
 // ─── public entry point ───────────────────────────────────────────────────────
 
-/// Curate the top `fetch_n` compatches with ≥ `min_subs` subscribers (skipping
-/// churned ones) and download them plus their patched mods into `workshop_dir`.
+/// Curate the top `fetch_n` scorable candidates with at least `min_subs`
+/// subscribers, then download them and their referenced mods.
 pub fn fetch(corpus: &Path, workshop_dir: &Path, fetch_n: usize, min_subs: i64) -> CmdResult {
 	let text = std::fs::read_to_string(corpus)?;
 	let corpus_data = Corpus::from_json(&text)?;
@@ -159,7 +160,7 @@ pub fn fetch(corpus: &Path, workshop_dir: &Path, fetch_n: usize, min_subs: i64) 
 		let mut seen: HashSet<&str> = HashSet::new();
 		for c in &selected {
 			seen.insert(c.compatch_id.as_str());
-			for m in &c.patched {
+			for m in &c.referenced_mods {
 				seen.insert(m.as_str());
 			}
 		}
@@ -181,7 +182,9 @@ pub fn fetch(corpus: &Path, workshop_dir: &Path, fetch_n: usize, min_subs: i64) 
 		.iter()
 		.filter(|c| {
 			workshop_dir.join(&c.compatch_id).is_dir()
-				&& c.patched.iter().all(|m| workshop_dir.join(m).is_dir())
+				&& c.referenced_mods
+					.iter()
+					.all(|m| workshop_dir.join(m).is_dir())
 		})
 		.count();
 	println!(
@@ -199,7 +202,7 @@ pub fn fetch(corpus: &Path, workshop_dir: &Path, fetch_n: usize, min_subs: i64) 
 mod tests {
 	use std::collections::{BTreeMap, HashSet};
 
-	use crate::corpus::{Case, Corpus, PatchedMeta};
+	use crate::corpus::{Case, Corpus, ReferencedModMeta};
 
 	use super::{batches, curate, download_targets, parse_downloaded};
 
@@ -208,13 +211,13 @@ mod tests {
 	/// Build a `Case` whose `mod_churned()` returns `churned`.
 	///
 	/// The compatch `time_updated` is always 500.  Non-churned mods have
-	/// `patched_meta.time_updated = 50` (< 500); churned mods have 999 (> 500).
-	fn make_case(id: &str, patched: &[&str], subs: i64, churned: bool) -> Case {
-		let mut patched_meta = BTreeMap::new();
-		for pid in patched {
-			patched_meta.insert(
+	/// `referenced_mod_meta.time_updated = 50` (< 500); churned mods have 999 (> 500).
+	fn make_case(id: &str, referenced_mods: &[&str], subs: i64, churned: bool) -> Case {
+		let mut referenced_mod_meta = BTreeMap::new();
+		for pid in referenced_mods {
+			referenced_mod_meta.insert(
 				pid.to_string(),
-				PatchedMeta {
+				ReferencedModMeta {
 					title: pid.to_string(),
 					time_created: 100,
 					// churned ⟺ mod updated AFTER the compatch
@@ -225,12 +228,12 @@ mod tests {
 		}
 		Case {
 			compatch_id: id.to_string(),
-			title: id.to_string(),
-			patched: patched.iter().map(|s| s.to_string()).collect(),
+			title: format!("{id} Compatch"),
+			referenced_mods: referenced_mods.iter().map(|s| s.to_string()).collect(),
 			time_created: 100,
 			time_updated: 500,
 			subscriptions: subs,
-			patched_meta,
+			referenced_mod_meta,
 			workshop: Default::default(),
 		}
 	}
@@ -269,11 +272,11 @@ mod tests {
 	fn test_curate_filters_and_sorts_and_caps() {
 		let corpus = Corpus {
 			cases: vec![
-				make_case("c1", &["m1"], 500, false), // passes: 500 subs, not churned
-				make_case("c2", &["m2"], 200, false), // passes but cut by fetch_n=2
-				make_case("c3", &["m3"], 800, true),  // EXCLUDED: churned
-				make_case("c4", &["m4"], 50, false),  // EXCLUDED: < min_subs=100
-				make_case("c5", &["m5"], 600, false), // passes: 600 subs, top-1
+				make_case("c1", &["base", "m1"], 500, false), // passes
+				make_case("c2", &["base", "m2"], 200, false), // cut by fetch_n
+				make_case("c3", &["base", "m3"], 800, true),  // churned
+				make_case("c4", &["base", "m4"], 50, false),  // below min_subs
+				make_case("c5", &["base", "m5"], 600, false), // top-1
 			],
 			..Default::default()
 		};
@@ -288,8 +291,8 @@ mod tests {
 	fn test_curate_all_excluded_returns_empty() {
 		let corpus = Corpus {
 			cases: vec![
-				make_case("c1", &["m1"], 500, true), // churned
-				make_case("c2", &["m2"], 50, false), // below min_subs
+				make_case("c1", &["base", "m1"], 500, true), // churned
+				make_case("c2", &["base", "m2"], 50, false), // below min_subs
 			],
 			..Default::default()
 		};
@@ -300,8 +303,8 @@ mod tests {
 	fn test_curate_fetch_n_larger_than_pool() {
 		let corpus = Corpus {
 			cases: vec![
-				make_case("c1", &["m1"], 300, false),
-				make_case("c2", &["m2"], 100, false),
+				make_case("c1", &["base", "m1"], 300, false),
+				make_case("c2", &["base", "m2"], 100, false),
 			],
 			..Default::default()
 		};
@@ -317,12 +320,12 @@ mod tests {
 	fn test_download_targets_dedupes_and_skips_local() {
 		let case_a = Case {
 			compatch_id: "cp1".to_string(),
-			patched: vec!["m1".to_string(), "m2".to_string()],
+			referenced_mods: vec!["m1".to_string(), "m2".to_string()],
 			..Default::default()
 		};
 		let case_b = Case {
 			compatch_id: "cp2".to_string(),
-			patched: vec!["m2".to_string(), "m3".to_string()], // m2 shared
+			referenced_mods: vec!["m2".to_string(), "m3".to_string()], // m2 shared
 			..Default::default()
 		};
 		let selected: Vec<&Case> = vec![&case_a, &case_b];
@@ -337,7 +340,7 @@ mod tests {
 	fn test_download_targets_all_local() {
 		let case_a = Case {
 			compatch_id: "cp1".to_string(),
-			patched: vec!["m1".to_string()],
+			referenced_mods: vec!["m1".to_string()],
 			..Default::default()
 		};
 		let local: HashSet<String> = HashSet::from(["cp1".to_string(), "m1".to_string()]);

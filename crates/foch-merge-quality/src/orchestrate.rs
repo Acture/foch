@@ -13,7 +13,8 @@ use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
 	Adjudications, ScoreCache, ScoreFileRequest, SourceMod, classify_resolution,
-	conflict_rel_paths, ground_truth_files, run_merge, score_file_with_cache, write_playset,
+	conflict_rel_paths, reference_output_files, retained_paths_with_module_context, run_merge,
+	score_file_with_cache, write_playset,
 };
 
 // ------------------------------------------------------------------ data model
@@ -50,16 +51,16 @@ pub struct CaseTimings {
 pub struct CaseResult {
 	pub compatch_id: String,
 	pub title: String,
-	pub patched: Vec<String>,
+	pub referenced_mods: Vec<String>,
 	/// Snake-case `MergeReportStatus` (e.g. `"ready"`, `"blocked"`).
 	pub merge_status: Option<String>,
 	/// Full `MergeReportValidation` as a JSON value.
 	pub validation: Option<serde_json::Value>,
-	/// Number of ground-truth files in the compatch.
+	/// Number of script files in the compatch reference output.
 	pub ground_truth_files: usize,
-	/// Number of ground-truth files contributed by at least two source mods.
+	/// Number of reference-output files attributable to at least two source mods.
 	pub multi_source_files: usize,
-	/// Verdict counts over every ground-truth file.
+	/// Verdict counts over every reference-output file.
 	pub all_ground_truth_verdicts: BTreeMap<String, usize>,
 	/// Verdict counts over files contributed by at least two source mods.
 	pub multi_source_verdicts: BTreeMap<String, usize>,
@@ -68,7 +69,7 @@ pub struct CaseResult {
 	/// Wall-clock timing breakdown for this case.
 	#[serde(default)]
 	pub timings: CaseTimings,
-	/// Per-file scores for every ground-truth file.
+	/// Per-file scores for every reference-output file.
 	pub files: Vec<FileRecord>,
 }
 
@@ -104,7 +105,7 @@ pub struct RunOptions<'a> {
 /// Score one compatch case against a flat workshop directory.
 ///
 /// The workshop directory must contain `<compatch_id>/` and every `<mod_id>/`
-/// subdirectory listed in `case.patched`.
+/// subdirectory listed in `case.referenced_mods`.
 ///
 /// When `keep` is `true` the per-case temp merge directory is leaked (not
 /// cleaned up); useful for post-hoc inspection.
@@ -126,14 +127,20 @@ pub fn score_case_with_cache(
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
 	let compatch_dir = workshop_dir.join(&case.compatch_id);
 	let mod_dirs: Vec<PathBuf> = case
-		.patched
+		.referenced_mods
 		.iter()
 		.map(|id| workshop_dir.join(id))
 		.collect();
 	let tmp = tempfile::tempdir()?;
 	let out_dir = tmp.path().join("out");
-	let result =
-		score_case_from_paths_with_cache(case, &compatch_dir, &mod_dirs, &out_dir, score_cache)?;
+	let result = score_case_from_paths_with_cache(
+		case,
+		&compatch_dir,
+		&mod_dirs,
+		&out_dir,
+		None,
+		score_cache,
+	)?;
 	if keep {
 		let _ = tmp.keep();
 	}
@@ -147,39 +154,46 @@ pub fn score_case_from_paths_with_cache(
 	compatch_dir: &Path,
 	mod_dirs: &[PathBuf],
 	out_dir: &Path,
+	basegame_root: Option<&Path>,
 	score_cache: &mut ScoreCache,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
-	if case.patched.len() != mod_dirs.len() {
+	if case.referenced_mods.len() != mod_dirs.len() {
 		return Err(format!(
 			"case {} declares {} source mods but {} roots were provided",
 			case.compatch_id,
-			case.patched.len(),
+			case.referenced_mods.len(),
 			mod_dirs.len()
 		)
 		.into());
 	}
 	let total_started = Instant::now();
 	let setup_started = Instant::now();
-	let gt = ground_truth_files(compatch_dir);
+	let gt = reference_output_files(compatch_dir);
 	let tmp = tempfile::tempdir()?;
 	let mods: Vec<(String, PathBuf)> = case
-		.patched
+		.referenced_mods
 		.iter()
 		.cloned()
 		.zip(mod_dirs.iter().cloned())
 		.collect();
 	let dlc = write_playset(tmp.path(), &mods)?;
-	let retained_paths = gt.iter().cloned().collect();
+	let retained_paths = retained_paths_with_module_context(&gt, mod_dirs);
 	let setup_ms = elapsed_ms(setup_started.elapsed());
 
 	let merge_started = Instant::now();
-	let result = run_merge(&dlc, out_dir, /* force= */ false, Some(retained_paths))?;
+	let result = run_merge(
+		&dlc,
+		out_dir,
+		basegame_root,
+		/* force= */ false,
+		Some(retained_paths),
+	)?;
 	let merge_ms = elapsed_ms(merge_started.elapsed());
 
 	let scoring_started = Instant::now();
 	let conflicts = conflict_rel_paths(&result.report);
 	let source_mods: Vec<SourceMod<'_>> = case
-		.patched
+		.referenced_mods
 		.iter()
 		.zip(mod_dirs)
 		.map(|(id, root)| SourceMod { id, root })
@@ -249,7 +263,7 @@ pub fn score_case_from_paths_with_cache(
 	Ok(CaseResult {
 		compatch_id: case.compatch_id.clone(),
 		title: case.title.clone(),
-		patched: case.patched.clone(),
+		referenced_mods: case.referenced_mods.clone(),
 		merge_status,
 		validation,
 		ground_truth_files: gt.len(),
@@ -272,8 +286,8 @@ fn elapsed_ms(duration: Duration) -> u64 {
 	u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Filter the corpus to fully-local cases (compatch + all patched mods present
-/// in `workshop_dir`), run foch merge on each, score against the compatch, and
+/// Filter the corpus to scorable, fully-local cases (candidate and referenced
+/// mods present in `workshop_dir`), run foch merge on each, and
 /// write `results.json` + `report.md`.
 pub fn run(opts: &RunOptions) -> CmdResult {
 	let text = std::fs::read_to_string(opts.corpus)?;
@@ -282,9 +296,14 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 	let local: Vec<&Case> = corpus
 		.cases
 		.iter()
-		.filter(|c| c.patched.len() >= 2)
+		.filter(|case| case.oracle_assessment().is_scorable())
+		.filter(|c| c.referenced_mods.len() >= 2)
 		.filter(|c| opts.workshop_dir.join(&c.compatch_id).is_dir())
-		.filter(|c| c.patched.iter().all(|m| opts.workshop_dir.join(m).is_dir()))
+		.filter(|c| {
+			c.referenced_mods
+				.iter()
+				.all(|m| opts.workshop_dir.join(m).is_dir())
+		})
 		.collect();
 
 	let to_score: &[&Case] = if opts.limit > 0 {
@@ -372,12 +391,16 @@ pub fn learn(results_dir: &Path, workshop_dir: &Path, basegame_root: Option<&Pat
 
 	let mut rows: Vec<ResolutionRow> = Vec::new();
 	for r in &results {
-		if r.patched.len() < 2 {
+		if r.referenced_mods.len() < 2 {
 			continue;
 		}
-		let source_roots: Vec<PathBuf> = r.patched.iter().map(|id| workshop_dir.join(id)).collect();
+		let source_roots: Vec<PathBuf> = r
+			.referenced_mods
+			.iter()
+			.map(|id| workshop_dir.join(id))
+			.collect();
 		let sources: Vec<SourceMod<'_>> = r
-			.patched
+			.referenced_mods
 			.iter()
 			.zip(&source_roots)
 			.map(|(id, root)| SourceMod { id, root })

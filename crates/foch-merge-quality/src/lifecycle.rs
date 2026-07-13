@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Eu4Discovery, WorkshopCatalog};
-use crate::corpus::{Case, Corpus};
+use crate::corpus::{
+	Case, Corpus, ORACLE_POLICY_VERSION, OracleAssessment, OracleStatus, assess_oracle_candidate,
+};
 use crate::dataset::{
 	DatasetPaths, FileResultRecord, GameIdentity, MeasurementIdentity, MeasurementRecord,
 	MeasurementSummary, ObjectKind, ObjectRecord, ObservationRecord, SCHEMA, SCORER_VERSION,
@@ -61,7 +63,30 @@ pub struct ReportOptions<'a> {
 	pub output_dir: &'a Path,
 	pub executable_hash: Option<&'a str>,
 	pub config_hash: Option<&'a str>,
+	pub cohort: ReportCohort,
 	pub limit: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReportCohort {
+	Scorable,
+	AllCandidates,
+}
+
+impl ReportCohort {
+	fn includes(self, assessment: &OracleAssessment) -> bool {
+		match self {
+			Self::Scorable => assessment.is_scorable(),
+			Self::AllCandidates => true,
+		}
+	}
+
+	fn as_str(self) -> &'static str {
+		match self {
+			Self::Scorable => "scorable",
+			Self::AllCandidates => "all_candidates",
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +127,12 @@ struct CompletedMeasurement {
 struct BaselineReport {
 	schema: String,
 	generated_at: String,
+	scorer_version: String,
+	oracle_policy_version: String,
+	cohort: String,
+	candidate_cases: usize,
+	scorable_cases: usize,
+	excluded_cases: usize,
 	baseline_complete: bool,
 	total_cases: usize,
 	terminal_cases: usize,
@@ -110,7 +141,7 @@ struct BaselineReport {
 	status_counts: BTreeMap<String, usize>,
 	executable_hash: Option<String>,
 	config_hash: Option<String>,
-	all_ground_truth: QualityAggregate,
+	reference_output: QualityAggregate,
 	multi_source: QualityAggregate,
 	cases: Vec<BaselineCase>,
 }
@@ -127,6 +158,7 @@ struct BaselineCase {
 	case_id: String,
 	snapshot_id: String,
 	title: String,
+	oracle: OracleAssessment,
 	status: String,
 	measurement_id: Option<String>,
 	detail: Option<String>,
@@ -155,7 +187,7 @@ pub fn collect(options: &CollectOptions<'_>) -> Result<CollectSummary, Box<dyn s
 	let local: Vec<(&Case, PathBuf, Vec<PathBuf>)> = corpus
 		.cases
 		.iter()
-		.filter(|case| case.patched.len() >= 2)
+		.filter(|case| case.referenced_mods.len() >= 2)
 		.filter_map(|case| resolve_case_paths(case, &options.discovery.workshop))
 		.take(if options.limit == 0 {
 			usize::MAX
@@ -204,7 +236,7 @@ pub fn collect(options: &CollectOptions<'_>) -> Result<CollectSummary, Box<dyn s
 		)?;
 
 		let mut source_refs = Vec::with_capacity(source_paths.len());
-		for (source_id, source_path) in case.patched.iter().zip(source_paths) {
+		for (source_id, source_path) in case.referenced_mods.iter().zip(source_paths) {
 			if !cache.contains_key(source_path) {
 				input_position += 1;
 				eprintln!(
@@ -468,7 +500,7 @@ pub fn measure_one(
 		title: observation
 			.map(|observation| observation.compatch.title.clone())
 			.unwrap_or_else(|| snapshot.case_id.clone()),
-		patched: snapshot
+		referenced_mods: snapshot
 			.source_mods
 			.iter()
 			.map(|source| source.workshop_id.clone())
@@ -481,11 +513,12 @@ pub fn measure_one(
 		&compatch,
 		&source_dirs,
 		output_dir,
+		basegame_root,
 		&mut cache,
 	) {
 		Ok(result) => {
 			let source_mods: Vec<SourceMod<'_>> = case
-				.patched
+				.referenced_mods
 				.iter()
 				.zip(&source_dirs)
 				.map(|(id, root)| SourceMod { id, root })
@@ -515,20 +548,47 @@ pub fn measure_one(
 pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
 	let paths = DatasetPaths::new(options.dataset_root);
 	let observations = read_jsonl::<ObservationRecord>(&paths.observations)?;
-	let mut snapshots = latest_snapshots(
+	let candidate_snapshots = latest_snapshots(
 		read_jsonl::<SnapshotRecord>(&paths.snapshots)?,
 		&observations,
 	);
+	let candidate_cases = candidate_snapshots.len();
+	let mut snapshots: Vec<(SnapshotRecord, String, OracleAssessment)> = candidate_snapshots
+		.into_iter()
+		.map(|snapshot| {
+			let observation = latest_observation(&observations, &snapshot.snapshot_id);
+			let title = observation
+				.map(|record| record.compatch.title.clone())
+				.unwrap_or_else(|| snapshot.case_id.clone());
+			let oracle = assess_oracle_candidate(
+				&title,
+				snapshot.source_mods.len(),
+				observation.is_some_and(|record| record.mod_churned),
+			);
+			(snapshot, title, oracle)
+		})
+		.collect();
+	let scorable_cases = snapshots
+		.iter()
+		.filter(|(_, _, assessment)| assessment.is_scorable())
+		.count();
+	snapshots.retain(|(_, _, assessment)| options.cohort.includes(assessment));
 	if options.limit > 0 {
 		snapshots.truncate(options.limit);
 	}
+	let report_snapshot_ids: HashSet<&str> = snapshots
+		.iter()
+		.map(|(snapshot, _, _)| snapshot.snapshot_id.as_str())
+		.collect();
 	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements)?;
 	let cohort = measurements
 		.iter()
 		.filter(|measurement| {
-			options
-				.executable_hash
-				.is_none_or(|hash| measurement.executable_hash == hash)
+			report_snapshot_ids.contains(measurement.snapshot_id.as_str())
+				&& measurement.scorer_version == SCORER_VERSION
+				&& options
+					.executable_hash
+					.is_none_or(|hash| measurement.executable_hash == hash)
 				&& options
 					.config_hash
 					.is_none_or(|hash| measurement.config_hash == hash)
@@ -544,9 +604,10 @@ pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Err
 		.or_else(|| cohort.map(|measurement| measurement.config_hash.clone()));
 	let mut selected: HashMap<String, &MeasurementRecord> = HashMap::new();
 	for measurement in &measurements {
-		if executable_hash
-			.as_deref()
-			.is_some_and(|hash| measurement.executable_hash != hash)
+		if measurement.scorer_version != SCORER_VERSION
+			|| executable_hash
+				.as_deref()
+				.is_some_and(|hash| measurement.executable_hash != hash)
 			|| config_hash
 				.as_deref()
 				.is_some_and(|hash| measurement.config_hash != hash)
@@ -567,9 +628,9 @@ pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Err
 	let mut status_counts = BTreeMap::new();
 	let mut terminal_cases = 0_usize;
 	let mut completed_cases = 0_usize;
-	let mut all_ground_truth = QualityAggregate::default();
+	let mut reference_output = QualityAggregate::default();
 	let mut multi_source = QualityAggregate::default();
-	for snapshot in &snapshots {
+	for (snapshot, title, oracle) in &snapshots {
 		let measurement = selected.get(&snapshot.snapshot_id).copied();
 		let (status, measurement_id, detail, summary) = match measurement {
 			Some(measurement) => {
@@ -578,10 +639,10 @@ pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Err
 				if measurement.status == TerminalStatus::Completed {
 					completed_cases += 1;
 					if let Some(summary) = &measurement.summary {
-						all_ground_truth.accepted += summary.accepted_ground_truth_files;
-						all_ground_truth.total += summary.ground_truth_files;
+						reference_output.accepted += summary.accepted_ground_truth_files;
+						reference_output.total += summary.ground_truth_files;
 						merge_counts(
-							&mut all_ground_truth.verdicts,
+							&mut reference_output.verdicts,
 							&summary.all_ground_truth_verdicts,
 						);
 						multi_source.accepted += summary.accepted_multi_source_files;
@@ -599,13 +660,11 @@ pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Err
 			None => ("missing".to_string(), None, None, None),
 		};
 		*status_counts.entry(status.clone()).or_default() += 1;
-		let title = latest_observation(&observations, &snapshot.snapshot_id)
-			.map(|observation| observation.compatch.title.clone())
-			.unwrap_or_else(|| snapshot.case_id.clone());
 		cases.push(BaselineCase {
 			case_id: snapshot.case_id.clone(),
 			snapshot_id: snapshot.snapshot_id.clone(),
-			title,
+			title: title.clone(),
+			oracle: oracle.clone(),
 			status,
 			measurement_id,
 			detail,
@@ -615,6 +674,12 @@ pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Err
 	let report = BaselineReport {
 		schema: SCHEMA.to_string(),
 		generated_at: now_rfc3339(),
+		scorer_version: SCORER_VERSION.to_string(),
+		oracle_policy_version: ORACLE_POLICY_VERSION.to_string(),
+		cohort: options.cohort.as_str().to_string(),
+		candidate_cases,
+		scorable_cases,
+		excluded_cases: candidate_cases.saturating_sub(scorable_cases),
 		baseline_complete: !snapshots.is_empty() && terminal_cases == snapshots.len(),
 		total_cases: snapshots.len(),
 		terminal_cases,
@@ -623,7 +688,7 @@ pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Err
 		status_counts,
 		executable_hash,
 		config_hash,
-		all_ground_truth,
+		reference_output,
 		multi_source,
 		cases,
 	};
@@ -768,7 +833,7 @@ fn resolve_case_paths<'a>(
 ) -> Option<(&'a Case, PathBuf, Vec<PathBuf>)> {
 	let compatch = catalog.resolve(&case.compatch_id)?;
 	let sources = case
-		.patched
+		.referenced_mods
 		.iter()
 		.map(|id| catalog.resolve(id))
 		.collect::<Option<Vec<_>>>()?;
@@ -790,10 +855,10 @@ fn snapshot_cached(
 
 fn observation_for_case(case: &Case, snapshot_id: &str, observed_at: &str) -> ObservationRecord {
 	let source_mods = case
-		.patched
+		.referenced_mods
 		.iter()
 		.map(|id| {
-			let meta = case.patched_meta.get(id);
+			let meta = case.referenced_mod_meta.get(id);
 			WorkshopObservation {
 				workshop_id: id.clone(),
 				title: meta
@@ -1066,6 +1131,14 @@ fn terminal_status_name(status: TerminalStatus) -> &'static str {
 	}
 }
 
+fn oracle_status_name(status: OracleStatus) -> &'static str {
+	match status {
+		OracleStatus::Accepted => "accepted",
+		OracleStatus::Proposed => "proposed",
+		OracleStatus::Excluded => "excluded",
+	}
+}
+
 fn merge_counts(target: &mut BTreeMap<String, usize>, source: &BTreeMap<String, usize>) {
 	for (key, count) in source {
 		*target.entry(key.clone()).or_default() += count;
@@ -1077,6 +1150,16 @@ fn render_baseline_report(report: &BaselineReport) -> String {
 		"# foch merge-quality baseline".to_string(),
 		String::new(),
 		format!(
+			"Cohort: **{}** (scorer `{}`, oracle policy `{}`) · candidates: **{}** · scorable: **{}** · excluded: **{}**",
+			report.cohort,
+			report.scorer_version,
+			report.oracle_policy_version,
+			report.candidate_cases,
+			report.scorable_cases,
+			report.excluded_cases
+		),
+		"The scorable cohort combines manually accepted and automatically proposed cases; proposed cases remain provisional oracle evidence.".to_string(),
+		format!(
 			"Baseline complete: **{}** · terminal cases: **{}/{}** · completed merges: **{}/{}**",
 			report.baseline_complete,
 			report.terminal_cases,
@@ -1085,9 +1168,9 @@ fn render_baseline_report(report: &BaselineReport) -> String {
 			report.total_cases
 		),
 		format!(
-			"All ground truth accepted: **{}/{}** · multi-source accepted: **{}/{}**",
-			report.all_ground_truth.accepted,
-			report.all_ground_truth.total,
+			"Reference-output accepted: **{}/{}** · multi-source accepted: **{}/{}**",
+			report.reference_output.accepted,
+			report.reference_output.total,
 			report.multi_source.accepted,
 			report.multi_source.total
 		),
@@ -1104,8 +1187,8 @@ fn render_baseline_report(report: &BaselineReport) -> String {
 		String::new(),
 		"## Cases".to_string(),
 		String::new(),
-		"| case | snapshot | status | multi-source accepted |".to_string(),
-		"|---|---|---|---:|".to_string(),
+		"| case | snapshot | oracle | status | multi-source accepted |".to_string(),
+		"|---|---|---|---|---:|".to_string(),
 	]);
 	for case in &report.cases {
 		let accepted = case.summary.as_ref().map_or_else(
@@ -1118,8 +1201,13 @@ fn render_baseline_report(report: &BaselineReport) -> String {
 			},
 		);
 		lines.push(format!(
-			"| {} (`{}`) | `{}` | `{}` | {} |",
-			case.title, case.case_id, case.snapshot_id, case.status, accepted
+			"| {} (`{}`) | `{}` | `{}` | `{}` | {} |",
+			case.title,
+			case.case_id,
+			case.snapshot_id,
+			oracle_status_name(case.oracle.status),
+			case.status,
+			accepted
 		));
 	}
 	lines.push(String::new());
@@ -1198,12 +1286,20 @@ mod tests {
 	}
 
 	fn observation(snapshot: &SnapshotRecord, observed_at: &str) -> ObservationRecord {
+		observation_with_title(snapshot, observed_at, &snapshot.case_id)
+	}
+
+	fn observation_with_title(
+		snapshot: &SnapshotRecord,
+		observed_at: &str,
+		title: &str,
+	) -> ObservationRecord {
 		ObservationRecord::new(
 			snapshot.snapshot_id.clone(),
 			observed_at.to_string(),
 			WorkshopObservation {
 				workshop_id: snapshot.case_id.clone(),
-				title: snapshot.case_id.clone(),
+				title: title.to_string(),
 				time_created: 0,
 				time_updated: 0,
 				provenance: Default::default(),
@@ -1212,6 +1308,91 @@ mod tests {
 			0,
 			false,
 		)
+	}
+
+	#[test]
+	fn report_scorable_cohort_excludes_broad_search_false_positives() {
+		let temp = tempfile::tempdir().unwrap();
+		let paths = DatasetPaths::new(temp.path().join("dataset"));
+		paths.ensure_layout().unwrap();
+		let excluded = snapshot("excluded", "c");
+		let proposed = snapshot("proposed", "d");
+		for snapshot in [&excluded, &proposed] {
+			append_unique(&paths.snapshots, snapshot).unwrap();
+		}
+		append_unique(
+			&paths.observations,
+			&observation_with_title(
+				&excluded,
+				"2026-07-12T00:00:00Z",
+				"Elder Scrolls Universalis",
+			),
+		)
+		.unwrap();
+		append_unique(
+			&paths.observations,
+			&observation_with_title(&proposed, "2026-07-12T00:00:00Z", "Actual Compatch"),
+		)
+		.unwrap();
+		append_unique(
+			&paths.measurements,
+			&MeasurementRecord::new(
+				MeasurementIdentity {
+					snapshot_id: proposed.snapshot_id.clone(),
+					executable_hash: "exe".to_string(),
+					scorer_version: SCORER_VERSION.to_string(),
+					config_hash: "config".to_string(),
+				},
+				"2026-07-12T00:00:00Z".to_string(),
+				"2026-07-12T00:01:00Z".to_string(),
+				TerminalStatus::Crashed,
+				Some("signal".to_string()),
+				None,
+				None,
+			),
+		)
+		.unwrap();
+		append_unique(
+			&paths.measurements,
+			&MeasurementRecord::new(
+				MeasurementIdentity {
+					snapshot_id: excluded.snapshot_id.clone(),
+					executable_hash: "excluded-exe".to_string(),
+					scorer_version: SCORER_VERSION.to_string(),
+					config_hash: "excluded-config".to_string(),
+				},
+				"2026-07-13T00:00:00Z".to_string(),
+				"2026-07-13T00:01:00Z".to_string(),
+				TerminalStatus::Crashed,
+				Some("excluded candidate".to_string()),
+				None,
+				None,
+			),
+		)
+		.unwrap();
+
+		let output = temp.path().join("report");
+		report(&ReportOptions {
+			dataset_root: &paths.root,
+			output_dir: &output,
+			executable_hash: None,
+			config_hash: None,
+			cohort: ReportCohort::Scorable,
+			limit: 0,
+		})
+		.unwrap();
+		let json: serde_json::Value =
+			serde_json::from_str(&fs::read_to_string(output.join("baseline.json")).unwrap())
+				.unwrap();
+		assert_eq!(json["candidate_cases"], 2);
+		assert_eq!(json["scorable_cases"], 1);
+		assert_eq!(json["excluded_cases"], 1);
+		assert_eq!(json["total_cases"], 1);
+		assert_eq!(json["baseline_complete"], true);
+		assert_eq!(json["executable_hash"], "exe");
+		assert_eq!(json["config_hash"], "config");
+		assert_eq!(json["cases"][0]["case_id"], "proposed");
+		assert_eq!(json["cases"][0]["oracle"]["status"], "proposed");
 	}
 
 	#[test]
@@ -1284,6 +1465,7 @@ mod tests {
 			output_dir: &output,
 			executable_hash: Some("exe"),
 			config_hash: Some("config"),
+			cohort: ReportCohort::AllCandidates,
 			limit: 0,
 		})
 		.unwrap();
@@ -1293,5 +1475,55 @@ mod tests {
 		assert_eq!(json["baseline_complete"], false);
 		assert_eq!(json["terminal_cases"], 1);
 		assert_eq!(json["merge_failed_cases"], 1);
+	}
+
+	#[test]
+	fn report_does_not_relabel_stale_scorer_measurements() {
+		let temp = tempfile::tempdir().unwrap();
+		let paths = DatasetPaths::new(temp.path().join("dataset"));
+		paths.ensure_layout().unwrap();
+		let snapshot = snapshot("case", "c");
+		append_unique(&paths.snapshots, &snapshot).unwrap();
+		append_unique(
+			&paths.observations,
+			&observation(&snapshot, "2026-07-12T00:00:00Z"),
+		)
+		.unwrap();
+		append_unique(
+			&paths.measurements,
+			&MeasurementRecord::new(
+				MeasurementIdentity {
+					snapshot_id: snapshot.snapshot_id.clone(),
+					executable_hash: "exe".to_string(),
+					scorer_version: "0.9.0".to_string(),
+					config_hash: "config".to_string(),
+				},
+				"start".to_string(),
+				"finish".to_string(),
+				TerminalStatus::Completed,
+				None,
+				None,
+				None,
+			),
+		)
+		.unwrap();
+
+		let output = temp.path().join("report");
+		report(&ReportOptions {
+			dataset_root: &paths.root,
+			output_dir: &output,
+			executable_hash: Some("exe"),
+			config_hash: Some("config"),
+			cohort: ReportCohort::AllCandidates,
+			limit: 0,
+		})
+		.unwrap();
+		let json: serde_json::Value =
+			serde_json::from_str(&fs::read_to_string(output.join("baseline.json")).unwrap())
+				.unwrap();
+		assert_eq!(json["scorer_version"], SCORER_VERSION);
+		assert_eq!(json["baseline_complete"], false);
+		assert_eq!(json["terminal_cases"], 0);
+		assert_eq!(json["cases"][0]["status"], "missing");
 	}
 }

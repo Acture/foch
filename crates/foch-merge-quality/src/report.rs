@@ -115,7 +115,7 @@ fn render_report(results: &[CaseResult]) -> String {
 	}
 
 	lines.push(format!(
-		"Cases scored: **{}** · all ground-truth accepted: **{}/{}** · multi-source accepted: **{}/{}**",
+		"Cases scored: **{}** · reference-output accepted: **{}/{}** · multi-source accepted: **{}/{}**",
 		results.len(),
 		accepted_ground_truth,
 		total_ground_truth,
@@ -139,7 +139,7 @@ fn render_report(results: &[CaseResult]) -> String {
 		lines.push(format!("| `{}` | {} | {} |", v, n, verdict_meaning(v)));
 	}
 	lines.push(String::new());
-	lines.push("## All ground-truth verdicts".to_string());
+	lines.push("## Reference-output verdicts".to_string());
 	lines.push(String::new());
 	lines.push("| verdict | count | meaning |".to_string());
 	lines.push("|---|---|---|".to_string());
@@ -158,10 +158,10 @@ fn render_report(results: &[CaseResult]) -> String {
 
 	for r in results {
 		lines.push(format!(
-			"### {} (`{}`) — patches {}",
+			"### {} (`{}`) — references {}",
 			r.title,
 			r.compatch_id,
-			r.patched.join(" + ")
+			r.referenced_mods.join(" + ")
 		));
 		let val_parse_errors = r
 			.validation
@@ -171,7 +171,7 @@ fn render_report(results: &[CaseResult]) -> String {
 			.map(|n| n.to_string())
 			.unwrap_or_else(|| "?".to_string());
 		lines.push(format!(
-			"- merge: status={} parse_errors={} · ground-truth={}/{} accepted · multi-source={}/{} accepted",
+			"- merge: status={} parse_errors={} · reference-output={}/{} accepted · multi-source={}/{} accepted",
 			r.merge_status.as_deref().unwrap_or("?"),
 			val_parse_errors,
 			r.accepted_ground_truth_files,
