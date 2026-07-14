@@ -19,7 +19,7 @@ use crate::dataset::{
 	append_unique_many, now_rfc3339, read_jsonl, stable_id,
 };
 use crate::object_store::{ExportProfile, ObjectStore, StoredObject};
-use crate::orchestrate::{CaseResult, score_case_from_paths_with_cache};
+use crate::orchestrate::{BaseGameMode, CaseResult, score_case_from_paths_with_cache};
 use crate::score::{Resolution, ScoreCache, SourceMod, classify_resolution};
 
 #[derive(Clone, Debug)]
@@ -44,7 +44,7 @@ pub struct MeasureOptions<'a> {
 	pub timeout: Duration,
 	pub limit: usize,
 	pub executable: &'a Path,
-	pub basegame_root: Option<&'a Path>,
+	pub basegame_root: &'a Path,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -310,7 +310,14 @@ pub fn measure(
 		snapshots.truncate(options.limit);
 	}
 	let executable_hash = digest_file(options.executable)?;
-	let config_hash = scorer_config_hash(options.timeout, options.basegame_root.is_some());
+	let basegame_version = crate::config::detect_game_version(options.basegame_root)
+		.ok_or("failed to detect base-game version for scorer identity")?;
+	let basegame_snapshot =
+		foch_engine::installed_base_snapshot_identity("eu4", &basegame_version)?
+			.ok_or_else(|| format!("no installed base snapshot for eu4@{basegame_version}"))?;
+	let basegame_snapshot_label = basegame_snapshot.as_label();
+	let basegame_identity = format!("eu4@{basegame_version}/{basegame_snapshot_label}");
+	let config_hash = scorer_config_hash(options.timeout, Some(&basegame_identity));
 	let existing: HashSet<String> = read_jsonl::<MeasurementRecord>(&paths.measurements)?
 		.into_iter()
 		.map(|measurement| measurement.measurement_id)
@@ -400,6 +407,7 @@ pub fn measure(
 			&stderr_path,
 			options.timeout,
 			options.basegame_root,
+			&basegame_snapshot_label,
 		);
 		let (mut status, mut detail, completed) = classify_child(child, &stdout_path, &stderr_path);
 
@@ -461,7 +469,8 @@ pub fn measure_one(
 	dataset_root: &Path,
 	snapshot_id: &str,
 	output_dir: &Path,
-	basegame_root: Option<&Path>,
+	basegame_root: &Path,
+	expected_base_snapshot_identity: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
 	let paths = DatasetPaths::new(dataset_root);
 	let snapshot = read_jsonl::<SnapshotRecord>(&paths.snapshots)?
@@ -471,19 +480,17 @@ pub fn measure_one(
 	let observations = read_jsonl::<ObservationRecord>(&paths.observations)?;
 	let observation = latest_observation(&observations, snapshot_id);
 	let store = ObjectStore::new(&paths.objects, &paths.work);
-	if let Some(basegame_root) = basegame_root {
-		let actual_version = crate::config::detect_game_version(basegame_root);
-		if actual_version.as_deref() != Some(snapshot.game.version.as_str()) {
-			let output = WorkerOutput::Fatal {
-				detail: format!(
-					"base-game version mismatch: snapshot={} local={}",
-					snapshot.game.version,
-					actual_version.as_deref().unwrap_or("unknown")
-				),
-			};
-			println!("{}", serde_json::to_string(&output)?);
-			return Ok(());
-		}
+	let actual_version = crate::config::detect_game_version(basegame_root);
+	if actual_version.as_deref() != Some(snapshot.game.version.as_str()) {
+		let output = WorkerOutput::Fatal {
+			detail: format!(
+				"base-game version mismatch: snapshot={} local={}",
+				snapshot.game.version,
+				actual_version.as_deref().unwrap_or("unknown")
+			),
+		};
+		println!("{}", serde_json::to_string(&output)?);
+		return Ok(());
 	}
 	let compatch = store.open_object(&snapshot.compatch.content_hash)?.tree;
 	let source_dirs: Vec<PathBuf> = snapshot
@@ -513,7 +520,8 @@ pub fn measure_one(
 		&compatch,
 		&source_dirs,
 		output_dir,
-		basegame_root,
+		BaseGameMode::Path(basegame_root),
+		Some(expected_base_snapshot_identity),
 		&mut cache,
 	) {
 		Ok(result) => {
@@ -528,7 +536,7 @@ pub fn measure_one(
 				.iter()
 				.filter(|file| file.multi_source)
 				.filter_map(|file| {
-					classify_resolution(&file.rel, &source_mods, &compatch, basegame_root)
+					classify_resolution(&file.rel, &source_mods, &compatch, Some(basegame_root))
 						.map(|resolution| (file.rel.clone(), resolution))
 				})
 				.collect();
@@ -811,13 +819,13 @@ fn write_export_checksums(output_dir: &Path) -> io::Result<()> {
 	fs::write(output_dir.join("checksums.txt"), checksums)
 }
 
-pub fn scorer_config_hash(timeout: Duration, basegame_enabled: bool) -> String {
+pub fn scorer_config_hash(timeout: Duration, basegame_identity: Option<&str>) -> String {
 	let config = serde_json::json!({
 		"scorer_version": SCORER_VERSION,
 		"timeout_secs": timeout.as_secs(),
 		"ordering": "gui_sensitive_else_insensitive",
 		"basegame_subtraction": "semantic_atoms_v1",
-		"basegame_enabled": basegame_enabled,
+		"basegame_identity": basegame_identity,
 		"multi_source": "all_sources_v1"
 	});
 	stable_id("scorer-config", &[config.to_string().as_bytes()])
@@ -987,20 +995,17 @@ fn run_measurement_child(
 	stdout_path: &Path,
 	stderr_path: &Path,
 	timeout: Duration,
-	basegame_root: Option<&Path>,
+	basegame_root: &Path,
+	base_snapshot_identity: &str,
 ) -> io::Result<ChildOutcome> {
-	let mut command = Command::new(executable);
-	command
-		.arg("--dataset-root")
-		.arg(dataset_root)
-		.arg("measure-one")
-		.arg("--snapshot-id")
-		.arg(snapshot_id)
-		.arg("--output-dir")
-		.arg(output_dir);
-	if let Some(basegame_root) = basegame_root {
-		command.arg("--basegame-root").arg(basegame_root);
-	}
+	let mut command = measurement_child_command(
+		executable,
+		dataset_root,
+		snapshot_id,
+		output_dir,
+		basegame_root,
+		base_snapshot_identity,
+	);
 	let mut child = command
 		.stdout(Stdio::from(File::create(stdout_path)?))
 		.stderr(Stdio::from(File::create(stderr_path)?))
@@ -1030,6 +1035,30 @@ fn run_measurement_child(
 		}
 		thread::sleep(Duration::from_millis(100));
 	}
+}
+
+fn measurement_child_command(
+	executable: &Path,
+	dataset_root: &Path,
+	snapshot_id: &str,
+	output_dir: &Path,
+	basegame_root: &Path,
+	base_snapshot_identity: &str,
+) -> Command {
+	let mut command = Command::new(executable);
+	command
+		.arg("--dataset-root")
+		.arg(dataset_root)
+		.arg("measure-one")
+		.arg("--snapshot-id")
+		.arg(snapshot_id)
+		.arg("--output-dir")
+		.arg(output_dir)
+		.arg("--basegame-root")
+		.arg(basegame_root)
+		.arg("--base-snapshot-identity")
+		.arg(base_snapshot_identity);
+	command
 }
 
 fn classify_child(
@@ -1412,16 +1441,52 @@ mod tests {
 	#[test]
 	fn scorer_config_identity_changes_with_timeout() {
 		assert_eq!(
-			scorer_config_hash(Duration::from_secs(600), true),
-			scorer_config_hash(Duration::from_secs(600), true)
+			scorer_config_hash(Duration::from_secs(600), Some("eu4@1/base-a")),
+			scorer_config_hash(Duration::from_secs(600), Some("eu4@1/base-a"))
 		);
 		assert_ne!(
-			scorer_config_hash(Duration::from_secs(600), true),
-			scorer_config_hash(Duration::from_secs(601), true)
+			scorer_config_hash(Duration::from_secs(600), Some("eu4@1/base-a")),
+			scorer_config_hash(Duration::from_secs(601), Some("eu4@1/base-a"))
 		);
 		assert_ne!(
-			scorer_config_hash(Duration::from_secs(600), true),
-			scorer_config_hash(Duration::from_secs(600), false)
+			scorer_config_hash(Duration::from_secs(600), Some("eu4@1/base-a")),
+			scorer_config_hash(Duration::from_secs(600), Some("eu4@1/base-b"))
+		);
+		assert_ne!(
+			scorer_config_hash(Duration::from_secs(600), Some("eu4@1/base-a")),
+			scorer_config_hash(Duration::from_secs(600), None)
+		);
+	}
+
+	#[test]
+	fn measurement_child_command_propagates_exact_base_snapshot_identity() {
+		let command = measurement_child_command(
+			Path::new("/tmp/foch-mq"),
+			Path::new("/tmp/dataset"),
+			"snapshot-1",
+			Path::new("/tmp/output"),
+			Path::new("/tmp/eu4"),
+			"sha256:parent-snapshot",
+		);
+		let args: Vec<String> = command
+			.get_args()
+			.map(|arg| arg.to_string_lossy().into_owned())
+			.collect();
+		assert_eq!(
+			args,
+			[
+				"--dataset-root",
+				"/tmp/dataset",
+				"measure-one",
+				"--snapshot-id",
+				"snapshot-1",
+				"--output-dir",
+				"/tmp/output",
+				"--basegame-root",
+				"/tmp/eu4",
+				"--base-snapshot-identity",
+				"sha256:parent-snapshot",
+			]
 		);
 	}
 

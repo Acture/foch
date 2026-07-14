@@ -33,7 +33,6 @@ fn install_test_base_data(game_root: &Path, data_root: &Path) {
 	let filter = FileFilter::for_game(game.clone());
 	let built = build_base_snapshot(&game, game_root, Some("1.37.5"), &filter).unwrap();
 	install_built_snapshot(
-		&built.snapshot,
 		&built.encoded_snapshot,
 		BaseDataSource::Build,
 		Some(built.snapshot_asset_name),
@@ -112,6 +111,34 @@ fn collect_measure_report_roundtrip() {
 	let mut collect = common.to_vec();
 	collect.push("collect");
 	run(binary, &collect);
+	let paths = DatasetPaths::new(&dataset);
+	let snapshot_id = read_jsonl::<SnapshotRecord>(&paths.snapshots)
+		.unwrap()
+		.pop()
+		.unwrap()
+		.snapshot_id;
+	let wrong_output = temp.path().join("wrong-identity-output");
+	let mut wrong_identity = common.to_vec();
+	wrong_identity.extend([
+		"measure-one",
+		"--snapshot-id",
+		&snapshot_id,
+		"--output-dir",
+		wrong_output.to_str().unwrap(),
+		"--basegame-root",
+		game.to_str().unwrap(),
+		"--base-snapshot-identity",
+		"sha256:not-the-parent-snapshot",
+	]);
+	let wrong_identity = run(binary, &wrong_identity);
+	let worker: serde_json::Value = serde_json::from_slice(&wrong_identity.stdout).unwrap();
+	assert_eq!(worker["status"], "merge_failed");
+	assert!(
+		worker["detail"]
+			.as_str()
+			.unwrap()
+			.contains("installed base snapshot identity mismatch")
+	);
 	let mut measure = common.to_vec();
 	measure.extend(["measure", "--timeout-secs", "30"]);
 	run(binary, &measure);
@@ -119,7 +146,6 @@ fn collect_measure_report_roundtrip() {
 	report.push("report");
 	run(binary, &report);
 
-	let paths = DatasetPaths::new(&dataset);
 	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements).unwrap();
 	assert_eq!(measurements.len(), 1);
 	assert_eq!(measurements[0].status, TerminalStatus::Completed);
@@ -129,7 +155,9 @@ fn collect_measure_report_roundtrip() {
 	assert!(
 		file_results[0].result["score"]["accepted_ok"]
 			.as_bool()
-			.unwrap()
+			.unwrap(),
+		"unexpected file result: {}",
+		file_results[0].result
 	);
 	assert!(!file_results[0].result["human_resolution"].is_null());
 	assert_eq!(

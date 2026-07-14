@@ -24,6 +24,8 @@ crates/foch-merge-quality/results/
 crates/foch-merge-quality/dataset/objects/
 crates/foch-merge-quality/dataset/.work/
 crates/foch-merge-quality/dataset/.lock/
+# Local proprietary game payload used by base-aware corpus scoring.
+crates/foch-merge-quality/tests/fixtures/basegame-text.tar.gz
 scripts/merge_quality/corpus.json
 scripts/merge_quality/results/
 scripts/merge_quality/__pycache__/

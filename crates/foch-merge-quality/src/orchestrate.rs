@@ -13,8 +13,8 @@ use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
 	Adjudications, ScoreCache, ScoreFileRequest, SourceMod, classify_resolution,
-	conflict_rel_paths, reference_output_files, retained_paths_with_module_context, run_merge,
-	score_file_with_cache, write_playset,
+	conflict_rel_paths, reference_output_files, run_merge, score_file_with_cache_and_basegame,
+	scoring_reference_units, scoring_requested_paths, write_playset,
 };
 
 // ------------------------------------------------------------------ data model
@@ -92,6 +92,9 @@ pub struct RunOptions<'a> {
 	pub workshop_dir: &'a Path,
 	/// Directory to write `results.json` + `report.md` into.
 	pub results_dir: &'a Path,
+	/// Base-game mode. Quality runs must pass a concrete version-bound root;
+	/// empty-base fallback is allowed only through the explicit variant.
+	pub base_game: BaseGameMode<'a>,
 	/// Cap on number of cases scored (`0` = all).
 	pub limit: usize,
 	/// Preserve per-case temp merge directories.
@@ -100,6 +103,21 @@ pub struct RunOptions<'a> {
 	/// corpus, where foch may crash). `false` scores in-process — for trusted
 	/// inputs / tests, and required when `current_exe` is not the `foch-mq` bin.
 	pub isolate: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum BaseGameMode<'a> {
+	Path(&'a Path),
+	ExplicitlyDisabled,
+}
+
+impl<'a> BaseGameMode<'a> {
+	pub fn root(self) -> Option<&'a Path> {
+		match self {
+			Self::Path(path) => Some(path),
+			Self::ExplicitlyDisabled => None,
+		}
+	}
 }
 
 /// Score one compatch case against a flat workshop directory.
@@ -112,16 +130,18 @@ pub struct RunOptions<'a> {
 pub fn score_case(
 	case: &Case,
 	workshop_dir: &Path,
+	base_game: BaseGameMode<'_>,
 	keep: bool,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
 	let mut score_cache = ScoreCache::new();
-	score_case_with_cache(case, workshop_dir, keep, &mut score_cache)
+	score_case_with_cache(case, workshop_dir, base_game, keep, &mut score_cache)
 }
 
 /// Score one compatch case while reusing scorer artifacts from a larger corpus run.
 pub fn score_case_with_cache(
 	case: &Case,
 	workshop_dir: &Path,
+	base_game: BaseGameMode<'_>,
 	keep: bool,
 	score_cache: &mut ScoreCache,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
@@ -138,11 +158,13 @@ pub fn score_case_with_cache(
 		&compatch_dir,
 		&mod_dirs,
 		&out_dir,
+		base_game,
 		None,
 		score_cache,
 	)?;
 	if keep {
-		let _ = tmp.keep();
+		let kept = tmp.keep();
+		eprintln!("[score] kept merge directory {}", kept.display());
 	}
 	Ok(result)
 }
@@ -154,7 +176,8 @@ pub fn score_case_from_paths_with_cache(
 	compatch_dir: &Path,
 	mod_dirs: &[PathBuf],
 	out_dir: &Path,
-	basegame_root: Option<&Path>,
+	base_game: BaseGameMode<'_>,
+	expected_base_snapshot_identity: Option<&str>,
 	score_cache: &mut ScoreCache,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
 	if case.referenced_mods.len() != mod_dirs.len() {
@@ -169,6 +192,7 @@ pub fn score_case_from_paths_with_cache(
 	let total_started = Instant::now();
 	let setup_started = Instant::now();
 	let gt = reference_output_files(compatch_dir);
+	let scoring_units = scoring_reference_units(&gt);
 	let tmp = tempfile::tempdir()?;
 	let mods: Vec<(String, PathBuf)> = case
 		.referenced_mods
@@ -177,16 +201,17 @@ pub fn score_case_from_paths_with_cache(
 		.zip(mod_dirs.iter().cloned())
 		.collect();
 	let dlc = write_playset(tmp.path(), &mods)?;
-	let retained_paths = retained_paths_with_module_context(&gt, mod_dirs);
+	let retained_paths = scoring_requested_paths(&gt);
 	let setup_ms = elapsed_ms(setup_started.elapsed());
 
 	let merge_started = Instant::now();
 	let result = run_merge(
 		&dlc,
 		out_dir,
-		basegame_root,
+		base_game.root(),
 		/* force= */ false,
 		Some(retained_paths),
+		expected_base_snapshot_identity,
 	)?;
 	let merge_ms = elapsed_ms(merge_started.elapsed());
 
@@ -200,10 +225,10 @@ pub fn score_case_from_paths_with_cache(
 		.collect();
 	let adjudications = Adjudications::built_in();
 
-	let files: Vec<FileRecord> = gt
+	let files: Vec<FileRecord> = scoring_units
 		.iter()
 		.map(|rel| {
-			let fs = score_file_with_cache(
+			let fs = score_file_with_cache_and_basegame(
 				&ScoreFileRequest {
 					compatch_id: &case.compatch_id,
 					rel,
@@ -214,6 +239,7 @@ pub fn score_case_from_paths_with_cache(
 					adjudications: &adjudications,
 				},
 				score_cache,
+				base_game.root(),
 			);
 			FileRecord {
 				rel: fs.rel,
@@ -266,7 +292,7 @@ pub fn score_case_from_paths_with_cache(
 		referenced_mods: case.referenced_mods.clone(),
 		merge_status,
 		validation,
-		ground_truth_files: gt.len(),
+		ground_truth_files: files.len(),
 		multi_source_files,
 		all_ground_truth_verdicts,
 		multi_source_verdicts,
@@ -322,15 +348,30 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 	let mut score_cache = ScoreCache::new();
 	for case in to_score {
 		let scored: Option<CaseResult> = if opts.isolate {
-			let output = std::process::Command::new(&exe)
+			let mut command = std::process::Command::new(&exe);
+			command
 				.arg("--corpus")
 				.arg(opts.corpus)
 				.arg("--workshop-dir")
 				.arg(opts.workshop_dir)
 				.arg("score-one")
 				.arg("--id")
-				.arg(&case.compatch_id)
-				.output()?;
+				.arg(&case.compatch_id);
+			if opts.keep {
+				command.arg("--keep");
+			}
+			match opts.base_game {
+				BaseGameMode::Path(path) => {
+					command.arg("--basegame-root").arg(path);
+				}
+				BaseGameMode::ExplicitlyDisabled => {
+					command.arg("--no-game-base");
+				}
+			}
+			let output = command.output()?;
+			if opts.keep {
+				eprint!("{}", String::from_utf8_lossy(&output.stderr));
+			}
 			if output.status.success() {
 				serde_json::from_slice::<CaseResult>(&output.stdout).ok()
 			} else {
@@ -342,7 +383,14 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 				None
 			}
 		} else {
-			score_case_with_cache(case, opts.workshop_dir, opts.keep, &mut score_cache).ok()
+			score_case_with_cache(
+				case,
+				opts.workshop_dir,
+				opts.base_game,
+				opts.keep,
+				&mut score_cache,
+			)
+			.ok()
 		};
 		match scored {
 			Some(cr) => {
@@ -363,7 +411,13 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 /// Score a single case by id and print its [`CaseResult`] as JSON to stdout.
 /// This is the per-case worker that the crash-isolating [`run`] spawns as a
 /// child process; if foch aborts here, only this child dies.
-pub fn score_one(corpus: &Path, workshop_dir: &Path, id: &str) -> CmdResult {
+pub fn score_one(
+	corpus: &Path,
+	workshop_dir: &Path,
+	base_game: BaseGameMode<'_>,
+	id: &str,
+	keep: bool,
+) -> CmdResult {
 	let text = std::fs::read_to_string(corpus)?;
 	let corpus = crate::corpus::Corpus::from_json(&text)?;
 	let case = corpus
@@ -371,7 +425,7 @@ pub fn score_one(corpus: &Path, workshop_dir: &Path, id: &str) -> CmdResult {
 		.iter()
 		.find(|c| c.compatch_id == id)
 		.ok_or_else(|| format!("compatch {id} not found in corpus"))?;
-	let result = score_case(case, workshop_dir, false)?;
+	let result = score_case(case, workshop_dir, base_game, keep)?;
 	// stdout = the JSON result (foch's [merge] logs go to stderr, kept separate).
 	println!("{}", serde_json::to_string(&result)?);
 	Ok(())

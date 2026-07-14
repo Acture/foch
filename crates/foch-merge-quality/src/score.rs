@@ -15,16 +15,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use foch_core::model::MergeReport;
+use foch_core::domain::descriptor::load_descriptor;
+use foch_core::model::{MergeReport, MergeReportStatus};
 use foch_engine::{
 	CheckRequest, Config, MergeError, MergeExecuteOptions, MergeExecutionResult,
 	run_merge_with_options,
 };
 use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, ContentFamilyPathMatcher, GameProfile, MergeKeySource, ModuleNameRule,
+	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
+	GameProfile, MergeKeySource, ModuleNameRule,
 };
+use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, parse_clausewitz_file};
+use foch_language::analyzer::semantic_index::parse_script_file;
 use regex::Regex;
 
 /// `^key = {` at a line start — a top-level Clausewitz definition.
@@ -178,37 +182,30 @@ pub fn reference_output_files(compatch_dir: &Path) -> Vec<String> {
 	out
 }
 
-/// Retain every reference-output path plus sibling source files belonging to
-/// the same static semantic module. Human compatches commonly relocate a
-/// definition across files (for example `governments/zzz_*.txt` into
-/// `governments/00_*.txt`), so exact-path filtering would remove a real merge
-/// input before the engine can see it.
-pub fn retained_paths_with_module_context(
-	ground_truth: &[String],
-	mod_dirs: &[PathBuf],
-) -> BTreeSet<String> {
-	let mut retained: BTreeSet<String> = ground_truth.iter().cloned().collect();
-	let prefixes: BTreeSet<&'static str> = ground_truth
-		.iter()
-		.filter_map(|rel| eligible_module_family(rel))
-		.filter_map(family_prefix)
-		.collect();
-	for prefix in prefixes {
-		for root in mod_dirs {
-			let family_root = root.join(prefix);
-			for entry in walkdir::WalkDir::new(&family_root)
-				.into_iter()
-				.filter_map(Result::ok)
-				.filter(|entry| entry.file_type().is_file())
-				.filter(|entry| module_view_includes_file(entry.path()))
-			{
-				if let Ok(relative) = entry.path().strip_prefix(root) {
-					retained.insert(relative.to_string_lossy().replace('\\', "/"));
-				}
-			}
+/// Return the scorer's requested paths unchanged. The engine owns semantic
+/// module expansion so production merges and corpus scoring use one closure
+/// rule and one cache identity.
+pub fn scoring_requested_paths(ground_truth: &[String]) -> BTreeSet<String> {
+	ground_truth.iter().cloned().collect()
+}
+
+/// Collapse raw compatch paths into deterministic scoring units. Definition
+/// modules contribute one unit at their policy-owned output path; ordinary
+/// files remain path-scoped units.
+pub fn scoring_reference_units(reference_paths: &[String]) -> Vec<String> {
+	let mut units = BTreeSet::new();
+	let mut module_units = BTreeMap::new();
+	for rel in reference_paths {
+		if let Some(policy) = definition_module_policy_for_path(rel) {
+			module_units
+				.entry(policy.replacement_prefix)
+				.or_insert(policy.full_output_path);
+		} else {
+			units.insert(rel.clone());
 		}
 	}
-	retained
+	units.extend(module_units.into_values().map(str::to_string));
+	units.into_iter().collect()
 }
 
 /// Syntactically index a mod's top-level definitions by `(content_directory,
@@ -273,7 +270,12 @@ pub fn write_playset(tmp: &Path, mods: &[(String, PathBuf)]) -> io::Result<PathB
 	let mut enabled = Vec::new();
 	for (steam_id, ws_dir) in mods {
 		let rel = format!("mod/ugc_{steam_id}.mod");
-		let path_val = ws_dir.to_string_lossy().replace('\\', "/");
+		let absolute = if ws_dir.is_absolute() {
+			ws_dir.clone()
+		} else {
+			std::env::current_dir()?.join(ws_dir)
+		};
+		let path_val = absolute.to_string_lossy().replace('\\', "/");
 		fs::write(
 			tmp.join(&rel),
 			format!("name=\"{steam_id}\"\npath=\"{path_val}\"\nremote_file_id=\"{steam_id}\"\n"),
@@ -307,10 +309,12 @@ pub fn run_merge(
 	basegame_root: Option<&Path>,
 	force: bool,
 	retained_paths: Option<BTreeSet<String>>,
+	expected_base_snapshot_identity: Option<&str>,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let playset = playset.to_path_buf();
 	let out_dir = out_dir.to_path_buf();
 	let basegame_root = basegame_root.map(Path::to_path_buf);
+	let expected_base_snapshot_identity = expected_base_snapshot_identity.map(str::to_string);
 	std::thread::Builder::new()
 		.stack_size(MERGE_STACK_BYTES)
 		.spawn(move || {
@@ -320,6 +324,7 @@ pub fn run_merge(
 				basegame_root.as_deref(),
 				force,
 				retained_paths,
+				expected_base_snapshot_identity.as_deref(),
 			)
 		})
 		.expect("spawn merge worker thread")
@@ -333,21 +338,26 @@ fn run_merge_inner(
 	basegame_root: Option<&Path>,
 	force: bool,
 	retained_paths: Option<BTreeSet<String>>,
+	expected_base_snapshot_identity: Option<&str>,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let mut game_path = HashMap::new();
 	if let Some(root) = basegame_root {
 		game_path.insert("eu4".to_string(), root.to_path_buf());
 	}
-	run_merge_with_options(
-		CheckRequest::from_playset_path(
-			playset.to_path_buf(),
-			Config {
-				steam_root_path: None,
-				paradox_data_path: None,
-				game_path,
-				extra_ignore_patterns: Vec::new(),
-			},
-		),
+	let mut request = CheckRequest::from_playset_path(
+		playset.to_path_buf(),
+		Config {
+			steam_root_path: None,
+			paradox_data_path: None,
+			game_path,
+			extra_ignore_patterns: Vec::new(),
+		},
+	);
+	if let Some(identity) = expected_base_snapshot_identity {
+		request = request.with_expected_base_snapshot_identity(identity);
+	}
+	let result = run_merge_with_options(
+		request,
 		MergeExecuteOptions {
 			out_dir: out_dir.to_path_buf(),
 			include_game_base: basegame_root.is_some(),
@@ -363,10 +373,20 @@ fn run_merge_inner(
 			provenance: false,
 			retained_paths,
 		},
-	)
+	)?;
+	if expected_base_snapshot_identity.is_some() && result.report.status == MergeReportStatus::Fatal
+	{
+		return Err(MergeError::WorkspaceResolve {
+			path: playset.to_path_buf(),
+			message: result.report.fatal_reason.clone().unwrap_or_else(|| {
+				"fatal merge while loading the expected base snapshot".to_string()
+			}),
+		});
+	}
+	Ok(result)
 }
 
-/// Classification of foch's output for one reference-output file.
+/// Classification of foch's output for one path- or module-scoped scoring unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
 	/// foch surfaced it as a conflict; the human resolved by hand.
@@ -527,12 +547,26 @@ impl ContentEntry {
 	}
 }
 
+type CanonicalModuleMap = BTreeMap<String, CanonicalStatement>;
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ModuleRootCacheIdentity {
+	path: PathBuf,
+	content_hash: String,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ModuleViewCacheKey {
+	roots: Vec<ModuleRootCacheIdentity>,
+	family_prefix: String,
+	policy_version: u32,
+}
+
 #[derive(Default)]
 pub struct ScoreCache {
 	path_content: HashMap<PathBuf, Option<ContentKey>>,
 	content_entries: HashMap<ContentKey, ContentEntry>,
-	file_assignment_views: HashMap<PathBuf, Option<BTreeMap<String, CanonicalStatement>>>,
-	module_views: HashMap<(PathBuf, String), Option<BTreeMap<String, CanonicalStatement>>>,
+	module_views: HashMap<ModuleViewCacheKey, Option<CanonicalModuleMap>>,
 }
 
 impl ScoreCache {
@@ -647,14 +681,28 @@ impl ScoreCache {
 			.clone()
 	}
 
-	fn module_view(
+	fn module_view(&mut self, roots: &[&Path], family_prefix: &str) -> Option<CanonicalModuleMap> {
+		self.module_view_with_post_build(roots, family_prefix, || {})
+	}
+
+	fn module_view_with_post_build(
 		&mut self,
-		root: &Path,
+		roots: &[&Path],
 		family_prefix: &str,
-	) -> Option<BTreeMap<String, CanonicalStatement>> {
-		let key = (root.to_path_buf(), family_prefix.to_string());
+		post_build: impl FnOnce(),
+	) -> Option<CanonicalModuleMap> {
+		let key = module_view_cache_key(roots, family_prefix)?;
 		if !self.module_views.contains_key(&key) {
-			let view = canonical_module_view_uncached(root, family_prefix);
+			let root_paths = key
+				.roots
+				.iter()
+				.map(|root| root.path.clone())
+				.collect::<Vec<_>>();
+			let view = canonical_layered_module_view_uncached(&root_paths, family_prefix);
+			post_build();
+			if module_view_cache_key(roots, family_prefix).as_ref() != Some(&key) {
+				return None;
+			}
 			self.module_views.insert(key.clone(), view);
 		}
 		self.module_views
@@ -662,35 +710,46 @@ impl ScoreCache {
 			.expect("module view inserted")
 			.clone()
 	}
-
-	fn file_assignment_view(
-		&mut self,
-		path: &Path,
-	) -> Option<BTreeMap<String, CanonicalStatement>> {
-		let key = path.to_path_buf();
-		if !self.file_assignment_views.contains_key(&key) {
-			let view = canonical_file_assignment_view_uncached(path);
-			self.file_assignment_views.insert(key.clone(), view);
-		}
-		self.file_assignment_views
-			.get(&key)
-			.expect("file assignment view inserted")
-			.clone()
-	}
 }
 
-/// Classify foch's merged output for one reference-output file against the compatch.
+/// Classify foch's merged output for one scoring unit against the compatch.
 pub fn score_file(request: &ScoreFileRequest<'_>) -> FileScore {
-	let mut cache = ScoreCache::new();
-	score_file_with_cache(request, &mut cache)
+	score_file_with_basegame(request, None)
 }
 
-/// Classify foch's merged output, reusing parsed/text artifacts across files.
+/// Classify one scoring unit with an optional base-game runtime layer.
+pub fn score_file_with_basegame(
+	request: &ScoreFileRequest<'_>,
+	basegame_root: Option<&Path>,
+) -> FileScore {
+	let mut cache = ScoreCache::new();
+	score_file_with_cache_and_basegame(request, &mut cache, basegame_root)
+}
+
+/// Classify one scoring unit, reusing parsed/text artifacts across files.
 pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCache) -> FileScore {
+	score_file_with_cache_and_basegame(request, cache, None)
+}
+
+/// Classify one scoring unit with a reusable cache and optional base-game
+/// runtime layer.
+pub fn score_file_with_cache_and_basegame(
+	request: &ScoreFileRequest<'_>,
+	cache: &mut ScoreCache,
+	basegame_root: Option<&Path>,
+) -> FileScore {
+	if let Some(policy) = definition_module_policy_for_path(request.rel) {
+		return score_definition_module(request, cache, policy, basegame_root);
+	}
+
 	let rel = request.rel;
 	let compatch_path = request.compatch.join(rel);
-	let module_target = module_target_context(cache, rel, &compatch_path);
-	let source_mod_ids = source_mod_ids_for_target(cache, rel, request.source_mods, &module_target);
+	let source_mod_ids = request
+		.source_mods
+		.iter()
+		.filter(|source| source.root.join(rel).is_file())
+		.map(|source| source.id.to_string())
+		.collect::<Vec<_>>();
 	let source_count = source_mod_ids.len();
 	let multi_source = source_count >= 2;
 	let foch_path = request.out_dir.join(rel);
@@ -713,14 +772,7 @@ pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCa
 		policy_equivalent = ast_match == Some(false)
 			&& accepted_equivalent_for_path(cache, rel, &foch_path, &compatch_path);
 	}
-	let module_equivalent = ast_match != Some(true)
-		&& keys_match != Some(true)
-		&& module_target.as_ref().is_some_and(|target| {
-			same_family_module_equivalent(cache, target, request.out_dir, request.compatch)
-		});
-	if let Some(target) = &module_target {
-		dropped = module_dropped_keys(cache, rel, target, request.source_mods, request.out_dir);
-	} else if foch_emitted {
+	if foch_emitted {
 		let mut source_keys = HashSet::new();
 		for source in request.source_mods {
 			source_keys.extend(cache.top_level_keys(&source.root.join(rel)));
@@ -740,11 +792,6 @@ pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCa
 		(
 			Verdict::AcceptedEquivalent,
 			Some("gfx_order_insensitive_ast_equivalent".to_string()),
-		)
-	} else if module_equivalent {
-		(
-			Verdict::AcceptedEquivalent,
-			Some("same_family_module_equivalent".to_string()),
 		)
 	} else if !foch_emitted {
 		(Verdict::NotEmitted, None)
@@ -775,6 +822,81 @@ pub fn score_file_with_cache(request: &ScoreFileRequest<'_>, cache: &mut ScoreCa
 		keys_match,
 		ast_match,
 		dropped_keys: dropped,
+		verdict,
+		acceptance_reason,
+	}
+}
+
+fn score_definition_module(
+	request: &ScoreFileRequest<'_>,
+	cache: &mut ScoreCache,
+	policy: DefinitionModulePolicy,
+	basegame_root: Option<&Path>,
+) -> FileScore {
+	let rel = policy.full_output_path;
+	let prefix = policy.replacement_prefix;
+	let mut human_roots = Vec::with_capacity(request.source_mods.len() + 2);
+	let mut foch_roots = Vec::with_capacity(request.source_mods.len() + 2);
+	if let Some(root) = basegame_root {
+		human_roots.push(root);
+		foch_roots.push(root);
+	}
+	for source in request.source_mods {
+		human_roots.push(source.root);
+		foch_roots.push(source.root);
+	}
+	human_roots.push(request.compatch);
+	foch_roots.push(request.out_dir);
+	let human = cache.module_view(&human_roots, prefix);
+	let foch = cache.module_view(&foch_roots, prefix);
+	let human_keys = human
+		.as_ref()
+		.map(|view| view.keys().cloned().collect::<BTreeSet<_>>())
+		.unwrap_or_default();
+	let source_mod_ids = source_mod_ids_for_module(cache, request.source_mods, prefix, &human_keys);
+	let source_count = source_mod_ids.len();
+	let foch_conflict = request.conflict_paths.contains(rel);
+	let mut keys_match = None;
+	let mut ast_match = None;
+	let mut dropped_keys = Vec::new();
+	let mut has_extra_keys = false;
+	if let (Some(human), Some(foch)) = (&human, &foch) {
+		dropped_keys = human
+			.keys()
+			.filter(|key| !foch.contains_key(*key))
+			.cloned()
+			.collect();
+		has_extra_keys = foch.keys().any(|key| !human.contains_key(key));
+		keys_match = Some(dropped_keys.is_empty() && !has_extra_keys);
+		ast_match = Some(human == foch);
+	}
+
+	let (verdict, acceptance_reason) = if foch_conflict {
+		(Verdict::ConflictWithheld, None)
+	} else {
+		match (&human, &foch) {
+			(Some(human), Some(foch)) if human == foch => (
+				Verdict::AcceptedEquivalent,
+				Some("same_family_module_equivalent".to_string()),
+			),
+			(Some(_), Some(_)) if !dropped_keys.is_empty() => (Verdict::DropsContent, None),
+			(Some(_), Some(_)) if has_extra_keys => (Verdict::DivergesStructure, None),
+			(Some(_), Some(_)) => (Verdict::DivergesAst, None),
+			(None, _) | (_, None) => (Verdict::DivergesStructure, None),
+		}
+	};
+
+	FileScore {
+		rel: rel.to_string(),
+		source_mod_ids,
+		source_count,
+		multi_source: source_count >= 2,
+		foch_emitted: request.out_dir.join(rel).is_file(),
+		foch_conflict,
+		similarity: None,
+		keys_match,
+		ast_match,
+		dropped_keys,
 		verdict,
 		acceptance_reason,
 	}
@@ -850,12 +972,12 @@ struct ModuleTarget {
 fn module_target_context(
 	cache: &mut ScoreCache,
 	rel: &str,
-	target_path: &Path,
+	target_roots: &[&Path],
 ) -> Option<ModuleTarget> {
 	let descriptor = eligible_module_family(rel)?;
 	let prefix = family_prefix(descriptor)?;
 	let keys: BTreeSet<String> = cache
-		.file_assignment_view(target_path)?
+		.module_view(target_roots, prefix)?
 		.into_keys()
 		.collect();
 	if keys.is_empty() {
@@ -864,82 +986,21 @@ fn module_target_context(
 	Some(ModuleTarget { prefix, keys })
 }
 
-fn source_mod_ids_for_target(
+fn source_mod_ids_for_module(
 	cache: &mut ScoreCache,
-	rel: &str,
 	sources: &[SourceMod<'_>],
-	target: &Option<ModuleTarget>,
+	prefix: &str,
+	human_keys: &BTreeSet<String>,
 ) -> Vec<String> {
 	sources
 		.iter()
 		.filter(|source| {
-			if source.root.join(rel).is_file() {
-				return true;
-			}
-			let Some(target) = target else {
-				return false;
-			};
 			cache
-				.module_view(source.root, target.prefix)
-				.is_some_and(|view| target.keys.iter().any(|key| view.contains_key(key)))
+				.module_view(&[source.root], prefix)
+				.is_some_and(|view| human_keys.iter().any(|key| view.contains_key(key)))
 		})
 		.map(|source| source.id.to_string())
 		.collect()
-}
-
-fn module_dropped_keys(
-	cache: &mut ScoreCache,
-	rel: &str,
-	target: &ModuleTarget,
-	sources: &[SourceMod<'_>],
-	foch_root: &Path,
-) -> Vec<String> {
-	let mut source_keys = BTreeSet::new();
-	for source in sources {
-		if let Some(view) = cache.module_view(source.root, target.prefix) {
-			source_keys.extend(
-				target
-					.keys
-					.iter()
-					.filter(|key| view.contains_key(*key))
-					.cloned(),
-			);
-		} else if let Some(view) = cache.file_assignment_view(&source.root.join(rel)) {
-			source_keys.extend(
-				target
-					.keys
-					.iter()
-					.filter(|key| view.contains_key(*key))
-					.cloned(),
-			);
-		}
-	}
-	let Some(foch) = cache.module_view(foch_root, target.prefix) else {
-		return Vec::new();
-	};
-	source_keys
-		.into_iter()
-		.filter(|key| !foch.contains_key(key))
-		.collect()
-}
-
-fn same_family_module_equivalent(
-	cache: &mut ScoreCache,
-	target: &ModuleTarget,
-	foch_root: &Path,
-	compatch_root: &Path,
-) -> bool {
-	let Some(foch) = cache.module_view(foch_root, target.prefix) else {
-		return false;
-	};
-	let Some(compatch) = cache.module_view(compatch_root, target.prefix) else {
-		return false;
-	};
-	target.keys.iter().all(|key| {
-		compatch
-			.get(key)
-			.is_some_and(|expected| foch.get(key) == Some(expected))
-	})
 }
 
 fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor> {
@@ -956,28 +1017,68 @@ fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor>
 	if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
 		return None;
 	}
+	if !matches!(
+		descriptor.load_policy,
+		ContentLoadPolicy::DefinitionModule(_)
+	) {
+		return None;
+	}
 	Some(descriptor)
 }
 
 fn family_prefix(descriptor: &ContentFamilyDescriptor) -> Option<&'static str> {
-	match descriptor.matcher {
-		ContentFamilyPathMatcher::Prefix(prefix) => Some(prefix),
-		ContentFamilyPathMatcher::Exact(_) => None,
+	match descriptor.load_policy {
+		ContentLoadPolicy::DefinitionModule(policy) => Some(policy.replacement_prefix),
+		ContentLoadPolicy::PerPath => None,
 	}
 }
 
-fn canonical_file_assignment_view_uncached(
-	path: &Path,
-) -> Option<BTreeMap<String, CanonicalStatement>> {
-	if !path.is_file() {
-		return None;
+fn definition_module_policy_for_path(rel: &str) -> Option<DefinitionModulePolicy> {
+	let descriptor = eligible_module_family(rel)?;
+	match descriptor.load_policy {
+		ContentLoadPolicy::DefinitionModule(policy) => Some(policy),
+		ContentLoadPolicy::PerPath => None,
 	}
-	let parsed = parse_clausewitz_file(path);
-	if !parsed.diagnostics.is_empty() {
-		return None;
+}
+
+fn definition_module_policy_for_prefix(prefix: &str) -> Option<DefinitionModulePolicy> {
+	let probe = format!("{}/__foch_module__.txt", prefix.trim_end_matches('/'));
+	let descriptor = eu4_profile().classify_content_family(Path::new(&probe))?;
+	match descriptor.load_policy {
+		ContentLoadPolicy::DefinitionModule(policy) if policy.replacement_prefix == prefix => {
+			Some(policy)
+		}
+		ContentLoadPolicy::DefinitionModule(_) | ContentLoadPolicy::PerPath => None,
 	}
+}
+
+fn canonical_layered_module_view_uncached(
+	roots: &[PathBuf],
+	family_prefix: &str,
+) -> Option<CanonicalModuleMap> {
+	let policy = definition_module_policy_for_prefix(family_prefix)?;
+	let mut visible_files = BTreeMap::<String, (PathBuf, PathBuf)>::new();
+	for root in roots {
+		if layer_replaces_module(root, family_prefix)? {
+			visible_files.clear();
+		}
+		for (relative, path) in module_files(root, family_prefix)? {
+			visible_files.insert(relative, (root.clone(), path));
+		}
+	}
+
+	let mut parsed_files = Vec::with_capacity(visible_files.len());
+	for (relative, (root, path)) in visible_files {
+		let parsed = parse_script_file("__score__", &root, &path)?;
+		parsed_files.push((relative, parsed));
+	}
+	let inputs = parsed_files
+		.iter()
+		.map(|(path, file)| DefinitionModuleInput::new(Path::new(path), file))
+		.collect::<Vec<_>>();
+	let module = load_definition_module(&inputs, policy).ok()?;
 	Some(
-		parsed
+		module
 			.ast
 			.statements
 			.iter()
@@ -986,45 +1087,106 @@ fn canonical_file_assignment_view_uncached(
 	)
 }
 
-fn canonical_module_view_uncached(
-	root: &Path,
-	family_prefix: &str,
-) -> Option<BTreeMap<String, CanonicalStatement>> {
-	let family_dir = root.join(family_prefix);
-	if !family_dir.is_dir() {
-		return Some(BTreeMap::new());
+fn layer_replaces_module(root: &Path, family_prefix: &str) -> Option<bool> {
+	let descriptor_path = root.join("descriptor.mod");
+	if !descriptor_path.is_file() {
+		return Some(false);
 	}
-	let mut files: Vec<PathBuf> = walkdir::WalkDir::new(&family_dir)
-		.into_iter()
-		.filter_map(Result::ok)
-		.filter(|entry| entry.file_type().is_file())
-		.map(|entry| entry.into_path())
-		.filter(|path| module_view_includes_file(path))
-		.collect();
-	files.sort_by(|left, right| {
-		relative_module_path(root, left).cmp(&relative_module_path(root, right))
-	});
-
-	let mut view = BTreeMap::new();
-	for path in files {
-		let parsed = parse_clausewitz_file(&path);
-		if !parsed.diagnostics.is_empty() {
-			return None;
-		}
-		for statement in &parsed.ast.statements {
-			if let Some((key, canonical)) = canonical_module_assignment(statement) {
-				view.insert(key, canonical);
-			}
-		}
-	}
-	Some(view)
+	let descriptor = load_descriptor(&descriptor_path).ok()?;
+	Some(
+		descriptor
+			.replace_path
+			.iter()
+			.any(|replace_path| replace_path_covers_prefix(replace_path, family_prefix)),
+	)
 }
 
-fn module_view_includes_file(path: &Path) -> bool {
-	let rel = path.to_string_lossy().replace('\\', "/");
-	is_clausewitz_like_path(&rel)
-		&& !is_gui_like_path(&rel)
-		&& path.extension().and_then(|ext| ext.to_str()) == Some("txt")
+fn replace_path_covers_prefix(replace_path: &str, family_prefix: &str) -> bool {
+	let normalized = replace_path.trim().replace('\\', "/");
+	let replace_path = normalized.trim_matches('/');
+	let family_prefix = family_prefix.trim_matches('/');
+	!replace_path.is_empty()
+		&& (replace_path == family_prefix
+			|| family_prefix
+				.strip_prefix(replace_path)
+				.is_some_and(|suffix| suffix.starts_with('/')))
+}
+
+#[cfg(test)]
+fn canonical_module_view_uncached(root: &Path, family_prefix: &str) -> Option<CanonicalModuleMap> {
+	canonical_layered_module_view_uncached(&[root.to_path_buf()], family_prefix)
+}
+
+fn module_view_cache_key(roots: &[&Path], family_prefix: &str) -> Option<ModuleViewCacheKey> {
+	let policy = definition_module_policy_for_prefix(family_prefix)?;
+	let roots = roots
+		.iter()
+		.map(|root| {
+			Some(ModuleRootCacheIdentity {
+				path: root.to_path_buf(),
+				content_hash: module_root_content_hash(root, family_prefix)?,
+			})
+		})
+		.collect::<Option<Vec<_>>>()?;
+	Some(ModuleViewCacheKey {
+		roots,
+		family_prefix: family_prefix.to_string(),
+		policy_version: policy.policy_version,
+	})
+}
+
+fn module_root_content_hash(root: &Path, family_prefix: &str) -> Option<String> {
+	let mut hasher = blake3::Hasher::new();
+	hasher.update(b"foch-mq-definition-module-root-v1");
+	hash_module_component(&mut hasher, family_prefix.as_bytes());
+	match fs::read(root.join("descriptor.mod")) {
+		Ok(bytes) => {
+			hasher.update(&[1]);
+			hash_module_component(&mut hasher, &bytes);
+		}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => {
+			hasher.update(&[0]);
+		}
+		Err(_) => return None,
+	}
+	for (relative, path) in module_files(root, family_prefix)? {
+		hash_module_component(&mut hasher, relative.as_bytes());
+		hash_module_component(&mut hasher, &fs::read(path).ok()?);
+	}
+	Some(hasher.finalize().to_hex().to_string())
+}
+
+fn module_files(root: &Path, family_prefix: &str) -> Option<Vec<(String, PathBuf)>> {
+	let family_dir = root.join(family_prefix);
+	match fs::metadata(&family_dir) {
+		Ok(metadata) if metadata.is_dir() => {}
+		Ok(_) => return Some(Vec::new()),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => return Some(Vec::new()),
+		Err(_) => return None,
+	}
+	collect_module_files(root, walkdir::WalkDir::new(&family_dir))
+}
+
+fn collect_module_files(
+	root: &Path,
+	entries: impl IntoIterator<Item = Result<walkdir::DirEntry, walkdir::Error>>,
+) -> Option<Vec<(String, PathBuf)>> {
+	let mut files = Vec::new();
+	for entry in entries {
+		let entry = entry.ok()?;
+		if !entry.file_type().is_file() {
+			continue;
+		}
+		let path = entry.into_path();
+		files.push((relative_module_path(root, &path), path));
+	}
+	files.sort_by(|left, right| left.0.cmp(&right.0));
+	Some(files)
+}
+
+fn hash_module_component(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+	hasher.update(&(bytes.len() as u64).to_le_bytes());
+	hasher.update(bytes);
 }
 
 fn relative_module_path(root: &Path, path: &Path) -> String {
@@ -1341,23 +1503,29 @@ pub fn classify_resolution(
 	basegame_root: Option<&Path>,
 ) -> Option<Resolution> {
 	let mut module_cache = ScoreCache::new();
-	let module_target = module_target_context(&mut module_cache, rel, &compatch.join(rel));
+	let mut human_roots = Vec::with_capacity(sources.len() + 2);
+	if let Some(root) = basegame_root {
+		human_roots.push(root);
+	}
+	human_roots.extend(sources.iter().map(|source| source.root));
+	human_roots.push(compatch);
+	let module_target = module_target_context(&mut module_cache, rel, &human_roots);
 	let (human_original, basegame, source_originals) = if let Some(target) = &module_target {
 		let mut resolution_keys = target.keys.clone();
 		for source in sources {
-			if let Some(view) = module_cache.file_assignment_view(&source.root.join(rel)) {
+			if let Some(view) = module_cache.module_view(&[source.root], target.prefix) {
 				resolution_keys.extend(view.into_keys());
 			}
 		}
-		let human_view = module_cache.module_view(compatch, target.prefix)?;
+		let human_view = module_cache.module_view(&human_roots, target.prefix)?;
 		let human = canonical_atoms_for_keys(&human_view, &resolution_keys);
 		let basegame = basegame_root
-			.and_then(|root| module_cache.module_view(root, target.prefix))
+			.and_then(|root| module_cache.module_view(&[root], target.prefix))
 			.map(|view| canonical_atoms_for_keys(&view, &resolution_keys))
 			.unwrap_or_default();
 		let mut source_originals = Vec::new();
 		for source in sources {
-			let Some(view) = module_cache.module_view(source.root, target.prefix) else {
+			let Some(view) = module_cache.module_view(&[source.root], target.prefix) else {
 				continue;
 			};
 			if !resolution_keys.iter().any(|key| view.contains_key(key)) {
@@ -1789,6 +1957,8 @@ mod classify_tests {
 	use std::fs;
 	use tempfile::TempDir;
 
+	const GOVERNMENTS_OUTPUT: &str = "common/governments/zzz_foch_governments.txt";
+
 	fn write_file(dir: &Path, rel: &str, content: &str) {
 		let path = dir.join(rel);
 		if let Some(p) = path.parent() {
@@ -1821,6 +1991,39 @@ mod classify_tests {
 				root: overlay,
 			},
 		]
+	}
+
+	fn write_governments_replace_descriptor(root: &Path) {
+		write_file(
+			root,
+			"descriptor.mod",
+			"name=\"fixture\"\nreplace_path=\"common/governments\"\n",
+		);
+	}
+
+	#[test]
+	fn write_playset_makes_relative_mod_roots_absolute() {
+		let root = tempfile::tempdir_in(".").expect("relative fixture root");
+		let relative_root = root
+			.path()
+			.strip_prefix(std::env::current_dir().expect("current directory"))
+			.unwrap_or(root.path())
+			.to_path_buf();
+		let playset = tempfile::tempdir().expect("playset root");
+		write_playset(
+			playset.path(),
+			&[("123".to_string(), relative_root.clone())],
+		)
+		.expect("write playset");
+
+		let descriptor = fs::read_to_string(playset.path().join("mod/ugc_123.mod"))
+			.expect("read generated descriptor");
+		let expected = std::env::current_dir()
+			.expect("current directory")
+			.join(relative_root)
+			.to_string_lossy()
+			.replace('\\', "/");
+		assert!(descriptor.contains(&format!("path=\"{expected}\"")));
 	}
 
 	#[test]
@@ -2062,45 +2265,10 @@ mod classify_tests {
 	}
 
 	#[test]
-	fn score_file_accepts_static_assignment_key_family_cross_file_equivalence() {
+	fn score_file_accepts_exact_definition_module_split_across_filenames() {
 		let (mod_a, mod_b, compatch) = make_dirs();
 		let out = tempfile::tempdir().unwrap();
-		let rel = "common/governments/00_governments.txt";
-		let full_module = "monarchy = { rank = 1 }\nrepublic = { rank = 2 }\n";
-		write_file(mod_a.path(), rel, full_module);
-		write_file(mod_b.path(), rel, full_module);
-		write_file(compatch.path(), rel, full_module);
-		write_file(out.path(), rel, "monarchy = { rank = 1 }\n");
-		write_file(
-			out.path(),
-			"common/governments/zzz_00_governments.txt",
-			"republic = { rank = 2 }\nunrelated = { rank = 3 }\n",
-		);
-		let sources = two_sources(mod_a.path(), mod_b.path());
-
-		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
-			rel,
-			source_mods: &sources,
-			compatch: compatch.path(),
-			out_dir: out.path(),
-			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
-		});
-
-		assert_eq!(score.ast_match, Some(false));
-		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
-		assert_eq!(
-			score.acceptance_reason.as_deref(),
-			Some("same_family_module_equivalent")
-		);
-	}
-
-	#[test]
-	fn score_file_tracks_static_module_sources_across_filenames() {
-		let (mod_a, mod_b, compatch) = make_dirs();
-		let out = tempfile::tempdir().unwrap();
-		let rel = "common/governments/00_compatch.txt";
+		write_governments_replace_descriptor(out.path());
 		write_file(
 			mod_a.path(),
 			"common/governments/a_governments.txt",
@@ -2111,12 +2279,100 @@ mod classify_tests {
 			"common/governments/b_governments.txt",
 			"republic = { rank = 2 }\n",
 		);
-		let merged = "monarchy = { rank = 1 }\nrepublic = { rank = 2 }\n";
-		write_file(compatch.path(), rel, merged);
+		write_file(
+			compatch.path(),
+			"common/governments/00_human.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/governments/10_human.txt",
+			"republic = { rank = 2 }\n",
+		);
 		write_file(
 			out.path(),
-			"common/governments/merged_governments.txt",
-			merged,
+			GOVERNMENTS_OUTPUT,
+			"republic = { rank = 2 }\nmonarchy = { rank = 1 }\n",
+		);
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel: GOVERNMENTS_OUTPUT,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert_eq!(score.source_mod_ids, ["base", "overlay"]);
+		assert!(score.foch_emitted);
+		assert_eq!(score.keys_match, Some(true));
+		assert_eq!(score.ast_match, Some(true));
+		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
+		assert_eq!(
+			score.acceptance_reason.as_deref(),
+			Some("same_family_module_equivalent")
+		);
+	}
+
+	#[test]
+	fn score_file_compares_layered_runtime_module_views() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let basegame = tempfile::tempdir().unwrap();
+		let out = tempfile::tempdir().unwrap();
+		write_file(
+			basegame.path(),
+			"common/governments/00_vanilla.txt",
+			"monarchy = { rank = 0 }\nvanilla_only = { rank = 0 }\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/governments/99_human_override.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_governments_replace_descriptor(out.path());
+		write_file(
+			out.path(),
+			GOVERNMENTS_OUTPUT,
+			"vanilla_only = { rank = 0 }\nmonarchy = { rank = 1 }\n",
+		);
+		let sources = two_sources(mod_a.path(), mod_b.path());
+		let request = ScoreFileRequest {
+			compatch_id: "case",
+			rel: GOVERNMENTS_OUTPUT,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		};
+
+		let score = score_file_with_basegame(&request, Some(basegame.path()));
+
+		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert_eq!(score.keys_match, Some(true));
+		assert_eq!(score.ast_match, Some(true));
+		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
+	}
+
+	#[test]
+	fn score_file_rejects_extra_definition_in_complete_module() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		write_governments_replace_descriptor(out.path());
+		let rel = "common/governments/00_governments.txt";
+		let monarchy = "monarchy = { rank = 1 }\n";
+		write_file(mod_a.path(), rel, monarchy);
+		write_file(mod_b.path(), rel, monarchy);
+		write_file(compatch.path(), rel, monarchy);
+		write_file(out.path(), GOVERNMENTS_OUTPUT, monarchy);
+		write_file(
+			out.path(),
+			"common/governments/stale_governments.txt",
+			"stale_only = { rank = 0 }\n",
 		);
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
@@ -2130,18 +2386,175 @@ mod classify_tests {
 			adjudications: &Adjudications::default(),
 		});
 
-		assert!(!score.foch_emitted, "the exact reference path is absent");
-		assert_eq!(score.source_mod_ids, ["base", "overlay"]);
-		assert!(score.multi_source);
-		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
-		assert_eq!(
-			score.acceptance_reason.as_deref(),
-			Some("same_family_module_equivalent")
-		);
+		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert_eq!(score.keys_match, Some(false));
+		assert_eq!(score.ast_match, Some(false));
+		assert!(score.dropped_keys.is_empty());
+		assert_eq!(score.verdict, Verdict::DivergesStructure);
+		assert_eq!(score.acceptance_reason, None);
 	}
 
 	#[test]
-	fn retained_paths_include_static_module_siblings_but_not_gui_siblings() {
+	fn score_file_reports_all_missing_human_module_keys() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		write_governments_replace_descriptor(out.path());
+		write_file(
+			mod_a.path(),
+			"common/governments/a_governments.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_file(
+			mod_b.path(),
+			"common/governments/b_governments.txt",
+			"republic = { rank = 2 }\ntribal = { rank = 0 }\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/governments/00_human.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/governments/10_human.txt",
+			"republic = { rank = 2 }\ntribal = { rank = 0 }\n",
+		);
+		write_file(out.path(), GOVERNMENTS_OUTPUT, "monarchy = { rank = 1 }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel: GOVERNMENTS_OUTPUT,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert_eq!(score.source_mod_ids, ["base", "overlay"]);
+		assert_eq!(score.keys_match, Some(false));
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.dropped_keys, ["republic", "tribal"]);
+		assert_eq!(score.verdict, Verdict::DropsContent);
+	}
+
+	#[test]
+	fn score_file_reports_changed_module_value_as_ast_divergence() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		write_governments_replace_descriptor(out.path());
+		let rel = "common/governments/human.txt";
+		write_file(mod_a.path(), rel, "monarchy = { rank = 1 }\n");
+		write_file(mod_b.path(), rel, "monarchy = { rank = 2 }\n");
+		write_file(compatch.path(), rel, "monarchy = { rank = 1 }\n");
+		write_file(out.path(), GOVERNMENTS_OUTPUT, "monarchy = { rank = 2 }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert_eq!(score.keys_match, Some(true));
+		assert_eq!(score.ast_match, Some(false));
+		assert_eq!(score.verdict, Verdict::DivergesAst);
+	}
+
+	#[test]
+	fn score_file_rejects_definition_module_loader_failure_on_either_side() {
+		let (mod_a, mod_b, human_invalid) = make_dirs();
+		let human_valid = tempfile::tempdir().unwrap();
+		let foch_valid = tempfile::tempdir().unwrap();
+		let foch_invalid = tempfile::tempdir().unwrap();
+		write_governments_replace_descriptor(foch_valid.path());
+		write_governments_replace_descriptor(foch_invalid.path());
+		let rel = "common/governments/human.txt";
+		let monarchy = "monarchy = { rank = 1 }\n";
+		write_file(mod_a.path(), rel, monarchy);
+		write_file(mod_b.path(), rel, monarchy);
+		write_file(human_invalid.path(), rel, monarchy);
+		write_file(
+			human_invalid.path(),
+			"common/governments/invalid_sibling.txt",
+			"unexpected_item\n",
+		);
+		write_file(human_valid.path(), rel, monarchy);
+		write_file(foch_valid.path(), GOVERNMENTS_OUTPUT, monarchy);
+		write_file(foch_invalid.path(), GOVERNMENTS_OUTPUT, monarchy);
+		write_file(
+			foch_invalid.path(),
+			"common/governments/invalid_sibling.txt",
+			"unexpected_item\n",
+		);
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let human_loader_failure = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: human_invalid.path(),
+			out_dir: foch_valid.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+		let foch_loader_failure = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: human_valid.path(),
+			out_dir: foch_invalid.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		for score in [human_loader_failure, foch_loader_failure] {
+			assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+			assert_eq!(score.keys_match, None);
+			assert_eq!(score.ast_match, None);
+			assert_eq!(score.verdict, Verdict::DivergesStructure);
+			assert!(!score.verdict.accepted_ok());
+		}
+	}
+
+	#[test]
+	fn score_file_uses_fixed_module_output_path_for_conflicts() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		write_governments_replace_descriptor(out.path());
+		let rel = "common/governments/human.txt";
+		let monarchy = "monarchy = { rank = 1 }\n";
+		write_file(mod_a.path(), rel, monarchy);
+		write_file(mod_b.path(), rel, monarchy);
+		write_file(compatch.path(), rel, monarchy);
+		write_file(out.path(), GOVERNMENTS_OUTPUT, monarchy);
+		let sources = two_sources(mod_a.path(), mod_b.path());
+		let conflicts = HashSet::from([GOVERNMENTS_OUTPUT.to_string()]);
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &conflicts,
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert!(score.foch_conflict);
+		assert_eq!(score.verdict, Verdict::ConflictWithheld);
+	}
+
+	#[test]
+	fn retained_paths_leave_module_expansion_to_the_engine() {
 		let source = tempfile::tempdir().unwrap();
 		write_file(
 			source.path(),
@@ -2154,11 +2567,143 @@ mod classify_tests {
 			"interface/target.gui".to_string(),
 		];
 
-		let retained =
-			retained_paths_with_module_context(&ground_truth, &[source.path().to_path_buf()]);
+		let retained = scoring_requested_paths(&ground_truth);
 
-		assert!(retained.contains("common/governments/zzz_governments.txt"));
+		assert_eq!(retained, ground_truth.into_iter().collect());
 		assert!(!retained.contains("interface/unrelated.gui"));
+	}
+
+	#[test]
+	fn scoring_reference_units_collapse_definition_module_paths_deterministically() {
+		let forward = vec![
+			"common/governments/10_human.txt".to_string(),
+			"interface/target.gui".to_string(),
+			"common/governments/00_human.txt".to_string(),
+		];
+		let reverse = forward.iter().rev().cloned().collect::<Vec<_>>();
+		let expected = vec![
+			GOVERNMENTS_OUTPUT.to_string(),
+			"interface/target.gui".to_string(),
+		];
+
+		assert_eq!(scoring_reference_units(&forward), expected);
+		assert_eq!(scoring_reference_units(&reverse), expected);
+	}
+
+	#[test]
+	fn canonical_module_view_rejects_unsupported_top_level_items() {
+		let root = tempfile::tempdir().unwrap();
+		write_file(
+			root.path(),
+			"common/governments/invalid.txt",
+			"unexpected_item\nvalid = yes\n",
+		);
+
+		assert!(canonical_module_view_uncached(root.path(), "common/governments").is_none());
+	}
+
+	#[test]
+	fn module_file_collection_propagates_walk_errors() {
+		let root = tempfile::tempdir().unwrap();
+		let missing = root.path().join("missing-module-directory");
+
+		assert!(
+			collect_module_files(root.path(), walkdir::WalkDir::new(missing)).is_none(),
+			"a failed walk must not become an incomplete successful module view"
+		);
+	}
+
+	#[test]
+	fn score_file_includes_uppercase_extension_in_definition_module() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		write_file(
+			compatch.path(),
+			"common/governments/HUMAN.TXT",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_governments_replace_descriptor(out.path());
+		write_file(out.path(), GOVERNMENTS_OUTPUT, "");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel: GOVERNMENTS_OUTPUT,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert_eq!(score.dropped_keys, ["monarchy"]);
+		assert_eq!(score.verdict, Verdict::DropsContent);
+	}
+
+	#[test]
+	fn layered_module_cache_preserves_root_order() {
+		let earlier = tempfile::tempdir().unwrap();
+		let later = tempfile::tempdir().unwrap();
+		let rel = "common/governments/shared.txt";
+		write_file(earlier.path(), rel, "monarchy = { rank = 1 }\n");
+		write_file(later.path(), rel, "monarchy = { rank = 2 }\n");
+		let mut cache = ScoreCache::new();
+
+		let forward = cache
+			.module_view(&[earlier.path(), later.path()], "common/governments")
+			.unwrap();
+		let reverse = cache
+			.module_view(&[later.path(), earlier.path()], "common/governments")
+			.unwrap();
+
+		assert_ne!(forward, reverse);
+	}
+
+	#[test]
+	fn layered_module_cache_tracks_file_and_descriptor_content() {
+		let earlier = tempfile::tempdir().unwrap();
+		let later = tempfile::tempdir().unwrap();
+		write_file(
+			earlier.path(),
+			"common/governments/earlier.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_file(
+			later.path(),
+			"common/governments/later.txt",
+			"republic = { rank = 1 }\n",
+		);
+		let mut cache = ScoreCache::new();
+		let roots = [earlier.path(), later.path()];
+
+		let initial = cache.module_view(&roots, "common/governments").unwrap();
+		write_file(
+			later.path(),
+			"common/governments/later.txt",
+			"republic = { rank = 2 }\n",
+		);
+		let changed_file = cache.module_view(&roots, "common/governments").unwrap();
+		write_governments_replace_descriptor(later.path());
+		let changed_descriptor = cache.module_view(&roots, "common/governments").unwrap();
+
+		assert_ne!(initial, changed_file);
+		assert!(changed_file.contains_key("monarchy"));
+		assert!(!changed_descriptor.contains_key("monarchy"));
+		assert!(changed_descriptor.contains_key("republic"));
+	}
+
+	#[test]
+	fn layered_module_cache_rejects_a_change_during_view_construction() {
+		let root = tempfile::tempdir().unwrap();
+		let rel = "common/governments/governments.txt";
+		write_file(root.path(), rel, "monarchy = { rank = 1 }\n");
+		let mut cache = ScoreCache::new();
+
+		let view = cache.module_view_with_post_build(&[root.path()], "common/governments", || {
+			write_file(root.path(), rel, "monarchy = { rank = 2 }\n")
+		});
+
+		assert!(view.is_none());
 	}
 
 	#[test]

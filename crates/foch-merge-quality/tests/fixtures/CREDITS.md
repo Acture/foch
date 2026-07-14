@@ -6,10 +6,15 @@ measuring `foch`'s merge quality. Full context is intentional: `foch merge` can 
 workspace-sensitive decisions, so reduced file slices are not an authoritative
 test corpus.
 
-The archive layout is:
+The committed archive layout is:
 
 - `corpus.json` — the selected compatch cases;
 - `workshop/<steam_id>/` — the full local candidate or referenced-mod directory.
+
+Base-aware acceptance scoring additionally uses a local
+`basegame-text.tar.gz` archive and the committed `basegame-manifest.json`. The
+game payload is intentionally excluded from git; run the ignored scoring test
+only on a machine where that version-bound archive has been prepared.
 
 Version-control metadata and platform junk such as `.git/` and `.DS_Store` are
 excluded because they are not playable mod content and are not consumed by
@@ -36,5 +41,4 @@ version, preserving authorship metadata.
 
 These fixtures are included in good faith for research and interoperability
 analysis. **If you are an author and would like your content removed, open an
-issue or contact the maintainer and we will remove it promptly** — the
-merge-quality test will simply skip any fixture that is absent.
+issue or contact the maintainer and we will remove it promptly.**

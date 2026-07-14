@@ -9,8 +9,9 @@ description = "Measures foch merge quality against evidence-qualified community 
 
 [features]
 # Network + SteamCMD orchestration (discovery/fetch). Off by default so the
-# scoring test and CI compile without reqwest's TLS stack. The committed
-# fixtures make scoring fully reproducible offline.
+# scoring test and CI compile without reqwest's TLS stack. The committed mod
+# corpus plus a local version-bound vanilla archive make scoring reproducible
+# offline; the base-aware acceptance test is ignored in ordinary CI.
 default = []
 steam = ["dep:reqwest"]
 
