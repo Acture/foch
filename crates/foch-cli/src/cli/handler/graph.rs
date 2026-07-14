@@ -12,10 +12,10 @@ const MODULE_REPORT_MAX_ITERS: usize = 20;
 
 pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 	if graph_args.modules {
-		let request = CheckRequest {
-			source: resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
+		let request = CheckRequest::new(
+			resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
 			config,
-		};
+		);
 		let state = build_runtime_state_for_request(&request, !graph_args.no_game_base)?;
 		let mut report = run_module_report(&state.semantic_index, MODULE_REPORT_MAX_ITERS);
 		let trace_path = graph_args.out.join(MERGE_TRACE_ARTIFACT_PATH);
@@ -49,10 +49,10 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 		}
 	}
 
-	let request = CheckRequest {
-		source: resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
+	let request = CheckRequest::new(
+		resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
 		config,
-	};
+	);
 	let summary = run_graph_with_options(
 		request,
 		&graph_args.out,

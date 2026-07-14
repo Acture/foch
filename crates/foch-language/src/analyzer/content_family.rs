@@ -275,6 +275,40 @@ impl DedupPolicy {
 	}
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum ContentLoadPolicy {
+	#[default]
+	PerPath,
+	DefinitionModule(DefinitionModulePolicy),
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct DefinitionModulePolicy {
+	pub definition_key: DefinitionKeyPolicy,
+	pub file_order: DefinitionFileOrder,
+	pub duplicate_definitions: DuplicateDefinitionPolicy,
+	pub full_output_path: &'static str,
+	pub replacement_prefix: &'static str,
+	/// Increment when loader semantics change. Callers must include this value
+	/// in cache identities for canonical module output.
+	pub policy_version: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DefinitionKeyPolicy {
+	AssignmentKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DefinitionFileOrder {
+	NormalizedPathAscending,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DuplicateDefinitionPolicy {
+	LaterDefinitionWins,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ContentFamilyCapabilities {
 	pub semantic_complete: bool,
@@ -518,6 +552,7 @@ pub struct ContentFamilyDescriptor {
 	pub matcher: ContentFamilyPathMatcher,
 	pub cwt_type: CwtType,
 	pub module_name_rule: ModuleNameRule,
+	pub load_policy: ContentLoadPolicy,
 	pub scope_policy: ContentFamilyScopePolicy,
 	pub capabilities: ContentFamilyCapabilities,
 	pub merge_key_source: Option<MergeKeySource>,
@@ -531,6 +566,7 @@ pub struct ContentFamilyDescriptorBuilder {
 	matcher: ContentFamilyPathMatcher,
 	cwt_type: CwtType,
 	module_name_rule: ModuleNameRule,
+	load_policy: ContentLoadPolicy,
 	scope_policy: ContentFamilyScopePolicy,
 	capabilities: ContentFamilyCapabilities,
 	merge_key_source: Option<MergeKeySource>,
@@ -546,6 +582,11 @@ impl ContentFamilyDescriptorBuilder {
 
 	pub fn module_name(mut self, rule: ModuleNameRule) -> Self {
 		self.module_name_rule = rule;
+		self
+	}
+
+	pub fn load_policy(mut self, policy: ContentLoadPolicy) -> Self {
+		self.load_policy = policy;
 		self
 	}
 
@@ -627,6 +668,7 @@ impl ContentFamilyDescriptorBuilder {
 			matcher: self.matcher,
 			cwt_type: self.cwt_type,
 			module_name_rule: self.module_name_rule,
+			load_policy: self.load_policy,
 			scope_policy: self.scope_policy,
 			capabilities: self.capabilities,
 			merge_key_source: self.merge_key_source,
@@ -643,6 +685,7 @@ impl ContentFamilyDescriptor {
 			matcher: ContentFamilyPathMatcher::Prefix(prefix),
 			cwt_type: CwtType::new("other"),
 			module_name_rule: ModuleNameRule::FallbackParent,
+			load_policy: ContentLoadPolicy::PerPath,
 			scope_policy: ContentFamilyScopePolicy {
 				root_scope: MaybeScope::Unknown,
 				from_alias: None,
@@ -677,6 +720,7 @@ impl ContentFamilyDescriptor {
 			matcher: ContentFamilyPathMatcher::Exact(exact_path),
 			cwt_type: CwtType::new("other"),
 			module_name_rule: ModuleNameRule::FallbackParent,
+			load_policy: ContentLoadPolicy::PerPath,
 			scope_policy: ContentFamilyScopePolicy {
 				root_scope: MaybeScope::Unknown,
 				from_alias: None,
@@ -861,5 +905,63 @@ mod tests {
 		right.hash(&mut right_hasher);
 
 		assert_eq!(left_hasher.finish(), right_hasher.finish());
+	}
+}
+
+#[cfg(test)]
+mod content_load_policy_tests {
+	use super::{
+		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
+		DefinitionModulePolicy, DuplicateDefinitionPolicy,
+	};
+
+	const MODULE_POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
+		definition_key: DefinitionKeyPolicy::AssignmentKey,
+		file_order: DefinitionFileOrder::NormalizedPathAscending,
+		duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
+		full_output_path: "common/governments/00_foch_governments.txt",
+		replacement_prefix: "common/governments",
+		policy_version: 1,
+	};
+
+	#[test]
+	fn load_policy_defaults_to_per_path() {
+		assert_eq!(ContentLoadPolicy::default(), ContentLoadPolicy::PerPath);
+		assert_eq!(
+			ContentFamilyDescriptor::prefix("test", "common/test/")
+				.build()
+				.load_policy,
+			ContentLoadPolicy::PerPath
+		);
+	}
+
+	#[test]
+	fn descriptor_records_the_complete_definition_module_policy() {
+		let descriptor = ContentFamilyDescriptor::prefix("test", "common/test/")
+			.load_policy(ContentLoadPolicy::DefinitionModule(MODULE_POLICY))
+			.build();
+
+		assert_eq!(
+			descriptor.load_policy,
+			ContentLoadPolicy::DefinitionModule(MODULE_POLICY)
+		);
+		assert_eq!(
+			MODULE_POLICY.definition_key,
+			DefinitionKeyPolicy::AssignmentKey
+		);
+		assert_eq!(
+			MODULE_POLICY.file_order,
+			DefinitionFileOrder::NormalizedPathAscending
+		);
+		assert_eq!(
+			MODULE_POLICY.duplicate_definitions,
+			DuplicateDefinitionPolicy::LaterDefinitionWins
+		);
+		assert_eq!(
+			MODULE_POLICY.full_output_path,
+			"common/governments/00_foch_governments.txt"
+		);
+		assert_eq!(MODULE_POLICY.replacement_prefix, "common/governments");
+		assert_eq!(MODULE_POLICY.policy_version, 1);
 	}
 }

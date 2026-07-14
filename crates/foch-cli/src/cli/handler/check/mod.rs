@@ -5,10 +5,10 @@ use foch_engine::{CheckRequest, Config, RunOptions, run_checks_with_options};
 use foch_language::analyzer::report::render_text;
 
 pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
-	let request = CheckRequest {
-		source: resolve_workspace_source(check_args.playset_path.as_deref(), &config)?,
+	let request = CheckRequest::new(
+		resolve_workspace_source(check_args.playset_path.as_deref(), &config)?,
 		config,
-	};
+	);
 	let run_options = RunOptions {
 		analysis_mode: to_analysis_mode(check_args.analysis_mode),
 		channel_mode: to_channel_mode(check_args.channel),

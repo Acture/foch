@@ -2,7 +2,7 @@
 //!
 //! A modset entry stores the materialized output directory as a tar.gz plus
 //! the final merge report JSON. The key is computed by callers from the full
-//! playset content identity: sorted per-mod content hashes, resolution-map
+//! playset content identity: ordered per-mod content hashes, resolution-map
 //! bytes hash, foch version, and game version.
 
 use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
@@ -319,11 +319,8 @@ pub fn compute_modset_cache_key(
 	foch_version: &str,
 	game_version: &str,
 ) -> String {
-	let mut sorted_mod_hashes = mod_hashes.to_vec();
-	sorted_mod_hashes.sort();
-
 	let mut hasher = blake3::Hasher::new();
-	for mod_hash in sorted_mod_hashes {
+	for mod_hash in mod_hashes {
 		update_hash_part(&mut hasher, mod_hash.as_bytes());
 	}
 	update_hash_part(&mut hasher, resolution_map_hash.as_bytes());
@@ -690,6 +687,36 @@ mod tests {
 		)
 		.expect("read restored output");
 		assert_eq!(restored, "effect = { add_prestige = 1 }\n");
+	}
+
+	#[test]
+	fn modset_cache_key_preserves_ordered_mod_precedence() {
+		let cache = ModsetCache::open(&cache_root("modset-precedence"));
+		let out = write_out_dir("effect = { add_prestige = 1 }\n");
+		let report = sample_report();
+		let forward = modset_key(
+			&["mod-a".to_string(), "mod-b".to_string()],
+			b"",
+			"0.1.0",
+			"eu4 1.37",
+		);
+		let reversed = modset_key(
+			&["mod-b".to_string(), "mod-a".to_string()],
+			b"",
+			"0.1.0",
+			"eu4 1.37",
+		);
+
+		assert_ne!(forward, reversed);
+		assert!(cache.lookup(&forward).is_none());
+		assert!(cache.lookup(&reversed).is_none());
+
+		cache
+			.store(&forward, out.path(), &report)
+			.expect("store forward precedence result");
+
+		assert!(cache.lookup(&forward).is_some());
+		assert!(cache.lookup(&reversed).is_none());
 	}
 
 	#[test]

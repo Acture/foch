@@ -31,11 +31,13 @@ use super::super::super::conflict_handler::{
 use super::super::super::conflict_view::build_conflict_view;
 use super::super::super::error::MergeError;
 use super::super::super::patch_deps::{
-	DagPatchComputation, DagPatchRequest, compute_dag_patches_with_handler,
+	DagPatchComputation, DagPatchRequest, compute_dag_patches_from_parsed,
+	compute_dag_patches_with_handler,
 };
 use super::super::super::patch_merge::{
 	AttributedPatch, PatchAddress, PatchConflict, PatchResolution,
 };
+use crate::merge::planning::module_view::CrossFileModuleViews;
 
 fn leaf_conflicts_for_unresolved(
 	target_path: &str,
@@ -104,19 +106,66 @@ pub(super) fn patch_based_structural_merge(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: PatchBasedMergeContext<'_>,
-	mut interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
+	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
 	interactive_config_path: Option<&Path>,
 ) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
+	let vanilla =
+		parse_vanilla_for_stale_detection(target_path, contributors, context.script_cache)?;
+	finish_patch_based_merge(
+		target_path,
+		contributors,
+		context,
+		vanilla,
+		interactive_handler,
+		interactive_config_path,
+		|resolution_map, context| {
+			run_patch_merge_engine(target_path, contributors, context, resolution_map)
+		},
+	)
+}
+
+pub(super) fn patch_based_cross_file_module_merge(
+	target_path: &str,
+	views: &CrossFileModuleViews,
+	context: PatchBasedMergeContext<'_>,
+	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
+	interactive_config_path: Option<&Path>,
+) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
+	finish_patch_based_merge(
+		target_path,
+		&views.aggregate_contributors,
+		context,
+		views.vanilla.clone(),
+		interactive_handler,
+		interactive_config_path,
+		|resolution_map, context| {
+			run_cross_file_module_patch_engine(target_path, views, context, resolution_map)
+		},
+	)
+}
+
+fn finish_patch_based_merge<F>(
+	target_path: &str,
+	contributors: &[ResolvedFileContributor],
+	context: PatchBasedMergeContext<'_>,
+	vanilla: Option<foch_language::analyzer::semantic_index::ParsedScriptFile>,
+	mut interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
+	interactive_config_path: Option<&Path>,
+	mut run_engine: F,
+) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure>
+where
+	F: FnMut(
+		&foch_core::config::ResolutionMap,
+		&PatchBasedMergeContext<'_>,
+	) -> Result<DagPatchComputation, MergeError>,
+{
 	// Hold an owned, mutable resolution map so that any post-pass interactive
 	// resolutions can be folded back in before we re-run the merge engine
 	// below. The merge engine itself never invokes interactive prompts — every
 	// surviving conflict that reaches the user has already been pruned by the
 	// downstream-override post-pass inside `compute_dag_patches_with_handler`.
 	let mut effective_map = context.resolution_map.clone();
-	let mut dag_patches =
-		run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
-	let vanilla =
-		parse_vanilla_for_stale_detection(target_path, contributors, context.script_cache)?;
+	let mut dag_patches = run_engine(&effective_map, &context)?;
 
 	if !dag_patches.merge_result.conflicts.is_empty()
 		&& let (Some(handler), Some(config_path)) =
@@ -185,8 +234,7 @@ pub(super) fn patch_based_structural_merge(
 				}));
 			}
 			if new_picks > 0 {
-				dag_patches =
-					run_patch_merge_engine(target_path, contributors, &context, &effective_map)?;
+				dag_patches = run_engine(&effective_map, &context)?;
 			}
 		}
 	}
@@ -472,6 +520,49 @@ fn run_patch_merge_engine(
 	.map_err(|err| MergeError::Validation {
 		path: Some(target_path.to_string()),
 		message: format!("patch computation failed: {err}"),
+	})
+}
+
+fn run_cross_file_module_patch_engine(
+	target_path: &str,
+	views: &CrossFileModuleViews,
+	context: &PatchBasedMergeContext<'_>,
+	resolution_map: &foch_core::config::ResolutionMap,
+) -> Result<DagPatchComputation, MergeError> {
+	let mut handler = ChainHandler {
+		first: LookupHandler::with_display_names(
+			resolution_map,
+			PathBuf::from(target_path),
+			(*context.mod_display_names).clone(),
+			context.cwt_schema_graph.clone(),
+		),
+		second: ChainHandler {
+			first: PriorityBoostResolutionHandler::new(
+				PathBuf::from(target_path),
+				&resolution_map.mod_priority_boost,
+			),
+			second: ChainHandler {
+				first: DepImpliesResolutionHandler::from_mod_dag(
+					PathBuf::from(target_path),
+					context.mod_dag,
+					context.dep_overrides,
+				),
+				second: DeferHandler,
+			},
+		},
+	};
+	let effective_policies = effective_merge_policies(context);
+	compute_dag_patches_from_parsed(
+		&views.file_dag,
+		views.vanilla.as_ref(),
+		&views.contributors,
+		context.merge_key_source,
+		&effective_policies,
+		&mut handler,
+	)
+	.map_err(|err| MergeError::Validation {
+		path: Some(target_path.to_string()),
+		message: format!("cross-file module patch computation failed: {err}"),
 	})
 }
 

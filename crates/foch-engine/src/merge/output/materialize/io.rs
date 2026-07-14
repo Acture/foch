@@ -7,6 +7,7 @@ use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergeReport,
 };
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,13 @@ impl PatchOutputMaterialization {
 		matches!(self, Self::NoopSkippedVsVanilla)
 	}
 
+	pub(super) fn publishes_output(self) -> bool {
+		matches!(
+			self,
+			Self::NormalWrite | Self::ExternalWrite | Self::KeptExisting
+		)
+	}
+
 	pub(super) fn uses_patch_merge_rendered_output(self) -> bool {
 		matches!(self, Self::NormalWrite | Self::NoopSkippedVsVanilla)
 	}
@@ -37,6 +45,7 @@ pub(super) fn write_patch_merge_output(
 	target_path: &str,
 	merge_output: &mut PatchBasedMergeOutput,
 	out_dir: &Path,
+	prior_out_dir: Option<&Path>,
 	resolution_map: &ResolutionMap,
 	report: &mut MergeReport,
 ) -> Result<PatchOutputMaterialization, MergeError> {
@@ -56,7 +65,23 @@ pub(super) fn write_patch_merge_output(
 		.keep_existing_paths
 		.contains(&output_relative_path)
 	{
-		if target.exists() {
+		let prior_target = prior_out_dir.map(|prior| prior.join(&output_relative_path));
+		if let Some(prior_target) = prior_target.as_ref().filter(|path| path.is_file()) {
+			if prior_target != &target {
+				if let Some(parent) = target.parent() {
+					fs::create_dir_all(parent)?;
+				}
+				fs::copy(prior_target, &target).map_err(|error| {
+					MergeError::Io(io::Error::new(
+						error.kind(),
+						format!(
+							"failed to carry kept output {} into staging at {}: {error}",
+							prior_target.display(),
+							target.display()
+						),
+					))
+				})?;
+			}
 			report.handler_resolutions.push(HandlerResolutionRecord {
 				path: target_path.to_string(),
 				action: "kept_existing".to_string(),
@@ -66,9 +91,10 @@ pub(super) fn write_patch_merge_output(
 			return Ok(PatchOutputMaterialization::KeptExisting);
 		}
 
+		let missing_path = prior_target.as_deref().unwrap_or(&target);
 		report.warnings.push(format!(
-			"keep_existing_failed: file does not exist at output dir: {}",
-			target.display()
+			"keep_existing_failed: file does not exist in prior output: {}",
+			missing_path.display()
 		));
 	}
 
@@ -100,11 +126,7 @@ pub(super) fn write_patch_merge_output(
 	}
 
 	if merge_output.noop_vs_vanilla {
-		// The patch-merged result is AST-equivalent to the vanilla base
-		// (modulo whitespace and comments). Shipping it would just shadow
-		// the game's own copy with byte-for-byte equivalent content, so
-		// skip the write and record the skip in the report instead of
-		// inflating `generated_file_count` with NoOp files.
+		// Shipping content equivalent to vanilla would only shadow the game file.
 		report.handler_resolutions.push(HandlerResolutionRecord {
 			path: target_path.to_string(),
 			action: "noop_skipped_vs_vanilla".to_string(),
@@ -147,6 +169,49 @@ pub(super) fn write_metadata_only(
 	Ok(())
 }
 
+pub(super) fn write_clean_metadata_only(
+	out_dir: &Path,
+	plan: &MergePlanResult,
+	report: &MergeReport,
+) -> Result<(), MergeError> {
+	clear_output_directory(out_dir)?;
+	write_metadata_only(out_dir, plan, report)
+}
+
+fn clear_output_directory(path: &Path) -> Result<(), MergeError> {
+	match fs::symlink_metadata(path) {
+		Ok(metadata) if metadata.file_type().is_dir() => {}
+		Ok(_) => {
+			return Err(MergeError::Io(io::Error::new(
+				io::ErrorKind::InvalidInput,
+				format!("output staging root is not a directory: {}", path.display()),
+			)));
+		}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => {
+			fs::create_dir_all(path)?;
+			return Ok(());
+		}
+		Err(error) => return Err(MergeError::Io(error)),
+	}
+	for entry in fs::read_dir(path)? {
+		remove_output_path(&entry?.path())?;
+	}
+	Ok(())
+}
+
+fn remove_output_path(path: &Path) -> io::Result<()> {
+	let metadata = match fs::symlink_metadata(path) {
+		Ok(metadata) => metadata,
+		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+		Err(error) => return Err(error),
+	};
+	if metadata.file_type().is_dir() {
+		fs::remove_dir_all(path)
+	} else {
+		fs::remove_file(path)
+	}
+}
+
 fn write_json_artifact<T: Serialize>(path: &Path, value: &T) -> Result<(), MergeError> {
 	if let Some(parent) = path.parent() {
 		fs::create_dir_all(parent)?;
@@ -167,7 +232,7 @@ pub(super) fn copy_winner_file(
 	out_dir: &Path,
 ) -> Result<(), MergeError> {
 	let source = winner_source_path(workspace, entry)?;
-	let target = out_dir.join(&entry.path);
+	let target = out_dir.join(entry.output_path());
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
@@ -179,13 +244,13 @@ pub(super) fn write_conflict_placeholder(
 	entry: &MergePlanEntry,
 	out_dir: &Path,
 ) -> Result<(), MergeError> {
-	let target = out_dir.join(&entry.path);
+	let target = out_dir.join(entry.output_path());
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
 	let mut lines = vec![
 		"FOCH_MERGE_CONFLICT".to_string(),
-		format!("path = {}", entry.path),
+		format!("path = {}", entry.output_path()),
 	];
 	if !entry.notes.is_empty() {
 		lines.push(format!("notes = {}", entry.notes.join(" | ")));
@@ -206,6 +271,7 @@ pub(super) fn write_generated_descriptor(
 	out_dir: &Path,
 	playset_path: &Path,
 	playset_name: &str,
+	replace_prefixes: &BTreeSet<String>,
 	descriptor_path: &Path,
 ) -> Result<(), MergeError> {
 	if let Some(parent) = descriptor_path.parent() {
@@ -216,9 +282,15 @@ pub(super) fn write_generated_descriptor(
 	let escaped_name = escape_descriptor_value(&format!("{playset_name} (Merged)"));
 	let escaped_path = escape_descriptor_value(&normalized_out_dir);
 	let escaped_playset = escape_descriptor_value(&normalized_playset_path);
-	let descriptor = format!(
+	let mut descriptor = format!(
 		"# Source playset: {escaped_playset}\nname=\"{escaped_name}\"\npath=\"{escaped_path}\"\n"
 	);
+	for prefix in replace_prefixes {
+		descriptor.push_str(&format!(
+			"replace_path=\"{}\"\n",
+			escape_descriptor_value(prefix)
+		));
+	}
 	fs::write(descriptor_path, descriptor)?;
 	Ok(())
 }
@@ -231,27 +303,30 @@ fn winner_source_path<'a>(
 		.winner
 		.as_ref()
 		.ok_or_else(|| MergeError::Validation {
-			path: Some(entry.path.clone()),
-			message: format!("merge plan entry {} is missing a winner", entry.path),
+			path: Some(entry.output_path().to_string()),
+			message: format!(
+				"merge plan entry {} is missing a winner",
+				entry.output_path()
+			),
 		})?;
-	let contributors =
-		workspace
-			.file_inventory
-			.get(&entry.path)
-			.ok_or_else(|| MergeError::Validation {
-				path: Some(entry.path.clone()),
-				message: format!(
-					"workspace is missing contributor inventory for {}",
-					entry.path
-				),
-			})?;
+	let contributors = workspace
+		.file_inventory
+		.get(entry.output_path())
+		.ok_or_else(|| MergeError::Validation {
+			path: Some(entry.output_path().to_string()),
+			message: format!(
+				"workspace is missing contributor inventory for {}",
+				entry.output_path()
+			),
+		})?;
 	find_contributor_path(contributors, winner)
 		.map(|path| path.as_path())
 		.ok_or_else(|| MergeError::Validation {
-			path: Some(entry.path.clone()),
+			path: Some(entry.output_path().to_string()),
 			message: format!(
 				"winner source {} is missing from workspace inventory for {}",
-				winner.source_path, entry.path
+				winner.source_path,
+				entry.output_path()
 			),
 		})
 }

@@ -4,6 +4,7 @@
 //! owns mod roots, user ignore patterns, and game-version selection.
 
 mod dag_base_cache;
+mod generation;
 pub mod layer;
 mod mod_diff_cache;
 mod mod_parse_cache;

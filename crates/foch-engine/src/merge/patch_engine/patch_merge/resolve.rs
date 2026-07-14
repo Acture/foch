@@ -7,7 +7,8 @@ use super::super::patch::{ClausewitzPatch, patches_semantically_equal};
 use super::address::patch_kind;
 use super::block_merge::{
 	synthesize_boolean_or, synthesize_scroll_stacked_insert, try_recursive_block_merge,
-	try_recursive_insert_merge, try_replace_block_named_container_merge, try_union_block_merge,
+	try_recursive_insert_merge, try_recursive_remove_replace_merge,
+	try_replace_block_named_container_merge, try_union_block_merge,
 };
 use super::rename::resolve_renames;
 use super::{AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution};
@@ -92,6 +93,15 @@ pub(super) fn resolve_address(
 	let has_mixed_kinds = kinds.windows(2).any(|w| w[0] != w[1]);
 
 	if has_mixed_kinds {
+		let distinct: std::collections::BTreeSet<&str> = kinds.iter().copied().collect();
+		if distinct == std::collections::BTreeSet::from(["RemoveNode", "ReplaceBlock"])
+			&& policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::Recurse
+			&& let Some(resolution) =
+				try_recursive_remove_replace_merge(&addr, &attributed, policies, stats)
+		{
+			return resolution;
+		}
+
 		// edit-wins: when the only divergence is one mod editing a property
 		// (SetValue / ReplaceBlock / InsertNode) while another removes it
 		// (RemoveNode), keep the edit and drop the removes. A "remove" at a GUI
@@ -101,7 +111,6 @@ pub(super) fn resolve_address(
 		// single edit kind; genuinely irreconcilable mixes still conflict, and
 		// edit-vs-edit (no removes) flows through the same-kind resolvers which
 		// preserve real scalar-disagreement conflicts.
-		let distinct: std::collections::BTreeSet<&str> = kinds.iter().copied().collect();
 		let edit_kinds: Vec<&str> = distinct
 			.iter()
 			.copied()
@@ -266,7 +275,11 @@ fn resolve_assignment_insert_nodes(
 		.iter()
 		.filter_map(|patch| match &patch.patch {
 			ClausewitzPatch::InsertNode {
-				statement: AstStatement::Assignment { value, .. },
+				statement:
+					AstStatement::Assignment {
+						value: value @ AstValue::Scalar { .. },
+						..
+					},
 				..
 			} => Some((patch, value)),
 			_ => None,

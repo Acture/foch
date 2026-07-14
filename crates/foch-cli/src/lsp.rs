@@ -4056,10 +4056,7 @@ fn scan_targets_from_manifest_path(
 	manifest_path: PathBuf,
 	config: Config,
 ) -> std::result::Result<Vec<ScanTarget>, String> {
-	let request = CheckRequest {
-		source: WorkspaceSource::Manifest(manifest_path),
-		config,
-	};
+	let request = CheckRequest::new(WorkspaceSource::Manifest(manifest_path), config);
 	let targets = resolve_workspace_targets(&request, true)
 		.map_err(|err| format!("resolve FOCH_LSP_WORKSPACE_MANIFEST failed: {err}"))?;
 	Ok(dedup_scan_targets(

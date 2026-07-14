@@ -17,12 +17,14 @@ mod simplify;
 mod workspace;
 
 pub use base_data::{
-	BASE_DATA_DIR_ENV, BASE_DATA_RELEASE_BASE_URL_ENV, BaseAnalysisSnapshot, BaseBuildObserver,
-	BaseBuildProfile, BaseDataSource, BaseSnapshotBuildResult, INSTALLED_COVERAGE_FILE_NAME,
-	InstalledBaseDataEntry, InstalledBaseSnapshot, ReleaseArtifactOutput, ReleaseDataManifest,
-	SnapshotBundleOutput, build_base_snapshot, build_base_snapshot_with_observer,
-	default_release_tag, install_built_snapshot, install_snapshot_from_release,
-	list_installed_base_data, resolve_game_root_and_version, write_release_artifacts,
+	BASE_DATA_DIR_ENV, BASE_DATA_RELEASE_BASE_URL_ENV, BASE_DATA_SCHEMA_VERSION,
+	BaseAnalysisSnapshot, BaseBuildObserver, BaseBuildProfile, BaseDataSource,
+	BaseSnapshotBuildResult, INSTALLED_COVERAGE_FILE_NAME, InstalledBaseDataEntry,
+	InstalledBaseSnapshot, InstalledBaseSnapshotIdentity, ReleaseArtifactOutput,
+	ReleaseDataManifest, SnapshotBundleOutput, build_base_snapshot,
+	build_base_snapshot_with_observer, default_release_tag, install_built_snapshot,
+	install_snapshot_from_release, installed_base_snapshot_identity, list_installed_base_data,
+	load_installed_base_snapshot, resolve_game_root_and_version, write_release_artifacts,
 	write_snapshot_bundle,
 };
 pub use cache::{

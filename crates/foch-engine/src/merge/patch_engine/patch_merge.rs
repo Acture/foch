@@ -21,7 +21,7 @@ use super::super::conflict_handler::ConflictHandler;
 #[cfg(test)]
 use super::super::conflict_handler::DeferHandler;
 use super::super::error::MergeError;
-use super::patch::{AstPath, ClausewitzPatch, fuzzy_rename_similarity};
+use super::patch::{AstPath, ClausewitzPatch, ListItemTarget, fuzzy_rename_similarity};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -92,6 +92,69 @@ pub struct PatchMergeStats {
 	pub edit_over_remove_resolved: usize,
 }
 
+impl PatchMergeStats {
+	pub(crate) fn accumulate(&mut self, nested: &Self) {
+		self.total_patches += nested.total_patches;
+		self.single_mod_patches += nested.single_mod_patches;
+		self.convergent_patches += nested.convergent_patches;
+		self.auto_merged_patches += nested.auto_merged_patches;
+		self.conflict_patches += nested.conflict_patches;
+		self.edit_over_remove_resolved += nested.edit_over_remove_resolved;
+	}
+}
+
+fn patch_sort_key(patch: &ClausewitzPatch) -> (AstPath, String, u8, Vec<u8>) {
+	let (path, key, operation_rank) = match patch {
+		ClausewitzPatch::Rename {
+			path,
+			old_key,
+			new_key,
+		} => (path.clone(), format!("{old_key}\0{new_key}"), 0),
+		ClausewitzPatch::RemoveNode { path, key, .. } => (path.clone(), key.clone(), 1),
+		ClausewitzPatch::RemoveListItem { path, key, .. } => (path.clone(), key.clone(), 2),
+		ClausewitzPatch::RemoveBlockItem { path, .. } => (path.clone(), String::new(), 3),
+		ClausewitzPatch::SetValue { path, key, .. } => (path.clone(), key.clone(), 4),
+		ClausewitzPatch::ReplaceBlock { path, key, .. } => (path.clone(), key.clone(), 5),
+		ClausewitzPatch::InsertNode { path, key, .. } => (path.clone(), key.clone(), 6),
+		ClausewitzPatch::AppendListItem { path, key, .. } => (path.clone(), key.clone(), 7),
+		ClausewitzPatch::AppendBlockItem { path, .. } => (path.clone(), String::new(), 8),
+	};
+	let payload = bincode::serialize(patch).unwrap_or_else(|_| format!("{patch:?}").into_bytes());
+	(path, key, operation_rank, payload)
+}
+
+fn sort_contributors(mod_patches: &mut [(String, usize, Vec<ClausewitzPatch>)]) {
+	mod_patches.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+}
+
+type PatchSourceOrder = (usize, String, usize);
+
+fn address_group_order_key(
+	address: &PatchAddress,
+	source_orders: &HashMap<PatchAddress, PatchSourceOrder>,
+) -> (usize, String, usize, AstPath, String) {
+	let (precedence, mod_id, source_ordinal) =
+		source_orders
+			.get(address)
+			.cloned()
+			.unwrap_or((usize::MAX, String::new(), usize::MAX));
+	(
+		precedence,
+		mod_id,
+		source_ordinal,
+		address.path.clone(),
+		address.key.clone(),
+	)
+}
+
+pub(crate) fn semantic_value_identity(value: &AstValue) -> String {
+	fingerprint::value_fingerprint(value)
+}
+
+pub(crate) fn semantic_statement_identity(statement: &AstStatement) -> String {
+	fingerprint::statement_fingerprint(statement)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -122,12 +185,13 @@ pub fn merge_patch_sets(
 }
 
 pub(crate) fn merge_patch_sets_for_file(
-	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 	current_file: Option<&Path>,
 ) -> Result<PatchMergeResult, MergeError> {
 	let mut result = PatchMergeResult::default();
+	sort_contributors(&mut mod_patches);
 
 	// --- Pre-pass: collect renames and rewrite cross-mod addresses ---
 	//
@@ -137,7 +201,7 @@ pub(crate) fn merge_patch_sets_for_file(
 	// key instead. Otherwise the renaming mod's RemoveNode would conflict
 	// with the modifier mod's edits at the old key.
 	let rename_map = build_rename_map(&mod_patches);
-	let mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)> = mod_patches
+	let mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)> = mod_patches
 		.into_iter()
 		.map(|(mod_id, prec, patches)| {
 			let rewritten = patches
@@ -147,15 +211,33 @@ pub(crate) fn merge_patch_sets_for_file(
 			(mod_id, prec, rewritten)
 		})
 		.collect();
+	sort_contributors(&mut mod_patches);
 	let mod_patches = drop_prefixed_rename_duplicate_inserts(mod_patches);
+	let mod_patches = normalize_singleton_list_inserts(mod_patches);
 
 	// Group patches by address, preserving attribution.
 	let mut by_address: HashMap<PatchAddress, Vec<AttributedPatch>> = HashMap::new();
+	let mut source_order_by_address: HashMap<PatchAddress, PatchSourceOrder> = HashMap::new();
+	let mut source_ordinal_by_attribution: HashMap<(PatchAddress, usize, String), usize> =
+		HashMap::new();
 
 	for (mod_id, precedence, patches) in mod_patches {
-		for patch in patches {
+		for (source_ordinal, patch) in patches.into_iter().enumerate() {
 			result.stats.total_patches += 1;
 			let addr = patch_address(&patch, policies);
+			let source_order = (precedence, mod_id.clone(), source_ordinal);
+			source_order_by_address
+				.entry(addr.clone())
+				.and_modify(|known| {
+					if source_order < *known {
+						known.clone_from(&source_order);
+					}
+				})
+				.or_insert(source_order);
+			source_ordinal_by_attribution
+				.entry((addr.clone(), precedence, mod_id.clone()))
+				.and_modify(|known| *known = (*known).min(source_ordinal))
+				.or_insert(source_ordinal);
 			by_address.entry(addr).or_default().push(AttributedPatch {
 				mod_id: mod_id.clone(),
 				precedence,
@@ -173,7 +255,42 @@ pub(crate) fn merge_patch_sets_for_file(
 	// unfingerprinted `SetValue(owner)`. Bucket by the kind-agnostic raw
 	// `(path, key)` so these ambiguous sibling intents surface as one conflict
 	// instead of applying independently.
-	let cross_kind_conflicts = detect_cross_kind_sibling_conflicts(&by_address, &mut result.stats);
+	let mut cross_kind_conflicts =
+		detect_cross_kind_sibling_conflicts(&by_address, &mut result.stats);
+	for conflict in &mut cross_kind_conflicts {
+		conflict.patches.sort_by(|left, right| {
+			let left_address = patch_address(&left.patch, policies);
+			let right_address = patch_address(&right.patch, policies);
+			let left_ordinal = source_ordinal_by_attribution
+				.get(&(left_address, left.precedence, left.mod_id.clone()))
+				.copied()
+				.unwrap_or(usize::MAX);
+			let right_ordinal = source_ordinal_by_attribution
+				.get(&(right_address, right.precedence, right.mod_id.clone()))
+				.copied()
+				.unwrap_or(usize::MAX);
+			left.precedence
+				.cmp(&right.precedence)
+				.then_with(|| left.mod_id.cmp(&right.mod_id))
+				.then_with(|| left_ordinal.cmp(&right_ordinal))
+				.then_with(|| patch_sort_key(&left.patch).cmp(&patch_sort_key(&right.patch)))
+		});
+	}
+	cross_kind_conflicts.sort_by_key(|conflict| {
+		let (precedence, mod_id, source_ordinal) = conflict
+			.split_addresses
+			.iter()
+			.filter_map(|address| source_order_by_address.get(address).cloned())
+			.min()
+			.unwrap_or((usize::MAX, String::new(), usize::MAX));
+		(
+			precedence,
+			mod_id,
+			source_ordinal,
+			conflict.address.path.clone(),
+			conflict.address.key.clone(),
+		)
+	});
 	let cross_kind_addresses: HashSet<PatchAddress> = cross_kind_conflicts
 		.iter()
 		.flat_map(|conflict| conflict.split_addresses.iter().cloned())
@@ -182,8 +299,11 @@ pub(crate) fn merge_patch_sets_for_file(
 		by_address.remove(addr);
 	}
 
-	let mut pending_resolutions = Vec::new();
-	for (addr, attributed) in by_address {
+	let mut address_groups = by_address.into_iter().collect::<Vec<_>>();
+	address_groups
+		.sort_by_key(|(address, _)| address_group_order_key(address, &source_order_by_address));
+	let mut pending_resolutions = Vec::with_capacity(address_groups.len());
+	for (addr, attributed) in address_groups {
 		pending_resolutions.push(resolve_address(
 			addr,
 			attributed,
@@ -235,6 +355,47 @@ pub(crate) fn merge_patch_sets_for_file(
 	}
 
 	Ok(result)
+}
+
+fn normalize_singleton_list_inserts(
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+) -> Vec<(String, usize, Vec<ClausewitzPatch>)> {
+	let list_addresses = mod_patches
+		.iter()
+		.flat_map(|(_, _, patches)| patches)
+		.filter_map(|patch| match patch {
+			ClausewitzPatch::AppendListItem { path, key, .. } => Some((path.clone(), key.clone())),
+			_ => None,
+		})
+		.collect::<HashSet<_>>();
+	if list_addresses.is_empty() {
+		return mod_patches;
+	}
+
+	mod_patches
+		.into_iter()
+		.map(|(mod_id, precedence, patches)| {
+			let patches = patches
+				.into_iter()
+				.map(|patch| match patch {
+					ClausewitzPatch::InsertNode {
+						path,
+						key,
+						statement: AstStatement::Assignment { value, .. },
+					} if list_addresses.contains(&(path.clone(), key.clone())) => {
+						ClausewitzPatch::AppendListItem {
+							path,
+							key,
+							value,
+							target_occurrence: ListItemTarget::new(0, 0, 0),
+						}
+					}
+					other => other,
+				})
+				.collect();
+			(mod_id, precedence, patches)
+		})
+		.collect()
 }
 
 const CROSS_MOD_INSERT_RENAME_THRESHOLD: f32 = 0.70;
@@ -347,6 +508,7 @@ fn lower_precedence_insert(left: (usize, &str, usize), right: (usize, &str, usiz
 // ---------------------------------------------------------------------------
 
 mod block_merge;
+pub(crate) use block_merge::order_patches_by_source;
 #[cfg(test)]
 pub(crate) use block_merge::{
 	ast_equal_ignoring_spans, child_identity, items_are_named_container,

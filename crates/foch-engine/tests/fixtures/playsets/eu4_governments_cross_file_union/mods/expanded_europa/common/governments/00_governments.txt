@@ -1,0 +1,3 @@
+expanded_europa_government = {
+	basic_reform = expanded_europa_reform
+}

@@ -1316,8 +1316,9 @@ fn merge_plan_json_output_contains_strategy_contributors_and_winner() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == "localisation/english/test_l_english.yml")
+		.find(|item| item["target"]["path"] == "localisation/english/test_l_english.yml")
 		.expect("matching entry");
+	assert_eq!(entry["target"]["kind"], "file");
 	assert_eq!(entry["strategy"], "localisation_merge");
 	assert!(entry["contributors"].is_array());
 	assert_eq!(entry["winner"]["mod_id"], "7402");
@@ -1358,8 +1359,9 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == STRUCTURAL_CONFLICT_PATH)
+		.find(|item| item["target"]["path"] == STRUCTURAL_CONFLICT_PATH)
 		.expect("matching entry");
+	assert_eq!(entry["target"]["kind"], "file");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
 	assert_eq!(entry["generated"], false);
@@ -1424,8 +1426,9 @@ fn merge_plan_json_output_marks_non_normalizable_defines_as_manual_conflict() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == "common/defines/test.txt")
+		.find(|item| item["target"]["path"] == "common/defines/test.txt")
 		.expect("matching entry");
+	assert_eq!(entry["target"]["kind"], "file");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
 	assert_eq!(entry["generated"], false);
@@ -1495,8 +1498,9 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["path"] == "common/scripted_effects/effects.txt")
+		.find(|item| item["target"]["path"] == "common/scripted_effects/effects.txt")
 		.expect("matching entry");
+	assert_eq!(entry["target"]["kind"], "file");
 	assert_eq!(entry["contributors"][0]["is_base_game"], true);
 	assert_eq!(entry["winner"]["mod_id"], "7501");
 	assert_eq!(entry["generated"], false);

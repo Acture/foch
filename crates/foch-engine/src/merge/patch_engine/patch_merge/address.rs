@@ -54,13 +54,33 @@ pub(super) fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -
 				key,
 			}
 		}
-		ClausewitzPatch::AppendListItem { path, key, value } => PatchAddress {
+		ClausewitzPatch::AppendListItem {
+			path,
+			key,
+			value,
+			target_occurrence,
+		} => PatchAddress {
 			path: path.clone(),
-			key: format!("__list_item__::{}::{}", key, value_fingerprint(value)),
+			key: format!(
+				"__list_item__::{}::{}::occurrence::{}",
+				key,
+				value_fingerprint(value),
+				target_occurrence.identity_ordinal()
+			),
 		},
-		ClausewitzPatch::RemoveListItem { path, key, value } => PatchAddress {
+		ClausewitzPatch::RemoveListItem {
+			path,
+			key,
+			value,
+			source_occurrence,
+		} => PatchAddress {
 			path: path.clone(),
-			key: format!("__list_item__::{}::{}", key, value_fingerprint(value)),
+			key: format!(
+				"__list_item__::{}::{}::occurrence::{}",
+				key,
+				value_fingerprint(value),
+				source_occurrence.identity_ordinal()
+			),
 		},
 		ClausewitzPatch::ReplaceBlock { path, key, .. } => PatchAddress {
 			path: path.clone(),

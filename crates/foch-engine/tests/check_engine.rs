@@ -1,5 +1,5 @@
 use foch_core::model::{
-	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport,
+	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 	MergeReportStatus, MergeReportValidation, Severity,
 };
 use foch_engine::{
@@ -106,7 +106,7 @@ fn plan_entry_for<'a>(result: &'a MergePlanResult, path: &str) -> &'a MergePlanE
 	result
 		.paths
 		.iter()
-		.find(|entry| entry.path == path)
+		.find(|entry| entry.output_path() == path)
 		.expect("merge plan entry exists")
 }
 
@@ -673,6 +673,81 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 }
 
 #[test]
+fn merge_plan_groups_opted_in_governments_module_across_filenames() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let expanded_europa = temp.path().join("9511");
+	let governments_expanded = temp.path().join("9512");
+
+	write_dlc_load(
+		&playlist_path,
+		&[
+			("9511", "Expanded Europa"),
+			("9512", "Governments Expanded"),
+		],
+	);
+	write_descriptor(&expanded_europa, "Expanded Europa", &[]);
+	write_descriptor(&governments_expanded, "Governments Expanded", &[]);
+	write_script_file(
+		&expanded_europa,
+		"common/governments/00_governments.txt",
+		"expanded_europa_government = { basic_reform = ee_reform }\n",
+	);
+	write_script_file(
+		&governments_expanded,
+		"common/governments/zzz_00_governments.txt",
+		"governments_expanded_government = { basic_reform = ge_reform }\n",
+	);
+
+	let result = run_merge_plan_no_base(request_for(&playlist_path));
+	assert_eq!(result.strategies.total_paths, 1, "plan: {result:#?}");
+	assert_eq!(result.strategies.structural_merge, 1, "plan: {result:#?}");
+	assert_eq!(result.paths.len(), 1, "plan: {result:#?}");
+	assert_eq!(
+		result.paths[0].output_path(),
+		"common/governments/zzz_foch_governments.txt"
+	);
+	let MergePlanTarget::Module {
+		input_paths,
+		replace_prefix,
+		..
+	} = &result.paths[0].target
+	else {
+		panic!("governments must be planned as a module target");
+	};
+	assert_eq!(input_paths.len(), 2);
+	assert_eq!(replace_prefix, "common/governments");
+}
+
+#[test]
+fn merge_plan_keeps_single_governments_file_as_a_complete_module_target() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_root = temp.path().join("9513");
+	write_dlc_load(&playlist_path, &[("9513", "Governments")]);
+	write_descriptor(&mod_root, "Governments", &[]);
+	write_script_file(
+		&mod_root,
+		"common/governments/only.txt",
+		"only_government = { basic_reform = only_reform }\n",
+	);
+
+	let result = run_merge_plan_no_base(request_for(&playlist_path));
+	assert_eq!(result.paths.len(), 1, "plan: {result:#?}");
+	assert!(matches!(
+		&result.paths[0].target,
+		MergePlanTarget::Module {
+			input_paths,
+			output_path,
+			replace_prefix,
+			..
+		} if input_paths == &["common/governments/only.txt"]
+			&& output_path == "common/governments/zzz_foch_governments.txt"
+			&& replace_prefix == "common/governments"
+	));
+}
+
+#[test]
 fn merge_plan_marks_non_normalizable_defines_overlap_as_manual_conflict() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");
@@ -820,6 +895,10 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		noop_skipped_file_count: 0,
 		cross_file_noop_skipped_file_count: 0,
 		per_entry_noop_skipped_count: 0,
+		definition_module_count: 0,
+		definition_module_generated_count: 0,
+		definition_module_blocked_count: 0,
+		definition_module_elapsed_ms: 0,
 		validation: MergeReportValidation {
 			fatal_errors: 0,
 			strict_findings: 4,
@@ -854,6 +933,10 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	assert_eq!(value["noop_skipped_file_count"], 0);
 	assert_eq!(value["cross_file_noop_skipped_file_count"], 0);
 	assert_eq!(value["per_entry_noop_skipped_count"], 0);
+	assert_eq!(value["definition_module_count"], 0);
+	assert_eq!(value["definition_module_generated_count"], 0);
+	assert_eq!(value["definition_module_blocked_count"], 0);
+	assert_eq!(value["definition_module_elapsed_ms"], 0);
 	assert_eq!(value["conflict_resolutions"].as_array().unwrap().len(), 0);
 	assert_eq!(value["handler_resolutions"].as_array().unwrap().len(), 0);
 	assert_eq!(value["dep_misuse"].as_array().unwrap().len(), 0);

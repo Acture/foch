@@ -6,10 +6,13 @@ use crate::workspace::{
 };
 use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy,
+	MergePlanTarget, MergeUnitId,
 };
-use foch_language::analyzer::content_family::GameProfile;
+use foch_language::analyzer::content_family::{ContentLoadPolicy, DefinitionModulePolicy};
+use foch_language::analyzer::content_family::{GameProfile, module_name_for_descriptor};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::semantic_index::parse_script_file;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -55,13 +58,95 @@ pub(crate) fn build_merge_plan_from_workspace(
 	result.playset_name = workspace.playlist.name.clone();
 
 	let profile = eu4_profile();
-	result.paths = workspace
-		.file_inventory
-		.iter()
-		.map(|(path, contributors)| classify_entry(path, contributors, profile))
-		.collect();
+	result.paths = build_merge_units(workspace, profile);
 	result.strategies = summarize_paths(&result.paths);
 	result
+}
+
+type ModuleInputs<'a> = Vec<(&'a str, &'a [ResolvedFileContributor])>;
+
+fn build_merge_units(
+	workspace: &ResolvedWorkspace,
+	profile: &dyn GameProfile,
+) -> Vec<MergePlanEntry> {
+	let mut regular = Vec::new();
+	let mut modules: BTreeMap<MergeUnitId, (DefinitionModulePolicy, ModuleInputs<'_>)> =
+		BTreeMap::new();
+
+	for (path, contributors) in &workspace.file_inventory {
+		let Some(descriptor) = profile.classify_content_family(Path::new(path)) else {
+			regular.push(classify_entry(path, contributors, profile));
+			continue;
+		};
+		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+			regular.push(classify_entry(path, contributors, profile));
+			continue;
+		};
+		let merge_unit = MergeUnitId {
+			family_id: descriptor.id.as_str().to_string(),
+			module_name: module_name_for_descriptor(Path::new(path), descriptor),
+		};
+		modules
+			.entry(merge_unit)
+			.or_insert_with(|| (policy, Vec::new()))
+			.1
+			.push((path.as_str(), contributors.as_slice()));
+	}
+
+	for (merge_unit, (policy, inputs)) in modules {
+		regular.push(classify_module_entry(merge_unit, policy, &inputs));
+	}
+	regular.sort_by(|left, right| left.output_path().cmp(right.output_path()));
+	regular
+}
+
+fn classify_module_entry(
+	merge_unit: MergeUnitId,
+	policy: DefinitionModulePolicy,
+	inputs: &ModuleInputs<'_>,
+) -> MergePlanEntry {
+	let input_paths = inputs
+		.iter()
+		.map(|(path, _)| (*path).to_string())
+		.collect::<Vec<_>>();
+	let mut contributors = inputs
+		.iter()
+		.flat_map(|(_, contributors)| contributors.iter())
+		.map(to_merge_contributor)
+		.collect::<Vec<_>>();
+	contributors.sort_by(|left, right| {
+		left.precedence
+			.cmp(&right.precedence)
+			.then_with(|| left.source_path.cmp(&right.source_path))
+			.then_with(|| left.mod_id.cmp(&right.mod_id))
+	});
+	let mut notes = Vec::new();
+	let strategy = inputs
+		.iter()
+		.find_map(|(input_path, contributors)| {
+			validate_structural_merge_inputs(input_path, contributors).err()
+		})
+		.map_or(MergePlanStrategy::StructuralMerge, |error| {
+			notes.push(error.to_string());
+			MergePlanStrategy::ManualConflict
+		});
+	let winner = (strategy != MergePlanStrategy::ManualConflict)
+		.then(|| contributors.last().cloned())
+		.flatten();
+
+	MergePlanEntry {
+		target: MergePlanTarget::Module {
+			id: merge_unit,
+			input_paths,
+			output_path: policy.full_output_path.to_string(),
+			replace_prefix: policy.replacement_prefix.to_string(),
+		},
+		strategy,
+		contributors,
+		winner,
+		generated: false,
+		notes,
+	}
 }
 
 fn classify_entry(
@@ -101,7 +186,9 @@ fn classify_entry(
 	}
 
 	MergePlanEntry {
-		path: path.to_string(),
+		target: MergePlanTarget::File {
+			path: path.to_string(),
+		},
 		strategy,
 		contributors: contributors_out,
 		winner,

@@ -2142,6 +2142,8 @@ mod tests {
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
+			requested_retained_paths: None,
+			effective_retained_paths: None,
 		}
 	}
 

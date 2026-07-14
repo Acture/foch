@@ -39,9 +39,59 @@ pub struct MergePlanContributor {
 	pub is_base_game: bool,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct MergeUnitId {
+	pub family_id: String,
+	pub module_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MergePlanTarget {
+	File {
+		path: String,
+	},
+	Module {
+		id: MergeUnitId,
+		input_paths: Vec<String>,
+		output_path: String,
+		replace_prefix: String,
+	},
+}
+
+impl MergePlanTarget {
+	pub fn output_path(&self) -> &str {
+		match self {
+			Self::File { path } => path,
+			Self::Module { output_path, .. } => output_path,
+		}
+	}
+
+	pub fn module_id(&self) -> Option<&MergeUnitId> {
+		match self {
+			Self::File { .. } => None,
+			Self::Module { id, .. } => Some(id),
+		}
+	}
+
+	pub fn input_paths(&self) -> &[String] {
+		match self {
+			Self::File { path } => std::slice::from_ref(path),
+			Self::Module { input_paths, .. } => input_paths,
+		}
+	}
+
+	pub fn replace_prefix(&self) -> Option<&str> {
+		match self {
+			Self::File { .. } => None,
+			Self::Module { replace_prefix, .. } => Some(replace_prefix),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MergePlanEntry {
-	pub path: String,
+	pub target: MergePlanTarget,
 	pub strategy: MergePlanStrategy,
 	pub contributors: Vec<MergePlanContributor>,
 	pub winner: Option<MergePlanContributor>,
@@ -49,6 +99,55 @@ pub struct MergePlanEntry {
 	pub generated: bool,
 	#[serde(default)]
 	pub notes: Vec<String>,
+}
+
+impl MergePlanEntry {
+	pub fn output_path(&self) -> &str {
+		self.target.output_path()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
+
+	#[test]
+	fn module_target_serializes_every_required_runtime_field() {
+		let entry = MergePlanEntry {
+			target: MergePlanTarget::Module {
+				id: MergeUnitId {
+					family_id: "governments".to_string(),
+					module_name: "governments".to_string(),
+				},
+				input_paths: vec!["common/governments/00_governments.txt".to_string()],
+				output_path: "common/governments/zzz_foch_governments.txt".to_string(),
+				replace_prefix: "common/governments".to_string(),
+			},
+			strategy: MergePlanStrategy::StructuralMerge,
+			contributors: Vec::new(),
+			winner: None,
+			generated: false,
+			notes: Vec::new(),
+		};
+
+		let json = serde_json::to_value(&entry).expect("serialize merge plan entry");
+		assert_eq!(json["target"]["kind"], "module");
+		assert_eq!(
+			json["target"]["output_path"],
+			"common/governments/zzz_foch_governments.txt"
+		);
+		assert_eq!(json["target"]["replace_prefix"], "common/governments");
+	}
+
+	#[test]
+	fn file_target_exposes_its_output_path() {
+		let target = MergePlanTarget::File {
+			path: "common/scripted_effects/example.txt".to_string(),
+		};
+
+		assert_eq!(target.output_path(), "common/scripted_effects/example.txt");
+		assert!(target.module_id().is_none());
+	}
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -268,6 +367,14 @@ pub struct MergeReport {
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,
+	#[serde(default)]
+	pub definition_module_count: usize,
+	#[serde(default)]
+	pub definition_module_generated_count: usize,
+	#[serde(default)]
+	pub definition_module_blocked_count: usize,
+	#[serde(default)]
+	pub definition_module_elapsed_ms: u64,
 	/// Unchanged vanilla base-game CopyThrough files intentionally not written
 	/// to the merged mod because the game already ships them.
 	#[serde(default)]

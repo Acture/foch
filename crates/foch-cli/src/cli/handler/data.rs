@@ -70,7 +70,6 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 			|counts: &mut std::collections::BTreeMap<String, u64>| {
 				if args.install {
 					let installed = install_built_snapshot(
-						&build.snapshot,
 						&build.encoded_snapshot,
 						BaseDataSource::Build,
 						Some(build.snapshot_asset_name.clone()),
@@ -98,7 +97,6 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 						"--output-dir is required when using --release-asset".to_string()
 					})?;
 					let release_output = write_release_artifacts(
-						&build.snapshot,
 						&build.encoded_snapshot,
 						output_dir,
 						&default_release_tag(),
@@ -123,7 +121,6 @@ fn handle_data_build(args: &DataBuildArgs, config: &Config) -> HandlerResult {
 					);
 				} else if let Some(output_dir) = args.output_dir.as_ref() {
 					let bundle = write_snapshot_bundle(
-						&build.snapshot,
 						&build.encoded_snapshot,
 						output_dir,
 						BaseDataSource::Build,

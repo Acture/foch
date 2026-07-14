@@ -13,10 +13,7 @@ pub fn handle_workspace(args: &WorkspaceArgs, config: Config) -> HandlerResult {
 }
 
 fn handle_workspace_resolve(args: &WorkspaceResolveArgs, config: Config) -> HandlerResult {
-	let request = CheckRequest {
-		source: WorkspaceSource::from_path(args.source_path.clone()),
-		config,
-	};
+	let request = CheckRequest::new(WorkspaceSource::from_path(args.source_path.clone()), config);
 	let summary = resolve_workspace_summary(&request)?;
 	println!("{}", render_workspace_summary(&summary));
 	Ok(0)

@@ -21,6 +21,9 @@ foch-language = { path = "../foch-language" }
 atty = "0.2"
 rayon.workspace = true
 reqwest.workspace = true
+remove_dir_all.workspace = true
+rustix.workspace = true
+same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -29,6 +32,9 @@ toml.workspace = true
 toml_edit = "0.23"
 tracing.workspace = true
 walkdir.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 bincode2 = { package = "bincode", version = "2.0.0-rc.3", features = ["serde"] }

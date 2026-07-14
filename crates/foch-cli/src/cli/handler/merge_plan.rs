@@ -5,10 +5,10 @@ use foch_engine::{CheckRequest, Config, MergePlanOptions, run_merge_plan_with_op
 use foch_language::analyzer::report::{merge_plan_exit_code, render_merge_plan_text};
 
 pub fn handle_merge_plan(merge_plan_args: &MergePlanArgs, config: Config) -> HandlerResult {
-	let request = CheckRequest {
-		source: resolve_workspace_source(merge_plan_args.playset_path.as_deref(), &config)?,
+	let request = CheckRequest::new(
+		resolve_workspace_source(merge_plan_args.playset_path.as_deref(), &config)?,
 		config,
-	};
+	);
 	let options = MergePlanOptions {
 		include_game_base: !merge_plan_args.no_game_base,
 	};

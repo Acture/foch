@@ -8,10 +8,10 @@ pub fn handle_simplify(simplify_args: &SimplifyArgs, config: Config) -> HandlerR
 	{
 		return Err("simplify requires exactly one of --out or --in-place".into());
 	}
-	let request = CheckRequest {
-		source: resolve_workspace_source(simplify_args.playset_path.as_deref(), &config)?,
+	let request = CheckRequest::new(
+		resolve_workspace_source(simplify_args.playset_path.as_deref(), &config)?,
 		config,
-	};
+	);
 	let summary = run_simplify_with_options(
 		request,
 		SimplifyOptions {

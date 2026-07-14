@@ -1,10 +1,19 @@
 use super::{
-	BASE_DATA_DIR_ENV, BASE_DATA_SCHEMA_VERSION, BaseAnalysisSnapshot, BaseDataSource,
-	BaseSymbolDefinition, CoverageClass, INSTALLED_COVERAGE_FILE_NAME,
+	BASE_DATA_DIR_ENV, BASE_DATA_ENV_LOCK, BASE_DATA_SCHEMA_VERSION, BaseAnalysisSnapshot,
+	BaseDataSource, BaseSymbolDefinition, CoverageClass, INSTALLED_COVERAGE_FILE_NAME,
 	INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata, build_coverage_report,
-	decode_snapshot_from_bytes, encode_snapshot_to_bytes, load_installed_base_snapshot,
-	write_installed_snapshot, write_snapshot_bundle,
+	clear_cached_loaded_base_snapshot, decode_cached_base_snapshot, decode_snapshot_from_bytes,
+	encode_snapshot_to_bytes, install_installed_snapshot_decode_gate,
+	installed_base_snapshot_identity, installed_snapshot_cold_decode_count,
+	installed_snapshot_current_digest_count, installed_snapshot_current_validation_count,
+	installed_snapshot_file_read_count, load_installed_base_snapshot,
+	loaded_base_snapshot_cache_completed_count, lock_and_validate_installed_base_snapshot_identity,
+	lock_installed_base_snapshot_for_install, reset_installed_snapshot_test_counters, sha256_hex,
+	stale_installed_base_data_message, validate_installed_base_snapshot_identity,
+	verified_snapshot_content_matches, write_release_artifacts, write_snapshot_bundle,
+	write_test_installed_snapshot,
 };
+use filetime::{FileTime, set_file_mtime};
 use foch_core::domain::game::Game;
 use foch_core::model::{
 	DocumentFamily, DocumentRecord, LocalisationDefinition, MaybeScope, ParamContract,
@@ -16,10 +25,30 @@ use foch_language::analyzer::content_family::CwtType;
 use foch_language::analyzer::parser::parse_clausewitz_content;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
 
-static BASE_DATA_ENV_LOCK: Mutex<()> = Mutex::new(());
+fn tamper_snapshot_preserving_len_and_mtime(path: &std::path::Path) {
+	let metadata = std::fs::metadata(path).expect("snapshot metadata");
+	let original_len = metadata.len();
+	let original_mtime = FileTime::from_last_modification_time(&metadata);
+	let mut bytes = std::fs::read(path).expect("read snapshot");
+	let last = bytes.last_mut().expect("non-empty snapshot");
+	*last ^= 0xff;
+	assert!(
+		decode_snapshot_from_bytes(&bytes).is_err(),
+		"tamper fixture must corrupt the encoded snapshot"
+	);
+	std::fs::write(path, bytes).expect("tamper snapshot");
+	set_file_mtime(path, original_mtime).expect("restore snapshot mtime");
+
+	let tampered_metadata = std::fs::metadata(path).expect("tampered snapshot metadata");
+	assert_eq!(tampered_metadata.len(), original_len);
+	assert_eq!(
+		FileTime::from_last_modification_time(&tampered_metadata),
+		original_mtime
+	);
+}
 
 fn country_mask() -> ScopeSet {
 	base_scope::country().into()
@@ -68,6 +97,31 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 		&index,
 		Default::default(),
 	)
+}
+
+fn alternate_valid_snapshot() -> BaseAnalysisSnapshot {
+	let mut snapshot = sample_snapshot_with_contract();
+	snapshot
+		.inventory_paths
+		.push("common/scripted_effects/alternate.txt".to_string());
+	snapshot
+}
+
+fn metadata_for_test_snapshot(
+	snapshot: &BaseAnalysisSnapshot,
+	encoded_snapshot: &[u8],
+) -> InstalledBaseDataMetadata {
+	InstalledBaseDataMetadata {
+		schema_version: snapshot.schema_version,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: snapshot.analysis_rules_version.clone(),
+		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: Some(sha256_hex(encoded_snapshot)),
+		vocabulary_manifest_sha256: None,
+	}
 }
 
 #[test]
@@ -2106,11 +2160,11 @@ fn build_coverage_report_classifies_foundation_and_excluded_roots() {
 
 #[test]
 fn write_snapshot_bundle_emits_coverage_report() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
 	let snapshot = sample_coverage_snapshot();
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let bundle = write_snapshot_bundle(
-		&snapshot,
 		&encoded.bytes,
 		temp.path(),
 		BaseDataSource::Build,
@@ -2125,11 +2179,11 @@ fn write_snapshot_bundle_emits_coverage_report() {
 
 #[test]
 fn write_snapshot_bundle_emits_vocabulary_manifest() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
 	let snapshot = sample_snapshot_with_contract();
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	write_snapshot_bundle(
-		&snapshot,
 		&encoded.bytes,
 		temp.path(),
 		BaseDataSource::Build,
@@ -2170,6 +2224,218 @@ fn write_snapshot_bundle_emits_vocabulary_manifest() {
 }
 
 #[test]
+fn snapshot_export_sidecars_are_derived_from_encoded_snapshot() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	let snapshot = alternate_valid_snapshot();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let expected_sha256 = sha256_hex(&encoded.bytes);
+
+	let bundle = write_snapshot_bundle(
+		&encoded.bytes,
+		&temp.path().join("bundle"),
+		BaseDataSource::Build,
+		Some("payload-asset.bin".to_string()),
+		Some(expected_sha256.clone()),
+	)
+	.expect("write bundle from encoded snapshot");
+	let metadata: InstalledBaseDataMetadata = serde_json::from_str(
+		&std::fs::read_to_string(&bundle.metadata_path).expect("read bundle metadata"),
+	)
+	.expect("parse bundle metadata");
+	assert_eq!(metadata.game, snapshot.game);
+	assert_eq!(metadata.game_version, snapshot.game_version);
+	assert_eq!(metadata.sha256.as_deref(), Some(expected_sha256.as_str()));
+
+	let release = write_release_artifacts(&encoded.bytes, &temp.path().join("release"), "v-test")
+		.expect("write release from encoded snapshot");
+	let manifest: super::ReleaseDataManifest = serde_json::from_str(
+		&std::fs::read_to_string(&release.manifest_path).expect("read release manifest"),
+	)
+	.expect("parse release manifest");
+	assert_eq!(manifest.assets[0].game, snapshot.game);
+	assert_eq!(manifest.assets[0].game_version, snapshot.game_version);
+	assert_eq!(manifest.assets[0].sha256, expected_sha256);
+}
+
+#[test]
+fn snapshot_export_rejects_invalid_encoded_bytes_before_writing_sidecars() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	let bundle_dir = temp.path().join("bundle");
+	let release_dir = temp.path().join("release");
+
+	let bundle_err = write_snapshot_bundle(
+		b"not a snapshot",
+		&bundle_dir,
+		BaseDataSource::Build,
+		None,
+		None,
+	)
+	.expect_err("invalid bundle payload must be rejected");
+	let release_err = write_release_artifacts(b"not a snapshot", &release_dir, "v-test")
+		.expect_err("invalid release payload must be rejected");
+
+	assert!(bundle_err.contains("failed to verify encoded base data snapshot"));
+	assert!(release_err.contains("failed to verify encoded base data snapshot"));
+	assert!(!bundle_dir.exists());
+	assert!(!release_dir.exists());
+}
+
+#[test]
+fn encoded_snapshot_outputs_share_one_verified_decode() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = alternate_valid_snapshot();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	clear_cached_loaded_base_snapshot(temp.path());
+	reset_installed_snapshot_test_counters();
+
+	let installed = super::install_built_snapshot(
+		&encoded.bytes,
+		BaseDataSource::Build,
+		Some("base.bin".to_string()),
+		Some(sha256_hex(&encoded.bytes)),
+	)
+	.expect("install snapshot");
+	write_release_artifacts(&encoded.bytes, &temp.path().join("release"), "v-test")
+		.expect("write release");
+	write_snapshot_bundle(
+		&encoded.bytes,
+		&temp.path().join("bundle"),
+		BaseDataSource::Build,
+		Some("base.bin".to_string()),
+		Some(sha256_hex(&encoded.bytes)),
+	)
+	.expect("write bundle");
+
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", None)
+		.expect("load installed snapshot")
+		.expect("snapshot exists");
+	assert!(Arc::ptr_eq(&installed.snapshot, &loaded.snapshot));
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn installed_snapshot_writer_blocks_while_publication_guard_is_held() {
+	use std::sync::mpsc::{self, RecvTimeoutError};
+	use std::thread;
+	use std::time::Duration;
+
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let original = sample_snapshot_with_contract();
+	let original_encoded = encode_snapshot_to_bytes(&original).expect("encode original snapshot");
+	let original_metadata = metadata_for_test_snapshot(&original, &original_encoded.bytes);
+	write_test_installed_snapshot(&original_metadata, &original_encoded.bytes)
+		.expect("install original snapshot");
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read original identity")
+		.expect("original identity exists");
+	let publication_guard =
+		lock_and_validate_installed_base_snapshot_identity("eu4", "schema-test", &identity)
+			.expect("lock original snapshot for publication");
+
+	let replacement = alternate_valid_snapshot();
+	let replacement_encoded =
+		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
+	let replacement_metadata = metadata_for_test_snapshot(&replacement, &replacement_encoded.bytes);
+	let started = Arc::new(Barrier::new(2));
+	let worker_started = Arc::clone(&started);
+	let (completed_tx, completed_rx) = mpsc::channel();
+	let writer = thread::spawn(move || {
+		worker_started.wait();
+		let result =
+			write_test_installed_snapshot(&replacement_metadata, &replacement_encoded.bytes)
+				.map(|_| ());
+		completed_tx.send(result).expect("report writer result");
+	});
+
+	started.wait();
+	assert!(
+		matches!(
+			completed_rx.recv_timeout(Duration::from_millis(100)),
+			Err(RecvTimeoutError::Timeout)
+		),
+		"installer completed while the publication guard held a shared lock"
+	);
+	drop(publication_guard);
+	completed_rx
+		.recv_timeout(Duration::from_secs(2))
+		.expect("installer should resume after publication guard release")
+		.expect("install replacement snapshot");
+	writer.join().expect("join snapshot writer");
+
+	let replacement_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read replacement identity")
+		.expect("replacement identity exists");
+	assert_ne!(identity.sha256(), replacement_identity.sha256());
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn installed_snapshot_writes_are_serialized() {
+	use std::sync::mpsc::{self, RecvTimeoutError};
+	use std::thread;
+	use std::time::Duration;
+
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let first_writer_guard = lock_installed_base_snapshot_for_install("eu4", "schema-test")
+		.expect("lock first snapshot installation");
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = metadata_for_test_snapshot(&snapshot, &encoded.bytes);
+	let started = Arc::new(Barrier::new(2));
+	let worker_started = Arc::clone(&started);
+	let (completed_tx, completed_rx) = mpsc::channel();
+	let writer = thread::spawn(move || {
+		worker_started.wait();
+		let result = write_test_installed_snapshot(&metadata, &encoded.bytes).map(|_| ());
+		completed_tx.send(result).expect("report writer result");
+	});
+
+	started.wait();
+	assert!(
+		matches!(
+			completed_rx.recv_timeout(Duration::from_millis(100)),
+			Err(RecvTimeoutError::Timeout)
+		),
+		"second installer completed while the first held the exclusive lock"
+	);
+	drop(first_writer_guard);
+	completed_rx
+		.recv_timeout(Duration::from_secs(2))
+		.expect("second installer should resume after exclusive lock release")
+		.expect("install snapshot");
+	writer.join().expect("join snapshot writer");
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
 fn load_installed_base_snapshot_rejects_old_schema_version() {
 	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
@@ -2191,7 +2457,7 @@ fn load_installed_base_snapshot_rejects_old_schema_version() {
 		vocabulary_manifest_sha256: None,
 	};
 	let installed =
-		write_installed_snapshot(&snapshot, &metadata, &encoded.bytes).expect("install snapshot");
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
 	assert!(
 		installed
 			.install_dir
@@ -2211,9 +2477,1059 @@ fn load_installed_base_snapshot_rejects_old_schema_version() {
 	)
 	.expect("write metadata");
 
-	let err = load_installed_base_snapshot("eu4", "schema-test")
+	let err = load_installed_base_snapshot("eu4", "schema-test", None)
 		.expect_err("old schema should be rejected");
 	assert!(err.contains("base data schema mismatch"));
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn load_installed_base_snapshot_reuses_decoded_snapshot() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let first = load_installed_base_snapshot("eu4", "schema-test", None)
+		.expect("load snapshot")
+		.expect("snapshot exists");
+	let second = load_installed_base_snapshot("eu4", "schema-test", None)
+		.expect("load snapshot")
+		.expect("snapshot exists");
+	assert!(Arc::ptr_eq(&installed.snapshot, &first.snapshot));
+	assert!(Arc::ptr_eq(&first.snapshot, &second.snapshot));
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn installed_base_snapshot_identity_supplies_verified_bytes_to_load() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	reset_installed_snapshot_test_counters();
+
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	assert_eq!(identity.verified.bytes.len(), encoded.bytes.len());
+	assert_eq!(installed_snapshot_current_digest_count(), 0);
+	assert_eq!(installed_snapshot_current_validation_count(), 0);
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
+		.expect("load snapshot")
+		.expect("snapshot exists");
+
+	assert_eq!(
+		identity.to_string(),
+		format!("sha256:{}", sha256_hex(&encoded.bytes))
+	);
+	assert_eq!(installed_snapshot_file_read_count(), 1);
+	#[cfg(unix)]
+	assert_eq!(installed_snapshot_current_digest_count(), 0);
+	#[cfg(not(unix))]
+	assert_eq!(installed_snapshot_current_digest_count(), 1);
+	assert_eq!(installed_snapshot_current_validation_count(), 1);
+	assert!(Arc::ptr_eq(&installed.snapshot, &loaded.snapshot));
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn explicit_snapshot_identity_transfers_across_threads_without_rereading() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	clear_cached_loaded_base_snapshot(&snapshot_path);
+	reset_installed_snapshot_test_counters();
+
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	let expected_label = identity.to_string();
+	let loaded = std::thread::spawn(move || {
+		load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
+			.expect("load snapshot on another thread")
+			.expect("snapshot exists")
+	})
+	.join()
+	.expect("identity transfer worker");
+
+	assert_eq!(
+		expected_label,
+		format!("sha256:{}", sha256_hex(&encoded.bytes))
+	);
+	assert_eq!(installed_snapshot_file_read_count(), 1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	assert_eq!(loaded.snapshot.inventory_paths, snapshot.inventory_paths);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn explicit_snapshot_identity_rejects_current_to_legacy_path_switch() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	reset_installed_snapshot_test_counters();
+	let current_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	let legacy_path = installed.install_dir.join("snapshot.bin.gz");
+	std::fs::rename(&current_path, &legacy_path).expect("switch to legacy snapshot path");
+
+	let err = load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
+		.expect_err("path switch must invalidate the staged identity");
+	assert!(err.contains("changed after identity verification"), "{err}");
+	assert!(err.contains(&identity.to_string()), "{err}");
+	assert_eq!(installed_snapshot_cold_decode_count(), 0);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn decoded_snapshot_cache_is_keyed_by_content_sha_across_install_paths() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	let root_a = temp.path().join("a");
+	let root_b = temp.path().join("b");
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, &root_a);
+	}
+	let installed_a =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot A");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, &root_b);
+	}
+	write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot B");
+	clear_cached_loaded_base_snapshot(&installed_a.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME));
+	reset_installed_snapshot_test_counters();
+
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, &root_a);
+	}
+	let identity_a = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read identity A")
+		.expect("identity A exists");
+	let loaded_a = load_installed_base_snapshot("eu4", "schema-test", Some(&identity_a))
+		.expect("load snapshot A")
+		.expect("snapshot A exists");
+
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, &root_b);
+	}
+	let identity_b = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read identity B")
+		.expect("identity B exists");
+	let loaded_b = load_installed_base_snapshot("eu4", "schema-test", Some(&identity_b))
+		.expect("load snapshot B")
+		.expect("snapshot B exists");
+
+	assert_eq!(identity_a.to_string(), identity_b.to_string());
+	assert!(Arc::ptr_eq(&loaded_a.snapshot, &loaded_b.snapshot));
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn explicit_identity_rejects_snapshot_changed_before_load() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	reset_installed_snapshot_test_counters();
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	tamper_snapshot_preserving_len_and_mtime(&snapshot_path);
+
+	let err = load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
+		.expect_err("changed snapshot must invalidate the explicit identity");
+	assert!(err.contains("changed after identity verification"), "{err}");
+	assert!(err.contains("retry"), "{err}");
+	assert_eq!(installed_snapshot_file_read_count(), 1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 0);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn current_content_digest_rejects_same_file_same_len_and_mtime_replacement() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	tamper_snapshot_preserving_len_and_mtime(&snapshot_path);
+	reset_installed_snapshot_test_counters();
+
+	assert!(
+		!verified_snapshot_content_matches(&snapshot_path, &identity.verified)
+			.expect("compare current snapshot digest")
+	);
+	assert_eq!(installed_snapshot_current_digest_count(), 1);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn public_identity_validation_rejects_changed_content() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	validate_installed_base_snapshot_identity("eu4", "schema-test", &identity)
+		.expect("identity must initially be current");
+
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	tamper_snapshot_preserving_len_and_mtime(&snapshot_path);
+	let err = validate_installed_base_snapshot_identity("eu4", "schema-test", &identity)
+		.expect_err("changed content must invalidate identity");
+	assert!(err.contains("changed after identity verification"), "{err}");
+	assert!(err.contains(&identity.to_string()), "{err}");
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn load_rejects_valid_snapshot_replacement_after_identity() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let original = sample_snapshot_with_contract();
+	let original_encoded = encode_snapshot_to_bytes(&original).expect("encode original snapshot");
+	let replacement = alternate_valid_snapshot();
+	let replacement_encoded =
+		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: original.game.clone(),
+		game_version: original.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed = write_test_installed_snapshot(&metadata, &original_encoded.bytes)
+		.expect("install original snapshot");
+	reset_installed_snapshot_test_counters();
+	let original_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read original identity")
+		.expect("original identity exists");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	std::fs::write(&snapshot_path, &replacement_encoded.bytes)
+		.expect("replace snapshot with valid bytes");
+
+	let err = load_installed_base_snapshot("eu4", "schema-test", Some(&original_identity))
+		.expect_err("load must not return replacement under original identity");
+	assert!(err.contains("changed after identity verification"), "{err}");
+	assert!(err.contains(&original_identity.to_string()), "{err}");
+	assert!(err.contains("retry"), "{err}");
+	assert_eq!(installed_snapshot_file_read_count(), 1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 0);
+
+	let replacement_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read replacement identity")
+		.expect("replacement identity exists");
+	assert_ne!(original_identity, replacement_identity);
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", Some(&replacement_identity))
+		.expect("load replacement after rebuilding identity")
+		.expect("replacement exists");
+	assert_eq!(loaded.snapshot.inventory_paths, replacement.inventory_paths);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn explicit_identity_rejects_valid_replacement_during_decode() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let original = sample_snapshot_with_contract();
+	let original_encoded = encode_snapshot_to_bytes(&original).expect("encode original snapshot");
+	let replacement = alternate_valid_snapshot();
+	let replacement_encoded =
+		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: original.game.clone(),
+		game_version: original.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed = write_test_installed_snapshot(&metadata, &original_encoded.bytes)
+		.expect("install original snapshot");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	clear_cached_loaded_base_snapshot(&snapshot_path);
+	reset_installed_snapshot_test_counters();
+	let original_identity = format!("sha256:{}", sha256_hex(&original_encoded.bytes));
+	let decode_gate = install_installed_snapshot_decode_gate();
+
+	let worker = std::thread::spawn(|| {
+		let identity = installed_base_snapshot_identity("eu4", "schema-test")
+			.expect("read original identity")
+			.expect("original identity exists");
+		let result = load_installed_base_snapshot("eu4", "schema-test", Some(&identity));
+		(identity, result)
+	});
+	decode_gate.wait_until_entered(1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	std::fs::write(&snapshot_path, &replacement_encoded.bytes)
+		.expect("replace snapshot while original is decoding");
+	decode_gate.release();
+
+	let (worker_identity, result) = worker.join().expect("load worker");
+	assert_eq!(worker_identity.to_string(), original_identity);
+	let err = result.expect_err("load must not consume replacement after decoding original");
+	assert!(err.contains("changed after identity verification"), "{err}");
+	assert!(err.contains(&original_identity), "{err}");
+	assert_eq!(installed_snapshot_file_read_count(), 1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+
+	let replacement_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read replacement identity")
+		.expect("replacement identity exists");
+	assert_ne!(original_identity, replacement_identity.to_string());
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", Some(&replacement_identity))
+		.expect("load replacement after retry")
+		.expect("replacement exists");
+	assert_eq!(loaded.snapshot.inventory_paths, replacement.inventory_paths);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn explicit_snapshot_identities_do_not_cross_between_threads() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let original = sample_snapshot_with_contract();
+	let original_encoded = encode_snapshot_to_bytes(&original).expect("encode original snapshot");
+	let replacement = alternate_valid_snapshot();
+	let replacement_encoded =
+		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: original.game.clone(),
+		game_version: original.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed = write_test_installed_snapshot(&metadata, &original_encoded.bytes)
+		.expect("install original snapshot");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	clear_cached_loaded_base_snapshot(&snapshot_path);
+	reset_installed_snapshot_test_counters();
+
+	let (original_ready_tx, original_ready_rx) = std::sync::mpsc::channel();
+	let (load_original_tx, load_original_rx) = std::sync::mpsc::channel();
+	let original_worker = std::thread::spawn(move || {
+		let identity = installed_base_snapshot_identity("eu4", "schema-test")
+			.expect("read original identity")
+			.expect("original identity exists");
+		original_ready_tx
+			.send(identity.clone())
+			.expect("signal original identity");
+		load_original_rx.recv().expect("wait to load original");
+		let result = load_installed_base_snapshot("eu4", "schema-test", Some(&identity));
+		(identity, result)
+	});
+	let original_identity = original_ready_rx.recv().expect("receive original identity");
+	std::fs::write(&snapshot_path, &replacement_encoded.bytes)
+		.expect("replace snapshot with valid bytes");
+	let replacement_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read replacement identity")
+		.expect("replacement identity exists");
+	assert_ne!(original_identity, replacement_identity);
+	load_original_tx.send(()).expect("start original load");
+
+	let (worker_identity, original_result) = original_worker.join().expect("original worker");
+	assert_eq!(worker_identity, original_identity);
+	let err = original_result.expect_err("original load must not accept replacement identity");
+	assert!(err.contains("changed after identity verification"), "{err}");
+	assert!(err.contains(&original_identity.to_string()), "{err}");
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", Some(&replacement_identity))
+		.expect("load replacement identity")
+		.expect("replacement exists");
+	assert_eq!(loaded.snapshot.inventory_paths, replacement.inventory_paths);
+	assert_eq!(installed_snapshot_file_read_count(), 2);
+	// Each captured digest is decoded once; the stale original is rejected by
+	// its single final current-content check rather than a pre-decode hash.
+	assert_eq!(installed_snapshot_cold_decode_count(), 2);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn install_built_snapshot_uses_encoded_bytes_as_the_single_source_of_truth() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let encoded_snapshot = alternate_valid_snapshot();
+	let encoded = encode_snapshot_to_bytes(&encoded_snapshot).expect("encode alternate snapshot");
+	let installed =
+		super::install_built_snapshot(&encoded.bytes, BaseDataSource::Build, None, None)
+			.expect("install encoded snapshot");
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read installed identity")
+		.expect("installed identity exists");
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
+		.expect("load installed alternate snapshot")
+		.expect("alternate snapshot exists");
+	assert!(Arc::ptr_eq(&installed.snapshot, &loaded.snapshot));
+	assert_eq!(
+		loaded.snapshot.inventory_paths,
+		encoded_snapshot.inventory_paths
+	);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn encoded_snapshot_installer_validates_release_contract() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let sha256 = sha256_hex(&encoded.bytes);
+	let expected = super::EncodedSnapshotExpectations {
+		game: Some("eu4"),
+		game_version: Some("schema-test"),
+		analysis_rules_version: Some(analysis_rules_version()),
+		sha256: Some(&sha256),
+	};
+	for invalid in [
+		super::EncodedSnapshotExpectations {
+			game: Some("ck3"),
+			..expected
+		},
+		super::EncodedSnapshotExpectations {
+			game_version: Some("wrong-version"),
+			..expected
+		},
+		super::EncodedSnapshotExpectations {
+			analysis_rules_version: Some("wrong-rules"),
+			..expected
+		},
+		super::EncodedSnapshotExpectations {
+			sha256: Some("wrong-sha256"),
+			..expected
+		},
+	] {
+		super::install_encoded_snapshot(
+			&encoded.bytes,
+			BaseDataSource::Download,
+			Some("release.bin".to_string()),
+			invalid,
+		)
+		.expect_err("invalid release contract must fail");
+	}
+
+	let mut old_schema = snapshot;
+	old_schema.schema_version = BASE_DATA_SCHEMA_VERSION - 1;
+	let old_schema = encode_snapshot_to_bytes(&old_schema).expect("encode old schema snapshot");
+	let schema_err = super::install_encoded_snapshot(
+		&old_schema.bytes,
+		BaseDataSource::Download,
+		Some("release.bin".to_string()),
+		super::EncodedSnapshotExpectations {
+			sha256: Some(&sha256_hex(&old_schema.bytes)),
+			..expected
+		},
+	)
+	.expect_err("old schema must fail");
+	assert!(schema_err.contains("schema mismatch"), "{schema_err}");
+
+	let installed = super::install_encoded_snapshot(
+		&encoded.bytes,
+		BaseDataSource::Download,
+		Some("release.bin".to_string()),
+		expected,
+	)
+	.expect("install validated release bytes");
+	assert_eq!(installed.metadata.source, BaseDataSource::Download);
+	assert_eq!(installed.metadata.sha256.as_deref(), Some(sha256.as_str()));
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn load_installed_base_snapshot_caches_concurrent_decode_error() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	clear_cached_loaded_base_snapshot(&snapshot_path);
+	std::fs::write(&snapshot_path, b"not-a-valid-base-snapshot")
+		.expect("write invalid snapshot bytes");
+	reset_installed_snapshot_test_counters();
+	let decode_gate = install_installed_snapshot_decode_gate();
+
+	let barrier = Arc::new(Barrier::new(3));
+	let mut workers = Vec::new();
+	for _ in 0..2 {
+		let barrier = Arc::clone(&barrier);
+		workers.push(std::thread::spawn(move || {
+			barrier.wait();
+			load_installed_base_snapshot("eu4", "schema-test", None)
+				.expect_err("invalid snapshot must fail")
+		}));
+	}
+	barrier.wait();
+	decode_gate.wait_until_entered(1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	decode_gate.release();
+	let first = workers.remove(0).join().expect("first worker");
+	let second = workers.remove(0).join().expect("second worker");
+
+	assert_eq!(first, second);
+	assert!(first.contains("failed to parse base data snapshot"));
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	let third = load_installed_base_snapshot("eu4", "schema-test", None)
+		.expect_err("cached invalid snapshot must still fail");
+	assert_eq!(third, first);
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn decoded_snapshot_cache_never_evicts_in_flight_cells() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	clear_cached_loaded_base_snapshot(&temp.path().join("clear-all"));
+	reset_installed_snapshot_test_counters();
+	let decode_gate = install_installed_snapshot_decode_gate();
+	let start = Arc::new(Barrier::new(3));
+	let bytes_a = Arc::<[u8]>::from(&b"invalid-a"[..]);
+	let bytes_b = Arc::<[u8]>::from(&b"invalid-b"[..]);
+	let sha_a = sha256_hex(&bytes_a);
+	let sha_b = sha256_hex(&bytes_b);
+
+	let first_a = {
+		let start = Arc::clone(&start);
+		let bytes = Arc::clone(&bytes_a);
+		let sha = sha_a.clone();
+		std::thread::spawn(move || {
+			start.wait();
+			decode_cached_base_snapshot(&sha, &bytes)
+		})
+	};
+	let first_b = {
+		let start = Arc::clone(&start);
+		let bytes = Arc::clone(&bytes_b);
+		let sha = sha_b.clone();
+		std::thread::spawn(move || {
+			start.wait();
+			decode_cached_base_snapshot(&sha, &bytes)
+		})
+	};
+	start.wait();
+	decode_gate.wait_until_entered(2);
+
+	let (started_tx, started_rx) = std::sync::mpsc::channel();
+	let second_a = {
+		let bytes = Arc::clone(&bytes_a);
+		let sha = sha_a.clone();
+		std::thread::spawn(move || {
+			started_tx.send(()).expect("signal second A");
+			decode_cached_base_snapshot(&sha, &bytes)
+		})
+	};
+	started_rx.recv().expect("second A started");
+	decode_gate.release();
+
+	let first_a = first_a.join().expect("first A worker");
+	let first_b = first_b.join().expect("first B worker");
+	let second_a = second_a.join().expect("second A worker");
+	let first_a = first_a.expect_err("invalid A must fail");
+	assert!(first_b.is_err());
+	let second_a = second_a.expect_err("second invalid A must fail");
+	assert_eq!(first_a, second_a);
+	assert_eq!(installed_snapshot_cold_decode_count(), 2);
+}
+
+#[test]
+fn decoded_snapshot_cache_bounds_completed_entries() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	clear_cached_loaded_base_snapshot(&snapshot_path);
+
+	for bytes in [b"invalid-one".as_slice(), b"invalid-two", b"invalid-three"] {
+		std::fs::write(&snapshot_path, bytes).expect("replace invalid snapshot bytes");
+		load_installed_base_snapshot("eu4", "schema-test", None)
+			.expect_err("invalid snapshot must fail");
+		assert!(loaded_base_snapshot_cache_completed_count() <= 1);
+	}
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn installed_base_snapshot_identity_reports_stale_metadata() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let metadata_path = installed
+		.install_dir
+		.join(super::INSTALLED_METADATA_FILE_NAME);
+
+	let old_schema = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION - 1,
+		..metadata.clone()
+	};
+	std::fs::write(
+		&metadata_path,
+		serde_json::to_string_pretty(&old_schema).expect("serialize old schema metadata"),
+	)
+	.expect("write old schema metadata");
+	let schema_err = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect_err("stale schema must be reported");
+	assert_eq!(
+		schema_err,
+		stale_installed_base_data_message(
+			"eu4",
+			"schema-test",
+			&format!(
+				"base data schema mismatch: expected {}, found {}",
+				BASE_DATA_SCHEMA_VERSION,
+				BASE_DATA_SCHEMA_VERSION - 1
+			),
+		)
+	);
+
+	let stale_rules = "stale-analysis-rules";
+	let old_rules = InstalledBaseDataMetadata {
+		analysis_rules_version: stale_rules.to_string(),
+		..metadata
+	};
+	std::fs::write(
+		&metadata_path,
+		serde_json::to_string_pretty(&old_rules).expect("serialize old rules metadata"),
+	)
+	.expect("write old rules metadata");
+	let rules_err = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect_err("stale analysis rules must be reported");
+	assert_eq!(
+		rules_err,
+		stale_installed_base_data_message(
+			"eu4",
+			"schema-test",
+			&format!(
+				"base data analysis rules version mismatch: expected {}, found {}",
+				analysis_rules_version(),
+				stale_rules
+			),
+		)
+	);
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn load_installed_base_snapshot_decodes_cold_content_once() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	clear_cached_loaded_base_snapshot(&snapshot_path);
+	reset_installed_snapshot_test_counters();
+	let decode_gate = install_installed_snapshot_decode_gate();
+
+	let barrier = Arc::new(Barrier::new(3));
+	let mut workers = Vec::new();
+	for _ in 0..2 {
+		let barrier = Arc::clone(&barrier);
+		workers.push(std::thread::spawn(move || {
+			barrier.wait();
+			load_installed_base_snapshot("eu4", "schema-test", None)
+				.expect("load snapshot")
+				.expect("snapshot exists")
+		}));
+	}
+	barrier.wait();
+	decode_gate.wait_until_entered(1);
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	decode_gate.release();
+	let first = workers.remove(0).join().expect("first worker");
+	let second = workers.remove(0).join().expect("second worker");
+
+	assert_eq!(installed_snapshot_cold_decode_count(), 1);
+	assert!(Arc::ptr_eq(&first.snapshot, &second.snapshot));
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn installed_base_snapshot_identity_tracks_bytes_and_invalidates_decoded_cache() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Build,
+		asset_name: None,
+		sha256: None,
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let original_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	let loaded = load_installed_base_snapshot("eu4", "schema-test", Some(&original_identity))
+		.expect("load snapshot")
+		.expect("snapshot exists");
+	assert!(Arc::ptr_eq(&installed.snapshot, &loaded.snapshot));
+
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	tamper_snapshot_preserving_len_and_mtime(&snapshot_path);
+
+	let tampered_identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read tampered snapshot identity")
+		.expect("tampered snapshot identity exists");
+	assert_ne!(original_identity, tampered_identity);
+	let err = load_installed_base_snapshot("eu4", "schema-test", Some(&tampered_identity))
+		.expect_err("tampered bytes must not reuse decoded snapshot");
+	assert!(err.contains("failed to parse base data snapshot"));
+
+	unsafe {
+		std::env::remove_var(BASE_DATA_DIR_ENV);
+	}
+}
+
+#[test]
+fn installed_base_snapshot_identity_verifies_metadata_sha256() {
+	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
+	let temp = TempDir::new().expect("temp dir");
+	unsafe {
+		std::env::set_var(BASE_DATA_DIR_ENV, temp.path());
+	}
+
+	let snapshot = sample_snapshot_with_contract();
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let expected_sha256 = sha256_hex(&encoded.bytes);
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: BASE_DATA_SCHEMA_VERSION,
+		game: snapshot.game.clone(),
+		game_version: snapshot.game_version.clone(),
+		analysis_rules_version: analysis_rules_version().to_string(),
+		generated_by_cli_version: env!("CARGO_PKG_VERSION").to_string(),
+		source: BaseDataSource::Download,
+		asset_name: Some("snapshot.bin".to_string()),
+		sha256: Some(expected_sha256.clone()),
+		vocabulary_manifest_sha256: None,
+	};
+	let installed =
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
+	let identity = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect("read snapshot identity")
+		.expect("snapshot identity exists");
+	assert_eq!(identity.to_string(), format!("sha256:{expected_sha256}"));
+	load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
+		.expect("load verified snapshot identity")
+		.expect("snapshot exists");
+
+	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	tamper_snapshot_preserving_len_and_mtime(&snapshot_path);
+
+	let identity_err = installed_base_snapshot_identity("eu4", "schema-test")
+		.expect_err("identity must verify metadata SHA-256");
+	assert!(identity_err.contains("SHA256 verification failed"));
+	let load_err = load_installed_base_snapshot("eu4", "schema-test", None)
+		.expect_err("load must verify metadata SHA-256 before cache reuse");
+	assert!(load_err.contains("SHA256 verification failed"));
 
 	unsafe {
 		std::env::remove_var(BASE_DATA_DIR_ENV);
@@ -2242,7 +3558,7 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 		vocabulary_manifest_sha256: None,
 	};
 	let installed =
-		write_installed_snapshot(&snapshot, &metadata, &encoded.bytes).expect("install snapshot");
+		write_test_installed_snapshot(&metadata, &encoded.bytes).expect("install snapshot");
 	assert!(
 		installed
 			.install_dir
@@ -2265,7 +3581,7 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 	std::fs::write(&snapshot_path, b"definitely-not-a-valid-snapshot")
 		.expect("write corrupt snapshot");
 
-	let err = load_installed_base_snapshot("eu4", "schema-test")
+	let err = load_installed_base_snapshot("eu4", "schema-test", None)
 		.expect_err("stale metadata should short-circuit before decode");
 	assert!(err.contains("base data schema mismatch"));
 	assert!(!err.contains("failed to parse base data snapshot"));

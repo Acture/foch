@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod content_family;
+pub mod definition_module;
 pub mod documents;
 pub mod eu4_builtin;
 pub mod eu4_profile;

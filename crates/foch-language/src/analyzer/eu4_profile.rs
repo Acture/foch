@@ -1,8 +1,9 @@
 use super::content_family::{
 	BlockMergePolicy, BlockPatchPolicy, BooleanMergePolicy, ConflictPolicy,
 	ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyPathMatcher,
-	ContentFamilyScopePolicy, CwtType, DedupPolicy, GameId, GameProfile, ListMergePolicy,
-	MergeKeySource, ModuleNameRule, ScalarMergePolicy,
+	ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy, DefinitionFileOrder,
+	DefinitionKeyPolicy, DefinitionModulePolicy, DuplicateDefinitionPolicy, GameId, GameProfile,
+	ListMergePolicy, MergeKeySource, ModuleNameRule, ScalarMergePolicy,
 };
 use super::eu4_builtin::builtin_base_scope_names;
 use foch_core::model::{MaybeScope, ScopeType, base_scope};
@@ -30,6 +31,15 @@ const fn semantic_complete_and_merge_ready() -> ContentFamilyCapabilities {
 		dedup_policy: DedupPolicy::None,
 	}
 }
+
+const EU4_GOVERNMENTS_MODULE_POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
+	definition_key: DefinitionKeyPolicy::AssignmentKey,
+	file_order: DefinitionFileOrder::NormalizedPathAscending,
+	duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
+	full_output_path: "common/governments/zzz_foch_governments.txt",
+	replacement_prefix: "common/governments",
+	policy_version: 1,
+};
 
 /// Safe for EU4 families whose definitions live in a global runtime namespace:
 /// event ids, decision ids, scripted effect names, and scripted trigger names
@@ -196,6 +206,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::FieldValue("id"))
+				.edit_wins_over_remove()
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::UnionWithRename)
 				.boolean_policy(BooleanMergePolicy::And)
@@ -966,6 +977,9 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.build(),
 			ContentFamilyDescriptor::prefix("common/governments", "common/governments/")
 				.module_name(ModuleNameRule::Static("governments"))
+				.load_policy(ContentLoadPolicy::DefinitionModule(
+					EU4_GOVERNMENTS_MODULE_POLICY,
+				))
 				.scope(unknown_scope())
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
@@ -1314,6 +1328,37 @@ pub fn eu4_content_family_for_root_family(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn governments_use_a_complete_versioned_definition_module_policy() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("common/governments/00_governments.txt"))
+			.expect("governments descriptor");
+		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+			panic!("governments must use definition-module loading");
+		};
+
+		assert_eq!(policy.definition_key, DefinitionKeyPolicy::AssignmentKey);
+		assert_eq!(
+			policy.file_order,
+			DefinitionFileOrder::NormalizedPathAscending
+		);
+		assert_eq!(
+			policy.duplicate_definitions,
+			DuplicateDefinitionPolicy::LaterDefinitionWins
+		);
+		assert_eq!(
+			policy.full_output_path,
+			"common/governments/zzz_foch_governments.txt"
+		);
+		assert_eq!(policy.replacement_prefix, "common/governments");
+		assert!(policy.policy_version > 0);
+		assert!(
+			policy
+				.full_output_path
+				.starts_with(&format!("{}/", policy.replacement_prefix))
+		);
+	}
 
 	#[test]
 	fn decision_and_mission_families_use_last_writer_scalar_policy() {

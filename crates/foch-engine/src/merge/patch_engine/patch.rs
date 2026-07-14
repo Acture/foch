@@ -9,6 +9,66 @@ use foch_language::analyzer::semantic_index::{ParsedScriptFile, is_decision_cont
 /// A path into the Clausewitz AST: sequence of keys from root to target node.
 pub type AstPath = Vec<String>;
 
+/// Stable semantic identity and source coordinate for one repeated-key occurrence.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub(crate) struct ListItemOccurrence {
+	pub identity_ordinal: usize,
+	pub source_ordinal: usize,
+}
+
+/// Gap in the common source sequence where a target-only list item belongs.
+/// `source_slot = 0` is before the first source item and `source_slot = N` is
+/// after the last item in a source sequence of length N.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub(crate) struct ListItemInsertion {
+	pub source_slot: usize,
+	pub target_ordinal: usize,
+}
+
+impl ListItemOccurrence {
+	pub(crate) fn source(identity_ordinal: usize, source_ordinal: usize) -> Self {
+		Self {
+			identity_ordinal,
+			source_ordinal,
+		}
+	}
+
+	pub(crate) fn identity_ordinal(self) -> usize {
+		self.identity_ordinal
+	}
+
+	pub(crate) fn matches_source(self, identity_ordinal: usize, source_ordinal: usize) -> bool {
+		self.identity_ordinal == identity_ordinal && self.source_ordinal == source_ordinal
+	}
+}
+
+/// Stable identity and base-relative insertion coordinate for a target-only item.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub(crate) struct ListItemTarget {
+	pub identity_ordinal: usize,
+	pub insertion: ListItemInsertion,
+}
+
+impl ListItemTarget {
+	pub(crate) fn new(identity_ordinal: usize, source_slot: usize, target_ordinal: usize) -> Self {
+		Self {
+			identity_ordinal,
+			insertion: ListItemInsertion {
+				source_slot,
+				target_ordinal,
+			},
+		}
+	}
+
+	pub(crate) fn identity_ordinal(self) -> usize {
+		self.identity_ordinal
+	}
+
+	pub(crate) fn insertion(self) -> ListItemInsertion {
+		self.insertion
+	}
+}
+
 /// A structural patch operation between a base game file and a mod overlay.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ClausewitzPatch {
@@ -36,12 +96,14 @@ pub(crate) enum ClausewitzPatch {
 		path: AstPath,
 		key: String,
 		value: AstValue,
+		target_occurrence: ListItemTarget,
 	},
 	/// Remove from a repeated-key list.
 	RemoveListItem {
 		path: AstPath,
 		key: String,
 		value: AstValue,
+		source_occurrence: ListItemOccurrence,
 	},
 	/// Replace entire block when diff is too large to be useful per-node.
 	ReplaceBlock {
@@ -492,6 +554,26 @@ pub fn diff_block_bodies(
 	if !ast_statement_list_has_real_content(overlay_items) {
 		return Vec::new();
 	}
+	diff_block_bodies_including_empty(
+		base_items,
+		overlay_items,
+		parent_path,
+		depth,
+		merge_key_source,
+	)
+}
+
+/// Diff block bodies while treating an empty overlay as an explicit empty
+/// target. This is reserved for expanding a parent removal into child
+/// removals; ordinary recursive replacement keeps an empty overlay as a
+/// conservative no-op.
+pub(crate) fn diff_block_bodies_including_empty(
+	base_items: &[AstStatement],
+	overlay_items: &[AstStatement],
+	parent_path: &[String],
+	depth: usize,
+	merge_key_source: MergeKeySource,
+) -> Vec<ClausewitzPatch> {
 	// Bare-Item set diff (e.g. `{ FRA ENG }`).
 	let base_block_items: Vec<&AstValue> = base_items
 		.iter()
@@ -788,12 +870,21 @@ fn diff_entry_maps(
 					removed: base_stmts[0].clone(),
 				});
 			} else {
-				for stmt in base_stmts {
+				let values = base_stmts
+					.iter()
+					.filter_map(|statement| statement_value(statement))
+					.collect::<Vec<_>>();
+				let occurrences = semantic_occurrence_ordinals(&values);
+				for (source_ordinal, stmt) in base_stmts.iter().enumerate() {
 					if let Some(val) = statement_value(stmt) {
 						patches.push(ClausewitzPatch::RemoveListItem {
 							path: path.clone(),
 							key: key.clone(),
 							value: val.clone(),
+							source_occurrence: ListItemOccurrence::source(
+								occurrences[source_ordinal],
+								source_ordinal,
+							),
 						});
 					}
 				}
@@ -814,12 +905,22 @@ fn diff_entry_maps(
 					statement: overlay_stmts[0].clone(),
 				});
 			} else {
-				for stmt in overlay_stmts {
+				let values = overlay_stmts
+					.iter()
+					.filter_map(|statement| statement_value(statement))
+					.collect::<Vec<_>>();
+				let occurrences = semantic_occurrence_ordinals(&values);
+				for (target_ordinal, stmt) in overlay_stmts.iter().enumerate() {
 					if let Some(val) = statement_value(stmt) {
 						patches.push(ClausewitzPatch::AppendListItem {
 							path: path.clone(),
 							key: key.clone(),
 							value: val.clone(),
+							target_occurrence: ListItemTarget::new(
+								occurrences[target_ordinal],
+								0,
+								target_ordinal,
+							),
 						});
 					}
 				}
@@ -1109,25 +1210,29 @@ pub(crate) fn patches_semantically_equal(a: &ClausewitzPatch, b: &ClausewitzPatc
 				path: pa,
 				key: ka,
 				value: va,
+				target_occurrence: oa,
 			},
 			ClausewitzPatch::AppendListItem {
 				path: pb,
 				key: kb,
 				value: vb,
+				target_occurrence: ob,
 			},
-		) => pa == pb && ka == kb && ast_values_semantically_equal(va, vb),
+		) => pa == pb && ka == kb && oa == ob && ast_values_semantically_equal(va, vb),
 		(
 			ClausewitzPatch::RemoveListItem {
 				path: pa,
 				key: ka,
 				value: va,
+				source_occurrence: oa,
 			},
 			ClausewitzPatch::RemoveListItem {
 				path: pb,
 				key: kb,
 				value: vb,
+				source_occurrence: ob,
 			},
-		) => pa == pb && ka == kb && ast_values_semantically_equal(va, vb),
+		) => pa == pb && ka == kb && oa == ob && ast_values_semantically_equal(va, vb),
 		(
 			ClausewitzPatch::ReplaceBlock {
 				path: pa,
@@ -1441,6 +1546,139 @@ fn child_keyed_entries(items: &[AstStatement]) -> Vec<KeyedEntry> {
 // Repeated-key (list semantics) diff
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SequenceAlignment {
+	pub matches: Vec<(usize, usize)>,
+	pub base_only: Vec<usize>,
+	pub overlay_only: Vec<usize>,
+}
+
+/// Return the source and target indices left unmatched by a stable LCS.
+/// Common prefixes/suffixes retain their original occurrences, while ties in
+/// the middle prefer skipping a source item so later source occurrences can
+/// match the current target item.
+pub(crate) fn align_sequences_by<T, U, F>(
+	base: &[T],
+	overlay: &[U],
+	equivalent: F,
+) -> SequenceAlignment
+where
+	F: Fn(&T, &U) -> bool,
+{
+	let mut base_matched = vec![false; base.len()];
+	let mut overlay_matched = vec![false; overlay.len()];
+	let mut matches = Vec::new();
+	let mut prefix = 0;
+	while prefix < base.len()
+		&& prefix < overlay.len()
+		&& equivalent(&base[prefix], &overlay[prefix])
+	{
+		base_matched[prefix] = true;
+		overlay_matched[prefix] = true;
+		matches.push((prefix, prefix));
+		prefix += 1;
+	}
+
+	let mut base_end = base.len();
+	let mut overlay_end = overlay.len();
+	while base_end > prefix
+		&& overlay_end > prefix
+		&& equivalent(&base[base_end - 1], &overlay[overlay_end - 1])
+	{
+		base_end -= 1;
+		overlay_end -= 1;
+		base_matched[base_end] = true;
+		overlay_matched[overlay_end] = true;
+		matches.push((base_end, overlay_end));
+	}
+
+	let base_middle_len = base_end - prefix;
+	let overlay_middle_len = overlay_end - prefix;
+	let columns = overlay_middle_len + 1;
+	let mut lengths = vec![0usize; (base_middle_len + 1) * columns];
+	for base_offset in (0..base_middle_len).rev() {
+		for overlay_offset in (0..overlay_middle_len).rev() {
+			let index = base_offset * columns + overlay_offset;
+			lengths[index] = if equivalent(
+				&base[prefix + base_offset],
+				&overlay[prefix + overlay_offset],
+			) {
+				1 + lengths[(base_offset + 1) * columns + overlay_offset + 1]
+			} else {
+				lengths[(base_offset + 1) * columns + overlay_offset]
+					.max(lengths[base_offset * columns + overlay_offset + 1])
+			};
+		}
+	}
+
+	let mut base_offset = 0;
+	let mut overlay_offset = 0;
+	while base_offset < base_middle_len && overlay_offset < overlay_middle_len {
+		let diagonal = lengths[(base_offset + 1) * columns + overlay_offset + 1];
+		if equivalent(
+			&base[prefix + base_offset],
+			&overlay[prefix + overlay_offset],
+		) && lengths[base_offset * columns + overlay_offset] == diagonal + 1
+		{
+			base_matched[prefix + base_offset] = true;
+			overlay_matched[prefix + overlay_offset] = true;
+			matches.push((prefix + base_offset, prefix + overlay_offset));
+			base_offset += 1;
+			overlay_offset += 1;
+			continue;
+		}
+		let skip_base = lengths[(base_offset + 1) * columns + overlay_offset];
+		let skip_overlay = lengths[base_offset * columns + overlay_offset + 1];
+		if skip_base >= skip_overlay {
+			base_offset += 1;
+		} else {
+			overlay_offset += 1;
+		}
+	}
+
+	matches.sort_unstable();
+	SequenceAlignment {
+		matches,
+		base_only: base_matched
+			.into_iter()
+			.enumerate()
+			.filter_map(|(index, matched)| (!matched).then_some(index))
+			.collect(),
+		overlay_only: overlay_matched
+			.into_iter()
+			.enumerate()
+			.filter_map(|(index, matched)| (!matched).then_some(index))
+			.collect(),
+	}
+}
+
+pub(crate) fn semantic_occurrence_ordinals(values: &[&AstValue]) -> Vec<usize> {
+	values
+		.iter()
+		.enumerate()
+		.map(|(index, value)| {
+			values[..index]
+				.iter()
+				.filter(|candidate| ast_values_semantically_equal(candidate, value))
+				.count()
+		})
+		.collect()
+}
+
+pub(crate) fn insertion_source_slot(
+	alignment: &SequenceAlignment,
+	target_index: usize,
+	source_len: usize,
+) -> usize {
+	alignment
+		.matches
+		.iter()
+		.find_map(|(source_index, overlay_index)| {
+			(*overlay_index > target_index).then_some(*source_index)
+		})
+		.unwrap_or(source_len)
+}
+
 fn diff_repeated_key(
 	key: &str,
 	base_stmts: &[&AstStatement],
@@ -1456,35 +1694,36 @@ fn diff_repeated_key(
 		.iter()
 		.filter_map(|s| statement_value(s))
 		.collect();
+	let alignment = align_sequences_by(&base_values, &overlay_values, |base, overlay| {
+		ast_values_semantically_equal(base, overlay)
+	});
+	let base_occurrences = semantic_occurrence_ordinals(&base_values);
+	let overlay_occurrences = semantic_occurrence_ordinals(&overlay_values);
 
-	// Compare as sets using semantic equality (ignores spans AND comments).
-	// Comment-only differences must NOT trigger spurious Remove+Append pairs:
-	// the patch_merge address layer fingerprints values without comments, so
-	// such pairs land at the same address and surface as mixed-kind conflicts.
-	for bv in &base_values {
-		if !overlay_values
-			.iter()
-			.any(|ov| ast_values_semantically_equal(ov, bv))
-		{
-			patches.push(ClausewitzPatch::RemoveListItem {
-				path: path.to_vec(),
-				key: key.to_string(),
-				value: (*bv).clone(),
-			});
-		}
+	for source_ordinal in alignment.base_only.iter().copied() {
+		patches.push(ClausewitzPatch::RemoveListItem {
+			path: path.to_vec(),
+			key: key.to_string(),
+			value: base_values[source_ordinal].clone(),
+			source_occurrence: ListItemOccurrence::source(
+				base_occurrences[source_ordinal],
+				source_ordinal,
+			),
+		});
 	}
 
-	for ov in &overlay_values {
-		if !base_values
-			.iter()
-			.any(|bv| ast_values_semantically_equal(bv, ov))
-		{
-			patches.push(ClausewitzPatch::AppendListItem {
-				path: path.to_vec(),
-				key: key.to_string(),
-				value: (*ov).clone(),
-			});
-		}
+	for target_ordinal in alignment.overlay_only.iter().copied() {
+		let source_slot = insertion_source_slot(&alignment, target_ordinal, base_values.len());
+		patches.push(ClausewitzPatch::AppendListItem {
+			path: path.to_vec(),
+			key: key.to_string(),
+			value: overlay_values[target_ordinal].clone(),
+			target_occurrence: ListItemTarget::new(
+				overlay_occurrences[target_ordinal],
+				source_slot,
+				target_ordinal,
+			),
+		});
 	}
 }
 
@@ -1711,6 +1950,87 @@ mod tests {
 			"expected AppendListItem for tag=ERS, got {:?}",
 			patches[0]
 		);
+	}
+
+	#[test]
+	fn repeated_key_diff_selects_exact_source_occurrence_for_removal() {
+		let base = make_parsed(vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("B")),
+			assignment("tag", scalar("A")),
+		]);
+		let overlay = make_parsed(vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("B")),
+		]);
+
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		assert!(matches!(
+			patches.as_slice(),
+			[ClausewitzPatch::RemoveListItem {
+				key,
+				value: AstValue::Scalar {
+					value: ScalarValue::Identifier(value),
+					..
+				},
+				source_occurrence,
+				..
+			}] if key == "tag"
+				&& value == "A"
+				&& source_occurrence.identity_ordinal() == 1
+				&& source_occurrence.source_ordinal == 2
+		));
+	}
+
+	#[test]
+	fn repeated_key_diff_records_middle_target_occurrence_for_insertion() {
+		let base = make_parsed(vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("C")),
+		]);
+		let overlay = make_parsed(vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("B")),
+			assignment("tag", scalar("C")),
+		]);
+
+		let patches = diff_ast(&base, &overlay, MergeKeySource::AssignmentKey);
+		assert!(matches!(
+			patches.as_slice(),
+			[ClausewitzPatch::AppendListItem {
+				key,
+				value: AstValue::Scalar {
+					value: ScalarValue::Identifier(value),
+					..
+				},
+				target_occurrence,
+				..
+			}] if key == "tag"
+				&& value == "B"
+				&& target_occurrence.identity_ordinal() == 0
+				&& target_occurrence.insertion() == ListItemInsertion {
+					source_slot: 1,
+					target_ordinal: 1,
+				}
+		));
+	}
+
+	#[test]
+	fn list_item_patch_semantics_include_occurrence_selector() {
+		let first = ClausewitzPatch::RemoveListItem {
+			path: vec![],
+			key: "tag".to_string(),
+			value: scalar("A"),
+			source_occurrence: ListItemOccurrence::source(0, 0),
+		};
+		let second = ClausewitzPatch::RemoveListItem {
+			path: vec![],
+			key: "tag".to_string(),
+			value: scalar("A"),
+			source_occurrence: ListItemOccurrence::source(1, 1),
+		};
+
+		assert!(!patches_semantically_equal(&first, &second));
 	}
 
 	#[test]

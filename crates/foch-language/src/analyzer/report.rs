@@ -637,7 +637,11 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 
 	format!(
 		"[{strategy}] path={} winner={} generated={} contributors={}{}",
-		entry.path, winner, entry.generated, contributors, notes
+		entry.target.output_path(),
+		winner,
+		entry.generated,
+		contributors,
+		notes
 	)
 }
 

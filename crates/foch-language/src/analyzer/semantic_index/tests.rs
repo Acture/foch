@@ -6717,7 +6717,7 @@ option = {
 fn extractor_for_returns_none_for_families_without_extractors() {
 	use super::super::content_family::{
 		ConflictPolicy, ContentFamilyCapabilities, ContentFamilyDescriptor,
-		ContentFamilyPathMatcher, MergePolicies, ModuleNameRule,
+		ContentFamilyPathMatcher, ContentLoadPolicy, MergePolicies, ModuleNameRule,
 	};
 	use super::extractors;
 	let descriptor = ContentFamilyDescriptor {
@@ -6725,6 +6725,7 @@ fn extractor_for_returns_none_for_families_without_extractors() {
 		matcher: ContentFamilyPathMatcher::Prefix("unregistered_test_family/"),
 		cwt_type: CwtType::new("events"),
 		module_name_rule: ModuleNameRule::Static("events"),
+		load_policy: ContentLoadPolicy::PerPath,
 		scope_policy: super::super::content_family::ContentFamilyScopePolicy {
 			root_scope: MaybeScope::Unknown,
 			from_alias: None,

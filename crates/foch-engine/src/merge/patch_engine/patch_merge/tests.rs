@@ -1,3 +1,4 @@
+use super::super::patch::{ListItemOccurrence, ListItemTarget};
 use super::block_merge::NamedContainerMergeError;
 use super::*;
 use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
@@ -53,6 +54,74 @@ fn edit_wins_policies() -> MergePolicies {
 		edit_wins_over_remove: true,
 		..Default::default()
 	}
+}
+
+#[test]
+fn source_order_consumes_parent_occurrence_before_duplicate_insert() {
+	let base = vec![assignment("shared", scalar("A"))];
+	let overlay = vec![
+		assignment("shared", scalar("A")),
+		assignment("shared", scalar("B")),
+		assignment("shared", scalar("A")),
+	];
+	let append_b = ClausewitzPatch::AppendListItem {
+		path: vec![],
+		key: "shared".to_string(),
+		value: scalar("B"),
+		target_occurrence: ListItemTarget::new(0, 1, 1),
+	};
+	let append_second_a = ClausewitzPatch::AppendListItem {
+		path: vec![],
+		key: "shared".to_string(),
+		value: scalar("A"),
+		target_occurrence: ListItemTarget::new(1, 1, 2),
+	};
+	let mut patches = vec![append_b.clone(), append_second_a.clone()];
+
+	order_patches_by_source(&mut patches, &base, &overlay);
+
+	assert_eq!(patches, vec![append_b, append_second_a]);
+}
+
+#[test]
+fn source_order_uses_the_lcs_selected_duplicate_occurrence() {
+	let base = vec![
+		assignment("shared", scalar("X")),
+		assignment("shared", scalar("A")),
+	];
+	let overlay = vec![
+		assignment("shared", scalar("A")),
+		assignment("shared", scalar("B")),
+		assignment("shared", scalar("X")),
+		assignment("shared", scalar("A")),
+	];
+	let append_a = ClausewitzPatch::AppendListItem {
+		path: vec![],
+		key: "shared".to_string(),
+		value: scalar("A"),
+		target_occurrence: ListItemTarget::new(0, 0, 0),
+	};
+	let append_b = ClausewitzPatch::AppendListItem {
+		path: vec![],
+		key: "shared".to_string(),
+		value: scalar("B"),
+		target_occurrence: ListItemTarget::new(0, 0, 1),
+	};
+	let mut patches = vec![append_a.clone(), append_b.clone()];
+
+	order_patches_by_source(&mut patches, &base, &overlay);
+
+	assert_eq!(patches, vec![append_a, append_b]);
+	let applied =
+		crate::merge::patch_apply::apply_patches(&base, &patches, MergeKeySource::AssignmentKey);
+	assert_eq!(applied.len(), overlay.len());
+	assert!(
+		applied
+			.iter()
+			.zip(&overlay)
+			.all(|(actual, expected)| ast_equal_ignoring_spans(actual, expected)),
+		"applied={applied:?}"
+	);
 }
 
 fn scalar_last_writer_policies() -> MergePolicies {
@@ -562,6 +631,7 @@ fn same_append_list_item_deduplicated() {
 		path: vec!["root".into(), "or".into()],
 		key: "tag".into(),
 		value: scalar("ERS"),
+		target_occurrence: ListItemTarget::new(0, 0, 0),
 	};
 
 	let result = merge_patch_sets_with_defer(
@@ -578,16 +648,58 @@ fn same_append_list_item_deduplicated() {
 }
 
 #[test]
+fn identical_list_values_at_different_occurrences_use_distinct_addresses() {
+	let append_first = ClausewitzPatch::AppendListItem {
+		path: vec![],
+		key: "tag".to_string(),
+		value: scalar("A"),
+		target_occurrence: ListItemTarget::new(1, 0, 1),
+	};
+	let append_second = ClausewitzPatch::AppendListItem {
+		path: vec![],
+		key: "tag".to_string(),
+		value: scalar("A"),
+		target_occurrence: ListItemTarget::new(2, 0, 2),
+	};
+	let remove_first = ClausewitzPatch::RemoveListItem {
+		path: vec![],
+		key: "other".to_string(),
+		value: scalar("B"),
+		source_occurrence: ListItemOccurrence::source(0, 0),
+	};
+	let remove_second = ClausewitzPatch::RemoveListItem {
+		path: vec![],
+		key: "other".to_string(),
+		value: scalar("B"),
+		source_occurrence: ListItemOccurrence::source(1, 1),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![(
+			"mod_a".to_string(),
+			1,
+			vec![append_first, append_second, remove_first, remove_second],
+		)],
+		&default_policies(),
+	);
+
+	assert_eq!(result.resolved.len(), 4);
+	assert!(result.conflicts.is_empty());
+}
+
+#[test]
 fn different_append_list_items_independent_addresses() {
 	let patch_a = ClausewitzPatch::AppendListItem {
 		path: vec!["root".into(), "or".into()],
 		key: "tag".into(),
 		value: scalar("ERS"),
+		target_occurrence: ListItemTarget::new(0, 0, 0),
 	};
 	let patch_b = ClausewitzPatch::AppendListItem {
 		path: vec!["root".into(), "or".into()],
 		key: "tag".into(),
 		value: scalar("FRA"),
+		target_occurrence: ListItemTarget::new(0, 0, 0),
 	};
 
 	let result = merge_patch_sets_with_defer(
@@ -959,7 +1071,7 @@ fn coordinate_first_writer_scalar_insert_policy_picks_lowest_precedence_for_xy()
 }
 
 #[test]
-fn last_writer_block_insert_policy_picks_highest_precedence() {
+fn scalar_last_writer_resolves_nested_leaf_after_block_recurse() {
 	let patch_a = ClausewitzPatch::InsertNode {
 		path: vec!["root".into()],
 		key: "effect_tooltip".into(),
@@ -993,10 +1105,10 @@ fn last_writer_block_insert_policy_picks_highest_precedence() {
 			strategy,
 			..
 		} => {
-			assert_eq!(strategy, "LastWriter");
+			assert_eq!(strategy, "recursive_insert_merge");
 			assert_eq!(patch, &patch_b);
 		}
-		other => panic!("expected LastWriter AutoMerged, got: {other:?}"),
+		other => panic!("expected recursively AutoMerged block insert, got: {other:?}"),
 	}
 }
 
@@ -1081,6 +1193,40 @@ fn stats_are_correctly_tracked() {
 	assert_eq!(result.stats.conflict_patches, 1);
 	assert_eq!(result.resolved.len(), 2); // single + convergent
 	assert_eq!(result.conflicts.len(), 1);
+}
+
+#[test]
+fn patch_merge_stats_accumulates_every_counter() {
+	let mut total = PatchMergeStats {
+		total_patches: 1,
+		single_mod_patches: 2,
+		convergent_patches: 3,
+		auto_merged_patches: 4,
+		conflict_patches: 5,
+		edit_over_remove_resolved: 6,
+	};
+	let nested = PatchMergeStats {
+		total_patches: 10,
+		single_mod_patches: 20,
+		convergent_patches: 30,
+		auto_merged_patches: 40,
+		conflict_patches: 50,
+		edit_over_remove_resolved: 60,
+	};
+
+	total.accumulate(&nested);
+
+	assert_eq!(
+		total,
+		PatchMergeStats {
+			total_patches: 11,
+			single_mod_patches: 22,
+			convergent_patches: 33,
+			auto_merged_patches: 44,
+			conflict_patches: 55,
+			edit_over_remove_resolved: 66,
+		}
+	);
 }
 
 #[test]
@@ -1185,6 +1331,114 @@ fn replace_block_wins_over_remove_edit_wins() {
 			assert_eq!(key, "position");
 		}
 		other => panic!("expected resolved ReplaceBlock, got: {other:?}"),
+	}
+}
+
+#[test]
+fn recursive_remove_replace_drops_unchanged_child_and_keeps_new_sibling() {
+	let old_effect = assignment_block(
+		"hidden_effect",
+		vec![assignment("set_global_flag", scalar("old_flag"))],
+	);
+	let new_effect = assignment_block(
+		"hidden_effect",
+		vec![assignment("set_global_flag", scalar("new_flag"))],
+	);
+	let old_immediate = assignment_block("immediate", vec![old_effect.clone()]);
+	let edited_immediate = assignment_block("immediate", vec![old_effect, new_effect.clone()]);
+	let remove = ClausewitzPatch::RemoveNode {
+		path: vec!["country_event:700".into()],
+		key: "immediate".into(),
+		removed: old_immediate.clone(),
+	};
+	let replace = ClausewitzPatch::ReplaceBlock {
+		path: vec!["country_event:700".into()],
+		key: "immediate".into(),
+		old_statement: old_immediate,
+		new_statement: edited_immediate,
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("remove_mod".into(), 1, vec![remove]),
+			("extend_mod".into(), 2, vec![replace]),
+		],
+		&edit_wins_policies(),
+	);
+
+	assert_eq!(
+		result.conflicts.len(),
+		0,
+		"conflicts: {:?}",
+		result.conflicts
+	);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::AutoMerged {
+			result: ClausewitzPatch::ReplaceBlock { new_statement, .. },
+			strategy,
+			..
+		} => {
+			assert_eq!(strategy, "recursive_remove_replace_merge");
+			assert_eq!(
+				block_items(new_statement),
+				std::slice::from_ref(&new_effect)
+			);
+		}
+		other => panic!("expected recursively merged ReplaceBlock, got: {other:?}"),
+	}
+}
+
+#[test]
+fn recursive_remove_replace_keeps_a_genuinely_edited_child() {
+	let old_effect = assignment_block(
+		"hidden_effect",
+		vec![assignment("set_global_flag", scalar("event_started"))],
+	);
+	let edited_effect = assignment_block(
+		"hidden_effect",
+		vec![
+			assignment("set_global_flag", scalar("event_started")),
+			assignment("add_prestige", number("5")),
+		],
+	);
+	let old_immediate = assignment_block("immediate", vec![old_effect]);
+	let edited_immediate = assignment_block("immediate", vec![edited_effect.clone()]);
+	let remove = ClausewitzPatch::RemoveNode {
+		path: vec!["country_event:701".into()],
+		key: "immediate".into(),
+		removed: old_immediate.clone(),
+	};
+	let replace = ClausewitzPatch::ReplaceBlock {
+		path: vec!["country_event:701".into()],
+		key: "immediate".into(),
+		old_statement: old_immediate,
+		new_statement: edited_immediate,
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("remove_mod".into(), 1, vec![remove]),
+			("edit_mod".into(), 2, vec![replace]),
+		],
+		&edit_wins_policies(),
+	);
+
+	assert_eq!(
+		result.conflicts.len(),
+		0,
+		"conflicts: {:?}",
+		result.conflicts
+	);
+	assert_eq!(result.resolved.len(), 1);
+	match &result.resolved[0] {
+		PatchResolution::Resolved(ClausewitzPatch::ReplaceBlock { new_statement, .. }) => {
+			assert_eq!(
+				block_items(new_statement),
+				std::slice::from_ref(&edited_effect)
+			);
+		}
+		other => panic!("expected the edited child to win, got: {other:?}"),
 	}
 }
 
@@ -2721,7 +2975,7 @@ fn recurse_policies() -> MergePolicies {
 }
 
 #[test]
-fn recurse_merges_disjoint_inserted_block_bodies() {
+fn scalar_last_writer_does_not_capture_disjoint_block_inserts() {
 	let body_a = vec![
 		assignment("start", number("1530")),
 		assignment_block("objective_a", vec![assignment("type", scalar("alpha"))]),
@@ -2737,12 +2991,17 @@ fn recurse_merges_disjoint_inserted_block_bodies() {
 		statement: assignment_block("age_of_reformation", body),
 	};
 
+	let policies = MergePolicies {
+		scalar: ScalarMergePolicy::LastWriter,
+		block_patch: BlockPatchPolicy::Recurse,
+		..Default::default()
+	};
 	let result = merge_patch_sets_with_defer(
 		vec![
 			("mod_a".into(), 1, vec![mk(body_a)]),
 			("mod_b".into(), 2, vec![mk(body_b)]),
 		],
-		&recurse_policies(),
+		&policies,
 	);
 
 	assert_eq!(
@@ -2783,6 +3042,201 @@ fn recurse_merges_disjoint_inserted_block_bodies() {
 		}
 		other => panic!("expected AutoMerged InsertNode, got: {other:?}"),
 	}
+}
+
+#[test]
+fn recursive_insert_merge_orders_sibling_children_by_precedence_every_run() {
+	let inserted = |child: &str| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "shared".into(),
+		statement: assignment_block("shared", vec![assignment(child, scalar("yes"))]),
+	};
+
+	for _ in 0..256 {
+		let result = merge_patch_sets_with_defer(
+			vec![
+				("mod_b".into(), 2, vec![inserted("b")]),
+				("mod_a".into(), 1, vec![inserted("a")]),
+			],
+			&recurse_policies(),
+		);
+		assert!(result.conflicts.is_empty());
+		let PatchResolution::AutoMerged {
+			result: ClausewitzPatch::InsertNode { statement, .. },
+			strategy,
+			..
+		} = &result.resolved[0]
+		else {
+			panic!("expected recursively merged insert: {:?}", result.resolved);
+		};
+		assert_eq!(strategy, "recursive_insert_merge");
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			panic!("expected merged block statement: {statement:?}");
+		};
+		let keys = items
+			.iter()
+			.filter_map(|item| match item {
+				AstStatement::Assignment { key, .. } => Some(key.as_str()),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(keys, vec!["a", "b"]);
+	}
+}
+
+#[test]
+fn recursive_insert_merge_preserves_contributor_local_child_order() {
+	let inserted = |children: Vec<&str>| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "shared".into(),
+		statement: assignment_block(
+			"shared",
+			children
+				.into_iter()
+				.map(|child| assignment(child, scalar("yes")))
+				.collect(),
+		),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_b".into(), 2, vec![inserted(vec!["middle_other_mod"])]),
+			(
+				"mod_a".into(),
+				1,
+				vec![inserted(vec!["z_first", "a_second"])],
+			),
+		],
+		&recurse_policies(),
+	);
+
+	assert!(result.conflicts.is_empty());
+	let PatchResolution::AutoMerged {
+		result: ClausewitzPatch::InsertNode { statement, .. },
+		..
+	} = &result.resolved[0]
+	else {
+		panic!("expected recursively merged insert: {:?}", result.resolved);
+	};
+	let AstStatement::Assignment {
+		value: AstValue::Block { items, .. },
+		..
+	} = statement
+	else {
+		panic!("expected merged block statement: {statement:?}");
+	};
+	let keys = items
+		.iter()
+		.filter_map(|item| match item {
+			AstStatement::Assignment { key, .. } => Some(key.as_str()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(keys, vec!["z_first", "a_second", "middle_other_mod"]);
+	assert_eq!(result.stats.total_patches, 5);
+	assert_eq!(result.stats.single_mod_patches, 3);
+}
+
+#[test]
+fn recursive_block_merge_aggregates_nested_stats() {
+	let old = assignment_block("shared", vec![assignment("field", scalar("yes"))]);
+	let removed = assignment_block("shared", vec![]);
+	let edited = assignment_block("shared", vec![assignment("field", scalar("no"))]);
+	let replace = |new_statement: AstStatement| ClausewitzPatch::ReplaceBlock {
+		path: vec![],
+		key: "shared".into(),
+		old_statement: old.clone(),
+		new_statement,
+	};
+	let policies = MergePolicies {
+		block_patch: BlockPatchPolicy::Recurse,
+		..Default::default()
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			("mod_a".into(), 1, vec![replace(removed)]),
+			("mod_b".into(), 2, vec![replace(edited)]),
+		],
+		&policies,
+	);
+
+	assert!(result.conflicts.is_empty(), "{:?}", result.conflicts);
+	assert_eq!(result.stats.total_patches, 3);
+	assert_eq!(result.stats.single_mod_patches, 1);
+}
+
+#[test]
+fn recursive_insert_merge_preserves_contributor_local_append_order() {
+	let inserted = |items: Vec<AstStatement>| ClausewitzPatch::InsertNode {
+		path: vec![],
+		key: "shared".into(),
+		statement: assignment_block("shared", items),
+	};
+
+	let result = merge_patch_sets_with_defer(
+		vec![
+			(
+				"mod_b".into(),
+				2,
+				vec![inserted(vec![
+					bare_item("middle_other_mod"),
+					assignment("tag", scalar("middle_other_mod")),
+				])],
+			),
+			(
+				"mod_a".into(),
+				1,
+				vec![inserted(vec![
+					bare_item("z_first"),
+					bare_item("a_second"),
+					assignment("tag", scalar("z_first")),
+					assignment("tag", scalar("a_second")),
+				])],
+			),
+		],
+		&recurse_policies(),
+	);
+
+	assert!(result.conflicts.is_empty());
+	let PatchResolution::AutoMerged {
+		result: ClausewitzPatch::InsertNode { statement, .. },
+		..
+	} = &result.resolved[0]
+	else {
+		panic!("expected recursively merged insert: {:?}", result.resolved);
+	};
+	let items = block_items(statement);
+	let bare_values = items
+		.iter()
+		.filter_map(|item| match item {
+			AstStatement::Item {
+				value: AstValue::Scalar { value, .. },
+				..
+			} => Some(value.as_text()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	let repeated_values = items
+		.iter()
+		.filter_map(|item| match item {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Scalar { value, .. },
+				..
+			} if key == "tag" => Some(value.as_text()),
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(bare_values, vec!["z_first", "a_second", "middle_other_mod"]);
+	assert_eq!(
+		repeated_values,
+		vec!["z_first", "a_second", "middle_other_mod"]
+	);
 }
 
 #[test]

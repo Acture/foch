@@ -11,7 +11,9 @@ use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, is_decision_container_key};
 
-use super::patch::{ClausewitzPatch, diff_ast, fold_renames};
+use super::patch::{ClausewitzPatch, ast_values_semantically_equal, diff_ast, fold_renames};
+#[cfg(test)]
+use super::patch::{ListItemOccurrence, ListItemTarget};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -62,8 +64,14 @@ fn apply_at_level(
 
 	let depth = current_path.len();
 
-	// Track which keys have already been removed (to skip duplicates).
-	let mut removed_keys: HashMap<String, usize> = HashMap::new();
+	let mut source_positions = HashMap::<String, usize>::new();
+	let mut value_occurrences = HashMap::<String, Vec<(AstValue, usize)>>::new();
+	let mut source_totals = HashMap::<String, usize>::new();
+	for statement in statements {
+		if let Some(key) = statement_key(statement, merge_key_source, current_path) {
+			*source_totals.entry(key).or_default() += 1;
+		}
+	}
 
 	let mut result: Vec<AstStatement> = Vec::with_capacity(statements.len());
 
@@ -95,43 +103,52 @@ fn apply_at_level(
 			result.push(stmt.clone());
 			continue;
 		};
+		let source_slot = *source_positions.entry(key.clone()).or_default();
+		*source_positions.entry(key.clone()).or_default() += 1;
+		append_list_items_at_source_slot(&mut result, &local, &key, source_slot);
+		let source_occurrence = stmt_value(stmt)
+			.map(|value| next_value_occurrence(&mut value_occurrences, &key, value))
+			.unwrap_or_default();
 
 		let key_patches = local_by_key.get(&key);
 
 		// Check for RemoveNode / RemoveListItem first.
-		if let Some(patches_for_key) = key_patches
-			&& should_remove(stmt, patches_for_key, &mut removed_keys, &key)
-		{
-			continue;
+		let removed = key_patches.is_some_and(|patches_for_key| {
+			should_remove(stmt, patches_for_key, source_slot, source_occurrence)
+		});
+		if !removed {
+			// Build the (possibly modified) statement.
+			let mut new_stmt = stmt.clone();
+
+			if let Some(patches_for_key) = key_patches {
+				apply_local_patches(&mut new_stmt, patches_for_key);
+			}
+
+			// Recurse into blocks for deeper patches.
+			let deeper_for_key = collect_deeper_patches(&deeper, &key, depth);
+			if !deeper_for_key.is_empty()
+				&& let AstStatement::Assignment {
+					value: AstValue::Block { items, span },
+					..
+				} = &new_stmt
+			{
+				let child_path = {
+					let mut p = current_path.to_vec();
+					p.push(key.clone());
+					p
+				};
+				let child_merge_key_source = child_merge_key_source(merge_key_source, &child_path);
+				let new_items =
+					apply_at_level(items, &deeper_for_key, &child_path, child_merge_key_source);
+				new_stmt = replace_block_items(&new_stmt, new_items, span.clone());
+			}
+
+			result.push(new_stmt);
 		}
 
-		// Build the (possibly modified) statement.
-		let mut new_stmt = stmt.clone();
-
-		if let Some(patches_for_key) = key_patches {
-			apply_local_patches(&mut new_stmt, patches_for_key);
+		if source_slot + 1 == source_totals[&key] {
+			append_list_items_at_source_slot(&mut result, &local, &key, source_slot + 1);
 		}
-
-		// Recurse into blocks for deeper patches.
-		let deeper_for_key = collect_deeper_patches(&deeper, &key, depth);
-		if !deeper_for_key.is_empty()
-			&& let AstStatement::Assignment {
-				value: AstValue::Block { items, span },
-				..
-			} = &new_stmt
-		{
-			let child_path = {
-				let mut p = current_path.to_vec();
-				p.push(key.clone());
-				p
-			};
-			let child_merge_key_source = child_merge_key_source(merge_key_source, &child_path);
-			let new_items =
-				apply_at_level(items, &deeper_for_key, &child_path, child_merge_key_source);
-			new_stmt = replace_block_items(&new_stmt, new_items, span.clone());
-		}
-
-		result.push(new_stmt);
 	}
 
 	if current_path.is_empty()
@@ -214,14 +231,12 @@ fn apply_at_level(
 			ClausewitzPatch::InsertNode { statement, .. } => {
 				result.push(statement.clone());
 			}
-			ClausewitzPatch::AppendListItem { key, value, .. } => {
-				result.push(AstStatement::Assignment {
-					key: key.clone(),
-					key_span: dummy_span(),
-					value: value.clone(),
-					span: dummy_span(),
-				});
+			ClausewitzPatch::AppendListItem { key, .. }
+				if source_totals.get(key).copied().unwrap_or_default() == 0 =>
+			{
+				append_list_item_statement(&mut result, patch);
 			}
+			ClausewitzPatch::AppendListItem { .. } => {}
 			ClausewitzPatch::AppendBlockItem { value, .. } => {
 				result.push(AstStatement::Item {
 					value: value.clone(),
@@ -436,25 +451,85 @@ fn group_by_key(patches: &[ClausewitzPatch]) -> HashMap<String, Vec<&ClausewitzP
 fn should_remove(
 	stmt: &AstStatement,
 	patches: &[&ClausewitzPatch],
-	removed_keys: &mut HashMap<String, usize>,
-	key: &str,
+	source_slot: usize,
+	value_occurrence: usize,
 ) -> bool {
-	for patch in patches {
-		match patch {
-			ClausewitzPatch::RemoveNode { .. } => return true,
-			ClausewitzPatch::RemoveListItem { value, .. } => {
-				if let Some(stmt_val) = stmt_value(stmt)
-					&& stmt_val == value
-				{
-					let count = removed_keys.entry(key.to_string()).or_insert(0);
-					*count += 1;
-					return true;
-				}
-			}
-			_ => {}
-		}
+	if patches
+		.iter()
+		.any(|patch| matches!(patch, ClausewitzPatch::RemoveNode { .. }))
+	{
+		return true;
 	}
-	false
+	let Some(value) = stmt_value(stmt) else {
+		return false;
+	};
+	patches.iter().any(|patch| {
+		matches!(
+			patch,
+			ClausewitzPatch::RemoveListItem {
+				value: removed,
+				source_occurrence,
+				..
+			} if source_occurrence.matches_source(value_occurrence, source_slot)
+				&& ast_values_semantically_equal(removed, value)
+		)
+	})
+}
+
+fn next_value_occurrence(
+	occurrences: &mut HashMap<String, Vec<(AstValue, usize)>>,
+	key: &str,
+	value: &AstValue,
+) -> usize {
+	let values = occurrences.entry(key.to_string()).or_default();
+	if let Some((_, next)) = values
+		.iter_mut()
+		.find(|(known, _)| ast_values_semantically_equal(known, value))
+	{
+		let occurrence = *next;
+		*next += 1;
+		return occurrence;
+	}
+	values.push((value.clone(), 1));
+	0
+}
+
+fn append_list_items_at_source_slot(
+	statements: &mut Vec<AstStatement>,
+	patches: &[ClausewitzPatch],
+	key: &str,
+	source_slot: usize,
+) {
+	let mut matching = patches
+		.iter()
+		.filter_map(|patch| match patch {
+			ClausewitzPatch::AppendListItem {
+				key: patch_key,
+				target_occurrence,
+				..
+			} if patch_key == key => {
+				let insertion = target_occurrence.insertion();
+				(insertion.source_slot == source_slot).then_some((insertion, patch))
+			}
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	matching.sort_by_key(|(insertion, _)| insertion.target_ordinal);
+	for (_, patch) in matching {
+		append_list_item_statement(statements, patch);
+	}
+}
+
+fn append_list_item_statement(statements: &mut Vec<AstStatement>, patch: &ClausewitzPatch) {
+	let ClausewitzPatch::AppendListItem { key, value, .. } = patch else {
+		return;
+	};
+	statements.push(AstStatement::Assignment {
+		key: key.clone(),
+		key_span: dummy_span(),
+		value: value.clone(),
+		span: dummy_span(),
+	});
 }
 
 /// Apply non-structural local patches (SetValue, ReplaceBlock) to a statement.
@@ -543,6 +618,7 @@ fn dummy_span() -> foch_language::analyzer::parser::SpanRange {
 
 #[cfg(test)]
 mod tests {
+	use super::super::patch::ast_statements_semantically_equal;
 	use super::*;
 	use foch_language::analyzer::content_family::CwtType;
 	use foch_language::analyzer::parser::{AstFile, ScalarValue, Span, SpanRange};
@@ -692,6 +768,7 @@ mod tests {
 			path: vec![],
 			key: "tag".to_string(),
 			value: scalar("ENG"),
+			target_occurrence: ListItemTarget::new(0, 2, 2),
 		}];
 		let result = apply_patches(&base, &patches, MergeKeySource::AssignmentKey);
 		// FRA and SPA pass through; ENG is appended via InsertNode-like logic.
@@ -721,6 +798,7 @@ mod tests {
 			path: vec![],
 			key: "tag".to_string(),
 			value: scalar("ENG"),
+			source_occurrence: ListItemOccurrence::source(0, 1),
 		}];
 		let result = apply_patches(&base, &patches, MergeKeySource::AssignmentKey);
 		assert_eq!(result.len(), 2);
@@ -745,6 +823,113 @@ mod tests {
 				..
 			} if v == "SPA"
 		));
+	}
+
+	#[test]
+	fn remove_list_item_targets_exact_source_occurrences() {
+		let base = vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("B")),
+			assignment("tag", scalar("A")),
+		];
+		let remove_last_a = ClausewitzPatch::RemoveListItem {
+			path: vec![],
+			key: "tag".to_string(),
+			value: scalar("A"),
+			source_occurrence: ListItemOccurrence::source(1, 2),
+		};
+
+		let last_removed = apply_patches(
+			&base,
+			std::slice::from_ref(&remove_last_a),
+			MergeKeySource::AssignmentKey,
+		);
+		assert_eq!(
+			last_removed,
+			vec![
+				assignment("tag", scalar("A")),
+				assignment("tag", scalar("B"))
+			]
+		);
+		let first_removed = apply_patches(
+			&base,
+			&[ClausewitzPatch::RemoveListItem {
+				path: vec![],
+				key: "tag".to_string(),
+				value: scalar("A"),
+				source_occurrence: ListItemOccurrence::source(0, 0),
+			}],
+			MergeKeySource::AssignmentKey,
+		);
+		assert_eq!(
+			first_removed,
+			vec![
+				assignment("tag", scalar("B")),
+				assignment("tag", scalar("A"))
+			]
+		);
+
+		let three_as = vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("B")),
+		];
+		let two_removed = apply_patches(
+			&three_as,
+			&[
+				ClausewitzPatch::RemoveListItem {
+					path: vec![],
+					key: "tag".to_string(),
+					value: scalar("A"),
+					source_occurrence: ListItemOccurrence::source(0, 0),
+				},
+				ClausewitzPatch::RemoveListItem {
+					path: vec![],
+					key: "tag".to_string(),
+					value: scalar("A"),
+					source_occurrence: ListItemOccurrence::source(2, 2),
+				},
+			],
+			MergeKeySource::AssignmentKey,
+		);
+		assert_eq!(
+			two_removed,
+			vec![
+				assignment("tag", scalar("A")),
+				assignment("tag", scalar("B"))
+			]
+		);
+	}
+
+	#[test]
+	fn append_list_item_inserts_at_target_occurrence() {
+		let base = vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("C")),
+		];
+		let result = apply_patches(
+			&base,
+			&[ClausewitzPatch::AppendListItem {
+				path: vec![],
+				key: "tag".to_string(),
+				value: scalar("B"),
+				target_occurrence: ListItemTarget::new(0, 1, 1),
+			}],
+			MergeKeySource::AssignmentKey,
+		);
+		let expected = vec![
+			assignment("tag", scalar("A")),
+			assignment("tag", scalar("B")),
+			assignment("tag", scalar("C")),
+		];
+		assert_eq!(result.len(), expected.len());
+		assert!(
+			result
+				.iter()
+				.zip(&expected)
+				.all(|(actual, expected)| ast_statements_semantically_equal(actual, expected))
+		);
 	}
 
 	#[test]

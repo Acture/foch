@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use foch_language::analyzer::content_family::{
 	MergeKeySource, MergePolicies, NamedContainerPolicy,
@@ -7,8 +7,250 @@ use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span,
 
 use super::super::super::conflict_handler::DeferHandler;
 use super::super::patch::{AstPath, ClausewitzPatch, ast_statements_semantically_equal};
-use super::fingerprint::{fingerprint_into, statement_fingerprint, value_fingerprint};
-use super::{AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution, merge_patch_sets};
+use super::address::patch_address;
+use super::fingerprint::{statement_fingerprint, value_fingerprint};
+use super::{
+	AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution, merge_patch_sets,
+	patch_sort_key,
+};
+
+fn sort_recursive_candidates(candidates: &mut [(String, usize, Vec<ClausewitzPatch>)]) {
+	candidates.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+}
+
+#[derive(Hash, Eq, PartialEq)]
+enum RecursiveSourceIdentity {
+	Statement(AstPath, String, String),
+	AssignmentValue(AstPath, String, String),
+	ListOccurrence(AstPath, String, String, usize),
+	BlockItem(AstPath, String),
+	AssignmentKey(AstPath, String),
+}
+
+fn collect_recursive_source_positions(
+	statements: &[AstStatement],
+	path: &[String],
+	next_position: &mut usize,
+	positions: &mut HashMap<RecursiveSourceIdentity, VecDeque<usize>>,
+	list_occurrences: &mut HashMap<(AstPath, String, String), usize>,
+) {
+	for statement in statements {
+		match statement {
+			AstStatement::Assignment { key, value, .. } => {
+				let position = *next_position;
+				*next_position += 1;
+				let value_identity = value_fingerprint(value);
+				let occurrence_key = (path.to_vec(), key.clone(), value_identity.clone());
+				let occurrence = list_occurrences.entry(occurrence_key).or_default();
+				positions
+					.entry(RecursiveSourceIdentity::ListOccurrence(
+						path.to_vec(),
+						key.clone(),
+						value_identity,
+						*occurrence,
+					))
+					.or_default()
+					.push_back(position);
+				*occurrence += 1;
+				positions
+					.entry(RecursiveSourceIdentity::Statement(
+						path.to_vec(),
+						key.clone(),
+						statement_fingerprint(statement),
+					))
+					.or_default()
+					.push_back(position);
+				positions
+					.entry(RecursiveSourceIdentity::AssignmentValue(
+						path.to_vec(),
+						key.clone(),
+						value_fingerprint(value),
+					))
+					.or_default()
+					.push_back(position);
+				positions
+					.entry(RecursiveSourceIdentity::AssignmentKey(
+						path.to_vec(),
+						key.clone(),
+					))
+					.or_default()
+					.push_back(position);
+				if let AstValue::Block { items, .. } = value {
+					let mut child_path = path.to_vec();
+					child_path.push(key.clone());
+					collect_recursive_source_positions(
+						items,
+						&child_path,
+						next_position,
+						positions,
+						list_occurrences,
+					);
+				}
+			}
+			AstStatement::Item { value, .. } => {
+				let position = *next_position;
+				*next_position += 1;
+				positions
+					.entry(RecursiveSourceIdentity::BlockItem(
+						path.to_vec(),
+						value_fingerprint(value),
+					))
+					.or_default()
+					.push_back(position);
+			}
+			AstStatement::Comment { .. } => {}
+		}
+	}
+}
+
+fn recursive_patch_source_position(
+	patch: &ClausewitzPatch,
+	positions: &mut HashMap<RecursiveSourceIdentity, VecDeque<usize>>,
+) -> Option<usize> {
+	let identity = match patch {
+		ClausewitzPatch::InsertNode {
+			path,
+			key,
+			statement,
+		}
+		| ClausewitzPatch::ReplaceBlock {
+			path,
+			key,
+			new_statement: statement,
+			..
+		} => RecursiveSourceIdentity::Statement(
+			path.clone(),
+			key.clone(),
+			statement_fingerprint(statement),
+		),
+		ClausewitzPatch::SetValue {
+			path,
+			key,
+			new_value,
+			..
+		} => RecursiveSourceIdentity::AssignmentValue(
+			path.clone(),
+			key.clone(),
+			value_fingerprint(new_value),
+		),
+		ClausewitzPatch::AppendListItem {
+			path,
+			key,
+			value: new_value,
+			target_occurrence,
+		} => RecursiveSourceIdentity::ListOccurrence(
+			path.clone(),
+			key.clone(),
+			value_fingerprint(new_value),
+			target_occurrence.identity_ordinal(),
+		),
+		ClausewitzPatch::AppendBlockItem { path, value } => {
+			RecursiveSourceIdentity::BlockItem(path.clone(), value_fingerprint(value))
+		}
+		ClausewitzPatch::Rename { path, new_key, .. } => {
+			RecursiveSourceIdentity::AssignmentKey(path.clone(), new_key.clone())
+		}
+		ClausewitzPatch::RemoveNode { .. }
+		| ClausewitzPatch::RemoveListItem { .. }
+		| ClausewitzPatch::RemoveBlockItem { .. } => return None,
+	};
+	positions.get_mut(&identity)?.pop_front()
+}
+
+pub(crate) fn order_patches_by_source(
+	patches: &mut Vec<ClausewitzPatch>,
+	base_body: &[AstStatement],
+	overlay_body: &[AstStatement],
+) {
+	let mut positions = HashMap::new();
+	let mut position_occurrences = HashMap::new();
+	let mut next_position = 0;
+	collect_recursive_source_positions(
+		overlay_body,
+		&[],
+		&mut next_position,
+		&mut positions,
+		&mut position_occurrences,
+	);
+	let mut consumed = HashMap::new();
+	let mut consumed_occurrences = HashMap::new();
+	let mut next_consumed_position = 0;
+	collect_recursive_source_positions(
+		base_body,
+		&[],
+		&mut next_consumed_position,
+		&mut consumed,
+		&mut consumed_occurrences,
+	);
+	for (identity, occurrences) in consumed {
+		if matches!(&identity, RecursiveSourceIdentity::ListOccurrence(..)) {
+			continue;
+		}
+		let Some(remaining) = positions.get_mut(&identity) else {
+			continue;
+		};
+		for _ in 0..occurrences.len() {
+			remaining.pop_front();
+		}
+	}
+	let mut indexed = patches
+		.drain(..)
+		.enumerate()
+		.map(|(original_index, patch)| {
+			let source_position = recursive_patch_source_position(&patch, &mut positions);
+			(original_index, source_position, patch)
+		})
+		.collect::<Vec<_>>();
+	indexed.sort_by_key(|(original_index, source_position, _)| {
+		(
+			source_position.is_some(),
+			source_position.unwrap_or(*original_index),
+			*original_index,
+		)
+	});
+	patches.extend(indexed.into_iter().map(|(_, _, patch)| patch));
+}
+
+fn recursive_patch_origins(
+	candidates: &[(String, usize, Vec<ClausewitzPatch>)],
+	policies: &MergePolicies,
+) -> HashMap<PatchAddress, (usize, String, usize)> {
+	let mut origins = HashMap::new();
+	for (mod_id, precedence, patches) in candidates {
+		for (source_ordinal, patch) in patches.iter().enumerate() {
+			let candidate = (*precedence, mod_id.clone(), source_ordinal);
+			origins
+				.entry(patch_address(patch, policies))
+				.and_modify(|known: &mut (usize, String, usize)| {
+					if &candidate < known {
+						known.clone_from(&candidate);
+					}
+				})
+				.or_insert(candidate);
+		}
+	}
+	origins
+}
+
+fn sort_recursive_application(
+	patches: &mut [ClausewitzPatch],
+	origins: &HashMap<PatchAddress, (usize, String, usize)>,
+	policies: &MergePolicies,
+) {
+	patches.sort_by(|left, right| {
+		let left_origin = origins
+			.get(&patch_address(left, policies))
+			.cloned()
+			.unwrap_or((usize::MAX, String::new(), usize::MAX));
+		let right_origin = origins
+			.get(&patch_address(right, policies))
+			.cloned()
+			.unwrap_or((usize::MAX, String::new(), usize::MAX));
+		left_origin
+			.cmp(&right_origin)
+			.then_with(|| patch_sort_key(left).cmp(&patch_sort_key(right)))
+	});
+}
 
 /// Attempt to union list-like block replacements by keeping the base body's
 /// first occurrence of each item, then appending unique items from every
@@ -38,7 +280,6 @@ pub(super) fn try_union_block_merge(attributed: &[AttributedPatch]) -> Option<Cl
 			_ => return None,
 		}
 	}
-
 	let ancestor_idx = replacements
 		.iter()
 		.enumerate()
@@ -82,18 +323,7 @@ fn push_unique_block_items(
 }
 
 fn union_item_fingerprint(item: &AstStatement) -> String {
-	match item {
-		AstStatement::Item { value, .. } => value_fingerprint(value),
-		AstStatement::Assignment { key, value, .. } => {
-			let mut out = String::new();
-			out.push('a');
-			out.push_str(key);
-			out.push('=');
-			fingerprint_into(value, &mut out);
-			out
-		}
-		AstStatement::Comment { .. } => statement_fingerprint(item),
-	}
+	statement_fingerprint(item)
 }
 
 /// Attempt to deep-merge multiple mods' `ReplaceBlock` patches at the same
@@ -142,6 +372,7 @@ pub(super) fn try_recursive_block_merge(
 			_ => return None,
 		}
 	}
+	overlays.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
 
 	// Pick the lowest-precedence mod as the ancestor source. Its `old`
 	// reflects the deepest base reachable from this address.
@@ -160,19 +391,23 @@ pub(super) fn try_recursive_block_merge(
 		Vec::with_capacity(overlays.len());
 	for (mod_id, prec, _old, new_stmt, _path, _key) in &overlays {
 		let new_body = statement_block_body(new_stmt)?;
-		let patches = super::super::patch::diff_block_bodies(
+		let mut patches = super::super::patch::diff_block_bodies(
 			ancestor_body,
 			new_body,
 			&[],
 			0,
 			policies.nested_merge_key_source,
 		);
+		order_patches_by_source(&mut patches, ancestor_body, new_body);
 		mod_patches.push((mod_id.clone(), *prec, patches));
 	}
 
 	// Recursively resolve nested patches with the same policies.
+	sort_recursive_candidates(&mut mod_patches);
+	let patch_origins = recursive_patch_origins(&mod_patches, policies);
 	let mut handler = DeferHandler;
 	let nested = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
+	stats.accumulate(&nested.stats);
 
 	if !nested.conflicts.is_empty() {
 		// Bubble up as a single conflict with detailed sub-reasons so users
@@ -201,7 +436,7 @@ pub(super) fn try_recursive_block_merge(
 
 	// Apply resolved nested patches to the base body to synthesize the merged
 	// body. Use `apply_patches` from `patch_apply` (paths are relative).
-	let resolved_patches: Vec<ClausewitzPatch> = nested
+	let mut resolved_patches: Vec<ClausewitzPatch> = nested
 		.resolved
 		.into_iter()
 		.filter_map(|r| match r {
@@ -210,6 +445,7 @@ pub(super) fn try_recursive_block_merge(
 			PatchResolution::Conflict { .. } => None,
 		})
 		.collect();
+	sort_recursive_application(&mut resolved_patches, &patch_origins, policies);
 
 	let merged_body = super::super::patch_apply::apply_patches(
 		ancestor_body,
@@ -229,7 +465,7 @@ pub(super) fn try_recursive_block_merge(
 	let key = representative.5.clone();
 	let representative_old = representative.2.clone();
 
-	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	let mods: Vec<String> = overlays.iter().map(|overlay| overlay.0.clone()).collect();
 	stats.auto_merged_patches += 1;
 	let _ = policies; // silence unused warnings if added later
 	Some(PatchResolution::AutoMerged {
@@ -242,6 +478,187 @@ pub(super) fn try_recursive_block_merge(
 		strategy: "recursive_block_merge".to_string(),
 		contributing_mods: mods,
 	})
+}
+
+/// Merge a block removal against sibling replacements by expanding both
+/// branches relative to the common block body. This is intentionally limited
+/// to replacements that do not edit an existing child: additions and removals
+/// can be combined structurally, while a genuine child edit is left to the
+/// family's explicit edit-vs-remove policy.
+struct RemoveReplaceBranch<'a> {
+	mod_id: String,
+	precedence: usize,
+	base: &'a AstStatement,
+	target: Option<&'a AstStatement>,
+	path: AstPath,
+	key: String,
+}
+
+pub(super) fn try_recursive_remove_replace_merge(
+	addr: &PatchAddress,
+	attributed: &[AttributedPatch],
+	policies: &MergePolicies,
+	stats: &mut PatchMergeStats,
+) -> Option<PatchResolution> {
+	if attributed.len() < 2 {
+		return None;
+	}
+
+	let mut branches = Vec::with_capacity(attributed.len());
+	let mut replacement_count = 0;
+	let mut removal_count = 0;
+	for attributed_patch in attributed {
+		match &attributed_patch.patch {
+			ClausewitzPatch::RemoveNode { path, key, removed } => {
+				removal_count += 1;
+				branches.push(RemoveReplaceBranch {
+					mod_id: attributed_patch.mod_id.clone(),
+					precedence: attributed_patch.precedence,
+					base: removed,
+					target: None,
+					path: path.clone(),
+					key: key.clone(),
+				});
+			}
+			ClausewitzPatch::ReplaceBlock {
+				path,
+				key,
+				old_statement,
+				new_statement,
+			} => {
+				replacement_count += 1;
+				branches.push(RemoveReplaceBranch {
+					mod_id: attributed_patch.mod_id.clone(),
+					precedence: attributed_patch.precedence,
+					base: old_statement,
+					target: Some(new_statement),
+					path: path.clone(),
+					key: key.clone(),
+				});
+			}
+			_ => return None,
+		}
+	}
+	if replacement_count == 0 || removal_count == 0 {
+		return None;
+	}
+	branches.sort_by(|left, right| {
+		left.precedence
+			.cmp(&right.precedence)
+			.then_with(|| left.mod_id.cmp(&right.mod_id))
+	});
+
+	let ancestor_statement = branches
+		.iter()
+		.min_by_key(|branch| branch.precedence)
+		.map(|branch| branch.base)?;
+	let ancestor_body = statement_block_body(ancestor_statement)?;
+	let empty_body: Vec<AstStatement> = Vec::new();
+	let mut branch_patches = Vec::with_capacity(branches.len());
+	for branch in &branches {
+		let target_body = match branch.target {
+			Some(statement) => statement_block_body(statement)?,
+			None => &empty_body,
+		};
+		let mut patches = super::super::patch::diff_block_bodies_including_empty(
+			ancestor_body,
+			target_body,
+			&[],
+			0,
+			policies.nested_merge_key_source,
+		);
+		if branch.target.is_some() && patches.iter().any(replacement_patch_edits_existing_child) {
+			return None;
+		}
+		order_patches_by_source(&mut patches, ancestor_body, target_body);
+		branch_patches.push((branch.mod_id.clone(), branch.precedence, patches));
+	}
+
+	sort_recursive_candidates(&mut branch_patches);
+	let patch_origins = recursive_patch_origins(&branch_patches, policies);
+	let mut handler = DeferHandler;
+	let nested = merge_patch_sets(branch_patches, policies, &mut handler).ok()?;
+	stats.accumulate(&nested.stats);
+	if !nested.conflicts.is_empty() {
+		let reasons = nested
+			.conflicts
+			.iter()
+			.filter_map(|conflict| match conflict {
+				PatchResolution::Conflict {
+					address, reason, ..
+				} => Some(format!("{}: {}", address.key, reason)),
+				_ => None,
+			})
+			.collect::<Vec<_>>();
+		stats.conflict_patches += 1;
+		return Some(PatchResolution::Conflict {
+			address: addr.clone(),
+			reason: format!(
+				"deep merge of removed/replaced block has {} unresolved sub-conflict(s): {}",
+				nested.conflicts.len(),
+				reasons.join("; ")
+			),
+			patches: attributed.to_vec(),
+		});
+	}
+
+	let mut resolved_patches = nested
+		.resolved
+		.into_iter()
+		.filter_map(|resolution| match resolution {
+			PatchResolution::Resolved(patch) => Some(patch),
+			PatchResolution::AutoMerged { result, .. } => Some(result),
+			PatchResolution::Conflict { .. } => None,
+		})
+		.collect::<Vec<_>>();
+	sort_recursive_application(&mut resolved_patches, &patch_origins, policies);
+	let merged_body = super::super::patch_apply::apply_patches(
+		ancestor_body,
+		&resolved_patches,
+		policies.nested_merge_key_source,
+	);
+
+	let representative = branches
+		.iter()
+		.filter(|branch| branch.target.is_some())
+		.max_by_key(|branch| branch.precedence)?;
+	let new_statement = with_block_body(representative.target?, merged_body);
+	let contributing_mods = branches
+		.iter()
+		.map(|branch| branch.mod_id.clone())
+		.collect();
+	stats.auto_merged_patches += 1;
+	Some(PatchResolution::AutoMerged {
+		result: ClausewitzPatch::ReplaceBlock {
+			path: representative.path.clone(),
+			key: representative.key.clone(),
+			old_statement: representative.base.clone(),
+			new_statement,
+		},
+		strategy: "recursive_remove_replace_merge".to_string(),
+		contributing_mods,
+	})
+}
+
+fn replacement_patch_edits_existing_child(patch: &ClausewitzPatch) -> bool {
+	let path = match patch {
+		ClausewitzPatch::SetValue { path, .. }
+		| ClausewitzPatch::RemoveNode { path, .. }
+		| ClausewitzPatch::InsertNode { path, .. }
+		| ClausewitzPatch::AppendListItem { path, .. }
+		| ClausewitzPatch::RemoveListItem { path, .. }
+		| ClausewitzPatch::ReplaceBlock { path, .. }
+		| ClausewitzPatch::AppendBlockItem { path, .. }
+		| ClausewitzPatch::RemoveBlockItem { path, .. }
+		| ClausewitzPatch::Rename { path, .. } => path,
+	};
+	!path.is_empty()
+		|| matches!(
+			patch,
+			ClausewitzPatch::SetValue { .. }
+				| ClausewitzPatch::ReplaceBlock { .. }
+				| ClausewitzPatch::Rename { .. }
+		)
 }
 
 /// Attempt to deep-merge multiple mods' `InsertNode` patches at the same
@@ -278,24 +695,29 @@ pub(super) fn try_recursive_insert_merge(
 			_ => return None,
 		}
 	}
+	inserts.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
 
 	let ancestor_body: Vec<AstStatement> = Vec::new();
 	let mut mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)> =
 		Vec::with_capacity(inserts.len());
 	for (mod_id, prec, statement, _path, _key) in &inserts {
 		let new_body = statement_block_body(statement)?;
-		let patches = super::super::patch::diff_block_bodies(
+		let mut patches = super::super::patch::diff_block_bodies(
 			&ancestor_body,
 			new_body,
 			&[],
 			0,
 			policies.nested_merge_key_source,
 		);
+		order_patches_by_source(&mut patches, &ancestor_body, new_body);
 		mod_patches.push((mod_id.clone(), *prec, patches));
 	}
 
+	sort_recursive_candidates(&mut mod_patches);
+	let patch_origins = recursive_patch_origins(&mod_patches, policies);
 	let mut handler = DeferHandler;
 	let nested = merge_patch_sets(mod_patches, policies, &mut handler).ok()?;
+	stats.accumulate(&nested.stats);
 
 	if !nested.conflicts.is_empty() {
 		let reasons: Vec<String> = nested
@@ -320,7 +742,7 @@ pub(super) fn try_recursive_insert_merge(
 		});
 	}
 
-	let resolved_patches: Vec<ClausewitzPatch> = nested
+	let mut resolved_patches: Vec<ClausewitzPatch> = nested
 		.resolved
 		.into_iter()
 		.filter_map(|r| match r {
@@ -329,6 +751,7 @@ pub(super) fn try_recursive_insert_merge(
 			PatchResolution::Conflict { .. } => None,
 		})
 		.collect();
+	sort_recursive_application(&mut resolved_patches, &patch_origins, policies);
 
 	let merged_body = super::super::patch_apply::apply_patches(
 		&ancestor_body,
@@ -341,7 +764,7 @@ pub(super) fn try_recursive_insert_merge(
 		.unwrap();
 	let merged_stmt = with_block_body(representative.2, merged_body);
 
-	let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
+	let mods: Vec<String> = inserts.iter().map(|insert| insert.0.clone()).collect();
 	stats.auto_merged_patches += 1;
 	Some(PatchResolution::AutoMerged {
 		result: ClausewitzPatch::InsertNode {

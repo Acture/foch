@@ -1,10 +1,11 @@
 //! Persistent cache for dependency-DAG base statement lists.
 //!
 //! `AstStatement` derives serde but not rkyv, so this layer uses bincode. Each
-//! `(deps_hash, file_path)` entry is stored as its own file; this avoids shared
-//! index rewrites while allowing independent invalidation per file and upstream
-//! dependency set.
+//! `(deps_hash, file_path)` entry is stored under `v<cache-version>/` as its own
+//! file; this avoids shared index rewrites while allowing independent
+//! invalidation per file and upstream dependency set.
 
+use super::generation::{generation_dir, prepare as prepare_generation};
 use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
 use foch_language::analyzer::parser::AstStatement;
 use std::fs;
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the cached DAG-base payload or synthesis behavior changes.
-pub const DAG_BASE_CACHE_VERSION: u32 = 9;
+pub const DAG_BASE_CACHE_VERSION: u32 = 11;
 const CACHE_ENV: &str = "FOCH_DAG_BASE_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
@@ -43,10 +44,26 @@ struct StoredDagBase {
 
 impl DagBaseCache {
 	pub fn open(cache_dir: &Path) -> Self {
-		let _ = fs::create_dir_all(cache_dir);
-		Self {
-			root: cache_dir.to_path_buf(),
+		let root = generation_dir(cache_dir, DAG_BASE_CACHE_VERSION);
+		match prepare_generation(cache_dir, DAG_BASE_CACHE_VERSION) {
+			Ok(removed_items) if removed_items > 0 => {
+				tracing::info!(
+					cache_version = DAG_BASE_CACHE_VERSION,
+					removed_items,
+					"removed obsolete DAG-base cache generations"
+				);
+			}
+			Err(error) => {
+				tracing::warn!(
+					cache_dir = %cache_dir.display(),
+					cache_version = DAG_BASE_CACHE_VERSION,
+					%error,
+					"failed to prepare DAG-base cache generation"
+				);
+			}
+			Ok(_) => {}
 		}
+		Self { root }
 	}
 
 	pub fn open_default() -> Self {
@@ -385,6 +402,48 @@ mod tests {
 			cache
 				.lookup("deps-a", "common/bar.txt", "0.1.0", "eu4 1.37")
 				.is_none()
+		);
+	}
+
+	#[test]
+	fn dag_base_cache_open_cleans_old_generations_and_preserves_current_and_other_layers() {
+		let workspace = cache_dir("dag-base-generation-lifecycle");
+		let layer_root = workspace.join("dag-base");
+		let cache = DagBaseCache::open(&layer_root);
+		let statements = sample_statements();
+		cache
+			.store("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37", &statements)
+			.expect("store current generation entry");
+
+		let current_generation = layer_root.join(format!("v{DAG_BASE_CACHE_VERSION}"));
+		assert_eq!(cache.root, current_generation);
+		let old_generation = layer_root.join(format!("v{}", DAG_BASE_CACHE_VERSION - 1));
+		fs::create_dir_all(&old_generation).expect("create old generation");
+		fs::write(old_generation.join("obsolete.bin"), b"obsolete").expect("seed old generation");
+		let legacy_entry = layer_root.join("legacy.bin");
+		fs::write(&legacy_entry, b"legacy").expect("seed legacy flat entry");
+		let unrelated_entry = workspace.join("diffs").join("v1").join("keep.bin");
+		fs::create_dir_all(unrelated_entry.parent().expect("unrelated parent"))
+			.expect("create unrelated layer");
+		fs::write(&unrelated_entry, b"keep").expect("seed unrelated layer");
+
+		let reopened = DagBaseCache::open(&layer_root);
+		assert!(!old_generation.exists());
+		assert!(!legacy_entry.exists());
+		assert!(unrelated_entry.exists());
+		assert_eq!(
+			reopened
+				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.expect("current generation survives cleanup"),
+			statements
+		);
+
+		let reopened_again = DagBaseCache::open(&layer_root);
+		assert!(unrelated_entry.exists());
+		assert!(
+			reopened_again
+				.lookup("deps-a", "common/foo.txt", "0.1.0", "eu4 1.37")
+				.is_some()
 		);
 	}
 }

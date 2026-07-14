@@ -19,10 +19,7 @@ use std::path::{Path, PathBuf};
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let source = resolve_workspace_source(merge_args.playset_path.as_deref(), &config)?;
 	let paradox_data_path = config.paradox_data_path.clone();
-	let request = CheckRequest {
-		source: source.clone(),
-		config,
-	};
+	let request = CheckRequest::new(source.clone(), config);
 	let local_config = load_local_foch_config(merge_args, &source)?;
 	let fingerprint = compute_fingerprint_for_source(&request, &local_config);
 	if let Some(exit) = handle_existing_out_dir(&merge_args.out, fingerprint.as_deref())? {

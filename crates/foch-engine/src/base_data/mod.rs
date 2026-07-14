@@ -26,13 +26,19 @@ use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use rayon::join;
 use reqwest::blocking::Client;
+use same_file::Handle as SameFileHandle;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Condvar;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
@@ -109,12 +115,212 @@ pub struct ReleaseDataManifest {
 pub struct InstalledBaseSnapshot {
 	pub install_dir: PathBuf,
 	pub metadata: InstalledBaseDataMetadata,
-	pub snapshot: BaseAnalysisSnapshot,
+	pub snapshot: Arc<BaseAnalysisSnapshot>,
+}
+
+/// Holds the shared advisory lock protecting one installed snapshot while an
+/// output derived from its verified identity is published.
+#[must_use = "dropping the guard allows the installed snapshot to be replaced"]
+#[derive(Debug)]
+pub(crate) struct InstalledBaseSnapshotPublicationGuard {
+	_lock_file: fs::File,
+}
+
+#[must_use = "dropping the guard allows another snapshot installation to start"]
+#[derive(Debug)]
+struct InstalledBaseSnapshotInstallGuard {
+	_lock_file: fs::File,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InstalledBaseSnapshotLockMode {
+	Shared,
+	Exclusive,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BaseSnapshotCurrentValidation {
+	Immediate,
+	Deferred,
+}
+
+/// A verified selection of one installed base snapshot.
+///
+/// The token owns the exact bytes read during identity computation and records
+/// the selected path and file identity. Passing it to
+/// [`load_installed_base_snapshot`] makes the identity/load boundary explicit
+/// and allows the load to reject content or path replacement.
+#[derive(Clone)]
+pub struct InstalledBaseSnapshotIdentity {
+	install_dir: PathBuf,
+	metadata: InstalledBaseDataMetadata,
+	verified: VerifiedSnapshotBytes,
+}
+
+impl std::fmt::Debug for InstalledBaseSnapshotIdentity {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter
+			.debug_struct("InstalledBaseSnapshotIdentity")
+			.field("install_dir", &self.install_dir)
+			.field("path", &self.verified.identity.path)
+			.field("sha256", &self.verified.identity.sha256)
+			.field("file_state", &self.verified.file_state)
+			.finish_non_exhaustive()
+	}
+}
+
+impl PartialEq for InstalledBaseSnapshotIdentity {
+	fn eq(&self, other: &Self) -> bool {
+		self.verified.identity == other.verified.identity
+			&& self.verified.file_state == other.verified.file_state
+			&& *self.verified.file_handle == *other.verified.file_handle
+	}
+}
+
+impl Eq for InstalledBaseSnapshotIdentity {}
+
+impl InstalledBaseSnapshotIdentity {
+	pub fn as_label(&self) -> String {
+		snapshot_identity_label(&self.verified.identity)
+	}
+
+	pub fn sha256(&self) -> &str {
+		&self.verified.identity.sha256
+	}
+}
+
+impl std::fmt::Display for InstalledBaseSnapshotIdentity {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		formatter.write_str(&self.as_label())
+	}
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct SnapshotContentIdentity {
+	path: PathBuf,
+	sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SnapshotFileState {
+	len: u64,
+	modified: Option<SystemTime>,
+	#[cfg(unix)]
+	device: u64,
+	#[cfg(unix)]
+	inode: u64,
+	#[cfg(unix)]
+	changed_seconds: i64,
+	#[cfg(unix)]
+	changed_nanoseconds: i64,
+}
+
+#[derive(Clone, Debug)]
+struct VerifiedSnapshotBytes {
+	identity: SnapshotContentIdentity,
+	file_handle: Arc<SameFileHandle>,
+	file_state: SnapshotFileState,
+	bytes: Arc<[u8]>,
+}
+
+#[derive(Clone, Debug)]
+struct StableSnapshotBytes {
+	file_handle: Arc<SameFileHandle>,
+	file_state: SnapshotFileState,
+	bytes: Arc<[u8]>,
+}
+
+type LoadedBaseSnapshotResult = Result<Arc<BaseAnalysisSnapshot>, String>;
+type LoadedBaseSnapshotCell = OnceLock<LoadedBaseSnapshotResult>;
+
+#[derive(Debug)]
+struct LoadedBaseSnapshotCacheEntry {
+	cell: Arc<LoadedBaseSnapshotCell>,
+	last_used: u64,
+}
+
+#[derive(Debug, Default)]
+struct LoadedBaseSnapshotCache {
+	entries: HashMap<String, LoadedBaseSnapshotCacheEntry>,
+	clock: u64,
+}
+
+// Keep only the most recently used completed decode. Initializations are never
+// evicted, so distinct concurrent digests can temporarily exceed this bound.
+const COMPLETED_BASE_SNAPSHOT_CACHE_LIMIT: usize = 1;
+static LOADED_BASE_SNAPSHOTS: OnceLock<Mutex<LoadedBaseSnapshotCache>> = OnceLock::new();
+
+#[cfg(test)]
+static INSTALLED_SNAPSHOT_FILE_READ_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static INSTALLED_SNAPSHOT_CURRENT_DIGEST_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static INSTALLED_SNAPSHOT_CURRENT_VALIDATION_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static INSTALLED_SNAPSHOT_COLD_DECODE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static BASE_DATA_ENV_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(test)]
+static INSTALLED_SNAPSHOT_DECODE_GATE: OnceLock<Mutex<Option<Arc<InstalledSnapshotDecodeGate>>>> =
+	OnceLock::new();
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct InstalledSnapshotDecodeGateState {
+	entered: usize,
+	released: bool,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct InstalledSnapshotDecodeGate {
+	state: Mutex<InstalledSnapshotDecodeGateState>,
+	entered: Condvar,
+	release: Condvar,
+}
+
+#[cfg(test)]
+impl InstalledSnapshotDecodeGate {
+	fn enter(&self) {
+		let mut state = self
+			.state
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		state.entered += 1;
+		self.entered.notify_all();
+		while !state.released {
+			state = self
+				.release
+				.wait(state)
+				.unwrap_or_else(std::sync::PoisonError::into_inner);
+		}
+	}
+
+	fn wait_until_entered(&self, expected: usize) {
+		let mut state = self
+			.state
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		while state.entered < expected {
+			state = self
+				.entered
+				.wait(state)
+				.unwrap_or_else(std::sync::PoisonError::into_inner);
+		}
+	}
+
+	fn release(&self) {
+		let mut state = self
+			.state
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		state.released = true;
+		self.release.notify_all();
+	}
 }
 
 #[derive(Clone, Debug)]
 pub struct BaseSnapshotBuildResult {
-	pub snapshot: BaseAnalysisSnapshot,
 	pub encoded_snapshot: Vec<u8>,
 	pub snapshot_asset_name: String,
 	pub snapshot_sha256: String,
@@ -1170,31 +1376,188 @@ pub fn installed_data_dir(game_key: &str, game_version: &str) -> PathBuf {
 		.join(sanitize_component(game_version))
 }
 
-pub fn load_installed_base_snapshot(
+fn installed_base_snapshot_lock_path(game_key: &str, game_version: &str) -> PathBuf {
+	// Keep the persistent lock beside the replaceable version bundle. Installed
+	// bundle enumeration ignores this regular file.
+	data_root().join(game_key).join(format!(
+		".snapshot-{}.lock",
+		sanitize_component(game_version)
+	))
+}
+
+fn acquire_installed_base_snapshot_lock(
 	game_key: &str,
 	game_version: &str,
-) -> Result<Option<InstalledBaseSnapshot>, String> {
-	let install_dir = installed_data_dir(game_key, game_version);
-	let metadata_path = install_dir.join(INSTALLED_METADATA_FILE_NAME);
-	let snapshot_path = resolve_installed_snapshot_path(&install_dir);
-	if !metadata_path.is_file() || snapshot_path.is_none() {
-		return Ok(None);
-	}
-	let snapshot_path = snapshot_path.expect("checked snapshot path");
-
-	let metadata_raw = fs::read_to_string(&metadata_path).map_err(|err| {
+	mode: InstalledBaseSnapshotLockMode,
+) -> Result<fs::File, String> {
+	let lock_path = installed_base_snapshot_lock_path(game_key, game_version);
+	let parent = lock_path
+		.parent()
+		.expect("installed base snapshot lock path has a parent");
+	fs::create_dir_all(parent).map_err(|err| {
 		format!(
-			"failed to read base data metadata {}: {err}",
-			metadata_path.display()
+			"failed to create base data lock directory {}: {err}",
+			parent.display()
 		)
 	})?;
-	let metadata: InstalledBaseDataMetadata =
-		serde_json::from_str(&metadata_raw).map_err(|err| {
+	let lock_file = fs::OpenOptions::new()
+		.read(true)
+		.write(true)
+		.create(true)
+		.truncate(false)
+		.open(&lock_path)
+		.map_err(|err| {
 			format!(
-				"failed to parse base data metadata {}: {err}",
-				metadata_path.display()
+				"failed to open base data snapshot lock {}: {err}",
+				lock_path.display()
 			)
 		})?;
+	let lock_result = match mode {
+		InstalledBaseSnapshotLockMode::Shared => lock_file.lock_shared(),
+		InstalledBaseSnapshotLockMode::Exclusive => lock_file.lock(),
+	};
+	lock_result.map_err(|err| {
+		format!(
+			"failed to lock base data snapshot {}: {err}",
+			lock_path.display()
+		)
+	})?;
+	Ok(lock_file)
+}
+
+fn lock_installed_base_snapshot_for_install(
+	game_key: &str,
+	game_version: &str,
+) -> Result<InstalledBaseSnapshotInstallGuard, String> {
+	Ok(InstalledBaseSnapshotInstallGuard {
+		_lock_file: acquire_installed_base_snapshot_lock(
+			game_key,
+			game_version,
+			InstalledBaseSnapshotLockMode::Exclusive,
+		)?,
+	})
+}
+
+/// Locks one installed snapshot against replacement, then validates the exact
+/// identity captured by the caller. The returned guard keeps that validation
+/// current until it is dropped.
+pub(crate) fn lock_and_validate_installed_base_snapshot_identity(
+	game_key: &str,
+	game_version: &str,
+	identity: &InstalledBaseSnapshotIdentity,
+) -> Result<InstalledBaseSnapshotPublicationGuard, String> {
+	let guard = InstalledBaseSnapshotPublicationGuard {
+		_lock_file: acquire_installed_base_snapshot_lock(
+			game_key,
+			game_version,
+			InstalledBaseSnapshotLockMode::Shared,
+		)?,
+	};
+	validate_installed_base_snapshot_identity(game_key, game_version, identity)?;
+	Ok(guard)
+}
+
+/// Reads and verifies the selected installed snapshot, returning an explicit
+/// token that can be transferred to the later load stage or another thread.
+pub fn installed_base_snapshot_identity(
+	game_key: &str,
+	game_version: &str,
+) -> Result<Option<InstalledBaseSnapshotIdentity>, String> {
+	let install_dir = installed_data_dir(game_key, game_version);
+	let metadata_path = install_dir.join(INSTALLED_METADATA_FILE_NAME);
+	if !metadata_path.is_file() {
+		return Ok(None);
+	}
+	let metadata = read_installed_base_metadata(&metadata_path)?;
+	validate_installed_base_metadata(game_key, game_version, &metadata)?;
+	let Some(snapshot_path) = resolve_installed_snapshot_path(&install_dir) else {
+		return Ok(None);
+	};
+	let verified = read_verified_snapshot_bytes(&snapshot_path, metadata.sha256.as_deref())?;
+	Ok(Some(InstalledBaseSnapshotIdentity {
+		install_dir,
+		metadata,
+		verified,
+	}))
+}
+
+/// Validates that a previously captured snapshot identity still selects the
+/// installed snapshot bytes for `game_key` and `game_version`.
+pub fn validate_installed_base_snapshot_identity(
+	game_key: &str,
+	game_version: &str,
+	identity: &InstalledBaseSnapshotIdentity,
+) -> Result<(), String> {
+	let install_dir = installed_data_dir(game_key, game_version);
+	if install_dir != identity.install_dir {
+		return Err(snapshot_changed_retry_message(
+			game_key,
+			game_version,
+			&identity.verified.identity,
+		));
+	}
+	let metadata_path = install_dir.join(INSTALLED_METADATA_FILE_NAME);
+	if !metadata_path.is_file() {
+		return Err(snapshot_changed_retry_message(
+			game_key,
+			game_version,
+			&identity.verified.identity,
+		));
+	}
+	let metadata = read_installed_base_metadata(&metadata_path)?;
+	validate_installed_base_metadata(game_key, game_version, &metadata)?;
+	let Some(snapshot_path) = resolve_installed_snapshot_path(&install_dir) else {
+		return Err(snapshot_changed_retry_message(
+			game_key,
+			game_version,
+			&identity.verified.identity,
+		));
+	};
+	if snapshot_path != identity.verified.identity.path {
+		return Err(snapshot_changed_retry_message(
+			game_key,
+			game_version,
+			&identity.verified.identity,
+		));
+	}
+	let map_stale =
+		|message: String| stale_installed_base_data_message(game_key, game_version, &message);
+	verify_snapshot_sha256(
+		&snapshot_path,
+		metadata.sha256.as_deref(),
+		&identity.verified.identity.sha256,
+	)
+	.map_err(&map_stale)?;
+	if !verified_snapshot_is_current(&snapshot_path, &identity.verified).map_err(&map_stale)? {
+		return Err(snapshot_changed_retry_message(
+			game_key,
+			game_version,
+			&identity.verified.identity,
+		));
+	}
+	Ok(())
+}
+
+fn read_installed_base_metadata(path: &Path) -> Result<InstalledBaseDataMetadata, String> {
+	let metadata_raw = fs::read_to_string(path).map_err(|err| {
+		format!(
+			"failed to read base data metadata {}: {err}",
+			path.display()
+		)
+	})?;
+	serde_json::from_str(&metadata_raw).map_err(|err| {
+		format!(
+			"failed to parse base data metadata {}: {err}",
+			path.display()
+		)
+	})
+}
+
+fn validate_installed_base_metadata(
+	game_key: &str,
+	game_version: &str,
+	metadata: &InstalledBaseDataMetadata,
+) -> Result<(), String> {
 	if metadata.schema_version != BASE_DATA_SCHEMA_VERSION {
 		return Err(stale_installed_base_data_message(
 			game_key,
@@ -1216,17 +1579,449 @@ pub fn load_installed_base_snapshot(
 			),
 		));
 	}
+	Ok(())
+}
 
-	let snapshot = load_snapshot_from_file(&snapshot_path).map_err(|message| {
-		stale_installed_base_data_message(
-			game_key,
-			game_version,
-			&format!(
-				"failed to parse base data snapshot {}: {message}",
-				snapshot_path.display()
-			),
+fn read_verified_snapshot_bytes(
+	path: &Path,
+	expected_sha256: Option<&str>,
+) -> Result<VerifiedSnapshotBytes, String> {
+	const MAX_ATTEMPTS: usize = 2;
+	for _ in 0..MAX_ATTEMPTS {
+		let Some(stable) = read_stable_snapshot_bytes(path)? else {
+			continue;
+		};
+		let sha256 = sha256_hex(&stable.bytes);
+		let verified = VerifiedSnapshotBytes {
+			identity: SnapshotContentIdentity {
+				path: path.to_path_buf(),
+				sha256,
+			},
+			file_handle: stable.file_handle,
+			file_state: stable.file_state,
+			bytes: stable.bytes,
+		};
+		// The stable read already checks the open handle and path state before
+		// and after reading. Its exact bytes define the token; consumers perform
+		// one final current-content check after decoding instead of rehashing here.
+		verify_snapshot_sha256(path, expected_sha256, &verified.identity.sha256)?;
+		return Ok(verified);
+	}
+	Err(format!(
+		"base data snapshot changed while reading {}",
+		path.display()
+	))
+}
+
+fn read_stable_snapshot_bytes(path: &Path) -> Result<Option<StableSnapshotBytes>, String> {
+	read_stable_snapshot_bytes_with_counter(path, true)
+}
+
+fn read_stable_snapshot_bytes_with_counter(
+	path: &Path,
+	count_identity_read: bool,
+) -> Result<Option<StableSnapshotBytes>, String> {
+	let mut file = fs::File::open(path).map_err(|err| {
+		format!(
+			"failed to open base data snapshot {}: {err}",
+			path.display()
 		)
 	})?;
+	#[cfg(test)]
+	if count_identity_read {
+		INSTALLED_SNAPSHOT_FILE_READ_COUNT.fetch_add(1, Ordering::Relaxed);
+	}
+	#[cfg(not(test))]
+	let _ = count_identity_read;
+	let before = file.metadata().map_err(|err| {
+		format!(
+			"failed to inspect base data snapshot {}: {err}",
+			path.display()
+		)
+	})?;
+	let file_handle = SameFileHandle::from_file(file.try_clone().map_err(|err| {
+		format!(
+			"failed to clone base data snapshot handle {}: {err}",
+			path.display()
+		)
+	})?)
+	.map_err(|err| {
+		format!(
+			"failed to identify base data snapshot {}: {err}",
+			path.display()
+		)
+	})?;
+	let mut bytes = Vec::new();
+	file.read_to_end(&mut bytes).map_err(|err| {
+		format!(
+			"failed to read base data snapshot {}: {err}",
+			path.display()
+		)
+	})?;
+	let after = file.metadata().map_err(|err| {
+		format!(
+			"failed to inspect base data snapshot {}: {err}",
+			path.display()
+		)
+	})?;
+	let current = match fs::metadata(path) {
+		Ok(metadata) => metadata,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => {
+			return Err(format!(
+				"failed to inspect base data snapshot {}: {err}",
+				path.display()
+			));
+		}
+	};
+	let current_handle = match SameFileHandle::from_path(path) {
+		Ok(handle) => handle,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+		Err(err) => {
+			return Err(format!(
+				"failed to identify base data snapshot {}: {err}",
+				path.display()
+			));
+		}
+	};
+	let before_state = snapshot_file_state(&before);
+	let after_state = snapshot_file_state(&after);
+	let current_state = snapshot_file_state(&current);
+	if file_handle != current_handle || before_state != after_state || after_state != current_state
+	{
+		return Ok(None);
+	}
+	Ok(Some(StableSnapshotBytes {
+		file_handle: Arc::new(file_handle),
+		file_state: after_state,
+		bytes: bytes.into(),
+	}))
+}
+
+fn snapshot_file_state(metadata: &fs::Metadata) -> SnapshotFileState {
+	#[cfg(unix)]
+	use std::os::unix::fs::MetadataExt;
+
+	SnapshotFileState {
+		len: metadata.len(),
+		modified: metadata.modified().ok(),
+		#[cfg(unix)]
+		device: metadata.dev(),
+		#[cfg(unix)]
+		inode: metadata.ino(),
+		#[cfg(unix)]
+		changed_seconds: metadata.ctime(),
+		#[cfg(unix)]
+		changed_nanoseconds: metadata.ctime_nsec(),
+	}
+}
+
+fn snapshot_identity_label(identity: &SnapshotContentIdentity) -> String {
+	format!("sha256:{}", identity.sha256)
+}
+
+fn snapshot_changed_retry_message(
+	game_key: &str,
+	game_version: &str,
+	expected: &SnapshotContentIdentity,
+) -> String {
+	format!(
+		"installed base data snapshot changed after identity verification for {game_key}@{game_version}: expected {}; retry the operation so its cache identity is rebuilt",
+		snapshot_identity_label(expected)
+	)
+}
+
+fn verified_snapshot_is_current(
+	path: &Path,
+	verified: &VerifiedSnapshotBytes,
+) -> Result<bool, String> {
+	#[cfg(test)]
+	INSTALLED_SNAPSHOT_CURRENT_VALIDATION_COUNT.fetch_add(1, Ordering::Relaxed);
+	let current_handle = match SameFileHandle::from_path(path) {
+		Ok(handle) => handle,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+		Err(err) => {
+			return Err(format!(
+				"failed to identify base data snapshot {}: {err}",
+				path.display()
+			));
+		}
+	};
+	if current_handle != *verified.file_handle {
+		return Ok(false);
+	}
+	let current = match fs::metadata(path) {
+		Ok(metadata) => metadata,
+		Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+		Err(err) => {
+			return Err(format!(
+				"failed to inspect base data snapshot {}: {err}",
+				path.display()
+			));
+		}
+	};
+	if snapshot_file_state(&current) != verified.file_state {
+		return Ok(false);
+	}
+	#[cfg(unix)]
+	{
+		Ok(true)
+	}
+	#[cfg(not(unix))]
+	{
+		verified_snapshot_content_matches(path, verified)
+	}
+}
+
+#[cfg(any(not(unix), test))]
+fn verified_snapshot_content_matches(
+	path: &Path,
+	verified: &VerifiedSnapshotBytes,
+) -> Result<bool, String> {
+	#[cfg(test)]
+	INSTALLED_SNAPSHOT_CURRENT_DIGEST_COUNT.fetch_add(1, Ordering::Relaxed);
+	let Some(current) = read_stable_snapshot_bytes_with_counter(path, false)? else {
+		return Ok(false);
+	};
+	Ok(*current.file_handle == *verified.file_handle
+		&& current.file_state == verified.file_state
+		&& sha256_hex(&current.bytes) == verified.identity.sha256)
+}
+
+fn verify_snapshot_sha256(
+	path: &Path,
+	expected_sha256: Option<&str>,
+	actual_sha256: &str,
+) -> Result<(), String> {
+	if let Some(expected_sha256) = expected_sha256
+		&& actual_sha256 != expected_sha256
+	{
+		return Err(format!(
+			"base data snapshot SHA256 verification failed for {}: expected {}, found {}",
+			path.display(),
+			expected_sha256,
+			actual_sha256
+		));
+	}
+	Ok(())
+}
+
+fn prune_completed_base_snapshot_cache(cache: &mut LoadedBaseSnapshotCache) {
+	let mut completed = cache
+		.entries
+		.iter()
+		.filter(|(_, entry)| entry.cell.get().is_some())
+		.map(|(sha256, entry)| (sha256.clone(), entry.last_used))
+		.collect::<Vec<_>>();
+	if completed.len() <= COMPLETED_BASE_SNAPSHOT_CACHE_LIMIT {
+		return;
+	}
+	completed.sort_by_key(|(_, last_used)| *last_used);
+	let remove_count = completed.len() - COMPLETED_BASE_SNAPSHOT_CACHE_LIMIT;
+	for (sha256, _) in completed.into_iter().take(remove_count) {
+		cache.entries.remove(&sha256);
+	}
+}
+
+fn loaded_base_snapshot_cell(sha256: &str) -> Arc<LoadedBaseSnapshotCell> {
+	let mut cache = LOADED_BASE_SNAPSHOTS
+		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+	cache.clock = cache.clock.wrapping_add(1);
+	let last_used = cache.clock;
+	if let Some(entry) = cache.entries.get_mut(sha256) {
+		entry.last_used = last_used;
+		return Arc::clone(&entry.cell);
+	}
+	let cell = Arc::new(OnceLock::new());
+	cache.entries.insert(
+		sha256.to_string(),
+		LoadedBaseSnapshotCacheEntry {
+			cell: Arc::clone(&cell),
+			last_used,
+		},
+	);
+	prune_completed_base_snapshot_cache(&mut cache);
+	cell
+}
+
+fn touch_loaded_base_snapshot_cache(sha256: &str) {
+	let mut cache = LOADED_BASE_SNAPSHOTS
+		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner);
+	cache.clock = cache.clock.wrapping_add(1);
+	let last_used = cache.clock;
+	if let Some(entry) = cache.entries.get_mut(sha256) {
+		entry.last_used = last_used;
+	}
+	prune_completed_base_snapshot_cache(&mut cache);
+}
+
+fn decode_cached_base_snapshot(sha256: &str, bytes: &[u8]) -> LoadedBaseSnapshotResult {
+	let result = loaded_base_snapshot_cell(sha256)
+		.get_or_init(|| decode_installed_snapshot_from_bytes(bytes).map(Arc::new))
+		.clone();
+	touch_loaded_base_snapshot_cache(sha256);
+	result
+}
+
+#[cfg(test)]
+pub(crate) fn reset_installed_snapshot_test_counters() {
+	INSTALLED_SNAPSHOT_FILE_READ_COUNT.store(0, Ordering::Relaxed);
+	INSTALLED_SNAPSHOT_CURRENT_DIGEST_COUNT.store(0, Ordering::Relaxed);
+	INSTALLED_SNAPSHOT_CURRENT_VALIDATION_COUNT.store(0, Ordering::Relaxed);
+	INSTALLED_SNAPSHOT_COLD_DECODE_COUNT.store(0, Ordering::Relaxed);
+	*INSTALLED_SNAPSHOT_DECODE_GATE
+		.get_or_init(|| Mutex::new(None))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+#[cfg(test)]
+pub(crate) fn installed_snapshot_file_read_count() -> usize {
+	INSTALLED_SNAPSHOT_FILE_READ_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn installed_snapshot_current_digest_count() -> usize {
+	INSTALLED_SNAPSHOT_CURRENT_DIGEST_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn installed_snapshot_current_validation_count() -> usize {
+	INSTALLED_SNAPSHOT_CURRENT_VALIDATION_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+pub(crate) fn installed_snapshot_cold_decode_count() -> usize {
+	INSTALLED_SNAPSHOT_COLD_DECODE_COUNT.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+fn install_installed_snapshot_decode_gate() -> Arc<InstalledSnapshotDecodeGate> {
+	let gate = Arc::new(InstalledSnapshotDecodeGate::default());
+	*INSTALLED_SNAPSHOT_DECODE_GATE
+		.get_or_init(|| Mutex::new(None))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+	gate
+}
+
+#[cfg(test)]
+pub(crate) fn clear_cached_loaded_base_snapshot(_path: &Path) {
+	LOADED_BASE_SNAPSHOTS
+		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+		.entries
+		.clear();
+}
+
+#[cfg(test)]
+fn loaded_base_snapshot_cache_completed_count() -> usize {
+	LOADED_BASE_SNAPSHOTS
+		.get_or_init(|| Mutex::new(LoadedBaseSnapshotCache::default()))
+		.lock()
+		.unwrap_or_else(std::sync::PoisonError::into_inner)
+		.entries
+		.values()
+		.filter(|entry| entry.cell.get().is_some())
+		.count()
+}
+
+fn decode_installed_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, String> {
+	#[cfg(test)]
+	{
+		INSTALLED_SNAPSHOT_COLD_DECODE_COUNT.fetch_add(1, Ordering::Relaxed);
+		let gate = INSTALLED_SNAPSHOT_DECODE_GATE
+			.get_or_init(|| Mutex::new(None))
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner)
+			.clone();
+		if let Some(gate) = gate {
+			gate.enter();
+		}
+	}
+	decode_snapshot_from_bytes(bytes)
+}
+
+/// Loads the installed snapshot, optionally bound to an explicit identity-stage token.
+pub fn load_installed_base_snapshot(
+	game_key: &str,
+	game_version: &str,
+	expected_identity: Option<&InstalledBaseSnapshotIdentity>,
+) -> Result<Option<InstalledBaseSnapshot>, String> {
+	let identity = match expected_identity {
+		Some(identity) => identity.clone(),
+		None => {
+			let Some(identity) = installed_base_snapshot_identity(game_key, game_version)? else {
+				return Ok(None);
+			};
+			identity
+		}
+	};
+	load_installed_base_snapshot_from_identity(
+		game_key,
+		game_version,
+		&identity,
+		BaseSnapshotCurrentValidation::Immediate,
+	)
+	.map(Some)
+}
+
+pub(crate) fn load_installed_base_snapshot_from_identity(
+	game_key: &str,
+	game_version: &str,
+	identity: &InstalledBaseSnapshotIdentity,
+	current_validation: BaseSnapshotCurrentValidation,
+) -> Result<InstalledBaseSnapshot, String> {
+	let expected_install_dir = installed_data_dir(game_key, game_version);
+	if identity.install_dir != expected_install_dir {
+		return Err(snapshot_changed_retry_message(
+			game_key,
+			game_version,
+			&identity.verified.identity,
+		));
+	}
+	validate_installed_base_metadata(game_key, game_version, &identity.metadata)?;
+	let map_stale =
+		|message: String| stale_installed_base_data_message(game_key, game_version, &message);
+	verify_snapshot_sha256(
+		&identity.verified.identity.path,
+		identity.metadata.sha256.as_deref(),
+		&identity.verified.identity.sha256,
+	)
+	.map_err(&map_stale)?;
+	let snapshot =
+		decode_cached_base_snapshot(&identity.verified.identity.sha256, &identity.verified.bytes)
+			.map_err(|message| {
+			stale_installed_base_data_message(
+				game_key,
+				game_version,
+				&format!(
+					"failed to parse base data snapshot {}: {message}",
+					identity.verified.identity.path.display()
+				),
+			)
+		})?;
+	validate_loaded_base_snapshot(game_key, game_version, &snapshot)?;
+	if current_validation == BaseSnapshotCurrentValidation::Immediate {
+		validate_installed_base_snapshot_identity(game_key, game_version, identity)?;
+	}
+	Ok(InstalledBaseSnapshot {
+		install_dir: identity.install_dir.clone(),
+		metadata: identity.metadata.clone(),
+		snapshot,
+	})
+}
+
+fn validate_loaded_base_snapshot(
+	game_key: &str,
+	game_version: &str,
+	snapshot: &BaseAnalysisSnapshot,
+) -> Result<(), String> {
 	if snapshot.schema_version != BASE_DATA_SCHEMA_VERSION {
 		return Err(stale_installed_base_data_message(
 			game_key,
@@ -1254,12 +2049,7 @@ pub fn load_installed_base_snapshot(
 			),
 		));
 	}
-
-	Ok(Some(InstalledBaseSnapshot {
-		install_dir,
-		metadata,
-		snapshot,
-	}))
+	Ok(())
 }
 
 fn stale_installed_base_data_message(game_key: &str, game_version: &str, reason: &str) -> String {
@@ -1502,7 +2292,6 @@ pub fn build_base_snapshot_with_observer(
 	let sha256 = sha256_hex(&encoded.bytes);
 	let asset_name = snapshot_asset_name(game.key(), &resolved_version);
 	Ok(BaseSnapshotBuildResult {
-		snapshot,
 		encoded_snapshot: encoded.bytes,
 		snapshot_asset_name: asset_name,
 		snapshot_sha256: sha256,
@@ -1510,42 +2299,40 @@ pub fn build_base_snapshot_with_observer(
 }
 
 pub fn install_built_snapshot(
-	snapshot: &BaseAnalysisSnapshot,
 	encoded_snapshot: &[u8],
 	source: BaseDataSource,
 	asset_name: Option<String>,
 	sha256: Option<String>,
 ) -> Result<InstalledBaseSnapshot, String> {
-	let metadata = InstalledBaseDataMetadata {
-		schema_version: snapshot.schema_version,
-		game: snapshot.game.clone(),
-		game_version: snapshot.game_version.clone(),
-		analysis_rules_version: snapshot.analysis_rules_version.clone(),
-		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
+	install_encoded_snapshot(
+		encoded_snapshot,
 		source,
 		asset_name,
-		sha256,
-		vocabulary_manifest_sha256: None,
-	};
-	write_installed_snapshot(snapshot, &metadata, encoded_snapshot)
+		EncodedSnapshotExpectations {
+			sha256: sha256.as_deref(),
+			..EncodedSnapshotExpectations::default()
+		},
+	)
 }
 
 pub fn write_release_artifacts(
-	snapshot: &BaseAnalysisSnapshot,
 	encoded_snapshot: &[u8],
 	output_dir: &Path,
 	release_tag: &str,
 ) -> Result<ReleaseArtifactOutput, String> {
+	let verified =
+		verify_encoded_snapshot(encoded_snapshot, EncodedSnapshotExpectations::default())?;
+	let snapshot = &verified.snapshot;
 	fs::create_dir_all(output_dir).map_err(|err| {
 		format!(
 			"failed to create output directory {}: {err}",
 			output_dir.display()
 		)
 	})?;
-	let sha256 = sha256_hex(encoded_snapshot);
+	let sha256 = verified.sha256.clone();
 	let asset_name = snapshot_asset_name(&snapshot.game, &snapshot.game_version);
 	let snapshot_path = output_dir.join(&asset_name);
-	fs::write(&snapshot_path, encoded_snapshot).map_err(|err| {
+	fs::write(&snapshot_path, verified.bytes).map_err(|err| {
 		format!(
 			"failed to write release snapshot {}: {err}",
 			snapshot_path.display()
@@ -1660,13 +2447,20 @@ fn write_vocabulary_manifest(
 }
 
 pub fn write_snapshot_bundle(
-	snapshot: &BaseAnalysisSnapshot,
 	encoded_snapshot: &[u8],
 	output_dir: &Path,
 	source: BaseDataSource,
 	asset_name: Option<String>,
-	sha256: Option<String>,
+	expected_sha256: Option<String>,
 ) -> Result<SnapshotBundleOutput, String> {
+	let verified = verify_encoded_snapshot(
+		encoded_snapshot,
+		EncodedSnapshotExpectations {
+			sha256: expected_sha256.as_deref(),
+			..EncodedSnapshotExpectations::default()
+		},
+	)?;
+	let snapshot = &verified.snapshot;
 	fs::create_dir_all(output_dir).map_err(|err| {
 		format!(
 			"failed to create output directory {}: {err}",
@@ -1684,7 +2478,7 @@ pub fn write_snapshot_bundle(
 		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
 		source,
 		asset_name,
-		sha256,
+		sha256: Some(verified.sha256.clone()),
 		vocabulary_manifest_sha256: Some(vocabulary_manifest_sha256),
 	};
 	let metadata_raw = serde_json::to_string_pretty(&metadata)
@@ -1692,7 +2486,7 @@ pub fn write_snapshot_bundle(
 	let snapshot_path = output_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	let metadata_path = output_dir.join(INSTALLED_METADATA_FILE_NAME);
 	let coverage_path = output_dir.join(INSTALLED_COVERAGE_FILE_NAME);
-	fs::write(&snapshot_path, encoded_snapshot).map_err(|err| {
+	fs::write(&snapshot_path, verified.bytes).map_err(|err| {
 		format!(
 			"failed to write snapshot bundle {}: {err}",
 			snapshot_path.display()
@@ -1753,13 +2547,6 @@ pub fn install_snapshot_from_release(
 				game_version
 			)
 		})?;
-	if asset.analysis_rules_version != analysis_rules_version() {
-		return Err(format!(
-			"release base data analysis rules version mismatch: expected {}, found {}",
-			analysis_rules_version(),
-			asset.analysis_rules_version
-		));
-	}
 	let asset_url = format!("{base_url}/{}", asset.asset_name);
 	let asset_bytes = client
 		.get(&asset_url)
@@ -1769,51 +2556,107 @@ pub fn install_snapshot_from_release(
 		.bytes()
 		.map_err(|err| format!("failed to read base data asset response {asset_url}: {err}"))?
 		.to_vec();
-	let digest = sha256_hex(&asset_bytes);
-	if digest != asset.sha256 {
-		return Err(format!(
-			"base data asset SHA256 verification failed: expected {}, found {}",
-			asset.sha256, digest
-		));
-	}
+	install_encoded_snapshot(
+		&asset_bytes,
+		BaseDataSource::Download,
+		Some(asset.asset_name),
+		EncodedSnapshotExpectations {
+			game: Some(game.key()),
+			game_version: Some(game_version),
+			analysis_rules_version: Some(&asset.analysis_rules_version),
+			sha256: Some(&asset.sha256),
+		},
+	)
+}
 
-	let snapshot = decode_snapshot_from_bytes(&asset_bytes)?;
-	if snapshot.game != game.key() || snapshot.game_version != game_version {
+struct VerifiedEncodedSnapshot<'a> {
+	bytes: &'a [u8],
+	sha256: String,
+	snapshot: Arc<BaseAnalysisSnapshot>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EncodedSnapshotExpectations<'a> {
+	game: Option<&'a str>,
+	game_version: Option<&'a str>,
+	analysis_rules_version: Option<&'a str>,
+	sha256: Option<&'a str>,
+}
+
+fn install_encoded_snapshot(
+	encoded_snapshot: &[u8],
+	source: BaseDataSource,
+	asset_name: Option<String>,
+	expected: EncodedSnapshotExpectations<'_>,
+) -> Result<InstalledBaseSnapshot, String> {
+	let verified = verify_encoded_snapshot(encoded_snapshot, expected)?;
+	let metadata = InstalledBaseDataMetadata {
+		schema_version: verified.snapshot.schema_version,
+		game: verified.snapshot.game.clone(),
+		game_version: verified.snapshot.game_version.clone(),
+		analysis_rules_version: verified.snapshot.analysis_rules_version.clone(),
+		generated_by_cli_version: verified.snapshot.generated_by_cli_version.clone(),
+		source,
+		asset_name,
+		sha256: Some(verified.sha256.clone()),
+		vocabulary_manifest_sha256: None,
+	};
+	write_installed_snapshot(verified, &metadata)
+}
+
+fn verify_encoded_snapshot<'a>(
+	encoded_snapshot: &'a [u8],
+	expected: EncodedSnapshotExpectations<'_>,
+) -> Result<VerifiedEncodedSnapshot<'a>, String> {
+	let sha256 = sha256_hex(encoded_snapshot);
+	let snapshot = decode_cached_base_snapshot(&sha256, encoded_snapshot)
+		.map_err(|err| format!("failed to verify encoded base data snapshot: {err}"))?;
+	let snapshot_path = installed_data_dir(&snapshot.game, &snapshot.game_version)
+		.join(INSTALLED_SNAPSHOT_FILE_NAME);
+	verify_snapshot_sha256(&snapshot_path, expected.sha256, &sha256)?;
+	validate_loaded_base_snapshot(&snapshot.game, &snapshot.game_version, &snapshot)?;
+	if expected.game.is_some_and(|game| snapshot.game != game)
+		|| expected
+			.game_version
+			.is_some_and(|game_version| snapshot.game_version != game_version)
+	{
 		return Err(format!(
-			"downloaded base data asset content mismatch: expected {}@{}, found {}@{}",
-			game.key(),
-			game_version,
+			"encoded base data content mismatch: expected {}@{}, found {}@{}",
+			expected.game.unwrap_or("*"),
+			expected.game_version.unwrap_or("*"),
 			snapshot.game,
 			snapshot.game_version
 		));
 	}
-	if snapshot.analysis_rules_version != asset.analysis_rules_version {
+	if let Some(expected_rules) = expected.analysis_rules_version
+		&& snapshot.analysis_rules_version != expected_rules
+	{
 		return Err(format!(
-			"downloaded base data analysis rules version mismatch: manifest {}, snapshot {}",
-			asset.analysis_rules_version, snapshot.analysis_rules_version
+			"encoded base data analysis rules version mismatch: expected {expected_rules}, found {}",
+			snapshot.analysis_rules_version
 		));
 	}
-
-	let metadata = InstalledBaseDataMetadata {
-		schema_version: snapshot.schema_version,
-		game: snapshot.game.clone(),
-		game_version: snapshot.game_version.clone(),
-		analysis_rules_version: snapshot.analysis_rules_version.clone(),
-		generated_by_cli_version: snapshot.generated_by_cli_version.clone(),
-		source: BaseDataSource::Download,
-		asset_name: Some(asset.asset_name),
-		sha256: Some(asset.sha256),
-		vocabulary_manifest_sha256: None,
-	};
-	write_installed_snapshot(&snapshot, &metadata, &asset_bytes)
+	Ok(VerifiedEncodedSnapshot {
+		bytes: encoded_snapshot,
+		sha256,
+		snapshot,
+	})
 }
 
 fn write_installed_snapshot(
-	snapshot: &BaseAnalysisSnapshot,
+	verified: VerifiedEncodedSnapshot<'_>,
 	metadata: &InstalledBaseDataMetadata,
-	encoded_snapshot: &[u8],
 ) -> Result<InstalledBaseSnapshot, String> {
+	let VerifiedEncodedSnapshot {
+		bytes: encoded_snapshot,
+		sha256: _,
+		snapshot,
+	} = verified;
+	validate_install_metadata(metadata, &snapshot)?;
+	let _install_guard =
+		lock_installed_base_snapshot_for_install(&snapshot.game, &snapshot.game_version)?;
 	let install_dir = installed_data_dir(&snapshot.game, &snapshot.game_version);
+	let snapshot_path = install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	fs::create_dir_all(&install_dir).map_err(|err| {
 		format!(
 			"failed to create base data install directory {}: {err}",
@@ -1821,10 +2664,9 @@ fn write_installed_snapshot(
 		)
 	})?;
 	let metadata_path = install_dir.join(INSTALLED_METADATA_FILE_NAME);
-	let snapshot_path = install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	let vocabulary_manifest_path = install_dir.join(INSTALLED_VOCABULARY_MANIFEST_FILE_NAME);
 	let vocabulary_manifest_sha256 =
-		write_vocabulary_manifest(&vocabulary_manifest_path, snapshot)?;
+		write_vocabulary_manifest(&vocabulary_manifest_path, &snapshot)?;
 	let mut metadata = metadata.clone();
 	metadata.vocabulary_manifest_sha256 = Some(vocabulary_manifest_sha256);
 	let metadata_raw = serde_json::to_string_pretty(&metadata)
@@ -1842,27 +2684,47 @@ fn write_installed_snapshot(
 		)
 	})?;
 	let coverage_path = install_dir.join(INSTALLED_COVERAGE_FILE_NAME);
-	write_coverage_report(&coverage_path, snapshot)?;
+	write_coverage_report(&coverage_path, &snapshot)?;
 	Ok(InstalledBaseSnapshot {
 		install_dir,
 		metadata,
-		snapshot: snapshot.clone(),
+		snapshot,
 	})
 }
 
-fn load_snapshot_from_file(path: &Path) -> Result<BaseAnalysisSnapshot, String> {
-	let raw = fs::read(path).map_err(|err| {
-		format!(
-			"failed to open base data snapshot {}: {err}",
-			path.display()
-		)
-	})?;
-	decode_snapshot_from_bytes(&raw).map_err(|err| {
-		format!(
-			"failed to parse base data snapshot {}: {err}",
-			path.display()
-		)
-	})
+fn validate_install_metadata(
+	metadata: &InstalledBaseDataMetadata,
+	snapshot: &BaseAnalysisSnapshot,
+) -> Result<(), String> {
+	if metadata.schema_version != snapshot.schema_version
+		|| metadata.game != snapshot.game
+		|| metadata.game_version != snapshot.game_version
+		|| metadata.analysis_rules_version != snapshot.analysis_rules_version
+		|| metadata.generated_by_cli_version != snapshot.generated_by_cli_version
+	{
+		return Err(format!(
+			"base data install metadata does not match encoded snapshot {}@{}",
+			snapshot.game, snapshot.game_version
+		));
+	}
+	Ok(())
+}
+
+#[cfg(test)]
+fn write_test_installed_snapshot(
+	metadata: &InstalledBaseDataMetadata,
+	encoded_snapshot: &[u8],
+) -> Result<InstalledBaseSnapshot, String> {
+	let verified = verify_encoded_snapshot(
+		encoded_snapshot,
+		EncodedSnapshotExpectations {
+			game: Some(&metadata.game),
+			game_version: Some(&metadata.game_version),
+			analysis_rules_version: Some(&metadata.analysis_rules_version),
+			sha256: metadata.sha256.as_deref(),
+		},
+	)?;
+	write_installed_snapshot(verified, metadata)
 }
 
 fn encode_snapshot_to_bytes(
@@ -2031,7 +2893,10 @@ fn snapshot_asset_name(game_key: &str, game_version: &str) -> String {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-	let digest = Sha256::digest(bytes);
+	sha256_digest_hex(&Sha256::digest(bytes))
+}
+
+fn sha256_digest_hex(digest: &[u8]) -> String {
 	let mut out = String::with_capacity(digest.len() * 2);
 	for byte in digest {
 		out.push_str(&format!("{byte:02x}"));

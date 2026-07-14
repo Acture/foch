@@ -1,8 +1,9 @@
 use super::file_filter::FileFilter;
 use super::{LoadedModSnapshot, WorkspaceScriptCache, cache::load_or_build_mod_snapshot};
 use crate::base_data::{
-	InstalledBaseSnapshot, base_game_mod_id, detect_game_version, load_installed_base_snapshot,
-	resolve_game_root, resolve_game_root_and_version,
+	BaseSnapshotCurrentValidation, InstalledBaseSnapshot, InstalledBaseSnapshotIdentity,
+	base_game_mod_id, detect_game_version, installed_base_snapshot_identity,
+	load_installed_base_snapshot_from_identity, resolve_game_root, resolve_game_root_and_version,
 };
 use crate::cache::compute_mod_hash_for_files;
 use crate::config::Config;
@@ -12,8 +13,12 @@ use foch_core::domain::ParseErrorKind;
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::game::Game;
 use foch_core::domain::playlist::{Playlist, PlaylistEntry};
-use foch_core::model::ModCandidate;
+use foch_core::model::{MergeUnitId, ModCandidate};
 use foch_core::utils::steam::steam_workshop_mod_path;
+use foch_language::analyzer::content_family::{
+	ContentLoadPolicy, GameProfile, module_name_for_descriptor,
+};
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsStr;
@@ -97,6 +102,8 @@ pub(crate) struct ResolvedWorkspace {
 	pub mod_snapshots: Vec<Option<LoadedModSnapshot>>,
 	pub script_cache: WorkspaceScriptCache,
 	pub file_inventory: BTreeMap<String, Vec<ResolvedFileContributor>>,
+	pub requested_retained_paths: Option<BTreeSet<String>>,
+	pub effective_retained_paths: Option<BTreeSet<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,10 +113,20 @@ pub(crate) struct WorkspaceInventory {
 	pub mods: Vec<ModCandidate>,
 	pub base_game_root: Option<PathBuf>,
 	pub mod_cache_game_version: Option<String>,
+	pub base_snapshot_identity: Option<InstalledBaseSnapshotIdentity>,
+	base_snapshot_current_validation: BaseSnapshotCurrentValidation,
 	pub cache_game_version: Option<String>,
 	pub snapshot_filter: FileFilter,
 	pub mod_hashes: Vec<Option<String>>,
-	pub retained_paths: Option<BTreeSet<String>>,
+	pub requested_retained_paths: Option<BTreeSet<String>>,
+	pub effective_retained_paths: Option<BTreeSet<String>>,
+	pub retained_module_policy_versions: BTreeMap<MergeUnitId, u32>,
+}
+
+impl WorkspaceInventory {
+	pub(crate) fn defer_base_snapshot_current_validation(&mut self) {
+		self.base_snapshot_current_validation = BaseSnapshotCurrentValidation::Deferred;
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -428,6 +445,81 @@ pub fn resolve_workspace_targets(
 	Ok(targets)
 }
 
+fn game_profile(game: &Game) -> Option<&'static dyn GameProfile> {
+	match game {
+		Game::EuropaUniversalis4 => Some(eu4_profile()),
+		Game::CrusaderKings3
+		| Game::Victoria3
+		| Game::Stellaris
+		| Game::HeartsOfIron4
+		| Game::Unknown => None,
+	}
+}
+
+fn retained_definition_modules(
+	game: &Game,
+	requested_paths: &BTreeSet<String>,
+) -> BTreeMap<MergeUnitId, u32> {
+	let Some(profile) = game_profile(game) else {
+		return BTreeMap::new();
+	};
+	requested_paths
+		.iter()
+		.filter_map(|path| {
+			let descriptor = profile.classify_content_family(Path::new(path))?;
+			let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+				return None;
+			};
+			Some((
+				MergeUnitId {
+					family_id: descriptor.id.as_str().to_string(),
+					module_name: module_name_for_descriptor(Path::new(path), descriptor),
+				},
+				policy.policy_version,
+			))
+		})
+		.collect()
+}
+
+fn expand_retained_paths_for_game<'a>(
+	game: &Game,
+	requested_paths: Option<&BTreeSet<String>>,
+	available_paths: impl IntoIterator<Item = &'a str>,
+) -> Option<BTreeSet<String>> {
+	let requested_paths = requested_paths?;
+	let mut effective = requested_paths
+		.iter()
+		.map(|path| normalize_relative_path(Path::new(path)))
+		.collect::<BTreeSet<_>>();
+	let selected_modules = retained_definition_modules(game, &effective);
+	if selected_modules.is_empty() {
+		return Some(effective);
+	}
+	let Some(profile) = game_profile(game) else {
+		return Some(effective);
+	};
+	for available_path in available_paths {
+		let normalized = normalize_relative_path(Path::new(available_path));
+		let Some(descriptor) = profile.classify_content_family(Path::new(&normalized)) else {
+			continue;
+		};
+		if !matches!(
+			descriptor.load_policy,
+			ContentLoadPolicy::DefinitionModule(_)
+		) {
+			continue;
+		}
+		let module = MergeUnitId {
+			family_id: descriptor.id.as_str().to_string(),
+			module_name: module_name_for_descriptor(Path::new(&normalized), descriptor),
+		};
+		if selected_modules.contains_key(&module) {
+			effective.insert(normalized);
+		}
+	}
+	Some(effective)
+}
+
 pub(crate) fn build_workspace_inventory_with_hash_cache(
 	request: &CheckRequest,
 	include_game_base: bool,
@@ -452,13 +544,29 @@ pub(crate) fn build_workspace_inventory_with_hash_cache(
 			FileFilter::for_game(playlist.game.clone())
 		}
 	};
-	let mods = build_mod_candidates_with_filter(
-		&source_root,
-		&config,
-		&playlist,
-		&snapshot_filter,
+	let mut mods =
+		build_mod_candidates_with_filter(&source_root, &config, &playlist, &snapshot_filter, None);
+	let available_mod_paths = mods
+		.iter()
+		.flat_map(|mod_item| mod_item.files.iter())
+		.map(|path| normalize_relative_path(path))
+		.collect::<Vec<_>>();
+	let effective_retained_paths = expand_retained_paths_for_game(
+		&playlist.game,
 		retained_paths,
+		available_mod_paths.iter().map(String::as_str),
 	);
+	if let Some(effective_retained_paths) = effective_retained_paths.as_ref() {
+		for mod_item in &mut mods {
+			mod_item.files.retain(|relative| {
+				effective_retained_paths.contains(&normalize_relative_path(relative))
+			});
+		}
+	}
+	let retained_module_policy_versions = effective_retained_paths
+		.as_ref()
+		.map(|paths| retained_definition_modules(&playlist.game, paths))
+		.unwrap_or_default();
 	let optional_game_root = resolve_game_root(&config, &playlist.game);
 	let (base_game_root, mod_cache_game_version) = if include_game_base {
 		let (game_root, game_version) = resolve_game_root_and_version(&config, &playlist.game)
@@ -476,9 +584,66 @@ pub(crate) fn build_workspace_inventory_with_hash_cache(
 				.and_then(|game_root| detect_game_version(game_root)),
 		)
 	};
-	let cache_game_version = mod_cache_game_version
-		.as_ref()
-		.map(|version| format!("{} {version}", playlist.game.key()));
+	let base_snapshot_identity = if let (Some(game_root), Some(game_version)) =
+		(base_game_root.as_ref(), mod_cache_game_version.as_ref())
+	{
+		if let Some(lease) = request.base_snapshot_lease.as_ref() {
+			Some(lease.clone())
+		} else {
+			Some(
+				installed_base_snapshot_identity(playlist.game.key(), game_version)
+					.map_err(|message| WorkspaceResolveError {
+						kind: WorkspaceResolveErrorKind::Io,
+						path: source_path.clone(),
+						message,
+					})?
+					.ok_or_else(|| WorkspaceResolveError {
+						kind: WorkspaceResolveErrorKind::Io,
+						path: source_path.clone(),
+						message: missing_base_data_message(&playlist.game, game_version, game_root),
+					})?,
+			)
+		}
+	} else {
+		None
+	};
+	if request.base_snapshot_lease.is_some() && base_snapshot_identity.is_none() {
+		return Err(WorkspaceResolveError {
+			kind: WorkspaceResolveErrorKind::Io,
+			path: source_path.clone(),
+			message:
+				"an exact base snapshot lease was supplied, but game-base resolution is disabled"
+					.to_string(),
+		});
+	}
+	if let Some(expected) = request.expected_base_snapshot_identity.as_deref() {
+		let Some(actual) = base_snapshot_identity.as_ref() else {
+			return Err(WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: source_path.clone(),
+				message: format!(
+					"expected base snapshot identity {expected}, but game-base resolution is disabled"
+				),
+			});
+		};
+		if actual.as_label() != expected {
+			return Err(WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: source_path.clone(),
+				message: format!(
+					"installed base snapshot identity mismatch: expected {expected}, found {actual}"
+				),
+			});
+		}
+	}
+	let cache_game_version = mod_cache_game_version.as_ref().map(|version| {
+		let mut identity = format!("{} {version}", playlist.game.key());
+		if let Some(base_snapshot_identity) = base_snapshot_identity.as_ref() {
+			identity.push_str(" base=");
+			identity.push_str(&base_snapshot_identity.as_label());
+		}
+		identity
+	});
 	let mod_hashes = mods
 		.iter()
 		.map(|mod_item| {
@@ -496,10 +661,18 @@ pub(crate) fn build_workspace_inventory_with_hash_cache(
 		mods,
 		base_game_root,
 		mod_cache_game_version,
+		base_snapshot_identity,
+		base_snapshot_current_validation: if request.base_snapshot_lease.is_some() {
+			BaseSnapshotCurrentValidation::Deferred
+		} else {
+			BaseSnapshotCurrentValidation::Immediate
+		},
 		cache_game_version,
 		snapshot_filter,
 		mod_hashes,
-		retained_paths: retained_paths.cloned(),
+		requested_retained_paths: retained_paths.cloned(),
+		effective_retained_paths,
+		retained_module_policy_versions,
 	})
 }
 
@@ -520,30 +693,56 @@ pub(crate) fn resolve_workspace_from_inventory(
 		mods,
 		base_game_root,
 		mod_cache_game_version,
+		base_snapshot_identity,
+		base_snapshot_current_validation,
 		cache_game_version,
 		snapshot_filter,
 		mod_hashes,
-		retained_paths,
+		requested_retained_paths,
+		effective_retained_paths,
+		retained_module_policy_versions: _,
 	} = inventory;
-	let installed_base_snapshot = if let (Some(game_root), Some(game_version)) =
-		(base_game_root.as_ref(), mod_cache_game_version.as_ref())
-	{
-		Some(
-			load_installed_base_snapshot(playlist.game.key(), game_version)
-				.map_err(|message| WorkspaceResolveError {
-					kind: WorkspaceResolveErrorKind::Io,
-					path: playlist_path.clone(),
-					message,
-				})?
-				.ok_or_else(|| WorkspaceResolveError {
-					kind: WorkspaceResolveErrorKind::Io,
-					path: playlist_path.clone(),
-					message: missing_base_data_message(&playlist.game, game_version, game_root),
-				})?,
-		)
-	} else {
-		None
+	let installed_base_snapshot = match (
+		base_game_root.as_ref(),
+		mod_cache_game_version.as_ref(),
+		base_snapshot_identity.as_ref(),
+	) {
+		(Some(_game_root), Some(game_version), Some(identity)) => Some(
+			load_installed_base_snapshot_from_identity(
+				playlist.game.key(),
+				game_version,
+				identity,
+				base_snapshot_current_validation,
+			)
+			.map_err(|message| WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: playlist_path.clone(),
+				message,
+			})?,
+		),
+		(Some(game_root), Some(game_version), None) => {
+			return Err(WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: playlist_path.clone(),
+				message: missing_base_data_message(&playlist.game, game_version, game_root),
+			});
+		}
+		_ => None,
 	};
+	let mut available_paths = effective_retained_paths
+		.as_ref()
+		.into_iter()
+		.flatten()
+		.cloned()
+		.collect::<Vec<_>>();
+	if let Some(base_snapshot) = installed_base_snapshot.as_ref() {
+		available_paths.extend(base_snapshot.snapshot.inventory_paths.iter().cloned());
+	}
+	let effective_retained_paths = expand_retained_paths_for_game(
+		&playlist.game,
+		requested_retained_paths.as_ref(),
+		available_paths.iter().map(String::as_str),
+	);
 	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
 		.iter()
 		.enumerate()
@@ -554,7 +753,7 @@ pub(crate) fn resolve_workspace_from_inventory(
 				mod_item,
 				&snapshot_filter,
 				mod_hashes.get(idx).and_then(|hash| hash.as_deref()),
-				retained_paths.is_none(),
+				requested_retained_paths.is_none(),
 			)
 		})
 		.collect();
@@ -565,6 +764,7 @@ pub(crate) fn resolve_workspace_from_inventory(
 		base_game_root.as_ref(),
 		installed_base_snapshot.as_ref(),
 		&mod_hashes,
+		effective_retained_paths.as_ref(),
 	);
 	inject_synthetic_bases(&mut file_inventory);
 	let script_cache = WorkspaceScriptCache::from_parts(
@@ -583,6 +783,8 @@ pub(crate) fn resolve_workspace_from_inventory(
 		mod_snapshots,
 		script_cache,
 		file_inventory,
+		requested_retained_paths,
+		effective_retained_paths,
 	})
 }
 
@@ -882,6 +1084,7 @@ pub(crate) fn build_file_inventory(
 	base_game_root: Option<&PathBuf>,
 	installed_base_snapshot: Option<&InstalledBaseSnapshot>,
 	mod_hashes: &[Option<String>],
+	retained_paths: Option<&BTreeSet<String>>,
 ) -> BTreeMap<String, Vec<ResolvedFileContributor>> {
 	let mut inventory = BTreeMap::new();
 	let mut precedence = 0;
@@ -890,6 +1093,9 @@ pub(crate) fn build_file_inventory(
 		let mod_id = base_game_mod_id(playlist.game.key());
 		let document_lookup = snapshot.snapshot.document_lookup();
 		for relative in &snapshot.snapshot.inventory_paths {
+			if retained_paths.is_some_and(|paths| !paths.contains(relative)) {
+				continue;
+			}
 			let document = document_lookup.get(relative.as_str());
 			inventory
 				.entry(relative.clone())
@@ -1187,6 +1393,112 @@ path = "missing-local-patch"
 		let targets = resolve_workspace_targets(&request_for_manifest(&manifest_path), false)
 			.expect("targets");
 		assert!(targets.is_empty());
+	}
+
+	#[test]
+	fn retained_governments_path_expands_to_the_complete_definition_module() {
+		let temp = TempDir::new().expect("tempdir");
+		let mod_root = temp.path().join("governments_mod");
+		write_descriptor(&mod_root, "Governments Mod", None);
+		let governments = mod_root.join("common/governments");
+		fs::create_dir_all(&governments).expect("create governments directory");
+		fs::write(
+			governments.join("00_governments.txt"),
+			"early_government = { basic_reform = early_reform }\n",
+		)
+		.expect("write early government");
+		fs::write(
+			governments.join("zzz_governments.txt"),
+			"late_government = { basic_reform = late_reform }\n",
+		)
+		.expect("write late government");
+		let unrelated = mod_root.join("common/scripted_effects");
+		fs::create_dir_all(&unrelated).expect("create unrelated directory");
+		fs::write(unrelated.join("effect.txt"), "effect = { }\n").expect("write unrelated file");
+		let manifest_path = temp.path().join("foch.toml");
+		fs::write(
+			&manifest_path,
+			r#"
+[workspace]
+game = "eu4"
+
+[[workspace.mods]]
+id = "governments_mod"
+path = "governments_mod"
+"#,
+		)
+		.expect("write manifest");
+		let requested = BTreeSet::from(["common/governments/00_governments.txt".to_string()]);
+
+		let inventory = build_workspace_inventory_with_hash_cache(
+			&request_for_manifest(&manifest_path),
+			false,
+			true,
+			Some(&requested),
+		)
+		.expect("build retained workspace inventory");
+		let retained_files = inventory.mods[0]
+			.files
+			.iter()
+			.map(|path| normalize_relative_path(path))
+			.collect::<BTreeSet<_>>();
+
+		assert_eq!(inventory.requested_retained_paths, Some(requested));
+		assert_eq!(
+			inventory.effective_retained_paths,
+			Some(BTreeSet::from([
+				"common/governments/00_governments.txt".to_string(),
+				"common/governments/zzz_governments.txt".to_string(),
+			]))
+		);
+		assert_eq!(
+			retained_files,
+			BTreeSet::from([
+				"common/governments/00_governments.txt".to_string(),
+				"common/governments/zzz_governments.txt".to_string(),
+			])
+		);
+	}
+
+	#[test]
+	fn retained_non_module_path_stays_exact() {
+		let available = BTreeSet::from([
+			"common/scripted_effects/one.txt".to_string(),
+			"common/scripted_effects/two.txt".to_string(),
+		]);
+		let requested = BTreeSet::from(["common/scripted_effects/one.txt".to_string()]);
+
+		let effective = expand_retained_paths_for_game(
+			&Game::EuropaUniversalis4,
+			Some(&requested),
+			available.iter().map(String::as_str),
+		);
+
+		assert_eq!(effective, Some(requested));
+	}
+
+	#[test]
+	fn retained_module_expansion_includes_available_basegame_siblings() {
+		let requested = BTreeSet::from(["common/governments/mod_override.txt".to_string()]);
+		let available = BTreeSet::from([
+			"common/governments/00_vanilla.txt".to_string(),
+			"common/governments/mod_override.txt".to_string(),
+			"common/scripted_effects/unrelated.txt".to_string(),
+		]);
+
+		let effective = expand_retained_paths_for_game(
+			&Game::EuropaUniversalis4,
+			Some(&requested),
+			available.iter().map(String::as_str),
+		);
+
+		assert_eq!(
+			effective,
+			Some(BTreeSet::from([
+				"common/governments/00_vanilla.txt".to_string(),
+				"common/governments/mod_override.txt".to_string(),
+			]))
+		);
 	}
 
 	fn make_contributor(

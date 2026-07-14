@@ -1,9 +1,14 @@
 use foch_core::config::compute_conflict_id;
+use foch_core::domain::descriptor::load_descriptor;
 use foch_core::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
 };
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
+use foch_language::analyzer::content_family::{ContentLoadPolicy, GameProfile};
+use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::parse_clausewitz_file;
+use foch_language::analyzer::semantic_index::parse_script_file;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -968,13 +973,75 @@ fn eu4_comment_only_override_is_noop_and_keeps_sibling_content() {
 	let merged_path = out_dir
 		.join("common")
 		.join("governments")
-		.join("00_governments.txt");
+		.join("zzz_foch_governments.txt");
 	let merged_text = fs::read_to_string(&merged_path)
 		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
 	assert!(
 		merged_text.contains("monarchy = {") && merged_text.contains("preferred_reform"),
 		"real sibling content should survive comment-only override; got:\n{merged_text}"
 	);
+}
+
+#[test]
+fn eu4_governments_cross_file_module_emits_union_once() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_governments_cross_file_union", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"cross-file governments merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(
+		result.report.status,
+		MergeReportStatus::Ready,
+		"cross-file governments merge should be ready; report: {:#?}",
+		result.report
+	);
+
+	let governments_dir = out_dir.join("common").join("governments");
+	let merged_path = governments_dir.join("zzz_foch_governments.txt");
+	let merged_text = fs::read_to_string(&merged_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
+	for definition in [
+		"expanded_europa_government",
+		"governments_expanded_government",
+	] {
+		assert_eq!(
+			merged_text.matches(definition).count(),
+			1,
+			"{definition} should appear exactly once; got:\n{merged_text}"
+		);
+	}
+	let emitted_government_files = fs::read_dir(&governments_dir)
+		.expect("read governments output")
+		.filter_map(Result::ok)
+		.filter(|entry| entry.path().extension().is_some_and(|ext| ext == "txt"))
+		.count();
+	assert_eq!(
+		emitted_government_files, 1,
+		"module inputs must be consumed instead of copied through"
+	);
+	let generated_descriptor =
+		load_descriptor(&out_dir.join("descriptor.mod")).expect("parse generated descriptor");
+	assert_eq!(
+		generated_descriptor.replace_path,
+		vec!["common/governments".to_string()]
+	);
+
+	let parsed_output = parse_script_file("generated", &out_dir, &merged_path)
+		.expect("parse generated governments module");
+	let relative = Path::new("common/governments/zzz_foch_governments.txt");
+	let descriptor = eu4_profile()
+		.classify_content_family(relative)
+		.expect("governments descriptor");
+	let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+		panic!("governments must use definition-module loading");
+	};
+	let runtime_view = load_definition_module(
+		&[DefinitionModuleInput::new(relative, &parsed_output)],
+		policy,
+	)
+	.expect("reload generated module using runtime policy");
+	assert_eq!(runtime_view.ast.statements, parsed_output.ast.statements);
 }
 
 #[test]
@@ -1206,35 +1273,38 @@ religion = sentinel
 	let config_path = temp_dir.path().join("foch.keep-existing.toml");
 	fs::copy(fixture.join("foch.toml"), &config_path).expect("copy keep_existing foch.toml");
 
-	let mut game_path = HashMap::new();
-	game_path.insert("eu4".to_string(), game_root);
-	let result = run_merge_with_options(
-		CheckRequest::from_playset_path(
-			fixture.join("dlc_load.json"),
-			Config {
-				steam_root_path: None,
-				paradox_data_path: None,
-				game_path,
-				extra_ignore_patterns: Vec::new(),
+	let run = |target_out: &Path| {
+		let mut game_path = HashMap::new();
+		game_path.insert("eu4".to_string(), game_root.clone());
+		run_merge_with_options(
+			CheckRequest::from_playset_path(
+				fixture.join("dlc_load.json"),
+				Config {
+					steam_root_path: None,
+					paradox_data_path: None,
+					game_path,
+					extra_ignore_patterns: Vec::new(),
+				},
+			),
+			MergeExecuteOptions {
+				out_dir: target_out.to_path_buf(),
+				include_game_base: false,
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				dep_overrides: Vec::new(),
+				resolution_config_path: Some(config_path.clone()),
+				interactive_conflict_handler: None,
+				interactive_resolution_config_path: None,
+				playset_fingerprint: None,
+				provenance: false,
+				retained_paths: None,
 			},
-		),
-		MergeExecuteOptions {
-			out_dir: out_dir.clone(),
-			include_game_base: false,
-			include_base: false,
-			gui_scroll_merge: false,
-			force: false,
-			ignore_replace_path: false,
-			dep_overrides: Vec::new(),
-			resolution_config_path: Some(config_path),
-			interactive_conflict_handler: None,
-			interactive_resolution_config_path: None,
-			playset_fingerprint: None,
-			provenance: false,
-			retained_paths: None,
-		},
-	)
-	.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));
+		)
+	};
+	let result = run(&out_dir)
+		.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));
 
 	assert_eq!(
 		result.exit_code, 0,
@@ -1261,6 +1331,52 @@ religion = sentinel
 			.any(|record| record.action.eq_ignore_ascii_case("kept_existing")),
 		"handler_resolutions must record the keep_existing decision; report: {:#?}",
 		result.report
+	);
+
+	fs::write(
+		&sentinel_path,
+		"# updated between identical merge requests\nreligion = updated_sentinel\n",
+	)
+	.expect("update pre-existing sentinel");
+	let repeated = run(&out_dir)
+		.unwrap_or_else(|err| panic!("repeated fixture eu4_handler_keep_existing failed: {err}"));
+	assert_eq!(repeated.exit_code, 0);
+	assert_eq!(
+		repeated.report.cache_source, None,
+		"keep_existing output is mutable state and must bypass a prior modset cache entry"
+	);
+	let repeated_text = fs::read_to_string(&sentinel_path).expect("read updated sentinel");
+	assert!(
+		repeated_text.contains("religion = updated_sentinel"),
+		"repeated merge must preserve the current output file; got:\n{repeated_text}"
+	);
+
+	let initially_missing_out = temp_dir.path().join("initially-missing-out");
+	let generated_path = initially_missing_out
+		.join("history")
+		.join("countries")
+		.join("TES - Test.txt");
+	let initial = run(&initially_missing_out)
+		.unwrap_or_else(|err| panic!("initial missing-output merge failed: {err}"));
+	assert_eq!(initial.exit_code, 0);
+	assert!(
+		generated_path.is_file(),
+		"first run should generate the missing output"
+	);
+	fs::write(
+		&generated_path,
+		"# edited after the first merge\nreligion = post_merge_edit\n",
+	)
+	.expect("edit first generated output");
+
+	let after_edit = run(&initially_missing_out)
+		.unwrap_or_else(|err| panic!("merge after editing generated output failed: {err}"));
+	assert_eq!(after_edit.exit_code, 0);
+	assert_eq!(after_edit.report.cache_source, None);
+	let after_edit_text = fs::read_to_string(&generated_path).expect("read preserved edit");
+	assert!(
+		after_edit_text.contains("religion = post_merge_edit"),
+		"a current keep_existing rule must bypass cache even when the cached run had no prior file; got:\n{after_edit_text}"
 	);
 }
 
