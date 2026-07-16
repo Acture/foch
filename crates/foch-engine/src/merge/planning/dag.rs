@@ -32,8 +32,8 @@ use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use super::super::conflict_handler::DeferHandler;
-use super::super::patch::{diff_ast, fold_renames};
-use super::super::patch_apply::apply_patches;
+use super::super::patch::{diff_ast_with_nested, fold_renames};
+use super::super::patch_apply::apply_patches_with_nested;
 use super::super::patch_merge::{PatchResolution, merge_patch_sets};
 use crate::workspace::ResolvedFileContributor;
 
@@ -871,8 +871,18 @@ impl BaseResolver {
 					merge_key_source,
 					policies,
 				)?;
-				let patches = fold_renames(diff_ast(&base_ast, parent_ast, merge_key_source));
-				current_statements = apply_patches(&current_statements, &patches, merge_key_source);
+				let patches = fold_renames(diff_ast_with_nested(
+					&base_ast,
+					parent_ast,
+					merge_key_source,
+					policies.nested_merge_key_source,
+				));
+				current_statements = apply_patches_with_nested(
+					&current_statements,
+					&patches,
+					merge_key_source,
+					policies.nested_merge_key_source,
+				);
 				continue;
 			}
 
@@ -890,7 +900,12 @@ impl BaseResolver {
 					merge_key_source,
 					policies,
 				)?;
-				let patches = fold_renames(diff_ast(&base_ast, parent_ast, merge_key_source));
+				let patches = fold_renames(diff_ast_with_nested(
+					&base_ast,
+					parent_ast,
+					merge_key_source,
+					policies.nested_merge_key_source,
+				));
 				mod_patches.push((parent.0.clone(), file_dag.precedence_of(&parent), patches));
 			}
 
@@ -900,8 +915,12 @@ impl BaseResolver {
 				return None;
 			}
 			let resolved_patches = resolved_patches(&merge_result.resolved);
-			current_statements =
-				apply_patches(&current_statements, &resolved_patches, merge_key_source);
+			current_statements = apply_patches_with_nested(
+				&current_statements,
+				&resolved_patches,
+				merge_key_source,
+				policies.nested_merge_key_source,
+			);
 		}
 
 		let template = template_for(file_dag, vanilla, contributors);

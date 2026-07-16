@@ -419,7 +419,7 @@ fn eu4_string_corruption_cornwall_matches_golden() {
 }
 
 #[test]
-fn eu4_minimal_passthrough_copies_single_contributor_files_byte_for_byte() {
+fn eu4_minimal_passthrough_copies_per_path_files_and_materializes_common_module() {
 	let out = run_merge_fixture("eu4_minimal_passthrough");
 	assert_structurally_sound(&out);
 
@@ -427,11 +427,32 @@ fn eu4_minimal_passthrough_copies_single_contributor_files_byte_for_byte() {
 		"common/defines.lua",
 		"localisation/minimal_l_english.yml",
 		"events/foo.txt",
-		"common/cultures/00_cultures.txt",
 	] {
 		assert_output_matches_fixture_input("eu4_minimal_passthrough", "minimal", &out, rel);
 		assert_matches_golden("eu4_minimal_passthrough", &out, rel);
 	}
+
+	let output_path = out
+		.join("common")
+		.join("cultures")
+		.join("zzz_foch_cultures.txt");
+	let output = fs::read_to_string(&output_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", output_path.display()));
+	for fragment in [
+		"minimal_group = {",
+		"graphical_culture = westerngfx",
+		"minimal_culture = {",
+		"primary = AAA",
+		"\"Aedan\"",
+		"\"Mab\"",
+		"\"Fixture\"",
+	] {
+		assert!(
+			output.contains(fragment),
+			"missing {fragment:?} in:\n{output}"
+		);
+	}
+	assert!(!out.join("common/cultures/00_cultures.txt").exists());
 }
 
 fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Path, rel: &str) {
@@ -571,34 +592,41 @@ fn eu4_two_mod_conflict_resolved_via_last_writer_handler() {
 }
 
 #[test]
-fn eu4_estates_preload_without_cwt_policy_keeps_duplicate_keyed_blocks() {
+fn eu4_estates_preload_merges_modifier_branches_by_inner_key() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_cwt_suggested_estates_preload", false);
 	assert_eq!(
 		result.exit_code, 0,
-		"estates_preload merge without cwt policy should still complete; report: {:#?}",
+		"estates_preload merge should complete; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.status,
 		MergeReportStatus::Ready,
-		"estates_preload merge without cwt policy should stay ready; report: {:#?}",
+		"estates_preload merge should stay ready; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.manual_conflict_count, 0,
-		"estates_preload merge without cwt policy should not add manual conflicts; report: {:#?}",
+		"estates_preload merge should not add manual conflicts; report: {:#?}",
 		result.report
 	);
 	let merged_path = out_dir
 		.join("common")
 		.join("estates_preload")
-		.join("test_modifiers.txt");
+		.join("zzz_foch_estates_preload.txt");
 	let merged_text = fs::read_to_string(&merged_path)
 		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
 	assert_eq!(
 		merged_text.matches("key = estate_balance").count(),
-		2,
-		"without cwt_suggested the merge should keep duplicate keyed blocks; got:\n{merged_text}"
+		1,
+		"modifier.key must identify one merged estate_balance body; got:\n{merged_text}"
+	);
+	assert!(merged_text.contains("add_loyalty = 5"), "{merged_text}");
+	assert!(merged_text.contains("add_influence = 10"), "{merged_text}");
+	assert_eq!(
+		merged_text.matches("key = estate_support").count(),
+		1,
+		"unchanged keyed modifiers must not duplicate; got:\n{merged_text}"
 	);
 }
 
@@ -707,7 +735,7 @@ fn eu4_boolean_or_policy_folds_scripted_trigger_into_or_block() {
 	let merged_trigger_path = out_dir
 		.join("common")
 		.join("scripted_triggers")
-		.join("test.txt");
+		.join("zzz_foch_scripted_triggers.txt");
 	let merged_text = fs::read_to_string(&merged_trigger_path)
 		.unwrap_or_else(|err| panic!("read {}: {err}", merged_trigger_path.display()));
 	assert!(
@@ -755,7 +783,7 @@ fn eu4_union_policy_concatenates_scripted_effect_bodies() {
 	let merged_effect_path = out_dir
 		.join("common")
 		.join("scripted_effects")
-		.join("test.txt");
+		.join("zzz_foch_scripted_effects.txt");
 	let merged_text = fs::read_to_string(&merged_effect_path)
 		.unwrap_or_else(|err| panic!("read {}: {err}", merged_effect_path.display()));
 	assert!(
@@ -790,7 +818,7 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 	let merged_effect_path = out_dir
 		.join("common")
 		.join("scripted_effects")
-		.join("test.txt");
+		.join("zzz_foch_scripted_effects.txt");
 	let merged_text = fs::read_to_string(&merged_effect_path)
 		.unwrap_or_else(|err| panic!("read {}: {err}", merged_effect_path.display()));
 
@@ -825,7 +853,7 @@ fn eu4_provenance_annotates_adopted_scripted_effect_and_writes_sidecar() {
 		.iter()
 		.find(|(path, _)| {
 			path.replace('\\', "/")
-				.ends_with("scripted_effects/test.txt")
+				.ends_with("scripted_effects/zzz_foch_scripted_effects.txt")
 		})
 		.map(|(_, defs)| defs)
 		.expect("report has provenance for the merged file");
@@ -863,7 +891,7 @@ fn eu4_merge_trace_records_union_scripted_effect() {
 		.iter()
 		.find(|(path, _)| {
 			path.replace('\\', "/")
-				.ends_with("scripted_effects/test.txt")
+				.ends_with("scripted_effects/zzz_foch_scripted_effects.txt")
 		})
 		.map(|(_, defs)| defs)
 		.expect("report has merge trace for the merged file");
@@ -1042,6 +1070,35 @@ fn eu4_governments_cross_file_module_emits_union_once() {
 	)
 	.expect("reload generated module using runtime policy");
 	assert_eq!(runtime_view.ast.statements, parsed_output.ast.statements);
+}
+
+#[test]
+fn eu4_institutions_cross_file_module_overlays_without_replace_path() {
+	let (result, out_dir) = run_merge_for_fixture("eu4_institutions_cross_file_overlay", false);
+	assert_eq!(
+		result.exit_code, 0,
+		"cross-file institutions merge should exit 0; report: {:#?}",
+		result.report
+	);
+	assert_eq!(result.report.status, MergeReportStatus::Ready);
+
+	let merged_path = out_dir
+		.join("common")
+		.join("institutions")
+		.join("zzz_foch_institutions.txt");
+	let merged_text = fs::read_to_string(&merged_path)
+		.unwrap_or_else(|err| panic!("read {}: {err}", merged_path.display()));
+	assert!(merged_text.contains("renaissance = {"), "{merged_text}");
+	assert!(merged_text.contains("printing_press = {"), "{merged_text}");
+
+	let generated_descriptor =
+		load_descriptor(&out_dir.join("descriptor.mod")).expect("parse generated descriptor");
+	assert!(
+		!generated_descriptor
+			.replace_path
+			.iter()
+			.any(|path| path == "common/institutions")
+	);
 }
 
 #[test]

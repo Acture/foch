@@ -23,7 +23,7 @@ use foch_engine::{
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
-	GameProfile, MergeKeySource, ModuleNameRule,
+	GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch_language::analyzer::eu4_profile::eu4_profile;
@@ -198,8 +198,8 @@ pub fn scoring_reference_units(reference_paths: &[String]) -> Vec<String> {
 	for rel in reference_paths {
 		if let Some(policy) = definition_module_policy_for_path(rel) {
 			module_units
-				.entry(policy.replacement_prefix)
-				.or_insert(policy.full_output_path);
+				.entry(policy.namespace_prefix)
+				.or_insert(policy.output_path);
 		} else {
 			units.insert(rel.clone());
 		}
@@ -752,8 +752,9 @@ pub fn score_file_with_cache_and_basegame(
 		.collect::<Vec<_>>();
 	let source_count = source_mod_ids.len();
 	let multi_source = source_count >= 2;
-	let foch_path = request.out_dir.join(rel);
-	let foch_emitted = foch_path.is_file();
+	let emitted_path = request.out_dir.join(rel);
+	let foch_emitted = emitted_path.is_file();
+	let runtime_path = effective_runtime_file(request, basegame_root);
 	let foch_conflict = request.conflict_paths.contains(rel);
 
 	let mut sim = None;
@@ -761,23 +762,23 @@ pub fn score_file_with_cache_and_basegame(
 	let mut ast_match = None;
 	let mut policy_equivalent = false;
 	let mut dropped: Vec<String> = Vec::new();
-	if foch_emitted {
-		let fk = cache.top_level_keys(&foch_path);
+	if let Some(foch_path) = &runtime_path {
+		let fk = cache.top_level_keys(foch_path);
 		let ck = cache.top_level_keys(&compatch_path);
 		keys_match = Some(fk == ck);
-		ast_match = ast_match_for_path_cached(cache, rel, &foch_path, &compatch_path);
+		ast_match = ast_match_for_path_cached(cache, rel, foch_path, &compatch_path);
 		if ast_match == Some(true) {
-			sim = cache.rounded_similarity(&foch_path, &compatch_path);
+			sim = cache.rounded_similarity(foch_path, &compatch_path);
 		}
 		policy_equivalent = ast_match == Some(false)
-			&& accepted_equivalent_for_path(cache, rel, &foch_path, &compatch_path);
+			&& accepted_equivalent_for_path(cache, rel, foch_path, &compatch_path);
 	}
-	if foch_emitted {
+	if let Some(foch_path) = &runtime_path {
 		let mut source_keys = HashSet::new();
 		for source in request.source_mods {
 			source_keys.extend(cache.top_level_keys(&source.root.join(rel)));
 		}
-		let foch_keys = cache.top_level_keys(&foch_path);
+		let foch_keys = cache.top_level_keys(foch_path);
 		dropped = source_keys.difference(&foch_keys).cloned().collect();
 		dropped.sort();
 	}
@@ -793,7 +794,7 @@ pub fn score_file_with_cache_and_basegame(
 			Verdict::AcceptedEquivalent,
 			Some("gfx_order_insensitive_ast_equivalent".to_string()),
 		)
-	} else if !foch_emitted {
+	} else if runtime_path.is_none() {
 		(Verdict::NotEmitted, None)
 	} else if let Some(adjudication) = request.adjudications.get(request.compatch_id, rel) {
 		match adjudication.verdict {
@@ -827,14 +828,41 @@ pub fn score_file_with_cache_and_basegame(
 	}
 }
 
+fn effective_runtime_file(
+	request: &ScoreFileRequest<'_>,
+	basegame_root: Option<&Path>,
+) -> Option<PathBuf> {
+	let output = request.out_dir.join(request.rel);
+	if output.is_file() {
+		return Some(output);
+	}
+	if layer_replaces_module(request.out_dir, request.rel) == Some(true) {
+		return None;
+	}
+
+	for source in request.source_mods.iter().rev() {
+		let candidate = source.root.join(request.rel);
+		if candidate.is_file() {
+			return Some(candidate);
+		}
+		if layer_replaces_module(source.root, request.rel) == Some(true) {
+			return None;
+		}
+	}
+
+	basegame_root
+		.map(|root| root.join(request.rel))
+		.filter(|path| path.is_file())
+}
+
 fn score_definition_module(
 	request: &ScoreFileRequest<'_>,
 	cache: &mut ScoreCache,
 	policy: DefinitionModulePolicy,
 	basegame_root: Option<&Path>,
 ) -> FileScore {
-	let rel = policy.full_output_path;
-	let prefix = policy.replacement_prefix;
+	let rel = policy.output_path;
+	let prefix = policy.namespace_prefix;
 	let mut human_roots = Vec::with_capacity(request.source_mods.len() + 2);
 	let mut foch_roots = Vec::with_capacity(request.source_mods.len() + 2);
 	if let Some(root) = basegame_root {
@@ -870,6 +898,10 @@ fn score_definition_module(
 		keys_match = Some(dropped_keys.is_empty() && !has_extra_keys);
 		ast_match = Some(human == foch);
 	}
+	let adjudication = request
+		.adjudications
+		.get(request.compatch_id, request.rel)
+		.or_else(|| request.adjudications.get(request.compatch_id, rel));
 
 	let (verdict, acceptance_reason) = if foch_conflict {
 		(Verdict::ConflictWithheld, None)
@@ -879,6 +911,14 @@ fn score_definition_module(
 				Verdict::AcceptedEquivalent,
 				Some("same_family_module_equivalent".to_string()),
 			),
+			(Some(_), Some(_)) if adjudication.is_some() => {
+				let adjudication = adjudication.expect("guarded adjudication lookup");
+				match adjudication.verdict {
+					AcceptedAdjudicationVerdict::AcceptedBetter => {
+						(Verdict::AcceptedBetter, Some(adjudication.reason.clone()))
+					}
+				}
+			}
 			(Some(_), Some(_)) if !dropped_keys.is_empty() => (Verdict::DropsContent, None),
 			(Some(_), Some(_)) if has_extra_keys => (Verdict::DivergesStructure, None),
 			(Some(_), Some(_)) => (Verdict::DivergesAst, None),
@@ -1011,10 +1051,14 @@ fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor>
 	if !matches!(descriptor.matcher, ContentFamilyPathMatcher::Prefix(_)) {
 		return None;
 	}
-	if !matches!(descriptor.module_name_rule, ModuleNameRule::Static(_)) {
-		return None;
-	}
-	if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
+	if !matches!(
+		descriptor.merge_key_source,
+		Some(
+			MergeKeySource::AssignmentKey
+				| MergeKeySource::FieldValue(_)
+				| MergeKeySource::ChildFieldValue { .. }
+		)
+	) {
 		return None;
 	}
 	if !matches!(
@@ -1028,7 +1072,7 @@ fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor>
 
 fn family_prefix(descriptor: &ContentFamilyDescriptor) -> Option<&'static str> {
 	match descriptor.load_policy {
-		ContentLoadPolicy::DefinitionModule(policy) => Some(policy.replacement_prefix),
+		ContentLoadPolicy::DefinitionModule(policy) => Some(policy.namespace_prefix),
 		ContentLoadPolicy::PerPath => None,
 	}
 }
@@ -1045,7 +1089,7 @@ fn definition_module_policy_for_prefix(prefix: &str) -> Option<DefinitionModuleP
 	let probe = format!("{}/__foch_module__.txt", prefix.trim_end_matches('/'));
 	let descriptor = eu4_profile().classify_content_family(Path::new(&probe))?;
 	match descriptor.load_policy {
-		ContentLoadPolicy::DefinitionModule(policy) if policy.replacement_prefix == prefix => {
+		ContentLoadPolicy::DefinitionModule(policy) if policy.namespace_prefix == prefix => {
 			Some(policy)
 		}
 		ContentLoadPolicy::DefinitionModule(_) | ContentLoadPolicy::PerPath => None,
@@ -1057,6 +1101,7 @@ fn canonical_layered_module_view_uncached(
 	family_prefix: &str,
 ) -> Option<CanonicalModuleMap> {
 	let policy = definition_module_policy_for_prefix(family_prefix)?;
+	let merge_key_source = definition_module_merge_key_for_prefix(family_prefix)?;
 	let mut visible_files = BTreeMap::<String, (PathBuf, PathBuf)>::new();
 	for root in roots {
 		if layer_replaces_module(root, family_prefix)? {
@@ -1082,9 +1127,15 @@ fn canonical_layered_module_view_uncached(
 			.ast
 			.statements
 			.iter()
-			.filter_map(canonical_module_assignment)
+			.filter_map(|statement| canonical_module_assignment(statement, merge_key_source))
 			.collect(),
 	)
+}
+
+fn definition_module_merge_key_for_prefix(prefix: &str) -> Option<MergeKeySource> {
+	let probe = format!("{}/__foch_module__.txt", prefix.trim_end_matches('/'));
+	let descriptor = eligible_module_family(&probe)?;
+	descriptor.merge_key_source
 }
 
 fn layer_replaces_module(root: &Path, family_prefix: &str) -> Option<bool> {
@@ -1196,17 +1247,53 @@ fn relative_module_path(root: &Path, path: &Path) -> String {
 		.replace('\\', "/")
 }
 
-fn canonical_module_assignment(statement: &AstStatement) -> Option<(String, CanonicalStatement)> {
+fn canonical_module_assignment(
+	statement: &AstStatement,
+	merge_key_source: MergeKeySource,
+) -> Option<(String, CanonicalStatement)> {
 	let AstStatement::Assignment { key, value, .. } = statement else {
 		return None;
 	};
+	let merge_key = match merge_key_source {
+		MergeKeySource::AssignmentKey => key.clone(),
+		MergeKeySource::FieldValue(field) => scalar_field_value(value, field)?,
+		MergeKeySource::ChildFieldValue {
+			child_key_field,
+			child_types,
+		} => {
+			if child_types.is_empty() || child_types.contains(&key.as_str()) {
+				scalar_field_value(value, child_key_field)
+					.map(|field_value| format!("{key}:{field_value}"))
+					.unwrap_or_else(|| key.clone())
+			} else {
+				key.clone()
+			}
+		}
+		MergeKeySource::ContainerChildKey
+		| MergeKeySource::ContainerChildFieldValue { .. }
+		| MergeKeySource::LeafPath => return None,
+	};
 	Some((
-		key.clone(),
+		merge_key,
 		CanonicalStatement::Assignment {
 			key: key.clone(),
 			value: canonical_value(value, AstOrderingPolicy::OrderInsensitive),
 		},
 	))
+}
+
+fn scalar_field_value(value: &AstValue, field: &str) -> Option<String> {
+	let AstValue::Block { items, .. } = value else {
+		return None;
+	};
+	items.iter().find_map(|statement| match statement {
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Scalar { value, .. },
+			..
+		} if key == field => Some(value.as_text()),
+		_ => None,
+	})
 }
 
 fn ast_match_for_path_with_ordering_cached(
@@ -2265,6 +2352,87 @@ mod classify_tests {
 	}
 
 	#[test]
+	fn score_file_uses_highest_precedence_source_when_output_is_omitted() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "interface/frontend.gui";
+		write_file(mod_a.path(), rel, "guiTypes = { active = no }\n");
+		write_file(mod_b.path(), rel, "guiTypes = { active = yes }\n");
+		write_file(compatch.path(), rel, "guiTypes = { active = yes }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert!(!score.foch_emitted);
+		assert_eq!(score.ast_match, Some(true));
+		assert_eq!(score.verdict, Verdict::MatchesHuman);
+	}
+
+	#[test]
+	fn score_file_falls_back_to_basegame_when_output_and_sources_are_omitted() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let basegame = tempfile::tempdir().unwrap();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "interface/frontend.gui";
+		write_file(basegame.path(), rel, "guiTypes = { active = yes }\n");
+		write_file(compatch.path(), rel, "guiTypes = { active = yes }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+		let request = ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		};
+
+		let score = score_file_with_basegame(&request, Some(basegame.path()));
+
+		assert!(!score.foch_emitted);
+		assert_eq!(score.source_count, 0);
+		assert_eq!(score.ast_match, Some(true));
+		assert_eq!(score.verdict, Verdict::MatchesHuman);
+	}
+
+	#[test]
+	fn score_file_respects_replace_path_when_output_is_omitted() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		let rel = "interface/frontend.gui";
+		write_file(mod_a.path(), rel, "guiTypes = { active = yes }\n");
+		write_file(
+			mod_b.path(),
+			"descriptor.mod",
+			"name=\"replacement\"\nreplace_path=\"interface\"\n",
+		);
+		write_file(compatch.path(), rel, "guiTypes = { active = yes }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			compatch_id: "case",
+			rel,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+			adjudications: &Adjudications::default(),
+		});
+
+		assert!(!score.foch_emitted);
+		assert_eq!(score.ast_match, None);
+		assert_eq!(score.verdict, Verdict::NotEmitted);
+	}
+
+	#[test]
 	fn score_file_accepts_exact_definition_module_split_across_filenames() {
 		let (mod_a, mod_b, compatch) = make_dirs();
 		let out = tempfile::tempdir().unwrap();
@@ -2603,6 +2771,23 @@ mod classify_tests {
 	}
 
 	#[test]
+	fn canonical_module_view_keys_repeated_wrappers_by_inner_field() {
+		let root = tempfile::tempdir().unwrap();
+		write_file(
+			root.path(),
+			"common/estates_preload/modifiers.txt",
+			"modifier = { key = estate_balance add_loyalty = 5 }\n\
+			 modifier = { key = estate_support add_influence = 2 }\n",
+		);
+
+		let view = canonical_module_view_uncached(root.path(), "common/estates_preload")
+			.expect("estates preload module view");
+		assert_eq!(view.len(), 2);
+		assert!(view.contains_key("modifier:estate_balance"));
+		assert!(view.contains_key("modifier:estate_support"));
+	}
+
+	#[test]
 	fn module_file_collection_propagates_walk_errors() {
 		let root = tempfile::tempdir().unwrap();
 		let missing = root.path().join("missing-module-directory");
@@ -2741,6 +2926,11 @@ mod classify_tests {
 	#[test]
 	fn module_family_eligibility_keeps_path_sensitive_roots_out() {
 		assert!(eligible_module_family("common/governments/00_governments.txt").is_some());
+		assert!(eligible_module_family("common/estates_preload/modifiers.txt").is_some());
+		assert!(eligible_module_family("common/defines/example.lua").is_none());
+		assert!(eligible_module_family("common/interface/example.gui").is_none());
+		assert!(eligible_module_family("common/countries/FRA.txt").is_none());
+		assert!(eligible_module_family("common/units/infantry.txt").is_none());
 		assert!(eligible_module_family("interface/example.gui").is_none());
 		assert!(eligible_module_family("history/countries/FRA - France.txt").is_none());
 		assert!(eligible_module_family("common/technology.txt").is_none());
@@ -2754,7 +2944,11 @@ mod classify_tests {
 		write_file(mod_a.path(), rel, "trigger = { tag = FRA }\n");
 		write_file(mod_b.path(), rel, "trigger = { tag = FRA }\n");
 		write_file(compatch.path(), rel, "trigger = { tag = FRA }\n");
-		write_file(out.path(), rel, "trigger = { tag = ENG }\n");
+		write_file(
+			out.path(),
+			"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+			"trigger = { tag = ENG }\n",
+		);
 		let adjudications = Adjudications::from_json(
 			r#"[{
 				"compatch_id": "case",

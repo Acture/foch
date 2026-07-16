@@ -6,6 +6,7 @@
 
 mod common;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use foch_merge_quality::corpus::{Case, Corpus};
@@ -30,6 +31,14 @@ fn case_3630876155() -> Case {
 	}
 }
 
+fn no_game_base_expected_verdicts() -> BTreeMap<String, usize> {
+	BTreeMap::from([
+		("accepted_equivalent".to_string(), 2),
+		("diverges_ast".to_string(), 3),
+		("diverges_structure".to_string(), 1),
+	])
+}
+
 fn write_file(root: &Path, relative: &str, content: &str) {
 	let path = root.join(relative);
 	std::fs::create_dir_all(path.parent().expect("fixture file parent"))
@@ -39,7 +48,8 @@ fn write_file(root: &Path, relative: &str, content: &str) {
 
 // ------------------------------------------------------------------ Test 1: score_case
 
-/// Validated reference output: 7 overlapping files, verdicts exactly as below.
+/// Validated reference output: 6 overlapping logical units after same-family
+/// definition files are collapsed into one module-scoped comparison.
 #[test]
 fn score_case_verdict_tally() {
 	let ws = workshop_3630876155();
@@ -53,13 +63,14 @@ fn score_case_verdict_tally() {
 		result.ground_truth_files,
 		result.all_ground_truth_verdicts.values().sum::<usize>()
 	);
-	assert_eq!(result.multi_source_files, 7, "multi-source file count");
+	assert_eq!(result.multi_source_files, 6, "multi-source unit count");
 
-	let expected = common::expected_verdicts()
-		.remove("3630876155")
-		.expect("expected verdicts for fixture compatch");
-	assert_eq!(result.multi_source_verdicts, expected, "verdict tally");
-	assert_eq!(result.accepted_multi_source_files, 4, "accepted tally");
+	assert_eq!(
+		result.multi_source_verdicts,
+		no_game_base_expected_verdicts(),
+		"verdict tally"
+	);
+	assert_eq!(result.accepted_multi_source_files, 2, "accepted tally");
 }
 
 #[test]
@@ -157,17 +168,17 @@ fn run_writes_artifacts() {
 
 	assert_eq!(records.len(), 1);
 	assert_eq!(records[0].compatch_id, "3630876155");
-	assert_eq!(records[0].multi_source_files, 7);
+	assert_eq!(records[0].multi_source_files, 6);
 	assert!(
 		records[0].timings.total_ms >= records[0].timings.merge_ms,
 		"total timing covers merge timing"
 	);
 
-	let expected = common::expected_verdicts()
-		.remove("3630876155")
-		.expect("expected verdicts for fixture compatch");
-	assert_eq!(records[0].multi_source_verdicts, expected);
-	assert_eq!(records[0].accepted_multi_source_files, 4);
+	assert_eq!(
+		records[0].multi_source_verdicts,
+		no_game_base_expected_verdicts()
+	);
+	assert_eq!(records[0].accepted_multi_source_files, 2);
 
 	// report.md must be non-empty
 	let report_md =

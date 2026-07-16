@@ -8,8 +8,10 @@ use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy,
 	MergePlanTarget, MergeUnitId,
 };
-use foch_language::analyzer::content_family::{ContentLoadPolicy, DefinitionModulePolicy};
-use foch_language::analyzer::content_family::{GameProfile, module_name_for_descriptor};
+use foch_language::analyzer::content_family::GameProfile;
+use foch_language::analyzer::content_family::{
+	ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
+};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::semantic_index::parse_script_file;
 use std::collections::BTreeMap;
@@ -84,7 +86,12 @@ fn build_merge_units(
 		};
 		let merge_unit = MergeUnitId {
 			family_id: descriptor.id.as_str().to_string(),
-			module_name: module_name_for_descriptor(Path::new(path), descriptor),
+			module_name: policy
+				.namespace_prefix
+				.rsplit('/')
+				.next()
+				.unwrap_or(descriptor.id.as_str())
+				.to_string(),
 		};
 		modules
 			.entry(merge_unit)
@@ -138,8 +145,9 @@ fn classify_module_entry(
 		target: MergePlanTarget::Module {
 			id: merge_unit,
 			input_paths,
-			output_path: policy.full_output_path.to_string(),
-			replace_prefix: policy.replacement_prefix.to_string(),
+			output_path: policy.output_path.to_string(),
+			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace)
+				.then(|| policy.namespace_prefix.to_string()),
 		},
 		strategy,
 		contributors,

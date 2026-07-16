@@ -13,7 +13,7 @@ use crate::cache::{
 
 // SemVer identity for cached merge output. Bump patch for output bug fixes,
 // minor for additive semantics, and major for incompatible cache payloads.
-const MODSET_CACHE_VERSION: &str = "12.0.3";
+const MODSET_CACHE_VERSION: &str = "13.0.0";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{

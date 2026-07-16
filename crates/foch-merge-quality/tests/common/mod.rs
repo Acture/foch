@@ -45,6 +45,10 @@ pub fn cached_base_aware_corpus_root() -> PathBuf {
 		.clone()
 }
 
+#[allow(
+	dead_code,
+	reason = "used only by the base-aware integration-test binary"
+)]
 pub fn expected_verdicts() -> BTreeMap<String, BTreeMap<String, usize>> {
 	let expected_text =
 		fs::read_to_string(fixtures_root().join("expected.json")).expect("read expected.json");

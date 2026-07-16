@@ -108,7 +108,7 @@ pub fn load_definition_module(
 	inputs: &[DefinitionModuleInput<'_>],
 	policy: DefinitionModulePolicy,
 ) -> Result<CanonicalDefinitionModule, DefinitionModuleLoadError> {
-	let replacement_prefix = normalize_relative_path(Path::new(policy.replacement_prefix))?;
+	let namespace_prefix = normalize_relative_path(Path::new(policy.namespace_prefix))?;
 	let mut ordered_inputs = inputs
 		.iter()
 		.map(|input| {
@@ -120,10 +120,10 @@ pub fn load_definition_module(
 					file_relative_path,
 				});
 			}
-			if !path_is_within_prefix(&input_path, &replacement_prefix) {
+			if !path_is_within_prefix(&input_path, &namespace_prefix) {
 				return Err(DefinitionModuleLoadError::OutsideReplacementPrefix {
 					path: input_path,
-					replacement_prefix: replacement_prefix.clone(),
+					replacement_prefix: namespace_prefix.clone(),
 				});
 			}
 			Ok(NormalizedInput {
@@ -199,6 +199,7 @@ pub fn load_definition_module(
 						});
 					}
 				}
+				DuplicateDefinitionPolicy::PreserveAll => {}
 			}
 
 			let output_statement_index = output_statements.len();
@@ -215,7 +216,7 @@ pub fn load_definition_module(
 
 	Ok(CanonicalDefinitionModule {
 		ast: AstFile {
-			path: PathBuf::from(policy.full_output_path),
+			path: PathBuf::from(policy.output_path),
 			statements: output_statements.into_iter().flatten().collect(),
 		},
 		definition_sources: winners
@@ -292,7 +293,8 @@ mod tests {
 	};
 	use crate::analyzer::content_family::CwtType;
 	use crate::analyzer::content_family::{
-		DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModulePolicy, DuplicateDefinitionPolicy,
+		DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
+		DuplicateDefinitionPolicy,
 	};
 	use crate::analyzer::parser::{
 		AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_content,
@@ -305,9 +307,15 @@ mod tests {
 		definition_key: DefinitionKeyPolicy::AssignmentKey,
 		file_order: DefinitionFileOrder::NormalizedPathAscending,
 		duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-		full_output_path: "common/governments/00_foch_governments.txt",
-		replacement_prefix: "common/governments",
+		output_path: "common/governments/00_foch_governments.txt",
+		namespace_prefix: "common/governments",
+		output_mode: DefinitionModuleOutput::ReplaceNamespace,
 		policy_version: 1,
+	};
+
+	const PRESERVE_DUPLICATES_POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
+		duplicate_definitions: DuplicateDefinitionPolicy::PreserveAll,
+		..POLICY
 	};
 
 	fn parsed_file(path: impl AsRef<Path>, source: &str) -> ParsedScriptFile {
@@ -401,7 +409,7 @@ mod tests {
 			assignment_keys(&loaded.ast),
 			vec!["a_government", "z_government"]
 		);
-		assert_eq!(loaded.ast.path, PathBuf::from(POLICY.full_output_path));
+		assert_eq!(loaded.ast.path, PathBuf::from(POLICY.output_path));
 	}
 
 	#[test]
@@ -524,6 +532,25 @@ mod tests {
 		assert_eq!(assignment_keys(&loaded.ast), vec!["shared"]);
 		assert_eq!(marker_for(&loaded.ast, "shared"), "second");
 		assert_eq!(loaded.definition_sources["shared"].statement_ordinal, 1);
+	}
+
+	#[test]
+	fn preserve_all_keeps_repeated_wrapper_assignments_in_source_order() {
+		let path = PathBuf::from("common/governments/definitions.txt");
+		let file = parsed_file(
+			&path,
+			"modifier = { marker = first }\nmodifier = { marker = second }",
+		);
+
+		let loaded = load_definition_module(
+			&[DefinitionModuleInput::new(&path, &file)],
+			PRESERVE_DUPLICATES_POLICY,
+		)
+		.expect("module should preserve repeated wrappers");
+
+		assert_eq!(assignment_keys(&loaded.ast), vec!["modifier", "modifier"]);
+		assert!(loaded.duplicate_diagnostics.is_empty());
+		assert_eq!(loaded.definition_sources["modifier"].statement_ordinal, 1);
 	}
 
 	#[test]

@@ -70,32 +70,28 @@ fn write_script_file(mod_root: &Path, relative_path: &str, content: &str) {
 	fs::write(path, content).expect("write script file");
 }
 
-/// Stage a structural-merge conflict: both mods contribute the same scripted
-/// triggers file, but mod_b's content is malformed Clausewitz so
+/// Stage a structural-merge conflict: both mods contribute the same event
+/// file, but mod_b's content is malformed Clausewitz so
 /// validate_structural_merge_inputs flags it and the merge plan downgrades the
 /// path to MergePlanStrategy::ManualConflict.
-const STRUCTURAL_CONFLICT_PATH: &str = "common/scripted_triggers/conflict.txt";
+const STRUCTURAL_CONFLICT_PATH: &str = "events/conflict.txt";
 
 fn stage_structural_manual_conflict(mod_a: &Path, mod_b: &Path) {
-	let dir_a = mod_a.join("common").join("scripted_triggers");
-	let dir_b = mod_b.join("common").join("scripted_triggers");
-	fs::create_dir_all(&dir_a).expect("create scripted_triggers dir (a)");
-	fs::create_dir_all(&dir_b).expect("create scripted_triggers dir (b)");
-	fs::write(
-		dir_a.join("conflict.txt"),
-		"my_trigger = { always = yes }\n",
-	)
-	.expect("write valid scripted_trigger");
+	write_script_file(
+		mod_a,
+		STRUCTURAL_CONFLICT_PATH,
+		"country_event = { id = test.1 }\n",
+	);
 	// Malformed Clausewitz: produces a parse diagnostic ("无法解析的语句起始 token"),
 	// which downgrades the structural merge to ManualConflict.
-	fs::write(
-		dir_b.join("conflict.txt"),
+	write_script_file(
+		mod_b,
+		STRUCTURAL_CONFLICT_PATH,
 		"name { = invalid syntax with unclosed\nbraces\n",
-	)
-	.expect("write malformed scripted_trigger");
+	);
 }
 
-const DAG_CONFLICT_PATH: &str = "common/ideas/conflict.txt";
+const DAG_CONFLICT_PATH: &str = "history/countries/conflict.txt";
 
 fn idea_file(cost: &str) -> String {
 	format!("group = {{\n\tidea = {{\n\t\tcost = {cost}\n\t}}\n}}\n")
@@ -420,13 +416,13 @@ fn target_temp_dir() -> TempDir {
 fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 	let fixture = CacheLayerFixture {
 		mods: root.join("mods").join("mods-entry.rkyv"),
-		diffs: root.join("diffs").join("diffs-entry.bin"),
-		dag_base: root.join("dag-base").join("dag-base-entry.bin"),
+		diffs: root.join("diffs").join("v6").join("diffs-entry.bin"),
+		dag_base: root.join("dag-base").join("v12").join("dag-base-entry.bin"),
 		modset_tarball: root.join("modsets").join("modset-entry.tar.gz"),
 		modset_report: root.join("modsets").join("modset-entry.report.json"),
 		parse: root
 			.join("parse")
-			.join("v8")
+			.join("v9")
 			.join("aa")
 			.join("bb")
 			.join("parse-entry.json"),
@@ -1498,9 +1494,11 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 		.as_array()
 		.expect("paths array")
 		.iter()
-		.find(|item| item["target"]["path"] == "common/scripted_effects/effects.txt")
+		.find(|item| {
+			item["target"]["output_path"] == "common/scripted_effects/zzz_foch_scripted_effects.txt"
+		})
 		.expect("matching entry");
-	assert_eq!(entry["target"]["kind"], "file");
+	assert_eq!(entry["target"]["kind"], "module");
 	assert_eq!(entry["contributors"][0]["is_base_game"], true);
 	assert_eq!(entry["winner"]["mod_id"], "7501");
 	assert_eq!(entry["generated"], false);
@@ -1581,7 +1579,9 @@ fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
 	);
 	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
 	assert!(stdout.contains("status: READY"));
-	let output = fs::read_to_string(out_dir.join(relative_path)).expect("read merged output");
+	let output =
+		fs::read_to_string(out_dir.join("common/scripted_effects/zzz_foch_scripted_effects.txt"))
+			.expect("read merged output");
 	assert!(output.contains("effect_a"), "output: {output}");
 	assert!(output.contains("effect_b"), "output: {output}");
 

@@ -236,6 +236,13 @@ impl<'a> Lexer<'a> {
 					if next == b'"' {
 						break;
 					}
+					if next == b'\\' {
+						self.advance_byte();
+						if self.peek_byte().is_some() {
+							self.advance_byte();
+						}
+						continue;
+					}
 					self.advance_byte();
 				}
 				let text = self.source[text_start..self.index].to_string();
@@ -869,6 +876,49 @@ mod tests {
 			panic!("expected block value");
 		};
 		assert!(!items.is_empty());
+	}
+
+	#[test]
+	fn parser_keeps_escaped_quotes_inside_multiline_strings() {
+		let parsed = parse_clausewitz_content(
+			PathBuf::from("scripted_effects.txt"),
+			r#"event_wrapper = {
+	effect = "
+		if = {
+			limit = { has_dlc = \"Mandate of Heaven\" }
+		}
+	"
+}
+next_effect = { add_prestige = 1 }
+"#,
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 2, "{:#?}", parsed.ast);
+		assert!(
+			parsed
+				.ast
+				.statements
+				.iter()
+				.all(|statement| matches!(statement, AstStatement::Assignment { .. }))
+		);
+
+		let AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} = &parsed.ast.statements[0]
+		else {
+			panic!("expected event wrapper block");
+		};
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Scalar { value, .. },
+			..
+		} = &items[0]
+		else {
+			panic!("expected multiline effect string");
+		};
+		assert_eq!(key, "effect");
+		assert!(value.as_text().contains(r#"\"Mandate of Heaven\""#));
 	}
 
 	#[test]

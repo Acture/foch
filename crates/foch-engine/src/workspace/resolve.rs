@@ -1463,10 +1463,10 @@ path = "governments_mod"
 	#[test]
 	fn retained_non_module_path_stays_exact() {
 		let available = BTreeSet::from([
-			"common/scripted_effects/one.txt".to_string(),
-			"common/scripted_effects/two.txt".to_string(),
+			"common/countries/France.txt".to_string(),
+			"common/countries/England.txt".to_string(),
 		]);
-		let requested = BTreeSet::from(["common/scripted_effects/one.txt".to_string()]);
+		let requested = BTreeSet::from(["common/countries/France.txt".to_string()]);
 
 		let effective = expand_retained_paths_for_game(
 			&Game::EuropaUniversalis4,

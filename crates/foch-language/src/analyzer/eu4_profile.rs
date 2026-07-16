@@ -2,8 +2,8 @@ use super::content_family::{
 	BlockMergePolicy, BlockPatchPolicy, BooleanMergePolicy, ConflictPolicy,
 	ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyPathMatcher,
 	ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy, DefinitionFileOrder,
-	DefinitionKeyPolicy, DefinitionModulePolicy, DuplicateDefinitionPolicy, GameId, GameProfile,
-	ListMergePolicy, MergeKeySource, ModuleNameRule, ScalarMergePolicy,
+	DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
+	GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule, ScalarMergePolicy,
 };
 use super::eu4_builtin::builtin_base_scope_names;
 use foch_core::model::{MaybeScope, ScopeType, base_scope};
@@ -36,10 +36,50 @@ const EU4_GOVERNMENTS_MODULE_POLICY: DefinitionModulePolicy = DefinitionModulePo
 	definition_key: DefinitionKeyPolicy::AssignmentKey,
 	file_order: DefinitionFileOrder::NormalizedPathAscending,
 	duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-	full_output_path: "common/governments/zzz_foch_governments.txt",
-	replacement_prefix: "common/governments",
+	output_path: "common/governments/zzz_foch_governments.txt",
+	namespace_prefix: "common/governments",
+	output_mode: DefinitionModuleOutput::ReplaceNamespace,
 	policy_version: 1,
 };
+
+fn enable_common_definition_modules(families: &mut [ContentFamilyDescriptor]) {
+	for descriptor in families {
+		if descriptor.load_policy != ContentLoadPolicy::PerPath
+			|| !matches!(
+				descriptor.merge_key_source,
+				Some(
+					MergeKeySource::AssignmentKey
+						| MergeKeySource::FieldValue(_)
+						| MergeKeySource::ChildFieldValue { .. }
+				)
+			) {
+			continue;
+		}
+		let ContentFamilyPathMatcher::Prefix(prefix) = descriptor.matcher else {
+			continue;
+		};
+		if !prefix.starts_with("common/") || !prefix.ends_with('/') {
+			continue;
+		}
+		if matches!(prefix, "common/countries/" | "common/units/") {
+			continue;
+		}
+
+		let namespace_prefix = prefix.trim_end_matches('/');
+		let module_slug = namespace_prefix.rsplit('/').next().unwrap_or("definitions");
+		let output_path =
+			Box::leak(format!("{namespace_prefix}/zzz_foch_{module_slug}.txt").into_boxed_str());
+		descriptor.load_policy = ContentLoadPolicy::DefinitionModule(DefinitionModulePolicy {
+			definition_key: DefinitionKeyPolicy::AssignmentKey,
+			file_order: DefinitionFileOrder::NormalizedPathAscending,
+			duplicate_definitions: DuplicateDefinitionPolicy::PreserveAll,
+			output_path,
+			namespace_prefix,
+			output_mode: DefinitionModuleOutput::Overlay,
+			policy_version: 2,
+		});
+	}
+}
 
 /// Safe for EU4 families whose definitions live in a global runtime namespace:
 /// event ids, decision ids, scripted effect names, and scripted trigger names
@@ -154,7 +194,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 	static EU4_CONTENT_FAMILIES: OnceLock<Box<[ContentFamilyDescriptor]>> = OnceLock::new();
 	ensure_base_scopes_initialized();
 	EU4_CONTENT_FAMILIES.get_or_init(|| {
-		vec![
+		let mut families = vec![
 			ContentFamilyDescriptor::prefix(
 				"events/common/new_diplomatic_actions",
 				"events/common/new_diplomatic_actions/",
@@ -189,10 +229,9 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.kind(CwtType::new("decisions"))
 				.module_name(ModuleNameRule::Static("decisions"))
 				.scope(scope(base_scope::country()))
-				// Safe: decision ids are global within the decisions namespace, not file-bound;
-				// omitting a vanilla-equivalent generated decision leaves the vanilla decision active.
+				// Cross-file dedup is safe because decision ids are global. Per-entry
+				// dedup is not: generated output reuses the source path and shadows vanilla.
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
-				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::ContainerChildKey)
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.boolean_policy(BooleanMergePolicy::And)
@@ -201,11 +240,14 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.kind(CwtType::new("events"))
 				.module_name(ModuleNameRule::Static("events"))
 				.scope(unknown_scope())
-				// Safe: event ids are global across event files; path does not affect identity;
-				// omitting a vanilla-equivalent generated event leaves the vanilla event active.
+				// Cross-file dedup is safe because event ids are global. Per-entry
+				// dedup is not: generated output reuses the source path and shadows vanilla.
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
-				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::FieldValue("id"))
+				.nested_merge_key(MergeKeySource::ChildFieldValue {
+					child_key_field: "name",
+					child_types: &["option"],
+				})
 				.edit_wins_over_remove()
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::UnionWithRename)
@@ -215,10 +257,9 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.kind(CwtType::new("decisions"))
 				.module_name(ModuleNameRule::Static("decisions"))
 				.scope(scope(base_scope::country()))
-				// Safe: decision ids are global within the decisions namespace, not file-bound;
-				// omitting a vanilla-equivalent generated decision leaves the vanilla decision active.
+				// Cross-file dedup is safe because decision ids are global. Per-entry
+				// dedup is not: generated output reuses the source path and shadows vanilla.
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
-				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::ContainerChildKey)
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.boolean_policy(BooleanMergePolicy::And)
@@ -973,7 +1014,10 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.module_name(ModuleNameRule::Static("estates_preload"))
 				.scope(unknown_scope())
 				.capabilities(semantic_complete_and_merge_ready())
-				.merge_key(MergeKeySource::AssignmentKey)
+				.merge_key(MergeKeySource::ChildFieldValue {
+					child_key_field: "key",
+					child_types: &["modifier"],
+				})
 				.build(),
 			ContentFamilyDescriptor::prefix("common/governments", "common/governments/")
 				.module_name(ModuleNameRule::Static("governments"))
@@ -1284,8 +1328,9 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.build(),
-		]
-		.into_boxed_slice()
+		];
+		enable_common_definition_modules(&mut families);
+		families.into_boxed_slice()
 	})
 }
 
@@ -1348,16 +1393,87 @@ mod tests {
 			DuplicateDefinitionPolicy::LaterDefinitionWins
 		);
 		assert_eq!(
-			policy.full_output_path,
+			policy.output_path,
 			"common/governments/zzz_foch_governments.txt"
 		);
-		assert_eq!(policy.replacement_prefix, "common/governments");
+		assert_eq!(policy.namespace_prefix, "common/governments");
+		assert_eq!(policy.output_mode, DefinitionModuleOutput::ReplaceNamespace);
 		assert!(policy.policy_version > 0);
 		assert!(
 			policy
-				.full_output_path
-				.starts_with(&format!("{}/", policy.replacement_prefix))
+				.output_path
+				.starts_with(&format!("{}/", policy.namespace_prefix))
 		);
+	}
+
+	#[test]
+	fn common_assignment_key_families_share_directory_namespaces() {
+		let profile = eu4_profile();
+		for path in [
+			"common/institutions/00_Core.txt",
+			"common/religions/00_religion.txt",
+			"common/scripted_effects/example.txt",
+		] {
+			let descriptor = profile
+				.classify_content_family(Path::new(path))
+				.expect("common descriptor");
+			let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+				panic!("{path} must use directory namespace loading");
+			};
+			assert_eq!(
+				policy.output_mode,
+				DefinitionModuleOutput::Overlay,
+				"{path}"
+			);
+			assert!(policy.output_path.contains("/zzz_foch_"), "{path}");
+		}
+	}
+
+	#[test]
+	fn every_eligible_common_directory_uses_namespace_loading() {
+		let mut eligible = 0;
+		for descriptor in eu4_content_families() {
+			let ContentFamilyPathMatcher::Prefix(prefix) = descriptor.matcher else {
+				continue;
+			};
+			if !prefix.starts_with("common/")
+				|| !matches!(
+					descriptor.merge_key_source,
+					Some(
+						MergeKeySource::AssignmentKey
+							| MergeKeySource::FieldValue(_)
+							| MergeKeySource::ChildFieldValue { .. }
+					)
+				) || matches!(prefix, "common/countries/" | "common/units/")
+			{
+				continue;
+			}
+			eligible += 1;
+			assert!(
+				matches!(
+					descriptor.load_policy,
+					ContentLoadPolicy::DefinitionModule(_)
+				),
+				"{prefix}"
+			);
+		}
+		assert!(eligible >= 70, "expected broad common namespace coverage");
+	}
+
+	#[test]
+	fn filename_identity_common_families_stay_per_path() {
+		let profile = eu4_profile();
+		for path in [
+			"common/countries/France.txt",
+			"common/units/western_medieval_infantry.txt",
+			"common/defines/00_test.lua",
+			"common/interface/example.gui",
+		] {
+			let descriptor = profile
+				.classify_content_family(Path::new(path))
+				.expect("common descriptor");
+			assert_eq!(descriptor.load_policy, ContentLoadPolicy::PerPath, "{path}");
+		}
 	}
 
 	#[test]
@@ -1375,6 +1491,43 @@ mod tests {
 				descriptor.merge_policies.scalar,
 				ScalarMergePolicy::LastWriter,
 				"{path}"
+			);
+		}
+	}
+
+	#[test]
+	fn events_merge_named_options_by_name() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("events/Elections.txt"))
+			.expect("events descriptor");
+
+		assert_eq!(
+			descriptor.merge_policies.nested_merge_key_source,
+			MergeKeySource::ChildFieldValue {
+				child_key_field: "name",
+				child_types: &["option"],
+			}
+		);
+	}
+
+	#[test]
+	fn per_path_event_and_decision_outputs_keep_vanilla_entries() {
+		let profile = eu4_profile();
+		for path in [
+			"events/Elections.txt",
+			"events/decisions/00_decisions.txt",
+			"decisions/Ottoman.txt",
+		] {
+			let descriptor = profile
+				.classify_content_family(Path::new(path))
+				.expect("expected EU4 content family");
+			assert!(
+				descriptor.capabilities.dedup_policy.cross_file_safe(),
+				"{path}"
+			);
+			assert!(
+				!descriptor.capabilities.dedup_policy.per_entry_safe(),
+				"{path} shadows the lower-layer file"
 			);
 		}
 	}

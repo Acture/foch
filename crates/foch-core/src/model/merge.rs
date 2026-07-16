@@ -55,7 +55,8 @@ pub enum MergePlanTarget {
 		id: MergeUnitId,
 		input_paths: Vec<String>,
 		output_path: String,
-		replace_prefix: String,
+		#[serde(default, skip_serializing_if = "Option::is_none")]
+		replace_prefix: Option<String>,
 	},
 }
 
@@ -84,7 +85,7 @@ impl MergePlanTarget {
 	pub fn replace_prefix(&self) -> Option<&str> {
 		match self {
 			Self::File { .. } => None,
-			Self::Module { replace_prefix, .. } => Some(replace_prefix),
+			Self::Module { replace_prefix, .. } => replace_prefix.as_deref(),
 		}
 	}
 }
@@ -121,7 +122,7 @@ mod tests {
 				},
 				input_paths: vec!["common/governments/00_governments.txt".to_string()],
 				output_path: "common/governments/zzz_foch_governments.txt".to_string(),
-				replace_prefix: "common/governments".to_string(),
+				replace_prefix: Some("common/governments".to_string()),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),

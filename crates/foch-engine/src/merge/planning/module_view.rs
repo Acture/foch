@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use foch_core::config::DepOverride;
 use foch_core::model::{MergePlanEntry, MergePlanTarget};
 use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModulePolicy, MergeKeySource,
-	module_name_for_descriptor,
+	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
+	MergeKeySource,
 };
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
@@ -172,9 +172,16 @@ fn validate_module_target<'a>(
 			descriptor.id.as_str()
 		));
 	}
-	if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
+	if !matches!(
+		descriptor.merge_key_source,
+		Some(
+			MergeKeySource::AssignmentKey
+				| MergeKeySource::FieldValue(_)
+				| MergeKeySource::ChildFieldValue { .. }
+		)
+	) {
 		return Err(format!(
-			"cross-file module {} requires assignment-key merge semantics",
+			"cross-file module {} requires a top-level definition merge key",
 			merge_unit.module_name
 		));
 	}
@@ -184,17 +191,20 @@ fn validate_module_target<'a>(
 			merge_unit.module_name
 		));
 	};
-	if module_policy.full_output_path != entry.output_path() {
+	if module_policy.output_path != entry.output_path() {
 		return Err(format!(
 			"module output {} does not match policy output {}",
 			entry.output_path(),
-			module_policy.full_output_path
+			module_policy.output_path
 		));
 	}
-	if replace_prefix != module_policy.replacement_prefix {
+	let expected_replace_prefix = (module_policy.output_mode
+		== DefinitionModuleOutput::ReplaceNamespace)
+		.then_some(module_policy.namespace_prefix);
+	if replace_prefix.as_deref() != expected_replace_prefix {
 		return Err(format!(
-			"module replacement prefix {replace_prefix} does not match policy prefix {}",
-			module_policy.replacement_prefix
+			"module replacement prefix {:?} does not match policy prefix {:?}",
+			replace_prefix, expected_replace_prefix
 		));
 	}
 	if input_paths.is_empty() {
@@ -204,13 +214,17 @@ fn validate_module_target<'a>(
 		));
 	}
 	for input_path in input_paths {
-		if !module_input_is_within_prefix(input_path, module_policy.replacement_prefix) {
+		if !module_input_is_within_prefix(input_path, module_policy.namespace_prefix) {
 			return Err(format!(
-				"module input {input_path} is outside replacement prefix {}",
-				module_policy.replacement_prefix
+				"module input {input_path} is outside namespace prefix {}",
+				module_policy.namespace_prefix
 			));
 		}
-		let expected_module_name = module_name_for_descriptor(Path::new(input_path), descriptor);
+		let expected_module_name = module_policy
+			.namespace_prefix
+			.rsplit('/')
+			.next()
+			.unwrap_or(descriptor.id.as_str());
 		if merge_unit.module_name != expected_module_name {
 			return Err(format!(
 				"merge unit module {} does not match input module {expected_module_name} for {input_path}",
@@ -272,7 +286,7 @@ fn include_reset_only_module_participants(
 				descriptor
 					.replace_path
 					.iter()
-					.any(|prefix| path_is_covered(policy.replacement_prefix, prefix))
+					.any(|prefix| path_is_covered(policy.namespace_prefix, prefix))
 			});
 		if !owns_reset && !representatives.contains_key(&mod_id) {
 			continue;
@@ -294,7 +308,7 @@ fn include_reset_only_module_participants(
 			mod_id,
 			ResolvedFileContributor {
 				mod_id: mod_item.mod_id.clone(),
-				absolute_path: root_path.join(policy.full_output_path),
+				absolute_path: root_path.join(policy.output_path),
 				root_path,
 				precedence,
 				is_base_game: false,
@@ -330,7 +344,7 @@ fn module_is_reset_by(
 		&& mod_dag
 			.replace_paths(mod_id)
 			.iter()
-			.any(|prefix| path_is_covered(policy.replacement_prefix, prefix))
+			.any(|prefix| path_is_covered(policy.namespace_prefix, prefix))
 }
 
 fn effective_ancestors(
@@ -377,7 +391,7 @@ fn fold_visible_module_files(
 		.collect::<Vec<_>>();
 	let canonical = load_definition_module(&inputs, policy)
 		.map_err(|error| format!("failed to load definition module: {error:?}"))?;
-	let output_path = PathBuf::from(policy.full_output_path);
+	let output_path = PathBuf::from(policy.output_path);
 	let mut parsed = visible_files
 		.values()
 		.next()
@@ -410,8 +424,8 @@ mod tests {
 	use super::{fold_visible_module_files, validate_module_target};
 	use foch_core::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use foch_language::analyzer::content_family::{
-		ContentFamilyDescriptor, DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModulePolicy,
-		DuplicateDefinitionPolicy, GameProfile,
+		ContentFamilyDescriptor, DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput,
+		DefinitionModulePolicy, DuplicateDefinitionPolicy, GameProfile,
 	};
 	use foch_language::analyzer::eu4_profile::eu4_profile;
 	use foch_language::analyzer::parser::{AstStatement, AstValue};
@@ -430,7 +444,7 @@ mod tests {
 				},
 				input_paths: vec![input_path.to_string()],
 				output_path: "common/governments/zzz_foch_governments.txt".to_string(),
-				replace_prefix: replace_prefix.to_string(),
+				replace_prefix: Some(replace_prefix.to_string()),
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -535,8 +549,9 @@ mod tests {
 				definition_key: DefinitionKeyPolicy::AssignmentKey,
 				file_order: DefinitionFileOrder::NormalizedPathAscending,
 				duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-				full_output_path: "common/governments/zzz_foch_governments.txt",
-				replacement_prefix: "common/governments",
+				output_path: "common/governments/zzz_foch_governments.txt",
+				namespace_prefix: "common/governments",
+				output_mode: DefinitionModuleOutput::ReplaceNamespace,
 				policy_version: 1,
 			},
 			&files,

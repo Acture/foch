@@ -1,29 +1,27 @@
 {
-  "3630876155": {
-    "accepted_equivalent": 1,
-    "diverges_ast": 3,
-    "matches_human": 3
-  },
-  "3630904821": {
-    "accepted_equivalent": 1,
-    "diverges_ast": 4,
-    "matches_human": 1
-  },
-  "3630934157": {
-    "accepted_equivalent": 1,
-    "diverges_ast": 5
+	"3630876155": {
+		"accepted_equivalent": 1,
+		"diverges_ast": 4,
+		"diverges_structure": 1
+	},
+	"3630904821": {
+		"accepted_equivalent": 1,
+		"diverges_ast": 4,
+		"matches_ast": 1
+	},
+	"3630934157": {
+		"accepted_equivalent": 2,
+		"diverges_ast": 4
   },
 	"3634824708": {
 		"diverges_ast": 6
 	},
-  "3634829839": {
-    "accepted_equivalent": 1,
-    "diverges_ast": 3,
-    "matches_human": 1
-  },
-  "3635635014": {
-    "accepted_equivalent": 1,
-    "diverges_ast": 4,
-    "matches_human": 1
-  }
+	"3634829839": {
+		"accepted_equivalent": 1,
+		"diverges_ast": 4
+	},
+	"3635635014": {
+		"accepted_equivalent": 1,
+		"diverges_ast": 6
+	}
 }

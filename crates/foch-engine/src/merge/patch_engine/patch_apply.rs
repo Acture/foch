@@ -27,7 +27,27 @@ pub fn apply_patches(
 	patches: &[ClausewitzPatch],
 	merge_key_source: MergeKeySource,
 ) -> Vec<AstStatement> {
-	apply_at_level(base_statements, patches, &[], merge_key_source)
+	apply_patches_with_nested(
+		base_statements,
+		patches,
+		merge_key_source,
+		merge_key_source.nested(),
+	)
+}
+
+pub fn apply_patches_with_nested(
+	base_statements: &[AstStatement],
+	patches: &[ClausewitzPatch],
+	merge_key_source: MergeKeySource,
+	nested_merge_key_source: MergeKeySource,
+) -> Vec<AstStatement> {
+	apply_at_level(
+		base_statements,
+		patches,
+		&[],
+		merge_key_source,
+		nested_merge_key_source,
+	)
 }
 
 /// Full pipeline: diff base vs overlay, then apply overlay's patches to base.
@@ -55,6 +75,7 @@ fn apply_at_level(
 	patches: &[ClausewitzPatch],
 	current_path: &[String],
 	merge_key_source: MergeKeySource,
+	nested_merge_key_source: MergeKeySource,
 ) -> Vec<AstStatement> {
 	// Partition patches into those targeting this level vs deeper levels.
 	let (local, deeper) = partition_patches(patches, current_path);
@@ -137,9 +158,13 @@ fn apply_at_level(
 					p.push(key.clone());
 					p
 				};
-				let child_merge_key_source = child_merge_key_source(merge_key_source, &child_path);
-				let new_items =
-					apply_at_level(items, &deeper_for_key, &child_path, child_merge_key_source);
+				let new_items = apply_at_level(
+					items,
+					&deeper_for_key,
+					&child_path,
+					nested_merge_key_source,
+					nested_merge_key_source.nested(),
+				);
 				new_stmt = replace_block_items(&new_stmt, new_items, span.clone());
 			}
 
@@ -166,12 +191,12 @@ fn apply_at_level(
 			if deeper_for_container.is_empty() {
 				continue;
 			}
-			let child_merge_key_source = child_merge_key_source(merge_key_source, &container_path);
 			let items = apply_at_level(
 				&[],
 				&deeper_for_container,
 				&container_path,
-				child_merge_key_source,
+				nested_merge_key_source,
+				nested_merge_key_source.nested(),
 			);
 			if !items.is_empty() {
 				result.push(AstStatement::Assignment {
@@ -209,6 +234,7 @@ fn apply_at_level(
 				&[],
 				&deeper_for_container,
 				&container_path,
+				MergeKeySource::AssignmentKey,
 				MergeKeySource::AssignmentKey,
 			);
 			if !items.is_empty() {
@@ -363,20 +389,6 @@ fn statement_key(
 		| MergeKeySource::ContainerChildFieldValue { .. } => assignment_key(stmt),
 		MergeKeySource::ChildFieldValue { .. } => unreachable!("handled before nested fallback"),
 		MergeKeySource::FieldValue(field) => field_value_key(stmt, field),
-	}
-}
-
-fn child_merge_key_source(
-	merge_key_source: MergeKeySource,
-	child_path: &[String],
-) -> MergeKeySource {
-	match merge_key_source {
-		MergeKeySource::ContainerChildFieldValue { containers, .. }
-			if child_path.len() == 1 && containers.contains(&child_path[0].as_str()) =>
-		{
-			merge_key_source
-		}
-		_ => MergeKeySource::AssignmentKey,
 	}
 }
 

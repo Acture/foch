@@ -10,11 +10,13 @@ use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
 use super::super::conflict_handler::{ConflictHandler, DeferHandler};
+#[cfg(test)]
+use super::super::patch::diff_ast;
 use super::super::patch::{
-	ClausewitzPatch, ListItemOccurrence, ListItemTarget, align_sequences_by, diff_ast,
+	ClausewitzPatch, ListItemOccurrence, ListItemTarget, align_sequences_by, diff_ast_with_nested,
 	fold_renames, insertion_source_slot, semantic_occurrence_ordinals,
 };
-use super::super::patch_apply::apply_patches;
+use super::super::patch_apply::apply_patches_with_nested;
 use super::super::patch_merge::{
 	PatchMergeResult, PatchResolution, merge_patch_sets_for_file, order_patches_by_source,
 	semantic_statement_identity, semantic_value_identity,
@@ -79,6 +81,7 @@ struct CachedDiffArgs<'a> {
 	current_base: &'a ParsedScriptFile,
 	current: &'a ParsedScriptFile,
 	merge_key_source: MergeKeySource,
+	nested_merge_key_source: MergeKeySource,
 	game_version: &'a str,
 }
 
@@ -89,8 +92,15 @@ struct CachedApplyArgs<'a> {
 	current_statements: &'a [AstStatement],
 	resolved_patches: &'a [ClausewitzPatch],
 	merge_key_source: MergeKeySource,
+	nested_merge_key_source: MergeKeySource,
 	cache_scope: DagApplyCacheScope,
 	game_version: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct PatchKeySources {
+	root: MergeKeySource,
+	nested: MergeKeySource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -582,11 +592,17 @@ fn cached_or_diff_patches(args: CachedDiffArgs<'_>) -> Vec<ClausewitzPatch> {
 		current_base,
 		current,
 		merge_key_source,
+		nested_merge_key_source,
 		game_version,
 	} = args;
 	let (Some(cache), Some(mod_hash), Some(base_view_hash)) = (cache, mod_hash, base_view_hash)
 	else {
-		let mut patches = fold_renames(diff_ast(current_base, current, merge_key_source));
+		let mut patches = fold_renames(diff_ast_with_nested(
+			current_base,
+			current,
+			merge_key_source,
+			nested_merge_key_source,
+		));
 		complete_root_duplicate_deltas(
 			&current_base.ast.statements,
 			&current.ast.statements,
@@ -621,7 +637,12 @@ fn cached_or_diff_patches(args: CachedDiffArgs<'_>) -> Vec<ClausewitzPatch> {
 		);
 		return patches;
 	}
-	let mut patches = fold_renames(diff_ast(current_base, current, merge_key_source));
+	let mut patches = fold_renames(diff_ast_with_nested(
+		current_base,
+		current,
+		merge_key_source,
+		nested_merge_key_source,
+	));
 	complete_root_duplicate_deltas(
 		&current_base.ast.statements,
 		&current.ast.statements,
@@ -659,11 +680,17 @@ fn cached_or_apply_base(args: CachedApplyArgs<'_>) -> Vec<AstStatement> {
 		current_statements,
 		resolved_patches,
 		merge_key_source,
+		nested_merge_key_source,
 		cache_scope,
 		game_version,
 	} = args;
 	let (Some(cache), Some(deps_hash)) = (cache, deps_hash) else {
-		return apply_patches(current_statements, resolved_patches, merge_key_source);
+		return apply_patches_with_nested(
+			current_statements,
+			resolved_patches,
+			merge_key_source,
+			nested_merge_key_source,
+		);
 	};
 	if let Some(statements) = cache.lookup(
 		deps_hash,
@@ -675,7 +702,12 @@ fn cached_or_apply_base(args: CachedApplyArgs<'_>) -> Vec<AstStatement> {
 		return statements;
 	}
 	record_dag_apply_cache_event(cache_scope, false);
-	let statements = apply_patches(current_statements, resolved_patches, merge_key_source);
+	let statements = apply_patches_with_nested(
+		current_statements,
+		resolved_patches,
+		merge_key_source,
+		nested_merge_key_source,
+	);
 	if let Err(err) = cache.store(
 		deps_hash,
 		file_path,
@@ -769,16 +801,21 @@ fn build_branch_patches(
 	effective_statements: &[AstStatement],
 	parent_intents: &[ClausewitzPatch],
 	direct_patches: &[ClausewitzPatch],
-	merge_key_source: MergeKeySource,
+	key_sources: PatchKeySources,
 ) -> (Vec<ClausewitzPatch>, Vec<ClausewitzPatch>) {
 	let base = synthesized_parsed_file(file_path, template, base_statements.to_vec());
 	let effective = synthesized_parsed_file(file_path, template, effective_statements.to_vec());
-	let mut branch_patches = fold_renames(diff_ast(&base, &effective, merge_key_source));
+	let mut branch_patches = fold_renames(diff_ast_with_nested(
+		&base,
+		&effective,
+		key_sources.root,
+		key_sources.nested,
+	));
 	complete_root_duplicate_deltas(
 		base_statements,
 		effective_statements,
 		&mut branch_patches,
-		merge_key_source,
+		key_sources.root,
 	);
 	order_patches_by_source(&mut branch_patches, base_statements, effective_statements);
 	let net_addresses = branch_patches
@@ -1050,7 +1087,10 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 			&state.statements,
 			&[],
 			&relative_intents,
-			merge_key_source,
+			PatchKeySources {
+				root: merge_key_source,
+				nested: policies.nested_merge_key_source,
+			},
 		);
 		for patch in &branch_intent_only {
 			append_unique_patch(&mut all_intent_only, patch);
@@ -1101,6 +1141,7 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 		current_statements: &shared_view.statements,
 		resolved_patches: &materialized,
 		merge_key_source,
+		nested_merge_key_source: policies.nested_merge_key_source,
 		cache_scope: DagApplyCacheScope::ResolvedBranchState,
 		game_version: cache_context,
 	});
@@ -1316,12 +1357,14 @@ fn compute_dag_patches_from_parsed_with_caches(
 	let mut parent_view_cache: BTreeMap<BTreeSet<ModId>, ParentView> = BTreeMap::new();
 	let mut seen_pending_conflicts = Vec::new();
 	let mut merge_result = PatchMergeResult::default();
-	let diff_cache_game_version =
-		format!("parent-relative-v9 {game_version} merge_key={merge_key_source:?}");
+	let diff_cache_game_version = format!(
+		"parent-relative-v10 {game_version} merge_key={merge_key_source:?} nested_merge_key={:?}",
+		policies.nested_merge_key_source
+	);
 	let policy_debug = format!("{policies:?}");
 	let policy_hash = blake3::hash(policy_debug.as_bytes()).to_hex().to_string();
 	let dag_base_game_version = format!(
-		"parent-relative-v9 {game_version} merge_key={merge_key_source:?} policies={policy_hash}"
+		"parent-relative-v10 {game_version} merge_key={merge_key_source:?} policies={policy_hash}"
 	);
 	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
 	let template = template_for(file_dag, vanilla, contributors);
@@ -1369,6 +1412,7 @@ fn compute_dag_patches_from_parsed_with_caches(
 				current_base: &current_base,
 				current,
 				merge_key_source,
+				nested_merge_key_source: policies.nested_merge_key_source,
 				game_version: &diff_cache_game_version,
 			});
 			let pending_conflicts =
@@ -1382,6 +1426,7 @@ fn compute_dag_patches_from_parsed_with_caches(
 				current_statements: &parent_view.statements,
 				resolved_patches: &patches,
 				merge_key_source,
+				nested_merge_key_source: policies.nested_merge_key_source,
 				cache_scope: DagApplyCacheScope::EffectiveNode,
 				game_version: &dag_base_game_version,
 			});
@@ -1392,7 +1437,10 @@ fn compute_dag_patches_from_parsed_with_caches(
 				&effective_statements,
 				&parent_view.intent_only_patches,
 				&patches,
-				merge_key_source,
+				PatchKeySources {
+					root: merge_key_source,
+					nested: policies.nested_merge_key_source,
+				},
 			);
 			node_states.insert(
 				mod_id.clone(),
@@ -2094,6 +2142,35 @@ mod tests {
 			merge_key_source,
 			&mut handler,
 		)
+	}
+
+	fn compute_with_policies(
+		mods: Vec<ModCandidate>,
+		contribs: Vec<ResolvedFileContributor>,
+		vanilla_source: Option<&str>,
+		inventory: HashMap<ModId, ParsedScriptFile>,
+		policies: &MergePolicies,
+	) -> DagPatchComputation {
+		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
+		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+		let fdag = induced_file_dag_with_overrides(
+			&dag,
+			"common/foo.txt",
+			&contribs,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
+		let mut handler = DeferHandler;
+		compute_dag_patches_from_parsed(
+			&fdag,
+			vanilla.as_ref(),
+			&inventory,
+			policies.merge_key_source,
+			policies,
+			&mut handler,
+		)
+		.expect("compute DAG patches")
 	}
 
 	#[allow(clippy::too_many_arguments)]
@@ -3904,6 +3981,84 @@ mod tests {
 				result.mod_patches
 			);
 		}
+	}
+
+	#[test]
+	fn event_options_with_unique_names_merge_by_name() {
+		let base = r#"country_event = {
+			id = test.1
+			option = { name = OPTION_A base_effect = yes }
+			option = { name = OPTION_B untouched = yes }
+		}
+		"#;
+		let branch_a = r#"country_event = {
+			id = test.1
+			option = { name = OPTION_A base_effect = yes from_a = yes }
+			option = { name = OPTION_B untouched = yes }
+		}
+		"#;
+		let branch_b = r#"country_event = {
+			id = test.1
+			option = { name = OPTION_A base_effect = yes from_b = yes }
+			option = { name = OPTION_B untouched = yes }
+		}
+		"#;
+		let policies = MergePolicies {
+			merge_key_source: MergeKeySource::FieldValue("id"),
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "name",
+				child_types: &["option"],
+			},
+			..MergePolicies::default()
+		};
+		let result = compute_with_policies(
+			vec![
+				mod_with("a", "A", vec![], vec![]),
+				mod_with("b", "B", vec![], vec![]),
+			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
+			Some(base),
+			parsed_inventory(&[("a", branch_a), ("b", branch_b)]),
+			&policies,
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert_eq!(output.matches("name = OPTION_A").count(), 1, "{output}");
+		assert_eq!(output.matches("name = OPTION_B").count(), 1, "{output}");
+		assert_eq!(output.matches("from_a = yes").count(), 1, "{output}");
+		assert_eq!(output.matches("from_b = yes").count(), 1, "{output}");
+	}
+
+	#[test]
+	fn event_options_with_duplicate_names_keep_source_occurrences() {
+		let base = "country_event = { id = test.1 }\n";
+		let branch = r#"country_event = {
+			id = test.1
+			option = { name = OPTION_A marker = first }
+			option = { name = OPTION_A marker = second }
+		}
+		"#;
+		let policies = MergePolicies {
+			merge_key_source: MergeKeySource::FieldValue("id"),
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "name",
+				child_types: &["option"],
+			},
+			..MergePolicies::default()
+		};
+		let result = compute_with_policies(
+			vec![mod_with("a", "A", vec![], vec![])],
+			vec![file_contributor("a", 1)],
+			Some(base),
+			parsed_inventory(&[("a", branch)]),
+			&policies,
+		);
+
+		let output = rendered(&result.merged_statements);
+		assert_eq!(output.matches("name = OPTION_A").count(), 2, "{output}");
+		assert_eq!(output.matches("marker = first").count(), 1, "{output}");
+		assert_eq!(output.matches("marker = second").count(), 1, "{output}");
 	}
 
 	#[test]

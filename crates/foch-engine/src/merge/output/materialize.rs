@@ -404,10 +404,10 @@ pub(crate) fn materialize_merge_with_workspace_result(
 					report.definition_module_elapsed_ms = report
 						.definition_module_elapsed_ms
 						.saturating_add(module_started.elapsed().as_millis() as u64);
-					if generated_paths.contains(entry.output_path())
-						&& let Some(prefix) = entry.target.replace_prefix()
-					{
-						published_module_replacements.insert(prefix.to_string());
+					if generated_paths.contains(entry.output_path()) {
+						if let Some(prefix) = entry.target.replace_prefix() {
+							published_module_replacements.insert(prefix.to_string());
+						}
 						report.definition_module_generated_count += 1;
 					} else if report.manual_conflict_count > conflicts_before {
 						report.definition_module_blocked_count += 1;
@@ -847,9 +847,12 @@ fn materialize_cross_file_module(
 				&mut report.dep_misuse,
 				std::mem::take(&mut merge_output.dep_remove_counts),
 			);
-			// A complete replacement cannot skip output merely because it matches
-			// vanilla: its descriptor will hide the original prefix.
-			merge_output.noop_vs_vanilla = false;
+			// A namespace replacement cannot skip output merely because it matches
+			// vanilla: its descriptor will hide the original prefix. An overlay
+			// module can safely remain absent when it is a semantic no-op.
+			if entry.target.replace_prefix().is_some() {
+				merge_output.noop_vs_vanilla = false;
+			}
 			let stage_dir = prepare_module_stage_dir(out_dir, entry.output_path())?;
 			let materialization = match write_patch_merge_output(
 				entry.output_path(),
@@ -888,7 +891,9 @@ fn materialize_cross_file_module(
 							.insert(entry.output_path().to_string(), provenance);
 					}
 				}
-			} else if materialization.counts_as_noop_skipped() {
+			} else if materialization.counts_as_noop_skipped()
+				&& entry.target.replace_prefix().is_none()
+			{
 				report.noop_skipped_file_count += 1;
 			} else {
 				let _ = fs::remove_dir_all(&stage_dir);
@@ -898,7 +903,7 @@ fn materialize_cross_file_module(
 					options,
 					report,
 					generated_paths,
-					"definition module did not produce a complete staged output".to_string(),
+					"definition module did not produce its required staged output".to_string(),
 				);
 			}
 			let _ = fs::remove_dir_all(&stage_dir);
@@ -2215,7 +2220,7 @@ mod tests {
 		assert_eq!(report.cross_file_noop_skipped_file_count, 0);
 	}
 
-	const DAG_CONFLICT_PATH: &str = "common/ideas/conflict.txt";
+	const DAG_CONFLICT_PATH: &str = "history/countries/conflict.txt";
 
 	fn idea_file(cost: &str) -> String {
 		format!("group = {{\n\tidea = {{\n\t\tcost = {cost}\n\t}}\n}}\n")

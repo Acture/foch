@@ -8,10 +8,12 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const PARSE_CACHE_VERSION: u32 = 8;
-const CACHE_VERSION_DIR: &str = "v8";
+const PARSE_CACHE_VERSION: u32 = 9;
+const CACHE_VERSION_DIR: &str = "v9";
 const PARSE_CACHE_DIR_NAME: &str = "parse";
 const LEGACY_PARSE_CACHE_DIR_NAME: &str = "parse_cache";
 const PARSE_CACHE_ENV: &str = "FOCH_PARSE_CACHE_DIR";
@@ -65,6 +67,7 @@ struct CacheFile {
 }
 
 pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
+	ensure_current_cache_generation();
 	let signature = file_signature(path);
 	let cache_path = parser_cache_file(path);
 
@@ -97,6 +100,37 @@ pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
 	}
 
 	(parsed, false)
+}
+
+#[cfg(not(test))]
+static CACHE_GENERATION_READY: OnceLock<()> = OnceLock::new();
+
+fn ensure_current_cache_generation() {
+	#[cfg(not(test))]
+	CACHE_GENERATION_READY.get_or_init(prune_obsolete_cache_generations);
+	#[cfg(test)]
+	prune_obsolete_cache_generations();
+}
+
+fn prune_obsolete_cache_generations() {
+	for base_root in cache_base_roots() {
+		let Ok(entries) = fs::read_dir(base_root) else {
+			continue;
+		};
+		for entry in entries.flatten() {
+			let path = entry.path();
+			let name = entry.file_name();
+			let name = name.to_string_lossy();
+			if path.is_dir()
+				&& name != CACHE_VERSION_DIR
+				&& name
+					.strip_prefix('v')
+					.is_some_and(|version| version.chars().all(|ch| ch.is_ascii_digit()))
+			{
+				let _ = fs::remove_dir_all(path);
+			}
+		}
+	}
 }
 
 fn file_signature(path: &Path) -> Option<(u64, u128)> {
@@ -528,6 +562,28 @@ mod tests {
 		assert_eq!(key.len(), 16);
 		assert_eq!(parts[0], OsStr::new(&key[0..2]));
 		assert_eq!(parts[1], OsStr::new(&key[2..4]));
+	}
+
+	#[test]
+	fn parse_prunes_obsolete_cache_generations() {
+		let cache_temp = tempdir().expect("cache tempdir");
+		let source_temp = tempdir().expect("source tempdir");
+		let _env = CacheEnvGuard::new(cache_temp.path());
+		let obsolete = cache_temp.path().join("v8");
+		let unrelated = cache_temp.path().join("metadata");
+		fs::create_dir_all(&obsolete).expect("create obsolete generation");
+		fs::create_dir_all(&unrelated).expect("create unrelated directory");
+		fs::write(obsolete.join("entry.json"), "stale").expect("write obsolete entry");
+		fs::write(unrelated.join("owner.txt"), "keep").expect("write unrelated entry");
+		let source = source_temp.path().join("source.txt");
+		fs::write(&source, "root = { value = yes }\n").expect("write source");
+
+		let (_, hit) = parse_clausewitz_file_cached(&source);
+
+		assert!(!hit);
+		assert!(!obsolete.exists());
+		assert!(parser_cache_root().is_dir());
+		assert!(unrelated.join("owner.txt").is_file());
 	}
 
 	#[test]

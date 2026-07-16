@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_PARSE_CACHE_VERSION: u32 = 2;
+pub const MOD_PARSE_CACHE_VERSION: u32 = 3;
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const CACHE_ENV: &str = "FOCH_MOD_PARSE_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
@@ -234,6 +234,7 @@ struct StoredParseIssue {
 impl ModParseCache {
 	pub fn open(cache_dir: &Path) -> Self {
 		let _ = fs::create_dir_all(cache_dir);
+		prune_obsolete_cache_generations(cache_dir);
 		Self {
 			root: cache_dir.to_path_buf(),
 		}
@@ -329,6 +330,30 @@ impl ModParseCache {
 	) -> PathBuf {
 		let filename = cache_filename(cache_version, mod_hash, foch_version, game_version);
 		self.root.join(filename)
+	}
+}
+
+fn prune_obsolete_cache_generations(cache_dir: &Path) {
+	let Ok(entries) = fs::read_dir(cache_dir) else {
+		return;
+	};
+	for entry in entries.flatten() {
+		let path = entry.path();
+		if !path.is_file() {
+			continue;
+		}
+		let name = entry.file_name();
+		let name = name.to_string_lossy();
+		let Some(version) = name
+			.split_once("__cv")
+			.and_then(|(_, suffix)| suffix.split_once("__"))
+			.and_then(|(version, _)| version.parse::<u32>().ok())
+		else {
+			continue;
+		};
+		if version != MOD_PARSE_CACHE_VERSION {
+			let _ = fs::remove_file(path);
+		}
 	}
 }
 
@@ -1138,6 +1163,33 @@ mod tests {
 
 		assert_eq!(hit.semantic_index.documents.len(), 1);
 		assert_eq!(hit.semantic_index.documents[0].mod_id, "mod-a");
+	}
+
+	#[test]
+	fn open_prunes_obsolete_cache_generations() {
+		let tmp = TempDir::new().expect("temp dir");
+		let obsolete = tmp.path().join(cache_filename(
+			MOD_PARSE_CACHE_VERSION - 1,
+			"old",
+			"0.1.0",
+			"eu4 1.37.4",
+		));
+		let current = tmp.path().join(cache_filename(
+			MOD_PARSE_CACHE_VERSION,
+			"current",
+			"0.1.0",
+			"eu4 1.37.4",
+		));
+		let unrelated = tmp.path().join("owner.txt");
+		fs::write(&obsolete, "stale").expect("write obsolete cache");
+		fs::write(&current, "current").expect("write current cache");
+		fs::write(&unrelated, "keep").expect("write unrelated file");
+
+		let _cache = ModParseCache::open(tmp.path());
+
+		assert!(!obsolete.exists());
+		assert!(current.is_file());
+		assert!(unrelated.is_file());
 	}
 
 	#[test]

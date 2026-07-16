@@ -287,11 +287,18 @@ pub struct DefinitionModulePolicy {
 	pub definition_key: DefinitionKeyPolicy,
 	pub file_order: DefinitionFileOrder,
 	pub duplicate_definitions: DuplicateDefinitionPolicy,
-	pub full_output_path: &'static str,
-	pub replacement_prefix: &'static str,
+	pub output_path: &'static str,
+	pub namespace_prefix: &'static str,
+	pub output_mode: DefinitionModuleOutput,
 	/// Increment when loader semantics change. Callers must include this value
 	/// in cache identities for canonical module output.
 	pub policy_version: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum DefinitionModuleOutput {
+	Overlay,
+	ReplaceNamespace,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -307,6 +314,7 @@ pub enum DefinitionFileOrder {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum DuplicateDefinitionPolicy {
 	LaterDefinitionWins,
+	PreserveAll,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -377,6 +385,22 @@ pub enum MergeKeySource {
 	},
 	/// Leaf-level defines paths (e.g. `NGame.START_YEAR`).
 	LeafPath,
+}
+
+impl MergeKeySource {
+	pub const fn nested(self) -> Self {
+		match self {
+			MergeKeySource::ContainerChildFieldValue {
+				child_key_field,
+				child_types,
+				..
+			} => MergeKeySource::ChildFieldValue {
+				child_key_field,
+				child_types,
+			},
+			_ => MergeKeySource::AssignmentKey,
+		}
+	}
 }
 
 #[derive(Serialize)]
@@ -608,7 +632,12 @@ impl ContentFamilyDescriptorBuilder {
 	pub fn merge_key(mut self, source: MergeKeySource) -> Self {
 		self.merge_key_source = Some(source);
 		self.merge_policies.merge_key_source = source;
-		self.merge_policies.nested_merge_key_source = nested_merge_key_source(source);
+		self.merge_policies.nested_merge_key_source = source.nested();
+		self
+	}
+
+	pub fn nested_merge_key(mut self, source: MergeKeySource) -> Self {
+		self.merge_policies.nested_merge_key_source = source;
 		self
 	}
 
@@ -747,20 +776,6 @@ impl ContentFamilyDescriptor {
 				edit_wins_over_remove: false,
 			},
 		}
-	}
-}
-
-fn nested_merge_key_source(source: MergeKeySource) -> MergeKeySource {
-	match source {
-		MergeKeySource::ContainerChildFieldValue {
-			child_key_field,
-			child_types,
-			..
-		} => MergeKeySource::ChildFieldValue {
-			child_key_field,
-			child_types,
-		},
-		_ => MergeKeySource::AssignmentKey,
 	}
 }
 
@@ -912,15 +927,16 @@ mod tests {
 mod content_load_policy_tests {
 	use super::{
 		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
-		DefinitionModulePolicy, DuplicateDefinitionPolicy,
+		DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
 	};
 
 	const MODULE_POLICY: DefinitionModulePolicy = DefinitionModulePolicy {
 		definition_key: DefinitionKeyPolicy::AssignmentKey,
 		file_order: DefinitionFileOrder::NormalizedPathAscending,
 		duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
-		full_output_path: "common/governments/00_foch_governments.txt",
-		replacement_prefix: "common/governments",
+		output_path: "common/governments/00_foch_governments.txt",
+		namespace_prefix: "common/governments",
+		output_mode: DefinitionModuleOutput::ReplaceNamespace,
 		policy_version: 1,
 	};
 
@@ -958,10 +974,14 @@ mod content_load_policy_tests {
 			DuplicateDefinitionPolicy::LaterDefinitionWins
 		);
 		assert_eq!(
-			MODULE_POLICY.full_output_path,
+			MODULE_POLICY.output_path,
 			"common/governments/00_foch_governments.txt"
 		);
-		assert_eq!(MODULE_POLICY.replacement_prefix, "common/governments");
+		assert_eq!(MODULE_POLICY.namespace_prefix, "common/governments");
+		assert_eq!(
+			MODULE_POLICY.output_mode,
+			DefinitionModuleOutput::ReplaceNamespace
+		);
 		assert_eq!(MODULE_POLICY.policy_version, 1);
 	}
 }

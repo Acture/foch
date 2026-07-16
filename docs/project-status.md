@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-14
+Last updated: 2026-07-16
 
 ## Summary
 
@@ -75,29 +75,33 @@ and 28/269 over multi-source files. That view is dominated by 30,293
 `not_emitted` files and includes broad-search false positives, so it is retained
 for audit rather than used as the current merge-success denominator.
 
-Scorer `1.1.0` now prevents old measurements from being relabeled after scoring
-semantics change. Its committed network-free fixture currently contains six
-`proposed` cases and 36 multi-source files: 11 accepted, comprising six
-`matches_human` and five `accepted_equivalent`; the other 25 are
-`diverges_ast`. The extra file versus scorer `1.0.0` is
-`common/institutions/00_ME_Override.txt`: both source mods define the same
-institution module under different filenames, which exact-path attribution had
-missed. A fresh full 23-candidate measurement is still required before quoting
-a scorer `1.1.0` full-local baseline. See
+Scorer `1.2.0` prevents old measurements from being relabeled after scoring
+semantics change. Its committed network-free fixture contains six `proposed`
+cases and 36 multi-source units. The 2026-07-16 base-aware full rerun records 7
+accepted units (six `accepted_equivalent`, one `matches_ast`), 28
+`diverges_ast`, and one `diverges_structure`; no unit is `not_emitted` or
+conflict-withheld. The accepted rate is therefore 7/36 (19.4%). This supersedes
+the previous 11/36 headline: no-op output is now scored through the effective
+source/base runtime layers, so older file-presence-based outcomes no longer
+define the current baseline. A fresh full 23-candidate measurement is still
+required before quoting a scorer `1.2.0` full-local baseline. See
 [`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
-A bounded rerun of all six fixture cases also found and fixed an output-layer
-defect: the emitter re-escaped quoted Clausewitz token bodies, doubling
-backslashes in `textureFile` paths. The fix repaired four semantic leaves in
-each recurring `interface/frontend.gui` output, 24 leaves total. Whole-file
-fixture totals remain 11/36 accepted because the same files still differ in GUI
-widget identity, content, and layout policy.
+All 15 `.gui` units still diverge under the order-sensitive GUI policy.
+Removing them leaves 7/21 accepted non-GUI units (33.3%), with 13
+`diverges_ast` and one `diverges_structure`. Directory-scoped definition
+modules now keep cross-filename `common/*` families in the denominator:
+`common/religions` is module-AST equivalent, while `common/institutions` is
+emitted and scored rather than dropped as a single-source path. The remaining
+module divergences are real value differences, not filename-layout artifacts.
 
-Removing all 15 `.gui` files from the denominator leaves 11/21 accepted
-non-GUI files (52.4%). Only three GUI failures are proven order-only; treating
-the other 12 as layout-equivalent would hide missing widget, sprite, and button
-content. The next merge-quality work therefore prioritizes the ten remaining
-non-GUI failures rather than using GUI exclusion to inflate the headline rate.
+Event merging now keys repeated `option` blocks by `option.name`, and per-path
+event/decision output retains vanilla-equivalent entries because the generated
+file shadows the lower-layer file. In the GE-EE `Elections.txt` case this
+reduced the semantic difference to 7 human-only and 2 foch-only atoms with
+1,210 shared atoms. The remaining misses are repeated `after`/`if` control-flow
+branches inside matched events/options, so event control-flow identity is the
+next event-specific merge-quality target.
 
 The shipped product surface includes:
 

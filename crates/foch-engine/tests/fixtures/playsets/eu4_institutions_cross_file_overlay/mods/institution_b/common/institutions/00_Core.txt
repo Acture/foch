@@ -1,0 +1,3 @@
+printing_press = {
+	penalty = 1
+}

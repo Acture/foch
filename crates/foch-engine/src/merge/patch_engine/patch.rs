@@ -530,9 +530,24 @@ pub fn diff_ast(
 	overlay: &ParsedScriptFile,
 	merge_key_source: MergeKeySource,
 ) -> Vec<ClausewitzPatch> {
+	diff_ast_with_nested(base, overlay, merge_key_source, merge_key_source.nested())
+}
+
+pub fn diff_ast_with_nested(
+	base: &ParsedScriptFile,
+	overlay: &ParsedScriptFile,
+	merge_key_source: MergeKeySource,
+	nested_merge_key_source: MergeKeySource,
+) -> Vec<ClausewitzPatch> {
 	let base_entries = extract_keyed_entries(&base.ast.statements, merge_key_source);
 	let overlay_entries = extract_keyed_entries(&overlay.ast.statements, merge_key_source);
-	diff_entry_maps(&base_entries, &overlay_entries, &[], 0)
+	diff_entry_maps(
+		&base_entries,
+		&overlay_entries,
+		&[],
+		0,
+		nested_merge_key_source,
+	)
 }
 
 /// Diff two block bodies (children of a parent block) and produce a flat
@@ -627,7 +642,13 @@ pub(crate) fn diff_block_bodies_including_empty(
 	// Per-key Assignment diff (recurses through nested blocks via diff_blocks).
 	let base_entries = extract_keyed_entries(base_items, merge_key_source);
 	let overlay_entries = extract_keyed_entries(overlay_items, merge_key_source);
-	let child_patches = diff_entry_maps(&base_entries, &overlay_entries, parent_path, depth);
+	let child_patches = diff_entry_maps(
+		&base_entries,
+		&overlay_entries,
+		parent_path,
+		depth,
+		merge_key_source.nested(),
+	);
 	patches.extend(child_patches);
 	patches
 }
@@ -851,6 +872,7 @@ fn diff_entry_maps(
 	overlay_entries: &[KeyedEntry],
 	parent_path: &[String],
 	depth: usize,
+	nested_merge_key_source: MergeKeySource,
 ) -> Vec<ClausewitzPatch> {
 	let base_map = build_key_map(base_entries);
 	let overlay_map = build_key_map(overlay_entries);
@@ -945,6 +967,7 @@ fn diff_entry_maps(
 				&path,
 				&mut patches,
 				depth,
+				nested_merge_key_source,
 			);
 		} else {
 			diff_repeated_key(key, base_stmts, overlay_stmts, &path, &mut patches);
@@ -1286,6 +1309,7 @@ fn diff_single_statement(
 	path: &[String],
 	patches: &mut Vec<ClausewitzPatch>,
 	depth: usize,
+	nested_merge_key_source: MergeKeySource,
 ) {
 	if statements_equal_ignoring_span(base, overlay) {
 		return;
@@ -1325,6 +1349,7 @@ fn diff_single_statement(
 				parent_path: path,
 				patches,
 				depth,
+				merge_key_source: nested_merge_key_source,
 			});
 		}
 		// Type mismatch (scalar↔block) → replace.
@@ -1355,6 +1380,7 @@ struct DiffBlockArgs<'a> {
 	parent_path: &'a [String],
 	patches: &'a mut Vec<ClausewitzPatch>,
 	depth: usize,
+	merge_key_source: MergeKeySource,
 }
 
 fn diff_blocks(args: DiffBlockArgs<'_>) {
@@ -1367,6 +1393,7 @@ fn diff_blocks(args: DiffBlockArgs<'_>) {
 		parent_path,
 		patches,
 		depth,
+		merge_key_source,
 	} = args;
 	// Depth limit: emit ReplaceBlock instead of recursing further.
 	if depth >= MAX_DIFF_DEPTH {
@@ -1495,13 +1522,14 @@ fn diff_blocks(args: DiffBlockArgs<'_>) {
 	}
 
 	// Produce per-child patches for Assignment statements.
-	let base_child_entries: Vec<KeyedEntry> = child_keyed_entries(base_items);
-	let overlay_child_entries: Vec<KeyedEntry> = child_keyed_entries(overlay_items);
+	let base_child_entries = extract_keyed_entries(base_items, merge_key_source);
+	let overlay_child_entries = extract_keyed_entries(overlay_items, merge_key_source);
 	let child_patches = diff_entry_maps(
 		&base_child_entries,
 		&overlay_child_entries,
 		&child_path,
 		depth + 1,
+		merge_key_source.nested(),
 	);
 	patches.extend(child_patches);
 }
@@ -1522,24 +1550,6 @@ fn value_lists_semantically_equal(a: &[&AstValue], b: &[&AstValue]) -> bool {
 		&& a.iter()
 			.zip(b.iter())
 			.all(|(va, vb)| ast_values_semantically_equal(va, vb))
-}
-
-/// Convert child statements into keyed entries using `AssignmentKey` semantics.
-fn child_keyed_entries(items: &[AstStatement]) -> Vec<KeyedEntry> {
-	items
-		.iter()
-		.filter_map(|stmt| {
-			if let AstStatement::Assignment { key, .. } = stmt {
-				Some(KeyedEntry {
-					merge_key: key.clone(),
-					statement: stmt.clone(),
-					path_prefix: Vec::new(),
-				})
-			} else {
-				None
-			}
-		})
-		.collect()
 }
 
 // ---------------------------------------------------------------------------

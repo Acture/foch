@@ -660,9 +660,21 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 	);
 
 	let result = run_merge_plan_no_base(request_for(&playlist_path));
-	let entry = plan_entry_for(&result, "common/scripted_effects/effects.txt");
+	let entry = plan_entry_for(
+		&result,
+		"common/scripted_effects/zzz_foch_scripted_effects.txt",
+	);
 	assert_eq!(result.strategies.structural_merge, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
+	assert!(matches!(
+		&entry.target,
+		MergePlanTarget::Module {
+			input_paths,
+			replace_prefix,
+			..
+		} if input_paths == &["common/scripted_effects/effects.txt"]
+			&& replace_prefix.is_none()
+	));
 	assert_eq!(
 		entry.winner.as_ref().expect("winner").mod_id,
 		"9502",
@@ -716,7 +728,7 @@ fn merge_plan_groups_opted_in_governments_module_across_filenames() {
 		panic!("governments must be planned as a module target");
 	};
 	assert_eq!(input_paths.len(), 2);
-	assert_eq!(replace_prefix, "common/governments");
+	assert_eq!(replace_prefix.as_deref(), Some("common/governments"));
 }
 
 #[test]
@@ -743,7 +755,45 @@ fn merge_plan_keeps_single_governments_file_as_a_complete_module_target() {
 			..
 		} if input_paths == &["common/governments/only.txt"]
 			&& output_path == "common/governments/zzz_foch_governments.txt"
-			&& replace_prefix == "common/governments"
+			&& replace_prefix.as_deref() == Some("common/governments")
+	));
+}
+
+#[test]
+fn merge_plan_closes_common_institutions_across_filenames_without_replace_path() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9521");
+	let mod_b = temp.path().join("9522");
+	write_dlc_load(&playlist_path, &[("9521", "A"), ("9522", "B")]);
+	write_descriptor(&mod_a, "A", &[]);
+	write_descriptor(&mod_b, "B", &[]);
+	write_script_file(
+		&mod_a,
+		"common/institutions/00_ME_Override.txt",
+		"renaissance = { bonus = 1 }\n",
+	);
+	write_script_file(
+		&mod_b,
+		"common/institutions/00_Core.txt",
+		"renaissance = { penalty = 1 }\n",
+	);
+
+	let result = run_merge_plan_no_base(request_for(&playlist_path));
+	assert_eq!(result.paths.len(), 1, "plan: {result:#?}");
+	assert!(matches!(
+		&result.paths[0].target,
+		MergePlanTarget::Module {
+			input_paths,
+			output_path,
+			replace_prefix,
+			..
+		} if input_paths == &[
+			"common/institutions/00_Core.txt",
+			"common/institutions/00_ME_Override.txt",
+		]
+			&& output_path == "common/institutions/zzz_foch_institutions.txt"
+			&& replace_prefix.is_none()
 	));
 }
 
