@@ -19,8 +19,9 @@
 mod common;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use foch_core::domain::game::Game;
 use foch_engine::{
@@ -29,7 +30,8 @@ use foch_engine::{
 };
 use foch_language::analysis_version::analysis_rules_version;
 use foch_merge_quality::corpus::Corpus;
-use foch_merge_quality::orchestrate::{BaseGameMode, score_case_from_paths_with_cache};
+use foch_merge_quality::orchestrate::{BaseGameMode, CaseResult, score_case_from_paths_with_cache};
+use foch_merge_quality::report::{write_report_md, write_results_json};
 use foch_merge_quality::score::ScoreCache;
 
 static BASE_DATA_ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -125,9 +127,69 @@ fn prune_stale_base_data_caches(current: &Path) {
 	}
 }
 
+fn fixture_artifact_run_root() -> Option<PathBuf> {
+	let parent: PathBuf = std::env::var_os("FOCH_MQ_FIXTURE_ARTIFACT_DIR")?.into();
+	let timestamp_nanos: u128 = SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_nanos();
+	Some(parent.join(format!(
+		"base-aware-{timestamp_nanos}-{}",
+		std::process::id()
+	)))
+}
+
+fn write_fixture_run_artifacts(
+	run_root: &Path,
+	fixture_root: &Path,
+	expected: &BTreeMap<String, BTreeMap<String, usize>>,
+	actual: &BTreeMap<String, BTreeMap<String, usize>>,
+	results: &[CaseResult],
+) -> std::io::Result<()> {
+	write_results_json(run_root, results)?;
+	write_report_md(run_root, results)?;
+	let context: serde_json::Value = serde_json::json!({
+		"fixture_root": fixture_root.display().to_string(),
+		"basegame_root": fixture_root.join("basegame").display().to_string(),
+		"workshop_root": fixture_root.join("workshop").display().to_string(),
+		"completed_cases": results.len(),
+		"expected_verdicts": expected,
+		"actual_verdicts": actual,
+	});
+	let context_json: String =
+		serde_json::to_string_pretty(&context).expect("fixture run context is serializable");
+	std::fs::write(run_root.join("run.json"), context_json)
+}
+
+#[test]
+fn fixture_run_artifacts_include_reproducible_context() {
+	let root: tempfile::TempDir = tempfile::tempdir().expect("create artifact root");
+	let fixture_root: PathBuf = root.path().join("fixture");
+	let mut expected: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+	expected.insert(
+		"case-a".to_string(),
+		BTreeMap::from([("matches_human".to_string(), 1)]),
+	);
+	let actual: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+
+	write_fixture_run_artifacts(root.path(), &fixture_root, &expected, &actual, &[])
+		.expect("write fixture artifacts");
+
+	let context: serde_json::Value = serde_json::from_slice(
+		&std::fs::read(root.path().join("run.json")).expect("read run context"),
+	)
+	.expect("parse run context");
+	assert_eq!(context["fixture_root"], fixture_root.display().to_string());
+	assert_eq!(context["completed_cases"], 0);
+	assert_eq!(context["expected_verdicts"]["case-a"]["matches_human"], 1);
+	assert!(root.path().join("results.json").is_file());
+	assert!(root.path().join("report.md").is_file());
+}
+
 /// Every committed fixture reproduces its base-aware baseline verdict tally. Data-driven:
 /// add a case by running `extract-fixtures` + regenerating `expected.json` —
-/// no test code change needed.
+/// no test code change needed. Set `FOCH_MQ_FIXTURE_ARTIFACT_DIR` to retain
+/// merged trees plus `results.json`, `report.md`, and reproducibility context.
 #[test]
 #[ignore = "requires local tests/fixtures/basegame-text.tar.gz"]
 fn committed_corpus_reproduces_base_aware_baseline() {
@@ -167,9 +229,23 @@ fn committed_corpus_reproduces_base_aware_baseline() {
 	);
 	let _base_data = FixtureBaseData::install(&basegame);
 	let mut score_cache = ScoreCache::new();
-	let mut actual = BTreeMap::new();
+	let mut actual: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+	let mut results: Vec<CaseResult> = Vec::with_capacity(expected.len());
+	let artifact_run_root: Option<PathBuf> = fixture_artifact_run_root();
+	if let Some(run_root) = &artifact_run_root {
+		std::fs::create_dir_all(run_root.join("merged"))
+			.expect("create fixture artifact directory");
+		write_fixture_run_artifacts(run_root, &corpus, &expected, &actual, &results)
+			.expect("initialize fixture artifacts");
+		eprintln!("[fixture] artifact run: {}", run_root.display());
+	}
 
-	for compatch_id in expected.keys() {
+	for (index, compatch_id) in expected.keys().enumerate() {
+		eprintln!(
+			"[fixture] scoring case {}/{}: {compatch_id}",
+			index + 1,
+			expected.len()
+		);
 		let case = fixture_corpus
 			.cases
 			.iter()
@@ -181,18 +257,35 @@ fn committed_corpus_reproduces_base_aware_baseline() {
 			.iter()
 			.map(|id| workshop.join(id))
 			.collect::<Vec<_>>();
-		let out = tempfile::tempdir().expect("create fixture merge output");
+		let temporary_output: Option<tempfile::TempDir> = artifact_run_root
+			.is_none()
+			.then(|| tempfile::tempdir().expect("create fixture merge output"));
+		let output_dir: PathBuf = artifact_run_root.as_ref().map_or_else(
+			|| {
+				temporary_output
+					.as_ref()
+					.expect("temporary output exists without artifact root")
+					.path()
+					.to_path_buf()
+			},
+			|run_root| run_root.join("merged").join(compatch_id),
+		);
 		let result = score_case_from_paths_with_cache(
 			case,
 			&compatch,
 			&mod_dirs,
-			out.path(),
+			&output_dir,
 			BaseGameMode::Path(&basegame),
 			None,
 			&mut score_cache,
 		)
 		.expect("score full fixture case");
-		actual.insert(compatch_id.clone(), result.multi_source_verdicts);
+		actual.insert(compatch_id.clone(), result.multi_source_verdicts.clone());
+		results.push(result);
+		if let Some(run_root) = &artifact_run_root {
+			write_fixture_run_artifacts(run_root, &corpus, &expected, &actual, &results)
+				.expect("refresh fixture artifacts");
+		}
 	}
 	assert_eq!(actual, expected, "merge-quality verdict baseline drifted");
 }

@@ -70,6 +70,21 @@ target/release/foch-mq report
 target/release/foch-mq report --cohort all-candidates
 ```
 
+The committed six-case fixture is a smaller, network-free regression gate. Its
+private base-game archive is required locally. Set an artifact parent to retain
+each merged tree and refresh detailed results after every completed case:
+
+```fish
+set -x FOCH_MQ_FIXTURE_ARTIFACT_DIR /tmp/foch-mq-fixture-runs
+cargo test --release -p foch-merge-quality --test scoring \
+  committed_corpus_reproduces_base_aware_baseline -- --ignored --nocapture
+```
+
+Each invocation creates a unique child directory containing `merged/<case-id>`,
+`results.json`, `report.md`, and `run.json`. The artifacts are written before
+the expected-verdict assertion, so an intentional baseline-drift failure still
+leaves the complete per-file evidence for adjudication.
+
 The default report is the scorable oracle cohort. `--cohort all-candidates`
 keeps broad-search false positives visible for discovery and audit without
 mixing them into the quality denominator. The current automatic policy marks a
