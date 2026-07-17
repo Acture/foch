@@ -5,6 +5,7 @@ members = [
 	"crates/foch-core", "crates/foch-cwt",
 	"crates/foch-engine",
 	"crates/foch-language", "crates/foch-syntax",
+	"crates/foch-merge-kernel",
 	"crates/foch-merge-quality",
 	"packages/tree-sitter-paradox",
 ]

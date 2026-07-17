@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::model::{MergeReport, MergeReportStatus};
 use foch_engine::{
-	CheckRequest, Config, MergeError, MergeExecuteOptions, MergeExecutionResult,
-	run_merge_with_options,
+	CheckRequest, Config, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeKernelMode,
+	run_merge_with_options_and_kernel,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
@@ -311,6 +311,27 @@ pub fn run_merge(
 	retained_paths: Option<BTreeSet<String>>,
 	expected_base_snapshot_identity: Option<&str>,
 ) -> Result<MergeExecutionResult, MergeError> {
+	run_merge_with_kernel(
+		playset,
+		out_dir,
+		basegame_root,
+		force,
+		retained_paths,
+		expected_base_snapshot_identity,
+		MergeKernelMode::Legacy,
+	)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn run_merge_with_kernel(
+	playset: &Path,
+	out_dir: &Path,
+	basegame_root: Option<&Path>,
+	force: bool,
+	retained_paths: Option<BTreeSet<String>>,
+	expected_base_snapshot_identity: Option<&str>,
+	merge_kernel: MergeKernelMode,
+) -> Result<MergeExecutionResult, MergeError> {
 	let playset = playset.to_path_buf();
 	let out_dir = out_dir.to_path_buf();
 	let basegame_root = basegame_root.map(Path::to_path_buf);
@@ -325,6 +346,7 @@ pub fn run_merge(
 				force,
 				retained_paths,
 				expected_base_snapshot_identity.as_deref(),
+				merge_kernel,
 			)
 		})
 		.expect("spawn merge worker thread")
@@ -339,6 +361,7 @@ fn run_merge_inner(
 	force: bool,
 	retained_paths: Option<BTreeSet<String>>,
 	expected_base_snapshot_identity: Option<&str>,
+	merge_kernel: MergeKernelMode,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let mut game_path = HashMap::new();
 	if let Some(root) = basegame_root {
@@ -356,7 +379,7 @@ fn run_merge_inner(
 	if let Some(identity) = expected_base_snapshot_identity {
 		request = request.with_expected_base_snapshot_identity(identity);
 	}
-	let result = run_merge_with_options(
+	let result = run_merge_with_options_and_kernel(
 		request,
 		MergeExecuteOptions {
 			out_dir: out_dir.to_path_buf(),
@@ -373,6 +396,7 @@ fn run_merge_inner(
 			provenance: false,
 			retained_paths,
 		},
+		merge_kernel,
 	)?;
 	if expected_base_snapshot_identity.is_some() && result.report.status == MergeReportStatus::Fatal
 	{

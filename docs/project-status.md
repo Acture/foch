@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-16
+Last updated: 2026-07-18
 
 ## Summary
 
@@ -103,6 +103,22 @@ reduced the semantic difference to 7 human-only and 2 foch-only atoms with
 branches inside matched events/options, so event control-flow identity is the
 next event-specific merge-quality target.
 
+An experimental structured-merge vertical slice now exists behind an engine
+API used only by `foch-mq shadow-compare`. A parser-independent kernel provides
+verified tree matching, base-composed left/right correspondence, PCS ordering,
+provenance, and typed conflicts; the first Clausewitz adapter supports only
+ordinary event files with a non-empty vanilla base and exactly two final DAG
+sinks. Legacy and Structured run in isolated child processes and cache
+namespaces, and unsupported shapes fail explicitly before any winner-copy
+fallback. Shadow manifests bind executable, mod, retained vanilla, and base
+snapshot contents together with the effective `foch.toml` and external
+resolution files; failed, drifted, or non-kernel arms are never compared.
+Delete-versus-move/reparent/reorder is conflict-visible rather than silently
+deleted. This is a probe surface, not a new quality baseline: no full corpus
+shadow run has been performed, and the committed 7/21 non-GUI result and scorer
+expectations are unchanged. See
+[`structured-merge-shadow.md`](./structured-merge-shadow.md).
+
 The shipped product surface includes:
 
 - `foch check`
@@ -124,6 +140,8 @@ The repository now has these first-class packages:
 - `crates/foch-core`
 - `crates/foch-language`
 - `crates/foch-engine`
+- `crates/foch-merge-kernel`
+- `crates/foch-merge-quality`
 - `packages/tree-sitter-paradox`
 - `packages/vscode-foch`
 

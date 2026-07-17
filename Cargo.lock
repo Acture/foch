@@ -969,6 +969,7 @@ dependencies = [
  "foch-core",
  "foch-cwt",
  "foch-language",
+ "foch-merge-kernel",
  "globset",
  "postcard",
  "rayon",
@@ -1007,6 +1008,16 @@ dependencies = [
  "sha2",
  "tempfile",
  "walkdir",
+]
+
+[[package]]
+name = "foch-merge-kernel"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

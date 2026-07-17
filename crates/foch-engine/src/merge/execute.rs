@@ -30,6 +30,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use super::structured::MergeKernelMode;
+
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
@@ -88,6 +90,14 @@ pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<MergeExecutionResult, MergeError> {
+	run_merge_with_options_and_kernel(request, options, MergeKernelMode::Legacy)
+}
+
+pub fn run_merge_with_options_and_kernel(
+	request: CheckRequest,
+	options: MergeExecuteOptions,
+	merge_kernel: MergeKernelMode,
+) -> Result<MergeExecutionResult, MergeError> {
 	let inventory_started = Instant::now();
 	let mut inventory_result = build_workspace_inventory_with_hash_cache(
 		&request,
@@ -140,7 +150,7 @@ pub fn run_merge_with_options(
 			};
 			cache.and_then(|cache| {
 				inventory_result.as_ref().ok().and_then(|inventory| {
-					build_modset_cache_context(&request, inventory, &options, cache)
+					build_modset_cache_context(&request, inventory, &options, merge_kernel, cache)
 				})
 			})
 		} else if has_interactive_conflict_handler {
@@ -242,6 +252,7 @@ pub fn run_merge_with_options(
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
 			provenance: options.provenance,
+			merge_kernel,
 			retained_paths: effective_retained_paths,
 		},
 		workspace_result,
@@ -371,6 +382,7 @@ fn build_modset_cache_context(
 	request: &CheckRequest,
 	inventory: &WorkspaceInventory,
 	options: &MergeExecuteOptions,
+	merge_kernel: MergeKernelMode,
 	cache: ModsetCache,
 ) -> Option<ModsetCacheContext> {
 	if options
@@ -416,6 +428,7 @@ fn build_modset_cache_context(
 		dep_overrides: &dep_overrides_label,
 		retained_paths: &retained_paths_label,
 		output_dir: &output_dir_label,
+		merge_kernel: merge_kernel.as_str(),
 	});
 	let key = compute_modset_cache_key(
 		&mod_hashes,
@@ -436,12 +449,14 @@ struct ModsetCacheBehavior<'a> {
 	dep_overrides: &'a str,
 	retained_paths: &'a str,
 	output_dir: &'a str,
+	merge_kernel: &'a str,
 }
 
 fn modset_cache_version_label(behavior: ModsetCacheBehavior<'_>) -> String {
 	format!(
-		"{} modset_cache={MODSET_CACHE_VERSION} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={} output_dir={}",
+		"{} modset_cache={MODSET_CACHE_VERSION} merge_kernel={} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={} output_dir={}",
 		env!("CARGO_PKG_VERSION"),
+		behavior.merge_kernel,
 		behavior.include_base,
 		behavior.provenance,
 		behavior.gui_scroll_merge,
@@ -1078,6 +1093,7 @@ mod tests {
 				dep_overrides: "none",
 				retained_paths: "full",
 				output_dir: "same-output",
+				merge_kernel: "legacy",
 			});
 			compute_modset_cache_key(
 				&["same-mod".to_string()],
@@ -1088,6 +1104,31 @@ mod tests {
 		};
 
 		assert_ne!(key_for(false), key_for(true));
+	}
+
+	#[test]
+	fn modset_cache_key_separates_merge_kernels() {
+		let key_for = |merge_kernel| {
+			let version = modset_cache_version_label(ModsetCacheBehavior {
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				provenance: false,
+				dep_overrides: "none",
+				retained_paths: "full",
+				output_dir: "same-output",
+				merge_kernel,
+			});
+			compute_modset_cache_key(
+				&["same-mod".to_string()],
+				"same-resolution",
+				&version,
+				"same-game",
+			)
+		};
+
+		assert_ne!(key_for("legacy"), key_for("structured"));
 	}
 
 	#[test]
@@ -1103,6 +1144,7 @@ mod tests {
 				dep_overrides: &dep_overrides,
 				retained_paths: "full",
 				output_dir: "same-output",
+				merge_kernel: "legacy",
 			});
 			compute_modset_cache_key(
 				&["same-mod".to_string()],

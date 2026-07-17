@@ -3,12 +3,17 @@
 //! Offline subcommands (`run`, `learn`, `extract-fixtures`) always build; the
 //! network ones (`discover`, `fetch`, `all`) require the `steam` feature.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use foch_merge_quality::{CmdResult, archive, config, fixtures, lifecycle, orchestrate, symbols};
+use foch_engine::MergeKernelMode;
+use foch_merge_quality::{
+	CmdResult, archive, config, fixtures, lifecycle, orchestrate, shadow, symbols,
+};
 
 #[derive(Parser)]
 #[command(
@@ -144,6 +149,29 @@ enum Cmd {
 		#[arg(long)]
 		ignore_order: bool,
 	},
+	/// Run legacy and structured merge kernels in isolated child processes.
+	ShadowCompare {
+		#[arg(long)]
+		playset: PathBuf,
+		#[arg(long)]
+		out_dir: PathBuf,
+		#[arg(long = "retained-path", required = true)]
+		retained_paths: Vec<String>,
+		#[arg(long)]
+		base_snapshot_identity: Option<String>,
+		#[arg(long)]
+		force: bool,
+	},
+	/// Execute one isolated shadow-comparison arm.
+	#[command(hide = true)]
+	ShadowRunOne {
+		#[arg(long)]
+		input_manifest: PathBuf,
+		#[arg(long)]
+		out_dir: PathBuf,
+		#[arg(long, value_enum)]
+		kernel: ShadowKernelKind,
+	},
 	/// Extract full local cases and pack the committed corpus archives.
 	ExtractFixtures {
 		/// Workshop/corpus archive (gzip-compressed tar).
@@ -186,6 +214,21 @@ enum ExportKind {
 enum ReportCohortKind {
 	Scorable,
 	AllCandidates,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ShadowKernelKind {
+	Legacy,
+	Structured,
+}
+
+impl From<ShadowKernelKind> for MergeKernelMode {
+	fn from(value: ShadowKernelKind) -> Self {
+		match value {
+			ShadowKernelKind::Legacy => Self::Legacy,
+			ShadowKernelKind::Structured => Self::Structured,
+		}
+	}
 }
 
 impl From<ReportCohortKind> for lifecycle::ReportCohort {
@@ -392,6 +435,39 @@ fn main() -> CmdResult {
 			println!("{}", serde_json::to_string_pretty(&diff)?);
 			Ok(())
 		}
+		Cmd::ShadowCompare {
+			playset,
+			out_dir,
+			retained_paths,
+			base_snapshot_identity,
+			force,
+		} => {
+			let game = discover_game(&game_root, &steam_root)?;
+			run_shadow_compare(
+				&playset,
+				&out_dir,
+				&game,
+				retained_paths,
+				base_snapshot_identity.as_deref(),
+				force,
+			)
+		}
+		Cmd::ShadowRunOne {
+			input_manifest,
+			out_dir,
+			kernel,
+		} => {
+			let manifest = serde_json::from_slice(&fs::read(input_manifest)?)?;
+			let executable = std::env::current_exe()?;
+			let record = shadow::run_shadow_arm(shadow::ShadowRunRequest {
+				manifest: &manifest,
+				output_dir: &out_dir,
+				executable: &executable,
+				kernel: kernel.into(),
+			});
+			println!("{}", serde_json::to_string(&record)?);
+			Ok(())
+		}
 		Cmd::ExtractFixtures {
 			out,
 			basegame_out,
@@ -456,6 +532,124 @@ fn main() -> CmdResult {
 	}
 }
 
+fn run_shadow_compare(
+	playset: &std::path::Path,
+	out_dir: &std::path::Path,
+	game: &config::Eu4GameDiscovery,
+	retained_paths: Vec<String>,
+	expected_base_snapshot_identity: Option<&str>,
+	force: bool,
+) -> CmdResult {
+	let retained_paths = retained_paths.into_iter().collect::<BTreeSet<_>>();
+	if retained_paths.is_empty() {
+		return Err("shadow-compare requires at least one --retained-path".into());
+	}
+	let (legacy_dir, structured_dir) = prepare_shadow_compare_dir(out_dir)?;
+	let executable = std::env::current_exe()?;
+	let base_snapshot = shadow::verified_retained_base_snapshot(
+		&game.game_version,
+		expected_base_snapshot_identity,
+		&retained_paths,
+	)?;
+	let manifest = shadow::capture_input_manifest(shadow::ShadowCaptureRequest {
+		playset,
+		game_root: &game.game_root,
+		game_version: &game.game_version,
+		retained_paths: &retained_paths,
+		retained_base_paths: &base_snapshot.retained_paths,
+		base_snapshot_identity: &base_snapshot.identity,
+		force,
+		executable: &executable,
+	})?;
+	let comparison_id = manifest.comparison_id.clone();
+	let manifest_path = out_dir.join("shadow-inputs.json");
+	fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+	eprintln!("[shadow] comparison={} kernel=legacy", &comparison_id[..12]);
+	let legacy = spawn_shadow_arm(ShadowArmCommand {
+		executable: &executable,
+		input_manifest: &manifest_path,
+		output_dir: &legacy_dir,
+		kernel: ShadowKernelKind::Legacy,
+	})?;
+	eprintln!(
+		"[shadow] comparison={} kernel=structured",
+		&comparison_id[..12]
+	);
+	let structured = spawn_shadow_arm(ShadowArmCommand {
+		executable: &executable,
+		input_manifest: &manifest_path,
+		output_dir: &structured_dir,
+		kernel: ShadowKernelKind::Structured,
+	})?;
+	let report = shadow::build_comparison_report(manifest, legacy, structured)?;
+	let encoded = serde_json::to_vec_pretty(&report)?;
+	fs::write(out_dir.join("shadow-compare.json"), &encoded)?;
+	println!("{}", String::from_utf8(encoded)?);
+	Ok(())
+}
+
+struct ShadowArmCommand<'a> {
+	executable: &'a std::path::Path,
+	input_manifest: &'a std::path::Path,
+	output_dir: &'a std::path::Path,
+	kernel: ShadowKernelKind,
+}
+
+fn spawn_shadow_arm(
+	arm: ShadowArmCommand<'_>,
+) -> Result<shadow::ShadowRunRecord, Box<dyn std::error::Error>> {
+	let kernel = match arm.kernel {
+		ShadowKernelKind::Legacy => "legacy",
+		ShadowKernelKind::Structured => "structured",
+	};
+	shadow::reset_output_dir(arm.output_dir)?;
+	let mut command = Command::new(arm.executable);
+	command
+		.arg("shadow-run-one")
+		.arg("--input-manifest")
+		.arg(arm.input_manifest)
+		.arg("--out-dir")
+		.arg(arm.output_dir)
+		.arg("--kernel")
+		.arg(kernel);
+	let output = command.output()?;
+	if !output.status.success() {
+		shadow::reset_output_dir(arm.output_dir)?;
+		return Err(std::io::Error::other(format!(
+			"{kernel} shadow child failed with status {:?}: {}",
+			output.status.code(),
+			String::from_utf8_lossy(&output.stderr).trim()
+		))
+		.into());
+	}
+	match serde_json::from_slice(&output.stdout) {
+		Ok(record) => Ok(record),
+		Err(error) => {
+			shadow::reset_output_dir(arm.output_dir)?;
+			Err(error.into())
+		}
+	}
+}
+
+fn prepare_shadow_compare_dir(out_dir: &std::path::Path) -> std::io::Result<(PathBuf, PathBuf)> {
+	fs::create_dir_all(out_dir)?;
+	remove_file_if_exists(&out_dir.join("shadow-compare.json"))?;
+	remove_file_if_exists(&out_dir.join("shadow-inputs.json"))?;
+	let legacy_dir = out_dir.join("legacy");
+	let structured_dir = out_dir.join("structured");
+	shadow::reset_output_dir(&legacy_dir)?;
+	shadow::reset_output_dir(&structured_dir)?;
+	Ok((legacy_dir, structured_dir))
+}
+
+fn remove_file_if_exists(path: &std::path::Path) -> std::io::Result<()> {
+	match fs::remove_file(path) {
+		Ok(()) => Ok(()),
+		Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+		Err(error) => Err(error),
+	}
+}
+
 fn discover(
 	game_root: &Option<PathBuf>,
 	workshop_dir: &Option<PathBuf>,
@@ -495,4 +689,32 @@ fn legacy_workshop(
 		.into_iter()
 		.next()
 		.ok_or_else(|| "no Workshop root discovered".into())
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn shadow_preflight_clears_stale_arm_and_manifest_artifacts() {
+		let temp = tempfile::tempdir().unwrap();
+		let out_dir = temp.path().join("shadow");
+		for relative in [
+			"legacy/events/stale.txt",
+			"structured/events/stale.txt",
+			"shadow-compare.json",
+			"shadow-inputs.json",
+		] {
+			let path = out_dir.join(relative);
+			fs::create_dir_all(path.parent().unwrap()).unwrap();
+			fs::write(path, "stale").unwrap();
+		}
+
+		let (legacy, structured) = prepare_shadow_compare_dir(&out_dir).unwrap();
+
+		assert!(!legacy.exists());
+		assert!(!structured.exists());
+		assert!(!out_dir.join("shadow-compare.json").exists());
+		assert!(!out_dir.join("shadow-inputs.json").exists());
+	}
 }

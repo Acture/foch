@@ -17,3 +17,4 @@ Read these documents in order if you are new to the project; each entry points a
 ## Implementation Spec
 
 - [merge-design.md](./merge-design.md) - implementation-grade design for `merge-plan`, `merge`, generated output layout, strategy classification, conflict handling, and validation
+- [structured-merge-shadow.md](./structured-merge-shadow.md) - experimental GumTree/PCS kernel slice, strict event eligibility, and isolated Legacy/Structured shadow comparison

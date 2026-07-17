@@ -3,7 +3,10 @@ use foch_core::domain::descriptor::load_descriptor;
 use foch_core::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
 };
-use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
+use foch_engine::{
+	CheckRequest, Config, MergeExecuteOptions, MergeKernelMode, run_merge_with_options,
+	run_merge_with_options_and_kernel,
+};
 use foch_language::analyzer::content_family::{ContentLoadPolicy, GameProfile};
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch_language::analyzer::eu4_profile::eu4_profile;
@@ -453,6 +456,71 @@ fn eu4_minimal_passthrough_copies_per_path_files_and_materializes_common_module(
 		);
 	}
 	assert!(!out.join("common/cultures/00_cultures.txt").exists());
+}
+
+#[test]
+fn public_legacy_selection_matches_default_on_a_warm_modset_cache() {
+	let fixture = fixture_dir("eu4_minimal_passthrough");
+	let temp_dir = tempfile::tempdir().expect("create legacy parity tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("empty-eu4-game");
+	fs::create_dir_all(&game_root).expect("create empty game root");
+	let request = || {
+		let mut game_path = HashMap::new();
+		game_path.insert("eu4".to_string(), game_root.clone());
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		)
+	};
+	let options = || MergeExecuteOptions {
+		out_dir: out_dir.clone(),
+		include_game_base: false,
+		include_base: false,
+		gui_scroll_merge: false,
+		force: true,
+		ignore_replace_path: false,
+		dep_overrides: Vec::new(),
+		resolution_config_path: None,
+		interactive_conflict_handler: None,
+		interactive_resolution_config_path: None,
+		playset_fingerprint: None,
+		provenance: false,
+		retained_paths: None,
+	};
+	let output_paths = [
+		"common/defines.lua",
+		"localisation/minimal_l_english.yml",
+		"events/foo.txt",
+		"common/cultures/zzz_foch_cultures.txt",
+	];
+	let read_outputs = || {
+		output_paths
+			.iter()
+			.map(|path| {
+				fs::read(out_dir.join(path))
+					.unwrap_or_else(|error| panic!("read legacy output {path}: {error}"))
+			})
+			.collect::<Vec<_>>()
+	};
+
+	let default = run_merge_with_options(request(), options()).expect("run default legacy merge");
+	assert_ne!(default.report.cache_source.as_deref(), Some("modset"));
+	let cold_outputs = read_outputs();
+	let explicit = run_merge_with_options_and_kernel(request(), options(), MergeKernelMode::Legacy)
+		.expect("run explicit legacy merge");
+	assert_eq!(
+		explicit.report.cache_source.as_deref(),
+		Some("modset"),
+		"the explicit Legacy rerun should exercise the warm modset-cache path"
+	);
+	assert_eq!(explicit.report.status, default.report.status);
+	assert_eq!(read_outputs(), cold_outputs);
 }
 
 fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Path, rel: &str) {
@@ -1660,5 +1728,115 @@ fn eu4_priority_boost_overrides_load_order_winner() {
 		!merged_text.contains("foch_300002_title"),
 		"priority_boost should override the natural load-order winner 300002; got:
 {merged_text}"
+	);
+}
+
+#[test]
+fn structured_merge_rejects_a_synthetic_base_without_copying_a_winner() {
+	let fixture = fixture_dir("eu4_priority_boost");
+	let temp_dir = tempfile::tempdir().expect("create structured merge tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let prior_file = out_dir.join("events/test_events.txt");
+	fs::create_dir_all(prior_file.parent().expect("prior output parent"))
+		.expect("create prior output parent");
+	fs::write(&prior_file, "prior-output\n").expect("write prior output");
+	let game_root = temp_dir.path().join("empty-eu4-game");
+	fs::create_dir_all(&game_root).expect("create empty game root");
+	let mut game_path = HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+
+	let error = run_merge_with_options_and_kernel(
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		),
+		MergeExecuteOptions {
+			out_dir: out_dir.clone(),
+			include_game_base: false,
+			include_base: false,
+			gui_scroll_merge: false,
+			force: false,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path: None,
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
+			playset_fingerprint: None,
+			provenance: false,
+			retained_paths: Some(["events/test_events.txt".to_string()].into()),
+		},
+		MergeKernelMode::Structured,
+	)
+	.expect_err("structured merge must reject a synthetic three-way base");
+	let message = error.to_string();
+	assert!(
+		message.contains("structured merge unsupported") && message.contains("real vanilla file"),
+		"unexpected structured rejection: {message}"
+	);
+	assert_eq!(
+		fs::read_to_string(prior_file).expect("read preserved prior output"),
+		"prior-output\n",
+		"an unsupported structured run must not publish a copied winner"
+	);
+}
+
+#[test]
+fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success() {
+	let fixture = fixture_dir("eu4_minimal_passthrough");
+	let temp_dir = tempfile::tempdir().expect("create structured merge tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let prior_file = out_dir.join("events/foo.txt");
+	fs::create_dir_all(prior_file.parent().expect("prior output parent"))
+		.expect("create prior output parent");
+	fs::write(&prior_file, "prior-output\n").expect("write prior output");
+	let game_root = temp_dir.path().join("empty-eu4-game");
+	fs::create_dir_all(&game_root).expect("create empty game root");
+	let mut game_path = HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+
+	let error = run_merge_with_options_and_kernel(
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		),
+		MergeExecuteOptions {
+			out_dir: out_dir.clone(),
+			include_game_base: false,
+			include_base: false,
+			gui_scroll_merge: false,
+			force: false,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path: None,
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
+			playset_fingerprint: None,
+			provenance: false,
+			retained_paths: Some(["events/foo.txt".to_string()].into()),
+		},
+		MergeKernelMode::Structured,
+	)
+	.expect_err("structured merge must reject a copy-through unit");
+	let message = error.to_string();
+	assert!(
+		message.contains("structured merge unsupported")
+			&& message.contains("planned as copy_through")
+			&& message.contains("candidate kernel was not invoked"),
+		"unexpected structured rejection: {message}"
+	);
+	assert_eq!(
+		fs::read_to_string(prior_file).expect("read preserved prior output"),
+		"prior-output\n",
+		"a non-kernel structured run must not publish copy-through output"
 	);
 }

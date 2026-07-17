@@ -18,6 +18,7 @@ globset.workspace = true
 foch-core = { path = "../foch-core" }
 foch-cwt = { path = "../foch-cwt" }
 foch-language = { path = "../foch-language" }
+foch-merge-kernel = { path = "../foch-merge-kernel" }
 atty = "0.2"
 rayon.workspace = true
 reqwest.workspace = true

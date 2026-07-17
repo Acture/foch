@@ -31,8 +31,8 @@ use super::super::super::conflict_handler::{
 use super::super::super::conflict_view::build_conflict_view;
 use super::super::super::error::MergeError;
 use super::super::super::patch_deps::{
-	DagPatchComputation, DagPatchRequest, compute_dag_patches_from_parsed,
-	compute_dag_patches_with_handler,
+	DagPatchComputation, DagPatchRequest, compute_dag_patches_from_parsed_with_kernel,
+	compute_dag_patches_with_handler_and_kernel,
 };
 use super::super::super::patch_merge::{
 	AttributedPatch, PatchAddress, PatchConflict, PatchResolution,
@@ -503,7 +503,7 @@ fn run_patch_merge_engine(
 		},
 	};
 	let effective_policies = effective_merge_policies(context);
-	compute_dag_patches_with_handler(
+	compute_dag_patches_with_handler_and_kernel(
 		DagPatchRequest {
 			file_path: target_path,
 			contributors,
@@ -516,6 +516,7 @@ fn run_patch_merge_engine(
 			script_cache: Some(context.script_cache),
 		},
 		&mut handler,
+		context.merge_kernel,
 	)
 	.map_err(|err| MergeError::Validation {
 		path: Some(target_path.to_string()),
@@ -552,13 +553,14 @@ fn run_cross_file_module_patch_engine(
 		},
 	};
 	let effective_policies = effective_merge_policies(context);
-	compute_dag_patches_from_parsed(
+	compute_dag_patches_from_parsed_with_kernel(
 		&views.file_dag,
 		views.vanilla.as_ref(),
 		&views.contributors,
 		context.merge_key_source,
 		&effective_policies,
 		&mut handler,
+		context.merge_kernel,
 	)
 	.map_err(|err| MergeError::Validation {
 		path: Some(target_path.to_string()),

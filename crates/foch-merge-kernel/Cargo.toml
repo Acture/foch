@@ -1,0 +1,14 @@
+[package]
+name = "foch-merge-kernel"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only AND GPL-3.0-only"
+readme = "README.md"
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3 = "1.5.5"
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2.0"

@@ -44,8 +44,9 @@ pub use graph::{
 };
 pub use merge::{
 	AnalysisStatusView, CandidateView, ConflictDecision, ConflictHandler, ConflictView,
-	InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
-	run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
+	InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeKernelMode,
+	MergeStatusView, run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
+	run_merge_with_options_and_kernel,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions, WorkspaceSource};
 pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};

@@ -20,6 +20,7 @@ use super::super::plan::build_merge_plan_from_workspace;
 use super::super::planning::module_view::build_cross_file_module_views;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
+use crate::merge::MergeKernelMode;
 use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{
@@ -72,6 +73,7 @@ pub(crate) struct MergeMaterializeOptions {
 	/// When set, annotate merged definitions with their adopted source mods
 	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
 	pub provenance: bool,
+	pub merge_kernel: MergeKernelMode,
 	/// Optional relative-path retention set for callers that only need a subset
 	/// of copy-through output.
 	pub retained_paths: Option<BTreeSet<String>>,
@@ -90,6 +92,7 @@ impl Default for MergeMaterializeOptions {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
+			merge_kernel: crate::merge::MergeKernelMode::Legacy,
 			retained_paths: None,
 		}
 	}
@@ -272,6 +275,9 @@ pub(crate) fn materialize_merge_with_workspace_result(
 		write_clean_metadata_only(out_dir, &plan, &report)?;
 		return Ok(report);
 	}
+	if options.merge_kernel == MergeKernelMode::Structured {
+		validate_structured_plan_selection(&plan, options.retained_paths.as_ref())?;
+	}
 
 	let workspace = workspace_result?;
 	let (mod_dag, dag_diagnostics) = stage_log_with("build_mod_dag", || {
@@ -381,6 +387,14 @@ pub(crate) fn materialize_merge_with_workspace_result(
 				}
 			}
 			MergePlanStrategy::StructuralMerge => {
+				let contributors = workspace.file_inventory.get(entry.output_path());
+				if options.merge_kernel == MergeKernelMode::Structured {
+					validate_structured_merge_entry(
+						entry,
+						contributors.map(Vec::as_slice),
+						profile,
+					)?;
+				}
 				if matches!(&entry.target, MergePlanTarget::Module { .. }) {
 					let module_started = Instant::now();
 					let conflicts_before = report.manual_conflict_count;
@@ -414,7 +428,6 @@ pub(crate) fn materialize_merge_with_workspace_result(
 					}
 					continue;
 				}
-				let contributors = workspace.file_inventory.get(entry.output_path());
 				let has_base = contributors
 					.map(|cs| cs.iter().any(|c| c.is_base_game || c.is_synthetic_base))
 					.unwrap_or(false);
@@ -468,6 +481,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										cache_game_version: &cache_game_version,
 										emit_options: &emit_options,
 										provenance: options.provenance,
+										merge_kernel: options.merge_kernel,
 										script_cache: &workspace.script_cache,
 									};
 									patch_based_structural_merge(
@@ -828,6 +842,7 @@ fn materialize_cross_file_module(
 			cache_game_version,
 			emit_options,
 			provenance: options.provenance,
+			merge_kernel: options.merge_kernel,
 			script_cache: &workspace.script_cache,
 		};
 		patch_based_cross_file_module_merge(
@@ -1304,6 +1319,123 @@ fn dag_diagnostic_warning(diagnostic: &DagDiagnostic) -> Option<String> {
 	}
 }
 
+fn validate_structured_merge_entry(
+	entry: &MergePlanEntry,
+	contributors: Option<&[ResolvedFileContributor]>,
+	profile: &dyn GameProfile,
+) -> Result<(), MergeError> {
+	if !matches!(entry.target, MergePlanTarget::File { .. }) {
+		return Err(structured_merge_unsupported(
+			entry,
+			"the first slice does not support definition modules",
+		));
+	}
+	let contributors = contributors.ok_or_else(|| {
+		structured_merge_unsupported(entry, "the merge unit has no file contributors")
+	})?;
+	if !contributors
+		.iter()
+		.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
+	{
+		return Err(structured_merge_unsupported(
+			entry,
+			"a real vanilla file is required as the three-way base",
+		));
+	}
+	let source_mod_count = contributors
+		.iter()
+		.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
+		.count();
+	if source_mod_count < 2 {
+		return Err(structured_merge_unsupported(
+			entry,
+			"at least two source mods are required",
+		));
+	}
+	let descriptor = profile
+		.classify_content_family(Path::new(entry.output_path()))
+		.ok_or_else(|| {
+			structured_merge_unsupported(entry, "the path has no ContentFamily descriptor")
+		})?;
+	if descriptor.id.as_str() != "events" {
+		return Err(structured_merge_unsupported(
+			entry,
+			"the first slice only supports the events content family",
+		));
+	}
+	if descriptor.merge_key_source.is_none() {
+		return Err(structured_merge_unsupported(
+			entry,
+			"the events family has no merge-key contract",
+		));
+	}
+	Ok(())
+}
+
+fn validate_structured_plan_selection(
+	plan: &MergePlanResult,
+	retained_paths: Option<&BTreeSet<String>>,
+) -> Result<(), MergeError> {
+	let retained_paths = retained_paths
+		.filter(|paths| !paths.is_empty())
+		.ok_or_else(|| MergeError::Validation {
+			path: None,
+			message: "structured merge unsupported: explicit retained paths are required"
+				.to_string(),
+		})?;
+	for retained_path in retained_paths {
+		let normalized = retained_path.replace('\\', "/");
+		let entry = plan
+			.paths
+			.iter()
+			.find(|entry| {
+				entry
+					.target
+					.input_paths()
+					.iter()
+					.any(|path| path == &normalized)
+			})
+			.ok_or_else(|| MergeError::Validation {
+				path: Some(normalized.clone()),
+				message: "structured merge unsupported: retained path has no merge-plan unit"
+					.to_string(),
+			})?;
+		if !matches!(entry.target, MergePlanTarget::File { .. }) {
+			return Err(structured_merge_unsupported(
+				entry,
+				"the first slice does not support definition modules",
+			));
+		}
+		if entry.strategy != MergePlanStrategy::StructuralMerge {
+			return Err(structured_merge_unsupported(
+				entry,
+				&format!(
+					"retained path planned as {}; the candidate kernel was not invoked",
+					merge_plan_strategy_name(entry.strategy)
+				),
+			));
+		}
+	}
+	Ok(())
+}
+
+fn merge_plan_strategy_name(strategy: MergePlanStrategy) -> &'static str {
+	match strategy {
+		MergePlanStrategy::CopyThrough => "copy_through",
+		MergePlanStrategy::LastWriterOverlay => "last_writer_overlay",
+		MergePlanStrategy::StructuralMerge => "structural_merge",
+		MergePlanStrategy::LocalisationMerge => "localisation_merge",
+		MergePlanStrategy::ManualConflict => "manual_conflict",
+	}
+}
+
+fn structured_merge_unsupported(entry: &MergePlanEntry, reason: &str) -> MergeError {
+	MergeError::Validation {
+		path: Some(entry.output_path().to_string()),
+		message: format!("structured merge unsupported: {reason}"),
+	}
+}
+
 fn record_plan_manual_conflicts(report: &mut MergeReport, plan: &MergePlanResult) {
 	for entry in &plan.paths {
 		if entry.strategy != MergePlanStrategy::ManualConflict {
@@ -1478,6 +1610,7 @@ struct PatchBasedMergeContext<'a> {
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
 	provenance: bool,
+	merge_kernel: MergeKernelMode,
 	script_cache: &'a WorkspaceScriptCache,
 }
 
@@ -1992,6 +2125,7 @@ mod tests {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
+			merge_kernel: crate::merge::MergeKernelMode::Legacy,
 			retained_paths: None,
 		}
 	}

@@ -26,6 +26,7 @@ pub mod object_store;
 pub mod orchestrate;
 pub mod report;
 pub mod score;
+pub mod shadow;
 pub mod symbols;
 
 #[cfg(feature = "steam")]
