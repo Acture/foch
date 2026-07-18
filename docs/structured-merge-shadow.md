@@ -134,9 +134,18 @@ Passing `--record` explicitly appends normalized records to
 
 ## Current Gate
 
-The corpus-native harness is implemented, but no real Elections or complete
-36-unit shadow run has been recorded yet. This is therefore still not a quality
-claim: the committed scorer expectations and current 7/21 non-GUI baseline are
-unchanged. Promotion requires at least one real non-GUI corpus improvement, no
+The targeted GE-EE `events/Elections.txt` gate has been run. After adding fixed
+assignment-value cardinality and wiring existing event policies, Structured
+finishes with valid output, no diagnostics, no duplicate anchors, and no orphan
+control-flow nodes. Against human it has 1,210 shared atoms, zero
+Structured-only atoms, and seven human-only atoms; Legacy has the same shared
+count plus two Legacy-only atoms. Structured took 53,524 ms versus Legacy's
+54,397 ms.
+
+The result is still `safety_failed`: an `if`/`else` chain is paired differently
+from human and the seven missing atoms remain. No complete 36-unit shadow run
+has therefore been recorded, the committed scorer expectations and 7/21
+non-GUI baseline are unchanged, and Structured events remain disabled.
+Promotion still requires at least one real non-GUI corpus improvement, no
 regression among the seven accepted units, no event-safety failure or silent
 wrong output, and runtime no worse than 2x Legacy on the promoted cohort.

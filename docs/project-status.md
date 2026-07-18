@@ -114,9 +114,12 @@ fallback. Shadow manifests bind executable, mod, retained vanilla, and base
 snapshot contents together with the effective `foch.toml` and external
 resolution files; failed, drifted, or non-kernel arms are never compared.
 Delete-versus-move/reparent/reorder is conflict-visible rather than silently
-deleted. This is a probe surface, not a new quality baseline: no full corpus
-shadow run has been performed, and the committed 7/21 non-GUI result and scorer
-expectations are unchanged. See
+deleted. Assignment and item wrappers now declare one required value child;
+required-slot matching and merge preserve that cardinality, and the adapter
+consumes the existing event edit-wins and scalar LastWriter policies. This is a
+probe surface, not a new quality baseline: no full corpus shadow run has been
+performed, and the committed 7/21 non-GUI result and scorer expectations are
+unchanged. See
 [`structured-merge-shadow.md`](./structured-merge-shadow.md).
 
 The probe now has a corpus-native execution layer. `foch-mq shadow-case`
@@ -126,7 +129,11 @@ supports an expected-denominator assertion, validates resumable evidence, and
 aggregates Legacy/Structured scores, semantic differences, event-safety checks,
 terminal failures, and timings. Child crashes and timeouts are paired report
 outcomes rather than aborted comparisons. This closes the evaluation plumbing
-gap only: GE-EE Elections and the 36-unit acceptance run are still pending, so
+gap only. The targeted GE-EE Elections run now completes with valid Structured
+output: 1,210 atoms match the human compatch, no Structured-only atoms remain,
+and seven human atoms are missing. It has no orphan control-flow nodes, but its
+control-flow shape still differs from human, so the gate remains
+`safety_failed`. The 36-unit acceptance run is intentionally still pending and
 the quality baseline remains 7/21 non-GUI.
 
 The shipped product surface includes:

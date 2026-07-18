@@ -6,7 +6,8 @@ use foch_language::analyzer::parser::{
 	AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange,
 };
 use foch_merge_kernel::{
-	ChildOrder, NodeId, NormalizedNode, NormalizedTree, SemanticKey, TreeError, TreeNode,
+	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, SemanticKey, TreeError,
+	TreeNode,
 };
 
 use super::policy::ClausewitzTreePolicy;
@@ -62,8 +63,15 @@ pub(crate) fn normalize_ast(
 		.iter()
 		.map(|statement| normalize_statement(statement, policy))
 		.collect();
-	NormalizedTree::from_root(branch(FILE_KIND, None, None, ChildOrder::Ordered, children))
-		.map_err(AstAdapterError::from)
+	NormalizedTree::from_root(branch(
+		FILE_KIND,
+		None,
+		None,
+		ChildOrder::Ordered,
+		ChildCardinality::Many,
+		children,
+	))
+	.map_err(AstAdapterError::from)
 }
 
 pub(crate) fn denormalize_ast(
@@ -94,6 +102,7 @@ fn normalize_statement(statement: &AstStatement, policy: &impl ClausewitzTreePol
 				Some(key.clone()),
 				policy.assignment_anchor(key, value),
 				ChildOrder::Ordered,
+				ChildCardinality::ExactlyOne,
 				vec![normalize_value(value, Some(key), policy)],
 			)
 		}
@@ -102,6 +111,7 @@ fn normalize_statement(statement: &AstStatement, policy: &impl ClausewitzTreePol
 			None,
 			None,
 			ChildOrder::Ordered,
+			ChildCardinality::ExactlyOne,
 			vec![normalize_value(value, None, policy)],
 		),
 		AstStatement::Comment { text, .. } => leaf(COMMENT_KIND, text.clone()),
@@ -125,6 +135,7 @@ fn normalize_value(
 			None,
 			None,
 			policy.block_child_order(assignment_key),
+			ChildCardinality::Many,
 			items
 				.iter()
 				.map(|statement| normalize_statement(statement, policy))
@@ -237,6 +248,7 @@ fn branch(
 	value: Option<String>,
 	anchor: Option<SemanticKey>,
 	child_order: ChildOrder,
+	child_cardinality: ChildCardinality,
 	children: Vec<TreeNode>,
 ) -> TreeNode {
 	TreeNode {
@@ -245,6 +257,7 @@ fn branch(
 		anchor,
 		signature: None,
 		child_order,
+		child_cardinality,
 		children,
 	}
 }

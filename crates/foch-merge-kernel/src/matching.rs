@@ -9,13 +9,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{NodeId, NormalizedNode, NormalizedTree, SemanticKey, SubtreeHash};
+use crate::{ChildCardinality, NodeId, NormalizedNode, NormalizedTree, SemanticKey, SubtreeHash};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchKind {
 	Exact,
 	SemanticAnchor,
+	RequiredSlot,
 	DescendantSimilarity,
 	Recovery,
 }
@@ -199,15 +200,19 @@ impl TreeMatcher {
 		}
 
 		match_unique_anchors(left, right, &mut matching);
+		match_required_slots(left, right, &mut matching);
 		match_exact_subtrees(left, right, &mut matching, self.config.min_height);
 		match_by_descendants(left, right, &mut matching, self.config.similarity_threshold);
+		match_required_slots(left, right, &mut matching);
 		recover_children(left, right, &mut matching, self.config.max_recovery_size);
 		matching
 	}
 }
 
 fn compatible(left: &NormalizedNode, right: &NormalizedNode) -> bool {
-	left.kind == right.kind && !anchors_forbid(left.anchor.as_ref(), right.anchor.as_ref())
+	left.kind == right.kind
+		&& left.child_cardinality == right.child_cardinality
+		&& !anchors_forbid(left.anchor.as_ref(), right.anchor.as_ref())
 }
 
 fn anchors_forbid(left: Option<&SemanticKey>, right: Option<&SemanticKey>) -> bool {
@@ -249,6 +254,58 @@ fn anchors_by_key(tree: &NormalizedTree) -> BTreeMap<SemanticKey, Vec<NodeId>> {
 		}
 	}
 	anchors
+}
+
+fn match_required_slots(left: &NormalizedTree, right: &NormalizedTree, matching: &mut Matching) {
+	loop {
+		let parents = matching.records().copied().collect::<Vec<_>>();
+		let mut changed = false;
+		for parent in parents {
+			let left_parent = left.node(parent.left).unwrap();
+			let right_parent = right.node(parent.right).unwrap();
+			if left_parent.child_cardinality != ChildCardinality::ExactlyOne
+				|| right_parent.child_cardinality != ChildCardinality::ExactlyOne
+			{
+				continue;
+			}
+			let ([left_child], [right_child]) = (
+				left_parent.children.as_slice(),
+				right_parent.children.as_slice(),
+			) else {
+				continue;
+			};
+			if !compatible(
+				left.node(*left_child).unwrap(),
+				right.node(*right_child).unwrap(),
+			) {
+				continue;
+			}
+			let matched_right = matching.get_from_left(*left_child);
+			let matched_left = matching.get_from_right(*right_child);
+			if matched_right.is_some_and(|matched| matched != *right_child)
+				|| matched_left.is_some_and(|matched| matched != *left_child)
+			{
+				matching.record_ambiguity(AmbiguousMatch {
+					left: *left_child,
+					candidates: vec![*right_child],
+					score: 1_000_000,
+				});
+				continue;
+			}
+			if matched_right == Some(*right_child) {
+				continue;
+			}
+			changed |= matching.insert(MatchRecord {
+				left: *left_child,
+				right: *right_child,
+				kind: MatchKind::RequiredSlot,
+				score: 1_000_000,
+			});
+		}
+		if !changed {
+			break;
+		}
+	}
 }
 
 fn match_exact_subtrees(
@@ -415,6 +472,7 @@ fn shallow_tree_eq(left: &NormalizedNode, right: &NormalizedNode) -> bool {
 		&& left.anchor == right.anchor
 		&& left.signature == right.signature
 		&& left.child_order == right.child_order
+		&& left.child_cardinality == right.child_cardinality
 }
 
 fn match_by_descendants(
@@ -528,6 +586,7 @@ fn recover_children(
 ) {
 	let mut processed = BTreeSet::new();
 	loop {
+		match_required_slots(left, right, matching);
 		let mut parents = matching
 			.records()
 			.copied()
@@ -544,8 +603,15 @@ fn recover_children(
 				.then_with(|| left_record.left.cmp(&right_record.left))
 		});
 		for parent in parents {
-			let left_children = left.node(parent.left).unwrap().children.clone();
-			let right_children = right.node(parent.right).unwrap().children.clone();
+			let left_parent = left.node(parent.left).unwrap();
+			let right_parent = right.node(parent.right).unwrap();
+			let left_children = left_parent.children.clone();
+			let right_children = right_parent.children.clone();
+			if left_parent.child_cardinality == ChildCardinality::ExactlyOne
+				&& right_parent.child_cardinality == ChildCardinality::ExactlyOne
+			{
+				continue;
+			}
 			if left_children.len().saturating_mul(right_children.len())
 				> max_recovery_size.saturating_mul(max_recovery_size)
 			{
@@ -687,6 +753,62 @@ mod tests {
 			matching.record(NodeId::new(1)).unwrap().kind,
 			MatchKind::SemanticAnchor
 		);
+	}
+
+	#[test]
+	fn required_slot_matches_divergent_compatible_children() {
+		let slot = |field: &str| {
+			NormalizedTree::from_root(
+				block(
+					"slot",
+					vec![block("block", vec![block(field, vec![scalar("yes")])])],
+				)
+				.with_child_cardinality(ChildCardinality::ExactlyOne),
+			)
+			.unwrap()
+		};
+		let left = slot("left_only");
+		let right = slot("right_only");
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert_eq!(
+			matching.record(NodeId::new(1)).unwrap().kind,
+			MatchKind::RequiredSlot
+		);
+	}
+
+	#[test]
+	fn required_slot_reports_a_preexisting_inconsistent_child_match() {
+		let tree = || {
+			NormalizedTree::from_root(block(
+				"root",
+				vec![
+					block("slot", vec![block("block", vec![scalar("value")])])
+						.with_child_cardinality(ChildCardinality::ExactlyOne),
+					block("block", vec![scalar("other")]),
+				],
+			))
+			.unwrap()
+		};
+		let left = tree();
+		let right = tree();
+		let mut matching = Matching::default();
+		for (left, right) in [(0, 0), (1, 1), (2, 4)] {
+			matching.insert(MatchRecord {
+				left: NodeId::new(left),
+				right: NodeId::new(right),
+				kind: MatchKind::Recovery,
+				score: 500_000,
+			});
+		}
+
+		match_required_slots(&left, &right, &mut matching);
+
+		assert_eq!(matching.ambiguities().len(), 1);
+		assert_eq!(matching.ambiguities()[0].left, NodeId::new(2));
+		assert_eq!(matching.ambiguities()[0].candidates, vec![NodeId::new(2)]);
 	}
 
 	#[test]

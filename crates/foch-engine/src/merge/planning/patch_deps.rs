@@ -177,6 +177,7 @@ struct StructuredFinalJoinArgs<'a> {
 	template: Option<&'a ParsedScriptFile>,
 	file_dag: &'a FileDag,
 	combined_result: PatchMergeResult,
+	policies: &'a MergePolicies,
 	has_vanilla_base: bool,
 }
 
@@ -1104,6 +1105,7 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 			template,
 			file_dag,
 			combined_result,
+			policies,
 			has_vanilla_base,
 		});
 	}
@@ -1219,6 +1221,7 @@ fn merge_structured_final_event_join(
 		template,
 		file_dag,
 		combined_result,
+		policies,
 		has_vanilla_base,
 	} = args;
 	if branch_ids.len() != 2 {
@@ -1292,7 +1295,7 @@ fn merge_structured_final_event_join(
 		path,
 		statements: right.source_statements.clone(),
 	};
-	let outcome = merge_event_files(&base_ast, &left_ast, &right_ast)
+	let outcome = merge_event_files(&base_ast, &left_ast, &right_ast, policies)
 		.map_err(|error| format!("structured merge adapter failed: {error}"))?;
 	if !outcome.conflicts().is_empty() {
 		let conflicts = serde_json::to_string(outcome.conflicts())

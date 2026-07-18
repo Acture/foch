@@ -12,6 +12,7 @@ pub enum ConflictKind {
 	DeleteModify,
 	MoveMove,
 	Ordering,
+	ValueSlot,
 	DuplicateSignature,
 	Policy,
 }

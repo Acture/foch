@@ -41,6 +41,14 @@ pub enum ChildOrder {
 	Commutative,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildCardinality {
+	#[default]
+	Many,
+	ExactlyOne,
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SemanticKey {
 	pub namespace: String,
@@ -87,6 +95,7 @@ pub struct TreeNode {
 	pub anchor: Option<SemanticKey>,
 	pub signature: Option<String>,
 	pub child_order: ChildOrder,
+	pub child_cardinality: ChildCardinality,
 	pub children: Vec<TreeNode>,
 }
 
@@ -98,6 +107,7 @@ impl TreeNode {
 			anchor: None,
 			signature: None,
 			child_order: ChildOrder::Ordered,
+			child_cardinality: ChildCardinality::Many,
 			children,
 		}
 	}
@@ -109,6 +119,7 @@ impl TreeNode {
 			anchor: None,
 			signature: None,
 			child_order: ChildOrder::Ordered,
+			child_cardinality: ChildCardinality::Many,
 			children: Vec::new(),
 		}
 	}
@@ -127,6 +138,11 @@ impl TreeNode {
 		self.child_order = child_order;
 		self
 	}
+
+	pub const fn with_child_cardinality(mut self, child_cardinality: ChildCardinality) -> Self {
+		self.child_cardinality = child_cardinality;
+		self
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -136,6 +152,7 @@ pub struct NormalizedNode {
 	pub anchor: Option<SemanticKey>,
 	pub signature: Option<String>,
 	pub child_order: ChildOrder,
+	pub child_cardinality: ChildCardinality,
 	pub parent: Option<NodeId>,
 	pub children: Vec<NodeId>,
 	pub subtree_hash: SubtreeHash,
@@ -153,6 +170,8 @@ pub struct NormalizedTree {
 pub enum TreeError {
 	#[error("normalized tree contains too many nodes")]
 	TooManyNodes,
+	#[error("node `{kind}` requires exactly one child, found {actual}")]
+	InvalidChildCardinality { kind: String, actual: usize },
 	#[error("node {0:?} is outside the normalized tree")]
 	UnknownNode(NodeId),
 }
@@ -206,14 +225,22 @@ fn flatten_node(
 		anchor,
 		signature,
 		child_order,
+		child_cardinality,
 		children,
 	} = node;
+	if child_cardinality == ChildCardinality::ExactlyOne && children.len() != 1 {
+		return Err(TreeError::InvalidChildCardinality {
+			kind,
+			actual: children.len(),
+		});
+	}
 	nodes.push(NormalizedNode {
 		kind,
 		value,
 		anchor,
 		signature,
 		child_order,
+		child_cardinality,
 		parent,
 		children: Vec::with_capacity(children.len()),
 		subtree_hash: SubtreeHash([0; 32]),
@@ -255,6 +282,10 @@ fn summarize_node(
 	hasher.update(&[match node.child_order {
 		ChildOrder::Ordered => 0,
 		ChildOrder::Commutative => 1,
+	}]);
+	hasher.update(&[match node.child_cardinality {
+		ChildCardinality::Many => 0,
+		ChildCardinality::ExactlyOne => 1,
 	}]);
 	let mut child_hashes = children
 		.iter()
@@ -381,6 +412,43 @@ mod tests {
 				.node(ordered_reversed.root())
 				.unwrap()
 				.subtree_hash
+		);
+	}
+
+	#[test]
+	fn exactly_one_cardinality_rejects_invalid_source_trees() {
+		for children in [
+			Vec::new(),
+			vec![
+				TreeNode::leaf("value", "one"),
+				TreeNode::leaf("value", "two"),
+			],
+		] {
+			let error = NormalizedTree::from_root(
+				TreeNode::branch("slot", children)
+					.with_child_cardinality(ChildCardinality::ExactlyOne),
+			)
+			.expect_err("an exactly-one node must contain one child");
+			assert!(matches!(
+				error,
+				TreeError::InvalidChildCardinality { kind, .. } if kind == "slot"
+			));
+		}
+	}
+
+	#[test]
+	fn cardinality_participates_in_the_structural_hash() {
+		let child = || TreeNode::leaf("value", "same");
+		let many = NormalizedTree::from_root(TreeNode::branch("slot", vec![child()])).unwrap();
+		let exactly_one = NormalizedTree::from_root(
+			TreeNode::branch("slot", vec![child()])
+				.with_child_cardinality(ChildCardinality::ExactlyOne),
+		)
+		.unwrap();
+
+		assert_ne!(
+			many.node(many.root()).unwrap().subtree_hash,
+			exactly_one.node(exactly_one.root()).unwrap().subtree_hash
 		);
 	}
 
