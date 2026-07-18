@@ -119,6 +119,16 @@ shadow run has been performed, and the committed 7/21 non-GUI result and scorer
 expectations are unchanged. See
 [`structured-merge-shadow.md`](./structured-merge-shadow.md).
 
+The probe now has a corpus-native execution layer. `foch-mq shadow-case`
+restores one immutable snapshot unit from the content-addressed object store;
+`shadow-corpus` deterministically derives all scorable multi-source units,
+supports an expected-denominator assertion, validates resumable evidence, and
+aggregates Legacy/Structured scores, semantic differences, event-safety checks,
+terminal failures, and timings. Child crashes and timeouts are paired report
+outcomes rather than aborted comparisons. This closes the evaluation plumbing
+gap only: GE-EE Elections and the 36-unit acceptance run are still pending, so
+the quality baseline remains 7/21 non-GUI.
+
 The shipped product surface includes:
 
 - `foch check`

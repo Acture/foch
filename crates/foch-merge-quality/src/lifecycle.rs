@@ -729,6 +729,7 @@ pub fn export_dataset(options: &ExportOptions<'_>) -> Result<(), Box<dyn std::er
 		&paths.observations,
 		&paths.measurements,
 		&paths.file_results,
+		&paths.shadow_measurements,
 		&paths.annotations,
 	] {
 		if source.is_file() {

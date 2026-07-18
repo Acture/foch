@@ -82,10 +82,61 @@ conflict reasons, and handler resolutions remain structured diagnostics in the
 report. `.foch/*` reports are excluded from file hashes so engine metadata does
 not masquerade as mod content.
 
+Each arm has a bounded timeout. A timeout, crash, malformed child response, or
+comparison-identity mismatch becomes a terminal arm record and clears partial
+output instead of aborting before the paired report can be written.
+
+## Corpus Shadow
+
+`shadow-case` restores source mods from the immutable dataset object store,
+preserves snapshot mod order, creates an isolated playset, and scores both arms
+against the human compatch with the existing base-aware scorer:
+
+```fish
+set EU4_ROOT "$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"
+cargo run -p foch-merge-quality --bin foch-mq -- \
+	--dataset-root crates/foch-merge-quality/dataset \
+	--game-root "$EU4_ROOT" \
+	shadow-case \
+	--id 3635635014 \
+	--retained-path events/Elections.txt \
+	--out-dir /tmp/foch-shadow-elections
+```
+
+`shadow-corpus` derives the deterministic scorable multi-source denominator and
+runs one isolated comparison per scoring unit. Use the expected-unit assertion
+for acceptance runs so corpus drift fails instead of silently changing the
+denominator:
+
+```fish
+cargo run -p foch-merge-quality --bin foch-mq -- \
+	--dataset-root crates/foch-merge-quality/dataset \
+	--game-root "$EU4_ROOT" \
+	shadow-corpus \
+	--out-dir /tmp/foch-shadow-corpus \
+	--expect-multi-source-units 36
+```
+
+Corpus reports include per-arm human scores, human/source resolution,
+directional semantic-atom differences, explicit unsupported/conflict/failure
+outcomes, and a report-only migration projection that keeps Legacy for
+unmigrated families. Event units additionally check parseability,
+namespace/event/option preservation, duplicate anchors, orphan control-flow
+branches, and ordered control-flow shape. Stable target identities use snapshot
+and content identities rather than absolute paths. Complete unit evidence is
+resumed only when its paired report, complete output-tree hash, current retained
+base files, effective `foch.toml`, and external resolution inputs still validate.
+
+The output root contains `shadow-targets.json`, one directory per stable unit,
+`shadow-corpus.json`, and `report.md`. Results remain outside Git by default.
+Passing `--record` explicitly appends normalized records to
+`dataset/shadow_measurements.jsonl`; it does not change `expected.json`.
+
 ## Current Gate
 
-This slice is ready for targeted event probes, not a corpus-wide quality
-claim. It has not changed the committed scorer expectations or the current
-7/21 non-GUI baseline. Promotion requires at least one real non-GUI corpus
-improvement, no regression among the seven accepted units, no silent wrong
-output, and runtime no worse than 2x Legacy on the promoted cohort.
+The corpus-native harness is implemented, but no real Elections or complete
+36-unit shadow run has been recorded yet. This is therefore still not a quality
+claim: the committed scorer expectations and current 7/21 non-GUI baseline are
+unchanged. Promotion requires at least one real non-GUI corpus improvement, no
+regression among the seven accepted units, no event-safety failure or silent
+wrong output, and runtime no worse than 2x Legacy on the promoted cohort.

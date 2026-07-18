@@ -315,6 +315,7 @@ pub struct DatasetPaths {
 	pub observations: PathBuf,
 	pub measurements: PathBuf,
 	pub file_results: PathBuf,
+	pub shadow_measurements: PathBuf,
 	pub annotations: PathBuf,
 	pub manifest: PathBuf,
 }
@@ -330,6 +331,7 @@ impl DatasetPaths {
 			observations: root.join("observations.jsonl"),
 			measurements: root.join("measurements.jsonl"),
 			file_results: root.join("file_results.jsonl"),
+			shadow_measurements: root.join("shadow_measurements.jsonl"),
 			annotations: root.join("annotations.jsonl"),
 			manifest: root.join("dataset.json"),
 			root,
@@ -346,6 +348,7 @@ impl DatasetPaths {
 			&self.observations,
 			&self.measurements,
 			&self.file_results,
+			&self.shadow_measurements,
 			&self.annotations,
 		] {
 			if !path.exists() {

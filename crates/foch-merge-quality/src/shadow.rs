@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use foch_core::config::FochConfig;
 use foch_core::model::{MergeReport, MergeReportStatus};
@@ -135,6 +137,18 @@ pub struct ShadowRunRequest<'a> {
 	pub kernel: MergeKernelMode,
 }
 
+pub struct ShadowCompareRequest<'a> {
+	pub playset: &'a Path,
+	pub output_dir: &'a Path,
+	pub game_root: &'a Path,
+	pub game_version: &'a str,
+	pub retained_paths: BTreeSet<String>,
+	pub expected_base_snapshot_identity: Option<&'a str>,
+	pub force: bool,
+	pub executable: &'a Path,
+	pub timeout: Duration,
+}
+
 #[derive(Debug, Deserialize)]
 struct DlcLoadIdentity {
 	#[serde(default)]
@@ -252,6 +266,234 @@ pub fn verified_retained_base_snapshot(
 			&snapshot.snapshot.inventory_paths,
 		),
 	})
+}
+
+pub fn run_shadow_comparison(
+	request: ShadowCompareRequest<'_>,
+) -> Result<ShadowComparisonReport, Box<dyn std::error::Error>> {
+	if request.retained_paths.is_empty() {
+		return Err("shadow comparison requires at least one retained path".into());
+	}
+	if request.timeout.is_zero() {
+		return Err("shadow comparison timeout must be greater than zero".into());
+	}
+	let (legacy_dir, structured_dir) = prepare_shadow_compare_dir(request.output_dir)?;
+	let base_snapshot = verified_retained_base_snapshot(
+		request.game_version,
+		request.expected_base_snapshot_identity,
+		&request.retained_paths,
+	)?;
+	let manifest = capture_input_manifest(ShadowCaptureRequest {
+		playset: request.playset,
+		game_root: request.game_root,
+		game_version: request.game_version,
+		retained_paths: &request.retained_paths,
+		retained_base_paths: &base_snapshot.retained_paths,
+		base_snapshot_identity: &base_snapshot.identity,
+		force: request.force,
+		executable: request.executable,
+	})?;
+	let manifest_path = request.output_dir.join("shadow-inputs.json");
+	fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+	eprintln!(
+		"[shadow] comparison={} kernel=legacy",
+		&manifest.comparison_id[..12]
+	);
+	let legacy = spawn_shadow_arm(ShadowChildRequest {
+		manifest: &manifest,
+		manifest_path: &manifest_path,
+		output_dir: &legacy_dir,
+		executable: request.executable,
+		kernel: MergeKernelMode::Legacy,
+		timeout: request.timeout,
+	})?;
+	eprintln!(
+		"[shadow] comparison={} kernel=structured",
+		&manifest.comparison_id[..12]
+	);
+	let structured = spawn_shadow_arm(ShadowChildRequest {
+		manifest: &manifest,
+		manifest_path: &manifest_path,
+		output_dir: &structured_dir,
+		executable: request.executable,
+		kernel: MergeKernelMode::Structured,
+		timeout: request.timeout,
+	})?;
+	let report = build_comparison_report(manifest, legacy, structured)?;
+	fs::write(
+		request.output_dir.join("shadow-compare.json"),
+		serde_json::to_vec_pretty(&report)?,
+	)?;
+	Ok(report)
+}
+
+struct ShadowChildRequest<'a> {
+	manifest: &'a ShadowInputManifest,
+	manifest_path: &'a Path,
+	output_dir: &'a Path,
+	executable: &'a Path,
+	kernel: MergeKernelMode,
+	timeout: Duration,
+}
+
+fn spawn_shadow_arm(request: ShadowChildRequest<'_>) -> io::Result<ShadowRunRecord> {
+	reset_output_dir(request.output_dir)?;
+	let scratch = tempfile::Builder::new()
+		.prefix(".shadow-child-")
+		.tempdir_in(
+			request
+				.output_dir
+				.parent()
+				.ok_or_else(|| io::Error::other("shadow output has no parent"))?,
+		)?;
+	let stdout_path = scratch.path().join("stdout.json");
+	let stderr_path = scratch.path().join("stderr.log");
+	let stdout = fs::File::create(&stdout_path)?;
+	let stderr = fs::File::create(&stderr_path)?;
+	let started = Instant::now();
+	let mut command = Command::new(request.executable);
+	command
+		.arg("shadow-run-one")
+		.arg("--input-manifest")
+		.arg(request.manifest_path)
+		.arg("--out-dir")
+		.arg(request.output_dir)
+		.arg("--kernel")
+		.arg(request.kernel.as_str())
+		.stdout(Stdio::from(stdout))
+		.stderr(Stdio::from(stderr));
+	let mut child = match command.spawn() {
+		Ok(child) => child,
+		Err(error) => {
+			reset_output_dir(request.output_dir)?;
+			return Ok(terminal_error_record(
+				&request,
+				started,
+				"crashed",
+				None,
+				format!("failed to spawn shadow child: {error}"),
+			));
+		}
+	};
+
+	let status = loop {
+		if let Some(status) = child.try_wait()? {
+			break Some(status);
+		}
+		if started.elapsed() >= request.timeout {
+			let _ = child.kill();
+			let _ = child.wait();
+			break None;
+		}
+		thread::sleep(Duration::from_millis(25));
+	};
+	let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+	let Some(status) = status else {
+		reset_output_dir(request.output_dir)?;
+		return Ok(terminal_error_record(
+			&request,
+			started,
+			"timed_out",
+			None,
+			format!("shadow arm exceeded {} seconds", request.timeout.as_secs()),
+		));
+	};
+	if !status.success() {
+		reset_output_dir(request.output_dir)?;
+		return Ok(terminal_error_record(
+			&request,
+			started,
+			"crashed",
+			status.code(),
+			format!(
+				"shadow child exited with status {:?}: {}",
+				status.code(),
+				stderr.trim()
+			),
+		));
+	}
+	let stdout = fs::read(&stdout_path)?;
+	match serde_json::from_slice::<ShadowRunRecord>(&stdout) {
+		Ok(record)
+			if record.schema == SHADOW_COMPARE_SCHEMA
+				&& record.comparison_id == request.manifest.comparison_id
+				&& record.kernel == request.kernel.as_str() =>
+		{
+			Ok(record)
+		}
+		Ok(_) => {
+			reset_output_dir(request.output_dir)?;
+			Ok(terminal_error_record(
+				&request,
+				started,
+				"error",
+				status.code(),
+				"shadow child returned a record for a different comparison".to_string(),
+			))
+		}
+		Err(error) => {
+			reset_output_dir(request.output_dir)?;
+			Ok(terminal_error_record(
+				&request,
+				started,
+				"error",
+				status.code(),
+				format!(
+					"invalid shadow child output: {error}; stderr: {}",
+					stderr.trim()
+				),
+			))
+		}
+	}
+}
+
+fn terminal_error_record(
+	request: &ShadowChildRequest<'_>,
+	started: Instant,
+	status: &str,
+	exit_code: Option<i32>,
+	message: String,
+) -> ShadowRunRecord {
+	ShadowRunRecord {
+		schema: SHADOW_COMPARE_SCHEMA.to_string(),
+		comparison_id: request.manifest.comparison_id.clone(),
+		kernel: request.kernel.as_str().to_string(),
+		output_dir: request.output_dir.to_path_buf(),
+		output_valid: false,
+		elapsed_ms: elapsed_ms(started),
+		status: status.to_string(),
+		exit_code,
+		manual_conflict_count: None,
+		handler_resolution_count: None,
+		generated_file_count: None,
+		fatal_reason: None,
+		error: Some(message.clone()),
+		diagnostics: vec![ShadowDiagnostic {
+			kind: ShadowDiagnosticKind::Error,
+			path: None,
+			message,
+		}],
+	}
+}
+
+pub fn prepare_shadow_compare_dir(output_dir: &Path) -> io::Result<(PathBuf, PathBuf)> {
+	fs::create_dir_all(output_dir)?;
+	remove_file_if_exists(&output_dir.join("shadow-compare.json"))?;
+	remove_file_if_exists(&output_dir.join("shadow-inputs.json"))?;
+	let legacy_dir = output_dir.join("legacy");
+	let structured_dir = output_dir.join("structured");
+	reset_output_dir(&legacy_dir)?;
+	reset_output_dir(&structured_dir)?;
+	Ok((legacy_dir, structured_dir))
+}
+
+fn remove_file_if_exists(path: &Path) -> io::Result<()> {
+	match fs::remove_file(path) {
+		Ok(()) => Ok(()),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+		Err(error) => Err(error),
+	}
 }
 
 pub fn run_shadow_arm(request: ShadowRunRequest<'_>) -> ShadowRunRecord {
@@ -416,6 +658,38 @@ pub fn diff_output_dirs(legacy: &Path, structured: &Path) -> io::Result<Vec<Shad
 			})
 		})
 		.collect())
+}
+
+pub fn output_content_hash(root: &Path) -> io::Result<Option<String>> {
+	if !root.is_dir() {
+		return Ok(None);
+	}
+	let mut hasher = blake3::Hasher::new();
+	hash_field(&mut hasher, b"foch-shadow-output-v1");
+	for (relative_path, content_hash) in output_hashes(root)? {
+		hash_field(&mut hasher, relative_path.as_bytes());
+		hash_field(&mut hasher, content_hash.as_bytes());
+	}
+	Ok(Some(hasher.finalize().to_hex().to_string()))
+}
+
+pub fn corpus_resume_environment_matches(
+	inputs: &ShadowComparisonInputs,
+	game_root: &Path,
+) -> io::Result<bool> {
+	let game_root = fs::canonicalize(game_root)?;
+	let retained_base_paths = inputs
+		.base_files
+		.iter()
+		.map(|file| file.relative_path.clone())
+		.collect::<BTreeSet<_>>();
+	if file_identities(&game_root, &retained_base_paths)? != inputs.base_files {
+		return Ok(false);
+	}
+	let cwd = std::env::current_dir()?;
+	let config_probe = cwd.join(".foch-corpus-shadow-config-probe");
+	let (foch_config_hash, resolution_files) = effective_foch_config_inputs(&config_probe)?;
+	Ok(foch_config_hash == inputs.foch_config_hash && resolution_files == inputs.resolution_files)
 }
 
 fn verify_manifest_inputs(manifest: &ShadowInputManifest, executable: &Path) -> io::Result<()> {
@@ -822,6 +1096,8 @@ fn hash_field(hasher: &mut blake3::Hasher, value: &[u8]) {
 mod tests {
 	use super::*;
 	use foch_core::model::MergeReportConflictResolution;
+	#[cfg(unix)]
+	use std::os::unix::fs::PermissionsExt;
 
 	struct InputFixture {
 		_temp: tempfile::TempDir,
@@ -877,6 +1153,128 @@ mod tests {
 			retained_paths: BTreeSet::from(["events/a.txt".to_string()]),
 			retained_base_paths: BTreeSet::from(["events/a.txt".to_string()]),
 		}
+	}
+
+	#[test]
+	fn shadow_preflight_clears_stale_arm_and_manifest_artifacts() {
+		let temp = tempfile::tempdir().unwrap();
+		let output_dir = temp.path().join("shadow");
+		for relative in [
+			"legacy/events/stale.txt",
+			"structured/events/stale.txt",
+			"shadow-compare.json",
+			"shadow-inputs.json",
+		] {
+			let path = output_dir.join(relative);
+			fs::create_dir_all(path.parent().unwrap()).unwrap();
+			fs::write(path, "stale").unwrap();
+		}
+
+		let (legacy, structured) = prepare_shadow_compare_dir(&output_dir).unwrap();
+
+		assert!(!legacy.exists());
+		assert!(!structured.exists());
+		assert!(!output_dir.join("shadow-compare.json").exists());
+		assert!(!output_dir.join("shadow-inputs.json").exists());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn timed_out_child_is_terminal_and_clears_partial_output() {
+		let fixture = input_fixture();
+		fs::write(
+			&fixture.executable,
+			"#!/bin/sh\nout=''\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--out-dir) shift; out=\"$1\" ;;\nesac\nshift\ndone\nmkdir -p \"$out/events\"\nprintf partial > \"$out/events/partial.txt\"\nwhile :; do :; done\n",
+		)
+		.unwrap();
+		let mut permissions = fs::metadata(&fixture.executable).unwrap().permissions();
+		permissions.set_mode(0o755);
+		fs::set_permissions(&fixture.executable, permissions).unwrap();
+		let manifest = capture(&fixture, false, "base");
+		let manifest_path = fixture.game_root.join("shadow-inputs.json");
+		fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+		let output_dir = fixture.game_root.join("structured");
+		fs::create_dir_all(output_dir.join("events")).unwrap();
+		fs::write(output_dir.join("events/stale.txt"), "stale").unwrap();
+
+		let record = spawn_shadow_arm(ShadowChildRequest {
+			manifest: &manifest,
+			manifest_path: &manifest_path,
+			output_dir: &output_dir,
+			executable: &fixture.executable,
+			kernel: MergeKernelMode::Structured,
+			timeout: Duration::from_millis(500),
+		})
+		.unwrap();
+
+		assert_eq!(record.status, "timed_out");
+		assert!(!record.output_valid);
+		assert!(!output_dir.exists());
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn crashed_child_is_terminal_and_clears_partial_output() {
+		let fixture = input_fixture();
+		fs::write(
+			&fixture.executable,
+			"#!/bin/sh\nout=''\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--out-dir) shift; out=\"$1\" ;;\nesac\nshift\ndone\nmkdir -p \"$out/events\"\nprintf partial > \"$out/events/partial.txt\"\nexit 7\n",
+		)
+		.unwrap();
+		let mut permissions = fs::metadata(&fixture.executable).unwrap().permissions();
+		permissions.set_mode(0o755);
+		fs::set_permissions(&fixture.executable, permissions).unwrap();
+		let manifest = capture(&fixture, false, "base");
+		let manifest_path = fixture.game_root.join("shadow-inputs.json");
+		fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+		let output_dir = fixture.game_root.join("structured");
+
+		let record = spawn_shadow_arm(ShadowChildRequest {
+			manifest: &manifest,
+			manifest_path: &manifest_path,
+			output_dir: &output_dir,
+			executable: &fixture.executable,
+			kernel: MergeKernelMode::Structured,
+			timeout: Duration::from_secs(1),
+		})
+		.unwrap();
+
+		assert_eq!(record.status, "crashed");
+		assert_eq!(record.exit_code, Some(7));
+		assert!(!record.output_valid);
+		assert!(!output_dir.exists());
+	}
+
+	#[test]
+	fn child_spawn_failure_is_terminal_after_preflight_cleanup() {
+		let fixture = input_fixture();
+		let manifest = capture(&fixture, false, "base");
+		let manifest_path = fixture.game_root.join("shadow-inputs.json");
+		fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+		fs::remove_file(&fixture.executable).unwrap();
+		let output_dir = fixture.game_root.join("structured");
+		fs::create_dir_all(output_dir.join("events")).unwrap();
+		fs::write(output_dir.join("events/stale.txt"), "stale").unwrap();
+
+		let record = spawn_shadow_arm(ShadowChildRequest {
+			manifest: &manifest,
+			manifest_path: &manifest_path,
+			output_dir: &output_dir,
+			executable: &fixture.executable,
+			kernel: MergeKernelMode::Structured,
+			timeout: Duration::from_secs(1),
+		})
+		.unwrap();
+
+		assert_eq!(record.status, "crashed");
+		assert!(!record.output_valid);
+		assert!(
+			record
+				.error
+				.as_deref()
+				.is_some_and(|error| error.contains("failed to spawn"))
+		);
+		assert!(!output_dir.exists());
 	}
 
 	fn capture(fixture: &InputFixture, force: bool, base: &str) -> ShadowInputManifest {
@@ -940,6 +1338,33 @@ mod tests {
 				.collect::<Vec<_>>(),
 			vec!["events/a.txt", "events/only-left.txt"]
 		);
+	}
+
+	#[test]
+	fn output_content_hash_covers_the_tree_and_ignores_internal_reports() {
+		let output = tempfile::tempdir().unwrap();
+		fs::create_dir_all(output.path().join("events")).unwrap();
+		fs::create_dir_all(output.path().join(".foch")).unwrap();
+		fs::write(output.path().join("events/a.txt"), "one").unwrap();
+		fs::write(output.path().join(".foch/report.json"), "first").unwrap();
+		let baseline = output_content_hash(output.path()).unwrap();
+
+		fs::write(output.path().join(".foch/report.json"), "second").unwrap();
+		assert_eq!(output_content_hash(output.path()).unwrap(), baseline);
+
+		fs::write(output.path().join("events/b.txt"), "two").unwrap();
+		assert_ne!(output_content_hash(output.path()).unwrap(), baseline);
+	}
+
+	#[test]
+	fn corpus_resume_environment_rejects_base_file_drift() {
+		let fixture = input_fixture();
+		let manifest = capture(&fixture, false, "base");
+		assert!(corpus_resume_environment_matches(&manifest.inputs, &fixture.game_root).unwrap());
+
+		fs::write(&fixture.base_file, "changed").unwrap();
+
+		assert!(!corpus_resume_environment_matches(&manifest.inputs, &fixture.game_root).unwrap());
 	}
 
 	#[test]

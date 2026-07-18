@@ -18,6 +18,9 @@ The dataset schema is semver `1.0.0`.
   observations and do not change snapshot identity.
 - Measurement identity: snapshot ID + the actual `foch-mq` executable hash +
   scorer semver + scorer-config hash.
+- Corpus-shadow target identity: snapshot ID + scoring unit + ordered
+  contributors + game version/build + exact base snapshot + executable hash + shadow/scorer config.
+  Absolute object-store and output paths are excluded.
 
 The candidate corpus also has its own semver schema. Oracle-policy semver is
 separate: changing candidate eligibility does not rewrite immutable snapshots
@@ -32,6 +35,7 @@ The append-only files under `crates/foch-merge-quality/dataset/` are:
 | `observations.jsonl` | collection time, titles, Workshop timestamps, author/URL/visibility/rights status, subscriptions, and churn |
 | `measurements.jsonl` | terminal case outcomes and aggregate scores |
 | `file_results.jsonl` | per-file scorer results keyed by measurement |
+| `shadow_measurements.jsonl` | explicitly recorded per-unit Legacy/Structured evidence |
 | `annotations.jsonl` | reserved append-only annotation records |
 
 ## Storage

@@ -19,6 +19,7 @@
 pub mod archive;
 pub mod config;
 pub mod corpus;
+pub mod corpus_shadow;
 pub mod dataset;
 pub mod fixtures;
 pub mod lifecycle;

@@ -6,13 +6,12 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use foch_engine::MergeKernelMode;
 use foch_merge_quality::{
-	CmdResult, archive, config, fixtures, lifecycle, orchestrate, shadow, symbols,
+	CmdResult, archive, config, corpus_shadow, fixtures, lifecycle, orchestrate, shadow, symbols,
 };
 
 #[derive(Parser)]
@@ -159,8 +158,38 @@ enum Cmd {
 		retained_paths: Vec<String>,
 		#[arg(long)]
 		base_snapshot_identity: Option<String>,
+		#[arg(long, default_value_t = 600)]
+		timeout_secs: u64,
 		#[arg(long)]
 		force: bool,
+	},
+	/// Compare both kernels for one immutable corpus scoring unit.
+	ShadowCase {
+		#[arg(long = "id")]
+		id: String,
+		#[arg(long)]
+		retained_path: String,
+		#[arg(long)]
+		out_dir: PathBuf,
+		#[arg(long, default_value_t = 600)]
+		timeout_secs: u64,
+		#[arg(long)]
+		force: bool,
+		#[arg(long)]
+		record: bool,
+	},
+	/// Compare both kernels for every scorable multi-source corpus unit.
+	ShadowCorpus {
+		#[arg(long)]
+		out_dir: PathBuf,
+		#[arg(long, default_value_t = 600)]
+		timeout_secs: u64,
+		#[arg(long)]
+		expect_multi_source_units: Option<usize>,
+		#[arg(long)]
+		force: bool,
+		#[arg(long)]
+		record: bool,
 	},
 	/// Execute one isolated shadow-comparison arm.
 	#[command(hide = true)]
@@ -440,17 +469,73 @@ fn main() -> CmdResult {
 			out_dir,
 			retained_paths,
 			base_snapshot_identity,
+			timeout_secs,
 			force,
 		} => {
 			let game = discover_game(&game_root, &steam_root)?;
-			run_shadow_compare(
-				&playset,
-				&out_dir,
-				&game,
-				retained_paths,
-				base_snapshot_identity.as_deref(),
+			let report = shadow::run_shadow_comparison(shadow::ShadowCompareRequest {
+				playset: &playset,
+				output_dir: &out_dir,
+				game_root: &game.game_root,
+				game_version: &game.game_version,
+				retained_paths: retained_paths.into_iter().collect::<BTreeSet<_>>(),
+				expected_base_snapshot_identity: base_snapshot_identity.as_deref(),
 				force,
-			)
+				executable: &std::env::current_exe()?,
+				timeout: Duration::from_secs(timeout_secs),
+			})?;
+			println!("{}", serde_json::to_string_pretty(&report)?);
+			Ok(())
+		}
+		Cmd::ShadowCase {
+			id,
+			retained_path,
+			out_dir,
+			timeout_secs,
+			force,
+			record,
+		} => {
+			let game = discover_game(&game_root, &steam_root)?;
+			let executable = std::env::current_exe()?;
+			let result = corpus_shadow::run_case(
+				&corpus_shadow::CorpusShadowOptions {
+					dataset_root: &dataset_root,
+					output_dir: &out_dir,
+					game: &game,
+					executable: &executable,
+					timeout: Duration::from_secs(timeout_secs),
+					force,
+					record,
+				},
+				&id,
+				&retained_path,
+			)?;
+			println!("{}", serde_json::to_string_pretty(&result)?);
+			Ok(())
+		}
+		Cmd::ShadowCorpus {
+			out_dir,
+			timeout_secs,
+			expect_multi_source_units,
+			force,
+			record,
+		} => {
+			let game = discover_game(&game_root, &steam_root)?;
+			let executable = std::env::current_exe()?;
+			let report = corpus_shadow::run_corpus(
+				&corpus_shadow::CorpusShadowOptions {
+					dataset_root: &dataset_root,
+					output_dir: &out_dir,
+					game: &game,
+					executable: &executable,
+					timeout: Duration::from_secs(timeout_secs),
+					force,
+					record,
+				},
+				expect_multi_source_units,
+			)?;
+			println!("{}", serde_json::to_string_pretty(&report.summary)?);
+			Ok(())
 		}
 		Cmd::ShadowRunOne {
 			input_manifest,
@@ -532,124 +617,6 @@ fn main() -> CmdResult {
 	}
 }
 
-fn run_shadow_compare(
-	playset: &std::path::Path,
-	out_dir: &std::path::Path,
-	game: &config::Eu4GameDiscovery,
-	retained_paths: Vec<String>,
-	expected_base_snapshot_identity: Option<&str>,
-	force: bool,
-) -> CmdResult {
-	let retained_paths = retained_paths.into_iter().collect::<BTreeSet<_>>();
-	if retained_paths.is_empty() {
-		return Err("shadow-compare requires at least one --retained-path".into());
-	}
-	let (legacy_dir, structured_dir) = prepare_shadow_compare_dir(out_dir)?;
-	let executable = std::env::current_exe()?;
-	let base_snapshot = shadow::verified_retained_base_snapshot(
-		&game.game_version,
-		expected_base_snapshot_identity,
-		&retained_paths,
-	)?;
-	let manifest = shadow::capture_input_manifest(shadow::ShadowCaptureRequest {
-		playset,
-		game_root: &game.game_root,
-		game_version: &game.game_version,
-		retained_paths: &retained_paths,
-		retained_base_paths: &base_snapshot.retained_paths,
-		base_snapshot_identity: &base_snapshot.identity,
-		force,
-		executable: &executable,
-	})?;
-	let comparison_id = manifest.comparison_id.clone();
-	let manifest_path = out_dir.join("shadow-inputs.json");
-	fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
-	eprintln!("[shadow] comparison={} kernel=legacy", &comparison_id[..12]);
-	let legacy = spawn_shadow_arm(ShadowArmCommand {
-		executable: &executable,
-		input_manifest: &manifest_path,
-		output_dir: &legacy_dir,
-		kernel: ShadowKernelKind::Legacy,
-	})?;
-	eprintln!(
-		"[shadow] comparison={} kernel=structured",
-		&comparison_id[..12]
-	);
-	let structured = spawn_shadow_arm(ShadowArmCommand {
-		executable: &executable,
-		input_manifest: &manifest_path,
-		output_dir: &structured_dir,
-		kernel: ShadowKernelKind::Structured,
-	})?;
-	let report = shadow::build_comparison_report(manifest, legacy, structured)?;
-	let encoded = serde_json::to_vec_pretty(&report)?;
-	fs::write(out_dir.join("shadow-compare.json"), &encoded)?;
-	println!("{}", String::from_utf8(encoded)?);
-	Ok(())
-}
-
-struct ShadowArmCommand<'a> {
-	executable: &'a std::path::Path,
-	input_manifest: &'a std::path::Path,
-	output_dir: &'a std::path::Path,
-	kernel: ShadowKernelKind,
-}
-
-fn spawn_shadow_arm(
-	arm: ShadowArmCommand<'_>,
-) -> Result<shadow::ShadowRunRecord, Box<dyn std::error::Error>> {
-	let kernel = match arm.kernel {
-		ShadowKernelKind::Legacy => "legacy",
-		ShadowKernelKind::Structured => "structured",
-	};
-	shadow::reset_output_dir(arm.output_dir)?;
-	let mut command = Command::new(arm.executable);
-	command
-		.arg("shadow-run-one")
-		.arg("--input-manifest")
-		.arg(arm.input_manifest)
-		.arg("--out-dir")
-		.arg(arm.output_dir)
-		.arg("--kernel")
-		.arg(kernel);
-	let output = command.output()?;
-	if !output.status.success() {
-		shadow::reset_output_dir(arm.output_dir)?;
-		return Err(std::io::Error::other(format!(
-			"{kernel} shadow child failed with status {:?}: {}",
-			output.status.code(),
-			String::from_utf8_lossy(&output.stderr).trim()
-		))
-		.into());
-	}
-	match serde_json::from_slice(&output.stdout) {
-		Ok(record) => Ok(record),
-		Err(error) => {
-			shadow::reset_output_dir(arm.output_dir)?;
-			Err(error.into())
-		}
-	}
-}
-
-fn prepare_shadow_compare_dir(out_dir: &std::path::Path) -> std::io::Result<(PathBuf, PathBuf)> {
-	fs::create_dir_all(out_dir)?;
-	remove_file_if_exists(&out_dir.join("shadow-compare.json"))?;
-	remove_file_if_exists(&out_dir.join("shadow-inputs.json"))?;
-	let legacy_dir = out_dir.join("legacy");
-	let structured_dir = out_dir.join("structured");
-	shadow::reset_output_dir(&legacy_dir)?;
-	shadow::reset_output_dir(&structured_dir)?;
-	Ok((legacy_dir, structured_dir))
-}
-
-fn remove_file_if_exists(path: &std::path::Path) -> std::io::Result<()> {
-	match fs::remove_file(path) {
-		Ok(()) => Ok(()),
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(error),
-	}
-}
-
 fn discover(
 	game_root: &Option<PathBuf>,
 	workshop_dir: &Option<PathBuf>,
@@ -689,32 +656,4 @@ fn legacy_workshop(
 		.into_iter()
 		.next()
 		.ok_or_else(|| "no Workshop root discovered".into())
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	#[test]
-	fn shadow_preflight_clears_stale_arm_and_manifest_artifacts() {
-		let temp = tempfile::tempdir().unwrap();
-		let out_dir = temp.path().join("shadow");
-		for relative in [
-			"legacy/events/stale.txt",
-			"structured/events/stale.txt",
-			"shadow-compare.json",
-			"shadow-inputs.json",
-		] {
-			let path = out_dir.join(relative);
-			fs::create_dir_all(path.parent().unwrap()).unwrap();
-			fs::write(path, "stale").unwrap();
-		}
-
-		let (legacy, structured) = prepare_shadow_compare_dir(&out_dir).unwrap();
-
-		assert!(!legacy.exists());
-		assert!(!structured.exists());
-		assert!(!out_dir.join("shadow-compare.json").exists());
-		assert!(!out_dir.join("shadow-inputs.json").exists());
-	}
 }

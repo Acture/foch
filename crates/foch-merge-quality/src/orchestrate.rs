@@ -20,7 +20,7 @@ use crate::score::{
 // ------------------------------------------------------------------ data model
 
 /// Per-file score record embedded in [`CaseResult`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FileRecord {
 	pub rel: String,
 	pub source_mod_ids: Vec<String>,
@@ -35,6 +35,26 @@ pub struct FileRecord {
 	pub verdict: String,
 	pub accepted_ok: bool,
 	pub acceptance_reason: Option<String>,
+}
+
+impl FileRecord {
+	pub fn from_score(score: crate::score::FileScore) -> Self {
+		Self {
+			rel: score.rel,
+			source_mod_ids: score.source_mod_ids,
+			source_count: score.source_count,
+			multi_source: score.multi_source,
+			foch_emitted: score.foch_emitted,
+			foch_conflict: score.foch_conflict,
+			similarity: score.similarity,
+			keys_match: score.keys_match,
+			ast_match: score.ast_match,
+			dropped_keys: score.dropped_keys,
+			verdict: score.verdict.as_str().to_string(),
+			accepted_ok: score.verdict.accepted_ok(),
+			acceptance_reason: score.acceptance_reason,
+		}
+	}
 }
 
 /// Per-case wall-clock timings, in milliseconds.
@@ -241,21 +261,7 @@ pub fn score_case_from_paths_with_cache(
 				score_cache,
 				base_game.root(),
 			);
-			FileRecord {
-				rel: fs.rel,
-				source_mod_ids: fs.source_mod_ids,
-				source_count: fs.source_count,
-				multi_source: fs.multi_source,
-				foch_emitted: fs.foch_emitted,
-				foch_conflict: fs.foch_conflict,
-				similarity: fs.similarity,
-				keys_match: fs.keys_match,
-				ast_match: fs.ast_match,
-				dropped_keys: fs.dropped_keys,
-				verdict: fs.verdict.as_str().to_string(),
-				accepted_ok: fs.verdict.accepted_ok(),
-				acceptance_reason: fs.acceptance_reason,
-			}
+			FileRecord::from_score(fs)
 		})
 		.collect();
 	let scoring_ms = elapsed_ms(scoring_started.elapsed());
