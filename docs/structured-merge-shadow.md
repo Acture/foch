@@ -132,6 +132,12 @@ The output root contains `shadow-targets.json`, one directory per stable unit,
 Passing `--record` explicitly appends normalized records to
 `dataset/shadow_measurements.jsonl`; it does not change `expected.json`.
 
+Report schema `1.1.0` records the non-GUI denominator separately from the full
+denominator, including Legacy accepted, Structured accepted, projected accepted,
+and Legacy-accepted units lost by the projection. This makes the 7/21 to 8/21
+rollout gate auditable directly from `shadow-corpus.json`; the supported-candidate
+runtime ratio and terminal safety/failure counts remain separate fields.
+
 ## Current Gate
 
 The targeted GE-EE `events/Elections.txt` v8 gate passed on 2026-07-20.

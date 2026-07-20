@@ -28,6 +28,7 @@ use crate::shadow::{
 };
 
 pub const CORPUS_SHADOW_SCHEMA: &str = "1.0.0";
+pub const CORPUS_SHADOW_REPORT_SCHEMA: &str = "1.1.0";
 
 pub struct CorpusShadowOptions<'a> {
 	pub dataset_root: &'a Path,
@@ -140,6 +141,7 @@ impl IdentifiedRecord for CorpusShadowUnitRecord {
 pub struct CorpusShadowSummary {
 	pub total_units: usize,
 	pub completed_units: usize,
+	pub non_gui_units: usize,
 	pub improved: usize,
 	pub regressed: usize,
 	pub unchanged_accepted: usize,
@@ -152,6 +154,10 @@ pub struct CorpusShadowSummary {
 	pub legacy_accepted: usize,
 	pub structured_accepted: usize,
 	pub projected_candidate_accepted: usize,
+	pub legacy_accepted_non_gui: usize,
+	pub structured_accepted_non_gui: usize,
+	pub projected_candidate_accepted_non_gui: usize,
+	pub legacy_accepted_non_gui_lost: usize,
 	pub legacy_elapsed_ms: u64,
 	pub structured_elapsed_ms: u64,
 	pub supported_runtime_ratio_milli: Option<u64>,
@@ -298,7 +304,7 @@ pub fn run_corpus(
 		units.push(run_target(options, loaded, target, &mut score_cache)?);
 	}
 	let report = CorpusShadowReport {
-		schema: CORPUS_SHADOW_SCHEMA.to_string(),
+		schema: CORPUS_SHADOW_REPORT_SCHEMA.to_string(),
 		generated_at: now_rfc3339(),
 		targets,
 		summary: summarize(&units),
@@ -845,6 +851,7 @@ fn summarize(units: &[CorpusShadowUnitRecord]) -> CorpusShadowSummary {
 			.score
 			.as_ref()
 			.is_some_and(|score| score.accepted_ok);
+		let non_gui = !is_gui_path(&unit.target.relative_path);
 		summary.legacy_accepted += usize::from(legacy_accepted);
 		summary.structured_accepted += usize::from(structured_accepted);
 		match unit.outcome {
@@ -877,6 +884,14 @@ fn summarize(units: &[CorpusShadowUnitRecord]) -> CorpusShadowSummary {
 			_ => structured_accepted,
 		};
 		summary.projected_candidate_accepted += usize::from(projected_accepted);
+		if non_gui {
+			summary.non_gui_units += 1;
+			summary.legacy_accepted_non_gui += usize::from(legacy_accepted);
+			summary.structured_accepted_non_gui += usize::from(structured_accepted);
+			summary.projected_candidate_accepted_non_gui += usize::from(projected_accepted);
+			summary.legacy_accepted_non_gui_lost +=
+				usize::from(legacy_accepted && !projected_accepted);
+		}
 	}
 	if supported_legacy_ms > 0 {
 		summary.supported_runtime_ratio_milli = Some(
@@ -928,6 +943,21 @@ fn render_units_report(
 			summary.needs_review,
 			summary.safety_failed
 		));
+		out.push_str(&format!(
+			"Non-GUI units: {} | Legacy accepted: {} | Structured accepted: {} | projected candidate accepted: {} | Legacy accepted lost: {}\n\n",
+			summary.non_gui_units,
+			summary.legacy_accepted_non_gui,
+			summary.structured_accepted_non_gui,
+			summary.projected_candidate_accepted_non_gui,
+			summary.legacy_accepted_non_gui_lost
+		));
+		if let Some(ratio_milli) = summary.supported_runtime_ratio_milli {
+			out.push_str(&format!(
+				"Supported candidate runtime ratio: {}.{:03}x Legacy\n\n",
+				ratio_milli / 1_000,
+				ratio_milli % 1_000
+			));
+		}
 	}
 	out.push_str("| Case | Unit | Legacy | Structured | Outcome |\n");
 	out.push_str("| --- | --- | --- | --- | --- |\n");
@@ -1551,6 +1581,11 @@ mod tests {
 		assert_eq!(summary.structured_accepted, 0);
 		assert_eq!(summary.projected_candidate_accepted, 1);
 		assert_eq!(summary.structured_unsupported, 1);
+		assert_eq!(summary.non_gui_units, 1);
+		assert_eq!(summary.legacy_accepted_non_gui, 1);
+		assert_eq!(summary.structured_accepted_non_gui, 0);
+		assert_eq!(summary.projected_candidate_accepted_non_gui, 1);
+		assert_eq!(summary.legacy_accepted_non_gui_lost, 0);
 	}
 
 	#[test]
@@ -1601,6 +1636,69 @@ mod tests {
 		assert_eq!(summary.structured_accepted, 1);
 		assert_eq!(summary.projected_candidate_accepted, 0);
 		assert_eq!(summary.safety_failed, 1);
+		assert_eq!(summary.non_gui_units, 1);
+		assert_eq!(summary.legacy_accepted_non_gui, 1);
+		assert_eq!(summary.structured_accepted_non_gui, 1);
+		assert_eq!(summary.projected_candidate_accepted_non_gui, 0);
+		assert_eq!(summary.legacy_accepted_non_gui_lost, 1);
+	}
+
+	#[test]
+	fn summary_excludes_gui_units_from_rollout_quality_counts() {
+		let target = make_target(
+			TargetIdentity {
+				snapshot: &snapshot(),
+				relative_path: "interface/a.gui",
+				source_mod_ids: &["left".to_string(), "right".to_string()],
+				base_snapshot_identity: "base",
+				executable_hash: "exe",
+				scorer_config_hash: "config",
+			},
+			&game(Path::new("/game")),
+		);
+		let record = CorpusShadowUnitRecord {
+			schema: CORPUS_SHADOW_SCHEMA.to_string(),
+			record_id: "record".to_string(),
+			target,
+			comparison_id: "comparison".to_string(),
+			observed_at: "now".to_string(),
+			human_resolution: None,
+			legacy: arm("legacy", true),
+			structured: arm("structured", false),
+			structured_vs_legacy: None,
+			outcome: CorpusShadowOutcome::Regressed,
+		};
+
+		let summary = summarize(&[record]);
+
+		assert_eq!(summary.total_units, 1);
+		assert_eq!(summary.legacy_accepted, 1);
+		assert_eq!(summary.non_gui_units, 0);
+		assert_eq!(summary.legacy_accepted_non_gui, 0);
+		assert_eq!(summary.structured_accepted_non_gui, 0);
+		assert_eq!(summary.projected_candidate_accepted_non_gui, 0);
+		assert_eq!(summary.legacy_accepted_non_gui_lost, 0);
+	}
+
+	#[test]
+	fn report_renders_non_gui_rollout_evidence() {
+		let summary = CorpusShadowSummary {
+			total_units: 36,
+			non_gui_units: 21,
+			legacy_accepted_non_gui: 7,
+			structured_accepted_non_gui: 8,
+			projected_candidate_accepted_non_gui: 8,
+			legacy_accepted_non_gui_lost: 0,
+			supported_runtime_ratio_milli: Some(1_086),
+			..CorpusShadowSummary::default()
+		};
+
+		let report = render_units_report(&[], Some(&summary));
+
+		assert!(report.contains(
+			"Non-GUI units: 21 | Legacy accepted: 7 | Structured accepted: 8 | projected candidate accepted: 8 | Legacy accepted lost: 0"
+		));
+		assert!(report.contains("Supported candidate runtime ratio: 1.086x Legacy"));
 	}
 
 	#[test]
