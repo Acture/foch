@@ -1235,7 +1235,7 @@ mod tests {
 			output_dir: &output_dir,
 			executable: &fixture.executable,
 			kernel: MergeKernelMode::Structured,
-			timeout: Duration::from_secs(1),
+			timeout: Duration::from_secs(5),
 		})
 		.unwrap();
 

@@ -121,26 +121,31 @@ anchors can be global or parent-scoped, event control-flow chains carry guard
 and effect roles, policy-preserved descendants can restore transparent wrapper
 paths, and negative Boolean blocks can select one revision's complete child
 set without leaving unreachable classes. These capabilities remain a probe
-surface, not a new quality baseline: no full corpus shadow run has been
-performed, and the committed 7/21 non-GUI result and scorer expectations are
-unchanged. See
+surface rather than the default engine. The fixed Legacy scorer baseline is
+still 7/36 overall and 7/21 when only `.gui` layout files are excluded; the
+selected Elections rollout projects both counts to 8 with no accepted unit
+lost. See
 [`structured-merge-shadow.md`](./structured-merge-shadow.md).
 
 The probe now has a corpus-native execution layer. `foch-mq shadow-case`
 restores one immutable snapshot unit from the content-addressed object store;
 `shadow-corpus` deterministically derives all scorable multi-source units,
-supports an expected-denominator assertion, validates resumable evidence, and
-aggregates Legacy/Structured scores, semantic differences, event-safety checks,
-terminal failures, and timings. Child crashes and timeouts are paired report
-outcomes rather than aborted comparisons. `shadow-case` filters its requested
-retained path before scoring unrelated compatch files. The 2026-07-20 GE-EE
-Elections v8 gate is now a strict improvement: Structured matches all 1,217
-human atoms with zero atoms on either side, reports no diagnostics, duplicate
-event/option IDs, or orphan control-flow paths, and matches the human
-control-flow multiset. Structured took 61,453 ms versus Legacy's 56,562 ms
-(1.086x), and the paired outcome is `improved`. The 36-unit acceptance run is
-still pending, so the committed quality baseline remains 7/21 non-GUI and
-Structured events remain unpromoted.
+validates a fixed per-file Legacy result against committed scorer expectations,
+and runs paired comparisons only for explicit candidates. Unselected units are
+reported as `legacy_retained`; the engine does not silently fall back after
+Structured is selected. Child crashes and timeouts remain explicit paired
+outcomes. Report schema `2.0.0` makes candidate execution, retained Legacy rows,
+projection counts, safety, and timings separately auditable.
+
+The 2026-07-21 complete 36-unit projection evaluated only GE-EE
+`events/Elections.txt` and retained Legacy for the other 35 units. Elections is
+a strict improvement: Structured matches all 1,217 human atoms with zero
+one-sided atoms, reports no diagnostics, duplicate event/option IDs, or orphan
+control-flow paths, and matches the human control-flow multiset. Structured
+took 54,270 ms versus Legacy's 51,229 ms (1.059x). The projection is 7 -> 8
+accepted overall and 7 -> 8 across the 21 non-GUI units, with no Legacy accepted
+unit lost and no terminal candidate failure. This validates Elections only;
+Structured remains globally disabled for the broader event family.
 
 The shipped product surface includes:
 

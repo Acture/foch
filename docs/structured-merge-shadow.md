@@ -103,10 +103,12 @@ cargo run -p foch-merge-quality --bin foch-mq -- \
 	--out-dir /tmp/foch-shadow-elections
 ```
 
-`shadow-corpus` derives the deterministic scorable multi-source denominator and
-runs one isolated comparison per scoring unit. Use the expected-unit assertion
-for acceptance runs so corpus drift fails instead of silently changing the
-denominator:
+`shadow-corpus` derives the deterministic scorable multi-source denominator,
+validates the committed per-file Legacy baseline against scorer expectations,
+and runs isolated comparisons only for explicit `--candidate` units. Unselected
+units are recorded as `legacy_retained`; this is a rollout disposition, not an
+in-engine fallback. Use the expected-unit assertion so corpus drift fails
+instead of silently changing the denominator:
 
 ```fish
 cargo run -p foch-merge-quality --bin foch-mq -- \
@@ -114,44 +116,53 @@ cargo run -p foch-merge-quality --bin foch-mq -- \
 	--game-root "$EU4_ROOT" \
 	shadow-corpus \
 	--out-dir /tmp/foch-shadow-corpus \
+	--candidate 3635635014:events/Elections.txt \
 	--expect-multi-source-units 36
 ```
 
-Corpus reports include per-arm human scores, human/source resolution,
-directional semantic-atom differences, explicit unsupported/conflict/failure
-outcomes, and a report-only migration projection that keeps Legacy for
-unmigrated families. Event units additionally check parseability,
+`tests/fixtures/legacy-baseline.json` must cover the exact target set, reproduce
+`tests/fixtures/expected.json`, and agree exactly with each selected candidate's
+live Legacy arm. Corpus reports embed every Legacy file score and
+the complete paired evidence only for evaluated candidates. Event candidates
+additionally check parseability,
 namespace/event/option preservation, duplicate anchors, orphan control-flow
 branches, and ordered control-flow shape. Stable target identities use snapshot
 and content identities rather than absolute paths. Complete unit evidence is
 resumed only when its paired report, complete output-tree hash, current retained
 base files, effective `foch.toml`, and external resolution inputs still validate.
 
-The output root contains `shadow-targets.json`, one directory per stable unit,
-`shadow-corpus.json`, and `report.md`. Results remain outside Git by default.
-Passing `--record` explicitly appends normalized records to
+The output root contains `shadow-targets.json`, one directory per evaluated
+candidate, `shadow-corpus.json`, and `report.md`. Results remain outside Git by
+default. Passing `--record` explicitly appends evaluated candidate records to
 `dataset/shadow_measurements.jsonl`; it does not change `expected.json`.
 
-Report schema `1.1.0` records the non-GUI denominator separately from the full
-denominator, including Legacy accepted, Structured accepted, projected accepted,
-and Legacy-accepted units lost by the projection. This makes the 7/21 to 8/21
-rollout gate auditable directly from `shadow-corpus.json`; the supported-candidate
-runtime ratio and terminal safety/failure counts remain separate fields.
+Report schema `2.0.0` separates `candidate_evaluated` from `legacy_retained` and
+records the non-GUI denominator separately from the full denominator. Only
+`.gui` layout files are excluded; `.gfx` definition files remain in the
+order-insensitive non-GUI denominator. Legacy accepted, projected accepted,
+Legacy-accepted units lost, candidate outcomes, and candidate runtime are all
+recomputable from the 36 report rows.
 
 ## Current Gate
 
-The targeted GE-EE `events/Elections.txt` v8 gate passed on 2026-07-20.
-Structured matches all 1,217 human semantic atoms with zero one-sided atoms,
-parses without diagnostics, and has no duplicate event IDs, duplicate option
-IDs, or orphan control-flow paths. Its order-insensitive control-flow multiset
-matches human. Structured took 61,453 ms versus Legacy's 56,562 ms (1.086x),
-and the paired outcome is `improved`; Legacy still differs by two Legacy-only
-and seven human-only atoms.
+The GE-EE `events/Elections.txt` gate and complete 36-unit rollout projection
+passed on 2026-07-21. The fixed scorer `1.2.0` baseline was reproduced first;
+its content identity is
+`faf47fd536026b14bae1c1fbd374cf937725ba7026930b0915c1cf8dfef73d38`.
+The projection evaluated only Elections and retained Legacy for the other 35
+units. It moves both the full and non-GUI accepted counts from 7 to 8 with zero
+Legacy-accepted units lost, one improvement, and no regression, review, safety,
+unsupported, conflict, or failed candidate outcome.
 
-No complete 36-unit shadow run has been recorded, so the committed scorer
-expectations and 7/21 non-GUI baseline are unchanged, and Structured events
-remain disabled. `shadow-case` now applies its retained-path filter before
-scoring unrelated compatch files, reducing single-unit preflight work.
-Promotion still requires at least one real non-GUI corpus improvement, no
-regression among the seven accepted units, no event-safety failure or silent
-wrong output, and runtime no worse than 2x Legacy on the promoted cohort.
+Structured matches all 1,217 Elections human semantic atoms with zero one-sided
+atoms, parses without diagnostics, has no duplicate event IDs, duplicate option
+IDs, or orphan control-flow paths, and matches the human control-flow multiset.
+Structured took 54,270 ms versus Legacy's 51,229 ms (1.059x). The auditable
+report is `/private/tmp/foch-shadow-corpus-elections-projection-v2/` with
+comparison ID
+`268be78b7d8b1c8fb3fb1ade298ffbb5147753b9ab7ab3590640ca5b634f826e`.
+
+This proves the selected Elections rollout, not the entire event family.
+Structured events remain globally disabled; other event units, including
+`PriceChanges.txt`, stay explicitly `legacy_retained` until selected and gated
+separately.

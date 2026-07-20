@@ -1,0 +1,763 @@
+{
+	"schema": "1.0.0",
+	"scorer_version": "1.2.0",
+	"expected_content_id": "5b1289f77bf7bce633b082bf1c5d031f2703d440875145edec22eba9759632ac",
+	"units": [
+		{
+			"case_id": "3630876155",
+			"score": {
+				"rel": "common/rebel_types/zzz_foch_rebel_types.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"2185445645"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": false,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_structure",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630876155",
+			"score": {
+				"rel": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"2185445645"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630876155",
+			"score": {
+				"rel": "interface/000_expanded_mod_family.gfx",
+				"source_mod_ids": [
+					"2164202838",
+					"2185445645"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "accepted_equivalent",
+				"accepted_ok": true,
+				"acceptance_reason": "gfx_order_insensitive_ast_equivalent"
+			}
+		},
+		{
+			"case_id": "3630876155",
+			"score": {
+				"rel": "interface/countrycourtview.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"2185445645"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630876155",
+			"score": {
+				"rel": "interface/frontend.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"2185445645"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": false,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630876155",
+			"score": {
+				"rel": "interface/subscription_banner_view.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"2185445645"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630904821",
+			"score": {
+				"rel": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1352521684"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630904821",
+			"score": {
+				"rel": "decisions/PragmaticSanction.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1352521684"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": 0.746,
+				"keys_match": true,
+				"ast_match": true,
+				"dropped_keys": [],
+				"verdict": "matches_ast",
+				"accepted_ok": true,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630904821",
+			"score": {
+				"rel": "interface/000_expanded_mod_family.gfx",
+				"source_mod_ids": [
+					"2164202838",
+					"1352521684"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "accepted_equivalent",
+				"accepted_ok": true,
+				"acceptance_reason": "gfx_order_insensitive_ast_equivalent"
+			}
+		},
+		{
+			"case_id": "3630904821",
+			"score": {
+				"rel": "interface/frontend.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"1352521684"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": false,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630904821",
+			"score": {
+				"rel": "interface/hre.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"1352521684"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630904821",
+			"score": {
+				"rel": "interface/subscription_banner_view.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"1352521684"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630934157",
+			"score": {
+				"rel": "common/religions/zzz_foch_religions.txt",
+				"source_mod_ids": [
+					"3342969370",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": true,
+				"dropped_keys": [],
+				"verdict": "accepted_equivalent",
+				"accepted_ok": true,
+				"acceptance_reason": "same_family_module_equivalent"
+			}
+		},
+		{
+			"case_id": "3630934157",
+			"score": {
+				"rel": "interface/000_expanded_mod_family.gfx",
+				"source_mod_ids": [
+					"3342969370",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "accepted_equivalent",
+				"accepted_ok": true,
+				"acceptance_reason": "gfx_order_insensitive_ast_equivalent"
+			}
+		},
+		{
+			"case_id": "3630934157",
+			"score": {
+				"rel": "interface/frontend.gui",
+				"source_mod_ids": [
+					"3342969370",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": false,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630934157",
+			"score": {
+				"rel": "interface/provinceview.gui",
+				"source_mod_ids": [
+					"3342969370",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630934157",
+			"score": {
+				"rel": "interface/subscription_banner_view.gui",
+				"source_mod_ids": [
+					"3342969370",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3630934157",
+			"score": {
+				"rel": "interface/topbar.gui",
+				"source_mod_ids": [
+					"3342969370",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634824708",
+			"score": {
+				"rel": "common/buildings/zzz_foch_buildings.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1770950522"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634824708",
+			"score": {
+				"rel": "common/institutions/zzz_foch_institutions.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1770950522"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634824708",
+			"score": {
+				"rel": "common/tradegoods/zzz_foch_tradegoods.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1770950522"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634824708",
+			"score": {
+				"rel": "events/PriceChanges.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1770950522"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634824708",
+			"score": {
+				"rel": "interface/000_expanded_mod_family.gfx",
+				"source_mod_ids": [
+					"2164202838",
+					"1770950522"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634824708",
+			"score": {
+				"rel": "interface/frontend.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"1770950522"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": false,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634829839",
+			"score": {
+				"rel": "common/ages/zzz_foch_ages.txt",
+				"source_mod_ids": [
+					"2172666098",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634829839",
+			"score": {
+				"rel": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"source_mod_ids": [
+					"2172666098",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634829839",
+			"score": {
+				"rel": "interface/000_expanded_mod_family.gfx",
+				"source_mod_ids": [
+					"2172666098",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "accepted_equivalent",
+				"accepted_ok": true,
+				"acceptance_reason": "gfx_order_insensitive_ast_equivalent"
+			}
+		},
+		{
+			"case_id": "3634829839",
+			"score": {
+				"rel": "interface/frontend.gui",
+				"source_mod_ids": [
+					"2172666098",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": false,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3634829839",
+			"score": {
+				"rel": "interface/subscription_banner_view.gui",
+				"source_mod_ids": [
+					"2172666098",
+					"2164202838"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "common/governments/zzz_foch_governments.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "common/scripted_effects/zzz_foch_scripted_effects.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "events/Elections.txt",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "interface/000_expanded_mod_family.gfx",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "accepted_equivalent",
+				"accepted_ok": true,
+				"acceptance_reason": "gfx_order_insensitive_ast_equivalent"
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "interface/frontend.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": false,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		},
+		{
+			"case_id": "3635635014",
+			"score": {
+				"rel": "interface/subscription_banner_view.gui",
+				"source_mod_ids": [
+					"2164202838",
+					"1596815683"
+				],
+				"source_count": 2,
+				"multi_source": true,
+				"foch_emitted": true,
+				"foch_conflict": false,
+				"similarity": null,
+				"keys_match": true,
+				"ast_match": false,
+				"dropped_keys": [],
+				"verdict": "diverges_ast",
+				"accepted_ok": false,
+				"acceptance_reason": null
+			}
+		}
+	]
+}

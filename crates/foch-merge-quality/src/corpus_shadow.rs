@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use foch_engine::installed_base_snapshot_identity;
@@ -11,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use crate::config::Eu4GameDiscovery;
 use crate::corpus::{OracleAssessment, assess_oracle_candidate};
 use crate::dataset::{
-	DatasetPaths, IdentifiedRecord, ObservationRecord, SnapshotRecord, append_unique_many,
-	now_rfc3339, read_jsonl, stable_id,
+	DatasetPaths, IdentifiedRecord, ObservationRecord, SCORER_VERSION, SnapshotRecord,
+	append_unique_many, now_rfc3339, read_jsonl, stable_id,
 };
 use crate::lifecycle::{executable_hash, scorer_config_hash};
 use crate::object_store::ObjectStore;
@@ -28,7 +29,7 @@ use crate::shadow::{
 };
 
 pub const CORPUS_SHADOW_SCHEMA: &str = "1.0.0";
-pub const CORPUS_SHADOW_REPORT_SCHEMA: &str = "1.1.0";
+pub const CORPUS_SHADOW_REPORT_SCHEMA: &str = "2.0.0";
 
 pub struct CorpusShadowOptions<'a> {
 	pub dataset_root: &'a Path,
@@ -38,6 +39,36 @@ pub struct CorpusShadowOptions<'a> {
 	pub timeout: Duration,
 	pub force: bool,
 	pub record: bool,
+}
+
+pub struct CorpusShadowCorpusOptions<'a> {
+	pub shadow: CorpusShadowOptions<'a>,
+	pub legacy_baseline: &'a Path,
+	pub expected_verdicts: &'a Path,
+	pub candidates: &'a BTreeSet<CorpusShadowSelection>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub struct CorpusShadowSelection {
+	pub case_id: String,
+	pub relative_path: String,
+}
+
+impl FromStr for CorpusShadowSelection {
+	type Err = String;
+
+	fn from_str(value: &str) -> Result<Self, Self::Err> {
+		let (case_id, relative_path) = value
+			.split_once(':')
+			.ok_or_else(|| "candidate must use CASE_ID:RELATIVE_PATH".to_string())?;
+		if case_id.is_empty() || relative_path.is_empty() {
+			return Err("candidate must use non-empty CASE_ID:RELATIVE_PATH".to_string());
+		}
+		Ok(Self {
+			case_id: case_id.to_string(),
+			relative_path: relative_path.replace('\\', "/"),
+		})
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -117,6 +148,13 @@ pub enum CorpusShadowOutcome {
 	Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorpusShadowDisposition {
+	LegacyRetained,
+	CandidateEvaluated,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CorpusShadowUnitRecord {
 	pub schema: String,
@@ -141,6 +179,8 @@ impl IdentifiedRecord for CorpusShadowUnitRecord {
 pub struct CorpusShadowSummary {
 	pub total_units: usize,
 	pub completed_units: usize,
+	pub legacy_retained: usize,
+	pub candidate_evaluated: usize,
 	pub non_gui_units: usize,
 	pub improved: usize,
 	pub regressed: usize,
@@ -152,23 +192,56 @@ pub struct CorpusShadowSummary {
 	pub structured_conflict: usize,
 	pub failed: usize,
 	pub legacy_accepted: usize,
-	pub structured_accepted: usize,
-	pub projected_candidate_accepted: usize,
+	pub candidate_accepted: usize,
+	pub projected_accepted: usize,
 	pub legacy_accepted_non_gui: usize,
-	pub structured_accepted_non_gui: usize,
-	pub projected_candidate_accepted_non_gui: usize,
+	pub candidate_accepted_non_gui: usize,
+	pub projected_accepted_non_gui: usize,
 	pub legacy_accepted_non_gui_lost: usize,
 	pub legacy_elapsed_ms: u64,
 	pub structured_elapsed_ms: u64,
 	pub supported_runtime_ratio_milli: Option<u64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LegacyBaselineIdentity {
+	pub schema: String,
+	pub scorer_version: String,
+	pub baseline_content_id: String,
+	pub expected_content_id: String,
+	pub unit_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct LegacyBaselineArtifact {
+	schema: String,
+	scorer_version: String,
+	expected_content_id: String,
+	units: Vec<LegacyBaselineUnit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct LegacyBaselineUnit {
+	case_id: String,
+	score: FileRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CorpusShadowProjectionUnit {
+	pub target: CorpusShadowTarget,
+	pub disposition: CorpusShadowDisposition,
+	pub legacy_baseline: FileRecord,
+	pub candidate: Option<CorpusShadowUnitRecord>,
+	pub projected_accepted: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CorpusShadowReport {
 	pub schema: String,
 	pub generated_at: String,
+	pub legacy_baseline: LegacyBaselineIdentity,
 	pub targets: Vec<CorpusShadowTarget>,
-	pub units: Vec<CorpusShadowUnitRecord>,
+	pub units: Vec<CorpusShadowProjectionUnit>,
 	pub summary: CorpusShadowSummary,
 }
 
@@ -229,15 +302,18 @@ pub fn run_case(
 }
 
 pub fn run_corpus(
-	options: &CorpusShadowOptions<'_>,
+	options: &CorpusShadowCorpusOptions<'_>,
 	expect_multi_source_units: Option<usize>,
 ) -> Result<CorpusShadowReport, Box<dyn std::error::Error>> {
-	validate_options(options)?;
-	let paths = DatasetPaths::new(options.dataset_root);
+	validate_options(&options.shadow)?;
+	if options.candidates.is_empty() {
+		return Err("shadow-corpus requires at least one explicit --candidate".into());
+	}
+	let paths = DatasetPaths::new(options.shadow.dataset_root);
 	let observations = read_jsonl::<ObservationRecord>(&paths.observations)?;
 	let snapshots = latest_snapshots(&paths)?;
 	let store = ObjectStore::new(&paths.objects, &paths.work);
-	let identity = run_identity(options)?;
+	let identity = run_identity(&options.shadow)?;
 	let mut verified = HashSet::new();
 	let mut score_cache = ScoreCache::new();
 	let mut loaded_by_snapshot = HashMap::new();
@@ -249,11 +325,11 @@ pub fn run_corpus(
 		if !assessment.is_scorable() {
 			continue;
 		}
-		validate_snapshot_game(&snapshot, options.game)?;
+		validate_snapshot_game(&snapshot, options.shadow.game)?;
 		let loaded = load_snapshot(&store, snapshot, &mut verified)?;
 		targets.extend(discover_targets(
 			&loaded,
-			options.game,
+			options.shadow.game,
 			&identity,
 			&mut score_cache,
 			None,
@@ -272,28 +348,75 @@ pub fn run_corpus(
 		)
 		.into());
 	}
-	fs::create_dir_all(options.output_dir)?;
+	let discovered = targets
+		.iter()
+		.map(|target| CorpusShadowSelection {
+			case_id: target.case_id.clone(),
+			relative_path: target.relative_path.clone(),
+		})
+		.collect::<BTreeSet<_>>();
+	let missing_candidates = options
+		.candidates
+		.difference(&discovered)
+		.map(|selection| format!("{}:{}", selection.case_id, selection.relative_path))
+		.collect::<Vec<_>>();
+	if !missing_candidates.is_empty() {
+		return Err(format!(
+			"candidate selection is not in the corpus denominator: {}",
+			missing_candidates.join(", ")
+		)
+		.into());
+	}
+	let (legacy_baseline, baseline_scores) =
+		load_legacy_baseline(options.legacy_baseline, options.expected_verdicts, &targets)?;
+	fs::create_dir_all(options.shadow.output_dir)?;
 	fs::write(
-		options.output_dir.join("shadow-targets.json"),
+		options.shadow.output_dir.join("shadow-targets.json"),
 		serde_json::to_vec_pretty(&targets)?,
 	)?;
 
 	let started = Instant::now();
 	let mut units = Vec::with_capacity(targets.len());
-	for (index, target) in targets.iter().cloned().enumerate() {
+	let mut candidate_records = Vec::with_capacity(options.candidates.len());
+	let mut candidate_index = 0_usize;
+	for target in targets.iter().cloned() {
+		let selection = CorpusShadowSelection {
+			case_id: target.case_id.clone(),
+			relative_path: target.relative_path.clone(),
+		};
+		let baseline = baseline_scores
+			.get(&selection)
+			.ok_or_else(|| {
+				format!(
+					"Legacy baseline is missing {}/{}",
+					target.case_id, target.relative_path
+				)
+			})?
+			.clone();
+		if !options.candidates.contains(&selection) {
+			units.push(CorpusShadowProjectionUnit {
+				target,
+				disposition: CorpusShadowDisposition::LegacyRetained,
+				projected_accepted: baseline.accepted_ok,
+				legacy_baseline: baseline,
+				candidate: None,
+			});
+			continue;
+		}
+		candidate_index += 1;
 		let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-		let eta_ms = if index == 0 {
+		let eta_ms = if candidate_index == 1 {
 			0
 		} else {
 			elapsed_ms
-				.checked_div(index as u64)
+				.checked_div((candidate_index - 1) as u64)
 				.unwrap_or(0)
-				.saturating_mul((targets.len() - index) as u64)
+				.saturating_mul((options.candidates.len() - candidate_index + 1) as u64)
 		};
 		eprintln!(
-			"[shadow-corpus] unit {}/{} {}/{} elapsed_ms={} eta_ms={eta_ms}",
-			index + 1,
-			targets.len(),
+			"[shadow-corpus] candidate {}/{} {}/{} elapsed_ms={} eta_ms={eta_ms}",
+			candidate_index,
+			options.candidates.len(),
 			target.case_id,
 			target.relative_path,
 			elapsed_ms
@@ -301,20 +424,195 @@ pub fn run_corpus(
 		let loaded = loaded_by_snapshot
 			.get(&target.snapshot_id)
 			.ok_or_else(|| format!("snapshot {} was not loaded", target.snapshot_id))?;
-		units.push(run_target(options, loaded, target, &mut score_cache)?);
+		let candidate = run_target(&options.shadow, loaded, target.clone(), &mut score_cache)?;
+		verify_candidate_legacy_baseline(&candidate, &baseline)?;
+		let projected_accepted = candidate_projected_accepted(&candidate);
+		candidate_records.push(candidate.clone());
+		units.push(CorpusShadowProjectionUnit {
+			target,
+			disposition: CorpusShadowDisposition::CandidateEvaluated,
+			legacy_baseline: baseline,
+			candidate: Some(candidate),
+			projected_accepted,
+		});
 	}
+	eprintln!(
+		"[shadow-corpus] assembled {} units: candidates={} legacy_retained={} elapsed_ms={}",
+		units.len(),
+		candidate_records.len(),
+		units.len().saturating_sub(candidate_records.len()),
+		u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+	);
 	let report = CorpusShadowReport {
 		schema: CORPUS_SHADOW_REPORT_SCHEMA.to_string(),
 		generated_at: now_rfc3339(),
+		legacy_baseline,
 		targets,
 		summary: summarize(&units),
 		units,
 	};
-	write_corpus_report(options.output_dir, &report)?;
-	if options.record {
-		append_unique_many(&paths.shadow_measurements, &report.units)?;
+	write_corpus_report(options.shadow.output_dir, &report)?;
+	if options.shadow.record {
+		append_unique_many(&paths.shadow_measurements, &candidate_records)?;
 	}
 	Ok(report)
+}
+
+fn load_legacy_baseline(
+	baseline_path: &Path,
+	expected_path: &Path,
+	targets: &[CorpusShadowTarget],
+) -> Result<
+	(
+		LegacyBaselineIdentity,
+		BTreeMap<CorpusShadowSelection, FileRecord>,
+	),
+	Box<dyn std::error::Error>,
+> {
+	let baseline_bytes = fs::read(baseline_path)?;
+	let expected_bytes = fs::read(expected_path)?;
+	let baseline = serde_json::from_slice::<LegacyBaselineArtifact>(&baseline_bytes)?;
+	let expected =
+		serde_json::from_slice::<BTreeMap<String, BTreeMap<String, usize>>>(&expected_bytes)?;
+	let expected_content_id = stable_id("legacy-expected-v1", &[&expected_bytes]);
+	if baseline.schema != "1.0.0" {
+		return Err(format!(
+			"unsupported Legacy baseline schema {}; expected 1.0.0",
+			baseline.schema
+		)
+		.into());
+	}
+	if baseline.scorer_version != SCORER_VERSION {
+		return Err(format!(
+			"Legacy baseline scorer version is {}; expected {SCORER_VERSION}",
+			baseline.scorer_version
+		)
+		.into());
+	}
+	if baseline.expected_content_id != expected_content_id {
+		return Err("Legacy baseline is not bound to the supplied expected verdicts".into());
+	}
+	let mut actual = BTreeMap::<String, BTreeMap<String, usize>>::new();
+	for unit in &baseline.units {
+		*actual
+			.entry(unit.case_id.clone())
+			.or_default()
+			.entry(unit.score.verdict.clone())
+			.or_default() += 1;
+	}
+	if actual != expected {
+		return Err(format!(
+			"Legacy baseline does not reproduce {}",
+			expected_path.display()
+		)
+		.into());
+	}
+
+	let mut scores = BTreeMap::new();
+	for unit in baseline.units {
+		if !unit.score.multi_source {
+			return Err(format!(
+				"Legacy baseline unit {}:{} is not multi-source",
+				unit.case_id, unit.score.rel
+			)
+			.into());
+		}
+		let selection = CorpusShadowSelection {
+			case_id: unit.case_id,
+			relative_path: unit.score.rel.clone(),
+		};
+		if scores.insert(selection.clone(), unit.score).is_some() {
+			return Err(format!(
+				"duplicate Legacy baseline unit {}:{}",
+				selection.case_id, selection.relative_path
+			)
+			.into());
+		}
+	}
+	let target_keys = targets
+		.iter()
+		.map(|target| CorpusShadowSelection {
+			case_id: target.case_id.clone(),
+			relative_path: target.relative_path.clone(),
+		})
+		.collect::<BTreeSet<_>>();
+	let score_keys = scores.keys().cloned().collect::<BTreeSet<_>>();
+	if score_keys != target_keys {
+		let missing = target_keys
+			.difference(&score_keys)
+			.map(selection_name)
+			.collect::<Vec<_>>();
+		let extra = score_keys
+			.difference(&target_keys)
+			.map(selection_name)
+			.collect::<Vec<_>>();
+		return Err(format!(
+			"Legacy baseline denominator mismatch: missing=[{}] extra=[{}]",
+			missing.join(", "),
+			extra.join(", ")
+		)
+		.into());
+	}
+	for target in targets {
+		let selection = CorpusShadowSelection {
+			case_id: target.case_id.clone(),
+			relative_path: target.relative_path.clone(),
+		};
+		let score = scores
+			.get(&selection)
+			.expect("matching key sets guarantee a baseline score");
+		if score.source_mod_ids != target.source_mod_ids {
+			return Err(format!(
+				"Legacy baseline source identity mismatch for {}:{}",
+				selection.case_id, selection.relative_path
+			)
+			.into());
+		}
+	}
+
+	Ok((
+		LegacyBaselineIdentity {
+			schema: "1.0.0".to_string(),
+			scorer_version: SCORER_VERSION.to_string(),
+			baseline_content_id: stable_id("legacy-baseline-v1", &[&baseline_bytes]),
+			expected_content_id,
+			unit_count: scores.len(),
+		},
+		scores,
+	))
+}
+
+fn selection_name(selection: &CorpusShadowSelection) -> String {
+	format!("{}:{}", selection.case_id, selection.relative_path)
+}
+
+fn verify_candidate_legacy_baseline(
+	candidate: &CorpusShadowUnitRecord,
+	baseline: &FileRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let observed = candidate
+		.legacy
+		.score
+		.as_ref()
+		.ok_or("candidate comparison did not produce a Legacy score")?;
+	if observed != baseline {
+		return Err(format!(
+			"candidate Legacy arm drifted from the fixed baseline for {}:{}: baseline={} observed={}",
+			candidate.target.case_id,
+			candidate.target.relative_path,
+			baseline.verdict,
+			observed.verdict
+		)
+		.into());
+	}
+	Ok(())
+}
+
+fn candidate_projected_accepted(candidate: &CorpusShadowUnitRecord) -> bool {
+	matches!(
+		candidate.outcome,
+		CorpusShadowOutcome::Improved | CorpusShadowOutcome::UnchangedAccepted
+	)
 }
 
 struct RunIdentity {
@@ -737,12 +1035,7 @@ fn semantic_diff_if_files(rel: &str, left: &Path, right: &Path) -> Option<Semant
 }
 
 fn is_gui_path(rel: &str) -> bool {
-	let lower = rel.to_ascii_lowercase();
-	lower.starts_with("interface/")
-		|| lower.starts_with("common/interface/")
-		|| lower.starts_with("gfx/")
-		|| lower.ends_with(".gui")
-		|| lower.ends_with(".gfx")
+	rel.to_ascii_lowercase().ends_with(".gui")
 }
 
 fn is_event_path(rel: &str) -> bool {
@@ -826,7 +1119,7 @@ fn record_id(
 	stable_id("corpus-shadow-record-v1", &[&payload])
 }
 
-fn summarize(units: &[CorpusShadowUnitRecord]) -> CorpusShadowSummary {
+fn summarize(units: &[CorpusShadowProjectionUnit]) -> CorpusShadowSummary {
 	let mut summary = CorpusShadowSummary {
 		total_units: units.len(),
 		completed_units: units.len(),
@@ -835,62 +1128,60 @@ fn summarize(units: &[CorpusShadowUnitRecord]) -> CorpusShadowSummary {
 	let mut supported_legacy_ms = 0_u64;
 	let mut supported_structured_ms = 0_u64;
 	for unit in units {
-		summary.legacy_elapsed_ms = summary
-			.legacy_elapsed_ms
-			.saturating_add(unit.legacy.elapsed_ms);
-		summary.structured_elapsed_ms = summary
-			.structured_elapsed_ms
-			.saturating_add(unit.structured.elapsed_ms);
-		let legacy_accepted = unit
-			.legacy
-			.score
-			.as_ref()
-			.is_some_and(|score| score.accepted_ok);
-		let structured_accepted = unit
-			.structured
-			.score
-			.as_ref()
-			.is_some_and(|score| score.accepted_ok);
+		let legacy_accepted = unit.legacy_baseline.accepted_ok;
 		let non_gui = !is_gui_path(&unit.target.relative_path);
 		summary.legacy_accepted += usize::from(legacy_accepted);
-		summary.structured_accepted += usize::from(structured_accepted);
-		match unit.outcome {
-			CorpusShadowOutcome::Improved => summary.improved += 1,
-			CorpusShadowOutcome::Regressed => summary.regressed += 1,
-			CorpusShadowOutcome::UnchangedAccepted => summary.unchanged_accepted += 1,
-			CorpusShadowOutcome::UnchangedRejected => summary.unchanged_rejected += 1,
-			CorpusShadowOutcome::NeedsReview => summary.needs_review += 1,
-			CorpusShadowOutcome::SafetyFailed => summary.safety_failed += 1,
-			CorpusShadowOutcome::StructuredUnsupported => summary.structured_unsupported += 1,
-			CorpusShadowOutcome::StructuredConflict => summary.structured_conflict += 1,
-			CorpusShadowOutcome::Failed => summary.failed += 1,
+		let candidate_accepted = unit
+			.candidate
+			.as_ref()
+			.and_then(|candidate| candidate.structured.score.as_ref())
+			.is_some_and(|score| score.accepted_ok);
+		summary.candidate_accepted += usize::from(candidate_accepted);
+		match &unit.candidate {
+			None => summary.legacy_retained += 1,
+			Some(candidate) => {
+				summary.candidate_evaluated += 1;
+				summary.legacy_elapsed_ms = summary
+					.legacy_elapsed_ms
+					.saturating_add(candidate.legacy.elapsed_ms);
+				summary.structured_elapsed_ms = summary
+					.structured_elapsed_ms
+					.saturating_add(candidate.structured.elapsed_ms);
+				match candidate.outcome {
+					CorpusShadowOutcome::Improved => summary.improved += 1,
+					CorpusShadowOutcome::Regressed => summary.regressed += 1,
+					CorpusShadowOutcome::UnchangedAccepted => summary.unchanged_accepted += 1,
+					CorpusShadowOutcome::UnchangedRejected => summary.unchanged_rejected += 1,
+					CorpusShadowOutcome::NeedsReview => summary.needs_review += 1,
+					CorpusShadowOutcome::SafetyFailed => summary.safety_failed += 1,
+					CorpusShadowOutcome::StructuredUnsupported => {
+						summary.structured_unsupported += 1
+					}
+					CorpusShadowOutcome::StructuredConflict => summary.structured_conflict += 1,
+					CorpusShadowOutcome::Failed => summary.failed += 1,
+				}
+				if candidate.structured.output_valid
+					&& !matches!(
+						candidate.outcome,
+						CorpusShadowOutcome::StructuredUnsupported
+							| CorpusShadowOutcome::StructuredConflict
+							| CorpusShadowOutcome::Failed
+					) {
+					supported_legacy_ms =
+						supported_legacy_ms.saturating_add(candidate.legacy.elapsed_ms);
+					supported_structured_ms =
+						supported_structured_ms.saturating_add(candidate.structured.elapsed_ms);
+				}
+			}
 		}
-		if unit.structured.output_valid
-			&& !matches!(
-				unit.outcome,
-				CorpusShadowOutcome::StructuredUnsupported
-					| CorpusShadowOutcome::StructuredConflict
-					| CorpusShadowOutcome::Failed
-			) {
-			supported_legacy_ms = supported_legacy_ms.saturating_add(unit.legacy.elapsed_ms);
-			supported_structured_ms =
-				supported_structured_ms.saturating_add(unit.structured.elapsed_ms);
-		}
-		let projected_accepted = match unit.outcome {
-			CorpusShadowOutcome::StructuredUnsupported => legacy_accepted,
-			CorpusShadowOutcome::SafetyFailed
-			| CorpusShadowOutcome::StructuredConflict
-			| CorpusShadowOutcome::Failed => false,
-			_ => structured_accepted,
-		};
-		summary.projected_candidate_accepted += usize::from(projected_accepted);
+		summary.projected_accepted += usize::from(unit.projected_accepted);
 		if non_gui {
 			summary.non_gui_units += 1;
 			summary.legacy_accepted_non_gui += usize::from(legacy_accepted);
-			summary.structured_accepted_non_gui += usize::from(structured_accepted);
-			summary.projected_candidate_accepted_non_gui += usize::from(projected_accepted);
+			summary.candidate_accepted_non_gui += usize::from(candidate_accepted);
+			summary.projected_accepted_non_gui += usize::from(unit.projected_accepted);
 			summary.legacy_accepted_non_gui_lost +=
-				usize::from(legacy_accepted && !projected_accepted);
+				usize::from(legacy_accepted && !unit.projected_accepted);
 		}
 	}
 	if supported_legacy_ms > 0 {
@@ -911,7 +1202,7 @@ fn write_single_report(output_dir: &Path, record: &CorpusShadowUnitRecord) -> io
 	)?;
 	fs::write(
 		output_dir.join("report.md"),
-		render_units_report(std::slice::from_ref(record), None),
+		render_candidate_report(record),
 	)
 }
 
@@ -922,105 +1213,161 @@ fn write_corpus_report(output_dir: &Path, report: &CorpusShadowReport) -> io::Re
 	)?;
 	fs::write(
 		output_dir.join("report.md"),
-		render_units_report(&report.units, Some(&report.summary)),
+		render_projection_report(report),
 	)
 }
 
-fn render_units_report(
-	units: &[CorpusShadowUnitRecord],
-	summary: Option<&CorpusShadowSummary>,
-) -> String {
+fn render_candidate_report(unit: &CorpusShadowUnitRecord) -> String {
 	let mut out = String::from("# Structured Merge Shadow Report\n\n");
-	if let Some(summary) = summary {
-		out.push_str(&format!(
-			"Units: {} | Legacy accepted: {} | projected candidate accepted: {} | improved: {} | regressed: {} | unsupported: {} | review: {} | safety failed: {}\n\n",
-			summary.total_units,
-			summary.legacy_accepted,
-			summary.projected_candidate_accepted,
-			summary.improved,
-			summary.regressed,
-			summary.structured_unsupported,
-			summary.needs_review,
-			summary.safety_failed
-		));
-		out.push_str(&format!(
-			"Non-GUI units: {} | Legacy accepted: {} | Structured accepted: {} | projected candidate accepted: {} | Legacy accepted lost: {}\n\n",
-			summary.non_gui_units,
-			summary.legacy_accepted_non_gui,
-			summary.structured_accepted_non_gui,
-			summary.projected_candidate_accepted_non_gui,
-			summary.legacy_accepted_non_gui_lost
-		));
-		if let Some(ratio_milli) = summary.supported_runtime_ratio_milli {
-			out.push_str(&format!(
-				"Supported candidate runtime ratio: {}.{:03}x Legacy\n\n",
-				ratio_milli / 1_000,
-				ratio_milli % 1_000
-			));
-		}
-	}
 	out.push_str("| Case | Unit | Legacy | Structured | Outcome |\n");
 	out.push_str("| --- | --- | --- | --- | --- |\n");
-	for unit in units {
-		let legacy = unit
-			.legacy
-			.score
-			.as_ref()
-			.map_or(unit.legacy.status.as_str(), |score| score.verdict.as_str());
-		let structured = unit
-			.structured
-			.score
-			.as_ref()
-			.map_or(unit.structured.status.as_str(), |score| {
-				score.verdict.as_str()
-			});
+	append_candidate_row(&mut out, unit);
+	append_candidate_details(&mut out, unit);
+	out
+}
+
+fn render_projection_report(report: &CorpusShadowReport) -> String {
+	let summary = &report.summary;
+	let mut out = String::from("# Structured Merge Rollout Projection\n\n");
+	out.push_str(&format!(
+		"Units: {} | candidate evaluated: {} | Legacy retained: {} | Legacy accepted: {} | projected accepted: {}\n\n",
+		summary.total_units,
+		summary.candidate_evaluated,
+		summary.legacy_retained,
+		summary.legacy_accepted,
+		summary.projected_accepted
+	));
+	out.push_str(&format!(
+		"Non-GUI units: {} | Legacy accepted: {} | projected accepted: {} | Legacy accepted lost: {}\n\n",
+		summary.non_gui_units,
+		summary.legacy_accepted_non_gui,
+		summary.projected_accepted_non_gui,
+		summary.legacy_accepted_non_gui_lost
+	));
+	out.push_str(&format!(
+		"Candidate outcomes: improved={} regressed={} unchanged_accepted={} unchanged_rejected={} review={} safety_failed={} unsupported={} conflict={} failed={}\n\n",
+		summary.improved,
+		summary.regressed,
+		summary.unchanged_accepted,
+		summary.unchanged_rejected,
+		summary.needs_review,
+		summary.safety_failed,
+		summary.structured_unsupported,
+		summary.structured_conflict,
+		summary.failed
+	));
+	if let Some(ratio_milli) = summary.supported_runtime_ratio_milli {
 		out.push_str(&format!(
-			"| {} | `{}` | {} | {} | {} |\n",
-			unit.target.case_id,
-			unit.target.relative_path,
-			legacy,
-			structured,
-			outcome_name(unit.outcome)
+			"Candidate runtime ratio: {}.{:03}x Legacy\n\n",
+			ratio_milli / 1_000,
+			ratio_milli % 1_000
 		));
 	}
-	for unit in units {
+	out.push_str(&format!(
+		"Legacy baseline: scorer `{}`; baseline `{}`; expected `{}`\n\n",
+		report.legacy_baseline.scorer_version,
+		report.legacy_baseline.baseline_content_id,
+		report.legacy_baseline.expected_content_id
+	));
+	out.push_str("| Case | Unit | Legacy baseline | Candidate | Disposition | Projected |\n");
+	out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+	for unit in &report.units {
+		let (candidate, disposition) =
+			unit.candidate
+				.as_ref()
+				.map_or(("not run", "legacy_retained"), |candidate| {
+					(
+						candidate
+							.structured
+							.score
+							.as_ref()
+							.map_or(candidate.structured.status.as_str(), |score| {
+								score.verdict.as_str()
+							}),
+						outcome_name(candidate.outcome),
+					)
+				});
 		out.push_str(&format!(
-			"\n## {}/{}\n\n- Outcome: `{}`\n- Timing: Legacy {} ms; Structured {} ms\n",
+			"| {} | `{}` | {} | {} | {} | {} |\n",
 			unit.target.case_id,
 			unit.target.relative_path,
-			outcome_name(unit.outcome),
-			unit.legacy.elapsed_ms,
-			unit.structured.elapsed_ms
+			unit.legacy_baseline.verdict,
+			candidate,
+			disposition,
+			if unit.projected_accepted {
+				"accepted"
+			} else {
+				"rejected"
+			}
 		));
-		if let Some(diff) = &unit.legacy.semantic_diff_from_human {
-			out.push_str(&format!(
-				"- Legacy versus human: {} only / {} only / {} shared atoms\n",
-				diff.left_only.values().sum::<usize>(),
-				diff.right_only.values().sum::<usize>(),
-				diff.shared_atoms
-			));
-		}
-		if let Some(diff) = &unit.structured.semantic_diff_from_human {
-			out.push_str(&format!(
-				"- Structured versus human: {} only / {} only / {} shared atoms\n",
-				diff.left_only.values().sum::<usize>(),
-				diff.right_only.values().sum::<usize>(),
-				diff.shared_atoms
-			));
-		}
-		if let Some(safety) = &unit.structured.event_safety {
-			out.push_str(&format!(
-				"- Event safety: parse={} human_parse={} duplicate_events={} duplicate_options={} orphan_control={} control_shape_matches_human={}\n",
-				safety.parse_ok,
-				safety.human_parse_ok,
-				safety.duplicate_event_ids.len(),
-				safety.duplicate_option_ids.len(),
-				safety.orphan_control_flow_paths.len(),
-				safety.control_flow_matches_human.unwrap_or(false)
-			));
+	}
+	for unit in &report.units {
+		if let Some(candidate) = &unit.candidate {
+			append_candidate_details(&mut out, candidate);
 		}
 	}
 	out
+}
+
+fn append_candidate_row(out: &mut String, unit: &CorpusShadowUnitRecord) {
+	let legacy = unit
+		.legacy
+		.score
+		.as_ref()
+		.map_or(unit.legacy.status.as_str(), |score| score.verdict.as_str());
+	let structured = unit
+		.structured
+		.score
+		.as_ref()
+		.map_or(unit.structured.status.as_str(), |score| {
+			score.verdict.as_str()
+		});
+	out.push_str(&format!(
+		"| {} | `{}` | {} | {} | {} |\n",
+		unit.target.case_id,
+		unit.target.relative_path,
+		legacy,
+		structured,
+		outcome_name(unit.outcome)
+	));
+}
+
+fn append_candidate_details(out: &mut String, unit: &CorpusShadowUnitRecord) {
+	out.push_str(&format!(
+		"\n## {}/{}\n\n- Outcome: `{}`\n- Timing: Legacy {} ms; Structured {} ms\n",
+		unit.target.case_id,
+		unit.target.relative_path,
+		outcome_name(unit.outcome),
+		unit.legacy.elapsed_ms,
+		unit.structured.elapsed_ms
+	));
+	if let Some(diff) = &unit.legacy.semantic_diff_from_human {
+		out.push_str(&format!(
+			"- Legacy versus human: {} only / {} only / {} shared atoms\n",
+			diff.left_only.values().sum::<usize>(),
+			diff.right_only.values().sum::<usize>(),
+			diff.shared_atoms
+		));
+	}
+	if let Some(diff) = &unit.structured.semantic_diff_from_human {
+		out.push_str(&format!(
+			"- Structured versus human: {} only / {} only / {} shared atoms\n",
+			diff.left_only.values().sum::<usize>(),
+			diff.right_only.values().sum::<usize>(),
+			diff.shared_atoms
+		));
+	}
+	if let Some(safety) = &unit.structured.event_safety {
+		out.push_str(&format!(
+			"- Event safety: parse={} human_parse={} duplicate_events={} duplicate_options={} orphan_control={} control_shape_matches_human={}\n",
+			safety.parse_ok,
+			safety.human_parse_ok,
+			safety.duplicate_event_ids.len(),
+			safety.duplicate_option_ids.len(),
+			safety.orphan_control_flow_paths.len(),
+			safety.control_flow_matches_human.unwrap_or(false)
+		));
+	}
 }
 
 fn outcome_name(outcome: CorpusShadowOutcome) -> &'static str {
@@ -1340,6 +1687,88 @@ mod tests {
 		}
 	}
 
+	fn baseline_artifact(score: FileRecord, expected_content_id: String) -> LegacyBaselineArtifact {
+		LegacyBaselineArtifact {
+			schema: "1.0.0".to_string(),
+			scorer_version: SCORER_VERSION.to_string(),
+			expected_content_id,
+			units: vec![LegacyBaselineUnit {
+				case_id: "case-a".to_string(),
+				score,
+			}],
+		}
+	}
+
+	#[test]
+	fn candidate_selection_requires_an_explicit_case_and_path() {
+		assert_eq!(
+			"case-a:events/a.txt".parse::<CorpusShadowSelection>(),
+			Ok(CorpusShadowSelection {
+				case_id: "case-a".to_string(),
+				relative_path: "events/a.txt".to_string(),
+			})
+		);
+		assert!("case-a".parse::<CorpusShadowSelection>().is_err());
+		assert!(":events/a.txt".parse::<CorpusShadowSelection>().is_err());
+	}
+
+	#[test]
+	fn legacy_baseline_must_cover_targets_and_match_expected_verdicts() {
+		let temp = tempfile::tempdir().unwrap();
+		let baseline_path = temp.path().join("legacy-baseline.json");
+		let expected_path = temp.path().join("expected.json");
+		let baseline_score = score(true);
+		let expected_bytes = serde_json::to_vec(&BTreeMap::from([(
+			"case-a".to_string(),
+			BTreeMap::from([("matches_ast".to_string(), 1)]),
+		)]))
+		.unwrap();
+		fs::write(&expected_path, &expected_bytes).unwrap();
+		fs::write(
+			&baseline_path,
+			serde_json::to_vec(&baseline_artifact(
+				baseline_score.clone(),
+				stable_id("legacy-expected-v1", &[&expected_bytes]),
+			))
+			.unwrap(),
+		)
+		.unwrap();
+		let target = make_target(
+			TargetIdentity {
+				snapshot: &snapshot(),
+				relative_path: "events/a.txt",
+				source_mod_ids: &["left".to_string(), "right".to_string()],
+				base_snapshot_identity: "base",
+				executable_hash: "exe",
+				scorer_config_hash: "config",
+			},
+			&game(Path::new("/game")),
+		);
+
+		let (identity, scores) = load_legacy_baseline(
+			&baseline_path,
+			&expected_path,
+			std::slice::from_ref(&target),
+		)
+		.unwrap();
+
+		assert_eq!(identity.unit_count, 1);
+		assert_eq!(scores.len(), 1);
+		assert_eq!(scores.values().next(), Some(&baseline_score));
+
+		fs::write(
+			&expected_path,
+			serde_json::to_vec(&BTreeMap::from([(
+				"case-a".to_string(),
+				BTreeMap::from([("diverges_ast".to_string(), 1)]),
+			)]))
+			.unwrap(),
+		)
+		.unwrap();
+		let error = load_legacy_baseline(&baseline_path, &expected_path, &[target]).unwrap_err();
+		assert!(error.to_string().contains("not bound"));
+	}
+
 	#[test]
 	fn target_identity_is_content_based_and_deterministic() {
 		let temp = tempfile::tempdir().unwrap();
@@ -1550,7 +1979,7 @@ mod tests {
 	}
 
 	#[test]
-	fn summary_projects_legacy_only_for_unsupported_units() {
+	fn summary_retains_legacy_for_unselected_units_without_running_structured() {
 		let target = make_target(
 			TargetIdentity {
 				snapshot: &snapshot(),
@@ -1562,29 +1991,26 @@ mod tests {
 			},
 			&game(Path::new("/game")),
 		);
-		let record = CorpusShadowUnitRecord {
-			schema: CORPUS_SHADOW_SCHEMA.to_string(),
-			record_id: "record".to_string(),
+		let record = CorpusShadowProjectionUnit {
 			target,
-			comparison_id: "comparison".to_string(),
-			observed_at: "now".to_string(),
-			human_resolution: None,
-			legacy: arm("legacy", true),
-			structured: arm("structured", false),
-			structured_vs_legacy: None,
-			outcome: CorpusShadowOutcome::StructuredUnsupported,
+			disposition: CorpusShadowDisposition::LegacyRetained,
+			legacy_baseline: score(true),
+			candidate: None,
+			projected_accepted: true,
 		};
 
 		let summary = summarize(&[record]);
 
 		assert_eq!(summary.legacy_accepted, 1);
-		assert_eq!(summary.structured_accepted, 0);
-		assert_eq!(summary.projected_candidate_accepted, 1);
-		assert_eq!(summary.structured_unsupported, 1);
+		assert_eq!(summary.candidate_accepted, 0);
+		assert_eq!(summary.projected_accepted, 1);
+		assert_eq!(summary.legacy_retained, 1);
+		assert_eq!(summary.candidate_evaluated, 0);
+		assert_eq!(summary.structured_unsupported, 0);
 		assert_eq!(summary.non_gui_units, 1);
 		assert_eq!(summary.legacy_accepted_non_gui, 1);
-		assert_eq!(summary.structured_accepted_non_gui, 0);
-		assert_eq!(summary.projected_candidate_accepted_non_gui, 1);
+		assert_eq!(summary.candidate_accepted_non_gui, 0);
+		assert_eq!(summary.projected_accepted_non_gui, 1);
 		assert_eq!(summary.legacy_accepted_non_gui_lost, 0);
 	}
 
@@ -1618,10 +2044,10 @@ mod tests {
 			option_ids_include_human: Some(true),
 			control_flow_matches_human: Some(false),
 		});
-		let record = CorpusShadowUnitRecord {
+		let candidate = CorpusShadowUnitRecord {
 			schema: CORPUS_SHADOW_SCHEMA.to_string(),
 			record_id: "record".to_string(),
-			target,
+			target: target.clone(),
 			comparison_id: "comparison".to_string(),
 			observed_at: "now".to_string(),
 			human_resolution: None,
@@ -1630,16 +2056,23 @@ mod tests {
 			structured_vs_legacy: None,
 			outcome: CorpusShadowOutcome::SafetyFailed,
 		};
+		let record = CorpusShadowProjectionUnit {
+			target,
+			disposition: CorpusShadowDisposition::CandidateEvaluated,
+			legacy_baseline: score(true),
+			candidate: Some(candidate),
+			projected_accepted: false,
+		};
 
 		let summary = summarize(&[record]);
 
-		assert_eq!(summary.structured_accepted, 1);
-		assert_eq!(summary.projected_candidate_accepted, 0);
+		assert_eq!(summary.candidate_accepted, 1);
+		assert_eq!(summary.projected_accepted, 0);
 		assert_eq!(summary.safety_failed, 1);
 		assert_eq!(summary.non_gui_units, 1);
 		assert_eq!(summary.legacy_accepted_non_gui, 1);
-		assert_eq!(summary.structured_accepted_non_gui, 1);
-		assert_eq!(summary.projected_candidate_accepted_non_gui, 0);
+		assert_eq!(summary.candidate_accepted_non_gui, 1);
+		assert_eq!(summary.projected_accepted_non_gui, 0);
 		assert_eq!(summary.legacy_accepted_non_gui_lost, 1);
 	}
 
@@ -1656,10 +2089,10 @@ mod tests {
 			},
 			&game(Path::new("/game")),
 		);
-		let record = CorpusShadowUnitRecord {
+		let candidate = CorpusShadowUnitRecord {
 			schema: CORPUS_SHADOW_SCHEMA.to_string(),
 			record_id: "record".to_string(),
-			target,
+			target: target.clone(),
 			comparison_id: "comparison".to_string(),
 			observed_at: "now".to_string(),
 			human_resolution: None,
@@ -1668,6 +2101,13 @@ mod tests {
 			structured_vs_legacy: None,
 			outcome: CorpusShadowOutcome::Regressed,
 		};
+		let record = CorpusShadowProjectionUnit {
+			target,
+			disposition: CorpusShadowDisposition::CandidateEvaluated,
+			legacy_baseline: score(true),
+			candidate: Some(candidate),
+			projected_accepted: false,
+		};
 
 		let summary = summarize(&[record]);
 
@@ -1675,30 +2115,55 @@ mod tests {
 		assert_eq!(summary.legacy_accepted, 1);
 		assert_eq!(summary.non_gui_units, 0);
 		assert_eq!(summary.legacy_accepted_non_gui, 0);
-		assert_eq!(summary.structured_accepted_non_gui, 0);
-		assert_eq!(summary.projected_candidate_accepted_non_gui, 0);
+		assert_eq!(summary.candidate_accepted_non_gui, 0);
+		assert_eq!(summary.projected_accepted_non_gui, 0);
 		assert_eq!(summary.legacy_accepted_non_gui_lost, 0);
+	}
+
+	#[test]
+	fn gfx_units_remain_in_the_non_gui_rollout_denominator() {
+		assert!(!is_gui_path("interface/000_expanded_mod_family.gfx"));
+		assert!(is_gui_path("interface/frontend.gui"));
 	}
 
 	#[test]
 	fn report_renders_non_gui_rollout_evidence() {
 		let summary = CorpusShadowSummary {
 			total_units: 36,
+			legacy_retained: 35,
+			candidate_evaluated: 1,
 			non_gui_units: 21,
+			legacy_accepted: 7,
+			projected_accepted: 8,
 			legacy_accepted_non_gui: 7,
-			structured_accepted_non_gui: 8,
-			projected_candidate_accepted_non_gui: 8,
+			candidate_accepted_non_gui: 1,
+			projected_accepted_non_gui: 8,
 			legacy_accepted_non_gui_lost: 0,
 			supported_runtime_ratio_milli: Some(1_086),
 			..CorpusShadowSummary::default()
 		};
-
-		let report = render_units_report(&[], Some(&summary));
+		let report = render_projection_report(&CorpusShadowReport {
+			schema: CORPUS_SHADOW_REPORT_SCHEMA.to_string(),
+			generated_at: "now".to_string(),
+			legacy_baseline: LegacyBaselineIdentity {
+				schema: "1.0.0".to_string(),
+				scorer_version: SCORER_VERSION.to_string(),
+				baseline_content_id: "baseline".to_string(),
+				expected_content_id: "expected".to_string(),
+				unit_count: 36,
+			},
+			targets: Vec::new(),
+			units: Vec::new(),
+			summary,
+		});
 
 		assert!(report.contains(
-			"Non-GUI units: 21 | Legacy accepted: 7 | Structured accepted: 8 | projected candidate accepted: 8 | Legacy accepted lost: 0"
+			"Units: 36 | candidate evaluated: 1 | Legacy retained: 35 | Legacy accepted: 7 | projected accepted: 8"
 		));
-		assert!(report.contains("Supported candidate runtime ratio: 1.086x Legacy"));
+		assert!(report.contains(
+			"Non-GUI units: 21 | Legacy accepted: 7 | projected accepted: 8 | Legacy accepted lost: 0"
+		));
+		assert!(report.contains("Candidate runtime ratio: 1.086x Legacy"));
 	}
 
 	#[test]

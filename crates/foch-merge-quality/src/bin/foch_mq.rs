@@ -178,10 +178,25 @@ enum Cmd {
 		#[arg(long)]
 		record: bool,
 	},
-	/// Compare both kernels for every scorable multi-source corpus unit.
+	/// Project selected Structured candidates over a fixed Legacy corpus baseline.
 	ShadowCorpus {
 		#[arg(long)]
 		out_dir: PathBuf,
+		/// Canonical per-file Legacy scores frozen from the base-aware fixture.
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/legacy-baseline.json")
+		)]
+		legacy_baseline: PathBuf,
+		/// Committed verdict counts used to validate the per-file baseline.
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/expected.json")
+		)]
+		expected_verdicts: PathBuf,
+		/// Structured candidate to execute, as CASE_ID:RELATIVE_PATH. Repeatable.
+		#[arg(long, required = true)]
+		candidate: Vec<corpus_shadow::CorpusShadowSelection>,
 		#[arg(long, default_value_t = 600)]
 		timeout_secs: u64,
 		#[arg(long)]
@@ -515,6 +530,9 @@ fn main() -> CmdResult {
 		}
 		Cmd::ShadowCorpus {
 			out_dir,
+			legacy_baseline,
+			expected_verdicts,
+			candidate,
 			timeout_secs,
 			expect_multi_source_units,
 			force,
@@ -522,15 +540,21 @@ fn main() -> CmdResult {
 		} => {
 			let game = discover_game(&game_root, &steam_root)?;
 			let executable = std::env::current_exe()?;
+			let candidates = candidate.into_iter().collect::<BTreeSet<_>>();
 			let report = corpus_shadow::run_corpus(
-				&corpus_shadow::CorpusShadowOptions {
-					dataset_root: &dataset_root,
-					output_dir: &out_dir,
-					game: &game,
-					executable: &executable,
-					timeout: Duration::from_secs(timeout_secs),
-					force,
-					record,
+				&corpus_shadow::CorpusShadowCorpusOptions {
+					shadow: corpus_shadow::CorpusShadowOptions {
+						dataset_root: &dataset_root,
+						output_dir: &out_dir,
+						game: &game,
+						executable: &executable,
+						timeout: Duration::from_secs(timeout_secs),
+						force,
+						record,
+					},
+					legacy_baseline: &legacy_baseline,
+					expected_verdicts: &expected_verdicts,
+					candidates: &candidates,
 				},
 				expect_multi_source_units,
 			)?;
