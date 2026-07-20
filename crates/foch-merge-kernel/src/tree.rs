@@ -50,7 +50,15 @@ pub enum ChildCardinality {
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticKeyScope {
+	Global,
+	Parent,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SemanticKey {
+	pub scope: SemanticKeyScope,
 	pub namespace: String,
 	pub value: String,
 }
@@ -58,6 +66,15 @@ pub struct SemanticKey {
 impl SemanticKey {
 	pub fn new(namespace: impl Into<String>, value: impl Into<String>) -> Self {
 		Self {
+			scope: SemanticKeyScope::Global,
+			namespace: namespace.into(),
+			value: value.into(),
+		}
+	}
+
+	pub fn parent_scoped(namespace: impl Into<String>, value: impl Into<String>) -> Self {
+		Self {
+			scope: SemanticKeyScope::Parent,
 			namespace: namespace.into(),
 			value: value.into(),
 		}
@@ -126,6 +143,15 @@ impl TreeNode {
 
 	pub fn with_anchor(mut self, namespace: impl Into<String>, value: impl Into<String>) -> Self {
 		self.anchor = Some(SemanticKey::new(namespace, value));
+		self
+	}
+
+	pub fn with_parent_scoped_anchor(
+		mut self,
+		namespace: impl Into<String>,
+		value: impl Into<String>,
+	) -> Self {
+		self.anchor = Some(SemanticKey::parent_scoped(namespace, value));
 		self
 	}
 
@@ -278,6 +304,12 @@ fn summarize_node(
 		&mut hasher,
 		node.anchor.as_ref().map(|anchor| anchor.value.as_str()),
 	);
+	if let Some(anchor) = &node.anchor {
+		hasher.update(&[match anchor.scope {
+			SemanticKeyScope::Global => 0,
+			SemanticKeyScope::Parent => 1,
+		}]);
+	}
 	hash_optional_field(&mut hasher, node.signature.as_deref());
 	hasher.update(&[match node.child_order {
 		ChildOrder::Ordered => 0,

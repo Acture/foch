@@ -199,8 +199,14 @@ pub fn run_case(
 	let loaded = load_snapshot(&store, snapshot, &mut verified)?;
 	let identity = run_identity(options)?;
 	let mut score_cache = ScoreCache::new();
-	let targets = discover_targets(&loaded, options.game, &identity, &mut score_cache)?;
 	let normalized = retained_path.replace('\\', "/");
+	let targets = discover_targets(
+		&loaded,
+		options.game,
+		&identity,
+		&mut score_cache,
+		Some(&normalized),
+	)?;
 	let target = targets
 		.into_iter()
 		.find(|target| target.relative_path == normalized)
@@ -244,6 +250,7 @@ pub fn run_corpus(
 			options.game,
 			&identity,
 			&mut score_cache,
+			None,
 		)?);
 		loaded_by_snapshot.insert(loaded.snapshot.snapshot_id.clone(), loaded);
 	}
@@ -408,6 +415,7 @@ fn discover_targets(
 	game: &Eu4GameDiscovery,
 	identity: &RunIdentity,
 	cache: &mut ScoreCache,
+	retained_path: Option<&str>,
 ) -> Result<Vec<CorpusShadowTarget>, Box<dyn std::error::Error>> {
 	let references = reference_output_files(&loaded.compatch);
 	let units = scoring_reference_units(&references);
@@ -417,6 +425,9 @@ fn discover_targets(
 	let empty_output = tempfile::tempdir()?;
 	let mut targets = Vec::new();
 	for relative_path in units {
+		if retained_path.is_some_and(|retained| retained != relative_path) {
+			continue;
+		}
 		let score = score_file_with_cache_and_basegame(
 			&ScoreFileRequest {
 				compatch_id: &loaded.snapshot.compatch.workshop_id,
@@ -1196,6 +1207,7 @@ fn normalize_event_facts(facts: &mut EventFacts) {
 	facts.event_ids.sort();
 	facts.option_ids.sort();
 	facts.orphan_control_flow_paths.sort();
+	facts.control_flow_shape.sort();
 }
 
 fn duplicates(values: &[String]) -> Vec<String> {
@@ -1368,21 +1380,33 @@ mod tests {
 			compatch,
 			source_dirs: vec![left, right],
 		};
+		let identity = RunIdentity {
+			base_snapshot_identity: "base".to_string(),
+			executable_hash: "exe".to_string(),
+			scorer_config_hash: "config".to_string(),
+		};
 		let targets = discover_targets(
 			&loaded,
 			&game(&game_root),
-			&RunIdentity {
-				base_snapshot_identity: "base".to_string(),
-				executable_hash: "exe".to_string(),
-				scorer_config_hash: "config".to_string(),
-			},
+			&identity,
 			&mut ScoreCache::new(),
+			None,
 		)
 		.unwrap();
 
 		assert_eq!(targets.len(), 1);
 		assert_eq!(targets[0].relative_path, "events/a.txt");
 		assert_eq!(targets[0].source_mod_ids, ["left", "right"]);
+
+		let filtered = discover_targets(
+			&loaded,
+			&game(&game_root),
+			&identity,
+			&mut ScoreCache::new(),
+			Some("events/left-only.txt"),
+		)
+		.unwrap();
+		assert!(filtered.is_empty());
 	}
 
 	#[test]
@@ -1406,6 +1430,23 @@ mod tests {
 		assert_eq!(safety.namespaces_include_human, Some(true));
 		assert_eq!(safety.event_ids_include_human, Some(true));
 		assert_eq!(safety.option_ids_include_human, Some(true));
+		assert_eq!(safety.control_flow_matches_human, Some(true));
+		assert!(safety.passed());
+	}
+
+	#[test]
+	fn valid_event_control_flow_ignores_top_level_event_order() {
+		let temp = tempfile::tempdir().unwrap();
+		let human = temp.path().join("human.txt");
+		let output = temp.path().join("output.txt");
+		let first = "country_event = { id = test.1 option = { name = first if = { always = yes } else = { always = no } } }";
+		let second =
+			"country_event = { id = test.2 option = { name = second if = { always = yes } } }";
+		write(&human, &format!("namespace = test\n{first}\n{second}\n"));
+		write(&output, &format!("namespace = test\n{second}\n{first}\n"));
+
+		let safety = assess_event_safety(&output, &human);
+
 		assert_eq!(safety.control_flow_matches_human, Some(true));
 		assert!(safety.passed());
 	}

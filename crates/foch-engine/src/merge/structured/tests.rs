@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 
-use foch_language::analyzer::content_family::{MergePolicies, ScalarMergePolicy};
+use foch_language::analyzer::content_family::{
+	MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
+};
 use foch_language::analyzer::parser::{AstFile, parse_clausewitz_content};
-use foch_merge_kernel::ConflictKind;
+use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
 
 use crate::emit::emit_clausewitz_statements;
 
@@ -23,6 +25,7 @@ fn emit(file: &AstFile) -> String {
 fn event_policies() -> MergePolicies {
 	MergePolicies {
 		scalar: ScalarMergePolicy::LastWriter,
+		one_sided_removal: OneSidedRemovalPolicy::PreserveIfParentSurvives,
 		edit_wins_over_remove: true,
 		..MergePolicies::default()
 	}
@@ -48,7 +51,7 @@ fn event_adapter_round_trips_ast_content_and_scalar_variants() {
 }
 
 #[test]
-fn event_and_option_use_semantic_identity_but_control_flow_does_not() {
+fn event_option_and_control_flow_use_their_intended_identity_scope() {
 	let ast = parse(
 		"country_event = {\n\
 		\tid = demo.1\n\
@@ -62,17 +65,151 @@ fn event_and_option_use_semantic_identity_but_control_flow_does_not() {
 		.nodes()
 		.filter_map(|(_, node)| node.anchor.as_ref())
 		.filter(|anchor| anchor.namespace == "clausewitz.assignment.identity")
-		.map(|anchor| anchor.value.as_str())
+		.map(|anchor| (anchor.value.as_str(), &anchor.scope))
 		.collect::<Vec<_>>();
 	let if_nodes = tree
 		.nodes()
-		.filter(|(_, node)| node.value.as_deref() == Some("if"))
+		.filter(|(_, node)| {
+			node.kind
+				.starts_with("clausewitz.control_flow.guarded_branch:")
+		})
+		.map(|(_, node)| node)
+		.collect::<Vec<_>>();
+	let control_chains = tree
+		.nodes()
+		.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))
 		.map(|(_, node)| node)
 		.collect::<Vec<_>>();
 
-	assert_eq!(anchors, vec!["country_event:demo.1", "option:demo.accept"]);
+	assert_eq!(
+		anchors,
+		vec![
+			("country_event:demo.1", &SemanticKeyScope::Global),
+			("option:demo.accept", &SemanticKeyScope::Parent),
+		]
+	);
 	assert_eq!(if_nodes.len(), 2);
-	assert!(if_nodes.iter().all(|node| node.anchor.is_none()));
+	assert!(if_nodes.iter().all(|node| {
+		node.anchor
+			.as_ref()
+			.is_some_and(|anchor| anchor.scope == SemanticKeyScope::Parent)
+	}));
+	assert!(if_nodes.iter().all(|node| node.signature.is_some()));
+	assert_eq!(
+		control_chains.len(),
+		2,
+		"adjacent ifs are independent chains"
+	);
+	assert!(control_chains.iter().all(|node| {
+		node.anchor
+			.as_ref()
+			.is_some_and(|anchor| anchor.scope == SemanticKeyScope::Parent)
+	}));
+}
+
+#[test]
+fn event_adapter_groups_else_branches_and_comments_into_one_chain() {
+	let ast = parse(
+		"country_event = {\n\
+		\tid = demo.1\n\
+		\toption = {\n\
+		\t\tname = demo.accept\n\
+		\t\tif = { limit = { has_country_flag = first } add_prestige = 1 }\n\
+		\t\t# branch note\n\
+		\t\telse_if = { limit = { has_country_flag = second } add_stability = 1 }\n\
+		\t\telse = { add_legitimacy = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+	let tree = normalize_ast(&ast, &EventTreePolicy).expect("normalize AST");
+	let chains = tree
+		.nodes()
+		.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))
+		.map(|(_, node)| node)
+		.collect::<Vec<_>>();
+
+	assert_eq!(chains.len(), 1);
+	assert!(chains[0].signature.is_some());
+	assert_eq!(
+		chains[0]
+			.children
+			.iter()
+			.filter_map(|child| {
+				let node = tree.node(*child).unwrap();
+				if node
+					.kind
+					.starts_with("clausewitz.control_flow.guarded_branch:")
+				{
+					Some("guarded")
+				} else if node.kind == "clausewitz.control_flow.else_branch" {
+					Some("else")
+				} else if node.kind == "clausewitz.comment" {
+					None
+				} else {
+					node.value.as_deref()
+				}
+			})
+			.collect::<Vec<_>>(),
+		vec!["guarded", "guarded", "else"]
+	);
+	let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild AST");
+	assert_eq!(emit(&rebuilt), emit(&ast));
+}
+
+#[test]
+fn event_merge_recognizes_an_if_demoted_by_a_new_leading_branch() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = demo.1\n\
+		\tif = { limit = { has_country_flag = old } add_prestige = 1 }\n\
+		\telse = { add_stability = -1 }\n\
+		}\n",
+	);
+	let left = base.clone();
+	let right = parse(
+		"country_event = {\n\
+		\tid = demo.1\n\
+		\tif = { limit = { has_country_flag = new } add_legitimacy = 1 }\n\
+		\telse_if = { limit = { has_country_flag = old } add_prestige = 1 }\n\
+		\telse = { add_stability = -1 }\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge branch insertion and demotion");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	assert_eq!(emit(outcome.resolved_ast().unwrap()), emit(&right));
+}
+
+#[test]
+fn event_merge_treats_guard_signatures_as_soft_correspondence() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = demo.1\n\
+		\tif = { limit = { always = yes } add_prestige = 1 }\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = demo.1\n\
+		\tif = { limit = { always = yes has_country_flag = from_left } add_prestige = 1 }\n\
+		}\n",
+	);
+	let right = parse(
+		"country_event = {\n\
+		\tid = demo.1\n\
+		\tif = { limit = { always = yes has_ruler_flag = from_right } add_prestige = 1 }\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge disjoint guard edits");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("has_country_flag = from_left"));
+	assert!(output.contains("has_ruler_flag = from_right"));
 }
 
 #[test]
@@ -249,7 +386,7 @@ fn event_merge_never_exposes_a_conflicted_tree_as_resolved() {
 }
 
 #[test]
-fn event_merge_uses_edit_wins_for_delete_modify() {
+fn event_merge_edit_wins_does_not_restore_unchanged_deleted_descendants() {
 	let base = parse(
 		"country_event = {\n\
 		\tid = 700\n\
@@ -282,23 +419,155 @@ fn event_merge_uses_edit_wins_for_delete_modify() {
 }
 
 #[test]
-fn event_merge_uses_last_writer_for_divergent_inserted_scalar() {
+fn event_merge_combines_hooks_boolean_replacements_and_union_safe_chains() {
 	let base = parse(
 		"country_event = {\n\
 		\tid = elections.720\n\
-		\tdesc = { trigger = { NOT = { has_government_attribute = has_dutch_election } } }\n\
+		\timmediate = { hidden_effect = { pre_select_possible_ruler_focus = yes } }\n\
+		\tdesc = {\n\
+		\t\ttrigger = { NOT = { has_government_attribute = has_dutch_election } }\n\
+		\t\tdesc = elections.720.db\n\
+		\t}\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = {\n\
+		\t\t\tlimit = { has_government_attribute = republican_virtues }\n\
+		\t\t\tdefine_ruler = { change_adm = 1 change_dip = 1 change_mil = 1 }\n\
+		\t\t}\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t}\n\
 		}\n",
 	);
 	let left = parse(
 		"country_event = {\n\
 		\tid = elections.720\n\
-		\tdesc = { trigger = { NOT = { has_reform = dutch_republic } } }\n\
+		\tdesc = { trigger = { NOT = { has_reform = dutch_republic } } desc = elections.720.db }\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = {\n\
+		\t\t\tlimit = { has_country_flag = NED_upgrade_statist_candidate_1 }\n\
+		\t\t\tdefine_ruler = { change_mil = 1 }\n\
+		\t\t}\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t}\n\
 		}\n",
 	);
 	let right = parse(
 		"country_event = {\n\
 		\tid = elections.720\n\
-		\tdesc = { trigger = { NOT = { has_government_attribute = has_dutch_election has_reform = crown_of_saint_wenceslaus } } }\n\
+		\timmediate = {\n\
+		\t\thidden_effect = {\n\
+		\t\t\tpre_select_possible_ruler_focus = yes\n\
+		\t\t\tpre_election_set_factional_veche = yes\n\
+		\t\t}\n\
+		\t}\n\
+		\tdesc = {\n\
+		\t\ttrigger = {\n\
+		\t\t\tNOT = {\n\
+		\t\t\t\thas_government_attribute = has_dutch_election\n\
+		\t\t\t\thas_reform = crown_of_saint_wenceslaus\n\
+		\t\t\t}\n\
+		\t\t}\n\
+		\t\tdesc = elections.720.db\n\
+		\t}\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = {\n\
+		\t\t\tlimit = { has_government_attribute = republican_virtues }\n\
+		\t\t\tdefine_ruler = { change_adm = 1 change_dip = 1 change_mil = 1 }\n\
+		\t\t}\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge one-sided omissions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	for retained in [
+		"pre_select_possible_ruler_focus = yes",
+		"pre_election_set_factional_veche = yes",
+		"has_government_attribute = has_dutch_election",
+		"has_reform = crown_of_saint_wenceslaus",
+		"has_government_attribute = republican_virtues",
+		"has_country_flag = NED_upgrade_statist_candidate_1",
+		"change_adm = 1",
+		"change_dip = 1",
+		"change_mil = 1",
+	] {
+		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
+	}
+	assert!(!output.contains("has_reform = dutch_republic"), "{output}");
+	assert_eq!(
+		output.matches("\t\telse = {").count(),
+		1,
+		"only one empty constructor fallback should remain:\n{output}"
+	);
+}
+
+#[test]
+fn event_merge_does_not_union_exclusive_constructor_chains() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = {\n\
+		\t\t\tlimit = { has_country_flag = original_candidate }\n\
+		\t\t\tdefine_ruler = { dynasty = original_dynasty }\n\
+		\t\t}\n\
+		\t\telse = { define_ruler = { dynasty = original_fallback } }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = {\n\
+		\t\t\tlimit = { has_country_flag = replacement_candidate }\n\
+		\t\t\tdefine_ruler = { dynasty = replacement_dynasty }\n\
+		\t\t}\n\
+		\t\telse = { define_ruler = { dynasty = replacement_fallback } }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = base.clone();
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge exclusive constructor replacement");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("replacement_candidate"), "{output}");
+	assert!(output.contains("replacement_dynasty"), "{output}");
+	assert!(output.contains("replacement_fallback"), "{output}");
+	assert!(!output.contains("original_candidate"), "{output}");
+	assert!(!output.contains("original_dynasty"), "{output}");
+	assert!(!output.contains("original_fallback"), "{output}");
+}
+
+#[test]
+fn event_merge_combines_presence_and_last_writer_policies() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\tdesc = { trigger = { NOT = { has_government_attribute = has_dutch_election } } desc = elections.720.db }\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\tdesc = { trigger = { NOT = { has_reform = dutch_republic } } desc = elections.720.db }\n\
+		}\n",
+	);
+	let right = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\tdesc = { trigger = { NOT = { has_government_attribute = has_dutch_election has_reform = crown_of_saint_wenceslaus } } desc = elections.720.db }\n\
 		}\n",
 	);
 
@@ -307,7 +576,7 @@ fn event_merge_uses_last_writer_for_divergent_inserted_scalar() {
 
 	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
 	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
-	assert!(!output.contains("has_government_attribute = has_dutch_election"));
+	assert!(output.contains("has_government_attribute = has_dutch_election"));
 	assert!(output.contains("has_reform = crown_of_saint_wenceslaus"));
-	assert!(!output.contains("has_reform = dutch_republic"));
+	assert!(!output.contains("has_reform = dutch_republic"), "{output}");
 }

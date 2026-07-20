@@ -3,7 +3,8 @@ use super::content_family::{
 	ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyPathMatcher,
 	ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy, DefinitionFileOrder,
 	DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
-	GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule, ScalarMergePolicy,
+	GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule, OneSidedRemovalPolicy,
+	ScalarMergePolicy,
 };
 use super::eu4_builtin::builtin_base_scope_names;
 use foch_core::model::{MaybeScope, ScopeType, base_scope};
@@ -251,6 +252,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.edit_wins_over_remove()
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::UnionWithRename)
+				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveIfParentSurvives)
 				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("decisions", "decisions/")

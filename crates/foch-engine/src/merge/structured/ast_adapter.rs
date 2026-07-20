@@ -16,7 +16,10 @@ const FILE_KIND: &str = "clausewitz.file";
 const ASSIGNMENT_KIND_PREFIX: &str = "clausewitz.assignment:";
 const ITEM_KIND: &str = "clausewitz.item";
 const COMMENT_KIND: &str = "clausewitz.comment";
-const BLOCK_KIND: &str = "clausewitz.block";
+const BLOCK_KIND_PREFIX: &str = "clausewitz.block";
+const CONTROL_FLOW_CHAIN_KIND_PREFIX: &str = "clausewitz.control_flow.chain:";
+const CONTROL_FLOW_GUARDED_BRANCH_KIND_PREFIX: &str = "clausewitz.control_flow.guarded_branch:";
+const CONTROL_FLOW_ELSE_BRANCH_KIND: &str = "clausewitz.control_flow.else_branch";
 const IDENTIFIER_KIND: &str = "clausewitz.scalar.identifier";
 const STRING_KIND: &str = "clausewitz.scalar.string";
 const NUMBER_KIND: &str = "clausewitz.scalar.number";
@@ -58,11 +61,7 @@ pub(crate) fn normalize_ast(
 	file: &AstFile,
 	policy: &impl ClausewitzTreePolicy,
 ) -> Result<NormalizedTree, AstAdapterError> {
-	let children = file
-		.statements
-		.iter()
-		.map(|statement| normalize_statement(statement, policy))
-		.collect();
+	let children = normalize_statements(&file.statements, policy);
 	NormalizedTree::from_root(branch(
 		FILE_KIND,
 		None,
@@ -85,26 +84,216 @@ pub(crate) fn denormalize_ast(
 			root.kind
 		)));
 	}
-	let statements = root
-		.children
-		.iter()
-		.map(|child| denormalize_statement(tree, *child))
-		.collect::<Result<Vec<_>, _>>()?;
+	let statements = denormalize_statements(tree, &root.children)?;
 	Ok(AstFile { path, statements })
+}
+
+fn normalize_statements(
+	statements: &[AstStatement],
+	policy: &impl ClausewitzTreePolicy,
+) -> Vec<TreeNode> {
+	let mut children = Vec::with_capacity(statements.len());
+	let mut index = 0;
+	while index < statements.len() {
+		if assignment_key(&statements[index]) == Some("if") {
+			let (chain, next) = normalize_control_flow_chain(statements, index, policy);
+			children.push(chain);
+			index = next;
+		} else {
+			children.push(normalize_statement(&statements[index], policy));
+			index += 1;
+		}
+	}
+	children
+}
+
+fn normalize_control_flow_chain(
+	statements: &[AstStatement],
+	start: usize,
+	policy: &impl ClausewitzTreePolicy,
+) -> (TreeNode, usize) {
+	let first = normalize_guarded_branch(&statements[start], policy);
+	let signature = first.signature.clone();
+	let mut children = vec![first];
+	let mut cursor = start + 1;
+
+	loop {
+		let mut branch = cursor;
+		while statements
+			.get(branch)
+			.is_some_and(|statement| matches!(statement, AstStatement::Comment { .. }))
+		{
+			branch += 1;
+		}
+		let Some(key @ ("else_if" | "else")) = statements.get(branch).and_then(assignment_key)
+		else {
+			break;
+		};
+		children.extend(
+			statements[cursor..branch]
+				.iter()
+				.map(|statement| normalize_statement(statement, policy)),
+		);
+		children.push(if key == "else_if" {
+			normalize_guarded_branch(&statements[branch], policy)
+		} else {
+			normalize_else_branch(&statements[branch], policy)
+		});
+		cursor = branch + 1;
+		if key == "else" {
+			break;
+		}
+	}
+
+	let kind = control_flow_chain_kind(&children);
+	let anchor = signature.as_ref().map(|signature| {
+		SemanticKey::parent_scoped("clausewitz.control_flow.chain.guard", signature.clone())
+	});
+	if let Some(signature) = &signature {
+		for child in &mut children {
+			if child.kind == CONTROL_FLOW_ELSE_BRANCH_KIND {
+				child.anchor = Some(SemanticKey::parent_scoped(
+					"clausewitz.control_flow.branch.guard",
+					format!("{signature}:else"),
+				));
+			}
+		}
+	}
+	let mut chain = branch(
+		&kind,
+		None,
+		anchor,
+		ChildOrder::Ordered,
+		ChildCardinality::Many,
+		children,
+	);
+	chain.signature = signature;
+	(chain, cursor)
+}
+
+fn normalize_else_branch(statement: &AstStatement, policy: &impl ClausewitzTreePolicy) -> TreeNode {
+	let AstStatement::Assignment { key, value, .. } = statement else {
+		unreachable!("control-flow else branch is an assignment")
+	};
+	debug_assert_eq!(key, "else");
+	let mut node = branch(
+		CONTROL_FLOW_ELSE_BRANCH_KIND,
+		None,
+		None,
+		ChildOrder::Ordered,
+		ChildCardinality::ExactlyOne,
+		vec![normalize_value(value, Some("else"), policy)],
+	);
+	node.signature = Some("control_flow:else".to_string());
+	node
+}
+
+fn normalize_guarded_branch(
+	statement: &AstStatement,
+	policy: &impl ClausewitzTreePolicy,
+) -> TreeNode {
+	let AstStatement::Assignment { key, value, .. } = statement else {
+		unreachable!("control-flow guarded branch is an assignment")
+	};
+	debug_assert!(matches!(key.as_str(), "if" | "else_if"));
+	let kind = guarded_branch_kind(value);
+	let mut node = branch(
+		&kind,
+		None,
+		None,
+		ChildOrder::Ordered,
+		ChildCardinality::ExactlyOne,
+		vec![normalize_value(value, Some("if"), policy)],
+	);
+	node.signature = control_flow_guard_signature(key, value, policy);
+	node.anchor = node.signature.as_ref().map(|signature| {
+		SemanticKey::parent_scoped("clausewitz.control_flow.branch.guard", signature.clone())
+	});
+	node
+}
+
+fn guarded_branch_kind(value: &AstValue) -> String {
+	let AstValue::Block { items, .. } = value else {
+		return format!("{CONTROL_FLOW_GUARDED_BRANCH_KIND_PREFIX}scalar");
+	};
+	let mut effects = items
+		.iter()
+		.filter_map(assignment_key)
+		.filter(|key| *key != "limit")
+		.collect::<Vec<_>>();
+	effects.sort_unstable();
+	effects.dedup();
+	let role = if contains_assignment_key(value, "dynasty") {
+		"exclusive:"
+	} else {
+		""
+	};
+	format!(
+		"{CONTROL_FLOW_GUARDED_BRANCH_KIND_PREFIX}{role}{}",
+		if effects.is_empty() {
+			"empty".to_string()
+		} else {
+			effects.join("+")
+		}
+	)
+}
+
+fn contains_assignment_key(value: &AstValue, expected: &str) -> bool {
+	let AstValue::Block { items, .. } = value else {
+		return false;
+	};
+	items.iter().any(|statement| match statement {
+		AstStatement::Assignment { key, value, .. } => {
+			key == expected || contains_assignment_key(value, expected)
+		}
+		AstStatement::Item { value, .. } => contains_assignment_key(value, expected),
+		AstStatement::Comment { .. } => false,
+	})
+}
+
+fn is_guarded_branch_kind(kind: &str) -> bool {
+	kind.starts_with(CONTROL_FLOW_GUARDED_BRANCH_KIND_PREFIX)
+}
+
+fn control_flow_chain_kind(children: &[TreeNode]) -> String {
+	let effects = children
+		.iter()
+		.filter_map(|child| {
+			child
+				.kind
+				.strip_prefix(CONTROL_FLOW_GUARDED_BRANCH_KIND_PREFIX)
+				.or((child.kind == CONTROL_FLOW_ELSE_BRANCH_KIND).then_some("else"))
+		})
+		.collect::<Vec<_>>();
+	format!("{CONTROL_FLOW_CHAIN_KIND_PREFIX}{}", effects.join(">"))
+}
+
+fn is_control_flow_chain_kind(kind: &str) -> bool {
+	kind.starts_with(CONTROL_FLOW_CHAIN_KIND_PREFIX)
+}
+
+fn assignment_key(statement: &AstStatement) -> Option<&str> {
+	match statement {
+		AstStatement::Assignment { key, .. } => Some(key),
+		AstStatement::Item { .. } | AstStatement::Comment { .. } => None,
+	}
 }
 
 fn normalize_statement(statement: &AstStatement, policy: &impl ClausewitzTreePolicy) -> TreeNode {
 	match statement {
 		AstStatement::Assignment { key, value, .. } => {
 			let kind = format!("{ASSIGNMENT_KIND_PREFIX}{key}");
-			branch(
+			let mut node = branch(
 				&kind,
 				Some(key.clone()),
 				policy.assignment_anchor(key, value),
 				ChildOrder::Ordered,
 				ChildCardinality::ExactlyOne,
 				vec![normalize_value(value, Some(key), policy)],
-			)
+			);
+			node.signature = control_flow_guard_signature(key, value, policy)
+				.or_else(|| policy.assignment_signature(key, value));
+			node
 		}
 		AstStatement::Item { value, .. } => branch(
 			ITEM_KIND,
@@ -131,17 +320,143 @@ fn normalize_value(
 			ScalarValue::Bool(value) => leaf(BOOL_KIND, value.to_string()),
 		},
 		AstValue::Block { items, .. } => branch(
-			BLOCK_KIND,
+			&block_kind(assignment_key),
 			None,
 			None,
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
-			items
-				.iter()
-				.map(|statement| normalize_statement(statement, policy))
-				.collect(),
+			normalize_statements(items, policy),
 		),
 	}
+}
+
+fn block_kind(assignment_key: Option<&str>) -> String {
+	assignment_key.map_or_else(
+		|| BLOCK_KIND_PREFIX.to_string(),
+		|key| format!("{BLOCK_KIND_PREFIX}:{key}"),
+	)
+}
+
+fn is_block_kind(kind: &str) -> bool {
+	kind == BLOCK_KIND_PREFIX || kind.starts_with(&format!("{BLOCK_KIND_PREFIX}:"))
+}
+
+fn control_flow_guard_signature(
+	key: &str,
+	value: &AstValue,
+	policy: &impl ClausewitzTreePolicy,
+) -> Option<String> {
+	if !matches!(key, "if" | "else_if") {
+		return None;
+	}
+	let AstValue::Block { items, .. } = value else {
+		return None;
+	};
+	let limit = items
+		.iter()
+		.find(|statement| assignment_key(statement) == Some("limit"))?;
+	let tree = NormalizedTree::from_root(normalize_statement(limit, policy)).ok()?;
+	Some(format!(
+		"limit:{}",
+		tree.node(tree.root()).ok()?.subtree_hash
+	))
+}
+
+fn denormalize_statements(
+	tree: &NormalizedTree,
+	children: &[NodeId],
+) -> Result<Vec<AstStatement>, AstAdapterError> {
+	let mut statements = Vec::with_capacity(children.len());
+	for child in children {
+		let node = tree.node(*child)?;
+		if is_control_flow_chain_kind(&node.kind) {
+			statements.extend(denormalize_control_flow_chain(tree, *child, node)?);
+		} else {
+			statements.push(denormalize_statement(tree, *child)?);
+		}
+	}
+	Ok(statements)
+}
+
+fn denormalize_control_flow_chain(
+	tree: &NormalizedTree,
+	chain_id: NodeId,
+	chain: &NormalizedNode,
+) -> Result<Vec<AstStatement>, AstAdapterError> {
+	let mut statements = Vec::with_capacity(chain.children.len());
+	let mut branch_count = 0;
+	let mut saw_else = false;
+	let mut branch_keys = Vec::new();
+	for (position, child) in chain.children.iter().enumerate() {
+		let node = tree.node(*child)?;
+		if node.kind == COMMENT_KIND {
+			statements.push(denormalize_statement(tree, *child)?);
+			continue;
+		}
+		if is_guarded_branch_kind(&node.kind) {
+			if saw_else {
+				return Err(AstAdapterError::InvalidTree(format!(
+					"guarded branch at child {position} follows `else` in control-flow chain {}",
+					chain_id.get()
+				)));
+			}
+			let key = if branch_count == 0 { "if" } else { "else_if" };
+			branch_count += 1;
+			branch_keys.push(key.to_string());
+			statements.push(AstStatement::Assignment {
+				key: key.to_string(),
+				key_span: synthetic_span(),
+				value: denormalize_only_value_child(tree, node)?,
+				span: synthetic_span(),
+			});
+			continue;
+		}
+		if node.kind == CONTROL_FLOW_ELSE_BRANCH_KIND {
+			if branch_count == 0 || saw_else {
+				return Err(AstAdapterError::InvalidTree(format!(
+					"invalid `else` placement at child {position} in control-flow chain {} after [{}]",
+					chain_id.get(),
+					branch_keys.join(", ")
+				)));
+			}
+			saw_else = true;
+			branch_keys.push("else".to_string());
+			statements.push(AstStatement::Assignment {
+				key: "else".to_string(),
+				key_span: synthetic_span(),
+				value: denormalize_only_value_child(tree, node)?,
+				span: synthetic_span(),
+			});
+			continue;
+		}
+		let key = node.value.as_deref().ok_or_else(|| {
+			AstAdapterError::InvalidTree(
+				"control-flow chain contains a non-branch node".to_string(),
+			)
+		})?;
+		let valid = match (branch_count, key, saw_else) {
+			(_, "else", false) if branch_count > 0 => {
+				saw_else = true;
+				true
+			}
+			_ => false,
+		};
+		if !valid {
+			return Err(AstAdapterError::InvalidTree(format!(
+				"invalid `{key}` placement at child {position} in control-flow chain {} after [{}]",
+				chain_id.get(),
+				branch_keys.join(", ")
+			)));
+		}
+		branch_keys.push(key.to_string());
+		statements.push(denormalize_statement(tree, *child)?);
+	}
+	if branch_count == 0 {
+		return Err(AstAdapterError::InvalidTree(
+			"control-flow chain contains no branches".to_string(),
+		));
+	}
+	Ok(statements)
 }
 
 fn denormalize_statement(
@@ -219,12 +534,8 @@ fn denormalize_value(tree: &NormalizedTree, id: NodeId) -> Result<AstValue, AstA
 					))
 				})?,
 		)),
-		BLOCK_KIND => {
-			let items = node
-				.children
-				.iter()
-				.map(|child| denormalize_statement(tree, *child))
-				.collect::<Result<Vec<_>, _>>()?;
+		kind if is_block_kind(kind) => {
+			let items = denormalize_statements(tree, &node.children)?;
 			return Ok(AstValue::Block {
 				items,
 				span: synthetic_span(),

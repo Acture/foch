@@ -10,10 +10,11 @@ use std::time::{Duration, Instant};
 
 use crate::pcs::merge_order;
 use crate::{
-	ChildCardinality, ChildOrder, ClassId, ClassMapping, ConflictKind, ConservativeMergePolicy,
-	DeleteModifyContext, Matching, MergeOutcome, MergePolicy, MergeTimings, NodeConflictContext,
-	NodeId, NormalizedNode, NormalizedTree, PolicyDecision, RevisionClass, RevisionId,
-	RevisionNode, SourceSet, StructuralConflict, TreeMatcher, TreeNode,
+	ChildCardinality, ChildOrder, ChildSetContext, ClassId, ClassMapping, ConflictKind,
+	ConservativeMergePolicy, DeleteModifyContext, DeleteUnchangedContext, Matching, MergeOutcome,
+	MergePolicy, MergeTimings, NodeConflictContext, NodeId, NormalizedNode, NormalizedTree,
+	PolicyDecision, RevisionClass, RevisionId, RevisionNode, SourceSet, StructuralConflict,
+	TreeMatcher, TreeNode,
 };
 
 struct Trees<'a> {
@@ -104,6 +105,7 @@ pub fn three_way_merge_with_policy(
 	let mut sources_preorder = Vec::new();
 	let mut visiting = BTreeSet::new();
 	let mut emitted = BTreeSet::new();
+	let mut policy_excluded = BTreeSet::new();
 	let root = build_class(
 		root_class,
 		&trees,
@@ -113,8 +115,14 @@ pub fn three_way_merge_with_policy(
 		&mut sources_preorder,
 		&mut visiting,
 		&mut emitted,
+		&mut policy_excluded,
+		policy,
+		&mut policy_ns,
 	);
 	for class in states.keys().filter(|class| !emitted.contains(class)) {
+		if is_policy_excluded(*class, &states, &policy_excluded) {
+			continue;
+		}
 		conflicts.push(class_conflict(
 			ConflictKind::Policy,
 			*class,
@@ -184,10 +192,13 @@ fn select_classes(
 	conflicts: &mut Vec<StructuralConflict>,
 ) -> BTreeMap<ClassId, ClassState> {
 	let mut states = BTreeMap::new();
+	let mut preserved_present_subtrees = BTreeSet::new();
+	let mut ancestor_closures = Vec::new();
 	for class in mapping.classes() {
 		let base = class.get(RevisionId::BASE);
 		let left = class.get(RevisionId::LEFT);
 		let right = class.get(RevisionId::RIGHT);
+		let mut preserves_present_subtree = false;
 		let keep = match (base, left, right) {
 			(Some(_), None, None) => false,
 			(Some(base_id), Some(present), None) => {
@@ -196,6 +207,32 @@ fn select_classes(
 				let content_unchanged = base_node.subtree_hash == present_node.subtree_hash;
 				let placement = placement_change(trees, mapping, class, RevisionId::LEFT);
 				let unchanged = content_unchanged && placement == PlacementChange::Unchanged;
+				let inherited =
+					inherits_preserved_subtree(trees, mapping, class, &preserved_present_subtrees);
+				if unchanged {
+					let policy_preserved = policy_preserves_delete_unchanged(
+						policy,
+						policy_ns,
+						base_node,
+						present_node,
+						RevisionId::RIGHT,
+						RevisionId::LEFT,
+						parent_present_in_both_revisions(trees, mapping, class),
+						present_parent_changed_from_base(trees, class, RevisionId::LEFT),
+						deleted_parent_has_same_kind_sibling(
+							trees,
+							mapping,
+							class,
+							RevisionId::RIGHT,
+							RevisionId::LEFT,
+						),
+						base_parent_node(trees, class),
+					);
+					preserves_present_subtree = inherited || policy_preserved;
+					if policy_preserved {
+						ancestor_closures.push((class.id, RevisionId::LEFT));
+					}
+				}
 				let covered = delete_modify_covered_by_ancestor(
 					trees,
 					mapping,
@@ -214,6 +251,9 @@ fn select_classes(
 					content_unchanged,
 					placement,
 				);
+				if !unchanged && inherited {
+					preserves_present_subtree = true;
+				}
 				if !unchanged && !covered && !resolved {
 					conflicts.push(class_conflict(
 						ConflictKind::DeleteModify,
@@ -223,7 +263,7 @@ fn select_classes(
 						delete_change_detail("right", "left", content_unchanged, placement),
 					));
 				}
-				!unchanged
+				!unchanged || preserves_present_subtree
 			}
 			(Some(base_id), None, Some(present)) => {
 				let base_node = trees.base.node(base_id).unwrap();
@@ -231,6 +271,32 @@ fn select_classes(
 				let content_unchanged = base_node.subtree_hash == present_node.subtree_hash;
 				let placement = placement_change(trees, mapping, class, RevisionId::RIGHT);
 				let unchanged = content_unchanged && placement == PlacementChange::Unchanged;
+				let inherited =
+					inherits_preserved_subtree(trees, mapping, class, &preserved_present_subtrees);
+				if unchanged {
+					let policy_preserved = policy_preserves_delete_unchanged(
+						policy,
+						policy_ns,
+						base_node,
+						present_node,
+						RevisionId::LEFT,
+						RevisionId::RIGHT,
+						parent_present_in_both_revisions(trees, mapping, class),
+						present_parent_changed_from_base(trees, class, RevisionId::RIGHT),
+						deleted_parent_has_same_kind_sibling(
+							trees,
+							mapping,
+							class,
+							RevisionId::LEFT,
+							RevisionId::RIGHT,
+						),
+						base_parent_node(trees, class),
+					);
+					preserves_present_subtree = inherited || policy_preserved;
+					if policy_preserved {
+						ancestor_closures.push((class.id, RevisionId::RIGHT));
+					}
+				}
 				let covered = delete_modify_covered_by_ancestor(
 					trees,
 					mapping,
@@ -249,6 +315,9 @@ fn select_classes(
 					content_unchanged,
 					placement,
 				);
+				if !unchanged && inherited {
+					preserves_present_subtree = true;
+				}
 				if !unchanged && !covered && !resolved {
 					conflicts.push(class_conflict(
 						ConflictKind::DeleteModify,
@@ -258,10 +327,13 @@ fn select_classes(
 						delete_change_detail("left", "right", content_unchanged, placement),
 					));
 				}
-				!unchanged
+				!unchanged || preserves_present_subtree
 			}
 			_ => true,
 		};
+		if preserves_present_subtree {
+			preserved_present_subtrees.insert(class.id);
+		}
 		if !keep {
 			continue;
 		}
@@ -281,7 +353,179 @@ fn select_classes(
 			},
 		);
 	}
+	close_policy_preserved_ancestors(
+		trees,
+		mapping,
+		policy,
+		policy_ns,
+		&ancestor_closures,
+		&mut states,
+		conflicts,
+	);
 	states
+}
+
+fn close_policy_preserved_ancestors(
+	trees: &Trees<'_>,
+	mapping: &ClassMapping,
+	policy: &dyn MergePolicy,
+	policy_ns: &mut u64,
+	roots: &[(ClassId, RevisionId)],
+	states: &mut BTreeMap<ClassId, ClassState>,
+	conflicts: &mut Vec<StructuralConflict>,
+) {
+	for (root, revision) in roots {
+		let class = mapping.class(*root);
+		let Some(node) = class.get(*revision) else {
+			continue;
+		};
+		let mut parent = trees.get(*revision).node(node).unwrap().parent;
+		let mut path = Vec::new();
+		let mut blocked = None;
+		while let Some(parent_node) = parent {
+			let parent_class = mapping.class_of(RevisionNode::new(*revision, parent_node));
+			if states.contains_key(&parent_class) {
+				break;
+			}
+			let normalized = trees.get(*revision).node(parent_node).unwrap();
+			let permitted =
+				measure_policy(policy_ns, || policy.permits_ancestor_closure(normalized));
+			if !permitted {
+				blocked = Some(parent_class);
+				break;
+			}
+			path.push((parent_class, parent_node));
+			parent = normalized.parent;
+		}
+		if let Some(blocked) = blocked {
+			conflicts.push(class_conflict(
+				ConflictKind::Policy,
+				*root,
+				Some(blocked),
+				mapping,
+				"policy-preserved node requires a non-transparent ancestor".to_string(),
+			));
+			continue;
+		}
+		for (class_id, node) in path.into_iter().rev() {
+			let class = mapping.class(class_id);
+			let sources =
+				SourceSet::new(class.members.iter().map(|(source_revision, source_node)| {
+					RevisionNode::new(*source_revision, *source_node)
+				}));
+			states.entry(class_id).or_insert(ClassState {
+				selected: RevisionNode::new(*revision, node),
+				sources,
+				parent: None,
+			});
+		}
+	}
+}
+
+fn inherits_preserved_subtree(
+	trees: &Trees<'_>,
+	mapping: &ClassMapping,
+	class: &RevisionClass,
+	preserved_present_subtrees: &BTreeSet<ClassId>,
+) -> bool {
+	parent_class(trees, mapping, class, RevisionId::BASE)
+		.is_some_and(|parent| preserved_present_subtrees.contains(&parent))
+}
+
+fn parent_present_in_both_revisions(
+	trees: &Trees<'_>,
+	mapping: &ClassMapping,
+	class: &RevisionClass,
+) -> bool {
+	let Some(parent) = parent_class(trees, mapping, class, RevisionId::BASE) else {
+		return false;
+	};
+	let parent = mapping.class(parent);
+	parent.get(RevisionId::LEFT).is_some() && parent.get(RevisionId::RIGHT).is_some()
+}
+
+fn base_parent_node<'a>(trees: &'a Trees<'_>, class: &RevisionClass) -> Option<&'a NormalizedNode> {
+	let node = class.get(RevisionId::BASE)?;
+	let parent = trees.base.node(node).unwrap().parent?;
+	Some(trees.base.node(parent).unwrap())
+}
+
+fn present_parent_changed_from_base(
+	trees: &Trees<'_>,
+	class: &RevisionClass,
+	present_revision: RevisionId,
+) -> bool {
+	let (Some(base), Some(present)) = (class.get(RevisionId::BASE), class.get(present_revision))
+	else {
+		return false;
+	};
+	let (Some(base_parent), Some(present_parent)) = (
+		trees.base.node(base).unwrap().parent,
+		trees.get(present_revision).node(present).unwrap().parent,
+	) else {
+		return false;
+	};
+	trees.base.node(base_parent).unwrap().subtree_hash
+		!= trees
+			.get(present_revision)
+			.node(present_parent)
+			.unwrap()
+			.subtree_hash
+}
+
+fn deleted_parent_has_same_kind_sibling(
+	trees: &Trees<'_>,
+	mapping: &ClassMapping,
+	class: &RevisionClass,
+	deleted_revision: RevisionId,
+	present_revision: RevisionId,
+) -> bool {
+	let (Some(base), Some(present)) = (class.get(RevisionId::BASE), class.get(present_revision))
+	else {
+		return false;
+	};
+	let Some(base_parent) = trees.base.node(base).unwrap().parent else {
+		return false;
+	};
+	let parent_class = mapping.class_of(RevisionNode::new(RevisionId::BASE, base_parent));
+	let Some(deleted_parent) = mapping.class(parent_class).get(deleted_revision) else {
+		return false;
+	};
+	let present_kind = &trees.get(present_revision).node(present).unwrap().kind;
+	trees
+		.get(deleted_revision)
+		.node(deleted_parent)
+		.unwrap()
+		.children
+		.iter()
+		.any(|sibling| trees.get(deleted_revision).node(*sibling).unwrap().kind == *present_kind)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn policy_preserves_delete_unchanged(
+	policy: &dyn MergePolicy,
+	policy_ns: &mut u64,
+	base: &NormalizedNode,
+	present: &NormalizedNode,
+	deleted_revision: RevisionId,
+	present_revision: RevisionId,
+	parent_present_in_both_revisions: bool,
+	present_parent_changed_from_base: bool,
+	deleted_parent_has_same_kind_sibling: bool,
+	base_parent: Option<&NormalizedNode>,
+) -> bool {
+	measure_policy(policy_ns, || {
+		policy.resolve_delete_unchanged(DeleteUnchangedContext {
+			base,
+			present,
+			deleted_revision,
+			present_revision,
+			parent_present_in_both_revisions,
+			present_parent_changed_from_base,
+			deleted_parent_has_same_kind_sibling,
+			base_parent,
+		})
+	}) == PolicyDecision::Resolved
 }
 
 fn delete_modify_covered_by_ancestor(
@@ -533,7 +777,6 @@ fn shallow_eq(left: &NormalizedNode, right: &NormalizedNode) -> bool {
 	left.kind == right.kind
 		&& left.value == right.value
 		&& left.anchor == right.anchor
-		&& left.signature == right.signature
 		&& left.child_order == right.child_order
 		&& left.child_cardinality == right.child_cardinality
 }
@@ -598,6 +841,9 @@ fn build_class(
 	sources_preorder: &mut Vec<SourceSet>,
 	visiting: &mut BTreeSet<ClassId>,
 	emitted: &mut BTreeSet<ClassId>,
+	policy_excluded: &mut BTreeSet<ClassId>,
+	policy: &dyn MergePolicy,
+	policy_ns: &mut u64,
 ) -> TreeNode {
 	let state = states
 		.get(&class_id)
@@ -620,21 +866,36 @@ fn build_class(
 	emitted.insert(class_id);
 	sources_preorder.push(state.sources.clone());
 	let selected = trees.node(state.selected);
-	let children = merged_children(class_id, selected, trees, mapping, states, conflicts)
-		.into_iter()
-		.map(|child| {
-			build_class(
-				child,
-				trees,
-				mapping,
-				states,
-				conflicts,
-				sources_preorder,
-				visiting,
-				emitted,
-			)
-		})
-		.collect();
+	let children = merged_children(
+		class_id,
+		selected,
+		ChildMergeContext {
+			trees,
+			mapping,
+			states,
+			conflicts,
+			policy_excluded,
+			policy,
+			policy_ns,
+		},
+	)
+	.into_iter()
+	.map(|child| {
+		build_class(
+			child,
+			trees,
+			mapping,
+			states,
+			conflicts,
+			sources_preorder,
+			visiting,
+			emitted,
+			policy_excluded,
+			policy,
+			policy_ns,
+		)
+	})
+	.collect();
 	visiting.remove(&class_id);
 	TreeNode {
 		kind: selected.kind.clone(),
@@ -682,14 +943,30 @@ fn clone_revision_subtree(
 	}
 }
 
+struct ChildMergeContext<'a, 'tree> {
+	trees: &'a Trees<'tree>,
+	mapping: &'a ClassMapping,
+	states: &'a BTreeMap<ClassId, ClassState>,
+	conflicts: &'a mut Vec<StructuralConflict>,
+	policy_excluded: &'a mut BTreeSet<ClassId>,
+	policy: &'a dyn MergePolicy,
+	policy_ns: &'a mut u64,
+}
+
 fn merged_children(
 	parent: ClassId,
 	selected: &NormalizedNode,
-	trees: &Trees<'_>,
-	mapping: &ClassMapping,
-	states: &BTreeMap<ClassId, ClassState>,
-	conflicts: &mut Vec<StructuralConflict>,
+	context: ChildMergeContext<'_, '_>,
 ) -> Vec<ClassId> {
+	let ChildMergeContext {
+		trees,
+		mapping,
+		states,
+		conflicts,
+		policy_excluded,
+		policy,
+		policy_ns,
+	} = context;
 	let class = mapping.class(parent);
 	if selected.child_cardinality == ChildCardinality::ExactlyOne {
 		return merge_exactly_one_child(parent, trees, mapping, states, conflicts);
@@ -697,6 +974,37 @@ fn merged_children(
 	let base = child_sequence(trees, mapping, states, class, RevisionId::BASE, parent);
 	let left = child_sequence(trees, mapping, states, class, RevisionId::LEFT, parent);
 	let right = child_sequence(trees, mapping, states, class, RevisionId::RIGHT, parent);
+	let selected_children = measure_policy(policy_ns, || {
+		policy.select_child_revision(ChildSetContext {
+			base: class
+				.get(RevisionId::BASE)
+				.map(|node| trees.base.node(node).unwrap()),
+			left: class
+				.get(RevisionId::LEFT)
+				.map(|node| trees.left.node(node).unwrap()),
+			right: class
+				.get(RevisionId::RIGHT)
+				.map(|node| trees.right.node(node).unwrap()),
+		})
+	});
+	if let Some(children) = match selected_children {
+		Some(RevisionId::BASE) => Some(base.clone()),
+		Some(RevisionId::LEFT) => Some(left.clone()),
+		Some(RevisionId::RIGHT) => Some(right.clone()),
+		_ => None,
+	} {
+		let retained = children.iter().copied().collect::<BTreeSet<_>>();
+		for excluded in base
+			.iter()
+			.chain(&left)
+			.chain(&right)
+			.copied()
+			.filter(|child| !retained.contains(child))
+		{
+			policy_excluded.insert(excluded);
+		}
+		return children;
+	}
 	if selected.child_order == ChildOrder::Commutative {
 		return commutative_children(
 			parent, &base, &left, &right, trees, mapping, states, conflicts,
@@ -719,6 +1027,25 @@ fn merged_children(
 			fallback_order(&base, &left, &right)
 		}
 	}
+}
+
+fn is_policy_excluded(
+	class: ClassId,
+	states: &BTreeMap<ClassId, ClassState>,
+	excluded_roots: &BTreeSet<ClassId>,
+) -> bool {
+	let mut current = Some(class);
+	let mut visited = BTreeSet::new();
+	while let Some(candidate) = current {
+		if excluded_roots.contains(&candidate) {
+			return true;
+		}
+		if !visited.insert(candidate) {
+			return false;
+		}
+		current = states.get(&candidate).and_then(|state| state.parent);
+	}
+	false
 }
 
 fn merge_exactly_one_child(
@@ -1015,6 +1342,22 @@ mod tests {
 		}
 	}
 
+	struct PreserveUnchanged;
+
+	impl MergePolicy for PreserveUnchanged {
+		fn resolve_delete_unchanged(&self, context: DeleteUnchangedContext<'_>) -> PolicyDecision {
+			if context.parent_present_in_both_revisions
+				&& context
+					.base_parent
+					.is_some_and(|parent| parent.child_cardinality == ChildCardinality::Many)
+			{
+				PolicyDecision::Resolved
+			} else {
+				PolicyDecision::Unresolved
+			}
+		}
+	}
+
 	struct RightLeafWins;
 
 	impl MergePolicy for RightLeafWins {
@@ -1022,6 +1365,33 @@ mod tests {
 			(context.left.is_some_and(|node| node.children.is_empty())
 				&& context.right.is_some_and(|node| node.children.is_empty()))
 			.then_some(RevisionId::RIGHT)
+		}
+	}
+
+	struct RightChildSetWins;
+
+	impl MergePolicy for RightChildSetWins {
+		fn select_child_revision(&self, context: ChildSetContext<'_>) -> Option<RevisionId> {
+			context
+				.base
+				.is_some_and(|node| node.kind == "negated")
+				.then_some(RevisionId::RIGHT)
+		}
+	}
+
+	struct PreserveHookWithWrappers;
+
+	impl MergePolicy for PreserveHookWithWrappers {
+		fn resolve_delete_unchanged(&self, context: DeleteUnchangedContext<'_>) -> PolicyDecision {
+			if context.base.value.as_deref() == Some("hook") {
+				PolicyDecision::Resolved
+			} else {
+				PolicyDecision::Unresolved
+			}
+		}
+
+		fn permits_ancestor_closure(&self, node: &NormalizedNode) -> bool {
+			node.kind == "wrapper"
 		}
 	}
 
@@ -1125,6 +1495,84 @@ mod tests {
 	}
 
 	#[test]
+	fn conservative_policy_applies_one_sided_unchanged_deletion() {
+		let entry = || {
+			TreeNode::branch("entry", vec![TreeNode::leaf("value", "retained")])
+				.with_anchor("entry", "a")
+		};
+		let base = root(vec![entry()]);
+		let left = root(Vec::new());
+		let right = base.clone();
+
+		let outcome = three_way_merge(&base, &left, &right);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert!(values(outcome.resolved_tree().unwrap()).is_empty());
+	}
+
+	#[test]
+	fn policy_can_preserve_a_one_sided_unchanged_subtree() {
+		let entry = || {
+			TreeNode::branch("entry", vec![TreeNode::leaf("value", "retained")])
+				.with_anchor("entry", "a")
+		};
+		let base = root(vec![entry()]);
+		let left = root(Vec::new());
+		let right = base.clone();
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &PreserveUnchanged);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert_eq!(values(outcome.resolved_tree().unwrap()), vec!["retained"]);
+	}
+
+	#[test]
+	fn policy_preserved_leaf_restores_transparent_ancestor_path() {
+		let owner =
+			|children| TreeNode::branch("owner", children).with_anchor("owner.identity", "same");
+		let base = root(vec![owner(vec![TreeNode::branch(
+			"wrapper",
+			vec![TreeNode::leaf("value", "hook")],
+		)])]);
+		let left = root(vec![owner(Vec::new())]);
+		let right = base.clone();
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &PreserveHookWithWrappers);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert_eq!(values(outcome.resolved_tree().unwrap()), vec!["hook"]);
+	}
+
+	#[test]
+	fn preserve_policy_does_not_restore_content_deleted_by_both_sides() {
+		let base = root(vec![
+			TreeNode::leaf("value", "removed").with_anchor("field", "same"),
+		]);
+		let left = root(Vec::new());
+		let right = root(Vec::new());
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &PreserveUnchanged);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert!(values(outcome.resolved_tree().unwrap()).is_empty());
+	}
+
+	#[test]
+	fn preserve_policy_does_not_retain_a_replaced_required_slot_value() {
+		let base = slot(TreeNode::leaf("scalar", "old"));
+		let left = slot(TreeNode::branch(
+			"block",
+			vec![TreeNode::leaf("field:new", "yes")],
+		));
+		let right = base.clone();
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &PreserveUnchanged);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert_eq!(slot_child(outcome.resolved_tree().unwrap()).kind, "block");
+	}
+
+	#[test]
 	fn delete_modify_is_an_explicit_conflict() {
 		let base = root(vec![
 			TreeNode::branch("entry", vec![TreeNode::leaf("value", "old")])
@@ -1178,6 +1626,25 @@ mod tests {
 		let right = root(vec![value("right")]);
 
 		let outcome = three_way_merge_with_policy(&base, &left, &right, &RightLeafWins);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert_eq!(values(outcome.resolved_tree().unwrap()), vec!["right"]);
+	}
+
+	#[test]
+	fn policy_can_select_one_revision_child_set() {
+		let negated = |value: &str| {
+			TreeNode::branch(
+				"negated",
+				vec![TreeNode::leaf("predicate", value).with_anchor("predicate", value)],
+			)
+			.with_anchor("expression", "same")
+		};
+		let base = root(vec![negated("base")]);
+		let left = root(vec![negated("left")]);
+		let right = root(vec![negated("right")]);
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &RightChildSetWins);
 
 		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
 		assert_eq!(values(outcome.resolved_tree().unwrap()), vec!["right"]);

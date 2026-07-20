@@ -15,10 +15,11 @@ pub use matching::{AmbiguousMatch, MatchKind, MatchRecord, MatcherConfig, Matchi
 pub use merge::{three_way_merge, three_way_merge_with_policy};
 pub use pcs::{PcsNode, PcsTriple};
 pub use policy::{
-	ConservativeMergePolicy, DeleteModifyContext, MergePolicy, NodeConflictContext, PolicyDecision,
+	ChildSetContext, ConservativeMergePolicy, DeleteModifyContext, DeleteUnchangedContext,
+	MergePolicy, NodeConflictContext, PolicyDecision,
 };
 pub use provenance::{RevisionNode, SourceSet};
 pub use tree::{
 	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, RevisionId, SemanticKey,
-	SubtreeHash, TreeError, TreeNode,
+	SemanticKeyScope, SubtreeHash, TreeError, TreeNode,
 };

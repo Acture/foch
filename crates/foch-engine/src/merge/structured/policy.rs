@@ -4,6 +4,10 @@ use foch_merge_kernel::{ChildOrder, SemanticKey};
 pub(crate) trait ClausewitzTreePolicy {
 	fn assignment_anchor(&self, key: &str, value: &AstValue) -> Option<SemanticKey>;
 
+	fn assignment_signature(&self, _key: &str, _value: &AstValue) -> Option<String> {
+		None
+	}
+
 	fn block_child_order(&self, _assignment_key: Option<&str>) -> ChildOrder {
 		ChildOrder::Ordered
 	}
@@ -19,10 +23,26 @@ impl ClausewitzTreePolicy for EventTreePolicy {
 				SemanticKey::new("clausewitz.assignment.identity", format!("{key}:{id}"))
 			}),
 			"option" => scalar_field(value, "name").map(|name| {
-				SemanticKey::new("clausewitz.assignment.identity", format!("option:{name}"))
+				SemanticKey::parent_scoped(
+					"clausewitz.assignment.identity",
+					format!("option:{name}"),
+				)
 			}),
-			"if" | "else_if" | "else" | "after" | "desc" | "triggered_desc" => None,
-			_ => Some(SemanticKey::new("clausewitz.assignment.key", key)),
+			"desc" | "triggered_desc" => scalar_field(value, "desc").map(|desc| {
+				SemanticKey::parent_scoped(
+					"clausewitz.assignment.identity",
+					format!("{key}:{desc}"),
+				)
+			}),
+			"if" | "else_if" | "else" => None,
+			_ => Some(SemanticKey::parent_scoped("clausewitz.assignment.key", key)),
+		}
+	}
+
+	fn assignment_signature(&self, key: &str, value: &AstValue) -> Option<String> {
+		match key {
+			"option" => scalar_field(value, "name").map(|name| format!("option:{name}")),
+			_ => None,
 		}
 	}
 }

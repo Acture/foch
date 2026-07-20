@@ -94,6 +94,19 @@ pub enum ListMergePolicy {
 	Replace,
 }
 
+/// How structured merge treats a base child omitted by one sibling while the
+/// other sibling retains it unchanged.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OneSidedRemovalPolicy {
+	/// Ordinary three-way semantics: the one-sided removal wins.
+	#[default]
+	Remove,
+	/// Preserve the unchanged child when its semantic parent exists in both
+	/// sibling revisions. A removal made by both siblings still wins.
+	PreserveIfParentSurvives,
+}
+
 /// How to merge child blocks that share the same key.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -158,6 +171,8 @@ pub struct MergePolicies {
 	pub nested_merge_key_source: MergeKeySource,
 	pub scalar: ScalarMergePolicy,
 	pub list: ListMergePolicy,
+	#[serde(default)]
+	pub one_sided_removal: OneSidedRemovalPolicy,
 	pub block: BlockMergePolicy,
 	pub boolean: BooleanMergePolicy,
 	pub block_patch: BlockPatchPolicy,
@@ -661,6 +676,11 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 
+	pub fn one_sided_removal_policy(mut self, policy: OneSidedRemovalPolicy) -> Self {
+		self.merge_policies.one_sided_removal = policy;
+		self
+	}
+
 	/// Opt this family into edit-wins-over-remove (GUI/asset families): a mod
 	/// editing a property beats a sibling mod removing it, instead of conflicting.
 	pub fn edit_wins_over_remove(mut self) -> Self {
@@ -733,6 +753,7 @@ impl ContentFamilyDescriptor {
 				nested_merge_key_source: MergeKeySource::AssignmentKey,
 				scalar: ScalarMergePolicy::Conflict,
 				list: ListMergePolicy::Union,
+				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
 				block_patch: BlockPatchPolicy::Recurse,
@@ -768,6 +789,7 @@ impl ContentFamilyDescriptor {
 				nested_merge_key_source: MergeKeySource::AssignmentKey,
 				scalar: ScalarMergePolicy::Conflict,
 				list: ListMergePolicy::Union,
+				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::And,
 				block_patch: BlockPatchPolicy::Recurse,

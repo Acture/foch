@@ -134,18 +134,18 @@ Passing `--record` explicitly appends normalized records to
 
 ## Current Gate
 
-The targeted GE-EE `events/Elections.txt` gate has been run. After adding fixed
-assignment-value cardinality and wiring existing event policies, Structured
-finishes with valid output, no diagnostics, no duplicate anchors, and no orphan
-control-flow nodes. Against human it has 1,210 shared atoms, zero
-Structured-only atoms, and seven human-only atoms; Legacy has the same shared
-count plus two Legacy-only atoms. Structured took 53,524 ms versus Legacy's
-54,397 ms.
+The targeted GE-EE `events/Elections.txt` v8 gate passed on 2026-07-20.
+Structured matches all 1,217 human semantic atoms with zero one-sided atoms,
+parses without diagnostics, and has no duplicate event IDs, duplicate option
+IDs, or orphan control-flow paths. Its order-insensitive control-flow multiset
+matches human. Structured took 61,453 ms versus Legacy's 56,562 ms (1.086x),
+and the paired outcome is `improved`; Legacy still differs by two Legacy-only
+and seven human-only atoms.
 
-The result is still `safety_failed`: an `if`/`else` chain is paired differently
-from human and the seven missing atoms remain. No complete 36-unit shadow run
-has therefore been recorded, the committed scorer expectations and 7/21
-non-GUI baseline are unchanged, and Structured events remain disabled.
+No complete 36-unit shadow run has been recorded, so the committed scorer
+expectations and 7/21 non-GUI baseline are unchanged, and Structured events
+remain disabled. `shadow-case` now applies its retained-path filter before
+scoring unrelated compatch files, reducing single-unit preflight work.
 Promotion still requires at least one real non-GUI corpus improvement, no
 regression among the seven accepted units, no event-safety failure or silent
 wrong output, and runtime no worse than 2x Legacy on the promoted cohort.

@@ -95,9 +95,9 @@ modules now keep cross-filename `common/*` families in the denominator:
 emitted and scored rather than dropped as a single-source path. The remaining
 module divergences are real value differences, not filename-layout artifacts.
 
-Event merging now keys repeated `option` blocks by `option.name`, and per-path
-event/decision output retains vanilla-equivalent entries because the generated
-file shadows the lower-layer file. In the GE-EE `Elections.txt` case this
+Legacy event merging now keys repeated `option` blocks by `option.name`, and
+per-path event/decision output retains vanilla-equivalent entries because the
+generated file shadows the lower-layer file. In the GE-EE `Elections.txt` case this
 reduced the semantic difference to 7 human-only and 2 foch-only atoms with
 1,210 shared atoms. The remaining misses are repeated `after`/`if` control-flow
 branches inside matched events/options, so event control-flow identity is the
@@ -116,8 +116,12 @@ resolution files; failed, drifted, or non-kernel arms are never compared.
 Delete-versus-move/reparent/reorder is conflict-visible rather than silently
 deleted. Assignment and item wrappers now declare one required value child;
 required-slot matching and merge preserve that cardinality, and the adapter
-consumes the existing event edit-wins and scalar LastWriter policies. This is a
-probe surface, not a new quality baseline: no full corpus shadow run has been
+consumes the existing event edit-wins and scalar LastWriter policies. Semantic
+anchors can be global or parent-scoped, event control-flow chains carry guard
+and effect roles, policy-preserved descendants can restore transparent wrapper
+paths, and negative Boolean blocks can select one revision's complete child
+set without leaving unreachable classes. These capabilities remain a probe
+surface, not a new quality baseline: no full corpus shadow run has been
 performed, and the committed 7/21 non-GUI result and scorer expectations are
 unchanged. See
 [`structured-merge-shadow.md`](./structured-merge-shadow.md).
@@ -128,13 +132,15 @@ restores one immutable snapshot unit from the content-addressed object store;
 supports an expected-denominator assertion, validates resumable evidence, and
 aggregates Legacy/Structured scores, semantic differences, event-safety checks,
 terminal failures, and timings. Child crashes and timeouts are paired report
-outcomes rather than aborted comparisons. This closes the evaluation plumbing
-gap only. The targeted GE-EE Elections run now completes with valid Structured
-output: 1,210 atoms match the human compatch, no Structured-only atoms remain,
-and seven human atoms are missing. It has no orphan control-flow nodes, but its
-control-flow shape still differs from human, so the gate remains
-`safety_failed`. The 36-unit acceptance run is intentionally still pending and
-the quality baseline remains 7/21 non-GUI.
+outcomes rather than aborted comparisons. `shadow-case` filters its requested
+retained path before scoring unrelated compatch files. The 2026-07-20 GE-EE
+Elections v8 gate is now a strict improvement: Structured matches all 1,217
+human atoms with zero atoms on either side, reports no diagnostics, duplicate
+event/option IDs, or orphan control-flow paths, and matches the human
+control-flow multiset. Structured took 61,453 ms versus Legacy's 56,562 ms
+(1.086x), and the paired outcome is `improved`. The 36-unit acceptance run is
+still pending, so the committed quality baseline remains 7/21 non-GUI and
+Structured events remain unpromoted.
 
 The shipped product surface includes:
 
