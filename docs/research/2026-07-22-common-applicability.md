@@ -50,9 +50,17 @@ The structured fixes in this checkpoint also change the failure taxonomy:
 - `common/tradegoods` likewise contains manual choices: human invents `0.15`
   between source values `0.2` and `0.1`, selects the base/TGE coal chain over
   EE's one-sided replacement, and restores a modifier removed by TGE.
-- `common/buildings` still reports 16 ambiguity conflicts, and
-  `common/governments` reports 22 `insert_insert` conflicts. These remain the
-  two actionable manual-resolution families for the next matching slice.
+- `common/governments`' 22 `insert_insert` conflicts are all false semantic
+  conflicts between distinct comments (for example, `ME Reforms` versus
+  `GE Reforms`). Comments currently enter positional recovery as unanchored
+  leaves; they should instead use trivia identity and never require a content
+  resolution.
+- `common/buildings`' 16 ambiguities are all repeated weighted `modifier`
+  records, primarily under `ai_will_do`. The family already declares
+  `ListMergePolicy::Replace`, but Structured does not yet dispatch that policy
+  over bare lists or weighted-record collections. The next slice should model
+  trivia, bare lists, and weighted modifiers as distinct node types, then apply
+  their reducers before reporting a manual conflict.
 
 ## Runtime
 

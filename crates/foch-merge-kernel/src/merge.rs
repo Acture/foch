@@ -81,18 +81,24 @@ pub fn three_way_merge_with_policy(
 	let mut conflicts = Vec::new();
 	record_match_ambiguities(
 		&base_left,
+		base,
+		left,
 		RevisionId::BASE,
 		RevisionId::LEFT,
 		&mut conflicts,
 	);
 	record_match_ambiguities(
 		&base_right,
+		base,
+		right,
 		RevisionId::BASE,
 		RevisionId::RIGHT,
 		&mut conflicts,
 	);
 	record_match_ambiguities(
 		&left_right,
+		left,
+		right,
 		RevisionId::LEFT,
 		RevisionId::RIGHT,
 		&mut conflicts,
@@ -156,6 +162,8 @@ pub fn three_way_merge_with_policy(
 
 fn record_match_ambiguities(
 	matching: &Matching,
+	left_tree: &NormalizedTree,
+	right_tree: &NormalizedTree,
 	left_revision: RevisionId,
 	right_revision: RevisionId,
 	conflicts: &mut Vec<StructuralConflict>,
@@ -175,10 +183,17 @@ fn record_match_ambiguities(
 				.then_some(RevisionNode::new(left_revision, ambiguity.left)),
 			revisions: SourceSet::new(revisions),
 			detail: format!(
-				"node {} has {} equally ranked candidates at score {}",
+				"node {} ({}) has {} equally ranked candidates at score {}: {}",
 				ambiguity.left.get(),
+				node_summary(left_tree.node(ambiguity.left).unwrap()),
 				ambiguity.candidates.len(),
-				ambiguity.score
+				ambiguity.score,
+				ambiguity
+					.candidates
+					.iter()
+					.map(|candidate| node_summary(right_tree.node(*candidate).unwrap()))
+					.collect::<Vec<_>>()
+					.join("; "),
 			),
 		});
 	}
@@ -715,7 +730,11 @@ fn select_revision_node(
 				class.id,
 				None,
 				mapping,
-				"left and right changed the same node differently".to_string(),
+				format!(
+					"left and right changed the same node differently: left {}; right {}",
+					node_summary(trees.node(left)),
+					node_summary(trees.node(right)),
+				),
 			));
 			right
 		}
@@ -736,7 +755,11 @@ fn select_revision_node(
 				class.id,
 				None,
 				mapping,
-				"left and right inserted different content into one matched class".to_string(),
+				format!(
+					"left and right inserted different content into one matched class: left {}; right {}",
+					node_summary(trees.node(left)),
+					node_summary(trees.node(right)),
+				),
 			));
 			right
 		}
@@ -745,6 +768,15 @@ fn select_revision_node(
 		(Some(base), None, None) => base,
 		(None, None, None) => unreachable!("revision class is never empty"),
 	}
+}
+
+fn node_summary(node: &NormalizedNode) -> String {
+	let value = node.value.as_deref().unwrap_or("<none>");
+	let anchor = node.anchor.as_ref().map_or_else(
+		|| "<none>".to_string(),
+		|anchor| format!("{}:{}", anchor.namespace, anchor.value),
+	);
+	format!("kind=`{}` value=`{value}` anchor=`{anchor}`", node.kind)
 }
 
 #[allow(clippy::too_many_arguments)]
