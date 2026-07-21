@@ -1,5 +1,5 @@
 use foch_language::analyzer::content_family::{
-	MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
+	BlockPatchPolicy, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 use foch_merge_kernel::{
@@ -7,6 +7,8 @@ use foch_merge_kernel::{
 	MergePolicy, NodeConflictContext, PolicyDecision, RevisionId, StructuralConflict,
 	three_way_merge_with_policy,
 };
+
+use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
 
 use super::ast_adapter::{AstAdapterError, denormalize_ast, normalize_ast};
 use super::policy::DefaultClausewitzTreePolicy;
@@ -112,12 +114,16 @@ fn merge_clausewitz_files_inner(
 	reduce_event_fallbacks: bool,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
 	let policy = DefaultClausewitzTreePolicy;
-	let base_tree = normalize_ast(base, &policy)?;
-	let left_tree = normalize_ast(left, &policy)?;
-	let right_tree = normalize_ast(right, &policy)?;
+	let base = canonicalize_boolean_or_definitions(base, policies);
+	let left = canonicalize_boolean_or_definitions(left, policies);
+	let right = canonicalize_boolean_or_definitions(right, policies);
+	let base_tree = normalize_ast(&base, &policy)?;
+	let left_tree = normalize_ast(&left, &policy)?;
+	let right_tree = normalize_ast(&right, &policy)?;
 	let kernel_policy = ClausewitzMergePolicy { policies };
 	let kernel = three_way_merge_with_policy(&base_tree, &left_tree, &right_tree, &kernel_policy);
 	let mut tentative_ast = denormalize_ast(base.path.clone(), kernel.tentative_tree())?;
+	simplify_boolean_or_definitions(&mut tentative_ast, policies);
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
@@ -125,6 +131,44 @@ fn merge_clausewitz_files_inner(
 		tentative_ast,
 		kernel,
 	})
+}
+
+fn canonicalize_boolean_or_definitions(file: &AstFile, policies: &MergePolicies) -> AstFile {
+	let mut file = file.clone();
+	for statement in &mut file.statements {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if policies.block_patch_policy_for_key(key) == BlockPatchPolicy::BooleanOr
+			&& !items.is_empty()
+		{
+			*items = canonical_boolean_or_body(std::mem::take(items));
+		}
+	}
+	file
+}
+
+fn simplify_boolean_or_definitions(file: &mut AstFile, policies: &MergePolicies) {
+	for statement in &mut file.statements {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if policies.block_patch_policy_for_key(key) == BlockPatchPolicy::BooleanOr
+			&& !items.is_empty()
+		{
+			*items = simplify_boolean_or_body(std::mem::take(items));
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -285,10 +329,23 @@ impl MergePolicy for ClausewitzMergePolicy<'_> {
 			.is_some_and(|parent| is_boolean_block_kind(&parent.kind))
 			&& context.parent_present_in_both_revisions
 			&& context.present_parent_changed_from_base;
-		if self.policies.one_sided_removal == OneSidedRemovalPolicy::PreserveIfParentSurvives
-			&& (scripted_hook_from_missing_container
-				|| union_safe_control_branch
-				|| additive_boolean_predicate)
+		let boolean_alternative = context
+			.base_parent
+			.is_some_and(|parent| parent.kind == "clausewitz.block:OR")
+			&& context.parent_present_in_both_revisions;
+		let preserve = match self.policies.one_sided_removal {
+			OneSidedRemovalPolicy::Remove => false,
+			OneSidedRemovalPolicy::PreserveIfParentSurvives => {
+				context.parent_present_in_both_revisions
+			}
+			OneSidedRemovalPolicy::PreserveAdditiveStructure => {
+				scripted_hook_from_missing_container
+					|| union_safe_control_branch
+					|| additive_boolean_predicate
+			}
+			OneSidedRemovalPolicy::PreserveBooleanAlternatives => boolean_alternative,
+		};
+		if preserve
 			&& context.base_parent.is_some_and(|parent| {
 				parent.child_cardinality == foch_merge_kernel::ChildCardinality::Many
 			}) {

@@ -1,23 +1,23 @@
 {
   "schema": "1.0.0",
-  "generated_at": "2026-07-21T17:31:37.159875Z",
+  "generated_at": "2026-07-21T19:29:58.877672Z",
   "hypothesis": "common/<folder> is a provisional semantic merge unit",
   "game_version": "v1.37.5.0",
   "steam_build_id": 15918133,
-  "executable_blake3": "699d5671ff38f6c6fa25127478d11db64b369aace375f8f630b164833943e02b",
+  "executable_blake3": "b569c8aa53c51b08e992fe9db9ee2a7c3fcafbc7ec5fb674869a9def51c7368a",
   "legacy_baseline_blake3": "6ed4b8332a97c279470f5022e63023ebba84d1fa5776daf02b5d64851921b223",
   "summary": {
     "expected_units": 12,
     "classified_units": 12,
-    "accepted_equivalent": 2,
+    "accepted_equivalent": 3,
     "manual_resolution_required": 2,
-    "semantic_mismatch": 8,
+    "semantic_mismatch": 7,
     "failed": 0,
     "legacy_accepted": 1,
     "legacy_accepted_preserved": 1,
-    "review_required": 10,
+    "review_required": 9,
     "gate_passed": true,
-    "elapsed_ms": 123260
+    "elapsed_ms": 229758
   },
   "families": [
     {
@@ -41,8 +41,8 @@
     {
       "content_family": "common/institutions",
       "units": 1,
-      "accepted_equivalent": 0,
-      "review_required": true
+      "accepted_equivalent": 1,
+      "review_required": false
     },
     {
       "content_family": "common/rebel_types",
@@ -88,7 +88,7 @@
       ],
       "legacy_verdict": "diverges_structure",
       "legacy_accepted": false,
-      "status": "manual_resolution_required",
+      "status": "semantic_mismatch",
       "publishable": false,
       "policies": {
         "merge_key_source": "assignment_key",
@@ -116,12 +116,10 @@
         "ita_republican_rebels"
       ],
       "semantic_diff_from_human": {
-        "left_atoms": 6234,
+        "left_atoms": 6238,
         "right_atoms": 6143,
-        "shared_atoms": 6137,
+        "shared_atoms": 6143,
         "left_only": {
-          "assignment:EE_SCO_nationalist_rebels/assignment:color={}": 1,
-          "assignment:EE_greek_nationalist_rebels/assignment:color={}": 1,
           "assignment:ita_monarchy_rebels/assignment:area=text:nation": 1,
           "assignment:ita_monarchy_rebels/assignment:artillery=number:0.1": 1,
           "assignment:ita_monarchy_rebels/assignment:can_enforce_trigger/assignment:always=bool:yes": 1,
@@ -212,46 +210,16 @@
           "assignment:ita_republican_rebels/assignment:unit_transfer=bool:yes": 1,
           "assignment:ita_republican_rebels/assignment:will_relocate=bool:yes": 1
         },
-        "right_only": {
-          "assignment:EE_SCO_nationalist_rebels/assignment:color/item=number:180": 1,
-          "assignment:EE_SCO_nationalist_rebels/assignment:color/item=number:25": 2,
-          "assignment:EE_greek_nationalist_rebels/assignment:color/item=number:180": 1,
-          "assignment:EE_greek_nationalist_rebels/assignment:color/item=number:25": 2
-        }
+        "right_only": {}
       },
-      "conflicts": [
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        }
-      ],
+      "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 77,
-        "merge_ms": 913,
-        "matcher_ns": 769538500,
-        "pcs_ns": 80164205,
-        "policy_ns": 589879
+        "view_ms": 1622,
+        "merge_ms": 942,
+        "matcher_ns": 798810042,
+        "pcs_ns": 79310159,
+        "policy_ns": 559091
       }
     },
     {
@@ -291,22 +259,43 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 24929,
+        "left_atoms": 24925,
         "right_atoms": 24928,
-        "shared_atoms": 24928,
+        "shared_atoms": 24916,
         "left_only": {
-          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
+          "assignment:heir_can_recieve_education_events/assignment:NOT/assignment:has_heir_flag=text:heir_finished_education": 1,
+          "assignment:heir_can_recieve_education_events/assignment:NOT/assignment:is_lesser_in_union=bool:yes": 1,
+          "assignment:heir_can_recieve_education_events/assignment:has_heir_flag=text:heir_started_education": 1
         },
-        "right_only": {}
+        "right_only": {
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
+          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1,
+          "assignment:heir_can_recieve_education_events/assignment:AND/assignment:NOT/assignment:has_heir_flag=text:heir_finished_education": 1,
+          "assignment:heir_can_recieve_education_events/assignment:AND/assignment:NOT/assignment:is_lesser_in_union=bool:yes": 1,
+          "assignment:heir_can_recieve_education_events/assignment:AND/assignment:has_heir_flag=text:heir_started_education": 1
+        }
       },
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 232,
-        "merge_ms": 2506,
-        "matcher_ns": 2093581875,
-        "pcs_ns": 282009069,
-        "policy_ns": 1876056
+        "view_ms": 996,
+        "merge_ms": 2371,
+        "matcher_ns": 1923949333,
+        "pcs_ns": 293672351,
+        "policy_ns": 1866649
       }
     },
     {
@@ -346,22 +335,37 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 25876,
+        "left_atoms": 25872,
         "right_atoms": 25875,
-        "shared_atoms": 25875,
+        "shared_atoms": 25866,
         "left_only": {
-          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1
         },
-        "right_only": {}
+        "right_only": {
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
+          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1
+        }
       },
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 26,
-        "merge_ms": 11284,
-        "matcher_ns": 10730116958,
-        "pcs_ns": 381380647,
-        "policy_ns": 2490811
+        "view_ms": 566,
+        "merge_ms": 9471,
+        "matcher_ns": 8846002292,
+        "pcs_ns": 427103325,
+        "policy_ns": 2535550
       }
     },
     {
@@ -410,11 +414,11 @@
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 26,
-        "merge_ms": 751,
-        "matcher_ns": 591340458,
-        "pcs_ns": 89133927,
-        "policy_ns": 605364
+        "view_ms": 329,
+        "merge_ms": 822,
+        "matcher_ns": 653625792,
+        "pcs_ns": 94326218,
+        "policy_ns": 640740
       }
     },
     {
@@ -429,14 +433,14 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "semantic_mismatch",
+      "status": "manual_resolution_required",
       "publishable": false,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
         "scalar": "last_writer",
         "list": "replace",
-        "one_sided_removal": "remove",
+        "one_sided_removal": "preserve_if_parent_survives",
         "block": "recursive",
         "boolean": "and",
         "block_patch": "recurse",
@@ -454,34 +458,109 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 2318,
+        "left_atoms": 2351,
         "right_atoms": 2327,
-        "shared_atoms": 2316,
+        "shared_atoms": 2326,
         "left_only": {
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:NOT/assignment:treasury=number:200": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:governing_capacity_percentage=number:0.8": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:governing_capacity_percentage=number:1": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:is_in_deficit=bool:yes": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:num_of_loans=number:1": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:num_of_loans=number:2": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:num_of_loans=number:3": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:treasury=number:300": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:development=number:10": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:development=number:20": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:development=number:30": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0.25": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0.5": 2,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0.75": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:1.25": 4,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:2": 1,
+          "assignment:courthouse/assignment:ai_will_do/assignment:modifier/assignment:factor=number:3": 1,
           "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:num_of_loans=number:1": 1,
-          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0": 1
+          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0": 1,
+          "assignment:tradecompany/assignment:manufactory/item=text:cloves": 1
         },
         "right_only": {
-          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0": 2,
-          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:factor=number:20": 1,
-          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:from/assignment:num_of_loans=number:3": 1,
-          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:from/assignment:personality=text:ai_militarist": 1,
-          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:has_terrain=text:mountain": 1,
-          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:navy_size_percentage=number:0.95": 1,
-          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:factor=number:1.5": 1,
-          "assignment:temple/assignment:on_destroyed/assignment:if/assignment:limit/assignment:FROM/assignment:has_country_flag=text:mosque_local_unrest_flag": 1,
-          "assignment:temple/assignment:on_destroyed/assignment:if/assignment:remove_province_modifier=text:turkoman_peaceful_worshipping": 1,
-          "assignment:workshop/assignment:on_obsolete={}": 1
+          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:factor=number:1.5": 1
         }
       },
-      "conflicts": [],
+      "conflicts": [
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 492 has 2 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 500 has 3 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 516 has 1 equally ranked candidates at score 875000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 524 has 1 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 532 has 1 equally ranked candidates at score 875000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 540 has 5 equally ranked candidates at score 625000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 566 has 2 equally ranked candidates at score 666666"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 576 has 2 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 679 has 2 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 687 has 3 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 703 has 1 equally ranked candidates at score 875000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 711 has 1 equally ranked candidates at score 750000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 719 has 1 equally ranked candidates at score 875000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 727 has 5 equally ranked candidates at score 625000"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 753 has 2 equally ranked candidates at score 666666"
+        },
+        {
+          "kind": "ambiguous_match",
+          "detail": "node 763 has 2 equally ranked candidates at score 750000"
+        }
+      ],
       "diagnostics": [],
       "timings": {
-        "view_ms": 32,
-        "merge_ms": 1416,
-        "matcher_ns": 1203757041,
-        "pcs_ns": 126611672,
-        "policy_ns": 849120
+        "view_ms": 1428,
+        "merge_ms": 1819,
+        "matcher_ns": 1599294958,
+        "pcs_ns": 131741185,
+        "policy_ns": 872482
       }
     },
     {
@@ -496,14 +575,14 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "semantic_mismatch",
-      "publishable": false,
+      "status": "accepted_equivalent",
+      "publishable": true,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
         "scalar": "sum",
         "list": "union",
-        "one_sided_removal": "remove",
+        "one_sided_removal": "preserve_boolean_alternatives",
         "block": "recursive",
         "boolean": "and",
         "block_patch": "recurse",
@@ -521,23 +600,20 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 1545,
+        "left_atoms": 1548,
         "right_atoms": 1548,
-        "shared_atoms": 1545,
+        "shared_atoms": 1548,
         "left_only": {},
-        "right_only": {
-          "assignment:industrialization/assignment:embracement_speed/assignment:modifier/assignment:potential/assignment:OR/assignment:trade_goods=text:cloves": 2,
-          "assignment:manufactories/assignment:embracement_speed/assignment:modifier/assignment:potential/assignment:OR/assignment:trade_goods=text:cloves": 1
-        }
+        "right_only": {}
       },
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 22,
-        "merge_ms": 685,
-        "matcher_ns": 585444667,
-        "pcs_ns": 53457798,
-        "policy_ns": 378535
+        "view_ms": 227,
+        "merge_ms": 338,
+        "matcher_ns": 237705167,
+        "pcs_ns": 52892214,
+        "policy_ns": 388578
       }
     },
     {
@@ -577,9 +653,9 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 2938,
+        "left_atoms": 2940,
         "right_atoms": 2944,
-        "shared_atoms": 2928,
+        "shared_atoms": 2930,
         "left_only": {
           "assignment:cloves/assignment:province/assignment:province_trade_power_modifier=number:0.1": 1,
           "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:has_institution=text:enlightenment": 1,
@@ -604,21 +680,19 @@
           "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:owner/assignment:NOT/assignment:has_country_flag=text:earlier_coal_available": 1,
           "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:has_institution=text:enlightenment": 1,
           "assignment:coal/assignment:trigger/assignment:if/assignment:provincial_institution_progress/assignment:which=text:enlightenment": 1,
-          "assignment:fur/assignment:chance/assignment:modifier/assignment:factor=number:2.0": 1,
           "assignment:gems/assignment:chance/assignment:modifier/assignment:FROM/assignment:OR/assignment:colonial_parent/assignment:has_increased_trade_goods_discovery/assignment:trade_goods=text:gems": 1,
           "assignment:gems/assignment:chance/assignment:modifier/assignment:FROM/assignment:OR/assignment:has_increased_trade_goods_discovery/assignment:trade_goods=text:gems": 1,
-          "assignment:gems/assignment:chance/assignment:modifier/assignment:factor=number:2": 1,
-          "assignment:slaves/assignment:chance/assignment:modifier/assignment:factor=number:1.5": 1
+          "assignment:gems/assignment:chance/assignment:modifier/assignment:factor=number:2": 1
         }
       },
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 29,
-        "merge_ms": 954,
-        "matcher_ns": 634770500,
-        "pcs_ns": 192648286,
-        "policy_ns": 1331339
+        "view_ms": 339,
+        "merge_ms": 1005,
+        "matcher_ns": 679398833,
+        "pcs_ns": 195834533,
+        "policy_ns": 1331592
       }
     },
     {
@@ -672,11 +746,11 @@
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 18,
-        "merge_ms": 413,
-        "matcher_ns": 326453625,
-        "pcs_ns": 49837389,
-        "policy_ns": 348278
+        "view_ms": 180,
+        "merge_ms": 443,
+        "matcher_ns": 354754125,
+        "pcs_ns": 50762757,
+        "policy_ns": 347285
       }
     },
     {
@@ -716,22 +790,39 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 25105,
+        "left_atoms": 25101,
         "right_atoms": 25104,
-        "shared_atoms": 25104,
+        "shared_atoms": 25094,
         "left_only": {
-          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
+          "assignment:ase_retain_age_ability_max_page_for_age_is_2/assignment:current_age=text:age_of_reformation": 1
         },
-        "right_only": {}
+        "right_only": {
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
+          "assignment:ase_retain_age_ability_max_page_for_age_is_2/assignment:OR/assignment:current_age=text:age_of_reformation": 1,
+          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1
+        }
       },
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 24,
-        "merge_ms": 4475,
-        "matcher_ns": 4027032500,
-        "pcs_ns": 302230243,
-        "policy_ns": 1891841
+        "view_ms": 40,
+        "merge_ms": 4120,
+        "matcher_ns": 3642340834,
+        "pcs_ns": 312538060,
+        "policy_ns": 1940315
       }
     },
     {
@@ -771,7 +862,7 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 2037,
+        "left_atoms": 2046,
         "right_atoms": 1894,
         "shared_atoms": 1894,
         "left_only": {
@@ -881,12 +972,17 @@
           "assignment:republic/assignment:legacy_government/item=text:greek_league": 1,
           "assignment:republic/assignment:reform_levels/assignment:economical_matters_republic/assignment:reforms/item=text:EE_curtail_the_burghers_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:economical_matters_republic/assignment:reforms/item=text:EE_modernize_industrial_sector": 1,
+          "assignment:republic/assignment:reform_levels/assignment:federalism_vs_unitarism_vs_confederacy/assignment:reforms/item=text:citizen_soldiers_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:federalism_vs_unitarism_vs_confederacy/assignment:reforms/item=text:fu_canton_administration": 1,
+          "assignment:republic/assignment:reform_levels/assignment:federalism_vs_unitarism_vs_confederacy/assignment:reforms/item=text:institutionalized_repbulican_army_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:federalism_vs_unitarism_vs_confederacy/assignment:reforms/item=text:mil_sforza_administration": 1,
           "assignment:republic/assignment:reform_levels/assignment:frequent_elections_vs_consolidation_of_power/assignment:reforms/item=text:EE_factional_politics_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:frequent_elections_vs_consolidation_of_power/assignment:reforms/item=text:EE_frequent_elections_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:guiding_principle_of_administration/assignment:reforms/item=text:federal_governorship_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:guiding_principle_of_administration/assignment:reforms/item=text:mil_secret_council": 1,
           "assignment:republic/assignment:reform_levels/assignment:guiding_principle_of_administration/assignment:reforms/item=text:orangist_stadholders_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:office_selection/assignment:reforms/item=text:direct_majority_rule_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:office_selection/assignment:reforms/item=text:electoral_college_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:office_selection/assignment:reforms/item=text:nov_republican_guard_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:RHN_democratic_capitalism": 1,
           "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:SOS_advanced_tactics": 1,
@@ -895,11 +991,15 @@
           "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:greek_league_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:nov_commercial_law": 1,
           "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:timurid_stratocracy": 1,
+          "assignment:republic/assignment:reform_levels/assignment:parliamentary_vs_presidential/assignment:reforms/item=text:federalism_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:parliamentary_vs_presidential/assignment:reforms/item=text:supremacy_constitution_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:EE_federal_senate_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:EE_reinforce_republican_values_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:EE_strengthen_executive_powers_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:become_rev_empire_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:fu_declare_pirate_empire_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:legislative_office_selection_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:vice_presidential_system_reform": 1,
           "assignment:republic/assignment:reform_levels/assignment:republican_virtues/assignment:reforms/item=text:sharia_reform": 1,
           "assignment:theocracy/assignment:reform_levels/assignment:internal_vs_external_mission/assignment:reforms/item=text:SOS_advanced_tactics": 1,
           "assignment:theocracy/assignment:reform_levels/assignment:internal_vs_external_mission/assignment:reforms/item=text:sharia_reform": 1,
@@ -1009,51 +1109,15 @@
         {
           "kind": "insert_insert",
           "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
-        },
-        {
-          "kind": "move_move",
-          "detail": "left and right moved the same node to different parents"
         }
       ],
       "diagnostics": [],
       "timings": {
-        "view_ms": 22,
-        "merge_ms": 719,
-        "matcher_ns": 579246875,
-        "pcs_ns": 86078498,
-        "policy_ns": 596502
+        "view_ms": 36,
+        "merge_ms": 762,
+        "matcher_ns": 588976792,
+        "pcs_ns": 100385424,
+        "policy_ns": 724826
       }
     },
     {
@@ -1102,11 +1166,11 @@
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 184,
-        "merge_ms": 79037,
-        "matcher_ns": 77297274333,
-        "pcs_ns": 1126256103,
-        "policy_ns": 7265188
+        "view_ms": 402,
+        "merge_ms": 77730,
+        "matcher_ns": 75968707708,
+        "pcs_ns": 1128821139,
+        "policy_ns": 6792820
       }
     },
     {
@@ -1146,22 +1210,37 @@
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 24930,
+        "left_atoms": 24926,
         "right_atoms": 24929,
-        "shared_atoms": 24929,
+        "shared_atoms": 24920,
         "left_only": {
-          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1
         },
-        "right_only": {}
+        "right_only": {
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
+          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
+          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
+          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1
+        }
       },
       "conflicts": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 52,
-        "merge_ms": 2683,
-        "matcher_ns": 2275817000,
-        "pcs_ns": 278459736,
-        "policy_ns": 1855556
+        "view_ms": 23,
+        "merge_ms": 2665,
+        "matcher_ns": 2222045791,
+        "pcs_ns": 291767494,
+        "policy_ns": 1898631
       }
     }
   ]

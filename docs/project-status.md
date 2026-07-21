@@ -91,9 +91,12 @@ All 15 `.gui` units still diverge under the order-sensitive GUI policy.
 Removing them leaves 7/21 accepted non-GUI units (33.3%), with 13
 `diverges_ast` and one `diverges_structure`. Directory-scoped definition
 modules now keep cross-filename `common/*` families in the denominator:
-`common/religions` is module-AST equivalent, while `common/institutions` is
-emitted and scored rather than dropped as a single-source path. The remaining
-module divergences are real value differences, not filename-layout artifacts.
+`common/religions`, `common/institutions`, and `common/scripted_effects` are now
+module-AST equivalent in the fixed 12-unit Structured common probe. The current
+matrix is 3 equivalent, 2 manual-resolution, 7 semantic-mismatch, and 0 failed.
+The remaining module divergences are internal value or policy differences, not
+filename-layout artifacts; `common/rebel_types` is a candidate-superset case
+that still needs an accepted-better judgment.
 
 Legacy event merging now keys repeated `option` blocks by `option.name`, and
 per-path event/decision output retains vanilla-equivalent entries because the

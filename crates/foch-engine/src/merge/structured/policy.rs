@@ -9,7 +9,10 @@ pub(crate) trait ClausewitzTreePolicy {
 	}
 
 	fn block_child_order(&self, _assignment_key: Option<&str>) -> ChildOrder {
-		ChildOrder::Ordered
+		match _assignment_key {
+			Some("OR") => ChildOrder::Commutative,
+			_ => ChildOrder::Ordered,
+		}
 	}
 }
 

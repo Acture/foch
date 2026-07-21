@@ -5,6 +5,8 @@ use foch_language::analyzer::content_family::{
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
+use crate::merge::boolean::combine_boolean_or_bodies;
+
 use super::super::super::conflict_handler::DeferHandler;
 use super::super::patch::{AstPath, ClausewitzPatch, ast_statements_semantically_equal};
 use super::address::patch_address;
@@ -1487,19 +1489,6 @@ fn extract_block_body(stmt: &AstStatement) -> Option<Vec<AstStatement>> {
 	}
 }
 
-/// Build an `OR = { <items...> }` statement that wraps the supplied body.
-fn make_or_wrapper(items: Vec<AstStatement>) -> AstStatement {
-	AstStatement::Assignment {
-		key: "OR".to_string(),
-		key_span: synthetic_span(),
-		value: AstValue::Block {
-			items,
-			span: synthetic_span(),
-		},
-		span: synthetic_span(),
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Scroll-stack synthesis (GUI keep-both)
 // ---------------------------------------------------------------------------
@@ -1683,67 +1672,6 @@ pub(super) fn synthesize_scroll_stacked_insert(
 	})
 }
 
-/// Build an `AND = { <items...> }` statement that wraps the supplied body,
-/// preserving the body's internal conjunction when it is used as a single
-/// disjunct of an `OR`.
-fn make_and_wrapper(items: Vec<AstStatement>) -> AstStatement {
-	AstStatement::Assignment {
-		key: "AND".to_string(),
-		key_span: synthetic_span(),
-		value: AstValue::Block {
-			items,
-			span: synthetic_span(),
-		},
-		span: synthetic_span(),
-	}
-}
-
-fn statement_or_body(statement: &AstStatement) -> Option<Vec<AstStatement>> {
-	match statement {
-		AstStatement::Assignment {
-			key,
-			value: AstValue::Block { items, .. },
-			..
-		} if key == "OR" => Some(items.clone()),
-		_ => None,
-	}
-}
-
-/// Turn a contributor body into one or more `OR` disjuncts.
-///
-/// A body that is already exactly `OR = { ... }` is flattened so BooleanOr
-/// merges do not emit nested ORs or duplicate an already-present branch. Other
-/// one-statement bodies are inlined verbatim, and multi-statement bodies are
-/// wrapped in `AND = { ... }` so their implicit conjunction is preserved.
-fn body_to_disjuncts(body: Vec<AstStatement>) -> Vec<AstStatement> {
-	if body.len() == 1
-		&& let Some(items) = statement_or_body(&body[0])
-	{
-		return items
-			.into_iter()
-			.flat_map(|item| {
-				if let Some(nested_items) = statement_or_body(&item) {
-					body_to_disjuncts(vec![make_or_wrapper(nested_items)])
-				} else {
-					vec![item]
-				}
-			})
-			.collect();
-	}
-	vec![body_to_disjunct(body)]
-}
-
-/// Turn a contributor body into a single `OR` disjunct. A one-statement body is
-/// inlined verbatim (its lone condition is already a disjunct); a multi-statement
-/// body is wrapped in `AND = { ... }` so its implicit conjunction is preserved.
-fn body_to_disjunct(mut body: Vec<AstStatement>) -> AstStatement {
-	if body.len() == 1 {
-		body.pop().expect("len checked")
-	} else {
-		make_and_wrapper(body)
-	}
-}
-
 /// Pull the AST body that each contributor wants to install at `addr`,
 /// from either an `InsertNode` or a `ReplaceBlock` patch.
 fn contributor_body(patch: &ClausewitzPatch) -> Option<Vec<AstStatement>> {
@@ -1786,23 +1714,10 @@ pub(super) fn synthesize_boolean_or(
 		return None;
 	}
 
-	let mut disjuncts: Vec<AstStatement> = Vec::new();
-	for body in bodies {
-		for disjunct in body_to_disjuncts(body) {
-			if !disjuncts
-				.iter()
-				.any(|existing| ast_statements_semantically_equal(existing, &disjunct))
-			{
-				disjuncts.push(disjunct);
-			}
-		}
-	}
-	if disjuncts.is_empty() {
-		return None;
-	}
+	let items = combine_boolean_or_bodies(bodies)?;
 
 	let synthesized_value = AstValue::Block {
-		items: vec![make_or_wrapper(disjuncts)],
+		items,
 		span: synthetic_span(),
 	};
 	let synthesized_stmt = AstStatement::Assignment {

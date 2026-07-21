@@ -105,6 +105,12 @@ pub enum OneSidedRemovalPolicy {
 	/// Preserve the unchanged child when its semantic parent exists in both
 	/// sibling revisions. A removal made by both siblings still wins.
 	PreserveIfParentSurvives,
+	/// Preserve only additive script structure: optional hook containers,
+	/// non-exclusive control-flow branches, and boolean predicates.
+	PreserveAdditiveStructure,
+	/// Preserve a one-sided removal only when the child is an alternative in an
+	/// `OR` block that survives in both sibling revisions.
+	PreserveBooleanAlternatives,
 }
 
 /// How to merge child blocks that share the same key.

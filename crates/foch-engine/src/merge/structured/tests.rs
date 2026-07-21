@@ -1,9 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use foch_language::analyzer::content_family::{
-	MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
+	BlockPatchPolicy, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
 };
-use foch_language::analyzer::parser::{AstFile, parse_clausewitz_content};
+use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
 use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
 
 use crate::emit::emit_clausewitz_statements;
@@ -22,13 +23,350 @@ fn emit(file: &AstFile) -> String {
 	emit_clausewitz_statements(&file.statements).expect("emit Clausewitz AST")
 }
 
+fn repeated_block_keys_by_identity(
+	file: &AstFile,
+	repeated_key: &str,
+) -> BTreeMap<String, BTreeSet<String>> {
+	let mut result = BTreeMap::new();
+	let Some(AstStatement::Assignment {
+		value: AstValue::Block { items, .. },
+		..
+	}) = file.statements.first()
+	else {
+		return result;
+	};
+	for statement in items {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			continue;
+		};
+		if key != repeated_key {
+			continue;
+		}
+		let identity = items.iter().find_map(|item| match item {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Scalar { value, .. },
+				..
+			} if key == "identity" => Some(value.as_text()),
+			_ => None,
+		});
+		let Some(identity) = identity else {
+			continue;
+		};
+		result.insert(
+			identity,
+			items
+				.iter()
+				.filter_map(|item| match item {
+					AstStatement::Assignment { key, .. } => Some(key.clone()),
+					AstStatement::Item { .. } | AstStatement::Comment { .. } => None,
+				})
+				.collect(),
+		);
+	}
+	result
+}
+
+fn scalar_items_for_definition(file: &AstFile, definition: &str, field: &str) -> Vec<String> {
+	file.statements
+		.iter()
+		.find_map(|statement| match statement {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} if key == definition => Some(items),
+			_ => None,
+		})
+		.and_then(|items| {
+			items.iter().find_map(|statement| match statement {
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items, .. },
+					..
+				} if key == field => Some(items),
+				_ => None,
+			})
+		})
+		.into_iter()
+		.flatten()
+		.filter_map(|statement| match statement {
+			AstStatement::Item {
+				value: AstValue::Scalar { value, .. },
+				..
+			} => Some(value.as_text()),
+			_ => None,
+		})
+		.collect()
+}
+
 fn event_policies() -> MergePolicies {
 	MergePolicies {
 		scalar: ScalarMergePolicy::LastWriter,
-		one_sided_removal: OneSidedRemovalPolicy::PreserveIfParentSurvives,
+		one_sided_removal: OneSidedRemovalPolicy::PreserveAdditiveStructure,
 		edit_wins_over_remove: true,
 		..MergePolicies::default()
 	}
+}
+
+fn boolean_or_policies() -> MergePolicies {
+	MergePolicies {
+		block_patch: BlockPatchPolicy::BooleanOr,
+		..MergePolicies::default()
+	}
+}
+
+fn preserve_one_sided_policies() -> MergePolicies {
+	MergePolicies {
+		one_sided_removal: OneSidedRemovalPolicy::PreserveIfParentSurvives,
+		..MergePolicies::default()
+	}
+}
+
+#[test]
+fn structured_boolean_or_flattens_and_deduplicates_disjuncts() {
+	let base = parse("");
+	let left = parse(
+		"is_expanded_mod_active = {\n\
+		\tOR = {\n\
+		\t\thas_global_flag = $mod$_expanded_mod_active\n\
+		\t\thas_global_flag = $mod$_expaned_mod_active\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse(
+		"is_expanded_mod_active = {\n\
+		\thas_global_flag = $mod$_expanded_mod_active\n\
+		}\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &boolean_or_policies())
+		.expect("merge BooleanOr definition");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert_eq!(output.matches("OR = {").count(), 1, "{output}");
+	assert_eq!(
+		output
+			.matches("has_global_flag = $mod$_expanded_mod_active")
+			.count(),
+		1,
+		"{output}"
+	);
+	assert_eq!(
+		output
+			.matches("has_global_flag = $mod$_expaned_mod_active")
+			.count(),
+		1,
+		"{output}"
+	);
+}
+
+#[test]
+fn structured_merge_matches_reordered_repeated_blocks_by_content() {
+	let base = parse(
+		"institution = {\n\
+		\tmodifier = { identity = a base_a = yes }\n\
+		\tmodifier = { identity = b base_b = yes }\n\
+		}\n",
+	);
+	let left = parse(
+		"institution = {\n\
+		\tmodifier = { identity = a base_a = yes left_a = yes }\n\
+		\tmodifier = { identity = b base_b = yes left_b = yes }\n\
+		}\n",
+	);
+	let right = parse(
+		"institution = {\n\
+		\tmodifier = { identity = b base_b = yes right_b = yes }\n\
+		\tmodifier = { identity = a base_a = yes right_a = yes }\n\
+		}\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+		.expect("merge repeated blocks");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let keys = repeated_block_keys_by_identity(
+		outcome.resolved_ast().expect("conflict-free AST"),
+		"modifier",
+	);
+	assert_eq!(
+		keys.get("a"),
+		Some(&BTreeSet::from([
+			"identity".to_string(),
+			"base_a".to_string(),
+			"left_a".to_string(),
+			"right_a".to_string(),
+		]))
+	);
+	assert_eq!(
+		keys.get("b"),
+		Some(&BTreeSet::from([
+			"identity".to_string(),
+			"base_b".to_string(),
+			"left_b".to_string(),
+			"right_b".to_string(),
+		]))
+	);
+}
+
+#[test]
+fn structured_merge_keeps_numeric_tuple_items_with_their_parent() {
+	let base = parse(
+		"rebel_a = { color = { 1 2 3 } }\n\
+		rebel_b = { color = { 1 2 3 } }\n",
+	);
+	let left = parse(
+		"rebel_a = { color = { 10 2 3 } }\n\
+		rebel_b = { color = { 1 2 3 } }\n",
+	);
+	let right = parse(
+		"rebel_a = { color = { 1 2 3 } }\n\
+		rebel_b = { color = { 1 20 3 } }\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+		.expect("merge numeric tuples");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let ast = outcome.resolved_ast().expect("conflict-free AST");
+	assert_eq!(
+		scalar_items_for_definition(ast, "rebel_a", "color"),
+		vec!["10", "2", "3"]
+	);
+	assert_eq!(
+		scalar_items_for_definition(ast, "rebel_b", "color"),
+		vec!["1", "20", "3"]
+	);
+}
+
+#[test]
+fn structured_merge_does_not_match_tuple_items_across_distinct_insertions() {
+	let base = parse("");
+	let left = parse("ita_rebels = { color = { 1 2 3 } }\n");
+	let right = parse("fee_ita_rebels = { color = { 1 2 3 } }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+		.expect("merge independent tuple-bearing definitions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let ast = outcome.resolved_ast().expect("conflict-free AST");
+	assert_eq!(
+		scalar_items_for_definition(ast, "ita_rebels", "color"),
+		vec!["1", "2", "3"]
+	);
+	assert_eq!(
+		scalar_items_for_definition(ast, "fee_ita_rebels", "color"),
+		vec!["1", "2", "3"]
+	);
+}
+
+#[test]
+fn structured_preserve_policy_keeps_unchanged_child_when_parent_survives() {
+	let base = parse("building = { cost = 100 sailors = 1 }\n");
+	let left = parse("building = { cost = 100 }\n");
+	let right = parse("building = { cost = 100 sailors = 1 tax = 1 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &preserve_one_sided_policies())
+		.expect("merge one-sided omission");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("sailors = 1"), "{output}");
+	assert!(output.contains("tax = 1"), "{output}");
+}
+
+#[test]
+fn structured_boolean_alternative_policy_preserves_one_sided_or_members() {
+	let base = parse(
+		"institution = {\n\
+		\tembracement_speed = {\n\
+		\t\tmodifier = {\n\
+		\t\t\tfactor = 0.2\n\
+		\t\t\tpotential = { OR = { trade_goods = ivory trade_goods = cloves } }\n\
+		\t\t\tcustom_trigger_tooltip = { tooltip = tradecompany has_building = tradecompany }\n\
+		\t\t}\n\
+		\t}\n\
+		}\n",
+	);
+	let left = base.clone();
+	let right = parse(
+		"institution = {\n\
+		\tembracement_speed = {\n\
+		\t\tmodifier = {\n\
+		\t\t\tfactor = 0.2\n\
+		\t\t\tpotential = { OR = { trade_goods = ivory trade_goods = fur } }\n\
+		\t\t\tcustom_trigger_tooltip = { tooltip = tradecompany has_building = tradecompany }\n\
+		\t\t}\n\
+		\t}\n\
+		}\n",
+	);
+	let policies = MergePolicies {
+		one_sided_removal: OneSidedRemovalPolicy::PreserveBooleanAlternatives,
+		..MergePolicies::default()
+	};
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies)
+		.expect("merge additive Boolean predicate deletion");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("trade_goods = cloves"), "{output}");
+	assert!(output.contains("trade_goods = fur"), "{output}");
+}
+
+#[test]
+fn structured_default_policy_keeps_delete_wins_semantics() {
+	let base = parse("building = { cost = 100 sailors = 1 }\n");
+	let left = parse("building = { cost = 100 }\n");
+	let right = parse("building = { cost = 100 sailors = 1 tax = 1 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+		.expect("merge one-sided omission conservatively");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(!output.contains("sailors = 1"), "{output}");
+	assert!(output.contains("tax = 1"), "{output}");
+}
+
+#[test]
+fn structured_preserve_policy_still_honors_two_sided_deletion() {
+	let base = parse("building = { cost = 100 sailors = 1 }\n");
+	let left = parse("building = { cost = 100 }\n");
+	let right = left.clone();
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &preserve_one_sided_policies())
+		.expect("merge two-sided deletion");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(!output.contains("sailors = 1"), "{output}");
+}
+
+#[test]
+fn structured_preserve_policy_does_not_hide_delete_modify_conflict() {
+	let base = parse("building = { cost = 100 sailors = 1 }\n");
+	let left = parse("building = { cost = 100 }\n");
+	let right = parse("building = { cost = 100 sailors = 2 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &preserve_one_sided_policies())
+		.expect("merge delete against modification");
+
+	assert!(
+		outcome
+			.conflicts()
+			.iter()
+			.any(|conflict| conflict.kind == ConflictKind::DeleteModify),
+		"{:?}",
+		outcome.conflicts()
+	);
 }
 
 #[test]

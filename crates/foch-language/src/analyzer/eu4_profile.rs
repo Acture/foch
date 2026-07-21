@@ -252,7 +252,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.edit_wins_over_remove()
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::UnionWithRename)
-				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveIfParentSurvives)
+				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveAdditiveStructure)
 				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("decisions", "decisions/")
@@ -767,6 +767,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.merge_key(MergeKeySource::AssignmentKey)
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::Replace)
+				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveIfParentSurvives)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/institutions", "common/institutions/")
 				.kind(CwtType::new("institutions"))
@@ -775,6 +776,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.scalar_policy(ScalarMergePolicy::Sum)
+				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveBooleanAlternatives)
 				.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/province_triggered_modifiers",
@@ -1429,6 +1431,30 @@ mod tests {
 			);
 			assert!(policy.output_path.contains("/zzz_foch_"), "{path}");
 		}
+	}
+
+	#[test]
+	fn buildings_preserve_one_sided_children_when_the_definition_survives() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("common/buildings/00_buildings.txt"))
+			.expect("buildings descriptor");
+
+		assert_eq!(
+			descriptor.merge_policies.one_sided_removal,
+			OneSidedRemovalPolicy::PreserveIfParentSurvives
+		);
+	}
+
+	#[test]
+	fn institutions_preserve_one_sided_or_alternatives() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("common/institutions/00_Core.txt"))
+			.expect("institutions descriptor");
+
+		assert_eq!(
+			descriptor.merge_policies.one_sided_removal,
+			OneSidedRemovalPolicy::PreserveBooleanAlternatives
+		);
 	}
 
 	#[test]

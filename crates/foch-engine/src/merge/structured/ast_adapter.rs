@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
@@ -93,6 +94,8 @@ fn normalize_statements(
 	policy: &impl ClausewitzTreePolicy,
 ) -> Vec<TreeNode> {
 	let mut children = Vec::with_capacity(statements.len());
+	let mut scalar_item_occurrences = BTreeMap::new();
+	let mut numeric_item_position = 0;
 	let mut index = 0;
 	while index < statements.len() {
 		if assignment_key(&statements[index]) == Some("if") {
@@ -100,7 +103,16 @@ fn normalize_statements(
 			children.push(chain);
 			index = next;
 		} else {
-			children.push(normalize_statement(&statements[index], policy));
+			let item_anchor = scalar_item_anchor(
+				&statements[index],
+				&mut scalar_item_occurrences,
+				&mut numeric_item_position,
+			);
+			children.push(normalize_statement_with_item_anchor(
+				&statements[index],
+				policy,
+				item_anchor,
+			));
 			index += 1;
 		}
 	}
@@ -280,6 +292,14 @@ fn assignment_key(statement: &AstStatement) -> Option<&str> {
 }
 
 fn normalize_statement(statement: &AstStatement, policy: &impl ClausewitzTreePolicy) -> TreeNode {
+	normalize_statement_with_item_anchor(statement, policy, None)
+}
+
+fn normalize_statement_with_item_anchor(
+	statement: &AstStatement,
+	policy: &impl ClausewitzTreePolicy,
+	item_anchor: Option<SemanticKey>,
+) -> TreeNode {
 	match statement {
 		AstStatement::Assignment { key, value, .. } => {
 			let kind = format!("{ASSIGNMENT_KIND_PREFIX}{key}");
@@ -298,13 +318,50 @@ fn normalize_statement(statement: &AstStatement, policy: &impl ClausewitzTreePol
 		AstStatement::Item { value, .. } => branch(
 			ITEM_KIND,
 			None,
-			None,
+			item_anchor,
 			ChildOrder::Ordered,
 			ChildCardinality::ExactlyOne,
 			vec![normalize_value(value, None, policy)],
 		),
 		AstStatement::Comment { text, .. } => leaf(COMMENT_KIND, text.clone()),
 	}
+}
+
+fn scalar_item_anchor(
+	statement: &AstStatement,
+	occurrences: &mut BTreeMap<(String, String), usize>,
+	numeric_position: &mut usize,
+) -> Option<SemanticKey> {
+	let AstStatement::Item {
+		value: AstValue::Scalar { value, .. },
+		..
+	} = statement
+	else {
+		return None;
+	};
+	if matches!(value, ScalarValue::Number(_)) {
+		let position = *numeric_position;
+		*numeric_position += 1;
+		return Some(SemanticKey::parent_scoped(
+			"clausewitz.item.number.position",
+			position.to_string(),
+		));
+	}
+
+	let kind = match value {
+		ScalarValue::Identifier(_) => "identifier",
+		ScalarValue::String(_) => "string",
+		ScalarValue::Bool(_) => "bool",
+		ScalarValue::Number(_) => unreachable!("numbers handled above"),
+	};
+	let occurrence_key = (kind.to_string(), value.as_text());
+	let occurrence = occurrences.entry(occurrence_key.clone()).or_default();
+	let anchor = SemanticKey::parent_scoped(
+		"clausewitz.item.scalar",
+		format!("{}:{}:{}", occurrence_key.0, occurrence_key.1, *occurrence),
+	);
+	*occurrence += 1;
+	Some(anchor)
 }
 
 fn normalize_value(
