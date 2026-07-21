@@ -18,3 +18,5 @@ Read these documents in order if you are new to the project; each entry points a
 
 - [merge-design.md](./merge-design.md) - implementation-grade design for `merge-plan`, `merge`, generated output layout, strategy classification, conflict handling, and validation
 - [structured-merge-shadow.md](./structured-merge-shadow.md) - experimental GumTree/PCS kernel slice, strict event eligibility, and isolated Legacy/Structured shadow comparison
+- [common-applicability-probe.md](./common-applicability-probe.md) - provisional `common/<folder>` module probe, classification gate, and publication boundary
+- [research/2026-07-22-common-applicability.md](./research/2026-07-22-common-applicability.md) - fixed 12-unit result, semantic failure taxonomy, and runtime evidence

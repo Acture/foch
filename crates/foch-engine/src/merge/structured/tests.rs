@@ -9,8 +9,8 @@ use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
 use crate::emit::emit_clausewitz_statements;
 
 use super::ast_adapter::{denormalize_ast, normalize_ast};
-use super::merge_event_files;
-use super::policy::EventTreePolicy;
+use super::policy::DefaultClausewitzTreePolicy;
+use super::{merge_clausewitz_files, merge_event_files};
 
 fn parse(source: &str) -> AstFile {
 	let parsed = parse_clausewitz_content(PathBuf::from("events/test.txt"), source);
@@ -32,6 +32,21 @@ fn event_policies() -> MergePolicies {
 }
 
 #[test]
+fn generic_clausewitz_merge_combines_independent_definition_edits() {
+	let base = parse("temple = { cost = 100 }\n");
+	let left = parse("temple = { cost = 100 manpower = 1 }\n");
+	let right = parse("temple = { cost = 100 tax = 1 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+		.expect("merge generic Clausewitz definitions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("manpower = 1"), "{output}");
+	assert!(output.contains("tax = 1"), "{output}");
+}
+
+#[test]
 fn event_adapter_round_trips_ast_content_and_scalar_variants() {
 	let ast = parse(
 		"# retained comment\n\
@@ -44,7 +59,7 @@ fn event_adapter_round_trips_ast_content_and_scalar_variants() {
 		\toption = { name = demo.accept }\n\
 		}\n",
 	);
-	let normalized = normalize_ast(&ast, &EventTreePolicy).expect("normalize AST");
+	let normalized = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
 	let rebuilt = denormalize_ast(ast.path.clone(), &normalized).expect("rebuild AST");
 
 	assert_eq!(emit(&rebuilt), emit(&ast));
@@ -60,7 +75,7 @@ fn event_option_and_control_flow_use_their_intended_identity_scope() {
 		\toption = { name = demo.accept }\n\
 		}\n",
 	);
-	let tree = normalize_ast(&ast, &EventTreePolicy).expect("normalize AST");
+	let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
 	let anchors = tree
 		.nodes()
 		.filter_map(|(_, node)| node.anchor.as_ref())
@@ -121,7 +136,7 @@ fn event_adapter_groups_else_branches_and_comments_into_one_chain() {
 		\t}\n\
 		}\n",
 	);
-	let tree = normalize_ast(&ast, &EventTreePolicy).expect("normalize AST");
+	let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
 	let chains = tree
 		.nodes()
 		.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))

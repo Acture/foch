@@ -1,0 +1,1168 @@
+{
+  "schema": "1.0.0",
+  "generated_at": "2026-07-21T17:31:37.159875Z",
+  "hypothesis": "common/<folder> is a provisional semantic merge unit",
+  "game_version": "v1.37.5.0",
+  "steam_build_id": 15918133,
+  "executable_blake3": "699d5671ff38f6c6fa25127478d11db64b369aace375f8f630b164833943e02b",
+  "legacy_baseline_blake3": "6ed4b8332a97c279470f5022e63023ebba84d1fa5776daf02b5d64851921b223",
+  "summary": {
+    "expected_units": 12,
+    "classified_units": 12,
+    "accepted_equivalent": 2,
+    "manual_resolution_required": 2,
+    "semantic_mismatch": 8,
+    "failed": 0,
+    "legacy_accepted": 1,
+    "legacy_accepted_preserved": 1,
+    "review_required": 10,
+    "gate_passed": true,
+    "elapsed_ms": 123260
+  },
+  "families": [
+    {
+      "content_family": "common/ages",
+      "units": 1,
+      "accepted_equivalent": 0,
+      "review_required": true
+    },
+    {
+      "content_family": "common/buildings",
+      "units": 1,
+      "accepted_equivalent": 0,
+      "review_required": true
+    },
+    {
+      "content_family": "common/governments",
+      "units": 1,
+      "accepted_equivalent": 0,
+      "review_required": true
+    },
+    {
+      "content_family": "common/institutions",
+      "units": 1,
+      "accepted_equivalent": 0,
+      "review_required": true
+    },
+    {
+      "content_family": "common/rebel_types",
+      "units": 1,
+      "accepted_equivalent": 0,
+      "review_required": true
+    },
+    {
+      "content_family": "common/religions",
+      "units": 1,
+      "accepted_equivalent": 1,
+      "review_required": false
+    },
+    {
+      "content_family": "common/scripted_effects",
+      "units": 1,
+      "accepted_equivalent": 1,
+      "review_required": false
+    },
+    {
+      "content_family": "common/scripted_triggers",
+      "units": 4,
+      "accepted_equivalent": 0,
+      "review_required": true
+    },
+    {
+      "content_family": "common/tradegoods",
+      "units": 1,
+      "accepted_equivalent": 0,
+      "review_required": true
+    }
+  ],
+  "units": [
+    {
+      "case_id": "3630876155",
+      "snapshot_id": "d60369eb6a10122a1478df23c06031a84858075f09db11574e8d29cc1a260f5c",
+      "relative_path": "common/rebel_types/zzz_foch_rebel_types.txt",
+      "module_prefix": "common/rebel_types",
+      "content_family": "common/rebel_types",
+      "source_mod_ids": [
+        "2164202838",
+        "2185445645"
+      ],
+      "legacy_verdict": "diverges_structure",
+      "legacy_accepted": false,
+      "status": "manual_resolution_required",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "be509fb5209c1de6cf2d5b60254c89c783f3e9b878c1caf382d6c609aa3d9993",
+        "left": "9cb6e70abfa679f7b6be41503c9809fe35dea2e78f673c6dca679747b5f1f562",
+        "right": "c68a6ff605f62c68d0444d4354ff8d333aaa39083cfe0501d84ce07483604306",
+        "human": "84ffc1716e8fe9eaf241f6a9af26279f24eba68ce002926510395d87c561462e"
+      },
+      "base_definitions": 50,
+      "active_definitions": 17,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [
+        "ita_monarchy_rebels",
+        "ita_republican_rebels"
+      ],
+      "semantic_diff_from_human": {
+        "left_atoms": 6234,
+        "right_atoms": 6143,
+        "shared_atoms": 6137,
+        "left_only": {
+          "assignment:EE_SCO_nationalist_rebels/assignment:color={}": 1,
+          "assignment:EE_greek_nationalist_rebels/assignment:color={}": 1,
+          "assignment:ita_monarchy_rebels/assignment:area=text:nation": 1,
+          "assignment:ita_monarchy_rebels/assignment:artillery=number:0.1": 1,
+          "assignment:ita_monarchy_rebels/assignment:can_enforce_trigger/assignment:always=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:can_negotiate_trigger/assignment:always=bool:no": 1,
+          "assignment:ita_monarchy_rebels/assignment:cavalry=number:0.4": 1,
+          "assignment:ita_monarchy_rebels/assignment:color/item=number:180": 1,
+          "assignment:ita_monarchy_rebels/assignment:color/item=number:25": 2,
+          "assignment:ita_monarchy_rebels/assignment:defect_delay=number:60": 1,
+          "assignment:ita_monarchy_rebels/assignment:defection=text:none": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_description=text:ita_monarchy_rebels_demand": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:add_government_reform=text:autocracy_reform": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:add_government_reform=text:parliamentary_reform": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:add_prestige=number:-10": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:hidden_effect/assignment:clr_country_flag=text:ita_republican_matter": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:hidden_effect/assignment:set_country_flag=text:ita_republican_matter_subversed": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:if/assignment:change_government=text:monarchy": 1,
+          "assignment:ita_monarchy_rebels/assignment:demands_enforced_effect/assignment:if/assignment:limit/assignment:NOT/assignment:government=text:monarchy": 1,
+          "assignment:ita_monarchy_rebels/assignment:general=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:gfx_type=text:culture_province": 1,
+          "assignment:ita_monarchy_rebels/assignment:government=text:any": 1,
+          "assignment:ita_monarchy_rebels/assignment:handle_action_build_core=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:handle_action_change_culture=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:handle_action_negotiate=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:handle_action_send_missionary=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:handle_action_stability=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:independence=text:none": 1,
+          "assignment:ita_monarchy_rebels/assignment:infantry=number:0.5": 1,
+          "assignment:ita_monarchy_rebels/assignment:morale=number:1.1": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:factor=number:1": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:controlled_by=text:REB": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:factor=number:0.001": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:factor=number:0.1": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:factor=number:1.5": 3,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:units_in_province=number:1": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:unrest=number:2": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:unrest=number:4": 1,
+          "assignment:ita_monarchy_rebels/assignment:movement_evaluation/assignment:modifier/assignment:unrest=number:6": 1,
+          "assignment:ita_monarchy_rebels/assignment:reinforcing=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:resilient=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:siege_won_effect/assignment:set_province_flag=text:ita_monarchy_rebellion_3": 1,
+          "assignment:ita_monarchy_rebels/assignment:siege_won_trigger/assignment:region=text:italy_region": 1,
+          "assignment:ita_monarchy_rebels/assignment:smart=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:spawn_chance/assignment:factor=number:0": 1,
+          "assignment:ita_monarchy_rebels/assignment:unit_transfer=bool:yes": 1,
+          "assignment:ita_monarchy_rebels/assignment:will_relocate=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:area=text:nation": 1,
+          "assignment:ita_republican_rebels/assignment:artillery=number:0.1": 1,
+          "assignment:ita_republican_rebels/assignment:can_enforce_trigger/assignment:always=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:can_negotiate_trigger/assignment:always=bool:no": 1,
+          "assignment:ita_republican_rebels/assignment:cavalry=number:0.4": 1,
+          "assignment:ita_republican_rebels/assignment:color/item=number:180": 1,
+          "assignment:ita_republican_rebels/assignment:color/item=number:25": 2,
+          "assignment:ita_republican_rebels/assignment:defect_delay=number:60": 1,
+          "assignment:ita_republican_rebels/assignment:defection=text:none": 1,
+          "assignment:ita_republican_rebels/assignment:demands_description=text:ita_republican_rebels_demand": 1,
+          "assignment:ita_republican_rebels/assignment:demands_enforced_effect/assignment:add_government_reform=text:constitutional_republic_reform": 1,
+          "assignment:ita_republican_rebels/assignment:demands_enforced_effect/assignment:add_prestige=number:-10": 1,
+          "assignment:ita_republican_rebels/assignment:demands_enforced_effect/assignment:hidden_effect/assignment:clr_country_flag=text:ita_republican_matter": 1,
+          "assignment:ita_republican_rebels/assignment:demands_enforced_effect/assignment:hidden_effect/assignment:set_country_flag=text:ita_republican_matter_subversed": 1,
+          "assignment:ita_republican_rebels/assignment:demands_enforced_effect/assignment:if/assignment:change_government=text:republic": 1,
+          "assignment:ita_republican_rebels/assignment:demands_enforced_effect/assignment:if/assignment:limit/assignment:NOT/assignment:government=text:republic": 1,
+          "assignment:ita_republican_rebels/assignment:general=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:gfx_type=text:culture_province": 1,
+          "assignment:ita_republican_rebels/assignment:government=text:any": 1,
+          "assignment:ita_republican_rebels/assignment:handle_action_build_core=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:handle_action_change_culture=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:handle_action_negotiate=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:handle_action_send_missionary=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:handle_action_stability=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:independence=text:none": 1,
+          "assignment:ita_republican_rebels/assignment:infantry=number:0.5": 1,
+          "assignment:ita_republican_rebels/assignment:morale=number:1.1": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:factor=number:1": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:controlled_by=text:REB": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:factor=number:0.001": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:factor=number:0.1": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:factor=number:1.5": 3,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:units_in_province=number:1": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:unrest=number:2": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:unrest=number:4": 1,
+          "assignment:ita_republican_rebels/assignment:movement_evaluation/assignment:modifier/assignment:unrest=number:6": 1,
+          "assignment:ita_republican_rebels/assignment:reinforcing=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:resilient=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:siege_won_effect/assignment:set_province_flag=text:ita_republican_rebellion_3": 1,
+          "assignment:ita_republican_rebels/assignment:siege_won_trigger/assignment:region=text:italy_region": 1,
+          "assignment:ita_republican_rebels/assignment:smart=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:spawn_chance/assignment:factor=number:0": 1,
+          "assignment:ita_republican_rebels/assignment:unit_transfer=bool:yes": 1,
+          "assignment:ita_republican_rebels/assignment:will_relocate=bool:yes": 1
+        },
+        "right_only": {
+          "assignment:EE_SCO_nationalist_rebels/assignment:color/item=number:180": 1,
+          "assignment:EE_SCO_nationalist_rebels/assignment:color/item=number:25": 2,
+          "assignment:EE_greek_nationalist_rebels/assignment:color/item=number:180": 1,
+          "assignment:EE_greek_nationalist_rebels/assignment:color/item=number:25": 2
+        }
+      },
+      "conflicts": [
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        }
+      ],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 77,
+        "merge_ms": 913,
+        "matcher_ns": 769538500,
+        "pcs_ns": 80164205,
+        "policy_ns": 589879
+      }
+    },
+    {
+      "case_id": "3630876155",
+      "snapshot_id": "d60369eb6a10122a1478df23c06031a84858075f09db11574e8d29cc1a260f5c",
+      "relative_path": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+      "module_prefix": "common/scripted_triggers",
+      "content_family": "common/scripted_triggers",
+      "source_mod_ids": [
+        "2164202838",
+        "2185445645"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "boolean_or",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "40c4fac70c9c91f518b8f9d8a3b6e7a0e6f37ac17280bb1dc7fd156c9ca477dd",
+        "left": "3dd93c4ee4349fd2fae8c4059c10ea5f9e813cc9902519fb9761f3f349e032d4",
+        "right": "0cd0dbbd792bb6fb16e2ac9448c63c49b9782d8df3fa013af905bc6751e8a6f7",
+        "human": "e2400c67782e8337b67f47da9a09a4eb3e558c556dcfe70da6cf0bfbb9fac8d9"
+      },
+      "base_definitions": 2507,
+      "active_definitions": 519,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 24929,
+        "right_atoms": 24928,
+        "shared_atoms": 24928,
+        "left_only": {
+          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+        },
+        "right_only": {}
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 232,
+        "merge_ms": 2506,
+        "matcher_ns": 2093581875,
+        "pcs_ns": 282009069,
+        "policy_ns": 1876056
+      }
+    },
+    {
+      "case_id": "3630904821",
+      "snapshot_id": "695b4ed11d04270342f5cb007ebd14001513bd91e3187434a6531e8f76ab7d7c",
+      "relative_path": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+      "module_prefix": "common/scripted_triggers",
+      "content_family": "common/scripted_triggers",
+      "source_mod_ids": [
+        "2164202838",
+        "1352521684"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "boolean_or",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "40c4fac70c9c91f518b8f9d8a3b6e7a0e6f37ac17280bb1dc7fd156c9ca477dd",
+        "left": "3dd93c4ee4349fd2fae8c4059c10ea5f9e813cc9902519fb9761f3f349e032d4",
+        "right": "f8640e0c89fe59074caabc4bd88dd444ee2a39d50b6a8c660de494b9076d1940",
+        "human": "9d76d6cc4d15ff3f8821a82c43d06d65b3e62e7082f11daab5cf1606d3ed4241"
+      },
+      "base_definitions": 2507,
+      "active_definitions": 582,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 25876,
+        "right_atoms": 25875,
+        "shared_atoms": 25875,
+        "left_only": {
+          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+        },
+        "right_only": {}
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 26,
+        "merge_ms": 11284,
+        "matcher_ns": 10730116958,
+        "pcs_ns": 381380647,
+        "policy_ns": 2490811
+      }
+    },
+    {
+      "case_id": "3630934157",
+      "snapshot_id": "ebdf8ea89e7fa5edb103708cdab2ce02dca53af16642d4aa1f5e577781033e30",
+      "relative_path": "common/religions/zzz_foch_religions.txt",
+      "module_prefix": "common/religions",
+      "content_family": "common/religions",
+      "source_mod_ids": [
+        "3342969370",
+        "2164202838"
+      ],
+      "legacy_verdict": "accepted_equivalent",
+      "legacy_accepted": true,
+      "status": "accepted_equivalent",
+      "publishable": true,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "last_writer",
+        "list": "replace",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "8ecb999d611573c320e7b8e41b4a74c38fc6b4e5223b7fbe2b25a6cd1b0b3dab",
+        "left": "588f49ef0ab32e5b0f275a5964d6a1e91abd18880c2af95ff373119d2e99484d",
+        "right": "07638ca8983644f6447358decb55941e7f61c31f16765e56eb6f44003a60a0e6",
+        "human": "ab1b8569cd6dc7af64ad99e1c510fe76da6344fdd41434582627f7dc5f35fc88"
+      },
+      "base_definitions": 7,
+      "active_definitions": 5,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 1682,
+        "right_atoms": 1682,
+        "shared_atoms": 1682,
+        "left_only": {},
+        "right_only": {}
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 26,
+        "merge_ms": 751,
+        "matcher_ns": 591340458,
+        "pcs_ns": 89133927,
+        "policy_ns": 605364
+      }
+    },
+    {
+      "case_id": "3634824708",
+      "snapshot_id": "54fb216188ec4267c3006b2b05b8c994ba75961a7337839a05a9f23272d62d0c",
+      "relative_path": "common/buildings/zzz_foch_buildings.txt",
+      "module_prefix": "common/buildings",
+      "content_family": "common/buildings",
+      "source_mod_ids": [
+        "2164202838",
+        "1770950522"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "last_writer",
+        "list": "replace",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "41453a4348e3ff5d2179134b53df3000a11697fea5afa8a53d83e76c49dbd559",
+        "left": "ee312a95023ef86476e2b9242569de2b7ae77a91f98967f670cd0c1d8504c204",
+        "right": "c8c0d9b846b31d7e21bb56521e2a7e8577049b892040ccd56d27ae5c8f3e0d9a",
+        "human": "03ea84f67dc803528ae7fbf675a0c3e9e1d2c0980e2a0eed1bf539fdb89e367f"
+      },
+      "base_definitions": 47,
+      "active_definitions": 65,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 2318,
+        "right_atoms": 2327,
+        "shared_atoms": 2316,
+        "left_only": {
+          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:num_of_loans=number:1": 1,
+          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0": 1
+        },
+        "right_only": {
+          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:factor=number:0": 2,
+          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:factor=number:20": 1,
+          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:from/assignment:num_of_loans=number:3": 1,
+          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:from/assignment:personality=text:ai_militarist": 1,
+          "assignment:ramparts/assignment:ai_will_do/assignment:modifier/assignment:has_terrain=text:mountain": 1,
+          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:FROM/assignment:navy_size_percentage=number:0.95": 1,
+          "assignment:shipyard/assignment:ai_will_do/assignment:modifier/assignment:factor=number:1.5": 1,
+          "assignment:temple/assignment:on_destroyed/assignment:if/assignment:limit/assignment:FROM/assignment:has_country_flag=text:mosque_local_unrest_flag": 1,
+          "assignment:temple/assignment:on_destroyed/assignment:if/assignment:remove_province_modifier=text:turkoman_peaceful_worshipping": 1,
+          "assignment:workshop/assignment:on_obsolete={}": 1
+        }
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 32,
+        "merge_ms": 1416,
+        "matcher_ns": 1203757041,
+        "pcs_ns": 126611672,
+        "policy_ns": 849120
+      }
+    },
+    {
+      "case_id": "3634824708",
+      "snapshot_id": "54fb216188ec4267c3006b2b05b8c994ba75961a7337839a05a9f23272d62d0c",
+      "relative_path": "common/institutions/zzz_foch_institutions.txt",
+      "module_prefix": "common/institutions",
+      "content_family": "common/institutions",
+      "source_mod_ids": [
+        "2164202838",
+        "1770950522"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "sum",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "2d9718feb070c841a52a3492fd04f59a4c07a6fd18bb84f2229b535befcb39d7",
+        "left": "e2f95a3a48a4a6f58eaf64a7b5a694b2f1accb5a0c64d2304f33bf178637f2e8",
+        "right": "64b6956954a4f21664e198f78d06d29a09a6137f0e34afdb2cc54662d06042b6",
+        "human": "105ef150baa307e680be3c9021d876f14121cc2a0102d08f5e90152ff01b669f"
+      },
+      "base_definitions": 8,
+      "active_definitions": 3,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 1545,
+        "right_atoms": 1548,
+        "shared_atoms": 1545,
+        "left_only": {},
+        "right_only": {
+          "assignment:industrialization/assignment:embracement_speed/assignment:modifier/assignment:potential/assignment:OR/assignment:trade_goods=text:cloves": 2,
+          "assignment:manufactories/assignment:embracement_speed/assignment:modifier/assignment:potential/assignment:OR/assignment:trade_goods=text:cloves": 1
+        }
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 22,
+        "merge_ms": 685,
+        "matcher_ns": 585444667,
+        "pcs_ns": 53457798,
+        "policy_ns": 378535
+      }
+    },
+    {
+      "case_id": "3634824708",
+      "snapshot_id": "54fb216188ec4267c3006b2b05b8c994ba75961a7337839a05a9f23272d62d0c",
+      "relative_path": "common/tradegoods/zzz_foch_tradegoods.txt",
+      "module_prefix": "common/tradegoods",
+      "content_family": "common/tradegoods",
+      "source_mod_ids": [
+        "2164202838",
+        "1770950522"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "last_writer",
+        "list": "replace",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "838b592983f658ad7b5277e1d4feeac3e819bc3a39538601f772438f392da42c",
+        "left": "da018be295fa6167eb8f0f3612b11b809bfba0ff67791aa8cc24e120a96d8682",
+        "right": "7a17c4d09622e3d9dd0af13b24cfa347199557b04bd5f53931be7a7a153f664b",
+        "human": "3001c05361663251421d7a30c2d45237cdcf44250def03686a1c93bcb48bdb98"
+      },
+      "base_definitions": 32,
+      "active_definitions": 91,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 2938,
+        "right_atoms": 2944,
+        "shared_atoms": 2928,
+        "left_only": {
+          "assignment:cloves/assignment:province/assignment:province_trade_power_modifier=number:0.1": 1,
+          "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:has_institution=text:enlightenment": 1,
+          "assignment:coal/assignment:trigger/assignment:else/assignment:provincial_institution_progress/assignment:which=text:enlightenment": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:limit/assignment:owner/assignment:has_country_flag=text:ENG_early_inno_coal": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:adm_tech=number:22": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:innovativeness=number:80": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:owner/assignment:has_country_flag=text:earlier_coal_available": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:adm_tech=number:23": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:has_institution=text:manufactories": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:provincial_institution_progress/assignment:which=text:manufactories": 1
+        },
+        "right_only": {
+          "assignment:cloves/assignment:province/assignment:province_trade_power_modifier=number:0.15": 1,
+          "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:adm_tech=number:23": 1,
+          "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:has_institution=text:manufactories": 1,
+          "assignment:coal/assignment:trigger/assignment:else/assignment:provincial_institution_progress/assignment:which=text:manufactories": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:limit/assignment:has_province_flag=text:GER_specific_coal": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:adm_tech=number:21": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:has_institution=text:manufactories": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:NOT/assignment:has_province_flag=text:GER_specific_coal": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:owner/assignment:NOT/assignment:has_country_flag=text:earlier_coal_available": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:has_institution=text:enlightenment": 1,
+          "assignment:coal/assignment:trigger/assignment:if/assignment:provincial_institution_progress/assignment:which=text:enlightenment": 1,
+          "assignment:fur/assignment:chance/assignment:modifier/assignment:factor=number:2.0": 1,
+          "assignment:gems/assignment:chance/assignment:modifier/assignment:FROM/assignment:OR/assignment:colonial_parent/assignment:has_increased_trade_goods_discovery/assignment:trade_goods=text:gems": 1,
+          "assignment:gems/assignment:chance/assignment:modifier/assignment:FROM/assignment:OR/assignment:has_increased_trade_goods_discovery/assignment:trade_goods=text:gems": 1,
+          "assignment:gems/assignment:chance/assignment:modifier/assignment:factor=number:2": 1,
+          "assignment:slaves/assignment:chance/assignment:modifier/assignment:factor=number:1.5": 1
+        }
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 29,
+        "merge_ms": 954,
+        "matcher_ns": 634770500,
+        "pcs_ns": 192648286,
+        "policy_ns": 1331339
+      }
+    },
+    {
+      "case_id": "3634829839",
+      "snapshot_id": "24048fe131d8365e61b3d70172e57d57f6a38ffb000f19a30ee35c20935a5803",
+      "relative_path": "common/ages/zzz_foch_ages.txt",
+      "module_prefix": "common/ages",
+      "content_family": "common/ages",
+      "source_mod_ids": [
+        "2172666098",
+        "2164202838"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "sum",
+        "list": "ordered_union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "174afd58f652268c6072af9e735b33cd7f44da19f0c26f07cb66873a4fe72679",
+        "left": "f35b91b76dc80f6e5a8405d49e753c4f8c2c5507b8c169a7bdeb664929840107",
+        "right": "c88984f064eec46d5dbe5c19e64b9ef18671b538a34ed794b83044644449e446",
+        "human": "a67508f647f071cbf84989d47cf5d93f46afa7d2a318137b507b753725c7cb97"
+      },
+      "base_definitions": 4,
+      "active_definitions": 4,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 608,
+        "right_atoms": 607,
+        "shared_atoms": 606,
+        "left_only": {
+          "assignment:age_of_discovery/assignment:abilities/assignment:ab_portugal_colonial_growth/assignment:modifier/assignment:global_colonial_growth=number:35": 1,
+          "assignment:age_of_reformation/assignment:objectives/assignment:obj_colonial_empire/assignment:colony=number:5": 1
+        },
+        "right_only": {
+          "assignment:age_of_discovery/assignment:abilities/assignment:ab_portugal_colonial_growth/assignment:modifier/assignment:global_colonial_growth=number:50": 1
+        }
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 18,
+        "merge_ms": 413,
+        "matcher_ns": 326453625,
+        "pcs_ns": 49837389,
+        "policy_ns": 348278
+      }
+    },
+    {
+      "case_id": "3634829839",
+      "snapshot_id": "24048fe131d8365e61b3d70172e57d57f6a38ffb000f19a30ee35c20935a5803",
+      "relative_path": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+      "module_prefix": "common/scripted_triggers",
+      "content_family": "common/scripted_triggers",
+      "source_mod_ids": [
+        "2172666098",
+        "2164202838"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "boolean_or",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "40c4fac70c9c91f518b8f9d8a3b6e7a0e6f37ac17280bb1dc7fd156c9ca477dd",
+        "left": "3ea14897ca40c9a8f56b4eb295af7757db6589a478fd30381e4e4032c24b6dfa",
+        "right": "3dd93c4ee4349fd2fae8c4059c10ea5f9e813cc9902519fb9761f3f349e032d4",
+        "human": "57e90b2c02cd8e89c5451367434472358683f8f935eba338dcefcaa829c63cc3"
+      },
+      "base_definitions": 2507,
+      "active_definitions": 534,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 25105,
+        "right_atoms": 25104,
+        "shared_atoms": 25104,
+        "left_only": {
+          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+        },
+        "right_only": {}
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 24,
+        "merge_ms": 4475,
+        "matcher_ns": 4027032500,
+        "pcs_ns": 302230243,
+        "policy_ns": 1891841
+      }
+    },
+    {
+      "case_id": "3635635014",
+      "snapshot_id": "b1f12d633dd249e644a0205708e8c23898d990eb8eea8d43134ff78188ef61f7",
+      "relative_path": "common/governments/zzz_foch_governments.txt",
+      "module_prefix": "common/governments",
+      "content_family": "common/governments",
+      "source_mod_ids": [
+        "2164202838",
+        "1596815683"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "manual_resolution_required",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "ordered_union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "recurse",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "bc80200a0ad4e2a1d5df32501510fc96828e78d2275372dd6f340d7032900056",
+        "left": "9f143716a440c8b624ef7621ab02ba596fd3c9e5b823d52657097310a42cf6a9",
+        "right": "939604cc88ad420d1ca55e29dda02d906adc8cf2eaa67c8e4138db55a9dccb78",
+        "human": "6650e78f2f5dc55eec2ee770dbcc04ee7a8e878e4677ca49933c367123f9d7ff"
+      },
+      "base_definitions": 6,
+      "active_definitions": 5,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 2037,
+        "right_atoms": 1894,
+        "shared_atoms": 1894,
+        "left_only": {
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_caliphate_feudal_theocracy": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_caliphate_iqta": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_enlist_the_help_of_sufi_orders": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_enlist_the_help_of_sufi_orders_ADU": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_ibadi_community": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_ottoman_government": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:ME_tribal_federation_monarchy": 1,
+          "assignment:monarchy/assignment:exclusive_reforms/item=text:khaganate": 1,
+          "assignment:monarchy/assignment:legacy_government/item=text:athenian_monarchy_legacy": 1,
+          "assignment:monarchy/assignment:legacy_government/item=text:crusader_kingdom_legacy": 1,
+          "assignment:monarchy/assignment:legacy_government/item=text:german_kaiserreich_legacy": 1,
+          "assignment:monarchy/assignment:legacy_government/item=text:khaganate_legacy": 1,
+          "assignment:monarchy/assignment:legacy_government/item=text:west_slavic_legacy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:absolute_rule_vs_constitutional/assignment:reforms/item=text:tur_absolute_sultanic_power": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:EE_SCO_expand_imperial_court_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:EE_decentralize_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:EE_regional_council_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:GAL_settling_the_terra_icognita": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:ara_consell_de_cent": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:mil_sforza_administration": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:tur_organized_pashas_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:tur_reform_beylerbeys": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:bureaucracy/assignment:reforms/item=text:tur_reform_eyalets": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:deliberative_assembly/assignment:reforms/item=text:ME_system_of_councils": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:deliberative_assembly/assignment:reforms/item=text:me_hindu_administration": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:economical_matters/assignment:reforms/item=text:EE_curtail_the_burghers_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:economical_matters/assignment:reforms/item=text:EE_modernize_industrial_sector": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ARA_crown_of_aragon": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_Celtic_Union": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_FRA_ancien_regime": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_IRE_Ardi_Heireann": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_IRE_Irish_Kingdom": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_Minor_IRI_Gaelic_Kingship": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_Minor_IRI_Gaelic_Kingship_Parliament": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_synthetic_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:EE_synthetic_monarchy_militarized": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:FRX_frankish_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_Celtic_High_Kingdom": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_caliphate_reform_shia_ibadi": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_caliphate_reform_sunni": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_caliphate_reform_sunni_andalusia": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_caliphate_reform_sunni_arabian": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_ibadi_community": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_ottoman_government": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ME_tribal_federation_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:POR_portuguese_colonial_autocracy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:POR_portuguese_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:RHN_autocratic_capitalism": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:UKS_angevin_monarchy_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:ada_adalan_empire": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:athenian_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:austria_hungary_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:byzantine_autocracy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:byzantine_late_autocracy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:convocation_of_the_tinners_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:crown_of_castile": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:crown_of_spain": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:crusader_kingdom": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:enlightened_despotism_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:fu_indian_sultanate_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:fu_janissary_autocracy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:fu_ottoman_government": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:fu_sultanate_of_rum_and_cairo": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:german_kaiserreich": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:khaganate": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:me_baroque_monarchy_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:me_mughal_empire": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:me_nordmark": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:plantagenet_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:religious_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:sisterhood_of_jeanne_darc_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:timurid_empire": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:timurid_empire_upgraded": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:timurid_governor": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:timurid_governor_upgraded": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:timurid_prince": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:timurid_semi_horde": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:tudor_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:turko_hellenic_autocracy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:tynwald_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:welsh_principality_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:feudalism_vs_autocracy/assignment:reforms/item=text:west_slavic_monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:growth_of_administration/assignment:reforms/item=text:ME_reform_chaghatai_literature": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:growth_of_administration/assignment:reforms/item=text:ara_consulate_of_the_sea": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:growth_of_administration/assignment:reforms/item=text:incan_administration_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:growth_of_administration/assignment:reforms/item=text:me_hofkammer_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:growth_of_administration/assignment:reforms/item=text:tur_custodian_holy_city_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:ME_caliphate_feudal_theocracy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:ME_caliphate_iqta": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:SOS_advanced_tactics": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:aztec_society_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:incan_society_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:maya_society_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:mil_secret_council": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:mughal_government_me": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:mughal_government_me_modifier_buff": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:hereditary_vs_nobility/assignment:reforms/item=text:sharia_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:military_doctrines/assignment:reforms/item=text:EE_FRA_gendarmes_reform": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:separation_of_power/assignment:reforms/item=text:EE_Global_Celtic_Empire": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:separation_of_power/assignment:reforms/item=text:EE_Raabsolute_Monarchy": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:state_and_religion/assignment:reforms/item=text:ME_enlist_the_help_of_sufi_orders": 1,
+          "assignment:monarchy/assignment:reform_levels/assignment:state_and_religion/assignment:reforms/item=text:ME_enlist_the_help_of_sufi_orders_ADU": 1,
+          "assignment:republic/assignment:legacy_government/item=text:athenian_republic_legacy": 1,
+          "assignment:republic/assignment:legacy_government/item=text:greek_league": 1,
+          "assignment:republic/assignment:reform_levels/assignment:economical_matters_republic/assignment:reforms/item=text:EE_curtail_the_burghers_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:economical_matters_republic/assignment:reforms/item=text:EE_modernize_industrial_sector": 1,
+          "assignment:republic/assignment:reform_levels/assignment:federalism_vs_unitarism_vs_confederacy/assignment:reforms/item=text:fu_canton_administration": 1,
+          "assignment:republic/assignment:reform_levels/assignment:federalism_vs_unitarism_vs_confederacy/assignment:reforms/item=text:mil_sforza_administration": 1,
+          "assignment:republic/assignment:reform_levels/assignment:frequent_elections_vs_consolidation_of_power/assignment:reforms/item=text:EE_factional_politics_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:frequent_elections_vs_consolidation_of_power/assignment:reforms/item=text:EE_frequent_elections_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:guiding_principle_of_administration/assignment:reforms/item=text:mil_secret_council": 1,
+          "assignment:republic/assignment:reform_levels/assignment:guiding_principle_of_administration/assignment:reforms/item=text:orangist_stadholders_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:office_selection/assignment:reforms/item=text:nov_republican_guard_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:RHN_democratic_capitalism": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:SOS_advanced_tactics": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:athenian_republic": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:fu_fleet_with_a_state_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:greek_league_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:nov_commercial_law": 1,
+          "assignment:republic/assignment:reform_levels/assignment:oligarchy_merchant_class_noble_elite/assignment:reforms/item=text:timurid_stratocracy": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:EE_federal_senate_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:EE_reinforce_republican_values_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:EE_strengthen_executive_powers_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:become_rev_empire_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:question_of_dictatorship/assignment:reforms/item=text:fu_declare_pirate_empire_reform": 1,
+          "assignment:republic/assignment:reform_levels/assignment:republican_virtues/assignment:reforms/item=text:sharia_reform": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:internal_vs_external_mission/assignment:reforms/item=text:SOS_advanced_tactics": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:internal_vs_external_mission/assignment:reforms/item=text:sharia_reform": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:secularization/assignment:reforms/item=text:empowered_papal_state_reform": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:theocratic_leadership/assignment:reforms/item=text:ME_bektashi_order_reform": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:theocratic_leadership/assignment:reforms/item=text:ME_sufi_order_reform": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:theocratic_leadership/assignment:reforms/item=text:RHN_holy_capitalism": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:theocratic_leadership/assignment:reforms/item=text:aju_hydraulic_empire": 1,
+          "assignment:theocracy/assignment:reform_levels/assignment:theocratic_leadership/assignment:reforms/item=text:fu_order_of_saint_joan_reform": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_administration/assignment:reforms/item=text:ME_Celtica_tribal_federation": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_administration/assignment:reforms/item=text:ME_tribal_federation_steppe_horde": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_administration/assignment:reforms/item=text:aztec_society_reform": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_administration/assignment:reforms/item=text:incan_society_reform": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_administration/assignment:reforms/item=text:maya_society_reform": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_cultural_values/assignment:reforms/item=text:EE_civil_society_reform": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_cultural_values/assignment:reforms/item=text:sharia_reform": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_modernization/assignment:reforms/item=text:EE_Modernize_economy": 1,
+          "assignment:tribal/assignment:reform_levels/assignment:tribal_reformation/assignment:reforms/item=text:EE_Unleash_Tribal_Horde": 1
+        },
+        "right_only": {}
+      },
+      "conflicts": [
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "insert_insert",
+          "detail": "left and right inserted different content into one matched class"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        },
+        {
+          "kind": "move_move",
+          "detail": "left and right moved the same node to different parents"
+        }
+      ],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 22,
+        "merge_ms": 719,
+        "matcher_ns": 579246875,
+        "pcs_ns": 86078498,
+        "policy_ns": 596502
+      }
+    },
+    {
+      "case_id": "3635635014",
+      "snapshot_id": "b1f12d633dd249e644a0205708e8c23898d990eb8eea8d43134ff78188ef61f7",
+      "relative_path": "common/scripted_effects/zzz_foch_scripted_effects.txt",
+      "module_prefix": "common/scripted_effects",
+      "content_family": "common/scripted_effects",
+      "source_mod_ids": [
+        "2164202838",
+        "1596815683"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "accepted_equivalent",
+      "publishable": true,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "union",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "7f8176418415903d3e86fef52374c56d05cda31d7ba3d019a51c6edbc6f1246a",
+        "left": "811b3523b79971421faf7b275e6f2a1de9b8bf9e0625d032dcc0ed5d1e2fa466",
+        "right": "f5d03158ef356c3b2dd6cab66a37629b87175fc9df181101807ce35898b541fe",
+        "human": "cc46ede86a9ec1f3111c6de8435412ed776a77dd1bdd3f14303fefcf8725e710"
+      },
+      "base_definitions": 797,
+      "active_definitions": 848,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 29897,
+        "right_atoms": 29897,
+        "shared_atoms": 29897,
+        "left_only": {},
+        "right_only": {}
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 184,
+        "merge_ms": 79037,
+        "matcher_ns": 77297274333,
+        "pcs_ns": 1126256103,
+        "policy_ns": 7265188
+      }
+    },
+    {
+      "case_id": "3635635014",
+      "snapshot_id": "b1f12d633dd249e644a0205708e8c23898d990eb8eea8d43134ff78188ef61f7",
+      "relative_path": "common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+      "module_prefix": "common/scripted_triggers",
+      "content_family": "common/scripted_triggers",
+      "source_mod_ids": [
+        "2164202838",
+        "1596815683"
+      ],
+      "legacy_verdict": "diverges_ast",
+      "legacy_accepted": false,
+      "status": "semantic_mismatch",
+      "publishable": false,
+      "policies": {
+        "merge_key_source": "assignment_key",
+        "nested_merge_key_source": "assignment_key",
+        "scalar": "conflict",
+        "list": "union",
+        "one_sided_removal": "remove",
+        "block": "recursive",
+        "boolean": "and",
+        "block_patch": "boolean_or",
+        "named_container": "conflict",
+        "edit_wins_over_remove": false
+      },
+      "view_content_ids": {
+        "base": "40c4fac70c9c91f518b8f9d8a3b6e7a0e6f37ac17280bb1dc7fd156c9ca477dd",
+        "left": "3dd93c4ee4349fd2fae8c4059c10ea5f9e813cc9902519fb9761f3f349e032d4",
+        "right": "996746e01f918085b51ca19792c9705086c5931dfac8e353bba063b05c168b07",
+        "human": "943299fe6a0943af2f065fef7f9cf58185df4f2b806d5ecd2d68a74d76022363"
+      },
+      "base_definitions": 2507,
+      "active_definitions": 539,
+      "missing_top_level_keys": [],
+      "extra_top_level_keys": [],
+      "semantic_diff_from_human": {
+        "left_atoms": 24930,
+        "right_atoms": 24929,
+        "shared_atoms": 24929,
+        "left_only": {
+          "assignment:is_expanded_mod_active/assignment:has_global_flag=text:$mod$_expanded_mod_active": 1
+        },
+        "right_only": {}
+      },
+      "conflicts": [],
+      "diagnostics": [],
+      "timings": {
+        "view_ms": 52,
+        "merge_ms": 2683,
+        "matcher_ns": 2275817000,
+        "pcs_ns": 278459736,
+        "policy_ns": 1855556
+      }
+    }
+  ]
+}

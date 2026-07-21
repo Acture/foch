@@ -2,7 +2,12 @@ mod ast_adapter;
 mod merge;
 mod policy;
 
+pub use ast_adapter::AstAdapterError;
 pub(crate) use merge::merge_event_files;
+pub use merge::{
+	ClausewitzConflictSummary, ClausewitzMergeOutcome, ClausewitzMergeTimings,
+	merge_clausewitz_files,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum MergeKernelMode {

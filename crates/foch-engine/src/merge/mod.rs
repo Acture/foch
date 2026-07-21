@@ -24,4 +24,7 @@ pub(crate) use planning::{dag, patch_deps};
 pub use resolution::conflict_handler::{ConflictDecision, ConflictHandler, InteractiveCliHandler};
 pub use resolution::conflict_view::{CandidateView, ConflictView};
 pub(crate) use resolution::{conflict_handler, conflict_view, handler_registry};
-pub use structured::MergeKernelMode;
+pub use structured::{
+	AstAdapterError, ClausewitzConflictSummary, ClausewitzMergeOutcome, ClausewitzMergeTimings,
+	MergeKernelMode, merge_clausewitz_files,
+};

@@ -27,7 +27,9 @@ use foch_language::analyzer::content_family::{
 };
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, parse_clausewitz_file};
+use foch_language::analyzer::parser::{
+	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_file,
+};
 use foch_language::analyzer::semantic_index::parse_script_file;
 use regex::Regex;
 
@@ -1589,18 +1591,52 @@ pub fn semantic_atom_diff(
 	let ordering = ignore_order.then_some(AstOrderingPolicy::OrderInsensitive);
 	let left = semantic_atoms_for_path_with_ordering(rel, left, ordering)?;
 	let right = semantic_atoms_for_path_with_ordering(rel, right, ordering)?;
-	let left_atoms = bag_size(&left);
-	let right_atoms = bag_size(&right);
-	let shared_atoms = intersection_bag_size(&left, &right);
-	let left_only = subtract_bag(&left, &right).0;
-	let right_only = subtract_bag(&right, &left).0;
-	Some(SemanticAtomDiff {
+	Some(semantic_atom_bag_diff(&left, &right))
+}
+
+pub(crate) fn semantic_atom_diff_ast(left: &AstFile, right: &AstFile) -> SemanticAtomDiff {
+	semantic_atom_diff_statements(&left.statements, &right.statements)
+}
+
+pub(crate) fn semantic_atom_diff_statements(
+	left: &[AstStatement],
+	right: &[AstStatement],
+) -> SemanticAtomDiff {
+	let left_atoms = semantic_atom_bag_statements(left);
+	let right_atoms = semantic_atom_bag_statements(right);
+	semantic_atom_bag_diff(&left_atoms, &right_atoms)
+}
+
+pub(crate) fn semantic_ast_content_id(ast: &AstFile) -> String {
+	let atoms = semantic_atom_bag_statements(&ast.statements);
+	let encoded = serde_json::to_vec(&atoms).expect("semantic atom bag serializes");
+	blake3::hash(&encoded).to_hex().to_string()
+}
+
+fn semantic_atom_bag_statements(statements: &[AstStatement]) -> AtomBag {
+	let mut atoms = AtomBag::new();
+	flatten_semantic_statements(
+		statements,
+		AstOrderingPolicy::OrderInsensitive,
+		&[],
+		&mut atoms,
+	);
+	atoms
+}
+
+fn semantic_atom_bag_diff(left: &AtomBag, right: &AtomBag) -> SemanticAtomDiff {
+	let left_atoms = bag_size(left);
+	let right_atoms = bag_size(right);
+	let shared_atoms = intersection_bag_size(left, right);
+	let left_only = subtract_bag(left, right).0;
+	let right_only = subtract_bag(right, left).0;
+	SemanticAtomDiff {
 		left_atoms,
 		right_atoms,
 		shared_atoms,
 		left_only,
 		right_only,
-	})
+	}
 }
 
 /// Classify how the human compatch resolved every source that contributes a

@@ -104,11 +104,12 @@ branches inside matched events/options, so event control-flow identity is the
 next event-specific merge-quality target.
 
 An experimental structured-merge vertical slice now exists behind an engine
-API used only by `foch-mq shadow-compare`. A parser-independent kernel provides
+API used by the merge-quality probes. A parser-independent kernel provides
 verified tree matching, base-composed left/right correspondence, PCS ordering,
-provenance, and typed conflicts; the first Clausewitz adapter supports only
-ordinary event files with a non-empty vanilla base and exactly two final DAG
-sinks. Legacy and Structured run in isolated child processes and cache
+provenance, and typed conflicts. The Clausewitz adapter is format-generic, while
+the production final-join integration remains restricted to ordinary event
+files with a non-empty vanilla base and exactly two final DAG sinks. Legacy and
+Structured shadow arms run in isolated child processes and cache
 namespaces, and unsupported shapes fail explicitly before any winner-copy
 fallback. Shadow manifests bind executable, mod, retained vanilla, and base
 snapshot contents together with the effective `foch.toml` and external
@@ -146,6 +147,22 @@ took 54,270 ms versus Legacy's 51,229 ms (1.059x). The projection is 7 -> 8
 accepted overall and 7 -> 8 across the 21 non-GUI units, with no Legacy accepted
 unit lost and no terminal candidate failure. This validates Elections only;
 Structured remains globally disabled for the broader event family.
+
+The 2026-07-22 `foch-mq common-probe` run completed the first Common
+Applicability Gate over all 12 fixed `common/**` corpus units. The probe uses
+the provisional `common/<folder>` module boundary, applies each classified
+`ContentFamily` policy to one shared Structured implementation, and never
+publishes a generated mod. All 12 units reached a classified result with no
+unsupported, parse, configuration, or adapter failure; the previously accepted
+religions unit remained accepted. Two units (`common/religions` and
+`common/scripted_effects`) are order-insensitive AST equivalent, two require
+manual resolution, and eight are conflict-free semantic mismatches. Every
+candidate retains all human top-level definitions, so remaining failures are
+inside reducers, repeated-child identity, and control-flow semantics rather
+than filename layout. The run took 123,260 ms; `common/scripted_effects`
+accounted for 80,263 ms and shows that matcher cost, not materialization, is the
+remaining performance hotspot. See
+[`research/2026-07-22-common-applicability.md`](./research/2026-07-22-common-applicability.md).
 
 The shipped product surface includes:
 

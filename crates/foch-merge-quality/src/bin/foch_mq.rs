@@ -11,7 +11,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use foch_engine::MergeKernelMode;
 use foch_merge_quality::{
-	CmdResult, archive, config, corpus_shadow, fixtures, lifecycle, orchestrate, shadow, symbols,
+	CmdResult, archive, common_probe, config, corpus_shadow, fixtures, lifecycle, orchestrate,
+	shadow, symbols,
 };
 
 #[derive(Parser)]
@@ -205,6 +206,17 @@ enum Cmd {
 		force: bool,
 		#[arg(long)]
 		record: bool,
+	},
+	/// Test the provisional common/<folder> module boundary with Structured.
+	CommonProbe {
+		#[arg(long)]
+		out_dir: PathBuf,
+		/// Fixed per-unit corpus denominator and Legacy evidence.
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/legacy-baseline.json")
+		)]
+		legacy_baseline: PathBuf,
 	},
 	/// Execute one isolated shadow-comparison arm.
 	#[command(hide = true)]
@@ -557,6 +569,22 @@ fn main() -> CmdResult {
 					candidates: &candidates,
 				},
 				expect_multi_source_units,
+			)?;
+			println!("{}", serde_json::to_string_pretty(&report.summary)?);
+			Ok(())
+		}
+		Cmd::CommonProbe {
+			out_dir,
+			legacy_baseline,
+		} => {
+			let game = discover_game(&game_root, &steam_root)?;
+			let report = common_probe::run_common_applicability_probe(
+				&common_probe::CommonApplicabilityOptions {
+					dataset_root: &dataset_root,
+					output_dir: &out_dir,
+					legacy_baseline: &legacy_baseline,
+					game: &game,
+				},
 			)?;
 			println!("{}", serde_json::to_string_pretty(&report.summary)?);
 			Ok(())

@@ -14,9 +14,9 @@ pub(crate) trait ClausewitzTreePolicy {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct EventTreePolicy;
+pub(crate) struct DefaultClausewitzTreePolicy;
 
-impl ClausewitzTreePolicy for EventTreePolicy {
+impl ClausewitzTreePolicy for DefaultClausewitzTreePolicy {
 	fn assignment_anchor(&self, key: &str, value: &AstValue) -> Option<SemanticKey> {
 		match key {
 			"country_event" | "province_event" => scalar_field(value, "id").map(|id| {

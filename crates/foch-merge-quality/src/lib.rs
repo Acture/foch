@@ -17,6 +17,7 @@
 //! runs over the committed fixtures / a local workshop directory.
 
 pub mod archive;
+pub mod common_probe;
 pub mod config;
 pub mod corpus;
 pub mod corpus_shadow;

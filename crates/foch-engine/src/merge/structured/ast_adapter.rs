@@ -26,7 +26,7 @@ const NUMBER_KIND: &str = "clausewitz.scalar.number";
 const BOOL_KIND: &str = "clausewitz.scalar.bool";
 
 #[derive(Debug)]
-pub(crate) enum AstAdapterError {
+pub enum AstAdapterError {
 	Kernel(TreeError),
 	InvalidTree(String),
 }

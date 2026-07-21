@@ -245,10 +245,10 @@ pub struct CorpusShadowReport {
 	pub summary: CorpusShadowSummary,
 }
 
-struct LoadedSnapshot {
-	snapshot: SnapshotRecord,
-	compatch: PathBuf,
-	source_dirs: Vec<PathBuf>,
+pub(crate) struct LoadedSnapshot {
+	pub(crate) snapshot: SnapshotRecord,
+	pub(crate) compatch: PathBuf,
+	pub(crate) source_dirs: Vec<PathBuf>,
 }
 
 struct TargetIdentity<'a> {
@@ -660,7 +660,7 @@ fn validate_options(options: &CorpusShadowOptions<'_>) -> Result<(), Box<dyn std
 	Ok(())
 }
 
-fn validate_snapshot_game(
+pub(crate) fn validate_snapshot_game(
 	snapshot: &SnapshotRecord,
 	game: &Eu4GameDiscovery,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -681,7 +681,7 @@ fn validate_snapshot_game(
 	Ok(())
 }
 
-fn load_snapshot(
+pub(crate) fn load_snapshot(
 	store: &ObjectStore,
 	snapshot: SnapshotRecord,
 	verified: &mut HashSet<String>,
@@ -1384,7 +1384,7 @@ fn outcome_name(outcome: CorpusShadowOutcome) -> &'static str {
 	}
 }
 
-fn latest_snapshots(paths: &DatasetPaths) -> io::Result<Vec<SnapshotRecord>> {
+pub(crate) fn latest_snapshots(paths: &DatasetPaths) -> io::Result<Vec<SnapshotRecord>> {
 	let snapshots = read_jsonl::<SnapshotRecord>(&paths.snapshots)?;
 	let observations = read_jsonl::<ObservationRecord>(&paths.observations)?;
 	let mut observed_at = HashMap::new();

@@ -9,29 +9,60 @@ use foch_merge_kernel::{
 };
 
 use super::ast_adapter::{AstAdapterError, denormalize_ast, normalize_ast};
-use super::policy::EventTreePolicy;
+use super::policy::DefaultClausewitzTreePolicy;
 
 #[derive(Clone, Debug)]
-pub(crate) struct ClausewitzMergeOutcome {
+pub struct ClausewitzMergeOutcome {
 	tentative_ast: AstFile,
 	kernel: MergeOutcome,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClausewitzConflictSummary {
+	pub kind: &'static str,
+	pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClausewitzMergeTimings {
+	pub matcher_ns: u64,
+	pub pcs_ns: u64,
+	pub policy_ns: u64,
+}
+
 impl ClausewitzMergeOutcome {
-	pub(crate) fn conflicts(&self) -> &[StructuralConflict] {
+	pub fn conflicts(&self) -> &[StructuralConflict] {
 		&self.kernel.conflicts
 	}
 
-	pub(crate) fn resolved_ast(&self) -> Option<&AstFile> {
+	pub fn resolved_ast(&self) -> Option<&AstFile> {
 		self.kernel
 			.conflicts
 			.is_empty()
 			.then_some(&self.tentative_ast)
 	}
 
-	#[cfg(test)]
-	pub(crate) fn tentative_ast(&self) -> &AstFile {
+	pub fn tentative_ast(&self) -> &AstFile {
 		&self.tentative_ast
+	}
+
+	pub fn conflict_summaries(&self) -> Vec<ClausewitzConflictSummary> {
+		self.kernel
+			.conflicts
+			.iter()
+			.map(|conflict| ClausewitzConflictSummary {
+				kind: conflict_kind_name(conflict.kind),
+				detail: conflict.detail.clone(),
+			})
+			.collect()
+	}
+
+	pub fn timings(&self) -> ClausewitzMergeTimings {
+		ClausewitzMergeTimings {
+			matcher_ns: self.kernel.timings.matcher_ns,
+			pcs_ns: self.kernel.timings.pcs_ns,
+			policy_ns: self.kernel.timings.policy_ns,
+		}
 	}
 
 	#[cfg(test)]
@@ -40,20 +71,56 @@ impl ClausewitzMergeOutcome {
 	}
 }
 
+fn conflict_kind_name(kind: ConflictKind) -> &'static str {
+	match kind {
+		ConflictKind::AmbiguousMatch => "ambiguous_match",
+		ConflictKind::InsertInsert => "insert_insert",
+		ConflictKind::DeleteModify => "delete_modify",
+		ConflictKind::MoveMove => "move_move",
+		ConflictKind::Ordering => "ordering",
+		ConflictKind::ValueSlot => "value_slot",
+		ConflictKind::DuplicateSignature => "duplicate_signature",
+		ConflictKind::Policy => "policy",
+	}
+}
+
+/// Merge three parseable Clausewitz ASTs without content-family-specific
+/// post-processing. The caller owns merge-unit construction and publication.
+pub fn merge_clausewitz_files(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
+	merge_clausewitz_files_inner(base, left, right, policies, false)
+}
+
 pub(crate) fn merge_event_files(
 	base: &AstFile,
 	left: &AstFile,
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	let policy = EventTreePolicy;
+	merge_clausewitz_files_inner(base, left, right, policies, true)
+}
+
+fn merge_clausewitz_files_inner(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+	reduce_event_fallbacks: bool,
+) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
+	let policy = DefaultClausewitzTreePolicy;
 	let base_tree = normalize_ast(base, &policy)?;
 	let left_tree = normalize_ast(left, &policy)?;
 	let right_tree = normalize_ast(right, &policy)?;
-	let kernel_policy = EventMergePolicy { policies };
+	let kernel_policy = ClausewitzMergePolicy { policies };
 	let kernel = three_way_merge_with_policy(&base_tree, &left_tree, &right_tree, &kernel_policy);
 	let mut tentative_ast = denormalize_ast(base.path.clone(), kernel.tentative_tree())?;
-	reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
+	if reduce_event_fallbacks {
+		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
+	}
 	Ok(ClausewitzMergeOutcome {
 		tentative_ast,
 		kernel,
@@ -189,11 +256,11 @@ fn is_empty_ruler_fallback(statement: &AstStatement) -> bool {
 			.all(|item| matches!(item, AstStatement::Comment { .. }))
 }
 
-struct EventMergePolicy<'a> {
+struct ClausewitzMergePolicy<'a> {
 	policies: &'a MergePolicies,
 }
 
-impl MergePolicy for EventMergePolicy<'_> {
+impl MergePolicy for ClausewitzMergePolicy<'_> {
 	fn resolve_delete_unchanged(&self, context: DeleteUnchangedContext<'_>) -> PolicyDecision {
 		let scripted_hook_from_missing_container = context
 			.base
