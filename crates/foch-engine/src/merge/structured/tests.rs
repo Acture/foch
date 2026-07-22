@@ -978,6 +978,59 @@ fn event_merge_combines_hooks_boolean_replacements_and_union_safe_chains() {
 }
 
 #[test]
+fn event_merge_matches_replaced_open_chains_by_parent_position() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_government_attribute = republican_virtues } define_ruler = { change_adm = 1 } }\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t\tif = { limit = { has_country_flag = old_candidate_flag } add_estate_loyalty = 5 }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tge_marker = yes\n\
+		\t\tif = { limit = { has_government_attribute = republican_virtues } define_ruler = { change_adm = 1 } }\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t\tif = { limit = { has_country_flag = old_candidate_flag } add_estate_loyalty = 5 }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = upgraded_candidate_flag } define_ruler = { change_mil = 1 } }\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t\tif = { limit = { has_saved_event_target = spread_target } add_province_modifier = support }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge positionally corresponding open chains");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("publishable event AST"));
+	for retained in [
+		"ge_marker = yes",
+		"has_government_attribute = republican_virtues",
+		"has_country_flag = upgraded_candidate_flag",
+		"has_saved_event_target = spread_target",
+	] {
+		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
+	}
+	assert!(!output.contains("old_candidate_flag"), "{output}");
+}
+
+#[test]
 fn event_merge_does_not_union_exclusive_constructor_chains() {
 	let base = parse(
 		"country_event = {\n\

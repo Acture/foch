@@ -120,16 +120,19 @@ fn normalize_statements(
 	let mut children = Vec::with_capacity(statements.len());
 	let mut scalar_item_occurrences = BTreeMap::new();
 	let mut numeric_item_position = 0;
+	let mut control_flow_chain_position = 0;
 	let mut index = 0;
 	while index < statements.len() {
 		if super::control_flow::starts_chain(&statements[index]) {
 			let (chain, next) = super::control_flow::normalize_chain(
 				statements,
 				index,
+				control_flow_chain_position,
 				policy,
 				control_flow_findings,
 			)?;
 			children.push(chain);
+			control_flow_chain_position += 1;
 			index = next;
 		} else {
 			let item_anchor = scalar_item_anchor(

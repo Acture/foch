@@ -430,12 +430,13 @@ pub(super) fn starts_chain(statement: &AstStatement) -> bool {
 pub(super) fn normalize_chain(
 	statements: &[AstStatement],
 	start: usize,
+	position: usize,
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<(TreeNode, usize), AstAdapterError> {
 	let opaque_next = opaque_chain_end(statements, start);
 	let mut semantic_findings = Vec::new();
-	match normalize_chain_semantic(statements, start, policy, &mut semantic_findings) {
+	match normalize_chain_semantic(statements, start, position, policy, &mut semantic_findings) {
 		Ok(chain) => {
 			control_flow_findings.append(&mut semantic_findings);
 			Ok(chain)
@@ -471,6 +472,7 @@ pub(super) fn normalize_chain(
 fn normalize_chain_semantic(
 	statements: &[AstStatement],
 	start: usize,
+	position: usize,
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<(TreeNode, usize), AstAdapterError> {
@@ -631,12 +633,20 @@ fn normalize_chain_semantic(
 		if exclusive { "exclusive:" } else { "" },
 		if complete { "complete" } else { "open" }
 	);
+	let anchor = if complete || exclusive {
+		identity.as_ref().map(|identity| {
+			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
+		})
+	} else {
+		Some(SemanticKey::parent_scoped(
+			"clausewitz.control_flow.chain.position",
+			position.to_string(),
+		))
+	};
 	let mut chain = branch(
 		&chain_kind,
 		None,
-		identity.as_ref().map(|identity| {
-			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
-		}),
+		anchor,
 		ChildOrder::Ordered,
 		ChildCardinality::Many,
 		children,
