@@ -370,6 +370,7 @@ impl GuardAtoms {
 struct RawCase {
 	guard: Option<Formula>,
 	effect_items: Vec<AstStatement>,
+	contains_default: bool,
 	leading_comments: Vec<AstStatement>,
 	original_index: usize,
 }
@@ -392,7 +393,7 @@ pub(super) fn orphan_paths(statements: &[AstStatement]) -> Vec<String> {
 }
 
 fn collect_orphan_paths(statements: &[AstStatement], path: &str, paths: &mut Vec<String>) {
-	let mut previous_control = None;
+	let mut branch_stack = Vec::new();
 	let mut key_counts = BTreeMap::<&str, usize>::new();
 	for statement in statements {
 		let AstStatement::Assignment { key, value, .. } = statement else {
@@ -402,25 +403,39 @@ fn collect_orphan_paths(statements: &[AstStatement], path: &str, paths: &mut Vec
 		let current_path = format!("{path}/{key}[{index}]");
 		*index += 1;
 		match branch_key(statement) {
-			Some("if") => previous_control = Some("if"),
+			Some("if") => branch_stack.push(()),
 			Some("else_if") => {
-				if !matches!(previous_control, Some("if" | "else_if")) {
+				if branch_stack.is_empty() {
 					paths.push(current_path.clone());
 				}
-				previous_control = Some("else_if");
+				if !has_limit_assignment(statement) {
+					branch_stack.pop();
+				}
 			}
 			Some("else") => {
-				if !matches!(previous_control, Some("if" | "else_if")) {
+				if branch_stack.pop().is_none() {
 					paths.push(current_path.clone());
 				}
-				previous_control = None;
 			}
-			_ => previous_control = None,
+			_ => branch_stack.clear(),
 		}
 		if let AstValue::Block { items, .. } = value {
 			collect_orphan_paths(items, &current_path, paths);
 		}
 	}
+}
+
+fn has_limit_assignment(statement: &AstStatement) -> bool {
+	let AstStatement::Assignment {
+		value: AstValue::Block { items, .. },
+		..
+	} = statement
+	else {
+		return false;
+	};
+	items
+		.iter()
+		.any(|item| assignment_key(item) == Some("limit"))
 }
 
 pub(super) fn branch_key(statement: &AstStatement) -> Option<&str> {
@@ -492,7 +507,8 @@ fn normalize_chain_semantic(
 	let (raw_cases, next, complete) = extract_raw_cases(statements, start, &mut atoms)?;
 	let mut seen_guards = BTreeSet::new();
 	for case in &raw_cases {
-		if let Some(guard) = &case.guard
+		if !case.contains_default
+			&& let Some(guard) = &case.guard
 			&& !seen_guards.insert(guard.key())
 		{
 			return Err(AstAdapterError::DuplicateControlFlowGuard(guard.key()));
@@ -502,7 +518,7 @@ fn normalize_chain_semantic(
 	let mut coverage = Formula::false_value();
 	let mut cases_by_effect: BTreeMap<String, Case> = BTreeMap::new();
 	for raw in raw_cases {
-		let contains_default = raw.guard.is_none();
+		let contains_default = raw.contains_default;
 		let effective_guard = match &raw.guard {
 			Some(guard) => guard.and(&coverage.not()?)?,
 			None => coverage.not()?,
@@ -743,49 +759,56 @@ fn extract_raw_cases(
 				"`{key}` branch is not a block"
 			)));
 		};
-		let (guard, effect_items) = if key == "else" {
+		let (guard, effect_items, contains_default) = if key == "else" {
 			complete = true;
-			(None, items.clone())
+			(None, items.clone(), true)
 		} else {
 			let limits = items
 				.iter()
 				.enumerate()
 				.filter(|(_, item)| assignment_key(item) == Some("limit"))
 				.collect::<Vec<_>>();
-			let [
-				(
-					limit_index,
-					AstStatement::Assignment {
-						value: AstValue::Block {
-							items: limit_items, ..
+			match limits.as_slice() {
+				[] => {
+					complete = true;
+					(Some(Formula::true_value()), items.clone(), true)
+				}
+				[
+					(
+						limit_index,
+						AstStatement::Assignment {
+							value: AstValue::Block {
+								items: limit_items, ..
+							},
+							..
 						},
-						..
-					},
+					),
+				] => (
+					Some(atoms.formula_for_items(limit_items, &[])?),
+					items
+						.iter()
+						.enumerate()
+						.filter(|(index, _)| *index != *limit_index)
+						.map(|(_, item)| item.clone())
+						.collect(),
+					false,
 				),
-			] = limits.as_slice()
-			else {
-				return Err(AstAdapterError::UnprovableControlFlow(format!(
-					"`{key}` branch requires exactly one block `limit`"
-				)));
-			};
-			(
-				Some(atoms.formula_for_items(limit_items, &[])?),
-				items
-					.iter()
-					.enumerate()
-					.filter(|(index, _)| *index != *limit_index)
-					.map(|(_, item)| item.clone())
-					.collect(),
-			)
+				_ => {
+					return Err(AstAdapterError::UnprovableControlFlow(format!(
+						"`{key}` branch has multiple or non-block `limit` assignments"
+					)));
+				}
+			}
 		};
 		cases.push(RawCase {
 			guard,
 			effect_items,
+			contains_default,
 			leading_comments: std::mem::take(&mut leading_comments),
 			original_index: cases.len(),
 		});
 		cursor += 1;
-		if complete {
+		if key == "else" {
 			break;
 		}
 
@@ -1484,7 +1507,7 @@ mod tests {
 	}
 
 	#[test]
-	fn preserves_guardless_branches_but_withholds_publication() {
+	fn preserves_guardless_branches_without_false_conflicts() {
 		let source = parse(
 			"coal = { trigger = {\n\
 			\tif = { add_prestige = 1 }\n\
@@ -1496,13 +1519,47 @@ mod tests {
 			.expect("guardless branches remain inspectable");
 
 		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
-		assert!(outcome.resolved_ast().is_none());
-		assert!(outcome.conflicts().iter().any(|conflict| {
-			conflict.kind == ConflictKind::Policy
-				&& conflict
-					.detail
-					.contains("requires exactly one block `limit`")
-		}));
+		assert_eq!(outcome.resolved_ast().map(emit), Some(emit(&source)));
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	}
+
+	#[test]
+	fn treats_terminal_guardless_else_if_as_the_default_branch() {
+		let source = parse(
+			"coal = { trigger = {\n\
+			\tif = { limit = { has_country_flag = selected } add_prestige = 1 }\n\
+			\telse_if = { add_stability = 1 }\n\
+			} }\n",
+		);
+
+		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
+			.expect("guardless else-if is a valid fallback");
+
+		let resolved = outcome.resolved_ast().expect("publish valid fallback");
+		let output = emit(resolved);
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		assert!(output.contains("add_prestige = 1"), "{output}");
+		assert!(output.contains("add_stability = 1"), "{output}");
+		assert!(output.contains("else ="), "{output}");
+	}
+
+	#[test]
+	fn pairs_stacked_sibling_branches_in_lifo_order() {
+		let source = parse(
+			"coal = { trigger = {\n\
+			\tif = { limit = { has_country_flag = outer } add_prestige = 1 }\n\
+			\tif = { limit = { has_country_flag = inner } add_stability = 1 }\n\
+			\telse = { add_stability = -1 }\n\
+			\telse = { add_prestige = -1 }\n\
+			} }\n",
+		);
+
+		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
+			.expect("stacked sibling branches remain inspectable");
+
+		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
+		assert_eq!(outcome.resolved_ast().map(emit), Some(emit(&source)));
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
 	}
 
 	#[test]

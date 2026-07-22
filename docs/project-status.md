@@ -172,6 +172,16 @@ and four are conflict-free semantic mismatches. The release-mode run took
 matcher-dominated hotspot. See
 [`research/2026-07-22-common-applicability.md`](./research/2026-07-22-common-applicability.md).
 
+A focused 2026-07-23 rerun of case `3635635014` now classifies
+`common/scripted_effects` as `accepted_equivalent`. Block-valued sibling
+`if`/`else` branches are paired with a LIFO stack, while a branch without a
+`limit` is modeled as an unconditional fallback instead of a structural error.
+The candidate and human module share all 28,066 semantic atoms with zero
+one-sided atoms and no conflicts. This establishes the focused 6/12 -> 7/12
+Common delta only; the 12-unit Common gate and 36-unit shadow projection have
+not been rerun, so the published 12/36 and 12/21 projections below remain the
+current full-corpus numbers.
+
 The corresponding production shadow run evaluated those 12 common units plus
 Elections while retaining Legacy for the other 23 scorer units. Outcomes were
 5 improved, 0 regressed, 1 unchanged accepted, 4 review, 2 structured conflict,
