@@ -812,6 +812,7 @@ fn materialize_cross_file_module(
 		mod_dag,
 		ignore_replace_path,
 		dep_overrides,
+		options.merge_kernel,
 	) {
 		Ok(views) => views,
 		Err(reason) => {
@@ -1324,50 +1325,95 @@ fn validate_structured_merge_entry(
 	contributors: Option<&[ResolvedFileContributor]>,
 	profile: &dyn GameProfile,
 ) -> Result<(), MergeError> {
-	if !matches!(entry.target, MergePlanTarget::File { .. }) {
-		return Err(structured_merge_unsupported(
-			entry,
-			"the first slice does not support definition modules",
-		));
-	}
-	let contributors = contributors.ok_or_else(|| {
-		structured_merge_unsupported(entry, "the merge unit has no file contributors")
-	})?;
-	if !contributors
-		.iter()
-		.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
-	{
-		return Err(structured_merge_unsupported(
-			entry,
-			"a real vanilla file is required as the three-way base",
-		));
-	}
-	let source_mod_count = contributors
-		.iter()
-		.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
-		.count();
-	if source_mod_count < 2 {
-		return Err(structured_merge_unsupported(
-			entry,
-			"at least two source mods are required",
-		));
-	}
 	let descriptor = profile
 		.classify_content_family(Path::new(entry.output_path()))
 		.ok_or_else(|| {
 			structured_merge_unsupported(entry, "the path has no ContentFamily descriptor")
 		})?;
-	if descriptor.id.as_str() != "events" {
+	if !descriptor.capabilities.merge_ready {
 		return Err(structured_merge_unsupported(
 			entry,
-			"the first slice only supports the events content family",
+			"the ContentFamily is not marked merge-ready",
 		));
 	}
-	if descriptor.merge_key_source.is_none() {
-		return Err(structured_merge_unsupported(
-			entry,
-			"the events family has no merge-key contract",
-		));
+
+	match &entry.target {
+		MergePlanTarget::File { .. } => {
+			let contributors = contributors.ok_or_else(|| {
+				structured_merge_unsupported(entry, "the merge unit has no file contributors")
+			})?;
+			if !contributors
+				.iter()
+				.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
+			{
+				return Err(structured_merge_unsupported(
+					entry,
+					"a real vanilla file is required as the three-way base",
+				));
+			}
+			let source_mods = contributors
+				.iter()
+				.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
+				.map(|contributor| contributor.mod_id.as_str())
+				.collect::<BTreeSet<_>>();
+			if source_mods.len() < 2 {
+				return Err(structured_merge_unsupported(
+					entry,
+					"at least two source mods are required",
+				));
+			}
+			if descriptor.id.as_str() != "events" {
+				return Err(structured_merge_unsupported(
+					entry,
+					"structured file merge only supports the events content family",
+				));
+			}
+			if descriptor.merge_key_source.is_none() {
+				return Err(structured_merge_unsupported(
+					entry,
+					"the events family has no merge-key contract",
+				));
+			}
+		}
+		MergePlanTarget::Module { .. } => {
+			if !matches!(
+				descriptor.load_policy,
+				ContentLoadPolicy::DefinitionModule(_)
+			) {
+				return Err(structured_merge_unsupported(
+					entry,
+					"the target is not a definition module",
+				));
+			}
+			if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
+				return Err(structured_merge_unsupported(
+					entry,
+					"definition-module merge requires assignment-key merge units",
+				));
+			}
+			if !entry
+				.contributors
+				.iter()
+				.any(|contributor| contributor.is_base_game)
+			{
+				return Err(structured_merge_unsupported(
+					entry,
+					"a vanilla definition module is required as the three-way base",
+				));
+			}
+			let source_mods = entry
+				.contributors
+				.iter()
+				.filter(|contributor| !contributor.is_base_game)
+				.map(|contributor| contributor.mod_id.as_str())
+				.collect::<BTreeSet<_>>();
+			if source_mods.len() < 2 {
+				return Err(structured_merge_unsupported(
+					entry,
+					"at least two source mods are required",
+				));
+			}
+		}
 	}
 	Ok(())
 }
@@ -1389,23 +1435,18 @@ fn validate_structured_plan_selection(
 			.paths
 			.iter()
 			.find(|entry| {
-				entry
-					.target
-					.input_paths()
-					.iter()
-					.any(|path| path == &normalized)
+				entry.output_path() == normalized
+					|| entry
+						.target
+						.input_paths()
+						.iter()
+						.any(|path| path == &normalized)
 			})
 			.ok_or_else(|| MergeError::Validation {
 				path: Some(normalized.clone()),
 				message: "structured merge unsupported: retained path has no merge-plan unit"
 					.to_string(),
 			})?;
-		if !matches!(entry.target, MergePlanTarget::File { .. }) {
-			return Err(structured_merge_unsupported(
-				entry,
-				"the first slice does not support definition modules",
-			));
-		}
 		if entry.strategy != MergePlanStrategy::StructuralMerge {
 			return Err(structured_merge_unsupported(
 				entry,
@@ -1703,7 +1744,7 @@ mod tests {
 	use foch_core::model::{
 		HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 		MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult,
-		MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportStatus,
+		MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportStatus, MergeUnitId,
 	};
 	use foch_language::analyzer::content_family::{ContentFamilyDescriptor, MergeKeySource};
 	use foch_language::analyzer::parser::{AstStatement, parse_clausewitz_content};
@@ -1864,6 +1905,88 @@ mod tests {
 
 		assert!(pending.is_empty());
 		assert_eq!(report.copied_file_count, 0);
+	}
+
+	#[test]
+	fn structured_validation_accepts_an_explicit_definition_module() {
+		let entry = structured_definition_module_entry(true);
+		let plan = MergePlanResult {
+			paths: vec![entry.clone()],
+			..MergePlanResult::default()
+		};
+		let retained =
+			BTreeSet::from(["common/institutions/zzz_foch_institutions.txt".to_string()]);
+
+		super::validate_structured_plan_selection(&plan, Some(&retained))
+			.expect("select definition module");
+		super::validate_structured_merge_entry(
+			&entry,
+			None,
+			foch_language::analyzer::eu4_profile::eu4_profile(),
+		)
+		.expect("validate definition module");
+	}
+
+	#[test]
+	fn structured_definition_module_requires_a_vanilla_base() {
+		let entry = structured_definition_module_entry(false);
+
+		let error = super::validate_structured_merge_entry(
+			&entry,
+			None,
+			foch_language::analyzer::eu4_profile::eu4_profile(),
+		)
+		.expect_err("module without vanilla must be rejected");
+
+		assert!(error.to_string().contains("vanilla definition module"));
+	}
+
+	fn structured_definition_module_entry(include_base: bool) -> MergePlanEntry {
+		let mut contributors = [
+			("left", "common/institutions/left.txt", 1, false),
+			("right", "common/institutions/right.txt", 2, false),
+		]
+		.into_iter()
+		.map(
+			|(mod_id, source_path, precedence, is_base_game)| MergePlanContributor {
+				mod_id: mod_id.to_string(),
+				source_path: source_path.to_string(),
+				precedence,
+				is_base_game,
+			},
+		)
+		.collect::<Vec<_>>();
+		if include_base {
+			contributors.insert(
+				0,
+				MergePlanContributor {
+					mod_id: "__game__".to_string(),
+					source_path: "common/institutions/00_core.txt".to_string(),
+					precedence: 0,
+					is_base_game: true,
+				},
+			);
+		}
+		MergePlanEntry {
+			target: MergePlanTarget::Module {
+				id: MergeUnitId {
+					family_id: "institutions".to_string(),
+					module_name: "institutions".to_string(),
+				},
+				input_paths: vec![
+					"common/institutions/00_core.txt".to_string(),
+					"common/institutions/left.txt".to_string(),
+					"common/institutions/right.txt".to_string(),
+				],
+				output_path: "common/institutions/zzz_foch_institutions.txt".to_string(),
+				replace_prefix: None,
+			},
+			strategy: MergePlanStrategy::StructuralMerge,
+			contributors,
+			winner: None,
+			generated: false,
+			notes: Vec::new(),
+		}
 	}
 
 	fn test_contributor(

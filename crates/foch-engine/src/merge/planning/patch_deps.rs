@@ -25,7 +25,9 @@ use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
 use crate::cache::{DagBaseCache, ModDiffCache};
-use crate::merge::structured::{MergeKernelMode, merge_event_files};
+use crate::merge::structured::{
+	MergeKernelMode, merge_clausewitz_definition_module, merge_event_files,
+};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
@@ -1098,7 +1100,7 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 		}
 	};
 	if kernel == MergeKernelMode::Structured && join_scope == BranchJoinScope::Final {
-		return merge_structured_final_event_join(StructuredFinalJoinArgs {
+		return merge_structured_final_join(StructuredFinalJoinArgs {
 			branch_ids,
 			node_states,
 			shared_view: &shared_view,
@@ -1211,7 +1213,7 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 	})
 }
 
-fn merge_structured_final_event_join(
+fn merge_structured_final_join(
 	args: StructuredFinalJoinArgs<'_>,
 ) -> Result<MergedBranches, String> {
 	let StructuredFinalJoinArgs {
@@ -1231,12 +1233,7 @@ fn merge_structured_final_event_join(
 			branch_ids.len()
 		));
 	}
-	if template.is_none_or(|file| file.file_kind.as_str() != "events") {
-		return Err(format!(
-			"structured merge unsupported for {}: the first slice only supports the events content family",
-			file_dag.file_path()
-		));
-	}
+	let is_event = template.is_some_and(|file| file.file_kind.as_str() == "events");
 	if !has_vanilla_base || shared_view.statements.is_empty() {
 		return Err(format!(
 			"structured merge unsupported for {}: a non-empty vanilla base is required",
@@ -1295,21 +1292,47 @@ fn merge_structured_final_event_join(
 		path,
 		statements: right.source_statements.clone(),
 	};
-	let outcome = merge_event_files(&base_ast, &left_ast, &right_ast, policies)
-		.map_err(|error| format!("structured merge adapter failed: {error}"))?;
-	if !outcome.conflicts().is_empty() {
-		let conflicts = serde_json::to_string(outcome.conflicts())
-			.unwrap_or_else(|_| format!("{:?}", outcome.conflicts()));
-		return Err(format!(
-			"structured merge conflict for {}: {conflicts}",
-			file_dag.file_path()
-		));
-	}
-	let statements = outcome
-		.resolved_ast()
-		.expect("conflict-free structured outcome exposes an AST")
-		.statements
-		.clone();
+	let statements = if is_event {
+		let outcome = merge_event_files(&base_ast, &left_ast, &right_ast, policies)
+			.map_err(|error| format!("structured merge adapter failed: {error}"))?;
+		if !outcome.conflicts().is_empty() {
+			let conflicts = serde_json::to_string(outcome.conflicts())
+				.unwrap_or_else(|_| format!("{:?}", outcome.conflicts()));
+			return Err(format!(
+				"structured merge conflict for {}: {conflicts}",
+				file_dag.file_path()
+			));
+		}
+		outcome
+			.resolved_ast()
+			.expect("conflict-free structured event outcome exposes an AST")
+			.statements
+			.clone()
+	} else {
+		let outcome =
+			merge_clausewitz_definition_module(&base_ast, &left_ast, &right_ast, policies)
+				.map_err(|error| format!("structured module adapter failed: {error}"))?;
+		eprintln!(
+			"[structured-module] final join {} base_definitions={} active_definitions={} copy_through_definitions={} structured_definitions={}",
+			file_dag.file_path(),
+			outcome.base_definitions(),
+			outcome.active_definitions(),
+			outcome.copy_through_definitions(),
+			outcome.structured_definitions(),
+		);
+		if !outcome.conflicts().is_empty() {
+			return Err(format!(
+				"structured merge conflict for {}: {:?}",
+				file_dag.file_path(),
+				outcome.conflicts(),
+			));
+		}
+		outcome
+			.resolved_ast()
+			.expect("conflict-free structured module outcome exposes an AST")
+			.statements
+			.clone()
+	};
 	Ok(MergedBranches {
 		statements,
 		intent_only_patches: Vec::new(),
@@ -2307,6 +2330,25 @@ mod tests {
 		}
 	}
 
+	fn parsed_definition_module_file(mod_id: &str, source: &str) -> ParsedScriptFile {
+		let path = PathBuf::from("common/institutions/zzz_foch_institutions.txt");
+		let parsed =
+			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		ParsedScriptFile {
+			mod_id: mod_id.to_string(),
+			path: path.clone(),
+			relative_path: path,
+			content_family: None,
+			file_kind: CwtType::new("institutions"),
+			module_name: "institutions".to_string(),
+			ast: parsed.ast,
+			source: source.to_string(),
+			parse_issues: Vec::new(),
+			parse_cache_hit: false,
+		}
+	}
+
 	fn compute_structured_event_join(
 		vanilla_source: Option<&str>,
 		left_source: &str,
@@ -2340,6 +2382,52 @@ mod tests {
 			vanilla.as_ref(),
 			&inventory,
 			descriptor.merge_key_source.expect("events merge key"),
+			&descriptor.merge_policies,
+			&mut handler,
+			MergeKernelMode::Structured,
+		)
+	}
+
+	fn compute_structured_definition_module_join(
+		vanilla_source: &str,
+		left_source: &str,
+		right_source: &str,
+	) -> Result<DagPatchComputation, String> {
+		let path = "common/institutions/zzz_foch_institutions.txt";
+		let mods = vec![
+			mod_with("left", "Left", vec![], vec![]),
+			mod_with("right", "Right", vec![], vec![]),
+		];
+		let contributors = vec![file_contributor("left", 0), file_contributor("right", 1)];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			path,
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let vanilla = parsed_definition_module_file("__game__", vanilla_source);
+		let inventory = HashMap::from([
+			(
+				mid("left"),
+				parsed_definition_module_file("left", left_source),
+			),
+			(
+				mid("right"),
+				parsed_definition_module_file("right", right_source),
+			),
+		]);
+		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+			.classify_content_family(Path::new(path))
+			.expect("institutions content family");
+		let mut handler = DeferHandler;
+		compute_dag_patches_from_parsed_with_kernel(
+			&file_dag,
+			Some(&vanilla),
+			&inventory,
+			descriptor.merge_key_source.expect("institutions merge key"),
 			&descriptor.merge_policies,
 			&mut handler,
 			MergeKernelMode::Structured,
@@ -2548,6 +2636,26 @@ mod tests {
 			\t}\n\
 			}\n"
 		);
+	}
+
+	#[test]
+	fn structured_kernel_runs_at_the_two_sink_definition_module_final_join() {
+		let base = "institution = { can_embrace = { OR = { trade_goods = ivory trade_goods = cloves } } }\n";
+		let right =
+			"institution = { can_embrace = { OR = { trade_goods = ivory trade_goods = fur } } }\n";
+
+		let result = compute_structured_definition_module_join(base, base, right)
+			.expect("structured definition-module final join");
+		let emitted = crate::emit::emit_clausewitz_statements(&result.merged_statements)
+			.expect("emit merged definition module");
+
+		assert!(result.merge_result.conflicts.is_empty());
+		for trade_good in ["ivory", "cloves", "fur"] {
+			assert!(
+				emitted.contains(&format!("trade_goods = {trade_good}")),
+				"{emitted}"
+			);
+		}
 	}
 
 	#[test]

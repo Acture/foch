@@ -1198,6 +1198,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.merge_key(MergeKeySource::AssignmentKey)
 				.scalar_reducer_rules(TRADEGOODS_SCALAR_REDUCER_RULES)
 				.list_policy(ListMergePolicy::Replace)
+				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveIfParentSurvives)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/tradenodes", "common/tradenodes/")
 				.module_name(ModuleNameRule::Static("tradenodes"))
@@ -1469,6 +1470,10 @@ mod tests {
 		let policies = &descriptor.merge_policies;
 
 		assert_eq!(policies.scalar, ScalarMergePolicy::Conflict);
+		assert_eq!(
+			policies.one_sided_removal,
+			OneSidedRemovalPolicy::PreserveIfParentSurvives
+		);
 		assert_eq!(
 			policies
 				.scalar_reducer_rule_for_path(&["cloves", "global_colonial_growth"])

@@ -5,12 +5,13 @@ use foch_core::config::DepOverride;
 use foch_core::model::{MergePlanEntry, MergePlanTarget};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
-	MergeKeySource,
+	DuplicateDefinitionPolicy, MergeKeySource,
 };
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
+use crate::merge::MergeKernelMode;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
@@ -28,8 +29,10 @@ pub(crate) fn build_cross_file_module_views(
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
+	merge_kernel: MergeKernelMode,
 ) -> Result<CrossFileModuleViews, String> {
 	let (merge_unit, input_paths, module_policy) = validate_module_target(entry, descriptor)?;
+	let module_policy = effective_module_policy(module_policy, merge_kernel);
 
 	let mut base_files = BTreeMap::new();
 	let mut files_by_mod: HashMap<ModId, BTreeMap<String, ParsedScriptFile>> = HashMap::new();
@@ -140,6 +143,16 @@ pub(crate) fn build_cross_file_module_views(
 		vanilla,
 		contributors: effective_views,
 	})
+}
+
+fn effective_module_policy(
+	mut policy: DefinitionModulePolicy,
+	merge_kernel: MergeKernelMode,
+) -> DefinitionModulePolicy {
+	if merge_kernel == MergeKernelMode::Structured {
+		policy.duplicate_definitions = DuplicateDefinitionPolicy::LaterDefinitionWins;
+	}
+	policy
 }
 
 fn validate_module_target<'a>(
@@ -421,11 +434,12 @@ fn fold_visible_module_files(
 
 #[cfg(test)]
 mod tests {
-	use super::{fold_visible_module_files, validate_module_target};
+	use super::{effective_module_policy, fold_visible_module_files, validate_module_target};
+	use crate::merge::MergeKernelMode;
 	use foch_core::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use foch_language::analyzer::content_family::{
-		ContentFamilyDescriptor, DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput,
-		DefinitionModulePolicy, DuplicateDefinitionPolicy, GameProfile,
+		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
+		DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy, GameProfile,
 	};
 	use foch_language::analyzer::eu4_profile::eu4_profile;
 	use foch_language::analyzer::parser::{AstStatement, AstValue};
@@ -523,6 +537,31 @@ mod tests {
 			.expect_err("module target must have at least one input");
 
 		assert!(error.contains("no input paths"), "error: {error}");
+	}
+
+	#[test]
+	fn structured_module_views_use_runtime_effective_duplicate_definitions() {
+		let ContentLoadPolicy::DefinitionModule(mut policy) = eu4_profile()
+			.classify_content_family(Path::new("common/scripted_triggers/example.txt"))
+			.expect("scripted triggers descriptor")
+			.load_policy
+		else {
+			panic!("scripted triggers must be a definition module");
+		};
+		assert_eq!(
+			policy.duplicate_definitions,
+			DuplicateDefinitionPolicy::PreserveAll
+		);
+
+		assert_eq!(
+			effective_module_policy(policy, MergeKernelMode::Structured).duplicate_definitions,
+			DuplicateDefinitionPolicy::LaterDefinitionWins
+		);
+		policy = effective_module_policy(policy, MergeKernelMode::Legacy);
+		assert_eq!(
+			policy.duplicate_definitions,
+			DuplicateDefinitionPolicy::PreserveAll
+		);
 	}
 
 	#[test]

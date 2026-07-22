@@ -7,7 +7,8 @@ use foch_core::model::{
 	MergeTraceEntry, MergeTracePolicy,
 };
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, MergePolicies, NamedContainerPolicy,
+	BlockPatchPolicy, ContentFamilyDescriptor, ContentLoadPolicy, MergePolicies,
+	NamedContainerPolicy,
 };
 use foch_language::analyzer::parser::{AstStatement, Span, SpanRange};
 
@@ -20,6 +21,7 @@ use super::{
 	PatchBasedMergeContext, PatchBasedMergeFailure, PatchBasedMergeOutput, PatchConflictReport,
 };
 use crate::emit::{EmitOptions, EmitOrdering, emit_clausewitz_statements_with_options};
+use crate::merge::MergeKernelMode;
 use crate::merge::cwt_suggestions::classify_conflict_kind;
 use crate::workspace::ResolvedFileContributor;
 use foch_cwt::CwtSchemaGraph;
@@ -291,7 +293,11 @@ where
 		})
 		.unwrap_or(false);
 	let merged_statements = dag_patches.merged_statements;
-	let (merged_statements, per_entry_noop_skipped_count) = if let Some(base) = vanilla.as_ref() {
+	let preserve_complete_module =
+		preserves_complete_structured_module(context.merge_kernel, context.descriptor);
+	let (merged_statements, per_entry_noop_skipped_count) = if preserve_complete_module {
+		(merged_statements, 0)
+	} else if let Some(base) = vanilla.as_ref() {
 		drop_per_entry_noop_duplicates(merged_statements, &base.ast.statements, context.descriptor)
 	} else {
 		(merged_statements, 0)
@@ -326,6 +332,17 @@ where
 		definition_provenance,
 		merge_trace,
 	})
+}
+
+fn preserves_complete_structured_module(
+	merge_kernel: MergeKernelMode,
+	descriptor: &ContentFamilyDescriptor,
+) -> bool {
+	merge_kernel == MergeKernelMode::Structured
+		&& matches!(
+			descriptor.load_policy,
+			ContentLoadPolicy::DefinitionModule(_)
+		)
 }
 
 fn emit_options_for_descriptor(
@@ -586,7 +603,10 @@ fn is_gui_container_family(context: &PatchBasedMergeContext<'_>) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::content_family::{ContentFamilyDescriptor, MergeKeySource};
+	use foch_language::analyzer::content_family::{
+		ContentFamilyDescriptor, GameProfile, MergeKeySource,
+	};
+	use foch_language::analyzer::eu4_profile::eu4_profile;
 
 	fn participant(mod_id: &str, precedence: usize, dag_level: usize) -> MergeTraceContributor {
 		MergeTraceContributor {
@@ -643,5 +663,30 @@ mod tests {
 		assert_eq!(entry.policy, MergeTracePolicy::Overlay);
 		assert_eq!(entry.decision, MergeTraceDecision::Overridden);
 		assert_eq!(entry.contributors[0].mod_id, "mod_b");
+	}
+
+	#[test]
+	fn structured_definition_modules_keep_the_complete_resolved_output() {
+		let module = eu4_profile()
+			.classify_content_family(Path::new(
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+			))
+			.expect("scripted triggers descriptor");
+		let event = eu4_profile()
+			.classify_content_family(Path::new("events/test.txt"))
+			.expect("events descriptor");
+
+		assert!(preserves_complete_structured_module(
+			MergeKernelMode::Structured,
+			module,
+		));
+		assert!(!preserves_complete_structured_module(
+			MergeKernelMode::Legacy,
+			module,
+		));
+		assert!(!preserves_complete_structured_module(
+			MergeKernelMode::Structured,
+			event,
+		));
 	}
 }

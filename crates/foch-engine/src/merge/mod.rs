@@ -26,6 +26,7 @@ pub use resolution::conflict_handler::{ConflictDecision, ConflictHandler, Intera
 pub use resolution::conflict_view::{CandidateView, ConflictView};
 pub(crate) use resolution::{conflict_handler, conflict_view, handler_registry};
 pub use structured::{
-	AstAdapterError, ClausewitzConflictSummary, ClausewitzMergeOutcome, ClausewitzMergeTimings,
-	MergeKernelMode, merge_clausewitz_files,
+	AstAdapterError, ClausewitzConflictSummary, ClausewitzDefinitionModuleOutcome,
+	ClausewitzMergeOutcome, ClausewitzMergeTimings, ClausewitzScalarReduction, MergeKernelMode,
+	canonicalize_clausewitz_file, merge_clausewitz_definition_module, merge_clausewitz_files,
 };
