@@ -2248,7 +2248,7 @@ mod tests {
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::PlaylistEntry;
 	use foch_core::model::ModCandidate;
-	use foch_language::analyzer::content_family::{CwtType, GameProfile};
+	use foch_language::analyzer::content_family::{CwtType, GameProfile, ListMergePolicy};
 	use std::path::PathBuf;
 
 	fn mod_with(
@@ -4469,6 +4469,211 @@ mod tests {
 		assert_eq!(output.matches("name = OPTION_A").count(), 2, "{output}");
 		assert_eq!(output.matches("marker = first").count(), 1, "{output}");
 		assert_eq!(output.matches("marker = second").count(), 1, "{output}");
+	}
+
+	#[test]
+	fn union_lists_retain_base_items_inside_matched_repeated_blocks() {
+		let base = r#"manufactories = {
+			embracement_speed = {
+				modifier = {
+					factor = 0.8
+					potential = { OR = { trade_goods = spices trade_goods = cloves } }
+					custom_trigger_tooltip = { tooltip = tooltip_tradecompany }
+				}
+				modifier = {
+					factor = 0.2
+					potential = { OR = { trade_goods = fur trade_goods = cloves } }
+					custom_trigger_tooltip = { tooltip = tooltip_plantations }
+				}
+			}
+		}
+		"#;
+		let expanded = r#"manufactories = {
+			embracement_speed = {
+				modifier = {
+					factor = 0.8
+					potential = { OR = { trade_goods = spices trade_goods = cocoa } }
+					custom_trigger_tooltip = { tooltip = tooltip_tradecompany }
+				}
+				modifier = {
+					factor = 0.2
+					potential = { OR = { trade_goods = fur trade_goods = cloves } }
+					custom_trigger_tooltip = { tooltip = tooltip_plantations }
+				}
+			}
+		}
+		"#;
+		let companion = base.replace(
+			"embracement_speed = {",
+			"compatibility_marker = yes\n\t\t\tembracement_speed = {",
+		);
+		let policies = MergePolicies {
+			merge_key_source: MergeKeySource::AssignmentKey,
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["modifier"],
+			},
+			list: ListMergePolicy::Union,
+			..MergePolicies::default()
+		};
+		let result = compute_with_policies(
+			vec![
+				mod_with("expanded", "Expanded", vec![], vec![]),
+				mod_with("companion", "Companion", vec![], vec![]),
+			],
+			vec![
+				file_contributor("expanded", 1),
+				file_contributor("companion", 2),
+			],
+			Some(base),
+			parsed_inventory(&[("expanded", expanded), ("companion", &companion)]),
+			&policies,
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert_eq!(
+			output.matches("tooltip = tooltip_tradecompany").count(),
+			1,
+			"{output}"
+		);
+		assert_eq!(
+			output.matches("tooltip = tooltip_plantations").count(),
+			1,
+			"{output}"
+		);
+		assert_eq!(
+			output.matches("trade_goods = cloves").count(),
+			2,
+			"{output}\npatches={:?}",
+			result.mod_patches
+		);
+		assert_eq!(output.matches("trade_goods = cocoa").count(), 1, "{output}");
+		assert_eq!(
+			output.matches("compatibility_marker = yes").count(),
+			1,
+			"{output}"
+		);
+	}
+
+	fn event_merge_policies() -> MergePolicies {
+		MergePolicies {
+			merge_key_source: MergeKeySource::FieldValue("id"),
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "name",
+				child_types: &["option"],
+			},
+			scalar: foch_language::analyzer::content_family::ScalarMergePolicy::LastWriter,
+			list: ListMergePolicy::UnionWithRename,
+			edit_wins_over_remove: true,
+			..MergePolicies::default()
+		}
+	}
+
+	#[test]
+	fn descendant_edit_preserves_sibling_removed_ancestor_block() {
+		let base = "country_event = { id = test.1 after = { base_cleanup = yes } }\n";
+		let removed = "country_event = { id = test.1 }\n";
+		let extended = r#"country_event = {
+			id = test.1
+			after = { base_cleanup = yes mod_cleanup = yes }
+		}
+		"#;
+		let result = compute_with_policies(
+			vec![
+				mod_with("removed", "Removed", vec![], vec![]),
+				mod_with("extended", "Extended", vec![], vec![]),
+			],
+			vec![
+				file_contributor("removed", 1),
+				file_contributor("extended", 2),
+			],
+			Some(base),
+			parsed_inventory(&[("removed", removed), ("extended", extended)]),
+			&event_merge_policies(),
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(output.contains("base_cleanup = yes"), "{output}");
+		assert!(output.contains("mod_cleanup = yes"), "{output}");
+	}
+
+	#[test]
+	fn event_descriptions_merge_by_localisation_identity() {
+		let base = r#"country_event = {
+			id = test.1
+			desc = { trigger = { mode = stable } desc = test.1.da }
+			desc = { trigger = { mode = base } desc = test.1.db }
+		}
+		"#;
+		let old_model = base.replace("mode = base", "mode = old_model");
+		let new_model = base.replace("mode = base", "mode = new_model");
+		let result = compute_with_policies(
+			vec![
+				mod_with("old", "Old", vec![], vec![]),
+				mod_with("new", "New", vec![], vec![]),
+			],
+			vec![file_contributor("old", 1), file_contributor("new", 2)],
+			Some(base),
+			parsed_inventory(&[("old", &old_model), ("new", &new_model)]),
+			&event_merge_policies(),
+		);
+
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert_eq!(output.matches("desc = test.1.db").count(), 1, "{output}");
+		assert!(output.contains("mode = new_model"), "{output}");
+		assert!(!output.contains("mode = old_model"), "{output}");
+	}
+
+	#[test]
+	fn event_control_flow_merges_if_branches_without_reviving_replaced_branch() {
+		let base = r#"country_event = {
+			id = test.1
+			option = {
+				name = test.1.a
+				if = { limit = { has_government_attribute = republican_virtues } define_ruler = { change_adm = 1 } }
+				else = { define_ruler = {} }
+				if = { limit = { has_country_flag = old_candidate_flag } add_estate_loyalty = 5 }
+			}
+		}
+		"#;
+		let ge = base.replace(
+			"name = test.1.a",
+			"name = test.1.a\n\t\t\t\tge_marker = yes",
+		);
+		let ee = r#"country_event = {
+			id = test.1
+			option = {
+				name = test.1.a
+				if = { limit = { has_country_flag = upgraded_candidate_flag } define_ruler = { change_mil = 1 } }
+				else = { define_ruler = {} }
+				if = { limit = { has_saved_event_target = spread_target } add_province_modifier = support }
+			}
+		}
+		"#;
+		let result = compute_structured_event_join(Some(base), &ge, ee)
+			.expect("structured control-flow join");
+
+		assert!(result.merge_result.conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(
+			output.contains("has_government_attribute = republican_virtues"),
+			"{output}",
+		);
+		assert!(
+			output.contains("has_country_flag = upgraded_candidate_flag"),
+			"{output}"
+		);
+		assert!(
+			output.contains("has_saved_event_target = spread_target"),
+			"{output}"
+		);
+		assert!(
+			!output.contains("has_country_flag = old_candidate_flag"),
+			"{output}"
+		);
 	}
 
 	#[test]

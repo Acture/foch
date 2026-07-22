@@ -375,7 +375,7 @@ fn statement_key(
 		child_types,
 	} = merge_key_source
 	{
-		return container_child_field_value_key(stmt, child_key_field, child_types);
+		return child_field_value_key(stmt, child_key_field, child_types);
 	}
 
 	// Outside configured named containers, nested children use AssignmentKey semantics.
@@ -427,6 +427,28 @@ fn container_child_field_value_key(
 	Some(key.clone())
 }
 
+fn child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, key)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = descendant_scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
+}
+
 fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option<String> {
 	for item in items {
 		if let AstStatement::Assignment {
@@ -436,6 +458,28 @@ fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option
 		} = item && key == expected_key
 		{
 			return Some(value.as_text());
+		}
+	}
+	None
+}
+
+fn descendant_scalar_assignment_value(
+	items: &[AstStatement],
+	expected_key: &str,
+) -> Option<String> {
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			continue;
+		};
+		if key == expected_key
+			&& let AstValue::Scalar { value, .. } = value
+		{
+			return Some(value.as_text());
+		}
+		if let AstValue::Block { items, .. } = value
+			&& let Some(found) = descendant_scalar_assignment_value(items, expected_key)
+		{
+			return Some(found);
 		}
 	}
 	None

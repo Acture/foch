@@ -779,6 +779,10 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(scope(base_scope::province()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.nested_merge_key(MergeKeySource::ChildFieldValue {
+					child_key_field: "tooltip",
+					child_types: &["modifier"],
+				})
 				.scalar_policy(ScalarMergePolicy::Sum)
 				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveBooleanAlternatives)
 				.build(),

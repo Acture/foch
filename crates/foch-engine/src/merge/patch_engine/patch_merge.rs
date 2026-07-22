@@ -8,11 +8,11 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use foch_core::model::HandlerResolutionRecord;
-use foch_language::analyzer::content_family::MergePolicies;
+#[cfg(test)]
+use foch_language::analyzer::content_family::NamedContainerPolicy;
 #[cfg(test)]
 use foch_language::analyzer::content_family::{BlockPatchPolicy, ScalarMergePolicy};
-#[cfg(test)]
-use foch_language::analyzer::content_family::{MergeKeySource, NamedContainerPolicy};
+use foch_language::analyzer::content_family::{ListMergePolicy, MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 
 #[cfg(test)]
@@ -214,6 +214,11 @@ pub(crate) fn merge_patch_sets_for_file(
 	sort_contributors(&mut mod_patches);
 	let mod_patches = drop_prefixed_rename_duplicate_inserts(mod_patches);
 	let mod_patches = normalize_singleton_list_inserts(mod_patches);
+	let mod_patches = apply_list_policy(mod_patches, policies);
+	let (mod_patches, prefix_edit_resolutions) =
+		drop_removed_ancestors_with_sibling_descendant_edits(mod_patches, policies);
+	result.stats.total_patches += prefix_edit_resolutions;
+	result.stats.edit_over_remove_resolved += prefix_edit_resolutions;
 
 	// Group patches by address, preserving attribution.
 	let mut by_address: HashMap<PatchAddress, Vec<AttributedPatch>> = HashMap::new();
@@ -355,6 +360,139 @@ pub(crate) fn merge_patch_sets_for_file(
 	}
 
 	Ok(result)
+}
+
+fn drop_removed_ancestors_with_sibling_descendant_edits(
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	policies: &MergePolicies,
+) -> (Vec<(String, usize, Vec<ClausewitzPatch>)>, usize) {
+	if !policies.edit_wins_over_remove {
+		return (mod_patches, 0);
+	}
+
+	let descendant_edits = mod_patches
+		.iter()
+		.flat_map(|(mod_id, _, patches)| {
+			patches
+				.iter()
+				.filter(|patch| is_descendant_edit_patch(patch))
+				.map(move |patch| (mod_id.clone(), patch_path_for_prefix_match(patch).to_vec()))
+		})
+		.collect::<Vec<_>>();
+	let mut dropped = 0;
+	let filtered = mod_patches
+		.into_iter()
+		.map(|(mod_id, precedence, patches)| {
+			let patches = patches
+				.into_iter()
+				.filter(|patch| {
+					let ClausewitzPatch::RemoveNode { path, key, .. } = patch else {
+						return true;
+					};
+					let mut removed_path = path.clone();
+					removed_path.push(key.clone());
+					let has_sibling_descendant_edit =
+						descendant_edits.iter().any(|(edit_mod_id, edit_path)| {
+							edit_mod_id != &mod_id && edit_path.starts_with(&removed_path)
+						});
+					if has_sibling_descendant_edit {
+						dropped += 1;
+					}
+					!has_sibling_descendant_edit
+				})
+				.collect();
+			(mod_id, precedence, patches)
+		})
+		.collect();
+	(filtered, dropped)
+}
+
+fn is_descendant_edit_patch(patch: &ClausewitzPatch) -> bool {
+	matches!(
+		patch,
+		ClausewitzPatch::SetValue { .. }
+			| ClausewitzPatch::ReplaceBlock { .. }
+			| ClausewitzPatch::InsertNode { .. }
+			| ClausewitzPatch::AppendListItem { .. }
+			| ClausewitzPatch::AppendBlockItem { .. }
+			| ClausewitzPatch::Rename { .. }
+	)
+}
+
+fn patch_path_for_prefix_match(patch: &ClausewitzPatch) -> &[String] {
+	match patch {
+		ClausewitzPatch::SetValue { path, .. }
+		| ClausewitzPatch::RemoveNode { path, .. }
+		| ClausewitzPatch::InsertNode { path, .. }
+		| ClausewitzPatch::AppendListItem { path, .. }
+		| ClausewitzPatch::RemoveListItem { path, .. }
+		| ClausewitzPatch::ReplaceBlock { path, .. }
+		| ClausewitzPatch::AppendBlockItem { path, .. }
+		| ClausewitzPatch::RemoveBlockItem { path, .. }
+		| ClausewitzPatch::Rename { path, .. } => path,
+	}
+}
+
+fn apply_list_policy(
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	policies: &MergePolicies,
+) -> Vec<(String, usize, Vec<ClausewitzPatch>)> {
+	let has_nested_semantic_identity = matches!(
+		policies.nested_merge_key_source,
+		MergeKeySource::ChildFieldValue { .. } | MergeKeySource::ContainerChildFieldValue { .. }
+	);
+	if policies.list == ListMergePolicy::Replace
+		|| mod_patches.len() <= 1
+		|| !has_nested_semantic_identity
+	{
+		return mod_patches;
+	}
+	let contributor_count = mod_patches
+		.iter()
+		.map(|(mod_id, _, _)| mod_id)
+		.collect::<HashSet<_>>()
+		.len();
+	let mut removers_by_address: HashMap<PatchAddress, HashSet<String>> = HashMap::new();
+	for (mod_id, _, patches) in &mod_patches {
+		for patch in patches {
+			if matches!(
+				patch,
+				ClausewitzPatch::RemoveListItem {
+					value: AstValue::Scalar { .. },
+					..
+				}
+			) {
+				removers_by_address
+					.entry(patch_address(patch, policies))
+					.or_default()
+					.insert(mod_id.clone());
+			}
+		}
+	}
+
+	mod_patches
+		.into_iter()
+		.map(|(mod_id, precedence, patches)| {
+			let patches = patches
+				.into_iter()
+				.filter(|patch| {
+					if !matches!(
+						patch,
+						ClausewitzPatch::RemoveListItem {
+							value: AstValue::Scalar { .. },
+							..
+						}
+					) {
+						return true;
+					}
+					removers_by_address
+						.get(&patch_address(patch, policies))
+						.is_some_and(|removers| removers.len() == contributor_count)
+				})
+				.collect();
+			(mod_id, precedence, patches)
+		})
+		.collect()
 }
 
 fn normalize_singleton_list_inserts(

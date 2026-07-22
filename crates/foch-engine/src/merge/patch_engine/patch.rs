@@ -806,7 +806,7 @@ fn extract_child_field_value_entries(
 	statements
 		.iter()
 		.filter_map(|stmt| {
-			let merge_key = container_child_field_value_key(stmt, child_key_field, child_types)?;
+			let merge_key = child_field_value_key(stmt, child_key_field, child_types)?;
 			Some(KeyedEntry {
 				merge_key,
 				statement: stmt.clone(),
@@ -814,6 +814,28 @@ fn extract_child_field_value_entries(
 			})
 		})
 		.collect()
+}
+
+fn child_field_value_key(
+	stmt: &AstStatement,
+	child_key_field: &str,
+	child_types: &[&str],
+) -> Option<String> {
+	let AstStatement::Assignment { key, value, .. } = stmt else {
+		return None;
+	};
+	if let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = scalar_assignment_value(items, key)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	if (child_types.is_empty() || child_types.contains(&key.as_str()))
+		&& let AstValue::Block { items, .. } = value
+		&& let Some(field_value) = descendant_scalar_assignment_value(items, child_key_field)
+	{
+		return Some(format!("{key}:{field_value}"));
+	}
+	Some(key.clone())
 }
 
 fn container_child_field_value_key(
@@ -847,6 +869,28 @@ fn scalar_assignment_value(items: &[AstStatement], expected_key: &str) -> Option
 		}
 		if let AstValue::Scalar { value, .. } = value {
 			return Some(value.as_text());
+		}
+	}
+	None
+}
+
+fn descendant_scalar_assignment_value(
+	items: &[AstStatement],
+	expected_key: &str,
+) -> Option<String> {
+	for item in items {
+		let AstStatement::Assignment { key, value, .. } = item else {
+			continue;
+		};
+		if key == expected_key
+			&& let AstValue::Scalar { value, .. } = value
+		{
+			return Some(value.as_text());
+		}
+		if let AstValue::Block { items, .. } = value
+			&& let Some(found) = descendant_scalar_assignment_value(items, expected_key)
+		{
+			return Some(found);
 		}
 	}
 	None
@@ -978,9 +1022,13 @@ fn diff_entry_maps(
 }
 
 fn entries_have_real_content(entries: &[&AstStatement]) -> bool {
-	entries
-		.iter()
-		.any(|stmt| ast_statement_has_real_content(stmt))
+	entries.iter().any(|stmt| match stmt {
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		} if items.is_empty() => true,
+		_ => ast_statement_has_real_content(stmt),
+	})
 }
 
 fn resolve_path(
@@ -1497,7 +1545,11 @@ fn diff_blocks(args: DiffBlockArgs<'_>) {
 	} else {
 		(changed + item_change_count) as f64 / total_units as f64
 	};
-	if ratio > REPLACE_THRESHOLD {
+	let has_nested_semantic_identity = matches!(
+		merge_key_source,
+		MergeKeySource::ChildFieldValue { .. } | MergeKeySource::ContainerChildFieldValue { .. }
+	);
+	if ratio > REPLACE_THRESHOLD && !has_nested_semantic_identity {
 		patches.push(ClausewitzPatch::ReplaceBlock {
 			path: parent_path.to_vec(),
 			key: key.to_string(),

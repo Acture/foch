@@ -519,6 +519,7 @@ impl MergeKeySource {
 				child_key_field,
 				child_types,
 			},
+			MergeKeySource::ChildFieldValue { .. } => self,
 			_ => MergeKeySource::AssignmentKey,
 		}
 	}
