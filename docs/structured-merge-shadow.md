@@ -1,15 +1,16 @@
 # Structured Merge Shadow Slice
 
-Status: experimental, quality-harness only. Production `foch merge` continues
-to use the legacy patch engine.
+Status: experimental and explicit opt-in. Production `foch merge` still
+defaults to Legacy, but selected event files and merge-ready definition modules
+can use the Structured final join.
 
 ## Scope
 
-The first structured vertical slice connects a parser-independent merge kernel
-to the real dependency-DAG final join. It currently accepts only a narrow,
-auditable shape:
+The structured vertical slice connects a parser-independent merge kernel to the
+real dependency-DAG final join. It accepts only narrow, auditable shapes:
 
-- the content family is ordinary `events`
+- the content family is ordinary `events`, or it declares a merge-ready
+  `DefinitionModule` with `AssignmentKey` identity
 - the exact path has exactly two final DAG sinks
 - a non-empty real vanilla file, not a synthetic empty base, is available as
   the three-way ancestor
@@ -25,15 +26,19 @@ join. There is no silent fallback after Structured has been selected.
 
 `crates/foch-merge-kernel` owns parser-independent normalized trees,
 provenance, matching, revision classes, PCS ordering constraints, and typed
-structural conflicts. `foch-engine` owns the Clausewitz AST adapter and event
-policy:
+structural conflicts. `foch-engine` owns the Clausewitz AST adapter and
+content-family policy:
 
 - `country_event` and `province_event` are anchored by their inner `id`
 - `option` blocks are anchored by their inner `name`
-- repeated control-flow keys such as `if`, `after`, and `desc` remain
-  unanchored and ordered
+- `if`/`else_if`/`else` chains are normalized as guarded control-flow cases
+  when their semantics are provable; otherwise they remain opaque and produce
+  review findings
 - assignment kinds include their key, so unrelated keys cannot recovery-match
-- comments and scalar variants survive AST round trips
+- comments are separated as trivia instead of entering positional content
+  matching, and scalar variants survive AST round trips
+- assignment-key modules merge complete runtime-effective definition views and
+  retain inactive definitions in deterministic output
 
 Exact subtree hashes are verified structurally before they become `Exact`
 matches. Changed compatible roots remain linked but carry recovery evidence.
@@ -144,6 +149,22 @@ Legacy-accepted units lost, candidate outcomes, and candidate runtime are all
 recomputable from the 36 report rows.
 
 ## Current Gate
+
+The latest 2026-07-22 gate evaluates all 12 fixed `common/**` candidates plus
+GE-EE `events/Elections.txt` against the complete 36-unit denominator. It
+projects strict and adjudicated acceptance from 7/36 to 12/36, and non-GUI
+acceptance from 7/21 to 12/21, with zero Legacy-accepted units lost. Candidate
+outcomes are 5 improved, 0 regressed, 1 unchanged accepted, 4 review, 2
+structured conflict, and 1 safety failure. Aggregate candidate runtime is
+0.960x Legacy.
+
+The five improvements are four scripted-trigger modules and institutions;
+religions remains accepted. Buildings and scripted effects withhold output on
+explicit conflicts. Elections currently fails the control-flow shape safety
+gate, so the event result below is retained as historical evidence rather than
+a current rollout claim.
+
+### Historical Elections gate
 
 The GE-EE `events/Elections.txt` gate and complete 36-unit rollout projection
 passed on 2026-07-21. The fixed scorer `1.2.0` baseline was reproduced first;

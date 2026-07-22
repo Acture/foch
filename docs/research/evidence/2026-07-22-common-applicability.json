@@ -1,23 +1,24 @@
 {
-  "schema": "1.0.0",
-  "generated_at": "2026-07-21T19:29:58.877672Z",
+  "schema": "2.0.0",
+  "generated_at": "2026-07-22T16:34:04.725052Z",
   "hypothesis": "common/<folder> is a provisional semantic merge unit",
   "game_version": "v1.37.5.0",
   "steam_build_id": 15918133,
-  "executable_blake3": "b569c8aa53c51b08e992fe9db9ee2a7c3fcafbc7ec5fb674869a9def51c7368a",
+  "executable_blake3": "612ad36554f05e66fb8901c6add85f5eaf45983c61440a3ed7d8fd3536a72873",
   "legacy_baseline_blake3": "6ed4b8332a97c279470f5022e63023ebba84d1fa5776daf02b5d64851921b223",
   "summary": {
     "expected_units": 12,
     "classified_units": 12,
-    "accepted_equivalent": 3,
+    "full_denominator": true,
+    "accepted_equivalent": 6,
     "manual_resolution_required": 2,
-    "semantic_mismatch": 7,
+    "semantic_mismatch": 4,
     "failed": 0,
     "legacy_accepted": 1,
     "legacy_accepted_preserved": 1,
-    "review_required": 9,
+    "review_required": 6,
     "gate_passed": true,
-    "elapsed_ms": 229758
+    "elapsed_ms": 37398
   },
   "families": [
     {
@@ -59,14 +60,14 @@
     {
       "content_family": "common/scripted_effects",
       "units": 1,
-      "accepted_equivalent": 1,
-      "review_required": false
+      "accepted_equivalent": 0,
+      "review_required": true
     },
     {
       "content_family": "common/scripted_triggers",
       "units": 4,
-      "accepted_equivalent": 0,
-      "review_required": true
+      "accepted_equivalent": 4,
+      "review_required": false
     },
     {
       "content_family": "common/tradegoods",
@@ -108,6 +109,7 @@
         "right": "c68a6ff605f62c68d0444d4354ff8d333aaa39083cfe0501d84ce07483604306",
         "human": "84ffc1716e8fe9eaf241f6a9af26279f24eba68ce002926510395d87c561462e"
       },
+      "candidate_semantic_content_id": "07551107265be5a85dc7d78b6b5344aee0240b99c6d3b15bb55bdf2b0559c6e0",
       "base_definitions": 50,
       "active_definitions": 17,
       "missing_top_level_keys": [],
@@ -116,9 +118,9 @@
         "ita_republican_rebels"
       ],
       "semantic_diff_from_human": {
-        "left_atoms": 6238,
-        "right_atoms": 6143,
-        "shared_atoms": 6143,
+        "left_atoms": 6280,
+        "right_atoms": 6185,
+        "shared_atoms": 6185,
         "left_only": {
           "assignment:ita_monarchy_rebels/assignment:area=text:nation": 1,
           "assignment:ita_monarchy_rebels/assignment:artillery=number:0.1": 1,
@@ -213,13 +215,19 @@
         "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 1622,
-        "merge_ms": 942,
-        "matcher_ns": 798810042,
-        "pcs_ns": 79310159,
-        "policy_ns": 559091
+        "view_ms": 23,
+        "merge_ms": 76,
+        "comparison_ms": 17,
+        "copy_through_definitions": 4,
+        "structured_definitions": 13,
+        "comparison_reused_definitions": 56,
+        "comparison_normalized_definitions": 7,
+        "matcher_ns": 14937791,
+        "pcs_ns": 8207131,
+        "policy_ns": 49452
       }
     },
     {
@@ -234,8 +242,8 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "semantic_mismatch",
-      "publishable": false,
+      "status": "accepted_equivalent",
+      "publishable": true,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
@@ -254,48 +262,32 @@
         "right": "0cd0dbbd792bb6fb16e2ac9448c63c49b9782d8df3fa013af905bc6751e8a6f7",
         "human": "e2400c67782e8337b67f47da9a09a4eb3e558c556dcfe70da6cf0bfbb9fac8d9"
       },
+      "candidate_semantic_content_id": "397d68b83893e0f486fabe45eecdedf6a52c44766e839472d4295df05a5f46d2",
       "base_definitions": 2507,
       "active_definitions": 519,
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 24925,
-        "right_atoms": 24928,
-        "shared_atoms": 24916,
-        "left_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
-          "assignment:heir_can_recieve_education_events/assignment:NOT/assignment:has_heir_flag=text:heir_finished_education": 1,
-          "assignment:heir_can_recieve_education_events/assignment:NOT/assignment:is_lesser_in_union=bool:yes": 1,
-          "assignment:heir_can_recieve_education_events/assignment:has_heir_flag=text:heir_started_education": 1
-        },
-        "right_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
-          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1,
-          "assignment:heir_can_recieve_education_events/assignment:AND/assignment:NOT/assignment:has_heir_flag=text:heir_finished_education": 1,
-          "assignment:heir_can_recieve_education_events/assignment:AND/assignment:NOT/assignment:is_lesser_in_union=bool:yes": 1,
-          "assignment:heir_can_recieve_education_events/assignment:AND/assignment:has_heir_flag=text:heir_started_education": 1
-        }
+        "left_atoms": 24931,
+        "right_atoms": 24931,
+        "shared_atoms": 24931,
+        "left_only": {},
+        "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 996,
-        "merge_ms": 2371,
-        "matcher_ns": 1923949333,
-        "pcs_ns": 293672351,
-        "policy_ns": 1866649
+        "view_ms": 59,
+        "merge_ms": 544,
+        "comparison_ms": 738,
+        "copy_through_definitions": 473,
+        "structured_definitions": 46,
+        "comparison_reused_definitions": 3013,
+        "comparison_normalized_definitions": 12,
+        "matcher_ns": 920498,
+        "pcs_ns": 11294449,
+        "policy_ns": 62011
       }
     },
     {
@@ -310,8 +302,8 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "semantic_mismatch",
-      "publishable": false,
+      "status": "accepted_equivalent",
+      "publishable": true,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
@@ -330,42 +322,32 @@
         "right": "f8640e0c89fe59074caabc4bd88dd444ee2a39d50b6a8c660de494b9076d1940",
         "human": "9d76d6cc4d15ff3f8821a82c43d06d65b3e62e7082f11daab5cf1606d3ed4241"
       },
+      "candidate_semantic_content_id": "aa907cb5712bfa6d971a3372119909d9f24e4f9a5511363a80f8f6f7c1f8b3f8",
       "base_definitions": 2507,
       "active_definitions": 582,
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 25872,
-        "right_atoms": 25875,
-        "shared_atoms": 25866,
-        "left_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1
-        },
-        "right_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
-          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1
-        }
+        "left_atoms": 25878,
+        "right_atoms": 25878,
+        "shared_atoms": 25878,
+        "left_only": {},
+        "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 566,
-        "merge_ms": 9471,
-        "matcher_ns": 8846002292,
-        "pcs_ns": 427103325,
-        "policy_ns": 2535550
+        "view_ms": 10,
+        "merge_ms": 577,
+        "comparison_ms": 786,
+        "copy_through_definitions": 533,
+        "structured_definitions": 49,
+        "comparison_reused_definitions": 3075,
+        "comparison_normalized_definitions": 13,
+        "matcher_ns": 1323253,
+        "pcs_ns": 17969693,
+        "policy_ns": 98437
       }
     },
     {
@@ -400,6 +382,7 @@
         "right": "07638ca8983644f6447358decb55941e7f61c31f16765e56eb6f44003a60a0e6",
         "human": "ab1b8569cd6dc7af64ad99e1c510fe76da6344fdd41434582627f7dc5f35fc88"
       },
+      "candidate_semantic_content_id": "43d691bf29ba649afc26908a4b0d5c3cfac25e38f6e4f0b90d05c158ddf5e01f",
       "base_definitions": 7,
       "active_definitions": 5,
       "missing_top_level_keys": [],
@@ -412,13 +395,19 @@
         "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 329,
-        "merge_ms": 822,
-        "matcher_ns": 653625792,
-        "pcs_ns": 94326218,
-        "policy_ns": 640740
+        "view_ms": 6,
+        "merge_ms": 64,
+        "comparison_ms": 16,
+        "copy_through_definitions": 2,
+        "structured_definitions": 3,
+        "comparison_reused_definitions": 4,
+        "comparison_normalized_definitions": 3,
+        "matcher_ns": 30465875,
+        "pcs_ns": 8705680,
+        "policy_ns": 58403
       }
     },
     {
@@ -453,6 +442,7 @@
         "right": "c8c0d9b846b31d7e21bb56521e2a7e8577049b892040ccd56d27ae5c8f3e0d9a",
         "human": "03ea84f67dc803528ae7fbf675a0c3e9e1d2c0980e2a0eed1bf539fdb89e367f"
       },
+      "candidate_semantic_content_id": "bcf3e790532baae6df0fdc39b8425a3d2bf4e544d59161ccc9c77085e32454b0",
       "base_definitions": 47,
       "active_definitions": 65,
       "missing_top_level_keys": [],
@@ -491,76 +481,82 @@
       "conflicts": [
         {
           "kind": "ambiguous_match",
-          "detail": "node 492 has 2 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 62 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 2 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 500 has 3 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 70 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 3 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 516 has 1 equally ranked candidates at score 875000"
+          "detail": "definition `courthouse`: node 86 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 1 equally ranked candidates at score 875000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 524 has 1 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 94 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 1 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 532 has 1 equally ranked candidates at score 875000"
+          "detail": "definition `courthouse`: node 102 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 1 equally ranked candidates at score 875000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 540 has 5 equally ranked candidates at score 625000"
+          "detail": "definition `courthouse`: node 110 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 5 equally ranked candidates at score 625000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 566 has 2 equally ranked candidates at score 666666"
+          "detail": "definition `courthouse`: node 136 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 2 equally ranked candidates at score 666666: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 576 has 2 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 146 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 2 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 679 has 2 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 94 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 2 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 687 has 3 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 102 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 3 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 703 has 1 equally ranked candidates at score 875000"
+          "detail": "definition `courthouse`: node 118 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 1 equally ranked candidates at score 875000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 711 has 1 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 126 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 1 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 719 has 1 equally ranked candidates at score 875000"
+          "detail": "definition `courthouse`: node 134 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 1 equally ranked candidates at score 875000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 727 has 5 equally ranked candidates at score 625000"
+          "detail": "definition `courthouse`: node 142 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 5 equally ranked candidates at score 625000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 753 has 2 equally ranked candidates at score 666666"
+          "detail": "definition `courthouse`: node 168 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 2 equally ranked candidates at score 666666: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         },
         {
           "kind": "ambiguous_match",
-          "detail": "node 763 has 2 equally ranked candidates at score 750000"
+          "detail": "definition `courthouse`: node 178 (kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`) has 2 equally ranked candidates at score 750000: kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`; kind=`clausewitz.assignment:modifier` value=`modifier` anchor=`clausewitz.assignment.key:modifier`"
         }
       ],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 1428,
-        "merge_ms": 1819,
-        "matcher_ns": 1599294958,
-        "pcs_ns": 131741185,
-        "policy_ns": 872482
+        "view_ms": 9,
+        "merge_ms": 60,
+        "comparison_ms": 17,
+        "copy_through_definitions": 0,
+        "structured_definitions": 65,
+        "comparison_reused_definitions": 54,
+        "comparison_normalized_definitions": 32,
+        "matcher_ns": 13711247,
+        "pcs_ns": 12984591,
+        "policy_ns": 93034
       }
     },
     {
@@ -595,6 +591,7 @@
         "right": "64b6956954a4f21664e198f78d06d29a09a6137f0e34afdb2cc54662d06042b6",
         "human": "105ef150baa307e680be3c9021d876f14121cc2a0102d08f5e90152ff01b669f"
       },
+      "candidate_semantic_content_id": "105ef150baa307e680be3c9021d876f14121cc2a0102d08f5e90152ff01b669f",
       "base_definitions": 8,
       "active_definitions": 3,
       "missing_top_level_keys": [],
@@ -607,13 +604,19 @@
         "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 227,
-        "merge_ms": 338,
-        "matcher_ns": 237705167,
-        "pcs_ns": 52892214,
-        "policy_ns": 388578
+        "view_ms": 6,
+        "merge_ms": 43,
+        "comparison_ms": 9,
+        "copy_through_definitions": 0,
+        "structured_definitions": 3,
+        "comparison_reused_definitions": 5,
+        "comparison_normalized_definitions": 3,
+        "matcher_ns": 19250292,
+        "pcs_ns": 5444733,
+        "policy_ns": 35101
       }
     },
     {
@@ -633,9 +636,9 @@
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
-        "scalar": "last_writer",
+        "scalar": "conflict",
         "list": "replace",
-        "one_sided_removal": "remove",
+        "one_sided_removal": "preserve_if_parent_survives",
         "block": "recursive",
         "boolean": "and",
         "block_patch": "recurse",
@@ -648,51 +651,60 @@
         "right": "7a17c4d09622e3d9dd0af13b24cfa347199557b04bd5f53931be7a7a153f664b",
         "human": "3001c05361663251421d7a30c2d45237cdcf44250def03686a1c93bcb48bdb98"
       },
+      "candidate_semantic_content_id": "c3147bd9ddcd9edbbd8edf80e46490ab1038fff988c3331ab70284d9ec15add3",
       "base_definitions": 32,
       "active_definitions": 91,
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 2940,
-        "right_atoms": 2944,
-        "shared_atoms": 2930,
+        "left_atoms": 2951,
+        "right_atoms": 2943,
+        "shared_atoms": 2943,
         "left_only": {
-          "assignment:cloves/assignment:province/assignment:province_trade_power_modifier=number:0.1": 1,
-          "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:has_institution=text:enlightenment": 1,
-          "assignment:coal/assignment:trigger/assignment:else/assignment:provincial_institution_progress/assignment:which=text:enlightenment": 1,
+          "assignment:cloves/assignment:chance/assignment:modifier/assignment:NOT/assignment:OR/assignment:area=text:molluca_area": 1,
+          "assignment:cloves/assignment:chance/assignment:modifier/assignment:NOT/assignment:OR/assignment:area=text:spice_islands_area": 1,
           "assignment:coal/assignment:trigger/assignment:else_if/assignment:limit/assignment:owner/assignment:has_country_flag=text:ENG_early_inno_coal": 1,
           "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:adm_tech=number:22": 1,
           "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:innovativeness=number:80": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:owner/assignment:has_country_flag=text:earlier_coal_available": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:adm_tech=number:23": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:has_institution=text:manufactories": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:provincial_institution_progress/assignment:which=text:manufactories": 1
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:provincial_institution_progress/assignment:value=number:100": 1,
+          "assignment:coal/assignment:trigger/assignment:else_if/assignment:provincial_institution_progress/assignment:which=text:manufactories": 1,
+          "assignment:dyes/assignment:modifier/assignment:heir_chance=number:0.33": 1
         },
-        "right_only": {
-          "assignment:cloves/assignment:province/assignment:province_trade_power_modifier=number:0.15": 1,
-          "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:adm_tech=number:23": 1,
-          "assignment:coal/assignment:trigger/assignment:else/assignment:owner/assignment:has_institution=text:manufactories": 1,
-          "assignment:coal/assignment:trigger/assignment:else/assignment:provincial_institution_progress/assignment:which=text:manufactories": 1,
-          "assignment:coal/assignment:trigger/assignment:else_if/assignment:limit/assignment:has_province_flag=text:GER_specific_coal": 1,
-          "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:adm_tech=number:21": 1,
-          "assignment:coal/assignment:trigger/assignment:else_if/assignment:owner/assignment:has_institution=text:manufactories": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:NOT/assignment:has_province_flag=text:GER_specific_coal": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:limit/assignment:owner/assignment:NOT/assignment:has_country_flag=text:earlier_coal_available": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:owner/assignment:has_institution=text:enlightenment": 1,
-          "assignment:coal/assignment:trigger/assignment:if/assignment:provincial_institution_progress/assignment:which=text:enlightenment": 1,
-          "assignment:gems/assignment:chance/assignment:modifier/assignment:FROM/assignment:OR/assignment:colonial_parent/assignment:has_increased_trade_goods_discovery/assignment:trade_goods=text:gems": 1,
-          "assignment:gems/assignment:chance/assignment:modifier/assignment:FROM/assignment:OR/assignment:has_increased_trade_goods_discovery/assignment:trade_goods=text:gems": 1,
-          "assignment:gems/assignment:chance/assignment:modifier/assignment:factor=number:2": 1
-        }
+        "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [
+        {
+          "path": [
+            "cloves",
+            "province",
+            "province_trade_power_modifier"
+          ],
+          "inputs": [
+            [
+              1,
+              "0.2"
+            ],
+            [
+              2,
+              "0.1"
+            ]
+          ],
+          "output": "0.15"
+        }
+      ],
       "diagnostics": [],
       "timings": {
-        "view_ms": 339,
-        "merge_ms": 1005,
-        "matcher_ns": 679398833,
-        "pcs_ns": 195834533,
-        "policy_ns": 1331592
+        "view_ms": 8,
+        "merge_ms": 80,
+        "comparison_ms": 24,
+        "copy_through_definitions": 0,
+        "structured_definitions": 91,
+        "comparison_reused_definitions": 44,
+        "comparison_normalized_definitions": 48,
+        "matcher_ns": 21456712,
+        "pcs_ns": 18302461,
+        "policy_ns": 137205
       }
     },
     {
@@ -712,7 +724,7 @@
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
-        "scalar": "sum",
+        "scalar": "conflict",
         "list": "ordered_union",
         "one_sided_removal": "remove",
         "block": "recursive",
@@ -727,6 +739,7 @@
         "right": "c88984f064eec46d5dbe5c19e64b9ef18671b538a34ed794b83044644449e446",
         "human": "a67508f647f071cbf84989d47cf5d93f46afa7d2a318137b507b753725c7cb97"
       },
+      "candidate_semantic_content_id": "a562dd848e850e72d9010482f3248371d0f0a0316acf40fb21475ddd4576c22d",
       "base_definitions": 4,
       "active_definitions": 4,
       "missing_top_level_keys": [],
@@ -744,13 +757,19 @@
         }
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 180,
-        "merge_ms": 443,
-        "matcher_ns": 354754125,
-        "pcs_ns": 50762757,
-        "policy_ns": 347285
+        "view_ms": 6,
+        "merge_ms": 24,
+        "comparison_ms": 7,
+        "copy_through_definitions": 1,
+        "structured_definitions": 3,
+        "comparison_reused_definitions": 1,
+        "comparison_normalized_definitions": 3,
+        "matcher_ns": 9120583,
+        "pcs_ns": 4151369,
+        "policy_ns": 25715
       }
     },
     {
@@ -765,8 +784,8 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "semantic_mismatch",
-      "publishable": false,
+      "status": "accepted_equivalent",
+      "publishable": true,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
@@ -785,44 +804,32 @@
         "right": "3dd93c4ee4349fd2fae8c4059c10ea5f9e813cc9902519fb9761f3f349e032d4",
         "human": "57e90b2c02cd8e89c5451367434472358683f8f935eba338dcefcaa829c63cc3"
       },
+      "candidate_semantic_content_id": "864caecf77bb501d911a2b5976ef3082c6880d043d9865bd3ee132f023e08730",
       "base_definitions": 2507,
       "active_definitions": 534,
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 25101,
-        "right_atoms": 25104,
-        "shared_atoms": 25094,
-        "left_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
-          "assignment:ase_retain_age_ability_max_page_for_age_is_2/assignment:current_age=text:age_of_reformation": 1
-        },
-        "right_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
-          "assignment:ase_retain_age_ability_max_page_for_age_is_2/assignment:OR/assignment:current_age=text:age_of_reformation": 1,
-          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1
-        }
+        "left_atoms": 25057,
+        "right_atoms": 25057,
+        "shared_atoms": 25057,
+        "left_only": {},
+        "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 40,
-        "merge_ms": 4120,
-        "matcher_ns": 3642340834,
-        "pcs_ns": 312538060,
-        "policy_ns": 1940315
+        "view_ms": 11,
+        "merge_ms": 545,
+        "comparison_ms": 747,
+        "copy_through_definitions": 471,
+        "structured_definitions": 63,
+        "comparison_reused_definitions": 3021,
+        "comparison_normalized_definitions": 19,
+        "matcher_ns": 1117247,
+        "pcs_ns": 13530563,
+        "policy_ns": 75688
       }
     },
     {
@@ -837,7 +844,7 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "manual_resolution_required",
+      "status": "semantic_mismatch",
       "publishable": false,
       "policies": {
         "merge_key_source": "assignment_key",
@@ -857,6 +864,7 @@
         "right": "939604cc88ad420d1ca55e29dda02d906adc8cf2eaa67c8e4138db55a9dccb78",
         "human": "6650e78f2f5dc55eec2ee770dbcc04ee7a8e878e4677ca49933c367123f9d7ff"
       },
+      "candidate_semantic_content_id": "5a97f888bd2af21be92ee1dffcffef03b5608a1609071633fa4711f7d041d31f",
       "base_definitions": 6,
       "active_definitions": 5,
       "missing_top_level_keys": [],
@@ -1021,103 +1029,20 @@
         },
         "right_only": {}
       },
-      "conflicts": [
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        },
-        {
-          "kind": "insert_insert",
-          "detail": "left and right inserted different content into one matched class"
-        }
-      ],
+      "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 36,
-        "merge_ms": 762,
-        "matcher_ns": 588976792,
-        "pcs_ns": 100385424,
-        "policy_ns": 724826
+        "view_ms": 5,
+        "merge_ms": 55,
+        "comparison_ms": 13,
+        "copy_through_definitions": 1,
+        "structured_definitions": 4,
+        "comparison_reused_definitions": 3,
+        "comparison_normalized_definitions": 4,
+        "matcher_ns": 26747250,
+        "pcs_ns": 8718477,
+        "policy_ns": 54356
       }
     },
     {
@@ -1132,8 +1057,8 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "accepted_equivalent",
-      "publishable": true,
+      "status": "manual_resolution_required",
+      "publishable": false,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
@@ -1152,25 +1077,45 @@
         "right": "f5d03158ef356c3b2dd6cab66a37629b87175fc9df181101807ce35898b541fe",
         "human": "cc46ede86a9ec1f3111c6de8435412ed776a77dd1bdd3f14303fefcf8725e710"
       },
+      "candidate_semantic_content_id": "6f6d814b114bf8331ec80812167e2381d0355cbc7ff28dd62de08eda3cce90aa",
       "base_definitions": 797,
-      "active_definitions": 848,
+      "active_definitions": 849,
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 29897,
-        "right_atoms": 29897,
-        "shared_atoms": 29897,
+        "left_atoms": 28066,
+        "right_atoms": 28066,
+        "shared_atoms": 28066,
         "left_only": {},
         "right_only": {}
       },
-      "conflicts": [],
+      "conflicts": [
+        {
+          "kind": "policy",
+          "detail": "definition `NED_auxilliary_effect`: 2 control-flow finding(s) require review: left:$/NED_auxilliary_effect[0]/add_age_modifier[0]/else[0], output:$/NED_auxilliary_effect[0]/add_age_modifier[0]/else[0]"
+        },
+        {
+          "kind": "policy",
+          "detail": "definition `TUN_leo_africanus_spawn`: 2 control-flow finding(s) require review: left:$/TUN_leo_africanus_spawn[0]/else[1], output:$/TUN_leo_africanus_spawn[0]/else[1]"
+        },
+        {
+          "kind": "policy",
+          "detail": "definition `set_new_colonization_region`: 1 control-flow finding(s) require review: left:unprovable Clausewitz control-flow structure: `else_if` branch requires exactly one block `limit`"
+        }
+      ],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 402,
-        "merge_ms": 77730,
-        "matcher_ns": 75968707708,
-        "pcs_ns": 1128821139,
-        "policy_ns": 6792820
+        "view_ms": 53,
+        "merge_ms": 27684,
+        "comparison_ms": 1256,
+        "copy_through_definitions": 485,
+        "structured_definitions": 364,
+        "comparison_reused_definitions": 1489,
+        "comparison_normalized_definitions": 149,
+        "matcher_ns": 8548576,
+        "pcs_ns": 90236370,
+        "policy_ns": 583580
       }
     },
     {
@@ -1185,8 +1130,8 @@
       ],
       "legacy_verdict": "diverges_ast",
       "legacy_accepted": false,
-      "status": "semantic_mismatch",
-      "publishable": false,
+      "status": "accepted_equivalent",
+      "publishable": true,
       "policies": {
         "merge_key_source": "assignment_key",
         "nested_merge_key_source": "assignment_key",
@@ -1205,42 +1150,32 @@
         "right": "996746e01f918085b51ca19792c9705086c5931dfac8e353bba063b05c168b07",
         "human": "943299fe6a0943af2f065fef7f9cf58185df4f2b806d5ecd2d68a74d76022363"
       },
+      "candidate_semantic_content_id": "92cf936b6c7424d12a3db7e12d25ea894653d19c815ae69a15b7014e2a05b505",
       "base_definitions": 2507,
       "active_definitions": 539,
       "missing_top_level_keys": [],
       "extra_top_level_keys": [],
       "semantic_diff_from_human": {
-        "left_atoms": 24926,
-        "right_atoms": 24929,
-        "shared_atoms": 24920,
-        "left_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1
-        },
-        "right_only": {
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_normal_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:ARA_peasants_branch_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_conquest_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:EE_FRA_unlock_diplomatic_missions": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_muslim_military_flag": 1,
-          "assignment:EE_has_locked_a_branch/assignment:OR/assignment:OR/assignment:has_country_flag=text:GRA_western_military_flag": 1,
-          "assignment:country_gets_japanese_unique_missions/assignment:OR/assignment:tag=text:RYU": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:BRI": 1,
-          "assignment:country_has_both_paradox_and_me_missions_old/assignment:OR/assignment:tag=text:FRA": 1
-        }
+        "left_atoms": 24932,
+        "right_atoms": 24932,
+        "shared_atoms": 24932,
+        "left_only": {},
+        "right_only": {}
       },
       "conflicts": [],
+      "scalar_reductions": [],
       "diagnostics": [],
       "timings": {
-        "view_ms": 23,
-        "merge_ms": 2665,
-        "matcher_ns": 2222045791,
-        "pcs_ns": 291767494,
-        "policy_ns": 1898631
+        "view_ms": 10,
+        "merge_ms": 534,
+        "comparison_ms": 740,
+        "copy_through_definitions": 497,
+        "structured_definitions": 42,
+        "comparison_reused_definitions": 3029,
+        "comparison_normalized_definitions": 12,
+        "matcher_ns": 787080,
+        "pcs_ns": 9760598,
+        "policy_ns": 54235
       }
     }
   ]

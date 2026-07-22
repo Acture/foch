@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-18
+Last updated: 2026-07-22
 
 ## Summary
 
@@ -91,12 +91,13 @@ All 15 `.gui` units still diverge under the order-sensitive GUI policy.
 Removing them leaves 7/21 accepted non-GUI units (33.3%), with 13
 `diverges_ast` and one `diverges_structure`. Directory-scoped definition
 modules now keep cross-filename `common/*` families in the denominator:
-`common/religions`, `common/institutions`, and `common/scripted_effects` are now
-module-AST equivalent in the fixed 12-unit Structured common probe. The current
-matrix is 3 equivalent, 2 manual-resolution, 7 semantic-mismatch, and 0 failed.
-The remaining module divergences are internal value or policy differences, not
-filename-layout artifacts; `common/rebel_types` is a candidate-superset case
-that still needs an accepted-better judgment.
+all four `common/scripted_triggers` units, `common/religions`, and
+`common/institutions` are module-AST equivalent in the fixed 12-unit Structured
+common probe. The current matrix is 6 equivalent, 2 manual-resolution, 4
+semantic-mismatch, and 0 failed. The remaining module divergences are internal
+value or policy choices, not filename-layout artifacts; `common/rebel_types`
+and `common/governments` are candidate-superset cases that still need an
+accepted-better judgment.
 
 Legacy event merging now keys repeated `option` blocks by `option.name`, and
 per-path event/decision output retains vanilla-equivalent entries because the
@@ -110,9 +111,10 @@ An experimental structured-merge vertical slice now exists behind an engine
 API used by the merge-quality probes. A parser-independent kernel provides
 verified tree matching, base-composed left/right correspondence, PCS ordering,
 provenance, and typed conflicts. The Clausewitz adapter is format-generic, while
-the production final-join integration remains restricted to ordinary event
-files with a non-empty vanilla base and exactly two final DAG sinks. Legacy and
-Structured shadow arms run in isolated child processes and cache
+the production final-join integration supports ordinary event files and
+explicitly enabled, merge-ready assignment-key definition modules. Both require
+a non-empty vanilla base and exactly two final DAG sinks. Legacy and Structured
+shadow arms run in isolated child processes and cache
 namespaces, and unsupported shapes fail explicitly before any winner-copy
 fallback. Shadow manifests bind executable, mod, retained vanilla, and base
 snapshot contents together with the effective `foch.toml` and external
@@ -124,11 +126,11 @@ consumes the existing event edit-wins and scalar LastWriter policies. Semantic
 anchors can be global or parent-scoped, event control-flow chains carry guard
 and effect roles, policy-preserved descendants can restore transparent wrapper
 paths, and negative Boolean blocks can select one revision's complete child
-set without leaving unreachable classes. These capabilities remain a probe
-surface rather than the default engine. The fixed Legacy scorer baseline is
-still 7/36 overall and 7/21 when only `.gui` layout files are excluded; the
-selected Elections rollout projects both counts to 8 with no accepted unit
-lost. See
+set without leaving unreachable classes. Structured remains explicit opt-in,
+and conflicts block publication without a winner-copy fallback. The fixed
+Legacy scorer baseline is still 7/36 overall and 7/21 when only `.gui` layout
+files are excluded; the current 13-candidate rollout projects both counts to 12
+with no accepted unit lost. See
 [`structured-merge-shadow.md`](./structured-merge-shadow.md).
 
 The probe now has a corpus-native execution layer. `foch-mq shadow-case`
@@ -151,21 +153,31 @@ accepted overall and 7 -> 8 across the 21 non-GUI units, with no Legacy accepted
 unit lost and no terminal candidate failure. This validates Elections only;
 Structured remains globally disabled for the broader event family.
 
+That result is historical rather than a current release claim. In the
+2026-07-22 generalized 13-candidate run, Elections failed the control-flow shape
+safety check with 74 candidate-only and 31 human-only atoms. It is excluded from
+the current projection until the generalized control-flow path restores the
+earlier event result.
+
 The 2026-07-22 `foch-mq common-probe` run completed the first Common
 Applicability Gate over all 12 fixed `common/**` corpus units. The probe uses
 the provisional `common/<folder>` module boundary, applies each classified
-`ContentFamily` policy to one shared Structured implementation, and never
-publishes a generated mod. All 12 units reached a classified result with no
-unsupported, parse, configuration, or adapter failure; the previously accepted
-religions unit remained accepted. Two units (`common/religions` and
-`common/scripted_effects`) are order-insensitive AST equivalent, two require
-manual resolution, and eight are conflict-free semantic mismatches. Every
-candidate retains all human top-level definitions, so remaining failures are
-inside reducers, repeated-child identity, and control-flow semantics rather
-than filename layout. The run took 123,260 ms; `common/scripted_effects`
-accounted for 80,263 ms and shows that matcher cost, not materialization, is the
-remaining performance hotspot. See
+`ContentFamily` policy to the same Structured definition-module API now used by
+the production final join, and never publishes a generated mod. All 12 units
+reached a classified result with no unsupported, parse, configuration, or
+adapter failure; the previously accepted religions unit remained accepted.
+Six units are order-insensitive AST equivalent, two require manual resolution,
+and four are conflict-free semantic mismatches. The release-mode run took
+37,398 ms; `common/scripted_effects` accounted for 29,176 ms and remains the
+matcher-dominated hotspot. See
 [`research/2026-07-22-common-applicability.md`](./research/2026-07-22-common-applicability.md).
+
+The corresponding production shadow run evaluated those 12 common units plus
+Elections while retaining Legacy for the other 23 scorer units. Outcomes were
+5 improved, 0 regressed, 1 unchanged accepted, 4 review, 2 structured conflict,
+and 1 safety failure. Strict and adjudicated acceptance project from 7/36 to
+12/36, and non-GUI acceptance from 7/21 to 12/21, with zero Legacy-accepted
+units lost. Aggregate candidate runtime was 0.960x Legacy.
 
 The shipped product surface includes:
 

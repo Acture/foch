@@ -3,8 +3,10 @@
 ## Scope
 
 This checkpoint tests the Directory Module Hypothesis against every `common/**`
-unit in the fixed merge-quality corpus. It does not change production content
-loading, merge planning, output paths, or rollout policy.
+unit in the fixed merge-quality corpus and exercises the same definition-module
+API used by the production Structured final join. The probe never publishes a
+generated mod. Production use remains explicit opt-in; Legacy is still the
+default merge kernel.
 
 For each corpus unit, the probe builds four effective module views for its
 `common/<folder>` prefix:
@@ -16,27 +18,46 @@ For each corpus unit, the probe builds four effective module views for its
 
 Files are resolved by normalized relative path in layer order. A covering
 `replace_path` clears earlier files. Visible files are read in lexical path
-order, and duplicate top-level assignment keys use the last visible
-definition. This is a provisional model to measure, not a claim about the
-game's loader.
+order. Structured definition modules use the runtime-effective last definition
+for duplicate top-level assignment keys; this is deliberately scoped to
+Structured so the frozen Legacy baseline is unchanged.
 
 ## Execution
 
-The shared Clausewitz structured adapter merges `base`, `left`, and `right`
-with the classified `ContentFamily` merge policies. Event-only post-processing
-is excluded. A structured conflict is a classified Manual Resolution Required
-result, not an unsupported-family result.
+`merge_clausewitz_definition_module` partitions complete base, left, and right
+views by top-level key and merges active definitions with the classified
+`ContentFamily` policies. Inactive definitions remain in the complete output.
+Direct copy-through is policy-aware: identical sides are safe, but a
+base-equal side may bypass the kernel only when the family's one-sided-removal
+policy is `Remove`. Control-flow definitions and policy-preserved alternatives
+always pass through Structured.
 
-Before tree matching, the probe removes top-level definitions that are
-semantically unchanged in both source views. It merges the remaining active
-definitions, projects them back over the complete base module, and compares
-that complete candidate with the complete human module. This partitioning is
-semantics-preserving for the probe's assignment-key module model and prevents
-unrelated vanilla definitions from dominating matcher cost.
+Top-level comments are detached before partitioning, merged as trivia, and
+reattached deterministically. They do not enter positional content matching.
+The output is sorted deterministically after the complete module is rebuilt.
 
-The probe never writes a generated mod. It may write candidate previews under
-its report directory for inspection; those files are research artifacts and
-are not publishable merge output.
+Comparison uses the same module normalizer in `common-probe` and
+`corpus-shadow`. Definitions identical between candidate and human are reused;
+only differing definitions are canonicalized before order-insensitive AST
+comparison. This affects scoring only in the Structured arm and cannot relabel
+the committed Legacy baseline.
+
+## Production activation
+
+A definition module may reach the production Structured final join only when:
+
+- the caller explicitly selects the Structured merge kernel;
+- the `ContentFamily` declares a merge-ready `DefinitionModule` with
+  `AssignmentKey` identity;
+- the merge plan contains a non-empty vanilla base and at least two distinct
+  non-base contributors;
+- the patch DAG has exactly two final sinks;
+- the structured merge returns no conflict.
+
+Complete Structured module output bypasses Legacy's per-entry vanilla no-op
+pruning. Omitting such a definition would expose a source-mod definition, not
+the vanilla definition, when the source mods remain loaded. Any conflict blocks
+publication; there is no winner-copy fallback.
 
 ## Gate
 
@@ -51,5 +72,6 @@ The fixed denominator is the 12 `common/**` units in
 - record per-family review status and per-unit structured timing;
 - include order-insensitive AST atom deltas against the effective human module.
 
-There is no target acceptance rate in this checkpoint. The measured matrix is
-the input to later semantic-policy work.
+There is no acceptance-rate threshold. The current measured matrix and
+remaining semantic decisions are recorded in
+[`research/2026-07-22-common-applicability.md`](./research/2026-07-22-common-applicability.md).
