@@ -302,7 +302,7 @@ fn inspect_control_flow_chain(
 	statements: &[AstStatement],
 	start: usize,
 ) -> Option<ControlFlowChain> {
-	if statement_key(statements.get(start)?) != Some("if") {
+	if super::control_flow::branch_key(statements.get(start)?) != Some("if") {
 		return None;
 	}
 	let mut all_guarded_define_ruler =
@@ -317,7 +317,10 @@ fn inspect_control_flow_chain(
 		{
 			branch += 1;
 		}
-		match statements.get(branch).and_then(statement_key) {
+		match statements
+			.get(branch)
+			.and_then(super::control_flow::branch_key)
+		{
 			Some("else_if") => {
 				all_guarded_define_ruler &=
 					statement_has_top_level_effect(&statements[branch], "define_ruler");

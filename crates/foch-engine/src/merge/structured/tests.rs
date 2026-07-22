@@ -468,6 +468,38 @@ fn structured_merge_preserves_orphan_control_flow_but_withholds_publication() {
 }
 
 #[test]
+fn scalar_control_flow_named_assignment_remains_ordinary_data() {
+	let base = parse(
+		"scripted_effect = {\n\
+		\tadd_age_modifier = {\n\
+		\t\tname = early_modifier\n\
+		\t\telse = \"add_prestige = 50\"\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"scripted_effect = {\n\
+		\tadd_age_modifier = {\n\
+		\t\tname = early_modifier\n\
+		\t\telse = \"add_prestige = 50\"\n\
+		\t}\n\
+		\tset_country_flag = left_marker\n\
+		}\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &base, &MergePolicies::default())
+		.expect("merge scalar assignment named like control flow");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(output.contains("else = \"add_prestige = 50\""), "{output}");
+	assert!(
+		output.contains("set_country_flag = left_marker"),
+		"{output}"
+	);
+}
+
+#[test]
 fn structured_preserve_policy_does_not_hide_delete_modify_conflict() {
 	let base = parse("building = { cost = 100 sailors = 1 }\n");
 	let left = parse("building = { cost = 100 }\n");

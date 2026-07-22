@@ -287,8 +287,9 @@ fn value_content_equal(left: &AstValue, right: &AstValue) -> bool {
 
 fn contains_control_flow(statements: &[AstStatement]) -> bool {
 	statements.iter().any(|statement| match statement {
-		AstStatement::Assignment { key, value, .. } => {
-			matches!(key.as_str(), "if" | "else_if" | "else") || value_contains_control_flow(value)
+		AstStatement::Assignment { value, .. } => {
+			super::control_flow::branch_key(statement).is_some()
+				|| value_contains_control_flow(value)
 		}
 		AstStatement::Item { value, .. } => value_contains_control_flow(value),
 		AstStatement::Comment { .. } => false,

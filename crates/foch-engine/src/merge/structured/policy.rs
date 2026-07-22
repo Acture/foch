@@ -37,7 +37,7 @@ impl ClausewitzTreePolicy for DefaultClausewitzTreePolicy {
 					format!("{key}:{desc}"),
 				)
 			}),
-			"if" | "else_if" | "else" => None,
+			"if" | "else_if" | "else" if matches!(value, AstValue::Block { .. }) => None,
 			_ => Some(SemanticKey::parent_scoped("clausewitz.assignment.key", key)),
 		}
 	}

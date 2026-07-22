@@ -401,15 +401,15 @@ fn collect_orphan_paths(statements: &[AstStatement], path: &str, paths: &mut Vec
 		let index = key_counts.entry(key).or_default();
 		let current_path = format!("{path}/{key}[{index}]");
 		*index += 1;
-		match key.as_str() {
-			"if" => previous_control = Some("if"),
-			"else_if" => {
+		match branch_key(statement) {
+			Some("if") => previous_control = Some("if"),
+			Some("else_if") => {
 				if !matches!(previous_control, Some("if" | "else_if")) {
 					paths.push(current_path.clone());
 				}
 				previous_control = Some("else_if");
 			}
-			"else" => {
+			Some("else") => {
 				if !matches!(previous_control, Some("if" | "else_if")) {
 					paths.push(current_path.clone());
 				}
@@ -423,8 +423,20 @@ fn collect_orphan_paths(statements: &[AstStatement], path: &str, paths: &mut Vec
 	}
 }
 
+pub(super) fn branch_key(statement: &AstStatement) -> Option<&str> {
+	let AstStatement::Assignment {
+		key,
+		value: AstValue::Block { .. },
+		..
+	} = statement
+	else {
+		return None;
+	};
+	matches!(key.as_str(), "if" | "else_if" | "else").then_some(key)
+}
+
 pub(super) fn starts_chain(statement: &AstStatement) -> bool {
-	assignment_key(statement) == Some("if")
+	branch_key(statement) == Some("if")
 }
 
 pub(super) fn normalize_chain(
@@ -665,7 +677,7 @@ fn opaque_chain_end(statements: &[AstStatement], start: usize) -> usize {
 		{
 			next += 1;
 		}
-		match statements.get(next).and_then(assignment_key) {
+		match statements.get(next).and_then(branch_key) {
 			Some("else_if") => cursor = next + 1,
 			Some("else") => return next + 1,
 			_ => return cursor,
@@ -719,14 +731,9 @@ fn extract_raw_cases(
 		let statement = statements.get(cursor).ok_or_else(|| {
 			AstAdapterError::UnprovableControlFlow("control-flow chain ended early".to_string())
 		})?;
-		let key = assignment_key(statement).ok_or_else(|| {
+		let key = branch_key(statement).ok_or_else(|| {
 			AstAdapterError::UnprovableControlFlow("branch is not an assignment".to_string())
 		})?;
-		if !matches!(key, "if" | "else_if" | "else") {
-			return Err(AstAdapterError::UnprovableControlFlow(format!(
-				"unexpected `{key}` in control-flow chain"
-			)));
-		}
 		let AstStatement::Assignment {
 			value: AstValue::Block { items, .. },
 			..
@@ -789,7 +796,7 @@ fn extract_raw_cases(
 		{
 			next += 1;
 		}
-		let Some("else_if" | "else") = statements.get(next).and_then(assignment_key) else {
+		let Some("else_if" | "else") = statements.get(next).and_then(branch_key) else {
 			break;
 		};
 		leading_comments.extend_from_slice(&statements[cursor..next]);
