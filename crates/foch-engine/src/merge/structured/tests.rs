@@ -1010,7 +1010,7 @@ fn event_merge_combines_hooks_boolean_replacements_and_union_safe_chains() {
 }
 
 #[test]
-fn event_merge_matches_replaced_open_chains_by_parent_position() {
+fn event_merge_matches_replaced_open_chains_by_sequence_context() {
 	let base = parse(
 		"country_event = {\n\
 		\tid = test.1\n\
@@ -1047,7 +1047,7 @@ fn event_merge_matches_replaced_open_chains_by_parent_position() {
 	);
 
 	let outcome = merge_event_files(&base, &left, &right, &event_policies())
-		.expect("merge positionally corresponding open chains");
+		.expect("merge corresponding open-chain sequence slots");
 
 	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
 	let output = emit(outcome.resolved_ast().expect("publishable event AST"));
@@ -1060,6 +1060,61 @@ fn event_merge_matches_replaced_open_chains_by_parent_position() {
 		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
 	}
 	assert!(!output.contains("old_candidate_flag"), "{output}");
+}
+
+#[test]
+fn event_merge_aligns_open_chains_after_an_insertion() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = candidate_a } add_prestige = 1 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_b } add_legitimacy = 1 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_c } add_stability = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = candidate_x } add_treasury = 10 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_a } add_prestige = 1 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_b } add_legitimacy = 1 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_c } add_stability = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = candidate_a } add_prestige = 1 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_b } add_legitimacy = 2 }\n\
+		\t\tif = { limit = { has_country_flag = candidate_c } add_stability = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge insertion-shifted open chains");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("publishable event AST"));
+	for retained in [
+		"has_country_flag = candidate_x",
+		"add_treasury = 10",
+		"has_country_flag = candidate_a",
+		"has_country_flag = candidate_b",
+		"add_legitimacy = 2",
+		"has_country_flag = candidate_c",
+	] {
+		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
+	}
+	assert!(!output.contains("add_legitimacy = 1"), "{output}");
 }
 
 #[test]

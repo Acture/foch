@@ -21,5 +21,5 @@ pub use policy::{
 pub use provenance::{RevisionNode, SourceSet};
 pub use tree::{
 	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, RevisionId, SemanticKey,
-	SemanticKeyScope, SubtreeHash, TreeError, TreeNode,
+	SemanticKeyMatchMode, SemanticKeyScope, SubtreeHash, TreeError, TreeNode,
 };

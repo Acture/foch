@@ -1157,13 +1157,19 @@ fn merged_children(
 	match merge_order(parent, &base, &left, &right) {
 		Ok(children) => children,
 		Err(cycle) => {
+			let path = if selected.policy_path.is_empty() {
+				"$".to_string()
+			} else {
+				format!("$/{}", selected.policy_path.join("/"))
+			};
 			conflicts.push(class_conflict(
 				ConflictKind::Ordering,
 				parent,
 				states.get(&parent).and_then(|state| state.parent),
 				mapping,
 				format!(
-					"PCS constraints contain a cycle across {} nodes and {} triples",
+					"PCS constraints contain a cycle at {path} ({}) across {} nodes and {} triples",
+					selected.kind,
 					cycle.remaining.len(),
 					cycle.triples.len()
 				),

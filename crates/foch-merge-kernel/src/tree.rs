@@ -56,11 +56,23 @@ pub enum SemanticKeyScope {
 	Parent,
 }
 
+#[derive(
+	Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticKeyMatchMode {
+	#[default]
+	Identity,
+	OrderedSimilarity,
+	OrderedSimilarityWithPosition,
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SemanticKey {
 	pub scope: SemanticKeyScope,
 	pub namespace: String,
 	pub value: String,
+	pub match_mode: SemanticKeyMatchMode,
 }
 
 impl SemanticKey {
@@ -69,6 +81,7 @@ impl SemanticKey {
 			scope: SemanticKeyScope::Global,
 			namespace: namespace.into(),
 			value: value.into(),
+			match_mode: SemanticKeyMatchMode::Identity,
 		}
 	}
 
@@ -77,6 +90,31 @@ impl SemanticKey {
 			scope: SemanticKeyScope::Parent,
 			namespace: namespace.into(),
 			value: value.into(),
+			match_mode: SemanticKeyMatchMode::Identity,
+		}
+	}
+
+	pub fn parent_scoped_ordered_similarity(
+		namespace: impl Into<String>,
+		value: impl Into<String>,
+	) -> Self {
+		Self {
+			scope: SemanticKeyScope::Parent,
+			namespace: namespace.into(),
+			value: value.into(),
+			match_mode: SemanticKeyMatchMode::OrderedSimilarity,
+		}
+	}
+
+	pub fn parent_scoped_ordered_similarity_with_position(
+		namespace: impl Into<String>,
+		value: impl Into<String>,
+	) -> Self {
+		Self {
+			scope: SemanticKeyScope::Parent,
+			namespace: namespace.into(),
+			value: value.into(),
+			match_mode: SemanticKeyMatchMode::OrderedSimilarityWithPosition,
 		}
 	}
 }
@@ -152,6 +190,28 @@ impl TreeNode {
 		value: impl Into<String>,
 	) -> Self {
 		self.anchor = Some(SemanticKey::parent_scoped(namespace, value));
+		self
+	}
+
+	pub fn with_parent_scoped_ordered_similarity_anchor(
+		mut self,
+		namespace: impl Into<String>,
+		value: impl Into<String>,
+	) -> Self {
+		self.anchor = Some(SemanticKey::parent_scoped_ordered_similarity(
+			namespace, value,
+		));
+		self
+	}
+
+	pub fn with_parent_scoped_ordered_similarity_position_anchor(
+		mut self,
+		namespace: impl Into<String>,
+		value: impl Into<String>,
+	) -> Self {
+		self.anchor = Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
+			namespace, value,
+		));
 		self
 	}
 

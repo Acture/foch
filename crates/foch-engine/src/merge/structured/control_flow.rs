@@ -457,13 +457,12 @@ pub(super) fn starts_chain(statement: &AstStatement) -> bool {
 pub(super) fn normalize_chain(
 	statements: &[AstStatement],
 	start: usize,
-	position: usize,
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<(TreeNode, usize), AstAdapterError> {
 	let opaque_next = opaque_chain_end(statements, start);
 	let mut semantic_findings = Vec::new();
-	match normalize_chain_semantic(statements, start, position, policy, &mut semantic_findings) {
+	match normalize_chain_semantic(statements, start, policy, &mut semantic_findings) {
 		Ok(chain) => {
 			control_flow_findings.append(&mut semantic_findings);
 			Ok(chain)
@@ -499,7 +498,6 @@ pub(super) fn normalize_chain(
 fn normalize_chain_semantic(
 	statements: &[AstStatement],
 	start: usize,
-	position: usize,
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<(TreeNode, usize), AstAdapterError> {
@@ -626,13 +624,21 @@ fn normalize_chain_semantic(
 		} else {
 			guarded_branch_kind(&value)
 		};
+		let branch_anchor = if is_default {
+			SemanticKey::parent_scoped_ordered_similarity_with_position(
+				"clausewitz.control_flow.branch.sequence",
+				kind.clone(),
+			)
+		} else {
+			SemanticKey::parent_scoped_ordered_similarity(
+				"clausewitz.control_flow.branch.sequence",
+				kind.clone(),
+			)
+		};
 		let mut node = branch(
 			&kind,
 			None,
-			Some(SemanticKey::parent_scoped(
-				"clausewitz.control_flow.branch.effect",
-				case.effect_key.clone(),
-			)),
+			Some(branch_anchor),
 			ChildOrder::Ordered,
 			ChildCardinality::ExactlyOne,
 			vec![normalize_value_with_findings(
@@ -666,9 +672,9 @@ fn normalize_chain_semantic(
 			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
 		})
 	} else {
-		Some(SemanticKey::parent_scoped(
-			"clausewitz.control_flow.chain.position",
-			position.to_string(),
+		Some(SemanticKey::parent_scoped_ordered_similarity_with_position(
+			"clausewitz.control_flow.chain.sequence",
+			"open",
 		))
 	};
 	let mut chain = branch(

@@ -494,6 +494,15 @@ Verified locally during ACT-165 representative-family validation:
 - `target/debug/foch graph tests/corpus/eu4_real_minimized/playlist.json --out /tmp/foch-act165-validation --mode semantic --family common/triggered_modifiers --no-game-base`
 - `target/debug/foch graph /tmp/foch-act165-holy-orders-playlist.json --out /tmp/foch-act165-holy-orders --mode semantic --family common/holy_orders --no-game-base`
 
+## Elections ordered-correspondence checkpoint (2026-07-23)
+
+- Open control-flow chains now use insertion-tolerant, similarity-weighted sequence alignment instead of absolute sibling positions. Matches are monotonic; non-unique best alignments remain typed ambiguities.
+- Guarded branches use the same ordered matcher without positional fallback. This merges high-confidence scalar edits while preserving structurally similar but semantically independent alternatives. Default branches and fully replaced open chains retain a weak positional fallback.
+- Focused validation passed: all 57 `foch-merge-kernel` tests, all 33 Structured merge tests, strict Clippy for `foch-merge-kernel` and `foch-engine`, and formatting.
+- The Elections-only real probe no longer reports the previous `ambiguous_match` or `delete_modify`. It is not accepted yet: four PCS ordering cycles remain under `country_event:700`, options `EVTOPTB700` through `EVTOPTE700`.
+- Evidence: `/private/tmp/foch-shadow-elections-ordered-paths/shadow-corpus.json`. No Common/full-corpus run or published quality-number update was performed.
+- Next slice: minimize one option-level cycle, inspect the competing base/left/right precedence triples, and make PCS ordering consume the established monotonic control-flow correspondence without weakening cycle detection globally.
+
 ## Practical Reading Order
 
 1. [architecture.md](./architecture.md)
