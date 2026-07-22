@@ -41,8 +41,31 @@ impl Trees<'_> {
 #[derive(Clone, Debug)]
 struct ClassState {
 	selected: RevisionNode,
+	scalar_synthesis: Option<ScalarSynthesis>,
 	sources: SourceSet,
 	parent: Option<ClassId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScalarSynthesis {
+	reducer_path: Vec<String>,
+	inputs: Vec<(RevisionId, String)>,
+	output: String,
+}
+
+#[derive(Clone, Debug)]
+struct SelectedClassNode {
+	node: RevisionNode,
+	scalar_synthesis: Option<ScalarSynthesis>,
+}
+
+impl SelectedClassNode {
+	fn revision(node: RevisionNode) -> Self {
+		Self {
+			node,
+			scalar_synthesis: None,
+		}
+	}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +132,7 @@ pub fn three_way_merge_with_policy(
 	assign_parents(&trees, &mapping, &mut states, &mut conflicts);
 	let root_class = mapping.class_of(RevisionNode::new(RevisionId::BASE, base.root()));
 	let mut sources_preorder = Vec::new();
+	let mut syntheses_preorder = Vec::new();
 	let mut visiting = BTreeSet::new();
 	let mut emitted = BTreeSet::new();
 	let mut policy_excluded = BTreeSet::new();
@@ -119,6 +143,7 @@ pub fn three_way_merge_with_policy(
 		&states,
 		&mut conflicts,
 		&mut sources_preorder,
+		&mut syntheses_preorder,
 		&mut visiting,
 		&mut emitted,
 		&mut policy_excluded,
@@ -140,12 +165,24 @@ pub fn three_way_merge_with_policy(
 			),
 		));
 	}
-	let tree = NormalizedTree::from_root(root).expect("merged tree fits the normalized arena");
+	let mut tree = NormalizedTree::from_root(root).expect("merged tree fits the normalized arena");
 	let provenance = sources_preorder
 		.into_iter()
 		.enumerate()
 		.map(|(index, sources)| (NodeId::new(index as u32), sources))
 		.collect();
+	for (index, synthesis) in syntheses_preorder.into_iter().enumerate() {
+		let Some(synthesis) = synthesis else {
+			continue;
+		};
+		tree.record_scalar_synthesis(
+			NodeId::new(index as u32),
+			synthesis.reducer_path,
+			synthesis.inputs,
+			synthesis.output,
+		)
+		.expect("synthesis preorder follows the normalized output tree");
+	}
 	let pcs_ns = nanos(pcs_started.elapsed()).saturating_sub(policy_ns);
 
 	MergeOutcome {
@@ -362,7 +399,8 @@ fn select_classes(
 		states.insert(
 			class.id,
 			ClassState {
-				selected,
+				selected: selected.node,
+				scalar_synthesis: selected.scalar_synthesis,
 				sources,
 				parent: None,
 			},
@@ -430,6 +468,7 @@ fn close_policy_preserved_ancestors(
 				}));
 			states.entry(class_id).or_insert(ClassState {
 				selected: RevisionNode::new(*revision, node),
+				scalar_synthesis: None,
 				sources,
 				parent: None,
 			});
@@ -693,7 +732,7 @@ fn select_revision_node(
 	policy: &dyn MergePolicy,
 	policy_ns: &mut u64,
 	conflicts: &mut Vec<StructuralConflict>,
-) -> RevisionNode {
+) -> SelectedClassNode {
 	let base = class
 		.get(RevisionId::BASE)
 		.map(|node| RevisionNode::new(RevisionId::BASE, node));
@@ -704,17 +743,11 @@ fn select_revision_node(
 		.get(RevisionId::RIGHT)
 		.map(|node| RevisionNode::new(RevisionId::RIGHT, node));
 	match (base, left, right) {
-		(_, Some(left), Some(right)) if shallow_eq(trees.node(left), trees.node(right)) => left,
-		(Some(base), Some(left), Some(right)) if shallow_eq(trees.node(base), trees.node(left)) => {
-			right
-		}
-		(Some(base), Some(left), Some(right))
-			if shallow_eq(trees.node(base), trees.node(right)) =>
-		{
-			left
+		(_, Some(left), Some(right)) if shallow_eq(trees.node(left), trees.node(right)) => {
+			SelectedClassNode::revision(left)
 		}
 		(Some(base), Some(left), Some(right)) => {
-			if let Some(selected) = select_divergent_node(
+			let decision = divergent_policy_decision(
 				trees,
 				policy,
 				policy_ns,
@@ -722,6 +755,29 @@ fn select_revision_node(
 				Some(base),
 				Some(left),
 				Some(right),
+			);
+			if matches!(decision, PolicyDecision::SynthesizeScalar(_))
+				&& let Some(selected) = apply_divergent_policy_decision(
+					trees,
+					Some(base),
+					Some(left),
+					Some(right),
+					&decision,
+				) {
+				return selected;
+			}
+			if shallow_eq(trees.node(base), trees.node(left)) {
+				return SelectedClassNode::revision(right);
+			}
+			if shallow_eq(trees.node(base), trees.node(right)) {
+				return SelectedClassNode::revision(left);
+			}
+			if let Some(selected) = apply_divergent_policy_decision(
+				trees,
+				Some(base),
+				Some(left),
+				Some(right),
+				&decision,
 			) {
 				return selected;
 			}
@@ -736,10 +792,10 @@ fn select_revision_node(
 					node_summary(trees.node(right)),
 				),
 			));
-			right
+			SelectedClassNode::revision(right)
 		}
 		(None, Some(left), Some(right)) => {
-			if let Some(selected) = select_divergent_node(
+			let decision = divergent_policy_decision(
 				trees,
 				policy,
 				policy_ns,
@@ -747,7 +803,10 @@ fn select_revision_node(
 				None,
 				Some(left),
 				Some(right),
-			) {
+			);
+			if let Some(selected) =
+				apply_divergent_policy_decision(trees, None, Some(left), Some(right), &decision)
+			{
 				return selected;
 			}
 			conflicts.push(class_conflict(
@@ -761,11 +820,11 @@ fn select_revision_node(
 					node_summary(trees.node(right)),
 				),
 			));
-			right
+			SelectedClassNode::revision(right)
 		}
-		(_, Some(left), None) => left,
-		(_, None, Some(right)) => right,
-		(Some(base), None, None) => base,
+		(_, Some(left), None) => SelectedClassNode::revision(left),
+		(_, None, Some(right)) => SelectedClassNode::revision(right),
+		(Some(base), None, None) => SelectedClassNode::revision(base),
 		(None, None, None) => unreachable!("revision class is never empty"),
 	}
 }
@@ -780,7 +839,7 @@ fn node_summary(node: &NormalizedNode) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn select_divergent_node(
+fn divergent_policy_decision(
 	trees: &Trees<'_>,
 	policy: &dyn MergePolicy,
 	policy_ns: &mut u64,
@@ -788,21 +847,63 @@ fn select_divergent_node(
 	base: Option<RevisionNode>,
 	left: Option<RevisionNode>,
 	right: Option<RevisionNode>,
-) -> Option<RevisionNode> {
-	let selected_revision = measure_policy(policy_ns, || {
-		policy.select_divergent_node(NodeConflictContext {
+) -> PolicyDecision {
+	measure_policy(policy_ns, || {
+		policy.resolve_divergent_node(NodeConflictContext {
 			kind,
 			base: base.map(|node| trees.node(node)),
 			left: left.map(|node| trees.node(node)),
 			right: right.map(|node| trees.node(node)),
 		})
-	});
-	match selected_revision {
-		Some(RevisionId::BASE) => base,
-		Some(RevisionId::LEFT) => left,
-		Some(RevisionId::RIGHT) => right,
-		_ => None,
+	})
+}
+
+fn apply_divergent_policy_decision(
+	trees: &Trees<'_>,
+	base: Option<RevisionNode>,
+	left: Option<RevisionNode>,
+	right: Option<RevisionNode>,
+	decision: &PolicyDecision,
+) -> Option<SelectedClassNode> {
+	match decision {
+		PolicyDecision::Select(RevisionId::BASE) => base.map(SelectedClassNode::revision),
+		PolicyDecision::Select(RevisionId::LEFT) => left.map(SelectedClassNode::revision),
+		PolicyDecision::Select(RevisionId::RIGHT) => right.map(SelectedClassNode::revision),
+		PolicyDecision::SynthesizeScalar(output) => {
+			synthesize_scalar_selection(trees, left?, right?, output.clone())
+		}
+		PolicyDecision::Unresolved | PolicyDecision::Resolved | PolicyDecision::Select(_) => None,
 	}
+}
+
+fn synthesize_scalar_selection(
+	trees: &Trees<'_>,
+	left: RevisionNode,
+	right: RevisionNode,
+	output: String,
+) -> Option<SelectedClassNode> {
+	let left_node = trees.node(left);
+	let right_node = trees.node(right);
+	if !left_node.children.is_empty()
+		|| !right_node.children.is_empty()
+		|| left_node.kind != right_node.kind
+		|| left_node.policy_path != right_node.policy_path
+	{
+		return None;
+	}
+	let left_value = left_node.value.clone()?;
+	let right_value = right_node.value.clone()?;
+	Some(SelectedClassNode {
+		node: right,
+		scalar_synthesis: Some(ScalarSynthesis {
+			reducer_path: left_node.policy_path.clone(),
+			inputs: vec![
+				(RevisionId::LEFT, left_value),
+				(RevisionId::RIGHT, right_value),
+			],
+			output,
+		}),
+	})
 }
 
 fn shallow_eq(left: &NormalizedNode, right: &NormalizedNode) -> bool {
@@ -871,6 +972,7 @@ fn build_class(
 	states: &BTreeMap<ClassId, ClassState>,
 	conflicts: &mut Vec<StructuralConflict>,
 	sources_preorder: &mut Vec<SourceSet>,
+	syntheses_preorder: &mut Vec<Option<ScalarSynthesis>>,
 	visiting: &mut BTreeSet<ClassId>,
 	emitted: &mut BTreeSet<ClassId>,
 	policy_excluded: &mut BTreeSet<ClassId>,
@@ -893,10 +995,12 @@ fn build_class(
 			state.selected,
 			Some(&state.sources),
 			sources_preorder,
+			syntheses_preorder,
 		);
 	}
 	emitted.insert(class_id);
 	sources_preorder.push(state.sources.clone());
+	syntheses_preorder.push(state.scalar_synthesis.clone());
 	let selected = trees.node(state.selected);
 	let children = merged_children(
 		class_id,
@@ -920,6 +1024,7 @@ fn build_class(
 			states,
 			conflicts,
 			sources_preorder,
+			syntheses_preorder,
 			visiting,
 			emitted,
 			policy_excluded,
@@ -931,7 +1036,11 @@ fn build_class(
 	visiting.remove(&class_id);
 	TreeNode {
 		kind: selected.kind.clone(),
-		value: selected.value.clone(),
+		value: state
+			.scalar_synthesis
+			.as_ref()
+			.map(|synthesis| synthesis.output.clone())
+			.or_else(|| selected.value.clone()),
 		anchor: selected.anchor.clone(),
 		signature: selected.signature.clone(),
 		child_order: selected.child_order,
@@ -945,6 +1054,7 @@ fn clone_revision_subtree(
 	source: RevisionNode,
 	root_sources: Option<&SourceSet>,
 	sources_preorder: &mut Vec<SourceSet>,
+	syntheses_preorder: &mut Vec<Option<ScalarSynthesis>>,
 ) -> TreeNode {
 	let node = trees.node(source);
 	sources_preorder.push(
@@ -952,6 +1062,7 @@ fn clone_revision_subtree(
 			.cloned()
 			.unwrap_or_else(|| SourceSet::new([source])),
 	);
+	syntheses_preorder.push(None);
 	let children = node
 		.children
 		.iter()
@@ -961,6 +1072,7 @@ fn clone_revision_subtree(
 				RevisionNode::new(source.revision, *child),
 				None,
 				sources_preorder,
+				syntheses_preorder,
 			)
 		})
 		.collect();
@@ -1346,6 +1458,17 @@ mod tests {
 		TreeNode::leaf("entry", name).with_anchor("entry", name)
 	}
 
+	fn scalar_field(key: &str, value: &str) -> TreeNode {
+		let mut field = TreeNode::branch(
+			format!("clausewitz.assignment:{key}"),
+			vec![TreeNode::leaf("clausewitz.scalar.number", value)],
+		)
+		.with_child_cardinality(ChildCardinality::ExactlyOne)
+		.with_parent_scoped_anchor("clausewitz.assignment.key", key);
+		field.value = Some(key.to_string());
+		field
+	}
+
 	fn moved_entry_parent(tree: &NormalizedTree) -> String {
 		let (_, entry) = tree
 			.nodes()
@@ -1393,10 +1516,50 @@ mod tests {
 	struct RightLeafWins;
 
 	impl MergePolicy for RightLeafWins {
-		fn select_divergent_node(&self, context: NodeConflictContext<'_>) -> Option<RevisionId> {
-			(context.left.is_some_and(|node| node.children.is_empty())
-				&& context.right.is_some_and(|node| node.children.is_empty()))
-			.then_some(RevisionId::RIGHT)
+		fn resolve_divergent_node(&self, context: NodeConflictContext<'_>) -> PolicyDecision {
+			if context.left.is_some_and(|node| node.children.is_empty())
+				&& context.right.is_some_and(|node| node.children.is_empty())
+			{
+				PolicyDecision::Select(RevisionId::RIGHT)
+			} else {
+				PolicyDecision::Unresolved
+			}
+		}
+	}
+
+	struct ScalarSynthesisPolicy {
+		path_suffix: &'static [&'static str],
+		output: &'static str,
+	}
+
+	impl MergePolicy for ScalarSynthesisPolicy {
+		fn resolve_divergent_node(&self, context: NodeConflictContext<'_>) -> PolicyDecision {
+			let (Some(left), Some(right)) = (context.left, context.right) else {
+				return PolicyDecision::Unresolved;
+			};
+			let suffix_matches = left.policy_path.len() >= self.path_suffix.len()
+				&& left.policy_path[left.policy_path.len() - self.path_suffix.len()..]
+					.iter()
+					.map(String::as_str)
+					.eq(self.path_suffix.iter().copied());
+			let numeric_scalars = left.kind == "clausewitz.scalar.number"
+				&& right.kind == "clausewitz.scalar.number"
+				&& left.children.is_empty()
+				&& right.children.is_empty()
+				&& left
+					.value
+					.as_deref()
+					.and_then(|value| value.parse::<f64>().ok())
+					.is_some() && right
+				.value
+				.as_deref()
+				.and_then(|value| value.parse::<f64>().ok())
+				.is_some();
+			if suffix_matches && numeric_scalars {
+				PolicyDecision::SynthesizeScalar(self.output.to_string())
+			} else {
+				PolicyDecision::Unresolved
+			}
 		}
 	}
 
@@ -1661,6 +1824,143 @@ mod tests {
 
 		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
 		assert_eq!(values(outcome.resolved_tree().unwrap()), vec!["right"]);
+	}
+
+	#[test]
+	fn revision_selection_does_not_override_a_one_sided_edit() {
+		let value = |value| TreeNode::leaf("value", value).with_anchor("field", "same");
+		let base = root(vec![value("old")]);
+		let left = root(vec![value("left")]);
+		let right = base.clone();
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &RightLeafWins);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert_eq!(values(outcome.resolved_tree().unwrap()), vec!["left"]);
+	}
+
+	#[test]
+	fn policy_synthesis_runs_before_the_one_side_changed_shortcut() {
+		let tree = |value: &str| root(vec![scalar_field("global_colonial_growth", value)]);
+		let base = tree("35");
+		let left = tree("50");
+		let right = tree("35");
+		let policy = ScalarSynthesisPolicy {
+			path_suffix: &["global_colonial_growth"],
+			output: "50",
+		};
+
+		let outcome = three_way_merge_with_policy(&base, &left, &right, &policy);
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		let (node_id, scalar) = outcome
+			.resolved_tree()
+			.unwrap()
+			.nodes()
+			.find(|(_, node)| node.kind == "clausewitz.scalar.number")
+			.unwrap();
+		assert_eq!(scalar.value.as_deref(), Some("50"));
+		assert_eq!(
+			scalar.scalar_reducer_path.as_deref(),
+			Some(["global_colonial_growth".to_string()].as_slice())
+		);
+		assert_eq!(
+			scalar.scalar_reducer_inputs,
+			vec![
+				(RevisionId::LEFT, "50".to_string()),
+				(RevisionId::RIGHT, "35".to_string()),
+			]
+		);
+		assert_eq!(scalar.scalar_reducer_output.as_deref(), Some("50"));
+		assert_eq!(
+			outcome.provenance[&node_id]
+				.iter()
+				.map(|source| source.revision)
+				.collect::<Vec<_>>(),
+			vec![RevisionId::BASE, RevisionId::LEFT, RevisionId::RIGHT]
+		);
+	}
+
+	#[test]
+	fn scalar_synthesis_provenance_is_deterministic() {
+		let tree = |value: &str| root(vec![scalar_field("province_trade_power_modifier", value)]);
+		let base = tree("0");
+		let left = tree(".2");
+		let right = tree(".1");
+		let policy = ScalarSynthesisPolicy {
+			path_suffix: &["province_trade_power_modifier"],
+			output: ".15",
+		};
+
+		let first = three_way_merge_with_policy(&base, &left, &right, &policy);
+		let second = three_way_merge_with_policy(&base, &left, &right, &policy);
+
+		assert!(first.conflicts.is_empty(), "{:?}", first.conflicts);
+		assert!(
+			first
+				.resolved_tree()
+				.unwrap()
+				.nodes()
+				.any(|(_, node)| node.scalar_reducer_output.as_deref() == Some(".15"))
+		);
+		assert_eq!(first.tentative_tree(), second.tentative_tree());
+		assert_eq!(first.provenance, second.provenance);
+	}
+
+	#[test]
+	fn unruled_and_nonnumeric_scalars_remain_conflicts() {
+		let policy = ScalarSynthesisPolicy {
+			path_suffix: &["province_trade_power_modifier"],
+			output: ".15",
+		};
+		for (key, base, left, right) in [
+			("technology", "20", "21", "22"),
+			("id", "100", "101", "102"),
+			("province_trade_power_modifier", "old", "left", "right"),
+			(
+				"province_trade_power_modifier",
+				"1444.11.11",
+				"1445.1.1",
+				"1446.1.1",
+			),
+		] {
+			let tree = |value: &str| root(vec![scalar_field(key, value)]);
+			let outcome =
+				three_way_merge_with_policy(&tree(base), &tree(left), &tree(right), &policy);
+			assert!(outcome.has_conflicts(), "{key} unexpectedly resolved");
+		}
+
+		let tuple = |left: &str, right: &str| {
+			let item = |position: &str, value: &str| {
+				TreeNode::branch(
+					"clausewitz.item",
+					vec![TreeNode::leaf("clausewitz.scalar.number", value)],
+				)
+				.with_child_cardinality(ChildCardinality::ExactlyOne)
+				.with_parent_scoped_anchor("clausewitz.item.number.position", position)
+			};
+			let mut field = TreeNode::branch(
+				"clausewitz.assignment:province_trade_power_modifier",
+				vec![TreeNode::branch(
+					"clausewitz.block:province_trade_power_modifier",
+					vec![item("0", left), item("1", right)],
+				)],
+			)
+			.with_child_cardinality(ChildCardinality::ExactlyOne)
+			.with_parent_scoped_anchor(
+				"clausewitz.assignment.key",
+				"province_trade_power_modifier",
+			);
+			field.value = Some("province_trade_power_modifier".to_string());
+			root(vec![field])
+		};
+		let outcome = three_way_merge_with_policy(
+			&tuple("0", "0"),
+			&tuple("1", "2"),
+			&tuple("3", "4"),
+			&policy,
+		);
+		assert!(outcome.has_conflicts(), "tuple-like value was averaged");
 	}
 
 	#[test]

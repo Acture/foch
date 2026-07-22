@@ -38,10 +38,12 @@ pub struct ChildSetContext<'a> {
 	pub right: Option<&'a NormalizedNode>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PolicyDecision {
 	Unresolved,
 	Resolved,
+	Select(RevisionId),
+	SynthesizeScalar(String),
 }
 
 pub trait MergePolicy {
@@ -63,6 +65,13 @@ pub trait MergePolicy {
 
 	fn select_child_revision(&self, _context: ChildSetContext<'_>) -> Option<RevisionId> {
 		None
+	}
+
+	/// Resolve a divergent matched node. Scalar synthesis changes only the
+	/// selected node's value and retains all matched revisions as provenance.
+	fn resolve_divergent_node(&self, context: NodeConflictContext<'_>) -> PolicyDecision {
+		self.select_divergent_node(context)
+			.map_or(PolicyDecision::Unresolved, PolicyDecision::Select)
 	}
 
 	fn select_divergent_node(&self, _context: NodeConflictContext<'_>) -> Option<RevisionId> {

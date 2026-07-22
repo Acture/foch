@@ -4,7 +4,7 @@ use super::content_family::{
 	ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy, DefinitionFileOrder,
 	DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
 	GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule, OneSidedRemovalPolicy,
-	ScalarMergePolicy,
+	ScalarMergePolicy, ScalarReducerRule,
 };
 use super::eu4_builtin::builtin_base_scope_names;
 use foch_core::model::{MaybeScope, ScopeType, base_scope};
@@ -15,6 +15,11 @@ use std::sync::OnceLock;
 pub struct Eu4Profile;
 
 static EU4_PROFILE: Eu4Profile = Eu4Profile;
+
+const TRADEGOODS_SCALAR_REDUCER_RULES: &[ScalarReducerRule] = &[
+	ScalarReducerRule::new(&["global_colonial_growth"], ScalarMergePolicy::Max),
+	ScalarReducerRule::new(&["province_trade_power_modifier"], ScalarMergePolicy::Avg),
+];
 
 fn ensure_base_scopes_initialized() {
 	if base_scope::is_initialized() {
@@ -756,7 +761,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(scope(base_scope::country()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
-				.scalar_policy(ScalarMergePolicy::Sum)
 				.list_policy(ListMergePolicy::OrderedUnion)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/buildings", "common/buildings/")
@@ -1192,7 +1196,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(country_from_scope(base_scope::province()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
-				.scalar_policy(ScalarMergePolicy::LastWriter)
+				.scalar_reducer_rules(TRADEGOODS_SCALAR_REDUCER_RULES)
 				.list_policy(ListMergePolicy::Replace)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/tradenodes", "common/tradenodes/")
@@ -1455,6 +1459,51 @@ mod tests {
 			descriptor.merge_policies.one_sided_removal,
 			OneSidedRemovalPolicy::PreserveBooleanAlternatives
 		);
+	}
+
+	#[test]
+	fn tradegoods_use_only_path_scoped_numeric_reducers() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("common/tradegoods/00_tradegoods.txt"))
+			.expect("tradegoods descriptor");
+		let policies = &descriptor.merge_policies;
+
+		assert_eq!(policies.scalar, ScalarMergePolicy::Conflict);
+		assert_eq!(
+			policies
+				.scalar_reducer_rule_for_path(&["cloves", "global_colonial_growth"])
+				.expect("growth reducer")
+				.reducer,
+			ScalarMergePolicy::Max
+		);
+		assert_eq!(
+			policies
+				.scalar_reducer_rule_for_path(&["cloves", "province_trade_power_modifier",])
+				.expect("trade-power reducer")
+				.reducer,
+			ScalarMergePolicy::Avg
+		);
+		for protected in ["technology", "date", "id", "position"] {
+			assert!(
+				policies
+					.scalar_reducer_rule_for_path(&["cloves", protected])
+					.is_none(),
+				"{protected} unexpectedly received a reducer"
+			);
+		}
+	}
+
+	#[test]
+	fn ages_do_not_sum_every_scalar() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("common/ages/00_default.txt"))
+			.expect("ages descriptor");
+
+		assert_eq!(
+			descriptor.merge_policies.scalar,
+			ScalarMergePolicy::Conflict
+		);
+		assert!(descriptor.merge_policies.scalar_reducer_rules.is_empty());
 	}
 
 	#[test]

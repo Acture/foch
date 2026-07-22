@@ -79,6 +79,64 @@ pub enum ScalarMergePolicy {
 	GuiWidget,
 }
 
+impl ScalarMergePolicy {
+	/// Reduce one pair of already-classified numeric scalar texts. Parsing is
+	/// deliberately identical to the existing patch reducer: strict `f64`
+	/// parsing, with no coercion of identifiers, dates, or tuple-like values.
+	pub fn reduce_numeric_pair(self, left: &str, right: &str) -> Option<String> {
+		let left_number = parse_finite_number(left)?;
+		let right_number = parse_finite_number(right)?;
+		let reduced = match self {
+			Self::Sum => left_number + right_number,
+			Self::Avg => (left_number + right_number) / 2.0,
+			Self::Max => left_number.max(right_number),
+			Self::Min => left_number.min(right_number),
+			Self::Conflict | Self::LastWriter | Self::CoordinateFirstWriter | Self::GuiWidget => {
+				return None;
+			}
+		};
+		format_reduced_number(reduced, left, right)
+	}
+}
+
+fn parse_finite_number(value: &str) -> Option<f64> {
+	value.parse::<f64>().ok().filter(|value| value.is_finite())
+}
+
+fn format_reduced_number(value: f64, left: &str, right: &str) -> Option<String> {
+	if !value.is_finite() {
+		return None;
+	}
+	if value == 0.0 {
+		return Some("0".to_string());
+	}
+
+	let absolute = value.abs();
+	let mut text = if !(1e-15..1e15).contains(&absolute) {
+		format!("{value}")
+	} else {
+		let fixed = format!("{value:.15}");
+		fixed
+			.trim_end_matches('0')
+			.trim_end_matches('.')
+			.to_string()
+	};
+	let omits_leading_zero = [left, right].iter().all(|input| {
+		input
+			.strip_prefix(['+', '-'])
+			.unwrap_or(input)
+			.starts_with('.')
+	});
+	if omits_leading_zero {
+		if let Some(fraction) = text.strip_prefix("0.") {
+			text = format!(".{fraction}");
+		} else if let Some(fraction) = text.strip_prefix("-0.") {
+			text = format!("-.{fraction}");
+		}
+	}
+	Some(text)
+}
+
 /// How to merge bare list items (entries without assignment keys).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,12 +228,38 @@ pub enum NamedContainerPolicy {
 	ScrollStack,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScalarReducerRule {
+	pub path_suffix: &'static [&'static str],
+	pub reducer: ScalarMergePolicy,
+}
+
+impl ScalarReducerRule {
+	pub const fn new(path_suffix: &'static [&'static str], reducer: ScalarMergePolicy) -> Self {
+		Self {
+			path_suffix,
+			reducer,
+		}
+	}
+
+	fn matches<T: AsRef<str>>(&self, path: &[T]) -> bool {
+		!self.path_suffix.is_empty()
+			&& path.len() >= self.path_suffix.len()
+			&& path[path.len() - self.path_suffix.len()..]
+				.iter()
+				.zip(self.path_suffix)
+				.all(|(component, expected)| component.as_ref() == *expected)
+	}
+}
+
 /// Bundle of policies that control how `deep_merge` resolves conflicts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergePolicies {
 	pub merge_key_source: MergeKeySource,
 	pub nested_merge_key_source: MergeKeySource,
 	pub scalar: ScalarMergePolicy,
+	#[serde(skip)]
+	pub scalar_reducer_rules: &'static [ScalarReducerRule],
 	pub list: ListMergePolicy,
 	#[serde(default)]
 	pub one_sided_removal: OneSidedRemovalPolicy,
@@ -196,6 +280,22 @@ pub struct MergePolicies {
 }
 
 impl MergePolicies {
+	pub fn scalar_reducer_rule_for_path<T: AsRef<str>>(
+		&self,
+		path: &[T],
+	) -> Option<&'static ScalarReducerRule> {
+		let mut best = None;
+		for rule in self.scalar_reducer_rules {
+			if rule.matches(path)
+				&& best.is_none_or(|current: &ScalarReducerRule| {
+					rule.path_suffix.len() > current.path_suffix.len()
+				}) {
+				best = Some(rule);
+			}
+		}
+		best
+	}
+
 	pub fn block_patch_policy_for_key(&self, key: &str) -> BlockPatchPolicy {
 		self.block_patch_policies
 			.iter()
@@ -677,6 +777,11 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 
+	pub fn scalar_reducer_rules(mut self, rules: &'static [ScalarReducerRule]) -> Self {
+		self.merge_policies.scalar_reducer_rules = rules;
+		self
+	}
+
 	pub fn list_policy(mut self, policy: ListMergePolicy) -> Self {
 		self.merge_policies.list = policy;
 		self
@@ -758,6 +863,7 @@ impl ContentFamilyDescriptor {
 				merge_key_source: MergeKeySource::AssignmentKey,
 				nested_merge_key_source: MergeKeySource::AssignmentKey,
 				scalar: ScalarMergePolicy::Conflict,
+				scalar_reducer_rules: &[],
 				list: ListMergePolicy::Union,
 				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
@@ -794,6 +900,7 @@ impl ContentFamilyDescriptor {
 				merge_key_source: MergeKeySource::AssignmentKey,
 				nested_merge_key_source: MergeKeySource::AssignmentKey,
 				scalar: ScalarMergePolicy::Conflict,
+				scalar_reducer_rules: &[],
 				list: ListMergePolicy::Union,
 				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
@@ -948,6 +1055,71 @@ mod tests {
 		right.hash(&mut right_hasher);
 
 		assert_eq!(left_hasher.finish(), right_hasher.finish());
+	}
+}
+
+#[cfg(test)]
+mod scalar_reducer_tests {
+	use super::{MergePolicies, ScalarMergePolicy, ScalarReducerRule};
+
+	const RULES: &[ScalarReducerRule] = &[
+		ScalarReducerRule::new(&[], ScalarMergePolicy::Avg),
+		ScalarReducerRule::new(&["value"], ScalarMergePolicy::Sum),
+		ScalarReducerRule::new(&["special", "value"], ScalarMergePolicy::Max),
+	];
+
+	#[test]
+	fn numeric_reducers_are_strict_and_deterministic() {
+		assert_eq!(
+			ScalarMergePolicy::Max.reduce_numeric_pair("50", "35"),
+			Some("50".to_string())
+		);
+		assert_eq!(
+			ScalarMergePolicy::Avg.reduce_numeric_pair(".2", ".1"),
+			Some(".15".to_string())
+		);
+		assert_eq!(
+			ScalarMergePolicy::Sum.reduce_numeric_pair("2.5", "1.25"),
+			Some("3.75".to_string())
+		);
+		assert_eq!(
+			ScalarMergePolicy::Min.reduce_numeric_pair("-2", "3"),
+			Some("-2".to_string())
+		);
+		assert_eq!(
+			ScalarMergePolicy::Avg.reduce_numeric_pair("1444.11.11", "1445.1.1"),
+			None
+		);
+		assert_eq!(
+			ScalarMergePolicy::Avg.reduce_numeric_pair("identifier", ".1"),
+			None
+		);
+		assert_eq!(
+			ScalarMergePolicy::LastWriter.reduce_numeric_pair("1", "2"),
+			None
+		);
+	}
+
+	#[test]
+	fn scalar_reducer_rules_use_the_longest_matching_suffix() {
+		let policies = MergePolicies {
+			scalar_reducer_rules: RULES,
+			..Default::default()
+		};
+		let generic = policies
+			.scalar_reducer_rule_for_path(&["root", "value"])
+			.expect("generic suffix");
+		let specific = policies
+			.scalar_reducer_rule_for_path(&["root", "special", "value"])
+			.expect("specific suffix");
+
+		assert_eq!(generic.reducer, ScalarMergePolicy::Sum);
+		assert_eq!(specific.reducer, ScalarMergePolicy::Max);
+		assert!(
+			policies
+				.scalar_reducer_rule_for_path(&["root", "technology"])
+				.is_none()
+		);
 	}
 }
 

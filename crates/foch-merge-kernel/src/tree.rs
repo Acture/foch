@@ -177,6 +177,15 @@ pub struct NormalizedNode {
 	pub value: Option<String>,
 	pub anchor: Option<SemanticKey>,
 	pub signature: Option<String>,
+	/// Stable semantic components inherited from anchored/value-bearing
+	/// ancestors. Scalar values themselves never participate in this path.
+	pub policy_path: Vec<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub scalar_reducer_path: Option<Vec<String>>,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub scalar_reducer_inputs: Vec<(RevisionId, String)>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub scalar_reducer_output: Option<String>,
 	pub child_order: ChildOrder,
 	pub child_cardinality: ChildCardinality,
 	pub parent: Option<NodeId>,
@@ -205,7 +214,7 @@ pub enum TreeError {
 impl NormalizedTree {
 	pub fn from_root(root: TreeNode) -> Result<Self, TreeError> {
 		let mut nodes = Vec::new();
-		let root = flatten_node(root, None, &mut nodes)?;
+		let root = flatten_node(root, None, &[], &mut nodes)?;
 		Ok(Self { root, nodes })
 	}
 
@@ -237,11 +246,29 @@ impl NormalizedTree {
 	pub fn to_debug_json(&self) -> Result<String, serde_json::Error> {
 		serde_json::to_string_pretty(self)
 	}
+
+	pub(crate) fn record_scalar_synthesis(
+		&mut self,
+		id: NodeId,
+		reducer_path: Vec<String>,
+		inputs: Vec<(RevisionId, String)>,
+		output: String,
+	) -> Result<(), TreeError> {
+		let node = self
+			.nodes
+			.get_mut(id.get() as usize)
+			.ok_or(TreeError::UnknownNode(id))?;
+		node.scalar_reducer_path = Some(reducer_path);
+		node.scalar_reducer_inputs = inputs;
+		node.scalar_reducer_output = Some(output);
+		Ok(())
+	}
 }
 
 fn flatten_node(
 	node: TreeNode,
 	parent: Option<NodeId>,
+	parent_policy_path: &[String],
 	nodes: &mut Vec<NormalizedNode>,
 ) -> Result<NodeId, TreeError> {
 	let id = NodeId::new(u32::try_from(nodes.len()).map_err(|_| TreeError::TooManyNodes)?);
@@ -254,6 +281,14 @@ fn flatten_node(
 		child_cardinality,
 		children,
 	} = node;
+	let mut policy_path = parent_policy_path.to_vec();
+	if let Some(component) = anchor
+		.as_ref()
+		.map(|anchor| anchor.value.as_str())
+		.or_else(|| (!children.is_empty()).then_some(value.as_deref()).flatten())
+	{
+		policy_path.push(component.to_string());
+	}
 	if child_cardinality == ChildCardinality::ExactlyOne && children.len() != 1 {
 		return Err(TreeError::InvalidChildCardinality {
 			kind,
@@ -265,6 +300,10 @@ fn flatten_node(
 		value,
 		anchor,
 		signature,
+		policy_path: policy_path.clone(),
+		scalar_reducer_path: None,
+		scalar_reducer_inputs: Vec::new(),
+		scalar_reducer_output: None,
 		child_order,
 		child_cardinality,
 		parent,
@@ -275,7 +314,7 @@ fn flatten_node(
 	});
 	let child_ids = children
 		.into_iter()
-		.map(|child| flatten_node(child, Some(id), nodes))
+		.map(|child| flatten_node(child, Some(id), &policy_path, nodes))
 		.collect::<Result<Vec<_>, _>>()?;
 	let (subtree_hash, height, descendant_count) = summarize_node(id, &child_ids, nodes);
 	let stored = &mut nodes[id.get() as usize];
@@ -393,6 +432,48 @@ mod tests {
 		);
 		assert_eq!(tree.node(NodeId::new(0)).unwrap().height, 2);
 		assert_eq!(tree.node(NodeId::new(0)).unwrap().descendant_count, 3);
+	}
+
+	#[test]
+	fn normalized_nodes_expose_stable_semantic_policy_paths() {
+		let scalar_field = |value: &str| {
+			let mut field = TreeNode::branch(
+				"clausewitz.assignment:province_trade_power_modifier",
+				vec![TreeNode::leaf("clausewitz.scalar.number", value)],
+			)
+			.with_child_cardinality(ChildCardinality::ExactlyOne);
+			field.value = Some("province_trade_power_modifier".to_string());
+			field
+		};
+		let trade_good = |value: &str| {
+			let mut definition = TreeNode::branch(
+				"clausewitz.assignment:cloves",
+				vec![TreeNode::branch(
+					"clausewitz.block:cloves",
+					vec![scalar_field(value)],
+				)],
+			);
+			definition.value = Some("cloves".to_string());
+			TreeNode::branch("clausewitz.file", vec![definition])
+		};
+		let left = NormalizedTree::from_root(trade_good(".2")).unwrap();
+		let right = NormalizedTree::from_root(trade_good(".1")).unwrap();
+		let left_scalar = left
+			.nodes()
+			.find(|(_, node)| node.kind == "clausewitz.scalar.number")
+			.unwrap()
+			.1;
+		let right_scalar = right
+			.nodes()
+			.find(|(_, node)| node.kind == "clausewitz.scalar.number")
+			.unwrap()
+			.1;
+
+		assert_eq!(
+			left_scalar.policy_path,
+			vec!["cloves", "province_trade_power_modifier"]
+		);
+		assert_eq!(left_scalar.policy_path, right_scalar.policy_path);
 	}
 
 	#[test]
