@@ -7,7 +7,8 @@ use foch_merge_kernel::{
 
 use super::ast_adapter::{
 	AstAdapterError, COMMENT_KIND, assignment_key, branch, denormalize_only_value_child,
-	denormalize_statement, normalize_statement, normalize_value, synthetic_span,
+	denormalize_statement, normalize_statement_with_findings, normalize_value_with_findings,
+	synthetic_span,
 };
 use super::policy::ClausewitzTreePolicy;
 
@@ -377,8 +378,49 @@ struct Case {
 	effect_key: String,
 	effect_items: Vec<AstStatement>,
 	effective_guard: Formula,
+	contains_default: bool,
 	leading_comments: Vec<AstStatement>,
 	original_rank: usize,
+}
+
+pub(super) fn orphan_paths(statements: &[AstStatement]) -> Vec<String> {
+	let mut paths = Vec::new();
+	collect_orphan_paths(statements, "$", &mut paths);
+	paths.sort();
+	paths.dedup();
+	paths
+}
+
+fn collect_orphan_paths(statements: &[AstStatement], path: &str, paths: &mut Vec<String>) {
+	let mut previous_control = None;
+	let mut key_counts = BTreeMap::<&str, usize>::new();
+	for statement in statements {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			continue;
+		};
+		let index = key_counts.entry(key).or_default();
+		let current_path = format!("{path}/{key}[{index}]");
+		*index += 1;
+		match key.as_str() {
+			"if" => previous_control = Some("if"),
+			"else_if" => {
+				if !matches!(previous_control, Some("if" | "else_if")) {
+					paths.push(current_path.clone());
+				}
+				previous_control = Some("else_if");
+			}
+			"else" => {
+				if !matches!(previous_control, Some("if" | "else_if")) {
+					paths.push(current_path.clone());
+				}
+				previous_control = None;
+			}
+			_ => previous_control = None,
+		}
+		if let AstValue::Block { items, .. } = value {
+			collect_orphan_paths(items, &current_path, paths);
+		}
+	}
 }
 
 pub(super) fn starts_chain(statement: &AstStatement) -> bool {
@@ -389,6 +431,48 @@ pub(super) fn normalize_chain(
 	statements: &[AstStatement],
 	start: usize,
 	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
+) -> Result<(TreeNode, usize), AstAdapterError> {
+	let opaque_next = opaque_chain_end(statements, start);
+	let mut semantic_findings = Vec::new();
+	match normalize_chain_semantic(statements, start, policy, &mut semantic_findings) {
+		Ok(chain) => {
+			control_flow_findings.append(&mut semantic_findings);
+			Ok(chain)
+		}
+		Err(AstAdapterError::UnprovableControlFlow(message))
+			if opaque_normalization_limit(&message) =>
+		{
+			normalize_opaque_chain(
+				statements,
+				start,
+				opaque_next,
+				policy,
+				control_flow_findings,
+			)
+		}
+		Err(
+			error @ (AstAdapterError::DuplicateControlFlowGuard(_)
+			| AstAdapterError::UnprovableControlFlow(_)),
+		) => {
+			control_flow_findings.push(error.to_string());
+			normalize_opaque_chain(
+				statements,
+				start,
+				opaque_next,
+				policy,
+				control_flow_findings,
+			)
+		}
+		Err(error) => Err(error),
+	}
+}
+
+fn normalize_chain_semantic(
+	statements: &[AstStatement],
+	start: usize,
+	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
 ) -> Result<(TreeNode, usize), AstAdapterError> {
 	let mut atoms = GuardAtoms::default();
 	let (raw_cases, next, complete) = extract_raw_cases(statements, start, &mut atoms)?;
@@ -404,23 +488,22 @@ pub(super) fn normalize_chain(
 	let mut coverage = Formula::false_value();
 	let mut cases_by_effect: BTreeMap<String, Case> = BTreeMap::new();
 	for raw in raw_cases {
+		let contains_default = raw.guard.is_none();
 		let effective_guard = match &raw.guard {
 			Some(guard) => guard.and(&coverage.not()?)?,
 			None => coverage.not()?,
 		};
 		if effective_guard.is_false() {
-			return Err(AstAdapterError::UnprovableControlFlow(format!(
-				"branch {} is unreachable",
-				raw.original_index
-			)));
+			return normalize_opaque_chain(statements, start, next, policy, control_flow_findings);
 		}
 		if let Some(guard) = &raw.guard {
 			coverage = coverage.or(guard)?;
 		}
-		let effect_key = normalized_effect_key(&raw.effect_items, policy)?;
+		let effect_key = normalized_effect_key(&raw.effect_items, policy, control_flow_findings)?;
 		match cases_by_effect.get_mut(&effect_key) {
 			Some(existing) => {
 				existing.effective_guard = existing.effective_guard.or(&effective_guard)?;
+				existing.contains_default |= contains_default;
 				existing.leading_comments.extend(raw.leading_comments);
 				existing.original_rank = existing.original_rank.min(raw.original_index);
 			}
@@ -431,6 +514,7 @@ pub(super) fn normalize_chain(
 						effect_key,
 						effect_items: raw.effect_items,
 						effective_guard,
+						contains_default,
 						leading_comments: raw.leading_comments,
 						original_rank: raw.original_index,
 					},
@@ -441,17 +525,25 @@ pub(super) fn normalize_chain(
 
 	let mut cases = cases_by_effect.into_values().collect::<Vec<_>>();
 	if complete && cases.len() < 2 {
-		return Err(AstAdapterError::UnprovableControlFlow(
-			"complete chain has no distinct guarded case".to_string(),
-		));
+		return normalize_opaque_chain(statements, start, next, policy, control_flow_findings);
 	}
 	let default = if complete {
-		let candidates = cases
+		let semantic_candidates = cases
 			.iter()
 			.enumerate()
 			.filter(|(_, case)| case.effective_guard.is_negative_only())
 			.map(|(index, _)| index)
 			.collect::<Vec<_>>();
+		let candidates = if semantic_candidates.len() == 1 {
+			semantic_candidates
+		} else {
+			cases
+				.iter()
+				.enumerate()
+				.filter(|(_, case)| case.contains_default)
+				.map(|(index, _)| index)
+				.collect()
+		};
 		match candidates.as_slice() {
 			[index] => Some(*index),
 			_ => {
@@ -472,7 +564,11 @@ pub(super) fn normalize_chain(
 	for index in order {
 		let case = &mut cases[index];
 		for comment in &case.leading_comments {
-			children.push(normalize_statement(comment, policy)?);
+			children.push(normalize_statement_with_findings(
+				comment,
+				policy,
+				control_flow_findings,
+			)?);
 		}
 		let is_default = Some(index) == default;
 		let value = if is_default {
@@ -509,10 +605,11 @@ pub(super) fn normalize_chain(
 			)),
 			ChildOrder::Ordered,
 			ChildCardinality::ExactlyOne,
-			vec![normalize_value(
+			vec![normalize_value_with_findings(
 				&value,
 				Some(if is_default { "else" } else { "if" }),
 				policy,
+				control_flow_findings,
 			)?],
 		);
 		node.signature = Some(format!("effect:{}", case.effect_key));
@@ -546,6 +643,57 @@ pub(super) fn normalize_chain(
 	);
 	chain.signature = identity;
 	Ok((chain, next))
+}
+
+fn opaque_chain_end(statements: &[AstStatement], start: usize) -> usize {
+	let mut cursor = start.saturating_add(1);
+	loop {
+		let mut next = cursor;
+		while statements
+			.get(next)
+			.is_some_and(|statement| matches!(statement, AstStatement::Comment { .. }))
+		{
+			next += 1;
+		}
+		match statements.get(next).and_then(assignment_key) {
+			Some("else_if") => cursor = next + 1,
+			Some("else") => return next + 1,
+			_ => return cursor,
+		}
+	}
+}
+
+fn opaque_normalization_limit(message: &str) -> bool {
+	message.starts_with("guard normalization exceeded ")
+		|| (message.starts_with("branch ") && message.ends_with(" is unreachable"))
+		|| message.starts_with("guard atom ")
+		|| message == "source precedence constraints contain a cycle"
+}
+
+fn normalize_opaque_chain(
+	statements: &[AstStatement],
+	start: usize,
+	next: usize,
+	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
+) -> Result<(TreeNode, usize), AstAdapterError> {
+	let children = statements[start..next]
+		.iter()
+		.map(|statement| {
+			normalize_statement_with_findings(statement, policy, control_flow_findings)
+		})
+		.collect::<Result<Vec<_>, _>>()?;
+	Ok((
+		branch(
+			&format!("{CHAIN_KIND_PREFIX}opaque"),
+			None,
+			None,
+			ChildOrder::Ordered,
+			ChildCardinality::Many,
+			children,
+		),
+		next,
+	))
 }
 
 fn extract_raw_cases(
@@ -643,15 +791,17 @@ fn extract_raw_cases(
 fn normalized_effect_key(
 	items: &[AstStatement],
 	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
 ) -> Result<String, AstAdapterError> {
 	let value = AstValue::Block {
 		items: items.to_vec(),
 		span: synthetic_span(),
 	};
-	let tree = NormalizedTree::from_root(normalize_value(
+	let tree = NormalizedTree::from_root(normalize_value_with_findings(
 		&value,
 		Some("control_flow_effect"),
 		policy,
+		control_flow_findings,
 	)?)?;
 	Ok(tree.node(tree.root())?.subtree_hash.to_string())
 }
@@ -662,6 +812,9 @@ fn stable_case_order(
 ) -> Result<Vec<usize>, AstAdapterError> {
 	let mut positive_owners: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
 	for (index, case) in cases.iter().enumerate() {
+		if Some(index) == default {
+			continue;
+		}
 		for atom in case.effective_guard.positive_atoms() {
 			positive_owners.entry(atom).or_default().insert(index);
 		}
@@ -669,6 +822,9 @@ fn stable_case_order(
 	let mut outgoing = vec![BTreeSet::new(); cases.len()];
 	let mut indegree = vec![0usize; cases.len()];
 	for (target, case) in cases.iter().enumerate() {
+		if Some(target) == default {
+			continue;
+		}
 		for atom in case.effective_guard.common_negative_atoms() {
 			let Some(owners) = positive_owners.get(&atom) else {
 				continue;
@@ -779,6 +935,13 @@ pub(super) fn denormalize_chain(
 	chain_id: NodeId,
 	chain: &NormalizedNode,
 ) -> Result<Vec<AstStatement>, AstAdapterError> {
+	if chain.kind == format!("{CHAIN_KIND_PREFIX}opaque") {
+		return chain
+			.children
+			.iter()
+			.map(|child| denormalize_statement(tree, *child))
+			.collect();
+	}
 	let mut statements = Vec::with_capacity(chain.children.len());
 	let mut branch_count = 0;
 	let mut saw_else = false;
@@ -962,7 +1125,7 @@ mod tests {
 
 	use super::super::ast_adapter::{denormalize_ast, normalize_ast};
 	use super::super::policy::DefaultClausewitzTreePolicy;
-	use super::super::{AstAdapterError, merge_clausewitz_files};
+	use super::super::{canonicalize_clausewitz_file, merge_clausewitz_files};
 
 	fn parse(source: &str) -> AstFile {
 		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
@@ -1197,7 +1360,91 @@ mod tests {
 	}
 
 	#[test]
-	fn rejects_duplicate_guards_before_publication() {
+	fn preserves_complete_chain_when_every_branch_has_the_same_effect() {
+		let ast = parse(
+			"trigger = {\n\
+			\tif = { limit = { has_country_flag = selected } add_prestige = 1 }\n\
+			\telse = { add_prestige = 1 }\n\
+			}\n",
+		);
+
+		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy)
+			.expect("normalize semantically redundant chain");
+		assert!(
+			tree.nodes()
+				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
+		);
+		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild opaque chain");
+
+		assert_eq!(emit(&rebuilt), emit(&ast));
+	}
+
+	#[test]
+	fn preserves_chain_when_guard_normalization_exceeds_the_bound() {
+		let alternatives = (0..=super::MAX_DNF_TERMS)
+			.map(|index| format!("has_country_flag = flag_{index}"))
+			.collect::<Vec<_>>()
+			.join(" ");
+		let ast = parse(&format!(
+			"trigger = {{ if = {{ limit = {{ OR = {{ {alternatives} }} }} add_prestige = 1 }} else = {{ add_stability = 1 }} }}\n"
+		));
+
+		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy)
+			.expect("preserve a bounded opaque chain");
+		assert!(
+			tree.nodes()
+				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
+		);
+		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild bounded chain");
+
+		assert_eq!(emit(&rebuilt), emit(&ast));
+	}
+
+	#[test]
+	fn tracks_explicit_else_when_its_effective_guard_is_positive() {
+		let ast = parse(
+			"trigger = {\n\
+			\tif = { limit = { NOT = { has_country_flag = selected } } add_prestige = 1 }\n\
+			\telse = { add_stability = 1 }\n\
+			}\n",
+		);
+
+		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy)
+			.expect("normalize chain with positive effective else guard");
+		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild complete chain");
+		let output = emit(&rebuilt);
+
+		assert!(output.contains("if ="), "{output}");
+		assert!(output.contains("else ="), "{output}");
+		assert!(output.contains("add_prestige = 1"), "{output}");
+		assert!(output.contains("add_stability = 1"), "{output}");
+	}
+
+	#[test]
+	fn canonicalizes_equivalent_inverted_chains_to_one_shape() {
+		let negative_first = parse(
+			"trigger = {\n\
+			\tif = { limit = { NOT = { has_country_flag = selected } } add_prestige = 1 }\n\
+			\telse = { add_stability = 1 }\n\
+			}\n",
+		);
+		let positive_first = parse(
+			"trigger = {\n\
+			\tif = { limit = { has_country_flag = selected } add_stability = 1 }\n\
+			\telse = { add_prestige = 1 }\n\
+			}\n",
+		);
+
+		let negative = canonicalize_clausewitz_file(&negative_first, &MergePolicies::default())
+			.expect("canonicalize negative-first chain");
+		let positive = canonicalize_clausewitz_file(&positive_first, &MergePolicies::default())
+			.expect("canonicalize positive-first chain");
+
+		assert_eq!(emit(&negative), emit(&positive));
+	}
+
+	#[test]
+	fn preserves_duplicate_guards_but_withholds_publication() {
 		let source = parse(
 			"coal = { trigger = {\n\
 			\tif = { limit = { has_country_flag = repeated } add_prestige = 1 }\n\
@@ -1206,17 +1453,21 @@ mod tests {
 			} }\n",
 		);
 
-		let error = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
-			.expect_err("duplicate guards must be rejected");
+		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
+			.expect("duplicate guards remain inspectable");
 
-		assert!(
-			matches!(error, AstAdapterError::DuplicateControlFlowGuard(_)),
-			"{error:?}"
-		);
+		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
+		assert!(outcome.resolved_ast().is_none());
+		assert!(outcome.conflicts().iter().any(|conflict| {
+			conflict.kind == ConflictKind::Policy
+				&& conflict
+					.detail
+					.contains("duplicate Clausewitz control-flow guard")
+		}));
 	}
 
 	#[test]
-	fn rejects_guardless_branches_as_unprovable() {
+	fn preserves_guardless_branches_but_withholds_publication() {
 		let source = parse(
 			"coal = { trigger = {\n\
 			\tif = { add_prestige = 1 }\n\
@@ -1224,13 +1475,17 @@ mod tests {
 			} }\n",
 		);
 
-		let error = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
-			.expect_err("guardless branches must be rejected");
+		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
+			.expect("guardless branches remain inspectable");
 
-		assert!(
-			matches!(error, AstAdapterError::UnprovableControlFlow(_)),
-			"{error:?}"
-		);
+		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
+		assert!(outcome.resolved_ast().is_none());
+		assert!(outcome.conflicts().iter().any(|conflict| {
+			conflict.kind == ConflictKind::Policy
+				&& conflict
+					.detail
+					.contains("requires exactly one block `limit`")
+		}));
 	}
 
 	#[test]

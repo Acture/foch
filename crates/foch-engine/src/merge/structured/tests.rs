@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
+	BlockPatchPolicy, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy, ScalarReducerRule,
 };
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
 use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
@@ -217,6 +217,54 @@ fn structured_merge_matches_reordered_repeated_blocks_by_content() {
 }
 
 #[test]
+fn structured_merge_matches_repeated_modifiers_by_tooltip_identity() {
+	let base = parse(
+		"manufactories = { embracement_speed = {
+			modifier = { potential = { OR = { trade_goods = coffee } } custom_trigger_tooltip = { tooltip = plantations_on } }
+			modifier = { potential = { OR = { trade_goods = spices trade_goods = cloves } } custom_trigger_tooltip = { tooltip = tradecompany_on } }
+			modifier = { potential = { OR = { trade_goods = cocoa } } custom_trigger_tooltip = { tooltip = plantations_off } }
+			modifier = { potential = { OR = { trade_goods = ivory trade_goods = cloves } } custom_trigger_tooltip = { tooltip = tradecompany_off } }
+		} }\n",
+	);
+	let left = parse(
+		"manufactories = { embracement_speed = {
+			modifier = { potential = { OR = { trade_goods = coffee } } custom_trigger_tooltip = { tooltip = plantations_on } }
+			modifier = { potential = { OR = { trade_goods = spices trade_goods = cloves trade_goods = incense } } custom_trigger_tooltip = { tooltip = tradecompany_on } }
+			modifier = { potential = { OR = { trade_goods = cocoa } } custom_trigger_tooltip = { tooltip = plantations_off } }
+			modifier = { potential = { OR = { trade_goods = ivory trade_goods = cloves trade_goods = incense } } custom_trigger_tooltip = { tooltip = tradecompany_off } }
+		} }\n",
+	);
+	let right = parse(
+		"manufactories = { embracement_speed = {
+			modifier = { potential = { OR = { trade_goods = ivory trade_goods = fur } } custom_trigger_tooltip = { tooltip = tradecompany_off } }
+			modifier = { potential = { OR = { trade_goods = cocoa trade_goods = cloves } } custom_trigger_tooltip = { tooltip = plantations_off } }
+			modifier = { potential = { OR = { trade_goods = spices trade_goods = cloves trade_goods = fur } } custom_trigger_tooltip = { tooltip = tradecompany_on } }
+			modifier = { potential = { OR = { trade_goods = coffee trade_goods = cloves } } custom_trigger_tooltip = { tooltip = plantations_on } }
+		} }\n",
+	);
+	let policies = MergePolicies {
+		one_sided_removal: OneSidedRemovalPolicy::PreserveBooleanAlternatives,
+		..MergePolicies::default()
+	};
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies)
+		.expect("merge tooltip-identified modifiers");
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("publishable modifier merge"));
+	for trade_good in ["incense", "fur"] {
+		assert!(
+			output.contains(&format!("trade_goods = {trade_good}")),
+			"{output}"
+		);
+	}
+	assert_eq!(
+		output.matches("trade_goods = cloves").count(),
+		4,
+		"{output}"
+	);
+}
+
+#[test]
 fn structured_merge_keeps_numeric_tuple_items_with_their_parent() {
 	let base = parse(
 		"rebel_a = { color = { 1 2 3 } }\n\
@@ -280,6 +328,49 @@ fn structured_preserve_policy_keeps_unchanged_child_when_parent_survives() {
 	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
 	assert!(output.contains("sailors = 1"), "{output}");
 	assert!(output.contains("tax = 1"), "{output}");
+}
+
+#[test]
+fn structured_preserve_policy_keeps_unchanged_repeated_block_among_insertions() {
+	let base = parse(
+		"gems = {\n\
+		\tchance = {\n\
+		\t\tmodifier = { factor = 2.0 FROM = { has_country_flag = encourage_cash_crops_flag } }\n\
+		\t\tmodifier = { factor = 2 FROM = { OR = { has_increased_trade_goods_discovery = { trade_goods = gems } colonial_parent = { has_increased_trade_goods_discovery = { trade_goods = gems } } } } }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"gems = {\n\
+		\tchance = {\n\
+		\t\tmodifier = { factor = 2.0 FROM = { has_country_flag = encourage_cash_crops_flag } }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse(
+		"gems = {\n\
+		\tchance = {\n\
+		\t\tmodifier = { factor = 2.0 FROM = { has_country_flag = encourage_cash_crops_flag } }\n\
+		\t\tmodifier = { factor = 2 FROM = { OR = { has_increased_trade_goods_discovery = { trade_goods = gems } colonial_parent = { has_increased_trade_goods_discovery = { trade_goods = gems } } } } }\n\
+		\t\tmodifier = { factor = 1.2 FROM = { has_country_flag = gems_chance_flag_low } }\n\
+		\t\tmodifier = { factor = 1.4 FROM = { has_country_flag = gems_chance_flag_medium } }\n\
+		\t\tmodifier = { factor = 1.6 FROM = { has_country_flag = gems_chance_flag_high } }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &preserve_one_sided_policies())
+		.expect("merge one-sided repeated block omission");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	assert!(
+		output.contains("has_increased_trade_goods_discovery"),
+		"{output}"
+	);
+	assert!(output.contains("gems_chance_flag_low"), "{output}");
+	assert!(output.contains("gems_chance_flag_medium"), "{output}");
+	assert!(output.contains("gems_chance_flag_high"), "{output}");
 }
 
 #[test]
@@ -348,6 +439,32 @@ fn structured_preserve_policy_still_honors_two_sided_deletion() {
 	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
 	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
 	assert!(!output.contains("sailors = 1"), "{output}");
+}
+
+#[test]
+fn structured_merge_preserves_orphan_control_flow_but_withholds_publication() {
+	let source = parse(
+		"scripted_effect = {\n\
+		\telse_if = { limit = { always = yes } add_prestige = 1 }\n\
+		}\n",
+	);
+
+	let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
+		.expect("retain orphan control flow as structured AST");
+
+	assert!(outcome.resolved_ast().is_none());
+	assert!(
+		outcome.conflicts().iter().any(|conflict| {
+			conflict.kind == ConflictKind::Policy
+				&& conflict
+					.detail
+					.contains("control-flow finding(s) require review")
+				&& conflict.detail.contains("else_if")
+		}),
+		"{:?}",
+		outcome.conflicts()
+	);
+	assert!(emit(outcome.tentative_ast()).contains("else_if ="));
 }
 
 #[test]
@@ -932,4 +1049,86 @@ fn event_merge_combines_presence_and_last_writer_policies() {
 	assert!(output.contains("has_government_attribute = has_dutch_election"));
 	assert!(output.contains("has_reform = crown_of_saint_wenceslaus"));
 	assert!(!output.contains("has_reform = dutch_republic"), "{output}");
+}
+
+#[test]
+fn structured_merge_applies_path_scoped_numeric_reducers_with_provenance() {
+	const RULES: &[ScalarReducerRule] = &[
+		ScalarReducerRule::new(&["global_colonial_growth"], ScalarMergePolicy::Max),
+		ScalarReducerRule::new(&["province_trade_power_modifier"], ScalarMergePolicy::Avg),
+	];
+	let policies = MergePolicies {
+		scalar_reducer_rules: RULES,
+		..MergePolicies::default()
+	};
+	let base =
+		parse("cloves = { global_colonial_growth = .05 province_trade_power_modifier = .05 }\n");
+	let left =
+		parse("cloves = { global_colonial_growth = .2 province_trade_power_modifier = .2 }\n");
+	let right =
+		parse("cloves = { global_colonial_growth = .1 province_trade_power_modifier = .1 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("numeric reducers resolve"));
+	assert!(output.contains("global_colonial_growth = .2"), "{output}");
+	assert!(
+		output.contains("province_trade_power_modifier = .15"),
+		"{output}"
+	);
+	let reductions = outcome.scalar_reductions();
+	assert_eq!(reductions.len(), 2);
+	assert!(reductions.iter().any(|reduction| {
+		reduction
+			.path
+			.ends_with(&["cloves".to_string(), "global_colonial_growth".to_string()])
+			&& reduction.output == ".2"
+			&& reduction.inputs.len() == 2
+	}));
+	assert!(reductions.iter().any(|reduction| {
+		reduction.path.ends_with(&[
+			"cloves".to_string(),
+			"province_trade_power_modifier".to_string(),
+		]) && reduction.output == ".15"
+	}));
+}
+
+#[test]
+fn structured_merge_keeps_unruled_numeric_divergence_as_a_conflict() {
+	const RULES: &[ScalarReducerRule] = &[ScalarReducerRule::new(
+		&["province_trade_power_modifier"],
+		ScalarMergePolicy::Avg,
+	)];
+	let policies = MergePolicies {
+		scalar_reducer_rules: RULES,
+		..MergePolicies::default()
+	};
+	let base = parse("cloves = { technology = 1 }\n");
+	let left = parse("cloves = { technology = 2 }\n");
+	let right = parse("cloves = { technology = 3 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies).unwrap();
+
+	assert!(outcome.resolved_ast().is_none());
+	assert!(outcome.scalar_reductions().is_empty());
+}
+
+#[test]
+fn structured_merge_preserves_distinct_comments_without_semantic_conflicts() {
+	let base = parse("# base\nvalue = { amount = 1 }\n");
+	let left = parse("# base\n# left\nvalue = { amount = 1 left = yes }\n");
+	let right = parse("# base\n# right\nvalue = { amount = 1 right = yes }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("comment-only divergence resolves"),
+	);
+	for comment in ["# base", "# left", "# right"] {
+		assert!(output.contains(comment), "missing {comment}:\n{output}");
+	}
 }

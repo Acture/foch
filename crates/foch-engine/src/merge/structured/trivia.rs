@@ -393,7 +393,7 @@ fn attach_statements(
 	let semantic = std::mem::take(statements);
 	let mut attached =
 		Vec::with_capacity(semantic.len() + trivia_entry_count(&before, &after, &parent_end));
-	for (statement, sibling) in semantic.into_iter().zip(siblings.into_iter()) {
+	for (statement, sibling) in semantic.into_iter().zip(siblings) {
 		let sibling = sibling.expect("semantic statements have sibling identities");
 		append_comments(&mut attached, before.remove(&sibling).unwrap_or_default());
 		attached.push(statement);

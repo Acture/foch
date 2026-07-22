@@ -75,7 +75,16 @@ pub(crate) fn normalize_ast(
 	file: &AstFile,
 	policy: &impl ClausewitzTreePolicy,
 ) -> Result<NormalizedTree, AstAdapterError> {
-	let children = normalize_statements(&file.statements, policy)?;
+	let (tree, _) = normalize_ast_with_findings(file, policy)?;
+	Ok(tree)
+}
+
+pub(crate) fn normalize_ast_with_findings(
+	file: &AstFile,
+	policy: &impl ClausewitzTreePolicy,
+) -> Result<(NormalizedTree, Vec<String>), AstAdapterError> {
+	let mut findings = Vec::new();
+	let children = normalize_statements(&file.statements, policy, &mut findings)?;
 	NormalizedTree::from_root(branch(
 		FILE_KIND,
 		None,
@@ -84,6 +93,7 @@ pub(crate) fn normalize_ast(
 		ChildCardinality::Many,
 		children,
 	))
+	.map(|tree| (tree, findings))
 	.map_err(AstAdapterError::from)
 }
 
@@ -105,6 +115,7 @@ pub(crate) fn denormalize_ast(
 fn normalize_statements(
 	statements: &[AstStatement],
 	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
 ) -> Result<Vec<TreeNode>, AstAdapterError> {
 	let mut children = Vec::with_capacity(statements.len());
 	let mut scalar_item_occurrences = BTreeMap::new();
@@ -112,15 +123,15 @@ fn normalize_statements(
 	let mut index = 0;
 	while index < statements.len() {
 		if super::control_flow::starts_chain(&statements[index]) {
-			let (chain, next) = super::control_flow::normalize_chain(statements, index, policy)?;
+			let (chain, next) = super::control_flow::normalize_chain(
+				statements,
+				index,
+				policy,
+				control_flow_findings,
+			)?;
 			children.push(chain);
 			index = next;
 		} else {
-			if matches!(assignment_key(&statements[index]), Some("else_if" | "else")) {
-				return Err(AstAdapterError::UnprovableControlFlow(
-					"orphan `else_if` or `else` branch".to_string(),
-				));
-			}
 			let item_anchor = scalar_item_anchor(
 				&statements[index],
 				&mut scalar_item_occurrences,
@@ -130,6 +141,7 @@ fn normalize_statements(
 				&statements[index],
 				policy,
 				item_anchor,
+				control_flow_findings,
 			)?);
 			index += 1;
 		}
@@ -144,17 +156,19 @@ pub(super) fn assignment_key(statement: &AstStatement) -> Option<&str> {
 	}
 }
 
-pub(super) fn normalize_statement(
+pub(super) fn normalize_statement_with_findings(
 	statement: &AstStatement,
 	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
-	normalize_statement_with_item_anchor(statement, policy, None)
+	normalize_statement_with_item_anchor(statement, policy, None, control_flow_findings)
 }
 
 fn normalize_statement_with_item_anchor(
 	statement: &AstStatement,
 	policy: &impl ClausewitzTreePolicy,
 	item_anchor: Option<SemanticKey>,
+	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
 	Ok(match statement {
 		AstStatement::Assignment { key, value, .. } => {
@@ -165,7 +179,12 @@ fn normalize_statement_with_item_anchor(
 				policy.assignment_anchor(key, value),
 				ChildOrder::Ordered,
 				ChildCardinality::ExactlyOne,
-				vec![normalize_value(value, Some(key), policy)?],
+				vec![normalize_value_with_findings(
+					value,
+					Some(key),
+					policy,
+					control_flow_findings,
+				)?],
 			);
 			node.signature = policy.assignment_signature(key, value);
 			node
@@ -176,7 +195,12 @@ fn normalize_statement_with_item_anchor(
 			item_anchor,
 			ChildOrder::Ordered,
 			ChildCardinality::ExactlyOne,
-			vec![normalize_value(value, None, policy)?],
+			vec![normalize_value_with_findings(
+				value,
+				None,
+				policy,
+				control_flow_findings,
+			)?],
 		),
 		AstStatement::Comment { text, .. } => leaf(COMMENT_KIND, text.clone()),
 	})
@@ -219,10 +243,11 @@ fn scalar_item_anchor(
 	Some(anchor)
 }
 
-pub(super) fn normalize_value(
+pub(super) fn normalize_value_with_findings(
 	value: &AstValue,
 	assignment_key: Option<&str>,
 	policy: &impl ClausewitzTreePolicy,
+	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
 	Ok(match value {
 		AstValue::Scalar { value, .. } => match value {
@@ -237,7 +262,7 @@ pub(super) fn normalize_value(
 			None,
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
-			normalize_statements(items, policy)?,
+			normalize_statements(items, policy, control_flow_findings)?,
 		),
 	})
 }

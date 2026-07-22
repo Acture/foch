@@ -45,6 +45,8 @@ impl ClausewitzTreePolicy for DefaultClausewitzTreePolicy {
 	fn assignment_signature(&self, key: &str, value: &AstValue) -> Option<String> {
 		match key {
 			"option" => scalar_field(value, "name").map(|name| format!("option:{name}")),
+			"modifier" => descendant_scalar_field(value, "tooltip")
+				.map(|tooltip| format!("modifier:tooltip:{tooltip}")),
 			_ => None,
 		}
 	}
@@ -65,5 +67,24 @@ fn scalar_field(value: &AstValue, field: &str) -> Option<String> {
 			return None;
 		};
 		Some(value.as_text())
+	})
+}
+
+fn descendant_scalar_field(value: &AstValue, field: &str) -> Option<String> {
+	let AstValue::Block { items, .. } = value else {
+		return None;
+	};
+	items.iter().find_map(|statement| {
+		let (key, value) = match statement {
+			AstStatement::Assignment { key, value, .. } => (Some(key.as_str()), value),
+			AstStatement::Item { value, .. } => (None, value),
+			AstStatement::Comment { .. } => return None,
+		};
+		if key == Some(field)
+			&& let AstValue::Scalar { value, .. } = value
+		{
+			return Some(value.as_text());
+		}
+		descendant_scalar_field(value, field)
 	})
 }
