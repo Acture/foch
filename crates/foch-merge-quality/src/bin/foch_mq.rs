@@ -211,6 +211,12 @@ enum Cmd {
 	CommonProbe {
 		#[arg(long)]
 		out_dir: PathBuf,
+		/// Restrict the probe to one or more corpus cases. Repeatable.
+		#[arg(long = "case")]
+		cases: Vec<String>,
+		/// Restrict the probe to one or more ContentFamily ids. Repeatable.
+		#[arg(long = "family")]
+		families: Vec<String>,
 		/// Fixed per-unit corpus denominator and Legacy evidence.
 		#[arg(
 			long,
@@ -576,14 +582,20 @@ fn main() -> CmdResult {
 		Cmd::CommonProbe {
 			out_dir,
 			legacy_baseline,
+			cases,
+			families,
 		} => {
 			let game = discover_game(&game_root, &steam_root)?;
+			let case_ids = cases.into_iter().collect::<BTreeSet<_>>();
+			let families = families.into_iter().collect::<BTreeSet<_>>();
 			let report = common_probe::run_common_applicability_probe(
 				&common_probe::CommonApplicabilityOptions {
 					dataset_root: &dataset_root,
 					output_dir: &out_dir,
 					legacy_baseline: &legacy_baseline,
 					game: &game,
+					case_ids: &case_ids,
+					families: &families,
 				},
 			)?;
 			println!("{}", serde_json::to_string_pretty(&report.summary)?);

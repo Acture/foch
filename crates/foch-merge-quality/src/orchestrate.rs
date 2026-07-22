@@ -12,9 +12,9 @@ use serde::{Deserialize, Serialize};
 use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
-	Adjudications, ScoreCache, ScoreFileRequest, SourceMod, classify_resolution,
-	conflict_rel_paths, reference_output_files, run_merge, score_file_with_cache_and_basegame,
-	scoring_reference_units, scoring_requested_paths, write_playset,
+	ScoreCache, ScoreFileRequest, SourceMod, classify_resolution, conflict_rel_paths,
+	reference_output_files, run_merge, score_file_with_cache_and_basegame, scoring_reference_units,
+	scoring_requested_paths, write_playset,
 };
 
 // ------------------------------------------------------------------ data model
@@ -243,20 +243,16 @@ pub fn score_case_from_paths_with_cache(
 		.zip(mod_dirs)
 		.map(|(id, root)| SourceMod { id, root })
 		.collect();
-	let adjudications = Adjudications::built_in();
-
 	let files: Vec<FileRecord> = scoring_units
 		.iter()
 		.map(|rel| {
 			let fs = score_file_with_cache_and_basegame(
 				&ScoreFileRequest {
-					compatch_id: &case.compatch_id,
 					rel,
 					source_mods: &source_mods,
 					compatch: compatch_dir,
 					out_dir,
 					conflict_paths: &conflicts,
-					adjudications: &adjudications,
 				},
 				score_cache,
 				base_game.root(),

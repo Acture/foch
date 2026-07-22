@@ -468,7 +468,7 @@ impl Verdict {
 
 #[derive(Clone, Debug, Default)]
 pub struct Adjudications {
-	records: HashMap<(String, String), AcceptedAdjudication>,
+	records: HashMap<(String, String, String, String), AcceptedAdjudication>,
 }
 
 impl Adjudications {
@@ -478,10 +478,19 @@ impl Adjudications {
 			.into_iter()
 			.map(|record| {
 				(
-					(record.compatch_id, record.rel),
+					(
+						record.compatch_id,
+						record.rel,
+						record.snapshot_id,
+						record.scoring_unit_id,
+					),
 					AcceptedAdjudication {
 						verdict: record.verdict,
 						reason: record.reason,
+						candidate_semantic_content_id: record.candidate_semantic_content_id,
+						human_semantic_content_id: record.human_semantic_content_id,
+						required_atoms: record.required_atoms,
+						forbidden_atoms: record.forbidden_atoms,
 					},
 				)
 			})
@@ -494,24 +503,72 @@ impl Adjudications {
 			.expect("built-in adjudications fixture parses")
 	}
 
-	fn get(&self, compatch_id: &str, rel: &str) -> Option<&AcceptedAdjudication> {
-		self.records
-			.get(&(compatch_id.to_string(), rel.to_string()))
+	pub fn accepted_better_reason(
+		&self,
+		binding: &AdjudicationBinding<'_>,
+		candidate: &AstFile,
+		human: &AstFile,
+	) -> Option<String> {
+		let adjudication = self.records.get(&(
+			binding.compatch_id.to_string(),
+			binding.relative_path.to_string(),
+			binding.snapshot_id.to_string(),
+			binding.scoring_unit_id.to_string(),
+		))?;
+		let candidate_atoms = semantic_atom_bag_statements(&candidate.statements);
+		let human_atoms = semantic_atom_bag_statements(&human.statements);
+		if semantic_atom_bag_content_id(&candidate_atoms)
+			!= adjudication.candidate_semantic_content_id
+			|| semantic_atom_bag_content_id(&human_atoms) != adjudication.human_semantic_content_id
+			|| adjudication
+				.required_atoms
+				.iter()
+				.any(|(atom, count)| candidate_atoms.get(atom).copied().unwrap_or(0) < *count)
+			|| adjudication
+				.forbidden_atoms
+				.iter()
+				.any(|atom| candidate_atoms.contains_key(atom))
+		{
+			return None;
+		}
+		match adjudication.verdict {
+			AcceptedAdjudicationVerdict::AcceptedBetter => Some(adjudication.reason.clone()),
+		}
 	}
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AdjudicationBinding<'a> {
+	pub compatch_id: &'a str,
+	pub relative_path: &'a str,
+	pub snapshot_id: &'a str,
+	pub scoring_unit_id: &'a str,
 }
 
 #[derive(Clone, Debug, serde::Deserialize)]
 struct AcceptedAdjudicationRecord {
 	compatch_id: String,
 	rel: String,
+	snapshot_id: String,
+	scoring_unit_id: String,
 	verdict: AcceptedAdjudicationVerdict,
 	reason: String,
+	candidate_semantic_content_id: String,
+	human_semantic_content_id: String,
+	#[serde(default)]
+	required_atoms: BTreeMap<String, usize>,
+	#[serde(default)]
+	forbidden_atoms: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug)]
 struct AcceptedAdjudication {
 	verdict: AcceptedAdjudicationVerdict,
 	reason: String,
+	candidate_semantic_content_id: String,
+	human_semantic_content_id: String,
+	required_atoms: BTreeMap<String, usize>,
+	forbidden_atoms: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
@@ -543,13 +600,11 @@ pub struct SourceMod<'a> {
 }
 
 pub struct ScoreFileRequest<'a> {
-	pub compatch_id: &'a str,
 	pub rel: &'a str,
 	pub source_mods: &'a [SourceMod<'a>],
 	pub compatch: &'a Path,
 	pub out_dir: &'a Path,
 	pub conflict_paths: &'a HashSet<String>,
-	pub adjudications: &'a Adjudications,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -822,12 +877,6 @@ pub fn score_file_with_cache_and_basegame(
 		)
 	} else if runtime_path.is_none() {
 		(Verdict::NotEmitted, None)
-	} else if let Some(adjudication) = request.adjudications.get(request.compatch_id, rel) {
-		match adjudication.verdict {
-			AcceptedAdjudicationVerdict::AcceptedBetter => {
-				(Verdict::AcceptedBetter, Some(adjudication.reason.clone()))
-			}
-		}
 	} else if !dropped.is_empty() {
 		(Verdict::DropsContent, None)
 	} else if ast_match == Some(false) && keys_match == Some(true) {
@@ -924,11 +973,6 @@ fn score_definition_module(
 		keys_match = Some(dropped_keys.is_empty() && !has_extra_keys);
 		ast_match = Some(human == foch);
 	}
-	let adjudication = request
-		.adjudications
-		.get(request.compatch_id, request.rel)
-		.or_else(|| request.adjudications.get(request.compatch_id, rel));
-
 	let (verdict, acceptance_reason) = if foch_conflict {
 		(Verdict::ConflictWithheld, None)
 	} else {
@@ -937,14 +981,6 @@ fn score_definition_module(
 				Verdict::AcceptedEquivalent,
 				Some("same_family_module_equivalent".to_string()),
 			),
-			(Some(_), Some(_)) if adjudication.is_some() => {
-				let adjudication = adjudication.expect("guarded adjudication lookup");
-				match adjudication.verdict {
-					AcceptedAdjudicationVerdict::AcceptedBetter => {
-						(Verdict::AcceptedBetter, Some(adjudication.reason.clone()))
-					}
-				}
-			}
 			(Some(_), Some(_)) if !dropped_keys.is_empty() => (Verdict::DropsContent, None),
 			(Some(_), Some(_)) if has_extra_keys => (Verdict::DivergesStructure, None),
 			(Some(_), Some(_)) => (Verdict::DivergesAst, None),
@@ -1103,7 +1139,7 @@ fn family_prefix(descriptor: &ContentFamilyDescriptor) -> Option<&'static str> {
 	}
 }
 
-fn definition_module_policy_for_path(rel: &str) -> Option<DefinitionModulePolicy> {
+pub(crate) fn definition_module_policy_for_path(rel: &str) -> Option<DefinitionModulePolicy> {
 	let descriptor = eligible_module_family(rel)?;
 	match descriptor.load_policy {
 		ContentLoadPolicy::DefinitionModule(policy) => Some(policy),
@@ -1609,6 +1645,10 @@ pub(crate) fn semantic_atom_diff_statements(
 
 pub(crate) fn semantic_ast_content_id(ast: &AstFile) -> String {
 	let atoms = semantic_atom_bag_statements(&ast.statements);
+	semantic_atom_bag_content_id(&atoms)
+}
+
+fn semantic_atom_bag_content_id(atoms: &AtomBag) -> String {
 	let encoded = serde_json::to_vec(&atoms).expect("semantic atom bag serializes");
 	blake3::hash(&encoded).to_hex().to_string()
 }
@@ -2368,13 +2408,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.ast_match, Some(false));
@@ -2397,13 +2435,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.ast_match, Some(false));
@@ -2422,13 +2458,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert!(!score.foch_emitted);
@@ -2446,13 +2480,11 @@ mod classify_tests {
 		write_file(compatch.path(), rel, "guiTypes = { active = yes }\n");
 		let sources = two_sources(mod_a.path(), mod_b.path());
 		let request = ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		};
 
 		let score = score_file_with_basegame(&request, Some(basegame.path()));
@@ -2478,13 +2510,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert!(!score.foch_emitted);
@@ -2525,13 +2555,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel: GOVERNMENTS_OUTPUT,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
@@ -2569,13 +2597,11 @@ mod classify_tests {
 		);
 		let sources = two_sources(mod_a.path(), mod_b.path());
 		let request = ScoreFileRequest {
-			compatch_id: "case",
 			rel: GOVERNMENTS_OUTPUT,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		};
 
 		let score = score_file_with_basegame(&request, Some(basegame.path()));
@@ -2605,13 +2631,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
@@ -2651,13 +2675,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel: GOVERNMENTS_OUTPUT,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
@@ -2681,13 +2703,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
@@ -2725,22 +2745,18 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let human_loader_failure = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: human_invalid.path(),
 			out_dir: foch_valid.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 		let foch_loader_failure = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: human_valid.path(),
 			out_dir: foch_invalid.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		for score in [human_loader_failure, foch_loader_failure] {
@@ -2767,13 +2783,11 @@ mod classify_tests {
 		let conflicts = HashSet::from([GOVERNMENTS_OUTPUT.to_string()]);
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &conflicts,
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
@@ -2872,13 +2886,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel: GOVERNMENTS_OUTPUT,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.dropped_keys, ["monarchy"]);
@@ -2969,13 +2981,11 @@ mod classify_tests {
 		let sources = two_sources(mod_a.path(), mod_b.path());
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.ast_match, Some(false));
@@ -2997,44 +3007,65 @@ mod classify_tests {
 	}
 
 	#[test]
-	fn score_file_applies_accepted_better_adjudication() {
-		let (mod_a, mod_b, compatch) = make_dirs();
-		let out = tempfile::tempdir().unwrap();
+	fn accepted_better_requires_exact_snapshot_unit_and_semantic_evidence() {
+		let temp = tempfile::tempdir().unwrap();
 		let rel = "common/scripted_triggers/example.txt";
-		write_file(mod_a.path(), rel, "trigger = { tag = FRA }\n");
-		write_file(mod_b.path(), rel, "trigger = { tag = FRA }\n");
-		write_file(compatch.path(), rel, "trigger = { tag = FRA }\n");
-		write_file(
-			out.path(),
-			"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
-			"trigger = { tag = ENG }\n",
-		);
-		let adjudications = Adjudications::from_json(
-			r#"[{
-				"compatch_id": "case",
-				"rel": "common/scripted_triggers/example.txt",
-				"verdict": "accepted_better",
-				"reason": "foch preserves the intended corrected country tag"
-			}]"#,
+		let candidate_path = temp.path().join("candidate.txt");
+		let human_path = temp.path().join("human.txt");
+		write_file(temp.path(), "candidate.txt", "trigger = { tag = ENG }\n");
+		write_file(temp.path(), "human.txt", "trigger = { tag = FRA }\n");
+		let candidate = parse_clausewitz_file(&candidate_path).ast;
+		let human = parse_clausewitz_file(&human_path).ast;
+		let candidate_atoms = semantic_atom_bag_statements(&candidate.statements);
+		let (required_atom, required_count) = candidate_atoms
+			.iter()
+			.next()
+			.expect("candidate has an atom");
+		let human_only = semantic_atom_bag_diff(
+			&semantic_atom_bag_statements(&human.statements),
+			&candidate_atoms,
 		)
-		.unwrap();
-		let sources = two_sources(mod_a.path(), mod_b.path());
-
-		let score = score_file(&ScoreFileRequest {
+		.left_only
+		.into_keys()
+		.next()
+		.expect("human has a distinct atom");
+		let fixture = serde_json::json!([{
+			"compatch_id": "case",
+			"rel": rel,
+			"snapshot_id": "snapshot",
+			"scoring_unit_id": "unit",
+			"verdict": "accepted_better",
+			"reason": "candidate preserves the intended corrected country tag",
+			"candidate_semantic_content_id": semantic_ast_content_id(&candidate),
+			"human_semantic_content_id": semantic_ast_content_id(&human),
+			"required_atoms": { (required_atom): required_count },
+			"forbidden_atoms": [human_only],
+		}]);
+		let adjudications = Adjudications::from_json(&fixture.to_string()).unwrap();
+		let binding = AdjudicationBinding {
 			compatch_id: "case",
-			rel,
-			source_mods: &sources,
-			compatch: compatch.path(),
-			out_dir: out.path(),
-			conflict_paths: &HashSet::new(),
-			adjudications: &adjudications,
-		});
+			relative_path: rel,
+			snapshot_id: "snapshot",
+			scoring_unit_id: "unit",
+		};
 
-		assert_eq!(score.ast_match, Some(false));
-		assert_eq!(score.verdict, Verdict::AcceptedBetter);
 		assert_eq!(
-			score.acceptance_reason.as_deref(),
-			Some("foch preserves the intended corrected country tag")
+			adjudications
+				.accepted_better_reason(&binding, &candidate, &human)
+				.as_deref(),
+			Some("candidate preserves the intended corrected country tag")
+		);
+		let stale_binding = AdjudicationBinding {
+			snapshot_id: "new-snapshot",
+			..binding
+		};
+		assert_eq!(
+			adjudications.accepted_better_reason(&stale_binding, &candidate, &human),
+			None
+		);
+		assert_eq!(
+			adjudications.accepted_better_reason(&binding, &human, &human),
+			None
 		);
 	}
 
@@ -3069,13 +3100,11 @@ mod classify_tests {
 		];
 
 		let score = score_file(&ScoreFileRequest {
-			compatch_id: "case",
 			rel,
 			source_mods: &sources,
 			compatch: compatch.path(),
 			out_dir: out.path(),
 			conflict_paths: &HashSet::new(),
-			adjudications: &Adjudications::default(),
 		});
 
 		assert_eq!(score.source_mod_ids, vec!["a", "b", "c"]);

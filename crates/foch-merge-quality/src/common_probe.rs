@@ -1,16 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 use std::time::Instant;
 
-use foch_core::domain::descriptor::load_descriptor;
-use foch_engine::merge_clausewitz_files;
+use foch_engine::merge_clausewitz_definition_module;
 use foch_language::analyzer::content_family::{GameProfile, MergeKeySource, MergePolicies};
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{AstFile, AstStatement, parse_clausewitz_file};
+use foch_language::analyzer::parser::{AstFile, AstStatement};
 use serde::{Deserialize, Serialize};
 
+use crate::common_module::{
+	CommonModuleDiagnostic, CommonModuleViewBuilder, normalize_module_comparison,
+};
 use crate::config::Eu4GameDiscovery;
 use crate::corpus_shadow::{
 	LoadedSnapshot, latest_snapshots, load_snapshot, validate_snapshot_game,
@@ -23,7 +24,7 @@ use crate::score::{
 	semantic_atom_diff_statements,
 };
 
-pub const COMMON_APPLICABILITY_SCHEMA: &str = "1.0.0";
+pub const COMMON_APPLICABILITY_SCHEMA: &str = "2.0.0";
 pub const COMMON_APPLICABILITY_UNIT_COUNT: usize = 12;
 
 pub struct CommonApplicabilityOptions<'a> {
@@ -31,6 +32,8 @@ pub struct CommonApplicabilityOptions<'a> {
 	pub output_dir: &'a Path,
 	pub legacy_baseline: &'a Path,
 	pub game: &'a Eu4GameDiscovery,
+	pub case_ids: &'a BTreeSet<String>,
+	pub families: &'a BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -86,10 +89,22 @@ pub struct CommonProbeConflict {
 	pub detail: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CommonProbeScalarReduction {
+	pub path: Vec<String>,
+	pub inputs: Vec<(u16, String)>,
+	pub output: String,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
 pub struct CommonProbeTimings {
 	pub view_ms: u64,
 	pub merge_ms: u64,
+	pub comparison_ms: u64,
+	pub copy_through_definitions: usize,
+	pub structured_definitions: usize,
+	pub comparison_reused_definitions: usize,
+	pub comparison_normalized_definitions: usize,
 	pub matcher_ns: u64,
 	pub pcs_ns: u64,
 	pub policy_ns: u64,
@@ -117,12 +132,14 @@ pub struct CommonProbeUnit {
 	pub publishable: bool,
 	pub policies: Option<MergePolicies>,
 	pub view_content_ids: Option<CommonProbeViewIdentities>,
+	pub candidate_semantic_content_id: Option<String>,
 	pub base_definitions: usize,
 	pub active_definitions: usize,
 	pub missing_top_level_keys: Vec<String>,
 	pub extra_top_level_keys: Vec<String>,
 	pub semantic_diff_from_human: Option<SemanticAtomDiff>,
 	pub conflicts: Vec<CommonProbeConflict>,
+	pub scalar_reductions: Vec<CommonProbeScalarReduction>,
 	pub diagnostics: Vec<CommonProbeDiagnostic>,
 	pub timings: CommonProbeTimings,
 }
@@ -131,6 +148,7 @@ pub struct CommonProbeUnit {
 pub struct CommonProbeSummary {
 	pub expected_units: usize,
 	pub classified_units: usize,
+	pub full_denominator: bool,
 	pub accepted_equivalent: usize,
 	pub manual_resolution_required: usize,
 	pub semantic_mismatch: usize,
@@ -138,7 +156,7 @@ pub struct CommonProbeSummary {
 	pub legacy_accepted: usize,
 	pub legacy_accepted_preserved: usize,
 	pub review_required: usize,
-	pub gate_passed: bool,
+	pub gate_passed: Option<bool>,
 	pub elapsed_ms: u64,
 }
 
@@ -175,46 +193,29 @@ struct LegacyBaselineUnit {
 	score: FileRecord,
 }
 
-#[derive(Clone, Debug)]
-struct ParsedModuleFile {
-	statements: Vec<AstStatement>,
-	diagnostics: Vec<CommonProbeDiagnostic>,
-}
-
-#[derive(Clone, Debug)]
-struct ParsedModuleLayer {
-	replace_namespace: bool,
-	files: BTreeMap<String, Arc<ParsedModuleFile>>,
-}
-
-struct PreparedMergeInputs {
-	base: AstFile,
-	left: AstFile,
-	right: AstFile,
-	active_keys: BTreeSet<String>,
-	base_definitions: usize,
-	whole_module: bool,
-}
-
-#[derive(Default)]
-struct FolderModuleCache {
-	layers: BTreeMap<(PathBuf, String), Arc<ParsedModuleLayer>>,
-	views: BTreeMap<(Vec<PathBuf>, String), Arc<AstFile>>,
+struct ComparisonNormalization {
+	candidate: AstFile,
+	human: AstFile,
+	conflicts: Vec<CommonProbeConflict>,
+	reused_definitions: usize,
+	normalized_definitions: usize,
 }
 
 pub fn run_common_applicability_probe(
 	options: &CommonApplicabilityOptions<'_>,
 ) -> Result<CommonApplicabilityReport, Box<dyn std::error::Error>> {
 	let started = Instant::now();
-	let targets = load_targets(options.legacy_baseline)?;
-	if targets.len() != COMMON_APPLICABILITY_UNIT_COUNT {
+	let all_targets = load_targets(options.legacy_baseline)?;
+	if all_targets.len() != COMMON_APPLICABILITY_UNIT_COUNT {
 		return Err(format!(
 			"common applicability denominator drifted: expected {}, found {}",
 			COMMON_APPLICABILITY_UNIT_COUNT,
-			targets.len()
+			all_targets.len()
 		)
 		.into());
 	}
+	let full_denominator = options.case_ids.is_empty() && options.families.is_empty();
+	let targets = select_targets(&all_targets, options.case_ids, options.families)?;
 
 	let paths = DatasetPaths::new(options.dataset_root);
 	let snapshots = latest_snapshots(&paths)?
@@ -251,7 +252,7 @@ pub fn run_common_applicability_probe(
 		}
 	}
 
-	let mut cache = FolderModuleCache::default();
+	let mut cache = CommonModuleViewBuilder::default();
 	let mut units = Vec::with_capacity(targets.len());
 	for (index, target) in targets.iter().enumerate() {
 		let unit_started = Instant::now();
@@ -296,11 +297,11 @@ pub fn run_common_applicability_probe(
 		legacy_baseline_blake3: blake3::hash(&fs::read(options.legacy_baseline)?)
 			.to_hex()
 			.to_string(),
-		summary: summarize(&units, duration_ms(started.elapsed())),
+		summary: summarize(&units, full_denominator, duration_ms(started.elapsed())),
 		families: summarize_families(&units),
 		units,
 	};
-	report.summary.gate_passed = common_gate_passed(&report.summary);
+	report.summary.gate_passed = common_gate_result(&report.summary);
 	write_report(options.output_dir, &report)?;
 	Ok(report)
 }
@@ -325,11 +326,68 @@ fn load_targets(path: &Path) -> Result<Vec<LegacyBaselineUnit>, Box<dyn std::err
 	Ok(targets)
 }
 
+fn select_targets(
+	targets: &[LegacyBaselineUnit],
+	case_ids: &BTreeSet<String>,
+	families: &BTreeSet<String>,
+) -> Result<Vec<LegacyBaselineUnit>, Box<dyn std::error::Error>> {
+	let available_cases = targets
+		.iter()
+		.map(|target| target.case_id.as_str())
+		.collect::<BTreeSet<_>>();
+	let unknown_cases = case_ids
+		.iter()
+		.filter(|case_id| !available_cases.contains(case_id.as_str()))
+		.cloned()
+		.collect::<Vec<_>>();
+	if !unknown_cases.is_empty() {
+		return Err(format!("unknown common probe cases: {}", unknown_cases.join(", ")).into());
+	}
+
+	let profile = eu4_profile();
+	let target_families = targets
+		.iter()
+		.filter_map(|target| {
+			profile
+				.classify_content_family(Path::new(&target.score.rel))
+				.map(|descriptor| descriptor.id.as_str().to_string())
+		})
+		.collect::<BTreeSet<_>>();
+	let unknown_families = families
+		.iter()
+		.filter(|family| !target_families.contains(family.as_str()))
+		.cloned()
+		.collect::<Vec<_>>();
+	if !unknown_families.is_empty() {
+		return Err(format!(
+			"unknown common probe families: {}",
+			unknown_families.join(", ")
+		)
+		.into());
+	}
+
+	let selected = targets
+		.iter()
+		.filter(|target| case_ids.is_empty() || case_ids.contains(&target.case_id))
+		.filter(|target| {
+			families.is_empty()
+				|| profile
+					.classify_content_family(Path::new(&target.score.rel))
+					.is_some_and(|descriptor| families.contains(descriptor.id.as_str()))
+		})
+		.cloned()
+		.collect::<Vec<_>>();
+	if selected.is_empty() {
+		return Err("common probe selection matched no units".into());
+	}
+	Ok(selected)
+}
+
 fn evaluate_unit(
 	options: &CommonApplicabilityOptions<'_>,
 	target: &LegacyBaselineUnit,
 	snapshot: &LoadedSnapshot,
-	cache: &mut FolderModuleCache,
+	cache: &mut CommonModuleViewBuilder,
 ) -> CommonProbeUnit {
 	let Some(module_prefix) = common_folder_prefix(&target.score.rel) else {
 		return failed_unit(
@@ -400,6 +458,7 @@ fn evaluate_unit(
 			.into_iter()
 			.filter_map(Result::err)
 			.flatten()
+			.map(common_module_diagnostic)
 			.collect::<Vec<_>>();
 		return CommonProbeUnit {
 			case_id: target.case_id.clone(),
@@ -414,12 +473,14 @@ fn evaluate_unit(
 			publishable: false,
 			policies: Some(descriptor.merge_policies),
 			view_content_ids: None,
+			candidate_semantic_content_id: None,
 			base_definitions: 0,
 			active_definitions: 0,
 			missing_top_level_keys: Vec::new(),
 			extra_top_level_keys: Vec::new(),
 			semantic_diff_from_human: None,
 			conflicts: Vec::new(),
+			scalar_reductions: Vec::new(),
 			diagnostics,
 			timings: CommonProbeTimings {
 				view_ms,
@@ -436,13 +497,11 @@ fn evaluate_unit(
 		right: semantic_ast_content_id(&right),
 		human: semantic_ast_content_id(&human),
 	};
-	let prepared = prepare_merge_inputs(&base, &left, &right);
-
 	let merge_started = Instant::now();
-	let outcome = match merge_clausewitz_files(
-		&prepared.base,
-		&prepared.left,
-		&prepared.right,
+	let outcome = match merge_clausewitz_definition_module(
+		&base,
+		&left,
+		&right,
 		&descriptor.merge_policies,
 	) {
 		Ok(outcome) => outcome,
@@ -460,12 +519,14 @@ fn evaluate_unit(
 				publishable: false,
 				policies: Some(descriptor.merge_policies),
 				view_content_ids: Some(view_content_ids.clone()),
-				base_definitions: prepared.base_definitions,
-				active_definitions: prepared.active_keys.len(),
+				candidate_semantic_content_id: None,
+				base_definitions: top_level_assignment_keys(&base).len(),
+				active_definitions: changed_top_level_keys(&base, &left, &right).len(),
 				missing_top_level_keys: Vec::new(),
 				extra_top_level_keys: Vec::new(),
 				semantic_diff_from_human: None,
 				conflicts: Vec::new(),
+				scalar_reductions: Vec::new(),
 				diagnostics: vec![CommonProbeDiagnostic {
 					phase: "structured_adapter".to_string(),
 					path: Some(target.score.rel.clone()),
@@ -480,20 +541,42 @@ fn evaluate_unit(
 		}
 	};
 	let merge_ms = duration_ms(merge_started.elapsed());
-	let candidate = compose_module_candidate(&base, &prepared, outcome.tentative_ast());
-	let diff = semantic_atom_diff_ast(&candidate, &human);
+	let candidate = outcome.tentative_ast().clone();
+	let comparison_started = Instant::now();
+	let comparison = canonicalize_comparison_pair(
+		&candidate,
+		&human,
+		&descriptor.merge_policies,
+		&module_prefix,
+	);
+	let comparison_ms = duration_ms(comparison_started.elapsed());
+	let diff = semantic_atom_diff_ast(&comparison.candidate, &comparison.human);
 	let candidate_keys = top_level_assignment_keys(&candidate);
 	let human_keys = top_level_assignment_keys(&human);
 	let missing_top_level_keys = human_keys.difference(&candidate_keys).cloned().collect();
 	let extra_top_level_keys = candidate_keys.difference(&human_keys).cloned().collect();
-	let conflicts = outcome
-		.conflict_summaries()
-		.into_iter()
+	let mut conflicts = outcome
+		.conflicts()
+		.iter()
 		.map(|conflict| CommonProbeConflict {
 			kind: conflict.kind.to_string(),
-			detail: conflict.detail,
+			detail: conflict.detail.clone(),
 		})
 		.collect::<Vec<_>>();
+	conflicts.extend(comparison.conflicts);
+	let scalar_reductions = outcome
+		.scalar_reductions()
+		.iter()
+		.map(|reduction| CommonProbeScalarReduction {
+			path: reduction.path.clone(),
+			inputs: reduction
+				.inputs
+				.iter()
+				.map(|(revision, value)| (revision.get(), value.clone()))
+				.collect(),
+			output: reduction.output.clone(),
+		})
+		.collect();
 	let equivalent = diff.left_only.is_empty() && diff.right_only.is_empty();
 	let status = if conflicts.is_empty() && equivalent {
 		CommonProbeStatus::AcceptedEquivalent
@@ -502,7 +585,6 @@ fn evaluate_unit(
 	} else {
 		CommonProbeStatus::SemanticMismatch
 	};
-	let timings = outcome.timings();
 	CommonProbeUnit {
 		case_id: target.case_id.clone(),
 		snapshot_id: Some(snapshot.snapshot.snapshot_id.clone()),
@@ -516,70 +598,53 @@ fn evaluate_unit(
 		publishable: status.is_accepted(),
 		policies: Some(descriptor.merge_policies),
 		view_content_ids: Some(view_content_ids),
-		base_definitions: prepared.base_definitions,
-		active_definitions: prepared.active_keys.len(),
+		candidate_semantic_content_id: Some(semantic_ast_content_id(&comparison.candidate)),
+		base_definitions: outcome.base_definitions(),
+		active_definitions: outcome.active_definitions(),
 		missing_top_level_keys,
 		extra_top_level_keys,
 		semantic_diff_from_human: Some(diff),
 		conflicts,
+		scalar_reductions,
 		diagnostics: Vec::new(),
 		timings: CommonProbeTimings {
 			view_ms,
 			merge_ms,
-			matcher_ns: timings.matcher_ns,
-			pcs_ns: timings.pcs_ns,
-			policy_ns: timings.policy_ns,
+			comparison_ms,
+			copy_through_definitions: outcome.copy_through_definitions(),
+			structured_definitions: outcome.structured_definitions(),
+			comparison_reused_definitions: comparison.reused_definitions,
+			comparison_normalized_definitions: comparison.normalized_definitions,
+			matcher_ns: outcome.timings().matcher_ns,
+			pcs_ns: outcome.timings().pcs_ns,
+			policy_ns: outcome.timings().policy_ns,
 		},
 	}
 }
-
-fn prepare_merge_inputs(base: &AstFile, left: &AstFile, right: &AstFile) -> PreparedMergeInputs {
-	let base_definitions = top_level_assignment_keys(base).len();
-	let base_map = definition_map(base);
-	let left_map = definition_map(left);
-	let right_map = definition_map(right);
-	let active_keys = base_map
-		.keys()
-		.chain(left_map.keys())
-		.chain(right_map.keys())
-		.map(|key| (*key).to_string())
-		.collect::<BTreeSet<_>>()
+fn canonicalize_comparison_pair(
+	candidate: &AstFile,
+	human: &AstFile,
+	policies: &MergePolicies,
+	module_prefix: &str,
+) -> ComparisonNormalization {
+	let comparison = normalize_module_comparison(candidate, human, policies, module_prefix);
+	let conflicts = comparison
+		.diagnostics
 		.into_iter()
-		.filter(|key| {
-			!optional_statements_equivalent(base_map.get(key.as_str()), left_map.get(key.as_str()))
-				|| !optional_statements_equivalent(
-					base_map.get(key.as_str()),
-					right_map.get(key.as_str()),
-				)
+		.map(|diagnostic| CommonProbeConflict {
+			kind: diagnostic.phase,
+			detail: match diagnostic.path {
+				Some(path) => format!("{path}: {}", diagnostic.message),
+				None => diagnostic.message,
+			},
 		})
-		.collect::<BTreeSet<_>>();
-	let whole_module = [base, left, right].iter().any(|ast| {
-		ast.statements
-			.iter()
-			.any(|statement| matches!(statement, AstStatement::Item { .. }))
-	});
-	if whole_module {
-		return PreparedMergeInputs {
-			base: base.clone(),
-			left: left.clone(),
-			right: right.clone(),
-			active_keys: base_map
-				.keys()
-				.chain(left_map.keys())
-				.chain(right_map.keys())
-				.map(|key| (*key).to_string())
-				.collect(),
-			base_definitions,
-			whole_module,
-		};
-	}
-	PreparedMergeInputs {
-		base: select_definitions(base, &active_keys),
-		left: select_definitions(left, &active_keys),
-		right: select_definitions(right, &active_keys),
-		active_keys,
-		base_definitions,
-		whole_module,
+		.collect();
+	ComparisonNormalization {
+		candidate: comparison.candidate,
+		human: comparison.human,
+		conflicts,
+		reused_definitions: comparison.reused_definitions,
+		normalized_definitions: comparison.normalized_definitions,
 	}
 }
 
@@ -610,228 +675,33 @@ fn optional_statements_equivalent(
 	}
 }
 
-fn select_definitions(ast: &AstFile, keys: &BTreeSet<String>) -> AstFile {
-	AstFile {
-		path: ast.path.clone(),
-		statements: ast
-			.statements
-			.iter()
-			.filter(|statement| match statement {
-				AstStatement::Assignment { key, .. } => keys.contains(key),
-				AstStatement::Item { .. } => true,
-				AstStatement::Comment { .. } => false,
-			})
-			.cloned()
-			.collect(),
-	}
-}
-
-fn compose_module_candidate(
-	base: &AstFile,
-	prepared: &PreparedMergeInputs,
-	merged_active: &AstFile,
-) -> AstFile {
-	if prepared.whole_module {
-		return merged_active.clone();
-	}
-	let mut statements = base
-		.statements
-		.iter()
-		.filter(|statement| match statement {
-			AstStatement::Assignment { key, .. } => !prepared.active_keys.contains(key),
-			AstStatement::Item { .. } => false,
-			AstStatement::Comment { .. } => false,
+fn changed_top_level_keys(base: &AstFile, left: &AstFile, right: &AstFile) -> BTreeSet<String> {
+	let base_map = definition_map(base);
+	let left_map = definition_map(left);
+	let right_map = definition_map(right);
+	base_map
+		.keys()
+		.chain(left_map.keys())
+		.chain(right_map.keys())
+		.map(|key| (*key).to_string())
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.filter(|key| {
+			!optional_statements_equivalent(base_map.get(key.as_str()), left_map.get(key.as_str()))
+				|| !optional_statements_equivalent(
+					base_map.get(key.as_str()),
+					right_map.get(key.as_str()),
+				)
 		})
-		.cloned()
-		.collect::<Vec<_>>();
-	statements.extend(merged_active.statements.iter().cloned());
-	statements.sort_by(compare_top_level_statements);
-	AstFile {
-		path: base.path.clone(),
-		statements,
-	}
+		.collect()
 }
 
-fn compare_top_level_statements(left: &AstStatement, right: &AstStatement) -> std::cmp::Ordering {
-	match (left, right) {
-		(
-			AstStatement::Assignment { key: left, .. },
-			AstStatement::Assignment { key: right, .. },
-		) => left.cmp(right),
-		(AstStatement::Assignment { .. }, _) => std::cmp::Ordering::Less,
-		(_, AstStatement::Assignment { .. }) => std::cmp::Ordering::Greater,
-		(AstStatement::Item { .. }, AstStatement::Comment { .. }) => std::cmp::Ordering::Less,
-		(AstStatement::Comment { .. }, AstStatement::Item { .. }) => std::cmp::Ordering::Greater,
-		_ => std::cmp::Ordering::Equal,
+fn common_module_diagnostic(diagnostic: CommonModuleDiagnostic) -> CommonProbeDiagnostic {
+	CommonProbeDiagnostic {
+		phase: diagnostic.phase,
+		path: diagnostic.path,
+		message: diagnostic.message,
 	}
-}
-
-impl FolderModuleCache {
-	fn view(
-		&mut self,
-		roots: &[&Path],
-		module_prefix: &str,
-	) -> Result<Arc<AstFile>, Vec<CommonProbeDiagnostic>> {
-		let key = (
-			roots.iter().map(|root| root.to_path_buf()).collect(),
-			module_prefix.to_string(),
-		);
-		if let Some(view) = self.views.get(&key) {
-			return Ok(Arc::clone(view));
-		}
-
-		let mut visible = BTreeMap::<String, Arc<ParsedModuleFile>>::new();
-		for root in roots {
-			let layer = self.layer(root, module_prefix)?;
-			if layer.replace_namespace {
-				visible.clear();
-			}
-			for (relative, file) in &layer.files {
-				visible.insert(relative.clone(), Arc::clone(file));
-			}
-		}
-
-		let diagnostics = visible
-			.values()
-			.flat_map(|file| file.diagnostics.iter().cloned())
-			.collect::<Vec<_>>();
-		if !diagnostics.is_empty() {
-			return Err(diagnostics);
-		}
-
-		let mut definitions = BTreeMap::<String, AstStatement>::new();
-		let mut items = Vec::new();
-		for file in visible.values() {
-			for statement in &file.statements {
-				match statement {
-					AstStatement::Assignment { key, .. } => {
-						definitions.insert(key.clone(), statement.clone());
-					}
-					AstStatement::Item { .. } => items.push(statement.clone()),
-					AstStatement::Comment { .. } => {}
-				}
-			}
-		}
-		let mut statements = definitions.into_values().collect::<Vec<_>>();
-		statements.extend(items);
-		let view = Arc::new(AstFile {
-			path: PathBuf::from(format!("{module_prefix}/__foch_common_probe__.txt")),
-			statements,
-		});
-		self.views.insert(key, Arc::clone(&view));
-		Ok(view)
-	}
-
-	fn layer(
-		&mut self,
-		root: &Path,
-		module_prefix: &str,
-	) -> Result<Arc<ParsedModuleLayer>, Vec<CommonProbeDiagnostic>> {
-		let key = (root.to_path_buf(), module_prefix.to_string());
-		if let Some(layer) = self.layers.get(&key) {
-			return Ok(Arc::clone(layer));
-		}
-		let layer = Arc::new(parse_module_layer(root, module_prefix)?);
-		self.layers.insert(key, Arc::clone(&layer));
-		Ok(layer)
-	}
-}
-
-fn parse_module_layer(
-	root: &Path,
-	module_prefix: &str,
-) -> Result<ParsedModuleLayer, Vec<CommonProbeDiagnostic>> {
-	let replace_namespace = match layer_replaces_module(root, module_prefix) {
-		Ok(replace) => replace,
-		Err(diagnostic) => return Err(vec![diagnostic]),
-	};
-	let directory = root.join(module_prefix);
-	if !directory.exists() {
-		return Ok(ParsedModuleLayer {
-			replace_namespace,
-			files: BTreeMap::new(),
-		});
-	}
-	if !directory.is_dir() {
-		return Err(vec![CommonProbeDiagnostic {
-			phase: "module_input".to_string(),
-			path: Some(directory.display().to_string()),
-			message: "module prefix is not a directory".to_string(),
-		}]);
-	}
-
-	let mut files = BTreeMap::new();
-	for entry in walkdir::WalkDir::new(&directory) {
-		let entry = match entry {
-			Ok(entry) => entry,
-			Err(error) => {
-				return Err(vec![CommonProbeDiagnostic {
-					phase: "module_input".to_string(),
-					path: error.path().map(|path| path.display().to_string()),
-					message: error.to_string(),
-				}]);
-			}
-		};
-		if !entry.file_type().is_file()
-			|| entry
-				.path()
-				.extension()
-				.and_then(|extension| extension.to_str())
-				.is_none_or(|extension| !extension.eq_ignore_ascii_case("txt"))
-		{
-			continue;
-		}
-		let path = entry.into_path();
-		let relative = relative_path(root, &path);
-		let parsed = parse_clausewitz_file(&path);
-		let diagnostics = parsed
-			.diagnostics
-			.into_iter()
-			.map(|diagnostic| CommonProbeDiagnostic {
-				phase: "parse".to_string(),
-				path: Some(relative.clone()),
-				message: diagnostic.message,
-			})
-			.collect();
-		files.insert(
-			relative,
-			Arc::new(ParsedModuleFile {
-				statements: parsed.ast.statements,
-				diagnostics,
-			}),
-		);
-	}
-	Ok(ParsedModuleLayer {
-		replace_namespace,
-		files,
-	})
-}
-
-fn layer_replaces_module(root: &Path, module_prefix: &str) -> Result<bool, CommonProbeDiagnostic> {
-	let descriptor_path = root.join("descriptor.mod");
-	if !descriptor_path.is_file() {
-		return Ok(false);
-	}
-	let descriptor = load_descriptor(&descriptor_path).map_err(|error| CommonProbeDiagnostic {
-		phase: "descriptor".to_string(),
-		path: Some(descriptor_path.display().to_string()),
-		message: error.to_string(),
-	})?;
-	Ok(descriptor
-		.replace_path
-		.iter()
-		.any(|replace_path| replace_path_covers_prefix(replace_path, module_prefix)))
-}
-
-fn replace_path_covers_prefix(replace_path: &str, module_prefix: &str) -> bool {
-	let normalized = replace_path.trim().replace('\\', "/");
-	let replace_path = normalized.trim_matches('/');
-	let module_prefix = module_prefix.trim_matches('/');
-	!replace_path.is_empty()
-		&& (replace_path == module_prefix
-			|| module_prefix
-				.strip_prefix(replace_path)
-				.is_some_and(|suffix| suffix.starts_with('/')))
 }
 
 fn common_folder_prefix(relative_path: &str) -> Option<String> {
@@ -839,13 +709,6 @@ fn common_folder_prefix(relative_path: &str) -> Option<String> {
 	let common = components.next()?;
 	let folder = components.next()?;
 	(common == "common" && !folder.is_empty()).then(|| format!("common/{folder}"))
-}
-
-fn relative_path(root: &Path, path: &Path) -> String {
-	path.strip_prefix(root)
-		.unwrap_or(path)
-		.to_string_lossy()
-		.replace('\\', "/")
 }
 
 fn top_level_assignment_keys(ast: &AstFile) -> BTreeSet<String> {
@@ -902,12 +765,14 @@ fn failed_unit_with_prefix(
 		publishable: false,
 		policies: None,
 		view_content_ids: None,
+		candidate_semantic_content_id: None,
 		base_definitions: 0,
 		active_definitions: 0,
 		missing_top_level_keys: Vec::new(),
 		extra_top_level_keys: Vec::new(),
 		semantic_diff_from_human: None,
 		conflicts: Vec::new(),
+		scalar_reductions: Vec::new(),
 		diagnostics: vec![CommonProbeDiagnostic {
 			phase: phase.to_string(),
 			path: Some(target.score.rel.clone()),
@@ -930,10 +795,15 @@ fn failed_unit_with_family(
 	unit
 }
 
-fn summarize(units: &[CommonProbeUnit], elapsed_ms: u64) -> CommonProbeSummary {
+fn summarize(
+	units: &[CommonProbeUnit],
+	full_denominator: bool,
+	elapsed_ms: u64,
+) -> CommonProbeSummary {
 	let mut summary = CommonProbeSummary {
 		expected_units: COMMON_APPLICABILITY_UNIT_COUNT,
 		classified_units: units.len(),
+		full_denominator,
 		elapsed_ms,
 		..CommonProbeSummary::default()
 	};
@@ -963,6 +833,12 @@ fn common_gate_passed(summary: &CommonProbeSummary) -> bool {
 	summary.classified_units == summary.expected_units
 		&& summary.failed == 0
 		&& summary.legacy_accepted_preserved == summary.legacy_accepted
+}
+
+fn common_gate_result(summary: &CommonProbeSummary) -> Option<bool> {
+	summary
+		.full_denominator
+		.then(|| common_gate_passed(summary))
 }
 
 fn summarize_families(units: &[CommonProbeUnit]) -> Vec<CommonProbeFamilySummary> {
@@ -1005,13 +881,14 @@ fn write_report(
 
 fn render_markdown(report: &CommonApplicabilityReport) -> String {
 	let summary = &report.summary;
+	let gate = match summary.gate_passed {
+		Some(true) => "passed",
+		Some(false) => "failed",
+		None => "not evaluated (filtered run)",
+	};
 	let mut output = format!(
 		"# Common applicability probe\n\nGate: **{}** | classified: {}/{} | accepted equivalent: {} | manual resolution: {} | semantic mismatch: {} | failed: {} | elapsed: {} ms\n\n",
-		if summary.gate_passed {
-			"passed"
-		} else {
-			"failed"
-		},
+		gate,
 		summary.classified_units,
 		summary.expected_units,
 		summary.accepted_equivalent,
@@ -1057,7 +934,15 @@ fn duration_ms(duration: std::time::Duration) -> u64 {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::content_family::MergePolicies;
+	use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
+	use foch_language::analyzer::parser::parse_clausewitz_content;
+	use std::path::PathBuf;
+
+	fn parse(source: &str) -> AstFile {
+		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		parsed.ast
+	}
 
 	fn write_file(root: &Path, relative: &str, contents: &str) {
 		let path = root.join(relative);
@@ -1093,30 +978,83 @@ mod tests {
 			"temple = { cost = 100 manpower = 1 tax = 1 }\n",
 		);
 
-		let mut cache = FolderModuleCache::default();
+		let mut cache = CommonModuleViewBuilder::default();
 		let base_view = cache.view(&[&base], "common/buildings").unwrap();
 		let left_view = cache.view(&[&base, &left], "common/buildings").unwrap();
 		let right_view = cache.view(&[&base, &right], "common/buildings").unwrap();
-		let prepared = prepare_merge_inputs(&base_view, &left_view, &right_view);
-		assert_eq!(prepared.base_definitions, 2);
-		assert_eq!(prepared.active_keys, BTreeSet::from(["temple".to_string()]));
-		let merged = merge_clausewitz_files(
-			&prepared.base,
-			&prepared.left,
-			&prepared.right,
+		assert_eq!(
+			changed_top_level_keys(&base_view, &left_view, &right_view),
+			BTreeSet::from(["temple".to_string()])
+		);
+		let merged = merge_clausewitz_definition_module(
+			&base_view,
+			&left_view,
+			&right_view,
 			&MergePolicies::default(),
 		)
 		.unwrap();
-		let candidate = compose_module_candidate(
-			&base_view,
-			&prepared,
-			merged.resolved_ast().expect("independent edits resolve"),
-		);
+		assert_eq!(merged.base_definitions(), 2);
+		assert!(merged.conflicts().is_empty(), "{:?}", merged.conflicts());
+		let candidate = merged.tentative_ast();
 		let human = cache
 			.view(&[&base, &left, &right, &human_root], "common/buildings")
 			.unwrap();
-		let diff = semantic_atom_diff_ast(&candidate, &human);
+		let diff = semantic_atom_diff_ast(candidate, &human);
 
+		assert!(diff.left_only.is_empty(), "{:?}", diff.left_only);
+		assert!(diff.right_only.is_empty(), "{:?}", diff.right_only);
+	}
+
+	#[test]
+	fn shared_module_merge_honors_nonstandard_one_sided_removal_policy() {
+		let base = parse(
+			"institution = { potential = { OR = { trade_goods = ivory trade_goods = cloves } } }\n",
+		);
+		let right = parse(
+			"institution = { potential = { OR = { trade_goods = ivory trade_goods = fur } } }\n",
+		);
+		let policies = MergePolicies {
+			one_sided_removal: OneSidedRemovalPolicy::PreserveBooleanAlternatives,
+			..MergePolicies::default()
+		};
+
+		let outcome = merge_clausewitz_definition_module(&base, &base, &right, &policies)
+			.expect("policy-aware partitioned merge");
+		assert_eq!(outcome.copy_through_definitions(), 0);
+		assert_eq!(outcome.structured_definitions(), 1);
+		let diff = semantic_atom_diff_ast(
+			outcome.tentative_ast(),
+			&parse(
+				"institution = { potential = { OR = { trade_goods = ivory trade_goods = cloves trade_goods = fur } } }\n",
+			),
+		);
+		assert!(diff.left_only.is_empty(), "{:?}", diff.left_only);
+		assert!(diff.right_only.is_empty(), "{:?}", diff.right_only);
+	}
+
+	#[test]
+	fn comparison_reuses_equal_definitions_and_normalizes_changed_control_flow() {
+		let candidate = parse(
+			"same = { value = 1 }\nflow = { if = { limit = { flag = yes } value = 1 } else = { value = 2 } }\n",
+		);
+		let human = parse(
+			"same = { value = 1 }\nflow = { if = { limit = { NOT = { flag = yes } } value = 2 } else = { value = 1 } }\n",
+		);
+		let comparison = canonicalize_comparison_pair(
+			&candidate,
+			&human,
+			&MergePolicies::default(),
+			"common/test",
+		);
+
+		assert_eq!(comparison.reused_definitions, 1);
+		assert_eq!(comparison.normalized_definitions, 1);
+		assert!(
+			comparison.conflicts.is_empty(),
+			"{:?}",
+			comparison.conflicts
+		);
+		let diff = semantic_atom_diff_ast(&comparison.candidate, &comparison.human);
 		assert!(diff.left_only.is_empty(), "{:?}", diff.left_only);
 		assert!(diff.right_only.is_empty(), "{:?}", diff.right_only);
 	}
@@ -1138,12 +1076,23 @@ mod tests {
 			"muslim = { }\n",
 		);
 
-		let view = FolderModuleCache::default()
+		let view = CommonModuleViewBuilder::default()
 			.view(&[&base, &replacement], "common/religions")
 			.unwrap();
 		assert_eq!(
 			top_level_assignment_keys(&view),
 			BTreeSet::from(["muslim".to_string()])
 		);
+	}
+
+	#[test]
+	fn filtered_summary_never_reports_the_full_gate() {
+		let filtered = summarize(&[], false, 0);
+		assert_eq!(filtered.expected_units, COMMON_APPLICABILITY_UNIT_COUNT);
+		assert_eq!(filtered.classified_units, 0);
+		assert_eq!(common_gate_result(&filtered), None);
+
+		let full = summarize(&[], true, 0);
+		assert_eq!(common_gate_result(&full), Some(false));
 	}
 }

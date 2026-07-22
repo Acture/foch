@@ -6,9 +6,12 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use foch_engine::installed_base_snapshot_identity;
-use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_file};
+use foch_language::analyzer::content_family::GameProfile;
+use foch_language::analyzer::eu4_profile::eu4_profile;
+use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_file};
 use serde::{Deserialize, Serialize};
 
+use crate::common_module::{CommonModuleViewBuilder, normalize_module_comparison};
 use crate::config::Eu4GameDiscovery;
 use crate::corpus::{OracleAssessment, assess_oracle_candidate};
 use crate::dataset::{
@@ -19,9 +22,10 @@ use crate::lifecycle::{executable_hash, scorer_config_hash};
 use crate::object_store::ObjectStore;
 use crate::orchestrate::FileRecord;
 use crate::score::{
-	Adjudications, Resolution, ScoreCache, ScoreFileRequest, SemanticAtomDiff, SourceMod,
-	classify_resolution, reference_output_files, score_file_with_cache_and_basegame,
-	scoring_reference_units, semantic_atom_diff, write_playset,
+	AdjudicationBinding, Adjudications, Resolution, ScoreCache, ScoreFileRequest, SemanticAtomDiff,
+	SourceMod, classify_resolution, definition_module_policy_for_path, reference_output_files,
+	score_file_with_cache_and_basegame, scoring_reference_units, semantic_atom_diff,
+	semantic_atom_diff_ast, write_playset,
 };
 use crate::shadow::{
 	ShadowCompareRequest, ShadowComparisonReport, ShadowDiagnostic, ShadowDiagnosticKind,
@@ -29,7 +33,7 @@ use crate::shadow::{
 };
 
 pub const CORPUS_SHADOW_SCHEMA: &str = "1.0.0";
-pub const CORPUS_SHADOW_REPORT_SCHEMA: &str = "2.0.0";
+pub const CORPUS_SHADOW_REPORT_SCHEMA: &str = "3.0.0";
 
 pub struct CorpusShadowOptions<'a> {
 	pub dataset_root: &'a Path,
@@ -191,13 +195,22 @@ pub struct CorpusShadowSummary {
 	pub structured_unsupported: usize,
 	pub structured_conflict: usize,
 	pub failed: usize,
-	pub legacy_accepted: usize,
-	pub candidate_accepted: usize,
-	pub projected_accepted: usize,
-	pub legacy_accepted_non_gui: usize,
-	pub candidate_accepted_non_gui: usize,
-	pub projected_accepted_non_gui: usize,
-	pub legacy_accepted_non_gui_lost: usize,
+	pub legacy_strict_accepted: usize,
+	pub legacy_adjudicated_accepted: usize,
+	pub candidate_strict_accepted: usize,
+	pub candidate_adjudicated_accepted: usize,
+	pub projected_strict_accepted: usize,
+	pub projected_adjudicated_accepted: usize,
+	pub legacy_strict_accepted_lost: usize,
+	pub legacy_adjudicated_accepted_lost: usize,
+	pub legacy_strict_accepted_non_gui: usize,
+	pub legacy_adjudicated_accepted_non_gui: usize,
+	pub candidate_strict_accepted_non_gui: usize,
+	pub candidate_adjudicated_accepted_non_gui: usize,
+	pub projected_strict_accepted_non_gui: usize,
+	pub projected_adjudicated_accepted_non_gui: usize,
+	pub legacy_strict_accepted_non_gui_lost: usize,
+	pub legacy_adjudicated_accepted_non_gui_lost: usize,
 	pub legacy_elapsed_ms: u64,
 	pub structured_elapsed_ms: u64,
 	pub supported_runtime_ratio_milli: Option<u64>,
@@ -232,7 +245,8 @@ pub struct CorpusShadowProjectionUnit {
 	pub disposition: CorpusShadowDisposition,
 	pub legacy_baseline: FileRecord,
 	pub candidate: Option<CorpusShadowUnitRecord>,
-	pub projected_accepted: bool,
+	pub projected_strict_accepted: bool,
+	pub projected_adjudicated_accepted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -397,7 +411,8 @@ pub fn run_corpus(
 			units.push(CorpusShadowProjectionUnit {
 				target,
 				disposition: CorpusShadowDisposition::LegacyRetained,
-				projected_accepted: baseline.accepted_ok,
+				projected_strict_accepted: strict_record_accepted(&baseline),
+				projected_adjudicated_accepted: baseline.accepted_ok,
 				legacy_baseline: baseline,
 				candidate: None,
 			});
@@ -426,14 +441,16 @@ pub fn run_corpus(
 			.ok_or_else(|| format!("snapshot {} was not loaded", target.snapshot_id))?;
 		let candidate = run_target(&options.shadow, loaded, target.clone(), &mut score_cache)?;
 		verify_candidate_legacy_baseline(&candidate, &baseline)?;
-		let projected_accepted = candidate_projected_accepted(&candidate);
+		let projected_strict_accepted = candidate_projected_strict_accepted(&candidate);
+		let projected_adjudicated_accepted = candidate_projected_adjudicated_accepted(&candidate);
 		candidate_records.push(candidate.clone());
 		units.push(CorpusShadowProjectionUnit {
 			target,
 			disposition: CorpusShadowDisposition::CandidateEvaluated,
 			legacy_baseline: baseline,
 			candidate: Some(candidate),
-			projected_accepted,
+			projected_strict_accepted,
+			projected_adjudicated_accepted,
 		});
 	}
 	eprintln!(
@@ -608,10 +625,35 @@ fn verify_candidate_legacy_baseline(
 	Ok(())
 }
 
-fn candidate_projected_accepted(candidate: &CorpusShadowUnitRecord) -> bool {
+fn candidate_is_publishable(candidate: &CorpusShadowUnitRecord) -> bool {
 	matches!(
 		candidate.outcome,
 		CorpusShadowOutcome::Improved | CorpusShadowOutcome::UnchangedAccepted
+	)
+}
+
+fn candidate_projected_strict_accepted(candidate: &CorpusShadowUnitRecord) -> bool {
+	candidate_is_publishable(candidate)
+		&& candidate
+			.structured
+			.score
+			.as_ref()
+			.is_some_and(strict_record_accepted)
+}
+
+fn candidate_projected_adjudicated_accepted(candidate: &CorpusShadowUnitRecord) -> bool {
+	candidate_is_publishable(candidate)
+		&& candidate
+			.structured
+			.score
+			.as_ref()
+			.is_some_and(|score| score.accepted_ok)
+}
+
+fn strict_record_accepted(score: &FileRecord) -> bool {
+	matches!(
+		score.verdict.as_str(),
+		"matches_human" | "matches_ast" | "accepted_equivalent"
 	)
 }
 
@@ -725,7 +767,6 @@ fn discover_targets(
 	let units = scoring_reference_units(&references);
 	let source_mods = source_mods(loaded);
 	let conflicts = HashSet::new();
-	let adjudications = Adjudications::built_in();
 	let empty_output = tempfile::tempdir()?;
 	let mut targets = Vec::new();
 	for relative_path in units {
@@ -734,13 +775,11 @@ fn discover_targets(
 		}
 		let score = score_file_with_cache_and_basegame(
 			&ScoreFileRequest {
-				compatch_id: &loaded.snapshot.compatch.workshop_id,
 				rel: &relative_path,
 				source_mods: &source_mods,
 				compatch: &loaded.compatch,
 				out_dir: empty_output.path(),
 				conflict_paths: &conflicts,
-				adjudications: &adjudications,
 			},
 			cache,
 			Some(&game.game_root),
@@ -951,6 +990,7 @@ fn assess_arm(
 ) -> Result<ShadowArmAssessment, Box<dyn std::error::Error>> {
 	let output_path = run.output_dir.join(&target.relative_path);
 	let output_hash = output_content_hash(&run.output_dir)?;
+	let mut assessment_diagnostics = run.diagnostics.clone();
 	let score = if run.output_valid {
 		let conflicts = run
 			.diagnostics
@@ -959,19 +999,86 @@ fn assess_arm(
 			.filter_map(|diagnostic| diagnostic.path.clone())
 			.collect::<HashSet<_>>();
 		let source_mods = source_mods(loaded);
-		Some(FileRecord::from_score(score_file_with_cache_and_basegame(
+		let mut score = FileRecord::from_score(score_file_with_cache_and_basegame(
 			&ScoreFileRequest {
-				compatch_id: &loaded.snapshot.compatch.workshop_id,
 				rel: &target.relative_path,
 				source_mods: &source_mods,
 				compatch: &loaded.compatch,
 				out_dir: &run.output_dir,
 				conflict_paths: &conflicts,
-				adjudications: &Adjudications::built_in(),
 			},
 			cache,
 			Some(&options.game.game_root),
-		)))
+		));
+		if !score.accepted_ok
+			&& let Some((candidate, human)) = adjudication_ast_pair(
+				&target.relative_path,
+				loaded,
+				&options.game.game_root,
+				&run.output_dir,
+			) {
+			if run.kernel == "structured"
+				&& let Some(module_policy) =
+					definition_module_policy_for_path(&target.relative_path)
+				&& let Some(descriptor) =
+					eu4_profile().classify_content_family(Path::new(&target.relative_path))
+			{
+				let comparison = normalize_module_comparison(
+					&candidate,
+					&human,
+					&descriptor.merge_policies,
+					module_policy.namespace_prefix,
+				);
+				let equivalent = if comparison.diagnostics.is_empty() {
+					let diff = semantic_atom_diff_ast(&comparison.candidate, &comparison.human);
+					let equivalent = diff.left_only.is_empty() && diff.right_only.is_empty();
+					if !equivalent {
+						let residual_keys = semantic_diff_top_level_keys(&diff);
+						assessment_diagnostics.push(ShadowDiagnostic {
+							kind: ShadowDiagnosticKind::Warning,
+							path: Some(target.relative_path.clone()),
+							message: format!(
+								"structured module normalization retained {} differing top-level definition(s): {}",
+								residual_keys.len(),
+								residual_keys.join(", "),
+							),
+						});
+					}
+					equivalent
+				} else {
+					for diagnostic in comparison.diagnostics {
+						assessment_diagnostics.push(ShadowDiagnostic {
+							kind: ShadowDiagnosticKind::Warning,
+							path: diagnostic.path,
+							message: format!("{}: {}", diagnostic.phase, diagnostic.message),
+						});
+					}
+					false
+				};
+				if equivalent {
+					score.verdict = "accepted_equivalent".to_string();
+					score.accepted_ok = true;
+					score.acceptance_reason =
+						Some("structured_module_semantic_equivalent".to_string());
+				}
+			}
+			if !score.accepted_ok
+				&& let Some(reason) = Adjudications::built_in().accepted_better_reason(
+					&AdjudicationBinding {
+						compatch_id: &loaded.snapshot.compatch.workshop_id,
+						relative_path: &target.relative_path,
+						snapshot_id: &target.snapshot_id,
+						scoring_unit_id: &target.unit_id,
+					},
+					&candidate,
+					&human,
+				) {
+				score.verdict = "accepted_better".to_string();
+				score.accepted_ok = true;
+				score.acceptance_reason = Some(reason);
+			}
+		}
+		Some(score)
 	} else {
 		None
 	};
@@ -1009,9 +1116,38 @@ fn assess_arm(
 		semantic_diff_from_sources,
 		semantic_diff_from_base,
 		event_safety,
-		diagnostics: run.diagnostics.clone(),
+		diagnostics: assessment_diagnostics,
 		error: run.error.clone(),
 	})
+}
+
+fn adjudication_ast_pair(
+	relative_path: &str,
+	loaded: &LoadedSnapshot,
+	game_root: &Path,
+	output_dir: &Path,
+) -> Option<(AstFile, AstFile)> {
+	if let Some(policy) = definition_module_policy_for_path(relative_path) {
+		let mut builder = CommonModuleViewBuilder::default();
+		let mut candidate_roots = Vec::with_capacity(loaded.source_dirs.len() + 2);
+		candidate_roots.push(game_root);
+		candidate_roots.extend(loaded.source_dirs.iter().map(PathBuf::as_path));
+		candidate_roots.push(output_dir);
+		let mut human_roots = Vec::with_capacity(loaded.source_dirs.len() + 2);
+		human_roots.push(game_root);
+		human_roots.extend(loaded.source_dirs.iter().map(PathBuf::as_path));
+		human_roots.push(loaded.compatch.as_path());
+		let candidate = builder
+			.view(&candidate_roots, policy.namespace_prefix)
+			.ok()?;
+		let human = builder.view(&human_roots, policy.namespace_prefix).ok()?;
+		return Some((candidate.as_ref().clone(), human.as_ref().clone()));
+	}
+
+	let candidate = parse_clausewitz_file(&output_dir.join(relative_path));
+	let human = parse_clausewitz_file(&loaded.compatch.join(relative_path));
+	(candidate.diagnostics.is_empty() && human.diagnostics.is_empty())
+		.then_some((candidate.ast, human.ast))
 }
 
 fn source_mods(loaded: &LoadedSnapshot) -> Vec<SourceMod<'_>> {
@@ -1032,6 +1168,18 @@ fn semantic_diff_if_files(rel: &str, left: &Path, right: &Path) -> Option<Semant
 		return None;
 	}
 	semantic_atom_diff(rel, left, right, !is_gui_path(rel))
+}
+
+fn semantic_diff_top_level_keys(diff: &SemanticAtomDiff) -> Vec<String> {
+	diff.left_only
+		.keys()
+		.chain(diff.right_only.keys())
+		.filter_map(|atom| atom.strip_prefix("assignment:"))
+		.filter_map(|atom| atom.split('/').next())
+		.map(str::to_string)
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.collect()
 }
 
 fn is_gui_path(rel: &str) -> bool {
@@ -1128,15 +1276,19 @@ fn summarize(units: &[CorpusShadowProjectionUnit]) -> CorpusShadowSummary {
 	let mut supported_legacy_ms = 0_u64;
 	let mut supported_structured_ms = 0_u64;
 	for unit in units {
-		let legacy_accepted = unit.legacy_baseline.accepted_ok;
+		let legacy_strict_accepted = strict_record_accepted(&unit.legacy_baseline);
+		let legacy_adjudicated_accepted = unit.legacy_baseline.accepted_ok;
 		let non_gui = !is_gui_path(&unit.target.relative_path);
-		summary.legacy_accepted += usize::from(legacy_accepted);
-		let candidate_accepted = unit
+		summary.legacy_strict_accepted += usize::from(legacy_strict_accepted);
+		summary.legacy_adjudicated_accepted += usize::from(legacy_adjudicated_accepted);
+		let candidate_score = unit
 			.candidate
 			.as_ref()
-			.and_then(|candidate| candidate.structured.score.as_ref())
-			.is_some_and(|score| score.accepted_ok);
-		summary.candidate_accepted += usize::from(candidate_accepted);
+			.and_then(|candidate| candidate.structured.score.as_ref());
+		let candidate_strict_accepted = candidate_score.is_some_and(strict_record_accepted);
+		let candidate_adjudicated_accepted = candidate_score.is_some_and(|score| score.accepted_ok);
+		summary.candidate_strict_accepted += usize::from(candidate_strict_accepted);
+		summary.candidate_adjudicated_accepted += usize::from(candidate_adjudicated_accepted);
 		match &unit.candidate {
 			None => summary.legacy_retained += 1,
 			Some(candidate) => {
@@ -1174,14 +1326,27 @@ fn summarize(units: &[CorpusShadowProjectionUnit]) -> CorpusShadowSummary {
 				}
 			}
 		}
-		summary.projected_accepted += usize::from(unit.projected_accepted);
+		summary.projected_strict_accepted += usize::from(unit.projected_strict_accepted);
+		summary.projected_adjudicated_accepted += usize::from(unit.projected_adjudicated_accepted);
+		summary.legacy_strict_accepted_lost +=
+			usize::from(legacy_strict_accepted && !unit.projected_strict_accepted);
+		summary.legacy_adjudicated_accepted_lost +=
+			usize::from(legacy_adjudicated_accepted && !unit.projected_adjudicated_accepted);
 		if non_gui {
 			summary.non_gui_units += 1;
-			summary.legacy_accepted_non_gui += usize::from(legacy_accepted);
-			summary.candidate_accepted_non_gui += usize::from(candidate_accepted);
-			summary.projected_accepted_non_gui += usize::from(unit.projected_accepted);
-			summary.legacy_accepted_non_gui_lost +=
-				usize::from(legacy_accepted && !unit.projected_accepted);
+			summary.legacy_strict_accepted_non_gui += usize::from(legacy_strict_accepted);
+			summary.legacy_adjudicated_accepted_non_gui += usize::from(legacy_adjudicated_accepted);
+			summary.candidate_strict_accepted_non_gui += usize::from(candidate_strict_accepted);
+			summary.candidate_adjudicated_accepted_non_gui +=
+				usize::from(candidate_adjudicated_accepted);
+			summary.projected_strict_accepted_non_gui +=
+				usize::from(unit.projected_strict_accepted);
+			summary.projected_adjudicated_accepted_non_gui +=
+				usize::from(unit.projected_adjudicated_accepted);
+			summary.legacy_strict_accepted_non_gui_lost +=
+				usize::from(legacy_strict_accepted && !unit.projected_strict_accepted);
+			summary.legacy_adjudicated_accepted_non_gui_lost +=
+				usize::from(legacy_adjudicated_accepted && !unit.projected_adjudicated_accepted);
 		}
 	}
 	if supported_legacy_ms > 0 {
@@ -1230,19 +1395,38 @@ fn render_projection_report(report: &CorpusShadowReport) -> String {
 	let summary = &report.summary;
 	let mut out = String::from("# Structured Merge Rollout Projection\n\n");
 	out.push_str(&format!(
-		"Units: {} | candidate evaluated: {} | Legacy retained: {} | Legacy accepted: {} | projected accepted: {}\n\n",
-		summary.total_units,
-		summary.candidate_evaluated,
-		summary.legacy_retained,
-		summary.legacy_accepted,
-		summary.projected_accepted
+		"Units: {} | candidate evaluated: {} | Legacy retained: {}\n\n",
+		summary.total_units, summary.candidate_evaluated, summary.legacy_retained
 	));
 	out.push_str(&format!(
-		"Non-GUI units: {} | Legacy accepted: {} | projected accepted: {} | Legacy accepted lost: {}\n\n",
+		"Strict: Legacy accepted {}/{} | projected accepted {}/{} | Legacy accepted lost {}\n\n",
+		summary.legacy_strict_accepted,
+		summary.total_units,
+		summary.projected_strict_accepted,
+		summary.total_units,
+		summary.legacy_strict_accepted_lost
+	));
+	out.push_str(&format!(
+		"Adjudicated: Legacy accepted {}/{} | projected accepted {}/{} | Legacy accepted lost {}\n\n",
+		summary.legacy_adjudicated_accepted,
+		summary.total_units,
+		summary.projected_adjudicated_accepted,
+		summary.total_units,
+		summary.legacy_adjudicated_accepted_lost
+	));
+	out.push_str(&format!(
+		"Non-GUI strict: Legacy accepted {}/{} | projected accepted {}/{}\n\n",
+		summary.legacy_strict_accepted_non_gui,
 		summary.non_gui_units,
-		summary.legacy_accepted_non_gui,
-		summary.projected_accepted_non_gui,
-		summary.legacy_accepted_non_gui_lost
+		summary.projected_strict_accepted_non_gui,
+		summary.non_gui_units
+	));
+	out.push_str(&format!(
+		"Non-GUI adjudicated: Legacy accepted {}/{} | projected accepted {}/{}\n\n",
+		summary.legacy_adjudicated_accepted_non_gui,
+		summary.non_gui_units,
+		summary.projected_adjudicated_accepted_non_gui,
+		summary.non_gui_units
 	));
 	out.push_str(&format!(
 		"Candidate outcomes: improved={} regressed={} unchanged_accepted={} unchanged_rejected={} review={} safety_failed={} unsupported={} conflict={} failed={}\n\n",
@@ -1269,8 +1453,10 @@ fn render_projection_report(report: &CorpusShadowReport) -> String {
 		report.legacy_baseline.baseline_content_id,
 		report.legacy_baseline.expected_content_id
 	));
-	out.push_str("| Case | Unit | Legacy baseline | Candidate | Disposition | Projected |\n");
-	out.push_str("| --- | --- | --- | --- | --- | --- |\n");
+	out.push_str(
+		"| Case | Unit | Legacy baseline | Candidate | Disposition | Strict | Adjudicated |\n",
+	);
+	out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
 	for unit in &report.units {
 		let (candidate, disposition) =
 			unit.candidate
@@ -1288,13 +1474,18 @@ fn render_projection_report(report: &CorpusShadowReport) -> String {
 					)
 				});
 		out.push_str(&format!(
-			"| {} | `{}` | {} | {} | {} | {} |\n",
+			"| {} | `{}` | {} | {} | {} | {} | {} |\n",
 			unit.target.case_id,
 			unit.target.relative_path,
 			unit.legacy_baseline.verdict,
 			candidate,
 			disposition,
-			if unit.projected_accepted {
+			if unit.projected_strict_accepted {
+				"accepted"
+			} else {
+				"rejected"
+			},
+			if unit.projected_adjudicated_accepted {
 				"accepted"
 			} else {
 				"rejected"
@@ -1996,22 +2187,32 @@ mod tests {
 			disposition: CorpusShadowDisposition::LegacyRetained,
 			legacy_baseline: score(true),
 			candidate: None,
-			projected_accepted: true,
+			projected_strict_accepted: true,
+			projected_adjudicated_accepted: true,
 		};
 
 		let summary = summarize(&[record]);
 
-		assert_eq!(summary.legacy_accepted, 1);
-		assert_eq!(summary.candidate_accepted, 0);
-		assert_eq!(summary.projected_accepted, 1);
+		assert_eq!(summary.legacy_strict_accepted, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted, 1);
+		assert_eq!(summary.candidate_strict_accepted, 0);
+		assert_eq!(summary.candidate_adjudicated_accepted, 0);
+		assert_eq!(summary.projected_strict_accepted, 1);
+		assert_eq!(summary.projected_adjudicated_accepted, 1);
+		assert_eq!(summary.legacy_strict_accepted_lost, 0);
+		assert_eq!(summary.legacy_adjudicated_accepted_lost, 0);
 		assert_eq!(summary.legacy_retained, 1);
 		assert_eq!(summary.candidate_evaluated, 0);
 		assert_eq!(summary.structured_unsupported, 0);
 		assert_eq!(summary.non_gui_units, 1);
-		assert_eq!(summary.legacy_accepted_non_gui, 1);
-		assert_eq!(summary.candidate_accepted_non_gui, 0);
-		assert_eq!(summary.projected_accepted_non_gui, 1);
-		assert_eq!(summary.legacy_accepted_non_gui_lost, 0);
+		assert_eq!(summary.legacy_strict_accepted_non_gui, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted_non_gui, 1);
+		assert_eq!(summary.candidate_strict_accepted_non_gui, 0);
+		assert_eq!(summary.candidate_adjudicated_accepted_non_gui, 0);
+		assert_eq!(summary.projected_strict_accepted_non_gui, 1);
+		assert_eq!(summary.projected_adjudicated_accepted_non_gui, 1);
+		assert_eq!(summary.legacy_strict_accepted_non_gui_lost, 0);
+		assert_eq!(summary.legacy_adjudicated_accepted_non_gui_lost, 0);
 	}
 
 	#[test]
@@ -2061,19 +2262,28 @@ mod tests {
 			disposition: CorpusShadowDisposition::CandidateEvaluated,
 			legacy_baseline: score(true),
 			candidate: Some(candidate),
-			projected_accepted: false,
+			projected_strict_accepted: false,
+			projected_adjudicated_accepted: false,
 		};
 
 		let summary = summarize(&[record]);
 
-		assert_eq!(summary.candidate_accepted, 1);
-		assert_eq!(summary.projected_accepted, 0);
+		assert_eq!(summary.candidate_strict_accepted, 1);
+		assert_eq!(summary.candidate_adjudicated_accepted, 1);
+		assert_eq!(summary.projected_strict_accepted, 0);
+		assert_eq!(summary.projected_adjudicated_accepted, 0);
+		assert_eq!(summary.legacy_strict_accepted_lost, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted_lost, 1);
 		assert_eq!(summary.safety_failed, 1);
 		assert_eq!(summary.non_gui_units, 1);
-		assert_eq!(summary.legacy_accepted_non_gui, 1);
-		assert_eq!(summary.candidate_accepted_non_gui, 1);
-		assert_eq!(summary.projected_accepted_non_gui, 0);
-		assert_eq!(summary.legacy_accepted_non_gui_lost, 1);
+		assert_eq!(summary.legacy_strict_accepted_non_gui, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted_non_gui, 1);
+		assert_eq!(summary.candidate_strict_accepted_non_gui, 1);
+		assert_eq!(summary.candidate_adjudicated_accepted_non_gui, 1);
+		assert_eq!(summary.projected_strict_accepted_non_gui, 0);
+		assert_eq!(summary.projected_adjudicated_accepted_non_gui, 0);
+		assert_eq!(summary.legacy_strict_accepted_non_gui_lost, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted_non_gui_lost, 1);
 	}
 
 	#[test]
@@ -2106,18 +2316,26 @@ mod tests {
 			disposition: CorpusShadowDisposition::CandidateEvaluated,
 			legacy_baseline: score(true),
 			candidate: Some(candidate),
-			projected_accepted: false,
+			projected_strict_accepted: false,
+			projected_adjudicated_accepted: false,
 		};
 
 		let summary = summarize(&[record]);
 
 		assert_eq!(summary.total_units, 1);
-		assert_eq!(summary.legacy_accepted, 1);
+		assert_eq!(summary.legacy_strict_accepted, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted, 1);
+		assert_eq!(summary.legacy_strict_accepted_lost, 1);
+		assert_eq!(summary.legacy_adjudicated_accepted_lost, 1);
 		assert_eq!(summary.non_gui_units, 0);
-		assert_eq!(summary.legacy_accepted_non_gui, 0);
-		assert_eq!(summary.candidate_accepted_non_gui, 0);
-		assert_eq!(summary.projected_accepted_non_gui, 0);
-		assert_eq!(summary.legacy_accepted_non_gui_lost, 0);
+		assert_eq!(summary.legacy_strict_accepted_non_gui, 0);
+		assert_eq!(summary.legacy_adjudicated_accepted_non_gui, 0);
+		assert_eq!(summary.candidate_strict_accepted_non_gui, 0);
+		assert_eq!(summary.candidate_adjudicated_accepted_non_gui, 0);
+		assert_eq!(summary.projected_strict_accepted_non_gui, 0);
+		assert_eq!(summary.projected_adjudicated_accepted_non_gui, 0);
+		assert_eq!(summary.legacy_strict_accepted_non_gui_lost, 0);
+		assert_eq!(summary.legacy_adjudicated_accepted_non_gui_lost, 0);
 	}
 
 	#[test]
@@ -2133,12 +2351,20 @@ mod tests {
 			legacy_retained: 35,
 			candidate_evaluated: 1,
 			non_gui_units: 21,
-			legacy_accepted: 7,
-			projected_accepted: 8,
-			legacy_accepted_non_gui: 7,
-			candidate_accepted_non_gui: 1,
-			projected_accepted_non_gui: 8,
-			legacy_accepted_non_gui_lost: 0,
+			legacy_strict_accepted: 7,
+			legacy_adjudicated_accepted: 7,
+			projected_strict_accepted: 10,
+			projected_adjudicated_accepted: 11,
+			legacy_strict_accepted_lost: 2,
+			legacy_adjudicated_accepted_lost: 3,
+			legacy_strict_accepted_non_gui: 7,
+			legacy_adjudicated_accepted_non_gui: 7,
+			candidate_strict_accepted_non_gui: 3,
+			candidate_adjudicated_accepted_non_gui: 4,
+			projected_strict_accepted_non_gui: 10,
+			projected_adjudicated_accepted_non_gui: 11,
+			legacy_strict_accepted_non_gui_lost: 0,
+			legacy_adjudicated_accepted_non_gui_lost: 0,
 			supported_runtime_ratio_milli: Some(1_086),
 			..CorpusShadowSummary::default()
 		};
@@ -2157,12 +2383,17 @@ mod tests {
 			summary,
 		});
 
+		assert!(report.contains("Units: 36 | candidate evaluated: 1 | Legacy retained: 35"));
 		assert!(report.contains(
-			"Units: 36 | candidate evaluated: 1 | Legacy retained: 35 | Legacy accepted: 7 | projected accepted: 8"
+			"Strict: Legacy accepted 7/36 | projected accepted 10/36 | Legacy accepted lost 2"
 		));
 		assert!(report.contains(
-			"Non-GUI units: 21 | Legacy accepted: 7 | projected accepted: 8 | Legacy accepted lost: 0"
+			"Adjudicated: Legacy accepted 7/36 | projected accepted 11/36 | Legacy accepted lost 3"
 		));
+		assert!(report.contains("Non-GUI strict: Legacy accepted 7/21 | projected accepted 10/21"));
+		assert!(
+			report.contains("Non-GUI adjudicated: Legacy accepted 7/21 | projected accepted 11/21")
+		);
 		assert!(report.contains("Candidate runtime ratio: 1.086x Legacy"));
 	}
 
