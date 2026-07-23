@@ -160,9 +160,27 @@ structured conflict, and 1 safety failure. Aggregate candidate runtime is
 
 The five improvements are four scripted-trigger modules and institutions;
 religions remains accepted. Buildings and scripted effects withhold output on
-explicit conflicts. Elections currently fails the control-flow shape safety
-gate, so the event result below is retained as historical evidence rather than
-a current rollout claim.
+explicit conflicts. That complete projection still records Elections as a
+safety failure because it has not been rerun. A focused 2026-07-23 rerun now
+passes the event safety gate but remains `needs_review`, so the projection
+counts are unchanged.
+
+### Focused Elections checkpoint
+
+The generalized Structured path now keeps independent constructor chains
+separate, honors one-sided deletion of unrelated vanilla branches, and matches
+ordered siblings against all established barriers. Event safety compares raw
+control-flow shape first and selectively canonicalizes only differing owners,
+so semantically equivalent guard normalization does not create a false
+failure.
+
+The focused case is parse-valid and conflict-free, with no diagnostics,
+duplicate event/option IDs, or orphan control-flow paths.
+`control_flow_matches_human` is true. The candidate shares 1,186 of 1,217 human
+semantic atoms, with 21 candidate-only and 31 human-only atoms, and therefore
+classifies as `needs_review` rather than accepted. Structured took 8,145 ms
+versus Legacy's 10,082 ms. Evidence is
+`/private/tmp/foch-elections-selective-safety/shadow-case.json`.
 
 ### Historical Elections gate
 

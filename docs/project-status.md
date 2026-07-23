@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-07-22
+Last updated: 2026-07-23
 
 ## Summary
 
@@ -158,6 +158,15 @@ That result is historical rather than a current release claim. In the
 safety check with 74 candidate-only and 31 human-only atoms. It is excluded from
 the current projection until the generalized control-flow path restores the
 earlier event result.
+
+A focused 2026-07-23 Elections rerun has now restored the generalized
+control-flow safety gate without restoring exact AST equality. Structured is
+parse-valid and conflict-free, has no diagnostics, duplicate event/option IDs,
+or orphan control flow, and its canonical control-flow shape matches the human
+compatch. The candidate shares 1,186 of 1,217 human semantic atoms, with 21
+candidate-only and 31 human-only atoms, so the focused outcome is
+`needs_review`, not accepted. Structured took 8,145 ms versus Legacy's
+10,082 ms. This focused result does not change the 36-unit projection.
 
 The 2026-07-22 `foch-mq common-probe` run completed the first Common
 Applicability Gate over all 12 fixed `common/**` corpus units. The probe uses
@@ -496,12 +505,14 @@ Verified locally during ACT-165 representative-family validation:
 
 ## Elections ordered-correspondence checkpoint (2026-07-23)
 
-- Open control-flow chains now use insertion-tolerant, similarity-weighted sequence alignment instead of absolute sibling positions. Matches are monotonic; non-unique best alignments remain typed ambiguities.
-- Guarded branches use the same ordered matcher without positional fallback. This merges high-confidence scalar edits while preserving structurally similar but semantically independent alternatives. Default branches and fully replaced open chains retain a weak positional fallback.
-- Focused validation passed: all 57 `foch-merge-kernel` tests, all 33 Structured merge tests, strict Clippy for `foch-merge-kernel` and `foch-engine`, and formatting.
-- The Elections-only real probe no longer reports the previous `ambiguous_match` or `delete_modify`. It is not accepted yet: four PCS ordering cycles remain under `country_event:700`, options `EVTOPTB700` through `EVTOPTE700`.
-- Evidence: `/private/tmp/foch-shadow-elections-ordered-paths/shadow-corpus.json`. No Common/full-corpus run or published quality-number update was performed.
-- Next slice: minimize one option-level cycle, inspect the competing base/left/right precedence triples, and make PCS ordering consume the established monotonic control-flow correspondence without weakening cycle detection globally.
+- Ordered matching now treats every already-matched sibling as a barrier, so an open chain cannot be paired across an interleaved closed chain. Unique exact signatures may still follow genuine moves; PCS remains responsible for reporting incompatible reorderings.
+- One-sided removal preservation now requires a unique same-kind insertion in the deleted node's ordered base gap. Unrelated surviving `if` siblings no longer resurrect vanilla branches deleted by one mod.
+- Complete constructor chains with an empty `define_ruler` fallback use the full effect set as their correspondence identity. Distinct candidate constructors remain independent chains instead of being rewritten into one `if` / `else_if` chain.
+- Event safety compares raw structure first, then canonicalizes only the smallest control-flow owners whose shapes differ. This accepts equivalent guard normalization without paying to normalize the whole event file.
+- Focused validation passed: all 59 `foch-merge-kernel` tests, all 60 Structured-module tests, three event-safety regressions, and formatting.
+- The Elections-only real probe is parse-valid, conflict-free, and `control_flow_matches_human = true`; it moves from `safety_failed` to `needs_review`. It shares 1,186/1,217 human atoms, with 21 candidate-only and 31 human-only atoms. Structured took 8,145 ms versus Legacy's 10,082 ms.
+- Evidence: `/private/tmp/foch-elections-selective-safety/shadow-case.json`. No Common or full-corpus run was performed, so published projection counts remain unchanged.
+- Next slice: localize the remaining 21/31 atom delta by event and option, separating canonical-equivalent guard rewrites from genuine content choices before adding another merge rule.
 
 ## Practical Reading Order
 

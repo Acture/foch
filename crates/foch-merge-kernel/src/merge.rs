@@ -271,7 +271,7 @@ fn select_classes(
 						RevisionId::LEFT,
 						parent_present_in_both_revisions(trees, mapping, class),
 						present_parent_changed_from_base(trees, class, RevisionId::LEFT),
-						deleted_parent_has_same_kind_sibling(
+						deleted_parent_has_same_kind_gap_replacement(
 							trees,
 							mapping,
 							class,
@@ -335,7 +335,7 @@ fn select_classes(
 						RevisionId::RIGHT,
 						parent_present_in_both_revisions(trees, mapping, class),
 						present_parent_changed_from_base(trees, class, RevisionId::RIGHT),
-						deleted_parent_has_same_kind_sibling(
+						deleted_parent_has_same_kind_gap_replacement(
 							trees,
 							mapping,
 							class,
@@ -527,7 +527,7 @@ fn present_parent_changed_from_base(
 			.subtree_hash
 }
 
-fn deleted_parent_has_same_kind_sibling(
+fn deleted_parent_has_same_kind_gap_replacement(
 	trees: &Trees<'_>,
 	mapping: &ClassMapping,
 	class: &RevisionClass,
@@ -545,14 +545,71 @@ fn deleted_parent_has_same_kind_sibling(
 	let Some(deleted_parent) = mapping.class(parent_class).get(deleted_revision) else {
 		return false;
 	};
-	let present_kind = &trees.get(present_revision).node(present).unwrap().kind;
-	trees
-		.get(deleted_revision)
-		.node(deleted_parent)
-		.unwrap()
+	let base_parent_node = trees.base.node(base_parent).unwrap();
+	let deleted_parent_node = trees.get(deleted_revision).node(deleted_parent).unwrap();
+	if base_parent_node.child_order != ChildOrder::Ordered
+		|| deleted_parent_node.child_order != ChildOrder::Ordered
+	{
+		return false;
+	}
+	let Some(base_index) = base_parent_node
 		.children
 		.iter()
-		.any(|sibling| trees.get(deleted_revision).node(*sibling).unwrap().kind == *present_kind)
+		.position(|child| *child == base)
+	else {
+		return false;
+	};
+	let present_kind = &trees.get(present_revision).node(present).unwrap().kind;
+
+	let mapped_base_index = |child: &NodeId| {
+		let sibling_class = mapping.class_of(RevisionNode::new(deleted_revision, *child));
+		let base_sibling = mapping.class(sibling_class).get(RevisionId::BASE)?;
+		base_parent_node
+			.children
+			.iter()
+			.position(|candidate| *candidate == base_sibling)
+	};
+	deleted_parent_node
+		.children
+		.iter()
+		.enumerate()
+		.filter(|(_, sibling)| {
+			trees.get(deleted_revision).node(**sibling).unwrap().kind == *present_kind
+		})
+		.filter(|(_, sibling)| {
+			let sibling_class = mapping.class_of(RevisionNode::new(deleted_revision, **sibling));
+			mapping.class(sibling_class).get(RevisionId::BASE).is_none()
+		})
+		.any(|(replacement_index, _)| {
+			let previous_base = deleted_parent_node.children[..replacement_index]
+				.iter()
+				.rev()
+				.find_map(&mapped_base_index);
+			let next_base = deleted_parent_node.children[replacement_index + 1..]
+				.iter()
+				.find_map(&mapped_base_index);
+			let target_is_in_gap = previous_base.is_none_or(|index| index < base_index)
+				&& next_base.is_none_or(|index| base_index < index);
+			if !target_is_in_gap {
+				return false;
+			}
+
+			base_parent_node
+				.children
+				.iter()
+				.enumerate()
+				.filter(|(index, sibling)| {
+					previous_base.is_none_or(|previous| previous < *index)
+						&& next_base.is_none_or(|next| *index < next)
+						&& trees.base.node(**sibling).unwrap().kind == *present_kind
+				})
+				.filter(|(_, sibling)| {
+					let sibling_class =
+						mapping.class_of(RevisionNode::new(RevisionId::BASE, **sibling));
+					mapping.class(sibling_class).get(deleted_revision).is_none()
+				})
+				.count() == 1
+		})
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -565,7 +622,7 @@ fn policy_preserves_delete_unchanged(
 	present_revision: RevisionId,
 	parent_present_in_both_revisions: bool,
 	present_parent_changed_from_base: bool,
-	deleted_parent_has_same_kind_sibling: bool,
+	deleted_parent_has_same_kind_gap_replacement: bool,
 	base_parent: Option<&NormalizedNode>,
 ) -> bool {
 	measure_policy(policy_ns, || {
@@ -576,7 +633,7 @@ fn policy_preserves_delete_unchanged(
 			present_revision,
 			parent_present_in_both_revisions,
 			present_parent_changed_from_base,
-			deleted_parent_has_same_kind_sibling,
+			deleted_parent_has_same_kind_gap_replacement,
 			base_parent,
 		})
 	}) == PolicyDecision::Resolved

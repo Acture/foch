@@ -442,13 +442,16 @@ fn match_ordered_similarity_siblings(
 	loop {
 		match_required_slots(left, right, matching);
 		match_parent_scoped_anchors(left, right, matching);
+		if match_unique_ordered_signatures(left, right, matching) {
+			continue;
+		}
 		let parents = matching.records().copied().collect::<Vec<_>>();
 		let mut proposals = Vec::new();
 		for parent in parents {
-			let left_groups =
-				ordered_similarity_groups(left, &left.node(parent.left).unwrap().children);
-			let right_groups =
-				ordered_similarity_groups(right, &right.node(parent.right).unwrap().children);
+			let left_children = &left.node(parent.left).unwrap().children;
+			let right_children = &right.node(parent.right).unwrap().children;
+			let left_groups = ordered_similarity_groups(left, left_children);
+			let right_groups = ordered_similarity_groups(right, right_children);
 			for (key, left_nodes) in left_groups {
 				let Some(right_nodes) = right_groups.get(&key) else {
 					continue;
@@ -457,6 +460,8 @@ fn match_ordered_similarity_siblings(
 					left,
 					right,
 					matching,
+					left_children,
+					right_children,
 					&left_nodes,
 					right_nodes,
 					threshold,
@@ -487,6 +492,72 @@ fn match_ordered_similarity_siblings(
 	}
 }
 
+fn match_unique_ordered_signatures(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	matching: &mut Matching,
+) -> bool {
+	let parents = matching.records().copied().collect::<Vec<_>>();
+	let mut proposals = Vec::new();
+	for parent in parents {
+		let left_groups =
+			ordered_similarity_groups(left, &left.node(parent.left).unwrap().children);
+		let right_groups =
+			ordered_similarity_groups(right, &right.node(parent.right).unwrap().children);
+		for (anchor, left_nodes) in left_groups {
+			let Some(right_nodes) = right_groups.get(&anchor) else {
+				continue;
+			};
+			let mut left_signatures: BTreeMap<String, Vec<NodeId>> = BTreeMap::new();
+			for node in left_nodes {
+				if matching.is_left_matched(node) || matching.is_left_ambiguous(node) {
+					continue;
+				}
+				if let Some(signature) = &left.node(node).unwrap().signature {
+					left_signatures
+						.entry(signature.clone())
+						.or_default()
+						.push(node);
+				}
+			}
+			let mut right_signatures: BTreeMap<String, Vec<NodeId>> = BTreeMap::new();
+			for node in right_nodes {
+				if matching.is_right_matched(*node) || matching.is_right_ambiguous(*node) {
+					continue;
+				}
+				if let Some(signature) = &right.node(*node).unwrap().signature {
+					right_signatures
+						.entry(signature.clone())
+						.or_default()
+						.push(*node);
+				}
+			}
+			for (signature, left_nodes) in left_signatures {
+				let Some(right_nodes) = right_signatures.get(&signature) else {
+					continue;
+				};
+				if let ([left_id], [right_id]) = (left_nodes.as_slice(), right_nodes.as_slice())
+					&& compatible_at_including_ordered(left, right, matching, *left_id, *right_id)
+				{
+					proposals.push((*left_id, *right_id));
+				}
+			}
+		}
+	}
+	proposals.sort_unstable();
+	proposals.dedup();
+	let mut changed = false;
+	for (left, right) in proposals {
+		changed |= matching.insert(MatchRecord {
+			left,
+			right,
+			kind: MatchKind::SoftSignature,
+			score: 900_000,
+		});
+	}
+	changed
+}
+
 fn ordered_similarity_groups(
 	tree: &NormalizedTree,
 	children: &[NodeId],
@@ -510,17 +581,24 @@ fn align_ordered_similarity_group(
 	left: &NormalizedTree,
 	right: &NormalizedTree,
 	matching: &mut Matching,
+	left_siblings: &[NodeId],
+	right_siblings: &[NodeId],
 	left_nodes: &[NodeId],
 	right_nodes: &[NodeId],
 	threshold: u32,
 	proposals: &mut Vec<RecoveryCandidate>,
 ) {
-	let right_positions = right_nodes
+	let left_positions = left_siblings
 		.iter()
 		.enumerate()
 		.map(|(index, id)| (*id, index))
 		.collect::<BTreeMap<_, _>>();
-	let mut fixed = left_nodes
+	let right_positions = right_siblings
+		.iter()
+		.enumerate()
+		.map(|(index, id)| (*id, index))
+		.collect::<BTreeMap<_, _>>();
+	let mut fixed = left_siblings
 		.iter()
 		.enumerate()
 		.filter_map(|(left_index, left_id)| {
@@ -529,26 +607,21 @@ fn align_ordered_similarity_group(
 		})
 		.collect::<Vec<_>>();
 	fixed.sort_unstable();
-	if let Some(pair) = fixed.windows(2).find(|pair| pair[0].1 >= pair[1].1) {
-		matching.record_ambiguity(AmbiguousMatch {
-			left: left_nodes[pair[1].0],
-			candidates: vec![right_nodes[pair[1].1]],
-			score: 1_000_000,
-		});
+	if fixed.windows(2).any(|pair| pair[0].1 >= pair[1].1) {
 		return;
 	}
 
 	let left_unmatched = left_nodes
 		.iter()
 		.copied()
-		.enumerate()
-		.filter(|(_, id)| !matching.is_left_matched(*id) && !matching.is_left_ambiguous(*id))
+		.filter(|id| !matching.is_left_matched(*id) && !matching.is_left_ambiguous(*id))
+		.map(|id| (left_positions[&id], id))
 		.collect::<Vec<_>>();
 	let right_unmatched = right_nodes
 		.iter()
 		.copied()
-		.enumerate()
-		.filter(|(_, id)| !matching.is_right_matched(*id) && !matching.is_right_ambiguous(*id))
+		.filter(|id| !matching.is_right_matched(*id) && !matching.is_right_ambiguous(*id))
+		.map(|id| (right_positions[&id], id))
 		.collect::<Vec<_>>();
 	if left_unmatched.is_empty() || right_unmatched.is_empty() {
 		return;
@@ -1754,6 +1827,44 @@ mod tests {
 	}
 
 	#[test]
+	fn ordered_similarity_siblings_respect_interleaved_matches() {
+		let open_chain = |identity: &str| {
+			block("open_chain", vec![scalar(identity)])
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+		};
+		let closed_chain = || {
+			block("closed_chain", vec![scalar("ruler")])
+				.with_parent_scoped_anchor("chain.effect", "ruler")
+		};
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![
+				open_chain("left_only"),
+				closed_chain(),
+				open_chain("shared"),
+			],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![
+				closed_chain(),
+				open_chain("right_only"),
+				open_chain("shared"),
+			],
+		))
+		.unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(matching.get_from_right(NodeId::new(3)), None);
+		assert_eq!(matching.get_from_left(NodeId::new(3)), Some(NodeId::new(1)));
+		assert_eq!(matching.get_from_left(NodeId::new(5)), Some(NodeId::new(5)));
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
 	fn ordered_similarity_siblings_never_cross() {
 		let item = |identity: &str| {
 			block("chain", vec![scalar(identity)])
@@ -1767,6 +1878,31 @@ mod tests {
 		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
 		assert_eq!(matching.get_from_left(NodeId::new(3)), None);
 		assert_eq!(matching.ambiguities().len(), 2);
+	}
+
+	#[test]
+	fn ordered_similarity_siblings_follow_unique_signatures_across_reorder() {
+		let item = |identity: &str, revision: &str| {
+			block("case", vec![scalar(identity), scalar(revision)])
+				.with_parent_scoped_ordered_similarity_anchor("sequence", "guarded_case")
+				.with_signature(identity)
+		};
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![item("a", "left-a"), item("b", "left-b")],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![item("b", "right-b"), item("a", "right-a")],
+		))
+		.unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(4)));
+		assert_eq!(matching.get_from_left(NodeId::new(4)), Some(NodeId::new(1)));
+		assert!(matching.ambiguities().is_empty());
 	}
 
 	#[test]

@@ -8,7 +8,7 @@ pub struct DeleteUnchangedContext<'a> {
 	pub present_revision: RevisionId,
 	pub parent_present_in_both_revisions: bool,
 	pub present_parent_changed_from_base: bool,
-	pub deleted_parent_has_same_kind_sibling: bool,
+	pub deleted_parent_has_same_kind_gap_replacement: bool,
 	pub base_parent: Option<&'a NormalizedNode>,
 }
 

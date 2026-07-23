@@ -1010,6 +1010,75 @@ fn event_merge_combines_hooks_boolean_replacements_and_union_safe_chains() {
 }
 
 #[test]
+fn event_merge_keeps_distinct_complete_constructor_chains_independent() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = { limit = { has_government_attribute = republican_virtues } define_ruler = { change_adm = 1 change_dip = 1 change_mil = 1 } }\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t\tif = { limit = { has_country_flag = obsolete_bonus } add_estate_loyalty = 5 }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = elections.720\n\
+		\toption = {\n\
+		\t\tname = elections.720.a\n\
+		\t\tif = { limit = { has_country_flag = upgraded_candidate } define_ruler = { change_mil = 1 } }\n\
+		\t\telse = { define_ruler = {} }\n\
+		\t\tif = { limit = { has_saved_event_target = spread_target } add_province_modifier = support }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = base.clone();
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("merge distinct complete constructor chains");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let resolved = outcome.resolved_ast().expect("publishable event AST");
+	let option_items = resolved
+		.statements
+		.iter()
+		.find_map(|statement| match statement {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} if key == "country_event" => items.iter().find_map(|item| match item {
+				AstStatement::Assignment {
+					key,
+					value: AstValue::Block { items, .. },
+					..
+				} if key == "option" => Some(items),
+				_ => None,
+			}),
+			_ => None,
+		})
+		.expect("merged event retains its option");
+	let control_flow = option_items
+		.iter()
+		.filter_map(|statement| match statement {
+			AstStatement::Assignment { key, .. }
+				if matches!(key.as_str(), "if" | "else_if" | "else") =>
+			{
+				Some(key.as_str())
+			}
+			_ => None,
+		})
+		.collect::<Vec<_>>();
+	assert_eq!(control_flow, ["if", "else", "if", "if"]);
+	let output = emit(resolved);
+	for retained in ["republican_virtues", "upgraded_candidate", "spread_target"] {
+		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
+	}
+	assert!(!output.contains("obsolete_bonus"), "{output}");
+}
+
+#[test]
 fn event_merge_matches_replaced_open_chains_by_sequence_context() {
 	let base = parse(
 		"country_event = {\n\
@@ -1115,6 +1184,120 @@ fn event_merge_aligns_open_chains_after_an_insertion() {
 		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
 	}
 	assert!(!output.contains("add_legitimacy = 1"), "{output}");
+}
+
+#[test]
+fn event_merge_keeps_open_chain_insertions_around_a_closed_chain() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = ruler_candidate } define_ruler = { adm = 4 } }\n\
+		\t\telse = { define_ruler = { adm = 3 } }\n\
+		\t\tif = { limit = { has_country_flag = shared_effect } add_prestige = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_reform = left_only } add_adm_power = 50 }\n\
+		\t\tif = { limit = { has_country_flag = ruler_candidate } define_ruler = { adm = 4 } }\n\
+		\t\telse = { define_ruler = { adm = 3 } }\n\
+		\t\tif = { limit = { has_country_flag = shared_effect } add_prestige = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = ruler_candidate } define_ruler = { adm = 4 } }\n\
+		\t\telse = { define_ruler = { adm = 3 } }\n\
+		\t\tif = { limit = { has_government_attribute = right_only } define_advisor = { skill = 2 } }\n\
+		\t\tif = { limit = { has_country_flag = shared_effect } add_prestige = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("retain independent insertions on both sides of a closed chain");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("publishable event AST"));
+	let left_position = output.find("left_only").expect("retain left insertion");
+	let ruler_position = output
+		.find("ruler_candidate")
+		.expect("retain closed ruler chain");
+	let right_position = output.find("right_only").expect("retain right insertion");
+	assert!(
+		left_position < ruler_position && ruler_position < right_position,
+		"independent insertions must remain on their respective sides:\n{output}"
+	);
+	assert!(output.contains("shared_effect"), "{output}");
+}
+
+#[test]
+fn event_merge_honors_one_sided_trailing_chain_deletions() {
+	let base = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = ruler_candidate } define_ruler = { adm = 4 } }\n\
+		\t\telse = { define_ruler = { adm = 3 } }\n\
+		\t\tif = { limit = { has_country_flag = shared_effect } add_prestige = 1 }\n\
+		\t\tif = { limit = { has_government_attribute = has_limited_terms } set_variable = election_term }\n\
+		\t\tif = { limit = { has_government_attribute = has_candidate_bonus } assign_ruler_focus = adm }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_reform = left_only } add_adm_power = 50 }\n\
+		\t\tif = { limit = { has_country_flag = ruler_candidate } define_ruler = { adm = 4 } }\n\
+		\t\telse = { define_ruler = { adm = 3 } }\n\
+		\t\tif = { limit = { has_country_flag = shared_effect } add_prestige = 1 }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse(
+		"country_event = {\n\
+		\tid = test.1\n\
+		\toption = {\n\
+		\t\tname = test.1.a\n\
+		\t\tif = { limit = { has_country_flag = ruler_candidate } define_ruler = { adm = 4 } }\n\
+		\t\telse = { define_ruler = { adm = 3 } }\n\
+		\t\tif = { limit = { has_government_attribute = right_only } define_advisor = { skill = 2 } }\n\
+		\t\tif = { limit = { has_country_flag = shared_effect } add_prestige = 1 }\n\
+		\t\tif = { limit = { has_government_attribute = has_limited_terms } set_variable = election_term }\n\
+		\t\tif = { limit = { has_government_attribute = has_candidate_bonus } assign_ruler_focus = adm }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_event_files(&base, &left, &right, &event_policies())
+		.expect("honor one-sided deletion outside an insertion gap");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("publishable event AST"));
+	for retained in [
+		"left_only",
+		"ruler_candidate",
+		"right_only",
+		"shared_effect",
+	] {
+		assert!(output.contains(retained), "missing `{retained}`:\n{output}");
+	}
+	assert!(!output.contains("has_limited_terms"), "{output}");
+	assert!(!output.contains("has_candidate_bonus"), "{output}");
 }
 
 #[test]

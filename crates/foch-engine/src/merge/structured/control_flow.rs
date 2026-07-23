@@ -586,6 +586,17 @@ fn normalize_chain_semantic(
 	};
 	let order = stable_case_order(&cases, default)?;
 	let default_effect = default.map(|index| cases[index].effect_key.clone());
+	let empty_constructor_default =
+		default.is_some_and(|index| is_empty_ruler_effect(&cases[index].effect_items));
+	let effect_signature = {
+		let mut effects = cases
+			.iter()
+			.map(|case| case.effect_key.as_str())
+			.collect::<Vec<_>>();
+		effects.sort_unstable();
+		effects.dedup();
+		format!("effects:{}", effects.join(","))
+	};
 	let mut children = Vec::new();
 	let mut prior_positive_atoms = BTreeSet::new();
 	let mut ordered_coverage = Formula::false_value();
@@ -667,7 +678,16 @@ fn normalize_chain_semantic(
 		if exclusive { "exclusive:" } else { "" },
 		if complete { "complete" } else { "open" }
 	);
-	let anchor = if complete || exclusive {
+	let anchor = if exclusive {
+		identity.as_ref().map(|identity| {
+			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
+		})
+	} else if empty_constructor_default {
+		Some(SemanticKey::parent_scoped_ordered_similarity(
+			"clausewitz.control_flow.chain.constructor_effects",
+			effect_signature.clone(),
+		))
+	} else if complete {
 		identity.as_ref().map(|identity| {
 			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
 		})
@@ -685,7 +705,11 @@ fn normalize_chain_semantic(
 		ChildCardinality::Many,
 		children,
 	);
-	chain.signature = identity;
+	chain.signature = if empty_constructor_default {
+		Some(effect_signature)
+	} else {
+		identity
+	};
 	Ok((chain, next))
 }
 
@@ -850,6 +874,25 @@ fn normalized_effect_key(
 		control_flow_findings,
 	)?)?;
 	Ok(tree.node(tree.root())?.subtree_hash.to_string())
+}
+
+fn is_empty_ruler_effect(items: &[AstStatement]) -> bool {
+	let mut effects = items
+		.iter()
+		.filter(|item| !matches!(item, AstStatement::Comment { .. }));
+	let Some(AstStatement::Assignment {
+		key,
+		value: AstValue::Block { items, .. },
+		..
+	}) = effects.next()
+	else {
+		return false;
+	};
+	key == "define_ruler"
+		&& effects.next().is_none()
+		&& items
+			.iter()
+			.all(|item| matches!(item, AstStatement::Comment { .. }))
 }
 
 fn stable_case_order(

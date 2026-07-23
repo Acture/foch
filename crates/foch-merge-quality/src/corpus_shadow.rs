@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use foch_engine::installed_base_snapshot_identity;
-use foch_language::analyzer::content_family::GameProfile;
+use foch_engine::{canonicalize_clausewitz_file, installed_base_snapshot_identity};
+use foch_language::analyzer::content_family::{GameProfile, MergePolicies};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_file};
 use serde::{Deserialize, Serialize};
@@ -1650,6 +1650,12 @@ fn assess_event_safety(output: &Path, human: &Path) -> EventSafetyAssessment {
 	let parse_ok = output.is_file() && output_parsed.diagnostics.is_empty();
 	let human_parse_ok = human.is_file() && human_parsed.diagnostics.is_empty();
 	let comparable = parse_ok && human_parse_ok;
+	let control_flow_matches_human = comparable.then_some(control_flow_shapes_match(
+		&output_parsed.ast,
+		&human_parsed.ast,
+		&output_facts.control_flow_shape,
+		&human_facts.control_flow_shape,
+	));
 	EventSafetyAssessment {
 		parse_ok,
 		diagnostic_count: output_parsed.diagnostics.len(),
@@ -1668,14 +1674,136 @@ fn assess_event_safety(output: &Path, human: &Path) -> EventSafetyAssessment {
 			&output_facts.option_ids,
 			&human_facts.option_ids,
 		)),
-		control_flow_matches_human: comparable
-			.then_some(output_facts.control_flow_shape == human_facts.control_flow_shape),
+		control_flow_matches_human,
 		namespaces: output_facts.namespaces,
 		event_ids: output_facts.event_ids,
 		option_ids: output_facts.option_ids,
 		orphan_control_flow_paths: output_facts.orphan_control_flow_paths,
 		control_flow_shape: output_facts.control_flow_shape,
 	}
+}
+
+fn control_flow_shapes_match(
+	output: &AstFile,
+	human: &AstFile,
+	output_shape: &[String],
+	human_shape: &[String],
+) -> bool {
+	if output_shape == human_shape {
+		return true;
+	}
+	let owners = differing_control_flow_owners(output_shape, human_shape);
+	match (
+		canonicalize_control_flow_owners(output, output_shape, &owners),
+		canonicalize_control_flow_owners(human, human_shape, &owners),
+	) {
+		(Some(output), Some(human)) => output == human,
+		_ => false,
+	}
+}
+
+fn differing_control_flow_owners(output: &[String], human: &[String]) -> Vec<String> {
+	let mut deltas = BTreeMap::<String, isize>::new();
+	for path in output {
+		*deltas.entry(path.clone()).or_default() += 1;
+	}
+	for path in human {
+		*deltas.entry(path.clone()).or_default() -= 1;
+	}
+	let mut candidates = deltas
+		.into_iter()
+		.filter(|(_, delta)| *delta != 0)
+		.filter_map(|(path, _)| path.rsplit_once('/').map(|(owner, _)| owner.to_string()))
+		.collect::<BTreeSet<_>>()
+		.into_iter()
+		.collect::<Vec<_>>();
+	candidates.sort_by_key(|path| path.matches('/').count());
+	let mut owners = Vec::<String>::new();
+	for candidate in candidates {
+		if owners
+			.iter()
+			.any(|owner| candidate == *owner || candidate.starts_with(&format!("{owner}/")))
+		{
+			continue;
+		}
+		owners.push(candidate);
+	}
+	owners
+}
+
+fn canonicalize_control_flow_owners(
+	file: &AstFile,
+	raw_shape: &[String],
+	owners: &[String],
+) -> Option<Vec<String>> {
+	let mut shape = raw_shape
+		.iter()
+		.filter(|path| {
+			!owners
+				.iter()
+				.any(|owner| path.starts_with(&format!("{owner}/")))
+		})
+		.cloned()
+		.collect::<Vec<_>>();
+	for owner in owners {
+		let statements = control_flow_owner_statements(file, owner)?;
+		let fragment = AstFile {
+			path: file.path.clone(),
+			statements: statements.to_vec(),
+		};
+		let canonical = canonicalize_clausewitz_file(&fragment, &MergePolicies::default()).ok()?;
+		let mut facts = EventFacts::default();
+		collect_control_flow(&canonical.statements, owner, &mut facts);
+		shape.extend(facts.control_flow_shape);
+	}
+	shape.sort();
+	Some(shape)
+}
+
+fn control_flow_owner_statements<'a>(file: &'a AstFile, owner: &str) -> Option<&'a [AstStatement]> {
+	let path = owner.strip_prefix("event:")?;
+	let mut segments = path.split('/');
+	let event_id = segments.next()?;
+	let mut statements = file.statements.iter().find_map(|statement| {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			return None;
+		};
+		(is_event_key(key) && child_scalar(items, "id").as_deref() == Some(event_id))
+			.then_some(items.as_slice())
+	})?;
+	for segment in segments {
+		let (key, index) = segment.rsplit_once('[')?;
+		let index = index.strip_suffix(']')?.parse::<usize>().ok()?;
+		let mut seen = 0_usize;
+		let mut next = None;
+		for statement in statements {
+			let AstStatement::Assignment {
+				key: candidate,
+				value,
+				..
+			} = statement
+			else {
+				continue;
+			};
+			if candidate != key {
+				continue;
+			}
+			if seen == index {
+				if let AstValue::Block { items, .. } = value {
+					next = Some(items.as_slice());
+				}
+				break;
+			}
+			seen += 1;
+		}
+		statements = next?;
+	}
+	Some(statements)
 }
 
 fn collect_event_facts(statements: &[AstStatement], facts: &mut EventFacts) {
@@ -2094,6 +2222,37 @@ mod tests {
 			"country_event = { id = test.2 option = { name = second if = { always = yes } } }";
 		write(&human, &format!("namespace = test\n{first}\n{second}\n"));
 		write(&output, &format!("namespace = test\n{second}\n{first}\n"));
+
+		let safety = assess_event_safety(&output, &human);
+
+		assert_eq!(safety.control_flow_matches_human, Some(true));
+		assert!(safety.passed());
+	}
+
+	#[test]
+	fn event_safety_accepts_canonical_equivalent_control_flow() {
+		let temp = tempfile::tempdir().unwrap();
+		let human = temp.path().join("human.txt");
+		let output = temp.path().join("output.txt");
+		write(
+			&human,
+			"namespace = test\n\
+			country_event = { id = test.1 option = { name = ok\n\
+			if = { limit = { has_country_flag = female NOT = { has_country_flag = signoria } } define_ruler = { mil = -2 random_gender = yes } }\n\
+			else_if = { limit = { has_country_flag = female has_country_flag = signoria } define_ruler = { random_gender = yes } }\n\
+			else_if = { limit = { has_country_flag = signoria } define_ruler = { random_gender = yes } }\n\
+			else = { define_ruler = { mil = -2 } }\n\
+			} }\n",
+		);
+		write(
+			&output,
+			"namespace = test\n\
+			country_event = { id = test.1 option = { name = ok\n\
+			if = { limit = { has_country_flag = signoria } define_ruler = { random_gender = yes } }\n\
+			else_if = { limit = { has_country_flag = female } define_ruler = { mil = -2 random_gender = yes } }\n\
+			else = { define_ruler = { mil = -2 } }\n\
+			} }\n",
+		);
 
 		let safety = assess_event_safety(&output, &human);
 

@@ -414,7 +414,7 @@ impl MergePolicy for ClausewitzMergePolicy<'_> {
 				.kind
 				.starts_with("clausewitz.control_flow.chain:"))
 			&& !context.base.kind.contains(":exclusive:")
-			&& context.deleted_parent_has_same_kind_sibling
+			&& context.deleted_parent_has_same_kind_gap_replacement
 			&& context.parent_present_in_both_revisions;
 		let additive_boolean_predicate = context
 			.base_parent
