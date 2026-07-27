@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -14,7 +14,7 @@ use crate::common_module::{
 };
 use crate::config::Eu4GameDiscovery;
 use crate::corpus_shadow::{
-	LoadedSnapshot, latest_snapshots, load_snapshot, validate_snapshot_game,
+	LoadedSnapshot, latest_snapshots, open_snapshot, validate_snapshot_game,
 };
 use crate::dataset::{DatasetPaths, now_rfc3339};
 use crate::object_store::ObjectStore;
@@ -24,7 +24,7 @@ use crate::score::{
 	semantic_atom_diff_statements,
 };
 
-pub const COMMON_APPLICABILITY_SCHEMA: &str = "2.0.0";
+pub const COMMON_APPLICABILITY_SCHEMA: &str = "2.1.0";
 pub const COMMON_APPLICABILITY_UNIT_COUNT: usize = 12;
 
 pub struct CommonApplicabilityOptions<'a> {
@@ -118,6 +118,14 @@ pub struct CommonProbeViewIdentities {
 	pub human: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CommonProbeInputAttribution {
+	pub left_vs_base: SemanticAtomDiff,
+	pub right_vs_base: SemanticAtomDiff,
+	pub human_vs_base: SemanticAtomDiff,
+	pub candidate_vs_base: SemanticAtomDiff,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CommonProbeUnit {
 	pub case_id: String,
@@ -137,6 +145,7 @@ pub struct CommonProbeUnit {
 	pub active_definitions: usize,
 	pub missing_top_level_keys: Vec<String>,
 	pub extra_top_level_keys: Vec<String>,
+	pub input_attribution: Option<CommonProbeInputAttribution>,
 	pub semantic_diff_from_human: Option<SemanticAtomDiff>,
 	pub conflicts: Vec<CommonProbeConflict>,
 	pub scalar_reductions: Vec<CommonProbeScalarReduction>,
@@ -223,7 +232,6 @@ pub fn run_common_applicability_probe(
 		.map(|snapshot| (snapshot.case_id.clone(), snapshot))
 		.collect::<BTreeMap<_, _>>();
 	let store = ObjectStore::new(&paths.objects, &paths.work);
-	let mut verified = HashSet::new();
 	let mut loaded = BTreeMap::<String, LoadedSnapshot>::new();
 	let mut load_errors = BTreeMap::<String, String>::new();
 	for case_id in targets
@@ -242,7 +250,7 @@ pub fn run_common_applicability_probe(
 			load_errors.insert(case_id.to_string(), error.to_string());
 			continue;
 		}
-		match load_snapshot(&store, snapshot, &mut verified) {
+		match open_snapshot(&store, snapshot) {
 			Ok(snapshot) => {
 				loaded.insert(case_id.to_string(), snapshot);
 			}
@@ -478,6 +486,7 @@ fn evaluate_unit(
 			active_definitions: 0,
 			missing_top_level_keys: Vec::new(),
 			extra_top_level_keys: Vec::new(),
+			input_attribution: None,
 			semantic_diff_from_human: None,
 			conflicts: Vec::new(),
 			scalar_reductions: Vec::new(),
@@ -524,6 +533,7 @@ fn evaluate_unit(
 				active_definitions: changed_top_level_keys(&base, &left, &right).len(),
 				missing_top_level_keys: Vec::new(),
 				extra_top_level_keys: Vec::new(),
+				input_attribution: None,
 				semantic_diff_from_human: None,
 				conflicts: Vec::new(),
 				scalar_reductions: Vec::new(),
@@ -542,6 +552,7 @@ fn evaluate_unit(
 	};
 	let merge_ms = duration_ms(merge_started.elapsed());
 	let candidate = outcome.tentative_ast().clone();
+	let input_attribution = semantic_input_attribution(&base, &left, &right, &human, &candidate);
 	let comparison_started = Instant::now();
 	let comparison = canonicalize_comparison_pair(
 		&candidate,
@@ -603,6 +614,7 @@ fn evaluate_unit(
 		active_definitions: outcome.active_definitions(),
 		missing_top_level_keys,
 		extra_top_level_keys,
+		input_attribution: Some(input_attribution),
 		semantic_diff_from_human: Some(diff),
 		conflicts,
 		scalar_reductions,
@@ -621,6 +633,22 @@ fn evaluate_unit(
 		},
 	}
 }
+
+fn semantic_input_attribution(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	human: &AstFile,
+	candidate: &AstFile,
+) -> CommonProbeInputAttribution {
+	CommonProbeInputAttribution {
+		left_vs_base: semantic_atom_diff_ast(left, base),
+		right_vs_base: semantic_atom_diff_ast(right, base),
+		human_vs_base: semantic_atom_diff_ast(human, base),
+		candidate_vs_base: semantic_atom_diff_ast(candidate, base),
+	}
+}
+
 fn canonicalize_comparison_pair(
 	candidate: &AstFile,
 	human: &AstFile,
@@ -770,6 +798,7 @@ fn failed_unit_with_prefix(
 		active_definitions: 0,
 		missing_top_level_keys: Vec::new(),
 		extra_top_level_keys: Vec::new(),
+		input_attribution: None,
 		semantic_diff_from_human: None,
 		conflicts: Vec::new(),
 		scalar_reductions: Vec::new(),
@@ -1030,6 +1059,42 @@ mod tests {
 		);
 		assert!(diff.left_only.is_empty(), "{:?}", diff.left_only);
 		assert!(diff.right_only.is_empty(), "{:?}", diff.right_only);
+	}
+
+	#[test]
+	fn input_attribution_compares_each_effective_view_to_base() {
+		let base = parse("monarchy = { reforms = { vanilla_reform } }\n");
+		let left = parse("monarchy = { reforms = { vanilla_reform ee_reform } }\n");
+		let right = base.clone();
+		let human = left.clone();
+		let candidate = left.clone();
+
+		let attribution = semantic_input_attribution(&base, &left, &right, &human, &candidate);
+		let assert_added_reform = |diff: &SemanticAtomDiff| {
+			assert_eq!(diff.left_only.values().sum::<usize>(), 1);
+			assert!(
+				diff.left_only
+					.keys()
+					.any(|atom| atom.contains("item=text:ee_reform")),
+				"{:?}",
+				diff.left_only
+			);
+			assert!(diff.right_only.is_empty(), "{:?}", diff.right_only);
+		};
+
+		assert_added_reform(&attribution.left_vs_base);
+		assert!(
+			attribution.right_vs_base.left_only.is_empty(),
+			"{:?}",
+			attribution.right_vs_base.left_only
+		);
+		assert!(
+			attribution.right_vs_base.right_only.is_empty(),
+			"{:?}",
+			attribution.right_vs_base.right_only
+		);
+		assert_added_reform(&attribution.human_vs_base);
+		assert_added_reform(&attribution.candidate_vs_base);
 	}
 
 	#[test]

@@ -71,9 +71,14 @@ The six rejected units now have narrow explanations:
   and dyes modifier that the human compatch chose to omit.
 - `common/ages` keeps Expanded Events' one-sided value and colony branch while
   the human compatch selects the other source's value and control flow.
-- `common/governments` has no missing human atom, but retains 152 source atoms
-  omitted by the human compatch. This is an accepted-better/manual-pruning
-  decision, not a module-layout failure.
+- The original `common/governments` result reported 152 candidate-only atoms.
+  That attribution is invalid: the evaluator folded all visible files in
+  global lexical-path order, allowing an earlier source `zzz_*` file to
+  override a later compatch `00_*` file. The 2026-07-24 layer-major fix covers
+  both the applicability probe and the production scorer. The focused
+  schema-`2.1.0` rerun is now exactly equivalent: 2,046 candidate atoms, 2,046
+  human atoms, all shared, with zero one-sided atoms. The original 152-atom
+  claim was entirely an evaluator artifact.
 - `common/scripted_effects` has three explicit control-flow policy conflicts;
   the engine withholds output rather than guessing.
 
@@ -85,3 +90,13 @@ so its nested control-flow matching remains the dominant optimization target.
 The production 13-candidate shadow run completed with a 0.960x aggregate
 Structured-to-Legacy runtime ratio, although scripted effects alone remains
 substantially slower because it reaches the expensive conflict path.
+
+The 2026-07-24 focused governments rerun exposed a separate harness startup
+cost. End-to-end report time was 258,342 ms while the module unit itself took
+177 ms. Sampling showed the process in `ObjectStore::verify_object` and
+`digest_tree`, reopening and hashing 5,935 files from three already
+content-addressed objects. Probe and shadow restoration now open immutable
+committed objects through their CAS markers; collection, `measure` preflight,
+export, and duplicate ingestion retain full payload verification. The identical
+focused rerun completed in 339 ms, about 762x faster, with the candidate still
+exactly matching all 2,046 human atoms.

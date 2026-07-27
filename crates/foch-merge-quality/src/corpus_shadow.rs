@@ -288,8 +288,7 @@ pub fn run_case(
 		.ok_or_else(|| format!("no latest snapshot for case {case_id}"))?;
 	validate_snapshot_game(&snapshot, options.game)?;
 	let store = ObjectStore::new(&paths.objects, &paths.work);
-	let mut verified = HashSet::new();
-	let loaded = load_snapshot(&store, snapshot, &mut verified)?;
+	let loaded = open_snapshot(&store, snapshot)?;
 	let identity = run_identity(options)?;
 	let mut score_cache = ScoreCache::new();
 	let normalized = retained_path.replace('\\', "/");
@@ -328,7 +327,6 @@ pub fn run_corpus(
 	let snapshots = latest_snapshots(&paths)?;
 	let store = ObjectStore::new(&paths.objects, &paths.work);
 	let identity = run_identity(&options.shadow)?;
-	let mut verified = HashSet::new();
 	let mut score_cache = ScoreCache::new();
 	let mut loaded_by_snapshot = HashMap::new();
 	let mut targets = Vec::new();
@@ -340,7 +338,7 @@ pub fn run_corpus(
 			continue;
 		}
 		validate_snapshot_game(&snapshot, options.shadow.game)?;
-		let loaded = load_snapshot(&store, snapshot, &mut verified)?;
+		let loaded = open_snapshot(&store, snapshot)?;
 		targets.extend(discover_targets(
 			&loaded,
 			options.shadow.game,
@@ -723,15 +721,13 @@ pub(crate) fn validate_snapshot_game(
 	Ok(())
 }
 
-pub(crate) fn load_snapshot(
+/// Opens an immutable snapshot from committed CAS objects. Collection verifies
+/// payloads before publishing their markers; explicit audits remain the
+/// responsibility of lifecycle measurement and export boundaries.
+pub(crate) fn open_snapshot(
 	store: &ObjectStore,
 	snapshot: SnapshotRecord,
-	verified: &mut HashSet<String>,
 ) -> io::Result<LoadedSnapshot> {
-	verify_once(store, &snapshot.compatch.content_hash, verified)?;
-	for source in &snapshot.source_mods {
-		verify_once(store, &source.content_hash, verified)?;
-	}
 	let compatch = store.open_object(&snapshot.compatch.content_hash)?.tree;
 	let source_dirs = snapshot
 		.source_mods
@@ -747,13 +743,6 @@ pub(crate) fn load_snapshot(
 		compatch,
 		source_dirs,
 	})
-}
-
-fn verify_once(store: &ObjectStore, hash: &str, verified: &mut HashSet<String>) -> io::Result<()> {
-	if verified.insert(hash.to_string()) {
-		store.verify_object(hash)?;
-	}
-	Ok(())
 }
 
 fn discover_targets(

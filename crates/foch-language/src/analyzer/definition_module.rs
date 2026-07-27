@@ -3,18 +3,28 @@ use super::content_family::{
 };
 use super::parser::{AstFile, AstStatement, SpanRange};
 use super::semantic_index::ParsedScriptFile;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug)]
 pub struct DefinitionModuleInput<'a> {
 	pub path: &'a Path,
 	pub file: &'a ParsedScriptFile,
+	pub layer_ordinal: usize,
 }
 
 impl<'a> DefinitionModuleInput<'a> {
 	pub fn new(path: &'a Path, file: &'a ParsedScriptFile) -> Self {
-		Self { path, file }
+		Self {
+			path,
+			file,
+			layer_ordinal: 0,
+		}
+	}
+
+	pub fn with_layer_ordinal(mut self, layer_ordinal: usize) -> Self {
+		self.layer_ordinal = layer_ordinal;
+		self
 	}
 }
 
@@ -96,6 +106,7 @@ pub enum DefinitionModuleLoadError {
 struct NormalizedInput<'a> {
 	path: String,
 	file: &'a ParsedScriptFile,
+	layer_ordinal: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -129,19 +140,24 @@ pub fn load_definition_module(
 			Ok(NormalizedInput {
 				path: input_path,
 				file: input.file,
+				layer_ordinal: input.layer_ordinal,
 			})
 		})
 		.collect::<Result<Vec<_>, DefinitionModuleLoadError>>()?;
 
 	match policy.file_order {
 		DefinitionFileOrder::NormalizedPathAscending => {
-			ordered_inputs.sort_by(|left, right| left.path.cmp(&right.path));
+			ordered_inputs.sort_by(|left, right| {
+				(left.layer_ordinal, left.path.as_str())
+					.cmp(&(right.layer_ordinal, right.path.as_str()))
+			});
 		}
 	}
-	for adjacent in ordered_inputs.windows(2) {
-		if adjacent[0].path == adjacent[1].path {
+	let mut seen_paths = BTreeSet::new();
+	for input in &ordered_inputs {
+		if !seen_paths.insert(input.path.clone()) {
 			return Err(DefinitionModuleLoadError::DuplicateInputPath {
-				path: adjacent[0].path.clone(),
+				path: input.path.clone(),
 			});
 		}
 	}
@@ -410,6 +426,29 @@ mod tests {
 			vec!["a_government", "z_government"]
 		);
 		assert_eq!(loaded.ast.path, PathBuf::from(POLICY.output_path));
+	}
+
+	#[test]
+	fn layer_order_precedes_lexical_path_order() {
+		let earlier_path = PathBuf::from("common/governments/zzz_source.txt");
+		let later_path = PathBuf::from("common/governments/00_compatch.txt");
+		let earlier_file = parsed_file(&earlier_path, "shared = { marker = source }");
+		let later_file = parsed_file(&later_path, "shared = { marker = compatch }");
+
+		let loaded = load_definition_module(
+			&[
+				DefinitionModuleInput::new(&later_path, &later_file).with_layer_ordinal(1),
+				DefinitionModuleInput::new(&earlier_path, &earlier_file).with_layer_ordinal(0),
+			],
+			POLICY,
+		)
+		.expect("layered module should load");
+
+		assert_eq!(marker_for(&loaded.ast, "shared"), "compatch");
+		assert_eq!(
+			loaded.definition_sources["shared"].path,
+			"common/governments/00_compatch.txt"
+		);
 	}
 
 	#[test]

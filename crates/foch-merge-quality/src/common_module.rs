@@ -264,20 +264,20 @@ impl CommonModuleViewBuilder {
 			return Ok(Arc::clone(view));
 		}
 
-		let mut visible = BTreeMap::<String, Arc<ParsedModuleFile>>::new();
-		for root in roots {
+		let mut visible = BTreeMap::<String, (usize, Arc<ParsedModuleFile>)>::new();
+		for (layer_ordinal, root) in roots.iter().enumerate() {
 			let layer = self.layer(root, module_prefix)?;
 			if layer.replace_namespace {
 				visible.clear();
 			}
 			for (relative, file) in &layer.files {
-				visible.insert(relative.clone(), Arc::clone(file));
+				visible.insert(relative.clone(), (layer_ordinal, Arc::clone(file)));
 			}
 		}
 
 		let diagnostics = visible
 			.values()
-			.flat_map(|file| file.diagnostics.iter().cloned())
+			.flat_map(|(_, file)| file.diagnostics.iter().cloned())
 			.collect::<Vec<_>>();
 		if !diagnostics.is_empty() {
 			return Err(diagnostics);
@@ -285,7 +285,12 @@ impl CommonModuleViewBuilder {
 
 		let mut definitions = BTreeMap::<String, AstStatement>::new();
 		let mut items = Vec::new();
-		for file in visible.values() {
+		let mut ordered_files = visible
+			.into_iter()
+			.map(|(relative, (layer_ordinal, file))| (layer_ordinal, relative, file))
+			.collect::<Vec<_>>();
+		ordered_files.sort_by(|left, right| (&left.0, &left.1).cmp(&(&right.0, &right.1)));
+		for (_, _, file) in ordered_files {
 			for statement in &file.statements {
 				match statement {
 					AstStatement::Assignment { key, .. } => {
@@ -428,6 +433,7 @@ fn relative_path(root: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use foch_language::analyzer::parser::parse_clausewitz_content;
 	use std::fs;
 
 	fn write_file(root: &Path, relative: &str, contents: &str) {
@@ -466,6 +472,43 @@ mod tests {
 			.view(&[&base, &overlay], "common/buildings")
 			.unwrap();
 		assert_eq!(assignment_keys(&view), vec!["market", "temple"]);
+	}
+
+	#[test]
+	fn later_layer_definition_wins_over_earlier_lexically_later_file() {
+		let temp = tempfile::tempdir().unwrap();
+		let base = temp.path().join("base");
+		let source = temp.path().join("source");
+		let compatch = temp.path().join("compatch");
+		write_file(
+			&base,
+			"common/governments/00_governments.txt",
+			"monarchy = { reforms = { vanilla_reform } }\n",
+		);
+		write_file(
+			&source,
+			"common/governments/zzz_00_governments.txt",
+			"monarchy = { reforms = { source_reform } }\n",
+		);
+		write_file(
+			&compatch,
+			"common/governments/00_governments.txt",
+			"monarchy = { reforms = { compatch_reform } }\n",
+		);
+
+		let view = CommonModuleViewBuilder::default()
+			.view(&[&base, &source, &compatch], "common/governments")
+			.unwrap();
+		let expected = parse_clausewitz_content(
+			PathBuf::from("common/governments/expected.txt"),
+			"monarchy = { reforms = { compatch_reform } }\n",
+		)
+		.ast;
+
+		assert!(
+			statements_content_equal(&view.statements, &expected.statements),
+			"later compatch layer must override earlier module definitions regardless of filename"
+		);
 	}
 
 	#[test]

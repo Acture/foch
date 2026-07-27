@@ -80,8 +80,8 @@ impl ObjectStore {
 		Ok(opened)
 	}
 
-	/// Open a previously verified object without re-hashing its payload. Callers
-	/// must establish a run-level verification boundary before using this fast path.
+	/// Open an immutable, committed object by validating its marker and tree path.
+	/// Use [`Self::verify_object`] at explicit integrity-audit boundaries.
 	pub fn open_object(&self, hash: &str) -> io::Result<StoredObject> {
 		let object_dir = self.object_dir(hash)?;
 		let expected = read_marker(&object_dir)?;
@@ -632,6 +632,28 @@ mod tests {
 		let second = store.snapshot_tree(source.path()).unwrap();
 		assert!(!second.newly_stored);
 		assert_eq!(second.hash, first.hash);
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn open_object_trusts_marker_while_verify_object_audits_payload() {
+		let source = tempfile::tempdir().unwrap();
+		write_fixture(source.path());
+		let dataset = tempfile::tempdir().unwrap();
+		let store = ObjectStore::new(dataset.path().join("objects"), dataset.path().join("work"));
+		let object = store.snapshot_tree(source.path()).unwrap();
+
+		fs::write(
+			object.tree.join("common/governments/example.txt"),
+			b"government = { rank = 2 }\n",
+		)
+		.unwrap();
+
+		assert_eq!(store.open_object(&object.hash).unwrap().hash, object.hash);
+		assert_eq!(
+			store.verify_object(&object.hash).unwrap_err().kind(),
+			ErrorKind::InvalidData
+		);
 	}
 
 	#[cfg(target_os = "macos")]

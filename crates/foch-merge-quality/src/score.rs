@@ -1164,24 +1164,26 @@ fn canonical_layered_module_view_uncached(
 ) -> Option<CanonicalModuleMap> {
 	let policy = definition_module_policy_for_prefix(family_prefix)?;
 	let merge_key_source = definition_module_merge_key_for_prefix(family_prefix)?;
-	let mut visible_files = BTreeMap::<String, (PathBuf, PathBuf)>::new();
-	for root in roots {
+	let mut visible_files = BTreeMap::<String, (usize, PathBuf, PathBuf)>::new();
+	for (layer_ordinal, root) in roots.iter().enumerate() {
 		if layer_replaces_module(root, family_prefix)? {
 			visible_files.clear();
 		}
 		for (relative, path) in module_files(root, family_prefix)? {
-			visible_files.insert(relative, (root.clone(), path));
+			visible_files.insert(relative, (layer_ordinal, root.clone(), path));
 		}
 	}
 
 	let mut parsed_files = Vec::with_capacity(visible_files.len());
-	for (relative, (root, path)) in visible_files {
+	for (relative, (layer_ordinal, root, path)) in visible_files {
 		let parsed = parse_script_file("__score__", &root, &path)?;
-		parsed_files.push((relative, parsed));
+		parsed_files.push((layer_ordinal, relative, parsed));
 	}
 	let inputs = parsed_files
 		.iter()
-		.map(|(path, file)| DefinitionModuleInput::new(Path::new(path), file))
+		.map(|(layer_ordinal, path, file)| {
+			DefinitionModuleInput::new(Path::new(path), file).with_layer_ordinal(*layer_ordinal)
+		})
 		.collect::<Vec<_>>();
 	let module = load_definition_module(&inputs, policy).ok()?;
 	Some(
@@ -2607,6 +2609,37 @@ mod classify_tests {
 		let score = score_file_with_basegame(&request, Some(basegame.path()));
 
 		assert_eq!(score.rel, GOVERNMENTS_OUTPUT);
+		assert_eq!(score.keys_match, Some(true));
+		assert_eq!(score.ast_match, Some(true));
+		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);
+	}
+
+	#[test]
+	fn score_file_prefers_later_layer_over_earlier_lexically_later_definition() {
+		let (mod_a, mod_b, compatch) = make_dirs();
+		let out = tempfile::tempdir().unwrap();
+		write_file(
+			mod_a.path(),
+			"common/governments/zzz_source.txt",
+			"monarchy = { rank = 1 }\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/governments/00_compatch.txt",
+			"monarchy = { rank = 2 }\n",
+		);
+		write_governments_replace_descriptor(out.path());
+		write_file(out.path(), GOVERNMENTS_OUTPUT, "monarchy = { rank = 2 }\n");
+		let sources = two_sources(mod_a.path(), mod_b.path());
+
+		let score = score_file(&ScoreFileRequest {
+			rel: GOVERNMENTS_OUTPUT,
+			source_mods: &sources,
+			compatch: compatch.path(),
+			out_dir: out.path(),
+			conflict_paths: &HashSet::new(),
+		});
+
 		assert_eq!(score.keys_match, Some(true));
 		assert_eq!(score.ast_match, Some(true));
 		assert_eq!(score.verdict, Verdict::AcceptedEquivalent);

@@ -17,10 +17,12 @@ For each corpus unit, the probe builds four effective module views for its
 - `human`: vanilla, both source mods, then the human compatch
 
 Files are resolved by normalized relative path in layer order. A covering
-`replace_path` clears earlier files. Visible files are read in lexical path
-order. Structured definition modules use the runtime-effective last definition
-for duplicate top-level assignment keys; this is deliberately scoped to
-Structured so the frozen Legacy baseline is unchanged.
+`replace_path` clears earlier files. Visible files are folded in layer-major
+order and lexical path order within each layer, so a later compatch definition
+wins over an earlier source definition regardless of their file names.
+Structured definition modules use the runtime-effective last definition for
+duplicate top-level assignment keys; this is deliberately scoped to Structured
+so the frozen Legacy baseline is unchanged.
 
 ## Execution
 
@@ -41,6 +43,13 @@ Comparison uses the same module normalizer in `common-probe` and
 only differing definitions are canonicalized before order-insensitive AST
 comparison. This affects scoring only in the Structured arm and cannot relabel
 the committed Legacy baseline.
+
+Snapshot restoration opens committed immutable CAS objects through their
+markers and does not re-hash payloads on every probe process. Collection hashes
+both the source and staged clone before atomically publishing the marker;
+`measure` preflight and export retain explicit full-payload audits. On the
+focused governments case this reduced report-level elapsed time from 258,342 ms
+to 339 ms (about 762x) while preserving exact 2,046-atom equivalence.
 
 ## Production activation
 
@@ -70,7 +79,10 @@ The fixed denominator is the 12 `common/**` units in
 - distinguish accepted AST equivalence, manual resolution, semantic mismatch,
   parse failure, configuration failure, and adapter failure;
 - record per-family review status and per-unit structured timing;
-- include order-insensitive AST atom deltas against the effective human module.
+- include order-insensitive AST atom deltas against the effective human module;
+- include independent left, right, human, and candidate deltas against the
+  runtime-effective vanilla base so source-backed retention is not mislabeled
+  as candidate duplication.
 
 There is no acceptance-rate threshold. The current measured matrix and
 remaining semantic decisions are recorded in
