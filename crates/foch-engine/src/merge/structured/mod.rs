@@ -7,7 +7,7 @@ mod policy;
 mod trivia;
 
 pub use ast_adapter::AstAdapterError;
-pub(crate) use dag_join::{StructuredJoinKind, merge_structured_dag_join};
+pub(crate) use dag_join::{StructuredDagProtocol, StructuredDagState, StructuredJoinKind};
 pub use definition_module::{
 	ClausewitzDefinitionModuleOutcome, merge_clausewitz_definition_module,
 };

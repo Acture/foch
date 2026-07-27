@@ -24,12 +24,16 @@ use super::super::patch_merge::{
 use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
-use super::dag_join::{DagJoinPlan, DagJoinScope, plan_dag_join, sink_mods};
+use super::dag_join::sink_mods;
 #[cfg(test)]
 use super::dag_join::{ancestry_metrics, reset_ancestry_metrics};
+use super::dag_pipeline::{
+	DagJoinProtocol, DagJoinRequest, DagPipelineResult, EffectiveNodeProtocol,
+	EffectiveNodeRequest, execute_dag_pipeline,
+};
 use crate::cache::{DagBaseCache, ModDiffCache};
-use crate::merge::kernel::{KernelMergeInput, KernelRevision, MergeKernelMode};
-use crate::merge::structured::{StructuredJoinKind, merge_structured_dag_join};
+use crate::merge::kernel::MergeKernelMode;
+use crate::merge::structured::{StructuredDagProtocol, StructuredDagState, StructuredJoinKind};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
@@ -123,18 +127,27 @@ struct DagApplyCacheEvent {
 }
 
 #[derive(Clone, Debug)]
-struct ParentView {
+struct LegacyDagState {
 	statements: Vec<AstStatement>,
 	intent_only_patches: Vec<ClausewitzPatch>,
 	pending_conflicts: Vec<PatchResolution>,
 }
 
-#[derive(Clone, Debug)]
-struct EffectiveNodeState {
-	statements: Vec<AstStatement>,
-	source_statements: Vec<AstStatement>,
-	intent_only_patches: Vec<ClausewitzPatch>,
-	pending_conflicts: Vec<PatchResolution>,
+struct LegacyDagProtocol<'a> {
+	file_dag: &'a FileDag,
+	base_statements: &'a [AstStatement],
+	template: Option<&'a ParsedScriptFile>,
+	merge_key_source: MergeKeySource,
+	policies: &'a MergePolicies,
+	handler: &'a mut dyn ConflictHandler,
+	mod_hashes: Option<&'a HashMap<ModId, String>>,
+	diff_cache: Option<&'a ModDiffCache>,
+	dag_base_cache: Option<&'a DagBaseCache>,
+	diff_cache_context: String,
+	dag_base_cache_context: String,
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	merge_result: PatchMergeResult,
+	seen_pending_conflicts: Vec<PatchResolution>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -142,70 +155,6 @@ enum PatchIntentAddress {
 	Node(Vec<String>, String),
 	ListItem(Vec<String>, String, String, usize),
 	BlockItem(Vec<String>, String),
-}
-
-struct MergedBranches {
-	statements: Vec<AstStatement>,
-	intent_only_patches: Vec<ClausewitzPatch>,
-	pending_conflicts: Vec<PatchResolution>,
-	merge_result: PatchMergeResult,
-}
-
-struct BranchMergeArgs<'a> {
-	branch_ids: &'a [ModId],
-	node_states: &'a HashMap<ModId, EffectiveNodeState>,
-	base_statements: &'a [AstStatement],
-	template: Option<&'a ParsedScriptFile>,
-	file_dag: &'a FileDag,
-	merge_key_source: MergeKeySource,
-	policies: &'a MergePolicies,
-	handler: &'a mut dyn ConflictHandler,
-	dag_base_cache: Option<&'a DagBaseCache>,
-	cache_context: &'a str,
-	parent_view_cache: &'a mut BTreeMap<BTreeSet<ModId>, ParentView>,
-	kernel: MergeKernelMode,
-	join_scope: DagJoinScope,
-	has_vanilla_base: bool,
-}
-
-struct StructuredFinalJoinArgs<'a> {
-	join_plan: &'a DagJoinPlan,
-	node_states: &'a HashMap<ModId, EffectiveNodeState>,
-	shared_view: &'a ParentView,
-	template: Option<&'a ParsedScriptFile>,
-	file_dag: &'a FileDag,
-	combined_result: PatchMergeResult,
-	policies: &'a MergePolicies,
-	has_vanilla_base: bool,
-}
-
-struct LegacyBranchJoinArgs<'a> {
-	join_plan: &'a DagJoinPlan,
-	node_states: &'a HashMap<ModId, EffectiveNodeState>,
-	shared_view: ParentView,
-	template: Option<&'a ParsedScriptFile>,
-	file_dag: &'a FileDag,
-	merge_key_source: MergeKeySource,
-	policies: &'a MergePolicies,
-	handler: &'a mut dyn ConflictHandler,
-	dag_base_cache: Option<&'a DagBaseCache>,
-	cache_context: &'a str,
-	combined_result: PatchMergeResult,
-}
-
-struct ParentViewArgs<'a> {
-	mod_id: &'a ModId,
-	file_dag: &'a FileDag,
-	base_statements: &'a [AstStatement],
-	template: Option<&'a ParsedScriptFile>,
-	node_states: &'a HashMap<ModId, EffectiveNodeState>,
-	merge_key_source: MergeKeySource,
-	policies: &'a MergePolicies,
-	handler: &'a mut dyn ConflictHandler,
-	dag_base_cache: Option<&'a DagBaseCache>,
-	cache_context: &'a str,
-	cache: &'a mut BTreeMap<BTreeSet<ModId>, ParentView>,
-	merge_result: &'a mut PatchMergeResult,
 }
 
 #[cfg(test)]
@@ -852,374 +801,167 @@ fn extend_unique_conflicts(target: &mut Vec<PatchResolution>, source: &[PatchRes
 	}
 }
 
-fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, String> {
-	let BranchMergeArgs {
-		branch_ids,
-		node_states,
-		base_statements,
-		template,
-		file_dag,
-		merge_key_source,
-		policies,
-		handler,
-		dag_base_cache,
-		cache_context,
-		parent_view_cache,
-		kernel,
-		join_scope,
-		has_vanilla_base,
-	} = args;
-	let mut combined_result = PatchMergeResult::default();
-	let join_plan = plan_dag_join(branch_ids, file_dag, join_scope)?;
-	let shared_view = match join_plan.shared_frontier() {
-		[] => ParentView {
-			statements: base_statements.to_vec(),
-			intent_only_patches: Vec::new(),
-			pending_conflicts: Vec::new(),
-		},
-		[shared] => {
-			let state = node_states.get(shared).ok_or_else(|| {
-				format!(
-					"missing shared ancestor state {} for {}",
-					shared.as_str(),
-					file_dag.file_path()
-				)
-			})?;
-			ParentView {
-				statements: if kernel == MergeKernelMode::Structured
-					&& join_plan.scope() == DagJoinScope::Final
-				{
-					state.source_statements.clone()
-				} else {
-					state.statements.clone()
-				},
-				intent_only_patches: state.intent_only_patches.clone(),
-				pending_conflicts: state.pending_conflicts.clone(),
-			}
-		}
-		_ => {
-			let cache_key = join_plan
-				.shared_frontier()
-				.iter()
-				.cloned()
-				.collect::<BTreeSet<_>>();
-			if let Some(cached) = parent_view_cache.get(&cache_key) {
-				cached.clone()
-			} else {
-				let merged = merge_branch_states(BranchMergeArgs {
-					branch_ids: join_plan.shared_frontier(),
-					node_states,
-					base_statements,
-					template,
-					file_dag,
-					merge_key_source,
-					policies,
-					handler,
-					dag_base_cache,
-					cache_context,
-					parent_view_cache,
-					kernel: MergeKernelMode::Legacy,
-					join_scope: DagJoinScope::Intermediate,
-					has_vanilla_base,
-				})?;
-				extend_merge_result(&mut combined_result, merged.merge_result);
-				let view = ParentView {
-					statements: merged.statements,
-					intent_only_patches: merged.intent_only_patches,
-					pending_conflicts: merged.pending_conflicts,
-				};
-				parent_view_cache.insert(cache_key, view.clone());
-				view
-			}
-		}
-	};
-	if kernel == MergeKernelMode::Structured && join_plan.scope() == DagJoinScope::Final {
-		return merge_structured_final_join(StructuredFinalJoinArgs {
-			join_plan: &join_plan,
-			node_states,
-			shared_view: &shared_view,
-			template,
-			file_dag,
-			combined_result,
-			policies,
-			has_vanilla_base,
+impl EffectiveNodeProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
+	fn effective_node(
+		&mut self,
+		request: EffectiveNodeRequest<'_, LegacyDagState>,
+	) -> Result<LegacyDagState, String> {
+		extend_unique_conflicts(
+			&mut self.seen_pending_conflicts,
+			&request.parent.pending_conflicts,
+		);
+		let current_base = synthesized_parsed_file(
+			self.file_dag.file_path(),
+			self.template,
+			request.parent.statements.clone(),
+		);
+		let base_view_hash = hash_ast_statements(&current_base.ast.statements);
+		let patches = cached_or_diff_patches(CachedDiffArgs {
+			cache: self.diff_cache,
+			target_path: self.file_dag.file_path(),
+			mod_hash: self
+				.mod_hashes
+				.and_then(|hashes| hashes.get(request.mod_id).map(String::as_str)),
+			base_view_hash: base_view_hash.as_deref(),
+			current_base: &current_base,
+			current: request.source,
+			merge_key_source: self.merge_key_source,
+			nested_merge_key_source: self.policies.nested_merge_key_source,
+			game_version: &self.diff_cache_context,
 		});
-	}
-
-	merge_legacy_branch_join(LegacyBranchJoinArgs {
-		join_plan: &join_plan,
-		node_states,
-		shared_view,
-		template,
-		file_dag,
-		merge_key_source,
-		policies,
-		handler,
-		dag_base_cache,
-		cache_context,
-		combined_result,
-	})
-}
-
-fn merge_legacy_branch_join(args: LegacyBranchJoinArgs<'_>) -> Result<MergedBranches, String> {
-	let LegacyBranchJoinArgs {
-		join_plan,
-		node_states,
-		shared_view,
-		template,
-		file_dag,
-		merge_key_source,
-		policies,
-		handler,
-		dag_base_cache,
-		cache_context,
-		mut combined_result,
-	} = args;
-	let mut pending_conflicts = Vec::new();
-	let mut all_intent_only = Vec::new();
-	let mut frontier_addresses = BTreeSet::new();
-	let mut patch_sets = Vec::with_capacity(join_plan.ordered_branches().len());
-	for branch_id in join_plan.ordered_branches() {
-		let state = node_states.get(branch_id).ok_or_else(|| {
-			format!(
-				"missing effective state for branch {} of {}",
-				branch_id.as_str(),
-				file_dag.file_path()
-			)
-		})?;
-		extend_unique_conflicts(&mut pending_conflicts, &state.pending_conflicts);
-		let relative_intents = state
-			.intent_only_patches
-			.iter()
-			.filter(|patch| !shared_view.intent_only_patches.contains(*patch))
-			.cloned()
-			.collect::<Vec<_>>();
-		let (branch_patches, branch_intent_only) = build_branch_patches(
-			file_dag.file_path(),
-			template,
-			&shared_view.statements,
-			&state.statements,
-			&[],
-			&relative_intents,
+		let pending_conflicts =
+			pending_after_direct_delta(&request.parent.pending_conflicts, &patches);
+		let apply_hash = self
+			.dag_base_cache
+			.and_then(|_| hash_dag_apply_input(&request.parent.statements, &patches));
+		let effective_statements = cached_or_apply_base(CachedApplyArgs {
+			cache: self.dag_base_cache,
+			deps_hash: apply_hash.as_deref(),
+			file_path: self.file_dag.file_path(),
+			current_statements: &request.parent.statements,
+			resolved_patches: &patches,
+			merge_key_source: self.merge_key_source,
+			nested_merge_key_source: self.policies.nested_merge_key_source,
+			cache_scope: DagApplyCacheScope::EffectiveNode,
+			game_version: &self.dag_base_cache_context,
+		});
+		let (_, intent_only_patches) = build_branch_patches(
+			self.file_dag.file_path(),
+			self.template,
+			self.base_statements,
+			&effective_statements,
+			&request.parent.intent_only_patches,
+			&patches,
 			PatchKeySources {
-				root: merge_key_source,
-				nested: policies.nested_merge_key_source,
+				root: self.merge_key_source,
+				nested: self.policies.nested_merge_key_source,
 			},
 		);
-		for patch in &branch_intent_only {
-			append_unique_patch(&mut all_intent_only, patch);
-		}
-		frontier_addresses.extend(branch_patches.iter().flat_map(patch_intent_addresses));
-		patch_sets.push((
-			branch_id.0.clone(),
-			file_dag.precedence_of(branch_id),
-			branch_patches,
+		self.mod_patches.push((
+			request.mod_id.0.clone(),
+			self.file_dag.precedence_of(request.mod_id),
+			patches,
 		));
-	}
-
-	patch_sets.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
-	let mut merge_result = merge_patch_sets_for_file(
-		patch_sets,
-		policies,
-		handler,
-		Some(Path::new(file_dag.file_path())),
-	)
-	.map_err(|err| err.to_string())?;
-	normalize_merge_result(&mut merge_result);
-	let new_conflicts = std::mem::take(&mut merge_result.conflicts);
-	extend_unique_conflicts(&mut pending_conflicts, &new_conflicts);
-	let resolved = resolved_patches(&merge_result);
-	let mut surviving_intents = shared_view.intent_only_patches;
-	surviving_intents.retain(|patch| {
-		patch_intent_addresses(patch)
-			.iter()
-			.all(|address| !frontier_addresses.contains(address))
-	});
-	let materialized = resolved
-		.into_iter()
-		.filter(|patch| {
-			if all_intent_only.contains(patch) {
-				append_unique_patch(&mut surviving_intents, patch);
-				false
-			} else {
-				true
-			}
+		Ok(LegacyDagState {
+			statements: effective_statements,
+			intent_only_patches,
+			pending_conflicts,
 		})
-		.collect::<Vec<_>>();
-	let deps_hash =
-		dag_base_cache.and_then(|_| hash_dag_apply_input(&shared_view.statements, &materialized));
-	let statements = cached_or_apply_base(CachedApplyArgs {
-		cache: dag_base_cache,
-		deps_hash: deps_hash.as_deref(),
-		file_path: file_dag.file_path(),
-		current_statements: &shared_view.statements,
-		resolved_patches: &materialized,
-		merge_key_source,
-		nested_merge_key_source: policies.nested_merge_key_source,
-		cache_scope: DagApplyCacheScope::ResolvedBranchState,
-		game_version: cache_context,
-	});
-	extend_merge_result(&mut combined_result, merge_result);
-
-	Ok(MergedBranches {
-		statements,
-		intent_only_patches: surviving_intents,
-		pending_conflicts,
-		merge_result: combined_result,
-	})
+	}
 }
 
-fn merge_structured_final_join(
-	args: StructuredFinalJoinArgs<'_>,
-) -> Result<MergedBranches, String> {
-	let StructuredFinalJoinArgs {
-		join_plan,
-		node_states,
-		shared_view,
-		template,
-		file_dag,
-		combined_result,
-		policies,
-		has_vanilla_base,
-	} = args;
-	if join_plan.ordered_branches().len() != 2 {
-		return Err(format!(
-			"structured merge unsupported for {}: expected exactly two final sinks, found {}",
-			file_dag.file_path(),
-			join_plan.ordered_branches().len()
-		));
-	}
-	if !has_vanilla_base || shared_view.statements.is_empty() {
-		return Err(format!(
-			"structured merge unsupported for {}: a non-empty vanilla base is required",
-			file_dag.file_path()
-		));
-	}
-	if !shared_view.pending_conflicts.is_empty() || !shared_view.intent_only_patches.is_empty() {
-		return Err(format!(
-			"structured merge unsupported for {}: the shared base contains unresolved patch state",
-			file_dag.file_path()
-		));
-	}
-
-	let path = PathBuf::from(file_dag.file_path());
-	let revisions = join_plan
-		.ordered_branches()
-		.iter()
-		.map(|branch_id| {
-			let state = node_states.get(branch_id).ok_or_else(|| {
-				format!(
-					"missing structured revision state {} for {}",
-					branch_id.as_str(),
-					file_dag.file_path()
-				)
-			})?;
-			if !state.pending_conflicts.is_empty() || !state.intent_only_patches.is_empty() {
-				return Err(format!(
-					"structured merge unsupported for {}: revision {} contains unresolved patch state",
-					file_dag.file_path(),
-					branch_id.as_str()
-				));
-			}
-			Ok(KernelRevision {
-				source_id: branch_id.0.clone(),
-				precedence: file_dag.precedence_of(branch_id),
-				ast: AstFile {
-					path: path.clone(),
-					statements: state.source_statements.clone(),
+impl DagJoinProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
+	fn join(
+		&mut self,
+		request: DagJoinRequest<'_, LegacyDagState>,
+	) -> Result<LegacyDagState, String> {
+		let mut pending_conflicts = Vec::new();
+		let mut all_intent_only = Vec::new();
+		let mut frontier_addresses = BTreeSet::new();
+		let mut patch_sets = Vec::with_capacity(request.revisions.len());
+		for revision in request.revisions {
+			extend_unique_conflicts(&mut pending_conflicts, &revision.state.pending_conflicts);
+			let relative_intents = revision
+				.state
+				.intent_only_patches
+				.iter()
+				.filter(|patch| !request.base.intent_only_patches.contains(*patch))
+				.cloned()
+				.collect::<Vec<_>>();
+			let (branch_patches, branch_intent_only) = build_branch_patches(
+				request.file_dag.file_path(),
+				self.template,
+				&request.base.statements,
+				&revision.state.statements,
+				&[],
+				&relative_intents,
+				PatchKeySources {
+					root: self.merge_key_source,
+					nested: self.policies.nested_merge_key_source,
 				},
+			);
+			for patch in &branch_intent_only {
+				append_unique_patch(&mut all_intent_only, patch);
+			}
+			frontier_addresses.extend(branch_patches.iter().flat_map(patch_intent_addresses));
+			patch_sets.push((
+				revision.mod_id.0.clone(),
+				revision.precedence,
+				branch_patches,
+			));
+		}
+
+		patch_sets.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+		let mut merge_result = merge_patch_sets_for_file(
+			patch_sets,
+			self.policies,
+			self.handler,
+			Some(Path::new(request.file_dag.file_path())),
+		)
+		.map_err(|error| error.to_string())?;
+		normalize_merge_result(&mut merge_result);
+		let new_conflicts = std::mem::take(&mut merge_result.conflicts);
+		extend_unique_conflicts(&mut pending_conflicts, &new_conflicts);
+		let resolved = resolved_patches(&merge_result);
+		let mut surviving_intents = request.base.intent_only_patches.clone();
+		surviving_intents.retain(|patch| {
+			patch_intent_addresses(patch)
+				.iter()
+				.all(|address| !frontier_addresses.contains(address))
+		});
+		let materialized = resolved
+			.into_iter()
+			.filter(|patch| {
+				if all_intent_only.contains(patch) {
+					append_unique_patch(&mut surviving_intents, patch);
+					false
+				} else {
+					true
+				}
 			})
+			.collect::<Vec<_>>();
+		let deps_hash = self
+			.dag_base_cache
+			.and_then(|_| hash_dag_apply_input(&request.base.statements, &materialized));
+		let statements = cached_or_apply_base(CachedApplyArgs {
+			cache: self.dag_base_cache,
+			deps_hash: deps_hash.as_deref(),
+			file_path: request.file_dag.file_path(),
+			current_statements: &request.base.statements,
+			resolved_patches: &materialized,
+			merge_key_source: self.merge_key_source,
+			nested_merge_key_source: self.policies.nested_merge_key_source,
+			cache_scope: DagApplyCacheScope::ResolvedBranchState,
+			game_version: &self.dag_base_cache_context,
+		});
+		extend_merge_result(&mut self.merge_result, merge_result);
+		extend_unique_conflicts(&mut self.seen_pending_conflicts, &pending_conflicts);
+		Ok(LegacyDagState {
+			statements,
+			intent_only_patches: surviving_intents,
+			pending_conflicts,
 		})
-		.collect::<Result<Vec<_>, String>>()?;
-	let input = KernelMergeInput::new(
-		AstFile {
-			path,
-			statements: shared_view.statements.clone(),
-		},
-		revisions,
-	);
-	let kind = if template.is_some_and(|file| file.file_kind.as_str() == "events") {
-		StructuredJoinKind::Event
-	} else {
-		StructuredJoinKind::DefinitionModule
-	};
-	let statements = merge_structured_dag_join(&input, kind, policies)?;
-	Ok(MergedBranches {
-		statements,
-		intent_only_patches: Vec::new(),
-		pending_conflicts: Vec::new(),
-		merge_result: combined_result,
-	})
-}
-
-fn parent_view_for(args: ParentViewArgs<'_>) -> Result<ParentView, String> {
-	let ParentViewArgs {
-		mod_id,
-		file_dag,
-		base_statements,
-		template,
-		node_states,
-		merge_key_source,
-		policies,
-		handler,
-		dag_base_cache,
-		cache_context,
-		cache,
-		merge_result,
-	} = args;
-	let parents = file_dag.parents_of(mod_id);
-	let parent_set = parents.iter().cloned().collect::<BTreeSet<_>>();
-	if let Some(view) = cache.get(&parent_set) {
-		return Ok(view.clone());
 	}
-
-	let view = match parents {
-		[] => ParentView {
-			statements: base_statements.to_vec(),
-			intent_only_patches: Vec::new(),
-			pending_conflicts: Vec::new(),
-		},
-		[parent] => {
-			let state = node_states.get(parent).ok_or_else(|| {
-				format!(
-					"missing direct parent state {} for {}",
-					parent.as_str(),
-					mod_id.as_str()
-				)
-			})?;
-			ParentView {
-				statements: state.statements.clone(),
-				intent_only_patches: state.intent_only_patches.clone(),
-				pending_conflicts: state.pending_conflicts.clone(),
-			}
-		}
-		_ => {
-			let merged = merge_branch_states(BranchMergeArgs {
-				branch_ids: parents,
-				node_states,
-				base_statements,
-				template,
-				file_dag,
-				merge_key_source,
-				policies,
-				handler,
-				dag_base_cache,
-				cache_context,
-				parent_view_cache: cache,
-				kernel: MergeKernelMode::Legacy,
-				join_scope: DagJoinScope::Intermediate,
-				has_vanilla_base: false,
-			})?;
-			extend_merge_result(merge_result, merged.merge_result);
-			ParentView {
-				statements: merged.statements,
-				intent_only_patches: merged.intent_only_patches,
-				pending_conflicts: merged.pending_conflicts,
-			}
-		}
-	};
-	cache.insert(parent_set, view.clone());
-	Ok(view)
 }
 
 fn pending_after_direct_delta(
@@ -1360,12 +1102,6 @@ fn compute_dag_patches_from_parsed_with_caches(
 		kernel,
 	} = args;
 	let base_statements = final_base_statements(file_dag, vanilla);
-	let mut mod_patches = Vec::new();
-	let mut node_states: HashMap<ModId, EffectiveNodeState> = HashMap::new();
-	let mut parent_views_by_mod: HashMap<ModId, ParentView> = HashMap::new();
-	let mut parent_view_cache: BTreeMap<BTreeSet<ModId>, ParentView> = BTreeMap::new();
-	let mut seen_pending_conflicts = Vec::new();
-	let mut merge_result = PatchMergeResult::default();
 	let diff_cache_game_version = format!(
 		"parent-relative-v10 {game_version} kernel={} merge_key={merge_key_source:?} nested_merge_key={:?}",
 		kernel.as_str(),
@@ -1377,161 +1113,180 @@ fn compute_dag_patches_from_parsed_with_caches(
 		"parent-relative-v10 {game_version} kernel={} merge_key={merge_key_source:?} policies={policy_hash}",
 		kernel.as_str(),
 	);
-	let all_contributors: BTreeSet<ModId> = file_dag.contributors().iter().cloned().collect();
 	let template = template_for(file_dag, vanilla, contributors);
 	let PatchCaches {
 		diff: diff_cache,
 		dag_base: dag_base_cache,
 	} = caches;
-
-	for level in topo_levels(&all_contributors, file_dag) {
-		for mod_id in &level {
-			let parent_view = parent_view_for(ParentViewArgs {
-				mod_id,
+	let artifacts = match kernel {
+		MergeKernelMode::Legacy => {
+			let root = LegacyDagState {
+				statements: base_statements.clone(),
+				intent_only_patches: Vec::new(),
+				pending_conflicts: Vec::new(),
+			};
+			let mut protocol = LegacyDagProtocol {
 				file_dag,
 				base_statements: &base_statements,
 				template,
-				node_states: &node_states,
 				merge_key_source,
 				policies,
 				handler,
+				mod_hashes,
+				diff_cache,
 				dag_base_cache,
-				cache_context: &dag_base_game_version,
-				cache: &mut parent_view_cache,
-				merge_result: &mut merge_result,
-			})?;
-			extend_unique_conflicts(&mut seen_pending_conflicts, &parent_view.pending_conflicts);
-			parent_views_by_mod.insert(mod_id.clone(), parent_view.clone());
-			let current_base = synthesized_parsed_file(
+				diff_cache_context: diff_cache_game_version,
+				dag_base_cache_context: dag_base_game_version,
+				mod_patches: Vec::new(),
+				merge_result: PatchMergeResult::default(),
+				seen_pending_conflicts: Vec::new(),
+			};
+			let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
+			let DagPipelineResult {
+				final_state,
+				parent_states,
+				..
+			} = pipeline;
+			record_downstream_resolutions(
+				&mut protocol.merge_result,
+				&protocol.seen_pending_conflicts,
+				&final_state.pending_conflicts,
 				file_dag.file_path(),
-				template,
-				parent_view.statements.clone(),
 			);
-			let base_view_hash = hash_ast_statements(&current_base.ast.statements);
-			let current = contributors.get(mod_id).ok_or_else(|| {
+			protocol.merge_result.conflicts = final_state.pending_conflicts;
+			normalize_merge_result(&mut protocol.merge_result);
+			DagPipelineArtifacts {
+				mod_patches: protocol.mod_patches,
+				merged_statements: final_state.statements,
+				merge_result: protocol.merge_result,
+				parent_statements: parent_states
+					.into_iter()
+					.map(|(mod_id, state)| (mod_id, state.statements))
+					.collect(),
+			}
+		}
+		MergeKernelMode::Structured => {
+			let kind = if template.is_some_and(|file| file.file_kind.as_str() == "events") {
+				StructuredJoinKind::Event
+			} else {
+				StructuredJoinKind::DefinitionModule
+			};
+			let root = StructuredDagState {
+				statements: base_statements.clone(),
+			};
+			let mut protocol = StructuredDagProtocol::new(kind, policies, vanilla.is_some());
+			let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
+			let DagPipelineResult {
+				final_state,
+				parent_states,
+				..
+			} = pipeline;
+			let mod_patches = compute_structured_diagnostic_patches(
+				file_dag,
+				contributors,
+				&parent_states,
+				template,
+				merge_key_source,
+				policies,
+				mod_hashes,
+				diff_cache,
+				&diff_cache_game_version,
+			)?;
+			DagPipelineArtifacts {
+				mod_patches,
+				merged_statements: final_state.statements,
+				merge_result: PatchMergeResult::default(),
+				parent_statements: parent_states
+					.into_iter()
+					.map(|(mod_id, state)| (mod_id, state.statements))
+					.collect(),
+			}
+		}
+	};
+
+	let direct_definition_keys = compute_direct_definition_keys(&artifacts.mod_patches);
+	let definition_provenance = compute_definition_provenance(
+		&artifacts.merged_statements,
+		contributors,
+		file_dag,
+		&artifacts.mod_patches,
+		&direct_definition_keys,
+		&artifacts.parent_statements,
+	);
+	let definition_participants =
+		compute_definition_participants(&direct_definition_keys, file_dag);
+	Ok(DagPatchComputation {
+		mod_patches: artifacts.mod_patches,
+		base_statements,
+		merged_statements: artifacts.merged_statements,
+		merge_result: artifacts.merge_result,
+		definition_provenance,
+		definition_participants,
+	})
+}
+
+struct DagPipelineArtifacts {
+	mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
+	merged_statements: Vec<AstStatement>,
+	merge_result: PatchMergeResult,
+	parent_statements: HashMap<ModId, Vec<AstStatement>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_structured_diagnostic_patches(
+	file_dag: &FileDag,
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+	parent_states: &HashMap<ModId, StructuredDagState>,
+	template: Option<&ParsedScriptFile>,
+	merge_key_source: MergeKeySource,
+	policies: &MergePolicies,
+	mod_hashes: Option<&HashMap<ModId, String>>,
+	diff_cache: Option<&ModDiffCache>,
+	cache_context: &str,
+) -> Result<Vec<(String, usize, Vec<ClausewitzPatch>)>, String> {
+	// These deltas feed stale-vanilla, dependency-misuse, and provenance
+	// reporting only. Structured DAG state and joins never consume them.
+	let all_contributors = file_dag
+		.contributors()
+		.iter()
+		.cloned()
+		.collect::<BTreeSet<_>>();
+	let mut mod_patches = Vec::new();
+	for level in topo_levels(&all_contributors, file_dag) {
+		for mod_id in level {
+			let parent = parent_states.get(&mod_id).ok_or_else(|| {
 				format!(
-					"missing parsed contributor {} for {}",
+					"missing diagnostic parent state {} for {}",
 					mod_id.as_str(),
 					file_dag.file_path()
 				)
 			})?;
+			let current = contributors.get(&mod_id).ok_or_else(|| {
+				format!(
+					"missing diagnostic contributor {} for {}",
+					mod_id.as_str(),
+					file_dag.file_path()
+				)
+			})?;
+			let current_base =
+				synthesized_parsed_file(file_dag.file_path(), template, parent.statements.clone());
+			let base_view_hash = hash_ast_statements(&current_base.ast.statements);
 			let patches = cached_or_diff_patches(CachedDiffArgs {
 				cache: diff_cache,
 				target_path: file_dag.file_path(),
-				mod_hash: mod_hashes.and_then(|hashes| hashes.get(mod_id).map(String::as_str)),
+				mod_hash: mod_hashes.and_then(|hashes| hashes.get(&mod_id).map(String::as_str)),
 				base_view_hash: base_view_hash.as_deref(),
 				current_base: &current_base,
 				current,
 				merge_key_source,
 				nested_merge_key_source: policies.nested_merge_key_source,
-				game_version: &diff_cache_game_version,
+				game_version: cache_context,
 			});
-			let pending_conflicts =
-				pending_after_direct_delta(&parent_view.pending_conflicts, &patches);
-			let apply_hash = dag_base_cache
-				.and_then(|_| hash_dag_apply_input(&parent_view.statements, &patches));
-			let effective_statements = cached_or_apply_base(CachedApplyArgs {
-				cache: dag_base_cache,
-				deps_hash: apply_hash.as_deref(),
-				file_path: file_dag.file_path(),
-				current_statements: &parent_view.statements,
-				resolved_patches: &patches,
-				merge_key_source,
-				nested_merge_key_source: policies.nested_merge_key_source,
-				cache_scope: DagApplyCacheScope::EffectiveNode,
-				game_version: &dag_base_game_version,
-			});
-			let (_, intent_only_patches) = build_branch_patches(
-				file_dag.file_path(),
-				template,
-				&base_statements,
-				&effective_statements,
-				&parent_view.intent_only_patches,
-				&patches,
-				PatchKeySources {
-					root: merge_key_source,
-					nested: policies.nested_merge_key_source,
-				},
-			);
-			node_states.insert(
-				mod_id.clone(),
-				EffectiveNodeState {
-					statements: effective_statements,
-					source_statements: current.ast.statements.clone(),
-					intent_only_patches,
-					pending_conflicts,
-				},
-			);
-			mod_patches.push((mod_id.0.clone(), file_dag.precedence_of(mod_id), patches));
+			let precedence = file_dag.precedence_of(&mod_id);
+			mod_patches.push((mod_id.0, precedence, patches));
 		}
 	}
-
-	let sinks = sink_mods(file_dag);
-	if kernel == MergeKernelMode::Structured && sinks.len() != 2 {
-		return Err(format!(
-			"structured merge unsupported for {}: expected exactly two final sinks, found {}",
-			file_dag.file_path(),
-			sinks.len()
-		));
-	}
-	let (current_statements, final_pending_conflicts) = match sinks.as_slice() {
-		[] => (base_statements.clone(), Vec::new()),
-		[sink] => {
-			let state = node_states
-				.get(sink)
-				.ok_or_else(|| format!("missing final state for sink {}", sink.as_str()))?;
-			(state.statements.clone(), state.pending_conflicts.clone())
-		}
-		_ => {
-			let merged = merge_branch_states(BranchMergeArgs {
-				branch_ids: &sinks,
-				node_states: &node_states,
-				base_statements: &base_statements,
-				template,
-				file_dag,
-				merge_key_source,
-				policies,
-				handler,
-				dag_base_cache,
-				cache_context: &dag_base_game_version,
-				parent_view_cache: &mut parent_view_cache,
-				kernel,
-				join_scope: DagJoinScope::Final,
-				has_vanilla_base: vanilla.is_some(),
-			})?;
-			extend_unique_conflicts(&mut seen_pending_conflicts, &merged.pending_conflicts);
-			extend_merge_result(&mut merge_result, merged.merge_result);
-			(merged.statements, merged.pending_conflicts)
-		}
-	};
-	record_downstream_resolutions(
-		&mut merge_result,
-		&seen_pending_conflicts,
-		&final_pending_conflicts,
-		file_dag.file_path(),
-	);
-	merge_result.conflicts = final_pending_conflicts;
-	normalize_merge_result(&mut merge_result);
-
-	let direct_definition_keys = compute_direct_definition_keys(&mod_patches);
-	let definition_provenance = compute_definition_provenance(
-		&current_statements,
-		contributors,
-		file_dag,
-		&mod_patches,
-		&direct_definition_keys,
-		&parent_views_by_mod,
-	);
-	let definition_participants =
-		compute_definition_participants(&direct_definition_keys, file_dag);
-	Ok(DagPatchComputation {
-		mod_patches,
-		base_statements,
-		merged_statements: current_statements,
-		merge_result,
-		definition_provenance,
-		definition_participants,
-	})
+	Ok(mod_patches)
 }
 
 /// Canonical, span-free text signature of a single statement (used as a hashable
@@ -1825,7 +1580,7 @@ fn compute_definition_provenance(
 	file_dag: &FileDag,
 	mod_patches: &[(String, usize, Vec<ClausewitzPatch>)],
 	direct_definition_keys: &HashMap<ModId, BTreeSet<String>>,
-	parent_views: &HashMap<ModId, ParentView>,
+	parent_statements: &HashMap<ModId, Vec<AstStatement>>,
 ) -> BTreeMap<String, Vec<String>> {
 	let mut ordered: Vec<ModId> = file_dag.contributors().to_vec();
 	ordered.sort_by_key(|mod_id| file_dag.precedence_of(mod_id));
@@ -1852,11 +1607,11 @@ fn compute_definition_provenance(
 			let Some(parsed) = contributors.get(mod_id) else {
 				continue;
 			};
-			let Some(parent_view) = parent_views.get(mod_id) else {
+			let Some(parent) = parent_statements.get(mod_id) else {
 				continue;
 			};
 			let direct_survives = direct_definition_contribution_survives(
-				&parent_view.statements,
+				parent,
 				&parsed.ast.statements,
 				merged_statements,
 				key,
@@ -2453,6 +2208,69 @@ mod tests {
 				"{emitted}"
 			);
 		}
+	}
+
+	#[test]
+	fn structured_intermediate_join_never_falls_back_to_legacy() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec![], vec![]),
+			mod_with("c", "C", vec![], vec![]),
+			mod_with("join", "Join", vec!["A", "B", "C"], vec![]),
+			mod_with("right", "Right", vec![], vec![]),
+		];
+		let contributors = vec![
+			file_contributor("a", 0),
+			file_contributor("b", 1),
+			file_contributor("c", 2),
+			file_contributor("join", 3),
+			file_contributor("right", 4),
+		];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			"events/test.txt",
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let base = parsed_event_file(
+			"__game__",
+			"country_event = { id = demo.1 title = demo.title }\n",
+		);
+		let inventory = ["a", "b", "c", "join", "right"]
+			.into_iter()
+			.map(|mod_id| {
+				(
+					mid(mod_id),
+					parsed_event_file(
+						mod_id,
+						&format!(
+							"country_event = {{ id = demo.1 title = demo.title {mod_id} = yes }}\n"
+						),
+					),
+				)
+			})
+			.collect::<HashMap<_, _>>();
+		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+			.classify_content_family(Path::new("events/test.txt"))
+			.expect("events content family");
+		let mut handler = DeferHandler;
+
+		let error = compute_dag_patches_from_parsed_with_kernel(
+			&file_dag,
+			Some(&base),
+			&inventory,
+			descriptor.merge_key_source.expect("events merge key"),
+			&descriptor.merge_policies,
+			&mut handler,
+			MergeKernelMode::Structured,
+		)
+		.expect_err("three-way Structured protocol rejects a three-parent intermediate join");
+
+		assert!(error.contains("expected exactly two revisions"), "{error}");
+		assert!(!error.contains("legacy"), "{error}");
 	}
 
 	#[test]
