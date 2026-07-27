@@ -2,6 +2,7 @@ pub(crate) mod boolean;
 pub(crate) mod cwt_suggestions;
 pub(crate) mod error;
 pub(crate) mod execute;
+pub(crate) mod kernel;
 pub(crate) mod namespace;
 pub(crate) mod output;
 pub(crate) mod patch_engine;
@@ -17,6 +18,7 @@ pub use execute::{
 	AnalysisStatusView, MergeExecuteOptions, MergeExecutionResult, MergeStatusView,
 	run_merge_with_options, run_merge_with_options_and_kernel,
 };
+pub use kernel::MergeKernelMode;
 #[allow(unused_imports)]
 pub(crate) use output::{localisation_merge, materialize, stale_vanilla};
 pub(crate) use patch_engine::{normalize, patch, patch_apply, patch_merge};
@@ -27,6 +29,6 @@ pub use resolution::conflict_view::{CandidateView, ConflictView};
 pub(crate) use resolution::{conflict_handler, conflict_view, handler_registry};
 pub use structured::{
 	AstAdapterError, ClausewitzConflictSummary, ClausewitzDefinitionModuleOutcome,
-	ClausewitzMergeOutcome, ClausewitzMergeTimings, ClausewitzScalarReduction, MergeKernelMode,
+	ClausewitzMergeOutcome, ClausewitzMergeTimings, ClausewitzScalarReduction,
 	canonicalize_clausewitz_file, merge_clausewitz_definition_module, merge_clausewitz_files,
 };

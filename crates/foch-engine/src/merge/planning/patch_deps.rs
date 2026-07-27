@@ -24,10 +24,12 @@ use super::super::patch_merge::{
 use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
 };
+use super::dag_join::{DagJoinPlan, DagJoinScope, plan_dag_join, sink_mods};
+#[cfg(test)]
+use super::dag_join::{ancestry_metrics, reset_ancestry_metrics};
 use crate::cache::{DagBaseCache, ModDiffCache};
-use crate::merge::structured::{
-	MergeKernelMode, merge_clausewitz_definition_module, merge_event_files,
-};
+use crate::merge::kernel::{KernelMergeInput, KernelRevision, MergeKernelMode};
+use crate::merge::structured::{StructuredJoinKind, merge_structured_dag_join};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
@@ -162,18 +164,12 @@ struct BranchMergeArgs<'a> {
 	cache_context: &'a str,
 	parent_view_cache: &'a mut BTreeMap<BTreeSet<ModId>, ParentView>,
 	kernel: MergeKernelMode,
-	join_scope: BranchJoinScope,
+	join_scope: DagJoinScope,
 	has_vanilla_base: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum BranchJoinScope {
-	Intermediate,
-	Final,
-}
-
 struct StructuredFinalJoinArgs<'a> {
-	branch_ids: &'a [ModId],
+	join_plan: &'a DagJoinPlan,
 	node_states: &'a HashMap<ModId, EffectiveNodeState>,
 	shared_view: &'a ParentView,
 	template: Option<&'a ParsedScriptFile>,
@@ -181,6 +177,20 @@ struct StructuredFinalJoinArgs<'a> {
 	combined_result: PatchMergeResult,
 	policies: &'a MergePolicies,
 	has_vanilla_base: bool,
+}
+
+struct LegacyBranchJoinArgs<'a> {
+	join_plan: &'a DagJoinPlan,
+	node_states: &'a HashMap<ModId, EffectiveNodeState>,
+	shared_view: ParentView,
+	template: Option<&'a ParsedScriptFile>,
+	file_dag: &'a FileDag,
+	merge_key_source: MergeKeySource,
+	policies: &'a MergePolicies,
+	handler: &'a mut dyn ConflictHandler,
+	dag_base_cache: Option<&'a DagBaseCache>,
+	cache_context: &'a str,
+	combined_result: PatchMergeResult,
 }
 
 struct ParentViewArgs<'a> {
@@ -200,63 +210,9 @@ struct ParentViewArgs<'a> {
 
 #[cfg(test)]
 std::thread_local! {
-		static ANCESTRY_METRICS: std::cell::Cell<AncestryMetrics> = const {
-			std::cell::Cell::new(AncestryMetrics {
-				work_units: 0,
-				coverage_word_unions: 0,
-				peak_transient_nodes: 0,
-			})
-	};
 	static DAG_APPLY_CACHE_EVENTS: std::cell::RefCell<Vec<DagApplyCacheEvent>> = const {
 		std::cell::RefCell::new(Vec::new())
 	};
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Default)]
-struct AncestryMetrics {
-	work_units: usize,
-	coverage_word_unions: usize,
-	peak_transient_nodes: usize,
-}
-
-#[cfg(test)]
-fn record_ancestry_work(steps: usize, transient_nodes: usize) {
-	ANCESTRY_METRICS.with(|metrics| {
-		let mut current = metrics.get();
-		current.work_units += steps;
-		current.peak_transient_nodes = current.peak_transient_nodes.max(transient_nodes);
-		metrics.set(current);
-	});
-}
-
-#[cfg(test)]
-fn record_coverage_word_unions(words: usize, transient_nodes: usize) {
-	ANCESTRY_METRICS.with(|metrics| {
-		let mut current = metrics.get();
-		current.work_units += words;
-		current.coverage_word_unions += words;
-		current.peak_transient_nodes = current.peak_transient_nodes.max(transient_nodes);
-		metrics.set(current);
-	});
-}
-
-#[cfg(not(test))]
-#[inline]
-fn record_ancestry_work(_steps: usize, _transient_nodes: usize) {}
-
-#[cfg(not(test))]
-#[inline]
-fn record_coverage_word_unions(_words: usize, _transient_nodes: usize) {}
-
-#[cfg(test)]
-fn reset_ancestry_metrics() {
-	ANCESTRY_METRICS.with(|metrics| metrics.set(AncestryMetrics::default()));
-}
-
-#[cfg(test)]
-fn ancestry_metrics() -> AncestryMetrics {
-	ANCESTRY_METRICS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
@@ -896,132 +852,6 @@ fn extend_unique_conflicts(target: &mut Vec<PatchResolution>, source: &[PatchRes
 	}
 }
 
-/// Maximal nodes present in every branch ancestry. The union ancestry is walked
-/// once, then compact branch-coverage bitsets flow from tips to parents. For
-/// `k` branches this costs `O(V + E * ceil(k / 64))` time and
-/// `O(V * ceil(k / 64))` transient storage; no effective node state retains
-/// ancestry after the join is resolved.
-fn common_frontier(branch_ids: &[ModId], file_dag: &FileDag) -> Result<Vec<ModId>, String> {
-	let mut ordered = branch_ids.to_vec();
-	ordered.sort_by(|left, right| {
-		file_dag
-			.precedence_of(left)
-			.cmp(&file_dag.precedence_of(right))
-			.then_with(|| left.cmp(right))
-	});
-	ordered.dedup();
-	if ordered.is_empty() {
-		return Ok(Vec::new());
-	}
-
-	let mut ancestor_nodes = BTreeSet::new();
-	let mut stack = ordered.clone();
-	while let Some(candidate) = stack.pop() {
-		if !ancestor_nodes.insert(candidate.clone()) {
-			continue;
-		}
-		for parent in file_dag.parents_of(&candidate).iter().rev() {
-			stack.push(parent.clone());
-		}
-		record_ancestry_work(1, ancestor_nodes.len() + stack.len());
-	}
-
-	let mut remaining_children = ancestor_nodes
-		.iter()
-		.cloned()
-		.map(|node| (node, 0usize))
-		.collect::<HashMap<_, _>>();
-	for child in &ancestor_nodes {
-		for parent in file_dag.parents_of(child) {
-			if let Some(child_count) = remaining_children.get_mut(parent) {
-				*child_count += 1;
-			}
-		}
-	}
-
-	let word_count = ordered.len().div_ceil(u64::BITS as usize);
-	let mut full_coverage = vec![u64::MAX; word_count];
-	let final_word_bits = ordered.len() % u64::BITS as usize;
-	if final_word_bits != 0 {
-		full_coverage[word_count - 1] = (1_u64 << final_word_bits) - 1;
-	}
-	let mut coverage: HashMap<ModId, Vec<u64>> = HashMap::new();
-	for (branch_index, branch_id) in ordered.iter().enumerate() {
-		coverage
-			.entry(branch_id.clone())
-			.or_insert_with(|| vec![0; word_count])[branch_index / u64::BITS as usize] |=
-			1_u64 << (branch_index % u64::BITS as usize);
-	}
-
-	let mut ready = remaining_children
-		.iter()
-		.filter(|(_, child_count)| **child_count == 0)
-		.map(|(node, _)| (file_dag.precedence_of(node), node.clone()))
-		.collect::<BTreeSet<_>>();
-	record_ancestry_work(
-		0,
-		ancestor_nodes.len() + remaining_children.len() + coverage.len() * word_count,
-	);
-	let mut common = BTreeSet::new();
-	let mut processed = 0;
-	let traversal_node_units = ancestor_nodes.len() + remaining_children.len();
-	while let Some((_, node)) = ready.pop_first() {
-		let node_coverage = coverage
-			.remove(&node)
-			.unwrap_or_else(|| vec![0; word_count]);
-		if node_coverage == full_coverage {
-			common.insert(node.clone());
-		}
-		for parent in file_dag.parents_of(&node) {
-			let Some(child_count) = remaining_children.get_mut(parent) else {
-				continue;
-			};
-			{
-				let parent_coverage = coverage
-					.entry(parent.clone())
-					.or_insert_with(|| vec![0; word_count]);
-				for (parent_word, node_word) in parent_coverage.iter_mut().zip(&node_coverage) {
-					*parent_word |= node_word;
-				}
-			}
-			record_coverage_word_unions(
-				word_count,
-				traversal_node_units + coverage.len() * word_count,
-			);
-			*child_count -= 1;
-			if *child_count == 0 {
-				ready.insert((file_dag.precedence_of(parent), parent.clone()));
-			}
-		}
-		processed += 1;
-	}
-	if processed != ancestor_nodes.len() {
-		return Err(format!(
-			"dependency cycle while resolving shared ancestry for {}",
-			file_dag.file_path()
-		));
-	}
-
-	let mut inherited = BTreeSet::new();
-	for candidate in &common {
-		record_ancestry_work(1, common.len() + inherited.len());
-		for parent in file_dag.parents_of(candidate) {
-			record_ancestry_work(1, common.len() + inherited.len());
-			if common.contains(parent) {
-				inherited.insert(parent.clone());
-			}
-		}
-	}
-	let mut frontier = common.difference(&inherited).cloned().collect::<Vec<_>>();
-	frontier.sort_by(|left, right| {
-		file_dag
-			.precedence_of(left)
-			.cmp(&file_dag.precedence_of(right))
-			.then_with(|| left.cmp(right))
-	});
-	Ok(frontier)
-}
-
 fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, String> {
 	let BranchMergeArgs {
 		branch_ids,
@@ -1040,8 +870,8 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 		has_vanilla_base,
 	} = args;
 	let mut combined_result = PatchMergeResult::default();
-	let shared_frontier = common_frontier(branch_ids, file_dag)?;
-	let shared_view = match shared_frontier.as_slice() {
+	let join_plan = plan_dag_join(branch_ids, file_dag, join_scope)?;
+	let shared_view = match join_plan.shared_frontier() {
 		[] => ParentView {
 			statements: base_statements.to_vec(),
 			intent_only_patches: Vec::new(),
@@ -1057,7 +887,7 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 			})?;
 			ParentView {
 				statements: if kernel == MergeKernelMode::Structured
-					&& join_scope == BranchJoinScope::Final
+					&& join_plan.scope() == DagJoinScope::Final
 				{
 					state.source_statements.clone()
 				} else {
@@ -1068,12 +898,16 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 			}
 		}
 		_ => {
-			let cache_key = shared_frontier.iter().cloned().collect::<BTreeSet<_>>();
+			let cache_key = join_plan
+				.shared_frontier()
+				.iter()
+				.cloned()
+				.collect::<BTreeSet<_>>();
 			if let Some(cached) = parent_view_cache.get(&cache_key) {
 				cached.clone()
 			} else {
 				let merged = merge_branch_states(BranchMergeArgs {
-					branch_ids: &shared_frontier,
+					branch_ids: join_plan.shared_frontier(),
 					node_states,
 					base_statements,
 					template,
@@ -1085,7 +919,7 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 					cache_context,
 					parent_view_cache,
 					kernel: MergeKernelMode::Legacy,
-					join_scope: BranchJoinScope::Intermediate,
+					join_scope: DagJoinScope::Intermediate,
 					has_vanilla_base,
 				})?;
 				extend_merge_result(&mut combined_result, merged.merge_result);
@@ -1099,9 +933,9 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 			}
 		}
 	};
-	if kernel == MergeKernelMode::Structured && join_scope == BranchJoinScope::Final {
+	if kernel == MergeKernelMode::Structured && join_plan.scope() == DagJoinScope::Final {
 		return merge_structured_final_join(StructuredFinalJoinArgs {
-			branch_ids,
+			join_plan: &join_plan,
 			node_states,
 			shared_view: &shared_view,
 			template,
@@ -1112,18 +946,40 @@ fn merge_branch_states(args: BranchMergeArgs<'_>) -> Result<MergedBranches, Stri
 		});
 	}
 
+	merge_legacy_branch_join(LegacyBranchJoinArgs {
+		join_plan: &join_plan,
+		node_states,
+		shared_view,
+		template,
+		file_dag,
+		merge_key_source,
+		policies,
+		handler,
+		dag_base_cache,
+		cache_context,
+		combined_result,
+	})
+}
+
+fn merge_legacy_branch_join(args: LegacyBranchJoinArgs<'_>) -> Result<MergedBranches, String> {
+	let LegacyBranchJoinArgs {
+		join_plan,
+		node_states,
+		shared_view,
+		template,
+		file_dag,
+		merge_key_source,
+		policies,
+		handler,
+		dag_base_cache,
+		cache_context,
+		mut combined_result,
+	} = args;
 	let mut pending_conflicts = Vec::new();
 	let mut all_intent_only = Vec::new();
 	let mut frontier_addresses = BTreeSet::new();
-	let mut ordered_branch_ids = branch_ids.to_vec();
-	ordered_branch_ids.sort_by(|left, right| {
-		file_dag
-			.precedence_of(left)
-			.cmp(&file_dag.precedence_of(right))
-			.then_with(|| left.cmp(right))
-	});
-	let mut patch_sets = Vec::with_capacity(ordered_branch_ids.len());
-	for branch_id in &ordered_branch_ids {
+	let mut patch_sets = Vec::with_capacity(join_plan.ordered_branches().len());
+	for branch_id in join_plan.ordered_branches() {
 		let state = node_states.get(branch_id).ok_or_else(|| {
 			format!(
 				"missing effective state for branch {} of {}",
@@ -1217,7 +1073,7 @@ fn merge_structured_final_join(
 	args: StructuredFinalJoinArgs<'_>,
 ) -> Result<MergedBranches, String> {
 	let StructuredFinalJoinArgs {
-		branch_ids,
+		join_plan,
 		node_states,
 		shared_view,
 		template,
@@ -1226,14 +1082,13 @@ fn merge_structured_final_join(
 		policies,
 		has_vanilla_base,
 	} = args;
-	if branch_ids.len() != 2 {
+	if join_plan.ordered_branches().len() != 2 {
 		return Err(format!(
 			"structured merge unsupported for {}: expected exactly two final sinks, found {}",
 			file_dag.file_path(),
-			branch_ids.len()
+			join_plan.ordered_branches().len()
 		));
 	}
-	let is_event = template.is_some_and(|file| file.file_kind.as_str() == "events");
 	if !has_vanilla_base || shared_view.statements.is_empty() {
 		return Err(format!(
 			"structured merge unsupported for {}: a non-empty vanilla base is required",
@@ -1242,97 +1097,53 @@ fn merge_structured_final_join(
 	}
 	if !shared_view.pending_conflicts.is_empty() || !shared_view.intent_only_patches.is_empty() {
 		return Err(format!(
-			"structured merge unsupported for {}: the shared base contains unresolved legacy state",
-			file_dag.file_path()
-		));
-	}
-
-	let mut ordered = branch_ids.to_vec();
-	ordered.sort_by(|left, right| {
-		file_dag
-			.precedence_of(left)
-			.cmp(&file_dag.precedence_of(right))
-			.then_with(|| left.cmp(right))
-	});
-	let left = node_states.get(&ordered[0]).ok_or_else(|| {
-		format!(
-			"missing structured left state {} for {}",
-			ordered[0].as_str(),
-			file_dag.file_path()
-		)
-	})?;
-	let right = node_states.get(&ordered[1]).ok_or_else(|| {
-		format!(
-			"missing structured right state {} for {}",
-			ordered[1].as_str(),
-			file_dag.file_path()
-		)
-	})?;
-	if !left.pending_conflicts.is_empty()
-		|| !right.pending_conflicts.is_empty()
-		|| !left.intent_only_patches.is_empty()
-		|| !right.intent_only_patches.is_empty()
-	{
-		return Err(format!(
-			"structured merge unsupported for {}: a final sink contains unresolved legacy state",
+			"structured merge unsupported for {}: the shared base contains unresolved patch state",
 			file_dag.file_path()
 		));
 	}
 
 	let path = PathBuf::from(file_dag.file_path());
-	let base_ast = AstFile {
-		path: path.clone(),
-		statements: shared_view.statements.clone(),
-	};
-	let left_ast = AstFile {
-		path: path.clone(),
-		statements: left.source_statements.clone(),
-	};
-	let right_ast = AstFile {
-		path,
-		statements: right.source_statements.clone(),
-	};
-	let statements = if is_event {
-		let outcome = merge_event_files(&base_ast, &left_ast, &right_ast, policies)
-			.map_err(|error| format!("structured merge adapter failed: {error}"))?;
-		if !outcome.conflicts().is_empty() {
-			let conflicts = serde_json::to_string(outcome.conflicts())
-				.unwrap_or_else(|_| format!("{:?}", outcome.conflicts()));
-			return Err(format!(
-				"structured merge conflict for {}: {conflicts}",
-				file_dag.file_path()
-			));
-		}
-		outcome
-			.resolved_ast()
-			.expect("conflict-free structured event outcome exposes an AST")
-			.statements
-			.clone()
+	let revisions = join_plan
+		.ordered_branches()
+		.iter()
+		.map(|branch_id| {
+			let state = node_states.get(branch_id).ok_or_else(|| {
+				format!(
+					"missing structured revision state {} for {}",
+					branch_id.as_str(),
+					file_dag.file_path()
+				)
+			})?;
+			if !state.pending_conflicts.is_empty() || !state.intent_only_patches.is_empty() {
+				return Err(format!(
+					"structured merge unsupported for {}: revision {} contains unresolved patch state",
+					file_dag.file_path(),
+					branch_id.as_str()
+				));
+			}
+			Ok(KernelRevision {
+				source_id: branch_id.0.clone(),
+				precedence: file_dag.precedence_of(branch_id),
+				ast: AstFile {
+					path: path.clone(),
+					statements: state.source_statements.clone(),
+				},
+			})
+		})
+		.collect::<Result<Vec<_>, String>>()?;
+	let input = KernelMergeInput::new(
+		AstFile {
+			path,
+			statements: shared_view.statements.clone(),
+		},
+		revisions,
+	);
+	let kind = if template.is_some_and(|file| file.file_kind.as_str() == "events") {
+		StructuredJoinKind::Event
 	} else {
-		let outcome =
-			merge_clausewitz_definition_module(&base_ast, &left_ast, &right_ast, policies)
-				.map_err(|error| format!("structured module adapter failed: {error}"))?;
-		eprintln!(
-			"[structured-module] final join {} base_definitions={} active_definitions={} copy_through_definitions={} structured_definitions={}",
-			file_dag.file_path(),
-			outcome.base_definitions(),
-			outcome.active_definitions(),
-			outcome.copy_through_definitions(),
-			outcome.structured_definitions(),
-		);
-		if !outcome.conflicts().is_empty() {
-			return Err(format!(
-				"structured merge conflict for {}: {:?}",
-				file_dag.file_path(),
-				outcome.conflicts(),
-			));
-		}
-		outcome
-			.resolved_ast()
-			.expect("conflict-free structured module outcome exposes an AST")
-			.statements
-			.clone()
+		StructuredJoinKind::DefinitionModule
 	};
+	let statements = merge_structured_dag_join(&input, kind, policies)?;
 	Ok(MergedBranches {
 		statements,
 		intent_only_patches: Vec::new(),
@@ -1396,7 +1207,7 @@ fn parent_view_for(args: ParentViewArgs<'_>) -> Result<ParentView, String> {
 				cache_context,
 				parent_view_cache: cache,
 				kernel: MergeKernelMode::Legacy,
-				join_scope: BranchJoinScope::Intermediate,
+				join_scope: DagJoinScope::Intermediate,
 				has_vanilla_base: false,
 			})?;
 			extend_merge_result(merge_result, merged.merge_result);
@@ -1436,20 +1247,6 @@ fn logical_conflict_key(key: &str) -> &str {
 	key.strip_prefix("__list_item__::")
 		.and_then(|rest| rest.split_once("::").map(|(logical_key, _)| logical_key))
 		.unwrap_or(key)
-}
-
-fn sink_mods(file_dag: &FileDag) -> Vec<ModId> {
-	let non_sinks = file_dag
-		.contributors()
-		.iter()
-		.flat_map(|mod_id| file_dag.parents_of(mod_id).iter().cloned())
-		.collect::<HashSet<_>>();
-	file_dag
-		.contributors()
-		.iter()
-		.filter(|mod_id| !non_sinks.contains(*mod_id))
-		.cloned()
-		.collect()
 }
 
 fn record_downstream_resolutions(
@@ -1699,7 +1496,7 @@ fn compute_dag_patches_from_parsed_with_caches(
 				cache_context: &dag_base_game_version,
 				parent_view_cache: &mut parent_view_cache,
 				kernel,
-				join_scope: BranchJoinScope::Final,
+				join_scope: DagJoinScope::Final,
 				has_vanilla_base: vanilla.is_some(),
 			})?;
 			extend_unique_conflicts(&mut seen_pending_conflicts, &merged.pending_conflicts);

@@ -30,7 +30,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use super::structured::MergeKernelMode;
+use super::kernel::MergeKernelMode;
 
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
