@@ -1,10 +1,9 @@
 use super::content_family::{
-	BlockMergePolicy, BlockPatchPolicy, BooleanMergePolicy, ConflictPolicy,
-	ContentFamilyCapabilities, ContentFamilyDescriptor, ContentFamilyPathMatcher,
-	ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy, DefinitionFileOrder,
-	DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
-	GameId, GameProfile, ListMergePolicy, MergeKeySource, ModuleNameRule, OneSidedRemovalPolicy,
-	ScalarMergePolicy, ScalarReducerRule,
+	BlockMergePolicy, BlockPatchPolicy, ConflictPolicy, ContentFamilyCapabilities,
+	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentFamilyScopePolicy, ContentLoadPolicy,
+	CwtType, DedupPolicy, DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput,
+	DefinitionModulePolicy, DuplicateDefinitionPolicy, GameId, GameProfile, ListMergePolicy,
+	MergeKeySource, ModuleNameRule, OneSidedRemovalPolicy, ScalarMergePolicy, ScalarReducerRule,
 };
 use super::eu4_builtin::builtin_base_scope_names;
 use foch_core::model::{MaybeScope, ScopeType, base_scope};
@@ -16,8 +15,11 @@ pub struct Eu4Profile;
 
 static EU4_PROFILE: Eu4Profile = Eu4Profile;
 
+const GLOBAL_COLONIAL_GROWTH_REDUCER: ScalarReducerRule =
+	ScalarReducerRule::new(&["global_colonial_growth"], ScalarMergePolicy::Max);
+const AGES_SCALAR_REDUCER_RULES: &[ScalarReducerRule] = &[GLOBAL_COLONIAL_GROWTH_REDUCER];
 const TRADEGOODS_SCALAR_REDUCER_RULES: &[ScalarReducerRule] = &[
-	ScalarReducerRule::new(&["global_colonial_growth"], ScalarMergePolicy::Max),
+	GLOBAL_COLONIAL_GROWTH_REDUCER,
 	ScalarReducerRule::new(&["province_trade_power_modifier"], ScalarMergePolicy::Avg),
 ];
 
@@ -240,7 +242,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.merge_key(MergeKeySource::ContainerChildKey)
 				.scalar_policy(ScalarMergePolicy::LastWriter)
-				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("events", "events/")
 				.kind(CwtType::new("events"))
@@ -258,7 +259,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.list_policy(ListMergePolicy::UnionWithRename)
 				.one_sided_removal_policy(OneSidedRemovalPolicy::PreserveAdditiveStructure)
-				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("decisions", "decisions/")
 				.kind(CwtType::new("decisions"))
@@ -269,7 +269,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.merge_key(MergeKeySource::ContainerChildKey)
 				.scalar_policy(ScalarMergePolicy::LastWriter)
-				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/scripted_effects", "common/scripted_effects/")
 				.kind(CwtType::new("scripted_effects"))
@@ -440,7 +439,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.scalar_policy(ScalarMergePolicy::Sum)
-				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/government_mechanics",
@@ -697,7 +695,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			.capabilities(semantic_complete_and_merge_ready())
 			.merge_key(MergeKeySource::AssignmentKey)
 			.scalar_policy(ScalarMergePolicy::Sum)
-			.boolean_policy(BooleanMergePolicy::And)
 			.build(),
 			ContentFamilyDescriptor::prefix("common/estate_action", "common/estate_action/")
 				.module_name(ModuleNameRule::Static("estate_action"))
@@ -761,6 +758,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(scope(base_scope::country()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.scalar_reducer_rules(AGES_SCALAR_REDUCER_RULES)
 				.list_policy(ListMergePolicy::OrderedUnion)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/buildings", "common/buildings/")
@@ -824,7 +822,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			.capabilities(semantic_complete_and_merge_ready())
 			.merge_key(MergeKeySource::AssignmentKey)
 			.list_policy(ListMergePolicy::Replace)
-			.boolean_policy(BooleanMergePolicy::And)
 			.build(),
 			ContentFamilyDescriptor::prefix("common/cultures", "common/cultures/")
 				.kind(CwtType::new("cultures"))
@@ -861,7 +858,6 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
 				.list_policy(ListMergePolicy::Replace)
-				.boolean_policy(BooleanMergePolicy::And)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/government_names", "common/government_names/")
 				.kind(CwtType::new("government_names"))
@@ -1503,16 +1499,34 @@ mod tests {
 	}
 
 	#[test]
-	fn ages_do_not_sum_every_scalar() {
+	fn ages_use_only_the_colonial_growth_numeric_reducer() {
 		let descriptor = eu4_profile()
 			.classify_content_family(Path::new("common/ages/00_default.txt"))
 			.expect("ages descriptor");
+		let policies = &descriptor.merge_policies;
 
+		assert_eq!(policies.scalar, ScalarMergePolicy::Conflict);
 		assert_eq!(
-			descriptor.merge_policies.scalar,
-			ScalarMergePolicy::Conflict
+			policies
+				.scalar_reducer_rule_for_path(&[
+					"age_of_discovery",
+					"abilities",
+					"ab_portugal_colonial_growth",
+					"modifier",
+					"global_colonial_growth",
+				])
+				.expect("growth reducer")
+				.reducer,
+			ScalarMergePolicy::Max
 		);
-		assert!(descriptor.merge_policies.scalar_reducer_rules.is_empty());
+		for protected in ["amount", "date", "id"] {
+			assert!(
+				policies
+					.scalar_reducer_rule_for_path(&["age_of_discovery", protected])
+					.is_none(),
+				"{protected} unexpectedly received a reducer"
+			);
+		}
 	}
 
 	#[test]

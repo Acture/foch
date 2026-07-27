@@ -186,10 +186,10 @@ pub enum BlockMergePolicy {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BooleanMergePolicy {
-	/// Combine conditions with AND semantics (both must hold).
-	#[default]
+	/// Combine complete revision predicates with AND semantics (both must hold).
 	And,
-	/// Combine conditions with OR semantics (either holds).
+	/// Combine complete revision predicates with OR semantics (either may hold).
+	#[default]
 	Or,
 	/// Overlay replaces base entirely.
 	Replace,
@@ -868,7 +868,7 @@ impl ContentFamilyDescriptor {
 				list: ListMergePolicy::Union,
 				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
-				boolean: BooleanMergePolicy::And,
+				boolean: BooleanMergePolicy::Or,
 				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::Conflict,
@@ -905,7 +905,7 @@ impl ContentFamilyDescriptor {
 				list: ListMergePolicy::Union,
 				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
-				boolean: BooleanMergePolicy::And,
+				boolean: BooleanMergePolicy::Or,
 				block_patch: BlockPatchPolicy::Recurse,
 				block_patch_policies: &[],
 				named_container: NamedContainerPolicy::Conflict,
@@ -1029,7 +1029,9 @@ mod dedup_policy_tests {
 
 #[cfg(test)]
 mod tests {
-	use super::{ContentFamilyId, CwtType};
+	use super::{
+		BooleanMergePolicy, ContentFamilyDescriptor, ContentFamilyId, CwtType, MergePolicies,
+	};
 	use std::collections::hash_map::DefaultHasher;
 	use std::hash::{Hash, Hasher};
 	use std::sync::Arc;
@@ -1056,6 +1058,18 @@ mod tests {
 		right.hash(&mut right_hasher);
 
 		assert_eq!(left_hasher.finish(), right_hasher.finish());
+	}
+
+	#[test]
+	fn boolean_merge_defaults_to_or_across_revisions() {
+		assert_eq!(MergePolicies::default().boolean, BooleanMergePolicy::Or);
+		assert_eq!(
+			ContentFamilyDescriptor::prefix("test", "common/test/")
+				.build()
+				.merge_policies
+				.boolean,
+			BooleanMergePolicy::Or
+		);
 	}
 }
 

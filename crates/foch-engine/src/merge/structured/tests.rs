@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy, ScalarReducerRule,
+	BlockPatchPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
+	ScalarReducerRule,
 };
+use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
 use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
 
@@ -11,10 +13,16 @@ use crate::emit::emit_clausewitz_statements;
 
 use super::ast_adapter::{denormalize_ast, normalize_ast};
 use super::policy::DefaultClausewitzTreePolicy;
-use super::{merge_clausewitz_files, merge_event_files};
+use super::{ClausewitzScalarReduction, merge_clausewitz_files, merge_event_files};
 
 fn parse(source: &str) -> AstFile {
 	let parsed = parse_clausewitz_content(PathBuf::from("events/test.txt"), source);
+	assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+	parsed.ast
+}
+
+fn parse_at(path: &str, source: &str) -> AstFile {
+	let parsed = parse_clausewitz_content(PathBuf::from(path), source);
 	assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 	parsed.ast
 }
@@ -165,6 +173,96 @@ fn structured_boolean_or_flattens_and_deduplicates_disjuncts() {
 		1,
 		"{output}"
 	);
+}
+
+#[test]
+fn structured_trigger_containers_or_complete_revision_predicates() {
+	let base = parse_at(
+		"common/ages/00_default.txt",
+		"age_of_reformation = {\n\
+		\tobjectives = {\n\
+		\t\tobj_colonial_empire = {\n\
+		\t\t\tcalc_true_if = {\n\
+		\t\t\t\tamount = 5\n\
+		\t\t\t\tall_subject_country = { is_colonial_nation = yes }\n\
+		\t\t\t}\n\
+		\t\t}\n\
+		\t}\n\
+		}\n",
+	);
+	let left = parse_at(
+		"common/ages/00_default.txt",
+		"age_of_reformation = {\n\
+		\tobjectives = {\n\
+		\t\tobj_colonial_empire = {\n\
+		\t\t\tif = {\n\
+		\t\t\t\tlimit = { is_expanded_mod_active = { mod = subjects } }\n\
+		\t\t\t\tcalc_true_if = {\n\
+		\t\t\t\t\tamount = 5\n\
+		\t\t\t\t\tall_subject_country = { is_colonial_nation = yes }\n\
+		\t\t\t\t}\n\
+		\t\t\t}\n\
+		\t\t\telse = { colony = 5 }\n\
+		\t\t}\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse_at(
+		"common/ages/00_default.txt",
+		"age_of_reformation = {\n\
+		\tobjectives = {\n\
+		\t\tobj_colonial_empire = { colony = 5 }\n\
+		\t}\n\
+		}\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("trigger merge resolves"));
+	assert!(
+		output.contains("obj_colonial_empire = {\n\t\t\tOR = {"),
+		"{output}"
+	);
+	assert!(output.contains("AND = {"), "{output}");
+	assert!(output.contains("is_expanded_mod_active = {"), "{output}");
+	assert!(output.contains("calc_true_if = {"), "{output}");
+	assert!(!output.contains("\tif = {"), "{output}");
+	assert!(!output.contains("\telse = {"), "{output}");
+	assert_eq!(output.matches("colony = 5").count(), 1, "{output}");
+}
+
+#[test]
+fn structured_trigger_simplifier_preserves_open_conditionals() {
+	let base = parse_at(
+		"common/ages/00_default.txt",
+		"age = { objectives = { objective = { always = yes } } }\n",
+	);
+	let left = parse_at(
+		"common/ages/00_default.txt",
+		"age = {\n\
+		\tobjectives = {\n\
+		\t\tobjective = {\n\
+		\t\t\tif = {\n\
+		\t\t\t\tlimit = { has_dlc = demo }\n\
+		\t\t\t\thas_country_flag = left\n\
+		\t\t\t}\n\
+		\t\t}\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse_at(
+		"common/ages/00_default.txt",
+		"age = { objectives = { objective = { colony = 5 } } }\n",
+	);
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default()).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("trigger merge resolves"));
+	assert!(output.contains("OR = {"), "{output}");
+	assert!(output.contains("\t\t\t\tif = {"), "{output}");
+	assert!(output.contains("colony = 5"), "{output}");
 }
 
 #[test]
@@ -811,8 +909,10 @@ fn event_merge_preserves_the_assignment_value_slot_when_blocks_diverge() {
 		"country_event = {\n\
 		\tid = demo.1\n\
 		\ttrigger = {\n\
-		\t\tleft_only = yes\n\
-		\t\tright_only = yes\n\
+		\t\tOR = {\n\
+		\t\t\tleft_only = yes\n\
+		\t\t\tright_only = yes\n\
+		\t\t}\n\
 		\t}\n\
 		}\n"
 	);
@@ -1415,6 +1515,54 @@ fn structured_merge_applies_path_scoped_numeric_reducers_with_provenance() {
 			"province_trade_power_modifier".to_string(),
 		]) && reduction.output == ".15"
 	}));
+}
+
+#[test]
+fn eu4_ages_reducer_retains_the_stronger_value_against_a_one_sided_change() {
+	let source = |value: &str| {
+		parse_at(
+			"common/ages/00_default.txt",
+			&format!(
+				"age_of_discovery = {{\n\
+				\tabilities = {{\n\
+				\t\tab_portugal_colonial_growth = {{\n\
+				\t\t\tmodifier = {{ global_colonial_growth = {value} }}\n\
+				\t\t}}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let base = source("50");
+	let left = source("50");
+	let right = source("35");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from("common/ages/00_default.txt").as_path())
+		.expect("ages descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("numeric reducer resolves"));
+	assert!(output.contains("global_colonial_growth = 50"), "{output}");
+	assert!(!output.contains("global_colonial_growth = 35"), "{output}");
+	assert_eq!(
+		outcome.scalar_reductions(),
+		vec![ClausewitzScalarReduction {
+			path: vec![
+				"age_of_discovery".to_string(),
+				"abilities".to_string(),
+				"ab_portugal_colonial_growth".to_string(),
+				"modifier".to_string(),
+				"global_colonial_growth".to_string(),
+			],
+			inputs: vec![
+				(foch_merge_kernel::RevisionId::LEFT, "50".to_string()),
+				(foch_merge_kernel::RevisionId::RIGHT, "35".to_string()),
+			],
+			output: "50".to_string(),
+		}]
+	);
 }
 
 #[test]

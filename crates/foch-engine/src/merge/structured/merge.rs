@@ -1,9 +1,13 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 
+use foch_core::model::ScopeKind;
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
+	BlockPatchPolicy, BooleanMergePolicy, CwtType, MergePolicies, OneSidedRemovalPolicy,
+	ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
+use foch_language::analyzer::semantic_index::{classify_script_file, script_container_scope_kind};
 use foch_merge_kernel::{
 	ChildSetContext, ConflictKind, DeleteModifyContext, DeleteUnchangedContext, MergeOutcome,
 	MergePolicy, NodeConflictContext, PolicyDecision, RevisionId, SourceSet, StructuralConflict,
@@ -140,12 +144,13 @@ pub fn canonicalize_clausewitz_file(
 	policies: &MergePolicies,
 ) -> Result<AstFile, AstAdapterError> {
 	let policy = DefaultClausewitzTreePolicy;
-	let canonical = canonicalize_boolean_or_definitions(file, policies);
+	let mut scope_cache = HashMap::new();
+	let canonical = canonicalize_boolean_or_definitions(file, policies, &mut scope_cache);
 	let (semantic, trivia) = detach_trivia(&canonical);
 	let tree = normalize_ast(&semantic, &policy)?;
 	let mut canonical = denormalize_ast(file.path.clone(), &tree)?;
 	attach_trivia(&mut canonical, &trivia);
-	simplify_boolean_or_definitions(&mut canonical, policies);
+	simplify_boolean_or_definitions(&mut canonical, policies, &mut scope_cache);
 	Ok(canonical)
 }
 
@@ -157,9 +162,10 @@ fn merge_clausewitz_files_inner(
 	reduce_event_fallbacks: bool,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
 	let policy = DefaultClausewitzTreePolicy;
-	let base = canonicalize_boolean_or_definitions(base, policies);
-	let left = canonicalize_boolean_or_definitions(left, policies);
-	let right = canonicalize_boolean_or_definitions(right, policies);
+	let mut scope_cache = HashMap::new();
+	let base = canonicalize_boolean_or_definitions(base, policies, &mut scope_cache);
+	let left = canonicalize_boolean_or_definitions(left, policies, &mut scope_cache);
+	let right = canonicalize_boolean_or_definitions(right, policies, &mut scope_cache);
 	let (base, base_trivia) = detach_trivia(&base);
 	let (left, left_trivia) = detach_trivia(&left);
 	let (right, right_trivia) = detach_trivia(&right);
@@ -212,7 +218,7 @@ fn merge_clausewitz_files_inner(
 		});
 	}
 	attach_trivia(&mut tentative_ast, &merged_trivia);
-	simplify_boolean_or_definitions(&mut tentative_ast, policies);
+	simplify_boolean_or_definitions(&mut tentative_ast, policies, &mut scope_cache);
 	if reduce_event_fallbacks {
 		reduce_redundant_constructor_fallbacks(&mut tentative_ast.statements);
 	}
@@ -222,42 +228,178 @@ fn merge_clausewitz_files_inner(
 	})
 }
 
-fn canonicalize_boolean_or_definitions(file: &AstFile, policies: &MergePolicies) -> AstFile {
+fn canonicalize_boolean_or_definitions(
+	file: &AstFile,
+	policies: &MergePolicies,
+	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
+) -> AstFile {
 	let mut file = file.clone();
-	for statement in &mut file.statements {
-		let AstStatement::Assignment {
-			key,
-			value: AstValue::Block { items, .. },
-			..
-		} = statement
-		else {
-			continue;
-		};
-		if policies.block_patch_policy_for_key(key) == BlockPatchPolicy::BooleanOr
-			&& !items.is_empty()
-		{
-			*items = canonical_boolean_or_body(std::mem::take(items));
-		}
+	let file_kind = classify_script_file(&file.path);
+	BooleanConditionTransformer {
+		file_path: &file.path,
+		file_kind: &file_kind,
+		policies,
+		transform: BooleanTransform::Canonicalize,
+		scope_cache,
 	}
+	.transform(&mut file.statements, &mut Vec::new(), ScriptContext::Data);
 	file
 }
 
-fn simplify_boolean_or_definitions(file: &mut AstFile, policies: &MergePolicies) {
-	for statement in &mut file.statements {
-		let AstStatement::Assignment {
-			key,
-			value: AstValue::Block { items, .. },
-			..
-		} = statement
-		else {
-			continue;
-		};
-		if policies.block_patch_policy_for_key(key) == BlockPatchPolicy::BooleanOr
-			&& !items.is_empty()
-		{
-			*items = simplify_boolean_or_body(std::mem::take(items));
+fn simplify_boolean_or_definitions(
+	file: &mut AstFile,
+	policies: &MergePolicies,
+	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
+) {
+	let file_kind = classify_script_file(&file.path);
+	BooleanConditionTransformer {
+		file_path: &file.path,
+		file_kind: &file_kind,
+		policies,
+		transform: BooleanTransform::Simplify,
+		scope_cache,
+	}
+	.transform(&mut file.statements, &mut Vec::new(), ScriptContext::Data);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScriptContext {
+	Data,
+	Trigger,
+	Effect,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BooleanTransform {
+	Canonicalize,
+	Simplify,
+}
+
+struct BooleanConditionTransformer<'a> {
+	file_path: &'a Path,
+	file_kind: &'a CwtType,
+	policies: &'a MergePolicies,
+	transform: BooleanTransform,
+	scope_cache: &'a mut HashMap<Vec<String>, Option<ScopeKind>>,
+}
+
+impl BooleanConditionTransformer<'_> {
+	fn transform(
+		&mut self,
+		statements: &mut [AstStatement],
+		path: &mut Vec<String>,
+		parent_context: ScriptContext,
+	) {
+		for statement in statements {
+			let AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} = statement
+			else {
+				continue;
+			};
+
+			path.push(key.clone());
+			let scope_kind = *self.scope_cache.entry(path.clone()).or_insert_with(|| {
+				let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
+				script_container_scope_kind(
+					self.file_kind.clone(),
+					self.file_path,
+					path_refs.as_slice(),
+				)
+			});
+			let context = script_context(parent_context, key, scope_kind);
+			let configured_definition = path.len() == 1
+				&& self.policies.block_patch_policy_for_key(key) == BlockPatchPolicy::BooleanOr;
+			let trigger_root = configured_definition
+				|| (self.policies.boolean == BooleanMergePolicy::Or
+					&& context == ScriptContext::Trigger
+					&& parent_context != context
+					&& !is_boolean_operator(key));
+
+			self.transform(
+				items,
+				path,
+				if configured_definition {
+					ScriptContext::Trigger
+				} else {
+					context
+				},
+			);
+			if trigger_root && !items.is_empty() {
+				*items = match self.transform {
+					BooleanTransform::Canonicalize => {
+						canonical_boolean_or_body(std::mem::take(items))
+					}
+					BooleanTransform::Simplify => {
+						let simplified = simplify_boolean_or_body(std::mem::take(items));
+						super::control_flow::simplify_merged_trigger_predicate(&simplified)
+							.unwrap_or(simplified)
+					}
+				};
+			}
+			path.pop();
 		}
 	}
+}
+
+fn script_context(
+	parent: ScriptContext,
+	key: &str,
+	scope_kind: Option<ScopeKind>,
+) -> ScriptContext {
+	let normalized = key.to_ascii_lowercase();
+	if matches!(
+		normalized.as_str(),
+		"trigger" | "limit" | "potential" | "allow" | "condition" | "hidden_trigger"
+	) || is_boolean_operator(&normalized)
+	{
+		return ScriptContext::Trigger;
+	}
+	if matches!(
+		normalized.as_str(),
+		"effect"
+			| "after" | "hidden_effect"
+			| "immediate"
+			| "on_add"
+			| "on_remove"
+			| "on_start"
+			| "on_end"
+			| "on_monthly"
+			| "country_event"
+			| "province_event"
+			| "option"
+	) {
+		return ScriptContext::Effect;
+	}
+	if matches!(normalized.as_str(), "if" | "else_if" | "else") {
+		return match parent {
+			ScriptContext::Data => ScriptContext::Trigger,
+			other => other,
+		};
+	}
+
+	match scope_kind {
+		Some(ScopeKind::Trigger) => ScriptContext::Trigger,
+		Some(ScopeKind::Effect | ScopeKind::ScriptedEffect | ScopeKind::Event) => {
+			ScriptContext::Effect
+		}
+		Some(
+			ScopeKind::File
+			| ScopeKind::Decision
+			| ScopeKind::Loop
+			| ScopeKind::AliasBlock
+			| ScopeKind::Block,
+		)
+		| None => parent,
+	}
+}
+
+fn is_boolean_operator(key: &str) -> bool {
+	["or", "and", "not", "nor", "nand"]
+		.iter()
+		.any(|operator| key.eq_ignore_ascii_case(operator))
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -243,6 +243,28 @@ struct GuardAtoms {
 	atoms: BTreeMap<String, GuardAtom>,
 }
 
+#[derive(Clone, Copy)]
+enum PredicateJoin {
+	And,
+	Or,
+}
+
+impl PredicateJoin {
+	fn identity(self) -> Formula {
+		match self {
+			Self::And => Formula::true_value(),
+			Self::Or => Formula::false_value(),
+		}
+	}
+
+	fn combine(self, left: &Formula, right: &Formula) -> Result<Formula, AstAdapterError> {
+		match self {
+			Self::And => left.and(right),
+			Self::Or => left.or(right),
+		}
+	}
+}
+
 impl GuardAtoms {
 	fn formula_for_items(
 		&mut self,
@@ -313,6 +335,103 @@ impl GuardAtoms {
 		}
 	}
 
+	fn predicate_formula_for_items(
+		&mut self,
+		items: &[AstStatement],
+		scopes: &[String],
+	) -> Result<Formula, AstAdapterError> {
+		self.predicate_formula_for_sequence(items, scopes, PredicateJoin::And)
+	}
+
+	fn predicate_formula_for_sequence(
+		&mut self,
+		items: &[AstStatement],
+		scopes: &[String],
+		join: PredicateJoin,
+	) -> Result<Formula, AstAdapterError> {
+		let mut result = join.identity();
+		let mut cursor = 0;
+		while cursor < items.len() {
+			let statement = &items[cursor];
+			let (predicate, next) = if starts_chain(statement) {
+				self.predicate_formula_for_chain(items, cursor, scopes)?
+			} else {
+				if branch_key(statement).is_some() {
+					return Err(AstAdapterError::UnprovableControlFlow(
+						"orphan branch in trigger predicate".to_string(),
+					));
+				}
+				(
+					self.predicate_formula_for_statement(statement, scopes)?,
+					cursor + 1,
+				)
+			};
+			result = join.combine(&result, &predicate)?;
+			cursor = next;
+		}
+		Ok(result)
+	}
+
+	fn predicate_formula_for_statement(
+		&mut self,
+		statement: &AstStatement,
+		scopes: &[String],
+	) -> Result<Formula, AstAdapterError> {
+		let AstStatement::Assignment {
+			key,
+			value: AstValue::Block { items, .. },
+			..
+		} = statement
+		else {
+			return Ok(self.atom_formula(scopes, statement));
+		};
+		match key.as_str() {
+			"AND" => self.predicate_formula_for_sequence(items, scopes, PredicateJoin::And),
+			"OR" => self.predicate_formula_for_sequence(items, scopes, PredicateJoin::Or),
+			"NOT" | "NAND" => self
+				.predicate_formula_for_sequence(items, scopes, PredicateJoin::And)?
+				.not(),
+			"NOR" => self
+				.predicate_formula_for_sequence(items, scopes, PredicateJoin::Or)?
+				.not(),
+			_ if items.len() == 1 => {
+				let mut nested_scopes = scopes.to_vec();
+				nested_scopes.push(key.clone());
+				self.predicate_formula_for_statement(&items[0], &nested_scopes)
+			}
+			_ => Ok(self.atom_formula(scopes, statement)),
+		}
+	}
+
+	fn predicate_formula_for_chain(
+		&mut self,
+		items: &[AstStatement],
+		start: usize,
+		scopes: &[String],
+	) -> Result<(Formula, usize), AstAdapterError> {
+		let (cases, next, complete) = extract_raw_cases(items, start, self)?;
+		if !complete {
+			return Err(AstAdapterError::UnprovableControlFlow(
+				"open trigger conditional cannot be simplified".to_string(),
+			));
+		}
+
+		let mut coverage = Formula::false_value();
+		let mut result = Formula::false_value();
+		for case in cases {
+			let effective_guard = match &case.guard {
+				Some(guard) => guard.and(&coverage.not()?)?,
+				None => coverage.not()?,
+			};
+			let predicate = self.predicate_formula_for_items(&case.effect_items, scopes)?;
+			result = result.or(&effective_guard.and(&predicate)?)?;
+			if let Some(guard) = &case.guard {
+				coverage = coverage.or(guard)?;
+			}
+		}
+		Ok((result, next))
+	}
+
 	fn atom_formula(&mut self, scopes: &[String], statement: &AstStatement) -> Formula {
 		let key = format!("{}{}", scopes.join("/"), statement_key(statement));
 		self.atoms.entry(key.clone()).or_insert_with(|| GuardAtom {
@@ -323,6 +442,28 @@ impl GuardAtoms {
 	}
 
 	fn formula_items(&self, formula: &Formula) -> Result<Vec<AstStatement>, AstAdapterError> {
+		Ok(vec![block_assignment(
+			"OR",
+			self.formula_disjuncts(formula)?,
+		)])
+	}
+
+	fn predicate_items(&self, formula: &Formula) -> Result<Vec<AstStatement>, AstAdapterError> {
+		let mut disjuncts = self.formula_disjuncts(formula)?;
+		if disjuncts.len() != 1 {
+			return Ok(vec![block_assignment("OR", disjuncts)]);
+		}
+		match disjuncts.pop().expect("single disjunct checked") {
+			AstStatement::Assignment {
+				key,
+				value: AstValue::Block { items, .. },
+				..
+			} if key == "AND" => Ok(items),
+			statement => Ok(vec![statement]),
+		}
+	}
+
+	fn formula_disjuncts(&self, formula: &Formula) -> Result<Vec<AstStatement>, AstAdapterError> {
 		let disjuncts = if formula.is_false() {
 			vec![bool_assignment("always", false)]
 		} else {
@@ -344,7 +485,7 @@ impl GuardAtoms {
 				})
 				.collect::<Result<Vec<_>, AstAdapterError>>()?
 		};
-		Ok(vec![block_assignment("OR", disjuncts)])
+		Ok(disjuncts)
 	}
 
 	fn literal_statement(
@@ -364,6 +505,68 @@ impl GuardAtoms {
 		}
 		Ok(statement)
 	}
+}
+
+pub(super) fn simplify_merged_trigger_predicate(
+	items: &[AstStatement],
+) -> Option<Vec<AstStatement>> {
+	let [
+		AstStatement::Assignment {
+			key,
+			value: AstValue::Block {
+				items: disjuncts, ..
+			},
+			..
+		},
+	] = items
+	else {
+		return None;
+	};
+	if key != "OR"
+		|| disjuncts.len() < 2
+		|| contains_comment(disjuncts)
+		|| !contains_control_flow(disjuncts)
+	{
+		return None;
+	}
+
+	let mut atoms = GuardAtoms::default();
+	let formula = atoms.predicate_formula_for_items(items, &[]).ok()?;
+	atoms.predicate_items(&formula).ok()
+}
+
+fn contains_comment(items: &[AstStatement]) -> bool {
+	items.iter().any(|statement| match statement {
+		AstStatement::Comment { .. } => true,
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		}
+		| AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => contains_comment(items),
+		AstStatement::Assignment { .. } | AstStatement::Item { .. } => false,
+	})
+}
+
+fn contains_control_flow(items: &[AstStatement]) -> bool {
+	items.iter().any(|statement| {
+		starts_chain(statement)
+			|| match statement {
+				AstStatement::Assignment {
+					value: AstValue::Block { items, .. },
+					..
+				}
+				| AstStatement::Item {
+					value: AstValue::Block { items, .. },
+					..
+				} => contains_control_flow(items),
+				AstStatement::Assignment { .. }
+				| AstStatement::Item { .. }
+				| AstStatement::Comment { .. } => false,
+			}
+	})
 }
 
 #[derive(Clone)]

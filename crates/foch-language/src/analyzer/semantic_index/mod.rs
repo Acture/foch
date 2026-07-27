@@ -44,9 +44,9 @@ pub struct ParsedScriptFile {
 
 use parse_cache::parse_clausewitz_file_cached;
 pub use scope_rules::{
-	cwt_file_kind_container_scope_kind, cwt_iterator_scope_type, cwt_scope_changer_target_type,
-	cwt_special_block_scope_kind, iterator_scope_type, scope_changer_target_type,
-	special_block_scope_kind,
+	cwt_file_kind_container_scope_kind, cwt_iterator_scope_type, cwt_path_container_scope_kind,
+	cwt_scope_changer_target_type, cwt_special_block_scope_kind, iterator_scope_type,
+	scope_changer_target_type, special_block_scope_kind,
 };
 use scope_rules::{
 	hand_container_scope_fallback, is_country_file_reference, is_country_tag_selector,
@@ -212,6 +212,20 @@ fn eu4_cwt_schema_graph() -> Option<&'static CwtSchemaGraph> {
 	EU4_CWT_SCHEMA_GRAPH
 		.get_or_init(load_eu4_cwt_schema_graph)
 		.as_ref()
+}
+
+/// Resolve the semantic role of a concrete script block in the active EU4 CWT schema.
+pub fn script_container_scope_kind(
+	file_kind: CwtType,
+	file_path: &Path,
+	ast_path: &[&str],
+) -> Option<ScopeKind> {
+	let key = *ast_path.last()?;
+	eu4_cwt_schema_graph()
+		.and_then(|graph| {
+			cwt_path_container_scope_kind(graph, file_kind.clone(), file_path, ast_path)
+		})
+		.or_else(|| hand_container_scope_fallback(file_kind, key))
 }
 
 fn load_eu4_cwt_schema_graph() -> Option<CwtSchemaGraph> {
@@ -1314,6 +1328,11 @@ fn create_child_scope(
 	let mut kind = ScopeKind::Block;
 	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
+	let cwt_path_scope_kind = ctx.cwt_schema_graph.and_then(|graph| {
+		let path = scope_assignment_path(index, parent_scope_id, key);
+		let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
+		cwt_path_container_scope_kind(graph, ctx.file_kind.clone(), ctx.path, path_refs.as_slice())
+	});
 
 	if is_on_actions_callback_root(ctx.file_kind.clone(), parent_scope_id, index, key) {
 		kind = ScopeKind::Effect;
@@ -1344,10 +1363,12 @@ fn create_child_scope(
 			| "on_monthly"
 	) {
 		kind = ScopeKind::Effect;
-	} else if let Some(file_kind_scope_kind) = ctx.cwt_schema_graph.map_or_else(
-		|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
-		|graph| cwt_file_kind_container_scope_kind(graph, ctx.file_kind.clone(), key),
-	) {
+	} else if let Some(file_kind_scope_kind) = cwt_path_scope_kind.or_else(|| {
+		ctx.cwt_schema_graph.map_or_else(
+			|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
+			|graph| cwt_file_kind_container_scope_kind(graph, ctx.file_kind.clone(), key),
+		)
+	}) {
 		kind = file_kind_scope_kind;
 	} else if let Some(semantics) = effect_context_semantics {
 		match semantics {
@@ -1481,6 +1502,25 @@ fn create_child_scope(
 		line: span.start.line,
 		key,
 	})
+}
+
+fn scope_assignment_path(
+	index: &SemanticIndex,
+	mut parent_scope_id: usize,
+	key: &str,
+) -> Vec<String> {
+	let mut path = vec![key.to_string()];
+	while let Some(scope) = index.scopes.get(parent_scope_id) {
+		if !scope.key.is_empty() {
+			path.push(scope.key.clone());
+		}
+		let Some(parent) = scope.parent else {
+			break;
+		};
+		parent_scope_id = parent;
+	}
+	path.reverse();
+	path
 }
 
 fn nearest_conditional_context_kind(

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::super::content_family::CwtType;
 use super::super::eu4_builtin::is_builtin_effect;
 use foch_core::model::{ScopeKind, ScopeType, base_scope};
@@ -315,6 +317,72 @@ pub fn cwt_file_kind_container_scope_kind(
 		return Some(kind);
 	}
 	cwt_derived_container_scope_kind(graph, file_kind, key)
+}
+
+/// Resolve a block's script role from its concrete CWT path.
+///
+/// Unlike [`cwt_file_kind_container_scope_kind`], this follows the active
+/// schema branch and therefore handles dynamic keys such as age objective ids.
+pub fn cwt_path_container_scope_kind(
+	graph: &CwtSchemaGraph,
+	file_kind: CwtType,
+	file_path: &Path,
+	ast_path: &[&str],
+) -> Option<ScopeKind> {
+	let key = *ast_path.last()?;
+	if let Some(kind) = hand_container_scope_fallback(file_kind, key) {
+		return Some(kind);
+	}
+
+	for candidate_path in [
+		ast_path,
+		ast_path.get(1..).expect("non-empty AST path has a suffix"),
+	] {
+		if let Some(BindContext::RuleField(field)) = graph.bind_context(file_path, candidate_path)
+			&& let Some(kind) = cwt_container_field_scope_kind(graph, field)
+		{
+			return Some(kind);
+		}
+	}
+
+	let parent_path = &ast_path[..ast_path.len() - 1];
+	let parent = if parent_path.is_empty() {
+		BindContext::RootType(graph.bind_root(file_path)?)
+	} else {
+		graph.bind_context(file_path, parent_path).or_else(|| {
+			graph.bind_context(
+				file_path,
+				parent_path
+					.get(1..)
+					.expect("non-empty parent path has a suffix"),
+			)
+		})?
+	};
+	if let Some(field_match) = graph.bind_field_match(parent, key) {
+		if let Some(alias) = field_match.alias()
+			&& let Some(kind) = cwt_alias_category_scope_kind(graph, &alias.category)
+		{
+			return Some(kind);
+		}
+		return cwt_container_field_scope_kind(graph, field_match.field());
+	}
+	cwt_dynamic_child_scope_kind(graph, parent)
+}
+
+fn cwt_dynamic_child_scope_kind(
+	graph: &CwtSchemaGraph,
+	parent: BindContext<'_>,
+) -> Option<ScopeKind> {
+	let BindContext::RuleField(parent) = parent else {
+		return None;
+	};
+	let CwtRuleValue::Block(fields) = &parent.value else {
+		return None;
+	};
+	fields
+		.iter()
+		.find(|field| field.key == "localisation")
+		.and_then(|field| cwt_container_field_scope_kind(graph, field))
 }
 
 fn is_legacy_container_scope_key(file_kind: &str, key: &str) -> bool {
@@ -908,8 +976,11 @@ pub fn looks_like_map_group_key(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-	use super::iterator_scope_type;
-	use foch_core::model::base_scope;
+	use std::path::Path;
+
+	use super::{cwt_path_container_scope_kind, iterator_scope_type};
+	use crate::analyzer::content_family::CwtType;
+	use foch_core::model::{ScopeKind, base_scope};
 
 	#[test]
 	fn iterator_scope_type_classifies_known_iterators() {
@@ -943,5 +1014,31 @@ mod tests {
 		for key in ["", "not_an_iterator", "owner", "any_known_country_xyz"] {
 			assert_eq!(iterator_scope_type(key), None, "{key}");
 		}
+	}
+
+	#[test]
+	fn cwt_path_classifies_dynamic_age_objectives_as_triggers() {
+		let graph = super::super::eu4_cwt_schema_graph().expect("EU4 CWT schema");
+		let file = Path::new("common/ages/00_default.txt");
+		let file_kind = CwtType::new("ages");
+
+		assert_eq!(
+			cwt_path_container_scope_kind(
+				graph,
+				file_kind.clone(),
+				file,
+				&["age_of_reformation", "objectives"],
+			),
+			Some(ScopeKind::Block),
+		);
+		assert_eq!(
+			cwt_path_container_scope_kind(
+				graph,
+				file_kind,
+				file,
+				&["age_of_reformation", "objectives", "obj_colonial_empire",],
+			),
+			Some(ScopeKind::Trigger),
+		);
 	}
 }

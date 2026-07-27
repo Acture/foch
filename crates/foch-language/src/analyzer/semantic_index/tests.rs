@@ -3379,6 +3379,34 @@ trigger = {
 }
 
 #[test]
+fn age_objective_definitions_use_trigger_scope() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let ages_dir = mod_root.join("common").join("ages");
+	fs::create_dir_all(&ages_dir).expect("create ages");
+	let path = ages_dir.join("ages.txt");
+	fs::write(
+		&path,
+		"age_of_reformation = {\n\
+		\tobjectives = {\n\
+		\t\tobj_colonial_empire = { colony = 5 }\n\
+		\t}\n\
+		}\n",
+	)
+	.expect("write ages");
+
+	let parsed = parse_script_file("1002", &mod_root, &path).expect("parse ages");
+	let index = build_semantic_index(&[parsed]);
+	let objective = index
+		.scopes
+		.iter()
+		.find(|scope| scope.key == "obj_colonial_empire")
+		.expect("objective scope");
+
+	assert_eq!(objective.kind, ScopeKind::Trigger);
+}
+
+#[test]
 fn mislocated_dsl_paths_reuse_existing_semantics() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");
