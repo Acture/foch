@@ -1,14 +1,19 @@
+use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
 use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read};
+use std::io::{self, ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
 
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 const OBJECT_MARKER: &str = ".foch-object.json";
 const HASH_FORMAT: &str = "foch-tree-v1";
+const VERIFICATION_CACHE_DIR: &str = "object-verification-v1";
+const VERIFICATION_CACHE_SCHEMA: &str = "1.0.0";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TreeStats {
@@ -45,10 +50,18 @@ pub struct ExportedArchive {
 	pub bytes: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+struct VerificationStamp {
+	schema: String,
+	object_hash: String,
+	metadata_hash: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct ObjectStore {
 	root: PathBuf,
 	work: PathBuf,
+	verified: Arc<Mutex<HashMap<String, StoredObject>>>,
 }
 
 impl ObjectStore {
@@ -56,6 +69,7 @@ impl ObjectStore {
 		Self {
 			root: root.into(),
 			work: work.into(),
+			verified: Arc::new(Mutex::new(HashMap::new())),
 		}
 	}
 
@@ -78,6 +92,78 @@ impl ObjectStore {
 			));
 		}
 		Ok(opened)
+	}
+
+	/// Verify an object once per store instance, then reuse its immutable path.
+	///
+	/// A command must keep one store alive for the full measurement so shared
+	/// source objects are not rehashed for every snapshot.
+	pub fn verify_once(&self, hash: &str) -> io::Result<StoredObject> {
+		if let Some(object) = self
+			.verified
+			.lock()
+			.map_err(|_| io::Error::other("object verification cache is poisoned"))?
+			.get(hash)
+			.cloned()
+		{
+			return Ok(object);
+		}
+		let opened = self.open_object(hash)?;
+		let metadata_hash = metadata_digest_tree(&opened.tree)?;
+		let stamp_path = self.verification_stamp_path(hash)?;
+		let stamp_matches = fs::read(&stamp_path)
+			.ok()
+			.and_then(|bytes| serde_json::from_slice::<VerificationStamp>(&bytes).ok())
+			.is_some_and(|stamp| {
+				stamp.schema == VERIFICATION_CACHE_SCHEMA
+					&& stamp.object_hash == hash
+					&& stamp.metadata_hash == metadata_hash
+			});
+		let object = if stamp_matches {
+			opened
+		} else {
+			let verified = self.verify_object(hash)?;
+			let verified_metadata_hash = metadata_digest_tree(&verified.tree)?;
+			if verified_metadata_hash != metadata_hash {
+				return Err(io::Error::new(
+					ErrorKind::InvalidData,
+					format!("stored object {hash} changed during verification"),
+				));
+			}
+			self.write_verification_stamp(hash, &verified_metadata_hash)?;
+			verified
+		};
+		self.verified
+			.lock()
+			.map_err(|_| io::Error::other("object verification cache is poisoned"))?
+			.insert(hash.to_string(), object.clone());
+		Ok(object)
+	}
+
+	fn verification_stamp_path(&self, hash: &str) -> io::Result<PathBuf> {
+		validate_hash(hash)?;
+		Ok(self
+			.work
+			.join(VERIFICATION_CACHE_DIR)
+			.join(format!("{hash}.json")))
+	}
+
+	fn write_verification_stamp(&self, hash: &str, metadata_hash: &str) -> io::Result<()> {
+		let path = self.verification_stamp_path(hash)?;
+		let parent = path.parent().expect("verification stamp path has a parent");
+		fs::create_dir_all(parent)?;
+		let mut pending = tempfile::NamedTempFile::new_in(parent)?;
+		let stamp = VerificationStamp {
+			schema: VERIFICATION_CACHE_SCHEMA.to_string(),
+			object_hash: hash.to_string(),
+			metadata_hash: metadata_hash.to_string(),
+		};
+		let bytes = serde_json::to_vec_pretty(&stamp).map_err(io::Error::other)?;
+		pending.write_all(&bytes)?;
+		pending
+			.persist(&path)
+			.map_err(|error| error.error)
+			.map(|_| ())
 	}
 
 	/// Open an immutable, committed object by validating its marker and tree path.
@@ -144,12 +230,17 @@ impl ObjectStore {
 		write_marker(staging.path(), &source_digest)?;
 
 		match fs::rename(staging.path(), &object_dir) {
-			Ok(()) => Ok(StoredObject {
-				hash: source_digest.hash,
-				tree: object_dir.join("tree"),
-				stats: source_digest.stats,
-				newly_stored: true,
-			}),
+			Ok(()) => {
+				let object = StoredObject {
+					hash: source_digest.hash,
+					tree: object_dir.join("tree"),
+					stats: source_digest.stats,
+					newly_stored: true,
+				};
+				let metadata_hash = metadata_digest_tree(&object.tree)?;
+				self.write_verification_stamp(&object.hash, &metadata_hash)?;
+				Ok(object)
+			}
 			Err(_err) if object_dir.exists() => self.verify_existing(&source_digest, &object_dir),
 			Err(err) => Err(err),
 		}
@@ -209,12 +300,15 @@ impl ObjectStore {
 				format!("stored object {} is corrupt", expected.hash),
 			));
 		}
-		Ok(StoredObject {
+		let object = StoredObject {
 			hash: expected.hash.clone(),
 			tree,
 			stats: expected.stats.clone(),
 			newly_stored: false,
-		})
+		};
+		let metadata_hash = metadata_digest_tree(&object.tree)?;
+		self.write_verification_stamp(&object.hash, &metadata_hash)?;
+		Ok(object)
 	}
 }
 
@@ -288,6 +382,41 @@ pub fn digest_tree(root: &Path) -> io::Result<TreeDigest> {
 		hash: hasher.finalize().to_hex().to_string(),
 		stats,
 	})
+}
+
+fn metadata_digest_tree(root: &Path) -> io::Result<String> {
+	let entries = collect_entries(root)?;
+	let mut hasher = blake3::Hasher::new();
+	hasher.update(VERIFICATION_CACHE_SCHEMA.as_bytes());
+	for entry in entries {
+		hasher.update(&(entry.key.len() as u64).to_le_bytes());
+		hasher.update(&entry.key);
+		let metadata = fs::symlink_metadata(&entry.absolute)?;
+		let modified = metadata
+			.modified()?
+			.duration_since(UNIX_EPOCH)
+			.map_err(io::Error::other)?;
+		hasher.update(&modified.as_secs().to_le_bytes());
+		hasher.update(&modified.subsec_nanos().to_le_bytes());
+		match entry.kind {
+			EntryKind::Directory => {
+				hasher.update(b"D");
+			}
+			EntryKind::File => {
+				hasher.update(b"F");
+				hasher.update(&metadata.len().to_le_bytes());
+				hasher.update(&[executable_bit(&metadata)]);
+			}
+			EntryKind::Symlink => {
+				hasher.update(b"L");
+				let target = fs::read_link(&entry.absolute)?;
+				let target_bytes = path_bytes(&target);
+				hasher.update(&(target_bytes.len() as u64).to_le_bytes());
+				hasher.update(&target_bytes);
+			}
+		}
+	}
+	Ok(hasher.finalize().to_hex().to_string())
 }
 
 fn collect_entries(root: &Path) -> io::Result<Vec<TreeEntry>> {
@@ -652,6 +781,10 @@ mod tests {
 		assert_eq!(store.open_object(&object.hash).unwrap().hash, object.hash);
 		assert_eq!(
 			store.verify_object(&object.hash).unwrap_err().kind(),
+			ErrorKind::InvalidData
+		);
+		assert_eq!(
+			store.verify_once(&object.hash).unwrap_err().kind(),
 			ErrorKind::InvalidData
 		);
 	}

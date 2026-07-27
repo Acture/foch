@@ -22,6 +22,12 @@ pub(crate) struct CrossFileModuleViews {
 	pub contributors: HashMap<ModId, ParsedScriptFile>,
 }
 
+#[derive(Clone, Debug)]
+struct VisibleModuleFile {
+	layer_ordinal: usize,
+	parsed: ParsedScriptFile,
+}
+
 pub(crate) fn build_cross_file_module_views(
 	entry: &MergePlanEntry,
 	workspace: &ResolvedWorkspace,
@@ -50,7 +56,13 @@ pub(crate) fn build_cross_file_module_views(
 			}
 			let parsed = parse_contributor(contributor, &workspace.script_cache)?;
 			if contributor.is_base_game {
-				base_files.insert(input_path.clone(), parsed);
+				base_files.insert(
+					input_path.clone(),
+					VisibleModuleFile {
+						layer_ordinal: 0,
+						parsed,
+					},
+				);
 				base_representative.get_or_insert_with(|| contributor.clone());
 				continue;
 			}
@@ -112,7 +124,7 @@ pub(crate) fn build_cross_file_module_views(
 		}) {
 			visible.clear();
 		}
-		for candidate in mod_dag.topo() {
+		for (layer_ordinal, candidate) in mod_dag.topo().iter().enumerate() {
 			if candidate != mod_id && (!ancestors.contains(candidate) || !file_dag.ships(candidate))
 			{
 				continue;
@@ -122,7 +134,13 @@ pub(crate) fn build_cross_file_module_views(
 			}
 			if let Some(owned_files) = files_by_mod.get(candidate) {
 				for (path, parsed) in owned_files {
-					visible.insert(path.clone(), parsed.clone());
+					visible.insert(
+						path.clone(),
+						VisibleModuleFile {
+							layer_ordinal: layer_ordinal + 1,
+							parsed: parsed.clone(),
+						},
+					);
 				}
 			}
 		}
@@ -396,11 +414,14 @@ fn fold_visible_module_files(
 	mod_id: &str,
 	module_name: &str,
 	policy: DefinitionModulePolicy,
-	visible_files: &BTreeMap<String, ParsedScriptFile>,
+	visible_files: &BTreeMap<String, VisibleModuleFile>,
 ) -> Result<ParsedScriptFile, String> {
 	let inputs = visible_files
 		.iter()
-		.map(|(path, file)| DefinitionModuleInput::new(Path::new(path), file))
+		.map(|(path, file)| {
+			DefinitionModuleInput::new(Path::new(path), &file.parsed)
+				.with_layer_ordinal(file.layer_ordinal)
+		})
 		.collect::<Vec<_>>();
 	let canonical = load_definition_module(&inputs, policy)
 		.map_err(|error| format!("failed to load definition module: {error:?}"))?;
@@ -408,7 +429,7 @@ fn fold_visible_module_files(
 	let mut parsed = visible_files
 		.values()
 		.next()
-		.cloned()
+		.map(|file| file.parsed.clone())
 		.unwrap_or_else(|| ParsedScriptFile {
 			mod_id: mod_id.to_string(),
 			path: output_path.clone(),
@@ -434,7 +455,10 @@ fn fold_visible_module_files(
 
 #[cfg(test)]
 mod tests {
-	use super::{effective_module_policy, fold_visible_module_files, validate_module_target};
+	use super::{
+		VisibleModuleFile, effective_module_policy, fold_visible_module_files,
+		validate_module_target,
+	};
 	use crate::merge::MergeKernelMode;
 	use foch_core::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use foch_language::analyzer::content_family::{
@@ -577,7 +601,10 @@ mod tests {
 			let parsed = parse_script_file("mod", temp.path(), path).expect("parse");
 			files.insert(
 				parsed.relative_path.to_string_lossy().replace('\\', "/"),
-				parsed,
+				VisibleModuleFile {
+					layer_ordinal: 1,
+					parsed,
+				},
 			);
 		}
 
@@ -619,5 +646,57 @@ mod tests {
 				.count(),
 			3
 		);
+	}
+
+	#[test]
+	fn later_layer_wins_over_earlier_lexically_later_file() {
+		let temp = TempDir::new().expect("temp dir");
+		let earlier = temp.path().join("common/governments/zzz_source.txt");
+		let later = temp.path().join("common/governments/00_compatch.txt");
+		fs::create_dir_all(earlier.parent().expect("parent")).expect("create parent");
+		fs::write(&earlier, "shared = source\n").expect("write source");
+		fs::write(&later, "shared = compatch\n").expect("write compatch");
+		let earlier = parse_script_file("source", temp.path(), &earlier).expect("parse source");
+		let later = parse_script_file("compatch", temp.path(), &later).expect("parse compatch");
+		let mut files = BTreeMap::new();
+		files.insert(
+			earlier.relative_path.to_string_lossy().replace('\\', "/"),
+			VisibleModuleFile {
+				layer_ordinal: 1,
+				parsed: earlier,
+			},
+		);
+		files.insert(
+			later.relative_path.to_string_lossy().replace('\\', "/"),
+			VisibleModuleFile {
+				layer_ordinal: 2,
+				parsed: later,
+			},
+		);
+
+		let folded = fold_visible_module_files(
+			"compatch",
+			"governments",
+			DefinitionModulePolicy {
+				definition_key: DefinitionKeyPolicy::AssignmentKey,
+				file_order: DefinitionFileOrder::NormalizedPathAscending,
+				duplicate_definitions: DuplicateDefinitionPolicy::LaterDefinitionWins,
+				output_path: "common/governments/zzz_foch_governments.txt",
+				namespace_prefix: "common/governments",
+				output_mode: DefinitionModuleOutput::ReplaceNamespace,
+				policy_version: 1,
+			},
+			&files,
+		)
+		.expect("fold module files");
+
+		assert!(matches!(
+			folded.ast.statements.as_slice(),
+			[AstStatement::Assignment {
+				key,
+				value: AstValue::Scalar { value, .. },
+				..
+			}] if key == "shared" && value.as_text() == "compatch"
+		));
 	}
 }

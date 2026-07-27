@@ -44,12 +44,13 @@ only differing definitions are canonicalized before order-insensitive AST
 comparison. This affects scoring only in the Structured arm and cannot relabel
 the committed Legacy baseline.
 
-Snapshot restoration opens committed immutable CAS objects through their
-markers and does not re-hash payloads on every probe process. Collection hashes
-both the source and staged clone before atomically publishing the marker;
-`measure` preflight and export retain explicit full-payload audits. On the
-focused governments case this reduced report-level elapsed time from 258,342 ms
-to 339 ms (about 762x) while preserving exact 2,046-atom equivalence.
+Snapshot restoration records a versioned metadata fingerprint after a full
+CAS payload audit. Later processes avoid rereading payload bytes only while the
+tree's paths, sizes, modification times, executable bits, and symlink targets
+remain unchanged; otherwise the object is fully rehashed. One command verifies
+each shared object at most once. The earlier marker-only governments run
+reduced report-level elapsed time from 258,342 ms to 339 ms, but that number
+predates the metadata guard and is not the current performance baseline.
 
 ## Production activation
 

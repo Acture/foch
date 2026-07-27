@@ -102,21 +102,22 @@ earlier `zzz_*` source file override a later `00_*` compatch file. Layer-major
 precedence is covered in both probe and scorer tests. A focused schema-`2.1.0`
 real-corpus rerun now accepts governments as exactly equivalent: candidate and
 human each contain 2,046 semantic atoms, all 2,046 are shared, and neither side
-has a one-sided atom. The implied matrix is 7 equivalent, 1 manual-resolution,
-4 semantic-mismatch, and 0 failed, but the full 12-unit probe has not been
-rerun, so this remains a focused projection rather than a replacement full
-baseline.
+has a one-sided atom. That focused output was not archived; the linked
+machine-readable evidence remains the schema-`2.0.0` full run. The implied
+matrix is 7 equivalent, 1 manual-resolution, 4 semantic-mismatch, and 0 failed,
+but it remains a projection until review-pack regeneration binds the result to
+its inputs.
 
 The original focused governments process took 258,342 ms end to end, although
 the unit analysis itself took only 177 ms. A live stack sample found the
 remaining time in `load_snapshot -> verify_object -> digest_tree`, reopening
 and hashing 5,935 files across three content-addressed objects. Probe and shadow
-snapshot restoration now trusts the marker of an immutable committed CAS
-object; full payload verification remains at collection, `measure` preflight,
-export, and duplicate-ingestion boundaries. The identical focused rerun took
-339 ms at report level, about 762x faster, while preserving exact 2,046-atom
-equivalence. Its unit timing was 255 ms: 111 ms for module views, 91 ms for
-Structured merge, and 22 ms for comparison.
+restoration now persist a versioned metadata stamp after a full payload audit,
+reuse it only while the complete tree metadata fingerprint is unchanged, and
+verify each object at most once per command. Any detected metadata change
+forces a full rehash. The earlier marker-only focused rerun took 339 ms at
+report level, about 762x faster, but that timing is not a benchmark for the
+guarded cache.
 
 Legacy event merging now keys repeated `option` blocks by `option.name`, and
 per-path event/decision output retains vanilla-equivalent entries because the

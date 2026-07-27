@@ -7,6 +7,9 @@ religions unit.
 
 Machine-readable evidence:
 [`evidence/2026-07-22-common-applicability.json`](evidence/2026-07-22-common-applicability.json)
+is the schema-`2.0.0` full 12-unit run. The later schema-`2.1.0` governments
+probe was focused and was not archived, so its numbers remain provisional
+until the review pack regenerates bound evidence.
 
 ## Matrix
 
@@ -76,9 +79,11 @@ The six rejected units now have narrow explanations:
   global lexical-path order, allowing an earlier source `zzz_*` file to
   override a later compatch `00_*` file. The 2026-07-24 layer-major fix covers
   both the applicability probe and the production scorer. The focused
-  schema-`2.1.0` rerun is now exactly equivalent: 2,046 candidate atoms, 2,046
-  human atoms, all shared, with zero one-sided atoms. The original 152-atom
-  claim was entirely an evaluator artifact.
+  schema-`2.1.0` focused run reported exact equivalence: 2,046 candidate atoms,
+  2,046 human atoms, all shared, with zero one-sided atoms. That result is not
+  part of the linked schema-`2.0.0` artifact and must be regenerated before it
+  is accepted as evidence. The original 152-atom claim remains an evaluator
+  artifact.
 - `common/scripted_effects` has three explicit control-flow policy conflicts;
   the engine withholds output rather than guessing.
 
@@ -95,8 +100,10 @@ The 2026-07-24 focused governments rerun exposed a separate harness startup
 cost. End-to-end report time was 258,342 ms while the module unit itself took
 177 ms. Sampling showed the process in `ObjectStore::verify_object` and
 `digest_tree`, reopening and hashing 5,935 files from three already
-content-addressed objects. Probe and shadow restoration now open immutable
-committed objects through their CAS markers; collection, `measure` preflight,
-export, and duplicate ingestion retain full payload verification. The identical
-focused rerun completed in 339 ms, about 762x faster, with the candidate still
-exactly matching all 2,046 human atoms.
+content-addressed objects. Probe and shadow restoration now keep a versioned
+metadata stamp after a full payload audit. A later process reuses that stamp
+only while every path, file size, modification time, executable bit, and
+symlink target is unchanged; a metadata change forces a full rehash. Within
+one command, each object is verified at most once. The earlier marker-only
+focused rerun completed in 339 ms, about 762x faster, but that timing predates
+the metadata guard and is diagnostic rather than a current benchmark.

@@ -721,20 +721,19 @@ pub(crate) fn validate_snapshot_game(
 	Ok(())
 }
 
-/// Opens an immutable snapshot from committed CAS objects. Collection verifies
-/// payloads before publishing their markers; explicit audits remain the
-/// responsibility of lifecycle measurement and export boundaries.
+/// Opens an immutable snapshot after verifying every referenced CAS object once
+/// for the lifetime of `store`.
 pub(crate) fn open_snapshot(
 	store: &ObjectStore,
 	snapshot: SnapshotRecord,
 ) -> io::Result<LoadedSnapshot> {
-	let compatch = store.open_object(&snapshot.compatch.content_hash)?.tree;
+	let compatch = store.verify_once(&snapshot.compatch.content_hash)?.tree;
 	let source_dirs = snapshot
 		.source_mods
 		.iter()
 		.map(|source| {
 			store
-				.open_object(&source.content_hash)
+				.verify_once(&source.content_hash)
 				.map(|object| object.tree)
 		})
 		.collect::<io::Result<Vec<_>>>()?;
