@@ -108,6 +108,24 @@ matrix is 7 equivalent, 1 manual-resolution, 4 semantic-mismatch, and 0 failed,
 but it remains a projection until review-pack regeneration binds the result to
 its inputs.
 
+The review-pack infrastructure now fixes the six snapshots, all 36 Legacy
+units, the 13 Structured rollout units, and each archived Legacy
+measurement/output CAS. A build performs zero Legacy merges, rescoring the
+pinned outputs with the current scorer, and runs at most one grouped Structured
+merge per case. It emits 49 input-bound evidence records and provisional
+annotations; verify/show never execute a merge. The real review pack has not
+yet been generated, so this implementation checkpoint does not change the
+published quality counts. See
+[`merge-quality-review-pack.md`](./merge-quality-review-pack.md).
+
+The advisory Wiki pipeline can now freeze the 71 mainspace pages linked by the
+current EU4 `Template:Modding navbox`, including exact revisions, raw wikitext,
+rendered HTML, contributors, attribution, and game-version binding. Archives
+are deterministic, size-bounded, offline-verifiable, and searchable through a
+bounded Clausewitz-aware BM25 index. The network snapshot has not been fetched
+in this checkpoint because the rate-limited acquisition is a manual
+long-running step. See [`wiki-knowledge-pack.md`](./wiki-knowledge-pack.md).
+
 The original focused governments process took 258,342 ms end to end, although
 the unit analysis itself took only 177 ms. A live stack sample found the
 remaining time in `load_snapshot -> verify_object -> digest_tree`, reopening

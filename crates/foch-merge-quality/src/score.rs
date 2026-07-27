@@ -1619,6 +1619,31 @@ pub struct SemanticAtomDiff {
 	pub right_only: BTreeMap<String, usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ReviewSemanticLayer {
+	pub semantic_content_id: String,
+	pub atoms: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ReviewSemanticSource {
+	pub source_id: String,
+	pub layer: ReviewSemanticLayer,
+	pub vs_base: SemanticAtomDiff,
+	pub candidate_vs_source: SemanticAtomDiff,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ReviewSemanticEvidence {
+	pub base: ReviewSemanticLayer,
+	pub sources: Vec<ReviewSemanticSource>,
+	pub human: ReviewSemanticLayer,
+	pub candidate: ReviewSemanticLayer,
+	pub human_vs_base: SemanticAtomDiff,
+	pub candidate_vs_base: SemanticAtomDiff,
+	pub candidate_vs_human: SemanticAtomDiff,
+}
+
 /// Compare two files using the scorer's format-aware semantic atom model.
 pub fn semantic_atom_diff(
 	rel: &str,
@@ -1630,6 +1655,98 @@ pub fn semantic_atom_diff(
 	let left = semantic_atoms_for_path_with_ordering(rel, left, ordering)?;
 	let right = semantic_atoms_for_path_with_ordering(rel, right, ordering)?;
 	Some(semantic_atom_bag_diff(&left, &right))
+}
+
+/// Build the scorer's complete base/source/human/candidate semantic evidence
+/// without changing the verdict policy.
+pub fn review_semantic_evidence(
+	request: &ScoreFileRequest<'_>,
+	basegame_root: Option<&Path>,
+) -> Option<ReviewSemanticEvidence> {
+	let mut cache = ScoreCache::new();
+	review_semantic_evidence_with_cache(request, &mut cache, basegame_root)
+}
+
+/// Build review evidence while reusing parsed content and module views across
+/// scoring units.
+pub fn review_semantic_evidence_with_cache(
+	request: &ScoreFileRequest<'_>,
+	cache: &mut ScoreCache,
+	basegame_root: Option<&Path>,
+) -> Option<ReviewSemanticEvidence> {
+	let mut base_roots = Vec::new();
+	if let Some(root) = basegame_root {
+		base_roots.push(root);
+	}
+	let base = semantic_atoms_for_runtime_layers(cache, request.rel, &base_roots)?;
+
+	let mut source_layers = Vec::with_capacity(request.source_mods.len());
+	for source in request.source_mods {
+		let mut roots = base_roots.clone();
+		roots.push(source.root);
+		let layer = semantic_atoms_for_runtime_layers(cache, request.rel, &roots)?;
+		source_layers.push((source.id.to_string(), layer));
+	}
+
+	let mut human_roots = base_roots.clone();
+	human_roots.extend(request.source_mods.iter().map(|source| source.root));
+	human_roots.push(request.compatch);
+	let human = semantic_atoms_for_runtime_layers(cache, request.rel, &human_roots)?;
+
+	let mut candidate_roots = base_roots;
+	candidate_roots.extend(request.source_mods.iter().map(|source| source.root));
+	candidate_roots.push(request.out_dir);
+	let candidate = semantic_atoms_for_runtime_layers(cache, request.rel, &candidate_roots)?;
+	let sources = source_layers
+		.into_iter()
+		.map(|(source_id, layer)| ReviewSemanticSource {
+			source_id,
+			layer: review_semantic_layer(&layer),
+			vs_base: semantic_atom_bag_diff(&layer, &base),
+			candidate_vs_source: semantic_atom_bag_diff(&candidate, &layer),
+		})
+		.collect();
+
+	Some(ReviewSemanticEvidence {
+		base: review_semantic_layer(&base),
+		sources,
+		human: review_semantic_layer(&human),
+		candidate: review_semantic_layer(&candidate),
+		human_vs_base: semantic_atom_bag_diff(&human, &base),
+		candidate_vs_base: semantic_atom_bag_diff(&candidate, &base),
+		candidate_vs_human: semantic_atom_bag_diff(&candidate, &human),
+	})
+}
+
+fn review_semantic_layer(atoms: &AtomBag) -> ReviewSemanticLayer {
+	ReviewSemanticLayer {
+		semantic_content_id: semantic_atom_bag_content_id(atoms),
+		atoms: bag_size(atoms),
+	}
+}
+
+fn semantic_atoms_for_runtime_layers(
+	cache: &mut ScoreCache,
+	rel: &str,
+	roots: &[&Path],
+) -> Option<AtomBag> {
+	if let Some(descriptor) = eligible_module_family(rel) {
+		let prefix = family_prefix(descriptor)?;
+		let view = cache.module_view(roots, prefix)?;
+		let keys = view.keys().cloned().collect::<BTreeSet<_>>();
+		return Some(canonical_atoms_for_keys(&view, &keys));
+	}
+
+	for root in roots.iter().rev() {
+		let path = root.join(rel);
+		if path.is_file() {
+			return semantic_atoms_for_path(rel, &path);
+		}
+		if layer_replaces_module(root, rel) == Some(true) {
+			return Some(AtomBag::new());
+		}
+	}
+	Some(AtomBag::new())
 }
 
 pub(crate) fn semantic_atom_diff_ast(left: &AstFile, right: &AstFile) -> SemanticAtomDiff {
@@ -2188,6 +2305,99 @@ mod classify_tests {
 			"descriptor.mod",
 			"name=\"fixture\"\nreplace_path=\"common/governments\"\n",
 		);
+	}
+
+	#[test]
+	fn review_evidence_binds_all_runtime_layers() {
+		let basegame = tempfile::tempdir().unwrap();
+		let left = tempfile::tempdir().unwrap();
+		let right = tempfile::tempdir().unwrap();
+		let compatch = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		let rel = "decisions/example.txt";
+		write_file(basegame.path(), rel, "decision = { value = 1 }\n");
+		write_file(left.path(), rel, "decision = { value = 2 }\n");
+		write_file(right.path(), rel, "decision = { value = 1 flag = yes }\n");
+		let merged = "decision = { value = 2 flag = yes }\n";
+		write_file(compatch.path(), rel, merged);
+		write_file(output.path(), rel, merged);
+		let sources = two_sources(left.path(), right.path());
+		let conflicts = HashSet::new();
+
+		let evidence = review_semantic_evidence(
+			&ScoreFileRequest {
+				rel,
+				source_mods: &sources,
+				compatch: compatch.path(),
+				out_dir: output.path(),
+				conflict_paths: &conflicts,
+			},
+			Some(basegame.path()),
+		)
+		.expect("review evidence");
+
+		assert_eq!(evidence.sources.len(), 2);
+		assert_eq!(
+			evidence.candidate.semantic_content_id,
+			evidence.human.semantic_content_id
+		);
+		assert!(evidence.candidate_vs_human.left_only.is_empty());
+		assert!(evidence.candidate_vs_human.right_only.is_empty());
+		assert!(
+			evidence
+				.sources
+				.iter()
+				.all(|source| !source.vs_base.left_only.is_empty())
+		);
+	}
+
+	#[test]
+	fn review_evidence_uses_complete_definition_module_views() {
+		let basegame = tempfile::tempdir().unwrap();
+		let left = tempfile::tempdir().unwrap();
+		let right = tempfile::tempdir().unwrap();
+		let compatch = tempfile::tempdir().unwrap();
+		let output = tempfile::tempdir().unwrap();
+		write_file(
+			basegame.path(),
+			"common/governments/00_base.txt",
+			"shared = { rank = 1 }\n",
+		);
+		write_file(
+			left.path(),
+			"common/governments/zzz_left.txt",
+			"shared = { rank = 2 }\n",
+		);
+		write_file(
+			right.path(),
+			"common/governments/10_right.txt",
+			"right_only = { rank = 1 }\n",
+		);
+		let merged = "right_only = { rank = 1 }\nshared = { rank = 2 }\n";
+		write_file(compatch.path(), "common/governments/00_human.txt", merged);
+		write_file(output.path(), GOVERNMENTS_OUTPUT, merged);
+		let sources = two_sources(left.path(), right.path());
+		let conflicts = HashSet::new();
+
+		let evidence = review_semantic_evidence(
+			&ScoreFileRequest {
+				rel: GOVERNMENTS_OUTPUT,
+				source_mods: &sources,
+				compatch: compatch.path(),
+				out_dir: output.path(),
+				conflict_paths: &conflicts,
+			},
+			Some(basegame.path()),
+		)
+		.expect("module review evidence");
+
+		assert_eq!(
+			evidence.candidate.semantic_content_id,
+			evidence.human.semantic_content_id
+		);
+		assert_eq!(evidence.candidate.atoms, evidence.human.atoms);
+		assert!(evidence.candidate_vs_human.left_only.is_empty());
+		assert!(evidence.candidate_vs_human.right_only.is_empty());
 	}
 
 	#[test]

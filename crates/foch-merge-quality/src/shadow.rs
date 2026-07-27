@@ -337,6 +337,26 @@ struct ShadowChildRequest<'a> {
 	timeout: Duration,
 }
 
+/// Run one merge kernel in an isolated child process using an already captured
+/// immutable input manifest.
+pub fn run_isolated_shadow_kernel(
+	manifest: &ShadowInputManifest,
+	manifest_path: &Path,
+	output_dir: &Path,
+	executable: &Path,
+	kernel: MergeKernelMode,
+	timeout: Duration,
+) -> io::Result<ShadowRunRecord> {
+	spawn_shadow_arm(ShadowChildRequest {
+		manifest,
+		manifest_path,
+		output_dir,
+		executable,
+		kernel,
+		timeout,
+	})
+}
+
 fn spawn_shadow_arm(request: ShadowChildRequest<'_>) -> io::Result<ShadowRunRecord> {
 	reset_output_dir(request.output_dir)?;
 	let scratch = tempfile::Builder::new()
@@ -724,6 +744,12 @@ fn verify_manifest_inputs(manifest: &ShadowInputManifest, executable: &Path) -> 
 			actual.comparison_id
 		),
 	))
+}
+
+/// Validate the self-contained schema and comparison identity without reopening
+/// the captured filesystem paths.
+pub fn validate_shadow_manifest_identity(manifest: &ShadowInputManifest) -> io::Result<()> {
+	validate_manifest(manifest)
 }
 
 fn validate_manifest(manifest: &ShadowInputManifest) -> io::Result<()> {

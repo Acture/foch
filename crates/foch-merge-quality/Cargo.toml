@@ -14,6 +14,7 @@ description = "Measures foch merge quality against evidence-qualified community 
 # offline; the base-aware acceptance test is ignored in ordinary CI.
 default = []
 steam = ["dep:reqwest"]
+wiki = ["dep:reqwest"]
 
 [[bin]]
 name = "foch-mq"
@@ -24,7 +25,9 @@ foch-engine = { path = "../foch-engine" }
 foch-core = { path = "../foch-core" }
 foch-language = { path = "../foch-language" }
 blake3 = "1.5.5"
+bm25 = { version = "=2.3.2", default-features = false }
 clap.workspace = true
+html2text = "=0.17.1"
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true

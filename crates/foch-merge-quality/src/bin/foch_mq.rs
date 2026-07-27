@@ -11,8 +11,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 use foch_engine::MergeKernelMode;
 use foch_merge_quality::{
-	CmdResult, archive, common_probe, config, corpus_shadow, fixtures, lifecycle, orchestrate,
-	shadow, symbols,
+	CmdResult, archive, common_probe, config, corpus_shadow, dataset, fixtures, knowledge,
+	lifecycle, orchestrate, review_annotation, review_pack, shadow, symbols,
 };
 
 #[derive(Parser)]
@@ -224,6 +224,16 @@ enum Cmd {
 		)]
 		legacy_baseline: PathBuf,
 	},
+	/// Build, verify, or search a frozen modding-wiki knowledge pack.
+	Knowledge {
+		#[command(subcommand)]
+		command: KnowledgeCommand,
+	},
+	/// Build, verify, or inspect the fixed merge-quality review pack.
+	ReviewPack {
+		#[command(subcommand)]
+		command: ReviewPackCommand,
+	},
 	/// Execute one isolated shadow-comparison arm.
 	#[command(hide = true)]
 	ShadowRunOne {
@@ -284,7 +294,124 @@ enum ShadowKernelKind {
 	Structured,
 }
 
+#[derive(Subcommand)]
+enum KnowledgeCommand {
+	/// Snapshot the exact current revisions linked by the EU4 Modding navbox.
+	#[cfg(feature = "wiki")]
+	Snapshot {
+		#[arg(long, value_enum, default_value_t = KnowledgeProfileKind::Eu4Modding)]
+		profile: KnowledgeProfileKind,
+		#[arg(long, default_value = "auto")]
+		game_version: String,
+		#[arg(long)]
+		out: Option<PathBuf>,
+		#[arg(long, default_value_t = 15)]
+		request_delay_secs: u64,
+		#[arg(long, default_value_t = 5)]
+		maxlag: u32,
+		#[arg(long)]
+		no_jina_fallback: bool,
+	},
+	/// Verify archive structure, hashes, revisions, and attribution metadata.
+	Verify {
+		#[arg(long)]
+		archive: PathBuf,
+	},
+	/// Search rendered, revision-pinned page chunks with bounded BM25.
+	Search {
+		#[arg(long)]
+		archive: PathBuf,
+		query: String,
+		#[arg(long, default_value_t = 5)]
+		limit: usize,
+		#[arg(long, default_value_t = 6_000)]
+		max_chars: usize,
+	},
+}
+
+#[derive(Subcommand)]
+enum ReviewPackCommand {
+	/// Reuse six pinned Legacy outputs and run at most six grouped Structured cases.
+	Build {
+		#[arg(long)]
+		out_dir: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/tests/fixtures/review-pack-selection.json"
+			)
+		)]
+		selection: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/legacy-baseline.json")
+		)]
+		legacy_baseline: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/expected.json")
+		)]
+		expected_verdicts: PathBuf,
+		#[arg(long, default_value_t = 600)]
+		timeout_secs: u64,
+		#[arg(long)]
+		wiki_knowledge_snapshot_id: Option<String>,
+		#[arg(long)]
+		force: bool,
+	},
+	/// Verify pack artifacts, CAS bindings, and current-scorer evidence without merging.
+	Verify {
+		#[arg(long)]
+		pack_dir: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/tests/fixtures/review-pack-selection.json"
+			)
+		)]
+		selection: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/legacy-baseline.json")
+		)]
+		legacy_baseline: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/expected.json")
+		)]
+		expected_verdicts: PathBuf,
+	},
+	/// Show the summary or one exact case/path/kernel evidence record.
+	Show {
+		#[arg(long)]
+		pack_dir: PathBuf,
+		#[arg(long = "case")]
+		case_id: Option<String>,
+		#[arg(long = "path")]
+		relative_path: Option<String>,
+		#[arg(long, value_enum)]
+		kernel: Option<ShadowKernelKind>,
+	},
+}
+
+#[cfg(feature = "wiki")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum KnowledgeProfileKind {
+	Eu4Modding,
+}
+
 impl From<ShadowKernelKind> for MergeKernelMode {
+	fn from(value: ShadowKernelKind) -> Self {
+		match value {
+			ShadowKernelKind::Legacy => Self::Legacy,
+			ShadowKernelKind::Structured => Self::Structured,
+		}
+	}
+}
+
+impl From<ShadowKernelKind> for review_annotation::ReviewKernel {
 	fn from(value: ShadowKernelKind) -> Self {
 		match value {
 			ShadowKernelKind::Legacy => Self::Legacy,
@@ -601,6 +728,169 @@ fn main() -> CmdResult {
 			println!("{}", serde_json::to_string_pretty(&report.summary)?);
 			Ok(())
 		}
+		Cmd::Knowledge { command } => match command {
+			#[cfg(feature = "wiki")]
+			KnowledgeCommand::Snapshot {
+				profile: KnowledgeProfileKind::Eu4Modding,
+				game_version,
+				out,
+				request_delay_secs,
+				maxlag,
+				no_jina_fallback,
+			} => {
+				let game_version = if game_version == "auto" {
+					discover_game(&game_root, &steam_root)?.game_version
+				} else {
+					game_version
+				};
+				let output = out.unwrap_or_else(|| {
+					dataset_root.join(".work/knowledge").join(format!(
+						"eu4-modding-{}.tar.zst",
+						path_component(&game_version)
+					))
+				});
+				let mut options = knowledge::WikiSnapshotOptions::new(
+					&output,
+					format!(
+						"foch-mq/{} (+https://github.com/Acture/foch; EU4 modding research)",
+						env!("CARGO_PKG_VERSION")
+					),
+				);
+				options.game_version = game_version;
+				options.request_delay = Duration::from_secs(request_delay_secs);
+				options.maxlag = maxlag;
+				if no_jina_fallback {
+					options.jina_prefix = None;
+				}
+				let report = knowledge::snapshot_eu4_modding(&options)?;
+				println!(
+					"{}",
+					serde_json::to_string_pretty(&serde_json::json!({
+						"pack_id": report.pack_id,
+						"archive": report.path,
+						"archive_blake3": report.archive_hash,
+						"archive_bytes": report.archive_bytes,
+						"page_count": report.page_count,
+					}))?
+				);
+				Ok(())
+			}
+			KnowledgeCommand::Verify { archive } => {
+				let pack = knowledge::verify_knowledge_archive(&archive)?;
+				println!(
+					"{}",
+					serde_json::to_string_pretty(&serde_json::json!({
+						"schema": pack.manifest.schema,
+						"profile": pack.manifest.profile,
+						"game_version": pack.manifest.game_version,
+						"pack_id": pack.manifest.pack_id,
+						"page_count": pack.manifest.pages.len(),
+						"snapshot_timestamp": pack.manifest.snapshot_timestamp,
+					}))?
+				);
+				Ok(())
+			}
+			KnowledgeCommand::Search {
+				archive,
+				query,
+				limit,
+				max_chars,
+			} => {
+				let hits = knowledge::search_knowledge_archive(
+					archive,
+					&dataset_root,
+					&query,
+					knowledge::SearchOptions::bounded(limit, max_chars),
+				)?;
+				println!("{}", serde_json::to_string_pretty(&hits)?);
+				Ok(())
+			}
+		},
+		Cmd::ReviewPack { command } => match command {
+			ReviewPackCommand::Build {
+				out_dir,
+				selection,
+				legacy_baseline,
+				expected_verdicts,
+				timeout_secs,
+				wiki_knowledge_snapshot_id,
+				force,
+			} => {
+				let game = discover_game(&game_root, &steam_root)?;
+				let executable = std::env::current_exe()?;
+				let result =
+					review_pack::build_review_pack(&review_pack::ReviewPackBuildOptions {
+						selection: &selection,
+						legacy_baseline: &legacy_baseline,
+						expected_verdicts: &expected_verdicts,
+						dataset_root: &dataset_root,
+						output_dir: &out_dir,
+						game: &game,
+						executable: &executable,
+						timeout: Duration::from_secs(timeout_secs),
+						force,
+						wiki_knowledge_snapshot_id: wiki_knowledge_snapshot_id.as_deref(),
+					})?;
+				let dataset_paths = dataset::DatasetPaths::new(&dataset_root);
+				let annotation_summary =
+					dataset::append_unique_many(&dataset_paths.annotations, &result.proposals)?;
+				eprintln!(
+					"[review-pack] annotations inserted={} already_present={}",
+					annotation_summary.inserted, annotation_summary.already_present
+				);
+				println!("{}", serde_json::to_string_pretty(&result.summary)?);
+				Ok(())
+			}
+			ReviewPackCommand::Verify {
+				pack_dir,
+				selection,
+				legacy_baseline,
+				expected_verdicts,
+			} => {
+				let game = discover_game(&game_root, &steam_root)?;
+				let result =
+					review_pack::verify_review_pack(&review_pack::ReviewPackVerifyOptions {
+						pack_dir: &pack_dir,
+						selection: &selection,
+						legacy_baseline: &legacy_baseline,
+						expected_verdicts: &expected_verdicts,
+						dataset_root: &dataset_root,
+						game: &game,
+					})?;
+				println!(
+					"{}",
+					serde_json::to_string_pretty(&serde_json::json!({
+						"review_pack_id": result.review_pack_id,
+						"units_verified": result.units_verified,
+						"cas_objects_verified": result.cas_objects_verified,
+						"proposals_verified": result.proposals_verified,
+					}))?
+				);
+				Ok(())
+			}
+			ReviewPackCommand::Show {
+				pack_dir,
+				case_id,
+				relative_path,
+				kernel,
+			} => {
+				let result = review_pack::show_review_pack(&review_pack::ReviewPackShowOptions {
+					pack_dir: &pack_dir,
+					case_id: case_id.as_deref(),
+					relative_path: relative_path.as_deref(),
+					kernel: kernel.map(review_annotation::ReviewKernel::from),
+				})?;
+				match result {
+					review_pack::ReviewPackShowResult::Summary(summary) => {
+						println!("{}", serde_json::to_string_pretty(&summary)?);
+					}
+					review_pack::ReviewPackShowResult::Unit(unit) => {
+						println!("{}", serde_json::to_string_pretty(&unit)?);
+					}
+				}
+				Ok(())
+			}
+		},
 		Cmd::ShadowRunOne {
 			input_manifest,
 			out_dir,
@@ -679,6 +969,21 @@ fn main() -> CmdResult {
 			})
 		}
 	}
+}
+
+#[cfg(feature = "wiki")]
+fn path_component(value: &str) -> String {
+	let normalized = value
+		.chars()
+		.map(|character| {
+			if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
+				character
+			} else {
+				'-'
+			}
+		})
+		.collect::<String>();
+	normalized.trim_matches('-').to_string()
 }
 
 fn discover(

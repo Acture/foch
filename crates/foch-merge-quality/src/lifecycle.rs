@@ -411,7 +411,7 @@ pub fn measure(
 		);
 		let (mut status, mut detail, completed) = classify_child(child, &stdout_path, &stderr_path);
 
-		let merged_output_hash = match archive_output(&store, &paths, &output_dir) {
+		let merged_output_hash = match archive_output_tree(&store, &paths, &output_dir) {
 			Ok(hash) => hash,
 			Err(err) => {
 				status = TerminalStatus::Fatal;
@@ -1114,7 +1114,7 @@ fn classify_child(
 	}
 }
 
-fn archive_output(
+pub fn archive_output_tree(
 	store: &ObjectStore,
 	paths: &DatasetPaths,
 	output_dir: &Path,

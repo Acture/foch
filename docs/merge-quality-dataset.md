@@ -36,7 +36,7 @@ The append-only files under `crates/foch-merge-quality/dataset/` are:
 | `measurements.jsonl` | terminal case outcomes and aggregate scores |
 | `file_results.jsonl` | per-file scorer results keyed by measurement |
 | `shadow_measurements.jsonl` | explicitly recorded per-unit Legacy/Structured evidence |
-| `annotations.jsonl` | reserved append-only annotation records |
+| `annotations.jsonl` | append-only, input-bound review proposals and adjudications |
 
 ## Storage
 
@@ -48,6 +48,22 @@ rejected.
 
 Merged output trees are archived through the same object store. Repeated source
 mods, compatches, and identical outputs deduplicate by tree hash.
+
+Wiki knowledge snapshots are deterministic `.tar.zst` archives under the
+ignored `dataset/.work/knowledge/` tree. They are revision-addressed advisory
+context rather than merge-oracle evidence; the repository retains acquisition,
+verification, and attribution policy without committing Wiki payloads.
+
+Review annotations bind the review-pack identity, optional Wiki snapshot
+identity, snapshot and scoring-unit identities, selected kernel, and the exact
+base/source/human/candidate content hashes. Proposals remain provisional.
+Accepted records must be explicit adjudications; non-identical positive
+judgments require family-invariant or runtime evidence, and non-identical GUI
+judgments require runtime evidence.
+
+See [`wiki-knowledge-pack.md`](./wiki-knowledge-pack.md) and
+[`merge-quality-review-pack.md`](./merge-quality-review-pack.md) for the
+acquisition, packaging, verification, and review workflows.
 
 ## Full baseline
 

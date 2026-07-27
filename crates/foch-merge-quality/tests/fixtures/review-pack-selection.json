@@ -1,0 +1,121 @@
+{
+	"schema": "1.0.0",
+	"profile": "eu4-merge-quality",
+	"game_version": "v1.37.5.0",
+	"steam_build_id": 15918133,
+	"legacy_baseline_blake3": "6ed4b8332a97c279470f5022e63023ebba84d1fa5776daf02b5d64851921b223",
+	"expected_verdicts_blake3": "4682da7af0642370bc46ed2e2767b4dc6ca8d2671571f80c38dc0efebcd38eaf",
+	"legacy_unit_count": 36,
+	"structured_unit_count": 13,
+	"cases": [
+		{
+			"case_id": "3630876155",
+			"snapshot_id": "d60369eb6a10122a1478df23c06031a84858075f09db11574e8d29cc1a260f5c",
+			"legacy_measurement_id": "b9f1bea38c13219af0d83c265305cfa5ac71738b64771bc1d7978a81326dc173",
+			"legacy_output_hash": "f3f1587853b2eea655575f0b41af5cb10c090fa68b605701b8549e49be9a5c4e",
+			"legacy_units": [
+				"common/rebel_types/zzz_foch_rebel_types.txt",
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"interface/000_expanded_mod_family.gfx",
+				"interface/countrycourtview.gui",
+				"interface/frontend.gui",
+				"interface/subscription_banner_view.gui"
+			],
+			"structured_units": [
+				"common/rebel_types/zzz_foch_rebel_types.txt",
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt"
+			]
+		},
+		{
+			"case_id": "3630904821",
+			"snapshot_id": "695b4ed11d04270342f5cb007ebd14001513bd91e3187434a6531e8f76ab7d7c",
+			"legacy_measurement_id": "62cd03c5e4427a524ee509916c6f05ccda17954a42386193b215b73b25a5a12c",
+			"legacy_output_hash": "40ac2c7796ed04022ff7cb92e8e433f635077777c0d5aa84516328898646042b",
+			"legacy_units": [
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"decisions/PragmaticSanction.txt",
+				"interface/000_expanded_mod_family.gfx",
+				"interface/frontend.gui",
+				"interface/hre.gui",
+				"interface/subscription_banner_view.gui"
+			],
+			"structured_units": [
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt"
+			]
+		},
+		{
+			"case_id": "3630934157",
+			"snapshot_id": "ebdf8ea89e7fa5edb103708cdab2ce02dca53af16642d4aa1f5e577781033e30",
+			"legacy_measurement_id": "1b76839ce1579d51079fb672ede203b3ed964962fc318d6cbf292cf35146dfb2",
+			"legacy_output_hash": "57aaf8a4853df4dd42dac73012b190b5bbcabd5c95090f103a2cd9d974146787",
+			"legacy_units": [
+				"common/religions/zzz_foch_religions.txt",
+				"interface/000_expanded_mod_family.gfx",
+				"interface/frontend.gui",
+				"interface/provinceview.gui",
+				"interface/subscription_banner_view.gui",
+				"interface/topbar.gui"
+			],
+			"structured_units": [
+				"common/religions/zzz_foch_religions.txt"
+			]
+		},
+		{
+			"case_id": "3634824708",
+			"snapshot_id": "54fb216188ec4267c3006b2b05b8c994ba75961a7337839a05a9f23272d62d0c",
+			"legacy_measurement_id": "f195459334eeef8cdaf486681423957a1faae9e76a0c939a914e70e029243920",
+			"legacy_output_hash": "9d35b306a86553bedcbe813878ffe2f5509792970de2a7ef858f0d80f5311962",
+			"legacy_units": [
+				"common/buildings/zzz_foch_buildings.txt",
+				"common/institutions/zzz_foch_institutions.txt",
+				"common/tradegoods/zzz_foch_tradegoods.txt",
+				"events/PriceChanges.txt",
+				"interface/000_expanded_mod_family.gfx",
+				"interface/frontend.gui"
+			],
+			"structured_units": [
+				"common/buildings/zzz_foch_buildings.txt",
+				"common/institutions/zzz_foch_institutions.txt",
+				"common/tradegoods/zzz_foch_tradegoods.txt"
+			]
+		},
+		{
+			"case_id": "3634829839",
+			"snapshot_id": "24048fe131d8365e61b3d70172e57d57f6a38ffb000f19a30ee35c20935a5803",
+			"legacy_measurement_id": "4ac95f726819ba271c28328ca1db12f50c8218d7ed1ad9ccb7117567636dd86c",
+			"legacy_output_hash": "b612a95a92f1420a8397089a0a72b1ed989d1bd355ca6b80a18ec4e48e366db7",
+			"legacy_units": [
+				"common/ages/zzz_foch_ages.txt",
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"interface/000_expanded_mod_family.gfx",
+				"interface/frontend.gui",
+				"interface/subscription_banner_view.gui"
+			],
+			"structured_units": [
+				"common/ages/zzz_foch_ages.txt",
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt"
+			]
+		},
+		{
+			"case_id": "3635635014",
+			"snapshot_id": "b1f12d633dd249e644a0205708e8c23898d990eb8eea8d43134ff78188ef61f7",
+			"legacy_measurement_id": "b01380afc1ecf122af7a19c2facdfa462991239e137621332a8627a3c2562c4e",
+			"legacy_output_hash": "d5577485da1235601d69ff06c17c11469fb95f69eb7c678472e563bb4c1b990c",
+			"legacy_units": [
+				"common/governments/zzz_foch_governments.txt",
+				"common/scripted_effects/zzz_foch_scripted_effects.txt",
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"events/Elections.txt",
+				"interface/000_expanded_mod_family.gfx",
+				"interface/frontend.gui",
+				"interface/subscription_banner_view.gui"
+			],
+			"structured_units": [
+				"common/governments/zzz_foch_governments.txt",
+				"common/scripted_effects/zzz_foch_scripted_effects.txt",
+				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
+				"events/Elections.txt"
+			]
+		}
+	]
+}
