@@ -6,12 +6,11 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use foch_engine::{canonicalize_clausewitz_file, installed_base_snapshot_identity};
-use foch_language::analyzer::content_family::{GameProfile, MergePolicies};
-use foch_language::analyzer::eu4_profile::eu4_profile;
+use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_file};
 use serde::{Deserialize, Serialize};
 
-use crate::common_module::{CommonModuleViewBuilder, normalize_module_comparison};
+use crate::common_module::CommonModuleViewBuilder;
 use crate::config::Eu4GameDiscovery;
 use crate::corpus::{OracleAssessment, assess_oracle_candidate};
 use crate::dataset::{
@@ -25,7 +24,7 @@ use crate::score::{
 	AdjudicationBinding, Adjudications, Resolution, ScoreCache, ScoreFileRequest, SemanticAtomDiff,
 	SourceMod, classify_resolution, definition_module_policy_for_path, reference_output_files,
 	score_file_with_cache_and_basegame, scoring_reference_units, semantic_atom_diff,
-	semantic_atom_diff_ast, write_playset,
+	structured_module_semantic_relation, write_playset,
 };
 use crate::shadow::{
 	ShadowCompareRequest, ShadowComparisonReport, ShadowDiagnostic, ShadowDiagnosticKind,
@@ -1006,22 +1005,13 @@ fn assess_arm(
 				&run.output_dir,
 			) {
 			if run.kernel == "structured"
-				&& let Some(module_policy) =
-					definition_module_policy_for_path(&target.relative_path)
-				&& let Some(descriptor) =
-					eu4_profile().classify_content_family(Path::new(&target.relative_path))
+				&& let Some(relation) =
+					structured_module_semantic_relation(&target.relative_path, &candidate, &human)
 			{
-				let comparison = normalize_module_comparison(
-					&candidate,
-					&human,
-					&descriptor.merge_policies,
-					module_policy.namespace_prefix,
-				);
-				let equivalent = if comparison.diagnostics.is_empty() {
-					let diff = semantic_atom_diff_ast(&comparison.candidate, &comparison.human);
-					let equivalent = diff.left_only.is_empty() && diff.right_only.is_empty();
+				let equivalent = relation.is_equivalent();
+				if relation.diagnostics.is_empty() {
 					if !equivalent {
-						let residual_keys = semantic_diff_top_level_keys(&diff);
+						let residual_keys = semantic_diff_top_level_keys(&relation.diff);
 						assessment_diagnostics.push(ShadowDiagnostic {
 							kind: ShadowDiagnosticKind::Warning,
 							path: Some(target.relative_path.clone()),
@@ -1032,17 +1022,15 @@ fn assess_arm(
 							),
 						});
 					}
-					equivalent
 				} else {
-					for diagnostic in comparison.diagnostics {
+					for diagnostic in relation.diagnostics {
 						assessment_diagnostics.push(ShadowDiagnostic {
 							kind: ShadowDiagnosticKind::Warning,
 							path: diagnostic.path,
 							message: format!("{}: {}", diagnostic.phase, diagnostic.message),
 						});
 					}
-					false
-				};
+				}
 				if equivalent {
 					score.verdict = "accepted_equivalent".to_string();
 					score.accepted_ok = true;
@@ -1109,7 +1097,7 @@ fn assess_arm(
 	})
 }
 
-fn adjudication_ast_pair(
+pub(crate) fn adjudication_ast_pair(
 	relative_path: &str,
 	loaded: &LoadedSnapshot,
 	game_root: &Path,

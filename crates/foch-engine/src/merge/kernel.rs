@@ -1,9 +1,12 @@
 use foch_language::analyzer::parser::AstFile;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum MergeKernelMode {
-	#[default]
+pub(crate) enum MergeKernelMode {
+	/// Patch-address engine retained only as a merge-quality baseline.
 	Legacy,
+	/// Production tree-state engine. The external `structured` label remains
+	/// stable in shadow-report schemas while the internal architecture migrates.
+	#[default]
 	Structured,
 }
 
@@ -12,6 +15,34 @@ impl MergeKernelMode {
 		match self {
 			Self::Legacy => "legacy",
 			Self::Structured => "structured",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MergeEvaluationKernel {
+	/// Address-patch implementation retained as a historical quality reference.
+	AddressPatchReference,
+	/// Production semantic-tree implementation.
+	#[default]
+	SemanticTree,
+}
+
+impl MergeEvaluationKernel {
+	/// Stable labels used by existing merge-quality artifacts.
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::AddressPatchReference => "legacy",
+			Self::SemanticTree => "structured",
+		}
+	}
+}
+
+impl From<MergeEvaluationKernel> for MergeKernelMode {
+	fn from(value: MergeEvaluationKernel) -> Self {
+		match value {
+			MergeEvaluationKernel::AddressPatchReference => Self::Legacy,
+			MergeEvaluationKernel::SemanticTree => Self::Structured,
 		}
 	}
 }
@@ -37,16 +68,5 @@ impl KernelMergeInput {
 				.then_with(|| left.source_id.cmp(&right.source_id))
 		});
 		Self { base, revisions }
-	}
-
-	pub fn exactly_two_revisions(&self) -> Result<[&KernelRevision; 2], String> {
-		match self.revisions.as_slice() {
-			[left, right] => Ok([left, right]),
-			_ => Err(format!(
-				"expected exactly two revisions for {}, found {}",
-				self.base.path.display(),
-				self.revisions.len()
-			)),
-		}
 	}
 }

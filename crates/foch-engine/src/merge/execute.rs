@@ -13,7 +13,7 @@ use crate::cache::{
 
 // SemVer identity for cached merge output. Bump patch for output bug fixes,
 // minor for additive semantics, and major for incompatible cache payloads.
-const MODSET_CACHE_VERSION: &str = "13.0.0";
+const MODSET_CACHE_VERSION: &str = "14.0.0";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
@@ -30,7 +30,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use super::kernel::MergeKernelMode;
+use super::kernel::{MergeEvaluationKernel, MergeKernelMode};
 
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
@@ -90,10 +90,18 @@ pub fn run_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<MergeExecutionResult, MergeError> {
-	run_merge_with_options_and_kernel(request, options, MergeKernelMode::Legacy)
+	run_merge_with_kernel_mode(request, options, MergeKernelMode::Structured)
 }
 
-pub fn run_merge_with_options_and_kernel(
+pub fn run_merge_for_evaluation(
+	request: CheckRequest,
+	options: MergeExecuteOptions,
+	kernel: MergeEvaluationKernel,
+) -> Result<MergeExecutionResult, MergeError> {
+	run_merge_with_kernel_mode(request, options, kernel.into())
+}
+
+fn run_merge_with_kernel_mode(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 	merge_kernel: MergeKernelMode,

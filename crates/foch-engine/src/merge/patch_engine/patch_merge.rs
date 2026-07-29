@@ -148,11 +148,11 @@ fn address_group_order_key(
 }
 
 pub(crate) fn semantic_value_identity(value: &AstValue) -> String {
-	fingerprint::value_fingerprint(value)
+	crate::merge::semantic_fingerprint::value_fingerprint(value)
 }
 
 pub(crate) fn semantic_statement_identity(statement: &AstStatement) -> String {
-	fingerprint::statement_fingerprint(statement)
+	crate::merge::semantic_fingerprint::statement_fingerprint(statement)
 }
 
 // ---------------------------------------------------------------------------
@@ -652,8 +652,6 @@ pub(crate) use block_merge::{
 	ast_equal_ignoring_spans, child_identity, items_are_named_container,
 	merge_named_container_bodies, rename_for_conflict,
 };
-
-mod fingerprint;
 
 mod rename;
 use rename::{build_rename_map, rewrite_patch_for_renames};

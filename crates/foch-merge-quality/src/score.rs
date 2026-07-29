@@ -18,8 +18,8 @@ use std::sync::LazyLock;
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::model::{MergeReport, MergeReportStatus};
 use foch_engine::{
-	CheckRequest, Config, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeKernelMode,
-	run_merge_with_options_and_kernel,
+	CheckRequest, Config, MergeError, MergeEvaluationKernel, MergeExecuteOptions,
+	MergeExecutionResult, run_merge_for_evaluation,
 };
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
@@ -32,6 +32,8 @@ use foch_language::analyzer::parser::{
 };
 use foch_language::analyzer::semantic_index::parse_script_file;
 use regex::Regex;
+
+use crate::common_module::{CommonModuleDiagnostic, normalize_module_comparison};
 
 /// `^key = {` at a line start — a top-level Clausewitz definition.
 static TOP_KEY_RE: LazyLock<Regex> =
@@ -320,7 +322,7 @@ pub fn run_merge(
 		force,
 		retained_paths,
 		expected_base_snapshot_identity,
-		MergeKernelMode::Legacy,
+		MergeEvaluationKernel::AddressPatchReference,
 	)
 }
 
@@ -332,7 +334,7 @@ pub fn run_merge_with_kernel(
 	force: bool,
 	retained_paths: Option<BTreeSet<String>>,
 	expected_base_snapshot_identity: Option<&str>,
-	merge_kernel: MergeKernelMode,
+	merge_kernel: MergeEvaluationKernel,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let playset = playset.to_path_buf();
 	let out_dir = out_dir.to_path_buf();
@@ -363,7 +365,7 @@ fn run_merge_inner(
 	force: bool,
 	retained_paths: Option<BTreeSet<String>>,
 	expected_base_snapshot_identity: Option<&str>,
-	merge_kernel: MergeKernelMode,
+	merge_kernel: MergeEvaluationKernel,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let mut game_path = HashMap::new();
 	if let Some(root) = basegame_root {
@@ -381,7 +383,7 @@ fn run_merge_inner(
 	if let Some(identity) = expected_base_snapshot_identity {
 		request = request.with_expected_base_snapshot_identity(identity);
 	}
-	let result = run_merge_with_options_and_kernel(
+	let result = run_merge_for_evaluation(
 		request,
 		MergeExecuteOptions {
 			out_dir: out_dir.to_path_buf(),
@@ -1619,6 +1621,39 @@ pub struct SemanticAtomDiff {
 	pub right_only: BTreeMap<String, usize>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StructuredModuleSemanticRelation {
+	pub(crate) diff: SemanticAtomDiff,
+	pub(crate) diagnostics: Vec<CommonModuleDiagnostic>,
+}
+
+impl StructuredModuleSemanticRelation {
+	pub(crate) fn is_equivalent(&self) -> bool {
+		self.diagnostics.is_empty()
+			&& self.diff.left_only.is_empty()
+			&& self.diff.right_only.is_empty()
+	}
+}
+
+pub(crate) fn structured_module_semantic_relation(
+	relative_path: &str,
+	candidate: &AstFile,
+	human: &AstFile,
+) -> Option<StructuredModuleSemanticRelation> {
+	let module_policy = definition_module_policy_for_path(relative_path)?;
+	let descriptor = eu4_profile().classify_content_family(Path::new(relative_path))?;
+	let comparison = normalize_module_comparison(
+		candidate,
+		human,
+		&descriptor.merge_policies,
+		module_policy.namespace_prefix,
+	);
+	Some(StructuredModuleSemanticRelation {
+		diff: semantic_atom_diff_ast(&comparison.candidate, &comparison.human),
+		diagnostics: comparison.diagnostics,
+	})
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ReviewSemanticLayer {
 	pub semantic_content_id: String,
@@ -2349,6 +2384,45 @@ mod classify_tests {
 				.iter()
 				.all(|source| !source.vs_base.left_only.is_empty())
 		);
+	}
+
+	#[test]
+	fn structured_module_relation_accepts_inverted_if_else() {
+		let temp = tempfile::tempdir().unwrap();
+		let candidate_path = temp.path().join("candidate.txt");
+		let human_path = temp.path().join("human.txt");
+		write_file(
+			temp.path(),
+			"candidate.txt",
+			"faith = {\n\
+			\tif = { limit = { has_country_flag = selected } add_stability = 1 }\n\
+			\telse = { add_prestige = 1 }\n\
+			}\n",
+		);
+		write_file(
+			temp.path(),
+			"human.txt",
+			"faith = {\n\
+			\tif = { limit = { NOT = { has_country_flag = selected } } add_prestige = 1 }\n\
+			\telse = { add_stability = 1 }\n\
+			}\n",
+		);
+		let candidate = parse_clausewitz_file(&candidate_path);
+		let human = parse_clausewitz_file(&human_path);
+		assert!(candidate.diagnostics.is_empty());
+		assert!(human.diagnostics.is_empty());
+		let raw = semantic_atom_diff_ast(&candidate.ast, &human.ast);
+		assert!(!raw.left_only.is_empty());
+		assert!(!raw.right_only.is_empty());
+
+		let relation = structured_module_semantic_relation(
+			"common/religions/zzz_foch_religions.txt",
+			&candidate.ast,
+			&human.ast,
+		)
+		.expect("religions is a Structured definition module");
+
+		assert!(relation.is_equivalent(), "{relation:?}");
 	}
 
 	#[test]

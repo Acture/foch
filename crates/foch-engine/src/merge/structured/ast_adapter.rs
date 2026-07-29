@@ -84,7 +84,7 @@ pub(crate) fn normalize_ast_with_findings(
 	policy: &impl ClausewitzTreePolicy,
 ) -> Result<(NormalizedTree, Vec<String>), AstAdapterError> {
 	let mut findings = Vec::new();
-	let children = normalize_statements(&file.statements, policy, &mut findings)?;
+	let children = normalize_statements(&file.statements, None, policy, &mut findings)?;
 	NormalizedTree::from_root(branch(
 		FILE_KIND,
 		None,
@@ -114,6 +114,7 @@ pub(crate) fn denormalize_ast(
 
 fn normalize_statements(
 	statements: &[AstStatement],
+	parent_assignment_key: Option<&str>,
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<Vec<TreeNode>, AstAdapterError> {
@@ -132,13 +133,21 @@ fn normalize_statements(
 			children.push(chain);
 			index = next;
 		} else {
-			let item_anchor = scalar_item_anchor(
-				&statements[index],
-				&mut scalar_item_occurrences,
-				&mut numeric_item_position,
-			);
+			let item_anchor = match &statements[index] {
+				AstStatement::Item { value, .. } => policy
+					.item_anchor(parent_assignment_key, value)
+					.or_else(|| {
+						scalar_item_anchor(
+							&statements[index],
+							&mut scalar_item_occurrences,
+							&mut numeric_item_position,
+						)
+					}),
+				AstStatement::Assignment { .. } | AstStatement::Comment { .. } => None,
+			};
 			children.push(normalize_statement_with_item_anchor(
 				&statements[index],
+				parent_assignment_key,
 				policy,
 				item_anchor,
 				control_flow_findings,
@@ -161,11 +170,12 @@ pub(super) fn normalize_statement_with_findings(
 	policy: &impl ClausewitzTreePolicy,
 	control_flow_findings: &mut Vec<String>,
 ) -> Result<TreeNode, AstAdapterError> {
-	normalize_statement_with_item_anchor(statement, policy, None, control_flow_findings)
+	normalize_statement_with_item_anchor(statement, None, policy, None, control_flow_findings)
 }
 
 fn normalize_statement_with_item_anchor(
 	statement: &AstStatement,
+	parent_assignment_key: Option<&str>,
 	policy: &impl ClausewitzTreePolicy,
 	item_anchor: Option<SemanticKey>,
 	control_flow_findings: &mut Vec<String>,
@@ -176,7 +186,7 @@ fn normalize_statement_with_item_anchor(
 			let mut node = branch(
 				&kind,
 				Some(key.clone()),
-				policy.assignment_anchor(key, value),
+				policy.assignment_anchor(parent_assignment_key, key, value),
 				ChildOrder::Ordered,
 				ChildCardinality::ExactlyOne,
 				vec![normalize_value_with_findings(
@@ -262,7 +272,7 @@ pub(super) fn normalize_value_with_findings(
 			None,
 			policy.block_child_order(assignment_key),
 			ChildCardinality::Many,
-			normalize_statements(items, policy, control_flow_findings)?,
+			normalize_statements(items, assignment_key, policy, control_flow_findings)?,
 		),
 	})
 }

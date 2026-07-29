@@ -63,6 +63,12 @@ pub trait MergePolicy {
 		false
 	}
 
+	/// Select one revision's complete subtree for an atomic node. This runs
+	/// before node-level conflict selection and child PCS reconstruction.
+	fn select_subtree_revision(&self, _context: ChildSetContext<'_>) -> Option<RevisionId> {
+		None
+	}
+
 	fn select_child_revision(&self, _context: ChildSetContext<'_>) -> Option<RevisionId> {
 		None
 	}

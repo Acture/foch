@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy, ScalarMergePolicy,
-	ScalarReducerRule,
+	BlockMergePolicy, BlockPatchPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy,
+	ScalarMergePolicy, ScalarReducerRule,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
@@ -12,7 +12,7 @@ use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
 use crate::emit::emit_clausewitz_statements;
 
 use super::ast_adapter::{denormalize_ast, normalize_ast};
-use super::policy::DefaultClausewitzTreePolicy;
+use super::policy::ContentFamilyMergePolicy;
 use super::{ClausewitzScalarReduction, merge_clausewitz_files, merge_event_files};
 
 fn parse(source: &str) -> AstFile {
@@ -644,7 +644,9 @@ fn event_adapter_round_trips_ast_content_and_scalar_variants() {
 		\toption = { name = demo.accept }\n\
 		}\n",
 	);
-	let normalized = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
+	let policies = MergePolicies::default();
+	let policy = ContentFamilyMergePolicy::new(&policies);
+	let normalized = normalize_ast(&ast, &policy).expect("normalize AST");
 	let rebuilt = denormalize_ast(ast.path.clone(), &normalized).expect("rebuild AST");
 
 	assert_eq!(emit(&rebuilt), emit(&ast));
@@ -660,7 +662,9 @@ fn event_option_and_control_flow_use_their_intended_identity_scope() {
 		\toption = { name = demo.accept }\n\
 		}\n",
 	);
-	let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
+	let policies = MergePolicies::default();
+	let policy = ContentFamilyMergePolicy::new(&policies);
+	let tree = normalize_ast(&ast, &policy).expect("normalize AST");
 	let anchors = tree
 		.nodes()
 		.filter_map(|(_, node)| node.anchor.as_ref())
@@ -721,7 +725,9 @@ fn event_adapter_groups_else_branches_and_comments_into_one_chain() {
 		\t}\n\
 		}\n",
 	);
-	let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
+	let policies = MergePolicies::default();
+	let policy = ContentFamilyMergePolicy::new(&policies);
+	let tree = normalize_ast(&ast, &policy).expect("normalize AST");
 	let chains = tree
 		.nodes()
 		.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))
@@ -1515,6 +1521,66 @@ fn structured_merge_applies_path_scoped_numeric_reducers_with_provenance() {
 			"province_trade_power_modifier".to_string(),
 		]) && reduction.output == ".15"
 	}));
+}
+
+#[test]
+fn structured_merge_applies_the_content_family_numeric_reducer() {
+	let policies = MergePolicies {
+		scalar: ScalarMergePolicy::Sum,
+		..MergePolicies::default()
+	};
+	let base = parse("estate = { loyalty = 10 }\n");
+	let left = parse("estate = { loyalty = 15 }\n");
+	let right = parse("estate = { loyalty = 20 }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("numeric reducer resolves"));
+	assert!(output.contains("loyalty = 35"), "{output}");
+}
+
+#[test]
+fn structured_merge_applies_atomic_block_replacement_policy() {
+	let policies = MergePolicies {
+		block: BlockMergePolicy::Replace,
+		..MergePolicies::default()
+	};
+	let base = parse("node = { value = 1 base_only = yes }\n");
+	let left = parse("node = { value = 2 left_only = yes }\n");
+	let right = parse("node = { value = 3 right_only = yes }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("replacement resolves"));
+	assert!(output.contains("value = 3"), "{output}");
+	assert!(output.contains("right_only = yes"), "{output}");
+	assert!(!output.contains("left_only"), "{output}");
+	assert!(!output.contains("base_only"), "{output}");
+}
+
+#[test]
+fn structured_union_blocks_match_children_by_content() {
+	let policies = MergePolicies {
+		block_patch: BlockPatchPolicy::Union,
+		..MergePolicies::default()
+	};
+	let base = parse("names = { tag = Base }\n");
+	let left = parse("names = { tag = Base tag = Left }\n");
+	let right = parse("names = { tag = Base tag = Right }\n");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &policies).unwrap();
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("union resolves"));
+	for value in ["Base", "Left", "Right"] {
+		assert_eq!(
+			output.matches(&format!("tag = {value}")).count(),
+			1,
+			"{output}"
+		);
+	}
 }
 
 #[test]

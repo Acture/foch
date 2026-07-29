@@ -18,8 +18,8 @@ use super::super::patch::{
 };
 use super::super::patch_apply::apply_patches_with_nested;
 use super::super::patch_merge::{
-	PatchMergeResult, PatchResolution, merge_patch_sets_for_file, order_patches_by_source,
-	semantic_statement_identity, semantic_value_identity,
+	AttributedPatch, PatchAddress, PatchMergeResult, PatchResolution, merge_patch_sets_for_file,
+	order_patches_by_source, semantic_statement_identity, semantic_value_identity,
 };
 use super::dag::{
 	FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides, topo_levels,
@@ -33,11 +33,14 @@ use super::dag_pipeline::{
 };
 use crate::cache::{DagBaseCache, ModDiffCache};
 use crate::merge::kernel::MergeKernelMode;
-use crate::merge::structured::{StructuredDagProtocol, StructuredDagState, StructuredJoinKind};
+use crate::merge::structured::{
+	ClausewitzFileAdapter, DefinitionModuleAdapter, EventFileAdapter, TreeConflictCandidate,
+	TreeDagProtocol, TreeDagState, TreeMergeAdapter, TreeMergeUnit,
+};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
-pub(crate) struct DagPatchComputation {
+pub(crate) struct DagMergeComputation {
 	pub mod_patches: Vec<(String, usize, Vec<ClausewitzPatch>)>,
 	pub base_statements: Vec<AstStatement>,
 	pub merged_statements: Vec<AstStatement>,
@@ -53,7 +56,7 @@ pub(crate) struct DagPatchComputation {
 	pub definition_participants: BTreeMap<String, Vec<MergeTraceContributor>>,
 }
 
-pub(crate) struct DagPatchRequest<'a> {
+pub(crate) struct DagMergeRequest<'a> {
 	pub file_path: &'a str,
 	pub contributors: &'a [ResolvedFileContributor],
 	pub merge_key_source: MergeKeySource,
@@ -65,7 +68,7 @@ pub(crate) struct DagPatchRequest<'a> {
 	pub script_cache: Option<&'a WorkspaceScriptCache>,
 }
 
-struct DagPatchArgs<'a> {
+struct DagMergeArgs<'a> {
 	file_dag: &'a FileDag,
 	vanilla: Option<&'a ParsedScriptFile>,
 	contributors: &'a HashMap<ModId, ParsedScriptFile>,
@@ -75,6 +78,7 @@ struct DagPatchArgs<'a> {
 	mod_hashes: Option<&'a HashMap<ModId, String>>,
 	game_version: &'a str,
 	kernel: MergeKernelMode,
+	tree_unit: TreeMergeUnit,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -127,13 +131,13 @@ struct DagApplyCacheEvent {
 }
 
 #[derive(Clone, Debug)]
-struct LegacyDagState {
+struct PatchBaselineDagState {
 	statements: Vec<AstStatement>,
 	intent_only_patches: Vec<ClausewitzPatch>,
 	pending_conflicts: Vec<PatchResolution>,
 }
 
-struct LegacyDagProtocol<'a> {
+struct PatchBaselineDagProtocol<'a> {
 	file_dag: &'a FileDag,
 	base_statements: &'a [AstStatement],
 	template: Option<&'a ParsedScriptFile>,
@@ -189,26 +193,26 @@ fn dag_apply_cache_events() -> Vec<DagApplyCacheEvent> {
 /// Each contributor is diffed against its resolved direct-parent view. The
 /// resulting effective node state is retained for descendants; incomparable
 /// branch frontiers are merged only at joins and at the final sink frontier.
-pub(crate) fn compute_dag_patches(
-	request: DagPatchRequest<'_>,
-) -> Result<DagPatchComputation, String> {
+pub(crate) fn compute_dag_merge(
+	request: DagMergeRequest<'_>,
+) -> Result<DagMergeComputation, String> {
 	let mut handler = DeferHandler;
-	compute_dag_patches_with_handler(request, &mut handler)
+	compute_dag_merge_with_handler(request, &mut handler)
 }
 
-pub(crate) fn compute_dag_patches_with_handler(
-	request: DagPatchRequest<'_>,
+pub(crate) fn compute_dag_merge_with_handler(
+	request: DagMergeRequest<'_>,
 	handler: &mut dyn ConflictHandler,
-) -> Result<DagPatchComputation, String> {
-	compute_dag_patches_with_handler_and_kernel(request, handler, MergeKernelMode::Legacy)
+) -> Result<DagMergeComputation, String> {
+	compute_dag_merge_for_evaluation(request, handler, MergeKernelMode::Structured)
 }
 
-pub(crate) fn compute_dag_patches_with_handler_and_kernel(
-	request: DagPatchRequest<'_>,
+pub(crate) fn compute_dag_merge_for_evaluation(
+	request: DagMergeRequest<'_>,
 	handler: &mut dyn ConflictHandler,
 	kernel: MergeKernelMode,
-) -> Result<DagPatchComputation, String> {
-	let DagPatchRequest {
+) -> Result<DagMergeComputation, String> {
+	let DagMergeRequest {
 		file_path,
 		contributors,
 		merge_key_source,
@@ -230,7 +234,7 @@ pub(crate) fn compute_dag_patches_with_handler_and_kernel(
 	let parsed_contributors =
 		parse_active_mod_contributors(file_path, contributors, &file_dag, script_cache)?;
 	let mod_hashes = contributor_mod_hashes(contributors, &file_dag);
-	compute_dag_patches_from_parsed_with_cache(DagPatchArgs {
+	compute_dag_merge_from_parsed_with_cache(DagMergeArgs {
 		file_dag: &file_dag,
 		vanilla: vanilla.as_ref(),
 		contributors: &parsed_contributors,
@@ -240,6 +244,7 @@ pub(crate) fn compute_dag_patches_with_handler_and_kernel(
 		mod_hashes: Some(&mod_hashes),
 		game_version,
 		kernel,
+		tree_unit: TreeMergeUnit::File,
 	})
 }
 
@@ -602,7 +607,7 @@ fn cached_or_diff_patches(args: CachedDiffArgs<'_>) -> Vec<ClausewitzPatch> {
 		&patches,
 	) {
 		tracing::warn!(
-			target: "foch::merge::patch_deps",
+			target: "foch::merge::dag_merge",
 			path = %target_path,
 			error = %err,
 			"failed to store mod diff cache entry"
@@ -655,7 +660,7 @@ fn cached_or_apply_base(args: CachedApplyArgs<'_>) -> Vec<AstStatement> {
 		&statements,
 	) {
 		tracing::warn!(
-			target: "foch::merge::patch_deps",
+			target: "foch::merge::dag_merge",
 			path = %file_path,
 			error = %err,
 			"failed to store DAG base cache entry"
@@ -801,11 +806,11 @@ fn extend_unique_conflicts(target: &mut Vec<PatchResolution>, source: &[PatchRes
 	}
 }
 
-impl EffectiveNodeProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
+impl EffectiveNodeProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 	fn effective_node(
 		&mut self,
-		request: EffectiveNodeRequest<'_, LegacyDagState>,
-	) -> Result<LegacyDagState, String> {
+		request: EffectiveNodeRequest<'_, PatchBaselineDagState>,
+	) -> Result<PatchBaselineDagState, String> {
 		extend_unique_conflicts(
 			&mut self.seen_pending_conflicts,
 			&request.parent.pending_conflicts,
@@ -862,7 +867,7 @@ impl EffectiveNodeProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
 			self.file_dag.precedence_of(request.mod_id),
 			patches,
 		));
-		Ok(LegacyDagState {
+		Ok(PatchBaselineDagState {
 			statements: effective_statements,
 			intent_only_patches,
 			pending_conflicts,
@@ -870,11 +875,11 @@ impl EffectiveNodeProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
 	}
 }
 
-impl DagJoinProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
+impl DagJoinProtocol<PatchBaselineDagState> for PatchBaselineDagProtocol<'_> {
 	fn join(
 		&mut self,
-		request: DagJoinRequest<'_, LegacyDagState>,
-	) -> Result<LegacyDagState, String> {
+		request: DagJoinRequest<'_, PatchBaselineDagState>,
+	) -> Result<PatchBaselineDagState, String> {
 		let mut pending_conflicts = Vec::new();
 		let mut all_intent_only = Vec::new();
 		let mut frontier_addresses = BTreeSet::new();
@@ -956,7 +961,7 @@ impl DagJoinProtocol<LegacyDagState> for LegacyDagProtocol<'_> {
 		});
 		extend_merge_result(&mut self.merge_result, merge_result);
 		extend_unique_conflicts(&mut self.seen_pending_conflicts, &pending_conflicts);
-		Ok(LegacyDagState {
+		Ok(PatchBaselineDagState {
 			statements,
 			intent_only_patches: surviving_intents,
 			pending_conflicts,
@@ -1029,27 +1034,27 @@ fn record_downstream_resolutions(
 	}
 }
 
-pub(crate) fn compute_dag_patches_from_parsed(
+pub(crate) fn compute_dag_merge_from_parsed(
 	file_dag: &FileDag,
 	vanilla: Option<&ParsedScriptFile>,
 	contributors: &HashMap<ModId, ParsedScriptFile>,
 	merge_key_source: MergeKeySource,
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
-) -> Result<DagPatchComputation, String> {
-	compute_dag_patches_from_parsed_with_kernel(
+) -> Result<DagMergeComputation, String> {
+	compute_dag_merge_from_parsed_for_evaluation(
 		file_dag,
 		vanilla,
 		contributors,
 		merge_key_source,
 		policies,
 		handler,
-		MergeKernelMode::Legacy,
+		MergeKernelMode::Structured,
 	)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_dag_patches_from_parsed_with_kernel(
+pub(crate) fn compute_dag_merge_from_parsed_for_evaluation(
 	file_dag: &FileDag,
 	vanilla: Option<&ParsedScriptFile>,
 	contributors: &HashMap<ModId, ParsedScriptFile>,
@@ -1057,8 +1062,8 @@ pub(crate) fn compute_dag_patches_from_parsed_with_kernel(
 	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 	kernel: MergeKernelMode,
-) -> Result<DagPatchComputation, String> {
-	compute_dag_patches_from_parsed_with_cache(DagPatchArgs {
+) -> Result<DagMergeComputation, String> {
+	compute_dag_merge_from_parsed_with_cache(DagMergeArgs {
 		file_dag,
 		vanilla,
 		contributors,
@@ -1068,16 +1073,32 @@ pub(crate) fn compute_dag_patches_from_parsed_with_kernel(
 		mod_hashes: None,
 		game_version: "unknown",
 		kernel,
+		tree_unit: inferred_tree_merge_unit(vanilla, contributors),
 	})
 }
 
-fn compute_dag_patches_from_parsed_with_cache(
-	args: DagPatchArgs<'_>,
-) -> Result<DagPatchComputation, String> {
+fn inferred_tree_merge_unit(
+	vanilla: Option<&ParsedScriptFile>,
+	contributors: &HashMap<ModId, ParsedScriptFile>,
+) -> TreeMergeUnit {
+	let is_event = vanilla
+		.into_iter()
+		.chain(contributors.values())
+		.any(|file| file.file_kind.as_str() == "events");
+	if is_event {
+		TreeMergeUnit::File
+	} else {
+		TreeMergeUnit::DefinitionModule
+	}
+}
+
+fn compute_dag_merge_from_parsed_with_cache(
+	args: DagMergeArgs<'_>,
+) -> Result<DagMergeComputation, String> {
 	let caches_enabled = args.mod_hashes.is_some_and(|hashes| !hashes.is_empty());
 	let diff_cache = caches_enabled.then(ModDiffCache::open_default);
 	let dag_base_cache = caches_enabled.then(DagBaseCache::open_default);
-	compute_dag_patches_from_parsed_with_caches(
+	compute_dag_merge_from_parsed_with_caches(
 		args,
 		PatchCaches {
 			diff: diff_cache.as_ref(),
@@ -1086,11 +1107,11 @@ fn compute_dag_patches_from_parsed_with_cache(
 	)
 }
 
-fn compute_dag_patches_from_parsed_with_caches(
-	args: DagPatchArgs<'_>,
+fn compute_dag_merge_from_parsed_with_caches(
+	args: DagMergeArgs<'_>,
 	caches: PatchCaches<'_>,
-) -> Result<DagPatchComputation, String> {
-	let DagPatchArgs {
+) -> Result<DagMergeComputation, String> {
+	let DagMergeArgs {
 		file_dag,
 		vanilla,
 		contributors,
@@ -1100,6 +1121,7 @@ fn compute_dag_patches_from_parsed_with_caches(
 		mod_hashes,
 		game_version,
 		kernel,
+		tree_unit,
 	} = args;
 	let base_statements = final_base_statements(file_dag, vanilla);
 	let diff_cache_game_version = format!(
@@ -1120,12 +1142,12 @@ fn compute_dag_patches_from_parsed_with_caches(
 	} = caches;
 	let artifacts = match kernel {
 		MergeKernelMode::Legacy => {
-			let root = LegacyDagState {
+			let root = PatchBaselineDagState {
 				statements: base_statements.clone(),
 				intent_only_patches: Vec::new(),
 				pending_conflicts: Vec::new(),
 			};
-			let mut protocol = LegacyDagProtocol {
+			let mut protocol = PatchBaselineDagProtocol {
 				file_dag,
 				base_statements: &base_statements,
 				template,
@@ -1166,22 +1188,34 @@ fn compute_dag_patches_from_parsed_with_caches(
 			}
 		}
 		MergeKernelMode::Structured => {
-			let kind = if template.is_some_and(|file| file.file_kind.as_str() == "events") {
-				StructuredJoinKind::Event
-			} else {
-				StructuredJoinKind::DefinitionModule
+			let file_adapter = ClausewitzFileAdapter;
+			let event_adapter = EventFileAdapter;
+			let module_adapter = DefinitionModuleAdapter;
+			let adapter: &dyn TreeMergeAdapter = match tree_unit {
+				TreeMergeUnit::File
+					if template.is_some_and(|file| file.file_kind.as_str() == "events") =>
+				{
+					&event_adapter
+				}
+				TreeMergeUnit::File => &file_adapter,
+				TreeMergeUnit::DefinitionModule => &module_adapter,
 			};
-			let root = StructuredDagState {
+			let root = TreeDagState {
 				statements: base_statements.clone(),
+				unresolved_conflicts: Vec::new(),
+				handler_resolutions: Vec::new(),
+				resolved_conflict_ids: Vec::new(),
+				external_file_resolution: None,
+				keep_existing: false,
 			};
-			let mut protocol = StructuredDagProtocol::new(kind, policies, vanilla.is_some());
+			let mut protocol = TreeDagProtocol::new(adapter, policies, vanilla.is_some(), handler);
 			let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
 			let DagPipelineResult {
 				final_state,
 				parent_states,
 				..
 			} = pipeline;
-			let mod_patches = compute_structured_diagnostic_patches(
+			let mod_patches = compute_tree_diagnostic_patches(
 				file_dag,
 				contributors,
 				&parent_states,
@@ -1192,10 +1226,11 @@ fn compute_dag_patches_from_parsed_with_caches(
 				diff_cache,
 				&diff_cache_game_version,
 			)?;
+			let merge_result = tree_merge_result(file_dag.file_path(), &final_state);
 			DagPipelineArtifacts {
 				mod_patches,
 				merged_statements: final_state.statements,
-				merge_result: PatchMergeResult::default(),
+				merge_result,
 				parent_statements: parent_states
 					.into_iter()
 					.map(|(mod_id, state)| (mod_id, state.statements))
@@ -1215,7 +1250,7 @@ fn compute_dag_patches_from_parsed_with_caches(
 	);
 	let definition_participants =
 		compute_definition_participants(&direct_definition_keys, file_dag);
-	Ok(DagPatchComputation {
+	Ok(DagMergeComputation {
 		mod_patches: artifacts.mod_patches,
 		base_statements,
 		merged_statements: artifacts.merged_statements,
@@ -1232,11 +1267,113 @@ struct DagPipelineArtifacts {
 	parent_statements: HashMap<ModId, Vec<AstStatement>>,
 }
 
+fn tree_merge_result(file_path: &str, state: &TreeDagState) -> PatchMergeResult {
+	let conflicts = state
+		.unresolved_conflicts
+		.iter()
+		.map(|conflict| {
+			let patches = conflict
+				.candidates
+				.iter()
+				.filter_map(|candidate| {
+					tree_conflict_candidate_patch(
+						&conflict.address_path,
+						&conflict.address_key,
+						conflict.base_statement.as_ref(),
+						candidate,
+					)
+					.map(|patch| AttributedPatch {
+						mod_id: candidate.source_id.clone(),
+						precedence: candidate.precedence,
+						patch,
+					})
+				})
+				.collect::<Vec<_>>();
+			PatchResolution::Conflict {
+				address: PatchAddress {
+					path: conflict.address_path.clone(),
+					key: conflict.address_key.clone(),
+				},
+				patches,
+				reason: conflict.reason.clone(),
+			}
+		})
+		.collect::<Vec<_>>();
+	let mut result = PatchMergeResult {
+		handler_resolved_count: state.resolved_conflict_ids.len(),
+		handler_resolutions: state.handler_resolutions.clone(),
+		conflicts,
+		..PatchMergeResult::default()
+	};
+	result.stats.conflict_patches = result.conflicts.len();
+	result.stats.total_patches = result
+		.conflicts
+		.iter()
+		.map(|conflict| match conflict {
+			PatchResolution::Conflict { patches, .. } => patches.len(),
+			PatchResolution::Resolved(_) | PatchResolution::AutoMerged { .. } => 0,
+		})
+		.sum();
+	if let Some(source) = &state.external_file_resolution {
+		result
+			.external_file_resolutions
+			.insert(PathBuf::from(file_path), source.clone());
+	}
+	if state.keep_existing {
+		result.keep_existing_paths.insert(PathBuf::from(file_path));
+	}
+	result
+}
+
+fn tree_conflict_candidate_patch(
+	path: &[String],
+	key: &str,
+	base: Option<&AstStatement>,
+	candidate: &TreeConflictCandidate,
+) -> Option<ClausewitzPatch> {
+	match (base, candidate.statement.as_ref()) {
+		(
+			Some(AstStatement::Assignment {
+				value: old_value, ..
+			}),
+			Some(AstStatement::Assignment {
+				value: new_value, ..
+			}),
+		) if matches!(old_value, AstValue::Scalar { .. })
+			&& matches!(new_value, AstValue::Scalar { .. }) =>
+		{
+			Some(ClausewitzPatch::SetValue {
+				path: path.to_vec(),
+				key: key.to_string(),
+				old_value: old_value.clone(),
+				new_value: new_value.clone(),
+			})
+		}
+		(Some(old_statement), Some(new_statement)) => Some(ClausewitzPatch::ReplaceBlock {
+			path: path.to_vec(),
+			key: key.to_string(),
+			old_statement: old_statement.clone(),
+			new_statement: new_statement.clone(),
+		}),
+		(None, Some(statement)) => Some(ClausewitzPatch::InsertNode {
+			path: path.to_vec(),
+			key: key.to_string(),
+			statement: statement.clone(),
+		}),
+		(Some(removed), None) => Some(ClausewitzPatch::RemoveNode {
+			path: path.to_vec(),
+			key: key.to_string(),
+			removed: removed.clone(),
+		}),
+		(None, None) => None,
+	}
+}
+
 #[allow(clippy::too_many_arguments)]
-fn compute_structured_diagnostic_patches(
+fn compute_tree_diagnostic_patches(
 	file_dag: &FileDag,
 	contributors: &HashMap<ModId, ParsedScriptFile>,
-	parent_states: &HashMap<ModId, StructuredDagState>,
+	parent_states: &HashMap<ModId, TreeDagState>,
 	template: Option<&ParsedScriptFile>,
 	merge_key_source: MergeKeySource,
 	policies: &MergePolicies,
@@ -1245,7 +1382,7 @@ fn compute_structured_diagnostic_patches(
 	cache_context: &str,
 ) -> Result<Vec<(String, usize, Vec<ClausewitzPatch>)>, String> {
 	// These deltas feed stale-vanilla, dependency-misuse, and provenance
-	// reporting only. Structured DAG state and joins never consume them.
+	// reporting only. Tree DAG state and joins never consume them.
 	let all_contributors = file_dag
 		.contributors()
 		.iter()
@@ -1901,11 +2038,11 @@ mod tests {
 		}
 	}
 
-	fn compute_structured_event_join(
+	fn compute_tree_event_join(
 		vanilla_source: Option<&str>,
 		left_source: &str,
 		right_source: &str,
-	) -> Result<DagPatchComputation, String> {
+	) -> Result<DagMergeComputation, String> {
 		let mods = vec![
 			mod_with("left", "Left", vec![], vec![]),
 			mod_with("right", "Right", vec![], vec![]),
@@ -1929,7 +2066,7 @@ mod tests {
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events content family");
 		let mut handler = DeferHandler;
-		compute_dag_patches_from_parsed_with_kernel(
+		compute_dag_merge_from_parsed_for_evaluation(
 			&file_dag,
 			vanilla.as_ref(),
 			&inventory,
@@ -1940,11 +2077,11 @@ mod tests {
 		)
 	}
 
-	fn compute_structured_definition_module_join(
+	fn compute_tree_definition_module_join(
 		vanilla_source: &str,
 		left_source: &str,
 		right_source: &str,
-	) -> Result<DagPatchComputation, String> {
+	) -> Result<DagMergeComputation, String> {
 		let path = "common/institutions/zzz_foch_institutions.txt";
 		let mods = vec![
 			mod_with("left", "Left", vec![], vec![]),
@@ -1975,7 +2112,7 @@ mod tests {
 			.classify_content_family(Path::new(path))
 			.expect("institutions content family");
 		let mut handler = DeferHandler;
-		compute_dag_patches_from_parsed_with_kernel(
+		compute_dag_merge_from_parsed_for_evaluation(
 			&file_dag,
 			Some(&vanilla),
 			&inventory,
@@ -1999,7 +2136,7 @@ mod tests {
 		vanilla_source: Option<&str>,
 		inventory: HashMap<ModId, ParsedScriptFile>,
 		ignore: IgnoreReplacePath,
-	) -> DagPatchComputation {
+	) -> DagMergeComputation {
 		compute_with_overrides(mods, contribs, vanilla_source, inventory, ignore, &[])
 	}
 
@@ -2010,7 +2147,7 @@ mod tests {
 		inventory: HashMap<ModId, ParsedScriptFile>,
 		ignore: IgnoreReplacePath,
 		dep_overrides: &[DepOverride],
-	) -> DagPatchComputation {
+	) -> DagMergeComputation {
 		compute_with_merge_key(
 			mods,
 			contribs,
@@ -2030,7 +2167,7 @@ mod tests {
 		ignore: IgnoreReplacePath,
 		dep_overrides: &[DepOverride],
 		merge_key_source: MergeKeySource,
-	) -> DagPatchComputation {
+	) -> DagMergeComputation {
 		let mut handler = DeferHandler;
 		compute_with_merge_key_and_handler(
 			mods,
@@ -2050,7 +2187,7 @@ mod tests {
 		vanilla_source: Option<&str>,
 		inventory: HashMap<ModId, ParsedScriptFile>,
 		policies: &MergePolicies,
-	) -> DagPatchComputation {
+	) -> DagMergeComputation {
 		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 		let fdag = induced_file_dag_with_overrides(
@@ -2062,7 +2199,7 @@ mod tests {
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
 		let mut handler = DeferHandler;
-		compute_dag_patches_from_parsed(
+		compute_dag_merge_from_parsed(
 			&fdag,
 			vanilla.as_ref(),
 			&inventory,
@@ -2083,7 +2220,7 @@ mod tests {
 		dep_overrides: &[DepOverride],
 		merge_key_source: MergeKeySource,
 		handler: &mut dyn ConflictHandler,
-	) -> DagPatchComputation {
+	) -> DagMergeComputation {
 		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 		let fdag = induced_file_dag_with_overrides(
@@ -2094,7 +2231,7 @@ mod tests {
 			dep_overrides,
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
-		compute_dag_patches_from_parsed(
+		compute_dag_merge_from_parsed(
 			&fdag,
 			vanilla.as_ref(),
 			&inventory,
@@ -2116,7 +2253,7 @@ mod tests {
 		handler: &mut dyn ConflictHandler,
 		diff_cache: &ModDiffCache,
 		dag_base_cache: &DagBaseCache,
-	) -> DagPatchComputation {
+	) -> DagMergeComputation {
 		let (dag, diags) = super::super::dag::build_mod_dag(&mods);
 		assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 		let fdag = induced_file_dag_with_overrides(
@@ -2127,8 +2264,8 @@ mod tests {
 			&[],
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
-		compute_dag_patches_from_parsed_with_caches(
-			DagPatchArgs {
+		compute_dag_merge_from_parsed_with_caches(
+			DagMergeArgs {
 				file_dag: &fdag,
 				vanilla: vanilla.as_ref(),
 				contributors: &inventory,
@@ -2138,6 +2275,7 @@ mod tests {
 				mod_hashes: Some(mod_hashes),
 				game_version: "cache-regression",
 				kernel: MergeKernelMode::Legacy,
+				tree_unit: TreeMergeUnit::File,
 			},
 			PatchCaches {
 				diff: Some(diff_cache),
@@ -2147,7 +2285,7 @@ mod tests {
 		.expect("compute cached DAG patches")
 	}
 
-	fn assert_computation_eq(expected: &DagPatchComputation, actual: &DagPatchComputation) {
+	fn assert_computation_eq(expected: &DagMergeComputation, actual: &DagMergeComputation) {
 		assert_eq!(actual.mod_patches, expected.mod_patches);
 		assert_eq!(actual.base_statements, expected.base_statements);
 		assert_eq!(actual.merged_statements, expected.merged_statements);
@@ -2160,14 +2298,14 @@ mod tests {
 	}
 
 	#[test]
-	fn structured_kernel_runs_at_the_two_sink_event_final_join() {
+	fn tree_kernel_runs_at_the_two_sink_event_final_join() {
 		let base =
 			"country_event = { id = demo.1 title = demo.title option = { name = demo.accept } }\n";
 		let left = "country_event = { id = demo.1 title = demo.title trigger = { has_country_flag = left } option = { name = demo.accept } }\n";
 		let right = "country_event = { id = demo.1 title = demo.title option = { name = demo.accept } option = { name = demo.reject } }\n";
 
-		let result = compute_structured_event_join(Some(base), left, right)
-			.expect("structured event final join");
+		let result =
+			compute_tree_event_join(Some(base), left, right).expect("tree event final join");
 		let emitted = crate::emit::emit_clausewitz_statements(&result.merged_statements)
 			.expect("emit merged event");
 
@@ -2191,13 +2329,13 @@ mod tests {
 	}
 
 	#[test]
-	fn structured_kernel_runs_at_the_two_sink_definition_module_final_join() {
+	fn tree_kernel_runs_at_the_two_sink_definition_module_final_join() {
 		let base = "institution = { can_embrace = { OR = { trade_goods = ivory trade_goods = cloves } } }\n";
 		let right =
 			"institution = { can_embrace = { OR = { trade_goods = ivory trade_goods = fur } } }\n";
 
-		let result = compute_structured_definition_module_join(base, base, right)
-			.expect("structured definition-module final join");
+		let result = compute_tree_definition_module_join(base, base, right)
+			.expect("tree definition-module final join");
 		let emitted = crate::emit::emit_clausewitz_statements(&result.merged_statements)
 			.expect("emit merged definition module");
 
@@ -2211,7 +2349,7 @@ mod tests {
 	}
 
 	#[test]
-	fn structured_intermediate_join_never_falls_back_to_legacy() {
+	fn tree_kernel_accepts_three_parent_intermediate_join() {
 		let mods = vec![
 			mod_with("a", "A", vec![], vec![]),
 			mod_with("b", "B", vec![], vec![]),
@@ -2258,7 +2396,7 @@ mod tests {
 			.expect("events content family");
 		let mut handler = DeferHandler;
 
-		let error = compute_dag_patches_from_parsed_with_kernel(
+		let result = compute_dag_merge_from_parsed_for_evaluation(
 			&file_dag,
 			Some(&base),
 			&inventory,
@@ -2267,18 +2405,133 @@ mod tests {
 			&mut handler,
 			MergeKernelMode::Structured,
 		)
-		.expect_err("three-way Structured protocol rejects a three-parent intermediate join");
+		.expect("tree kernel folds all three intermediate revisions");
+		let emitted = crate::emit::emit_clausewitz_statements(&result.merged_statements)
+			.expect("emit tree result");
 
-		assert!(error.contains("expected exactly two revisions"), "{error}");
-		assert!(!error.contains("legacy"), "{error}");
+		assert!(result.merge_result.conflicts.is_empty());
+		assert!(emitted.contains("join = yes"), "{emitted}");
+		assert!(emitted.contains("right = yes"), "{emitted}");
 	}
 
 	#[test]
-	fn structured_kernel_rejects_an_implicit_empty_base() {
+	fn tree_handler_can_select_any_of_three_original_sources() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec![], vec![]),
+			mod_with("c", "C", vec![], vec![]),
+		];
+		let contributors = vec![
+			file_contributor("a", 0),
+			file_contributor("b", 1),
+			file_contributor("c", 2),
+		];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			"common/foo.txt",
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let base = parsed_file("__game__", "value = 0\n");
+		let inventory = parsed_inventory(&[
+			("a", "value = 1\n"),
+			("b", "value = 2\n"),
+			("c", "value = 3\n"),
+		]);
+
+		for (winner, expected) in [("a", "1"), ("b", "2"), ("c", "3")] {
+			let mut handler = PickModHandler { winner, calls: 0 };
+			let result = compute_dag_merge_from_parsed_for_evaluation(
+				&file_dag,
+				Some(&base),
+				&inventory,
+				MergeKeySource::AssignmentKey,
+				&MergePolicies::default(),
+				&mut handler,
+				MergeKernelMode::Structured,
+			)
+			.expect("resolve tree conflict by original source");
+
+			assert_eq!(handler.calls, 1);
+			assert!(result.merge_result.conflicts.is_empty());
+			assert_eq!(
+				root_scalar_values(&result.merged_statements, "value"),
+				vec![expected]
+			);
+		}
+	}
+
+	#[test]
+	fn unresolved_tree_conflict_reaches_manual_resolution_with_all_sources() {
+		let mods = vec![
+			mod_with("a", "A", vec![], vec![]),
+			mod_with("b", "B", vec![], vec![]),
+			mod_with("c", "C", vec![], vec![]),
+		];
+		let contributors = vec![
+			file_contributor("a", 0),
+			file_contributor("b", 1),
+			file_contributor("c", 2),
+		];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			"common/foo.txt",
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let base = parsed_file("__game__", "value = 0\n");
+		let inventory = parsed_inventory(&[
+			("a", "value = 1\n"),
+			("b", "value = 2\n"),
+			("c", "value = 3\n"),
+		]);
+		let mut handler = DeferHandler;
+
+		let result = compute_dag_merge_from_parsed_for_evaluation(
+			&file_dag,
+			Some(&base),
+			&inventory,
+			MergeKeySource::AssignmentKey,
+			&MergePolicies::default(),
+			&mut handler,
+			MergeKernelMode::Structured,
+		)
+		.expect("retain unresolved tree conflict");
+
+		let [
+			PatchResolution::Conflict {
+				address, patches, ..
+			},
+		] = result.merge_result.conflicts.as_slice()
+		else {
+			panic!(
+				"expected one tree conflict, got {:?}",
+				result.merge_result.conflicts
+			);
+		};
+		assert_eq!(address.path, Vec::<String>::new());
+		assert_eq!(address.key, "value");
+		assert_eq!(
+			patches
+				.iter()
+				.map(|patch| patch.mod_id.as_str())
+				.collect::<Vec<_>>(),
+			vec!["a", "b", "c"]
+		);
+	}
+
+	#[test]
+	fn tree_kernel_rejects_an_implicit_empty_base() {
 		let source = "country_event = { id = demo.1 title = demo.title }\n";
 
-		let error = compute_structured_event_join(None, source, source)
-			.expect_err("structured event merge requires vanilla");
+		let error =
+			compute_tree_event_join(None, source, source).expect_err("tree merge requires vanilla");
 
 		assert!(error.contains("non-empty vanilla base"), "{error}");
 	}
@@ -2308,7 +2561,7 @@ mod tests {
 		assert_eq!(target.stats.edit_over_remove_resolved, 5);
 	}
 
-	fn patches_for<'a>(result: &'a DagPatchComputation, mod_id: &str) -> &'a Vec<ClausewitzPatch> {
+	fn patches_for<'a>(result: &'a DagMergeComputation, mod_id: &str) -> &'a Vec<ClausewitzPatch> {
 		&result
 			.mod_patches
 			.iter()
@@ -2353,7 +2606,7 @@ mod tests {
 		keys
 	}
 
-	fn base_keys(result: &DagPatchComputation) -> Vec<String> {
+	fn base_keys(result: &DagMergeComputation) -> Vec<String> {
 		let mut keys: Vec<_> = result
 			.base_statements
 			.iter()
@@ -3759,7 +4012,7 @@ mod tests {
 		);
 	}
 
-	fn prov(result: &DagPatchComputation, key: &str) -> Vec<String> {
+	fn prov(result: &DagMergeComputation, key: &str) -> Vec<String> {
 		result
 			.definition_provenance
 			.get(key)
@@ -4268,8 +4521,7 @@ mod tests {
 			}
 		}
 		"#;
-		let result = compute_structured_event_join(Some(base), &ge, ee)
-			.expect("structured control-flow join");
+		let result = compute_tree_event_join(Some(base), &ge, ee).expect("tree control-flow join");
 
 		assert!(result.merge_result.conflicts.is_empty());
 		let output = rendered(&result.merged_statements);

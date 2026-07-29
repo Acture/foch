@@ -269,6 +269,8 @@ pub enum TreeError {
 	InvalidChildCardinality { kind: String, actual: usize },
 	#[error("node {0:?} is outside the normalized tree")]
 	UnknownNode(NodeId),
+	#[error("node `{kind}` is not a scalar leaf")]
+	InvalidScalarSynthesis { kind: String },
 }
 
 impl NormalizedTree {
@@ -322,6 +324,43 @@ impl NormalizedTree {
 		node.scalar_reducer_inputs = inputs;
 		node.scalar_reducer_output = Some(output);
 		Ok(())
+	}
+
+	pub fn synthesize_scalar_value(
+		&mut self,
+		id: NodeId,
+		value: String,
+		reducer_path: Vec<String>,
+		inputs: Vec<(RevisionId, String)>,
+	) -> Result<(), TreeError> {
+		let node = self
+			.nodes
+			.get_mut(id.get() as usize)
+			.ok_or(TreeError::UnknownNode(id))?;
+		if !node.children.is_empty() || node.value.is_none() {
+			return Err(TreeError::InvalidScalarSynthesis {
+				kind: node.kind.clone(),
+			});
+		}
+		node.value = Some(value.clone());
+		node.scalar_reducer_path = Some(reducer_path);
+		node.scalar_reducer_inputs = inputs;
+		node.scalar_reducer_output = Some(value);
+		self.recompute_summaries();
+		Ok(())
+	}
+
+	fn recompute_summaries(&mut self) {
+		for index in (0..self.nodes.len()).rev() {
+			let id = NodeId::new(index as u32);
+			let children = self.nodes[index].children.clone();
+			let (subtree_hash, height, descendant_count) =
+				summarize_node(id, &children, &self.nodes);
+			let node = &mut self.nodes[index];
+			node.subtree_hash = subtree_hash;
+			node.height = height;
+			node.descendant_count = descendant_count;
+		}
 	}
 }
 
@@ -553,6 +592,33 @@ mod tests {
 		assert_ne!(
 			first.node(first.root()).unwrap().subtree_hash,
 			changed.node(changed.root()).unwrap().subtree_hash
+		);
+	}
+
+	#[test]
+	fn scalar_synthesis_updates_value_evidence_and_ancestor_hashes() {
+		let mut tree = NormalizedTree::from_root(sample_tree()).unwrap();
+		let scalar = NodeId::new(1);
+		let original_root_hash = tree.node(tree.root()).unwrap().subtree_hash;
+
+		tree.synthesize_scalar_value(
+			scalar,
+			"merged".to_string(),
+			vec!["a".to_string()],
+			vec![
+				(RevisionId::new(1), "left".to_string()),
+				(RevisionId::new(2), "right".to_string()),
+			],
+		)
+		.unwrap();
+
+		let node = tree.node(scalar).unwrap();
+		assert_eq!(node.value.as_deref(), Some("merged"));
+		assert_eq!(node.scalar_reducer_output.as_deref(), Some("merged"));
+		assert_eq!(node.scalar_reducer_inputs.len(), 2);
+		assert_ne!(
+			tree.node(tree.root()).unwrap().subtree_hash,
+			original_root_hash
 		);
 	}
 

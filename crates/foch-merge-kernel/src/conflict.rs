@@ -23,6 +23,8 @@ pub struct StructuralConflict {
 	pub parent: Option<ClassId>,
 	pub base: Option<RevisionNode>,
 	pub revisions: SourceSet,
+	#[serde(default, skip_serializing_if = "Vec::is_empty")]
+	pub semantic_path: Vec<String>,
 	pub detail: String,
 }
 

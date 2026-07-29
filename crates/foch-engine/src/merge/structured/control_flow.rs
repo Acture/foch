@@ -1416,7 +1416,7 @@ mod tests {
 	use crate::emit::emit_clausewitz_statements;
 
 	use super::super::ast_adapter::{denormalize_ast, normalize_ast};
-	use super::super::policy::DefaultClausewitzTreePolicy;
+	use super::super::policy::ContentFamilyMergePolicy;
 	use super::super::{canonicalize_clausewitz_file, merge_clausewitz_files};
 
 	fn parse(source: &str) -> AstFile {
@@ -1590,7 +1590,9 @@ mod tests {
 			} }\n",
 		);
 
-		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize AST");
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&ast, &policy).expect("normalize AST");
 		let chain_count = tree
 			.nodes()
 			.filter(|(_, node)| node.kind.starts_with("clausewitz.control_flow.chain:"))
@@ -1660,8 +1662,9 @@ mod tests {
 			}\n",
 		);
 
-		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy)
-			.expect("normalize semantically redundant chain");
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&ast, &policy).expect("normalize semantically redundant chain");
 		assert!(
 			tree.nodes()
 				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
@@ -1681,8 +1684,9 @@ mod tests {
 			"trigger = {{ if = {{ limit = {{ OR = {{ {alternatives} }} }} add_prestige = 1 }} else = {{ add_stability = 1 }} }}\n"
 		));
 
-		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy)
-			.expect("preserve a bounded opaque chain");
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&ast, &policy).expect("preserve a bounded opaque chain");
 		assert!(
 			tree.nodes()
 				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:opaque")
@@ -1701,7 +1705,9 @@ mod tests {
 			}\n",
 		);
 
-		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy)
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&ast, &policy)
 			.expect("normalize chain with positive effective else guard");
 		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild complete chain");
 		let output = emit(&rebuilt);
@@ -1731,6 +1737,43 @@ mod tests {
 			.expect("canonicalize negative-first chain");
 		let positive = canonicalize_clausewitz_file(&positive_first, &MergePolicies::default())
 			.expect("canonicalize positive-first chain");
+
+		assert_eq!(emit(&negative), emit(&positive));
+	}
+
+	#[test]
+	fn canonicalizes_equivalent_inverted_chains_inside_definition_blocks() {
+		let negative_first = parse(
+			"faith = {\n\
+			\tif = { limit = { NOT = { has_country_flag = selected } } add_prestige = 1 }\n\
+			\telse = { add_stability = 1 }\n\
+			}\n",
+		);
+		let positive_first = parse(
+			"faith = {\n\
+			\tif = { limit = { has_country_flag = selected } add_stability = 1 }\n\
+			\telse = { add_prestige = 1 }\n\
+			}\n",
+		);
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let nested_tree =
+			normalize_ast(&negative_first, &policy).expect("normalize nested negative-first chain");
+		assert!(
+			nested_tree
+				.nodes()
+				.any(|(_, node)| node.kind == "clausewitz.control_flow.chain:complete"),
+			"{:?}",
+			nested_tree
+				.nodes()
+				.map(|(_, node)| node.kind.as_str())
+				.collect::<Vec<_>>()
+		);
+
+		let negative = canonicalize_clausewitz_file(&negative_first, &policies)
+			.expect("canonicalize nested negative-first chain");
+		let positive = canonicalize_clausewitz_file(&positive_first, &policies)
+			.expect("canonicalize nested positive-first chain");
 
 		assert_eq!(emit(&negative), emit(&positive));
 	}
@@ -1860,7 +1903,9 @@ mod tests {
 			} }\n",
 		);
 
-		let tree = normalize_ast(&ast, &DefaultClausewitzTreePolicy).expect("normalize nested AST");
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&ast, &policy).expect("normalize nested AST");
 		let rebuilt = denormalize_ast(ast.path.clone(), &tree).expect("rebuild nested AST");
 
 		assert_eq!(emit(&rebuilt), emit(&ast));

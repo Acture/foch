@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use foch_engine::MergeKernelMode;
+use foch_engine::MergeEvaluationKernel;
 use foch_merge_quality::{
 	CmdResult, archive, common_probe, config, corpus_shadow, dataset, fixtures, knowledge,
 	lifecycle, orchestrate, review_annotation, review_pack, shadow, symbols,
@@ -331,6 +331,19 @@ enum KnowledgeCommand {
 
 #[derive(Subcommand)]
 enum ReviewPackCommand {
+	/// Rescore pinned Legacy outputs into candidate baseline fixtures.
+	FreezeBaseline {
+		#[arg(long)]
+		out_dir: PathBuf,
+		#[arg(
+			long,
+			default_value = concat!(
+				env!("CARGO_MANIFEST_DIR"),
+				"/tests/fixtures/review-pack-selection.json"
+			)
+		)]
+		selection: PathBuf,
+	},
 	/// Reuse six pinned Legacy outputs and run at most six grouped Structured cases.
 	Build {
 		#[arg(long)]
@@ -402,11 +415,11 @@ enum KnowledgeProfileKind {
 	Eu4Modding,
 }
 
-impl From<ShadowKernelKind> for MergeKernelMode {
+impl From<ShadowKernelKind> for MergeEvaluationKernel {
 	fn from(value: ShadowKernelKind) -> Self {
 		match value {
-			ShadowKernelKind::Legacy => Self::Legacy,
-			ShadowKernelKind::Structured => Self::Structured,
+			ShadowKernelKind::Legacy => Self::AddressPatchReference,
+			ShadowKernelKind::Structured => Self::SemanticTree,
 		}
 	}
 }
@@ -807,6 +820,19 @@ fn main() -> CmdResult {
 			}
 		},
 		Cmd::ReviewPack { command } => match command {
+			ReviewPackCommand::FreezeBaseline { out_dir, selection } => {
+				let game = discover_game(&game_root, &steam_root)?;
+				let result = review_pack::freeze_legacy_baseline(
+					&review_pack::ReviewPackFreezeBaselineOptions {
+						selection: &selection,
+						dataset_root: &dataset_root,
+						output_dir: &out_dir,
+						game: &game,
+					},
+				)?;
+				println!("{}", serde_json::to_string_pretty(&result)?);
+				Ok(())
+			}
 			ReviewPackCommand::Build {
 				out_dir,
 				selection,

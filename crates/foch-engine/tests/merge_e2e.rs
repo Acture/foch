@@ -4,8 +4,8 @@ use foch_core::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
 };
 use foch_engine::{
-	CheckRequest, Config, MergeExecuteOptions, MergeKernelMode, run_merge_with_options,
-	run_merge_with_options_and_kernel,
+	CheckRequest, Config, MergeEvaluationKernel, MergeExecuteOptions, run_merge_for_evaluation,
+	run_merge_with_options,
 };
 use foch_language::analyzer::content_family::{ContentLoadPolicy, GameProfile};
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
@@ -459,9 +459,9 @@ fn eu4_minimal_passthrough_copies_per_path_files_and_materializes_common_module(
 }
 
 #[test]
-fn public_legacy_selection_matches_default_on_a_warm_modset_cache() {
+fn public_tree_selection_matches_default_on_a_warm_modset_cache() {
 	let fixture = fixture_dir("eu4_minimal_passthrough");
-	let temp_dir = tempfile::tempdir().expect("create legacy parity tempdir");
+	let temp_dir = tempfile::tempdir().expect("create tree parity tempdir");
 	let out_dir = temp_dir.path().join("out");
 	let game_root = temp_dir.path().join("empty-eu4-game");
 	fs::create_dir_all(&game_root).expect("create empty game root");
@@ -504,20 +504,21 @@ fn public_legacy_selection_matches_default_on_a_warm_modset_cache() {
 			.iter()
 			.map(|path| {
 				fs::read(out_dir.join(path))
-					.unwrap_or_else(|error| panic!("read legacy output {path}: {error}"))
+					.unwrap_or_else(|error| panic!("read tree output {path}: {error}"))
 			})
 			.collect::<Vec<_>>()
 	};
 
-	let default = run_merge_with_options(request(), options()).expect("run default legacy merge");
+	let default = run_merge_with_options(request(), options()).expect("run default tree merge");
 	assert_ne!(default.report.cache_source.as_deref(), Some("modset"));
 	let cold_outputs = read_outputs();
-	let explicit = run_merge_with_options_and_kernel(request(), options(), MergeKernelMode::Legacy)
-		.expect("run explicit legacy merge");
+	let explicit =
+		run_merge_for_evaluation(request(), options(), MergeEvaluationKernel::SemanticTree)
+			.expect("run explicit tree merge");
 	assert_eq!(
 		explicit.report.cache_source.as_deref(),
 		Some("modset"),
-		"the explicit Legacy rerun should exercise the warm modset-cache path"
+		"the explicit Tree rerun should exercise the warm modset-cache path"
 	);
 	assert_eq!(explicit.report.status, default.report.status);
 	assert_eq!(read_outputs(), cold_outputs);
@@ -1745,7 +1746,7 @@ fn structured_merge_rejects_a_synthetic_base_without_copying_a_winner() {
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 
-	let error = run_merge_with_options_and_kernel(
+	let error = run_merge_for_evaluation(
 		CheckRequest::from_playset_path(
 			fixture.join("dlc_load.json"),
 			Config {
@@ -1770,7 +1771,7 @@ fn structured_merge_rejects_a_synthetic_base_without_copying_a_winner() {
 			provenance: false,
 			retained_paths: Some(["events/test_events.txt".to_string()].into()),
 		},
-		MergeKernelMode::Structured,
+		MergeEvaluationKernel::SemanticTree,
 	)
 	.expect_err("structured merge must reject a synthetic three-way base");
 	let message = error.to_string();
@@ -1799,7 +1800,7 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 
-	let error = run_merge_with_options_and_kernel(
+	let error = run_merge_for_evaluation(
 		CheckRequest::from_playset_path(
 			fixture.join("dlc_load.json"),
 			Config {
@@ -1824,7 +1825,7 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 			provenance: false,
 			retained_paths: Some(["events/foo.txt".to_string()].into()),
 		},
-		MergeKernelMode::Structured,
+		MergeEvaluationKernel::SemanticTree,
 	)
 	.expect_err("structured merge must reject a copy-through unit");
 	let message = error.to_string();

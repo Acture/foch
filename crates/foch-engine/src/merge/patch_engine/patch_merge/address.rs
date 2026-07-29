@@ -1,8 +1,9 @@
 use foch_language::analyzer::content_family::{BlockPatchPolicy, MergePolicies};
 
+use crate::merge::semantic_fingerprint::{statement_fingerprint, value_fingerprint};
+
 use super::super::patch::{AstPath, ClausewitzPatch};
 use super::PatchAddress;
-use super::fingerprint::{statement_fingerprint, value_fingerprint};
 
 pub(super) fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -> PatchAddress {
 	match patch {

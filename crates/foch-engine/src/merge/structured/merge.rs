@@ -1,17 +1,15 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
 use foch_core::model::ScopeKind;
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, BooleanMergePolicy, CwtType, MergePolicies, OneSidedRemovalPolicy,
-	ScalarMergePolicy,
+	BlockPatchPolicy, BooleanMergePolicy, CwtType, MergePolicies, ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::{classify_script_file, script_container_scope_kind};
 use foch_merge_kernel::{
-	ChildSetContext, ConflictKind, DeleteModifyContext, DeleteUnchangedContext, MergeOutcome,
-	MergePolicy, NodeConflictContext, PolicyDecision, RevisionId, SourceSet, StructuralConflict,
-	three_way_merge_with_policy,
+	ConflictKind, MergeOutcome, NodeId, NormalizedNode, NormalizedTree, RevisionId, SourceSet,
+	StructuralConflict, three_way_merge_with_policy,
 };
 
 use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
@@ -19,7 +17,7 @@ use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body}
 use super::ast_adapter::{
 	AstAdapterError, denormalize_ast, normalize_ast, normalize_ast_with_findings,
 };
-use super::policy::DefaultClausewitzTreePolicy;
+use super::policy::{ContentFamilyMergePolicy, LocalSourceSelections};
 use super::trivia::{attach_trivia, detach_trivia, merge_trivia};
 
 #[derive(Clone, Debug)]
@@ -31,6 +29,7 @@ pub struct ClausewitzMergeOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClausewitzConflictSummary {
 	pub kind: &'static str,
+	pub semantic_path: Vec<String>,
 	pub detail: String,
 }
 
@@ -70,6 +69,7 @@ impl ClausewitzMergeOutcome {
 			.iter()
 			.map(|conflict| ClausewitzConflictSummary {
 				kind: conflict_kind_name(conflict.kind),
+				semantic_path: conflict.semantic_path.clone(),
 				detail: conflict.detail.clone(),
 			})
 			.collect()
@@ -124,16 +124,193 @@ pub fn merge_clausewitz_files(
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	merge_clausewitz_files_inner(base, left, right, policies, false)
+	merge_clausewitz_files_inner(base, left, right, policies, false, None)
 }
 
+#[cfg(test)]
 pub(crate) fn merge_event_files(
 	base: &AstFile,
 	left: &AstFile,
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	merge_clausewitz_files_inner(base, left, right, policies, true)
+	merge_clausewitz_files_inner(base, left, right, policies, true, None)
+}
+
+pub(crate) fn merge_clausewitz_files_with_source_selections(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+	source_selections: &LocalSourceSelections,
+) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
+	merge_clausewitz_files_inner(base, left, right, policies, false, Some(source_selections))
+}
+
+pub(crate) fn merge_event_files_with_source_selections(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+	source_selections: &LocalSourceSelections,
+) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
+	merge_clausewitz_files_inner(base, left, right, policies, true, Some(source_selections))
+}
+
+pub(crate) fn apply_nary_scalar_reducers(
+	base: &AstFile,
+	revisions: &[&AstFile],
+	merged: &AstFile,
+	policies: &MergePolicies,
+) -> Result<AstFile, AstAdapterError> {
+	if revisions.len() < 2
+		|| (policies.scalar_reducer_rules.is_empty() && !is_numeric_reducer(policies.scalar))
+	{
+		return Ok(merged.clone());
+	}
+
+	let policy = ContentFamilyMergePolicy::new(policies);
+	let base_tree = normalized_without_trivia(base, &policy)?;
+	let base_scalars = reducer_scalars(&base_tree, policies)?;
+	let revision_scalars = revisions
+		.iter()
+		.map(|revision| {
+			let tree = normalized_without_trivia(revision, &policy)?;
+			reducer_scalars(&tree, policies)
+		})
+		.collect::<Result<Vec<_>, AstAdapterError>>()?;
+
+	let (merged_semantic, merged_trivia) = detach_trivia(merged);
+	let mut merged_tree = normalize_ast(&merged_semantic, &policy)?;
+	let merged_scalars = reducer_scalars(&merged_tree, policies)?;
+	let mut changed_by_path: BTreeMap<Vec<String>, Vec<(RevisionId, String)>> = BTreeMap::new();
+	for (index, scalars) in revision_scalars.iter().enumerate() {
+		let source = RevisionId::new(u16::try_from(index + 1).map_err(|_| {
+			AstAdapterError::InvalidTree("too many scalar reducer revisions".to_string())
+		})?);
+		for (path, scalar) in scalars {
+			if base_scalars
+				.get(path)
+				.is_some_and(|base| base.value == scalar.value)
+			{
+				continue;
+			}
+			changed_by_path
+				.entry(path.clone())
+				.or_default()
+				.push((source, scalar.value.clone()));
+		}
+	}
+
+	for (path, inputs) in changed_by_path {
+		if inputs.len() < 2 || inputs.windows(2).all(|pair| pair[0].1 == pair[1].1) {
+			continue;
+		}
+		let reducer = scalar_reducer_for_path(policies, &path).ok_or_else(|| {
+			AstAdapterError::InvalidTree(format!(
+				"numeric reducer disappeared for semantic path {}",
+				path.join("/")
+			))
+		})?;
+		let output = reducer
+			.reduce_numeric_values(inputs.iter().map(|(_, value)| value.as_str()))
+			.ok_or_else(|| {
+				AstAdapterError::InvalidTree(format!(
+					"numeric reducer {reducer:?} rejected semantic path {}",
+					path.join("/")
+				))
+			})?;
+		let target = merged_scalars.get(&path).ok_or_else(|| {
+			AstAdapterError::InvalidTree(format!(
+				"merged tree dropped numeric reducer path {}",
+				path.join("/")
+			))
+		})?;
+		merged_tree.synthesize_scalar_value(target.node, output, path, inputs)?;
+	}
+
+	let mut reduced = denormalize_ast(merged.path.clone(), &merged_tree)?;
+	attach_trivia(&mut reduced, &merged_trivia);
+	Ok(reduced)
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReducerScalar {
+	node: NodeId,
+	value: String,
+}
+
+fn normalized_without_trivia(
+	file: &AstFile,
+	policy: &ContentFamilyMergePolicy<'_>,
+) -> Result<NormalizedTree, AstAdapterError> {
+	let (semantic, _) = detach_trivia(file);
+	normalize_ast(&semantic, policy)
+}
+
+fn reducer_scalars(
+	tree: &NormalizedTree,
+	policies: &MergePolicies,
+) -> Result<BTreeMap<Vec<String>, ReducerScalar>, AstAdapterError> {
+	let mut scalars = BTreeMap::new();
+	let mut ambiguous_paths = BTreeSet::new();
+	for (node, normalized) in tree.nodes() {
+		if scalar_reducer_for_node(policies, normalized).is_none() {
+			continue;
+		}
+		let value = normalized.value.clone().ok_or_else(|| {
+			AstAdapterError::InvalidTree(format!(
+				"numeric reducer target {} has no scalar value",
+				normalized.policy_path.join("/")
+			))
+		})?;
+		if !value
+			.parse::<f64>()
+			.ok()
+			.is_some_and(|number| number.is_finite())
+			|| ambiguous_paths.contains(&normalized.policy_path)
+		{
+			continue;
+		}
+		if scalars.contains_key(&normalized.policy_path) {
+			scalars.remove(&normalized.policy_path);
+			ambiguous_paths.insert(normalized.policy_path.clone());
+			continue;
+		}
+		scalars.insert(
+			normalized.policy_path.clone(),
+			ReducerScalar { node, value },
+		);
+	}
+	Ok(scalars)
+}
+
+fn scalar_reducer_for_node(
+	policies: &MergePolicies,
+	node: &NormalizedNode,
+) -> Option<ScalarMergePolicy> {
+	(node.children.is_empty()
+		&& node.kind.starts_with("clausewitz.scalar.")
+		&& node.value.is_some())
+	.then(|| scalar_reducer_for_path(policies, &node.policy_path))
+	.flatten()
+}
+
+fn scalar_reducer_for_path(policies: &MergePolicies, path: &[String]) -> Option<ScalarMergePolicy> {
+	policies
+		.scalar_reducer_rule_for_path(path)
+		.map(|rule| rule.reducer)
+		.or_else(|| is_numeric_reducer(policies.scalar).then_some(policies.scalar))
+}
+
+const fn is_numeric_reducer(policy: ScalarMergePolicy) -> bool {
+	matches!(
+		policy,
+		ScalarMergePolicy::Sum
+			| ScalarMergePolicy::Avg
+			| ScalarMergePolicy::Max
+			| ScalarMergePolicy::Min
+	)
 }
 
 /// Normalize a Clausewitz file through the same semantic representation used
@@ -143,7 +320,7 @@ pub fn canonicalize_clausewitz_file(
 	file: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<AstFile, AstAdapterError> {
-	let policy = DefaultClausewitzTreePolicy;
+	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
 	let canonical = canonicalize_boolean_or_definitions(file, policies, &mut scope_cache);
 	let (semantic, trivia) = detach_trivia(&canonical);
@@ -160,8 +337,12 @@ fn merge_clausewitz_files_inner(
 	right: &AstFile,
 	policies: &MergePolicies,
 	reduce_event_fallbacks: bool,
+	source_selections: Option<&LocalSourceSelections>,
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	let policy = DefaultClausewitzTreePolicy;
+	let policy = source_selections.map_or_else(
+		|| ContentFamilyMergePolicy::new(policies),
+		|selections| ContentFamilyMergePolicy::with_source_selections(policies, selections),
+	);
 	let mut scope_cache = HashMap::new();
 	let base = canonicalize_boolean_or_definitions(base, policies, &mut scope_cache);
 	let left = canonicalize_boolean_or_definitions(left, policies, &mut scope_cache);
@@ -192,9 +373,7 @@ fn merge_clausewitz_files_inner(
 				.map(|finding| format!("{revision}:{finding}")),
 		);
 	}
-	let kernel_policy = ClausewitzMergePolicy { policies };
-	let mut kernel =
-		three_way_merge_with_policy(&base_tree, &left_tree, &right_tree, &kernel_policy);
+	let mut kernel = three_way_merge_with_policy(&base_tree, &left_tree, &right_tree, &policy);
 	let mut tentative_ast = denormalize_ast(base.path.clone(), kernel.tentative_tree())?;
 	control_flow_findings.extend(
 		super::control_flow::orphan_paths(&tentative_ast.statements)
@@ -214,6 +393,7 @@ fn merge_clausewitz_files_inner(
 			parent: None,
 			base: None,
 			revisions: SourceSet::default(),
+			semantic_path: Vec::new(),
 			detail: format!("{count} control-flow finding(s) require review: {examples}"),
 		});
 	}
@@ -374,10 +554,7 @@ fn script_context(
 		return ScriptContext::Effect;
 	}
 	if matches!(normalized.as_str(), "if" | "else_if" | "else") {
-		return match parent {
-			ScriptContext::Data => ScriptContext::Trigger,
-			other => other,
-		};
+		return ScriptContext::Effect;
 	}
 
 	match scope_kind {
@@ -532,141 +709,4 @@ fn is_empty_ruler_fallback(statement: &AstStatement) -> bool {
 		&& items
 			.iter()
 			.all(|item| matches!(item, AstStatement::Comment { .. }))
-}
-
-struct ClausewitzMergePolicy<'a> {
-	policies: &'a MergePolicies,
-}
-
-impl MergePolicy for ClausewitzMergePolicy<'_> {
-	fn resolve_delete_unchanged(&self, context: DeleteUnchangedContext<'_>) -> PolicyDecision {
-		let scripted_hook_from_missing_container = context
-			.base
-			.value
-			.as_deref()
-			.is_some_and(|key| key.starts_with("pre_") || key.starts_with("post_"))
-			&& !context.parent_present_in_both_revisions
-			&& context.present_parent_changed_from_base;
-		let union_safe_control_branch = (context
-			.base
-			.kind
-			.starts_with("clausewitz.control_flow.guarded_branch:")
-			|| context
-				.base
-				.kind
-				.starts_with("clausewitz.control_flow.chain:"))
-			&& !context.base.kind.contains(":exclusive:")
-			&& context.deleted_parent_has_same_kind_gap_replacement
-			&& context.parent_present_in_both_revisions;
-		let additive_boolean_predicate = context
-			.base_parent
-			.is_some_and(|parent| is_boolean_block_kind(&parent.kind))
-			&& context.parent_present_in_both_revisions
-			&& context.present_parent_changed_from_base;
-		let boolean_alternative = context
-			.base_parent
-			.is_some_and(|parent| parent.kind == "clausewitz.block:OR")
-			&& context.parent_present_in_both_revisions;
-		let preserve = match self.policies.one_sided_removal {
-			OneSidedRemovalPolicy::Remove => false,
-			OneSidedRemovalPolicy::PreserveIfParentSurvives => {
-				context.parent_present_in_both_revisions
-			}
-			OneSidedRemovalPolicy::PreserveAdditiveStructure => {
-				scripted_hook_from_missing_container
-					|| union_safe_control_branch
-					|| additive_boolean_predicate
-			}
-			OneSidedRemovalPolicy::PreserveBooleanAlternatives => boolean_alternative,
-		};
-		if preserve
-			&& context.base_parent.is_some_and(|parent| {
-				parent.child_cardinality == foch_merge_kernel::ChildCardinality::Many
-			}) {
-			PolicyDecision::Resolved
-		} else {
-			PolicyDecision::Unresolved
-		}
-	}
-
-	fn resolve_delete_modify(&self, context: DeleteModifyContext<'_>) -> PolicyDecision {
-		if self.policies.edit_wins_over_remove
-			&& context.content_changed
-			&& !context.reparented
-			&& !context.reordered
-		{
-			PolicyDecision::Resolved
-		} else {
-			PolicyDecision::Unresolved
-		}
-	}
-
-	fn permits_ancestor_closure(&self, node: &foch_merge_kernel::NormalizedNode) -> bool {
-		node.kind.starts_with("clausewitz.block")
-			|| matches!(
-				node.value.as_deref(),
-				Some("immediate" | "hidden_effect" | "after")
-			)
-	}
-
-	fn select_child_revision(&self, context: ChildSetContext<'_>) -> Option<RevisionId> {
-		let (Some(base), Some(left), Some(right)) = (context.base, context.left, context.right)
-		else {
-			return None;
-		};
-		(is_negated_boolean_block_kind(&base.kind)
-			&& left.subtree_hash != base.subtree_hash
-			&& right.subtree_hash != base.subtree_hash)
-			.then_some(RevisionId::RIGHT)
-	}
-
-	fn resolve_divergent_node(&self, context: NodeConflictContext<'_>) -> PolicyDecision {
-		let scalar_conflict = matches!(
-			context.kind,
-			ConflictKind::InsertInsert | ConflictKind::Policy
-		) && context.left.is_some_and(is_scalar_node)
-			&& context.right.is_some_and(is_scalar_node);
-		if !scalar_conflict {
-			return PolicyDecision::Unresolved;
-		}
-		let left = context.left.expect("scalar conflict has left node");
-		let right = context.right.expect("scalar conflict has right node");
-		if left.policy_path == right.policy_path
-			&& let Some(rule) = self
-				.policies
-				.scalar_reducer_rule_for_path(&left.policy_path)
-			&& let (Some(left_value), Some(right_value)) =
-				(left.value.as_deref(), right.value.as_deref())
-			&& let Some(output) = rule.reducer.reduce_numeric_pair(left_value, right_value)
-		{
-			return PolicyDecision::SynthesizeScalar(output);
-		}
-		if self.policies.scalar == ScalarMergePolicy::LastWriter {
-			PolicyDecision::Select(RevisionId::RIGHT)
-		} else {
-			PolicyDecision::Unresolved
-		}
-	}
-}
-
-fn is_boolean_block_kind(kind: &str) -> bool {
-	matches!(
-		kind,
-		"clausewitz.block:AND"
-			| "clausewitz.block:NAND"
-			| "clausewitz.block:NOR"
-			| "clausewitz.block:NOT"
-			| "clausewitz.block:OR"
-	)
-}
-
-fn is_negated_boolean_block_kind(kind: &str) -> bool {
-	matches!(
-		kind,
-		"clausewitz.block:NAND" | "clausewitz.block:NOR" | "clausewitz.block:NOT"
-	)
-}
-
-fn is_scalar_node(node: &foch_merge_kernel::NormalizedNode) -> bool {
-	node.kind.starts_with("clausewitz.scalar.") && node.children.is_empty()
 }

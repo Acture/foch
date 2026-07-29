@@ -44,7 +44,14 @@ pub enum ReviewKernel {
 #[serde(rename_all = "snake_case")]
 pub enum AstRelation {
 	ExactEquivalent,
+	LogicalEquivalent,
 	Nonidentical,
+}
+
+impl AstRelation {
+	pub fn is_equivalent(self) -> bool {
+		matches!(self, Self::ExactEquivalent | Self::LogicalEquivalent)
+	}
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
@@ -1024,6 +1031,16 @@ mod tests {
 		exact.label = ReviewLabel::Equivalent;
 		exact.ast_relation = AstRelation::ExactEquivalent;
 		assert!(ReviewAnnotation::new(exact).is_ok());
+
+		let mut logical = draft("logical", ReviewKernel::Structured);
+		logical.label = ReviewLabel::Equivalent;
+		logical.ast_relation = AstRelation::LogicalEquivalent;
+		let logical = ReviewAnnotation::new(logical).unwrap();
+		assert!(logical.ast_relation.is_equivalent());
+		assert_eq!(
+			serde_json::to_value(logical).unwrap()["ast_relation"],
+			"logical_equivalent"
+		);
 	}
 
 	#[test]

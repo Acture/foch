@@ -6,11 +6,11 @@ use foch_language::analyzer::content_family::{
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use crate::merge::boolean::combine_boolean_or_bodies;
+use crate::merge::semantic_fingerprint::{statement_fingerprint, value_fingerprint};
 
 use super::super::super::conflict_handler::DeferHandler;
 use super::super::patch::{AstPath, ClausewitzPatch, ast_statements_semantically_equal};
 use super::address::patch_address;
-use super::fingerprint::{statement_fingerprint, value_fingerprint};
 use super::{
 	AttributedPatch, PatchAddress, PatchMergeStats, PatchResolution, merge_patch_sets,
 	patch_sort_key,

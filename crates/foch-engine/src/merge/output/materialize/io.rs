@@ -1,5 +1,5 @@
 use super::super::super::error::MergeError;
-use super::PatchBasedMergeOutput;
+use super::StructuralMergeOutput;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
 use foch_core::config::{ResolutionDecision, ResolutionMap};
 use foch_core::model::{
@@ -13,14 +13,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum PatchOutputMaterialization {
+pub(super) enum StructuralOutputMaterialization {
 	NormalWrite,
 	ExternalWrite,
 	KeptExisting,
 	NoopSkippedVsVanilla,
 }
 
-impl PatchOutputMaterialization {
+impl StructuralOutputMaterialization {
 	pub(super) fn counts_as_generated(self) -> bool {
 		matches!(self, Self::NormalWrite | Self::ExternalWrite)
 	}
@@ -36,19 +36,19 @@ impl PatchOutputMaterialization {
 		)
 	}
 
-	pub(super) fn uses_patch_merge_rendered_output(self) -> bool {
+	pub(super) fn uses_rendered_output(self) -> bool {
 		matches!(self, Self::NormalWrite | Self::NoopSkippedVsVanilla)
 	}
 }
 
-pub(super) fn write_patch_merge_output(
+pub(super) fn write_structural_merge_output(
 	target_path: &str,
-	merge_output: &mut PatchBasedMergeOutput,
+	merge_output: &mut StructuralMergeOutput,
 	out_dir: &Path,
 	prior_out_dir: Option<&Path>,
 	resolution_map: &ResolutionMap,
 	report: &mut MergeReport,
-) -> Result<PatchOutputMaterialization, MergeError> {
+) -> Result<StructuralOutputMaterialization, MergeError> {
 	let output_relative_path = PathBuf::from(target_path);
 	let target = out_dir.join(target_path);
 
@@ -88,7 +88,7 @@ pub(super) fn write_patch_merge_output(
 				source: None,
 				rationale: None,
 			});
-			return Ok(PatchOutputMaterialization::KeptExisting);
+			return Ok(StructuralOutputMaterialization::KeptExisting);
 		}
 
 		let missing_path = prior_target.as_deref().unwrap_or(&target);
@@ -122,7 +122,7 @@ pub(super) fn write_patch_merge_output(
 			source: Some(source_path.display().to_string()),
 			rationale: None,
 		});
-		return Ok(PatchOutputMaterialization::ExternalWrite);
+		return Ok(StructuralOutputMaterialization::ExternalWrite);
 	}
 
 	if merge_output.noop_vs_vanilla {
@@ -135,14 +135,14 @@ pub(super) fn write_patch_merge_output(
 				"merged content is AST-equal to vanilla; not shipping a redundant copy".to_string(),
 			),
 		});
-		return Ok(PatchOutputMaterialization::NoopSkippedVsVanilla);
+		return Ok(StructuralOutputMaterialization::NoopSkippedVsVanilla);
 	}
 
 	write_rendered_output(target_path, &merge_output.rendered, out_dir)?;
 	report
 		.handler_resolutions
 		.extend(merge_output.handler_resolutions.iter().cloned());
-	Ok(PatchOutputMaterialization::NormalWrite)
+	Ok(StructuralOutputMaterialization::NormalWrite)
 }
 
 fn write_rendered_output(

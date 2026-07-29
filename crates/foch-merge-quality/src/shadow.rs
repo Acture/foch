@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use foch_core::config::FochConfig;
 use foch_core::model::{MergeReport, MergeReportStatus};
 use foch_engine::{
-	CheckRequest, Config, FileFilter, MergeKernelMode, installed_base_snapshot_identity,
+	CheckRequest, Config, FileFilter, MergeEvaluationKernel, installed_base_snapshot_identity,
 	load_installed_base_snapshot, resolve_workspace_summary,
 };
 use foch_language::analyzer::content_family::{
@@ -134,7 +134,7 @@ pub struct ShadowRunRequest<'a> {
 	pub manifest: &'a ShadowInputManifest,
 	pub output_dir: &'a Path,
 	pub executable: &'a Path,
-	pub kernel: MergeKernelMode,
+	pub kernel: MergeEvaluationKernel,
 }
 
 pub struct ShadowCompareRequest<'a> {
@@ -305,7 +305,7 @@ pub fn run_shadow_comparison(
 		manifest_path: &manifest_path,
 		output_dir: &legacy_dir,
 		executable: request.executable,
-		kernel: MergeKernelMode::Legacy,
+		kernel: MergeEvaluationKernel::AddressPatchReference,
 		timeout: request.timeout,
 	})?;
 	eprintln!(
@@ -317,7 +317,7 @@ pub fn run_shadow_comparison(
 		manifest_path: &manifest_path,
 		output_dir: &structured_dir,
 		executable: request.executable,
-		kernel: MergeKernelMode::Structured,
+		kernel: MergeEvaluationKernel::SemanticTree,
 		timeout: request.timeout,
 	})?;
 	let report = build_comparison_report(manifest, legacy, structured)?;
@@ -333,7 +333,7 @@ struct ShadowChildRequest<'a> {
 	manifest_path: &'a Path,
 	output_dir: &'a Path,
 	executable: &'a Path,
-	kernel: MergeKernelMode,
+	kernel: MergeEvaluationKernel,
 	timeout: Duration,
 }
 
@@ -344,7 +344,7 @@ pub fn run_isolated_shadow_kernel(
 	manifest_path: &Path,
 	output_dir: &Path,
 	executable: &Path,
-	kernel: MergeKernelMode,
+	kernel: MergeEvaluationKernel,
 	timeout: Duration,
 ) -> io::Result<ShadowRunRecord> {
 	spawn_shadow_arm(ShadowChildRequest {
@@ -1070,7 +1070,7 @@ fn report_diagnostics(report: &MergeReport) -> Vec<ShadowDiagnostic> {
 fn error_record(
 	manifest: &ShadowInputManifest,
 	output_dir: &Path,
-	kernel: MergeKernelMode,
+	kernel: MergeEvaluationKernel,
 	started: Instant,
 	message: String,
 ) -> ShadowRunRecord {
@@ -1228,7 +1228,7 @@ mod tests {
 			manifest_path: &manifest_path,
 			output_dir: &output_dir,
 			executable: &fixture.executable,
-			kernel: MergeKernelMode::Structured,
+			kernel: MergeEvaluationKernel::SemanticTree,
 			timeout: Duration::from_millis(500),
 		})
 		.unwrap();
@@ -1260,7 +1260,7 @@ mod tests {
 			manifest_path: &manifest_path,
 			output_dir: &output_dir,
 			executable: &fixture.executable,
-			kernel: MergeKernelMode::Structured,
+			kernel: MergeEvaluationKernel::SemanticTree,
 			timeout: Duration::from_secs(5),
 		})
 		.unwrap();
@@ -1287,7 +1287,7 @@ mod tests {
 			manifest_path: &manifest_path,
 			output_dir: &output_dir,
 			executable: &fixture.executable,
-			kernel: MergeKernelMode::Structured,
+			kernel: MergeEvaluationKernel::SemanticTree,
 			timeout: Duration::from_secs(1),
 		})
 		.unwrap();
@@ -1523,7 +1523,7 @@ mod tests {
 			manifest: &manifest,
 			output_dir: &output,
 			executable: &different_executable,
-			kernel: MergeKernelMode::Structured,
+			kernel: MergeEvaluationKernel::SemanticTree,
 		});
 
 		assert_eq!(record.status, "error");

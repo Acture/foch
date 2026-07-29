@@ -4,10 +4,11 @@ use std::time::Instant;
 use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 
+use super::policy::LocalSourceSelections;
 use super::trivia::{attach_trivia, detach_trivia, merge_trivia};
 use super::{
 	AstAdapterError, ClausewitzConflictSummary, ClausewitzMergeTimings, ClausewitzScalarReduction,
-	merge_clausewitz_files,
+	merge_clausewitz_files, merge_clausewitz_files_with_source_selections,
 };
 
 #[derive(Clone, Debug)]
@@ -68,12 +69,32 @@ pub fn merge_clausewitz_definition_module(
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
+	merge_clausewitz_definition_module_inner(base, left, right, policies, None)
+}
+
+pub(crate) fn merge_clausewitz_definition_module_with_source_selections(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+	source_selections: &LocalSourceSelections,
+) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
+	merge_clausewitz_definition_module_inner(base, left, right, policies, Some(source_selections))
+}
+
+fn merge_clausewitz_definition_module_inner(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+	source_selections: Option<&LocalSourceSelections>,
+) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
 	let base_definitions = top_level_assignment_keys(base).len();
 	if [base, left, right]
 		.iter()
 		.any(|file| has_top_level_items(file))
 	{
-		let outcome = merge_clausewitz_files(base, left, right, policies)?;
+		let outcome = merge_files(base, left, right, policies, source_selections)?;
 		return Ok(ClausewitzDefinitionModuleOutcome {
 			tentative_ast: outcome.tentative_ast().clone(),
 			conflicts: outcome.conflict_summaries(),
@@ -125,8 +146,13 @@ pub fn merge_clausewitz_definition_module(
 				statements.extend(selected.iter().cloned());
 				copy_through_definitions += 1;
 			} else {
-				let outcome =
-					merge_clausewitz_files(&base_group, &left_group, &right_group, policies)?;
+				let outcome = merge_files(
+					&base_group,
+					&left_group,
+					&right_group,
+					policies,
+					source_selections,
+				)?;
 				statements.extend(outcome.tentative_ast().statements.iter().cloned());
 				conflicts.extend(
 					outcome
@@ -177,6 +203,21 @@ pub fn merge_clausewitz_definition_module(
 		copy_through_definitions,
 		structured_definitions,
 	})
+}
+
+fn merge_files(
+	base: &AstFile,
+	left: &AstFile,
+	right: &AstFile,
+	policies: &MergePolicies,
+	source_selections: Option<&LocalSourceSelections>,
+) -> Result<super::ClausewitzMergeOutcome, AstAdapterError> {
+	source_selections.map_or_else(
+		|| merge_clausewitz_files(base, left, right, policies),
+		|selections| {
+			merge_clausewitz_files_with_source_selections(base, left, right, policies, selections)
+		},
+	)
 }
 
 fn direct_three_way_selection<'a>(

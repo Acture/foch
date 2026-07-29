@@ -24,14 +24,18 @@ fn try_parse_f64(val: &AstValue) -> Option<f64> {
 	}
 }
 
-/// Build a synthetic `AstValue::Scalar(Number)` reusing the span from a
-/// reference value.
-fn make_number_value(n: f64, reference_span: &AstValue) -> AstValue {
-	let text = if n == n.floor() && n.abs() < 1e15 {
-		format!("{}", n as i64)
-	} else {
-		format!("{n}")
-	};
+fn number_text(value: &AstValue) -> Option<&str> {
+	match value {
+		AstValue::Scalar {
+			value: ScalarValue::Number(number),
+			..
+		} => Some(number),
+		_ => None,
+	}
+}
+
+/// Build a synthetic numeric scalar reusing the span from a reference value.
+fn make_number_value(text: String, reference_span: &AstValue) -> AstValue {
 	AstValue::Scalar {
 		value: ScalarValue::Number(text),
 		span: reference_span.span().clone(),
@@ -562,19 +566,9 @@ fn resolve_numeric_set_values(
 }
 
 fn merge_numeric_values(values: &[AstValue], policy: ScalarMergePolicy) -> Option<AstValue> {
-	let parsed: Vec<Option<f64>> = values.iter().map(try_parse_f64).collect();
-	if parsed.iter().any(|p| p.is_none()) {
-		return None;
-	}
-	let nums: Vec<f64> = parsed.into_iter().map(|p| p.unwrap()).collect();
-	let merged = match policy {
-		ScalarMergePolicy::Sum => nums.iter().sum(),
-		ScalarMergePolicy::Avg => nums.iter().sum::<f64>() / nums.len() as f64,
-		ScalarMergePolicy::Max => nums.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-		ScalarMergePolicy::Min => nums.iter().cloned().fold(f64::INFINITY, f64::min),
-		_ => return None,
-	};
-	Some(make_number_value(merged, &values[0]))
+	let inputs = values.iter().map(number_text).collect::<Option<Vec<_>>>()?;
+	let merged = policy.reduce_numeric_values(inputs)?;
+	Some(make_number_value(merged, values.first()?))
 }
 
 fn resolve_last_writer_set_value(

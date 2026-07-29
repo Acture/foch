@@ -3,9 +3,9 @@
 mod cross_file_dedup;
 mod io;
 mod output_transaction;
-mod patch_structural;
 mod per_entry_noop;
 mod stale_detect;
+mod structural;
 
 use super::super::conflict_handler::ConflictHandler;
 use super::super::dag::{
@@ -43,14 +43,13 @@ use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::parse_clausewitz_file;
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 #[cfg(test)]
-use io::PatchOutputMaterialization;
+use io::StructuralOutputMaterialization;
 use io::{
 	copy_winner_file, is_text_placeholder_path, write_clean_metadata_only,
 	write_conflict_placeholder, write_generated_descriptor, write_metadata_only,
-	write_patch_merge_output,
+	write_structural_merge_output,
 };
 pub(crate) use output_transaction::OutputTransaction;
-use patch_structural::{patch_based_cross_file_module_merge, patch_based_structural_merge};
 use stale_detect::apply_dep_misuse_remove_counts;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -59,6 +58,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
+use structural::{merge_definition_module, merge_structural_file};
 
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
@@ -92,7 +92,7 @@ impl Default for MergeMaterializeOptions {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
-			merge_kernel: crate::merge::MergeKernelMode::Legacy,
+			merge_kernel: crate::merge::MergeKernelMode::Structured,
 			retained_paths: None,
 		}
 	}
@@ -433,7 +433,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 					.unwrap_or(false);
 
 				if has_base && let Some(contributors) = contributors {
-					// Only use patch engine when 2+ non-base mods contribute
+					// Only invoke the tree merge when 2+ non-base mods contribute
 					// (single-mod overlap with base is just last-writer).
 					let non_base_count = contributors
 						.iter()
@@ -466,7 +466,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 								options.interactive_conflict_handler.as_deref_mut();
 							let result =
 								std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-									let context = PatchBasedMergeContext {
+									let context = StructuralMergeContext {
 										descriptor: &desc,
 										cwt_schema_graph: cwt_schema_graph.clone(),
 										merge_key_source,
@@ -484,7 +484,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										merge_kernel: options.merge_kernel,
 										script_cache: &workspace.script_cache,
 									};
-									patch_based_structural_merge(
+									merge_structural_file(
 										&target,
 										&contribs,
 										context,
@@ -501,7 +501,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										&mut report.dep_misuse,
 										std::mem::take(&mut merge_output.dep_remove_counts),
 									);
-									let materialization = write_patch_merge_output(
+									let materialization = write_structural_merge_output(
 										entry.output_path(),
 										&mut merge_output,
 										out_dir,
@@ -509,7 +509,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										&options.resolution_map,
 										&mut report,
 									)?;
-									if materialization.uses_patch_merge_rendered_output() {
+									if materialization.uses_rendered_output() {
 										report.per_entry_noop_skipped_count +=
 											merge_output.per_entry_noop_skipped_count;
 									}
@@ -538,7 +538,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 									}
 									continue;
 								}
-								Ok(Err(PatchBasedMergeFailure::Unresolved(conflict))) => {
+								Ok(Err(StructuralMergeFailure::Unresolved(conflict))) => {
 									if resolve_structural_merge_failure(
 										StructuralMergeFailureCtx {
 											entry,
@@ -552,10 +552,10 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										continue;
 									}
 								}
-								Ok(Err(PatchBasedMergeFailure::Merge(err))) => {
-									let conflict = PatchConflictReport::without_details(format!(
-										"patch merge failed: {err}"
-									));
+								Ok(Err(StructuralMergeFailure::Merge(err))) => {
+									let conflict = StructuralConflictReport::without_details(
+										format!("structural merge failed: {err}"),
+									);
 									if resolve_structural_merge_failure(
 										StructuralMergeFailureCtx {
 											entry,
@@ -570,8 +570,8 @@ pub(crate) fn materialize_merge_with_workspace_result(
 									}
 								}
 								Err(_) => {
-									let conflict = PatchConflictReport::without_details(
-										"patch merge panicked".to_string(),
+									let conflict = StructuralConflictReport::without_details(
+										"structural merge panicked".to_string(),
 									);
 									if resolve_structural_merge_failure(
 										StructuralMergeFailureCtx {
@@ -828,7 +828,7 @@ fn materialize_cross_file_module(
 	};
 	let cwt_schema_graph = crate::merge::cwt_suggestions::cwt_schema_graph_for_profile(profile);
 	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-		let patch_context = PatchBasedMergeContext {
+		let merge_context = StructuralMergeContext {
 			descriptor,
 			cwt_schema_graph,
 			merge_key_source,
@@ -846,10 +846,10 @@ fn materialize_cross_file_module(
 			merge_kernel: options.merge_kernel,
 			script_cache: &workspace.script_cache,
 		};
-		patch_based_cross_file_module_merge(
+		merge_definition_module(
 			entry.output_path(),
 			&views,
-			patch_context,
+			merge_context,
 			options.interactive_conflict_handler.as_deref_mut(),
 			options.interactive_resolution_config_path.as_deref(),
 		)
@@ -870,7 +870,7 @@ fn materialize_cross_file_module(
 				merge_output.noop_vs_vanilla = false;
 			}
 			let stage_dir = prepare_module_stage_dir(out_dir, entry.output_path())?;
-			let materialization = match write_patch_merge_output(
+			let materialization = match write_structural_merge_output(
 				entry.output_path(),
 				&mut merge_output,
 				&stage_dir,
@@ -884,7 +884,7 @@ fn materialize_cross_file_module(
 					return Err(error);
 				}
 			};
-			if materialization.uses_patch_merge_rendered_output() {
+			if materialization.uses_rendered_output() {
 				report.per_entry_noop_skipped_count += merge_output.per_entry_noop_skipped_count;
 			}
 			if materialization.publishes_output() {
@@ -925,7 +925,7 @@ fn materialize_cross_file_module(
 			let _ = fs::remove_dir_all(&stage_dir);
 			Ok(())
 		}
-		Ok(Err(PatchBasedMergeFailure::Unresolved(conflict))) => {
+		Ok(Err(StructuralMergeFailure::Unresolved(conflict))) => {
 			resolve_cross_file_module_conflict(
 				entry,
 				out_dir,
@@ -936,7 +936,7 @@ fn materialize_cross_file_module(
 			)?;
 			Ok(())
 		}
-		Ok(Err(PatchBasedMergeFailure::Merge(error))) => resolve_cross_file_module_failure(
+		Ok(Err(StructuralMergeFailure::Merge(error))) => resolve_cross_file_module_failure(
 			entry,
 			out_dir,
 			options,
@@ -1015,7 +1015,7 @@ fn resolve_cross_file_module_failure(
 		options,
 		report,
 		generated_paths,
-		PatchConflictReport::without_details(reason),
+		StructuralConflictReport::without_details(reason),
 	)
 }
 
@@ -1025,7 +1025,7 @@ fn resolve_cross_file_module_conflict(
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
-	conflict: PatchConflictReport,
+	conflict: StructuralConflictReport,
 ) -> Result<(), MergeError> {
 	discard_module_output(entry, out_dir, generated_paths)?;
 	let reason = conflict.reason;
@@ -1342,6 +1342,14 @@ fn validate_structured_merge_entry(
 			let contributors = contributors.ok_or_else(|| {
 				structured_merge_unsupported(entry, "the merge unit has no file contributors")
 			})?;
+			let source_mods = contributors
+				.iter()
+				.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
+				.map(|contributor| contributor.mod_id.as_str())
+				.collect::<BTreeSet<_>>();
+			if source_mods.len() < 2 {
+				return Ok(());
+			}
 			if !contributors
 				.iter()
 				.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
@@ -1351,31 +1359,23 @@ fn validate_structured_merge_entry(
 					"a real vanilla file is required as the three-way base",
 				));
 			}
-			let source_mods = contributors
-				.iter()
-				.filter(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
-				.map(|contributor| contributor.mod_id.as_str())
-				.collect::<BTreeSet<_>>();
-			if source_mods.len() < 2 {
-				return Err(structured_merge_unsupported(
-					entry,
-					"at least two source mods are required",
-				));
-			}
-			if descriptor.id.as_str() != "events" {
-				return Err(structured_merge_unsupported(
-					entry,
-					"structured file merge only supports the events content family",
-				));
-			}
 			if descriptor.merge_key_source.is_none() {
 				return Err(structured_merge_unsupported(
 					entry,
-					"the events family has no merge-key contract",
+					"the ContentFamily has no merge-key contract",
 				));
 			}
 		}
 		MergePlanTarget::Module { .. } => {
+			let source_mods = entry
+				.contributors
+				.iter()
+				.filter(|contributor| !contributor.is_base_game)
+				.map(|contributor| contributor.mod_id.as_str())
+				.collect::<BTreeSet<_>>();
+			if source_mods.len() < 2 {
+				return Ok(());
+			}
 			if !matches!(
 				descriptor.load_policy,
 				ContentLoadPolicy::DefinitionModule(_)
@@ -1401,18 +1401,6 @@ fn validate_structured_merge_entry(
 					"a vanilla definition module is required as the three-way base",
 				));
 			}
-			let source_mods = entry
-				.contributors
-				.iter()
-				.filter(|contributor| !contributor.is_base_game)
-				.map(|contributor| contributor.mod_id.as_str())
-				.collect::<BTreeSet<_>>();
-			if source_mods.len() < 2 {
-				return Err(structured_merge_unsupported(
-					entry,
-					"at least two source mods are required",
-				));
-			}
 		}
 	}
 	Ok(())
@@ -1422,13 +1410,9 @@ fn validate_structured_plan_selection(
 	plan: &MergePlanResult,
 	retained_paths: Option<&BTreeSet<String>>,
 ) -> Result<(), MergeError> {
-	let retained_paths = retained_paths
-		.filter(|paths| !paths.is_empty())
-		.ok_or_else(|| MergeError::Validation {
-			path: None,
-			message: "structured merge unsupported: explicit retained paths are required"
-				.to_string(),
-		})?;
+	let Some(retained_paths) = retained_paths.filter(|paths| !paths.is_empty()) else {
+		return Ok(());
+	};
 	for retained_path in retained_paths {
 		let normalized = retained_path.replace('\\', "/");
 		let entry = plan
@@ -1496,7 +1480,7 @@ fn record_plan_manual_conflicts(report: &mut MergeReport, plan: &MergePlanResult
 struct StructuralMergeFailureCtx<'a> {
 	entry: &'a MergePlanEntry,
 	out_dir: &'a Path,
-	conflict: PatchConflictReport,
+	conflict: StructuralConflictReport,
 	options: &'a MergeMaterializeOptions,
 	report: &'a mut MergeReport,
 	generated_paths: &'a mut BTreeSet<String>,
@@ -1578,14 +1562,14 @@ fn summarize_conflict_kind(leaf_conflicts: &[LeafConflictDetail]) -> Option<Conf
 }
 
 #[derive(Clone, Debug)]
-struct PatchBasedMergeOutput {
+struct StructuralMergeOutput {
 	rendered: String,
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
 	stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
 	external_file_resolutions: HashMap<PathBuf, PathBuf>,
 	keep_existing_paths: HashSet<PathBuf>,
-	/// True when the patch-merged statement list is AST-equal (modulo
+	/// True when the merged statement list is AST-equal (modulo
 	/// span / comment trivia) to the vanilla base — shipping the file
 	/// would just shadow the game's own copy with the same content.
 	noop_vs_vanilla: bool,
@@ -1600,13 +1584,13 @@ struct PatchBasedMergeOutput {
 }
 
 #[derive(Clone, Debug)]
-struct PatchConflictReport {
+struct StructuralConflictReport {
 	reason: String,
 	leaf_conflicts: Vec<LeafConflictDetail>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
 }
 
-impl PatchConflictReport {
+impl StructuralConflictReport {
 	fn without_details(reason: String) -> Self {
 		Self {
 			reason,
@@ -1617,12 +1601,12 @@ impl PatchConflictReport {
 }
 
 #[derive(Debug)]
-enum PatchBasedMergeFailure {
+enum StructuralMergeFailure {
 	Merge(MergeError),
-	Unresolved(PatchConflictReport),
+	Unresolved(StructuralConflictReport),
 }
 
-impl From<MergeError> for PatchBasedMergeFailure {
+impl From<MergeError> for StructuralMergeFailure {
 	fn from(err: MergeError) -> Self {
 		Self::Merge(err)
 	}
@@ -1636,7 +1620,7 @@ struct DepMisuseRemoveCount {
 }
 
 #[derive(Clone)]
-struct PatchBasedMergeContext<'a> {
+struct StructuralMergeContext<'a> {
 	descriptor: &'a ContentFamilyDescriptor,
 	cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
 	merge_key_source: MergeKeySource,
@@ -2272,8 +2256,8 @@ mod tests {
 			.expect("merge plan entry exists")
 	}
 
-	fn patch_merge_output(rendered: &str) -> super::PatchBasedMergeOutput {
-		super::PatchBasedMergeOutput {
+	fn structural_merge_output(rendered: &str) -> super::StructuralMergeOutput {
+		super::StructuralMergeOutput {
 			rendered: rendered.to_string(),
 			dep_remove_counts: Vec::new(),
 			stale_vanilla_targets: Vec::new(),
@@ -2496,13 +2480,13 @@ mod tests {
 			"unrelated\n",
 		);
 
-		let mut merge_output = patch_merge_output("merged\n");
+		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.keep_existing_paths
 			.insert(PathBuf::from(relative_path));
 		let mut report = MergeReport::default();
 
-		let materialization = super::write_patch_merge_output(
+		let materialization = super::write_structural_merge_output(
 			relative_path,
 			&mut merge_output,
 			&staging_dir,
@@ -2514,7 +2498,7 @@ mod tests {
 
 		assert_eq!(
 			materialization,
-			super::PatchOutputMaterialization::KeptExisting
+			super::StructuralOutputMaterialization::KeptExisting
 		);
 		assert_eq!(
 			fs::read_to_string(staging_dir.join(relative_path)).expect("read output"),
@@ -2539,7 +2523,7 @@ mod tests {
 		let relative_path = "common/ideas/file-level-handler.txt";
 		write_file(&out_dir, relative_path, "existing\n");
 
-		let mut merge_output = patch_merge_output("merged\n");
+		let mut merge_output = structural_merge_output("merged\n");
 		let mut resolution_map = ResolutionMap::default();
 		resolution_map.by_file.insert(
 			PathBuf::from(relative_path),
@@ -2547,7 +2531,7 @@ mod tests {
 		);
 		let mut report = MergeReport::default();
 
-		let materialization = super::write_patch_merge_output(
+		let materialization = super::write_structural_merge_output(
 			relative_path,
 			&mut merge_output,
 			&out_dir,
@@ -2559,7 +2543,7 @@ mod tests {
 
 		assert_eq!(
 			materialization,
-			super::PatchOutputMaterialization::KeptExisting
+			super::StructuralOutputMaterialization::KeptExisting
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
@@ -2579,13 +2563,13 @@ mod tests {
 		let temp = TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("out");
 		let relative_path = "common/ideas/missing.txt";
-		let mut merge_output = patch_merge_output("merged\n");
+		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.keep_existing_paths
 			.insert(PathBuf::from(relative_path));
 		let mut report = MergeReport::default();
 
-		let materialization = super::write_patch_merge_output(
+		let materialization = super::write_structural_merge_output(
 			relative_path,
 			&mut merge_output,
 			&out_dir,
@@ -2597,7 +2581,7 @@ mod tests {
 
 		assert_eq!(
 			materialization,
-			super::PatchOutputMaterialization::NormalWrite
+			super::StructuralOutputMaterialization::NormalWrite
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
@@ -2614,7 +2598,7 @@ mod tests {
 		let temp = TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("out");
 		let relative_path = "common/ideas/dep.txt";
-		let mut merge_output = patch_merge_output("merged\n");
+		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.handler_resolutions
 			.push(HandlerResolutionRecord {
@@ -2625,7 +2609,7 @@ mod tests {
 			});
 		let mut report = MergeReport::default();
 
-		let materialization = super::write_patch_merge_output(
+		let materialization = super::write_structural_merge_output(
 			relative_path,
 			&mut merge_output,
 			&out_dir,
@@ -2637,7 +2621,7 @@ mod tests {
 
 		assert_eq!(
 			materialization,
-			super::PatchOutputMaterialization::NormalWrite
+			super::StructuralOutputMaterialization::NormalWrite
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
@@ -2659,13 +2643,13 @@ mod tests {
 		let relative_path = "common/ideas/external.txt";
 		fs::write(&external_path, "external\n").expect("write external source");
 
-		let mut merge_output = patch_merge_output("merged\n");
+		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.external_file_resolutions
 			.insert(PathBuf::from(relative_path), external_path.clone());
 		let mut report = MergeReport::default();
 
-		let materialization = super::write_patch_merge_output(
+		let materialization = super::write_structural_merge_output(
 			relative_path,
 			&mut merge_output,
 			&out_dir,
@@ -2677,7 +2661,7 @@ mod tests {
 
 		assert_eq!(
 			materialization,
-			super::PatchOutputMaterialization::ExternalWrite
+			super::StructuralOutputMaterialization::ExternalWrite
 		);
 		assert_eq!(
 			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
@@ -2700,13 +2684,13 @@ mod tests {
 		let out_dir = temp.path().join("out");
 		let external_path = temp.path().join("missing-external.txt");
 		let relative_path = "common/ideas/missing-external.txt";
-		let mut merge_output = patch_merge_output("merged\n");
+		let mut merge_output = structural_merge_output("merged\n");
 		merge_output
 			.external_file_resolutions
 			.insert(PathBuf::from(relative_path), external_path.clone());
 		let mut report = MergeReport::default();
 
-		let err = super::write_patch_merge_output(
+		let err = super::write_structural_merge_output(
 			relative_path,
 			&mut merge_output,
 			&out_dir,

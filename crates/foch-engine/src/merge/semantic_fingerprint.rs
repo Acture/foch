@@ -85,7 +85,7 @@ fn digest(encoded: &[u8]) -> String {
 /// distinct `AppendBlockItem` / `RemoveBlockItem` its own `PatchAddress` so
 /// that multiple mods can append/remove different values inside the same
 /// block without one clobbering the others.
-pub(super) fn value_fingerprint(v: &AstValue) -> String {
+pub(crate) fn value_fingerprint(v: &AstValue) -> String {
 	let mut encoded = Vec::new();
 	encode_value(v, &mut encoded);
 	digest(&encoded)
@@ -97,7 +97,7 @@ pub(super) fn value_fingerprint(v: &AstValue) -> String {
 /// insert/remove payloads at distinct addresses, while Recurse and other
 /// unique-key policies deliberately collide at `(path, key)` so leaf
 /// resolvers surface sibling conflicts.
-pub(super) fn statement_fingerprint(stmt: &AstStatement) -> String {
+pub(crate) fn statement_fingerprint(stmt: &AstStatement) -> String {
 	let mut encoded = Vec::new();
 	encode_statement(stmt, &mut encoded);
 	digest(&encoded)

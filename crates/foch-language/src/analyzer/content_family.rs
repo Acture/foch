@@ -80,22 +80,35 @@ pub enum ScalarMergePolicy {
 }
 
 impl ScalarMergePolicy {
-	/// Reduce one pair of already-classified numeric scalar texts. Parsing is
-	/// deliberately identical to the existing patch reducer: strict `f64`
-	/// parsing, with no coercion of identifiers, dates, or tuple-like values.
-	pub fn reduce_numeric_pair(self, left: &str, right: &str) -> Option<String> {
-		let left_number = parse_finite_number(left)?;
-		let right_number = parse_finite_number(right)?;
+	/// Reduce all changed contributor values in one operation. Callers must
+	/// exclude unchanged base copies before invoking this method.
+	pub fn reduce_numeric_values<'a>(
+		self,
+		values: impl IntoIterator<Item = &'a str>,
+	) -> Option<String> {
+		let values = values.into_iter().collect::<Vec<_>>();
+		values.first()?;
+		let numbers = values
+			.iter()
+			.map(|value| parse_finite_number(value))
+			.collect::<Option<Vec<_>>>()?;
 		let reduced = match self {
-			Self::Sum => left_number + right_number,
-			Self::Avg => (left_number + right_number) / 2.0,
-			Self::Max => left_number.max(right_number),
-			Self::Min => left_number.min(right_number),
+			Self::Sum => numbers.iter().sum(),
+			Self::Avg => numbers.iter().sum::<f64>() / numbers.len() as f64,
+			Self::Max => numbers.into_iter().reduce(f64::max)?,
+			Self::Min => numbers.into_iter().reduce(f64::min)?,
 			Self::Conflict | Self::LastWriter | Self::CoordinateFirstWriter | Self::GuiWidget => {
 				return None;
 			}
 		};
-		format_reduced_number(reduced, left, right)
+		format_reduced_number(reduced, &values)
+	}
+
+	/// Reduce one pair of already-classified numeric scalar texts. Parsing is
+	/// deliberately identical to the existing patch reducer: strict `f64`
+	/// parsing, with no coercion of identifiers, dates, or tuple-like values.
+	pub fn reduce_numeric_pair(self, left: &str, right: &str) -> Option<String> {
+		self.reduce_numeric_values([left, right])
 	}
 }
 
@@ -103,7 +116,7 @@ fn parse_finite_number(value: &str) -> Option<f64> {
 	value.parse::<f64>().ok().filter(|value| value.is_finite())
 }
 
-fn format_reduced_number(value: f64, left: &str, right: &str) -> Option<String> {
+fn format_reduced_number(value: f64, inputs: &[&str]) -> Option<String> {
 	if !value.is_finite() {
 		return None;
 	}
@@ -121,7 +134,7 @@ fn format_reduced_number(value: f64, left: &str, right: &str) -> Option<String> 
 			.trim_end_matches('.')
 			.to_string()
 	};
-	let omits_leading_zero = [left, right].iter().all(|input| {
+	let omits_leading_zero = inputs.iter().all(|input| {
 		input
 			.strip_prefix(['+', '-'])
 			.unwrap_or(input)
@@ -1111,6 +1124,18 @@ mod scalar_reducer_tests {
 		);
 		assert_eq!(
 			ScalarMergePolicy::LastWriter.reduce_numeric_pair("1", "2"),
+			None
+		);
+		assert_eq!(
+			ScalarMergePolicy::Avg.reduce_numeric_values([".2", ".1", ".3"]),
+			Some(".2".to_string())
+		);
+		assert_eq!(
+			ScalarMergePolicy::Sum.reduce_numeric_values(["1", "2", "3"]),
+			Some("6".to_string())
+		);
+		assert_eq!(
+			ScalarMergePolicy::Avg.reduce_numeric_values(std::iter::empty::<&str>()),
 			None
 		);
 	}

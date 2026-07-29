@@ -18,7 +18,7 @@ use super::stale_detect::{
 	parse_vanilla_for_stale_detection, vanilla_snippet_for_address,
 };
 use super::{
-	PatchBasedMergeContext, PatchBasedMergeFailure, PatchBasedMergeOutput, PatchConflictReport,
+	StructuralConflictReport, StructuralMergeContext, StructuralMergeFailure, StructuralMergeOutput,
 };
 use crate::emit::{EmitOptions, EmitOrdering, emit_clausewitz_statements_with_options};
 use crate::merge::MergeKernelMode;
@@ -31,11 +31,11 @@ use super::super::super::conflict_handler::{
 	PriorityBoostResolutionHandler, PromptOutcomeKind, prompt_survivors_and_persist,
 };
 use super::super::super::conflict_view::build_conflict_view;
-use super::super::super::error::MergeError;
-use super::super::super::patch_deps::{
-	DagPatchComputation, DagPatchRequest, compute_dag_patches_from_parsed_with_kernel,
-	compute_dag_patches_with_handler_and_kernel,
+use super::super::super::dag_merge::{
+	DagMergeComputation, DagMergeRequest, compute_dag_merge_for_evaluation,
+	compute_dag_merge_from_parsed_for_evaluation,
 };
+use super::super::super::error::MergeError;
 use super::super::super::patch_merge::{
 	AttributedPatch, PatchAddress, PatchConflict, PatchResolution,
 };
@@ -101,19 +101,19 @@ fn leaf_conflict_contributors(
 	contributors
 }
 
-/// Patch-based structural merge: walk the dependency DAG level by level, diff
-/// every mod in a level against the same running base, sibling-merge that
-/// level's patches, then apply the resolved level to advance the running state.
-pub(super) fn patch_based_structural_merge(
+/// Materialize one structural file through the selected evaluation arm.
+/// Production always selects the tree arm; the patch arm remains available to
+/// merge-quality comparisons only.
+pub(super) fn merge_structural_file(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
-	context: PatchBasedMergeContext<'_>,
+	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
 	interactive_config_path: Option<&Path>,
-) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
+) -> Result<StructuralMergeOutput, StructuralMergeFailure> {
 	let vanilla =
 		parse_vanilla_for_stale_detection(target_path, contributors, context.script_cache)?;
-	finish_patch_based_merge(
+	finish_structural_merge(
 		target_path,
 		contributors,
 		context,
@@ -121,19 +121,19 @@ pub(super) fn patch_based_structural_merge(
 		interactive_handler,
 		interactive_config_path,
 		|resolution_map, context| {
-			run_patch_merge_engine(target_path, contributors, context, resolution_map)
+			run_structural_file_engine(target_path, contributors, context, resolution_map)
 		},
 	)
 }
 
-pub(super) fn patch_based_cross_file_module_merge(
+pub(super) fn merge_definition_module(
 	target_path: &str,
 	views: &CrossFileModuleViews,
-	context: PatchBasedMergeContext<'_>,
+	context: StructuralMergeContext<'_>,
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
 	interactive_config_path: Option<&Path>,
-) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure> {
-	finish_patch_based_merge(
+) -> Result<StructuralMergeOutput, StructuralMergeFailure> {
+	finish_structural_merge(
 		target_path,
 		&views.aggregate_contributors,
 		context,
@@ -141,39 +141,39 @@ pub(super) fn patch_based_cross_file_module_merge(
 		interactive_handler,
 		interactive_config_path,
 		|resolution_map, context| {
-			run_cross_file_module_patch_engine(target_path, views, context, resolution_map)
+			run_definition_module_engine(target_path, views, context, resolution_map)
 		},
 	)
 }
 
-fn finish_patch_based_merge<F>(
+fn finish_structural_merge<F>(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
-	context: PatchBasedMergeContext<'_>,
+	context: StructuralMergeContext<'_>,
 	vanilla: Option<foch_language::analyzer::semantic_index::ParsedScriptFile>,
 	mut interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
 	interactive_config_path: Option<&Path>,
 	mut run_engine: F,
-) -> Result<PatchBasedMergeOutput, PatchBasedMergeFailure>
+) -> Result<StructuralMergeOutput, StructuralMergeFailure>
 where
 	F: FnMut(
 		&foch_core::config::ResolutionMap,
-		&PatchBasedMergeContext<'_>,
-	) -> Result<DagPatchComputation, MergeError>,
+		&StructuralMergeContext<'_>,
+	) -> Result<DagMergeComputation, MergeError>,
 {
 	// Hold an owned, mutable resolution map so that any post-pass interactive
 	// resolutions can be folded back in before we re-run the merge engine
 	// below. The merge engine itself never invokes interactive prompts — every
 	// surviving conflict that reaches the user has already been pruned by the
-	// downstream-override post-pass inside `compute_dag_patches_with_handler`.
+	// downstream-override post-pass inside `compute_dag_merge_with_handler`.
 	let mut effective_map = context.resolution_map.clone();
-	let mut dag_patches = run_engine(&effective_map, &context)?;
+	let mut dag_merge = run_engine(&effective_map, &context)?;
 
-	if !dag_patches.merge_result.conflicts.is_empty()
+	if !dag_merge.merge_result.conflicts.is_empty()
 		&& let (Some(handler), Some(config_path)) =
 			(interactive_handler.as_mut(), interactive_config_path)
 	{
-		let survivors: Vec<(PatchAddress, PatchConflict)> = dag_patches
+		let survivors: Vec<(PatchAddress, PatchConflict)> = dag_merge
 			.merge_result
 			.conflicts
 			.iter()
@@ -230,20 +230,20 @@ where
 				}
 			}
 			if prompt.aborted {
-				return Err(PatchBasedMergeFailure::Merge(MergeError::Validation {
+				return Err(StructuralMergeFailure::Merge(MergeError::Validation {
 					path: Some(target_path.to_string()),
 					message: "merge aborted by user".to_string(),
 				}));
 			}
 			if new_picks > 0 {
-				dag_patches = run_engine(&effective_map, &context)?;
+				dag_merge = run_engine(&effective_map, &context)?;
 			}
 		}
 	}
 
 	let stale_vanilla_targets = collect_stale_vanilla_targets(
 		target_path,
-		&dag_patches.mod_patches,
+		&dag_merge.mod_patches,
 		vanilla.as_ref(),
 		context.merge_key_source,
 		context.mod_versions,
@@ -251,9 +251,9 @@ where
 	let dep_remove_counts = collect_dep_misuse_remove_counts(
 		context.dep_misuse_findings,
 		contributors,
-		&dag_patches.mod_patches,
+		&dag_merge.mod_patches,
 	);
-	let merge_result = dag_patches.merge_result;
+	let merge_result = dag_merge.merge_result;
 
 	if !merge_result.conflicts.is_empty() {
 		let conflict_keys: Vec<_> = merge_result
@@ -267,20 +267,22 @@ where
 			})
 			.collect();
 		let reason = format!(
-			"patch merge has {} unresolved conflict(s): {}",
+			"structural merge has {} unresolved conflict(s): {}",
 			conflict_keys.len(),
 			conflict_keys.join("; "),
 		);
-		return Err(PatchBasedMergeFailure::Unresolved(PatchConflictReport {
-			reason,
-			leaf_conflicts: leaf_conflicts_for_unresolved(
-				target_path,
-				&merge_result.conflicts,
-				context.mod_versions,
-				context.cwt_schema_graph.as_deref(),
-			),
-			handler_resolutions: merge_result.handler_resolutions,
-		}));
+		return Err(StructuralMergeFailure::Unresolved(
+			StructuralConflictReport {
+				reason,
+				leaf_conflicts: leaf_conflicts_for_unresolved(
+					target_path,
+					&merge_result.conflicts,
+					context.mod_versions,
+					context.cwt_schema_graph.as_deref(),
+				),
+				handler_resolutions: merge_result.handler_resolutions,
+			},
+		));
 	}
 
 	let noop_vs_vanilla = vanilla
@@ -288,13 +290,13 @@ where
 		.map(|base| {
 			crate::merge::patch::ast_statement_lists_semantically_equal(
 				&base.ast.statements,
-				&dag_patches.merged_statements,
+				&dag_merge.merged_statements,
 			)
 		})
 		.unwrap_or(false);
-	let merged_statements = dag_patches.merged_statements;
+	let merged_statements = dag_merge.merged_statements;
 	let preserve_complete_module =
-		preserves_complete_structured_module(context.merge_kernel, context.descriptor);
+		preserves_complete_tree_module(context.merge_kernel, context.descriptor);
 	let (merged_statements, per_entry_noop_skipped_count) = if preserve_complete_module {
 		(merged_statements, 0)
 	} else if let Some(base) = vanilla.as_ref() {
@@ -302,8 +304,8 @@ where
 	} else {
 		(merged_statements, 0)
 	};
-	let definition_participants = dag_patches.definition_participants;
-	let definition_provenance = dag_patches.definition_provenance;
+	let definition_participants = dag_merge.definition_participants;
+	let definition_provenance = dag_merge.definition_provenance;
 	let merge_trace = build_merge_trace(
 		&definition_provenance,
 		&definition_participants,
@@ -320,7 +322,7 @@ where
 	};
 	let emit_options = emit_options_for_descriptor(context.emit_options, context.descriptor);
 	let rendered = emit_clausewitz_statements_with_options(&merged_statements, &emit_options)?;
-	Ok(PatchBasedMergeOutput {
+	Ok(StructuralMergeOutput {
 		rendered,
 		dep_remove_counts,
 		stale_vanilla_targets,
@@ -334,7 +336,7 @@ where
 	})
 }
 
-fn preserves_complete_structured_module(
+fn preserves_complete_tree_module(
 	merge_kernel: MergeKernelMode,
 	descriptor: &ContentFamilyDescriptor,
 ) -> bool {
@@ -491,12 +493,12 @@ fn inject_provenance_comments(
 	out
 }
 
-fn run_patch_merge_engine(
+fn run_structural_file_engine(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
-	context: &PatchBasedMergeContext<'_>,
+	context: &StructuralMergeContext<'_>,
 	resolution_map: &foch_core::config::ResolutionMap,
-) -> Result<DagPatchComputation, MergeError> {
+) -> Result<DagMergeComputation, MergeError> {
 	let mut handler = ChainHandler {
 		first: LookupHandler::with_display_names(
 			resolution_map,
@@ -520,8 +522,8 @@ fn run_patch_merge_engine(
 		},
 	};
 	let effective_policies = effective_merge_policies(context);
-	compute_dag_patches_with_handler_and_kernel(
-		DagPatchRequest {
+	compute_dag_merge_for_evaluation(
+		DagMergeRequest {
 			file_path: target_path,
 			contributors,
 			merge_key_source: context.merge_key_source,
@@ -541,12 +543,12 @@ fn run_patch_merge_engine(
 	})
 }
 
-fn run_cross_file_module_patch_engine(
+fn run_definition_module_engine(
 	target_path: &str,
 	views: &CrossFileModuleViews,
-	context: &PatchBasedMergeContext<'_>,
+	context: &StructuralMergeContext<'_>,
 	resolution_map: &foch_core::config::ResolutionMap,
-) -> Result<DagPatchComputation, MergeError> {
+) -> Result<DagMergeComputation, MergeError> {
 	let mut handler = ChainHandler {
 		first: LookupHandler::with_display_names(
 			resolution_map,
@@ -570,7 +572,7 @@ fn run_cross_file_module_patch_engine(
 		},
 	};
 	let effective_policies = effective_merge_policies(context);
-	compute_dag_patches_from_parsed_with_kernel(
+	compute_dag_merge_from_parsed_for_evaluation(
 		&views.file_dag,
 		views.vanilla.as_ref(),
 		&views.contributors,
@@ -585,7 +587,7 @@ fn run_cross_file_module_patch_engine(
 	})
 }
 
-fn effective_merge_policies(context: &PatchBasedMergeContext<'_>) -> MergePolicies {
+fn effective_merge_policies(context: &StructuralMergeContext<'_>) -> MergePolicies {
 	let mut policies = context.descriptor.merge_policies;
 	if context.gui_scroll_merge && is_gui_container_family(context) {
 		policies.named_container = NamedContainerPolicy::ScrollStack;
@@ -593,7 +595,7 @@ fn effective_merge_policies(context: &PatchBasedMergeContext<'_>) -> MergePolici
 	policies
 }
 
-fn is_gui_container_family(context: &PatchBasedMergeContext<'_>) -> bool {
+fn is_gui_container_family(context: &StructuralMergeContext<'_>) -> bool {
 	matches!(
 		context.descriptor.id.as_str(),
 		"interface" | "common/interface"
@@ -676,15 +678,15 @@ mod tests {
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events descriptor");
 
-		assert!(preserves_complete_structured_module(
+		assert!(preserves_complete_tree_module(
 			MergeKernelMode::Structured,
 			module,
 		));
-		assert!(!preserves_complete_structured_module(
+		assert!(!preserves_complete_tree_module(
 			MergeKernelMode::Legacy,
 			module,
 		));
-		assert!(!preserves_complete_structured_module(
+		assert!(!preserves_complete_tree_module(
 			MergeKernelMode::Structured,
 			event,
 		));

@@ -46,10 +46,10 @@ pub use merge::{
 	AnalysisStatusView, AstAdapterError, CandidateView, ClausewitzConflictSummary,
 	ClausewitzDefinitionModuleOutcome, ClausewitzMergeOutcome, ClausewitzMergeTimings,
 	ClausewitzScalarReduction, ConflictDecision, ConflictHandler, ConflictView,
-	InteractiveCliHandler, MergeError, MergeExecuteOptions, MergeExecutionResult, MergeKernelMode,
-	MergeStatusView, canonicalize_clausewitz_file, merge_clausewitz_definition_module,
-	merge_clausewitz_files, run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
-	run_merge_with_options_and_kernel,
+	InteractiveCliHandler, MergeError, MergeEvaluationKernel, MergeExecuteOptions,
+	MergeExecutionResult, MergeStatusView, canonicalize_clausewitz_file,
+	merge_clausewitz_definition_module, merge_clausewitz_files, run_merge_for_evaluation,
+	run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions, WorkspaceSource};
 pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};
