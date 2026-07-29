@@ -18,11 +18,27 @@ The committed
 Structured units must be a subset of the corresponding Legacy case. Any case,
 snapshot, file, baseline, output, or denominator drift aborts the build.
 
+## Baseline refresh
+
+Scoring behavior changes require a scorer semver bump and an explicit refresh
+of the candidate baseline fixtures. The refresh restores and rescores the six
+pinned Legacy outputs; it does not rerun a Legacy merge or overwrite committed
+fixtures:
+
+```fish
+target/release/foch-mq review-pack freeze-baseline \
+	--out-dir crates/foch-merge-quality/dataset/.work/review-baseline-candidate
+```
+
+The output directory contains `legacy-baseline.json`, `expected.json`, and
+`review-pack-selection.json`. Review their complete diff and validate a pack
+against those three files before replacing the committed fixtures.
+
 ## Build contract
 
 Build performs no Legacy merge. For each case it restores the pinned Legacy
 output CAS, scores every selected Legacy unit with the current scorer, and
-requires exact equality with the frozen scorer `1.2.0` `FileRecord`.
+requires exact equality with the frozen scorer `1.3.0` `FileRecord`.
 
 Structured runs once per case with all selected paths grouped into the same
 playset, for at most six child-process executions. A failed, timed-out, or
@@ -57,9 +73,12 @@ After the pack is complete, `build` idempotently appends the same proposals to
 
 Each unit binds the base snapshot, ordered source and compatch CAS objects,
 human and candidate semantic hashes, current scorer result, diagnostics,
-selected kernel, and optional Wiki snapshot. Exact AST/module-semantic equality
-is proposed as `equivalent`; every non-identical or unavailable candidate is
-proposed as `insufficient_evidence`.
+selected kernel, and optional Wiki snapshot. Raw order-insensitive atom
+differences remain in the evidence for audit. A candidate is proposed as
+`equivalent` with `ast_relation = exact_equivalent` when that raw comparison is
+exact, or with `ast_relation = logical_equivalent` when the shared Structured
+module normalizer proves differing raw ASTs equivalent. Every unresolved or
+unavailable candidate is proposed as `insufficient_evidence`.
 
 Accepted records in the same append-only dataset annotation log must supersede
 prior records rather than mutate them. Non-identical positive

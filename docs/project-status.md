@@ -75,21 +75,22 @@ and 28/269 over multi-source files. That view is dominated by 30,293
 `not_emitted` files and includes broad-search false positives, so it is retained
 for audit rather than used as the current merge-success denominator.
 
-Scorer `1.2.0` prevents old measurements from being relabeled after scoring
+Scorer `1.3.0` prevents old measurements from being relabeled after scoring
 semantics change. Its committed network-free fixture contains six `proposed`
-cases and 36 multi-source units. The 2026-07-16 base-aware full rerun records 7
-accepted units (six `accepted_equivalent`, one `matches_ast`), 28
-`diverges_ast`, and one `diverges_structure`; no unit is `not_emitted` or
-conflict-withheld. The accepted rate is therefore 7/36 (19.4%). This supersedes
-the previous 11/36 headline: no-op output is now scored through the effective
-source/base runtime layers, so older file-presence-based outcomes no longer
-define the current baseline. A fresh full 23-candidate measurement is still
-required before quoting a scorer `1.2.0` full-local baseline. See
+cases and 36 multi-source units. An explicit refresh against the six pinned
+Legacy output-CAS objects records 10 `accepted_equivalent` and 26
+`diverges_ast`; no unit is `not_emitted` or conflict-withheld. The accepted
+rate is therefore 10/36 (27.8%). Relative to scorer `1.2.0`, module-aware
+runtime scoring promotes `common/rebel_types` and four
+`common/scripted_triggers` units, while correcting false-positive
+`PragmaticSanction` and `common/religions` results. A fresh full 23-candidate
+measurement is still required before quoting a scorer `1.3.0` full-local
+baseline. See
 [`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
 All 15 `.gui` units still diverge under the order-sensitive GUI policy.
-Removing them leaves 7/21 accepted non-GUI units (33.3%), with 13
-`diverges_ast` and one `diverges_structure`. Directory-scoped definition
+Removing them leaves 10/21 accepted non-GUI units (47.6%), with 11
+`diverges_ast`. Directory-scoped definition
 modules now keep cross-filename `common/*` families in the denominator:
 all four `common/scripted_triggers` units, `common/religions`, and
 `common/institutions` are module-AST equivalent in the fixed 12-unit Structured
