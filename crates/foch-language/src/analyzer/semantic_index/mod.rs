@@ -1399,13 +1399,6 @@ fn create_child_scope(
 			| "on_monthly"
 	) {
 		kind = ScopeKind::Effect;
-	} else if let Some(file_kind_scope_kind) = cwt_path_scope_kind.or_else(|| {
-		ctx.cwt_rule_engine.map_or_else(
-			|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
-			|engine| cwt_file_kind_container_scope_kind(engine, ctx.file_kind.clone(), key),
-		)
-	}) {
-		kind = file_kind_scope_kind;
 	} else if let Some(semantics) = effect_context_semantics {
 		match semantics {
 			EffectContextScopeSemantics::EffectContainer => {
@@ -1493,6 +1486,13 @@ fn create_child_scope(
 		&& !is_keyword(key)
 	{
 		kind = ScopeKind::ScriptedEffect;
+	} else if let Some(file_kind_scope_kind) = cwt_path_scope_kind.or_else(|| {
+		ctx.cwt_rule_engine.map_or_else(
+			|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
+			|engine| cwt_file_kind_container_scope_kind(engine, ctx.file_kind.clone(), key),
+		)
+	}) {
+		kind = file_kind_scope_kind;
 	}
 
 	// Clausewitz logic-block keywords are case-insensitive in EU4: vanilla
