@@ -8,6 +8,26 @@ use foch_merge_kernel::{
 	SourceNodeRef, StructuralConflict,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VanillaBaseMode {
+	Required,
+	ExplicitlyDisabled,
+}
+
+impl VanillaBaseMode {
+	pub(crate) fn from_include_game_base(include_game_base: bool) -> Self {
+		if include_game_base {
+			Self::Required
+		} else {
+			Self::ExplicitlyDisabled
+		}
+	}
+
+	pub(crate) fn requires_non_empty(self) -> bool {
+		self == Self::Required
+	}
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct SemanticMergeSource {
 	pub source_id: String,

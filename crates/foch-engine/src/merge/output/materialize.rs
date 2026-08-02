@@ -21,6 +21,7 @@ use super::super::plan::build_merge_plan_from_workspace;
 use super::super::planning::module_view::build_cross_file_module_views;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
+use crate::merge::model::VanillaBaseMode;
 use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{
@@ -392,6 +393,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 					validate_structured_merge_entry(
 						entry,
 						contributors.map(Vec::as_slice),
+						VanillaBaseMode::from_include_game_base(options.include_game_base),
 						profile,
 					)?;
 				}
@@ -481,6 +483,9 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										emit_options: &emit_options,
 										provenance: options.provenance,
 										script_cache: &workspace.script_cache,
+										vanilla_base_mode: VanillaBaseMode::from_include_game_base(
+											options.include_game_base,
+										),
 									};
 									structural_backend.merge_file(
 										&target,
@@ -846,6 +851,7 @@ fn materialize_cross_file_module(
 			emit_options,
 			provenance: options.provenance,
 			script_cache: &workspace.script_cache,
+			vanilla_base_mode: VanillaBaseMode::from_include_game_base(options.include_game_base),
 		};
 		structural_backend.merge_definition_module(
 			entry.output_path(),
@@ -1324,6 +1330,7 @@ fn dag_diagnostic_warning(diagnostic: &DagDiagnostic) -> Option<String> {
 fn validate_structured_merge_entry(
 	entry: &MergePlanEntry,
 	contributors: Option<&[ResolvedFileContributor]>,
+	vanilla_base_mode: VanillaBaseMode,
 	profile: &dyn GameProfile,
 ) -> Result<(), MergeError> {
 	let descriptor = profile
@@ -1351,13 +1358,14 @@ fn validate_structured_merge_entry(
 			if source_mods.len() < 2 {
 				return Ok(());
 			}
-			if !contributors
-				.iter()
-				.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
+			if vanilla_base_mode.requires_non_empty()
+				&& !contributors
+					.iter()
+					.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
 			{
 				return Err(structured_merge_unsupported(
 					entry,
-					"a real vanilla file is required as the three-way base",
+					"a real vanilla file is required as the semantic merge base",
 				));
 			}
 			if descriptor.merge_key_source.is_none() {
@@ -1392,14 +1400,15 @@ fn validate_structured_merge_entry(
 					"definition-module merge requires assignment-key merge units",
 				));
 			}
-			if !entry
-				.contributors
-				.iter()
-				.any(|contributor| contributor.is_base_game)
+			if vanilla_base_mode.requires_non_empty()
+				&& !entry
+					.contributors
+					.iter()
+					.any(|contributor| contributor.is_base_game)
 			{
 				return Err(structured_merge_unsupported(
 					entry,
-					"a vanilla definition module is required as the three-way base",
+					"a vanilla definition module is required as the semantic merge base",
 				));
 			}
 		}
@@ -1637,6 +1646,7 @@ pub(crate) struct StructuralMergeContext<'a> {
 	emit_options: &'a EmitOptions,
 	provenance: bool,
 	script_cache: &'a WorkspaceScriptCache,
+	vanilla_base_mode: VanillaBaseMode,
 }
 
 /// Run `f`, framing it with `[merge] {name}: start` / `[merge] {name}: done` lines
@@ -1720,6 +1730,7 @@ impl MaterializeProgress {
 mod tests {
 	use super::{MergeMaterializeOptions, materialize_merge_internal};
 	use crate::config::Config;
+	use crate::merge::model::VanillaBaseMode;
 	use crate::request::CheckRequest;
 	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
 	use foch_core::config::{ResolutionDecision, ResolutionMap};
@@ -1906,6 +1917,7 @@ mod tests {
 		super::validate_structured_merge_entry(
 			&entry,
 			None,
+			VanillaBaseMode::Required,
 			foch_language::analyzer::eu4_profile::eu4_profile(),
 		)
 		.expect("validate definition module");
@@ -1918,11 +1930,25 @@ mod tests {
 		let error = super::validate_structured_merge_entry(
 			&entry,
 			None,
+			VanillaBaseMode::Required,
 			foch_language::analyzer::eu4_profile::eu4_profile(),
 		)
 		.expect_err("module without vanilla must be rejected");
 
 		assert!(error.to_string().contains("vanilla definition module"));
+	}
+
+	#[test]
+	fn structured_definition_module_allows_an_explicitly_disabled_vanilla_base() {
+		let entry = structured_definition_module_entry(false);
+
+		super::validate_structured_merge_entry(
+			&entry,
+			None,
+			VanillaBaseMode::ExplicitlyDisabled,
+			foch_language::analyzer::eu4_profile::eu4_profile(),
+		)
+		.expect("explicit empty base is allowed");
 	}
 
 	fn structured_definition_module_entry(include_base: bool) -> MergePlanEntry {

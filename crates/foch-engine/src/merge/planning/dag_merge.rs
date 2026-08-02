@@ -17,7 +17,7 @@ use super::dag_pipeline::{DagPipelineResult, execute_dag_pipeline};
 use super::definition_trace::compute_definition_participants;
 use crate::merge::model::{
 	SemanticDeltaPartition, SemanticMergeComputation, SemanticMergeSource, SemanticPartitionId,
-	SemanticSourceDelta,
+	SemanticSourceDelta, VanillaBaseMode,
 };
 use crate::merge::structured::{
 	ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,
@@ -44,6 +44,7 @@ pub(crate) struct SemanticDagMergeComputation {
 pub(crate) struct SemanticDagMergeRequest<'a> {
 	pub input: DagMergeInputRequest<'a>,
 	pub policies: &'a MergePolicies,
+	pub vanilla_base_mode: VanillaBaseMode,
 }
 
 struct SemanticDagMergeArgs<'a> {
@@ -51,6 +52,7 @@ struct SemanticDagMergeArgs<'a> {
 	vanilla: Option<&'a ParsedScriptFile>,
 	contributors: &'a HashMap<ModId, ParsedScriptFile>,
 	policies: &'a MergePolicies,
+	vanilla_base_mode: VanillaBaseMode,
 	handler: &'a mut dyn ConflictHandler,
 	tree_unit: TreeMergeUnit,
 }
@@ -72,6 +74,7 @@ pub(crate) fn compute_dag_merge_with_handler(
 		vanilla: prepared.vanilla.as_ref(),
 		contributors: &prepared.contributors,
 		policies: request.policies,
+		vanilla_base_mode: request.vanilla_base_mode,
 		handler,
 		tree_unit: TreeMergeUnit::File,
 	})
@@ -82,6 +85,7 @@ pub(crate) fn compute_dag_merge_from_parsed(
 	vanilla: Option<&ParsedScriptFile>,
 	contributors: &HashMap<ModId, ParsedScriptFile>,
 	policies: &MergePolicies,
+	vanilla_base_mode: VanillaBaseMode,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<SemanticDagMergeComputation, String> {
 	compute_semantic_dag_merge_from_parsed(SemanticDagMergeArgs {
@@ -89,6 +93,7 @@ pub(crate) fn compute_dag_merge_from_parsed(
 		vanilla,
 		contributors,
 		policies,
+		vanilla_base_mode,
 		handler,
 		tree_unit: inferred_tree_merge_unit(vanilla, contributors),
 	})
@@ -117,6 +122,7 @@ fn compute_semantic_dag_merge_from_parsed(
 		vanilla,
 		contributors,
 		policies,
+		vanilla_base_mode,
 		handler,
 		tree_unit,
 	} = args;
@@ -154,6 +160,7 @@ fn compute_semantic_dag_merge_from_parsed(
 		join,
 		policies,
 		vanilla.is_some(),
+		vanilla_base_mode,
 		handler,
 	);
 	let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
@@ -449,6 +456,7 @@ mod tests {
 		vanilla_source: Option<&str>,
 		left_source: &str,
 		right_source: &str,
+		vanilla_base_mode: VanillaBaseMode,
 	) -> Result<SemanticDagMergeComputation, String> {
 		let mods = vec![
 			mod_with("left", "Left", vec![], vec![]),
@@ -478,6 +486,7 @@ mod tests {
 			vanilla.as_ref(),
 			&inventory,
 			&descriptor.merge_policies,
+			vanilla_base_mode,
 			&mut handler,
 		)
 	}
@@ -522,6 +531,7 @@ mod tests {
 			Some(&vanilla),
 			&inventory,
 			&descriptor.merge_policies,
+			VanillaBaseMode::Required,
 			&mut handler,
 		)
 	}
@@ -652,6 +662,7 @@ mod tests {
 			vanilla.as_ref(),
 			&inventory,
 			policies,
+			VanillaBaseMode::Required,
 			&mut handler,
 		)
 		.expect("compute semantic DAG merge")
@@ -740,6 +751,7 @@ mod tests {
 			vanilla.as_ref(),
 			&inventory,
 			&MergePolicies::default(),
+			VanillaBaseMode::Required,
 			handler,
 		)
 		.expect("compute semantic DAG merge")
@@ -849,8 +861,8 @@ mod tests {
 		let left = "country_event = { id = demo.1 title = demo.title trigger = { has_country_flag = left } option = { name = demo.accept } }\n";
 		let right = "country_event = { id = demo.1 title = demo.title option = { name = demo.accept } option = { name = demo.reject } }\n";
 
-		let result =
-			compute_tree_event_join(Some(base), left, right).expect("tree event final join");
+		let result = compute_tree_event_join(Some(base), left, right, VanillaBaseMode::Required)
+			.expect("tree event final join");
 		let emitted = crate::emit::emit_clausewitz_statements(&result.merged_statements)
 			.expect("emit merged event");
 
@@ -954,6 +966,7 @@ mod tests {
 			Some(&base),
 			&inventory,
 			&descriptor.merge_policies,
+			VanillaBaseMode::Required,
 			&mut handler,
 		)
 		.expect("tree kernel folds all three intermediate revisions");
@@ -1000,6 +1013,7 @@ mod tests {
 				Some(&base),
 				&inventory,
 				&MergePolicies::default(),
+				VanillaBaseMode::Required,
 				&mut handler,
 			)
 			.expect("resolve tree conflict by original source");
@@ -1047,6 +1061,7 @@ mod tests {
 			Some(&base),
 			&inventory,
 			&MergePolicies::default(),
+			VanillaBaseMode::Required,
 			&mut handler,
 		)
 		.expect("retain unresolved tree conflict");
@@ -1073,10 +1088,21 @@ mod tests {
 	fn tree_kernel_rejects_an_implicit_empty_base() {
 		let source = "country_event = { id = demo.1 title = demo.title }\n";
 
-		let error =
-			compute_tree_event_join(None, source, source).expect_err("tree merge requires vanilla");
+		let error = compute_tree_event_join(None, source, source, VanillaBaseMode::Required)
+			.expect_err("tree merge requires vanilla");
 
 		assert!(error.contains("non-empty vanilla base"), "{error}");
+	}
+
+	#[test]
+	fn tree_kernel_allows_an_explicitly_disabled_vanilla_base() {
+		let source = "country_event = { id = demo.1 title = demo.title }\n";
+
+		let result =
+			compute_tree_event_join(None, source, source, VanillaBaseMode::ExplicitlyDisabled)
+				.expect("explicit empty base is allowed");
+
+		assert!(!result.merged_statements.is_empty());
 	}
 
 	#[test]
@@ -3195,7 +3221,8 @@ mod tests {
 			}
 		}
 		"#;
-		let result = compute_tree_event_join(Some(base), &ge, ee).expect("tree control-flow join");
+		let result = compute_tree_event_join(Some(base), &ge, ee, VanillaBaseMode::Required)
+			.expect("tree control-flow join");
 
 		assert!(result.semantic.unresolved_conflicts.is_empty());
 		let output = rendered(&result.merged_statements);

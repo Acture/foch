@@ -454,6 +454,7 @@ fn run_semantic_structural_file_engine(
 				script_cache: Some(context.script_cache),
 			},
 			policies: &effective_policies,
+			vanilla_base_mode: context.vanilla_base_mode,
 		},
 		&mut handler,
 	)
@@ -476,6 +477,7 @@ fn run_semantic_definition_module_engine(
 		views.vanilla.as_ref(),
 		&views.contributors,
 		&effective_policies,
+		context.vanilla_base_mode,
 		&mut handler,
 	)
 	.map_err(|err| MergeError::Validation {

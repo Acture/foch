@@ -15,7 +15,7 @@ use crate::merge::kernel::{KernelMergeInput, KernelRevision};
 use crate::merge::model::{
 	MergeOutputDirective, SemanticConflictCandidate, SemanticMergeComputation,
 	SemanticMergeConflict, SemanticMergeFacts, SemanticMergeSource, SemanticPartitionId,
-	SemanticPartitionLineage,
+	SemanticPartitionLineage, VanillaBaseMode,
 };
 use crate::merge::planning::dag::{FileDag, ModId};
 use crate::merge::planning::dag_join::DagJoinScope;
@@ -677,6 +677,7 @@ pub(crate) struct TreeDagProtocol<'a> {
 	kernel: TreeMergeKernel<'a>,
 	source_observer: TreeSourceObserver<'a>,
 	has_vanilla_base: bool,
+	vanilla_base_mode: VanillaBaseMode,
 	handler: &'a mut dyn ConflictHandler,
 }
 
@@ -686,12 +687,14 @@ impl<'a> TreeDagProtocol<'a> {
 		join: &'a dyn TreeJoinProtocol,
 		policies: &'a MergePolicies,
 		has_vanilla_base: bool,
+		vanilla_base_mode: VanillaBaseMode,
 		handler: &'a mut dyn ConflictHandler,
 	) -> Self {
 		Self {
 			kernel: TreeMergeKernel::new(join, policies),
 			source_observer: TreeSourceObserver::new(partition_adapter, policies),
 			has_vanilla_base,
+			vanilla_base_mode,
 			handler,
 		}
 	}
@@ -745,7 +748,10 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 		root: &TreeDagState,
 		sinks: &[ModId],
 	) -> Result<(), String> {
-		if sinks.len() > 1 && (!self.has_vanilla_base || root.statements.is_empty()) {
+		if sinks.len() > 1
+			&& self.vanilla_base_mode.requires_non_empty()
+			&& (!self.has_vanilla_base || root.statements.is_empty())
+		{
 			return Err(format!(
 				"tree merge unsupported for {}: a non-empty vanilla base is required",
 				file_dag.file_path(),
@@ -755,7 +761,7 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 	}
 
 	fn join(&mut self, request: DagJoinRequest<'_, TreeDagState>) -> Result<TreeDagState, String> {
-		if request.base.statements.is_empty() {
+		if self.vanilla_base_mode.requires_non_empty() && request.base.statements.is_empty() {
 			return Err(format!(
 				"tree merge unsupported for {} {} join: a non-empty shared base is required",
 				request.file_dag.file_path(),
@@ -888,7 +894,7 @@ mod tests {
 	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler, DeferHandler};
 	use crate::merge::conflict_view::ConflictView;
 	use crate::merge::kernel::{KernelMergeInput, KernelRevision};
-	use crate::merge::model::SemanticPartitionId;
+	use crate::merge::model::{SemanticPartitionId, VanillaBaseMode};
 	use crate::merge::planning::dag::{FileDag, ModId};
 	use crate::merge::planning::dag_join::{DagJoinScope, plan_dag_join};
 	use crate::merge::planning::dag_pipeline::{
@@ -1113,6 +1119,7 @@ mod tests {
 			&ClausewitzFileJoin,
 			&policies,
 			true,
+			VanillaBaseMode::Required,
 			&mut handler,
 		);
 
@@ -1160,6 +1167,7 @@ mod tests {
 			&DefinitionModuleJoin,
 			&policies,
 			true,
+			VanillaBaseMode::Required,
 			&mut handler,
 		);
 
