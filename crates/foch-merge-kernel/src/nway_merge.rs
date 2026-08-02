@@ -360,6 +360,15 @@ fn resolution_overrides(
 			},
 		};
 		insert_exact_selection(&mut overrides, target, exact, conflict.id)?;
+		let subtree_root = match selected {
+			BoundResolutionSource::Node(source) => source,
+			BoundResolutionSource::Tombstone { base_node, .. } => {
+				RevisionNode::new(RevisionId::BASE, base_node)
+			}
+		};
+		overrides
+			.excluded
+			.extend(correspondence.subtree_variant_descendants(subtree_root, base, revisions));
 
 		for candidate in &conflict.candidates {
 			let bound =

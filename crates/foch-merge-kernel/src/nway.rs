@@ -237,6 +237,25 @@ impl NWayCorrespondence {
 		&self.class_facts
 	}
 
+	pub(crate) fn subtree_variant_descendants(
+		&self,
+		root: RevisionNode,
+		base: &NormalizedTree,
+		revisions: &[MergeRevision<'_>],
+	) -> BTreeSet<ClassId> {
+		let root_class = self.classes.class_of(root);
+		let mut descendants = BTreeSet::new();
+		for (revision, root_node) in &self.classes.class(root_class).members {
+			let tree = tree_for_revision(base, revisions, *revision);
+			let mut pending = tree.node(*root_node).unwrap().children.clone();
+			while let Some(node) = pending.pop() {
+				descendants.insert(self.classes.class_of(RevisionNode::new(*revision, node)));
+				pending.extend(tree.node(node).unwrap().children.iter().copied());
+			}
+		}
+		descendants
+	}
+
 	pub fn conservative_selection(
 		&self,
 		base: &NormalizedTree,
@@ -1758,6 +1777,56 @@ mod tests {
 						if source.revision == RevisionId::new(1)
 				)
 		}));
+	}
+
+	#[test]
+	fn exact_resolution_selects_a_whole_subtree_across_delete_modify() {
+		let assignment = |value: &str| {
+			TreeNode::branch("assignment", vec![field(value)])
+				.with_anchor("assignment", "shared")
+				.with_child_cardinality(ChildCardinality::ExactlyOne)
+		};
+		let base = root(vec![assignment("base")]);
+		let first = root(vec![assignment("one")]);
+		let deleted = root(Vec::new());
+		let third = root(vec![assignment("three")]);
+		let revisions = [
+			MergeRevision::new(RevisionId::new(1), &first),
+			MergeRevision::new(RevisionId::new(2), &deleted),
+			MergeRevision::new(RevisionId::new(3), &third),
+		];
+		let probe = n_way_merge(&base, &revisions).unwrap();
+		let conflict = probe
+			.conflicts
+			.iter()
+			.find(|conflict| conflict.kind == ConflictKind::DeleteModify)
+			.expect("delete/modify conflict");
+		let selected = conflict
+			.candidates
+			.iter()
+			.copied()
+			.find(|candidate| candidate.input().revision == RevisionId::new(1))
+			.expect("first revision candidate");
+		let resolution = conflict.select(selected).unwrap();
+
+		let outcome = n_way_merge_with_policy_and_resolutions(
+			&base,
+			&revisions,
+			&ConservativeMergePolicy,
+			&[resolution],
+		)
+		.unwrap();
+
+		assert!(outcome.conflicts.is_empty(), "{:?}", outcome.conflicts);
+		assert_eq!(
+			outcome
+				.tentative_tree()
+				.node(NodeId::new(2))
+				.unwrap()
+				.value
+				.as_deref(),
+			Some("one"),
+		);
 	}
 
 	#[test]

@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use crate::{
 	ChildOrder, ClassId, ConflictKind, MergeDecisionEvidence, MergeDecisionReason,
 	MergeDecisionResult, MergePolicy, MergePolicyKind, MergeRevision, NWayClassContext,
@@ -607,35 +605,8 @@ fn exclude_unselected_subtree_classes(
 	correspondence: &NWayCorrespondence,
 	plan: &mut NWaySelectionPlan,
 ) {
-	let root_class = correspondence.classes.class_of(selected);
-	for (revision, root) in &correspondence.classes.class(root_class).members {
-		let source = RevisionNode::new(*revision, *root);
-		for class in subtree_classes(source, base, revisions, correspondence) {
-			if class != root_class {
-				plan.policy_excluded.insert(class);
-			}
-		}
-	}
-}
-
-fn subtree_classes(
-	root: RevisionNode,
-	base: &NormalizedTree,
-	revisions: &[MergeRevision<'_>],
-	correspondence: &NWayCorrespondence,
-) -> BTreeSet<ClassId> {
-	let tree = tree_for_revision(base, revisions, root.revision);
-	let mut pending = vec![root.node];
-	let mut classes = BTreeSet::new();
-	while let Some(node) = pending.pop() {
-		classes.insert(
-			correspondence
-				.classes
-				.class_of(RevisionNode::new(root.revision, node)),
-		);
-		pending.extend(tree.node(node).unwrap().children.iter().copied());
-	}
-	classes
+	plan.policy_excluded
+		.extend(correspondence.subtree_variant_descendants(selected, base, revisions));
 }
 
 fn close_policy_ancestors(
