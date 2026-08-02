@@ -4,6 +4,7 @@ pub(crate) mod boolean;
 pub(crate) mod cwt_suggestions;
 pub(crate) mod error;
 pub(crate) mod execute;
+pub(crate) mod gui;
 pub(crate) mod kernel;
 pub(crate) mod model;
 pub(crate) mod namespace;

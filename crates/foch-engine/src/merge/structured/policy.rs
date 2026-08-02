@@ -57,9 +57,21 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 		if matches!(key, "if" | "else_if" | "else") && matches!(value, AstValue::Block { .. }) {
 			return None;
 		}
+		if let Some(identity) =
+			crate::merge::gui::scroll_stack_variant_identity(self.policies, key, value)
+		{
+			return Some(SemanticKey::parent_scoped(
+				"clausewitz.scroll_stack.variant",
+				identity,
+			));
+		}
+		if self.policies.divergent_block_policy_for_key(key) == DivergentBlockPolicy::Union
+			&& !matches!(value, AstValue::Block { .. })
+		{
+			return Some(union_assignment_anchor(key, value));
+		}
 		if parent_assignment_key.is_some_and(|parent| {
-			self.policies.divergent_block_policy_for_key(parent)
-				== foch_language::analyzer::content_family::DivergentBlockPolicy::Union
+			self.policies.divergent_block_policy_for_key(parent) == DivergentBlockPolicy::Union
 		}) {
 			return Some(union_assignment_anchor(key, value));
 		}

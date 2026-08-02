@@ -265,26 +265,25 @@ where
 		));
 	}
 
+	let merge_policies = effective_merge_policies(&context);
+	let mut merged_statements = dag_merge.merged_statements;
+	crate::merge::gui::coalesce_scroll_stack_variants(&mut merged_statements, &merge_policies);
 	let noop_vs_vanilla = if let Some(base) = vanilla.as_ref() {
 		let merged = AstFile {
 			path: base.ast.path.clone(),
-			statements: dag_merge.merged_statements.clone(),
+			statements: merged_statements.clone(),
 		};
-		clausewitz_files_semantically_equivalent(
-			&base.ast,
-			&merged,
-			&effective_merge_policies(&context),
-		)
-		.map_err(|error| {
-			StructuralMergeFailure::Merge(MergeError::Validation {
-				path: Some(target_path.to_string()),
-				message: format!("failed to compare semantic no-op output: {error}"),
-			})
-		})?
+		clausewitz_files_semantically_equivalent(&base.ast, &merged, &merge_policies).map_err(
+			|error| {
+				StructuralMergeFailure::Merge(MergeError::Validation {
+					path: Some(target_path.to_string()),
+					message: format!("failed to compare semantic no-op output: {error}"),
+				})
+			},
+		)?
 	} else {
 		false
 	};
-	let merged_statements = dag_merge.merged_statements;
 	let preserve_complete_module = preserves_complete_tree_module(context.descriptor);
 	let (merged_statements, per_entry_noop_skipped_count) = if preserve_complete_module {
 		(merged_statements, 0)

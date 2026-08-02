@@ -13,7 +13,10 @@ use crate::emit::emit_clausewitz_statements;
 
 use super::ast_adapter::{denormalize_ast, normalize_ast};
 use super::policy::ContentFamilyMergePolicy;
-use super::{ClausewitzScalarReduction, merge_clausewitz_files, merge_event_files};
+use super::{
+	ClausewitzScalarReduction, merge_clausewitz_files, merge_clausewitz_files_n_way,
+	merge_event_files,
+};
 
 fn parse(source: &str) -> AstFile {
 	let parsed = parse_clausewitz_content(PathBuf::from("events/test.txt"), source);
@@ -133,6 +136,35 @@ fn preserve_one_sided_policies() -> MergePolicies {
 	MergePolicies {
 		one_sided_removal: OneSidedRemovalPolicy::PreserveIfParentSurvives,
 		..MergePolicies::default()
+	}
+}
+
+#[test]
+fn structured_union_keeps_distinct_scalar_assignments() {
+	const UNION_RULES: &[(&str, DivergentBlockPolicy)] =
+		&[("monarch_names", DivergentBlockPolicy::Union)];
+	let policies = MergePolicies {
+		divergent_block_rules: UNION_RULES,
+		..MergePolicies::default()
+	};
+	let base = parse("");
+	let left = parse("monarch_names = \"Aldus\"\n");
+	let middle = parse("monarch_names = \"Berta\"\n");
+	let right = parse("monarch_names = \"Cedric\"\n");
+
+	let outcome = merge_clausewitz_files_n_way(&base, &[&left, &middle, &right], &policies)
+		.expect("merge scalar union");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+	for monarch_name in ["Aldus", "Berta", "Cedric"] {
+		assert_eq!(
+			output
+				.matches(&format!("monarch_names = \"{monarch_name}\""))
+				.count(),
+			1,
+			"{output}"
+		);
 	}
 }
 

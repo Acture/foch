@@ -80,6 +80,15 @@ pub(crate) fn classify_conflict_kind(
 		return Some(ConflictKind::SchemaCardinalityViolation);
 	}
 
+	if reason.starts_with("policy:")
+		&& ast_path.len() > 1
+		&& !matches!(
+			engine.root_binding(file_path),
+			SchemaBinding::Unbound { .. }
+		) {
+		return Some(ConflictKind::DeepMergeable);
+	}
+
 	if (reason.contains("sibling mods inserted divergent statements at the same key")
 		|| reason.contains("multiple mods replace the same block with different content"))
 		&& (root_name_field(engine, file_path).is_some()
@@ -271,6 +280,20 @@ mod tests {
 				Path::new("events/example.txt"),
 				&["country_event"],
 				"sibling mods inserted divergent statements at the same key"
+			),
+			Some(ConflictKind::DeepMergeable)
+		);
+	}
+
+	#[test]
+	fn classifies_tree_policy_conflicts_below_bound_roots_as_deep_mergeable() {
+		let engine = schema_pack_engine("events");
+		assert_eq!(
+			classify_conflict_kind(
+				&engine,
+				Path::new("events/example.txt"),
+				&["country_event", "immediate"],
+				"policy: divergent block revisions remain unresolved"
 			),
 			Some(ConflictKind::DeepMergeable)
 		);

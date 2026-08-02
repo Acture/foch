@@ -1176,8 +1176,8 @@ fn eu4_gui_edit_wins_over_remove_keeps_the_edit() {
 	// GUI families opt into edit-wins, so the edit is kept and no manual
 	// conflict is surfaced — a GUI "remove" is typically a trimmed widget copy
 	// not re-shipping a field, not an intentional delete that should veto a
-	// sibling mod's edit. Contrast eu4_mixed_kinds_conflict (history family,
-	// flag off), where the same SetValue-vs-RemoveNode shape stays a conflict.
+	// sibling mod's edit. Contrast eu4_edit_vs_delete_reports_structural_conflict
+	// (history family, flag off), where the same edit-vs-delete shape conflicts.
 	let (result, out_dir) = run_merge_for_fixture("eu4_gui_edit_wins_over_remove", false);
 	assert_eq!(
 		result.exit_code, 0,
@@ -1271,22 +1271,22 @@ fn eu4_gui_scroll_merge_flag_stacks_divergent_same_name_container() {
 }
 
 #[test]
-fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
+fn eu4_edit_vs_delete_reports_structural_conflict() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false);
 	assert_eq!(
 		result.exit_code, 2,
-		"strict mixed-kinds merge should block; report: {:#?}",
+		"strict edit-vs-delete merge should block; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.status,
 		MergeReportStatus::Blocked,
-		"strict mixed-kinds merge should be blocked; report: {:#?}",
+		"strict edit-vs-delete merge should be blocked; report: {:#?}",
 		result.report
 	);
 	assert!(
 		result.report.manual_conflict_count >= 1,
-		"mixed SetValue/RemoveNode edits must surface a manual conflict; report: {:#?}",
+		"edit-vs-delete changes must surface a manual conflict; report: {:#?}",
 		result.report
 	);
 	assert!(
@@ -1294,8 +1294,8 @@ fn eu4_mixed_kinds_set_value_vs_remove_node_reports_conflict() {
 			.report
 			.conflict_resolutions
 			.iter()
-			.any(|resolution| resolution.reason.contains("mixed patch kinds")),
-		"mixed-kinds conflict reason should mention mixed patch kinds; report: {:#?}",
+			.any(|resolution| resolution.reason.contains("delete_modify")),
+		"tree conflict reason should identify delete_modify; report: {:#?}",
 		result.report
 	);
 	assert!(out_dir.exists(), "out dir should still be materialized");
@@ -1733,7 +1733,7 @@ fn eu4_priority_boost_overrides_load_order_winner() {
 }
 
 #[test]
-fn structured_merge_rejects_a_synthetic_base_without_copying_a_winner() {
+fn structured_merge_allows_an_explicit_empty_base() {
 	let fixture = fixture_dir("eu4_priority_boost");
 	let temp_dir = tempfile::tempdir().expect("create structured merge tempdir");
 	let out_dir = temp_dir.path().join("out");
@@ -1746,7 +1746,7 @@ fn structured_merge_rejects_a_synthetic_base_without_copying_a_winner() {
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 
-	let error = run_merge_for_evaluation(
+	let result = run_merge_for_evaluation(
 		CheckRequest::from_playset_path(
 			fixture.join("dlc_load.json"),
 			Config {
@@ -1773,17 +1773,18 @@ fn structured_merge_rejects_a_synthetic_base_without_copying_a_winner() {
 		},
 		MergeEvaluationKernel::SemanticTree,
 	)
-	.expect_err("structured merge must reject a synthetic three-way base");
-	let message = error.to_string();
-	assert!(
-		message.contains("structured merge unsupported") && message.contains("real vanilla file"),
-		"unexpected structured rejection: {message}"
-	);
+	.expect("an explicitly disabled game base should permit an empty semantic base");
+	assert_eq!(result.exit_code, 0, "report: {:#?}", result.report);
 	assert_eq!(
-		fs::read_to_string(prior_file).expect("read preserved prior output"),
-		"prior-output\n",
-		"an unsupported structured run must not publish a copied winner"
+		result.report.status,
+		MergeReportStatus::Ready,
+		"report: {:#?}",
+		result.report
 	);
+	let merged_text = fs::read_to_string(prior_file).expect("read merged output");
+	assert!(merged_text.contains("foch_300001_title"), "{merged_text}");
+	assert!(!merged_text.contains("foch_300002_title"), "{merged_text}");
+	assert!(!merged_text.contains("prior-output"), "{merged_text}");
 }
 
 #[test]

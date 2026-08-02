@@ -37,7 +37,11 @@ pub(crate) fn build_cross_file_module_views(
 	duplicate_definitions: Option<DuplicateDefinitionPolicy>,
 ) -> Result<CrossFileModuleViews, String> {
 	let (merge_unit, input_paths, module_policy) = validate_module_target(entry, descriptor)?;
-	let module_policy = apply_duplicate_definition_override(module_policy, duplicate_definitions);
+	let module_policy = apply_duplicate_definition_override(
+		module_policy,
+		duplicate_definitions,
+		descriptor.merge_key_source,
+	);
 
 	let mut base_files = BTreeMap::new();
 	let mut files_by_mod: HashMap<ModId, BTreeMap<String, ParsedScriptFile>> = HashMap::new();
@@ -165,8 +169,11 @@ pub(crate) fn build_cross_file_module_views(
 fn apply_duplicate_definition_override(
 	mut policy: DefinitionModulePolicy,
 	duplicate_definitions: Option<DuplicateDefinitionPolicy>,
+	merge_key_source: Option<MergeKeySource>,
 ) -> DefinitionModulePolicy {
-	if let Some(duplicate_definitions) = duplicate_definitions {
+	if merge_key_source == Some(MergeKeySource::AssignmentKey)
+		&& let Some(duplicate_definitions) = duplicate_definitions
+	{
 		policy.duplicate_definitions = duplicate_definitions;
 	}
 	policy
@@ -563,11 +570,10 @@ mod tests {
 
 	#[test]
 	fn structured_module_views_use_runtime_effective_duplicate_definitions() {
-		let ContentLoadPolicy::DefinitionModule(mut policy) = eu4_profile()
+		let descriptor = eu4_profile()
 			.classify_content_family(Path::new("common/scripted_triggers/example.txt"))
-			.expect("scripted triggers descriptor")
-			.load_policy
-		else {
+			.expect("scripted triggers descriptor");
+		let ContentLoadPolicy::DefinitionModule(mut policy) = descriptor.load_policy else {
 			panic!("scripted triggers must be a definition module");
 		};
 		assert_eq!(
@@ -579,13 +585,34 @@ mod tests {
 			apply_duplicate_definition_override(
 				policy,
 				Some(DuplicateDefinitionPolicy::LaterDefinitionWins),
+				descriptor.merge_key_source,
 			)
 			.duplicate_definitions,
 			DuplicateDefinitionPolicy::LaterDefinitionWins
 		);
-		policy = apply_duplicate_definition_override(policy, None);
+		policy = apply_duplicate_definition_override(policy, None, descriptor.merge_key_source);
 		assert_eq!(
 			policy.duplicate_definitions,
+			DuplicateDefinitionPolicy::PreserveAll
+		);
+	}
+
+	#[test]
+	fn nested_identity_modules_preserve_repeated_top_level_assignments() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new("common/estates_preload/example.txt"))
+			.expect("estates preload descriptor");
+		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+			panic!("estates preload must be a definition module");
+		};
+
+		assert_eq!(
+			apply_duplicate_definition_override(
+				policy,
+				Some(DuplicateDefinitionPolicy::LaterDefinitionWins),
+				descriptor.merge_key_source,
+			)
+			.duplicate_definitions,
 			DuplicateDefinitionPolicy::PreserveAll
 		);
 	}

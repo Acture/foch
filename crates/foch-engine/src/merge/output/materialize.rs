@@ -1394,10 +1394,10 @@ fn validate_structured_merge_entry(
 					"the target is not a definition module",
 				));
 			}
-			if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
+			if descriptor.merge_key_source.is_none() {
 				return Err(structured_merge_unsupported(
 					entry,
-					"definition-module merge requires assignment-key merge units",
+					"the ContentFamily has no merge-key contract",
 				));
 			}
 			if vanilla_base_mode.requires_non_empty()
