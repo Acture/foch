@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use foch_core::model::ScopeKind;
-use foch_cwt::{BindContext, CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtTypeDef};
+use foch_cwt::{
+	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtSchemaGraph, RuleContext, RuleEngine,
+};
 use foch_language::analyzer::content_family::CwtType;
 use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_file};
 use foch_language::analyzer::semantic_index::{
@@ -40,19 +42,19 @@ struct VanillaContainerScopeMismatch {
 #[test]
 #[ignore = "run manually as a parity gate before swapping production callers"]
 fn container_scope_table_matches_cwt_helper() {
-	let graph = schema_graph();
+	let engine = rule_engine();
 	let cases = legacy_cases();
 	let mismatches = cases
 		.iter()
 		.filter_map(|case| {
 			let cwt =
-				cwt_file_kind_container_scope_kind(graph, CwtType::new(case.file_kind), case.key);
+				cwt_file_kind_container_scope_kind(engine, CwtType::new(case.file_kind), case.key);
 			(Some(case.legacy) != cwt).then(|| ContainerScopeMismatch {
 				file_kind: case.file_kind.to_string(),
 				key: case.key.to_string(),
 				hand: case.legacy,
 				cwt,
-				cwt_fields: describe_cwt_fields(graph, case.file_kind, case.key),
+				cwt_fields: describe_cwt_fields(engine, case.file_kind, case.key),
 			})
 		})
 		.collect::<Vec<_>>();
@@ -72,7 +74,7 @@ fn container_scope_table_matches_cwt_helper() {
 #[test]
 #[ignore = "requires a local EU4 install and is run manually as an acceptance gate"]
 fn vanilla_corpus_container_scope_matches_cwt_helper() {
-	let graph = schema_graph();
+	let engine = rule_engine();
 	let eu4_root = eu4_root();
 	if !eu4_root.is_dir() {
 		println!("EU4 install not found at {}", eu4_root.display());
@@ -95,7 +97,7 @@ fn vanilla_corpus_container_scope_matches_cwt_helper() {
 		walk_keys(&parsed.ast.statements, &mut |key, line| {
 			keys_checked += 1;
 			let legacy = legacy_container_scope_kind(file_kind.as_str(), key);
-			let cwt = cwt_file_kind_container_scope_kind(graph, file_kind.clone(), key);
+			let cwt = cwt_file_kind_container_scope_kind(engine, file_kind.clone(), key);
 			if legacy != cwt && (legacy.is_some() || cwt.is_some()) {
 				mismatches.push(VanillaContainerScopeMismatch {
 					file_kind: file_kind.as_str().to_string(),
@@ -123,10 +125,12 @@ fn vanilla_corpus_container_scope_matches_cwt_helper() {
 	);
 }
 
-fn schema_graph() -> &'static CwtSchemaGraph {
-	static GRAPH: OnceLock<CwtSchemaGraph> = OnceLock::new();
-	GRAPH.get_or_init(|| {
-		CwtSchemaGraph::from_directory(&vendor_schema_dir()).expect("load vendored cwtools schema")
+fn rule_engine() -> &'static RuleEngine {
+	static ENGINE: OnceLock<RuleEngine> = OnceLock::new();
+	ENGINE.get_or_init(|| {
+		let graph = CwtSchemaGraph::from_directory(&vendor_schema_dir())
+			.expect("load vendored cwtools schema");
+		RuleEngine::from_graph(&graph)
 	})
 }
 
@@ -652,22 +656,22 @@ fn legacy_container_scope_kind(file_kind: &str, key: &str) -> Option<ScopeKind> 
 	legacy_case_lookup().get(&(file_kind, key)).copied()
 }
 
-fn describe_cwt_fields(graph: &CwtSchemaGraph, file_kind: &str, key: &str) -> Vec<String> {
+fn describe_cwt_fields(engine: &RuleEngine, file_kind: &str, key: &str) -> Vec<String> {
 	let mut descriptions = Vec::new();
-	for definition in root_type_candidates(graph, file_kind) {
+	for definition in root_type_candidates(engine, file_kind) {
 		collect_field_descriptions(
-			graph,
-			&format!("type:{}", definition.name.as_str()),
-			BindContext::RootType(definition),
+			engine,
+			&format!("type:{}", definition.name),
+			RuleContext::RootType(definition),
 			definition.rules.as_slice(),
 			key,
 			&mut descriptions,
 		);
 		for subtype in &definition.subtypes {
 			collect_field_descriptions(
-				graph,
-				&format!("type:{}:subtype:{}", definition.name.as_str(), subtype.name),
-				BindContext::AliasRules(subtype.rules.as_slice()),
+				engine,
+				&format!("type:{}:subtype:{}", definition.name, subtype.name),
+				RuleContext::AliasRules(subtype.rules.as_slice()),
 				subtype.rules.as_slice(),
 				key,
 				&mut descriptions,
@@ -679,10 +683,11 @@ fn describe_cwt_fields(graph: &CwtSchemaGraph, file_kind: &str, key: &str) -> Ve
 	descriptions
 }
 
-fn root_type_candidates<'g>(graph: &'g CwtSchemaGraph, file_kind: &str) -> Vec<&'g CwtTypeDef> {
-	let mut matches = graph
-		.types
-		.values()
+fn root_type_candidates<'e>(engine: &'e RuleEngine, file_kind: &str) -> Vec<&'e CompiledRoot> {
+	let mut matches = engine
+		.pack()
+		.roots
+		.iter()
 		.filter(|definition| {
 			definition.name.as_str() == file_kind
 				|| definition
@@ -703,15 +708,15 @@ fn schema_path_matches_file_kind(path: &str, file_kind: &str) -> bool {
 	normalized == file_kind || normalized.rsplit('/').next() == Some(file_kind)
 }
 
-fn collect_field_descriptions<'g>(
-	graph: &'g CwtSchemaGraph,
+fn collect_field_descriptions<'e>(
+	engine: &'e RuleEngine,
 	context: &str,
-	parent: BindContext<'g>,
-	rules: &'g [CwtRuleField],
+	parent: RuleContext<'e>,
+	rules: &'e [CompiledRuleField],
 	key: &str,
 	descriptions: &mut Vec<String>,
 ) {
-	for field in graph.bind_fields(parent, key) {
+	for field in engine.bind_fields(parent, key) {
 		descriptions.push(format!(
 			"{} => {} = {}",
 			context,
@@ -720,13 +725,13 @@ fn collect_field_descriptions<'g>(
 		));
 	}
 	for field in rules {
-		let CwtRuleValue::Block(children) = &field.value else {
+		let CompiledRuleValue::Block(children) = &field.value else {
 			continue;
 		};
 		collect_field_descriptions(
-			graph,
+			engine,
 			&format!("{context}/{}", field.key),
-			BindContext::RuleField(field),
+			RuleContext::RuleField(field),
 			children.as_slice(),
 			key,
 			descriptions,
@@ -734,11 +739,11 @@ fn collect_field_descriptions<'g>(
 	}
 }
 
-fn format_rule_value(value: &CwtRuleValue) -> String {
+fn format_rule_value(value: &CompiledRuleValue) -> String {
 	match value {
-		CwtRuleValue::Scalar(value) => format!("Scalar({value})"),
-		CwtRuleValue::Marker(value) => format!("Marker({value})"),
-		CwtRuleValue::Block(fields) => {
+		CompiledRuleValue::Scalar(value) => format!("Scalar({value})"),
+		CompiledRuleValue::Marker(value) => format!("Marker({value})"),
+		CompiledRuleValue::Block(fields) => {
 			let preview = fields
 				.iter()
 				.take(4)

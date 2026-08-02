@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const CACHE_FORMAT: &str = "3.0.0";
+const CACHE_VERSION: &str = "3.0.0";
 
 #[allow(
 	dead_code,
@@ -105,7 +105,7 @@ fn build_cached_root(namespace: &str, archives: &[PathBuf], base_aware: bool) ->
 			.unwrap_or_else(|err| panic!("unpack {}: {err}", archive.display()));
 	}
 	fs::write(marker_path(&staging), &archive_hash).expect("write archive hash marker");
-	fs::write(format_path(&staging), CACHE_FORMAT).expect("write cache format marker");
+	fs::write(version_path(&staging), CACHE_VERSION).expect("write cache version marker");
 	let _ = fs::remove_dir_all(&root);
 	fs::rename(&staging, &root).expect("publish cached corpus fixture");
 	prune_stale_fixture_caches(parent, &root, namespace);
@@ -132,9 +132,9 @@ fn fixture_archive_hash(archives: &[PathBuf]) -> String {
 
 fn cached_root_is_valid(root: &Path, archive_hash: &str, base_aware: bool) -> bool {
 	marker_path(root).is_file()
-		&& format_path(root).is_file()
+		&& version_path(root).is_file()
 		&& fs::read_to_string(marker_path(root)).is_ok_and(|hash| hash == archive_hash)
-		&& fs::read_to_string(format_path(root)).is_ok_and(|version| version == CACHE_FORMAT)
+		&& fs::read_to_string(version_path(root)).is_ok_and(|version| version == CACHE_VERSION)
 		&& root.join("corpus.json").is_file()
 		&& root.join("workshop").is_dir()
 		&& (!base_aware
@@ -216,20 +216,20 @@ fn marker_path(root: &Path) -> PathBuf {
 	root.join(".archive-hash")
 }
 
-fn format_path(root: &Path) -> PathBuf {
-	root.join(".cache-format")
+fn version_path(root: &Path) -> PathBuf {
+	root.join(".cache-version")
 }
 
 #[cfg(test)]
 mod tests {
-	use super::{CACHE_FORMAT, cached_root_is_valid, format_path, marker_path};
+	use super::{CACHE_VERSION, cached_root_is_valid, marker_path, version_path};
 	use std::fs;
 
 	#[test]
 	fn mod_corpus_cache_does_not_require_local_basegame_payload() {
 		let temp = tempfile::tempdir().expect("temp dir");
 		fs::write(marker_path(temp.path()), "archive-hash").expect("write hash");
-		fs::write(format_path(temp.path()), CACHE_FORMAT).expect("write format");
+		fs::write(version_path(temp.path()), CACHE_VERSION).expect("write version");
 		fs::write(temp.path().join("corpus.json"), "{}").expect("write corpus");
 		fs::create_dir(temp.path().join("workshop")).expect("create workshop");
 
@@ -238,10 +238,10 @@ mod tests {
 	}
 
 	#[test]
-	fn cache_format_mismatch_invalidates_old_fixture_root() {
+	fn cache_version_mismatch_invalidates_old_fixture_root() {
 		let temp = tempfile::tempdir().expect("temp dir");
 		fs::write(marker_path(temp.path()), "archive-hash").expect("write hash");
-		fs::write(format_path(temp.path()), "2.0.0").expect("write old format");
+		fs::write(version_path(temp.path()), "2.0.0").expect("write old version");
 		fs::write(temp.path().join("corpus.json"), "{}").expect("write corpus");
 		fs::create_dir(temp.path().join("workshop")).expect("create workshop");
 

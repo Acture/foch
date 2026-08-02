@@ -5,7 +5,7 @@ use std::process::Command;
 
 use foch_cwt::{
 	AliasCategory, CwtAlias, CwtRuleCondition, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
-	CwtSubtype, CwtTypeDef, SchemaBinding, SchemaPack, SchemaSource,
+	CwtSubtype, CwtTypeDef, RuleEngine, SchemaBinding, SchemaPack, SchemaSource,
 };
 use foch_syntax::ParadoxTree;
 use serde::Serialize;
@@ -126,20 +126,21 @@ fn fixture_schema_pack_matches_baseline() {
 fn fixture_root_binding_prefers_exact_path_and_reports_ambiguity() {
 	let root = fixture_schema_dir();
 	let graph = CwtSchemaGraph::from_directory(&root).expect("load schema fixture");
+	let engine = RuleEngine::from_graph(&graph);
 
-	let event_binding = graph.root_binding(Path::new("events/example.txt"));
+	let event_binding = engine.root_binding(Path::new("events/example.txt"));
 	let SchemaBinding::Bound { type_id, .. } = event_binding else {
 		panic!("expected bound events root, got {event_binding:?}");
 	};
 	assert_eq!(type_id.as_str(), "event");
 
-	let missions_binding = graph.root_binding(Path::new("missions/example.txt"));
+	let missions_binding = engine.root_binding(Path::new("missions/example.txt"));
 	let SchemaBinding::Dynamic { reason } = missions_binding else {
 		panic!("expected dynamic missions root, got {missions_binding:?}");
 	};
 	assert_eq!(reason, "ambiguous-root-type");
 
-	let missing_binding = graph.root_binding(Path::new("common/example.txt"));
+	let missing_binding = engine.root_binding(Path::new("common/example.txt"));
 	let SchemaBinding::Unbound { reason } = missing_binding else {
 		panic!("expected unbound common root, got {missing_binding:?}");
 	};
@@ -160,6 +161,7 @@ fn cwtools_schema_pack_matches_baseline() {
 fn build_fixture_baseline(root: &Path) -> FixtureBaseline {
 	let pack = load_pack(root);
 	let graph = pack.graph.as_ref();
+	let engine = RuleEngine::from_graph(graph);
 	FixtureBaseline {
 		pack_id: pack.id.to_hex(),
 		types: sorted_type_baselines(graph),
@@ -171,15 +173,15 @@ fn build_fixture_baseline(root: &Path) -> FixtureBaseline {
 		bindings: vec![
 			binding_baseline(
 				"events/example.txt",
-				graph.root_binding(Path::new("events/example.txt")),
+				engine.root_binding(Path::new("events/example.txt")),
 			),
 			binding_baseline(
 				"missions/example.txt",
-				graph.root_binding(Path::new("missions/example.txt")),
+				engine.root_binding(Path::new("missions/example.txt")),
 			),
 			binding_baseline(
 				"common/example.txt",
-				graph.root_binding(Path::new("common/example.txt")),
+				engine.root_binding(Path::new("common/example.txt")),
 			),
 		],
 	}
@@ -188,6 +190,7 @@ fn build_fixture_baseline(root: &Path) -> FixtureBaseline {
 fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 	let pack = load_pack(root);
 	let graph = pack.graph.as_ref();
+	let engine = RuleEngine::from_graph(graph);
 	VendorBaseline {
 		schema_commit: git_head(root),
 		file_count: cwt_files(root).len(),
@@ -232,23 +235,23 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 		selected_bindings: vec![
 			binding_baseline(
 				"events/example.txt",
-				graph.root_binding(Path::new("events/example.txt")),
+				engine.root_binding(Path::new("events/example.txt")),
 			),
 			binding_baseline(
 				"decisions/example.txt",
-				graph.root_binding(Path::new("decisions/example.txt")),
+				engine.root_binding(Path::new("decisions/example.txt")),
 			),
 			binding_baseline(
 				"missions/example.txt",
-				graph.root_binding(Path::new("missions/example.txt")),
+				engine.root_binding(Path::new("missions/example.txt")),
 			),
 			binding_baseline(
 				"common/opinion_modifiers/example.txt",
-				graph.root_binding(Path::new("common/opinion_modifiers/example.txt")),
+				engine.root_binding(Path::new("common/opinion_modifiers/example.txt")),
 			),
 			binding_baseline(
 				"common/achievements.txt",
-				graph.root_binding(Path::new("common/achievements.txt")),
+				engine.root_binding(Path::new("common/achievements.txt")),
 			),
 		],
 		known_scopes: graph

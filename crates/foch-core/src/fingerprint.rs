@@ -74,6 +74,10 @@ fn serialize_resolution_entry(entry: &ResolutionEntry) -> String {
 	let conflict_id = entry.conflict_id.clone().unwrap_or_default();
 	let mod_id = entry.mod_id.clone().unwrap_or_default();
 	let prefer_mod = entry.prefer_mod.clone().unwrap_or_default();
+	let prefer_candidate = entry
+		.prefer_candidate
+		.map(|candidate| candidate.to_string())
+		.unwrap_or_default();
 	let use_file = entry
 		.use_file
 		.as_ref()
@@ -82,7 +86,7 @@ fn serialize_resolution_entry(entry: &ResolutionEntry) -> String {
 	let keep_existing = entry.keep_existing.unwrap_or(false);
 	let priority_boost = entry.priority_boost.unwrap_or(0);
 	format!(
-		"file={file}|conflict_id={conflict_id}|mod={mod_id}|prefer_mod={prefer_mod}|use_file={use_file}|keep_existing={keep_existing}|priority_boost={priority_boost}"
+		"file={file}|conflict_id={conflict_id}|mod={mod_id}|prefer_mod={prefer_mod}|prefer_candidate={prefer_candidate}|use_file={use_file}|keep_existing={keep_existing}|priority_boost={priority_boost}"
 	)
 }
 
@@ -135,6 +139,7 @@ mod tests {
 			mod_id: None,
 			r#match: None,
 			prefer_mod: Some("X".to_string()),
+			prefer_candidate: None,
 			use_file: None,
 			keep_existing: None,
 			priority_boost: None,
@@ -147,6 +152,7 @@ mod tests {
 			mod_id: None,
 			r#match: None,
 			prefer_mod: Some("Y".to_string()),
+			prefer_candidate: None,
 			use_file: None,
 			keep_existing: None,
 			priority_boost: None,

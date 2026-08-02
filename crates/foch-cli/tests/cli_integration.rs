@@ -374,7 +374,7 @@ fn serve_directory(root: &Path) -> StaticServer {
 	}
 }
 
-fn collect_gzip_files(root: &Path) -> Vec<std::path::PathBuf> {
+fn collect_mod_snapshot_files(root: &Path) -> Vec<std::path::PathBuf> {
 	let mut files = Vec::new();
 	if !root.exists() {
 		return files;
@@ -416,16 +416,25 @@ fn target_temp_dir() -> TempDir {
 fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 	let fixture = CacheLayerFixture {
 		mods: root.join("mods").join("mods-entry.rkyv"),
-		diffs: root.join("diffs").join("v6").join("diffs-entry.bin"),
-		dag_base: root.join("dag-base").join("v12").join("dag-base-entry.bin"),
-		modset_tarball: root.join("modsets").join("modset-entry.tar.gz"),
-		modset_report: root.join("modsets").join("modset-entry.report.json"),
+		diffs: root.join("diffs").join("v6.0.0").join("diffs-entry.bin"),
+		dag_base: root
+			.join("dag-base")
+			.join("v12.0.0")
+			.join("dag-base-entry.bin"),
+		modset_tarball: root
+			.join("modsets")
+			.join("v14.0.0")
+			.join("modset-entry.tar.gz"),
+		modset_report: root
+			.join("modsets")
+			.join("v14.0.0")
+			.join("modset-entry.report.json"),
 		parse: root
 			.join("parse")
-			.join("v9")
+			.join("v10.0.0")
 			.join("aa")
 			.join("bb")
-			.join("parse-entry.json"),
+			.join("parse-entry.bin"),
 	};
 	for path in [
 		&fixture.mods,
@@ -442,29 +451,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 }
 
 fn cache_env_values(root: &Path) -> Vec<(String, String)> {
-	vec![
-		("FOCH_CACHE_ROOT".to_string(), root.display().to_string()),
-		(
-			"FOCH_MOD_PARSE_CACHE_DIR".to_string(),
-			root.join("mods").display().to_string(),
-		),
-		(
-			"FOCH_MOD_DIFF_CACHE_DIR".to_string(),
-			root.join("diffs").display().to_string(),
-		),
-		(
-			"FOCH_DAG_BASE_CACHE_DIR".to_string(),
-			root.join("dag-base").display().to_string(),
-		),
-		(
-			"FOCH_MODSET_CACHE_DIR".to_string(),
-			root.display().to_string(),
-		),
-		(
-			"FOCH_PARSE_CACHE_DIR".to_string(),
-			root.join("parse").display().to_string(),
-		),
-	]
+	vec![("FOCH_CACHE_ROOT".to_string(), root.display().to_string())]
 }
 
 fn read_json_file(path: &Path) -> serde_json::Value {
@@ -1976,7 +1963,7 @@ fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let mod_root = tmp.path().join("7706");
-	let cache_dir = tmp.path().join("mod-cache");
+	let cache_root = tmp.path().join("cache");
 
 	write_dlc_load(&playlist_path, &[("7706", "A")]);
 	write_descriptor(&mod_root, "mod-a");
@@ -1988,14 +1975,14 @@ fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
 	.expect("write event");
 
 	let playlist_str = playlist_path.display().to_string();
-	let cache_dir_str = cache_dir.display().to_string();
+	let cache_root_str = cache_root.display().to_string();
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
 		tmp.path(),
-		&[("FOCH_MOD_PARSE_CACHE_DIR", cache_dir_str.as_str())],
+		&[("FOCH_CACHE_ROOT", cache_root_str.as_str())],
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
-	assert!(collect_gzip_files(&cache_dir).is_empty());
+	assert!(collect_mod_snapshot_files(&cache_root).is_empty());
 }
 
 #[test]
@@ -2003,7 +1990,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let mod_root = tmp.path().join("7711");
-	let cache_dir = tmp.path().join("mod-cache");
+	let cache_root = tmp.path().join("cache");
 	write_game_version(&tmp.path().join("eu4-game"), "11.0.0-test");
 
 	write_dlc_load(&playlist_path, &[("7711", "A")]);
@@ -2016,8 +2003,8 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	.expect("write event");
 
 	let playlist_str = playlist_path.display().to_string();
-	let cache_dir_str = cache_dir.display().to_string();
-	let envs = [("FOCH_MOD_PARSE_CACHE_DIR", cache_dir_str.as_str())];
+	let cache_root_str = cache_root.display().to_string();
+	let envs = [("FOCH_CACHE_ROOT", cache_root_str.as_str())];
 
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
@@ -2025,7 +2012,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 		&envs,
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
-	let first_files = collect_gzip_files(&cache_dir);
+	let first_files = collect_mod_snapshot_files(&cache_root);
 	assert_eq!(first_files.len(), 1);
 	assert!(first_files[0].to_string_lossy().contains("__cv"));
 
@@ -2035,7 +2022,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 		&envs,
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
-	let second_files = collect_gzip_files(&cache_dir);
+	let second_files = collect_mod_snapshot_files(&cache_root);
 	assert_eq!(second_files.len(), 1);
 
 	fs::write(
@@ -2050,7 +2037,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 		&envs,
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
-	let third_files = collect_gzip_files(&cache_dir);
+	let third_files = collect_mod_snapshot_files(&cache_root);
 	assert_eq!(third_files.len(), 2);
 }
 
@@ -2058,7 +2045,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
-	let cache_dir = tmp.path().join("mod-cache");
+	let cache_root = tmp.path().join("cache");
 	write_game_version(&tmp.path().join("eu4-game"), "11.1.0-test");
 
 	write_dlc_load(&playlist_path, &[("7721", "A"), ("7722", "B")]);
@@ -2098,14 +2085,14 @@ fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 	.expect("write effect");
 
 	let playlist_str = playlist_path.display().to_string();
-	let cache_dir_str = cache_dir.display().to_string();
+	let cache_root_str = cache_root.display().to_string();
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["merge-plan", playlist_str.as_str(), "--no-game-base"],
 		tmp.path(),
-		&[("FOCH_MOD_PARSE_CACHE_DIR", cache_dir_str.as_str())],
+		&[("FOCH_CACHE_ROOT", cache_root_str.as_str())],
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
-	assert_eq!(collect_gzip_files(&cache_dir).len(), 2);
+	assert_eq!(collect_mod_snapshot_files(&cache_root).len(), 2);
 }
 
 #[test]

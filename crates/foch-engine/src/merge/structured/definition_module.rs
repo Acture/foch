@@ -3,19 +3,23 @@ use std::time::Instant;
 
 use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
+use foch_merge_kernel::{ConflictResolution, StructuralConflict};
 
-use super::policy::LocalSourceSelections;
-use super::trivia::{attach_trivia, detach_trivia, merge_trivia};
+use crate::merge::model::SemanticPartitionId;
+
+use super::trivia::{attach_trivia, detach_trivia, merge_trivia, merge_trivia_n_way};
 use super::{
-	AstAdapterError, ClausewitzConflictSummary, ClausewitzMergeTimings, ClausewitzScalarReduction,
-	merge_clausewitz_files, merge_clausewitz_files_with_source_selections,
+	AstAdapterError, ClausewitzKernelFacts, ClausewitzMergeTimings, ClausewitzScalarReduction,
+	merge_clausewitz_files, merge_clausewitz_files_n_way,
+	merge_clausewitz_files_n_way_with_resolutions,
 };
 
 #[derive(Clone, Debug)]
 pub struct ClausewitzDefinitionModuleOutcome {
 	tentative_ast: AstFile,
-	conflicts: Vec<ClausewitzConflictSummary>,
+	conflicts: Vec<StructuralConflict>,
 	scalar_reductions: Vec<ClausewitzScalarReduction>,
+	kernel_facts: Vec<ClausewitzKernelFacts>,
 	timings: ClausewitzMergeTimings,
 	base_definitions: usize,
 	active_definitions: usize,
@@ -32,12 +36,18 @@ impl ClausewitzDefinitionModuleOutcome {
 		&self.tentative_ast
 	}
 
-	pub fn conflicts(&self) -> &[ClausewitzConflictSummary] {
+	pub fn conflicts(&self) -> &[StructuralConflict] {
 		&self.conflicts
 	}
 
 	pub fn scalar_reductions(&self) -> &[ClausewitzScalarReduction] {
 		&self.scalar_reductions
+	}
+
+	pub(crate) fn into_tree_parts(
+		self,
+	) -> (AstFile, Vec<StructuralConflict>, Vec<ClausewitzKernelFacts>) {
+		(self.tentative_ast, self.conflicts, self.kernel_facts)
 	}
 
 	pub const fn timings(&self) -> ClausewitzMergeTimings {
@@ -69,17 +79,159 @@ pub fn merge_clausewitz_definition_module(
 	right: &AstFile,
 	policies: &MergePolicies,
 ) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
-	merge_clausewitz_definition_module_inner(base, left, right, policies, None)
+	merge_clausewitz_definition_module_inner(base, left, right, policies)
 }
 
-pub(crate) fn merge_clausewitz_definition_module_with_source_selections(
+pub(crate) fn merge_clausewitz_definition_module_n_way_with_resolutions(
 	base: &AstFile,
-	left: &AstFile,
-	right: &AstFile,
+	revisions: &[&AstFile],
 	policies: &MergePolicies,
-	source_selections: &LocalSourceSelections,
+	resolutions: &[ConflictResolution],
 ) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
-	merge_clausewitz_definition_module_inner(base, left, right, policies, Some(source_selections))
+	merge_clausewitz_definition_module_n_way_inner(base, revisions, policies, resolutions)
+}
+
+fn merge_clausewitz_definition_module_n_way_inner(
+	base: &AstFile,
+	revisions: &[&AstFile],
+	policies: &MergePolicies,
+	resolutions: &[ConflictResolution],
+) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
+	if revisions.is_empty() {
+		return Err(AstAdapterError::InvalidTree(
+			"definition-module merge requires at least one revision".to_string(),
+		));
+	}
+	let base_definitions = top_level_assignment_keys(base).len();
+	if std::iter::once(base)
+		.chain(revisions.iter().copied())
+		.any(has_top_level_items)
+	{
+		let outcome = merge_files_n_way(base, revisions, policies, resolutions)?;
+		let active_definitions = std::iter::once(base)
+			.chain(revisions.iter().copied())
+			.flat_map(top_level_assignment_keys)
+			.collect::<BTreeSet<_>>()
+			.len();
+		let conflicts = outcome.conflicts().to_vec();
+		let scalar_reductions = outcome.scalar_reductions();
+		let timings = outcome.timings();
+		let (tentative_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
+		return Ok(ClausewitzDefinitionModuleOutcome {
+			tentative_ast,
+			conflicts,
+			scalar_reductions,
+			kernel_facts: vec![kernel_fact],
+			timings,
+			base_definitions,
+			active_definitions,
+			copy_through_definitions: 0,
+			structured_definitions: 1,
+		});
+	}
+
+	let (base, base_trivia) = detach_trivia(base);
+	let detached_revisions = revisions
+		.iter()
+		.map(|revision| detach_trivia(revision))
+		.collect::<Vec<_>>();
+	let revision_files = detached_revisions
+		.iter()
+		.map(|(file, _)| file)
+		.collect::<Vec<_>>();
+	let revision_trivia = detached_revisions
+		.iter()
+		.map(|(_, trivia)| trivia)
+		.collect::<Vec<_>>();
+	let keys = std::iter::once(&base)
+		.chain(revision_files.iter().copied())
+		.flat_map(top_level_assignment_keys)
+		.collect::<BTreeSet<_>>();
+	let mut statements = Vec::new();
+	let mut conflicts = Vec::new();
+	let mut scalar_reductions = Vec::new();
+	let mut kernel_facts = Vec::new();
+	let mut timings = ClausewitzMergeTimings::default();
+	let mut active_definitions = 0;
+	let copy_through_definitions = 0;
+	let mut structured_definitions = 0;
+	let total = keys.len();
+	let progress_step = (total / 10).max(1);
+	let started = Instant::now();
+	for (index, key) in keys.into_iter().enumerate() {
+		let base_group = select_definition(&base, &key);
+		let revision_groups = revision_files
+			.iter()
+			.map(|revision| select_definition(revision, &key))
+			.collect::<Vec<_>>();
+		if revision_groups
+			.iter()
+			.all(|revision| statements_content_equal(&base_group.statements, &revision.statements))
+		{
+			statements.extend(base_group.statements);
+		} else {
+			active_definitions += 1;
+			let revision_group_refs = revision_groups.iter().collect::<Vec<_>>();
+			let partition_resolutions = resolutions
+				.iter()
+				.filter(|resolution| resolution.conflict.semantic_path.first() == Some(&key))
+				.cloned()
+				.collect::<Vec<_>>();
+			let outcome = merge_files_n_way(
+				&base_group,
+				&revision_group_refs,
+				policies,
+				&partition_resolutions,
+			)?;
+			conflicts.extend(outcome.conflicts().iter().cloned().map(|mut conflict| {
+				conflict.detail = format!("definition `{key}`: {}", conflict.detail);
+				conflict
+			}));
+			scalar_reductions.extend(outcome.scalar_reductions());
+			let partition_timings = outcome.timings();
+			timings.matcher_ns = timings
+				.matcher_ns
+				.saturating_add(partition_timings.matcher_ns);
+			timings.delta_ns = timings.delta_ns.saturating_add(partition_timings.delta_ns);
+			timings.pcs_ns = timings.pcs_ns.saturating_add(partition_timings.pcs_ns);
+			timings.policy_ns = timings
+				.policy_ns
+				.saturating_add(partition_timings.policy_ns);
+			let (partition_ast, kernel_fact) =
+				outcome.into_parts(SemanticPartitionId::Definition(key.clone()));
+			statements.extend(partition_ast.statements);
+			kernel_facts.push(kernel_fact);
+			structured_definitions += 1;
+		}
+
+		let completed = index + 1;
+		if total >= 20 && (completed == 1 || completed == total || completed % progress_step == 0) {
+			let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+			let eta_ms = elapsed_ms.saturating_mul((total - completed) as u64) / completed as u64;
+			eprintln!(
+				"[structured-module] {} definitions {completed}/{total} active={active_definitions} copy_through={copy_through_definitions} structured={structured_definitions} elapsed_ms={elapsed_ms} eta_ms={eta_ms}",
+				base.path.display(),
+			);
+		}
+	}
+	statements.sort_by(compare_top_level_statements);
+	let mut tentative_ast = AstFile {
+		path: base.path.clone(),
+		statements,
+	};
+	let trivia = merge_trivia_n_way(&base_trivia, &revision_trivia);
+	attach_trivia(&mut tentative_ast, &trivia);
+	Ok(ClausewitzDefinitionModuleOutcome {
+		tentative_ast,
+		conflicts,
+		scalar_reductions,
+		kernel_facts,
+		timings,
+		base_definitions,
+		active_definitions,
+		copy_through_definitions,
+		structured_definitions,
+	})
 }
 
 fn merge_clausewitz_definition_module_inner(
@@ -87,19 +239,23 @@ fn merge_clausewitz_definition_module_inner(
 	left: &AstFile,
 	right: &AstFile,
 	policies: &MergePolicies,
-	source_selections: Option<&LocalSourceSelections>,
 ) -> Result<ClausewitzDefinitionModuleOutcome, AstAdapterError> {
 	let base_definitions = top_level_assignment_keys(base).len();
 	if [base, left, right]
 		.iter()
 		.any(|file| has_top_level_items(file))
 	{
-		let outcome = merge_files(base, left, right, policies, source_selections)?;
+		let outcome = merge_clausewitz_files(base, left, right, policies)?;
+		let conflicts = outcome.conflicts().to_vec();
+		let scalar_reductions = outcome.scalar_reductions();
+		let timings = outcome.timings();
+		let (tentative_ast, kernel_fact) = outcome.into_parts(SemanticPartitionId::File);
 		return Ok(ClausewitzDefinitionModuleOutcome {
-			tentative_ast: outcome.tentative_ast().clone(),
-			conflicts: outcome.conflict_summaries(),
-			scalar_reductions: outcome.scalar_reductions(),
-			timings: outcome.timings(),
+			tentative_ast,
+			conflicts,
+			scalar_reductions,
+			kernel_facts: vec![kernel_fact],
+			timings,
 			base_definitions,
 			active_definitions: top_level_assignment_keys(base)
 				.into_iter()
@@ -123,6 +279,7 @@ fn merge_clausewitz_definition_module_inner(
 	let mut statements = Vec::new();
 	let mut conflicts = Vec::new();
 	let mut scalar_reductions = Vec::new();
+	let mut kernel_facts = Vec::new();
 	let mut timings = ClausewitzMergeTimings::default();
 	let mut active_definitions = 0;
 	let mut copy_through_definitions = 0;
@@ -146,32 +303,26 @@ fn merge_clausewitz_definition_module_inner(
 				statements.extend(selected.iter().cloned());
 				copy_through_definitions += 1;
 			} else {
-				let outcome = merge_files(
-					&base_group,
-					&left_group,
-					&right_group,
-					policies,
-					source_selections,
-				)?;
-				statements.extend(outcome.tentative_ast().statements.iter().cloned());
-				conflicts.extend(
-					outcome
-						.conflict_summaries()
-						.into_iter()
-						.map(|mut conflict| {
-							conflict.detail = format!("definition `{key}`: {}", conflict.detail);
-							conflict
-						}),
-				);
+				let outcome =
+					merge_clausewitz_files(&base_group, &left_group, &right_group, policies)?;
+				conflicts.extend(outcome.conflicts().iter().cloned().map(|mut conflict| {
+					conflict.detail = format!("definition `{key}`: {}", conflict.detail);
+					conflict
+				}));
 				scalar_reductions.extend(outcome.scalar_reductions());
 				let partition_timings = outcome.timings();
 				timings.matcher_ns = timings
 					.matcher_ns
 					.saturating_add(partition_timings.matcher_ns);
+				timings.delta_ns = timings.delta_ns.saturating_add(partition_timings.delta_ns);
 				timings.pcs_ns = timings.pcs_ns.saturating_add(partition_timings.pcs_ns);
 				timings.policy_ns = timings
 					.policy_ns
 					.saturating_add(partition_timings.policy_ns);
+				let (partition_ast, kernel_fact) =
+					outcome.into_parts(SemanticPartitionId::Definition(key.clone()));
+				statements.extend(partition_ast.statements);
+				kernel_facts.push(kernel_fact);
 				structured_definitions += 1;
 			}
 		}
@@ -197,6 +348,7 @@ fn merge_clausewitz_definition_module_inner(
 		tentative_ast,
 		conflicts,
 		scalar_reductions,
+		kernel_facts,
 		timings,
 		base_definitions,
 		active_definitions,
@@ -205,19 +357,17 @@ fn merge_clausewitz_definition_module_inner(
 	})
 }
 
-fn merge_files(
+fn merge_files_n_way(
 	base: &AstFile,
-	left: &AstFile,
-	right: &AstFile,
+	revisions: &[&AstFile],
 	policies: &MergePolicies,
-	source_selections: Option<&LocalSourceSelections>,
+	resolutions: &[ConflictResolution],
 ) -> Result<super::ClausewitzMergeOutcome, AstAdapterError> {
-	source_selections.map_or_else(
-		|| merge_clausewitz_files(base, left, right, policies),
-		|selections| {
-			merge_clausewitz_files_with_source_selections(base, left, right, policies, selections)
-		},
-	)
+	if resolutions.is_empty() {
+		merge_clausewitz_files_n_way(base, revisions, policies)
+	} else {
+		merge_clausewitz_files_n_way_with_resolutions(base, revisions, policies, resolutions)
+	}
 }
 
 fn direct_three_way_selection<'a>(
@@ -268,6 +418,20 @@ fn top_level_assignment_keys(ast: &AstFile) -> BTreeSet<String> {
 			AstStatement::Assignment { key, .. } => Some(key.clone()),
 			AstStatement::Item { .. } | AstStatement::Comment { .. } => None,
 		})
+		.collect()
+}
+
+pub(crate) fn definition_module_partition_ids(files: &[&AstFile]) -> Vec<SemanticPartitionId> {
+	if files.iter().copied().any(has_top_level_items) {
+		return vec![SemanticPartitionId::File];
+	}
+	files
+		.iter()
+		.copied()
+		.flat_map(top_level_assignment_keys)
+		.map(SemanticPartitionId::Definition)
+		.collect::<BTreeSet<_>>()
+		.into_iter()
 		.collect()
 }
 

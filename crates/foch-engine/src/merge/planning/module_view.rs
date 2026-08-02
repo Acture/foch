@@ -11,7 +11,6 @@ use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_def
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
-use crate::merge::MergeKernelMode;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, WorkspaceScriptCache};
 
 #[derive(Clone, Debug)]
@@ -35,10 +34,10 @@ pub(crate) fn build_cross_file_module_views(
 	mod_dag: &ModDag,
 	ignore_replace_path: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
-	merge_kernel: MergeKernelMode,
+	duplicate_definitions: Option<DuplicateDefinitionPolicy>,
 ) -> Result<CrossFileModuleViews, String> {
 	let (merge_unit, input_paths, module_policy) = validate_module_target(entry, descriptor)?;
-	let module_policy = effective_module_policy(module_policy, merge_kernel);
+	let module_policy = apply_duplicate_definition_override(module_policy, duplicate_definitions);
 
 	let mut base_files = BTreeMap::new();
 	let mut files_by_mod: HashMap<ModId, BTreeMap<String, ParsedScriptFile>> = HashMap::new();
@@ -163,12 +162,12 @@ pub(crate) fn build_cross_file_module_views(
 	})
 }
 
-fn effective_module_policy(
+fn apply_duplicate_definition_override(
 	mut policy: DefinitionModulePolicy,
-	merge_kernel: MergeKernelMode,
+	duplicate_definitions: Option<DuplicateDefinitionPolicy>,
 ) -> DefinitionModulePolicy {
-	if merge_kernel == MergeKernelMode::Structured {
-		policy.duplicate_definitions = DuplicateDefinitionPolicy::LaterDefinitionWins;
+	if let Some(duplicate_definitions) = duplicate_definitions {
+		policy.duplicate_definitions = duplicate_definitions;
 	}
 	policy
 }
@@ -456,10 +455,9 @@ fn fold_visible_module_files(
 #[cfg(test)]
 mod tests {
 	use super::{
-		VisibleModuleFile, effective_module_policy, fold_visible_module_files,
+		VisibleModuleFile, apply_duplicate_definition_override, fold_visible_module_files,
 		validate_module_target,
 	};
-	use crate::merge::MergeKernelMode;
 	use foch_core::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use foch_language::analyzer::content_family::{
 		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
@@ -578,10 +576,14 @@ mod tests {
 		);
 
 		assert_eq!(
-			effective_module_policy(policy, MergeKernelMode::Structured).duplicate_definitions,
+			apply_duplicate_definition_override(
+				policy,
+				Some(DuplicateDefinitionPolicy::LaterDefinitionWins),
+			)
+			.duplicate_definitions,
 			DuplicateDefinitionPolicy::LaterDefinitionWins
 		);
-		policy = effective_module_policy(policy, MergeKernelMode::Legacy);
+		policy = apply_duplicate_definition_override(policy, None);
 		assert_eq!(
 			policy.duplicate_definitions,
 			DuplicateDefinitionPolicy::PreserveAll

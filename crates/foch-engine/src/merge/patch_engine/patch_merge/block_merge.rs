@@ -330,7 +330,7 @@ fn union_item_fingerprint(item: &AstStatement) -> String {
 
 /// Attempt to deep-merge multiple mods' `ReplaceBlock` patches at the same
 /// address by re-running the diff/merge pipeline against the bodies. Used by
-/// `BlockPatchPolicy::Recurse` to handle date-keyed history blocks where each
+/// `DivergentBlockPolicy::Recurse` to handle date-keyed history blocks where each
 /// mod typically modifies a different field inside the same date container.
 ///
 /// Returns:

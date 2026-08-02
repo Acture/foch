@@ -8,6 +8,7 @@ homepage.workspace = true
 repository.workspace = true
 
 [dependencies]
+bincode.workspace = true
 console.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true
@@ -23,5 +24,4 @@ walkdir.workspace = true
 
 [dev-dependencies]
 foch-core = { path = "../foch-core", features = ["test-utils"] }
-foch-syntax = { path = "../foch-syntax" }
 tempfile.workspace = true

@@ -43,11 +43,10 @@ pub use graph::{
 	merge_trace_edges_from_trace, run_graph_with_options, run_module_report, write_module_report,
 };
 pub use merge::{
-	AnalysisStatusView, AstAdapterError, CandidateView, ClausewitzConflictSummary,
-	ClausewitzDefinitionModuleOutcome, ClausewitzMergeOutcome, ClausewitzMergeTimings,
-	ClausewitzScalarReduction, ConflictDecision, ConflictHandler, ConflictView,
-	InteractiveCliHandler, MergeError, MergeEvaluationKernel, MergeExecuteOptions,
-	MergeExecutionResult, MergeStatusView, canonicalize_clausewitz_file,
+	AnalysisStatusView, AstAdapterError, CandidateView, ClausewitzDefinitionModuleOutcome,
+	ClausewitzMergeOutcome, ClausewitzMergeTimings, ClausewitzScalarReduction, ConflictDecision,
+	ConflictHandler, ConflictView, InteractiveCliHandler, MergeError, MergeEvaluationKernel,
+	MergeExecuteOptions, MergeExecutionResult, MergeStatusView, canonicalize_clausewitz_file,
 	merge_clausewitz_definition_module, merge_clausewitz_files, run_merge_for_evaluation,
 	run_merge_plan, run_merge_plan_with_options, run_merge_with_options,
 };

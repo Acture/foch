@@ -19,8 +19,8 @@ Deferred to Slice B: `gui_tooltip`, `lsp_hover`.
   aggregates across all same-key blocks rather than keying off a single block.
 - The inline comment is ASCII (`# foch: <key> from <names>`) to stay safe across
   Clausewitz file encodings; names are mod display names in precedence order.
-- `MODSET_CACHE_FORMAT_VERSION` bumped to `…-provenance-v6`; the modset key also
-  encodes `provenance={bool}`. Per-file `DAG_BASE`/`MOD_DIFF` caches unchanged
+- The modset cache generation was advanced for this change; the modset key also
+  encodes `provenance={bool}`. Per-file `DAG_BASE`/`MOD_DIFF` caches were unchanged
   (provenance is derived after, from in-memory contributors).
 
 ## Problem
@@ -151,7 +151,7 @@ the merge functions**.
 
 Comment injection changes emitted bytes **only when the flag is on**. The
 whole-output **modset tarball cache key** (`execute.rs:186`,
-`MODSET_CACHE_FORMAT_VERSION`) currently encodes `include_base`; add
+`MODSET_CACHE_VERSION`) currently encodes `include_base`; add
 `provenance={provenance}` to the key so a `--provenance` run never reuses a
 non-provenance cached tarball (and vice-versa). The per-file `DAG_BASE_CACHE`
 and `MOD_DIFF_CACHE` are **not** bumped — comments are post-cache.

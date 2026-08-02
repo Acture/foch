@@ -4,7 +4,8 @@ use super::super::content_family::CwtType;
 use super::super::eu4_builtin::is_builtin_effect;
 use foch_core::model::{ScopeKind, ScopeType, base_scope};
 use foch_cwt::{
-	AliasCategory, BindContext, CwtAlias, CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtTypeDef,
+	CompiledAlias, CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue,
+	RuleContext, RuleEngine,
 };
 
 pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
@@ -105,23 +106,23 @@ pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	}
 }
 
-pub fn cwt_iterator_scope_type(graph: &CwtSchemaGraph, key: &str) -> Option<ScopeType> {
-	cwt_alias_push_scope(graph, key)
+pub fn cwt_iterator_scope_type(engine: &RuleEngine, key: &str) -> Option<ScopeType> {
+	cwt_alias_push_scope(engine, key)
 		.and_then(scope_name_to_base_scope)
-		.or_else(|| cwt_field_push_scope_type(graph, key))
+		.or_else(|| cwt_field_push_scope_type(engine, key))
 }
 
-pub fn cwt_scope_changer_target_type(graph: &CwtSchemaGraph, key: &str) -> Option<ScopeType> {
-	cwt_alias_push_scope(graph, key)
+pub fn cwt_scope_changer_target_type(engine: &RuleEngine, key: &str) -> Option<ScopeType> {
+	cwt_alias_push_scope(engine, key)
 		.and_then(scope_name_to_base_scope)
-		.or_else(|| cwt_direct_scope_marker_type(graph, key))
+		.or_else(|| cwt_direct_scope_marker_type(engine, key))
 		.or_else(|| scope_changer_target_type_fallback(key))
 }
 
-pub fn cwt_special_block_scope_kind(graph: &CwtSchemaGraph, key: &str) -> ScopeKind {
+pub fn cwt_special_block_scope_kind(engine: &RuleEngine, key: &str) -> ScopeKind {
 	let mut has_trigger = false;
 	let mut has_effect = false;
-	for alias in graph.aliases.values() {
+	for alias in engine.aliases() {
 		if alias.name != key {
 			continue;
 		}
@@ -131,7 +132,7 @@ pub fn cwt_special_block_scope_kind(graph: &CwtSchemaGraph, key: &str) -> ScopeK
 			_ => {}
 		}
 	}
-	visit_graph_rule_fields(graph, &mut |field| {
+	visit_rule_engine_fields(engine, &mut |field| {
 		if field.key != key {
 			return;
 		}
@@ -150,18 +151,16 @@ pub fn cwt_special_block_scope_kind(graph: &CwtSchemaGraph, key: &str) -> ScopeK
 	}
 }
 
-fn cwt_alias_push_scope<'a>(graph: &'a CwtSchemaGraph, key: &str) -> Option<&'a str> {
-	[AliasCategory::Effect, AliasCategory::Trigger]
-		.into_iter()
-		.find_map(|category| {
-			graph
-				.aliases
-				.get(&(category, key.to_string()))
-				.and_then(alias_push_scope)
-		})
+fn cwt_alias_push_scope<'a>(engine: &'a RuleEngine, key: &str) -> Option<&'a str> {
+	[
+		CompiledAliasCategory::Effect,
+		CompiledAliasCategory::Trigger,
+	]
+	.into_iter()
+	.find_map(|category| engine.alias(category, key).and_then(alias_push_scope))
 }
 
-fn alias_push_scope(alias: &CwtAlias) -> Option<&str> {
+fn alias_push_scope(alias: &CompiledAlias) -> Option<&str> {
 	alias.attributes.push_scope.as_deref().or_else(|| {
 		alias
 			.rules
@@ -180,10 +179,10 @@ fn scope_name_to_base_scope(scope_name: &str) -> Option<ScopeType> {
 	}
 }
 
-fn cwt_field_push_scope_type(graph: &CwtSchemaGraph, key: &str) -> Option<ScopeType> {
+fn cwt_field_push_scope_type(engine: &RuleEngine, key: &str) -> Option<ScopeType> {
 	let mut matched = None;
 	let mut ambiguous = false;
-	visit_graph_rule_fields(graph, &mut |field| {
+	visit_rule_engine_fields(engine, &mut |field| {
 		if ambiguous || field.key != key {
 			return;
 		}
@@ -204,10 +203,10 @@ fn cwt_field_push_scope_type(graph: &CwtSchemaGraph, key: &str) -> Option<ScopeT
 	if ambiguous { None } else { matched }
 }
 
-fn cwt_direct_scope_marker_type(graph: &CwtSchemaGraph, key: &str) -> Option<ScopeType> {
+fn cwt_direct_scope_marker_type(engine: &RuleEngine, key: &str) -> Option<ScopeType> {
 	let mut matched = None;
 	let mut ambiguous = false;
-	visit_graph_rule_fields(graph, &mut |field| {
+	visit_rule_engine_fields(engine, &mut |field| {
 		if ambiguous || field.key != key {
 			return;
 		}
@@ -223,10 +222,12 @@ fn cwt_direct_scope_marker_type(graph: &CwtSchemaGraph, key: &str) -> Option<Sco
 	if ambiguous { None } else { matched }
 }
 
-fn rule_field_scope_marker_type(field: &CwtRuleField) -> Option<ScopeType> {
+fn rule_field_scope_marker_type(field: &CompiledRuleField) -> Option<ScopeType> {
 	match &field.value {
-		CwtRuleValue::Marker(marker) | CwtRuleValue::Scalar(marker) => marker_scope_type(marker),
-		CwtRuleValue::Block(_) => None,
+		CompiledRuleValue::Marker(marker) | CompiledRuleValue::Scalar(marker) => {
+			marker_scope_type(marker)
+		}
+		CompiledRuleValue::Block(_) => None,
 	}
 }
 
@@ -254,18 +255,18 @@ fn scope_changer_target_type_fallback(key: &str) -> Option<ScopeType> {
 	}
 }
 
-fn alias_rules_scope_kind(alias: &CwtAlias) -> Option<ScopeKind> {
+fn alias_rules_scope_kind(alias: &CompiledAlias) -> Option<ScopeKind> {
 	rules_alias_scope_kind(&alias.rules)
 }
 
-fn rule_field_alias_scope_kind(field: &CwtRuleField) -> Option<ScopeKind> {
-	let CwtRuleValue::Block(fields) = &field.value else {
+fn rule_field_alias_scope_kind(field: &CompiledRuleField) -> Option<ScopeKind> {
+	let CompiledRuleValue::Block(fields) = &field.value else {
 		return None;
 	};
 	rules_alias_scope_kind(fields)
 }
 
-fn rules_alias_scope_kind(fields: &[CwtRuleField]) -> Option<ScopeKind> {
+fn rules_alias_scope_kind(fields: &[CompiledRuleField]) -> Option<ScopeKind> {
 	if fields.iter().any(|child| child.key == "alias_name[effect]") {
 		Some(ScopeKind::Effect)
 	} else if fields
@@ -278,35 +279,35 @@ fn rules_alias_scope_kind(fields: &[CwtRuleField]) -> Option<ScopeKind> {
 	}
 }
 
-fn visit_graph_rule_fields<F>(graph: &CwtSchemaGraph, visit: &mut F)
+fn visit_rule_engine_fields<F>(engine: &RuleEngine, visit: &mut F)
 where
-	F: FnMut(&CwtRuleField),
+	F: FnMut(&CompiledRuleField),
 {
-	for definition in graph.types.values() {
+	for definition in &engine.pack().roots {
 		visit_rule_fields(&definition.rules, visit);
 		for subtype in &definition.subtypes {
 			visit_rule_fields(&subtype.rules, visit);
 		}
 	}
-	for alias in graph.aliases.values() {
+	for alias in engine.aliases() {
 		visit_rule_fields(&alias.rules, visit);
 	}
 }
 
-fn visit_rule_fields<F>(fields: &[CwtRuleField], visit: &mut F)
+fn visit_rule_fields<F>(fields: &[CompiledRuleField], visit: &mut F)
 where
-	F: FnMut(&CwtRuleField),
+	F: FnMut(&CompiledRuleField),
 {
 	for field in fields {
 		visit(field);
-		if let CwtRuleValue::Block(children) = &field.value {
+		if let CompiledRuleValue::Block(children) = &field.value {
 			visit_rule_fields(children, visit);
 		}
 	}
 }
 
 pub fn cwt_file_kind_container_scope_kind(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_kind: CwtType,
 	key: &str,
 ) -> Option<ScopeKind> {
@@ -316,7 +317,7 @@ pub fn cwt_file_kind_container_scope_kind(
 	if let Some(kind) = hand_container_scope_fallback(file_kind.clone(), key) {
 		return Some(kind);
 	}
-	cwt_derived_container_scope_kind(graph, file_kind, key)
+	cwt_derived_container_scope_kind(engine, file_kind, key)
 }
 
 /// Resolve a block's script role from its concrete CWT path.
@@ -324,7 +325,7 @@ pub fn cwt_file_kind_container_scope_kind(
 /// Unlike [`cwt_file_kind_container_scope_kind`], this follows the active
 /// schema branch and therefore handles dynamic keys such as age objective ids.
 pub fn cwt_path_container_scope_kind(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_kind: CwtType,
 	file_path: &Path,
 	ast_path: &[&str],
@@ -338,8 +339,8 @@ pub fn cwt_path_container_scope_kind(
 		ast_path,
 		ast_path.get(1..).expect("non-empty AST path has a suffix"),
 	] {
-		if let Some(BindContext::RuleField(field)) = graph.bind_context(file_path, candidate_path)
-			&& let Some(kind) = cwt_container_field_scope_kind(graph, field)
+		if let Some(RuleContext::RuleField(field)) = engine.bind_context(file_path, candidate_path)
+			&& let Some(kind) = cwt_container_field_scope_kind(engine, field)
 		{
 			return Some(kind);
 		}
@@ -347,10 +348,10 @@ pub fn cwt_path_container_scope_kind(
 
 	let parent_path = &ast_path[..ast_path.len() - 1];
 	let parent = if parent_path.is_empty() {
-		BindContext::RootType(graph.bind_root(file_path)?)
+		RuleContext::RootType(engine.bind_root(file_path)?)
 	} else {
-		graph.bind_context(file_path, parent_path).or_else(|| {
-			graph.bind_context(
+		engine.bind_context(file_path, parent_path).or_else(|| {
+			engine.bind_context(
 				file_path,
 				parent_path
 					.get(1..)
@@ -358,31 +359,28 @@ pub fn cwt_path_container_scope_kind(
 			)
 		})?
 	};
-	if let Some(field_match) = graph.bind_field_match(parent, key) {
+	if let Some(field_match) = engine.bind_field_match(parent, key) {
 		if let Some(alias) = field_match.alias()
-			&& let Some(kind) = cwt_alias_category_scope_kind(graph, &alias.category)
+			&& let Some(kind) = cwt_alias_category_scope_kind(engine, &alias.category)
 		{
 			return Some(kind);
 		}
-		return cwt_container_field_scope_kind(graph, field_match.field());
+		return cwt_container_field_scope_kind(engine, field_match.field());
 	}
-	cwt_dynamic_child_scope_kind(graph, parent)
+	cwt_dynamic_child_scope_kind(engine, parent)
 }
 
-fn cwt_dynamic_child_scope_kind(
-	graph: &CwtSchemaGraph,
-	parent: BindContext<'_>,
-) -> Option<ScopeKind> {
-	let BindContext::RuleField(parent) = parent else {
+fn cwt_dynamic_child_scope_kind(engine: &RuleEngine, parent: RuleContext<'_>) -> Option<ScopeKind> {
+	let RuleContext::RuleField(parent) = parent else {
 		return None;
 	};
-	let CwtRuleValue::Block(fields) = &parent.value else {
+	let CompiledRuleValue::Block(fields) = &parent.value else {
 		return None;
 	};
 	fields
 		.iter()
 		.find(|field| field.key == "localisation")
-		.and_then(|field| cwt_container_field_scope_kind(graph, field))
+		.and_then(|field| cwt_container_field_scope_kind(engine, field))
 }
 
 fn is_legacy_container_scope_key(file_kind: &str, key: &str) -> bool {
@@ -590,16 +588,16 @@ fn is_legacy_container_scope_key(file_kind: &str, key: &str) -> bool {
 }
 
 fn cwt_derived_container_scope_kind(
-	graph: &CwtSchemaGraph,
+	engine: &RuleEngine,
 	file_kind: CwtType,
 	key: &str,
 ) -> Option<ScopeKind> {
 	let mut has_trigger = false;
 	let mut has_effect = false;
 	let mut has_block = false;
-	for definition in file_kind_root_types(graph, &file_kind) {
-		for field in file_kind_container_fields(graph, definition, key) {
-			match cwt_container_field_scope_kind(graph, field) {
+	for definition in file_kind_root_types(engine, &file_kind) {
+		for field in file_kind_container_fields(engine, definition, key) {
+			match cwt_container_field_scope_kind(engine, field) {
 				Some(ScopeKind::Effect) => has_effect = true,
 				Some(ScopeKind::Trigger) => has_trigger = true,
 				Some(ScopeKind::Block) => has_block = true,
@@ -618,11 +616,12 @@ fn cwt_derived_container_scope_kind(
 	}
 }
 
-fn file_kind_root_types<'g>(graph: &'g CwtSchemaGraph, file_kind: &CwtType) -> Vec<&'g CwtTypeDef> {
+fn file_kind_root_types<'e>(engine: &'e RuleEngine, file_kind: &CwtType) -> Vec<&'e CompiledRoot> {
 	let kind = file_kind.as_str();
-	let mut matches = graph
-		.types
-		.values()
+	let mut matches = engine
+		.pack()
+		.roots
+		.iter()
 		.filter(|definition| {
 			definition.name.as_str() == kind
 				|| definition
@@ -643,23 +642,23 @@ fn schema_path_matches_file_kind(path: &str, file_kind: &str) -> bool {
 	normalized == file_kind || normalized.rsplit('/').next() == Some(file_kind)
 }
 
-fn file_kind_container_fields<'g>(
-	graph: &'g CwtSchemaGraph,
-	definition: &'g CwtTypeDef,
+fn file_kind_container_fields<'e>(
+	engine: &'e RuleEngine,
+	definition: &'e CompiledRoot,
 	key: &str,
-) -> Vec<&'g CwtRuleField> {
+) -> Vec<&'e CompiledRuleField> {
 	let mut matches = Vec::new();
 	collect_rule_set_matches(
-		graph,
-		BindContext::RootType(definition),
+		engine,
+		RuleContext::RootType(definition),
 		definition.rules.as_slice(),
 		key,
 		&mut matches,
 	);
 	for subtype in &definition.subtypes {
 		collect_rule_set_matches(
-			graph,
-			BindContext::AliasRules(subtype.rules.as_slice()),
+			engine,
+			RuleContext::AliasRules(subtype.rules.as_slice()),
 			subtype.rules.as_slice(),
 			key,
 			&mut matches,
@@ -668,21 +667,21 @@ fn file_kind_container_fields<'g>(
 	matches
 }
 
-fn collect_rule_set_matches<'g>(
-	graph: &'g CwtSchemaGraph,
-	parent: BindContext<'g>,
-	rules: &'g [CwtRuleField],
+fn collect_rule_set_matches<'e>(
+	engine: &'e RuleEngine,
+	parent: RuleContext<'e>,
+	rules: &'e [CompiledRuleField],
 	key: &str,
-	matches: &mut Vec<&'g CwtRuleField>,
+	matches: &mut Vec<&'e CompiledRuleField>,
 ) {
-	matches.extend(graph.bind_fields(parent, key));
+	matches.extend(engine.bind_fields(parent, key));
 	for field in rules {
-		let CwtRuleValue::Block(children) = &field.value else {
+		let CompiledRuleValue::Block(children) = &field.value else {
 			continue;
 		};
 		collect_rule_set_matches(
-			graph,
-			BindContext::RuleField(field),
+			engine,
+			RuleContext::RuleField(field),
 			children.as_slice(),
 			key,
 			matches,
@@ -691,26 +690,26 @@ fn collect_rule_set_matches<'g>(
 }
 
 fn cwt_container_field_scope_kind(
-	graph: &CwtSchemaGraph,
-	field: &CwtRuleField,
+	engine: &RuleEngine,
+	field: &CompiledRuleField,
 ) -> Option<ScopeKind> {
 	match &field.value {
-		CwtRuleValue::Block(fields) => cwt_container_block_scope_kind(graph, fields),
-		CwtRuleValue::Scalar(value) | CwtRuleValue::Marker(value) => {
-			cwt_container_scalar_scope_kind(graph, value)
+		CompiledRuleValue::Block(fields) => cwt_container_block_scope_kind(engine, fields),
+		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => {
+			cwt_container_scalar_scope_kind(engine, value)
 		}
 	}
 }
 
 fn cwt_container_block_scope_kind(
-	graph: &CwtSchemaGraph,
-	fields: &[CwtRuleField],
+	engine: &RuleEngine,
+	fields: &[CompiledRuleField],
 ) -> Option<ScopeKind> {
 	let mut has_trigger = false;
 	let mut has_effect = false;
 	let mut has_block = false;
 	for child in fields {
-		match cwt_direct_child_scope_kind(graph, child) {
+		match cwt_direct_child_scope_kind(engine, child) {
 			Some(ScopeKind::Effect) => has_effect = true,
 			Some(ScopeKind::Trigger) => has_trigger = true,
 			Some(ScopeKind::Block) => has_block = true,
@@ -731,55 +730,57 @@ fn cwt_container_block_scope_kind(
 	}
 }
 
-fn cwt_direct_child_scope_kind(graph: &CwtSchemaGraph, field: &CwtRuleField) -> Option<ScopeKind> {
-	cwt_alias_marker_scope_kind(graph, &field.key)
+fn cwt_direct_child_scope_kind(
+	engine: &RuleEngine,
+	field: &CompiledRuleField,
+) -> Option<ScopeKind> {
+	cwt_alias_marker_scope_kind(engine, &field.key)
 }
 
-fn cwt_container_scalar_scope_kind(graph: &CwtSchemaGraph, value: &str) -> Option<ScopeKind> {
+fn cwt_container_scalar_scope_kind(engine: &RuleEngine, value: &str) -> Option<ScopeKind> {
 	if is_event_like_reference(value) {
 		return Some(ScopeKind::Effect);
 	}
-	if let Some(scope_kind) = cwt_alias_marker_scope_kind(graph, value) {
+	if let Some(scope_kind) = cwt_alias_marker_scope_kind(engine, value) {
 		return Some(scope_kind);
 	}
-	graph
-		.types
-		.get(&foch_cwt::CwtType::new(value))
-		.and_then(|definition| cwt_container_block_scope_kind(graph, &definition.rules))
+	engine
+		.root(value)
+		.and_then(|definition| cwt_container_block_scope_kind(engine, &definition.rules))
 }
 
-fn cwt_alias_marker_scope_kind(graph: &CwtSchemaGraph, marker: &str) -> Option<ScopeKind> {
+fn cwt_alias_marker_scope_kind(engine: &RuleEngine, marker: &str) -> Option<ScopeKind> {
 	let (head, payload) = cwt_marker_parts(marker)?;
 	match head {
 		"alias_name" | "alias" => {
 			let category = payload
 				.split_once(':')
 				.map_or(payload, |(category, _)| category);
-			cwt_alias_category_scope_kind(graph, &AliasCategory::from_name(category))
+			cwt_alias_category_scope_kind(engine, &CompiledAliasCategory::from_name(category))
 		}
 		_ => None,
 	}
 }
 
 fn cwt_alias_category_scope_kind(
-	graph: &CwtSchemaGraph,
-	category: &AliasCategory,
+	engine: &RuleEngine,
+	category: &CompiledAliasCategory,
 ) -> Option<ScopeKind> {
 	match category {
-		AliasCategory::Effect => Some(ScopeKind::Effect),
-		AliasCategory::Trigger => Some(ScopeKind::Trigger),
-		AliasCategory::Modifier => Some(ScopeKind::Block),
-		AliasCategory::Link => None,
-		AliasCategory::Other(_) => {
+		CompiledAliasCategory::Effect => Some(ScopeKind::Effect),
+		CompiledAliasCategory::Trigger => Some(ScopeKind::Trigger),
+		CompiledAliasCategory::Modifier => Some(ScopeKind::Block),
+		CompiledAliasCategory::Link => None,
+		CompiledAliasCategory::Other(_) => {
 			let mut has_trigger = false;
 			let mut has_effect = false;
 			let mut has_block = false;
-			for alias in graph
-				.aliases
-				.values()
+			for alias in engine
+				.aliases()
+				.iter()
 				.filter(|alias| &alias.category == category)
 			{
-				match cwt_container_block_scope_kind(graph, &alias.rules) {
+				match cwt_container_block_scope_kind(engine, &alias.rules) {
 					Some(ScopeKind::Effect) => has_effect = true,
 					Some(ScopeKind::Trigger) => has_trigger = true,
 					Some(ScopeKind::Block) => has_block = true,
@@ -1018,13 +1019,13 @@ mod tests {
 
 	#[test]
 	fn cwt_path_classifies_dynamic_age_objectives_as_triggers() {
-		let graph = super::super::eu4_cwt_schema_graph().expect("EU4 CWT schema");
+		let engine = super::super::eu4_cwt_rule_engine().expect("EU4 CWT rules");
 		let file = Path::new("common/ages/00_default.txt");
 		let file_kind = CwtType::new("ages");
 
 		assert_eq!(
 			cwt_path_container_scope_kind(
-				graph,
+				engine,
 				file_kind.clone(),
 				file,
 				&["age_of_reformation", "objectives"],
@@ -1033,7 +1034,7 @@ mod tests {
 		);
 		assert_eq!(
 			cwt_path_container_scope_kind(
-				graph,
+				engine,
 				file_kind,
 				file,
 				&["age_of_reformation", "objectives", "obj_colonial_empire",],

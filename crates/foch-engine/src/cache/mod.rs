@@ -13,10 +13,11 @@ pub(crate) mod parsed_scripts;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};
+pub use foch_core::cache::default_foch_cache_dir;
 pub use layer::{CacheLayer, CacheLayerEntryInfo, CacheLayerOps, EvictionStats, all_layers};
 pub use mod_diff_cache::default_mod_diff_cache_dir;
 pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_diff_cache_stats};
-pub use mod_parse_cache::{CacheError, default_foch_cache_dir, default_mod_parse_cache_dir};
+pub use mod_parse_cache::{CacheError, default_mod_parse_cache_dir};
 pub(crate) use mod_parse_cache::{
 	CachedModData, ModParseCache, compute_mod_hash_for_files, compute_mod_hash_with_filter,
 };
@@ -54,16 +55,7 @@ mod tests {
 	impl EnvGuard {
 		fn new(cache_root: &Path) -> Self {
 			let lock = ENV_LOCK.lock().expect("env lock");
-			let keys = [
-				"FOCH_CACHE_ROOT",
-				"FOCH_CACHE_DIR",
-				"FOCH_MOD_PARSE_CACHE_DIR",
-				"FOCH_MOD_DIFF_CACHE_DIR",
-				"FOCH_DAG_BASE_CACHE_DIR",
-				"FOCH_MODSET_CACHE_DIR",
-				"FOCH_PARSE_CACHE_DIR",
-				"FOCH_CACHE_MAX_BYTES",
-			];
+			let keys = ["FOCH_CACHE_ROOT", "FOCH_CACHE_MAX_BYTES"];
 			let previous = keys
 				.into_iter()
 				.map(|key| (key, std::env::var(key).ok()))
@@ -121,7 +113,7 @@ mod tests {
 		assert_eq!(default_modset_cache_dir(), root.join("modsets"));
 		assert_eq!(
 			parse_cache::parser_cache_root(),
-			root.join("parse").join("v9")
+			root.join("parse").join("v10.0.0")
 		);
 	}
 

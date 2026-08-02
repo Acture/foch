@@ -31,31 +31,35 @@ pub(crate) struct PcsCycle {
 	pub triples: Vec<PcsTriple>,
 }
 
-pub(crate) fn merge_order(
+pub(crate) fn merge_orders(
 	parent: ClassId,
 	base: &[ClassId],
-	left: &[ClassId],
-	right: &[ClassId],
+	revisions: &[&[ClassId]],
 ) -> Result<Vec<ClassId>, PcsCycle> {
-	if left == right {
-		return Ok(left.to_vec());
+	if let Some(first) = revisions.first()
+		&& revisions.iter().all(|revision| *revision == *first)
+	{
+		return Ok(first.to_vec());
 	}
 
 	let base_triples = sequence_triples(parent, base);
-	let left_triples = sequence_triples(parent, left);
-	let right_triples = sequence_triples(parent, right);
-	let removed = base_triples
-		.difference(&left_triples)
-		.chain(base_triples.difference(&right_triples))
+	let revision_triples = revisions
+		.iter()
+		.map(|revision| sequence_triples(parent, revision))
+		.collect::<Vec<_>>();
+	let removed = revision_triples
+		.iter()
+		.flat_map(|triples| base_triples.difference(triples))
 		.copied()
 		.collect::<BTreeSet<_>>();
 	let mut merged = base_triples
 		.difference(&removed)
 		.copied()
 		.collect::<BTreeSet<_>>();
-	merged.extend(left_triples.difference(&base_triples).copied());
-	merged.extend(right_triples.difference(&base_triples).copied());
-	topological_order(&merged, base, left, right)
+	for triples in &revision_triples {
+		merged.extend(triples.difference(&base_triples).copied());
+	}
+	topological_order(&merged, base, revisions)
 }
 
 pub(crate) fn sequence_triples(parent: ClassId, children: &[ClassId]) -> BTreeSet<PcsTriple> {
@@ -76,18 +80,14 @@ pub(crate) fn sequence_triples(parent: ClassId, children: &[ClassId]) -> BTreeSe
 fn topological_order(
 	triples: &BTreeSet<PcsTriple>,
 	base: &[ClassId],
-	left: &[ClassId],
-	right: &[ClassId],
+	revisions: &[&[ClassId]],
 ) -> Result<Vec<ClassId>, PcsCycle> {
 	let mut nodes = BTreeSet::from([PcsNode::Start, PcsNode::End]);
 	// Callers filter resolved deletions before PCS, so every remaining class is live.
-	nodes.extend(
-		base.iter()
-			.chain(left)
-			.chain(right)
-			.copied()
-			.map(PcsNode::Class),
-	);
+	nodes.extend(base.iter().copied().map(PcsNode::Class));
+	for revision in revisions {
+		nodes.extend(revision.iter().copied().map(PcsNode::Class));
+	}
 	let mut outgoing: BTreeMap<PcsNode, BTreeSet<PcsNode>> = BTreeMap::new();
 	let mut indegree: BTreeMap<PcsNode, usize> = BTreeMap::new();
 	for triple in triples {
@@ -106,11 +106,11 @@ fn topological_order(
 		indegree.entry(*node).or_default();
 	}
 
-	let ranks = stable_ranks(&nodes, base, left, right);
+	let ranks = stable_ranks(&nodes, base, revisions);
 	let mut ready = indegree
 		.iter()
 		.filter(|(_, count)| **count == 0)
-		.map(|(node, _)| (ranks[node], *node))
+		.map(|(node, _)| (ranks[node].clone(), *node))
 		.collect::<BTreeSet<_>>();
 	let mut ordered = Vec::with_capacity(nodes.len());
 	while let Some((_, node)) = ready.pop_first() {
@@ -121,7 +121,7 @@ fn topological_order(
 				.expect("successor has an indegree entry");
 			*count -= 1;
 			if *count == 0 {
-				ready.insert((ranks[successor], *successor));
+				ready.insert((ranks[successor].clone(), *successor));
 			}
 		}
 	}
@@ -144,9 +144,8 @@ fn topological_order(
 fn stable_ranks(
 	nodes: &BTreeSet<PcsNode>,
 	base: &[ClassId],
-	left: &[ClassId],
-	right: &[ClassId],
-) -> BTreeMap<PcsNode, (u8, usize, usize, usize, PcsNode)> {
+	revisions: &[&[ClassId]],
+) -> BTreeMap<PcsNode, (u8, Vec<usize>, PcsNode)> {
 	let positions = |sequence: &[ClassId]| {
 		sequence
 			.iter()
@@ -155,22 +154,27 @@ fn stable_ranks(
 			.collect::<BTreeMap<_, _>>()
 	};
 	let base_positions = positions(base);
-	let left_positions = positions(left);
-	let right_positions = positions(right);
+	let revision_positions = revisions
+		.iter()
+		.map(|revision| positions(revision))
+		.collect::<Vec<_>>();
 	let missing = usize::MAX;
 	nodes
 		.iter()
 		.map(|node| {
 			let rank = match node {
-				PcsNode::Start => (0, 0, 0, 0, *node),
-				PcsNode::Class(class) => (
-					1,
-					*base_positions.get(class).unwrap_or(&missing),
-					*left_positions.get(class).unwrap_or(&missing),
-					*right_positions.get(class).unwrap_or(&missing),
-					*node,
-				),
-				PcsNode::End => (2, missing, missing, missing, *node),
+				PcsNode::Start => (0, vec![0; revisions.len() + 1], *node),
+				PcsNode::Class(class) => {
+					let mut positions = Vec::with_capacity(revisions.len() + 1);
+					positions.push(*base_positions.get(class).unwrap_or(&missing));
+					positions.extend(
+						revision_positions
+							.iter()
+							.map(|revision| *revision.get(class).unwrap_or(&missing)),
+					);
+					(1, positions, *node)
+				}
+				PcsNode::End => (2, vec![missing; revisions.len() + 1], *node),
 			};
 			(*node, rank)
 		})
@@ -187,11 +191,10 @@ mod tests {
 
 	#[test]
 	fn independent_insertions_are_both_retained() {
-		let merged = merge_order(
+		let merged = merge_orders(
 			class(0),
 			&[class(1)],
-			&[class(2), class(1)],
-			&[class(1), class(3)],
+			&[&[class(2), class(1)], &[class(1), class(3)]],
 		)
 		.unwrap();
 
@@ -203,26 +206,47 @@ mod tests {
 		let base = [class(1), class(2), class(3)];
 		let left = [class(2), class(1), class(3)];
 
-		assert_eq!(merge_order(class(0), &base, &left, &base).unwrap(), left);
+		assert_eq!(
+			merge_orders(class(0), &base, &[&left, &base]).unwrap(),
+			left
+		);
 	}
 
 	#[test]
 	fn live_class_missing_from_one_revision_is_retained() {
 		assert_eq!(
-			merge_order(class(0), &[class(1)], &[], &[class(1)]).unwrap(),
+			merge_orders(class(0), &[class(1)], &[&[], &[class(1)]]).unwrap(),
 			vec![class(1)]
 		);
 	}
 
 	#[test]
 	fn incompatible_reorders_report_a_cycle() {
-		let result = merge_order(
+		let result = merge_orders(
 			class(0),
 			&[class(1), class(2), class(3)],
-			&[class(2), class(1), class(3)],
-			&[class(1), class(3), class(2)],
+			&[
+				&[class(2), class(1), class(3)],
+				&[class(1), class(3), class(2)],
+			],
 		);
 
 		assert!(result.is_err());
+	}
+
+	#[test]
+	fn three_independent_insertions_are_retained_in_revision_order() {
+		let merged = merge_orders(
+			class(0),
+			&[class(1)],
+			&[
+				&[class(2), class(1)],
+				&[class(1), class(3)],
+				&[class(1), class(4)],
+			],
+		)
+		.unwrap();
+
+		assert_eq!(merged, vec![class(2), class(1), class(3), class(4)]);
 	}
 }

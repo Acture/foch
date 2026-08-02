@@ -1,8 +1,5 @@
-use super::{
-	CacheError, DagBaseCache, ModDiffCache, ModParseCache, ModsetCache, default_dag_base_cache_dir,
-	default_mod_diff_cache_dir, default_mod_parse_cache_dir, default_modset_cache_dir,
-};
-use foch_language::analyzer::semantic_index::parse_cache;
+use super::{CacheError, DagBaseCache, ModDiffCache, ModParseCache, ModsetCache};
+use foch_core::cache::default_foch_cache_dir;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,17 +27,6 @@ impl CacheLayer {
 			Self::Parse => "parse",
 		}
 	}
-
-	pub fn path(self) -> PathBuf {
-		match self {
-			Self::Mods => default_mod_parse_cache_dir(),
-			Self::Diffs => default_mod_diff_cache_dir(),
-			Self::DagBase => default_dag_base_cache_dir(),
-			Self::Modsets => default_modset_cache_dir(),
-			Self::CwtRules => foch_cwt::default_compiled_rule_cache_dir(),
-			Self::Parse => parse_cache::parser_cache_root(),
-		}
-	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +47,7 @@ pub struct EvictionStats {
 /// (see docs/cache-architecture.md). Operates on on-disk entries by age/size.
 pub trait CacheLayerOps {
 	fn layer(&self) -> super::CacheLayer;
+	fn path(&self) -> &Path;
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError>;
 	fn total_bytes(&self) -> Result<u64, super::CacheError>;
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError>;
@@ -69,13 +56,25 @@ pub trait CacheLayerOps {
 }
 
 pub fn all_layers() -> Vec<Box<dyn CacheLayerOps>> {
+	all_layers_at(&default_foch_cache_dir())
+}
+
+fn all_layers_at(root: &Path) -> Vec<Box<dyn CacheLayerOps>> {
 	vec![
-		Box::new(ModParseCache::open_default()),
-		Box::new(ModDiffCache::open_default()),
-		Box::new(DagBaseCache::open_default()),
-		Box::new(ModsetCache::open_default()),
-		Box::new(CwtRuleCacheLayer),
-		Box::new(ParseCacheLayer),
+		Box::new(ModParseCache::open(&root.join(CacheLayer::Mods.name()))),
+		Box::new(ModDiffCache::open(&root.join(CacheLayer::Diffs.name()))),
+		Box::new(DagBaseCache::open(&root.join(CacheLayer::DagBase.name()))),
+		Box::new(ModsetCache::open(root)),
+		Box::new(FileCacheLayer::new(
+			CacheLayer::CwtRules,
+			root.join(CacheLayer::CwtRules.name()),
+			"bin",
+		)),
+		Box::new(FileCacheLayer::new(
+			CacheLayer::Parse,
+			root.join(CacheLayer::Parse.name()),
+			"bin",
+		)),
 	]
 }
 
@@ -84,8 +83,12 @@ impl CacheLayerOps for ModParseCache {
 		CacheLayer::Mods
 	}
 
+	fn path(&self) -> &Path {
+		self.root()
+	}
+
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(CacheLayer::Mods, &default_mod_parse_cache_dir(), "rkyv")
+		list_file_entries(CacheLayer::Mods, self.root(), "rkyv")
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -95,7 +98,7 @@ impl CacheLayerOps for ModParseCache {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(&default_mod_parse_cache_dir(), self.list_entries()?, days)
+		purge_file_entries(self.root(), self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -103,7 +106,7 @@ impl CacheLayerOps for ModParseCache {
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(&default_mod_parse_cache_dir())
+		clear_dir(self.root())
 	}
 }
 
@@ -112,8 +115,12 @@ impl CacheLayerOps for ModDiffCache {
 		CacheLayer::Diffs
 	}
 
+	fn path(&self) -> &Path {
+		self.layer_root()
+	}
+
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(CacheLayer::Diffs, &default_mod_diff_cache_dir(), "bin")
+		list_file_entries(CacheLayer::Diffs, self.entries_root(), "bin")
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -123,7 +130,7 @@ impl CacheLayerOps for ModDiffCache {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(&default_mod_diff_cache_dir(), self.list_entries()?, days)
+		purge_file_entries(self.entries_root(), self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -131,7 +138,7 @@ impl CacheLayerOps for ModDiffCache {
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(&default_mod_diff_cache_dir())
+		clear_dir(self.layer_root())
 	}
 }
 
@@ -140,8 +147,12 @@ impl CacheLayerOps for DagBaseCache {
 		CacheLayer::DagBase
 	}
 
+	fn path(&self) -> &Path {
+		self.layer_root()
+	}
+
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(CacheLayer::DagBase, &default_dag_base_cache_dir(), "bin")
+		list_file_entries(CacheLayer::DagBase, self.entries_root(), "bin")
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -151,7 +162,7 @@ impl CacheLayerOps for DagBaseCache {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(&default_dag_base_cache_dir(), self.list_entries()?, days)
+		purge_file_entries(self.entries_root(), self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -159,13 +170,17 @@ impl CacheLayerOps for DagBaseCache {
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(&default_dag_base_cache_dir())
+		clear_dir(self.layer_root())
 	}
 }
 
 impl CacheLayerOps for ModsetCache {
 	fn layer(&self) -> super::CacheLayer {
 		CacheLayer::Modsets
+	}
+
+	fn path(&self) -> &Path {
+		self.layer_root()
 	}
 
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
@@ -220,7 +235,7 @@ impl CacheLayerOps for ModsetCache {
 			removed_entries += 1;
 			freed_bytes = freed_bytes.saturating_add(entry.size_bytes);
 		}
-		prune_empty_dirs(&default_modset_cache_dir());
+		prune_empty_dirs(self.layer_root());
 		Ok(EvictionStats {
 			removed_entries,
 			freed_bytes,
@@ -228,23 +243,37 @@ impl CacheLayerOps for ModsetCache {
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(&default_modset_cache_dir())
+		clear_dir(self.layer_root())
 	}
 }
 
-struct CwtRuleCacheLayer;
+struct FileCacheLayer {
+	layer: CacheLayer,
+	root: PathBuf,
+	extension: &'static str,
+}
 
-impl CacheLayerOps for CwtRuleCacheLayer {
+impl FileCacheLayer {
+	fn new(layer: CacheLayer, root: PathBuf, extension: &'static str) -> Self {
+		Self {
+			layer,
+			root,
+			extension,
+		}
+	}
+}
+
+impl CacheLayerOps for FileCacheLayer {
 	fn layer(&self) -> super::CacheLayer {
-		CacheLayer::CwtRules
+		self.layer
+	}
+
+	fn path(&self) -> &Path {
+		&self.root
 	}
 
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(
-			CacheLayer::CwtRules,
-			&foch_cwt::default_compiled_rule_cache_dir(),
-			"bin",
-		)
+		list_file_entries(self.layer, &self.root, self.extension)
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -254,11 +283,7 @@ impl CacheLayerOps for CwtRuleCacheLayer {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(
-			&foch_cwt::default_compiled_rule_cache_dir(),
-			self.list_entries()?,
-			days,
-		)
+		purge_file_entries(&self.root, self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -266,50 +291,7 @@ impl CacheLayerOps for CwtRuleCacheLayer {
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(&foch_cwt::default_compiled_rule_cache_dir())
-	}
-}
-
-struct ParseCacheLayer;
-
-impl CacheLayerOps for ParseCacheLayer {
-	fn layer(&self) -> super::CacheLayer {
-		CacheLayer::Parse
-	}
-
-	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		Ok(parse_cache::list_entries()
-			.into_iter()
-			.map(|entry| CacheLayerEntryInfo {
-				layer: CacheLayer::Parse,
-				key: entry.key,
-				path: entry.path,
-				size_bytes: entry.size_bytes,
-				modified: entry.modified,
-			})
-			.collect())
-	}
-
-	fn total_bytes(&self) -> Result<u64, super::CacheError> {
-		Ok(total_entry_bytes(&<Self as CacheLayerOps>::list_entries(
-			self,
-		)?))
-	}
-
-	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		parse_cache::purge_older_than(days).map_err(CacheError::Io)
-	}
-
-	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
-		let stats = parse_cache::gc_with_cap(cap_bytes);
-		Ok(EvictionStats {
-			removed_entries: stats.evicted.min(usize::MAX as u64) as usize,
-			freed_bytes: stats.bytes_before.saturating_sub(stats.bytes_after),
-		})
-	}
-
-	fn clear(&self) -> Result<(), super::CacheError> {
-		parse_cache::cache_clean().map_err(CacheError::Io)
+		clear_dir(&self.root)
 	}
 }
 
@@ -471,11 +453,26 @@ mod tests {
 
 	#[test]
 	fn all_layers_present_and_report_size() {
-		let layers = all_layers();
+		let temp = tempfile::tempdir().expect("cache root");
+		let layers = all_layers_at(temp.path());
+		fs::write(layers[0].path().join("entry.rkyv"), b"cache").expect("cache entry");
+
 		assert_eq!(layers.len(), 6);
-		for l in &layers {
-			let _ = l.total_bytes().unwrap_or(0);
+		assert_eq!(
+			layers.iter().map(|layer| layer.layer()).collect::<Vec<_>>(),
+			vec![
+				CacheLayer::Mods,
+				CacheLayer::Diffs,
+				CacheLayer::DagBase,
+				CacheLayer::Modsets,
+				CacheLayer::CwtRules,
+				CacheLayer::Parse,
+			]
+		);
+		for layer in &layers {
+			assert!(layer.path().starts_with(temp.path()));
 		}
+		assert_eq!(layers[0].total_bytes().expect("mods cache size"), 5);
 	}
 
 	#[test]

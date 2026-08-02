@@ -85,9 +85,9 @@ impl ConflictResolver {
 				mod_id: candidate.mod_id.clone(),
 				display_name: candidate.mod_display_name.clone(),
 				precedence: candidate.precedence,
-				summary: candidate.patch_summary.clone(),
+				summary: candidate.change_summary.clone(),
 				projected_snippet: truncate_rendered_snippet(
-					&candidate.patch_rendered,
+					&candidate.candidate_rendered,
 					MAX_SNIPPET_LINES,
 					MAX_SNIPPET_LINE_CHARS,
 				),
@@ -332,11 +332,11 @@ impl ConflictHandler for InteractiveTuiHandler {
 		};
 
 		match action {
-			ConflictAction::PickCandidate(index) => view
+			ConflictAction::PickCandidate(candidate) => view
 				.candidates
-				.get(index)
-				.map(|candidate| ConflictDecision::PickMod {
-					mod_id: candidate.mod_id.clone(),
+				.get(candidate)
+				.map(|_| ConflictDecision::PickCandidate {
+					candidate,
 					record: None,
 				})
 				.unwrap_or(ConflictDecision::Defer { record: None }),
@@ -932,19 +932,19 @@ mod tests {
 					mod_id: "2164202838".to_string(),
 					mod_display_name: "Europa Expanded".to_string(),
 					precedence: 0,
-					patch_summary: vec![
+					change_summary: vec![
 						"set \"name\": \"old\" → \"Charles-Francois de Broglie\"".to_string(),
 					],
-					patch_rendered: "name = \"Charles-Francois de Broglie\"\n".to_string(),
+					candidate_rendered: "name = \"Charles-Francois de Broglie\"\n".to_string(),
 				},
 				CandidateView {
 					mod_id: "1999055990".to_string(),
 					mod_display_name: "Chinese Language Supp.".to_string(),
 					precedence: 2,
-					patch_summary: vec![
+					change_summary: vec![
 						"set \"name\": \"old\" → \"Chinese localization\"".to_string(),
 					],
-					patch_rendered: "name = \"Chinese localization\"\n".to_string(),
+					candidate_rendered: "name = \"Chinese localization\"\n".to_string(),
 				},
 			],
 		}

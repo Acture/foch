@@ -240,7 +240,7 @@ fn merge_patch_sets_with_resolution_picks_correct_mod_patch() {
 		&default_policies(),
 		&mut handler,
 	)
-	.expect("resolution map should pick mod_a");
+	.expect("resolution map should select the mod_a candidate");
 
 	assert_eq!(result.conflicts.len(), 0);
 	assert_eq!(result.handler_resolved_count, 1);
@@ -249,7 +249,7 @@ fn merge_patch_sets_with_resolution_picks_correct_mod_patch() {
 }
 
 #[test]
-fn merge_patch_sets_records_pick_mod_handler_metadata() {
+fn merge_patch_sets_records_candidate_handler_metadata() {
 	struct MockRecordedPickHandler;
 
 	impl ConflictHandler for MockRecordedPickHandler {
@@ -257,8 +257,8 @@ fn merge_patch_sets_records_pick_mod_handler_metadata() {
 			&mut self,
 			_: &crate::merge::conflict_view::ConflictView,
 		) -> ConflictDecision {
-			ConflictDecision::PickMod {
-				mod_id: "mod_b".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
 				record: Some(HandlerResolutionRecord {
 					path: "common/ideas/dep.txt".to_string(),
 					action: "dep_implied".to_string(),
@@ -313,8 +313,8 @@ fn chain_handler_falls_through_to_second_on_defer() {
 			&mut self,
 			_: &crate::merge::conflict_view::ConflictView,
 		) -> ConflictDecision {
-			ConflictDecision::PickMod {
-				mod_id: "mod_b".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
 				record: None,
 			}
 		}
@@ -1708,29 +1708,29 @@ fn assignment_block(key: &str, items: Vec<AstStatement>) -> AstStatement {
 
 fn boolean_or_policies() -> MergePolicies {
 	MergePolicies {
-		block_patch: BlockPatchPolicy::BooleanOr,
+		divergent_block: DivergentBlockPolicy::BooleanOr,
 		..Default::default()
 	}
 }
 
-const COUNTRY_NAME_BLOCK_POLICIES: &[(&str, BlockPatchPolicy)] = &[
-	("monarch_names", BlockPatchPolicy::Union),
-	("leader_names", BlockPatchPolicy::Union),
-	("ship_names", BlockPatchPolicy::Union),
-	("army_names", BlockPatchPolicy::Union),
+const COUNTRY_NAME_BLOCK_POLICIES: &[(&str, DivergentBlockPolicy)] = &[
+	("monarch_names", DivergentBlockPolicy::Union),
+	("leader_names", DivergentBlockPolicy::Union),
+	("ship_names", DivergentBlockPolicy::Union),
+	("army_names", DivergentBlockPolicy::Union),
 ];
 
 fn union_policies() -> MergePolicies {
 	MergePolicies {
-		block_patch: BlockPatchPolicy::Union,
+		divergent_block: DivergentBlockPolicy::Union,
 		..Default::default()
 	}
 }
 
 fn country_history_name_union_policies() -> MergePolicies {
 	MergePolicies {
-		block_patch: BlockPatchPolicy::Recurse,
-		block_patch_policies: COUNTRY_NAME_BLOCK_POLICIES,
+		divergent_block: DivergentBlockPolicy::Recurse,
+		divergent_block_rules: COUNTRY_NAME_BLOCK_POLICIES,
 		..Default::default()
 	}
 }
@@ -2094,7 +2094,7 @@ fn boolean_or_single_modification_no_or_wrap() {
 
 #[test]
 fn explicit_last_writer_block_policy_falls_through_to_conflict() {
-	// `BlockPatchPolicy::LastWriter` is a deliberate escape hatch: it does
+	// `DivergentBlockPolicy::LastWriter` is a deliberate escape hatch: it does
 	// not actually silently pick a winner — it just sidesteps Recurse /
 	// Union / BooleanOr / named-container so the final branch in
 	// `resolve_replace_blocks` reports the divergent ReplaceBlock as a
@@ -2115,7 +2115,7 @@ fn explicit_last_writer_block_policy_falls_through_to_conflict() {
 	};
 
 	let mut policies = default_policies();
-	policies.block_patch = BlockPatchPolicy::LastWriter;
+	policies.divergent_block = DivergentBlockPolicy::LastWriter;
 	let result = merge_patch_sets_with_defer(
 		vec![
 			("mod_a".into(), 1, vec![patch_a]),
@@ -2128,9 +2128,9 @@ fn explicit_last_writer_block_policy_falls_through_to_conflict() {
 	assert_eq!(result.conflicts.len(), 1);
 	assert_eq!(result.stats.conflict_patches, 1);
 	assert_eq!(
-		MergePolicies::default().block_patch,
-		BlockPatchPolicy::Recurse,
-		"BlockPatchPolicy::default() must be Recurse"
+		MergePolicies::default().divergent_block,
+		DivergentBlockPolicy::Recurse,
+		"DivergentBlockPolicy::default() must be Recurse"
 	);
 }
 
@@ -2964,12 +2964,12 @@ fn convergent_renames_resolve() {
 }
 
 // -----------------------------------------------------------------------
-// BlockPatchPolicy::Recurse — date-keyed history deep merge
+// DivergentBlockPolicy::Recurse — date-keyed history deep merge
 // -----------------------------------------------------------------------
 
 fn recurse_policies() -> MergePolicies {
 	MergePolicies {
-		block_patch: BlockPatchPolicy::Recurse,
+		divergent_block: DivergentBlockPolicy::Recurse,
 		..Default::default()
 	}
 }
@@ -2993,7 +2993,7 @@ fn scalar_last_writer_does_not_capture_disjoint_block_inserts() {
 
 	let policies = MergePolicies {
 		scalar: ScalarMergePolicy::LastWriter,
-		block_patch: BlockPatchPolicy::Recurse,
+		divergent_block: DivergentBlockPolicy::Recurse,
 		..Default::default()
 	};
 	let result = merge_patch_sets_with_defer(
@@ -3153,7 +3153,7 @@ fn recursive_block_merge_aggregates_nested_stats() {
 		new_statement,
 	};
 	let policies = MergePolicies {
-		block_patch: BlockPatchPolicy::Recurse,
+		divergent_block: DivergentBlockPolicy::Recurse,
 		..Default::default()
 	};
 

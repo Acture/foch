@@ -15,6 +15,7 @@ use super::policy::ClausewitzTreePolicy;
 const CHAIN_KIND_PREFIX: &str = "clausewitz.control_flow.chain:";
 const GUARDED_BRANCH_KIND_PREFIX: &str = "clausewitz.control_flow.guarded_branch:";
 const ELSE_BRANCH_KIND: &str = "clausewitz.control_flow.else_branch";
+const BRANCH_BODY_ANCHOR_NAMESPACE: &str = "clausewitz.control_flow.branch.body";
 const MAX_DNF_TERMS: usize = 256;
 
 type Term = BTreeMap<String, bool>;
@@ -849,18 +850,23 @@ fn normalize_chain_semantic(
 				kind.clone(),
 			)
 		};
+		let mut body = normalize_value_with_findings(
+			&value,
+			Some(if is_default { "else" } else { "if" }),
+			policy,
+			control_flow_findings,
+		)?;
+		body.anchor = Some(SemanticKey::parent_scoped(
+			BRANCH_BODY_ANCHOR_NAMESPACE,
+			"body",
+		));
 		let mut node = branch(
 			&kind,
 			None,
 			Some(branch_anchor),
 			ChildOrder::Ordered,
 			ChildCardinality::ExactlyOne,
-			vec![normalize_value_with_findings(
-				&value,
-				Some(if is_default { "else" } else { "if" }),
-				policy,
-				control_flow_findings,
-			)?],
+			vec![body],
 		);
 		node.signature = Some(format!("effect:{}", case.effect_key));
 		children.push(node);
@@ -886,7 +892,7 @@ fn normalize_chain_semantic(
 			SemanticKey::parent_scoped("clausewitz.control_flow.chain.effect", identity.clone())
 		})
 	} else if empty_constructor_default {
-		Some(SemanticKey::parent_scoped_ordered_similarity(
+		Some(SemanticKey::parent_scoped(
 			"clausewitz.control_flow.chain.constructor_effects",
 			effect_signature.clone(),
 		))

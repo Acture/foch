@@ -429,7 +429,9 @@ fn anchors_forbid(left: Option<&SemanticKey>, right: Option<&SemanticKey>) -> bo
 		(Some(left), Some(right))
 			if left.scope == right.scope
 				&& left.namespace == right.namespace
-				&& (left.value != right.value || left.match_mode != right.match_mode)
+				&& (left.match_mode != right.match_mode
+					|| (left.match_mode == SemanticKeyMatchMode::Identity
+						&& left.value != right.value))
 	)
 }
 
@@ -561,7 +563,7 @@ fn match_unique_ordered_signatures(
 fn ordered_similarity_groups(
 	tree: &NormalizedTree,
 	children: &[NodeId],
-) -> BTreeMap<SemanticKey, Vec<NodeId>> {
+) -> BTreeMap<(SemanticKeyScope, String, SemanticKeyMatchMode), Vec<NodeId>> {
 	let mut groups = BTreeMap::new();
 	for child in children {
 		let node = tree.node(*child).unwrap();
@@ -569,7 +571,11 @@ fn ordered_similarity_groups(
 			continue;
 		};
 		groups
-			.entry(anchor.clone())
+			.entry((
+				anchor.scope.clone(),
+				anchor.namespace.clone(),
+				anchor.match_mode,
+			))
 			.or_insert_with(Vec::new)
 			.push(*child);
 	}
@@ -1823,6 +1829,30 @@ mod tests {
 			matching.get_from_left(NodeId::new(10)),
 			Some(NodeId::new(7))
 		);
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn ordered_similarity_anchor_values_are_soft_identity() {
+		let item = |anchor: &str, value: &str| {
+			block("chain", vec![scalar(value)])
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", anchor)
+		};
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![item("old-a", "left-a"), item("old-b", "left-b")],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![item("new-a", "right-a"), item("new-b", "right-b")],
+		))
+		.unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert_eq!(matching.get_from_left(NodeId::new(3)), Some(NodeId::new(3)));
 		assert!(matching.ambiguities().is_empty());
 	}
 

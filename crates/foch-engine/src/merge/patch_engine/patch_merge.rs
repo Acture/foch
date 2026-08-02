@@ -11,7 +11,7 @@ use foch_core::model::HandlerResolutionRecord;
 #[cfg(test)]
 use foch_language::analyzer::content_family::NamedContainerPolicy;
 #[cfg(test)]
-use foch_language::analyzer::content_family::{BlockPatchPolicy, ScalarMergePolicy};
+use foch_language::analyzer::content_family::{DivergentBlockPolicy, ScalarMergePolicy};
 use foch_language::analyzer::content_family::{ListMergePolicy, MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 

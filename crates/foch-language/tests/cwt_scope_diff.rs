@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use foch_core::model::{ScopeKind, ScopeType, base_scope};
-use foch_cwt::CwtSchemaGraph;
+use foch_cwt::{CwtSchemaGraph, RuleEngine};
 use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_file};
 use foch_language::analyzer::semantic_index::{
 	cwt_iterator_scope_type, cwt_scope_changer_target_type, cwt_special_block_scope_kind,
@@ -152,13 +152,13 @@ struct ScopeKindMismatch {
 #[test]
 #[ignore = "run manually as a parity gate before swapping production callers"]
 fn keyword_tables_match_cwt_helpers() {
-	let graph = schema_graph();
+	let engine = rule_engine();
 
 	let iterator_mismatches = iterator_keys()
 		.into_iter()
 		.filter_map(|key| {
 			let legacy = legacy_iterator_scope_type(key);
-			let cwt = cwt_iterator_scope_type(graph, key);
+			let cwt = cwt_iterator_scope_type(engine, key);
 			(legacy != cwt).then(|| OptionScopeMismatch {
 				key: key.to_string(),
 				legacy,
@@ -178,7 +178,7 @@ fn keyword_tables_match_cwt_helpers() {
 		.into_iter()
 		.filter_map(|key| {
 			let legacy = legacy_scope_changer_target_type(key);
-			let cwt = cwt_scope_changer_target_type(graph, key);
+			let cwt = cwt_scope_changer_target_type(engine, key);
 			(legacy != cwt).then(|| OptionScopeMismatch {
 				key: key.to_string(),
 				legacy,
@@ -198,7 +198,7 @@ fn keyword_tables_match_cwt_helpers() {
 		.into_iter()
 		.filter_map(|key| {
 			let legacy = legacy_special_block_scope_kind(key);
-			let cwt = cwt_special_block_scope_kind(graph, key);
+			let cwt = cwt_special_block_scope_kind(engine, key);
 			(legacy != cwt).then(|| ScopeKindMismatch {
 				key: key.to_string(),
 				legacy,
@@ -243,7 +243,7 @@ fn keyword_tables_match_cwt_helpers() {
 #[test]
 #[ignore = "requires a local EU4 install and is run manually as an acceptance gate"]
 fn vanilla_corpus_matches_cwt_helpers() {
-	let graph = schema_graph();
+	let engine = rule_engine();
 	let eu4_root = eu4_root();
 	if !eu4_root.is_dir() {
 		println!("EU4 install not found at {}", eu4_root.display());
@@ -272,7 +272,7 @@ fn vanilla_corpus_matches_cwt_helpers() {
 			keys_checked += 1;
 
 			let legacy_iterator = legacy_iterator_scope_type(key);
-			let cwt_iterator = cwt_iterator_scope_type(graph, key);
+			let cwt_iterator = cwt_iterator_scope_type(engine, key);
 			if legacy_iterator != cwt_iterator {
 				iterator_mismatches.push(OptionScopeMismatch {
 					key: key.to_string(),
@@ -284,7 +284,7 @@ fn vanilla_corpus_matches_cwt_helpers() {
 			}
 
 			let legacy_scope_changer = legacy_scope_changer_target_type(key);
-			let cwt_scope_changer = cwt_scope_changer_target_type(graph, key);
+			let cwt_scope_changer = cwt_scope_changer_target_type(engine, key);
 			if legacy_scope_changer != cwt_scope_changer {
 				scope_changer_mismatches.push(OptionScopeMismatch {
 					key: key.to_string(),
@@ -296,7 +296,7 @@ fn vanilla_corpus_matches_cwt_helpers() {
 			}
 
 			let legacy_special_block = legacy_special_block_scope_kind(key);
-			let cwt_special_block = cwt_special_block_scope_kind(graph, key);
+			let cwt_special_block = cwt_special_block_scope_kind(engine, key);
 			if legacy_special_block != cwt_special_block {
 				special_block_mismatches.push(ScopeKindMismatch {
 					key: key.to_string(),
@@ -351,11 +351,13 @@ fn vanilla_corpus_matches_cwt_helpers() {
 	assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
-fn schema_graph() -> &'static CwtSchemaGraph {
+fn rule_engine() -> &'static RuleEngine {
 	ensure_base_scopes_initialized();
-	static GRAPH: OnceLock<CwtSchemaGraph> = OnceLock::new();
-	GRAPH.get_or_init(|| {
-		CwtSchemaGraph::from_directory(&vendor_schema_dir()).expect("load vendored cwtools schema")
+	static ENGINE: OnceLock<RuleEngine> = OnceLock::new();
+	ENGINE.get_or_init(|| {
+		let graph = CwtSchemaGraph::from_directory(&vendor_schema_dir())
+			.expect("load vendored cwtools schema");
+		RuleEngine::from_graph(&graph)
 	})
 }
 

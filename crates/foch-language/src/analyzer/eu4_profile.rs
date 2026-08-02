@@ -1,8 +1,8 @@
 use super::content_family::{
-	BlockMergePolicy, BlockPatchPolicy, ConflictPolicy, ContentFamilyCapabilities,
-	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentFamilyScopePolicy, ContentLoadPolicy,
-	CwtType, DedupPolicy, DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput,
-	DefinitionModulePolicy, DuplicateDefinitionPolicy, GameId, GameProfile, ListMergePolicy,
+	BlockMergePolicy, ConflictPolicy, ContentFamilyCapabilities, ContentFamilyDescriptor,
+	ContentFamilyPathMatcher, ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy,
+	DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
+	DivergentBlockPolicy, DuplicateDefinitionPolicy, GameId, GameProfile, ListMergePolicy,
 	MergeKeySource, ModuleNameRule, OneSidedRemovalPolicy, ScalarMergePolicy, ScalarReducerRule,
 };
 use super::eu4_builtin::builtin_base_scope_names;
@@ -150,11 +150,11 @@ fn dynamic_scope_policy() -> ContentFamilyScopePolicy {
 	}
 }
 
-const COUNTRY_HISTORY_BLOCK_PATCH_POLICIES: &[(&str, BlockPatchPolicy)] = &[
-	("monarch_names", BlockPatchPolicy::Union),
-	("leader_names", BlockPatchPolicy::Union),
-	("ship_names", BlockPatchPolicy::Union),
-	("army_names", BlockPatchPolicy::Union),
+const COUNTRY_HISTORY_DIVERGENT_BLOCK_RULES: &[(&str, DivergentBlockPolicy)] = &[
+	("monarch_names", DivergentBlockPolicy::Union),
+	("leader_names", DivergentBlockPolicy::Union),
+	("ship_names", DivergentBlockPolicy::Union),
+	("army_names", DivergentBlockPolicy::Union),
 ];
 
 const GUI_TYPES_NAMED_CHILD_TYPES: &[&str] = &[
@@ -282,7 +282,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_merge_ready_cross_file_dedup_safe())
 				.per_entry_dedup_safe()
 				.merge_key(MergeKeySource::AssignmentKey)
-				.block_patch_policy(BlockPatchPolicy::Union)
+				.divergent_block_policy(DivergentBlockPolicy::Union)
 				.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/scripted_triggers",
@@ -300,7 +300,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			.per_entry_dedup_safe()
 			.merge_key(MergeKeySource::AssignmentKey)
 			.conflict_policy(ConflictPolicy::BooleanOr)
-			.block_patch_policy(BlockPatchPolicy::BooleanOr)
+			.divergent_block_policy(DivergentBlockPolicy::BooleanOr)
 			.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/triggered_modifiers",
@@ -372,7 +372,7 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(scope(base_scope::country()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
-				.block_patch_policies(COUNTRY_HISTORY_BLOCK_PATCH_POLICIES)
+				.divergent_block_rules(COUNTRY_HISTORY_DIVERGENT_BLOCK_RULES)
 				.build(),
 			ContentFamilyDescriptor::prefix("history/provinces", "history/provinces/")
 				.kind(CwtType::new("province_history"))

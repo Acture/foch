@@ -1,22 +1,23 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use foch_cwt::{
-	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity, CwtSchemaGraph,
-	RuleContext, RuleEngine, RuleEngineLoadStatus, SchemaBinding, SchemaSource,
-	load_rule_engine_from_dir,
+	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity,
+	CompiledTypeKeyFilter, CwtSchemaGraph, RuleContext, RuleEngine, RuleEngineLoadStatus,
+	SchemaBinding, SchemaSource, load_rule_engine_from_dir,
 };
 use foch_syntax::ParadoxTree;
 
 #[test]
-fn compiled_engine_matches_graph_root_and_chain_binding() {
+fn compiled_engine_binds_root_and_alias_chain() {
 	let graph = load_binding_graph();
 	let engine = RuleEngine::from_graph(&graph);
 
 	let root_path = Path::new("events/example.txt");
-	assert_eq!(
+	assert!(matches!(
 		engine.root_binding(root_path),
-		graph.root_binding(root_path)
-	);
+		SchemaBinding::Bound { .. }
+	));
 	let root = engine.bind_root(root_path).expect("bind event root");
 	assert_eq!(
 		root.subtypes
@@ -27,11 +28,6 @@ fn compiled_engine_matches_graph_root_and_chain_binding() {
 	);
 
 	let ast_path = ["country_event", "trigger", "is_year"];
-	assert_eq!(
-		engine.bind_chain(root_path, &ast_path),
-		graph.bind_chain(root_path, &ast_path)
-	);
-
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(root_path, &ast_path) else {
 		panic!("expected compiled binding to resolve alias path");
 	};
@@ -73,6 +69,114 @@ fn compiled_engine_projects_field_and_alias_metadata() {
 	assert_eq!(alias.name, "is_year");
 	assert_eq!(alias.value, CompiledRuleValue::Scalar("int".to_string()));
 	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
+}
+
+#[test]
+fn compiled_engine_tracks_subtype_and_root_instance_contexts() {
+	let graph = load_binding_graph();
+	let engine = RuleEngine::from_graph(&graph);
+
+	let event_context = engine
+		.bind_context(Path::new("events/example.txt"), &["country_event"])
+		.expect("bind event subtype context");
+	let RuleContext::Subtype(event, subtype) = event_context else {
+		panic!("expected subtype context, got {event_context:?}");
+	};
+	assert_eq!(event.name, "event");
+	assert_eq!(
+		subtype.type_key_filter,
+		Some(CompiledTypeKeyFilter::Exact(vec![
+			"country_event".to_string()
+		]))
+	);
+
+	let mission_context = engine
+		.bind_context(Path::new("missions/example.txt"), &["my_mission"])
+		.expect("bind mission root instance context");
+	let RuleContext::RootType(mission) = mission_context else {
+		panic!("expected root context, got {mission_context:?}");
+	};
+	assert_eq!(mission.name, "mission");
+}
+
+#[test]
+fn compiled_engine_returns_all_direct_field_matches() {
+	let schema = r#"
+	types = {
+		type[estate_privilege] = {
+			path = "game/common/estate_privileges"
+		}
+	}
+
+	estate_privilege = {
+		can_revoke = bool
+		can_revoke = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	let privilege = engine
+		.bind_root(Path::new("common/estate_privileges/example.txt"))
+		.expect("bind privilege root");
+	let matches = engine.bind_fields(RuleContext::RootType(privilege), "can_revoke");
+
+	assert_eq!(matches.len(), 2);
+	assert!(matches.iter().any(|field| matches!(
+		&field.value,
+		CompiledRuleValue::Scalar(value) if value == "bool"
+	)));
+	assert!(
+		matches
+			.iter()
+			.any(|field| matches!(&field.value, CompiledRuleValue::Block(_)))
+	);
+}
+
+#[test]
+fn compiled_engine_projects_plural_replace_scopes() {
+	let schema = r#"
+	types = {
+		type[incident] = {
+			path = "game/common/incidents"
+		}
+	}
+
+	incident = {
+		## replace_scopes = { this = country root = country }
+		immediate = {
+			alias_name[effect] = alias_match_left[effect]
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = RuleEngine::from_graph(&graph);
+	let incident = engine
+		.bind_root(Path::new("common/incidents/example.txt"))
+		.expect("bind incident root");
+	let field = engine
+		.bind_field(RuleContext::RootType(incident), "immediate")
+		.expect("bind immediate field");
+
+	assert_eq!(
+		field
+			.attributes
+			.replace_scope
+			.get("this")
+			.map(String::as_str),
+		Some("country")
+	);
+	assert_eq!(
+		field
+			.attributes
+			.replace_scope
+			.get("root")
+			.map(String::as_str),
+		Some("country")
+	);
 }
 
 #[test]
@@ -441,10 +545,6 @@ fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 	let path = Path::new("missions/example.txt");
 	let ast_path = ["demo_mission", "mission_tree", "conquest", "trigger"];
 
-	assert_eq!(
-		engine.bind_chain(path, &ast_path),
-		graph.bind_chain(path, &ast_path)
-	);
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
 		panic!("expected compiled dynamic field binding");
 	};
@@ -464,7 +564,7 @@ fn compiled_engine_binds_angle_bracket_dynamic_fields() {
 }
 
 #[test]
-fn compiled_engine_matches_root_type_key_filter_exclusions() {
+fn compiled_engine_honors_root_type_key_filter_exclusions() {
 	let schema = r#"
 	types = {
 		type[idea_group] = {
@@ -496,10 +596,6 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 	let path = Path::new("common/ideas/example.txt");
 	let ast_path = ["sample_group", "sample_idea", "idea_only"];
 
-	assert_eq!(
-		engine.bind_chain(path, &ast_path),
-		graph.bind_chain(path, &ast_path)
-	);
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
 		panic!("expected compiled idea binding");
 	};
@@ -507,10 +603,6 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 	assert_eq!(node_id.0, "type:idea:field:idea_only");
 
 	let excluded_path = ["sample_group", "start", "idea_only"];
-	assert_eq!(
-		engine.bind_chain(path, &excluded_path),
-		graph.bind_chain(path, &excluded_path)
-	);
 	assert!(
 		!matches!(
 			engine.bind_chain(path, &excluded_path),
@@ -521,7 +613,7 @@ fn compiled_engine_matches_root_type_key_filter_exclusions() {
 }
 
 #[test]
-fn compiled_engine_matches_path_file_root_matching() {
+fn compiled_engine_honors_path_file_root_matching() {
 	let schema = r#"
 	types = {
 		type[map_fallback] = {
@@ -555,10 +647,6 @@ fn compiled_engine_matches_path_file_root_matching() {
 	let area_path = Path::new("map/area.txt");
 	let area_ast_path = ["sample_area", "area_only"];
 
-	assert_eq!(
-		engine.bind_chain(area_path, &area_ast_path),
-		graph.bind_chain(area_path, &area_ast_path)
-	);
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(area_path, &area_ast_path)
 	else {
 		panic!("expected compiled area binding");
@@ -568,10 +656,6 @@ fn compiled_engine_matches_path_file_root_matching() {
 
 	let region_path = Path::new("map/region.txt");
 	let region_ast_path = ["sample_region", "region_only"];
-	assert_eq!(
-		engine.bind_chain(region_path, &region_ast_path),
-		graph.bind_chain(region_path, &region_ast_path)
-	);
 	let SchemaBinding::Bound { type_id, node_id } =
 		engine.bind_chain(region_path, &region_ast_path)
 	else {
@@ -582,10 +666,6 @@ fn compiled_engine_matches_path_file_root_matching() {
 
 	let fallback_path = Path::new("map/other.txt");
 	let fallback_ast_path = ["sample_map", "fallback_only"];
-	assert_eq!(
-		engine.bind_chain(fallback_path, &fallback_ast_path),
-		graph.bind_chain(fallback_path, &fallback_ast_path)
-	);
 	let SchemaBinding::Bound { type_id, node_id } =
 		engine.bind_chain(fallback_path, &fallback_ast_path)
 	else {
@@ -596,7 +676,7 @@ fn compiled_engine_matches_path_file_root_matching() {
 }
 
 #[test]
-fn compiled_engine_matches_ordered_skip_root_key_chain() {
+fn compiled_engine_honors_ordered_skip_root_key_chain() {
 	let schema = r#"
 	types = {
 		type[game_age] = {
@@ -622,10 +702,6 @@ fn compiled_engine_matches_ordered_skip_root_key_chain() {
 	let path = Path::new("common/ages/example.txt");
 	let ast_path = ["age_of_discovery", "abilities", "free_war_taxes", "power"];
 
-	assert_eq!(
-		engine.bind_chain(path, &ast_path),
-		graph.bind_chain(path, &ast_path)
-	);
 	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
 		panic!("expected compiled game_age_ability binding");
 	};
@@ -633,10 +709,6 @@ fn compiled_engine_matches_ordered_skip_root_key_chain() {
 	assert_eq!(node_id.0, "type:game_age_ability:field:power");
 
 	let missing_fixed_wrapper = ["age_of_discovery", "free_war_taxes", "power"];
-	assert_eq!(
-		engine.bind_chain(path, &missing_fixed_wrapper),
-		graph.bind_chain(path, &missing_fixed_wrapper)
-	);
 	assert!(
 		!matches!(
 			engine.bind_chain(path, &missing_fixed_wrapper),
@@ -732,6 +804,12 @@ fn compiled_binary_pack_roundtrips_severity_attributes() {
 fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 	let root = binding_fixture_dir();
 	let cache = tempfile::tempdir().expect("create compiled rule cache tempdir");
+	let obsolete_generation = cache.path().join("v0.10.0");
+	fs::create_dir_all(&obsolete_generation).expect("create obsolete generation");
+	fs::write(obsolete_generation.join("rules.bin"), b"obsolete")
+		.expect("write obsolete generation entry");
+	let legacy_flat_entry = cache.path().join("rules-fmt-0_10_0-src-old.bin");
+	fs::write(&legacy_flat_entry, b"obsolete").expect("write legacy flat entry");
 
 	let first = load_rule_engine_from_dir(
 		&root,
@@ -741,6 +819,14 @@ fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
 	.expect("compile fixture schema into cache");
 	assert_eq!(first.status, RuleEngineLoadStatus::CompiledFromSource);
 	assert!(first.cache_path.as_ref().is_some_and(|path| path.is_file()));
+	assert!(
+		first
+			.cache_path
+			.as_ref()
+			.is_some_and(|path| { path.starts_with(cache.path().join("v0.11.0")) })
+	);
+	assert!(!obsolete_generation.exists());
+	assert!(!legacy_flat_entry.exists());
 	assert!(first.timings.cache_read.is_some());
 	assert!(first.timings.source_compile.is_some());
 	assert!(first.engine.alias_count() > 0);

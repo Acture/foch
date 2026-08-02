@@ -552,7 +552,7 @@ pub fn diff_ast_with_nested(
 
 /// Diff two block bodies (children of a parent block) and produce a flat
 /// list of `ClausewitzPatch` operations. Used by
-/// `BlockPatchPolicy::Recurse` to deep-merge multiple mods' replacements
+/// `DivergentBlockPolicy::Recurse` to deep-merge multiple mods' replacements
 /// of the same block.
 ///
 /// Patch paths are emitted relative to `parent_path`. Pass `&[]` to make

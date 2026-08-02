@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use foch_language::analyzer::content_family::{
-	BlockMergePolicy, BlockPatchPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy,
+	BlockMergePolicy, DivergentBlockPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy,
 	ScalarMergePolicy, ScalarReducerRule,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
@@ -124,7 +124,7 @@ fn event_policies() -> MergePolicies {
 
 fn boolean_or_policies() -> MergePolicies {
 	MergePolicies {
-		block_patch: BlockPatchPolicy::BooleanOr,
+		divergent_block: DivergentBlockPolicy::BooleanOr,
 		..MergePolicies::default()
 	}
 }
@@ -1563,7 +1563,7 @@ fn structured_merge_applies_atomic_block_replacement_policy() {
 #[test]
 fn structured_union_blocks_match_children_by_content() {
 	let policies = MergePolicies {
-		block_patch: BlockPatchPolicy::Union,
+		divergent_block: DivergentBlockPolicy::Union,
 		..MergePolicies::default()
 	};
 	let base = parse("names = { tag = Base }\n");

@@ -1,16 +1,12 @@
-use std::collections::BTreeMap;
-
 use foch_language::analyzer::content_family::{
-	BlockMergePolicy, BlockPatchPolicy, MergeKeySource, MergePolicies, OneSidedRemovalPolicy,
+	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, OneSidedRemovalPolicy,
 	ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_merge_kernel::{
-	ChildOrder, ChildSetContext, ConflictKind, DeleteModifyContext, DeleteUnchangedContext,
-	MergePolicy, NodeConflictContext, PolicyDecision, RevisionId, SemanticKey,
+	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
+	RevisionId, SemanticKey,
 };
-
-pub(crate) type LocalSourceSelections = BTreeMap<Vec<String>, RevisionId>;
 
 pub(crate) trait ClausewitzTreePolicy {
 	fn assignment_anchor(
@@ -43,38 +39,11 @@ pub(crate) trait ClausewitzTreePolicy {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ContentFamilyMergePolicy<'a> {
 	policies: &'a MergePolicies,
-	source_selections: Option<&'a LocalSourceSelections>,
 }
 
 impl<'a> ContentFamilyMergePolicy<'a> {
 	pub(crate) const fn new(policies: &'a MergePolicies) -> Self {
-		Self {
-			policies,
-			source_selections: None,
-		}
-	}
-
-	pub(crate) const fn with_source_selections(
-		policies: &'a MergePolicies,
-		source_selections: &'a LocalSourceSelections,
-	) -> Self {
-		Self {
-			policies,
-			source_selections: Some(source_selections),
-		}
-	}
-
-	fn forced_revision(
-		&self,
-		base: Option<&foch_merge_kernel::NormalizedNode>,
-		left: Option<&foch_merge_kernel::NormalizedNode>,
-		right: Option<&foch_merge_kernel::NormalizedNode>,
-	) -> Option<RevisionId> {
-		let selections = self.source_selections?;
-		[left, right, base]
-			.into_iter()
-			.flatten()
-			.find_map(|node| selections.get(&node.policy_path).copied())
+		Self { policies }
 	}
 }
 
@@ -89,8 +58,8 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 			return None;
 		}
 		if parent_assignment_key.is_some_and(|parent| {
-			self.policies.block_patch_policy_for_key(parent)
-				== foch_language::analyzer::content_family::BlockPatchPolicy::Union
+			self.policies.divergent_block_policy_for_key(parent)
+				== foch_language::analyzer::content_family::DivergentBlockPolicy::Union
 		}) {
 			return Some(union_assignment_anchor(key, value));
 		}
@@ -124,8 +93,8 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 	) -> Option<SemanticKey> {
 		parent_assignment_key
 			.is_some_and(|parent| {
-				self.policies.block_patch_policy_for_key(parent)
-					== foch_language::analyzer::content_family::BlockPatchPolicy::Union
+				self.policies.divergent_block_policy_for_key(parent)
+					== foch_language::analyzer::content_family::DivergentBlockPolicy::Union
 			})
 			.then(|| {
 				SemanticKey::parent_scoped(
@@ -146,51 +115,98 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 }
 
 impl MergePolicy for ContentFamilyMergePolicy<'_> {
-	fn resolve_delete_unchanged(&self, context: DeleteUnchangedContext<'_>) -> PolicyDecision {
-		if let Some(revision) =
-			self.forced_revision(Some(context.base), Some(context.present), None)
-		{
-			return PolicyDecision::Select(revision);
+	fn select_nway_deleted_subtree(&self, context: NWayDeleteContext<'_>) -> Option<RevisionId> {
+		let content_changed = context
+			.class
+			.contributors
+			.iter()
+			.any(|view| view.subtree_changed);
+		if !content_changed && self.resolve_nway_delete(context) == PolicyDecision::Resolved {
+			return context
+				.class
+				.contributors
+				.last()
+				.map(|view| view.source.revision);
 		}
-		let scripted_hook_from_missing_container = context
-			.base
+
+		let base = context.class.base?;
+		if !base
+			.node
+			.kind
+			.starts_with("clausewitz.control_flow.guarded_branch:")
+			|| base.node.kind.contains(":exclusive:")
+			|| !context.deleted_parent_has_same_kind_gap_replacement
+			|| !context.parent_present_in_all_revisions
+		{
+			return None;
+		}
+		context
+			.class
+			.contributors
+			.last()
+			.map(|view| view.source.revision)
+	}
+
+	fn resolve_nway_delete(&self, context: NWayDeleteContext<'_>) -> PolicyDecision {
+		let content_changed = context
+			.class
+			.contributors
+			.iter()
+			.any(|view| view.subtree_changed);
+		let reparented = context
+			.class
+			.contributors
+			.iter()
+			.any(|view| view.reparented);
+		let reordered = context.class.contributors.iter().any(|view| view.reordered);
+		if self.policies.edit_wins_over_remove && content_changed && !reparented && !reordered {
+			return PolicyDecision::Resolved;
+		}
+
+		let Some(base) = context.class.base else {
+			return PolicyDecision::Unresolved;
+		};
+		let present_parent_changed_from_base = context
+			.class
+			.contributors
+			.iter()
+			.any(|view| view.parent_changed_from_base);
+		let scripted_hook_from_missing_container = base
+			.node
 			.value
 			.as_deref()
 			.is_some_and(|key| key.starts_with("pre_") || key.starts_with("post_"))
-			&& !context.parent_present_in_both_revisions
-			&& context.present_parent_changed_from_base;
-		let union_safe_control_branch = (context
-			.base
+			&& !context.parent_present_in_all_revisions
+			&& present_parent_changed_from_base;
+		let union_safe_control_branch = (base
+			.node
 			.kind
 			.starts_with("clausewitz.control_flow.guarded_branch:")
-			|| context
-				.base
-				.kind
-				.starts_with("clausewitz.control_flow.chain:"))
-			&& !context.base.kind.contains(":exclusive:")
+			|| base.node.kind.starts_with("clausewitz.control_flow.chain:"))
+			&& !base.node.kind.contains(":exclusive:")
 			&& context.deleted_parent_has_same_kind_gap_replacement
-			&& context.parent_present_in_both_revisions;
-		let additive_boolean_predicate = context
-			.base_parent
+			&& context.parent_present_in_all_revisions;
+		let additive_boolean_predicate = base
+			.parent
 			.is_some_and(|parent| is_boolean_block_kind(&parent.kind))
-			&& context.parent_present_in_both_revisions
-			&& context.present_parent_changed_from_base;
-		let boolean_alternative = context
-			.base_parent
+			&& context.parent_present_in_all_revisions
+			&& present_parent_changed_from_base;
+		let boolean_alternative = base
+			.parent
 			.is_some_and(|parent| parent.kind == "clausewitz.block:OR")
-			&& context.parent_present_in_both_revisions;
-		let union_block_member = context
-			.base_parent
+			&& context.parent_present_in_all_revisions;
+		let union_block_member = base
+			.parent
 			.and_then(|parent| block_assignment_key(&parent.kind))
 			.is_some_and(|key| {
-				self.policies.block_patch_policy_for_key(key) == BlockPatchPolicy::Union
-			}) && context.parent_present_in_both_revisions
-			&& context.present_parent_changed_from_base;
+				self.policies.divergent_block_policy_for_key(key) == DivergentBlockPolicy::Union
+			}) && context.parent_present_in_all_revisions
+			&& present_parent_changed_from_base;
 		let preserve = union_block_member
 			|| match self.policies.one_sided_removal {
 				OneSidedRemovalPolicy::Remove => false,
 				OneSidedRemovalPolicy::PreserveIfParentSurvives => {
-					context.parent_present_in_both_revisions
+					context.parent_present_in_all_revisions
 				}
 				OneSidedRemovalPolicy::PreserveAdditiveStructure => {
 					scripted_hook_from_missing_container
@@ -200,7 +216,7 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 				OneSidedRemovalPolicy::PreserveBooleanAlternatives => boolean_alternative,
 			};
 		if preserve
-			&& context.base_parent.is_some_and(|parent| {
+			&& base.parent.is_some_and(|parent| {
 				parent.child_cardinality == foch_merge_kernel::ChildCardinality::Many
 			}) {
 			PolicyDecision::Resolved
@@ -209,18 +225,75 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		}
 	}
 
-	fn resolve_delete_modify(&self, context: DeleteModifyContext<'_>) -> PolicyDecision {
-		if let Some(revision) =
-			self.forced_revision(Some(context.base), Some(context.present), None)
-		{
-			return PolicyDecision::Select(revision);
+	fn select_nway_subtree(&self, context: NWayClassContext<'_>) -> Option<RevisionId> {
+		let base = context.base?;
+		let changed = context
+			.contributors
+			.iter()
+			.filter(|view| view.subtree_changed)
+			.collect::<Vec<_>>();
+		if changed.len() < 2 {
+			return None;
 		}
-		if self.policies.edit_wins_over_remove
-			&& context.content_changed
-			&& !context.reparented
-			&& !context.reordered
+		let selected = changed.last()?.source.revision;
+		if is_negated_boolean_block_kind(&base.node.kind) {
+			return Some(selected);
+		}
+		let key = block_assignment_key(&base.node.kind)?;
+		(self.policies.block == BlockMergePolicy::Replace
+			&& self.policies.divergent_block_policy_for_key(key) == DivergentBlockPolicy::Recurse)
+			.then_some(selected)
+	}
+
+	fn resolve_nway_divergent_node(&self, context: NWayClassContext<'_>) -> PolicyDecision {
+		let changed = context
+			.contributors
+			.iter()
+			.filter(|view| context.base.is_none() || view.shallow_changed)
+			.collect::<Vec<_>>();
+		if !matches!(
+			context.kind,
+			ConflictKind::InsertInsert | ConflictKind::Policy
+		) || context
+			.contributors
+			.iter()
+			.any(|view| !is_scalar_node(view.node))
 		{
-			PolicyDecision::Resolved
+			return PolicyDecision::Unresolved;
+		}
+		let Some(first) = context.contributors.first().map(|view| view.node) else {
+			return PolicyDecision::Unresolved;
+		};
+		if context
+			.contributors
+			.iter()
+			.skip(1)
+			.any(|view| view.node.policy_path != first.policy_path)
+		{
+			return PolicyDecision::Unresolved;
+		}
+		let values = || {
+			context
+				.contributors
+				.iter()
+				.map(|view| view.node.value.as_deref())
+				.collect::<Option<Vec<_>>>()
+		};
+		if let Some(rule) = self
+			.policies
+			.scalar_reducer_rule_for_path(&first.policy_path)
+			&& let Some(values) = values()
+			&& let Some(output) = rule.reducer.reduce_numeric_values(values)
+		{
+			return PolicyDecision::SynthesizeScalar(output);
+		}
+		if let Some(values) = values()
+			&& let Some(output) = self.policies.scalar.reduce_numeric_values(values)
+		{
+			return PolicyDecision::SynthesizeScalar(output);
+		}
+		if changed.len() >= 2 && self.policies.scalar == ScalarMergePolicy::LastWriter {
+			PolicyDecision::Select(changed.last().unwrap().source.revision)
 		} else {
 			PolicyDecision::Unresolved
 		}
@@ -232,68 +305,6 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 				node.value.as_deref(),
 				Some("immediate" | "hidden_effect" | "after")
 			)
-	}
-
-	fn select_subtree_revision(&self, context: ChildSetContext<'_>) -> Option<RevisionId> {
-		if let Some(revision) = self.forced_revision(context.base, context.left, context.right) {
-			return Some(revision);
-		}
-		let (Some(base), Some(left), Some(right)) = (context.base, context.left, context.right)
-		else {
-			return None;
-		};
-		let both_changed =
-			left.subtree_hash != base.subtree_hash && right.subtree_hash != base.subtree_hash;
-		if !both_changed {
-			return None;
-		}
-		if is_negated_boolean_block_kind(&base.kind) {
-			return Some(RevisionId::RIGHT);
-		}
-		let key = block_assignment_key(&base.kind)?;
-		(self.policies.block == BlockMergePolicy::Replace
-			&& self.policies.block_patch_policy_for_key(key) == BlockPatchPolicy::Recurse)
-			.then_some(RevisionId::RIGHT)
-	}
-
-	fn resolve_divergent_node(&self, context: NodeConflictContext<'_>) -> PolicyDecision {
-		if let Some(revision) = self.forced_revision(context.base, context.left, context.right) {
-			return PolicyDecision::Select(revision);
-		}
-		let scalar_conflict = matches!(
-			context.kind,
-			ConflictKind::InsertInsert | ConflictKind::Policy
-		) && context.left.is_some_and(is_scalar_node)
-			&& context.right.is_some_and(is_scalar_node);
-		if !scalar_conflict {
-			return PolicyDecision::Unresolved;
-		}
-		let left = context.left.expect("scalar conflict has left node");
-		let right = context.right.expect("scalar conflict has right node");
-		if left.policy_path == right.policy_path
-			&& let Some(rule) = self
-				.policies
-				.scalar_reducer_rule_for_path(&left.policy_path)
-			&& let (Some(left_value), Some(right_value)) =
-				(left.value.as_deref(), right.value.as_deref())
-			&& let Some(output) = rule.reducer.reduce_numeric_pair(left_value, right_value)
-		{
-			return PolicyDecision::SynthesizeScalar(output);
-		}
-		if let (Some(left_value), Some(right_value)) =
-			(left.value.as_deref(), right.value.as_deref())
-			&& let Some(output) = self
-				.policies
-				.scalar
-				.reduce_numeric_pair(left_value, right_value)
-		{
-			return PolicyDecision::SynthesizeScalar(output);
-		}
-		if self.policies.scalar == ScalarMergePolicy::LastWriter {
-			PolicyDecision::Select(RevisionId::RIGHT)
-		} else {
-			PolicyDecision::Unresolved
-		}
 	}
 }
 
@@ -362,7 +373,7 @@ fn content_family_anchor(
 		MergeKeySource::AssignmentKey
 		| MergeKeySource::ContainerChildKey
 		| MergeKeySource::ContainerChildFieldValue { .. }
-		| MergeKeySource::LeafPath => Some(assignment_key_anchor(key)),
+		| MergeKeySource::LeafPath => None,
 		MergeKeySource::ChildFieldValue {
 			child_key_field,
 			child_types,

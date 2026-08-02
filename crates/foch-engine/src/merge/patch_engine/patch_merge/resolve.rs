@@ -1,5 +1,5 @@
 use foch_language::analyzer::content_family::{
-	BlockPatchPolicy, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
+	DivergentBlockPolicy, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
@@ -99,7 +99,7 @@ pub(super) fn resolve_address(
 	if has_mixed_kinds {
 		let distinct: std::collections::BTreeSet<&str> = kinds.iter().copied().collect();
 		if distinct == std::collections::BTreeSet::from(["RemoveNode", "ReplaceBlock"])
-			&& policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::Recurse
+			&& policies.divergent_block_policy_for_key(&addr.key) == DivergentBlockPolicy::Recurse
 			&& let Some(resolution) =
 				try_recursive_remove_replace_merge(&addr, &attributed, policies, stats)
 		{
@@ -222,7 +222,7 @@ fn resolve_insert_nodes(
 	// BooleanOr policy: when each contributor inserts a block-bodied
 	// statement under the same key, combine their bodies as a single
 	// `OR = { ... }` of disjuncts and emit one synthesized InsertNode.
-	if policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::BooleanOr
+	if policies.divergent_block_policy_for_key(&addr.key) == DivergentBlockPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{
 		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
@@ -234,7 +234,7 @@ fn resolve_insert_nodes(
 		};
 	}
 
-	if policies.block_patch_policy_for_key(&addr.key) == BlockPatchPolicy::Recurse
+	if policies.divergent_block_policy_for_key(&addr.key) == DivergentBlockPolicy::Recurse
 		&& let Some(resolution) = try_recursive_insert_merge(&addr, &attributed, policies, stats)
 	{
 		return resolution;
@@ -668,7 +668,7 @@ fn resolve_remove_block_items(
 	PatchResolution::Resolved(attributed.into_iter().next().unwrap().patch)
 }
 
-/// Multiple mods replacing the same block → if `BlockPatchPolicy::BooleanOr`,
+/// Multiple mods replacing the same block → if `DivergentBlockPolicy::BooleanOr`,
 /// wrap each contributor's body in `OR = { ... }` and emit a synthesized
 /// `ReplaceBlock`. Otherwise try a named-container 3-way merge. Fall back to
 /// a conflict when neither strategy applies.
@@ -694,8 +694,8 @@ fn resolve_replace_blocks(
 		};
 	}
 
-	let block_policy = policies.block_patch_policy_for_key(&addr.key);
-	if block_policy == BlockPatchPolicy::BooleanOr
+	let block_policy = policies.divergent_block_policy_for_key(&addr.key);
+	if block_policy == DivergentBlockPolicy::BooleanOr
 		&& let Some(synth) = synthesize_boolean_or(&addr, &attributed)
 	{
 		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
@@ -707,7 +707,7 @@ fn resolve_replace_blocks(
 		};
 	}
 
-	if block_policy == BlockPatchPolicy::Union
+	if block_policy == DivergentBlockPolicy::Union
 		&& let Some(merged) = try_union_block_merge(&attributed)
 	{
 		let mods: Vec<String> = attributed.iter().map(|a| a.mod_id.clone()).collect();
@@ -719,7 +719,7 @@ fn resolve_replace_blocks(
 		};
 	}
 
-	if block_policy == BlockPatchPolicy::Recurse
+	if block_policy == DivergentBlockPolicy::Recurse
 		&& let Some(resolution) = try_recursive_block_merge(&addr, &attributed, policies, stats)
 	{
 		return resolution;

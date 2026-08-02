@@ -1,7 +1,7 @@
 //! Integration test: a FATAL merge result must not be cached in the modset cache.
 //!
 //! This runs as its own binary (separate `tests/` file) so that env-var writes
-//! to `FOCH_MODSET_CACHE_DIR` and `FOCH_DATA_DIR` are isolated from the parallel
+//! to `FOCH_CACHE_ROOT` and `FOCH_DATA_DIR` are isolated from the parallel
 //! merge e2e test suite.  Any shared-binary approach would contaminate other
 //! tests that write real cache entries into the same dir.
 
@@ -70,7 +70,7 @@ fn fatal_merge_is_not_cached() {
 	// SAFETY: this binary is single-threaded at this point; no rayon/tokio
 	// workers are live yet.
 	unsafe {
-		std::env::set_var("FOCH_MODSET_CACHE_DIR", cache_dir.path());
+		std::env::set_var("FOCH_CACHE_ROOT", cache_dir.path());
 		std::env::set_var("FOCH_DATA_DIR", data_dir.path());
 	}
 
@@ -148,7 +148,7 @@ fn fatal_merge_is_not_cached() {
 
 	// Belt-and-suspenders restore (process exits after the test regardless).
 	unsafe {
-		std::env::remove_var("FOCH_MODSET_CACHE_DIR");
+		std::env::remove_var("FOCH_CACHE_ROOT");
 		std::env::remove_var("FOCH_DATA_DIR");
 	}
 }

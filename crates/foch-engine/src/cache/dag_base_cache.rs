@@ -6,15 +6,15 @@
 //! invalidation per file and upstream dependency set.
 
 use super::generation::{generation_dir, prepare as prepare_generation};
-use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
+use super::mod_parse_cache::CacheError;
+use foch_core::cache::default_foch_cache_dir;
 use foch_language::analyzer::parser::AstStatement;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the cached DAG-base payload or synthesis behavior changes.
-pub const DAG_BASE_CACHE_VERSION: u32 = 12;
-const CACHE_ENV: &str = "FOCH_DAG_BASE_CACHE_DIR";
+pub const DAG_BASE_CACHE_VERSION: &str = "12.0.0";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
 
@@ -29,12 +29,13 @@ pub struct DagBaseCacheStats {
 
 #[derive(Clone, Debug)]
 pub struct DagBaseCache {
+	layer_root: PathBuf,
 	root: PathBuf,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct StoredDagBase {
-	cache_version: u32,
+	cache_version: String,
 	deps_hash: String,
 	file_path: String,
 	foch_version: String,
@@ -63,11 +64,22 @@ impl DagBaseCache {
 			}
 			Ok(_) => {}
 		}
-		Self { root }
+		Self {
+			layer_root: cache_dir.to_path_buf(),
+			root,
+		}
 	}
 
 	pub fn open_default() -> Self {
 		Self::open(&default_dag_base_cache_dir())
+	}
+
+	pub(crate) fn layer_root(&self) -> &Path {
+		&self.layer_root
+	}
+
+	pub(crate) fn entries_root(&self) -> &Path {
+		&self.root
 	}
 
 	pub fn lookup(
@@ -96,7 +108,7 @@ impl DagBaseCache {
 	) -> Result<(), CacheError> {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
 		let payload = StoredDagBase {
-			cache_version: DAG_BASE_CACHE_VERSION,
+			cache_version: DAG_BASE_CACHE_VERSION.to_string(),
 			deps_hash: deps_hash.to_string(),
 			file_path: file_path.to_string(),
 			foch_version: foch_version.to_string(),
@@ -154,9 +166,6 @@ impl DagBaseCache {
 }
 
 pub fn default_dag_base_cache_dir() -> PathBuf {
-	if let Ok(override_dir) = std::env::var(CACHE_ENV) {
-		return PathBuf::from(override_dir);
-	}
 	default_foch_cache_dir().join("dag-base")
 }
 
@@ -173,7 +182,7 @@ pub fn reset_dag_base_cache_stats() {
 }
 
 fn cache_filename(
-	cache_version: u32,
+	cache_version: &str,
 	deps_hash: &str,
 	file_path: &str,
 	foch_version: &str,
@@ -371,13 +380,7 @@ mod tests {
 			"0.1.0",
 			"eu4 1.37",
 		);
-		let bumped = cache_filename(
-			DAG_BASE_CACHE_VERSION + 1,
-			"deps-a",
-			"common/foo.txt",
-			"0.1.0",
-			"eu4 1.37",
-		);
+		let bumped = cache_filename("12.0.1", "deps-a", "common/foo.txt", "0.1.0", "eu4 1.37");
 
 		assert_ne!(current, bumped);
 		assert!(current.contains(&format!("__cv{}__", DAG_BASE_CACHE_VERSION)));
@@ -417,7 +420,7 @@ mod tests {
 
 		let current_generation = layer_root.join(format!("v{DAG_BASE_CACHE_VERSION}"));
 		assert_eq!(cache.root, current_generation);
-		let old_generation = layer_root.join(format!("v{}", DAG_BASE_CACHE_VERSION - 1));
+		let old_generation = layer_root.join("v11.0.0");
 		fs::create_dir_all(&old_generation).expect("create old generation");
 		fs::write(old_generation.join("obsolete.bin"), b"obsolete").expect("seed old generation");
 		let legacy_entry = layer_root.join("legacy.bin");

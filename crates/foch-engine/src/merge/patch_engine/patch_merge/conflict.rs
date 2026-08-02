@@ -10,8 +10,8 @@ use super::{
 	PatchResolution,
 };
 use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
-use crate::merge::conflict_view::build_decision_conflict_view;
 use crate::merge::error::MergeError;
+use crate::merge::patch_engine::conflict_view::build_decision_conflict_view;
 
 /// Cross-kind sibling conflict detected before per-address dispatch.
 ///
@@ -121,21 +121,15 @@ pub(super) fn apply_conflict_decision(
 				reason: conflict.reason,
 			});
 		}
-		ConflictDecision::PickMod { mod_id, record } => {
-			let Some(chosen) = conflict
-				.patches
-				.iter()
-				.find(|patch| patch.mod_id == mod_id)
-				.cloned()
-			else {
-				// Stale pick: the conflict_id matches an earlier resolution
-				// whose target mod is no longer a contributor at this address
-				// (typical after a prior pick reshapes the parent block).
+		ConflictDecision::PickCandidate { candidate, record } => {
+			let Some(chosen) = conflict.patches.get(candidate).cloned() else {
+				// Stale pick: the conflict no longer has the candidate shown to
+				// the handler. Defer so the next pass can re-arbitrate it.
 				// Defer instead of erroring so the user can re-arbitrate on
 				// the next interactive pass; the surviving conflict still
 				// surfaces in the report.
 				eprintln!(
-					"[foch] stale pick for {conflict_path}: mod `{mod_id}` is no longer a contributor; deferring"
+					"[foch] stale pick for {conflict_path}: candidate {candidate} no longer exists; deferring"
 				);
 				result.conflicts.push(PatchResolution::Conflict {
 					address,

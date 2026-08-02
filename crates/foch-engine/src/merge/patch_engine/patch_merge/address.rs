@@ -1,4 +1,4 @@
-use foch_language::analyzer::content_family::{BlockPatchPolicy, MergePolicies};
+use foch_language::analyzer::content_family::{DivergentBlockPolicy, MergePolicies};
 
 use crate::merge::semantic_fingerprint::{statement_fingerprint, value_fingerprint};
 
@@ -23,8 +23,8 @@ pub(super) fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -
 			// BooleanOr also keeps no fingerprint so synthesis can fold
 			// bodies into a single OR block at the same address.
 			let fingerprint_nodes = matches!(
-				policies.block_patch_policy_for_key(key),
-				BlockPatchPolicy::Union
+				policies.divergent_block_policy_for_key(key),
+				DivergentBlockPolicy::Union
 			);
 			let key = if fingerprint_nodes {
 				format!("__node__::{}::{}", key, statement_fingerprint(removed))
@@ -42,8 +42,8 @@ pub(super) fn patch_address(patch: &ClausewitzPatch, policies: &MergePolicies) -
 			statement,
 		} => {
 			let fingerprint_nodes = matches!(
-				policies.block_patch_policy_for_key(key),
-				BlockPatchPolicy::Union
+				policies.divergent_block_policy_for_key(key),
+				DivergentBlockPolicy::Union
 			);
 			let key = if fingerprint_nodes {
 				format!("__node__::{}::{}", key, statement_fingerprint(statement))

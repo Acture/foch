@@ -151,6 +151,10 @@ pub struct ResolutionEntry {
 	pub r#match: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub prefer_mod: Option<String>,
+	/// One-based exact candidate index. Valid only with an exact `conflict_id`
+	/// selector, whose identity binds the complete candidate sequence.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub prefer_candidate: Option<usize>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub use_file: Option<PathBuf>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -207,6 +211,8 @@ impl Eq for ResolutionMap {}
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ResolutionDecision {
 	PreferMod(String),
+	/// Zero-based exact candidate index used internally after config parsing.
+	PreferCandidate(usize),
 	UseFile(PathBuf),
 	KeepExisting,
 	/// Dispatch to a named handler in the merge handler registry.
@@ -479,7 +485,7 @@ impl ResolutionEntry {
 			if self.all_action_count() != 1 {
 				return Err(ConfigError::resolution_entry(
 					index,
-					"priority_boost cannot be combined with prefer_mod, use_file, keep_existing, handler, or policy",
+					"priority_boost cannot be combined with prefer_mod, prefer_candidate, use_file, keep_existing, handler, or policy",
 				));
 			}
 			return Ok(());
@@ -502,10 +508,24 @@ impl ResolutionEntry {
 				"policy action requires file selector or match selector",
 			));
 		}
+		if let Some(candidate) = self.prefer_candidate {
+			if self.conflict_id.is_none() {
+				return Err(ConfigError::resolution_entry(
+					index,
+					"prefer_candidate requires an exact conflict_id selector",
+				));
+			}
+			if candidate == 0 {
+				return Err(ConfigError::resolution_entry(
+					index,
+					"prefer_candidate is one-based and must be at least 1",
+				));
+			}
+		}
 		if self.all_action_count() != 1 {
 			return Err(ConfigError::resolution_entry(
 				index,
-				"exactly one action (prefer_mod, use_file, keep_existing, handler, policy) must be set",
+				"exactly one action (prefer_mod, prefer_candidate, use_file, keep_existing, handler, policy) must be set",
 			));
 		}
 		if self.keep_existing.is_some() && self.file.is_none() {
@@ -526,6 +546,7 @@ impl ResolutionEntry {
 
 	fn standard_action_count(&self) -> usize {
 		option_count(&self.prefer_mod)
+			+ option_count(&self.prefer_candidate)
 			+ option_count(&self.use_file)
 			+ option_count(&self.keep_existing)
 			+ option_count(&self.handler)
@@ -537,7 +558,9 @@ impl ResolutionEntry {
 	}
 
 	fn decision_action(&self) -> Option<ResolutionDecision> {
-		if let Some(prefer_mod) = &self.prefer_mod {
+		if let Some(prefer_candidate) = self.prefer_candidate {
+			Some(ResolutionDecision::PreferCandidate(prefer_candidate - 1))
+		} else if let Some(prefer_mod) = &self.prefer_mod {
 			Some(ResolutionDecision::PreferMod(prefer_mod.clone()))
 		} else if let Some(use_file) = &self.use_file {
 			Some(ResolutionDecision::UseFile(use_file.clone()))
@@ -881,6 +904,10 @@ conflict_id = "ab12cd34"
 prefer_mod = "9876543210"
 
 [[resolutions]]
+conflict_id = "exact-node"
+prefer_candidate = 2
+
+[[resolutions]]
 mod = "1234567890"
 priority_boost = 100
 
@@ -892,7 +919,7 @@ policy = "cwt_suggested"
 		.expect("parse config");
 
 		assert_eq!(config.overrides, vec![DepOverride::new("abc", "def")]);
-		assert_eq!(config.resolutions.len(), 6);
+		assert_eq!(config.resolutions.len(), 7);
 
 		let map = ResolutionMap::from_entries(&config.resolutions).expect("build resolution map");
 		assert_eq!(
@@ -912,6 +939,10 @@ policy = "cwt_suggested"
 		assert_eq!(
 			map.by_conflict_id.get("ab12cd34"),
 			Some(&ResolutionDecision::PreferMod("9876543210".to_owned()))
+		);
+		assert_eq!(
+			map.by_conflict_id.get("exact-node"),
+			Some(&ResolutionDecision::PreferCandidate(1))
 		);
 		assert_eq!(map.mod_priority_boost.get("1234567890"), Some(&100));
 		assert_eq!(
@@ -1053,6 +1084,24 @@ prefer_mod = "123"
 use_file = "manual/PirateEvents.txt"
 "#,
 				"exactly one action",
+			),
+			(
+				"candidate selection without exact conflict",
+				r#"
+[[resolutions]]
+file = "events/PirateEvents.txt"
+prefer_candidate = 1
+"#,
+				"prefer_candidate requires an exact conflict_id",
+			),
+			(
+				"zero candidate selection",
+				r#"
+[[resolutions]]
+conflict_id = "ab12cd34"
+prefer_candidate = 0
+"#,
+				"prefer_candidate is one-based",
 			),
 			(
 				"mod without priority boost",

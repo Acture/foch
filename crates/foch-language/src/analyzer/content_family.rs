@@ -265,7 +265,7 @@ impl ScalarReducerRule {
 	}
 }
 
-/// Bundle of policies that control how `deep_merge` resolves conflicts.
+/// Domain policies used by every structural merge implementation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MergePolicies {
 	pub merge_key_source: MergeKeySource,
@@ -278,16 +278,14 @@ pub struct MergePolicies {
 	pub one_sided_removal: OneSidedRemovalPolicy,
 	pub block: BlockMergePolicy,
 	pub boolean: BooleanMergePolicy,
-	pub block_patch: BlockPatchPolicy,
+	pub divergent_block: DivergentBlockPolicy,
 	#[serde(skip)]
-	pub block_patch_policies: &'static [(&'static str, BlockPatchPolicy)],
+	pub divergent_block_rules: &'static [(&'static str, DivergentBlockPolicy)],
 	pub named_container: NamedContainerPolicy,
-	/// When one mod edits a property (SetValue/ReplaceBlock) and a sibling mod
-	/// removes that same property, keep the edit and drop the remove instead of
-	/// reporting a mixed-kinds conflict. Opt-in per family (GUI/asset families),
-	/// where a "remove" is typically a trimmed widget copy not re-shipping a
-	/// field rather than an intentional delete. Off by default so game-logic
-	/// families (e.g. history) keep edit-vs-remove as an honest conflict.
+	/// When one mod edits a property and a sibling mod removes it, keep the edit
+	/// instead of reporting a conflict. This is opt-in for GUI/asset families,
+	/// where an omitted field commonly means that a trimmed widget copy did not
+	/// re-ship the field. Game-logic families keep edit-vs-remove as a conflict.
 	#[serde(default)]
 	pub edit_wins_over_remove: bool,
 }
@@ -309,27 +307,23 @@ impl MergePolicies {
 		best
 	}
 
-	pub fn block_patch_policy_for_key(&self, key: &str) -> BlockPatchPolicy {
-		self.block_patch_policies
+	pub fn divergent_block_policy_for_key(&self, key: &str) -> DivergentBlockPolicy {
+		self.divergent_block_rules
 			.iter()
 			.find_map(|(policy_key, policy)| (*policy_key == key).then_some(*policy))
-			.unwrap_or(self.block_patch)
+			.unwrap_or(self.divergent_block)
 	}
 }
 
-/// How patch-level block conflicts are resolved by the patch merge engine
-/// (the successor to deep_merge / ir.rs). When two or more mods both modify
-/// the same block-valued node, this policy decides whether the bodies are
-/// recursively merged (default), wrapped in `OR = { ... }` blocks for
-/// boolean-OR trigger semantics, unioned as list-like contents, or left as
-/// explicit manual conflicts.
+/// How divergent block-valued nodes are combined.
+///
+/// This policy belongs to the content family. Merge kernels may implement it
+/// with tree synthesis or another structural representation, but the behavior
+/// must not depend on that representation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BlockPatchPolicy {
-	/// Highest-precedence mod's replacement wins; others are reported as
-	/// conflicts in the existing patch merge flow. Explicit per family —
-	/// rarely useful now that `Recurse` is the baseline and the leaf-level
-	/// merge engine itself enforces sibling conflicts.
+pub enum DivergentBlockPolicy {
+	/// Select the highest-precedence complete block.
 	LastWriter,
 	/// Combine each mod's body inside an `OR = { ... }` wrapper so the
 	/// resulting trigger fires if any contributor's predicate holds.
@@ -337,15 +331,9 @@ pub enum BlockPatchPolicy {
 	/// Union the base block's list-like items with every replacement body,
 	/// de-duplicating by content fingerprint while preserving first-seen order.
 	Union,
-	/// Recursively deep-merge multiple mods' replacements of the same block.
-	/// This is the **default baseline** for any family/key without an explicit
-	/// override. When N mods all emit `ReplaceBlock` against a common base
-	/// block, the patch engine re-runs its diff/merge pipeline on the bodies
-	/// and synthesizes a single merged `ReplaceBlock`; sub-conflicts surface
-	/// as real conflicts via the leaf resolvers (`ScalarMergePolicy::Conflict`,
-	/// `NamedContainerPolicy::Conflict`, etc.). Cross-level explicit-dependency
-	/// override semantics are handled separately by the `patch_deps.rs`
-	/// post-pass — `Recurse` only governs same-level sibling dispatch.
+	/// Recursively merge the contributors' block bodies. This is the default
+	/// for a family/key without an explicit override; unresolved descendants
+	/// remain explicit conflicts.
 	#[default]
 	Recurse,
 }
@@ -823,16 +811,16 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 
-	pub fn block_patch_policy(mut self, policy: BlockPatchPolicy) -> Self {
-		self.merge_policies.block_patch = policy;
+	pub fn divergent_block_policy(mut self, policy: DivergentBlockPolicy) -> Self {
+		self.merge_policies.divergent_block = policy;
 		self
 	}
 
-	pub fn block_patch_policies(
+	pub fn divergent_block_rules(
 		mut self,
-		policies: &'static [(&'static str, BlockPatchPolicy)],
+		policies: &'static [(&'static str, DivergentBlockPolicy)],
 	) -> Self {
-		self.merge_policies.block_patch_policies = policies;
+		self.merge_policies.divergent_block_rules = policies;
 		self
 	}
 
@@ -882,8 +870,8 @@ impl ContentFamilyDescriptor {
 				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::Or,
-				block_patch: BlockPatchPolicy::Recurse,
-				block_patch_policies: &[],
+				divergent_block: DivergentBlockPolicy::Recurse,
+				divergent_block_rules: &[],
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
 			},
@@ -919,8 +907,8 @@ impl ContentFamilyDescriptor {
 				one_sided_removal: OneSidedRemovalPolicy::Remove,
 				block: BlockMergePolicy::Recursive,
 				boolean: BooleanMergePolicy::Or,
-				block_patch: BlockPatchPolicy::Recurse,
-				block_patch_policies: &[],
+				divergent_block: DivergentBlockPolicy::Recurse,
+				divergent_block_rules: &[],
 				named_container: NamedContainerPolicy::Conflict,
 				edit_wins_over_remove: false,
 			},

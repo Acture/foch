@@ -1,5 +1,7 @@
 use super::localisation::parse_localisation_file;
-use super::semantic_index::{ParsedScriptFile, build_semantic_index, parse_script_file};
+use super::semantic_index::{
+	ParsedScriptFile, build_semantic_index, parse_script_file, parse_script_file_without_cache,
+};
 use foch_core::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
 	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
@@ -126,9 +128,26 @@ pub fn parse_discovered_text_documents(
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
 ) -> ParsedDocumentBatch {
+	parse_discovered_text_documents_with(mod_id, root, documents, parse_script_file)
+}
+
+pub fn parse_discovered_text_documents_without_cache(
+	mod_id: &str,
+	root: &Path,
+	documents: &[DiscoveredTextDocument],
+) -> ParsedDocumentBatch {
+	parse_discovered_text_documents_with(mod_id, root, documents, parse_script_file_without_cache)
+}
+
+fn parse_discovered_text_documents_with(
+	mod_id: &str,
+	root: &Path,
+	documents: &[DiscoveredTextDocument],
+	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptFile>,
+) -> ParsedDocumentBatch {
 	let parsed: Vec<Option<ParsedTextDocument>> = documents
 		.par_iter()
-		.map(|doc| parse_text_document(mod_id, root, doc))
+		.map(|doc| parse_text_document_with(mod_id, root, doc, parse_script))
 		.collect();
 
 	let mut batch = ParsedDocumentBatch::default();
@@ -266,14 +285,15 @@ pub(crate) fn classify_document_family(relative_path: &Path) -> Option<DocumentF
 	}
 }
 
-pub(crate) fn parse_text_document(
+fn parse_text_document_with(
 	mod_id: &str,
 	root: &Path,
 	doc: &DiscoveredTextDocument,
+	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptFile>,
 ) -> Option<ParsedTextDocument> {
 	match doc.family {
 		DocumentFamily::Clausewitz => {
-			parse_script_file(mod_id, root, &doc.absolute_path).map(ParsedTextDocument::Clausewitz)
+			parse_script(mod_id, root, &doc.absolute_path).map(ParsedTextDocument::Clausewitz)
 		}
 		DocumentFamily::Localisation => Some(ParsedTextDocument::Localisation(
 			parse_localisation_document(mod_id, &doc.absolute_path, &doc.relative_path),

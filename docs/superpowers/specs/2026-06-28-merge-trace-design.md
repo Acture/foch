@@ -40,7 +40,7 @@ MergeTraceDecision: adopted | overridden | unioned | conflict
 
 At `patch_structural.rs`, after DAG patch computation and before provenance comments are injected, build a per-file trace from `definition_provenance`, the structural contributors, and `ContentFamilyDescriptor`. Return it in `PatchBasedMergeOutput`. `materialize.rs` accumulates the per-file trace into `MergeReport.merge_trace` only when `--provenance` is on and the file is actually materialized as generated output, mirroring the existing provenance accumulation.
 
-`execute.rs` writes `.foch/foch-merge-trace.json` beside `.foch/foch-provenance.json` when the embedded map is non-empty, and removes stale trace sidecars when the flag is off. Bump `MODSET_CACHE_FORMAT_VERSION` so cached provenance runs cannot hide the new artifact.
+`execute.rs` writes `.foch/foch-merge-trace.json` beside `.foch/foch-provenance.json` when the embedded map is non-empty, and removes stale trace sidecars when the flag is off. Advance `MODSET_CACHE_VERSION` so cached provenance runs cannot hide the new artifact.
 
 ## Graph surfacing
 

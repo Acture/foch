@@ -11,13 +11,29 @@ use crate::error::CwtLoadError;
 use crate::pack::{SchemaPack, SchemaPackId, SchemaSource, schema_pack_id_from_dir};
 use crate::schema::{
 	AliasCategory, CwtAlias, CwtComplexEnum, CwtFieldAttributes, CwtLink, CwtRuleCondition,
-	CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtTypeDef,
-	CwtTypeKeyFilter,
+	CwtRuleField, CwtRuleValue, CwtSchemaGraph, CwtScope, CwtSeverity, CwtSubtype, CwtType,
+	CwtTypeDef, CwtTypeKeyFilter,
 };
-use crate::{CwtNodeId, CwtType, SchemaBinding};
 
 pub const PACK_FORMAT_VERSION: &str = "0.11.0";
 const DEFAULT_COMPILED_RULE_CACHE_DIR_NAME: &str = "cwt-rules";
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct CwtNodeId(pub String);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SchemaBinding {
+	Bound {
+		type_id: CwtType,
+		node_id: CwtNodeId,
+	},
+	Dynamic {
+		reason: &'static str,
+	},
+	Unbound {
+		reason: String,
+	},
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuleEngineLoadStatus {
@@ -55,7 +71,10 @@ pub fn load_rule_engine_from_dir(
 	let source_id = schema_pack_id_from_dir(root)?;
 	let source_hash = hash_started.elapsed();
 	let source_id_hex = source_id.to_hex();
-	let cache_path = cache_dir.map(|dir| compiled_rule_cache_path(dir, &source_id_hex));
+	let cache_path = cache_dir.map(|dir| {
+		let generation = prepare_compiled_rule_cache_generation(dir);
+		compiled_rule_cache_path(&generation, &source_id_hex)
+	});
 	let mut cache_read = None;
 	if let Some(path) = cache_path.as_ref() {
 		let cache_started = Instant::now();
@@ -98,9 +117,29 @@ pub fn load_rule_engine_from_dir(
 	})
 }
 
-fn compiled_rule_cache_path(cache_dir: &Path, source_id: &str) -> PathBuf {
-	let format = PACK_FORMAT_VERSION.replace('.', "_");
-	cache_dir.join(format!("rules-fmt-{format}-src-{source_id}.bin"))
+fn prepare_compiled_rule_cache_generation(cache_dir: &Path) -> PathBuf {
+	let namespace = foch_core::cache::cache_version_namespace(PACK_FORMAT_VERSION)
+		.expect("compiled CWT pack version is valid SemVer");
+	let generation = cache_dir.join(&namespace);
+	let _ = fs::create_dir_all(&generation);
+	if let Ok(entries) = fs::read_dir(cache_dir) {
+		for entry in entries.flatten() {
+			if entry.file_name() == namespace.as_str() {
+				continue;
+			}
+			let path = entry.path();
+			if path.is_dir() {
+				let _ = fs::remove_dir_all(path);
+			} else {
+				let _ = fs::remove_file(path);
+			}
+		}
+	}
+	generation
+}
+
+fn compiled_rule_cache_path(generation_dir: &Path, source_id: &str) -> PathBuf {
+	generation_dir.join(format!("rules-src-{source_id}.bin"))
 }
 
 fn read_cached_compiled_pack(path: &Path, source_id: &str) -> Option<CompiledRulePack> {
@@ -592,6 +631,21 @@ impl RuleEngine {
 		self.pack.aliases.as_slice()
 	}
 
+	pub fn root(&self, name: &str) -> Option<&CompiledRoot> {
+		self.index
+			.roots
+			.get(name)
+			.map(|index| &self.pack.roots[*index])
+	}
+
+	pub fn alias(&self, category: CompiledAliasCategory, name: &str) -> Option<&CompiledAlias> {
+		self.index
+			.aliases
+			.get(&category)
+			.and_then(|aliases| aliases.get(name))
+			.map(|index| &self.pack.aliases[*index])
+	}
+
 	pub fn enum_values(&self, name: &str) -> Option<&[String]> {
 		self.index
 			.enums
@@ -665,10 +719,7 @@ impl RuleEngine {
 		let SchemaBinding::Bound { type_id, .. } = self.root_binding(file_path) else {
 			return None;
 		};
-		self.pack
-			.roots
-			.iter()
-			.find(|root| root.name == type_id.as_str())
+		self.root(type_id.as_str())
 	}
 
 	pub fn root_binding(&self, file_path: &Path) -> SchemaBinding {
@@ -1159,7 +1210,12 @@ impl RuleEngine {
 				continue;
 			}
 			let category = CompiledAliasCategory::from_name(payload);
-			let Some(alias_index) = self.index.aliases.get(&(category, key.to_string())) else {
+			let Some(alias_index) = self
+				.index
+				.aliases
+				.get(&category)
+				.and_then(|aliases| aliases.get(key))
+			else {
 				continue;
 			};
 			matches.push(CompiledBindFieldMatch::Alias {
@@ -1264,7 +1320,8 @@ impl<'p> CompiledBindFieldMatch<'p> {
 }
 
 struct RuntimeRuleIndex {
-	aliases: HashMap<(CompiledAliasCategory, String), usize>,
+	roots: HashMap<String, usize>,
+	aliases: HashMap<CompiledAliasCategory, HashMap<String, usize>>,
 	enums: HashMap<String, usize>,
 	value_sets: HashMap<String, usize>,
 	complex_enums: HashMap<String, usize>,
@@ -1274,12 +1331,19 @@ struct RuntimeRuleIndex {
 
 impl RuntimeRuleIndex {
 	fn new(pack: &CompiledRulePack) -> Self {
-		let aliases = pack
-			.aliases
+		let roots = pack
+			.roots
 			.iter()
 			.enumerate()
-			.map(|(index, alias)| ((alias.category.clone(), alias.name.clone()), index))
+			.map(|(index, root)| (root.name.clone(), index))
 			.collect();
+		let mut aliases = HashMap::<CompiledAliasCategory, HashMap<String, usize>>::new();
+		for (index, alias) in pack.aliases.iter().enumerate() {
+			aliases
+				.entry(alias.category.clone())
+				.or_default()
+				.insert(alias.name.clone(), index);
+		}
 		let enums = pack
 			.enums
 			.iter()
@@ -1312,6 +1376,7 @@ impl RuntimeRuleIndex {
 			}
 		}
 		Self {
+			roots,
 			aliases,
 			enums,
 			value_sets,

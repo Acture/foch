@@ -1,4 +1,5 @@
 use crate::workspace::FileFilter;
+use foch_core::cache::default_foch_cache_dir;
 #[cfg(test)]
 use foch_core::domain::game::Game;
 use foch_core::model::{
@@ -17,9 +18,8 @@ use walkdir::WalkDir;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_PARSE_CACHE_VERSION: u32 = 3;
+pub const MOD_PARSE_CACHE_VERSION: &str = "3.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
-const CACHE_ENV: &str = "FOCH_MOD_PARSE_CACHE_DIR";
 const HASH_HEX_LEN: usize = 16;
 
 #[derive(Clone, Debug)]
@@ -44,7 +44,7 @@ pub enum CacheError {
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 struct StoredCachedModData {
-	cache_version: u32,
+	cache_version: String,
 	mod_hash: String,
 	foch_version: String,
 	game_version: String,
@@ -244,6 +244,10 @@ impl ModParseCache {
 		Self::open(&default_mod_parse_cache_dir())
 	}
 
+	pub(crate) fn root(&self) -> &Path {
+		&self.root
+	}
+
 	pub fn lookup(
 		&self,
 		mod_hash: &str,
@@ -276,7 +280,7 @@ impl ModParseCache {
 
 	fn lookup_with_cache_version(
 		&self,
-		cache_version: u32,
+		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
 		game_version: &str,
@@ -296,7 +300,7 @@ impl ModParseCache {
 
 	fn store_with_cache_version(
 		&self,
-		cache_version: u32,
+		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
 		game_version: &str,
@@ -323,7 +327,7 @@ impl ModParseCache {
 
 	fn cache_file(
 		&self,
-		cache_version: u32,
+		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
 		game_version: &str,
@@ -347,7 +351,7 @@ fn prune_obsolete_cache_generations(cache_dir: &Path) {
 		let Some(version) = name
 			.split_once("__cv")
 			.and_then(|(_, suffix)| suffix.split_once("__"))
-			.and_then(|(version, _)| version.parse::<u32>().ok())
+			.map(|(version, _)| version)
 		else {
 			continue;
 		};
@@ -389,14 +393,14 @@ impl From<io::Error> for CacheError {
 
 impl StoredCachedModData {
 	fn from_cached_mod_data(
-		cache_version: u32,
+		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
 		game_version: &str,
 		data: &CachedModData,
 	) -> Result<Self, CacheError> {
 		Ok(Self {
-			cache_version,
+			cache_version: cache_version.to_string(),
 			mod_hash: mod_hash.to_string(),
 			foch_version: foch_version.to_string(),
 			game_version: game_version.to_string(),
@@ -938,14 +942,7 @@ fn path_to_string(path: &Path) -> String {
 }
 
 pub fn default_mod_parse_cache_dir() -> PathBuf {
-	if let Ok(override_dir) = std::env::var(CACHE_ENV) {
-		return PathBuf::from(override_dir);
-	}
 	default_foch_cache_dir().join(DEFAULT_CACHE_DIR_NAME)
-}
-
-pub fn default_foch_cache_dir() -> PathBuf {
-	foch_core::cache::default_foch_cache_dir()
 }
 
 #[cfg(test)]
@@ -1021,7 +1018,7 @@ fn decode_payload(bytes: &[u8]) -> Result<StoredCachedModData, CacheError> {
 }
 
 fn cache_filename(
-	cache_version: u32,
+	cache_version: &str,
 	mod_hash: &str,
 	foch_version: &str,
 	game_version: &str,
@@ -1168,12 +1165,9 @@ mod tests {
 	#[test]
 	fn open_prunes_obsolete_cache_generations() {
 		let tmp = TempDir::new().expect("temp dir");
-		let obsolete = tmp.path().join(cache_filename(
-			MOD_PARSE_CACHE_VERSION - 1,
-			"old",
-			"0.1.0",
-			"eu4 1.37.4",
-		));
+		let obsolete = tmp
+			.path()
+			.join(cache_filename("2.0.0", "old", "0.1.0", "eu4 1.37.4"));
 		let current = tmp.path().join(cache_filename(
 			MOD_PARSE_CACHE_VERSION,
 			"current",
@@ -1206,12 +1200,7 @@ mod tests {
 
 		assert!(
 			cache
-				.lookup_with_cache_version(
-					MOD_PARSE_CACHE_VERSION + 1,
-					"abc123",
-					"0.1.0",
-					"eu4 1.37.4",
-				)
+				.lookup_with_cache_version("3.0.1", "abc123", "0.1.0", "eu4 1.37.4",)
 				.is_none()
 		);
 	}

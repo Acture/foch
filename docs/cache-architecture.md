@@ -1,32 +1,47 @@
 # Cache architecture
 
-`foch` keeps user-visible caches under one root, resolved by `FOCH_CACHE_ROOT`, then the legacy `FOCH_CACHE_DIR`, then `dirs::cache_dir()/foch` with a repository-local fallback when the system cache directory is unavailable.
+`foch` keeps every user-visible cache under one root. `FOCH_CACHE_ROOT` is the
+only override. Without it, foch uses `dirs::cache_dir()/foch`; if that location
+is unavailable or unwritable, it falls back to `target/foch-cache` in the
+workspace.
 
 Current layers:
 
-- `mods/` — engine mod snapshot cache.
-- `diffs/` — engine per-mod diff cache.
-- `dag-base/` — engine dependency-DAG base cache.
-- `modsets/v<cache-semver>/` - engine full playset result cache.
-- `cwt-rules/` — compiled CWT rule-pack cache for schema-aware LSP features.
-- `parse/v7/` — legacy parser-file cache.
+| Layer | Format generation | Address |
+|---|---:|---|
+| `mods/` | `3.0.0` | Mod content hash plus foch and game versions |
+| `diffs/v6.0.0/` | `6.0.0` | Target, mod, vanilla, foch, and game hashes |
+| `dag-base/v12.0.0/` | `12.0.0` | Dependency set, file, foch, and game hashes |
+| `modsets/v14.0.0/` | `14.0.0` | Ordered mods, resolutions, foch, and game hashes |
+| `cwt-rules/v0.11.0/` | `0.11.0` | CWT source-pack hash |
+| `parse/v10.0.0/` | `10.0.0` | Parser mode plus source bytes |
 
-Layer-specific overrides (`FOCH_MOD_PARSE_CACHE_DIR`, `FOCH_MOD_DIFF_CACHE_DIR`, `FOCH_DAG_BASE_CACHE_DIR`, `FOCH_MODSET_CACHE_DIR`, `FOCH_PARSE_CACHE_DIR`) remain supported for tests and advanced workflows. The legacy parser cache also checks the previous `parse_cache/v7/` location on a miss and lazily moves valid entries into `parse/v7/`.
+Cache format generations are SemVer strings. Opening a layer creates its active
+generation and deletes every obsolete recognized generation, including old
+integer namespaces such as `v9`. Obsolete payloads are never decoded or
+migrated. The mod snapshot cache keeps its generation in each flat filename and
+deletes files whose embedded generation is not current.
 
-## Lifecycle seam, not a shared key/value cache
+The parser cache is content-addressed and stores bincode payloads. It reads a
+source file once on a miss, hashes the parser mode and raw bytes, and reuses the
+same parse result across paths. A cache hit rebases the stored AST path to the
+requested file. Lua and Clausewitz inputs cannot share an entry.
 
-The cache layers do not currently share enough key/value shape for a useful generic trait. `mods` keys include mod content hash plus foch/game versions and store a large semantic snapshot; `diffs` and `dag-base` have multi-part keys and store patch or AST statement vectors; `modsets` stores a tarball plus report keyed by a precomputed playset hash; `parse` keys are source-file paths and file signatures with byte-cap GC. A trait with associated `Key` and `Value` types would not let the CLI iterate heterogeneous layers as `Box<dyn Cache>` without adding an erased wrapper, and forcing store/lookup signatures into one shape would hide important validation inputs.
+## Lifecycle seam
 
-Instead, `foch-engine::cache::CacheLayerOps` is deliberately lifecycle-only: it lists on-disk entries and controls age purge, byte-cap eviction, total size, and clear operations without abstracting lookup or store semantics. The CLI iterates this seam across all layers, so every layer receives the same lifecycle control plane and byte-cap policy while each cache keeps its existing key format, value format, and validation rules.
+The layers do not share a useful key/value interface. Their validation inputs
+and payloads are intentionally different: mod snapshots contain semantic
+indexes, diffs contain patches, DAG bases contain AST statements, modsets contain
+an archive plus report, and CWT/parser caches contain compiled or parsed forms.
 
-The modset output cache has a separate semantic version because it stores final
-merge artifacts rather than parser data. Opening a versioned modset cache first
-creates the active namespace, then removes legacy flat entries and every other
-version namespace before lookup. Reopening the same version preserves its
-entries. The version remains part of the content-addressed key as a second
-correctness guard; the namespace provides automatic storage reclamation when
-merge-output semantics change.
+`foch-engine::cache::CacheLayerOps` therefore exposes only filesystem lifecycle
+operations: path, entry listing, total size, age purge, byte-cap eviction, and
+clear. Each implementation operates on its own configured path; it never falls
+back to a process-global default. The CLI uses this seam for `foch cache` and
+automatic garbage collection.
 
-The parser cache payloads still live in `foch-language`, including the `parse/v7` on-disk format and legacy `parse_cache/v7` migration path, but parser-cache lifecycle is now owned from the engine seam. `foch-language` exposes only the minimal filesystem lifecycle functions needed by the engine wrapper.
-
-Automatic post-command GC runs after successful `check`, `merge`, and `data build` commands and byte-caps every cache layer independently. The default cap is 1 GiB per layer and can be changed with `FOCH_CACHE_MAX_BYTES`; a freshly-produced artifact larger than the cap, such as a very large modset tarball, may be evicted immediately after the run unless the cap is raised.
+Automatic GC runs after successful `check`, `merge`, and `data build` commands.
+It applies a byte cap independently to every layer, retaining the newest entries
+that fit. The default is 1 GiB per layer and `FOCH_CACHE_MAX_BYTES` overrides it.
+A newly produced artifact larger than the cap can therefore be evicted at the
+end of the command.

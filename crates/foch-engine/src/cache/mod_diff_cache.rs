@@ -6,15 +6,15 @@
 //! per-mod index and to keep failed writes isolated.
 
 use super::generation::{generation_dir, prepare as prepare_generation};
-use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
+use super::mod_parse_cache::CacheError;
 use crate::merge::patch::ClausewitzPatch;
+use foch_core::cache::default_foch_cache_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Bump when the cached patch payload or diff behavior becomes incompatible.
-pub const MOD_DIFF_CACHE_VERSION: u32 = 6;
-const CACHE_ENV: &str = "FOCH_MOD_DIFF_CACHE_DIR";
+pub const MOD_DIFF_CACHE_VERSION: &str = "6.0.0";
 const HASH_HEX_LEN: usize = 16;
 const COMPACT_HASH_LEN: usize = 12;
 
@@ -29,12 +29,13 @@ pub struct ModDiffCacheStats {
 
 #[derive(Clone, Debug)]
 pub struct ModDiffCache {
+	layer_root: PathBuf,
 	root: PathBuf,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct StoredModDiff {
-	cache_version: u32,
+	cache_version: String,
 	target_path: String,
 	mod_hash: String,
 	vanilla_hash: String,
@@ -64,11 +65,22 @@ impl ModDiffCache {
 			}
 			Ok(_) => {}
 		}
-		Self { root }
+		Self {
+			layer_root: cache_dir.to_path_buf(),
+			root,
+		}
 	}
 
 	pub fn open_default() -> Self {
 		Self::open(&default_mod_diff_cache_dir())
+	}
+
+	pub(crate) fn layer_root(&self) -> &Path {
+		&self.layer_root
+	}
+
+	pub(crate) fn entries_root(&self) -> &Path {
+		&self.root
 	}
 
 	pub fn lookup(
@@ -105,7 +117,7 @@ impl ModDiffCache {
 	) -> Result<(), CacheError> {
 		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
 		let payload = StoredModDiff {
-			cache_version: MOD_DIFF_CACHE_VERSION,
+			cache_version: MOD_DIFF_CACHE_VERSION.to_string(),
 			target_path: target_path.to_string(),
 			mod_hash: mod_hash.to_string(),
 			vanilla_hash: vanilla_hash.to_string(),
@@ -180,9 +192,6 @@ impl ModDiffCache {
 }
 
 pub fn default_mod_diff_cache_dir() -> PathBuf {
-	if let Ok(override_dir) = std::env::var(CACHE_ENV) {
-		return PathBuf::from(override_dir);
-	}
 	default_foch_cache_dir().join("diffs")
 }
 
@@ -199,7 +208,7 @@ pub fn reset_mod_diff_cache_stats() {
 }
 
 fn cache_filename(
-	cache_version: u32,
+	cache_version: &str,
 	target_path: &str,
 	mod_hash: &str,
 	vanilla_hash: &str,
@@ -465,7 +474,7 @@ mod tests {
 			"eu4 1.37",
 		);
 		let bumped = cache_filename(
-			MOD_DIFF_CACHE_VERSION + 1,
+			"6.0.1",
 			"common/foo.txt",
 			"mod-a",
 			"vanilla-a",
@@ -522,7 +531,7 @@ mod tests {
 
 		let current_generation = layer_root.join(format!("v{MOD_DIFF_CACHE_VERSION}"));
 		assert_eq!(cache.root, current_generation);
-		let old_generation = layer_root.join(format!("v{}", MOD_DIFF_CACHE_VERSION - 1));
+		let old_generation = layer_root.join("v5.0.0");
 		fs::create_dir_all(&old_generation).expect("create old generation");
 		fs::write(old_generation.join("obsolete.bin"), b"obsolete").expect("seed old generation");
 		let legacy_entry = layer_root.join("legacy.bin");

@@ -80,19 +80,22 @@ pub(crate) fn detach_trivia(file: &AstFile) -> (AstFile, Trivia) {
 /// their maximum active multiplicity. A base comment deleted by both active
 /// revisions is therefore absent from the result.
 pub(crate) fn merge_trivia(base: &Trivia, left: &Trivia, right: &Trivia) -> Trivia {
-	let left_counts = trivia_counts(left);
-	let right_counts = trivia_counts(right);
-	let mut active_counts = left_counts;
-	for (identity, count) in right_counts {
-		active_counts
-			.entry(identity)
-			.and_modify(|active| *active = (*active).max(count))
-			.or_insert(count);
-	}
+	merge_trivia_n_way(base, &[left, right])
+}
 
+pub(crate) fn merge_trivia_n_way(base: &Trivia, revisions: &[&Trivia]) -> Trivia {
+	let mut active_counts = BTreeMap::<TriviaIdentity, usize>::new();
+	for revision in revisions {
+		for (identity, count) in trivia_counts(revision) {
+			active_counts
+				.entry(identity)
+				.and_modify(|active| *active = (*active).max(count))
+				.or_insert(count);
+		}
+	}
 	let mut emitted_counts = BTreeMap::<TriviaIdentity, usize>::new();
 	let mut entries = Vec::new();
-	for source in [base, left, right] {
+	for source in std::iter::once(base).chain(revisions.iter().copied()) {
 		for entry in &source.entries {
 			let identity = trivia_identity(entry);
 			let target = active_counts.get(&identity).copied().unwrap_or_default();

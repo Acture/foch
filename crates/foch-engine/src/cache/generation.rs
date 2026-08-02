@@ -1,15 +1,16 @@
-use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub(super) fn generation_dir(cache_dir: &Path, cache_version: u32) -> PathBuf {
-	cache_dir.join(format!("v{cache_version}"))
+pub(super) fn generation_dir(cache_dir: &Path, cache_version: &str) -> PathBuf {
+	let namespace = foch_core::cache::cache_version_namespace(cache_version)
+		.expect("cache format version is valid SemVer");
+	cache_dir.join(namespace)
 }
 
-pub(super) fn prepare(cache_dir: &Path, cache_version: u32) -> io::Result<usize> {
+pub(super) fn prepare(cache_dir: &Path, cache_version: &str) -> io::Result<usize> {
 	fs::create_dir_all(cache_dir)?;
-	let active_namespace = format!("v{cache_version}");
+	let active_namespace = foch_core::cache::cache_version_namespace(cache_version)?;
 	fs::create_dir_all(cache_dir.join(&active_namespace))?;
 
 	let mut removed_items = 0;
@@ -22,7 +23,7 @@ pub(super) fn prepare(cache_dir: &Path, cache_version: u32) -> io::Result<usize>
 
 		let file_type = entry.file_type()?;
 		if file_type.is_dir() {
-			if !is_generation(&name) {
+			if !foch_core::cache::is_cache_version_namespace(&name.to_string_lossy()) {
 				continue;
 			}
 			fs::remove_dir_all(entry.path())?;
@@ -32,12 +33,4 @@ pub(super) fn prepare(cache_dir: &Path, cache_version: u32) -> io::Result<usize>
 		removed_items += 1;
 	}
 	Ok(removed_items)
-}
-
-fn is_generation(name: &OsStr) -> bool {
-	name.to_str()
-		.and_then(|name| name.strip_prefix('v'))
-		.is_some_and(|version| {
-			!version.is_empty() && version.bytes().all(|byte| byte.is_ascii_digit())
-		})
 }

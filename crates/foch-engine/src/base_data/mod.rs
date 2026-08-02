@@ -52,8 +52,7 @@ pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
 pub const INSTALLED_COVERAGE_FILE_NAME: &str = "coverage.json";
 pub const INSTALLED_VOCABULARY_MANIFEST_FILE_NAME: &str = "vocabulary-manifest.json";
-const LEGACY_INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin.gz";
-const SNAPSHOT_WIRE_FORMAT_VERSION: u32 = 1;
+const SNAPSHOT_WIRE_FORMAT_VERSION: &str = "1.0.0";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -514,60 +513,6 @@ pub struct BaseAnalysisSnapshot {
 	pub resource_references: Vec<BaseResourceReference>,
 	pub csv_rows: Vec<BaseCsvRow>,
 	pub json_properties: Vec<BaseJsonProperty>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct LegacyBaseAnalysisSnapshot {
-	schema_version: u32,
-	game: String,
-	game_version: String,
-	generated_by_cli_version: String,
-	inventory_paths: Vec<String>,
-	documents: Vec<BaseDocumentRecord>,
-	parse_error_count: usize,
-	parsed_files: usize,
-	scopes: Vec<BaseScopeNode>,
-	symbol_definitions: Vec<BaseSymbolDefinition>,
-	symbol_references: Vec<BaseSymbolReference>,
-	alias_usages: Vec<BaseAliasUsage>,
-	key_usages: Vec<BaseKeyUsage>,
-	scalar_assignments: Vec<BaseScalarAssignment>,
-	localisation_definitions: Vec<BaseLocalisationDefinition>,
-	localisation_duplicates: Vec<BaseLocalisationDuplicate>,
-	ui_definitions: Vec<BaseUiDefinition>,
-	resource_references: Vec<BaseResourceReference>,
-	csv_rows: Vec<BaseCsvRow>,
-	json_properties: Vec<BaseJsonProperty>,
-}
-
-impl From<LegacyBaseAnalysisSnapshot> for BaseAnalysisSnapshot {
-	fn from(value: LegacyBaseAnalysisSnapshot) -> Self {
-		Self {
-			schema_version: value.schema_version,
-			game: value.game,
-			game_version: value.game_version,
-			analysis_rules_version: analysis_rules_version().to_string(),
-			generated_by_cli_version: value.generated_by_cli_version,
-			inventory_paths: value.inventory_paths,
-			documents: value.documents,
-			parse_error_count: value.parse_error_count,
-			parsed_files: value.parsed_files,
-			parse_stats: ParseFamilyStats::default(),
-			parsed_scripts: Vec::new(),
-			scopes: value.scopes,
-			symbol_definitions: value.symbol_definitions,
-			symbol_references: value.symbol_references,
-			alias_usages: value.alias_usages,
-			key_usages: value.key_usages,
-			scalar_assignments: value.scalar_assignments,
-			localisation_definitions: value.localisation_definitions,
-			localisation_duplicates: value.localisation_duplicates,
-			ui_definitions: value.ui_definitions,
-			resource_references: value.resource_references,
-			csv_rows: value.csv_rows,
-			json_properties: value.json_properties,
-		}
-	}
 }
 
 impl BaseAnalysisSnapshot {
@@ -1176,7 +1121,7 @@ pub struct BaseJsonProperty {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SnapshotWireBundle {
-	format_version: u32,
+	format_version: String,
 	schema_version: u32,
 	game: String,
 	game_version: String,
@@ -1223,16 +1168,6 @@ struct SnapshotInventoryDocumentsSection {
 	parse_error_count: usize,
 	parsed_files: usize,
 	parse_stats: ParseFamilyStats,
-}
-
-#[derive(
-	Clone, Debug, Serialize, Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
-struct LegacySnapshotInventoryDocumentsSection {
-	inventory_paths: Vec<String>,
-	documents: Vec<BaseDocumentRecord>,
-	parse_error_count: usize,
-	parsed_files: usize,
 }
 
 #[derive(
@@ -2760,7 +2695,7 @@ fn encode_snapshot_to_bytes(
 		parsed_scripts_res?,
 	];
 	let bundle = SnapshotWireBundle {
-		format_version: SNAPSHOT_WIRE_FORMAT_VERSION,
+		format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		schema_version: snapshot.schema_version,
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
@@ -2781,10 +2716,6 @@ fn encode_snapshot_to_bytes(
 }
 
 fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, String> {
-	if bytes.starts_with(&[0x1f, 0x8b]) {
-		return decode_legacy_snapshot_from_bytes(bytes);
-	}
-
 	let bundle: SnapshotWireBundle = bincode::deserialize(bytes)
 		.map_err(|err| format!("failed to parse base data snapshot bundle: {err}"))?;
 	if bundle.format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
@@ -2812,7 +2743,9 @@ fn decode_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, Stri
 				metadata = Some(decode_section_payload::<SnapshotMetadataSection>(&section)?);
 			}
 			SnapshotWireSectionName::InventoryDocuments => {
-				inventory = Some(decode_inventory_documents_section(&section)?);
+				inventory = Some(decode_section_payload::<SnapshotInventoryDocumentsSection>(
+					&section,
+				)?);
 			}
 			SnapshotWireSectionName::SymbolScope => {
 				symbol_scope = Some(decode_section_payload::<SnapshotSymbolScopeSection>(
@@ -3000,14 +2933,7 @@ fn unix_timestamp_millis() -> u64 {
 
 fn resolve_installed_snapshot_path(install_dir: &Path) -> Option<PathBuf> {
 	let current = install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
-	if current.is_file() {
-		return Some(current);
-	}
-	let legacy = install_dir.join(LEGACY_INSTALLED_SNAPSHOT_FILE_NAME);
-	if legacy.is_file() {
-		return Some(legacy);
-	}
-	None
+	current.is_file().then_some(current)
 }
 
 fn encode_metadata_section(snapshot: &BaseAnalysisSnapshot) -> Result<SectionEncodeResult, String> {
@@ -3186,25 +3112,6 @@ where
 	})
 }
 
-fn decode_inventory_documents_section(
-	section: &SnapshotWireSection,
-) -> Result<SnapshotInventoryDocumentsSection, String> {
-	match decode_section_payload::<SnapshotInventoryDocumentsSection>(section) {
-		Ok(decoded) => Ok(decoded),
-		Err(_) => {
-			let legacy =
-				decode_section_payload::<LegacySnapshotInventoryDocumentsSection>(section)?;
-			Ok(SnapshotInventoryDocumentsSection {
-				inventory_paths: legacy.inventory_paths,
-				documents: legacy.documents,
-				parse_error_count: legacy.parse_error_count,
-				parsed_files: legacy.parsed_files,
-				parse_stats: ParseFamilyStats::default(),
-			})
-		}
-	}
-}
-
 fn snapshot_section_display_name(name: SnapshotWireSectionName) -> &'static str {
 	match name {
 		SnapshotWireSectionName::Metadata => "metadata",
@@ -3213,21 +3120,6 @@ fn snapshot_section_display_name(name: SnapshotWireSectionName) -> &'static str 
 		SnapshotWireSectionName::LocalisationUiResources => "localisation_ui_resources",
 		SnapshotWireSectionName::StructuredData => "structured_data",
 		SnapshotWireSectionName::ParsedScripts => "parsed_scripts",
-	}
-}
-
-fn decode_legacy_snapshot_from_bytes(bytes: &[u8]) -> Result<BaseAnalysisSnapshot, String> {
-	let cursor = Cursor::new(bytes);
-	let decoder = GzDecoder::new(cursor);
-	match bincode::deserialize_from::<_, BaseAnalysisSnapshot>(decoder) {
-		Ok(snapshot) => Ok(snapshot),
-		Err(_) => {
-			let cursor = Cursor::new(bytes);
-			let decoder = GzDecoder::new(cursor);
-			let snapshot = bincode::deserialize_from::<_, LegacyBaseAnalysisSnapshot>(decoder)
-				.map_err(|err| format!("failed to parse legacy base data snapshot: {err}"))?;
-			Ok(snapshot.into())
-		}
 	}
 }
 

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -9,12 +9,11 @@ use foch_core::config::{
 	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
 };
 use foch_core::model::HandlerResolutionRecord;
-use foch_cwt::CwtSchemaGraph;
+use foch_cwt::RuleEngine;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::merge::conflict_view::ConflictView;
 use crate::merge::dag::ModDag;
-use crate::merge::patch_merge::PatchAddress;
 
 pub trait ConflictHandler {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision;
@@ -24,11 +23,22 @@ pub trait ConflictHandler {
 	fn set_deferred_so_far(&mut self, _count: usize) {}
 }
 
+fn unique_candidate_index(view: &ConflictView, mod_id: &str) -> Option<usize> {
+	let mut matches = view
+		.candidates
+		.iter()
+		.enumerate()
+		.filter(|(_, candidate)| candidate.mod_id == mod_id)
+		.map(|(index, _)| index);
+	let candidate = matches.next()?;
+	matches.next().is_none().then_some(candidate)
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ConflictDecision {
-	/// Pick this mod's patch only; drop the others, optionally recording a handler-specific report entry.
-	PickMod {
-		mod_id: String,
+	/// Pick one exact candidate from the `ConflictView` passed to the handler.
+	PickCandidate {
+		candidate: usize,
 		record: Option<HandlerResolutionRecord>,
 	},
 	/// Use this external file's content (handled at materialize time).
@@ -223,9 +233,12 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 		let Some(winner) = self.winner(&mods) else {
 			return ConflictDecision::Defer { record: None };
 		};
+		let Some(candidate) = unique_candidate_index(view, &winner) else {
+			return ConflictDecision::Defer { record: None };
+		};
 		let rationale = self.rationale(&winner, &mods);
-		ConflictDecision::PickMod {
-			mod_id: winner.clone(),
+		ConflictDecision::PickCandidate {
+			candidate,
 			record: Some(HandlerResolutionRecord {
 				path: view.file_path.to_string_lossy().replace('\\', "/"),
 				action: "dep_implied".to_string(),
@@ -249,12 +262,15 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 		}
 	}
 
-	fn winner(&self, view: &ConflictView) -> Option<(String, usize)> {
-		let winner = view.candidates.iter().max_by(|left, right| {
-			left.precedence
-				.cmp(&right.precedence)
-				.then_with(|| left.mod_id.cmp(&right.mod_id))
-		})?;
+	fn winner(&self, view: &ConflictView) -> Option<(usize, String, usize)> {
+		let (winner_index, winner) = view.candidates.iter().enumerate().max_by(
+			|(left_index, left), (right_index, right)| {
+				left.precedence
+					.cmp(&right.precedence)
+					.then_with(|| left.mod_id.cmp(&right.mod_id))
+					.then_with(|| left_index.cmp(right_index))
+			},
+		)?;
 		if self.boosts.get(&winner.mod_id).copied().unwrap_or(0) == 0 {
 			return None;
 		}
@@ -266,13 +282,13 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 		if tied_winners != 1 {
 			return None;
 		}
-		Some((winner.mod_id.clone(), winner.precedence))
+		Some((winner_index, winner.mod_id.clone(), winner.precedence))
 	}
 }
 
 impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
-		let Some((winner, precedence)) = self.winner(view) else {
+		let Some((candidate, winner, precedence)) = self.winner(view) else {
 			return ConflictDecision::Defer { record: None };
 		};
 		let mod_ids: Vec<&str> = view
@@ -280,8 +296,8 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 			.iter()
 			.map(|candidate| candidate.mod_id.as_str())
 			.collect();
-		ConflictDecision::PickMod {
-			mod_id: winner.clone(),
+		ConflictDecision::PickCandidate {
+			candidate,
 			record: Some(HandlerResolutionRecord {
 				path: view.file_path.to_string_lossy().replace('\\', "/"),
 				action: "priority_boost".to_string(),
@@ -300,7 +316,7 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
 	pub _current_file: PathBuf,
-	cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
+	cwt_rule_engine: Option<Arc<RuleEngine>>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 }
@@ -315,12 +331,12 @@ impl<'a> LookupHandler<'a> {
 		map: &'a ResolutionMap,
 		file: PathBuf,
 		_mod_displayname_lookup: HashMap<String, String>,
-		cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
+		cwt_rule_engine: Option<Arc<RuleEngine>>,
 	) -> Self {
 		Self {
 			map,
 			_current_file: file,
-			cwt_schema_graph,
+			cwt_rule_engine,
 			current_conflict_index: 1,
 			total_conflicts: 1,
 		}
@@ -328,12 +344,12 @@ impl<'a> LookupHandler<'a> {
 }
 
 fn log_cwt_suggestion_on_miss(
-	graph: Option<&CwtSchemaGraph>,
+	engine: Option<&RuleEngine>,
 	current_file: &Path,
 	address_path: &[String],
 	address_key: &str,
 ) {
-	let Some(graph) = graph else {
+	let Some(engine) = engine else {
 		return;
 	};
 	let ast_path = if address_path.is_empty() {
@@ -342,7 +358,7 @@ fn log_cwt_suggestion_on_miss(
 		address_path.iter().map(String::as_str).collect::<Vec<_>>()
 	};
 	let Some(suggestion) =
-		crate::merge::cwt_suggestions::suggest_for_conflict(graph, current_file, &ast_path)
+		crate::merge::cwt_suggestions::suggest_for_conflict(engine, current_file, &ast_path)
 	else {
 		return;
 	};
@@ -372,10 +388,20 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 			format!("{address_path}/{}", view.address_key)
 		};
 		match self.map.lookup(lookup_file, &conflict_id, &leaf_address) {
-			Some(ResolutionDecision::PreferMod(mod_id)) => ConflictDecision::PickMod {
-				mod_id: mod_id.clone(),
-				record: None,
-			},
+			Some(ResolutionDecision::PreferCandidate(candidate)) => view
+				.candidates
+				.get(*candidate)
+				.map(|_| ConflictDecision::PickCandidate {
+					candidate: *candidate,
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None }),
+			Some(ResolutionDecision::PreferMod(mod_id)) => unique_candidate_index(view, mod_id)
+				.map(|candidate| ConflictDecision::PickCandidate {
+					candidate,
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None }),
 			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
 			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
 			Some(ResolutionDecision::Handler(name)) => {
@@ -383,7 +409,7 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 			}
 			None => {
 				log_cwt_suggestion_on_miss(
-					self.cwt_schema_graph.as_deref(),
+					self.cwt_rule_engine.as_deref(),
 					lookup_file,
 					&view.address_path,
 					&view.address_key,
@@ -398,10 +424,6 @@ impl<'a> ConflictHandler for LookupHandler<'a> {
 		self.total_conflicts = total;
 	}
 }
-pub(crate) trait ConfigWriter {
-	fn append_resolution(&mut self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>>;
-}
-
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct FilesystemConfigWriter {
 	path: PathBuf,
@@ -421,10 +443,8 @@ impl FilesystemConfigWriter {
 			.unwrap_or("foch.toml");
 		parent.join(format!(".{file_name}.{}.tmp", std::process::id()))
 	}
-}
 
-impl ConfigWriter for FilesystemConfigWriter {
-	fn append_resolution(&mut self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>> {
+	fn append_resolution(&self, entry: ResolutionEntry) -> Result<(), Box<dyn Error>> {
 		if let Some(parent) = self
 			.path
 			.parent()
@@ -502,7 +522,7 @@ impl InteractiveCliHandler {
 
 	fn stdin_stderr_are_tty(&self) -> bool {
 		self.tty_available
-			.unwrap_or_else(|| atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stderr))
+			.unwrap_or_else(|| io::stdin().is_terminal() && io::stderr().is_terminal())
 	}
 
 	fn write_conflict_summary(&mut self, view: &ConflictView) {
@@ -541,10 +561,10 @@ impl InteractiveCliHandler {
 	}
 
 	fn write_candidate_patch(&mut self, candidate: &crate::merge::conflict_view::CandidateView) {
-		for summary in &candidate.patch_summary {
+		for summary in &candidate.change_summary {
 			let _ = writeln!(self.stderr, "      {summary}");
 		}
-		let lines: Vec<&str> = candidate.patch_rendered.lines().collect();
+		let lines: Vec<&str> = candidate.candidate_rendered.lines().collect();
 		for line in lines.iter().take(20) {
 			let _ = writeln!(self.stderr, "      {line}");
 		}
@@ -635,10 +655,10 @@ impl ConflictHandler for InteractiveCliHandler {
 					if let Ok(index) = choice.parse::<usize>()
 						&& let Some(candidate) = index
 							.checked_sub(1)
-							.and_then(|index| view.candidates.get(index))
+							.filter(|index| view.candidates.get(*index).is_some())
 					{
-						return ConflictDecision::PickMod {
-							mod_id: candidate.mod_id.clone(),
+						return ConflictDecision::PickCandidate {
+							candidate,
 							record: None,
 						};
 					}
@@ -695,19 +715,23 @@ impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<
 }
 
 pub(crate) fn resolution_entry_for_decision(
+	view: &ConflictView,
 	current_file: &Path,
-	address: &PatchAddress,
+	conflict_id: &str,
 	decision: &ConflictDecision,
 ) -> Option<ResolutionEntry> {
-	let address_path = address.path.join("/");
-	let conflict_id = compute_conflict_id(current_file, &address_path, &address.key);
 	match decision {
-		ConflictDecision::PickMod { mod_id, .. } => Some(ResolutionEntry {
+		ConflictDecision::PickCandidate { candidate, .. } => Some(ResolutionEntry {
 			file: None,
-			conflict_id: Some(conflict_id),
+			conflict_id: Some(conflict_id.to_string()),
 			mod_id: None,
 			r#match: None,
-			prefer_mod: Some(mod_id.clone()),
+			prefer_mod: None,
+			prefer_candidate: Some(
+				view.candidates
+					.get(*candidate)
+					.and_then(|_| candidate.checked_add(1))?,
+			),
 			use_file: None,
 			keep_existing: None,
 			priority_boost: None,
@@ -716,10 +740,11 @@ pub(crate) fn resolution_entry_for_decision(
 		}),
 		ConflictDecision::UseFile(path) => Some(ResolutionEntry {
 			file: None,
-			conflict_id: Some(conflict_id),
+			conflict_id: Some(conflict_id.to_string()),
 			mod_id: None,
 			r#match: None,
 			prefer_mod: None,
+			prefer_candidate: None,
 			use_file: Some(path.clone()),
 			keep_existing: None,
 			priority_boost: None,
@@ -732,6 +757,7 @@ pub(crate) fn resolution_entry_for_decision(
 			mod_id: None,
 			r#match: None,
 			prefer_mod: None,
+			prefer_candidate: None,
 			use_file: None,
 			keep_existing: Some(true),
 			priority_boost: None,
@@ -767,28 +793,27 @@ pub struct PromptSurvivorsResult {
 /// overrides have already pruned transient conflicts). Persists every Picked
 /// decision to foch.toml as a side effect.
 ///
-/// `survivors` should be the list of `(address, conflict)` extracted from
-/// `PatchResolution::Conflict` survivors. The returned outcomes carry the
-/// resolution-map decision the caller should fold into the in-memory map
-/// before re-running the merge engine. If the user aborts, `aborted` is set
-/// and any outcomes already collected are still returned.
+/// The returned outcomes carry the resolution-map decision the caller should
+/// fold into the in-memory map before re-running the merge engine. If the user
+/// aborts, `aborted` is set and any outcomes already collected are returned.
 pub fn prompt_survivors_and_persist(
 	target_path: &Path,
-	survivors: &[(PatchAddress, ConflictView)],
+	survivors: &[ConflictView],
 	handler: &mut dyn ConflictHandler,
 	config_path: &Path,
 ) -> PromptSurvivorsResult {
 	let total = survivors.len();
 	let mut deferred_so_far = 0usize;
 	let mut result = PromptSurvivorsResult::default();
-	let mut config_writer = FilesystemConfigWriter::new(config_path.to_path_buf());
-	for (idx, (address, view)) in survivors.iter().enumerate() {
+	let config_writer = FilesystemConfigWriter::new(config_path.to_path_buf());
+	for (idx, view) in survivors.iter().enumerate() {
 		let current = idx + 1;
 		let conflict_id = view.conflict_id.clone();
 		handler.set_conflict_progress(current, total);
 		handler.set_deferred_so_far(deferred_so_far);
 		let decision = handler.on_conflict(view);
-		if let Some(entry) = resolution_entry_for_decision(target_path, address, &decision)
+		if let Some(entry) =
+			resolution_entry_for_decision(view, target_path, &view.conflict_id, &decision)
 			&& let Err(err) = config_writer.append_resolution(entry)
 		{
 			eprintln!("[foch] failed to persist interactive resolution: {err}");
@@ -796,11 +821,21 @@ pub fn prompt_survivors_and_persist(
 			break;
 		}
 		match decision {
-			ConflictDecision::PickMod { mod_id, .. } => {
-				result.outcomes.push(PromptOutcome {
-					conflict_id,
-					kind: PromptOutcomeKind::Picked(ResolutionDecision::PreferMod(mod_id)),
-				});
+			ConflictDecision::PickCandidate { candidate, .. } => {
+				if view.candidates.get(candidate).is_some() {
+					result.outcomes.push(PromptOutcome {
+						conflict_id,
+						kind: PromptOutcomeKind::Picked(ResolutionDecision::PreferCandidate(
+							candidate,
+						)),
+					});
+				} else {
+					result.outcomes.push(PromptOutcome {
+						conflict_id,
+						kind: PromptOutcomeKind::Deferred,
+					});
+					deferred_so_far += 1;
+				}
 			}
 			ConflictDecision::UseFile(path) => result.outcomes.push(PromptOutcome {
 				conflict_id,
@@ -840,6 +875,11 @@ fn render_resolution_entry(entry: &ResolutionEntry) -> String {
 	if let Some(prefer_mod) = &entry.prefer_mod {
 		table["prefer_mod"] = value(prefer_mod.clone());
 	}
+	if let Some(prefer_candidate) = entry.prefer_candidate {
+		table["prefer_candidate"] = value(
+			i64::try_from(prefer_candidate).expect("candidate index exceeds TOML integer range"),
+		);
+	}
 	if let Some(use_file) = &entry.use_file {
 		table["use_file"] = value(path_to_toml_string(use_file));
 	}
@@ -864,7 +904,7 @@ fn path_to_toml_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
 	use std::cell::Cell;
-	use std::collections::{BTreeMap, HashMap};
+	use std::collections::BTreeMap;
 	use std::io::Cursor;
 	use std::path::PathBuf;
 	use std::rc::Rc;
@@ -873,88 +913,72 @@ mod tests {
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::PlaylistEntry;
 	use foch_core::model::ModCandidate;
-	use foch_language::analyzer::parser::{AstValue, ScalarValue, Span, SpanRange};
 
 	use super::*;
-	use crate::emit::EmitOptions;
-	use crate::merge::conflict_view::build_conflict_view;
-	use crate::merge::patch::ClausewitzPatch;
-	use crate::merge::patch_merge::{AttributedPatch, PatchConflict};
+	use crate::merge::conflict_view::CandidateView;
 
-	fn address() -> PatchAddress {
-		PatchAddress {
+	struct TestAddress {
+		path: Vec<String>,
+		key: String,
+	}
+
+	struct TestConflict {
+		candidates: Vec<(String, usize)>,
+		reason: String,
+	}
+
+	fn address() -> TestAddress {
+		TestAddress {
 			path: vec!["root".to_string(), "event".to_string()],
 			key: "id".to_string(),
 		}
 	}
 
-	fn conflict() -> PatchConflict {
-		PatchConflict {
-			patches: Vec::new(),
+	fn conflict() -> TestConflict {
+		TestConflict {
+			candidates: Vec::new(),
 			reason: "test conflict".to_string(),
 		}
 	}
 
-	fn span() -> SpanRange {
-		SpanRange {
-			start: Span {
-				line: 0,
-				column: 0,
-				offset: 0,
-			},
-			end: Span {
-				line: 0,
-				column: 0,
-				offset: 0,
-			},
-		}
-	}
-
-	fn scalar(value: &str) -> AstValue {
-		AstValue::Scalar {
-			value: ScalarValue::Identifier(value.to_string()),
-			span: span(),
-		}
-	}
-
-	fn attributed_patch(mod_id: &str, precedence: usize, value: &str) -> AttributedPatch {
-		AttributedPatch {
-			mod_id: mod_id.to_string(),
-			precedence,
-			patch: ClausewitzPatch::SetValue {
-				path: vec!["root".to_string()],
-				key: "id".to_string(),
-				old_value: scalar("old"),
-				new_value: scalar(value),
-			},
-		}
-	}
-
-	fn conflict_with_patches() -> PatchConflict {
+	fn conflict_with_patches() -> TestConflict {
 		conflict_with_mods(&[("mod_a", 1, "alpha"), ("mod_b", 2, "beta")])
 	}
 
-	fn conflict_with_mods(mods: &[(&str, usize, &str)]) -> PatchConflict {
-		PatchConflict {
-			patches: mods
+	fn conflict_with_mods(mods: &[(&str, usize, &str)]) -> TestConflict {
+		TestConflict {
+			candidates: mods
 				.iter()
-				.map(|(mod_id, precedence, value)| attributed_patch(mod_id, *precedence, value))
+				.map(|(mod_id, precedence, _)| ((*mod_id).to_string(), *precedence))
 				.collect(),
 			reason: "mods disagree".to_string(),
 		}
 	}
 
-	fn view_for(file: &str, address: &PatchAddress, conflict: &PatchConflict) -> ConflictView {
-		build_conflict_view(
-			&PathBuf::from(file),
-			address,
-			conflict,
-			compute_conflict_id(&PathBuf::from(file), &address.path.join("/"), &address.key),
-			&HashMap::new(),
-			None,
-			&EmitOptions::default(),
-		)
-		.expect("build conflict view")
+	fn view_for(file: &str, address: &TestAddress, conflict: &TestConflict) -> ConflictView {
+		ConflictView {
+			file_path: PathBuf::from(file),
+			address_path: address.path.clone(),
+			address_key: address.key.clone(),
+			conflict_id: compute_conflict_id(
+				&PathBuf::from(file),
+				&address.path.join("/"),
+				&address.key,
+			),
+			reason: conflict.reason.clone(),
+			vanilla_snippet: None,
+			candidates: conflict
+				.candidates
+				.iter()
+				.map(|(mod_id, precedence)| CandidateView {
+					mod_id: mod_id.clone(),
+					mod_display_name: mod_id.clone(),
+					precedence: *precedence,
+					change_summary: Vec::new(),
+					candidate_rendered: String::new(),
+				})
+				.collect(),
+		}
 	}
 
 	fn dep_handler(edges: &[(&str, &str)]) -> DepImpliesResolutionHandler {
@@ -966,11 +990,11 @@ mod tests {
 
 	fn assert_dep_pick(decision: ConflictDecision, expected_mod: &str, expected_rationale: &str) {
 		match decision {
-			ConflictDecision::PickMod {
-				mod_id,
+			ConflictDecision::PickCandidate {
+				candidate,
 				record: Some(record),
 			} => {
-				assert_eq!(mod_id, expected_mod);
+				assert_eq!(candidate, 0);
 				assert_eq!(record.path, "common/ideas/dep.txt");
 				assert_eq!(record.action, "dep_implied");
 				assert_eq!(record.source.as_deref(), Some(expected_mod));
@@ -1015,8 +1039,8 @@ mod tests {
 	impl ConflictHandler for CountingHandler {
 		fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
 			self.calls.set(self.calls.get() + 1);
-			ConflictDecision::PickMod {
-				mod_id: "mod_b".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
 				record: None,
 			}
 		}
@@ -1038,13 +1062,13 @@ mod tests {
 	}
 
 	#[test]
-	fn lookup_handler_returns_pick_mod_when_resolution_map_has_entry() {
+	fn lookup_handler_returns_candidate_when_resolution_map_has_entry() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
 			conflict_id,
-			ResolutionDecision::PreferMod("mod-a".to_string()),
+			ResolutionDecision::PreferMod("mod_a".to_string()),
 		);
 		let map = ResolutionMap {
 			by_conflict_id,
@@ -1055,13 +1079,13 @@ mod tests {
 		let decision = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
-			&conflict(),
+			&conflict_with_patches(),
 		));
 
 		assert_eq!(
 			decision,
-			ConflictDecision::PickMod {
-				mod_id: "mod-a".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 0,
 				record: None
 			}
 		);
@@ -1082,13 +1106,56 @@ mod tests {
 	}
 
 	#[test]
+	fn lookup_handler_defers_when_prefer_mod_is_not_an_exact_candidate() {
+		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
+		let map = ResolutionMap {
+			by_conflict_id: BTreeMap::from([(
+				conflict_id,
+				ResolutionDecision::PreferMod("same_mod".to_string()),
+			)]),
+			..ResolutionMap::default()
+		};
+		let conflict = conflict_with_mods(&[("same_mod", 1, "alpha"), ("same_mod", 2, "beta")]);
+		let mut handler = LookupHandler::new(&map, current_file);
+
+		let decision =
+			handler.on_conflict(&view_for("events/PirateEvents.txt", &address(), &conflict));
+
+		assert_eq!(decision, ConflictDecision::Defer { record: None });
+	}
+
+	#[test]
+	fn lookup_handler_replays_exact_candidate_when_mod_ids_repeat() {
+		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
+		let map = ResolutionMap {
+			by_conflict_id: BTreeMap::from([(conflict_id, ResolutionDecision::PreferCandidate(1))]),
+			..ResolutionMap::default()
+		};
+		let conflict = conflict_with_mods(&[("same_mod", 1, "alpha"), ("same_mod", 2, "beta")]);
+		let mut handler = LookupHandler::new(&map, current_file);
+
+		let decision =
+			handler.on_conflict(&view_for("events/PirateEvents.txt", &address(), &conflict));
+
+		assert_eq!(
+			decision,
+			ConflictDecision::PickCandidate {
+				candidate: 1,
+				record: None,
+			}
+		);
+	}
+
+	#[test]
 	fn lookup_handler_chained_with_defer_uses_resolution_then_defers() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = BTreeMap::new();
 		by_conflict_id.insert(
 			conflict_id,
-			ResolutionDecision::PreferMod("mod-a".to_string()),
+			ResolutionDecision::PreferMod("mod_a".to_string()),
 		);
 		let map = ResolutionMap {
 			by_conflict_id,
@@ -1098,7 +1165,7 @@ mod tests {
 			first: LookupHandler::new(&map, current_file),
 			second: DeferHandler,
 		};
-		let miss = PatchAddress {
+		let miss = TestAddress {
 			path: vec!["root".to_string(), "event".to_string()],
 			key: "other".to_string(),
 		};
@@ -1106,15 +1173,15 @@ mod tests {
 		let resolved = handler.on_conflict(&view_for(
 			"events/PirateEvents.txt",
 			&address(),
-			&conflict(),
+			&conflict_with_patches(),
 		));
 		let deferred =
 			handler.on_conflict(&view_for("events/PirateEvents.txt", &miss, &conflict()));
 
 		assert_eq!(
 			resolved,
-			ConflictDecision::PickMod {
-				mod_id: "mod-a".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 0,
 				record: None
 			}
 		);
@@ -1269,7 +1336,7 @@ mod tests {
 	}
 
 	#[test]
-	fn interactive_handler_returns_pick_mod_on_user_choice() {
+	fn interactive_handler_returns_exact_candidate_on_user_choice() {
 		let mut handler = handler_with_input("2\n", true);
 
 		let decision = handler.on_conflict(&view_for(
@@ -1280,8 +1347,8 @@ mod tests {
 
 		assert_eq!(
 			decision,
-			ConflictDecision::PickMod {
-				mod_id: "mod_b".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
 				record: None
 			}
 		);
@@ -1295,13 +1362,10 @@ mod tests {
 		let mut handler = handler_with_input("1\n", true);
 		let survivor_address = address();
 		let survivor_conflict = conflict_with_patches();
-		let survivors = vec![(
-			survivor_address.clone(),
-			view_for(
-				"events/PirateEvents.txt",
-				&survivor_address,
-				&survivor_conflict,
-			),
+		let survivors = vec![view_for(
+			"events/PirateEvents.txt",
+			&survivor_address,
+			&survivor_conflict,
 		)];
 
 		let result =
@@ -1311,7 +1375,7 @@ mod tests {
 		assert_eq!(result.outcomes.len(), 1);
 		let content = fs::read_to_string(&config_path).expect("read config");
 		assert!(content.contains("[[resolutions]]"));
-		assert!(content.contains("prefer_mod = \"mod_a\""));
+		assert!(content.contains("prefer_candidate = 1"));
 		assert!(content.contains(&compute_conflict_id(&current_file, "root/event", "id")));
 	}
 
@@ -1390,8 +1454,8 @@ mod tests {
 
 		assert_eq!(
 			decision,
-			ConflictDecision::PickMod {
-				mod_id: "mod_a".to_string(),
+			ConflictDecision::PickCandidate {
+				candidate: 0,
 				record: None
 			}
 		);
@@ -1417,7 +1481,7 @@ dep = "b"
 "#,
 		)
 		.expect("write config");
-		let mut writer = FilesystemConfigWriter::new(path.clone());
+		let writer = FilesystemConfigWriter::new(path.clone());
 
 		writer
 			.append_resolution(ResolutionEntry {
@@ -1426,6 +1490,7 @@ dep = "b"
 				mod_id: None,
 				r#match: None,
 				prefer_mod: Some("mod_a".to_string()),
+				prefer_candidate: None,
 				use_file: None,
 				keep_existing: None,
 				priority_boost: None,

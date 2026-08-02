@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub(crate) mod backend;
 mod cross_file_dedup;
 mod io;
 mod output_transaction;
@@ -20,13 +21,13 @@ use super::super::plan::build_merge_plan_from_workspace;
 use super::super::planning::module_view::build_cross_file_module_views;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
-use crate::merge::MergeKernelMode;
 use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceScriptCache,
 	resolve_workspace,
 };
+use backend::{SemanticStructuralBackend, StructuralMergeBackend};
 use cross_file_dedup::prune_cross_file_noop_duplicates;
 use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionMap};
 use foch_core::model::{
@@ -35,7 +36,7 @@ use foch_core::model::{
 	MergePlanTarget, MergeReport, MergeReportConflictResolution, MergeReportStatus,
 	MergeTraceEntry, SemanticIndex, StaleVanillaTargetDescriptor,
 };
-use foch_cwt::CwtSchemaGraph;
+use foch_cwt::RuleEngine;
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, MergeKeySource,
 };
@@ -58,7 +59,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
-use structural::{merge_definition_module, merge_structural_file};
 
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
@@ -73,7 +73,7 @@ pub(crate) struct MergeMaterializeOptions {
 	/// When set, annotate merged definitions with their adopted source mods
 	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
 	pub provenance: bool,
-	pub merge_kernel: MergeKernelMode,
+	pub structural_backend: Box<dyn StructuralMergeBackend>,
 	/// Optional relative-path retention set for callers that only need a subset
 	/// of copy-through output.
 	pub retained_paths: Option<BTreeSet<String>>,
@@ -92,7 +92,7 @@ impl Default for MergeMaterializeOptions {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
-			merge_kernel: crate::merge::MergeKernelMode::Structured,
+			structural_backend: Box::new(SemanticStructuralBackend),
 			retained_paths: None,
 		}
 	}
@@ -275,7 +275,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 		write_clean_metadata_only(out_dir, &plan, &report)?;
 		return Ok(report);
 	}
-	if options.merge_kernel == MergeKernelMode::Structured {
+	if options.structural_backend.profile().validate_semantic_units {
 		validate_structured_plan_selection(&plan, options.retained_paths.as_ref())?;
 	}
 
@@ -388,7 +388,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 			}
 			MergePlanStrategy::StructuralMerge => {
 				let contributors = workspace.file_inventory.get(entry.output_path());
-				if options.merge_kernel == MergeKernelMode::Structured {
+				if options.structural_backend.profile().validate_semantic_units {
 					validate_structured_merge_entry(
 						entry,
 						contributors.map(Vec::as_slice),
@@ -451,10 +451,8 @@ pub(crate) fn materialize_merge_with_workspace_result(
 							let target = entry.output_path().to_string();
 							let contribs = contributors.clone();
 							let desc = descriptor.clone();
-							let cwt_schema_graph =
-								crate::merge::cwt_suggestions::cwt_schema_graph_for_profile(
-									profile,
-								);
+							let cwt_rule_engine =
+								crate::merge::cwt_suggestions::cwt_rule_engine_for_profile(profile);
 							let dag = mod_dag.clone();
 							let ignore = ignore_replace_path.clone();
 							let dep_overrides = dep_overrides.clone();
@@ -462,13 +460,14 @@ pub(crate) fn materialize_merge_with_workspace_result(
 							let resolution_map = options.resolution_map.clone();
 							let interactive_config_path =
 								options.interactive_resolution_config_path.clone();
+							let structural_backend = &*options.structural_backend;
 							let interactive_handler =
 								options.interactive_conflict_handler.as_deref_mut();
 							let result =
 								std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 									let context = StructuralMergeContext {
 										descriptor: &desc,
-										cwt_schema_graph: cwt_schema_graph.clone(),
+										cwt_rule_engine: cwt_rule_engine.clone(),
 										merge_key_source,
 										gui_scroll_merge: options.gui_scroll_merge,
 										mod_dag: &dag,
@@ -481,10 +480,9 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										cache_game_version: &cache_game_version,
 										emit_options: &emit_options,
 										provenance: options.provenance,
-										merge_kernel: options.merge_kernel,
 										script_cache: &workspace.script_cache,
 									};
-									merge_structural_file(
+									structural_backend.merge_file(
 										&target,
 										&contribs,
 										context,
@@ -812,7 +810,10 @@ fn materialize_cross_file_module(
 		mod_dag,
 		ignore_replace_path,
 		dep_overrides,
-		options.merge_kernel,
+		options
+			.structural_backend
+			.profile()
+			.duplicate_definition_override,
 	) {
 		Ok(views) => views,
 		Err(reason) => {
@@ -826,11 +827,12 @@ fn materialize_cross_file_module(
 			);
 		}
 	};
-	let cwt_schema_graph = crate::merge::cwt_suggestions::cwt_schema_graph_for_profile(profile);
+	let cwt_rule_engine = crate::merge::cwt_suggestions::cwt_rule_engine_for_profile(profile);
+	let structural_backend = &*options.structural_backend;
 	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let merge_context = StructuralMergeContext {
 			descriptor,
-			cwt_schema_graph,
+			cwt_rule_engine,
 			merge_key_source,
 			gui_scroll_merge: options.gui_scroll_merge,
 			mod_dag,
@@ -843,10 +845,9 @@ fn materialize_cross_file_module(
 			cache_game_version,
 			emit_options,
 			provenance: options.provenance,
-			merge_kernel: options.merge_kernel,
 			script_cache: &workspace.script_cache,
 		};
-		merge_definition_module(
+		structural_backend.merge_definition_module(
 			entry.output_path(),
 			&views,
 			merge_context,
@@ -1562,7 +1563,7 @@ fn summarize_conflict_kind(leaf_conflicts: &[LeafConflictDetail]) -> Option<Conf
 }
 
 #[derive(Clone, Debug)]
-struct StructuralMergeOutput {
+pub(crate) struct StructuralMergeOutput {
 	rendered: String,
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
 	stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
@@ -1584,7 +1585,7 @@ struct StructuralMergeOutput {
 }
 
 #[derive(Clone, Debug)]
-struct StructuralConflictReport {
+pub(crate) struct StructuralConflictReport {
 	reason: String,
 	leaf_conflicts: Vec<LeafConflictDetail>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
@@ -1601,7 +1602,7 @@ impl StructuralConflictReport {
 }
 
 #[derive(Debug)]
-enum StructuralMergeFailure {
+pub(crate) enum StructuralMergeFailure {
 	Merge(MergeError),
 	Unresolved(StructuralConflictReport),
 }
@@ -1620,9 +1621,9 @@ struct DepMisuseRemoveCount {
 }
 
 #[derive(Clone)]
-struct StructuralMergeContext<'a> {
+pub(crate) struct StructuralMergeContext<'a> {
 	descriptor: &'a ContentFamilyDescriptor,
-	cwt_schema_graph: Option<Arc<CwtSchemaGraph>>,
+	cwt_rule_engine: Option<Arc<RuleEngine>>,
 	merge_key_source: MergeKeySource,
 	gui_scroll_merge: bool,
 	mod_dag: &'a ModDag,
@@ -1635,7 +1636,6 @@ struct StructuralMergeContext<'a> {
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
 	provenance: bool,
-	merge_kernel: MergeKernelMode,
 	script_cache: &'a WorkspaceScriptCache,
 }
 
@@ -2232,7 +2232,7 @@ mod tests {
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
-			merge_kernel: crate::merge::MergeKernelMode::Legacy,
+			structural_backend: Box::new(super::backend::ReferenceStructuralBackend),
 			retained_paths: None,
 		}
 	}

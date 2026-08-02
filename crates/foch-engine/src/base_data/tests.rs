@@ -2628,7 +2628,7 @@ fn explicit_snapshot_identity_transfers_across_threads_without_rereading() {
 }
 
 #[test]
-fn explicit_snapshot_identity_rejects_current_to_legacy_path_switch() {
+fn explicit_snapshot_identity_rejects_snapshot_path_switch() {
 	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
 	unsafe {
@@ -2655,8 +2655,8 @@ fn explicit_snapshot_identity_rejects_current_to_legacy_path_switch() {
 		.expect("snapshot identity exists");
 	reset_installed_snapshot_test_counters();
 	let current_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
-	let legacy_path = installed.install_dir.join("snapshot.bin.gz");
-	std::fs::rename(&current_path, &legacy_path).expect("switch to legacy snapshot path");
+	let relocated_path = installed.install_dir.join("snapshot.relocated.bin");
+	std::fs::rename(&current_path, &relocated_path).expect("relocate snapshot path");
 
 	let err = load_installed_base_snapshot("eu4", "schema-test", Some(&identity))
 		.expect_err("path switch must invalidate the staged identity");

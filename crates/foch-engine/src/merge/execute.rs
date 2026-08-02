@@ -3,6 +3,9 @@ use super::error::MergeError;
 use super::materialize::{
 	MergeMaterializeOptions, OutputTransaction, materialize_merge_with_workspace_result,
 };
+use super::output::materialize::backend::{
+	ReferenceStructuralBackend, SemanticStructuralBackend, StructuralMergeBackend,
+};
 use crate::base_data::{
 	InstalledBaseSnapshotIdentity, InstalledBaseSnapshotPublicationGuard,
 	lock_and_validate_installed_base_snapshot_identity,
@@ -260,7 +263,7 @@ fn run_merge_with_kernel_mode(
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
 			provenance: options.provenance,
-			merge_kernel,
+			structural_backend: structural_backend(merge_kernel),
 			retained_paths: effective_retained_paths,
 		},
 		workspace_result,
@@ -296,6 +299,13 @@ fn run_merge_with_kernel_mode(
 	finalize_merge_output(transaction, execution, modset_cache.as_ref(), true, |_| {
 		validate_base_snapshot_publish_guard(base_snapshot_publish_guard.as_ref())
 	})
+}
+
+fn structural_backend(mode: MergeKernelMode) -> Box<dyn StructuralMergeBackend> {
+	match mode {
+		MergeKernelMode::Structured => Box::new(SemanticStructuralBackend),
+		MergeKernelMode::Legacy => Box::new(ReferenceStructuralBackend),
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -501,7 +511,9 @@ fn resolution_decision_depends_on_prior_output(decision: &ResolutionDecision) ->
 	match decision {
 		ResolutionDecision::KeepExisting => true,
 		ResolutionDecision::Handler(name) => name.eq_ignore_ascii_case("keep_existing"),
-		ResolutionDecision::PreferMod(_) | ResolutionDecision::UseFile(_) => false,
+		ResolutionDecision::PreferMod(_)
+		| ResolutionDecision::PreferCandidate(_)
+		| ResolutionDecision::UseFile(_) => false,
 	}
 }
 

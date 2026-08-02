@@ -15,18 +15,20 @@ use super::localisation::collect_localisation_definitions_from_root;
 use super::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
 };
-use super::parser::{AstFile, AstStatement, AstValue, SpanRange};
+use super::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_file};
 use foch_core::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, MaybeScope,
 	ParamBinding, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet,
 	ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
 	UiDefinition, base_scope,
 };
-use foch_cwt::CwtSchemaGraph;
+use foch_cwt::{
+	RuleEngine, SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,
+};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Clone, Debug)]
 pub struct ParsedScriptFile {
@@ -126,11 +128,29 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 	parse_script_file_with_profile(mod_id, root, file, eu4_profile())
 }
 
+pub(super) fn parse_script_file_without_cache(
+	mod_id: &str,
+	root: &Path,
+	file: &Path,
+) -> Option<ParsedScriptFile> {
+	parse_script_file_with_profile_and_cache(mod_id, root, file, eu4_profile(), false)
+}
+
 pub fn parse_script_file_with_profile(
 	mod_id: &str,
 	root: &Path,
 	file: &Path,
 	profile: &dyn GameProfile,
+) -> Option<ParsedScriptFile> {
+	parse_script_file_with_profile_and_cache(mod_id, root, file, profile, true)
+}
+
+fn parse_script_file_with_profile_and_cache(
+	mod_id: &str,
+	root: &Path,
+	file: &Path,
+	profile: &dyn GameProfile,
+	use_cache: bool,
 ) -> Option<ParsedScriptFile> {
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
 	let content_family = profile.classify_content_family(&relative);
@@ -141,7 +161,11 @@ pub fn parse_script_file_with_profile(
 		|| fallback_module_name_from_relative(&relative),
 		|descriptor| module_name_for_descriptor(&relative, descriptor).replace('-', "_"),
 	);
-	let (parsed, parse_cache_hit) = parse_clausewitz_file_cached(file);
+	let (parsed, parse_cache_hit) = if use_cache {
+		parse_clausewitz_file_cached(file)
+	} else {
+		(parse_clausewitz_file(file), false)
+	};
 	let source = std::fs::read_to_string(file).unwrap_or_default();
 
 	let parse_issues = parsed
@@ -184,7 +208,7 @@ pub fn build_semantic_index_with_profile(
 ) -> SemanticIndex {
 	let mut index = SemanticIndex::default();
 	let map_groups = collect_map_groups(files);
-	let cwt_schema_graph = cwt_schema_graph_for_profile(profile);
+	let cwt_rule_engine = cwt_rule_engine_for_profile(profile);
 	for file in files {
 		index.documents.push(DocumentRecord {
 			mod_id: file.mod_id.clone(),
@@ -193,7 +217,7 @@ pub fn build_semantic_index_with_profile(
 			parse_ok: file.parse_issues.is_empty(),
 		});
 		index.parse_issues.extend(file.parse_issues.clone());
-		build_file_index(file, &map_groups, cwt_schema_graph, &mut index);
+		build_file_index(file, &map_groups, cwt_rule_engine, &mut index);
 	}
 	infer_definition_scope_from_references(&mut index);
 	infer_definition_dynamic_alias_masks_from_references(&mut index);
@@ -201,17 +225,17 @@ pub fn build_semantic_index_with_profile(
 	index
 }
 
-fn cwt_schema_graph_for_profile(profile: &dyn GameProfile) -> Option<&'static CwtSchemaGraph> {
+fn cwt_rule_engine_for_profile(profile: &dyn GameProfile) -> Option<&'static RuleEngine> {
 	match profile.game_id() {
-		GameId::Eu4 => eu4_cwt_schema_graph(),
+		GameId::Eu4 => eu4_cwt_rule_engine(),
 	}
 }
 
-fn eu4_cwt_schema_graph() -> Option<&'static CwtSchemaGraph> {
-	static EU4_CWT_SCHEMA_GRAPH: OnceLock<Option<CwtSchemaGraph>> = OnceLock::new();
-	EU4_CWT_SCHEMA_GRAPH
-		.get_or_init(load_eu4_cwt_schema_graph)
-		.as_ref()
+fn eu4_cwt_rule_engine() -> Option<&'static RuleEngine> {
+	static EU4_CWT_RULE_ENGINE: OnceLock<Option<Arc<RuleEngine>>> = OnceLock::new();
+	EU4_CWT_RULE_ENGINE
+		.get_or_init(load_eu4_cwt_rule_engine)
+		.as_deref()
 }
 
 /// Resolve the semantic role of a concrete script block in the active EU4 CWT schema.
@@ -221,18 +245,25 @@ pub fn script_container_scope_kind(
 	ast_path: &[&str],
 ) -> Option<ScopeKind> {
 	let key = *ast_path.last()?;
-	eu4_cwt_schema_graph()
-		.and_then(|graph| {
-			cwt_path_container_scope_kind(graph, file_kind.clone(), file_path, ast_path)
+	eu4_cwt_rule_engine()
+		.and_then(|engine| {
+			cwt_path_container_scope_kind(engine, file_kind.clone(), file_path, ast_path)
 		})
 		.or_else(|| hand_container_scope_fallback(file_kind, key))
 }
 
-fn load_eu4_cwt_schema_graph() -> Option<CwtSchemaGraph> {
-	cwt_schema_search_roots()
+fn load_eu4_cwt_rule_engine() -> Option<Arc<RuleEngine>> {
+	let root = cwt_schema_search_roots()
 		.into_iter()
-		.find(|root| root.is_dir())
-		.and_then(|root| CwtSchemaGraph::from_directory(&root).ok())
+		.find(|root| root.is_dir())?;
+	let cache_dir = default_compiled_rule_cache_dir();
+	load_rule_engine_from_dir(
+		&root,
+		SchemaSource::UserProvided { path: root.clone() },
+		Some(&cache_dir),
+	)
+	.ok()
+	.map(|load| load.engine)
 }
 
 fn cwt_schema_search_roots() -> Vec<PathBuf> {
@@ -254,7 +285,7 @@ fn cwt_schema_search_roots() -> Vec<PathBuf> {
 fn build_file_index(
 	file: &ParsedScriptFile,
 	map_groups: &MapGroupLookup,
-	cwt_schema_graph: Option<&CwtSchemaGraph>,
+	cwt_rule_engine: Option<&RuleEngine>,
 	index: &mut SemanticIndex,
 ) {
 	let mut aliases = HashMap::new();
@@ -287,7 +318,7 @@ fn build_file_index(
 		path: &file.relative_path,
 		content_family: file.content_family,
 		file_kind: file.file_kind.clone(),
-		cwt_schema_graph,
+		cwt_rule_engine,
 		module_name: &file.module_name,
 		source: &file.source,
 		map_groups,
@@ -338,7 +369,7 @@ struct BuildContext<'a> {
 	path: &'a Path,
 	content_family: Option<&'static ContentFamilyDescriptor>,
 	file_kind: CwtType,
-	cwt_schema_graph: Option<&'a CwtSchemaGraph>,
+	cwt_rule_engine: Option<&'a RuleEngine>,
 	module_name: &'a str,
 	source: &'a str,
 	map_groups: &'a MapGroupLookup,
@@ -628,7 +659,7 @@ fn handle_event_block(
 		path: ctx.path,
 		content_family: ctx.content_family,
 		file_kind: ctx.file_kind.clone(),
-		cwt_schema_graph: ctx.cwt_schema_graph,
+		cwt_rule_engine: ctx.cwt_rule_engine,
 		module_name: ctx.module_name,
 		source: ctx.source,
 		map_groups: ctx.map_groups,
@@ -1328,10 +1359,15 @@ fn create_child_scope(
 	let mut kind = ScopeKind::Block;
 	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
-	let cwt_path_scope_kind = ctx.cwt_schema_graph.and_then(|graph| {
+	let cwt_path_scope_kind = ctx.cwt_rule_engine.and_then(|engine| {
 		let path = scope_assignment_path(index, parent_scope_id, key);
 		let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
-		cwt_path_container_scope_kind(graph, ctx.file_kind.clone(), ctx.path, path_refs.as_slice())
+		cwt_path_container_scope_kind(
+			engine,
+			ctx.file_kind.clone(),
+			ctx.path,
+			path_refs.as_slice(),
+		)
 	});
 
 	if is_on_actions_callback_root(ctx.file_kind.clone(), parent_scope_id, index, key) {
@@ -1364,9 +1400,9 @@ fn create_child_scope(
 	) {
 		kind = ScopeKind::Effect;
 	} else if let Some(file_kind_scope_kind) = cwt_path_scope_kind.or_else(|| {
-		ctx.cwt_schema_graph.map_or_else(
+		ctx.cwt_rule_engine.map_or_else(
 			|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
-			|graph| cwt_file_kind_container_scope_kind(graph, ctx.file_kind.clone(), key),
+			|engine| cwt_file_kind_container_scope_kind(engine, ctx.file_kind.clone(), key),
 		)
 	}) {
 		kind = file_kind_scope_kind;

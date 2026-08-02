@@ -1,41 +1,31 @@
-use crate::{ConflictKind, NormalizedNode, RevisionId};
+use crate::{ClassId, ConflictKind, NormalizedNode, RevisionId, RevisionNode};
 
 #[derive(Clone, Copy, Debug)]
-pub struct DeleteUnchangedContext<'a> {
-	pub base: &'a NormalizedNode,
-	pub present: &'a NormalizedNode,
-	pub deleted_revision: RevisionId,
-	pub present_revision: RevisionId,
-	pub parent_present_in_both_revisions: bool,
-	pub present_parent_changed_from_base: bool,
-	pub deleted_parent_has_same_kind_gap_replacement: bool,
-	pub base_parent: Option<&'a NormalizedNode>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct DeleteModifyContext<'a> {
-	pub base: &'a NormalizedNode,
-	pub present: &'a NormalizedNode,
-	pub deleted_revision: RevisionId,
-	pub present_revision: RevisionId,
-	pub content_changed: bool,
+pub struct NWayNodeView<'a> {
+	pub source: RevisionNode,
+	pub node: &'a NormalizedNode,
+	pub parent: Option<&'a NormalizedNode>,
+	pub shallow_changed: bool,
+	pub subtree_changed: bool,
 	pub reparented: bool,
 	pub reordered: bool,
+	pub parent_changed_from_base: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct NodeConflictContext<'a> {
+pub struct NWayClassContext<'a> {
+	pub class: ClassId,
 	pub kind: ConflictKind,
-	pub base: Option<&'a NormalizedNode>,
-	pub left: Option<&'a NormalizedNode>,
-	pub right: Option<&'a NormalizedNode>,
+	pub base: Option<NWayNodeView<'a>>,
+	pub contributors: &'a [NWayNodeView<'a>],
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct ChildSetContext<'a> {
-	pub base: Option<&'a NormalizedNode>,
-	pub left: Option<&'a NormalizedNode>,
-	pub right: Option<&'a NormalizedNode>,
+pub struct NWayDeleteContext<'a> {
+	pub class: NWayClassContext<'a>,
+	pub deleted_by: &'a [RevisionId],
+	pub parent_present_in_all_revisions: bool,
+	pub deleted_parent_has_same_kind_gap_replacement: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -47,13 +37,25 @@ pub enum PolicyDecision {
 }
 
 pub trait MergePolicy {
-	/// Resolve a one-sided deletion of an otherwise unchanged node in favor of
-	/// the present revision. The default keeps ordinary three-way delete wins.
-	fn resolve_delete_unchanged(&self, _context: DeleteUnchangedContext<'_>) -> PolicyDecision {
+	fn resolve_nway_delete(&self, _context: NWayDeleteContext<'_>) -> PolicyDecision {
 		PolicyDecision::Unresolved
 	}
 
-	fn resolve_delete_modify(&self, _context: DeleteModifyContext<'_>) -> PolicyDecision {
+	/// Preserve one surviving revision's complete subtree when another
+	/// revision deleted the matched semantic unit.
+	fn select_nway_deleted_subtree(&self, _context: NWayDeleteContext<'_>) -> Option<RevisionId> {
+		None
+	}
+
+	fn select_nway_subtree(&self, _context: NWayClassContext<'_>) -> Option<RevisionId> {
+		None
+	}
+
+	fn select_nway_children(&self, _context: NWayClassContext<'_>) -> Option<RevisionId> {
+		None
+	}
+
+	fn resolve_nway_divergent_node(&self, _context: NWayClassContext<'_>) -> PolicyDecision {
 		PolicyDecision::Unresolved
 	}
 
@@ -61,27 +63,6 @@ pub trait MergePolicy {
 	/// preserved descendant remains reachable from the merged root.
 	fn permits_ancestor_closure(&self, _node: &NormalizedNode) -> bool {
 		false
-	}
-
-	/// Select one revision's complete subtree for an atomic node. This runs
-	/// before node-level conflict selection and child PCS reconstruction.
-	fn select_subtree_revision(&self, _context: ChildSetContext<'_>) -> Option<RevisionId> {
-		None
-	}
-
-	fn select_child_revision(&self, _context: ChildSetContext<'_>) -> Option<RevisionId> {
-		None
-	}
-
-	/// Resolve a divergent matched node. Scalar synthesis changes only the
-	/// selected node's value and retains all matched revisions as provenance.
-	fn resolve_divergent_node(&self, context: NodeConflictContext<'_>) -> PolicyDecision {
-		self.select_divergent_node(context)
-			.map_or(PolicyDecision::Unresolved, PolicyDecision::Select)
-	}
-
-	fn select_divergent_node(&self, _context: NodeConflictContext<'_>) -> Option<RevisionId> {
-		None
 	}
 }
 

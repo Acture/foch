@@ -115,7 +115,7 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 
 	unsafe {
 		std::env::set_var("FOCH_DATA_DIR", &data_root);
-		std::env::set_var("FOCH_MODSET_CACHE_DIR", &cache_root);
+		std::env::set_var("FOCH_CACHE_ROOT", &cache_root);
 	}
 	let game = Game::EuropaUniversalis4;
 	let built = build_base_snapshot(
@@ -191,6 +191,6 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 
 	unsafe {
 		std::env::remove_var("FOCH_DATA_DIR");
-		std::env::remove_var("FOCH_MODSET_CACHE_DIR");
+		std::env::remove_var("FOCH_CACHE_ROOT");
 	}
 }

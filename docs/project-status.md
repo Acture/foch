@@ -1,10 +1,35 @@
 # Project Status
 
-Last updated: 2026-07-23
+Last updated: 2026-08-02
 
 ## Summary
 
 `foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is organized as a workspace monorepo. The near-term public surface is now LSP-first: VS Code/LSP can advance to a `0.1.0` preview on editor usability while the merge engine remains explicitly experimental.
+
+## 2026-08-02 architecture checkpoint
+
+The production structural path now runs both two-revision and multi-revision
+joins through the same N-way `TreeMergeKernel`. The separate three-way kernel
+and its binary-only policy hooks have been deleted. CWT runtime binding now uses
+the compiled, indexed `RuleEngine` across LSP analysis and merge guidance; the
+raw graph binder, duplicate validator surface, and unwired syntax-bridge
+experiment have been removed.
+
+Cache configuration is now one-root only (`FOCH_CACHE_ROOT`). Every persisted
+format uses a SemVer generation parsed by the `semver` crate; obsolete
+generations are deleted rather than decoded or migrated. The parser cache uses
+SHA-256 content addresses over parser mode and source bytes with bincode
+payloads, while mod-snapshot construction bypasses that per-file cache when the
+outer content-addressed mod cache is active. Base snapshots accept only the
+`1.0.0` `snapshot.bin` wire format. See
+[`cache-architecture.md`](./cache-architecture.md).
+
+Focused kernel, CWT, structured-merge, parser-cache, engine-cache, and base
+snapshot tests are green at this checkpoint. No full corpus or full workspace
+gate has been run, so published merge-quality counts below are unchanged. A
+single-file cold/warm mod-snapshot regression now finishes in 6.51 seconds
+without touching the user parser cache; most of that remaining cold cost is CWT
+runtime initialization and remains a performance target.
 
 ## LSP-first 0.1 preview
 

@@ -5,10 +5,11 @@
 //! playset content identity: ordered per-mod content hashes, resolution-map
 //! bytes hash, foch version, and game version.
 
-use super::mod_parse_cache::{CacheError, default_foch_cache_dir};
+use super::mod_parse_cache::CacheError;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use foch_core::cache::default_foch_cache_dir;
 use foch_core::model::MergeReport;
 use std::fs;
 use std::io;
@@ -18,13 +19,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tar::{Archive, Builder};
 use walkdir::WalkDir;
 
-const CACHE_ENV: &str = "FOCH_MODSET_CACHE_DIR";
 const MODSETS_DIR_NAME: &str = "modsets";
 static CACHE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug)]
 pub struct ModsetCache {
-	root: PathBuf,
+	layer_root: PathBuf,
 	entries_dir: PathBuf,
 }
 
@@ -53,10 +53,10 @@ pub struct CacheStats {
 
 impl ModsetCache {
 	pub fn open(cache_dir: &Path) -> Self {
-		let entries_dir = cache_dir.join(MODSETS_DIR_NAME);
+		let layer_root = cache_dir.join(MODSETS_DIR_NAME);
 		let cache = Self {
-			root: cache_dir.to_path_buf(),
-			entries_dir,
+			entries_dir: layer_root.clone(),
+			layer_root,
 		};
 		let _ = fs::create_dir_all(cache.entries_dir());
 		cache
@@ -67,14 +67,14 @@ impl ModsetCache {
 	}
 
 	pub fn open_versioned(cache_dir: &Path, version: &str) -> Result<Self, CacheError> {
-		let root = cache_dir.to_path_buf();
-		let all_entries_dir = root.join(MODSETS_DIR_NAME);
-		fs::create_dir_all(&all_entries_dir).map_err(CacheError::Io)?;
-		let namespace = cache_version_namespace(version)?;
-		let entries_dir = all_entries_dir.join(&namespace);
+		let layer_root = cache_dir.join(MODSETS_DIR_NAME);
+		fs::create_dir_all(&layer_root).map_err(CacheError::Io)?;
+		let namespace =
+			foch_core::cache::cache_version_namespace(version).map_err(CacheError::Io)?;
+		let entries_dir = layer_root.join(&namespace);
 		fs::create_dir_all(&entries_dir).map_err(CacheError::Io)?;
 
-		let cleanup = remove_obsolete_version_entries(&all_entries_dir, &namespace)?;
+		let cleanup = remove_obsolete_version_entries(&layer_root, &namespace)?;
 		if cleanup.removed_items > 0 {
 			tracing::info!(
 				cache_version = version,
@@ -84,19 +84,22 @@ impl ModsetCache {
 			);
 		}
 
-		Ok(Self { root, entries_dir })
+		Ok(Self {
+			layer_root,
+			entries_dir,
+		})
 	}
 
 	pub fn open_default_versioned(version: &str) -> Result<Self, CacheError> {
 		Self::open_versioned(&default_modset_cache_root_dir(), version)
 	}
 
-	pub fn root(&self) -> &Path {
-		&self.root
+	pub(crate) fn layer_root(&self) -> &Path {
+		&self.layer_root
 	}
 
-	pub fn entries_dir(&self) -> PathBuf {
-		self.entries_dir.clone()
+	pub fn entries_dir(&self) -> &Path {
+		&self.entries_dir
 	}
 
 	pub fn lookup(&self, key: &str) -> Option<CachedModsetResult> {
@@ -163,7 +166,7 @@ impl ModsetCache {
 			remove_if_exists(&entry.report_path)?;
 			purged += 1;
 		}
-		prune_empty_dirs(&self.entries_dir());
+		prune_empty_dirs(self.entries_dir());
 		Ok(purged)
 	}
 
@@ -174,14 +177,14 @@ impl ModsetCache {
 			return Ok(entries);
 		}
 		let mut tarballs = Vec::new();
-		collect_tarballs(&root, &mut tarballs)?;
+		collect_tarballs(root, &mut tarballs)?;
 		for path in tarballs {
 			let Some(key) = tarball_key(&path) else {
 				continue;
 			};
 			let report_path = path
 				.parent()
-				.unwrap_or(&root)
+				.unwrap_or(root)
 				.join(format!("{key}.report.json"));
 			if !report_path.is_file() {
 				continue;
@@ -222,28 +225,11 @@ impl ModsetCache {
 }
 
 pub fn default_modset_cache_root_dir() -> PathBuf {
-	if let Ok(override_dir) = std::env::var(CACHE_ENV) {
-		return PathBuf::from(override_dir);
-	}
 	default_foch_cache_dir()
 }
 
 pub fn default_modset_cache_dir() -> PathBuf {
 	default_modset_cache_root_dir().join(MODSETS_DIR_NAME)
-}
-
-fn cache_version_namespace(version: &str) -> Result<String, CacheError> {
-	if version.is_empty()
-		|| !version
-			.chars()
-			.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-	{
-		return Err(CacheError::Io(io::Error::new(
-			io::ErrorKind::InvalidInput,
-			format!("invalid modset cache version: {version:?}"),
-		)));
-	}
-	Ok(format!("v{version}"))
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -838,17 +824,16 @@ mod tests {
 	}
 
 	#[test]
-	fn versioned_cache_removes_legacy_and_obsolete_versions() {
+	fn versioned_cache_removes_flat_entries_and_obsolete_versions() {
 		let root = cache_root("modset-version-lifecycle");
 		let out = write_out_dir("effect = { add_prestige = 1 }\n");
 		let report = sample_report();
-		let legacy = ModsetCache::open(&root);
-		legacy
-			.store("legacy", out.path(), &report)
-			.expect("store legacy entry");
+		let flat = ModsetCache::open(&root);
+		flat.store("flat", out.path(), &report)
+			.expect("store flat entry");
 
 		let old = ModsetCache::open_versioned(&root, "11.4.0").expect("open old version");
-		assert!(legacy.lookup("legacy").is_none());
+		assert!(flat.lookup("flat").is_none());
 		old.store("old", out.path(), &report)
 			.expect("store old version entry");
 

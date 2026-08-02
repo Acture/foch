@@ -11,7 +11,6 @@ repository.workspace = true
 blake3 = "1.5.5"
 bincode.workspace = true
 rkyv.workspace = true
-console.workspace = true
 dirs.workspace = true
 flate2.workspace = true
 globset.workspace = true
@@ -19,7 +18,6 @@ foch-core = { path = "../foch-core" }
 foch-cwt = { path = "../foch-cwt" }
 foch-language = { path = "../foch-language" }
 foch-merge-kernel = { path = "../foch-merge-kernel" }
-atty = "0.2"
 rayon.workspace = true
 reqwest.workspace = true
 remove_dir_all.workspace = true
@@ -38,9 +36,6 @@ walkdir.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
-bincode2 = { package = "bincode", version = "2.0.0-rc.3", features = ["serde"] }
-bitcode = { version = "0.6", features = ["serde"] }
 filetime = "0.2"
 foch-core = { path = "../foch-core", features = ["test-utils"] }
-postcard = { version = "1", features = ["alloc"] }
 tempfile.workspace = true

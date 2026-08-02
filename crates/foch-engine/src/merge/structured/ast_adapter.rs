@@ -7,8 +7,8 @@ use foch_language::analyzer::parser::{
 	AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange,
 };
 use foch_merge_kernel::{
-	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, SemanticKey, TreeError,
-	TreeNode,
+	ChildCardinality, ChildOrder, NWayMergeError, NodeId, NormalizedNode, NormalizedTree,
+	SemanticKey, TreeError, TreeNode,
 };
 
 use super::policy::ClausewitzTreePolicy;
@@ -26,6 +26,7 @@ const BOOL_KIND: &str = "clausewitz.scalar.bool";
 #[derive(Debug)]
 pub enum AstAdapterError {
 	Kernel(TreeError),
+	Merge(NWayMergeError),
 	InvalidTree(String),
 	DuplicateControlFlowGuard(String),
 	UnprovableControlFlow(String),
@@ -35,6 +36,7 @@ impl fmt::Display for AstAdapterError {
 	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
 			Self::Kernel(error) => write!(formatter, "normalized tree error: {error}"),
+			Self::Merge(error) => write!(formatter, "normalized tree merge error: {error}"),
 			Self::InvalidTree(message) => {
 				write!(formatter, "invalid Clausewitz merge tree: {message}")
 			}
@@ -58,6 +60,7 @@ impl Error for AstAdapterError {
 	fn source(&self) -> Option<&(dyn Error + 'static)> {
 		match self {
 			Self::Kernel(error) => Some(error),
+			Self::Merge(error) => Some(error),
 			Self::InvalidTree(_)
 			| Self::DuplicateControlFlowGuard(_)
 			| Self::UnprovableControlFlow(_) => None,
@@ -68,6 +71,12 @@ impl Error for AstAdapterError {
 impl From<TreeError> for AstAdapterError {
 	fn from(error: TreeError) -> Self {
 		Self::Kernel(error)
+	}
+}
+
+impl From<NWayMergeError> for AstAdapterError {
+	fn from(error: NWayMergeError) -> Self {
+		Self::Merge(error)
 	}
 }
 
@@ -342,6 +351,83 @@ pub(super) fn denormalize_statement(
 			id.get()
 		))),
 	}
+}
+
+pub(crate) fn top_level_assignment_key(
+	tree: &NormalizedTree,
+	mut id: NodeId,
+) -> Result<Option<&str>, TreeError> {
+	loop {
+		let node = tree.node(id)?;
+		let Some(parent) = node.parent else {
+			return Ok(None);
+		};
+		if parent == tree.root() {
+			return Ok(node
+				.kind
+				.starts_with(ASSIGNMENT_KIND_PREFIX)
+				.then_some(node.value.as_deref())
+				.flatten());
+		}
+		id = parent;
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SemanticNodeAddress {
+	pub path: Vec<String>,
+	pub key: Option<String>,
+}
+
+pub(crate) fn semantic_node_address(
+	tree: &NormalizedTree,
+	node: NodeId,
+) -> Result<SemanticNodeAddress, TreeError> {
+	let original = tree.node(node)?;
+	let target = if is_statement_node(original) {
+		Some(node)
+	} else {
+		original
+			.parent
+			.filter(|parent| tree.node(*parent).is_ok_and(is_statement_node))
+	};
+	let Some(target) = target else {
+		return Ok(SemanticNodeAddress {
+			path: original
+				.policy_path
+				.split_last()
+				.map_or_else(Vec::new, |(_, path)| path.to_vec()),
+			key: original.policy_path.last().cloned(),
+		});
+	};
+
+	let mut path = Vec::new();
+	let mut current = tree.node(target)?.parent;
+	while let Some(node) = current {
+		let normalized = tree.node(node)?;
+		if is_statement_node(normalized)
+			&& let Some(label) = semantic_statement_label(normalized)
+		{
+			path.push(label.to_string());
+		}
+		current = normalized.parent;
+	}
+	path.reverse();
+	Ok(SemanticNodeAddress {
+		path,
+		key: semantic_statement_label(tree.node(target)?).map(str::to_string),
+	})
+}
+
+fn is_statement_node(node: &NormalizedNode) -> bool {
+	node.kind.starts_with(ASSIGNMENT_KIND_PREFIX) || node.kind == ITEM_KIND
+}
+
+fn semantic_statement_label(node: &NormalizedNode) -> Option<&str> {
+	node.anchor
+		.as_ref()
+		.map(|anchor| anchor.value.as_str())
+		.or(node.value.as_deref())
 }
 
 pub(super) fn denormalize_only_value_child(

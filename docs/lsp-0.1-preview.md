@@ -8,7 +8,7 @@ This document defines the first public VS Code/LSP preview surface. It is intent
 
 Foch LSP should not compete on validator count. It should compete on a better EU4 editing experience and on Foch-native semantics: modlist-aware symbol graphs, contributor/provenance context, merge-risk signals, and eventually code actions that connect editor findings to merge/corpus workflows.
 
-Foch uses CWT schema data, including `cwtools-eu4-config`, as one input. It does not embed the CWTools VS Code extension or CWTools' validator engine. The current implementation parses `.cwt` files into Foch's own `CwtSchemaGraph`, binds schema context inside the Rust LSP, and emits a deliberately small set of editor diagnostics and completions. That distinction matters: CWT is the schema language/data source; CWTools is another product built on that ecosystem.
+Foch uses CWT schema data, including `cwtools-eu4-config`, as one input. It does not embed the CWTools VS Code extension or CWTools' validator engine. The current implementation parses `.cwt` files into Foch's schema graph, compiles that graph into the indexed Rust `RuleEngine`, and uses the compiled runtime for LSP binding, diagnostics, and completions. That distinction matters: CWT is the schema language/data source; CWTools is another product built on that ecosystem.
 
 CWTools' public README and Marketplace page list multi-game support, syntax errors, autocomplete, hover/tooltips, validators, go-to-definition, find-references, and missing-localisation code actions. Treat that as a feature-breadth benchmark, not as the target user experience: [cwtools-vscode](https://github.com/cwtools/cwtools-vscode), [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=tboby.cwtools-vscode).
 

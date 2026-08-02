@@ -305,6 +305,10 @@ impl NormalizedTree {
 		self.nodes.is_empty()
 	}
 
+	pub fn semantically_equivalent(&self, other: &Self) -> bool {
+		equivalent_subtrees(self, self.root, other, other.root)
+	}
+
 	pub fn to_debug_json(&self) -> Result<String, serde_json::Error> {
 		serde_json::to_string_pretty(self)
 	}
@@ -360,6 +364,65 @@ impl NormalizedTree {
 			node.subtree_hash = subtree_hash;
 			node.height = height;
 			node.descendant_count = descendant_count;
+		}
+	}
+}
+
+fn equivalent_subtrees(
+	left_tree: &NormalizedTree,
+	left_id: NodeId,
+	right_tree: &NormalizedTree,
+	right_id: NodeId,
+) -> bool {
+	let left = left_tree
+		.node(left_id)
+		.expect("semantic equivalence receives a node from the left tree");
+	let right = right_tree
+		.node(right_id)
+		.expect("semantic equivalence receives a node from the right tree");
+	if left.kind != right.kind
+		|| left.value != right.value
+		|| left.anchor != right.anchor
+		|| left.signature != right.signature
+		|| left.child_order != right.child_order
+		|| left.child_cardinality != right.child_cardinality
+		|| left.children.len() != right.children.len()
+	{
+		return false;
+	}
+	match left.child_order {
+		ChildOrder::Ordered => left
+			.children
+			.iter()
+			.zip(&right.children)
+			.all(|(left, right)| equivalent_subtrees(left_tree, *left, right_tree, *right)),
+		ChildOrder::Commutative => {
+			let mut matched = vec![false; right.children.len()];
+			left.children.iter().all(|left_child| {
+				right
+					.children
+					.iter()
+					.enumerate()
+					.find(|(index, right_child)| {
+						!matched[*index]
+							&& left_tree
+								.node(*left_child)
+								.expect("left child belongs to its tree")
+								.subtree_hash == right_tree
+								.node(**right_child)
+								.expect("right child belongs to its tree")
+								.subtree_hash && equivalent_subtrees(
+							left_tree,
+							*left_child,
+							right_tree,
+							**right_child,
+						)
+					})
+					.is_some_and(|(index, _)| {
+						matched[index] = true;
+						true
+					})
+			})
 		}
 	}
 }
@@ -531,6 +594,29 @@ mod tests {
 		);
 		assert_eq!(tree.node(NodeId::new(0)).unwrap().height, 2);
 		assert_eq!(tree.node(NodeId::new(0)).unwrap().descendant_count, 3);
+	}
+
+	#[test]
+	fn semantic_equivalence_respects_declared_child_order() {
+		let children = || vec![TreeNode::leaf("field", "a"), TreeNode::leaf("field", "b")];
+		let ordered = NormalizedTree::from_root(TreeNode::branch("root", children())).unwrap();
+		let ordered_reversed = NormalizedTree::from_root(TreeNode::branch(
+			"root",
+			children().into_iter().rev().collect(),
+		))
+		.unwrap();
+		let commutative = NormalizedTree::from_root(
+			TreeNode::branch("root", children()).with_child_order(ChildOrder::Commutative),
+		)
+		.unwrap();
+		let commutative_reversed = NormalizedTree::from_root(
+			TreeNode::branch("root", children().into_iter().rev().collect())
+				.with_child_order(ChildOrder::Commutative),
+		)
+		.unwrap();
+
+		assert!(!ordered.semantically_equivalent(&ordered_reversed));
+		assert!(commutative.semantically_equivalent(&commutative_reversed));
 	}
 
 	#[test]

@@ -69,7 +69,7 @@ fn handle_cache_stats(args: &FochCliCacheStatsArgs) -> HandlerResult {
 			layer.layer().name(),
 			stats.entry_count,
 			format_bytes(stats.total_bytes),
-			layer.layer().path().display()
+			layer.path().display()
 		);
 	}
 	println!(
@@ -230,7 +230,7 @@ fn format_layer_selection(layer: Option<FochCliCacheLayerArg>) -> String {
 		other => selected_layers(Some(other))
 			.into_iter()
 			.next()
-			.map(|layer| layer.layer().path().display().to_string())
+			.map(|layer| layer.path().display().to_string())
 			.unwrap_or_else(|| default_foch_cache_dir().display().to_string()),
 	}
 }
