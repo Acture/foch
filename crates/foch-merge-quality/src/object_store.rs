@@ -140,6 +140,34 @@ impl ObjectStore {
 		Ok(object)
 	}
 
+	/// Open a committed object for measurement without rereading payload bytes.
+	///
+	/// Collection already binds the tree to its content hash. Measurements use
+	/// a complete metadata fingerprint to detect later changes; explicit audits
+	/// and exports remain responsible for full payload verification.
+	pub fn open_object_guarded(&self, hash: &str) -> io::Result<StoredObject> {
+		let opened = self.open_object(hash)?;
+		let metadata_hash = metadata_digest_tree(&opened.tree)?;
+		let stamp_path = self.verification_stamp_path(hash)?;
+		match fs::read(&stamp_path)
+			.ok()
+			.and_then(|bytes| serde_json::from_slice::<VerificationStamp>(&bytes).ok())
+		{
+			Some(stamp)
+				if stamp.schema == VERIFICATION_CACHE_SCHEMA
+					&& stamp.object_hash == hash
+					&& stamp.metadata_hash == metadata_hash => {}
+			Some(_) => {
+				return Err(io::Error::new(
+					ErrorKind::InvalidData,
+					format!("stored object {hash} metadata changed after collection"),
+				));
+			}
+			None => self.write_verification_stamp(hash, &metadata_hash)?,
+		}
+		Ok(opened)
+	}
+
 	fn verification_stamp_path(&self, hash: &str) -> io::Result<PathBuf> {
 		validate_hash(hash)?;
 		Ok(self
@@ -785,6 +813,41 @@ mod tests {
 		);
 		assert_eq!(
 			store.verify_once(&object.hash).unwrap_err().kind(),
+			ErrorKind::InvalidData
+		);
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn guarded_open_seeds_legacy_stamp_and_rejects_metadata_changes() {
+		let source = tempfile::tempdir().unwrap();
+		write_fixture(source.path());
+		let dataset = tempfile::tempdir().unwrap();
+		let objects = dataset.path().join("objects");
+		let work = dataset.path().join("work");
+		let store = ObjectStore::new(&objects, &work);
+		let object = store.snapshot_tree(source.path()).unwrap();
+		fs::remove_file(store.verification_stamp_path(&object.hash).unwrap()).unwrap();
+
+		store.open_object_guarded(&object.hash).unwrap();
+		assert!(
+			store
+				.verification_stamp_path(&object.hash)
+				.unwrap()
+				.is_file()
+		);
+
+		fs::write(
+			object.tree.join("common/governments/example.txt"),
+			b"government = { rank = 20 }\n",
+		)
+		.unwrap();
+		let reopened = ObjectStore::new(objects, work);
+		assert_eq!(
+			reopened
+				.open_object_guarded(&object.hash)
+				.unwrap_err()
+				.kind(),
 			ErrorKind::InvalidData
 		);
 	}

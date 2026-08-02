@@ -343,12 +343,12 @@ pub fn measure(
 	let mut verification_errors = HashMap::new();
 	for (index, hash) in pending_hashes.iter().enumerate() {
 		eprintln!(
-			"[measure] verify object {}/{} {hash} ({})",
+			"[measure] inspect object {}/{} {hash} ({})",
 			index + 1,
 			pending_hashes.len(),
 			progress(index + 1, pending_hashes.len(), started)
 		);
-		if let Err(err) = store.verify_object(hash) {
+		if let Err(err) = store.open_object_guarded(hash) {
 			verification_errors.insert(hash.clone(), err.to_string());
 		}
 	}
