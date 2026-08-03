@@ -402,13 +402,14 @@ fn run_merge_inner(
 		},
 		merge_kernel,
 	)?;
-	if expected_base_snapshot_identity.is_some() && result.report.status == MergeReportStatus::Fatal
-	{
+	if result.report.status == MergeReportStatus::Fatal {
 		return Err(MergeError::WorkspaceResolve {
 			path: playset.to_path_buf(),
-			message: result.report.fatal_reason.clone().unwrap_or_else(|| {
-				"fatal merge while loading the expected base snapshot".to_string()
-			}),
+			message: result
+				.report
+				.fatal_reason
+				.clone()
+				.unwrap_or_else(|| "fatal merge produced no scoreable output".to_string()),
 		});
 	}
 	Ok(result)
@@ -2340,6 +2341,21 @@ mod classify_tests {
 			"descriptor.mod",
 			"name=\"fixture\"\nreplace_path=\"common/governments\"\n",
 		);
+	}
+
+	#[test]
+	fn run_merge_rejects_fatal_report_without_expected_snapshot_identity() {
+		let temp = tempfile::tempdir().expect("test root");
+		let playset = temp.path().join("dlc_load.json");
+		fs::write(&playset, "{ invalid json").expect("write invalid playset");
+
+		let error = run_merge(&playset, &temp.path().join("out"), None, false, None, None)
+			.expect_err("fatal merge output must never be scoreable");
+
+		let MergeError::WorkspaceResolve { message, .. } = error else {
+			panic!("fatal report must become a workspace error");
+		};
+		assert!(!message.is_empty());
 	}
 
 	#[test]
