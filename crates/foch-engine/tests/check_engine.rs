@@ -639,6 +639,38 @@ fn merge_plan_marks_single_contributor_path_as_copy_through() {
 }
 
 #[test]
+fn merge_plan_prunes_empty_structural_mod_layer_before_classification() {
+	let temp = TempDir::new().expect("temp dir");
+	let playlist_path = temp.path().join("playlist.json");
+	let mod_a = temp.path().join("9451");
+	let mod_b = temp.path().join("9452");
+
+	write_dlc_load(&playlist_path, &[("9451", "A"), ("9452", "B")]);
+	write_descriptor(&mod_a, "mod-a", &[]);
+	write_descriptor(&mod_b, "mod-b", &[]);
+	write_script_file(&mod_a, "events/shared.txt", "# intentionally empty\n");
+	write_script_file(
+		&mod_b,
+		"events/shared.txt",
+		"namespace = test\ncountry_event = { id = test.1 }\n",
+	);
+
+	let result = run_merge_plan_no_base(request_for(&playlist_path));
+	let entry = plan_entry_for(&result, "events/shared.txt");
+	assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
+	assert_eq!(entry.contributors.len(), 2);
+	assert_eq!(
+		entry
+			.contributors
+			.iter()
+			.filter(|contributor| contributor.mod_id == "9451")
+			.count(),
+		1,
+		"only the synthetic base derived from the empty mod should remain"
+	);
+}
+
+#[test]
 fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 	let temp = TempDir::new().expect("temp dir");
 	let playlist_path = temp.path().join("playlist.json");

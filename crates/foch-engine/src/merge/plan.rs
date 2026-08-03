@@ -1,8 +1,10 @@
 use super::error::MergeError;
 use super::normalize::normalize_defines_file;
+use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{
-	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace,
+	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceResolveErrorKind,
+	WorkspaceScriptCache, resolve_workspace,
 };
 use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy,
@@ -10,10 +12,9 @@ use foch_core::model::{
 };
 use foch_language::analyzer::content_family::GameProfile;
 use foch_language::analyzer::content_family::{
-	ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
+	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::semantic_index::parse_script_file;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,24 +27,30 @@ pub fn run_merge_plan_with_options(
 	request: CheckRequest,
 	options: MergePlanOptions,
 ) -> MergePlanResult {
-	let workspace = match resolve_workspace(&request, options.include_game_base) {
+	let mut workspace = match resolve_workspace(&request, options.include_game_base) {
 		Ok(workspace) => workspace,
-		Err(err) => {
-			let mut result = MergePlanResult {
-				generated_at: current_generated_at(),
-				include_game_base: options.include_game_base,
-				..MergePlanResult::default()
-			};
-			if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
-				result.push_fatal_error("failed to parse Playset JSON");
-			} else {
-				result.push_fatal_error(err.message);
-			}
-			return result;
-		}
+		Err(err) => return fatal_plan_from_workspace_error(&err, options.include_game_base),
 	};
+	prune_noop_script_contributors(&mut workspace, eu4_profile());
 
 	build_merge_plan_from_workspace(&workspace, options.include_game_base)
+}
+
+pub(crate) fn fatal_plan_from_workspace_error(
+	err: &WorkspaceResolveError,
+	include_game_base: bool,
+) -> MergePlanResult {
+	let mut result = MergePlanResult {
+		generated_at: current_generated_at(),
+		include_game_base,
+		..MergePlanResult::default()
+	};
+	if err.kind == WorkspaceResolveErrorKind::PlaylistFormat {
+		result.push_fatal_error("failed to parse Playset JSON");
+	} else {
+		result.push_fatal_error(err.message.clone());
+	}
+	result
 }
 
 pub(crate) fn build_merge_plan_from_workspace(
@@ -60,6 +67,10 @@ pub(crate) fn build_merge_plan_from_workspace(
 	result.playset_name = workspace.playlist.name.clone();
 
 	let profile = eu4_profile();
+	if let Err(error) = validate_structural_snapshot(workspace, profile) {
+		result.push_fatal_error(error);
+		return result;
+	}
 	result.paths = build_merge_units(workspace, profile);
 	result.strategies = summarize_paths(&result.paths);
 	result
@@ -77,11 +88,21 @@ fn build_merge_units(
 
 	for (path, contributors) in &workspace.file_inventory {
 		let Some(descriptor) = profile.classify_content_family(Path::new(path)) else {
-			regular.push(classify_entry(path, contributors, profile));
+			regular.push(classify_entry(
+				path,
+				contributors,
+				None,
+				&workspace.script_cache,
+			));
 			continue;
 		};
 		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
-			regular.push(classify_entry(path, contributors, profile));
+			regular.push(classify_entry(
+				path,
+				contributors,
+				Some(descriptor),
+				&workspace.script_cache,
+			));
 			continue;
 		};
 		let merge_unit = MergeUnitId {
@@ -101,7 +122,12 @@ fn build_merge_units(
 	}
 
 	for (merge_unit, (policy, inputs)) in modules {
-		regular.push(classify_module_entry(merge_unit, policy, &inputs));
+		regular.push(classify_module_entry(
+			merge_unit,
+			policy,
+			&inputs,
+			&workspace.script_cache,
+		));
 	}
 	regular.sort_by(|left, right| left.output_path().cmp(right.output_path()));
 	regular
@@ -111,6 +137,7 @@ fn classify_module_entry(
 	merge_unit: MergeUnitId,
 	policy: DefinitionModulePolicy,
 	inputs: &ModuleInputs<'_>,
+	script_cache: &WorkspaceScriptCache,
 ) -> MergePlanEntry {
 	let input_paths = inputs
 		.iter()
@@ -131,7 +158,7 @@ fn classify_module_entry(
 	let strategy = inputs
 		.iter()
 		.find_map(|(input_path, contributors)| {
-			validate_structural_merge_inputs(input_path, contributors).err()
+			validate_structural_merge_inputs(input_path, contributors, script_cache).err()
 		})
 		.map_or(MergePlanStrategy::StructuralMerge, |error| {
 			notes.push(error.to_string());
@@ -160,7 +187,8 @@ fn classify_module_entry(
 fn classify_entry(
 	path: &str,
 	contributors: &[ResolvedFileContributor],
-	profile: &dyn GameProfile,
+	descriptor: Option<&ContentFamilyDescriptor>,
+	script_cache: &WorkspaceScriptCache,
 ) -> MergePlanEntry {
 	let contributors_out: Vec<MergePlanContributor> =
 		contributors.iter().map(to_merge_contributor).collect();
@@ -169,8 +197,8 @@ fn classify_entry(
 
 	let strategy = if contributors.len() == 1 {
 		MergePlanStrategy::CopyThrough
-	} else if is_structural_merge_path(path, profile) {
-		match validate_structural_merge_inputs(path, contributors) {
+	} else if is_structural_merge_path(path, descriptor) {
+		match validate_structural_merge_inputs(path, contributors, script_cache) {
 			Ok(()) => MergePlanStrategy::StructuralMerge,
 			Err(err) => {
 				notes.push(err.to_string());
@@ -246,44 +274,39 @@ fn current_generated_at() -> String {
 fn validate_structural_merge_inputs(
 	path: &str,
 	contributors: &[ResolvedFileContributor],
+	script_cache: &WorkspaceScriptCache,
 ) -> Result<(), MergeError> {
 	let mut failures = Vec::new();
 	let is_defines_path = path.to_ascii_lowercase().starts_with("common/defines/");
 
 	for contributor in contributors {
-		if let Some(parse_ok) = contributor.parse_ok_hint {
-			if parse_ok {
-				if !is_defines_path {
-					continue;
-				}
-			} else if contributor.is_base_game {
+		let Some(parse_ok) = contributor.parse_ok_hint else {
+			failures.push(format!(
+				"missing cached parse status for {}",
+				contributor.mod_id
+			));
+			continue;
+		};
+		if !parse_ok {
+			if contributor.is_base_game {
 				failures.push(format!("base game parse issues in {}", contributor.mod_id));
-				continue;
 			} else {
 				failures.push(format!("cached parse issues in {}", contributor.mod_id));
-				continue;
 			}
+			continue;
 		}
-
-		match parse_script_file(
-			&contributor.mod_id,
-			&contributor.root_path,
-			&contributor.absolute_path,
-		) {
-			Some(parsed) if parsed.parse_issues.is_empty() => {
-				if is_defines_path && let Err(err) = normalize_defines_file(&parsed) {
-					failures.push(format!(
-						"non-normalizable defines in {}: {}",
-						contributor.mod_id, err
-					));
-				}
-			}
-			Some(parsed) => failures.push(format!(
-				"{} parse issues in {}",
-				parsed.parse_issues.len(),
-				contributor.mod_id
-			)),
-			None => failures.push(format!("unable to parse {}", contributor.mod_id)),
+		if !is_defines_path {
+			continue;
+		}
+		let Some(parsed) = script_cache.get(&contributor.mod_id, Path::new(path)) else {
+			failures.push(format!("missing cached AST for {}", contributor.mod_id));
+			continue;
+		};
+		if let Err(err) = normalize_defines_file(parsed) {
+			failures.push(format!(
+				"non-normalizable defines in {}: {}",
+				contributor.mod_id, err
+			));
 		}
 	}
 
@@ -300,14 +323,91 @@ fn validate_structural_merge_inputs(
 	}
 }
 
-fn is_structural_merge_path(path: &str, profile: &dyn GameProfile) -> bool {
+fn is_structural_merge_path(path: &str, descriptor: Option<&ContentFamilyDescriptor>) -> bool {
 	if !is_text_like_overlay_path(path) {
 		return false;
 	}
-	profile
-		.classify_content_family(Path::new(path))
-		.and_then(|d| d.merge_key_source)
+	descriptor
+		.and_then(|descriptor| descriptor.merge_key_source)
 		.is_some()
+}
+
+fn validate_structural_snapshot(
+	workspace: &ResolvedWorkspace,
+	profile: &dyn GameProfile,
+) -> Result<(), String> {
+	for (path, contributors) in &workspace.file_inventory {
+		let descriptor = profile.classify_content_family(Path::new(path));
+		if !is_structural_merge_path(path, descriptor) {
+			continue;
+		}
+		for contributor in contributors {
+			let missing_status = contributor.parse_ok_hint.is_none();
+			let missing_ast = workspace
+				.script_cache
+				.get(&contributor.mod_id, Path::new(path))
+				.is_none();
+			if !missing_status && !missing_ast {
+				continue;
+			}
+			let missing = match (missing_status, missing_ast) {
+				(true, true) => "parse status and cached AST",
+				(true, false) => "parse status",
+				(false, true) => "cached AST",
+				(false, false) => unreachable!(),
+			};
+			let repair = if contributor.is_base_game {
+				"foch data build eu4 --from-game-path <EU4_ROOT> --game-version auto --install"
+			} else {
+				"foch cache clear --layer mods --yes"
+			};
+			return Err(format!(
+				"structural merge snapshot invariant violated for {path} from {}: missing {missing}; run `{repair}` and retry",
+				contributor.mod_id
+			));
+		}
+	}
+	Ok(())
+}
+
+pub(crate) fn prune_noop_script_contributors(
+	workspace: &mut ResolvedWorkspace,
+	profile: &dyn GameProfile,
+) {
+	let script_cache = &workspace.script_cache;
+	workspace
+		.file_inventory
+		.retain(|relative_path, contributors| {
+			let descriptor = profile.classify_content_family(Path::new(relative_path));
+			if descriptor.is_some_and(|descriptor| {
+				matches!(
+					descriptor.load_policy,
+					ContentLoadPolicy::DefinitionModule(_)
+				)
+			}) {
+				return true;
+			}
+			if !is_structural_merge_path(relative_path, descriptor) {
+				return true;
+			}
+			contributors.retain(|contributor| {
+				contributor.is_base_game
+					|| contributor.is_synthetic_base
+					|| !is_noop_script_contributor(contributor, relative_path, script_cache)
+			});
+			!contributors.is_empty()
+		});
+}
+
+fn is_noop_script_contributor(
+	contributor: &ResolvedFileContributor,
+	relative_path: &str,
+	script_cache: &WorkspaceScriptCache,
+) -> bool {
+	let Some(parsed) = script_cache.get(&contributor.mod_id, Path::new(relative_path)) else {
+		return false;
+	};
+	parsed.parse_issues.is_empty() && !ast_statement_list_has_real_content(&parsed.ast.statements)
 }
 
 fn is_text_like_overlay_path(path: &str) -> bool {
@@ -337,4 +437,84 @@ pub(crate) fn is_localisation_yml_path(path: &str) -> bool {
 		return false;
 	};
 	matches!(ext, "yml" | "yaml")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::build_merge_plan_from_workspace;
+	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
+	use foch_core::domain::game::Game;
+	use foch_core::domain::playlist::Playlist;
+	use std::collections::BTreeMap;
+	use std::path::PathBuf;
+
+	fn workspace_with_snapshot_gap(
+		mod_id: &str,
+		is_base_game: bool,
+		parse_ok_hint: Option<bool>,
+	) -> ResolvedWorkspace {
+		let root_path = PathBuf::from(mod_id);
+		let mut file_inventory = BTreeMap::new();
+		file_inventory.insert(
+			"events/test.txt".to_string(),
+			vec![ResolvedFileContributor {
+				mod_id: mod_id.to_string(),
+				root_path: root_path.clone(),
+				absolute_path: root_path.join("events/test.txt"),
+				precedence: usize::from(!is_base_game),
+				is_base_game,
+				is_synthetic_base: false,
+				parse_ok_hint,
+				mod_hash: (!is_base_game).then(|| format!("hash-{mod_id}")),
+			}],
+		);
+		ResolvedWorkspace {
+			playlist_path: PathBuf::from("playlist.json"),
+			playlist: Playlist {
+				game: Game::EuropaUniversalis4,
+				name: "snapshot-gap".to_string(),
+				mods: Vec::new(),
+			},
+			mods: Vec::new(),
+			installed_base_snapshot: None,
+			cache_game_version: None,
+			mod_snapshots: Vec::new(),
+			script_cache: Default::default(),
+			file_inventory,
+			requested_retained_paths: None,
+			effective_retained_paths: None,
+		}
+	}
+
+	#[test]
+	fn missing_mod_parse_status_is_a_fatal_snapshot_invariant() {
+		let workspace = workspace_with_snapshot_gap("mod-a", false, None);
+
+		let result = build_merge_plan_from_workspace(&workspace, false);
+
+		assert!(result.has_fatal_errors());
+		assert!(result.paths.is_empty());
+		assert!(
+			result
+				.fatal_errors
+				.iter()
+				.any(|error| error.contains("foch cache clear --layer mods --yes"))
+		);
+	}
+
+	#[test]
+	fn missing_base_ast_is_a_fatal_snapshot_invariant() {
+		let workspace = workspace_with_snapshot_gap("__game__", true, Some(true));
+
+		let result = build_merge_plan_from_workspace(&workspace, true);
+
+		assert!(result.has_fatal_errors());
+		assert!(result.paths.is_empty());
+		assert!(
+			result
+				.fatal_errors
+				.iter()
+				.any(|error| { error.contains("foch data build eu4 --from-game-path <EU4_ROOT>") })
+		);
+	}
 }

@@ -340,9 +340,8 @@ pub fn run(opts: &RunOptions) -> CmdResult {
 		&local[..]
 	};
 
-	// Isolate each case's merge in a child process. foch can stack-overflow
-	// (unbounded recursion in build_merge_plan) on pathological community mods,
-	// which aborts the process uncatchably — so a crash must take down only that
+	// Isolate each case's merge in a child process. Pathological community mods
+	// can still crash a structured merge, so a crash must take down only that
 	// case, not the whole run. Each child is `foch-mq score-one --id <id>`.
 	let exe = std::env::current_exe()?;
 	let (mut ok, mut skipped) = (0usize, 0usize);

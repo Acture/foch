@@ -35,7 +35,7 @@ impl WorkspaceScriptCache {
 					tracing::warn!(
 						target: "foch::workspace::scripts",
 						error = %err,
-						"failed to decode base parsed script cache; falling back to on-demand parse"
+						"failed to decode base parsed script cache; merge planning requires a rebuilt base snapshot"
 					);
 				}
 			}

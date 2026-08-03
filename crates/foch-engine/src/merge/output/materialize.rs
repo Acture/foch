@@ -17,13 +17,15 @@ use super::super::error::MergeError;
 use super::super::namespace::{
 	FamilyKeyIndex, build_family_key_index, detect_key_conflicts, group_by_family,
 };
-use super::super::plan::build_merge_plan_from_workspace;
+use super::super::plan::{
+	build_merge_plan_from_workspace, fatal_plan_from_workspace_error,
+	prune_noop_script_contributors,
+};
 use super::super::planning::module_view::build_cross_file_module_views;
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
 use crate::merge::model::VanillaBaseMode;
-use crate::merge::patch::ast_statement_list_has_real_content;
-use crate::request::{CheckRequest, MergePlanOptions};
+use crate::request::CheckRequest;
 use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceScriptCache,
 	resolve_workspace,
@@ -42,7 +44,6 @@ use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::parse_clausewitz_file;
 use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 #[cfg(test)]
 use io::StructuralOutputMaterialization;
@@ -125,39 +126,6 @@ fn apply_mod_priority_boosts(workspace: &mut ResolvedWorkspace, boosts: &BTreeMa
 	}
 }
 
-fn prune_noop_script_contributors(workspace: &mut ResolvedWorkspace, profile: &dyn GameProfile) {
-	workspace
-		.file_inventory
-		.retain(|relative_path, contributors| {
-			let descriptor = profile.classify_content_family(Path::new(relative_path));
-			if descriptor.is_some_and(|descriptor| {
-				matches!(
-					descriptor.load_policy,
-					ContentLoadPolicy::DefinitionModule(_)
-				)
-			}) {
-				return true;
-			}
-			let is_structural_script = descriptor
-				.and_then(|descriptor| descriptor.merge_key_source)
-				.is_some();
-			if !is_structural_script {
-				return true;
-			}
-			contributors.retain(|contributor| {
-				contributor.is_base_game
-					|| contributor.is_synthetic_base
-					|| !is_noop_script_contributor(contributor)
-			});
-			!contributors.is_empty()
-		});
-}
-
-fn is_noop_script_contributor(contributor: &ResolvedFileContributor) -> bool {
-	let parsed = parse_clausewitz_file(&contributor.absolute_path);
-	parsed.diagnostics.is_empty() && !ast_statement_list_has_real_content(&parsed.ast.statements)
-}
-
 fn boosted_precedence(precedence: usize, boost: i32) -> usize {
 	if boost >= 0 {
 		precedence.saturating_add(boost as usize)
@@ -179,10 +147,8 @@ pub(crate) fn materialize_merge_internal(
 	out_dir: &Path,
 	options: MergeMaterializeOptions,
 ) -> Result<MergeReport, MergeError> {
-	// Resolve once and reuse: build_merge_plan_from_workspace and the rest of
-	// the pipeline both consume the same ResolvedWorkspace. The legacy
-	// run_merge_plan_with_options recovery path is kept for the case where
-	// resolution itself failed (it may still produce a fatal-only plan).
+	// Resolve once and reuse: planning and materialization consume the same
+	// ResolvedWorkspace snapshot.
 	let workspace_result = stage_log_with("resolve_workspace", || {
 		let result = resolve_workspace(&request, options.include_game_base);
 		let summary = result
@@ -230,12 +196,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	let plan = stage_log_with("build_merge_plan", || {
 		let plan = match &workspace_result {
 			Ok(workspace) => build_merge_plan_from_workspace(workspace, options.include_game_base),
-			Err(_) => crate::run_merge_plan_with_options(
-				request.clone(),
-				MergePlanOptions {
-					include_game_base: options.include_game_base,
-				},
-			),
+			Err(err) => fatal_plan_from_workspace_error(err, options.include_game_base),
 		};
 		let summary = format!(
 			"total_paths={} copy_through={} last_writer_overlay={} structural_merge={} localisation_merge={} manual_conflict={}",
@@ -265,14 +226,13 @@ pub(crate) fn materialize_merge_with_workspace_result(
 
 	if plan.has_fatal_errors() {
 		report.status = MergeReportStatus::Fatal;
-		// Surface *why* resolution failed (e.g. missing/stale base data with the
-		// `foch data install` hint) so a fatal merge isn't an opaque `status:
-		// FATAL`, mirroring `foch check`. Only the Err path produces a fatal
-		// plan, so this stays `None` on success and the report is unchanged.
+		// Keep fatal snapshot and resolution failures actionable in the report;
+		// merge-plan fatal errors are intentionally not serialized.
 		report.fatal_reason = workspace_result
 			.as_ref()
 			.err()
-			.map(|err| err.message.clone());
+			.map(|err| err.message.clone())
+			.or_else(|| plan.fatal_errors.first().cloned());
 		write_clean_metadata_only(out_dir, &plan, &report)?;
 		return Ok(report);
 	}
@@ -1728,11 +1688,17 @@ impl MaterializeProgress {
 
 #[cfg(test)]
 mod tests {
-	use super::{MergeMaterializeOptions, materialize_merge_internal};
+	use super::{
+		MergeMaterializeOptions, materialize_merge_internal,
+		materialize_merge_with_workspace_result,
+	};
 	use crate::config::Config;
 	use crate::merge::model::VanillaBaseMode;
 	use crate::request::CheckRequest;
-	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
+	use crate::workspace::{
+		ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError,
+		WorkspaceResolveErrorKind,
+	};
 	use foch_core::config::{ResolutionDecision, ResolutionMap};
 	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::Playlist;
@@ -1759,6 +1725,40 @@ mod tests {
 		});
 		assert_eq!(calls.get(), 1, "closure must run exactly once");
 		assert_eq!(value, 42, "stage_log_with must return the closure's value");
+	}
+
+	#[test]
+	fn failed_workspace_is_not_resolved_again_while_building_plan() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("dlc_load.json");
+		let mod_root = temp.path().join("9701");
+		write_dlc_load(&playlist_path, &[("9701", "A")]);
+		write_descriptor(&mod_root, "A");
+		write_file(
+			&mod_root,
+			"events/test.txt",
+			"namespace = test\ncountry_event = { id = test.1 }\n",
+		);
+
+		let report = materialize_merge_with_workspace_result(
+			request_for(&playlist_path),
+			&temp.path().join("staging"),
+			None,
+			&temp.path().join("published"),
+			no_base_options(false),
+			Err(WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: temp.path().join("sentinel"),
+				message: "sentinel resolution failure".to_string(),
+			}),
+		)
+		.expect("resolution failure should produce a fatal report");
+
+		assert_eq!(report.status, MergeReportStatus::Fatal);
+		assert_eq!(
+			report.fatal_reason.as_deref(),
+			Some("sentinel resolution failure")
+		);
 	}
 
 	#[test]

@@ -217,35 +217,43 @@ fn run_merge_with_kernel_mode(
 		.and_then(|inventory| inventory.effective_retained_paths.clone());
 	let resolve_started = Instant::now();
 	let workspace_result = inventory_result.and_then(resolve_workspace_from_inventory);
-	if let Ok(workspace) = workspace_result.as_ref() {
-		let cache_hits = workspace
-			.mod_snapshots
-			.iter()
-			.flatten()
-			.filter(|snapshot| snapshot.cache_hit)
-			.count();
-		let cache_misses = workspace
-			.mod_snapshots
-			.iter()
-			.flatten()
-			.filter(|snapshot| !snapshot.cache_hit)
-			.count();
-		eprintln!(
-			"[merge] resolve_workspace: done elapsed_ms={} mods={} files={} requested_paths={} effective_paths={} mod_parse_cache_hits={} mod_parse_cache_misses={}",
+	match workspace_result.as_ref() {
+		Ok(workspace) => {
+			let cache_hits = workspace
+				.mod_snapshots
+				.iter()
+				.flatten()
+				.filter(|snapshot| snapshot.cache_hit)
+				.count();
+			let cache_misses = workspace
+				.mod_snapshots
+				.iter()
+				.flatten()
+				.filter(|snapshot| !snapshot.cache_hit)
+				.count();
+			eprintln!(
+				"[merge] resolve_workspace: done elapsed_ms={} mods={} files={} requested_paths={} effective_paths={} mod_parse_cache_hits={} mod_parse_cache_misses={}",
+				resolve_started.elapsed().as_millis(),
+				workspace.mods.len(),
+				workspace.file_inventory.len(),
+				workspace
+					.requested_retained_paths
+					.as_ref()
+					.map_or(0, BTreeSet::len),
+				workspace
+					.effective_retained_paths
+					.as_ref()
+					.map_or(0, BTreeSet::len),
+				cache_hits,
+				cache_misses
+			);
+		}
+		Err(err) => eprintln!(
+			"[merge] resolve_workspace: error elapsed_ms={} kind={:?} message={}",
 			resolve_started.elapsed().as_millis(),
-			workspace.mods.len(),
-			workspace.file_inventory.len(),
-			workspace
-				.requested_retained_paths
-				.as_ref()
-				.map_or(0, BTreeSet::len),
-			workspace
-				.effective_retained_paths
-				.as_ref()
-				.map_or(0, BTreeSet::len),
-			cache_hits,
-			cache_misses
-		);
+			err.kind,
+			err.message
+		),
 	}
 	let mut report = materialize_merge_with_workspace_result(
 		request.clone(),
