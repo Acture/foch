@@ -9,10 +9,10 @@ Current layers:
 
 | Layer | Format generation | Address |
 |---|---:|---|
-| `mods/` | `3.0.0` | Mod content hash plus foch and game versions |
+| `mods/` | `4.0.0` | Selected mod content hash plus foch and game versions |
 | `diffs/v6.0.0/` | `6.0.0` | Target, mod, vanilla, foch, and game hashes |
 | `dag-base/v12.0.0/` | `12.0.0` | Dependency set, file, foch, and game hashes |
-| `modsets/v14.0.0/` | `14.0.0` | Ordered mods, resolutions, foch, and game hashes |
+| `modsets/v14.0.1/` | `14.0.1` | Ordered mods, resolutions, merge behavior, foch, and game hashes |
 | `cwt-rules/v0.11.0/` | `0.11.0` | CWT source-pack hash |
 | `parse/v10.0.0/` | `10.0.0` | Parser mode plus source bytes |
 
@@ -21,6 +21,11 @@ generation and deletes every obsolete recognized generation, including old
 integer namespaces such as `v9`. Obsolete payloads are never decoded or
 migrated. The mod snapshot cache keeps its generation in each flat filename and
 deletes files whose embedded generation is not current.
+
+Retained-path runs cache the exact selected mod snapshot under the selected
+files' content hash. Modset identities deliberately exclude the destination
+directory: cache restoration is transactional, while resolutions that depend
+on prior output bypass the modset cache entirely.
 
 The parser cache is content-addressed and stores bincode payloads. It reads a
 source file once on a miss, hashes the parser mode and raw bytes, and reuses the
