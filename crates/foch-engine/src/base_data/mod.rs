@@ -45,14 +45,15 @@ use walkdir::WalkDir;
 const BASE_GAME_MOD_ID_PREFIX: &str = "__game__";
 pub const BASE_DATA_DIR_ENV: &str = "FOCH_DATA_DIR";
 pub const BASE_DATA_RELEASE_BASE_URL_ENV: &str = "FOCH_DATA_RELEASE_BASE_URL";
-// Bump when any serialized snapshot section becomes wire-incompatible.
-pub const BASE_DATA_SCHEMA_VERSION: u32 = 13;
+// Bump when any serialized snapshot section or its outer envelope becomes
+// wire-incompatible.
+pub const BASE_DATA_SCHEMA_VERSION: u32 = 14;
 pub const RELEASE_MANIFEST_FILE_NAME: &str = "foch-data-manifest.json";
 pub const INSTALLED_SNAPSHOT_FILE_NAME: &str = "snapshot.bin";
 pub const INSTALLED_METADATA_FILE_NAME: &str = "metadata.json";
 pub const INSTALLED_COVERAGE_FILE_NAME: &str = "coverage.json";
 pub const INSTALLED_VOCABULARY_MANIFEST_FILE_NAME: &str = "vocabulary-manifest.json";
-const SNAPSHOT_WIRE_FORMAT_VERSION: &str = "1.0.0";
+const SNAPSHOT_WIRE_FORMAT_VERSION: &str = "2.0.0";
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +65,8 @@ pub enum BaseDataSource {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstalledBaseDataMetadata {
 	pub schema_version: u32,
+	#[serde(default)]
+	pub snapshot_format_version: String,
 	pub game: String,
 	pub game_version: String,
 	pub analysis_rules_version: String,
@@ -82,6 +85,7 @@ pub struct InstalledBaseDataMetadata {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct InstalledBaseDataEntry {
 	pub schema_version: u32,
+	pub snapshot_format_version: String,
 	pub game: String,
 	pub game_version: String,
 	pub analysis_rules_version: String,
@@ -106,6 +110,8 @@ pub struct ReleaseDataAsset {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReleaseDataManifest {
 	pub schema_version: u32,
+	#[serde(default)]
+	pub snapshot_format_version: String,
 	pub cli_tag: String,
 	pub assets: Vec<ReleaseDataAsset>,
 }
@@ -1493,6 +1499,21 @@ fn validate_installed_base_metadata(
 	game_version: &str,
 	metadata: &InstalledBaseDataMetadata,
 ) -> Result<(), String> {
+	if metadata.snapshot_format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
+		let found = if metadata.snapshot_format_version.is_empty() {
+			"<missing>"
+		} else {
+			&metadata.snapshot_format_version
+		};
+		return Err(stale_installed_base_data_message(
+			game_key,
+			game_version,
+			&format!(
+				"base data snapshot format mismatch: expected {}, found {found}",
+				SNAPSHOT_WIRE_FORMAT_VERSION
+			),
+		));
+	}
 	if metadata.schema_version != BASE_DATA_SCHEMA_VERSION {
 		return Err(stale_installed_base_data_message(
 			game_key,
@@ -2040,6 +2061,7 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 				})?;
 			entries.push(InstalledBaseDataEntry {
 				schema_version: metadata.schema_version,
+				snapshot_format_version: metadata.snapshot_format_version,
 				game: metadata.game,
 				game_version: metadata.game_version,
 				analysis_rules_version: metadata.analysis_rules_version,
@@ -2276,6 +2298,7 @@ pub fn write_release_artifacts(
 
 	let manifest = ReleaseDataManifest {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		cli_tag: release_tag.to_string(),
 		assets: vec![ReleaseDataAsset {
 			game: snapshot.game.clone(),
@@ -2407,6 +2430,7 @@ pub fn write_snapshot_bundle(
 		write_vocabulary_manifest(&vocabulary_manifest_path, snapshot)?;
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: snapshot.schema_version,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: snapshot.analysis_rules_version.clone(),
@@ -2469,6 +2493,12 @@ pub fn install_snapshot_from_release(
 			BASE_DATA_SCHEMA_VERSION, manifest.schema_version
 		));
 	}
+	if manifest.snapshot_format_version != SNAPSHOT_WIRE_FORMAT_VERSION {
+		return Err(format!(
+			"release manifest snapshot format mismatch: expected {}, found {}",
+			SNAPSHOT_WIRE_FORMAT_VERSION, manifest.snapshot_format_version
+		));
+	}
 
 	let asset = manifest
 		.assets
@@ -2527,6 +2557,7 @@ fn install_encoded_snapshot(
 	let verified = verify_encoded_snapshot(encoded_snapshot, expected)?;
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: verified.snapshot.schema_version,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: verified.snapshot.game.clone(),
 		game_version: verified.snapshot.game_version.clone(),
 		analysis_rules_version: verified.snapshot.analysis_rules_version.clone(),
@@ -2631,7 +2662,8 @@ fn validate_install_metadata(
 	metadata: &InstalledBaseDataMetadata,
 	snapshot: &BaseAnalysisSnapshot,
 ) -> Result<(), String> {
-	if metadata.schema_version != snapshot.schema_version
+	if metadata.snapshot_format_version != SNAPSHOT_WIRE_FORMAT_VERSION
+		|| metadata.schema_version != snapshot.schema_version
 		|| metadata.game != snapshot.game
 		|| metadata.game_version != snapshot.game_version
 		|| metadata.analysis_rules_version != snapshot.analysis_rules_version

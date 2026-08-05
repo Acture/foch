@@ -1,9 +1,9 @@
 use super::{
 	BASE_DATA_DIR_ENV, BASE_DATA_ENV_LOCK, BASE_DATA_SCHEMA_VERSION, BaseAnalysisSnapshot,
 	BaseDataSource, BaseSymbolDefinition, CoverageClass, INSTALLED_COVERAGE_FILE_NAME,
-	INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata, build_coverage_report,
-	clear_cached_loaded_base_snapshot, decode_cached_base_snapshot, decode_snapshot_from_bytes,
-	encode_snapshot_to_bytes, install_installed_snapshot_decode_gate,
+	INSTALLED_SNAPSHOT_FILE_NAME, InstalledBaseDataMetadata, SNAPSHOT_WIRE_FORMAT_VERSION,
+	build_coverage_report, clear_cached_loaded_base_snapshot, decode_cached_base_snapshot,
+	decode_snapshot_from_bytes, encode_snapshot_to_bytes, install_installed_snapshot_decode_gate,
 	installed_base_snapshot_identity, installed_snapshot_cold_decode_count,
 	installed_snapshot_current_digest_count, installed_snapshot_current_validation_count,
 	installed_snapshot_file_read_count, load_installed_base_snapshot,
@@ -113,6 +113,7 @@ fn metadata_for_test_snapshot(
 ) -> InstalledBaseDataMetadata {
 	InstalledBaseDataMetadata {
 		schema_version: snapshot.schema_version,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: snapshot.analysis_rules_version.clone(),
@@ -2253,6 +2254,11 @@ fn snapshot_export_sidecars_are_derived_from_encoded_snapshot() {
 		&std::fs::read_to_string(&release.manifest_path).expect("read release manifest"),
 	)
 	.expect("parse release manifest");
+	assert_eq!(manifest.schema_version, BASE_DATA_SCHEMA_VERSION);
+	assert_eq!(
+		manifest.snapshot_format_version,
+		SNAPSHOT_WIRE_FORMAT_VERSION
+	);
 	assert_eq!(manifest.assets[0].game, snapshot.game);
 	assert_eq!(manifest.assets[0].game_version, snapshot.game_version);
 	assert_eq!(manifest.assets[0].sha256, expected_sha256);
@@ -2447,6 +2453,7 @@ fn load_installed_base_snapshot_rejects_old_schema_version() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2498,6 +2505,7 @@ fn load_installed_base_snapshot_reuses_decoded_snapshot() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2535,6 +2543,7 @@ fn installed_base_snapshot_identity_supplies_verified_bytes_to_load() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2587,6 +2596,7 @@ fn explicit_snapshot_identity_transfers_across_threads_without_rereading() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2639,6 +2649,7 @@ fn explicit_snapshot_identity_rejects_snapshot_path_switch() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2679,6 +2690,7 @@ fn decoded_snapshot_cache_is_keyed_by_content_sha_across_install_paths() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2742,6 +2754,7 @@ fn explicit_identity_rejects_snapshot_changed_before_load() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2785,6 +2798,7 @@ fn current_content_digest_rejects_same_file_same_len_and_mtime_replacement() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2826,6 +2840,7 @@ fn public_identity_validation_rejects_changed_content() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2870,6 +2885,7 @@ fn load_rejects_valid_snapshot_replacement_after_identity() {
 		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: original.game.clone(),
 		game_version: original.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2926,6 +2942,7 @@ fn explicit_identity_rejects_valid_replacement_during_decode() {
 		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: original.game.clone(),
 		game_version: original.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -2993,6 +3010,7 @@ fn explicit_snapshot_identities_do_not_cross_between_threads() {
 		encode_snapshot_to_bytes(&replacement).expect("encode replacement snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: original.game.clone(),
 		game_version: original.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3165,6 +3183,7 @@ fn load_installed_base_snapshot_caches_concurrent_decode_error() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3281,6 +3300,7 @@ fn decoded_snapshot_cache_bounds_completed_entries() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3319,6 +3339,7 @@ fn installed_base_snapshot_identity_reports_stale_metadata() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3400,6 +3421,7 @@ fn load_installed_base_snapshot_decodes_cold_content_once() {
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3454,6 +3476,7 @@ fn installed_base_snapshot_identity_tracks_bytes_and_invalidates_decoded_cache()
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3502,6 +3525,7 @@ fn installed_base_snapshot_identity_verifies_metadata_sha256() {
 	let expected_sha256 = sha256_hex(&encoded.bytes);
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3537,7 +3561,7 @@ fn installed_base_snapshot_identity_verifies_metadata_sha256() {
 }
 
 #[test]
-fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot() {
+fn load_installed_base_snapshot_rejects_stale_format_before_reading_snapshot() {
 	let _guard = BASE_DATA_ENV_LOCK.lock().expect("env lock");
 	let temp = TempDir::new().expect("temp dir");
 	unsafe {
@@ -3548,6 +3572,7 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
 	let metadata = InstalledBaseDataMetadata {
 		schema_version: BASE_DATA_SCHEMA_VERSION,
+		snapshot_format_version: SNAPSHOT_WIRE_FORMAT_VERSION.to_string(),
 		game: snapshot.game.clone(),
 		game_version: snapshot.game_version.clone(),
 		analysis_rules_version: analysis_rules_version().to_string(),
@@ -3568,10 +3593,11 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 	let metadata_path = installed
 		.install_dir
 		.join(super::INSTALLED_METADATA_FILE_NAME);
-	let old_metadata = InstalledBaseDataMetadata {
-		schema_version: BASE_DATA_SCHEMA_VERSION - 1,
-		..metadata
-	};
+	let mut old_metadata = serde_json::to_value(metadata).expect("serialize metadata");
+	old_metadata
+		.as_object_mut()
+		.expect("metadata object")
+		.remove("snapshot_format_version");
 	std::fs::write(
 		&metadata_path,
 		serde_json::to_string_pretty(&old_metadata).expect("serialize metadata"),
@@ -3580,11 +3606,14 @@ fn load_installed_base_snapshot_rejects_stale_metadata_before_decoding_snapshot(
 	let snapshot_path = installed.install_dir.join(INSTALLED_SNAPSHOT_FILE_NAME);
 	std::fs::write(&snapshot_path, b"definitely-not-a-valid-snapshot")
 		.expect("write corrupt snapshot");
+	reset_installed_snapshot_test_counters();
 
 	let err = load_installed_base_snapshot("eu4", "schema-test", None)
-		.expect_err("stale metadata should short-circuit before decode");
-	assert!(err.contains("base data schema mismatch"));
+		.expect_err("stale format should short-circuit before reading the payload");
+	assert!(err.contains("base data snapshot format mismatch"));
 	assert!(!err.contains("failed to parse base data snapshot"));
+	assert_eq!(installed_snapshot_file_read_count(), 0);
+	assert_eq!(installed_snapshot_cold_decode_count(), 0);
 
 	unsafe {
 		std::env::remove_var(BASE_DATA_DIR_ENV);
