@@ -54,6 +54,7 @@ fn fatal_merge_is_not_cached() {
 	let cache_dir = TempDir::new_in(&scratch).expect("cache temp dir");
 	let data_dir = TempDir::new_in(&scratch).expect("data temp dir (intentionally empty)");
 	let game_dir = TempDir::new_in(&scratch).expect("game temp dir");
+	let output_dir = TempDir::new_in(&scratch).expect("output temp dir");
 	let obsolete_cache = cache_dir.path().join("modsets").join("v11.4.0");
 	fs::create_dir_all(&obsolete_cache).expect("create obsolete cache namespace");
 	fs::write(obsolete_cache.join("obsolete.tar.gz"), b"obsolete").expect("seed obsolete tarball");
@@ -90,24 +91,20 @@ fn fatal_merge_is_not_cached() {
 		)
 	};
 
-	let make_options = |suffix: &str| {
-		let out_dir = scratch.join(suffix);
-		fs::create_dir_all(&out_dir).expect("create out dir");
-		MergeExecuteOptions {
-			out_dir,
-			include_game_base: true,
-			include_base: false,
-			gui_scroll_merge: false,
-			force: false,
-			ignore_replace_path: false,
-			dep_overrides: Vec::new(),
-			resolution_config_path: None,
-			interactive_conflict_handler: None,
-			interactive_resolution_config_path: None,
-			playset_fingerprint: None,
-			provenance: false,
-			retained_paths: None,
-		}
+	let make_options = |suffix: &str| MergeExecuteOptions {
+		out_dir: output_dir.path().join(suffix),
+		include_game_base: true,
+		include_base: false,
+		gui_scroll_merge: false,
+		force: false,
+		ignore_replace_path: false,
+		dep_overrides: Vec::new(),
+		resolution_config_path: None,
+		interactive_conflict_handler: None,
+		interactive_resolution_config_path: None,
+		playset_fingerprint: None,
+		provenance: false,
+		retained_paths: None,
 	};
 
 	// --- Run 1 -----------------------------------------------------------

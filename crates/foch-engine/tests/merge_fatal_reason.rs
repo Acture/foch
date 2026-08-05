@@ -37,6 +37,7 @@ fn fatal_merge_surfaces_resolve_error_reason() {
 
 	let data_dir = TempDir::new_in(&scratch).expect("data temp dir (intentionally empty)");
 	let game_dir = TempDir::new_in(&scratch).expect("game temp dir");
+	let output_dir = TempDir::new_in(&scratch).expect("output temp dir");
 
 	// `version.txt` lets `detect_game_version` succeed; the empty `FOCH_DATA_DIR`
 	// then makes `load_installed_base_snapshot` yield no snapshot, so
@@ -63,10 +64,8 @@ fn fatal_merge_surfaces_resolve_error_reason() {
 		},
 	);
 
-	let out_dir = scratch.join("out");
-	fs::create_dir_all(&out_dir).expect("create out dir");
 	let options = MergeExecuteOptions {
-		out_dir,
+		out_dir: output_dir.path().join("out"),
 		include_game_base: true,
 		include_base: false,
 		gui_scroll_merge: false,
