@@ -2,9 +2,9 @@
 	"name": "foch-workspace",
 	"engines": {
 		"node": ">=22 <25",
-		"bun": ">=1.2.8"
+		"bun": ">=1.3.14"
 	},
-	"packageManager": "bun@1.2.8",
+	"packageManager": "bun@1.3.14",
 	"private": true,
 	"workspaces": [
 		"packages/tree-sitter-paradox",

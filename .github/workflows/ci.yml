@@ -101,18 +101,19 @@ jobs:
           node-version: '22'
 
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.2.8
+          bun-version-file: package.json
 
       - name: Cache Bun
         uses: actions/cache@v6
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-downloads-v1-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-downloads-v1-
+            ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
@@ -159,18 +160,19 @@ jobs:
           node-version: '22'
 
       - name: Setup Bun
+        id: setup-bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: 1.2.8
+          bun-version-file: package.json
 
       - name: Cache Bun
         uses: actions/cache@v6
         with:
           path: |
             ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-downloads-v1-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-downloads-v1-
+            ${{ runner.os }}-bun-downloads-${{ steps.setup-bun.outputs.bun-version }}-v1-
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
