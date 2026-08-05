@@ -2569,7 +2569,7 @@ mod tests {
 	use std::cell::Cell;
 
 	use super::*;
-	use crate::dataset::{GameIdentity, MeasurementIdentity, SnapshotObjectRef};
+	use crate::dataset::{GameIdentity, SnapshotObjectRef};
 
 	const FIXTURE: &str = concat!(
 		env!("CARGO_MANIFEST_DIR"),
@@ -2770,7 +2770,7 @@ mod tests {
 		let object = store.snapshot_tree(&source).unwrap();
 		let snapshot_id = "a".repeat(64);
 		let measurement = MeasurementRecord::new(
-			MeasurementIdentity {
+			crate::dataset::MeasurementIdentity {
 				snapshot_id: snapshot_id.clone(),
 				executable_hash: "b".repeat(64),
 				scorer_version: "historical".to_string(),

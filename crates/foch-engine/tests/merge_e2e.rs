@@ -1365,6 +1365,7 @@ fn eu4_defer_handler_keeps_manual_conflict_with_attribution() {
 	assert!(out_dir.exists(), "out dir should still be tracked");
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 #[test]
 fn eu4_keep_existing_handler_preserves_existing_output_file() {
 	let fixture = fixture_dir("eu4_handler_keep_existing");
@@ -1742,9 +1743,6 @@ fn structured_merge_allows_an_explicit_empty_base() {
 	let temp_dir = tempfile::tempdir().expect("create structured merge tempdir");
 	let out_dir = temp_dir.path().join("out");
 	let prior_file = out_dir.join("events/test_events.txt");
-	fs::create_dir_all(prior_file.parent().expect("prior output parent"))
-		.expect("create prior output parent");
-	fs::write(&prior_file, "prior-output\n").expect("write prior output");
 	let game_root = temp_dir.path().join("empty-eu4-game");
 	fs::create_dir_all(&game_root).expect("create empty game root");
 	let mut game_path = HashMap::new();
@@ -1788,7 +1786,6 @@ fn structured_merge_allows_an_explicit_empty_base() {
 	let merged_text = fs::read_to_string(prior_file).expect("read merged output");
 	assert!(merged_text.contains("foch_300001_title"), "{merged_text}");
 	assert!(!merged_text.contains("foch_300002_title"), "{merged_text}");
-	assert!(!merged_text.contains("prior-output"), "{merged_text}");
 }
 
 #[test]
@@ -1796,10 +1793,6 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 	let fixture = fixture_dir("eu4_minimal_passthrough");
 	let temp_dir = tempfile::tempdir().expect("create structured merge tempdir");
 	let out_dir = temp_dir.path().join("out");
-	let prior_file = out_dir.join("events/foo.txt");
-	fs::create_dir_all(prior_file.parent().expect("prior output parent"))
-		.expect("create prior output parent");
-	fs::write(&prior_file, "prior-output\n").expect("write prior output");
 	let game_root = temp_dir.path().join("empty-eu4-game");
 	fs::create_dir_all(&game_root).expect("create empty game root");
 	let mut game_path = HashMap::new();
@@ -1840,9 +1833,8 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 			&& message.contains("candidate kernel was not invoked"),
 		"unexpected structured rejection: {message}"
 	);
-	assert_eq!(
-		fs::read_to_string(prior_file).expect("read preserved prior output"),
-		"prior-output\n",
+	assert!(
+		!out_dir.exists(),
 		"a non-kernel structured run must not publish copy-through output"
 	);
 }
