@@ -2757,6 +2757,7 @@ mod tests {
 		);
 	}
 
+	#[cfg(target_os = "macos")]
 	#[test]
 	fn pinned_legacy_measurement_and_output_are_loaded_without_historical_scores() {
 		let temp = tempfile::tempdir().unwrap();

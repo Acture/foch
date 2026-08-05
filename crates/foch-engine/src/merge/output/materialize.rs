@@ -2900,6 +2900,7 @@ mod tests {
 		assert!(!descriptor.contains("replace_path=\"common/governments\""));
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn reset_only_mod_participates_in_definition_module_merge() {
 		let temp = TempDir::new().expect("temp dir");
@@ -3090,6 +3091,7 @@ mod tests {
 		assert!(entry.winner.is_some());
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn unresolved_structural_merge_skips_by_default() {
 		let temp = TempDir::new().expect("temp dir");
@@ -3133,6 +3135,7 @@ mod tests {
 		assert_eq!(resolution.leaf_conflicts[0].address_key, "group");
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn fatal_materialization_replaces_old_output_with_metadata_only() {
 		let temp = TempDir::new().expect("temp dir");

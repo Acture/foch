@@ -1210,6 +1210,7 @@ mod tests {
 		));
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn output_transaction_reports_the_prior_tree_it_observed() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1224,6 +1225,7 @@ mod tests {
 		assert_eq!(existing.prior_dir(), Some(out_dir.as_path()));
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn output_transaction_replaces_the_complete_tree_without_overlay() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1315,6 +1317,26 @@ mod tests {
 		);
 	}
 
+	#[cfg(any(target_os = "windows", target_os = "redox"))]
+	#[test]
+	fn output_transaction_rejects_existing_directory_without_atomic_exchange() {
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("merged-mod");
+		fs::create_dir(&out_dir).expect("create existing output");
+
+		let error = match OutputTransaction::begin(&out_dir) {
+			Ok(_) => panic!("existing output requires atomic directory exchange"),
+			Err(error) => error,
+		};
+
+		assert!(
+			error
+				.to_string()
+				.contains("atomic replacement of an existing output directory is unsupported")
+		);
+	}
+
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn output_transaction_rejects_a_replaced_directory_before_publish() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1455,6 +1477,7 @@ mod tests {
 		drop(listener);
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn modset_cache_restore_replaces_instead_of_overlaying_output() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1492,6 +1515,7 @@ mod tests {
 		assert!(!out_dir.join("common/governments/stale.txt").exists());
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn modset_cache_stale_base_after_restore_preserves_old_output() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1543,6 +1567,7 @@ mod tests {
 		assert!(!out_dir.join("common/governments/current.txt").exists());
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn normal_subset_stale_base_after_cache_store_preserves_old_output() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
@@ -1799,6 +1824,7 @@ mod tests {
 		}
 	}
 
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn modset_cache_unpack_error_preserves_old_output() {
 		let temp = tempfile::TempDir::new().expect("temp dir");

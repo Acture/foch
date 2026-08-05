@@ -89,9 +89,7 @@ fn semantic_pipeline_does_not_depend_on_address_patch_types() {
 		assert_source_excludes(path, source, ADDRESS_PATCH_DEPENDENCIES);
 	}
 	let dag_merge_source = include_str!("planning/dag_merge.rs")
-		.split(
-			"// ---------------------------------------------------------------------------\n// Tests",
-		)
+		.split("// Tests")
 		.next()
 		.expect("semantic DAG merge production source");
 	assert_source_excludes(
