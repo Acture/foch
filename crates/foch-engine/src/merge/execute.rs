@@ -16,7 +16,7 @@ use crate::cache::{
 
 // SemVer identity for cached merge output. Bump patch for output bug fixes,
 // minor for additive semantics, and major for incompatible cache payloads.
-const MODSET_CACHE_VERSION: &str = "14.0.0";
+const MODSET_CACHE_VERSION: &str = "14.0.1";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
@@ -444,7 +444,6 @@ fn build_modset_cache_context(
 		&inventory.retained_module_policy_versions,
 	);
 	let dep_overrides_label = dep_overrides_cache_label(&options.dep_overrides);
-	let output_dir_label = output_dir_cache_label(&options.out_dir);
 	let foch_version = modset_cache_version_label(ModsetCacheBehavior {
 		include_base: options.include_base,
 		gui_scroll_merge: options.gui_scroll_merge,
@@ -453,7 +452,6 @@ fn build_modset_cache_context(
 		provenance: options.provenance,
 		dep_overrides: &dep_overrides_label,
 		retained_paths: &retained_paths_label,
-		output_dir: &output_dir_label,
 		merge_kernel: merge_kernel.as_str(),
 	});
 	let key = compute_modset_cache_key(
@@ -474,13 +472,12 @@ struct ModsetCacheBehavior<'a> {
 	provenance: bool,
 	dep_overrides: &'a str,
 	retained_paths: &'a str,
-	output_dir: &'a str,
 	merge_kernel: &'a str,
 }
 
 fn modset_cache_version_label(behavior: ModsetCacheBehavior<'_>) -> String {
 	format!(
-		"{} modset_cache={MODSET_CACHE_VERSION} merge_kernel={} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={} output_dir={}",
+		"{} modset_cache={MODSET_CACHE_VERSION} merge_kernel={} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={}",
 		env!("CARGO_PKG_VERSION"),
 		behavior.merge_kernel,
 		behavior.include_base,
@@ -490,7 +487,6 @@ fn modset_cache_version_label(behavior: ModsetCacheBehavior<'_>) -> String {
 		behavior.ignore_replace_path,
 		behavior.dep_overrides,
 		behavior.retained_paths,
-		behavior.output_dir,
 	)
 }
 
@@ -575,19 +571,6 @@ fn retained_paths_cache_label(
 		hasher.update(&version.to_le_bytes());
 	}
 	format!("subset:{}", hasher.finalize().to_hex())
-}
-
-fn output_dir_cache_label(out_dir: &Path) -> String {
-	let identity = if out_dir.is_absolute() {
-		out_dir.to_path_buf()
-	} else {
-		std::env::current_dir()
-			.map(|cwd| cwd.join(out_dir))
-			.unwrap_or_else(|_| out_dir.to_path_buf())
-	};
-	blake3::hash(normalize_descriptor_path(&identity).as_bytes())
-		.to_hex()
-		.to_string()
 }
 
 fn resolution_config_bytes(playset_root: &Path, explicit_path: Option<&Path>) -> Vec<u8> {
@@ -1120,7 +1103,6 @@ mod tests {
 				provenance: false,
 				dep_overrides: "none",
 				retained_paths: "full",
-				output_dir: "same-output",
 				merge_kernel: "legacy",
 			});
 			compute_modset_cache_key(
@@ -1145,7 +1127,6 @@ mod tests {
 				provenance: false,
 				dep_overrides: "none",
 				retained_paths: "full",
-				output_dir: "same-output",
 				merge_kernel,
 			});
 			compute_modset_cache_key(
@@ -1171,7 +1152,6 @@ mod tests {
 				provenance: false,
 				dep_overrides: &dep_overrides,
 				retained_paths: "full",
-				output_dir: "same-output",
 				merge_kernel: "legacy",
 			});
 			compute_modset_cache_key(

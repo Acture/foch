@@ -459,10 +459,11 @@ fn eu4_minimal_passthrough_copies_per_path_files_and_materializes_common_module(
 }
 
 #[test]
-fn public_tree_selection_matches_default_on_a_warm_modset_cache() {
+fn public_tree_selection_reuses_modset_cache_across_output_directories() {
 	let fixture = fixture_dir("eu4_minimal_passthrough");
 	let temp_dir = tempfile::tempdir().expect("create tree parity tempdir");
-	let out_dir = temp_dir.path().join("out");
+	let cold_out_dir = temp_dir.path().join("cold-out");
+	let warm_out_dir = temp_dir.path().join("warm-out");
 	let game_root = temp_dir.path().join("empty-eu4-game");
 	fs::create_dir_all(&game_root).expect("create empty game root");
 	let request = || {
@@ -478,8 +479,8 @@ fn public_tree_selection_matches_default_on_a_warm_modset_cache() {
 			},
 		)
 	};
-	let options = || MergeExecuteOptions {
-		out_dir: out_dir.clone(),
+	let options = |out_dir: &Path| MergeExecuteOptions {
+		out_dir: out_dir.to_path_buf(),
 		include_game_base: false,
 		include_base: false,
 		gui_scroll_merge: false,
@@ -499,7 +500,7 @@ fn public_tree_selection_matches_default_on_a_warm_modset_cache() {
 		"events/foo.txt",
 		"common/cultures/zzz_foch_cultures.txt",
 	];
-	let read_outputs = || {
+	let read_outputs = |out_dir: &Path| {
 		output_paths
 			.iter()
 			.map(|path| {
@@ -509,19 +510,22 @@ fn public_tree_selection_matches_default_on_a_warm_modset_cache() {
 			.collect::<Vec<_>>()
 	};
 
-	let default = run_merge_with_options(request(), options()).expect("run default tree merge");
-	assert_ne!(default.report.cache_source.as_deref(), Some("modset"));
-	let cold_outputs = read_outputs();
-	let explicit =
-		run_merge_for_evaluation(request(), options(), MergeEvaluationKernel::SemanticTree)
-			.expect("run explicit tree merge");
+	let default =
+		run_merge_with_options(request(), options(&cold_out_dir)).expect("run default tree merge");
+	let cold_outputs = read_outputs(&cold_out_dir);
+	let explicit = run_merge_for_evaluation(
+		request(),
+		options(&warm_out_dir),
+		MergeEvaluationKernel::SemanticTree,
+	)
+	.expect("run explicit tree merge");
 	assert_eq!(
 		explicit.report.cache_source.as_deref(),
 		Some("modset"),
-		"the explicit Tree rerun should exercise the warm modset-cache path"
+		"the explicit Tree rerun should reuse the cache in a different output directory"
 	);
 	assert_eq!(explicit.report.status, default.report.status);
-	assert_eq!(read_outputs(), cold_outputs);
+	assert_eq!(read_outputs(&warm_out_dir), cold_outputs);
 }
 
 fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Path, rel: &str) {
