@@ -1,11 +1,10 @@
-use crate::cache::{CachedModData, ModParseCache, compute_mod_hash_with_filter};
+use crate::cache::{CachedModData, ModParseCache};
 use foch_core::model::{
 	DocumentFamily, FamilyParseStats, ModCandidate, ParseFamilyStats, SemanticIndex,
 };
 use foch_language::analyzer::documents::{
-	ParsedTextDocument, build_semantic_index_from_documents, discover_text_documents,
-	discover_text_documents_from_paths, parse_discovered_text_documents,
-	parse_discovered_text_documents_without_cache,
+	ParsedTextDocument, build_semantic_index_from_documents, discover_text_documents_from_paths,
+	parse_discovered_text_documents, parse_discovered_text_documents_without_cache,
 };
 use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
@@ -43,10 +42,8 @@ pub(crate) fn load_or_build_mod_snapshot(
 	mod_item: &ModCandidate,
 	filter: &super::FileFilter,
 	mod_hash: Option<&str>,
-	allow_persistent_cache: bool,
 ) -> Option<LoadedModSnapshot> {
-	let cache =
-		(allow_persistent_cache && game_version.is_some()).then(ModParseCache::open_default);
+	let cache = (game_version.is_some() && mod_hash.is_some()).then(ModParseCache::open_default);
 	load_or_build_mod_snapshot_with_cache(
 		game_key,
 		game_version,
@@ -54,7 +51,6 @@ pub(crate) fn load_or_build_mod_snapshot(
 		filter,
 		mod_hash,
 		cache.as_ref(),
-		allow_persistent_cache,
 	)
 }
 
@@ -65,13 +61,10 @@ fn load_or_build_mod_snapshot_with_cache(
 	filter: &super::FileFilter,
 	mod_hash: Option<&str>,
 	cache: Option<&ModParseCache>,
-	discover_full_mod: bool,
 ) -> Option<LoadedModSnapshot> {
 	let root = mod_item.root_path.as_ref()?;
 	let cache_game_version = game_version.map(|version| format!("{game_key} {version}"));
-	let owned_mod_hash = mod_hash
-		.map(ToOwned::to_owned)
-		.or_else(|| cache.and_then(|_| compute_mod_hash_with_filter(root, filter).ok()));
+	let owned_mod_hash = mod_hash.map(ToOwned::to_owned);
 	let process_cache_key = process_snapshot_cache_key(
 		root,
 		owned_mod_hash.as_deref(),
@@ -94,14 +87,10 @@ fn load_or_build_mod_snapshot_with_cache(
 		return Some(snapshot);
 	}
 
-	let documents = if discover_full_mod {
-		discover_text_documents(root)
-			.into_iter()
-			.filter(|doc| filter.accepts(&doc.relative_path))
-			.collect::<Vec<_>>()
-	} else {
-		discover_text_documents_from_paths(root, &mod_item.files)
-	};
+	let documents = discover_text_documents_from_paths(root, &mod_item.files)
+		.into_iter()
+		.filter(|doc| filter.accepts(&doc.relative_path))
+		.collect::<Vec<_>>();
 	let parsed = if cache.is_some() {
 		parse_discovered_text_documents_without_cache(&mod_item.mod_id, root, &documents)
 	} else {
@@ -269,13 +258,22 @@ mod tests {
 	use tempfile::TempDir;
 
 	#[test]
-	fn load_or_build_mod_snapshot_reuses_content_addressed_cache() {
+	fn load_or_build_mod_snapshot_reuses_content_addressed_cache_for_retained_subset() {
 		let temp = TempDir::new().expect("temp dir");
 		let cache_dir = temp.path().join("cache");
 		let cache = ModParseCache::open(&cache_dir);
 		let mod_root = temp.path().join("9001");
+		fs::create_dir_all(mod_root.join("common").join("defines")).expect("create defines root");
 		fs::create_dir_all(mod_root.join("common").join("scripted_effects"))
 			.expect("create mod root");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("defines")
+				.join("cache_test.lua"),
+			"NDefines.NCountry.CACHE_TEST = 1\n",
+		)
+		.expect("write defines file");
 		fs::write(
 			mod_root
 				.join("common")
@@ -284,6 +282,14 @@ mod tests {
 			"ME_give_claims = { add_prestige = 1 }\n",
 		)
 		.expect("write scripted effect");
+		fs::write(
+			mod_root
+				.join("common")
+				.join("scripted_effects")
+				.join("omitted.txt"),
+			"omitted_effect = { add_prestige = 2 }\n",
+		)
+		.expect("write omitted scripted effect");
 		let mod_item = ModCandidate {
 			entry: PlaylistEntry {
 				enabled: true,
@@ -306,18 +312,22 @@ mod tests {
 				supported_version: None,
 			}),
 			descriptor_error: None,
-			files: Vec::new(),
+			files: vec![
+				std::path::PathBuf::from("common/defines/cache_test.lua"),
+				std::path::PathBuf::from("common/scripted_effects/effects.txt"),
+			],
 		};
 		let filter = super::super::FileFilter::for_game(Game::EuropaUniversalis4);
+		let mod_hash = crate::cache::compute_mod_hash_for_files(&mod_root, &mod_item.files)
+			.expect("compute retained subset hash");
 
 		let cold = load_or_build_mod_snapshot_with_cache(
 			"eu4",
 			Some("1.0.0-test"),
 			&mod_item,
 			&filter,
-			None,
+			Some(&mod_hash),
 			Some(&cache),
-			true,
 		)
 		.expect("cold snapshot");
 		let warm = load_or_build_mod_snapshot_with_cache(
@@ -325,9 +335,8 @@ mod tests {
 			Some("1.0.0-test"),
 			&mod_item,
 			&filter,
-			None,
+			Some(&mod_hash),
 			Some(&cache),
-			true,
 		)
 		.expect("warm snapshot");
 
@@ -335,9 +344,21 @@ mod tests {
 		assert!(warm.cache_hit);
 		assert!(cold.mod_hash.is_some());
 		assert_eq!(warm.mod_hash, cold.mod_hash);
-		assert_eq!(warm.parsed_files, 1);
-		assert_eq!(warm.parsed_documents.len(), 1);
-		let cached_document = &warm.parsed_documents[0];
+		assert_eq!(warm.parsed_files, 2);
+		assert_eq!(warm.parsed_documents.len(), 2);
+		assert!(
+			warm.parsed_documents
+				.iter()
+				.all(|document| !document.relative_path.ends_with("omitted.txt"))
+		);
+		let cached_document = warm
+			.parsed_documents
+			.iter()
+			.find(|document| {
+				document.relative_path
+					== std::path::Path::new("common/scripted_effects/effects.txt")
+			})
+			.expect("cached scripted effect");
 		assert_eq!(
 			cached_document.relative_path,
 			std::path::PathBuf::from("common/scripted_effects/effects.txt")
@@ -365,6 +386,14 @@ mod tests {
 				.get(
 					"9001",
 					std::path::Path::new("common/scripted_effects/effects.txt")
+				)
+				.is_some()
+		);
+		assert!(
+			script_cache
+				.get(
+					"9001",
+					std::path::Path::new("common/defines/cache_test.lua")
 				)
 				.is_some()
 		);

@@ -278,11 +278,20 @@ pub(crate) fn classify_document_family(relative_path: &Path) -> Option<DocumentF
 	match ext.as_str() {
 		"txt" | "gui" | "gfx" | "asset" => Some(DocumentFamily::Clausewitz),
 		"mod" => Some(DocumentFamily::Clausewitz),
+		"lua" if is_clausewitz_defines_path(relative_path) => Some(DocumentFamily::Clausewitz),
 		"yml" | "yaml" => Some(DocumentFamily::Localisation),
 		"csv" => Some(DocumentFamily::Csv),
 		"json" => Some(DocumentFamily::Json),
 		_ => None,
 	}
+}
+
+fn is_clausewitz_defines_path(relative_path: &Path) -> bool {
+	let normalized = relative_path
+		.to_string_lossy()
+		.replace('\\', "/")
+		.to_ascii_lowercase();
+	normalized == "common/defines.lua" || normalized.starts_with("common/defines/")
 }
 
 fn parse_text_document_with(
@@ -697,6 +706,14 @@ mod tests {
 		assert_eq!(
 			classify_document_family(Path::new("common/settings.json")),
 			Some(DocumentFamily::Json)
+		);
+		assert_eq!(
+			classify_document_family(Path::new("common/defines/00_test.lua")),
+			Some(DocumentFamily::Clausewitz)
+		);
+		assert_eq!(
+			classify_document_family(Path::new("common/defines.lua")),
+			Some(DocumentFamily::Clausewitz)
 		);
 		assert_eq!(
 			classify_document_family(Path::new("script/shader.lua")),

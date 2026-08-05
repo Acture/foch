@@ -1,3 +1,4 @@
+#[cfg(test)]
 use crate::workspace::FileFilter;
 use foch_core::cache::default_foch_cache_dir;
 #[cfg(test)]
@@ -14,11 +15,12 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use walkdir::WalkDir;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_PARSE_CACHE_VERSION: &str = "3.0.0";
+pub const MOD_PARSE_CACHE_VERSION: &str = "4.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const HASH_HEX_LEN: usize = 16;
 
@@ -951,10 +953,8 @@ pub fn compute_mod_hash(mod_root: &Path) -> Result<String, io::Error> {
 	compute_mod_hash_with_filter(mod_root, &filter)
 }
 
-pub fn compute_mod_hash_with_filter(
-	mod_root: &Path,
-	filter: &FileFilter,
-) -> Result<String, io::Error> {
+#[cfg(test)]
+fn compute_mod_hash_with_filter(mod_root: &Path, filter: &FileFilter) -> Result<String, io::Error> {
 	let mut files = Vec::new();
 	for entry in WalkDir::new(mod_root)
 		.into_iter()
@@ -1032,6 +1032,7 @@ fn cache_filename(
 	)
 }
 
+#[cfg(test)]
 fn should_descend(path: &Path, root: &Path) -> bool {
 	if path == root {
 		return true;

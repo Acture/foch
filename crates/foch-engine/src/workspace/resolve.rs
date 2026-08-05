@@ -753,7 +753,6 @@ pub(crate) fn resolve_workspace_from_inventory(
 				mod_item,
 				&snapshot_filter,
 				mod_hashes.get(idx).and_then(|hash| hash.as_deref()),
-				requested_retained_paths.is_none(),
 			)
 		})
 		.collect();

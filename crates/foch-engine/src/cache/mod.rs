@@ -18,9 +18,7 @@ pub use layer::{CacheLayer, CacheLayerEntryInfo, CacheLayerOps, EvictionStats, a
 pub use mod_diff_cache::default_mod_diff_cache_dir;
 pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_diff_cache_stats};
 pub use mod_parse_cache::{CacheError, default_mod_parse_cache_dir};
-pub(crate) use mod_parse_cache::{
-	CachedModData, ModParseCache, compute_mod_hash_for_files, compute_mod_hash_with_filter,
-};
+pub(crate) use mod_parse_cache::{CachedModData, ModParseCache, compute_mod_hash_for_files};
 pub use modset_cache::{
 	CacheEntryInfo, CacheStats, CachedModsetResult, ModsetCache, default_modset_cache_dir,
 	default_modset_cache_root_dir,
