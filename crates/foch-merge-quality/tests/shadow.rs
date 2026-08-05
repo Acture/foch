@@ -27,7 +27,7 @@ fn isolated_failed_arm_clears_stale_output() {
 		data_root.join("mod/ugc_1.mod"),
 		format!(
 			"name=\"mod-a\"\npath=\"{}\"\nremote_file_id=\"1\"\n",
-			mod_root.display()
+			mod_root.to_string_lossy().replace('\\', "/")
 		),
 	)
 	.unwrap();

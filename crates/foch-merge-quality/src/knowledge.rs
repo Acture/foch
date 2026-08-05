@@ -1910,15 +1910,13 @@ mod tests {
 		)
 		.unwrap();
 		assert_ne!(pack.manifest.pack_id, other_version.manifest.pack_id);
-		let first = tempfile::NamedTempFile::new().unwrap();
-		let second = tempfile::NamedTempFile::new().unwrap();
-		write_knowledge_archive(&pack, first.path()).unwrap();
-		write_knowledge_archive(&pack, second.path()).unwrap();
-		assert_eq!(
-			fs::read(first.path()).unwrap(),
-			fs::read(second.path()).unwrap()
-		);
-		let verified = verify_knowledge_archive(first.path()).unwrap();
+		let temp = tempfile::tempdir().unwrap();
+		let first = temp.path().join("first.tar.zst");
+		let second = temp.path().join("second.tar.zst");
+		write_knowledge_archive(&pack, &first).unwrap();
+		write_knowledge_archive(&pack, &second).unwrap();
+		assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+		let verified = verify_knowledge_archive(&first).unwrap();
 		assert_eq!(verified.manifest.pack_id, pack.manifest.pack_id);
 		assert_eq!(verified.manifest.game_version, "1.37.5");
 	}

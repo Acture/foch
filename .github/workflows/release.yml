@@ -174,11 +174,9 @@ jobs:
         with:
           path: |
             ~/.bun/install/cache
-            node_modules
-            packages/*/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-bun-downloads-v1-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-downloads-v1-
 
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile

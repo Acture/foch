@@ -3,3 +3,6 @@
 # NOTE: *.txt mod fixtures are intentionally NOT normalized — Paradox mod data
 # is frequently CRLF and several tests exercise that, so it must stay as-is.
 *.cwt text eol=lf
+
+# Frozen review-pack artifacts are byte-addressed and rendered with LF.
+crates/foch-merge-quality/tests/fixtures/*.json text eol=lf
