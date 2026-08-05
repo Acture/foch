@@ -21,22 +21,42 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: homebrew-tap-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   homebrew-tap:
     name: Update Homebrew tap from release asset
     if: ${{ vars.HOMEBREW_TAP_REPO != '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout current repository
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
 
+      - name: Validate release tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release tag must be v-prefixed SemVer, got: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
       - name: Resolve release metadata
         id: meta
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          tag="${{ inputs.tag }}"
+          tag="$RELEASE_TAG"
           version="${tag#v}"
           repo="${GITHUB_REPOSITORY}"
           url="https://github.com/${repo}/releases/download/${tag}/foch-${version}-source.tar.gz"
