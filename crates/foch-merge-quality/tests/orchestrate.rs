@@ -4,7 +4,9 @@ use std::path::Path;
 
 use foch_core::model::MergeReport;
 use foch_merge_quality::corpus::Case;
-use foch_merge_quality::orchestrate::score_existing_output_with_cache;
+use foch_merge_quality::orchestrate::{
+	ScoreExistingOutputRequest, score_existing_output_with_cache,
+};
 use foch_merge_quality::score::ScoreCache;
 
 fn write_file(root: &Path, relative: &str, content: &str) {
@@ -49,17 +51,21 @@ fn scores_existing_output_without_executing_a_merge() {
 	let output_before = std::fs::read(out.join(rel)).expect("read output before scoring");
 	let mut cache = ScoreCache::new();
 
+	let source_dirs = [mod_a, mod_b];
 	let result = score_existing_output_with_cache(
-		&case,
-		&compatch,
-		&[mod_a, mod_b],
-		&out,
-		&report,
-		None,
-		42,
+		&ScoreExistingOutputRequest {
+			case: &case,
+			compatch_dir: &compatch,
+			source_dirs: &source_dirs,
+			output_dir: &out,
+			report: &report,
+			basegame_root: None,
+			merge_ms: 42,
+		},
 		&mut cache,
 	)
-	.expect("score existing output");
+	.expect("score existing output")
+	.result;
 
 	assert_eq!(std::fs::read(out.join(rel)).unwrap(), output_before);
 	assert_eq!(result.ground_truth_files, 1);
@@ -111,17 +117,21 @@ fn definition_module_paths_collapse_into_one_existing_output_unit() {
 	let report = MergeReport::default();
 	let mut cache = ScoreCache::new();
 
+	let source_dirs = [mod_a, mod_b];
 	let result = score_existing_output_with_cache(
-		&case,
-		&compatch,
-		&[mod_a, mod_b],
-		&out,
-		&report,
-		None,
-		0,
+		&ScoreExistingOutputRequest {
+			case: &case,
+			compatch_dir: &compatch,
+			source_dirs: &source_dirs,
+			output_dir: &out,
+			report: &report,
+			basegame_root: None,
+			merge_ms: 0,
+		},
 		&mut cache,
 	)
-	.expect("score existing definition-module output");
+	.expect("score existing definition-module output")
+	.result;
 
 	assert_eq!(result.files.len(), 1);
 	assert_eq!(result.ground_truth_files, 1);

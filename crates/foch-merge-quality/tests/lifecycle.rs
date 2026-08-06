@@ -154,7 +154,7 @@ fn collect_fixture(temp: &tempfile::TempDir, case_count: usize) -> (Fixture, Env
 fn runner_identity() -> MeasurementRunnerIdentity {
 	MeasurementRunnerIdentity {
 		engine_artifact: EngineArtifactIdentity::foch_executable_blake3("a".repeat(64)),
-		worker_protocol_version: "fake-product-runner-v1".to_string(),
+		runner_protocol_version: "fake-product-runner-v1".to_string(),
 		merge_kernel: MeasurementKernel::SemanticTree,
 		scope: MeasurementScope::FullProductMerge,
 	}
@@ -835,6 +835,24 @@ fn terminal_runner_outcomes_are_persisted_without_process_protocols() {
 			.iter()
 			.all(|record| record.merged_output_hash().is_none())
 	);
+
+	let mut cached_runner = FakeRunner::new([]);
+	let resumed = measure_with_runner(
+		&MeasureOptions {
+			dataset_root: &fixture.dataset,
+			timeout: Duration::from_secs(30),
+			limit: 0,
+			basegame_root: &fixture.game,
+			snapshot_ids: None,
+		},
+		&mut cached_runner,
+	)
+	.unwrap();
+	assert_eq!(
+		(resumed.cached, resumed.measured, resumed.failed),
+		(5, 0, 5)
+	);
+	assert!(cached_runner.calls.is_empty());
 }
 
 #[test]

@@ -80,10 +80,10 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Cargo test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
 
       - name: Cargo test (merge-quality steam feature)
-        run: cargo test -p foch-merge-quality --features steam
+        run: cargo test --locked -p foch-merge-quality --features steam
 
   tree-sitter-smoke:
     name: Tree-sitter smoke

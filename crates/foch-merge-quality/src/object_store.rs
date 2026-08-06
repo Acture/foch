@@ -12,8 +12,8 @@ use walkdir::WalkDir;
 
 const OBJECT_MARKER: &str = ".foch-object.json";
 const HASH_FORMAT: &str = "foch-tree-v1";
-const VERIFICATION_CACHE_DIR: &str = "object-verification-v1";
-const VERIFICATION_CACHE_SCHEMA: &str = "1.0.0";
+const VERIFICATION_CACHE_DIR: &str = "object-verification-v2";
+const VERIFICATION_CACHE_SCHEMA: &str = "2.0.0";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
 pub struct TreeStats {
@@ -140,11 +140,11 @@ impl ObjectStore {
 		Ok(object)
 	}
 
-	/// Open a committed object for measurement without rereading payload bytes.
+	/// Open a committed object for measurement, reusing a prior full verification.
 	///
-	/// Collection already binds the tree to its content hash. Measurements use
-	/// a complete metadata fingerprint to detect later changes; explicit audits
-	/// and exports remain responsible for full payload verification.
+	/// A matching v2 stamp avoids rereading payload bytes. Missing stamps require
+	/// a full payload audit before they are created, while mismatched stamps fail
+	/// closed because the object changed after its last verification.
 	pub fn open_object_guarded(&self, hash: &str) -> io::Result<StoredObject> {
 		let opened = self.open_object(hash)?;
 		let metadata_hash = metadata_digest_tree(&opened.tree)?;
@@ -163,7 +163,18 @@ impl ObjectStore {
 					format!("stored object {hash} metadata changed after collection"),
 				));
 			}
-			None => self.write_verification_stamp(hash, &metadata_hash)?,
+			None => {
+				let verified = self.verify_object(hash)?;
+				let verified_metadata_hash = metadata_digest_tree(&verified.tree)?;
+				if verified_metadata_hash != metadata_hash {
+					return Err(io::Error::new(
+						ErrorKind::InvalidData,
+						format!("stored object {hash} changed during verification"),
+					));
+				}
+				self.write_verification_stamp(hash, &verified_metadata_hash)?;
+				return Ok(verified);
+			}
 		}
 		Ok(opened)
 	}
@@ -819,7 +830,7 @@ mod tests {
 
 	#[cfg(target_os = "macos")]
 	#[test]
-	fn guarded_open_seeds_legacy_stamp_and_rejects_metadata_changes() {
+	fn guarded_open_verifies_missing_stamp_and_rejects_metadata_changes() {
 		let source = tempfile::tempdir().unwrap();
 		write_fixture(source.path());
 		let dataset = tempfile::tempdir().unwrap();
@@ -850,6 +861,29 @@ mod tests {
 				.kind(),
 			ErrorKind::InvalidData
 		);
+	}
+
+	#[cfg(target_os = "macos")]
+	#[test]
+	fn guarded_open_rejects_same_length_tampering_without_writing_stamp() {
+		let source = tempfile::tempdir().unwrap();
+		write_fixture(source.path());
+		let dataset = tempfile::tempdir().unwrap();
+		let store = ObjectStore::new(dataset.path().join("objects"), dataset.path().join("work"));
+		let object = store.snapshot_tree(source.path()).unwrap();
+		let stamp_path = store.verification_stamp_path(&object.hash).unwrap();
+		fs::remove_file(&stamp_path).unwrap();
+
+		let payload_path = object.tree.join("common/governments/example.txt");
+		let original_len = fs::metadata(&payload_path).unwrap().len();
+		fs::write(&payload_path, b"government = { rank = 2 }\n").unwrap();
+		assert_eq!(fs::metadata(&payload_path).unwrap().len(), original_len);
+
+		assert_eq!(
+			store.open_object_guarded(&object.hash).unwrap_err().kind(),
+			ErrorKind::InvalidData
+		);
+		assert!(!stamp_path.exists());
 	}
 
 	#[cfg(target_os = "macos")]

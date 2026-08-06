@@ -25,7 +25,7 @@ use foch_merge_quality::shadow::{
 	validate_shadow_manifest_identity,
 };
 
-pub const WORKER_PROTOCOL_VERSION: &str = "foch-cli-merge-report-v2";
+pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-merge-report-v2";
 const MAX_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DISABLED_BASE_SNAPSHOT_IDENTITY: &str = "explicitly-disabled";
@@ -67,7 +67,7 @@ impl ProductMeasurementRunner {
 			executable,
 			identity: MeasurementRunnerIdentity {
 				engine_artifact: EngineArtifactIdentity::foch_executable_blake3(hash),
-				worker_protocol_version: WORKER_PROTOCOL_VERSION.to_string(),
+				runner_protocol_version: RUNNER_PROTOCOL_VERSION.to_string(),
 				merge_kernel: MeasurementKernel::SemanticTree,
 				scope: MeasurementScope::FullProductMerge,
 			},

@@ -305,7 +305,7 @@ pub enum MeasurementCohortKey {
 	},
 	EngineArtifactV2 {
 		engine_artifact: EngineArtifactIdentity,
-		worker_protocol_version: String,
+		runner_protocol_version: String,
 		merge_kernel: MeasurementKernel,
 		scope: MeasurementScope,
 		scorer_version: String,
@@ -330,7 +330,7 @@ impl MeasurementCohortKey {
 			),
 			Self::EngineArtifactV2 {
 				engine_artifact,
-				worker_protocol_version,
+				runner_protocol_version,
 				merge_kernel,
 				scope,
 				scorer_version,
@@ -341,7 +341,7 @@ impl MeasurementCohortKey {
 					engine_artifact.kind.as_str().as_bytes(),
 					engine_artifact.hash_algorithm.as_str().as_bytes(),
 					engine_artifact.hash.as_bytes(),
-					worker_protocol_version.as_bytes(),
+					runner_protocol_version.as_bytes(),
 					merge_kernel.as_str().as_bytes(),
 					scope.as_str().as_bytes(),
 					scorer_version.as_bytes(),
@@ -411,7 +411,7 @@ impl LegacyMeasurementIdentityV1 {
 pub struct MeasurementIdentityV2 {
 	pub snapshot_id: String,
 	pub engine_artifact: EngineArtifactIdentity,
-	pub worker_protocol_version: String,
+	pub runner_protocol_version: String,
 	pub merge_kernel: MeasurementKernel,
 	pub scope: MeasurementScope,
 	pub scorer_version: String,
@@ -422,7 +422,7 @@ impl MeasurementIdentityV2 {
 	pub fn cohort_key(&self) -> MeasurementCohortKey {
 		MeasurementCohortKey::EngineArtifactV2 {
 			engine_artifact: self.engine_artifact.clone(),
-			worker_protocol_version: self.worker_protocol_version.clone(),
+			runner_protocol_version: self.runner_protocol_version.clone(),
 			merge_kernel: self.merge_kernel,
 			scope: self.scope,
 			scorer_version: self.scorer_version.clone(),
@@ -467,7 +467,7 @@ pub enum MeasurementRecord {
 		measurement_id: String,
 		snapshot_id: String,
 		engine_artifact: EngineArtifactIdentity,
-		worker_protocol_version: String,
+		runner_protocol_version: String,
 		merge_kernel: MeasurementKernel,
 		scope: MeasurementScope,
 		scorer_version: String,
@@ -521,7 +521,7 @@ impl MeasurementRecord {
 			measurement_id: identity.measurement_id(),
 			snapshot_id: identity.snapshot_id,
 			engine_artifact: identity.engine_artifact,
-			worker_protocol_version: identity.worker_protocol_version,
+			runner_protocol_version: identity.runner_protocol_version,
 			merge_kernel: identity.merge_kernel,
 			scope: identity.scope,
 			scorer_version: identity.scorer_version,
@@ -587,13 +587,13 @@ impl MeasurementRecord {
 		}
 	}
 
-	pub fn worker_protocol_version(&self) -> Option<&str> {
+	pub fn runner_protocol_version(&self) -> Option<&str> {
 		match self {
 			Self::V1 { .. } => None,
 			Self::V2 {
-				worker_protocol_version,
+				runner_protocol_version,
 				..
-			} => Some(worker_protocol_version),
+			} => Some(runner_protocol_version),
 		}
 	}
 
@@ -666,7 +666,7 @@ impl MeasurementRecord {
 			},
 			Self::V2 {
 				engine_artifact,
-				worker_protocol_version,
+				runner_protocol_version,
 				merge_kernel,
 				scope,
 				scorer_version,
@@ -674,7 +674,7 @@ impl MeasurementRecord {
 				..
 			} => MeasurementCohortKey::EngineArtifactV2 {
 				engine_artifact: engine_artifact.clone(),
-				worker_protocol_version: worker_protocol_version.clone(),
+				runner_protocol_version: runner_protocol_version.clone(),
 				merge_kernel: *merge_kernel,
 				scope: *scope,
 				scorer_version: scorer_version.clone(),
@@ -705,7 +705,7 @@ impl MeasurementRecord {
 			Self::V2 {
 				snapshot_id,
 				engine_artifact,
-				worker_protocol_version,
+				runner_protocol_version,
 				merge_kernel,
 				scope,
 				scorer_version,
@@ -714,7 +714,7 @@ impl MeasurementRecord {
 			} => MeasurementIdentityV2 {
 				snapshot_id: snapshot_id.clone(),
 				engine_artifact: engine_artifact.clone(),
-				worker_protocol_version: worker_protocol_version.clone(),
+				runner_protocol_version: runner_protocol_version.clone(),
 				merge_kernel: *merge_kernel,
 				scope: *scope,
 				scorer_version: scorer_version.clone(),
@@ -1099,7 +1099,7 @@ fn try_lock_exclusive(_file: &fs::File) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-	use std::collections::BTreeSet;
+	use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 	use serde::{Deserialize, Serialize};
 
@@ -1239,6 +1239,57 @@ mod tests {
 		)
 	}
 
+	fn v2_identity() -> MeasurementIdentityV2 {
+		MeasurementIdentityV2 {
+			snapshot_id: "snapshot".to_string(),
+			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
+			runner_protocol_version: "1.0.0".to_string(),
+			merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
+			scope: MeasurementScope::FullProductMerge,
+			scorer_version: SCORER_VERSION.to_string(),
+			scorer_config_hash: "config".to_string(),
+		}
+	}
+
+	#[derive(Clone, Copy)]
+	struct V2IdentityParts<'a> {
+		snapshot_id: &'a str,
+		engine_artifact_kind: &'a str,
+		engine_artifact_hash_algorithm: &'a str,
+		engine_artifact_hash: &'a str,
+		runner_protocol_version: &'a str,
+		merge_kernel: &'a str,
+		scope: &'a str,
+		scorer_version: &'a str,
+		scorer_config_hash: &'a str,
+	}
+
+	impl V2IdentityParts<'_> {
+		fn cohort_id(self) -> String {
+			stable_id(
+				"measurement-cohort-v2",
+				&[
+					self.engine_artifact_kind.as_bytes(),
+					self.engine_artifact_hash_algorithm.as_bytes(),
+					self.engine_artifact_hash.as_bytes(),
+					self.runner_protocol_version.as_bytes(),
+					self.merge_kernel.as_bytes(),
+					self.scope.as_bytes(),
+					self.scorer_version.as_bytes(),
+					self.scorer_config_hash.as_bytes(),
+				],
+			)
+		}
+
+		fn measurement_id(self) -> String {
+			let cohort_id = self.cohort_id();
+			stable_id(
+				"measurement-v2",
+				&[self.snapshot_id.as_bytes(), cohort_id.as_bytes()],
+			)
+		}
+	}
+
 	#[test]
 	fn snapshot_identity_is_repeatable_and_preserves_source_order() {
 		let first = snapshot(&["a", "b"]);
@@ -1318,18 +1369,119 @@ mod tests {
 	}
 
 	#[test]
-	fn v2_identity_covers_engine_protocol_kernel_and_scorer() {
-		let identity = MeasurementIdentityV2 {
-			snapshot_id: "snapshot".to_string(),
-			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
-			worker_protocol_version: "1.0.0".to_string(),
-			merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
-			scope: MeasurementScope::FullProductMerge,
-			scorer_version: SCORER_VERSION.to_string(),
-			scorer_config_hash: "config".to_string(),
-		};
+	fn v2_identity_sensitivity_matrix_covers_every_semantic_input() {
+		let identity = v2_identity();
 		let cohort_id = identity.cohort_id();
 		let measurement_id = identity.measurement_id();
+		let parts = V2IdentityParts {
+			snapshot_id: &identity.snapshot_id,
+			engine_artifact_kind: identity.engine_artifact.kind.as_str(),
+			engine_artifact_hash_algorithm: identity.engine_artifact.hash_algorithm.as_str(),
+			engine_artifact_hash: &identity.engine_artifact.hash,
+			runner_protocol_version: &identity.runner_protocol_version,
+			merge_kernel: identity.merge_kernel.as_str(),
+			scope: identity.scope.as_str(),
+			scorer_version: &identity.scorer_version,
+			scorer_config_hash: &identity.scorer_config_hash,
+		};
+		assert_eq!(parts.cohort_id(), cohort_id);
+		assert_eq!(parts.measurement_id(), measurement_id);
+
+		let mutations = [
+			(
+				"snapshot_id",
+				V2IdentityParts {
+					snapshot_id: "other-snapshot",
+					..parts
+				},
+				false,
+			),
+			(
+				"engine artifact kind",
+				V2IdentityParts {
+					engine_artifact_kind: "other_engine_artifact",
+					..parts
+				},
+				true,
+			),
+			(
+				"engine artifact hash algorithm",
+				V2IdentityParts {
+					engine_artifact_hash_algorithm: "other_hash_algorithm",
+					..parts
+				},
+				true,
+			),
+			(
+				"engine artifact digest",
+				V2IdentityParts {
+					engine_artifact_hash: "other-artifact",
+					..parts
+				},
+				true,
+			),
+			(
+				"runner protocol",
+				V2IdentityParts {
+					runner_protocol_version: "2.0.0",
+					..parts
+				},
+				true,
+			),
+			(
+				"merge kernel",
+				V2IdentityParts {
+					merge_kernel: MeasurementKernel::SemanticTree.as_str(),
+					..parts
+				},
+				true,
+			),
+			(
+				"scope",
+				V2IdentityParts {
+					scope: "other_scope",
+					..parts
+				},
+				true,
+			),
+			(
+				"scorer version",
+				V2IdentityParts {
+					scorer_version: "2.1.0",
+					..parts
+				},
+				true,
+			),
+			(
+				"scorer config hash",
+				V2IdentityParts {
+					scorer_config_hash: "other-config",
+					..parts
+				},
+				true,
+			),
+		];
+		for (field, mutated, changes_cohort) in mutations {
+			assert_ne!(
+				mutated.measurement_id(),
+				measurement_id,
+				"{field} must affect measurement identity"
+			);
+			if changes_cohort {
+				assert_ne!(
+					mutated.cohort_id(),
+					cohort_id,
+					"{field} must affect cohort identity"
+				);
+			} else {
+				assert_eq!(
+					mutated.cohort_id(),
+					cohort_id,
+					"{field} is measurement-specific"
+				);
+			}
+		}
+
 		let record = MeasurementRecord::new_v2(
 			identity.clone(),
 			"started".to_string(),
@@ -1342,6 +1494,7 @@ mod tests {
 
 		assert_eq!(record.schema(), MEASUREMENT_SCHEMA_V2);
 		assert_eq!(record.scorer_version(), "2.0.0");
+		assert_eq!(record.runner_protocol_version(), Some("1.0.0"));
 		assert_eq!(record.cohort_id(), cohort_id);
 		assert_eq!(record.measurement_id(), measurement_id);
 		assert_eq!(
@@ -1350,6 +1503,8 @@ mod tests {
 		);
 		assert!(record.identity_is_valid());
 		let wire = serde_json::to_value(&record).unwrap();
+		assert_eq!(wire["runner_protocol_version"], "1.0.0");
+		assert!(wire.get("worker_protocol_version").is_none());
 		assert_eq!(wire["merge_kernel"], "legacy_address_patch_reference");
 		assert_eq!(wire["scope"], "full_product_merge");
 		assert_eq!(wire["schema"], MEASUREMENT_SCHEMA_V2);
@@ -1371,6 +1526,50 @@ mod tests {
 			serde_json::to_value(structured).unwrap()["merge_kernel"],
 			"semantic_tree"
 		);
+	}
+
+	#[test]
+	fn v2_operational_record_fields_do_not_affect_identity() {
+		let identity = v2_identity();
+		let baseline = MeasurementRecord::new_v2(
+			identity.clone(),
+			"2026-01-01T00:00:00Z".to_string(),
+			"2026-01-01T00:00:01Z".to_string(),
+			TerminalStatus::Completed,
+			None,
+			None,
+			None,
+		);
+		let operationally_different = MeasurementRecord::new_v2(
+			identity,
+			"2026-02-02T00:00:00Z".to_string(),
+			"2026-02-02T00:01:00Z".to_string(),
+			TerminalStatus::Fatal,
+			Some("different detail".to_string()),
+			Some("different merged output".to_string()),
+			Some(MeasurementSummary {
+				merge_status: Some("failed".to_string()),
+				ground_truth_files: 1,
+				multi_source_files: 2,
+				accepted_ground_truth_files: 3,
+				accepted_multi_source_files: 4,
+				all_ground_truth_verdicts: BTreeMap::from([("different".to_string(), 5)]),
+				multi_source_verdicts: BTreeMap::from([("different".to_string(), 6)]),
+				setup_ms: 7,
+				merge_ms: 8,
+				scoring_ms: 9,
+				total_ms: 10,
+			}),
+		);
+
+		assert_ne!(baseline, operationally_different);
+		assert_eq!(
+			baseline.measurement_id(),
+			operationally_different.measurement_id()
+		);
+		assert_eq!(baseline.cohort_id(), operationally_different.cohort_id());
+		assert!(baseline.identity_is_valid());
+		assert!(operationally_different.identity_is_valid());
 	}
 
 	#[test]
@@ -1396,7 +1595,7 @@ mod tests {
 			MeasurementIdentityV2 {
 				snapshot_id: "other-snapshot".to_string(),
 				engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
-				worker_protocol_version: "1.0.0".to_string(),
+				runner_protocol_version: "1.0.0".to_string(),
 				merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
 				scope: MeasurementScope::FullProductMerge,
 				scorer_version: SCORER_VERSION.to_string(),
@@ -1420,36 +1619,130 @@ mod tests {
 	}
 
 	#[test]
-	fn frozen_scorer_1_0_cohort_keeps_its_historical_identity_and_file_results() {
-		const EXECUTABLE_HASH: &str =
-			"16fcde0535ad3c759492f1aa76ad6164d466cb6fea8125a65f36c3bebb06ea91";
-		const CONFIG_HASH: &str =
-			"e2580bc8c745bf7aca520ce909f093028455a9745d5fae6f92b94424d2986393";
+	fn frozen_v1_evidence_has_two_complete_cohorts_and_valid_foreign_keys() {
+		struct FrozenCohort {
+			executable_hash: &'static str,
+			scorer_version: &'static str,
+			config_hash: &'static str,
+			expected_file_results: usize,
+		}
+
+		const COHORTS: [FrozenCohort; 2] = [
+			FrozenCohort {
+				executable_hash: "16fcde0535ad3c759492f1aa76ad6164d466cb6fea8125a65f36c3bebb06ea91",
+				scorer_version: "1.0.0",
+				config_hash: "e2580bc8c745bf7aca520ce909f093028455a9745d5fae6f92b94424d2986393",
+				expected_file_results: 30_739,
+			},
+			FrozenCohort {
+				executable_hash: "0507a19de246a59bd2f718ad2941fd4d0c9ec07d469ab911a1e6b04bb11ba519",
+				scorer_version: "1.3.0",
+				config_hash: "8beffefe06b044798b769b805fb556dd93769ebdbf367df3d6468ef6834d5665",
+				expected_file_results: 29_481,
+			},
+		];
+
 		let dataset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset");
 		let measurements =
 			read_jsonl::<MeasurementRecord>(&dataset_root.join("measurements.jsonl")).unwrap();
-		let frozen_ids: BTreeSet<String> = measurements
+		let v1_measurements: Vec<&MeasurementRecord> = measurements
 			.iter()
-			.filter(|measurement| {
-				measurement.legacy_executable_hash() == Some(EXECUTABLE_HASH)
-					&& measurement.scorer_version() == "1.0.0"
-					&& measurement.config_hash() == CONFIG_HASH
-			})
-			.map(|measurement| {
+			.filter(|measurement| measurement.schema() == MEASUREMENT_SCHEMA_V1)
+			.collect();
+		assert_eq!(v1_measurements.len(), 46);
+		let v1_measurement_ids: BTreeSet<&str> = v1_measurements
+			.iter()
+			.copied()
+			.map(MeasurementRecord::measurement_id)
+			.collect();
+		assert_eq!(v1_measurement_ids.len(), 46);
+
+		for cohort in &COHORTS {
+			let cohort_measurements: Vec<&MeasurementRecord> = v1_measurements
+				.iter()
+				.copied()
+				.filter(|measurement| {
+					measurement.legacy_executable_hash() == Some(cohort.executable_hash)
+						&& measurement.scorer_version() == cohort.scorer_version
+						&& measurement.config_hash() == cohort.config_hash
+				})
+				.collect();
+			assert_eq!(cohort_measurements.len(), 23, "{}", cohort.scorer_version);
+			for measurement in cohort_measurements {
 				assert_eq!(measurement.schema(), MEASUREMENT_SCHEMA_V1);
 				assert!(measurement.identity_is_valid());
-				measurement.measurement_id().to_string()
-			})
-			.collect();
-		assert_eq!(frozen_ids.len(), 23);
+			}
+		}
 
-		let file_results = fs::read_to_string(dataset_root.join("file_results.jsonl")).unwrap();
-		let referenced_file_results = file_results
-			.lines()
-			.filter(|line| !line.trim().is_empty())
-			.map(|line| serde_json::from_str::<FileResultRecord>(line).unwrap())
-			.filter(|record| frozen_ids.contains(&record.measurement_id))
-			.count();
-		assert_eq!(referenced_file_results, 30_739);
+		let measurement_by_id: HashMap<&str, &MeasurementRecord> = measurements
+			.iter()
+			.map(|measurement| (measurement.measurement_id(), measurement))
+			.collect();
+		let file_results =
+			read_jsonl::<FileResultRecord>(&dataset_root.join("file_results.jsonl")).unwrap();
+		let mut file_result_counts = BTreeMap::<&str, usize>::new();
+		for file_result in &file_results {
+			let measurement = measurement_by_id
+				.get(file_result.measurement_id.as_str())
+				.unwrap_or_else(|| {
+					panic!(
+						"file result {} references missing measurement {}",
+						file_result.file_result_id, file_result.measurement_id
+					)
+				});
+			if measurement.schema() == MEASUREMENT_SCHEMA_V1 {
+				*file_result_counts
+					.entry(measurement.scorer_version())
+					.or_default() += 1;
+			}
+		}
+		assert_eq!(file_result_counts.values().sum::<usize>(), 60_220);
+		assert_eq!(
+			file_result_counts,
+			COHORTS
+				.iter()
+				.map(|cohort| (cohort.scorer_version, cohort.expected_file_results))
+				.collect()
+		);
+	}
+
+	#[test]
+	fn committed_v1_evidence_jsonl_prefixes_are_frozen() {
+		let dataset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset");
+		let files: [(&str, usize, &str); 3] = [
+			(
+				"measurements.jsonl",
+				43_182,
+				"bf7d4fd1b01389bd67f8cf430fc7441c3991bbb309f6e4f1c094861c4bdec255",
+			),
+			(
+				"file_results.jsonl",
+				35_906_768,
+				"1bae838fabbf0989843c0c6ac5b159a05a622415522ecb1b9140044e3743f811",
+			),
+			(
+				"object_records.jsonl",
+				34_798,
+				"6db356013a6d8f873bb83ce3bbae0d600ef9c9dd47e634ffee7d9eb68c46590e",
+			),
+		];
+		for (name, frozen_prefix_len, expected_hash) in files {
+			let bytes = fs::read(dataset_root.join(name)).unwrap();
+			assert!(
+				bytes.len() >= frozen_prefix_len,
+				"{name} is shorter than its frozen V1 prefix"
+			);
+			let frozen_prefix = &bytes[..frozen_prefix_len];
+			assert_eq!(
+				frozen_prefix.last(),
+				Some(&b'\n'),
+				"{name} frozen V1 prefix must end at a JSONL record boundary"
+			);
+			assert_eq!(
+				blake3::hash(frozen_prefix).to_hex().to_string(),
+				expected_hash,
+				"{name} frozen V1 prefix changed"
+			);
+		}
 	}
 }

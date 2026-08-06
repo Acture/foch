@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::corpus::Case;
 use crate::score::{
-	ScoreCache, ScoreFileRequest, SourceMod, conflict_rel_paths, reference_output_files,
-	score_file_with_cache_and_basegame, scoring_reference_units,
+	Resolution, ScoreCache, ScoreFileRequest, SourceMod, classify_resolution, conflict_rel_paths,
+	reference_output_files, score_file_with_cache_and_basegame, scoring_reference_units,
 };
 use foch_core::model::MergeReport;
 
@@ -89,6 +89,23 @@ pub struct CaseResult {
 	pub files: Vec<FileRecord>,
 }
 
+/// Immutable inputs needed to score one already generated product output.
+pub struct ScoreExistingOutputRequest<'a> {
+	pub case: &'a Case,
+	pub compatch_dir: &'a Path,
+	pub source_dirs: &'a [PathBuf],
+	pub output_dir: &'a Path,
+	pub report: &'a MergeReport,
+	pub basegame_root: Option<&'a Path>,
+	pub merge_ms: u64,
+}
+
+/// Mechanical scores and derived human-resolution evidence for one case.
+pub struct ExistingOutputScore {
+	pub result: CaseResult,
+	pub resolutions: BTreeMap<String, Resolution>,
+}
+
 // ------------------------------------------------------------------ public API
 
 /// Score an already generated output tree against a human compatch.
@@ -96,34 +113,28 @@ pub struct CaseResult {
 /// This function performs no merge execution and selects no merge kernel. The
 /// caller owns product execution and supplies its parsed [`MergeReport`] plus
 /// measured merge duration.
-#[allow(clippy::too_many_arguments)]
 pub fn score_existing_output_with_cache(
-	case: &Case,
-	compatch_dir: &Path,
-	mod_dirs: &[PathBuf],
-	out_dir: &Path,
-	report: &MergeReport,
-	basegame_root: Option<&Path>,
-	merge_ms: u64,
+	request: &ScoreExistingOutputRequest<'_>,
 	score_cache: &mut ScoreCache,
-) -> Result<CaseResult, Box<dyn std::error::Error>> {
-	if case.referenced_mods.len() != mod_dirs.len() {
+) -> Result<ExistingOutputScore, Box<dyn std::error::Error>> {
+	if request.case.referenced_mods.len() != request.source_dirs.len() {
 		return Err(format!(
 			"case {} declares {} source mods but {} roots were provided",
-			case.compatch_id,
-			case.referenced_mods.len(),
-			mod_dirs.len()
+			request.case.compatch_id,
+			request.case.referenced_mods.len(),
+			request.source_dirs.len()
 		)
 		.into());
 	}
 	let setup_started = Instant::now();
-	let gt = reference_output_files(compatch_dir);
+	let gt = reference_output_files(request.compatch_dir);
 	let scoring_units = scoring_reference_units(&gt);
-	let conflicts = conflict_rel_paths(report);
-	let source_mods: Vec<SourceMod<'_>> = case
+	let conflicts = conflict_rel_paths(request.report);
+	let source_mods: Vec<SourceMod<'_>> = request
+		.case
 		.referenced_mods
 		.iter()
-		.zip(mod_dirs)
+		.zip(request.source_dirs)
 		.map(|(id, root)| SourceMod { id, root })
 		.collect();
 	let setup_ms = elapsed_ms(setup_started.elapsed());
@@ -136,12 +147,12 @@ pub fn score_existing_output_with_cache(
 				&ScoreFileRequest {
 					rel,
 					source_mods: &source_mods,
-					compatch: compatch_dir,
-					out_dir,
+					compatch: request.compatch_dir,
+					out_dir: request.output_dir,
 					conflict_paths: &conflicts,
 				},
 				score_cache,
-				basegame_root,
+				request.basegame_root,
 			);
 			FileRecord::from_score(fs)
 		})
@@ -168,17 +179,32 @@ pub fn score_existing_output_with_cache(
 	}
 
 	// Serialise MergeReportStatus via serde → "ready" / "blocked" etc.
-	let merge_status = serde_json::to_value(report.status)
+	let merge_status = serde_json::to_value(request.report.status)
 		.ok()
 		.and_then(|v| v.as_str().map(str::to_string));
 
-	let validation = serde_json::to_value(&report.validation).ok();
-	let total_ms = setup_ms.saturating_add(merge_ms).saturating_add(scoring_ms);
+	let validation = serde_json::to_value(&request.report.validation).ok();
+	let total_ms = setup_ms
+		.saturating_add(request.merge_ms)
+		.saturating_add(scoring_ms);
+	let resolutions = files
+		.iter()
+		.filter(|file| file.multi_source)
+		.filter_map(|file| {
+			classify_resolution(
+				&file.rel,
+				&source_mods,
+				request.compatch_dir,
+				request.basegame_root,
+			)
+			.map(|resolution| (file.rel.clone(), resolution))
+		})
+		.collect();
 
-	Ok(CaseResult {
-		compatch_id: case.compatch_id.clone(),
-		title: case.title.clone(),
-		referenced_mods: case.referenced_mods.clone(),
+	let result = CaseResult {
+		compatch_id: request.case.compatch_id.clone(),
+		title: request.case.title.clone(),
+		referenced_mods: request.case.referenced_mods.clone(),
 		merge_status,
 		validation,
 		ground_truth_files: files.len(),
@@ -189,11 +215,15 @@ pub fn score_existing_output_with_cache(
 		accepted_multi_source_files,
 		timings: CaseTimings {
 			setup_ms,
-			merge_ms,
+			merge_ms: request.merge_ms,
 			scoring_ms,
 			total_ms,
 		},
 		files,
+	};
+	Ok(ExistingOutputScore {
+		result,
+		resolutions,
 	})
 }
 

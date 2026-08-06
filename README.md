@@ -18,7 +18,9 @@ foch data build eu4 --from-game-path "/path/to/Europa Universalis IV" --game-ver
 foch merge dlc_load.json --out merged-mod
 ```
 
-When a crates.io package is published, the install line becomes `cargo install foch`. Until then, use the path install above or a release binary.
+When the current package is published to crates.io, the install line becomes
+`cargo install foch-cli --bin foch`. Until then, use the path install above or a
+release binary.
 
 ## Schema vendor
 

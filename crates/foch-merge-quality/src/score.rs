@@ -260,30 +260,6 @@ pub fn conflict_rel_paths(report: &MergeReport) -> HashSet<String> {
 	out
 }
 
-/// Write `dlc_load.json` + `mod/ugc_<id>.mod` descriptors pointing at mod dirs.
-pub fn write_playset(tmp: &Path, mods: &[(String, PathBuf)]) -> io::Result<PathBuf> {
-	fs::create_dir_all(tmp.join("mod"))?;
-	let mut enabled = Vec::new();
-	for (steam_id, ws_dir) in mods {
-		let rel = format!("mod/ugc_{steam_id}.mod");
-		let absolute = if ws_dir.is_absolute() {
-			ws_dir.clone()
-		} else {
-			std::env::current_dir()?.join(ws_dir)
-		};
-		let path_val = absolute.to_string_lossy().replace('\\', "/");
-		fs::write(
-			tmp.join(&rel),
-			format!("name=\"{steam_id}\"\npath=\"{path_val}\"\nremote_file_id=\"{steam_id}\"\n"),
-		)?;
-		enabled.push(rel);
-	}
-	let dlc = serde_json::json!({ "enabled_mods": enabled, "disabled_dlcs": [] });
-	let dlc_path = tmp.join("dlc_load.json");
-	fs::write(&dlc_path, serde_json::to_string(&dlc).unwrap())?;
-	Ok(dlc_path)
-}
-
 /// Classification of foch's output for one path- or module-scoped scoring unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -2342,31 +2318,6 @@ mod classify_tests {
 		assert_eq!(evidence.candidate.atoms, evidence.human.atoms);
 		assert!(evidence.candidate_vs_human.left_only.is_empty());
 		assert!(evidence.candidate_vs_human.right_only.is_empty());
-	}
-
-	#[test]
-	fn write_playset_makes_relative_mod_roots_absolute() {
-		let root = tempfile::tempdir_in(".").expect("relative fixture root");
-		let relative_root = root
-			.path()
-			.strip_prefix(std::env::current_dir().expect("current directory"))
-			.unwrap_or(root.path())
-			.to_path_buf();
-		let playset = tempfile::tempdir().expect("playset root");
-		write_playset(
-			playset.path(),
-			&[("123".to_string(), relative_root.clone())],
-		)
-		.expect("write playset");
-
-		let descriptor = fs::read_to_string(playset.path().join("mod/ugc_123.mod"))
-			.expect("read generated descriptor");
-		let expected = std::env::current_dir()
-			.expect("current directory")
-			.join(relative_root)
-			.to_string_lossy()
-			.replace('\\', "/");
-		assert!(descriptor.contains(&format!("path=\"{expected}\"")));
 	}
 
 	#[test]

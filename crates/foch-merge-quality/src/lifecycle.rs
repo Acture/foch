@@ -20,12 +20,15 @@ use crate::dataset::{
 	append_unique_many, now_rfc3339, read_jsonl, stable_id,
 };
 use crate::object_store::{ExportProfile, ObjectStore, StoredObject};
-use crate::orchestrate::{CaseResult, FileRecord, score_existing_output_with_cache};
+use crate::orchestrate::{
+	CaseResult, ExistingOutputScore, FileRecord, ScoreExistingOutputRequest,
+	score_existing_output_with_cache,
+};
 use crate::report::{
 	MEASUREMENT_REPORT_SCHEMA, MeasurementCohortSelector, committed_measurement_cohort_registry,
 	select_measurement_cohort,
 };
-use crate::score::{Resolution, ScoreCache, SourceMod, classify_resolution};
+use crate::score::ScoreCache;
 
 #[derive(Clone, Debug)]
 pub struct CollectOptions<'a> {
@@ -69,7 +72,7 @@ pub struct MeasureRunSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeasurementRunnerIdentity {
 	pub engine_artifact: EngineArtifactIdentity,
-	pub worker_protocol_version: String,
+	pub runner_protocol_version: String,
 	pub merge_kernel: MeasurementKernel,
 	pub scope: MeasurementScope,
 }
@@ -164,12 +167,7 @@ pub struct ExportOptions<'a> {
 	pub profile: DatasetExportProfile,
 }
 
-struct CompletedMeasurement {
-	result: CaseResult,
-	resolutions: BTreeMap<String, Resolution>,
-}
-
-type TerminalClassification = (TerminalStatus, Option<String>, Option<CompletedMeasurement>);
+type TerminalClassification = (TerminalStatus, Option<String>, Option<ExistingOutputScore>);
 
 struct PreparedMeasurement {
 	identity: MeasurementIdentityV2,
@@ -496,6 +494,8 @@ pub fn measure_with_runner(
 
 	let mut verified_outputs = HashMap::new();
 	let mut cached = 0_usize;
+	let mut completed_count = 0_usize;
+	let mut failed = 0_usize;
 	let mut pending = Vec::new();
 	for (snapshot, identity) in selected_measurements {
 		let measurement_id = identity.measurement_id();
@@ -508,10 +508,23 @@ pub fn measure_with_runner(
 				&mut verified_outputs,
 			)?;
 			cached += 1;
+			if record.status() == TerminalStatus::Completed {
+				completed_count += 1;
+			} else if record.status().counts_as_merge_failed() {
+				failed += 1;
+			}
 		} else {
 			pending.push((snapshot, identity));
 		}
 	}
+	eprintln!(
+		"[measure] resume selected={} cached={} cached_completed={} cached_failed={} pending={}",
+		snapshots.len(),
+		cached,
+		completed_count,
+		failed,
+		pending.len()
+	);
 
 	// Resolve every immutable input and allocate every work directory before the
 	// first product invocation. A missing CAS object or local setup error can
@@ -548,7 +561,6 @@ pub fn measure_with_runner(
 	}
 
 	let mut measured = 0_usize;
-	let mut failed = 0_usize;
 	let case_started = Instant::now();
 	let mut score_cache = ScoreCache::new();
 	let pending_count = prepared.len();
@@ -651,9 +663,21 @@ pub fn measure_with_runner(
 		measurement_ids.insert(measurement_id.clone());
 		recoverable_measurement_ids.remove(&measurement_id);
 		measured += 1;
-		if status.counts_as_merge_failed() {
+		if status == TerminalStatus::Completed {
+			completed_count += 1;
+		} else if status.counts_as_merge_failed() {
 			failed += 1;
 		}
+		eprintln!(
+			"[measure] terminal {}/{} status={} cached={} completed={} failed={} ({})",
+			cached + measured,
+			snapshots.len(),
+			terminal_status_name(status),
+			cached,
+			completed_count,
+			failed,
+			progress(index + 1, pending_count, case_started)
+		);
 	}
 
 	Ok(MeasureRunSummary {
@@ -1173,7 +1197,7 @@ fn validate_runner_identity(
 	if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
 		return Err("measurement runner artifact must have a 64-character BLAKE3 hash".into());
 	}
-	if identity.worker_protocol_version.trim().is_empty() {
+	if identity.runner_protocol_version.trim().is_empty() {
 		return Err("measurement runner protocol version must not be empty".into());
 	}
 	if identity.merge_kernel != MeasurementKernel::SemanticTree {
@@ -1700,7 +1724,7 @@ fn measurement_identity(
 	MeasurementIdentityV2 {
 		snapshot_id: snapshot.snapshot_id.clone(),
 		engine_artifact: runner.engine_artifact.clone(),
-		worker_protocol_version: runner.worker_protocol_version.clone(),
+		runner_protocol_version: runner.runner_protocol_version.clone(),
 		merge_kernel: runner.merge_kernel,
 		scope: runner.scope,
 		scorer_version: SCORER_VERSION.to_string(),
@@ -1766,46 +1790,20 @@ fn classify_terminal_merge(
 					.unwrap_or_else(|| "merge report status is fatal".to_string());
 				return Ok((TerminalStatus::Fatal, Some(detail), None));
 			}
-			let result = score_existing_output_with_cache(
-				&request.case,
-				&request.compatch_dir,
-				&request.source_dirs,
-				&request.output_dir,
-				&report,
-				Some(&request.basegame_root),
-				merge_ms,
+			let completed = score_existing_output_with_cache(
+				&ScoreExistingOutputRequest {
+					case: &request.case,
+					compatch_dir: &request.compatch_dir,
+					source_dirs: &request.source_dirs,
+					output_dir: &request.output_dir,
+					report: &report,
+					basegame_root: Some(&request.basegame_root),
+					merge_ms,
+				},
 				score_cache,
 			)
 			.map_err(|error| format!("failed to score completed merge: {error}"))?;
-			let source_mods = request
-				.case
-				.referenced_mods
-				.iter()
-				.zip(&request.source_dirs)
-				.map(|(id, root)| SourceMod { id, root })
-				.collect::<Vec<_>>();
-			let resolutions = result
-				.files
-				.iter()
-				.filter(|file| file.multi_source)
-				.filter_map(|file| {
-					classify_resolution(
-						&file.rel,
-						&source_mods,
-						&request.compatch_dir,
-						Some(&request.basegame_root),
-					)
-					.map(|resolution| (file.rel.clone(), resolution))
-				})
-				.collect();
-			Ok((
-				TerminalStatus::Completed,
-				None,
-				Some(CompletedMeasurement {
-					result,
-					resolutions,
-				}),
-			))
+			Ok((TerminalStatus::Completed, None, Some(completed)))
 		}
 		TerminalMerge::MergeFailed { detail } => {
 			Ok((TerminalStatus::MergeFailed, Some(detail), None))
@@ -2028,13 +2026,13 @@ fn measurement_identity_summary(report: &BaselineReport) -> String {
 		),
 		MeasurementCohortKey::EngineArtifactV2 {
 			engine_artifact,
-			worker_protocol_version,
+			runner_protocol_version,
 			merge_kernel,
 			scope,
 			scorer_version,
 			scorer_config_hash,
 		} => format!(
-			"Identity: `engine_artifact_v2` · artifact `{}` `{}` `{}` · worker protocol `{worker_protocol_version}` · scope `{}` · scorer `{scorer_version}` · config `{scorer_config_hash}` · kernel `{}`",
+			"Identity: `engine_artifact_v2` · artifact `{}` `{}` `{}` · runner protocol `{runner_protocol_version}` · scope `{}` · scorer `{scorer_version}` · config `{scorer_config_hash}` · kernel `{}`",
 			engine_artifact.kind.as_str(),
 			engine_artifact.hash_algorithm.as_str(),
 			engine_artifact.hash,
@@ -2158,7 +2156,7 @@ mod tests {
 		let proposed_identity = MeasurementIdentityV2 {
 			snapshot_id: proposed.snapshot_id.clone(),
 			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("a".repeat(64)),
-			worker_protocol_version: "test-runner-v1".to_string(),
+			runner_protocol_version: "test-runner-v1".to_string(),
 			merge_kernel: MeasurementKernel::SemanticTree,
 			scope: MeasurementScope::FullProductMerge,
 			scorer_version: SCORER_VERSION.to_string(),
@@ -2184,7 +2182,7 @@ mod tests {
 				MeasurementIdentityV2 {
 					snapshot_id: excluded.snapshot_id.clone(),
 					engine_artifact: EngineArtifactIdentity::foch_executable_blake3("c".repeat(64)),
-					worker_protocol_version: "test-runner-v1".to_string(),
+					runner_protocol_version: "test-runner-v1".to_string(),
 					merge_kernel: MeasurementKernel::SemanticTree,
 					scope: MeasurementScope::FullProductMerge,
 					scorer_version: SCORER_VERSION.to_string(),
@@ -2387,7 +2385,7 @@ mod tests {
 		let identity = MeasurementIdentityV2 {
 			snapshot_id: first.snapshot_id.clone(),
 			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("e".repeat(64)),
-			worker_protocol_version: "test-runner-v1".to_string(),
+			runner_protocol_version: "test-runner-v1".to_string(),
 			merge_kernel: MeasurementKernel::SemanticTree,
 			scope: MeasurementScope::FullProductMerge,
 			scorer_version: SCORER_VERSION.to_string(),
@@ -2441,7 +2439,7 @@ mod tests {
 				MeasurementIdentityV2 {
 					snapshot_id: snapshot.snapshot_id.clone(),
 					engine_artifact: EngineArtifactIdentity::foch_executable_blake3("1".repeat(64)),
-					worker_protocol_version: "test-runner-v1".to_string(),
+					runner_protocol_version: "test-runner-v1".to_string(),
 					merge_kernel: MeasurementKernel::SemanticTree,
 					scope: MeasurementScope::FullProductMerge,
 					scorer_version: "0.9.0".to_string(),

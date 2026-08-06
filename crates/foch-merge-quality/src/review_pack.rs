@@ -4,14 +4,14 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::config::Eu4GameDiscovery;
 use crate::dataset::{
-	DatasetPaths, MeasurementCohortKey, MeasurementKernel, MeasurementRecord, SCORER_VERSION,
-	SnapshotRecord, TerminalStatus, read_jsonl, stable_id,
+	DatasetPaths, MeasurementCohortKey, MeasurementKernel, MeasurementRecord, SnapshotRecord,
+	TerminalStatus, read_jsonl, stable_id,
 };
 use crate::object_store::ObjectStore;
 use crate::orchestrate::FileRecord;
@@ -22,7 +22,7 @@ use crate::review_annotation::{
 use crate::score::{
 	ReviewSemanticEvidence, ScoreCache, ScoreFileRequest, SourceMod,
 	review_semantic_evidence_with_cache, score_file_with_cache_and_basegame,
-	structured_module_semantic_relation, write_playset,
+	structured_module_semantic_relation,
 };
 use crate::shadow::{
 	SHADOW_COMPARE_SCHEMA, ShadowCaptureRequest, ShadowDiagnostic, ShadowDiagnosticKind,
@@ -262,23 +262,6 @@ pub struct ReviewPackBuildOptions<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ReviewPackFreezeBaselineOptions<'a> {
-	pub selection: &'a Path,
-	pub dataset_root: &'a Path,
-	pub output_dir: &'a Path,
-	pub game: &'a Eu4GameDiscovery,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct ReviewPackFreezeBaselineResult {
-	pub scorer_version: String,
-	pub legacy_units: usize,
-	pub output_dir: PathBuf,
-	pub legacy_baseline_blake3: String,
-	pub expected_verdicts_blake3: String,
-}
-
-#[derive(Clone, Debug)]
 pub struct ReviewPackVerifyOptions<'a> {
 	pub pack_dir: &'a Path,
 	pub selection: &'a Path,
@@ -485,6 +468,30 @@ pub trait StructuredKernelRunner {
 	) -> io::Result<ShadowRunRecord>;
 }
 
+/// Write the launcher playset used only by the review-pack orchestration path.
+fn write_playset(root: &Path, mods: &[(String, PathBuf)]) -> io::Result<PathBuf> {
+	fs::create_dir_all(root.join("mod"))?;
+	let mut enabled = Vec::with_capacity(mods.len());
+	for (steam_id, workshop_dir) in mods {
+		let relative = format!("mod/ugc_{steam_id}.mod");
+		let absolute = if workshop_dir.is_absolute() {
+			workshop_dir.clone()
+		} else {
+			std::env::current_dir()?.join(workshop_dir)
+		};
+		let path = absolute.to_string_lossy().replace('\\', "/");
+		fs::write(
+			root.join(&relative),
+			format!("name=\"{steam_id}\"\npath=\"{path}\"\nremote_file_id=\"{steam_id}\"\n"),
+		)?;
+		enabled.push(relative);
+	}
+	let launcher = serde_json::json!({ "enabled_mods": enabled, "disabled_dlcs": [] });
+	let path = root.join("dlc_load.json");
+	fs::write(&path, serde_json::to_vec(&launcher)?)?;
+	Ok(path)
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PrecomputedReviewPack {
 	pub selection: ReviewPackSelection,
@@ -493,106 +500,6 @@ pub struct PrecomputedReviewPack {
 	pub wiki_knowledge_snapshot_id: Option<String>,
 	pub case_runs: Vec<ReviewPackCaseRun>,
 	pub units: Vec<ReviewPackUnitEvidence>,
-}
-
-pub fn freeze_legacy_baseline(
-	options: &ReviewPackFreezeBaselineOptions<'_>,
-) -> ReviewResult<ReviewPackFreezeBaselineResult> {
-	if options.output_dir.exists() {
-		return invalid(format!(
-			"review-pack baseline output already exists: {}",
-			options.output_dir.display()
-		));
-	}
-	let selection = ReviewPackSelection::from_path(options.selection)?;
-	validate_selection_game(&selection, options.game)?;
-	let dataset_paths = DatasetPaths::new(options.dataset_root);
-	let snapshots = selected_snapshots(&selection, &dataset_paths, options.game)?;
-	let store = ObjectStore::new(&dataset_paths.objects, &dataset_paths.work);
-	let legacy_cases = load_pinned_legacy_cases(&selection, &dataset_paths, &store)?;
-	let mut units = Vec::with_capacity(REVIEW_PACK_LEGACY_UNIT_COUNT);
-	let mut score_cache = ScoreCache::new();
-	let started = Instant::now();
-
-	for (index, case) in selection.cases.iter().enumerate() {
-		let case_started = Instant::now();
-		eprintln!(
-			"[review-pack] freeze Legacy case {}/{} {}",
-			index + 1,
-			selection.cases.len(),
-			case.case_id
-		);
-		let loaded = open_snapshot(
-			&store,
-			snapshots
-				.get(&case.case_id)
-				.expect("selected snapshots were validated")
-				.clone(),
-		)?;
-		let legacy = legacy_cases
-			.get(&case.case_id)
-			.expect("Legacy measurements were validated");
-		let legacy_output = store.verify_once(&legacy.output_cas_hash)?.tree;
-		let sources = source_mods(&loaded);
-		for relative_path in &case.legacy_units {
-			let score = FileRecord::from_score(score_file_with_cache_and_basegame(
-				&ScoreFileRequest {
-					rel: relative_path,
-					source_mods: &sources,
-					compatch: &loaded.compatch,
-					out_dir: &legacy_output,
-					conflict_paths: &HashSet::new(),
-				},
-				&mut score_cache,
-				Some(&options.game.game_root),
-			));
-			if !score.multi_source {
-				return invalid(format!(
-					"refreshed Legacy baseline unit is not multi-source: {}:{}",
-					case.case_id, relative_path
-				));
-			}
-			units.push(LegacyBaselineUnit {
-				case_id: case.case_id.clone(),
-				score,
-			});
-		}
-		eprintln!(
-			"[review-pack] froze Legacy case {} units={} elapsed_ms={} total_elapsed_ms={}",
-			case.case_id,
-			case.legacy_units.len(),
-			u64::try_from(case_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-			u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
-		);
-	}
-
-	let artifacts = render_frozen_baseline_artifacts(selection, units)?;
-	let parent = options.output_dir.parent().ok_or_else(|| {
-		ReviewPackError::Invalid("review-pack baseline output has no parent".to_string())
-	})?;
-	fs::create_dir_all(parent)?;
-	let staging = tempfile::Builder::new()
-		.prefix(".review-pack-baseline-")
-		.tempdir_in(parent)?;
-	fs::write(
-		staging.path().join("legacy-baseline.json"),
-		&artifacts.baseline,
-	)?;
-	fs::write(staging.path().join("expected.json"), &artifacts.expected)?;
-	fs::write(
-		staging.path().join("review-pack-selection.json"),
-		&artifacts.selection,
-	)?;
-	let staging_path = staging.keep();
-	fs::rename(staging_path, options.output_dir)?;
-
-	Ok(ReviewPackFreezeBaselineResult {
-		scorer_version: SCORER_VERSION.to_string(),
-		legacy_units: REVIEW_PACK_LEGACY_UNIT_COUNT,
-		output_dir: options.output_dir.to_path_buf(),
-		legacy_baseline_blake3: artifacts.legacy_baseline_blake3,
-		expected_verdicts_blake3: artifacts.expected_verdicts_blake3,
-	})
 }
 
 pub fn build_review_pack_with_runner(
@@ -1415,99 +1322,6 @@ struct LegacyBaseline {
 	units: BTreeMap<(String, String), FileRecord>,
 }
 
-struct FrozenBaselineArtifacts {
-	baseline: Vec<u8>,
-	expected: Vec<u8>,
-	selection: Vec<u8>,
-	legacy_baseline_blake3: String,
-	expected_verdicts_blake3: String,
-}
-
-fn render_frozen_baseline_artifacts(
-	mut selection: ReviewPackSelection,
-	mut units: Vec<LegacyBaselineUnit>,
-) -> ReviewResult<FrozenBaselineArtifacts> {
-	selection.validate()?;
-	units.sort_by(|left, right| {
-		(&left.case_id, &left.score.rel).cmp(&(&right.case_id, &right.score.rel))
-	});
-	let selected = selection
-		.cases
-		.iter()
-		.flat_map(|case| {
-			case.legacy_units
-				.iter()
-				.map(|path| (case.case_id.clone(), path.clone()))
-		})
-		.collect::<BTreeSet<_>>();
-	let mut observed = BTreeSet::new();
-	for unit in &units {
-		if !unit.score.multi_source {
-			return invalid(format!(
-				"refreshed Legacy baseline unit {}:{} is not multi-source",
-				unit.case_id, unit.score.rel
-			));
-		}
-		let key = (unit.case_id.clone(), unit.score.rel.clone());
-		if !observed.insert(key.clone()) {
-			return invalid(format!(
-				"refreshed Legacy baseline contains duplicate unit {}:{}",
-				key.0, key.1
-			));
-		}
-	}
-	if selected != observed {
-		let missing = selected
-			.difference(&observed)
-			.map(|(case, path)| format!("{case}:{path}"))
-			.collect::<Vec<_>>();
-		let extra = observed
-			.difference(&selected)
-			.map(|(case, path)| format!("{case}:{path}"))
-			.collect::<Vec<_>>();
-		return invalid(format!(
-			"refreshed Legacy baseline denominator mismatch: missing=[{}] extra=[{}]",
-			missing.join(", "),
-			extra.join(", ")
-		));
-	}
-
-	let mut expected = BTreeMap::<String, BTreeMap<String, usize>>::new();
-	for unit in &units {
-		*expected
-			.entry(unit.case_id.clone())
-			.or_default()
-			.entry(unit.score.verdict.clone())
-			.or_default() += 1;
-	}
-	let expected_bytes = pretty_json_bytes(&expected)?;
-	let baseline = LegacyBaselineFile {
-		schema: REVIEW_PACK_SCHEMA.to_string(),
-		scorer_version: SCORER_VERSION.to_string(),
-		expected_content_id: stable_id("legacy-expected-v1", &[&expected_bytes]),
-		units,
-	};
-	let baseline_bytes = pretty_json_bytes(&baseline)?;
-	let legacy_baseline_blake3 = blake3::hash(&baseline_bytes).to_hex().to_string();
-	let expected_verdicts_blake3 = blake3::hash(&expected_bytes).to_hex().to_string();
-	selection
-		.legacy_baseline_blake3
-		.clone_from(&legacy_baseline_blake3);
-	selection
-		.expected_verdicts_blake3
-		.clone_from(&expected_verdicts_blake3);
-	selection.validate()?;
-	let selection_bytes = pretty_json_bytes(&selection)?;
-
-	Ok(FrozenBaselineArtifacts {
-		baseline: baseline_bytes,
-		expected: expected_bytes,
-		selection: selection_bytes,
-		legacy_baseline_blake3,
-		expected_verdicts_blake3,
-	})
-}
-
 #[derive(Debug)]
 struct LegacyCase {
 	measurement_id: String,
@@ -1651,6 +1465,12 @@ fn selected_snapshots(
 				case.case_id, case.snapshot_id
 			))
 		})?;
+		if !snapshot.identity_is_valid() {
+			return invalid(format!(
+				"pinned snapshot has an invalid identity for case {}",
+				case.case_id
+			));
+		}
 		if snapshot.case_id != case.case_id {
 			return invalid(format!(
 				"pinned snapshot {} belongs to case {}, not {}",
@@ -2702,6 +2522,31 @@ mod tests {
 		concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/expected.json");
 
 	#[test]
+	fn review_playset_makes_relative_mod_roots_absolute() {
+		let root = tempfile::tempdir_in(".").expect("relative fixture root");
+		let current = std::env::current_dir().expect("current directory");
+		let relative_root = root
+			.path()
+			.strip_prefix(&current)
+			.unwrap_or(root.path())
+			.to_path_buf();
+		let playset = tempfile::tempdir().expect("playset root");
+		write_playset(
+			playset.path(),
+			&[("123".to_string(), relative_root.clone())],
+		)
+		.expect("write review playset");
+
+		let descriptor = fs::read_to_string(playset.path().join("mod/ugc_123.mod"))
+			.expect("read generated descriptor");
+		let expected = current
+			.join(relative_root)
+			.to_string_lossy()
+			.replace('\\', "/");
+		assert!(descriptor.contains(&format!("path=\"{expected}\"")));
+	}
+
+	#[test]
 	fn pinned_selection_is_exact_and_structured_is_a_legacy_subset() {
 		let selection = ReviewPackSelection::from_path(Path::new(FIXTURE)).unwrap();
 		assert_eq!(selection.cases.len(), REVIEW_PACK_CASE_COUNT);
@@ -2792,20 +2637,6 @@ mod tests {
 			hash_file(Path::new(EXPECTED_FIXTURE)).unwrap(),
 			selection.expected_verdicts_blake3
 		);
-	}
-
-	#[test]
-	fn newly_frozen_baseline_uses_the_current_scorer_version() {
-		let selection = ReviewPackSelection::from_path(Path::new(FIXTURE)).unwrap();
-		let historical = serde_json::from_slice::<LegacyBaselineFile>(
-			&fs::read(LEGACY_BASELINE_FIXTURE).unwrap(),
-		)
-		.unwrap();
-		let artifacts = render_frozen_baseline_artifacts(selection, historical.units).unwrap();
-		let refreshed = serde_json::from_slice::<LegacyBaselineFile>(&artifacts.baseline).unwrap();
-
-		assert_eq!(refreshed.scorer_version, SCORER_VERSION);
-		assert_eq!(artifacts.expected, fs::read(EXPECTED_FIXTURE).unwrap());
 	}
 
 	struct SpyRunner {
@@ -3231,5 +3062,78 @@ mod tests {
 
 		let selected = selected_snapshots(&selection, &paths, &game).unwrap();
 		assert_eq!(selected["case"].snapshot_id, pinned.snapshot_id);
+	}
+
+	fn assert_forged_snapshot_ref_is_rejected(mutate: impl FnOnce(&mut SnapshotRecord)) {
+		let temp = tempfile::tempdir().unwrap();
+		let paths = DatasetPaths::new(temp.path().join("dataset"));
+		fs::create_dir_all(&paths.root).unwrap();
+		let original = SnapshotRecord::new(
+			"case".to_string(),
+			GameIdentity {
+				app_id: 236_850,
+				version: "v1".to_string(),
+				steam_build_id: Some(1),
+			},
+			SnapshotObjectRef {
+				workshop_id: "compatch".to_string(),
+				content_hash: "a".repeat(64),
+			},
+			vec![SnapshotObjectRef {
+				workshop_id: "source".to_string(),
+				content_hash: "b".repeat(64),
+			}],
+		);
+		let mut forged = original.clone();
+		mutate(&mut forged);
+		assert_eq!(forged.snapshot_id, original.snapshot_id);
+		assert!(!forged.identity_is_valid());
+		write_jsonl(&paths.snapshots, &[forged]).unwrap();
+
+		let selection = ReviewPackSelection {
+			schema: REVIEW_PACK_SCHEMA.to_string(),
+			profile: REVIEW_PACK_PROFILE.to_string(),
+			game_version: "v1".to_string(),
+			steam_build_id: 1,
+			legacy_baseline_blake3: "e".repeat(64),
+			expected_verdicts_blake3: "f".repeat(64),
+			legacy_unit_count: 1,
+			structured_unit_count: 1,
+			cases: vec![ReviewPackSelectionCase {
+				case_id: "case".to_string(),
+				snapshot_id: original.snapshot_id,
+				legacy_measurement_id: "1".repeat(64),
+				legacy_output_hash: "2".repeat(64),
+				legacy_units: vec!["events/example.txt".to_string()],
+				structured_units: vec!["events/example.txt".to_string()],
+			}],
+		};
+		let game = Eu4GameDiscovery {
+			game_root: temp.path().join("game"),
+			game_version: "v1".to_string(),
+			steam_build_id: Some(1),
+			steam_root: None,
+		};
+
+		assert_eq!(
+			selected_snapshots(&selection, &paths, &game)
+				.unwrap_err()
+				.to_string(),
+			"pinned snapshot has an invalid identity for case case"
+		);
+	}
+
+	#[test]
+	fn selected_snapshot_rejects_retained_id_with_forged_compatch_ref() {
+		assert_forged_snapshot_ref_is_rejected(|snapshot| {
+			snapshot.compatch.content_hash = "c".repeat(64);
+		});
+	}
+
+	#[test]
+	fn selected_snapshot_rejects_retained_id_with_forged_source_ref() {
+		assert_forged_snapshot_ref_is_rejected(|snapshot| {
+			snapshot.source_mods[0].content_hash = "c".repeat(64);
+		});
 	}
 }

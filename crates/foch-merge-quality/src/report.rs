@@ -293,7 +293,7 @@ mod tests {
 			MeasurementIdentityV2 {
 				snapshot_id: "snapshot".to_string(),
 				engine_artifact: EngineArtifactIdentity::foch_executable_blake3(artifact_hash),
-				worker_protocol_version: "1.0.0".to_string(),
+				runner_protocol_version: "1.0.0".to_string(),
 				merge_kernel: kernel,
 				scope: MeasurementScope::FullProductMerge,
 				scorer_version: scorer_version.to_string(),

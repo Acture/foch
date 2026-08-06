@@ -1,8 +1,10 @@
 # Merge-quality review pack
 
-The review pack is an audit artifact for the fixed six-case rollout selection.
-It compares archived Legacy evidence with product-generated SemanticTree
-evidence without creating another benchmark denominator.
+The review pack is a schema `1.0.0` audit artifact for the fixed six-case
+rollout selection. It compares archived Legacy evidence with product-generated
+`semantic_tree` / `full_product_merge` evidence without creating another
+benchmark denominator. It is separate from V2 measurement cohorts and schema
+`2.0.0` measurement reports.
 
 There is no `foch-mq` command or default self-spawning builder. The library
 entrypoint is `build_review_pack_with_runner`, and callers must inject the
@@ -36,7 +38,9 @@ one auditable workflow:
 1. Restore and rescore the six pinned Legacy output CAS objects without
    rerunning a Legacy merge.
 2. Invoke `build_review_pack_with_runner` with the exact public `foch` artifact
-   and a bounded timeout. Run at most one grouped product merge per case.
+   and a bounded timeout. Run at most one grouped product merge per case, and
+   require its execution attestation to name `kernel = semantic_tree` and
+   `scope = full_product_merge`.
 3. Reject the build unless every Structured case is `ready`, exits zero,
    reports valid output, has zero manual conflicts and zero handler
    resolutions, and contains no error, fatal, conflict, or handler-resolution
@@ -54,19 +58,21 @@ The script selects only the ignored `review_pack_acceptance` test and supplies
 its exact guard token. Do not substitute a test binary path or reintroduce a
 hidden child protocol.
 
-`freeze_legacy_baseline` remains a pure library operation for the future
-acceptance test. Its staged output contains `legacy-baseline.json`,
-`expected.json`, and `review-pack-selection.json`; it does not overwrite the
-committed fixtures.
+`legacy-baseline.json`, `expected.json`, and `review-pack-selection.json` are
+immutable committed inputs. There is no freeze/regeneration API or staged
+baseline-generation step. The supported review-pack surface is build plus
+verify; changing those fixtures requires a separately reviewed dataset
+migration.
 
 ## Build contract
 
 For each case, the builder restores the pinned Legacy output, scores every
 selected Legacy unit, and requires exact equality with the frozen `FileRecord`.
-The injected runner receives a grouped Structured request for all selected
-paths in that case. A successful result is archived into the same verified CAS
-format inside the staged review pack. It never appends the canonical dataset's
-object stream or writes its canonical CAS.
+The injected runner receives one grouped request per case. Selected paths bound
+the review evidence; they do not narrow product execution, which remains
+`semantic_tree` / `full_product_merge`. A successful result is archived into
+the same verified CAS format inside the staged review pack. It never appends
+the canonical dataset's object stream or writes its canonical CAS.
 
 The pack contains:
 
@@ -88,20 +94,21 @@ verification.
 
 Each unit binds the base snapshot, ordered source and compatch CAS objects,
 human and candidate semantic hashes, scorer result, diagnostics, selected
-kernel, and optional historical knowledge-snapshot ID. Raw atom differences
-remain available for audit. Exact or proven logical equivalence may produce an
-`equivalent` proposal; unavailable or unresolved candidates produce
-`insufficient_evidence`.
+review arm (`legacy` or `structured`), and optional historical
+knowledge-snapshot ID. Raw atom differences remain available for audit. Exact
+or proven logical equivalence may produce an `equivalent` proposal;
+unavailable or unresolved candidates produce `insufficient_evidence`.
 
 Non-identical positive adjudications require explicit family-invariant or
 runtime evidence. Non-identical GUI adjudications require runtime evidence.
 
 ## Verification and inspection
 
-`verify_review_pack` executes no merge. It applies the same clean Structured
-attestation rules as the builder, verifies artifact and CAS hashes, checks the
-installed game/base identity, recomputes semantic evidence and `FileRecord`s,
-and reconstructs the review-pack identity.
+`verify_review_pack` executes no merge. It applies the same clean
+`semantic_tree` / `full_product_merge` attestation rules as the builder,
+verifies artifact and CAS hashes, checks the installed game/base identity,
+recomputes semantic evidence and `FileRecord`s, and reconstructs the
+review-pack identity.
 
 Inspection is ordinary file review: read `summary.json`, `manifest.json`, and
 the selected unit JSON with standard tools such as `jq`. There is no package

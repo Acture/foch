@@ -16,27 +16,37 @@ use foch_engine::{BaseDataSource, FileFilter, build_base_snapshot, install_built
 use foch_merge_quality::config::{
 	DiscoveryOverrides, Eu4Discovery, WorkshopCatalog, detect_game_version, discover_eu4_game,
 };
-use foch_merge_quality::corpus::Case;
+use foch_merge_quality::corpus::{Case, assess_oracle_candidate};
 use foch_merge_quality::dataset::{
-	DatasetPaths, MeasurementKernel, MeasurementRecord, MeasurementScope, SCORER_VERSION,
-	SnapshotRecord, TerminalStatus, read_jsonl,
+	DatasetPaths, MeasurementKernel, MeasurementRecord, MeasurementScope, ObservationRecord,
+	SCORER_VERSION, SnapshotRecord, TerminalStatus, read_jsonl,
 };
 use foch_merge_quality::lifecycle::{
 	CollectOptions, MeasureOptions, MeasurementRequest, MeasurementRunner, ReportCohort,
 	ReportOptions, TerminalMerge, collect, measure_with_runner, report,
 };
 use foch_merge_quality::object_store::digest_tree;
-use foch_merge_quality::orchestrate::score_existing_output_with_cache;
+use foch_merge_quality::orchestrate::{
+	ScoreExistingOutputRequest, score_existing_output_with_cache,
+};
 use foch_merge_quality::review_pack::{
 	REVIEW_PACK_CASE_COUNT, REVIEW_PACK_LEGACY_UNIT_COUNT, REVIEW_PACK_STRUCTURED_UNIT_COUNT,
 	ReviewPackBuildOptions, ReviewPackVerifyOptions, build_review_pack_with_runner,
 	verify_review_pack,
 };
 use foch_merge_quality::score::ScoreCache;
-use runner::{ProductMeasurementRunner, WORKER_PROTOCOL_VERSION};
+use runner::{ProductMeasurementRunner, RUNNER_PROTOCOL_VERSION};
 
 const FIXTURE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const FULL_CORPUS_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const FIXED_PRODUCT_SCORABLE_SNAPSHOT_IDS: [&str; 6] = [
+	"24048fe131d8365e61b3d70172e57d57f6a38ffb000f19a30ee35c20935a5803",
+	"54fb216188ec4267c3006b2b05b8c994ba75961a7337839a05a9f23272d62d0c",
+	"695b4ed11d04270342f5cb007ebd14001513bd91e3187434a6531e8f76ab7d7c",
+	"b1f12d633dd249e644a0205708e8c23898d990eb8eea8d43134ff78188ef61f7",
+	"d60369eb6a10122a1478df23c06031a84858075f09db11574e8d29cc1a260f5c",
+	"ebdf8ea89e7fa5edb103708cdab2ce02dca53af16642d4aa1f5e577781033e30",
+];
 const FIXED_PRODUCT_SNAPSHOT_IDS: [&str; 23] = [
 	"00fdd9728a2db4dd886c759d86e5f25f93f2013d3b1998ad99d8599627b66d8b",
 	"02f3aba17eac3872918a21785384be530d8b915019f2739d0eff48cf7051b033",
@@ -121,8 +131,8 @@ fn tiny_product_cli_to_pure_scorer_seam() {
 	);
 	assert_eq!(runner.identity().scope, MeasurementScope::FullProductMerge);
 	assert_eq!(
-		runner.identity().worker_protocol_version,
-		WORKER_PROTOCOL_VERSION
+		runner.identity().runner_protocol_version,
+		RUNNER_PROTOCOL_VERSION
 	);
 	assert_eq!(runner.identity().engine_artifact.hash.len(), 64);
 
@@ -150,17 +160,21 @@ fn tiny_product_cli_to_pure_scorer_seam() {
 	assert!(product_text.contains("add_prestige = 5"));
 
 	let mut score_cache = ScoreCache::new();
+	let source_dirs = [source_a.clone(), source_b.clone()];
 	let scored = score_existing_output_with_cache(
-		&case,
-		&compatch,
-		&[source_a.clone(), source_b.clone()],
-		&output,
-		&merge_report,
-		None,
-		merge_ms,
+		&ScoreExistingOutputRequest {
+			case: &case,
+			compatch_dir: &compatch,
+			source_dirs: &source_dirs,
+			output_dir: &output,
+			report: &merge_report,
+			basegame_root: None,
+			merge_ms,
+		},
 		&mut score_cache,
 	)
-	.expect("score existing product output");
+	.expect("score existing product output")
+	.result;
 	let expected = BTreeMap::from([("accepted_equivalent".to_string(), 1)]);
 	assert_expected_verdicts(&scored.multi_source_verdicts, &expected)
 		.expect("tiny product verdict baseline matches");
@@ -178,6 +192,13 @@ fn tiny_product_cli_to_pure_scorer_seam() {
 		source_b_before,
 		"product runner must not mutate source B"
 	);
+}
+
+#[test]
+fn fixed_product_report_denominators_are_stable() {
+	let dataset_root = repo_root().join("crates/foch-merge-quality/dataset");
+	let snapshot_ids = fixed_product_snapshot_ids(&dataset_root);
+	assert_fixed_product_snapshot_contract(&dataset_root, &snapshot_ids);
 }
 
 #[test]
@@ -236,7 +257,7 @@ fn product_fixture_acceptance() {
 	);
 	assert_eq!(measured.measured, 6);
 	assert_eq!(measured.failed, 0);
-	let records = exact_product_records(&dataset_root, &measured);
+	let records = exact_product_records(&dataset_root, &measured, &fixture_snapshot_ids);
 	assert_complete_product_cohort(&records, 6);
 	let cohort_id = unique_cohort_id(&records);
 	let output = repo_root()
@@ -252,7 +273,7 @@ fn product_fixture_acceptance() {
 		snapshot_ids: Some(&fixture_snapshot_ids),
 	})
 	.expect("write product fixture baseline");
-	assert_product_report(&output.join("baseline.json"), 6);
+	assert_product_report(&output.join("baseline.json"), 6, 6, 6);
 }
 
 #[test]
@@ -264,6 +285,7 @@ fn full_product_corpus_acceptance() {
 		.unwrap_or_else(std::sync::PoisonError::into_inner);
 	let dataset_root = repo_root().join("crates/foch-merge-quality/dataset");
 	let snapshot_ids = fixed_product_snapshot_ids(&dataset_root);
+	assert_fixed_product_snapshot_contract(&dataset_root, &snapshot_ids);
 	let basegame = required_basegame_root();
 	let mut runner = ProductMeasurementRunner::full_product().expect("construct product runner");
 	let measured = measure_with_runner(
@@ -287,7 +309,7 @@ fn full_product_corpus_acceptance() {
 		measured.failed, 0,
 		"every product case must be terminal-successful"
 	);
-	let records = exact_product_records(&dataset_root, &measured);
+	let records = exact_product_records(&dataset_root, &measured, &snapshot_ids);
 	assert_complete_product_cohort(&records, FIXED_PRODUCT_SNAPSHOT_IDS.len());
 	let actual_ids = records
 		.iter()
@@ -301,9 +323,17 @@ fn full_product_corpus_acceptance() {
 	let output_root = repo_root()
 		.join("target/merge-quality/full-product-corpus")
 		.join(&cohort_id);
-	for (name, cohort) in [
-		("scorable", ReportCohort::Scorable),
-		("all-candidates", ReportCohort::AllCandidates),
+	for (name, cohort, expected_report_cases) in [
+		(
+			"scorable",
+			ReportCohort::Scorable,
+			FIXED_PRODUCT_SCORABLE_SNAPSHOT_IDS.len(),
+		),
+		(
+			"all-candidates",
+			ReportCohort::AllCandidates,
+			FIXED_PRODUCT_SNAPSHOT_IDS.len(),
+		),
 	] {
 		let output = output_root.join(name);
 		report(&ReportOptions {
@@ -319,6 +349,8 @@ fn full_product_corpus_acceptance() {
 		assert_product_report(
 			&output.join("baseline.json"),
 			FIXED_PRODUCT_SNAPSHOT_IDS.len(),
+			FIXED_PRODUCT_SCORABLE_SNAPSHOT_IDS.len(),
+			expected_report_cases,
 		);
 	}
 }
@@ -517,16 +549,22 @@ fn install_fixture_base_snapshot(basegame: &Path, game_version: &str) {
 fn exact_product_records(
 	dataset_root: &Path,
 	run: &foch_merge_quality::lifecycle::MeasureRunSummary,
+	snapshot_ids: &[String],
 ) -> Vec<MeasurementRecord> {
 	let paths = DatasetPaths::new(dataset_root);
+	let snapshot_ids = snapshot_ids
+		.iter()
+		.map(String::as_str)
+		.collect::<BTreeSet<_>>();
 	read_jsonl::<MeasurementRecord>(&paths.measurements)
 		.expect("read product measurements")
 		.into_iter()
 		.filter(|record| {
-			record.schema() == "2.0.0"
+			snapshot_ids.contains(record.snapshot_id())
+				&& record.schema() == "2.0.0"
 				&& record.scorer_version() == SCORER_VERSION
 				&& record.config_hash() == run.scorer_config_hash
-				&& record.worker_protocol_version() == Some(WORKER_PROTOCOL_VERSION)
+				&& record.runner_protocol_version() == Some(RUNNER_PROTOCOL_VERSION)
 				&& record.merge_kernel() == Some(MeasurementKernel::SemanticTree)
 				&& record.scope() == Some(MeasurementScope::FullProductMerge)
 				&& record
@@ -563,7 +601,12 @@ fn unique_cohort_id(records: &[MeasurementRecord]) -> String {
 	cohort_ids.into_iter().next().expect("one cohort ID")
 }
 
-fn assert_product_report(path: &Path, expected_cases: usize) {
+fn assert_product_report(
+	path: &Path,
+	expected_candidate_cases: usize,
+	expected_scorable_cases: usize,
+	expected_report_cases: usize,
+) {
 	let report: serde_json::Value = serde_json::from_slice(
 		&fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
 	)
@@ -571,10 +614,72 @@ fn assert_product_report(path: &Path, expected_cases: usize) {
 	assert_eq!(report["schema"], "2.0.0");
 	assert_eq!(report["merge_kernel"], "semantic_tree");
 	assert_eq!(report["scorer_version"], "2.0.0");
-	assert_eq!(report["total_cases"], expected_cases);
-	assert_eq!(report["terminal_cases"], expected_cases);
-	assert_eq!(report["completed_cases"], expected_cases);
+	assert_eq!(report["candidate_cases"], expected_candidate_cases);
+	assert_eq!(report["scorable_cases"], expected_scorable_cases);
+	assert_eq!(
+		report["excluded_cases"],
+		expected_candidate_cases - expected_scorable_cases
+	);
+	assert_eq!(report["total_cases"], expected_report_cases);
+	assert_eq!(report["terminal_cases"], expected_report_cases);
+	assert_eq!(report["completed_cases"], expected_report_cases);
+	assert_eq!(report["merge_failed_cases"], 0);
+	assert_eq!(report["status_counts"]["completed"], expected_report_cases);
 	assert_eq!(report["baseline_complete"], true);
+}
+
+fn scorable_snapshot_ids(dataset_root: &Path, snapshot_ids: &[String]) -> BTreeSet<String> {
+	let paths = DatasetPaths::new(dataset_root);
+	let snapshots = read_jsonl::<SnapshotRecord>(&paths.snapshots)
+		.expect("read canonical snapshots")
+		.into_iter()
+		.map(|snapshot| (snapshot.snapshot_id.clone(), snapshot))
+		.collect::<BTreeMap<_, _>>();
+	let latest_observations = read_jsonl::<ObservationRecord>(&paths.observations)
+		.expect("read canonical observations")
+		.into_iter()
+		.fold(
+			BTreeMap::<String, ObservationRecord>::new(),
+			|mut latest, observation| {
+				let replace = latest
+					.get(&observation.snapshot_id)
+					.is_none_or(|current| observation.observed_at > current.observed_at);
+				if replace {
+					latest.insert(observation.snapshot_id.clone(), observation);
+				}
+				latest
+			},
+		);
+	snapshot_ids
+		.iter()
+		.filter_map(|snapshot_id| {
+			let snapshot = snapshots
+				.get(snapshot_id)
+				.expect("fixed product snapshot exists");
+			let observation = latest_observations
+				.get(snapshot_id)
+				.expect("fixed product snapshot has an observation");
+			let scorable = assess_oracle_candidate(
+				&observation.compatch.title,
+				snapshot.source_mods.len(),
+				observation.mod_churned,
+			)
+			.is_scorable();
+			scorable.then(|| snapshot_id.clone())
+		})
+		.collect()
+}
+
+fn assert_fixed_product_snapshot_contract(dataset_root: &Path, snapshot_ids: &[String]) {
+	assert_eq!(snapshot_ids.len(), FIXED_PRODUCT_SNAPSHOT_IDS.len());
+	assert_eq!(
+		scorable_snapshot_ids(dataset_root, snapshot_ids),
+		FIXED_PRODUCT_SCORABLE_SNAPSHOT_IDS
+			.into_iter()
+			.map(str::to_string)
+			.collect::<BTreeSet<_>>(),
+		"the fixed product cohort's scorable membership changed"
+	);
 }
 
 fn fixed_product_snapshot_ids(dataset_root: &Path) -> Vec<String> {

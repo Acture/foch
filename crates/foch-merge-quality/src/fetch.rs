@@ -188,10 +188,8 @@ pub fn fetch(corpus: &Path, workshop_dir: &Path, fetch_n: usize, min_subs: i64) 
 		})
 		.count();
 	println!(
-		"{full}/{} curated compatches now fully local and testable \
-		 (workshop dir: {}). Next: `run`.",
-		selected.len(),
-		workshop_dir.display()
+		"{full}/{} curated compatches now fully local and testable.",
+		selected.len()
 	);
 	Ok(())
 }

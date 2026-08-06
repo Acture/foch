@@ -49,24 +49,96 @@ fn maintenance_root(name: &str) -> PathBuf {
 	dataset_root().join(".work/maintenance").join(name)
 }
 
-fn require_workflow(expected: &str) -> Result<(), Box<dyn Error>> {
-	let actual = std::env::var(WORKFLOW_ENV).unwrap_or_default();
-	if actual != expected {
+fn validate_workflow_invocation<S: AsRef<str>>(
+	expected_workflow: &str,
+	expected_test: &str,
+	actual_workflow: Option<&str>,
+	libtest_args: &[S],
+) -> Result<(), String> {
+	if actual_workflow != Some(expected_workflow) {
 		return Err(format!(
-			"refusing maintenance workflow: run scripts/merge-quality/{expected}.fish"
-		)
-		.into());
+			"refusing maintenance workflow: run scripts/merge-quality/{expected_workflow}.fish"
+		));
+	}
+	if !libtest_args.iter().any(|arg| arg.as_ref() == "--ignored") {
+		return Err("refusing maintenance workflow without libtest --ignored".to_string());
+	}
+	if !libtest_args.iter().any(|arg| arg.as_ref() == "--exact") {
+		return Err("refusing maintenance workflow without libtest --exact".to_string());
+	}
+	if libtest_args.first().map(AsRef::as_ref) != Some(expected_test)
+		|| libtest_args
+			.iter()
+			.skip(1)
+			.any(|arg| !arg.as_ref().starts_with('-'))
+	{
+		return Err(format!(
+			"refusing maintenance workflow without the exact `{expected_test}` test filter"
+		));
 	}
 	Ok(())
 }
 
-fn require_fresh_output(path: &Path) -> Result<(), Box<dyn Error>> {
+fn require_workflow(expected_workflow: &str, expected_test: &str) -> Result<(), Box<dyn Error>> {
+	let actual_workflow = std::env::var(WORKFLOW_ENV).ok();
+	let libtest_args = std::env::args().skip(1).collect::<Vec<_>>();
+	validate_workflow_invocation(
+		expected_workflow,
+		expected_test,
+		actual_workflow.as_deref(),
+		&libtest_args,
+	)
+	.map_err(Into::into)
+}
+
+#[test]
+fn workflow_invocation_guard_accepts_exact_ignored_test() {
+	let args = ["refresh_corpus", "--ignored", "--exact", "--nocapture"];
+	assert_eq!(
+		validate_workflow_invocation(
+			"refresh-corpus",
+			"refresh_corpus",
+			Some("refresh-corpus"),
+			&args,
+		),
+		Ok(())
+	);
+}
+
+#[test]
+fn workflow_invocation_guard_rejects_unguarded_or_ambiguous_invocations() {
+	let missing_ignored = ["refresh_corpus", "--exact"];
+	let missing_exact = ["refresh_corpus", "--ignored"];
+	let wrong_filter = ["refresh_fixtures", "--ignored", "--exact"];
+	let skip_value_only = ["--skip", "refresh_corpus", "--ignored", "--exact"];
+	let extra_filter = ["refresh_corpus", "refresh_fixtures", "--ignored", "--exact"];
+	for args in [
+		missing_ignored.as_slice(),
+		missing_exact.as_slice(),
+		wrong_filter.as_slice(),
+		skip_value_only.as_slice(),
+		extra_filter.as_slice(),
+	] {
+		assert!(
+			validate_workflow_invocation(
+				"refresh-corpus",
+				"refresh_corpus",
+				Some("refresh-corpus"),
+				args,
+			)
+			.is_err()
+		);
+	}
+	let valid_args = ["refresh_corpus", "--ignored", "--exact"];
+	assert!(
+		validate_workflow_invocation("refresh-corpus", "refresh_corpus", None, &valid_args,)
+			.is_err()
+	);
+}
+
+fn require_fresh_output(path: &Path, label: &str) -> Result<(), Box<dyn Error>> {
 	if path.exists() && fs::read_dir(path)?.next().is_some() {
-		return Err(format!(
-			"maintenance output already exists; archive it before retrying: {}",
-			path.display()
-		)
-		.into());
+		return Err(format!("{label} output already exists; archive it before retrying").into());
 	}
 	fs::create_dir_all(path)?;
 	Ok(())
@@ -74,7 +146,7 @@ fn require_fresh_output(path: &Path) -> Result<(), Box<dyn Error>> {
 
 fn require_nonempty_file(path: &Path, description: &str) -> Result<(), Box<dyn Error>> {
 	if !path.is_file() || fs::metadata(path)?.len() == 0 {
-		return Err(format!("missing or empty {description}: {}", path.display()).into());
+		return Err(format!("missing or empty {description}").into());
 	}
 	Ok(())
 }
@@ -140,7 +212,7 @@ fn primary_workshop(discovery: &Eu4Discovery) -> Result<&Path, Box<dyn Error>> {
 #[test]
 #[ignore = "mutates the canonical local corpus dataset"]
 fn refresh_corpus() -> Result<(), Box<dyn Error>> {
-	require_workflow("refresh-corpus")?;
+	require_workflow("refresh-corpus", "refresh_corpus")?;
 	require_nonempty_file(&corpus_path(), "canonical corpus definition")?;
 	let discovery = discover_eu4()?;
 	let summary = collect(&CollectOptions {
@@ -168,7 +240,7 @@ fn refresh_corpus() -> Result<(), Box<dyn Error>> {
 #[test]
 #[ignore = "writes a deterministic local dataset export"]
 fn export_dataset_metadata() -> Result<(), Box<dyn Error>> {
-	require_workflow("export")?;
+	require_workflow("export", "export_dataset_metadata")?;
 	for path in [
 		dataset_root().join("dataset.json"),
 		dataset_root().join("measurements.jsonl"),
@@ -177,7 +249,7 @@ fn export_dataset_metadata() -> Result<(), Box<dyn Error>> {
 		require_nonempty_file(&path, "dataset export input")?;
 	}
 	let root = maintenance_root("export");
-	require_fresh_output(&root)?;
+	require_fresh_output(&root, "dataset export")?;
 	let first = root.join("metadata-a");
 	let second = root.join("metadata-b");
 	for output_dir in [&first, &second] {
@@ -199,15 +271,15 @@ fn export_dataset_metadata() -> Result<(), Box<dyn Error>> {
 #[test]
 #[ignore = "reads the local Workshop and full EU4 installation"]
 fn refresh_fixtures() -> Result<(), Box<dyn Error>> {
-	require_workflow("refresh-fixtures")?;
+	require_workflow("refresh-fixtures", "refresh_fixtures")?;
 	require_nonempty_file(&corpus_path(), "canonical corpus definition")?;
 	let discovery = discover_eu4()?;
 	let workshop = primary_workshop(&discovery)?;
 	if !directory_contains_file(workshop) {
-		return Err(format!("Workshop root contains no files: {}", workshop.display()).into());
+		return Err("discovered Workshop root contains no files".into());
 	}
 	let output = maintenance_root("fixture-refresh");
-	require_fresh_output(&output)?;
+	require_fresh_output(&output, "fixture refresh")?;
 	let scratch_root = dataset_root().join(".work");
 	fs::create_dir_all(&scratch_root)?;
 	let staging = tempfile::tempdir_in(&scratch_root)?;
@@ -286,15 +358,15 @@ fn refresh_fixtures() -> Result<(), Box<dyn Error>> {
 #[test]
 #[ignore = "scans the full local Workshop corpus"]
 fn symbol_evidence() -> Result<(), Box<dyn Error>> {
-	require_workflow("symbol-evidence")?;
+	require_workflow("symbol-evidence", "symbol_evidence")?;
 	require_nonempty_file(&corpus_path(), "canonical corpus definition")?;
 	let discovery = discover_eu4()?;
 	let workshop = primary_workshop(&discovery)?;
 	if !directory_contains_file(workshop) {
-		return Err(format!("Workshop root contains no files: {}", workshop.display()).into());
+		return Err("discovered Workshop root contains no files".into());
 	}
 	let output = maintenance_root("symbol-evidence");
-	require_fresh_output(&output)?;
+	require_fresh_output(&output, "symbol evidence")?;
 	foch_merge_quality::symbols::run(&corpus_path(), workshop, &output, 0)?;
 	let report: serde_json::Value =
 		serde_json::from_slice(&fs::read(output.join("symbols.json"))?)?;
@@ -316,7 +388,7 @@ fn symbol_evidence() -> Result<(), Box<dyn Error>> {
 #[test]
 #[ignore = "requires the private corpus CAS and installed EU4 snapshot"]
 fn common_module_acceptance() -> Result<(), Box<dyn Error>> {
-	require_workflow("common-module")?;
+	require_workflow("common-module", "common_module_acceptance")?;
 	for path in [
 		dataset_root().join("dataset.json"),
 		dataset_root().join("snapshots.jsonl"),
@@ -328,7 +400,7 @@ fn common_module_acceptance() -> Result<(), Box<dyn Error>> {
 	}
 	let discovery = discover_eu4()?;
 	let output = maintenance_root("common-module");
-	require_fresh_output(&output)?;
+	require_fresh_output(&output, "Common module acceptance")?;
 	let evaluator_artifact = executable_hash(&std::env::current_exe()?)?;
 	let report = run_common_applicability_probe(&CommonApplicabilityOptions {
 		dataset_root: &dataset_root(),
@@ -444,13 +516,13 @@ fn select_complete_product_cohort<'a>(
 #[test]
 #[ignore = "requires a complete V2 product cohort"]
 fn structured_rollout_acceptance() -> Result<(), Box<dyn Error>> {
-	require_workflow("structured-rollout")?;
+	require_workflow("structured-rollout", "structured_rollout_acceptance")?;
 	let paths = DatasetPaths::new(dataset_root());
 	for path in [&paths.measurements, &paths.file_results] {
 		require_nonempty_file(path, "structured rollout input")?;
 	}
 	let output = maintenance_root("structured-rollout");
-	require_fresh_output(&output)?;
+	require_fresh_output(&output, "structured rollout")?;
 	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements)?;
 	let registry = committed_measurement_cohort_registry()?;
 	let legacy = select_measurement_cohort(
@@ -586,7 +658,7 @@ fn synthetic_product_cohort(
 				MeasurementIdentityV2 {
 					snapshot_id: format!("snapshot-{index:02}"),
 					engine_artifact: EngineArtifactIdentity::foch_executable_blake3(artifact_hash),
-					worker_protocol_version: "1.0.0".to_string(),
+					runner_protocol_version: "1.0.0".to_string(),
 					merge_kernel: MeasurementKernel::SemanticTree,
 					scope: MeasurementScope::FullProductMerge,
 					scorer_version: SCORER_VERSION.to_string(),
@@ -636,7 +708,7 @@ fn product_cohort_selection_ignores_partial_and_failed_artifacts() {
 #[test]
 #[ignore = "performs Steam API discovery and SteamCMD acquisition"]
 fn acquire_workshop_corpus() -> Result<(), Box<dyn Error>> {
-	require_workflow("acquire")?;
+	require_workflow("acquire", "acquire_workshop_corpus")?;
 	if foch_merge_quality::secrets::steam_api_key().is_none() {
 		return Err("Steam API key is not configured".into());
 	}
@@ -649,10 +721,10 @@ fn acquire_workshop_corpus() -> Result<(), Box<dyn Error>> {
 	let discovery = discover_eu4()?;
 	let workshop = primary_workshop(&discovery)?;
 	if !workshop.is_dir() {
-		return Err(format!("Workshop root does not exist: {}", workshop.display()).into());
+		return Err("discovered Workshop root does not exist".into());
 	}
 	let output = maintenance_root("acquisition");
-	require_fresh_output(&output)?;
+	require_fresh_output(&output, "Steam acquisition")?;
 	let discovered_corpus = output.join("corpus.json");
 	foch_merge_quality::steam::discover(&discovered_corpus, 300)?;
 	require_nonempty_file(&discovered_corpus, "discovered Workshop corpus")?;
