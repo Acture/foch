@@ -6,18 +6,13 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use foch_engine::MergeEvaluationKernel;
 use serde::{Deserialize, Serialize};
 
 use crate::config::Eu4GameDiscovery;
-use crate::corpus_shadow::{
-	LoadedSnapshot, adjudication_ast_pair, open_snapshot, validate_snapshot_game,
-};
 use crate::dataset::{
-	DatasetPaths, MeasurementRecord, SCORER_VERSION, SnapshotRecord, TerminalStatus, read_jsonl,
-	stable_id,
+	DatasetPaths, MeasurementCohortKey, MeasurementKernel, MeasurementRecord, SCORER_VERSION,
+	SnapshotRecord, TerminalStatus, read_jsonl, stable_id,
 };
-use crate::lifecycle::archive_output_tree;
 use crate::object_store::ObjectStore;
 use crate::orchestrate::FileRecord;
 use crate::review_annotation::{
@@ -31,8 +26,10 @@ use crate::score::{
 };
 use crate::shadow::{
 	SHADOW_COMPARE_SCHEMA, ShadowCaptureRequest, ShadowDiagnostic, ShadowDiagnosticKind,
-	ShadowInputManifest, ShadowRunRecord, capture_input_manifest, run_isolated_shadow_kernel,
-	validate_shadow_manifest_identity, verified_retained_base_snapshot,
+	ShadowInputManifest, ShadowRunRecord, capture_input_manifest, verified_retained_base_snapshot,
+};
+use crate::snapshot::{
+	LoadedSnapshot, adjudication_ast_pair, open_snapshot, validate_snapshot_game,
 };
 
 pub const REVIEW_PACK_SCHEMA: &str = "1.0.0";
@@ -40,6 +37,12 @@ pub const REVIEW_PACK_PROFILE: &str = "eu4-merge-quality";
 pub const REVIEW_PACK_CASE_COUNT: usize = 6;
 pub const REVIEW_PACK_LEGACY_UNIT_COUNT: usize = 36;
 pub const REVIEW_PACK_STRUCTURED_UNIT_COUNT: usize = 13;
+pub const REVIEW_PACK_LEGACY_SCORER_VERSION: &str = "1.3.0";
+
+const REVIEW_PACK_LEGACY_EXECUTABLE_HASH: &str =
+	"0507a19de246a59bd2f718ad2941fd4d0c9ec07d469ab911a1e6b04bb11ba519";
+const REVIEW_PACK_LEGACY_CONFIG_HASH: &str =
+	"8beffefe06b044798b769b805fb556dd93769ebdbf367df3d6468ef6834d5665";
 
 type ReviewResult<T> = Result<T, ReviewPackError>;
 
@@ -285,14 +288,6 @@ pub struct ReviewPackVerifyOptions<'a> {
 	pub game: &'a Eu4GameDiscovery,
 }
 
-#[derive(Clone, Debug)]
-pub struct ReviewPackShowOptions<'a> {
-	pub pack_dir: &'a Path,
-	pub case_id: Option<&'a str>,
-	pub relative_path: Option<&'a str>,
-	pub kernel: Option<ReviewKernel>,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewPackArtifact {
@@ -394,6 +389,15 @@ impl ReviewPackUnitEvidence {
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ReviewPackStructuredAttestation {
+	pub comparison_id: String,
+	pub exit_code: i32,
+	pub manual_conflict_count: usize,
+	pub handler_resolution_count: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReviewPackCaseRun {
 	pub case_id: String,
 	pub snapshot_id: String,
@@ -405,8 +409,8 @@ pub struct ReviewPackCaseRun {
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub legacy_measurement_id: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
-	pub shadow_manifest: Option<ShadowInputManifest>,
-	pub diagnostics: Vec<ShadowDiagnostic>,
+	pub structured_attestation: Option<ReviewPackStructuredAttestation>,
+	pub diagnostic_kinds: Vec<ShadowDiagnosticKind>,
 	pub elapsed_ms: u64,
 }
 
@@ -466,12 +470,6 @@ pub struct ReviewPackVerifyResult {
 	pub proposals_verified: usize,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum ReviewPackShowResult {
-	Summary(ReviewPackSummary),
-	Unit(Box<ReviewPackUnitEvidence>),
-}
-
 pub struct StructuredKernelRequest<'a> {
 	pub manifest: &'a ShadowInputManifest,
 	pub manifest_path: &'a Path,
@@ -485,25 +483,6 @@ pub trait StructuredKernelRunner {
 		&mut self,
 		request: StructuredKernelRequest<'_>,
 	) -> io::Result<ShadowRunRecord>;
-}
-
-#[derive(Default)]
-pub struct IsolatedStructuredKernelRunner;
-
-impl StructuredKernelRunner for IsolatedStructuredKernelRunner {
-	fn run_structured(
-		&mut self,
-		request: StructuredKernelRequest<'_>,
-	) -> io::Result<ShadowRunRecord> {
-		run_isolated_shadow_kernel(
-			request.manifest,
-			request.manifest_path,
-			request.output_dir,
-			request.executable,
-			MergeEvaluationKernel::SemanticTree,
-			request.timeout,
-		)
-	}
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -616,13 +595,6 @@ pub fn freeze_legacy_baseline(
 	})
 }
 
-pub fn build_review_pack(
-	options: &ReviewPackBuildOptions<'_>,
-) -> ReviewResult<ReviewPackBuildResult> {
-	let mut runner = IsolatedStructuredKernelRunner;
-	build_review_pack_with_runner(options, &mut runner)
-}
-
 pub fn build_review_pack_with_runner(
 	options: &ReviewPackBuildOptions<'_>,
 	runner: &mut dyn StructuredKernelRunner,
@@ -678,6 +650,8 @@ pub fn build_review_pack_with_runner(
 	let scratch = tempfile::Builder::new()
 		.prefix(".review-pack-build-")
 		.tempdir_in(work_parent)?;
+	let pack_objects = scratch.path().join("objects");
+	let pack_store = ObjectStore::new(&pack_objects, scratch.path().join("object-work"));
 	let mut case_runs = Vec::with_capacity(REVIEW_PACK_CASE_COUNT * 2);
 	let mut units =
 		Vec::with_capacity(REVIEW_PACK_LEGACY_UNIT_COUNT + REVIEW_PACK_STRUCTURED_UNIT_COUNT);
@@ -703,8 +677,8 @@ pub fn build_review_pack_with_runner(
 			output_valid: true,
 			output_cas_hash: Some(legacy.output_cas_hash.clone()),
 			legacy_measurement_id: Some(legacy.measurement_id.clone()),
-			shadow_manifest: None,
-			diagnostics: Vec::new(),
+			structured_attestation: None,
+			diagnostic_kinds: Vec::new(),
 			elapsed_ms: legacy.elapsed_ms,
 		});
 		for relative_path in &case.legacy_units {
@@ -726,8 +700,8 @@ pub fn build_review_pack_with_runner(
 			));
 			if &actual != frozen {
 				return invalid(format!(
-					"pinned Legacy output no longer reproduces the frozen current-scorer baseline for {}:{}: expected {frozen:?}, found {actual:?}",
-					case.case_id, relative_path,
+					"pinned Legacy output no longer reproduces the frozen scorer {} baseline for {}:{}: expected {frozen:?}, found {actual:?}",
+					baseline.scorer_version, case.case_id, relative_path,
 				));
 			}
 			units.push(make_unit_evidence(UnitEvidenceRequest {
@@ -820,17 +794,8 @@ pub fn build_review_pack_with_runner(
 				case.case_id
 			));
 		}
-		let output_cas_hash = if run.output_valid {
-			archive_output_tree(&store, &dataset_paths, &structured_output)?
-		} else {
-			None
-		};
-		if run.output_valid && output_cas_hash.is_none() {
-			return invalid(format!(
-				"Structured case {} reported valid output but produced no output tree",
-				case.case_id
-			));
-		}
+		let structured_attestation = validate_structured_run_evidence(&run, &case.case_id)?;
+		let output_cas_hash = Some(pack_store.snapshot_tree(&structured_output)?.hash);
 		case_runs.push(ReviewPackCaseRun {
 			case_id: case.case_id.clone(),
 			snapshot_id: case.snapshot_id.clone(),
@@ -839,35 +804,31 @@ pub fn build_review_pack_with_runner(
 			output_valid: run.output_valid,
 			output_cas_hash: output_cas_hash.clone(),
 			legacy_measurement_id: None,
-			shadow_manifest: Some(manifest.clone()),
-			diagnostics: run.diagnostics.clone(),
+			structured_attestation: Some(structured_attestation),
+			diagnostic_kinds: run
+				.diagnostics
+				.iter()
+				.map(|diagnostic| diagnostic.kind)
+				.collect(),
 			elapsed_ms: run.elapsed_ms,
 		});
-		let conflict_paths = run
-			.diagnostics
-			.iter()
-			.filter(|diagnostic| diagnostic.kind == ShadowDiagnosticKind::Conflict)
-			.filter_map(|diagnostic| diagnostic.path.clone())
-			.collect::<HashSet<_>>();
 		let sources = source_mods(&loaded);
 		for relative_path in &case.structured_units {
-			let file_record = run.output_valid.then(|| {
-				FileRecord::from_score(score_file_with_cache_and_basegame(
-					&ScoreFileRequest {
-						rel: relative_path,
-						source_mods: &sources,
-						compatch: &loaded.compatch,
-						out_dir: &structured_output,
-						conflict_paths: &conflict_paths,
-					},
-					&mut score_cache,
-					Some(&options.game.game_root),
-				))
-			});
+			let file_record = Some(FileRecord::from_score(score_file_with_cache_and_basegame(
+				&ScoreFileRequest {
+					rel: relative_path,
+					source_mods: &sources,
+					compatch: &loaded.compatch,
+					out_dir: &structured_output,
+					conflict_paths: &HashSet::new(),
+				},
+				&mut score_cache,
+				Some(&options.game.game_root),
+			)));
 			units.push(make_unit_evidence(UnitEvidenceRequest {
 				loaded: &loaded,
 				game_root: &options.game.game_root,
-				output_dir: run.output_valid.then_some(structured_output.as_path()),
+				output_dir: Some(&structured_output),
 				output_cas_hash: output_cas_hash.as_deref(),
 				relative_path,
 				kernel: ReviewKernel::Structured,
@@ -883,7 +844,7 @@ pub fn build_review_pack_with_runner(
 		}
 	}
 
-	build_from_precomputed_evidence(
+	build_from_precomputed_evidence_with_objects(
 		options.output_dir,
 		PrecomputedReviewPack {
 			selection,
@@ -893,6 +854,76 @@ pub fn build_review_pack_with_runner(
 			case_runs,
 			units,
 		},
+		Some(&pack_objects),
+	)
+}
+
+fn validate_structured_run_evidence(
+	run: &ShadowRunRecord,
+	case_id: &str,
+) -> ReviewResult<ReviewPackStructuredAttestation> {
+	let blocking_diagnostic = run
+		.diagnostics
+		.iter()
+		.any(|diagnostic| is_blocking_structured_diagnostic(diagnostic.kind));
+	if run.status != "ready"
+		|| !run.output_valid
+		|| run.exit_code != Some(0)
+		|| run.manual_conflict_count != Some(0)
+		|| run.handler_resolution_count != Some(0)
+		|| run.fatal_reason.is_some()
+		|| run.error.is_some()
+		|| blocking_diagnostic
+	{
+		return invalid(format!(
+			"Structured case {case_id} is not clean review evidence: require ready/exit=0/output_valid/manual_conflicts=0/handler_resolutions=0 and no blocking diagnostics"
+		));
+	}
+	validate_hash("Structured runner comparison_id", &run.comparison_id)?;
+	Ok(ReviewPackStructuredAttestation {
+		comparison_id: run.comparison_id.clone(),
+		exit_code: 0,
+		manual_conflict_count: 0,
+		handler_resolution_count: 0,
+	})
+}
+
+fn validate_structured_case_run(run: &ReviewPackCaseRun) -> ReviewResult<()> {
+	let attestation = run.structured_attestation.as_ref().ok_or_else(|| {
+		ReviewPackError::Invalid(format!(
+			"Structured case {} has no portable execution attestation",
+			run.case_id
+		))
+	})?;
+	let blocking_diagnostic = run
+		.diagnostic_kinds
+		.iter()
+		.copied()
+		.any(is_blocking_structured_diagnostic);
+	if run.status != "ready"
+		|| !run.output_valid
+		|| run.output_cas_hash.is_none()
+		|| attestation.exit_code != 0
+		|| attestation.manual_conflict_count != 0
+		|| attestation.handler_resolution_count != 0
+		|| blocking_diagnostic
+	{
+		return invalid(format!(
+			"Structured case {} persisted non-clean review evidence",
+			run.case_id
+		));
+	}
+	validate_hash("Structured case comparison_id", &attestation.comparison_id)?;
+	Ok(())
+}
+
+const fn is_blocking_structured_diagnostic(kind: ShadowDiagnosticKind) -> bool {
+	matches!(
+		kind,
+		ShadowDiagnosticKind::Error
+			| ShadowDiagnosticKind::Fatal
+			| ShadowDiagnosticKind::Conflict
+			| ShadowDiagnosticKind::HandlerResolution
 	)
 }
 
@@ -1035,9 +1066,18 @@ fn evaluated_ast_relation(
 
 pub fn build_from_precomputed_evidence(
 	output_dir: &Path,
+	input: PrecomputedReviewPack,
+) -> ReviewResult<ReviewPackBuildResult> {
+	build_from_precomputed_evidence_with_objects(output_dir, input, None)
+}
+
+fn build_from_precomputed_evidence_with_objects(
+	output_dir: &Path,
 	mut input: PrecomputedReviewPack,
+	pack_objects: Option<&Path>,
 ) -> ReviewResult<ReviewPackBuildResult> {
 	input.selection.validate()?;
+	validate_pack_local_objects(&input, pack_objects)?;
 	validate_precomputed(&input)?;
 	if output_dir.exists() {
 		return invalid(format!(
@@ -1066,6 +1106,11 @@ pub fn build_from_precomputed_evidence(
 		.tempdir_in(parent)?;
 	let root = staging.path();
 	fs::create_dir_all(root.join("units"))?;
+	if let Some(pack_objects) = pack_objects
+		&& pack_objects.is_dir()
+	{
+		fs::rename(pack_objects, root.join("objects"))?;
+	}
 	let mut unit_artifacts = Vec::with_capacity(input.units.len());
 	for unit in &input.units {
 		let relative = format!("units/{}.json", unit.scoring_unit_id);
@@ -1111,6 +1156,47 @@ pub fn build_from_precomputed_evidence(
 	})
 }
 
+fn validate_pack_local_objects(
+	input: &PrecomputedReviewPack,
+	pack_objects: Option<&Path>,
+) -> ReviewResult<()> {
+	let required_hashes = input
+		.case_runs
+		.iter()
+		.filter(|run| run.kernel == ReviewKernel::Structured)
+		.filter_map(|run| run.output_cas_hash.as_deref())
+		.chain(
+			input
+				.units
+				.iter()
+				.filter(|unit| unit.kernel == ReviewKernel::Structured)
+				.filter_map(|unit| unit.output_cas_hash.as_deref()),
+		)
+		.collect::<BTreeSet<_>>();
+	if required_hashes.is_empty() {
+		return Ok(());
+	}
+	for hash in &required_hashes {
+		validate_hash("Structured pack-local output CAS hash", hash)?;
+	}
+	let pack_objects = pack_objects.ok_or_else(|| {
+		ReviewPackError::Invalid(
+			"Structured output hashes require verified pack-local CAS objects".to_string(),
+		)
+	})?;
+	if !pack_objects.is_dir() {
+		return invalid(format!(
+			"pack-local CAS object directory does not exist: {}",
+			pack_objects.display()
+		));
+	}
+	let store = ObjectStore::new(pack_objects, pack_objects.join(".verification-work"));
+	for hash in required_hashes {
+		store.verify_object(hash)?;
+	}
+	Ok(())
+}
+
 pub fn verify_review_pack(
 	options: &ReviewPackVerifyOptions<'_>,
 ) -> ReviewResult<ReviewPackVerifyResult> {
@@ -1125,6 +1211,10 @@ pub fn verify_review_pack(
 	let dataset_paths = DatasetPaths::new(options.dataset_root);
 	let snapshots = selected_snapshots(&selection, &dataset_paths, options.game)?;
 	let store = ObjectStore::new(&dataset_paths.objects, &dataset_paths.work);
+	let pack_store = ObjectStore::new(
+		options.pack_dir.join("objects"),
+		options.pack_dir.join(".verification-work"),
+	);
 	let baseline = load_legacy_baseline(options.legacy_baseline, options.expected_verdicts)?;
 	let legacy_cases = load_pinned_legacy_cases(&selection, &dataset_paths, &store)?;
 
@@ -1198,10 +1288,32 @@ pub fn verify_review_pack(
 		);
 		loaded.insert(case.case_id.clone(), open_snapshot(&store, snapshot)?);
 	}
+	for run in &manifest.case_runs {
+		if run.kernel == ReviewKernel::Structured
+			&& let Some(output_hash) = &run.output_cas_hash
+		{
+			pack_store.verify_object(output_hash)?;
+			cas_hashes.insert(output_hash.clone());
+		}
+	}
 	let mut score_cache = ScoreCache::new();
+	let verification = ReviewVerificationContext {
+		dataset_store: &store,
+		pack_store: &pack_store,
+		game: options.game,
+		baseline: &baseline,
+		legacy_cases: &legacy_cases,
+	};
 	for unit in &units {
 		if let Some(output_hash) = &unit.output_cas_hash {
-			store.verify_once(output_hash)?;
+			match unit.kernel {
+				ReviewKernel::Legacy => {
+					store.verify_once(output_hash)?;
+				}
+				ReviewKernel::Structured => {
+					pack_store.verify_object(output_hash)?;
+				}
+			}
 			cas_hashes.insert(output_hash.clone());
 		}
 		recompute_unit(
@@ -1209,10 +1321,7 @@ pub fn verify_review_pack(
 			loaded
 				.get(&unit.case_id)
 				.expect("unit selection was validated"),
-			&store,
-			options.game,
-			&baseline,
-			&legacy_cases,
+			&verification,
 			&mut score_cache,
 		)?;
 	}
@@ -1285,51 +1394,6 @@ pub fn verify_review_pack(
 	})
 }
 
-pub fn show_review_pack(options: &ReviewPackShowOptions<'_>) -> ReviewResult<ReviewPackShowResult> {
-	match (options.case_id, options.relative_path) {
-		(None, None) if options.kernel.is_none() => {
-			let manifest =
-				read_json::<ReviewPackManifest>(&options.pack_dir.join("manifest.json"))?;
-			verify_artifact(options.pack_dir, &manifest.summary)?;
-			let summary =
-				read_json::<ReviewPackSummary>(&options.pack_dir.join(&manifest.summary.path))?;
-			if summary.review_pack_id != manifest.review_pack_id {
-				return invalid("summary review_pack_id does not match manifest");
-			}
-			Ok(ReviewPackShowResult::Summary(summary))
-		}
-		(Some(case_id), Some(relative_path)) => {
-			validate_relative_path(relative_path)?;
-			let manifest =
-				read_json::<ReviewPackManifest>(&options.pack_dir.join("manifest.json"))?;
-			let matches = manifest
-				.units
-				.iter()
-				.filter(|unit| {
-					unit.case_id == case_id
-						&& unit.relative_path == relative_path
-						&& options.kernel.is_none_or(|kernel| unit.kernel == kernel)
-				})
-				.collect::<Vec<_>>();
-			if matches.is_empty() {
-				return invalid(format!(
-					"review-pack unit not found: {case_id}:{relative_path}"
-				));
-			}
-			if matches.len() > 1 {
-				return invalid(format!(
-					"review-pack selector {case_id}:{relative_path} is ambiguous; specify kernel"
-				));
-			}
-			verify_artifact(options.pack_dir, &matches[0].artifact)?;
-			Ok(ReviewPackShowResult::Unit(Box::new(read_json(
-				&options.pack_dir.join(&matches[0].artifact.path),
-			)?)))
-		}
-		_ => invalid("show requires both CASE and PATH, or neither"),
-	}
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyBaselineFile {
@@ -1347,6 +1411,7 @@ struct LegacyBaselineUnit {
 }
 
 struct LegacyBaseline {
+	scorer_version: String,
 	units: BTreeMap<(String, String), FileRecord>,
 }
 
@@ -1504,12 +1569,7 @@ fn load_legacy_baseline(
 			baseline.schema
 		));
 	}
-	if baseline.scorer_version != SCORER_VERSION {
-		return invalid(format!(
-			"Legacy baseline scorer version is {}; expected {SCORER_VERSION}",
-			baseline.scorer_version
-		));
-	}
+	validate_required("Legacy baseline scorer_version", &baseline.scorer_version)?;
 	let expected_content_id = stable_id("legacy-expected-v1", &[&expected_bytes]);
 	if baseline.expected_content_id != expected_content_id {
 		return invalid("Legacy baseline is not bound to expected verdicts");
@@ -1545,7 +1605,10 @@ fn load_legacy_baseline(
 	if actual != expected {
 		return invalid("Legacy baseline does not reproduce expected verdict counts");
 	}
-	Ok(LegacyBaseline { units })
+	Ok(LegacyBaseline {
+		scorer_version: baseline.scorer_version,
+		units,
+	})
 }
 
 fn validate_selection_game(
@@ -1607,15 +1670,31 @@ fn load_pinned_legacy_cases(
 	store: &ObjectStore,
 ) -> ReviewResult<BTreeMap<String, LegacyCase>> {
 	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements)?;
+	let registry = crate::report::committed_measurement_cohort_registry()?;
+	let expected_cohort = review_pack_legacy_cohort_key();
+	let registered = registry
+		.cohorts
+		.iter()
+		.find(|cohort| cohort.identity == expected_cohort)
+		.ok_or_else(|| {
+			ReviewPackError::Invalid(
+				"the exact review-pack Legacy scorer 1.3.0 cohort is not registered".to_string(),
+			)
+		})?;
+	if registered.merge_kernel != MeasurementKernel::LegacyAddressPatchReference {
+		return invalid(
+			"the exact review-pack Legacy scorer 1.3.0 cohort has the wrong kernel contract",
+		);
+	}
 	let mut by_id = BTreeMap::new();
 	for measurement in &measurements {
 		if by_id
-			.insert(measurement.measurement_id.as_str(), measurement)
+			.insert(measurement.measurement_id(), measurement)
 			.is_some()
 		{
 			return invalid(format!(
 				"dataset contains duplicate measurement {}",
-				measurement.measurement_id
+				measurement.measurement_id()
 			));
 		}
 	}
@@ -1629,9 +1708,21 @@ fn load_pinned_legacy_cases(
 					case.case_id, case.legacy_measurement_id
 				))
 			})?;
-		if measurement.snapshot_id != case.snapshot_id
-			|| measurement.status != TerminalStatus::Completed
-			|| measurement.merged_output_hash.as_deref() != Some(&case.legacy_output_hash)
+		if !measurement.identity_is_valid() {
+			return invalid(format!(
+				"pinned Legacy measurement has an invalid identity for case {}",
+				case.case_id
+			));
+		}
+		if measurement.cohort_key() != expected_cohort {
+			return invalid(format!(
+				"pinned Legacy measurement does not match the exact scorer 1.3.0 executable/config cohort for case {}",
+				case.case_id
+			));
+		}
+		if measurement.snapshot_id() != case.snapshot_id
+			|| measurement.status() != TerminalStatus::Completed
+			|| measurement.merged_output_hash() != Some(case.legacy_output_hash.as_str())
 		{
 			return invalid(format!(
 				"pinned Legacy measurement/output binding changed for case {}",
@@ -1644,14 +1735,19 @@ fn load_pinned_legacy_cases(
 			LegacyCase {
 				measurement_id: case.legacy_measurement_id.clone(),
 				output_cas_hash: case.legacy_output_hash.clone(),
-				elapsed_ms: measurement
-					.summary
-					.as_ref()
-					.map_or(0, |summary| summary.total_ms),
+				elapsed_ms: measurement.summary().map_or(0, |summary| summary.total_ms),
 			},
 		);
 	}
 	Ok(selected)
+}
+
+fn review_pack_legacy_cohort_key() -> MeasurementCohortKey {
+	MeasurementCohortKey::OrchestratorBoundV1 {
+		executable_hash: REVIEW_PACK_LEGACY_EXECUTABLE_HASH.to_string(),
+		scorer_version: REVIEW_PACK_LEGACY_SCORER_VERSION.to_string(),
+		config_hash: REVIEW_PACK_LEGACY_CONFIG_HASH.to_string(),
+	}
 }
 
 fn source_mods(loaded: &LoadedSnapshot) -> Vec<SourceMod<'_>> {
@@ -1779,8 +1875,8 @@ struct CaseRunIdentity<'a> {
 	output_valid: bool,
 	output_cas_hash: Option<&'a str>,
 	legacy_measurement_id: Option<&'a str>,
-	shadow_comparison_id: Option<&'a str>,
-	diagnostics: &'a [ShadowDiagnostic],
+	structured_attestation: Option<&'a ReviewPackStructuredAttestation>,
+	diagnostic_kinds: &'a [ShadowDiagnosticKind],
 }
 
 #[derive(Serialize)]
@@ -1827,11 +1923,8 @@ fn review_pack_id(input: &PrecomputedReviewPack) -> ReviewResult<String> {
 				output_valid: run.output_valid,
 				output_cas_hash: run.output_cas_hash.as_deref(),
 				legacy_measurement_id: run.legacy_measurement_id.as_deref(),
-				shadow_comparison_id: run
-					.shadow_manifest
-					.as_ref()
-					.map(|manifest| manifest.comparison_id.as_str()),
-				diagnostics: &run.diagnostics,
+				structured_attestation: run.structured_attestation.as_ref(),
+				diagnostic_kinds: &run.diagnostic_kinds,
 			})
 			.collect(),
 		units: units
@@ -1897,11 +1990,13 @@ fn validate_precomputed(input: &PrecomputedReviewPack) -> ReviewResult<()> {
 		}
 		match run.kernel {
 			ReviewKernel::Legacy => {
-				if !run.output_valid
+				if run.status != "reused_archived_measurement"
+					|| !run.output_valid
 					|| run.output_cas_hash.as_deref() != Some(case.legacy_output_hash.as_str())
 					|| run.legacy_measurement_id.as_deref()
 						!= Some(case.legacy_measurement_id.as_str())
-					|| run.shadow_manifest.is_some()
+					|| run.structured_attestation.is_some()
+					|| !run.diagnostic_kinds.is_empty()
 				{
 					return invalid(format!(
 						"precomputed Legacy run is not pinned for case {}",
@@ -1910,29 +2005,8 @@ fn validate_precomputed(input: &PrecomputedReviewPack) -> ReviewResult<()> {
 				}
 			}
 			ReviewKernel::Structured => {
-				let shadow = run.shadow_manifest.as_ref().ok_or_else(|| {
-					ReviewPackError::Invalid(format!(
-						"precomputed Structured run has no manifest for case {}",
-						run.case_id
-					))
-				})?;
-				validate_shadow_manifest_identity(shadow)
-					.map_err(|error| ReviewPackError::Invalid(error.to_string()))?;
-				let retained = shadow
-					.inputs
-					.retained_paths
-					.iter()
-					.map(String::as_str)
-					.collect::<BTreeSet<_>>();
-				let selected = case
-					.structured_units
-					.iter()
-					.map(String::as_str)
-					.collect::<BTreeSet<_>>();
-				if retained != selected
-					|| run.output_valid != run.output_cas_hash.is_some()
-					|| run.legacy_measurement_id.is_some()
-				{
+				validate_structured_case_run(run)?;
+				if run.legacy_measurement_id.is_some() {
 					return invalid(format!(
 						"precomputed Structured run is inconsistent for case {}",
 						run.case_id
@@ -2014,9 +2088,9 @@ fn validate_precomputed(input: &PrecomputedReviewPack) -> ReviewResult<()> {
 			.get(&(unit.case_id.as_str(), unit.kernel))
 			.expect("precomputed runs contain both kernels for every selected case");
 		let expected_shadow_id = run
-			.shadow_manifest
+			.structured_attestation
 			.as_ref()
-			.map(|manifest| manifest.comparison_id.as_str());
+			.map(|attestation| attestation.comparison_id.as_str());
 		let binding_valid = match unit.kernel {
 			ReviewKernel::Legacy => {
 				unit.output_cas_hash.as_deref() == Some(case.legacy_output_hash.as_str())
@@ -2038,6 +2112,17 @@ fn validate_precomputed(input: &PrecomputedReviewPack) -> ReviewResult<()> {
 			return invalid(format!(
 				"precomputed unit evidence is inconsistent for {}:{}:{:?}",
 				unit.case_id, unit.relative_path, unit.kernel
+			));
+		}
+		if unit.kernel == ReviewKernel::Structured
+			&& unit
+				.diagnostics
+				.iter()
+				.any(|diagnostic| is_blocking_structured_diagnostic(diagnostic.kind))
+		{
+			return invalid(format!(
+				"precomputed Structured unit contains blocking diagnostics for {}:{}",
+				unit.case_id, unit.relative_path
 			));
 		}
 		if let Some(evidence) = &unit.semantic_evidence {
@@ -2213,7 +2298,8 @@ fn validate_manifest_against_selection(
 						!= Some(selected_case.legacy_measurement_id.as_str())
 					|| run.output_cas_hash.as_deref()
 						!= Some(selected_case.legacy_output_hash.as_str())
-					|| run.shadow_manifest.is_some()
+					|| run.structured_attestation.is_some()
+					|| !run.diagnostic_kinds.is_empty()
 				{
 					return invalid(format!(
 						"Legacy case run {} is not an archived-measurement reuse",
@@ -2222,29 +2308,8 @@ fn validate_manifest_against_selection(
 				}
 			}
 			ReviewKernel::Structured => {
-				let shadow = run.shadow_manifest.as_ref().ok_or_else(|| {
-					ReviewPackError::Invalid(format!(
-						"Structured case run {} has no captured manifest",
-						run.case_id
-					))
-				})?;
-				validate_shadow_manifest_identity(shadow)
-					.map_err(|error| ReviewPackError::Invalid(error.to_string()))?;
-				let retained_paths = shadow
-					.inputs
-					.retained_paths
-					.iter()
-					.map(String::as_str)
-					.collect::<BTreeSet<_>>();
-				let selected_paths = selected_case
-					.structured_units
-					.iter()
-					.map(String::as_str)
-					.collect::<BTreeSet<_>>();
-				if retained_paths != selected_paths
-					|| run.output_valid != run.output_cas_hash.is_some()
-					|| run.legacy_measurement_id.is_some()
-				{
+				validate_structured_case_run(run)?;
+				if run.legacy_measurement_id.is_some() {
 					return invalid(format!(
 						"Structured case run {} has an invalid captured manifest",
 						run.case_id
@@ -2311,16 +2376,58 @@ fn validate_unit_binding(
 			unit.scoring_unit_id
 		));
 	}
+	let case_run = manifest
+		.case_runs
+		.iter()
+		.find(|run| run.case_id == unit.case_id && run.kernel == unit.kernel)
+		.expect("manifest case-run identities were validated before unit bindings");
+	match unit.kernel {
+		ReviewKernel::Legacy => {
+			if unit.legacy_measurement_id.as_deref() != Some(case.legacy_measurement_id.as_str())
+				|| unit.shadow_comparison_id.is_some()
+			{
+				return invalid(format!(
+					"unit {} has an invalid Legacy execution binding",
+					unit.scoring_unit_id
+				));
+			}
+		}
+		ReviewKernel::Structured => {
+			let comparison_id = case_run
+				.structured_attestation
+				.as_ref()
+				.expect("Structured case run validation requires an attestation")
+				.comparison_id
+				.as_str();
+			if unit.shadow_comparison_id.as_deref() != Some(comparison_id)
+				|| unit.legacy_measurement_id.is_some()
+				|| unit
+					.diagnostics
+					.iter()
+					.any(|diagnostic| is_blocking_structured_diagnostic(diagnostic.kind))
+			{
+				return invalid(format!(
+					"unit {} has invalid Structured execution evidence",
+					unit.scoring_unit_id
+				));
+			}
+		}
+	}
 	Ok(())
+}
+
+struct ReviewVerificationContext<'a> {
+	dataset_store: &'a ObjectStore,
+	pack_store: &'a ObjectStore,
+	game: &'a Eu4GameDiscovery,
+	baseline: &'a LegacyBaseline,
+	legacy_cases: &'a BTreeMap<String, LegacyCase>,
 }
 
 fn recompute_unit(
 	unit: &ReviewPackUnitEvidence,
 	loaded: &LoadedSnapshot,
-	store: &ObjectStore,
-	game: &Eu4GameDiscovery,
-	baseline: &LegacyBaseline,
-	legacy_cases: &BTreeMap<String, LegacyCase>,
+	verification: &ReviewVerificationContext<'_>,
 	score_cache: &mut ScoreCache,
 ) -> ReviewResult<()> {
 	if unit.raw_cas != raw_cas_binding(&loaded.snapshot) {
@@ -2329,7 +2436,8 @@ fn recompute_unit(
 			unit.scoring_unit_id
 		));
 	}
-	let legacy = legacy_cases
+	let legacy = verification
+		.legacy_cases
 		.get(&unit.case_id)
 		.ok_or_else(|| ReviewPackError::Invalid(format!("missing Legacy case {}", unit.case_id)))?;
 	let output = match unit.kernel {
@@ -2342,12 +2450,22 @@ fn recompute_unit(
 					unit.scoring_unit_id
 				));
 			}
-			Some(store.verify_once(&legacy.output_cas_hash)?.tree)
+			Some(
+				verification
+					.dataset_store
+					.verify_once(&legacy.output_cas_hash)?
+					.tree,
+			)
 		}
 		ReviewKernel::Structured => unit
 			.output_cas_hash
 			.as_deref()
-			.map(|hash| store.verify_once(hash).map(|object| object.tree))
+			.map(|hash| {
+				verification
+					.pack_store
+					.verify_object(hash)
+					.map(|object| object.tree)
+			})
 			.transpose()?,
 	};
 	if unit.semantic_hashes.candidate_available != output.is_some()
@@ -2375,7 +2493,7 @@ fn recompute_unit(
 				conflict_paths: &conflict_paths,
 			},
 			score_cache,
-			Some(&game.game_root),
+			Some(&verification.game.game_root),
 		))
 	});
 	if unit.file_record.as_ref() != current_file_record.as_ref() {
@@ -2394,7 +2512,7 @@ fn recompute_unit(
 			conflict_paths: &HashSet::new(),
 		},
 		score_cache,
-		Some(&game.game_root),
+		Some(&verification.game.game_root),
 	)
 	.ok_or_else(|| {
 		ReviewPackError::Invalid(format!(
@@ -2427,7 +2545,7 @@ fn recompute_unit(
 		unit.kernel,
 		&unit.relative_path,
 		loaded,
-		&game.game_root,
+		&verification.game.game_root,
 		output.as_deref(),
 	);
 	if unit.ast_relation != expected_relation {
@@ -2437,7 +2555,8 @@ fn recompute_unit(
 		));
 	}
 	if unit.kernel == ReviewKernel::Legacy {
-		let frozen = baseline
+		let frozen = verification
+			.baseline
 			.units
 			.get(&(unit.case_id.clone(), unit.relative_path.clone()));
 		if current_file_record.as_ref() != frozen {
@@ -2602,6 +2721,39 @@ mod tests {
 	}
 
 	#[test]
+	fn pinned_selection_uses_the_exact_legacy_scorer_1_3_cohort() {
+		let selection = ReviewPackSelection::from_path(Path::new(FIXTURE)).unwrap();
+		let dataset = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset/measurements.jsonl");
+		let measurements = read_jsonl::<MeasurementRecord>(&dataset).unwrap();
+		let by_id = measurements
+			.iter()
+			.map(|measurement| (measurement.measurement_id(), measurement))
+			.collect::<BTreeMap<_, _>>();
+		let expected_cohort = review_pack_legacy_cohort_key();
+
+		for case in &selection.cases {
+			let measurement = by_id
+				.get(case.legacy_measurement_id.as_str())
+				.expect("pinned Legacy measurement exists");
+			assert_eq!(measurement.cohort_key(), expected_cohort);
+			assert_eq!(
+				measurement.scorer_version(),
+				REVIEW_PACK_LEGACY_SCORER_VERSION
+			);
+			assert_eq!(measurement.config_hash(), REVIEW_PACK_LEGACY_CONFIG_HASH);
+			assert_eq!(
+				measurement.legacy_executable_hash(),
+				Some(REVIEW_PACK_LEGACY_EXECUTABLE_HASH)
+			);
+			assert_eq!(measurement.snapshot_id(), case.snapshot_id);
+			assert_eq!(
+				measurement.merged_output_hash(),
+				Some(case.legacy_output_hash.as_str())
+			);
+		}
+	}
+
+	#[test]
 	fn selection_drift_is_rejected() {
 		let mut selection = ReviewPackSelection::from_path(Path::new(FIXTURE)).unwrap();
 		selection.cases[0]
@@ -2617,23 +2769,66 @@ mod tests {
 	}
 
 	#[test]
-	fn frozen_baseline_artifacts_round_trip_committed_fixtures() {
+	fn committed_historical_baseline_is_hash_bound_and_loadable() {
+		let selection = load_and_validate_inputs(
+			Path::new(FIXTURE),
+			Path::new(LEGACY_BASELINE_FIXTURE),
+			Path::new(EXPECTED_FIXTURE),
+		)
+		.unwrap();
+		let baseline = load_legacy_baseline(
+			Path::new(LEGACY_BASELINE_FIXTURE),
+			Path::new(EXPECTED_FIXTURE),
+		)
+		.unwrap();
+
+		assert_eq!(baseline.scorer_version, "1.3.0");
+		assert_eq!(baseline.units.len(), REVIEW_PACK_LEGACY_UNIT_COUNT);
+		assert_eq!(
+			hash_file(Path::new(LEGACY_BASELINE_FIXTURE)).unwrap(),
+			selection.legacy_baseline_blake3
+		);
+		assert_eq!(
+			hash_file(Path::new(EXPECTED_FIXTURE)).unwrap(),
+			selection.expected_verdicts_blake3
+		);
+	}
+
+	#[test]
+	fn newly_frozen_baseline_uses_the_current_scorer_version() {
 		let selection = ReviewPackSelection::from_path(Path::new(FIXTURE)).unwrap();
-		let baseline = serde_json::from_slice::<LegacyBaselineFile>(
+		let historical = serde_json::from_slice::<LegacyBaselineFile>(
 			&fs::read(LEGACY_BASELINE_FIXTURE).unwrap(),
 		)
 		.unwrap();
-		let artifacts = render_frozen_baseline_artifacts(selection, baseline.units).unwrap();
-		assert_eq!(
-			artifacts.baseline,
-			fs::read(LEGACY_BASELINE_FIXTURE).unwrap()
-		);
+		let artifacts = render_frozen_baseline_artifacts(selection, historical.units).unwrap();
+		let refreshed = serde_json::from_slice::<LegacyBaselineFile>(&artifacts.baseline).unwrap();
+
+		assert_eq!(refreshed.scorer_version, SCORER_VERSION);
 		assert_eq!(artifacts.expected, fs::read(EXPECTED_FIXTURE).unwrap());
-		assert_eq!(artifacts.selection, fs::read(FIXTURE).unwrap());
 	}
 
 	struct SpyRunner {
 		calls: Cell<usize>,
+	}
+
+	fn clean_structured_run() -> ShadowRunRecord {
+		ShadowRunRecord {
+			schema: SHADOW_COMPARE_SCHEMA.to_string(),
+			comparison_id: "a".repeat(64),
+			kernel: "structured".to_string(),
+			output_dir: PathBuf::from("/Users/private/review-output"),
+			output_valid: true,
+			elapsed_ms: 1,
+			status: "ready".to_string(),
+			exit_code: Some(0),
+			manual_conflict_count: Some(0),
+			handler_resolution_count: Some(0),
+			generated_file_count: Some(1),
+			fatal_reason: None,
+			error: None,
+			diagnostics: Vec::new(),
+		}
 	}
 
 	impl StructuredKernelRunner for SpyRunner {
@@ -2672,6 +2867,112 @@ mod tests {
 		assert_eq!(runner.calls.get(), 6);
 		// No Legacy method exists on StructuredKernelRunner.
 		let _runner: &dyn StructuredKernelRunner = &runner;
+	}
+
+	#[test]
+	fn structured_run_evidence_is_strictly_fail_closed() {
+		let clean = clean_structured_run();
+		assert!(validate_structured_run_evidence(&clean, "case").is_ok());
+
+		let mut blocked = clean.clone();
+		blocked.status = "blocked".to_string();
+		assert!(validate_structured_run_evidence(&blocked, "case").is_err());
+		let mut nonzero = clean.clone();
+		nonzero.exit_code = Some(1);
+		assert!(validate_structured_run_evidence(&nonzero, "case").is_err());
+		let mut invalid_output = clean.clone();
+		invalid_output.output_valid = false;
+		assert!(validate_structured_run_evidence(&invalid_output, "case").is_err());
+		let mut manual = clean.clone();
+		manual.manual_conflict_count = Some(1);
+		assert!(validate_structured_run_evidence(&manual, "case").is_err());
+		let mut handler = clean.clone();
+		handler.handler_resolution_count = Some(1);
+		assert!(validate_structured_run_evidence(&handler, "case").is_err());
+		for kind in [
+			ShadowDiagnosticKind::Error,
+			ShadowDiagnosticKind::Fatal,
+			ShadowDiagnosticKind::Conflict,
+			ShadowDiagnosticKind::HandlerResolution,
+		] {
+			let mut diagnostic = clean.clone();
+			diagnostic.diagnostics.push(ShadowDiagnostic {
+				kind,
+				path: Some("events/example.txt".to_string()),
+				message: "blocking evidence".to_string(),
+			});
+			assert!(validate_structured_run_evidence(&diagnostic, "case").is_err());
+		}
+	}
+
+	#[test]
+	fn persisted_structured_attestation_is_portable_and_equally_strict() {
+		let mut run = clean_structured_run();
+		run.diagnostics.push(ShadowDiagnostic {
+			kind: ShadowDiagnosticKind::Warning,
+			path: Some("/Users/private/source.txt".to_string()),
+			message: "warning from /Users/private/source.txt".to_string(),
+		});
+		let attestation = validate_structured_run_evidence(&run, "case").unwrap();
+		let persisted = ReviewPackCaseRun {
+			case_id: "case".to_string(),
+			snapshot_id: "b".repeat(64),
+			kernel: ReviewKernel::Structured,
+			status: run.status,
+			output_valid: run.output_valid,
+			output_cas_hash: Some("c".repeat(64)),
+			legacy_measurement_id: None,
+			structured_attestation: Some(attestation),
+			diagnostic_kinds: vec![ShadowDiagnosticKind::Warning],
+			elapsed_ms: run.elapsed_ms,
+		};
+		validate_structured_case_run(&persisted).unwrap();
+		let encoded = serde_json::to_string(&persisted).unwrap();
+		assert!(!encoded.contains("/Users/private"));
+		assert!(!encoded.contains("output_dir"));
+
+		let mut handler = persisted;
+		handler
+			.structured_attestation
+			.as_mut()
+			.unwrap()
+			.handler_resolution_count = 1;
+		assert!(validate_structured_case_run(&handler).is_err());
+	}
+
+	#[test]
+	fn precomputed_structured_hashes_require_pack_local_objects() {
+		let temp = tempfile::tempdir().unwrap();
+		let output = temp.path().join("pack");
+		let selection = ReviewPackSelection::from_path(Path::new(FIXTURE)).unwrap();
+		let input = PrecomputedReviewPack {
+			selection,
+			base_snapshot_identity: "sha256:base".to_string(),
+			executable_blake3: "d".repeat(64),
+			wiki_knowledge_snapshot_id: None,
+			case_runs: vec![ReviewPackCaseRun {
+				case_id: "case".to_string(),
+				snapshot_id: "e".repeat(64),
+				kernel: ReviewKernel::Structured,
+				status: "ready".to_string(),
+				output_valid: true,
+				output_cas_hash: Some("f".repeat(64)),
+				legacy_measurement_id: None,
+				structured_attestation: Some(ReviewPackStructuredAttestation {
+					comparison_id: "a".repeat(64),
+					exit_code: 0,
+					manual_conflict_count: 0,
+					handler_resolution_count: 0,
+				}),
+				diagnostic_kinds: Vec::new(),
+				elapsed_ms: 1,
+			}],
+			units: Vec::new(),
+		};
+
+		let error = build_from_precomputed_evidence(&output, input).unwrap_err();
+		assert!(error.to_string().contains("pack-local CAS objects"));
+		assert!(!output.exists());
 	}
 
 	#[test]
@@ -2759,7 +3060,7 @@ mod tests {
 
 	#[cfg(target_os = "macos")]
 	#[test]
-	fn pinned_legacy_measurement_and_output_are_loaded_without_historical_scores() {
+	fn pinned_registered_legacy_measurement_and_output_are_loaded_without_historical_scores() {
 		let temp = tempfile::tempdir().unwrap();
 		let paths = DatasetPaths::new(temp.path().join("dataset"));
 		fs::create_dir_all(&paths.root).unwrap();
@@ -2769,12 +3070,20 @@ mod tests {
 		let store = ObjectStore::new(&paths.objects, &paths.work);
 		let object = store.snapshot_tree(&source).unwrap();
 		let snapshot_id = "a".repeat(64);
-		let measurement = MeasurementRecord::new(
-			crate::dataset::MeasurementIdentity {
+		let crate::dataset::MeasurementCohortKey::OrchestratorBoundV1 {
+			executable_hash,
+			scorer_version,
+			config_hash,
+		} = review_pack_legacy_cohort_key()
+		else {
+			panic!("review-pack Legacy cohort must use the V1 identity")
+		};
+		let measurement = MeasurementRecord::new_v1(
+			crate::dataset::LegacyMeasurementIdentityV1 {
 				snapshot_id: snapshot_id.clone(),
-				executable_hash: "b".repeat(64),
-				scorer_version: "historical".to_string(),
-				config_hash: "c".repeat(64),
+				executable_hash,
+				scorer_version,
+				config_hash,
 			},
 			"2026-07-01T00:00:00Z".to_string(),
 			"2026-07-01T00:00:01Z".to_string(),
@@ -2796,7 +3105,7 @@ mod tests {
 			cases: vec![ReviewPackSelectionCase {
 				case_id: "case".to_string(),
 				snapshot_id,
-				legacy_measurement_id: measurement.measurement_id.clone(),
+				legacy_measurement_id: measurement.measurement_id().to_string(),
 				legacy_output_hash: object.hash.clone(),
 				legacy_units: vec!["events/example.txt".to_string()],
 				structured_units: vec!["events/example.txt".to_string()],
@@ -2804,9 +3113,53 @@ mod tests {
 		};
 
 		let loaded = load_pinned_legacy_cases(&selection, &paths, &store).unwrap();
-		assert_eq!(loaded["case"].measurement_id, measurement.measurement_id);
+		assert_eq!(loaded["case"].measurement_id, measurement.measurement_id());
 		assert_eq!(loaded["case"].output_cas_hash, object.hash);
 
+		let registry = crate::report::committed_measurement_cohort_registry().unwrap();
+		let wrong_identity = registry
+			.cohorts
+			.iter()
+			.find(|cohort| cohort.identity.scorer_version() == "1.0.0")
+			.unwrap()
+			.identity
+			.clone();
+		let MeasurementCohortKey::OrchestratorBoundV1 {
+			executable_hash,
+			scorer_version,
+			config_hash,
+		} = wrong_identity
+		else {
+			panic!("historical scorer 1.0 cohort must use the V1 identity")
+		};
+		let wrong_measurement = MeasurementRecord::new_v1(
+			crate::dataset::LegacyMeasurementIdentityV1 {
+				snapshot_id: selection.cases[0].snapshot_id.clone(),
+				executable_hash,
+				scorer_version,
+				config_hash,
+			},
+			"2026-07-01T00:00:00Z".to_string(),
+			"2026-07-01T00:00:01Z".to_string(),
+			TerminalStatus::Completed,
+			None,
+			Some(object.hash.clone()),
+			None,
+		);
+		write_jsonl(
+			&paths.measurements,
+			&[measurement.clone(), wrong_measurement.clone()],
+		)
+		.unwrap();
+		selection.cases[0].legacy_measurement_id = wrong_measurement.measurement_id().to_string();
+		assert!(
+			load_pinned_legacy_cases(&selection, &paths, &store)
+				.unwrap_err()
+				.to_string()
+				.contains("exact scorer 1.3.0")
+		);
+
+		selection.cases[0].legacy_measurement_id = measurement.measurement_id().to_string();
 		selection.cases[0].legacy_output_hash = "f".repeat(64);
 		assert!(
 			load_pinned_legacy_cases(&selection, &paths, &store)
@@ -2878,73 +3231,5 @@ mod tests {
 
 		let selected = selected_snapshots(&selection, &paths, &game).unwrap();
 		assert_eq!(selected["case"].snapshot_id, pinned.snapshot_id);
-	}
-
-	#[test]
-	fn show_rejects_partial_selector_without_execution() {
-		let temp = tempfile::tempdir().unwrap();
-		let error = show_review_pack(&ReviewPackShowOptions {
-			pack_dir: temp.path(),
-			case_id: Some("case"),
-			relative_path: None,
-			kernel: None,
-		})
-		.unwrap_err();
-		assert!(error.to_string().contains("both CASE and PATH"));
-	}
-
-	#[test]
-	fn show_verifies_summary_artifact_before_reading_it() {
-		let temp = tempfile::tempdir().unwrap();
-		let summary = ReviewPackSummary {
-			schema: REVIEW_PACK_SCHEMA.to_string(),
-			review_pack_id: "review-pack".to_string(),
-			..ReviewPackSummary::default()
-		};
-		write_json(&temp.path().join("summary.json"), &summary).unwrap();
-		fs::write(temp.path().join("proposals.jsonl"), b"").unwrap();
-		let manifest = ReviewPackManifest {
-			schema: REVIEW_PACK_SCHEMA.to_string(),
-			review_pack_id: "review-pack".to_string(),
-			profile: REVIEW_PACK_PROFILE.to_string(),
-			game_version: "v1".to_string(),
-			steam_build_id: 1,
-			base_snapshot_identity: "base".to_string(),
-			executable_blake3: "a".repeat(64),
-			legacy_baseline_blake3: "b".repeat(64),
-			expected_verdicts_blake3: "c".repeat(64),
-			wiki_knowledge_snapshot_id: None,
-			case_count: 0,
-			legacy_unit_count: 0,
-			structured_unit_count: 0,
-			case_runs: Vec::new(),
-			units: Vec::new(),
-			summary: artifact_for(temp.path(), "summary.json").unwrap(),
-			proposals: artifact_for(temp.path(), "proposals.jsonl").unwrap(),
-		};
-		write_json(&temp.path().join("manifest.json"), &manifest).unwrap();
-		assert!(matches!(
-			show_review_pack(&ReviewPackShowOptions {
-				pack_dir: temp.path(),
-				case_id: None,
-				relative_path: None,
-				kernel: None,
-			})
-			.unwrap(),
-			ReviewPackShowResult::Summary(_)
-		));
-
-		fs::write(temp.path().join("summary.json"), b"{}\n").unwrap();
-		assert!(
-			show_review_pack(&ReviewPackShowOptions {
-				pack_dir: temp.path(),
-				case_id: None,
-				relative_path: None,
-				kernel: None,
-			})
-			.unwrap_err()
-			.to_string()
-			.contains("mismatch")
-		);
 	}
 }

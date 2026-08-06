@@ -1,13 +1,9 @@
-//! Scoring: run `foch merge` on a synthetic 2-mod playset and classify, for
-//! every file in the compatch reference output, how foch's structural
-//! merge compares — structurally and by line similarity.
+//! Scoring primitives for classifying how an existing generated output tree
+//! compares with a human compatch — structurally and by line similarity.
 //!
 //! This is a faithful port of the Python harness's scoring so the verdicts are
-//! identical, with one deliberate change: the merge runs **in-process** via
-//! `foch_engine::run_merge_with_options` (no `foch` subprocess) with
-//! a reference-output retained-path set. When the measured snapshot has a matching
-//! base-game root, vanilla is included as the three-way merge ancestor but is
-//! not copied through into the generated compatch.
+//! identical. Scoring consumes an existing output tree; merge execution belongs
+//! to the product integration layer.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -16,11 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use foch_core::domain::descriptor::load_descriptor;
-use foch_core::model::{MergeReport, MergeReportStatus};
-use foch_engine::{
-	CheckRequest, Config, MergeError, MergeEvaluationKernel, MergeExecuteOptions,
-	MergeExecutionResult, run_merge_for_evaluation,
-};
+use foch_core::model::MergeReport;
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
 	GameProfile, MergeKeySource,
@@ -290,129 +282,6 @@ pub fn write_playset(tmp: &Path, mods: &[(String, PathBuf)]) -> io::Result<PathB
 	let dlc_path = tmp.join("dlc_load.json");
 	fs::write(&dlc_path, serde_json::to_string(&dlc).unwrap())?;
 	Ok(dlc_path)
-}
-
-/// Stack size for the merge worker thread. foch's merge planner recurses on
-/// definition nesting; deeply-nested community mod files can exceed the default
-/// ~8 MB main-thread stack (macOS caps it low), so we run the merge on a worker
-/// thread with a generous stack — a pathological file then degrades to a slow
-/// merge rather than aborting the whole harness process.
-const MERGE_STACK_BYTES: usize = 512 * 1024 * 1024;
-
-/// Run a merge of `playset` into `out_dir`, in-process. When `basegame_root` is
-/// present, the matching installed base snapshot is used as the common
-/// ancestor; unchanged base payload is never copied into the output. When
-/// `retained_paths` is set, merge planning and output are limited to that
-/// reference-output set. `force` auto-resolves manual conflicts when true;
-/// when false, conflicting files are withheld and surface in the report.
-///
-/// Runs on a large-stack worker thread (see [`MERGE_STACK_BYTES`]).
-pub fn run_merge(
-	playset: &Path,
-	out_dir: &Path,
-	basegame_root: Option<&Path>,
-	force: bool,
-	retained_paths: Option<BTreeSet<String>>,
-	expected_base_snapshot_identity: Option<&str>,
-) -> Result<MergeExecutionResult, MergeError> {
-	run_merge_with_kernel(
-		playset,
-		out_dir,
-		basegame_root,
-		force,
-		retained_paths,
-		expected_base_snapshot_identity,
-		MergeEvaluationKernel::AddressPatchReference,
-	)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn run_merge_with_kernel(
-	playset: &Path,
-	out_dir: &Path,
-	basegame_root: Option<&Path>,
-	force: bool,
-	retained_paths: Option<BTreeSet<String>>,
-	expected_base_snapshot_identity: Option<&str>,
-	merge_kernel: MergeEvaluationKernel,
-) -> Result<MergeExecutionResult, MergeError> {
-	let playset = playset.to_path_buf();
-	let out_dir = out_dir.to_path_buf();
-	let basegame_root = basegame_root.map(Path::to_path_buf);
-	let expected_base_snapshot_identity = expected_base_snapshot_identity.map(str::to_string);
-	std::thread::Builder::new()
-		.stack_size(MERGE_STACK_BYTES)
-		.spawn(move || {
-			run_merge_inner(
-				&playset,
-				&out_dir,
-				basegame_root.as_deref(),
-				force,
-				retained_paths,
-				expected_base_snapshot_identity.as_deref(),
-				merge_kernel,
-			)
-		})
-		.expect("spawn merge worker thread")
-		.join()
-		.expect("merge worker thread panicked")
-}
-
-fn run_merge_inner(
-	playset: &Path,
-	out_dir: &Path,
-	basegame_root: Option<&Path>,
-	force: bool,
-	retained_paths: Option<BTreeSet<String>>,
-	expected_base_snapshot_identity: Option<&str>,
-	merge_kernel: MergeEvaluationKernel,
-) -> Result<MergeExecutionResult, MergeError> {
-	let mut game_path = HashMap::new();
-	if let Some(root) = basegame_root {
-		game_path.insert("eu4".to_string(), root.to_path_buf());
-	}
-	let mut request = CheckRequest::from_playset_path(
-		playset.to_path_buf(),
-		Config {
-			steam_root_path: None,
-			paradox_data_path: None,
-			game_path,
-			extra_ignore_patterns: Vec::new(),
-		},
-	);
-	if let Some(identity) = expected_base_snapshot_identity {
-		request = request.with_expected_base_snapshot_identity(identity);
-	}
-	let result = run_merge_for_evaluation(
-		request,
-		MergeExecuteOptions {
-			out_dir: out_dir.to_path_buf(),
-			include_game_base: basegame_root.is_some(),
-			include_base: false,
-			gui_scroll_merge: false,
-			force,
-			ignore_replace_path: false,
-			dep_overrides: Vec::new(),
-			resolution_config_path: None,
-			interactive_conflict_handler: None,
-			interactive_resolution_config_path: None,
-			playset_fingerprint: None,
-			provenance: false,
-			retained_paths,
-		},
-		merge_kernel,
-	)?;
-	if result.report.status == MergeReportStatus::Fatal {
-		return Err(MergeError::WorkspaceResolve {
-			path: playset.to_path_buf(),
-			message: result
-				.report
-				.fatal_reason
-				.clone()
-				.unwrap_or_else(|| "fatal merge produced no scoreable output".to_string()),
-		});
-	}
-	Ok(result)
 }
 
 /// Classification of foch's output for one path- or module-scoped scoring unit.
@@ -1255,7 +1124,7 @@ fn module_view_cache_key(roots: &[&Path], family_prefix: &str) -> Option<ModuleV
 
 fn module_root_content_hash(root: &Path, family_prefix: &str) -> Option<String> {
 	let mut hasher = blake3::Hasher::new();
-	hasher.update(b"foch-mq-definition-module-root-v1");
+	hasher.update(b"foch-merge-quality-definition-module-root-v1");
 	hash_module_component(&mut hasher, family_prefix.as_bytes());
 	match fs::read(root.join("descriptor.mod")) {
 		Ok(bytes) => {
@@ -2341,21 +2210,6 @@ mod classify_tests {
 			"descriptor.mod",
 			"name=\"fixture\"\nreplace_path=\"common/governments\"\n",
 		);
-	}
-
-	#[test]
-	fn run_merge_rejects_fatal_report_without_expected_snapshot_identity() {
-		let temp = tempfile::tempdir().expect("test root");
-		let playset = temp.path().join("dlc_load.json");
-		fs::write(&playset, "{ invalid json").expect("write invalid playset");
-
-		let error = run_merge(&playset, &temp.path().join("out"), None, false, None, None)
-			.expect_err("fatal merge output must never be scoreable");
-
-		let MergeError::WorkspaceResolve { message, .. } = error else {
-			panic!("fatal report must become a workspace error");
-		};
-		assert!(!message.is_empty());
 	}
 
 	#[test]

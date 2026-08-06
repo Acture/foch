@@ -14,7 +14,9 @@ use crate::corpus::WorkshopProvenance;
 use crate::object_store::TreeStats;
 
 pub const SCHEMA: &str = "1.0.0";
-pub const SCORER_VERSION: &str = "1.3.0";
+pub const MEASUREMENT_SCHEMA_V1: &str = "1.0.0";
+pub const MEASUREMENT_SCHEMA_V2: &str = "2.0.0";
+pub const SCORER_VERSION: &str = "2.0.0";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +112,16 @@ impl SnapshotRecord {
 			compatch,
 			source_mods,
 		}
+	}
+
+	pub fn identity_is_valid(&self) -> bool {
+		*self
+			== Self::new(
+				self.case_id.clone(),
+				self.game.clone(),
+				self.compatch.clone(),
+				self.source_mods.clone(),
+			)
 	}
 }
 
@@ -208,33 +220,271 @@ pub struct MeasurementSummary {
 	pub total_ms: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
-pub struct MeasurementRecord {
-	pub schema: String,
-	pub measurement_id: String,
-	pub snapshot_id: String,
-	pub executable_hash: String,
-	pub scorer_version: String,
-	pub config_hash: String,
-	pub started_at: String,
-	pub finished_at: String,
-	pub status: TerminalStatus,
-	pub detail: Option<String>,
-	pub merged_output_hash: Option<String>,
-	pub summary: Option<MeasurementSummary>,
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineArtifactKind {
+	FochExecutable,
 }
 
-pub struct MeasurementIdentity {
+impl EngineArtifactKind {
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::FochExecutable => "foch_executable",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactHashAlgorithm {
+	Blake3,
+}
+
+impl ArtifactHashAlgorithm {
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Blake3 => "blake3",
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+pub struct EngineArtifactIdentity {
+	pub kind: EngineArtifactKind,
+	pub hash_algorithm: ArtifactHashAlgorithm,
+	pub hash: String,
+}
+
+impl EngineArtifactIdentity {
+	pub fn foch_executable_blake3(hash: impl Into<String>) -> Self {
+		Self {
+			kind: EngineArtifactKind::FochExecutable,
+			hash_algorithm: ArtifactHashAlgorithm::Blake3,
+			hash: hash.into(),
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementKernel {
+	LegacyAddressPatchReference,
+	SemanticTree,
+}
+
+impl MeasurementKernel {
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::LegacyAddressPatchReference => "legacy_address_patch_reference",
+			Self::SemanticTree => "semantic_tree",
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasurementScope {
+	FullProductMerge,
+}
+
+impl MeasurementScope {
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::FullProductMerge => "full_product_merge",
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(tag = "identity_kind", rename_all = "snake_case")]
+pub enum MeasurementCohortKey {
+	OrchestratorBoundV1 {
+		executable_hash: String,
+		scorer_version: String,
+		config_hash: String,
+	},
+	EngineArtifactV2 {
+		engine_artifact: EngineArtifactIdentity,
+		worker_protocol_version: String,
+		merge_kernel: MeasurementKernel,
+		scope: MeasurementScope,
+		scorer_version: String,
+		scorer_config_hash: String,
+	},
+}
+
+impl MeasurementCohortKey {
+	pub fn cohort_id(&self) -> String {
+		match self {
+			Self::OrchestratorBoundV1 {
+				executable_hash,
+				scorer_version,
+				config_hash,
+			} => stable_id(
+				"measurement-cohort-v1",
+				&[
+					executable_hash.as_bytes(),
+					scorer_version.as_bytes(),
+					config_hash.as_bytes(),
+				],
+			),
+			Self::EngineArtifactV2 {
+				engine_artifact,
+				worker_protocol_version,
+				merge_kernel,
+				scope,
+				scorer_version,
+				scorer_config_hash,
+			} => stable_id(
+				"measurement-cohort-v2",
+				&[
+					engine_artifact.kind.as_str().as_bytes(),
+					engine_artifact.hash_algorithm.as_str().as_bytes(),
+					engine_artifact.hash.as_bytes(),
+					worker_protocol_version.as_bytes(),
+					merge_kernel.as_str().as_bytes(),
+					scope.as_str().as_bytes(),
+					scorer_version.as_bytes(),
+					scorer_config_hash.as_bytes(),
+				],
+			),
+		}
+	}
+
+	pub fn scorer_version(&self) -> &str {
+		match self {
+			Self::OrchestratorBoundV1 { scorer_version, .. }
+			| Self::EngineArtifactV2 { scorer_version, .. } => scorer_version,
+		}
+	}
+
+	pub const fn merge_kernel(&self) -> Option<MeasurementKernel> {
+		match self {
+			Self::OrchestratorBoundV1 { .. } => None,
+			Self::EngineArtifactV2 { merge_kernel, .. } => Some(*merge_kernel),
+		}
+	}
+
+	pub const fn scope(&self) -> Option<MeasurementScope> {
+		match self {
+			Self::OrchestratorBoundV1 { .. } => None,
+			Self::EngineArtifactV2 { scope, .. } => Some(*scope),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LegacyMeasurementIdentityV1 {
 	pub snapshot_id: String,
 	pub executable_hash: String,
 	pub scorer_version: String,
 	pub config_hash: String,
+}
+
+impl LegacyMeasurementIdentityV1 {
+	pub fn cohort_key(&self) -> MeasurementCohortKey {
+		MeasurementCohortKey::OrchestratorBoundV1 {
+			executable_hash: self.executable_hash.clone(),
+			scorer_version: self.scorer_version.clone(),
+			config_hash: self.config_hash.clone(),
+		}
+	}
+
+	pub fn cohort_id(&self) -> String {
+		self.cohort_key().cohort_id()
+	}
+
+	pub fn measurement_id(&self) -> String {
+		stable_id(
+			"measurement",
+			&[
+				self.snapshot_id.as_bytes(),
+				self.executable_hash.as_bytes(),
+				self.scorer_version.as_bytes(),
+				self.config_hash.as_bytes(),
+			],
+		)
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MeasurementIdentityV2 {
+	pub snapshot_id: String,
+	pub engine_artifact: EngineArtifactIdentity,
+	pub worker_protocol_version: String,
+	pub merge_kernel: MeasurementKernel,
+	pub scope: MeasurementScope,
+	pub scorer_version: String,
+	pub scorer_config_hash: String,
+}
+
+impl MeasurementIdentityV2 {
+	pub fn cohort_key(&self) -> MeasurementCohortKey {
+		MeasurementCohortKey::EngineArtifactV2 {
+			engine_artifact: self.engine_artifact.clone(),
+			worker_protocol_version: self.worker_protocol_version.clone(),
+			merge_kernel: self.merge_kernel,
+			scope: self.scope,
+			scorer_version: self.scorer_version.clone(),
+			scorer_config_hash: self.scorer_config_hash.clone(),
+		}
+	}
+
+	pub fn cohort_id(&self) -> String {
+		self.cohort_key().cohort_id()
+	}
+
+	pub fn measurement_id(&self) -> String {
+		let cohort_id = self.cohort_id();
+		stable_id(
+			"measurement-v2",
+			&[self.snapshot_id.as_bytes(), cohort_id.as_bytes()],
+		)
+	}
+}
+
+/// One immutable terminal measurement. V1 preserves the historical
+/// orchestrator-bound identity; all new measurements must use V2.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "schema")]
+pub enum MeasurementRecord {
+	#[serde(rename = "1.0.0")]
+	V1 {
+		measurement_id: String,
+		snapshot_id: String,
+		executable_hash: String,
+		scorer_version: String,
+		config_hash: String,
+		started_at: String,
+		finished_at: String,
+		status: TerminalStatus,
+		detail: Option<String>,
+		merged_output_hash: Option<String>,
+		summary: Option<MeasurementSummary>,
+	},
+	#[serde(rename = "2.0.0")]
+	V2 {
+		measurement_id: String,
+		snapshot_id: String,
+		engine_artifact: EngineArtifactIdentity,
+		worker_protocol_version: String,
+		merge_kernel: MeasurementKernel,
+		scope: MeasurementScope,
+		scorer_version: String,
+		scorer_config_hash: String,
+		started_at: String,
+		finished_at: String,
+		status: TerminalStatus,
+		detail: Option<String>,
+		merged_output_hash: Option<String>,
+		summary: Option<MeasurementSummary>,
+	},
 }
 
 impl MeasurementRecord {
 	#[allow(clippy::too_many_arguments)]
-	pub fn new(
-		identity: MeasurementIdentity,
+	pub fn new_v1(
+		identity: LegacyMeasurementIdentityV1,
 		started_at: String,
 		finished_at: String,
 		status: TerminalStatus,
@@ -242,18 +492,8 @@ impl MeasurementRecord {
 		merged_output_hash: Option<String>,
 		summary: Option<MeasurementSummary>,
 	) -> Self {
-		let measurement_id = stable_id(
-			"measurement",
-			&[
-				identity.snapshot_id.as_bytes(),
-				identity.executable_hash.as_bytes(),
-				identity.scorer_version.as_bytes(),
-				identity.config_hash.as_bytes(),
-			],
-		);
-		Self {
-			schema: SCHEMA.to_string(),
-			measurement_id,
+		Self::V1 {
+			measurement_id: identity.measurement_id(),
 			snapshot_id: identity.snapshot_id,
 			executable_hash: identity.executable_hash,
 			scorer_version: identity.scorer_version,
@@ -266,11 +506,229 @@ impl MeasurementRecord {
 			summary,
 		}
 	}
+
+	#[allow(clippy::too_many_arguments)]
+	pub fn new_v2(
+		identity: MeasurementIdentityV2,
+		started_at: String,
+		finished_at: String,
+		status: TerminalStatus,
+		detail: Option<String>,
+		merged_output_hash: Option<String>,
+		summary: Option<MeasurementSummary>,
+	) -> Self {
+		Self::V2 {
+			measurement_id: identity.measurement_id(),
+			snapshot_id: identity.snapshot_id,
+			engine_artifact: identity.engine_artifact,
+			worker_protocol_version: identity.worker_protocol_version,
+			merge_kernel: identity.merge_kernel,
+			scope: identity.scope,
+			scorer_version: identity.scorer_version,
+			scorer_config_hash: identity.scorer_config_hash,
+			started_at,
+			finished_at,
+			status,
+			detail,
+			merged_output_hash,
+			summary,
+		}
+	}
+
+	pub const fn schema(&self) -> &'static str {
+		match self {
+			Self::V1 { .. } => MEASUREMENT_SCHEMA_V1,
+			Self::V2 { .. } => MEASUREMENT_SCHEMA_V2,
+		}
+	}
+
+	pub fn measurement_id(&self) -> &str {
+		match self {
+			Self::V1 { measurement_id, .. } | Self::V2 { measurement_id, .. } => measurement_id,
+		}
+	}
+
+	pub fn snapshot_id(&self) -> &str {
+		match self {
+			Self::V1 { snapshot_id, .. } | Self::V2 { snapshot_id, .. } => snapshot_id,
+		}
+	}
+
+	pub fn scorer_version(&self) -> &str {
+		match self {
+			Self::V1 { scorer_version, .. } | Self::V2 { scorer_version, .. } => scorer_version,
+		}
+	}
+
+	pub fn config_hash(&self) -> &str {
+		match self {
+			Self::V1 { config_hash, .. } => config_hash,
+			Self::V2 {
+				scorer_config_hash, ..
+			} => scorer_config_hash,
+		}
+	}
+
+	pub fn legacy_executable_hash(&self) -> Option<&str> {
+		match self {
+			Self::V1 {
+				executable_hash, ..
+			} => Some(executable_hash),
+			Self::V2 { .. } => None,
+		}
+	}
+
+	pub fn engine_artifact(&self) -> Option<&EngineArtifactIdentity> {
+		match self {
+			Self::V1 { .. } => None,
+			Self::V2 {
+				engine_artifact, ..
+			} => Some(engine_artifact),
+		}
+	}
+
+	pub fn worker_protocol_version(&self) -> Option<&str> {
+		match self {
+			Self::V1 { .. } => None,
+			Self::V2 {
+				worker_protocol_version,
+				..
+			} => Some(worker_protocol_version),
+		}
+	}
+
+	pub const fn merge_kernel(&self) -> Option<MeasurementKernel> {
+		match self {
+			Self::V1 { .. } => None,
+			Self::V2 { merge_kernel, .. } => Some(*merge_kernel),
+		}
+	}
+
+	pub const fn scope(&self) -> Option<MeasurementScope> {
+		match self {
+			Self::V1 { .. } => None,
+			Self::V2 { scope, .. } => Some(*scope),
+		}
+	}
+
+	pub fn started_at(&self) -> &str {
+		match self {
+			Self::V1 { started_at, .. } | Self::V2 { started_at, .. } => started_at,
+		}
+	}
+
+	pub fn finished_at(&self) -> &str {
+		match self {
+			Self::V1 { finished_at, .. } | Self::V2 { finished_at, .. } => finished_at,
+		}
+	}
+
+	pub const fn status(&self) -> TerminalStatus {
+		match self {
+			Self::V1 { status, .. } | Self::V2 { status, .. } => *status,
+		}
+	}
+
+	pub fn detail(&self) -> Option<&str> {
+		match self {
+			Self::V1 { detail, .. } | Self::V2 { detail, .. } => detail.as_deref(),
+		}
+	}
+
+	pub fn merged_output_hash(&self) -> Option<&str> {
+		match self {
+			Self::V1 {
+				merged_output_hash, ..
+			}
+			| Self::V2 {
+				merged_output_hash, ..
+			} => merged_output_hash.as_deref(),
+		}
+	}
+
+	pub fn summary(&self) -> Option<&MeasurementSummary> {
+		match self {
+			Self::V1 { summary, .. } | Self::V2 { summary, .. } => summary.as_ref(),
+		}
+	}
+
+	pub fn cohort_key(&self) -> MeasurementCohortKey {
+		match self {
+			Self::V1 {
+				executable_hash,
+				scorer_version,
+				config_hash,
+				..
+			} => MeasurementCohortKey::OrchestratorBoundV1 {
+				executable_hash: executable_hash.clone(),
+				scorer_version: scorer_version.clone(),
+				config_hash: config_hash.clone(),
+			},
+			Self::V2 {
+				engine_artifact,
+				worker_protocol_version,
+				merge_kernel,
+				scope,
+				scorer_version,
+				scorer_config_hash,
+				..
+			} => MeasurementCohortKey::EngineArtifactV2 {
+				engine_artifact: engine_artifact.clone(),
+				worker_protocol_version: worker_protocol_version.clone(),
+				merge_kernel: *merge_kernel,
+				scope: *scope,
+				scorer_version: scorer_version.clone(),
+				scorer_config_hash: scorer_config_hash.clone(),
+			},
+		}
+	}
+
+	pub fn cohort_id(&self) -> String {
+		self.cohort_key().cohort_id()
+	}
+
+	pub fn identity_is_valid(&self) -> bool {
+		let expected = match self {
+			Self::V1 {
+				snapshot_id,
+				executable_hash,
+				scorer_version,
+				config_hash,
+				..
+			} => LegacyMeasurementIdentityV1 {
+				snapshot_id: snapshot_id.clone(),
+				executable_hash: executable_hash.clone(),
+				scorer_version: scorer_version.clone(),
+				config_hash: config_hash.clone(),
+			}
+			.measurement_id(),
+			Self::V2 {
+				snapshot_id,
+				engine_artifact,
+				worker_protocol_version,
+				merge_kernel,
+				scope,
+				scorer_version,
+				scorer_config_hash,
+				..
+			} => MeasurementIdentityV2 {
+				snapshot_id: snapshot_id.clone(),
+				engine_artifact: engine_artifact.clone(),
+				worker_protocol_version: worker_protocol_version.clone(),
+				merge_kernel: *merge_kernel,
+				scope: *scope,
+				scorer_version: scorer_version.clone(),
+				scorer_config_hash: scorer_config_hash.clone(),
+			}
+			.measurement_id(),
+		};
+		self.measurement_id() == expected
+	}
 }
 
 impl IdentifiedRecord for MeasurementRecord {
 	fn record_id(&self) -> &str {
-		&self.measurement_id
+		self.measurement_id()
 	}
 }
 
@@ -284,7 +742,18 @@ pub struct FileResultRecord {
 }
 
 impl FileResultRecord {
+	/// Construct payload-bound evidence for a V2 measurement.
 	pub fn new(measurement_id: String, relative_path: String, result: serde_json::Value) -> Self {
+		Self::new_v2(measurement_id, relative_path, result)
+	}
+
+	/// Reconstruct the historical V1 path-only identity without changing
+	/// committed Legacy records.
+	pub fn new_v1(
+		measurement_id: String,
+		relative_path: String,
+		result: serde_json::Value,
+	) -> Self {
 		let file_result_id = stable_id(
 			"file-result",
 			&[measurement_id.as_bytes(), relative_path.as_bytes()],
@@ -296,6 +765,45 @@ impl FileResultRecord {
 			relative_path,
 			result,
 		}
+	}
+
+	pub fn new_v2(
+		measurement_id: String,
+		relative_path: String,
+		result: serde_json::Value,
+	) -> Self {
+		let result_bytes = serde_json::to_vec(&result).expect("file-result evidence serializes");
+		let file_result_id = stable_id(
+			"file-result-v2",
+			&[
+				measurement_id.as_bytes(),
+				relative_path.as_bytes(),
+				&result_bytes,
+			],
+		);
+		Self {
+			schema: SCHEMA.to_string(),
+			file_result_id,
+			measurement_id,
+			relative_path,
+			result,
+		}
+	}
+
+	pub fn identity_is_valid_for(&self, measurement: &MeasurementRecord) -> bool {
+		let expected = match measurement {
+			MeasurementRecord::V1 { .. } => Self::new_v1(
+				self.measurement_id.clone(),
+				self.relative_path.clone(),
+				self.result.clone(),
+			),
+			MeasurementRecord::V2 { .. } => Self::new_v2(
+				self.measurement_id.clone(),
+				self.relative_path.clone(),
+				self.result.clone(),
+			),
+		};
+		*self == expected
 	}
 }
 
@@ -536,21 +1044,27 @@ fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
 }
 
 struct DatasetLock {
-	path: PathBuf,
+	_file: fs::File,
 }
 
 impl DatasetLock {
 	fn acquire(root: &Path) -> io::Result<Self> {
 		let path = root.join(".lock");
+		let file = fs::OpenOptions::new()
+			.create(true)
+			.read(true)
+			.write(true)
+			.truncate(false)
+			.open(path)?;
 		let started = Instant::now();
 		loop {
-			match fs::create_dir(&path) {
-				Ok(()) => return Ok(Self { path }),
-				Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+			match try_lock_exclusive(&file) {
+				Ok(()) => return Ok(Self { _file: file }),
+				Err(err) if err.kind() == ErrorKind::WouldBlock => {
 					if started.elapsed() >= Duration::from_secs(30) {
 						return Err(io::Error::new(
 							ErrorKind::WouldBlock,
-							format!("timed out waiting for dataset lock {}", path.display()),
+							"timed out waiting for dataset append lock after 30 seconds",
 						));
 					}
 					thread::sleep(Duration::from_millis(25));
@@ -561,14 +1075,32 @@ impl DatasetLock {
 	}
 }
 
-impl Drop for DatasetLock {
-	fn drop(&mut self) {
-		let _ = fs::remove_dir(&self.path);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn try_lock_exclusive(file: &fs::File) -> io::Result<()> {
+	use std::os::fd::AsRawFd;
+
+	// SAFETY: `file` owns a valid descriptor for the duration of the call, and
+	// `flock` neither retains the descriptor nor dereferences Rust memory.
+	let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+	if result == 0 {
+		Ok(())
+	} else {
+		Err(io::Error::last_os_error())
 	}
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn try_lock_exclusive(_file: &fs::File) -> io::Result<()> {
+	Err(io::Error::new(
+		ErrorKind::Unsupported,
+		"dataset append locking is supported only on macOS and Linux",
+	))
 }
 
 #[cfg(test)]
 mod tests {
+	use std::collections::BTreeSet;
+
 	use serde::{Deserialize, Serialize};
 
 	use super::*;
@@ -643,6 +1175,25 @@ mod tests {
 		assert_eq!(read_jsonl::<Record>(&path).unwrap(), records);
 	}
 
+	#[cfg(any(target_os = "linux", target_os = "macos"))]
+	#[test]
+	fn dataset_lock_is_exclusive_and_released_with_its_file_handle() {
+		let temp = tempfile::tempdir().unwrap();
+		let first = DatasetLock::acquire(temp.path()).unwrap();
+		let second_file = fs::OpenOptions::new()
+			.read(true)
+			.write(true)
+			.open(temp.path().join(".lock"))
+			.unwrap();
+
+		assert_eq!(
+			try_lock_exclusive(&second_file).unwrap_err().kind(),
+			ErrorKind::WouldBlock
+		);
+		drop(first);
+		try_lock_exclusive(&second_file).unwrap();
+	}
+
 	#[test]
 	fn stable_ids_are_order_sensitive_and_namespace_scoped() {
 		let ab = stable_id("snapshot", &[b"a", b"b"]);
@@ -694,14 +1245,35 @@ mod tests {
 		let repeated = snapshot(&["a", "b"]);
 		let reordered = snapshot(&["b", "a"]);
 		assert_eq!(first, repeated);
+		assert!(first.identity_is_valid());
 		assert_ne!(first.snapshot_id, reordered.snapshot_id);
+
+		let mut altered = first;
+		altered.compatch.content_hash = "altered".to_string();
+		assert!(!altered.identity_is_valid());
+	}
+
+	#[test]
+	fn v2_file_result_identity_binds_the_full_payload() {
+		let first = FileResultRecord::new(
+			"measurement".to_string(),
+			"common/a.txt".to_string(),
+			serde_json::json!({"score": {"verdict": "exact"}}),
+		);
+		let changed = FileResultRecord::new(
+			"measurement".to_string(),
+			"common/a.txt".to_string(),
+			serde_json::json!({"score": {"verdict": "semantic"}}),
+		);
+
+		assert_ne!(first.file_result_id, changed.file_result_id);
 	}
 
 	#[test]
 	fn measurement_identity_is_content_addressed() {
 		let make = |started_at: &str| {
-			MeasurementRecord::new(
-				MeasurementIdentity {
+			MeasurementRecord::new_v1(
+				LegacyMeasurementIdentityV1 {
 					snapshot_id: "snapshot".to_string(),
 					executable_hash: "executable".to_string(),
 					scorer_version: SCORER_VERSION.to_string(),
@@ -715,8 +1287,169 @@ mod tests {
 				None,
 			)
 		};
-		assert_eq!(make("first").measurement_id, make("later").measurement_id);
+		assert_eq!(
+			make("first").measurement_id(),
+			make("later").measurement_id()
+		);
 		assert!(TerminalStatus::TimedOut.counts_as_merge_failed());
 		assert!(!TerminalStatus::Completed.counts_as_merge_failed());
+	}
+
+	#[test]
+	fn historical_measurement_wire_format_round_trips_byte_for_byte() {
+		let line = concat!(
+			"{\"schema\":\"1.0.0\",",
+			"\"measurement_id\":\"93e40b750e503c261c083dbbe2fcd3f1ab81f2851f409534651f0f01cf8e7d6b\",",
+			"\"snapshot_id\":\"snapshot\",",
+			"\"executable_hash\":\"executable\",",
+			"\"scorer_version\":\"1.0.0\",",
+			"\"config_hash\":\"config\",",
+			"\"started_at\":\"started\",",
+			"\"finished_at\":\"finished\",",
+			"\"status\":\"completed\",",
+			"\"detail\":null,",
+			"\"merged_output_hash\":null,",
+			"\"summary\":null}"
+		);
+		let record: MeasurementRecord = serde_json::from_str(line).unwrap();
+		assert_eq!(record.schema(), MEASUREMENT_SCHEMA_V1);
+		assert!(record.identity_is_valid());
+		assert_eq!(serde_json::to_string(&record).unwrap(), line);
+	}
+
+	#[test]
+	fn v2_identity_covers_engine_protocol_kernel_and_scorer() {
+		let identity = MeasurementIdentityV2 {
+			snapshot_id: "snapshot".to_string(),
+			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
+			worker_protocol_version: "1.0.0".to_string(),
+			merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
+			scope: MeasurementScope::FullProductMerge,
+			scorer_version: SCORER_VERSION.to_string(),
+			scorer_config_hash: "config".to_string(),
+		};
+		let cohort_id = identity.cohort_id();
+		let measurement_id = identity.measurement_id();
+		let record = MeasurementRecord::new_v2(
+			identity.clone(),
+			"started".to_string(),
+			"finished".to_string(),
+			TerminalStatus::Completed,
+			None,
+			None,
+			None,
+		);
+
+		assert_eq!(record.schema(), MEASUREMENT_SCHEMA_V2);
+		assert_eq!(record.scorer_version(), "2.0.0");
+		assert_eq!(record.cohort_id(), cohort_id);
+		assert_eq!(record.measurement_id(), measurement_id);
+		assert_eq!(
+			record.merge_kernel(),
+			Some(MeasurementKernel::LegacyAddressPatchReference)
+		);
+		assert!(record.identity_is_valid());
+		let wire = serde_json::to_value(&record).unwrap();
+		assert_eq!(wire["merge_kernel"], "legacy_address_patch_reference");
+		assert_eq!(wire["scope"], "full_product_merge");
+		assert_eq!(wire["schema"], MEASUREMENT_SCHEMA_V2);
+
+		let mut structured = identity;
+		structured.merge_kernel = MeasurementKernel::SemanticTree;
+		assert_ne!(structured.cohort_id(), cohort_id);
+		assert_ne!(structured.measurement_id(), measurement_id);
+		let structured = MeasurementRecord::new_v2(
+			structured,
+			"started".to_string(),
+			"finished".to_string(),
+			TerminalStatus::Completed,
+			None,
+			None,
+			None,
+		);
+		assert_eq!(
+			serde_json::to_value(structured).unwrap()["merge_kernel"],
+			"semantic_tree"
+		);
+	}
+
+	#[test]
+	fn appending_v2_does_not_rewrite_existing_v1_bytes() {
+		let temp = tempfile::tempdir().unwrap();
+		let path = temp.path().join("measurements.jsonl");
+		let v1_line = concat!(
+			"{\"schema\":\"1.0.0\",",
+			"\"measurement_id\":\"93e40b750e503c261c083dbbe2fcd3f1ab81f2851f409534651f0f01cf8e7d6b\",",
+			"\"snapshot_id\":\"snapshot\",",
+			"\"executable_hash\":\"executable\",",
+			"\"scorer_version\":\"1.0.0\",",
+			"\"config_hash\":\"config\",",
+			"\"started_at\":\"started\",",
+			"\"finished_at\":\"finished\",",
+			"\"status\":\"completed\",",
+			"\"detail\":null,",
+			"\"merged_output_hash\":null,",
+			"\"summary\":null}"
+		);
+		fs::write(&path, format!("{v1_line}\n")).unwrap();
+		let v2 = MeasurementRecord::new_v2(
+			MeasurementIdentityV2 {
+				snapshot_id: "other-snapshot".to_string(),
+				engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
+				worker_protocol_version: "1.0.0".to_string(),
+				merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
+				scope: MeasurementScope::FullProductMerge,
+				scorer_version: SCORER_VERSION.to_string(),
+				scorer_config_hash: "config".to_string(),
+			},
+			"started".to_string(),
+			"finished".to_string(),
+			TerminalStatus::Completed,
+			None,
+			None,
+			None,
+		);
+
+		assert_eq!(append_unique(&path, &v2).unwrap(), AppendOutcome::Inserted);
+		let bytes = fs::read_to_string(&path).unwrap();
+		assert!(bytes.starts_with(&format!("{v1_line}\n")));
+		let records = read_jsonl::<MeasurementRecord>(&path).unwrap();
+		assert_eq!(records.len(), 2);
+		assert_eq!(records[0].schema(), MEASUREMENT_SCHEMA_V1);
+		assert_eq!(records[1].schema(), MEASUREMENT_SCHEMA_V2);
+	}
+
+	#[test]
+	fn frozen_scorer_1_0_cohort_keeps_its_historical_identity_and_file_results() {
+		const EXECUTABLE_HASH: &str =
+			"16fcde0535ad3c759492f1aa76ad6164d466cb6fea8125a65f36c3bebb06ea91";
+		const CONFIG_HASH: &str =
+			"e2580bc8c745bf7aca520ce909f093028455a9745d5fae6f92b94424d2986393";
+		let dataset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset");
+		let measurements =
+			read_jsonl::<MeasurementRecord>(&dataset_root.join("measurements.jsonl")).unwrap();
+		let frozen_ids: BTreeSet<String> = measurements
+			.iter()
+			.filter(|measurement| {
+				measurement.legacy_executable_hash() == Some(EXECUTABLE_HASH)
+					&& measurement.scorer_version() == "1.0.0"
+					&& measurement.config_hash() == CONFIG_HASH
+			})
+			.map(|measurement| {
+				assert_eq!(measurement.schema(), MEASUREMENT_SCHEMA_V1);
+				assert!(measurement.identity_is_valid());
+				measurement.measurement_id().to_string()
+			})
+			.collect();
+		assert_eq!(frozen_ids.len(), 23);
+
+		let file_results = fs::read_to_string(dataset_root.join("file_results.jsonl")).unwrap();
+		let referenced_file_results = file_results
+			.lines()
+			.filter(|line| !line.trim().is_empty())
+			.map(|line| serde_json::from_str::<FileResultRecord>(line).unwrap())
+			.filter(|record| frozen_ids.contains(&record.measurement_id))
+			.count();
+		assert_eq!(referenced_file_results, 30_739);
 	}
 }

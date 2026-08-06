@@ -199,6 +199,42 @@ pub enum MergeReportStatus {
 	Fatal,
 }
 
+/// Wire schema for the execution identity embedded in every product merge
+/// report. Merge-quality consumers reject reports without this attestation
+/// instead of inferring the implementation from the command they launched.
+pub const MERGE_EXECUTION_ATTESTATION_SCHEMA: &str = "1.0.0";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeReportKernel {
+	AddressPatchReference,
+	SemanticTree,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeReportScope {
+	FullProductMerge,
+	RetainedPathEvaluation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum MergeReportBaseSnapshot {
+	Disabled,
+	Resolved { identity: String },
+	Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MergeExecutionAttestation {
+	pub schema: String,
+	pub kernel: MergeReportKernel,
+	pub scope: MergeReportScope,
+	pub base_snapshot: MergeReportBaseSnapshot,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReportValidation {
 	pub fatal_errors: usize,
@@ -355,6 +391,10 @@ pub struct StaleVanillaTargetDescriptor {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReport {
 	pub status: MergeReportStatus,
+	/// Stable, product-authored execution identity. Historical reports omit it;
+	/// consumers that require an exact kernel/scope contract must reject `None`.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub execution: Option<MergeExecutionAttestation>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_source: Option<String>,
 	/// When `status == Fatal` because workspace resolution failed, the

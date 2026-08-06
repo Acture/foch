@@ -18,11 +18,11 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
 ### `apps/`
 
 - `crates/foch-cli`
-  - Rust binary package for:
-    - `foch` (main CLI; the `lsp` subcommand runs the language server on stdio)
-    - `parse_stats` and `symbol_dump` (gated behind `--features dev-tools`;
-      parser / semantic-index debugging utilities, not user-facing)
-  - owns CLI parsing, command dispatch, and binary entrypoints
+  - owns the repository's only normal Cargo binary, `foch`; the `lsp`
+    subcommand runs the language server on stdio
+  - provides `parse_stats` and `symbol_dump` only as `dev-tools`-gated Cargo
+    examples for parser / semantic-index maintainers
+  - owns CLI parsing, command dispatch, and the product entrypoint
 
 ### `crates/`
 
@@ -46,6 +46,11 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
   - merge planning/execution
   - simplify
   - stable orchestration APIs consumed by the CLI
+- `crates/foch-merge-quality`
+  - private, library-only product evaluation and immutable dataset contracts
+  - pure scoring over an existing output tree and product `MergeReport`
+  - injected measurement/review runners and exact cohort reporting
+  - no binary target and no production dependency from `foch-cli`
 
 ### `packages/`
 
@@ -64,6 +69,7 @@ The intended dependency flow is:
 - `crates/foch-cli -> foch-engine`
 - `foch-engine -> foch-language + foch-core`
 - `foch-language -> foch-core`
+- `foch-cli` tests `-> foch-merge-quality` as a dev-dependency only
 
 `foch-language` is the behavior boundary for game-aware language semantics. `ScriptFileKind` remains a plain compatibility enum and is not the primary extension point.
 
@@ -87,7 +93,19 @@ The intended dependency flow is:
 2. `foch-engine::merge::ir` lifts supported roots into merge IR.
 3. `foch-engine::merge::emit` produces deterministic Clausewitz output.
 4. `foch-engine::merge::materialize` writes the merged tree and `.foch/*` sidecars.
-5. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline.
+5. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline and records kernel, scope, and base-snapshot attestation in the merge report.
+
+### Product merge-quality acceptance
+
+1. An ignored `foch-cli` integration test selects exact immutable snapshot IDs.
+2. The library materializes one content-bound base view from the installed
+   inventory; both product execution and scoring use that view instead of the
+   mutable game tree.
+3. Each case launches the public `foch merge --non-interactive` artifact in an independent bounded child process.
+4. The runner verifies the product-authored execution attestation; the library
+   rechecks the pinned base and archives the emitted tree.
+5. `foch-merge-quality` scores that existing tree without selecting or executing a merge kernel.
+6. Exact V2 cohort reports and assertions remain separate from frozen V1 Legacy evidence.
 
 ### `foch graph`
 

@@ -1,43 +1,11 @@
-//! Integration tests for orchestrate::score_case / run / learn.
-//!
-//! The committed fixture archive already contains a temp "workshop directory"
-//! (`workshop/<steam_id>/...`), which is exactly how a real Steam Workshop
-//! download looks.
+//! Integration tests for scoring an already generated product output tree.
 
-mod common;
+use std::path::Path;
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-
-use foch_merge_quality::corpus::{Case, Corpus};
-use foch_merge_quality::orchestrate::{
-	self, BaseGameMode, CaseResult, RunOptions, score_case_from_paths_with_cache,
-};
+use foch_core::model::MergeReport;
+use foch_merge_quality::corpus::Case;
+use foch_merge_quality::orchestrate::score_existing_output_with_cache;
 use foch_merge_quality::score::ScoreCache;
-
-// ------------------------------------------------------------------ helpers
-
-/// Reuse the archive-hash-addressed committed corpus fixture.
-fn workshop_3630876155() -> PathBuf {
-	common::cached_corpus_root().join("workshop")
-}
-
-fn case_3630876155() -> Case {
-	Case {
-		compatch_id: "3630876155".to_string(),
-		title: "Expanded Family Compatch".to_string(),
-		referenced_mods: vec!["2164202838".to_string(), "2185445645".to_string()],
-		..Default::default()
-	}
-}
-
-fn no_game_base_expected_verdicts() -> BTreeMap<String, usize> {
-	BTreeMap::from([
-		("accepted_equivalent".to_string(), 2),
-		("diverges_ast".to_string(), 3),
-		("diverges_structure".to_string(), 1),
-	])
-}
 
 fn write_file(root: &Path, relative: &str, content: &str) {
 	let path = root.join(relative);
@@ -46,35 +14,63 @@ fn write_file(root: &Path, relative: &str, content: &str) {
 	std::fs::write(path, content).expect("write fixture file");
 }
 
-// ------------------------------------------------------------------ Test 1: score_case
-
-/// Validated reference output: 6 overlapping logical units after same-family
-/// definition files are collapsed into one module-scoped comparison.
 #[test]
-fn score_case_verdict_tally() {
-	let ws = workshop_3630876155();
-	let case = case_3630876155();
-
-	let result = orchestrate::score_case(&case, &ws, BaseGameMode::ExplicitlyDisabled, false)
-		.expect("score_case succeeds");
-
-	assert_eq!(result.ground_truth_files, result.files.len());
-	assert_eq!(
-		result.ground_truth_files,
-		result.all_ground_truth_verdicts.values().sum::<usize>()
+fn scores_existing_output_without_executing_a_merge() {
+	let root = tempfile::tempdir().expect("fixture root");
+	let mod_a = root.path().join("mod-a");
+	let mod_b = root.path().join("mod-b");
+	let compatch = root.path().join("compatch");
+	let out = root.path().join("out");
+	let rel = "events/example.txt";
+	let merged = concat!(
+		"namespace = example\n",
+		"country_event = { id = example.1 title = one }\n",
+		"country_event = { id = example.2 title = two }\n",
 	);
-	assert_eq!(result.multi_source_files, 6, "multi-source unit count");
-
-	assert_eq!(
-		result.multi_source_verdicts,
-		no_game_base_expected_verdicts(),
-		"verdict tally"
+	write_file(
+		&mod_a,
+		rel,
+		"namespace = example\ncountry_event = { id = example.1 title = one }\n",
 	);
-	assert_eq!(result.accepted_multi_source_files, 2, "accepted tally");
+	write_file(
+		&mod_b,
+		rel,
+		"namespace = example\ncountry_event = { id = example.2 title = two }\n",
+	);
+	write_file(&compatch, rel, merged);
+	write_file(&out, rel, merged);
+	let case = Case {
+		compatch_id: "human".to_string(),
+		title: "existing output".to_string(),
+		referenced_mods: vec!["mod-a".to_string(), "mod-b".to_string()],
+		..Default::default()
+	};
+	let report = MergeReport::default();
+	let output_before = std::fs::read(out.join(rel)).expect("read output before scoring");
+	let mut cache = ScoreCache::new();
+
+	let result = score_existing_output_with_cache(
+		&case,
+		&compatch,
+		&[mod_a, mod_b],
+		&out,
+		&report,
+		None,
+		42,
+		&mut cache,
+	)
+	.expect("score existing output");
+
+	assert_eq!(std::fs::read(out.join(rel)).unwrap(), output_before);
+	assert_eq!(result.ground_truth_files, 1);
+	assert_eq!(result.multi_source_files, 1);
+	assert_eq!(result.merge_status.as_deref(), Some("ready"));
+	assert_eq!(result.timings.merge_ms, 42);
+	assert!(result.timings.total_ms >= 42);
 }
 
 #[test]
-fn definition_module_paths_count_as_one_ground_truth_unit() {
+fn definition_module_paths_collapse_into_one_existing_output_unit() {
 	let root = tempfile::tempdir().expect("fixture root");
 	let mod_a = root.path().join("mod-a");
 	let mod_b = root.path().join("mod-b");
@@ -100,159 +96,36 @@ fn definition_module_paths_count_as_one_ground_truth_unit() {
 		"common/governments/10_human.txt",
 		"republic = { rank = 1 }\n",
 	);
+	let module_rel = "common/governments/zzz_foch_governments.txt";
+	write_file(
+		&out,
+		module_rel,
+		"monarchy = { rank = 1 }\nrepublic = { rank = 1 }\n",
+	);
 	let case = Case {
 		compatch_id: "human".to_string(),
 		title: "two-file governments compatch".to_string(),
 		referenced_mods: vec!["mod-a".to_string(), "mod-b".to_string()],
 		..Default::default()
 	};
+	let report = MergeReport::default();
 	let mut cache = ScoreCache::new();
 
-	let result = score_case_from_paths_with_cache(
+	let result = score_existing_output_with_cache(
 		&case,
 		&compatch,
 		&[mod_a, mod_b],
 		&out,
-		BaseGameMode::ExplicitlyDisabled,
+		&report,
 		None,
+		0,
 		&mut cache,
 	)
-	.expect("score definition module fixture");
+	.expect("score existing definition-module output");
 
 	assert_eq!(result.files.len(), 1);
 	assert_eq!(result.ground_truth_files, 1);
+	assert_eq!(result.multi_source_files, 1);
 	assert_eq!(result.all_ground_truth_verdicts.values().sum::<usize>(), 1);
-	assert_eq!(
-		result.files[0].rel,
-		"common/governments/zzz_foch_governments.txt"
-	);
-}
-
-// ------------------------------------------------------------------ Test 2: run
-
-/// `run` with a single-case corpus writes results.json (with the right tally)
-/// and a non-empty report.md.
-#[test]
-fn run_writes_artifacts() {
-	let ws = workshop_3630876155();
-
-	// Build a minimal corpus.json
-	let corpus = Corpus {
-		cases: vec![case_3630876155()],
-		..Default::default()
-	};
-	let corpus_json = corpus.to_json_pretty().unwrap();
-
-	let run_tmp = tempfile::tempdir().expect("run tmp");
-	let corpus_path = run_tmp.path().join("corpus.json");
-	let results_dir = run_tmp.path().join("results");
-
-	std::fs::write(&corpus_path, corpus_json).unwrap();
-
-	orchestrate::run(&RunOptions {
-		corpus: &corpus_path,
-		workshop_dir: &ws,
-		results_dir: &results_dir,
-		base_game: BaseGameMode::ExplicitlyDisabled,
-		limit: 0,
-		keep: false,
-		isolate: false, // in-process: the test binary is not `foch-mq`
-	})
-	.expect("run succeeds");
-
-	// results.json must exist and decode to a vec with one record
-	let results_text =
-		std::fs::read_to_string(results_dir.join("results.json")).expect("results.json written");
-	let records: Vec<CaseResult> =
-		serde_json::from_str(&results_text).expect("results.json parses");
-
-	assert_eq!(records.len(), 1);
-	assert_eq!(records[0].compatch_id, "3630876155");
-	assert_eq!(records[0].multi_source_files, 6);
-	assert!(
-		records[0].timings.total_ms >= records[0].timings.merge_ms,
-		"total timing covers merge timing"
-	);
-
-	assert_eq!(
-		records[0].multi_source_verdicts,
-		no_game_base_expected_verdicts()
-	);
-	assert_eq!(records[0].accepted_multi_source_files, 2);
-
-	// report.md must be non-empty
-	let report_md =
-		std::fs::read_to_string(results_dir.join("report.md")).expect("report.md written");
-	assert!(!report_md.trim().is_empty(), "report.md is non-empty");
-	assert!(
-		report_md.contains("Timing: total="),
-		"report.md includes aggregate timing"
-	);
-	assert!(
-		report_md.contains("- timings: total="),
-		"report.md includes per-case timing"
-	);
-}
-
-// ------------------------------------------------------------------ Test 3: learn
-
-/// `learn` re-reads the mod + compatch files, classifies human resolutions, and
-/// writes a rules.md with the four canonical sections.
-#[test]
-fn learn_writes_rules_md() {
-	// Use the real fixture workshop so classify_resolution can read the files.
-	let ws = workshop_3630876155();
-	let case = case_3630876155();
-
-	// Score first to obtain a CaseResult with real overlap file records.
-	let result = orchestrate::score_case(&case, &ws, BaseGameMode::ExplicitlyDisabled, false)
-		.expect("score_case");
-
-	let results_tmp = tempfile::tempdir().expect("results tmp");
-	let results_dir = results_tmp.path();
-
-	// Write results.json with real file-level data.
-	let json = serde_json::to_string_pretty(&[result]).unwrap();
-	std::fs::write(results_dir.join("results.json"), json).unwrap();
-
-	// learn now takes workshop_dir as well.
-	orchestrate::learn(results_dir, &ws, None).expect("learn succeeds");
-
-	let rules = std::fs::read_to_string(results_dir.join("rules.md")).expect("rules.md written");
-
-	// Must contain all four Python-compat section headers.
-	assert!(
-		rules.contains("## Order-independent rule"),
-		"rules.md must have crosstab section"
-	);
-	assert!(
-		rules.contains("## How humans resolve overlaps (ALL overlapping files)"),
-		"rules.md must have ALL section"
-	);
-	assert!(
-		rules.contains("## How humans resolve the conflicts foch WITHHELD"),
-		"rules.md must have conflict section"
-	);
-	assert!(
-		rules.contains("## Per-file detail"),
-		"rules.md must have per-file section"
-	);
-
-	// Per-file detail must have at least one classified row (7 overlap files).
-	let has_resolution = rules.contains("union")
-		|| rules.contains("took_base")
-		|| rules.contains("took_overlay")
-		|| rules.contains("hand_edit")
-		|| rules.contains("identical");
-	assert!(
-		has_resolution,
-		"rules.md must contain a human resolution verdict"
-	);
-
-	// The per-file table must mention at least one fixture file.
-	let has_file_row = rules.contains("interface/") || rules.contains("common/");
-	assert!(
-		has_file_row,
-		"rules.md per-file detail must list at least one overlap file"
-	);
+	assert_eq!(result.files[0].rel, module_rel);
 }

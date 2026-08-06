@@ -13,9 +13,6 @@ use crate::common_module::{
 	CommonModuleDiagnostic, CommonModuleViewBuilder, normalize_module_comparison,
 };
 use crate::config::Eu4GameDiscovery;
-use crate::corpus_shadow::{
-	LoadedSnapshot, latest_snapshots, open_snapshot, validate_snapshot_game,
-};
 use crate::dataset::{DatasetPaths, now_rfc3339};
 use crate::object_store::ObjectStore;
 use crate::orchestrate::FileRecord;
@@ -23,8 +20,9 @@ use crate::score::{
 	SemanticAtomDiff, semantic_ast_content_id, semantic_atom_diff_ast,
 	semantic_atom_diff_statements,
 };
+use crate::snapshot::{LoadedSnapshot, latest_snapshots, open_snapshot, validate_snapshot_game};
 
-pub const COMMON_APPLICABILITY_SCHEMA: &str = "2.1.0";
+pub const COMMON_APPLICABILITY_SCHEMA: &str = "3.0.0";
 pub const COMMON_APPLICABILITY_UNIT_COUNT: usize = 12;
 
 pub struct CommonApplicabilityOptions<'a> {
@@ -32,6 +30,8 @@ pub struct CommonApplicabilityOptions<'a> {
 	pub output_dir: &'a Path,
 	pub legacy_baseline: &'a Path,
 	pub game: &'a Eu4GameDiscovery,
+	/// BLAKE3 of the fixed test or product artifact that owns this evaluation.
+	pub evaluator_artifact_blake3: &'a str,
 	pub case_ids: &'a BTreeSet<String>,
 	pub families: &'a BTreeSet<String>,
 }
@@ -184,7 +184,7 @@ pub struct CommonApplicabilityReport {
 	pub hypothesis: String,
 	pub game_version: String,
 	pub steam_build_id: Option<u64>,
-	pub executable_blake3: String,
+	pub evaluator_artifact_blake3: String,
 	pub legacy_baseline_blake3: String,
 	pub summary: CommonProbeSummary,
 	pub families: Vec<CommonProbeFamilySummary>,
@@ -299,9 +299,7 @@ pub fn run_common_applicability_probe(
 		hypothesis: "common/<folder> is a provisional semantic merge unit".to_string(),
 		game_version: options.game.game_version.clone(),
 		steam_build_id: options.game.steam_build_id,
-		executable_blake3: blake3::hash(&fs::read(std::env::current_exe()?)?)
-			.to_hex()
-			.to_string(),
+		evaluator_artifact_blake3: options.evaluator_artifact_blake3.to_string(),
 		legacy_baseline_blake3: blake3::hash(&fs::read(options.legacy_baseline)?)
 			.to_hex()
 			.to_string(),

@@ -2,14 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
 
 use foch_core::config::FochConfig;
-use foch_core::model::{MergeReport, MergeReportStatus};
 use foch_engine::{
-	CheckRequest, Config, FileFilter, MergeEvaluationKernel, installed_base_snapshot_identity,
+	CheckRequest, Config, FileFilter, installed_base_snapshot_identity,
 	load_installed_base_snapshot, resolve_workspace_summary,
 };
 use foch_language::analyzer::content_family::{
@@ -17,8 +13,6 @@ use foch_language::analyzer::content_family::{
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use serde::{Deserialize, Serialize};
-
-use crate::score::run_merge_with_kernel;
 
 pub const SHADOW_COMPARE_SCHEMA: &str = "2.0.0";
 
@@ -128,25 +122,6 @@ pub struct ShadowCaptureRequest<'a> {
 pub struct VerifiedRetainedBaseSnapshot {
 	pub identity: String,
 	pub retained_paths: BTreeSet<String>,
-}
-
-pub struct ShadowRunRequest<'a> {
-	pub manifest: &'a ShadowInputManifest,
-	pub output_dir: &'a Path,
-	pub executable: &'a Path,
-	pub kernel: MergeEvaluationKernel,
-}
-
-pub struct ShadowCompareRequest<'a> {
-	pub playset: &'a Path,
-	pub output_dir: &'a Path,
-	pub game_root: &'a Path,
-	pub game_version: &'a str,
-	pub retained_paths: BTreeSet<String>,
-	pub expected_base_snapshot_identity: Option<&'a str>,
-	pub force: bool,
-	pub executable: &'a Path,
-	pub timeout: Duration,
 }
 
 #[derive(Debug, Deserialize)]
@@ -268,358 +243,6 @@ pub fn verified_retained_base_snapshot(
 	})
 }
 
-pub fn run_shadow_comparison(
-	request: ShadowCompareRequest<'_>,
-) -> Result<ShadowComparisonReport, Box<dyn std::error::Error>> {
-	if request.retained_paths.is_empty() {
-		return Err("shadow comparison requires at least one retained path".into());
-	}
-	if request.timeout.is_zero() {
-		return Err("shadow comparison timeout must be greater than zero".into());
-	}
-	let (legacy_dir, structured_dir) = prepare_shadow_compare_dir(request.output_dir)?;
-	let base_snapshot = verified_retained_base_snapshot(
-		request.game_version,
-		request.expected_base_snapshot_identity,
-		&request.retained_paths,
-	)?;
-	let manifest = capture_input_manifest(ShadowCaptureRequest {
-		playset: request.playset,
-		game_root: request.game_root,
-		game_version: request.game_version,
-		retained_paths: &request.retained_paths,
-		retained_base_paths: &base_snapshot.retained_paths,
-		base_snapshot_identity: &base_snapshot.identity,
-		force: request.force,
-		executable: request.executable,
-	})?;
-	let manifest_path = request.output_dir.join("shadow-inputs.json");
-	fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
-
-	eprintln!(
-		"[shadow] comparison={} kernel=legacy",
-		&manifest.comparison_id[..12]
-	);
-	let legacy = spawn_shadow_arm(ShadowChildRequest {
-		manifest: &manifest,
-		manifest_path: &manifest_path,
-		output_dir: &legacy_dir,
-		executable: request.executable,
-		kernel: MergeEvaluationKernel::AddressPatchReference,
-		timeout: request.timeout,
-	})?;
-	eprintln!(
-		"[shadow] comparison={} kernel=structured",
-		&manifest.comparison_id[..12]
-	);
-	let structured = spawn_shadow_arm(ShadowChildRequest {
-		manifest: &manifest,
-		manifest_path: &manifest_path,
-		output_dir: &structured_dir,
-		executable: request.executable,
-		kernel: MergeEvaluationKernel::SemanticTree,
-		timeout: request.timeout,
-	})?;
-	let report = build_comparison_report(manifest, legacy, structured)?;
-	fs::write(
-		request.output_dir.join("shadow-compare.json"),
-		serde_json::to_vec_pretty(&report)?,
-	)?;
-	Ok(report)
-}
-
-struct ShadowChildRequest<'a> {
-	manifest: &'a ShadowInputManifest,
-	manifest_path: &'a Path,
-	output_dir: &'a Path,
-	executable: &'a Path,
-	kernel: MergeEvaluationKernel,
-	timeout: Duration,
-}
-
-/// Run one merge kernel in an isolated child process using an already captured
-/// immutable input manifest.
-pub fn run_isolated_shadow_kernel(
-	manifest: &ShadowInputManifest,
-	manifest_path: &Path,
-	output_dir: &Path,
-	executable: &Path,
-	kernel: MergeEvaluationKernel,
-	timeout: Duration,
-) -> io::Result<ShadowRunRecord> {
-	spawn_shadow_arm(ShadowChildRequest {
-		manifest,
-		manifest_path,
-		output_dir,
-		executable,
-		kernel,
-		timeout,
-	})
-}
-
-fn spawn_shadow_arm(request: ShadowChildRequest<'_>) -> io::Result<ShadowRunRecord> {
-	reset_output_dir(request.output_dir)?;
-	let scratch = tempfile::Builder::new()
-		.prefix(".shadow-child-")
-		.tempdir_in(
-			request
-				.output_dir
-				.parent()
-				.ok_or_else(|| io::Error::other("shadow output has no parent"))?,
-		)?;
-	let stdout_path = scratch.path().join("stdout.json");
-	let stderr_path = scratch.path().join("stderr.log");
-	let stdout = fs::File::create(&stdout_path)?;
-	let stderr = fs::File::create(&stderr_path)?;
-	let started = Instant::now();
-	let mut command = Command::new(request.executable);
-	command
-		.arg("shadow-run-one")
-		.arg("--input-manifest")
-		.arg(request.manifest_path)
-		.arg("--out-dir")
-		.arg(request.output_dir)
-		.arg("--kernel")
-		.arg(request.kernel.as_str())
-		.stdout(Stdio::from(stdout))
-		.stderr(Stdio::from(stderr));
-	let mut child = match command.spawn() {
-		Ok(child) => child,
-		Err(error) => {
-			reset_output_dir(request.output_dir)?;
-			return Ok(terminal_error_record(
-				&request,
-				started,
-				"crashed",
-				None,
-				format!("failed to spawn shadow child: {error}"),
-			));
-		}
-	};
-
-	let status = loop {
-		if let Some(status) = child.try_wait()? {
-			break Some(status);
-		}
-		if started.elapsed() >= request.timeout {
-			let _ = child.kill();
-			let _ = child.wait();
-			break None;
-		}
-		thread::sleep(Duration::from_millis(25));
-	};
-	let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
-	let Some(status) = status else {
-		reset_output_dir(request.output_dir)?;
-		return Ok(terminal_error_record(
-			&request,
-			started,
-			"timed_out",
-			None,
-			format!("shadow arm exceeded {} seconds", request.timeout.as_secs()),
-		));
-	};
-	if !status.success() {
-		reset_output_dir(request.output_dir)?;
-		return Ok(terminal_error_record(
-			&request,
-			started,
-			"crashed",
-			status.code(),
-			format!(
-				"shadow child exited with status {:?}: {}",
-				status.code(),
-				stderr.trim()
-			),
-		));
-	}
-	let stdout = fs::read(&stdout_path)?;
-	match serde_json::from_slice::<ShadowRunRecord>(&stdout) {
-		Ok(record)
-			if record.schema == SHADOW_COMPARE_SCHEMA
-				&& record.comparison_id == request.manifest.comparison_id
-				&& record.kernel == request.kernel.as_str() =>
-		{
-			Ok(record)
-		}
-		Ok(_) => {
-			reset_output_dir(request.output_dir)?;
-			Ok(terminal_error_record(
-				&request,
-				started,
-				"error",
-				status.code(),
-				"shadow child returned a record for a different comparison".to_string(),
-			))
-		}
-		Err(error) => {
-			reset_output_dir(request.output_dir)?;
-			Ok(terminal_error_record(
-				&request,
-				started,
-				"error",
-				status.code(),
-				format!(
-					"invalid shadow child output: {error}; stderr: {}",
-					stderr.trim()
-				),
-			))
-		}
-	}
-}
-
-fn terminal_error_record(
-	request: &ShadowChildRequest<'_>,
-	started: Instant,
-	status: &str,
-	exit_code: Option<i32>,
-	message: String,
-) -> ShadowRunRecord {
-	ShadowRunRecord {
-		schema: SHADOW_COMPARE_SCHEMA.to_string(),
-		comparison_id: request.manifest.comparison_id.clone(),
-		kernel: request.kernel.as_str().to_string(),
-		output_dir: request.output_dir.to_path_buf(),
-		output_valid: false,
-		elapsed_ms: elapsed_ms(started),
-		status: status.to_string(),
-		exit_code,
-		manual_conflict_count: None,
-		handler_resolution_count: None,
-		generated_file_count: None,
-		fatal_reason: None,
-		error: Some(message.clone()),
-		diagnostics: vec![ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::Error,
-			path: None,
-			message,
-		}],
-	}
-}
-
-pub fn prepare_shadow_compare_dir(output_dir: &Path) -> io::Result<(PathBuf, PathBuf)> {
-	fs::create_dir_all(output_dir)?;
-	remove_file_if_exists(&output_dir.join("shadow-compare.json"))?;
-	remove_file_if_exists(&output_dir.join("shadow-inputs.json"))?;
-	let legacy_dir = output_dir.join("legacy");
-	let structured_dir = output_dir.join("structured");
-	reset_output_dir(&legacy_dir)?;
-	reset_output_dir(&structured_dir)?;
-	Ok((legacy_dir, structured_dir))
-}
-
-fn remove_file_if_exists(path: &Path) -> io::Result<()> {
-	match fs::remove_file(path) {
-		Ok(()) => Ok(()),
-		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(error),
-	}
-}
-
-pub fn run_shadow_arm(request: ShadowRunRequest<'_>) -> ShadowRunRecord {
-	let started = Instant::now();
-	if let Err(error) = reset_output_dir(request.output_dir) {
-		return error_record(
-			request.manifest,
-			request.output_dir,
-			request.kernel,
-			started,
-			format!("failed to clear shadow output: {error}"),
-		);
-	}
-	if let Err(error) = verify_manifest_inputs(request.manifest, request.executable) {
-		return error_record(
-			request.manifest,
-			request.output_dir,
-			request.kernel,
-			started,
-			error.to_string(),
-		);
-	}
-
-	let inputs = &request.manifest.inputs;
-	let retained_paths = inputs.retained_paths.iter().cloned().collect();
-	let result = run_merge_with_kernel(
-		&inputs.playset,
-		request.output_dir,
-		Some(&inputs.game_root),
-		inputs.force,
-		Some(retained_paths),
-		Some(&inputs.base_snapshot_identity),
-		request.kernel,
-	);
-	let mut record = match result {
-		Ok(result) => {
-			let output_valid = report_output_valid(result.report.status);
-			ShadowRunRecord {
-				schema: SHADOW_COMPARE_SCHEMA.to_string(),
-				comparison_id: request.manifest.comparison_id.clone(),
-				kernel: request.kernel.as_str().to_string(),
-				output_dir: request.output_dir.to_path_buf(),
-				output_valid,
-				elapsed_ms: elapsed_ms(started),
-				status: report_status_name(result.report.status).to_string(),
-				exit_code: Some(result.exit_code),
-				manual_conflict_count: Some(result.merge_status.manual_conflict_count),
-				handler_resolution_count: Some(result.merge_status.handler_resolution_count),
-				generated_file_count: Some(result.merge_status.generated_file_count),
-				fatal_reason: result.report.fatal_reason.clone(),
-				error: None,
-				diagnostics: report_diagnostics(&result.report),
-			}
-		}
-		Err(error) => error_record(
-			request.manifest,
-			request.output_dir,
-			request.kernel,
-			started,
-			error.to_string(),
-		),
-	};
-
-	if !record.output_valid
-		&& let Err(error) = reset_output_dir(request.output_dir)
-	{
-		record.diagnostics.push(ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::Error,
-			path: Some(request.output_dir.display().to_string()),
-			message: format!("failed to clear failed shadow output: {error}"),
-		});
-	}
-	if let Err(error) = verify_manifest_inputs(request.manifest, request.executable) {
-		let message = format!("shadow inputs changed while arm was running: {error}");
-		if let Err(cleanup_error) = reset_output_dir(request.output_dir) {
-			record.diagnostics.push(ShadowDiagnostic {
-				kind: ShadowDiagnosticKind::Error,
-				path: Some(request.output_dir.display().to_string()),
-				message: format!("failed to clear invalid shadow output: {cleanup_error}"),
-			});
-		}
-		record.output_valid = false;
-		record.status = "error".to_string();
-		record.exit_code = None;
-		record.error = Some(message.clone());
-		record.diagnostics.push(ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::Error,
-			path: None,
-			message,
-		});
-	}
-	record.elapsed_ms = elapsed_ms(started);
-	record
-}
-
-pub fn reset_output_dir(path: &Path) -> io::Result<()> {
-	match fs::symlink_metadata(path) {
-		Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-			fs::remove_dir_all(path)
-		}
-		Ok(_) => fs::remove_file(path),
-		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(error),
-	}
-}
-
 pub fn build_comparison_report(
 	manifest: ShadowInputManifest,
 	legacy: ShadowRunRecord,
@@ -693,59 +316,6 @@ pub fn output_content_hash(root: &Path) -> io::Result<Option<String>> {
 	Ok(Some(hasher.finalize().to_hex().to_string()))
 }
 
-pub fn corpus_resume_environment_matches(
-	inputs: &ShadowComparisonInputs,
-	game_root: &Path,
-) -> io::Result<bool> {
-	let game_root = fs::canonicalize(game_root)?;
-	let retained_base_paths = inputs
-		.base_files
-		.iter()
-		.map(|file| file.relative_path.clone())
-		.collect::<BTreeSet<_>>();
-	if file_identities(&game_root, &retained_base_paths)? != inputs.base_files {
-		return Ok(false);
-	}
-	let cwd = std::env::current_dir()?;
-	let config_probe = cwd.join(".foch-corpus-shadow-config-probe");
-	let (foch_config_hash, resolution_files) = effective_foch_config_inputs(&config_probe)?;
-	Ok(foch_config_hash == inputs.foch_config_hash && resolution_files == inputs.resolution_files)
-}
-
-fn verify_manifest_inputs(manifest: &ShadowInputManifest, executable: &Path) -> io::Result<()> {
-	validate_manifest(manifest)?;
-	let retained_paths = manifest.inputs.retained_paths.iter().cloned().collect();
-	let retained_base_paths = manifest
-		.inputs
-		.base_files
-		.iter()
-		.map(|file| file.relative_path.clone())
-		.collect();
-	let actual = capture_input_manifest(ShadowCaptureRequest {
-		playset: &manifest.inputs.playset,
-		game_root: &manifest.inputs.game_root,
-		game_version: &manifest.inputs.game_version,
-		retained_paths: &retained_paths,
-		retained_base_paths: &retained_base_paths,
-		base_snapshot_identity: &manifest.inputs.base_snapshot_identity,
-		force: manifest.inputs.force,
-		executable,
-	})?;
-	if actual.comparison_id == manifest.comparison_id {
-		return Ok(());
-	}
-	let changed = changed_input_fields(&manifest.inputs, &actual.inputs);
-	Err(io::Error::new(
-		io::ErrorKind::InvalidData,
-		format!(
-			"shadow input mismatch in {}: expected comparison {}, captured {}",
-			changed.join(", "),
-			manifest.comparison_id,
-			actual.comparison_id
-		),
-	))
-}
-
 /// Validate the self-contained schema and comparison identity without reopening
 /// the captured filesystem paths.
 pub fn validate_shadow_manifest_identity(manifest: &ShadowInputManifest) -> io::Result<()> {
@@ -778,52 +348,6 @@ fn comparison_id_for_inputs(inputs: &ShadowComparisonInputs) -> io::Result<Strin
 	hasher.update(b"foch-shadow-compare-v2\0");
 	hash_field(&mut hasher, &encoded);
 	Ok(hasher.finalize().to_hex().to_string())
-}
-
-fn changed_input_fields(
-	expected: &ShadowComparisonInputs,
-	actual: &ShadowComparisonInputs,
-) -> Vec<&'static str> {
-	let mut changed = Vec::new();
-	if expected.playset != actual.playset || expected.playset_hash != actual.playset_hash {
-		changed.push("playset");
-	}
-	if expected.launcher_descriptors != actual.launcher_descriptors {
-		changed.push("launcher_descriptors");
-	}
-	if expected.mods != actual.mods {
-		changed.push("mod_contents");
-	}
-	if expected.game_root != actual.game_root || expected.game_version != actual.game_version {
-		changed.push("game");
-	}
-	if expected.base_snapshot_identity != actual.base_snapshot_identity {
-		changed.push("base_snapshot_identity");
-	}
-	if expected.base_files != actual.base_files {
-		changed.push("base_game_files");
-	}
-	if expected.foch_config_hash != actual.foch_config_hash {
-		changed.push("foch_config");
-	}
-	if expected.resolution_files != actual.resolution_files {
-		changed.push("resolution_files");
-	}
-	if expected.executable != actual.executable
-		|| expected.executable_hash != actual.executable_hash
-	{
-		changed.push("executable");
-	}
-	if expected.retained_paths != actual.retained_paths {
-		changed.push("retained_paths");
-	}
-	if expected.force != actual.force {
-		changed.push("force");
-	}
-	if changed.is_empty() {
-		changed.push("unknown_fields");
-	}
-	changed
 }
 
 fn launcher_descriptor_identities(
@@ -1024,95 +548,6 @@ fn output_hashes(root: &Path) -> io::Result<BTreeMap<String, String>> {
 	Ok(hashes)
 }
 
-fn report_diagnostics(report: &MergeReport) -> Vec<ShadowDiagnostic> {
-	let mut diagnostics = Vec::new();
-	if let Some(reason) = report.fatal_reason.as_ref() {
-		diagnostics.push(ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::Fatal,
-			path: None,
-			message: reason.clone(),
-		});
-	}
-	diagnostics.extend(
-		report
-			.warnings
-			.iter()
-			.cloned()
-			.map(|message| ShadowDiagnostic {
-				kind: ShadowDiagnosticKind::Warning,
-				path: None,
-				message,
-			}),
-	);
-	diagnostics.extend(
-		report
-			.conflict_resolutions
-			.iter()
-			.map(|resolution| ShadowDiagnostic {
-				kind: ShadowDiagnosticKind::Conflict,
-				path: Some(resolution.path.clone()),
-				message: resolution.reason.clone(),
-			}),
-	);
-	diagnostics.extend(report.handler_resolutions.iter().map(|resolution| {
-		ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::HandlerResolution,
-			path: Some(resolution.path.clone()),
-			message: resolution
-				.rationale
-				.clone()
-				.unwrap_or_else(|| resolution.action.clone()),
-		}
-	}));
-	diagnostics
-}
-
-fn error_record(
-	manifest: &ShadowInputManifest,
-	output_dir: &Path,
-	kernel: MergeEvaluationKernel,
-	started: Instant,
-	message: String,
-) -> ShadowRunRecord {
-	ShadowRunRecord {
-		schema: SHADOW_COMPARE_SCHEMA.to_string(),
-		comparison_id: manifest.comparison_id.clone(),
-		kernel: kernel.as_str().to_string(),
-		output_dir: output_dir.to_path_buf(),
-		output_valid: false,
-		elapsed_ms: elapsed_ms(started),
-		status: "error".to_string(),
-		exit_code: None,
-		manual_conflict_count: None,
-		handler_resolution_count: None,
-		generated_file_count: None,
-		fatal_reason: None,
-		error: Some(message.clone()),
-		diagnostics: vec![ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::Error,
-			path: None,
-			message,
-		}],
-	}
-}
-
-fn report_status_name(status: MergeReportStatus) -> &'static str {
-	match status {
-		MergeReportStatus::Ready => "ready",
-		MergeReportStatus::PartialSuccess => "partial_success",
-		MergeReportStatus::Blocked => "blocked",
-		MergeReportStatus::Fatal => "fatal",
-	}
-}
-
-fn report_output_valid(status: MergeReportStatus) -> bool {
-	!matches!(status, MergeReportStatus::Fatal)
-}
-
-fn elapsed_ms(started: Instant) -> u64 {
-	u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
-
 fn hash_field(hasher: &mut blake3::Hasher, value: &[u8]) {
 	hasher.update(&(value.len() as u64).to_le_bytes());
 	hasher.update(value);
@@ -1121,9 +556,6 @@ fn hash_field(hasher: &mut blake3::Hasher, value: &[u8]) {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::model::MergeReportConflictResolution;
-	#[cfg(unix)]
-	use std::os::unix::fs::PermissionsExt;
 
 	struct InputFixture {
 		_temp: tempfile::TempDir,
@@ -1143,7 +575,7 @@ mod tests {
 		let mod_root = temp.path().join("mod-a");
 		let mod_file = mod_root.join("events/a.txt");
 		let base_file = game_root.join("events/a.txt");
-		let executable = temp.path().join("foch-mq");
+		let executable = temp.path().join("evaluator-artifact");
 		fs::create_dir_all(data_root.join("mod")).unwrap();
 		fs::create_dir_all(mod_file.parent().unwrap()).unwrap();
 		fs::create_dir_all(base_file.parent().unwrap()).unwrap();
@@ -1179,128 +611,6 @@ mod tests {
 			retained_paths: BTreeSet::from(["events/a.txt".to_string()]),
 			retained_base_paths: BTreeSet::from(["events/a.txt".to_string()]),
 		}
-	}
-
-	#[test]
-	fn shadow_preflight_clears_stale_arm_and_manifest_artifacts() {
-		let temp = tempfile::tempdir().unwrap();
-		let output_dir = temp.path().join("shadow");
-		for relative in [
-			"legacy/events/stale.txt",
-			"structured/events/stale.txt",
-			"shadow-compare.json",
-			"shadow-inputs.json",
-		] {
-			let path = output_dir.join(relative);
-			fs::create_dir_all(path.parent().unwrap()).unwrap();
-			fs::write(path, "stale").unwrap();
-		}
-
-		let (legacy, structured) = prepare_shadow_compare_dir(&output_dir).unwrap();
-
-		assert!(!legacy.exists());
-		assert!(!structured.exists());
-		assert!(!output_dir.join("shadow-compare.json").exists());
-		assert!(!output_dir.join("shadow-inputs.json").exists());
-	}
-
-	#[cfg(unix)]
-	#[test]
-	fn timed_out_child_is_terminal_and_clears_partial_output() {
-		let fixture = input_fixture();
-		fs::write(
-			&fixture.executable,
-			"#!/bin/sh\nout=''\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--out-dir) shift; out=\"$1\" ;;\nesac\nshift\ndone\nmkdir -p \"$out/events\"\nprintf partial > \"$out/events/partial.txt\"\nwhile :; do :; done\n",
-		)
-		.unwrap();
-		let mut permissions = fs::metadata(&fixture.executable).unwrap().permissions();
-		permissions.set_mode(0o755);
-		fs::set_permissions(&fixture.executable, permissions).unwrap();
-		let manifest = capture(&fixture, false, "base");
-		let manifest_path = fixture.game_root.join("shadow-inputs.json");
-		fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-		let output_dir = fixture.game_root.join("structured");
-		fs::create_dir_all(output_dir.join("events")).unwrap();
-		fs::write(output_dir.join("events/stale.txt"), "stale").unwrap();
-
-		let record = spawn_shadow_arm(ShadowChildRequest {
-			manifest: &manifest,
-			manifest_path: &manifest_path,
-			output_dir: &output_dir,
-			executable: &fixture.executable,
-			kernel: MergeEvaluationKernel::SemanticTree,
-			timeout: Duration::from_millis(500),
-		})
-		.unwrap();
-
-		assert_eq!(record.status, "timed_out");
-		assert!(!record.output_valid);
-		assert!(!output_dir.exists());
-	}
-
-	#[cfg(unix)]
-	#[test]
-	fn crashed_child_is_terminal_and_clears_partial_output() {
-		let fixture = input_fixture();
-		fs::write(
-			&fixture.executable,
-			"#!/bin/sh\nout=''\nwhile [ \"$#\" -gt 0 ]; do\ncase \"$1\" in\n--out-dir) shift; out=\"$1\" ;;\nesac\nshift\ndone\nmkdir -p \"$out/events\"\nprintf partial > \"$out/events/partial.txt\"\nexit 7\n",
-		)
-		.unwrap();
-		let mut permissions = fs::metadata(&fixture.executable).unwrap().permissions();
-		permissions.set_mode(0o755);
-		fs::set_permissions(&fixture.executable, permissions).unwrap();
-		let manifest = capture(&fixture, false, "base");
-		let manifest_path = fixture.game_root.join("shadow-inputs.json");
-		fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-		let output_dir = fixture.game_root.join("structured");
-
-		let record = spawn_shadow_arm(ShadowChildRequest {
-			manifest: &manifest,
-			manifest_path: &manifest_path,
-			output_dir: &output_dir,
-			executable: &fixture.executable,
-			kernel: MergeEvaluationKernel::SemanticTree,
-			timeout: Duration::from_secs(5),
-		})
-		.unwrap();
-
-		assert_eq!(record.status, "crashed");
-		assert_eq!(record.exit_code, Some(7));
-		assert!(!record.output_valid);
-		assert!(!output_dir.exists());
-	}
-
-	#[test]
-	fn child_spawn_failure_is_terminal_after_preflight_cleanup() {
-		let fixture = input_fixture();
-		let manifest = capture(&fixture, false, "base");
-		let manifest_path = fixture.game_root.join("shadow-inputs.json");
-		fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
-		fs::remove_file(&fixture.executable).unwrap();
-		let output_dir = fixture.game_root.join("structured");
-		fs::create_dir_all(output_dir.join("events")).unwrap();
-		fs::write(output_dir.join("events/stale.txt"), "stale").unwrap();
-
-		let record = spawn_shadow_arm(ShadowChildRequest {
-			manifest: &manifest,
-			manifest_path: &manifest_path,
-			output_dir: &output_dir,
-			executable: &fixture.executable,
-			kernel: MergeEvaluationKernel::SemanticTree,
-			timeout: Duration::from_secs(1),
-		})
-		.unwrap();
-
-		assert_eq!(record.status, "crashed");
-		assert!(!record.output_valid);
-		assert!(
-			record
-				.error
-				.as_deref()
-				.is_some_and(|error| error.contains("failed to spawn"))
-		);
-		assert!(!output_dir.exists());
 	}
 
 	fn capture(fixture: &InputFixture, force: bool, base: &str) -> ShadowInputManifest {
@@ -1380,17 +690,6 @@ mod tests {
 
 		fs::write(output.path().join("events/b.txt"), "two").unwrap();
 		assert_ne!(output_content_hash(output.path()).unwrap(), baseline);
-	}
-
-	#[test]
-	fn corpus_resume_environment_rejects_base_file_drift() {
-		let fixture = input_fixture();
-		let manifest = capture(&fixture, false, "base");
-		assert!(corpus_resume_environment_matches(&manifest.inputs, &fixture.game_root).unwrap());
-
-		fs::write(&fixture.base_file, "changed").unwrap();
-
-		assert!(!corpus_resume_environment_matches(&manifest.inputs, &fixture.game_root).unwrap());
 	}
 
 	#[test]
@@ -1510,34 +809,6 @@ mod tests {
 	}
 
 	#[test]
-	fn failed_arm_removes_preexisting_output_and_records_input_reason() {
-		let fixture = input_fixture();
-		let manifest = capture(&fixture, false, "sha256:base-v1");
-		let output = fixture.game_root.join("structured");
-		fs::create_dir_all(output.join("events")).unwrap();
-		fs::write(output.join("events/stale.txt"), "stale").unwrap();
-		let different_executable = fixture.game_root.join("different-foch-mq");
-		fs::write(&different_executable, "different-binary").unwrap();
-
-		let record = run_shadow_arm(ShadowRunRequest {
-			manifest: &manifest,
-			output_dir: &output,
-			executable: &different_executable,
-			kernel: MergeEvaluationKernel::SemanticTree,
-		});
-
-		assert_eq!(record.status, "error");
-		assert!(!record.output_valid);
-		assert!(!output.exists());
-		assert!(
-			record
-				.diagnostics
-				.iter()
-				.any(|diagnostic| diagnostic.message.contains("executable"))
-		);
-	}
-
-	#[test]
 	fn failed_arm_output_is_never_compared() {
 		let fixture = input_fixture();
 		let manifest = capture(&fixture, false, "sha256:base-v1");
@@ -1554,38 +825,5 @@ mod tests {
 
 		assert!(!report.outputs_compared);
 		assert!(report.file_deltas.is_empty());
-	}
-
-	#[test]
-	fn fatal_reports_are_not_valid_comparison_outputs() {
-		assert!(!report_output_valid(MergeReportStatus::Fatal));
-		assert!(report_output_valid(MergeReportStatus::Blocked));
-	}
-
-	#[test]
-	fn report_diagnostics_preserve_warning_and_conflict_reasons() {
-		let mut report = MergeReport::default();
-		report
-			.warnings
-			.push("structured merge unsupported: expected exactly two final sinks".to_string());
-		report
-			.conflict_resolutions
-			.push(MergeReportConflictResolution {
-				path: "events/a.txt".to_string(),
-				reason: "ordering conflict".to_string(),
-				..MergeReportConflictResolution::default()
-			});
-
-		let diagnostics = report_diagnostics(&report);
-
-		assert!(diagnostics.iter().any(|diagnostic| {
-			diagnostic.kind == ShadowDiagnosticKind::Warning
-				&& diagnostic.message.contains("unsupported")
-		}));
-		assert!(diagnostics.iter().any(|diagnostic| {
-			diagnostic.kind == ShadowDiagnosticKind::Conflict
-				&& diagnostic.path.as_deref() == Some("events/a.txt")
-				&& diagnostic.message == "ordering conflict"
-		}));
 	}
 }

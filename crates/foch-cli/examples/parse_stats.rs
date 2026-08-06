@@ -6,7 +6,9 @@ use walkdir::WalkDir;
 fn main() {
 	let mut args = std::env::args().skip(1);
 	let Some(root_arg) = args.next() else {
-		eprintln!("usage: cargo run --bin parse_stats -- <root> [--exts txt,gui,gfx]");
+		eprintln!(
+			"usage: cargo run -p foch-cli --example parse_stats --features dev-tools -- <root> [--exts txt,gui,gfx]"
+		);
 		std::process::exit(1);
 	};
 	let mut exts = vec!["txt".to_string()];

@@ -26,10 +26,13 @@ def main() -> None:
 		f'sha256 "{"a" * 64}"',
 		'version "1.2.3"',
 		'std_cargo_args(path: "crates/foch-cli")',
+		'"--bin", "foch"',
 	)
 	missing = [fragment for fragment in expected_fragments if fragment not in formula]
 	if missing:
 		raise SystemExit(f"rendered formula is missing: {missing}")
+	if '"--bins"' in formula:
+		raise SystemExit("rendered formula must install only the foch binary")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ use crate::cache::{
 
 // SemVer identity for cached merge output. Bump patch for output bug fixes,
 // minor for additive semantics, and major for incompatible cache payloads.
-const MODSET_CACHE_VERSION: &str = "14.0.1";
+const MODSET_CACHE_VERSION: &str = "14.1.0";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
@@ -24,8 +24,10 @@ use crate::workspace::{
 };
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionDecision, ResolutionMap};
 use foch_core::model::{
-	AnalysisMode, ChannelMode, Finding, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
-	MERGE_TRACE_ARTIFACT_PATH, MergeReport, MergeReportStatus, MergeReportValidation,
+	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
+	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
+	MergeExecutionAttestation, MergeReport, MergeReportBaseSnapshot, MergeReportKernel,
+	MergeReportScope, MergeReportStatus, MergeReportValidation,
 };
 use std::collections::BTreeSet;
 use std::fs;
@@ -143,6 +145,12 @@ fn run_merge_with_kernel_mode(
 		Ok(inventory) => BaseSnapshotPublishGuard::from_inventory(inventory)?,
 		Err(_) => None,
 	};
+	let execution_attestation = merge_execution_attestation(
+		merge_kernel,
+		options.retained_paths.is_some(),
+		options.include_game_base,
+		base_snapshot_publish_guard.as_ref(),
+	);
 	let resolution_map = load_resolution_map(&request, options.resolution_config_path.as_deref())?;
 	let has_interactive_conflict_handler = options.interactive_conflict_handler.is_some();
 	let depends_on_prior_output = resolution_map_depends_on_prior_output(&resolution_map);
@@ -197,6 +205,7 @@ fn run_merge_with_kernel_mode(
 				let mut report = cached.report;
 				report.cache_source = Some("modset".to_string());
 				report.playset_fingerprint = options.playset_fingerprint.clone();
+				report.execution = Some(execution_attestation.clone());
 				let execution = merge_execution_result(report);
 				return finalize_merge_output(transaction, execution, None, false, |_| {
 					validate_base_snapshot_publish_guard(base_snapshot_publish_guard.as_ref())
@@ -277,6 +286,7 @@ fn run_merge_with_kernel_mode(
 		workspace_result,
 	)?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();
+	report.execution = Some(execution_attestation);
 
 	if report.status == MergeReportStatus::Fatal {
 		let execution = merge_execution_result(report);
@@ -313,6 +323,38 @@ fn structural_backend(mode: MergeKernelMode) -> Box<dyn StructuralMergeBackend> 
 	match mode {
 		MergeKernelMode::Structured => Box::new(SemanticStructuralBackend),
 		MergeKernelMode::Legacy => Box::new(ReferenceStructuralBackend),
+	}
+}
+
+fn merge_execution_attestation(
+	kernel: MergeKernelMode,
+	retained_path_evaluation: bool,
+	include_game_base: bool,
+	base_snapshot: Option<&BaseSnapshotPublishGuard>,
+) -> MergeExecutionAttestation {
+	let kernel = match kernel {
+		MergeKernelMode::Legacy => MergeReportKernel::AddressPatchReference,
+		MergeKernelMode::Structured => MergeReportKernel::SemanticTree,
+	};
+	let scope = if retained_path_evaluation {
+		MergeReportScope::RetainedPathEvaluation
+	} else {
+		MergeReportScope::FullProductMerge
+	};
+	let base_snapshot = if !include_game_base {
+		MergeReportBaseSnapshot::Disabled
+	} else if let Some(base_snapshot) = base_snapshot {
+		MergeReportBaseSnapshot::Resolved {
+			identity: base_snapshot.identity.as_label(),
+		}
+	} else {
+		MergeReportBaseSnapshot::Unavailable
+	};
+	MergeExecutionAttestation {
+		schema: MERGE_EXECUTION_ATTESTATION_SCHEMA.to_string(),
+		kernel,
+		scope,
+		base_snapshot,
 	}
 }
 
@@ -936,6 +978,25 @@ mod tests {
 		let mut report = MergeReport::default();
 		update(&mut report);
 		report
+	}
+
+	#[test]
+	fn product_attestation_distinguishes_scope_kernel_and_disabled_base() {
+		let attestation =
+			merge_execution_attestation(MergeKernelMode::Structured, false, false, None);
+
+		assert_eq!(attestation.schema, MERGE_EXECUTION_ATTESTATION_SCHEMA);
+		assert_eq!(attestation.kernel, MergeReportKernel::SemanticTree);
+		assert_eq!(attestation.scope, MergeReportScope::FullProductMerge);
+		assert_eq!(attestation.base_snapshot, MergeReportBaseSnapshot::Disabled);
+
+		let evaluation = merge_execution_attestation(MergeKernelMode::Legacy, true, true, None);
+		assert_eq!(evaluation.kernel, MergeReportKernel::AddressPatchReference);
+		assert_eq!(evaluation.scope, MergeReportScope::RetainedPathEvaluation);
+		assert_eq!(
+			evaluation.base_snapshot,
+			MergeReportBaseSnapshot::Unavailable
+		);
 	}
 
 	#[test]

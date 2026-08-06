@@ -51,6 +51,9 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt --all --check
 
+      - name: Verify Cargo binary surface
+        run: python3 scripts/check_cargo_binary_targets.py
+
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 

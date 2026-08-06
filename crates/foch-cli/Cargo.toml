@@ -27,7 +27,9 @@ tracing-subscriber.workspace = true
 walkdir.workspace = true
 
 [dev-dependencies]
+dirs.workspace = true
 foch-core = { path = "../../crates/foch-core", features = ["test-utils"] }
+foch-merge-quality = { path = "../../crates/foch-merge-quality" }
 tempfile.workspace = true
 tiny_http.workspace = true
 toml.workspace = true
@@ -35,24 +37,23 @@ toml.workspace = true
 [features]
 # Opt-in build flag for parser/semantic-index dev tools.
 # `cargo install --path crates/foch-cli` (the default user path) installs only
-# `foch`; pass `--features dev-tools` to also build `parse_stats` and
-# `symbol_dump`, which are debugging utilities for the parser and
+# `foch`; pass `--features dev-tools` to build the `parse_stats` and
+# `symbol_dump` examples, which are debugging utilities for parser and
 # semantic-index maintainers (raw-directory inputs, ad-hoc arg parsing, no
-# playset/config plumbing). Keeping them off by default avoids polluting
-# the user-facing `~/.cargo/bin/` namespace.
+# playset/config plumbing). Examples cannot pollute the user-facing
+# `~/.cargo/bin/` namespace.
 dev-tools = []
 
 [[bin]]
 name = "foch"
 path = "src/main.rs"
 
-[[bin]]
+[[example]]
 name = "parse_stats"
-path = "src/bin/parse_stats.rs"
+path = "examples/parse_stats.rs"
 required-features = ["dev-tools"]
 
-[[bin]]
+[[example]]
 name = "symbol_dump"
-path = "src/bin/symbol_dump.rs"
+path = "examples/symbol_dump.rs"
 required-features = ["dev-tools"]
-

@@ -1,6 +1,6 @@
 # Project Status
 
-Last updated: 2026-08-02
+Last updated: 2026-08-06
 
 ## Summary
 
@@ -30,6 +30,55 @@ gate has been run, so published merge-quality counts below are unchanged. A
 single-file cold/warm mod-snapshot regression now finishes in 6.51 seconds
 without touching the user parser cache; most of that remaining cold cost is CWT
 runtime initialization and remains a performance target.
+
+## 2026-08-06 merge-quality package integration checkpoint
+
+The standalone merge-quality binary surface has been removed. Normal,
+default-feature, and release builds expose only the public `foch` product
+binary; merge-quality collection, scoring, reporting, export, probes, and
+evidence packaging remain library responsibilities exercised by repository-owned
+tests.
+
+Product measurement now crosses an injected `MeasurementRunner` boundary. The
+runner launches the exact public `foch merge` artifact, while the library owns
+dataset verification, terminal outcome persistence, resume, output archival,
+pure scoring of the parsed `MergeReport`, and exact cohort reporting. V2
+identity binds the `foch` artifact digest, runner protocol, scorer `2.0.0`,
+`semantic_tree`, `full_product_merge`, the installed base snapshot, Steam build,
+exact timeout, and a pinned product-base digest. The installed inventory plus
+version metadata is copied into a private fixed view; the product and scorer see
+only that same view, and its exact file set and bytes are reverified after every
+case. The product writes kernel, scope, and base identity into `MergeReport`;
+the runner rejects mismatched attestation.
+A parseable non-Fatal report remains scoreable even if the process exits
+nonzero; crashes, timeouts, explicit execution failures, and Fatal reports
+remain distinct terminal records.
+
+Lifecycle validation now recomputes snapshot identities, verifies selected input
+CAS objects even on cache hits, binds V2 file-result IDs to their complete
+payload, and resumes the file-result-before-terminal crash window only through
+deterministic replay. Review packs pin the exact scorer `1.3.0` Legacy cohort,
+store only portable Structured attestations, reject conflicts and handler
+resolutions fail-closed, and require every Structured output in pack-local CAS.
+
+The two existing 23-case V1 cohorts are unchanged. Their scorer `1.0.0` and
+`1.3.0` records both describe the historical
+`legacy_address_patch_reference` evaluator and cannot seed a V2 cache hit.
+
+Operator workflows now use the fixed scripts under `scripts/merge-quality/`:
+`acceptance.fish`, `fixture-acceptance.fish`, `review-pack.fish`,
+`refresh-corpus.fish`, `export.fish`, `refresh-fixtures.fish`,
+`symbol-evidence.fish`, `common-module.fish`, `structured-rollout.fish`, and
+`acquire.fish`. Each selects one exact ignored test. The old live dual-kernel
+shadow workflow is retained only as frozen rollout evidence.
+
+This is an implementation checkpoint, not a corpus acceptance result. Formatting,
+locked workspace tests, strict all-target/all-feature Clippy, the hermetic public
+CLI-to-scorer seam, default/Steam maintenance compilation, Cargo target
+metadata, Homebrew rendering, Fish syntax, Actionlint, Python lint/type checks,
+grammar tests, and VS Code smoke all pass. The long-running fixed 23-case V2
+product cohort has not completed, so no product quality counts are published
+from V2 yet.
 
 ## LSP-first 0.1 preview
 
@@ -76,16 +125,20 @@ Current EU4 active-playset merge baseline:
 - [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) ships narrow per-path defaults that clear all 9 manual conflicts without enabling global last-writer behavior.
 - Warm cache-backed iterations are seconds; cold debug runs remain around 25-30 minutes, while release+cache has been observed around 40 seconds for this baseline.
 
-The merge-quality harness now has a separate immutable baseline
-lifecycle. `foch-mq collect` archives complete local cases into a verified APFS
-copy-on-write object store; `measure` runs latest snapshots in timeout-bounded
-child processes and records crashes/fatals instead of skipping them; `report`
-emits reference-output and multi-source metrics; and `export` produces metadata,
-semantic, or full deterministic exports. Broad Workshop candidates remain in
-the full collection, while a separately versioned oracle policy selects the
-provisional scoring cohort. Scoring uses every exact-path contributor, adds
-cross-filename attribution for static `AssignmentKey` modules, and subtracts
-structured base-game atoms during human-resolution analysis.
+The merge-quality dataset has a separate immutable baseline lifecycle. The
+standalone runner is retired; package-owned tests now inject the public product
+runner while the library verifies the APFS copy-on-write object store, records
+terminal outcomes, resumes by stable identity, scores existing outputs, and
+produces deterministic exports. Broad Workshop candidates remain in the full
+collection, while a separately versioned oracle policy selects the provisional
+scoring cohort.
+
+Important identity correction: both existing 23-case measurement cohorts use
+the evaluation-only `AddressPatchReference` kernel selected by the historical
+scorer. They are Legacy evidence, not measurements of the `semantic_tree`
+kernel used by the public `foch merge` path. Their JSONL records,
+file-result foreign keys, and CAS objects remain immutable; the first product
+baseline must be a fresh measurement cohort bound to the actual `foch` binary.
 
 The first canonical full-local baseline completed on 2026-07-13 with scorer
 `1.0.0` against source
@@ -100,17 +153,16 @@ and 28/269 over multi-source files. That view is dominated by 30,293
 `not_emitted` files and includes broad-search false positives, so it is retained
 for audit rather than used as the current merge-success denominator.
 
-Scorer `1.3.0` prevents old measurements from being relabeled after scoring
-semantics change. Its committed network-free fixture contains six `proposed`
-cases and 36 multi-source units. An explicit refresh against the six pinned
-Legacy output-CAS objects records 10 `accepted_equivalent` and 26
-`diverges_ast`; no unit is `not_emitted` or conflict-withheld. The accepted
-rate is therefore 10/36 (27.8%). Relative to scorer `1.2.0`, module-aware
-runtime scoring promotes `common/rebel_types` and four
-`common/scripted_triggers` units, while correcting false-positive
-`PragmaticSanction` and `common/religions` results. A fresh full 23-candidate
-measurement is still required before quoting a scorer `1.3.0` full-local
-baseline. See
+The historical scorer `1.3.0` Legacy cohort completed on 2026-08-06. It is
+pinned to executable hash
+`0507a19de246a59bd2f718ad2941fd4d0c9ec07d469ab911a1e6b04bb11ba519`
+and configuration hash
+`8beffefe06b044798b769b805fb556dd93769ebdbf367df3d6468ef6834d5665`.
+All 23 broad candidates reached `completed`. The all-candidate view accepted
+83/29,481 reference-output files and 25/217 multi-source files; the six-case
+scorable view accepted 11/39 reference-output files and 11/36 multi-source
+files. These figures describe `legacy_address_patch_reference` only. They must
+not be quoted as TreeMerge or product quality. See
 [`merge-quality-dataset.md`](./merge-quality-dataset.md).
 
 All 15 `.gui` units still diverge under the order-sensitive GUI policy.
@@ -134,23 +186,18 @@ matrix is 7 equivalent, 1 manual-resolution, 4 semantic-mismatch, and 0 failed,
 but it remains a projection until review-pack regeneration binds the result to
 its inputs.
 
-The review-pack infrastructure now fixes the six snapshots, all 36 Legacy
-units, the 13 Structured rollout units, and each archived Legacy
-measurement/output CAS. A build performs zero Legacy merges, rescoring the
-pinned outputs with the current scorer, and runs at most one grouped Structured
-merge per case. It emits 49 input-bound evidence records and provisional
-annotations; verify/show never execute a merge. The real review pack has not
-yet been generated, so this implementation checkpoint does not change the
-published quality counts. See
+The review-pack infrastructure fixes the six snapshots, all 36 Legacy units,
+the 13 historical Structured rollout units, and each archived Legacy
+measurement/output CAS. Its library builder now requires an injected runner and
+has no default child process. The repository-owned ignored acceptance test and
+Fish wrapper now own build plus verification, but the real review pack has not
+been generated; this checkpoint therefore changes no published quality counts. See
 [`merge-quality-review-pack.md`](./merge-quality-review-pack.md).
 
-The advisory Wiki pipeline can now freeze the 71 mainspace pages linked by the
-current EU4 `Template:Modding navbox`, including exact revisions, raw wikitext,
-rendered HTML, contributors, attribution, and game-version binding. Archives
-are deterministic, size-bounded, offline-verifiable, and searchable through a
-bounded Clausewitz-aware BM25 index. The network snapshot has not been fetched
-in this checkpoint because the rate-limited acquisition is a manual
-long-running step. See [`wiki-knowledge-pack.md`](./wiki-knowledge-pack.md).
+The unused advisory Wiki acquisition/search subsystem has been removed from
+foch. It had no fetched canonical pack and no product, scorer, or review
+consumer; any future Wiki research requires a separately owned package rather
+than another merge-quality command surface.
 
 The original focused governments process took 258,342 ms end to end, although
 the unit analysis itself took only 177 ms. A live stack sample found the
@@ -171,41 +218,21 @@ reduced the semantic difference to 7 human-only and 2 foch-only atoms with
 branches inside matched events/options, so event control-flow identity is the
 next event-specific merge-quality target.
 
-An experimental structured-merge vertical slice now exists behind an engine
-API used by the merge-quality probes. A parser-independent kernel provides
-verified tree matching, base-composed left/right correspondence, PCS ordering,
-provenance, and typed conflicts. The Clausewitz adapter is format-generic, while
-the production final-join integration supports ordinary event files and
-explicitly enabled, merge-ready assignment-key definition modules. Both require
-a non-empty vanilla base and exactly two final DAG sinks. Legacy and Structured
-shadow arms run in isolated child processes and cache
-namespaces, and unsupported shapes fail explicitly before any winner-copy
-fallback. Shadow manifests bind executable, mod, retained vanilla, and base
-snapshot contents together with the effective `foch.toml` and external
-resolution files; failed, drifted, or non-kernel arms are never compared.
-Delete-versus-move/reparent/reorder is conflict-visible rather than silently
-deleted. Assignment and item wrappers now declare one required value child;
-required-slot matching and merge preserve that cardinality, and the adapter
-consumes the existing event edit-wins and scalar LastWriter policies. Semantic
-anchors can be global or parent-scoped, event control-flow chains carry guard
-and effect roles, policy-preserved descendants can restore transparent wrapper
-paths, and negative Boolean blocks can select one revision's complete child
-set without leaving unreachable classes. Structured remains explicit opt-in,
-and conflicts block publication without a winner-copy fallback. The fixed
-Legacy scorer baseline is still 7/36 overall and 7/21 when only `.gui` layout
-files are excluded; the current 13-candidate rollout projects both counts to 12
-with no accepted unit lost. See
+The former structured-merge shadow slice is now frozen rollout history. Its
+parser-independent kernel established verified matching, base-composed
+correspondence, PCS ordering, provenance, and conflict-visible
+delete/move/reparent/reorder behavior before the public product runner adopted
+`semantic_tree`. The historical 13-candidate projection moved its Legacy view
+from 7/36 to 12/36 and from 7/21 to 12/21 outside `.gui`, but those counts cover
+only a selected rollout against a Legacy address-patch denominator. They are
+not current product quality. See
 [`structured-merge-shadow.md`](./structured-merge-shadow.md).
 
-The probe now has a corpus-native execution layer. `foch-mq shadow-case`
-restores one immutable snapshot unit from the content-addressed object store;
-`shadow-corpus` deterministically derives all scorable multi-source units,
-validates a fixed per-file Legacy result against committed scorer expectations,
-and runs paired comparisons only for explicit candidates. Unselected units are
-reported as `legacy_retained`; the engine does not silently fall back after
-Structured is selected. Child crashes and timeouts remain explicit paired
-outcomes. Report schema `2.0.0` makes candidate execution, retained Legacy rows,
-projection counts, safety, and timings separately auditable.
+The retired corpus-shadow harness restored immutable snapshot units, derived a
+fixed multi-source denominator, and compared selected candidates while retaining
+Legacy evidence for projection. Its report schema `2.0.0` kept execution,
+retained rows, safety, and timings separately auditable. That machinery is no
+longer an operator workflow; tracked records are frozen historical evidence.
 
 The 2026-07-21 complete 36-unit projection evaluated only GE-EE
 `events/Elections.txt` and retained Legacy for the other 35 units. Elections is
@@ -215,15 +242,15 @@ control-flow paths, and matches the human control-flow multiset. Structured
 took 54,270 ms versus Legacy's 51,229 ms (1.059x). The projection is 7 -> 8
 accepted overall and 7 -> 8 across the 21 non-GUI units, with no Legacy accepted
 unit lost and no terminal candidate failure. This validates Elections only;
-Structured remains globally disabled for the broader event family.
+at that checkpoint, Structured remained disabled for the broader event family.
 
 That result is historical rather than a current release claim. In the
 2026-07-22 generalized 13-candidate run, Elections failed the control-flow shape
 safety check with 74 candidate-only and 31 human-only atoms. It is excluded from
-the current projection until the generalized control-flow path restores the
+that projection until the generalized control-flow path restores the
 earlier event result.
 
-A focused 2026-07-23 Elections rerun has now restored the generalized
+A focused 2026-07-23 Elections rerun restored the generalized
 control-flow safety gate without restoring exact AST equality. Structured is
 parse-valid and conflict-free, has no diagnostics, duplicate event/option IDs,
 or orphan control flow, and its canonical control-flow shape matches the human
@@ -232,11 +259,11 @@ candidate-only and 31 human-only atoms, so the focused outcome is
 `needs_review`, not accepted. Structured took 8,145 ms versus Legacy's
 10,082 ms. This focused result does not change the 36-unit projection.
 
-The 2026-07-22 `foch-mq common-probe` run completed the first Common
-Applicability Gate over all 12 fixed `common/**` corpus units. The probe uses
+The historical 2026-07-22 Common applicability run completed the first gate
+over all 12 fixed `common/**` corpus units. The probe uses
 the provisional `common/<folder>` module boundary, applies each classified
-`ContentFamily` policy to the same Structured definition-module API now used by
-the production final join, and never publishes a generated mod. All 12 units
+`ContentFamily` policy to the same definition-module API later used by the
+public `semantic_tree` join, and never publishes a generated mod. All 12 units
 reached a classified result with no unsupported, parse, configuration, or
 adapter failure; the previously accepted religions unit remained accepted.
 Six units are order-insensitive AST equivalent, two require manual resolution,
@@ -252,15 +279,23 @@ A focused 2026-07-23 rerun of case `3635635014` now classifies
 The candidate and human module share all 28,066 semantic atoms with zero
 one-sided atoms and no conflicts. This establishes the focused 6/12 -> 7/12
 Common delta only; the 12-unit Common gate and 36-unit shadow projection have
-not been rerun, so the published 12/36 and 12/21 projections below remain the
-current full-corpus numbers.
+not been rerun. The 12/36 and 12/21 figures below therefore remained the last
+historical shadow projection at that checkpoint; they are not a current product
+baseline.
 
-The corresponding production shadow run evaluated those 12 common units plus
-Elections while retaining Legacy for the other 23 scorer units. Outcomes were
-5 improved, 0 regressed, 1 unchanged accepted, 4 review, 2 structured conflict,
-and 1 safety failure. Strict and adjudicated acceptance project from 7/36 to
-12/36, and non-GUI acceptance from 7/21 to 12/21, with zero Legacy-accepted
-units lost. Aggregate candidate runtime was 0.960x Legacy.
+The corresponding historical shadow projection evaluated those 12 common
+units plus Elections while retaining Legacy for the other 23 scorer units.
+Outcomes were 5 improved, 0 regressed, 1 unchanged accepted, 4 review, 2
+structured conflict, and 1 safety failure. Strict and adjudicated acceptance
+projected from 7/36 to 12/36, and non-GUI acceptance from 7/21 to 12/21, with
+zero Legacy-accepted units lost. Aggregate candidate runtime was 0.960x
+Legacy. This is frozen rollout evidence, not a live dual-kernel promotion gate.
+
+Current Common-module reruns use
+`scripts/merge-quality/common-module.fish`, which selects the exact ignored
+`common_module_acceptance` test and asserts the fixed 12-unit cohort. The probe
+accepts `evaluator_artifact_blake3` from its caller; the merge-quality library
+does not select or launch a hidden evaluator executable.
 
 The shipped product surface includes:
 
@@ -575,7 +610,10 @@ Verified locally during ACT-165 representative-family validation:
 - Event safety compares raw structure first, then canonicalizes only the smallest control-flow owners whose shapes differ. This accepts equivalent guard normalization without paying to normalize the whole event file.
 - Focused validation passed: all 59 `foch-merge-kernel` tests, all 60 Structured-module tests, three event-safety regressions, and formatting.
 - The Elections-only real probe is parse-valid, conflict-free, and `control_flow_matches_human = true`; it moves from `safety_failed` to `needs_review`. It shares 1,186/1,217 human atoms, with 21 candidate-only and 31 human-only atoms. Structured took 8,145 ms versus Legacy's 10,082 ms.
-- Evidence: `/private/tmp/foch-elections-selective-safety/shadow-case.json`. No Common or full-corpus run was performed, so published projection counts remain unchanged.
+- Historical evidence:
+  `/private/tmp/foch-elections-selective-safety/shadow-case.json`. Neither Common
+  nor the full corpus was rerun at that checkpoint, so the frozen projection
+  counts were unchanged.
 - Next slice: localize the remaining 21/31 atom delta by event and option, separating canonical-equivalent guard rewrites from genuine content choices before adding another merge rule.
 
 ## Practical Reading Order

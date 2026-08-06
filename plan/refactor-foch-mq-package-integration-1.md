@@ -4,13 +4,13 @@ version: 1.0
 date_created: 2026-08-06
 last_updated: 2026-08-06
 owner: foch
-status: In Progress
+status: Product Acceptance Pending
 tags: [architecture, refactor, testing, merge-quality, cli, dataset]
 ---
 
 # Introduction
 
-![Status: In Progress](https://img.shields.io/badge/status-In%20Progress-yellow)
+![Status: Product Acceptance Pending](https://img.shields.io/badge/status-product%20acceptance%20pending-yellow)
 
 Delete the standalone `foch-mq` Cargo binary instead of renaming or embedding it as a `foch mq` product command. Keep `crates/foch-merge-quality` as a private, library-only package that owns deterministic scoring, immutable dataset records, reports, and evidence verification. Put product-quality assertions in integration tests that execute the real `foch` binary. Put state-changing corpus maintenance behind fixed Fish scripts that invoke explicitly named ignored tests; do not recreate a general-purpose hidden CLI inside libtest.
 
@@ -114,9 +114,9 @@ The existing 27 leaf commands are not migrated one-for-one.
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
 | TASK-001 | Record the exact current `git status`, the BLAKE3 and line/object counts for tracked dataset streams, and the two complete V1 cohort triples. Confirm no measurement process is running. Do not edit or reorder JSONL. | ✅ | 2026-08-06 |
-| TASK-002 | Add a focused regression in `crates/foch-merge-quality/tests/scoring.rs` proving that the historical `score::run_merge` path selects `AddressPatchReference`, while `foch_engine::run_merge_with_options` selects Structured. Rename historical helpers to include `legacy_reference` and delete ambiguous names rather than adding aliases. | | |
-| TASK-003 | Add `crates/foch-merge-quality/dataset/measurement-cohorts.json` with exact entries for the known scorer `1.0.0` and `1.3.0` V1 triples. Each entry must state `identity_kind = orchestrator_bound_v1` and `merge_kernel = legacy_address_patch_reference`. | | |
-| TASK-004 | Correct `docs/project-status.md`, `docs/merge-quality-dataset.md`, and the Notion project page so scorer `1.0.0`/`1.3.0` are historical Legacy baselines. Remove every current claim that the completed `1.3.0` 23-case measurement is a TreeMerge product baseline. | | |
+| TASK-002 | Freeze the historical execution contract as Legacy evidence, then delete the merge-quality package's live evaluator and ambiguous scoring test surface. Product regressions prove the public command reports Structured attestation. | ✅ | 2026-08-06 |
+| TASK-003 | Add `crates/foch-merge-quality/dataset/measurement-cohorts.json` with exact entries for the known scorer `1.0.0` and `1.3.0` V1 triples. Each entry must state `identity_kind = orchestrator_bound_v1` and `merge_kernel = legacy_address_patch_reference`. | ✅ | 2026-08-06 |
+| TASK-004 | Correct `docs/project-status.md`, `docs/merge-quality-dataset.md`, and the Notion project page so scorer `1.0.0`/`1.3.0` are historical Legacy baselines. Remove every current claim that the completed `1.3.0` 23-case measurement is a TreeMerge product baseline. | ✅ | 2026-08-06 |
 
 Completion criteria:
 
@@ -128,8 +128,8 @@ Execution checkpoint after separating the pre-existing work into commits `caaa3c
 
 - No `foch-mq`, `foch merge`, or corpus-measurement process was running.
 - `measurements.jsonl`: BLAKE3 `bf7d4fd1b01389bd67f8cf430fc7441c3991bbb309f6e4f1c094861c4bdec255`; 46 JSON records (47 physical lines because the file begins with a blank line).
-- `file_results.jsonl`: BLAKE3 `1bae838fabbf0989843c0c6ac5b159a05a622415522ecb1b9140044e3743f811`; 60,221 physical lines.
-- `object_records.jsonl`: BLAKE3 `6db356013a6d8f873bb83ce3bbae0d600ef9c9dd47e634ffee7d9eb68c46590e`; 121 physical lines.
+- `file_results.jsonl`: BLAKE3 `1bae838fabbf0989843c0c6ac5b159a05a622415522ecb1b9140044e3743f811`; 60,220 JSON records (60,221 physical lines).
+- `object_records.jsonl`: BLAKE3 `6db356013a6d8f873bb83ce3bbae0d600ef9c9dd47e634ffee7d9eb68c46590e`; 120 JSON records (121 physical lines).
 - V1 cohort A: scorer `1.0.0`, executable `16fcde0535ad3c759492f1aa76ad6164d466cb6fea8125a65f36c3bebb06ea91`, config `e2580bc8c745bf7aca520ce909f093028455a9745d5fae6f92b94424d2986393`, 23/23 completed snapshots.
 - V1 cohort B: scorer `1.3.0`, executable `0507a19de246a59bd2f718ad2941fd4d0c9ec07d469ab911a1e6b04bb11ba519`, config `8beffefe06b044798b769b805fb556dd93769ebdbf367df3d6468ef6834d5665`, 23/23 completed snapshots.
 - Integrity audit: 46 unique measurement IDs, zero dangling file-result measurement references, and zero missing merged-output content hashes.
@@ -141,11 +141,11 @@ Execution checkpoint after separating the pre-existing work into commits `caaa3c
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-005 | In `crates/foch-merge-quality/src/dataset.rs`, replace the single measurement wire struct with an internally tagged `MeasurementRecord` enum containing byte-compatible schema `1.0.0` V1 fields and schema `2.0.0` V2 fields. Keep object, snapshot, observation, file-result, annotation, manifest, and CAS schemas unchanged. | | |
-| TASK-006 | Define V2 identity as `snapshot_id + engine_artifact(kind, algorithm, digest) + worker_protocol_version + scorer_version + scorer_config_hash`, using the `measurement-v2` stable-ID namespace. Exclude runner/test binary hash, runner path, output path, timestamps, and report renderer implementation. | | |
-| TASK-007 | Replace the global-current-scorer filter in `lifecycle::report` with `MeasurementCohortKey` and stable `cohort_id` grouping. Add exact cohort selection; return an ambiguity error listing cohort IDs when a partial selector matches more than one cohort. | | |
-| TASK-008 | Bump report output schema to `2.0.0`. Render identity kind, artifact digest, runner protocol, scorer version, config hash, and merge kernel in JSON and Markdown. Resolve V1 kernel labels only through `measurement-cohorts.json`; reject unknown V1 triples rather than guessing. | | |
-| TASK-009 | Update `review_pack.rs`, `corpus_shadow.rs`, and file-result joins to use version-independent measurement getters. Preserve every pinned V1 measurement/output binding and bump only shadow/corpus-shadow artifact schemas whose payload shape changes. | | |
+| TASK-005 | In `crates/foch-merge-quality/src/dataset.rs`, replace the single measurement wire struct with an internally tagged `MeasurementRecord` enum containing byte-compatible schema `1.0.0` V1 fields and schema `2.0.0` V2 fields. Keep object, snapshot, observation, file-result, annotation, manifest, and CAS schemas unchanged. | ✅ | 2026-08-06 |
+| TASK-006 | Define V2 identity as `snapshot_id + engine_artifact(kind, algorithm, digest) + worker_protocol_version + scorer_version + scorer_config_hash`, using the `measurement-v2` stable-ID namespace. Exclude runner/test binary hash, runner path, output path, timestamps, and report renderer implementation. | ✅ | 2026-08-06 |
+| TASK-007 | Replace the global-current-scorer filter in `lifecycle::report` with `MeasurementCohortKey` and stable `cohort_id` grouping. Add exact cohort selection; return an ambiguity error listing cohort IDs when a partial selector matches more than one cohort. | ✅ | 2026-08-06 |
+| TASK-008 | Bump report output schema to `2.0.0`. Render identity kind, artifact digest, runner protocol, scorer version, config hash, and merge kernel in JSON and Markdown. Resolve V1 kernel labels only through `measurement-cohorts.json`; reject unknown V1 triples rather than guessing. | ✅ | 2026-08-06 |
+| TASK-009 | Update review-pack and file-result joins to use version-independent measurement getters, preserve every pinned V1 binding, and delete the now-unconsumed corpus-shadow implementation while retaining its immutable data stream. | ✅ | 2026-08-06 |
 
 Completion criteria:
 
@@ -160,11 +160,11 @@ Completion criteria:
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-010 | Extract `score_existing_output_with_cache` in `crates/foch-merge-quality/src/score.rs`. Its request contains the case, ordered source roots, compatch root, optional base-game root, generated output root, and parsed `MergeReport`; it returns ordered file records, resolution evidence, verdict counts, and scoring timing. | | |
-| TASK-011 | Remove merge execution, the 512 MiB merge thread, `MergeEvaluationKernel`, playset construction, and `run_merge_for_evaluation` imports from the pure scorer. Keep Legacy execution only in an explicitly named test/reference module while pinned reference evidence remains required. | | |
-| TASK-012 | Define `MeasurementRunner` and typed `MeasurementRequest` / `TerminalMerge` contracts in `lifecycle.rs`. Refactor `measure` into `measure_with_runner`, leaving dataset verification, resume, persistence, output archival, and reporting independent of process implementation. | | |
-| TASK-013 | Delete `WorkerOutput`, `measure_one`, `run_measurement_child`, `measurement_child_command`, `score_one`, and all `std::env::current_exe()` self-spawn behavior from lifecycle/orchestration. Replace lifecycle tests with fake-runner completed/crashed/timed-out/fatal/resume cases. | | |
-| TASK-014 | Refactor `review_pack.rs` to require an injected runner. Keep `StructuredKernelRunner` and `build_review_pack_with_runner`; delete `IsolatedStructuredKernelRunner` and the default build path that invokes `shadow-run-one`. | | |
+| TASK-010 | Extract `score_existing_output_with_cache` in `crates/foch-merge-quality/src/score.rs`. Its request contains the case, ordered source roots, compatch root, optional base-game root, generated output root, and parsed `MergeReport`; it returns ordered file records, resolution evidence, verdict counts, and scoring timing. | ✅ | 2026-08-06 |
+| TASK-011 | Remove merge execution, the 512 MiB merge thread, `MergeEvaluationKernel`, playset construction, and `run_merge_for_evaluation` imports from the pure scorer. Keep Legacy execution only in an explicitly named test/reference module while pinned reference evidence remains required. | ✅ | 2026-08-06 |
+| TASK-012 | Define `MeasurementRunner` and typed `MeasurementRequest` / `TerminalMerge` contracts in `lifecycle.rs`. Refactor `measure` into `measure_with_runner`, leaving dataset verification, resume, persistence, output archival, and reporting independent of process implementation. | ✅ | 2026-08-06 |
+| TASK-013 | Delete `WorkerOutput`, `measure_one`, `run_measurement_child`, `measurement_child_command`, `score_one`, and all `std::env::current_exe()` self-spawn behavior from lifecycle/orchestration. Replace lifecycle tests with fake-runner completed/crashed/timed-out/fatal/resume cases. | ✅ | 2026-08-06 |
+| TASK-014 | Refactor `review_pack.rs` to require an injected runner. Keep `StructuredKernelRunner` and `build_review_pack_with_runner`; delete `IsolatedStructuredKernelRunner` and the default build path that invokes `shadow-run-one`. | ✅ | 2026-08-06 |
 
 Completion criteria:
 
@@ -179,11 +179,11 @@ Completion criteria:
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-015 | Add `foch-merge-quality` as a dev-dependency of `crates/foch-cli`; do not add it to production dependencies. Create `crates/foch-cli/tests/merge_quality/runner.rs` implementing `MeasurementRunner` around `env!("CARGO_BIN_EXE_foch")`. | | |
-| TASK-016 | For each case, restore immutable source/compatch roots, write a temporary playset and isolated `FOCH_CONFIG_DIR/config.toml`, run public `foch merge <playset> --out <dir> --non-interactive`, enforce timeout/kill, rehash the executable after completion, and parse `.foch/foch-merge-report.json`. | | |
-| TASK-017 | Add a non-ignored tiny product/scorer seam test in `crates/foch-cli/tests/merge_quality_corpus.rs`. It must launch real `foch`, assert Structured output/report identity, score the output through the library, and detect a deliberate expected-verdict mismatch. | | |
-| TASK-018 | Add an ignored six-case `product_fixture_acceptance` that creates a new product baseline artifact distinct from `legacy-baseline.json` and `expected.json`. Preserve the existing Legacy fixture under an explicit historical name. | | |
-| TASK-019 | Add ignored `full_product_corpus_acceptance` for the fixed 23 snapshot IDs. Use scorer protocol `2.0.0`, runner protocol `foch-cli-merge-report-v1`, `merge_kernel = semantic_tree`, and `scope = full_product_merge`; start a fresh 0/23 V2 cohort and never reuse V1 cache entries. | | |
+| TASK-015 | Add `foch-merge-quality` as a dev-dependency of `crates/foch-cli`; do not add it to production dependencies. Create `crates/foch-cli/tests/merge_quality/runner.rs` implementing `MeasurementRunner` around `env!("CARGO_BIN_EXE_foch")`. | ✅ | 2026-08-06 |
+| TASK-016 | For each case, restore immutable source/compatch roots, write a temporary playset and isolated `FOCH_CONFIG_DIR/config.toml`, run public `foch merge <playset> --out <dir> --non-interactive`, enforce timeout/kill, rehash the executable after completion, and parse `.foch/foch-merge-report.json`. | ✅ | 2026-08-06 |
+| TASK-017 | Add a non-ignored tiny product/scorer seam test in `crates/foch-cli/tests/merge_quality_corpus.rs`. It must launch real `foch`, assert Structured output/report identity, score the output through the library, and detect a deliberate expected-verdict mismatch. | ✅ | 2026-08-06 |
+| TASK-018 | Add an ignored six-case `product_fixture_acceptance` that creates a new product baseline artifact distinct from `legacy-baseline.json` and `expected.json`. Preserve the existing Legacy fixture under an explicit historical name. | ✅ | 2026-08-06 |
+| TASK-019 | Add ignored `full_product_corpus_acceptance` for the fixed 23 snapshot IDs. Use scorer protocol `2.0.0`, runner protocol `foch-cli-merge-report-v1`, `merge_kernel = semantic_tree`, and `scope = full_product_merge`; start a fresh 0/23 V2 cohort and never reuse V1 cache entries. | ✅ | 2026-08-06 |
 
 Completion criteria:
 
@@ -198,12 +198,12 @@ Completion criteria:
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-020 | Convert `shadow-corpus` into ignored `structured_rollout_acceptance` against pinned Legacy CAS outputs. Fold `shadow-case` filtering into fixed test fixtures. Delete live `shadow-compare` and `shadow-run-one` execution paths after parity tests pass. | | |
-| TASK-021 | Convert `common-probe` into ignored `common_module_acceptance` with the fixed case/family matrix and measurable denominator assertions. Keep overlap scoring and full-local symbol evidence as separate tests and reports. | | |
-| TASK-022 | Convert review-pack freeze/build/verify into explicit maintenance/acceptance tests using the injected product runner. Split proposal generation from annotation recording; no test may append `annotations.jsonl` implicitly. Delete `review-pack show`. | | |
-| TASK-023 | Add fixed ignored maintenance tests for collect, deterministic export, fixture refresh, full-local symbols, and Steam discover/fetch. Each test must require its prerequisites, use repository-owned output locations, validate the resulting manifest/checksums, and perform no operation when run without `--ignored --exact`. | | |
-| TASK-024 | Add thin Fish entrypoints under `scripts/merge-quality/` for acceptance, corpus refresh, export, fixture refresh, review pack, symbol evidence, and Steam acquisition. Each script invokes exactly one named test/workflow and contains no scoring, dataset, or network logic. | | |
-| TASK-025 | Delete obsolete `run`, `learn`, `baseline`, `all`, live dual-kernel orchestration, and the entire unused knowledge command/module/documentation set. Remove dependencies and Cargo features that have no remaining library/test consumer. | | |
+| TASK-020 | Convert `shadow-corpus` into ignored `structured_rollout_acceptance` against pinned Legacy CAS outputs. Fold `shadow-case` filtering into fixed test fixtures. Delete live `shadow-compare` and `shadow-run-one` execution paths after parity tests pass. | ✅ | 2026-08-06 |
+| TASK-021 | Convert `common-probe` into ignored `common_module_acceptance` with the fixed case/family matrix and measurable denominator assertions. Keep overlap scoring and full-local symbol evidence as separate tests and reports. | ✅ | 2026-08-06 |
+| TASK-022 | Convert review-pack freeze/build/verify into explicit maintenance/acceptance tests using the injected product runner. Split proposal generation from annotation recording; no test may append `annotations.jsonl` implicitly. Delete `review-pack show`. | ✅ | 2026-08-06 |
+| TASK-023 | Add fixed ignored maintenance tests for collect, deterministic export, fixture refresh, full-local symbols, and Steam discover/fetch. Each test must require its prerequisites, use repository-owned output locations, validate the resulting manifest/checksums, and perform no operation when run without `--ignored --exact`. | ✅ | 2026-08-06 |
+| TASK-024 | Add thin Fish entrypoints under `scripts/merge-quality/` for acceptance, corpus refresh, export, fixture refresh, review pack, symbol evidence, and Steam acquisition. Each script invokes exactly one named test/workflow and contains no scoring, dataset, or network logic. | ✅ | 2026-08-06 |
+| TASK-025 | Delete obsolete `run`, `learn`, `baseline`, `all`, live dual-kernel orchestration, and the entire unused knowledge command/module/documentation set. Remove dependencies and Cargo features that have no remaining library/test consumer. | ✅ | 2026-08-06 |
 
 Completion criteria:
 
@@ -218,11 +218,11 @@ Completion criteria:
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-026 | Add `publish = false` to `crates/foch-merge-quality/Cargo.toml`; delete its `[[bin]]` target and bin-only `clap` dependency; delete `src/bin/foch_mq.rs`. | | |
-| TASK-027 | Move `crates/foch-cli/src/bin/parse_stats.rs` and `symbol_dump.rs` to `crates/foch-cli/examples/`. Replace their `[[bin]]` entries with `[[example]]` entries requiring `dev-tools`, and update their verified invocation docs. | | |
-| TASK-028 | Change `scripts/render_homebrew_formula.sh` from `--bins` to `--bin foch`. Update `scripts/test_render_homebrew_formula.py` to require the explicit target and reject `--bins`. Keep the existing release workflow's explicit `--bin foch`. | | |
-| TASK-029 | Add a CI metadata invariant that parses Cargo metadata correctly via `.targets[]."required-features"` and asserts the complete `kind == "bin"` set is exactly `foch-cli/foch`. Keep `cargo test --workspace` and strict all-target/all-feature Clippy. | | |
-| TASK-030 | Remove stale `foch_lsp`, `foch-mq`, `score-one`, `measure-one`, and `shadow-run-one` ignore rules, examples, and active documentation. Do not edit or commit the untracked local `AGENTS.md`; project documentation carries the durable boundary. | | |
+| TASK-026 | Add `publish = false` to `crates/foch-merge-quality/Cargo.toml`; delete its `[[bin]]` target and bin-only `clap` dependency; delete `src/bin/foch_mq.rs`. | ✅ | 2026-08-06 |
+| TASK-027 | Move `crates/foch-cli/src/bin/parse_stats.rs` and `symbol_dump.rs` to `crates/foch-cli/examples/`. Replace their `[[bin]]` entries with `[[example]]` entries requiring `dev-tools`, and update their verified invocation docs. | ✅ | 2026-08-06 |
+| TASK-028 | Change `scripts/render_homebrew_formula.sh` from `--bins` to `--bin foch`. Update `scripts/test_render_homebrew_formula.py` to require the explicit target and reject `--bins`. Keep the existing release workflow's explicit `--bin foch`. | ✅ | 2026-08-06 |
+| TASK-029 | Add a CI metadata invariant that parses Cargo metadata correctly via `.targets[]."required-features"` and asserts the complete `kind == "bin"` set is exactly `foch-cli/foch`. Keep `cargo test --workspace` and strict all-target/all-feature Clippy. | ✅ | 2026-08-06 |
+| TASK-030 | Remove stale `foch_lsp`, `foch-mq`, `score-one`, `measure-one`, and `shadow-run-one` ignore rules, examples, and active documentation. Do not edit or commit the untracked local `AGENTS.md`; project documentation carries the durable boundary. | ✅ | 2026-08-06 |
 
 Completion criteria:
 
@@ -237,10 +237,26 @@ Completion criteria:
 
 | Task | Description | Completed | Date |
 |------|-------------|-----------|------|
-| TASK-031 | Run formatting, strict workspace Clippy, workspace tests, Steam-feature tests that still have consumers, Fish syntax checks, Homebrew renderer tests, Cargo metadata invariants, and `git diff --check`. Fix every failure before corpus execution. | | |
-| TASK-032 | Hand off the exact Fish command for the long-running release-profile `full_product_corpus_acceptance`. Require 23 unique snapshots, 23 terminal records, zero failed terminal records, and complete scorable/all-candidate reports before accepting the cohort. | | |
+| TASK-031 | Run formatting, strict workspace Clippy, workspace tests, Steam-feature tests that still have consumers, Fish syntax checks, Homebrew renderer tests, Cargo metadata invariants, and `git diff --check`. Fix every failure before corpus execution. | ✅ | 2026-08-06 |
+| TASK-032 | Hand off the exact Fish command for the long-running release-profile `full_product_corpus_acceptance`. Require 23 unique snapshots, 23 terminal records, zero failed terminal records, and complete scorable/all-candidate reports before accepting the cohort. | ✅ | 2026-08-06 |
 | TASK-033 | Compare product V2/scorer `2.0.0` against the historical V1/scorer `1.3.0` Legacy cohort by case and scoring unit. Classify every delta as product-kernel change, full-versus-retained scope change, scorer change, or defect; do not overwrite expected artifacts automatically. | | |
 | TASK-034 | Update `docs/project-status.md`, `docs/merge-quality-dataset.md`, the implementation plan status, and the Notion project page with the exact product cohort ID, artifact hash, validation results, accepted deltas, blockers, and next failure-ranked merge-quality slice. | | |
+
+Automated implementation checkpoint (2026-08-06):
+
+- `cargo fmt --all --check`
+- `cargo test --workspace --locked`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- default and `steam` maintenance targets compiled without running ignored workflows
+- the non-ignored public `foch` CLI-to-scorer seam passed
+- Cargo binary metadata, Homebrew rendering, Fish syntax, Actionlint, Ruff,
+  `ty`, grammar tests, VS Code smoke, and `git diff --check` passed
+- no full corpus, Steam acquisition, six-case fixture acceptance, review-pack
+  acceptance, or other ignored long-running workflow was executed
+- post-implementation review hardened snapshot and V2 file-result identities,
+  cached input-CAS verification, deterministic crash-window replay, a pinned
+  product/scorer base view, exact scorer `1.3.0` review-pack selection, portable
+  path-free attestations, and fail-closed Structured evidence validation
 
 Completion criteria:
 

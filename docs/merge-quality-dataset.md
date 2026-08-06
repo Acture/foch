@@ -8,7 +8,9 @@ repository-visible; full payload objects are repository-local and ignored.
 
 ## Identity
 
-The dataset schema is semver `1.0.0`.
+The dataset manifest and the original measurement wire schema are semver
+`1.0.0`. Measurement records are versioned independently so the append-only
+stream can retain V1 history while accepting product-bound V2 records.
 
 - Object identity: BLAKE3 over the sorted full tree, including relative path,
   file kind, executable bit, file bytes, and symlink target. `.DS_Store`, `.git`,
@@ -16,11 +18,25 @@ The dataset schema is semver `1.0.0`.
 - Snapshot identity: EU4 version + Steam build ID + compatch tree hash + ordered
   source-mod tree hashes. Collection time and Workshop metadata are separate
   observations and do not change snapshot identity.
-- Measurement identity: snapshot ID + the actual `foch-mq` executable hash +
-  scorer semver + scorer-config hash.
-- Corpus-shadow target identity: snapshot ID + scoring unit + ordered
-  contributors + game version/build + exact base snapshot + executable hash + shadow/scorer config.
-  Absolute object-store and output paths are excluded.
+- V1 measurement identity: snapshot ID + the actual historical `foch-mq`
+  executable hash + scorer semver + scorer-config hash. Every currently tracked
+  V1 cohort used `legacy_address_patch_reference`, even scorer `1.3.0`.
+- V2 measurement identity: snapshot ID + the actual `foch` executable artifact
+  digest + runner protocol + `semantic_tree` kernel + `full_product_merge`
+  scope + scorer semver + scorer-config hash. The scorer configuration also
+  binds the installed base snapshot SHA, Steam build, exact timeout, and the
+  BLAKE3 digest of a private pinned product-base view. That view contains exactly
+  the regular files named by the installed inventory plus detected version
+  metadata. Both the product process and scorer receive that same view, never
+  the mutable Steam tree; its exact file set and bytes are reverified after each
+  case before evidence is persisted. The current product scorer is `2.0.0`; its
+  runner invokes public non-interactive `foch merge` and rejects reports whose
+  product-authored kernel, scope, or base-snapshot attestation does not match the
+  request.
+- Historical corpus-shadow target identity: snapshot ID + scoring unit +
+  ordered contributors + game version/build + exact base snapshot + evaluator
+  artifact + shadow/scorer config. Absolute object-store and output paths were
+  excluded. This identity now describes frozen rollout evidence only.
 
 The candidate corpus also has its own semver schema. Oracle-policy semver is
 separate: changing candidate eligibility does not rewrite immutable snapshots
@@ -35,7 +51,7 @@ The append-only files under `crates/foch-merge-quality/dataset/` are:
 | `observations.jsonl` | collection time, titles, Workshop timestamps, author/URL/visibility/rights status, subscriptions, and churn |
 | `measurements.jsonl` | terminal case outcomes and aggregate scores |
 | `file_results.jsonl` | per-file scorer results keyed by measurement |
-| `shadow_measurements.jsonl` | explicitly recorded per-unit Legacy/Structured evidence |
+| `shadow_measurements.jsonl` | frozen per-unit Legacy/Structured rollout evidence |
 | `annotations.jsonl` | append-only, input-bound review proposals and adjudications |
 
 ## Storage
@@ -49,75 +65,77 @@ rejected.
 Merged output trees are archived through the same object store. Repeated source
 mods, compatches, and identical outputs deduplicate by tree hash.
 
-Wiki knowledge snapshots are deterministic `.tar.zst` archives under the
-ignored `dataset/.work/knowledge/` tree. They are revision-addressed advisory
-context rather than merge-oracle evidence; the repository retains acquisition,
-verification, and attribution policy without committing Wiki payloads.
-
-Review annotations bind the review-pack identity, optional Wiki snapshot
-identity, snapshot and scoring-unit identities, selected kernel, and the exact
-base/source/human/candidate content hashes. Proposals remain provisional.
+Review annotations bind the review-pack identity, snapshot and scoring-unit
+identities, selected kernel, and the exact base/source/human/candidate content
+hashes. Historical records may retain an opaque optional knowledge-snapshot
+binding, but foch no longer acquires, indexes, or serves Wiki content. Proposals remain provisional.
 Accepted records must be explicit adjudications; non-identical positive
 judgments require family-invariant or runtime evidence, and non-identical GUI
 judgments require runtime evidence.
 
-See [`wiki-knowledge-pack.md`](./wiki-knowledge-pack.md) and
-[`merge-quality-review-pack.md`](./merge-quality-review-pack.md) for the
-acquisition, packaging, verification, and review workflows.
+See [`merge-quality-review-pack.md`](./merge-quality-review-pack.md) for the
+evidence packaging, verification, and review workflow.
 
-## Full baseline
+## Historical Legacy baselines
 
-Build once in release mode, then run the complete locally available corpus:
+The two tracked 23-case V1 cohorts are immutable historical evidence. Their
+artifact identity records the then-current `foch-mq` executable, but both scorer
+`1.0.0` and scorer `1.3.0` executed the evaluation-only
+`legacy_address_patch_reference` kernel. They do not measure the public product
+and there is no supported command for rerunning or extending them.
 
-```fish
-cargo build --release -p foch-merge-quality --bin foch-mq
-set -x EU4_ROOT "$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"
-target/release/foch-mq baseline --timeout-secs 600
-```
+V2 starts a separate product-bound history. A product measurement must launch
+the exact `foch` artifact through the injected runner, parse its
+`MergeReport`, score the existing output without selecting another kernel, and
+record `semantic_tree` plus `full_product_merge`. V1 cache entries can never
+satisfy a V2 request. The fixed acceptance passes the same exact snapshot ID
+list through measurement and both reports, so later append-only collection
+cannot drift its denominator.
 
-`EU4_ROOT` is optional. Resolution precedence is CLI override, environment,
-existing foch config, then `steamlocate`; Workshop items are searched across all
-Steam libraries. Collection and measurement always cover the full locally
-available candidate corpus. The command is resumable: existing objects and
-measurements with the same identities are cache hits.
+Snapshot IDs are recomputed from every stored payload before selection. V2 file
+result IDs bind the complete score and human-resolution payload, while frozen V1
+path-only IDs retain their historical validation rule. Resume permits orphaned
+file results only for a currently selected V2 identity with no terminal record,
+then requires deterministic replay before committing the terminal record.
 
-For separate phases:
+Every measured case ends as `completed`, `merge_failed`, `crashed`,
+`timed_out`, or `fatal`. A parseable non-Fatal product report is completed and
+scoreable even when the CLI process exits nonzero; a Fatal report remains
+Fatal. Reports select one complete stable cohort ID. A scorer-only selector
+fails when it matches more than one cohort, and failed terminal outcomes remain
+in the denominator. Resume validates every selected input CAS, the archived
+output CAS and object record, payload-bound file-result identities, foreign
+keys, and aggregate summary before counting a cache hit. Local prerequisite
+failures abort before any immutable terminal record is appended.
 
-```fish
-target/release/foch-mq collect
-target/release/foch-mq measure --timeout-secs 600
-target/release/foch-mq report
-target/release/foch-mq report --cohort all-candidates
-```
+## Repository-owned workflows
 
-The committed six-case fixture is a smaller, network-free regression gate. Its
-private base-game archive is required locally. Set an artifact parent to retain
-each merged tree and refresh detailed results after every completed case:
+Use only the fixed Fish entrypoints below. Each maintenance script selects one
+exact ignored test and supplies its mutation guard; the scripts contain no
+scoring logic.
 
-```fish
-set -x FOCH_MQ_FIXTURE_ARTIFACT_DIR /tmp/foch-mq-fixture-runs
-cargo test --release -p foch-merge-quality --test scoring \
-  committed_corpus_reproduces_base_aware_baseline -- --ignored --nocapture
-```
+| goal | entrypoint | exact test |
+|---|---|---|
+| Run the fixed 23-snapshot product acceptance | `scripts/merge-quality/acceptance.fish` | target `merge_quality_corpus`, test `full_product_corpus_acceptance` |
+| Run the isolated six-case product fixture | `scripts/merge-quality/fixture-acceptance.fish` | target `merge_quality_corpus`, test `product_fixture_acceptance` |
+| Build and verify the fixed review pack | `scripts/merge-quality/review-pack.fish` | target `merge_quality_corpus`, test `review_pack_acceptance` |
+| Refresh immutable snapshots and observations | `scripts/merge-quality/refresh-corpus.fish` | target `maintenance`, test `refresh_corpus` |
+| Produce two matching metadata exports | `scripts/merge-quality/export.fish` | target `maintenance`, test `export_dataset_metadata` |
+| Stage refreshed corpus/base-game fixture archives | `scripts/merge-quality/refresh-fixtures.fish` | target `maintenance`, test `refresh_fixtures` |
+| Generate full-local symbol evidence | `scripts/merge-quality/symbol-evidence.fish` | target `maintenance`, test `symbol_evidence` |
+| Run the fixed 12-unit Common gate | `scripts/merge-quality/common-module.fish` | target `maintenance`, test `common_module_acceptance` |
+| Compare one complete V2 product cohort with pinned Legacy evidence | `scripts/merge-quality/structured-rollout.fish` | target `maintenance`, test `structured_rollout_acceptance` |
+| Acquire Workshop candidates with the `steam` feature | `scripts/merge-quality/acquire.fish` | target `maintenance`, test `acquire_workshop_corpus` |
 
-Each invocation creates a unique child directory containing `merged/<case-id>`,
-`results.json`, `report.md`, and `run.json`. The artifacts are written before
-the expected-verdict assertion, so an intentional baseline-drift failure still
-leaves the complete per-file evidence for adjudication.
+The long-running acceptance is manual. It uses the release-built public `foch`
+binary, requires the private CAS and installed EU4 base snapshot, asserts the
+fixed 23 snapshot IDs, and writes cohort-specific reports only after all 23
+terminal records succeed. As of this documentation checkpoint, that first V2
+23-case cohort has not been run or accepted.
 
-The default report is the scorable oracle cohort. `--cohort all-candidates`
-keeps broad-search false positives visible for discovery and audit without
-mixing them into the quality denominator. The current automatic policy marks a
-case `proposed` only when its title states compatibility intent, it references
-exactly two mods, and neither referenced mod is newer than the candidate.
-Other cases remain collected and are labeled `excluded`; proposed evidence is
-not silently upgraded to accepted oracle evidence.
-
-Every measured case must end as `completed`, `merge_failed`, `crashed`,
-`timed_out`, or `fatal`. A report is baseline-complete only when every latest
-snapshot in the selected report cohort has a terminal measurement for the
-current scorer semver. Failures remain in the denominator; they are never
-skipped, and measurements from an older scorer are never relabeled as current.
+The six-case fixture and review pack are also manual because both execute real
+product merges. They remain isolated from the canonical 23-case denominator and
+cannot create or reuse a product cohort accidentally.
 
 ## Metrics
 
@@ -138,20 +156,22 @@ order-insensitive AST comparison.
 
 ## Export
 
-Metadata-only export is the default and is suitable for public review:
+The supported export workflow is:
 
 ```fish
-target/release/foch-mq export --out /tmp/foch-mq-export
+scripts/merge-quality/export.fish
 ```
 
-`--profile semantic` and `--profile full` add one deterministic `tar.zst` per
-input under `objects/` and per merged result under `outputs/`. `export.json` and
-`checksums.txt` bind every archive. Those payload exports are for private
-research use unless Workshop redistribution rights have been reviewed
-separately; unknown rights never enter the default metadata-only profile.
+It runs `export_dataset_metadata`, writes two independent metadata exports under
+`dataset/.work/maintenance/export/`, and requires their `export.json` and
+`checksums.txt` bytes to match. The library still supports semantic and full
+profiles for repository-owned workflows, but no public Fish entrypoint exposes
+payload export. Those payloads remain private unless Workshop redistribution
+rights have been reviewed separately.
 
-The first full local 23-candidate run remains preserved as scorer `1.0.0`
-history. Scorer `1.1.0` changes cross-file module attribution and therefore
-requires a fresh measurement pass rather than reusing those scores. Full local
-measurement remains a manual acceptance step because the dataset archives
-roughly 13.6 GiB of logical Workshop payload and a cold run can take hours.
+The two full local 23-candidate V1 runs remain preserved as scorer `1.0.0` and
+`1.3.0` history. Both are Legacy AddressPatchReference measurements. Scoring or
+execution changes require a fresh cohort rather than relabeling or reusing those
+records. Full local product measurement remains a manual acceptance step because
+the dataset archives roughly 13.6 GiB of logical Workshop payload and a cold run
+can take hours.

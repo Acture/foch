@@ -6,6 +6,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Measures foch merge quality against evidence-qualified community compatch candidates."
+publish = false
 
 [features]
 # Network + SteamCMD orchestration (discovery/fetch). Off by default so the
@@ -14,20 +15,12 @@ description = "Measures foch merge quality against evidence-qualified community 
 # offline; the base-aware acceptance test is ignored in ordinary CI.
 default = []
 steam = ["dep:reqwest"]
-wiki = ["dep:reqwest"]
-
-[[bin]]
-name = "foch-mq"
-path = "src/bin/foch_mq.rs"
 
 [dependencies]
 foch-engine = { path = "../foch-engine" }
 foch-core = { path = "../foch-core" }
 foch-language = { path = "../foch-language" }
 blake3 = "1.5.5"
-bm25 = { version = "=2.3.2", default-features = false }
-clap.workspace = true
-html2text = "=0.17.1"
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
@@ -39,5 +32,5 @@ time.workspace = true
 zstd.workspace = true
 reqwest = { workspace = true, optional = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 libc = "0.2.186"

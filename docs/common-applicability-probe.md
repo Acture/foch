@@ -4,9 +4,9 @@
 
 This checkpoint tests the Directory Module Hypothesis against every `common/**`
 unit in the fixed merge-quality corpus and exercises the same definition-module
-API used by the production Structured final join. The probe never publishes a
-generated mod. Production use remains explicit opt-in; Legacy is still the
-default merge kernel.
+API used by the public SemanticTree product merge. The probe is an evaluator:
+it never publishes a generated mod and does not select or launch a product
+executable.
 
 For each corpus unit, the probe builds four effective module views for its
 `common/<folder>` prefix:
@@ -38,11 +38,10 @@ Top-level comments are detached before partitioning, merged as trivia, and
 reattached deterministically. They do not enter positional content matching.
 The output is sorted deterministically after the complete module is rebuilt.
 
-Comparison uses the same module normalizer in `common-probe` and
-`corpus-shadow`. Definitions identical between candidate and human are reused;
-only differing definitions are canonicalized before order-insensitive AST
-comparison. This affects scoring only in the Structured arm and cannot relabel
-the committed Legacy baseline.
+Comparison uses the same module normalizer retained by the frozen Common and
+corpus-shadow evidence. Definitions identical between candidate and human are
+reused; only differing definitions are canonicalized before order-insensitive
+AST comparison. This cannot relabel the committed Legacy baseline.
 
 Snapshot restoration records a versioned metadata fingerprint after a full
 CAS payload audit. Later processes avoid rereading payload bytes only while the
@@ -52,11 +51,29 @@ each shared object at most once. The earlier marker-only governments run
 reduced report-level elapsed time from 258,342 ms to 339 ms, but that number
 predates the metadata guard and is not the current performance baseline.
 
-## Production activation
+## Run the fixed gate
 
-A definition module may reach the production Structured final join only when:
+The supported entrypoint is:
 
-- the caller explicitly selects the Structured merge kernel;
+```fish
+scripts/merge-quality/common-module.fish
+```
+
+It invokes the exact ignored test `common_module_acceptance` in
+`crates/foch-merge-quality/tests/maintenance.rs`. The test requires the private
+corpus CAS and installed EU4 snapshot, asserts the fixed denominator of 12
+units, and fails unless all 12 are classified with zero failed units.
+
+`run_common_applicability_probe` accepts `evaluator_artifact_blake3` from its
+caller. The maintenance test supplies that artifact identity explicitly; the
+probe library does not call `current_exe`, discover a runner, or spawn a hidden
+command. The artifact binds the resulting evidence to the evaluator without
+pretending it is a product measurement.
+
+## Product relationship
+
+A definition module reaches the product SemanticTree final join only when:
+
 - the `ContentFamily` declares a merge-ready `DefinitionModule` with
   `AssignmentKey` identity;
 - the merge plan contains a non-empty vanilla base and at least two distinct
@@ -64,7 +81,7 @@ A definition module may reach the production Structured final join only when:
 - the patch DAG has exactly two final sinks;
 - the structured merge returns no conflict.
 
-Complete Structured module output bypasses Legacy's per-entry vanilla no-op
+Complete SemanticTree module output bypasses per-entry vanilla no-op
 pruning. Omitting such a definition would expose a source-mod definition, not
 the vanilla definition, when the source mods remain loaded. Any conflict blocks
 publication; there is no winner-copy fallback.

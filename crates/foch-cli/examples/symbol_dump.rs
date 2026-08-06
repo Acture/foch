@@ -42,7 +42,9 @@ struct SymbolDump {
 fn main() {
 	let mut args = std::env::args().skip(1);
 	let Some(root_arg) = args.next() else {
-		eprintln!("usage: cargo run --bin symbol_dump -- <eu4_root> [output_json]");
+		eprintln!(
+			"usage: cargo run -p foch-cli --example symbol_dump --features dev-tools -- <eu4_root> [output_json]"
+		);
 		std::process::exit(1);
 	};
 	let output = args

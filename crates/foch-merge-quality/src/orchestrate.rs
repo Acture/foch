@@ -1,7 +1,4 @@
-//! Scoring orchestration: `run` scores every locally-available compatch in the
-//! corpus; `learn` classifies how humans resolved overlaps.
-//!
-//! Reuses [`crate::score`] primitives and writes artifacts via [`crate::report`].
+//! Deterministic scoring over an already generated product output tree.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,13 +6,12 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::CmdResult;
 use crate::corpus::Case;
 use crate::score::{
-	ScoreCache, ScoreFileRequest, SourceMod, classify_resolution, conflict_rel_paths,
-	reference_output_files, run_merge, score_file_with_cache_and_basegame, scoring_reference_units,
-	scoring_requested_paths, write_playset,
+	ScoreCache, ScoreFileRequest, SourceMod, conflict_rel_paths, reference_output_files,
+	score_file_with_cache_and_basegame, scoring_reference_units,
 };
+use foch_core::model::MergeReport;
 
 // ------------------------------------------------------------------ data model
 
@@ -66,7 +62,7 @@ pub struct CaseTimings {
 	pub total_ms: u64,
 }
 
-/// Per-case scoring result — the unit element of `results.json`.
+/// Per-case scoring result for one already generated output tree.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CaseResult {
 	pub compatch_id: String,
@@ -93,111 +89,22 @@ pub struct CaseResult {
 	pub files: Vec<FileRecord>,
 }
 
-/// One row in the per-file detail of `rules.md`: a classified overlap file.
-pub struct ResolutionRow {
-	pub title: String,
-	pub rel: String,
-	/// foch's verdict string for this file (e.g. `"conflict_withheld"`).
-	pub foch_verdict: String,
-	pub resolution: crate::score::Resolution,
-}
-
 // ------------------------------------------------------------------ public API
 
-/// Options for [`run`].
-pub struct RunOptions<'a> {
-	/// Path to `corpus.json`.
-	pub corpus: &'a Path,
-	/// Steam Workshop content dir holding the downloaded mods + compatches.
-	pub workshop_dir: &'a Path,
-	/// Directory to write `results.json` + `report.md` into.
-	pub results_dir: &'a Path,
-	/// Base-game mode. Quality runs must pass a concrete version-bound root;
-	/// empty-base fallback is allowed only through the explicit variant.
-	pub base_game: BaseGameMode<'a>,
-	/// Cap on number of cases scored (`0` = all).
-	pub limit: usize,
-	/// Preserve per-case temp merge directories.
-	pub keep: bool,
-	/// Isolate each merge in a `score-one` child process (CLI over the live
-	/// corpus, where foch may crash). `false` scores in-process — for trusted
-	/// inputs / tests, and required when `current_exe` is not the `foch-mq` bin.
-	pub isolate: bool,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum BaseGameMode<'a> {
-	Path(&'a Path),
-	ExplicitlyDisabled,
-}
-
-impl<'a> BaseGameMode<'a> {
-	pub fn root(self) -> Option<&'a Path> {
-		match self {
-			Self::Path(path) => Some(path),
-			Self::ExplicitlyDisabled => None,
-		}
-	}
-}
-
-/// Score one compatch case against a flat workshop directory.
+/// Score an already generated output tree against a human compatch.
 ///
-/// The workshop directory must contain `<compatch_id>/` and every `<mod_id>/`
-/// subdirectory listed in `case.referenced_mods`.
-///
-/// When `keep` is `true` the per-case temp merge directory is leaked (not
-/// cleaned up); useful for post-hoc inspection.
-pub fn score_case(
-	case: &Case,
-	workshop_dir: &Path,
-	base_game: BaseGameMode<'_>,
-	keep: bool,
-) -> Result<CaseResult, Box<dyn std::error::Error>> {
-	let mut score_cache = ScoreCache::new();
-	score_case_with_cache(case, workshop_dir, base_game, keep, &mut score_cache)
-}
-
-/// Score one compatch case while reusing scorer artifacts from a larger corpus run.
-pub fn score_case_with_cache(
-	case: &Case,
-	workshop_dir: &Path,
-	base_game: BaseGameMode<'_>,
-	keep: bool,
-	score_cache: &mut ScoreCache,
-) -> Result<CaseResult, Box<dyn std::error::Error>> {
-	let compatch_dir = workshop_dir.join(&case.compatch_id);
-	let mod_dirs: Vec<PathBuf> = case
-		.referenced_mods
-		.iter()
-		.map(|id| workshop_dir.join(id))
-		.collect();
-	let tmp = tempfile::tempdir()?;
-	let out_dir = tmp.path().join("out");
-	let result = score_case_from_paths_with_cache(
-		case,
-		&compatch_dir,
-		&mod_dirs,
-		&out_dir,
-		base_game,
-		None,
-		score_cache,
-	)?;
-	if keep {
-		let kept = tmp.keep();
-		eprintln!("[score] kept merge directory {}", kept.display());
-	}
-	Ok(result)
-}
-
-/// Score a case from explicit immutable object roots and write the merged tree
-/// to a caller-owned directory. This is the baseline worker entry point.
-pub fn score_case_from_paths_with_cache(
+/// This function performs no merge execution and selects no merge kernel. The
+/// caller owns product execution and supplies its parsed [`MergeReport`] plus
+/// measured merge duration.
+#[allow(clippy::too_many_arguments)]
+pub fn score_existing_output_with_cache(
 	case: &Case,
 	compatch_dir: &Path,
 	mod_dirs: &[PathBuf],
 	out_dir: &Path,
-	base_game: BaseGameMode<'_>,
-	expected_base_snapshot_identity: Option<&str>,
+	report: &MergeReport,
+	basegame_root: Option<&Path>,
+	merge_ms: u64,
 	score_cache: &mut ScoreCache,
 ) -> Result<CaseResult, Box<dyn std::error::Error>> {
 	if case.referenced_mods.len() != mod_dirs.len() {
@@ -209,40 +116,19 @@ pub fn score_case_from_paths_with_cache(
 		)
 		.into());
 	}
-	let total_started = Instant::now();
 	let setup_started = Instant::now();
 	let gt = reference_output_files(compatch_dir);
 	let scoring_units = scoring_reference_units(&gt);
-	let tmp = tempfile::tempdir()?;
-	let mods: Vec<(String, PathBuf)> = case
-		.referenced_mods
-		.iter()
-		.cloned()
-		.zip(mod_dirs.iter().cloned())
-		.collect();
-	let dlc = write_playset(tmp.path(), &mods)?;
-	let retained_paths = scoring_requested_paths(&gt);
-	let setup_ms = elapsed_ms(setup_started.elapsed());
-
-	let merge_started = Instant::now();
-	let result = run_merge(
-		&dlc,
-		out_dir,
-		base_game.root(),
-		/* force= */ false,
-		Some(retained_paths),
-		expected_base_snapshot_identity,
-	)?;
-	let merge_ms = elapsed_ms(merge_started.elapsed());
-
-	let scoring_started = Instant::now();
-	let conflicts = conflict_rel_paths(&result.report);
+	let conflicts = conflict_rel_paths(report);
 	let source_mods: Vec<SourceMod<'_>> = case
 		.referenced_mods
 		.iter()
 		.zip(mod_dirs)
 		.map(|(id, root)| SourceMod { id, root })
 		.collect();
+	let setup_ms = elapsed_ms(setup_started.elapsed());
+
+	let scoring_started = Instant::now();
 	let files: Vec<FileRecord> = scoring_units
 		.iter()
 		.map(|rel| {
@@ -255,7 +141,7 @@ pub fn score_case_from_paths_with_cache(
 					conflict_paths: &conflicts,
 				},
 				score_cache,
-				base_game.root(),
+				basegame_root,
 			);
 			FileRecord::from_score(fs)
 		})
@@ -282,11 +168,12 @@ pub fn score_case_from_paths_with_cache(
 	}
 
 	// Serialise MergeReportStatus via serde → "ready" / "blocked" etc.
-	let merge_status = serde_json::to_value(result.report.status)
+	let merge_status = serde_json::to_value(report.status)
 		.ok()
 		.and_then(|v| v.as_str().map(str::to_string));
 
-	let validation = serde_json::to_value(result.report.validation).ok();
+	let validation = serde_json::to_value(&report.validation).ok();
+	let total_ms = setup_ms.saturating_add(merge_ms).saturating_add(scoring_ms);
 
 	Ok(CaseResult {
 		compatch_id: case.compatch_id.clone(),
@@ -304,7 +191,7 @@ pub fn score_case_from_paths_with_cache(
 			setup_ms,
 			merge_ms,
 			scoring_ms,
-			total_ms: elapsed_ms(total_started.elapsed()),
+			total_ms,
 		},
 		files,
 	})
@@ -312,171 +199,4 @@ pub fn score_case_from_paths_with_cache(
 
 fn elapsed_ms(duration: Duration) -> u64 {
 	u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
-/// Filter the corpus to scorable, fully-local cases (candidate and referenced
-/// mods present in `workshop_dir`), run foch merge on each, and
-/// write `results.json` + `report.md`.
-pub fn run(opts: &RunOptions) -> CmdResult {
-	let text = std::fs::read_to_string(opts.corpus)?;
-	let corpus = crate::corpus::Corpus::from_json(&text)?;
-
-	let local: Vec<&Case> = corpus
-		.cases
-		.iter()
-		.filter(|case| case.oracle_assessment().is_scorable())
-		.filter(|c| c.referenced_mods.len() >= 2)
-		.filter(|c| opts.workshop_dir.join(&c.compatch_id).is_dir())
-		.filter(|c| {
-			c.referenced_mods
-				.iter()
-				.all(|m| opts.workshop_dir.join(m).is_dir())
-		})
-		.collect();
-
-	let to_score: &[&Case] = if opts.limit > 0 {
-		&local[..opts.limit.min(local.len())]
-	} else {
-		&local[..]
-	};
-
-	// Isolate each case's merge in a child process. Pathological community mods
-	// can still crash a structured merge, so a crash must take down only that
-	// case, not the whole run. Each child is `foch-mq score-one --id <id>`.
-	let exe = std::env::current_exe()?;
-	let (mut ok, mut skipped) = (0usize, 0usize);
-	let mut results: Vec<CaseResult> = Vec::with_capacity(to_score.len());
-	let mut score_cache = ScoreCache::new();
-	for case in to_score {
-		let scored: Option<CaseResult> = if opts.isolate {
-			let mut command = std::process::Command::new(&exe);
-			command
-				.arg("--corpus")
-				.arg(opts.corpus)
-				.arg("--workshop-dir")
-				.arg(opts.workshop_dir)
-				.arg("score-one")
-				.arg("--id")
-				.arg(&case.compatch_id);
-			if opts.keep {
-				command.arg("--keep");
-			}
-			match opts.base_game {
-				BaseGameMode::Path(path) => {
-					command.arg("--basegame-root").arg(path);
-				}
-				BaseGameMode::ExplicitlyDisabled => {
-					command.arg("--no-game-base");
-				}
-			}
-			let output = command.output()?;
-			if opts.keep {
-				eprint!("{}", String::from_utf8_lossy(&output.stderr));
-			}
-			if output.status.success() {
-				serde_json::from_slice::<CaseResult>(&output.stdout).ok()
-			} else {
-				eprintln!(
-					"  [run] skip {}: foch could not merge it (status {:?}) — likely a foch crash",
-					case.compatch_id,
-					output.status.code()
-				);
-				None
-			}
-		} else {
-			score_case_with_cache(
-				case,
-				opts.workshop_dir,
-				opts.base_game,
-				opts.keep,
-				&mut score_cache,
-			)
-			.ok()
-		};
-		match scored {
-			Some(cr) => {
-				results.push(cr);
-				ok += 1;
-			}
-			None => skipped += 1,
-		}
-	}
-	eprintln!("[run] scored {ok}, skipped {skipped}");
-
-	crate::report::write_results_json(opts.results_dir, &results)?;
-	crate::report::write_report_md(opts.results_dir, &results)?;
-
-	Ok(())
-}
-
-/// Score a single case by id and print its [`CaseResult`] as JSON to stdout.
-/// This is the per-case worker that the crash-isolating [`run`] spawns as a
-/// child process; if foch aborts here, only this child dies.
-pub fn score_one(
-	corpus: &Path,
-	workshop_dir: &Path,
-	base_game: BaseGameMode<'_>,
-	id: &str,
-	keep: bool,
-) -> CmdResult {
-	let text = std::fs::read_to_string(corpus)?;
-	let corpus = crate::corpus::Corpus::from_json(&text)?;
-	let case = corpus
-		.cases
-		.iter()
-		.find(|c| c.compatch_id == id)
-		.ok_or_else(|| format!("compatch {id} not found in corpus"))?;
-	let result = score_case(case, workshop_dir, base_game, keep)?;
-	// stdout = the JSON result (foch's [merge] logs go to stderr, kept separate).
-	println!("{}", serde_json::to_string(&result)?);
-	Ok(())
-}
-
-/// Read `results.json` from `results_dir`, classify how humans resolved each
-/// overlap (using the mod + compatch files in `workshop_dir`), and write
-/// `rules.md`.
-///
-/// Faithful port of the Python `cmd_learn`: for every overlap file in every
-/// case, calls [`classify_resolution`] to determine the human resolution
-/// strategy, then aggregates into relationship→verdict crosstab, overall
-/// verdict distribution, and the subset where foch withheld a conflict.
-pub fn learn(results_dir: &Path, workshop_dir: &Path, basegame_root: Option<&Path>) -> CmdResult {
-	let text = std::fs::read_to_string(results_dir.join("results.json"))?;
-	let results: Vec<CaseResult> = serde_json::from_str(&text)?;
-
-	let mut rows: Vec<ResolutionRow> = Vec::new();
-	for r in &results {
-		if r.referenced_mods.len() < 2 {
-			continue;
-		}
-		let source_roots: Vec<PathBuf> = r
-			.referenced_mods
-			.iter()
-			.map(|id| workshop_dir.join(id))
-			.collect();
-		let sources: Vec<SourceMod<'_>> = r
-			.referenced_mods
-			.iter()
-			.zip(&source_roots)
-			.map(|(id, root)| SourceMod { id, root })
-			.collect();
-		let compatch = workshop_dir.join(&r.compatch_id);
-
-		for f in &r.files {
-			if !f.multi_source {
-				continue;
-			}
-			if let Some(res) = classify_resolution(&f.rel, &sources, &compatch, basegame_root) {
-				rows.push(ResolutionRow {
-					title: r.title.clone(),
-					rel: f.rel.clone(),
-					foch_verdict: f.verdict.clone(),
-					resolution: res,
-				});
-			}
-		}
-	}
-
-	crate::report::write_rules_md(results_dir, &rows)?;
-	Ok(())
 }
