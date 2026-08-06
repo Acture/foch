@@ -72,6 +72,13 @@ Operator workflows now use the fixed scripts under `scripts/merge-quality/`:
 `acquire.fish`. Each selects one exact ignored test. The old live dual-kernel
 shadow workflow is retained only as frozen rollout evidence.
 
+The Steam acquisition gate now carries one corpus-derived plan through download
+and evidence generation. Newly needed items require explicit SteamCMD
+confirmation; canonical manifest/checksum artifacts bind the discovered corpus
+and selected local tree digests, and a second full tree audit closes the
+workflow. This is local acquisition integrity, not Steam remote-freshness
+attestation and not a product-quality result.
+
 This is an implementation checkpoint, not a corpus acceptance result. Formatting,
 locked workspace tests, strict all-target/all-feature Clippy, the hermetic public
 CLI-to-scorer seam, default/Steam maintenance compilation, Cargo target

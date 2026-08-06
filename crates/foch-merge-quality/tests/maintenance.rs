@@ -728,40 +728,41 @@ fn acquire_workshop_corpus() -> Result<(), Box<dyn Error>> {
 	let discovered_corpus = output.join("corpus.json");
 	foch_merge_quality::steam::discover(&discovered_corpus, 300)?;
 	require_nonempty_file(&discovered_corpus, "discovered Workshop corpus")?;
-	let corpus = Corpus::from_json(&fs::read_to_string(&discovered_corpus)?)?;
-	if corpus.cases.is_empty() {
-		return Err("Steam discovery produced no corpus cases".into());
+	let corpus_bytes = fs::read(&discovered_corpus)?;
+	let plan = foch_merge_quality::fetch::plan_acquisition(&corpus_bytes, 15, 100)?;
+	let outcome = foch_merge_quality::fetch::fetch(&plan, workshop)?;
+	let manifest = foch_merge_quality::fetch::write_acquisition_integrity(
+		&plan,
+		&outcome,
+		&discovered_corpus,
+		workshop,
+		&output,
+	)?;
+	let verified = foch_merge_quality::fetch::verify_acquisition_integrity(
+		&plan,
+		&outcome,
+		&discovered_corpus,
+		workshop,
+		&output,
+	)?;
+	if verified != manifest {
+		return Err("full Steam acquisition verification returned a different manifest".into());
 	}
-	let mut selected = corpus
-		.cases
-		.iter()
-		.filter(|case| case.oracle_assessment().is_scorable())
-		.filter(|case| !case.mod_churned() && case.subscriptions >= 100)
-		.collect::<Vec<_>>();
-	selected.sort_by_key(|case| std::cmp::Reverse(case.subscriptions));
-	selected.truncate(15);
-	if selected.len() != 15 {
-		return Err(format!(
-			"Steam discovery produced only {} of 15 eligible acquisition cases",
-			selected.len()
-		)
-		.into());
-	}
-	foch_merge_quality::fetch::fetch(&discovered_corpus, workshop, 15, 100)?;
-	let missing = selected
-		.iter()
-		.flat_map(|case| {
-			std::iter::once(case.compatch_id.as_str())
-				.chain(case.referenced_mods.iter().map(String::as_str))
-		})
-		.filter(|id| !directory_contains_file(&workshop.join(id)))
-		.collect::<BTreeSet<_>>();
-	if !missing.is_empty() {
-		return Err(format!(
-			"Steam acquisition is incomplete: {} item(s) missing",
-			missing.len()
-		)
-		.into());
-	}
+	require_nonempty_file(
+		&output.join(foch_merge_quality::fetch::ACQUISITION_MANIFEST_FILE),
+		"Steam acquisition manifest",
+	)?;
+	require_nonempty_file(
+		&output.join(foch_merge_quality::fetch::ACQUISITION_CHECKSUMS_FILE),
+		"Steam acquisition checksums",
+	)?;
+	eprintln!(
+		"Steam acquisition integrity attested: {} cases, {} Workshop items; \
+		 {} existing-local inputs, {} SteamCMD-confirmed downloads",
+		manifest.selection.selected_case_ids.len(),
+		manifest.workshop_items.len(),
+		outcome.already_local_count(),
+		outcome.downloaded_count(),
+	);
 	Ok(())
 }

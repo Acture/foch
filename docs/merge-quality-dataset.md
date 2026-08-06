@@ -127,6 +127,15 @@ scoring logic.
 | Compare one complete V2 product cohort with pinned Legacy evidence | `scripts/merge-quality/structured-rollout.fish` | target `maintenance`, test `structured_rollout_acceptance` |
 | Acquire Workshop candidates with the `steam` feature | `scripts/merge-quality/acquire.fish` | target `maintenance`, test `acquire_workshop_corpus` |
 
+The acquisition workflow derives one exact typed plan before downloading. Every
+newly needed item must be confirmed by SteamCMD; already-present Workshop items
+are treated only as local inputs. It writes canonical `manifest.json` and
+`checksums.txt`, binds the raw discovered corpus and every selected
+`foch-tree-v1` digest, then re-hashes the selected trees before succeeding.
+These artifacts establish deterministic local acquisition integrity. They do
+not authenticate Steam's remote state or prove that an already-local item is
+the latest published version.
+
 The long-running acceptance is manual. It uses the release-built public `foch`
 binary, requires the private CAS and installed EU4 base snapshot, asserts the
 fixed 23 snapshot IDs, and writes cohort-specific reports only after all 23

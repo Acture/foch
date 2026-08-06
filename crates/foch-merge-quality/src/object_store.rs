@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 const OBJECT_MARKER: &str = ".foch-object.json";
-const HASH_FORMAT: &str = "foch-tree-v1";
+/// Domain separator for deterministic full-tree content digests.
+pub const TREE_DIGEST_FORMAT: &str = "foch-tree-v1";
 const VERIFICATION_CACHE_DIR: &str = "object-verification-v2";
 const VERIFICATION_CACHE_SCHEMA: &str = "2.0.0";
 
@@ -375,7 +376,7 @@ pub fn digest_tree(root: &Path) -> io::Result<TreeDigest> {
 	}
 	let entries = collect_entries(root)?;
 	let mut hasher = blake3::Hasher::new();
-	hasher.update(HASH_FORMAT.as_bytes());
+	hasher.update(TREE_DIGEST_FORMAT.as_bytes());
 	let mut stats = TreeStats::default();
 	let mut buffer = vec![0_u8; 1024 * 1024];
 

@@ -2,7 +2,7 @@
 goal: Remove the foch-mq binary and integrate merge-quality into libraries, product tests, and scoped maintenance workflows
 version: 1.0
 date_created: 2026-08-06
-last_updated: 2026-08-06
+last_updated: 2026-08-07
 owner: foch
 status: Product Acceptance Pending
 tags: [architecture, refactor, testing, merge-quality, cli, dataset]
@@ -205,7 +205,7 @@ Completion criteria:
 | TASK-020 | Convert `shadow-corpus` into ignored `structured_rollout_acceptance` against pinned Legacy CAS outputs. Fold `shadow-case` filtering into fixed test fixtures. Delete live `shadow-compare` and `shadow-run-one` execution paths after parity tests pass. | ✅ | 2026-08-06 |
 | TASK-021 | Convert `common-probe` into ignored `common_module_acceptance` with the fixed case/family matrix and measurable denominator assertions. Keep overlap scoring and full-local symbol evidence as separate tests and reports. | ✅ | 2026-08-06 |
 | TASK-022 | Treat the frozen Legacy baseline and selection as immutable committed artifacts; expose no freeze/regeneration API. Keep only explicit review-pack build and verify using the injected product runner. Split proposal generation from annotation recording; no test may append `annotations.jsonl` implicitly. Delete `review-pack show`. | ✅ | 2026-08-06 |
-| TASK-023 | Add fixed ignored maintenance tests for collect, deterministic export, fixture refresh, full-local symbols, and Steam discover/fetch. Each test must require its prerequisites, use repository-owned output locations, validate the resulting manifest/checksums, and perform no operation when run without `--ignored --exact`. Steam acquisition attests integrity only; `structured_rollout_acceptance` and TASK-033 own quality classification. | ✅ | 2026-08-06 |
+| TASK-023 | Add fixed ignored maintenance tests for collect, deterministic export, fixture refresh, full-local symbols, and Steam discover/fetch. Each test must require its prerequisites, use repository-owned output locations, validate the resulting manifest/checksums, and perform no operation when run without `--ignored --exact`. Steam acquisition attests integrity only; `structured_rollout_acceptance` and TASK-033 own quality classification. | ✅ | 2026-08-07 |
 | TASK-024 | Add thin Fish entrypoints under `scripts/merge-quality/` for acceptance, corpus refresh, export, fixture refresh, review pack, symbol evidence, and Steam acquisition. Each script invokes exactly one named test/workflow and contains no scoring, dataset, or network logic. | ✅ | 2026-08-06 |
 | TASK-025 | Delete obsolete `run`, `learn`, `baseline`, `all`, live dual-kernel orchestration, and the entire unused knowledge command/module/documentation set. Remove dependencies and Cargo features that have no remaining library/test consumer. | ✅ | 2026-08-06 |
 
@@ -246,7 +246,7 @@ Completion criteria:
 | TASK-033 | Compare product V2/scorer `2.0.0` against the historical V1/scorer `1.3.0` Legacy cohort by case and scoring unit. Classify every delta as product-kernel change, full-versus-retained scope change, scorer change, or defect; do not overwrite expected artifacts automatically. | | |
 | TASK-034 | Update `docs/project-status.md`, `docs/merge-quality-dataset.md`, the implementation plan status, and the Notion project page with the exact product cohort ID, artifact hash, validation results, accepted deltas, blockers, and next failure-ranked merge-quality slice. | | |
 
-Automated implementation checkpoint (2026-08-06):
+Automated implementation checkpoint (2026-08-06; hardened 2026-08-07):
 
 - `cargo fmt --all --check`
 - `cargo test --workspace --locked`
@@ -267,6 +267,10 @@ Automated implementation checkpoint (2026-08-06):
   `runner_protocol_version`, required full payload verification before seeding a
   v2 CAS stamp, removed the unused Legacy-freeze API, and made cached terminal
   failures visible in resume accounting
+- follow-up audit closed the missing Steam acquisition contract with one typed
+  corpus selection plan, confirmed-download accounting for newly needed items,
+  deterministic local tree manifests/checksums, and a full post-write tree audit;
+  this attests local acquisition integrity, not Steam remote freshness
 - canonical measurement state remains 46 V1 records and zero V2 records; the
   long-running product cohort and TASK-033/TASK-034 remain pending
 
