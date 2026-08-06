@@ -16,6 +16,7 @@ const CHAIN_KIND_PREFIX: &str = "clausewitz.control_flow.chain:";
 const GUARDED_BRANCH_KIND_PREFIX: &str = "clausewitz.control_flow.guarded_branch:";
 const ELSE_BRANCH_KIND: &str = "clausewitz.control_flow.else_branch";
 const BRANCH_BODY_ANCHOR_NAMESPACE: &str = "clausewitz.control_flow.branch.body";
+const ELSE_WITH_LIMIT_MESSAGE: &str = "`else` branch contains a top-level `limit`";
 const MAX_DNF_TERMS: usize = 256;
 
 type Term = BTreeMap<String, bool>;
@@ -672,7 +673,7 @@ pub(super) fn normalize_chain(
 			Ok(chain)
 		}
 		Err(AstAdapterError::UnprovableControlFlow(message))
-			if opaque_normalization_limit(&message) =>
+			if should_normalize_opaque(&message) =>
 		{
 			normalize_opaque_chain(
 				statements,
@@ -940,11 +941,12 @@ fn opaque_chain_end(statements: &[AstStatement], start: usize) -> usize {
 	}
 }
 
-fn opaque_normalization_limit(message: &str) -> bool {
+fn should_normalize_opaque(message: &str) -> bool {
 	message.starts_with("guard normalization exceeded ")
 		|| (message.starts_with("branch ") && message.ends_with(" is unreachable"))
 		|| message.starts_with("guard atom ")
 		|| message == "source precedence constraints contain a cycle"
+		|| message == ELSE_WITH_LIMIT_MESSAGE
 }
 
 fn normalize_opaque_chain(
@@ -999,6 +1001,16 @@ fn extract_raw_cases(
 			)));
 		};
 		let (guard, effect_items, contains_default) = if key == "else" {
+			// `else` is the default role. Its top-level `limit` cannot safely be
+			// reinterpreted as either a guard or an effect, so preserve the chain opaquely.
+			if items
+				.iter()
+				.any(|item| assignment_key(item) == Some("limit"))
+			{
+				return Err(AstAdapterError::UnprovableControlFlow(
+					ELSE_WITH_LIMIT_MESSAGE.to_string(),
+				));
+			}
 			complete = true;
 			(None, items.clone(), true)
 		} else {
@@ -1782,6 +1794,53 @@ mod tests {
 			.expect("canonicalize nested positive-first chain");
 
 		assert_eq!(emit(&negative), emit(&positive));
+	}
+
+	#[test]
+	fn keeps_unguarded_else_as_a_semantic_default() {
+		let source = parse(
+			"effect = {\n\
+			\tif = { limit = { has_country_flag = first } add_prestige = 1 }\n\
+			\telse = { add_stability = 1 }\n\
+			}\n",
+		);
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&source, &policy).expect("normalize an unguarded default");
+		let rebuilt =
+			denormalize_ast(source.path.clone(), &tree).expect("rebuild semantic default");
+
+		assert!(
+			tree.nodes()
+				.any(|(_, node)| node.kind == super::ELSE_BRANCH_KIND),
+			"{:?}",
+			tree.nodes()
+				.map(|(_, node)| node.kind.as_str())
+				.collect::<Vec<_>>()
+		);
+		assert!(
+			!tree
+				.nodes()
+				.any(|(_, node)| { node.kind == format!("{}opaque", super::CHAIN_KIND_PREFIX) })
+		);
+		assert_eq!(emit(&rebuilt), emit(&source));
+	}
+
+	#[test]
+	fn preserves_else_with_a_top_level_limit_as_opaque() {
+		let source = parse(
+			"effect = {\n\
+			\tif = { limit = { has_country_flag = first } add_prestige = 1 }\n\
+			\telse = { limit = { has_country_flag = second } add_stability = 1 }\n\
+			}\n",
+		);
+
+		let outcome = merge_clausewitz_files(&source, &source, &source, &MergePolicies::default())
+			.expect("an unprovable terminal branch must remain inspectable");
+
+		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
+		assert_eq!(outcome.resolved_ast().map(emit), Some(emit(&source)));
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
 	}
 
 	#[test]
