@@ -36,7 +36,8 @@ impl OutputTransaction {
 		let parent = output_parent(final_dir);
 		fs::create_dir_all(parent)?;
 		let lock_file = acquire_output_lock(final_dir)?;
-		let initial_target = inspect_output_target(final_dir)?;
+		let initial_target =
+			normalize_empty_output_target(final_dir, inspect_output_target(final_dir)?)?;
 		ensure_target_replacement_supported(&initial_target)?;
 		let staging_dir = create_unique_sibling_dir(final_dir, "staging")?;
 		let staging_identity = match inspect_output_target(&staging_dir) {
@@ -299,6 +300,26 @@ fn inspect_output_target(path: &Path) -> Result<OutputTargetState, MergeError> {
 		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(OutputTargetState::Missing),
 		Err(error) => Err(MergeError::Io(error)),
 	}
+}
+
+fn normalize_empty_output_target(
+	path: &Path,
+	target: OutputTargetState,
+) -> Result<OutputTargetState, MergeError> {
+	let OutputTargetState::Directory(_) = &target else {
+		return Ok(target);
+	};
+	let mut entries = fs::read_dir(path)?;
+	if let Some(entry) = entries.next() {
+		entry?;
+		return Ok(target);
+	}
+	drop(entries);
+	if inspect_output_target(path)? != target {
+		return Err(output_target_changed_error(path));
+	}
+	fs::remove_dir(path)?;
+	Ok(OutputTargetState::Missing)
 }
 
 fn output_target_changed_error(path: &Path) -> MergeError {

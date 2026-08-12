@@ -212,8 +212,6 @@ impl ProductMeasurementRunner {
 		if !self.no_game_base {
 			validate_base_snapshot(request)?;
 		}
-		fs::create_dir_all(&request.output_dir)
-			.map_err(|error| format!("failed to create measurement output directory: {error}"))?;
 		let run_root = tempfile::Builder::new()
 			.prefix("foch-product-measurement-")
 			.tempdir()

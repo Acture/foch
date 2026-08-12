@@ -1360,8 +1360,27 @@ mod tests {
 		drop(missing);
 
 		fs::create_dir(&out_dir).expect("create prior output");
+		fs::write(out_dir.join("prior.txt"), "prior output\n").expect("write prior output");
 		let existing = OutputTransaction::begin(&out_dir).expect("begin existing transaction");
 		assert_eq!(existing.prior_dir(), Some(out_dir.as_path()));
+	}
+
+	#[test]
+	fn output_transaction_treats_an_existing_empty_directory_as_missing() {
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("merged-mod");
+		fs::create_dir(&out_dir).expect("create empty output");
+
+		let transaction = OutputTransaction::begin(&out_dir).expect("begin transaction");
+		assert_eq!(transaction.prior_dir(), None);
+		fs::write(transaction.staging_dir().join("new.txt"), "new output\n")
+			.expect("write staged output");
+		transaction.publish().expect("publish transaction");
+
+		assert_eq!(
+			fs::read_to_string(out_dir.join("new.txt")).expect("read published output"),
+			"new output\n"
+		);
 	}
 
 	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
@@ -1462,6 +1481,7 @@ mod tests {
 		let temp = tempfile::TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("merged-mod");
 		fs::create_dir(&out_dir).expect("create existing output");
+		fs::write(out_dir.join("prior.txt"), "prior output\n").expect("write prior output");
 
 		let error = match OutputTransaction::begin(&out_dir) {
 			Ok(_) => panic!("existing output requires atomic directory exchange"),
@@ -1481,10 +1501,12 @@ mod tests {
 		let temp = tempfile::TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("merged-mod");
 		fs::create_dir(&out_dir).expect("create initial output");
+		fs::write(out_dir.join("prior.txt"), "prior output\n").expect("write initial output");
 		let transaction = OutputTransaction::begin(&out_dir).expect("begin transaction");
 		fs::write(transaction.staging_dir().join("new.txt"), "new output\n")
 			.expect("write staged output");
 
+		fs::remove_file(out_dir.join("prior.txt")).expect("remove initial output file");
 		fs::remove_dir(&out_dir).expect("remove initial output");
 		fs::create_dir(&out_dir).expect("create concurrent replacement");
 		fs::write(out_dir.join("concurrent.txt"), "preserve me\n")
