@@ -6,3 +6,6 @@
 
 # Frozen review-pack artifacts are byte-addressed and rendered with LF.
 crates/foch-merge-quality/tests/fixtures/*.json text eol=lf
+
+# Dataset records are byte-frozen; checkout conversion must not change hashes.
+crates/foch-merge-quality/dataset/*.jsonl text eol=lf

@@ -1345,26 +1345,8 @@ impl DatasetLock {
 	}
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn try_lock_exclusive(file: &fs::File) -> io::Result<()> {
-	use std::os::fd::AsRawFd;
-
-	// SAFETY: `file` owns a valid descriptor for the duration of the call, and
-	// `flock` neither retains the descriptor nor dereferences Rust memory.
-	let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-	if result == 0 {
-		Ok(())
-	} else {
-		Err(io::Error::last_os_error())
-	}
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn try_lock_exclusive(_file: &fs::File) -> io::Result<()> {
-	Err(io::Error::new(
-		ErrorKind::Unsupported,
-		"dataset append locking is supported only on macOS and Linux",
-	))
+	Ok(file.try_lock()?)
 }
 
 #[cfg(test)]
@@ -1445,7 +1427,6 @@ mod tests {
 		assert_eq!(read_jsonl::<Record>(&path).unwrap(), records);
 	}
 
-	#[cfg(any(target_os = "linux", target_os = "macos"))]
 	#[test]
 	fn dataset_lock_is_exclusive_and_released_with_its_file_handle() {
 		let temp = tempfile::tempdir().unwrap();
