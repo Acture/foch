@@ -797,7 +797,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foch-cli"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "clap",
  "clap-verbosity-flag",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "foch-core"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "chardetng",
@@ -846,7 +846,7 @@ dependencies = [
 
 [[package]]
 name = "foch-cwt"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "bincode",
  "foch-core",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "foch-engine"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "bincode",
  "blake3",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "foch-language"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "bincode",
  "blake3",
@@ -913,7 +913,7 @@ dependencies = [
 
 [[package]]
 name = "foch-merge-kernel"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "serde",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "foch-merge-quality"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "blake3",
  "flate2",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "foch-syntax"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "foch-core",
  "tree-sitter",

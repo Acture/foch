@@ -1,10 +1,10 @@
 # Project Status
 
-Last updated: 2026-08-08
+Last updated: 2026-08-12
 
 ## Summary
 
-`foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is organized as a workspace monorepo. The near-term public surface is now LSP-first: VS Code/LSP can advance to a `0.1.0` preview on editor usability while the merge engine remains explicitly experimental.
+`foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is organized as a workspace monorepo. The Rust workspace remains at `0.0.1` until the real product merge loop is accepted. The separately published VS Code/LSP surface is already a `0.1.0` preview; its editor version does not claim merge-engine maturity.
 
 ## 2026-08-08 Workshop-backed merge-quality checkpoint
 
