@@ -1,36 +1,111 @@
-#[cfg(test)]
-use crate::workspace::FileFilter;
+use flate2::Compression;
+use flate2::bufread::GzDecoder;
+use flate2::write::GzEncoder;
 use foch_core::cache::default_foch_cache_dir;
-#[cfg(test)]
-use foch_core::domain::game::Game;
 use foch_core::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
 	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex,
 	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
+use rkyv::ser::{Positional, writer::IoWriter};
 use rkyv::util::AlignedVec;
 use std::fmt;
-use std::fs;
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::fs::{self, File, OpenOptions};
 #[cfg(test)]
-use walkdir::WalkDir;
+use std::io::Cursor;
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
-pub const MOD_PARSE_CACHE_VERSION: &str = "4.0.0";
+pub const MOD_PARSE_CACHE_VERSION: &str = "10.0.0";
 const DEFAULT_CACHE_DIR_NAME: &str = "mods";
-const HASH_HEX_LEN: usize = 16;
+const MOD_PARSE_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
+const MOD_PARSE_CACHE_HEADER_BYTES: usize = MOD_PARSE_CACHE_MAGIC.len() + size_of::<u64>();
+const MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES: u64 = 4_u64 << 30;
+const STALE_MOD_PARSE_CACHE_TMP_SECONDS: u64 = 24 * 60 * 60;
+static MOD_PARSE_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct SizeLimitedWriter<W> {
+	inner: W,
+	written: u64,
+	limit: u64,
+}
+
+impl<W> SizeLimitedWriter<W> {
+	fn new(inner: W, limit: u64) -> Self {
+		Self {
+			inner,
+			written: 0,
+			limit,
+		}
+	}
+
+	fn into_inner(self) -> W {
+		self.inner
+	}
+}
+
+impl<W: Write> Write for SizeLimitedWriter<W> {
+	fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+		let requested = u64::try_from(bytes.len())
+			.map_err(|_| io::Error::other("mod snapshot write does not fit u64"))?;
+		if self.written.saturating_add(requested) > self.limit {
+			return Err(io::Error::new(
+				io::ErrorKind::FileTooLarge,
+				format!(
+					"uncompressed mod snapshot exceeds the {} byte decode limit",
+					self.limit
+				),
+			));
+		}
+		let written = self.inner.write(bytes)?;
+		self.written = self.written.saturating_add(written as u64);
+		Ok(written)
+	}
+
+	fn flush(&mut self) -> io::Result<()> {
+		self.inner.flush()
+	}
+}
 
 #[derive(Clone, Debug)]
 pub struct CachedModData {
 	pub semantic_index: SemanticIndex,
-	/// Parsed Clausewitz documents are stored so runtime overlap can normalize
-	/// definitions without reparsing unchanged mods. This vector may be empty for
-	/// cache files written by older or intentionally semantic-only writers.
-	pub parsed_documents: Vec<ParsedScriptFile>,
+	/// Strictly sorted, unique, normalized relative paths for every file in the
+	/// source mod inventory, including files outside semantic analysis.
+	pub inventory_paths: Vec<String>,
+	/// One compact flag per `semantic_index.documents` entry. `true` means the
+	/// document parsed cleanly and contains no non-comment AST content.
+	pub document_noop_hints: Vec<bool>,
+	/// One raw-input identity per `semantic_index.documents` entry. Clausewitz
+	/// documents carry an identity; formats that do not need lazy AST reloads
+	/// use `None`.
+	pub document_input_identities: Vec<Option<CachedDocumentInputIdentity>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub(crate) struct CachedDocumentInputIdentity {
+	pub size_bytes: u64,
+	pub content_digest: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ModParseCacheEntryProfile {
+	pub compressed_bytes: u64,
+	pub uncompressed_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ModParseCacheStoreOutcome {
+	Stored(ModParseCacheEntryProfile),
+	RejectedTooLarge {
+		compressed_bytes: u64,
+		cap_bytes: u64,
+	},
 }
 
 #[derive(Clone, Debug)]
@@ -49,9 +124,11 @@ struct StoredCachedModData {
 	cache_version: String,
 	mod_hash: String,
 	foch_version: String,
-	game_version: String,
+	game_key: String,
 	semantic_index: StoredSemanticIndex,
-	parsed_documents: Vec<u8>,
+	inventory_paths: Vec<String>,
+	document_noop_hints: Vec<bool>,
+	document_input_identities: Vec<Option<CachedDocumentInputIdentity>>,
 }
 
 #[derive(Clone, Debug, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -254,30 +331,79 @@ impl ModParseCache {
 		&self,
 		mod_hash: &str,
 		foch_version: &str,
-		game_version: &str,
+		game_key: &str,
 	) -> Option<CachedModData> {
-		self.lookup_with_cache_version(
-			MOD_PARSE_CACHE_VERSION,
-			mod_hash,
-			foch_version,
-			game_version,
-		)
+		self.lookup_with_cache_version(MOD_PARSE_CACHE_VERSION, mod_hash, foch_version, game_key)
 	}
 
-	pub fn store(
+	pub(crate) fn store_owned(
 		&self,
 		mod_hash: &str,
 		foch_version: &str,
-		game_version: &str,
-		data: &CachedModData,
-	) -> Result<(), CacheError> {
-		self.store_with_cache_version(
+		game_key: &str,
+		data: CachedModData,
+	) -> (CachedModData, Result<ModParseCacheStoreOutcome, CacheError>) {
+		self.store_owned_with_cache_version_and_cap(
 			MOD_PARSE_CACHE_VERSION,
 			mod_hash,
 			foch_version,
-			game_version,
+			game_key,
 			data,
+			super::cache_cap_bytes(),
 		)
+	}
+
+	#[cfg(test)]
+	fn store(
+		&self,
+		mod_hash: &str,
+		foch_version: &str,
+		game_key: &str,
+		data: &CachedModData,
+	) -> Result<(), CacheError> {
+		let (_, result) = self.store_owned_with_cache_version_and_cap(
+			MOD_PARSE_CACHE_VERSION,
+			mod_hash,
+			foch_version,
+			game_key,
+			data.clone(),
+			u64::MAX,
+		);
+		match result? {
+			ModParseCacheStoreOutcome::Stored(_) => Ok(()),
+			ModParseCacheStoreOutcome::RejectedTooLarge {
+				compressed_bytes,
+				cap_bytes,
+			} => Err(CacheError::encode(format!(
+				"compressed mod snapshot is {compressed_bytes} bytes, exceeding the {cap_bytes} byte cache-layer cap"
+			))),
+		}
+	}
+
+	pub(crate) fn entry_profile(
+		&self,
+		mod_hash: &str,
+		foch_version: &str,
+		game_key: &str,
+	) -> Option<ModParseCacheEntryProfile> {
+		let path = self.cache_file(MOD_PARSE_CACHE_VERSION, mod_hash, foch_version, game_key);
+		let compressed_bytes = fs::metadata(&path).ok()?.len();
+		let mut header = [0_u8; MOD_PARSE_CACHE_HEADER_BYTES];
+		fs::File::open(path).ok()?.read_exact(&mut header).ok()?;
+		let uncompressed_bytes = declared_uncompressed_bytes(&header).ok()?;
+		Some(ModParseCacheEntryProfile {
+			compressed_bytes,
+			uncompressed_bytes,
+		})
+	}
+
+	pub(crate) fn touch_entry(&self, mod_hash: &str, foch_version: &str, game_key: &str) {
+		touch_cache_file(&self.cache_file(
+			MOD_PARSE_CACHE_VERSION,
+			mod_hash,
+			foch_version,
+			game_key,
+		));
 	}
 
 	fn lookup_with_cache_version(
@@ -285,46 +411,78 @@ impl ModParseCache {
 		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
-		game_version: &str,
+		game_key: &str,
 	) -> Option<CachedModData> {
-		let path = self.cache_file(cache_version, mod_hash, foch_version, game_version);
-		let raw = fs::read(path).ok()?;
-		let stored = decode_payload(&raw).ok()?;
-		if stored.cache_version != cache_version
-			|| stored.mod_hash != mod_hash
-			|| stored.foch_version != foch_version
-			|| stored.game_version != game_version
-		{
-			return None;
-		}
-		stored.into_cached_mod_data().ok()
+		self.lookup_with_cache_version_and_cap(
+			cache_version,
+			mod_hash,
+			foch_version,
+			game_key,
+			super::cache_cap_bytes(),
+		)
 	}
 
-	fn store_with_cache_version(
+	fn lookup_with_cache_version_and_cap(
 		&self,
 		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
-		game_version: &str,
-		data: &CachedModData,
-	) -> Result<(), CacheError> {
-		fs::create_dir_all(&self.root).map_err(CacheError::Io)?;
-		let payload = StoredCachedModData::from_cached_mod_data(
+		game_key: &str,
+		cap_bytes: u64,
+	) -> Option<CachedModData> {
+		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
+		let compressed_bytes = fs::metadata(&path).ok()?.len();
+		if compressed_bytes > cap_bytes {
+			tracing::warn!(
+				target: "foch::cache::mod_snapshot",
+				path = %path.display(),
+				compressed_bytes,
+				cap_bytes,
+				"discarding mod snapshot larger than the cache-layer byte cap"
+			);
+			let _ = fs::remove_file(path);
+			return None;
+		}
+		let stored = decode_payload_from_file(&path).ok()?;
+		if stored.cache_version != cache_version
+			|| stored.mod_hash != mod_hash
+			|| stored.foch_version != foch_version
+			|| stored.game_key != game_key
+		{
+			return None;
+		}
+		stored.validate_document_metadata().ok()?;
+		let data = stored.into_cached_mod_data();
+		touch_cache_file(&path);
+		Some(data)
+	}
+
+	fn store_owned_with_cache_version_and_cap(
+		&self,
+		cache_version: &str,
+		mod_hash: &str,
+		foch_version: &str,
+		game_key: &str,
+		data: CachedModData,
+		cap_bytes: u64,
+	) -> (CachedModData, Result<ModParseCacheStoreOutcome, CacheError>) {
+		if let Err(error) = validate_cached_document_metadata(&data) {
+			return (data, Err(error));
+		}
+		if let Err(error) = fs::create_dir_all(&self.root).map_err(CacheError::Io) {
+			return (data, Err(error));
+		}
+		let payload = StoredCachedModData::from_cached_mod_data_owned(
 			cache_version,
 			mod_hash,
 			foch_version,
-			game_version,
+			game_key,
 			data,
-		)?;
-		let encoded = encode_payload(&payload)?;
-		let path = self.cache_file(cache_version, mod_hash, foch_version, game_version);
-		let tmp = path.with_extension(format!("rkyv.{}.tmp", std::process::id()));
-		fs::write(&tmp, encoded.as_slice()).map_err(CacheError::Io)?;
-		fs::rename(&tmp, &path).map_err(|err| {
-			let _ = fs::remove_file(&tmp);
-			CacheError::Io(err)
-		})?;
-		Ok(())
+		);
+		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
+		let result = store_payload_streaming(&path, &payload, cap_bytes);
+		let data = payload.into_cached_mod_data();
+		(data, result)
 	}
 
 	fn cache_file(
@@ -332,10 +490,16 @@ impl ModParseCache {
 		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
-		game_version: &str,
+		game_key: &str,
 	) -> PathBuf {
-		let filename = cache_filename(cache_version, mod_hash, foch_version, game_version);
+		let filename = cache_filename(cache_version, mod_hash, foch_version, game_key);
 		self.root.join(filename)
+	}
+}
+
+fn touch_cache_file(path: &Path) {
+	if let Ok(file) = fs::File::open(path) {
+		let _ = file.set_modified(SystemTime::now());
 	}
 }
 
@@ -350,6 +514,18 @@ fn prune_obsolete_cache_generations(cache_dir: &Path) {
 		}
 		let name = entry.file_name();
 		let name = name.to_string_lossy();
+		if is_mod_parse_cache_tmp(&name) {
+			let stale = entry
+				.metadata()
+				.ok()
+				.and_then(|metadata| metadata.modified().ok())
+				.and_then(|modified| SystemTime::now().duration_since(modified).ok())
+				.is_some_and(|age| age >= Duration::from_secs(STALE_MOD_PARSE_CACHE_TMP_SECONDS));
+			if stale {
+				let _ = fs::remove_file(path);
+			}
+			continue;
+		}
 		let Some(version) = name
 			.split_once("__cv")
 			.and_then(|(_, suffix)| suffix.split_once("__"))
@@ -361,6 +537,10 @@ fn prune_obsolete_cache_generations(cache_dir: &Path) {
 			let _ = fs::remove_file(path);
 		}
 	}
+}
+
+fn is_mod_parse_cache_tmp(name: &str) -> bool {
+	name.contains("__cv") && name.contains(".rkyv.") && name.ends_with(".tmp")
 }
 
 impl CacheError {
@@ -394,109 +574,175 @@ impl From<io::Error> for CacheError {
 }
 
 impl StoredCachedModData {
-	fn from_cached_mod_data(
+	fn from_cached_mod_data_owned(
 		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
-		game_version: &str,
-		data: &CachedModData,
-	) -> Result<Self, CacheError> {
-		Ok(Self {
+		game_key: &str,
+		data: CachedModData,
+	) -> Self {
+		Self {
 			cache_version: cache_version.to_string(),
 			mod_hash: mod_hash.to_string(),
 			foch_version: foch_version.to_string(),
-			game_version: game_version.to_string(),
-			semantic_index: StoredSemanticIndex::from_semantic_index(&data.semantic_index),
-			parsed_documents: super::parsed_scripts::encode_parsed_documents(
-				&data.parsed_documents,
-			)
-			.map_err(CacheError::encode)?,
-		})
+			game_key: game_key.to_string(),
+			semantic_index: StoredSemanticIndex::from_semantic_index_owned(data.semantic_index),
+			inventory_paths: data.inventory_paths,
+			document_noop_hints: data.document_noop_hints,
+			document_input_identities: data.document_input_identities,
+		}
 	}
 
-	fn into_cached_mod_data(self) -> Result<CachedModData, CacheError> {
-		Ok(CachedModData {
-			semantic_index: self.semantic_index.into_semantic_index(),
-			parsed_documents: super::parsed_scripts::decode_parsed_documents(
-				&self.parsed_documents,
-			)
-			.map_err(CacheError::encode)?,
-		})
+	fn validate_document_metadata(&self) -> Result<(), CacheError> {
+		let document_count = self.semantic_index.documents.len();
+		if self.document_noop_hints.len() != document_count {
+			return Err(CacheError::encode(format!(
+				"mod snapshot noop hint count {} does not match document count {document_count}",
+				self.document_noop_hints.len(),
+			)));
+		}
+		if self.document_input_identities.len() != document_count {
+			return Err(CacheError::encode(format!(
+				"mod snapshot input identity count {} does not match document count {document_count}",
+				self.document_input_identities.len(),
+			)));
+		}
+		validate_inventory_paths(&self.inventory_paths)?;
+		Ok(())
+	}
+
+	fn into_cached_mod_data(self) -> CachedModData {
+		let semantic_index = self.semantic_index.into_semantic_index();
+		CachedModData {
+			semantic_index,
+			inventory_paths: self.inventory_paths,
+			document_noop_hints: self.document_noop_hints,
+			document_input_identities: self.document_input_identities,
+		}
 	}
 }
 
+fn validate_cached_document_metadata(data: &CachedModData) -> Result<(), CacheError> {
+	let document_count = data.semantic_index.documents.len();
+	if data.document_noop_hints.len() != document_count {
+		return Err(CacheError::encode(format!(
+			"mod snapshot noop hint count {} does not match document count {document_count}",
+			data.document_noop_hints.len(),
+		)));
+	}
+	if data.document_input_identities.len() != document_count {
+		return Err(CacheError::encode(format!(
+			"mod snapshot input identity count {} does not match document count {document_count}",
+			data.document_input_identities.len(),
+		)));
+	}
+	validate_inventory_paths(&data.inventory_paths)?;
+	Ok(())
+}
+
+fn validate_inventory_paths(inventory_paths: &[String]) -> Result<(), CacheError> {
+	for path in inventory_paths {
+		if !is_normalized_relative_inventory_path(path) {
+			return Err(CacheError::encode(format!(
+				"mod snapshot inventory path {path:?} is not a normalized forward-slash relative path"
+			)));
+		}
+	}
+	for pair in inventory_paths.windows(2) {
+		if pair[0] >= pair[1] {
+			return Err(CacheError::encode(
+				"mod snapshot inventory paths must be strictly sorted and unique",
+			));
+		}
+	}
+	Ok(())
+}
+
+fn is_normalized_relative_inventory_path(path: &str) -> bool {
+	let bytes = path.as_bytes();
+	if path.is_empty()
+		|| path.starts_with('/')
+		|| path.contains('\\')
+		|| (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+	{
+		return false;
+	}
+	path.split('/')
+		.all(|component| !component.is_empty() && component != "." && component != "..")
+}
+
 impl StoredSemanticIndex {
-	fn from_semantic_index(index: &SemanticIndex) -> Self {
+	fn from_semantic_index_owned(index: SemanticIndex) -> Self {
 		Self {
 			documents: index
 				.documents
-				.iter()
-				.map(StoredDocumentRecord::from_document_record)
+				.into_iter()
+				.map(StoredDocumentRecord::from_document_record_owned)
 				.collect(),
 			scopes: index
 				.scopes
-				.iter()
-				.map(StoredScopeNode::from_scope_node)
+				.into_iter()
+				.map(StoredScopeNode::from_scope_node_owned)
 				.collect(),
 			definitions: index
 				.definitions
-				.iter()
-				.map(StoredSymbolDefinition::from_symbol_definition)
+				.into_iter()
+				.map(StoredSymbolDefinition::from_symbol_definition_owned)
 				.collect(),
 			references: index
 				.references
-				.iter()
-				.map(StoredSymbolReference::from_symbol_reference)
+				.into_iter()
+				.map(StoredSymbolReference::from_symbol_reference_owned)
 				.collect(),
 			alias_usages: index
 				.alias_usages
-				.iter()
-				.map(StoredAliasUsage::from_alias_usage)
+				.into_iter()
+				.map(StoredAliasUsage::from_alias_usage_owned)
 				.collect(),
 			key_usages: index
 				.key_usages
-				.iter()
-				.map(StoredKeyUsage::from_key_usage)
+				.into_iter()
+				.map(StoredKeyUsage::from_key_usage_owned)
 				.collect(),
 			scalar_assignments: index
 				.scalar_assignments
-				.iter()
-				.map(StoredScalarAssignment::from_scalar_assignment)
+				.into_iter()
+				.map(StoredScalarAssignment::from_scalar_assignment_owned)
 				.collect(),
 			localisation_definitions: index
 				.localisation_definitions
-				.iter()
-				.map(StoredLocalisationDefinition::from_localisation_definition)
+				.into_iter()
+				.map(StoredLocalisationDefinition::from_localisation_definition_owned)
 				.collect(),
 			localisation_duplicates: index
 				.localisation_duplicates
-				.iter()
-				.map(StoredLocalisationDuplicate::from_localisation_duplicate)
+				.into_iter()
+				.map(StoredLocalisationDuplicate::from_localisation_duplicate_owned)
 				.collect(),
 			ui_definitions: index
 				.ui_definitions
-				.iter()
-				.map(StoredUiDefinition::from_ui_definition)
+				.into_iter()
+				.map(StoredUiDefinition::from_ui_definition_owned)
 				.collect(),
 			resource_references: index
 				.resource_references
-				.iter()
-				.map(StoredResourceReference::from_resource_reference)
+				.into_iter()
+				.map(StoredResourceReference::from_resource_reference_owned)
 				.collect(),
 			csv_rows: index
 				.csv_rows
-				.iter()
-				.map(StoredCsvRow::from_csv_row)
+				.into_iter()
+				.map(StoredCsvRow::from_csv_row_owned)
 				.collect(),
 			json_properties: index
 				.json_properties
-				.iter()
-				.map(StoredJsonProperty::from_json_property)
+				.into_iter()
+				.map(StoredJsonProperty::from_json_property_owned)
 				.collect(),
 			parse_issues: index
 				.parse_issues
-				.iter()
-				.map(StoredParseIssue::from_parse_issue)
+				.into_iter()
+				.map(StoredParseIssue::from_parse_issue_owned)
 				.collect(),
 		}
 	}
@@ -578,9 +824,9 @@ impl StoredSemanticIndex {
 }
 
 impl StoredDocumentRecord {
-	fn from_document_record(item: &DocumentRecord) -> Self {
+	fn from_document_record_owned(item: DocumentRecord) -> Self {
 		Self {
-			mod_id: item.mod_id.clone(),
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			family: item.family,
 			parse_ok: item.parse_ok,
@@ -598,17 +844,17 @@ impl StoredDocumentRecord {
 }
 
 impl StoredScopeNode {
-	fn from_scope_node(item: &ScopeNode) -> Self {
+	fn from_scope_node_owned(item: ScopeNode) -> Self {
 		Self {
 			id: item.id,
 			kind: item.kind,
 			parent: item.parent,
 			this_type: item.this_type,
-			aliases: item.aliases.clone(),
-			mod_id: item.mod_id.clone(),
+			aliases: item.aliases,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
-			span: item.span.clone(),
-			key: item.key.clone(),
+			span: item.span,
+			key: item.key,
 		}
 	}
 
@@ -628,13 +874,13 @@ impl StoredScopeNode {
 }
 
 impl StoredSymbolDefinition {
-	fn from_symbol_definition(item: &SymbolDefinition) -> Self {
+	fn from_symbol_definition_owned(item: SymbolDefinition) -> Self {
 		Self {
 			kind: item.kind,
-			name: item.name.clone(),
-			module: item.module.clone(),
-			local_name: item.local_name.clone(),
-			mod_id: item.mod_id.clone(),
+			name: item.name,
+			module: item.module,
+			local_name: item.local_name,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -644,10 +890,10 @@ impl StoredSymbolDefinition {
 			inferred_this_mask: item.inferred_this_mask,
 			inferred_from_mask: item.inferred_from_mask,
 			inferred_root_mask: item.inferred_root_mask,
-			required_params: item.required_params.clone(),
-			optional_params: item.optional_params.clone(),
-			param_contract: item.param_contract.clone(),
-			scope_param_names: item.scope_param_names.clone(),
+			required_params: item.required_params,
+			optional_params: item.optional_params,
+			param_contract: item.param_contract,
+			scope_param_names: item.scope_param_names,
 		}
 	}
 
@@ -676,18 +922,18 @@ impl StoredSymbolDefinition {
 }
 
 impl StoredSymbolReference {
-	fn from_symbol_reference(item: &SymbolReference) -> Self {
+	fn from_symbol_reference_owned(item: SymbolReference) -> Self {
 		Self {
 			kind: item.kind,
-			name: item.name.clone(),
-			module: item.module.clone(),
-			mod_id: item.mod_id.clone(),
+			name: item.name,
+			module: item.module,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
 			scope_id: item.scope_id,
-			provided_params: item.provided_params.clone(),
-			param_bindings: item.param_bindings.clone(),
+			provided_params: item.provided_params,
+			param_bindings: item.param_bindings,
 		}
 	}
 
@@ -708,10 +954,10 @@ impl StoredSymbolReference {
 }
 
 impl StoredAliasUsage {
-	fn from_alias_usage(item: &AliasUsage) -> Self {
+	fn from_alias_usage_owned(item: AliasUsage) -> Self {
 		Self {
-			alias: item.alias.clone(),
-			mod_id: item.mod_id.clone(),
+			alias: item.alias,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -732,10 +978,10 @@ impl StoredAliasUsage {
 }
 
 impl StoredKeyUsage {
-	fn from_key_usage(item: &KeyUsage) -> Self {
+	fn from_key_usage_owned(item: KeyUsage) -> Self {
 		Self {
-			key: item.key.clone(),
-			mod_id: item.mod_id.clone(),
+			key: item.key,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -758,11 +1004,11 @@ impl StoredKeyUsage {
 }
 
 impl StoredScalarAssignment {
-	fn from_scalar_assignment(item: &ScalarAssignment) -> Self {
+	fn from_scalar_assignment_owned(item: ScalarAssignment) -> Self {
 		Self {
-			key: item.key.clone(),
-			value: item.value.clone(),
-			mod_id: item.mod_id.clone(),
+			key: item.key,
+			value: item.value,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -784,10 +1030,10 @@ impl StoredScalarAssignment {
 }
 
 impl StoredLocalisationDefinition {
-	fn from_localisation_definition(item: &LocalisationDefinition) -> Self {
+	fn from_localisation_definition_owned(item: LocalisationDefinition) -> Self {
 		Self {
-			key: item.key.clone(),
-			mod_id: item.mod_id.clone(),
+			key: item.key,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -806,10 +1052,10 @@ impl StoredLocalisationDefinition {
 }
 
 impl StoredLocalisationDuplicate {
-	fn from_localisation_duplicate(item: &LocalisationDuplicate) -> Self {
+	fn from_localisation_duplicate_owned(item: LocalisationDuplicate) -> Self {
 		Self {
-			key: item.key.clone(),
-			mod_id: item.mod_id.clone(),
+			key: item.key,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			first_line: item.first_line,
 			duplicate_line: item.duplicate_line,
@@ -828,10 +1074,10 @@ impl StoredLocalisationDuplicate {
 }
 
 impl StoredUiDefinition {
-	fn from_ui_definition(item: &UiDefinition) -> Self {
+	fn from_ui_definition_owned(item: UiDefinition) -> Self {
 		Self {
-			name: item.name.clone(),
-			mod_id: item.mod_id.clone(),
+			name: item.name,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -850,11 +1096,11 @@ impl StoredUiDefinition {
 }
 
 impl StoredResourceReference {
-	fn from_resource_reference(item: &ResourceReference) -> Self {
+	fn from_resource_reference_owned(item: ResourceReference) -> Self {
 		Self {
-			key: item.key.clone(),
-			value: item.value.clone(),
-			mod_id: item.mod_id.clone(),
+			key: item.key,
+			value: item.value,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -874,10 +1120,10 @@ impl StoredResourceReference {
 }
 
 impl StoredCsvRow {
-	fn from_csv_row(item: &CsvRow) -> Self {
+	fn from_csv_row_owned(item: CsvRow) -> Self {
 		Self {
-			identity: item.identity.clone(),
-			mod_id: item.mod_id.clone(),
+			identity: item.identity,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -896,10 +1142,10 @@ impl StoredCsvRow {
 }
 
 impl StoredJsonProperty {
-	fn from_json_property(item: &JsonProperty) -> Self {
+	fn from_json_property_owned(item: JsonProperty) -> Self {
 		Self {
-			key_path: item.key_path.clone(),
-			mod_id: item.mod_id.clone(),
+			key_path: item.key_path,
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
@@ -918,13 +1164,13 @@ impl StoredJsonProperty {
 }
 
 impl StoredParseIssue {
-	fn from_parse_issue(item: &ParseIssue) -> Self {
+	fn from_parse_issue_owned(item: ParseIssue) -> Self {
 		Self {
-			mod_id: item.mod_id.clone(),
+			mod_id: item.mod_id,
 			path: path_to_string(&item.path),
 			line: item.line,
 			column: item.column,
-			message: item.message.clone(),
+			message: item.message,
 		}
 	}
 
@@ -947,102 +1193,175 @@ pub fn default_mod_parse_cache_dir() -> PathBuf {
 	default_foch_cache_dir().join(DEFAULT_CACHE_DIR_NAME)
 }
 
-#[cfg(test)]
-pub fn compute_mod_hash(mod_root: &Path) -> Result<String, io::Error> {
-	let filter = FileFilter::for_game(Game::EuropaUniversalis4);
-	compute_mod_hash_with_filter(mod_root, &filter)
-}
-
-#[cfg(test)]
-fn compute_mod_hash_with_filter(mod_root: &Path, filter: &FileFilter) -> Result<String, io::Error> {
-	let mut files = Vec::new();
-	for entry in WalkDir::new(mod_root)
-		.into_iter()
-		.filter_entry(|entry| should_descend(entry.path(), mod_root))
-	{
-		let entry = entry.map_err(io::Error::other)?;
-		if !entry.file_type().is_file() {
-			continue;
+fn store_payload_streaming(
+	path: &Path,
+	payload: &StoredCachedModData,
+	cap_bytes: u64,
+) -> Result<ModParseCacheStoreOutcome, CacheError> {
+	let (tmp, file) = create_mod_parse_cache_tmp(path)?;
+	let encoded = encode_payload_into_file(payload, file);
+	let profile = match encoded {
+		Ok(profile) => profile,
+		Err(error) => {
+			let _ = fs::remove_file(&tmp);
+			return Err(error);
 		}
-		let path = entry.path();
-		let Ok(relative) = path.strip_prefix(mod_root) else {
-			continue;
-		};
-		if !filter.accepts(relative) {
-			continue;
-		}
-		files.push(relative.to_path_buf());
+	};
+	if profile.compressed_bytes > cap_bytes {
+		let _ = fs::remove_file(&tmp);
+		tracing::warn!(
+			target: "foch::cache::mod_snapshot",
+			path = %path.display(),
+			compressed_bytes = profile.compressed_bytes,
+			cap_bytes,
+			"rejecting mod snapshot larger than the cache-layer byte cap"
+		);
+		return Ok(ModParseCacheStoreOutcome::RejectedTooLarge {
+			compressed_bytes: profile.compressed_bytes,
+			cap_bytes,
+		});
 	}
-	compute_mod_hash_for_files(mod_root, &files)
+	if let Err(error) = fs::rename(&tmp, path) {
+		let _ = fs::remove_file(&tmp);
+		return Err(CacheError::Io(error));
+	}
+	Ok(ModParseCacheStoreOutcome::Stored(profile))
 }
 
-pub(crate) fn compute_mod_hash_for_files(
-	mod_root: &Path,
-	files: &[PathBuf],
-) -> Result<String, io::Error> {
-	let mut files = files.to_vec();
-	files.sort();
-
-	let mut hasher = blake3::Hasher::new();
-	let mut buffer = vec![0_u8; 64 * 1024];
-	for relative in files {
-		let normalized = normalize_relative_path(&relative);
-		hasher.update(&(normalized.len() as u64).to_le_bytes());
-		hasher.update(normalized.as_bytes());
-		let absolute = mod_root.join(&relative);
-		let mut file = fs::File::open(&absolute)?;
-		let len = file.metadata()?.len();
-		hasher.update(&len.to_le_bytes());
-		loop {
-			let read = file.read(&mut buffer)?;
-			if read == 0 {
-				break;
-			}
-			hasher.update(&buffer[..read]);
+fn create_mod_parse_cache_tmp(path: &Path) -> Result<(PathBuf, File), CacheError> {
+	for _ in 0..32 {
+		let sequence = MOD_PARSE_CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+		let tmp = path.with_extension(format!("rkyv.{}.{}.tmp", std::process::id(), sequence));
+		match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+			Ok(file) => return Ok((tmp, file)),
+			Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+			Err(error) => return Err(CacheError::Io(error)),
 		}
 	}
-	Ok(hasher.finalize().to_hex()[..HASH_HEX_LEN].to_string())
+	Err(CacheError::Io(io::Error::new(
+		io::ErrorKind::AlreadyExists,
+		"could not allocate a unique mod snapshot temporary file",
+	)))
 }
 
-fn encode_payload(payload: &StoredCachedModData) -> Result<AlignedVec, CacheError> {
-	rkyv::to_bytes::<rkyv::rancor::Error>(payload).map_err(CacheError::encode)
+fn encode_payload_into_file(
+	payload: &StoredCachedModData,
+	mut file: File,
+) -> Result<ModParseCacheEntryProfile, CacheError> {
+	file.write_all(&[0_u8; MOD_PARSE_CACHE_HEADER_BYTES])
+		.map_err(CacheError::Io)?;
+	let encoder = GzEncoder::new(file, Compression::fast());
+	let limited = SizeLimitedWriter::new(encoder, MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES);
+	let writer = IoWriter::new(limited);
+	let writer = rkyv::api::high::to_bytes_in::<_, rkyv::rancor::Error>(payload, writer)
+		.map_err(CacheError::encode)?;
+	let uncompressed_bytes = u64::try_from(writer.pos())
+		.map_err(|_| CacheError::encode("mod snapshot is too large to encode"))?;
+	let encoder = writer.into_inner().into_inner();
+	let mut file = encoder.finish().map_err(CacheError::Io)?;
+	let compressed_bytes = file.seek(SeekFrom::End(0)).map_err(CacheError::Io)?;
+	if uncompressed_bytes > MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES {
+		return Err(CacheError::encode(format!(
+			"uncompressed mod snapshot is {uncompressed_bytes} bytes, exceeding the {} byte decode limit",
+			MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES
+		)));
+	}
+	file.seek(SeekFrom::Start(0)).map_err(CacheError::Io)?;
+	file.write_all(MOD_PARSE_CACHE_MAGIC)
+		.map_err(CacheError::Io)?;
+	file.write_all(&uncompressed_bytes.to_le_bytes())
+		.map_err(CacheError::Io)?;
+	file.flush().map_err(CacheError::Io)?;
+	Ok(ModParseCacheEntryProfile {
+		compressed_bytes,
+		uncompressed_bytes,
+	})
 }
 
+fn decode_payload_from_file(path: &Path) -> Result<StoredCachedModData, CacheError> {
+	let file = File::open(path).map_err(CacheError::Io)?;
+	decode_payload_from_reader(BufReader::new(file))
+}
+
+fn decode_payload_from_reader(
+	mut reader: impl std::io::BufRead,
+) -> Result<StoredCachedModData, CacheError> {
+	let mut header = [0_u8; MOD_PARSE_CACHE_HEADER_BYTES];
+	reader.read_exact(&mut header).map_err(CacheError::Io)?;
+	let uncompressed_bytes = declared_uncompressed_bytes(&header)?;
+	let expected = usize::try_from(uncompressed_bytes)
+		.map_err(|_| CacheError::encode("mod snapshot length does not fit this platform"))?;
+	let mut decoder = GzDecoder::new(reader);
+	let mut aligned = AlignedVec::<16>::with_capacity(expected.min(1 << 20));
+	let mut chunk = [0_u8; 64 * 1024];
+	loop {
+		let read = decoder.read(&mut chunk).map_err(CacheError::Io)?;
+		if read == 0 {
+			break;
+		}
+		if aligned.len().saturating_add(read) > expected {
+			return Err(CacheError::encode(
+				"decompressed mod snapshot exceeds its declared length",
+			));
+		}
+		aligned.extend_from_slice(&chunk[..read]);
+	}
+	if aligned.len() != expected {
+		return Err(CacheError::encode(format!(
+			"decompressed mod snapshot length mismatch: expected {expected}, observed {}",
+			aligned.len()
+		)));
+	}
+	let mut compressed = decoder.into_inner();
+	let mut trailing = [0_u8; 1];
+	if compressed.read(&mut trailing).map_err(CacheError::Io)? != 0 {
+		return Err(CacheError::encode(
+			"trailing bytes after mod snapshot gzip stream",
+		));
+	}
+	let stored = rkyv::from_bytes::<StoredCachedModData, rkyv::rancor::Error>(&aligned)
+		.map_err(CacheError::encode)?;
+	stored.validate_document_metadata()?;
+	Ok(stored)
+}
+
+#[cfg(test)]
 fn decode_payload(bytes: &[u8]) -> Result<StoredCachedModData, CacheError> {
-	let mut aligned = AlignedVec::<16>::with_capacity(bytes.len());
-	aligned.extend_from_slice(bytes);
-	// SAFETY: Mod parse cache files are produced by `encode_payload`; corrupt or
-	// incompatible files simply fail and are treated as cache misses.
-	unsafe { rkyv::from_bytes_unchecked::<StoredCachedModData, rkyv::rancor::Error>(&aligned) }
-		.map_err(CacheError::encode)
+	decode_payload_from_reader(Cursor::new(bytes))
+}
+
+fn declared_uncompressed_bytes(header: &[u8]) -> Result<u64, CacheError> {
+	if header.len() != MOD_PARSE_CACHE_HEADER_BYTES {
+		return Err(CacheError::encode("invalid mod snapshot header length"));
+	}
+	if header.get(..MOD_PARSE_CACHE_MAGIC.len()) != Some(MOD_PARSE_CACHE_MAGIC.as_slice()) {
+		return Err(CacheError::encode("invalid mod snapshot magic"));
+	}
+	let length_bytes: [u8; 8] = header[MOD_PARSE_CACHE_MAGIC.len()..]
+		.try_into()
+		.map_err(CacheError::encode)?;
+	let uncompressed_bytes = u64::from_le_bytes(length_bytes);
+	if uncompressed_bytes > MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES {
+		return Err(CacheError::encode(format!(
+			"mod snapshot declares {uncompressed_bytes} uncompressed bytes, exceeding the {} byte decode limit",
+			MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES
+		)));
+	}
+	Ok(uncompressed_bytes)
 }
 
 fn cache_filename(
 	cache_version: &str,
 	mod_hash: &str,
 	foch_version: &str,
-	game_version: &str,
+	game_key: &str,
 ) -> String {
 	format!(
 		"{}__cv{}__v{}__g{}.rkyv",
 		sanitize_component(mod_hash),
 		cache_version,
 		sanitize_component(foch_version),
-		sanitize_component(game_version)
-	)
-}
-
-#[cfg(test)]
-fn should_descend(path: &Path, root: &Path) -> bool {
-	if path == root {
-		return true;
-	}
-	let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-		return true;
-	};
-	!matches!(
-		name,
-		".git" | ".hg" | ".svn" | ".jj" | ".direnv" | "target" | "node_modules"
+		sanitize_component(game_key)
 	)
 }
 
@@ -1062,78 +1381,12 @@ fn sanitize_component(value: &str) -> String {
 	}
 }
 
-fn normalize_relative_path(path: &Path) -> String {
-	path.to_string_lossy().replace('\\', "/")
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use foch_core::model::{DocumentFamily, DocumentRecord};
-	use std::thread;
 	use std::time::Duration;
 	use tempfile::TempDir;
-
-	fn write_loadable_file(root: &Path, relative: &str, contents: &str) {
-		let path = root.join(relative);
-		fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
-		fs::write(path, contents).expect("write file");
-	}
-
-	#[test]
-	fn mod_hash_is_deterministic_across_runs() {
-		let tmp = TempDir::new().expect("temp dir");
-		write_loadable_file(tmp.path(), "common/countries/A.txt", "color = { 1 2 3 }\n");
-
-		let first = compute_mod_hash(tmp.path()).expect("first hash");
-		let second = compute_mod_hash(tmp.path()).expect("second hash");
-
-		assert_eq!(first, second);
-	}
-
-	#[test]
-	fn mod_hash_changes_when_file_content_changes() {
-		let tmp = TempDir::new().expect("temp dir");
-		write_loadable_file(tmp.path(), "common/countries/A.txt", "color = { 1 2 3 }\n");
-		let first = compute_mod_hash(tmp.path()).expect("first hash");
-
-		write_loadable_file(tmp.path(), "common/countries/A.txt", "color = { 1 2 4 }\n");
-		let second = compute_mod_hash(tmp.path()).expect("second hash");
-
-		assert_ne!(first, second);
-	}
-
-	#[test]
-	fn mod_hash_unaffected_by_mtime() {
-		let tmp = TempDir::new().expect("temp dir");
-		let relative = "common/countries/A.txt";
-		write_loadable_file(tmp.path(), relative, "color = { 1 2 3 }\n");
-		let first = compute_mod_hash(tmp.path()).expect("first hash");
-
-		thread::sleep(Duration::from_millis(10));
-		write_loadable_file(tmp.path(), relative, "color = { 1 2 3 }\n");
-		let second = compute_mod_hash(tmp.path()).expect("second hash");
-
-		assert_eq!(first, second);
-	}
-
-	#[test]
-	fn mod_hash_excludes_ignored_paths() {
-		let tmp = TempDir::new().expect("temp dir");
-		write_loadable_file(tmp.path(), "common/countries/A.txt", "color = { 1 2 3 }\n");
-		let first = compute_mod_hash(tmp.path()).expect("first hash");
-
-		write_loadable_file(tmp.path(), "target/common/countries/A.txt", "changed\n");
-		write_loadable_file(tmp.path(), ".git/common/countries/A.txt", "changed\n");
-		write_loadable_file(
-			tmp.path(),
-			"node_modules/common/countries/A.txt",
-			"changed\n",
-		);
-		let second = compute_mod_hash(tmp.path()).expect("second hash");
-
-		assert_eq!(first, second);
-	}
 
 	#[test]
 	fn cache_lookup_miss_then_store_then_hit() {
@@ -1148,7 +1401,15 @@ mod tests {
 		});
 		let data = CachedModData {
 			semantic_index: index,
-			parsed_documents: Vec::new(),
+			inventory_paths: vec![
+				"common/countries/A.txt".to_string(),
+				"gfx/flags/A.tga".to_string(),
+			],
+			document_noop_hints: vec![true],
+			document_input_identities: vec![Some(CachedDocumentInputIdentity {
+				size_bytes: 17,
+				content_digest: "abc123".to_string(),
+			})],
 		};
 
 		assert!(cache.lookup("abc123", "0.1.0", "eu4 1.37.4").is_none());
@@ -1161,6 +1422,277 @@ mod tests {
 
 		assert_eq!(hit.semantic_index.documents.len(), 1);
 		assert_eq!(hit.semantic_index.documents[0].mod_id, "mod-a");
+		assert_eq!(
+			hit.inventory_paths,
+			vec![
+				"common/countries/A.txt".to_string(),
+				"gfx/flags/A.tga".to_string(),
+			]
+		);
+		assert_eq!(hit.document_noop_hints, vec![true]);
+		assert_eq!(
+			hit.document_input_identities,
+			vec![Some(CachedDocumentInputIdentity {
+				size_bytes: 17,
+				content_digest: "abc123".to_string(),
+			})]
+		);
+		let profile = cache
+			.entry_profile("abc123", "0.1.0", "eu4 1.37.4")
+			.expect("entry profile");
+		assert!(profile.compressed_bytes > MOD_PARSE_CACHE_HEADER_BYTES as u64);
+		assert!(profile.uncompressed_bytes > 0);
+		let path = cache.cache_file(MOD_PARSE_CACHE_VERSION, "abc123", "0.1.0", "eu4 1.37.4");
+		let raw = fs::read(path).expect("read envelope");
+		assert_eq!(&raw[..MOD_PARSE_CACHE_MAGIC.len()], MOD_PARSE_CACHE_MAGIC);
+	}
+
+	#[test]
+	fn oversized_store_returns_payload_and_leaves_no_entry() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let data = CachedModData {
+			semantic_index: SemanticIndex::default(),
+			inventory_paths: vec!["common/countries/A.txt".to_string()],
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
+		};
+		let final_path =
+			cache.cache_file(MOD_PARSE_CACHE_VERSION, "oversized", "0.1.0", "eu4 1.37.4");
+
+		let (returned, result) = cache.store_owned_with_cache_version_and_cap(
+			MOD_PARSE_CACHE_VERSION,
+			"oversized",
+			"0.1.0",
+			"eu4 1.37.4",
+			data,
+			MOD_PARSE_CACHE_HEADER_BYTES as u64,
+		);
+
+		assert!(returned.semantic_index.documents.is_empty());
+		assert_eq!(
+			returned.inventory_paths,
+			vec!["common/countries/A.txt".to_string()]
+		);
+		assert!(matches!(
+			result,
+			Ok(ModParseCacheStoreOutcome::RejectedTooLarge { .. })
+		));
+		assert!(!final_path.exists());
+		assert!(
+			fs::read_dir(tmp.path())
+				.expect("read cache dir")
+				.flatten()
+				.all(|entry| !is_mod_parse_cache_tmp(&entry.file_name().to_string_lossy()))
+		);
+	}
+
+	#[test]
+	fn store_error_returns_original_payload_without_creating_temp_files() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let mut index = SemanticIndex::default();
+		index.documents.push(DocumentRecord {
+			mod_id: "mod-a".to_string(),
+			path: PathBuf::from("common/countries/A.txt"),
+			family: DocumentFamily::Clausewitz,
+			parse_ok: true,
+		});
+		let data = CachedModData {
+			semantic_index: index,
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: vec![None],
+		};
+
+		let (returned, result) = cache.store_owned("invalid-metadata", "0.1.0", "eu4 1.37.4", data);
+
+		assert!(result.is_err());
+		assert_eq!(returned.semantic_index.documents.len(), 1);
+		assert!(returned.document_noop_hints.is_empty());
+		assert!(
+			fs::read_dir(tmp.path())
+				.expect("read cache dir")
+				.flatten()
+				.all(|entry| !is_mod_parse_cache_tmp(&entry.file_name().to_string_lossy()))
+		);
+	}
+
+	#[test]
+	fn store_rejects_invalid_inventory_paths() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let invalid_cases = [
+			(
+				"unsorted",
+				vec!["gfx/flags/A.tga", "common/countries/A.txt"],
+			),
+			(
+				"duplicate",
+				vec!["common/countries/A.txt", "common/countries/A.txt"],
+			),
+			("empty", vec![""]),
+			("absolute", vec!["/common/countries/A.txt"]),
+			("drive-absolute", vec!["C:/common/countries/A.txt"]),
+			("empty-component", vec!["common//countries/A.txt"]),
+			("dot-component", vec!["common/./countries/A.txt"]),
+			("parent-component", vec!["common/../countries/A.txt"]),
+			("backslash", vec![r"common\countries\A.txt"]),
+		];
+
+		for (case, paths) in invalid_cases {
+			let inventory_paths = paths.into_iter().map(str::to_string).collect::<Vec<_>>();
+			let data = CachedModData {
+				semantic_index: SemanticIndex::default(),
+				inventory_paths: inventory_paths.clone(),
+				document_noop_hints: Vec::new(),
+				document_input_identities: Vec::new(),
+			};
+
+			let (returned, result) = cache.store_owned(case, "0.1.0", "eu4 1.37.4", data);
+			let error = result.expect_err(case);
+
+			assert_eq!(returned.inventory_paths, inventory_paths, "{case}");
+			assert!(
+				matches!(error, CacheError::Encode(message) if message.contains("inventory")),
+				"{case}"
+			);
+		}
+		assert!(
+			fs::read_dir(tmp.path())
+				.expect("read cache dir")
+				.next()
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn decode_rejects_invalid_inventory_paths() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let path = cache.cache_file(
+			MOD_PARSE_CACHE_VERSION,
+			"invalid-inventory",
+			"0.1.0",
+			"eu4 1.37.4",
+		);
+		let payload = StoredCachedModData::from_cached_mod_data_owned(
+			MOD_PARSE_CACHE_VERSION,
+			"invalid-inventory",
+			"0.1.0",
+			"eu4 1.37.4",
+			CachedModData {
+				semantic_index: SemanticIndex::default(),
+				inventory_paths: vec!["common/../countries/A.txt".to_string()],
+				document_noop_hints: Vec::new(),
+				document_input_identities: Vec::new(),
+			},
+		);
+		assert!(matches!(
+			store_payload_streaming(&path, &payload, u64::MAX).expect("encode invalid payload"),
+			ModParseCacheStoreOutcome::Stored(_)
+		));
+
+		let error = decode_payload_from_file(&path).expect_err("reject invalid inventory");
+		assert!(matches!(
+			error,
+			CacheError::Encode(message) if message.contains("inventory path")
+		));
+		assert!(
+			cache
+				.lookup("invalid-inventory", "0.1.0", "eu4 1.37.4")
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn lookup_rejects_compressed_entry_over_cap_before_decode() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let path = cache.cache_file(MOD_PARSE_CACHE_VERSION, "over-cap", "0.1.0", "eu4 1.37.4");
+		fs::write(&path, [0_u8; MOD_PARSE_CACHE_HEADER_BYTES + 1]).expect("write oversized entry");
+
+		assert!(
+			cache
+				.lookup_with_cache_version_and_cap(
+					MOD_PARSE_CACHE_VERSION,
+					"over-cap",
+					"0.1.0",
+					"eu4 1.37.4",
+					MOD_PARSE_CACHE_HEADER_BYTES as u64,
+				)
+				.is_none()
+		);
+		assert!(!path.exists());
+	}
+
+	#[test]
+	fn cache_lookup_treats_corruption_truncation_and_trailing_bytes_as_misses() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let data = CachedModData {
+			semantic_index: SemanticIndex::default(),
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
+		};
+		cache
+			.store("corrupt", "0.1.0", "eu4 1.37.4", &data)
+			.expect("store cache");
+		let path = cache.cache_file(MOD_PARSE_CACHE_VERSION, "corrupt", "0.1.0", "eu4 1.37.4");
+		let original = fs::read(&path).expect("read cache entry");
+
+		let mut corrupted = original.clone();
+		let payload_middle =
+			MOD_PARSE_CACHE_HEADER_BYTES + (corrupted.len() - MOD_PARSE_CACHE_HEADER_BYTES) / 2;
+		corrupted[payload_middle] ^= 0xff;
+		fs::write(&path, corrupted).expect("write corrupted entry");
+		assert!(cache.lookup("corrupt", "0.1.0", "eu4 1.37.4").is_none());
+
+		fs::write(&path, &original[..original.len() - 1]).expect("write truncated entry");
+		assert!(cache.lookup("corrupt", "0.1.0", "eu4 1.37.4").is_none());
+
+		let mut trailing = original;
+		trailing.push(0);
+		fs::write(&path, trailing).expect("write entry with trailing byte");
+		assert!(cache.lookup("corrupt", "0.1.0", "eu4 1.37.4").is_none());
+	}
+
+	#[test]
+	fn cache_decode_rejects_invalid_magic_and_oversized_declared_payload() {
+		let mut invalid_magic = vec![0_u8; MOD_PARSE_CACHE_HEADER_BYTES];
+		invalid_magic[MOD_PARSE_CACHE_MAGIC.len()..].copy_from_slice(&1_u64.to_le_bytes());
+		assert!(decode_payload(&invalid_magic).is_err());
+
+		let mut oversized = Vec::from(MOD_PARSE_CACHE_MAGIC.as_slice());
+		oversized.extend_from_slice(&(MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES + 1).to_le_bytes());
+		assert!(decode_payload(&oversized).is_err());
+	}
+
+	#[test]
+	fn successful_cache_lookup_touches_entry_mtime() {
+		let tmp = TempDir::new().expect("temp dir");
+		let cache = ModParseCache::open(tmp.path());
+		let data = CachedModData {
+			semantic_index: SemanticIndex::default(),
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
+		};
+		cache
+			.store("touch", "0.1.0", "eu4 1.37.4", &data)
+			.expect("store cache");
+		let path = cache.cache_file(MOD_PARSE_CACHE_VERSION, "touch", "0.1.0", "eu4 1.37.4");
+		let old_time = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+		filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(old_time))
+			.expect("age cache entry");
+
+		assert!(cache.lookup("touch", "0.1.0", "eu4 1.37.4").is_some());
+		let touched = fs::metadata(path)
+			.expect("cache metadata")
+			.modified()
+			.expect("cache mtime");
+		assert!(touched > old_time);
 	}
 
 	#[test]
@@ -1176,13 +1708,24 @@ mod tests {
 			"eu4 1.37.4",
 		));
 		let unrelated = tmp.path().join("owner.txt");
+		let stale_tmp = current.with_extension("rkyv.123.456.tmp");
+		let fresh_tmp = current.with_extension("rkyv.123.457.tmp");
 		fs::write(&obsolete, "stale").expect("write obsolete cache");
 		fs::write(&current, "current").expect("write current cache");
 		fs::write(&unrelated, "keep").expect("write unrelated file");
+		fs::write(&stale_tmp, "stale tmp").expect("write stale tmp");
+		fs::write(&fresh_tmp, "fresh tmp").expect("write fresh tmp");
+		let old_time = SystemTime::now()
+			.checked_sub(Duration::from_secs(STALE_MOD_PARSE_CACHE_TMP_SECONDS + 1))
+			.expect("old time");
+		filetime::set_file_mtime(&stale_tmp, filetime::FileTime::from_system_time(old_time))
+			.expect("age stale tmp");
 
 		let _cache = ModParseCache::open(tmp.path());
 
 		assert!(!obsolete.exists());
+		assert!(!stale_tmp.exists());
+		assert!(fresh_tmp.is_file());
 		assert!(current.is_file());
 		assert!(unrelated.is_file());
 	}
@@ -1193,7 +1736,9 @@ mod tests {
 		let cache = ModParseCache::open(tmp.path());
 		let data = CachedModData {
 			semantic_index: SemanticIndex::default(),
-			parsed_documents: Vec::new(),
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
 		};
 		cache
 			.store("abc123", "0.1.0", "eu4 1.37.4", &data)
@@ -1207,17 +1752,19 @@ mod tests {
 	}
 
 	#[test]
-	fn cache_lookup_miss_on_different_game_version() {
+	fn cache_lookup_miss_on_different_game_key() {
 		let tmp = TempDir::new().expect("temp dir");
 		let cache = ModParseCache::open(tmp.path());
 		let data = CachedModData {
 			semantic_index: SemanticIndex::default(),
-			parsed_documents: Vec::new(),
+			inventory_paths: Vec::new(),
+			document_noop_hints: Vec::new(),
+			document_input_identities: Vec::new(),
 		};
 		cache
-			.store("abc123", "0.1.0", "eu4 1.37.4", &data)
+			.store("abc123", "0.1.0", "eu4", &data)
 			.expect("store cache");
 
-		assert!(cache.lookup("abc123", "0.1.0", "eu4 1.38.0").is_none());
+		assert!(cache.lookup("abc123", "0.1.0", "ck3").is_none());
 	}
 }

@@ -1,5 +1,7 @@
 use crate::domain::ParseError;
 use jomini::JominiDeserialize;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::Path;
 
 #[derive(JominiDeserialize, Debug, Clone, Default)]
@@ -19,9 +21,46 @@ pub struct ModDescriptor {
 }
 
 pub fn load_descriptor(path: &Path) -> Result<ModDescriptor, ParseError> {
-	let data = std::fs::read(path).map_err(|err| ParseError::io(path.to_path_buf(), err))?;
+	let mut file = open_regular_descriptor_no_follow(path)
+		.map_err(|err| ParseError::io(path.to_path_buf(), err))?;
+	let mut data = Vec::new();
+	file.read_to_end(&mut data)
+		.map_err(|err| ParseError::io(path.to_path_buf(), err))?;
 	parse_descriptor_bytes(&data)
 		.map_err(|err| ParseError::format(path.to_path_buf(), err.to_string()))
+}
+
+fn open_regular_descriptor_no_follow(path: &Path) -> io::Result<File> {
+	let metadata = fs::symlink_metadata(path)?;
+	if !metadata.file_type().is_file() {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!(
+				"descriptor must be a regular file, not a symlink: {}",
+				path.display()
+			),
+		));
+	}
+	#[cfg(unix)]
+	let file = {
+		use rustix::fs::{Mode, OFlags, open};
+		let descriptor = open(
+			path,
+			OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+			Mode::empty(),
+		)
+		.map_err(io::Error::from)?;
+		File::from(descriptor)
+	};
+	#[cfg(not(unix))]
+	let file = File::open(path)?;
+	if !file.metadata()?.file_type().is_file() {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!("descriptor must be a regular file: {}", path.display()),
+		));
+	}
+	Ok(file)
 }
 
 /// Parse `descriptor.mod` bytes, sniffing UTF-8 vs. windows-1252.
@@ -53,6 +92,7 @@ pub(crate) fn parse_descriptor_bytes(data: &[u8]) -> Result<ModDescriptor, jomin
 #[cfg(test)]
 mod tests {
 	use super::{ModDescriptor, load_descriptor, parse_descriptor_bytes};
+	use std::fs;
 	use std::path::Path;
 
 	fn parse(input: &str) -> ModDescriptor {
@@ -74,6 +114,21 @@ mod tests {
 		assert_eq!(descriptor.name, "defines");
 		assert_eq!(descriptor.version.as_deref(), Some("0.0.1"));
 		assert_eq!(descriptor.remote_file_id.as_deref(), Some("2887527268"));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn rejects_descriptor_symlinks_without_reading_the_target() {
+		use std::os::unix::fs::symlink;
+
+		let root = tempfile::tempdir().expect("fixture root");
+		let target = root.path().join("outside.mod");
+		let descriptor = root.path().join("descriptor.mod");
+		fs::write(&target, "name=\"outside\"\n").expect("write target");
+		symlink(&target, &descriptor).expect("link descriptor");
+
+		let error = load_descriptor(&descriptor).expect_err("descriptor symlink must fail closed");
+		assert!(error.to_string().contains("regular file"));
 	}
 
 	#[test]

@@ -8,24 +8,24 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 use foch_core::domain::descriptor::load_descriptor;
-use foch_core::model::MergeReport;
+use foch_core::domain::game::Game;
+use foch_core::model::{DocumentFamily, MergeReport};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
 	GameProfile, MergeKeySource,
 };
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
+use foch_language::analyzer::documents::classify_document_family;
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{
-	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_file,
+	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content, parse_clausewitz_file,
 };
 use foch_language::analyzer::semantic_index::parse_script_file;
 use regex::Regex;
-
-use crate::common_module::{CommonModuleDiagnostic, normalize_module_comparison};
 
 /// `^key = {` at a line start — a top-level Clausewitz definition.
 static TOP_KEY_RE: LazyLock<Regex> =
@@ -33,9 +33,6 @@ static TOP_KEY_RE: LazyLock<Regex> =
 static WS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 /// `for <path>;` inside a conflict warning string.
 static WARN_PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"for ([\w./\-]+);").unwrap());
-
-const SKIP_NAMES: &[&str] = &["descriptor.mod", "thumbnail.png"];
-const SKIP_EXTS: &[&str] = &["bak", "jpg", "jpeg", "png", "dds", "tga", "mod"];
 
 /// Read a file as UTF-8, replacing invalid sequences (mirrors Python's
 /// `read_text(errors="replace")`). Returns `None` only on I/O error.
@@ -146,36 +143,66 @@ fn find_longest_match(
 	(besti, bestj, bestsize)
 }
 
-/// Relative paths of every script file in the compatch reference output,
-/// skipping descriptors and non-script binary assets.
-pub fn reference_output_files(compatch_dir: &Path) -> Vec<String> {
+/// Relative paths of every supported text document in the compatch reference
+/// output. Traversal is pruned at non-loadable top-level roots, and file
+/// admission uses the analyzer's explicit [`DocumentFamily`] whitelist.
+pub fn reference_output_files(compatch_dir: &Path) -> io::Result<Vec<String>> {
 	let mut out = Vec::new();
+	let loadable_roots = Game::EuropaUniversalis4
+		.loadable_content_roots()
+		.expect("EU4 loadable roots are defined");
 	for entry in walkdir::WalkDir::new(compatch_dir)
 		.into_iter()
-		.filter_map(Result::ok)
-	{
+		.filter_entry(|entry| {
+			walk_entry_is_under_loadable_root(compatch_dir, entry, loadable_roots)
+		}) {
+		let entry = entry.map_err(io::Error::other)?;
 		if !entry.file_type().is_file() {
 			continue;
 		}
-		let path = entry.path();
-		let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-		if SKIP_NAMES.contains(&name) {
-			continue;
-		}
-		let ext = path
-			.extension()
-			.and_then(|e| e.to_str())
-			.map(str::to_ascii_lowercase)
-			.unwrap_or_default();
-		if SKIP_EXTS.contains(&ext.as_str()) {
-			continue;
-		}
-		if let Ok(rel) = path.strip_prefix(compatch_dir) {
-			out.push(rel.to_string_lossy().replace('\\', "/"));
+		let relative = entry
+			.path()
+			.strip_prefix(compatch_dir)
+			.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+		if is_supported_text_document(relative) {
+			out.push(relative.to_string_lossy().replace('\\', "/"));
 		}
 	}
 	out.sort();
-	out
+	Ok(out)
+}
+
+fn walk_entry_is_under_loadable_root(
+	root: &Path,
+	entry: &walkdir::DirEntry,
+	loadable_roots: &[&str],
+) -> bool {
+	if entry.depth() == 0 {
+		return true;
+	}
+	let Ok(relative) = entry.path().strip_prefix(root) else {
+		return false;
+	};
+	let Some(Component::Normal(top_level)) = relative.components().next() else {
+		return false;
+	};
+	let top_level = top_level.to_string_lossy();
+	loadable_roots
+		.iter()
+		.any(|candidate| top_level.eq_ignore_ascii_case(candidate))
+}
+
+fn is_supported_text_document(relative: &Path) -> bool {
+	Game::EuropaUniversalis4.is_loadable_content_path(relative)
+		&& matches!(
+			classify_document_family(relative),
+			Some(
+				DocumentFamily::Clausewitz
+					| DocumentFamily::Localisation
+					| DocumentFamily::Csv
+					| DocumentFamily::Json
+			)
+		)
 }
 
 /// Return the scorer's requested paths unchanged. The engine owns semantic
@@ -192,6 +219,9 @@ pub fn scoring_reference_units(reference_paths: &[String]) -> Vec<String> {
 	let mut units = BTreeSet::new();
 	let mut module_units = BTreeMap::new();
 	for rel in reference_paths {
+		if !is_supported_text_document(Path::new(rel)) {
+			continue;
+		}
 		if let Some(policy) = definition_module_policy_for_path(rel) {
 			module_units
 				.entry(policy.namespace_prefix)
@@ -202,6 +232,129 @@ pub fn scoring_reference_units(reference_paths: &[String]) -> Vec<String> {
 	}
 	units.extend(module_units.into_values().map(str::to_string));
 	units.into_iter().collect()
+}
+
+/// Enumerate the exact regular files under one runtime layer that the scorer
+/// can inspect for a scoring unit. Definition-module units expand to the full
+/// policy namespace; path-scoped units remain exact. `descriptor.mod` is
+/// included because replace-path semantics can change the effective view.
+pub fn scoring_evidence_files(root: &Path, scoring_unit: &str) -> io::Result<Vec<String>> {
+	let relative = Path::new(scoring_unit);
+	if scoring_unit.is_empty()
+		|| relative.components().any(|component| {
+			matches!(
+				component,
+				Component::Prefix(_)
+					| Component::RootDir
+					| Component::ParentDir
+					| Component::CurDir
+			)
+		}) {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!("unsafe scoring unit path {scoring_unit:?}"),
+		));
+	}
+	if !is_supported_text_document(relative) {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!("unsupported scoring unit document {scoring_unit:?}"),
+		));
+	}
+
+	let mut paths = BTreeSet::new();
+	push_regular_evidence_file(root, Path::new("descriptor.mod"), &mut paths)?;
+	if let Some(policy) = definition_module_policy_for_path(scoring_unit) {
+		let namespace = root.join(policy.namespace_prefix);
+		match fs::symlink_metadata(&namespace) {
+			Ok(metadata) if metadata.file_type().is_dir() => {
+				for entry in walkdir::WalkDir::new(&namespace) {
+					let entry = entry.map_err(io::Error::other)?;
+					if !entry.file_type().is_file() {
+						continue;
+					}
+					let relative = entry
+						.path()
+						.strip_prefix(root)
+						.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+					if is_supported_text_document(relative) {
+						paths.insert(relative.to_string_lossy().replace('\\', "/"));
+					}
+				}
+			}
+			Ok(_) => {
+				return Err(io::Error::new(
+					io::ErrorKind::InvalidData,
+					format!(
+						"scoring module namespace is not a directory: {}",
+						namespace.display()
+					),
+				));
+			}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+			Err(error) => return Err(error),
+		}
+	} else {
+		push_regular_evidence_file(root, relative, &mut paths)?;
+	}
+	Ok(paths.into_iter().collect())
+}
+
+/// Whether one scorer-visible relative path can belong to the requested unit.
+/// Path-scoped units admit only their exact path; definition-module units admit
+/// only files inside the policy-owned namespace. The descriptor is shared by
+/// every unit because it controls replace-path visibility.
+pub fn scoring_evidence_path_belongs_to_unit(scoring_unit: &str, relative_path: &str) -> bool {
+	let scoring_path = Path::new(scoring_unit);
+	let relative_path = Path::new(relative_path);
+	if scoring_unit.is_empty()
+		|| !is_supported_text_document(scoring_path)
+		|| relative_path.is_absolute()
+		|| relative_path.components().any(|component| {
+			matches!(
+				component,
+				Component::Prefix(_)
+					| Component::RootDir
+					| Component::ParentDir
+					| Component::CurDir
+			)
+		}) {
+		return false;
+	}
+	if relative_path == Path::new("descriptor.mod") {
+		return true;
+	}
+	if !is_supported_text_document(relative_path) {
+		return false;
+	}
+	definition_module_policy_for_path(scoring_unit).map_or_else(
+		|| relative_path == scoring_path,
+		|policy| relative_path.starts_with(policy.namespace_prefix),
+	)
+}
+
+fn push_regular_evidence_file(
+	root: &Path,
+	relative: &Path,
+	paths: &mut BTreeSet<String>,
+) -> io::Result<()> {
+	let path = root.join(relative);
+	match fs::symlink_metadata(&path) {
+		Ok(metadata) if metadata.file_type().is_file() => {
+			paths.insert(relative.to_string_lossy().replace('\\', "/"));
+			Ok(())
+		}
+		Ok(_) if path.is_file() => Err(io::Error::new(
+			io::ErrorKind::InvalidData,
+			format!(
+				"scoring evidence must be a regular file: {}",
+				path.display()
+			),
+		)),
+		Ok(_) => Ok(()),
+		Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+		Err(error) => Err(error),
+	}
 }
 
 /// Syntactically index a mod's top-level definitions by `(content_directory,
@@ -466,9 +619,9 @@ struct ContentEntry {
 }
 
 impl ContentEntry {
-	fn new(text: String) -> Self {
+	fn new(bytes: &[u8]) -> Self {
 		Self {
-			text,
+			text: foch_core::decode_paradox_bytes(bytes).into_owned(),
 			normalized: None,
 			keys: None,
 			canonical: HashMap::new(),
@@ -510,9 +663,9 @@ impl ScoreCache {
 				Ok(bytes) => {
 					let hash = blake3::hash(&bytes).to_hex().to_string();
 					let key = ContentKey(hash);
-					self.content_entries.entry(key.clone()).or_insert_with(|| {
-						ContentEntry::new(String::from_utf8_lossy(&bytes).into_owned())
-					});
+					self.content_entries
+						.entry(key.clone())
+						.or_insert_with(|| ContentEntry::new(&bytes));
 					Some(key)
 				}
 				Err(_) => None,
@@ -589,7 +742,14 @@ impl ScoreCache {
 			.canonical
 			.contains_key(&key)
 		{
-			let parsed = parse_clausewitz_file(path);
+			let parsed = parse_clausewitz_content(
+				path.to_path_buf(),
+				&self
+					.content_entries
+					.get(&content)
+					.expect("content entry inserted")
+					.text,
+			);
 			let canonical = if parsed.diagnostics.is_empty() {
 				Some(canonical_statements(&parsed.ast.statements, ordering))
 			} else {
@@ -1141,6 +1301,10 @@ fn collect_module_files(
 			continue;
 		}
 		let path = entry.into_path();
+		let relative = path.strip_prefix(root).ok()?;
+		if !is_supported_text_document(relative) {
+			continue;
+		}
 		files.push((relative_module_path(root, &path), path));
 	}
 	files.sort_by(|left, right| left.0.cmp(&right.0));
@@ -1465,39 +1629,6 @@ pub struct SemanticAtomDiff {
 	pub shared_atoms: usize,
 	pub left_only: BTreeMap<String, usize>,
 	pub right_only: BTreeMap<String, usize>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct StructuredModuleSemanticRelation {
-	pub(crate) diff: SemanticAtomDiff,
-	pub(crate) diagnostics: Vec<CommonModuleDiagnostic>,
-}
-
-impl StructuredModuleSemanticRelation {
-	pub(crate) fn is_equivalent(&self) -> bool {
-		self.diagnostics.is_empty()
-			&& self.diff.left_only.is_empty()
-			&& self.diff.right_only.is_empty()
-	}
-}
-
-pub(crate) fn structured_module_semantic_relation(
-	relative_path: &str,
-	candidate: &AstFile,
-	human: &AstFile,
-) -> Option<StructuredModuleSemanticRelation> {
-	let module_policy = definition_module_policy_for_path(relative_path)?;
-	let descriptor = eu4_profile().classify_content_family(Path::new(relative_path))?;
-	let comparison = normalize_module_comparison(
-		candidate,
-		human,
-		&descriptor.merge_policies,
-		module_policy.namespace_prefix,
-	);
-	Some(StructuredModuleSemanticRelation {
-		diff: semantic_atom_diff_ast(&comparison.candidate, &comparison.human),
-		diagnostics: comparison.diagnostics,
-	})
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -2233,45 +2364,6 @@ mod classify_tests {
 	}
 
 	#[test]
-	fn structured_module_relation_accepts_inverted_if_else() {
-		let temp = tempfile::tempdir().unwrap();
-		let candidate_path = temp.path().join("candidate.txt");
-		let human_path = temp.path().join("human.txt");
-		write_file(
-			temp.path(),
-			"candidate.txt",
-			"faith = {\n\
-			\tif = { limit = { has_country_flag = selected } add_stability = 1 }\n\
-			\telse = { add_prestige = 1 }\n\
-			}\n",
-		);
-		write_file(
-			temp.path(),
-			"human.txt",
-			"faith = {\n\
-			\tif = { limit = { NOT = { has_country_flag = selected } } add_prestige = 1 }\n\
-			\telse = { add_stability = 1 }\n\
-			}\n",
-		);
-		let candidate = parse_clausewitz_file(&candidate_path);
-		let human = parse_clausewitz_file(&human_path);
-		assert!(candidate.diagnostics.is_empty());
-		assert!(human.diagnostics.is_empty());
-		let raw = semantic_atom_diff_ast(&candidate.ast, &human.ast);
-		assert!(!raw.left_only.is_empty());
-		assert!(!raw.right_only.is_empty());
-
-		let relation = structured_module_semantic_relation(
-			"common/religions/zzz_foch_religions.txt",
-			&candidate.ast,
-			&human.ast,
-		)
-		.expect("religions is a Structured definition module");
-
-		assert!(relation.is_equivalent(), "{relation:?}");
-	}
-
-	#[test]
 	fn review_evidence_uses_complete_definition_module_views() {
 		let basegame = tempfile::tempdir().unwrap();
 		let left = tempfile::tempdir().unwrap();
@@ -2959,6 +3051,7 @@ mod classify_tests {
 			"common/governments/10_human.txt".to_string(),
 			"interface/target.gui".to_string(),
 			"common/governments/00_human.txt".to_string(),
+			"music/not-a-unit.ogg".to_string(),
 		];
 		let reverse = forward.iter().rev().cloned().collect::<Vec<_>>();
 		let expected = vec![
@@ -2968,6 +3061,67 @@ mod classify_tests {
 
 		assert_eq!(scoring_reference_units(&forward), expected);
 		assert_eq!(scoring_reference_units(&reverse), expected);
+	}
+
+	#[test]
+	fn scoring_evidence_expands_modules_but_keeps_path_units_exact() {
+		let root = tempfile::tempdir().unwrap();
+		write_file(
+			root.path(),
+			"descriptor.mod",
+			"name=\"fixture\"\nreplace_path=\"common/governments\"\n",
+		);
+		write_file(root.path(), "common/governments/a.txt", "monarchy = {}\n");
+		write_file(
+			root.path(),
+			"common/governments/nested/b.txt",
+			"republic = {}\n",
+		);
+		write_file(
+			root.path(),
+			"common/governments/nested/sound.ogg",
+			"\0binary",
+		);
+		write_file(root.path(), "common/governments/unknown.bin", "\0binary");
+		write_file(root.path(), "interface/target.gui", "guiTypes = {}\n");
+		write_file(root.path(), "interface/unrelated.gui", "guiTypes = {}\n");
+
+		assert_eq!(
+			scoring_evidence_files(root.path(), GOVERNMENTS_OUTPUT).unwrap(),
+			vec![
+				"common/governments/a.txt".to_string(),
+				"common/governments/nested/b.txt".to_string(),
+				"descriptor.mod".to_string(),
+			]
+		);
+		assert_eq!(
+			scoring_evidence_files(root.path(), "interface/target.gui").unwrap(),
+			vec![
+				"descriptor.mod".to_string(),
+				"interface/target.gui".to_string(),
+			]
+		);
+	}
+
+	#[test]
+	fn unsupported_binary_paths_cannot_enter_scoring_or_evidence_units() {
+		let root = tempfile::tempdir().unwrap();
+		for relative in [
+			"music/reference.ogg",
+			"sound/reference.wav",
+			"gfx/models/reference.mesh",
+			"gfx/models/reference.anim",
+			"common/reference.unknown",
+			"not_loaded/reference.txt",
+		] {
+			assert!(scoring_reference_units(&[relative.to_string()]).is_empty());
+			assert!(scoring_evidence_files(root.path(), relative).is_err());
+			assert!(!scoring_evidence_path_belongs_to_unit(relative, relative));
+		}
+		assert!(!scoring_evidence_path_belongs_to_unit(
+			GOVERNMENTS_OUTPUT,
+			"common/governments/reference.mesh"
+		));
 	}
 
 	#[test]
@@ -3404,5 +3558,116 @@ mod classify_tests {
 				.keys()
 				.any(|atom| atom.ends_with("extra=bool:yes"))
 		);
+	}
+
+	#[test]
+	fn reference_output_files_admits_only_supported_loadable_text_families() {
+		let compatch = tempfile::tempdir().unwrap();
+		write_file(compatch.path(), "README.md", "not a game input\n");
+		write_file(compatch.path(), ".git/ignored.txt", "not a game input\n");
+		write_file(
+			compatch.path(),
+			"not_loaded/ignored.txt",
+			"not a game input\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/scripted_effects/reference.txt",
+			"reference = {}\n",
+		);
+		write_file(
+			compatch.path(),
+			"common/defines/00_reference.lua",
+			"NGame = {}\n",
+		);
+		write_file(compatch.path(), "common/reference.mod", "reference = yes\n");
+		write_file(compatch.path(), "events/reference.TXT", "reference = {}\n");
+		write_file(
+			compatch.path(),
+			"interface/reference.gui",
+			"guiTypes = {}\n",
+		);
+		write_file(
+			compatch.path(),
+			"interface/reference.gfx",
+			"spriteTypes = {}\n",
+		);
+		write_file(
+			compatch.path(),
+			"gfx/models/reference.asset",
+			"pdxmesh = {}\n",
+		);
+		write_file(
+			compatch.path(),
+			"localisation/reference_l_english.yml",
+			"l_english:\n reference:0 \"Reference\"\n",
+		);
+		write_file(
+			compatch.path(),
+			"localisation/reference_l_english.yaml",
+			"l_english:\n reference_yaml:0 \"Reference\"\n",
+		);
+		write_file(compatch.path(), "map/reference.csv", "1;reference\n");
+		write_file(
+			compatch.path(),
+			"pdx_online_assets/reference.json",
+			"{\"reference\":true}\n",
+		);
+
+		for relative in [
+			"music/reference.ogg",
+			"sound/reference.wav",
+			"gfx/models/reference.mesh",
+			"gfx/models/reference.anim",
+			"common/reference.bin",
+			"common/reference.unknown",
+			"music/reference.lua",
+		] {
+			write_file(compatch.path(), relative, "\0binary");
+		}
+
+		assert_eq!(
+			reference_output_files(compatch.path()).unwrap(),
+			vec![
+				"common/defines/00_reference.lua",
+				"common/reference.mod",
+				"common/scripted_effects/reference.txt",
+				"events/reference.TXT",
+				"gfx/models/reference.asset",
+				"interface/reference.gfx",
+				"interface/reference.gui",
+				"localisation/reference_l_english.yaml",
+				"localisation/reference_l_english.yml",
+				"map/reference.csv",
+				"pdx_online_assets/reference.json",
+			]
+		);
+	}
+
+	#[test]
+	fn reference_output_files_propagates_walk_failures() {
+		let root = tempfile::tempdir().unwrap();
+		let missing = root.path().join("missing-compatch");
+		assert!(reference_output_files(&missing).is_err());
+	}
+
+	#[test]
+	fn scorer_output_paths_must_belong_to_their_exact_unit() {
+		assert!(scoring_evidence_path_belongs_to_unit(
+			"interface/reference.gui",
+			"interface/reference.gui"
+		));
+		assert!(!scoring_evidence_path_belongs_to_unit(
+			"interface/reference.gui",
+			"interface/unrelated.gui"
+		));
+		assert!(scoring_evidence_path_belongs_to_unit(
+			"common/governments/zzz_foch_governments.txt",
+			"common/governments/00_governments.txt"
+		));
+		assert!(!scoring_evidence_path_belongs_to_unit(
+			"common/governments/zzz_foch_governments.txt",
+			"common/government_names/unrelated.txt"
+		));
 	}
 }

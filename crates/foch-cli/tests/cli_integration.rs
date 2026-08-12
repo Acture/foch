@@ -399,6 +399,7 @@ struct CacheLayerFixture {
 	dag_base: PathBuf,
 	modset_tarball: PathBuf,
 	modset_report: PathBuf,
+	cwt_rules: PathBuf,
 	parse: PathBuf,
 }
 
@@ -423,12 +424,13 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 			.join("dag-base-entry.bin"),
 		modset_tarball: root
 			.join("modsets")
-			.join("v14.0.0")
+			.join("v14.2.0")
 			.join("modset-entry.tar.gz"),
 		modset_report: root
 			.join("modsets")
-			.join("v14.0.0")
+			.join("v14.2.0")
 			.join("modset-entry.report.json"),
+		cwt_rules: root.join("cwt-rules").join("v0.11.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
 			.join("v10.0.0")
@@ -442,6 +444,7 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		&fixture.dag_base,
 		&fixture.modset_tarball,
 		&fixture.modset_report,
+		&fixture.cwt_rules,
 		&fixture.parse,
 	] {
 		fs::create_dir_all(path.parent().expect("cache parent")).expect("create cache parent");
@@ -474,6 +477,9 @@ fn cache_commands_stats_where_and_clean_noop() {
 	assert!(stats_stdout.contains("diffs"));
 	assert!(stats_stdout.contains("dag-base"));
 	assert!(stats_stdout.contains("modsets"));
+	assert!(stats_stdout.contains("cwt-rules"));
+	assert!(stats_stdout.contains("parse"));
+	assert!(!stats_stdout.contains("input-digests"));
 
 	let (clean_code, clean_stdout, clean_stderr) =
 		run_foch(&["cache", "clean", "--older-than", "9999"], tmp.path());
@@ -1986,12 +1992,11 @@ fn no_game_base_without_detectable_version_skips_mod_snapshot_cache() {
 }
 
 #[test]
-fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
+fn check_no_game_base_does_not_persist_unversioned_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let mod_root = tmp.path().join("7711");
 	let cache_root = tmp.path().join("cache");
-	write_game_version(&tmp.path().join("eu4-game"), "11.0.0-test");
 
 	write_dlc_load(&playlist_path, &[("7711", "A")]);
 	write_descriptor(&mod_root, "mod-a");
@@ -2013,8 +2018,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	let first_files = collect_mod_snapshot_files(&cache_root);
-	assert_eq!(first_files.len(), 1);
-	assert!(first_files[0].to_string_lossy().contains("__cv"));
+	assert!(first_files.is_empty());
 
 	let (code, _stdout, stderr) = run_foch_with_env(
 		&["check", playlist_str.as_str(), "--no-game-base"],
@@ -2023,7 +2027,7 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	let second_files = collect_mod_snapshot_files(&cache_root);
-	assert_eq!(second_files.len(), 1);
+	assert!(second_files.is_empty());
 
 	fs::write(
 		mod_root.join("events").join("event.txt"),
@@ -2038,15 +2042,14 @@ fn check_no_game_base_builds_and_reuses_mod_snapshot_cache() {
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	let third_files = collect_mod_snapshot_files(&cache_root);
-	assert_eq!(third_files.len(), 2);
+	assert!(third_files.is_empty());
 }
 
 #[test]
-fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
+fn merge_plan_no_game_base_does_not_persist_unversioned_mod_snapshot_cache() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let cache_root = tmp.path().join("cache");
-	write_game_version(&tmp.path().join("eu4-game"), "11.1.0-test");
 
 	write_dlc_load(&playlist_path, &[("7721", "A"), ("7722", "B")]);
 	write_descriptor(&tmp.path().join("7721"), "mod-a");
@@ -2092,7 +2095,7 @@ fn merge_plan_no_game_base_populates_mod_snapshot_cache() {
 		&[("FOCH_CACHE_ROOT", cache_root_str.as_str())],
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
-	assert_eq!(collect_mod_snapshot_files(&cache_root).len(), 2);
+	assert!(collect_mod_snapshot_files(&cache_root).is_empty());
 }
 
 #[test]
@@ -2120,6 +2123,7 @@ fn cache_clean_layer_filter_targets_only_specified_layer() {
 	assert!(fixture.dag_base.exists());
 	assert!(fixture.modset_tarball.exists());
 	assert!(fixture.modset_report.exists());
+	assert!(fixture.cwt_rules.exists());
 	assert!(fixture.parse.exists());
 }
 
@@ -2147,6 +2151,7 @@ fn cache_clear_all_wipes_every_layer() {
 	assert!(!fixture.dag_base.exists());
 	assert!(!fixture.modset_tarball.exists());
 	assert!(!fixture.modset_report.exists());
+	assert!(!fixture.cwt_rules.exists());
 	assert!(!fixture.parse.exists());
 }
 

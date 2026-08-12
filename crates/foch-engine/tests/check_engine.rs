@@ -968,6 +968,7 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	let report = MergeReport {
 		status: MergeReportStatus::Blocked,
 		execution: None,
+		input: None,
 		cache_source: None,
 		fatal_reason: None,
 		manual_conflict_count: 2,

@@ -2,15 +2,29 @@
 goal: Remove the foch-mq binary and integrate merge-quality into libraries, product tests, and scoped maintenance workflows
 version: 1.0
 date_created: 2026-08-06
-last_updated: 2026-08-07
+last_updated: 2026-08-08
 owner: foch
-status: Product Acceptance Pending
+status: Superseded
 tags: [architecture, refactor, testing, merge-quality, cli, dataset]
 ---
 
 # Introduction
 
-![Status: Product Acceptance Pending](https://img.shields.io/badge/status-product%20acceptance%20pending-yellow)
+![Status: Superseded](https://img.shields.io/badge/status-superseded-orange)
+
+> **Superseded 2026-08-08:** The binary/package integration work remains
+> historical context, but its private input-CAS and fixed 23-snapshot product
+> acceptance contract is retired. Product acceptance now follows
+> `refactor-workshop-backed-merge-quality-inputs-1.md`: a fixed 14-case logical
+> corpus resolved read-only from Steam Workshop plus `appworkshop_236850.acf`,
+> with no full input-tree archival or input-CAS preflight.
+>
+> **Do not use the commands, scripts, APIs, task gates, or acceptance criteria
+> below as operating instructions.** They are retained only as the decision
+> record for removing the `foch-mq` binary. Acquisition, corpus/fixture refresh,
+> fixture acceptance, review-pack, and semantic/full payload-export paths have
+> since been deleted. The only current product gate is
+> `scripts/merge-quality/acceptance.fish`; `export.fish` is metadata-only.
 
 Delete the standalone `foch-mq` Cargo binary instead of renaming or embedding it as a `foch mq` product command. Keep `crates/foch-merge-quality` as a private, library-only package that owns deterministic scoring, immutable dataset records, reports, and evidence verification. Put product-quality assertions in integration tests that execute the real `foch` binary. Put state-changing corpus maintenance behind fixed Fish scripts that invoke explicitly named ignored tests; do not recreate a general-purpose hidden CLI inside libtest.
 
@@ -319,7 +333,7 @@ Completion criteria:
 - **FILE-017**: `scripts/merge-quality/` — fixed Fish workflow entrypoints.
 - **FILE-018**: `.github/workflows/ci.yml` — binary target invariant and retained feature gates.
 - **FILE-019**: `scripts/render_homebrew_formula.sh` and `scripts/test_render_homebrew_formula.py` — explicit product binary installation.
-- **FILE-020**: `docs/merge-quality-dataset.md`, `docs/structured-merge-shadow.md`, `docs/common-applicability-probe.md`, `docs/merge-quality-review-pack.md`, `docs/wiki-knowledge-pack.md`, and `docs/project-status.md` — command migration and baseline correction.
+- **FILE-020**: `docs/merge-quality-dataset.md`, `docs/structured-merge-shadow.md`, `docs/common-applicability-probe.md`, `docs/wiki-knowledge-pack.md`, and `docs/project-status.md` — command migration and baseline correction. The former review-pack guide was removed with that workflow.
 - **FILE-021**: `.gitignore` — dead binary rules only; preserve dataset/CAS ignores.
 - **FILE-022**: `plan/refactor-foch-mq-package-integration-1.md` — executable migration plan and status record.
 
@@ -360,5 +374,4 @@ Completion criteria:
 - [`plan/architecture-tree-native-merge-1.md`](./architecture-tree-native-merge-1.md)
 - [`docs/merge-quality-dataset.md`](../docs/merge-quality-dataset.md)
 - [`docs/structured-merge-shadow.md`](../docs/structured-merge-shadow.md)
-- [`docs/merge-quality-review-pack.md`](../docs/merge-quality-review-pack.md)
 - [`docs/adr/0002-unify-tree-merge-kernel.md`](../docs/adr/0002-unify-tree-merge-kernel.md)

@@ -99,7 +99,7 @@ pub fn generate(
 			to_scan.len(),
 			case.compatch_id
 		);
-		let report = scan_case(case, workshop_dir, &mut index_cache);
+		let report = scan_case(case, workshop_dir, &mut index_cache)?;
 		totals.symbol_conflicts += report.symbol_conflicts;
 		totals.cross_file_symbol_conflicts += report.cross_file_symbol_conflicts;
 		totals.same_path_symbol_conflicts += report.same_path_symbol_conflicts;
@@ -140,7 +140,7 @@ fn scan_case(
 	case: &Case,
 	workshop_dir: &Path,
 	index_cache: &mut BTreeMap<String, HashMap<(String, String), Vec<String>>>,
-) -> SymbolCaseReport {
+) -> Result<SymbolCaseReport, Box<dyn std::error::Error>> {
 	let compatch_dir = workshop_dir.join(&case.compatch_id);
 	let mods: Vec<(String, PathBuf)> = case
 		.referenced_mods
@@ -162,7 +162,7 @@ fn scan_case(
 	}
 
 	let mut compatch_defs: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-	for rel in reference_output_files(&compatch_dir) {
+	for rel in reference_output_files(&compatch_dir)? {
 		if !rel.ends_with(".txt") {
 			continue;
 		}
@@ -230,7 +230,7 @@ fn scan_case(
 	let cross_file_symbol_conflicts = conflicts.iter().filter(|c| c.cross_file).count();
 	let same_path_symbol_conflicts = conflicts.iter().filter(|c| c.same_path).count();
 
-	SymbolCaseReport {
+	Ok(SymbolCaseReport {
 		compatch_id: case.compatch_id.clone(),
 		title: case.title.clone(),
 		referenced_mods: case.referenced_mods.clone(),
@@ -238,7 +238,7 @@ fn scan_case(
 		cross_file_symbol_conflicts,
 		same_path_symbol_conflicts,
 		conflicts,
-	}
+	})
 }
 
 fn sorted_unique(paths: &[String]) -> Vec<String> {

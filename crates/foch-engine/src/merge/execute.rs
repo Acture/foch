@@ -16,18 +16,19 @@ use crate::cache::{
 
 // SemVer identity for cached merge output. Bump patch for output bug fixes,
 // minor for additive semantics, and major for incompatible cache payloads.
-const MODSET_CACHE_VERSION: &str = "14.1.0";
+const MODSET_CACHE_VERSION: &str = "14.2.0";
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
-	WorkspaceInventory, build_workspace_inventory_with_hash_cache, resolve_workspace_from_inventory,
+	WorkspaceInventory, build_workspace_inventory_for_paths, resolve_product_input_manifest,
+	resolve_workspace_from_inventory,
 };
 use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionDecision, ResolutionMap};
 use foch_core::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
 	MergeExecutionAttestation, MergeReport, MergeReportBaseSnapshot, MergeReportKernel,
-	MergeReportScope, MergeReportStatus, MergeReportValidation,
+	MergeReportScope, MergeReportStatus, MergeReportValidation, ProductInputAttestation,
 };
 use std::collections::BTreeSet;
 use std::fs;
@@ -112,23 +113,22 @@ fn run_merge_with_kernel_mode(
 	merge_kernel: MergeKernelMode,
 ) -> Result<MergeExecutionResult, MergeError> {
 	let inventory_started = Instant::now();
-	let mut inventory_result = build_workspace_inventory_with_hash_cache(
+	let mut inventory_result = build_workspace_inventory_for_paths(
 		&request,
 		options.include_game_base,
-		options.retained_paths.is_some(),
 		options.retained_paths.as_ref(),
 	);
 	if let Ok(inventory) = inventory_result.as_ref() {
-		let hashed_mods = inventory
+		let versioned_mods = inventory
 			.mod_hashes
 			.iter()
 			.filter(|hash| hash.is_some())
 			.count();
 		eprintln!(
-			"[merge] build_workspace_inventory: done elapsed_ms={} mods={} hashed_mods={}",
+			"[merge] build_workspace_inventory: done elapsed_ms={} mods={} versioned_mods={}",
 			inventory_started.elapsed().as_millis(),
 			inventory.mods.len(),
-			hashed_mods
+			versioned_mods
 		);
 	}
 	if options.retained_paths.is_some()
@@ -145,6 +145,13 @@ fn run_merge_with_kernel_mode(
 		Ok(inventory) => BaseSnapshotPublishGuard::from_inventory(inventory)?,
 		Err(_) => None,
 	};
+	let product_input_publish_guard = inventory_result.as_ref().ok().and_then(|inventory| {
+		ProductInputPublishGuard::from_inventory(
+			request.clone(),
+			options.retained_paths.clone(),
+			inventory,
+		)
+	});
 	let execution_attestation = merge_execution_attestation(
 		merge_kernel,
 		options.retained_paths.is_some(),
@@ -206,9 +213,15 @@ fn run_merge_with_kernel_mode(
 				report.cache_source = Some("modset".to_string());
 				report.playset_fingerprint = options.playset_fingerprint.clone();
 				report.execution = Some(execution_attestation.clone());
+				report.input = product_input_publish_guard
+					.as_ref()
+					.map(|guard| guard.expected.clone());
 				let execution = merge_execution_result(report);
 				return finalize_merge_output(transaction, execution, None, false, |_| {
-					validate_base_snapshot_publish_guard(base_snapshot_publish_guard.as_ref())
+					validate_publish_guards(
+						base_snapshot_publish_guard.as_ref(),
+						product_input_publish_guard.as_ref(),
+					)
 				});
 			}
 		}
@@ -220,12 +233,12 @@ fn run_merge_with_kernel_mode(
 
 	let interactive_conflict_handler = options.interactive_conflict_handler;
 	let interactive_resolution_config_path = options.interactive_resolution_config_path;
-	let effective_retained_paths = inventory_result
-		.as_ref()
-		.ok()
-		.and_then(|inventory| inventory.effective_retained_paths.clone());
 	let resolve_started = Instant::now();
 	let workspace_result = inventory_result.and_then(resolve_workspace_from_inventory);
+	let effective_retained_paths = workspace_result
+		.as_ref()
+		.ok()
+		.and_then(|workspace| workspace.effective_retained_paths.clone());
 	match workspace_result.as_ref() {
 		Ok(workspace) => {
 			let cache_hits = workspace
@@ -287,18 +300,27 @@ fn run_merge_with_kernel_mode(
 	)?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();
 	report.execution = Some(execution_attestation);
+	report.input = product_input_publish_guard
+		.as_ref()
+		.map(|guard| guard.expected.clone());
 
 	if report.status == MergeReportStatus::Fatal {
 		let execution = merge_execution_result(report);
 		return finalize_merge_output(transaction, execution, modset_cache.as_ref(), false, |_| {
-			validate_base_snapshot_publish_guard(base_snapshot_publish_guard.as_ref())
+			validate_publish_guards(
+				base_snapshot_publish_guard.as_ref(),
+				product_input_publish_guard.as_ref(),
+			)
 		});
 	}
 
 	if report.status == MergeReportStatus::Blocked && !options.force {
 		let execution = merge_execution_result(report);
 		return finalize_merge_output(transaction, execution, modset_cache.as_ref(), true, |_| {
-			validate_base_snapshot_publish_guard(base_snapshot_publish_guard.as_ref())
+			validate_publish_guards(
+				base_snapshot_publish_guard.as_ref(),
+				product_input_publish_guard.as_ref(),
+			)
 		});
 	}
 
@@ -315,7 +337,10 @@ fn run_merge_with_kernel_mode(
 	}
 	let execution = merge_execution_result(report);
 	finalize_merge_output(transaction, execution, modset_cache.as_ref(), true, |_| {
-		validate_base_snapshot_publish_guard(base_snapshot_publish_guard.as_ref())
+		validate_publish_guards(
+			base_snapshot_publish_guard.as_ref(),
+			product_input_publish_guard.as_ref(),
+		)
 	})
 }
 
@@ -372,6 +397,49 @@ struct BaseSnapshotPublishGuard {
 	identity: InstalledBaseSnapshotIdentity,
 }
 
+#[derive(Clone, Debug)]
+struct ProductInputPublishGuard {
+	request: CheckRequest,
+	retained_paths: Option<BTreeSet<String>>,
+	expected: ProductInputAttestation,
+}
+
+impl ProductInputPublishGuard {
+	fn from_inventory(
+		request: CheckRequest,
+		retained_paths: Option<BTreeSet<String>>,
+		inventory: &WorkspaceInventory,
+	) -> Option<Self> {
+		Some(Self {
+			request,
+			retained_paths,
+			expected: inventory.product_input_manifest.as_ref()?.attestation(),
+		})
+	}
+
+	fn validate(&self) -> Result<(), MergeError> {
+		let observed = resolve_product_input_manifest(&self.request, self.retained_paths.as_ref())
+			.map_err(|err| MergeError::WorkspaceResolve {
+				path: err.path,
+				message: format!(
+					"failed to revalidate product inputs before publication: {}",
+					err.message
+				),
+			})?
+			.attestation();
+		if observed != self.expected {
+			return Err(MergeError::WorkspaceResolve {
+				path: self.request.source_path().to_path_buf(),
+				message: format!(
+					"product inputs changed during merge: expected {}, observed {}",
+					self.expected.digest, observed.digest
+				),
+			});
+		}
+		Ok(())
+	}
+}
+
 impl BaseSnapshotPublishGuard {
 	fn from_inventory(inventory: &WorkspaceInventory) -> Result<Option<Self>, MergeError> {
 		let Some(identity) = inventory.base_snapshot_identity.as_ref() else {
@@ -418,12 +486,12 @@ fn finalize_merge_output_with_publish<Guard>(
 	publish: impl FnOnce(OutputTransaction) -> Result<(), MergeError>,
 ) -> Result<MergeExecutionResult, MergeError> {
 	write_merge_report_artifact(transaction.staging_dir(), &execution.report)?;
+	// Validate every mutable input before the staging tree becomes reusable or
+	// visible. A failed guard must never poison the modset cache under an old key.
+	let _base_snapshot_publication_guard = validate_base_snapshot(transaction.staging_dir())?;
 	if store_cache {
 		store_modset_cache_entry(cache_context, transaction.staging_dir(), &execution.report);
 	}
-	// Keep this as the last semantic check: extraction and report generation
-	// or cache storage may race with replacement of the snapshot lease.
-	let _base_snapshot_publication_guard = validate_base_snapshot(transaction.staging_dir())?;
 	publish(transaction)?;
 	Ok(execution)
 }
@@ -444,6 +512,16 @@ fn validate_base_snapshot_publish_guard(
 		path: guard.playlist_path.clone(),
 		message,
 	})
+}
+
+fn validate_publish_guards(
+	base_snapshot_guard: Option<&BaseSnapshotPublishGuard>,
+	product_input_guard: Option<&ProductInputPublishGuard>,
+) -> Result<Option<InstalledBaseSnapshotPublicationGuard>, MergeError> {
+	if let Some(product_input_guard) = product_input_guard {
+		product_input_guard.validate()?;
+	}
+	validate_base_snapshot_publish_guard(base_snapshot_guard)
 }
 
 fn build_modset_cache_context(
@@ -1630,7 +1708,7 @@ mod tests {
 
 	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
-	fn normal_subset_stale_base_after_cache_store_preserves_old_output() {
+	fn failed_publication_guard_does_not_store_or_publish_subset_output() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
 		let cache_context = ModsetCacheContext {
 			cache: ModsetCache::open(&temp.path().join("cache")),
@@ -1658,7 +1736,7 @@ mod tests {
 			true,
 			|staging_dir| {
 				assert!(staging_dir.join(MERGE_REPORT_ARTIFACT_PATH).is_file());
-				assert!(cache_context.cache.lookup(&cache_context.key).is_some());
+				assert!(cache_context.cache.lookup(&cache_context.key).is_none());
 				fs::write(&base_snapshot, "base-v2")?;
 				if fs::read(&base_snapshot)? != expected_base {
 					return Err(MergeError::WorkspaceResolve {
@@ -1677,6 +1755,7 @@ mod tests {
 			"old descriptor\n"
 		);
 		assert!(!out_dir.join("subset.txt").exists());
+		assert!(cache_context.cache.lookup(&cache_context.key).is_none());
 	}
 
 	#[test]
@@ -1841,16 +1920,17 @@ mod tests {
 		reset_installed_snapshot_test_counters();
 		let mut game_path = HashMap::new();
 		game_path.insert("eu4".to_string(), game_root);
+		let request = CheckRequest::from_playset_path(
+			paradox_dir.join("dlc_load.json"),
+			crate::Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		);
 		let result = run_merge_with_options(
-			CheckRequest::from_playset_path(
-				paradox_dir.join("dlc_load.json"),
-				crate::Config {
-					steam_root_path: None,
-					paradox_data_path: None,
-					game_path,
-					extra_ignore_patterns: Vec::new(),
-				},
-			),
+			request,
 			MergeExecuteOptions {
 				out_dir: temp.path().join("out"),
 				include_game_base: true,
@@ -1872,6 +1952,13 @@ mod tests {
 		.expect("run full merge with revalidation");
 
 		assert_eq!(result.report.status, MergeReportStatus::Ready);
+		assert!(result.report.input.is_none());
+		let persisted = serde_json::from_slice::<MergeReport>(
+			&fs::read(temp.path().join("out").join(MERGE_REPORT_ARTIFACT_PATH))
+				.expect("read merge report"),
+		)
+		.expect("decode merge report");
+		assert!(persisted.input.is_none());
 		assert_eq!(installed_snapshot_file_read_count(), 1);
 		assert_eq!(installed_snapshot_cold_decode_count(), 1);
 		assert_eq!(installed_snapshot_current_validation_count(), 1);

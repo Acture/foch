@@ -518,7 +518,6 @@ fn prune_empty_dirs(root: &Path) {
 
 #[cfg(test)]
 mod tests {
-	use super::super::mod_parse_cache::compute_mod_hash;
 	use super::*;
 	use filetime::{FileTime, set_file_mtime};
 	use foch_core::model::{MergeReportStatus, MergeReportValidation};
@@ -575,15 +574,6 @@ mod tests {
 		fs::create_dir_all(file.parent().expect("parent")).expect("create parent");
 		fs::write(file, content).expect("write output file");
 		out
-	}
-
-	fn write_mod_file(mod_root: &Path, content: &str) {
-		let file = mod_root
-			.join("common")
-			.join("scripted_effects")
-			.join("x.txt");
-		fs::create_dir_all(file.parent().expect("parent")).expect("create mod parent");
-		fs::write(file, content).expect("write mod file");
 	}
 
 	fn write_tarball_entry(tarball_path: &Path, entry_path: &str, content: &[u8]) {
@@ -786,15 +776,12 @@ mod tests {
 	}
 
 	#[test]
-	fn modset_cache_invalidates_when_mod_hash_changes() {
+	fn modset_cache_invalidates_when_source_version_changes() {
 		let cache = ModsetCache::open(&cache_root("modset-mod-change"));
 		let out = write_out_dir("effect = { add_prestige = 1 }\n");
 		let report = sample_report();
-		let mod_root = cache_root("mod-content");
-		write_mod_file(&mod_root, "effect = { add_prestige = 1 }\n");
-		let first_hash = compute_mod_hash(&mod_root).expect("first mod hash");
-		write_mod_file(&mod_root, "effect = { add_prestige = 2 }\n");
-		let second_hash = compute_mod_hash(&mod_root).expect("second mod hash");
+		let first_hash = "workshop:1001:manifest:2001".to_string();
+		let second_hash = "workshop:1001:manifest:2002".to_string();
 		let first = modset_key(&[first_hash], b"", "0.1.0", "eu4 1.37");
 		let second = modset_key(&[second_hash], b"", "0.1.0", "eu4 1.37");
 

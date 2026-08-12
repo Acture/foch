@@ -269,6 +269,7 @@ mod tests {
 					.collect(),
 				..ModDescriptor::default()
 			}),
+			workshop_identity: None,
 			descriptor_error: None,
 			files: Vec::new(),
 		}

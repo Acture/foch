@@ -466,11 +466,46 @@ fn public_tree_selection_reuses_modset_cache_across_output_directories() {
 	let warm_out_dir = temp_dir.path().join("warm-out");
 	let game_root = temp_dir.path().join("empty-eu4-game");
 	fs::create_dir_all(&game_root).expect("create empty game root");
+	let workshop_root = temp_dir.path().join("steamapps/workshop");
+	let workshop_mod = workshop_root.join("content/236850/200001");
+	copy_dir_recursive(&fixture.join("mods/minimal"), &workshop_mod);
+	fs::write(
+		workshop_root.join("appworkshop_236850.acf"),
+		r#""AppWorkshop"
+{
+	"appid" "236850"
+	"WorkshopItemsInstalled"
+	{
+		"200001"
+		{
+			"size" "1"
+			"timeupdated" "1780000000"
+			"manifest" "300001"
+		}
+	}
+}"#,
+	)
+	.expect("write Workshop ACF");
+	let manifest_path = temp_dir.path().join("foch.toml");
+	fs::write(
+		&manifest_path,
+		r#"
+[workspace]
+game = "eu4"
+
+[[workspace.mods]]
+id = "200001"
+steam_id = "200001"
+path = "steamapps/workshop/content/236850/200001"
+workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "300001" }
+"#,
+	)
+	.expect("write ACF-backed workspace manifest");
 	let request = || {
 		let mut game_path = HashMap::new();
 		game_path.insert("eu4".to_string(), game_root.clone());
-		CheckRequest::from_playset_path(
-			fixture.join("dlc_load.json"),
+		CheckRequest::from_manifest_path(
+			manifest_path.clone(),
 			Config {
 				steam_root_path: None,
 				paradox_data_path: None,

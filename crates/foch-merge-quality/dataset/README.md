@@ -1,26 +1,33 @@
 # foch merge-quality dataset
 
-Tracked JSONL files contain append-only metadata. The content-addressed
-`objects/`, transient `.work/`, and the advisory `.lock` file are intentionally ignored.
-`shadow_measurements.jsonl` is frozen rollout history; there is no live
-dual-kernel command that appends to it.
+Tracked JSONL files are append-only metadata. The V1 prefixes and
+`shadow_measurements.jsonl` are frozen historical evidence. New measurements
+are V2 only: scorer `2.0.0`, the public `foch merge` artifact,
+`semantic_tree`, and `full_product_merge`.
 
-Schema and operating instructions: [`../../../docs/merge-quality-dataset.md`](../../../docs/merge-quality-dataset.md).
+The only product acceptance is the fixed 14-case gate:
 
-The fixed 36-Legacy / 13-Structured / six-case review-pack contract is
-documented in
-[`../../../docs/merge-quality-review-pack.md`](../../../docs/merge-quality-review-pack.md).
-Generated packs belong under ignored `.work/review-packs/`.
+```fish
+scripts/merge-quality/acceptance.fish
+```
 
-The tracked measurement stream contains two immutable V1 cohorts produced by
-the historical `foch-mq` artifact. Scorers `1.0.0` and `1.3.0` both used
-`legacy_address_patch_reference`. New measurements are V2 only: scorer `2.0.0`,
-the public `foch merge` artifact, `semantic_tree`, and
-`full_product_merge`, with product-authored report attestation and an exact
-base-game content binding.
+Its exact ignored test, `workshop_product_corpus_acceptance`, resolves the
+committed logical manifest directly from read-only Steam Workshop content and
+same-library `appworkshop_236850.acf`. It never reads legacy `objects/`.
+Completed V2 runs retain compact scorer evidence under ignored
+`evidence_objects/` rather than full input or output trees.
 
-Use the fixed entrypoints in `scripts/merge-quality/`: `acceptance.fish`,
-`fixture-acceptance.fish`, `review-pack.fish`, `refresh-corpus.fish`,
-`export.fish`, `refresh-fixtures.fish`, `symbol-evidence.fish`,
-`common-module.fish`, `structured-rollout.fish`, and `acquire.fish`. Each
-invokes one exact ignored test.
+Ignored `objects/` is inert V1 storage. The code has no current object-store,
+tree-packing, or snapshot-building workflow. The directory remains on disk
+until the user performs a separate reviewed cleanup; no repository script
+deletes it.
+
+The remaining supported scripts are `export.fish` (metadata only),
+`symbol-evidence.fish`, `common-module.fish`, and
+`structured-rollout.fish`. Acquisition, corpus/fixture refresh, fixture
+acceptance, review-pack, and semantic/full payload export are retired.
+
+Current temporary output lives under ignored `.maintenance-work/` and
+`.evidence-work/`; legacy `.work/` and the advisory `.lock` file also remain
+ignored. Full schema and operating details are in
+[`../../../docs/merge-quality-dataset.md`](../../../docs/merge-quality-dataset.md).

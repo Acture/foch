@@ -1,10 +1,74 @@
 # Project Status
 
-Last updated: 2026-08-06
+Last updated: 2026-08-08
 
 ## Summary
 
 `foch` is an alpha EU4 analyzer-plus-merge toolkit, and the repository is organized as a workspace monorepo. The near-term public surface is now LSP-first: VS Code/LSP can advance to a `0.1.0` preview on editor usability while the merge engine remains explicitly experimental.
+
+## 2026-08-08 Workshop-backed merge-quality checkpoint
+
+The planned 23-snapshot V2 product gate was retired before completion. The
+canonical product acceptance is now the committed fixed 14-case logical cohort
+in `workshop-product-cases-v2.json`. It requires 26 unique installed Workshop
+items with usable Steam manifest IDs. The nine deliberately excluded cases are
+fixed in the contract; a local installation cannot silently reduce the
+denominator.
+
+Every Steam library's `content/236850` root is paired with its same-library
+`appworkshop_236850.acf`. Both are read-only. Product runs use the installed mod
+directories in place, bind each input version only to the ordered ACF manifest
+IDs, require a Steam build ID, and repeat the ACF checks after each case. The
+product-manifest digest covers canonical ACF identity metadata, not mod bytes.
+Missing entries, `manifest = -1`, ambiguous
+cross-library installs, or mid-run drift fail before a terminal measurement is
+written.
+
+Normal acceptance does not pre-hash Workshop trees. During a cold semantic
+parse, each required Clausewitz script is read once and its raw size/BLAKE3
+identity is derived from those same bytes for later lazy-AST validation. That
+per-document parser guard is deliberately separate from ACF-only installation
+identity. Recursive full-tree hashing is reserved for an explicit integrity
+audit and is not an acceptance or cache-hit prerequisite. Descriptor parsing
+is deferred until after semantic-cache lookup and no longer computes a discarded
+content digest.
+
+Ordinary acceptance no longer opens or verifies the legacy
+`crates/foch-merge-quality/dataset/objects/` tree. Completed V2 measurements
+retain an explicit compact evidence bundle containing reports, identities,
+scorer configuration, results, and scorer-relevant candidate files rather than
+recursive input or output trees. The per-case unit list and base scoring closure
+are captured only for a fresh measurement and stored as evidence; they are not
+part of cohort identity and are not recomputed for cache reuse or reporting.
+Their live compatch discovery begins only after the product merge returns
+non-fatal, so it cannot precede the product cache lookup.
+The old object-store, recursive pack, snapshot
+builder, acquisition, corpus/fixture refresh, fixture acceptance, review-pack,
+and semantic/full payload-export paths have been removed. Metadata export is
+metadata-only.
+
+Historical V1 JSONL prefixes, frozen rollout evidence, and the physical
+`objects/` directory remain unchanged. Identifying and retiring input-only
+objects is a separate user-operated storage migration; no test or maintenance
+script deletes them.
+
+The only manual gate is:
+
+```fish
+scripts/merge-quality/acceptance.fish
+```
+
+The wrapper runs the cache-residency pre-gate and the cohort test under macOS
+Seatbelt and proves the legacy CAS paths are unreadable before Steam discovery.
+Raw Cargo fails closed. This is an implementation checkpoint, not a quality result: the first
+14-case Workshop cohort has not yet been run or accepted.
+
+The architecture correction has passed focused regressions, the full locked
+Rust workspace suite, strict all-target/all-feature clippy, formatting,
+actionlint, Fish syntax validation, grammar tests, and the VS Code smoke test.
+No real Workshop acceptance has been rerun. Cargo metadata exposes only the
+`foch` production binary, and the historical JSONL files remain byte-identical
+to their recorded SHA-256 baselines.
 
 ## 2026-08-02 architecture checkpoint
 
@@ -19,9 +83,14 @@ Cache configuration is now one-root only (`FOCH_CACHE_ROOT`). Every persisted
 format uses a SemVer generation parsed by the `semver` crate; obsolete
 generations are deleted rather than decoded or migrated. The parser cache uses
 SHA-256 content addresses over parser mode and source bytes with bincode
-payloads, while mod-snapshot construction bypasses that per-file cache when the
-outer content-addressed mod cache is active. Base snapshots accept only the
-`1.0.0` `snapshot.bin` wire format. See
+payloads. The `mods/` generation `10.0.0` cache is addressed from trusted
+Workshop ACF identity plus mod, game, and filter behavior. It stores a
+compressed semantic index, its sorted loadable-file inventory, and compact
+raw-script identities, not source trees or parsed ASTs. Warm lookup happens
+before a Workshop walk; retained-path views are transient and cannot replace the
+complete cached snapshot. Mods without trusted ACF identity do not use that
+persistent snapshot cache. Base snapshots accept only the `1.0.0`
+`snapshot.bin` wire format. See
 [`cache-architecture.md`](./cache-architecture.md).
 
 Focused kernel, CWT, structured-merge, parser-cache, engine-cache, and base
@@ -33,59 +102,16 @@ runtime initialization and remains a performance target.
 
 ## 2026-08-06 merge-quality package integration checkpoint
 
-The standalone merge-quality binary surface has been removed. Normal,
-default-feature, and release builds expose only the public `foch` product
-binary; merge-quality collection, scoring, reporting, export, probes, and
-evidence packaging remain library responsibilities exercised by repository-owned
-tests.
+This is archived design history, not an operator guide. It removed the
+standalone `foch-mq` binary and established the library/test boundary, but its
+proposed 23-snapshot input-CAS product gate and associated maintenance surface
+were never accepted. They were superseded and then removed by the 2026-08-08
+Workshop-backed architecture above.
 
-Product measurement now crosses an injected `MeasurementRunner` boundary. The
-runner launches the exact public `foch merge` artifact, while the library owns
-dataset verification, terminal outcome persistence, resume, output archival,
-pure scoring of the parsed `MergeReport`, and exact cohort reporting. V2
-identity binds the `foch` artifact digest, runner protocol, scorer `2.0.0`,
-`semantic_tree`, `full_product_merge`, the installed base snapshot, Steam build,
-exact timeout, and a pinned product-base digest. The installed inventory plus
-version metadata is copied into a private fixed view; the product and scorer see
-only that same view, and its exact file set and bytes are reverified after every
-case. The product writes kernel, scope, and base identity into `MergeReport`;
-the runner rejects mismatched attestation.
-A parseable non-Fatal report remains scoreable even if the process exits
-nonzero; crashes, timeouts, explicit execution failures, and Fatal reports
-remain distinct terminal records.
-
-Lifecycle validation now recomputes snapshot identities, verifies selected input
-CAS objects even on cache hits, binds V2 file-result IDs to their complete
-payload, and resumes the file-result-before-terminal crash window only through
-deterministic replay. Review packs pin the exact scorer `1.3.0` Legacy cohort,
-store only portable Structured attestations, reject conflicts and handler
-resolutions fail-closed, and require every Structured output in pack-local CAS.
-
-The two existing 23-case V1 cohorts are unchanged. Their scorer `1.0.0` and
-`1.3.0` records both describe the historical
-`legacy_address_patch_reference` evaluator and cannot seed a V2 cache hit.
-
-Operator workflows now use the fixed scripts under `scripts/merge-quality/`:
-`acceptance.fish`, `fixture-acceptance.fish`, `review-pack.fish`,
-`refresh-corpus.fish`, `export.fish`, `refresh-fixtures.fish`,
-`symbol-evidence.fish`, `common-module.fish`, `structured-rollout.fish`, and
-`acquire.fish`. Each selects one exact ignored test. The old live dual-kernel
-shadow workflow is retained only as frozen rollout evidence.
-
-The Steam acquisition gate now carries one corpus-derived plan through download
-and evidence generation. Newly needed items require explicit SteamCMD
-confirmation; canonical manifest/checksum artifacts bind the discovered corpus
-and selected local tree digests, and a second full tree audit closes the
-workflow. This is local acquisition integrity, not Steam remote-freshness
-attestation and not a product-quality result.
-
-This is an implementation checkpoint, not a corpus acceptance result. Formatting,
-locked workspace tests, strict all-target/all-feature Clippy, the hermetic public
-CLI-to-scorer seam, default/Steam maintenance compilation, Cargo target
-metadata, Homebrew rendering, Fish syntax, Actionlint, Python lint/type checks,
-grammar tests, and VS Code smoke all pass. The long-running fixed 23-case V2
-product cohort has not completed, so no product quality counts are published
-from V2 yet.
+The two existing 23-case V1 cohorts remain frozen
+`legacy_address_patch_reference` evidence. They cannot seed a V2 cache hit and
+there is no supported collector, snapshot builder, archive replay, acquisition,
+fixture, or review-pack workflow for extending them.
 
 ## LSP-first 0.1 preview
 
@@ -132,13 +158,11 @@ Current EU4 active-playset merge baseline:
 - [`examples/eu4-default-foch.toml`](../examples/eu4-default-foch.toml) ships narrow per-path defaults that clear all 9 manual conflicts without enabling global last-writer behavior.
 - Warm cache-backed iterations are seconds; cold debug runs remain around 25-30 minutes, while release+cache has been observed around 40 seconds for this baseline.
 
-The merge-quality dataset has a separate immutable baseline lifecycle. The
-standalone runner is retired; package-owned tests now inject the public product
-runner while the library verifies the APFS copy-on-write object store, records
-terminal outcomes, resumes by stable identity, scores existing outputs, and
-produces deterministic exports. Broad Workshop candidates remain in the full
-collection, while a separately versioned oracle policy selects the provisional
-scoring cohort.
+The merge-quality dataset now has a strict current/historical boundary. The
+fixed 14-case product test injects the public runner, reads same-library
+Workshop/ACF inputs in place, resumes by stable V2 identity, scores existing
+temporary output, and stores compact evidence. The historical V1 object tree is
+inert and metadata export never includes payloads.
 
 Important identity correction: both existing 23-case measurement cohorts use
 the evaluation-only `AddressPatchReference` kernel selected by the historical
@@ -190,16 +214,9 @@ human each contain 2,046 semantic atoms, all 2,046 are shared, and neither side
 has a one-sided atom. That focused output was not archived; the linked
 machine-readable evidence remains the schema-`2.0.0` full run. The implied
 matrix is 7 equivalent, 1 manual-resolution, 4 semantic-mismatch, and 0 failed,
-but it remains a projection until review-pack regeneration binds the result to
-its inputs.
-
-The review-pack infrastructure fixes the six snapshots, all 36 Legacy units,
-the 13 historical Structured rollout units, and each archived Legacy
-measurement/output CAS. Its library builder now requires an injected runner and
-has no default child process. The repository-owned ignored acceptance test and
-Fish wrapper now own build plus verification, but the real review pack has not
-been generated; this checkpoint therefore changes no published quality counts. See
-[`merge-quality-review-pack.md`](./merge-quality-review-pack.md).
+but it remains a historical projection. The former review-pack builder,
+verifier, acceptance test, and script are retired; no pack regeneration is a
+current acceptance condition.
 
 The unused advisory Wiki acquisition/search subsystem has been removed from
 foch. It had no fetched canonical pack and no product, scorer, or review
@@ -209,13 +226,11 @@ than another merge-quality command surface.
 The original focused governments process took 258,342 ms end to end, although
 the unit analysis itself took only 177 ms. A live stack sample found the
 remaining time in `load_snapshot -> verify_object -> digest_tree`, reopening
-and hashing 5,935 files across three content-addressed objects. Probe and shadow
-restoration now persist a versioned metadata stamp after a full payload audit,
-reuse it only while the complete tree metadata fingerprint is unchanged, and
-verify each object at most once per command. Any detected metadata change
-forces a full rehash. The earlier marker-only focused rerun took 339 ms at
-report level, about 762x faster, but that timing is not a benchmark for the
-guarded cache.
+and hashing 5,935 files across three content-addressed objects. A temporary
+metadata-stamp optimization reduced a focused report-level rerun to 339 ms,
+about 762x faster, but the underlying restore path remained architecturally
+wrong for current acceptance. Snapshot restoration and guarded object-store
+verification are now removed rather than optimized further.
 
 Legacy event merging now keys repeated `option` blocks by `option.name`, and
 per-path event/decision output retains vanilla-equivalent entries because the

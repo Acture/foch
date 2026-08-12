@@ -56,5 +56,6 @@ pub use runtime::{RuntimeState, build_runtime_state_for_request};
 pub use simplify::{SimplifyOptions, SimplifyReport, SimplifySummary, run_simplify_with_options};
 pub use workspace::{
 	FileFilter, WorkspaceResolveSummary, WorkspaceResolvedMod, WorkspaceSession, WorkspaceTarget,
-	WorkspaceTargetRole, resolve_workspace_summary, resolve_workspace_targets,
+	WorkspaceTargetRole, resolve_product_input_manifest, resolve_workspace_summary,
+	resolve_workspace_targets,
 };

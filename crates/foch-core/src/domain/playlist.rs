@@ -1,6 +1,7 @@
 use crate::domain::ParseError;
 use crate::domain::descriptor::load_descriptor;
 use crate::domain::game::Game;
+use crate::utils::steam::WorkshopInstallIdentity;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +26,7 @@ pub struct PlaylistEntry {
 	pub enabled: bool,
 	pub position: Option<usize>,
 	pub steam_id: Option<String>,
+	pub workshop_identity: Option<WorkshopInstallIdentity>,
 	pub root_path: Option<PathBuf>,
 }
 
@@ -111,6 +113,7 @@ fn read_dlc_load_entry(paradox_data_dir: &Path, position: usize, rel: &str) -> P
 		enabled: true,
 		position: Some(position),
 		steam_id,
+		workshop_identity: None,
 		root_path: None,
 	}
 }

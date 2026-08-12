@@ -15,7 +15,10 @@ use super::localisation::collect_localisation_definitions_from_root;
 use super::param_contracts::{
 	apply_registered_param_contracts, explicit_contract_param_names, registered_param_contract,
 };
-use super::parser::{AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_file};
+use super::parser::{
+	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content,
+	parse_clausewitz_file,
+};
 use foch_core::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, MaybeScope,
 	ParamBinding, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet,
@@ -44,7 +47,18 @@ pub struct ParsedScriptFile {
 	pub parse_cache_hit: bool,
 }
 
-use parse_cache::parse_clausewitz_file_cached;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ParsedScriptInputIdentity {
+	pub size_bytes: u64,
+	pub content_digest: String,
+}
+
+pub(super) struct ParsedScriptWithInputIdentity {
+	pub file: ParsedScriptFile,
+	pub input_identity: Option<ParsedScriptInputIdentity>,
+}
+
+use parse_cache::parse_clausewitz_bytes_cached;
 pub use scope_rules::{
 	cwt_file_kind_container_scope_kind, cwt_iterator_scope_type, cwt_path_container_scope_kind,
 	cwt_scope_changer_target_type, cwt_special_block_scope_kind, iterator_scope_type,
@@ -128,12 +142,32 @@ pub fn parse_script_file(mod_id: &str, root: &Path, file: &Path) -> Option<Parse
 	parse_script_file_with_profile(mod_id, root, file, eu4_profile())
 }
 
-pub(super) fn parse_script_file_without_cache(
+pub(super) fn parse_script_file_with_input_identity(
 	mod_id: &str,
 	root: &Path,
 	file: &Path,
-) -> Option<ParsedScriptFile> {
-	parse_script_file_with_profile_and_cache(mod_id, root, file, eu4_profile(), false)
+) -> Option<ParsedScriptWithInputIdentity> {
+	parse_script_file_with_profile_and_cache_with_input_identity(
+		mod_id,
+		root,
+		file,
+		eu4_profile(),
+		true,
+	)
+}
+
+pub(super) fn parse_script_file_without_cache_with_input_identity(
+	mod_id: &str,
+	root: &Path,
+	file: &Path,
+) -> Option<ParsedScriptWithInputIdentity> {
+	parse_script_file_with_profile_and_cache_with_input_identity(
+		mod_id,
+		root,
+		file,
+		eu4_profile(),
+		false,
+	)
 }
 
 pub fn parse_script_file_with_profile(
@@ -145,6 +179,28 @@ pub fn parse_script_file_with_profile(
 	parse_script_file_with_profile_and_cache(mod_id, root, file, profile, true)
 }
 
+/// Builds an AST-only parsed script from caller-supplied bytes.
+/// The file is never reopened and raw source text is not retained.
+pub fn parse_script_bytes_cached(
+	mod_id: &str,
+	root: &Path,
+	file: &Path,
+	bytes: &[u8],
+) -> Option<ParsedScriptFile> {
+	let relative = file.strip_prefix(root).ok()?.to_path_buf();
+	let profile = eu4_profile();
+	let (parsed, parse_cache_hit) = parse_clausewitz_bytes_cached(file, bytes);
+	Some(parsed_script_file_from_result(
+		mod_id,
+		file,
+		relative,
+		profile,
+		parsed,
+		parse_cache_hit,
+		String::new(),
+	))
+}
+
 fn parse_script_file_with_profile_and_cache(
 	mod_id: &str,
 	root: &Path,
@@ -152,7 +208,64 @@ fn parse_script_file_with_profile_and_cache(
 	profile: &dyn GameProfile,
 	use_cache: bool,
 ) -> Option<ParsedScriptFile> {
+	parse_script_file_with_profile_and_cache_with_input_identity(
+		mod_id, root, file, profile, use_cache,
+	)
+	.map(|parsed| parsed.file)
+}
+
+fn parse_script_file_with_profile_and_cache_with_input_identity(
+	mod_id: &str,
+	root: &Path,
+	file: &Path,
+	profile: &dyn GameProfile,
+	use_cache: bool,
+) -> Option<ParsedScriptWithInputIdentity> {
 	let relative = file.strip_prefix(root).ok()?.to_path_buf();
+	let (parsed, parse_cache_hit, source, input_identity) = match std::fs::read(file) {
+		Ok(bytes) => {
+			let content_digest = blake3::hash(&bytes).to_hex().to_string();
+			let source = foch_core::decode_paradox_bytes(&bytes).into_owned();
+			let (parsed, parse_cache_hit) = if use_cache {
+				parse_clausewitz_bytes_cached(file, &bytes)
+			} else {
+				(parse_clausewitz_content(file.to_path_buf(), &source), false)
+			};
+			(
+				parsed,
+				parse_cache_hit,
+				source,
+				Some(ParsedScriptInputIdentity {
+					size_bytes: bytes.len() as u64,
+					content_digest,
+				}),
+			)
+		}
+		Err(_) => (parse_clausewitz_file(file), false, String::new(), None),
+	};
+	Some(ParsedScriptWithInputIdentity {
+		file: parsed_script_file_from_result(
+			mod_id,
+			file,
+			relative,
+			profile,
+			parsed,
+			parse_cache_hit,
+			source,
+		),
+		input_identity,
+	})
+}
+
+fn parsed_script_file_from_result(
+	mod_id: &str,
+	file: &Path,
+	relative: PathBuf,
+	profile: &dyn GameProfile,
+	parsed: ParseResult,
+	parse_cache_hit: bool,
+	source: String,
+) -> ParsedScriptFile {
 	let content_family = profile.classify_content_family(&relative);
 	let file_kind = content_family.map_or(CwtType::new("other"), |descriptor| {
 		descriptor.cwt_type.clone()
@@ -161,13 +274,6 @@ fn parse_script_file_with_profile_and_cache(
 		|| fallback_module_name_from_relative(&relative),
 		|descriptor| module_name_for_descriptor(&relative, descriptor).replace('-', "_"),
 	);
-	let (parsed, parse_cache_hit) = if use_cache {
-		parse_clausewitz_file_cached(file)
-	} else {
-		(parse_clausewitz_file(file), false)
-	};
-	let source = std::fs::read_to_string(file).unwrap_or_default();
-
 	let parse_issues = parsed
 		.diagnostics
 		.into_iter()
@@ -180,7 +286,7 @@ fn parse_script_file_with_profile_and_cache(
 		})
 		.collect();
 
-	Some(ParsedScriptFile {
+	ParsedScriptFile {
 		mod_id: mod_id.to_string(),
 		path: file.to_path_buf(),
 		relative_path: relative,
@@ -191,7 +297,7 @@ fn parse_script_file_with_profile_and_cache(
 		source,
 		parse_issues,
 		parse_cache_hit,
-	})
+	}
 }
 
 pub fn collect_localisation_definitions(mod_id: &str, root: &Path) -> Vec<LocalisationDefinition> {
@@ -1345,6 +1451,54 @@ fn on_actions_callback_from_type(_key: &str) -> ScopeType {
 	base_scope::country()
 }
 
+#[cfg(test)]
+std::thread_local! {
+	static CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS: std::cell::Cell<usize> = const {
+		std::cell::Cell::new(0)
+	};
+}
+
+#[cfg(test)]
+fn reset_create_child_scope_cwt_path_bindings() {
+	CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn take_create_child_scope_cwt_path_bindings() -> usize {
+	CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS.with(std::cell::Cell::take)
+}
+
+fn child_scope_kind_override(
+	key: &str,
+	enclosing_conditional_context: Option<ScopeKind>,
+	effect_context_semantics: Option<EffectContextScopeSemantics>,
+	has_items: bool,
+) -> Option<ScopeKind> {
+	if key.eq_ignore_ascii_case("if") || key.eq_ignore_ascii_case("else") {
+		return Some(
+			if matches!(
+				enclosing_conditional_context,
+				Some(ScopeKind::Effect | ScopeKind::ScriptedEffect)
+			) || effect_context_semantics == Some(EffectContextScopeSemantics::EffectContainer)
+			{
+				ScopeKind::Effect
+			} else {
+				ScopeKind::Trigger
+			},
+		);
+	}
+	if key.eq_ignore_ascii_case("not")
+		|| key.eq_ignore_ascii_case("or")
+		|| key.eq_ignore_ascii_case("and")
+	{
+		return Some(ScopeKind::Trigger);
+	}
+	if key == "option" {
+		return Some(ScopeKind::Effect);
+	}
+	(event_scope_type(key).is_some() && has_items).then_some(ScopeKind::Event)
+}
+
 fn create_child_scope(
 	index: &mut SemanticIndex,
 	parent_scope_id: usize,
@@ -1359,16 +1513,12 @@ fn create_child_scope(
 	let mut kind = ScopeKind::Block;
 	let enclosing_conditional_context = nearest_conditional_context_kind(index, parent_scope_id);
 	let effect_context_semantics = effect_context_scope_semantics(ctx, key, parent_scope_id, index);
-	let cwt_path_scope_kind = ctx.cwt_rule_engine.and_then(|engine| {
-		let path = scope_assignment_path(index, parent_scope_id, key);
-		let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
-		cwt_path_container_scope_kind(
-			engine,
-			ctx.file_kind.clone(),
-			ctx.path,
-			path_refs.as_slice(),
-		)
-	});
+	let scope_kind_override = child_scope_kind_override(
+		key,
+		enclosing_conditional_context,
+		effect_context_semantics,
+		!items.is_empty(),
+	);
 
 	if is_on_actions_callback_root(ctx.file_kind.clone(), parent_scope_id, index, key) {
 		kind = ScopeKind::Effect;
@@ -1486,45 +1636,34 @@ fn create_child_scope(
 		&& !is_keyword(key)
 	{
 		kind = ScopeKind::ScriptedEffect;
-	} else if let Some(file_kind_scope_kind) = cwt_path_scope_kind.or_else(|| {
-		ctx.cwt_rule_engine.map_or_else(
-			|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
-			|engine| cwt_file_kind_container_scope_kind(engine, ctx.file_kind.clone(), key),
-		)
-	}) {
+	} else if scope_kind_override.is_none()
+		&& let Some(file_kind_scope_kind) = ctx
+			.cwt_rule_engine
+			.and_then(|engine| {
+				#[cfg(test)]
+				CREATE_CHILD_SCOPE_CWT_PATH_BINDINGS.with(|count| count.set(count.get() + 1));
+				let path = scope_assignment_path(index, parent_scope_id, key);
+				let path_refs = path.iter().map(String::as_str).collect::<Vec<_>>();
+				cwt_path_container_scope_kind(
+					engine,
+					ctx.file_kind.clone(),
+					ctx.path,
+					path_refs.as_slice(),
+				)
+			})
+			.or_else(|| {
+				ctx.cwt_rule_engine.map_or_else(
+					|| hand_container_scope_fallback(ctx.file_kind.clone(), key),
+					|engine| cwt_file_kind_container_scope_kind(engine, ctx.file_kind.clone(), key),
+				)
+			}) {
 		kind = file_kind_scope_kind;
 	}
 
-	// Clausewitz logic-block keywords are case-insensitive in EU4: vanilla
-	// uses lowercase `if/else` but mods routinely write `IF/ELSE/OR/AND/NOT`.
-	// Treat them uniformly so the resulting scope kind reflects their actual
-	// semantics (Trigger/Effect), which lets is_param_block_scope and the
-	// scripted-call candidate gates classify nested calls correctly.
-	if key.eq_ignore_ascii_case("if") || key.eq_ignore_ascii_case("else") {
-		if matches!(
-			enclosing_conditional_context,
-			Some(ScopeKind::Effect | ScopeKind::ScriptedEffect)
-		) || effect_context_semantics == Some(EffectContextScopeSemantics::EffectContainer)
-		{
-			kind = ScopeKind::Effect;
-		} else {
-			kind = ScopeKind::Trigger;
-		}
-	}
-
-	if key.eq_ignore_ascii_case("not")
-		|| key.eq_ignore_ascii_case("or")
-		|| key.eq_ignore_ascii_case("and")
-	{
-		kind = ScopeKind::Trigger;
-	}
-
-	if key == "option" {
-		kind = ScopeKind::Effect;
-	}
-
-	if event_scope_type(key).is_some() && !items.is_empty() {
-		kind = ScopeKind::Event;
+	// These classifications intentionally override generic and builtin kinds,
+	// but their presence makes the CWT path lookup provably unnecessary.
+	if let Some(scope_kind_override) = scope_kind_override {
+		kind = scope_kind_override;
 	}
 
 	push_scope(ScopeArgs {

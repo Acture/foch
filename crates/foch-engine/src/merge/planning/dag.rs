@@ -763,6 +763,7 @@ mod tests {
 			root_path: None,
 			descriptor_path: None,
 			descriptor: Some(descriptor),
+			workshop_identity: None,
 			descriptor_error: None,
 			files: Vec::new(),
 		}

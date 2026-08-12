@@ -1,75 +1,91 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use foch_core::model::{MergeReport, MergeReportStatus};
-use serde::Serialize;
-use walkdir::WalkDir;
+use foch_core::model::{
+	MergeReport, MergeReportStatus, PRODUCT_INPUT_PROFILE, ProductInputManifest,
+};
+use foch_core::utils::steam::{SteamId, WorkshopInstallIdentity};
+use serde::{Deserialize, Serialize};
 
-use crate::config::{Eu4Discovery, WorkshopCatalog};
-use crate::corpus::{
-	Case, Corpus, ORACLE_POLICY_VERSION, OracleAssessment, OracleStatus, assess_oracle_candidate,
-};
+use crate::config::Eu4Discovery;
+use crate::corpus::{Case, ORACLE_POLICY_VERSION, assess_oracle_candidate};
 use crate::dataset::{
-	DatasetPaths, EngineArtifactIdentity, FileResultRecord, GameIdentity, MeasurementCohortKey,
+	DatasetPaths, EngineArtifactIdentity, FileResultRecord, InputVersionRecord,
 	MeasurementIdentityV2, MeasurementKernel, MeasurementRecord, MeasurementScope,
-	MeasurementSummary, ObjectKind, ObjectRecord, ObservationRecord, SCHEMA, SCORER_VERSION,
-	SnapshotObjectRef, SnapshotRecord, TerminalStatus, WorkshopObservation, append_unique,
-	append_unique_many, now_rfc3339, read_jsonl, stable_id,
+	MeasurementSummary, SCORER_VERSION, TerminalStatus, WorkshopItemObservationV2,
+	WorkshopObservationRecordV2, append_unique, append_unique_many, append_workshop_observation_v2,
+	now_rfc3339, read_jsonl, stable_id,
 };
-use crate::object_store::{ExportProfile, ObjectStore, StoredObject};
+use crate::evidence_store::{
+	EvidenceBundleInput, EvidenceEntryInput, EvidenceEntryKind, EvidenceStore,
+	read_stable_source_file,
+};
 use crate::orchestrate::{
 	CaseResult, ExistingOutputScore, FileRecord, ScoreExistingOutputRequest,
 	score_existing_output_with_cache,
 };
 use crate::report::{
-	MEASUREMENT_REPORT_SCHEMA, MeasurementCohortSelector, committed_measurement_cohort_registry,
-	select_measurement_cohort,
+	MeasurementCohortSelector, WorkshopMeasurementReport, WorkshopReportCase, WorkshopReportCohort,
+	WorkshopReportRequest, build_workshop_measurement_report,
+	committed_measurement_cohort_registry,
 };
-use crate::score::ScoreCache;
+use crate::score::{
+	ScoreCache, reference_output_files, scoring_evidence_files,
+	scoring_evidence_path_belongs_to_unit, scoring_reference_units,
+};
+use crate::workshop_inputs::{
+	ResolvedWorkshopCase, WorkshopCaseManifest, resolve_workshop_cases,
+	validate_workshop_cases_unchanged,
+};
 
 #[derive(Clone, Debug)]
-pub struct CollectOptions<'a> {
-	pub corpus: &'a Path,
+pub struct WorkshopMeasureOptions<'a> {
+	pub case_manifest: &'a Path,
 	pub dataset_root: &'a Path,
 	pub discovery: &'a Eu4Discovery,
-	pub limit: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CollectSummary {
-	pub local_cases: usize,
-	pub snapshots: usize,
-	pub unique_objects: usize,
-	pub logical_bytes: u64,
-}
-
-#[derive(Clone, Debug)]
-pub struct MeasureOptions<'a> {
-	pub dataset_root: &'a Path,
 	pub timeout: Duration,
-	pub limit: usize,
 	pub basegame_root: &'a Path,
-	/// Exact immutable snapshots to measure, in caller-supplied order.
-	///
-	/// Exact selection and `limit` are mutually exclusive: an exact selector is
-	/// itself the complete denominator and must not be silently truncated.
-	pub snapshot_ids: Option<&'a [String]>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MeasureRunSummary {
+pub struct WorkshopMeasureRunSummary {
 	pub selected: usize,
 	pub cached: usize,
 	pub measured: usize,
 	pub failed: usize,
+	pub cohort_id: String,
 	pub product_hash: String,
 	pub scorer_config_hash: String,
+	pub input_version_ids: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
+pub struct WorkshopReportOptions<'a> {
+	pub case_manifest: &'a Path,
+	pub dataset_root: &'a Path,
+	pub discovery: &'a Eu4Discovery,
+	pub output_dir: &'a Path,
+	pub cohort_id: &'a str,
+	pub cohort: WorkshopReportCohort,
+}
+
+#[derive(Clone, Debug)]
+pub struct MetadataExportOptions<'a> {
+	pub dataset_root: &'a Path,
+	pub output_dir: &'a Path,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct MetadataExportManifest {
+	schema: &'static str,
+	profile: &'static str,
+	files: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct MeasurementRunnerIdentity {
 	pub engine_artifact: EngineArtifactIdentity,
 	pub runner_protocol_version: String,
@@ -79,10 +95,13 @@ pub struct MeasurementRunnerIdentity {
 
 #[derive(Clone, Debug)]
 pub struct MeasurementRequest {
-	pub snapshot_id: String,
+	pub input_version_id: String,
 	pub case: Case,
 	pub compatch_dir: PathBuf,
 	pub source_dirs: Vec<PathBuf>,
+	/// Ordered ACF identities for product inputs. Real Workshop measurements
+	/// require this; synthetic local fixtures may omit it.
+	pub source_manifest: Option<ProductInputManifest>,
 	pub output_dir: PathBuf,
 	pub basegame_root: PathBuf,
 	pub expected_base_snapshot_identity: String,
@@ -119,1075 +138,1333 @@ pub trait MeasurementRunner {
 	fn run(&mut self, request: &MeasurementRequest) -> TerminalMerge;
 }
 
-#[derive(Clone, Debug)]
-pub struct ReportOptions<'a> {
-	pub dataset_root: &'a Path,
-	pub output_dir: &'a Path,
-	pub cohort_id: Option<&'a str>,
-	pub scorer_version: Option<&'a str>,
-	pub cohort: ReportCohort,
-	pub limit: usize,
-	/// Exact immutable snapshots to report, in caller-supplied order.
-	pub snapshot_ids: Option<&'a [String]>,
+struct CapturedScoringInputs {
+	_root: tempfile::TempDir,
+	compatch_dir: PathBuf,
+	source_dirs: Vec<PathBuf>,
+	output_dir: PathBuf,
+	basegame_root: PathBuf,
+	scorer_closure: ScorerCaseClosure,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReportCohort {
-	Scorable,
-	AllCandidates,
+struct CompletedMeasurement {
+	score: ExistingOutputScore,
+	inputs: CapturedScoringInputs,
 }
 
-impl ReportCohort {
-	fn includes(self, assessment: &OracleAssessment) -> bool {
-		match self {
-			Self::Scorable => assessment.is_scorable(),
-			Self::AllCandidates => true,
-		}
-	}
-
-	fn as_str(self) -> &'static str {
-		match self {
-			Self::Scorable => "scorable",
-			Self::AllCandidates => "all_candidates",
-		}
-	}
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DatasetExportProfile {
-	Metadata,
-	Semantic,
-	Full,
-}
-
-#[derive(Clone, Debug)]
-pub struct ExportOptions<'a> {
-	pub dataset_root: &'a Path,
-	pub output_dir: &'a Path,
-	pub profile: DatasetExportProfile,
-}
-
-type TerminalClassification = (TerminalStatus, Option<String>, Option<ExistingOutputScore>);
-
-struct PreparedMeasurement {
+struct PreparedWorkshopMeasurement {
+	resolved: ResolvedWorkshopCase,
+	input_version: InputVersionRecord,
 	identity: MeasurementIdentityV2,
-	case_id: String,
-	request: MeasurementRequest,
-	_work: tempfile::TempDir,
+	measurement_id: String,
 }
 
-#[derive(Clone, Copy, Serialize)]
-struct ProductBaseIdentity<'a> {
-	game: &'static str,
-	game_version: &'a str,
-	steam_build_id: Option<u64>,
-	installed_snapshot_sha256: &'a str,
-	pinned_product_base_blake3: &'a str,
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ScorerCaseClosure {
+	/// First-run scorer inputs and compact evidence only. Workshop ACF identity
+	/// is the authoritative installation version, so this closure is not part of
+	/// input or cohort identity and is never rebuilt for cached/report reads.
+	scoring_units: Vec<String>,
+	base_scoring_closure_digest: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
-struct BaselineReport {
+struct CachedWorkshopValidation<'a> {
+	evidence_store: &'a EvidenceStore,
+	input_version: &'a InputVersionRecord,
+	resolved: &'a ResolvedWorkshopCase,
+	runner_identity: &'a MeasurementRunnerIdentity,
+	scorer_config_hash: &'a str,
+	timeout: Duration,
+	base_snapshot_identity: &'a str,
+}
+
+struct WorkshopEvidenceRequest<'a> {
+	input_version: &'a InputVersionRecord,
+	resolved: &'a ResolvedWorkshopCase,
+	measurement: &'a MeasurementRequest,
+	report: &'a MergeReport,
+	file_results: &'a [FileResultRecord],
+	runner_identity: &'a MeasurementRunnerIdentity,
+	scorer_config_hash: &'a str,
+	captured: &'a CapturedScoringInputs,
+}
+
+struct WorkshopReportEvidenceValidation<'a> {
+	cases: &'a [WorkshopReportCase],
+	resolved_cases: &'a [ResolvedWorkshopCase],
+	measurements: &'a [MeasurementRecord],
+	file_results: &'a [FileResultRecord],
+	evidence_store: &'a EvidenceStore,
+}
+
+type TerminalClassification = (TerminalStatus, Option<String>, Option<CompletedMeasurement>);
+
+const SCORER_EVIDENCE_INDEX_SCHEMA: &str = "1.0.0";
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct WorkshopProductInputEvidence {
+	input_version: InputVersionRecord,
+	compatch: WorkshopInstallIdentity,
+	source_manifest: ProductInputManifest,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScorerEvidenceReference {
+	kind: EvidenceEntryKind,
+	relative_path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScorerEvidenceUnit {
+	relative_path: String,
+	entries: Vec<ScorerEvidenceReference>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ScorerEvidenceIndex {
 	schema: String,
-	generated_at: String,
-	measurement_cohort_id: String,
-	measurement_cohort_label: String,
-	measurement_identity: MeasurementCohortKey,
-	merge_kernel: MeasurementKernel,
-	scorer_version: String,
-	oracle_policy_version: String,
-	cohort: String,
-	candidate_cases: usize,
-	scorable_cases: usize,
-	excluded_cases: usize,
-	baseline_complete: bool,
-	total_cases: usize,
-	terminal_cases: usize,
-	completed_cases: usize,
-	merge_failed_cases: usize,
-	status_counts: BTreeMap<String, usize>,
-	reference_output: QualityAggregate,
-	multi_source: QualityAggregate,
-	cases: Vec<BaselineCase>,
+	units: Vec<ScorerEvidenceUnit>,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
-struct QualityAggregate {
-	accepted: usize,
-	total: usize,
-	verdicts: BTreeMap<String, usize>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct BaselineCase {
-	case_id: String,
-	snapshot_id: String,
-	title: String,
-	oracle: OracleAssessment,
-	status: String,
-	measurement_id: Option<String>,
-	detail: Option<String>,
-	summary: Option<MeasurementSummary>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ExportManifest {
-	schema: String,
-	profile: String,
-	objects: Vec<ExportManifestObject>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ExportManifestObject {
-	content_hash: String,
-	archive: String,
-	archive_hash: String,
-	archive_bytes: u64,
-}
-
-pub fn collect(options: &CollectOptions<'_>) -> Result<CollectSummary, Box<dyn std::error::Error>> {
-	let paths = DatasetPaths::new(options.dataset_root);
-	paths.ensure_layout()?;
-	let corpus = Corpus::from_json(&fs::read_to_string(options.corpus)?)?;
-	let local: Vec<(&Case, PathBuf, Vec<PathBuf>)> = corpus
-		.cases
-		.iter()
-		.filter(|case| case.referenced_mods.len() >= 2)
-		.filter_map(|case| resolve_case_paths(case, &options.discovery.workshop))
-		.take(if options.limit == 0 {
-			usize::MAX
-		} else {
-			options.limit
-		})
-		.collect();
-
-	let store = ObjectStore::new(&paths.objects, &paths.work);
-	let mut cache: HashMap<PathBuf, StoredObject> = HashMap::new();
-	let total_input_paths = local
-		.iter()
-		.flat_map(|(_, compatch, sources)| std::iter::once(compatch).chain(sources.iter()))
-		.collect::<HashSet<_>>()
-		.len();
-	let mut input_position = 0_usize;
-	let observed_at = now_rfc3339();
-	let started = Instant::now();
-	for (index, (case, compatch_path, source_paths)) in local.iter().enumerate() {
-		eprintln!(
-			"[collect] case {}/{} {} ({})",
-			index + 1,
-			local.len(),
-			case.compatch_id,
-			progress(index + 1, local.len(), started)
-		);
-		if !cache.contains_key(compatch_path) {
-			input_position += 1;
-			eprintln!(
-				"[collect] object {}/{} compatch:{} ({})",
-				input_position,
-				total_input_paths,
-				case.compatch_id,
-				progress(input_position, total_input_paths, started)
-			);
-		}
-		let compatch = snapshot_cached(&store, &mut cache, compatch_path)?;
-		append_unique(
-			&paths.object_records,
-			&ObjectRecord::new(
-				ObjectKind::Compatch,
-				compatch.hash.clone(),
-				Some(case.compatch_id.clone()),
-				compatch.stats.clone(),
-			),
-		)?;
-
-		let mut source_refs = Vec::with_capacity(source_paths.len());
-		for (source_id, source_path) in case.referenced_mods.iter().zip(source_paths) {
-			if !cache.contains_key(source_path) {
-				input_position += 1;
-				eprintln!(
-					"[collect] object {}/{} source:{} ({})",
-					input_position,
-					total_input_paths,
-					source_id,
-					progress(input_position, total_input_paths, started)
-				);
-			}
-			let source = snapshot_cached(&store, &mut cache, source_path)?;
-			append_unique(
-				&paths.object_records,
-				&ObjectRecord::new(
-					ObjectKind::SourceMod,
-					source.hash.clone(),
-					Some(source_id.clone()),
-					source.stats.clone(),
-				),
-			)?;
-			source_refs.push(SnapshotObjectRef {
-				workshop_id: source_id.clone(),
-				content_hash: source.hash,
-			});
-		}
-
-		let snapshot = SnapshotRecord::new(
-			case.compatch_id.clone(),
-			GameIdentity {
-				app_id: crate::config::EU4_APPID,
-				version: options.discovery.game_version.clone(),
-				steam_build_id: options.discovery.steam_build_id,
-			},
-			SnapshotObjectRef {
-				workshop_id: case.compatch_id.clone(),
-				content_hash: compatch.hash,
-			},
-			source_refs,
-		);
-		append_unique(&paths.snapshots, &snapshot)?;
-		append_unique(
-			&paths.observations,
-			&observation_for_case(case, &snapshot.snapshot_id, &observed_at),
-		)?;
-	}
-
-	let unique_objects: HashMap<&str, u64> = cache
-		.values()
-		.map(|object| (object.hash.as_str(), object.stats.bytes))
-		.collect();
-	let logical_bytes = unique_objects.values().sum();
-	Ok(CollectSummary {
-		local_cases: local.len(),
-		snapshots: local.len(),
-		unique_objects: unique_objects.len(),
-		logical_bytes,
-	})
-}
-
-pub fn measure_with_runner(
-	options: &MeasureOptions<'_>,
+/// Measure the fixed logical cohort directly from read-only Steam Workshop
+/// inputs. This path never constructs or opens the legacy input CAS.
+pub fn measure_workshop_with_runner(
+	options: &WorkshopMeasureOptions<'_>,
 	runner: &mut dyn MeasurementRunner,
-) -> Result<MeasureRunSummary, Box<dyn std::error::Error>> {
+) -> Result<WorkshopMeasureRunSummary, Box<dyn std::error::Error>> {
 	let paths = DatasetPaths::new(options.dataset_root);
-	paths.ensure_layout()?;
+	paths.ensure_workshop_layout()?;
+	let case_manifest = WorkshopCaseManifest::from_path(options.case_manifest)?;
+	if case_manifest.app_id != crate::config::EU4_APPID.to_string() {
+		return Err(format!(
+			"Workshop case manifest app id {} does not match EU4 {}",
+			case_manifest.app_id,
+			crate::config::EU4_APPID
+		)
+		.into());
+	}
+	if options.discovery.workshop.app_id() != crate::config::EU4_APPID {
+		return Err("Workshop catalog belongs to the wrong Steam app".into());
+	}
 	runner.preflight().map_err(|error| {
 		format!(
 			"measurement runner preflight failed: {}",
 			redact_remaining_absolute_paths(&error)
 		)
 	})?;
-	let observations = read_jsonl::<ObservationRecord>(&paths.observations)?;
-	let snapshots = select_snapshots(
-		read_jsonl::<SnapshotRecord>(&paths.snapshots)?,
-		&observations,
-		options.snapshot_ids,
-		options.limit,
-	)?;
 	let runner_identity = runner.identity().clone();
 	validate_runner_identity(&runner_identity)?;
+
 	let local_game = crate::config::discover_eu4_game(&crate::config::DiscoveryOverrides {
 		game_root: Some(options.basegame_root.to_path_buf()),
+		steam_root: options.discovery.steam_root.clone(),
 		..crate::config::DiscoveryOverrides::default()
 	})
 	.map_err(|error| {
 		format!(
-			"failed to identify the measurement base game: {}",
+			"failed to identify the Workshop measurement base game: {}",
 			redact_remaining_absolute_paths(&error)
 		)
 	})?;
-	for snapshot in &snapshots {
-		validate_measurement_game(snapshot, &local_game)?;
+	if local_game.game_version != options.discovery.game_version
+		|| local_game.steam_build_id != options.discovery.steam_build_id
+	{
+		return Err("Workshop discovery and measurement base-game identity differ".into());
 	}
-	let basegame_version = local_game.game_version;
-	let basegame_snapshot =
-		foch_engine::installed_base_snapshot_identity("eu4", &basegame_version)?
-			.ok_or_else(|| format!("no installed base snapshot for eu4@{basegame_version}"))?;
-	let basegame_snapshot_label = basegame_snapshot.as_label();
-	let loaded_base = foch_engine::load_installed_base_snapshot(
-		"eu4",
-		&basegame_version,
-		Some(&basegame_snapshot),
-	)?
-	.ok_or_else(|| format!("no installed base snapshot for eu4@{basegame_version}"))?;
-	let pinned_base_paths =
-		product_base_inventory_paths(options.basegame_root, &loaded_base.snapshot.inventory_paths)?;
-	let (pinned_base_view, pinned_product_base_blake3) =
-		materialize_base_inventory_view(options.basegame_root, &pinned_base_paths, &paths.work)?;
-	let pinned_version = crate::config::detect_game_version(pinned_base_view.path())
-		.ok_or("pinned product base does not contain detectable version metadata")?;
-	if pinned_version != basegame_version {
-		return Err(format!(
-			"pinned product base version mismatch: expected {basegame_version}, found {pinned_version}"
+	let steam_build_id = local_game.steam_build_id.ok_or(
+		"full-product Workshop measurement requires a Steam build id from appmanifest_236850.acf",
+	)?;
+	let base_snapshot =
+		foch_engine::installed_base_snapshot_identity("eu4", &local_game.game_version)?
+			.ok_or_else(|| {
+				format!(
+					"no installed base snapshot for eu4@{}",
+					local_game.game_version
+				)
+			})?;
+	let base_snapshot_label = base_snapshot.as_label();
+	let preflight_started = Instant::now();
+	let resolved_cases = resolve_workshop_cases(
+		&options.discovery.workshop,
+		&case_manifest.cases,
+		|position, total, workshop_id| {
+			eprintln!(
+				"[workshop-preflight] item {position}/{total} {workshop_id} ({})",
+				progress(position, total, preflight_started)
+			);
+		},
+	)
+	.map_err(|error| {
+		format!(
+			"Workshop input preflight failed: {}",
+			redact_remaining_absolute_paths(&error)
 		)
-		.into());
+	})?;
+	let scorer_config_hash = workshop_scorer_config_hash(
+		options.timeout,
+		&local_game.game_version,
+		steam_build_id,
+		&base_snapshot_label,
+	);
+
+	let mut cohort_id = None;
+	let mut input_version_ids = Vec::with_capacity(resolved_cases.len());
+	let mut prepared = Vec::with_capacity(resolved_cases.len());
+	for resolved in resolved_cases {
+		let input_version =
+			resolved.input_version(&local_game.game_version, Some(steam_build_id))?;
+		if !input_version.identity_is_valid() {
+			return Err(format!(
+				"Workshop input version identity is invalid for case {}",
+				resolved.definition.case_id
+			)
+			.into());
+		}
+		let identity = MeasurementIdentityV2 {
+			input_version_id: input_version.input_version_id.clone(),
+			engine_artifact: runner_identity.engine_artifact.clone(),
+			runner_protocol_version: runner_identity.runner_protocol_version.clone(),
+			merge_kernel: runner_identity.merge_kernel,
+			scope: runner_identity.scope,
+			scorer_version: SCORER_VERSION.to_string(),
+			scorer_config_hash: scorer_config_hash.clone(),
+		};
+		let current_cohort_id = identity.cohort_id();
+		if let Some(expected) = cohort_id.as_deref() {
+			if expected != current_cohort_id {
+				return Err("Workshop cases resolved to multiple measurement cohorts".into());
+			}
+		} else {
+			cohort_id = Some(current_cohort_id);
+		}
+		let measurement_id = identity.measurement_id();
+		input_version_ids.push(input_version.input_version_id.clone());
+		prepared.push(PreparedWorkshopMeasurement {
+			resolved,
+			input_version,
+			identity,
+			measurement_id,
+		});
 	}
-	let basegame_identity = ProductBaseIdentity {
-		game: "eu4",
-		game_version: &basegame_version,
-		steam_build_id: local_game.steam_build_id,
-		installed_snapshot_sha256: basegame_snapshot.sha256(),
-		pinned_product_base_blake3: &pinned_product_base_blake3,
-	};
-	let scorer_config_hash = product_scorer_config_hash(options.timeout, &basegame_identity);
+
 	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements)?;
 	let measurements_by_id = index_measurements(&measurements)?;
-	let mut measurement_ids = measurements_by_id
-		.keys()
-		.map(|measurement_id| (*measurement_id).to_string())
+	let file_results = read_jsonl::<FileResultRecord>(&paths.file_results)?;
+	let measurement_ids = measurements
+		.iter()
+		.map(|measurement| measurement.measurement_id().to_string())
+		.collect::<HashSet<_>>();
+	let recoverable_measurement_ids = prepared
+		.iter()
+		.map(|measurement| measurement.measurement_id.clone())
 		.collect::<HashSet<_>>();
 	let mut v2_measurement_ids = measurements
 		.iter()
 		.filter(|measurement| matches!(measurement, MeasurementRecord::V2 { .. }))
 		.map(|measurement| measurement.measurement_id().to_string())
 		.collect::<HashSet<_>>();
-	let selected_measurements = snapshots
-		.iter()
-		.map(|snapshot| {
-			(
-				snapshot,
-				measurement_identity(snapshot, &runner_identity, &scorer_config_hash),
-			)
-		})
-		.collect::<Vec<_>>();
-	let mut recoverable_measurement_ids = HashSet::with_capacity(selected_measurements.len());
-	for (_, identity) in &selected_measurements {
-		let measurement_id = identity.measurement_id();
-		if !measurements_by_id.contains_key(measurement_id.as_str())
-			&& !recoverable_measurement_ids.insert(measurement_id)
-		{
-			return Err("selected snapshots resolve to duplicate measurement identities".into());
-		}
-		v2_measurement_ids.insert(identity.measurement_id());
-	}
-	let file_results = read_jsonl::<FileResultRecord>(&paths.file_results)?;
+	v2_measurement_ids.extend(recoverable_measurement_ids.iter().cloned());
 	validate_file_result_foreign_keys(
 		&file_results,
 		&measurement_ids,
 		&v2_measurement_ids,
 		&recoverable_measurement_ids,
 	)?;
-	let object_records = read_jsonl::<ObjectRecord>(&paths.object_records)?;
-	let store = ObjectStore::new(&paths.objects, &paths.work);
-	let started = Instant::now();
-	let mut input_hashes = HashSet::new();
-	for snapshot in &snapshots {
-		input_hashes.insert(snapshot.compatch.content_hash.clone());
-		input_hashes.extend(
-			snapshot
-				.source_mods
-				.iter()
-				.map(|source| source.content_hash.clone()),
-		);
-	}
-	let mut input_hashes: Vec<String> = input_hashes.into_iter().collect();
-	input_hashes.sort();
-	for (index, hash) in input_hashes.iter().enumerate() {
-		eprintln!(
-			"[measure] inspect object {}/{} {hash} ({})",
-			index + 1,
-			input_hashes.len(),
-			progress(index + 1, input_hashes.len(), started)
-		);
-		store.open_object_guarded(hash).map_err(|error| {
-			format!(
-				"measurement CAS preflight failed for object {hash}: {:?}",
-				error.kind()
-			)
-		})?;
-	}
 
-	let mut verified_outputs = HashMap::new();
+	let evidence_store = EvidenceStore::for_dataset(&paths);
+	let mut score_cache = ScoreCache::new();
 	let mut cached = 0_usize;
-	let mut completed_count = 0_usize;
+	let mut measured = 0_usize;
 	let mut failed = 0_usize;
-	let mut pending = Vec::new();
-	for (snapshot, identity) in selected_measurements {
-		let measurement_id = identity.measurement_id();
+	let started = Instant::now();
+
+	for (index, prepared_measurement) in prepared.into_iter().enumerate() {
+		let PreparedWorkshopMeasurement {
+			resolved,
+			input_version,
+			identity,
+			measurement_id,
+		} = prepared_measurement;
+		let definition = &resolved.definition;
+		eprintln!(
+			"[workshop-measure] case {}/{} {} ({})",
+			index + 1,
+			case_manifest.cases.len(),
+			definition.case_id,
+			progress(index + 1, case_manifest.cases.len(), started)
+		);
 		if let Some(record) = measurements_by_id.get(measurement_id.as_str()) {
-			validate_cached_measurement(
+			resolved.validate_unchanged(&options.discovery.workshop)?;
+			validate_cached_workshop_measurement(
 				record,
 				&file_results,
-				&object_records,
-				&store,
-				&mut verified_outputs,
+				&CachedWorkshopValidation {
+					evidence_store: &evidence_store,
+					input_version: &input_version,
+					resolved: &resolved,
+					runner_identity: &runner_identity,
+					scorer_config_hash: &scorer_config_hash,
+					timeout: options.timeout,
+					base_snapshot_identity: &base_snapshot_label,
+				},
 			)?;
 			cached += 1;
-			if record.status() == TerminalStatus::Completed {
-				completed_count += 1;
-			} else if record.status().counts_as_merge_failed() {
+			if record.status().counts_as_merge_failed() {
 				failed += 1;
 			}
-		} else {
-			pending.push((snapshot, identity));
+			continue;
 		}
-	}
-	eprintln!(
-		"[measure] resume selected={} cached={} cached_completed={} cached_failed={} pending={}",
-		snapshots.len(),
-		cached,
-		completed_count,
-		failed,
-		pending.len()
-	);
-
-	// Resolve every immutable input and allocate every work directory before the
-	// first product invocation. A missing CAS object or local setup error can
-	// therefore never poison an immutable measurement identity with `fatal`.
-	let mut prepared = Vec::with_capacity(pending.len());
-	for (snapshot, identity) in pending {
 		let work = tempfile::Builder::new()
-			.prefix("measurement-")
-			.tempdir_in(&paths.work)?;
+			.prefix("workshop-measurement-")
+			.tempdir_in(&paths.evidence_work)?;
 		let output_dir = work.path().join("output");
 		fs::create_dir(&output_dir)?;
-		let request = measurement_request(
-			snapshot,
-			&observations,
-			&store,
+		let request = MeasurementRequest {
+			input_version_id: input_version.input_version_id.clone(),
+			case: resolved.case(),
+			compatch_dir: resolved.compatch.install.content_path.clone(),
+			source_dirs: resolved.source_dirs(),
+			source_manifest: Some(resolved.product_manifest.clone()),
 			output_dir,
-			options,
-			&basegame_snapshot_label,
-			pinned_base_view.path(),
-		)
-		.map_err(|error| {
-			format!(
-				"measurement input preflight failed for snapshot {}: {:?}",
-				snapshot.snapshot_id,
-				error.kind()
-			)
-		})?;
-		prepared.push(PreparedMeasurement {
-			identity,
-			case_id: snapshot.case_id.clone(),
-			request,
-			_work: work,
-		});
-	}
-
-	let mut measured = 0_usize;
-	let case_started = Instant::now();
-	let mut score_cache = ScoreCache::new();
-	let pending_count = prepared.len();
-
-	for (index, prepared) in prepared.into_iter().enumerate() {
-		eprintln!(
-			"[measure] case {}/{} {} ({})",
-			index + 1,
-			pending_count,
-			prepared.case_id,
-			progress(index + 1, pending_count, case_started)
-		);
+			basegame_root: options.basegame_root.to_path_buf(),
+			expected_base_snapshot_identity: base_snapshot_label.clone(),
+			timeout: options.timeout,
+		};
 		let started_at = now_rfc3339();
-		let terminal = runner.run(&prepared.request);
-		validate_base_inventory_view(
-			pinned_base_view.path(),
-			&pinned_base_paths,
-			&pinned_product_base_blake3,
-		)
-		.map_err(|error| {
-			format!(
-				"pinned product base changed during case {}: {:?}",
-				prepared.case_id,
-				error.kind()
+		let terminal = runner.run(&request);
+		let completed_report = match &terminal {
+			TerminalMerge::Completed { report, .. } => Some((**report).clone()),
+			_ => None,
+		};
+		if let Some(report) = completed_report
+			.as_ref()
+			.filter(|report| report.status != MergeReportStatus::Fatal)
+			&& report.input.as_ref() != Some(&resolved.product_manifest.attestation())
+		{
+			return Err(format!(
+				"product merge report input does not match prepared Workshop case {}",
+				definition.case_id
 			)
-		})?;
-		let (status, detail, completed) =
-			classify_terminal_merge(terminal, &prepared.request, &mut score_cache)?;
-		let detail = detail.map(|detail| redact_persisted_detail(&detail, &prepared.request));
-		let measurement_id = prepared.identity.measurement_id();
-		let preexisting_file_results = file_results
-			.iter()
-			.filter(|record| record.measurement_id == measurement_id)
-			.count();
+			.into());
+		}
+		let current_base =
+			foch_engine::installed_base_snapshot_identity("eu4", &local_game.game_version)?
+				.ok_or_else(|| {
+					"installed base snapshot disappeared during measurement".to_string()
+				})?;
+		if current_base.as_label() != base_snapshot_label {
+			return Err(format!(
+				"installed base snapshot changed during case {}",
+				definition.case_id
+			)
+			.into());
+		}
+		validate_live_game_identity(&local_game, options.basegame_root, "Workshop measurement")?;
+		let (status, detail, mut completed) =
+			classify_terminal_merge(terminal, &request, &mut score_cache)?;
+		resolved.validate_unchanged(&options.discovery.workshop)?;
+		let detail = detail.map(|detail| redact_persisted_detail(&detail, &request));
 		let summary = completed
 			.as_ref()
-			.map(|completed| measurement_summary(&completed.result));
-		let completed_output = completed.is_some();
-		let replayed_file_results = completed.map_or_else(Vec::new, |mut completed| {
-			completed
-				.result
-				.files
+			.map(|completed| measurement_summary(&completed.score.result));
+		let file_evidence = completed.as_mut().map_or_else(Vec::new, |completed| {
+			std::mem::take(&mut completed.score.result.files)
 				.into_iter()
 				.map(|file| {
 					let relative_path = file.rel.clone();
-					let resolution = completed.resolutions.remove(&relative_path);
-					let result = serde_json::json!({
-						"score": file,
-						"human_resolution": resolution
-					});
-					FileResultRecord::new(measurement_id.clone(), relative_path, result)
+					let resolution = completed.score.resolutions.remove(&relative_path);
+					FileResultRecord::new(
+						measurement_id.clone(),
+						relative_path,
+						serde_json::json!({
+							"score": file,
+							"human_resolution": resolution
+						}),
+					)
 				})
 				.collect::<Vec<_>>()
 		});
+		let has_recoverable_file_results = file_results
+			.iter()
+			.any(|record| record.measurement_id == measurement_id);
+		if summary.is_none() && has_recoverable_file_results {
+			return Err(format!(
+				"case {} has recoverable completed file results, but replay did not complete",
+				definition.case_id
+			)
+			.into());
+		}
 		if let Some(summary) = &summary {
 			validate_replayed_file_results(
 				&measurement_id,
 				summary,
 				&file_results,
-				&replayed_file_results,
+				&file_evidence,
 			)?;
-		} else if preexisting_file_results != 0 {
-			return Err(format!(
-				"recoverable orphan measurement {measurement_id} has file evidence but its replay did not complete"
-			)
-			.into());
 		}
-		let merged_output_hash = if completed_output {
+		let evidence_bundle_hash = if status == TerminalStatus::Completed {
+			let report = completed_report
+				.as_ref()
+				.ok_or("completed Workshop measurement has no merge report")?;
+			let entries = workshop_evidence_entries(&WorkshopEvidenceRequest {
+				input_version: &input_version,
+				resolved: &resolved,
+				measurement: &request,
+				report,
+				file_results: &file_evidence,
+				runner_identity: &runner_identity,
+				scorer_config_hash: &scorer_config_hash,
+				captured: &completed
+					.as_ref()
+					.ok_or("completed Workshop measurement has no captured scorer inputs")?
+					.inputs,
+			})?;
 			Some(
-				archive_output_tree(&store, &paths, &prepared.request.output_dir)?
-					.ok_or("completed merge output disappeared before archival")?,
+				evidence_store
+					.store(EvidenceBundleInput {
+						measurement_id: measurement_id.clone(),
+						input_version_id: input_version.input_version_id.clone(),
+						entries,
+					})?
+					.hash,
 			)
 		} else {
 			None
 		};
-		if let Some(summary) = &summary {
-			append_unique_many(&paths.file_results, &replayed_file_results)?;
-			let persisted_file_results = read_jsonl::<FileResultRecord>(&paths.file_results)?;
-			validate_file_result_foreign_keys(
-				&persisted_file_results,
-				&measurement_ids,
-				&v2_measurement_ids,
-				&recoverable_measurement_ids,
-			)?;
-			validate_replayed_file_results(&measurement_id, summary, &persisted_file_results, &[])?;
+		resolved.validate_unchanged(&options.discovery.workshop)?;
+		validate_live_game_identity(&local_game, options.basegame_root, "Workshop measurement")?;
+
+		let observation = workshop_observation(&input_version, &resolved, now_rfc3339())?;
+		if !observation.matches_input_version(&input_version) {
+			return Err("Workshop ACF observation does not match its input version".into());
+		}
+		append_unique(&paths.input_versions, &input_version)?;
+		append_workshop_observation_v2(&paths.observations, &observation)?;
+		if summary.is_some() {
+			append_unique_many(&paths.file_results, &file_evidence)?;
 		}
 		let record = MeasurementRecord::new_v2(
-			prepared.identity,
+			identity,
 			started_at,
 			now_rfc3339(),
 			status,
 			detail,
-			merged_output_hash,
+			evidence_bundle_hash,
 			summary,
 		);
-		// Commit the terminal record last. If the process is interrupted while
-		// persisting file results, the next run sees no terminal measurement and
-		// safely replays the idempotent file-result writes before committing it.
+		if !record.evidence_reference_is_valid() {
+			return Err("Workshop measurement has an invalid evidence reference".into());
+		}
 		append_unique(&paths.measurements, &record)?;
-		measurement_ids.insert(measurement_id.clone());
-		recoverable_measurement_ids.remove(&measurement_id);
 		measured += 1;
-		if status == TerminalStatus::Completed {
-			completed_count += 1;
-		} else if status.counts_as_merge_failed() {
+		if status.counts_as_merge_failed() {
 			failed += 1;
 		}
-		eprintln!(
-			"[measure] terminal {}/{} status={} cached={} completed={} failed={} ({})",
-			cached + measured,
-			snapshots.len(),
-			terminal_status_name(status),
-			cached,
-			completed_count,
-			failed,
-			progress(index + 1, pending_count, case_started)
-		);
 	}
 
-	Ok(MeasureRunSummary {
-		selected: snapshots.len(),
+	Ok(WorkshopMeasureRunSummary {
+		selected: case_manifest.cases.len(),
 		cached,
 		measured,
 		failed,
+		cohort_id: cohort_id.ok_or("Workshop cohort contains no cases")?,
 		product_hash: runner_identity.engine_artifact.hash,
 		scorer_config_hash,
+		input_version_ids,
 	})
 }
 
-pub fn report(options: &ReportOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
-	let paths = DatasetPaths::new(options.dataset_root);
-	let observations = read_jsonl::<ObservationRecord>(&paths.observations)?;
-	let candidate_snapshots = select_snapshots(
-		read_jsonl::<SnapshotRecord>(&paths.snapshots)?,
-		&observations,
-		options.snapshot_ids,
-		options.limit,
-	)?;
-	let candidate_cases = candidate_snapshots.len();
-	let mut snapshots: Vec<(SnapshotRecord, String, OracleAssessment)> = candidate_snapshots
-		.into_iter()
-		.map(|snapshot| {
-			let observation = latest_observation(&observations, &snapshot.snapshot_id);
-			let title = observation
-				.map(|record| record.compatch.title.clone())
-				.unwrap_or_else(|| snapshot.case_id.clone());
-			let oracle = assess_oracle_candidate(
-				&title,
-				snapshot.source_mods.len(),
-				observation.is_some_and(|record| record.mod_churned),
-			);
-			(snapshot, title, oracle)
-		})
-		.collect();
-	let scorable_cases = snapshots
-		.iter()
-		.filter(|(_, _, assessment)| assessment.is_scorable())
-		.count();
-	snapshots.retain(|(_, _, assessment)| options.cohort.includes(assessment));
-	let report_snapshot_ids: HashSet<&str> = snapshots
-		.iter()
-		.map(|(snapshot, _, _)| snapshot.snapshot_id.as_str())
-		.collect();
-	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements)?;
-	let selector = match (options.cohort_id, options.scorer_version) {
-		(Some(cohort_id), None) => MeasurementCohortSelector::CohortId(cohort_id),
-		(None, Some(scorer_version)) => MeasurementCohortSelector::ScorerVersion(scorer_version),
-		(None, None) => MeasurementCohortSelector::ScorerVersion(SCORER_VERSION),
-		(Some(_), Some(_)) => {
-			return Err("report accepts either cohort_id or scorer_version, not both".into());
-		}
-	};
-	let registry = committed_measurement_cohort_registry()?;
-	let selected_cohort = select_measurement_cohort(&measurements, &registry, selector)?;
-	let descriptor = selected_cohort.descriptor;
-	let merge_kernel = descriptor.merge_kernel.ok_or_else(|| {
-		format!(
-			"measurement cohort {} has no registered merge kernel",
-			descriptor.cohort_id
-		)
+fn validate_live_game_identity(
+	expected: &crate::config::Eu4GameDiscovery,
+	game_root: &Path,
+	operation: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let observed = crate::config::discover_eu4_game(&crate::config::DiscoveryOverrides {
+		game_root: Some(game_root.to_path_buf()),
+		steam_root: expected.steam_root.clone(),
+		..crate::config::DiscoveryOverrides::default()
 	})?;
-	let mut selected: HashMap<String, &MeasurementRecord> = HashMap::new();
-	for measurement in selected_cohort.measurements {
-		if !report_snapshot_ids.contains(measurement.snapshot_id()) {
-			continue;
-		}
-		selected
-			.entry(measurement.snapshot_id().to_string())
-			.and_modify(|current| {
-				if measurement.finished_at() > current.finished_at() {
-					*current = measurement;
-				}
-			})
-			.or_insert(measurement);
+	if observed.game_root != expected.game_root
+		|| observed.game_version != expected.game_version
+		|| observed.steam_build_id != expected.steam_build_id
+	{
+		return Err(format!("EU4 installation identity changed during {operation}").into());
 	}
-
-	let mut cases = Vec::with_capacity(snapshots.len());
-	let mut status_counts = BTreeMap::new();
-	let mut terminal_cases = 0_usize;
-	let mut completed_cases = 0_usize;
-	let mut reference_output = QualityAggregate::default();
-	let mut multi_source = QualityAggregate::default();
-	for (snapshot, title, oracle) in &snapshots {
-		let measurement = selected.get(&snapshot.snapshot_id).copied();
-		let (status, measurement_id, detail, summary) = match measurement {
-			Some(measurement) => {
-				terminal_cases += 1;
-				let status = terminal_status_name(measurement.status()).to_string();
-				if measurement.status() == TerminalStatus::Completed {
-					completed_cases += 1;
-					if let Some(summary) = measurement.summary() {
-						reference_output.accepted += summary.accepted_ground_truth_files;
-						reference_output.total += summary.ground_truth_files;
-						merge_counts(
-							&mut reference_output.verdicts,
-							&summary.all_ground_truth_verdicts,
-						);
-						multi_source.accepted += summary.accepted_multi_source_files;
-						multi_source.total += summary.multi_source_files;
-						merge_counts(&mut multi_source.verdicts, &summary.multi_source_verdicts);
-					}
-				}
-				(
-					status,
-					Some(measurement.measurement_id().to_string()),
-					measurement.detail().map(str::to_string),
-					measurement.summary().cloned(),
-				)
-			}
-			None => ("missing".to_string(), None, None, None),
-		};
-		*status_counts.entry(status.clone()).or_default() += 1;
-		cases.push(BaselineCase {
-			case_id: snapshot.case_id.clone(),
-			snapshot_id: snapshot.snapshot_id.clone(),
-			title: title.clone(),
-			oracle: oracle.clone(),
-			status,
-			measurement_id,
-			detail,
-			summary,
-		});
-	}
-	let report = BaselineReport {
-		schema: MEASUREMENT_REPORT_SCHEMA.to_string(),
-		generated_at: now_rfc3339(),
-		measurement_cohort_id: descriptor.cohort_id,
-		measurement_cohort_label: descriptor.label,
-		measurement_identity: descriptor.identity,
-		merge_kernel,
-		scorer_version: descriptor.scorer_version,
-		oracle_policy_version: ORACLE_POLICY_VERSION.to_string(),
-		cohort: options.cohort.as_str().to_string(),
-		candidate_cases,
-		scorable_cases,
-		excluded_cases: candidate_cases.saturating_sub(scorable_cases),
-		baseline_complete: !snapshots.is_empty() && terminal_cases == snapshots.len(),
-		total_cases: snapshots.len(),
-		terminal_cases,
-		completed_cases,
-		merge_failed_cases: terminal_cases.saturating_sub(completed_cases),
-		status_counts,
-		reference_output,
-		multi_source,
-		cases,
-	};
-	fs::create_dir_all(options.output_dir)?;
-	fs::write(
-		options.output_dir.join("baseline.json"),
-		format!("{}\n", serde_json::to_string_pretty(&report)?),
-	)?;
-	fs::write(
-		options.output_dir.join("report.md"),
-		render_baseline_report(&report),
-	)?;
 	Ok(())
 }
 
-pub fn export_dataset(options: &ExportOptions<'_>) -> Result<(), Box<dyn std::error::Error>> {
-	let paths = DatasetPaths::new(options.dataset_root);
-	if options.output_dir.is_dir() && fs::read_dir(options.output_dir)?.next().is_some() {
-		return Err(format!(
-			"export output directory must be empty: {}",
-			options.output_dir.display()
-		)
-		.into());
-	}
-	fs::create_dir_all(options.output_dir)?;
-	for source in [
-		&paths.manifest,
-		&paths.object_records,
-		&paths.snapshots,
-		&paths.observations,
-		&paths.measurements,
-		&paths.file_results,
-		&paths.shadow_measurements,
-		&paths.annotations,
-	] {
-		if source.is_file() {
-			fs::write(
-				options.output_dir.join(
-					source
-						.file_name()
-						.expect("dataset metadata paths have file names"),
-				),
-				fs::read(source)?,
-			)?;
-		}
-	}
-
-	let mut exported = Vec::new();
-	if options.profile != DatasetExportProfile::Metadata {
-		let store = ObjectStore::new(&paths.objects, &paths.work);
-		let records = read_jsonl::<ObjectRecord>(&paths.object_records)?;
-		let mut archives: Vec<(String, String)> = records
-			.iter()
-			.map(|record| {
-				let directory = if record.kind == ObjectKind::MergedOutput {
-					"outputs"
-				} else {
-					"objects"
-				};
-				(directory.to_string(), record.content_hash.clone())
-			})
-			.collect::<HashSet<_>>()
-			.into_iter()
-			.collect();
-		archives.sort();
-		let profile = match options.profile {
-			DatasetExportProfile::Semantic => ExportProfile::Semantic,
-			DatasetExportProfile::Full => ExportProfile::Full,
-			DatasetExportProfile::Metadata => unreachable!("handled above"),
-		};
-		for (index, (directory, hash)) in archives.iter().enumerate() {
-			eprintln!("[export] object {}/{} {hash}", index + 1, archives.len());
-			fs::create_dir_all(options.output_dir.join(directory))?;
-			let relative = format!("{directory}/{hash}.tar.zst");
-			let archive =
-				store.export_object(hash, &options.output_dir.join(&relative), profile)?;
-			exported.push(ExportManifestObject {
-				content_hash: hash.clone(),
-				archive: relative,
-				archive_hash: archive.hash,
-				archive_bytes: archive.bytes,
-			});
-		}
-	}
-	let profile = match options.profile {
-		DatasetExportProfile::Metadata => "metadata",
-		DatasetExportProfile::Semantic => "semantic",
-		DatasetExportProfile::Full => "full",
-	};
-	let manifest = ExportManifest {
-		schema: SCHEMA.to_string(),
-		profile: profile.to_string(),
-		objects: exported,
-	};
-	fs::write(
-		options.output_dir.join("export.json"),
-		format!("{}\n", serde_json::to_string_pretty(&manifest)?),
-	)?;
-	write_export_checksums(options.output_dir)?;
-	Ok(())
-}
-
-fn write_export_checksums(output_dir: &Path) -> io::Result<()> {
-	let mut files: Vec<PathBuf> = walkdir::WalkDir::new(output_dir)
-		.into_iter()
-		.filter_map(Result::ok)
-		.filter(|entry| entry.file_type().is_file())
-		.filter(|entry| entry.file_name() != "checksums.txt")
-		.map(|entry| entry.into_path())
-		.collect();
-	files.sort();
-	let mut checksums = String::new();
-	for file in files {
-		let relative = file
-			.strip_prefix(output_dir)
-			.expect("export files remain under output directory")
-			.to_string_lossy()
-			.replace('\\', "/");
-		checksums.push_str(&format!("{}  {relative}\n", digest_file(&file)?));
-	}
-	fs::write(output_dir.join("checksums.txt"), checksums)
-}
-
-fn product_scorer_config_hash(
+fn workshop_scorer_config_hash(
 	timeout: Duration,
-	basegame_identity: &ProductBaseIdentity<'_>,
+	game_version: &str,
+	steam_build_id: u64,
+	base_snapshot_identity: &str,
 ) -> String {
+	// This hash identifies scorer policy, not case data. Ordered Workshop ACF
+	// revisions live in input_version_id; per-case scoring closures are captured
+	// only when a new measurement actually runs.
 	let config = serde_json::json!({
 		"scorer_version": SCORER_VERSION,
+		"oracle_policy_version": ORACLE_POLICY_VERSION,
 		"scope": MeasurementScope::FullProductMerge.as_str(),
 		"merge_kernel": MeasurementKernel::SemanticTree.as_str(),
 		"public_command": "foch_merge_non_interactive",
 		"force": false,
 		"retained_paths": "all",
-		"retained_path_filter": null,
 		"include_game_base": true,
+		"input_source": "steam_workshop_acf_read_only_v1",
+		"product_input_profile": PRODUCT_INPUT_PROFILE,
 		"timeout_nanos": timeout.as_nanos().to_string(),
 		"ordering": "gui_sensitive_else_insensitive",
 		"basegame_subtraction": "semantic_atoms_v1",
-		"basegame_identity": basegame_identity,
+		"game_version": game_version,
+		"steam_build_id": steam_build_id.to_string(),
+		"base_snapshot_identity": base_snapshot_identity,
 		"multi_source": "all_sources_v1"
 	});
-	stable_id("scorer-config", &[config.to_string().as_bytes()])
+	stable_id(
+		"workshop-scorer-config-v2",
+		&[config.to_string().as_bytes()],
+	)
 }
 
-fn product_base_inventory_paths(
-	game_root: &Path,
-	installed_inventory_paths: &[String],
-) -> io::Result<Vec<String>> {
-	let mut relative_paths = validated_base_inventory_paths(installed_inventory_paths)?;
-	for version_path in [
-		"launcher-settings.json",
-		"launcher/launcher-settings.json",
-		"version.txt",
-	] {
-		if game_root.join(version_path).is_file()
-			&& !relative_paths.iter().any(|path| path == version_path)
-		{
-			relative_paths.push(version_path.to_string());
-		}
+fn workshop_product_input_evidence(
+	input_version: &InputVersionRecord,
+	resolved: &ResolvedWorkshopCase,
+) -> WorkshopProductInputEvidence {
+	WorkshopProductInputEvidence {
+		input_version: input_version.clone(),
+		compatch: resolved.compatch.install.identity.clone(),
+		source_manifest: resolved.product_manifest.clone(),
 	}
-	relative_paths.sort();
-	Ok(relative_paths)
 }
 
-fn materialize_base_inventory_view(
-	game_root: &Path,
-	inventory_paths: &[String],
-	work_root: &Path,
-) -> io::Result<(tempfile::TempDir, String)> {
-	let relative_paths = validated_base_inventory_paths(inventory_paths)?;
-	let view = tempfile::Builder::new()
-		.prefix("scoring-base-")
-		.tempdir_in(work_root)?;
-	let mut hasher = blake3::Hasher::new();
-	hasher.update(b"foch-product-base-inventory-v1");
-	let mut buffer = vec![0_u8; 1024 * 1024];
-	let total = relative_paths.len();
-	let progress_interval = (total / 10).max(1_000);
-	let started = Instant::now();
-	for (index, relative_path) in relative_paths.into_iter().enumerate() {
-		let source_path = game_root.join(&relative_path);
-		let source_link_metadata = fs::symlink_metadata(&source_path).map_err(|error| {
-			io::Error::new(
-				error.kind(),
-				format!("failed to inspect base inventory file {relative_path:?}: {error}"),
-			)
+fn workshop_scorer_evidence(
+	runner_identity: &MeasurementRunnerIdentity,
+	scorer_config_hash: &str,
+	timeout: Duration,
+	base_snapshot_identity: &str,
+	base_scoring_closure_digest: &str,
+	scoring_units: &[String],
+) -> serde_json::Value {
+	serde_json::json!({
+		"scorer_version": SCORER_VERSION,
+		"oracle_policy_version": ORACLE_POLICY_VERSION,
+		"scorer_config_hash": scorer_config_hash,
+		"runner": runner_identity,
+		"timeout_nanos": timeout.as_nanos().to_string(),
+		"base_snapshot_identity": base_snapshot_identity,
+		"base_scoring_closure_digest": base_scoring_closure_digest,
+		"scoring_units": scoring_units,
+	})
+}
+
+fn stored_scorer_closure(
+	evidence: &serde_json::Value,
+) -> Result<ScorerCaseClosure, Box<dyn std::error::Error>> {
+	let scoring_units = evidence
+		.get("scoring_units")
+		.cloned()
+		.ok_or_else(|| "scorer evidence has no scoring units".to_string())
+		.and_then(|value| {
+			serde_json::from_value::<Vec<String>>(value)
+				.map_err(|error| format!("invalid scorer evidence units: {error}"))
 		})?;
-		if !source_link_metadata.file_type().is_file() {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("base inventory entry is not a regular file: {relative_path:?}"),
-			));
-		}
-		let destination = view.path().join(&relative_path);
-		if let Some(parent) = destination.parent() {
-			fs::create_dir_all(parent)?;
-		}
-		let mut source = File::open(&source_path)?;
-		let source_metadata_before = source.metadata()?;
-		let mut target = File::create(&destination)?;
-		hasher.update(&(relative_path.len() as u64).to_le_bytes());
-		hasher.update(relative_path.as_bytes());
-		hasher.update(&source_metadata_before.len().to_le_bytes());
-		let mut copied = 0_u64;
-		loop {
-			let read = source.read(&mut buffer)?;
-			if read == 0 {
-				break;
-			}
-			target.write_all(&buffer[..read])?;
-			hasher.update(&buffer[..read]);
-			copied = copied.saturating_add(read as u64);
-		}
-		drop(target);
-		let source_metadata_after = source.metadata()?;
-		if copied != source_metadata_before.len()
-			|| source_metadata_before.len() != source_metadata_after.len()
-			|| source_metadata_before.modified().ok() != source_metadata_after.modified().ok()
-		{
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("base inventory file changed while copying: {relative_path:?}"),
-			));
-		}
-		let mut permissions = fs::metadata(&destination)?.permissions();
-		permissions.set_readonly(true);
-		fs::set_permissions(&destination, permissions)?;
+	let canonical_units = scoring_units.iter().cloned().collect::<BTreeSet<_>>();
+	if scoring_units.is_empty()
+		|| canonical_units.len() != scoring_units.len()
+		|| canonical_units.iter().cloned().collect::<Vec<_>>() != scoring_units
+		|| scoring_units.iter().any(|unit| {
+			unit.is_empty()
+				|| Path::new(unit).is_absolute()
+				|| Path::new(unit).components().any(|component| {
+					matches!(
+						component,
+						Component::Prefix(_)
+							| Component::RootDir | Component::ParentDir
+							| Component::CurDir
+					)
+				})
+		}) {
+		return Err("scorer evidence units are unsafe, empty, duplicated, or unsorted".into());
+	}
+	let base_scoring_closure_digest = evidence
+		.get("base_scoring_closure_digest")
+		.and_then(serde_json::Value::as_str)
+		.ok_or("scorer evidence has no base scoring closure digest")?
+		.to_string();
+	if base_scoring_closure_digest.len() != 64
+		|| !base_scoring_closure_digest
+			.bytes()
+			.all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+	{
+		return Err("scorer evidence has an invalid base scoring closure digest".into());
+	}
+	Ok(ScorerCaseClosure {
+		scoring_units,
+		base_scoring_closure_digest,
+	})
+}
 
-		let position = index + 1;
-		if position == total || position % progress_interval == 0 {
+/// Write a schema-3 Workshop report from the current read-only ACF cohort and
+/// compact V2 measurement evidence. Legacy snapshots and object CAS are never
+/// opened by this path.
+pub fn report_workshop(
+	options: &WorkshopReportOptions<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let manifest = WorkshopCaseManifest::from_path(options.case_manifest)?;
+	if manifest.app_id != crate::config::EU4_APPID.to_string() {
+		return Err("Workshop product report requires an EU4 case manifest".into());
+	}
+	if options.discovery.workshop.app_id() != crate::config::EU4_APPID {
+		return Err("Workshop report catalog belongs to the wrong Steam app".into());
+	}
+	let local_game = crate::config::discover_eu4_game(&crate::config::DiscoveryOverrides {
+		game_root: Some(options.discovery.game_root.clone()),
+		steam_root: options.discovery.steam_root.clone(),
+		..crate::config::DiscoveryOverrides::default()
+	})
+	.map_err(|error| {
+		format!(
+			"failed to identify the Workshop report base game: {}",
+			redact_remaining_absolute_paths(&error)
+		)
+	})?;
+	if local_game.game_root != options.discovery.game_root
+		|| local_game.game_version != options.discovery.game_version
+		|| local_game.steam_build_id != options.discovery.steam_build_id
+	{
+		return Err("Workshop discovery and report base-game identity differ".into());
+	}
+	let steam_build_id = local_game.steam_build_id.ok_or(
+		"full-product Workshop report requires a Steam build id from appmanifest_236850.acf",
+	)?;
+	let resolve_started = Instant::now();
+	let resolved_cases = resolve_workshop_cases(
+		&options.discovery.workshop,
+		&manifest.cases,
+		|position, total, workshop_id| {
 			eprintln!(
-				"[measure] pin product base {position}/{total} (elapsed={:.1}s)",
-				started.elapsed().as_secs_f64()
+				"[workshop-report] resolve item {position}/{total} {workshop_id} ({})",
+				progress(position, total, resolve_started)
 			);
-		}
+		},
+	)?;
+	let mut cases = Vec::with_capacity(resolved_cases.len());
+	for resolved in &resolved_cases {
+		let input_version =
+			resolved.input_version(&local_game.game_version, Some(steam_build_id))?;
+		let title = resolved.case().title;
+		let oracle = assess_oracle_candidate(&title, resolved.sources.len(), false);
+		cases.push(WorkshopReportCase::new(input_version, title, oracle));
 	}
-	Ok((view, hasher.finalize().to_hex().to_string()))
+	let paths = DatasetPaths::new(options.dataset_root);
+	let measurements = read_jsonl::<MeasurementRecord>(&paths.measurements)?;
+	let file_results = read_jsonl::<FileResultRecord>(&paths.file_results)?;
+	let registry = committed_measurement_cohort_registry()?;
+	let generated_at = now_rfc3339();
+	let report = build_workshop_measurement_report(WorkshopReportRequest {
+		generated_at: &generated_at,
+		cases: &cases,
+		measurements: &measurements,
+		registry: &registry,
+		selector: MeasurementCohortSelector::CohortId(options.cohort_id),
+		cohort: options.cohort,
+	})?;
+
+	let evidence_store = EvidenceStore::for_dataset(&paths);
+	validate_workshop_report_evidence(
+		&report,
+		&WorkshopReportEvidenceValidation {
+			cases: &cases,
+			resolved_cases: &resolved_cases,
+			measurements: &measurements,
+			file_results: &file_results,
+			evidence_store: &evidence_store,
+		},
+	)?;
+	let validation_started = Instant::now();
+	validate_workshop_cases_unchanged(
+		&options.discovery.workshop,
+		&resolved_cases,
+		|position, total, workshop_id| {
+			eprintln!(
+				"[workshop-report] validate item {position}/{total} {workshop_id} ({})",
+				progress(position, total, validation_started)
+			);
+		},
+	)?;
+	validate_live_game_identity(&local_game, &local_game.game_root, "Workshop report")?;
+
+	fs::create_dir_all(options.output_dir)?;
+	fs::write(
+		options.output_dir.join("baseline.json"),
+		format!("{}\n", serde_json::to_string_pretty(&report)?),
+	)?;
+	Ok(())
 }
 
-fn validated_base_inventory_paths(inventory_paths: &[String]) -> io::Result<Vec<String>> {
-	let mut relative_paths = inventory_paths.to_vec();
-	relative_paths.sort();
-	if relative_paths.windows(2).any(|pair| pair[0] == pair[1]) {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			"installed base snapshot inventory contains duplicate paths",
-		));
-	}
-	for relative_path in &relative_paths {
-		let relative = Path::new(relative_path);
-		if relative_path.is_empty()
-			|| relative.is_absolute()
-			|| relative.components().any(|component| {
-				matches!(
-					component,
-					Component::Prefix(_) | Component::RootDir | Component::ParentDir
-				)
-			}) {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("invalid base inventory path: {relative_path:?}"),
-			));
-		}
-	}
-	Ok(relative_paths)
-}
-
-fn validate_base_inventory_view(
-	view_root: &Path,
-	inventory_paths: &[String],
-	expected_digest: &str,
-) -> io::Result<()> {
-	let expected_paths = validated_base_inventory_paths(inventory_paths)?
-		.into_iter()
-		.collect::<HashSet<_>>();
-	let mut actual_paths = HashSet::with_capacity(expected_paths.len());
-	for entry in WalkDir::new(view_root).follow_links(false) {
-		let entry = entry.map_err(io::Error::other)?;
-		if entry.path() == view_root || entry.file_type().is_dir() {
+fn validate_workshop_report_evidence(
+	report: &WorkshopMeasurementReport,
+	validation: &WorkshopReportEvidenceValidation<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+	for reported_case in &report.cases {
+		let Some(measurement_id) = reported_case.measurement_id.as_deref() else {
+			continue;
+		};
+		let measurement = validation
+			.measurements
+			.iter()
+			.find(|measurement| measurement.measurement_id() == measurement_id)
+			.ok_or_else(|| format!("reported measurement {measurement_id} is missing"))?;
+		if measurement.status() != TerminalStatus::Completed {
 			continue;
 		}
-		if !entry.file_type().is_file() {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				"pinned product base contains a non-regular entry",
-			));
+		let case_index = validation
+			.cases
+			.iter()
+			.position(|case| case.input_version.input_version_id == reported_case.input_version_id)
+			.ok_or_else(|| {
+				format!(
+					"reported input version {} is not in the live Workshop cohort",
+					reported_case.input_version_id
+				)
+			})?;
+		let case = &validation.cases[case_index];
+		let resolved = &validation.resolved_cases[case_index];
+		if resolved.definition.case_id != reported_case.case_id {
+			return Err(format!(
+				"reported case {} does not match its live Workshop input",
+				reported_case.case_id
+			)
+			.into());
 		}
-		let relative = entry
-			.path()
-			.strip_prefix(view_root)
-			.expect("walked base entry remains under its root")
-			.to_string_lossy()
-			.replace('\\', "/");
-		actual_paths.insert(relative);
-	}
-	if actual_paths != expected_paths {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			"pinned product base file set changed",
-		));
-	}
-	let actual_digest = base_inventory_digest(view_root, inventory_paths)?;
-	if actual_digest != expected_digest {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			"pinned product base content changed",
-		));
+		let evidence_hash = reported_case
+			.evidence_bundle_hash
+			.as_deref()
+			.ok_or_else(|| {
+				format!("completed measurement {measurement_id} has no evidence bundle")
+			})?;
+		let bundle = validation.evidence_store.open(evidence_hash)?;
+		if bundle.manifest.input_version_id != reported_case.input_version_id
+			|| bundle.manifest.measurement_id != measurement_id
+		{
+			return Err(format!(
+				"evidence bundle {evidence_hash} does not match reported case {}",
+				reported_case.case_id
+			)
+			.into());
+		}
+
+		let measurement_file_results = validation
+			.file_results
+			.iter()
+			.filter(|record| record.measurement_id == measurement_id)
+			.collect::<Vec<_>>();
+		let summary = measurement
+			.summary()
+			.ok_or_else(|| format!("completed measurement {measurement_id} has no summary"))?;
+		validate_cached_file_results(measurement_id, summary, &measurement_file_results)?;
+		let stored_product_input = read_bundle_json::<WorkshopProductInputEvidence>(
+			&bundle,
+			"metadata/product-input.json",
+		)?;
+		if stored_product_input != workshop_product_input_evidence(&case.input_version, resolved) {
+			return Err(format!(
+				"reported measurement {measurement_id} has stale product-input evidence"
+			)
+			.into());
+		}
+		let stored_file_results =
+			read_bundle_json::<Vec<FileResultRecord>>(&bundle, "metadata/file-results.json")?;
+		let expected_file_results = measurement_file_results
+			.iter()
+			.map(|record| (*record).clone())
+			.collect::<Vec<_>>();
+		if canonical_file_results(stored_file_results)
+			!= canonical_file_results(expected_file_results)
+		{
+			return Err(format!(
+				"reported measurement {measurement_id} has stale file-result evidence"
+			)
+			.into());
+		}
+		let merge_report = read_bundle_json::<MergeReport>(&bundle, "metadata/merge-report.json")?;
+		if merge_report.input.as_ref() != Some(&resolved.product_manifest.attestation()) {
+			return Err(format!(
+				"reported measurement {measurement_id} has stale merge-report input"
+			)
+			.into());
+		}
+
+		let scorer = read_bundle_json::<serde_json::Value>(&bundle, "metadata/scorer-config.json")?;
+		let scorer_closure = stored_scorer_closure(&scorer)?;
+		if scorer
+			.get("scorer_config_hash")
+			.and_then(serde_json::Value::as_str)
+			!= Some(measurement.config_hash())
+			|| scorer
+				.get("scorer_version")
+				.and_then(serde_json::Value::as_str)
+				!= Some(measurement.scorer_version())
+		{
+			return Err(
+				format!("reported measurement {measurement_id} has stale scorer evidence").into(),
+			);
+		}
+		validate_scorer_evidence_index(
+			&bundle,
+			&measurement_file_results,
+			&resolved.product_manifest,
+			&scorer_closure.scoring_units,
+		)?;
 	}
 	Ok(())
 }
 
-fn base_inventory_digest(game_root: &Path, inventory_paths: &[String]) -> io::Result<String> {
-	let relative_paths = validated_base_inventory_paths(inventory_paths)?;
+/// Export only the append-only dataset metadata. This deliberately has no
+/// object-CAS profile: live Workshop inputs remain in Steam's installation.
+pub fn export_dataset_metadata(
+	options: &MetadataExportOptions<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let paths = DatasetPaths::new(options.dataset_root);
+	if options.output_dir.exists() && fs::read_dir(options.output_dir)?.next().is_some() {
+		return Err(format!(
+			"metadata export directory must be empty: {}",
+			options.output_dir.display()
+		)
+		.into());
+	}
+	fs::create_dir_all(options.output_dir)?;
 
-	let mut hasher = blake3::Hasher::new();
-	hasher.update(b"foch-product-base-inventory-v1");
-	let mut buffer = vec![0_u8; 1024 * 1024];
-	let total = relative_paths.len();
-	let progress_interval = (total / 10).max(1_000);
-	let started = Instant::now();
-	for (index, relative_path) in relative_paths.into_iter().enumerate() {
-		let relative = Path::new(&relative_path);
-		let mut file = File::open(game_root.join(relative)).map_err(|error| {
-			io::Error::new(
-				error.kind(),
-				format!("failed to read base inventory file {relative_path:?}: {error}"),
+	let sources = [
+		&paths.manifest,
+		&paths.object_records,
+		&paths.snapshots,
+		&paths.input_versions,
+		&paths.observations,
+		&paths.measurements,
+		&paths.file_results,
+		&paths.shadow_measurements,
+		&paths.annotations,
+	];
+	let mut files = Vec::new();
+	for source in sources {
+		if !source.is_file() {
+			continue;
+		}
+		let file_name = source
+			.file_name()
+			.ok_or_else(|| {
+				format!(
+					"dataset metadata path has no file name: {}",
+					source.display()
+				)
+			})?
+			.to_string_lossy()
+			.into_owned();
+		fs::copy(source, options.output_dir.join(&file_name))?;
+		files.push(file_name);
+	}
+	files.sort();
+	let manifest = MetadataExportManifest {
+		schema: "2.0.0",
+		profile: "metadata",
+		files,
+	};
+	fs::write(
+		options.output_dir.join("export.json"),
+		format!("{}\n", serde_json::to_string_pretty(&manifest)?),
+	)?;
+	write_metadata_export_checksums(options.output_dir)?;
+	Ok(())
+}
+
+fn write_metadata_export_checksums(output_dir: &Path) -> io::Result<()> {
+	let mut files = fs::read_dir(output_dir)?
+		.map(|entry| entry.map(|entry| entry.path()))
+		.collect::<io::Result<Vec<_>>>()?;
+	files.retain(|path| {
+		path.is_file() && path.file_name().is_some_and(|name| name != "checksums.txt")
+	});
+	files.sort();
+	let mut checksums = String::new();
+	for file in files {
+		let file_name = file
+			.file_name()
+			.expect("metadata export files have names")
+			.to_string_lossy();
+		checksums.push_str(&format!("{}  {file_name}\n", digest_file(&file)?));
+	}
+	fs::write(output_dir.join("checksums.txt"), checksums)
+}
+
+fn workshop_observation(
+	input_version: &InputVersionRecord,
+	resolved: &ResolvedWorkshopCase,
+	observed_at: String,
+) -> Result<WorkshopObservationRecordV2, Box<dyn std::error::Error>> {
+	fn item(
+		resolved: &crate::workshop_inputs::ResolvedWorkshopItem,
+	) -> Result<WorkshopItemObservationV2, String> {
+		Ok(WorkshopItemObservationV2 {
+			workshop_id: resolved.install.identity.workshop_id.clone(),
+			manifest_id: resolved.install.identity.manifest_id.clone(),
+			time_updated: resolved.install.time_updated,
+			size_bytes: resolved.install.size_bytes,
+			ugc_handle: resolved
+				.install
+				.ugc_handle
+				.as_deref()
+				.map(str::parse::<SteamId>)
+				.transpose()?,
+		})
+	}
+
+	Ok(WorkshopObservationRecordV2::new(
+		input_version.input_version_id.clone(),
+		observed_at,
+		item(&resolved.compatch)?,
+		resolved
+			.sources
+			.iter()
+			.map(item)
+			.collect::<Result<Vec<_>, _>>()?,
+	))
+}
+
+fn validate_cached_workshop_measurement(
+	measurement: &MeasurementRecord,
+	file_results: &[FileResultRecord],
+	validation: &CachedWorkshopValidation<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+	let measurement_id = measurement.measurement_id();
+	if measurement.input_version_id() != Some(validation.input_version.input_version_id.as_str()) {
+		return Err(format!(
+			"cached Workshop measurement {measurement_id} belongs to a different input version"
+		)
+		.into());
+	}
+	if !measurement.identity_is_valid() || !measurement.evidence_reference_is_valid() {
+		return Err(format!(
+			"cached Workshop measurement {measurement_id} has an invalid identity or evidence reference"
+		)
+		.into());
+	}
+	let measurement_file_results = file_results
+		.iter()
+		.filter(|record| record.measurement_id == measurement_id)
+		.collect::<Vec<_>>();
+	if measurement.status() != TerminalStatus::Completed {
+		if measurement.summary().is_some() || !measurement_file_results.is_empty() {
+			return Err(format!(
+				"non-completed cached Workshop measurement {measurement_id} contains completed evidence"
 			)
-		})?;
-		let metadata_before = file.metadata()?;
-		if !metadata_before.is_file() {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("base inventory entry is not a file: {relative_path:?}"),
-			));
+			.into());
 		}
-		hasher.update(&(relative_path.len() as u64).to_le_bytes());
-		hasher.update(relative_path.as_bytes());
-		hasher.update(&metadata_before.len().to_le_bytes());
-		loop {
-			let read = file.read(&mut buffer)?;
-			if read == 0 {
-				break;
-			}
-			hasher.update(&buffer[..read]);
-		}
-		let metadata_after = file.metadata()?;
-		if metadata_before.len() != metadata_after.len()
-			|| metadata_before.modified().ok() != metadata_after.modified().ok()
+		return Ok(());
+	}
+
+	let evidence_hash = measurement.evidence_bundle_hash().ok_or_else(|| {
+		format!("completed cached Workshop measurement {measurement_id} has no evidence bundle")
+	})?;
+	let bundle = validation.evidence_store.open(evidence_hash)?;
+	if bundle.manifest.measurement_id != measurement_id
+		|| bundle.manifest.input_version_id != validation.input_version.input_version_id
+	{
+		return Err(format!(
+			"evidence bundle {evidence_hash} does not belong to Workshop measurement {measurement_id}"
+		)
+		.into());
+	}
+	let summary = measurement.summary().ok_or_else(|| {
+		format!("completed cached Workshop measurement {measurement_id} has no score summary")
+	})?;
+	validate_cached_file_results(measurement_id, summary, &measurement_file_results)?;
+
+	let expected_product_input =
+		workshop_product_input_evidence(validation.input_version, validation.resolved);
+	let stored_product_input =
+		read_bundle_json::<WorkshopProductInputEvidence>(&bundle, "metadata/product-input.json")?;
+	if stored_product_input != expected_product_input {
+		return Err(format!(
+			"cached Workshop measurement {measurement_id} product-input evidence is stale"
+		)
+		.into());
+	}
+	let stored_scorer =
+		read_bundle_json::<serde_json::Value>(&bundle, "metadata/scorer-config.json")?;
+	let scorer_closure = stored_scorer_closure(&stored_scorer)?;
+	let expected_scorer = workshop_scorer_evidence(
+		validation.runner_identity,
+		validation.scorer_config_hash,
+		validation.timeout,
+		validation.base_snapshot_identity,
+		&scorer_closure.base_scoring_closure_digest,
+		&scorer_closure.scoring_units,
+	);
+	if stored_scorer != expected_scorer {
+		return Err(format!(
+			"cached Workshop measurement {measurement_id} scorer evidence is stale"
+		)
+		.into());
+	}
+	let stored_file_results =
+		read_bundle_json::<Vec<FileResultRecord>>(&bundle, "metadata/file-results.json")?;
+	let expected_file_results = measurement_file_results
+		.iter()
+		.map(|record| (*record).clone())
+		.collect::<Vec<_>>();
+	if canonical_file_results(stored_file_results) != canonical_file_results(expected_file_results)
+	{
+		return Err(format!(
+			"cached Workshop measurement {measurement_id} file-result evidence is stale"
+		)
+		.into());
+	}
+	let report = read_bundle_json::<MergeReport>(&bundle, "metadata/merge-report.json")?;
+	if report.input.as_ref() != Some(&validation.resolved.product_manifest.attestation()) {
+		return Err(format!(
+			"cached Workshop measurement {measurement_id} merge report input is stale"
+		)
+		.into());
+	}
+	validate_scorer_evidence_index(
+		&bundle,
+		&measurement_file_results,
+		&validation.resolved.product_manifest,
+		&scorer_closure.scoring_units,
+	)?;
+	Ok(())
+}
+
+fn read_bundle_json<T>(
+	bundle: &crate::evidence_store::StoredEvidenceBundle,
+	relative_path: &str,
+) -> Result<T, Box<dyn std::error::Error>>
+where
+	T: serde::de::DeserializeOwned,
+{
+	serde_json::from_slice(&bundle.read_entry(relative_path)?)
+		.map_err(|error| format!("invalid cached evidence {}: {error}", relative_path).into())
+}
+
+fn canonical_file_results(mut records: Vec<FileResultRecord>) -> Vec<FileResultRecord> {
+	records.sort_by(|left, right| left.file_result_id.cmp(&right.file_result_id));
+	records
+}
+
+fn validate_scorer_evidence_index(
+	bundle: &crate::evidence_store::StoredEvidenceBundle,
+	file_results: &[&FileResultRecord],
+	source_manifest: &ProductInputManifest,
+	expected_scoring_units: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+	if !source_manifest.digest_is_valid() {
+		return Err("scorer evidence uses an invalid ACF source manifest".into());
+	}
+	let index = read_bundle_json::<ScorerEvidenceIndex>(bundle, "metadata/evidence-index.json")?;
+	if index.schema != SCORER_EVIDENCE_INDEX_SCHEMA {
+		return Err(format!("unsupported scorer evidence index schema {}", index.schema).into());
+	}
+	let expected_units = file_results
+		.iter()
+		.map(|record| record.relative_path.as_str())
+		.collect::<BTreeSet<_>>();
+	let actual_units = index
+		.units
+		.iter()
+		.map(|unit| unit.relative_path.as_str())
+		.collect::<BTreeSet<_>>();
+	let current_units = expected_scoring_units
+		.iter()
+		.map(String::as_str)
+		.collect::<BTreeSet<_>>();
+	if current_units.len() != expected_scoring_units.len()
+		|| actual_units.len() != index.units.len()
+		|| actual_units != expected_units
+		|| actual_units != current_units
+	{
+		return Err("scorer evidence index does not cover the exact scoring units".into());
+	}
+
+	let metadata = BTreeSet::from([
+		ScorerEvidenceReference {
+			kind: EvidenceEntryKind::ProductInputManifest,
+			relative_path: "metadata/product-input.json".to_string(),
+		},
+		ScorerEvidenceReference {
+			kind: EvidenceEntryKind::MergeReport,
+			relative_path: "metadata/merge-report.json".to_string(),
+		},
+		ScorerEvidenceReference {
+			kind: EvidenceEntryKind::ScorerConfig,
+			relative_path: "metadata/scorer-config.json".to_string(),
+		},
+		ScorerEvidenceReference {
+			kind: EvidenceEntryKind::FileResult,
+			relative_path: "metadata/file-results.json".to_string(),
+		},
+		ScorerEvidenceReference {
+			kind: EvidenceEntryKind::ScorerEvidenceIndex,
+			relative_path: "metadata/evidence-index.json".to_string(),
+		},
+	]);
+	let mut indexed_files = BTreeSet::new();
+	let source_prefixes = source_manifest
+		.mods
+		.iter()
+		.enumerate()
+		.map(|(index, source)| format!("sources/{:02}-{}/", index + 1, source.mod_id))
+		.collect::<Vec<_>>();
+	for unit in &index.units {
+		let canonical = unit.entries.iter().cloned().collect::<BTreeSet<_>>();
+		if canonical.len() != unit.entries.len()
+			|| canonical.iter().cloned().collect::<Vec<_>>() != unit.entries
 		{
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidData,
-				format!("base inventory file changed while hashing: {relative_path:?}"),
-			));
+			return Err(format!(
+				"scorer evidence for {} is not canonical",
+				unit.relative_path
+			)
+			.into());
 		}
-		let position = index + 1;
-		if position == total || position % progress_interval == 0 {
-			eprintln!(
-				"[measure] hash base inventory {position}/{total} (elapsed={:.1}s)",
-				started.elapsed().as_secs_f64()
-			);
+		if !canonical.iter().any(|entry| {
+			entry.kind == EvidenceEntryKind::CompatchInput
+				&& entry.relative_path != "compatch/descriptor.mod"
+		}) {
+			return Err(format!(
+				"scorer evidence for {} has no compatch scoring input",
+				unit.relative_path
+			)
+			.into());
+		}
+		let file_result = file_results
+			.iter()
+			.find(|record| record.relative_path == unit.relative_path)
+			.expect("validated scoring-unit coverage");
+		let score = file_result
+			.result
+			.get("score")
+			.cloned()
+			.ok_or_else(|| "file result is missing score evidence".to_string())
+			.and_then(|value| {
+				serde_json::from_value::<FileRecord>(value)
+					.map_err(|error| format!("invalid score evidence: {error}"))
+			})?;
+		let output_entries = canonical
+			.iter()
+			.filter(|entry| entry.kind == EvidenceEntryKind::MergedOutput)
+			.collect::<Vec<_>>();
+		for entry in &output_entries {
+			let relative_path = entry
+				.relative_path
+				.strip_prefix("output/")
+				.ok_or("merged-output evidence has an invalid prefix")?;
+			if !scoring_evidence_path_belongs_to_unit(&unit.relative_path, relative_path) {
+				return Err(format!(
+					"scorer evidence for {} contains unrelated merged output {}",
+					unit.relative_path, entry.relative_path
+				)
+				.into());
+			}
+		}
+		let expected_output = format!("output/{}", unit.relative_path);
+		let captured_output_exists = output_entries
+			.iter()
+			.any(|entry| entry.relative_path == expected_output);
+		if captured_output_exists != score.foch_emitted {
+			return Err(format!(
+				"scorer evidence for {} disagrees with the recorded output presence",
+				unit.relative_path
+			)
+			.into());
+		}
+		for entry in canonical {
+			let valid_prefix = match entry.kind {
+				EvidenceEntryKind::CompatchInput => entry.relative_path.starts_with("compatch/"),
+				EvidenceEntryKind::SourceInput => source_prefixes
+					.iter()
+					.any(|prefix| entry.relative_path.starts_with(prefix)),
+				EvidenceEntryKind::MergedOutput => entry.relative_path.starts_with("output/"),
+				EvidenceEntryKind::BaseInput => entry.relative_path.starts_with("base/"),
+				_ => false,
+			};
+			if !valid_prefix {
+				return Err(format!(
+					"scorer evidence for {} contains an invalid reference",
+					unit.relative_path
+				)
+				.into());
+			}
+			indexed_files.insert(entry);
 		}
 	}
-	Ok(hasher.finalize().to_hex().to_string())
+
+	let bundle_files = bundle
+		.manifest
+		.entries
+		.iter()
+		.map(|entry| ScorerEvidenceReference {
+			kind: entry.kind,
+			relative_path: entry.relative_path.clone(),
+		})
+		.collect::<BTreeSet<_>>();
+	let expected_bundle_files = metadata
+		.into_iter()
+		.chain(indexed_files)
+		.collect::<BTreeSet<_>>();
+	if bundle_files.len() != bundle.manifest.entries.len() || bundle_files != expected_bundle_files
+	{
+		return Err("evidence bundle does not match its scorer-read closure".into());
+	}
+	Ok(())
+}
+
+fn workshop_evidence_entries(
+	request: &WorkshopEvidenceRequest<'_>,
+) -> Result<Vec<EvidenceEntryInput>, Box<dyn std::error::Error>> {
+	let mut entries = vec![
+		EvidenceEntryInput::bytes(
+			EvidenceEntryKind::ProductInputManifest,
+			"metadata/product-input.json",
+			serde_json::to_vec_pretty(&workshop_product_input_evidence(
+				request.input_version,
+				request.resolved,
+			))?,
+		),
+		EvidenceEntryInput::bytes(
+			EvidenceEntryKind::MergeReport,
+			"metadata/merge-report.json",
+			serde_json::to_vec_pretty(request.report)?,
+		),
+		EvidenceEntryInput::bytes(
+			EvidenceEntryKind::ScorerConfig,
+			"metadata/scorer-config.json",
+			serde_json::to_vec_pretty(&workshop_scorer_evidence(
+				request.runner_identity,
+				request.scorer_config_hash,
+				request.measurement.timeout,
+				&request.measurement.expected_base_snapshot_identity,
+				&request.captured.scorer_closure.base_scoring_closure_digest,
+				&request.captured.scorer_closure.scoring_units,
+			))?,
+		),
+		EvidenceEntryInput::bytes(
+			EvidenceEntryKind::FileResult,
+			"metadata/file-results.json",
+			serde_json::to_vec_pretty(request.file_results)?,
+		),
+	];
+	let mut destinations = entries
+		.iter()
+		.map(|entry| entry.relative_path.clone())
+		.collect::<BTreeSet<_>>();
+	let mut units = Vec::with_capacity(request.file_results.len());
+
+	for file_result in request.file_results {
+		let mut unit_entries = BTreeSet::new();
+		let compatch_files =
+			scoring_evidence_files(&request.captured.compatch_dir, &file_result.relative_path)?;
+		if !compatch_files.iter().any(|path| path != "descriptor.mod") {
+			return Err(format!(
+				"scoring unit {} has no regular compatch evidence",
+				file_result.relative_path
+			)
+			.into());
+		}
+		push_evidence_paths(
+			&mut entries,
+			&mut destinations,
+			&mut unit_entries,
+			EvidenceEntryKind::CompatchInput,
+			"compatch",
+			&request.captured.compatch_dir,
+			compatch_files,
+		)?;
+		for (index, (source, captured_source)) in request
+			.resolved
+			.sources
+			.iter()
+			.zip(&request.captured.source_dirs)
+			.enumerate()
+		{
+			let prefix = format!(
+				"sources/{:02}-{}",
+				index + 1,
+				source.install.identity.workshop_id
+			);
+			push_evidence_paths(
+				&mut entries,
+				&mut destinations,
+				&mut unit_entries,
+				EvidenceEntryKind::SourceInput,
+				&prefix,
+				captured_source,
+				scoring_evidence_files(captured_source, &file_result.relative_path)?,
+			)?;
+		}
+		push_evidence_paths(
+			&mut entries,
+			&mut destinations,
+			&mut unit_entries,
+			EvidenceEntryKind::MergedOutput,
+			"output",
+			&request.captured.output_dir,
+			scoring_evidence_files(&request.captured.output_dir, &file_result.relative_path)?,
+		)?;
+		push_evidence_paths(
+			&mut entries,
+			&mut destinations,
+			&mut unit_entries,
+			EvidenceEntryKind::BaseInput,
+			"base",
+			&request.captured.basegame_root,
+			scoring_evidence_files(&request.captured.basegame_root, &file_result.relative_path)?,
+		)?;
+		units.push(ScorerEvidenceUnit {
+			relative_path: file_result.relative_path.clone(),
+			entries: unit_entries.into_iter().collect(),
+		});
+	}
+	units.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+	entries.push(EvidenceEntryInput::bytes(
+		EvidenceEntryKind::ScorerEvidenceIndex,
+		"metadata/evidence-index.json",
+		serde_json::to_vec_pretty(&ScorerEvidenceIndex {
+			schema: SCORER_EVIDENCE_INDEX_SCHEMA.to_string(),
+			units,
+		})?,
+	));
+	Ok(entries)
+}
+
+fn push_evidence_paths(
+	entries: &mut Vec<EvidenceEntryInput>,
+	destinations: &mut BTreeSet<String>,
+	unit_entries: &mut BTreeSet<ScorerEvidenceReference>,
+	kind: EvidenceEntryKind,
+	prefix: &str,
+	root: &Path,
+	relative_paths: Vec<String>,
+) -> io::Result<()> {
+	for relative_path in relative_paths {
+		let destination = format!("{prefix}/{relative_path}");
+		unit_entries.insert(ScorerEvidenceReference {
+			kind,
+			relative_path: destination.clone(),
+		});
+		if destinations.insert(destination.clone()) {
+			entries.push(EvidenceEntryInput::source_file(
+				kind,
+				destination,
+				root.join(relative_path),
+			));
+		}
+	}
+	Ok(())
 }
 
 fn validate_runner_identity(
@@ -1205,202 +1482,9 @@ fn validate_runner_identity(
 	}
 	Ok(())
 }
-
-fn validate_measurement_game(
-	snapshot: &SnapshotRecord,
-	local: &crate::config::Eu4GameDiscovery,
-) -> Result<(), Box<dyn std::error::Error>> {
-	if snapshot.game.app_id != crate::config::EU4_APPID {
-		return Err(format!(
-			"snapshot {} has unexpected app ID {}",
-			snapshot.snapshot_id, snapshot.game.app_id
-		)
-		.into());
-	}
-	if snapshot.game.version != local.game_version {
-		return Err(format!(
-			"base-game version mismatch for snapshot {}: snapshot={} local={}",
-			snapshot.snapshot_id, snapshot.game.version, local.game_version
-		)
-		.into());
-	}
-	if snapshot.game.steam_build_id != local.steam_build_id {
-		return Err(format!(
-			"Steam build mismatch for snapshot {}: snapshot={:?} local={:?}",
-			snapshot.snapshot_id, snapshot.game.steam_build_id, local.steam_build_id
-		)
-		.into());
-	}
-	Ok(())
-}
-
 pub fn executable_hash(path: &Path) -> io::Result<String> {
 	digest_file(path)
 }
-
-fn resolve_case_paths<'a>(
-	case: &'a Case,
-	catalog: &WorkshopCatalog,
-) -> Option<(&'a Case, PathBuf, Vec<PathBuf>)> {
-	let compatch = catalog.resolve(&case.compatch_id)?;
-	let sources = case
-		.referenced_mods
-		.iter()
-		.map(|id| catalog.resolve(id))
-		.collect::<Option<Vec<_>>>()?;
-	Some((case, compatch, sources))
-}
-
-fn snapshot_cached(
-	store: &ObjectStore,
-	cache: &mut HashMap<PathBuf, StoredObject>,
-	path: &Path,
-) -> io::Result<StoredObject> {
-	if let Some(object) = cache.get(path) {
-		return Ok(object.clone());
-	}
-	let object = store.snapshot_tree(path)?;
-	cache.insert(path.to_path_buf(), object.clone());
-	Ok(object)
-}
-
-fn observation_for_case(case: &Case, snapshot_id: &str, observed_at: &str) -> ObservationRecord {
-	let source_mods = case
-		.referenced_mods
-		.iter()
-		.map(|id| {
-			let meta = case.referenced_mod_meta.get(id);
-			WorkshopObservation {
-				workshop_id: id.clone(),
-				title: meta
-					.map(|meta| meta.title.clone())
-					.unwrap_or_else(|| id.clone()),
-				time_created: meta.map_or(0, |meta| meta.time_created),
-				time_updated: meta.map_or(0, |meta| meta.time_updated),
-				provenance: meta.map(|meta| meta.workshop.clone()).unwrap_or_default(),
-			}
-		})
-		.collect();
-	ObservationRecord::new(
-		snapshot_id.to_string(),
-		observed_at.to_string(),
-		WorkshopObservation {
-			workshop_id: case.compatch_id.clone(),
-			title: case.title.clone(),
-			time_created: case.time_created,
-			time_updated: case.time_updated,
-			provenance: case.workshop.clone(),
-		},
-		source_mods,
-		case.subscriptions,
-		case.mod_churned(),
-	)
-}
-
-fn select_snapshots(
-	snapshots: Vec<SnapshotRecord>,
-	observations: &[ObservationRecord],
-	exact_ids: Option<&[String]>,
-	limit: usize,
-) -> Result<Vec<SnapshotRecord>, Box<dyn std::error::Error>> {
-	let mut snapshot_ids = HashSet::with_capacity(snapshots.len());
-	for snapshot in &snapshots {
-		if !snapshot.identity_is_valid() {
-			return Err(
-				format!("snapshot {} has an invalid identity", snapshot.snapshot_id).into(),
-			);
-		}
-		if !snapshot_ids.insert(snapshot.snapshot_id.as_str()) {
-			return Err(format!("snapshot {} occurs more than once", snapshot.snapshot_id).into());
-		}
-	}
-	let Some(exact_ids) = exact_ids else {
-		let mut selected = latest_snapshots(snapshots, observations);
-		if limit > 0 {
-			selected.truncate(limit);
-		}
-		return Ok(selected);
-	};
-	if exact_ids.is_empty() {
-		return Err("exact snapshot selection must contain at least one ID".into());
-	}
-	if limit != 0 {
-		return Err("exact snapshot selection cannot be combined with limit".into());
-	}
-	let requested = exact_ids.iter().map(String::as_str).collect::<HashSet<_>>();
-	if requested.len() != exact_ids.len() {
-		return Err("exact snapshot selection contains duplicate IDs".into());
-	}
-	let mut matches: HashMap<String, Vec<SnapshotRecord>> = HashMap::new();
-	for snapshot in snapshots {
-		if requested.contains(snapshot.snapshot_id.as_str()) {
-			matches
-				.entry(snapshot.snapshot_id.clone())
-				.or_default()
-				.push(snapshot);
-		}
-	}
-	let mut selected = Vec::with_capacity(exact_ids.len());
-	for snapshot_id in exact_ids {
-		let found = matches.remove(snapshot_id).unwrap_or_default();
-		if found.len() != 1 {
-			return Err(format!(
-				"exact snapshot ID {snapshot_id} must exist exactly once; found {} records",
-				found.len()
-			)
-			.into());
-		}
-		selected.push(found.into_iter().next().expect("one exact snapshot"));
-	}
-	Ok(selected)
-}
-
-fn latest_snapshots(
-	snapshots: Vec<SnapshotRecord>,
-	observations: &[ObservationRecord],
-) -> Vec<SnapshotRecord> {
-	let mut observed_at: HashMap<&str, &str> = HashMap::new();
-	for observation in observations {
-		observed_at
-			.entry(observation.snapshot_id.as_str())
-			.and_modify(|timestamp| {
-				if observation.observed_at.as_str() > *timestamp {
-					*timestamp = observation.observed_at.as_str();
-				}
-			})
-			.or_insert(observation.observed_at.as_str());
-	}
-	let mut latest: BTreeMap<String, (String, SnapshotRecord)> = BTreeMap::new();
-	for snapshot in snapshots {
-		let timestamp = observed_at
-			.get(snapshot.snapshot_id.as_str())
-			.copied()
-			.unwrap_or("")
-			.to_string();
-		latest
-			.entry(snapshot.case_id.clone())
-			.and_modify(|current| {
-				if (timestamp.as_str(), snapshot.snapshot_id.as_str())
-					> (current.0.as_str(), current.1.snapshot_id.as_str())
-				{
-					*current = (timestamp.clone(), snapshot.clone());
-				}
-			})
-			.or_insert((timestamp, snapshot));
-	}
-	latest.into_values().map(|(_, snapshot)| snapshot).collect()
-}
-
-fn latest_observation<'a>(
-	observations: &'a [ObservationRecord],
-	snapshot_id: &str,
-) -> Option<&'a ObservationRecord> {
-	observations
-		.iter()
-		.filter(|observation| observation.snapshot_id == snapshot_id)
-		.max_by(|left, right| left.observed_at.cmp(&right.observed_at))
-}
-
 fn index_measurements(
 	measurements: &[MeasurementRecord],
 ) -> Result<HashMap<&str, &MeasurementRecord>, Box<dyn std::error::Error>> {
@@ -1474,85 +1558,6 @@ fn validate_file_result_foreign_keys(
 	}
 	Ok(())
 }
-
-fn validate_cached_measurement(
-	measurement: &MeasurementRecord,
-	file_results: &[FileResultRecord],
-	object_records: &[ObjectRecord],
-	store: &ObjectStore,
-	verified_outputs: &mut HashMap<String, crate::object_store::TreeStats>,
-) -> Result<(), Box<dyn std::error::Error>> {
-	let measurement_id = measurement.measurement_id();
-	let measurement_file_results = file_results
-		.iter()
-		.filter(|record| record.measurement_id == measurement_id)
-		.collect::<Vec<_>>();
-	if measurement.status() != TerminalStatus::Completed {
-		if measurement.merged_output_hash().is_some()
-			|| measurement.summary().is_some()
-			|| !measurement_file_results.is_empty()
-		{
-			return Err(format!(
-				"non-completed cached measurement {measurement_id} contains completed evidence"
-			)
-			.into());
-		}
-		return Ok(());
-	}
-
-	let output_hash = measurement.merged_output_hash().ok_or_else(|| {
-		format!("completed cached measurement {measurement_id} has no output CAS hash")
-	})?;
-	let summary = measurement.summary().ok_or_else(|| {
-		format!("completed cached measurement {measurement_id} has no score summary")
-	})?;
-	let matching_objects = object_records
-		.iter()
-		.filter(|record| {
-			record.kind == ObjectKind::MergedOutput && record.content_hash == output_hash
-		})
-		.collect::<Vec<_>>();
-	if matching_objects.len() != 1 {
-		return Err(format!(
-			"completed cached measurement {measurement_id} requires exactly one merged-output object record for {output_hash}; found {}",
-			matching_objects.len()
-		)
-		.into());
-	}
-	let object_record = matching_objects[0];
-	let expected_object = ObjectRecord::new(
-		ObjectKind::MergedOutput,
-		output_hash.to_string(),
-		None,
-		object_record.stats.clone(),
-	);
-	if expected_object != *object_record {
-		return Err(format!(
-			"merged-output object record for {output_hash} has invalid identity or metadata"
-		)
-		.into());
-	}
-	let verified_stats = if let Some(stats) = verified_outputs.get(output_hash) {
-		stats.clone()
-	} else {
-		let object = store.verify_object(output_hash).map_err(|error| {
-			format!(
-				"completed cached output {output_hash} failed CAS verification: {:?}",
-				error.kind()
-			)
-		})?;
-		verified_outputs.insert(output_hash.to_string(), object.stats.clone());
-		object.stats
-	};
-	if verified_stats != object_record.stats {
-		return Err(format!(
-			"merged-output object record for {output_hash} has stale tree statistics"
-		)
-		.into());
-	}
-	validate_cached_file_results(measurement_id, summary, &measurement_file_results)
-}
-
 fn validate_replayed_file_results(
 	measurement_id: &str,
 	summary: &MeasurementSummary,
@@ -1716,64 +1721,128 @@ fn validate_cached_file_results(
 	Ok(())
 }
 
-fn measurement_identity(
-	snapshot: &SnapshotRecord,
-	runner: &MeasurementRunnerIdentity,
-	scorer_config_hash: &str,
-) -> MeasurementIdentityV2 {
-	MeasurementIdentityV2 {
-		snapshot_id: snapshot.snapshot_id.clone(),
-		engine_artifact: runner.engine_artifact.clone(),
-		runner_protocol_version: runner.runner_protocol_version.clone(),
-		merge_kernel: runner.merge_kernel,
-		scope: runner.scope,
-		scorer_version: SCORER_VERSION.to_string(),
-		scorer_config_hash: scorer_config_hash.to_string(),
+fn capture_scoring_inputs(
+	request: &MeasurementRequest,
+) -> Result<CapturedScoringInputs, Box<dyn std::error::Error>> {
+	let scoring_units = scoring_reference_units(&reference_output_files(&request.compatch_dir)?);
+	if scoring_units.is_empty() {
+		return Err(format!(
+			"Workshop case {} contains no scorer reference units",
+			request.case.compatch_id
+		)
+		.into());
 	}
-}
-
-fn measurement_request(
-	snapshot: &SnapshotRecord,
-	observations: &[ObservationRecord],
-	store: &ObjectStore,
-	output_dir: PathBuf,
-	options: &MeasureOptions<'_>,
-	expected_base_snapshot_identity: &str,
-	pinned_basegame_root: &Path,
-) -> io::Result<MeasurementRequest> {
-	let observation = latest_observation(observations, &snapshot.snapshot_id);
-	let compatch_dir = store.open_object(&snapshot.compatch.content_hash)?.tree;
-	let source_dirs = snapshot
-		.source_mods
-		.iter()
-		.map(|source| {
-			store
-				.open_object(&source.content_hash)
-				.map(|object| object.tree)
-		})
-		.collect::<io::Result<Vec<_>>>()?;
-	let case = Case {
-		compatch_id: snapshot.compatch.workshop_id.clone(),
-		title: observation
-			.map(|record| record.compatch.title.clone())
-			.unwrap_or_else(|| snapshot.case_id.clone()),
-		referenced_mods: snapshot
-			.source_mods
-			.iter()
-			.map(|source| source.workshop_id.clone())
-			.collect(),
-		..Case::default()
-	};
-	Ok(MeasurementRequest {
-		snapshot_id: snapshot.snapshot_id.clone(),
-		case,
+	let work_parent = request
+		.output_dir
+		.parent()
+		.ok_or("measurement output has no work parent")?;
+	let root = tempfile::Builder::new()
+		.prefix("scorer-inputs-")
+		.tempdir_in(work_parent)?;
+	let compatch_dir = root.path().join("compatch");
+	let output_dir = root.path().join("output");
+	let basegame_root = root.path().join("base");
+	fs::create_dir(&compatch_dir)?;
+	fs::create_dir(&output_dir)?;
+	fs::create_dir(&basegame_root)?;
+	capture_scoring_layer(&request.compatch_dir, &compatch_dir, &scoring_units)?;
+	capture_scoring_layer(&request.output_dir, &output_dir, &scoring_units)?;
+	capture_scoring_layer(&request.basegame_root, &basegame_root, &scoring_units)?;
+	let mut source_dirs = Vec::with_capacity(request.source_dirs.len());
+	for (index, source) in request.source_dirs.iter().enumerate() {
+		let destination = root.path().join(format!("source-{:02}", index + 1));
+		fs::create_dir(&destination)?;
+		capture_scoring_layer(source, &destination, &scoring_units)?;
+		source_dirs.push(destination);
+	}
+	let captured_units = scoring_reference_units(&reference_output_files(&compatch_dir)?);
+	if captured_units != scoring_units {
+		return Err("captured compatch does not preserve the exact scoring units".into());
+	}
+	let base_scoring_closure_digest = scoring_closure_digest(&basegame_root, &scoring_units)?;
+	Ok(CapturedScoringInputs {
+		_root: root,
 		compatch_dir,
 		source_dirs,
 		output_dir,
-		basegame_root: pinned_basegame_root.to_path_buf(),
-		expected_base_snapshot_identity: expected_base_snapshot_identity.to_string(),
-		timeout: options.timeout,
+		basegame_root,
+		scorer_closure: ScorerCaseClosure {
+			scoring_units,
+			base_scoring_closure_digest,
+		},
 	})
+}
+
+fn scoring_closure_digest(
+	root: &Path,
+	scoring_units: &[String],
+) -> Result<String, Box<dyn std::error::Error>> {
+	let before = scoring_units
+		.iter()
+		.map(|unit| scoring_evidence_files(root, unit))
+		.collect::<Result<Vec<_>, _>>()?
+		.into_iter()
+		.flatten()
+		.collect::<BTreeSet<_>>();
+	let mut hasher = blake3::Hasher::new();
+	update_closure_field(&mut hasher, b"foch-scorer-closure-v1");
+	hasher.update(&(before.len() as u64).to_le_bytes());
+	for relative_path in &before {
+		let content = read_stable_source_file(root, Path::new(relative_path))?;
+		update_closure_field(&mut hasher, relative_path.as_bytes());
+		update_closure_field(&mut hasher, &content);
+	}
+	let after = scoring_units
+		.iter()
+		.map(|unit| scoring_evidence_files(root, unit))
+		.collect::<Result<Vec<_>, _>>()?
+		.into_iter()
+		.flatten()
+		.collect::<BTreeSet<_>>();
+	if after != before {
+		return Err(format!("scorer closure changed while reading {}", root.display()).into());
+	}
+	Ok(hasher.finalize().to_hex().to_string())
+}
+
+fn update_closure_field(hasher: &mut blake3::Hasher, field: &[u8]) {
+	hasher.update(&(field.len() as u64).to_le_bytes());
+	hasher.update(field);
+}
+
+fn capture_scoring_layer(
+	source_root: &Path,
+	destination_root: &Path,
+	scoring_units: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+	let before = scoring_units
+		.iter()
+		.map(|unit| scoring_evidence_files(source_root, unit))
+		.collect::<Result<Vec<_>, _>>()?
+		.into_iter()
+		.flatten()
+		.collect::<BTreeSet<_>>();
+	for relative_path in &before {
+		let content = read_stable_source_file(source_root, Path::new(relative_path))?;
+		let destination = destination_root.join(relative_path);
+		fs::create_dir_all(destination.parent().expect("captured file has parent"))?;
+		fs::write(destination, content)?;
+	}
+	let after = scoring_units
+		.iter()
+		.map(|unit| scoring_evidence_files(source_root, unit))
+		.collect::<Result<Vec<_>, _>>()?
+		.into_iter()
+		.flatten()
+		.collect::<BTreeSet<_>>();
+	if after != before {
+		return Err(format!(
+			"scorer input file set changed while capturing {}",
+			source_root.display()
+		)
+		.into());
+	}
+	Ok(())
 }
 
 fn classify_terminal_merge(
@@ -1790,20 +1859,28 @@ fn classify_terminal_merge(
 					.unwrap_or_else(|| "merge report status is fatal".to_string());
 				return Ok((TerminalStatus::Fatal, Some(detail), None));
 			}
+			let captured = capture_scoring_inputs(request)?;
 			let completed = score_existing_output_with_cache(
 				&ScoreExistingOutputRequest {
 					case: &request.case,
-					compatch_dir: &request.compatch_dir,
-					source_dirs: &request.source_dirs,
-					output_dir: &request.output_dir,
+					compatch_dir: &captured.compatch_dir,
+					source_dirs: &captured.source_dirs,
+					output_dir: &captured.output_dir,
 					report: &report,
-					basegame_root: Some(&request.basegame_root),
+					basegame_root: Some(&captured.basegame_root),
 					merge_ms,
 				},
 				score_cache,
 			)
 			.map_err(|error| format!("failed to score completed merge: {error}"))?;
-			Ok((TerminalStatus::Completed, None, Some(completed)))
+			Ok((
+				TerminalStatus::Completed,
+				None,
+				Some(CompletedMeasurement {
+					score: completed,
+					inputs: captured,
+				}),
+			))
 		}
 		TerminalMerge::MergeFailed { detail } => {
 			Ok((TerminalStatus::MergeFailed, Some(detail), None))
@@ -1879,28 +1956,6 @@ fn redact_remaining_absolute_paths(detail: &str) -> String {
 	output.push_str(&detail[cursor..]);
 	output
 }
-
-pub fn archive_output_tree(
-	store: &ObjectStore,
-	paths: &DatasetPaths,
-	output_dir: &Path,
-) -> io::Result<Option<String>> {
-	if !output_dir.is_dir() {
-		return Ok(None);
-	}
-	let object = store.snapshot_tree(output_dir)?;
-	append_unique(
-		&paths.object_records,
-		&ObjectRecord::new(
-			ObjectKind::MergedOutput,
-			object.hash.clone(),
-			None,
-			object.stats,
-		),
-	)?;
-	Ok(Some(object.hash))
-}
-
 fn measurement_summary(result: &CaseResult) -> MeasurementSummary {
 	MeasurementSummary {
 		merge_status: result.merge_status.clone(),
@@ -1914,131 +1969,6 @@ fn measurement_summary(result: &CaseResult) -> MeasurementSummary {
 		merge_ms: result.timings.merge_ms,
 		scoring_ms: result.timings.scoring_ms,
 		total_ms: result.timings.total_ms,
-	}
-}
-
-fn terminal_status_name(status: TerminalStatus) -> &'static str {
-	match status {
-		TerminalStatus::Completed => "completed",
-		TerminalStatus::MergeFailed => "merge_failed",
-		TerminalStatus::Crashed => "crashed",
-		TerminalStatus::TimedOut => "timed_out",
-		TerminalStatus::Fatal => "fatal",
-	}
-}
-
-fn oracle_status_name(status: OracleStatus) -> &'static str {
-	match status {
-		OracleStatus::Accepted => "accepted",
-		OracleStatus::Proposed => "proposed",
-		OracleStatus::Excluded => "excluded",
-	}
-}
-
-fn merge_counts(target: &mut BTreeMap<String, usize>, source: &BTreeMap<String, usize>) {
-	for (key, count) in source {
-		*target.entry(key.clone()).or_default() += count;
-	}
-}
-
-fn render_baseline_report(report: &BaselineReport) -> String {
-	let mut lines = vec![
-		"# foch merge-quality baseline".to_string(),
-		String::new(),
-		format!(
-			"Measurement cohort: **{}** (`{}`)",
-			report.measurement_cohort_label, report.measurement_cohort_id
-		),
-		measurement_identity_summary(report),
-		format!(
-			"Oracle cohort: **{}** (policy `{}`) · candidates: **{}** · scorable: **{}** · excluded: **{}**",
-			report.cohort,
-			report.oracle_policy_version,
-			report.candidate_cases,
-			report.scorable_cases,
-			report.excluded_cases
-		),
-		"The scorable cohort combines manually accepted and automatically proposed cases; proposed cases remain provisional oracle evidence.".to_string(),
-		format!(
-			"Baseline complete: **{}** · terminal cases: **{}/{}** · completed merges: **{}/{}**",
-			report.baseline_complete,
-			report.terminal_cases,
-			report.total_cases,
-			report.completed_cases,
-			report.total_cases
-		),
-		format!(
-			"Reference-output accepted: **{}/{}** · multi-source accepted: **{}/{}**",
-			report.reference_output.accepted,
-			report.reference_output.total,
-			report.multi_source.accepted,
-			report.multi_source.total
-		),
-		String::new(),
-		"## Outcomes".to_string(),
-		String::new(),
-		"| status | cases |".to_string(),
-		"|---|---:|".to_string(),
-	];
-	for (status, count) in &report.status_counts {
-		lines.push(format!("| `{status}` | {count} |"));
-	}
-	lines.extend([
-		String::new(),
-		"## Cases".to_string(),
-		String::new(),
-		"| case | snapshot | oracle | status | multi-source accepted |".to_string(),
-		"|---|---|---|---|---:|".to_string(),
-	]);
-	for case in &report.cases {
-		let accepted = case.summary.as_ref().map_or_else(
-			|| "n/a".to_string(),
-			|summary| {
-				format!(
-					"{}/{}",
-					summary.accepted_multi_source_files, summary.multi_source_files
-				)
-			},
-		);
-		lines.push(format!(
-			"| {} (`{}`) | `{}` | `{}` | `{}` | {} |",
-			case.title,
-			case.case_id,
-			case.snapshot_id,
-			oracle_status_name(case.oracle.status),
-			case.status,
-			accepted
-		));
-	}
-	lines.push(String::new());
-	lines.join("\n")
-}
-
-fn measurement_identity_summary(report: &BaselineReport) -> String {
-	match &report.measurement_identity {
-		MeasurementCohortKey::OrchestratorBoundV1 {
-			executable_hash,
-			scorer_version,
-			config_hash,
-		} => format!(
-			"Identity: `orchestrator_bound_v1` · artifact BLAKE3 `{executable_hash}` · scorer `{scorer_version}` · config `{config_hash}` · kernel `{}`",
-			report.merge_kernel.as_str()
-		),
-		MeasurementCohortKey::EngineArtifactV2 {
-			engine_artifact,
-			runner_protocol_version,
-			merge_kernel,
-			scope,
-			scorer_version,
-			scorer_config_hash,
-		} => format!(
-			"Identity: `engine_artifact_v2` · artifact `{}` `{}` `{}` · runner protocol `{runner_protocol_version}` · scope `{}` · scorer `{scorer_version}` · config `{scorer_config_hash}` · kernel `{}`",
-			engine_artifact.kind.as_str(),
-			engine_artifact.hash_algorithm.as_str(),
-			engine_artifact.hash,
-			scope.as_str(),
-			merge_kernel.as_str()
-		),
 	}
 }
 
@@ -2066,7 +1996,6 @@ fn digest_file(path: &Path) -> io::Result<String> {
 	}
 	Ok(hasher.finalize().to_hex().to_string())
 }
-
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -2079,392 +2008,41 @@ mod tests {
 		);
 	}
 
-	fn snapshot(case_id: &str, hash_seed: &str) -> SnapshotRecord {
-		SnapshotRecord::new(
-			case_id.to_string(),
-			GameIdentity {
-				app_id: 236850,
-				version: "1.37.5".to_string(),
-				steam_build_id: Some(42),
-			},
-			SnapshotObjectRef {
-				workshop_id: case_id.to_string(),
-				content_hash: hash_seed.repeat(64),
-			},
-			vec![
-				SnapshotObjectRef {
-					workshop_id: "a".to_string(),
-					content_hash: "a".repeat(64),
-				},
-				SnapshotObjectRef {
-					workshop_id: "b".to_string(),
-					content_hash: "b".repeat(64),
-				},
-			],
-		)
-	}
-
-	fn observation(snapshot: &SnapshotRecord, observed_at: &str) -> ObservationRecord {
-		observation_with_title(snapshot, observed_at, &snapshot.case_id)
-	}
-
-	fn observation_with_title(
-		snapshot: &SnapshotRecord,
-		observed_at: &str,
-		title: &str,
-	) -> ObservationRecord {
-		ObservationRecord::new(
-			snapshot.snapshot_id.clone(),
-			observed_at.to_string(),
-			WorkshopObservation {
-				workshop_id: snapshot.case_id.clone(),
-				title: title.to_string(),
-				time_created: 0,
-				time_updated: 0,
-				provenance: Default::default(),
-			},
-			Vec::new(),
-			0,
-			false,
-		)
-	}
-
 	#[test]
-	fn report_scorable_cohort_excludes_broad_search_false_positives() {
-		let temp = tempfile::tempdir().unwrap();
-		let paths = DatasetPaths::new(temp.path().join("dataset"));
-		paths.ensure_layout().unwrap();
-		let excluded = snapshot("excluded", "c");
-		let proposed = snapshot("proposed", "d");
-		for snapshot in [&excluded, &proposed] {
-			append_unique(&paths.snapshots, snapshot).unwrap();
-		}
-		append_unique(
-			&paths.observations,
-			&observation_with_title(
-				&excluded,
-				"2026-07-12T00:00:00Z",
-				"Elder Scrolls Universalis",
-			),
-		)
-		.unwrap();
-		append_unique(
-			&paths.observations,
-			&observation_with_title(&proposed, "2026-07-12T00:00:00Z", "Actual Compatch"),
-		)
-		.unwrap();
-		let proposed_identity = MeasurementIdentityV2 {
-			snapshot_id: proposed.snapshot_id.clone(),
-			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("a".repeat(64)),
-			runner_protocol_version: "test-runner-v1".to_string(),
-			merge_kernel: MeasurementKernel::SemanticTree,
-			scope: MeasurementScope::FullProductMerge,
-			scorer_version: SCORER_VERSION.to_string(),
-			scorer_config_hash: "b".repeat(64),
-		};
-		let proposed_cohort_id = proposed_identity.cohort_id();
-		append_unique(
-			&paths.measurements,
-			&MeasurementRecord::new_v2(
-				proposed_identity,
-				"2026-07-12T00:00:00Z".to_string(),
-				"2026-07-12T00:01:00Z".to_string(),
-				TerminalStatus::Crashed,
-				Some("signal".to_string()),
-				None,
-				None,
-			),
-		)
-		.unwrap();
-		append_unique(
-			&paths.measurements,
-			&MeasurementRecord::new_v2(
-				MeasurementIdentityV2 {
-					snapshot_id: excluded.snapshot_id.clone(),
-					engine_artifact: EngineArtifactIdentity::foch_executable_blake3("c".repeat(64)),
-					runner_protocol_version: "test-runner-v1".to_string(),
-					merge_kernel: MeasurementKernel::SemanticTree,
-					scope: MeasurementScope::FullProductMerge,
-					scorer_version: SCORER_VERSION.to_string(),
-					scorer_config_hash: "d".repeat(64),
-				},
-				"2026-07-13T00:00:00Z".to_string(),
-				"2026-07-13T00:01:00Z".to_string(),
-				TerminalStatus::Crashed,
-				Some("excluded candidate".to_string()),
-				None,
-				None,
-			),
-		)
-		.unwrap();
+	fn scorer_closure_binds_live_bytes_but_config_identity_is_policy_only() {
+		let base = tempfile::tempdir().unwrap();
+		fs::create_dir_all(base.path().join("interface")).unwrap();
+		fs::write(base.path().join("interface/reference.gui"), "one\n").unwrap();
+		let units = vec!["interface/reference.gui".to_string()];
+		let first_digest = scoring_closure_digest(base.path(), &units).unwrap();
+		fs::write(base.path().join("interface/reference.gui"), "two\n").unwrap();
+		let second_digest = scoring_closure_digest(base.path(), &units).unwrap();
+		assert_ne!(first_digest, second_digest);
 
-		let output = temp.path().join("report");
-		report(&ReportOptions {
-			dataset_root: &paths.root,
-			output_dir: &output,
-			cohort_id: Some(&proposed_cohort_id),
-			scorer_version: None,
-			cohort: ReportCohort::Scorable,
-			limit: 0,
-			snapshot_ids: None,
-		})
-		.unwrap();
-		let json: serde_json::Value =
-			serde_json::from_str(&fs::read_to_string(output.join("baseline.json")).unwrap())
-				.unwrap();
-		assert_eq!(json["candidate_cases"], 2);
-		assert_eq!(json["scorable_cases"], 1);
-		assert_eq!(json["excluded_cases"], 1);
-		assert_eq!(json["total_cases"], 1);
-		assert_eq!(json["baseline_complete"], true);
-		assert_eq!(json["measurement_cohort_id"], proposed_cohort_id);
-		assert_eq!(
-			json["measurement_identity"]["identity_kind"],
-			"engine_artifact_v2"
-		);
-		assert_eq!(json["cases"][0]["case_id"], "proposed");
-		assert_eq!(json["cases"][0]["oracle"]["status"], "proposed");
+		let first =
+			workshop_scorer_config_hash(Duration::from_secs(1), "1.37.5", 4242, "base-snapshot");
+		let changed_timeout =
+			workshop_scorer_config_hash(Duration::from_secs(2), "1.37.5", 4242, "base-snapshot");
+		let changed_base =
+			workshop_scorer_config_hash(Duration::from_secs(1), "1.37.5", 4242, "other-base");
+		assert_ne!(first, changed_timeout);
+		assert_ne!(first, changed_base);
 	}
 
+	#[cfg(unix)]
 	#[test]
-	fn latest_snapshot_uses_observation_time_per_case() {
-		let old = snapshot("case", "c");
-		let new = snapshot("case", "d");
-		let observations = vec![
-			observation(&old, "2026-07-11T00:00:00Z"),
-			observation(&new, "2026-07-12T00:00:00Z"),
-		];
-		assert_eq!(
-			latest_snapshots(vec![old, new.clone()], &observations),
-			vec![new]
-		);
-	}
+	fn scorer_closure_rejects_intermediate_symlinks() {
+		use std::os::unix::fs::symlink;
 
-	#[test]
-	fn measurement_game_contract_binds_the_exact_steam_build() {
-		let snapshot = snapshot("case", "c");
-		let local = crate::config::Eu4GameDiscovery {
-			game_root: PathBuf::from("/unused"),
-			game_version: snapshot.game.version.clone(),
-			steam_build_id: None,
-			steam_root: None,
-		};
-		let error = validate_measurement_game(&snapshot, &local).unwrap_err();
-		assert!(error.to_string().contains("Steam build mismatch"));
-	}
+		let root = tempfile::tempdir().unwrap();
+		let outside = tempfile::tempdir().unwrap();
+		fs::write(outside.path().join("reference.gui"), "outside\n").unwrap();
+		symlink(outside.path(), root.path().join("interface")).unwrap();
 
-	#[test]
-	fn product_scorer_config_identity_binds_execution_scope_and_timeout() {
-		let base_a = ProductBaseIdentity {
-			game: "eu4",
-			game_version: "1",
-			steam_build_id: Some(1),
-			installed_snapshot_sha256: "base-a",
-			pinned_product_base_blake3: "raw-a",
-		};
-		let base_b = ProductBaseIdentity {
-			installed_snapshot_sha256: "base-b",
-			..base_a
-		};
-		let raw_b = ProductBaseIdentity {
-			pinned_product_base_blake3: "raw-b",
-			..base_a
-		};
-		assert_eq!(
-			product_scorer_config_hash(Duration::from_secs(600), &base_a),
-			product_scorer_config_hash(Duration::from_secs(600), &base_a)
-		);
-		assert_ne!(
-			product_scorer_config_hash(Duration::from_secs(600), &base_a),
-			product_scorer_config_hash(Duration::from_secs(600) + Duration::from_nanos(1), &base_a)
-		);
-		assert_ne!(
-			product_scorer_config_hash(Duration::from_secs(600), &base_a),
-			product_scorer_config_hash(Duration::from_secs(600), &base_b)
-		);
-		assert_ne!(
-			product_scorer_config_hash(Duration::from_secs(600), &base_a),
-			product_scorer_config_hash(Duration::from_secs(600), &raw_b)
-		);
-	}
-
-	#[test]
-	fn materialized_base_inventory_excludes_unbound_files_and_freezes_scoring_bytes() {
-		let temp = tempfile::tempdir().unwrap();
-		let game = temp.path().join("game");
-		let work = temp.path().join("work");
-		fs::create_dir_all(game.join("decisions")).unwrap();
-		fs::create_dir(&work).unwrap();
-		fs::write(game.join("decisions/a.txt"), "a").unwrap();
-		fs::write(game.join("ignored.txt"), "ignored-a").unwrap();
-		let inventory = vec!["decisions/a.txt".to_string()];
-		let (view, first) = materialize_base_inventory_view(&game, &inventory, &work).unwrap();
-		assert!(!view.path().join("ignored.txt").exists());
-
-		fs::write(game.join("ignored.txt"), "ignored-b").unwrap();
-		fs::write(game.join("decisions/a.txt"), "b").unwrap();
-		assert_eq!(
-			fs::read_to_string(view.path().join("decisions/a.txt")).unwrap(),
-			"a"
-		);
-		assert_eq!(
-			first,
-			base_inventory_digest(view.path(), &inventory).unwrap()
-		);
-
-		let (changed_view, changed_digest) =
-			materialize_base_inventory_view(&game, &inventory, &work).unwrap();
-		assert_ne!(first, changed_digest);
-		assert_eq!(
-			changed_digest,
-			base_inventory_digest(changed_view.path(), &inventory).unwrap()
-		);
-	}
-
-	#[test]
-	fn pinned_base_validation_rejects_added_missing_and_changed_files() {
-		let temp = tempfile::tempdir().unwrap();
-		let game = temp.path().join("game");
-		let work = temp.path().join("work");
-		fs::create_dir_all(game.join("decisions")).unwrap();
-		fs::create_dir(&work).unwrap();
-		fs::write(game.join("decisions/a.txt"), "a").unwrap();
-		let inventory = vec!["decisions/a.txt".to_string()];
-
-		let (added_view, added_digest) =
-			materialize_base_inventory_view(&game, &inventory, &work).unwrap();
-		fs::write(added_view.path().join("extra.txt"), "extra").unwrap();
+		let error = scoring_closure_digest(root.path(), &["interface/reference.gui".to_string()])
+			.expect_err("intermediate symlink must fail closed");
 		assert!(
-			validate_base_inventory_view(added_view.path(), &inventory, &added_digest).is_err()
+			error.to_string().contains("not a directory") || error.to_string().contains("symlink")
 		);
-
-		let (missing_view, missing_digest) =
-			materialize_base_inventory_view(&game, &inventory, &work).unwrap();
-		fs::remove_file(missing_view.path().join("decisions/a.txt")).unwrap();
-		assert!(
-			validate_base_inventory_view(missing_view.path(), &inventory, &missing_digest).is_err()
-		);
-
-		let (changed_view, changed_digest) =
-			materialize_base_inventory_view(&game, &inventory, &work).unwrap();
-		let changed_path = changed_view.path().join("decisions/a.txt");
-		let mut permissions = fs::metadata(&changed_path).unwrap().permissions();
-		#[cfg(unix)]
-		{
-			use std::os::unix::fs::PermissionsExt;
-			permissions.set_mode(permissions.mode() | 0o200);
-		}
-		#[cfg(not(unix))]
-		permissions.set_readonly(false);
-		fs::set_permissions(&changed_path, permissions).unwrap();
-		fs::write(changed_path, "b").unwrap();
-		assert!(
-			validate_base_inventory_view(changed_view.path(), &inventory, &changed_digest).is_err()
-		);
-	}
-
-	#[test]
-	fn report_requires_a_terminal_outcome_for_every_case() {
-		let temp = tempfile::tempdir().unwrap();
-		let paths = DatasetPaths::new(temp.path().join("dataset"));
-		paths.ensure_layout().unwrap();
-		let first = snapshot("first", "c");
-		let second = snapshot("second", "d");
-		append_unique(&paths.snapshots, &first).unwrap();
-		append_unique(&paths.snapshots, &second).unwrap();
-		append_unique(
-			&paths.observations,
-			&observation(&first, "2026-07-12T00:00:00Z"),
-		)
-		.unwrap();
-		append_unique(
-			&paths.observations,
-			&observation(&second, "2026-07-12T00:00:00Z"),
-		)
-		.unwrap();
-		let identity = MeasurementIdentityV2 {
-			snapshot_id: first.snapshot_id.clone(),
-			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("e".repeat(64)),
-			runner_protocol_version: "test-runner-v1".to_string(),
-			merge_kernel: MeasurementKernel::SemanticTree,
-			scope: MeasurementScope::FullProductMerge,
-			scorer_version: SCORER_VERSION.to_string(),
-			scorer_config_hash: "f".repeat(64),
-		};
-		let cohort_id = identity.cohort_id();
-		let measurement = MeasurementRecord::new_v2(
-			identity,
-			"start".to_string(),
-			"finish".to_string(),
-			TerminalStatus::Crashed,
-			Some("signal".to_string()),
-			None,
-			None,
-		);
-		append_unique(&paths.measurements, &measurement).unwrap();
-		let output = temp.path().join("report");
-		report(&ReportOptions {
-			dataset_root: &paths.root,
-			output_dir: &output,
-			cohort_id: Some(&cohort_id),
-			scorer_version: None,
-			cohort: ReportCohort::AllCandidates,
-			limit: 0,
-			snapshot_ids: None,
-		})
-		.unwrap();
-		let json: serde_json::Value =
-			serde_json::from_str(&fs::read_to_string(output.join("baseline.json")).unwrap())
-				.unwrap();
-		assert_eq!(json["baseline_complete"], false);
-		assert_eq!(json["terminal_cases"], 1);
-		assert_eq!(json["merge_failed_cases"], 1);
-	}
-
-	#[test]
-	fn report_rejects_a_missing_requested_scorer_cohort() {
-		let temp = tempfile::tempdir().unwrap();
-		let paths = DatasetPaths::new(temp.path().join("dataset"));
-		paths.ensure_layout().unwrap();
-		let snapshot = snapshot("case", "c");
-		append_unique(&paths.snapshots, &snapshot).unwrap();
-		append_unique(
-			&paths.observations,
-			&observation(&snapshot, "2026-07-12T00:00:00Z"),
-		)
-		.unwrap();
-		append_unique(
-			&paths.measurements,
-			&MeasurementRecord::new_v2(
-				MeasurementIdentityV2 {
-					snapshot_id: snapshot.snapshot_id.clone(),
-					engine_artifact: EngineArtifactIdentity::foch_executable_blake3("1".repeat(64)),
-					runner_protocol_version: "test-runner-v1".to_string(),
-					merge_kernel: MeasurementKernel::SemanticTree,
-					scope: MeasurementScope::FullProductMerge,
-					scorer_version: "0.9.0".to_string(),
-					scorer_config_hash: "2".repeat(64),
-				},
-				"start".to_string(),
-				"finish".to_string(),
-				TerminalStatus::Completed,
-				None,
-				None,
-				None,
-			),
-		)
-		.unwrap();
-
-		let error = report(&ReportOptions {
-			dataset_root: &paths.root,
-			output_dir: &temp.path().join("report"),
-			cohort_id: None,
-			scorer_version: Some(SCORER_VERSION),
-			cohort: ReportCohort::AllCandidates,
-			limit: 0,
-			snapshot_ids: None,
-		})
-		.unwrap_err();
-		assert!(error.to_string().contains("no measurement cohort matches"));
 	}
 }

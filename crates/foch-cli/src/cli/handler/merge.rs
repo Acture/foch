@@ -4,10 +4,10 @@ use foch_core::config::{AppliedDepOverride, FochConfig};
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::playlist::Playlist;
 use foch_core::fingerprint::compute_playset_fingerprint;
-use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport};
+use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch_engine::{
 	CheckRequest, Config, ConflictHandler, InteractiveCliHandler, MergeExecuteOptions,
-	WorkspaceSource, resolve_workspace_summary, run_merge_with_options,
+	WorkspaceSource, resolve_product_input_manifest, run_merge_with_options,
 };
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
@@ -164,11 +164,11 @@ fn applied_dep_overrides(
 
 /// Compute the playset fingerprint without doing a full workspace resolve.
 ///
-/// Reads `dlc_load.json` for the ordered enabled-mods list, then loads each
-/// mod's descriptor file at `<playset_root>/mod/ugc_<steam_id>.mod` to pull
-/// the version field. Combines that with the foch.toml overrides /
-/// resolutions. Returns `None` if anything required is missing — the caller
-/// then treats the run as un-fingerprintable and skips the cache check.
+/// Launcher playsets use their ordered enabled-mod list and descriptor
+/// versions. Manifest workspaces use only their ordered, trusted Workshop ACF
+/// identities; imports or local unversioned mods fail closed. Neither path
+/// inventories a mod root. The fingerprint also binds foch overrides and
+/// resolutions.
 fn compute_fingerprint_for_source(
 	request: &CheckRequest,
 	local_config: &FochConfig,
@@ -190,14 +190,11 @@ fn compute_fingerprint_for_playset(
 		if !entry.enabled {
 			continue;
 		}
-		let Some(steam_id) = entry.steam_id.clone() else {
-			continue;
-		};
+		let steam_id = entry.steam_id.clone()?;
 		let descriptor_path = playset_root.join("mod").join(format!("ugc_{steam_id}.mod"));
 		let version = load_descriptor(&descriptor_path)
 			.ok()
-			.and_then(|d| d.version)
-			.unwrap_or_default();
+			.and_then(|descriptor| descriptor.version)?;
 		mods.push((steam_id, version));
 	}
 	Some(compute_playset_fingerprint(
@@ -211,17 +208,33 @@ fn compute_fingerprint_for_manifest(
 	request: &CheckRequest,
 	local_config: &FochConfig,
 ) -> Option<String> {
-	let summary = resolve_workspace_summary(request).ok()?;
-	let mods = summary
-		.mods
-		.into_iter()
-		.map(|mod_item| (mod_item.mod_id, String::new()))
-		.collect::<Vec<_>>();
-	Some(compute_playset_fingerprint(
-		&mods,
-		&local_config.overrides,
-		&local_config.resolutions,
+	let manifest = resolve_product_input_manifest(request, None).ok()?;
+	Some(compute_fingerprint_for_workshop_manifest(
+		&manifest,
+		local_config,
 	))
+}
+
+fn compute_fingerprint_for_workshop_manifest(
+	manifest: &ProductInputManifest,
+	local_config: &FochConfig,
+) -> String {
+	let mods = manifest
+		.mods
+		.iter()
+		.map(|input| {
+			(
+				input.mod_id.clone(),
+				format!(
+					"steam-acf:{}:{}:{}",
+					input.workshop_identity.app_id,
+					input.workshop_identity.workshop_id,
+					input.workshop_identity.manifest_id
+				),
+			)
+		})
+		.collect::<Vec<_>>();
+	compute_playset_fingerprint(&mods, &local_config.overrides, &local_config.resolutions)
 }
 
 fn resolve_resolution_config_path(merge_args: &MergeArgs, source: &WorkspaceSource) -> PathBuf {
@@ -413,4 +426,39 @@ fn launcher_stub_slug(out_dir: &Path) -> String {
 
 fn escape_descriptor(value: &str) -> String {
 	value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use foch_core::model::ProductInputMod;
+	use foch_core::utils::steam::{SteamId, WorkshopInstallIdentity};
+
+	fn workshop_manifest(manifest_id: u64) -> ProductInputManifest {
+		ProductInputManifest::new(vec![ProductInputMod {
+			mod_id: "1001".to_string(),
+			precedence: 1,
+			workshop_identity: WorkshopInstallIdentity {
+				app_id: 236_850,
+				workshop_id: SteamId::new(1_001),
+				manifest_id: SteamId::new(manifest_id),
+			},
+		}])
+	}
+
+	#[test]
+	fn manifest_fingerprint_uses_ordered_acf_identity() {
+		let config = FochConfig::default();
+		let first = compute_fingerprint_for_workshop_manifest(&workshop_manifest(2_001), &config);
+		let second = compute_fingerprint_for_workshop_manifest(&workshop_manifest(2_002), &config);
+
+		assert_ne!(first, second);
+	}
+
+	#[test]
+	fn manifest_fingerprint_fails_closed_when_acf_resolution_fails() {
+		let request =
+			CheckRequest::from_manifest_path(PathBuf::from("missing-foch.toml"), Config::default());
+		assert!(compute_fingerprint_for_manifest(&request, &FochConfig::default()).is_none());
+	}
 }

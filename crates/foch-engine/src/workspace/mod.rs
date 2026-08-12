@@ -9,13 +9,13 @@ pub use file_filter::FileFilter;
 
 pub(crate) use resolve::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceInventory,
-	build_workspace_inventory_with_hash_cache, normalize_relative_path, resolve_workspace,
+	build_workspace_inventory_for_paths, normalize_relative_path, resolve_workspace,
 	resolve_workspace_from_inventory,
 };
 pub use resolve::{
 	WorkspaceResolveError, WorkspaceResolveErrorKind, WorkspaceResolveSummary,
-	WorkspaceResolvedMod, WorkspaceTarget, WorkspaceTargetRole, resolve_workspace_summary,
-	resolve_workspace_targets,
+	WorkspaceResolvedMod, WorkspaceTarget, WorkspaceTargetRole, resolve_product_input_manifest,
+	resolve_workspace_summary, resolve_workspace_targets,
 };
 pub(crate) use scripts::WorkspaceScriptCache;
 

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::analysis::Severity;
 use crate::config::AppliedDepOverride;
+use crate::utils::steam::WorkshopInstallIdentity;
 
 pub const MERGED_MOD_DESCRIPTOR_PATH: &str = "descriptor.mod";
 pub const MERGE_PLAN_ARTIFACT_PATH: &str = ".foch/foch-merge-plan.json";
@@ -110,7 +111,11 @@ impl MergePlanEntry {
 
 #[cfg(test)]
 mod tests {
-	use super::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
+	use super::{
+		MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId, ProductInputManifest,
+		ProductInputMod,
+	};
+	use crate::utils::steam::{SteamId, WorkshopInstallIdentity};
 
 	#[test]
 	fn module_target_serializes_every_required_runtime_field() {
@@ -148,6 +153,38 @@ mod tests {
 
 		assert_eq!(target.output_path(), "common/scripted_effects/example.txt");
 		assert!(target.module_id().is_none());
+	}
+
+	#[test]
+	fn product_input_manifest_digest_binds_mod_order_and_acf_version() {
+		let first = ProductInputMod {
+			mod_id: "mod-a".to_string(),
+			precedence: 1,
+			workshop_identity: WorkshopInstallIdentity {
+				app_id: 236_850,
+				workshop_id: SteamId::new(1_001),
+				manifest_id: SteamId::new(2_001),
+			},
+		};
+		let second = ProductInputMod {
+			mod_id: "mod-b".to_string(),
+			precedence: 2,
+			workshop_identity: WorkshopInstallIdentity {
+				app_id: 236_850,
+				workshop_id: SteamId::new(1_002),
+				manifest_id: SteamId::new(2_002),
+			},
+		};
+		let manifest = ProductInputManifest::new(vec![first.clone(), second.clone()]);
+		let reordered = ProductInputManifest::new(vec![second, first.clone()]);
+		let mut changed = first;
+		changed.workshop_identity.manifest_id = SteamId::new(2_003);
+		let changed = ProductInputManifest::new(vec![changed]);
+
+		assert_eq!(manifest.digest.len(), 64);
+		assert_ne!(manifest.digest, reordered.digest);
+		assert_ne!(manifest.digest, changed.digest);
+		assert_eq!(manifest.attestation().mod_count, 2);
 	}
 }
 
@@ -203,6 +240,98 @@ pub enum MergeReportStatus {
 /// report. Merge-quality consumers reject reports without this attestation
 /// instead of inferring the implementation from the command they launched.
 pub const MERGE_EXECUTION_ATTESTATION_SCHEMA: &str = "1.0.0";
+
+/// Wire schema and hashing profile for ordered Steam Workshop revisions.
+///
+/// Normal product execution trusts the read-only Workshop ACF as the source
+/// version authority. It must never derive this identity by walking or hashing
+/// the Workshop content tree.
+pub const PRODUCT_INPUT_MANIFEST_SCHEMA: &str = "2.0.0";
+pub const PRODUCT_INPUT_PROFILE: &str = "steam-workshop-acf-v1";
+pub const PRODUCT_INPUT_DIGEST_ALGORITHM: &str = "blake3";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductInputMod {
+	pub mod_id: String,
+	pub precedence: usize,
+	pub workshop_identity: WorkshopInstallIdentity,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductInputManifest {
+	pub schema: String,
+	pub profile: String,
+	pub digest_algorithm: String,
+	pub digest: String,
+	pub mods: Vec<ProductInputMod>,
+}
+
+impl ProductInputManifest {
+	pub fn new(mods: Vec<ProductInputMod>) -> Self {
+		let mut manifest = Self {
+			schema: PRODUCT_INPUT_MANIFEST_SCHEMA.to_string(),
+			profile: PRODUCT_INPUT_PROFILE.to_string(),
+			digest_algorithm: PRODUCT_INPUT_DIGEST_ALGORITHM.to_string(),
+			digest: String::new(),
+			mods,
+		};
+		manifest.digest = manifest.compute_digest();
+		manifest
+	}
+
+	pub fn attestation(&self) -> ProductInputAttestation {
+		ProductInputAttestation {
+			schema: self.schema.clone(),
+			profile: self.profile.clone(),
+			digest_algorithm: self.digest_algorithm.clone(),
+			digest: self.digest.clone(),
+			mod_count: self.mods.len(),
+		}
+	}
+
+	pub fn digest_is_valid(&self) -> bool {
+		self.digest == self.compute_digest()
+	}
+
+	fn compute_digest(&self) -> String {
+		let mut hasher = blake3::Hasher::new();
+		update_digest_field(&mut hasher, &self.schema);
+		update_digest_field(&mut hasher, &self.profile);
+		update_digest_field(&mut hasher, &self.digest_algorithm);
+		hasher.update(&(self.mods.len() as u64).to_le_bytes());
+		for mod_input in &self.mods {
+			update_digest_field(&mut hasher, &mod_input.mod_id);
+			hasher.update(&(mod_input.precedence as u64).to_le_bytes());
+			hasher.update(&mod_input.workshop_identity.app_id.to_le_bytes());
+			update_digest_field(
+				&mut hasher,
+				mod_input.workshop_identity.workshop_id.as_str(),
+			);
+			update_digest_field(
+				&mut hasher,
+				mod_input.workshop_identity.manifest_id.as_str(),
+			);
+		}
+		hasher.finalize().to_hex().to_string()
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductInputAttestation {
+	pub schema: String,
+	pub profile: String,
+	pub digest_algorithm: String,
+	pub digest: String,
+	pub mod_count: usize,
+}
+
+fn update_digest_field(hasher: &mut blake3::Hasher, value: &str) {
+	hasher.update(&(value.len() as u64).to_le_bytes());
+	hasher.update(value.as_bytes());
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -395,6 +524,10 @@ pub struct MergeReport {
 	/// consumers that require an exact kernel/scope contract must reject `None`.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub execution: Option<MergeExecutionAttestation>,
+	/// Stable attestation for the exact ordered mod inputs observed by the
+	/// product. It intentionally contains no local paths or input payloads.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub input: Option<ProductInputAttestation>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_source: Option<String>,
 	/// When `status == Fatal` because workspace resolution failed, the

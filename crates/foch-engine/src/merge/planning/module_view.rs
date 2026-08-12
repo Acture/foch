@@ -8,7 +8,7 @@ use foch_language::analyzer::content_family::{
 	DuplicateDefinitionPolicy, MergeKeySource,
 };
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
+use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, WorkspaceScriptCache};
@@ -283,30 +283,9 @@ fn parse_contributor(
 	contributor: &ResolvedFileContributor,
 	script_cache: &WorkspaceScriptCache,
 ) -> Result<ParsedScriptFile, String> {
-	let relative = contributor
-		.absolute_path
-		.strip_prefix(&contributor.root_path)
-		.map_err(|_| {
-			format!(
-				"{} is outside contributor root {}",
-				contributor.absolute_path.display(),
-				contributor.root_path.display()
-			)
-		})?;
-	if let Some(parsed) = script_cache.get(&contributor.mod_id, relative) {
-		return Ok(parsed.clone());
-	}
-	parse_script_file(
-		&contributor.mod_id,
-		&contributor.root_path,
-		&contributor.absolute_path,
-	)
-	.ok_or_else(|| {
-		format!(
-			"failed to parse module input {}",
-			contributor.absolute_path.display()
-		)
-	})
+	script_cache
+		.load(contributor)
+		.map(|parsed| (*parsed).clone())
 }
 
 fn include_reset_only_module_participants(
@@ -463,8 +442,9 @@ fn fold_visible_module_files(
 mod tests {
 	use super::{
 		VisibleModuleFile, apply_duplicate_definition_override, fold_visible_module_files,
-		validate_module_target,
+		parse_contributor, validate_module_target,
 	};
+	use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 	use foch_core::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use foch_language::analyzer::content_family::{
 		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
@@ -477,6 +457,30 @@ mod tests {
 	use std::fs;
 	use std::path::Path;
 	use tempfile::TempDir;
+
+	#[test]
+	fn module_view_never_bypasses_a_missing_verified_ast() {
+		let temp = TempDir::new().expect("temp dir");
+		let relative = "common/governments/test.txt";
+		fs::create_dir_all(temp.path().join("common/governments")).expect("create governments dir");
+		fs::write(temp.path().join(relative), "government = { rank = 1 }\n")
+			.expect("write module script");
+		let contributor = ResolvedFileContributor {
+			mod_id: "mod-a".to_string(),
+			root_path: temp.path().to_path_buf(),
+			absolute_path: temp.path().join(relative),
+			precedence: 1,
+			is_base_game: false,
+			is_synthetic_base: false,
+			parse_ok_hint: Some(true),
+			mod_hash: Some("hash-a".to_string()),
+		};
+
+		let error = parse_contributor(&contributor, &WorkspaceScriptCache::default())
+			.expect_err("missing verified AST must fail closed");
+
+		assert!(error.contains("no semantic-snapshot input"));
+	}
 
 	fn module_entry(input_path: &str, module_name: &str, replace_prefix: &str) -> MergePlanEntry {
 		MergePlanEntry {

@@ -3,9 +3,12 @@
 ## Scope
 
 This checkpoint tests the Directory Module Hypothesis against every `common/**`
-unit in the fixed merge-quality corpus and exercises the same definition-module
-API used by the public SemanticTree product merge. The probe is an evaluator:
-it never publishes a generated mod and does not select or launch a product
+unit in the frozen 12-unit expectation matrix and exercises the same
+definition-module API used by the public SemanticTree product merge. The
+expectation JSON supplies only paths and historical verdicts. Actual inputs are
+resolved from the fixed Workshop case manifest, the paired read-only Steam ACF,
+and the installed EU4 root. The probe does not restore or replay a V1 snapshot.
+It never publishes a generated mod and does not select or launch a product
 executable.
 
 For each corpus unit, the probe builds four effective module views for its
@@ -16,7 +19,9 @@ For each corpus unit, the probe builds four effective module views for its
 - `right`: vanilla plus the second source mod
 - `human`: vanilla, both source mods, then the human compatch
 
-Files are resolved by normalized relative path in layer order. A covering
+The source order must match the frozen expectation and the fixed Workshop case
+definition exactly. Files are then read directly from the resolved installation
+directories and resolved by normalized relative path in layer order. A covering
 `replace_path` clears earlier files. Visible files are folded in layer-major
 order and lexical path order within each layer, so a later compatch definition
 wins over an earlier source definition regardless of their file names.
@@ -43,13 +48,19 @@ corpus-shadow evidence. Definitions identical between candidate and human are
 reused; only differing definitions are canonicalized before order-insensitive
 AST comparison. This cannot relabel the committed Legacy baseline.
 
-Snapshot restoration records a versioned metadata fingerprint after a full
-CAS payload audit. Later processes avoid rereading payload bytes only while the
-tree's paths, sizes, modification times, executable bits, and symlink targets
-remain unchanged; otherwise the object is fully rehashed. One command verifies
-each shared object at most once. The earlier marker-only governments run
-reduced report-level elapsed time from 258,342 ms to 339 ms, but that number
-predates the metadata guard and is not the current performance baseline.
+Each selected logical case is resolved through `ResolvedWorkshopCase`. Its V2
+`input_version_id` commits to the game/build identity, ordered Workshop manifest
+IDs, and case topology; it does not digest Workshop files. Missing ACF records, unavailable
+manifests, or missing item directories become input failures; cases are never
+dynamically skipped. After evaluation, the probe reloads the exact same ACF
+catalog and compares the relevant install identities. A relevant ACF drift
+aborts the run before either report is written; ordinary content changes under
+an unchanged ACF identity are outside this version contract.
+
+The schema-4 report records `input_version_id` per resolved unit plus the hashes
+of the case manifest, frozen expectation JSON, and evaluator artifact. The probe
+has no dataset-root option and never constructs, opens, verifies, or restores an
+input-CAS object.
 
 ## Run the fixed gate
 
@@ -60,15 +71,17 @@ scripts/merge-quality/common-module.fish
 ```
 
 It invokes the exact ignored test `common_module_acceptance` in
-`crates/foch-merge-quality/tests/maintenance.rs`. The test requires the private
-corpus CAS and installed EU4 snapshot, asserts the fixed denominator of 12
-units, and fails unless all 12 are classified with zero failed units.
+`crates/foch-merge-quality/tests/maintenance.rs`. The test requires the installed
+EU4 version and every Workshop item referenced by the selected fixed cases in
+the paired ACF. It asserts the denominator of 12 units and fails unless all 12
+are classified with zero failed units.
 
-`run_common_applicability_probe` accepts `evaluator_artifact_blake3` from its
-caller. The maintenance test supplies that artifact identity explicitly; the
-probe library does not call `current_exe`, discover a runner, or spawn a hidden
-command. The artifact binds the resulting evidence to the evaluator without
-pretending it is a product measurement.
+`run_common_applicability_probe` accepts `case_manifest`, a complete
+`Eu4Discovery`, and `evaluator_artifact_blake3` from its caller. The maintenance
+test supplies the artifact identity explicitly; the probe library does not call
+`current_exe`, discover a runner, or spawn a hidden command. The artifact binds
+the resulting evidence to the evaluator without pretending it is a product
+measurement.
 
 ## Product relationship
 
@@ -89,9 +102,12 @@ publication; there is no winner-copy fallback.
 ## Gate
 
 The fixed denominator is the 12 `common/**` units in
-`tests/fixtures/legacy-baseline.json`. The report must:
+`crates/foch-merge-quality/tests/fixtures/legacy-baseline.json`, joined by case
+ID to `workshop-product-cases-v2.json`. The report must:
 
 - classify all 12 units;
+- record a valid V2 input identity for every resolved unit and no legacy
+  `snapshot_id`;
 - preserve every previously accepted unit;
 - contain no unsupported-family outcome;
 - distinguish accepted AST equivalence, manual resolution, semantic mismatch,

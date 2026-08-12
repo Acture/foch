@@ -374,6 +374,7 @@ mod tests {
 				replace_path: replace_path.into_iter().map(str::to_string).collect(),
 				..ModDescriptor::default()
 			}),
+			workshop_identity: None,
 			descriptor_error: None,
 			files: Vec::new(),
 		}

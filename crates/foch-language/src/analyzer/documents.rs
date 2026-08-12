@@ -1,6 +1,7 @@
 use super::localisation::parse_localisation_file;
 use super::semantic_index::{
-	ParsedScriptFile, build_semantic_index, parse_script_file, parse_script_file_without_cache,
+	ParsedScriptFile, ParsedScriptWithInputIdentity, build_semantic_index,
+	parse_script_file_with_input_identity, parse_script_file_without_cache_with_input_identity,
 };
 use foch_core::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
@@ -55,9 +56,17 @@ pub struct ParsedJsonDocument {
 #[derive(Clone, Debug, Default)]
 pub struct ParsedDocumentBatch {
 	pub documents: Vec<ParsedTextDocument>,
+	pub document_input_identities: Vec<ParsedDocumentInputIdentity>,
 	pub clausewitz_cache_hits: usize,
 	pub clausewitz_cache_misses: usize,
 	pub parse_stats: ParseFamilyStats,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParsedDocumentInputIdentity {
+	pub relative_path: PathBuf,
+	pub size_bytes: u64,
+	pub content_digest: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,7 +137,12 @@ pub fn parse_discovered_text_documents(
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
 ) -> ParsedDocumentBatch {
-	parse_discovered_text_documents_with(mod_id, root, documents, parse_script_file)
+	parse_discovered_text_documents_with(
+		mod_id,
+		root,
+		documents,
+		parse_script_file_with_input_identity,
+	)
 }
 
 pub fn parse_discovered_text_documents_without_cache(
@@ -136,22 +150,27 @@ pub fn parse_discovered_text_documents_without_cache(
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
 ) -> ParsedDocumentBatch {
-	parse_discovered_text_documents_with(mod_id, root, documents, parse_script_file_without_cache)
+	parse_discovered_text_documents_with(
+		mod_id,
+		root,
+		documents,
+		parse_script_file_without_cache_with_input_identity,
+	)
 }
 
 fn parse_discovered_text_documents_with(
 	mod_id: &str,
 	root: &Path,
 	documents: &[DiscoveredTextDocument],
-	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptFile>,
+	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptWithInputIdentity>,
 ) -> ParsedDocumentBatch {
-	let parsed: Vec<Option<ParsedTextDocument>> = documents
+	let parsed: Vec<Option<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)>> = documents
 		.par_iter()
 		.map(|doc| parse_text_document_with(mod_id, root, doc, parse_script))
 		.collect();
 
 	let mut batch = ParsedDocumentBatch::default();
-	for doc in parsed.into_iter().flatten() {
+	for (doc, input_identity) in parsed.into_iter().flatten() {
 		match document_parse_details(&doc) {
 			DocumentParseDetails::Clausewitz {
 				parse_issue_count,
@@ -192,6 +211,9 @@ fn parse_discovered_text_documents_with(
 				parse_issue_count,
 				parse_ok,
 			),
+		}
+		if let Some(input_identity) = input_identity {
+			batch.document_input_identities.push(input_identity);
 		}
 		batch.documents.push(doc);
 	}
@@ -256,20 +278,100 @@ pub fn build_semantic_index_from_documents(documents: &[ParsedTextDocument]) -> 
 		}
 	}
 
-	index.documents.sort_by(|lhs, rhs| {
+	sort_and_dedup_document_records(&mut index.documents);
+
+	index
+}
+
+/// Builds the same index as [`build_semantic_index_from_documents`] while
+/// consuming parsed documents so Clausewitz ASTs and source buffers are not
+/// cloned solely to pass them to the semantic indexer.
+pub fn build_semantic_index_from_owned_documents(
+	documents: Vec<ParsedTextDocument>,
+) -> SemanticIndex {
+	let mut clausewitz_docs: Vec<ParsedScriptFile> = Vec::new();
+	let mut document_records: Vec<DocumentRecord> = Vec::with_capacity(documents.len());
+	let mut localisation_definitions: Vec<LocalisationDefinition> = Vec::new();
+	let mut localisation_duplicates: Vec<LocalisationDuplicate> = Vec::new();
+	let mut csv_rows: Vec<CsvRow> = Vec::new();
+	let mut json_properties: Vec<JsonProperty> = Vec::new();
+	let mut parse_issues: Vec<ParseIssue> = Vec::new();
+
+	for doc in documents {
+		match doc {
+			ParsedTextDocument::Clausewitz(file) => {
+				document_records.push(DocumentRecord {
+					mod_id: file.mod_id.clone(),
+					path: file.relative_path.clone(),
+					family: DocumentFamily::Clausewitz,
+					parse_ok: file.parse_issues.is_empty(),
+				});
+				clausewitz_docs.push(file);
+			}
+			ParsedTextDocument::Localisation(file) => {
+				document_records.push(DocumentRecord {
+					mod_id: file.mod_id,
+					path: file.path,
+					family: DocumentFamily::Localisation,
+					parse_ok: file.parse_issues.is_empty(),
+				});
+				localisation_definitions.extend(file.entries);
+				localisation_duplicates.extend(file.duplicates);
+				parse_issues.extend(file.parse_issues);
+			}
+			ParsedTextDocument::Csv(file) => {
+				document_records.push(DocumentRecord {
+					mod_id: file.mod_id,
+					path: file.path,
+					family: DocumentFamily::Csv,
+					parse_ok: file.parse_issues.is_empty(),
+				});
+				csv_rows.extend(file.rows);
+				parse_issues.extend(file.parse_issues);
+			}
+			ParsedTextDocument::Json(file) => {
+				document_records.push(DocumentRecord {
+					mod_id: file.mod_id,
+					path: file.path,
+					family: DocumentFamily::Json,
+					parse_ok: file.parse_issues.is_empty(),
+				});
+				json_properties.extend(file.properties);
+				parse_issues.extend(file.parse_issues);
+			}
+		}
+	}
+
+	let mut index = build_semantic_index(&clausewitz_docs);
+	index.documents.extend(document_records);
+	index
+		.localisation_definitions
+		.extend(localisation_definitions);
+	index
+		.localisation_duplicates
+		.extend(localisation_duplicates);
+	index.csv_rows.extend(csv_rows);
+	index.json_properties.extend(json_properties);
+	index.parse_issues.extend(parse_issues);
+	sort_and_dedup_document_records(&mut index.documents);
+
+	index
+}
+
+fn sort_and_dedup_document_records(documents: &mut Vec<DocumentRecord>) {
+	documents.sort_by(|lhs, rhs| {
 		(lhs.path.clone(), lhs.mod_id.clone()).cmp(&(rhs.path.clone(), rhs.mod_id.clone()))
 	});
-	index.documents.dedup_by(|lhs, rhs| {
+	documents.dedup_by(|lhs, rhs| {
 		lhs.path == rhs.path
 			&& lhs.mod_id == rhs.mod_id
 			&& lhs.family == rhs.family
 			&& lhs.parse_ok == rhs.parse_ok
 	});
-
-	index
 }
 
-pub(crate) fn classify_document_family(relative_path: &Path) -> Option<DocumentFamily> {
+/// Classify one relative path into a supported text-document parser family.
+pub fn classify_document_family(relative_path: &Path) -> Option<DocumentFamily> {
 	let ext = relative_path
 		.extension()
 		.and_then(|value| value.to_str())
@@ -298,25 +400,46 @@ fn parse_text_document_with(
 	mod_id: &str,
 	root: &Path,
 	doc: &DiscoveredTextDocument,
-	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptFile>,
-) -> Option<ParsedTextDocument> {
+	parse_script: fn(&str, &Path, &Path) -> Option<ParsedScriptWithInputIdentity>,
+) -> Option<(ParsedTextDocument, Option<ParsedDocumentInputIdentity>)> {
 	match doc.family {
 		DocumentFamily::Clausewitz => {
-			parse_script(mod_id, root, &doc.absolute_path).map(ParsedTextDocument::Clausewitz)
+			parse_script(mod_id, root, &doc.absolute_path).map(|parsed| {
+				let input_identity =
+					parsed
+						.input_identity
+						.map(|identity| ParsedDocumentInputIdentity {
+							relative_path: doc.relative_path.clone(),
+							size_bytes: identity.size_bytes,
+							content_digest: identity.content_digest,
+						});
+				(ParsedTextDocument::Clausewitz(parsed.file), input_identity)
+			})
 		}
-		DocumentFamily::Localisation => Some(ParsedTextDocument::Localisation(
-			parse_localisation_document(mod_id, &doc.absolute_path, &doc.relative_path),
+		DocumentFamily::Localisation => Some((
+			ParsedTextDocument::Localisation(parse_localisation_document(
+				mod_id,
+				&doc.absolute_path,
+				&doc.relative_path,
+			)),
+			None,
 		)),
-		DocumentFamily::Csv => Some(ParsedTextDocument::Csv(parse_csv_document(
-			mod_id,
-			&doc.absolute_path,
-			&doc.relative_path,
-		))),
-		DocumentFamily::Json => Some(ParsedTextDocument::Json(parse_json_document(
-			mod_id,
-			&doc.absolute_path,
-			&doc.relative_path,
-		))),
+		DocumentFamily::Csv => Some((
+			ParsedTextDocument::Csv(parse_csv_document(
+				mod_id,
+				&doc.absolute_path,
+				&doc.relative_path,
+			)),
+			None,
+		)),
+		DocumentFamily::Json => Some((
+			ParsedTextDocument::Json(parse_json_document(
+				mod_id,
+				&doc.absolute_path,
+				&doc.relative_path,
+			)),
+			None,
+		)),
 	}
 }
 
@@ -677,8 +800,9 @@ fn document_parse_details(doc: &ParsedTextDocument) -> DocumentParseDetails {
 #[cfg(test)]
 mod tests {
 	use super::{
+		build_semantic_index_from_documents, build_semantic_index_from_owned_documents,
 		classify_document_family, discover_text_documents, parse_csv_document,
-		parse_localisation_document,
+		parse_discovered_text_documents, parse_localisation_document,
 	};
 	use foch_core::model::DocumentFamily;
 	use std::fs;
@@ -931,5 +1055,55 @@ mod tests {
 
 		let parsed = parse_csv_document("mod", &path, Path::new("map/definition.csv"));
 		assert_eq!(parsed.parse_issues.len(), 2, "{:?}", parsed.parse_issues);
+	}
+
+	#[test]
+	fn borrowed_and_owned_semantic_index_builders_are_equivalent() {
+		let tmp = TempDir::new().expect("temp dir");
+		fs::create_dir_all(tmp.path().join("events")).expect("create events dir");
+		fs::create_dir_all(tmp.path().join("localisation")).expect("create localisation dir");
+		fs::create_dir_all(tmp.path().join("common")).expect("create common dir");
+		fs::write(
+			tmp.path().join("events").join("test.txt"),
+			"namespace = test\ncountry_event = { id = test.1 }\n",
+		)
+		.expect("write script");
+		fs::write(
+			tmp.path().join("localisation").join("test_l_english.yml"),
+			"l_english:\ntest.key:0 \"Test\"\n",
+		)
+		.expect("write localisation");
+		fs::write(
+			tmp.path().join("common").join("data.csv"),
+			"key;value\nalpha;1\n",
+		)
+		.expect("write csv");
+		fs::write(
+			tmp.path().join("common").join("settings.json"),
+			"{\"feature\":{\"enabled\":true}}\n",
+		)
+		.expect("write json");
+
+		let discovered = discover_text_documents(tmp.path());
+		let mut batch = parse_discovered_text_documents("mod-a", tmp.path(), &discovered);
+		let duplicate_clausewitz = batch
+			.documents
+			.iter()
+			.find(|document| matches!(document, super::ParsedTextDocument::Clausewitz(_)))
+			.expect("clausewitz document")
+			.clone();
+		batch.documents.push(duplicate_clausewitz);
+
+		let borrowed = build_semantic_index_from_documents(&batch.documents);
+		let owned = build_semantic_index_from_owned_documents(batch.documents);
+		let borrowed_json = serde_json::to_value(&borrowed).expect("serialize borrowed index");
+		let owned_json = serde_json::to_value(&owned).expect("serialize owned index");
+
+		assert_eq!(owned_json, borrowed_json);
+		assert_eq!(
+			owned.documents.len(),
+			4,
+			"duplicate record behavior changed"
+		);
 	}
 }

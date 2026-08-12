@@ -127,7 +127,7 @@ pub fn score_existing_output_with_cache(
 		.into());
 	}
 	let setup_started = Instant::now();
-	let gt = reference_output_files(request.compatch_dir);
+	let gt = reference_output_files(request.compatch_dir)?;
 	let scoring_units = scoring_reference_units(&gt);
 	let conflicts = conflict_rel_paths(request.report);
 	let source_mods: Vec<SourceMod<'_>> = request

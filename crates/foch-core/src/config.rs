@@ -1,4 +1,5 @@
 use crate::domain::game::Game;
+use crate::utils::steam::WorkshopInstallIdentity;
 use globset::{Glob, GlobMatcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,8 @@ pub struct WorkspaceMod {
 	pub path: Option<PathBuf>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub steam_id: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub workshop_identity: Option<WorkshopInstallIdentity>,
 	#[serde(default = "default_workspace_mod_enabled")]
 	pub enabled: bool,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -833,6 +836,7 @@ path = "../mods/local_patch"
 
 [[workspace.mods]]
 steam_id = "2164202838"
+workshop_identity = { app_id = 236850, workshop_id = "2164202838", manifest_id = "9007199254740993" }
 enabled = false
 position = 4
 "#,
@@ -847,6 +851,15 @@ position = 4
 		assert_eq!(workspace.mods[0].id.as_deref(), Some("local_patch"));
 		assert!(workspace.mods[0].enabled);
 		assert_eq!(workspace.mods[1].steam_id.as_deref(), Some("2164202838"));
+		assert_eq!(
+			workspace.mods[1]
+				.workshop_identity
+				.as_ref()
+				.expect("Workshop identity")
+				.manifest_id
+				.as_str(),
+			"9007199254740993"
+		);
 		assert!(!workspace.mods[1].enabled);
 		assert_eq!(workspace.mods[1].position, Some(4));
 	}

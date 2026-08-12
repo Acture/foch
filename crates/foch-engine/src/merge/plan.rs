@@ -1,6 +1,5 @@
 use super::error::MergeError;
 use super::normalize::normalize_defines_file;
-use crate::merge::patch::ast_statement_list_has_real_content;
 use crate::request::{CheckRequest, MergePlanOptions};
 use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceResolveErrorKind,
@@ -298,11 +297,17 @@ fn validate_structural_merge_inputs(
 		if !is_defines_path {
 			continue;
 		}
-		let Some(parsed) = script_cache.get(&contributor.mod_id, Path::new(path)) else {
-			failures.push(format!("missing cached AST for {}", contributor.mod_id));
-			continue;
+		let parsed = match script_cache.load(contributor) {
+			Ok(parsed) => parsed,
+			Err(error) => {
+				failures.push(format!(
+					"failed to load AST for {}: {error}",
+					contributor.mod_id
+				));
+				continue;
+			}
 		};
-		if let Err(err) = normalize_defines_file(parsed) {
+		if let Err(err) = normalize_defines_file(&parsed) {
 			failures.push(format!(
 				"non-normalizable defines in {}: {}",
 				contributor.mod_id, err
@@ -342,27 +347,16 @@ fn validate_structural_snapshot(
 			continue;
 		}
 		for contributor in contributors {
-			let missing_status = contributor.parse_ok_hint.is_none();
-			let missing_ast = workspace
-				.script_cache
-				.get(&contributor.mod_id, Path::new(path))
-				.is_none();
-			if !missing_status && !missing_ast {
+			if contributor.parse_ok_hint.is_some() {
 				continue;
 			}
-			let missing = match (missing_status, missing_ast) {
-				(true, true) => "parse status and cached AST",
-				(true, false) => "parse status",
-				(false, true) => "cached AST",
-				(false, false) => unreachable!(),
-			};
 			let repair = if contributor.is_base_game {
 				"foch data build eu4 --from-game-path <EU4_ROOT> --game-version auto --install"
 			} else {
 				"foch cache clear --layer mods --yes"
 			};
 			return Err(format!(
-				"structural merge snapshot invariant violated for {path} from {}: missing {missing}; run `{repair}` and retry",
+				"structural merge snapshot invariant violated for {path} from {}: missing parse status; run `{repair}` and retry",
 				contributor.mod_id
 			));
 		}
@@ -390,24 +384,17 @@ pub(crate) fn prune_noop_script_contributors(
 			if !is_structural_merge_path(relative_path, descriptor) {
 				return true;
 			}
+			if contributors.len() < 2 {
+				return true;
+			}
 			contributors.retain(|contributor| {
 				contributor.is_base_game
 					|| contributor.is_synthetic_base
-					|| !is_noop_script_contributor(contributor, relative_path, script_cache)
+					|| script_cache.is_noop_hint(&contributor.mod_id, Path::new(relative_path))
+						!= Some(true)
 			});
 			!contributors.is_empty()
 		});
-}
-
-fn is_noop_script_contributor(
-	contributor: &ResolvedFileContributor,
-	relative_path: &str,
-	script_cache: &WorkspaceScriptCache,
-) -> bool {
-	let Some(parsed) = script_cache.get(&contributor.mod_id, Path::new(relative_path)) else {
-		return false;
-	};
-	parsed.parse_issues.is_empty() && !ast_statement_list_has_real_content(&parsed.ast.statements)
 }
 
 fn is_text_like_overlay_path(path: &str) -> bool {
@@ -446,7 +433,7 @@ mod tests {
 	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::Playlist;
 	use std::collections::BTreeMap;
-	use std::path::PathBuf;
+	use std::path::{Path, PathBuf};
 
 	fn workspace_with_snapshot_gap(
 		mod_id: &str,
@@ -503,18 +490,27 @@ mod tests {
 	}
 
 	#[test]
-	fn missing_base_ast_is_a_fatal_snapshot_invariant() {
+	fn missing_cached_ast_is_not_a_snapshot_invariant() {
 		let workspace = workspace_with_snapshot_gap("__game__", true, Some(true));
 
 		let result = build_merge_plan_from_workspace(&workspace, true);
 
-		assert!(result.has_fatal_errors());
-		assert!(result.paths.is_empty());
+		assert!(!result.has_fatal_errors());
+		assert_eq!(result.paths.len(), 1);
+	}
+
+	#[test]
+	fn singleton_structural_contributor_does_not_load_an_ast_during_pruning() {
+		let workspace = workspace_with_snapshot_gap("mod-a", false, Some(true));
+
+		let result = build_merge_plan_from_workspace(&workspace, false);
+
+		assert!(!result.has_fatal_errors());
+		assert_eq!(result.paths.len(), 1);
 		assert!(
-			result
-				.fatal_errors
-				.iter()
-				.any(|error| { error.contains("foch data build eu4 --from-game-path <EU4_ROOT>") })
+			!workspace
+				.script_cache
+				.is_loaded("mod-a", Path::new("events/test.txt"))
 		);
 	}
 }

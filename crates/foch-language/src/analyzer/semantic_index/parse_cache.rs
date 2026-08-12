@@ -70,6 +70,25 @@ pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
 		return (parse_clausewitz_file(path), false);
 	};
 	let content_key = parse_content_key(path, &bytes);
+	parse_clausewitz_bytes_with_key(path, &bytes, content_key)
+}
+
+/// Parses caller-supplied bytes without reopening `path`.
+///
+/// The persistent cache is addressed only by parser mode and the actual bytes;
+/// external installation or snapshot identities do not create a second parser
+/// identity for identical input.
+pub fn parse_clausewitz_bytes_cached(path: &Path, bytes: &[u8]) -> (ParseResult, bool) {
+	ensure_current_cache_generation();
+	let content_key = parse_content_key(path, bytes);
+	parse_clausewitz_bytes_with_key(path, bytes, content_key)
+}
+
+fn parse_clausewitz_bytes_with_key(
+	path: &Path,
+	bytes: &[u8],
+	content_key: String,
+) -> (ParseResult, bool) {
 	let cache_path = cache_file_for_key(&parser_cache_root(), &content_key);
 
 	if let Some(mut result) = load_cache_hit(&cache_path, &content_key) {
@@ -78,7 +97,7 @@ pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
 		return (result, true);
 	}
 
-	let content = foch_core::decode_paradox_bytes(&bytes);
+	let content = foch_core::decode_paradox_bytes(bytes);
 	let parsed = parse_clausewitz_content(path.to_path_buf(), &content);
 	let entry = ParseCacheEntry {
 		version: PARSE_CACHE_VERSION.to_string(),
@@ -127,16 +146,20 @@ fn active_cache_namespace() -> String {
 
 fn parse_content_key(path: &Path, bytes: &[u8]) -> String {
 	let mut hasher = Sha256::new();
-	let mode = if is_lua_path(path) {
-		b"lua".as_slice()
-	} else {
-		b"clausewitz".as_slice()
-	};
+	let mode = parser_mode(path);
 	hasher.update((mode.len() as u64).to_le_bytes());
 	hasher.update(mode);
 	hasher.update((bytes.len() as u64).to_le_bytes());
 	hasher.update(bytes);
 	format!("{:x}", hasher.finalize())
+}
+
+fn parser_mode(path: &Path) -> &'static [u8] {
+	if is_lua_path(path) {
+		b"lua"
+	} else {
+		b"clausewitz"
+	}
 }
 
 fn is_lua_path(path: &Path) -> bool {
@@ -616,6 +639,22 @@ mod tests {
 		assert!(!first_hit);
 		assert!(second_hit);
 		assert_eq!(second_result.ast.path, second);
+		assert_eq!(cache_stats().file_count, 1);
+	}
+
+	#[test]
+	fn caller_supplied_byte_cache_reuses_identical_bytes_without_reopening_path() {
+		let cache_temp = tempdir().expect("cache tempdir");
+		let _env = CacheEnvGuard::new(cache_temp.path());
+		let missing_path = Path::new("/missing/mod/common/scripted_effects/a.txt");
+		let bytes = b"effect = { add_prestige = 1 }\n";
+
+		let (first, first_hit) = parse_clausewitz_bytes_cached(missing_path, bytes);
+		let (second, second_hit) = parse_clausewitz_bytes_cached(missing_path, bytes);
+
+		assert!(!first_hit);
+		assert!(second_hit);
+		assert_eq!(first, second);
 		assert_eq!(cache_stats().file_count, 1);
 	}
 

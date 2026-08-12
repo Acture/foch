@@ -6,12 +6,13 @@ use crate::workspace::{ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_wor
 use foch_core::model::{SemanticIndex, SymbolKind, SymbolReference};
 use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, parse_script_file, resolve_scripted_effect_reference_targets,
+	ParsedScriptFile, resolve_scripted_effect_reference_targets,
 	resolve_scripted_trigger_reference_targets,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,10 +76,14 @@ pub(crate) fn build_runtime_state_from_workspace(
 		.installed_base_snapshot
 		.as_ref()
 		.map(|_| base_game_mod_id(workspace.playlist.game.key()));
-	let parsed_scripts =
-		collect_workspace_scripts(workspace, &enabled_mod_ids, base_mod_id.as_deref());
 	let semantic_index =
 		collect_workspace_semantic_index(workspace, &enabled_mod_ids, base_mod_id.as_deref());
+	let parsed_scripts = collect_workspace_scripts(
+		workspace,
+		&enabled_mod_ids,
+		base_mod_id.as_deref(),
+		&semantic_index,
+	)?;
 	let precedence_by_mod = build_precedence_map(workspace, base_mod_id.as_deref());
 	let definitions =
 		collect_definition_records(&semantic_index, &parsed_scripts, &precedence_by_mod)?;
@@ -211,10 +216,27 @@ fn collect_workspace_scripts(
 	workspace: &ResolvedWorkspace,
 	enabled_mod_ids: &HashSet<String>,
 	base_mod_id: Option<&str>,
-) -> Vec<ParsedScriptFile> {
+	semantic_index: &SemanticIndex,
+) -> Result<Vec<Arc<ParsedScriptFile>>, String> {
+	let required = semantic_index
+		.definitions
+		.iter()
+		.map(|definition| {
+			(
+				definition.mod_id.clone(),
+				normalize_path(Path::new(&definition.path)),
+			)
+		})
+		.collect::<HashSet<_>>();
 	let mut parsed = workspace
 		.script_cache
-		.documents_for_mods(enabled_mod_ids, base_mod_id);
+		.documents_for_mods(enabled_mod_ids, base_mod_id)?;
+	parsed.retain(|document| {
+		required.contains(&(
+			document.mod_id.clone(),
+			normalize_path(&document.relative_path),
+		))
+	});
 	let mut seen = parsed
 		.iter()
 		.map(|document| {
@@ -226,45 +248,49 @@ fn collect_workspace_scripts(
 		})
 		.collect::<HashSet<_>>();
 
-	for contributors in workspace.file_inventory.values() {
-		for contributor in contributors {
-			if !(enabled_mod_ids.contains(&contributor.mod_id)
-				|| base_mod_id.is_some_and(|base| contributor.mod_id == base))
-			{
-				continue;
-			}
-			let Ok(relative_path) = contributor
-				.absolute_path
-				.strip_prefix(&contributor.root_path)
-			else {
-				continue;
-			};
-			let key = format!("{}::{}", contributor.mod_id, normalize_path(relative_path));
-			if !seen.insert(key) || !looks_like_clausewitz_path(&contributor.absolute_path) {
-				continue;
-			}
-			if let Some(file) = workspace
-				.script_cache
-				.get(&contributor.mod_id, relative_path)
-				.cloned()
-			{
-				parsed.push(file);
-				continue;
-			}
-			if let Some(file) = parse_script_file(
-				&contributor.mod_id,
-				&contributor.root_path,
-				&contributor.absolute_path,
-			) {
-				parsed.push(file);
-			}
+	let mut contributors_by_key = HashMap::new();
+	for contributor in workspace.file_inventory.values().flatten() {
+		if !(enabled_mod_ids.contains(&contributor.mod_id)
+			|| base_mod_id.is_some_and(|base| contributor.mod_id == base))
+		{
+			continue;
 		}
+		let relative_path = contributor
+			.absolute_path
+			.strip_prefix(&contributor.root_path)
+			.map_err(|_| {
+				format!(
+					"runtime contributor {} escaped its root",
+					contributor.mod_id
+				)
+			})?;
+		contributors_by_key.insert(
+			(contributor.mod_id.clone(), normalize_path(relative_path)),
+			contributor,
+		);
+	}
+	let mut required = required.into_iter().collect::<Vec<_>>();
+	required.sort();
+	for (mod_id, relative_path) in required {
+		let seen_key = format!("{mod_id}::{relative_path}");
+		if !seen.insert(seen_key) {
+			continue;
+		}
+		let contributor = contributors_by_key
+			.get(&(mod_id.clone(), relative_path.clone()))
+			.ok_or_else(|| format!("missing runtime AST contributor {mod_id}::{relative_path}"))?;
+		if !looks_like_clausewitz_path(&contributor.absolute_path) {
+			return Err(format!(
+				"runtime definition {mod_id}::{relative_path} is not a Clausewitz script"
+			));
+		}
+		parsed.push(workspace.script_cache.load(contributor)?);
 	}
 	parsed.sort_by(|lhs, rhs| {
 		(lhs.mod_id.as_str(), lhs.relative_path.as_os_str())
 			.cmp(&(rhs.mod_id.as_str(), rhs.relative_path.as_os_str()))
 	});
-	parsed
+	Ok(parsed)
 }
 
 fn merge_semantic_indexes(mut base: SemanticIndex, mut overlay: SemanticIndex) -> SemanticIndex {
@@ -335,7 +361,7 @@ fn build_precedence_map(
 
 fn collect_definition_records(
 	index: &SemanticIndex,
-	parsed_scripts: &[ParsedScriptFile],
+	parsed_scripts: &[Arc<ParsedScriptFile>],
 	precedence_by_mod: &HashMap<String, usize>,
 ) -> Result<Vec<DefinitionRecord>, String> {
 	let mut by_path = HashMap::<(String, String), &ParsedScriptFile>::new();
@@ -345,7 +371,7 @@ fn collect_definition_records(
 				parsed.mod_id.clone(),
 				normalize_path(parsed.relative_path.as_path()),
 			),
-			parsed,
+			parsed.as_ref(),
 		);
 	}
 
@@ -355,13 +381,24 @@ fn collect_definition_records(
 			definition.mod_id.clone(),
 			normalize_path(Path::new(&definition.path)),
 		);
-		let Some(parsed) = by_path.get(&key) else {
-			continue;
-		};
+		let parsed = by_path.get(&key).ok_or_else(|| {
+			format!(
+				"missing verified AST for runtime definition {} {}:{}",
+				definition.mod_id,
+				definition.path.display(),
+				definition.line
+			)
+		})?;
 		let Some(statement) =
 			find_statement_by_position(&parsed.ast.statements, definition.line, definition.column)
 		else {
-			continue;
+			return Err(format!(
+				"runtime definition position is absent from verified AST for {} {}:{}:{}",
+				definition.mod_id,
+				definition.path.display(),
+				definition.line,
+				definition.column
+			));
 		};
 		let normalized_statement = emit_clausewitz_statements(std::slice::from_ref(&statement))
 			.map_err(|err| {

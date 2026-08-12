@@ -10,7 +10,7 @@ use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
 use foch_core::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
+use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use foch_merge_kernel::{DeltaOperation, NodeId, TreeMatcher};
 use std::collections::{HashMap, HashSet};
 
@@ -95,18 +95,13 @@ pub(super) fn parse_vanilla_for_stale_detection(
 	else {
 		return Ok(None);
 	};
-	if let Ok(relative) = base.absolute_path.strip_prefix(&base.root_path)
-		&& let Some(parsed) = script_cache.get(&base.mod_id, relative)
-	{
-		return Ok(Some(parsed.clone()));
-	}
-	parse_script_file(&base.mod_id, &base.root_path, &base.absolute_path)
-		.map(Some)
-		.ok_or_else(|| MergeError::Validation {
+	script_cache
+		.load(base)
+		.map(|parsed| Some((*parsed).clone()))
+		.map_err(|error| MergeError::Validation {
 			path: Some(file_path.to_string()),
 			message: format!(
-				"failed to parse vanilla file {} for stale target detection",
-				base.absolute_path.display()
+				"failed to load verified vanilla AST for stale target detection: {error}"
 			),
 		})
 }
@@ -346,6 +341,7 @@ pub(super) fn apply_dep_misuse_remove_counts(
 
 #[cfg(test)]
 mod tests {
+	use std::fs;
 	use std::path::PathBuf;
 
 	use foch_language::analyzer::content_family::CwtType;
@@ -358,6 +354,39 @@ mod tests {
 	use crate::merge::model::{
 		SemanticDeltaPartition, SemanticMergeSource, SemanticPartitionId, SemanticSourceDelta,
 	};
+	use tempfile::TempDir;
+
+	#[test]
+	fn stale_detection_never_bypasses_a_missing_verified_ast() {
+		let temp = TempDir::new().expect("temp dir");
+		let relative = "events/test.txt";
+		fs::create_dir_all(temp.path().join("events")).expect("create events dir");
+		fs::write(
+			temp.path().join(relative),
+			"country_event = { id = test.1 }\n",
+		)
+		.expect("write vanilla script");
+		let contributor = ResolvedFileContributor {
+			mod_id: "__game__".to_string(),
+			root_path: temp.path().to_path_buf(),
+			absolute_path: temp.path().join(relative),
+			precedence: 0,
+			is_base_game: true,
+			is_synthetic_base: false,
+			parse_ok_hint: Some(true),
+			mod_hash: None,
+		};
+
+		let error = parse_vanilla_for_stale_detection(
+			relative,
+			&[contributor],
+			&WorkspaceScriptCache::default(),
+		)
+		.expect_err("missing verified AST must fail closed");
+
+		assert!(matches!(error, MergeError::Validation { .. }));
+		assert!(error.to_string().contains("no semantic-snapshot input"));
+	}
 
 	#[test]
 	fn semantic_remove_count_counts_only_deleted_statement_roots() {

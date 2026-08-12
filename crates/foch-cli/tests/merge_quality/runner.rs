@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -11,24 +12,107 @@ use foch_core::domain::game::Game;
 use foch_core::model::{
 	MERGE_EXECUTION_ATTESTATION_SCHEMA, MERGE_REPORT_ARTIFACT_PATH, MergeReport,
 	MergeReportBaseSnapshot, MergeReportKernel, MergeReportScope, MergeReportStatus,
+	PRODUCT_INPUT_DIGEST_ALGORITHM, PRODUCT_INPUT_MANIFEST_SCHEMA, PRODUCT_INPUT_PROFILE,
+	ProductInputManifest, ProductInputMod,
 };
+use foch_core::utils::steam::{SteamId, WorkshopInstallIdentity};
 use foch_merge_quality::corpus::Case;
 use foch_merge_quality::dataset::{EngineArtifactIdentity, MeasurementKernel, MeasurementScope};
 use foch_merge_quality::lifecycle::{
 	MeasurementRequest, MeasurementRunner, MeasurementRunnerIdentity, TerminalMerge,
 	executable_hash,
 };
-use foch_merge_quality::review_pack::{StructuredKernelRequest, StructuredKernelRunner};
-use foch_merge_quality::shadow::{
-	SHADOW_COMPARE_SCHEMA, ShadowCaptureRequest, ShadowDiagnostic, ShadowDiagnosticKind,
-	ShadowInputManifest, ShadowRunRecord, capture_input_manifest,
-	validate_shadow_manifest_identity,
-};
 
-pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-merge-report-v2";
+pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-merge-report-v3";
 const MAX_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DISABLED_BASE_SNAPSHOT_IDENTITY: &str = "explicitly-disabled";
+const CACHE_MAX_BYTES_ENV: &str = "FOCH_CACHE_MAX_BYTES";
+const CACHE_DIAGNOSTIC_PREFIXES: [&[u8]; 3] = [
+	b"[merge] mod_snapshot:",
+	b"[merge] resolve_workspace:",
+	b"[merge] modset_cache_",
+];
+
+enum ProductCacheRoot {
+	SystemManaged { path: PathBuf },
+	RunnerScoped { owner: tempfile::TempDir },
+}
+
+impl ProductCacheRoot {
+	fn path(&self) -> &Path {
+		match self {
+			Self::SystemManaged { path } => path,
+			Self::RunnerScoped { owner } => owner.path(),
+		}
+	}
+}
+
+struct ProductCacheEnvironment {
+	root: ProductCacheRoot,
+	max_bytes: Option<OsString>,
+}
+
+impl ProductCacheEnvironment {
+	fn system_managed() -> Self {
+		Self {
+			root: ProductCacheRoot::SystemManaged {
+				path: foch_engine::default_foch_cache_dir(),
+			},
+			max_bytes: std::env::var_os(CACHE_MAX_BYTES_ENV),
+		}
+	}
+
+	fn runner_scoped() -> io::Result<Self> {
+		let owner = tempfile::Builder::new()
+			.prefix("foch-product-fixture-cache-")
+			.tempdir()?;
+		Ok(Self {
+			root: ProductCacheRoot::RunnerScoped { owner },
+			max_bytes: std::env::var_os(CACHE_MAX_BYTES_ENV),
+		})
+	}
+
+	fn runner_scoped_default_cap() -> io::Result<Self> {
+		Self::runner_scoped_default_cap_for(std::env::var_os(CACHE_MAX_BYTES_ENV))
+	}
+
+	fn runner_scoped_default_cap_for(configured_cap: Option<OsString>) -> io::Result<Self> {
+		if configured_cap.is_some() {
+			return Err(io::Error::new(
+				io::ErrorKind::InvalidInput,
+				format!(
+					"{CACHE_MAX_BYTES_ENV} must be absent for the default 1 GiB cache-residency gate"
+				),
+			));
+		}
+		let owner = tempfile::Builder::new()
+			.prefix("foch-product-cache-gate-")
+			.tempdir()?;
+		Ok(Self {
+			root: ProductCacheRoot::RunnerScoped { owner },
+			max_bytes: None,
+		})
+	}
+
+	fn apply_to(&self, command: &mut Command) {
+		command.env(foch_core::cache::CACHE_ROOT_ENV, self.root.path());
+		if let Some(max_bytes) = &self.max_bytes {
+			command.env(CACHE_MAX_BYTES_ENV, max_bytes);
+		}
+	}
+}
+
+pub(crate) struct ProductMergeObservation {
+	pub terminal: TerminalMerge,
+	pub cache_diagnostics: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalFailureMode {
+	Return,
+	Panic,
+}
 
 /// Executes every measurement through the exact `foch` binary Cargo built for
 /// this integration-test process.
@@ -36,23 +120,54 @@ pub struct ProductMeasurementRunner {
 	executable: PathBuf,
 	identity: MeasurementRunnerIdentity,
 	base_data_root: PathBuf,
+	cache: ProductCacheEnvironment,
 	no_game_base: bool,
+	terminal_failure_mode: TerminalFailureMode,
+	cohort_cold_built_mod_ids: BTreeSet<String>,
 }
 
 impl ProductMeasurementRunner {
 	pub fn full_product() -> io::Result<Self> {
-		Self::new(false)
+		Self::new(
+			false,
+			ProductCacheEnvironment::system_managed(),
+			TerminalFailureMode::Return,
+		)
+	}
+
+	pub(crate) fn full_product_fail_fast() -> io::Result<Self> {
+		Self::full_product_fail_fast_for(std::env::var_os(CACHE_MAX_BYTES_ENV))
+	}
+
+	fn full_product_fail_fast_for(configured_cap: Option<OsString>) -> io::Result<Self> {
+		Self::new(
+			false,
+			ProductCacheEnvironment::runner_scoped_default_cap_for(configured_cap)?,
+			TerminalFailureMode::Panic,
+		)
 	}
 
 	pub fn no_game_base_fixture() -> io::Result<Self> {
-		Self::new(true)
+		Self::new(
+			true,
+			ProductCacheEnvironment::runner_scoped()?,
+			TerminalFailureMode::Return,
+		)
 	}
 
-	pub fn executable(&self) -> &Path {
-		&self.executable
+	pub(crate) fn workshop_cache_gate() -> io::Result<Self> {
+		Self::new(
+			false,
+			ProductCacheEnvironment::runner_scoped_default_cap()?,
+			TerminalFailureMode::Return,
+		)
 	}
 
-	fn new(no_game_base: bool) -> io::Result<Self> {
+	fn new(
+		no_game_base: bool,
+		cache: ProductCacheEnvironment,
+		terminal_failure_mode: TerminalFailureMode,
+	) -> io::Result<Self> {
 		let executable = PathBuf::from(env!("CARGO_BIN_EXE_foch"));
 		let hash = executable_hash(&executable)?;
 		let base_data_root = std::env::var_os(foch_engine::BASE_DATA_DIR_ENV)
@@ -72,7 +187,10 @@ impl ProductMeasurementRunner {
 				scope: MeasurementScope::FullProductMerge,
 			},
 			base_data_root,
+			cache,
 			no_game_base,
+			terminal_failure_mode,
+			cohort_cold_built_mod_ids: BTreeSet::new(),
 		})
 	}
 
@@ -80,6 +198,7 @@ impl ProductMeasurementRunner {
 		&self,
 		request: &MeasurementRequest,
 		force: bool,
+		captured_cache_diagnostics: Option<&mut String>,
 	) -> Result<TerminalMerge, String> {
 		let before_hash = executable_hash(&self.executable)
 			.map_err(|error| format!("failed to hash product executable before merge: {error}"))?;
@@ -105,7 +224,6 @@ impl ProductMeasurementRunner {
 		let xdg_config_home = run_root.path().join("xdg-config");
 		let xdg_data_home = run_root.path().join("xdg-data");
 		let xdg_cache_home = run_root.path().join("xdg-cache");
-		let cache_root = run_root.path().join("foch-cache");
 		let temp_root = run_root.path().join("tmp");
 		for path in [
 			&config_dir,
@@ -113,7 +231,6 @@ impl ProductMeasurementRunner {
 			&xdg_config_home,
 			&xdg_data_home,
 			&xdg_cache_home,
-			&cache_root,
 			&temp_root,
 		] {
 			fs::create_dir_all(path)
@@ -126,7 +243,6 @@ impl ProductMeasurementRunner {
 		command
 			.env_clear()
 			.env("FOCH_CONFIG_DIR", &config_dir)
-			.env("FOCH_CACHE_ROOT", &cache_root)
 			.env(foch_engine::BASE_DATA_DIR_ENV, &self.base_data_root)
 			.env("HOME", &home_dir)
 			.env("XDG_CONFIG_HOME", &xdg_config_home)
@@ -143,6 +259,7 @@ impl ProductMeasurementRunner {
 			.arg("--out")
 			.arg(&request.output_dir)
 			.arg("--non-interactive");
+		self.cache.apply_to(&mut command);
 		if self.no_game_base {
 			command.arg("--no-game-base");
 		}
@@ -163,7 +280,7 @@ impl ProductMeasurementRunner {
 			.take()
 			.ok_or_else(|| "failed to capture product stderr".to_string())?;
 		let stdout_capture = spawn_bounded_capture(stdout_reader);
-		let stderr_capture = spawn_bounded_capture(stderr_reader);
+		let stderr_capture = spawn_bounded_diagnostic_capture(stderr_reader);
 		let mut timed_out = false;
 		let status = loop {
 			match child
@@ -183,7 +300,8 @@ impl ProductMeasurementRunner {
 		};
 		let merge_ms = u64::try_from(merge_started.elapsed().as_millis()).unwrap_or(u64::MAX);
 		let _stdout = finish_bounded_capture(stdout_capture, "stdout");
-		let stderr = finish_bounded_capture(stderr_capture, "stderr");
+		let (stderr, cache_diagnostics) =
+			finish_bounded_diagnostic_capture(stderr_capture, "stderr");
 		let after_hash = executable_hash(&self.executable)
 			.map_err(|error| format!("failed to hash product executable after merge: {error}"))?;
 		if after_hash != before_hash {
@@ -198,7 +316,19 @@ impl ProductMeasurementRunner {
 			Some(run_root.path()),
 			&self.executable,
 			&self.base_data_root,
+			self.cache.root.path(),
 		);
+		let cache_diagnostics = redact_diagnostic(
+			&cache_diagnostics,
+			request,
+			Some(run_root.path()),
+			&self.executable,
+			&self.base_data_root,
+			self.cache.root.path(),
+		);
+		if let Some(captured) = captured_cache_diagnostics {
+			*captured = cache_diagnostics;
+		}
 		if timed_out {
 			return Ok(TerminalMerge::TimedOut {
 				detail: Some(with_diagnostic(
@@ -249,6 +379,7 @@ impl ProductMeasurementRunner {
 							Some(run_root.path()),
 							&self.executable,
 							&self.base_data_root,
+							self.cache.root.path(),
 						),
 						&stderr,
 					),
@@ -267,6 +398,7 @@ impl ProductMeasurementRunner {
 							Some(run_root.path()),
 							&self.executable,
 							&self.base_data_root,
+							self.cache.root.path(),
 						),
 						&stderr,
 					),
@@ -295,6 +427,21 @@ impl ProductMeasurementRunner {
 			})
 		}
 	}
+
+	pub(crate) fn run_cache_probe(
+		&self,
+		request: &MeasurementRequest,
+		force: bool,
+	) -> ProductMergeObservation {
+		let mut cache_diagnostics = String::new();
+		let terminal = self
+			.run_product_merge(request, force, Some(&mut cache_diagnostics))
+			.unwrap_or_else(|detail| TerminalMerge::Fatal { detail });
+		ProductMergeObservation {
+			terminal: redact_terminal_merge(terminal, request, self),
+			cache_diagnostics,
+		}
+	}
 }
 
 impl MeasurementRunner for ProductMeasurementRunner {
@@ -312,40 +459,236 @@ impl MeasurementRunner for ProductMeasurementRunner {
 	}
 
 	fn run(&mut self, request: &MeasurementRequest) -> TerminalMerge {
+		let mut cache_diagnostics = String::new();
+		let capture = (self.terminal_failure_mode == TerminalFailureMode::Panic)
+			.then_some(&mut cache_diagnostics);
 		let terminal = self
-			.run_product_merge(request, false)
+			.run_product_merge(request, false, capture)
 			.unwrap_or_else(|detail| TerminalMerge::Fatal { detail });
-		redact_terminal_merge(terminal, request, self)
+		let terminal = redact_terminal_merge(terminal, request, self);
+		let terminal = enforce_terminal_failure_mode(terminal, self.terminal_failure_mode);
+		if self.terminal_failure_mode == TerminalFailureMode::Panic {
+			validate_cohort_cache_diagnostics(
+				&mut self.cohort_cold_built_mod_ids,
+				request,
+				&cache_diagnostics,
+			)
+			.unwrap_or_else(|detail| {
+				panic!("full-product acceptance cache-residency invariant failed: {detail}")
+			});
+		}
+		terminal
 	}
 }
 
-impl StructuredKernelRunner for ProductMeasurementRunner {
-	fn run_structured(
-		&mut self,
-		request: StructuredKernelRequest<'_>,
-	) -> io::Result<ShadowRunRecord> {
-		if self.no_game_base {
-			return Err(io::Error::new(
-				io::ErrorKind::InvalidInput,
-				"review-pack execution requires the full product runner",
+#[derive(Debug, Eq, PartialEq)]
+struct CompletedCacheDiagnostics {
+	started_mod_ids: Vec<String>,
+	parsed_mod_ids: Vec<String>,
+	stored_mod_ids: Vec<String>,
+	disk_hit_mod_ids: Vec<String>,
+}
+
+fn parse_completed_cache_diagnostics(
+	diagnostics: &str,
+) -> Result<CompletedCacheDiagnostics, String> {
+	if diagnostics.trim().is_empty() {
+		return Err("cache diagnostics are missing".to_string());
+	}
+	if diagnostics.contains("truncated")
+		|| diagnostics.contains("unavailable")
+		|| diagnostics.contains("capture panicked")
+	{
+		return Err("cache diagnostics are incomplete".to_string());
+	}
+	let lines = diagnostics.lines().collect::<Vec<_>>();
+	if lines
+		.iter()
+		.any(|line| line.contains("modset_cache_hits=1"))
+	{
+		return Err("modset cache shortcut bypassed workspace resolution".to_string());
+	}
+	if lines
+		.iter()
+		.filter(|line| line.contains("modset_cache_hits=0 modset_cache_misses=1"))
+		.count()
+		!= 1
+	{
+		return Err("expected exactly one modset cache miss diagnostic".to_string());
+	}
+
+	let workspace_summaries = lines
+		.iter()
+		.copied()
+		.filter(|line| line.starts_with("[merge] resolve_workspace: done "))
+		.collect::<Vec<_>>();
+	let [workspace_summary] = workspace_summaries.as_slice() else {
+		return Err("expected exactly one completed workspace cache summary".to_string());
+	};
+	let expected_hits = diagnostic_usize_field(workspace_summary, "mod_parse_cache_hits")?;
+	let expected_misses = diagnostic_usize_field(workspace_summary, "mod_parse_cache_misses")?;
+	let expected_mods = diagnostic_usize_field(workspace_summary, "mods")?;
+	let started_mod_ids = diagnostic_mod_ids(&lines, "[merge] mod_snapshot: start ")?;
+	let parsed_mod_ids = diagnostic_mod_ids(&lines, "[merge] mod_snapshot: parse_done ")?;
+	let cache_store_lines = lines
+		.iter()
+		.copied()
+		.filter(|line| line.starts_with("[merge] mod_snapshot: cache_store "))
+		.collect::<Vec<_>>();
+	let mut stored_mod_ids = Vec::with_capacity(cache_store_lines.len());
+	for line in cache_store_lines {
+		let state = diagnostic_field(line, "state")?;
+		if state != "stored" {
+			return Err(format!(
+				"semantic snapshot cache store was not resident: state={state}"
 			));
 		}
-		validate_structured_request(self, &request)?;
-		validate_live_shadow_inputs(request.manifest, &self.executable)?;
-		let measurement = measurement_request_from_shadow(&request)?;
-		let terminal = self
-			.run_product_merge(&measurement, request.manifest.inputs.force)
-			.unwrap_or_else(|detail| TerminalMerge::Fatal { detail });
-		let terminal = redact_terminal_merge(terminal, &measurement, self);
-		validate_live_shadow_inputs(request.manifest, &self.executable)?;
-		let mut record = shadow_record_from_terminal(
-			&request.manifest.comparison_id,
-			request.output_dir,
-			terminal,
-		);
-		redact_shadow_record(&mut record, &measurement, self);
-		Ok(record)
+		stored_mod_ids.push(diagnostic_field(line, "mod_id")?.to_string());
 	}
+	let cache_hit_lines = lines
+		.iter()
+		.copied()
+		.filter(|line| line.starts_with("[merge] mod_snapshot: cache_hit "))
+		.collect::<Vec<_>>();
+	let mut disk_hit_mod_ids = Vec::with_capacity(cache_hit_lines.len());
+	for line in cache_hit_lines {
+		if diagnostic_field(line, "source")? != "disk" {
+			return Err("full-product child reported a non-disk semantic cache hit".to_string());
+		}
+		disk_hit_mod_ids.push(diagnostic_field(line, "mod_id")?.to_string());
+	}
+
+	ensure_unique_mod_ids("start", &started_mod_ids)?;
+	ensure_unique_mod_ids("parse_done", &parsed_mod_ids)?;
+	ensure_unique_mod_ids("cache_store", &stored_mod_ids)?;
+	ensure_unique_mod_ids("disk cache hit", &disk_hit_mod_ids)?;
+	if started_mod_ids.len() != expected_mods
+		|| parsed_mod_ids.len() != expected_misses
+		|| stored_mod_ids.len() != expected_misses
+		|| disk_hit_mod_ids.len() != expected_hits
+		|| expected_hits + expected_misses != expected_mods
+	{
+		return Err("workspace cache summary does not match per-mod diagnostics".to_string());
+	}
+	let started = started_mod_ids.iter().cloned().collect::<BTreeSet<_>>();
+	let observed = parsed_mod_ids
+		.iter()
+		.chain(&disk_hit_mod_ids)
+		.cloned()
+		.collect::<BTreeSet<_>>();
+	if started != observed {
+		return Err("per-mod cache outcomes do not match started mods".to_string());
+	}
+	if parsed_mod_ids.iter().cloned().collect::<BTreeSet<_>>()
+		!= stored_mod_ids.iter().cloned().collect::<BTreeSet<_>>()
+	{
+		return Err("parsed semantic snapshots were not all stored resident".to_string());
+	}
+	Ok(CompletedCacheDiagnostics {
+		started_mod_ids,
+		parsed_mod_ids,
+		stored_mod_ids,
+		disk_hit_mod_ids,
+	})
+}
+
+fn validate_cohort_cache_diagnostics(
+	cold_built_mod_ids: &mut BTreeSet<String>,
+	request: &MeasurementRequest,
+	diagnostics: &str,
+) -> Result<(), String> {
+	let parsed = parse_completed_cache_diagnostics(diagnostics)?;
+	let expected = request
+		.case
+		.referenced_mods
+		.iter()
+		.cloned()
+		.collect::<BTreeSet<_>>();
+	if expected.len() != request.case.referenced_mods.len() {
+		return Err("measurement request contains duplicate source mod IDs".to_string());
+	}
+	if parsed
+		.started_mod_ids
+		.iter()
+		.cloned()
+		.collect::<BTreeSet<_>>()
+		!= expected
+	{
+		return Err("cache diagnostics covered the wrong source mod IDs".to_string());
+	}
+	record_cold_builds(cold_built_mod_ids, &parsed.parsed_mod_ids)
+}
+
+fn record_cold_builds(
+	cold_built_mod_ids: &mut BTreeSet<String>,
+	parsed_mod_ids: &[String],
+) -> Result<(), String> {
+	if let Some(repeated) = parsed_mod_ids
+		.iter()
+		.find(|mod_id| cold_built_mod_ids.contains(*mod_id))
+	{
+		return Err(format!(
+			"semantic snapshot for mod_id={repeated} was cold-built more than once in the cohort"
+		));
+	}
+	cold_built_mod_ids.extend(parsed_mod_ids.iter().cloned());
+	Ok(())
+}
+
+fn diagnostic_mod_ids(lines: &[&str], prefix: &str) -> Result<Vec<String>, String> {
+	lines
+		.iter()
+		.copied()
+		.filter(|line| line.starts_with(prefix))
+		.map(|line| diagnostic_field(line, "mod_id").map(str::to_string))
+		.collect()
+}
+
+fn diagnostic_usize_field(line: &str, key: &str) -> Result<usize, String> {
+	diagnostic_field(line, key)?
+		.parse::<usize>()
+		.map_err(|_| format!("cache diagnostic field {key} is not an integer"))
+}
+
+fn diagnostic_field<'a>(line: &'a str, key: &str) -> Result<&'a str, String> {
+	let prefix = format!("{key}=");
+	line.split_ascii_whitespace()
+		.find_map(|field| field.strip_prefix(&prefix))
+		.ok_or_else(|| format!("cache diagnostic is missing field {key}"))
+}
+
+fn ensure_unique_mod_ids(label: &str, mod_ids: &[String]) -> Result<(), String> {
+	if mod_ids.iter().collect::<BTreeSet<_>>().len() == mod_ids.len() {
+		Ok(())
+	} else {
+		Err(format!("duplicate mod_id in {label} cache diagnostics"))
+	}
+}
+
+fn enforce_terminal_failure_mode(
+	terminal: TerminalMerge,
+	mode: TerminalFailureMode,
+) -> TerminalMerge {
+	if mode == TerminalFailureMode::Panic {
+		match &terminal {
+			TerminalMerge::MergeFailed { detail } => {
+				panic!("full-product acceptance aborted on first merge_failed: {detail}")
+			}
+			TerminalMerge::Crashed { detail } => panic!(
+				"full-product acceptance aborted on first crashed: {}",
+				detail.as_deref().unwrap_or("no diagnostic")
+			),
+			TerminalMerge::TimedOut { detail } => panic!(
+				"full-product acceptance aborted on first timed_out: {}",
+				detail.as_deref().unwrap_or("no diagnostic")
+			),
+			TerminalMerge::Fatal { detail } => {
+				panic!("full-product acceptance aborted on first fatal: {detail}")
+			}
+			TerminalMerge::Completed { .. } => {}
+		}
+	}
+	terminal
 }
 
 fn redact_terminal_merge(
@@ -360,6 +703,7 @@ fn redact_terminal_merge(
 			None,
 			&runner.executable,
 			&runner.base_data_root,
+			runner.cache.root.path(),
 		)
 	};
 	match terminal {
@@ -376,231 +720,6 @@ fn redact_terminal_merge(
 			detail: redact(detail),
 		},
 		completed @ TerminalMerge::Completed { .. } => completed,
-	}
-}
-
-fn validate_structured_request(
-	runner: &ProductMeasurementRunner,
-	request: &StructuredKernelRequest<'_>,
-) -> io::Result<()> {
-	validate_shadow_manifest_identity(request.manifest)?;
-	let persisted =
-		serde_json::from_slice::<ShadowInputManifest>(&fs::read(request.manifest_path)?)
-			.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-	if &persisted != request.manifest {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			"persisted shadow manifest does not match the requested manifest",
-		));
-	}
-	let runner_executable = runner.executable.canonicalize()?;
-	let requested_executable = request.executable.canonicalize()?;
-	let manifest_executable = request.manifest.inputs.executable.canonicalize()?;
-	if requested_executable != runner_executable || manifest_executable != runner_executable {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidInput,
-			"review-pack manifest and runner do not bind the same executable",
-		));
-	}
-	let actual_hash = executable_hash(&runner_executable)?;
-	if actual_hash != runner.identity.engine_artifact.hash
-		|| actual_hash != request.manifest.inputs.executable_hash
-	{
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			"review-pack executable identity changed",
-		));
-	}
-	Ok(())
-}
-
-fn validate_live_shadow_inputs(
-	manifest: &ShadowInputManifest,
-	executable: &Path,
-) -> io::Result<()> {
-	let retained_paths: BTreeSet<String> = manifest.inputs.retained_paths.iter().cloned().collect();
-	let retained_base_paths: BTreeSet<String> = manifest
-		.inputs
-		.base_files
-		.iter()
-		.map(|file| file.relative_path.clone())
-		.collect();
-	let actual = capture_input_manifest(ShadowCaptureRequest {
-		playset: &manifest.inputs.playset,
-		game_root: &manifest.inputs.game_root,
-		game_version: &manifest.inputs.game_version,
-		retained_paths: &retained_paths,
-		retained_base_paths: &retained_base_paths,
-		base_snapshot_identity: &manifest.inputs.base_snapshot_identity,
-		force: manifest.inputs.force,
-		executable,
-	})?;
-	if actual.comparison_id != manifest.comparison_id {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidData,
-			"review-pack inputs changed after the shadow manifest was captured",
-		));
-	}
-	Ok(())
-}
-
-fn measurement_request_from_shadow(
-	request: &StructuredKernelRequest<'_>,
-) -> io::Result<MeasurementRequest> {
-	if request.manifest.inputs.mods.is_empty() {
-		return Err(io::Error::new(
-			io::ErrorKind::InvalidInput,
-			"review-pack manifest contains no source mods",
-		));
-	}
-	let source_dirs = request
-		.manifest
-		.inputs
-		.mods
-		.iter()
-		.map(|source| {
-			source.root_path.clone().ok_or_else(|| {
-				io::Error::new(
-					io::ErrorKind::InvalidData,
-					format!("review-pack source {} has no resolved root", source.mod_id),
-				)
-			})
-		})
-		.collect::<io::Result<Vec<_>>>()?;
-	let referenced_mods = request
-		.manifest
-		.inputs
-		.mods
-		.iter()
-		.map(|source| source.mod_id.clone())
-		.collect();
-	let compatch_dir = request
-		.manifest_path
-		.parent()
-		.ok_or_else(|| io::Error::other("review-pack manifest has no parent directory"))?
-		.canonicalize()?;
-	Ok(MeasurementRequest {
-		snapshot_id: request.manifest.comparison_id.clone(),
-		case: Case {
-			compatch_id: request.manifest.comparison_id.clone(),
-			title: "review-pack Structured product run".to_string(),
-			referenced_mods,
-			..Case::default()
-		},
-		compatch_dir,
-		source_dirs,
-		output_dir: request.output_dir.to_path_buf(),
-		basegame_root: request.manifest.inputs.game_root.clone(),
-		expected_base_snapshot_identity: request.manifest.inputs.base_snapshot_identity.clone(),
-		timeout: request.timeout,
-	})
-}
-
-fn shadow_record_from_terminal(
-	comparison_id: &str,
-	output_dir: &Path,
-	terminal: TerminalMerge,
-) -> ShadowRunRecord {
-	match terminal {
-		TerminalMerge::Completed { report, merge_ms } => ShadowRunRecord {
-			schema: SHADOW_COMPARE_SCHEMA.to_string(),
-			comparison_id: comparison_id.to_string(),
-			kernel: "structured".to_string(),
-			output_dir: output_dir.to_path_buf(),
-			output_valid: report.status == MergeReportStatus::Ready
-				&& report.manual_conflict_count == 0
-				&& report.validation.fatal_errors == 0,
-			elapsed_ms: merge_ms,
-			status: merge_report_status_name(report.status).to_string(),
-			exit_code: Some(merge_report_exit_code(&report)),
-			manual_conflict_count: Some(report.manual_conflict_count),
-			handler_resolution_count: Some(report.handler_resolutions.len()),
-			generated_file_count: Some(report.generated_file_count),
-			fatal_reason: report.fatal_reason.clone(),
-			error: None,
-			diagnostics: merge_report_diagnostics(&report),
-		},
-		TerminalMerge::MergeFailed { detail } => {
-			terminal_shadow_error(comparison_id, output_dir, "merge_failed", detail, false)
-		}
-		TerminalMerge::Crashed { detail } => terminal_shadow_error(
-			comparison_id,
-			output_dir,
-			"crashed",
-			detail.unwrap_or_else(|| "product merge process crashed".to_string()),
-			false,
-		),
-		TerminalMerge::TimedOut { detail } => terminal_shadow_error(
-			comparison_id,
-			output_dir,
-			"timed_out",
-			detail.unwrap_or_else(|| "product merge process timed out".to_string()),
-			false,
-		),
-		TerminalMerge::Fatal { detail } => {
-			terminal_shadow_error(comparison_id, output_dir, "fatal", detail, true)
-		}
-	}
-}
-
-fn terminal_shadow_error(
-	comparison_id: &str,
-	output_dir: &Path,
-	status: &str,
-	detail: String,
-	fatal: bool,
-) -> ShadowRunRecord {
-	ShadowRunRecord {
-		schema: SHADOW_COMPARE_SCHEMA.to_string(),
-		comparison_id: comparison_id.to_string(),
-		kernel: "structured".to_string(),
-		output_dir: output_dir.to_path_buf(),
-		output_valid: false,
-		elapsed_ms: 0,
-		status: status.to_string(),
-		exit_code: None,
-		manual_conflict_count: None,
-		handler_resolution_count: None,
-		generated_file_count: None,
-		fatal_reason: fatal.then(|| detail.clone()),
-		error: Some(detail.clone()),
-		diagnostics: vec![ShadowDiagnostic {
-			kind: if fatal {
-				ShadowDiagnosticKind::Fatal
-			} else {
-				ShadowDiagnosticKind::Error
-			},
-			path: None,
-			message: detail,
-		}],
-	}
-}
-
-fn redact_shadow_record(
-	record: &mut ShadowRunRecord,
-	request: &MeasurementRequest,
-	runner: &ProductMeasurementRunner,
-) {
-	let redact = |value: &str| {
-		redact_diagnostic(
-			value,
-			request,
-			None,
-			&runner.executable,
-			&runner.base_data_root,
-		)
-	};
-	if let Some(fatal_reason) = record.fatal_reason.as_mut() {
-		*fatal_reason = redact(fatal_reason);
-	}
-	if let Some(error) = record.error.as_mut() {
-		*error = redact(error);
-	}
-	for diagnostic in &mut record.diagnostics {
-		diagnostic.message = redact(&diagnostic.message);
-		if let Some(path) = diagnostic.path.as_mut() {
-			*path = redact(path);
-		}
 	}
 }
 
@@ -644,69 +763,36 @@ fn validate_product_attestation(
 			Err("product merge report could not attest a base snapshot".to_string())
 		}
 		_ => Err("product merge report base snapshot mode mismatch".to_string()),
-	}
-}
+	}?;
 
-fn merge_report_status_name(status: MergeReportStatus) -> &'static str {
-	match status {
-		MergeReportStatus::Ready => "ready",
-		MergeReportStatus::PartialSuccess => "partial_success",
-		MergeReportStatus::Blocked => "blocked",
-		MergeReportStatus::Fatal => "fatal",
+	let Some(expected_manifest) = request.source_manifest.as_ref() else {
+		return if report.input.is_none() {
+			Ok(())
+		} else {
+			Err("local fixture unexpectedly produced a Workshop input attestation".to_string())
+		};
+	};
+	if !expected_manifest.digest_is_valid() {
+		return Err("measurement request has an invalid Workshop input manifest".to_string());
 	}
-}
-
-fn merge_report_exit_code(report: &MergeReport) -> i32 {
-	if report.validation.fatal_errors > 0 || report.status == MergeReportStatus::Fatal {
-		1
-	} else if report.status == MergeReportStatus::Blocked {
-		2
-	} else {
-		0
+	let actual = report
+		.input
+		.as_ref()
+		.ok_or_else(|| "product merge report has no Workshop input attestation".to_string())?;
+	if actual.schema != PRODUCT_INPUT_MANIFEST_SCHEMA
+		|| actual.profile != PRODUCT_INPUT_PROFILE
+		|| actual.digest_algorithm != PRODUCT_INPUT_DIGEST_ALGORITHM
+	{
+		return Err("product merge report has an unsupported input profile".to_string());
 	}
-}
-
-fn merge_report_diagnostics(report: &MergeReport) -> Vec<ShadowDiagnostic> {
-	let mut diagnostics = Vec::new();
-	if let Some(reason) = report.fatal_reason.as_ref() {
-		diagnostics.push(ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::Fatal,
-			path: None,
-			message: reason.clone(),
-		});
+	let expected = expected_manifest.attestation();
+	if actual != &expected {
+		return Err(format!(
+			"product merge input attestation mismatch: expected {}, found {}",
+			expected.digest, actual.digest
+		));
 	}
-	diagnostics.extend(
-		report
-			.warnings
-			.iter()
-			.cloned()
-			.map(|message| ShadowDiagnostic {
-				kind: ShadowDiagnosticKind::Warning,
-				path: None,
-				message,
-			}),
-	);
-	diagnostics.extend(
-		report
-			.conflict_resolutions
-			.iter()
-			.map(|resolution| ShadowDiagnostic {
-				kind: ShadowDiagnosticKind::Conflict,
-				path: Some(resolution.path.clone()),
-				message: resolution.reason.clone(),
-			}),
-	);
-	diagnostics.extend(report.handler_resolutions.iter().map(|resolution| {
-		ShadowDiagnostic {
-			kind: ShadowDiagnosticKind::HandlerResolution,
-			path: Some(resolution.path.clone()),
-			message: resolution
-				.rationale
-				.clone()
-				.unwrap_or_else(|| resolution.action.clone()),
-		}
-	}));
-	diagnostics
+	Ok(())
 }
 
 fn validate_request(request: &MeasurementRequest) -> Result<(), String> {
@@ -716,6 +802,31 @@ fn validate_request(request: &MeasurementRequest) -> Result<(), String> {
 			request.case.referenced_mods.len(),
 			request.source_dirs.len()
 		));
+	}
+	if let Some(manifest) = request.source_manifest.as_ref() {
+		if !manifest.digest_is_valid() {
+			return Err("source manifest digest is invalid".to_string());
+		}
+		if manifest.mods.len() != request.case.referenced_mods.len() {
+			return Err("source manifest does not match the measurement topology".to_string());
+		}
+		for (index, (expected_id, input)) in request
+			.case
+			.referenced_mods
+			.iter()
+			.zip(&manifest.mods)
+			.enumerate()
+		{
+			if input.mod_id != *expected_id
+				|| input.precedence != index + 1
+				|| input.workshop_identity.workshop_id.as_str() != expected_id
+			{
+				return Err(format!(
+					"source manifest entry {} does not match Workshop source {expected_id}",
+					index + 1
+				));
+			}
+		}
 	}
 	for (label, path) in std::iter::once(("compatch", &request.compatch_dir))
 		.chain(std::iter::once(("base game", &request.basegame_root)))
@@ -758,6 +869,10 @@ fn write_workspace_manifest(path: &Path, request: &MeasurementRequest) -> Result
 				id: Some(id.clone()),
 				path: Some(root),
 				steam_id: Some(id.clone()),
+				workshop_identity: request
+					.source_manifest
+					.as_ref()
+					.map(|manifest| manifest.mods[position].workshop_identity.clone()),
 				enabled: true,
 				position: Some(position),
 			})
@@ -844,12 +959,100 @@ fn finish_bounded_capture(
 	}
 }
 
+struct BoundedDiagnosticCapture {
+	tail: Vec<u8>,
+	tail_truncated: bool,
+	cache_diagnostics: Vec<u8>,
+	cache_diagnostics_truncated: bool,
+}
+
+fn spawn_bounded_diagnostic_capture(
+	reader: impl Read + Send + 'static,
+) -> thread::JoinHandle<io::Result<BoundedDiagnosticCapture>> {
+	thread::spawn(move || {
+		use std::io::BufRead;
+
+		let capacity = usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap_or(usize::MAX);
+		let mut reader = io::BufReader::new(reader);
+		let mut tail = Vec::with_capacity(capacity);
+		let mut cache_diagnostics = Vec::new();
+		let mut line = Vec::new();
+		let mut tail_truncated = false;
+		let mut cache_diagnostics_truncated = false;
+		loop {
+			line.clear();
+			let read = reader.read_until(b'\n', &mut line)?;
+			if read == 0 {
+				break;
+			}
+			tail.extend_from_slice(&line);
+			if tail.len() > capacity {
+				let excess = tail.len() - capacity;
+				tail.drain(..excess);
+				tail_truncated = true;
+			}
+			if CACHE_DIAGNOSTIC_PREFIXES
+				.iter()
+				.any(|prefix| line.starts_with(prefix))
+			{
+				let remaining = capacity.saturating_sub(cache_diagnostics.len());
+				if line.len() <= remaining {
+					cache_diagnostics.extend_from_slice(&line);
+				} else {
+					cache_diagnostics.extend_from_slice(&line[..remaining]);
+					cache_diagnostics_truncated = true;
+				}
+			}
+		}
+		Ok(BoundedDiagnosticCapture {
+			tail,
+			tail_truncated,
+			cache_diagnostics,
+			cache_diagnostics_truncated,
+		})
+	})
+}
+
+fn finish_bounded_diagnostic_capture(
+	capture: thread::JoinHandle<io::Result<BoundedDiagnosticCapture>>,
+	stream: &str,
+) -> (String, String) {
+	match capture.join() {
+		Ok(Ok(captured)) => {
+			let tail = String::from_utf8_lossy(&captured.tail);
+			let tail = if captured.tail_truncated {
+				format!("<{stream} truncated to last {MAX_DIAGNOSTIC_BYTES} bytes>\n{tail}")
+			} else {
+				tail.into_owned()
+			};
+			let cache_diagnostics = String::from_utf8_lossy(&captured.cache_diagnostics);
+			let cache_diagnostics = if captured.cache_diagnostics_truncated {
+				format!(
+					"{cache_diagnostics}\n<cache diagnostics truncated at {MAX_DIAGNOSTIC_BYTES} bytes>"
+				)
+			} else {
+				cache_diagnostics.into_owned()
+			};
+			(tail, cache_diagnostics)
+		}
+		Ok(Err(error)) => {
+			let unavailable = format!("<{stream} unavailable: {error}>");
+			(unavailable.clone(), unavailable)
+		}
+		Err(_) => {
+			let unavailable = format!("<{stream} capture panicked>");
+			(unavailable.clone(), unavailable)
+		}
+	}
+}
+
 fn redact_diagnostic(
 	diagnostic: &str,
 	request: &MeasurementRequest,
 	run_root: Option<&Path>,
 	executable: &Path,
 	base_data_root: &Path,
+	cache_root: &Path,
 ) -> String {
 	let mut replacements = Vec::<(PathBuf, &'static str)>::new();
 	push_redaction_paths(&mut replacements, executable, "<foch-executable>");
@@ -860,6 +1063,7 @@ fn redact_diagnostic(
 	push_redaction_paths(&mut replacements, &request.compatch_dir, "<compatch-root>");
 	push_redaction_paths(&mut replacements, &request.basegame_root, "<basegame-root>");
 	push_redaction_paths(&mut replacements, base_data_root, "<base-data-root>");
+	push_redaction_paths(&mut replacements, cache_root, "<cache-root>");
 	for source in &request.source_dirs {
 		push_redaction_paths(&mut replacements, source, "<source-root>");
 	}
@@ -954,8 +1158,132 @@ fn exit_signal(_status: &ExitStatus) -> Option<i32> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::model::{HandlerResolutionRecord, MergeReportConflictResolution};
-	use foch_merge_quality::corpus::Case;
+	use std::ffi::OsStr;
+
+	fn command_env<'a>(command: &'a Command, key: &str) -> Option<&'a OsStr> {
+		for (name, value) in command.get_envs() {
+			if name == OsStr::new(key) {
+				return value;
+			}
+		}
+		None
+	}
+
+	#[test]
+	fn full_product_and_fixture_runners_use_distinct_cache_lifetimes() {
+		let system_root = foch_engine::default_foch_cache_dir();
+		let inherited_max_bytes = std::env::var_os(CACHE_MAX_BYTES_ENV);
+		let full_product = ProductMeasurementRunner::full_product().expect("full-product runner");
+		assert!(matches!(
+			&full_product.cache.root,
+			ProductCacheRoot::SystemManaged { .. }
+		));
+		assert_eq!(full_product.cache.root.path(), system_root);
+		assert_eq!(
+			full_product.cache.max_bytes.as_deref(),
+			inherited_max_bytes.as_deref()
+		);
+		assert_eq!(
+			full_product.terminal_failure_mode,
+			TerminalFailureMode::Return
+		);
+		let mut full_product_command = Command::new(&full_product.executable);
+		full_product_command.env_clear();
+		full_product.cache.apply_to(&mut full_product_command);
+		assert_eq!(
+			command_env(&full_product_command, foch_core::cache::CACHE_ROOT_ENV),
+			Some(system_root.as_os_str())
+		);
+		assert_eq!(
+			command_env(&full_product_command, CACHE_MAX_BYTES_ENV),
+			inherited_max_bytes.as_deref()
+		);
+		let fail_fast =
+			ProductMeasurementRunner::full_product_fail_fast_for(None).expect("fail-fast runner");
+		assert_eq!(fail_fast.terminal_failure_mode, TerminalFailureMode::Panic);
+		assert!(matches!(
+			&fail_fast.cache.root,
+			ProductCacheRoot::RunnerScoped { .. }
+		));
+		assert_eq!(fail_fast.cache.max_bytes, None);
+		let fail_fast_root = fail_fast.cache.root.path().to_path_buf();
+		assert_ne!(fail_fast_root, system_root);
+		assert!(fail_fast_root.is_dir());
+		drop(fail_fast);
+		assert!(!fail_fast_root.exists());
+
+		let fixture = ProductMeasurementRunner::no_game_base_fixture().expect("fixture runner");
+		assert!(matches!(
+			&fixture.cache.root,
+			ProductCacheRoot::RunnerScoped { .. }
+		));
+		let fixture_root = fixture.cache.root.path().to_path_buf();
+		assert_ne!(fixture_root, system_root);
+		assert!(fixture_root.is_dir());
+		assert_eq!(
+			fixture.cache.max_bytes.as_deref(),
+			inherited_max_bytes.as_deref()
+		);
+
+		drop(fixture);
+		assert!(!fixture_root.exists());
+	}
+
+	#[test]
+	fn cache_gate_rejects_an_override_and_applies_no_cap() {
+		let Err(error) = ProductMeasurementRunner::full_product_fail_fast_for(Some(
+			OsString::from("1073741825"),
+		)) else {
+			panic!("fail-fast acceptance runner must reject every cap override");
+		};
+		assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+
+		let Err(error) = ProductCacheEnvironment::runner_scoped_default_cap_for(Some(
+			OsString::from("1073741825"),
+		)) else {
+			panic!("cache gate must reject every cap override");
+		};
+		assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+		assert!(error.to_string().contains(CACHE_MAX_BYTES_ENV));
+
+		let cache = ProductCacheEnvironment::runner_scoped_default_cap_for(None)
+			.expect("default-cap cache environment");
+		let mut command = Command::new(env!("CARGO_BIN_EXE_foch"));
+		command.env_clear();
+		cache.apply_to(&mut command);
+		assert_eq!(
+			command_env(&command, foch_core::cache::CACHE_ROOT_ENV),
+			Some(cache.root.path().as_os_str())
+		);
+		assert_eq!(command_env(&command, CACHE_MAX_BYTES_ENV), None);
+	}
+
+	#[test]
+	fn command_cache_environment_reuses_captured_root_and_optional_cap() {
+		let mut runner = ProductMeasurementRunner::no_game_base_fixture().expect("fixture runner");
+		let stable_root = runner.cache.root.path().to_path_buf();
+		runner.cache.max_bytes = Some(OsString::from("12345"));
+
+		for _ in 0..2 {
+			let mut command = Command::new(&runner.executable);
+			command.env_clear();
+			runner.cache.apply_to(&mut command);
+			assert_eq!(
+				command_env(&command, foch_core::cache::CACHE_ROOT_ENV),
+				Some(stable_root.as_os_str())
+			);
+			assert_eq!(
+				command_env(&command, CACHE_MAX_BYTES_ENV),
+				Some(OsStr::new("12345"))
+			);
+		}
+
+		runner.cache.max_bytes = None;
+		let mut default_capped = Command::new(&runner.executable);
+		default_capped.env_clear();
+		runner.cache.apply_to(&mut default_capped);
+		assert_eq!(command_env(&default_capped, CACHE_MAX_BYTES_ENV), None);
+	}
 
 	#[test]
 	fn diagnostics_are_bounded_and_hide_local_roots() {
@@ -966,16 +1294,18 @@ mod tests {
 		let source_root = objects_root.join("bb/hash/tree");
 		let basegame_root = root.path().join("private-base");
 		let base_data_root = root.path().join("private-base-data");
+		let cache_root = root.path().join("private-cache");
 		for path in [
 			&compatch_root,
 			&source_root,
 			&basegame_root,
 			&base_data_root,
+			&cache_root,
 		] {
 			fs::create_dir_all(path).expect("create private fixture path");
 		}
 		let request = MeasurementRequest {
-			snapshot_id: "snapshot".to_string(),
+			input_version_id: "fixture-input".to_string(),
 			case: Case {
 				compatch_id: "compatch".to_string(),
 				title: "fixture".to_string(),
@@ -984,19 +1314,21 @@ mod tests {
 			},
 			compatch_dir: compatch_root,
 			source_dirs: vec![source_root],
+			source_manifest: None,
 			output_dir: root.path().join("private-output"),
 			basegame_root,
 			expected_base_snapshot_identity: "none".to_string(),
 			timeout: Duration::from_secs(1),
 		};
 		let raw = format!(
-			"{} {} {} {} {} {} {}",
+			"{} {} {} {} {} {} {} {}",
 			request.compatch_dir.display(),
 			request.source_dirs[0].display(),
 			request.output_dir.display(),
 			dataset_root.display(),
 			objects_root.display(),
 			base_data_root.display(),
+			cache_root.display(),
 			"x".repeat(usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap() + 1),
 		);
 
@@ -1006,10 +1338,12 @@ mod tests {
 			Some(root.path()),
 			Path::new(env!("CARGO_BIN_EXE_foch")),
 			&base_data_root,
+			&cache_root,
 		);
 
 		assert!(!redacted.contains(&root.path().display().to_string()));
 		assert!(redacted.contains("<compatch-root>"));
+		assert!(redacted.contains("<cache-root>"));
 		assert!(redacted.len() <= usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap() + 32);
 	}
 
@@ -1027,6 +1361,159 @@ mod tests {
 	}
 
 	#[test]
+	fn cache_diagnostic_capture_survives_a_truncated_stderr_tail() {
+		let capacity = usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap();
+		let mut bytes = b"[merge] mod_snapshot: cache_hit mod_id=42 source=disk\n".to_vec();
+		bytes.extend(vec![b'x'; capacity + 17]);
+		let (tail, cache_diagnostics) = finish_bounded_diagnostic_capture(
+			spawn_bounded_diagnostic_capture(io::Cursor::new(bytes)),
+			"stderr",
+		);
+
+		assert!(tail.starts_with("<stderr truncated to last"));
+		assert!(!tail.contains("mod_id=42"));
+		assert_eq!(
+			cache_diagnostics,
+			"[merge] mod_snapshot: cache_hit mod_id=42 source=disk\n"
+		);
+	}
+
+	fn completed_cache_diagnostics(parsed: &[&str], disk_hits: &[&str]) -> String {
+		let mut lines =
+			vec!["[merge] modset_cache_hits=0 modset_cache_misses=1 key=redacted".to_string()];
+		for mod_id in parsed.iter().chain(disk_hits) {
+			lines.push(format!(
+				"[merge] mod_snapshot: start mod_id={mod_id} files=1"
+			));
+		}
+		for mod_id in parsed {
+			lines.push(format!(
+				"[merge] mod_snapshot: parse_done mod_id={mod_id} elapsed_ms=1 cache_hits=0 cache_misses=1"
+			));
+			lines.push(format!(
+				"[merge] mod_snapshot: cache_store mod_id={mod_id} state=stored elapsed_ms=1 total_ms=2 compressed_bytes=100 uncompressed_bytes=200"
+			));
+		}
+		for mod_id in disk_hits {
+			lines.push(format!(
+				"[merge] mod_snapshot: cache_hit mod_id={mod_id} source=disk elapsed_ms=1"
+			));
+		}
+		lines.push(format!(
+			"[merge] resolve_workspace: done elapsed_ms=1 mods={} files=3 requested_paths=0 effective_paths=0 mod_parse_cache_hits={} mod_parse_cache_misses={}",
+			parsed.len() + disk_hits.len(),
+			disk_hits.len(),
+			parsed.len()
+		));
+		format!("{}\n", lines.join("\n"))
+	}
+
+	#[test]
+	fn completed_cache_diagnostic_parser_is_fail_closed() {
+		let diagnostics = completed_cache_diagnostics(&["a", "b"], &["c"]);
+		assert_eq!(
+			parse_completed_cache_diagnostics(&diagnostics).expect("complete diagnostics"),
+			CompletedCacheDiagnostics {
+				started_mod_ids: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+				parsed_mod_ids: vec!["a".to_string(), "b".to_string()],
+				stored_mod_ids: vec!["a".to_string(), "b".to_string()],
+				disk_hit_mod_ids: vec!["c".to_string()],
+			}
+		);
+		assert!(parse_completed_cache_diagnostics("").is_err());
+		assert!(
+			parse_completed_cache_diagnostics(&format!(
+				"{diagnostics}<cache diagnostics truncated>"
+			))
+			.is_err()
+		);
+		assert!(
+			parse_completed_cache_diagnostics(
+				&diagnostics.replace("source=disk", "source=process")
+			)
+			.is_err()
+		);
+		assert!(
+			parse_completed_cache_diagnostics(&completed_cache_diagnostics(&["a", "a"], &[]))
+				.is_err()
+		);
+		assert!(
+			parse_completed_cache_diagnostics(
+				&diagnostics.replace("state=stored", "state=rejected_too_large")
+			)
+			.is_err()
+		);
+		assert!(
+			parse_completed_cache_diagnostics(&diagnostics.replace("state=stored", "state=error"))
+				.is_err()
+		);
+		let missing_store = diagnostics
+			.lines()
+			.filter(|line| {
+				!(line.starts_with("[merge] mod_snapshot: cache_store ")
+					&& line.contains("mod_id=a"))
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		assert!(parse_completed_cache_diagnostics(&missing_store).is_err());
+	}
+
+	#[test]
+	fn cohort_cold_build_detector_rejects_only_a_second_parse() {
+		let mut cold_built = BTreeSet::new();
+		record_cold_builds(&mut cold_built, &["a".to_string(), "b".to_string()])
+			.expect("first cold builds");
+		record_cold_builds(&mut cold_built, &[]).expect("disk hits are not recorded");
+		record_cold_builds(&mut cold_built, &["c".to_string()]).expect("new cold build");
+		let error = record_cold_builds(&mut cold_built, &["a".to_string()])
+			.expect_err("second cold build must fail");
+		assert!(error.contains("mod_id=a"));
+		assert_eq!(
+			cold_built,
+			["a".to_string(), "b".to_string(), "c".to_string()]
+				.into_iter()
+				.collect()
+		);
+	}
+
+	#[test]
+	fn fail_fast_mode_panics_only_for_terminal_process_failures() {
+		let completed = TerminalMerge::Completed {
+			report: Box::new(MergeReport::default()),
+			merge_ms: 1,
+		};
+		assert!(matches!(
+			enforce_terminal_failure_mode(completed, TerminalFailureMode::Panic),
+			TerminalMerge::Completed { .. }
+		));
+		assert!(matches!(
+			enforce_terminal_failure_mode(
+				TerminalMerge::TimedOut { detail: None },
+				TerminalFailureMode::Return,
+			),
+			TerminalMerge::TimedOut { .. }
+		));
+
+		for terminal in [
+			TerminalMerge::MergeFailed {
+				detail: "failed".to_string(),
+			},
+			TerminalMerge::Crashed { detail: None },
+			TerminalMerge::TimedOut { detail: None },
+			TerminalMerge::Fatal {
+				detail: "fatal".to_string(),
+			},
+		] {
+			assert!(
+				std::panic::catch_unwind(|| {
+					enforce_terminal_failure_mode(terminal, TerminalFailureMode::Panic)
+				})
+				.is_err()
+			);
+		}
+	}
+
+	#[test]
 	fn cohort_preflight_rejects_changed_product_identity_without_leaking_path() {
 		let mut runner = ProductMeasurementRunner::no_game_base_fixture().expect("runner");
 		runner.identity.engine_artifact.hash = "0".repeat(64);
@@ -1040,83 +1527,7 @@ mod tests {
 	}
 
 	#[test]
-	fn shadow_record_preserves_product_conflict_and_warning_diagnostics() {
-		let report = MergeReport {
-			status: MergeReportStatus::Blocked,
-			manual_conflict_count: 1,
-			generated_file_count: 2,
-			warnings: vec!["review warning".to_string()],
-			conflict_resolutions: vec![MergeReportConflictResolution {
-				path: "events/example.txt".to_string(),
-				reason: "manual conflict".to_string(),
-				..MergeReportConflictResolution::default()
-			}],
-			handler_resolutions: vec![HandlerResolutionRecord {
-				path: "common/example.txt".to_string(),
-				action: "last_writer".to_string(),
-				source: None,
-				rationale: Some("reviewed resolution".to_string()),
-			}],
-			..MergeReport::default()
-		};
-		let record = shadow_record_from_terminal(
-			"comparison",
-			Path::new("output"),
-			TerminalMerge::Completed {
-				report: Box::new(report),
-				merge_ms: 17,
-			},
-		);
-
-		assert!(!record.output_valid);
-		assert_eq!(record.status, "blocked");
-		assert_eq!(record.exit_code, Some(2));
-		assert_eq!(record.manual_conflict_count, Some(1));
-		assert_eq!(record.handler_resolution_count, Some(1));
-		assert_eq!(record.generated_file_count, Some(2));
-		assert!(record.diagnostics.iter().any(|diagnostic| {
-			diagnostic.kind == ShadowDiagnosticKind::Warning
-				&& diagnostic.message == "review warning"
-		}));
-		assert!(record.diagnostics.iter().any(|diagnostic| {
-			diagnostic.kind == ShadowDiagnosticKind::Conflict
-				&& diagnostic.path.as_deref() == Some("events/example.txt")
-		}));
-		assert!(record.diagnostics.iter().any(|diagnostic| {
-			diagnostic.kind == ShadowDiagnosticKind::HandlerResolution
-				&& diagnostic.path.as_deref() == Some("common/example.txt")
-				&& diagnostic.message == "reviewed resolution"
-		}));
-	}
-
-	#[test]
-	fn partial_success_and_inconsistent_ready_reports_are_not_review_evidence() {
-		for report in [
-			MergeReport {
-				status: MergeReportStatus::PartialSuccess,
-				manual_conflict_count: 1,
-				..MergeReport::default()
-			},
-			MergeReport {
-				status: MergeReportStatus::Ready,
-				manual_conflict_count: 1,
-				..MergeReport::default()
-			},
-		] {
-			let record = shadow_record_from_terminal(
-				"comparison",
-				Path::new("output"),
-				TerminalMerge::Completed {
-					report: Box::new(report),
-					merge_ms: 1,
-				},
-			);
-			assert!(!record.output_valid);
-		}
-	}
-
-	#[test]
-	fn product_attestation_requires_exact_kernel_scope_and_base_identity() {
+	fn product_attestation_requires_exact_execution_and_input_identity() {
 		let mut report = MergeReport {
 			execution: Some(foch_core::model::MergeExecutionAttestation {
 				schema: MERGE_EXECUTION_ATTESTATION_SCHEMA.to_string(),
@@ -1126,13 +1537,15 @@ mod tests {
 					identity: "base-identity".to_string(),
 				},
 			}),
+			input: Some(ProductInputManifest::new(Vec::new()).attestation()),
 			..MergeReport::default()
 		};
 		let request = MeasurementRequest {
-			snapshot_id: "snapshot".to_string(),
+			input_version_id: "fixture-input".to_string(),
 			case: Case::default(),
 			compatch_dir: PathBuf::from("/compatch"),
 			source_dirs: Vec::new(),
+			source_manifest: Some(ProductInputManifest::new(Vec::new())),
 			output_dir: PathBuf::from("/output"),
 			basegame_root: PathBuf::from("/base"),
 			expected_base_snapshot_identity: "base-identity".to_string(),
@@ -1151,5 +1564,53 @@ mod tests {
 			identity: "other".to_string(),
 		};
 		assert!(validate_product_attestation(&report, &request, false).is_err());
+		report.execution.as_mut().unwrap().base_snapshot = MergeReportBaseSnapshot::Resolved {
+			identity: "base-identity".to_string(),
+		};
+		report.input.as_mut().unwrap().digest = "0".repeat(64);
+		assert!(validate_product_attestation(&report, &request, false).is_err());
+		report.input = None;
+		assert!(validate_product_attestation(&report, &request, false).is_err());
+	}
+
+	#[test]
+	fn product_attestation_uses_the_request_acf_manifest() {
+		let root = tempfile::tempdir().expect("fixture root");
+		let source_manifest = ProductInputManifest::new(vec![ProductInputMod {
+			mod_id: "1001".to_string(),
+			precedence: 1,
+			workshop_identity: WorkshopInstallIdentity {
+				app_id: 236_850,
+				workshop_id: SteamId::new(1_001),
+				manifest_id: SteamId::new(2_001),
+			},
+		}]);
+		let report = MergeReport {
+			execution: Some(foch_core::model::MergeExecutionAttestation {
+				schema: MERGE_EXECUTION_ATTESTATION_SCHEMA.to_string(),
+				kernel: MergeReportKernel::SemanticTree,
+				scope: MergeReportScope::FullProductMerge,
+				base_snapshot: MergeReportBaseSnapshot::Disabled,
+			}),
+			input: Some(source_manifest.attestation()),
+			..MergeReport::default()
+		};
+		let request = MeasurementRequest {
+			input_version_id: "fixture-input".to_string(),
+			case: Case {
+				referenced_mods: vec!["1001".to_string()],
+				..Case::default()
+			},
+			compatch_dir: root.path().join("compatch"),
+			source_dirs: vec![root.path().join("source")],
+			source_manifest: Some(source_manifest),
+			output_dir: root.path().join("output"),
+			basegame_root: root.path().join("base"),
+			expected_base_snapshot_identity: DISABLED_BASE_SNAPSHOT_IDENTITY.to_string(),
+			timeout: Duration::from_secs(1),
+		};
+
+		validate_product_attestation(&report, &request, true)
+			.expect("attestation uses ACF manifest");
 	}
 }

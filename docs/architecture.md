@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-03-31
+Last updated: 2026-08-08
 
 ## Summary
 
@@ -49,7 +49,10 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
 - `crates/foch-merge-quality`
   - private, library-only product evaluation and immutable dataset contracts
   - pure scoring over an existing output tree and product `MergeReport`
-  - injected measurement/review runners and exact cohort reporting
+  - read-only Workshop/ACF input resolution, injected product measurement
+    runners, compact evidence, and exact cohort reporting
+  - metadata-only dataset export; no `ObjectStore`, recursive tree packer,
+    snapshot builder, acquisition path, or review-pack workflow
   - no binary target and no production dependency from `foch-cli`
 
 ### `packages/`
@@ -97,15 +100,35 @@ The intended dependency flow is:
 
 ### Product merge-quality acceptance
 
-1. An ignored `foch-cli` integration test selects exact immutable snapshot IDs.
-2. The library materializes one content-bound base view from the installed
-   inventory; both product execution and scoring use that view instead of the
-   mutable game tree.
-3. Each case launches the public `foch merge --non-interactive` artifact in an independent bounded child process.
-4. The runner verifies the product-authored execution attestation; the library
-   rechecks the pinned base and archives the emitted tree.
-5. `foch-merge-quality` scores that existing tree without selecting or executing a merge kernel.
-6. Exact V2 cohort reports and assertions remain separate from frozen V1 Legacy evidence.
+1. An ignored `foch-cli` integration test loads the committed fixed 14-case
+   logical manifest; installed state cannot shrink its denominator.
+2. The catalog pairs every discovered
+   `steamapps/workshop/content/236850` root with the same library's
+   `appworkshop_236850.acf` and strictly resolves all selected manifest IDs.
+3. The engine requires the Steam build ID and records the ordered source-mod
+   installation identities from ACF `(app_id, workshop_id, manifest_id)` tuples.
+   It does not enumerate paths or read file bytes to establish that identity.
+   Workshop content and ACF files are read-only and are not copied into an
+   input CAS.
+4. Each case launches the public `foch merge --non-interactive` artifact in an
+   independent bounded child process and verifies its product-authored kernel,
+   scope, base, and input attestation.
+5. Before committing a terminal result, the library re-reads the exact ACF
+   pairs and compares the ordered installation identities; any drift invalidates
+   the run.
+6. Only after a fresh product merge returns non-fatal does the scorer discover
+   its scoring-unit set and base scoring closure. It captures only that compact
+   closure, scores the capture without selecting another kernel, and stores the
+   same bytes with an exact evidence index. The closure is stored evidence, not
+   installation or cohort identity.
+7. V2 input versions, observations, measurements, reports, and assertions stay
+   separate from frozen V1 metadata and its historical `objects/` store.
+
+This fixed 14-case workflow is the only product acceptance denominator.
+Common-module and structured-rollout scripts are auxiliary analysis over the
+same read-only boundary, not alternative product gates. Historical V1 objects
+remain inert on disk pending a separate user-operated cleanup; current code
+cannot pack, restore, or export them.
 
 ### `foch graph`
 

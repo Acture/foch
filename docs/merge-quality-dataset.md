@@ -1,186 +1,221 @@
 # Merge-quality dataset
 
-The merge-quality corpus is an append-only research dataset built from broad
-EU4 Workshop compatibility candidates and the mod items they reference. Steam
-child relationships are discovery evidence, not proof that an item is a
-compatch or that every child is a merge input. The JSONL metadata is
-repository-visible; full payload objects are repository-local and ignored.
+The merge-quality dataset has two deliberately separate layers:
 
-## Identity
+- current V2 product measurements over a fixed 14-case logical corpus resolved
+  directly from installed Steam Workshop content; and
+- frozen V1 JSONL and object payloads retained as historical evidence.
 
-The dataset manifest and the original measurement wire schema are semver
-`1.0.0`. Measurement records are versioned independently so the append-only
-stream can retain V1 history while accepting product-bound V2 records.
+The current product path never restores or archives complete mod trees.
 
-- Object identity: BLAKE3 over the sorted full tree, including relative path,
-  file kind, executable bit, file bytes, and symlink target. `.DS_Store`, `.git`,
-  and the object marker are excluded.
-- Snapshot identity: EU4 version + Steam build ID + compatch tree hash + ordered
-  source-mod tree hashes. Collection time and Workshop metadata are separate
-  observations and do not change snapshot identity.
-- V1 measurement identity: snapshot ID + the actual historical `foch-mq`
-  executable hash + scorer semver + scorer-config hash. Every currently tracked
-  V1 cohort used `legacy_address_patch_reference`, even scorer `1.3.0`.
-- V2 measurement identity: snapshot ID + the actual `foch` executable artifact
-  digest + runner protocol + `semantic_tree` kernel + `full_product_merge`
-  scope + scorer semver + scorer-config hash. The scorer configuration also
-  binds the installed base snapshot SHA, Steam build, exact timeout, and the
-  BLAKE3 digest of a private pinned product-base view. That view contains exactly
-  the regular files named by the installed inventory plus detected version
-  metadata. Both the product process and scorer receive that same view, never
-  the mutable Steam tree; its exact file set and bytes are reverified after each
-  case before evidence is persisted. The current product scorer is `2.0.0`; its
-  runner invokes public non-interactive `foch merge` and rejects reports whose
-  product-authored kernel, scope, or base-snapshot attestation does not match the
-  request.
-- Historical corpus-shadow target identity: snapshot ID + scoring unit +
-  ordered contributors + game version/build + exact base snapshot + evaluator
-  artifact + shadow/scorer config. Absolute object-store and output paths were
-  excluded. This identity now describes frozen rollout evidence only.
+## Current product acceptance
 
-The candidate corpus also has its own semver schema. Oracle-policy semver is
-separate: changing candidate eligibility does not rewrite immutable snapshots
-or measurements.
+The only product acceptance workflow is
+`scripts/merge-quality/acceptance.fish`. It runs the exact ignored
+`workshop_product_corpus_acceptance` test against the committed
+`workshop-product-cases-v2.json` manifest.
 
-The append-only files under `crates/foch-merge-quality/dataset/` are:
+The denominator is always 14 logical cases containing 26 unique Workshop
+items. The nine excluded cases are part of the committed policy, not dynamic
+skips. Missing items, `manifest = -1`, malformed ACF data, ambiguous
+cross-library installs, or input drift are prerequisite failures.
+
+For every Steam library, discovery pairs
+`steamapps/workshop/content/236850` with the same library's
+`steamapps/workshop/appworkshop_236850.acf`. Both are read-only. Each case reads
+the installed mod directories in place and records:
+
+- the ordered Workshop item and ACF manifest IDs;
+- the game version and mandatory Steam build ID;
+- an ACF-only product manifest/attestation over the ordered source-mod
+  identities; and
+- the public `foch` artifact, runner protocol, scorer configuration, kernel,
+  scope, and base-game identity.
+
+The manifest digest is a canonical digest of identity metadata, not a digest of
+Workshop files. Local byte changes that do not change an ACF manifest ID do not
+create a new input version; Steam's ACF is deliberately the version authority.
+The product merge reads required files directly from the installed directories.
+When Clausewitz scripts are parsed, their raw size and BLAKE3 identity are
+derived from the same read used by the parser so later lazy AST loads cannot be
+silently mixed with a different semantic snapshot. This is not a full-tree
+preflight.
+
+The runner re-reads the relevant ACF entries before publication and rejects a
+merge report whose product-authored ACF attestation differs from the prepared
+case. Mid-run ACF drift produces no measurement or evidence row.
+
+Run the fixed wrapper from the repository root:
+
+```fish
+scripts/merge-quality/acceptance.fish
+```
+
+The wrapper runs Cargo under macOS Seatbelt while denying all reads and writes
+to the frozen `dataset/objects/` and `dataset/.work/` trees. The ignored test
+requires `FOCH_LEGACY_CAS_GUARD=seatbelt-v1` and actively confirms that both
+paths return `PermissionDenied` (or `NotFound` after a future cleanup) before
+discovering Steam or starting a merge. A raw Cargo invocation lacks the guard
+marker and fails closed; manually setting the marker still cannot bypass the
+live denial probe while either legacy tree exists.
+
+Steam discovery is automatic. To select one installation explicitly, provide
+both members of the read-only pair:
+
+```fish
+set -x EU4_ROOT "$HOME/Library/Application Support/Steam/steamapps/common/Europa Universalis IV"
+set -x STEAM_WORKSHOP_DIR "$HOME/Library/Application Support/Steam/steamapps/workshop/content/236850"
+set -x STEAM_WORKSHOP_ACF "$HOME/Library/Application Support/Steam/steamapps/workshop/appworkshop_236850.acf"
+scripts/merge-quality/acceptance.fish
+```
+
+The first fixed 14-case Workshop cohort has not yet been run or accepted.
+
+## Records and identity
+
+The tracked files under `crates/foch-merge-quality/dataset/` are append-only
+metadata:
 
 | file | contents |
 |---|---|
-| `object_records.jsonl` | object hash, role, Workshop identity, and tree statistics |
-| `snapshots.jsonl` | immutable game/compatch/ordered-source identities |
-| `observations.jsonl` | collection time, titles, Workshop timestamps, author/URL/visibility/rights status, subscriptions, and churn |
-| `measurements.jsonl` | terminal case outcomes and aggregate scores |
+| `object_records.jsonl` | frozen historical object metadata |
+| `snapshots.jsonl` | frozen historical V1 game/compatch/source identities |
+| `input_versions.jsonl` | V2 game/build and ordered ACF manifest identities |
+| `observations.jsonl` | frozen V1 observations plus V2 read-only Workshop observations |
+| `measurements.jsonl` | terminal V1 and V2 measurement records |
 | `file_results.jsonl` | per-file scorer results keyed by measurement |
-| `shadow_measurements.jsonl` | frozen per-unit Legacy/Structured rollout evidence |
-| `annotations.jsonl` | append-only, input-bound review proposals and adjudications |
+| `shadow_measurements.jsonl` | frozen Legacy/Structured rollout evidence |
+| `annotations.jsonl` | frozen historical review records |
 
-## Storage
+Historical object identity is BLAKE3 over a sorted full tree. A historical V1
+snapshot binds the EU4 version, Steam build, compatch object, and ordered source
+objects. V1 measurement identity binds that snapshot to the historical
+`foch-mq` artifact and scorer configuration. Both tracked V1 cohorts used
+`legacy_address_patch_reference`, including scorer `1.3.0`.
 
-`dataset/objects/<prefix>/<hash>/tree` is a verified content-addressed object
-store. On macOS, collection requires APFS `clonefile`; it fails rather than
-silently falling back to a physical copy. Source and staged trees are hashed
-independently before the object is committed. Escaping or absolute symlinks are
-rejected.
+V2 input identity instead binds the logical case, game/build, and ordered
+Workshop item and ACF manifest IDs. The product manifest uses profile
+`steam-workshop-acf-v1` and contains the ordered source-mod ACF identities with
+mod ID and precedence; the compatch ACF identity remains in the case input
+version. Absolute paths, ACF timestamps, file paths, file bytes, and observation
+time are not identity fields. V2 measurement identity additionally binds the
+public `foch` digest, runner protocol, scorer `2.0.0`, scorer configuration,
+`semantic_tree`, and `full_product_merge`.
 
-Merged output trees are archived through the same object store. Repeated source
-mods, compatches, and identical outputs deduplicate by tree hash.
+The scorer configuration binds scorer policy and the installed base-snapshot
+identity. A newly executed case discovers its scoring units and base-game
+scoring closure once, then stores both inside the immutable evidence bundle.
+That case-specific closure is evidence, not cohort identity, and is not rebuilt
+to decide whether a stored measurement is reusable.
 
-Review annotations bind the review-pack identity, snapshot and scoring-unit
-identities, selected kernel, and the exact base/source/human/candidate content
-hashes. Historical records may retain an opaque optional knowledge-snapshot
-binding, but foch no longer acquires, indexes, or serves Wiki content. Proposals remain provisional.
-Accepted records must be explicit adjudications; non-identical positive
-judgments require family-invariant or runtime evidence, and non-identical GUI
-judgments require runtime evidence.
+V1 cache entries cannot satisfy V2 requests. A cached V2 result must match the
+current ACF input version and pass internal evidence-bundle validation. Cache
+reuse does not enumerate or hash the live Workshop tree. Terminal states are
+`completed`, `merge_failed`, `crashed`, `timed_out`, and `fatal`; failed
+terminal outcomes stay in the fixed denominator. Reports select one complete
+cohort and use report schema `3.0.0`.
 
-See [`merge-quality-review-pack.md`](./merge-quality-review-pack.md) for the
-evidence packaging, verification, and review workflow.
+## Storage boundary
+
+Completed V2 measurements retain compact content-addressed evidence under
+`dataset/evidence_objects/`. A bundle contains the merge report, product-input
+manifest, scorer configuration, file results, and the explicit source,
+compatch, base, and merged-output closure visible to scoring. Scoring runs from
+one immutable compact capture, and that same capture is stored with an exact
+per-unit evidence index. Cache reuse and standalone reporting validate the
+bundle internally, match it to the current ACF identity, and check its file
+results and merge-report attestation. They do not reconstruct the closure from
+live Workshop or base-game files. The bundle is not a recursive copy of a mod
+or generated output tree.
+
+`dataset/objects/` is frozen V1 history. Current code has no `ObjectStore`
+workflow, recursive tree packer, or snapshot builder, and no current
+acceptance, report, probe, or export opens that directory. Raw V1 replay is no
+longer supported.
+
+The physical historical object directory has not yet been cleaned. Separating
+input-only objects from retained output evidence and removing the former is a
+later, user-operated storage migration. No repository script deletes or
+rewrites it.
+
+The V1 JSONL prefixes, `objects/`, `shadow_measurements.jsonl`, review fixtures,
+and annotations remain frozen. There is no supported review-pack builder,
+verifier, or annotation workflow.
+
+### Concurrency boundary
+
+The operational drift model is Steam or local files changing normally while a
+measurement runs. ACF reloads and pre-publication guards fail closed when the
+declared Workshop version changes. Required scripts are read in place, and a
+lazy script read must match the raw identity captured by the semantic parse that
+produced its cached metadata. Foch neither scans unrelated files nor claims to
+detect local content edits that preserve the same ACF manifest ID. A recursive
+content digest belongs only in an explicit integrity audit, never this
+acceptance path. A fresh case does not enumerate the compatch scoring closure
+until the product merge has returned non-fatal, so product cache lookup precedes
+all Workshop tree traversal performed by the scorer.
+
+## Supported repository workflows
+
+The scripts below are the complete supported merge-quality operator surface.
+Each invokes only named exact ignored tests and contains no scoring logic.
+
+| purpose | entrypoint | exact test |
+|---|---|---|
+| Product acceptance: cache-residency pre-gate, then fixed 14-case Workshop cohort | `scripts/merge-quality/acceptance.fish` | `workshop_product_cache_residency_gate`, then `workshop_product_corpus_acceptance` |
+| Deterministic metadata-only export | `scripts/merge-quality/export.fish` | `export_dataset_metadata` |
+| Full-local symbol research evidence | `scripts/merge-quality/symbol-evidence.fish` | `symbol_evidence` |
+| Fixed 12-unit Common applicability probe | `scripts/merge-quality/common-module.fish` | `common_module_acceptance` |
+| Compare a complete V2 cohort with pinned Legacy metadata | `scripts/merge-quality/structured-rollout.fish` | `structured_rollout_acceptance` |
+
+The Common and structured-rollout scripts are auxiliary analysis gates; they
+are not alternative product acceptance denominators.
+
+The following workflows are retired and have no script or supported library
+entrypoint: Workshop acquisition, corpus refresh, fixture archive refresh,
+six-case fixture acceptance, review-pack build/verification, and semantic or
+full payload export. Installed Workshop content is acquired and updated by
+Steam, outside foch.
+
+### Metadata export
+
+`scripts/merge-quality/export.fish` writes two independent exports under
+`dataset/.maintenance-work/export/` and requires byte-identical `export.json`
+and `checksums.txt` output. The export contains tracked metadata files only. It
+never copies `objects/`, `evidence_objects/`, Workshop content, base-game files,
+or generated output payloads. Semantic and full CAS export profiles no longer
+exist.
 
 ## Historical Legacy baselines
 
-The two tracked 23-case V1 cohorts are immutable historical evidence. Their
-artifact identity records the then-current `foch-mq` executable, but both scorer
-`1.0.0` and scorer `1.3.0` executed the evaluation-only
-`legacy_address_patch_reference` kernel. They do not measure the public product
-and there is no supported command for rerunning or extending them.
+The two tracked 23-case V1 cohorts are immutable research history. Scorers
+`1.0.0` and `1.3.0` both executed the evaluation-only
+`legacy_address_patch_reference` kernel, not the public product. There is no
+supported command for rerunning, extending, or relabeling them.
 
-V2 starts a separate product-bound history. A product measurement must launch
-the exact `foch` artifact through the injected runner, parse its
-`MergeReport`, score the existing output without selecting another kernel, and
-record `semantic_tree` plus `full_product_merge`. V1 cache entries can never
-satisfy a V2 request. The fixed acceptance passes the same exact snapshot ID
-list through measurement and both reports, so later append-only collection
-cannot drift its denominator.
+The scorer `1.3.0` all-candidate view accepted 83/29,481 reference-output files
+and 25/217 multi-source files. Its six-case scorable view accepted 11/39 and
+11/36 respectively. These figures must not be quoted as `semantic_tree` or
+current product quality.
 
-Snapshot IDs are recomputed from every stored payload before selection. V2 file
-result IDs bind the complete score and human-resolution payload, while frozen V1
-path-only IDs retain their historical validation rule. Resume permits orphaned
-file results only for a currently selected V2 identity with no terminal record,
-then requires deterministic replay before committing the terminal record.
-
-Every measured case ends as `completed`, `merge_failed`, `crashed`,
-`timed_out`, or `fatal`. A parseable non-Fatal product report is completed and
-scoreable even when the CLI process exits nonzero; a Fatal report remains
-Fatal. Reports select one complete stable cohort ID. A scorer-only selector
-fails when it matches more than one cohort, and failed terminal outcomes remain
-in the denominator. Resume validates every selected input CAS, the archived
-output CAS and object record, payload-bound file-result identities, foreign
-keys, and aggregate summary before counting a cache hit. Local prerequisite
-failures abort before any immutable terminal record is appended.
-
-## Repository-owned workflows
-
-Use only the fixed Fish entrypoints below. Each maintenance script selects one
-exact ignored test and supplies its mutation guard; the scripts contain no
-scoring logic.
-
-| goal | entrypoint | exact test |
-|---|---|---|
-| Run the fixed 23-snapshot product acceptance | `scripts/merge-quality/acceptance.fish` | target `merge_quality_corpus`, test `full_product_corpus_acceptance` |
-| Run the isolated six-case product fixture | `scripts/merge-quality/fixture-acceptance.fish` | target `merge_quality_corpus`, test `product_fixture_acceptance` |
-| Build and verify the fixed review pack | `scripts/merge-quality/review-pack.fish` | target `merge_quality_corpus`, test `review_pack_acceptance` |
-| Refresh immutable snapshots and observations | `scripts/merge-quality/refresh-corpus.fish` | target `maintenance`, test `refresh_corpus` |
-| Produce two matching metadata exports | `scripts/merge-quality/export.fish` | target `maintenance`, test `export_dataset_metadata` |
-| Stage refreshed corpus/base-game fixture archives | `scripts/merge-quality/refresh-fixtures.fish` | target `maintenance`, test `refresh_fixtures` |
-| Generate full-local symbol evidence | `scripts/merge-quality/symbol-evidence.fish` | target `maintenance`, test `symbol_evidence` |
-| Run the fixed 12-unit Common gate | `scripts/merge-quality/common-module.fish` | target `maintenance`, test `common_module_acceptance` |
-| Compare one complete V2 product cohort with pinned Legacy evidence | `scripts/merge-quality/structured-rollout.fish` | target `maintenance`, test `structured_rollout_acceptance` |
-| Acquire Workshop candidates with the `steam` feature | `scripts/merge-quality/acquire.fish` | target `maintenance`, test `acquire_workshop_corpus` |
-
-The acquisition workflow derives one exact typed plan before downloading. Every
-newly needed item must be confirmed by SteamCMD; already-present Workshop items
-are treated only as local inputs. It writes canonical `manifest.json` and
-`checksums.txt`, binds the raw discovered corpus and every selected
-`foch-tree-v1` digest, then re-hashes the selected trees before succeeding.
-These artifacts establish deterministic local acquisition integrity. They do
-not authenticate Steam's remote state or prove that an already-local item is
-the latest published version.
-
-The long-running acceptance is manual. It uses the release-built public `foch`
-binary, requires the private CAS and installed EU4 base snapshot, asserts the
-fixed 23 snapshot IDs, and writes cohort-specific reports only after all 23
-terminal records succeed. As of this documentation checkpoint, that first V2
-23-case cohort has not been run or accepted.
-
-The six-case fixture and review pack are also manual because both execute real
-product merges. They remain isolated from the canonical 23-case denominator and
-cannot create or reuse a product cohort accidentally.
+The old review-pack and live dual-kernel surfaces are also retired. Their
+fixtures and JSONL streams are frozen evidence only; they do not define a
+current gate.
 
 ## Metrics
 
-Reports expose two co-equal views over the selected oracle cohort:
+Current reports expose two co-equal views over the selected V2 cohort:
 
-- all files in each human reference output
-- files attributable to at least two referenced mods
+- all files in each human reference output; and
+- files attributable to at least two referenced mods.
 
-Exact-path collisions count as contributions even when the two files define
-different keys. For static `AssignmentKey` content families, definitions that
-move between sibling filenames are also attributed and compared at module
-scope. VFS path masking still matters: same-path source definitions omitted by
-the later reference file are treated as a real human choice. Human-resolution
-analysis uses AST-derived semantic atoms for parseable Clausewitz files and
-subtracts base-game atoms before labeling contributor retention or human-only
-content. GUI ordering stays significant; other Clausewitz families use
-order-insensitive AST comparison.
+Exact-path collisions count as contributions even when files define different
+keys. Static `AssignmentKey` families also compare definitions that move
+between sibling filenames at module scope. VFS path masking remains
+significant. Human-resolution analysis uses AST-derived semantic atoms for
+parseable Clausewitz files and subtracts base-game atoms before classifying
+contributor retention or human-only content. GUI ordering remains significant;
+other Clausewitz families use order-insensitive AST comparison.
 
-## Export
-
-The supported export workflow is:
-
-```fish
-scripts/merge-quality/export.fish
-```
-
-It runs `export_dataset_metadata`, writes two independent metadata exports under
-`dataset/.work/maintenance/export/`, and requires their `export.json` and
-`checksums.txt` bytes to match. The library still supports semantic and full
-profiles for repository-owned workflows, but no public Fish entrypoint exposes
-payload export. Those payloads remain private unless Workshop redistribution
-rights have been reviewed separately.
-
-The two full local 23-candidate V1 runs remain preserved as scorer `1.0.0` and
-`1.3.0` history. Both are Legacy AddressPatchReference measurements. Scoring or
-execution changes require a fresh cohort rather than relabeling or reusing those
-records. Full local product measurement remains a manual acceptance step because
-the dataset archives roughly 13.6 GiB of logical Workshop payload and a cold run
-can take hours.
+Historical V1 metrics and frozen rollout projections remain available for
+audit, but they are not the current product baseline.

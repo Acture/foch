@@ -149,11 +149,34 @@ mod tests {
 			&["*.bak".to_string(), "**/.DS_Store".to_string()],
 		)
 		.unwrap();
-		let files = collect_relative_files(root, &filter);
+		let files = collect_relative_files(root, &filter).expect("collect relative files");
 		let strs: Vec<String> = files
 			.iter()
 			.map(|p| p.to_string_lossy().replace('\\', "/"))
 			.collect();
 		assert_eq!(strs, vec!["common/countries/X.txt".to_string()]);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn collect_relative_files_ignores_file_and_directory_symlinks() {
+		use crate::workspace::resolve::collect_relative_files;
+		use std::fs;
+		use std::os::unix::fs::symlink;
+
+		let dir = tempfile::tempdir().expect("tempdir");
+		let root = dir.path().join("mod");
+		let outside = dir.path().join("outside");
+		fs::create_dir_all(root.join("common/countries")).expect("create mod files");
+		fs::create_dir_all(outside.join("events")).expect("create outside files");
+		let regular = root.join("common/countries/regular.txt");
+		fs::write(&regular, "regular = yes\n").expect("write regular file");
+		fs::write(outside.join("events/leak.txt"), "leak = yes\n").expect("write outside file");
+		symlink(&regular, root.join("common/countries/linked.txt")).expect("create file symlink");
+		symlink(outside.join("events"), root.join("events")).expect("create directory symlink");
+
+		let files = collect_relative_files(&root, &FileFilter::for_game(Game::EuropaUniversalis4))
+			.expect("collect relative files");
+		assert_eq!(files, vec![PathBuf::from("common/countries/regular.txt")]);
 	}
 }

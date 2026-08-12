@@ -1,0 +1,124 @@
+{
+  "schema": "2.0.0",
+  "app_id": "236850",
+  "cases": [
+    {
+      "case_id": "1351632822",
+      "compatch_workshop_id": "1351632822",
+      "source_workshop_ids": [
+        "1449952810",
+        "1796527319",
+        "2016264376"
+      ]
+    },
+    {
+      "case_id": "2016264376",
+      "compatch_workshop_id": "2016264376",
+      "source_workshop_ids": [
+        "1449952810",
+        "1796527319",
+        "1351632822"
+      ]
+    },
+    {
+      "case_id": "3340627985",
+      "compatch_workshop_id": "3340627985",
+      "source_workshop_ids": [
+        "3414246813",
+        "3437049148"
+      ]
+    },
+    {
+      "case_id": "3367806636",
+      "compatch_workshop_id": "3367806636",
+      "source_workshop_ids": [
+        "2164202838",
+        "3367805409"
+      ]
+    },
+    {
+      "case_id": "3609019235",
+      "compatch_workshop_id": "3609019235",
+      "source_workshop_ids": [
+        "3609590723",
+        "3611259455",
+        "3611746726"
+      ]
+    },
+    {
+      "case_id": "3609590723",
+      "compatch_workshop_id": "3609590723",
+      "source_workshop_ids": [
+        "3609019235",
+        "3611259455",
+        "3611746726"
+      ]
+    },
+    {
+      "case_id": "3611259455",
+      "compatch_workshop_id": "3611259455",
+      "source_workshop_ids": [
+        "3609019235",
+        "3609590723",
+        "3611746726"
+      ]
+    },
+    {
+      "case_id": "3611746726",
+      "compatch_workshop_id": "3611746726",
+      "source_workshop_ids": [
+        "3609019235",
+        "3609590723",
+        "3611259455"
+      ]
+    },
+    {
+      "case_id": "3630876155",
+      "compatch_workshop_id": "3630876155",
+      "source_workshop_ids": [
+        "2164202838",
+        "2185445645"
+      ]
+    },
+    {
+      "case_id": "3630904821",
+      "compatch_workshop_id": "3630904821",
+      "source_workshop_ids": [
+        "2164202838",
+        "1352521684"
+      ]
+    },
+    {
+      "case_id": "3630934157",
+      "compatch_workshop_id": "3630934157",
+      "source_workshop_ids": [
+        "3342969370",
+        "2164202838"
+      ]
+    },
+    {
+      "case_id": "3634824708",
+      "compatch_workshop_id": "3634824708",
+      "source_workshop_ids": [
+        "2164202838",
+        "1770950522"
+      ]
+    },
+    {
+      "case_id": "3634829839",
+      "compatch_workshop_id": "3634829839",
+      "source_workshop_ids": [
+        "2172666098",
+        "2164202838"
+      ]
+    },
+    {
+      "case_id": "3635635014",
+      "compatch_workshop_id": "3635635014",
+      "source_workshop_ids": [
+        "2164202838",
+        "1596815683"
+      ]
+    }
+  ]
+}

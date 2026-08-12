@@ -1484,9 +1484,8 @@ fn root_path_match_len(
 	if let Some(normalized_file_path) = normalized_file_path {
 		return (file_path == normalized_file_path).then_some(normalized_file_path.len());
 	}
-	(file_path == normalized_root_path
-		|| file_path.starts_with(&format!("{normalized_root_path}/")))
-	.then_some(normalized_root_path.len())
+	let suffix = file_path.strip_prefix(normalized_root_path)?;
+	(suffix.is_empty() || suffix.starts_with('/')).then_some(normalized_root_path.len())
 }
 
 fn root_skip_key_matches(skip_key: &str, key: &str) -> bool {
@@ -1642,4 +1641,17 @@ fn normalize_path(path: &Path) -> String {
 		.replace('\\', "/")
 		.trim_matches('/')
 		.to_ascii_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::root_path_match_len;
+
+	#[test]
+	fn root_path_matching_requires_a_component_boundary() {
+		assert_eq!(root_path_match_len("common/foo", "common", None), Some(6));
+		assert_eq!(root_path_match_len("common", "common", None), Some(6));
+		assert_eq!(root_path_match_len("commonplace/foo", "common", None), None);
+		assert_eq!(root_path_match_len("events/a.txt", "", None), None);
+	}
 }

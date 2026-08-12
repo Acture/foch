@@ -3033,6 +3033,78 @@ immediate = {
 }
 
 #[test]
+fn create_child_scope_only_binds_cwt_path_in_fallback_branch() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	fs::create_dir_all(mod_root.join("events")).expect("create events");
+	fs::write(
+		mod_root.join("events").join("path_binding.txt"),
+		r#"
+namespace = test
+country_event = {
+	id = test.1
+	trigger = {
+		if = { }
+		eLsE = { }
+		NOT = { }
+	}
+	immediate = {
+		every_country = { }
+		ROOT = { }
+		option = { }
+		iF = { }
+		mystery_container = { }
+	}
+}
+"#,
+	)
+	.expect("write event");
+
+	let parsed = parse_script_file(
+		"1000",
+		&mod_root,
+		&mod_root.join("events").join("path_binding.txt"),
+	)
+	.expect("parsed event");
+	let engine = foch_cwt::RuleEngine::from_graph(&foch_cwt::CwtSchemaGraph::default());
+	let mut index = foch_core::model::SemanticIndex::default();
+	super::reset_create_child_scope_cwt_path_bindings();
+	super::build_file_index(
+		&parsed,
+		&super::MapGroupLookup::default(),
+		Some(&engine),
+		&mut index,
+	);
+
+	assert_eq!(
+		super::take_create_child_scope_cwt_path_bindings(),
+		1,
+		"only the unclassified container should reach CWT path binding"
+	);
+	for (key, expected_kind) in [
+		("country_event", ScopeKind::Event),
+		("trigger", ScopeKind::Trigger),
+		("if", ScopeKind::Trigger),
+		("eLsE", ScopeKind::Trigger),
+		("NOT", ScopeKind::Trigger),
+		("immediate", ScopeKind::Effect),
+		("every_country", ScopeKind::Loop),
+		("ROOT", ScopeKind::AliasBlock),
+		("option", ScopeKind::Effect),
+		("iF", ScopeKind::Effect),
+		("mystery_container", ScopeKind::Block),
+	] {
+		assert!(
+			index
+				.scopes
+				.iter()
+				.any(|scope| scope.key == key && scope.kind == expected_kind),
+			"{key} should retain {expected_kind:?} semantics"
+		);
+	}
+}
+
+#[test]
 fn achievements_builtin_blocks_do_not_become_scripted_effect_calls() {
 	let tmp = TempDir::new().expect("temp dir");
 	let mod_root = tmp.path().join("mod");

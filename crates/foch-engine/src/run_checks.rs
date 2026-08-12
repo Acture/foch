@@ -197,16 +197,24 @@ pub fn run_checks_with_options(request: CheckRequest, options: RunOptions) -> Ch
 	let vanilla_symbol_index = VanillaSymbolIndex::build(&resolved);
 	let (mod_dag, _dag_diagnostics) = build_mod_dag(&resolved.mods);
 	let runtime_overlap_findings = if options.analysis_mode == AnalysisMode::Semantic {
-		run_progress_stage(
+		let runtime_overlap = run_progress_stage(
 			"runtime overlap",
 			|| {
 				build_runtime_state_from_workspace(&resolved)
-					.ok()
 					.map(|state| build_overlap_findings(&state))
-					.unwrap_or_default()
 			},
-			|findings| format!("findings={}", findings.len()),
-		)
+			|runtime_overlap| match runtime_overlap {
+				Ok(findings) => format!("findings={}", findings.len()),
+				Err(_) => "failed".to_string(),
+			},
+		);
+		match runtime_overlap {
+			Ok(findings) => findings,
+			Err(error) => {
+				result.push_fatal_error(format!("failed to build runtime overlap state: {error}"));
+				return result;
+			}
+		}
 	} else {
 		Vec::new()
 	};

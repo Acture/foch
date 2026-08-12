@@ -1018,6 +1018,7 @@ mod tests {
 				dependencies: dependencies.iter().map(|dep| (*dep).to_string()).collect(),
 				..ModDescriptor::default()
 			}),
+			workshop_identity: None,
 			descriptor_error: None,
 			files: Vec::new(),
 		}

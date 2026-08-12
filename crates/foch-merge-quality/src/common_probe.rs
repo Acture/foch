@@ -12,24 +12,23 @@ use serde::{Deserialize, Serialize};
 use crate::common_module::{
 	CommonModuleDiagnostic, CommonModuleViewBuilder, normalize_module_comparison,
 };
-use crate::config::Eu4GameDiscovery;
-use crate::dataset::{DatasetPaths, now_rfc3339};
-use crate::object_store::ObjectStore;
+use crate::config::{EU4_APPID, Eu4Discovery};
+use crate::dataset::now_rfc3339;
 use crate::orchestrate::FileRecord;
 use crate::score::{
 	SemanticAtomDiff, semantic_ast_content_id, semantic_atom_diff_ast,
 	semantic_atom_diff_statements,
 };
-use crate::snapshot::{LoadedSnapshot, latest_snapshots, open_snapshot, validate_snapshot_game};
+use crate::workshop_inputs::{ResolvedWorkshopCase, WorkshopCaseManifest};
 
-pub const COMMON_APPLICABILITY_SCHEMA: &str = "3.0.0";
+pub const COMMON_APPLICABILITY_SCHEMA: &str = "4.0.0";
 pub const COMMON_APPLICABILITY_UNIT_COUNT: usize = 12;
 
 pub struct CommonApplicabilityOptions<'a> {
-	pub dataset_root: &'a Path,
+	pub case_manifest: &'a Path,
 	pub output_dir: &'a Path,
 	pub legacy_baseline: &'a Path,
-	pub game: &'a Eu4GameDiscovery,
+	pub discovery: &'a Eu4Discovery,
 	/// BLAKE3 of the fixed test or product artifact that owns this evaluation.
 	pub evaluator_artifact_blake3: &'a str,
 	pub case_ids: &'a BTreeSet<String>,
@@ -129,7 +128,7 @@ pub struct CommonProbeInputAttribution {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CommonProbeUnit {
 	pub case_id: String,
-	pub snapshot_id: Option<String>,
+	pub input_version_id: Option<String>,
 	pub relative_path: String,
 	pub module_prefix: String,
 	pub content_family: Option<String>,
@@ -185,6 +184,7 @@ pub struct CommonApplicabilityReport {
 	pub game_version: String,
 	pub steam_build_id: Option<u64>,
 	pub evaluator_artifact_blake3: String,
+	pub case_manifest_blake3: String,
 	pub legacy_baseline_blake3: String,
 	pub summary: CommonProbeSummary,
 	pub families: Vec<CommonProbeFamilySummary>,
@@ -210,11 +210,30 @@ struct ComparisonNormalization {
 	normalized_definitions: usize,
 }
 
+struct ResolvedCommonInput {
+	case: ResolvedWorkshopCase,
+	input_version_id: String,
+}
+
 pub fn run_common_applicability_probe(
 	options: &CommonApplicabilityOptions<'_>,
 ) -> Result<CommonApplicabilityReport, Box<dyn std::error::Error>> {
 	let started = Instant::now();
-	let all_targets = load_targets(options.legacy_baseline)?;
+	let case_manifest_bytes = fs::read(options.case_manifest)?;
+	let case_manifest =
+		WorkshopCaseManifest::from_json(std::str::from_utf8(&case_manifest_bytes)?)?;
+	if case_manifest.app_id != EU4_APPID.to_string() {
+		return Err(format!(
+			"Workshop case manifest app id {} does not match EU4 {EU4_APPID}",
+			case_manifest.app_id
+		)
+		.into());
+	}
+	if options.discovery.workshop.app_id() != EU4_APPID {
+		return Err("Workshop catalog belongs to the wrong Steam app".into());
+	}
+	let legacy_baseline_bytes = fs::read(options.legacy_baseline)?;
+	let all_targets = load_targets(&legacy_baseline_bytes)?;
 	if all_targets.len() != COMMON_APPLICABILITY_UNIT_COUNT {
 		return Err(format!(
 			"common applicability denominator drifted: expected {}, found {}",
@@ -225,40 +244,12 @@ pub fn run_common_applicability_probe(
 	}
 	let full_denominator = options.case_ids.is_empty() && options.families.is_empty();
 	let targets = select_targets(&all_targets, options.case_ids, options.families)?;
-
-	let paths = DatasetPaths::new(options.dataset_root);
-	let snapshots = latest_snapshots(&paths)?
-		.into_iter()
-		.map(|snapshot| (snapshot.case_id.clone(), snapshot))
-		.collect::<BTreeMap<_, _>>();
-	let store = ObjectStore::new(&paths.objects, &paths.work);
-	let mut loaded = BTreeMap::<String, LoadedSnapshot>::new();
-	let mut load_errors = BTreeMap::<String, String>::new();
-	for case_id in targets
+	let selected_case_ids = targets
 		.iter()
-		.map(|target| target.case_id.as_str())
-		.collect::<BTreeSet<_>>()
-	{
-		let Some(snapshot) = snapshots.get(case_id).cloned() else {
-			load_errors.insert(
-				case_id.to_string(),
-				"latest snapshot is missing".to_string(),
-			);
-			continue;
-		};
-		if let Err(error) = validate_snapshot_game(&snapshot, options.game) {
-			load_errors.insert(case_id.to_string(), error.to_string());
-			continue;
-		}
-		match open_snapshot(&store, snapshot) {
-			Ok(snapshot) => {
-				loaded.insert(case_id.to_string(), snapshot);
-			}
-			Err(error) => {
-				load_errors.insert(case_id.to_string(), error.to_string());
-			}
-		}
-	}
+		.map(|target| target.case_id.clone())
+		.collect::<BTreeSet<_>>();
+	let (resolved, load_errors) =
+		resolve_workshop_inputs(options.discovery, &case_manifest, &selected_case_ids);
 
 	let mut cache = CommonModuleViewBuilder::default();
 	let mut units = Vec::with_capacity(targets.len());
@@ -268,17 +259,17 @@ pub fn run_common_applicability_probe(
 			failed_unit(
 				target,
 				CommonProbeStatus::InputFailure,
-				"snapshot",
+				"workshop_input",
 				error.clone(),
 			)
-		} else if let Some(snapshot) = loaded.get(&target.case_id) {
-			evaluate_unit(options, target, snapshot, &mut cache)
+		} else if let Some(input) = resolved.get(&target.case_id) {
+			evaluate_unit(options, target, input, &mut cache)
 		} else {
 			failed_unit(
 				target,
 				CommonProbeStatus::InputFailure,
-				"snapshot",
-				"snapshot was not loaded".to_string(),
+				"workshop_input",
+				"Workshop input was not resolved".to_string(),
 			)
 		};
 		let elapsed_ms = duration_ms(unit_started.elapsed());
@@ -292,17 +283,19 @@ pub fn run_common_applicability_probe(
 		);
 		units.push(unit);
 	}
+	for input in resolved.values() {
+		input.case.validate_unchanged(&options.discovery.workshop)?;
+	}
 
 	let mut report = CommonApplicabilityReport {
 		schema: COMMON_APPLICABILITY_SCHEMA.to_string(),
 		generated_at: now_rfc3339(),
 		hypothesis: "common/<folder> is a provisional semantic merge unit".to_string(),
-		game_version: options.game.game_version.clone(),
-		steam_build_id: options.game.steam_build_id,
+		game_version: options.discovery.game_version.clone(),
+		steam_build_id: options.discovery.steam_build_id,
 		evaluator_artifact_blake3: options.evaluator_artifact_blake3.to_string(),
-		legacy_baseline_blake3: blake3::hash(&fs::read(options.legacy_baseline)?)
-			.to_hex()
-			.to_string(),
+		case_manifest_blake3: blake3::hash(&case_manifest_bytes).to_hex().to_string(),
+		legacy_baseline_blake3: blake3::hash(&legacy_baseline_bytes).to_hex().to_string(),
 		summary: summarize(&units, full_denominator, duration_ms(started.elapsed())),
 		families: summarize_families(&units),
 		units,
@@ -312,8 +305,64 @@ pub fn run_common_applicability_probe(
 	Ok(report)
 }
 
-fn load_targets(path: &Path) -> Result<Vec<LegacyBaselineUnit>, Box<dyn std::error::Error>> {
-	let baseline: LegacyBaseline = serde_json::from_slice(&fs::read(path)?)?;
+fn resolve_workshop_inputs(
+	discovery: &Eu4Discovery,
+	manifest: &WorkshopCaseManifest,
+	case_ids: &BTreeSet<String>,
+) -> (
+	BTreeMap<String, ResolvedCommonInput>,
+	BTreeMap<String, String>,
+) {
+	let definitions = manifest
+		.cases
+		.iter()
+		.map(|definition| (definition.case_id.as_str(), definition))
+		.collect::<BTreeMap<_, _>>();
+	let mut resolved_inputs = BTreeMap::new();
+	let mut errors = BTreeMap::new();
+	for case_id in case_ids {
+		let Some(definition) = definitions.get(case_id.as_str()).copied() else {
+			errors.insert(
+				case_id.clone(),
+				"case is absent from the fixed Workshop manifest".to_string(),
+			);
+			continue;
+		};
+		let resolved = match ResolvedWorkshopCase::resolve(&discovery.workshop, definition) {
+			Ok(resolved) => resolved,
+			Err(error) => {
+				errors.insert(case_id.clone(), error);
+				continue;
+			}
+		};
+		let input_version =
+			match resolved.input_version(&discovery.game_version, discovery.steam_build_id) {
+				Ok(input_version) if input_version.identity_is_valid() => input_version,
+				Ok(_) => {
+					errors.insert(
+						case_id.clone(),
+						"resolved Workshop input has an invalid V2 identity".to_string(),
+					);
+					continue;
+				}
+				Err(error) => {
+					errors.insert(case_id.clone(), error);
+					continue;
+				}
+			};
+		resolved_inputs.insert(
+			case_id.clone(),
+			ResolvedCommonInput {
+				case: resolved,
+				input_version_id: input_version.input_version_id,
+			},
+		);
+	}
+	(resolved_inputs, errors)
+}
+
+fn load_targets(bytes: &[u8]) -> Result<Vec<LegacyBaselineUnit>, Box<dyn std::error::Error>> {
+	let baseline: LegacyBaseline = serde_json::from_slice(bytes)?;
 	let mut targets = baseline
 		.units
 		.into_iter()
@@ -392,66 +441,94 @@ fn select_targets(
 fn evaluate_unit(
 	options: &CommonApplicabilityOptions<'_>,
 	target: &LegacyBaselineUnit,
-	snapshot: &LoadedSnapshot,
+	input: &ResolvedCommonInput,
 	cache: &mut CommonModuleViewBuilder,
 ) -> CommonProbeUnit {
 	let Some(module_prefix) = common_folder_prefix(&target.score.rel) else {
-		return failed_unit(
-			target,
-			CommonProbeStatus::ConfigurationFailure,
-			"module_boundary",
-			"path does not identify a common/<folder> module".to_string(),
+		return attach_resolved_input(
+			failed_unit(
+				target,
+				CommonProbeStatus::ConfigurationFailure,
+				"module_boundary",
+				"path does not identify a common/<folder> module".to_string(),
+			),
+			input,
 		);
 	};
 	let Some(descriptor) = eu4_profile().classify_content_family(Path::new(&target.score.rel))
 	else {
-		return failed_unit_with_prefix(
-			target,
-			module_prefix,
-			CommonProbeStatus::ConfigurationFailure,
-			"content_family",
-			"path has no ContentFamily descriptor".to_string(),
+		return attach_resolved_input(
+			failed_unit_with_prefix(
+				target,
+				module_prefix,
+				CommonProbeStatus::ConfigurationFailure,
+				"content_family",
+				"path has no ContentFamily descriptor".to_string(),
+			),
+			input,
 		);
 	};
 	if descriptor.merge_key_source != Some(MergeKeySource::AssignmentKey) {
-		return failed_unit_with_family(
-			target,
-			module_prefix,
-			descriptor.id.as_str(),
-			CommonProbeStatus::ConfigurationFailure,
-			"merge_key",
-			"folder probe currently requires AssignmentKey module definitions".to_string(),
+		return attach_resolved_input(
+			failed_unit_with_family(
+				target,
+				module_prefix,
+				descriptor.id.as_str(),
+				CommonProbeStatus::ConfigurationFailure,
+				"merge_key",
+				"folder probe currently requires AssignmentKey module definitions".to_string(),
+			),
+			input,
 		);
 	}
-	if snapshot.source_dirs.len() != 2 {
-		return failed_unit_with_family(
-			target,
-			module_prefix,
-			descriptor.id.as_str(),
-			CommonProbeStatus::ConfigurationFailure,
-			"source_arity",
-			format!(
-				"structured three-way probe requires exactly two source mods, found {}",
-				snapshot.source_dirs.len()
+	if target.score.source_mod_ids != input.case.definition.source_workshop_ids {
+		return attach_resolved_input(
+			failed_unit_with_family(
+				target,
+				module_prefix,
+				descriptor.id.as_str(),
+				CommonProbeStatus::ConfigurationFailure,
+				"source_topology",
+				format!(
+					"frozen expectation sources {:?} differ from Workshop manifest {:?}",
+					target.score.source_mod_ids, input.case.definition.source_workshop_ids
+				),
 			),
+			input,
+		);
+	}
+	if input.case.sources.len() != 2 {
+		return attach_resolved_input(
+			failed_unit_with_family(
+				target,
+				module_prefix,
+				descriptor.id.as_str(),
+				CommonProbeStatus::ConfigurationFailure,
+				"source_arity",
+				format!(
+					"structured three-way probe requires exactly two source mods, found {}",
+					input.case.sources.len()
+				),
+			),
+			input,
 		);
 	}
 
 	let view_started = Instant::now();
-	let base_roots = [options.game.game_root.as_path()];
+	let base_roots = [options.discovery.game_root.as_path()];
 	let left_roots = [
-		options.game.game_root.as_path(),
-		snapshot.source_dirs[0].as_path(),
+		options.discovery.game_root.as_path(),
+		input.case.sources[0].install.content_path.as_path(),
 	];
 	let right_roots = [
-		options.game.game_root.as_path(),
-		snapshot.source_dirs[1].as_path(),
+		options.discovery.game_root.as_path(),
+		input.case.sources[1].install.content_path.as_path(),
 	];
 	let human_roots = [
-		options.game.game_root.as_path(),
-		snapshot.source_dirs[0].as_path(),
-		snapshot.source_dirs[1].as_path(),
-		snapshot.compatch.as_path(),
+		options.discovery.game_root.as_path(),
+		input.case.sources[0].install.content_path.as_path(),
+		input.case.sources[1].install.content_path.as_path(),
+		input.case.compatch.install.content_path.as_path(),
 	];
 	let base = cache.view(&base_roots, &module_prefix);
 	let left = cache.view(&left_roots, &module_prefix);
@@ -468,11 +545,11 @@ fn evaluate_unit(
 			.collect::<Vec<_>>();
 		return CommonProbeUnit {
 			case_id: target.case_id.clone(),
-			snapshot_id: Some(snapshot.snapshot.snapshot_id.clone()),
+			input_version_id: Some(input.input_version_id.clone()),
 			relative_path: target.score.rel.clone(),
 			module_prefix,
 			content_family: Some(descriptor.id.as_str().to_string()),
-			source_mod_ids: snapshot_source_ids(snapshot),
+			source_mod_ids: workshop_source_ids(input),
 			legacy_verdict: target.score.verdict.clone(),
 			legacy_accepted: target.score.accepted_ok,
 			status: CommonProbeStatus::ParseFailure,
@@ -515,11 +592,11 @@ fn evaluate_unit(
 		Err(error) => {
 			return CommonProbeUnit {
 				case_id: target.case_id.clone(),
-				snapshot_id: Some(snapshot.snapshot.snapshot_id.clone()),
+				input_version_id: Some(input.input_version_id.clone()),
 				relative_path: target.score.rel.clone(),
 				module_prefix,
 				content_family: Some(descriptor.id.as_str().to_string()),
-				source_mod_ids: snapshot_source_ids(snapshot),
+				source_mod_ids: workshop_source_ids(input),
 				legacy_verdict: target.score.verdict.clone(),
 				legacy_accepted: target.score.accepted_ok,
 				status: CommonProbeStatus::AdapterFailure,
@@ -596,11 +673,11 @@ fn evaluate_unit(
 	};
 	CommonProbeUnit {
 		case_id: target.case_id.clone(),
-		snapshot_id: Some(snapshot.snapshot.snapshot_id.clone()),
+		input_version_id: Some(input.input_version_id.clone()),
 		relative_path: target.score.rel.clone(),
 		module_prefix,
 		content_family: Some(descriptor.id.as_str().to_string()),
-		source_mod_ids: snapshot_source_ids(snapshot),
+		source_mod_ids: workshop_source_ids(input),
 		legacy_verdict: target.score.verdict.clone(),
 		legacy_accepted: target.score.accepted_ok,
 		status,
@@ -747,13 +824,17 @@ fn top_level_assignment_keys(ast: &AstFile) -> BTreeSet<String> {
 		.collect()
 }
 
-fn snapshot_source_ids(snapshot: &LoadedSnapshot) -> Vec<String> {
-	snapshot
-		.snapshot
-		.source_mods
-		.iter()
-		.map(|source| source.workshop_id.clone())
-		.collect()
+fn workshop_source_ids(input: &ResolvedCommonInput) -> Vec<String> {
+	input.case.definition.source_workshop_ids.clone()
+}
+
+fn attach_resolved_input(
+	mut unit: CommonProbeUnit,
+	input: &ResolvedCommonInput,
+) -> CommonProbeUnit {
+	unit.input_version_id = Some(input.input_version_id.clone());
+	unit.source_mod_ids = workshop_source_ids(input);
+	unit
 }
 
 fn failed_unit(
@@ -780,7 +861,7 @@ fn failed_unit_with_prefix(
 ) -> CommonProbeUnit {
 	CommonProbeUnit {
 		case_id: target.case_id.clone(),
-		snapshot_id: None,
+		input_version_id: None,
 		relative_path: target.score.rel.clone(),
 		module_prefix,
 		content_family: None,
@@ -961,6 +1042,8 @@ fn duration_ms(duration: std::time::Duration) -> u64 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::config::WorkshopCatalog;
+	use crate::workshop_inputs::{WORKSHOP_CASE_MANIFEST_SCHEMA, WorkshopCaseDefinition};
 	use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
 	use foch_language::analyzer::parser::parse_clausewitz_content;
 	use std::path::PathBuf;
@@ -975,6 +1058,209 @@ mod tests {
 		let path = root.join(relative);
 		fs::create_dir_all(path.parent().expect("fixture path has parent")).unwrap();
 		fs::write(path, contents).unwrap();
+	}
+
+	fn workshop_manifest() -> WorkshopCaseManifest {
+		WorkshopCaseManifest {
+			schema: WORKSHOP_CASE_MANIFEST_SCHEMA.to_string(),
+			app_id: EU4_APPID.to_string(),
+			cases: vec![WorkshopCaseDefinition {
+				case_id: "42".to_string(),
+				compatch_workshop_id: "42".to_string(),
+				source_workshop_ids: vec!["1".to_string(), "2".to_string()],
+			}],
+		}
+	}
+
+	fn write_workshop_acf(path: &Path, items: &[(&str, &str)]) {
+		let installed = items
+			.iter()
+			.map(|(workshop_id, manifest_id)| {
+				format!(
+					r#"		"{workshop_id}"
+		{{
+			"size" "1"
+			"timeupdated" "1780000000"
+			"manifest" "{manifest_id}"
+		}}"#
+				)
+			})
+			.collect::<Vec<_>>()
+			.join("\n");
+		fs::write(
+			path,
+			format!(
+				r#""AppWorkshop"
+{{
+	"appid" "{EU4_APPID}"
+	"WorkshopItemsInstalled"
+	{{
+{installed}
+	}}
+}}"#
+			),
+		)
+		.unwrap();
+	}
+
+	fn workshop_discovery(
+		temp: &tempfile::TempDir,
+		installed: &[(&str, &str)],
+	) -> (Eu4Discovery, PathBuf) {
+		let game_root = temp.path().join("game");
+		let workshop_library = temp.path().join("steam-library");
+		let workshop_root = workshop_library
+			.join("steamapps/workshop/content")
+			.join(EU4_APPID.to_string());
+		let workshop_acf = workshop_library
+			.join("steamapps/workshop")
+			.join(format!("appworkshop_{EU4_APPID}.acf"));
+		write_file(
+			&game_root,
+			"common/buildings/base.txt",
+			"temple = { cost = 100 }\n",
+		);
+		for (workshop_id, content) in [
+			("1", "temple = { cost = 100 manpower = 1 }\n"),
+			("2", "temple = { cost = 100 tax = 1 }\n"),
+			("42", "temple = { cost = 100 manpower = 1 tax = 1 }\n"),
+		] {
+			let item_root = workshop_root.join(workshop_id);
+			write_file(&item_root, "descriptor.mod", "name = \"fixture\"\n");
+			write_file(&item_root, "common/buildings/fixture.txt", content);
+		}
+		write_workshop_acf(&workshop_acf, installed);
+		let workshop =
+			WorkshopCatalog::from_override(EU4_APPID, workshop_root, workshop_acf.clone()).unwrap();
+		(
+			Eu4Discovery {
+				game_root,
+				game_version: "1.37.5".to_string(),
+				steam_build_id: Some(123),
+				steam_root: None,
+				workshop,
+			},
+			workshop_acf,
+		)
+	}
+
+	fn baseline_score(relative_path: String) -> FileRecord {
+		FileRecord {
+			rel: relative_path,
+			source_mod_ids: vec!["1".to_string(), "2".to_string()],
+			source_count: 2,
+			multi_source: true,
+			foch_emitted: false,
+			foch_conflict: false,
+			similarity: None,
+			keys_match: None,
+			ast_match: None,
+			dropped_keys: Vec::new(),
+			verdict: "frozen_review".to_string(),
+			accepted_ok: false,
+			acceptance_reason: None,
+		}
+	}
+
+	#[test]
+	fn workshop_resolution_reports_missing_acf_item_without_touching_legacy_cas() {
+		let temp = tempfile::tempdir().unwrap();
+		let (discovery, _) = workshop_discovery(&temp, &[("42", "42001"), ("1", "1001")]);
+		let legacy_cas = temp.path().join("dataset/objects/sentinel");
+		write_file(
+			temp.path(),
+			"dataset/objects/sentinel",
+			"do not read or rewrite\n",
+		);
+		let before = fs::read(&legacy_cas).unwrap();
+		let case_ids = BTreeSet::from(["42".to_string()]);
+
+		let (resolved, errors) =
+			resolve_workshop_inputs(&discovery, &workshop_manifest(), &case_ids);
+
+		assert!(resolved.is_empty());
+		assert!(
+			errors["42"].contains("absent from appworkshop_236850.acf"),
+			"{}",
+			errors["42"]
+		);
+		assert_eq!(fs::read(legacy_cas).unwrap(), before);
+	}
+
+	#[test]
+	fn workshop_revalidation_rejects_acf_drift() {
+		let temp = tempfile::tempdir().unwrap();
+		let initial = [("42", "42001"), ("1", "1001"), ("2", "2001")];
+		let (discovery, workshop_acf) = workshop_discovery(&temp, &initial);
+		let case_ids = BTreeSet::from(["42".to_string()]);
+		let (resolved, errors) =
+			resolve_workshop_inputs(&discovery, &workshop_manifest(), &case_ids);
+		assert!(errors.is_empty(), "{errors:?}");
+		assert_eq!(resolved["42"].input_version_id.len(), 64);
+
+		write_workshop_acf(
+			&workshop_acf,
+			&[("42", "42002"), ("1", "1001"), ("2", "2001")],
+		);
+		let error = resolved["42"]
+			.case
+			.validate_unchanged(&discovery.workshop)
+			.unwrap_err();
+		assert!(error.contains("ACF changed"), "{error}");
+	}
+
+	#[test]
+	fn fixed_probe_reads_direct_workshop_inputs_and_emits_v2_ids() {
+		let temp = tempfile::tempdir().unwrap();
+		let installed = [("42", "42001"), ("1", "1001"), ("2", "2001")];
+		let (discovery, _) = workshop_discovery(&temp, &installed);
+		let case_manifest = temp.path().join("workshop-cases.json");
+		fs::write(
+			&case_manifest,
+			serde_json::to_vec(&workshop_manifest()).unwrap(),
+		)
+		.unwrap();
+		let units = (0..COMMON_APPLICABILITY_UNIT_COUNT)
+			.map(|index| {
+				serde_json::json!({
+					"case_id": "42",
+					"score": baseline_score(format!("common/buildings/unit_{index:02}.txt")),
+				})
+			})
+			.collect::<Vec<_>>();
+		let legacy_baseline = temp.path().join("legacy-baseline.json");
+		fs::write(
+			&legacy_baseline,
+			serde_json::to_vec(&serde_json::json!({ "units": units })).unwrap(),
+		)
+		.unwrap();
+		let legacy_cas = temp.path().join("dataset/objects/sentinel");
+		write_file(
+			temp.path(),
+			"dataset/objects/sentinel",
+			"legacy CAS sentinel\n",
+		);
+		let before = fs::read(&legacy_cas).unwrap();
+		let output = temp.path().join("output");
+		let evaluator = "a".repeat(64);
+		let report = run_common_applicability_probe(&CommonApplicabilityOptions {
+			case_manifest: &case_manifest,
+			output_dir: &output,
+			legacy_baseline: &legacy_baseline,
+			discovery: &discovery,
+			evaluator_artifact_blake3: &evaluator,
+			case_ids: &BTreeSet::new(),
+			families: &BTreeSet::new(),
+		})
+		.unwrap();
+
+		assert_eq!(report.summary.gate_passed, Some(true));
+		assert_eq!(fs::read(legacy_cas).unwrap(), before);
+		let wire = serde_json::to_value(&report).unwrap();
+		for unit in wire["units"].as_array().unwrap() {
+			assert_eq!(unit["input_version_id"].as_str().unwrap().len(), 64);
+			assert!(unit.get("snapshot_id").is_none());
+		}
 	}
 
 	#[test]

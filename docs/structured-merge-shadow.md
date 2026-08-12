@@ -69,11 +69,12 @@ The remaining tracked artifacts are evidence, not executable workflows:
   append-only historical stream;
 - `tests/fixtures/legacy-baseline.json` and `expected.json` bind the historical
   scorer view;
-- `tests/fixtures/review-pack-selection.json` pins the six cases, 36 Legacy
-  units, and 13 Structured rollout units used by review packaging.
+- `tests/fixtures/review-pack-selection.json` preserves the former six-case,
+  36-Legacy-unit, and 13-Structured-unit selection as historical metadata.
 
 Do not append new results with an ad hoc test binary or reconstruct the retired
-child protocol.
+child protocol. The review-pack builder, verifier, acceptance test, and Fish
+entrypoint are retired; the selection fixture is not a runnable workflow.
 
 ## Historical rollout results
 
@@ -100,15 +101,18 @@ focused results establishes or changes a V2 product baseline.
 
 ## Current acceptance paths
 
-Use `scripts/merge-quality/acceptance.fish` for the fixed 23-snapshot V2
-product acceptance. It invokes the exact ignored
-`full_product_corpus_acceptance` test, launches the release-built public
-`foch merge`, and records scorer `2.0.0`, `semantic_tree`, and
-`full_product_merge`.
+Use `scripts/merge-quality/acceptance.fish` for the fixed 14-case V2 product
+acceptance. It invokes the exact ignored
+`workshop_product_corpus_acceptance` test, resolves the committed logical cases
+from read-only Workshop content and same-library ACF files, launches the
+release-built public `foch merge`, and records scorer `2.0.0`,
+`semantic_tree`, and `full_product_merge`. This path does not read the legacy
+`objects/` store; completed results retain compact scorer evidence.
 
 Use `scripts/merge-quality/common-module.fish` for the separate fixed 12-unit
 Common applicability gate. After a complete V2 cohort exists, use
 `scripts/merge-quality/structured-rollout.fish` to compare its fixed scoring
 units with the pinned Legacy cohort. None of these scripts runs a live
-dual-kernel shadow comparison. The first full 23-case V2 product cohort has not
-yet been completed at this checkpoint.
+dual-kernel shadow comparison or restores a V1 CAS object. They are auxiliary
+analysis, not alternative product acceptance paths. The first fixed 14-case V2
+product cohort has not yet been completed at this checkpoint.

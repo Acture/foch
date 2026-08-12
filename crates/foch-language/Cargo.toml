@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 bincode.workspace = true
+blake3 = "1.5.5"
 console.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true

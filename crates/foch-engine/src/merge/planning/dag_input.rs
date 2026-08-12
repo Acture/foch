@@ -113,17 +113,9 @@ fn parse_vanilla_contributor(
 	else {
 		return Ok(None);
 	};
-	if let Some(parsed) = parsed_from_cache(base, script_cache) {
-		return Ok(Some(parsed));
-	}
-	parse_script_file(&base.mod_id, &base.root_path, &base.absolute_path)
+	parse_contributor(base, script_cache)
 		.map(Some)
-		.ok_or_else(|| {
-			format!(
-				"failed to parse vanilla file {} for {file_path}",
-				base.absolute_path.display()
-			)
-		})
+		.map_err(|error| format!("failed to parse vanilla file for {file_path}: {error}"))
 }
 
 fn parse_active_mod_contributors(
@@ -142,33 +134,68 @@ fn parse_active_mod_contributors(
 		let contributor = by_mod
 			.get(mod_id)
 			.ok_or_else(|| format!("missing contributor {} for {file_path}", mod_id.as_str()))?;
-		let parsed_file = parsed_from_cache(contributor, script_cache)
-			.or_else(|| {
-				parse_script_file(
-					&contributor.mod_id,
-					&contributor.root_path,
-					&contributor.absolute_path,
-				)
-			})
-			.ok_or_else(|| {
-				format!(
-					"failed to parse mod file {} for {}",
-					contributor.absolute_path.display(),
-					contributor.mod_id,
-				)
-			})?;
+		let parsed_file = parse_contributor(contributor, script_cache).map_err(|error| {
+			format!(
+				"failed to parse mod file for {} in {file_path}: {error}",
+				contributor.mod_id
+			)
+		})?;
 		parsed.insert(mod_id.clone(), parsed_file);
 	}
 	Ok(parsed)
 }
 
-fn parsed_from_cache(
+fn parse_contributor(
 	contributor: &ResolvedFileContributor,
 	script_cache: Option<&WorkspaceScriptCache>,
-) -> Option<ParsedScriptFile> {
-	let relative = contributor
-		.absolute_path
-		.strip_prefix(&contributor.root_path)
-		.ok()?;
-	script_cache?.get(&contributor.mod_id, relative).cloned()
+) -> Result<ParsedScriptFile, String> {
+	if let Some(script_cache) = script_cache {
+		return script_cache
+			.load(contributor)
+			.map(|parsed| (*parsed).clone());
+	}
+	parse_script_file(
+		&contributor.mod_id,
+		&contributor.root_path,
+		&contributor.absolute_path,
+	)
+	.ok_or_else(|| format!("failed to parse {}", contributor.absolute_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::fs;
+	use tempfile::TempDir;
+
+	#[test]
+	fn verified_cache_error_never_falls_back_to_direct_parsing() {
+		let temp = TempDir::new().expect("temp dir");
+		let relative = "events/test.txt";
+		fs::create_dir_all(temp.path().join("events")).expect("create events dir");
+		fs::write(
+			temp.path().join(relative),
+			"country_event = { id = test.1 }\n",
+		)
+		.expect("write script");
+		let contributor = ResolvedFileContributor {
+			mod_id: "mod-a".to_string(),
+			root_path: temp.path().to_path_buf(),
+			absolute_path: temp.path().join(relative),
+			precedence: 1,
+			is_base_game: false,
+			is_synthetic_base: false,
+			parse_ok_hint: Some(true),
+			mod_hash: Some("hash-a".to_string()),
+		};
+		let cache = WorkspaceScriptCache::default();
+
+		let error = parse_contributor(&contributor, Some(&cache))
+			.expect_err("missing verified entry must fail closed");
+		assert!(error.contains("no semantic-snapshot input"));
+		assert!(
+			parse_contributor(&contributor, None).is_ok(),
+			"direct parsing remains available only when no cache was supplied"
+		);
+	}
 }

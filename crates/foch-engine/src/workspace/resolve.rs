@@ -1,11 +1,13 @@
 use super::file_filter::FileFilter;
-use super::{LoadedModSnapshot, WorkspaceScriptCache, cache::load_or_build_mod_snapshot};
+use super::{
+	LoadedModSnapshot, WorkspaceScriptCache,
+	cache::{build_transient_mod_snapshot, load_or_build_mod_snapshot},
+};
 use crate::base_data::{
 	BaseSnapshotCurrentValidation, InstalledBaseSnapshot, InstalledBaseSnapshotIdentity,
 	base_game_mod_id, detect_game_version, installed_base_snapshot_identity,
 	load_installed_base_snapshot_from_identity, resolve_game_root, resolve_game_root_and_version,
 };
-use crate::cache::compute_mod_hash_for_files;
 use crate::config::Config;
 use crate::request::{CheckRequest, WorkspaceSource};
 use foch_core::config::{FochConfig, WorkspaceConfig, WorkspaceImportKind, WorkspaceMod};
@@ -13,20 +15,21 @@ use foch_core::domain::ParseErrorKind;
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::game::Game;
 use foch_core::domain::playlist::{Playlist, PlaylistEntry};
-use foch_core::model::{MergeUnitId, ModCandidate};
-use foch_core::utils::steam::steam_workshop_mod_path;
+use foch_core::model::{MergeUnitId, ModCandidate, ProductInputManifest, ProductInputMod};
+use foch_core::utils::steam::{
+	SteamWorkshopCatalog, WorkshopInstallIdentity, steam_workshop_mod_path,
+};
 use foch_language::analyzer::content_family::{
 	ContentLoadPolicy, GameProfile, module_name_for_descriptor,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
-use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +121,7 @@ pub(crate) struct WorkspaceInventory {
 	pub cache_game_version: Option<String>,
 	pub snapshot_filter: FileFilter,
 	pub mod_hashes: Vec<Option<String>>,
+	pub product_input_manifest: Option<ProductInputManifest>,
 	pub requested_retained_paths: Option<BTreeSet<String>>,
 	pub effective_retained_paths: Option<BTreeSet<String>>,
 	pub retained_module_policy_versions: BTreeMap<MergeUnitId, u32>,
@@ -325,6 +329,7 @@ fn playlist_entry_from_workspace_mod(
 		position: Some(manifest_mod.position.unwrap_or(next_position)),
 		steam_id,
 		root_path,
+		workshop_identity: manifest_mod.workshop_identity.clone(),
 	})
 }
 
@@ -375,30 +380,18 @@ pub(crate) fn build_workspace_inventory(
 	request: &CheckRequest,
 	include_game_base: bool,
 ) -> Result<WorkspaceInventory, WorkspaceResolveError> {
-	build_workspace_inventory_with_hash_cache(request, include_game_base, false, None)
+	build_workspace_inventory_for_paths(request, include_game_base, None)
 }
 
 pub fn resolve_workspace_summary(
 	request: &CheckRequest,
 ) -> Result<WorkspaceResolveSummary, WorkspaceResolveError> {
 	let loaded = load_workspace_source(request)?;
-	let snapshot_filter = match FileFilter::new(
-		loaded.playlist.game.clone(),
-		&loaded.config.extra_ignore_patterns,
-	) {
-		Ok(filter) => filter,
-		Err(message) => {
-			tracing::warn!(target: "foch::workspace::resolve", message, "falling back to filter without extra ignore globs");
-			FileFilter::for_game(loaded.playlist.game.clone())
-		}
-	};
-	let mods = build_mod_candidates_with_filter(
-		&loaded.source_root,
-		&loaded.config,
-		&loaded.playlist,
-		&snapshot_filter,
-		None,
-	);
+	let mut mods =
+		build_mod_candidates_metadata(&loaded.source_root, &loaded.config, &loaded.playlist);
+	for mod_item in &mut mods {
+		load_mod_candidate_descriptor(mod_item);
+	}
 	let game_root = resolve_game_root(&loaded.config, &loaded.playlist.game);
 	Ok(WorkspaceResolveSummary {
 		source_path: loaded.source_path,
@@ -443,6 +436,55 @@ pub fn resolve_workspace_targets(
 		}
 	}
 	Ok(targets)
+}
+
+/// Resolve the complete ordered product input manifest for a workspace.
+/// Identity comes only from the read-only Steam Workshop ACF; no content file
+/// is opened to construct this manifest.
+pub fn resolve_product_input_manifest(
+	request: &CheckRequest,
+	_retained_paths: Option<&BTreeSet<String>>,
+) -> Result<ProductInputManifest, WorkspaceResolveError> {
+	let loaded = load_workspace_source(request)?;
+	let mut entries = loaded.playlist.mods.clone();
+	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
+	let mods = entries
+		.iter()
+		.enumerate()
+		.map(|(index, entry)| {
+			let mod_id = mod_id_for_entry(entry);
+			let identity =
+				entry
+					.workshop_identity
+					.clone()
+					.ok_or_else(|| WorkspaceResolveError {
+						kind: WorkspaceResolveErrorKind::Io,
+						path: loaded.source_path.clone(),
+						message: format!(
+							"product input {mod_id} has no trusted Workshop ACF identity"
+						),
+					})?;
+			let root =
+				resolve_mod_root(&loaded.source_root, &loaded.config, &loaded.playlist, entry);
+			validate_workshop_lease(
+				&mod_id,
+				entry.steam_id.as_deref(),
+				root.as_deref(),
+				&identity,
+			)
+			.map_err(|error| WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: root.unwrap_or_else(|| loaded.source_path.clone()),
+				message: error.to_string(),
+			})?;
+			Ok(ProductInputMod {
+				mod_id,
+				precedence: index + 1,
+				workshop_identity: identity,
+			})
+		})
+		.collect::<Result<Vec<_>, WorkspaceResolveError>>()?;
+	Ok(ProductInputManifest::new(mods))
 }
 
 fn game_profile(game: &Game) -> Option<&'static dyn GameProfile> {
@@ -520,10 +562,9 @@ fn expand_retained_paths_for_game<'a>(
 	Some(effective)
 }
 
-pub(crate) fn build_workspace_inventory_with_hash_cache(
+pub(crate) fn build_workspace_inventory_for_paths(
 	request: &CheckRequest,
 	include_game_base: bool,
-	use_process_hash_cache: bool,
 	retained_paths: Option<&BTreeSet<String>>,
 ) -> Result<WorkspaceInventory, WorkspaceResolveError> {
 	let loaded = load_workspace_source(request)?;
@@ -544,25 +585,9 @@ pub(crate) fn build_workspace_inventory_with_hash_cache(
 			FileFilter::for_game(playlist.game.clone())
 		}
 	};
-	let mut mods =
-		build_mod_candidates_with_filter(&source_root, &config, &playlist, &snapshot_filter, None);
-	let available_mod_paths = mods
-		.iter()
-		.flat_map(|mod_item| mod_item.files.iter())
-		.map(|path| normalize_relative_path(path))
-		.collect::<Vec<_>>();
-	let effective_retained_paths = expand_retained_paths_for_game(
-		&playlist.game,
-		retained_paths,
-		available_mod_paths.iter().map(String::as_str),
-	);
-	if let Some(effective_retained_paths) = effective_retained_paths.as_ref() {
-		for mod_item in &mut mods {
-			mod_item.files.retain(|relative| {
-				effective_retained_paths.contains(&normalize_relative_path(relative))
-			});
-		}
-	}
+	let mods = build_mod_candidates_metadata(&source_root, &config, &playlist);
+	let effective_retained_paths =
+		expand_retained_paths_for_game(&playlist.game, retained_paths, std::iter::empty());
 	let retained_module_policy_versions = effective_retained_paths
 		.as_ref()
 		.map(|paths| retained_definition_modules(&playlist.game, paths))
@@ -644,16 +669,40 @@ pub(crate) fn build_workspace_inventory_with_hash_cache(
 		}
 		identity
 	});
+	for mod_item in &mods {
+		validate_workshop_input(mod_item).map_err(|error| WorkspaceResolveError {
+			kind: WorkspaceResolveErrorKind::Io,
+			path: mod_item
+				.root_path
+				.clone()
+				.unwrap_or_else(|| source_path.clone()),
+			message: format!(
+				"failed to validate Workshop ACF identity for {}: {error}",
+				mod_item.mod_id
+			),
+		})?;
+	}
 	let mod_hashes = mods
 		.iter()
 		.map(|mod_item| {
-			if use_process_hash_cache {
-				compute_candidate_hash_with_process_cache(mod_item)
-			} else {
-				compute_candidate_hash(mod_item)
-			}
+			semantic_snapshot_key(&playlist.game, &config.extra_ignore_patterns, mod_item)
 		})
-		.collect();
+		.collect::<Vec<_>>();
+	let product_input_manifest = mods
+		.iter()
+		.enumerate()
+		.map(|(index, mod_item)| {
+			mod_item
+				.workshop_identity
+				.clone()
+				.map(|workshop_identity| ProductInputMod {
+					mod_id: mod_item.mod_id.clone(),
+					precedence: index + 1,
+					workshop_identity,
+				})
+		})
+		.collect::<Option<Vec<_>>>()
+		.map(ProductInputManifest::new);
 
 	Ok(WorkspaceInventory {
 		playlist_path: source_path,
@@ -670,6 +719,7 @@ pub(crate) fn build_workspace_inventory_with_hash_cache(
 		cache_game_version,
 		snapshot_filter,
 		mod_hashes,
+		product_input_manifest,
 		requested_retained_paths: retained_paths.cloned(),
 		effective_retained_paths,
 		retained_module_policy_versions,
@@ -690,7 +740,7 @@ pub(crate) fn resolve_workspace_from_inventory(
 	let WorkspaceInventory {
 		playlist_path,
 		playlist,
-		mods,
+		mut mods,
 		base_game_root,
 		mod_cache_game_version,
 		base_snapshot_identity,
@@ -698,8 +748,9 @@ pub(crate) fn resolve_workspace_from_inventory(
 		cache_game_version,
 		snapshot_filter,
 		mod_hashes,
+		product_input_manifest: _,
 		requested_retained_paths,
-		effective_retained_paths,
+		effective_retained_paths: _,
 		retained_module_policy_versions: _,
 	} = inventory;
 	let installed_base_snapshot = match (
@@ -729,11 +780,45 @@ pub(crate) fn resolve_workspace_from_inventory(
 		}
 		_ => None,
 	};
-	let mut available_paths = effective_retained_paths
-		.as_ref()
-		.into_iter()
-		.flatten()
-		.cloned()
+	let mut mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
+		.iter()
+		.enumerate()
+		.map(|(idx, mod_item)| {
+			load_or_build_mod_snapshot(
+				playlist.game.key(),
+				mod_item,
+				&snapshot_filter,
+				mod_hashes.get(idx).and_then(|hash| hash.as_deref()),
+			)
+			.map_err(|error| WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: mod_item
+					.root_path
+					.clone()
+					.unwrap_or_else(|| playlist_path.clone()),
+				message: format!(
+					"failed to load semantic snapshot for {}: {error}",
+					mod_item.mod_id
+				),
+			})
+		})
+		.collect::<Result<_, _>>()?;
+	// Descriptor metadata affects dependency and replace-path semantics, but it
+	// is not needed to address an ACF-keyed semantic snapshot. Keep this read
+	// after every process/disk snapshot lookup so a warm run never touches a
+	// Workshop file before its semantic caches have had a chance to hit.
+	for mod_item in &mut mods {
+		load_mod_candidate_descriptor(mod_item);
+	}
+	for (mod_item, snapshot) in mods.iter_mut().zip(mod_snapshots.iter()) {
+		if let Some(snapshot) = snapshot {
+			mod_item.files = snapshot.inventory_paths.clone();
+		}
+	}
+	let mut available_paths = mods
+		.iter()
+		.flat_map(|mod_item| mod_item.files.iter())
+		.map(|path| normalize_relative_path(path))
 		.collect::<Vec<_>>();
 	if let Some(base_snapshot) = installed_base_snapshot.as_ref() {
 		available_paths.extend(base_snapshot.snapshot.inventory_paths.iter().cloned());
@@ -743,19 +828,33 @@ pub(crate) fn resolve_workspace_from_inventory(
 		requested_retained_paths.as_ref(),
 		available_paths.iter().map(String::as_str),
 	);
-	let mod_snapshots: Vec<Option<LoadedModSnapshot>> = mods
-		.iter()
-		.enumerate()
-		.map(|(idx, mod_item)| {
-			load_or_build_mod_snapshot(
-				playlist.game.key(),
-				mod_cache_game_version.as_deref(),
-				mod_item,
-				&snapshot_filter,
-				mod_hashes.get(idx).and_then(|hash| hash.as_deref()),
-			)
-		})
-		.collect();
+	if let Some(effective_retained_paths) = effective_retained_paths.as_ref() {
+		for mod_item in &mut mods {
+			mod_item.files.retain(|relative| {
+				effective_retained_paths.contains(&normalize_relative_path(relative))
+			});
+		}
+		for (mod_item, snapshot) in mods.iter().zip(mod_snapshots.iter_mut()) {
+			let Some(full_snapshot) = snapshot.as_ref() else {
+				continue;
+			};
+			if mod_item.files == full_snapshot.inventory_paths {
+				continue;
+			}
+			*snapshot = build_transient_mod_snapshot(mod_item, &snapshot_filter, full_snapshot)
+				.map_err(|error| WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: mod_item
+						.root_path
+						.clone()
+						.unwrap_or_else(|| playlist_path.clone()),
+					message: format!(
+						"failed to build retained semantic snapshot for {}: {error}",
+						mod_item.mod_id
+					),
+				})?;
+		}
+	}
 	let mut file_inventory = build_file_inventory(
 		&playlist,
 		&mods,
@@ -771,7 +870,12 @@ pub(crate) fn resolve_workspace_from_inventory(
 		&mod_snapshots,
 		installed_base_snapshot.as_ref(),
 		base_game_root.as_deref(),
-	);
+	)
+	.map_err(|message| WorkspaceResolveError {
+		kind: WorkspaceResolveErrorKind::Io,
+		path: playlist_path.clone(),
+		message,
+	})?;
 
 	Ok(ResolvedWorkspace {
 		playlist_path,
@@ -798,12 +902,10 @@ fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) 
 	)
 }
 
-pub(crate) fn build_mod_candidates_with_filter(
+pub(crate) fn build_mod_candidates_metadata(
 	source_root: &Path,
 	config: &Config,
 	playlist: &Playlist,
-	filter: &FileFilter,
-	retained_paths: Option<&BTreeSet<String>>,
 ) -> Vec<ModCandidate> {
 	let mut entries = playlist.mods.clone();
 	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
@@ -811,121 +913,145 @@ pub(crate) fn build_mod_candidates_with_filter(
 	entries
 		.into_iter()
 		.map(|entry| {
-			let mod_id = entry
-				.steam_id
-				.clone()
-				.filter(|x| !x.trim().is_empty())
-				.or_else(|| entry.id.clone().filter(|x| !x.trim().is_empty()))
-				.unwrap_or_else(|| "<missing-steam-id>".to_string());
+			let mod_id = mod_id_for_entry(&entry);
 
 			let root_path = resolve_mod_root(source_root, config, playlist, &entry);
 			let descriptor_path = root_path.as_ref().map(|path| path.join("descriptor.mod"));
 
-			let (descriptor, descriptor_error) = match descriptor_path.as_ref() {
-				Some(path) if path.exists() => match load_descriptor(path) {
-					Ok(descriptor) => (Some(descriptor), None),
-					Err(err) => (None, Some(err.to_string())),
-				},
-				Some(path) => (None, Some(format!("{} does not exist", path.display()))),
-				None => (None, None),
-			};
-
-			let mut files = root_path
-				.as_ref()
-				.map_or_else(Vec::new, |root| collect_relative_files(root, filter));
-			if let Some(retained_paths) = retained_paths {
-				files
-					.retain(|relative| retained_paths.contains(&normalize_relative_path(relative)));
-			}
-
+			let workshop_identity = entry.workshop_identity.clone();
 			ModCandidate {
 				entry,
 				mod_id,
 				root_path,
 				descriptor_path,
-				descriptor,
-				descriptor_error,
-				files,
+				descriptor: None,
+				workshop_identity,
+				descriptor_error: None,
+				files: Vec::new(),
 			}
 		})
 		.collect()
 }
 
-fn compute_candidate_hash(mod_item: &ModCandidate) -> Option<String> {
-	let root = mod_item.root_path.as_ref()?;
-	let files = candidate_hash_files(root, mod_item);
-	compute_mod_hash_for_files(root, &files).ok()
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct CandidateHashCacheKey {
-	root: String,
-	files: Vec<CandidateFileFingerprint>,
-}
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct CandidateFileFingerprint {
-	path: String,
-	len: u64,
-	modified_ns: Option<u128>,
-}
-
-static CANDIDATE_HASH_CACHE: OnceLock<Mutex<HashMap<CandidateHashCacheKey, String>>> =
-	OnceLock::new();
-
-fn compute_candidate_hash_with_process_cache(mod_item: &ModCandidate) -> Option<String> {
-	let root = mod_item.root_path.as_ref()?;
-	let files = candidate_hash_files(root, mod_item);
-	let Some(key) = candidate_hash_cache_key(root, &files) else {
-		return compute_candidate_hash(mod_item);
+fn load_mod_candidate_descriptor(mod_item: &mut ModCandidate) {
+	let (descriptor, descriptor_error) = match mod_item.descriptor_path.as_ref() {
+		Some(path) if path.exists() => match load_descriptor(path) {
+			Ok(descriptor) => (Some(descriptor), None),
+			Err(error) => (None, Some(error.to_string())),
+		},
+		Some(path) => (None, Some(format!("{} does not exist", path.display()))),
+		None => (None, None),
 	};
-	let cache = CANDIDATE_HASH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-	if let Ok(guard) = cache.lock()
-		&& let Some(hash) = guard.get(&key)
-	{
-		return Some(hash.clone());
-	}
-	let hash = compute_mod_hash_for_files(root, &files).ok()?;
-	if let Ok(mut guard) = cache.lock() {
-		guard.insert(key, hash.clone());
-	}
-	Some(hash)
+	mod_item.descriptor = descriptor;
+	mod_item.descriptor_error = descriptor_error;
 }
 
-fn candidate_hash_files(root: &Path, mod_item: &ModCandidate) -> Vec<PathBuf> {
-	let mut files = mod_item.files.clone();
-	if let Some(descriptor_path) = mod_item
-		.descriptor_path
-		.as_ref()
-		.filter(|path| path.is_file())
-		&& let Ok(relative) = descriptor_path.strip_prefix(root)
-		&& !files.iter().any(|path| path == relative)
-	{
-		files.push(relative.to_path_buf());
-	}
-	files
+fn mod_id_for_entry(entry: &PlaylistEntry) -> String {
+	entry
+		.steam_id
+		.clone()
+		.filter(|value| !value.trim().is_empty())
+		.or_else(|| entry.id.clone().filter(|value| !value.trim().is_empty()))
+		.unwrap_or_else(|| "<missing-steam-id>".to_string())
 }
 
-fn candidate_hash_cache_key(root: &Path, files: &[PathBuf]) -> Option<CandidateHashCacheKey> {
-	let mut fingerprints = Vec::with_capacity(files.len());
-	for relative in files {
-		let metadata = fs::metadata(root.join(relative)).ok()?;
-		let modified_ns = metadata
-			.modified()
-			.ok()
-			.and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-			.map(|duration| duration.as_nanos());
-		fingerprints.push(CandidateFileFingerprint {
-			path: normalize_relative_path(relative),
-			len: metadata.len(),
-			modified_ns,
-		});
+fn validate_workshop_input(mod_item: &ModCandidate) -> Result<(), io::Error> {
+	let Some(expected) = mod_item.workshop_identity.as_ref() else {
+		return Ok(());
+	};
+	validate_workshop_lease(
+		&mod_item.mod_id,
+		mod_item.entry.steam_id.as_deref(),
+		mod_item.root_path.as_deref(),
+		expected,
+	)
+}
+
+fn validate_workshop_lease(
+	mod_id: &str,
+	steam_id: Option<&str>,
+	root: Option<&Path>,
+	expected: &WorkshopInstallIdentity,
+) -> Result<(), io::Error> {
+	let root = root.ok_or_else(|| {
+		io::Error::new(
+			io::ErrorKind::NotFound,
+			format!("Workshop mod {mod_id} has no content root"),
+		)
+	})?;
+	if steam_id != Some(expected.workshop_id.as_str()) {
+		return Err(io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!(
+				"Workshop identity {} does not match steam_id for {}",
+				expected.workshop_id, mod_id
+			),
+		));
 	}
-	fingerprints.sort_by(|left, right| left.path.cmp(&right.path));
-	Some(CandidateHashCacheKey {
-		root: normalize_relative_path(root),
-		files: fingerprints,
-	})
+	let content_root = root.parent().ok_or_else(|| {
+		io::Error::new(
+			io::ErrorKind::InvalidInput,
+			format!("Workshop root has no content parent: {}", root.display()),
+		)
+	})?;
+	let workshop_root = content_root
+		.parent()
+		.and_then(Path::parent)
+		.ok_or_else(|| {
+			io::Error::new(
+				io::ErrorKind::InvalidInput,
+				format!("Workshop root has no ACF parent: {}", root.display()),
+			)
+		})?;
+	let manifest_path = workshop_root.join(format!("appworkshop_{}.acf", expected.app_id));
+	let catalog = SteamWorkshopCatalog::from_override(
+		expected.app_id,
+		content_root.to_path_buf(),
+		manifest_path,
+	)
+	.map_err(|error| io::Error::other(error.to_string()))?;
+	let observed = catalog
+		.require_item(&expected.workshop_id)
+		.map_err(|error| io::Error::other(error.to_string()))?;
+	let observed_identity = observed
+		.identity()
+		.map_err(|error| io::Error::other(error.to_string()))?;
+	let canonical_root = fs::canonicalize(root)?;
+	if observed_identity != *expected || observed.content_path != canonical_root {
+		return Err(io::Error::other(format!(
+			"Workshop ACF identity changed for {}: expected {:?}, observed {:?}",
+			mod_id, expected, observed_identity
+		)));
+	}
+	Ok(())
+}
+
+fn semantic_snapshot_key(
+	game: &Game,
+	extra_ignore_patterns: &[String],
+	mod_item: &ModCandidate,
+) -> Option<String> {
+	let identity: &WorkshopInstallIdentity = mod_item.workshop_identity.as_ref()?;
+	let mut hasher = blake3::Hasher::new();
+	update_cache_key_field(&mut hasher, "foch-workshop-semantic-snapshot-v2");
+	update_cache_key_field(&mut hasher, game.key());
+	let mut ignore_patterns = extra_ignore_patterns.to_vec();
+	ignore_patterns.sort();
+	ignore_patterns.dedup();
+	hasher.update(&(ignore_patterns.len() as u64).to_le_bytes());
+	for pattern in ignore_patterns {
+		update_cache_key_field(&mut hasher, &pattern);
+	}
+	update_cache_key_field(&mut hasher, &mod_item.mod_id);
+	hasher.update(&identity.app_id.to_le_bytes());
+	update_cache_key_field(&mut hasher, identity.workshop_id.as_str());
+	update_cache_key_field(&mut hasher, identity.manifest_id.as_str());
+	Some(hasher.finalize().to_hex().to_string())
+}
+
+fn update_cache_key_field(hasher: &mut blake3::Hasher, value: &str) {
+	hasher.update(&(value.len() as u64).to_le_bytes());
+	hasher.update(value.as_bytes());
 }
 
 fn resolve_mod_root(
@@ -1051,10 +1177,43 @@ fn descriptor_path_candidates(game_data_dir: &Path, raw: &str) -> Vec<PathBuf> {
 	dedup_candidates(candidates)
 }
 
-pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> Vec<PathBuf> {
+pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> io::Result<Vec<PathBuf>> {
+	let loadable_roots = filter.game().loadable_content_roots();
+	let entries = WalkDir::new(root)
+		.follow_links(false)
+		.into_iter()
+		.filter_entry(|entry| {
+			if entry.depth() != 1 {
+				return true;
+			}
+			let Some(loadable_roots) = loadable_roots else {
+				return true;
+			};
+			let name = entry.file_name().to_string_lossy();
+			loadable_roots
+				.iter()
+				.any(|root_name| name.eq_ignore_ascii_case(root_name))
+		})
+		.map(|entry| {
+			entry.map_err(|error| {
+				let kind = error
+					.io_error()
+					.map_or(io::ErrorKind::Other, io::Error::kind);
+				io::Error::new(kind, error.to_string())
+			})
+		});
+	collect_relative_files_from_entries(root, filter, entries)
+}
+
+fn collect_relative_files_from_entries(
+	root: &Path,
+	filter: &FileFilter,
+	entries: impl IntoIterator<Item = io::Result<walkdir::DirEntry>>,
+) -> io::Result<Vec<PathBuf>> {
 	let mut files = Vec::new();
 
-	for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+	for entry in entries {
+		let entry = entry?;
 		if !entry.file_type().is_file() {
 			continue;
 		}
@@ -1064,16 +1223,24 @@ pub(crate) fn collect_relative_files(root: &Path, filter: &FileFilter) -> Vec<Pa
 			continue;
 		}
 
-		if let Ok(relative) = path.strip_prefix(root) {
-			if !filter.accepts(relative) {
-				continue;
-			}
-			files.push(relative.to_path_buf());
+		let relative = path.strip_prefix(root).map_err(|error| {
+			io::Error::new(
+				io::ErrorKind::InvalidData,
+				format!(
+					"walked path {} escaped root {}: {error}",
+					path.display(),
+					root.display()
+				),
+			)
+		})?;
+		if !filter.accepts(relative) {
+			continue;
 		}
+		files.push(relative.to_path_buf());
 	}
 
 	files.sort();
-	files
+	Ok(files)
 }
 
 pub(crate) fn build_file_inventory(
@@ -1192,6 +1359,7 @@ pub(crate) fn inject_synthetic_bases(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use foch_core::utils::steam::SteamId;
 	use std::fs;
 	use tempfile::TempDir;
 
@@ -1240,6 +1408,121 @@ mod tests {
 
 	fn request_for_manifest(path: &Path) -> CheckRequest {
 		CheckRequest::from_manifest_path(path.to_path_buf(), Config::default())
+	}
+
+	#[test]
+	fn relative_file_inventory_propagates_walk_errors() {
+		let filter = FileFilter::for_game(Game::EuropaUniversalis4);
+		let injected_error = io::Error::new(
+			io::ErrorKind::PermissionDenied,
+			"injected directory traversal failure",
+		);
+		let error = collect_relative_files_from_entries(
+			Path::new("/synthetic-mod-root"),
+			&filter,
+			[Err(injected_error)],
+		)
+		.expect_err("directory traversal errors must fail the inventory");
+
+		assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+		assert_eq!(error.to_string(), "injected directory traversal failure");
+	}
+
+	#[test]
+	fn semantic_snapshot_key_binds_acf_and_behavior_but_not_root_or_inventory() {
+		let identity = WorkshopInstallIdentity {
+			app_id: 236_850,
+			workshop_id: SteamId::new(1_001),
+			manifest_id: SteamId::new(2_001),
+		};
+		let candidate = |mod_id: &str, root: &str, files: Vec<&str>| ModCandidate {
+			entry: PlaylistEntry::default(),
+			mod_id: mod_id.to_string(),
+			root_path: Some(PathBuf::from(root)),
+			descriptor_path: None,
+			descriptor: None,
+			workshop_identity: Some(identity.clone()),
+			descriptor_error: None,
+			files: files.into_iter().map(PathBuf::from).collect(),
+		};
+		let first = candidate(
+			"mod-a",
+			"/first/workshop/root",
+			vec!["common/scripted_effects/shared.txt"],
+		);
+		let moved = candidate(
+			"mod-a",
+			"/second/workshop/root",
+			vec!["events/new.txt", "gfx/large.dds"],
+		);
+		let base_patterns = vec!["**/.DS_Store".to_string(), "*.bak".to_string()];
+		let reordered_patterns = vec![
+			"*.bak".to_string(),
+			"**/.DS_Store".to_string(),
+			"*.bak".to_string(),
+		];
+
+		assert_eq!(
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &reordered_patterns, &moved),
+			"root and discovered file-set changes must not precede an ACF-keyed lookup"
+		);
+		assert_ne!(
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
+			semantic_snapshot_key(
+				&Game::EuropaUniversalis4,
+				&base_patterns,
+				&candidate("mod-b", "/first/workshop/root", Vec::new()),
+			)
+		);
+		assert_ne!(
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
+			semantic_snapshot_key(
+				&Game::EuropaUniversalis4,
+				&["different/**".to_string()],
+				&first,
+			)
+		);
+		assert_ne!(
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
+			semantic_snapshot_key(&Game::CrusaderKings3, &base_patterns, &first)
+		);
+		let mut updated_acf = first.clone();
+		updated_acf
+			.workshop_identity
+			.as_mut()
+			.expect("Workshop identity")
+			.manifest_id = SteamId::new(2_002);
+		assert_ne!(
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
+			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &updated_acf)
+		);
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn relative_file_inventory_prunes_non_loadable_subtrees_before_descent() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp = TempDir::new().expect("tempdir");
+		let root = temp.path().join("mod");
+		let loadable = root.join("common/countries");
+		let poison = root.join("irrelevant/blocked");
+		fs::create_dir_all(&loadable).expect("create loadable root");
+		fs::create_dir_all(&poison).expect("create poison root");
+		fs::write(loadable.join("A.txt"), "AAA = { }\n").expect("write loadable file");
+		fs::write(poison.join("large.bin"), b"must not be visited").expect("write poison file");
+		fs::set_permissions(root.join("irrelevant"), fs::Permissions::from_mode(0o000))
+			.expect("poison irrelevant subtree");
+
+		let result = collect_relative_files(&root, &FileFilter::for_game(Game::EuropaUniversalis4));
+		fs::set_permissions(root.join("irrelevant"), fs::Permissions::from_mode(0o700))
+			.expect("restore irrelevant subtree");
+
+		assert_eq!(
+			result.expect("non-loadable subtree must be pruned"),
+			vec![PathBuf::from("common/countries/A.txt")]
+		);
 	}
 
 	#[test]
@@ -1297,6 +1580,42 @@ path = "local_patch"
 		);
 		assert!(targets.iter().any(|target| target.path == imported_root));
 		assert!(targets.iter().any(|target| target.path == local_root));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn workspace_summary_does_not_walk_mod_content() {
+		use std::os::unix::fs::PermissionsExt;
+
+		let temp = TempDir::new().expect("tempdir");
+		let mod_root = temp.path().join("local_mod");
+		write_descriptor(&mod_root, "Local Mod", None);
+		let poison = mod_root.join("events/blocked");
+		fs::create_dir_all(&poison).expect("create poison content");
+		fs::write(poison.join("event.txt"), "namespace = poison\n").expect("write poison content");
+		fs::set_permissions(mod_root.join("events"), fs::Permissions::from_mode(0o000))
+			.expect("poison loadable subtree");
+		let manifest_path = temp.path().join("foch.toml");
+		fs::write(
+			&manifest_path,
+			r#"
+[workspace]
+game = "eu4"
+
+[[workspace.mods]]
+id = "local_mod"
+path = "local_mod"
+"#,
+		)
+		.expect("write manifest");
+
+		let result = resolve_workspace_summary(&request_for_manifest(&manifest_path));
+		fs::set_permissions(mod_root.join("events"), fs::Permissions::from_mode(0o700))
+			.expect("restore content subtree");
+
+		let summary = result.expect("summary must be metadata-only");
+		assert_eq!(summary.mods.len(), 1);
+		assert_eq!(summary.mods[0].mod_id, "local_mod");
 	}
 
 	#[test]
@@ -1395,6 +1714,73 @@ path = "missing-local-patch"
 	}
 
 	#[test]
+	fn workspace_product_input_manifest_reads_acf_not_mod_content() {
+		let temp = TempDir::new().expect("tempdir");
+		let workshop_root = temp.path().join("steamapps/workshop");
+		let content_root = workshop_root.join("content/236850");
+		let mod_root = content_root.join("1001");
+		let content_file = mod_root.join("gfx/sentinel.dds");
+		fs::create_dir_all(content_file.parent().expect("sentinel parent"))
+			.expect("create Workshop item");
+		fs::write(&content_file, b"first payload").expect("write sentinel");
+		fs::write(
+			workshop_root.join("appworkshop_236850.acf"),
+			r#""AppWorkshop"
+{
+	"appid" "236850"
+	"WorkshopItemsInstalled"
+	{
+		"1001"
+		{
+			"size" "13"
+			"timeupdated" "1780000000"
+			"manifest" "2001"
+		}
+	}
+}"#,
+		)
+		.expect("write Workshop ACF");
+		let manifest_path = temp.path().join("foch.toml");
+		fs::write(
+			&manifest_path,
+			r#"
+[workspace]
+game = "eu4"
+
+[[workspace.mods]]
+id = "mod-a"
+steam_id = "1001"
+path = "steamapps/workshop/content/236850/1001"
+workshop_identity = { app_id = 236850, workshop_id = "1001", manifest_id = "2001" }
+"#,
+		)
+		.expect("write manifest");
+
+		let request = request_for_manifest(&manifest_path);
+		let first = resolve_product_input_manifest(&request, None).expect("first manifest");
+		fs::write(&content_file, b"changed bytes").expect("mutate content without changing ACF");
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			fs::set_permissions(&content_file, fs::Permissions::from_mode(0o000))
+				.expect("make sentinel unreadable");
+		}
+		let second = resolve_product_input_manifest(&request, None).expect("second manifest");
+		#[cfg(unix)]
+		{
+			use std::os::unix::fs::PermissionsExt;
+			fs::set_permissions(&content_file, fs::Permissions::from_mode(0o600))
+				.expect("restore sentinel permissions");
+		}
+
+		assert_eq!(first.mods[0].mod_id, "1001");
+		assert_eq!(first.mods[0].precedence, 1);
+		assert_eq!(first.mods[0].workshop_identity.manifest_id.as_str(), "2001");
+		assert!(first.digest_is_valid());
+		assert_eq!(first, second);
+	}
+
+	#[test]
 	fn retained_governments_path_expands_to_the_complete_definition_module() {
 		let temp = TempDir::new().expect("tempdir");
 		let mod_root = temp.path().join("governments_mod");
@@ -1429,27 +1815,34 @@ path = "governments_mod"
 		.expect("write manifest");
 		let requested = BTreeSet::from(["common/governments/00_governments.txt".to_string()]);
 
-		let inventory = build_workspace_inventory_with_hash_cache(
+		let inventory = build_workspace_inventory_for_paths(
 			&request_for_manifest(&manifest_path),
 			false,
-			true,
 			Some(&requested),
 		)
 		.expect("build retained workspace inventory");
-		let retained_files = inventory.mods[0]
+		assert!(inventory.mods[0].files.is_empty());
+		assert!(inventory.mods[0].descriptor.is_none());
+		assert!(inventory.mods[0].descriptor_error.is_none());
+		assert_eq!(inventory.requested_retained_paths, Some(requested.clone()));
+		assert_eq!(
+			inventory.effective_retained_paths,
+			Some(requested),
+			"pre-cache inventory identity must not require walking sibling paths"
+		);
+		let workspace = resolve_workspace_from_inventory(inventory).expect("resolve workspace");
+		assert_eq!(
+			workspace.mods[0]
+				.descriptor
+				.as_ref()
+				.map(|descriptor| descriptor.name.as_str()),
+			Some("Governments Mod")
+		);
+		let retained_files = workspace.mods[0]
 			.files
 			.iter()
 			.map(|path| normalize_relative_path(path))
 			.collect::<BTreeSet<_>>();
-
-		assert_eq!(inventory.requested_retained_paths, Some(requested));
-		assert_eq!(
-			inventory.effective_retained_paths,
-			Some(BTreeSet::from([
-				"common/governments/00_governments.txt".to_string(),
-				"common/governments/zzz_governments.txt".to_string(),
-			]))
-		);
 		assert_eq!(
 			retained_files,
 			BTreeSet::from([
@@ -1457,6 +1850,7 @@ path = "governments_mod"
 				"common/governments/zzz_governments.txt".to_string(),
 			])
 		);
+		assert_eq!(workspace.effective_retained_paths, Some(retained_files));
 	}
 
 	#[test]

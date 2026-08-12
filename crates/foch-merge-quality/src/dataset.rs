@@ -10,13 +10,25 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
-use crate::corpus::WorkshopProvenance;
-use crate::object_store::TreeStats;
+use foch_core::utils::steam::SteamId;
 
+use crate::corpus::WorkshopProvenance;
 pub const SCHEMA: &str = "1.0.0";
+pub const INPUT_VERSION_SCHEMA_V2: &str = "2.0.0";
+pub const WORKSHOP_OBSERVATION_SCHEMA_V2: &str = "2.0.0";
 pub const MEASUREMENT_SCHEMA_V1: &str = "1.0.0";
 pub const MEASUREMENT_SCHEMA_V2: &str = "2.0.0";
 pub const SCORER_VERSION: &str = "2.0.0";
+
+/// Frozen V1 tree statistics retained for decoding historical metadata.
+/// Live Workshop inputs do not materialize tree objects.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+pub struct TreeStats {
+	pub files: u64,
+	pub directories: u64,
+	pub symlinks: u64,
+	pub bytes: u64,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +87,90 @@ pub struct GameIdentity {
 	pub app_id: u32,
 	pub version: String,
 	pub steam_build_id: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GameInputIdentityV2 {
+	pub app_id: SteamId,
+	pub version: String,
+	pub steam_build_id: Option<SteamId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopInputVersionV2 {
+	pub workshop_id: SteamId,
+	pub manifest_id: SteamId,
+}
+
+/// Immutable identity for one live-Workshop product input set.
+///
+/// Paths, ACF timestamps, and content-tree digests are deliberately absent.
+/// Steam's read-only ACF is the sole authority for ordered Workshop versions.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputVersionRecord {
+	pub schema: String,
+	pub input_version_id: String,
+	pub case_id: String,
+	pub game: GameInputIdentityV2,
+	pub compatch: WorkshopInputVersionV2,
+	/// Source mods in declared playset order. Order is part of input identity.
+	pub source_mods: Vec<WorkshopInputVersionV2>,
+}
+
+impl InputVersionRecord {
+	pub fn new(
+		case_id: String,
+		game: GameInputIdentityV2,
+		compatch: WorkshopInputVersionV2,
+		source_mods: Vec<WorkshopInputVersionV2>,
+	) -> Self {
+		let identity = serde_json::to_vec(&(&game, &compatch, &source_mods))
+			.expect("Workshop input identity serializes");
+		let input_version_id = stable_id(
+			"workshop-input-version-v2",
+			&[case_id.as_bytes(), &identity],
+		);
+		Self {
+			schema: INPUT_VERSION_SCHEMA_V2.to_string(),
+			input_version_id,
+			case_id,
+			game,
+			compatch,
+			source_mods,
+		}
+	}
+
+	pub fn identity_is_valid(&self) -> bool {
+		self.schema == INPUT_VERSION_SCHEMA_V2
+			&& !self.case_id.is_empty()
+			&& !self.game.version.is_empty()
+			&& *self
+				== Self::new(
+					self.case_id.clone(),
+					self.game.clone(),
+					self.compatch.clone(),
+					self.source_mods.clone(),
+				)
+	}
+}
+
+impl IdentifiedRecord for InputVersionRecord {
+	fn record_id(&self) -> &str {
+		&self.input_version_id
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopItemObservationV2 {
+	pub workshop_id: SteamId,
+	pub manifest_id: SteamId,
+	pub time_updated: u64,
+	pub size_bytes: u64,
+	pub ugc_handle: Option<SteamId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -186,6 +282,118 @@ impl ObservationRecord {
 impl IdentifiedRecord for ObservationRecord {
 	fn record_id(&self) -> &str {
 		&self.observation_id
+	}
+}
+
+/// One read-only observation of the Steam ACF state backing an input version.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkshopObservationRecordV2 {
+	pub schema: String,
+	pub observation_id: String,
+	pub input_version_id: String,
+	pub observed_at: String,
+	pub compatch: WorkshopItemObservationV2,
+	pub source_mods: Vec<WorkshopItemObservationV2>,
+}
+
+impl WorkshopObservationRecordV2 {
+	pub fn new(
+		input_version_id: String,
+		observed_at: String,
+		compatch: WorkshopItemObservationV2,
+		source_mods: Vec<WorkshopItemObservationV2>,
+	) -> Self {
+		let payload =
+			serde_json::to_vec(&(&input_version_id, &observed_at, &compatch, &source_mods))
+				.expect("Workshop observation identity serializes");
+		Self {
+			schema: WORKSHOP_OBSERVATION_SCHEMA_V2.to_string(),
+			observation_id: stable_id("workshop-observation-v2", &[&payload]),
+			input_version_id,
+			observed_at,
+			compatch,
+			source_mods,
+		}
+	}
+
+	pub fn identity_is_valid(&self) -> bool {
+		self.schema == WORKSHOP_OBSERVATION_SCHEMA_V2
+			&& is_blake3_hash(&self.input_version_id)
+			&& !self.observed_at.is_empty()
+			&& *self
+				== Self::new(
+					self.input_version_id.clone(),
+					self.observed_at.clone(),
+					self.compatch.clone(),
+					self.source_mods.clone(),
+				)
+	}
+
+	pub fn matches_input_version(&self, input: &InputVersionRecord) -> bool {
+		self.input_version_id == input.input_version_id
+			&& item_observation_matches_input(&self.compatch, &input.compatch)
+			&& self.source_mods.len() == input.source_mods.len()
+			&& self
+				.source_mods
+				.iter()
+				.zip(&input.source_mods)
+				.all(|(observation, version)| item_observation_matches_input(observation, version))
+	}
+}
+
+fn item_observation_matches_input(
+	observation: &WorkshopItemObservationV2,
+	version: &WorkshopInputVersionV2,
+) -> bool {
+	observation.workshop_id == version.workshop_id && observation.manifest_id == version.manifest_id
+}
+
+impl IdentifiedRecord for WorkshopObservationRecordV2 {
+	fn record_id(&self) -> &str {
+		&self.observation_id
+	}
+}
+
+/// Compatibility reader for the append-only observations stream.
+///
+/// V1 remains represented by [`ObservationRecord`] so historical callers and
+/// serialization stay untouched. New code can read the shared JSONL as this
+/// enum and append only `V2` records.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum WorkshopObservationRecord {
+	V2(WorkshopObservationRecordV2),
+	V1(ObservationRecord),
+}
+
+impl WorkshopObservationRecord {
+	pub fn schema(&self) -> &str {
+		match self {
+			Self::V1(record) => &record.schema,
+			Self::V2(record) => &record.schema,
+		}
+	}
+}
+
+impl From<ObservationRecord> for WorkshopObservationRecord {
+	fn from(record: ObservationRecord) -> Self {
+		Self::V1(record)
+	}
+}
+
+impl From<WorkshopObservationRecordV2> for WorkshopObservationRecord {
+	fn from(record: WorkshopObservationRecordV2) -> Self {
+		Self::V2(record)
+	}
+}
+
+impl IdentifiedRecord for WorkshopObservationRecord {
+	fn record_id(&self) -> &str {
+		match self {
+			Self::V1(record) => record.record_id(),
+			Self::V2(record) => record.record_id(),
+		}
 	}
 }
 
@@ -409,7 +617,7 @@ impl LegacyMeasurementIdentityV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MeasurementIdentityV2 {
-	pub snapshot_id: String,
+	pub input_version_id: String,
 	pub engine_artifact: EngineArtifactIdentity,
 	pub runner_protocol_version: String,
 	pub merge_kernel: MeasurementKernel,
@@ -438,7 +646,7 @@ impl MeasurementIdentityV2 {
 		let cohort_id = self.cohort_id();
 		stable_id(
 			"measurement-v2",
-			&[self.snapshot_id.as_bytes(), cohort_id.as_bytes()],
+			&[self.input_version_id.as_bytes(), cohort_id.as_bytes()],
 		)
 	}
 }
@@ -465,7 +673,7 @@ pub enum MeasurementRecord {
 	#[serde(rename = "2.0.0")]
 	V2 {
 		measurement_id: String,
-		snapshot_id: String,
+		input_version_id: String,
 		engine_artifact: EngineArtifactIdentity,
 		runner_protocol_version: String,
 		merge_kernel: MeasurementKernel,
@@ -476,7 +684,7 @@ pub enum MeasurementRecord {
 		finished_at: String,
 		status: TerminalStatus,
 		detail: Option<String>,
-		merged_output_hash: Option<String>,
+		evidence_bundle_hash: Option<String>,
 		summary: Option<MeasurementSummary>,
 	},
 }
@@ -514,12 +722,12 @@ impl MeasurementRecord {
 		finished_at: String,
 		status: TerminalStatus,
 		detail: Option<String>,
-		merged_output_hash: Option<String>,
+		evidence_bundle_hash: Option<String>,
 		summary: Option<MeasurementSummary>,
 	) -> Self {
 		Self::V2 {
 			measurement_id: identity.measurement_id(),
-			snapshot_id: identity.snapshot_id,
+			input_version_id: identity.input_version_id,
 			engine_artifact: identity.engine_artifact,
 			runner_protocol_version: identity.runner_protocol_version,
 			merge_kernel: identity.merge_kernel,
@@ -530,7 +738,7 @@ impl MeasurementRecord {
 			finished_at,
 			status,
 			detail,
-			merged_output_hash,
+			evidence_bundle_hash,
 			summary,
 		}
 	}
@@ -548,9 +756,19 @@ impl MeasurementRecord {
 		}
 	}
 
-	pub fn snapshot_id(&self) -> &str {
+	pub fn legacy_snapshot_id(&self) -> Option<&str> {
 		match self {
-			Self::V1 { snapshot_id, .. } | Self::V2 { snapshot_id, .. } => snapshot_id,
+			Self::V1 { snapshot_id, .. } => Some(snapshot_id),
+			Self::V2 { .. } => None,
+		}
+	}
+
+	pub fn input_version_id(&self) -> Option<&str> {
+		match self {
+			Self::V1 { .. } => None,
+			Self::V2 {
+				input_version_id, ..
+			} => Some(input_version_id),
 		}
 	}
 
@@ -639,10 +857,36 @@ impl MeasurementRecord {
 		match self {
 			Self::V1 {
 				merged_output_hash, ..
-			}
-			| Self::V2 {
-				merged_output_hash, ..
 			} => merged_output_hash.as_deref(),
+			Self::V2 { .. } => None,
+		}
+	}
+
+	pub fn evidence_bundle_hash(&self) -> Option<&str> {
+		match self {
+			Self::V1 { .. } => None,
+			Self::V2 {
+				evidence_bundle_hash,
+				..
+			} => evidence_bundle_hash.as_deref(),
+		}
+	}
+
+	/// Completed V2 measurements must carry a valid compact evidence bundle;
+	/// failed terminal outcomes must not claim successful evidence archival.
+	pub fn evidence_reference_is_valid(&self) -> bool {
+		match self {
+			Self::V1 { .. } => true,
+			Self::V2 {
+				status,
+				evidence_bundle_hash,
+				..
+			} => {
+				matches!(
+					(*status, evidence_bundle_hash),
+					(TerminalStatus::Completed, Some(hash)) if is_blake3_hash(hash)
+				) || (*status != TerminalStatus::Completed && evidence_bundle_hash.is_none())
+			}
 		}
 	}
 
@@ -703,7 +947,7 @@ impl MeasurementRecord {
 			}
 			.measurement_id(),
 			Self::V2 {
-				snapshot_id,
+				input_version_id,
 				engine_artifact,
 				runner_protocol_version,
 				merge_kernel,
@@ -712,7 +956,7 @@ impl MeasurementRecord {
 				scorer_config_hash,
 				..
 			} => MeasurementIdentityV2 {
-				snapshot_id: snapshot_id.clone(),
+				input_version_id: input_version_id.clone(),
 				engine_artifact: engine_artifact.clone(),
 				runner_protocol_version: runner_protocol_version.clone(),
 				merge_kernel: *merge_kernel,
@@ -816,10 +1060,15 @@ impl IdentifiedRecord for FileResultRecord {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DatasetPaths {
 	pub root: PathBuf,
-	pub objects: PathBuf,
-	pub work: PathBuf,
+	/// Legacy V1 input/output CAS. New Workshop-backed measurements must not
+	/// write to this root.
+	pub legacy_objects: PathBuf,
+	pub legacy_work: PathBuf,
+	pub evidence_objects: PathBuf,
+	pub evidence_work: PathBuf,
 	pub object_records: PathBuf,
 	pub snapshots: PathBuf,
+	pub input_versions: PathBuf,
 	pub observations: PathBuf,
 	pub measurements: PathBuf,
 	pub file_results: PathBuf,
@@ -832,10 +1081,13 @@ impl DatasetPaths {
 	pub fn new(root: impl Into<PathBuf>) -> Self {
 		let root = root.into();
 		Self {
-			objects: root.join("objects"),
-			work: root.join(".work"),
+			legacy_objects: root.join("objects"),
+			legacy_work: root.join(".work"),
+			evidence_objects: root.join("evidence_objects"),
+			evidence_work: root.join(".evidence-work"),
 			object_records: root.join("object_records.jsonl"),
 			snapshots: root.join("snapshots.jsonl"),
+			input_versions: root.join("input_versions.jsonl"),
 			observations: root.join("observations.jsonl"),
 			measurements: root.join("measurements.jsonl"),
 			file_results: root.join("file_results.jsonl"),
@@ -846,18 +1098,18 @@ impl DatasetPaths {
 		}
 	}
 
-	pub fn ensure_layout(&self) -> io::Result<()> {
+	/// Create only the metadata and compact-evidence paths used by live
+	/// Workshop measurement. The legacy input/output CAS roots are deliberately
+	/// untouched so a product run can prove it has no dependency on them.
+	pub fn ensure_workshop_layout(&self) -> io::Result<()> {
 		fs::create_dir_all(&self.root)?;
-		fs::create_dir_all(&self.objects)?;
-		fs::create_dir_all(&self.work)?;
+		fs::create_dir_all(&self.evidence_objects)?;
+		fs::create_dir_all(&self.evidence_work)?;
 		for path in [
-			&self.object_records,
-			&self.snapshots,
+			&self.input_versions,
 			&self.observations,
 			&self.measurements,
 			&self.file_results,
-			&self.shadow_measurements,
-			&self.annotations,
 		] {
 			if !path.exists() {
 				fs::write(path, b"")?;
@@ -903,6 +1155,17 @@ where
 	} else {
 		AppendOutcome::AlreadyPresent
 	})
+}
+
+/// Append one V2 ACF observation to the mixed historical observation stream.
+///
+/// Using the compatibility enum for the index scan is required because the
+/// existing prefix contains V1 records with a different wire shape.
+pub fn append_workshop_observation_v2(
+	path: &Path,
+	record: &WorkshopObservationRecordV2,
+) -> io::Result<AppendOutcome> {
+	append_unique(path, &WorkshopObservationRecord::V2(record.clone()))
 }
 
 /// Append a batch with one lock, one index scan, and one atomic rewrite. This
@@ -1024,6 +1287,13 @@ pub fn stable_id(namespace: &str, parts: &[&[u8]]) -> String {
 		hasher.update(part);
 	}
 	hasher.finalize().to_hex().to_string()
+}
+
+fn is_blake3_hash(value: &str) -> bool {
+	value.len() == 64
+		&& value
+			.bytes()
+			.all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 pub fn now_rfc3339() -> String {
@@ -1205,13 +1475,16 @@ mod tests {
 	}
 
 	#[test]
-	fn layout_initialization_is_repeatable() {
+	fn workshop_layout_initialization_is_repeatable_without_legacy_cas() {
 		let temp = tempfile::tempdir().unwrap();
 		let paths = DatasetPaths::new(temp.path().join("dataset"));
-		paths.ensure_layout().unwrap();
-		paths.ensure_layout().unwrap();
-		assert!(paths.objects.is_dir());
-		assert!(paths.snapshots.is_file());
+		paths.ensure_workshop_layout().unwrap();
+		paths.ensure_workshop_layout().unwrap();
+		assert!(!paths.legacy_objects.exists());
+		assert!(!paths.legacy_work.exists());
+		assert!(paths.evidence_objects.is_dir());
+		assert!(paths.evidence_work.is_dir());
+		assert!(paths.input_versions.is_file());
 		let manifest: serde_json::Value =
 			serde_json::from_str(&fs::read_to_string(paths.manifest).unwrap()).unwrap();
 		assert_eq!(manifest["schema"], SCHEMA);
@@ -1239,9 +1512,33 @@ mod tests {
 		)
 	}
 
+	fn steam_id(value: &str) -> SteamId {
+		value.parse().unwrap()
+	}
+
+	fn workshop_input(workshop_id: &str, manifest_id: &str) -> WorkshopInputVersionV2 {
+		WorkshopInputVersionV2 {
+			workshop_id: steam_id(workshop_id),
+			manifest_id: steam_id(manifest_id),
+		}
+	}
+
+	fn input_version(source_mods: Vec<WorkshopInputVersionV2>) -> InputVersionRecord {
+		InputVersionRecord::new(
+			"case-1".to_string(),
+			GameInputIdentityV2 {
+				app_id: steam_id("236850"),
+				version: "1.37.5".to_string(),
+				steam_build_id: Some(steam_id("18446744073709551615")),
+			},
+			workshop_input("3630876155", "9007199254740993"),
+			source_mods,
+		)
+	}
+
 	fn v2_identity() -> MeasurementIdentityV2 {
 		MeasurementIdentityV2 {
-			snapshot_id: "snapshot".to_string(),
+			input_version_id: "input-version".to_string(),
 			engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
 			runner_protocol_version: "1.0.0".to_string(),
 			merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
@@ -1253,7 +1550,7 @@ mod tests {
 
 	#[derive(Clone, Copy)]
 	struct V2IdentityParts<'a> {
-		snapshot_id: &'a str,
+		input_version_id: &'a str,
 		engine_artifact_kind: &'a str,
 		engine_artifact_hash_algorithm: &'a str,
 		engine_artifact_hash: &'a str,
@@ -1285,7 +1582,7 @@ mod tests {
 			let cohort_id = self.cohort_id();
 			stable_id(
 				"measurement-v2",
-				&[self.snapshot_id.as_bytes(), cohort_id.as_bytes()],
+				&[self.input_version_id.as_bytes(), cohort_id.as_bytes()],
 			)
 		}
 	}
@@ -1302,6 +1599,99 @@ mod tests {
 		let mut altered = first;
 		altered.compatch.content_hash = "altered".to_string();
 		assert!(!altered.identity_is_valid());
+	}
+
+	#[test]
+	fn workshop_input_version_binds_canonical_acf_manifests_and_order() {
+		let first = input_version(vec![
+			workshop_input("111", "1001"),
+			workshop_input("222", "1002"),
+		]);
+		assert!(first.identity_is_valid());
+		assert_eq!(first, input_version(first.source_mods.clone()));
+
+		let mut changed_manifest = first.clone();
+		changed_manifest.source_mods[0].manifest_id = steam_id("2001");
+		assert!(!changed_manifest.identity_is_valid());
+		let changed_manifest = InputVersionRecord::new(
+			changed_manifest.case_id,
+			changed_manifest.game,
+			changed_manifest.compatch,
+			changed_manifest.source_mods,
+		);
+		assert_ne!(first.input_version_id, changed_manifest.input_version_id);
+
+		let reordered = input_version(first.source_mods.iter().cloned().rev().collect());
+		assert_ne!(first.input_version_id, reordered.input_version_id);
+
+		let wire = serde_json::to_value(&first).unwrap();
+		assert_eq!(wire["game"]["app_id"], "236850");
+		assert_eq!(wire["game"]["steam_build_id"], "18446744073709551615");
+		assert_eq!(wire["compatch"]["manifest_id"], "9007199254740993");
+		assert!(wire["compatch"].get("product_input_digest").is_none());
+		assert!(wire["game"]["app_id"].is_string());
+	}
+
+	#[test]
+	fn steam_ids_reject_noncanonical_or_lossy_wire_values() {
+		for invalid in ["", "-1", "+1", "01", "1.0", "18446744073709551616"] {
+			assert!(invalid.parse::<SteamId>().is_err(), "{invalid}");
+		}
+		assert!(serde_json::from_str::<SteamId>("236850").is_err());
+		assert_eq!(
+			serde_json::from_str::<SteamId>("\"9007199254740993\"")
+				.unwrap()
+				.as_str(),
+			"9007199254740993"
+		);
+	}
+
+	#[test]
+	fn workshop_v2_observation_appends_without_rewriting_v1_bytes() {
+		let temp = tempfile::tempdir().unwrap();
+		let path = temp.path().join("observations.jsonl");
+		let v1 = ObservationRecord::new(
+			"snapshot".to_string(),
+			"2026-01-01T00:00:00Z".to_string(),
+			WorkshopObservation {
+				workshop_id: "3630876155".to_string(),
+				title: "compatch".to_string(),
+				time_created: 1,
+				time_updated: 2,
+				provenance: WorkshopProvenance::default(),
+			},
+			Vec::new(),
+			10,
+			false,
+		);
+		let v1_line = serde_json::to_string(&v1).unwrap();
+		fs::write(&path, format!("{v1_line}\n")).unwrap();
+		let input = input_version(Vec::new());
+		let v2 = WorkshopObservationRecordV2::new(
+			input.input_version_id.clone(),
+			"2026-08-08T00:00:00Z".to_string(),
+			WorkshopItemObservationV2 {
+				workshop_id: steam_id("3630876155"),
+				manifest_id: steam_id("9007199254740993"),
+				time_updated: 1_754_608_753,
+				size_bytes: 42,
+				ugc_handle: Some(steam_id("18446744073709551615")),
+			},
+			Vec::new(),
+		);
+		assert!(v2.identity_is_valid());
+		assert!(v2.matches_input_version(&input));
+		assert_eq!(
+			append_workshop_observation_v2(&path, &v2).unwrap(),
+			AppendOutcome::Inserted
+		);
+
+		let bytes = fs::read_to_string(&path).unwrap();
+		assert!(bytes.starts_with(&format!("{v1_line}\n")));
+		let records = read_jsonl::<WorkshopObservationRecord>(&path).unwrap();
+		assert!(matches!(records[0], WorkshopObservationRecord::V1(_)));
+		assert!(matches!(records[1], WorkshopObservationRecord::V2(_)));
+		assert_eq!(records[1].schema(), WORKSHOP_OBSERVATION_SCHEMA_V2);
 	}
 
 	#[test]
@@ -1374,7 +1764,7 @@ mod tests {
 		let cohort_id = identity.cohort_id();
 		let measurement_id = identity.measurement_id();
 		let parts = V2IdentityParts {
-			snapshot_id: &identity.snapshot_id,
+			input_version_id: &identity.input_version_id,
 			engine_artifact_kind: identity.engine_artifact.kind.as_str(),
 			engine_artifact_hash_algorithm: identity.engine_artifact.hash_algorithm.as_str(),
 			engine_artifact_hash: &identity.engine_artifact.hash,
@@ -1389,9 +1779,9 @@ mod tests {
 
 		let mutations = [
 			(
-				"snapshot_id",
+				"input_version_id",
 				V2IdentityParts {
-					snapshot_id: "other-snapshot",
+					input_version_id: "other-input-version",
 					..parts
 				},
 				false,
@@ -1508,6 +1898,10 @@ mod tests {
 		assert_eq!(wire["merge_kernel"], "legacy_address_patch_reference");
 		assert_eq!(wire["scope"], "full_product_merge");
 		assert_eq!(wire["schema"], MEASUREMENT_SCHEMA_V2);
+		assert_eq!(wire["input_version_id"], "input-version");
+		assert!(wire.get("snapshot_id").is_none());
+		assert!(wire.get("evidence_bundle_hash").is_some());
+		assert!(wire.get("merged_output_hash").is_none());
 
 		let mut structured = identity;
 		structured.merge_kernel = MeasurementKernel::SemanticTree;
@@ -1525,6 +1919,33 @@ mod tests {
 		assert_eq!(
 			serde_json::to_value(structured).unwrap()["merge_kernel"],
 			"semantic_tree"
+		);
+	}
+
+	#[test]
+	fn v2_evidence_reference_matches_terminal_status() {
+		let record = |status: TerminalStatus, evidence_bundle_hash: Option<String>| {
+			MeasurementRecord::new_v2(
+				v2_identity(),
+				"started".to_string(),
+				"finished".to_string(),
+				status,
+				None,
+				evidence_bundle_hash,
+				None,
+			)
+		};
+		assert!(
+			record(TerminalStatus::Completed, Some("a".repeat(64))).evidence_reference_is_valid()
+		);
+		assert!(!record(TerminalStatus::Completed, None).evidence_reference_is_valid());
+		assert!(record(TerminalStatus::Crashed, None).evidence_reference_is_valid());
+		assert!(
+			!record(TerminalStatus::Crashed, Some("a".repeat(64))).evidence_reference_is_valid()
+		);
+		assert!(
+			!record(TerminalStatus::Completed, Some("invalid".to_string()))
+				.evidence_reference_is_valid()
 		);
 	}
 
@@ -1593,7 +2014,7 @@ mod tests {
 		fs::write(&path, format!("{v1_line}\n")).unwrap();
 		let v2 = MeasurementRecord::new_v2(
 			MeasurementIdentityV2 {
-				snapshot_id: "other-snapshot".to_string(),
+				input_version_id: "other-input-version".to_string(),
 				engine_artifact: EngineArtifactIdentity::foch_executable_blake3("artifact"),
 				runner_protocol_version: "1.0.0".to_string(),
 				merge_kernel: MeasurementKernel::LegacyAddressPatchReference,
@@ -1709,7 +2130,17 @@ mod tests {
 	#[test]
 	fn committed_v1_evidence_jsonl_prefixes_are_frozen() {
 		let dataset_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("dataset");
-		let files: [(&str, usize, &str); 3] = [
+		let files: [(&str, usize, &str); 5] = [
+			(
+				"snapshots.jsonl",
+				14_882,
+				"3305e28717526ca30995c04d88aa20ea2b97eb9738bb28d6bc77d387e99ae109",
+			),
+			(
+				"observations.jsonl",
+				77_958,
+				"05df761e1128c32f4c58c6616460a34fe0cb401f67d7ca2c817827770f29623e",
+			),
 			(
 				"measurements.jsonl",
 				43_182,
