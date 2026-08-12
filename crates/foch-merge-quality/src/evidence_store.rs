@@ -905,24 +905,27 @@ fn source_file_fingerprint(metadata: &Metadata) -> SourceFileFingerprint {
 		.map_or((None, None), |duration| {
 			(Some(duration.as_secs()), Some(duration.subsec_nanos()))
 		});
-	let mut fingerprint = SourceFileFingerprint {
+	#[cfg(unix)]
+	let (device_id, inode, changed_seconds, changed_nanoseconds) = {
+		use std::os::unix::fs::MetadataExt;
+		(
+			Some(metadata.dev()),
+			Some(metadata.ino()),
+			Some(metadata.ctime()),
+			Some(metadata.ctime_nsec()),
+		)
+	};
+	#[cfg(not(unix))]
+	let (device_id, inode, changed_seconds, changed_nanoseconds) = (None, None, None, None);
+	SourceFileFingerprint {
 		len: metadata.len(),
 		modified_seconds,
 		modified_nanoseconds,
-		device_id: None,
-		inode: None,
-		changed_seconds: None,
-		changed_nanoseconds: None,
-	};
-	#[cfg(unix)]
-	{
-		use std::os::unix::fs::MetadataExt;
-		fingerprint.device_id = Some(metadata.dev());
-		fingerprint.inode = Some(metadata.ino());
-		fingerprint.changed_seconds = Some(metadata.ctime());
-		fingerprint.changed_nanoseconds = Some(metadata.ctime_nsec());
+		device_id,
+		inode,
+		changed_seconds,
+		changed_nanoseconds,
 	}
-	fingerprint
 }
 
 fn bundle_stats(entries: &[PreparedEntry]) -> io::Result<EvidenceBundleStats> {

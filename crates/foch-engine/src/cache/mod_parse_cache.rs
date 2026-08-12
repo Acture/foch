@@ -498,7 +498,8 @@ impl ModParseCache {
 }
 
 fn touch_cache_file(path: &Path) {
-	if let Ok(file) = fs::File::open(path) {
+	// Windows requires a writable handle for `SetFileTime`.
+	if let Ok(file) = OpenOptions::new().write(true).open(path) {
 		let _ = file.set_modified(SystemTime::now());
 	}
 }

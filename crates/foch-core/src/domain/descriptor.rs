@@ -92,6 +92,7 @@ pub(crate) fn parse_descriptor_bytes(data: &[u8]) -> Result<ModDescriptor, jomin
 #[cfg(test)]
 mod tests {
 	use super::{ModDescriptor, load_descriptor, parse_descriptor_bytes};
+	#[cfg(unix)]
 	use std::fs;
 	use std::path::Path;
 
