@@ -5,6 +5,7 @@ mod cross_file_dedup;
 mod io;
 mod output_transaction;
 mod per_entry_noop;
+mod provenance_tooltip;
 mod stale_detect;
 mod structural;
 
@@ -21,9 +22,12 @@ use super::super::plan::{
 	build_merge_plan_from_workspace, fatal_plan_from_workspace_error,
 	prune_noop_script_contributors,
 };
-use super::super::planning::module_view::build_cross_file_module_views;
+use super::super::planning::module_view::{
+	CrossFileModuleViewError, build_cross_file_module_views,
+};
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
+use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::request::CheckRequest;
 use crate::workspace::{
@@ -31,13 +35,13 @@ use crate::workspace::{
 	resolve_workspace,
 };
 use backend::{SemanticStructuralBackend, StructuralMergeBackend};
-use cross_file_dedup::prune_cross_file_noop_duplicates;
-use foch_core::config::{AppliedDepOverride, DepOverride, FochConfig, ResolutionMap};
+use cross_file_dedup::{CrossFilePruneResult, prune_cross_file_noop_duplicates};
+use foch_core::config::{AppliedDepOverride, DepOverride, ResolutionMap};
 use foch_core::model::{
-	CheckContext, ConflictKind, DepMisuseFinding, HandlerResolutionRecord, LeafConflictDetail,
-	MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult, MergePlanStrategy,
-	MergePlanTarget, MergeReport, MergeReportConflictResolution, MergeReportStatus,
-	MergeTraceEntry, SemanticIndex, StaleVanillaTargetDescriptor,
+	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, HandlerResolutionRecord,
+	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult,
+	MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportConflictResolution,
+	MergeReportStatus, MergeTraceEntry, SemanticIndex, StaleVanillaTargetDescriptor,
 };
 use foch_cwt::RuleEngine;
 use foch_language::analyzer::content_family::{
@@ -53,6 +57,7 @@ use io::{
 	write_structural_merge_output,
 };
 pub(crate) use output_transaction::OutputTransaction;
+use provenance_tooltip::write_surviving_provenance_localisation;
 use stale_detect::apply_dep_misuse_remove_counts;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -60,7 +65,7 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub(crate) struct MergeMaterializeOptions {
 	pub include_game_base: bool,
@@ -70,6 +75,10 @@ pub(crate) struct MergeMaterializeOptions {
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
 	pub resolution_map: foch_core::config::ResolutionMap,
+	pub emit_options: EmitOptions,
+	/// External resolution payloads read during prepare. Configured `use_file`
+	/// decisions consume these bytes so export cannot drift during review.
+	pub frozen_external_files: BTreeMap<PathBuf, Vec<u8>>,
 	pub interactive_conflict_handler: Option<Box<dyn ConflictHandler>>,
 	pub interactive_resolution_config_path: Option<PathBuf>,
 	/// When set, annotate merged definitions with their adopted source mods
@@ -91,6 +100,8 @@ impl Default for MergeMaterializeOptions {
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_map: foch_core::config::ResolutionMap::default(),
+			emit_options: EmitOptions::default(),
+			frozen_external_files: BTreeMap::new(),
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
@@ -124,6 +135,39 @@ fn apply_mod_priority_boosts(workspace: &mut ResolvedWorkspace, boosts: &BTreeMa
 				.then_with(|| left.mod_id.cmp(&right.mod_id))
 		});
 	}
+}
+
+/// Freeze the exact path-level plan that materialization will consume.
+///
+/// Merge-only priority changes and no-op pruning must happen before the user
+/// reviews the plan. Keeping this preparation in one helper prevents the
+/// preview and export paths from resolving or planning the workspace twice.
+pub(crate) fn prepare_merge_plan(
+	workspace_result: &mut Result<ResolvedWorkspace, WorkspaceResolveError>,
+	include_game_base: bool,
+	resolution_map: &ResolutionMap,
+) -> MergePlanResult {
+	if let Ok(workspace) = workspace_result {
+		apply_mod_priority_boosts(workspace, &resolution_map.mod_priority_boost);
+		prune_noop_script_contributors(workspace, eu4_profile());
+	}
+
+	stage_log_with("build_merge_plan", || {
+		let plan = match workspace_result {
+			Ok(workspace) => build_merge_plan_from_workspace(workspace, include_game_base),
+			Err(err) => fatal_plan_from_workspace_error(err, include_game_base),
+		};
+		let summary = format!(
+			"total_paths={} copy_through={} last_writer_overlay={} structural_merge={} localisation_merge={} manual_conflict={}",
+			plan.strategies.total_paths,
+			plan.strategies.copy_through,
+			plan.strategies.last_writer_overlay,
+			plan.strategies.structural_merge,
+			plan.strategies.localisation_merge,
+			plan.strategies.manual_conflict,
+		);
+		(plan, Some(summary))
+	})
 }
 
 fn boosted_precedence(precedence: usize, boost: i32) -> usize {
@@ -177,39 +221,38 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	out_dir: &Path,
 	prior_out_dir: Option<&Path>,
 	published_out_dir: &Path,
-	mut options: MergeMaterializeOptions,
+	options: MergeMaterializeOptions,
 	mut workspace_result: Result<ResolvedWorkspace, WorkspaceResolveError>,
+) -> Result<MergeReport, MergeError> {
+	let plan = prepare_merge_plan(
+		&mut workspace_result,
+		options.include_game_base,
+		&options.resolution_map,
+	);
+	materialize_prepared_merge_with_workspace_result(
+		request,
+		out_dir,
+		prior_out_dir,
+		published_out_dir,
+		options,
+		workspace_result,
+		plan,
+	)
+}
+
+pub(crate) fn materialize_prepared_merge_with_workspace_result(
+	request: CheckRequest,
+	out_dir: &Path,
+	prior_out_dir: Option<&Path>,
+	published_out_dir: &Path,
+	mut options: MergeMaterializeOptions,
+	workspace_result: Result<ResolvedWorkspace, WorkspaceResolveError>,
+	plan: MergePlanResult,
 ) -> Result<MergeReport, MergeError> {
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
-
-	if let Ok(workspace) = &mut workspace_result {
-		// The merge resolution map is loaded after generic workspace resolution,
-		// so priority_boost is a merge-only post-processing pass here.
-		apply_mod_priority_boosts(workspace, &options.resolution_map.mod_priority_boost);
-	}
 	let profile = eu4_profile();
-	if let Ok(workspace) = &mut workspace_result {
-		prune_noop_script_contributors(workspace, profile);
-	}
-
-	let plan = stage_log_with("build_merge_plan", || {
-		let plan = match &workspace_result {
-			Ok(workspace) => build_merge_plan_from_workspace(workspace, options.include_game_base),
-			Err(err) => fatal_plan_from_workspace_error(err, options.include_game_base),
-		};
-		let summary = format!(
-			"total_paths={} copy_through={} last_writer_overlay={} structural_merge={} localisation_merge={} manual_conflict={}",
-			plan.strategies.total_paths,
-			plan.strategies.copy_through,
-			plan.strategies.last_writer_overlay,
-			plan.strategies.structural_merge,
-			plan.strategies.localisation_merge,
-			plan.strategies.manual_conflict,
-		);
-		(plan, Some(summary))
-	});
-	report.manual_conflict_count = plan.strategies.manual_conflict;
+	report.unsupported_input_count = plan.strategies.manual_conflict;
 	report.definition_module_count = plan
 		.paths
 		.iter()
@@ -239,6 +282,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	if options.structural_backend.profile().validate_semantic_units {
 		validate_structured_plan_selection(&plan, options.retained_paths.as_ref())?;
 	}
+	record_plan_unsupported_inputs(&mut report, &plan);
 
 	let workspace = workspace_result?;
 	let (mod_dag, dag_diagnostics) = stage_log_with("build_mod_dag", || {
@@ -268,13 +312,6 @@ pub(crate) fn materialize_merge_with_workspace_result(
 		IgnoreReplacePath::None
 	};
 
-	if report.manual_conflict_count > 0 && !options.force {
-		record_plan_manual_conflicts(&mut report, &plan);
-		report.status = MergeReportStatus::Blocked;
-		write_clean_metadata_only(out_dir, &plan, &report)?;
-		return Ok(report);
-	}
-
 	fs::create_dir_all(out_dir)?;
 	let descriptor_root = descriptor_output_root(published_out_dir)?;
 
@@ -283,7 +320,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	let cache_game_version = workspace_cache_game_version(&workspace);
 	let cache_game_version =
 		cache_game_version_with_resolution_salt(&cache_game_version, &options.resolution_map);
-	let emit_options = load_emit_options(&request)?;
+	let emit_options = options.emit_options.clone();
 
 	crate::cache::reset_mod_diff_cache_stats();
 	crate::cache::reset_dag_base_cache_stats();
@@ -292,7 +329,8 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	eprintln!("[merge] materialize: start (total_paths={total_paths})");
 	let mut materialize_progress = MaterializeProgress::new(total_paths);
 	let mut pending_copy_through = Vec::new();
-	let mut published_module_replacements = BTreeSet::new();
+	let mut counted_generated_paths = BTreeSet::new();
+	let mut provenance_localisation_by_script = BTreeMap::<String, BTreeMap<String, String>>::new();
 
 	for entry in &plan.paths {
 		materialize_progress.tick();
@@ -323,8 +361,12 @@ pub(crate) fn materialize_merge_with_workspace_result(
 									fs::create_dir_all(parent)?;
 								}
 								fs::write(target, bytes)?;
-								generated_paths.insert(entry.output_path().to_string());
-								report.generated_file_count += 1;
+								record_counted_generated_output(
+									entry.output_path(),
+									&mut generated_paths,
+									&mut counted_generated_paths,
+									&mut report,
+								);
 							}
 							Ok(LocalisationMergeOutcome::LanguageMismatch { warning }) => {
 								report.warnings.push(warning);
@@ -349,17 +391,26 @@ pub(crate) fn materialize_merge_with_workspace_result(
 			}
 			MergePlanStrategy::StructuralMerge => {
 				let contributors = workspace.file_inventory.get(entry.output_path());
+				let descriptor = profile.classify_content_family(Path::new(entry.output_path()));
+				let vanilla_base_mode = effective_vanilla_base_mode(
+					descriptor,
+					contributors.map(Vec::as_slice),
+					VanillaBaseMode::from_include_game_base(options.include_game_base),
+					workspace
+						.verified_absent_base_paths
+						.contains(entry.output_path()),
+				);
 				if options.structural_backend.profile().validate_semantic_units {
 					validate_structured_merge_entry(
 						entry,
 						contributors.map(Vec::as_slice),
-						VanillaBaseMode::from_include_game_base(options.include_game_base),
+						vanilla_base_mode,
 						profile,
 					)?;
 				}
 				if matches!(&entry.target, MergePlanTarget::Module { .. }) {
 					let module_started = Instant::now();
-					let conflicts_before = report.manual_conflict_count;
+					let deferred_before = report.deferred_unit_count();
 					materialize_cross_file_module(CrossFileModuleMaterializeContext {
 						workspace: &workspace,
 						entry,
@@ -368,6 +419,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 						options: &mut options,
 						report: &mut report,
 						generated_paths: &mut generated_paths,
+						counted_generated_paths: &mut counted_generated_paths,
 						profile,
 						mod_dag: &mod_dag,
 						ignore_replace_path: &ignore_replace_path,
@@ -376,25 +428,24 @@ pub(crate) fn materialize_merge_with_workspace_result(
 						mod_display_names: &mod_display_names,
 						cache_game_version: &cache_game_version,
 						emit_options: &emit_options,
+						provenance_localisation_by_script: &mut provenance_localisation_by_script,
 					})?;
 					report.definition_module_elapsed_ms = report
 						.definition_module_elapsed_ms
 						.saturating_add(module_started.elapsed().as_millis() as u64);
-					if generated_paths.contains(entry.output_path()) {
-						if let Some(prefix) = entry.target.replace_prefix() {
-							published_module_replacements.insert(prefix.to_string());
-						}
-						report.definition_module_generated_count += 1;
-					} else if report.manual_conflict_count > conflicts_before {
+					if !generated_paths.contains(entry.output_path())
+						&& report.deferred_unit_count() > deferred_before
+					{
 						report.definition_module_blocked_count += 1;
 					}
 					continue;
 				}
-				let has_base = contributors
-					.map(|cs| cs.iter().any(|c| c.is_base_game || c.is_synthetic_base))
-					.unwrap_or(false);
+				let can_run_semantic_merge = !vanilla_base_mode.requires_non_empty()
+					|| contributors
+						.map(|cs| cs.iter().any(|c| c.is_base_game))
+						.unwrap_or(false);
 
-				if has_base && let Some(contributors) = contributors {
+				if can_run_semantic_merge && let Some(contributors) = contributors {
 					// Only invoke the tree merge when 2+ non-base mods contribute
 					// (single-mod overlap with base is just last-writer).
 					let non_base_count = contributors
@@ -403,8 +454,6 @@ pub(crate) fn materialize_merge_with_workspace_result(
 						.count();
 
 					if non_base_count >= 2 {
-						let descriptor =
-							profile.classify_content_family(Path::new(entry.output_path()));
 						let merge_key_source = descriptor.and_then(|d| d.merge_key_source);
 
 						if let (Some(descriptor), Some(merge_key_source)) =
@@ -443,9 +492,7 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										emit_options: &emit_options,
 										provenance: options.provenance,
 										script_cache: &workspace.script_cache,
-										vanilla_base_mode: VanillaBaseMode::from_include_game_base(
-											options.include_game_base,
-										),
+										vanilla_base_mode,
 									};
 									structural_backend.merge_file(
 										&target,
@@ -470,16 +517,34 @@ pub(crate) fn materialize_merge_with_workspace_result(
 										out_dir,
 										prior_out_dir,
 										&options.resolution_map,
+										&options.frozen_external_files,
 										&mut report,
 									)?;
 									if materialization.uses_rendered_output() {
 										report.per_entry_noop_skipped_count +=
 											merge_output.per_entry_noop_skipped_count;
 									}
+									if materialization.publishes_output()
+										&& materialization.uses_rendered_output()
+									{
+										let entries = std::mem::take(
+											&mut merge_output.provenance_localisation,
+										);
+										if !entries.is_empty() {
+											provenance_localisation_by_script
+												.insert(entry.output_path().to_string(), entries);
+										}
+									}
 									if materialization.counts_as_generated() {
-										generated_paths.insert(entry.output_path().to_string());
-										report.generated_file_count += 1;
-										if options.provenance {
+										record_counted_generated_output(
+											entry.output_path(),
+											&mut generated_paths,
+											&mut counted_generated_paths,
+											&mut report,
+										);
+										if options.provenance
+											&& materialization.uses_rendered_output()
+										{
 											let trace =
 												std::mem::take(&mut merge_output.merge_trace);
 											if !trace.is_empty() {
@@ -507,9 +572,11 @@ pub(crate) fn materialize_merge_with_workspace_result(
 											entry,
 											out_dir,
 											conflict,
+											deferred_reason: DeferredUnitReason::NeedsUserChoice,
 											options: &options,
 											report: &mut report,
 											generated_paths: &mut generated_paths,
+											counted_generated_paths: &mut counted_generated_paths,
 										},
 									)? {
 										continue;
@@ -524,9 +591,11 @@ pub(crate) fn materialize_merge_with_workspace_result(
 											entry,
 											out_dir,
 											conflict,
+											deferred_reason: DeferredUnitReason::EngineFailure,
 											options: &options,
 											report: &mut report,
 											generated_paths: &mut generated_paths,
+											counted_generated_paths: &mut counted_generated_paths,
 										},
 									)? {
 										continue;
@@ -541,9 +610,11 @@ pub(crate) fn materialize_merge_with_workspace_result(
 											entry,
 											out_dir,
 											conflict,
+											deferred_reason: DeferredUnitReason::EngineFailure,
 											options: &options,
 											report: &mut report,
 											generated_paths: &mut generated_paths,
+											counted_generated_paths: &mut counted_generated_paths,
 										},
 									)? {
 										continue;
@@ -555,70 +626,92 @@ pub(crate) fn materialize_merge_with_workspace_result(
 
 					// Single non-base mod or patch engine failed: copy winner
 					copy_winner_file(&workspace, entry, out_dir)?;
-					generated_paths.insert(entry.output_path().to_string());
-					report.generated_file_count += 1;
+					record_counted_generated_output(
+						entry.output_path(),
+						&mut generated_paths,
+						&mut counted_generated_paths,
+						&mut report,
+					);
 				} else {
-					// No base available at all (neither vanilla nor synthetic);
+					// No observed vanilla base and the family does not permit a
+					// known-empty semantic ancestor;
 					// fall back to last-writer copy.
 					copy_winner_file(&workspace, entry, out_dir)?;
-					generated_paths.insert(entry.output_path().to_string());
-					report.generated_file_count += 1;
+					record_counted_generated_output(
+						entry.output_path(),
+						&mut generated_paths,
+						&mut counted_generated_paths,
+						&mut report,
+					);
 				}
 			}
 			MergePlanStrategy::ManualConflict => {
+				let reason = if entry.notes.is_empty() {
+					"input is not supported by a safe merge strategy".to_string()
+				} else {
+					entry.notes.join("; ")
+				};
 				if matches!(&entry.target, MergePlanTarget::Module { .. }) {
 					discard_module_output(entry, out_dir, &mut generated_paths)?;
-					let reason = if entry.notes.is_empty() {
-						"definition module requires manual resolution".to_string()
+					let force_note = if options.force {
+						"; --force applies only to genuine conflicts"
 					} else {
-						entry.notes.join("; ")
+						""
 					};
 					report.warnings.push(format!(
-						"{} for {}; skipped complete module output even with --force",
+						"{} for {}; deferred complete module output{}",
 						reason,
-						entry.output_path()
+						entry.output_path(),
+						force_note
 					));
-					report
-						.conflict_resolutions
-						.push(plan_conflict_skipped_resolution(entry, &reason));
 					continue;
 				}
-				if options.force {
-					if is_text_placeholder_path(entry.output_path()) {
-						write_conflict_placeholder(entry, out_dir)?;
-						generated_paths.insert(entry.output_path().to_string());
-						report.generated_file_count += 1;
-					} else if let Some(contributors) =
-						workspace.file_inventory.get(entry.output_path())
-					{
-						// Binary conflict: copy highest-precedence (last) mod's version
-						if let Some(best) = contributors
-							.iter()
-							.filter(|c| !c.is_base_game)
-							.max_by_key(|c| c.precedence)
-						{
-							let target = out_dir.join(entry.output_path());
-							if let Some(parent) = target.parent() {
-								fs::create_dir_all(parent)?;
-							}
-							fs::copy(&best.absolute_path, target)?;
-							generated_paths.insert(entry.output_path().to_string());
-							report.generated_file_count += 1;
-						}
-					}
-				}
+				let force_note = if options.force {
+					"; --force applies only to genuine conflicts"
+				} else {
+					""
+				};
+				report.warnings.push(format!(
+					"{} for {}; unsupported input deferred, skipping output{}",
+					reason,
+					entry.output_path(),
+					force_note
+				));
 			}
 		}
 	}
 	materialize_progress.finish();
-	prune_cross_file_noop_duplicates(
-		out_dir,
-		&mut generated_paths,
+	// Cross-file dedup must observe the same files that the game loader will:
+	// pending one-writer paths are real mod outputs, not vanilla fallbacks.
+	let prune_result = build_surviving_output_manifest(
 		&workspace,
+		out_dir,
+		&pending_copy_through,
+		generated_paths,
 		profile,
 		&mut report,
 	)?;
-	flush_pending_copy_through(&workspace, out_dir, &pending_copy_through)?;
+	let published_module_replacements = reconcile_surviving_output_facts(
+		&plan,
+		&prune_result,
+		&mut counted_generated_paths,
+		&mut provenance_localisation_by_script,
+		&mut report,
+	);
+	let mut generated_paths = prune_result.surviving_generated_paths;
+	if options.provenance
+		&& let Some(localisation_path) = write_surviving_provenance_localisation(
+			out_dir,
+			&provenance_localisation_by_script,
+			&generated_paths,
+		)? {
+		record_counted_generated_output(
+			&localisation_path,
+			&mut generated_paths,
+			&mut counted_generated_paths,
+			&mut report,
+		);
+	}
 	let mod_diff_cache_stats = crate::cache::mod_diff_cache_stats();
 	let dag_base_cache_stats = crate::cache::dag_base_cache_stats();
 	eprintln!(
@@ -673,18 +766,11 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	}
 	*/
 
-	let mut persisted_plan = plan.clone();
-	report.status = if report.manual_conflict_count > 0 && !options.force {
-		MergeReportStatus::Blocked
-	} else if report.manual_conflict_count > 0 {
+	report.status = if report.deferred_unit_count() > 0 {
 		MergeReportStatus::PartialSuccess
 	} else {
 		MergeReportStatus::Ready
 	};
-	if report.status == MergeReportStatus::Blocked {
-		write_clean_metadata_only(out_dir, &persisted_plan, &report)?;
-		return Ok(report);
-	}
 
 	write_generated_descriptor(
 		&descriptor_root,
@@ -693,11 +779,58 @@ pub(crate) fn materialize_merge_with_workspace_result(
 		&published_module_replacements,
 		&out_dir.join(MERGED_MOD_DESCRIPTOR_PATH),
 	)?;
-	for entry in &mut persisted_plan.paths {
-		entry.generated = generated_paths.contains(entry.output_path());
-	}
-	write_metadata_only(out_dir, &persisted_plan, &report)?;
+	write_metadata_only(out_dir, &plan, &report)?;
 	Ok(report)
+}
+
+fn record_counted_generated_output(
+	path: &str,
+	generated_paths: &mut BTreeSet<String>,
+	counted_generated_paths: &mut BTreeSet<String>,
+	report: &mut MergeReport,
+) {
+	generated_paths.insert(path.to_string());
+	if counted_generated_paths.insert(path.to_string()) {
+		report.generated_file_count += 1;
+	}
+}
+
+fn reconcile_surviving_output_facts(
+	plan: &MergePlanResult,
+	prune_result: &CrossFilePruneResult,
+	counted_generated_paths: &mut BTreeSet<String>,
+	provenance_localisation_by_script: &mut BTreeMap<String, BTreeMap<String, String>>,
+	report: &mut MergeReport,
+) -> BTreeSet<String> {
+	let surviving_paths = &prune_result.surviving_generated_paths;
+	debug_assert!(prune_result.pruned_paths.is_disjoint(surviving_paths));
+
+	counted_generated_paths.retain(|path| surviving_paths.contains(path));
+	report.generated_file_count = counted_generated_paths.len();
+	report.cross_file_noop_skipped_file_count = prune_result.pruned_paths.len();
+	report
+		.merge_trace
+		.retain(|path, _| surviving_paths.contains(path));
+	report
+		.definition_provenance
+		.retain(|path, _| surviving_paths.contains(path));
+	provenance_localisation_by_script.retain(|path, _| surviving_paths.contains(path));
+
+	let mut published_module_replacements = BTreeSet::new();
+	report.definition_module_generated_count = 0;
+	for entry in &plan.paths {
+		if !matches!(&entry.target, MergePlanTarget::Module { .. })
+			|| !surviving_paths.contains(entry.output_path())
+		{
+			continue;
+		}
+		report.definition_module_generated_count += 1;
+		if let Some(prefix) = entry.target.replace_prefix() {
+			published_module_replacements.insert(prefix.to_string());
+		}
+	}
+
+	published_module_replacements
 }
 
 fn descriptor_output_root(published_out_dir: &Path) -> Result<PathBuf, MergeError> {
@@ -715,6 +848,7 @@ struct CrossFileModuleMaterializeContext<'a> {
 	options: &'a mut MergeMaterializeOptions,
 	report: &'a mut MergeReport,
 	generated_paths: &'a mut BTreeSet<String>,
+	counted_generated_paths: &'a mut BTreeSet<String>,
 	profile: &'a dyn GameProfile,
 	mod_dag: &'a ModDag,
 	ignore_replace_path: &'a IgnoreReplacePath,
@@ -723,6 +857,7 @@ struct CrossFileModuleMaterializeContext<'a> {
 	mod_display_names: &'a HashMap<String, String>,
 	cache_game_version: &'a str,
 	emit_options: &'a EmitOptions,
+	provenance_localisation_by_script: &'a mut BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn materialize_cross_file_module(
@@ -736,6 +871,7 @@ fn materialize_cross_file_module(
 		options,
 		report,
 		generated_paths,
+		counted_generated_paths,
 		profile,
 		mod_dag,
 		ignore_replace_path,
@@ -744,6 +880,7 @@ fn materialize_cross_file_module(
 		mod_display_names,
 		cache_game_version,
 		emit_options,
+		provenance_localisation_by_script,
 	} = context;
 	let Some(descriptor) = profile.classify_content_family(Path::new(entry.output_path())) else {
 		return resolve_cross_file_module_failure(
@@ -752,6 +889,7 @@ fn materialize_cross_file_module(
 			options,
 			report,
 			generated_paths,
+			DeferredUnitReason::EngineFailure,
 			format!(
 				"missing content-family descriptor for {}",
 				entry.output_path()
@@ -765,6 +903,7 @@ fn materialize_cross_file_module(
 			options,
 			report,
 			generated_paths,
+			DeferredUnitReason::EngineFailure,
 			format!("missing merge-key policy for {}", entry.output_path()),
 		);
 	};
@@ -781,13 +920,22 @@ fn materialize_cross_file_module(
 			.duplicate_definition_override,
 	) {
 		Ok(views) => views,
-		Err(reason) => {
+		Err(error) => {
+			let (deferred_reason, reason) = match error {
+				CrossFileModuleViewError::UnsupportedInput(reason) => {
+					(DeferredUnitReason::UnsupportedInput, reason)
+				}
+				CrossFileModuleViewError::EngineFailure(reason) => {
+					(DeferredUnitReason::EngineFailure, reason)
+				}
+			};
 			return resolve_cross_file_module_failure(
 				entry,
 				out_dir,
 				options,
 				report,
 				generated_paths,
+				deferred_reason,
 				reason,
 			);
 		}
@@ -843,6 +991,7 @@ fn materialize_cross_file_module(
 				&stage_dir,
 				prior_out_dir,
 				&options.resolution_map,
+				&options.frozen_external_files,
 				report,
 			) {
 				Ok(materialization) => materialization,
@@ -857,10 +1006,25 @@ fn materialize_cross_file_module(
 			if materialization.publishes_output() {
 				publish_staged_module_output(&stage_dir, out_dir, entry.output_path())?;
 				generated_paths.insert(entry.output_path().to_string());
-				if materialization.counts_as_generated() {
-					report.generated_file_count += 1;
+				if materialization.uses_rendered_output() {
+					let entries = std::mem::take(&mut merge_output.provenance_localisation);
+					if !entries.is_empty() {
+						provenance_localisation_by_script
+							.insert(entry.output_path().to_string(), entries);
+					}
 				}
-				if materialization.counts_as_generated() && options.provenance {
+				if materialization.counts_as_generated() {
+					record_counted_generated_output(
+						entry.output_path(),
+						generated_paths,
+						counted_generated_paths,
+						report,
+					);
+				}
+				if materialization.counts_as_generated()
+					&& materialization.uses_rendered_output()
+					&& options.provenance
+				{
 					let trace = std::mem::take(&mut merge_output.merge_trace);
 					if !trace.is_empty() {
 						report
@@ -886,6 +1050,7 @@ fn materialize_cross_file_module(
 					options,
 					report,
 					generated_paths,
+					DeferredUnitReason::EngineFailure,
 					"definition module did not produce its required staged output".to_string(),
 				);
 			}
@@ -899,6 +1064,7 @@ fn materialize_cross_file_module(
 				options,
 				report,
 				generated_paths,
+				DeferredUnitReason::NeedsUserChoice,
 				conflict,
 			)?;
 			Ok(())
@@ -909,6 +1075,7 @@ fn materialize_cross_file_module(
 			options,
 			report,
 			generated_paths,
+			DeferredUnitReason::EngineFailure,
 			format!("cross-file module merge failed: {error}"),
 		),
 		Err(_) => resolve_cross_file_module_failure(
@@ -917,6 +1084,7 @@ fn materialize_cross_file_module(
 			options,
 			report,
 			generated_paths,
+			DeferredUnitReason::EngineFailure,
 			"cross-file module merge panicked".to_string(),
 		),
 	}
@@ -974,6 +1142,7 @@ fn resolve_cross_file_module_failure(
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
+	deferred_reason: DeferredUnitReason,
 	reason: String,
 ) -> Result<(), MergeError> {
 	resolve_cross_file_module_conflict(
@@ -982,6 +1151,7 @@ fn resolve_cross_file_module_failure(
 		options,
 		report,
 		generated_paths,
+		deferred_reason,
 		StructuralConflictReport::without_details(reason),
 	)
 }
@@ -992,11 +1162,12 @@ fn resolve_cross_file_module_conflict(
 	options: &MergeMaterializeOptions,
 	report: &mut MergeReport,
 	generated_paths: &mut BTreeSet<String>,
+	deferred_reason: DeferredUnitReason,
 	conflict: StructuralConflictReport,
 ) -> Result<(), MergeError> {
 	discard_module_output(entry, out_dir, generated_paths)?;
 	let reason = conflict.reason;
-	report.manual_conflict_count += 1;
+	record_deferred_unit(report, deferred_reason);
 	report
 		.handler_resolutions
 		.extend(conflict.handler_resolutions);
@@ -1016,6 +1187,7 @@ fn resolve_cross_file_module_conflict(
 		.push(workspace_conflict_skipped_resolution(
 			entry,
 			&reason,
+			deferred_reason,
 			conflict.leaf_conflicts,
 		));
 	Ok(())
@@ -1073,10 +1245,49 @@ fn flush_pending_copy_through(
 	out_dir: &Path,
 	pending_copy_through: &[MergePlanEntry],
 ) -> Result<(), MergeError> {
-	for entry in pending_copy_through {
-		copy_winner_file(workspace, entry, out_dir)?;
+	let started = Instant::now();
+	let mut last_progress = started;
+	let mut cloned = 0_usize;
+	let total = pending_copy_through.len();
+	eprintln!("[merge] copy_through_flush: start files={total}");
+	for (index, entry) in pending_copy_through.iter().enumerate() {
+		cloned += usize::from(copy_winner_file(workspace, entry, out_dir)?);
+		let processed = index + 1;
+		if processed < total
+			&& (processed.is_multiple_of(5_000)
+				|| last_progress.elapsed() >= Duration::from_secs(2))
+		{
+			let elapsed = started.elapsed().as_secs_f64().max(f64::EPSILON);
+			let rate = processed as f64 / elapsed;
+			let eta_seconds = (total - processed) as f64 / rate;
+			eprintln!(
+				"[merge] copy_through_flush: progress processed={processed} total={total} cloned={cloned} copied={} elapsed_ms={} rate_files_per_second={rate:.1} eta_seconds={eta_seconds:.1}",
+				processed.saturating_sub(cloned),
+				started.elapsed().as_millis(),
+			);
+			last_progress = Instant::now();
+		}
 	}
+	eprintln!(
+		"[merge] copy_through_flush: done elapsed_ms={} files={} cloned={} copied={}",
+		started.elapsed().as_millis(),
+		total,
+		cloned,
+		total.saturating_sub(cloned),
+	);
 	Ok(())
+}
+
+fn build_surviving_output_manifest(
+	workspace: &ResolvedWorkspace,
+	out_dir: &Path,
+	pending_copy_through: &[MergePlanEntry],
+	generated_paths: BTreeSet<String>,
+	profile: &dyn GameProfile,
+	report: &mut MergeReport,
+) -> Result<CrossFilePruneResult, MergeError> {
+	flush_pending_copy_through(workspace, out_dir, pending_copy_through)?;
+	prune_cross_file_noop_duplicates(out_dir, generated_paths, workspace, profile, report)
 }
 
 fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
@@ -1086,18 +1297,6 @@ fn dependency_misuse_context(workspace: &ResolvedWorkspace) -> CheckContext {
 		mods: workspace.mods.clone(),
 		semantic_index: workspace_mod_semantic_index(workspace),
 	}
-}
-
-fn load_emit_options(request: &CheckRequest) -> Result<EmitOptions, MergeError> {
-	let playset_root = request
-		.source_path()
-		.parent()
-		.unwrap_or_else(|| Path::new("."));
-	let config = FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
-		path: Some(playset_root.display().to_string()),
-		message: err.to_string(),
-	})?;
-	Ok(EmitOptions::with_indent(config.emit_indent()))
 }
 
 fn workspace_game_version(workspace: &ResolvedWorkspace) -> Option<&str> {
@@ -1376,6 +1575,31 @@ fn validate_structured_merge_entry(
 	Ok(())
 }
 
+fn effective_vanilla_base_mode(
+	descriptor: Option<&ContentFamilyDescriptor>,
+	contributors: Option<&[ResolvedFileContributor]>,
+	configured: VanillaBaseMode,
+	base_path_verified_absent: bool,
+) -> VanillaBaseMode {
+	if configured != VanillaBaseMode::Required
+		|| !base_path_verified_absent
+		|| !descriptor.is_some_and(ContentFamilyDescriptor::supports_verified_empty_file_base)
+	{
+		return configured;
+	}
+
+	let has_real_vanilla = contributors.is_some_and(|contributors| {
+		contributors
+			.iter()
+			.any(|contributor| contributor.is_base_game && !contributor.is_synthetic_base)
+	});
+	if has_real_vanilla {
+		VanillaBaseMode::Required
+	} else {
+		VanillaBaseMode::KnownAbsent
+	}
+}
+
 fn validate_structured_plan_selection(
 	plan: &MergePlanResult,
 	retained_paths: Option<&BTreeSet<String>>,
@@ -1401,7 +1625,13 @@ fn validate_structured_plan_selection(
 				message: "structured merge unsupported: retained path has no merge-plan unit"
 					.to_string(),
 			})?;
-		if entry.strategy != MergePlanStrategy::StructuralMerge {
+		let is_base_only_runtime_fallback = entry.strategy == MergePlanStrategy::CopyThrough
+			&& !entry.contributors.is_empty()
+			&& entry
+				.contributors
+				.iter()
+				.all(|contributor| contributor.is_base_game);
+		if entry.strategy != MergePlanStrategy::StructuralMerge && !is_base_only_runtime_fallback {
 			return Err(structured_merge_unsupported(
 				entry,
 				&format!(
@@ -1431,13 +1661,13 @@ fn structured_merge_unsupported(entry: &MergePlanEntry, reason: &str) -> MergeEr
 	}
 }
 
-fn record_plan_manual_conflicts(report: &mut MergeReport, plan: &MergePlanResult) {
+fn record_plan_unsupported_inputs(report: &mut MergeReport, plan: &MergePlanResult) {
 	for entry in &plan.paths {
 		if entry.strategy != MergePlanStrategy::ManualConflict {
 			continue;
 		}
 		let reason = if entry.notes.is_empty() {
-			"manual conflict".to_string()
+			"input is not supported by a safe merge strategy".to_string()
 		} else {
 			entry.notes.join("; ")
 		};
@@ -1451,9 +1681,11 @@ struct StructuralMergeFailureCtx<'a> {
 	entry: &'a MergePlanEntry,
 	out_dir: &'a Path,
 	conflict: StructuralConflictReport,
+	deferred_reason: DeferredUnitReason,
 	options: &'a MergeMaterializeOptions,
 	report: &'a mut MergeReport,
 	generated_paths: &'a mut BTreeSet<String>,
+	counted_generated_paths: &'a mut BTreeSet<String>,
 }
 
 fn resolve_structural_merge_failure(
@@ -1463,21 +1695,30 @@ fn resolve_structural_merge_failure(
 		entry,
 		out_dir,
 		conflict,
+		deferred_reason,
 		options,
 		report,
 		generated_paths,
+		counted_generated_paths,
 	} = ctx;
 	let reason = conflict.reason;
-	report.manual_conflict_count += 1;
+	record_deferred_unit(report, deferred_reason);
 	report
 		.handler_resolutions
 		.extend(conflict.handler_resolutions);
-	if options.force && is_text_placeholder_path(entry.output_path()) {
+	if deferred_reason == DeferredUnitReason::NeedsUserChoice
+		&& options.force
+		&& is_text_placeholder_path(entry.output_path())
+	{
 		let mut marker_entry = entry.clone();
 		marker_entry.notes.push(reason.clone());
 		write_conflict_placeholder(&marker_entry, out_dir)?;
-		report.generated_file_count += 1;
-		generated_paths.insert(entry.output_path().to_string());
+		record_counted_generated_output(
+			entry.output_path(),
+			generated_paths,
+			counted_generated_paths,
+			report,
+		);
 		report.warnings.push(format!(
 			"{} for {}; wrote manual conflict marker",
 			reason,
@@ -1485,9 +1726,10 @@ fn resolve_structural_merge_failure(
 		));
 	} else {
 		report.warnings.push(format!(
-			"{} for {}; manual resolution required, skipping output",
+			"{} for {}; {} deferred, skipping output",
 			reason,
-			entry.output_path()
+			entry.output_path(),
+			deferred_reason.as_str()
 		));
 	}
 	report
@@ -1495,6 +1737,7 @@ fn resolve_structural_merge_failure(
 		.push(workspace_conflict_skipped_resolution(
 			entry,
 			&reason,
+			deferred_reason,
 			conflict.leaf_conflicts,
 		));
 	Ok(true)
@@ -1503,11 +1746,13 @@ fn resolve_structural_merge_failure(
 fn workspace_conflict_skipped_resolution(
 	entry: &MergePlanEntry,
 	reason: &str,
+	deferred_reason: DeferredUnitReason,
 	leaf_conflicts: Vec<LeafConflictDetail>,
 ) -> MergeReportConflictResolution {
 	MergeReportConflictResolution {
 		path: entry.output_path().to_string(),
 		reason: reason.to_string(),
+		deferred_reason,
 		kind: summarize_conflict_kind(&leaf_conflicts),
 		leaf_conflicts,
 	}
@@ -1520,6 +1765,7 @@ fn plan_conflict_skipped_resolution(
 	MergeReportConflictResolution {
 		path: entry.output_path().to_string(),
 		reason: reason.to_string(),
+		deferred_reason: DeferredUnitReason::UnsupportedInput,
 		kind: None,
 		leaf_conflicts: Vec::new(),
 	}
@@ -1531,13 +1777,21 @@ fn summarize_conflict_kind(leaf_conflicts: &[LeafConflictDetail]) -> Option<Conf
 	kinds.all(|kind| kind == first).then_some(first)
 }
 
+fn record_deferred_unit(report: &mut MergeReport, reason: DeferredUnitReason) {
+	match reason {
+		DeferredUnitReason::NeedsUserChoice => report.manual_conflict_count += 1,
+		DeferredUnitReason::UnsupportedInput => report.unsupported_input_count += 1,
+		DeferredUnitReason::EngineFailure => report.engine_failure_count += 1,
+	}
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct StructuralMergeOutput {
 	rendered: String,
 	dep_remove_counts: Vec<DepMisuseRemoveCount>,
 	stale_vanilla_targets: Vec<StaleVanillaTargetDescriptor>,
 	handler_resolutions: Vec<HandlerResolutionRecord>,
-	external_file_resolutions: HashMap<PathBuf, PathBuf>,
+	external_file_resolutions: HashMap<PathBuf, ExternalFileResolution>,
 	keep_existing_paths: HashSet<PathBuf>,
 	/// True when the merged statement list is AST-equal (modulo
 	/// span / comment trivia) to the vanilla base — shipping the file
@@ -1551,6 +1805,9 @@ pub(crate) struct StructuralMergeOutput {
 	definition_provenance: BTreeMap<String, Vec<String>>,
 	/// Per top-level definition key → merge audit trail.
 	merge_trace: BTreeMap<String, MergeTraceEntry>,
+	/// Game-loadable localisation entries for condition tooltip wrappers. These
+	/// are published only when this exact rendered output survives materialization.
+	provenance_localisation: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1690,10 +1947,11 @@ impl MaterializeProgress {
 mod tests {
 	use super::{
 		MergeMaterializeOptions, materialize_merge_internal,
-		materialize_merge_with_workspace_result,
+		materialize_merge_with_workspace_result, materialize_prepared_merge_with_workspace_result,
 	};
 	use crate::config::Config;
-	use crate::merge::model::VanillaBaseMode;
+	use crate::emit::EmitOptions;
+	use crate::merge::model::{ExternalFileResolution, VanillaBaseMode};
 	use crate::request::CheckRequest;
 	use crate::workspace::{
 		ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError,
@@ -1703,11 +1961,14 @@ mod tests {
 	use foch_core::domain::game::Game;
 	use foch_core::domain::playlist::Playlist;
 	use foch_core::model::{
-		HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
-		MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor, MergePlanEntry, MergePlanResult,
-		MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportStatus, MergeUnitId,
+		DeferredUnitReason, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
+		MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor,
+		MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
+		MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy, MergeUnitId,
 	};
-	use foch_language::analyzer::content_family::{ContentFamilyDescriptor, MergeKeySource};
+	use foch_language::analyzer::content_family::{
+		ContentFamilyDescriptor, GameProfile, MergeKeySource,
+	};
 	use foch_language::analyzer::parser::{AstStatement, parse_clausewitz_content};
 	use serde_json::json;
 	use std::cell::Cell;
@@ -1715,6 +1976,47 @@ mod tests {
 	use std::fs;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
+
+	#[derive(Clone)]
+	struct FixedStructuralBackend {
+		output: super::StructuralMergeOutput,
+	}
+
+	impl super::backend::StructuralMergeBackend for FixedStructuralBackend {
+		fn profile(&self) -> super::backend::StructuralBackendProfile {
+			super::backend::StructuralBackendProfile {
+				cache_label: "fixed-test",
+				validate_semantic_units: false,
+				duplicate_definition_override: None,
+			}
+		}
+
+		fn merge_file(
+			&self,
+			_target_path: &str,
+			_contributors: &[ResolvedFileContributor],
+			_context: super::StructuralMergeContext<'_>,
+			_interactive_handler: Option<
+				&mut (dyn crate::merge::conflict_handler::ConflictHandler + '_),
+			>,
+			_interactive_config_path: Option<&Path>,
+		) -> Result<super::StructuralMergeOutput, super::StructuralMergeFailure> {
+			Ok(self.output.clone())
+		}
+
+		fn merge_definition_module(
+			&self,
+			_target_path: &str,
+			_views: &crate::merge::planning::module_view::CrossFileModuleViews,
+			_context: super::StructuralMergeContext<'_>,
+			_interactive_handler: Option<
+				&mut (dyn crate::merge::conflict_handler::ConflictHandler + '_),
+			>,
+			_interactive_config_path: Option<&Path>,
+		) -> Result<super::StructuralMergeOutput, super::StructuralMergeFailure> {
+			panic!("ordinary structural regression must not use the module branch")
+		}
+	}
 
 	#[test]
 	fn stage_log_with_invokes_closure_exactly_once_and_returns_value() {
@@ -1924,6 +2226,39 @@ mod tests {
 	}
 
 	#[test]
+	fn structured_validation_allows_a_retained_base_only_runtime_fallback() {
+		let base = test_contributor("base", 0, true, false);
+		let entry = copy_through_entry("common/powerprojection/00_static.txt", &base);
+		let plan = MergePlanResult {
+			paths: vec![entry],
+			..MergePlanResult::default()
+		};
+		let retained = BTreeSet::from(["common/powerprojection/00_static.txt".to_string()]);
+
+		super::validate_structured_plan_selection(&plan, Some(&retained))
+			.expect("base-only retained paths use the unchanged runtime base");
+	}
+
+	#[test]
+	fn structured_validation_rejects_a_retained_mod_copy_through() {
+		let contributor = test_contributor("mod", 1, false, false);
+		let entry = copy_through_entry("common/powerprojection/00_static.txt", &contributor);
+		let plan = MergePlanResult {
+			paths: vec![entry],
+			..MergePlanResult::default()
+		};
+		let retained = BTreeSet::from(["common/powerprojection/00_static.txt".to_string()]);
+
+		let error = super::validate_structured_plan_selection(&plan, Some(&retained))
+			.expect_err("mod input must exercise the candidate structural kernel");
+		assert!(
+			error
+				.to_string()
+				.contains("candidate kernel was not invoked")
+		);
+	}
+
+	#[test]
 	fn structured_definition_module_requires_a_vanilla_base() {
 		let entry = structured_definition_module_entry(false);
 
@@ -1949,6 +2284,75 @@ mod tests {
 			foch_language::analyzer::eu4_profile::eu4_profile(),
 		)
 		.expect("explicit empty base is allowed");
+	}
+
+	#[test]
+	fn supported_file_families_treat_verified_missing_vanilla_as_known_absent() {
+		let profile = foch_language::analyzer::eu4_profile::eu4_profile();
+		let defines = profile.classify_content_family(Path::new("common/defines/es_defines.lua"));
+		let events = profile.classify_content_family(Path::new("events/test.txt"));
+		let gfx =
+			profile.classify_content_family(Path::new("interface/000_expanded_mod_family.gfx"));
+		let governments = profile.classify_content_family(Path::new("common/governments/test.txt"));
+		let contributors = [
+			test_contributor("left", 1, false, false),
+			test_contributor("right", 2, false, false),
+		];
+
+		assert_eq!(
+			super::effective_vanilla_base_mode(
+				defines,
+				Some(&contributors),
+				VanillaBaseMode::Required,
+				true,
+			),
+			VanillaBaseMode::KnownAbsent
+		);
+		assert_eq!(
+			super::effective_vanilla_base_mode(
+				gfx,
+				Some(&contributors),
+				VanillaBaseMode::Required,
+				true,
+			),
+			VanillaBaseMode::KnownAbsent
+		);
+		assert_eq!(
+			super::effective_vanilla_base_mode(
+				events,
+				Some(&contributors),
+				VanillaBaseMode::Required,
+				true,
+			),
+			VanillaBaseMode::KnownAbsent
+		);
+		assert_eq!(
+			super::effective_vanilla_base_mode(
+				governments,
+				Some(&contributors),
+				VanillaBaseMode::Required,
+				true,
+			),
+			VanillaBaseMode::Required
+		);
+		assert_eq!(
+			super::effective_vanilla_base_mode(
+				defines,
+				Some(&contributors),
+				VanillaBaseMode::ExplicitlyDisabled,
+				false,
+			),
+			VanillaBaseMode::ExplicitlyDisabled
+		);
+		assert_eq!(
+			super::effective_vanilla_base_mode(
+				defines,
+				Some(&contributors),
+				VanillaBaseMode::Required,
+				false,
+			),
+			VanillaBaseMode::Required
+		);
 	}
 
 	fn structured_definition_module_entry(include_base: bool) -> MergePlanEntry {
@@ -1994,7 +2398,6 @@ mod tests {
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors,
 			winner: None,
-			generated: false,
 			notes: Vec::new(),
 		}
 	}
@@ -2054,7 +2457,6 @@ mod tests {
 			strategy: MergePlanStrategy::CopyThrough,
 			contributors: vec![plan_contributor.clone()],
 			winner: Some(plan_contributor),
-			generated: false,
 			notes: Vec::new(),
 		}
 	}
@@ -2078,6 +2480,7 @@ mod tests {
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
+			verified_absent_base_paths: BTreeSet::new(),
 			requested_retained_paths: None,
 			effective_retained_paths: None,
 		}
@@ -2255,6 +2658,8 @@ mod tests {
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
 			resolution_map: foch_core::config::ResolutionMap::default(),
+			emit_options: EmitOptions::default(),
+			frozen_external_files: BTreeMap::new(),
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
@@ -2294,6 +2699,7 @@ mod tests {
 			per_entry_noop_skipped_count: 0,
 			definition_provenance: BTreeMap::new(),
 			merge_trace: BTreeMap::new(),
+			provenance_localisation: BTreeMap::new(),
 		}
 	}
 
@@ -2333,9 +2739,135 @@ mod tests {
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
+			verified_absent_base_paths: BTreeSet::new(),
 			requested_retained_paths: None,
 			effective_retained_paths: None,
 		}
+	}
+
+	fn ordinary_structural_fixture(
+		test_root: &Path,
+		output: super::StructuralMergeOutput,
+	) -> (MergeReport, PathBuf, &'static str) {
+		const TARGET: &str = "common/diplomatic_actions/ordinary.txt";
+		let workspace = cross_file_workspace(
+			test_root,
+			&[
+				("mod_a", TARGET, "from a\n", 10, false),
+				("mod_b", TARGET, "from b\n", 20, false),
+			],
+		);
+		let contributors = workspace.file_inventory[TARGET]
+			.iter()
+			.map(|contributor| MergePlanContributor {
+				mod_id: contributor.mod_id.clone(),
+				source_path: contributor.absolute_path.to_string_lossy().into_owned(),
+				precedence: contributor.precedence,
+				is_base_game: contributor.is_base_game,
+			})
+			.collect::<Vec<_>>();
+		let plan = MergePlanResult {
+			playset_name: "ordinary-structural-provenance".to_string(),
+			paths: vec![MergePlanEntry {
+				target: MergePlanTarget::File {
+					path: TARGET.to_string(),
+				},
+				strategy: MergePlanStrategy::StructuralMerge,
+				contributors,
+				winner: None,
+				notes: Vec::new(),
+			}],
+			..MergePlanResult::default()
+		};
+		let out_dir = test_root.join("out");
+		let mut options = no_base_options(false);
+		options.provenance = true;
+		options.structural_backend = Box::new(FixedStructuralBackend { output });
+		let report = materialize_prepared_merge_with_workspace_result(
+			request_for(&workspace.playlist_path),
+			&out_dir,
+			None,
+			&out_dir,
+			options,
+			Ok(workspace),
+			plan,
+		)
+		.expect("materialize ordinary structural fixture");
+		(report, out_dir, TARGET)
+	}
+
+	fn structural_output_with_provenance(target: &str) -> super::StructuralMergeOutput {
+		let mut output = structural_merge_output(
+			"send_warning = { condition = { tooltip = FOCH_PROVENANCE_fixed } }\n",
+		);
+		output.provenance_localisation.insert(
+			"FOCH_PROVENANCE_fixed".to_string(),
+			"$ORIGINAL_TT$\\n\\nBase: Mod A".to_string(),
+		);
+		output
+			.definition_provenance
+			.insert("send_warning".to_string(), vec!["mod_a".to_string()]);
+		output.merge_trace.insert(
+			"send_warning".to_string(),
+			MergeTraceEntry {
+				contributors: Vec::new(),
+				policy: MergeTracePolicy::Union,
+				decision: MergeTraceDecision::Unioned,
+			},
+		);
+		assert!(target.starts_with("common/diplomatic_actions/"));
+		output
+	}
+
+	#[test]
+	fn ordinary_structural_output_publishes_its_surviving_tooltip_localisation() {
+		let temp = TempDir::new().expect("temp dir");
+		let target = "common/diplomatic_actions/ordinary.txt";
+		let output = structural_output_with_provenance(target);
+
+		let (report, out_dir, target) = ordinary_structural_fixture(temp.path(), output);
+
+		let script = fs::read_to_string(out_dir.join(target)).expect("read ordinary script");
+		assert!(
+			script.contains("tooltip = FOCH_PROVENANCE_fixed"),
+			"{script}"
+		);
+		let localisation_paths = fs::read_dir(out_dir.join("localisation"))
+			.expect("ordinary output must publish localisation")
+			.map(|entry| entry.expect("localisation entry").path())
+			.collect::<Vec<_>>();
+		assert_eq!(localisation_paths.len(), 1, "{localisation_paths:?}");
+		let localisation =
+			fs::read_to_string(&localisation_paths[0]).expect("read provenance localisation");
+		for language in ["l_english:", "l_german:", "l_french:", "l_spanish:"] {
+			assert!(localisation.contains(language), "{localisation}");
+		}
+		assert_eq!(localisation.matches("FOCH_PROVENANCE_fixed").count(), 4);
+		assert!(report.definition_provenance.contains_key(target));
+		assert!(report.merge_trace.contains_key(target));
+	}
+
+	#[test]
+	fn ordinary_external_write_publishes_no_stale_semantic_facts_or_tooltip_localisation() {
+		let temp = TempDir::new().expect("temp dir");
+		let target = "common/diplomatic_actions/ordinary.txt";
+		let external_path = temp.path().join("external.txt");
+		fs::write(&external_path, "external = yes\n").expect("write external payload");
+		let mut output = structural_output_with_provenance(target);
+		output.external_file_resolutions.insert(
+			PathBuf::from(target),
+			ExternalFileResolution::Live(external_path),
+		);
+
+		let (report, out_dir, target) = ordinary_structural_fixture(temp.path(), output);
+
+		assert_eq!(
+			fs::read_to_string(out_dir.join(target)).expect("read external output"),
+			"external = yes\n",
+		);
+		assert!(!out_dir.join("localisation").exists());
+		assert!(!report.definition_provenance.contains_key(target));
+		assert!(!report.merge_trace.contains_key(target));
 	}
 
 	#[test]
@@ -2365,20 +2897,29 @@ mod tests {
 		workspace: &ResolvedWorkspace,
 		generated_path: &str,
 	) -> (BTreeSet<String>, MergeReport) {
-		let mut generated_paths = BTreeSet::from([generated_path.to_string()]);
+		let generated_paths = BTreeSet::from([generated_path.to_string()]);
+		let mut counted_generated_paths = generated_paths.clone();
 		let mut report = MergeReport {
 			generated_file_count: 1,
 			..MergeReport::default()
 		};
-		super::prune_cross_file_noop_duplicates(
+		let prune_result = super::prune_cross_file_noop_duplicates(
 			out_dir,
-			&mut generated_paths,
+			generated_paths,
 			workspace,
 			foch_language::analyzer::eu4_profile::eu4_profile(),
 			&mut report,
 		)
 		.expect("cross-file noop prune succeeds");
-		(generated_paths, report)
+		let mut provenance_localisation = BTreeMap::new();
+		super::reconcile_surviving_output_facts(
+			&MergePlanResult::default(),
+			&prune_result,
+			&mut counted_generated_paths,
+			&mut provenance_localisation,
+			&mut report,
+		);
+		(prune_result.surviving_generated_paths, report)
 	}
 
 	#[test]
@@ -2408,6 +2949,221 @@ mod tests {
 			report.handler_resolutions[0].action,
 			"cross_file_noop_skipped"
 		);
+	}
+
+	#[test]
+	fn cross_file_noop_observes_pending_copy_through_mod_winner() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let copied_path = "common/scripted_effects/00_mod_winner.txt";
+		let generated_path = "common/scripted_effects/zz_generated.txt";
+		let content = "shared_effect = {\n\tadd_prestige = 1\n}\n";
+		let workspace = cross_file_workspace(
+			temp.path(),
+			&[
+				("mod_winner", copied_path, content, 1, false),
+				("merged_input", generated_path, content, 2, false),
+			],
+		);
+		let copied_entry =
+			copy_through_entry(copied_path, &workspace.file_inventory[copied_path][0]);
+		let mut pending_copy_through = Vec::new();
+		let mut report = MergeReport {
+			generated_file_count: 1,
+			..MergeReport::default()
+		};
+		super::materialize_copy_through(
+			&workspace,
+			&copied_entry,
+			&out_dir,
+			false,
+			&mut report,
+			None,
+			&mut pending_copy_through,
+		)
+		.expect("queue copy-through winner");
+		write_file(&out_dir, generated_path, content);
+		assert!(!out_dir.join(copied_path).exists());
+
+		let prune_result = super::build_surviving_output_manifest(
+			&workspace,
+			&out_dir,
+			&pending_copy_through,
+			BTreeSet::from([generated_path.to_string()]),
+			foch_language::analyzer::eu4_profile::eu4_profile(),
+			&mut report,
+		)
+		.expect("flush pending winner before cross-file pruning");
+		let mut counted_generated_paths = BTreeSet::from([generated_path.to_string()]);
+		let mut provenance_localisation = BTreeMap::new();
+		super::reconcile_surviving_output_facts(
+			&MergePlanResult::default(),
+			&prune_result,
+			&mut counted_generated_paths,
+			&mut provenance_localisation,
+			&mut report,
+		);
+
+		assert_eq!(
+			fs::read_to_string(out_dir.join(copied_path)).expect("read copied winner"),
+			content
+		);
+		assert!(!out_dir.join(generated_path).exists());
+		assert!(prune_result.surviving_generated_paths.is_empty());
+		assert_eq!(
+			prune_result.pruned_paths,
+			BTreeSet::from([generated_path.to_string()])
+		);
+		assert_eq!(report.generated_file_count, 0);
+		assert_eq!(report.copied_file_count, 1);
+		assert_eq!(report.overlay_file_count, 0);
+		assert_eq!(report.cross_file_noop_skipped_file_count, 1);
+	}
+
+	#[test]
+	fn surviving_manifest_removes_pruned_module_publication_facts() {
+		let temp = TempDir::new().expect("temp dir");
+		let vanilla_path = "common/scripted_effects/00_vanilla.txt";
+		let dropped_path = "common/scripted_effects/zzz_foch_dropped.txt";
+		let kept_path = "common/scripted_triggers/zzz_foch_kept.txt";
+		let duplicated_effect = "shared_effect = {\n\tadd_prestige = 1\n}\n";
+		let kept_trigger = "kept_trigger = {\n\talways = yes\n}\n";
+		let module_entry = |family: &str, path: &str, prefix: &str| MergePlanEntry {
+			target: MergePlanTarget::Module {
+				id: MergeUnitId {
+					family_id: family.to_string(),
+					module_name: family.to_string(),
+				},
+				input_paths: Vec::new(),
+				output_path: path.to_string(),
+				replace_prefix: Some(prefix.to_string()),
+			},
+			strategy: MergePlanStrategy::StructuralMerge,
+			contributors: Vec::new(),
+			winner: None,
+			notes: Vec::new(),
+		};
+		let plan = MergePlanResult {
+			paths: vec![
+				module_entry("scripted_effects", dropped_path, "common/scripted_effects"),
+				module_entry("scripted_triggers", kept_path, "common/scripted_triggers"),
+			],
+			..MergePlanResult::default()
+		};
+		let trace = MergeTraceEntry {
+			contributors: Vec::new(),
+			policy: MergeTracePolicy::Union,
+			decision: MergeTraceDecision::Unioned,
+		};
+		let mut report = MergeReport {
+			generated_file_count: 2,
+			copied_file_count: 3,
+			overlay_file_count: 4,
+			definition_module_generated_count: 2,
+			definition_provenance: BTreeMap::from([
+				(
+					dropped_path.to_string(),
+					BTreeMap::from([("dropped".to_string(), vec!["mod_a".to_string()])]),
+				),
+				(
+					kept_path.to_string(),
+					BTreeMap::from([("kept".to_string(), vec!["mod_b".to_string()])]),
+				),
+			]),
+			merge_trace: BTreeMap::from([
+				(
+					dropped_path.to_string(),
+					BTreeMap::from([("dropped".to_string(), trace.clone())]),
+				),
+				(
+					kept_path.to_string(),
+					BTreeMap::from([("kept".to_string(), trace)]),
+				),
+			]),
+			..MergeReport::default()
+		};
+		let mut counted_generated_paths =
+			BTreeSet::from([dropped_path.to_string(), kept_path.to_string()]);
+		let mut localisation_by_script = BTreeMap::from([
+			(
+				dropped_path.to_string(),
+				BTreeMap::from([("FOCH_DROPPED".to_string(), "dropped".to_string())]),
+			),
+			(
+				kept_path.to_string(),
+				BTreeMap::from([("FOCH_KEPT".to_string(), "kept".to_string())]),
+			),
+		]);
+		let workspace = cross_file_workspace(
+			temp.path(),
+			&[
+				("base_game", vanilla_path, duplicated_effect, 0, true),
+				("merged_effects", dropped_path, duplicated_effect, 1, false),
+				("merged_triggers", kept_path, kept_trigger, 2, false),
+			],
+		);
+		write_file(temp.path(), dropped_path, duplicated_effect);
+		write_file(temp.path(), kept_path, kept_trigger);
+		let prune_result = super::prune_cross_file_noop_duplicates(
+			temp.path(),
+			BTreeSet::from([dropped_path.to_string(), kept_path.to_string()]),
+			&workspace,
+			foch_language::analyzer::eu4_profile::eu4_profile(),
+			&mut report,
+		)
+		.expect("prune covered replacement module output");
+
+		let replacement_prefixes = super::reconcile_surviving_output_facts(
+			&plan,
+			&prune_result,
+			&mut counted_generated_paths,
+			&mut localisation_by_script,
+			&mut report,
+		);
+		let mut generated_paths = prune_result.surviving_generated_paths.clone();
+		let localisation_path = super::write_surviving_provenance_localisation(
+			temp.path(),
+			&localisation_by_script,
+			&generated_paths,
+		)
+		.expect("write surviving provenance localisation")
+		.expect("kept script owns localisation");
+		super::record_counted_generated_output(
+			&localisation_path,
+			&mut generated_paths,
+			&mut counted_generated_paths,
+			&mut report,
+		);
+		let descriptor_path = temp.path().join("descriptor.mod");
+		super::io::write_generated_descriptor(
+			temp.path(),
+			&temp.path().join("playlist.json"),
+			"test",
+			&replacement_prefixes,
+			&descriptor_path,
+		)
+		.expect("write descriptor from surviving module entries");
+		let descriptor = fs::read_to_string(descriptor_path).expect("read descriptor");
+
+		let localisation =
+			fs::read_to_string(temp.path().join(&localisation_path)).expect("read localisation");
+		assert!(localisation.contains("FOCH_KEPT"));
+		assert!(!localisation.contains("FOCH_DROPPED"));
+		assert!(!temp.path().join(dropped_path).exists());
+		assert!(temp.path().join(kept_path).is_file());
+		assert_eq!(report.generated_file_count, 2);
+		assert_eq!(report.copied_file_count, 3);
+		assert_eq!(report.overlay_file_count, 4);
+		assert_eq!(report.cross_file_noop_skipped_file_count, 1);
+		assert_eq!(report.definition_module_generated_count, 1);
+		assert!(!report.merge_trace.contains_key(dropped_path));
+		assert!(!report.definition_provenance.contains_key(dropped_path));
+		assert!(!localisation_by_script.contains_key(dropped_path));
+		assert!(report.merge_trace.contains_key(kept_path));
+		assert!(report.definition_provenance.contains_key(kept_path));
+		assert!(localisation_by_script.contains_key(kept_path));
+		assert!(!descriptor.contains("replace_path=\"common/scripted_effects\""));
+		assert!(descriptor.contains("replace_path=\"common/scripted_triggers\""));
 	}
 
 	#[test]
@@ -2518,6 +3274,7 @@ mod tests {
 			&staging_dir,
 			Some(&prior_out_dir),
 			&ResolutionMap::default(),
+			&BTreeMap::new(),
 			&mut report,
 		)
 		.expect("materialize keep existing");
@@ -2543,6 +3300,44 @@ mod tests {
 	}
 
 	#[test]
+	fn materialize_keep_existing_rejects_uncarried_provenance_localisation_dependencies() {
+		let temp = TempDir::new().expect("temp dir");
+		let prior_out_dir = temp.path().join("prior-out");
+		let staging_dir = temp.path().join("staging");
+		let relative_path = "common/diplomatic_actions/handler.txt";
+		write_file(
+			&prior_out_dir,
+			relative_path,
+			"send_warning = { condition = { tooltip = FOCH_PROVENANCE_deadbeef } }\n",
+		);
+		let mut merge_output = structural_merge_output("merged\n");
+		merge_output
+			.keep_existing_paths
+			.insert(PathBuf::from(relative_path));
+		let mut report = MergeReport::default();
+
+		let error = super::write_structural_merge_output(
+			relative_path,
+			&mut merge_output,
+			&staging_dir,
+			Some(&prior_out_dir),
+			&ResolutionMap::default(),
+			&BTreeMap::new(),
+			&mut report,
+		)
+		.expect_err("keep_existing must not orphan generated tooltip keys");
+
+		assert!(
+			error
+				.to_string()
+				.contains("without its exact generated localisation dependencies"),
+			"{error}",
+		);
+		assert!(!staging_dir.join(relative_path).exists());
+		assert!(report.handler_resolutions.is_empty());
+	}
+
+	#[test]
 	fn materialize_file_level_keep_existing_resolution_skips_write_when_output_exists() {
 		let temp = TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("out");
@@ -2563,6 +3358,7 @@ mod tests {
 			&out_dir,
 			Some(&out_dir),
 			&resolution_map,
+			&BTreeMap::new(),
 			&mut report,
 		)
 		.expect("materialize file-level keep existing");
@@ -2601,6 +3397,7 @@ mod tests {
 			&out_dir,
 			Some(&out_dir),
 			&ResolutionMap::default(),
+			&BTreeMap::new(),
 			&mut report,
 		)
 		.expect("materialize normal write");
@@ -2641,6 +3438,7 @@ mod tests {
 			&out_dir,
 			None,
 			&ResolutionMap::default(),
+			&BTreeMap::new(),
 			&mut report,
 		)
 		.expect("materialize normal write");
@@ -2670,9 +3468,13 @@ mod tests {
 		fs::write(&external_path, "external\n").expect("write external source");
 
 		let mut merge_output = structural_merge_output("merged\n");
-		merge_output
-			.external_file_resolutions
-			.insert(PathBuf::from(relative_path), external_path.clone());
+		merge_output.external_file_resolutions.insert(
+			PathBuf::from(relative_path),
+			ExternalFileResolution::Frozen(external_path.clone()),
+		);
+		let frozen_external_files =
+			BTreeMap::from([(external_path.clone(), b"external\n".to_vec())]);
+		fs::write(&external_path, "changed after prepare\n").expect("mutate external source");
 		let mut report = MergeReport::default();
 
 		let materialization = super::write_structural_merge_output(
@@ -2681,6 +3483,7 @@ mod tests {
 			&out_dir,
 			None,
 			&ResolutionMap::default(),
+			&frozen_external_files,
 			&mut report,
 		)
 		.expect("materialize external file");
@@ -2705,15 +3508,50 @@ mod tests {
 	}
 
 	#[test]
+	fn materialize_live_external_file_ignores_frozen_payload_for_same_path() {
+		let temp = TempDir::new().expect("temp dir");
+		let out_dir = temp.path().join("out");
+		let external_path = temp.path().join("external.txt");
+		let relative_path = "common/ideas/external.txt";
+		fs::write(&external_path, "live interactive bytes\n").expect("write live source");
+
+		let mut merge_output = structural_merge_output("merged\n");
+		merge_output.external_file_resolutions.insert(
+			PathBuf::from(relative_path),
+			ExternalFileResolution::Live(external_path.clone()),
+		);
+		let frozen_external_files =
+			BTreeMap::from([(external_path, b"stale configured bytes\n".to_vec())]);
+		let mut report = MergeReport::default();
+
+		super::write_structural_merge_output(
+			relative_path,
+			&mut merge_output,
+			&out_dir,
+			None,
+			&ResolutionMap::default(),
+			&frozen_external_files,
+			&mut report,
+		)
+		.expect("materialize live external file");
+
+		assert_eq!(
+			fs::read_to_string(out_dir.join(relative_path)).expect("read output"),
+			"live interactive bytes\n"
+		);
+	}
+
+	#[test]
 	fn materialize_external_file_errors_when_external_missing() {
 		let temp = TempDir::new().expect("temp dir");
 		let out_dir = temp.path().join("out");
 		let external_path = temp.path().join("missing-external.txt");
 		let relative_path = "common/ideas/missing-external.txt";
 		let mut merge_output = structural_merge_output("merged\n");
-		merge_output
-			.external_file_resolutions
-			.insert(PathBuf::from(relative_path), external_path.clone());
+		merge_output.external_file_resolutions.insert(
+			PathBuf::from(relative_path),
+			ExternalFileResolution::Live(external_path.clone()),
+		);
 		let mut report = MergeReport::default();
 
 		let err = super::write_structural_merge_output(
@@ -2722,6 +3560,7 @@ mod tests {
 			&out_dir,
 			None,
 			&ResolutionMap::default(),
+			&BTreeMap::new(),
 			&mut report,
 		)
 		.expect_err("missing external source should error");
@@ -2815,8 +3654,6 @@ mod tests {
 			"from-a\n"
 		);
 
-		let plan = read_plan(&out_dir);
-		assert!(!plan_entry_for(&plan, "common/only.txt").generated);
 		let persisted_report = read_report(&out_dir);
 		assert_eq!(persisted_report.status, report.status);
 		assert_eq!(persisted_report.copied_file_count, 1);
@@ -2886,7 +3723,13 @@ mod tests {
 		.expect("materialize forced module conflict");
 
 		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
-		assert_eq!(report.manual_conflict_count, 1);
+		assert_eq!(report.manual_conflict_count, 0);
+		assert_eq!(report.unsupported_input_count, 1);
+		assert_eq!(report.engine_failure_count, 0);
+		assert_eq!(
+			report.conflict_resolutions[0].deferred_reason,
+			DeferredUnitReason::UnsupportedInput
+		);
 		assert_eq!(report.definition_module_count, 1);
 		assert_eq!(report.definition_module_generated_count, 0);
 		assert_eq!(report.definition_module_blocked_count, 1);
@@ -2975,6 +3818,77 @@ mod tests {
 			"descriptor must identify the final output directory: {descriptor}"
 		);
 		assert!(!descriptor.contains("foch-staging"));
+	}
+
+	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
+	#[test]
+	fn reset_only_mod_publishes_overlay_module_replacement() {
+		let temp = TempDir::new().expect("temp dir");
+		let playlist_path = temp.path().join("playlist.json");
+		let mod_a = temp.path().join("powerprojection-a");
+		let reset_mod = temp.path().join("powerprojection-reset");
+		let mod_c = temp.path().join("powerprojection-c");
+		let out_dir = temp.path().join("out");
+		write_dlc_load(
+			&playlist_path,
+			&[
+				("powerprojection-a", "A"),
+				("powerprojection-reset", "Reset"),
+				("powerprojection-c", "C"),
+			],
+		);
+		write_descriptor(&mod_a, "powerprojection-a");
+		write_descriptor(&reset_mod, "powerprojection-reset");
+		fs::write(
+			reset_mod.join("descriptor.mod"),
+			"name=\"powerprojection-reset\"\nreplace_path=\"common/powerprojection\"\n",
+		)
+		.expect("write reset descriptor");
+		write_descriptor(&mod_c, "powerprojection-c");
+		write_file(
+			&mod_a,
+			"common/powerprojection/a.txt",
+			"removed_by_reset = { yearly_decay = 1 }\n",
+		);
+		write_file(
+			&mod_c,
+			"common/powerprojection/c.txt",
+			"survives_reset = { yearly_decay = 2 }\n",
+		);
+
+		let report = materialize_merge_internal(
+			request_for(&playlist_path),
+			&out_dir,
+			no_base_options(false),
+		)
+		.expect("materialize reset overlay module");
+
+		assert_eq!(report.status, MergeReportStatus::Ready);
+		assert_eq!(report.definition_module_count, 1);
+		assert_eq!(report.definition_module_generated_count, 1);
+		let output =
+			fs::read_to_string(out_dir.join("common/powerprojection/zzz_foch_powerprojection.txt"))
+				.expect("read overlay module output");
+		assert!(output.contains("survives_reset"), "output: {output}");
+		assert!(!output.contains("removed_by_reset"), "output: {output}");
+		let descriptor =
+			fs::read_to_string(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH)).expect("read descriptor");
+		assert!(
+			descriptor.contains("replace_path=\"common/powerprojection\""),
+			"descriptor: {descriptor}"
+		);
+		let plan = read_plan(&out_dir);
+		assert!(matches!(
+			&plan_entry_for(
+				&plan,
+				"common/powerprojection/zzz_foch_powerprojection.txt"
+			)
+			.target,
+			MergePlanTarget::Module {
+				replace_prefix: Some(prefix),
+				..
+			} if prefix == "common/powerprojection"
+		));
 	}
 
 	#[test]
@@ -3093,7 +4007,7 @@ mod tests {
 
 	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
-	fn unresolved_structural_merge_skips_by_default() {
+	fn unresolved_structural_merge_defers_conflict_and_publishes_partial_output() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let out_dir = temp.path().join("out");
@@ -3121,10 +4035,10 @@ mod tests {
 		)
 		.expect("materialize");
 
-		assert_eq!(report.status, MergeReportStatus::Blocked);
+		assert_eq!(report.status, MergeReportStatus::PartialSuccess);
 		assert_eq!(report.manual_conflict_count, 1);
 		assert!(!out_dir.join(DAG_CONFLICT_PATH).exists());
-		assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+		assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
 		assert!(!out_dir.join("common/governments/stale-module.txt").exists());
 		assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).is_file());
 		assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).is_file());

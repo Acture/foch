@@ -21,6 +21,7 @@ use super::super::conflict_handler::ConflictHandler;
 #[cfg(test)]
 use super::super::conflict_handler::DeferHandler;
 use super::super::error::MergeError;
+use super::super::model::ExternalFileResolution;
 use super::patch::{AstPath, ClausewitzPatch, ListItemTarget, fuzzy_rename_similarity};
 
 // ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ pub struct PatchMergeResult {
 	pub stats: PatchMergeStats,
 	pub handler_resolved_count: usize,
 	pub handler_resolutions: Vec<HandlerResolutionRecord>,
-	pub external_file_resolutions: HashMap<PathBuf, PathBuf>,
+	pub external_file_resolutions: HashMap<PathBuf, ExternalFileResolution>,
 	pub keep_existing_paths: HashSet<PathBuf>,
 }
 

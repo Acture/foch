@@ -18,7 +18,7 @@ pub const INPUT_VERSION_SCHEMA_V2: &str = "2.0.0";
 pub const WORKSHOP_OBSERVATION_SCHEMA_V2: &str = "2.0.0";
 pub const MEASUREMENT_SCHEMA_V1: &str = "1.0.0";
 pub const MEASUREMENT_SCHEMA_V2: &str = "2.0.0";
-pub const SCORER_VERSION: &str = "2.0.0";
+pub const SCORER_VERSION: &str = "2.1.0";
 
 /// Frozen V1 tree statistics retained for decoding historical metadata.
 /// Live Workshop inputs do not materialize tree objects.
@@ -1818,7 +1818,7 @@ mod tests {
 			(
 				"scorer version",
 				V2IdentityParts {
-					scorer_version: "2.1.0",
+					scorer_version: "different-scorer-version",
 					..parts
 				},
 				true,
@@ -1864,7 +1864,7 @@ mod tests {
 		);
 
 		assert_eq!(record.schema(), MEASUREMENT_SCHEMA_V2);
-		assert_eq!(record.scorer_version(), "2.0.0");
+		assert_eq!(record.scorer_version(), SCORER_VERSION);
 		assert_eq!(record.runner_protocol_version(), Some("1.0.0"));
 		assert_eq!(record.cohort_id(), cohort_id);
 		assert_eq!(record.measurement_id(), measurement_id);

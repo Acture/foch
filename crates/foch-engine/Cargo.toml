@@ -35,6 +35,9 @@ walkdir.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys.workspace = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
+
 [dev-dependencies]
 filetime = "0.2"
 foch-core = { path = "../foch-core", features = ["test-utils"] }

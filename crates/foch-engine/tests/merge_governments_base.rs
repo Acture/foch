@@ -108,6 +108,22 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 		"sibling_only = { basic_reform = sibling_reform }\n",
 	);
 	write_file(
+		&playset_root.join("mods/1001"),
+		"common/defines/es_defines.lua",
+		concat!(
+			"NDefines.NGame.FOCH_LEFT_ONLY = 1\n",
+			"NDefines.NGame.FOCH_SHARED = 10\n",
+		),
+	);
+	write_file(
+		&playset_root.join("mods/1002"),
+		"common/defines/es_defines.lua",
+		concat!(
+			"NDefines.NGame.FOCH_RIGHT_ONLY = 2\n",
+			"NDefines.NGame.FOCH_SHARED = 20\n",
+		),
+	);
+	write_file(
 		&playset_root,
 		"dlc_load.json",
 		"{\n\t\"enabled_mods\": [\"mod/ugc_1001.mod\", \"mod/ugc_1002.mod\"],\n\t\"disabled_dlcs\": []\n}\n",
@@ -160,7 +176,8 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 			playset_fingerprint: None,
 			provenance: false,
 			retained_paths: Some(BTreeSet::from([
-				"common/governments/zzz_10_override.txt".to_string()
+				"common/governments/zzz_10_override.txt".to_string(),
+				"common/defines/es_defines.lua".to_string(),
 			])),
 		},
 	)
@@ -186,6 +203,24 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 		.filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
 		.collect::<Vec<_>>();
 	assert_eq!(emitted_files.len(), 1);
+	let defines = fs::read_to_string(out_dir.join("common/defines/es_defines.lua"))
+		.expect("read known-absent defines merge");
+	assert!(
+		defines.contains("NDefines.NGame.FOCH_LEFT_ONLY = 1"),
+		"{defines}"
+	);
+	assert!(
+		defines.contains("NDefines.NGame.FOCH_RIGHT_ONLY = 2"),
+		"{defines}"
+	);
+	assert!(
+		defines.contains("NDefines.NGame.FOCH_SHARED = 20"),
+		"{defines}"
+	);
+	assert!(
+		!defines.contains("NDefines.NGame.FOCH_SHARED = 10"),
+		"{defines}"
+	);
 	let descriptor = fs::read_to_string(out_dir.join("descriptor.mod")).expect("read descriptor");
 	assert!(descriptor.contains("replace_path=\"common/governments\""));
 

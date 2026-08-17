@@ -15,15 +15,85 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use crate::merge::conflict_view::ConflictView;
 use crate::merge::dag::ModDag;
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ConflictViewRequirement {
+	/// The handler always returns an unrecorded defer decision.
+	DeferWithoutView,
+	/// The handler only needs stable identity and contributor metadata.
+	Metadata,
+	/// The handler needs rendered vanilla/candidate snippets.
+	Full,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConflictMetadataCandidate {
+	pub mod_id: String,
+	pub precedence: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConflictMetadataView {
+	pub file_path: PathBuf,
+	pub address_path: Vec<String>,
+	pub address_key: String,
+	pub conflict_id: String,
+	pub reason: String,
+	pub candidates: Vec<ConflictMetadataCandidate>,
+}
+
+impl From<&ConflictView> for ConflictMetadataView {
+	fn from(view: &ConflictView) -> Self {
+		Self {
+			file_path: view.file_path.clone(),
+			address_path: view.address_path.clone(),
+			address_key: view.address_key.clone(),
+			conflict_id: view.conflict_id.clone(),
+			reason: view.reason.clone(),
+			candidates: view
+				.candidates
+				.iter()
+				.map(|candidate| ConflictMetadataCandidate {
+					mod_id: candidate.mod_id.clone(),
+					precedence: candidate.precedence,
+				})
+				.collect(),
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MetadataConflictDecision {
+	Decision(ConflictDecision),
+	NeedsFullView,
+}
+
+impl From<ConflictDecision> for MetadataConflictDecision {
+	fn from(decision: ConflictDecision) -> Self {
+		Self::Decision(decision)
+	}
+}
+
 pub trait ConflictHandler {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision;
+
+	/// Declare the cheapest view that preserves this handler's behavior.
+	///
+	/// External handlers default to `Full`; opting into `Metadata` also requires
+	/// implementing `on_conflict_metadata`.
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		ConflictViewRequirement::Full
+	}
+
+	fn on_conflict_metadata(&mut self, _view: &ConflictMetadataView) -> MetadataConflictDecision {
+		panic!("metadata-capable conflict handler must implement on_conflict_metadata")
+	}
 
 	fn set_conflict_progress(&mut self, _current: usize, _total: usize) {}
 
 	fn set_deferred_so_far(&mut self, _count: usize) {}
 }
 
-fn unique_candidate_index(view: &ConflictView, mod_id: &str) -> Option<usize> {
+fn unique_candidate_index(view: &ConflictMetadataView, mod_id: &str) -> Option<usize> {
 	let mut matches = view
 		.candidates
 		.iter()
@@ -43,6 +113,8 @@ pub enum ConflictDecision {
 	},
 	/// Use this external file's content (handled at materialize time).
 	UseFile(PathBuf),
+	/// Use bytes frozen from a configured external file during preparation.
+	UseFrozenFile(PathBuf),
 	/// Keep whatever already exists at output dir (handled at materialize time).
 	KeepExisting,
 	/// Defer — log to report, leave for later resolution, optionally recording a handler-specific report entry.
@@ -59,6 +131,10 @@ pub struct DeferHandler;
 impl ConflictHandler for DeferHandler {
 	fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
 		ConflictDecision::Defer { record: None }
+	}
+
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		ConflictViewRequirement::DeferWithoutView
 	}
 }
 
@@ -155,7 +231,7 @@ impl DepImpliesResolutionHandler {
 		}
 	}
 
-	fn conflict_mods(&self, view: &ConflictView) -> Vec<String> {
+	fn conflict_mods(&self, view: &ConflictMetadataView) -> Vec<String> {
 		let mut seen = HashSet::new();
 		view.candidates
 			.iter()
@@ -225,10 +301,8 @@ impl DepImpliesResolutionHandler {
 		}
 		format!("mod {winner} is downstream of all conflicting contributors")
 	}
-}
 
-impl ConflictHandler for DepImpliesResolutionHandler {
-	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+	fn decide(&mut self, view: &ConflictMetadataView) -> ConflictDecision {
 		let mods = self.conflict_mods(view);
 		let Some(winner) = self.winner(&mods) else {
 			return ConflictDecision::Defer { record: None };
@@ -249,6 +323,20 @@ impl ConflictHandler for DepImpliesResolutionHandler {
 	}
 }
 
+impl ConflictHandler for DepImpliesResolutionHandler {
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		self.decide(&ConflictMetadataView::from(view))
+	}
+
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		ConflictViewRequirement::Metadata
+	}
+
+	fn on_conflict_metadata(&mut self, view: &ConflictMetadataView) -> MetadataConflictDecision {
+		self.decide(view).into()
+	}
+}
+
 pub(crate) struct PriorityBoostResolutionHandler<'a> {
 	_current_file: PathBuf,
 	boosts: &'a BTreeMap<String, i32>,
@@ -262,7 +350,7 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 		}
 	}
 
-	fn winner(&self, view: &ConflictView) -> Option<(usize, String, usize)> {
+	fn winner(&self, view: &ConflictMetadataView) -> Option<(usize, String, usize)> {
 		let (winner_index, winner) = view.candidates.iter().enumerate().max_by(
 			|(left_index, left), (right_index, right)| {
 				left.precedence
@@ -284,10 +372,8 @@ impl<'a> PriorityBoostResolutionHandler<'a> {
 		}
 		Some((winner_index, winner.mod_id.clone(), winner.precedence))
 	}
-}
 
-impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
-	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+	fn decide(&mut self, view: &ConflictMetadataView) -> ConflictDecision {
 		let Some((candidate, winner, precedence)) = self.winner(view) else {
 			return ConflictDecision::Defer { record: None };
 		};
@@ -308,6 +394,20 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 				)),
 			}),
 		}
+	}
+}
+
+impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		self.decide(&ConflictMetadataView::from(view))
+	}
+
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		ConflictViewRequirement::Metadata
+	}
+
+	fn on_conflict_metadata(&mut self, view: &ConflictMetadataView) -> MetadataConflictDecision {
+		self.decide(view).into()
 	}
 }
 
@@ -339,6 +439,83 @@ impl<'a> LookupHandler<'a> {
 			cwt_rule_engine,
 			current_conflict_index: 1,
 			total_conflicts: 1,
+		}
+	}
+
+	fn lookup_file<'view>(&'view self, view: &'view ConflictMetadataView) -> &'view Path {
+		if self._current_file.as_os_str().is_empty() {
+			&view.file_path
+		} else {
+			&self._current_file
+		}
+	}
+
+	fn matching_resolution<'view>(
+		&'view self,
+		view: &'view ConflictMetadataView,
+	) -> Option<&'view ResolutionDecision> {
+		let address_path = view.address_path.join("/");
+		let lookup_file = self.lookup_file(view);
+		let leaf_address = if address_path.is_empty() {
+			view.address_key.clone()
+		} else {
+			format!("{address_path}/{}", view.address_key)
+		};
+		let view_address_conflict_id =
+			compute_conflict_id(&view.file_path, &address_path, &view.address_key);
+		let address_conflict_id = (view.conflict_id == view_address_conflict_id)
+			.then(|| compute_conflict_id(lookup_file, &address_path, &view.address_key));
+		self.map
+			.by_conflict_id
+			.get(&view.conflict_id)
+			.or_else(|| {
+				address_conflict_id
+					.as_ref()
+					.and_then(|conflict_id| self.map.by_conflict_id.get(conflict_id))
+			})
+			.or_else(|| self.map.by_file.get(lookup_file))
+			.or_else(|| {
+				self.map
+					.pattern_rules
+					.iter()
+					.find(|rule| rule.matches(lookup_file, &leaf_address))
+					.map(|rule| &rule.decision)
+			})
+	}
+
+	fn decide_metadata(&mut self, view: &ConflictMetadataView) -> ConflictDecision {
+		match self.matching_resolution(view) {
+			Some(ResolutionDecision::PreferCandidate(candidate)) => view
+				.candidates
+				.get(*candidate)
+				.map(|_| ConflictDecision::PickCandidate {
+					candidate: *candidate,
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None }),
+			Some(ResolutionDecision::PreferMod(mod_id)) => unique_candidate_index(view, mod_id)
+				.map(|candidate| ConflictDecision::PickCandidate {
+					candidate,
+					record: None,
+				})
+				.unwrap_or(ConflictDecision::Defer { record: None }),
+			Some(ResolutionDecision::UseFile(path)) => {
+				ConflictDecision::UseFrozenFile(path.clone())
+			}
+			Some(ResolutionDecision::UseLiveFile(path)) => ConflictDecision::UseFile(path.clone()),
+			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
+			Some(ResolutionDecision::Handler(_)) => {
+				unreachable!("named handlers require a full conflict view")
+			}
+			None => {
+				log_cwt_suggestion_on_miss(
+					self.cwt_rule_engine.as_deref(),
+					self.lookup_file(view),
+					&view.address_path,
+					&view.address_key,
+				);
+				ConflictDecision::Defer { record: None }
+			}
 		}
 	}
 }
@@ -375,47 +552,26 @@ fn log_cwt_suggestion_on_miss(
 
 impl<'a> ConflictHandler for LookupHandler<'a> {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
-		let address_path = view.address_path.join("/");
-		let lookup_file = if self._current_file.as_os_str().is_empty() {
-			&view.file_path
+		let metadata = ConflictMetadataView::from(view);
+		if let Some(ResolutionDecision::Handler(name)) = self.matching_resolution(&metadata) {
+			crate::merge::handler_registry::dispatch(name, view)
 		} else {
-			&self._current_file
-		};
-		let conflict_id = compute_conflict_id(lookup_file, &address_path, &view.address_key);
-		let leaf_address = if address_path.is_empty() {
-			view.address_key.clone()
+			self.decide_metadata(&metadata)
+		}
+	}
+
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		ConflictViewRequirement::Metadata
+	}
+
+	fn on_conflict_metadata(&mut self, view: &ConflictMetadataView) -> MetadataConflictDecision {
+		if matches!(
+			self.matching_resolution(view),
+			Some(ResolutionDecision::Handler(_))
+		) {
+			MetadataConflictDecision::NeedsFullView
 		} else {
-			format!("{address_path}/{}", view.address_key)
-		};
-		match self.map.lookup(lookup_file, &conflict_id, &leaf_address) {
-			Some(ResolutionDecision::PreferCandidate(candidate)) => view
-				.candidates
-				.get(*candidate)
-				.map(|_| ConflictDecision::PickCandidate {
-					candidate: *candidate,
-					record: None,
-				})
-				.unwrap_or(ConflictDecision::Defer { record: None }),
-			Some(ResolutionDecision::PreferMod(mod_id)) => unique_candidate_index(view, mod_id)
-				.map(|candidate| ConflictDecision::PickCandidate {
-					candidate,
-					record: None,
-				})
-				.unwrap_or(ConflictDecision::Defer { record: None }),
-			Some(ResolutionDecision::UseFile(path)) => ConflictDecision::UseFile(path.clone()),
-			Some(ResolutionDecision::KeepExisting) => ConflictDecision::KeepExisting,
-			Some(ResolutionDecision::Handler(name)) => {
-				crate::merge::handler_registry::dispatch(name, view)
-			}
-			None => {
-				log_cwt_suggestion_on_miss(
-					self.cwt_rule_engine.as_deref(),
-					lookup_file,
-					&view.address_path,
-					&view.address_key,
-				);
-				ConflictDecision::Defer { record: None }
-			}
+			self.decide_metadata(view).into()
 		}
 	}
 
@@ -695,10 +851,42 @@ pub struct ChainHandler<H1: ConflictHandler, H2: ConflictHandler> {
 	pub second: H2,
 }
 
+fn on_conflict_without_full_view(
+	handler: &mut dyn ConflictHandler,
+	view: &ConflictMetadataView,
+) -> MetadataConflictDecision {
+	match handler.conflict_view_requirement() {
+		ConflictViewRequirement::DeferWithoutView => {
+			ConflictDecision::Defer { record: None }.into()
+		}
+		ConflictViewRequirement::Metadata => handler.on_conflict_metadata(view),
+		ConflictViewRequirement::Full => MetadataConflictDecision::NeedsFullView,
+	}
+}
+
 impl<H1: ConflictHandler, H2: ConflictHandler> ConflictHandler for ChainHandler<H1, H2> {
 	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
 		match self.first.on_conflict(view) {
 			ConflictDecision::Defer { record: None } => self.second.on_conflict(view),
+			other => other,
+		}
+	}
+
+	fn conflict_view_requirement(&self) -> ConflictViewRequirement {
+		if self.first.conflict_view_requirement() == ConflictViewRequirement::DeferWithoutView
+			&& self.second.conflict_view_requirement() == ConflictViewRequirement::DeferWithoutView
+		{
+			ConflictViewRequirement::DeferWithoutView
+		} else {
+			ConflictViewRequirement::Metadata
+		}
+	}
+
+	fn on_conflict_metadata(&mut self, view: &ConflictMetadataView) -> MetadataConflictDecision {
+		match on_conflict_without_full_view(&mut self.first, view) {
+			MetadataConflictDecision::Decision(ConflictDecision::Defer { record: None }) => {
+				on_conflict_without_full_view(&mut self.second, view)
+			}
 			other => other,
 		}
 	}
@@ -738,19 +926,21 @@ pub(crate) fn resolution_entry_for_decision(
 			handler: None,
 			policy: None,
 		}),
-		ConflictDecision::UseFile(path) => Some(ResolutionEntry {
-			file: None,
-			conflict_id: Some(conflict_id.to_string()),
-			mod_id: None,
-			r#match: None,
-			prefer_mod: None,
-			prefer_candidate: None,
-			use_file: Some(path.clone()),
-			keep_existing: None,
-			priority_boost: None,
-			handler: None,
-			policy: None,
-		}),
+		ConflictDecision::UseFile(path) | ConflictDecision::UseFrozenFile(path) => {
+			Some(ResolutionEntry {
+				file: None,
+				conflict_id: Some(conflict_id.to_string()),
+				mod_id: None,
+				r#match: None,
+				prefer_mod: None,
+				prefer_candidate: None,
+				use_file: Some(path.clone()),
+				keep_existing: None,
+				priority_boost: None,
+				handler: None,
+				policy: None,
+			})
+		}
 		ConflictDecision::KeepExisting => Some(ResolutionEntry {
 			file: Some(current_file.to_path_buf()),
 			conflict_id: None,
@@ -839,6 +1029,10 @@ pub fn prompt_survivors_and_persist(
 			}
 			ConflictDecision::UseFile(path) => result.outcomes.push(PromptOutcome {
 				conflict_id,
+				kind: PromptOutcomeKind::Picked(ResolutionDecision::UseLiveFile(path)),
+			}),
+			ConflictDecision::UseFrozenFile(path) => result.outcomes.push(PromptOutcome {
+				conflict_id,
 				kind: PromptOutcomeKind::Picked(ResolutionDecision::UseFile(path)),
 			}),
 			ConflictDecision::KeepExisting => result.outcomes.push(PromptOutcome {
@@ -910,6 +1104,7 @@ mod tests {
 	use std::rc::Rc;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
+	use foch_core::config::compute_conflict_id;
 	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::playlist::PlaylistEntry;
 	use foch_core::model::ModCandidate;
@@ -1063,7 +1258,7 @@ mod tests {
 	}
 
 	#[test]
-	fn lookup_handler_returns_candidate_when_resolution_map_has_entry() {
+	fn lookup_handler_replays_generic_patch_address_conflict_id() {
 		let current_file = PathBuf::from("events/PirateEvents.txt");
 		let conflict_id = compute_conflict_id(&current_file, "root/event", "id");
 		let mut by_conflict_id = BTreeMap::new();
@@ -1093,6 +1288,101 @@ mod tests {
 	}
 
 	#[test]
+	fn lookup_handler_prefers_exact_view_then_target_address_then_file_and_pattern() {
+		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let address = address();
+		let conflict = conflict_with_patches();
+		let address_conflict_id =
+			compute_conflict_id(&current_file, &address.path.join("/"), &address.key);
+		let mut view = view_for("events/PirateEvents.txt", &address, &conflict);
+		view.conflict_id = "a".repeat(64);
+
+		let exact_map = ResolutionMap {
+			by_conflict_id: BTreeMap::from([
+				(
+					view.conflict_id.clone(),
+					ResolutionDecision::PreferMod("mod_b".to_string()),
+				),
+				(
+					address_conflict_id.clone(),
+					ResolutionDecision::PreferMod("mod_a".to_string()),
+				),
+			]),
+			by_file: BTreeMap::from([(
+				current_file.clone(),
+				ResolutionDecision::PreferMod("mod_a".to_string()),
+			)]),
+			..ResolutionMap::default()
+		};
+		assert_eq!(
+			LookupHandler::new(&exact_map, current_file.clone()).on_conflict(&view),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
+				record: None,
+			},
+			"the exact public view id must beat the target address id and file rule",
+		);
+
+		let address_only_map = ResolutionMap {
+			by_conflict_id: BTreeMap::from([(
+				address_conflict_id.clone(),
+				ResolutionDecision::PreferMod("mod_a".to_string()),
+			)]),
+			..ResolutionMap::default()
+		};
+		assert_eq!(
+			LookupHandler::new(&address_only_map, current_file.clone()).on_conflict(&view),
+			ConflictDecision::Defer { record: None },
+			"an address-derived id must not select a semantic candidate sequence",
+		);
+
+		let address_view = view_for("root/event/id", &address, &conflict);
+		let address_map = ResolutionMap {
+			by_conflict_id: BTreeMap::from([(
+				address_conflict_id,
+				ResolutionDecision::PreferMod("mod_a".to_string()),
+			)]),
+			by_file: BTreeMap::from([(
+				current_file.clone(),
+				ResolutionDecision::PreferMod("mod_b".to_string()),
+			)]),
+			..ResolutionMap::default()
+		};
+		assert_eq!(
+			LookupHandler::new(&address_map, current_file.clone()).on_conflict(&address_view),
+			ConflictDecision::PickCandidate {
+				candidate: 0,
+				record: None,
+			},
+			"the target address fallback must run before the file rule",
+		);
+
+		let (file_matcher, leaf_matcher) =
+			foch_core::config::parse_match_dsl("events/**").expect("compile test pattern");
+		let file_map = ResolutionMap {
+			by_file: BTreeMap::from([(
+				current_file.clone(),
+				ResolutionDecision::PreferMod("mod_b".to_string()),
+			)]),
+			pattern_rules: vec![foch_core::config::PatternRule {
+				dsl: "events/**".to_string(),
+				file_matcher,
+				leaf_matcher,
+				decision: ResolutionDecision::PreferMod("mod_a".to_string()),
+			}],
+			..ResolutionMap::default()
+		};
+		assert_eq!(
+			LookupHandler::new(&file_map, current_file).on_conflict(&view),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
+				record: None,
+			},
+			"the legacy miss must preserve file-over-pattern precedence",
+		);
+	}
+
+	#[test]
 	fn lookup_handler_returns_defer_on_miss() {
 		let map = ResolutionMap::default();
 		let mut handler = LookupHandler::new(&map, PathBuf::from("events/PirateEvents.txt"));
@@ -1104,6 +1394,33 @@ mod tests {
 		));
 
 		assert_eq!(decision, ConflictDecision::Defer { record: None });
+	}
+
+	#[test]
+	fn lookup_handler_requests_full_view_only_after_a_named_handler_matches() {
+		let current_file = PathBuf::from("events/PirateEvents.txt");
+		let map = ResolutionMap {
+			by_file: BTreeMap::from([(
+				current_file.clone(),
+				ResolutionDecision::Handler("defer".to_string()),
+			)]),
+			..ResolutionMap::default()
+		};
+		let mut handler = LookupHandler::new(&map, current_file);
+
+		assert_eq!(
+			handler.conflict_view_requirement(),
+			ConflictViewRequirement::Metadata,
+		);
+		let view = view_for(
+			"events/PirateEvents.txt",
+			&address(),
+			&conflict_with_patches(),
+		);
+		assert_eq!(
+			handler.on_conflict_metadata(&ConflictMetadataView::from(&view)),
+			MetadataConflictDecision::NeedsFullView,
+		);
 	}
 
 	#[test]
@@ -1170,23 +1487,31 @@ mod tests {
 			path: vec!["root".to_string(), "event".to_string()],
 			key: "other".to_string(),
 		};
+		assert_eq!(
+			handler.conflict_view_requirement(),
+			ConflictViewRequirement::Metadata,
+		);
 
-		let resolved = handler.on_conflict(&view_for(
+		let resolved_view = view_for(
 			"events/PirateEvents.txt",
 			&address(),
 			&conflict_with_patches(),
-		));
-		let deferred =
-			handler.on_conflict(&view_for("events/PirateEvents.txt", &miss, &conflict()));
+		);
+		let deferred_view = view_for("events/PirateEvents.txt", &miss, &conflict());
+		let resolved = handler.on_conflict_metadata(&ConflictMetadataView::from(&resolved_view));
+		let deferred = handler.on_conflict_metadata(&ConflictMetadataView::from(&deferred_view));
 
 		assert_eq!(
 			resolved,
-			ConflictDecision::PickCandidate {
+			MetadataConflictDecision::Decision(ConflictDecision::PickCandidate {
 				candidate: 0,
 				record: None
-			}
+			})
 		);
-		assert_eq!(deferred, ConflictDecision::Defer { record: None });
+		assert_eq!(
+			deferred,
+			MetadataConflictDecision::Decision(ConflictDecision::Defer { record: None })
+		);
 	}
 
 	#[test]

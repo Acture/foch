@@ -72,21 +72,15 @@ pub(crate) fn contributor_mod_hashes(
 		.collect()
 }
 
-pub(crate) fn final_base_statements(
-	file_dag: &FileDag,
-	vanilla: Option<&ParsedScriptFile>,
-) -> Vec<AstStatement> {
-	if file_dag
-		.contributors()
-		.iter()
-		.any(|mod_id| file_dag.replaces_path(mod_id))
-	{
-		Vec::new()
-	} else {
-		vanilla
-			.map(|base| base.ast.statements.clone())
-			.unwrap_or_default()
-	}
+pub(crate) fn merge_ancestor_statements(vanilla: Option<&ParsedScriptFile>) -> Vec<AstStatement> {
+	// `replace_path` controls loader visibility and is already reflected in the
+	// active DAG and each contributor's complete source view. Observed vanilla
+	// remains the epistemic ancestor used to compare independent replacements;
+	// applying a replacement source against this root still deletes every base
+	// statement that the source omits.
+	vanilla
+		.map(|base| base.ast.statements.clone())
+		.unwrap_or_default()
 }
 
 pub(crate) fn template_for<'a>(

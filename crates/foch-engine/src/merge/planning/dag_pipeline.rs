@@ -14,6 +14,7 @@ use super::dag_join::{DagJoinPlan, DagJoinScope, plan_dag_join, sink_mods};
 pub(crate) struct EffectiveNodeRequest<'a, State> {
 	pub mod_id: &'a ModId,
 	pub precedence: usize,
+	pub resets_base: bool,
 	pub parent: &'a State,
 	pub source: &'a ParsedScriptFile,
 }
@@ -95,6 +96,7 @@ where
 			let state = protocol.effective_node(EffectiveNodeRequest {
 				mod_id,
 				precedence: file_dag.precedence_of(mod_id),
+				resets_base: file_dag.replaces_path(mod_id),
 				parent: &parent,
 				source,
 			})?;

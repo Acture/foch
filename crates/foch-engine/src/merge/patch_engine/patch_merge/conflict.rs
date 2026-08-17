@@ -11,6 +11,7 @@ use super::{
 };
 use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 use crate::merge::error::MergeError;
+use crate::merge::model::ExternalFileResolution;
 use crate::merge::patch_engine::conflict_view::build_decision_conflict_view;
 
 /// Cross-kind sibling conflict detected before per-address dispatch.
@@ -151,9 +152,17 @@ pub(super) fn apply_conflict_decision(
 			// Inline use_file is a whole-file materialization decision. Key it by
 			// the real target file so write_patch_merge_output can honor it; the
 			// old synthetic AST key was unreachable by the materializer.
-			result
-				.external_file_resolutions
-				.insert(conflict_file.to_path_buf(), source_path);
+			result.external_file_resolutions.insert(
+				conflict_file.to_path_buf(),
+				ExternalFileResolution::Live(source_path),
+			);
+		}
+		ConflictDecision::UseFrozenFile(source_path) => {
+			result.handler_resolved_count += 1;
+			result.external_file_resolutions.insert(
+				conflict_file.to_path_buf(),
+				ExternalFileResolution::Frozen(source_path),
+			);
 		}
 		ConflictDecision::KeepExisting => {
 			result.handler_resolved_count += 1;

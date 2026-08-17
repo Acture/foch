@@ -15,7 +15,7 @@ use foch_merge_quality::config::{DiscoveryOverrides, discover_eu4};
 use foch_merge_quality::corpus::{Case, assess_oracle_candidate};
 use foch_merge_quality::dataset::{
 	DatasetPaths, MeasurementKernel, MeasurementRecord, MeasurementScope, ObservationRecord,
-	SCORER_VERSION, SnapshotRecord, TerminalStatus, read_jsonl,
+	SCORER_VERSION, SnapshotRecord, TerminalStatus, WorkshopObservationRecord, read_jsonl,
 };
 use foch_merge_quality::lifecycle::{
 	MeasurementRequest, MeasurementRunner, TerminalMerge, WorkshopMeasureOptions,
@@ -27,9 +27,12 @@ use foch_merge_quality::orchestrate::{
 use foch_merge_quality::report::WorkshopReportCohort;
 use foch_merge_quality::score::ScoreCache;
 use foch_merge_quality::workshop_inputs::WorkshopCaseManifest;
-use runner::{ProductMeasurementRunner, ProductMergeObservation, RUNNER_PROTOCOL_VERSION};
+use runner::{ProductMeasurementRunner, ProductPreviewObservation, RUNNER_PROTOCOL_VERSION};
 
-const WORKSHOP_CHILD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const WORKSHOP_PREVIEW_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+// Confirmed publication includes structural solving, COW clone/copy-through,
+// and product revalidation. Keep this distinct from the read-only plan gate.
+const WORKSHOP_EXPORT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const CACHE_GATE_CASE_ID: &str = "1351632822";
 const CACHE_GATE_SOURCE_IDS: [&str; 3] = ["1449952810", "1796527319", "2016264376"];
 const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
@@ -132,6 +135,15 @@ fn tiny_product_cli_to_pure_scorer_seam() {
 		RUNNER_PROTOCOL_VERSION
 	);
 	assert_eq!(runner.identity().engine_artifact.hash.len(), 64);
+	let preview = runner.run_cache_probe(&request);
+	assert_eq!(
+		preview.failure, None,
+		"preview failed: {:?}",
+		preview.failure
+	);
+	assert!(preview.plan_output.contains("Foch Merge Plan"));
+	assert!(!preview.output_exists);
+	assert!(!preview.report_exists);
 
 	let (merge_report, merge_ms) = match runner.run(&request) {
 		TerminalMerge::Completed { report, merge_ms } => (report, merge_ms),
@@ -292,15 +304,15 @@ fn workshop_product_cache_residency_gate() {
 		output_dir: work.path().join("cold-output"),
 		basegame_root: basegame,
 		expected_base_snapshot_identity: base_snapshot.as_label(),
-		timeout: WORKSHOP_CHILD_TIMEOUT,
+		timeout: WORKSHOP_PREVIEW_TIMEOUT,
 	};
 	let runner = ProductMeasurementRunner::workshop_cache_gate()
 		.expect("construct isolated default-cap cache-gate runner");
 
-	let cold = runner.run_cache_probe(&request, true);
+	let cold = runner.run_cache_probe(&request);
 	assert_cache_gate_observation("cold", &cold, 0, 3, "parse_done");
 	request.output_dir = work.path().join("warm-output");
-	let warm = runner.run_cache_probe(&request, false);
+	let warm = runner.run_cache_probe(&request);
 	assert_cache_gate_observation("warm", &warm, 3, 0, "disk_hit");
 
 	let reloaded = discovery
@@ -349,7 +361,7 @@ fn workshop_product_corpus_acceptance() {
 			case_manifest: &case_manifest,
 			dataset_root: &dataset_root,
 			discovery: &discovery,
-			timeout: WORKSHOP_CHILD_TIMEOUT,
+			timeout: WORKSHOP_EXPORT_TIMEOUT,
 			basegame_root: &basegame,
 		},
 		&mut runner,
@@ -399,6 +411,39 @@ fn workshop_product_corpus_acceptance() {
 			&& record.evidence_bundle_hash().is_some()
 			&& record.summary().is_some()
 	}));
+	let summaries = records
+		.iter()
+		.map(|record| {
+			record
+				.summary()
+				.expect("completed product measurement summary")
+		})
+		.collect::<Vec<_>>();
+	assert!(
+		summaries.iter().all(|summary| {
+			matches!(
+				summary.merge_status.as_deref(),
+				Some("ready" | "partial_success")
+			)
+		}),
+		"Workshop acceptance requires publishable product reports; blocked is not completion"
+	);
+	let multi_source_files = summaries
+		.iter()
+		.map(|summary| summary.multi_source_files)
+		.sum::<usize>();
+	let accepted_multi_source_files = summaries
+		.iter()
+		.map(|summary| summary.accepted_multi_source_files)
+		.sum::<usize>();
+	assert!(
+		multi_source_files > 0,
+		"fixed Workshop cohort must contain multi-source scoring units"
+	);
+	assert!(
+		accepted_multi_source_files > 0,
+		"Workshop acceptance requires at least one accepted multi-source output"
+	);
 
 	let output = repo_root()
 		.join("target/merge-quality/workshop-product-corpus")
@@ -436,28 +481,36 @@ fn require_acceptance(expected: &str) {
 
 fn assert_cache_gate_observation(
 	phase: &str,
-	observation: &ProductMergeObservation,
+	observation: &ProductPreviewObservation,
 	expected_hits: usize,
 	expected_misses: usize,
 	expected_event: &str,
 ) {
-	let report = match &observation.terminal {
-		TerminalMerge::Completed { report, .. } => report,
-		terminal => panic!("{phase} cache-gate merge did not complete: {terminal:?}"),
-	};
-	assert_ne!(
-		report.cache_source.as_deref(),
-		Some("modset"),
-		"{phase} cache-gate merge must execute workspace resolution"
+	assert_eq!(
+		observation.failure, None,
+		"{phase} cache-gate preview failed: {:?}",
+		observation.failure
+	);
+	assert!(
+		observation.plan_output.contains("Foch Merge Plan"),
+		"{phase} cache-gate preview did not return a merge plan"
+	);
+	assert!(
+		!observation.plan_output.contains("<stdout truncated"),
+		"{phase} cache-gate preview plan exceeded the bounded capture"
+	);
+	assert!(
+		!observation.output_exists,
+		"{phase} cache-gate preview must not materialize the output directory"
+	);
+	assert!(
+		!observation.report_exists,
+		"{phase} cache-gate preview must not write a merge report"
 	);
 	let diagnostics = &observation.cache_diagnostics;
 	assert!(
 		!diagnostics.contains("truncated"),
 		"{phase} cache diagnostics were truncated; refusing an incomplete assertion"
-	);
-	assert!(
-		!diagnostics.contains("modset_cache_hits=1"),
-		"{phase} cache gate took the modset shortcut:\n{diagnostics}"
 	);
 	let cache_store_lines = diagnostics
 		.lines()
@@ -468,14 +521,6 @@ fn assert_cache_gate_observation(
 			.iter()
 			.all(|line| line.contains(" state=stored ")),
 		"{phase} cache gate observed a non-resident semantic snapshot store:\n{diagnostics}"
-	);
-	assert_eq!(
-		diagnostics
-			.lines()
-			.filter(|line| line.contains("modset_cache_hits=0 modset_cache_misses=1"))
-			.count(),
-		1,
-		"{phase} cache gate must miss its force-specific modset key exactly once:\n{diagnostics}"
 	);
 	let workspace_summary =
 		format!("mod_parse_cache_hits={expected_hits} mod_parse_cache_misses={expected_misses}");
@@ -664,6 +709,20 @@ fn assert_workshop_product_report(path: &Path, expected_cases: usize) {
 	assert_eq!(report["merge_failed_cases"], 0);
 	assert_eq!(report["status_counts"]["completed"], expected_cases);
 	assert_eq!(report["baseline_complete"], true);
+	let multi_source_total = report["multi_source"]["total"]
+		.as_u64()
+		.expect("Workshop report multi-source total");
+	let multi_source_accepted = report["multi_source"]["accepted"]
+		.as_u64()
+		.expect("Workshop report accepted multi-source count");
+	assert!(
+		multi_source_total > 0,
+		"fixed Workshop report must contain multi-source scoring units"
+	);
+	assert!(
+		multi_source_accepted > 0,
+		"Workshop report must contain at least one accepted multi-source output"
+	);
 	let cases = report["cases"].as_array().expect("Workshop report cases");
 	assert!(cases.iter().all(|case| {
 		case.get("snapshot_id").is_none()
@@ -673,6 +732,10 @@ fn assert_workshop_product_report(path: &Path, expected_cases: usize) {
 			&& case["evidence_bundle_hash"]
 				.as_str()
 				.is_some_and(|value| value.len() == 64)
+			&& matches!(
+				case["summary"]["merge_status"].as_str(),
+				Some("ready" | "partial_success")
+			)
 	}));
 }
 
@@ -683,9 +746,13 @@ fn scorable_snapshot_ids(dataset_root: &Path, snapshot_ids: &[String]) -> BTreeS
 		.into_iter()
 		.map(|snapshot| (snapshot.snapshot_id.clone(), snapshot))
 		.collect::<BTreeMap<_, _>>();
-	let latest_observations = read_jsonl::<ObservationRecord>(&paths.observations)
+	let latest_observations = read_jsonl::<WorkshopObservationRecord>(&paths.observations)
 		.expect("read canonical observations")
 		.into_iter()
+		.filter_map(|observation| match observation {
+			WorkshopObservationRecord::V1(observation) => Some(observation),
+			WorkshopObservationRecord::V2(_) => None,
+		})
 		.fold(
 			BTreeMap::<String, ObservationRecord>::new(),
 			|mut latest, observation| {

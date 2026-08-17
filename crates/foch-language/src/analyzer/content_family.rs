@@ -184,6 +184,21 @@ pub enum OneSidedRemovalPolicy {
 	PreserveBooleanAlternatives,
 }
 
+/// How independently inserted children using the nested merge key correspond
+/// across sibling revisions.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NestedInsertionPolicy {
+	/// Treat the nested key as sufficient identity even when neither insertion
+	/// can be traced to an ancestor child.
+	#[default]
+	MatchByKey,
+	/// Only correlate nested children through a shared ancestor. Unbased
+	/// insertions remain source-isolated and are appended in revision order,
+	/// preserving each source's order and duplicate cardinality.
+	SourceIsolatedAppend,
+}
+
 /// How to merge child blocks that share the same key.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -270,6 +285,8 @@ impl ScalarReducerRule {
 pub struct MergePolicies {
 	pub merge_key_source: MergeKeySource,
 	pub nested_merge_key_source: MergeKeySource,
+	#[serde(default)]
+	pub nested_insertion: NestedInsertionPolicy,
 	pub scalar: ScalarMergePolicy,
 	#[serde(skip)]
 	pub scalar_reducer_rules: &'static [ScalarReducerRule],
@@ -764,6 +781,11 @@ impl ContentFamilyDescriptorBuilder {
 		self
 	}
 
+	pub fn nested_insertion_policy(mut self, policy: NestedInsertionPolicy) -> Self {
+		self.merge_policies.nested_insertion = policy;
+		self
+	}
+
 	pub fn conflict_policy(mut self, policy: ConflictPolicy) -> Self {
 		self.conflict_policy = policy;
 		self
@@ -841,6 +863,16 @@ impl ContentFamilyDescriptorBuilder {
 }
 
 impl ContentFamilyDescriptor {
+	/// Whether a file-level semantic merge may use an empty ancestor after the
+	/// current game root has authoritatively proved that the exact path does not
+	/// exist. This is a property of the merge unit: aggregate definition modules
+	/// have namespace-wide ancestors and must not infer them from one path.
+	pub fn supports_verified_empty_file_base(&self) -> bool {
+		self.load_policy == ContentLoadPolicy::PerPath
+			&& self.capabilities.merge_ready
+			&& self.merge_key_source.is_some()
+	}
+
 	pub fn prefix(id: &'static str, prefix: &'static str) -> ContentFamilyDescriptorBuilder {
 		ContentFamilyDescriptorBuilder {
 			id: ContentFamilyId::new(id),
@@ -864,6 +896,7 @@ impl ContentFamilyDescriptor {
 			merge_policies: MergePolicies {
 				merge_key_source: MergeKeySource::AssignmentKey,
 				nested_merge_key_source: MergeKeySource::AssignmentKey,
+				nested_insertion: NestedInsertionPolicy::MatchByKey,
 				scalar: ScalarMergePolicy::Conflict,
 				scalar_reducer_rules: &[],
 				list: ListMergePolicy::Union,
@@ -901,6 +934,7 @@ impl ContentFamilyDescriptor {
 			merge_policies: MergePolicies {
 				merge_key_source: MergeKeySource::AssignmentKey,
 				nested_merge_key_source: MergeKeySource::AssignmentKey,
+				nested_insertion: NestedInsertionPolicy::MatchByKey,
 				scalar: ScalarMergePolicy::Conflict,
 				scalar_reducer_rules: &[],
 				list: ListMergePolicy::Union,

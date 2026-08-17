@@ -12,7 +12,7 @@ Current layers:
 | `mods/` | `10.0.0` | Workshop ACF identity, mod ID, game/filter behavior, and foch version |
 | `diffs/v6.0.0/` | `6.0.0` | Target, mod semantic key, vanilla, foch, and game hashes |
 | `dag-base/v12.0.0/` | `12.0.0` | Dependency set, file, foch, and game hashes |
-| `modsets/v14.2.0/` | `14.2.0` | Ordered mod semantic keys, resolutions, merge behavior, foch, and game/base versions |
+| `modsets/v14.3.0/` | `14.3.0` | Ordered mod semantic keys, resolutions, merge behavior, foch, and game/base versions |
 | `cwt-rules/v0.11.0/` | `0.11.0` | CWT source-pack hash |
 | `parse/v10.0.0/` | `10.0.0` | Parser mode plus source bytes |
 

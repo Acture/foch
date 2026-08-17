@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::game::Game;
-use foch_core::model::{DocumentFamily, MergeReport};
+use foch_core::model::{DeferredUnitReason, DocumentFamily, MergeReport};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
 	GameProfile, MergeKeySource,
@@ -397,17 +397,24 @@ pub fn definition_index(mod_dir: &Path) -> HashMap<(String, String), Vec<String>
 	index
 }
 
-/// Paths foch surfaced as conflicts (it declined to auto-merge; a human did).
+/// Paths foch deferred because they require a genuine user or policy choice.
+/// Unsupported inputs and engine failures are deliberately not scored as
+/// human merge conflicts.
 pub fn conflict_rel_paths(report: &MergeReport) -> HashSet<String> {
 	let mut out = HashSet::new();
 	for c in &report.conflict_resolutions {
-		if !c.path.is_empty() {
+		if c.deferred_reason == DeferredUnitReason::NeedsUserChoice && !c.path.is_empty() {
 			out.insert(c.path.clone());
 		}
 	}
-	for w in &report.warnings {
-		if let Some(m) = WARN_PATH_RE.captures(w) {
-			out.insert(m[1].to_string());
+	// Pre-structured reports exposed only warning text. Keep that fallback for
+	// reports with no typed entries, but never let a warning overwrite a typed
+	// unsupported-input or engine-failure classification.
+	if report.conflict_resolutions.is_empty() {
+		for w in &report.warnings {
+			if let Some(m) = WARN_PATH_RE.captures(w) {
+				out.insert(m[1].to_string());
+			}
 		}
 	}
 	out
@@ -2996,6 +3003,43 @@ mod classify_tests {
 			assert_eq!(score.verdict, Verdict::DivergesStructure);
 			assert!(!score.verdict.accepted_ok());
 		}
+	}
+
+	#[test]
+	fn conflict_paths_exclude_typed_unsupported_and_engine_failures() {
+		let mut report = MergeReport::default();
+		for (path, deferred_reason) in [
+			(
+				"common/actual_conflict.txt",
+				DeferredUnitReason::NeedsUserChoice,
+			),
+			(
+				"common/unsupported.txt",
+				DeferredUnitReason::UnsupportedInput,
+			),
+			(
+				"common/engine_failure.txt",
+				DeferredUnitReason::EngineFailure,
+			),
+		] {
+			report
+				.conflict_resolutions
+				.push(foch_core::model::MergeReportConflictResolution {
+					path: path.to_string(),
+					reason: deferred_reason.as_str().to_string(),
+					deferred_reason,
+					kind: None,
+					leaf_conflicts: Vec::new(),
+				});
+		}
+		report.warnings.push(
+			"engine failure for common/engine_failure.txt; deferred, skipping output".to_string(),
+		);
+
+		assert_eq!(
+			conflict_rel_paths(&report),
+			HashSet::from(["common/actual_conflict.txt".to_string()])
+		);
 	}
 
 	#[test]

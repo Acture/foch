@@ -424,11 +424,11 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 			.join("dag-base-entry.bin"),
 		modset_tarball: root
 			.join("modsets")
-			.join("v14.2.0")
+			.join("v14.3.0")
 			.join("modset-entry.tar.gz"),
 		modset_report: root
 			.join("modsets")
-			.join("v14.2.0")
+			.join("v14.3.0")
 			.join("modset-entry.report.json"),
 		cwt_rules: root.join("cwt-rules").join("v0.11.0").join("cwt-entry.bin"),
 		parse: root
@@ -1197,7 +1197,7 @@ fn merge_plan_returns_exit_2_when_manual_conflict_exists() {
 	);
 	assert_eq!(code, 2);
 	assert!(stdout.contains("MANUAL_CONFLICT"));
-	assert!(stdout.contains("generated=false"));
+	assert!(!stdout.contains("generated="));
 }
 
 #[test]
@@ -1248,6 +1248,36 @@ fn merge_plan_returns_exit_0_when_no_manual_conflict_exists() {
 	);
 	assert_eq!(code, 0);
 	assert!(stdout.contains("structural_merge: 1"));
+}
+
+#[test]
+fn merge_preview_returns_exit_0_when_plan_has_manual_conflicts() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+
+	write_dlc_load(&playlist_path, &[("7251", "A"), ("7252", "B")]);
+	write_descriptor(&tmp.path().join("7251"), "mod-a");
+	write_descriptor(&tmp.path().join("7252"), "mod-b");
+	stage_structural_manual_conflict(&tmp.path().join("7251"), &tmp.path().join("7252"));
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+			"--non-interactive",
+		],
+		tmp.path(),
+	);
+
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(stdout.contains("MANUAL_CONFLICT"), "stdout: {stdout}");
+	assert!(!out_dir.exists(), "preview must not create --out");
 }
 
 #[test]
@@ -1311,7 +1341,7 @@ fn merge_plan_json_output_contains_strategy_contributors_and_winner() {
 	assert_eq!(entry["strategy"], "localisation_merge");
 	assert!(entry["contributors"].is_array());
 	assert_eq!(entry["winner"]["mod_id"], "7402");
-	assert_eq!(entry["generated"], false);
+	assert!(entry.get("generated").is_none());
 	assert_eq!(entry["notes"], json!([]));
 }
 
@@ -1353,7 +1383,7 @@ fn merge_plan_json_output_uses_null_winner_for_manual_conflicts() {
 	assert_eq!(entry["target"]["kind"], "file");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
-	assert_eq!(entry["generated"], false);
+	assert!(entry.get("generated").is_none());
 	assert!(
 		entry["notes"]
 			.as_array()
@@ -1420,7 +1450,7 @@ fn merge_plan_json_output_marks_non_normalizable_defines_as_manual_conflict() {
 	assert_eq!(entry["target"]["kind"], "file");
 	assert_eq!(entry["strategy"], "manual_conflict");
 	assert!(entry["winner"].is_null());
-	assert_eq!(entry["generated"], false);
+	assert!(entry.get("generated").is_none());
 	assert!(entry["notes"].as_array().is_some_and(|notes| {
 		notes.iter().any(|note| {
 			note.as_str()
@@ -1494,7 +1524,37 @@ fn merge_plan_include_game_base_changes_contributor_ordering() {
 	assert_eq!(entry["target"]["kind"], "module");
 	assert_eq!(entry["contributors"][0]["is_base_game"], true);
 	assert_eq!(entry["winner"]["mod_id"], "7501");
-	assert_eq!(entry["generated"], false);
+	assert!(entry.get("generated").is_none());
+}
+
+#[test]
+fn merge_command_defaults_to_plan_without_writing_output() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	let mod_root = tmp.path().join("7804");
+
+	write_dlc_load(&playlist_path, &[("7804", "A")]);
+	write_descriptor(&mod_root, "mod-a");
+	fs::create_dir_all(mod_root.join("common")).expect("create common dir");
+	fs::write(mod_root.join("common").join("only.txt"), "from-a\n").expect("write file");
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+		],
+		tmp.path(),
+	);
+
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(stdout.contains("Foch Merge Plan"), "stdout: {stdout}");
+	assert!(!out_dir.exists(), "preview must not create --out");
 }
 
 #[test]
@@ -1518,6 +1578,7 @@ fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--confirm",
 		],
 		tmp.path(),
 	);
@@ -1539,6 +1600,32 @@ fn merge_command_generates_output_tree_and_returns_exit_0_for_clean_playset() {
 	assert_eq!(report["validation"]["fatal_errors"], 0);
 	assert_eq!(report["validation"]["strict_findings"], 0);
 	assert_eq!(report["validation"]["parse_errors"], 0);
+
+	let (repeat_code, repeat_stdout, repeat_stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--no-game-base",
+			"--confirm",
+			"--non-interactive",
+		],
+		tmp.path(),
+	);
+	assert_eq!(
+		repeat_code, 1,
+		"stdout: {repeat_stdout}\nstderr: {repeat_stderr}"
+	);
+	assert!(repeat_stdout.contains("Foch Merge Plan"));
+	assert!(
+		repeat_stderr.contains("separate interactive confirmation"),
+		"stderr: {repeat_stderr}"
+	);
+	assert_eq!(
+		fs::read_to_string(out_dir.join("common/only.txt")).expect("read preserved output"),
+		"from-a\n"
+	);
 }
 
 #[test]
@@ -1567,6 +1654,7 @@ fn merge_command_ignore_dep_drops_declared_edge_and_reports_override() {
 			"--no-game-base",
 			"--ignore-dep",
 			"7902:7901",
+			"--confirm",
 		],
 		tmp.path(),
 	);
@@ -1605,15 +1693,17 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--confirm",
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 2);
-	assert!(stdout.contains("status: BLOCKED"));
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: PARTIAL_SUCCESS"));
 	assert!(!out_dir.join(DAG_CONFLICT_PATH).exists());
+	assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "blocked");
+	assert_eq!(report["status"], "partial_success");
 	assert_eq!(report["manual_conflict_count"], 1);
 	assert_eq!(report["generated_file_count"], 0);
 	assert!(
@@ -1621,6 +1711,45 @@ fn merge_command_skips_unresolved_dag_conflict_by_default() {
 			.as_array()
 			.is_some_and(|items| !items.is_empty())
 	);
+}
+
+#[test]
+fn merge_command_force_writes_placeholder_only_for_genuine_user_choice() {
+	let tmp = TempDir::new().expect("temp dir");
+	let playlist_path = tmp.path().join("playlist.json");
+	let out_dir = tmp.path().join("merged-out");
+	stage_dag_genuine_conflict(
+		&playlist_path,
+		&tmp.path().join("9101"),
+		&tmp.path().join("9102"),
+		&tmp.path().join("9103"),
+	);
+
+	let playlist_str = playlist_path.display().to_string();
+	let out_str = out_dir.display().to_string();
+	let (code, stdout, _stderr) = run_foch(
+		&[
+			"merge",
+			playlist_str.as_str(),
+			"--out",
+			out_str.as_str(),
+			"--force",
+			"--no-game-base",
+			"--confirm",
+		],
+		tmp.path(),
+	);
+
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: PARTIAL_SUCCESS"));
+	assert!(out_dir.join(DAG_CONFLICT_PATH).exists());
+
+	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
+	assert_eq!(report["status"], "partial_success");
+	assert_eq!(report["manual_conflict_count"], 1);
+	assert_eq!(report["unsupported_input_count"], 0);
+	assert_eq!(report["engine_failure_count"], 0);
+	assert_eq!(report["generated_file_count"], 1);
 }
 
 #[test]
@@ -1649,9 +1778,14 @@ fn merge_command_non_interactive_does_not_enable_tui_prompting() {
 		tmp.path(),
 	);
 
-	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(stdout.contains("Foch Merge Plan"), "stdout: {stdout}");
 	assert!(!stderr.contains("interactive mode:"), "stderr: {stderr}");
 	assert!(!stderr.contains("interactive TUI"), "stderr: {stderr}");
+	assert!(
+		!out_dir.exists(),
+		"--non-interactive must not imply --confirm"
+	);
 }
 
 #[test]
@@ -1676,11 +1810,12 @@ fn merge_command_cli_prompt_selects_simple_prompt_handler() {
 			out_str.as_str(),
 			"--no-game-base",
 			"--cli-prompt",
+			"--confirm",
 		],
 		tmp.path(),
 	);
 
-	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
 	assert!(
 		stderr.contains("interactive mode: simple prompt"),
 		"stderr: {stderr}"
@@ -1714,10 +1849,11 @@ fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--confirm",
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
 	assert!(!stdout.contains("Tip:"), "stdout: {stdout}");
 	assert!(
 		stderr.contains("Tip: 1 unresolved merge conflict"),
@@ -1734,11 +1870,14 @@ fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 		stderr.contains("handler = \"last_writer\""),
 		"stderr: {stderr}"
 	);
-	assert!(stderr.contains("Foch kept"), "stderr: {stderr}");
+	assert!(
+		stderr.contains("Foch exported the safe units"),
+		"stderr: {stderr}"
+	);
 }
 
 #[test]
-fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_blocks() {
+fn merge_command_defers_unsupported_input_and_exports_safe_files() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -1749,6 +1888,8 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 	write_descriptor(&mod_a, "mod-a");
 	write_descriptor(&mod_b, "mod-b");
 	stage_structural_manual_conflict(&mod_a, &mod_b);
+	fs::create_dir_all(mod_b.join("common")).expect("create common dir");
+	fs::write(mod_b.join("common").join("safe.txt"), "safe\n").expect("write safe file");
 
 	let playlist_str = playlist_path.display().to_string();
 	let out_str = out_dir.display().to_string();
@@ -1759,23 +1900,31 @@ fn merge_command_returns_exit_2_and_writes_only_sidecars_when_manual_conflict_bl
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--confirm",
 		],
 		tmp.path(),
 	);
-	assert_eq!(code, 2);
-	assert!(stdout.contains("status: BLOCKED"));
-	assert!(!out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+	assert_eq!(code, 0);
+	assert!(stdout.contains("status: PARTIAL_SUCCESS"));
+	assert!(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH).exists());
+	assert_eq!(
+		fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
+		"safe\n"
+	);
 	assert!(!out_dir.join(STRUCTURAL_CONFLICT_PATH).exists());
 	assert!(out_dir.join(MERGE_PLAN_ARTIFACT_PATH).exists());
 	assert!(out_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
-	assert_eq!(report["status"], "blocked");
-	assert_eq!(report["manual_conflict_count"], 1);
+	assert_eq!(report["status"], "partial_success");
+	assert_eq!(report["manual_conflict_count"], 0);
+	assert_eq!(report["unsupported_input_count"], 1);
+	assert_eq!(report["engine_failure_count"], 0);
+	assert_eq!(report["copied_file_count"], 1);
 }
 
 #[test]
-fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
+fn merge_command_force_mode_does_not_override_unsupported_input() {
 	let tmp = TempDir::new().expect("temp dir");
 	let playlist_path = tmp.path().join("playlist.json");
 	let out_dir = tmp.path().join("merged-out");
@@ -1799,6 +1948,7 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 			out_str.as_str(),
 			"--force",
 			"--no-game-base",
+			"--confirm",
 		],
 		tmp.path(),
 	);
@@ -1809,13 +1959,16 @@ fn merge_command_force_mode_returns_exit_3_and_keeps_placeholder_behavior() {
 		fs::read_to_string(out_dir.join("common/safe.txt")).expect("read copied safe file"),
 		"safe\n"
 	);
-	// Manual-conflict structural file resolved by --force placeholder
-	assert!(out_dir.join(STRUCTURAL_CONFLICT_PATH).exists());
+	// Malformed input is unsupported, not a user-choice conflict; --force must
+	// not publish a placeholder for it.
+	assert!(!out_dir.join(STRUCTURAL_CONFLICT_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
 	assert_eq!(report["status"], "partial_success");
-	assert_eq!(report["manual_conflict_count"], 1);
-	assert_eq!(report["generated_file_count"], 1);
+	assert_eq!(report["manual_conflict_count"], 0);
+	assert_eq!(report["unsupported_input_count"], 1);
+	assert_eq!(report["engine_failure_count"], 0);
+	assert_eq!(report["generated_file_count"], 0);
 	assert_eq!(report["copied_file_count"], 1);
 }
 
@@ -1862,6 +2015,7 @@ fn merge_command_revalidates_generated_output_and_backfills_validation_buckets()
 			"--out",
 			out_str.as_str(),
 			"--no-game-base",
+			"--confirm",
 		],
 		tmp.path(),
 	);

@@ -1664,6 +1664,458 @@ fn eu4_ages_reducer_retains_the_stronger_value_against_a_one_sided_change() {
 }
 
 #[test]
+fn eu4_diplomatic_actions_keep_distinct_tooltip_conditions_independent() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let base = parse_at(path, "");
+	let left = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = {\n\
+		\t\ttooltip = EE_PEACE_BLOCK\n\
+		\t\tpotential = { has_country_flag = ee_war }\n\
+		\t\tallow = { always = no }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = {\n\
+		\t\ttooltip = ICE_PEACE_BLOCK\n\
+		\t\tpotential = { has_country_flag = ice_war }\n\
+		\t\tallow = { always = no }\n\
+		\t}\n\
+		}\n",
+	);
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge independent diplomatic-action conditions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("conflict-free condition merge"),
+	);
+	assert_eq!(output.matches("condition = {").count(), 2, "{output}");
+	for identity in ["EE_PEACE_BLOCK", "ICE_PEACE_BLOCK"] {
+		assert_eq!(output.matches(identity).count(), 1, "{output}");
+	}
+}
+
+#[test]
+fn eu4_diplomatic_actions_keep_missing_and_keyed_conditions_independent() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let base = parse_at(path, "");
+	let left = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = {\n\
+		\t\tpotential = { has_country_flag = shared_war }\n\
+		\t\tallow = { always = no }\n\
+		\t}\n\
+		}\n",
+	);
+	let right = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = {\n\
+		\t\ttooltip = KEYED_PEACE_BLOCK\n\
+		\t\tpotential = { has_country_flag = shared_war }\n\
+		\t\tallow = { always = no }\n\
+		\t}\n\
+		}\n",
+	);
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge identity-less and keyed diplomatic-action conditions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("conflict-free condition merge"),
+	);
+	assert_eq!(output.matches("condition = {").count(), 2, "{output}");
+	assert_eq!(output.matches("KEYED_PEACE_BLOCK").count(), 1, "{output}");
+}
+
+#[test]
+fn eu4_diplomatic_actions_preserve_duplicate_blank_tooltip_cardinality() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let conditions = |first_allow: &str, third_allow: &str| {
+		parse_at(
+			path,
+			&format!(
+				"annexationaction = {{\n\
+				\tcondition = {{ tooltip = \" \" potential = {{ tag = AAA }} allow = {{ {first_allow} }} }}\n\
+				\tcondition = {{ tooltip = \" \" potential = {{ tag = BBB }} allow = {{ always = no }} }}\n\
+				\tcondition = {{ tooltip = \" \" potential = {{ tag = CCC }} allow = {{ {third_allow} }} }}\n\
+				}}\n"
+			),
+		)
+	};
+	let base = conditions("always = no", "always = no");
+	let left = conditions("has_country_flag = left_annexation", "always = no");
+	let right = conditions("always = no", "has_country_flag = right_annexation");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge duplicate placeholder-tooltip conditions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("conflict-free placeholder condition merge"),
+	);
+	assert_eq!(output.matches("condition = {").count(), 3, "{output}");
+	assert_eq!(output.matches("tooltip = \" \"").count(), 3, "{output}");
+	for value in ["AAA", "BBB", "CCC", "left_annexation", "right_annexation"] {
+		assert_eq!(output.matches(value).count(), 1, "{output}");
+	}
+}
+
+#[test]
+fn eu4_diplomatic_actions_keep_same_tooltip_additions_source_isolated() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let base = parse_at(path, "");
+	let condition = |flag: &str| {
+		parse_at(
+			path,
+			&format!(
+				"requestpeace = {{\n\
+				\tcondition = {{\n\
+				\t\ttooltip = SHARED_PEACE_BLOCK\n\
+				\t\tpotential = {{ has_country_flag = {flag} }}\n\
+				\t\tallow = {{ always = no }}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let left = condition("ee_war");
+	let right = condition("ice_war");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge source-isolated diplomatic-action conditions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("conflict-free source-isolated condition merge"),
+	);
+	assert_eq!(output.matches("condition = {").count(), 2, "{output}");
+	assert_eq!(output.matches("SHARED_PEACE_BLOCK").count(), 2, "{output}");
+	let left_offset = output.find("ee_war").expect("left condition emitted");
+	let right_offset = output.find("ice_war").expect("right condition emitted");
+	assert!(left_offset < right_offset, "{output}");
+}
+
+#[test]
+fn eu4_diplomatic_actions_defer_divergent_edits_to_the_same_base_condition() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let condition = |flag: &str| {
+		parse_at(
+			path,
+			&format!(
+				"requestpeace = {{\n\
+				\tcondition = {{\n\
+				\t\ttooltip = SHARED_PEACE_BLOCK\n\
+				\t\tpotential = {{ has_country_flag = {flag} }}\n\
+				\t\tallow = {{ always = no }}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let base = condition("base_war");
+	let left = condition("ee_war");
+	let right = condition("ice_war");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge divergent edits to one ancestral condition");
+
+	assert!(outcome.resolved_ast().is_none());
+	assert!(!outcome.conflicts().is_empty());
+	let tentative = emit(outcome.tentative_ast());
+	assert_eq!(tentative.matches("condition = {").count(), 1, "{tentative}");
+}
+
+#[test]
+fn eu4_diplomatic_actions_do_not_duplicate_unchanged_base_conditions() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let base = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = {\n\
+		\t\ttooltip = BASE_PEACE_BLOCK\n\
+		\t\tpotential = { has_country_flag = base_war }\n\
+		\t\tallow = { always = no }\n\
+		\t}\n\
+		}\n",
+	);
+	let left = base.clone();
+	let right = base.clone();
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge unchanged ancestral condition copies");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("unchanged copies resolve"));
+	assert_eq!(output.matches("condition = {").count(), 1, "{output}");
+	assert_eq!(output.matches("BASE_PEACE_BLOCK").count(), 1, "{output}");
+	assert_eq!(output.matches("base_war").count(), 1, "{output}");
+}
+
+#[test]
+fn eu4_diplomatic_actions_preserve_one_mods_duplicate_condition_order() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let base = parse_at(path, "");
+	let left = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = { tooltip = SHARED potential = { tag = AAA } allow = { always = no } }\n\
+		\tcondition = { tooltip = SHARED potential = { tag = BBB } allow = { always = no } }\n\
+		\tcondition = { tooltip = \" \" potential = { tag = CCC } allow = { always = no } }\n\
+		\tcondition = { tooltip = \" \" potential = { tag = DDD } allow = { always = no } }\n\
+		}\n",
+	);
+	let right = parse_at(
+		path,
+		"requestpeace = {\n\
+		\tcondition = { tooltip = SHARED potential = { tag = EEE } allow = { always = no } }\n\
+		}\n",
+	);
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge duplicate source conditions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("duplicate conditions resolve"),
+	);
+	assert_eq!(output.matches("condition = {").count(), 5, "{output}");
+	assert_eq!(output.matches("tooltip = SHARED").count(), 3, "{output}");
+	assert_eq!(output.matches("tooltip = \" \"").count(), 2, "{output}");
+	let offsets = ["AAA", "BBB", "CCC", "DDD", "EEE"].map(|tag| {
+		output
+			.find(tag)
+			.unwrap_or_else(|| panic!("missing {tag}: {output}"))
+	});
+	assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]), "{output}");
+}
+
+#[test]
+fn eu4_diplomatic_actions_append_source_isolated_conditions_in_nway_order() {
+	let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+	let condition = |flag: &str| {
+		parse_at(
+			path,
+			&format!(
+				"requestpeace = {{\n\
+				\tcondition = {{\n\
+				\t\ttooltip = SHARED_PEACE_BLOCK\n\
+				\t\tpotential = {{ has_country_flag = {flag} }}\n\
+				\t\tallow = {{ always = no }}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let base = parse_at(path, "");
+	let first = condition("first_war");
+	let second = condition("second_war");
+	let third = condition("third_war");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("diplomatic actions descriptor");
+
+	let outcome = merge_clausewitz_files_n_way(
+		&base,
+		&[&first, &second, &third],
+		&descriptor.merge_policies,
+	)
+	.expect("merge source-isolated N-way conditions");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(outcome.resolved_ast().expect("N-way conditions resolve"));
+	assert_eq!(output.matches("condition = {").count(), 3, "{output}");
+	assert_eq!(output.matches("SHARED_PEACE_BLOCK").count(), 3, "{output}");
+	let offsets = ["first_war", "second_war", "third_war"].map(|flag| {
+		output
+			.find(flag)
+			.unwrap_or_else(|| panic!("missing {flag}: {output}"))
+	});
+	assert!(offsets.windows(2).all(|pair| pair[0] < pair[1]), "{output}");
+}
+
+#[test]
+fn eu4_subject_types_keep_distinct_modifier_subject_entries_independent() {
+	let path = "common/subject_types/zzz_foch_subject_types.txt";
+	let subject_type = |additional_modifier: Option<&str>| {
+		let additional = additional_modifier.map_or_else(String::new, |modifier| {
+			format!(
+				"\tmodifier_subject = {{\n\
+				\t\tmodifier = {modifier}\n\
+				\t\ttrigger = {{ overlord = {{ has_country_flag = {modifier}_flag }} }}\n\
+				\t}}\n"
+			)
+		});
+		parse_at(
+			path,
+			&format!(
+				"colony = {{\n\
+				\tmodifier_subject = {{\n\
+				\t\tmodifier = vanilla_colony_modifier\n\
+				\t\ttrigger = {{ num_of_cities = 10 }}\n\
+				\t}}\n\
+				{additional}\
+				}}\n"
+			),
+		)
+	};
+	let base = subject_type(None);
+	let left = subject_type(Some("ee_colony_modifier"));
+	let right = subject_type(Some("ice_colony_modifier"));
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("subject types descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge independent subject modifier entries");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("conflict-free subject modifier merge"),
+	);
+	assert_eq!(
+		output.matches("modifier_subject = {").count(),
+		3,
+		"{output}"
+	);
+	for modifier in [
+		"vanilla_colony_modifier",
+		"ee_colony_modifier",
+		"ice_colony_modifier",
+	] {
+		assert_eq!(
+			output.matches(&format!("modifier = {modifier}")).count(),
+			1,
+			"{output}"
+		);
+	}
+}
+
+#[test]
+fn eu4_subject_types_key_modifier_overlord_entries_by_modifier() {
+	let path = "common/subject_types/zzz_foch_subject_types.txt";
+	let base = parse_at(path, "");
+	let subject_type = |modifier: &str| {
+		parse_at(
+			path,
+			&format!(
+				"colony = {{\n\
+				\tmodifier_overlord = {{\n\
+				\t\tmodifier = {modifier}\n\
+				\t\ttrigger = {{ has_country_flag = {modifier}_flag }}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let left = subject_type("ee_overlord_modifier");
+	let right = subject_type("ice_overlord_modifier");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("subject types descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge independent overlord modifier entries");
+
+	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	let output = emit(
+		outcome
+			.resolved_ast()
+			.expect("conflict-free overlord modifier merge"),
+	);
+	assert_eq!(
+		output.matches("modifier_overlord = {").count(),
+		2,
+		"{output}"
+	);
+	for modifier in ["ee_overlord_modifier", "ice_overlord_modifier"] {
+		assert_eq!(
+			output.matches(&format!("modifier = {modifier}")).count(),
+			1,
+			"{output}"
+		);
+	}
+}
+
+#[test]
+fn eu4_subject_types_still_conflict_on_same_modifier_subject_identity() {
+	let path = "common/subject_types/zzz_foch_subject_types.txt";
+	let base = parse_at(path, "");
+	let subject_type = |flag: &str| {
+		parse_at(
+			path,
+			&format!(
+				"colony = {{\n\
+				\tmodifier_subject = {{\n\
+				\t\tmodifier = shared_colony_modifier\n\
+				\t\ttrigger = {{ overlord = {{ has_country_flag = {flag} }} }}\n\
+				\t}}\n\
+				}}\n"
+			),
+		)
+	};
+	let left = subject_type("ee_flag");
+	let right = subject_type("ice_flag");
+	let descriptor = eu4_profile()
+		.classify_content_family(PathBuf::from(path).as_path())
+		.expect("subject types descriptor");
+
+	let outcome = merge_clausewitz_files(&base, &left, &right, &descriptor.merge_policies)
+		.expect("merge same-identity subject modifier entries");
+
+	assert!(outcome.resolved_ast().is_none());
+	assert!(
+		outcome
+			.conflicts()
+			.iter()
+			.any(|conflict| conflict.kind == ConflictKind::InsertInsert),
+		"{:?}",
+		outcome.conflicts()
+	);
+}
+
+#[test]
 fn structured_merge_keeps_unruled_numeric_divergence_as_a_conflict() {
 	const RULES: &[ScalarReducerRule] = &[ScalarReducerRule::new(
 		&["province_trade_power_modifier"],

@@ -98,8 +98,6 @@ pub struct MergePlanEntry {
 	pub contributors: Vec<MergePlanContributor>,
 	pub winner: Option<MergePlanContributor>,
 	#[serde(default)]
-	pub generated: bool,
-	#[serde(default)]
 	pub notes: Vec<String>,
 }
 
@@ -132,7 +130,6 @@ mod tests {
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
 			winner: None,
-			generated: false,
 			notes: Vec::new(),
 		};
 
@@ -230,8 +227,9 @@ impl MergePlanResult {
 pub enum MergeReportStatus {
 	#[default]
 	Ready,
-	/// Some manual conflicts were resolved by --force (binary files copied from winner).
+	/// Safe units were exported while unresolved units were deferred or forced.
 	PartialSuccess,
+	/// Publication was stopped by an explicit non-conflict gate.
 	Blocked,
 	Fatal,
 }
@@ -416,10 +414,31 @@ pub struct LeafConflictDetail {
 	pub contributors: Vec<MergeReportConflictContributor>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredUnitReason {
+	#[default]
+	NeedsUserChoice,
+	UnsupportedInput,
+	EngineFailure,
+}
+
+impl DeferredUnitReason {
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::NeedsUserChoice => "needs_user_choice",
+			Self::UnsupportedInput => "unsupported_input",
+			Self::EngineFailure => "engine_failure",
+		}
+	}
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct MergeReportConflictResolution {
 	pub path: String,
 	pub reason: String,
+	#[serde(default)]
+	pub deferred_reason: DeferredUnitReason,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub kind: Option<ConflictKind>,
 	#[serde(default)]
@@ -537,7 +556,16 @@ pub struct MergeReport {
 	/// report stays byte-identical.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub fatal_reason: Option<String>,
+	/// Deferred units with genuine competing outcomes that require a reviewed
+	/// user or policy choice.
 	pub manual_conflict_count: usize,
+	/// Deferred units whose syntax or content shape is not supported yet.
+	#[serde(default)]
+	pub unsupported_input_count: usize,
+	/// Deferred units caused by an internal merge invariant or implementation
+	/// failure. These are product bugs, not user conflicts.
+	#[serde(default)]
+	pub engine_failure_count: usize,
 	pub generated_file_count: usize,
 	pub copied_file_count: usize,
 	pub overlay_file_count: usize,
@@ -606,4 +634,12 @@ pub struct MergeReport {
 	/// Populated with `definition_provenance` when `--provenance` is enabled.
 	#[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
 	pub merge_trace: BTreeMap<String, BTreeMap<String, MergeTraceEntry>>,
+}
+
+impl MergeReport {
+	pub fn deferred_unit_count(&self) -> usize {
+		self.manual_conflict_count
+			.saturating_add(self.unsupported_input_count)
+			.saturating_add(self.engine_failure_count)
+	}
 }

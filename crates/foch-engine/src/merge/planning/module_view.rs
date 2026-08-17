@@ -21,6 +21,22 @@ pub(crate) struct CrossFileModuleViews {
 	pub contributors: HashMap<ModId, ParsedScriptFile>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CrossFileModuleViewError {
+	UnsupportedInput(String),
+	EngineFailure(String),
+}
+
+impl CrossFileModuleViewError {
+	fn engine_failure(reason: impl Into<String>) -> Self {
+		Self::EngineFailure(reason.into())
+	}
+
+	fn unsupported_input(reason: impl Into<String>) -> Self {
+		Self::UnsupportedInput(reason.into())
+	}
+}
+
 #[derive(Clone, Debug)]
 struct VisibleModuleFile {
 	layer_ordinal: usize,
@@ -35,8 +51,12 @@ pub(crate) fn build_cross_file_module_views(
 	ignore_replace_path: &IgnoreReplacePath,
 	dep_overrides: &[DepOverride],
 	duplicate_definitions: Option<DuplicateDefinitionPolicy>,
-) -> Result<CrossFileModuleViews, String> {
-	let (merge_unit, input_paths, module_policy) = validate_module_target(entry, descriptor)?;
+) -> Result<CrossFileModuleViews, CrossFileModuleViewError> {
+	let has_covering_reset_participant =
+		definition_module_has_covering_reset_participant(workspace, descriptor);
+	let (merge_unit, input_paths, module_policy) =
+		validate_module_target(entry, descriptor, has_covering_reset_participant)
+			.map_err(CrossFileModuleViewError::engine_failure)?;
 	let module_policy = apply_duplicate_definition_override(
 		module_policy,
 		duplicate_definitions,
@@ -49,15 +69,15 @@ pub(crate) fn build_cross_file_module_views(
 	let mut base_representative = None;
 
 	for input_path in input_paths {
-		let contributors = workspace
-			.file_inventory
-			.get(input_path)
-			.ok_or_else(|| format!("missing module input {input_path}"))?;
+		let contributors = workspace.file_inventory.get(input_path).ok_or_else(|| {
+			CrossFileModuleViewError::engine_failure(format!("missing module input {input_path}"))
+		})?;
 		for contributor in contributors {
 			if contributor.is_synthetic_base {
 				continue;
 			}
-			let parsed = parse_contributor(contributor, &workspace.script_cache)?;
+			let parsed = parse_contributor(contributor, &workspace.script_cache)
+				.map_err(CrossFileModuleViewError::engine_failure)?;
 			if contributor.is_base_game {
 				base_files.insert(
 					input_path.clone(),
@@ -182,6 +202,7 @@ fn apply_duplicate_definition_override(
 fn validate_module_target<'a>(
 	entry: &'a MergePlanEntry,
 	descriptor: &ContentFamilyDescriptor,
+	has_covering_reset_participant: bool,
 ) -> Result<
 	(
 		&'a foch_core::model::MergeUnitId,
@@ -235,13 +256,19 @@ fn validate_module_target<'a>(
 			module_policy.output_path
 		));
 	}
-	let expected_replace_prefix = (module_policy.output_mode
-		== DefinitionModuleOutput::ReplaceNamespace)
-		.then_some(module_policy.namespace_prefix);
-	if replace_prefix.as_deref() != expected_replace_prefix {
+	let statically_replaces_namespace =
+		module_policy.output_mode == DefinitionModuleOutput::ReplaceNamespace;
+	let replacement_prefix_is_valid = match replace_prefix.as_deref() {
+		Some(prefix) => {
+			prefix == module_policy.namespace_prefix
+				&& (statically_replaces_namespace || has_covering_reset_participant)
+		}
+		None => !statically_replaces_namespace,
+	};
+	if !replacement_prefix_is_valid {
 		return Err(format!(
-			"module replacement prefix {:?} does not match policy prefix {:?}",
-			replace_prefix, expected_replace_prefix
+			"module replacement prefix {:?} does not match policy prefix {:?}; static replacement: {statically_replaces_namespace}, covering reset participant: {has_covering_reset_participant}",
+			replace_prefix, module_policy.namespace_prefix
 		));
 	}
 	if input_paths.is_empty() {
@@ -270,6 +297,24 @@ fn validate_module_target<'a>(
 		}
 	}
 	Ok((merge_unit, input_paths, module_policy))
+}
+
+fn definition_module_has_covering_reset_participant(
+	workspace: &ResolvedWorkspace,
+	descriptor: &ContentFamilyDescriptor,
+) -> bool {
+	let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+		return false;
+	};
+	workspace.mods.iter().any(|mod_item| {
+		mod_item.root_path.is_some()
+			&& mod_item.descriptor.as_ref().is_some_and(|mod_descriptor| {
+				mod_descriptor
+					.replace_path
+					.iter()
+					.any(|prefix| path_is_covered(policy.namespace_prefix, prefix))
+			})
+	})
 }
 
 fn module_input_is_within_prefix(path: &str, prefix: &str) -> bool {
@@ -400,7 +445,7 @@ fn fold_visible_module_files(
 	module_name: &str,
 	policy: DefinitionModulePolicy,
 	visible_files: &BTreeMap<String, VisibleModuleFile>,
-) -> Result<ParsedScriptFile, String> {
+) -> Result<ParsedScriptFile, CrossFileModuleViewError> {
 	let inputs = visible_files
 		.iter()
 		.map(|(path, file)| {
@@ -408,8 +453,11 @@ fn fold_visible_module_files(
 				.with_layer_ordinal(file.layer_ordinal)
 		})
 		.collect::<Vec<_>>();
-	let canonical = load_definition_module(&inputs, policy)
-		.map_err(|error| format!("failed to load definition module: {error:?}"))?;
+	let canonical = load_definition_module(&inputs, policy).map_err(|error| {
+		CrossFileModuleViewError::unsupported_input(format!(
+			"failed to load definition module: {error:?}"
+		))
+	})?;
 	let output_path = PathBuf::from(policy.output_path);
 	let mut parsed = visible_files
 		.values()
@@ -496,7 +544,6 @@ mod tests {
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
 			winner: None,
-			generated: false,
 			notes: Vec::new(),
 		}
 	}
@@ -507,6 +554,30 @@ mod tests {
 			.expect("governments descriptor")
 	}
 
+	fn powerprojection_entry(replace_prefix: Option<&str>) -> MergePlanEntry {
+		MergePlanEntry {
+			target: MergePlanTarget::Module {
+				id: MergeUnitId {
+					family_id: "common/powerprojection".to_string(),
+					module_name: "powerprojection".to_string(),
+				},
+				input_paths: vec!["common/powerprojection/example.txt".to_string()],
+				output_path: "common/powerprojection/zzz_foch_powerprojection.txt".to_string(),
+				replace_prefix: replace_prefix.map(str::to_string),
+			},
+			strategy: MergePlanStrategy::StructuralMerge,
+			contributors: Vec::new(),
+			winner: None,
+			notes: Vec::new(),
+		}
+	}
+
+	fn powerprojection_descriptor() -> &'static ContentFamilyDescriptor {
+		eu4_profile()
+			.classify_content_family(Path::new("common/powerprojection/example.txt"))
+			.expect("powerprojection descriptor")
+	}
+
 	#[test]
 	fn module_target_rejects_a_different_replacement_prefix() {
 		let entry = module_entry(
@@ -515,7 +586,7 @@ mod tests {
 			"common/ideas",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor())
+		let error = validate_module_target(&entry, governments_descriptor(), false)
 			.expect_err("target prefix must match the load policy");
 
 		assert!(error.contains("common/ideas"), "error: {error}");
@@ -530,7 +601,7 @@ mod tests {
 			"common/governments",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor())
+		let error = validate_module_target(&entry, governments_descriptor(), false)
 			.expect_err("module input must stay within its runtime prefix");
 
 		assert!(
@@ -547,7 +618,7 @@ mod tests {
 			"common/governments",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor())
+		let error = validate_module_target(&entry, governments_descriptor(), false)
 			.expect_err("module id must match the descriptor's module rule");
 
 		assert!(error.contains("ideas"), "error: {error}");
@@ -566,10 +637,22 @@ mod tests {
 		};
 		input_paths.clear();
 
-		let error = validate_module_target(&entry, governments_descriptor())
+		let error = validate_module_target(&entry, governments_descriptor(), false)
 			.expect_err("module target must have at least one input");
 
 		assert!(error.contains("no input paths"), "error: {error}");
+	}
+
+	#[test]
+	fn overlay_module_replacement_requires_a_covering_reset_participant() {
+		let entry = powerprojection_entry(Some("common/powerprojection"));
+
+		let error = validate_module_target(&entry, powerprojection_descriptor(), false)
+			.expect_err("overlay module cannot replace its namespace without a reset participant");
+		assert!(error.contains("covering reset participant: false"));
+
+		validate_module_target(&entry, powerprojection_descriptor(), true)
+			.expect("covering reset participant permits dynamic namespace replacement");
 	}
 
 	#[test]

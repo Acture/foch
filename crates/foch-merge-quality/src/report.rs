@@ -812,7 +812,10 @@ mod tests {
 		let records = crate::dataset::read_jsonl::<MeasurementRecord>(
 			&dataset_root.join("measurements.jsonl"),
 		)
-		.unwrap();
+		.unwrap()
+		.into_iter()
+		.filter(|measurement| matches!(measurement, MeasurementRecord::V1 { .. }))
+		.collect::<Vec<_>>();
 		let registry = committed_measurement_cohort_registry().unwrap();
 		let descriptors = measurement_cohort_descriptors(&records, &registry).unwrap();
 

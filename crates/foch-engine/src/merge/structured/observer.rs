@@ -14,7 +14,7 @@ use foch_merge_kernel::{
 
 use crate::merge::model::{
 	SemanticDeltaPartition, SemanticMergeComputation, SemanticMergeFacts, SemanticMergeSource,
-	SemanticPartitionId, SemanticPartitionLineage, SemanticSourceDelta,
+	SemanticOrigin, SemanticPartitionId, SemanticPartitionLineage, SemanticSourceDelta,
 };
 
 use super::top_level_assignment_key;
@@ -49,6 +49,7 @@ impl<'a> TreeSourceObserver<'a> {
 		revision: &AstFile,
 		source: SemanticMergeSource,
 		parent_lineage: &BTreeMap<SemanticPartitionId, SemanticPartitionLineage>,
+		resets_base: bool,
 	) -> Result<TreeSourceObservation, String> {
 		let partition_ids = self
 			.partition_adapter
@@ -56,13 +57,14 @@ impl<'a> TreeSourceObserver<'a> {
 		let mut partitions = Vec::with_capacity(partition_ids.len());
 		let mut lineage = BTreeMap::new();
 		for partition in partition_ids {
-			let base_tree = super::normalize_clausewitz_partition(base, &partition, self.policies)
+			let base_tree = self
+				.partition_adapter
+				.normalize_partition(base, &partition, self.policies)
 				.map_err(|error| format!("failed to normalize source-delta base: {error}"))?;
-			let revision_tree =
-				super::normalize_clausewitz_partition(revision, &partition, self.policies)
-					.map_err(|error| {
-						format!("failed to normalize source-delta revision: {error}")
-					})?;
+			let revision_tree = self
+				.partition_adapter
+				.normalize_partition(revision, &partition, self.policies)
+				.map_err(|error| format!("failed to normalize source-delta revision: {error}"))?;
 			let matching = self.matcher.match_trees(&base_tree, &revision_tree);
 			let delta =
 				RevisionDelta::between(&base_tree, RevisionId::LEFT, &revision_tree, &matching);
@@ -72,6 +74,7 @@ impl<'a> TreeSourceObserver<'a> {
 				&base_tree,
 				&revision_tree,
 				&delta,
+				resets_base,
 			)?;
 			if lineage
 				.insert(partition.clone(), partition_lineage)
@@ -100,14 +103,30 @@ fn apply_source_delta_lineage(
 	base_tree: &NormalizedTree,
 	revision_tree: &NormalizedTree,
 	delta: &RevisionDelta,
+	resets_base: bool,
 ) -> Result<SemanticPartitionLineage, String> {
+	match parent {
+		Some(parent) if parent.tree != *base_tree => {
+			return Err("parent lineage tree does not match contributor delta base".to_string());
+		}
+		None if !resets_base && !normalized_tree_is_empty_root(base_tree)? => {
+			return Err("non-empty contributor delta base is missing parent lineage".to_string());
+		}
+		Some(_) | None => {}
+	}
 	if let Some(parent) = parent
-		&& parent.tree != *base_tree
+		&& let Some((node, _)) = base_tree
+			.nodes()
+			.find(|(node, _)| !parent.origins.contains_key(node))
 	{
-		return Err("parent lineage tree does not match contributor delta base".to_string());
+		return Err(format!(
+			"parent lineage is missing origins for base node {}",
+			node.get(),
+		));
 	}
 
 	let mut base_by_revision = BTreeMap::new();
+	let mut revision_by_base = BTreeMap::new();
 	for matched in &delta.matches {
 		if matched.base.revision != RevisionId::BASE
 			|| matched.revision.revision == RevisionId::BASE
@@ -120,13 +139,48 @@ fn apply_source_delta_lineage(
 		{
 			return Err("contributor delta repeats a revision node match".to_string());
 		}
+		if revision_by_base
+			.insert(matched.base.node, matched.revision.node)
+			.is_some()
+		{
+			return Err("contributor delta repeats a base node match".to_string());
+		}
 	}
 
 	let mut replaced = BTreeSet::new();
 	let mut augmented = BTreeSet::new();
+	let mut deletion_augmented = BTreeSet::new();
 	for operation in &delta.operations {
 		match operation {
-			DeltaOperation::Insert { .. } | DeltaOperation::Delete { .. } => {}
+			DeltaOperation::Insert { .. } => {}
+			DeltaOperation::Delete { tombstone } => {
+				if tombstone.deleted.revision != RevisionId::BASE {
+					return Err(
+						"contributor delta deletion does not reference the base".to_string()
+					);
+				}
+				if let Some(former_parent) = tombstone.former_parent {
+					if former_parent.revision != RevisionId::BASE {
+						return Err(
+							"contributor delta deletion parent does not reference the base"
+								.to_string(),
+						);
+					}
+					let revision_parent = revision_by_base
+						.get(&former_parent.node)
+						.copied()
+						.ok_or_else(|| {
+							"contributor delta deletion parent has no surviving revision match"
+								.to_string()
+						})?;
+					let revision_parent_node = revision_tree
+						.node(revision_parent)
+						.map_err(|error| format!("invalid surviving deletion parent: {error}"))?;
+					if revision_parent_node.parent.is_some() {
+						deletion_augmented.insert(revision_parent);
+					}
+				}
+			}
 			DeltaOperation::Update { revision, .. } => {
 				replaced.insert(revision.node);
 			}
@@ -154,10 +208,12 @@ fn apply_source_delta_lineage(
 	}
 
 	let mut sources = BTreeMap::new();
+	let mut origins = BTreeMap::new();
+	let revision_is_empty_root = normalized_tree_is_empty_root(revision_tree)?;
 	for (node_id, node) in revision_tree.nodes() {
 		let matched_base = base_by_revision.get(&node_id).copied();
 		let is_inserted = matched_base.is_none();
-		let mut node_sources = if replaced.contains(&node_id) || is_inserted {
+		let mut node_sources = if resets_base || replaced.contains(&node_id) || is_inserted {
 			BTreeSet::new()
 		} else {
 			matched_base
@@ -168,17 +224,43 @@ fn apply_source_delta_lineage(
 		if replaced.contains(&node_id)
 			|| augmented.contains(&node_id)
 			|| (is_inserted && node.children.is_empty())
+			|| (resets_base && !revision_is_empty_root && node.children.is_empty())
 		{
 			node_sources.insert(source.clone());
 		}
 		if !node_sources.is_empty() {
 			sources.insert(node_id, node_sources);
 		}
+
+		let mut node_origins = matched_base
+			.and_then(|base| parent.and_then(|lineage| lineage.origins.get(&base)))
+			.cloned()
+			.unwrap_or_default();
+		if (resets_base && !revision_is_empty_root)
+			|| is_inserted
+			|| replaced.contains(&node_id)
+			|| augmented.contains(&node_id)
+			|| deletion_augmented.contains(&node_id)
+		{
+			node_origins.insert(SemanticOrigin::Mod(source.clone()));
+		}
+		// Origins are a total node map. A synthetic empty root legitimately has
+		// no semantic origin, but its empty set must remain addressable when a
+		// later kernel join projects provenance through that root node.
+		origins.insert(node_id, node_origins);
 	}
 	Ok(SemanticPartitionLineage {
 		tree: revision_tree.clone(),
 		sources,
+		origins,
 	})
+}
+
+fn normalized_tree_is_empty_root(tree: &NormalizedTree) -> Result<bool, String> {
+	let root = tree
+		.node(tree.root())
+		.map_err(|error| format!("normalized tree has an invalid root: {error}"))?;
+	Ok(tree.len() == 1 && root.children.is_empty())
 }
 
 #[derive(Default)]
@@ -363,10 +445,10 @@ mod tests {
 	use std::path::PathBuf;
 
 	use super::*;
-	use foch_language::analyzer::content_family::MergeKeySource;
+	use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
 	use foch_language::analyzer::parser::parse_clausewitz_content;
 
-	use crate::merge::structured::merge_clausewitz_files_n_way;
+	use crate::merge::structured::{merge_clausewitz_files_n_way, normalize_clausewitz_partition};
 
 	fn participant(mod_id: &str, precedence: usize, dag_level: usize) -> MergeTraceContributor {
 		MergeTraceContributor {
@@ -380,6 +462,94 @@ mod tests {
 		let parsed = parse_clausewitz_content(PathBuf::from("common/test.txt"), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
+	}
+
+	fn normalized(source: &str) -> NormalizedTree {
+		normalize_clausewitz_partition(
+			&parse(source),
+			&SemanticPartitionId::File,
+			&MergePolicies::default(),
+		)
+		.expect("normalize origin fixture")
+	}
+
+	fn source(mod_id: &str, precedence: usize) -> SemanticMergeSource {
+		SemanticMergeSource {
+			source_id: mod_id.to_string(),
+			precedence,
+		}
+	}
+
+	fn apply_origin_delta(
+		base_tree: &NormalizedTree,
+		revision_tree: &NormalizedTree,
+		parent: Option<&SemanticPartitionLineage>,
+		source: &SemanticMergeSource,
+	) -> SemanticPartitionLineage {
+		let matching = TreeMatcher::default().match_trees(base_tree, revision_tree);
+		let delta = RevisionDelta::between(base_tree, RevisionId::LEFT, revision_tree, &matching);
+		apply_source_delta_lineage(source, parent, base_tree, revision_tree, &delta, false)
+			.expect("apply origin delta")
+	}
+
+	fn origins_for_value(
+		lineage: &SemanticPartitionLineage,
+		value: &str,
+	) -> BTreeSet<SemanticOrigin> {
+		let node = lineage
+			.tree
+			.nodes()
+			.find_map(|(node, normalized)| {
+				(normalized.value.as_deref() == Some(value)).then_some(node)
+			})
+			.unwrap_or_else(|| panic!("missing normalized value {value}"));
+		lineage.origins.get(&node).cloned().unwrap_or_default()
+	}
+
+	fn condition_origins_for_tooltip(
+		lineage: &SemanticPartitionLineage,
+		tooltip: &str,
+	) -> BTreeSet<SemanticOrigin> {
+		let tooltip_node = lineage
+			.tree
+			.nodes()
+			.find_map(|(node, normalized)| {
+				(normalized.value.as_deref() == Some(tooltip)).then_some(node)
+			})
+			.unwrap_or_else(|| panic!("missing tooltip {tooltip}"));
+		let mut current = Some(tooltip_node);
+		let condition = loop {
+			let node = current.expect("tooltip must be nested in a condition");
+			let normalized = lineage.tree.node(node).expect("condition ancestor");
+			if normalized.kind == "clausewitz.assignment:condition"
+				&& normalized.value.as_deref() == Some("condition")
+			{
+				break node;
+			}
+			current = normalized.parent;
+		};
+		let mut origins = BTreeSet::new();
+		let mut pending = vec![condition];
+		while let Some(node) = pending.pop() {
+			origins.extend(
+				lineage
+					.origins
+					.get(&node)
+					.unwrap_or_else(|| panic!("missing origins for node {}", node.get()))
+					.iter()
+					.cloned(),
+			);
+			pending.extend(
+				lineage
+					.tree
+					.node(node)
+					.expect("condition subtree node")
+					.children
+					.iter()
+					.copied(),
+			);
+		}
+		origins
 	}
 
 	#[test]
@@ -409,6 +579,264 @@ mod tests {
 				.map(|contributor| contributor.mod_id.as_str())
 				.collect::<Vec<_>>(),
 			vec!["mod_a", "mod_b"]
+		);
+	}
+
+	#[test]
+	fn source_delta_preserves_vanilla_origin_and_records_modifier() {
+		let base = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = vanilla } } }",
+		);
+		let revision = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = tweaked } } }",
+		);
+		let parent = SemanticPartitionLineage::vanilla(base.clone());
+		let mod_a = source("mod_a", 10);
+
+		let lineage = apply_origin_delta(&base, &revision, Some(&parent), &mod_a);
+
+		assert_eq!(
+			origins_for_value(&lineage, "tweaked"),
+			BTreeSet::from([SemanticOrigin::Vanilla, SemanticOrigin::Mod(mod_a),]),
+		);
+		assert_eq!(
+			origins_for_value(&lineage, "SHARED_TT"),
+			BTreeSet::from([SemanticOrigin::Vanilla]),
+		);
+	}
+
+	#[test]
+	fn source_delta_marks_an_inserted_subtree_with_its_mod_origin() {
+		let base = normalized("");
+		let revision = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = from_a } } }",
+		);
+		let mod_a = source("mod_a", 10);
+
+		let lineage = apply_origin_delta(&base, &revision, None, &mod_a);
+
+		for value in ["send_warning", "condition", "SHARED_TT", "from_a"] {
+			assert_eq!(
+				origins_for_value(&lineage, value),
+				BTreeSet::from([SemanticOrigin::Mod(mod_a.clone())]),
+				"origin for {value}",
+			);
+		}
+	}
+
+	#[test]
+	fn source_delta_reset_adopts_the_reset_source_and_preserves_semantic_ancestry() {
+		let base = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = vanilla } } }",
+		);
+		let revision = base.clone();
+		let parent = SemanticPartitionLineage::vanilla(base.clone());
+		let mod_a = source("reset", 10);
+		let matching = TreeMatcher::default().match_trees(&base, &revision);
+		let delta = RevisionDelta::between(&base, RevisionId::LEFT, &revision, &matching);
+
+		let lineage =
+			apply_source_delta_lineage(&mod_a, Some(&parent), &base, &revision, &delta, true)
+				.expect("apply reset origin delta");
+
+		for value in ["send_warning", "condition", "SHARED_TT", "vanilla"] {
+			assert_eq!(
+				origins_for_value(&lineage, value),
+				BTreeSet::from([SemanticOrigin::Vanilla, SemanticOrigin::Mod(mod_a.clone()),]),
+				"origin for {value}",
+			);
+		}
+		assert_eq!(
+			lineage
+				.sources
+				.values()
+				.flat_map(|sources| sources.iter().cloned())
+				.collect::<BTreeSet<_>>(),
+			BTreeSet::from([mod_a]),
+			"the reset source must adopt byte-identical surviving content",
+		);
+	}
+
+	#[test]
+	fn source_delta_reset_does_not_attribute_an_empty_synthetic_root() {
+		let base = normalized("shared = { value = vanilla }");
+		let revision = normalized("");
+		let parent = SemanticPartitionLineage::vanilla(base.clone());
+		let reset = source("reset", 10);
+		let matching = TreeMatcher::default().match_trees(&base, &revision);
+		let delta = RevisionDelta::between(&base, RevisionId::LEFT, &revision, &matching);
+
+		let lineage =
+			apply_source_delta_lineage(&reset, Some(&parent), &base, &revision, &delta, true)
+				.expect("apply empty reset delta");
+
+		assert!(lineage.sources.is_empty());
+		assert!(
+			!lineage
+				.origins
+				.get(&lineage.tree.root())
+				.expect("total empty-root origins")
+				.contains(&SemanticOrigin::Mod(reset)),
+		);
+	}
+
+	#[test]
+	fn source_delta_rejects_missing_parent_lineage_for_a_non_empty_base() {
+		let base = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = vanilla } } }",
+		);
+		let revision = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = tweaked } } }",
+		);
+		let matching = TreeMatcher::default().match_trees(&base, &revision);
+		let delta = RevisionDelta::between(&base, RevisionId::LEFT, &revision, &matching);
+
+		let error =
+			apply_source_delta_lineage(&source("mod_a", 10), None, &base, &revision, &delta, false)
+				.expect_err("non-empty bases require parent lineage");
+
+		assert!(
+			error.contains("non-empty contributor delta base"),
+			"{error}"
+		);
+	}
+
+	#[test]
+	fn source_delta_rejects_a_partial_parent_origin_map() {
+		let base = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = vanilla } } }",
+		);
+		let revision = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = tweaked } } }",
+		);
+		let matching = TreeMatcher::default().match_trees(&base, &revision);
+		let delta = RevisionDelta::between(&base, RevisionId::LEFT, &revision, &matching);
+		let mut parent = SemanticPartitionLineage::vanilla(base.clone());
+		parent.origins.remove(&base.root());
+
+		let error = apply_source_delta_lineage(
+			&source("mod_a", 10),
+			Some(&parent),
+			&base,
+			&revision,
+			&delta,
+			false,
+		)
+		.expect_err("parent origins must be total");
+
+		assert!(error.contains("missing origins for base node"), "{error}");
+	}
+
+	#[test]
+	fn source_delta_keeps_the_earliest_mod_origin_across_later_edits() {
+		let empty = normalized("");
+		let added = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = from_a } } }",
+		);
+		let modified = normalized(
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = from_b } } }",
+		);
+		let mod_a = source("mod_a", 10);
+		let mod_b = source("mod_b", 20);
+		let added_lineage = apply_origin_delta(&empty, &added, None, &mod_a);
+
+		let lineage = apply_origin_delta(&added, &modified, Some(&added_lineage), &mod_b);
+
+		assert_eq!(
+			origins_for_value(&lineage, "from_b"),
+			BTreeSet::from([SemanticOrigin::Mod(mod_a), SemanticOrigin::Mod(mod_b),]),
+		);
+	}
+
+	#[test]
+	fn source_delta_attributes_a_delete_only_change_to_its_surviving_condition() {
+		let base = normalized(
+			"send_warning = {
+				condition = { tooltip = TARGET_TT allow = { removed = yes retained = yes } }
+				condition = { tooltip = SIBLING_TT allow = { sibling = yes } }
+			}",
+		);
+		let revision = normalized(
+			"send_warning = {
+				condition = { tooltip = TARGET_TT allow = { retained = yes } }
+				condition = { tooltip = SIBLING_TT allow = { sibling = yes } }
+			}",
+		);
+		let mod_a = source("mod_a", 10);
+		let parent = SemanticPartitionLineage::vanilla(base.clone());
+
+		let lineage = apply_origin_delta(&base, &revision, Some(&parent), &mod_a);
+
+		assert_eq!(
+			condition_origins_for_tooltip(&lineage, "TARGET_TT"),
+			BTreeSet::from([SemanticOrigin::Vanilla, SemanticOrigin::Mod(mod_a)]),
+		);
+		assert_eq!(
+			condition_origins_for_tooltip(&lineage, "SIBLING_TT"),
+			BTreeSet::from([SemanticOrigin::Vanilla]),
+			"the deletion must not mark an unrelated sibling condition",
+		);
+	}
+
+	#[test]
+	fn source_delta_rejects_a_deleted_subtree_with_no_surviving_parent_match() {
+		let base = normalized(
+			"send_warning = { condition = { tooltip = TARGET_TT allow = { removed = yes retained = yes } } }",
+		);
+		let revision = normalized(
+			"send_warning = { condition = { tooltip = TARGET_TT allow = { retained = yes } } }",
+		);
+		let matching = TreeMatcher::default().match_trees(&base, &revision);
+		let mut delta = RevisionDelta::between(&base, RevisionId::LEFT, &revision, &matching);
+		let former_parent = delta
+			.operations
+			.iter()
+			.find_map(|operation| match operation {
+				DeltaOperation::Delete { tombstone } => tombstone.former_parent,
+				DeltaOperation::Insert { .. }
+				| DeltaOperation::Update { .. }
+				| DeltaOperation::Move { .. }
+				| DeltaOperation::Rename { .. } => None,
+			})
+			.expect("deleted subtree parent");
+		delta
+			.matches
+			.retain(|matched| matched.base != former_parent);
+
+		let error = apply_source_delta_lineage(
+			&source("mod_a", 10),
+			Some(&SemanticPartitionLineage::vanilla(base.clone())),
+			&base,
+			&revision,
+			&delta,
+			false,
+		)
+		.expect_err("a deleted subtree parent must survive in the revision match");
+
+		assert!(
+			error.contains("deletion parent has no surviving revision match"),
+			"{error}",
+		);
+	}
+
+	#[test]
+	fn source_delta_does_not_attach_a_top_level_delete_to_a_surviving_sibling() {
+		let base = normalized(
+			"send_warning = { condition = { tooltip = DELETED_TT allow = { deleted = yes } } }
+			send_warning = { condition = { tooltip = SURVIVOR_TT allow = { retained = yes } } }",
+		);
+		let revision = normalized(
+			"send_warning = { condition = { tooltip = SURVIVOR_TT allow = { retained = yes } } }",
+		);
+		let mod_a = source("mod_a", 10);
+		let parent = SemanticPartitionLineage::vanilla(base.clone());
+
+		let lineage = apply_origin_delta(&base, &revision, Some(&parent), &mod_a);
+
+		assert_eq!(
+			condition_origins_for_tooltip(&lineage, "SURVIVOR_TT"),
+			BTreeSet::from([SemanticOrigin::Vanilla]),
+			"a top-level deletion must not mark a surviving sibling definition",
 		);
 	}
 

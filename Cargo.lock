@@ -872,6 +872,7 @@ dependencies = [
  "foch-language",
  "foch-merge-kernel",
  "globset",
+ "libc",
  "rayon",
  "remove_dir_all",
  "reqwest",

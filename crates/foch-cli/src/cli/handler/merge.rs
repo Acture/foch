@@ -7,13 +7,15 @@ use foch_core::fingerprint::compute_playset_fingerprint;
 use foch_core::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch_engine::{
 	CheckRequest, Config, ConflictHandler, InteractiveCliHandler, MergeExecuteOptions,
-	WorkspaceSource, resolve_product_input_manifest, run_merge_with_options,
+	WorkspaceSource, prepare_merge_with_options, resolve_product_input_manifest,
 };
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
-use foch_language::analyzer::report::render_merge_report_text;
+use foch_language::analyzer::report::{
+	merge_plan_exit_code, render_merge_plan_text, render_merge_report_text,
+};
 use std::fs;
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
@@ -22,13 +24,10 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let request = CheckRequest::new(source.clone(), config);
 	let local_config = load_local_foch_config(merge_args, &source)?;
 	let fingerprint = compute_fingerprint_for_source(&request, &local_config);
-	if let Some(exit) = handle_existing_out_dir(&merge_args.out, fingerprint.as_deref())? {
-		return Ok(exit);
-	}
 	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
 	let (interactive_conflict_handler, interactive_resolution_config_path) =
 		build_interactive_conflict_handler(merge_args, &source);
-	let execution = run_merge_with_options(
+	let prepared = prepare_merge_with_options(
 		request,
 		MergeExecuteOptions {
 			out_dir: merge_args.out.clone(),
@@ -44,11 +43,24 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			}),
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
-			playset_fingerprint: fingerprint,
+			playset_fingerprint: fingerprint.clone(),
 			provenance: merge_args.provenance,
 			retained_paths: None,
 		},
 	)?;
+	println!("{}", render_merge_plan_text(prepared.plan()));
+	let plan_exit_code = merge_plan_exit_code(prepared.plan());
+	if prepared.plan().has_fatal_errors() {
+		return Ok(plan_exit_code);
+	}
+	if !confirm_merge_export(merge_args, merge_args.out.as_path())? {
+		return Ok(0);
+	}
+
+	let Some(execution) = prepared.export_with_overwrite_confirmation(confirm_existing_out_dir)?
+	else {
+		return Ok(1);
+	};
 	println!("{}", render_merge_report_text(&execution.report));
 	if let Some(tip) = render_unresolved_conflict_tip(&execution.report, merge_args.out.as_path()) {
 		eprintln!("{tip}");
@@ -63,6 +75,46 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+fn confirm_merge_export(
+	merge_args: &MergeArgs,
+	out_dir: &Path,
+) -> Result<bool, Box<dyn std::error::Error>> {
+	if merge_args.confirm {
+		return Ok(true);
+	}
+
+	if merge_args.non_interactive {
+		eprintln!("[foch] plan prepared; output not written. Pass --confirm to export it.");
+		return Ok(false);
+	}
+
+	let stdin = std::io::stdin();
+	let stderr = std::io::stderr();
+	if !stdin.is_terminal() || !stderr.is_terminal() {
+		eprintln!("[foch] plan prepared; output not written. Pass --confirm to export it.");
+		return Ok(false);
+	}
+
+	let mut handle = stderr.lock();
+	write!(
+		handle,
+		"[foch] export this plan to {}? [y/N] ",
+		out_dir.display()
+	)?;
+	handle.flush()?;
+	drop(handle);
+
+	let mut answer = String::new();
+	stdin.lock().read_line(&mut answer)?;
+	let answer = answer.trim().to_ascii_lowercase();
+	if answer == "y" || answer == "yes" {
+		Ok(true)
+	} else {
+		eprintln!("[foch] plan kept as preview; output directory not modified");
+		Ok(false)
+	}
 }
 
 fn build_interactive_conflict_handler(
@@ -104,13 +156,18 @@ fn render_unresolved_conflict_tip(report: &MergeReport, out_dir: &Path) -> Optio
 
 	let report_path = out_dir.join(MERGE_REPORT_ARTIFACT_PATH);
 	let plural = if unresolved_conflicts == 1 { "" } else { "s" };
+	let verb = if unresolved_conflicts == 1 {
+		"was"
+	} else {
+		"were"
+	};
 	let mut lines = vec![
 		format!(
-			"Tip: {unresolved_conflicts} unresolved merge conflict{plural} were SKIPPED (not written to {}).",
+			"Tip: {unresolved_conflicts} unresolved merge conflict{plural} {verb} SKIPPED (not written to {}).",
 			out_dir.display()
 		),
 		format!("  1. Inspect {} for details.", report_path.display()),
-		"  2. Add a foch.toml [[resolutions]] entry with handler = \"last_writer\" for the reviewed conflict."
+		"  2. Choose a reviewed resolution interactively, or add a supported foch.toml [[resolutions]] entry with handler = \"last_writer\"."
 			.to_string(),
 	];
 	if let Some(finding) = report.dep_misuse.first() {
@@ -125,7 +182,8 @@ fn render_unresolved_conflict_tip(report: &MergeReport, out_dir: &Path) -> Optio
 		lines.push("  3. Resolve skipped files manually, then re-run merge.".to_string());
 	}
 	lines.push(
-		"Foch kept your output safe; use an explicit resolution when you're ready.".to_string(),
+		"Foch exported the safe units and withheld only these conflicts; use an explicit resolution when you're ready."
+			.to_string(),
 	);
 	Some(lines.join("\n"))
 }
@@ -263,63 +321,24 @@ fn playset_root_for(playset_path: &Path) -> PathBuf {
 		.to_path_buf()
 }
 
-/// Refuse to silently overwrite a non-empty existing output directory.
-///
-/// If the existing report's `playset_fingerprint` matches the current run's,
-/// the merge is short-circuited: the previous report is printed and the saved
-/// exit code is returned. Otherwise the user is prompted to overwrite (or the
-/// run is aborted on a non-TTY).
-///
-/// Returns:
-/// - `Ok(None)` to proceed with a fresh merge (directory absent, empty, or
-///   user confirmed at the prompt — the directory is wiped first)
-/// - `Ok(Some(exit_code))` to abort early without invoking the merge engine
-/// - `Err(_)` for filesystem or IO errors
-fn handle_existing_out_dir(
-	out_dir: &Path,
-	current_fingerprint: Option<&str>,
-) -> Result<Option<i32>, Box<dyn std::error::Error>> {
-	if !out_dir.exists() {
-		return Ok(None);
-	}
-	if !out_dir.is_dir() {
-		return Err(format!(
-			"--out path {} exists and is not a directory; refusing to overwrite",
-			out_dir.display()
-		)
-		.into());
-	}
-	let has_entries = fs::read_dir(out_dir)?.next().is_some();
-	if !has_entries {
-		return Ok(None);
-	}
-
-	if let Some(current) = current_fingerprint
-		&& let Some(cached) = read_cached_report(out_dir)
-		&& cached.playset_fingerprint.as_deref() == Some(current)
-	{
-		eprintln!(
-			"[foch] {} matches the prior merge fingerprint; reusing the existing output.",
-			out_dir.display()
-		);
-		println!("{}", render_merge_report_text(&cached));
-		return Ok(Some(merge_report_exit_code(&cached)));
-	}
-
+/// Confirm replacement while the engine holds the output transaction lock.
+/// This keeps the path inspected by the prompt identical to the path replaced
+/// by publication; a concurrent writer cannot swap it after authorization.
+fn confirm_existing_out_dir(out_dir: &Path) -> io::Result<bool> {
 	let stdin = std::io::stdin();
 	let stderr = std::io::stderr();
 	if !stdin.is_terminal() || !stderr.is_terminal() {
 		eprintln!(
-			"[foch] --out {} already exists and is non-empty (and the prior merge has a different mod set or no recorded fingerprint); refusing to overwrite without an interactive confirmation. Delete it manually or run from a TTY.",
+			"[foch] --out {} already exists and is non-empty; refusing to overwrite without a separate interactive confirmation. Delete it manually or run from a TTY.",
 			out_dir.display()
 		);
-		return Ok(Some(1));
+		return Ok(false);
 	}
 
 	let mut handle = stderr.lock();
 	write!(
 		handle,
-		"[foch] --out {} already exists and the prior merge differs (or has no recorded fingerprint). Overwrite? [y/N] ",
+		"[foch] --out {} already exists and is non-empty. Overwrite it with the confirmed plan? [y/N] ",
 		out_dir.display()
 	)?;
 	handle.flush()?;
@@ -330,30 +349,10 @@ fn handle_existing_out_dir(
 	let answer = answer.trim().to_ascii_lowercase();
 	if answer != "y" && answer != "yes" {
 		eprintln!("[foch] aborted; output directory not modified");
-		return Ok(Some(1));
+		return Ok(false);
 	}
 
-	fs::remove_dir_all(out_dir)?;
-	Ok(None)
-}
-
-fn read_cached_report(out_dir: &Path) -> Option<MergeReport> {
-	let report_path = out_dir.join(MERGE_REPORT_ARTIFACT_PATH);
-	let raw = fs::read_to_string(&report_path).ok()?;
-	serde_json::from_str(&raw).ok()
-}
-
-fn merge_report_exit_code(report: &MergeReport) -> i32 {
-	use foch_core::model::MergeReportStatus;
-	if report.validation.fatal_errors > 0 {
-		return 1;
-	}
-	match report.status {
-		MergeReportStatus::Ready => 0,
-		MergeReportStatus::PartialSuccess => 0,
-		MergeReportStatus::Blocked => 2,
-		MergeReportStatus::Fatal => 1,
-	}
+	Ok(true)
 }
 
 /// Drop a `<paradox_data_path>/mod/foch_<slug>.mod` stub pointing at the

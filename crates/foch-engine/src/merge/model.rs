@@ -11,6 +11,10 @@ use foch_merge_kernel::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VanillaBaseMode {
 	Required,
+	/// The base-game inventory was included and the exact semantic unit was
+	/// absent. The empty ancestor is therefore observed product state, not a
+	/// caller request to ignore vanilla.
+	KnownAbsent,
 	ExplicitlyDisabled,
 }
 
@@ -32,6 +36,17 @@ impl VanillaBaseMode {
 pub(crate) struct SemanticMergeSource {
 	pub source_id: String,
 	pub precedence: usize,
+}
+
+/// Cumulative semantic ancestry for one normalized output node.
+///
+/// This is deliberately separate from [`SemanticMergeSource`]-based adopted
+/// provenance: replacing a vanilla value adopts the mod's value while the
+/// semantic identity still descends from vanilla.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum SemanticOrigin {
+	Vanilla,
+	Mod(SemanticMergeSource),
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -58,6 +73,21 @@ pub(crate) struct SemanticSourceDelta {
 pub(crate) struct SemanticPartitionLineage {
 	pub tree: NormalizedTree,
 	pub sources: BTreeMap<NodeId, BTreeSet<SemanticMergeSource>>,
+	pub origins: BTreeMap<NodeId, BTreeSet<SemanticOrigin>>,
+}
+
+impl SemanticPartitionLineage {
+	pub(crate) fn vanilla(tree: NormalizedTree) -> Self {
+		let origins = tree
+			.nodes()
+			.map(|(node, _)| (node, BTreeSet::from([SemanticOrigin::Vanilla])))
+			.collect();
+		Self {
+			tree,
+			sources: BTreeMap::new(),
+			origins,
+		}
+	}
 }
 
 /// Parser-independent facts for one normalized merge partition.
@@ -91,8 +121,22 @@ pub(crate) struct SemanticMergeConflict {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExternalFileResolution {
+	Frozen(PathBuf),
+	Live(PathBuf),
+}
+
+impl ExternalFileResolution {
+	pub(crate) fn source_path(&self) -> &PathBuf {
+		match self {
+			Self::Frozen(path) | Self::Live(path) => path,
+		}
+	}
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum MergeOutputDirective {
-	UseFile(PathBuf),
+	UseFile(ExternalFileResolution),
 	KeepExisting,
 }
 

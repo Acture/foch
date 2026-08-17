@@ -43,5 +43,5 @@ pub use provenance::{RevisionNode, SourceSet};
 pub use selection::{ConflictNodeId, SourceNodeRef};
 pub use tree::{
 	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, RevisionId, SemanticKey,
-	SemanticKeyMatchMode, SemanticKeyScope, SubtreeHash, TreeError, TreeNode,
+	SemanticKeyLineage, SemanticKeyMatchMode, SemanticKeyScope, SubtreeHash, TreeError, TreeNode,
 };

@@ -7,7 +7,7 @@
 
 use foch_core::model::MergeReportStatus;
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -43,9 +43,9 @@ fn count_tarballs(dir: &PathBuf) -> usize {
 		.count()
 }
 
-/// A FATAL merge (triggered by an empty base-data dir) must NOT be written to
-/// the modset cache.  After the fix, no `{key}.tar.gz` exists in the cache
-/// dir, and a second identical run is a cache miss (not a replay).
+/// A FATAL retained-path evaluation (triggered by an empty base-data dir) must
+/// NOT be written to the modset cache. Full-product output intentionally never
+/// uses this cache; the subset keeps this failure-path coverage meaningful.
 #[test]
 fn fatal_merge_is_not_cached() {
 	let scratch = scratch_root();
@@ -55,10 +55,6 @@ fn fatal_merge_is_not_cached() {
 	let data_dir = TempDir::new_in(&scratch).expect("data temp dir (intentionally empty)");
 	let game_dir = TempDir::new_in(&scratch).expect("game temp dir");
 	let output_dir = TempDir::new_in(&scratch).expect("output temp dir");
-	let obsolete_cache = cache_dir.path().join("modsets").join("v11.4.0");
-	fs::create_dir_all(&obsolete_cache).expect("create obsolete cache namespace");
-	fs::write(obsolete_cache.join("obsolete.tar.gz"), b"obsolete").expect("seed obsolete tarball");
-	fs::write(obsolete_cache.join("obsolete.report.json"), b"{}").expect("seed obsolete report");
 
 	// `version.txt` lets `detect_game_version` succeed, so `modset_cache_game_version`
 	// returns `Some(...)` and a cache context is built.  But `FOCH_DATA_DIR` is an
@@ -104,7 +100,7 @@ fn fatal_merge_is_not_cached() {
 		interactive_resolution_config_path: None,
 		playset_fingerprint: None,
 		provenance: false,
-		retained_paths: None,
+		retained_paths: Some(BTreeSet::from(["events/foo.txt".to_string()])),
 	};
 
 	// --- Run 1 -----------------------------------------------------------
@@ -120,8 +116,7 @@ fn fatal_merge_is_not_cached() {
 		result1.report.status,
 	);
 
-	// Version activation removes the obsolete namespace, and a FATAL run does
-	// not add a replacement entry under the current namespace.
+	// A FATAL run does not add an entry under the current namespace.
 	let modsets_dir = cache_dir.path().join("modsets");
 	let tar_count = count_tarballs(&modsets_dir);
 	assert_eq!(

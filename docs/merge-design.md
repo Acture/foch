@@ -41,8 +41,8 @@ The intended workflow is:
 
 1. `foch check <playlist.json>`
 2. `foch merge-plan <playlist.json> --format json --output <path>`
-3. `foch merge <playlist.json> --out <dir>`
-4. automatic post-merge validation run on the generated output
+3. `foch merge <playlist.json> --out <dir>` to review the frozen plan
+4. `foch merge <playlist.json> --out <dir> --confirm` to export that plan and run post-merge validation
 
 `check` remains the existing diagnostic command.
 
@@ -90,22 +90,27 @@ Required input:
 Supported options:
 
 - `--force`
+- `--confirm`
+- `--non-interactive`
 - `--no-game-base`
 
 Behavior:
 
 - computes the same plan as `merge-plan`
-- aborts on manual conflicts unless `--force` is set
-- writes a merged output tree
+- prints the frozen plan without touching `--out` until the user confirms
+- treats `--confirm` as confirmation of that prepared plan only
+- requires a separate TTY confirmation before replacing a non-empty `--out`; CI and batch exports must use a new or empty path
+- writes every safe file or definition module after confirmation
+- withholds only unresolved files or definition modules and records them for later resolution
+- uses `--force` only to emit explicit fallbacks for deferred conflicts
 - writes merge metadata
 - runs post-merge validation
 
 Exit codes:
 
-- `0` when generation succeeds and validation is clean
-- `1` on system or input errors
-- `2` when manual conflicts block generation without `--force`
-- `3` when generation completes but post-merge validation is not clean, or when `--force` leaves residual conflicts
+- `0` when generation completes as `ready` or `partial_success`, or when the command remains a plan-only preview
+- `1` on system or input errors, or when the separate non-empty-output overwrite confirmation is unavailable or declined
+- `2` when an explicit non-conflict publication gate blocks generation
 
 ## Merge Strategy Taxonomy
 
@@ -158,8 +163,9 @@ Definition:
 Behavior:
 
 - do not silently choose a winner during merge planning
-- block `merge` unless `--force` is used
-- if `--force` is used, emit a conflict placeholder file only for text formats and omit binary outputs entirely
+- defer only the affected file or complete definition module
+- continue materializing unrelated safe units with or without `--force`
+- if `--force` is used, emit a text conflict placeholder or an explicit highest-precedence binary fallback where supported
 - always record the conflict in the merge manifest and validation report
 
 ## Supported Structural Path Classes In V1
@@ -230,7 +236,7 @@ For each path in the plan:
 - copy files for `copy_through`
 - copy the winning file for `last_writer_overlay`
 - generate files for `structural_merge`
-- block or emit conflict placeholders for `manual_conflict`, depending on `--force`
+- withhold the affected unit for `manual_conflict`, or emit a safe placeholder when `--force` permits it
 
 ### Phase 5: Write metadata
 
@@ -301,14 +307,11 @@ Required top-level fields:
 - `strategies`
 - `paths`
 
-Each `paths` entry must contain:
-
-- `path`
-- `strategy`
-- `contributors`
-- `winner`
-- `generated`
-- `notes`
+Each `paths` entry must contain `target`, `strategy`, `contributors`, `winner`,
+and `notes`. `target` is a tagged object: a file target has
+`{ "kind": "file", "path": ... }`; a module target has
+`{ "kind": "module", "id": ..., "input_paths": ..., "output_path": ... }`
+plus optional `replace_prefix`. Plan entries do not have a `generated` field.
 
 ### `foch-merge-report.json`
 
@@ -334,9 +337,10 @@ Required top-level fields:
 
 `status` uses the following execution semantics:
 
-- `ready` only when generation completes, `manual_conflict_count == 0`, and validation has no fatal errors, strict findings, or parse errors
-- `blocked` only when `manual_conflict` stops generation before emission because `--force` was not used
-- `fatal` for materialization failure, validation failure after generation, or any forced run that still carries residual conflicts
+- `ready` when generation completes with `manual_conflict_count == 0`; analysis findings are reported separately
+- `partial_success` when safe output is published while one or more files or definition modules remain deferred
+- `blocked` only for an explicit non-conflict publication gate
+- `fatal` for system, input, materialization, or fatal validation failure
 
 ## Structural Merge Rules
 
@@ -382,12 +386,14 @@ The following conditions must produce `manual_conflict`:
 
 With `--force`:
 
-- generation continues for non-conflicting paths
+- generation continues for non-conflicting paths exactly as it does without `--force`
 - every text `manual_conflict` path emits a placeholder file containing contributor paths and a conflict marker
-- binary `manual_conflict` paths are omitted from the output tree
+- binary `manual_conflict` paths copy the explicit highest-precedence fallback
 - the merge report still records the run as conflict-bearing
 
 `--force` never changes validation severity or hides conflicts from the report.
+Without `--force`, the same conflicts are recorded and withheld while safe units
+still publish as `partial_success`.
 
 ## Failure And Warning Policy
 
@@ -401,20 +407,17 @@ Return exit code `1` and stop immediately for:
 - unwritable output directory
 - metadata write failure
 
-### Merge-blocking failures
+### Deferred merge conflicts
 
-Return exit code `2` for:
-
-- any manual conflict during `merge-plan`
-- any manual conflict during `merge` when `--force` is not set
+`merge-plan` returns exit code `2` when its plan contains manual conflicts so
+automation can detect that review is needed. A confirmed `merge` does not turn
+those local conflicts into a global failure: it publishes safe units, withholds
+the affected units, records `partial_success`, and returns `0`.
 
 ### Post-generation validation failure
 
-Return exit code `3` for:
-
-- generated output with fatal validation errors
-- generated output with strict findings or parse errors
-- any forced merge that still carries `manual_conflict_count > 0`
+Fatal validation errors return exit code `1`. Non-fatal analysis findings stay
+separate from merge completion and remain visible in the report.
 
 Localisation failures that are purely compatibility-related should be reported clearly, but they should not be conflated with the core merge classification or emission contract.
 
@@ -437,6 +440,7 @@ The first merge-capable implementation is acceptable only if all of the followin
 - generated output always contains `.foch/foch-merge-report.json`
 - `merge` always performs a post-generation validation pass
 - manual conflicts are never silently converted into last-writer success
+- a manual conflict withholds only its file or complete definition module; unrelated safe units are still exported
 
 ## Required Test Scenarios
 
@@ -452,6 +456,7 @@ At minimum, future implementation tests must cover:
 - parse failure inside a structural class becomes `manual_conflict`
 - default mode keeps base game at lower precedence than every mod
 - `--no-game-base` opts out of that base-game input explicitly
-- `merge --force` continues generation while preserving conflict markers
-- post-merge validation failure returns exit code `3`
+- a confirmed merge with one safe file and one manual conflict exports the descriptor, safe file, plan, and report as `partial_success` while withholding the conflict
+- `merge --force` preserves the same safe output and adds conflict markers where supported
+- fatal post-merge validation failure returns exit code `1`
 - generated descriptor and metadata files are always present on successful generation

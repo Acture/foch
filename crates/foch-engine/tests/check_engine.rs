@@ -634,7 +634,6 @@ fn merge_plan_marks_single_contributor_path_as_copy_through() {
 	assert_eq!(result.strategies.total_paths, 1);
 	assert_eq!(result.strategies.copy_through, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::CopyThrough);
-	assert!(!entry.generated);
 	assert!(entry.notes.is_empty());
 }
 
@@ -712,7 +711,6 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 		"9502",
 		"highest-precedence mod should win ties"
 	);
-	assert!(!entry.generated);
 	assert!(entry.notes.is_empty());
 }
 
@@ -851,7 +849,6 @@ fn merge_plan_marks_non_normalizable_defines_overlap_as_manual_conflict() {
 	assert_eq!(result.strategies.manual_conflict, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
 	assert!(entry.winner.is_none());
-	assert!(!entry.generated);
 	assert!(
 		entry
 			.notes
@@ -886,7 +883,6 @@ fn merge_plan_marks_invalid_structural_overlap_as_manual_conflict() {
 	assert_eq!(result.strategies.manual_conflict, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
 	assert!(entry.winner.is_none());
-	assert!(!entry.generated);
 	assert!(!entry.notes.is_empty());
 }
 
@@ -929,7 +925,6 @@ fn merge_plan_marks_binary_overlap_as_last_writer_overlay() {
 	let entry = plan_entry_for(&result, "pdx_browser/overlap.bin");
 	assert_eq!(entry.strategy, MergePlanStrategy::LastWriterOverlay);
 	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9802");
-	assert!(!entry.generated);
 	assert!(!entry.notes.is_empty());
 }
 
@@ -959,7 +954,6 @@ fn merge_plan_marks_localisation_yaml_overlap_as_localisation_merge() {
 	assert_eq!(result.strategies.localisation_merge, 1);
 	assert_eq!(entry.strategy, MergePlanStrategy::LocalisationMerge);
 	assert_eq!(entry.winner.as_ref().expect("winner").mod_id, "9902");
-	assert!(!entry.generated);
 	assert!(entry.notes.is_empty());
 }
 
@@ -972,6 +966,8 @@ fn merge_report_serializes_frozen_contract_buckets() {
 		cache_source: None,
 		fatal_reason: None,
 		manual_conflict_count: 2,
+		unsupported_input_count: 1,
+		engine_failure_count: 3,
 		generated_file_count: 0,
 		copied_file_count: 3,
 		overlay_file_count: 1,
@@ -1010,6 +1006,8 @@ fn merge_report_serializes_frozen_contract_buckets() {
 	// stays byte-identical to the pre-field contract.
 	assert!(value.get("fatal_reason").is_none());
 	assert_eq!(value["manual_conflict_count"], 2);
+	assert_eq!(value["unsupported_input_count"], 1);
+	assert_eq!(value["engine_failure_count"], 3);
 	assert_eq!(value["generated_file_count"], 0);
 	assert_eq!(value["copied_file_count"], 3);
 	assert_eq!(value["overlay_file_count"], 1);

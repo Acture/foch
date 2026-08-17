@@ -11,13 +11,13 @@ use foch_merge_kernel::{DeltaOperation, RevisionNode};
 use super::super::conflict_handler::{ConflictHandler, DeferHandler};
 use super::dag::{FileDag, ModId};
 use super::dag_input::{
-	DagMergeInputRequest, final_base_statements, prepare_dag_merge_input, template_for,
+	DagMergeInputRequest, merge_ancestor_statements, prepare_dag_merge_input, template_for,
 };
 use super::dag_pipeline::{DagPipelineResult, execute_dag_pipeline};
 use super::definition_trace::compute_definition_participants;
 use crate::merge::model::{
 	SemanticDeltaPartition, SemanticMergeComputation, SemanticMergeSource, SemanticPartitionId,
-	SemanticSourceDelta, VanillaBaseMode,
+	SemanticPartitionLineage, SemanticSourceDelta, VanillaBaseMode,
 };
 use crate::merge::structured::{
 	ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,
@@ -49,12 +49,55 @@ pub(crate) struct SemanticDagMergeRequest<'a> {
 
 struct SemanticDagMergeArgs<'a> {
 	file_dag: &'a FileDag,
-	vanilla: Option<&'a ParsedScriptFile>,
+	base_observation: SemanticBaseObservation<'a>,
 	contributors: &'a HashMap<ModId, ParsedScriptFile>,
 	policies: &'a MergePolicies,
-	vanilla_base_mode: VanillaBaseMode,
 	handler: &'a mut dyn ConflictHandler,
 	tree_unit: TreeMergeUnit,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SemanticBaseObservation<'a> {
+	Present(&'a ParsedScriptFile),
+	KnownAbsent,
+	ExplicitlyDisabled,
+}
+
+impl<'a> SemanticBaseObservation<'a> {
+	fn try_from_parts(
+		vanilla: Option<&'a ParsedScriptFile>,
+		mode: VanillaBaseMode,
+	) -> Result<Self, String> {
+		match (mode, vanilla) {
+			(VanillaBaseMode::Required, Some(vanilla)) => Ok(Self::Present(vanilla)),
+			(VanillaBaseMode::KnownAbsent, None) => Ok(Self::KnownAbsent),
+			(VanillaBaseMode::ExplicitlyDisabled, None) => Ok(Self::ExplicitlyDisabled),
+			(VanillaBaseMode::Required, None) => {
+				Err("required vanilla base is missing its parsed file".to_string())
+			}
+			(VanillaBaseMode::KnownAbsent, Some(_)) => {
+				Err("known-absent vanilla base unexpectedly has a parsed file".to_string())
+			}
+			(VanillaBaseMode::ExplicitlyDisabled, Some(_)) => {
+				Err("explicitly disabled vanilla base unexpectedly has a parsed file".to_string())
+			}
+		}
+	}
+
+	const fn vanilla(self) -> Option<&'a ParsedScriptFile> {
+		match self {
+			Self::Present(vanilla) => Some(vanilla),
+			Self::KnownAbsent | Self::ExplicitlyDisabled => None,
+		}
+	}
+
+	const fn mode(self) -> VanillaBaseMode {
+		match self {
+			Self::Present(_) => VanillaBaseMode::Required,
+			Self::KnownAbsent => VanillaBaseMode::KnownAbsent,
+			Self::ExplicitlyDisabled => VanillaBaseMode::ExplicitlyDisabled,
+		}
+	}
 }
 
 pub(crate) fn compute_dag_merge(
@@ -69,12 +112,15 @@ pub(crate) fn compute_dag_merge_with_handler(
 	handler: &mut dyn ConflictHandler,
 ) -> Result<SemanticDagMergeComputation, String> {
 	let prepared = prepare_dag_merge_input(request.input)?;
+	let base_observation = SemanticBaseObservation::try_from_parts(
+		prepared.vanilla.as_ref(),
+		request.vanilla_base_mode,
+	)?;
 	compute_semantic_dag_merge_from_parsed(SemanticDagMergeArgs {
 		file_dag: &prepared.file_dag,
-		vanilla: prepared.vanilla.as_ref(),
+		base_observation,
 		contributors: &prepared.contributors,
 		policies: request.policies,
-		vanilla_base_mode: request.vanilla_base_mode,
 		handler,
 		tree_unit: TreeMergeUnit::File,
 	})
@@ -88,12 +134,12 @@ pub(crate) fn compute_dag_merge_from_parsed(
 	vanilla_base_mode: VanillaBaseMode,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<SemanticDagMergeComputation, String> {
+	let base_observation = SemanticBaseObservation::try_from_parts(vanilla, vanilla_base_mode)?;
 	compute_semantic_dag_merge_from_parsed(SemanticDagMergeArgs {
 		file_dag,
-		vanilla,
+		base_observation,
 		contributors,
 		policies,
-		vanilla_base_mode,
 		handler,
 		tree_unit: inferred_tree_merge_unit(vanilla, contributors),
 	})
@@ -119,14 +165,14 @@ fn compute_semantic_dag_merge_from_parsed(
 ) -> Result<SemanticDagMergeComputation, String> {
 	let SemanticDagMergeArgs {
 		file_dag,
-		vanilla,
+		base_observation,
 		contributors,
 		policies,
-		vanilla_base_mode,
 		handler,
 		tree_unit,
 	} = args;
-	let base_statements = final_base_statements(file_dag, vanilla);
+	let vanilla = base_observation.vanilla();
+	let base_statements = merge_ancestor_statements(vanilla);
 	let template = template_for(file_dag, vanilla, contributors);
 	let file_adapter = ClausewitzFileAdapter;
 	let file_join = ClausewitzFileJoin;
@@ -144,11 +190,12 @@ fn compute_semantic_dag_merge_from_parsed(
 			TreeMergeUnit::File => (&file_adapter, &file_join),
 			TreeMergeUnit::DefinitionModule => (&module_adapter, &module_join),
 		};
+	let partition_lineage = seed_vanilla_partition_lineage(vanilla, partition_adapter, policies)?;
 	let root = TreeDagState {
 		statements: base_statements.clone(),
 		source_deltas: Vec::new(),
 		merge_facts: Vec::new(),
-		partition_lineage: BTreeMap::new(),
+		partition_lineage,
 		unresolved_conflicts: Vec::new(),
 		handler_resolutions: Vec::new(),
 		resolved_conflict_ids: Vec::new(),
@@ -160,7 +207,7 @@ fn compute_semantic_dag_merge_from_parsed(
 		join,
 		policies,
 		vanilla.is_some(),
-		vanilla_base_mode,
+		base_observation.mode(),
 		handler,
 	);
 	let pipeline = execute_dag_pipeline(file_dag, contributors, root, &mut protocol)?;
@@ -180,6 +227,29 @@ fn compute_semantic_dag_merge_from_parsed(
 		definition_provenance,
 		definition_participants,
 	})
+}
+
+fn seed_vanilla_partition_lineage(
+	vanilla: Option<&ParsedScriptFile>,
+	partition_adapter: &dyn TreePartitionAdapter,
+	policies: &MergePolicies,
+) -> Result<BTreeMap<SemanticPartitionId, SemanticPartitionLineage>, String> {
+	let Some(vanilla) = vanilla else {
+		return Ok(BTreeMap::new());
+	};
+	let mut lineage = BTreeMap::new();
+	for partition in partition_adapter.normalization_partitions(&vanilla.ast, &vanilla.ast) {
+		let tree = partition_adapter
+			.normalize_partition(&vanilla.ast, &partition, policies)
+			.map_err(|error| format!("failed to normalize vanilla root lineage: {error}"))?;
+		if lineage
+			.insert(partition, SemanticPartitionLineage::vanilla(tree))
+			.is_some()
+		{
+			return Err("vanilla root repeated a semantic partition".to_string());
+		}
+	}
+	Ok(lineage)
 }
 
 fn compute_semantic_direct_definition_keys(
@@ -337,6 +407,7 @@ mod tests {
 	use foch_language::analyzer::parser::AstValue;
 
 	use crate::cache::{DagBaseCache, ModDiffCache};
+	use crate::merge::model::SemanticOrigin;
 	use crate::merge::patch_engine::dag_merge::{
 		ReferenceDagMergeComputation, ReferenceParsedDagMergeRequest,
 		compute_reference_dag_merge_from_parsed as compute_reference_dag_merge_from_parsed_reference,
@@ -382,6 +453,13 @@ mod tests {
 
 	fn mid(s: &str) -> ModId {
 		ModId(s.to_string())
+	}
+
+	fn semantic_source(mod_id: &str, precedence: usize) -> SemanticMergeSource {
+		SemanticMergeSource {
+			source_id: mod_id.to_string(),
+			precedence,
+		}
 	}
 
 	fn file_contributor(mod_id: &str, precedence: usize) -> ResolvedFileContributor {
@@ -453,6 +531,25 @@ mod tests {
 		}
 	}
 
+	fn parsed_diplomatic_actions_file(mod_id: &str, source: &str) -> ParsedScriptFile {
+		let path = PathBuf::from("common/diplomatic_actions/zzz_foch_diplomatic_actions.txt");
+		let parsed =
+			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		ParsedScriptFile {
+			mod_id: mod_id.to_string(),
+			path: path.clone(),
+			relative_path: path,
+			content_family: None,
+			file_kind: CwtType::new("diplomatic_actions"),
+			module_name: "diplomatic_actions".to_string(),
+			ast: parsed.ast,
+			source: source.to_string(),
+			parse_issues: Vec::new(),
+			parse_cache_hit: false,
+		}
+	}
+
 	fn compute_tree_event_join(
 		vanilla_source: Option<&str>,
 		left_source: &str,
@@ -478,6 +575,38 @@ mod tests {
 			(mid("left"), parsed_event_file("left", left_source)),
 			(mid("right"), parsed_event_file("right", right_source)),
 		]);
+		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+			.classify_content_family(Path::new("events/test.txt"))
+			.expect("events content family");
+		let mut handler = DeferHandler;
+		compute_dag_merge_from_parsed(
+			&file_dag,
+			vanilla.as_ref(),
+			&inventory,
+			&descriptor.merge_policies,
+			vanilla_base_mode,
+			&mut handler,
+		)
+	}
+
+	fn compute_single_tree_event_join(
+		vanilla_source: Option<&str>,
+		source: &str,
+		vanilla_base_mode: VanillaBaseMode,
+	) -> Result<SemanticDagMergeComputation, String> {
+		let mods = vec![mod_with("only", "Only", vec![], vec![])];
+		let contributors = vec![file_contributor("only", 0)];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			"events/test.txt",
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let vanilla = vanilla_source.map(|source| parsed_event_file("__game__", source));
+		let inventory = HashMap::from([(mid("only"), parsed_event_file("only", source))]);
 		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events content family");
@@ -535,6 +664,209 @@ mod tests {
 			VanillaBaseMode::Required,
 			&mut handler,
 		)
+	}
+
+	fn compute_tree_diplomatic_actions_join(
+		vanilla_source: Option<&str>,
+		left_source: &str,
+		right_source: &str,
+		vanilla_base_mode: VanillaBaseMode,
+	) -> Result<SemanticDagMergeComputation, String> {
+		let path = "common/diplomatic_actions/zzz_foch_diplomatic_actions.txt";
+		let mods = vec![
+			mod_with("left", "Left", vec![], vec![]),
+			mod_with("right", "Right", vec![], vec![]),
+		];
+		let contributors = vec![file_contributor("left", 10), file_contributor("right", 20)];
+		let (dag, diagnostics) = super::super::dag::build_mod_dag(&mods);
+		assert!(diagnostics.is_empty(), "{diagnostics:?}");
+		let file_dag = induced_file_dag_with_overrides(
+			&dag,
+			path,
+			&contributors,
+			&IgnoreReplacePath::None,
+			&[],
+		);
+		let vanilla =
+			vanilla_source.map(|source| parsed_diplomatic_actions_file("__game__", source));
+		let inventory = HashMap::from([
+			(
+				mid("left"),
+				parsed_diplomatic_actions_file("left", left_source),
+			),
+			(
+				mid("right"),
+				parsed_diplomatic_actions_file("right", right_source),
+			),
+		]);
+		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+			.classify_content_family(Path::new(path))
+			.expect("diplomatic actions content family");
+		let mut handler = DeferHandler;
+		compute_dag_merge_from_parsed(
+			&file_dag,
+			vanilla.as_ref(),
+			&inventory,
+			&descriptor.merge_policies,
+			vanilla_base_mode,
+			&mut handler,
+		)
+	}
+
+	fn condition_origins_for_marker(
+		lineage: &SemanticPartitionLineage,
+		marker: &str,
+	) -> BTreeSet<SemanticOrigin> {
+		let marker_node = lineage
+			.tree
+			.nodes()
+			.find_map(|(node, normalized)| {
+				(normalized.value.as_deref() == Some(marker)).then_some(node)
+			})
+			.unwrap_or_else(|| panic!("missing marker {marker}"));
+		let mut current = Some(marker_node);
+		let condition = loop {
+			let node = current.expect("marker must be nested in a condition");
+			let normalized = lineage.tree.node(node).expect("normalized marker ancestor");
+			if normalized.kind == "clausewitz.assignment:condition"
+				&& normalized.value.as_deref() == Some("condition")
+			{
+				break node;
+			}
+			current = normalized.parent;
+		};
+		let mut pending = vec![condition];
+		let mut origins = BTreeSet::new();
+		while let Some(node) = pending.pop() {
+			origins.extend(
+				lineage
+					.origins
+					.get(&node)
+					.unwrap_or_else(|| panic!("missing origins for node {}", node.get()))
+					.iter()
+					.cloned(),
+			);
+			pending.extend(
+				lineage
+					.tree
+					.node(node)
+					.expect("condition subtree node")
+					.children
+					.iter()
+					.copied(),
+			);
+		}
+		origins
+	}
+
+	#[test]
+	fn vanilla_root_seeding_marks_every_definition_partition_node() {
+		let vanilla = parsed_definition_module_file(
+			"__game__",
+			"shared = { condition = { tooltip = SHARED_TT } }\n\
+			shared = { condition = { tooltip = SHARED_TT } }\n",
+		);
+		let lineage = seed_vanilla_partition_lineage(
+			Some(&vanilla),
+			&DefinitionModuleAdapter,
+			&MergePolicies::default(),
+		)
+		.expect("seed vanilla definition lineage");
+		let partition = lineage
+			.get(&SemanticPartitionId::Definition("shared".to_string()))
+			.expect("shared definition partition");
+
+		assert_eq!(partition.origins.len(), partition.tree.nodes().count());
+		assert!(
+			partition
+				.origins
+				.values()
+				.all(|origins| { origins == &BTreeSet::from([SemanticOrigin::Vanilla]) })
+		);
+	}
+
+	#[test]
+	fn diplomatic_conditions_with_the_same_tooltip_keep_node_isolated_origins() {
+		let vanilla =
+			"send_warning = { condition = { tooltip = SHARED_TT allow = { marker = vanilla } } }";
+		let left = "send_warning = {\n\
+			condition = { tooltip = SHARED_TT allow = { marker = vanilla } }\n\
+			condition = { tooltip = SHARED_TT allow = { marker = from_left } }\n\
+		}";
+		let right = "send_warning = {\n\
+			condition = { tooltip = SHARED_TT allow = { marker = vanilla } }\n\
+			condition = { tooltip = SHARED_TT allow = { marker = from_right } }\n\
+		}";
+		let result = compute_tree_diplomatic_actions_join(
+			Some(vanilla),
+			left,
+			right,
+			VanillaBaseMode::Required,
+		)
+		.expect("merge source-isolated diplomatic conditions");
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+		let lineage = result
+			.semantic
+			.partition_lineage
+			.get(&SemanticPartitionId::Definition("send_warning".to_string()))
+			.expect("send_warning lineage");
+
+		assert_eq!(
+			condition_origins_for_marker(lineage, "vanilla"),
+			BTreeSet::from([SemanticOrigin::Vanilla]),
+		);
+		assert_eq!(
+			condition_origins_for_marker(lineage, "from_left"),
+			BTreeSet::from([SemanticOrigin::Mod(semantic_source("left", 10))]),
+		);
+		assert_eq!(
+			condition_origins_for_marker(lineage, "from_right"),
+			BTreeSet::from([SemanticOrigin::Mod(semantic_source("right", 20))]),
+		);
+	}
+
+	#[test]
+	fn deleted_definition_retains_only_an_empty_lineage_partition() {
+		let vanilla = "removed_action = { condition = { tooltip = REMOVED_TT } }\n\
+			surviving_action = { condition = { tooltip = SURVIVING_TT allow = { marker = vanilla } } }";
+		let surviving = "surviving_action = { condition = { tooltip = SURVIVING_TT allow = { marker = vanilla } } }";
+		let result = compute_tree_diplomatic_actions_join(
+			Some(vanilla),
+			surviving,
+			surviving,
+			VanillaBaseMode::Required,
+		)
+		.expect("merge a definition deleted by every surviving source");
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+
+		let removed = result
+			.semantic
+			.partition_lineage
+			.get(&SemanticPartitionId::Definition(
+				"removed_action".to_string(),
+			))
+			.expect("deleted definition retains audit lineage");
+		let removed_root = removed
+			.tree
+			.node(removed.tree.root())
+			.expect("deleted partition root");
+		assert!(removed_root.children.is_empty());
+
+		let surviving = result
+			.semantic
+			.partition_lineage
+			.get(&SemanticPartitionId::Definition(
+				"surviving_action".to_string(),
+			))
+			.expect("surviving definition lineage");
+		assert!(
+			!surviving
+				.tree
+				.node(surviving.tree.root())
+				.expect("surviving partition root")
+				.children
+				.is_empty(),
+		);
 	}
 
 	fn parsed_inventory(entries: &[(&str, &str)]) -> HashMap<ModId, ParsedScriptFile> {
@@ -708,7 +1040,7 @@ mod tests {
 			&[],
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
-		let base_statements = final_base_statements(&file_dag, vanilla.as_ref());
+		let base_statements = merge_ancestor_statements(vanilla.as_ref());
 		compute_reference_dag_merge_from_parsed_reference(ReferenceParsedDagMergeRequest {
 			file_dag: &file_dag,
 			base_statements: &base_statements,
@@ -782,7 +1114,7 @@ mod tests {
 			dep_overrides,
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
-		let base_statements = final_base_statements(&file_dag, vanilla.as_ref());
+		let base_statements = merge_ancestor_statements(vanilla.as_ref());
 		compute_reference_dag_merge_from_parsed_reference(ReferenceParsedDagMergeRequest {
 			file_dag: &file_dag,
 			base_statements: &base_statements,
@@ -819,7 +1151,7 @@ mod tests {
 			&[],
 		);
 		let vanilla = vanilla_source.map(|source| parsed_file("__game__", source));
-		let base_statements = final_base_statements(&fdag, vanilla.as_ref());
+		let base_statements = merge_ancestor_statements(vanilla.as_ref());
 		compute_reference_dag_merge_from_parsed_with_caches(
 			ReferenceParsedDagMergeRequest {
 				file_dag: &fdag,
@@ -1089,10 +1421,49 @@ mod tests {
 	fn tree_kernel_rejects_an_implicit_empty_base() {
 		let source = "country_event = { id = demo.1 title = demo.title }\n";
 
-		let error = compute_tree_event_join(None, source, source, VanillaBaseMode::Required)
+		let error = compute_single_tree_event_join(None, source, VanillaBaseMode::Required)
 			.expect_err("tree merge requires vanilla");
 
-		assert!(error.contains("non-empty vanilla base"), "{error}");
+		assert!(error.contains("required vanilla base"), "{error}");
+	}
+
+	#[test]
+	fn semantic_merge_rejects_known_absent_with_a_parsed_vanilla_file() {
+		let source = "country_event = { id = demo.1 title = demo.title }\n";
+
+		let error =
+			compute_single_tree_event_join(Some(source), source, VanillaBaseMode::KnownAbsent)
+				.expect_err("known-absent state cannot carry vanilla content");
+
+		assert!(error.contains("known-absent vanilla base"), "{error}");
+	}
+
+	#[test]
+	fn semantic_merge_rejects_disabled_with_a_parsed_vanilla_file() {
+		let source = "country_event = { id = demo.1 title = demo.title }\n";
+
+		let error = compute_single_tree_event_join(
+			Some(source),
+			source,
+			VanillaBaseMode::ExplicitlyDisabled,
+		)
+		.expect_err("disabled state cannot carry vanilla content");
+
+		assert!(
+			error.contains("explicitly disabled vanilla base"),
+			"{error}"
+		);
+	}
+
+	#[test]
+	fn semantic_merge_allows_required_with_a_parsed_vanilla_file() {
+		let source = "country_event = { id = demo.1 title = demo.title }\n";
+
+		let result =
+			compute_single_tree_event_join(Some(source), source, VanillaBaseMode::Required)
+				.expect("required state with parsed vanilla is valid");
+
+		assert!(!result.merged_statements.is_empty());
 	}
 
 	#[test]
@@ -1104,6 +1475,24 @@ mod tests {
 				.expect("explicit empty base is allowed");
 
 		assert!(!result.merged_statements.is_empty());
+	}
+
+	#[test]
+	fn tree_kernel_preserves_total_origins_for_known_absent_two_mod_join() {
+		let source = "country_event = { id = demo.1 title = demo.title }\n";
+
+		let result = compute_tree_event_join(None, source, source, VanillaBaseMode::KnownAbsent)
+			.expect("known-absent empty base is allowed");
+
+		assert!(!result.merged_statements.is_empty());
+		assert!(!result.semantic.partition_lineage.is_empty());
+		for lineage in result.semantic.partition_lineage.values() {
+			assert_eq!(
+				lineage.origins.len(),
+				lineage.tree.nodes().count(),
+				"every normalized node, including a synthetic root, must have an origin entry",
+			);
+		}
 	}
 
 	#[test]
@@ -2417,20 +2806,15 @@ mod tests {
 	}
 
 	#[test]
-	fn replace_path_drops_prior_contributors_and_uses_empty_base() {
+	fn replace_path_drops_prior_contributors_but_keeps_vanilla_merge_ancestor() {
 		let result = compute(
 			vec![
 				mod_with("a", "A", vec![], vec![]),
 				mod_with("b", "B", vec!["A"], vec!["common"]),
-				mod_with("c", "C", vec!["B"], vec![]),
 			],
-			vec![
-				file_contributor("a", 1),
-				file_contributor("b", 2),
-				file_contributor("c", 3),
-			],
+			vec![file_contributor("a", 1), file_contributor("b", 2)],
 			Some("root = yes\n"),
-			parsed_inventory(&[("b", "b = yes\n"), ("c", "b = yes\nc = yes\n")]),
+			parsed_inventory(&[("b", "b = yes\n")]),
 			IgnoreReplacePath::None,
 		);
 
@@ -2446,10 +2830,166 @@ mod tests {
 			vec!["b"]
 		);
 		assert_eq!(
-			semantic_operation_keys(&result, "c", SemanticOperationKind::Insert),
-			vec!["c"]
+			semantic_operation_keys(&result, "b", SemanticOperationKind::Delete),
+			vec!["root"]
 		);
-		assert!(base_keys(&result).is_empty());
+		assert_eq!(base_keys(&result), vec!["root"]);
+		let output = rendered(&result.merged_statements);
+		assert_eq!(output, "b = yes\n");
+	}
+
+	#[test]
+	fn independent_replace_path_owners_merge_against_vanilla_ancestor() {
+		let result = compute(
+			vec![
+				mod_with("left", "Left", vec![], vec!["common"]),
+				mod_with("right", "Right", vec![], vec!["common"]),
+			],
+			vec![file_contributor("left", 1), file_contributor("right", 2)],
+			Some("kept = yes\nremoved_by_both = yes\n"),
+			parsed_inventory(&[
+				("left", "kept = yes\nleft_only = yes\n"),
+				("right", "kept = yes\nright_only = yes\n"),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		assert_eq!(base_keys(&result), vec!["kept", "removed_by_both"]);
+		assert!(result.semantic.unresolved_conflicts.is_empty());
+		let output = rendered(&result.merged_statements);
+		assert!(output.contains("kept = yes"), "{output}");
+		assert!(output.contains("left_only = yes"), "{output}");
+		assert!(output.contains("right_only = yes"), "{output}");
+		assert!(!output.contains("removed_by_both"), "{output}");
+	}
+
+	#[test]
+	fn independent_replace_path_layers_treat_shared_vanilla_absence_as_neutral() {
+		let result = compute(
+			vec![
+				mod_with("left", "Left", vec![], vec!["common"]),
+				mod_with("right", "Right", vec![], vec!["common"]),
+			],
+			vec![file_contributor("left", 1), file_contributor("right", 2)],
+			Some(
+				"shared = { potential = { always = yes } color = { 1 2 3 } value = vanilla }\n\
+				 removed_by_both = { value = vanilla }\n",
+			),
+			parsed_inventory(&[
+				("left", "left_only = { value = left }\n"),
+				(
+					"right",
+					"shared = { potential = { always = yes } color = { 4 5 6 } value = right }\n\
+					 right_only = { value = right }\n",
+				),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		assert!(
+			result.semantic.unresolved_conflicts.is_empty(),
+			"shared vanilla absence in the left reset layer must be neutral: {:#?}",
+			result.semantic.unresolved_conflicts,
+		);
+		let output = rendered(&result.merged_statements);
+		assert!(output.contains("left_only ="), "{output}");
+		assert!(output.contains("right_only ="), "{output}");
+		assert!(output.contains("shared ="), "{output}");
+		assert!(output.contains("value = right"), "{output}");
+		assert!(!output.contains("removed_by_both"), "{output}");
+		assert_eq!(prov(&result, "shared"), vec!["right".to_string()]);
+		assert_eq!(
+			result.definition_participants["shared"]
+				.iter()
+				.map(|participant| participant.mod_id.as_str())
+				.collect::<Vec<_>>(),
+			vec!["right"],
+		);
+	}
+
+	#[test]
+	fn non_reset_revision_absence_remains_an_authoritative_deletion() {
+		let result = compute(
+			vec![
+				mod_with("reset", "Reset", vec![], vec!["common"]),
+				mod_with("ordinary", "Ordinary", vec![], vec![]),
+			],
+			vec![
+				file_contributor("reset", 1),
+				file_contributor("ordinary", 2),
+			],
+			Some("shared = { value = vanilla }\n"),
+			parsed_inventory(&[
+				("reset", "shared = { value = reset }\n"),
+				("ordinary", "ordinary_only = yes\n"),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		let [conflict] = result.semantic.unresolved_conflicts.as_slice() else {
+			panic!(
+				"an ordinary revision's deletion must not be neutralized: {:#?}",
+				result.semantic.unresolved_conflicts,
+			);
+		};
+		assert_eq!(conflict.conflict.semantic_path, vec!["shared"]);
+	}
+
+	#[test]
+	fn reset_descendant_branch_absence_remains_an_authoritative_deletion() {
+		let result = compute(
+			vec![
+				mod_with("reset", "Reset", vec![], vec!["common"]),
+				mod_with("remover", "Remover", vec!["Reset"], vec![]),
+				mod_with("modifier", "Modifier", vec!["Reset"], vec![]),
+			],
+			vec![
+				file_contributor("reset", 1),
+				file_contributor("remover", 2),
+				file_contributor("modifier", 3),
+			],
+			Some("shared = { value = vanilla }\n"),
+			parsed_inventory(&[
+				("reset", "shared = { value = vanilla }\n"),
+				("remover", "remover_only = yes\n"),
+				(
+					"modifier",
+					"shared = { value = modified }\nmodifier_only = yes\n",
+				),
+			]),
+			IgnoreReplacePath::None,
+		);
+
+		let [conflict] = result.semantic.unresolved_conflicts.as_slice() else {
+			panic!(
+				"a descendant snapshot's deletion must not become sparse-neutral: {:#?}",
+				result.semantic.unresolved_conflicts,
+			);
+		};
+		assert_eq!(conflict.conflict.semantic_path, vec!["shared"]);
+	}
+
+	#[test]
+	fn independent_replace_path_owners_defer_overlapping_edits() {
+		let result = compute(
+			vec![
+				mod_with("left", "Left", vec![], vec!["common"]),
+				mod_with("right", "Right", vec![], vec!["common"]),
+			],
+			vec![file_contributor("left", 1), file_contributor("right", 2)],
+			Some("value = 0\n"),
+			parsed_inventory(&[("left", "value = 1\n"), ("right", "value = 2\n")]),
+			IgnoreReplacePath::None,
+		);
+
+		assert_eq!(base_keys(&result), vec!["value"]);
+		let [conflict] = result.semantic.unresolved_conflicts.as_slice() else {
+			panic!(
+				"expected one overlapping replacement conflict, got {:?}",
+				result.semantic.unresolved_conflicts
+			);
+		};
+		assert_eq!(conflict.conflict.semantic_path, vec!["value"]);
 	}
 
 	#[test]

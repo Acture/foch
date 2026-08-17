@@ -611,7 +611,7 @@ fn workshop_scorer_config_hash(
 		"oracle_policy_version": ORACLE_POLICY_VERSION,
 		"scope": MeasurementScope::FullProductMerge.as_str(),
 		"merge_kernel": MeasurementKernel::SemanticTree.as_str(),
-		"public_command": "foch_merge_non_interactive",
+		"public_command": "foch_merge_confirm_non_interactive",
 		"force": false,
 		"retained_paths": "all",
 		"include_game_base": true,
@@ -626,7 +626,7 @@ fn workshop_scorer_config_hash(
 		"multi_source": "all_sources_v1"
 	});
 	stable_id(
-		"workshop-scorer-config-v2",
+		"workshop-scorer-config-v3",
 		&[config.to_string().as_bytes()],
 	)
 }

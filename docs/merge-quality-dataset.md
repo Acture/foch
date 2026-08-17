@@ -99,7 +99,7 @@ Workshop item and ACF manifest IDs. The product manifest uses profile
 mod ID and precedence; the compatch ACF identity remains in the case input
 version. Absolute paths, ACF timestamps, file paths, file bytes, and observation
 time are not identity fields. V2 measurement identity additionally binds the
-public `foch` digest, runner protocol, scorer `2.0.0`, scorer configuration,
+public `foch` digest, runner protocol, scorer `2.1.0`, scorer configuration,
 `semantic_tree`, and `full_product_merge`.
 
 The scorer configuration binds scorer policy and the installed base-snapshot

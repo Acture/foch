@@ -417,7 +417,7 @@ fn file_level_conflict_decisions_are_keyed_by_current_file() {
 
 	assert_eq!(
 		file_result.external_file_resolutions.get(&current_file),
-		Some(&external_file)
+		Some(&ExternalFileResolution::Live(external_file))
 	);
 	assert!(
 		!file_result

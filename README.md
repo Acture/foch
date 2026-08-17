@@ -66,26 +66,39 @@ foch data build eu4 \
 foch workspace resolve "$PLAYSET"
 foch check "$PLAYSET"
 foch merge-plan "$PLAYSET"
-foch merge "$PLAYSET" --out ./merged-mod
+foch merge "$PLAYSET" --out ./merged-mod            # preview the frozen path plan
+foch merge "$PLAYSET" --out ./merged-mod --confirm  # export that plan
+foch merge "$PLAYSET" --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path
 ```
 
 The initial base-data build scans the installed game and can take time. It
 produces an analyzed snapshot for later runs; Foch does not copy installed
 Workshop mods into an input CAS.
 
-Foch reads installed source mods in place and writes the result to the explicit
-`--out` directory. Review `merged-mod/.foch/foch-merge-plan.json` and
+Foch reads installed source mods in place. `foch merge` first prints a frozen
+path-level plan without touching `--out`; answer yes in a TTY or pass `--confirm`
+to export that same prepared plan. `--confirm` bypasses only this plan-export
+prompt: a non-empty `--out` still requires a separate TTY overwrite confirmation.
+Without that TTY confirmation Foch refuses the overwrite and exits `1`, so CI and
+batch exports must use a new or empty output path. Leaving the merge as a preview
+exits `0`. Structural leaf conflicts can still surface during export and are
+recorded in the report. `--non-interactive` disables prompts and remains plan-only
+unless combined with `--confirm`. After export, review
+`merged-mod/.foch/foch-merge-plan.json` and
 `merged-mod/.foch/foch-merge-report.json` before enabling the generated mod. A
-merge with unresolved conflicts exits with status 2 and leaves the plan/report
-for review without presenting a usable merged mod. In a terminal, Foch can ask
-for narrow resolutions interactively; use `--non-interactive` for CI or batch
-runs. When a merge is ready, enable its launcher entry and disable the source
-mods to avoid loading both copies. Use a copy of your playset and keep normal
-game saves backed up while evaluating development builds.
+confirmed merge defers unresolved files or definition modules, exports every
+safe unit, and reports `partial_success`; add a reviewed resolution or edit the
+withheld unit manually later. `--force` only asks Foch to emit explicit
+fallbacks for supported conflicts. When a merge is ready, enable its
+launcher entry and disable the source mods to avoid loading both copies. Use a
+copy of your playset and keep normal game saves backed up while evaluating
+development builds.
 
 ## Conflict policy
 
 Foch does not silently choose a winner for an ambiguous structural conflict.
+It withholds only that file or definition module while continuing to export
+unrelated safe output.
 Reviewed decisions can be recorded as narrow `[[resolutions]]` entries in
 `foch.toml`:
 
@@ -108,7 +121,7 @@ composition is documented in
 | `foch workspace resolve` | Show the game and mod inputs Foch will use. |
 | `foch check` | Parse and analyze a workspace without writing a merge. |
 | `foch merge-plan` | Produce the merge strategy and conflict inventory. |
-| `foch merge` | Materialize and revalidate a merged mod directory. |
+| `foch merge` | Prepare a frozen path plan; export and revalidate only after confirmation. |
 | `foch graph` | Export call, definition-dependency, mod-dependency, and semantic graphs. |
 | `foch simplify` | Remove target-mod definitions equivalent to effective base definitions. |
 | `foch data` | Build, install, and inspect EU4 base-data snapshots. |

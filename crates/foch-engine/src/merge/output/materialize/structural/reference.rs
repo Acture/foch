@@ -27,7 +27,7 @@ use crate::merge::patch_engine::patch_merge::{
 	AttributedPatch, PatchConflict, PatchMergeResult, PatchResolution,
 };
 use crate::merge::planning::dag_input::{
-	DagMergeInputRequest, final_base_statements, template_for,
+	DagMergeInputRequest, merge_ancestor_statements, template_for,
 };
 use crate::merge::planning::module_view::CrossFileModuleViews;
 use crate::merge::resolution::conflict_handler::ConflictHandler;
@@ -187,6 +187,9 @@ where
 		per_entry_noop_skipped_count,
 		definition_provenance,
 		merge_trace,
+		// The address-patch reference backend does not retain node lineage. It is
+		// test-only; product materialization uses the semantic backend above.
+		provenance_localisation: Default::default(),
 	})
 }
 
@@ -228,7 +231,7 @@ fn run_reference_definition_module_engine(
 ) -> Result<ReferenceDagMergeComputation, MergeError> {
 	let mut handler = super::automatic_conflict_handler(target_path, context, resolution_map);
 	let effective_policies = super::effective_merge_policies(context);
-	let base_statements = final_base_statements(&views.file_dag, views.vanilla.as_ref());
+	let base_statements = merge_ancestor_statements(views.vanilla.as_ref());
 	compute_reference_dag_merge_from_parsed(ReferenceParsedDagMergeRequest {
 		file_dag: &views.file_dag,
 		base_statements: &base_statements,

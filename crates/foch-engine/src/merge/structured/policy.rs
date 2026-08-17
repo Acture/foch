@@ -1,6 +1,6 @@
 use foch_language::analyzer::content_family::{
-	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, OneSidedRemovalPolicy,
-	ScalarMergePolicy,
+	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, NestedInsertionPolicy,
+	OneSidedRemovalPolicy, ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_merge_kernel::{
@@ -374,12 +374,32 @@ fn content_family_anchor(
 		child_types,
 	} = policies.nested_merge_key_source
 		&& (child_types.is_empty() || child_types.contains(&key))
-		&& let Some(identity) = scalar_field(value, child_key_field)
 	{
-		return Some(SemanticKey::parent_scoped(
-			"clausewitz.assignment.identity",
-			format!("{key}:{identity}"),
-		));
+		// Trigger canonicalization can place an identity field below transparent
+		// boolean wrappers before the tree matcher sees this assignment.
+		if let Some(identity) = scalar_field_through_boolean_wrappers(value, child_key_field)
+			.filter(|identity| !identity.trim().is_empty())
+		{
+			return Some(nested_insertion_anchor(
+				policies,
+				SemanticKey::parent_scoped(
+					"clausewitz.assignment.identity",
+					format!("{key}:{identity}"),
+				),
+			));
+		}
+		if child_types.contains(&key) {
+			// A configured child without a usable identity must not match a child
+			// that has one. Keep identity-less siblings on conservative similarity
+			// matching because placeholder values such as `tooltip = " "` repeat.
+			return Some(nested_insertion_anchor(
+				policies,
+				SemanticKey::parent_scoped_ordered_similarity_with_position(
+					"clausewitz.assignment.identity",
+					format!("{key}:<missing-{child_key_field}>"),
+				),
+			));
+		}
 	}
 	match policies.merge_key_source {
 		MergeKeySource::AssignmentKey
@@ -393,14 +413,29 @@ fn content_family_anchor(
 			if !child_types.is_empty() && !child_types.contains(&key) {
 				return Some(assignment_key_anchor(key));
 			}
-			scalar_field(value, child_key_field).map(|identity| {
-				SemanticKey::parent_scoped(
+			if let Some(identity) =
+				scalar_field(value, child_key_field).filter(|identity| !identity.trim().is_empty())
+			{
+				return Some(SemanticKey::parent_scoped(
 					"clausewitz.assignment.identity",
 					format!("{key}:{identity}"),
+				));
+			}
+			child_types.contains(&key).then(|| {
+				SemanticKey::parent_scoped_ordered_similarity_with_position(
+					"clausewitz.assignment.identity",
+					format!("{key}:<missing-{child_key_field}>"),
 				)
 			})
 		}
 		MergeKeySource::FieldValue(_) => None,
+	}
+}
+
+fn nested_insertion_anchor(policies: &MergePolicies, anchor: SemanticKey) -> SemanticKey {
+	match policies.nested_insertion {
+		NestedInsertionPolicy::MatchByKey => anchor,
+		NestedInsertionPolicy::SourceIsolatedAppend => anchor.requiring_seeded_lineage(),
 	}
 }
 
@@ -423,6 +458,23 @@ fn scalar_field(value: &AstValue, field: &str) -> Option<String> {
 			return None;
 		};
 		Some(value.as_text())
+	})
+}
+
+fn scalar_field_through_boolean_wrappers(value: &AstValue, field: &str) -> Option<String> {
+	if let Some(value) = scalar_field(value, field) {
+		return Some(value);
+	}
+	let AstValue::Block { items, .. } = value else {
+		return None;
+	};
+	items.iter().find_map(|statement| {
+		let AstStatement::Assignment { key, value, .. } = statement else {
+			return None;
+		};
+		matches!(key.as_str(), "AND" | "OR")
+			.then(|| scalar_field_through_boolean_wrappers(value, field))
+			.flatten()
 	})
 }
 
@@ -449,9 +501,11 @@ fn descendant_scalar_field(value: &AstValue, field: &str) -> Option<String> {
 mod tests {
 	use std::path::PathBuf;
 
-	use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
+	use foch_language::analyzer::content_family::{
+		MergeKeySource, MergePolicies, NestedInsertionPolicy,
+	};
 	use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_content};
-	use foch_merge_kernel::SemanticKeyScope;
+	use foch_merge_kernel::{SemanticKeyLineage, SemanticKeyMatchMode, SemanticKeyScope};
 
 	use super::{ClausewitzTreePolicy, ContentFamilyMergePolicy};
 
@@ -492,6 +546,101 @@ mod tests {
 
 		assert_eq!(anchor.scope, SemanticKeyScope::Parent);
 		assert_eq!(anchor.value, "option:accept");
+	}
+
+	#[test]
+	fn nested_child_field_policy_finds_canonicalized_trigger_identity() {
+		let policies = MergePolicies {
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["condition"],
+			},
+			..MergePolicies::default()
+		};
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let (key, value) =
+			assignment("condition = { OR = { AND = { tooltip = SHARED_PEACE_BLOCK } } }");
+
+		let anchor = policy
+			.assignment_anchor(None, &key, &value)
+			.expect("canonicalized condition identity");
+
+		assert_eq!(anchor.scope, SemanticKeyScope::Parent);
+		assert_eq!(anchor.value, "condition:SHARED_PEACE_BLOCK");
+	}
+
+	#[test]
+	fn nested_child_field_policy_uses_soft_missing_identity_for_nested_predicates() {
+		let policies = MergePolicies {
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["condition"],
+			},
+			..MergePolicies::default()
+		};
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let (key, value) = assignment(
+			"condition = { potential = { custom_trigger_tooltip = { tooltip = NESTED } } }",
+		);
+
+		let anchor = policy
+			.assignment_anchor(None, &key, &value)
+			.expect("identity-less condition anchor");
+
+		assert_eq!(anchor.namespace, "clausewitz.assignment.identity");
+		assert_eq!(anchor.value, "condition:<missing-tooltip>");
+		assert_eq!(
+			anchor.match_mode,
+			SemanticKeyMatchMode::OrderedSimilarityWithPosition
+		);
+	}
+
+	#[test]
+	fn nested_child_field_policy_treats_blank_placeholder_as_missing_identity() {
+		let policies = MergePolicies {
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["condition"],
+			},
+			..MergePolicies::default()
+		};
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let (key, value) = assignment("condition = { tooltip = \" \" }");
+
+		let anchor = policy
+			.assignment_anchor(None, &key, &value)
+			.expect("blank condition anchor");
+
+		assert_eq!(anchor.namespace, "clausewitz.assignment.identity");
+		assert_eq!(anchor.value, "condition:<missing-tooltip>");
+		assert_eq!(
+			anchor.match_mode,
+			SemanticKeyMatchMode::OrderedSimilarityWithPosition
+		);
+	}
+
+	#[test]
+	fn source_isolated_nested_policy_marks_keyed_and_blank_children_for_seeded_lineage() {
+		let policies = MergePolicies {
+			nested_merge_key_source: MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["condition"],
+			},
+			nested_insertion: NestedInsertionPolicy::SourceIsolatedAppend,
+			..MergePolicies::default()
+		};
+		let policy = ContentFamilyMergePolicy::new(&policies);
+
+		for source in [
+			"condition = { tooltip = SHARED_PEACE_BLOCK }",
+			"condition = { tooltip = \" \" }",
+		] {
+			let (key, value) = assignment(source);
+			let anchor = policy
+				.assignment_anchor(None, &key, &value)
+				.expect("configured condition anchor");
+			assert_eq!(anchor.lineage, SemanticKeyLineage::Seeded);
+		}
 	}
 
 	fn assignment(source: &str) -> (String, AstValue) {

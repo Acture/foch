@@ -3,7 +3,8 @@ use super::content_family::{
 	ContentFamilyPathMatcher, ContentFamilyScopePolicy, ContentLoadPolicy, CwtType, DedupPolicy,
 	DefinitionFileOrder, DefinitionKeyPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 	DivergentBlockPolicy, DuplicateDefinitionPolicy, GameId, GameProfile, ListMergePolicy,
-	MergeKeySource, ModuleNameRule, OneSidedRemovalPolicy, ScalarMergePolicy, ScalarReducerRule,
+	MergeKeySource, ModuleNameRule, NestedInsertionPolicy, OneSidedRemovalPolicy,
+	ScalarMergePolicy, ScalarReducerRule,
 };
 use super::eu4_builtin::builtin_base_scope_names;
 use foch_core::model::{MaybeScope, ScopeType, base_scope};
@@ -14,6 +15,10 @@ use std::sync::OnceLock;
 pub struct Eu4Profile;
 
 static EU4_PROFILE: Eu4Profile = Eu4Profile;
+
+/// Localisation headers declared by EU4's `localisation/languages.yml`.
+pub const EU4_LOCALISATION_LANGUAGE_HEADERS: [&str; 4] =
+	["l_english", "l_german", "l_french", "l_spanish"];
 
 const GLOBAL_COLONIAL_GROWTH_REDUCER: ScalarReducerRule =
 	ScalarReducerRule::new(&["global_colonial_growth"], ScalarMergePolicy::Max);
@@ -325,6 +330,16 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::LeafPath)
 				.conflict_policy(ConflictPolicy::MergeLeaf)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
+				.build(),
+			ContentFamilyDescriptor::exact("common/defines", "common/defines.lua")
+				.kind(CwtType::new("defines"))
+				.module_name(ModuleNameRule::Static("defines"))
+				.scope(unknown_scope())
+				.capabilities(semantic_complete_and_merge_ready())
+				.merge_key(MergeKeySource::LeafPath)
+				.conflict_policy(ConflictPolicy::MergeLeaf)
+				.scalar_policy(ScalarMergePolicy::LastWriter)
 				.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/diplomatic_actions",
@@ -338,6 +353,11 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 			.scope(country_from_scope(base_scope::country()))
 			.capabilities(semantic_complete_and_merge_ready())
 			.merge_key(MergeKeySource::AssignmentKey)
+			.nested_merge_key(MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["condition"],
+			})
+			.nested_insertion_policy(NestedInsertionPolicy::SourceIsolatedAppend)
 			.build(),
 			ContentFamilyDescriptor::prefix(
 				"common/new_diplomatic_actions",
@@ -424,6 +444,10 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(country_from_scope(base_scope::country()))
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
+				.nested_merge_key(MergeKeySource::ChildFieldValue {
+					child_key_field: "modifier",
+					child_types: &["modifier_subject", "modifier_overlord"],
+				})
 				.build(),
 			ContentFamilyDescriptor::prefix("common/rebel_types", "common/rebel_types/")
 				.kind(CwtType::new("rebel_types"))
@@ -1574,6 +1598,10 @@ mod tests {
 				.expect("common descriptor");
 			assert_eq!(descriptor.load_policy, ContentLoadPolicy::PerPath, "{path}");
 		}
+		let defines = profile
+			.classify_content_family(Path::new("common/defines/00_test.lua"))
+			.expect("defines descriptor");
+		assert_eq!(defines.merge_policies.scalar, ScalarMergePolicy::LastWriter);
 	}
 
 	#[test]
@@ -1607,6 +1635,27 @@ mod tests {
 				child_key_field: "name",
 				child_types: &["option"],
 			}
+		);
+	}
+
+	#[test]
+	fn diplomatic_action_conditions_isolate_unbased_insertions_by_source() {
+		let descriptor = eu4_profile()
+			.classify_content_family(Path::new(
+				"common/diplomatic_actions/00_diplomatic_actions.txt",
+			))
+			.expect("diplomatic actions descriptor");
+
+		assert_eq!(
+			descriptor.merge_policies.nested_merge_key_source,
+			MergeKeySource::ChildFieldValue {
+				child_key_field: "tooltip",
+				child_types: &["condition"],
+			}
+		);
+		assert_eq!(
+			descriptor.merge_policies.nested_insertion,
+			NestedInsertionPolicy::SourceIsolatedAppend
 		);
 	}
 

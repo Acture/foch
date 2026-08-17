@@ -841,10 +841,9 @@ fn normalize_chain_semantic(
 			guarded_branch_kind(&value)
 		};
 		let branch_anchor = if is_default {
-			SemanticKey::parent_scoped_ordered_similarity_with_position(
-				"clausewitz.control_flow.branch.sequence",
-				kind.clone(),
-			)
+			// A normalized complete chain has exactly one default branch. Its
+			// semantic role is stable even when guarded siblings are reordered.
+			SemanticKey::parent_scoped("clausewitz.control_flow.branch.sequence", kind.clone())
 		} else {
 			SemanticKey::parent_scoped_ordered_similarity(
 				"clausewitz.control_flow.branch.sequence",
@@ -1429,7 +1428,7 @@ mod tests {
 	use foch_language::analyzer::parser::{
 		AstFile, AstStatement, AstValue, parse_clausewitz_content,
 	};
-	use foch_merge_kernel::ConflictKind;
+	use foch_merge_kernel::{ConflictKind, SemanticKeyMatchMode, SemanticKeyScope};
 
 	use crate::emit::emit_clausewitz_statements;
 
@@ -1920,6 +1919,28 @@ mod tests {
 		assert_eq!(emit(outcome.tentative_ast()), emit(&source));
 		assert_eq!(outcome.resolved_ast().map(emit), Some(emit(&source)));
 		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	}
+
+	#[test]
+	fn complete_chain_default_branch_has_stable_role_identity() {
+		let source = parse(
+			"coal = { trigger = {\n\
+			\tif = { limit = { has_country_flag = selected } add_prestige = 1 }\n\
+			\telse = { add_legitimacy = 0 }\n\
+			} }\n",
+		);
+		let policies = MergePolicies::default();
+		let policy = ContentFamilyMergePolicy::new(&policies);
+		let tree = normalize_ast(&source, &policy).expect("normalize complete chain");
+		let default = tree
+			.nodes()
+			.map(|(_, node)| node)
+			.find(|node| node.kind == super::ELSE_BRANCH_KIND)
+			.expect("normalized default branch");
+		let anchor = default.anchor.as_ref().expect("default role anchor");
+
+		assert_eq!(anchor.scope, SemanticKeyScope::Parent);
+		assert_eq!(anchor.match_mode, SemanticKeyMatchMode::Identity);
 	}
 
 	#[test]

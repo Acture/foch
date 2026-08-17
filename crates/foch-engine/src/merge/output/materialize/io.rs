@@ -1,5 +1,6 @@
 use super::super::super::error::MergeError;
-use super::StructuralMergeOutput;
+use super::{StructuralMergeOutput, provenance_tooltip::PROVENANCE_KEY_PREFIX};
+use crate::merge::model::ExternalFileResolution;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
 use foch_core::config::{ResolutionDecision, ResolutionMap};
 use foch_core::model::{
@@ -7,9 +8,13 @@ use foch_core::model::{
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergeReport,
 };
 use serde::Serialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(target_os = "macos")]
+use std::ffi::CString;
 use std::fs;
 use std::io;
+#[cfg(target_os = "macos")]
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +52,7 @@ pub(super) fn write_structural_merge_output(
 	out_dir: &Path,
 	prior_out_dir: Option<&Path>,
 	resolution_map: &ResolutionMap,
+	frozen_external_files: &BTreeMap<PathBuf, Vec<u8>>,
 	report: &mut MergeReport,
 ) -> Result<StructuralOutputMaterialization, MergeError> {
 	let output_relative_path = PathBuf::from(target_path);
@@ -67,6 +73,18 @@ pub(super) fn write_structural_merge_output(
 	{
 		let prior_target = prior_out_dir.map(|prior| prior.join(&output_relative_path));
 		if let Some(prior_target) = prior_target.as_ref().filter(|path| path.is_file()) {
+			let prior_bytes = fs::read(prior_target)?;
+			if prior_bytes
+				.windows(PROVENANCE_KEY_PREFIX.len())
+				.any(|window| window == PROVENANCE_KEY_PREFIX.as_bytes())
+			{
+				return Err(MergeError::Validation {
+					path: Some(target_path.to_string()),
+					message: format!(
+						"keep_existing cannot carry a script containing {PROVENANCE_KEY_PREFIX} references without its exact generated localisation dependencies",
+					),
+				});
+			}
 			if prior_target != &target {
 				if let Some(parent) = target.parent() {
 					fs::create_dir_all(parent)?;
@@ -98,24 +116,40 @@ pub(super) fn write_structural_merge_output(
 		));
 	}
 
-	if let Some(source_path) = merge_output
+	if let Some(external_resolution) = merge_output
 		.external_file_resolutions
 		.get(&output_relative_path)
 	{
-		let bytes = fs::read(source_path).map_err(|err| {
-			MergeError::Io(io::Error::new(
-				err.kind(),
-				format!(
-					"failed to read external resolution source {} for {}: {err}",
-					source_path.display(),
-					target_path
-				),
-			))
-		})?;
+		let source_path = external_resolution.source_path();
 		if let Some(parent) = target.parent() {
 			fs::create_dir_all(parent)?;
 		}
-		fs::write(&target, bytes)?;
+		match external_resolution {
+			ExternalFileResolution::Frozen(_) => {
+				let bytes = frozen_external_files.get(source_path).ok_or_else(|| {
+					MergeError::Validation {
+						path: Some(source_path.display().to_string()),
+						message: format!(
+							"prepared external resolution payload is missing for {target_path}"
+						),
+					}
+				})?;
+				fs::write(&target, bytes)?;
+			}
+			ExternalFileResolution::Live(_) => {
+				let bytes = fs::read(source_path).map_err(|err| {
+					MergeError::Io(io::Error::new(
+						err.kind(),
+						format!(
+							"failed to read external resolution source {} for {}: {err}",
+							source_path.display(),
+							target_path
+						),
+					))
+				})?;
+				fs::write(&target, bytes)?;
+			}
+		}
 		report.handler_resolutions.push(HandlerResolutionRecord {
 			path: target_path.to_string(),
 			action: "external".to_string(),
@@ -230,14 +264,43 @@ pub(super) fn copy_winner_file(
 	workspace: &ResolvedWorkspace,
 	entry: &MergePlanEntry,
 	out_dir: &Path,
-) -> Result<(), MergeError> {
+) -> Result<bool, MergeError> {
 	let source = winner_source_path(workspace, entry)?;
 	let target = out_dir.join(entry.output_path());
 	if let Some(parent) = target.parent() {
 		fs::create_dir_all(parent)?;
 	}
+	copy_file(source, &target).map_err(MergeError::from)
+}
+
+fn copy_file(source: &Path, target: &Path) -> io::Result<bool> {
+	#[cfg(target_os = "macos")]
+	if clone_file(source, target)? {
+		return Ok(true);
+	}
+
 	fs::copy(source, target)?;
-	Ok(())
+	Ok(false)
+}
+
+#[cfg(target_os = "macos")]
+fn clone_file(source: &Path, target: &Path) -> io::Result<bool> {
+	let source = CString::new(source.as_os_str().as_bytes()).map_err(|_| {
+		io::Error::new(
+			io::ErrorKind::InvalidInput,
+			"source path contains a NUL byte",
+		)
+	})?;
+	let target = CString::new(target.as_os_str().as_bytes()).map_err(|_| {
+		io::Error::new(
+			io::ErrorKind::InvalidInput,
+			"target path contains a NUL byte",
+		)
+	})?;
+	// SAFETY: both pointers come from live CStrings and clonefile does not retain
+	// them after returning. A failure is recoverable via the ordinary copy path.
+	let result = unsafe { libc::clonefile(source.as_ptr(), target.as_ptr(), 0) };
+	Ok(result == 0)
 }
 
 pub(super) fn write_conflict_placeholder(

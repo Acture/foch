@@ -92,11 +92,12 @@ The intended dependency flow is:
 
 ### `foch merge`
 
-1. `foch-engine::merge::plan` freezes the merge plan.
-2. `foch-engine::merge::ir` lifts supported roots into merge IR.
-3. `foch-engine::merge::emit` produces deterministic Clausewitz output.
-4. `foch-engine::merge::materialize` writes the merged tree and `.foch/*` sidecars.
-5. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline and records kernel, scope, and base-snapshot attestation in the merge report.
+1. `foch-engine::merge::plan` freezes and displays the path-level merge plan without writing an output tree.
+2. Explicit confirmation authorizes export of that frozen plan; file- or module-level conflicts are deferred and recorded while unrelated safe units continue.
+3. `foch-engine::merge::ir` lifts supported roots into merge IR.
+4. `foch-engine::merge::emit` produces deterministic Clausewitz output.
+5. `foch-engine::merge::materialize` writes the safe merged tree, withholds deferred units, and writes `.foch/*` sidecars.
+6. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline and records kernel, scope, and base-snapshot attestation in the merge report.
 
 ### Product merge-quality acceptance
 
@@ -110,9 +111,11 @@ The intended dependency flow is:
    It does not enumerate paths or read file bytes to establish that identity.
    Workshop content and ACF files are read-only and are not copied into an
    input CAS.
-4. Each case launches the public `foch merge --non-interactive` artifact in an
+4. Each case launches the public `foch merge --confirm --non-interactive` artifact in an
    independent bounded child process and verifies its product-authored kernel,
    scope, base, and input attestation.
+   The separate cold/warm cache gate deliberately omits `--confirm`: it validates
+   the default read-only plan path and requires no output directory or merge report.
 5. Before committing a terminal result, the library re-reads the exact ACF
    pairs and compares the ordered installation identities; any drift invalidates
    the run.

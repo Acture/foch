@@ -107,6 +107,7 @@ enum TokenKind {
 	RBrace,
 	Comment(String),
 	Newline,
+	Comma,
 	Eof,
 }
 
@@ -197,6 +198,16 @@ impl<'a> Lexer<'a> {
 					},
 				}
 			}
+			b',' if self.lua_mode => {
+				self.advance_byte();
+				Token {
+					kind: TokenKind::Comma,
+					span: SpanRange {
+						start: start.clone(),
+						end: self.current_span(),
+					},
+				}
+			}
 			b'#' => {
 				self.advance_byte();
 				let text_start = self.index;
@@ -259,16 +270,37 @@ impl<'a> Lexer<'a> {
 			}
 			b'-' | b'0'..=b'9' => {
 				let text_start = self.index;
+				let digit_leading = byte.is_ascii_digit();
 				self.advance_byte();
+				if !digit_leading
+					&& !self
+						.peek_byte()
+						.is_some_and(|next| next.is_ascii_digit() || next == b'.')
+				{
+					return Token {
+						kind: TokenKind::Number("-".to_string()),
+						span: SpanRange {
+							start: start.clone(),
+							end: self.current_span(),
+						},
+					};
+				}
 				while let Some(next) = self.peek_byte() {
-					if !next.is_ascii_digit() && next != b'.' {
+					if is_token_delimiter(next)
+						|| (self.lua_mode && next == b',')
+						|| (self.lua_mode && next == b'-' && self.peek_byte_at(1) == Some(b'-'))
+					{
 						break;
 					}
 					self.advance_byte();
 				}
 				let text = self.source[text_start..self.index].to_string();
 				Token {
-					kind: TokenKind::Number(text),
+					kind: if is_number_token(&text) {
+						TokenKind::Number(text)
+					} else {
+						TokenKind::Identifier(text)
+					},
 					span: SpanRange {
 						start: start.clone(),
 						end: self.current_span(),
@@ -279,7 +311,7 @@ impl<'a> Lexer<'a> {
 				let text_start = self.index;
 				self.advance_byte();
 				while let Some(next) = self.peek_byte() {
-					if is_token_delimiter(next) {
+					if is_token_delimiter(next) || (self.lua_mode && next == b',') {
 						break;
 					}
 					if self.lua_mode && next == b'-' && self.peek_byte_at(1) == Some(b'-') {
@@ -419,6 +451,40 @@ fn is_token_delimiter(byte: u8) -> bool {
 	)
 }
 
+fn is_number_token(text: &str) -> bool {
+	if text == "-" {
+		return true;
+	}
+	let unsigned = text.strip_prefix('-').unwrap_or(text);
+	let Some(exponent_index) = unsigned.find(['e', 'E']) else {
+		return unsigned.bytes().any(|byte| byte.is_ascii_digit())
+			&& unsigned
+				.bytes()
+				.all(|byte| byte.is_ascii_digit() || byte == b'.');
+	};
+	let (mantissa, exponent_with_marker) = unsigned.split_at(exponent_index);
+	let exponent = &exponent_with_marker[1..];
+	decimal_mantissa_is_valid(mantissa)
+		&& signed_digits_are_valid(exponent)
+		&& !exponent.bytes().any(|byte| matches!(byte, b'e' | b'E'))
+}
+
+fn decimal_mantissa_is_valid(mantissa: &str) -> bool {
+	match mantissa.split_once('.') {
+		Some((whole, fraction)) => {
+			!fraction.is_empty()
+				&& whole.bytes().all(|byte| byte.is_ascii_digit())
+				&& fraction.bytes().all(|byte| byte.is_ascii_digit())
+		}
+		None => !mantissa.is_empty() && mantissa.bytes().all(|byte| byte.is_ascii_digit()),
+	}
+}
+
+fn signed_digits_are_valid(value: &str) -> bool {
+	let digits = value.strip_prefix(['+', '-']).unwrap_or(value);
+	!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 struct ParserState {
 	tokens: Vec<Token>,
 	index: usize,
@@ -453,7 +519,7 @@ impl ParserState {
 					self.bump();
 					break;
 				}
-				TokenKind::Newline => {
+				TokenKind::Newline | TokenKind::Comma => {
 					self.bump();
 				}
 				TokenKind::Comment(text) => {
@@ -662,7 +728,7 @@ impl ParserState {
 		let mut token = self.bump();
 		while matches!(
 			token.kind,
-			TokenKind::Newline | TokenKind::Comment(_) | TokenKind::Eq
+			TokenKind::Newline | TokenKind::Comma | TokenKind::Comment(_) | TokenKind::Eq
 		) {
 			token = self.bump();
 		}
@@ -839,6 +905,34 @@ mod tests {
 		};
 
 		assert_eq!(items.len(), 2);
+	}
+
+	#[test]
+	fn parser_treats_digit_leading_identifier_as_assignment_key() {
+		let parsed = parse_clausewitz_content(
+			PathBuf::from("common/powerprojection/00_static.txt"),
+			"25_permanent_power_projection = { yearly_decay = 1 }\n",
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 1, "{:#?}", parsed.ast);
+
+		let AstStatement::Assignment { key, value, .. } = &parsed.ast.statements[0] else {
+			panic!("expected digit-leading assignment");
+		};
+		assert_eq!(key, "25_permanent_power_projection");
+		let AstValue::Block { items, .. } = value else {
+			panic!("expected definition block");
+		};
+		let AstStatement::Assignment { value, .. } = &items[0] else {
+			panic!("expected numeric field assignment");
+		};
+		assert!(matches!(
+			value,
+			AstValue::Scalar {
+				value: ScalarValue::Number(number),
+				..
+			} if number == "1"
+		));
 	}
 
 	#[test]
@@ -1090,6 +1184,35 @@ next_effect = { add_prestige = 1 }
 		let AstValue::Scalar { .. } = value else {
 			panic!("expected scalar value");
 		};
+	}
+
+	#[test]
+	fn lua_mode_comma_separates_numeric_scalars_and_preserves_exponents() {
+		let parsed = parse_clausewitz_content(
+			PathBuf::from("defines.lua"),
+			"plain = 75,\npositive_exp = 1e-5,\nnegative_exp = -1e-5,\nstandalone = -,\n",
+		);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		assert_eq!(parsed.ast.statements.len(), 4, "{:#?}", parsed.ast);
+
+		for (statement, (expected_key, expected_number)) in parsed.ast.statements.iter().zip([
+			("plain", "75"),
+			("positive_exp", "1e-5"),
+			("negative_exp", "-1e-5"),
+			("standalone", "-"),
+		]) {
+			let AstStatement::Assignment { key, value, .. } = statement else {
+				panic!("expected assignment");
+			};
+			assert_eq!(key, expected_key);
+			assert!(matches!(
+				value,
+				AstValue::Scalar {
+					value: ScalarValue::Number(number),
+					..
+				} if number == expected_number
+			));
+		}
 	}
 
 	#[test]

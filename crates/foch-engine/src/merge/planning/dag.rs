@@ -478,6 +478,9 @@ impl FileDag {
 	pub fn replaces_path(&self, mod_id: &ModId) -> bool {
 		self.replace_path_owners.contains(mod_id)
 	}
+	pub fn has_replace_path_owner(&self) -> bool {
+		!self.replace_path_owners.is_empty()
+	}
 }
 
 pub(crate) fn topo_levels(parents: &BTreeSet<ModId>, file_dag: &FileDag) -> Vec<Vec<ModId>> {

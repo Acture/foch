@@ -2,7 +2,7 @@
 
 Tracked JSONL files are append-only metadata. The V1 prefixes and
 `shadow_measurements.jsonl` are frozen historical evidence. New measurements
-are V2 only: scorer `2.0.0`, the public `foch merge` artifact,
+are V2 only: scorer `2.1.0`, the public `foch merge` artifact,
 `semantic_tree`, and `full_product_merge`.
 
 The only product acceptance is the fixed 14-case gate:

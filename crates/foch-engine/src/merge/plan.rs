@@ -6,15 +6,16 @@ use crate::workspace::{
 	WorkspaceScriptCache, resolve_workspace,
 };
 use foch_core::model::{
-	MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies, MergePlanStrategy,
-	MergePlanTarget, MergeUnitId,
+	DocumentFamily, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies,
+	MergePlanStrategy, MergePlanTarget, MergeUnitId,
 };
 use foch_language::analyzer::content_family::GameProfile;
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 };
+use foch_language::analyzer::documents::{classify_document_family, is_clausewitz_defines_path};
 use foch_language::analyzer::eu4_profile::eu4_profile;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -104,6 +105,15 @@ fn build_merge_units(
 			));
 			continue;
 		};
+		if !is_structural_merge_path(path, Some(descriptor)) {
+			regular.push(classify_entry(
+				path,
+				contributors,
+				Some(descriptor),
+				&workspace.script_cache,
+			));
+			continue;
+		}
 		let merge_unit = MergeUnitId {
 			family_id: descriptor.id.as_str().to_string(),
 			module_name: policy
@@ -121,10 +131,24 @@ fn build_merge_units(
 	}
 
 	for (merge_unit, (policy, inputs)) in modules {
+		let has_reset_participant = module_has_reset_participant(workspace, policy);
+		if !module_has_non_base_contributor(&inputs) && !has_reset_participant {
+			for (path, contributors) in inputs {
+				let descriptor = profile.classify_content_family(Path::new(path));
+				regular.push(classify_entry(
+					path,
+					contributors,
+					descriptor,
+					&workspace.script_cache,
+				));
+			}
+			continue;
+		}
 		regular.push(classify_module_entry(
 			merge_unit,
 			policy,
 			&inputs,
+			has_reset_participant,
 			&workspace.script_cache,
 		));
 	}
@@ -132,10 +156,67 @@ fn build_merge_units(
 	regular
 }
 
+fn module_has_non_base_contributor(inputs: &ModuleInputs<'_>) -> bool {
+	inputs.iter().any(|(_, contributors)| {
+		contributors
+			.iter()
+			.any(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base)
+	})
+}
+
+fn module_has_reset_participant(
+	workspace: &ResolvedWorkspace,
+	policy: DefinitionModulePolicy,
+) -> bool {
+	workspace.mods.iter().any(|mod_item| {
+		mod_item.root_path.is_some()
+			&& mod_item.descriptor.as_ref().is_some_and(|descriptor| {
+				descriptor.replace_path.iter().any(|replace_path| {
+					replace_path_covers_namespace(replace_path, policy.namespace_prefix)
+				})
+			})
+	})
+}
+
+fn participating_module_namespaces(
+	workspace: &ResolvedWorkspace,
+	profile: &dyn GameProfile,
+) -> BTreeSet<&'static str> {
+	workspace
+		.file_inventory
+		.iter()
+		.filter_map(|(path, contributors)| {
+			let descriptor = profile.classify_content_family(Path::new(path))?;
+			let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+				return None;
+			};
+			if !is_structural_merge_path(path, Some(descriptor)) {
+				return None;
+			}
+			let has_non_base_contributor = contributors
+				.iter()
+				.any(|contributor| !contributor.is_base_game && !contributor.is_synthetic_base);
+			(has_non_base_contributor || module_has_reset_participant(workspace, policy))
+				.then_some(policy.namespace_prefix)
+		})
+		.collect()
+}
+
+fn replace_path_covers_namespace(replace_path: &str, namespace_prefix: &str) -> bool {
+	let replace_path = replace_path.trim_matches('/').replace('\\', "/");
+	let namespace_prefix = namespace_prefix.trim_matches('/').replace('\\', "/");
+	!replace_path.is_empty()
+		&& (namespace_prefix == replace_path
+			|| namespace_prefix
+				.strip_prefix(&replace_path)
+				.is_some_and(|suffix| suffix.starts_with('/')))
+}
+
 fn classify_module_entry(
 	merge_unit: MergeUnitId,
 	policy: DefinitionModulePolicy,
 	inputs: &ModuleInputs<'_>,
+	has_reset_participant: bool,
 	script_cache: &WorkspaceScriptCache,
 ) -> MergePlanEntry {
 	let input_paths = inputs
@@ -172,13 +253,13 @@ fn classify_module_entry(
 			id: merge_unit,
 			input_paths,
 			output_path: policy.output_path.to_string(),
-			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace)
+			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace
+				|| has_reset_participant)
 				.then(|| policy.namespace_prefix.to_string()),
 		},
 		strategy,
 		contributors,
 		winner,
-		generated: false,
 		notes,
 	}
 }
@@ -227,7 +308,6 @@ fn classify_entry(
 		strategy,
 		contributors: contributors_out,
 		winner,
-		generated: false,
 		notes,
 	}
 }
@@ -276,7 +356,7 @@ fn validate_structural_merge_inputs(
 	script_cache: &WorkspaceScriptCache,
 ) -> Result<(), MergeError> {
 	let mut failures = Vec::new();
-	let is_defines_path = path.to_ascii_lowercase().starts_with("common/defines/");
+	let is_defines_path = is_clausewitz_defines_path(Path::new(path));
 
 	for contributor in contributors {
 		let Some(parse_ok) = contributor.parse_ok_hint else {
@@ -329,7 +409,7 @@ fn validate_structural_merge_inputs(
 }
 
 fn is_structural_merge_path(path: &str, descriptor: Option<&ContentFamilyDescriptor>) -> bool {
-	if !is_text_like_overlay_path(path) {
+	if classify_document_family(Path::new(path)) != Some(DocumentFamily::Clausewitz) {
 		return false;
 	}
 	descriptor
@@ -341,9 +421,19 @@ fn validate_structural_snapshot(
 	workspace: &ResolvedWorkspace,
 	profile: &dyn GameProfile,
 ) -> Result<(), String> {
+	let participating_modules = participating_module_namespaces(workspace, profile);
 	for (path, contributors) in &workspace.file_inventory {
 		let descriptor = profile.classify_content_family(Path::new(path));
 		if !is_structural_merge_path(path, descriptor) {
+			continue;
+		}
+		if descriptor.is_some_and(|descriptor| {
+			matches!(
+				descriptor.load_policy,
+				ContentLoadPolicy::DefinitionModule(policy)
+					if !participating_modules.contains(policy.namespace_prefix)
+			)
+		}) {
 			continue;
 		}
 		for contributor in contributors {
@@ -430,9 +520,11 @@ pub(crate) fn is_localisation_yml_path(path: &str) -> bool {
 mod tests {
 	use super::build_merge_plan_from_workspace;
 	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
+	use foch_core::domain::descriptor::ModDescriptor;
 	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::Playlist;
-	use std::collections::BTreeMap;
+	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
+	use foch_core::model::{MergePlanStrategy, MergePlanTarget, ModCandidate};
+	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::{Path, PathBuf};
 
 	fn workspace_with_snapshot_gap(
@@ -440,14 +532,23 @@ mod tests {
 		is_base_game: bool,
 		parse_ok_hint: Option<bool>,
 	) -> ResolvedWorkspace {
+		workspace_with_snapshot_gap_at_path("events/test.txt", mod_id, is_base_game, parse_ok_hint)
+	}
+
+	fn workspace_with_snapshot_gap_at_path(
+		relative_path: &str,
+		mod_id: &str,
+		is_base_game: bool,
+		parse_ok_hint: Option<bool>,
+	) -> ResolvedWorkspace {
 		let root_path = PathBuf::from(mod_id);
 		let mut file_inventory = BTreeMap::new();
 		file_inventory.insert(
-			"events/test.txt".to_string(),
+			relative_path.to_string(),
 			vec![ResolvedFileContributor {
 				mod_id: mod_id.to_string(),
 				root_path: root_path.clone(),
-				absolute_path: root_path.join("events/test.txt"),
+				absolute_path: root_path.join(relative_path),
 				precedence: usize::from(!is_base_game),
 				is_base_game,
 				is_synthetic_base: false,
@@ -468,8 +569,49 @@ mod tests {
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
+			verified_absent_base_paths: BTreeSet::new(),
 			requested_retained_paths: None,
 			effective_retained_paths: None,
+		}
+	}
+
+	fn mod_contributor(
+		mod_id: &str,
+		relative_path: &str,
+		precedence: usize,
+	) -> ResolvedFileContributor {
+		let root_path = PathBuf::from(mod_id);
+		ResolvedFileContributor {
+			mod_id: mod_id.to_string(),
+			root_path: root_path.clone(),
+			absolute_path: root_path.join(relative_path),
+			precedence,
+			is_base_game: false,
+			is_synthetic_base: false,
+			parse_ok_hint: Some(true),
+			mod_hash: Some(format!("hash-{mod_id}")),
+		}
+	}
+
+	fn reset_only_mod(mod_id: &str, replace_path: &str) -> ModCandidate {
+		let root_path = PathBuf::from(mod_id);
+		ModCandidate {
+			entry: PlaylistEntry {
+				enabled: true,
+				root_path: Some(root_path.clone()),
+				..PlaylistEntry::default()
+			},
+			mod_id: mod_id.to_string(),
+			root_path: Some(root_path),
+			descriptor_path: None,
+			descriptor: Some(ModDescriptor {
+				name: mod_id.to_string(),
+				replace_path: vec![replace_path.to_string()],
+				..ModDescriptor::default()
+			}),
+			workshop_identity: None,
+			descriptor_error: None,
+			files: Vec::new(),
 		}
 	}
 
@@ -512,5 +654,175 @@ mod tests {
 				.script_cache
 				.is_loaded("mod-a", Path::new("events/test.txt"))
 		);
+	}
+
+	#[test]
+	fn base_only_definition_module_input_is_planned_as_copy_through() {
+		let workspace = workspace_with_snapshot_gap_at_path(
+			"common/powerprojection/00_static.txt",
+			"__game__eu4",
+			true,
+			None,
+		);
+
+		let result = build_merge_plan_from_workspace(&workspace, true);
+
+		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
+		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
+		assert_eq!(result.paths[0].strategy, MergePlanStrategy::CopyThrough);
+		assert!(matches!(
+			&result.paths[0].target,
+			MergePlanTarget::File { path }
+				if path == "common/powerprojection/00_static.txt"
+		));
+		assert!(
+			result.paths[0]
+				.contributors
+				.iter()
+				.all(|contributor| contributor.is_base_game)
+		);
+	}
+
+	#[test]
+	fn participating_definition_module_keeps_base_only_inputs() {
+		let base_path = "common/powerprojection/00_static.txt";
+		let mod_path = "common/powerprojection/modded.txt";
+		let mut workspace =
+			workspace_with_snapshot_gap_at_path(base_path, "__game__eu4", true, Some(true));
+		workspace.file_inventory.insert(
+			mod_path.to_string(),
+			vec![mod_contributor("mod-a", mod_path, 1)],
+		);
+
+		let result = build_merge_plan_from_workspace(&workspace, true);
+
+		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
+		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
+		let MergePlanTarget::Module {
+			input_paths,
+			replace_prefix,
+			..
+		} = &result.paths[0].target
+		else {
+			panic!("expected definition module");
+		};
+		assert_eq!(input_paths, &[base_path.to_string(), mod_path.to_string()]);
+		assert!(replace_prefix.is_none());
+		assert!(
+			result.paths[0]
+				.contributors
+				.iter()
+				.any(|contributor| contributor.is_base_game)
+		);
+	}
+
+	#[test]
+	fn reset_only_mod_participates_in_base_backed_definition_module() {
+		let mut workspace = workspace_with_snapshot_gap_at_path(
+			"common/powerprojection/00_static.txt",
+			"__game__eu4",
+			true,
+			Some(true),
+		);
+		workspace.mods.push(reset_only_mod("reset-mod", "common"));
+		workspace.mod_snapshots.push(None);
+
+		let result = build_merge_plan_from_workspace(&workspace, true);
+
+		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
+		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
+		assert!(matches!(
+			&result.paths[0].target,
+			MergePlanTarget::Module {
+				replace_prefix: Some(prefix),
+				..
+			} if prefix == "common/powerprojection"
+		));
+	}
+
+	#[test]
+	fn non_clausewitz_lua_under_structural_family_does_not_require_parse_status() {
+		let mut workspace = workspace_with_snapshot_gap_at_path(
+			"gfx/shader_upgrade.lua",
+			"__game__eu4",
+			true,
+			None,
+		);
+		workspace
+			.file_inventory
+			.get_mut("gfx/shader_upgrade.lua")
+			.expect("shader inventory")
+			.push(ResolvedFileContributor {
+				mod_id: "mod-a".to_string(),
+				root_path: PathBuf::from("mod-a"),
+				absolute_path: PathBuf::from("mod-a/gfx/shader_upgrade.lua"),
+				precedence: 1,
+				is_base_game: false,
+				is_synthetic_base: false,
+				parse_ok_hint: None,
+				mod_hash: Some("hash-mod-a".to_string()),
+			});
+
+		let result = build_merge_plan_from_workspace(&workspace, true);
+
+		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
+		assert_eq!(result.strategies.last_writer_overlay, 1);
+		assert_eq!(
+			result.paths[0]
+				.winner
+				.as_ref()
+				.map(|winner| winner.mod_id.as_str()),
+			Some("mod-a")
+		);
+	}
+
+	#[test]
+	fn clausewitz_paths_under_mixed_extension_families_require_parse_status() {
+		for path in [
+			"gfx/test.gfx",
+			"common/defines.lua",
+			"common/defines/test.lua",
+		] {
+			let workspace = workspace_with_snapshot_gap_at_path(path, "__game__eu4", true, None);
+
+			let result = build_merge_plan_from_workspace(&workspace, true);
+
+			assert!(result.has_fatal_errors(), "{path}");
+			assert!(result.paths.is_empty(), "{path}");
+		}
+	}
+
+	#[test]
+	fn non_clausewitz_file_under_definition_module_is_a_regular_overlay() {
+		let mut workspace = workspace_with_snapshot_gap_at_path(
+			"common/governments/metadata.json",
+			"__game__eu4",
+			true,
+			None,
+		);
+		workspace
+			.file_inventory
+			.get_mut("common/governments/metadata.json")
+			.expect("governments metadata inventory")
+			.push(ResolvedFileContributor {
+				mod_id: "mod-a".to_string(),
+				root_path: PathBuf::from("mod-a"),
+				absolute_path: PathBuf::from("mod-a/common/governments/metadata.json"),
+				precedence: 1,
+				is_base_game: false,
+				is_synthetic_base: false,
+				parse_ok_hint: None,
+				mod_hash: Some("hash-mod-a".to_string()),
+			});
+
+		let result = build_merge_plan_from_workspace(&workspace, true);
+
+		assert!(!result.has_fatal_errors(), "{:#?}", result.fatal_errors);
+		assert_eq!(result.strategies.last_writer_overlay, 1);
+		assert!(matches!(
+			&result.paths[0].target,
+			foch_core::model::MergePlanTarget::File { path }
+				if path == "common/governments/metadata.json"
+		));
 	}
 }

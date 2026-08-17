@@ -15,13 +15,16 @@ use foch_core::domain::ParseErrorKind;
 use foch_core::domain::descriptor::load_descriptor;
 use foch_core::domain::game::Game;
 use foch_core::domain::playlist::{Playlist, PlaylistEntry};
-use foch_core::model::{MergeUnitId, ModCandidate, ProductInputManifest, ProductInputMod};
+use foch_core::model::{
+	DocumentFamily, MergeUnitId, ModCandidate, ProductInputManifest, ProductInputMod,
+};
 use foch_core::utils::steam::{
 	SteamWorkshopCatalog, WorkshopInstallIdentity, steam_workshop_mod_path,
 };
 use foch_language::analyzer::content_family::{
-	ContentLoadPolicy, GameProfile, module_name_for_descriptor,
+	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, module_name_for_descriptor,
 };
+use foch_language::analyzer::documents::classify_document_family;
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
@@ -105,6 +108,11 @@ pub(crate) struct ResolvedWorkspace {
 	pub mod_snapshots: Vec<Option<LoadedModSnapshot>>,
 	pub script_cache: WorkspaceScriptCache,
 	pub file_inventory: BTreeMap<String, Vec<ResolvedFileContributor>>,
+	/// Exact per-path absence observations made against the current game root
+	/// for semantic families that explicitly support an empty ancestor. A
+	/// missing entry in the installed snapshot is not, by itself, proof of
+	/// absence because snapshots can be built with filters.
+	pub verified_absent_base_paths: BTreeSet<String>,
 	pub requested_retained_paths: Option<BTreeSet<String>>,
 	pub effective_retained_paths: Option<BTreeSet<String>>,
 }
@@ -864,6 +872,13 @@ pub(crate) fn resolve_workspace_from_inventory(
 		&mod_hashes,
 		effective_retained_paths.as_ref(),
 	);
+	let verified_absent_base_paths = verify_absent_semantic_bases(
+		&playlist,
+		base_game_root.as_deref(),
+		installed_base_snapshot.is_some(),
+		&file_inventory,
+		&playlist_path,
+	)?;
 	inject_synthetic_bases(&mut file_inventory);
 	let script_cache = WorkspaceScriptCache::from_parts(
 		&mods,
@@ -886,9 +901,82 @@ pub(crate) fn resolve_workspace_from_inventory(
 		mod_snapshots,
 		script_cache,
 		file_inventory,
+		verified_absent_base_paths,
 		requested_retained_paths,
 		effective_retained_paths,
 	})
+}
+
+fn verify_absent_semantic_bases(
+	playlist: &Playlist,
+	base_game_root: Option<&Path>,
+	base_snapshot_loaded: bool,
+	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
+	error_path: &Path,
+) -> Result<BTreeSet<String>, WorkspaceResolveError> {
+	let (Some(root), Some(profile)) = (base_game_root, game_profile(&playlist.game)) else {
+		return Ok(BTreeSet::new());
+	};
+	if !base_snapshot_loaded {
+		return Ok(BTreeSet::new());
+	}
+
+	let mut absent = BTreeSet::new();
+	for (relative, contributors) in file_inventory {
+		let relative_path = Path::new(relative);
+		let descriptor = profile.classify_content_family(relative_path);
+		if classify_document_family(relative_path) != Some(DocumentFamily::Clausewitz)
+			|| !descriptor.is_some_and(ContentFamilyDescriptor::supports_verified_empty_file_base)
+			|| contributors
+				.iter()
+				.any(|contributor| contributor.is_base_game)
+			|| contributors
+				.iter()
+				.filter(|contributor| !contributor.is_base_game)
+				.count() < 2
+		{
+			continue;
+		}
+
+		if relative_path.as_os_str().is_empty()
+			|| relative_path.is_absolute()
+			|| !relative_path
+				.components()
+				.all(|component| matches!(component, std::path::Component::Normal(_)))
+		{
+			return Err(WorkspaceResolveError {
+				kind: WorkspaceResolveErrorKind::Io,
+				path: error_path.to_path_buf(),
+				message: format!("unsafe semantic base path {relative:?}"),
+			});
+		}
+
+		let absolute = root.join(relative_path);
+		match fs::symlink_metadata(&absolute) {
+			Ok(_) => {
+				return Err(WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: absolute,
+					message: format!(
+						"installed base snapshot omits the existing semantic merge base {relative}; rebuild and reinstall base data before merging"
+					),
+				});
+			}
+			Err(error) if error.kind() == io::ErrorKind::NotFound => {
+				absent.insert(relative.clone());
+			}
+			Err(error) => {
+				return Err(WorkspaceResolveError {
+					kind: WorkspaceResolveErrorKind::Io,
+					path: absolute,
+					message: format!(
+						"failed to verify whether semantic merge base {relative} exists: {error}"
+					),
+				});
+			}
+		}
+	}
+	Ok(absent)
 }
 
 fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) -> String {
@@ -1909,6 +1997,121 @@ path = "governments_mod"
 			parse_ok_hint: None,
 			mod_hash: Some(format!("hash-{mod_id}")),
 		}
+	}
+
+	fn two_mod_inventory(relative_path: &str) -> BTreeMap<String, Vec<ResolvedFileContributor>> {
+		BTreeMap::from([(
+			relative_path.to_string(),
+			vec![
+				make_contributor("mod_a", 1, false),
+				make_contributor("mod_b", 2, false),
+			],
+		)])
+	}
+
+	fn eu4_test_playlist() -> Playlist {
+		Playlist {
+			game: Game::EuropaUniversalis4,
+			name: "semantic-base-proof".to_string(),
+			mods: Vec::new(),
+		}
+	}
+
+	#[test]
+	fn absent_semantic_base_requires_a_loaded_snapshot_and_supported_file_family() {
+		let temp = TempDir::new().expect("tempdir");
+		let playlist = eu4_test_playlist();
+		let defines_path = "common/defines/es_defines.lua";
+		let defines_inventory = two_mod_inventory(defines_path);
+
+		let absent = verify_absent_semantic_bases(
+			&playlist,
+			Some(temp.path()),
+			true,
+			&defines_inventory,
+			Path::new("playlist.json"),
+		)
+		.expect("verify absent defines base");
+		assert_eq!(absent, BTreeSet::from([defines_path.to_string()]));
+
+		let without_snapshot = verify_absent_semantic_bases(
+			&playlist,
+			Some(temp.path()),
+			false,
+			&defines_inventory,
+			Path::new("playlist.json"),
+		)
+		.expect("skip absence proof without a base snapshot");
+		assert!(without_snapshot.is_empty());
+
+		let events_inventory = two_mod_inventory("events/test.txt");
+		let events = verify_absent_semantic_bases(
+			&playlist,
+			Some(temp.path()),
+			true,
+			&events_inventory,
+			Path::new("playlist.json"),
+		)
+		.expect("verify absent event base");
+		assert_eq!(events, BTreeSet::from(["events/test.txt".to_string()]));
+
+		let gfx_path = "interface/000_expanded_mod_family.gfx";
+		let gfx = verify_absent_semantic_bases(
+			&playlist,
+			Some(temp.path()),
+			true,
+			&two_mod_inventory(gfx_path),
+			Path::new("playlist.json"),
+		)
+		.expect("verify absent GFX base");
+		assert_eq!(gfx, BTreeSet::from([gfx_path.to_string()]));
+
+		let module_inventory = two_mod_inventory("common/governments/test.txt");
+		let module = verify_absent_semantic_bases(
+			&playlist,
+			Some(temp.path()),
+			true,
+			&module_inventory,
+			Path::new("playlist.json"),
+		)
+		.expect("aggregate definition module stays required");
+		assert!(module.is_empty());
+
+		let binary = verify_absent_semantic_bases(
+			&playlist,
+			Some(temp.path()),
+			true,
+			&two_mod_inventory("gfx/picture.dds"),
+			Path::new("playlist.json"),
+		)
+		.expect("binary assets do not need semantic base verification");
+		assert!(binary.is_empty());
+	}
+
+	#[test]
+	fn live_semantic_base_rejects_a_filtered_snapshot_gap() {
+		let temp = TempDir::new().expect("tempdir");
+		let relative_path = "common/defines/es_defines.lua";
+		let absolute_path = temp.path().join(relative_path);
+		fs::create_dir_all(absolute_path.parent().expect("defines parent"))
+			.expect("create defines parent");
+		fs::write(&absolute_path, "NDefines.NGame.TEST = 1\n").expect("write live base");
+
+		let error = verify_absent_semantic_bases(
+			&eu4_test_playlist(),
+			Some(temp.path()),
+			true,
+			&two_mod_inventory(relative_path),
+			Path::new("playlist.json"),
+		)
+		.expect_err("filtered snapshot must not prove live base absence");
+
+		assert_eq!(error.path, absolute_path);
+		assert!(
+			error
+				.message
+				.contains("omits the existing semantic merge base")
+		);
 	}
 
 	#[test]

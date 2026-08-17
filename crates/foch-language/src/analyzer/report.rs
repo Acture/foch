@@ -301,6 +301,14 @@ pub fn render_merge_report_text(report: &MergeReport) -> String {
 		report.manual_conflict_count
 	));
 	lines.push(format!(
+		"unsupported_input_count: {}",
+		report.unsupported_input_count
+	));
+	lines.push(format!(
+		"engine_failure_count: {}",
+		report.engine_failure_count
+	));
+	lines.push(format!(
 		"generated_file_count: {}",
 		report.generated_file_count
 	));
@@ -351,6 +359,10 @@ fn append_conflict_resolutions_section(lines: &mut Vec<String>, report: &MergeRe
 	for resolution in &report.conflict_resolutions {
 		lines.push(format!("  - path: {}", resolution.path));
 		lines.push(format!("    reason: {}", resolution.reason));
+		lines.push(format!(
+			"    deferred_reason: {}",
+			resolution.deferred_reason.as_str()
+		));
 		if let Some(kind) = resolution.kind {
 			lines.push(format!("    kind: {}", render_conflict_kind(kind)));
 		}
@@ -636,10 +648,9 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 	};
 
 	format!(
-		"[{strategy}] path={} winner={} generated={} contributors={}{}",
+		"[{strategy}] path={} winner={} contributors={}{}",
 		entry.target.output_path(),
 		winner,
-		entry.generated,
 		contributors,
 		notes
 	)
@@ -880,6 +891,7 @@ mod tests {
 			conflict_resolutions: vec![foch_core::model::MergeReportConflictResolution {
 				path: "history/countries/TES - Test.txt".to_string(),
 				reason: "manual resolution required".to_string(),
+				deferred_reason: foch_core::model::DeferredUnitReason::NeedsUserChoice,
 				kind: Some(ConflictKind::SchemaCardinalityViolation),
 				leaf_conflicts: vec![foch_core::model::LeafConflictDetail {
 					address_path: String::new(),
@@ -894,6 +906,7 @@ mod tests {
 
 		let output = render_merge_report_text(&report);
 
+		assert!(output.contains("deferred_reason: needs_user_choice"));
 		assert!(output.contains("kind: schema_cardinality_violation"));
 		assert!(output.contains("address: religion conflict_id: deadbeef"));
 	}

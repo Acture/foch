@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-	ChildCardinality, NodeId, NormalizedNode, NormalizedTree, SemanticKey, SemanticKeyMatchMode,
-	SemanticKeyScope, SubtreeHash,
+	ChildCardinality, NodeId, NormalizedNode, NormalizedTree, SemanticKey, SemanticKeyLineage,
+	SemanticKeyMatchMode, SemanticKeyScope, SubtreeHash,
 };
 
 const ORDERED_POSITIONAL_SCORE: u32 = 575_000;
@@ -260,7 +260,66 @@ impl TreeMatcher {
 		match_soft_signatures(left, right, &mut matching);
 		recover_children(left, right, &mut matching, self.config.max_recovery_size);
 		record_unresolved_soft_signature_ambiguities(left, right, &mut matching);
+		if let Some(seed) = seed {
+			retain_seeded_lineage_matches(left, right, seed, &mut matching);
+		}
 		matching
+	}
+}
+
+fn retain_seeded_lineage_matches(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	seed: &Matching,
+	matching: &mut Matching,
+) {
+	matching.by_left.retain(|left_id, record| {
+		seeded_lineage_pair_is_allowed(left, right, seed, *left_id, record.right)
+	});
+	matching.by_right = matching
+		.by_left
+		.values()
+		.map(|record| (record.right, record.left))
+		.collect();
+	for ambiguity in &mut matching.ambiguous {
+		let left_id = ambiguity.left;
+		ambiguity.candidates.retain(|right_id| {
+			seeded_lineage_pair_is_allowed(left, right, seed, left_id, *right_id)
+		});
+	}
+	matching
+		.ambiguous
+		.retain(|ambiguity| !ambiguity.candidates.is_empty());
+}
+
+fn seeded_lineage_pair_is_allowed(
+	left: &NormalizedTree,
+	right: &NormalizedTree,
+	seed: &Matching,
+	left_id: NodeId,
+	right_id: NodeId,
+) -> bool {
+	match (
+		nearest_seeded_lineage_root(left, left_id),
+		nearest_seeded_lineage_root(right, right_id),
+	) {
+		(None, None) => true,
+		(Some(left_root), Some(right_root)) => seed.get_from_left(left_root) == Some(right_root),
+		(Some(_), None) | (None, Some(_)) => false,
+	}
+}
+
+fn nearest_seeded_lineage_root(tree: &NormalizedTree, mut node: NodeId) -> Option<NodeId> {
+	loop {
+		let current = tree.node(node).unwrap();
+		if current
+			.anchor
+			.as_ref()
+			.is_some_and(|anchor| anchor.lineage == SemanticKeyLineage::Seeded)
+		{
+			return Some(node);
+		}
+		node = current.parent?;
 	}
 }
 
@@ -430,6 +489,7 @@ fn anchors_forbid(left: Option<&SemanticKey>, right: Option<&SemanticKey>) -> bo
 			if left.scope == right.scope
 				&& left.namespace == right.namespace
 				&& (left.match_mode != right.match_mode
+					|| left.lineage != right.lineage
 					|| (left.match_mode == SemanticKeyMatchMode::Identity
 						&& left.value != right.value))
 	)
@@ -507,6 +567,11 @@ fn match_unique_ordered_signatures(
 		let right_groups =
 			ordered_similarity_groups(right, &right.node(parent.right).unwrap().children);
 		for (anchor, left_nodes) in left_groups {
+			// Position-aware signatures are lineage evidence inside the ordered-gap
+			// alignment, where cardinality and similarity can still reject them.
+			if anchor.2 == SemanticKeyMatchMode::OrderedSimilarityWithPosition {
+				continue;
+			}
 			let Some(right_nodes) = right_groups.get(&anchor) else {
 				continue;
 			};
@@ -632,6 +697,23 @@ fn align_ordered_similarity_group(
 	if left_unmatched.is_empty() || right_unmatched.is_empty() {
 		return;
 	}
+	let gap_index = |position: usize, left_side: bool| {
+		fixed.partition_point(|(left_position, right_position)| {
+			if left_side {
+				*left_position < position
+			} else {
+				*right_position < position
+			}
+		})
+	};
+	let mut left_gap_counts = vec![0usize; fixed.len() + 1];
+	for (position, _) in &left_unmatched {
+		left_gap_counts[gap_index(*position, true)] += 1;
+	}
+	let mut right_gap_counts = vec![0usize; fixed.len() + 1];
+	for (position, _) in &right_unmatched {
+		right_gap_counts[gap_index(*position, false)] += 1;
+	}
 
 	let left_features = left_unmatched
 		.iter()
@@ -640,6 +722,98 @@ fn align_ordered_similarity_group(
 	let right_features = right_unmatched
 		.iter()
 		.map(|(_, id)| subtree_features(right, *id))
+		.collect::<Vec<_>>();
+	let left_lineage_hashes = left_unmatched
+		.iter()
+		.map(|(_, id)| subtree_lineage_hashes(left, *id))
+		.collect::<Vec<_>>();
+	let right_lineage_hashes = right_unmatched
+		.iter()
+		.map(|(_, id)| subtree_lineage_hashes(right, *id))
+		.collect::<Vec<_>>();
+	let mut left_hash_owners = BTreeMap::<(usize, SubtreeHash), Option<usize>>::new();
+	for (index, ((position, _), hashes)) in
+		left_unmatched.iter().zip(&left_lineage_hashes).enumerate()
+	{
+		let gap = gap_index(*position, true);
+		for hash in hashes {
+			left_hash_owners
+				.entry((gap, *hash))
+				.and_modify(|owner| *owner = None)
+				.or_insert(Some(index));
+		}
+	}
+	let mut right_hash_owners = BTreeMap::<(usize, SubtreeHash), Option<usize>>::new();
+	for (index, ((position, _), hashes)) in right_unmatched
+		.iter()
+		.zip(&right_lineage_hashes)
+		.enumerate()
+	{
+		let gap = gap_index(*position, false);
+		for hash in hashes {
+			right_hash_owners
+				.entry((gap, *hash))
+				.and_modify(|owner| *owner = None)
+				.or_insert(Some(index));
+		}
+	}
+	let mut left_signature_owners = BTreeMap::<(usize, String), Option<usize>>::new();
+	for (index, (position, id)) in left_unmatched.iter().enumerate() {
+		let Some(signature) = &left.node(*id).unwrap().signature else {
+			continue;
+		};
+		left_signature_owners
+			.entry((gap_index(*position, true), signature.clone()))
+			.and_modify(|owner| *owner = None)
+			.or_insert(Some(index));
+	}
+	let mut right_signature_owners = BTreeMap::<(usize, String), Option<usize>>::new();
+	for (index, (position, id)) in right_unmatched.iter().enumerate() {
+		let Some(signature) = &right.node(*id).unwrap().signature else {
+			continue;
+		};
+		right_signature_owners
+			.entry((gap_index(*position, false), signature.clone()))
+			.and_modify(|owner| *owner = None)
+			.or_insert(Some(index));
+	}
+	let mut discriminative_pairs = vec![vec![false; right_unmatched.len()]; left_unmatched.len()];
+	for (key, left_owner) in &left_hash_owners {
+		let Some(left_index) = left_owner else {
+			continue;
+		};
+		if let Some(Some(right_index)) = right_hash_owners.get(key) {
+			discriminative_pairs[*left_index][*right_index] = true;
+		}
+	}
+	for (key, left_owner) in &left_signature_owners {
+		let Some(left_index) = left_owner else {
+			continue;
+		};
+		if let Some(Some(right_index)) = right_signature_owners.get(key) {
+			discriminative_pairs[*left_index][*right_index] = true;
+		}
+	}
+	for (left_index, (_, left_id)) in left_unmatched.iter().enumerate() {
+		for (right_index, (_, right_id)) in right_unmatched.iter().enumerate() {
+			if discriminative_pairs[left_index][right_index]
+				&& !compatible_at_including_ordered(left, right, matching, *left_id, *right_id)
+			{
+				discriminative_pairs[left_index][right_index] = false;
+			}
+		}
+	}
+	let left_evidence_degrees = discriminative_pairs
+		.iter()
+		.map(|row| row.iter().filter(|evidence| **evidence).count())
+		.collect::<Vec<_>>();
+	let right_evidence_degrees = (0..right_unmatched.len())
+		.map(|right_index| {
+			discriminative_pairs
+				.iter()
+				.filter(|row| row[right_index])
+				.count()
+		})
 		.collect::<Vec<_>>();
 	let scores = left_unmatched
 		.iter()
@@ -653,16 +827,21 @@ fn align_ordered_similarity_group(
 				.iter()
 				.enumerate()
 				.map(|(right_index, (right_position, right_id))| {
-					let respects_fixed = fixed.iter().all(|(fixed_left, fixed_right)| {
-						(left_position < fixed_left && right_position < fixed_right)
-							|| (left_position > fixed_left && right_position > fixed_right)
-					});
-					if !respects_fixed
+					let left_gap = gap_index(*left_position, true);
+					let right_gap = gap_index(*right_position, false);
+					if left_gap != right_gap
 						|| !compatible_at_including_ordered(
 							left, right, matching, *left_id, *right_id,
 						) {
 						return None;
 					}
+					// Position only identifies a sibling when insertions and removals have
+					// not shifted the two sides of this fixed-anchor gap.
+					let positional_fallback_is_safe =
+						left_gap_counts[left_gap] == right_gap_counts[right_gap];
+					let discriminative_evidence = discriminative_pairs[left_index][right_index]
+						&& left_evidence_degrees[left_index] == 1
+						&& right_evidence_degrees[right_index] == 1;
 					let similarity = raw_subtree_similarity(
 						&left_features[left_index],
 						&right_features[right_index],
@@ -673,6 +852,8 @@ fn align_ordered_similarity_group(
 						right.node(*right_id).unwrap(),
 						similarity,
 						threshold,
+						positional_fallback_is_safe,
+						discriminative_evidence,
 					)
 				})
 				.collect::<Vec<_>>()
@@ -734,6 +915,8 @@ fn ordered_pair_score(
 	right: &NormalizedNode,
 	similarity: u32,
 	threshold: u32,
+	positional_fallback_is_safe: bool,
+	discriminative_evidence: bool,
 ) -> Option<OrderedScore> {
 	match match_mode {
 		SemanticKeyMatchMode::OrderedSimilarity => {
@@ -753,18 +936,24 @@ fn ordered_pair_score(
 				reported: score,
 			})
 		}
-		SemanticKeyMatchMode::OrderedSimilarityWithPosition => Some(OrderedScore {
-			weight: if similarity > threshold {
-				u64::from(similarity)
-			} else {
-				1
-			},
-			reported: if similarity > threshold {
-				similarity
-			} else {
-				ORDERED_POSITIONAL_SCORE
-			},
-		}),
+		SemanticKeyMatchMode::OrderedSimilarityWithPosition => {
+			if !positional_fallback_is_safe && (!discriminative_evidence || similarity <= threshold)
+			{
+				return None;
+			}
+			Some(OrderedScore {
+				weight: if similarity > threshold {
+					u64::from(similarity)
+				} else {
+					1
+				},
+				reported: if similarity > threshold {
+					similarity
+				} else {
+					ORDERED_POSITIONAL_SCORE
+				},
+			})
+		}
 		SemanticKeyMatchMode::Identity => None,
 	}
 }
@@ -1095,6 +1284,21 @@ fn subtree_features(
 		stack.extend(node.children.iter().rev().copied());
 	}
 	features
+}
+
+fn subtree_lineage_hashes(tree: &NormalizedTree, root: NodeId) -> BTreeSet<SubtreeHash> {
+	let mut hashes = BTreeSet::new();
+	let mut stack = vec![root];
+	while let Some(id) = stack.pop() {
+		let node = tree.node(id).unwrap();
+		// Scalars are often shared boilerplate and are too weak to establish lineage.
+		// An exact non-leaf root, however, is stronger evidence than a descendant.
+		if !node.children.is_empty() {
+			hashes.insert(node.subtree_hash);
+		}
+		stack.extend(node.children.iter().rev().copied());
+	}
+	hashes
 }
 
 fn raw_subtree_similarity(
@@ -1699,6 +1903,14 @@ mod tests {
 		TreeNode::branch(kind, children)
 	}
 
+	fn seeded_lineage_block(child: TreeNode) -> TreeNode {
+		let mut node = block("condition", vec![child]);
+		node.anchor = Some(
+			SemanticKey::parent_scoped("condition.tooltip", "shared").requiring_seeded_lineage(),
+		);
+		node
+	}
+
 	#[test]
 	fn exact_subtrees_match_recursively() {
 		let left = NormalizedTree::from_root(block(
@@ -1797,8 +2009,11 @@ mod tests {
 	#[test]
 	fn ordered_similarity_siblings_align_around_an_insertion() {
 		let item = |identity: &str, revision: &str| {
-			block("chain", vec![scalar(identity), scalar(revision)])
-				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+			block(
+				"chain",
+				vec![block("identity", vec![scalar(identity)]), scalar(revision)],
+			)
+			.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
 		};
 		let left = NormalizedTree::from_root(block(
 			"root",
@@ -1823,11 +2038,11 @@ mod tests {
 		let matching = TreeMatcher::default().match_trees(&left, &right);
 
 		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
-		assert_eq!(matching.get_from_left(NodeId::new(4)), Some(NodeId::new(1)));
-		assert_eq!(matching.get_from_left(NodeId::new(7)), Some(NodeId::new(4)));
+		assert_eq!(matching.get_from_left(NodeId::new(5)), Some(NodeId::new(1)));
+		assert_eq!(matching.get_from_left(NodeId::new(9)), Some(NodeId::new(5)));
 		assert_eq!(
-			matching.get_from_left(NodeId::new(10)),
-			Some(NodeId::new(7))
+			matching.get_from_left(NodeId::new(13)),
+			Some(NodeId::new(9))
 		);
 		assert!(matching.ambiguities().is_empty());
 	}
@@ -1853,6 +2068,194 @@ mod tests {
 
 		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
 		assert_eq!(matching.get_from_left(NodeId::new(3)), Some(NodeId::new(3)));
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn positional_fallback_does_not_force_unequal_dissimilar_siblings_to_match() {
+		let item = |value: &str| {
+			block("chain", vec![scalar(value)])
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+		};
+		let left =
+			NormalizedTree::from_root(block("root", vec![item("left-a"), item("left-b")])).unwrap();
+		let right = NormalizedTree::from_root(block("root", vec![item("right-only")])).unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(matching.get_from_left(NodeId::new(3)), None);
+		assert_eq!(matching.get_from_right(NodeId::new(1)), None);
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn unequal_gaps_reject_weak_similarity_above_the_similarity_threshold() {
+		let item = |identity: &str, changed: &[&str]| {
+			let children = std::iter::once(block("shared", vec![scalar("same")]))
+				.chain(changed.iter().map(|value| scalar(value)))
+				.collect();
+			block("chain", children)
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+				.with_signature(identity)
+		};
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![
+				item("left-a", &["left", "left-extra"]),
+				item("left-b", &["unrelated", "left-only"]),
+			],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![item("right", &["right", "additional", "right-extra"])],
+		))
+		.unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(matching.get_from_right(NodeId::new(1)), None);
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn unique_signature_does_not_bypass_unequal_gap_evidence_threshold() {
+		let item = |signature: &str, value: &str| {
+			block("chain", vec![scalar(value)])
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+				.with_signature(signature)
+		};
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![
+				item("shared-id", "left-value"),
+				item("inserted-id", "inserted-value"),
+			],
+		))
+		.unwrap();
+		let right =
+			NormalizedTree::from_root(block("root", vec![item("shared-id", "right-value")]))
+				.unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(matching.get_from_right(NodeId::new(1)), None);
+	}
+
+	#[test]
+	fn unequal_gap_keeps_a_strong_modified_sibling_match() {
+		let item = |signature: &str, children: Vec<TreeNode>| {
+			block("chain", children)
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+				.with_signature(signature)
+		};
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![
+				item(
+					"inserted",
+					vec![
+						block("insert-only", vec![scalar("new")]),
+						scalar("unrelated"),
+					],
+				),
+				item(
+					"left-edited",
+					vec![block("shared", vec![scalar("same")]), scalar("left-change")],
+				),
+			],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![item(
+				"right-edited",
+				vec![
+					block("shared", vec![scalar("same")]),
+					scalar("right-change"),
+					scalar("right-extra"),
+				],
+			)],
+		))
+		.unwrap();
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(matching.get_from_left(NodeId::new(5)), Some(NodeId::new(1)));
+		assert_eq!(
+			matching.record(NodeId::new(5)).unwrap().kind,
+			MatchKind::DescendantSimilarity
+		);
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn unequal_gap_prefers_unique_lineage_evidence_over_a_higher_dice_insertion() {
+		let item = |children: Vec<TreeNode>| {
+			block("chain", children)
+				.with_parent_scoped_ordered_similarity_position_anchor("sequence", "open_chain")
+		};
+		let marker = |value: &str| block("field", vec![scalar(value)]);
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![
+				item(vec![
+					marker("common-a"),
+					marker("common-b"),
+					marker("common-c"),
+					marker("inserted-change"),
+				]),
+				item(vec![
+					marker("common-a"),
+					marker("common-b"),
+					marker("common-c"),
+					marker("lineage-marker"),
+					marker("edited-a"),
+					marker("edited-b"),
+					marker("edited-c"),
+					marker("edited-d"),
+					marker("edited-e"),
+					marker("edited-f"),
+				]),
+			],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![item(vec![
+				marker("common-a"),
+				marker("common-b"),
+				marker("common-c"),
+				marker("lineage-marker"),
+				marker("right-change"),
+			])],
+		))
+		.unwrap();
+		let inserted_score = raw_subtree_similarity(
+			&subtree_features(&left, NodeId::new(1)),
+			&subtree_features(&right, NodeId::new(1)),
+		);
+		let edited_score = raw_subtree_similarity(
+			&subtree_features(&left, NodeId::new(10)),
+			&subtree_features(&right, NodeId::new(1)),
+		);
+		assert!(
+			inserted_score > edited_score,
+			"{inserted_score} <= {edited_score}"
+		);
+		assert!(edited_score > 500_000, "{edited_score}");
+
+		let matching = TreeMatcher::default().match_trees(&left, &right);
+
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(
+			matching.get_from_left(NodeId::new(10)),
+			Some(NodeId::new(1))
+		);
 		assert!(matching.ambiguities().is_empty());
 	}
 
@@ -2230,6 +2633,58 @@ mod tests {
 			seed.record(NodeId::new(1)).unwrap().kind,
 			MatchKind::Recovery
 		);
+	}
+
+	#[test]
+	fn seeded_lineage_keeps_unbased_identical_insertions_separate() {
+		let base = NormalizedTree::from_root(block("root", vec![])).unwrap();
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![seeded_lineage_block(scalar("identical"))],
+		))
+		.unwrap();
+		let right = left.clone();
+		let matcher = TreeMatcher::default();
+		let seed = Matching::compose_through_base(
+			&matcher.match_trees(&base, &left),
+			&matcher.match_trees(&base, &right),
+		);
+
+		let matching = matcher.match_trees_with_seed(&left, &right, Some(&seed));
+
+		assert_eq!(matching.get_from_left(left.root()), Some(right.root()));
+		assert_eq!(matching.get_from_left(NodeId::new(1)), None);
+		assert_eq!(matching.get_from_left(NodeId::new(2)), None);
+		assert!(matching.ambiguities().is_empty());
+	}
+
+	#[test]
+	fn seeded_lineage_correlates_children_from_the_same_base_node() {
+		let base = NormalizedTree::from_root(block(
+			"root",
+			vec![seeded_lineage_block(block("base-body", vec![]))],
+		))
+		.unwrap();
+		let left = NormalizedTree::from_root(block(
+			"root",
+			vec![seeded_lineage_block(block("left-body", vec![]))],
+		))
+		.unwrap();
+		let right = NormalizedTree::from_root(block(
+			"root",
+			vec![seeded_lineage_block(block("right-body", vec![]))],
+		))
+		.unwrap();
+		let matcher = TreeMatcher::default();
+		let seed = Matching::compose_through_base(
+			&matcher.match_trees(&base, &left),
+			&matcher.match_trees(&base, &right),
+		);
+
+		let matching = matcher.match_trees_with_seed(&left, &right, Some(&seed));
+
+		assert_eq!(seed.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
+		assert_eq!(matching.get_from_left(NodeId::new(1)), Some(NodeId::new(1)));
 	}
 
 	#[test]

@@ -2142,6 +2142,7 @@ mod tests {
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
+			verified_absent_base_paths: BTreeSet::new(),
 			requested_retained_paths: None,
 			effective_retained_paths: None,
 		}

@@ -4,7 +4,8 @@ use foch_core::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
 };
 use foch_engine::{
-	CheckRequest, Config, MergeEvaluationKernel, MergeExecuteOptions, run_merge_for_evaluation,
+	CheckRequest, Config, ConflictDecision, ConflictHandler, ConflictView, MergeEvaluationKernel,
+	MergeExecuteOptions, prepare_merge_with_options, run_merge_for_evaluation,
 	run_merge_with_options,
 };
 use foch_language::analyzer::content_family::{ContentLoadPolicy, GameProfile};
@@ -20,6 +21,16 @@ use std::sync::{Mutex, OnceLock};
 use tempfile::{Builder, TempDir};
 
 static MERGE_TEMP_DIRS: OnceLock<Mutex<Vec<TempDir>>> = OnceLock::new();
+
+struct UseFileHandler {
+	path: PathBuf,
+}
+
+impl ConflictHandler for UseFileHandler {
+	fn on_conflict(&mut self, _view: &ConflictView) -> ConflictDecision {
+		ConflictDecision::UseFile(self.path.clone())
+	}
+}
 
 fn playsets_root() -> PathBuf {
 	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -459,7 +470,7 @@ fn eu4_minimal_passthrough_copies_per_path_files_and_materializes_common_module(
 }
 
 #[test]
-fn public_tree_selection_reuses_modset_cache_across_output_directories() {
+fn public_tree_selection_does_not_bundle_full_product_output() {
 	let fixture = fixture_dir("eu4_minimal_passthrough");
 	let temp_dir = tempfile::tempdir().expect("create tree parity tempdir");
 	let cold_out_dir = temp_dir.path().join("cold-out");
@@ -556,8 +567,8 @@ workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "30
 	.expect("run explicit tree merge");
 	assert_eq!(
 		explicit.report.cache_source.as_deref(),
-		Some("modset"),
-		"the explicit Tree rerun should reuse the cache in a different output directory"
+		None,
+		"full-product reruns must not restore a bundled modset output"
 	);
 	assert_eq!(explicit.report.status, default.report.status);
 	assert_eq!(read_outputs(&warm_out_dir), cold_outputs);
@@ -615,14 +626,14 @@ fn eu4_two_mod_conflict_without_foch_toml_reports_manual_conflict() {
 fn eu4_schema_cardinality_conflict_is_tagged_from_cwt() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_schema_cardinality_conflict", false);
 	assert_eq!(
-		result.exit_code, 2,
-		"strict schema-cardinality merge should block; report: {:#?}",
+		result.exit_code, 0,
+		"schema-cardinality conflict should be deferred; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.status,
-		MergeReportStatus::Blocked,
-		"strict schema-cardinality merge should be blocked; report: {:#?}",
+		MergeReportStatus::PartialSuccess,
+		"schema-cardinality conflict should produce partial output; report: {:#?}",
 		result.report
 	);
 	assert!(
@@ -1069,14 +1080,14 @@ fn eu4_gfx_sprite_types_same_name_divergence_conflicts() {
 	let (result, _out_dir) =
 		run_merge_for_fixture("eu4_gfx_sprite_types_same_name_conflict", false);
 	assert_eq!(
-		result.exit_code, 2,
-		"same-name divergent spriteType merge should block; report: {:#?}",
+		result.exit_code, 0,
+		"same-name divergent spriteType conflict should be deferred; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.status,
-		MergeReportStatus::Blocked,
-		"same-name divergent spriteType merge should be blocked; report: {:#?}",
+		MergeReportStatus::PartialSuccess,
+		"same-name divergent spriteType conflict should produce partial output; report: {:#?}",
 		result.report
 	);
 	assert!(
@@ -1250,23 +1261,23 @@ fn eu4_gui_edit_wins_over_remove_keeps_the_edit() {
 
 #[test]
 fn eu4_gui_scroll_merge_flag_stacks_divergent_same_name_container() {
-	let (blocked, _blocked_out_dir) =
+	let (partial, _partial_out_dir) =
 		run_merge_for_fixture("eu4_gui_scroll_stack_same_name_conflict", false);
 	assert_eq!(
-		blocked.exit_code, 2,
-		"same-name divergent GUI merge without flag should block; report: {:#?}",
-		blocked.report
+		partial.exit_code, 0,
+		"same-name divergent GUI conflict should be deferred; report: {:#?}",
+		partial.report
 	);
 	assert_eq!(
-		blocked.report.status,
-		MergeReportStatus::Blocked,
-		"same-name divergent GUI merge without flag should be blocked; report: {:#?}",
-		blocked.report
+		partial.report.status,
+		MergeReportStatus::PartialSuccess,
+		"same-name divergent GUI conflict should produce partial output; report: {:#?}",
+		partial.report
 	);
 	assert!(
-		blocked.report.manual_conflict_count >= 1,
+		partial.report.manual_conflict_count >= 1,
 		"same-name divergent GUI containers must surface a manual conflict without the flag; report: {:#?}",
-		blocked.report
+		partial.report
 	);
 
 	let (result, out_dir) = run_merge_for_fixture_with_gui_scroll(
@@ -1313,14 +1324,14 @@ fn eu4_gui_scroll_merge_flag_stacks_divergent_same_name_container() {
 fn eu4_edit_vs_delete_reports_structural_conflict() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_mixed_kinds_conflict", false);
 	assert_eq!(
-		result.exit_code, 2,
-		"strict edit-vs-delete merge should block; report: {:#?}",
+		result.exit_code, 0,
+		"edit-vs-delete conflict should be deferred; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.status,
-		MergeReportStatus::Blocked,
-		"strict edit-vs-delete merge should be blocked; report: {:#?}",
+		MergeReportStatus::PartialSuccess,
+		"edit-vs-delete conflict should produce partial output; report: {:#?}",
 		result.report
 	);
 	assert!(
@@ -1344,14 +1355,14 @@ fn eu4_edit_vs_delete_reports_structural_conflict() {
 fn eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks() {
 	let (result, out_dir) = run_merge_for_fixture("eu4_recurse_block_conflict", false);
 	assert_eq!(
-		result.exit_code, 2,
-		"strict recurse merge should block; report: {:#?}",
+		result.exit_code, 0,
+		"recursive conflict should be deferred; report: {:#?}",
 		result.report
 	);
 	assert_eq!(
 		result.report.status,
-		MergeReportStatus::Blocked,
-		"strict recurse merge should be blocked; report: {:#?}",
+		MergeReportStatus::PartialSuccess,
+		"recursive conflict should produce partial output; report: {:#?}",
 		result.report
 	);
 	assert!(
@@ -1578,13 +1589,41 @@ use_file = "{}"
 	)
 	.expect("write use_file config");
 
-	let result = run_merge_for_playset(
-		&fixture.join("dlc_load.json"),
-		out_dir.clone(),
-		game_root,
-		true,
-		Some(config_path),
-	);
+	let mut game_path = HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+	let prepared = prepare_merge_with_options(
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		),
+		MergeExecuteOptions {
+			out_dir: out_dir.clone(),
+			include_game_base: false,
+			include_base: false,
+			gui_scroll_merge: false,
+			force: true,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path: Some(config_path),
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
+			playset_fingerprint: None,
+			provenance: false,
+			retained_paths: None,
+		},
+	)
+	.expect("prepare use_file merge");
+	fs::write(
+		&external_file,
+		"# changed while the prepared plan was under review\n",
+	)
+	.expect("mutate external resolution file");
+	let result = prepared.export().expect("export prepared use_file merge");
 
 	assert_eq!(
 		result.exit_code, 0,
@@ -1612,6 +1651,86 @@ use_file = "{}"
 				&& record.source.as_deref() == Some(external_source.as_str())
 		}),
 		"use_file materialization should be audited as an external handler resolution; report: {:#?}",
+		result.report
+	);
+
+	MERGE_TEMP_DIRS
+		.get_or_init(|| Mutex::new(Vec::new()))
+		.lock()
+		.expect("merge tempdir registry lock")
+		.push(temp_dir);
+}
+
+#[test]
+fn eu4_semantic_interactive_use_file_applies_live_payload_end_to_end() {
+	let fixture = fixture_dir("eu4_two_mod_conflict");
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_interactive_use_file-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+
+	let external_file = temp_dir.path().join("interactive-resolution.txt");
+	fs::write(&external_file, "stale before review\n").expect("write initial external file");
+	let interactive_config = temp_dir.path().join("foch.interactive.toml");
+	let mut game_path = HashMap::new();
+	game_path.insert("eu4".to_string(), game_root);
+	let prepared = prepare_merge_with_options(
+		CheckRequest::from_playset_path(
+			fixture.join("dlc_load.json"),
+			Config {
+				steam_root_path: None,
+				paradox_data_path: None,
+				game_path,
+				extra_ignore_patterns: Vec::new(),
+			},
+		),
+		MergeExecuteOptions {
+			out_dir: out_dir.clone(),
+			include_game_base: false,
+			include_base: false,
+			gui_scroll_merge: false,
+			force: false,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path: None,
+			interactive_conflict_handler: Some(Box::new(UseFileHandler {
+				path: external_file.clone(),
+			})),
+			interactive_resolution_config_path: Some(interactive_config.clone()),
+			playset_fingerprint: None,
+			provenance: false,
+			retained_paths: None,
+		},
+	)
+	.expect("prepare interactive use_file merge");
+	let live_bytes = b"# selected after review\nreligion = live_interactive\ncapital = 777\n";
+	fs::write(&external_file, live_bytes).expect("update live external file");
+	let result = prepared
+		.export()
+		.expect("export interactive use_file merge");
+
+	assert_eq!(result.exit_code, 0, "report: {:#?}", result.report);
+	assert_eq!(result.report.manual_conflict_count, 0);
+	assert_eq!(
+		fs::read(out_dir.join("history/countries/TES - Test.txt")).expect("read output"),
+		live_bytes
+	);
+	let persisted = fs::read_to_string(interactive_config).expect("read persisted decision");
+	assert!(persisted.contains("use_file"), "{persisted}");
+	assert!(
+		result
+			.report
+			.handler_resolutions
+			.iter()
+			.any(|record| record.action == "external"),
+		"report: {:#?}",
 		result.report
 	);
 

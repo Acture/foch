@@ -1,21 +1,25 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use foch_core::model::HandlerResolutionRecord;
 use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_merge_kernel::{
-	ConflictNodeId, ConflictResolution, RevisionId, SourceNodeRef, StructuralConflict,
+	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
+	SourceNodeRef, StructuralConflict,
 };
 
 use crate::emit::emit_clausewitz_statements;
-use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
+use crate::merge::conflict_handler::{
+	ConflictDecision, ConflictHandler, ConflictMetadataCandidate, ConflictMetadataView,
+	ConflictViewRequirement, MetadataConflictDecision,
+};
 use crate::merge::conflict_view::{CandidateView, ConflictView};
 use crate::merge::kernel::{KernelMergeInput, KernelRevision};
 use crate::merge::model::{
-	MergeOutputDirective, SemanticConflictCandidate, SemanticMergeComputation,
-	SemanticMergeConflict, SemanticMergeFacts, SemanticMergeSource, SemanticPartitionId,
-	SemanticPartitionLineage, VanillaBaseMode,
+	ExternalFileResolution, MergeOutputDirective, SemanticConflictCandidate,
+	SemanticMergeComputation, SemanticMergeConflict, SemanticMergeFacts, SemanticMergeSource,
+	SemanticPartitionId, SemanticPartitionLineage, VanillaBaseMode,
 };
 use crate::merge::planning::dag::{FileDag, ModId};
 use crate::merge::planning::dag_join::DagJoinScope;
@@ -23,10 +27,9 @@ use crate::merge::planning::dag_pipeline::{
 	DagJoinProtocol, DagJoinRequest, DagJoinRevision, EffectiveNodeProtocol, EffectiveNodeRequest,
 };
 
-use super::ast_adapter::{denormalize_statement, normalize_ast};
+use super::ast_adapter::denormalize_statement;
 use super::definition_module::definition_module_partition_ids;
 use super::observer::TreeSourceObserver;
-use super::policy::ContentFamilyMergePolicy;
 use super::trivia::detach_trivia;
 use super::{
 	ClausewitzKernelFacts, merge_clausewitz_definition_module_n_way_with_resolutions,
@@ -36,6 +39,22 @@ use super::{
 pub(crate) type TreeConflictResolutions = BTreeMap<ConflictNodeId, ConflictResolution>;
 pub(crate) type TreeDagState = SemanticMergeComputation;
 
+/// Build the public, file-scoped identity for a semantic-tree conflict.
+///
+/// `ConflictNodeId` remains the kernel-internal resolution key. Its derivation
+/// intentionally excludes the target path, so the same structural conflict in
+/// two files can have the same raw id. Public and persisted ids bind that raw
+/// identity to the slash-normalized merge target and retain the full digest.
+pub(crate) fn semantic_conflict_id(target_path: &Path, raw_conflict_id: ConflictNodeId) -> String {
+	let normalized_target_path = target_path.to_string_lossy().replace('\\', "/");
+	let mut hasher = blake3::Hasher::new();
+	hasher.update(b"foch-semantic-conflict-v1\0");
+	hasher.update(normalized_target_path.as_bytes());
+	hasher.update(b"\0");
+	hasher.update(raw_conflict_id.as_bytes());
+	hasher.finalize().to_hex().to_string()
+}
+
 pub(crate) trait TreePartitionAdapter {
 	fn normalization_partitions(
 		&self,
@@ -44,10 +63,23 @@ pub(crate) trait TreePartitionAdapter {
 	) -> Vec<SemanticPartitionId> {
 		vec![SemanticPartitionId::File]
 	}
+
+	fn normalize_partition(
+		&self,
+		file: &AstFile,
+		partition: &SemanticPartitionId,
+		policies: &MergePolicies,
+	) -> Result<foch_merge_kernel::NormalizedTree, super::AstAdapterError> {
+		super::normalize_clausewitz_partition(file, partition, policies)
+	}
 }
 
 pub(crate) trait TreeJoinProtocol {
 	fn name(&self) -> &'static str;
+
+	fn supports_sparse_reset_layers(&self) -> bool {
+		false
+	}
 
 	fn merge_n_way(
 		&self,
@@ -144,6 +176,22 @@ impl TreePartitionAdapter for DefinitionModuleAdapter {
 	) -> Vec<SemanticPartitionId> {
 		definition_module_partition_ids(&[base, revision])
 	}
+
+	fn normalize_partition(
+		&self,
+		file: &AstFile,
+		partition: &SemanticPartitionId,
+		policies: &MergePolicies,
+	) -> Result<foch_merge_kernel::NormalizedTree, super::AstAdapterError> {
+		if matches!(partition, SemanticPartitionId::File) {
+			return super::normalize_clausewitz_partition(file, partition, policies);
+		}
+		// The module join detaches trivia before selecting and canonicalizing each
+		// definition. Lineage must normalize in that same order: comments inside a
+		// trigger otherwise change the temporary Boolean-OR wrapper shape.
+		let (semantic, _) = detach_trivia(file);
+		super::normalize_clausewitz_partition(&semantic, partition, policies)
+	}
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -152,6 +200,10 @@ pub(crate) struct DefinitionModuleJoin;
 impl TreeJoinProtocol for DefinitionModuleJoin {
 	fn name(&self) -> &'static str {
 		"definition-module"
+	}
+
+	fn supports_sparse_reset_layers(&self) -> bool {
+		true
 	}
 
 	fn merge_n_way(
@@ -320,33 +372,260 @@ struct TreeConflictResolution {
 	handler_resolutions: Vec<HandlerResolutionRecord>,
 	resolved_conflict_ids: Vec<String>,
 	output_directives: Vec<MergeOutputDirective>,
+	#[cfg(test)]
+	metadata_view_build_count: usize,
+	#[cfg(test)]
+	full_view_build_count: usize,
+}
+
+struct SemanticCandidateIndex {
+	tree: NormalizedTree,
+}
+
+impl SemanticCandidateIndex {
+	fn new(
+		file: &AstFile,
+		partition: &SemanticPartitionId,
+		partition_adapter: &dyn TreePartitionAdapter,
+		policies: &MergePolicies,
+	) -> Result<Self, String> {
+		let tree = partition_adapter
+			.normalize_partition(file, partition, policies)
+			.map_err(|error| format!("failed to normalize conflict candidate: {error}"))?;
+		Ok(Self { tree })
+	}
+
+	fn statement(
+		&self,
+		node_id: NodeId,
+		semantic_path: &[String],
+	) -> Result<Option<AstStatement>, String> {
+		let mut current = Some(node_id);
+		while let Some(node_id) = current {
+			let node = match self.tree.node(node_id) {
+				Ok(node) => node,
+				Err(_) => return Ok(None),
+			};
+			if node.kind.starts_with("clausewitz.assignment:")
+				&& node.policy_path.starts_with(semantic_path)
+			{
+				return denormalize_statement(&self.tree, node_id)
+					.map(Some)
+					.map_err(|error| format!("failed to render conflict candidate: {error}"));
+			}
+			current = node.parent;
+		}
+		Ok(None)
+	}
+}
+
+struct ConflictRecordBuilder<'a> {
+	input: &'a KernelMergeInput,
+	policies: &'a MergePolicies,
+	partition_adapter: &'a dyn TreePartitionAdapter,
+	partitions: BTreeSet<SemanticPartitionId>,
+	indexes: BTreeMap<(RevisionId, SemanticPartitionId), SemanticCandidateIndex>,
+	#[cfg(test)]
+	record_build_count: usize,
+	#[cfg(test)]
+	normalized_input_count: usize,
+}
+
+impl<'a> ConflictRecordBuilder<'a> {
+	fn new(
+		input: &'a KernelMergeInput,
+		policies: &'a MergePolicies,
+		partition_adapter: &'a dyn TreePartitionAdapter,
+	) -> Self {
+		let partitions = input
+			.revisions
+			.iter()
+			.flat_map(|revision| {
+				partition_adapter.normalization_partitions(&input.base, &revision.ast)
+			})
+			.collect();
+		Self {
+			input,
+			policies,
+			partition_adapter,
+			partitions,
+			indexes: BTreeMap::new(),
+			#[cfg(test)]
+			record_build_count: 0,
+			#[cfg(test)]
+			normalized_input_count: 0,
+		}
+	}
+
+	fn conflict_partition(&self, semantic_path: &[String]) -> Option<SemanticPartitionId> {
+		if self.partitions.contains(&SemanticPartitionId::File) {
+			return Some(SemanticPartitionId::File);
+		}
+		let partition = SemanticPartitionId::Definition(semantic_path.first()?.clone());
+		self.partitions.contains(&partition).then_some(partition)
+	}
+
+	fn input_file(&self, revision_id: RevisionId) -> Result<&AstFile, String> {
+		if revision_id == RevisionId::BASE {
+			Ok(&self.input.base)
+		} else {
+			Ok(&input_revision(self.input, revision_id)?.ast)
+		}
+	}
+
+	fn node_statement(
+		&mut self,
+		revision_id: RevisionId,
+		node_id: NodeId,
+		expected_input: Option<MergeInputId>,
+		partition: &SemanticPartitionId,
+		semantic_path: &[String],
+	) -> Result<Option<AstStatement>, String> {
+		let cache_key = (revision_id, partition.clone());
+		if !self.indexes.contains_key(&cache_key) {
+			let index = SemanticCandidateIndex::new(
+				self.input_file(revision_id)?,
+				partition,
+				self.partition_adapter,
+				self.policies,
+			)?;
+			self.indexes.insert(cache_key.clone(), index);
+			#[cfg(test)]
+			{
+				self.normalized_input_count += 1;
+			}
+		}
+		let index = self
+			.indexes
+			.get(&cache_key)
+			.expect("semantic candidate index was inserted");
+		if expected_input
+			.is_some_and(|expected| MergeInputId::from_tree(revision_id, &index.tree) != expected)
+		{
+			return Ok(None);
+		}
+		index.statement(node_id, semantic_path)
+	}
+
+	fn record(&mut self, conflict: &StructuralConflict) -> Result<SemanticMergeConflict, String> {
+		#[cfg(test)]
+		{
+			self.record_build_count += 1;
+		}
+		let partition = self.conflict_partition(&conflict.semantic_path);
+		let base_statement = match (partition.as_ref(), conflict.base) {
+			(Some(partition), Some(base)) => self.node_statement(
+				base.revision,
+				base.node,
+				None,
+				partition,
+				&conflict.semantic_path,
+			)?,
+			_ => None,
+		};
+		let mut candidates = Vec::new();
+		for source in conflict
+			.candidates
+			.iter()
+			.filter(|candidate| candidate.input().revision != RevisionId::BASE)
+		{
+			let revision = input_revision(self.input, source.input().revision)?;
+			let statement = match (source, partition.as_ref()) {
+				(SourceNodeRef::Node { input, node }, Some(partition)) => self.node_statement(
+					input.revision,
+					*node,
+					Some(*input),
+					partition,
+					&conflict.semantic_path,
+				)?,
+				(SourceNodeRef::Tombstone { .. }, _) => None,
+				(SourceNodeRef::Node { .. }, None) => None,
+			};
+			candidates.push(SemanticConflictCandidate {
+				source: *source,
+				source_id: revision.source_id.clone(),
+				precedence: revision.precedence,
+				statement,
+			});
+		}
+		Ok(SemanticMergeConflict {
+			conflict: conflict.clone(),
+			reason: format!("{}: {}", conflict.kind, conflict.detail),
+			base_statement,
+			source_selectable: !candidates.is_empty(),
+			candidates,
+		})
+	}
 }
 
 fn resolve_tree_conflicts(
-	input: &KernelMergeInput,
+	builder: &mut ConflictRecordBuilder<'_>,
 	conflicts: &[StructuralConflict],
-	policies: &MergePolicies,
 	handler: &mut dyn ConflictHandler,
 ) -> Result<TreeConflictResolution, String> {
 	let mut resolution = TreeConflictResolution::default();
 	let conflict_count = conflicts.len();
+	let view_requirement = handler.conflict_view_requirement();
 	handler.set_conflict_progress(0, conflict_count);
 	for (index, conflict) in conflicts.iter().enumerate() {
 		handler.set_conflict_progress(index + 1, conflict_count);
-		let record = tree_conflict_record(input, conflict, policies)?;
-		let view = semantic_conflict_view(&input.base.path, &record)?;
-		let conflict_id = conflict.id.to_string();
-		match handler.on_conflict(&view) {
+		let conflict_id = semantic_conflict_id(&builder.input.base.path, conflict.id);
+		let mut prebuilt_record = None;
+		let decision = match view_requirement {
+			ConflictViewRequirement::DeferWithoutView => ConflictDecision::Defer { record: None },
+			ConflictViewRequirement::Metadata => {
+				#[cfg(test)]
+				{
+					resolution.metadata_view_build_count += 1;
+				}
+				let view = tree_conflict_metadata(builder.input, conflict)?;
+				match handler.on_conflict_metadata(&view) {
+					MetadataConflictDecision::Decision(decision) => decision,
+					MetadataConflictDecision::NeedsFullView => {
+						#[cfg(test)]
+						{
+							resolution.full_view_build_count += 1;
+						}
+						let record = builder.record(conflict)?;
+						let view = semantic_conflict_view(&builder.input.base.path, &record)?;
+						let decision = handler.on_conflict(&view);
+						prebuilt_record = Some(record);
+						decision
+					}
+				}
+			}
+			ConflictViewRequirement::Full => {
+				#[cfg(test)]
+				{
+					resolution.full_view_build_count += 1;
+				}
+				let record = builder.record(conflict)?;
+				let view = semantic_conflict_view(&builder.input.base.path, &record)?;
+				let decision = handler.on_conflict(&view);
+				prebuilt_record = Some(record);
+				decision
+			}
+		};
+		match decision {
 			ConflictDecision::PickCandidate {
 				candidate,
 				record: log,
-			} if record.source_selectable => {
-				let Some(candidate) = record.candidates.get(candidate) else {
-					resolution.unresolved_conflicts.push(record);
+			} if conflict
+				.candidates
+				.iter()
+				.any(|candidate| candidate.input().revision != RevisionId::BASE) =>
+			{
+				let Some(candidate) = conflict
+					.candidates
+					.iter()
+					.filter(|candidate| candidate.input().revision != RevisionId::BASE)
+					.nth(candidate)
+				else {
+					push_unresolved_record(builder, conflict, prebuilt_record, &mut resolution)?;
 					continue;
 				};
 				let selected = conflict
-					.select(candidate.source)
+					.select(*candidate)
 					.map_err(|error| format!("invalid exact tree conflict selection: {error}"))?;
 				resolution.resolutions.insert(conflict.id, selected);
 				resolution.handled_conflicts.insert(conflict.id, ());
@@ -359,21 +638,32 @@ fn resolve_tree_conflicts(
 				if let Some(log) = log {
 					resolution.handler_resolutions.push(log);
 				}
-				resolution.unresolved_conflicts.push(record);
+				push_unresolved_record(builder, conflict, prebuilt_record, &mut resolution)?;
 			}
 			ConflictDecision::Defer { record: None } => {
-				resolution.unresolved_conflicts.push(record);
+				push_unresolved_record(builder, conflict, prebuilt_record, &mut resolution)?;
 			}
 			ConflictDecision::Defer { record: Some(log) } => {
 				resolution.handler_resolutions.push(log);
-				resolution.unresolved_conflicts.push(record);
+				push_unresolved_record(builder, conflict, prebuilt_record, &mut resolution)?;
 			}
 			ConflictDecision::UseFile(path) => {
 				resolution.handled_conflicts.insert(conflict.id, ());
 				resolution.resolved_conflict_ids.push(conflict_id);
 				resolution
 					.output_directives
-					.push(MergeOutputDirective::UseFile(path));
+					.push(MergeOutputDirective::UseFile(ExternalFileResolution::Live(
+						path,
+					)));
+			}
+			ConflictDecision::UseFrozenFile(path) => {
+				resolution.handled_conflicts.insert(conflict.id, ());
+				resolution.resolved_conflict_ids.push(conflict_id);
+				resolution
+					.output_directives
+					.push(MergeOutputDirective::UseFile(
+						ExternalFileResolution::Frozen(path),
+					));
 			}
 			ConflictDecision::KeepExisting => {
 				resolution.handled_conflicts.insert(conflict.id, ());
@@ -385,7 +675,7 @@ fn resolve_tree_conflicts(
 			ConflictDecision::Abort => {
 				return Err(format!(
 					"conflict handler aborted tree merge for {} at {}",
-					input.base.path.display(),
+					builder.input.base.path.display(),
 					conflict.semantic_path.join("/"),
 				));
 			}
@@ -394,39 +684,69 @@ fn resolve_tree_conflicts(
 	Ok(resolution)
 }
 
-fn tree_conflict_record(
+fn push_unresolved_record(
+	builder: &mut ConflictRecordBuilder<'_>,
+	conflict: &StructuralConflict,
+	prebuilt_record: Option<SemanticMergeConflict>,
+	resolution: &mut TreeConflictResolution,
+) -> Result<(), String> {
+	resolution.unresolved_conflicts.push(match prebuilt_record {
+		Some(record) => record,
+		None => builder.record(conflict)?,
+	});
+	Ok(())
+}
+
+fn tree_conflict_metadata(
 	input: &KernelMergeInput,
 	conflict: &StructuralConflict,
-	policies: &MergePolicies,
-) -> Result<SemanticMergeConflict, String> {
-	let base = semantic_candidate(&input.base, &conflict.semantic_path, policies)?;
+) -> Result<ConflictMetadataView, String> {
+	let (address_path, address_key) = split_semantic_address(&conflict.semantic_path);
 	let candidates = conflict
 		.candidates
 		.iter()
 		.filter(|candidate| candidate.input().revision != RevisionId::BASE)
 		.map(|source| {
 			let revision = input_revision(input, source.input().revision)?;
-			let statement = match source {
-				SourceNodeRef::Node { .. } => {
-					semantic_candidate(&revision.ast, &conflict.semantic_path, policies)?.statement
-				}
-				SourceNodeRef::Tombstone { .. } => None,
-			};
-			Ok(SemanticConflictCandidate {
-				source: *source,
-				source_id: revision.source_id.clone(),
+			Ok(ConflictMetadataCandidate {
+				mod_id: revision.source_id.clone(),
 				precedence: revision.precedence,
-				statement,
 			})
 		})
 		.collect::<Result<Vec<_>, String>>()?;
-	Ok(SemanticMergeConflict {
-		conflict: conflict.clone(),
+	Ok(ConflictMetadataView {
+		file_path: input.base.path.clone(),
+		address_path,
+		address_key,
+		conflict_id: semantic_conflict_id(&input.base.path, conflict.id),
 		reason: format!("{}: {}", conflict.kind, conflict.detail),
-		base_statement: base.statement,
-		source_selectable: !candidates.is_empty(),
 		candidates,
 	})
+}
+
+fn collect_unresolved_conflict_records(
+	builder: &mut ConflictRecordBuilder<'_>,
+	conflicts: &[StructuralConflict],
+	handled_conflicts: &BTreeMap<ConflictNodeId, ()>,
+	reusable_records: Vec<SemanticMergeConflict>,
+	existing_ids: &BTreeSet<ConflictNodeId>,
+) -> Result<Vec<SemanticMergeConflict>, String> {
+	let mut reusable_records = reusable_records
+		.into_iter()
+		.map(|record| (record.conflict.id, record))
+		.collect::<BTreeMap<_, _>>();
+	let mut seen_ids = existing_ids.clone();
+	let mut records = Vec::new();
+	for conflict in conflicts {
+		if handled_conflicts.contains_key(&conflict.id) || !seen_ids.insert(conflict.id) {
+			continue;
+		}
+		records.push(match reusable_records.remove(&conflict.id) {
+			Some(record) => record,
+			None => builder.record(conflict)?,
+		});
+	}
+	Ok(records)
 }
 
 fn input_revision(
@@ -445,43 +765,6 @@ fn input_revision(
 	})
 }
 
-struct SemanticCandidate {
-	statement: Option<AstStatement>,
-}
-
-fn semantic_candidate(
-	file: &AstFile,
-	semantic_path: &[String],
-	policies: &MergePolicies,
-) -> Result<SemanticCandidate, String> {
-	if semantic_path.is_empty() {
-		return Ok(SemanticCandidate { statement: None });
-	}
-	let policy = ContentFamilyMergePolicy::new(policies);
-	let (semantic, _) = detach_trivia(file);
-	let tree = normalize_ast(&semantic, &policy)
-		.map_err(|error| format!("failed to normalize conflict candidate: {error}"))?;
-	let matching_nodes = tree
-		.nodes()
-		.filter(|(_, node)| node.policy_path == semantic_path)
-		.collect::<Vec<_>>();
-	let assignments = matching_nodes
-		.iter()
-		.filter(|(_, node)| node.kind.starts_with("clausewitz.assignment:"))
-		.map(|(node, _)| *node)
-		.collect::<Vec<_>>();
-	match assignments.as_slice() {
-		[node] => Ok(SemanticCandidate {
-			statement: Some(
-				denormalize_statement(&tree, *node)
-					.map_err(|error| format!("failed to render conflict candidate: {error}"))?,
-			),
-		}),
-		[] if matching_nodes.is_empty() => Ok(SemanticCandidate { statement: None }),
-		[] | [_, _, ..] => Ok(SemanticCandidate { statement: None }),
-	}
-}
-
 fn split_semantic_address(path: &[String]) -> (Vec<String>, String) {
 	match path.split_last() {
 		Some((key, parent)) => (parent.to_vec(), key.clone()),
@@ -498,14 +781,13 @@ pub(crate) fn semantic_conflict_view(
 		.candidates
 		.iter()
 		.map(|candidate| {
-			let candidate_rendered = candidate.statement.as_ref().map_or_else(
-				|| Ok("(removed)".to_string()),
-				|statement| {
-					emit_clausewitz_statements(std::slice::from_ref(statement))
-						.map(|rendered| rendered.trim_end().to_string())
-						.map_err(|error| format!("failed to emit tree conflict candidate: {error}"))
-				},
-			)?;
+			let candidate_rendered = match (&candidate.statement, candidate.source) {
+				(Some(statement), _) => emit_clausewitz_statements(std::slice::from_ref(statement))
+					.map(|rendered| rendered.trim_end().to_string())
+					.map_err(|error| format!("failed to emit tree conflict candidate: {error}")),
+				(None, SourceNodeRef::Tombstone { .. }) => Ok("(removed)".to_string()),
+				(None, SourceNodeRef::Node { .. }) => Ok("(unrenderable)".to_string()),
+			}?;
 			Ok(CandidateView {
 				mod_id: candidate.source_id.clone(),
 				mod_display_name: candidate.source_id.clone(),
@@ -529,7 +811,7 @@ pub(crate) fn semantic_conflict_view(
 		file_path: file_path.to_path_buf(),
 		address_path: display_path.clone(),
 		address_key: display_key.clone(),
-		conflict_id: record.conflict.id.to_string(),
+		conflict_id: semantic_conflict_id(file_path, record.conflict.id),
 		reason: record.reason.clone(),
 		vanilla_snippet,
 		candidates,
@@ -551,6 +833,13 @@ fn merge_tree_metadata(
 							.entry(*node)
 							.or_default()
 							.extend(sources.iter().cloned());
+					}
+					for (node, origins) in &lineage.origins {
+						existing
+							.origins
+							.entry(*node)
+							.or_default()
+							.extend(origins.iter().cloned());
 					}
 				}
 				Some(_) => {
@@ -600,6 +889,101 @@ fn merge_tree_metadata(
 	state
 }
 
+/// A definition-module view owned by `replace_path` is a sparse loader layer,
+/// not a complete snapshot. If any active branch retains a vanilla definition,
+/// an absent copy in that reset-owner layer is therefore neutral. Padding that
+/// absent copy with the merge ancestor lets the ordinary N-way kernel express
+/// that rule; definitions absent from every branch remain unpadded and are
+/// still deleted. Non-reset revisions are deliberately never padded: their
+/// omission can be an authoritative deletion in an effective descendant view.
+///
+/// The matching vanilla lineage is padded with the statement, and the reset
+/// owner's synthetic deletion partition is removed from its source observation.
+/// This keeps the neutral input provenance- and participant-free instead of
+/// attributing the retained definition to the reset mod that omitted it.
+fn neutralize_sparse_reset_definition_absence(
+	file_dag: &FileDag,
+	base: &TreeDagState,
+	revisions: &[DagJoinRevision<'_, TreeDagState>],
+) -> Result<Option<Vec<TreeDagState>>, String> {
+	if std::iter::once(base)
+		.chain(revisions.iter().map(|revision| revision.state))
+		.flat_map(|state| &state.statements)
+		.any(|statement| matches!(statement, AstStatement::Item { .. }))
+	{
+		return Ok(None);
+	}
+
+	let retained_keys = revisions
+		.iter()
+		.flat_map(|revision| &revision.state.statements)
+		.filter_map(|statement| match statement {
+			AstStatement::Assignment { key, .. } => Some(key.clone()),
+			AstStatement::Item { .. } | AstStatement::Comment { .. } => None,
+		})
+		.collect::<BTreeSet<_>>();
+	let mut retained_base_groups = BTreeMap::<String, Vec<AstStatement>>::new();
+	for statement in &base.statements {
+		let AstStatement::Assignment { key, .. } = statement else {
+			continue;
+		};
+		if retained_keys.contains(key) {
+			retained_base_groups
+				.entry(key.clone())
+				.or_default()
+				.push(statement.clone());
+		}
+	}
+	if retained_base_groups.is_empty() {
+		return Ok(None);
+	}
+
+	let mut states = revisions
+		.iter()
+		.map(|revision| revision.state.clone())
+		.collect::<Vec<_>>();
+	for (revision, state) in revisions.iter().zip(&mut states) {
+		if !file_dag.replaces_path(revision.mod_id) {
+			continue;
+		}
+		let present_keys = state
+			.statements
+			.iter()
+			.filter_map(|statement| match statement {
+				AstStatement::Assignment { key, .. } => Some(key.clone()),
+				AstStatement::Item { .. } | AstStatement::Comment { .. } => None,
+			})
+			.collect::<BTreeSet<_>>();
+		let mut neutral_partitions = BTreeSet::new();
+		for (key, base_group) in &retained_base_groups {
+			if present_keys.contains(key) {
+				continue;
+			}
+			state.statements.extend(base_group.iter().cloned());
+			let partition = SemanticPartitionId::Definition(key.clone());
+			let lineage = base.partition_lineage.get(&partition).ok_or_else(|| {
+				format!(
+					"non-empty reset merge ancestor is missing lineage for partition {partition:?}",
+				)
+			})?;
+			state
+				.partition_lineage
+				.insert(partition.clone(), lineage.clone());
+			neutral_partitions.insert(partition);
+		}
+		for delta in &mut state.source_deltas {
+			if delta.source.source_id == revision.mod_id.0
+				&& delta.source.precedence == revision.precedence
+			{
+				delta
+					.partitions
+					.retain(|partition| !neutral_partitions.contains(&partition.partition));
+			}
+		}
+	}
+	Ok(Some(states))
+}
+
 fn compose_join_lineage(
 	facts: &SemanticMergeFacts,
 	base: &TreeDagState,
@@ -622,8 +1006,10 @@ fn compose_join_lineage(
 	}
 
 	let mut sources = BTreeMap::new();
+	let mut origins = BTreeMap::new();
 	for (output_node, input_sources) in &facts.outcome.provenance {
 		let mut original_sources = BTreeSet::new();
+		let mut original_origins = BTreeSet::new();
 		for input_source in input_sources.iter() {
 			let (expected_tree, lineage) = if input_source.revision == RevisionId::BASE {
 				(
@@ -661,20 +1047,45 @@ fn compose_join_lineage(
 				if let Some(node_sources) = lineage.sources.get(&input_source.node) {
 					original_sources.extend(node_sources.iter().cloned());
 				}
+				let node_origins = lineage.origins.get(&input_source.node).ok_or_else(|| {
+					format!(
+						"lineage is missing origins for input node {} in partition {:?}",
+						input_source.node.get(),
+						facts.partition,
+					)
+				})?;
+				original_origins.extend(node_origins.iter().cloned());
+			} else if !normalized_tree_is_empty_root(expected_tree)? {
+				return Err(format!(
+					"non-empty merge input is missing lineage for partition {:?}",
+					facts.partition,
+				));
 			}
 		}
 		if !original_sources.is_empty() {
 			sources.insert(*output_node, original_sources);
 		}
+		// Preserve a total node map, including the originless synthetic root used
+		// by KnownAbsent and ExplicitlyDisabled empty-base joins.
+		origins.insert(*output_node, original_origins);
 	}
 	Ok(SemanticPartitionLineage {
 		tree: facts.outcome.tentative_tree().clone(),
 		sources,
+		origins,
 	})
+}
+
+fn normalized_tree_is_empty_root(tree: &NormalizedTree) -> Result<bool, String> {
+	let root = tree
+		.node(tree.root())
+		.map_err(|error| format!("normalized tree has an invalid root: {error}"))?;
+	Ok(tree.len() == 1 && root.children.is_empty())
 }
 
 pub(crate) struct TreeDagProtocol<'a> {
 	kernel: TreeMergeKernel<'a>,
+	partition_adapter: &'a dyn TreePartitionAdapter,
 	source_observer: TreeSourceObserver<'a>,
 	has_vanilla_base: bool,
 	vanilla_base_mode: VanillaBaseMode,
@@ -692,6 +1103,7 @@ impl<'a> TreeDagProtocol<'a> {
 	) -> Self {
 		Self {
 			kernel: TreeMergeKernel::new(join, policies),
+			partition_adapter,
 			source_observer: TreeSourceObserver::new(partition_adapter, policies),
 			has_vanilla_base,
 			vanilla_base_mode,
@@ -720,6 +1132,7 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			&request.source.ast,
 			source,
 			&request.parent.partition_lineage,
+			request.resets_base,
 		)?;
 		let mut source_deltas = request.parent.source_deltas.clone();
 		if !source_deltas.contains(&observation.delta) {
@@ -732,7 +1145,7 @@ impl EffectiveNodeProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			source_deltas,
 			merge_facts: request.parent.merge_facts.clone(),
 			partition_lineage,
-			unresolved_conflicts: request.parent.unresolved_conflicts.clone(),
+			unresolved_conflicts: Vec::new(),
 			handler_resolutions: request.parent.handler_resolutions.clone(),
 			resolved_conflict_ids: request.parent.resolved_conflict_ids.clone(),
 			conflict_resolutions: request.parent.conflict_resolutions.clone(),
@@ -772,9 +1185,31 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 			));
 		}
 		let path = PathBuf::from(request.file_dag.file_path());
-		let mut state = merge_tree_metadata(request.base, &request.revisions);
-		let revisions = request
+		let adjusted_states = if self.kernel.join.supports_sparse_reset_layers()
+			&& request.file_dag.has_replace_path_owner()
+		{
+			neutralize_sparse_reset_definition_absence(
+				request.file_dag,
+				request.base,
+				&request.revisions,
+			)?
+		} else {
+			None
+		};
+		let merge_revisions = request
 			.revisions
+			.iter()
+			.enumerate()
+			.map(|(index, revision)| DagJoinRevision {
+				mod_id: revision.mod_id,
+				precedence: revision.precedence,
+				state: adjusted_states
+					.as_ref()
+					.map_or(revision.state, |states| &states[index]),
+			})
+			.collect::<Vec<_>>();
+		let mut state = merge_tree_metadata(request.base, &merge_revisions);
+		let revisions = merge_revisions
 			.iter()
 			.map(|revision| KernelRevision {
 				source_id: revision.mod_id.0.clone(),
@@ -799,8 +1234,10 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				request.file_dag.file_path(),
 			)
 		})?;
-		let resolution =
-			resolve_tree_conflicts(&input, &probe.conflicts, self.kernel.policies, self.handler)?;
+		let mut record_builder =
+			ConflictRecordBuilder::new(&input, self.kernel.policies, self.partition_adapter);
+		let mut resolution =
+			resolve_tree_conflicts(&mut record_builder, &probe.conflicts, self.handler)?;
 		let outcome = if resolution.resolutions.is_empty() {
 			probe
 		} else {
@@ -816,7 +1253,7 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 		};
 		state.statements = outcome.statements;
 		for facts in outcome.merge_facts {
-			let lineage = compose_join_lineage(&facts, request.base, &request.revisions)?;
+			let lineage = compose_join_lineage(&facts, request.base, &merge_revisions)?;
 			state
 				.partition_lineage
 				.insert(facts.partition.clone(), lineage);
@@ -824,9 +1261,41 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 				state.merge_facts.push(facts);
 			}
 		}
+		for conflict in &outcome.conflicts {
+			if resolution.resolutions.contains_key(&conflict.id) {
+				return Err(format!(
+					"exact source selection did not resolve {} at {}",
+					conflict.kind,
+					conflict.semantic_path.join("/"),
+				));
+			}
+		}
+		let replayed_conflict_ids = outcome
+			.conflicts
+			.iter()
+			.map(|conflict| conflict.id)
+			.collect::<BTreeSet<_>>();
+		state.unresolved_conflicts.retain(|record| {
+			!resolution
+				.handled_conflicts
+				.contains_key(&record.conflict.id)
+				&& !replayed_conflict_ids.contains(&record.conflict.id)
+		});
+		let existing_unresolved_ids = state
+			.unresolved_conflicts
+			.iter()
+			.map(|conflict| conflict.conflict.id)
+			.collect::<BTreeSet<_>>();
+		let reusable_records = std::mem::take(&mut resolution.unresolved_conflicts);
 		state
 			.unresolved_conflicts
-			.extend(resolution.unresolved_conflicts);
+			.extend(collect_unresolved_conflict_records(
+				&mut record_builder,
+				&outcome.conflicts,
+				&resolution.handled_conflicts,
+				reusable_records,
+				&existing_unresolved_ids,
+			)?);
 		state
 			.handler_resolutions
 			.extend(resolution.handler_resolutions);
@@ -843,30 +1312,6 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 		for directive in resolution.output_directives {
 			state.push_output_directive(directive);
 		}
-		for conflict in outcome.conflicts {
-			if resolution.handled_conflicts.contains_key(&conflict.id) {
-				if state
-					.conflict_resolutions
-					.iter()
-					.any(|exact| exact.conflict.id == conflict.id)
-				{
-					return Err(format!(
-						"exact source selection did not resolve {} at {}",
-						conflict.kind,
-						conflict.semantic_path.join("/"),
-					));
-				}
-				continue;
-			}
-			let record = tree_conflict_record(&input, &conflict, self.kernel.policies)?;
-			if !state
-				.unresolved_conflicts
-				.iter()
-				.any(|existing| existing.conflict.id == record.conflict.id)
-			{
-				state.unresolved_conflicts.push(record);
-			}
-		}
 		Ok(state)
 	}
 }
@@ -874,10 +1319,12 @@ impl DagJoinProtocol<TreeDagState> for TreeDagProtocol<'_> {
 #[cfg(test)]
 mod tests {
 	use std::cell::RefCell;
-	use std::path::PathBuf;
+	use std::collections::{BTreeMap, BTreeSet};
+	use std::path::{Path, PathBuf};
 
+	use foch_core::config::{ResolutionDecision, ResolutionMap};
 	use foch_language::analyzer::content_family::{
-		CwtType, MergePolicies, ScalarMergePolicy, ScalarReducerRule,
+		CwtType, GameProfile, MergePolicies, ScalarMergePolicy, ScalarReducerRule,
 	};
 	use foch_language::analyzer::parser::{
 		AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange, parse_clausewitz_content,
@@ -886,15 +1333,23 @@ mod tests {
 	use foch_merge_kernel::{ConflictResolution, DeltaOperation, RevisionId};
 
 	use super::{
-		ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,
-		TreeConflictResolutions, TreeDagProtocol, TreeDagState, TreeJoinProtocol, TreeMergeKernel,
-		TreeMergeStep, resolve_tree_conflicts,
+		ClausewitzFileAdapter, ClausewitzFileJoin, ConflictRecordBuilder, DefinitionModuleAdapter,
+		DefinitionModuleJoin, TreeConflictResolutions, TreeDagProtocol, TreeDagState,
+		TreeJoinProtocol, TreeMergeKernel, TreeMergeStep, TreePartitionAdapter,
+		collect_unresolved_conflict_records, compose_join_lineage, resolve_tree_conflicts,
+		semantic_conflict_id,
 	};
 	use crate::emit::emit_clausewitz_statements;
-	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler, DeferHandler};
+	use crate::merge::conflict_handler::{
+		ChainHandler, ConflictDecision, ConflictHandler, ConflictViewRequirement, DeferHandler,
+		LookupHandler,
+	};
 	use crate::merge::conflict_view::ConflictView;
 	use crate::merge::kernel::{KernelMergeInput, KernelRevision};
-	use crate::merge::model::{SemanticPartitionId, VanillaBaseMode};
+	use crate::merge::model::{
+		SemanticMergeSource, SemanticOrigin, SemanticPartitionId, SemanticPartitionLineage,
+		VanillaBaseMode,
+	};
 	use crate::merge::planning::dag::{FileDag, ModId};
 	use crate::merge::planning::dag_join::{DagJoinScope, plan_dag_join};
 	use crate::merge::planning::dag_pipeline::{
@@ -908,14 +1363,54 @@ mod tests {
 
 	struct PickCandidateHandler {
 		candidate: usize,
+		seen_conflict_ids: Vec<String>,
 	}
 
 	impl ConflictHandler for PickCandidateHandler {
-		fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
+		fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+			self.seen_conflict_ids.push(view.conflict_id.clone());
 			ConflictDecision::PickCandidate {
 				candidate: self.candidate,
 				record: None,
 			}
+		}
+	}
+
+	#[derive(Default)]
+	struct FullViewDeferHandler {
+		seen_views: usize,
+	}
+
+	impl ConflictHandler for FullViewDeferHandler {
+		fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+			assert!(
+				view.candidates
+					.iter()
+					.all(|candidate| !candidate.candidate_rendered.is_empty()),
+				"full-view handlers must receive rendered candidates",
+			);
+			self.seen_views += 1;
+			ConflictDecision::Defer { record: None }
+		}
+	}
+
+	#[derive(Default)]
+	struct CaptureDeferHandler {
+		views: Vec<ConflictView>,
+	}
+
+	impl ConflictHandler for CaptureDeferHandler {
+		fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+			self.views.push(view.clone());
+			ConflictDecision::Defer { record: None }
+		}
+	}
+
+	struct UseFileHandler;
+
+	impl ConflictHandler for UseFileHandler {
+		fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
+			ConflictDecision::UseFile(PathBuf::from("resolved.txt"))
 		}
 	}
 
@@ -1087,10 +1582,25 @@ mod tests {
 	#[test]
 	fn tree_dag_state_retains_kernel_deltas_provenance_and_decisions() {
 		let policies = MergePolicies::default();
-		let base = tree_state("entry = { left = no right = no third = no }\n");
-		let a = tree_state("entry = { left = yes right = no third = no }\n");
-		let b = tree_state("entry = { left = no right = yes third = no }\n");
-		let c = tree_state("entry = { left = no right = no third = yes }\n");
+		let base = vanilla_tree_state("entry = { left = no right = no third = no }\n", &policies);
+		let a = mod_file_tree_state(
+			"entry = { left = yes right = no third = no }\n",
+			"a",
+			10,
+			&policies,
+		);
+		let b = mod_file_tree_state(
+			"entry = { left = no right = yes third = no }\n",
+			"b",
+			20,
+			&policies,
+		);
+		let c = mod_file_tree_state(
+			"entry = { left = no right = no third = yes }\n",
+			"c",
+			30,
+			&policies,
+		);
 		let ids = [ModId::from("a"), ModId::from("b"), ModId::from("c")];
 		let mut file_dag = FileDag::default();
 		file_dag.file_path = "common/test.txt".to_string();
@@ -1156,9 +1666,230 @@ mod tests {
 	}
 
 	#[test]
+	fn complete_overlay_clears_tentative_parent_conflicts_for_a_single_sink() {
+		let policies = MergePolicies::default();
+		let (base, _left, _right, intermediate, _ids, _file_dag) =
+			conflicting_tree_dag_fixture(&policies);
+		assert!(!intermediate.unresolved_conflicts.is_empty());
+		let source = parsed_script_file("c", "value = 3\n");
+		let mod_id = ModId::from("c");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			&policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+
+		let final_sink = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &mod_id,
+				precedence: 30,
+				resets_base: false,
+				parent: &intermediate,
+				source: &source,
+			})
+			.expect("apply complete downstream overlay");
+
+		assert_eq!(final_sink.statements, source.ast.statements);
+		assert!(
+			final_sink.unresolved_conflicts.is_empty(),
+			"a complete overlay replaces the tentative parent snapshot",
+		);
+		assert!(
+			!base.statements.is_empty(),
+			"fixture must retain a real vanilla base"
+		);
+	}
+
+	#[test]
+	fn unrelated_later_join_preserves_inherited_unresolved_conflicts() {
+		let policies = MergePolicies::default();
+		let (_base, _left, _right, intermediate, ids, mut file_dag) =
+			conflicting_tree_dag_fixture(&policies);
+		let inherited = intermediate.unresolved_conflicts.clone();
+		let pass_left = intermediate.clone();
+		let pass_right = intermediate.clone();
+		let pass_ids = [ModId::from("pass-left"), ModId::from("pass-right")];
+		file_dag.file_path = "common/test.txt".to_string();
+		let plan = plan_dag_join(&pass_ids, &file_dag, DagJoinScope::Final)
+			.expect("plan unrelated pass-through join");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			&policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+
+		let joined = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &intermediate,
+				revisions: vec![
+					DagJoinRevision {
+						mod_id: &pass_ids[0],
+						precedence: 30,
+						state: &pass_left,
+					},
+					DagJoinRevision {
+						mod_id: &pass_ids[1],
+						precedence: 40,
+						state: &pass_right,
+					},
+				],
+			})
+			.expect("join unrelated pass-through states");
+
+		assert_eq!(joined.unresolved_conflicts, inherited);
+		assert_eq!(ids.len(), 2);
+	}
+
+	#[test]
+	fn exact_current_resolution_replaces_same_id_inherited_unresolved_record() {
+		let policies = MergePolicies::default();
+		let (base, left, right, intermediate, ids, file_dag) =
+			conflicting_tree_dag_fixture(&policies);
+		let mut inherited_base = base;
+		inherited_base.unresolved_conflicts = intermediate.unresolved_conflicts;
+		let plan =
+			plan_dag_join(&ids, &file_dag, DagJoinScope::Final).expect("plan exact replay join");
+		let mut handler = PickCandidateHandler {
+			candidate: 0,
+			seen_conflict_ids: Vec::new(),
+		};
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			&policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+
+		let joined = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &inherited_base,
+				revisions: vec![
+					DagJoinRevision {
+						mod_id: &ids[0],
+						precedence: 10,
+						state: &left,
+					},
+					DagJoinRevision {
+						mod_id: &ids[1],
+						precedence: 20,
+						state: &right,
+					},
+				],
+			})
+			.expect("replay exact current resolution");
+
+		assert!(joined.unresolved_conflicts.is_empty());
+	}
+
+	#[test]
+	fn output_directive_does_not_revalidate_an_ancestor_exact_resolution() {
+		let policies = MergePolicies::default();
+		let (base, left, right, intermediate, ids, file_dag) =
+			conflicting_tree_dag_fixture(&policies);
+		let old_record = intermediate
+			.unresolved_conflicts
+			.first()
+			.expect("fixture conflict");
+		let old_exact = old_record
+			.conflict
+			.select(
+				old_record
+					.candidates
+					.first()
+					.expect("selectable candidate")
+					.source,
+			)
+			.expect("valid inherited exact selection");
+		let mut inherited_base = base;
+		inherited_base.conflict_resolutions.push(old_exact);
+		let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Final)
+			.expect("plan output directive join");
+		let mut handler = UseFileHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			&policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+
+		let joined = protocol.join(DagJoinRequest {
+			plan: &plan,
+			file_dag: &file_dag,
+			base: &inherited_base,
+			revisions: vec![
+				DagJoinRevision {
+					mod_id: &ids[0],
+					precedence: 10,
+					state: &left,
+				},
+				DagJoinRevision {
+					mod_id: &ids[1],
+					precedence: 20,
+					state: &right,
+				},
+			],
+		});
+
+		assert!(
+			joined.is_ok(),
+			"output directives are not exact replay selections: {joined:?}",
+		);
+	}
+
+	#[test]
+	fn compose_join_lineage_rejects_a_missing_non_empty_input_lineage() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file("entry = { left = no right = no }\n"),
+			vec![parsed_revision(
+				"mod-a",
+				10,
+				"entry = { left = yes right = no }\n",
+			)],
+		);
+		let outcome = kernel
+			.merge_tentative(&input)
+			.expect("merge lineage fixture");
+		let facts = outcome.merge_facts.first().expect("file merge facts");
+		let base = tree_state("entry = { left = no right = no }\n");
+		let revision = tree_state("entry = { left = yes right = no }\n");
+		let mod_id = ModId::from("mod-a");
+		let revisions = [DagJoinRevision {
+			mod_id: &mod_id,
+			precedence: 10,
+			state: &revision,
+		}];
+
+		let error = compose_join_lineage(facts, &base, &revisions)
+			.expect_err("non-empty merge inputs require lineage");
+
+		assert!(error.contains("non-empty merge input"), "{error}");
+	}
+
+	#[test]
 	fn effective_definition_node_records_parent_relative_partitioned_deltas() {
 		let policies = MergePolicies::default();
-		let parent = tree_state("alpha = { value = 1 }\nbeta = { value = 1 }\n");
+		let parent = vanilla_definition_tree_state(
+			"alpha = { value = 1 }\nbeta = { value = 1 }\n",
+			&policies,
+		);
 		let source = parsed_script_file("mod-a", "beta = { value = 2 }\n");
 		let mod_id = ModId::from("mod-a");
 		let mut handler = DeferHandler;
@@ -1175,6 +1906,7 @@ mod tests {
 			.effective_node(EffectiveNodeRequest {
 				mod_id: &mod_id,
 				precedence: 40,
+				resets_base: false,
 				parent: &parent,
 				source: &source,
 			})
@@ -1216,6 +1948,198 @@ mod tests {
 				.iter()
 				.any(|operation| matches!(operation, DeltaOperation::Update { .. }))
 		);
+	}
+
+	#[test]
+	fn definition_module_lineage_matches_join_input_after_trivia_detach() {
+		let mut failures = Vec::new();
+		for (path, definition) in [
+			("common/cb_types/zzz_foch_cb_types.txt", "cb_fidei_defensor"),
+			(
+				"common/new_diplomatic_actions/zzz_foch_new_diplomatic_actions.txt",
+				"EE_spa_buy_india_port",
+			),
+			(
+				"common/peace_treaties/zzz_foch_peace_treaties.txt",
+				"IC_peace",
+			),
+			(
+				"common/scripted_effects/zzz_foch_scripted_effects.txt",
+				"ME_change_all_subject_colors",
+			),
+		] {
+			let policies = foch_language::analyzer::eu4_profile::eu4_profile()
+				.classify_content_family(Path::new(path))
+				.unwrap_or_else(|| panic!("classify {path}"))
+				.merge_policies;
+			let base = vanilla_definition_tree_state("retained = { value = 0 }\n", &policies);
+			let left_source = format!(
+				"retained = {{ value = 0 }}\n\
+				 {definition} = {{\n\
+				 \ttrigger = {{\n\
+				 \t\talways = yes # trivia must not affect the boolean tree\n\
+				 \t}}\n\
+				 }}\n"
+			);
+			let left_file = parsed_script_file_at(path, "left", &left_source);
+			let right_file = parsed_script_file_at(path, "right", "retained = { value = 0 }\n");
+			let ids = [ModId::from("left"), ModId::from("right")];
+			let mut file_dag = FileDag::default();
+			file_dag.file_path = path.to_string();
+			let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Final)
+				.expect("plan independent definition-module join");
+			let mut handler = DeferHandler;
+			let mut protocol = TreeDagProtocol::new(
+				&DefinitionModuleAdapter,
+				&DefinitionModuleJoin,
+				&policies,
+				true,
+				VanillaBaseMode::Required,
+				&mut handler,
+			);
+			let left = protocol
+				.effective_node(EffectiveNodeRequest {
+					mod_id: &ids[0],
+					precedence: 10,
+					resets_base: false,
+					parent: &base,
+					source: &left_file,
+				})
+				.expect("observe inserted definition");
+			let right = protocol
+				.effective_node(EffectiveNodeRequest {
+					mod_id: &ids[1],
+					precedence: 20,
+					resets_base: false,
+					parent: &base,
+					source: &right_file,
+				})
+				.expect("observe unchanged module");
+
+			let state = match protocol.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &base,
+				revisions: vec![
+					DagJoinRevision {
+						mod_id: &ids[0],
+						precedence: 10,
+						state: &left,
+					},
+					DagJoinRevision {
+						mod_id: &ids[1],
+						precedence: 20,
+						state: &right,
+					},
+				],
+			}) {
+				Ok(state) => state,
+				Err(error) => {
+					failures.push((definition, error));
+					continue;
+				}
+			};
+			let partition = SemanticPartitionId::Definition(definition.to_string());
+			let lineage = state
+				.partition_lineage
+				.get(&partition)
+				.unwrap_or_else(|| panic!("missing lineage for {definition}"));
+			let output = AstFile {
+				path: PathBuf::from(path),
+				statements: state.statements.clone(),
+			};
+			let normalized = DefinitionModuleAdapter
+				.normalize_partition(&output, &partition, &policies)
+				.unwrap_or_else(|error| panic!("normalize joined {definition}: {error}"));
+			assert_eq!(lineage.tree, normalized, "output lineage for {definition}");
+			assert!(
+				lineage
+					.sources
+					.values()
+					.flatten()
+					.any(|source| source.source_id == "left"),
+				"missing original source for {definition}"
+			);
+		}
+		assert!(failures.is_empty(), "lineage failures: {failures:#?}");
+	}
+
+	#[test]
+	fn definition_module_file_fallback_lineage_matches_join_input_with_trivia() {
+		let path = "common/cb_types/zzz_foch_cb_types.txt";
+		let policies = foch_language::analyzer::eu4_profile::eu4_profile()
+			.classify_content_family(Path::new(path))
+			.expect("classify cb types")
+			.merge_policies;
+		let base_source = "loose_item\nretained = { trigger = { always = yes # trivia\n} }\n";
+		let left_source =
+			"loose_item\nretained = { trigger = { always = yes # trivia\n} value = 1 }\n";
+		let base = vanilla_definition_tree_state(base_source, &policies);
+		let left_file = parsed_script_file_at(path, "left", left_source);
+		let right_file = parsed_script_file_at(path, "right", base_source);
+		let ids = [ModId::from("left"), ModId::from("right")];
+		let mut file_dag = FileDag::default();
+		file_dag.file_path = path.to_string();
+		let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Final)
+			.expect("plan file-fallback definition-module join");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&DefinitionModuleAdapter,
+			&DefinitionModuleJoin,
+			&policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+		let left = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &ids[0],
+				precedence: 10,
+				resets_base: false,
+				parent: &base,
+				source: &left_file,
+			})
+			.expect("observe left file fallback");
+		let right = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &ids[1],
+				precedence: 20,
+				resets_base: false,
+				parent: &base,
+				source: &right_file,
+			})
+			.expect("observe right file fallback");
+		let state = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &base,
+				revisions: vec![
+					DagJoinRevision {
+						mod_id: &ids[0],
+						precedence: 10,
+						state: &left,
+					},
+					DagJoinRevision {
+						mod_id: &ids[1],
+						precedence: 20,
+						state: &right,
+					},
+				],
+			})
+			.expect("join file-fallback definition module");
+		let lineage = state
+			.partition_lineage
+			.get(&SemanticPartitionId::File)
+			.expect("file fallback lineage");
+		let output = AstFile {
+			path: PathBuf::from(path),
+			statements: state.statements,
+		};
+		let normalized = DefinitionModuleAdapter
+			.normalize_partition(&output, &SemanticPartitionId::File, &policies)
+			.expect("normalize joined file fallback");
+		assert_eq!(lineage.tree, normalized);
 	}
 
 	#[test]
@@ -1268,6 +2192,269 @@ mod tests {
 	}
 
 	#[test]
+	fn default_defer_builds_no_views_and_reuses_each_unresolved_record() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file("first = 0\nsecond = 0\n"),
+			vec![
+				parsed_revision("a", 10, "first = 1\nsecond = 1\n"),
+				parsed_revision("b", 20, "first = 2\nsecond = 2\n"),
+			],
+		);
+		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
+		assert!(
+			probe.conflicts.len() >= 2,
+			"expected a multi-conflict fixture"
+		);
+		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
+		let mut handler = DeferHandler;
+		assert_eq!(
+			handler.conflict_view_requirement(),
+			ConflictViewRequirement::DeferWithoutView,
+		);
+
+		let mut resolution = resolve_tree_conflicts(&mut builder, &probe.conflicts, &mut handler)
+			.expect("defer conflicts");
+
+		assert_eq!(resolution.metadata_view_build_count, 0);
+		assert_eq!(resolution.full_view_build_count, 0);
+		assert_eq!(builder.record_build_count, probe.conflicts.len());
+		assert_eq!(
+			builder.normalized_input_count,
+			input.revisions.len() + 1,
+			"each input AST should be normalized once across all conflicts",
+		);
+		let build_count = builder.record_build_count;
+		let records = collect_unresolved_conflict_records(
+			&mut builder,
+			&probe.conflicts,
+			&BTreeMap::new(),
+			std::mem::take(&mut resolution.unresolved_conflicts),
+			&BTreeSet::new(),
+		)
+		.expect("reuse unresolved records for final outcome");
+		assert_eq!(records.len(), probe.conflicts.len());
+		assert_eq!(
+			builder.record_build_count, build_count,
+			"final outcome must reuse records produced during handler dispatch",
+		);
+	}
+
+	#[test]
+	fn full_view_handler_still_receives_rendered_candidates() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file("value = 0\n"),
+			vec![
+				parsed_revision("a", 10, "value = 1\n"),
+				parsed_revision("b", 20, "value = 2\n"),
+			],
+		);
+		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
+		assert!(!probe.conflicts.is_empty());
+		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
+		let mut handler = FullViewDeferHandler::default();
+
+		let resolution = resolve_tree_conflicts(&mut builder, &probe.conflicts, &mut handler)
+			.expect("dispatch full views");
+
+		assert_eq!(resolution.metadata_view_build_count, 0);
+		assert_eq!(resolution.full_view_build_count, probe.conflicts.len());
+		assert_eq!(handler.seen_views, probe.conflicts.len());
+		assert_eq!(builder.record_build_count, probe.conflicts.len());
+	}
+
+	#[test]
+	fn definition_module_conflict_views_render_exact_duplicate_path_candidates() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&DefinitionModuleJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file(
+				"before = { keep = 0 }\ntarget = { child = { id = a value = 0 } child = { id = b value = 0 } }\n",
+			),
+			vec![
+				parsed_revision(
+					"a",
+					10,
+					"before = { keep = 0 }\ntarget = { child = { id = a value = 1 } child = { id = b value = 0 } }\n",
+				),
+				parsed_revision(
+					"b",
+					20,
+					"before = { keep = 0 }\ntarget = { child = { id = a value = 2 } child = { id = b value = 0 } }\n",
+				),
+			],
+		);
+		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
+		assert!(!probe.conflicts.is_empty(), "duplicate paths must conflict");
+		let mut builder = ConflictRecordBuilder::new(&input, &policies, &DefinitionModuleAdapter);
+		let mut handler = CaptureDeferHandler::default();
+
+		resolve_tree_conflicts(&mut builder, &probe.conflicts, &mut handler)
+			.expect("render exact definition candidates");
+
+		let rendered = handler
+			.views
+			.iter()
+			.flat_map(|view| view.candidates.iter())
+			.map(|candidate| candidate.candidate_rendered.as_str())
+			.collect::<Vec<_>>();
+		assert!(
+			handler.views.iter().any(|view| {
+				view.vanilla_snippet
+					.as_deref()
+					.is_some_and(|snippet| snippet.contains("value = 0"))
+			}),
+			"the exact partition-scoped base node must render despite duplicate paths",
+		);
+		assert!(
+			rendered.iter().all(|candidate| *candidate != "(removed)"),
+			"node candidates must never be reported as deletions: {rendered:?}",
+		);
+		assert!(
+			rendered
+				.iter()
+				.any(|candidate| candidate.contains("value = 1")),
+			"missing exact a candidate: {rendered:?}",
+		);
+		assert!(
+			rendered
+				.iter()
+				.any(|candidate| candidate.contains("value = 2")),
+			"missing exact b candidate: {rendered:?}",
+		);
+	}
+
+	#[test]
+	fn only_tombstones_render_as_removed() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file("value = 0\n"),
+			vec![
+				parsed_revision("deleted", 10, ""),
+				parsed_revision("modified", 20, "value = 2\n"),
+			],
+		);
+		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
+		assert!(!probe.conflicts.is_empty());
+		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
+		let mut handler = CaptureDeferHandler::default();
+
+		resolve_tree_conflicts(&mut builder, &probe.conflicts, &mut handler)
+			.expect("render delete-modify candidates");
+
+		for (conflict, view) in probe.conflicts.iter().zip(&handler.views) {
+			let sources = conflict
+				.candidates
+				.iter()
+				.filter(|source| source.input().revision != RevisionId::BASE);
+			for (source, candidate) in sources.zip(&view.candidates) {
+				assert_eq!(
+					candidate.candidate_rendered == "(removed)",
+					matches!(source, foch_merge_kernel::SourceNodeRef::Tombstone { .. }),
+					"candidate kind and rendering diverged: {source:?}",
+				);
+			}
+		}
+	}
+
+	#[test]
+	fn node_with_a_mismatched_partition_root_renders_as_unrenderable() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file("value = 0\n"),
+			vec![
+				parsed_revision("a", 10, "value = 1\n"),
+				parsed_revision("b", 20, "value = 2\n"),
+			],
+		);
+		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
+		let mut conflict = probe.conflicts.first().expect("fixture conflict").clone();
+		let source_index = conflict
+			.candidates
+			.iter()
+			.position(|source| {
+				matches!(
+					source,
+					foch_merge_kernel::SourceNodeRef::Node { input, .. }
+						if input.revision == RevisionId::new(1)
+				)
+			})
+			.expect("a node candidate");
+		let wrong_root_hash = conflict
+			.candidates
+			.iter()
+			.find(|source| source.input().revision == RevisionId::new(2))
+			.expect("b candidate")
+			.input()
+			.root_hash;
+		let foch_merge_kernel::SourceNodeRef::Node {
+			input: mut candidate_input,
+			node,
+		} = conflict.candidates[source_index]
+		else {
+			unreachable!("source index was filtered to node candidates")
+		};
+		candidate_input.root_hash = wrong_root_hash;
+		conflict.candidates[source_index] = foch_merge_kernel::SourceNodeRef::Node {
+			input: candidate_input,
+			node,
+		};
+		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
+
+		let record = builder.record(&conflict).expect("build guarded record");
+		let view = super::semantic_conflict_view(&input.base.path, &record)
+			.expect("render guarded conflict");
+		let candidate_index = conflict.candidates[..source_index]
+			.iter()
+			.filter(|source| source.input().revision != RevisionId::BASE)
+			.count();
+
+		assert_eq!(
+			view.candidates[candidate_index].candidate_rendered,
+			"(unrenderable)",
+		);
+	}
+
+	#[test]
+	fn lookup_builds_full_view_only_for_the_matching_named_handler() {
+		let policies = MergePolicies::default();
+		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+		let input = KernelMergeInput::new(
+			parsed_file("first = 0\nsecond = 0\nthird = 0\n"),
+			vec![
+				parsed_revision("a", 10, "first = 1\nsecond = 1\nthird = 1\n"),
+				parsed_revision("b", 20, "first = 2\nsecond = 2\nthird = 2\n"),
+			],
+		);
+		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
+		assert!(probe.conflicts.len() >= 3, "expected three conflicts");
+		let selected_id = semantic_conflict_id(&input.base.path, probe.conflicts[1].id);
+		let map = ResolutionMap {
+			by_conflict_id: BTreeMap::from([(
+				selected_id,
+				ResolutionDecision::Handler("defer".to_string()),
+			)]),
+			..ResolutionMap::default()
+		};
+		let mut handler = ChainHandler {
+			first: LookupHandler::new(&map, input.base.path.clone()),
+			second: DeferHandler,
+		};
+		let mut builder = ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
+
+		let resolution = resolve_tree_conflicts(&mut builder, &probe.conflicts, &mut handler)
+			.expect("dispatch lookup conflicts");
+
+		assert_eq!(resolution.metadata_view_build_count, probe.conflicts.len());
+		assert_eq!(resolution.full_view_build_count, 1);
+	}
+
+	#[test]
 	fn handler_selects_exact_source_when_display_mod_ids_repeat() {
 		let policies = MergePolicies::default();
 		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
@@ -1281,12 +2468,25 @@ mod tests {
 		);
 		let probe = kernel.merge_tentative(&input).expect("probe conflicts");
 		assert!(!probe.conflicts.is_empty());
-		let mut handler = PickCandidateHandler { candidate: 1 };
+		let expected_conflict_ids = probe
+			.conflicts
+			.iter()
+			.map(|conflict| semantic_conflict_id(&input.base.path, conflict.id))
+			.collect::<Vec<_>>();
+		let mut handler = PickCandidateHandler {
+			candidate: 1,
+			seen_conflict_ids: Vec::new(),
+		};
 
-		let resolution = resolve_tree_conflicts(&input, &probe.conflicts, &policies, &mut handler)
-			.expect("resolve exact candidates");
+		let mut record_builder =
+			ConflictRecordBuilder::new(&input, &policies, &ClausewitzFileAdapter);
+		let resolution =
+			resolve_tree_conflicts(&mut record_builder, &probe.conflicts, &mut handler)
+				.expect("resolve exact candidates");
 
 		assert!(resolution.unresolved_conflicts.is_empty());
+		assert_eq!(handler.seen_conflict_ids, expected_conflict_ids);
+		assert_eq!(resolution.resolved_conflict_ids, expected_conflict_ids);
 		assert_eq!(resolution.resolutions.len(), probe.conflicts.len());
 		assert!(
 			resolution
@@ -1331,6 +2531,75 @@ mod tests {
 			.collect()
 	}
 
+	fn conflicting_tree_dag_fixture(
+		policies: &MergePolicies,
+	) -> (
+		TreeDagState,
+		TreeDagState,
+		TreeDagState,
+		TreeDagState,
+		[ModId; 2],
+		FileDag,
+	) {
+		let base = vanilla_tree_state("value = 0\n", policies);
+		let sources = [
+			parsed_script_file("a", "value = 1\n"),
+			parsed_script_file("b", "value = 2\n"),
+		];
+		let ids = [ModId::from("a"), ModId::from("b")];
+		let mut file_dag = FileDag::default();
+		file_dag.file_path = "common/test.txt".to_string();
+		let plan = plan_dag_join(&ids, &file_dag, DagJoinScope::Intermediate)
+			.expect("plan conflicting intermediate join");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+		let left = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &ids[0],
+				precedence: 10,
+				resets_base: false,
+				parent: &base,
+				source: &sources[0],
+			})
+			.expect("observe left conflict branch");
+		let right = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &ids[1],
+				precedence: 20,
+				resets_base: false,
+				parent: &base,
+				source: &sources[1],
+			})
+			.expect("observe right conflict branch");
+		let intermediate = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &base,
+				revisions: vec![
+					DagJoinRevision {
+						mod_id: &ids[0],
+						precedence: 10,
+						state: &left,
+					},
+					DagJoinRevision {
+						mod_id: &ids[1],
+						precedence: 20,
+						state: &right,
+					},
+				],
+			})
+			.expect("build conflicting intermediate state");
+		(base, left, right, intermediate, ids, file_dag)
+	}
+
 	fn revision(source_id: &str, precedence: usize, value: &str) -> KernelRevision {
 		KernelRevision {
 			source_id: source_id.to_string(),
@@ -1354,7 +2623,11 @@ mod tests {
 	}
 
 	fn parsed_script_file(mod_id: &str, source: &str) -> ParsedScriptFile {
-		let path = PathBuf::from("common/test.txt");
+		parsed_script_file_at("common/test.txt", mod_id, source)
+	}
+
+	fn parsed_script_file_at(path: &str, mod_id: &str, source: &str) -> ParsedScriptFile {
+		let path = PathBuf::from(path);
 		let parsed = parse_clausewitz_content(path.clone(), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
@@ -1383,6 +2656,69 @@ mod tests {
 			conflict_resolutions: Vec::new(),
 			output_directives: Vec::new(),
 		}
+	}
+
+	fn vanilla_tree_state(source: &str, policies: &MergePolicies) -> TreeDagState {
+		lineaged_tree_state(
+			source,
+			&ClausewitzFileAdapter,
+			policies,
+			SemanticOrigin::Vanilla,
+		)
+	}
+
+	fn vanilla_definition_tree_state(source: &str, policies: &MergePolicies) -> TreeDagState {
+		lineaged_tree_state(
+			source,
+			&DefinitionModuleAdapter,
+			policies,
+			SemanticOrigin::Vanilla,
+		)
+	}
+
+	fn mod_file_tree_state(
+		source: &str,
+		mod_id: &str,
+		precedence: usize,
+		policies: &MergePolicies,
+	) -> TreeDagState {
+		lineaged_tree_state(
+			source,
+			&ClausewitzFileAdapter,
+			policies,
+			SemanticOrigin::Mod(SemanticMergeSource {
+				source_id: mod_id.to_string(),
+				precedence,
+			}),
+		)
+	}
+
+	fn lineaged_tree_state(
+		source: &str,
+		adapter: &dyn TreePartitionAdapter,
+		policies: &MergePolicies,
+		origin: SemanticOrigin,
+	) -> TreeDagState {
+		let file = parsed_file(source);
+		let mut state = tree_state(source);
+		for partition in adapter.normalization_partitions(&file, &file) {
+			let tree = adapter
+				.normalize_partition(&file, &partition, policies)
+				.expect("normalize lineaged test state");
+			let origins = tree
+				.nodes()
+				.map(|(node, _)| (node, BTreeSet::from([origin.clone()])))
+				.collect();
+			state.partition_lineage.insert(
+				partition,
+				SemanticPartitionLineage {
+					tree,
+					sources: BTreeMap::new(),
+					origins,
+				},
+			);
+		}
+		state
 	}
 
 	fn file(value: &str) -> AstFile {

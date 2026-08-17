@@ -388,7 +388,7 @@ pub fn classify_document_family(relative_path: &Path) -> Option<DocumentFamily> 
 	}
 }
 
-fn is_clausewitz_defines_path(relative_path: &Path) -> bool {
+pub fn is_clausewitz_defines_path(relative_path: &Path) -> bool {
 	let normalized = relative_path
 		.to_string_lossy()
 		.replace('\\', "/")

@@ -23,16 +23,14 @@ use foch_merge_quality::lifecycle::{
 	executable_hash,
 };
 
-pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-merge-report-v3";
+pub const RUNNER_PROTOCOL_VERSION: &str = "foch-cli-publishable-merge-report-v5";
 const MAX_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
+const MAX_PLAN_BYTES: u64 = 4 * 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DISABLED_BASE_SNAPSHOT_IDENTITY: &str = "explicitly-disabled";
 const CACHE_MAX_BYTES_ENV: &str = "FOCH_CACHE_MAX_BYTES";
-const CACHE_DIAGNOSTIC_PREFIXES: [&[u8]; 3] = [
-	b"[merge] mod_snapshot:",
-	b"[merge] resolve_workspace:",
-	b"[merge] modset_cache_",
-];
+const CACHE_DIAGNOSTIC_PREFIXES: [&[u8]; 2] =
+	[b"[merge] mod_snapshot:", b"[merge] resolve_workspace:"];
 
 enum ProductCacheRoot {
 	SystemManaged { path: PathBuf },
@@ -103,9 +101,22 @@ impl ProductCacheEnvironment {
 	}
 }
 
-pub(crate) struct ProductMergeObservation {
-	pub terminal: TerminalMerge,
+pub(crate) struct ProductPreviewObservation {
+	pub failure: Option<String>,
+	pub plan_output: String,
 	pub cache_diagnostics: String,
+	pub output_exists: bool,
+	pub report_exists: bool,
+}
+
+struct ProductCommandResult {
+	run_root: tempfile::TempDir,
+	status: ExitStatus,
+	timed_out: bool,
+	merge_ms: u64,
+	stdout: String,
+	stderr: String,
+	cache_diagnostics: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -194,18 +205,15 @@ impl ProductMeasurementRunner {
 		})
 	}
 
-	fn run_product_merge(
+	fn run_product_command(
 		&self,
 		request: &MeasurementRequest,
-		force: bool,
-		captured_cache_diagnostics: Option<&mut String>,
-	) -> Result<TerminalMerge, String> {
+		confirm: bool,
+	) -> Result<ProductCommandResult, String> {
 		let before_hash = executable_hash(&self.executable)
 			.map_err(|error| format!("failed to hash product executable before merge: {error}"))?;
 		if before_hash != self.identity.engine_artifact.hash {
-			return Ok(TerminalMerge::Fatal {
-				detail: "product executable changed after runner identity was created".to_string(),
-			});
+			return Err("product executable changed after runner identity was created".to_string());
 		}
 
 		validate_request(request)?;
@@ -258,11 +266,11 @@ impl ProductMeasurementRunner {
 			.arg(&request.output_dir)
 			.arg("--non-interactive");
 		self.cache.apply_to(&mut command);
+		if confirm {
+			command.arg("--confirm");
+		}
 		if self.no_game_base {
 			command.arg("--no-game-base");
-		}
-		if force {
-			command.arg("--force");
 		}
 
 		let merge_started = Instant::now();
@@ -277,7 +285,7 @@ impl ProductMeasurementRunner {
 			.stderr
 			.take()
 			.ok_or_else(|| "failed to capture product stderr".to_string())?;
-		let stdout_capture = spawn_bounded_capture(stdout_reader);
+		let stdout_capture = spawn_bounded_prefix_capture(stdout_reader);
 		let stderr_capture = spawn_bounded_diagnostic_capture(stderr_reader);
 		let mut timed_out = false;
 		let status = loop {
@@ -297,17 +305,24 @@ impl ProductMeasurementRunner {
 			}
 		};
 		let merge_ms = u64::try_from(merge_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-		let _stdout = finish_bounded_capture(stdout_capture, "stdout");
+		let stdout = finish_bounded_prefix_capture(stdout_capture, "stdout");
 		let (stderr, cache_diagnostics) =
 			finish_bounded_diagnostic_capture(stderr_capture, "stderr");
 		let after_hash = executable_hash(&self.executable)
 			.map_err(|error| format!("failed to hash product executable after merge: {error}"))?;
 		if after_hash != before_hash {
-			return Ok(TerminalMerge::Fatal {
-				detail: "product executable changed while measurement was running".to_string(),
-			});
+			return Err("product executable changed while measurement was running".to_string());
 		}
 
+		let stdout = redact_diagnostic_with_limit(
+			&stdout,
+			request,
+			Some(run_root.path()),
+			&self.executable,
+			&self.base_data_root,
+			self.cache.root.path(),
+			MAX_PLAN_BYTES + 256,
+		);
 		let stderr = redact_diagnostic(
 			&stderr,
 			request,
@@ -324,22 +339,39 @@ impl ProductMeasurementRunner {
 			&self.base_data_root,
 			self.cache.root.path(),
 		);
+		Ok(ProductCommandResult {
+			run_root,
+			status,
+			timed_out,
+			merge_ms,
+			stdout,
+			stderr,
+			cache_diagnostics,
+		})
+	}
+
+	fn run_product_merge(
+		&self,
+		request: &MeasurementRequest,
+		captured_cache_diagnostics: Option<&mut String>,
+	) -> Result<TerminalMerge, String> {
+		let result = self.run_product_command(request, true)?;
 		if let Some(captured) = captured_cache_diagnostics {
-			*captured = cache_diagnostics;
+			captured.clone_from(&result.cache_diagnostics);
 		}
-		if timed_out {
+		if result.timed_out {
 			return Ok(TerminalMerge::TimedOut {
 				detail: Some(with_diagnostic(
 					format!("foch merge exceeded {} ms", request.timeout.as_millis()),
-					&stderr,
+					&result.stderr,
 				)),
 			});
 		}
-		if let Some(signal) = exit_signal(&status) {
+		if let Some(signal) = exit_signal(&result.status) {
 			return Ok(TerminalMerge::Crashed {
 				detail: Some(with_diagnostic(
 					format!("foch merge terminated by signal {signal}"),
-					&stderr,
+					&result.stderr,
 				)),
 			});
 		}
@@ -352,7 +384,7 @@ impl ProductMeasurementRunner {
 					return Ok(TerminalMerge::Fatal {
 						detail: with_diagnostic(
 							format!("product merge report is invalid JSON: {error}"),
-							&stderr,
+							&result.stderr,
 						),
 					});
 				}
@@ -362,7 +394,7 @@ impl ProductMeasurementRunner {
 				return Ok(TerminalMerge::Fatal {
 					detail: with_diagnostic(
 						format!("failed to read product merge report: {error}"),
-						&stderr,
+						&result.stderr,
 					),
 				});
 			}
@@ -374,12 +406,12 @@ impl ProductMeasurementRunner {
 						redact_diagnostic(
 							&detail,
 							request,
-							Some(run_root.path()),
+							Some(result.run_root.path()),
 							&self.executable,
 							&self.base_data_root,
 							self.cache.root.path(),
 						),
-						&stderr,
+						&result.stderr,
 					),
 				});
 			}
@@ -393,35 +425,46 @@ impl ProductMeasurementRunner {
 						redact_diagnostic(
 							reason,
 							request,
-							Some(run_root.path()),
+							Some(result.run_root.path()),
 							&self.executable,
 							&self.base_data_root,
 							self.cache.root.path(),
 						),
-						&stderr,
+						&result.stderr,
+					),
+				});
+			}
+			if !is_publishable_product_status(report.status) {
+				return Ok(TerminalMerge::MergeFailed {
+					detail: with_diagnostic(
+						format!(
+							"product merge report is blocked with {} unresolved manual conflicts",
+							report.manual_conflict_count
+						),
+						&result.stderr,
 					),
 				});
 			}
 			return Ok(TerminalMerge::Completed {
 				report: Box::new(report),
-				merge_ms,
+				merge_ms: result.merge_ms,
 			});
 		}
 
-		let code = status.code().map_or_else(
+		let code = result.status.code().map_or_else(
 			|| "without an exit code".to_string(),
 			|code| format!("with exit code {code}"),
 		);
-		if status.success() {
+		if result.status.success() {
 			Ok(TerminalMerge::Fatal {
 				detail: with_diagnostic(
-					"foch merge succeeded without writing a merge report".to_string(),
-					&stderr,
+					"confirmed foch merge succeeded without writing a merge report".to_string(),
+					&result.stderr,
 				),
 			})
 		} else {
 			Ok(TerminalMerge::MergeFailed {
-				detail: with_diagnostic(format!("foch merge failed {code}"), &stderr),
+				detail: with_diagnostic(format!("foch merge failed {code}"), &result.stderr),
 			})
 		}
 	}
@@ -429,15 +472,31 @@ impl ProductMeasurementRunner {
 	pub(crate) fn run_cache_probe(
 		&self,
 		request: &MeasurementRequest,
-		force: bool,
-	) -> ProductMergeObservation {
-		let mut cache_diagnostics = String::new();
-		let terminal = self
-			.run_product_merge(request, force, Some(&mut cache_diagnostics))
-			.unwrap_or_else(|detail| TerminalMerge::Fatal { detail });
-		ProductMergeObservation {
-			terminal: redact_terminal_merge(terminal, request, self),
+	) -> ProductPreviewObservation {
+		let result = self.run_product_command(request, false);
+		let (failure, plan_output, cache_diagnostics) = match result {
+			Ok(result) => (
+				preview_failure(&result, request.timeout),
+				result.stdout,
+				result.cache_diagnostics,
+			),
+			Err(detail) => (Some(detail), String::new(), String::new()),
+		};
+		ProductPreviewObservation {
+			failure: failure.map(|detail| {
+				redact_diagnostic(
+					&detail,
+					request,
+					None,
+					&self.executable,
+					&self.base_data_root,
+					self.cache.root.path(),
+				)
+			}),
+			plan_output,
 			cache_diagnostics,
+			output_exists: request.output_dir.exists(),
+			report_exists: request.output_dir.join(MERGE_REPORT_ARTIFACT_PATH).exists(),
 		}
 	}
 }
@@ -461,7 +520,7 @@ impl MeasurementRunner for ProductMeasurementRunner {
 		let capture = (self.terminal_failure_mode == TerminalFailureMode::Panic)
 			.then_some(&mut cache_diagnostics);
 		let terminal = self
-			.run_product_merge(request, false, capture)
+			.run_product_merge(request, capture)
 			.unwrap_or_else(|detail| TerminalMerge::Fatal { detail });
 		let terminal = redact_terminal_merge(terminal, request, self);
 		let terminal = enforce_terminal_failure_mode(terminal, self.terminal_failure_mode);
@@ -477,6 +536,39 @@ impl MeasurementRunner for ProductMeasurementRunner {
 		}
 		terminal
 	}
+}
+
+fn is_publishable_product_status(status: MergeReportStatus) -> bool {
+	matches!(
+		status,
+		MergeReportStatus::Ready | MergeReportStatus::PartialSuccess
+	)
+}
+
+fn preview_failure(result: &ProductCommandResult, timeout: Duration) -> Option<String> {
+	if result.timed_out {
+		return Some(with_diagnostic(
+			format!("foch merge preview exceeded {} ms", timeout.as_millis()),
+			&result.stderr,
+		));
+	}
+	if let Some(signal) = exit_signal(&result.status) {
+		return Some(with_diagnostic(
+			format!("foch merge preview terminated by signal {signal}"),
+			&result.stderr,
+		));
+	}
+	if !result.status.success() {
+		let code = result.status.code().map_or_else(
+			|| "without an exit code".to_string(),
+			|code| format!("with exit code {code}"),
+		);
+		return Some(with_diagnostic(
+			format!("foch merge preview failed {code}"),
+			&result.stderr,
+		));
+	}
+	None
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -500,20 +592,6 @@ fn parse_completed_cache_diagnostics(
 		return Err("cache diagnostics are incomplete".to_string());
 	}
 	let lines = diagnostics.lines().collect::<Vec<_>>();
-	if lines
-		.iter()
-		.any(|line| line.contains("modset_cache_hits=1"))
-	{
-		return Err("modset cache shortcut bypassed workspace resolution".to_string());
-	}
-	if lines
-		.iter()
-		.filter(|line| line.contains("modset_cache_hits=0 modset_cache_misses=1"))
-		.count()
-		!= 1
-	{
-		return Err("expected exactly one modset cache miss diagnostic".to_string());
-	}
 
 	let workspace_summaries = lines
 		.iter()
@@ -915,11 +993,11 @@ fn write_engine_config(
 		.map_err(|error| format!("failed to write isolated engine config: {error}"))
 }
 
-fn spawn_bounded_capture(
+fn spawn_bounded_prefix_capture(
 	mut reader: impl Read + Send + 'static,
 ) -> thread::JoinHandle<io::Result<(Vec<u8>, bool)>> {
 	thread::spawn(move || {
-		let capacity = usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap_or(usize::MAX);
+		let capacity = usize::try_from(MAX_PLAN_BYTES).unwrap_or(usize::MAX);
 		let mut retained = Vec::with_capacity(capacity);
 		let mut buffer = [0_u8; 8192];
 		let mut truncated = false;
@@ -928,10 +1006,9 @@ fn spawn_bounded_capture(
 			if read == 0 {
 				break;
 			}
-			retained.extend_from_slice(&buffer[..read]);
-			if retained.len() > capacity {
-				let excess = retained.len() - capacity;
-				retained.drain(..excess);
+			let remaining = capacity.saturating_sub(retained.len());
+			retained.extend_from_slice(&buffer[..read.min(remaining)]);
+			if read > remaining {
 				truncated = true;
 			}
 		}
@@ -939,7 +1016,7 @@ fn spawn_bounded_capture(
 	})
 }
 
-fn finish_bounded_capture(
+fn finish_bounded_prefix_capture(
 	capture: thread::JoinHandle<io::Result<(Vec<u8>, bool)>>,
 	stream: &str,
 ) -> String {
@@ -947,7 +1024,7 @@ fn finish_bounded_capture(
 		Ok(Ok((bytes, truncated))) => {
 			let body = String::from_utf8_lossy(&bytes);
 			if truncated {
-				format!("<{stream} truncated to last {MAX_DIAGNOSTIC_BYTES} bytes>\n{body}")
+				format!("{body}\n<{stream} truncated after first {MAX_PLAN_BYTES} bytes>")
 			} else {
 				body.into_owned()
 			}
@@ -1052,6 +1129,26 @@ fn redact_diagnostic(
 	base_data_root: &Path,
 	cache_root: &Path,
 ) -> String {
+	redact_diagnostic_with_limit(
+		diagnostic,
+		request,
+		run_root,
+		executable,
+		base_data_root,
+		cache_root,
+		MAX_DIAGNOSTIC_BYTES,
+	)
+}
+
+fn redact_diagnostic_with_limit(
+	diagnostic: &str,
+	request: &MeasurementRequest,
+	run_root: Option<&Path>,
+	executable: &Path,
+	base_data_root: &Path,
+	cache_root: &Path,
+	max_bytes: u64,
+) -> String {
 	let mut replacements = Vec::<(PathBuf, &'static str)>::new();
 	push_redaction_paths(&mut replacements, executable, "<foch-executable>");
 	if let Some(run_root) = run_root {
@@ -1098,10 +1195,7 @@ fn redact_diagnostic(
 			redacted = redacted.replace(&normalized, replacement);
 		}
 	}
-	truncate_utf8(
-		redacted,
-		usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap_or(usize::MAX),
-	)
+	truncate_utf8(redacted, usize::try_from(max_bytes).unwrap_or(usize::MAX))
 }
 
 fn push_redaction_paths(
@@ -1346,16 +1440,19 @@ mod tests {
 	}
 
 	#[test]
-	fn process_capture_retains_only_the_bounded_tail() {
-		let capacity = usize::try_from(MAX_DIAGNOSTIC_BYTES).unwrap();
+	fn process_capture_retains_only_the_bounded_prefix() {
+		let capacity = usize::try_from(MAX_PLAN_BYTES).unwrap();
 		let mut bytes = vec![b'a'; capacity];
 		bytes.extend(vec![b'b'; 17]);
-		let captured =
-			finish_bounded_capture(spawn_bounded_capture(io::Cursor::new(bytes)), "stderr");
+		let captured = finish_bounded_prefix_capture(
+			spawn_bounded_prefix_capture(io::Cursor::new(bytes)),
+			"stdout",
+		);
 
-		assert!(captured.starts_with("<stderr truncated to last"));
-		assert!(captured.ends_with(&"b".repeat(17)));
-		assert!(!captured.contains(&"a".repeat(capacity)));
+		let expected_prefix = "a".repeat(capacity);
+		assert!(captured.starts_with(expected_prefix.as_str()));
+		assert!(captured.ends_with("<stdout truncated after first 4194304 bytes>"));
+		assert!(!captured.contains(&"b".repeat(17)));
 	}
 
 	#[test]
@@ -1377,8 +1474,7 @@ mod tests {
 	}
 
 	fn completed_cache_diagnostics(parsed: &[&str], disk_hits: &[&str]) -> String {
-		let mut lines =
-			vec!["[merge] modset_cache_hits=0 modset_cache_misses=1 key=redacted".to_string()];
+		let mut lines = Vec::new();
 		for mod_id in parsed.iter().chain(disk_hits) {
 			lines.push(format!(
 				"[merge] mod_snapshot: start mod_id={mod_id} files=1"
@@ -1509,6 +1605,16 @@ mod tests {
 				.is_err()
 			);
 		}
+	}
+
+	#[test]
+	fn only_ready_or_partial_success_reports_are_publishable() {
+		assert!(is_publishable_product_status(MergeReportStatus::Ready));
+		assert!(is_publishable_product_status(
+			MergeReportStatus::PartialSuccess
+		));
+		assert!(!is_publishable_product_status(MergeReportStatus::Blocked));
+		assert!(!is_publishable_product_status(MergeReportStatus::Fatal));
 	}
 
 	#[test]

@@ -118,8 +118,8 @@ pub enum MergePlanOutputFormat {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Generate a merged mod directory and revalidate it",
-	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod\n  foch merge ./foch.toml --out ./merged-mod\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # CI / batch mode\n  foch merge ./playlist.json --out ./merged-mod --force\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
+	about = "Prepare a merge plan, then optionally export and revalidate it",
+	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod                 # review, then confirm in a TTY\n  foch merge ./foch.toml --out ./merged-mod --confirm          # explicitly export\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # plan only\n  foch merge ./playlist.json --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path\n  foch merge ./playlist.json --out ./merged-mod --force --confirm\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
 	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
@@ -128,6 +128,8 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub out: PathBuf,
 
+	/// Emit explicit fallbacks for deferred conflicts where supported. Safe
+	/// units are exported with or without this flag.
 	#[arg(long)]
 	pub force: bool,
 
@@ -156,14 +158,20 @@ pub struct MergeArgs {
 	#[arg(long, value_name = "PATH")]
 	pub config: Option<PathBuf>,
 
-	/// Annotate each merged definition with the mods it was adopted from:
-	/// inline `# foch: <key> from <mods>` comments plus a
-	/// `.foch/foch-provenance.json` sidecar. Off by default; output is
-	/// byte-identical to a normal merge when omitted.
+	/// Annotate merged definitions with their source mods using inline
+	/// comments plus `.foch/foch-provenance.json` and
+	/// `.foch/foch-merge-trace.json` sidecars. Diplomatic actions also expose
+	/// `Base:` / `Modified by:` provenance in generated in-game tooltip
+	/// localisation. Off by default; output is byte-identical when omitted.
 	#[arg(long)]
 	pub provenance: bool,
 
-	/// Disable TTY-detected interactive prompts; useful for CI and batch runs.
+	/// Export without the plan prompt. A non-empty --out still requires a
+	/// separate TTY overwrite confirmation.
+	#[arg(long)]
+	pub confirm: bool,
+
+	/// Disable TTY-detected prompts. This does not imply --confirm.
 	#[arg(long, alias = "no-interactive")]
 	pub non_interactive: bool,
 
@@ -576,6 +584,26 @@ mod tests {
 			panic!("expected merge command");
 		};
 		assert!(args.non_interactive);
+		assert!(!args.confirm);
+	}
+
+	#[test]
+	fn merge_command_accepts_confirm_flag() {
+		let cli = FochCli::try_parse_from([
+			"foch",
+			"merge",
+			"playlist.json",
+			"--out",
+			"merged",
+			"--confirm",
+		])
+		.expect("parse cli");
+
+		let FochCliCommands::Merge(args) = cli.command else {
+			panic!("expected merge command");
+		};
+		assert!(args.confirm);
+		assert!(!args.non_interactive);
 	}
 
 	#[test]

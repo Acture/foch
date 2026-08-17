@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch_core::config::compute_conflict_id;
 use foch_core::model::{
 	HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor,
 };
@@ -11,6 +10,7 @@ use foch_language::analyzer::content_family::{
 use foch_language::analyzer::parser::{AstFile, AstStatement, Span, SpanRange};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
+use super::provenance_tooltip::materialize_condition_provenance_tooltips;
 use super::stale_detect::{
 	collect_semantic_dep_misuse_remove_counts, collect_semantic_stale_vanilla_targets,
 	parse_vanilla_for_stale_detection,
@@ -20,9 +20,12 @@ use super::{
 };
 use crate::emit::{EmitOptions, EmitOrdering, emit_clausewitz_statements_with_options};
 use crate::merge::cwt_suggestions::classify_conflict_kind;
-use crate::merge::model::{MergeOutputDirective, SemanticMergeComputation, SemanticMergeConflict};
+use crate::merge::model::{
+	ExternalFileResolution, MergeOutputDirective, SemanticMergeComputation, SemanticMergeConflict,
+};
 use crate::merge::structured::{
-	clausewitz_files_semantically_equivalent, observe_merge_trace, semantic_conflict_view,
+	clausewitz_files_semantically_equivalent, observe_merge_trace, semantic_conflict_id,
+	semantic_conflict_view,
 };
 use crate::workspace::ResolvedFileContributor;
 use foch_cwt::RuleEngine;
@@ -76,11 +79,7 @@ fn leaf_conflicts_for_semantic(
 			LeafConflictDetail {
 				address_path: joined_path.clone(),
 				address_key: address_key.clone(),
-				conflict_id: compute_conflict_id(
-					Path::new(target_path),
-					&joined_path,
-					&address_key,
-				),
+				conflict_id: semantic_conflict_id(Path::new(target_path), conflict.conflict.id),
 				kind: cwt_rule_engine.and_then(|engine| {
 					classify_conflict_kind(
 						engine,
@@ -107,7 +106,7 @@ fn semantic_output_metadata(
 	computation: SemanticMergeComputation,
 ) -> (
 	Vec<HandlerResolutionRecord>,
-	HashMap<PathBuf, PathBuf>,
+	HashMap<PathBuf, ExternalFileResolution>,
 	HashSet<PathBuf>,
 ) {
 	let mut external_file_resolutions = HashMap::new();
@@ -306,14 +305,31 @@ where
 			message,
 		})
 	})?;
-	let merged_statements = if context.provenance {
-		inject_provenance_comments(
-			merged_statements,
-			&definition_provenance,
-			context.mod_display_names,
+	let tooltip_output = materialize_condition_provenance_tooltips(
+		context.provenance,
+		target_path,
+		merged_statements,
+		&dag_merge.semantic,
+		&merge_policies,
+		context.mod_display_names,
+	)
+	.map_err(|message| {
+		StructuralMergeFailure::Merge(MergeError::Validation {
+			path: Some(target_path.to_string()),
+			message,
+		})
+	})?;
+	let (merged_statements, provenance_localisation) = if context.provenance {
+		(
+			inject_provenance_comments(
+				tooltip_output.statements,
+				&definition_provenance,
+				context.mod_display_names,
+			),
+			tooltip_output.localisation,
 		)
 	} else {
-		merged_statements
+		(tooltip_output.statements, tooltip_output.localisation)
 	};
 	let emit_options = emit_options_for_descriptor(context.emit_options, context.descriptor);
 	let rendered = emit_clausewitz_statements_with_options(&merged_statements, &emit_options)?;
@@ -330,6 +346,7 @@ where
 		per_entry_noop_skipped_count,
 		definition_provenance,
 		merge_trace,
+		provenance_localisation,
 	})
 }
 
@@ -532,8 +549,36 @@ fn is_gui_container_family(context: &StructuralMergeContext<'_>) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::content_family::GameProfile;
+	use std::fs;
+	use std::time::{SystemTime, UNIX_EPOCH};
+
+	use foch_core::config::{FochConfig, ResolutionMap};
+	use foch_language::analyzer::content_family::{GameProfile, MergePolicies};
 	use foch_language::analyzer::eu4_profile::eu4_profile;
+	use foch_language::analyzer::parser::parse_clausewitz_content;
+	use foch_merge_kernel::RevisionId;
+
+	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
+	use crate::merge::model::{SemanticConflictCandidate, SemanticMergeConflict};
+	use crate::merge::structured::merge_clausewitz_files;
+
+	struct SequentialCandidateHandler {
+		next_candidate: usize,
+	}
+
+	impl ConflictHandler for SequentialCandidateHandler {
+		fn on_conflict(
+			&mut self,
+			_view: &crate::merge::conflict_view::ConflictView,
+		) -> ConflictDecision {
+			let candidate = self.next_candidate;
+			self.next_candidate += 1;
+			ConflictDecision::PickCandidate {
+				candidate,
+				record: None,
+			}
+		}
+	}
 
 	#[test]
 	fn structured_definition_modules_keep_the_complete_resolved_output() {
@@ -548,5 +593,213 @@ mod tests {
 
 		assert!(preserves_complete_tree_module(module));
 		assert!(!preserves_complete_tree_module(event));
+	}
+
+	#[test]
+	fn identical_cross_file_semantic_conflicts_have_independent_persistence_and_replay() {
+		const TARGETS: [&str; 2] = ["common/first.txt", "common/second.txt"];
+		let conflicts =
+			TARGETS.map(|target| semantic_scalar_conflict(target, "value = 1\n", "value = 2\n"));
+		assert_eq!(
+			conflicts[0].conflict.id, conflicts[1].conflict.id,
+			"the kernel id intentionally excludes the target path",
+		);
+		let expected_ids = TARGETS
+			.iter()
+			.zip(&conflicts)
+			.map(|(target, conflict)| semantic_conflict_id(Path::new(target), conflict.conflict.id))
+			.collect::<Vec<_>>();
+		assert_ne!(expected_ids[0], expected_ids[1]);
+		assert!(
+			expected_ids
+				.iter()
+				.all(|conflict_id| conflict_id.len() == 64
+					&& conflict_id.bytes().all(|b| b.is_ascii_hexdigit())),
+		);
+
+		let views = TARGETS
+			.iter()
+			.zip(&conflicts)
+			.map(|(target, conflict)| {
+				semantic_conflict_view(Path::new(target), conflict).expect("semantic conflict view")
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(views[0].address_path, views[1].address_path);
+		assert_eq!(views[0].address_key, views[1].address_key);
+		assert_eq!(
+			views
+				.iter()
+				.map(|view| view.conflict_id.clone())
+				.collect::<Vec<_>>(),
+			expected_ids
+		);
+
+		let leaf_conflicts = TARGETS
+			.iter()
+			.zip(&conflicts)
+			.flat_map(|(target, conflict)| {
+				leaf_conflicts_for_semantic(
+					target,
+					std::slice::from_ref(conflict),
+					&HashMap::new(),
+					None,
+				)
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(
+			leaf_conflicts
+				.iter()
+				.map(|conflict| conflict.conflict_id.clone())
+				.collect::<Vec<_>>(),
+			expected_ids
+		);
+
+		let config_path = project_test_dir("semantic_cross_file_conflict_ids").join("foch.toml");
+		let mut picker = SequentialCandidateHandler { next_candidate: 0 };
+		let outcomes = TARGETS
+			.iter()
+			.zip(&views)
+			.flat_map(|(target, view)| {
+				let prompt = prompt_survivors_and_persist(
+					Path::new(target),
+					std::slice::from_ref(view),
+					&mut picker,
+					&config_path,
+				);
+				assert!(!prompt.aborted);
+				prompt.outcomes
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(
+			outcomes
+				.iter()
+				.map(|outcome| outcome.conflict_id.clone())
+				.collect::<Vec<_>>(),
+			expected_ids
+		);
+
+		let config = FochConfig::from_toml_str(
+			&fs::read_to_string(&config_path).expect("read persisted conflict resolutions"),
+		)
+		.expect("parse persisted conflict resolutions");
+		let resolution_map =
+			ResolutionMap::from_entries(&config.resolutions).expect("index conflict resolutions");
+		assert_eq!(
+			LookupHandler::new(&resolution_map, PathBuf::from(TARGETS[0])).on_conflict(&views[0]),
+			ConflictDecision::PickCandidate {
+				candidate: 0,
+				record: None,
+			}
+		);
+		assert_eq!(
+			LookupHandler::new(&resolution_map, PathBuf::from(TARGETS[1])).on_conflict(&views[1]),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
+				record: None,
+			}
+		);
+	}
+
+	#[test]
+	fn same_address_semantic_candidate_sequences_persist_and_replay_independently() {
+		const TARGET: &str = "common/test.txt";
+		let conflicts = [
+			semantic_scalar_conflict(TARGET, "value = 1\n", "value = 2\n"),
+			semantic_scalar_conflict(TARGET, "value = 3\n", "value = 4\n"),
+		];
+		assert_ne!(conflicts[0].conflict.id, conflicts[1].conflict.id);
+		let views = conflicts
+			.iter()
+			.map(|conflict| {
+				semantic_conflict_view(Path::new(TARGET), conflict).expect("semantic conflict view")
+			})
+			.collect::<Vec<_>>();
+		assert_eq!(views[0].address_path, views[1].address_path);
+		assert_eq!(views[0].address_key, views[1].address_key);
+		assert_ne!(views[0].conflict_id, views[1].conflict_id);
+
+		let config_path = project_test_dir("semantic_candidate_sequence_ids").join("foch.toml");
+		let mut picker = SequentialCandidateHandler { next_candidate: 0 };
+		let prompt =
+			prompt_survivors_and_persist(Path::new(TARGET), &views, &mut picker, &config_path);
+		assert!(!prompt.aborted);
+		assert_eq!(prompt.outcomes.len(), 2);
+
+		let config = FochConfig::from_toml_str(
+			&fs::read_to_string(&config_path).expect("read persisted conflict resolutions"),
+		)
+		.expect("parse persisted conflict resolutions");
+		let resolution_map =
+			ResolutionMap::from_entries(&config.resolutions).expect("index conflict resolutions");
+		let mut lookup = LookupHandler::new(&resolution_map, PathBuf::from(TARGET));
+		assert_eq!(
+			lookup.on_conflict(&views[0]),
+			ConflictDecision::PickCandidate {
+				candidate: 0,
+				record: None,
+			},
+		);
+		assert_eq!(
+			lookup.on_conflict(&views[1]),
+			ConflictDecision::PickCandidate {
+				candidate: 1,
+				record: None,
+			},
+		);
+	}
+
+	fn semantic_scalar_conflict(
+		target_path: &str,
+		left_source: &str,
+		right_source: &str,
+	) -> SemanticMergeConflict {
+		let base = parse_test_file(target_path, "value = 0\n");
+		let left = parse_test_file(target_path, left_source);
+		let right = parse_test_file(target_path, right_source);
+		let outcome = merge_clausewitz_files(&base, &left, &right, &MergePolicies::default())
+			.expect("compute scalar tree conflict");
+		let [conflict] = outcome.conflicts() else {
+			panic!(
+				"expected one scalar tree conflict: {:?}",
+				outcome.conflicts()
+			);
+		};
+		let candidates = conflict
+			.candidates
+			.iter()
+			.copied()
+			.filter(|source| source.input().revision != RevisionId::BASE)
+			.map(|source| SemanticConflictCandidate {
+				source,
+				source_id: format!("mod_{}", source.input().revision.get()),
+				precedence: usize::from(source.input().revision.get()),
+				statement: None,
+			})
+			.collect::<Vec<_>>();
+		SemanticMergeConflict {
+			conflict: conflict.clone(),
+			reason: conflict.detail.clone(),
+			base_statement: None,
+			source_selectable: !candidates.is_empty(),
+			candidates,
+		}
+	}
+
+	fn parse_test_file(target_path: &str, source: &str) -> AstFile {
+		let parsed = parse_clausewitz_content(PathBuf::from(target_path), source);
+		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+		parsed.ast
+	}
+
+	fn project_test_dir(name: &str) -> PathBuf {
+		let nanos = SystemTime::now()
+			.duration_since(UNIX_EPOCH)
+			.expect("clock after epoch")
+			.as_nanos();
+		std::env::current_dir()
+			.expect("current dir")
+			.join("target")
+			.join("foch-engine-tests")
+			.join(format!("{name}-{}-{nanos}", std::process::id()))
 	}
 }

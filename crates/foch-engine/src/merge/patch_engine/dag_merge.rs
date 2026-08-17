@@ -9,8 +9,8 @@ use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use crate::merge::planning::dag::{FileDag, ModId};
 use crate::merge::planning::dag_input::{
-	DagMergeInputRequest, contributor_mod_hashes, final_base_statements, prepare_dag_merge_input,
-	template_for,
+	DagMergeInputRequest, contributor_mod_hashes, merge_ancestor_statements,
+	prepare_dag_merge_input, template_for,
 };
 use crate::merge::planning::dag_join::sink_mods;
 use crate::merge::planning::definition_trace::compute_definition_participants;
@@ -60,7 +60,7 @@ pub(crate) fn compute_reference_dag_merge(
 	let contributors = request.input.contributors;
 	let prepared = prepare_dag_merge_input(request.input)?;
 	let mod_hashes = contributor_mod_hashes(contributors, &prepared.file_dag);
-	let base_statements = final_base_statements(&prepared.file_dag, prepared.vanilla.as_ref());
+	let base_statements = merge_ancestor_statements(prepared.vanilla.as_ref());
 	compute_reference_dag_merge_from_parsed(ReferenceParsedDagMergeRequest {
 		file_dag: &prepared.file_dag,
 		base_statements: &base_statements,

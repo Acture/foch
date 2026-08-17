@@ -67,12 +67,28 @@ pub enum SemanticKeyMatchMode {
 	OrderedSimilarityWithPosition,
 }
 
+/// Whether a semantic key may establish correspondence directly between two
+/// sibling revisions or must be connected by an existing matcher seed.
+#[derive(
+	Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticKeyLineage {
+	#[default]
+	Unrestricted,
+	/// In a seeded comparison, retain matches inside this keyed subtree only
+	/// when the keyed roots themselves are connected by the seed.
+	Seeded,
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct SemanticKey {
 	pub scope: SemanticKeyScope,
 	pub namespace: String,
 	pub value: String,
 	pub match_mode: SemanticKeyMatchMode,
+	#[serde(default)]
+	pub lineage: SemanticKeyLineage,
 }
 
 impl SemanticKey {
@@ -82,6 +98,7 @@ impl SemanticKey {
 			namespace: namespace.into(),
 			value: value.into(),
 			match_mode: SemanticKeyMatchMode::Identity,
+			lineage: SemanticKeyLineage::Unrestricted,
 		}
 	}
 
@@ -91,6 +108,7 @@ impl SemanticKey {
 			namespace: namespace.into(),
 			value: value.into(),
 			match_mode: SemanticKeyMatchMode::Identity,
+			lineage: SemanticKeyLineage::Unrestricted,
 		}
 	}
 
@@ -103,6 +121,7 @@ impl SemanticKey {
 			namespace: namespace.into(),
 			value: value.into(),
 			match_mode: SemanticKeyMatchMode::OrderedSimilarity,
+			lineage: SemanticKeyLineage::Unrestricted,
 		}
 	}
 
@@ -115,7 +134,13 @@ impl SemanticKey {
 			namespace: namespace.into(),
 			value: value.into(),
 			match_mode: SemanticKeyMatchMode::OrderedSimilarityWithPosition,
+			lineage: SemanticKeyLineage::Unrestricted,
 		}
+	}
+
+	pub fn requiring_seeded_lineage(mut self) -> Self {
+		self.lineage = SemanticKeyLineage::Seeded;
+		self
 	}
 }
 
