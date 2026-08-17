@@ -1,4 +1,7 @@
-# Default foch.toml resolutions for an EU4 mod playset.
+# Historical narrow-resolution example for one EU4 mod playset.
+#
+# This is a DSL example, not a current default. Do not copy these rules without
+# confirming the same file conflicts in your own merge report.
 #
 # Run `foch merge` against this template if you want a no-prompt batch
 # merge that resolves every known recurring conflict by picking the

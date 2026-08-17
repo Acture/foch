@@ -312,9 +312,12 @@ match = "**"
 handler = "last_writer"
 ```
 
-### Narrow EU4 alpha defaults
+### Historical narrow-rule example
 
-`examples/eu4-default-foch.toml` ships a hand-curated set of `last_writer` rules for the 9 files that surfaced as manual conflicts on a real N=37 playset (idea overhauls, government tables, country-tag overrides, disaster modifier lists, GUI overlays). Copy it next to your `dlc_load.json` for a no-prompt batch merge that preserves every otherwise-correct `downstream_override` decision.
+`examples/eu4-default-foch.toml` preserves nine narrow `last_writer` rules from
+one historical playset probe. It is a DSL example, not a current default or a
+claim that those files conflict in another playset. Review every path against
+your own merge report before copying a rule.
 
 ### Per-path policy
 

@@ -69,7 +69,8 @@ set -x STEAM_WORKSHOP_ACF "$HOME/Library/Application Support/Steam/steamapps/wor
 scripts/merge-quality/acceptance.fish
 ```
 
-The first fixed 14-case Workshop cohort has not yet been run or accepted.
+Older runner/scorer revisions started the fixed workflow and left incomplete
+records, but no complete current runner-v5/scorer-2.1 cohort has been accepted.
 
 ## Records and identity
 
@@ -112,8 +113,16 @@ V1 cache entries cannot satisfy V2 requests. A cached V2 result must match the
 current ACF input version and pass internal evidence-bundle validation. Cache
 reuse does not enumerate or hash the live Workshop tree. Terminal states are
 `completed`, `merge_failed`, `crashed`, `timed_out`, and `fatal`; failed
-terminal outcomes stay in the fixed denominator. Reports select one complete
-cohort and use report schema `3.0.0`.
+terminal outcomes stay in the fixed denominator.
+
+The V2 streams are intentionally resumable. After one case finishes, its input,
+observation, file results, evidence reference, and terminal measurement are
+appended with stable identities. A later invocation reuses only exact matching
+measurements from the same artifact/protocol/kernel/scorer cohort and runs the
+missing cases. An interrupted partial cohort is valid measurement history, not
+an accepted baseline. Reports expose whether every selected case has a terminal
+record; product acceptance additionally requires all fourteen results to be
+publishable and their evidence to validate. Reports use schema `3.0.0`.
 
 ## Storage boundary
 

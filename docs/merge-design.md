@@ -1,6 +1,14 @@
 # Merge Design
 
-Last updated: 2026-03-24
+Original design: 2026-03-24
+
+Last reconciled with current source: 2026-08-17
+
+> This document preserves the public merge/output design and its rationale. The
+> implementation now supports more content families than the original V1 list.
+> For current behavior, accepted evidence, and active architecture gaps, read
+> [project-status.md](./project-status.md) first; code and integration tests win
+> if an older design statement disagrees with them.
 
 ## Summary
 
@@ -49,6 +57,12 @@ The intended workflow is:
 `merge-plan` becomes the dry-run planning command.
 
 `merge` becomes the artifact-producing command and always runs a validation pass before success is reported.
+
+The current preview freezes the loader view and path-level classification, not
+the complete semantic artifact. Leaf conflicts can therefore be discovered
+during confirmed export. Showing those semantic outcomes before confirmation
+is future work; this document does not prescribe a new internal type or
+pipeline for it.
 
 ## Command Surface
 
@@ -102,7 +116,8 @@ Behavior:
 - requires a separate TTY confirmation before replacing a non-empty `--out`; CI and batch exports must use a new or empty path
 - writes every safe file or definition module after confirmation
 - withholds only unresolved files or definition modules and records them for later resolution
-- uses `--force` only to emit explicit fallbacks for deferred conflicts
+- uses `--force` only for supported text `needs_user_choice` fallbacks;
+  `unsupported_input` and `engine_failure` remain withheld
 - writes merge metadata
 - runs post-merge validation
 
@@ -165,10 +180,15 @@ Behavior:
 - do not silently choose a winner during merge planning
 - defer only the affected file or complete definition module
 - continue materializing unrelated safe units with or without `--force`
-- if `--force` is used, emit a text conflict placeholder or an explicit highest-precedence binary fallback where supported
+- if `--force` is used, emit a conflict placeholder only for supported text
+  `needs_user_choice` units
 - always record the conflict in the merge manifest and validation report
 
-## Supported Structural Path Classes In V1
+## Original V1 Seed Classes
+
+This list records the initial design scope; it is not the current exhaustive
+`ContentFamily` registry or definition-module policy. Use the EU4 profile and
+its regression tests for the live support set.
 
 V1 structural merge support is limited to paths already covered by current semantic indexing:
 

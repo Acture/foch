@@ -1,6 +1,6 @@
 # Architecture
 
-Last updated: 2026-08-08
+Last updated: 2026-08-17
 
 ## Summary
 
@@ -11,11 +11,11 @@ Last updated: 2026-08-08
 - shared CI
 - docs and scripts
 
-The buildable products live under `apps/`, `crates/`, and `packages/`.
+The buildable products live under `crates/` and `packages/`.
 
 ## Workspace Layout
 
-### `apps/`
+### `crates/`
 
 - `crates/foch-cli`
   - owns the repository's only normal Cargo binary, `foch`; the `lsp`
@@ -24,12 +24,16 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
     examples for parser / semantic-index maintainers
   - owns CLI parsing, command dispatch, and the product entrypoint
 
-### `crates/`
-
 - `crates/foch-core`
   - shared domain types
   - diagnostics/model payloads
   - generic utilities
+- `crates/foch-syntax`
+  - shared syntax-tree types and source spans
+  - consumed by the CWT schema layer
+- `crates/foch-cwt`
+  - CWT schema loading and compiled rule packs
+  - schema binding and rule evaluation used by CLI, language, and engine layers
 - `crates/foch-language`
   - parsing
   - document discovery
@@ -46,6 +50,10 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
   - merge planning/execution
   - simplify
   - stable orchestration APIs consumed by the CLI
+- `crates/foch-merge-kernel`
+  - normalized semantic-tree representation
+  - matching, deltas, conflict identities, and N-way merge primitives
+  - game-independent kernel consumed by `foch-engine`
 - `crates/foch-merge-quality`
   - private, library-only product evaluation and immutable dataset contracts
   - pure scoring over an existing output tree and product `MergeReport`
@@ -69,9 +77,10 @@ The buildable products live under `apps/`, `crates/`, and `packages/`.
 
 The intended dependency flow is:
 
-- `crates/foch-cli -> foch-engine`
-- `foch-engine -> foch-language + foch-core`
-- `foch-language -> foch-core`
+- `foch-cli -> foch-engine + foch-language + foch-cwt + foch-core`
+- `foch-engine -> foch-language + foch-cwt + foch-core + foch-merge-kernel`
+- `foch-language -> foch-cwt + foch-core`
+- `foch-cwt -> foch-syntax`
 - `foch-cli` tests `-> foch-merge-quality` as a dev-dependency only
 
 `foch-language` is the behavior boundary for game-aware language semantics. `ScriptFileKind` remains a plain compatibility enum and is not the primary extension point.
@@ -92,12 +101,28 @@ The intended dependency flow is:
 
 ### `foch merge`
 
-1. `foch-engine::merge::plan` freezes and displays the path-level merge plan without writing an output tree.
-2. Explicit confirmation authorizes export of that frozen plan; file- or module-level conflicts are deferred and recorded while unrelated safe units continue.
-3. `foch-engine::merge::ir` lifts supported roots into merge IR.
-4. `foch-engine::merge::emit` produces deterministic Clausewitz output.
-5. `foch-engine::merge::materialize` writes the safe merged tree, withholds deferred units, and writes `.foch/*` sidecars.
-6. `foch-engine::merge::execute` revalidates the output using the normal analyzer pipeline and records kernel, scope, and base-snapshot attestation in the merge report.
+1. `foch-engine::merge::execute::prepare_merge_with_options` freezes the
+   resolved workspace, path-level plan, and policy without writing an output
+   tree.
+2. Explicit confirmation calls the prepared session's export path. File- or
+   module-level failures are typed and deferred while unrelated safe units
+   continue.
+3. `foch-engine::merge::planning` builds definition-module views and revision
+   DAGs; `merge::structured` adapts supported Clausewitz ASTs to the semantic
+   tree in `foch-merge-kernel`.
+4. `foch-engine::merge::output::materialize` emits deterministic Clausewitz
+   output, withholds deferred units, projects provenance where enabled, and
+   stages `.foch/*` sidecars.
+5. `foch-engine::merge::execute` revalidates the generated tree and
+   records kernel, scope, base, and input attestation in the merge report.
+6. `output::materialize::output_transaction` publishes the complete staging
+   tree under a same-target lock.
+
+The preview freezes the resolved workspace and path-level plan. Structural
+merging still happens during confirmed export, so some leaf conflicts and
+deferred units first appear in the final report. Improving what the preview can
+show remains open work; no replacement internal representation has been chosen.
+See [project-status.md](./project-status.md).
 
 ### Product merge-quality acceptance
 

@@ -33,9 +33,11 @@ What is not established yet:
 - support for Paradox games other than EU4.
 
 The next product milestone is the fixed 14-case Workshop acceptance run and
-classification of every non-accepted result. See
-[`docs/project-status.md`](./docs/project-status.md) for current evidence rather
-than relying on historical headline numbers.
+classification of every non-accepted result. The measurement logs are
+intentionally resumable: completed cases may be recorded before the whole run
+finishes, but only a complete validated cohort is product evidence. See
+[`docs/project-status.md`](./docs/project-status.md) for current input
+availability and evidence rather than relying on historical headline numbers.
 
 ## Build and try it
 
