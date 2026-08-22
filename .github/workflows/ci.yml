@@ -57,7 +57,9 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Verify Cargo binary surface
-        run: python3 scripts/check_cargo_binary_targets.py
+        run: |
+          python3 scripts/check_cargo_binary_targets.py
+          python3 -m unittest discover --start-directory scripts --pattern 'test_check_cargo_binary_targets.py'
 
       - name: Cargo clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -237,17 +239,12 @@ jobs:
       - name: Build NSIS development installer
         run: bun run --cwd apps/foch-desktop tauri build --bundles nsis
 
-      - name: Launch desktop executable
+      - name: Smoke test installed desktop package
         shell: pwsh
-        run: |
-          $process = Start-Process -FilePath "target/release/foch-desktop.exe" -PassThru
-          Start-Sleep -Seconds 5
-          if ($process.HasExited) {
-            throw "foch-desktop exited during launch smoke with code $($process.ExitCode)"
-          }
-          Stop-Process -Id $process.Id
+        run: ./scripts/smoke_windows_desktop_installer.ps1 -InstallerDirectory target/release/bundle/nsis
 
       - name: Upload NSIS development installer
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: foch-desktop-windows-x64-development

@@ -6,10 +6,11 @@ Product-plan update: 2026-08-23. See the
 [desktop app development plan](./desktop-app-plan.md) for the active,
 issue-sized product backlog.
 
-Desktop implementation checkpoint: `APP-001` is implemented locally on branch
-`feat/app-001-desktop`. The macOS no-bundle production build and focused
-frontend/backend gates pass. The new Windows installer and launch-smoke job is
-committed to the workflow definition but has not run on GitHub yet.
+Desktop implementation checkpoint: `APP-001` implementation is pending Windows
+CI acceptance on branch `feat/app-001-desktop`. The macOS no-bundle production
+build and focused frontend/backend gates pass. The new Windows installer and
+launch-smoke job is committed to the workflow definition but has not run on
+GitHub yet.
 
 This is the repository handoff for contributors and fresh agents. It is
 self-contained: Notion page **foch — Merge Corpus & Game Semantics** tracks live
