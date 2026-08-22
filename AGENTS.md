@@ -50,10 +50,12 @@ none substitutes for product merge evidence.
   or copy entire Workshop trees into an input CAS. A whole-tree integrity scan
   is an explicit audit with its I/O cost stated up front, not a hidden merge or
   acceptance prerequisite.
-- The only normal executable is `foch`; the language server is `foch lsp`.
-  Parser-maintainer tools are feature-gated examples. Merge-quality workflows
-  belong in the `foch-merge-quality` library and exact integration tests, not a
-  separate product binary.
+- The only command-line executable is `foch`; the language server is `foch
+  lsp`. The separate `foch-desktop` application links the shared Rust engine
+  directly and must not spawn or bundle the CLI. Parser-maintainer tools are
+  feature-gated examples. Merge-quality workflows belong in the
+  `foch-merge-quality` library and exact integration tests, not a separate
+  product binary.
 - Product acceptance re-parses and semantically scores the generated mod, but
   it does not launch EU4 or prove in-game playability. Runtime playability is a
   separate manual check.

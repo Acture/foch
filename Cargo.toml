@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+	"apps/foch-desktop/src-tauri",
 	"crates/foch-cli",
 	"crates/foch-core", "crates/foch-cwt",
 	"crates/foch-engine",

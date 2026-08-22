@@ -11,6 +11,8 @@ it with live ownership when access is available.
 
 - [project-status.md](./project-status.md) — current goal, accepted evidence,
   dirty-worktree warning, active tasks, and fresh-agent runbook
+- [desktop-app-plan.md](./desktop-app-plan.md) — concrete Tauri product backlog,
+  task dependencies, and per-task completion criteria
 - [architecture.md](./architecture.md) — package and execution boundaries,
   including the current prepare/export gap
 - [merge-design.md](./merge-design.md) — public merge artifacts, conflict policy,

@@ -1,6 +1,15 @@
 # Project Status
 
-Last verified: 2026-08-17 against source commit `3924bc3`
+Last source verification: 2026-08-17 against source commit `3924bc3`
+
+Product-plan update: 2026-08-23. See the
+[desktop app development plan](./desktop-app-plan.md) for the active,
+issue-sized product backlog.
+
+Desktop implementation checkpoint: `APP-001` is implemented locally on branch
+`feat/app-001-desktop`. The macOS no-bundle production build and focused
+frontend/backend gates pass. The new Windows installer and launch-smoke job is
+committed to the workflow definition but has not run on GitHub yet.
 
 This is the repository handoff for contributors and fresh agents. It is
 self-contained: Notion page **foch — Merge Corpus & Game Semantics** tracks live
@@ -14,9 +23,10 @@ semantics it understands, produces a deterministic merged mod, and reports real
 ambiguity instead of silently choosing a winner.
 
 The current source line is an unreleased EU4-only alpha at `0.0.1`. It is not a
-reliable one-click merger for arbitrary modlists. The next product proof is a
-complete run of the fixed 14-case Workshop acceptance workflow with the current
-public `foch` binary and scorer.
+reliable one-click merger for arbitrary modlists. The active product direction
+is one shared Rust engine with a `foch` CLI and a player-facing Tauri desktop
+application. The fixed 14-case Workshop workflow remains the merge-quality gate
+for that product; it is not the product roadmap.
 
 ## Current Checkpoint
 
@@ -29,6 +39,8 @@ public `foch` binary and scorer.
 | Current local inputs | A directory-only check found 24 of the fixed 26 Workshop items; `1596815683` and `2172666098` were absent and must be resolved before the official gate can pass preflight |
 | Focused merge evidence | Bounded `state_edicts` export is `ready`; this is a regression check, not cohort acceptance |
 | Analyzer coverage | Last recorded real-game analyzer probe was `parse_only=60`, `semantic_complete=69`; this is separate from merge quality |
+| Desktop shell | `APP-001` links `foch-engine` and `foch-core` directly, has no privileged plugins or sidecars, and passes the local no-bundle Tauri production build |
+| Current workspace test | The desktop tests pass, but `cargo test --workspace` currently fails the existing `foch-language` semantic-corpus assertion for `_player_decision`; the isolated rerun fails identically |
 
 Re-run `git status --short --branch` and `git log -3 --oneline` before relying
 on source or worktree observations. Re-run the official Workshop preflight
@@ -67,10 +79,11 @@ instead of treating the directory-only availability check as authoritative.
 
 ### Repository layout
 
-The repository has one normal executable, `foch`. The language server is the
-`foch lsp` subcommand. Parser-maintainer tools are feature-gated examples, and
-the merge-quality harness is a library/test package rather than another
-product binary.
+The repository has one command-line executable, `foch`, plus the
+player-facing `foch-desktop` application. The language server is the `foch lsp`
+subcommand. Parser-maintainer tools are feature-gated examples, and the
+merge-quality harness is a library/test package rather than another product
+binary.
 
 | Path | Responsibility |
 | --- | --- |
@@ -82,6 +95,7 @@ product binary.
 | `crates/foch-engine` | Workspace/cache and merge/check/graph/simplify orchestration |
 | `crates/foch-merge-kernel` | Game-independent semantic-tree matching and N-way merge |
 | `crates/foch-merge-quality` | Private fixed-corpus measurement, scoring, and evidence |
+| `apps/foch-desktop` | Tauri desktop application linking the shared engine directly |
 | `packages/tree-sitter-paradox` | Independently versioned grammar package |
 | `packages/vscode-foch` | Independently versioned VS Code extension using `foch lsp` |
 
@@ -145,25 +159,19 @@ delete them unless the user chooses whether to retain those partial logs.
 
 ## Next Work
 
-1. Restore or otherwise resolve the two missing fixed Workshop items. The
-   official discovery/ACF preflight, not the directory count above, decides
-   whether the 26-item input contract is satisfied.
-2. The user runs the only product acceptance entrypoint:
+The active tasks and their completion criteria live in
+[desktop-app-plan.md](./desktop-app-plan.md). The immediate dependency order is:
 
-   ```fish
-   scripts/merge-quality/acceptance.fish
-   ```
-
-   The workflow is intentionally resumable and may append one case at a time.
-   Do not replace it with a raw `cargo test -- --ignored` invocation.
-3. Classify every non-accepted result from the complete current cohort. Fix one
-   reproducible cause at a time with a focused fixture and a bounded real case.
-4. If either total-conversion case times out, address that specific
-   `replace_path` performance path. Do not generalize it to ordinary mods
-   without further evidence.
-5. Separately improve the preview so users can see more semantic conflicts
-   before confirming export. Use existing plan/report terminology; no internal
-   representation has been selected for that work.
+1. Run the `APP-001` Windows CI smoke job, then begin `ENG-001` (structured
+   progress and cancellation).
+2. Start `APP-002` (first launch and current playset) and `ENG-002` (complete
+   read-only semantic result) after their respective prerequisites.
+3. Complete `APP-003` and `APP-004` to deliver the first product checkpoint: a
+   Windows user can inspect the current playset and browse the complete merge
+   result without writing output.
+4. Run merge-quality work only from fresh reproduced failures, one exact
+   `ContentFamily` and cause per task. The fixed 14-case wrapper remains the
+   release gate and is not a user-facing feature.
 
 ## Fresh-Agent Runbook
 
@@ -173,8 +181,9 @@ delete them unless the user chooses whether to retain those partial logs.
    unrelated changes, especially the four measurement logs.
 3. Distinguish committed implementation, recorded verification, current
    worktree observations, and accepted product evidence.
-4. Choose work from a fresh acceptance failure or a clearly reproduced focused
-   issue. Do not promote a historical probe into the active roadmap.
+4. Choose an unowned task from the desktop app plan or a fresh, clearly
+   reproduced content-family failure. Do not promote a historical probe into
+   the active roadmap.
 5. Run focused tests first, then the normal Rust gates. Update this page and
    Notion when a product gate or decision changes.
 6. Commit or push only when the user asks. Never bypass repository hooks.
@@ -209,15 +218,17 @@ agent reran them after documentation-only edits.
 ## Reading Order
 
 1. [README](../README.md) — user-facing product and CLI boundary.
-2. [Architecture](./architecture.md) — package and execution layout.
-3. [Merge design](./merge-design.md) — merge strategies, artifacts, and conflict
+2. [Desktop app plan](./desktop-app-plan.md) — active product tasks,
+   dependencies, and completion criteria.
+3. [Architecture](./architecture.md) — package and execution layout.
+4. [Merge design](./merge-design.md) — merge strategies, artifacts, and conflict
    policy.
-4. [Merge-quality dataset](./merge-quality-dataset.md) — fixed cohort,
+5. [Merge-quality dataset](./merge-quality-dataset.md) — fixed cohort,
    identity, resume behavior, evidence, and acceptance contract.
-5. [Cache architecture](./cache-architecture.md) — cache and trust boundaries.
-6. [Workspace manifest](./foch-workspace-manifest.md) and
+6. [Cache architecture](./cache-architecture.md) — cache and trust boundaries.
+7. [Workspace manifest](./foch-workspace-manifest.md) and
    [resolution DSL](./foch-toml-resolutions.md) — user configuration.
-7. [Known issues](../KNOWN_ISSUES.md) and
+8. [Known issues](../KNOWN_ISSUES.md) and
    [release checklist](./RELEASE_CHECKLIST.md) — current limits and release
    gates.
 

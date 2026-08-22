@@ -63,6 +63,14 @@ The buildable products live under `crates/` and `packages/`.
     snapshot builder, acquisition path, or review-pack workflow
   - no binary target and no production dependency from `foch-cli`
 
+### `apps/`
+
+- `apps/foch-desktop`
+  - player-facing Tauri application using React, TypeScript, and Vite
+  - links `foch-engine` and `foch-core` directly
+  - does not bundle or spawn the `foch` CLI
+  - owns desktop presentation and IPC adapters, not merge semantics
+
 ### `packages/`
 
 - `packages/tree-sitter-paradox`

@@ -17,17 +17,25 @@ CargoTarget = TypedDict(
 )
 
 
+class CargoDependency(TypedDict):
+	name: str
+
+
 class CargoPackage(TypedDict):
 	name: str
 	manifest_path: str
 	targets: list[CargoTarget]
+	dependencies: list[CargoDependency]
 
 
 class CargoMetadata(TypedDict):
 	packages: list[CargoPackage]
 
 
-EXPECTED_BINARIES: tuple[tuple[str, str], ...] = (("foch-cli", "foch"),)
+EXPECTED_BINARIES: tuple[tuple[str, str], ...] = (
+	("foch-cli", "foch"),
+	("foch-desktop", "foch-desktop"),
+)
 EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	("foch-cli", "parse_stats", ("dev-tools",)),
 	("foch-cli", "symbol_dump", ("dev-tools",)),
@@ -55,6 +63,60 @@ def custom_harness_targets(manifest_path: Path) -> list[str]:
 	return targets
 
 
+def verify_desktop_contract(repo_root: Path, packages: list[CargoPackage]) -> None:
+	desktop = next(
+		(package for package in packages if package["name"] == "foch-desktop"),
+		None,
+	)
+	if desktop is None:
+		raise SystemExit("foch-desktop Cargo package is missing")
+	dependencies = {dependency["name"] for dependency in desktop["dependencies"]}
+	required = {"foch-core", "foch-engine"}
+	if not required.issubset(dependencies):
+		raise SystemExit(
+			f"foch-desktop must depend directly on {sorted(required)}; found {sorted(dependencies)}"
+		)
+	if "foch-cli" in dependencies:
+		raise SystemExit("foch-desktop must not depend on or bundle the foch CLI")
+
+	desktop_root = repo_root / "apps" / "foch-desktop"
+	package = cast(
+		dict[str, object],
+		json.loads((desktop_root / "package.json").read_text(encoding="utf-8")),
+	)
+	frontend_dependencies = cast(dict[str, object], package.get("dependencies", {}))
+	for forbidden in (
+		"@tauri-apps/plugin-fs",
+		"@tauri-apps/plugin-opener",
+		"@tauri-apps/plugin-shell",
+	):
+		if forbidden in frontend_dependencies:
+			raise SystemExit(f"foch-desktop must not enable {forbidden} in APP-001")
+
+	config = cast(
+		dict[str, object],
+		json.loads(
+			(desktop_root / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+		),
+	)
+	if config.get("identifier") != "dev.acture.foch":
+		raise SystemExit("foch-desktop bundle identifier must be dev.acture.foch")
+	bundle = cast(dict[str, object], config.get("bundle", {}))
+	if "externalBin" in bundle or "resources" in bundle:
+		raise SystemExit("foch-desktop APP-001 must not bundle sidecars or resources")
+
+	capability = cast(
+		dict[str, object],
+		json.loads(
+			(desktop_root / "src-tauri" / "capabilities" / "default.json").read_text(
+				encoding="utf-8"
+			)
+		),
+	)
+	if capability.get("permissions") != []:
+		raise SystemExit("foch-desktop APP-001 capability must remain empty")
+
+
 def main() -> None:
 	repo_root = Path(__file__).resolve().parent.parent
 	result = subprocess.run(
@@ -72,6 +134,7 @@ def main() -> None:
 		text=True,
 	)
 	metadata = cast(CargoMetadata, json.loads(result.stdout))
+	verify_desktop_contract(repo_root, metadata["packages"])
 	actual = tuple(
 		sorted(
 			(package["name"], target["name"])
@@ -82,7 +145,8 @@ def main() -> None:
 	)
 	if actual != EXPECTED_BINARIES:
 		raise SystemExit(
-			f"normal Cargo binaries must be exactly {EXPECTED_BINARIES}; found {actual}"
+			"Cargo binaries must be exactly the foch CLI and foch-desktop app; "
+			f"expected {EXPECTED_BINARIES}, found {actual}"
 		)
 	examples = tuple(
 		sorted(

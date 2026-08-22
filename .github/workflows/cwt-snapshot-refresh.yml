@@ -16,7 +16,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
@@ -76,6 +76,12 @@ jobs:
       - name: Cache Rust
         if: steps.refresh.outputs.changed == 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install Tauri Linux dependencies
+        if: steps.refresh.outputs.changed == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
 
       - name: Verify GitHub CLI auth
         if: steps.refresh.outputs.changed == 'true'

@@ -32,12 +32,13 @@ What is not established yet:
 - a completed quality baseline for the current user-facing `foch merge` path;
 - support for Paradox games other than EU4.
 
-The next product milestone is the fixed 14-case Workshop acceptance run and
-classification of every non-accepted result. The measurement logs are
-intentionally resumable: completed cases may be recorded before the whole run
-finishes, but only a complete validated cohort is product evidence. See
-[`docs/project-status.md`](./docs/project-status.md) for current input
-availability and evidence rather than relying on historical headline numbers.
+The active product milestone is a Windows read-only desktop workflow: detect
+the current EU4 playset, compute the complete semantic result before
+confirmation, and let the player browse it without writing output. The fixed
+14-case Workshop cohort remains the merge-quality gate for that product; it is
+not the user-facing milestone. See
+[`docs/desktop-app-plan.md`](./docs/desktop-app-plan.md) for the task backlog
+and [`docs/project-status.md`](./docs/project-status.md) for current evidence.
 
 ## Build and try it
 
