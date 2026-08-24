@@ -162,6 +162,21 @@ pub fn load_or_init_config() -> Result<(Config, PathBuf), Box<dyn std::error::Er
 	Ok((config, config_file))
 }
 
+/// Load the existing configuration without creating directories or files.
+/// Steam discovery fills only the returned in-memory value.
+pub fn load_config_read_only() -> Result<Config, Box<dyn std::error::Error>> {
+	let config_file = get_config_dir_path()?.join("config.toml");
+	let mut config = if config_file.is_file() {
+		Config::load_config(&config_file)?
+	} else {
+		Config::default()
+	};
+	if config.steam_root_path.is_none() {
+		config.steam_root_path = find_steam_root_path();
+	}
+	Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{Config, ValidationStatus};

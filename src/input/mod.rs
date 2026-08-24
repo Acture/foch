@@ -1,6 +1,7 @@
 //! Product input discovery, resolution, and cached snapshots.
 
 pub mod config;
+mod inspect;
 pub mod request;
 
 mod file_filter;
@@ -10,9 +11,13 @@ mod scripts;
 
 pub use config::{
 	CONFIG_DIR_ENV, Config, ValidationItem, ValidationStatus, get_config_dir_path,
-	load_or_init_config,
+	load_config_read_only, load_or_init_config,
 };
 pub use file_filter::FileFilter;
+pub use inspect::{
+	BaseDataInspection, BaseDataState, CurrentEu4Input, DetectedPlayset, DetectedPlaysetMod,
+	InputReadiness, InputReadinessIssue, InstalledGameInspection, inspect_current_eu4_input,
+};
 pub(crate) use mod_snapshot::LoadedModSnapshot;
 pub use mod_snapshot::{CacheError, default_mod_snapshot_cache_dir};
 pub use request::{CheckOptions, InputRequest, InputSource};

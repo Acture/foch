@@ -148,7 +148,9 @@ struct LoadedInputSource {
 
 fn load_input_source(request: &InputRequest) -> Result<LoadedInputSource, InputResolveError> {
 	match &request.source {
-		InputSource::DlcLoad(path) => load_dlc_load_source(path, &request.config),
+		InputSource::DlcLoad(path) => {
+			load_dlc_load_source(path, &request.config, request.preloaded_playset.as_ref())
+		}
 		InputSource::Manifest(path) => load_manifest_source(path, &request.config),
 	}
 }
@@ -156,8 +158,12 @@ fn load_input_source(request: &InputRequest) -> Result<LoadedInputSource, InputR
 fn load_dlc_load_source(
 	path: &Path,
 	config: &Config,
+	preloaded_playset: Option<&Playset>,
 ) -> Result<LoadedInputSource, InputResolveError> {
-	let playlist = Playset::from_dlc_load(path).map_err(input_error_from_playset_parse)?;
+	let playlist = match preloaded_playset {
+		Some(playset) => playset.clone(),
+		None => Playset::from_dlc_load(path).map_err(input_error_from_playset_parse)?,
+	};
 	Ok(LoadedInputSource {
 		source_path: path.to_path_buf(),
 		source_root: source_root_for(path),
@@ -579,6 +585,33 @@ pub(crate) fn build_input_inventory_for_paths(
 				.and_then(|game_root| detect_game_version(game_root)),
 		)
 	};
+	if let Some(expected) = request.expected_game_root.as_ref() {
+		let actual = base_game_root.as_ref().or(optional_game_root.as_ref());
+		match actual {
+			Some(actual) if actual == expected => {}
+			Some(actual) => {
+				return Err(InputResolveError {
+					kind: InputResolveErrorKind::Io,
+					path: source_path.clone(),
+					message: format!(
+						"inspected EU4 game root changed: expected {}, resolved {}",
+						expected.display(),
+						actual.display()
+					),
+				});
+			}
+			None => {
+				return Err(InputResolveError {
+					kind: InputResolveErrorKind::Io,
+					path: source_path.clone(),
+					message: format!(
+						"inspected EU4 game root is no longer available: {}",
+						expected.display()
+					),
+				});
+			}
+		}
+	}
 	let base_snapshot_identity = if let (Some(game_root), Some(game_version)) =
 		(base_game_root.as_ref(), mod_cache_game_version.as_ref())
 	{

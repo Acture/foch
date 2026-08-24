@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::game::eu4::base::snapshot::InstalledBaseSnapshotIdentity;
 use crate::input::config::Config;
+use crate::playset::Playset;
 
 #[derive(Clone, Debug)]
 pub struct InputRequest {
@@ -11,9 +12,16 @@ pub struct InputRequest {
 	/// Content identity supplied by a parent measurement process. Input
 	/// resolution verifies it before retaining its own exact load token.
 	pub expected_base_snapshot_identity: Option<String>,
-	/// Exact parent-owned snapshot lease. Publishing workflows use this for
+	/// Exact parent-owned snapshot lease. Commit workflows use this for
 	/// internal revalidation without recapturing or current-checking the file.
 	pub(crate) base_snapshot_lease: Option<InstalledBaseSnapshotIdentity>,
+	/// Exact game installation selected by a read-only inspection. Resolution
+	/// must not silently fall back to a different Steam library afterwards.
+	pub(crate) expected_game_root: Option<PathBuf>,
+	/// Playset captured by a read-only inspection. Keeping this out of
+	/// [`InputSource`] preserves the public source shape while allowing a later
+	/// request to consume the exact inspected load order.
+	pub(crate) preloaded_playset: Option<Playset>,
 }
 
 impl InputRequest {
@@ -23,6 +31,8 @@ impl InputRequest {
 			config,
 			expected_base_snapshot_identity: None,
 			base_snapshot_lease: None,
+			expected_game_root: None,
+			preloaded_playset: None,
 		}
 	}
 
@@ -44,6 +54,20 @@ impl InputRequest {
 		lease: Option<InstalledBaseSnapshotIdentity>,
 	) -> Self {
 		self.base_snapshot_lease = lease;
+		self
+	}
+
+	pub(crate) fn with_preloaded_playset(mut self, playset: Playset) -> Self {
+		debug_assert!(
+			matches!(self.source, InputSource::DlcLoad(_)),
+			"only dlc_load input may retain a preloaded playset"
+		);
+		self.preloaded_playset = Some(playset);
+		self
+	}
+
+	pub(crate) fn with_expected_game_root(mut self, game_root: PathBuf) -> Self {
+		self.expected_game_root = Some(game_root);
 		self
 	}
 
