@@ -1,52 +1,51 @@
 # foch
 
-Foch is an EU4 mod analysis and merge tool under active development.
+Foch is an EU4 mod analysis and merge tool under active development. It takes
+an ordered Europa Universalis IV playset, preserves contributions whose loader
+semantics are understood, and surfaces genuine ambiguity instead of silently
+discarding one mod's work.
 
-Its core goal is narrow: take an ordered Europa Universalis IV mod playset,
-identify interactions between mods, merge the content families whose load
-semantics are understood, and surface ambiguous conflicts instead of silently
-discarding contributions.
-
-> **Unreleased alpha (workspace version `0.0.1`), EU4 only.** The CLI and merge
-> pipeline work on tested fixtures, but the current product kernel has not yet
-> completed the fixed real-Workshop acceptance cohort. Do not treat Foch as a
-> reliable one-click merger for arbitrary modlists yet.
+> **Unreleased alpha (`0.0.1`), EU4 only.** The implementation passes its
+> focused fixture gates, but the current product has no accepted complete
+> 14-case Workshop cohort. Do not treat it as a reliable one-click merger for
+> arbitrary modlists yet.
 
 ## Current boundary
 
 Foch can currently:
 
-- resolve a Paradox Launcher `dlc_load.json` or a declarative `foch.toml`
-  workspace;
+- inspect and resolve a Launcher `dlc_load.json` or declarative `foch.toml`
+  project while preserving playset order;
 - parse Clausewitz script, localisation, CSV, and JSON content;
 - build a cross-mod semantic index and report overlap risk;
-- generate a deterministic merge plan;
-- materialize a separate merged-mod directory for supported structural roots;
-- stop or report when a conflict needs an explicit decision;
-- write machine-readable plan and report artifacts under the output's `.foch/`
-  directory.
+- analyze a complete deterministic merge result before writing output;
+- expose file- and definition-module review units with their disposition and
+  contributors;
+- commit supported output to a separate merged-mod directory after explicit
+  confirmation; and
+- record machine-readable artifacts below the output's `.foch/` directory.
 
-What is not established yet:
+What is not established:
 
-- automatic-merge reliability across ordinary, arbitrary EU4 modlists;
-- a completed quality baseline for the current user-facing `foch merge` path;
-- support for Paradox games other than EU4.
+- automatic-merge reliability across arbitrary EU4 modlists;
+- a complete accepted quality baseline for the current user-facing merge path;
+- support for any Paradox game other than EU4; or
+- an interactive `MergeSession` API. Session work is deliberately deferred.
 
-The active product milestone is a Windows read-only desktop workflow: detect
-the current EU4 playset, compute the complete semantic result before
-confirmation, and let the player browse it without writing output. The fixed
-14-case Workshop cohort remains the merge-quality gate for that product; it is
-not the user-facing milestone. See
-[`docs/desktop-app-plan.md`](./docs/desktop-app-plan.md) for the task backlog
-and [`docs/project-status.md`](./docs/project-status.md) for current evidence.
+Reusable CWT schema machinery lives under `src/game/schema`. That boundary is
+intended to support future concrete game implementations, but today only
+`src/game/eu4` has verified loader and content-family behavior.
+
+The active product milestone is a Windows read-only desktop workflow: inspect
+the current EU4 input, run merge analysis, and browse every review unit without
+writing output. See [the desktop plan](./docs/desktop-app-plan.md) and
+[the current checkpoint](./docs/project-status.md).
 
 ## Build and try it
 
-There is no published binary matching the current source line. The existing
-crates.io `foch 0.1.0` package is an older, superseded build; the current
-workspace is back at `0.0.1` while its product contract is being established.
-Do not use `cargo install foch` for this codebase. Build current Foch from the
-repository:
+There is no released binary matching this source line. The crates.io
+`foch 0.1.0` package is an older, superseded build; do not use `cargo install
+foch` for this repository.
 
 ```fish
 git clone --recurse-submodules https://github.com/Acture/foch.git
@@ -54,7 +53,7 @@ cd foch
 cargo install --path apps/foch-cli
 ```
 
-Build and install the EU4 base-data snapshot, then inspect and merge a launcher
+Build and install the EU4 base-data snapshot, then inspect and merge a Launcher
 playset:
 
 ```fish
@@ -66,44 +65,37 @@ foch data build eu4 \
 	--game-version auto \
 	--install
 
-foch workspace resolve "$PLAYSET"
+foch input inspect "$PLAYSET"
 foch check "$PLAYSET"
-foch merge-plan "$PLAYSET"
-foch merge "$PLAYSET" --out ./merged-mod            # preview the frozen path plan
-foch merge "$PLAYSET" --out ./merged-mod --confirm  # export that plan
-foch merge "$PLAYSET" --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path
+foch merge "$PLAYSET" --out ./merged-mod --non-interactive  # analyze and review; no write
+foch merge "$PLAYSET" --out ./merged-mod --confirm  # commit the reviewed result
+foch merge "$PLAYSET" --out ./new-merged-mod --confirm --non-interactive
 ```
 
-The initial base-data build scans the installed game and can take time. It
-produces an analyzed snapshot for later runs; Foch does not copy installed
-Workshop mods into an input CAS.
+The initial base-data build scans the installed game and can take time. Foch
+reads installed Workshop mods in place; it does not copy whole mod trees into
+an input CAS.
 
-Foch reads installed source mods in place. `foch merge` first prints a frozen
-path-level plan without touching `--out`; answer yes in a TTY or pass `--confirm`
-to export that same prepared plan. `--confirm` bypasses only this plan-export
-prompt: a non-empty `--out` still requires a separate TTY overwrite confirmation.
-Without that TTY confirmation Foch refuses the overwrite and exits `1`, so CI and
-batch exports must use a new or empty output path. Leaving the merge as a preview
-exits `0`. Structural leaf conflicts can still surface during export and are
-recorded in the report. `--non-interactive` disables prompts and remains plan-only
-unless combined with `--confirm`. After export, review
-`merged-mod/.foch/foch-merge-plan.json` and
-`merged-mod/.foch/foch-merge-report.json` before enabling the generated mod. A
-confirmed merge defers unresolved files or definition modules, exports every
-safe unit, and reports `partial_success`; add a reviewed resolution or edit the
-withheld unit manually later. `--force` only asks Foch to emit explicit
-fallbacks for supported conflicts. When a merge is ready, enable its
-launcher entry and disable the source mods to avoid loading both copies. Use a
-copy of your playset and keep normal game saves backed up while evaluating
-development builds.
+`foch merge` resolves and freezes the input, computes the semantic result, and
+presents its review without touching `--out`. A TTY confirmation or
+`--confirm` commits that result. A non-empty output directory still requires a
+separate TTY overwrite confirmation, so non-interactive jobs must use a new or
+empty path. `--non-interactive` disables prompts and does not imply
+`--confirm`.
+
+Unresolved files or complete definition modules are withheld while unrelated
+safe units are written. This `partial_success` result is valid. `--force`
+applies only to supported `needs_user_choice` fallbacks; it does not turn
+unsupported input or engine failures into safe output.
+
+Source mods and the game install are always read-only inputs. Enable the
+generated mod only after reviewing its report, and disable its source mods to
+avoid loading both copies.
 
 ## Conflict policy
 
-Foch does not silently choose a winner for an ambiguous structural conflict.
-It withholds only that file or definition module while continuing to export
-unrelated safe output.
-Reviewed decisions can be recorded as narrow `[[resolutions]]` entries in
-`foch.toml`:
+Foch does not silently pick a winner for an ambiguous structural conflict.
+Reviewed decisions can be recorded as narrow `[[resolutions]]` entries:
 
 ```toml
 [[resolutions]]
@@ -111,54 +103,40 @@ match = "common/ideas/00_country_ideas.txt"
 handler = "last_writer"
 ```
 
-Prefer exact files or conflicts over global policies. The available selectors,
-handlers, and safety rules are documented in
-[`docs/foch-toml-resolutions.md`](./docs/foch-toml-resolutions.md). Workspace
-composition is documented in
-[`docs/foch-workspace-manifest.md`](./docs/foch-workspace-manifest.md).
+Prefer exact files or conflict IDs over broad policies. See the
+[resolution reference](./docs/foch-toml-resolutions.md) and
+[project manifest reference](./docs/foch-project-manifest.md).
 
 ## CLI surface
 
 | Command | Purpose |
 | --- | --- |
-| `foch workspace resolve` | Show the game and mod inputs Foch will use. |
-| `foch check` | Parse and analyze a workspace without writing a merge. |
-| `foch merge-plan` | Produce the merge strategy and conflict inventory. |
-| `foch merge` | Prepare a frozen path plan; export and revalidate only after confirmation. |
-| `foch graph` | Export call, definition-dependency, mod-dependency, and semantic graphs. |
+| `foch input inspect` | Show the game and ordered mod inputs Foch will use. |
+| `foch check` | Parse and analyze an input without writing a merge. |
+| `foch merge` | Analyze and review a semantic result; commit only after confirmation. |
+| `foch graph` | Write call, definition-dependency, mod-dependency, and semantic graphs. |
 | `foch simplify` | Remove target-mod definitions equivalent to effective base definitions. |
 | `foch data` | Build, install, and inspect EU4 base-data snapshots. |
-| `foch cache` | Inspect and maintain persistent Foch caches. |
+| `foch cache` | Inspect and explicitly maintain persistent caches. |
 | `foch lsp` | Run the language server used by the VS Code extension. |
 
-Run `foch <command> --help` for the authoritative options.
+Run `foch <command> --help` for authoritative options.
 
-## Independent versions
+## Repository layout
 
-The repository contains three separately versioned products:
+- `src/` — the root `foch` library: input, project, check, graph, simplify,
+  merge, platform, reusable schema machinery, and concrete EU4 behavior
+- `apps/foch-cli` — the `foch` executable, LSP, integration tests, and private
+  merge-quality harness
+- `apps/foch-desktop` — the Tauri desktop product, linked directly to `foch`
+- `packages/tree-sitter-paradox` — independently versioned grammar package
+- `packages/vscode-foch` — independently versioned VS Code extension
 
-- Foch CLI, engine, and Rust libraries: `0.0.1`, tracking product merge
-  maturity;
-- VS Code extension: `0.1.0`, tracking editor usability;
-- `tree-sitter-paradox`: `0.2.0`, tracking the independently published grammar.
-
-Cache generations, report schemas, and dataset schemas have their own versions
-and do not track the CLI release number.
-
-## VS Code preview
-
-The current source tree under
-[`packages/vscode-foch`](./packages/vscode-foch) bundles `foch lsp` for EU4
-script diagnostics, schema-aware completion and hover, navigation, symbols, and
-a focused missing-localisation quick fix. The Marketplace `0.1.0` build predates
-these source-tree capabilities and remains a stale preview pending republish.
-Neither editor surface is a claim that automatic merge is ready for arbitrary
-modlists. See
-[`docs/lsp-0.1-preview.md`](./docs/lsp-0.1-preview.md).
+The Rust product is versioned at `0.0.1`, the VS Code extension at `0.1.0`, and
+`tree-sitter-paradox` at `0.2.0`. Cache and report schema generations are
+versioned independently.
 
 ## Development
-
-The main local gates are:
 
 ```fish
 cargo fmt --all --check
@@ -175,13 +153,16 @@ not part of a normal build.
 
 ## Documentation
 
-- [`KNOWN_ISSUES.md`](./KNOWN_ISSUES.md) — user-visible limitations and workarounds.
-- [`docs/project-status.md`](./docs/project-status.md) — current engineering and acceptance status.
-- [`docs/architecture.md`](./docs/architecture.md) — package and execution boundaries.
-- [`docs/foch-workspace-manifest.md`](./docs/foch-workspace-manifest.md) — workspace configuration.
-- [`docs/foch-toml-resolutions.md`](./docs/foch-toml-resolutions.md) — conflict-resolution DSL.
-- [`docs/RELEASE_CHECKLIST.md`](./docs/RELEASE_CHECKLIST.md) — release gates.
+- [Project status](./docs/project-status.md)
+- [Architecture](./docs/architecture.md)
+- [Desktop app plan](./docs/desktop-app-plan.md)
+- [Merge design](./docs/merge-design.md)
+- [`foch.toml` project manifest](./docs/foch-project-manifest.md)
+- [Resolution DSL](./docs/foch-toml-resolutions.md)
+- [VS Code/LSP preview](./docs/lsp-0.1-preview.md)
+- [Known issues](./KNOWN_ISSUES.md)
+- [Release checklist](./docs/RELEASE_CHECKLIST.md)
 
 ## License
 
-AGPL-3.0-only. See [`LICENSE`](./LICENSE).
+AGPL-3.0-only. See [LICENSE](./LICENSE).

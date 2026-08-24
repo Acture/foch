@@ -4,7 +4,7 @@
 # is frequently CRLF and several tests exercise that, so it must stay as-is.
 *.cwt text eol=lf
 
-# Frozen review-pack artifacts are byte-addressed and rendered with LF.
+# Fixed merge-quality cohort fixtures are byte-addressed and rendered with LF.
 apps/foch-cli/tests/merge_quality/fixtures/*.json text eol=lf
 
 # Dataset records are byte-frozen; checkout conversion must not change hashes.

@@ -14,16 +14,16 @@ it with live ownership when access is available.
 - [desktop-app-plan.md](./desktop-app-plan.md) — concrete Tauri product backlog,
   task dependencies, and per-task completion criteria
 - [architecture.md](./architecture.md) — package and execution boundaries,
-  including the current prepare/export gap
-- [merge-design.md](./merge-design.md) — public merge artifacts, conflict policy,
-  and output contract
+  including the analyze/review/commit flow
+- [merge-design.md](./merge-design.md) — review units, conflict policy, and
+  commit contract
 - [merge-quality-dataset.md](./merge-quality-dataset.md) — fixed 14-case product
   acceptance, input identity, evidence, and scoring contract
 
 ## User and Contributor Reference
 
-- [foch-workspace-manifest.md](./foch-workspace-manifest.md) — declarative
-  workspace composition
+- [foch-project-manifest.md](./foch-project-manifest.md) — declarative project
+  input composition
 - [foch-toml-resolutions.md](./foch-toml-resolutions.md) — reviewed conflict
   resolutions and safety rules
 - [cache-architecture.md](./cache-architecture.md) — cache layers, identity, and
@@ -43,5 +43,7 @@ active task queue and do not replace the current product acceptance gate.
   GumTree/PCS rollout and Legacy/Structured comparison
 - [common-applicability-probe.md](./common-applicability-probe.md) — auxiliary
   `common/<folder>` analysis, not product acceptance
-- [research/2026-07-22-common-applicability.md](./research/2026-07-22-common-applicability.md)
-  — fixed research result and failure taxonomy
+
+Files below `reviews/`, `research/`, `superpowers/`, and the top-level `plan/`
+directory are retained historical evidence. Their old crate names, commands,
+and roadmap language are not current architecture.

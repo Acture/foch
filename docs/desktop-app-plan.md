@@ -1,410 +1,271 @@
 # Desktop App Development Plan
 
-Planning decision: 2026-08-23
+This is the active issue-sized plan for the player-facing Tauri application.
+The product remains EU4-only and shares the root `foch` library with the CLI.
 
-This document is the executable product backlog for Foch's player-facing
-desktop application. It turns the product workflow into reviewable tasks with
-explicit dependencies and completion criteria. The fixed Workshop corpus is a
-quality gate for these tasks; running the corpus is not itself a product
-feature.
+## Product boundary
 
-## Product Boundary
+The first useful desktop checkpoint is a Windows player opening Foch and
+answering three questions without writing output:
 
-Foch will have two user-facing entry points backed by the same Rust engine:
+1. Did Foch find the installed EU4 game, current Launcher playset, every
+   descriptor/Workshop item, and the matching base snapshot?
+2. What will the semantic merge do to every file or definition module?
+3. Which units are safe, copied, need a choice, unsupported, failed, or
+   explicitly deferred?
 
-- `foch` remains the command-line interface for automation, advanced users,
-  and diagnostics.
-- A dedicated desktop application becomes the primary interface for EU4
-  players.
+The desktop backend links `foch` directly. It does not spawn the CLI, expose
+raw syntax/report/artifact data over IPC, mutate game or source-mod trees, or
+use the merge-quality harness as a product API.
 
-The desktop application will use Tauri with a TypeScript frontend. The initial
-implementation plan uses React and Vite. The Tauri Rust package must depend
-directly on `foch-engine` and `foch-core`; it must not bundle another `foch`
-executable, spawn the CLI, scrape terminal output, or consume merge-quality
-JSONL as a product API.
+The lifecycle is:
 
-The other existing interfaces keep narrower roles:
-
-- The VS Code extension remains a mod-authoring and language-analysis tool.
-- The terminal conflict resolver remains a fallback for CLI users.
-- The merge-quality package remains internal validation infrastructure.
-
-Windows 10/11 x64 is the primary product and acceptance target. macOS and
-Linux must share the same frontend and engine code, with platform-specific
-Steam, Launcher, path, packaging, and signing behavior isolated in small Rust
-adapters.
-
-## Target User Flow
-
-1. Open Foch and verify the detected game, Launcher, and base-data state.
-2. Inspect the current Launcher playset and exact enabled-mod order.
-3. Start a read-only merge analysis and watch its progress.
-4. Browse every safe, deferred, unsupported, and failed result before output.
-5. Review genuine conflicts, choose a source or manual result, or defer them.
-6. Review the exact output and all remaining omissions.
-7. Confirm once, publish transactionally, and follow an accurate Launcher
-   enable/disable checklist.
-8. Reopen the project later, retaining valid decisions and identifying stale
-   ones after input changes.
-
-## Non-Negotiable Behavior
-
-- Preview must not create or replace the requested output directory or alter
-  Launcher state.
-- Preview must not copy complete Workshop trees into another store or hash all
-  Workshop files. Workshop version identity continues to come from the paired
-  read-only ACF manifest.
-- Confirmation publishes the result the user reviewed. It must not start a
-  second semantic merge or discover new semantic choices.
-- Input changes between preview and export invalidate the preview before any
-  output transaction starts.
-- `needs_user_choice`, `unsupported_input`, and `engine_failure` remain
-  distinct. Only genuine user choices receive selection controls.
-- Defer is a valid default. Safe unrelated content must remain available when
-  some units are deferred.
-- A partial artifact may be exported for manual repair, but the application
-  must not call it safe to activate when disabling the source mods would drop
-  withheld content.
-- The first implementation reruns the complete read-only analysis after a
-  batch of changed decisions. Incremental recomputation is not required.
-- The application may create a Launcher mod entry after explicit export, but
-  it must not silently modify the active playset.
-
-## Dependency Order
-
-```mermaid
-flowchart LR
-    APP001[APP-001 Desktop package] --> APP002[APP-002 First launch]
-    ENG001[ENG-001 Progress and cancellation] --> ENG002[ENG-002 Complete read-only result]
-    APP001 --> APP003[APP-003 Analysis commands]
-    APP002 --> APP003
-    ENG001 --> APP003
-    ENG002 --> APP003
-    APP003 --> APP004[APP-004 Preview browser]
-    ENG002 --> ENG003[ENG-003 Decisions before confirmation]
-    APP004 --> APP005[APP-005 Conflict review]
-    ENG003 --> APP005
-    ENG003 --> ENG004[ENG-004 Export reviewed result]
-    APP005 --> APP006[APP-006 Final review and export]
-    ENG004 --> APP006
-    APP006 --> APP007[APP-007 Reopen work]
-    APP007 --> APP008[APP-008 Explain results]
-    APP006 --> REL001[REL-001 Windows alpha]
-    APP008 --> REL001
-    REL001 --> REL002[REL-002 macOS and Linux]
+```text
+inspect -> analyze -> review -> confirm -> commit
 ```
 
-Start `APP-001` and `ENG-001` in parallel. Then run `APP-002` and `ENG-002`
-in parallel. `APP-003` and `APP-004` combine those two lines into the first
-product checkpoint.
+The UI may call the last step “export.” Internally it commits already analyzed
+and frozen bytes; it does not rerun semantic merge work after confirmation.
 
-## Milestone 1: Windows Read-Only Product
+`MergeSession` is not part of the current implementation. Persisted or
+long-lived interactive session design remains deferred until the bounded
+analysis/review APIs prove a concrete need.
 
-### APP-001: Add the desktop application package
+## Non-negotiable behavior
 
-**Outcome:** the repository can build and package a Windows desktop shell that
-links the existing Rust engine.
+- EU4, source mods, Launcher files, and Workshop ACF files are read-only.
+- Playset order is semantic and must remain unchanged.
+- Input inspection must not initialize config or base data.
+- Analysis must not write the requested output directory.
+- Every planned file or definition module must have exactly one review outcome.
+- Confirmation does not authorize replacing a non-empty output directory.
+- Input/base/output drift must fail before commit.
+- Only bounded DTOs may cross Tauri IPC.
+- One analysis may be queued or running; terminal history is a small FIFO.
+- Cancellation is cooperative and terminal status is stable.
 
-**Work:**
+## Dependency order
 
-- Create `apps/foch-desktop` with Tauri, React, TypeScript, and Vite.
-- Add the frontend to the Bun workspace and the Tauri Rust package to the Cargo
-  workspace.
-- Depend directly on `foch-engine` and `foch-core` from the Tauri Rust package.
-- Add frontend formatting, lint, type-check, unit-test, and production-build
-  gates alongside the normal Rust gates.
-- Add a Windows development-package smoke to CI. Public signing is deferred to
-  `REL-001`.
+```text
+APP-001
+   |
+   +--> INPUT-001 --> APP-003 --> APP-004
+   |
+   +--> ENG-001 ----/
+   +--> ENG-002 --> REVIEW-001 -/
 
-**Done when:** Windows CI produces an installable development application, the
-window starts successfully, and repository tests prove that the application
-does not bundle or spawn the `foch` CLI.
+APP-004 --> ENG-003 --> APP-005 --> ENG-004 --> APP-006 --> APP-007
+                                                        |
+                                                        +--> APP-008 --> REL-001 --> REL-002
+```
 
-### APP-002: Build first-launch and current-playset UI
+## Milestone 1: Windows read-only product
 
-**Outcome:** a player can see whether Foch is ready and which mods it will
-analyze without using a terminal.
+### APP-001: Desktop application package
 
-**Work:**
+**Status:** implemented by `7f39c20` and strengthened by `f59d3f3`; Windows CI
+installer/launch evidence remains a release prerequisite.
 
-- Reuse existing configuration and workspace APIs to detect Steam, EU4, the
-  Paradox user directory, installed base data, and the current
-  `dlc_load.json`.
-- Show every enabled mod in exact load order with display name, Workshop
-  identity and version, dependency information, and descriptor or missing-input
-  errors.
-- Offer explicit path selection only when discovery fails.
-- Do not claim to enumerate every named Launcher playset until that behavior is
-  implemented and verified.
+**Scope:** Tauri v2, React/TypeScript/Vite shell, direct Rust-library link, no
+sidecar, minimal capabilities, frontend/backend smoke gates.
 
-**Done when:** a clean Windows user profile can reach a clear ready or blocked
-state, inspect the actual current playset, and follow an actionable correction
-for every blocked prerequisite.
+**Done when:** Windows CI produces an installable development application and
+launch smoke succeeds on a clean runner.
 
-### ENG-001: Add structured progress and cancellation
+### ENG-001: Structured progress and cancellation
 
-**Outcome:** CLI and desktop users receive the same meaningful progress while
-long-running work remains cancellable.
+**Status:** implemented in the root merge analysis API.
 
-**Likely ownership:** `crates/foch-engine/src/merge`, workspace resolution,
-base-data loading where relevant, and the CLI progress adapter.
+**Scope:** stable stages, elapsed time, optional unit counts, observer trait,
+thread-safe cancellation token, and cancellation checks between bounded work.
 
-**Work:**
+**Done when:** focused tests cover ordering, stage/count fields, cancellation,
+and no output mutation.
 
-- Replace merge-path `eprintln!`-only progress with callbacks covering
-  inventory, workspace resolution, parsing, semantic merge, validation, and
-  export.
-- Include completed/total counts when available, the current stage, and elapsed
-  time without emitting one event per trivial operation.
-- Keep a CLI adapter that renders the events as useful logs.
-- Add cancellation checks between safe work units. Cancellation before
-  publication must leave output and Launcher state unchanged.
+### ENG-002: Complete read-only merge analysis
 
-**Done when:** focused tests cover ordered events, count and elapsed fields,
-cancellation in each stage, and unchanged filesystem state after cancellation.
+**Status:** implemented by the analyze/commit split beginning at `001e5c3`.
 
-### ENG-002: Compute the complete merge result without publishing
+**Scope:** compute the semantic result, generated bytes, validation, and drift
+guards before confirmation. Commit may only validate and atomically install the
+frozen artifact tree.
 
-**Outcome:** confirmation is preceded by the real semantic result rather than
-the current path-only plan.
+**Done when:** tests prove analysis does not touch the target, commit does not
+rerun a backend, and input/base/prior-output drift fails before write.
 
-**Likely ownership:** `crates/foch-engine/src/merge/execute.rs`,
-`crates/foch-engine/src/merge/output/materialize.rs`, related output helpers,
-and merge-report models in `foch-core`.
+### APP-002: First-launch and current-playset UI
 
-**Work:**
+**Status:** implemented in source by `55273b3`, `e4b1a9c`, `d593699`, and
+`b8db81a`. A packaged clean-Windows-profile check remains outstanding.
 
-- Move semantic work currently performed during export into the read-only
-  preparation path.
-- Retain final generated text, source references for files that will be copied,
-  omitted and deferred records, complete conflict views, and report facts.
-- Do not load copy-through assets into memory merely to preserve them for
-  export. Keep validated source references and copy them only after
-  confirmation.
-- Complete cross-file and final-output decisions before presenting the result.
-- Do not begin an output transaction, create the requested output directory,
-  install a Launcher entry, copy complete source trees, or run a full-tree
-  integrity audit.
+**Scope:** present the detected game/version, base-data state, ordered enabled
+mods, descriptor/Workshop readiness issues, retry, and a disabled analysis
+action while input is blocked.
 
-**Done when:** the no-confirm path exposes every final safe, user-choice,
-unsupported, and engine-failure result while the requested output and Launcher
-state remain absent or byte-identical.
+**Done when:** the committed UI is backed by real read-only inspection on a
+clean Windows profile and every blocked state gives an actionable reason.
+
+### INPUT-001: Inspect the current EU4 input
+
+**Status:** implemented by `e4b1a9c` and hardened by `d593699`.
+
+**Scope:**
+
+- detect the EU4 install and exact game version;
+- read the current `dlc_load.json` once with sibling descriptors;
+- pair installed Workshop items with the correct library's
+  `appworkshop_236850.acf` records, keeping IDs as strings;
+- inspect installed base-data identity and readiness;
+- return explicit readiness issues and ordered, displayable contributors; and
+- convert a ready result into an `InputRequest` that reuses the inspected
+  playset and exact paths.
+
+**Done when:** tests cover ready, missing, invalid, and stale inputs; IDs larger
+than JavaScript's safe integer range round-trip as strings; the inspection
+performs no writes; and later analysis cannot silently switch to a different
+playset/game root.
+
+### REVIEW-001: Complete merge review ledger
+
+**Status:** implemented by `7567dce`; the fixed-corpus harness was aligned in
+`30aa902`.
+
+**Scope:** expose stable review units from `AnalyzedMerge`, one per planned file
+or definition module, with normalized IDs, family, strategy, disposition,
+ordered contributors, optional output path, and bounded notes.
+
+**Done when:** tests cover every materialization branch, backend failure/panic,
+explicit versus implicit defer, `--force`, cross-file pruning, duplicate IDs,
+double resolution, and pending-unit invariants.
 
 ### APP-003: Expose desktop analysis commands
 
-**Outcome:** the TypeScript UI can drive analysis without becoming responsible
-for engine state or filesystem behavior.
+**Status:** implemented by `b8db81a`.
 
-**Work:**
+**Scope:** exactly six Tauri commands:
 
-- Add thin Tauri commands to start and cancel analysis and to query its summary,
-  filtered result pages, one result detail, and one conflict detail.
-- Keep the prepared result and generated payloads in Rust-owned application
-  state. Do not send whole syntax trees or an entire generated mod through IPC.
-- Stream `ENG-001` progress through a Tauri channel.
-- Validate every path and option at the Rust boundary and expose only the
-  filesystem operations required by the product workflow.
+- `inspect_input`
+- `start_merge_analysis`
+- `cancel_merge_analysis`
+- `get_merge_analysis_summary`
+- `list_merge_units`
+- `get_merge_unit`
 
-**Done when:** command tests cover valid and invalid input, bounded response
-payloads, progress, cancellation, and the absence of CLI subprocesses.
+The service keeps opaque analyzed results in Rust, uses background blocking
+work for analysis, assigns UUIDs, permits one active analysis, retains at most
+four terminal analyses, and filters/paginates units before serialization.
 
-### APP-004: Build the read-only preview browser
+**Done when:** command/service tests cover busy state, queued/running
+cancellation, progress, ready/deferral/blocked/failed outcomes, terminal FIFO,
+pagination bounds, query bounds, DTO casing, panic conversion, and absence of
+CLI process spawning. There is no commit/export command in this task.
 
-**Outcome:** a player can understand the complete proposed merge before any
-output is written.
+### APP-004: Read-only review browser
 
-**Work:**
+**Status:** implemented in source by `55273b3` and `b8db81a`. The complete
+packaged Windows flow remains unverified.
 
-- Add Analyze, stage progress, elapsed time, cancellation, and summary counts.
-- Add a searchable and filterable result list grouped by file or content
-  family.
-- Distinguish safe structural merge, copy or overlay, `needs_user_choice`,
-  `unsupported_input`, and `engine_failure` visually and textually.
-- Show contributing mods, the decision reason, and proposed final content
-  without exposing raw report JSON as the primary interface.
+**Scope:** first-launch readiness screen, ordered playset summary, analysis
+progress/cancel UI, disposition counts, searchable/filterable paginated unit
+list, and bounded unit detail.
 
-**Done when:** the packaged Windows app completes current playset, analysis,
-and complete result browsing without creating or modifying output.
+**Done when:** APP-003 backs the committed UI and a packaged Windows app can
+inspect the current input and browse the complete semantic result without
+writing output or requiring terminal use.
 
-Completion of `APP-004` is the first product checkpoint.
+## Milestone 2: Decisions and export
 
-## Milestone 2: Review, Confirm, and Export
+### ENG-003: Apply review decisions before confirmation
 
-### ENG-003: Apply decisions before confirmation
+**Depends on:** APP-004.
 
-**Outcome:** every genuine ambiguity can be selected or deferred during review.
+Add typed decisions for genuine `needs_user_choice` units, re-evaluate affected
+units before confirmation, and keep unsupported input/engine failures distinct
+from user choices.
 
-**Work:**
+**Done when:** every surviving choice is visible and editable before export,
+decision changes deterministically update the review, and no hidden conflict is
+first discovered by commit.
 
-- Expose existing stable conflict IDs and candidate views through the desktop
-  command boundary.
-- Persist source selection, external manual files, keep-existing choices, and
-  defer through the existing `foch.toml` resolution path.
-- Re-run the complete read-only analysis after a saved batch of decisions.
-- Preserve `unsupported_input` and `engine_failure` as non-selectable product
-  limitations.
+### APP-005: Visual conflict review
 
-**Done when:** all surviving user choices are visible and editable before
-confirmation, and the resulting preview reflects the saved decisions.
+**Depends on:** ENG-003.
 
-### APP-005: Build visual conflict review
+Show contributors, relevant source context, candidate choices, defer, and the
+effect of each decision without depending on the terminal TUI.
 
-**Outcome:** a player can resolve or defer conflicts without the terminal or
-manual TOML editing.
+**Done when:** a player can finish or defer the conflict queue and return to a
+stable final review.
 
-**Work:**
+### ENG-004: Commit the exact reviewed result
 
-- Add a global conflict queue with filters for state, file, content family, and
-  source mod.
-- Present vanilla, every contributing mod, and the proposed result side by side.
-- Support choosing a candidate, providing a manual file, keeping a prior result,
-  deferring, undoing, and saving a batch.
-- Distinguish active, resolved, deferred, and stale saved decisions.
+**Depends on:** APP-005.
 
-**Done when:** a user can finish or defer the queue and return to final review
-without opening the TUI, JSON, or TOML.
+Expose the guarded commit operation required by desktop export. Revalidate
+input/base/output guards, require separate authorization for replacement, and
+atomically install the exact reviewed artifact tree.
 
-### ENG-004: Export the exact reviewed result
+**Done when:** tests prove one semantic computation, review/export parity,
+drift rejection before write, and atomic target replacement.
 
-**Outcome:** export is a checked publication step, not another semantic merge.
+### APP-006: Final confirmation, export, and Launcher handoff
 
-**Work:**
+**Depends on:** ENG-004.
 
-- Retain the reviewed file decisions and generated text in Rust-owned prepared
-  state.
-- Before writing, revalidate ordered Workshop versions, base snapshot, merge
-  options, saved decisions, and external manual files.
-- Reject changed input before opening the output transaction and require a new
-  preview.
-- For unchanged input, write transactionally without invoking the semantic
-  merge kernel again.
+Present target path, replacement warning, safe/withheld totals, Launcher steps,
+and export progress. Creating or enabling a Launcher entry requires explicit
+user action and must never alter the source playset silently.
 
-**Done when:** tests prove one semantic computation, preview/export parity,
-input-drift rejection before write, and atomic publication.
+**Done when:** a player can review, confirm, export, and follow an accurate
+Launcher checklist end to end.
 
-### APP-006: Build final review, export, and Launcher handoff
+### APP-007: Reopen reviewed work
 
-**Outcome:** a player understands exactly what will be written and how to use
-the result safely.
+**Depends on:** APP-006.
 
-**Work:**
+Persist only the smallest stable decision metadata. Reinspect current inputs on
+reopen and invalidate stale work clearly when identities change.
 
-- Show output path, generated/copied/omitted counts, all remaining deferred
-  units, activation safety, and overwrite consequences.
-- Require a separate confirmation before replacing a non-empty output
-  directory.
-- Show export progress and cancellation only at stages where cancellation is
-  safe.
-- After success, show the generated Launcher entry, merged mod to enable, source
-  mods to disable, and any reason the partial result is not safe to activate.
-- Do not silently edit the active Launcher playset.
+**Done when:** valid decisions survive restart while mod/game/base drift cannot
+be mistaken for a current review.
 
-**Done when:** current playset, review, choose or defer, final confirmation,
-export, and an accurate Launcher checklist work end to end, and confirmation
-opens no new semantic-choice UI.
+## Milestone 3: Explain and release
 
-### APP-007: Reopen existing work
+### APP-008: Explain results
 
-**Outcome:** decisions survive normal application restarts and mod updates do
-not silently reuse obsolete previews.
+Expose concise provenance and withholding explanations built from existing
+review/report data. Do not ship raw ASTs or unbounded trace data to the frontend.
 
-**Work:**
+### REL-001: Windows alpha
 
-- Open an existing `foch.toml` project and its last report.
-- Revalidate current Workshop ACF identities, load order, base data, options,
-  and saved decisions.
-- Retain decisions whose exact conflict and candidates still match; label
-  non-matching decisions stale and require a fresh preview.
+Require installer/launch CI, signed/reproducible release artifacts as policy
+dictates, a clean-profile end-to-end smoke, current documentation, and an
+explicit statement that merge-quality acceptance does not launch EU4.
 
-**Done when:** a restarted application can resume valid review work while
-preventing export from an obsolete preview.
+### REL-002: macOS and Linux packages
 
-Completion of `APP-007` is the first complete daily-use merge workflow.
+Reuse the same application/domain code. Add only platform-specific discovery,
+packaging, and smoke evidence; do not fork merge semantics by platform.
 
-## Milestone 3: Explain and Release
+## Parallel merge-quality work
 
-### APP-008: Explain the final result
+The fixed 14-case, 26-item Workshop cohort remains the product gate. Work from
+fresh failures: reproduce one cause with a focused fixture, fix the correct EU4
+content-family or merge boundary, run focused gates, then probe the bounded real
+case. Agents hand off the long wrapper rather than starting it unannounced.
 
-**Outcome:** users can answer why Foch produced or withheld an item without
-reading raw artifacts.
+## Deferred until evidence requires it
 
-**Work:**
+- `MergeSession` or another long-lived domain session
+- multi-game selection
+- background Workshop subscription/download/update
+- automatic playset mutation
+- full-tree Workshop hashing as a normal identity check
+- a full merge-output cache
+- arbitrary filesystem/shell Tauri capabilities
 
-- Present existing report, provenance, and merge-trace data as navigable UI.
-- For each output or withheld unit, show contributing mods, the automatic rule
-  or saved user choice, the reason, and the final location.
-- Link final results back to their conflicts and decisions.
+## Updating this plan
 
-**Done when:** the application answers the common provenance and withheld-result
-questions without requiring the report JSON.
-
-In-game `Base: ...` and `Modified by: ...` presentation remains a separate
-content-family task. Add it only where EU4 exposes a safe tooltip or
-localisation surface, and only to final surviving output.
-
-### REL-001: Ship the Windows alpha
-
-**Outcome:** a Windows player can install and use Foch without a development
-toolchain.
-
-**Likely ownership:** the desktop package, `.github/workflows/release.yml`, and
-the existing base-data release path.
-
-**Work:**
-
-- Produce a Windows desktop installer, CLI archive, matching base-data manifest
-  and snapshot, and checksums under one version.
-- Add Windows signing before public download so the normal path does not depend
-  on dismissing SmartScreen.
-- Test a clean machine through install, base-data setup, first launch, current
-  playset, preview, export, and Launcher discovery.
-
-**Done when:** a non-developer can complete that flow without Rust, Bun, or a
-terminal.
-
-### REL-002: Package macOS and Linux
-
-**Outcome:** the shared application code produces supported secondary-platform
-artifacts without forking product behavior.
-
-**Work:**
-
-- Build, sign, and notarize the macOS application and package the Linux
-  application in the selected release formats.
-- Keep platform-specific behavior behind small Rust adapters.
-- Continue full product acceptance on Windows. Initially require packaging plus
-  first-launch and read-only-preview smoke on macOS and Linux.
-
-**Done when:** shared features remain common while each platform-specific path
-is explicit and tested.
-
-## Parallel Merge-Quality Work
-
-After `ENG-002`, fresh real failures create one issue per exact
-`ContentFamily`, case, and user-visible symptom. Each issue must:
-
-- preserve every compatible base and mod contribution;
-- defer genuinely ambiguous content;
-- start with a focused failing regression;
-- replay the reproduced real case; and
-- reparse the generated output without regressing supported families.
-
-Do not create a generic “improve merge quality” mega-task. Do not select a
-family from stale corpus results, and do not count running the 14-case wrapper
-as a product deliverable.
-
-## Deferred Until Evidence Requires Them
-
-- Incremental recomputation after each individual conflict choice.
-- Silent or automatic mutation of the active Launcher playset.
-- A second full-featured TUI or a VS Code merge application.
-- A project-history database beyond `foch.toml`, reports, and input identity.
-- Multi-game UI behavior.
-- General `replace_path` optimization without a reproduced current bottleneck.
-
-## Updating This Plan
-
-Mark task state in Notion, which remains the live ownership system. Update this
-document when task boundaries, dependencies, product behavior, or completion
-criteria change. Record rolling source commits, test results, corpus totals, and
-local input availability in `project-status.md`, not here.
+Update task status only with an exact commit or worktree observation. Keep
+stable product rules in `AGENTS.md`, current source/test evidence in
+`project-status.md`, and live ownership/blockers in Notion.

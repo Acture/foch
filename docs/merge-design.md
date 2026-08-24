@@ -1,482 +1,229 @@
 # Merge Design
 
-Original design: 2026-03-24
-
-Last reconciled with current source: 2026-08-17
-
-> This document preserves the public merge/output design and its rationale. The
-> implementation now supports more content families than the original V1 list.
-> For current behavior, accepted evidence, and active architecture gaps, read
-> [project-status.md](./project-status.md) first; code and integration tests win
-> if an older design statement disagrees with them.
-
-## Summary
-
-This document defines the first implementation-ready design for turning `foch` into a static-analysis-driven Paradox mod merger.
-
-This specification is intentionally narrow:
-
-- target game: EU4 only
-- structural merge support: only roots already covered by the current semantic indexing layer
-- unsupported binary or unknown assets: copy through when unique, otherwise raise a manual conflict
-- generated output is never considered successful until it has been revalidated
-
-## Product Goal
-
-The product goal is to take an ordered playset and produce either:
-
-- a deterministic merge plan
-- or a generated merged mod directory plus a validation report
-
-The generated result must preserve load-order semantics where direct copying is sufficient, and use structural merging only where the repository already has enough parser and semantic coverage to do so safely.
-
-## V1 Non-Goals
-
-The first merge-capable version does not attempt to provide:
-
-- universal Paradox game support beyond EU4
-- guaranteed safe rewriting of every `.gui`, `.gfx`, or arbitrary text file
-- automatic resolution of unsupported overlapping binary assets
-- editor-integrated conflict review UX
-- semantic equivalence guarantees for paths outside the supported structural classes
-- a full localisation compatibility solution
-
-Localisation-specific compatibility remains a separate workstream. The merge engine may report localisation regressions during validation, but v1 merge planning and emission do not depend on solving localisation behavior end to end.
-
-## Target Workflow
-
-The intended workflow is:
-
-1. `foch check <playlist.json>`
-2. `foch merge-plan <playlist.json> --format json --output <path>`
-3. `foch merge <playlist.json> --out <dir>` to review the frozen plan
-4. `foch merge <playlist.json> --out <dir> --confirm` to export that plan and run post-merge validation
-
-`check` remains the existing diagnostic command.
-
-`merge-plan` becomes the dry-run planning command.
-
-`merge` becomes the artifact-producing command and always runs a validation pass before success is reported.
-
-The current preview freezes the loader view and path-level classification, not
-the complete semantic artifact. Leaf conflicts can therefore be discovered
-during confirmed export. Showing those semantic outcomes before confirmation
-is future work; this document does not prescribe a new internal type or
-pipeline for it.
-
-## Command Surface
-
-### `foch check`
-
-The existing command remains unchanged in v1.
-
-### `foch merge-plan`
-
-Required input:
-
-- `playset_path`
-
-Supported options:
-
-- `--format text|json`
-- `--output <path>`
-- `--no-game-base`
-
-Behavior:
-
-- resolves the playset and effective load order
-- classifies every file in the merged view
-- emits a deterministic plan without writing a merged mod tree
-
-Exit codes:
-
-- `0` when the plan is produced successfully
-- `1` on system or input errors
-- `2` when manual conflicts are present in the computed plan
-
-### `foch merge`
-
-Required input:
-
-- `playset_path`
-- `--out <dir>`
-
-Supported options:
-
-- `--force`
-- `--confirm`
-- `--non-interactive`
-- `--no-game-base`
-
-Behavior:
-
-- computes the same plan as `merge-plan`
-- prints the frozen plan without touching `--out` until the user confirms
-- treats `--confirm` as confirmation of that prepared plan only
-- requires a separate TTY confirmation before replacing a non-empty `--out`; CI and batch exports must use a new or empty path
-- writes every safe file or definition module after confirmation
-- withholds only unresolved files or definition modules and records them for later resolution
-- uses `--force` only for supported text `needs_user_choice` fallbacks;
-  `unsupported_input` and `engine_failure` remain withheld
-- writes merge metadata
-- runs post-merge validation
-
-Exit codes:
-
-- `0` when generation completes as `ready` or `partial_success`, or when the command remains a plan-only preview
-- `1` on system or input errors, or when the separate non-empty-output overwrite confirmation is unavailable or declined
-- `2` when an explicit non-conflict publication gate blocks generation
-
-## Merge Strategy Taxonomy
-
-Every effective path in the merged view must be classified into exactly one strategy:
-
-### `copy_through`
-
-Definition:
-
-- the path is provided by exactly one source artifact in the resolved load order
-
-Behavior:
-
-- copy the source file into the generated output without rewriting it
-
-### `last_writer_overlay`
-
-Definition:
-
-- the path is provided by multiple sources, but the path class is not supported for structural merging and is still safe to represent with normal Paradox last-writer semantics
-
-Behavior:
-
-- copy only the highest-precedence source file
-- record all overridden contributors in the merge manifest
-
-Allowed for v1:
-
-- unique text or asset classes where direct overlay is faithful to game semantics and the repository is not attempting structural composition
-
-### `structural_merge`
-
-Definition:
-
-- the path is provided by multiple sources and belongs to a supported structural merge class
-
-Behavior:
-
-- parse all contributors
-- convert them into merge IR
-- merge deterministically by class-specific rules
-- emit a generated file instead of copying a source file verbatim
-
-### `manual_conflict`
-
-Definition:
-
-- the path is provided by multiple sources and the repository cannot safely apply either direct overlay or structural merging under v1 rules
-
-Behavior:
-
-- do not silently choose a winner during merge planning
-- defer only the affected file or complete definition module
-- continue materializing unrelated safe units with or without `--force`
-- if `--force` is used, emit a conflict placeholder only for supported text
-  `needs_user_choice` units
-- always record the conflict in the merge manifest and validation report
-
-## Original V1 Seed Classes
-
-This list records the initial design scope; it is not the current exhaustive
-`ContentFamily` registry or definition-module policy. Use the EU4 profile and
-its regression tests for the live support set.
-
-V1 structural merge support is limited to paths already covered by current semantic indexing:
-
-- `events/**`
-- `decisions/**`
-- `common/scripted_effects/**`
-- `common/diplomatic_actions/**`
-- `common/triggered_modifiers/**`
-- `common/defines/**`
-
-UI-related paths are explicitly limited in v1:
-
-- `interface/**`
-- `common/interface/**`
-- `gfx/**`
-
-Policy for these UI-related paths:
-
-- they may be classified as structural merge candidates in planning
-- they are not rewritten in v1
-- overlapping files in these roots become `manual_conflict` unless they can be represented faithfully as `last_writer_overlay`
-
-This keeps the implementation aligned with current parser coverage without overstating safety.
-
-## Deterministic Precedence Rules
-
-All merge behavior must use a single precedence order:
-
-- later enabled mod in the playset overrides earlier enabled mod
-- by default, base game content is lower precedence than every mod; `--no-game-base` disables that input
-- when two contributions originate from the same mod and path, the repository uses the file discovered at that normalized relative path
-
-The merge plan and the generated output must both use this exact order. No command may use a different precedence model.
-
-## Merge Pipeline
-
-### Phase 1: Resolve inputs
-
-- parse the playset
-- resolve mod roots
-- optionally resolve the base game root
-- build the effective ordered contributor list
-
-### Phase 2: Build file inventory
-
-- enumerate all effective relative paths
-- normalize path separators and casing rules used by the current analyzer
-- collect contributors per path in precedence order
-
-### Phase 3: Classify strategy
-
-For each effective path:
-
-- `copy_through` if there is a single contributor
-- `structural_merge` if the normalized path falls in a supported structural class and all contributors parse successfully
-- `last_writer_overlay` if the path is a non-structural class that can safely preserve last-writer semantics
-- `manual_conflict` otherwise
-
-A parse failure for any contributor in a structural class downgrades that path to `manual_conflict`.
-
-### Phase 4: Materialize output
-
-For each path in the plan:
-
-- copy files for `copy_through`
-- copy the winning file for `last_writer_overlay`
-- generate files for `structural_merge`
-- withhold the affected unit for `manual_conflict`, or emit a safe placeholder when `--force` permits it
-
-### Phase 5: Write metadata
-
-Always write:
-
-- generated `descriptor.mod`
-- `foch-merge-plan.json`
-- `foch-merge-report.json`
-
-### Phase 6: Revalidate
-
-Always run a validation pass against the generated output tree:
-
-- parse validation
-- semantic validation over supported script roots
-- unresolved references and localisation regressions
-- residual manual conflicts
-
-The final command status is derived from this validation step.
-
-## Implementation Order For Milestone 4
-
-The first implementation pass should be split into the same four slices used by the roadmap so the coordinator can assign them independently:
-
-- Slice A: contract freeze for plan/report shape and output layout
-- Slice B: merge IR for supported structural roots
-- Slice C: materialization and artifact emission
-- Slice D: post-merge revalidation and exit-status gating
-
-Recommended dependency order:
-
-- complete Slice A before any worker starts Slice B or Slice C
-- allow Slice B and Slice C to run in parallel only after the shared contract is frozen
-- keep Slice D last, because it depends on the emitted tree and metadata files
-
-## Output Artifact Layout
-
-Given `foch merge playlist.json --out ./merged-mod`, the output directory layout is fixed as:
+This document defines the current product merge contract. Foch is an EU4-aware
+N-way semantic merger, not a generic three-way text merger and not a wrapper
+around exact-path overwrite order.
+
+## Goals
+
+- preserve compatible contributions from an ordered EU4 mod playset;
+- model verified loader semantics at the correct file, definition, or
+  definition-module boundary;
+- use the analyzed EU4 base snapshot as the semantic ancestor;
+- make genuine ambiguity reviewable instead of silently choosing a winner;
+- compute the complete result before confirmation; and
+- atomically commit the exact reviewed bytes to a separate mod directory.
+
+Localisation and unsupported content families may use narrower strategies. CWT
+rules are evidence for shape and editor behavior, not proof of runtime load or
+merge semantics.
+
+## Product flow
 
 ```text
-merged-mod/
+inspect input
+    -> analyze semantic result
+    -> review every unit
+    -> confirm target/replacement
+    -> commit frozen artifacts
+```
+
+`foch merge <input> --out <dir>` performs analysis and review without touching
+the target. A TTY confirmation or `--confirm` authorizes commit. In
+non-interactive use, analysis remains read-only unless `--confirm` is also
+present.
+
+There is no separate CLI merge-plan command in this contract. Path
+classification is part of merge analysis. There is also no implemented
+`MergeSession`; long-lived session design is deferred.
+
+## Inputs and precedence
+
+An input is either the Launcher's `dlc_load.json` plus sibling `.mod`
+descriptors, or a `[project]` manifest in `foch.toml`. Resolution produces:
+
+- the concrete EU4 game root and version;
+- the ordered enabled mod contributors;
+- declared dependencies and reviewed overrides;
+- paired Workshop ACF installation identities when available; and
+- the installed EU4 base-snapshot identity.
+
+Playset order is semantic. Every path strategy, revision DAG, review
+contributor, cache identity, and report must preserve it. Sorting contributors
+merely to make a key deterministic is incorrect.
+
+Source mods and the game installation are read-only. Normal analysis reads
+installed Workshop content in place and does not copy or recursively hash whole
+trees into an input CAS.
+
+## Units and content families
+
+A merge review unit is one of:
+
+- **file** — a single output-relative path; or
+- **definition module** — all files that jointly define one loader-level
+  module for a concrete EU4 content family.
+
+Exact-path overlap is neither necessary nor sufficient for a semantic conflict.
+The EU4 content-family registry in `src/game/eu4/content` decides discovery,
+module partition, key policy, ordering, base requirements, and supported merge
+behavior.
+
+The analyzed EU4 base snapshot is the ancestor for structural merge. Missing
+vanilla input is never treated as an empty ancestor unless the content family
+explicitly opts into a verified empty-base policy.
+
+## Analysis strategies
+
+The internal path plan assigns one strategy before materialization:
+
+| Strategy | Contract |
+| --- | --- |
+| `copy_through` | One effective non-base contribution is copied unchanged. |
+| `last_writer_overlay` | Verified loader semantics select the highest-precedence contributor. |
+| `structural_merge` | Supported Clausewitz definitions are adapted to the semantic tree and N-way merged against the base ancestor. |
+| `localisation_merge` | Keys are unioned; the highest-precedence contributor wins only for the same localisation key. |
+| `manual_conflict` | The path cannot be safely analyzed automatically and needs review or withholding. |
+
+Structural analysis builds revision DAGs and definition-module views, adapts
+supported EU4 syntax into the semantic-tree kernel, materializes deterministic
+Clausewitz bytes into a Rust-owned artifact tree, and re-parses/rechecks that
+tree. None of this changes `--out`.
+
+The stable production backend identity is `gumtree-pcs-nway`. The retained
+`address-patch` backend is comparative evaluation history and is not the public
+product path.
+
+## Review contract
+
+Each planned target resolves exactly once into a `MergeUnitOutcome` with:
+
+- stable normalized ID (`file:<path>` or `module:<family>/<module>`);
+- normalized path, content family, and unit kind;
+- stable snake-case strategy;
+- one disposition;
+- concise summary, optional committed output path, and notes; and
+- ordered, de-duplicated contributors with display name, precedence, source
+  paths, and base-game flag.
+
+Dispositions are:
+
+| Disposition | Meaning |
+| --- | --- |
+| `safe` | Analysis produced a supported semantic result. |
+| `copy` | The effective source can be copied without semantic synthesis. |
+| `needs_user_choice` | Supported candidates remain ambiguous and need a reviewed decision. |
+| `unsupported_input` | The input shape is outside verified behavior. |
+| `engine_failure` | A bounded backend failure/panic was caught for this unit. |
+| `deferred` | A configured explicit defer handler intentionally withheld the unit. |
+
+The review summary counts every unit exactly once. Duplicate IDs or output
+paths, double resolution, and pending units are invariant failures. If
+cross-file pruning removes generated output, the unit remains in review with
+`output_path = null`; its semantic disposition is not rewritten.
+
+An implicit interactive/TUI defer remains `needs_user_choice`. `deferred` is
+reserved for an explicit configured defer decision. `--force` must not emit an
+explicitly deferred unit.
+
+## Resolution policy
+
+Reviewed static decisions live in `foch.toml` `[[resolutions]]`. Exact conflict
+IDs and files outrank pattern rules. Built-in handlers are dispatched by the
+root merge resolution registry. See
+[foch-toml-resolutions.md](./foch-toml-resolutions.md).
+
+Foch never applies a broad last-writer policy merely because it would avoid a
+conflict. `--force` is limited to supported `needs_user_choice` fallbacks; it
+does not reinterpret unsupported input, engine failure, or explicit defer as
+safe.
+
+## Commit contract
+
+Analysis freezes:
+
+- the generated artifact tree and its byte identity;
+- the ordered product-input attestation;
+- the installed base-snapshot identity;
+- any existing output bytes consumed by `keep_existing`; and
+- the fingerprint of a non-empty replacement target when the user asks to
+  replace it.
+
+`AnalyzedMerge::commit` revalidates those guards and atomically installs the
+frozen tree. It does not parse, run a merge backend, resolve a new conflict, or
+read a different external resolution file. Drift fails before target mutation.
+
+`--confirm` authorizes the reviewed commit but not replacement of a non-empty
+directory. Replacement needs a separate TTY confirmation/fingerprinted
+authorization. Batch jobs must use a new or empty target.
+
+## Partial results and statuses
+
+Unsafe units are withheld at file or complete definition-module granularity;
+unrelated safe units may still commit.
+
+- `ready` — all required output is safe and validation passed.
+- `partial_success` — safe output committed while one or more units were
+  withheld or used an explicit supported fallback.
+- `blocked` — an explicit non-conflict gate prevents activation/commit.
+- `fatal` — input, validation, emission, I/O, cancellation, or invariant failure
+  prevents a trustworthy analyzed result.
+
+A partial result is not permission to activate the generated mod blindly. The
+report must identify withheld units and activation safety.
+
+## Output tree
+
+A committed result contains only the separate generated mod tree. It never
+normalizes or modifies source inputs.
+
+```text
+<out>/
   descriptor.mod
+  common/...
+  events/...
+  localisation/...
   .foch/
     foch-merge-plan.json
     foch-merge-report.json
-  <generated game-relative files...>
+    foch-provenance.json      # only when requested
+    foch-merge-trace.json     # only when requested
 ```
 
-### `descriptor.mod`
+`foch-merge-plan.json` records the internal deterministic target
+classification used by analysis; its name is an artifact compatibility
+contract, not a separate command. `foch-merge-report.json` records status,
+validation, backend/scope/base attestation, ordered product-input identity,
+withheld units, and handler outcomes.
 
-The generated descriptor must:
+Provenance output is opt-in. When disabled, it must not perturb ordinary
+emitted bytes.
 
-- use a generated display name derived from the playset name plus ` (Merged)`
-- omit Steam-specific publishing metadata
-- point to the generated output directory only
-- record the source playset path in a leading comment when the descriptor format allows comments
+## Determinism and safety invariants
 
-### `foch-merge-plan.json`
+- identical frozen inputs, policy, base snapshot, and Foch version produce the
+  same review units and output bytes;
+- paths in artifacts use normalized `/` separators and safe relative paths;
+- contributors retain semantic precedence;
+- source trees are never destinations;
+- output is staged and installed atomically under a same-target lock;
+- failure before commit leaves the target unchanged;
+- replacement authorization is invalidated by target drift; and
+- product acceptance re-parses and scores generated output but does not launch
+  EU4 or prove in-game playability.
 
-This file is the persisted version of the computed plan.
+## Required tests
 
-Required top-level fields:
+Merge changes should cover the smallest owning boundary first and then the CLI
+integration path. The contract requires regressions for:
 
-- `game`
-- `playset_name`
-- `generated_at`
-- `include_game_base`
-- `strategies`
-- `paths`
-
-Each `paths` entry must contain `target`, `strategy`, `contributors`, `winner`,
-and `notes`. `target` is a tagged object: a file target has
-`{ "kind": "file", "path": ... }`; a module target has
-`{ "kind": "module", "id": ..., "input_paths": ..., "output_path": ... }`
-plus optional `replace_prefix`. Plan entries do not have a `generated` field.
-
-### `foch-merge-report.json`
-
-This file records merge execution and validation outcome.
-
-Required top-level fields:
-
-- `status`
-- `manual_conflict_count`
-- `generated_file_count`
-- `copied_file_count`
-- `overlay_file_count`
-- `validation`
-
-`validation` must contain:
-
-- `fatal_errors`
-- `strict_findings`
-- `advisory_findings`
-- `parse_errors`
-- `unresolved_references`
-- `missing_localisation`
-
-`status` uses the following execution semantics:
-
-- `ready` when generation completes with `manual_conflict_count == 0`; analysis findings are reported separately
-- `partial_success` when safe output is published while one or more files or definition modules remain deferred
-- `blocked` only for an explicit non-conflict publication gate
-- `fatal` for system, input, materialization, or fatal validation failure
-
-## Structural Merge Rules
-
-V1 structural merging uses conservative, class-level rules:
-
-### Events and decisions
-
-- merge by individual definition name: an event is identified by its `id` field inside the event block; a decision is identified by its key inside the `country_decisions` / `province_decisions` wrapper
-- when a definition name exists in only one contributor, include it unchanged
-- when the same definition name exists in multiple contributors, choose the highest-precedence full definition and record the overridden contributors in metadata
-- do not attempt deep field-wise reconciliation (e.g. merging trigger blocks) inside a single winning definition in v1
-
-### Scripted effects, diplomatic actions, and triggered modifiers
-
-- merge by top-level named block
-- unique definitions are preserved
-- duplicate top-level names resolve to highest precedence
-- overridden definitions are recorded in provenance metadata
-
-### Defines
-
-- merge by assignment path when the parser can identify a deterministic assignment key
-- when the same key is assigned by multiple contributors, highest precedence wins
-- if an assignment cannot be normalized to a stable key, classify the file as `manual_conflict`
-
-These rules make structural merge useful without pretending to solve semantic equivalence across arbitrary nested script.
-
-## Conflict Handling Policy
-
-### Blocking conflicts
-
-The following conditions must produce `manual_conflict`:
-
-- overlapping binary or unknown formats
-- overlapping UI-related files in limited v1 roots
-- parse failure in a would-be structural merge path
-- non-normalizable content in `common/defines/**`
-- any path class outside the allowed `last_writer_overlay` and `structural_merge` rules
-
-### `--force` behavior
-
-`--force` only changes materialization behavior. It does not downgrade a conflict internally.
-
-With `--force`:
-
-- generation continues for non-conflicting paths exactly as it does without `--force`
-- every text `manual_conflict` path emits a placeholder file containing contributor paths and a conflict marker
-- binary `manual_conflict` paths copy the explicit highest-precedence fallback
-- the merge report still records the run as conflict-bearing
-
-`--force` never changes validation severity or hides conflicts from the report.
-Without `--force`, the same conflicts are recorded and withheld while safe units
-still publish as `partial_success`.
-
-## Failure And Warning Policy
-
-### Hard-stop failures
-
-Return exit code `1` and stop immediately for:
-
-- unreadable playset input
-- malformed playset JSON
-- missing configured roots required for the chosen command
-- unwritable output directory
-- metadata write failure
-
-### Deferred merge conflicts
-
-`merge-plan` returns exit code `2` when its plan contains manual conflicts so
-automation can detect that review is needed. A confirmed `merge` does not turn
-those local conflicts into a global failure: it publishes safe units, withholds
-the affected units, records `partial_success`, and returns `0`.
-
-### Post-generation validation failure
-
-Fatal validation errors return exit code `1`. Non-fatal analysis findings stay
-separate from merge completion and remain visible in the report.
-
-Localisation failures that are purely compatibility-related should be reported clearly, but they should not be conflated with the core merge classification or emission contract.
-
-### Warnings only
-
-Keep generation successful while reporting warnings for:
-
-- advisory findings in the validation pass
-- overridden contributors under `last_writer_overlay`
-- structurally merged files that required precedence resolution but not manual conflict handling
-
-## Acceptance Criteria
-
-The first merge-capable implementation is acceptable only if all of the following are true:
-
-- `merge-plan` and `merge` use the same precedence model
-- every effective path is classified into exactly one strategy
-- supported structural roots are limited to the v1 set in this document
-- generated output always contains `.foch/foch-merge-plan.json`
-- generated output always contains `.foch/foch-merge-report.json`
-- `merge` always performs a post-generation validation pass
-- manual conflicts are never silently converted into last-writer success
-- a manual conflict withholds only its file or complete definition module; unrelated safe units are still exported
-
-## Required Test Scenarios
-
-At minimum, future implementation tests must cover:
-
-- single-contributor file becomes `copy_through`
-- unsupported overlapping text file becomes `last_writer_overlay` when allowed
-- unsupported overlapping binary file becomes `manual_conflict`
-- duplicate event or decision key resolves by precedence and is recorded in metadata
-- duplicate scripted effect resolves by precedence and is recorded in metadata
-- `common/defines/**` with normalizable assignments merges by key
-- `common/defines/**` with non-normalizable content becomes `manual_conflict`
-- parse failure inside a structural class becomes `manual_conflict`
-- default mode keeps base game at lower precedence than every mod
-- `--no-game-base` opts out of that base-game input explicitly
-- a confirmed merge with one safe file and one manual conflict exports the descriptor, safe file, plan, and report as `partial_success` while withholding the conflict
-- `merge --force` preserves the same safe output and adds conflict markers where supported
-- fatal post-merge validation failure returns exit code `1`
-- generated descriptor and metadata files are always present on successful generation
+- ordered input and base ancestry;
+- every analysis strategy and review disposition;
+- definition-module aggregation and cross-file pruning;
+- conflict-handler precedence and explicit defer;
+- bounded backend failure/panic conversion;
+- no writes during analysis;
+- artifact, input, base, prior-output, and replacement-target drift;
+- commit without semantic recomputation;
+- partial success withholding only unsafe units; and
+- deterministic artifacts across repeated runs.

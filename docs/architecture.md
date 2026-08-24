@@ -1,212 +1,189 @@
 # Architecture
 
-Last updated: 2026-08-17
+This page describes the current source boundaries. Historical documents may
+still contain the superseded `crates/foch-*` split; those names are not current
+architecture.
 
-## Summary
+## Repository layout
 
-`foch` is now a workspace-based monorepo. The repository root is coordination only:
+The repository is a Cargo and Bun workspace, but the Rust domain model and
+orchestration now live in one primary package at the repository root.
 
-- Cargo workspace manifest
-- Bun workspace manifest
-- shared CI
-- docs and scripts
+### Root `foch` library
 
-The buildable products live under `crates/` and `packages/`.
+| Path | Responsibility |
+| --- | --- |
+| `src/model` | Shared reports, findings, identities, and serialization models |
+| `src/project` | `foch.toml`, dependency overrides, resolution policy, and project fingerprints |
+| `src/playset` | Launcher playsets, descriptors, dependencies, and Steam installation identity |
+| `src/input` | Read-only inspection, input resolution, inventories, and mod snapshots |
+| `src/game/schema` | Reusable CWT loading, compilation, querying, and rule evaluation |
+| `src/game/eu4` | Concrete EU4 parsing, content families, semantic indexing, base snapshots, and editor behavior |
+| `src/check` | Semantic checks and runtime overlap analysis |
+| `src/graph` | Definition, call, module, and mod dependency graph output |
+| `src/simplify` | Base-equivalent definition removal |
+| `src/merge` | Path planning, semantic-tree kernel, analysis, review ledger, resolution, and commit |
+| `src/platform` | Filesystem and cache lifecycle services |
 
-## Workspace Layout
+`src/game/schema` is reusable infrastructure; it is not a supported game by
+itself. Foch remains EU4-only. A future game must add and verify its own loader,
+content-family, base-data, and merge behavior instead of treating CWT coverage
+as proof of compatibility.
 
-### `crates/`
+### Applications and packages
 
-- `crates/foch-cli`
-  - owns the repository's only normal Cargo binary, `foch`; the `lsp`
-    subcommand runs the language server on stdio
-  - provides `parse_stats` and `symbol_dump` only as `dev-tools`-gated Cargo
-    examples for parser / semantic-index maintainers
-  - owns CLI parsing, command dispatch, and the product entrypoint
+- `apps/foch-cli` owns the `foch` binary, `foch lsp`, CLI adapters, terminal
+  conflict UI, integration tests, and the private merge-quality harness.
+- `apps/foch-desktop` owns the Tauri/React player interface and IPC adapters.
+  Its Rust backend links `foch` directly; it does not spawn or bundle the CLI.
+- `packages/tree-sitter-paradox` is the independently versioned grammar and a
+  Cargo/Bun workspace member.
+- `packages/vscode-foch` is the independently versioned VS Code extension. It
+  launches a bundled `foch lsp` process.
 
-- `crates/foch-core`
-  - shared domain types
-  - diagnostics/model payloads
-  - generic utilities
-- `crates/foch-syntax`
-  - shared syntax-tree types and source spans
-  - consumed by the CWT schema layer
-- `crates/foch-cwt`
-  - CWT schema loading and compiled rule packs
-  - schema binding and rule evaluation used by CLI, language, and engine layers
-- `crates/foch-language`
-  - parsing
-  - document discovery
-  - localisation
-  - semantic index
-  - `ContentFamily`
-  - `GameProfile`
-  - EU4 builtin/profile/content-family registry
-- `crates/foch-engine`
-  - workspace resolution/cache
-  - base snapshot build/install/load
-  - runtime binding and overlap
-  - graph export
-  - merge planning/execution
-  - simplify
-  - stable orchestration APIs consumed by the CLI
-- `crates/foch-merge-kernel`
-  - normalized semantic-tree representation
-  - matching, deltas, conflict identities, and N-way merge primitives
-  - game-independent kernel consumed by `foch-engine`
-- `crates/foch-merge-quality`
-  - private, library-only product evaluation and immutable dataset contracts
-  - pure scoring over an existing output tree and product `MergeReport`
-  - read-only Workshop/ACF input resolution, injected product measurement
-    runners, compact evidence, and exact cohort reporting
-  - metadata-only dataset export; no `ObjectStore`, recursive tree packer,
-    snapshot builder, acquisition path, or review-pack workflow
-  - no binary target and no production dependency from `foch-cli`
+There are no current `foch-core`, `foch-syntax`, `foch-cwt`, `foch-language`,
+`foch-engine`, `foch-merge-kernel`, or `foch-merge-quality` packages. Do not
+reintroduce package seams merely to recreate those names.
 
-### `apps/`
+## Dependency direction
 
-- `apps/foch-desktop`
-  - player-facing Tauri application using React, TypeScript, and Vite
-  - links `foch-engine` and `foch-core` directly
-  - does not bundle or spawn the `foch` CLI
-  - owns desktop presentation and IPC adapters, not merge semantics
+```text
+foch-cli --------> foch <-------- foch-desktop
+                       |
+                       +-- game/schema (reusable CWT machinery)
+                       +-- game/eu4    (the only concrete game)
 
-### `packages/`
+vscode-foch -----> foch lsp
+foch -----------> tree-sitter-paradox
+```
 
-- `packages/tree-sitter-paradox`
-  - grammar package
-  - Cargo workspace member
-  - Bun workspace package
-- `packages/vscode-foch`
-  - VS Code extension
-  - bundles `foch` from `crates/foch-cli` and launches it as `foch lsp`
+Applications adapt the root library to a transport or UI. Domain behavior does
+not depend on CLI/Tauri types. Merge-quality code is test-only and exercises the
+same public product path rather than becoming another engine layer.
 
-## Dependency Direction
+## Input flow
 
-The intended dependency flow is:
+1. `src/input` inspects a `dlc_load.json` or `[project]` manifest and resolves
+   the game root, ordered mod contributors, descriptors, and installed Steam
+   identities.
+2. Inspection is read-only. It does not initialize configuration, update ACF
+   files, copy Workshop trees, or install base data.
+3. A ready inspection can produce an `InputRequest` that retains the exact
+   inspected playset and base-snapshot identity.
+4. Downstream inventory and semantic work preserve playset order. Order is a
+   semantic input and is never sorted merely to stabilize a cache key.
 
-- `foch-cli -> foch-engine + foch-language + foch-cwt + foch-core`
-- `foch-engine -> foch-language + foch-cwt + foch-core + foch-merge-kernel`
-- `foch-language -> foch-cwt + foch-core`
-- `foch-cwt -> foch-syntax`
-- `foch-cli` tests `-> foch-merge-quality` as a dev-dependency only
+The analyzed EU4 base snapshot is the ancestor for supported structural merges.
+A missing base file is not an empty ancestor unless that content family has an
+explicit verified policy.
 
-`foch-language` is the behavior boundary for game-aware language semantics. `ScriptFileKind` remains a plain compatibility enum and is not the primary extension point.
+## Check, graph, and simplify
 
-## Data Flow
+`foch check` resolves an input, parses its documents through the EU4 layer,
+builds semantic indexes, and adds runtime binding/overlap findings before
+rendering a report.
 
-### `foch check`
+`foch graph` uses the same resolved semantic state to write call,
+definition-dependency, module, mod-dependency, or family graph artifacts.
 
-1. `foch-engine::workspace` resolves the effective workspace from config, playset, mod roots, and optional base snapshot.
-2. `foch-language` parses documents, builds semantic indexes, and runs semantic analysis.
-3. `foch-engine::runtime::overlap` adds final overlap diagnostics.
-4. `foch-language::analyzer::report` renders the output.
+`foch simplify` compares the target mod with effective base definitions and
+writes a separate simplified tree. Source mods and game files remain read-only.
 
-### `foch merge-plan`
+## Merge lifecycle
 
-1. `foch-engine::workspace` builds the effective file inventory.
-2. `foch-engine::merge::plan` classifies each effective path as copy-through, overlay, structural merge, or manual conflict.
+The public lifecycle is **inspect → analyze → review → confirm → commit**.
 
-### `foch merge`
+### Analyze
 
-1. `foch-engine::merge::execute::prepare_merge_with_options` freezes the
-   resolved workspace, path-level plan, and policy without writing an output
-   tree.
-2. Explicit confirmation calls the prepared session's export path. File- or
-   module-level failures are typed and deferred while unrelated safe units
-   continue.
-3. `foch-engine::merge::planning` builds definition-module views and revision
-   DAGs; `merge::structured` adapts supported Clausewitz ASTs to the semantic
-   tree in `foch-merge-kernel`.
-4. `foch-engine::merge::output::materialize` emits deterministic Clausewitz
-   output, withholds deferred units, projects provenance where enabled, and
-   stages `.foch/*` sidecars.
-5. `foch-engine::merge::execute` revalidates the generated tree and
-   records kernel, scope, base, and input attestation in the merge report.
-6. `output::materialize::output_transaction` publishes the complete staging
-   tree under a same-target lock.
+`src/merge/analyze.rs` performs all semantic work before the output target is
+modified:
 
-The preview freezes the resolved workspace and path-level plan. Structural
-merging still happens during confirmed export, so some leaf conflicts and
-deferred units first appear in the final report. Improving what the preview can
-show remains open work; no replacement internal representation has been chosen.
-See [project-status.md](./project-status.md).
+1. resolve and inventory the exact input;
+2. classify paths and build definition-module views;
+3. run the semantic-tree backend and configured conflict handlers;
+4. materialize generated bytes into a Rust-owned artifact tree;
+5. re-parse and semantically validate that tree; and
+6. freeze artifacts plus input, base-snapshot, and prior-output guards.
 
-### Product merge-quality acceptance
+Analysis reports structured progress across inventory, input resolution,
+semantic merge, validation, and artifact freezing. Cancellation is cooperative
+between stages and bounded units.
 
-1. An ignored `foch-cli` integration test loads the committed fixed 14-case
-   logical manifest; installed state cannot shrink its denominator.
-2. The catalog pairs every discovered
-   `steamapps/workshop/content/236850` root with the same library's
-   `appworkshop_236850.acf` and strictly resolves all selected manifest IDs.
-3. The engine requires the Steam build ID and records the ordered source-mod
-   installation identities from ACF `(app_id, workshop_id, manifest_id)` tuples.
-   It does not enumerate paths or read file bytes to establish that identity.
-   Workshop content and ACF files are read-only and are not copied into an
-   input CAS.
-4. Each case launches the public `foch merge --confirm --non-interactive` artifact in an
-   independent bounded child process and verifies its product-authored kernel,
-   scope, base, and input attestation.
-   The separate cold/warm cache gate deliberately omits `--confirm`: it validates
-   the default read-only plan path and requires no output directory or merge report.
-5. Before committing a terminal result, the library re-reads the exact ACF
-   pairs and compares the ordered installation identities; any drift invalidates
-   the run.
-6. Only after a fresh product merge returns non-fatal does the scorer discover
-   its scoring-unit set and base scoring closure. It captures only that compact
-   closure, scores the capture without selecting another kernel, and stores the
-   same bytes with an exact evidence index. The closure is stored evidence, not
-   installation or cohort identity.
-7. V2 input versions, observations, measurements, reports, and assertions stay
-   separate from frozen V1 metadata and its historical `objects/` store.
+### Review
 
-This fixed 14-case workflow is the only product acceptance denominator.
-Common-module and structured-rollout scripts are auxiliary analysis over the
-same read-only boundary, not alternative product gates. Historical V1 objects
-remain inert on disk pending a separate user-operated cleanup; current code
-cannot pack, restore, or export them.
+Every path-plan entry must resolve exactly once into a stable review unit. A
+unit is either a file or a definition module and records:
 
-### `foch graph`
+- stable ID, normalized path, family, and strategy;
+- disposition: `safe`, `copy`, `needs_user_choice`, `unsupported_input`,
+  `engine_failure`, or explicit `deferred`;
+- ordered contributors and base-game participation;
+- whether an output path exists; and
+- concise notes suitable for a bounded UI projection.
 
-1. `foch-engine::runtime::binding` resolves runtime winners and reference targets.
-2. `foch-engine::runtime::overlap` classifies overlap states.
-3. `foch-engine::graph::export` writes `calls` and `mod-deps` artifacts.
+The review ledger rejects duplicate IDs/output paths, double resolution, and
+pending units. Cross-file pruning removes only the output path; it does not
+rewrite the unit's semantic disposition.
 
-### `foch simplify`
+### Commit
 
-1. `foch-engine::runtime::overlap` identifies base-equivalent definitions.
-2. `foch-engine::simplify::execute` rewrites files, drops empty files, and emits `simplify-report.json`.
+`AnalyzedMerge::commit` does not rerun a merge backend. It revalidates the
+frozen input identities, installed base snapshot, and any reviewed existing
+output bytes, then atomically installs the frozen artifact tree. Replacing a
+non-empty directory requires a separately fingerprinted authorization.
 
-## Language Layer
+`needs_user_choice`, `unsupported_input`, and `engine_failure` units are
+withheld while unrelated safe units may still commit. `--force` affects only
+supported user-choice fallbacks. A `partial_success` report is therefore a
+valid product result, not an implicit global failure.
 
-The language crate owns:
+No `MergeSession` abstraction is implemented in this slice. Long-lived
+interactive session ownership remains deferred until the analysis/review
+surface proves it is needed.
 
-- parser
-- document family discovery
-- semantic indexing
-- localisation handling
-- analyzer reporting
-- EU4-specific `ContentFamilyDescriptor` registry
-- `Eu4Profile`
+## Desktop boundary
 
-Behavior is attached to `ContentFamily`, not to giant central matches. That lets new EU4 roots and future game profiles register semantics without reopening core traversal logic.
+The desktop backend exposes bounded DTOs rather than serializing `AnalyzedMerge`
+or raw artifact/report structures. The first analysis surface contains six
+commands:
 
-## Product Packages
+- `inspect_input`
+- `start_merge_analysis`
+- `cancel_merge_analysis`
+- `get_merge_analysis_summary`
+- `list_merge_units`
+- `get_merge_unit`
 
-### VS Code
+Only one analysis may be queued or running. Terminal analyses are kept in a
+small FIFO, and unit listing is filtered and paginated before crossing IPC.
+There is intentionally no commit/export command in this checkpoint.
 
-`packages/vscode-foch` is a standalone extension package. It prefers a bundled `foch` binary under `bin/<platform>-<arch>/` and launches it as `foch lsp`; its packaging scripts build that binary from the workspace root before packaging the VSIX.
+## Cache boundary
 
-### Tree-sitter
+Persistent cache formats and payload identities are owned by their domain
+modules; `src/platform/cache_store` only provides filesystem lifecycle
+operations. Opening a current generation must not delete other generations.
+Eviction and clearing are explicit maintenance operations. See
+[cache-architecture.md](./cache-architecture.md).
 
-`packages/tree-sitter-paradox` remains its own grammar package. It is part of the workspace, but it is not folded into the Rust crates.
+## Merge-quality acceptance
 
-## Removed Legacy Shape
+The private harness under `apps/foch-cli/tests/merge_quality/` owns the fixed
+14-case, 26-item Workshop denominator, append-only V2 records, evidence capture,
+scoring, and reports. The supported operator entrypoint is:
 
-The old root-library shell and `src/check/` compatibility façade are gone as primary architecture. Internal code should import from workspace crates directly:
+```fish
+scripts/merge-quality/acceptance.fish
+```
 
-- `foch_core`
-- `foch_language`
-- `foch_engine`
+It reads installed Workshop content in place and binds identity to paired Steam
+ACF records. It does not recursively hash or copy whole mod trees for normal
+acceptance. A complete cohort is required for a product-quality claim; an
+interrupted append-only run remains measurement history, not a baseline.
 
-The repository root is no longer a buildable Rust package.
+## Editor boundary
+
+The reusable CWT layer compiles schemas, while `src/game/eu4/editor` interprets
+them for EU4 diagnostics, completion, hover, and navigation. CWT rules remain
+evidence: runtime load order and merge semantics stay in concrete EU4 content
+families rather than in a generic schema package.

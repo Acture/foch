@@ -22,23 +22,25 @@ none substitutes for product merge evidence.
 
 ## Product Contracts
 
-- EU4 is the only supported game profile. Do not imply support for other
+- EU4 is the only supported game. Do not imply support for other
   Paradox games until their loader behavior and content families are verified.
-- Game-aware behavior belongs behind `GameProfile` and `ContentFamily` in
-  `foch-language`. `ScriptFileKind` is only a compatibility label. CWT schemas
-  are useful evidence, but they do not by themselves prove runtime load or
-  merge semantics.
+- Reusable CWT parsing, compilation, and rule evaluation belong in
+  `src/game/schema`. Concrete EU4 interpretation belongs in `src/game/eu4`,
+  with `ContentFamilyDescriptor` as the analyzer behavior boundary. CWT
+  schemas are useful evidence, but they do not by themselves prove runtime
+  load or merge semantics.
 - Playset order and declared mod dependencies are semantic inputs. Preserve
-  their precedence in workspace resolution, merge DAGs, cache identities, and
+  their precedence in input resolution, merge DAGs, cache identities, and
   tests; never sort mods merely to make a key deterministic.
 - The analyzed EU4 base snapshot is the semantic ancestor for supported
   structural merges. Do not treat a missing vanilla file as an empty ancestor
-  unless that `ContentFamily` explicitly supports a verified empty base.
-- `foch merge` is preview-first. Without confirmation it prints a frozen
-  path-level plan and does not write `--out`. Confirmed export may discover
-  deeper semantic conflicts, writes all safe files or complete definition
-  modules, and defers only unsafe units. `partial_success` is a valid product
-  result; `--force` applies only to supported `needs_user_choice` fallbacks.
+  unless that EU4 content-family descriptor explicitly supports a verified
+  empty base.
+- `foch merge` is analyze-first. It resolves and freezes the input, computes
+  the complete semantic result, and exposes review units before confirmation.
+  Commit writes all safe files or complete definition modules and defers only
+  unsafe units. `partial_success` is a valid product result; `--force` applies
+  only to supported `needs_user_choice` fallbacks.
 - `--confirm` does not authorize replacement of a non-empty output directory.
   That has a separate TTY confirmation, so non-interactive jobs must use a new
   or empty output path.
@@ -51,11 +53,10 @@ none substitutes for product merge evidence.
   is an explicit audit with its I/O cost stated up front, not a hidden merge or
   acceptance prerequisite.
 - The only command-line executable is `foch`; the language server is `foch
-  lsp`. The separate `foch-desktop` application links the shared Rust engine
+  lsp`. The separate `foch-desktop` application links the root `foch` library
   directly and must not spawn or bundle the CLI. Parser-maintainer tools are
-  feature-gated examples. Merge-quality workflows belong in the
-  `foch-merge-quality` library and exact integration tests, not a separate
-  product binary.
+  feature-gated examples. Merge-quality workflows belong in the CLI's exact
+  integration-test harness, not a production library or separate binary.
 - Product acceptance re-parses and semantically scores the generated mod, but
   it does not launch EU4 or prove in-game playability. Runtime playability is a
   separate manual check.
@@ -81,13 +82,13 @@ Agents should use focused fixtures and bounded real-case probes while
 developing, then hand off the wrapper command instead of launching it
 unannounced.
 
-The V2 JSONL streams under `crates/foch-merge-quality/dataset/` are append-only
-and intentionally resumable per case. An interrupted partial cohort is valid
-measurement history, not corruption, but it is not an accepted baseline. Only
-a complete cohort for the current product artifact, runner, kernel, scope, and
-scorer may support a product-quality claim. Never restore, truncate, stage, or
-rewrite dirty measurement records without first establishing their identity
-and getting the user's decision.
+The V2 JSONL streams under `apps/foch-cli/tests/merge_quality/data/` are
+append-only and intentionally resumable per case. An interrupted partial cohort
+is valid measurement history, not corruption, but it is not an accepted
+baseline. Only a complete cohort for the current product artifact, runner,
+kernel, scope, and scorer may support a product-quality claim. Never restore,
+truncate, stage, or rewrite dirty measurement records without first
+establishing their identity and getting the user's decision.
 
 Frozen V1 objects, scorers, and historical roadmap numbers are research
 history. Do not quote them as current `semantic_tree` quality and do not make
@@ -104,9 +105,9 @@ the legacy object store part of the current product path.
 - Distinguish committed implementation, a local worktree observation, a
   recorded test result, and an accepted product cohort. Never promote one into
   another.
-- Prefer fixes driven by a fresh acceptance failure: reproduce one cause with a
-  focused regression, fix it at the correct `ContentFamily` or kernel boundary,
-  run focused gates, then re-check a bounded real case.
+- Prefer fixes driven by a fresh acceptance failure: reproduce one cause with
+  a focused regression, fix it at the correct EU4 content-family or kernel
+  boundary, run focused gates, then re-check a bounded real case.
 - Do not invent architectural names in status or planning documents before a
   corresponding code boundary and demonstrated need exist. Use terms already
   present in the source and reports.
@@ -115,26 +116,22 @@ the legacy object store part of the current product path.
 
 ## Project Structure & Module Organization
 
-`foch` is a workspace monorepo. The main Rust packages are:
+`foch` is a workspace monorepo with one primary Rust library:
 
-- `crates/foch-cli` — the `foch` binary, `foch lsp`, CLI integration tests, and
-  feature-gated maintainer examples
-- `crates/foch-core` — shared domain types and utilities
-- `crates/foch-syntax` — shared syntax-tree types and source spans
-- `crates/foch-cwt` — CWT schema loading, compilation, and rule evaluation
-- `crates/foch-language` — parsing, semantic indexing, `ContentFamily`, `GameProfile`
-- `crates/foch-engine` — higher-level build/check/merge/graph/simplify orchestration
-- `crates/foch-merge-kernel` — game-independent semantic-tree matching and
-  N-way merge primitives
-- `crates/foch-merge-quality` — library-only fixed-corpus measurement, scoring,
-  evidence, and reporting
+- `src/` — project/input models, check/graph/simplify orchestration, merge
+  analysis/review/commit, platform services, reusable CWT schema machinery, and
+  concrete EU4 semantics
+- `apps/foch-cli` — the `foch` binary, `foch lsp`, CLI integration tests,
+  fixed-corpus merge-quality harness, and feature-gated maintainer examples
+- `apps/foch-desktop` — the player-facing Tauri application, linked directly to
+  the root library without a CLI sidecar
 
 JS packages live under `packages/`:
 
 - `packages/tree-sitter-paradox` — grammar package
 - `packages/vscode-foch` — VS Code extension
 
-Use `tests/` and crate-local `tests/fixtures/` for integration fixtures and
+Use `tests/` and package-local `tests/fixtures/` for integration fixtures and
 corpus-style checks, `docs/` for architecture and status docs, and `scripts/`
 for operator workflow wrappers.
 
@@ -150,7 +147,12 @@ for operator workflow wrappers.
 
 ## Coding Style & Naming Conventions
 
-Use tabs in repo-authored code unless a file already uses another style. Prefer small composable helpers over deep hierarchies. In Rust, use `snake_case` for functions/modules and `UpperCamelCase` for types. Keep `ContentFamily` as the analyzer behavior boundary; `ScriptFileKind` is only a compatibility label. Delete dead code instead of leaving compatibility shims.
+Use tabs in repo-authored code unless a file already uses another style.
+Prefer small composable helpers over deep hierarchies. In Rust, use
+`snake_case` for functions/modules and `UpperCamelCase` for types. Keep
+`ContentFamilyDescriptor` as the EU4 analyzer behavior boundary;
+`ScriptFileKind` is only a compatibility label. Delete dead code instead of
+leaving compatibility shims.
 
 ## Testing Guidelines
 
@@ -158,8 +160,8 @@ Add unit or regression tests with every semantic-family change. For coverage wor
 
 Coverage-reset execution should stay narrow: promote one root per issue, keep local validation green first, then treat the manual full EU4 probe as the acceptance gate before calling the slice verified complete.
 
-For merge changes, start with the smallest relevant kernel/language/engine test,
-add a regression for the observed semantic cause, then run the owning crate and
+For merge changes, start with the smallest relevant merge/game/CLI test,
+add a regression for the observed semantic cause, then run the owning package and
 CLI integration tests. Do not update expected corpus output merely to make a
 failure green; adjudicate why the product and the human compatch differ.
 
