@@ -642,7 +642,7 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 						}
 					}
 
-					// Single non-base mod or patch engine failed: copy winner
+					// Single non-base mod or structural merge failed: copy winner
 					copy_winner_file(&workspace, entry, out_dir)?;
 					record_counted_generated_output(
 						entry.output_path(),

@@ -73,7 +73,7 @@ const ADDRESS_PATCH_DEPENDENCIES: &[&str] = &[
 	"PatchBaselineDagProtocol",
 	"ModDiffCache",
 	"DagBaseCache",
-	"patch_engine::",
+	"address_patch::",
 ];
 
 const DAG_MERGE_FACADE_DEPENDENCIES: &[&str] = &[

@@ -35,7 +35,7 @@ use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use walkdir::WalkDir;
 
-use super::kernel::MergeBackendId;
+use super::kernel_adapter::MergeBackendId;
 
 pub struct MergeAnalysisOptions {
 	pub out_dir: PathBuf,

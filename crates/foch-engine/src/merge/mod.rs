@@ -1,3 +1,4 @@
+pub(crate) mod address_patch;
 #[cfg(test)]
 mod architecture_tests;
 pub(crate) mod backend;
@@ -6,11 +7,10 @@ pub(crate) mod cwt_suggestions;
 pub(crate) mod error;
 pub(crate) mod execute;
 pub(crate) mod gui;
-pub(crate) mod kernel;
+pub(crate) mod kernel_adapter;
 pub(crate) mod model;
 pub(crate) mod namespace;
 pub(crate) mod output;
-pub(crate) mod patch_engine;
 #[cfg(test)]
 mod patch_real_mods;
 pub(crate) mod plan;
@@ -19,6 +19,9 @@ pub(crate) mod resolution;
 pub(crate) mod semantic_fingerprint;
 pub(crate) mod structured;
 
+#[cfg(test)]
+pub(crate) use address_patch::patch_apply;
+pub(crate) use address_patch::{normalize, patch, patch_merge};
 pub use error::MergeError;
 pub use execute::{
 	AnalysisStatusView, AnalyzedMerge, CancellationToken, CommitAuthorization, CommitResult,
@@ -26,12 +29,9 @@ pub use execute::{
 	MergeStatusView, NoopProgressObserver, ProgressObserver, ReplacementTarget, analyze_merge,
 	run_merge_for_evaluation, run_merge_with_options,
 };
-pub use kernel::{MergeBackendDescriptor, MergeBackendId};
+pub use kernel_adapter::{MergeBackendDescriptor, MergeBackendId};
 #[allow(unused_imports)]
 pub(crate) use output::{localisation_merge, materialize, stale_vanilla};
-#[cfg(test)]
-pub(crate) use patch_engine::patch_apply;
-pub(crate) use patch_engine::{normalize, patch, patch_merge};
 pub use plan::{run_merge_plan, run_merge_plan_with_options};
 pub(crate) use planning::dag;
 #[allow(unused_imports)]

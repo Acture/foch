@@ -14,7 +14,7 @@ use super::planning::module_view::CrossFileModuleViews;
 use super::resolution::conflict_handler::ConflictHandler;
 use crate::workspace::ResolvedFileContributor;
 
-pub(crate) use super::kernel::{MergeBackendDescriptor, MergeBackendId};
+pub(crate) use super::kernel_adapter::{MergeBackendDescriptor, MergeBackendId};
 pub(crate) use address_patch::AddressPatchBackend;
 pub(crate) use gumtree_pcs_nway::GumtreePcsNwayBackend;
 

@@ -15,7 +15,7 @@ use crate::merge::conflict_handler::{
 	ConflictViewRequirement, MetadataConflictDecision,
 };
 use crate::merge::conflict_view::{CandidateView, ConflictView};
-use crate::merge::kernel::{KernelMergeInput, KernelRevision};
+use crate::merge::kernel_adapter::{KernelMergeInput, KernelRevision};
 use crate::merge::model::{
 	ExternalFileResolution, MergeOutputDirective, SemanticConflictCandidate,
 	SemanticMergeComputation, SemanticMergeConflict, SemanticMergeFacts, SemanticMergeSource,
@@ -1345,7 +1345,7 @@ mod tests {
 		LookupHandler,
 	};
 	use crate::merge::conflict_view::ConflictView;
-	use crate::merge::kernel::{KernelMergeInput, KernelRevision};
+	use crate::merge::kernel_adapter::{KernelMergeInput, KernelRevision};
 	use crate::merge::model::{
 		SemanticMergeSource, SemanticOrigin, SemanticPartitionId, SemanticPartitionLineage,
 		VanillaBaseMode,

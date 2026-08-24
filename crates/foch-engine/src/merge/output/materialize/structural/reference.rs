@@ -16,16 +16,16 @@ use super::super::{
 	},
 };
 use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
-use crate::merge::cwt_suggestions::classify_conflict_kind;
-use crate::merge::error::MergeError;
-use crate::merge::patch_engine::conflict_view::build_conflict_view;
-use crate::merge::patch_engine::dag_merge::{
+use crate::merge::address_patch::conflict_view::build_conflict_view;
+use crate::merge::address_patch::dag_merge::{
 	ReferenceDagMergeComputation, ReferenceDagMergeRequest, ReferenceParsedDagMergeRequest,
 	compute_reference_dag_merge, compute_reference_dag_merge_from_parsed,
 };
-use crate::merge::patch_engine::patch_merge::{
+use crate::merge::address_patch::patch_merge::{
 	AttributedPatch, PatchConflict, PatchMergeResult, PatchResolution,
 };
+use crate::merge::cwt_suggestions::classify_conflict_kind;
+use crate::merge::error::MergeError;
 use crate::merge::planning::dag_input::{
 	DagMergeInputRequest, merge_ancestor_statements, template_for,
 };
@@ -139,7 +139,7 @@ where
 	}
 
 	let noop_vs_vanilla = vanilla.as_ref().is_some_and(|base| {
-		crate::merge::patch_engine::patch::ast_statement_lists_semantically_equal(
+		crate::merge::address_patch::patch::ast_statement_lists_semantically_equal(
 			&base.ast.statements,
 			&dag_merge.merged_statements,
 		)

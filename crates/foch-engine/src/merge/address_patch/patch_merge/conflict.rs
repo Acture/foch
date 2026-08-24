@@ -9,10 +9,10 @@ use super::{
 	AttributedPatch, PatchAddress, PatchConflict, PatchMergeResult, PatchMergeStats,
 	PatchResolution,
 };
+use crate::merge::address_patch::conflict_view::build_decision_conflict_view;
 use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 use crate::merge::error::MergeError;
 use crate::merge::model::ExternalFileResolution;
-use crate::merge::patch_engine::conflict_view::build_decision_conflict_view;
 
 /// Cross-kind sibling conflict detected before per-address dispatch.
 ///

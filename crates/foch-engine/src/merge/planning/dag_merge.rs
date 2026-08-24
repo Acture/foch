@@ -407,20 +407,20 @@ mod tests {
 	use foch_language::analyzer::parser::AstValue;
 
 	use crate::cache::{DagBaseCache, ModDiffCache};
-	use crate::merge::model::SemanticOrigin;
-	use crate::merge::patch_engine::dag_merge::{
+	use crate::merge::address_patch::dag_merge::{
 		ReferenceDagMergeComputation, ReferenceParsedDagMergeRequest,
 		compute_reference_dag_merge_from_parsed as compute_reference_dag_merge_from_parsed_reference,
 		compute_reference_dag_merge_from_parsed_with_caches,
 		direct_definition_contribution_survives, same_key_statements, statement_signature,
 	};
-	use crate::merge::patch_engine::dag_protocol::{
+	use crate::merge::address_patch::dag_protocol::{
 		DagApplyCacheEvent, DagApplyCacheScope, ReferenceDagCaches, dag_apply_cache_events,
 		extend_merge_result, hash_ast_statements, hash_dag_apply_input, pending_after_direct_delta,
 		reset_dag_apply_cache_events,
 	};
-	use crate::merge::patch_engine::patch::{ClausewitzPatch, diff_ast};
-	use crate::merge::patch_engine::patch_merge::{PatchMergeResult, PatchResolution};
+	use crate::merge::address_patch::patch::{ClausewitzPatch, diff_ast};
+	use crate::merge::address_patch::patch_merge::{PatchMergeResult, PatchResolution};
+	use crate::merge::model::SemanticOrigin;
 	use crate::merge::planning::dag::{IgnoreReplacePath, induced_file_dag_with_overrides};
 	use crate::merge::planning::dag_join::{ancestry_metrics, reset_ancestry_metrics};
 	use crate::workspace::ResolvedFileContributor;
