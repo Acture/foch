@@ -36,7 +36,6 @@ pub use error::MergeError;
 pub use kernel_adapter::{MergeBackendDescriptor, MergeBackendId};
 #[allow(unused_imports)]
 pub(crate) use output::{localisation_merge, materialize, stale_vanilla};
-pub use path_plan::{PathPlanOptions, run_merge_plan, run_merge_plan_with_options};
 pub(crate) use planning::dag;
 #[allow(unused_imports)]
 pub use resolution::conflict_handler::{

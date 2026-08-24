@@ -16,9 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 pub use store::default_mod_snapshot_cache_dir;
-pub(crate) use store::{
-	CachedDocumentInputIdentity, CachedModData, ModSnapshotCache, ModSnapshotCacheStoreOutcome,
-};
+pub(crate) use store::{CachedDocumentInputIdentity, CachedModData, ModSnapshotCache};
 
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedModSnapshot {
@@ -156,22 +154,9 @@ fn load_or_build_mod_snapshot_with_cache(
 		);
 		data = returned_data;
 		match store_result {
-			Ok(ModSnapshotCacheStoreOutcome::Stored(profile)) => {
+			Ok(profile) => {
 				store_state = "stored";
 				stored_profile = Some(profile);
-			}
-			Ok(ModSnapshotCacheStoreOutcome::RejectedTooLarge {
-				compressed_bytes,
-				cap_bytes,
-			}) => {
-				store_state = "rejected_too_large";
-				tracing::warn!(
-					target: "crate::input::resolve",
-					mod_id = %mod_item.mod_id,
-					compressed_bytes,
-					cap_bytes,
-					"mod parse cache entry is too large to remain resident"
-				);
 			}
 			Err(err) => {
 				store_state = "error";

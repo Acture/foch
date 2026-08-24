@@ -97,15 +97,6 @@ pub(crate) struct ModSnapshotCacheEntryProfile {
 	pub uncompressed_bytes: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ModSnapshotCacheStoreOutcome {
-	Stored(ModSnapshotCacheEntryProfile),
-	RejectedTooLarge {
-		compressed_bytes: u64,
-		cap_bytes: u64,
-	},
-}
-
 #[derive(Clone, Debug)]
 pub struct ModSnapshotCache {
 	root: PathBuf,
@@ -331,15 +322,14 @@ impl ModSnapshotCache {
 		data: CachedModData,
 	) -> (
 		CachedModData,
-		Result<ModSnapshotCacheStoreOutcome, CacheError>,
+		Result<ModSnapshotCacheEntryProfile, CacheError>,
 	) {
-		self.store_owned_with_cache_version_and_cap(
+		self.store_owned_with_cache_version(
 			MOD_SNAPSHOT_CACHE_VERSION,
 			mod_hash,
 			foch_version,
 			game_key,
 			data,
-			crate::platform::cache_store::cache_cap_bytes(),
 		)
 	}
 
@@ -351,23 +341,14 @@ impl ModSnapshotCache {
 		game_key: &str,
 		data: &CachedModData,
 	) -> Result<(), CacheError> {
-		let (_, result) = self.store_owned_with_cache_version_and_cap(
+		let (_, result) = self.store_owned_with_cache_version(
 			MOD_SNAPSHOT_CACHE_VERSION,
 			mod_hash,
 			foch_version,
 			game_key,
 			data.clone(),
-			u64::MAX,
 		);
-		match result? {
-			ModSnapshotCacheStoreOutcome::Stored(_) => Ok(()),
-			ModSnapshotCacheStoreOutcome::RejectedTooLarge {
-				compressed_bytes,
-				cap_bytes,
-			} => Err(CacheError::encode(format!(
-				"compressed mod snapshot is {compressed_bytes} bytes, exceeding the {cap_bytes} byte cache-layer cap"
-			))),
-		}
+		result.map(|_| ())
 	}
 
 	pub(crate) fn entry_profile(
@@ -403,36 +384,7 @@ impl ModSnapshotCache {
 		foch_version: &str,
 		game_key: &str,
 	) -> Option<CachedModData> {
-		self.lookup_with_cache_version_and_cap(
-			cache_version,
-			mod_hash,
-			foch_version,
-			game_key,
-			crate::platform::cache_store::cache_cap_bytes(),
-		)
-	}
-
-	fn lookup_with_cache_version_and_cap(
-		&self,
-		cache_version: &str,
-		mod_hash: &str,
-		foch_version: &str,
-		game_key: &str,
-		cap_bytes: u64,
-	) -> Option<CachedModData> {
 		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
-		let compressed_bytes = fs::metadata(&path).ok()?.len();
-		if compressed_bytes > cap_bytes {
-			tracing::warn!(
-				target: "foch::input::mod_snapshot",
-				path = %path.display(),
-				compressed_bytes,
-				cap_bytes,
-				"discarding mod snapshot larger than the cache-layer byte cap"
-			);
-			let _ = fs::remove_file(path);
-			return None;
-		}
 		let stored = decode_payload_from_file(&path).ok()?;
 		if stored.cache_version != cache_version
 			|| stored.mod_hash != mod_hash
@@ -447,17 +399,16 @@ impl ModSnapshotCache {
 		Some(data)
 	}
 
-	fn store_owned_with_cache_version_and_cap(
+	fn store_owned_with_cache_version(
 		&self,
 		cache_version: &str,
 		mod_hash: &str,
 		foch_version: &str,
 		game_key: &str,
 		data: CachedModData,
-		cap_bytes: u64,
 	) -> (
 		CachedModData,
-		Result<ModSnapshotCacheStoreOutcome, CacheError>,
+		Result<ModSnapshotCacheEntryProfile, CacheError>,
 	) {
 		if let Err(error) = validate_cached_document_metadata(&data) {
 			return (data, Err(error));
@@ -473,7 +424,7 @@ impl ModSnapshotCache {
 			data,
 		);
 		let path = self.cache_file(cache_version, mod_hash, foch_version, game_key);
-		let result = store_payload_streaming(&path, &payload, cap_bytes);
+		let result = store_payload_streaming(&path, &payload);
 		let data = payload.into_cached_mod_data();
 		(data, result)
 	}
@@ -1125,8 +1076,7 @@ pub fn default_mod_snapshot_cache_dir() -> PathBuf {
 fn store_payload_streaming(
 	path: &Path,
 	payload: &StoredCachedModData,
-	cap_bytes: u64,
-) -> Result<ModSnapshotCacheStoreOutcome, CacheError> {
+) -> Result<ModSnapshotCacheEntryProfile, CacheError> {
 	let (tmp, file) = create_mod_snapshot_cache_tmp(path)?;
 	let encoded = encode_payload_into_file(payload, file);
 	let profile = match encoded {
@@ -1136,25 +1086,11 @@ fn store_payload_streaming(
 			return Err(error);
 		}
 	};
-	if profile.compressed_bytes > cap_bytes {
-		let _ = fs::remove_file(&tmp);
-		tracing::warn!(
-			target: "foch::input::mod_snapshot",
-			path = %path.display(),
-			compressed_bytes = profile.compressed_bytes,
-			cap_bytes,
-			"rejecting mod snapshot larger than the cache-layer byte cap"
-		);
-		return Ok(ModSnapshotCacheStoreOutcome::RejectedTooLarge {
-			compressed_bytes: profile.compressed_bytes,
-			cap_bytes,
-		});
-	}
 	if let Err(error) = fs::rename(&tmp, path) {
 		let _ = fs::remove_file(&tmp);
 		return Err(CacheError::Io(error));
 	}
-	Ok(ModSnapshotCacheStoreOutcome::Stored(profile))
+	Ok(profile)
 }
 
 fn create_mod_snapshot_cache_tmp(path: &Path) -> Result<(PathBuf, File), CacheError> {
@@ -1380,50 +1316,6 @@ mod tests {
 	}
 
 	#[test]
-	fn oversized_store_returns_payload_and_leaves_no_entry() {
-		let tmp = TempDir::new().expect("temp dir");
-		let cache = ModSnapshotCache::open(tmp.path());
-		let data = CachedModData {
-			semantic_index: SemanticIndex::default(),
-			inventory_paths: vec!["common/countries/A.txt".to_string()],
-			document_noop_hints: Vec::new(),
-			document_input_identities: Vec::new(),
-		};
-		let final_path = cache.cache_file(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"oversized",
-			"0.1.0",
-			"eu4 1.37.4",
-		);
-
-		let (returned, result) = cache.store_owned_with_cache_version_and_cap(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"oversized",
-			"0.1.0",
-			"eu4 1.37.4",
-			data,
-			MOD_SNAPSHOT_CACHE_HEADER_BYTES as u64,
-		);
-
-		assert!(returned.semantic_index.documents.is_empty());
-		assert_eq!(
-			returned.inventory_paths,
-			vec!["common/countries/A.txt".to_string()]
-		);
-		assert!(matches!(
-			result,
-			Ok(ModSnapshotCacheStoreOutcome::RejectedTooLarge { .. })
-		));
-		assert!(!final_path.exists());
-		assert!(
-			fs::read_dir(&cache.root)
-				.expect("read cache dir")
-				.flatten()
-				.all(|entry| !is_mod_snapshot_cache_tmp(&entry.file_name().to_string_lossy()))
-		);
-	}
-
-	#[test]
 	fn store_error_returns_original_payload_without_creating_temp_files() {
 		let tmp = TempDir::new().expect("temp dir");
 		let cache = ModSnapshotCache::open(tmp.path());
@@ -1524,10 +1416,7 @@ mod tests {
 				document_input_identities: Vec::new(),
 			},
 		);
-		assert!(matches!(
-			store_payload_streaming(&path, &payload, u64::MAX).expect("encode invalid payload"),
-			ModSnapshotCacheStoreOutcome::Stored(_)
-		));
+		store_payload_streaming(&path, &payload).expect("encode invalid payload");
 
 		let error = decode_payload_from_file(&path).expect_err("reject invalid inventory");
 		assert!(matches!(
@@ -1539,33 +1428,6 @@ mod tests {
 				.lookup("invalid-inventory", "0.1.0", "eu4 1.37.4")
 				.is_none()
 		);
-	}
-
-	#[test]
-	fn lookup_rejects_compressed_entry_over_cap_before_decode() {
-		let tmp = TempDir::new().expect("temp dir");
-		let cache = ModSnapshotCache::open(tmp.path());
-		let path = cache.cache_file(
-			MOD_SNAPSHOT_CACHE_VERSION,
-			"over-cap",
-			"0.1.0",
-			"eu4 1.37.4",
-		);
-		fs::write(&path, [0_u8; MOD_SNAPSHOT_CACHE_HEADER_BYTES + 1])
-			.expect("write oversized entry");
-
-		assert!(
-			cache
-				.lookup_with_cache_version_and_cap(
-					MOD_SNAPSHOT_CACHE_VERSION,
-					"over-cap",
-					"0.1.0",
-					"eu4 1.37.4",
-					MOD_SNAPSHOT_CACHE_HEADER_BYTES as u64,
-				)
-				.is_none()
-		);
-		assert!(!path.exists());
 	}
 
 	#[test]

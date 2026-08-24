@@ -22,7 +22,6 @@ pub struct FochCli {
 #[derive(Subcommand, Debug)]
 pub enum FochCliCommands {
 	Check(CheckArgs),
-	MergePlan(MergePlanArgs),
 	Merge(MergeArgs),
 	Graph(GraphArgs),
 	Simplify(SimplifyArgs),
@@ -53,7 +52,7 @@ pub struct LspArgs {
 	after_help = "Examples:\n  foch check ./playlist.json\n  foch check ./foch.toml\n  foch check ./playlist.json --strict\n  foch check ./playlist.json --analysis-mode semantic --channel strict\n  foch check ./playlist.json --no-game-base\n  foch check ./playlist.json --format json --output result.json"
 )]
 pub struct CheckArgs {
-	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
+	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
 	pub playset_path: Option<PathBuf>,
 
 	#[arg(long, value_enum, default_value_t = CheckOutputFormat::Text)]
@@ -91,38 +90,11 @@ pub enum CheckOutputFormat {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Generate a deterministic merge plan for a playset",
-	after_help = "Examples:\n  foch merge-plan ./playlist.json\n  foch merge-plan ./foch.toml\n  foch merge-plan ./playlist.json --format json --output plan.json\n  foch merge-plan ./playlist.json --no-game-base"
-)]
-pub struct MergePlanArgs {
-	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
-	pub playset_path: Option<PathBuf>,
-
-	#[arg(long, value_enum, default_value_t = MergePlanOutputFormat::Text)]
-	pub format: MergePlanOutputFormat,
-
-	#[arg(long)]
-	pub output: Option<PathBuf>,
-
-	/// Skip loading vanilla game files; the lowest-precedence enabled mod
-	/// is treated as a synthetic base for diff-and-merge.
-	#[arg(long)]
-	pub no_game_base: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum MergePlanOutputFormat {
-	Text,
-	Json,
-}
-
-#[derive(Parser, Debug)]
-#[command(
 	about = "Analyze a merge, review its frozen plan, then optionally commit it",
 	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod                 # analyze, review, then confirm in a TTY\n  foch merge ./foch.toml --out ./merged-mod --confirm          # analyze and explicitly commit\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # analysis only\n  foch merge ./playlist.json --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path\n  foch merge ./playlist.json --out ./merged-mod --force --confirm\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
-	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
+	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
 	pub playset_path: Option<PathBuf>,
 
 	#[arg(long)]
@@ -214,7 +186,7 @@ impl FromStr for IgnoreDepArg {
 	after_help = "Examples:\n  foch graph ./playlist.json --out ./graphs\n  foch graph ./foch.toml --out ./graphs\n  foch graph ./playlist.json --out ./graphs --scope mods --format both\n  foch graph ./playlist.json --out ./graphs --root scripted_effect:shared_effect\n  foch graph ./playlist.json --out ./graphs --mode semantic --family common/client_states"
 )]
 pub struct GraphArgs {
-	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
+	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
 	pub playset_path: Option<PathBuf>,
 
 	#[arg(long)]
@@ -301,7 +273,7 @@ pub enum GraphArtifactFormatArg {
 	after_help = "Examples:\n  foch simplify ./playlist.json --target 1234 --out ./mod-clean\n  foch simplify ./foch.toml --target local_patch --out ./mod-clean\n  foch simplify ./playlist.json --target 1234 --in-place"
 )]
 pub struct SimplifyArgs {
-	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
+	#[arg(default_value = None, value_name = "INPUT_SOURCE")]
 	pub playset_path: Option<PathBuf>,
 
 	#[arg(long)]
@@ -441,7 +413,7 @@ pub enum FochCliCacheLayerArg {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Inspect a Foch input source",
-	after_help = "Examples:\n  foch input resolve ./foch.toml\n  foch input resolve ~/Documents/Paradox\\ Interactive/Europa\\ Universalis\\ IV/dlc_load.json"
+	after_help = "Examples:\n  foch input inspect ./foch.toml\n  foch input inspect ~/Documents/Paradox\\ Interactive/Europa\\ Universalis\\ IV/dlc_load.json"
 )]
 pub struct InputArgs {
 	#[command(subcommand)]
@@ -450,11 +422,12 @@ pub struct InputArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum FochCliInputCommands {
-	Resolve(InputResolveArgs),
+	Inspect(InputInspectArgs),
 }
 
 #[derive(Parser, Debug)]
-pub struct InputResolveArgs {
+pub struct InputInspectArgs {
+	#[arg(value_name = "INPUT_SOURCE")]
 	pub source_path: PathBuf,
 }
 

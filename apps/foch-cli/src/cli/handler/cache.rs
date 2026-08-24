@@ -3,9 +3,11 @@ use crate::cli::arg::{
 	FochCliCacheLayerArg, FochCliCacheListArgs, FochCliCacheStatsArgs,
 };
 use crate::cli::handler::HandlerResult;
+use foch::game::eu4::script::parse_cache;
 use foch::platform::cache_store::{
-	CacheLayerEntryInfo, FileCacheLayer, cache_cap_bytes, default_foch_cache_dir,
+	CacheLayerEntryInfo, EvictionStats, FileCacheLayer, cache_cap_bytes, default_foch_cache_dir,
 };
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Copy)]
@@ -51,6 +53,73 @@ struct LayerStats {
 	newest_mtime: Option<SystemTime>,
 }
 
+enum CacheLayer {
+	Files(FileCacheLayer),
+	Parse { root: PathBuf },
+}
+
+impl CacheLayer {
+	fn name(&self) -> &str {
+		match self {
+			Self::Files(layer) => layer.name(),
+			Self::Parse { .. } => "parse",
+		}
+	}
+
+	fn path(&self) -> &Path {
+		match self {
+			Self::Files(layer) => layer.path(),
+			Self::Parse { root } => root,
+		}
+	}
+
+	fn list_entries(&self) -> Result<Vec<CacheLayerEntryInfo>, Box<dyn std::error::Error>> {
+		match self {
+			Self::Files(layer) => Ok(layer.list_entries()?),
+			Self::Parse { .. } => Ok(parse_cache::list_entries()
+				.into_iter()
+				.map(|entry| CacheLayerEntryInfo {
+					layer_name: "parse".to_string(),
+					key: entry.key,
+					path: entry.path,
+					size_bytes: entry.size_bytes,
+					modified: entry.modified,
+				})
+				.collect()),
+		}
+	}
+
+	fn purge_older_than(&self, days: u32) -> Result<usize, Box<dyn std::error::Error>> {
+		match self {
+			Self::Files(layer) => Ok(layer.purge_older_than(days)?),
+			Self::Parse { .. } => Ok(parse_cache::purge_older_than(days)?),
+		}
+	}
+
+	fn evict_to_byte_cap(
+		&self,
+		cap_bytes: u64,
+	) -> Result<EvictionStats, Box<dyn std::error::Error>> {
+		match self {
+			Self::Files(layer) => Ok(layer.evict_to_byte_cap(cap_bytes)?),
+			Self::Parse { .. } => {
+				let stats = parse_cache::gc_with_cap(cap_bytes);
+				Ok(EvictionStats {
+					removed_entries: usize::try_from(stats.evicted).unwrap_or(usize::MAX),
+					freed_bytes: stats.bytes_before.saturating_sub(stats.bytes_after),
+				})
+			}
+		}
+	}
+
+	fn clear(&self) -> Result<(), Box<dyn std::error::Error>> {
+		match self {
+			Self::Files(layer) => Ok(layer.clear()?),
+			Self::Parse { .. } => Ok(parse_cache::cache_clean()?),
+		}
+	}
+}
+
 pub fn handle_cache(cache_args: &FochCliCacheArgs) -> HandlerResult {
 	match &cache_args.command {
 		FochCliCacheCommands::Stats(args) => handle_cache_stats(args),
@@ -58,27 +127,6 @@ pub fn handle_cache(cache_args: &FochCliCacheArgs) -> HandlerResult {
 		FochCliCacheCommands::Clean(args) => handle_cache_clean(args),
 		FochCliCacheCommands::Clear(args) => handle_cache_clear(args),
 		FochCliCacheCommands::Where => handle_cache_where(),
-	}
-}
-
-/// Runs automatic post-command cache GC by byte-capping every cache layer.
-pub fn run_auto_cache_gc() {
-	let cap = cache_cap_bytes();
-	for layer in selected_layers(Some(FochCliCacheLayerArg::All)) {
-		match layer.evict_to_byte_cap(cap) {
-			Ok(stats) => tracing::debug!(
-				layer = layer.name(),
-				evicted = stats.removed_entries,
-				freed_bytes = stats.freed_bytes,
-				cap_bytes = cap,
-				"cache GC complete"
-			),
-			Err(err) => tracing::warn!(
-				layer = layer.name(),
-				error = %err,
-				"cache GC failed"
-			),
-		}
 	}
 }
 
@@ -194,22 +242,34 @@ fn handle_cache_where() -> HandlerResult {
 	Ok(0)
 }
 
-fn selected_layers(arg: Option<FochCliCacheLayerArg>) -> Vec<FileCacheLayer> {
+fn selected_layers(arg: Option<FochCliCacheLayerArg>) -> Vec<CacheLayer> {
 	let selected = arg.unwrap_or(FochCliCacheLayerArg::All);
 	let root = default_foch_cache_dir();
 	CACHE_LAYER_SPECS
 		.iter()
 		.filter(|spec| selected == FochCliCacheLayerArg::All || spec.selection == selected)
-		.map(|spec| FileCacheLayer::new(spec.name, root.join(spec.name), spec.extension))
+		.map(|spec| {
+			if spec.selection == FochCliCacheLayerArg::Parse {
+				CacheLayer::Parse {
+					root: root.join(spec.name),
+				}
+			} else {
+				CacheLayer::Files(FileCacheLayer::new(
+					spec.name,
+					root.join(spec.name),
+					spec.extension,
+				))
+			}
+		})
 		.collect()
 }
 
-fn layer_stats(layer: &FileCacheLayer) -> Result<LayerStats, Box<dyn std::error::Error>> {
+fn layer_stats(layer: &CacheLayer) -> Result<LayerStats, Box<dyn std::error::Error>> {
 	let entries = layer.list_entries()?;
 	Ok(stats_from_entries(&entries))
 }
 
-fn combined_stats(layers: &[FileCacheLayer]) -> Result<LayerStats, Box<dyn std::error::Error>> {
+fn combined_stats(layers: &[CacheLayer]) -> Result<LayerStats, Box<dyn std::error::Error>> {
 	let mut entries = Vec::new();
 	for layer in layers {
 		entries.extend(layer.list_entries()?);

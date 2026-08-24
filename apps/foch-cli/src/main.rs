@@ -1,7 +1,7 @@
 use clap::Parser;
 use foch::check::CHECK_PROGRESS_TARGET;
 use foch::graph::SEMANTIC_GRAPH_PROGRESS_TARGET;
-use foch::input::load_or_init_config;
+use foch::input::{load_config_read_only, load_or_init_config};
 use foch_cli::cli::arg;
 use foch_cli::cli::handler;
 use std::io;
@@ -36,9 +36,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 	let show_semantic_graph_progress = matches!(&cliargs.command, arg::FochCliCommands::Graph(graph_args) if graph_args.mode == arg::GraphModeArg::Semantic);
 	let show_check_progress = matches!(
 		&cliargs.command,
-		arg::FochCliCommands::Check(_)
-			| arg::FochCliCommands::Merge(_)
-			| arg::FochCliCommands::MergePlan(_)
+		arg::FochCliCommands::Check(_) | arg::FochCliCommands::Merge(_)
 	);
 	let semantic_graph_progress_level = if show_semantic_graph_progress {
 		LevelFilter::INFO
@@ -89,40 +87,29 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 
 	tracing::subscriber::set_global_default(subscriber)?;
 
-	let (mut config, config_file) = load_or_init_config()?;
-
-	let result = match &cliargs.command {
-		arg::FochCliCommands::Check(check_args) => handler::check::handle_check(check_args, config),
-		arg::FochCliCommands::MergePlan(merge_plan_args) => {
-			handler::merge_plan::handle_merge_plan(merge_plan_args, config)
+	match &cliargs.command {
+		arg::FochCliCommands::Cache(cache_args) => return handler::cache::handle_cache(cache_args),
+		arg::FochCliCommands::Input(input_args) => {
+			return handler::input::handle_input(input_args, load_config_read_only()?);
 		}
+		arg::FochCliCommands::Lsp(_lsp_args) => return Ok(foch_cli::lsp::run()),
+		_ => {}
+	}
+
+	let (mut config, config_file) = load_or_init_config()?;
+	match &cliargs.command {
+		arg::FochCliCommands::Check(check_args) => handler::check::handle_check(check_args, config),
 		arg::FochCliCommands::Merge(merge_args) => handler::merge::handle_merge(merge_args, config),
 		arg::FochCliCommands::Graph(graph_args) => handler::graph::handle_graph(graph_args, config),
 		arg::FochCliCommands::Simplify(simplify_args) => {
 			handler::simplify::handle_simplify(simplify_args, config)
 		}
 		arg::FochCliCommands::Data(data_args) => handler::data::handle_data(data_args, config),
-		arg::FochCliCommands::Cache(cache_args) => handler::cache::handle_cache(cache_args),
+		arg::FochCliCommands::Cache(_)
+		| arg::FochCliCommands::Input(_)
+		| arg::FochCliCommands::Lsp(_) => unreachable!("handled before config initialization"),
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
 		}
-		arg::FochCliCommands::Input(input_args) => handler::input::handle_input(input_args, config),
-		arg::FochCliCommands::Lsp(_lsp_args) => Ok(foch_cli::lsp::run()),
-	};
-
-	if matches!(&result, Ok(0)) && should_run_cache_gc(&cliargs.command) {
-		handler::cache::run_auto_cache_gc();
-	}
-
-	result
-}
-
-fn should_run_cache_gc(command: &arg::FochCliCommands) -> bool {
-	match command {
-		arg::FochCliCommands::Check(_) | arg::FochCliCommands::Merge(_) => true,
-		arg::FochCliCommands::Data(data_args) => {
-			matches!(data_args.command, arg::FochCliDataCommands::Build(_))
-		}
-		_ => false,
 	}
 }

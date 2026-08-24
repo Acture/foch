@@ -1,14 +1,14 @@
-use crate::cli::arg::{FochCliInputCommands, InputArgs, InputResolveArgs};
+use crate::cli::arg::{FochCliInputCommands, InputArgs, InputInspectArgs};
 use crate::cli::handler::HandlerResult;
 use foch::input::{Config, InputRequest, InputResolveSummary, InputSource, resolve_input_summary};
 
 pub fn handle_input(args: &InputArgs, config: Config) -> HandlerResult {
 	match &args.command {
-		FochCliInputCommands::Resolve(resolve_args) => handle_input_resolve(resolve_args, config),
+		FochCliInputCommands::Inspect(inspect_args) => handle_input_inspect(inspect_args, config),
 	}
 }
 
-fn handle_input_resolve(args: &InputResolveArgs, config: Config) -> HandlerResult {
+fn handle_input_inspect(args: &InputInspectArgs, config: Config) -> HandlerResult {
 	let request = InputRequest::new(InputSource::from_path(args.source_path.clone()), config);
 	let summary = resolve_input_summary(&request)?;
 	println!("{}", render_input_summary(&summary));

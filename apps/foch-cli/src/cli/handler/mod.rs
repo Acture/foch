@@ -5,7 +5,6 @@ pub mod data;
 pub mod graph;
 pub mod input;
 pub mod merge;
-pub mod merge_plan;
 pub mod simplify;
 
 pub type HandlerResult = Result<i32, Box<dyn std::error::Error>>;
@@ -13,8 +12,8 @@ pub type HandlerResult = Result<i32, Box<dyn std::error::Error>>;
 use foch::input::{Config, InputSource};
 use std::path::{Path, PathBuf};
 
-/// Resolve the `<PLAYSET_PATH>` argument shared by `check`, `merge-plan`,
-/// `merge`, `graph`, and `simplify`. When the user supplies an explicit path
+/// Resolve the `<PLAYSET_PATH>` argument shared by `check`, `merge`, `graph`,
+/// and `simplify`. When the user supplies an explicit path
 /// it is used verbatim; otherwise `<paradox_data_path>/dlc_load.json` (the
 /// launcher's currently-active playset) is the implicit default. Returns a
 /// human-readable error string when neither source produces a usable path.

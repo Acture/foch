@@ -1,8 +1,8 @@
-//! Fingerprint of a playset's effective state for merge-result reuse.
+//! Fingerprint of a playset's effective state for analysis attribution.
 //!
-//! When `foch merge --out X` runs against a directory whose previous report
-//! shows a matching fingerprint, the merge can be skipped entirely and the
-//! cached report reused. The fingerprint covers:
+//! The value identifies the ordered inputs and configured decisions recorded
+//! with a merge report. It does not authorize reuse of a previous output. The
+//! fingerprint covers:
 //!
 //! - The ordered enabled-mods list (each entry is `(mod_id, version)`).
 //! - The sorted local foch.toml `[[overrides]]`.
@@ -12,8 +12,8 @@
 //!
 //! - Mod file contents (a workshop mod content update with the same version
 //!   field will be treated as the same playset).
-//! - Vanilla game data version (caller should invalidate the out_dir on game
-//!   patch).
+//! - Vanilla game data version (tracked separately by the analyzed base
+//!   snapshot identity).
 
 use super::{DepOverride, ResolutionEntry};
 use blake3::Hasher;

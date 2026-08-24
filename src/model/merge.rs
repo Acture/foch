@@ -12,12 +12,6 @@ pub const MERGE_REPORT_ARTIFACT_PATH: &str = ".foch/foch-merge-report.json";
 pub const MERGE_PROVENANCE_ARTIFACT_PATH: &str = ".foch/foch-provenance.json";
 pub const MERGE_TRACE_ARTIFACT_PATH: &str = ".foch/foch-merge-trace.json";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MergePlanFormat {
-	Text,
-	Json,
-}
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergePlanStrategy {
@@ -265,7 +259,7 @@ pub enum MergeReportStatus {
 	Ready,
 	/// Safe units were exported while unresolved units were deferred or forced.
 	PartialSuccess,
-	/// Publication was stopped by an explicit non-conflict gate.
+	/// Commit was stopped by an explicit non-conflict gate.
 	Blocked,
 	Fatal,
 }
@@ -689,12 +683,10 @@ pub struct MergeReport {
 	// D2 local dependency overrides applied during DAG-based merge.
 	#[serde(default)]
 	pub dep_overrides_applied: Vec<AppliedDepOverride>,
-	/// SHA-256 fingerprint of the playset state that produced this report —
-	/// the ordered enabled-mods list with each mod's version, plus the
-	/// sorted local foch.toml [[overrides]] and [[resolutions]] entries.
-	/// Re-running `foch merge --out X` against a directory whose existing
-	/// report has the same fingerprint can skip the merge entirely and
-	/// reuse the previous result.
+	/// BLAKE3 fingerprint of the playset state that produced this report: the
+	/// ordered enabled-mods list with each mod's version, plus sorted local
+	/// foch.toml [[overrides]] and [[resolutions]] entries. It attributes the
+	/// analyzed input; it does not authorize reuse of a previous output.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub playset_fingerprint: Option<String>,
 	/// Per merged file path → per top-level definition key → the mods whose

@@ -6,10 +6,9 @@ use crate::game::eu4::content::{
 	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 };
 use crate::game::eu4::script::documents::{classify_document_family, is_clausewitz_defines_path};
-use crate::input::request::InputRequest;
 use crate::input::{
 	InputResolveError, InputResolveErrorKind, InputScriptCache, ResolvedInput,
-	ResolvedInputContributor, resolve_input,
+	ResolvedInputContributor,
 };
 use crate::model::{
 	DocumentFamily, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies,
@@ -18,36 +17,6 @@ use crate::model::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-#[derive(Clone, Debug)]
-pub struct PathPlanOptions {
-	pub include_game_base: bool,
-}
-
-impl Default for PathPlanOptions {
-	fn default() -> Self {
-		Self {
-			include_game_base: true,
-		}
-	}
-}
-
-pub fn run_merge_plan(request: InputRequest) -> MergePlanResult {
-	run_merge_plan_with_options(request, PathPlanOptions::default())
-}
-
-pub fn run_merge_plan_with_options(
-	request: InputRequest,
-	options: PathPlanOptions,
-) -> MergePlanResult {
-	let mut input = match resolve_input(&request, options.include_game_base) {
-		Ok(input) => input,
-		Err(err) => return fatal_plan_from_input_error(&err, options.include_game_base),
-	};
-	prune_noop_script_contributors(&mut input, eu4());
-
-	build_merge_plan_from_input(&input, options.include_game_base)
-}
 
 pub(crate) fn fatal_plan_from_input_error(
 	err: &InputResolveError,

@@ -1948,8 +1948,8 @@ fn looks_like_localisation_name(value: &str) -> bool {
 }
 
 fn resolve_scan_targets(params: &InitializeParams) -> Vec<ScanTarget> {
-	if std::env::var_os("FOCH_LSP_WORKSPACE_MANIFEST").is_some() {
-		return scan_targets_from_manifest_env().unwrap_or_default();
+	if std::env::var_os("FOCH_LSP_PROJECT_MANIFEST").is_some() {
+		return scan_targets_from_project_manifest_env().unwrap_or_default();
 	}
 
 	match scan_targets_from_env() {
@@ -1958,26 +1958,26 @@ fn resolve_scan_targets(params: &InitializeParams) -> Vec<ScanTarget> {
 	}
 }
 
-fn scan_targets_from_manifest_env() -> std::result::Result<Vec<ScanTarget>, String> {
-	let raw = match std::env::var("FOCH_LSP_WORKSPACE_MANIFEST") {
+fn scan_targets_from_project_manifest_env() -> std::result::Result<Vec<ScanTarget>, String> {
+	let raw = match std::env::var("FOCH_LSP_PROJECT_MANIFEST") {
 		Ok(value) => value,
 		Err(std::env::VarError::NotPresent) => return Ok(Vec::new()),
-		Err(err) => return Err(format!("read FOCH_LSP_WORKSPACE_MANIFEST failed: {err}")),
+		Err(err) => return Err(format!("read FOCH_LSP_PROJECT_MANIFEST failed: {err}")),
 	};
 	let manifest_path = PathBuf::from(raw);
 	let config = load_or_init_config()
 		.map(|(config, _path)| config)
 		.unwrap_or_else(|_| Config::default());
-	scan_targets_from_manifest_path(manifest_path, config)
+	scan_targets_from_project_manifest_path(manifest_path, config)
 }
 
-fn scan_targets_from_manifest_path(
+fn scan_targets_from_project_manifest_path(
 	manifest_path: PathBuf,
 	config: Config,
 ) -> std::result::Result<Vec<ScanTarget>, String> {
 	let request = InputRequest::new(InputSource::Manifest(manifest_path), config);
 	let targets = resolve_input_targets(&request, true)
-		.map_err(|err| format!("resolve FOCH_LSP_WORKSPACE_MANIFEST failed: {err}"))?;
+		.map_err(|err| format!("resolve FOCH_LSP_PROJECT_MANIFEST failed: {err}"))?;
 	Ok(dedup_scan_targets(
 		targets
 			.into_iter()
@@ -2267,8 +2267,9 @@ mod tests {
 		assignment_key_on_line, build_workspace_snapshot, build_workspace_snapshot_with_schema,
 		detect_completion_context, document_symbols, extract_completion_prefix,
 		localisation_stub_code_actions, parse_scan_targets_json, resolve_definition_locations,
-		resolve_reference_locations, scan_targets_from_manifest_path, schema_completion_candidate,
-		schema_diagnostic, schema_hover_view, select_completion_candidates, workspace_symbols,
+		resolve_reference_locations, scan_targets_from_project_manifest_path,
+		schema_completion_candidate, schema_diagnostic, schema_hover_view,
+		select_completion_candidates, workspace_symbols,
 	};
 	use foch::game::eu4::editor::schema::{
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
@@ -2418,7 +2419,7 @@ mod tests {
 	}
 
 	#[test]
-	fn manifest_targets_resolve_for_lsp() {
+	fn project_manifest_targets_resolve_for_lsp() {
 		let tmp = TempDir::new().expect("temp dir");
 		let game_root = tmp.path().join("game-root");
 		let mod_root = tmp.path().join("local-mod");
@@ -2448,8 +2449,8 @@ path = "local-mod"
 		)
 		.expect("write manifest");
 
-		let targets =
-			scan_targets_from_manifest_path(manifest, Config::default()).expect("resolve manifest");
+		let targets = scan_targets_from_project_manifest_path(manifest, Config::default())
+			.expect("resolve project manifest");
 		assert_eq!(targets.len(), 2);
 		assert!(targets.iter().any(|target| target.role == TargetRole::Game));
 		assert!(targets.iter().any(|target| target.role == TargetRole::Mod));

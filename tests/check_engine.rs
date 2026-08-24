@@ -1,6 +1,6 @@
 use foch::check::{run_checks, run_checks_with_options};
 use foch::input::{CheckOptions, Config, InputRequest};
-use foch::merge::{PathPlanOptions, run_merge_plan_with_options};
+use foch::merge::{CancellationToken, MergeAnalysisOptions, NoopProgressObserver, analyze_merge};
 use foch::model::{
 	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 	MergeReportStatus, MergeReportValidation, Severity,
@@ -120,12 +120,35 @@ fn run_checks_no_base(request: InputRequest) -> CheckResult {
 }
 
 fn run_merge_plan_no_base(request: InputRequest) -> MergePlanResult {
-	run_merge_plan_with_options(
+	let out_dir = request
+		.source_path()
+		.parent()
+		.expect("input path has parent")
+		.join("merged-output");
+	analyze_merge(
 		request,
-		PathPlanOptions {
+		MergeAnalysisOptions {
+			out_dir,
 			include_game_base: false,
+			include_base: false,
+			gui_scroll_merge: false,
+			force: false,
+			ignore_replace_path: false,
+			dep_overrides: Vec::new(),
+			resolution_config_path: None,
+			interactive_conflict_handler: None,
+			interactive_resolution_config_path: None,
+			playset_fingerprint: None,
+			provenance: false,
+			retained_paths: None,
 		},
+		&NoopProgressObserver,
+		&CancellationToken::new(),
 	)
+	.expect("analyze merge")
+	.analysis()
+	.plan()
+	.clone()
 }
 
 #[test]

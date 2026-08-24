@@ -1,7 +1,5 @@
 use super::parser::{ParseResult, parse_clausewitz_content, parse_clausewitz_file};
-use crate::platform::cache_store::{
-	cache_version_namespace, default_foch_cache_dir, is_cache_version_namespace,
-};
+use crate::platform::cache_store::{cache_version_namespace, default_foch_cache_dir};
 use filetime::{FileTime, set_file_mtime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -9,8 +7,6 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-#[cfg(not(test))]
-use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PARSE_CACHE_VERSION: &str = "10.0.0";
@@ -65,7 +61,6 @@ struct CacheFile {
 }
 
 pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
-	ensure_current_cache_generation();
 	let Ok(bytes) = fs::read(path) else {
 		return (parse_clausewitz_file(path), false);
 	};
@@ -79,7 +74,6 @@ pub fn parse_clausewitz_file_cached(path: &Path) -> (ParseResult, bool) {
 /// external installation or snapshot identities do not create a second parser
 /// identity for identical input.
 pub fn parse_clausewitz_bytes_cached(path: &Path, bytes: &[u8]) -> (ParseResult, bool) {
-	ensure_current_cache_generation();
 	let content_key = parse_content_key(path, bytes);
 	parse_clausewitz_bytes_with_key(path, bytes, content_key)
 }
@@ -107,37 +101,6 @@ fn parse_clausewitz_bytes_with_key(
 	store_parse_cache_entry(&cache_path, &entry);
 
 	(parsed, false)
-}
-
-#[cfg(not(test))]
-static CACHE_GENERATION_READY: OnceLock<()> = OnceLock::new();
-
-fn ensure_current_cache_generation() {
-	#[cfg(not(test))]
-	CACHE_GENERATION_READY.get_or_init(prune_obsolete_cache_generations);
-	#[cfg(test)]
-	prune_obsolete_cache_generations();
-}
-
-fn prune_obsolete_cache_generations() {
-	let current_root = parse_cache_base_root();
-	if let Some(obsolete_root) = obsolete_parse_cache_base_root()
-		&& obsolete_root != current_root
-	{
-		let _ = fs::remove_dir_all(obsolete_root);
-	}
-	let active_namespace = active_cache_namespace();
-	let Ok(entries) = fs::read_dir(current_root) else {
-		return;
-	};
-	for entry in entries.flatten() {
-		let path = entry.path();
-		let name = entry.file_name();
-		let name = name.to_string_lossy();
-		if path.is_dir() && name != active_namespace && is_cache_version_namespace(&name) {
-			let _ = fs::remove_dir_all(path);
-		}
-	}
 }
 
 fn active_cache_namespace() -> String {
@@ -550,7 +513,7 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_prunes_obsolete_cache_generations() {
+	fn parse_preserves_obsolete_cache_generations_until_explicit_gc() {
 		let cache_temp = tempdir().expect("cache tempdir");
 		let source_temp = tempdir().expect("source tempdir");
 		let _env = CacheEnvGuard::new(cache_temp.path());
@@ -566,9 +529,15 @@ mod tests {
 		let (_, hit) = parse_clausewitz_file_cached(&source);
 
 		assert!(!hit);
-		assert!(!obsolete.exists());
+		assert!(obsolete.join("entry.json").is_file());
 		assert!(parser_cache_root().is_dir());
 		assert!(unrelated.join("owner.txt").is_file());
+
+		let stats = gc_with_cap(0);
+
+		assert!(stats.evicted >= 2);
+		assert!(!obsolete.exists());
+		assert!(!unrelated.exists());
 	}
 
 	#[test]
@@ -683,7 +652,7 @@ mod tests {
 	}
 
 	#[test]
-	fn parse_removes_obsolete_cache_root_without_loading_it() {
+	fn parse_preserves_obsolete_cache_root_until_explicit_clean() {
 		let cache_temp = tempdir().expect("cache tempdir");
 		let source_temp = tempdir().expect("source tempdir");
 		let new_root = cache_temp.path().join(PARSE_CACHE_DIR_NAME);
@@ -698,7 +667,11 @@ mod tests {
 		let (_, hit) = parse_clausewitz_file_cached(&source);
 
 		assert!(!hit);
-		assert!(!obsolete_generation.exists());
+		assert!(obsolete_generation.is_dir());
+
+		cache_clean().expect("clean all parse cache roots");
+
+		assert!(!obsolete_root.exists());
 	}
 
 	#[test]

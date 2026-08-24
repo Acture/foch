@@ -1,12 +1,11 @@
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::{HandlerResult, resolve_input_source};
-use foch::game::eu4::analysis::report::{
-	merge_plan_exit_code, render_merge_plan_text, render_merge_report_text,
-};
+use foch::game::eu4::analysis::report::{merge_plan_exit_code, render_merge_report_text};
 use foch::input::{Config, InputRequest, InputSource, resolve_product_input_manifest};
 use foch::merge::{
-	CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
-	MergeAnalysisOptions, NoopProgressObserver, analyze_merge,
+	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
+	MergeAnalysisOptions, MergeAnalysisStatus, MergeDisposition, MergeUnitKind,
+	NoopProgressObserver, analyze_merge,
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
@@ -52,7 +51,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		&CancellationToken::new(),
 	)?;
 	let analysis = analyzed.analysis();
-	println!("{}", render_merge_plan_text(analysis.plan()));
+	println!("{}", render_merge_review_text(&analyzed));
 	let plan_exit_code = merge_plan_exit_code(analysis.plan());
 	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
@@ -84,6 +83,72 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 		eprintln!("[foch] failed to install launcher stub: {err}");
 	}
 	Ok(execution.exit_code)
+}
+
+fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
+	let analysis = analyzed.analysis();
+	let summary = analyzed.review_summary();
+	let status = match analysis.status() {
+		MergeAnalysisStatus::ReadyToCommit => "ready_to_commit",
+		MergeAnalysisStatus::CommittableWithDeferrals => "committable_with_deferrals",
+		MergeAnalysisStatus::Blocked => "blocked",
+	};
+	let mut output = format!(
+		"Foch Merge Review\nstatus: {status}\nunits: {}\n  safe: {}\n  copy: {}\n  needs_user_choice: {}\n  unsupported_input: {}\n  engine_failure: {}\n  deferred: {}\n",
+		summary.total,
+		summary.safe,
+		summary.copy,
+		summary.needs_user_choice,
+		summary.unsupported_input,
+		summary.engine_failure,
+		summary.deferred,
+	);
+	if !analysis.plan().fatal_errors.is_empty() {
+		output.push_str("fatal errors:\n");
+		for error in &analysis.plan().fatal_errors {
+			output.push_str(&format!("  - {error}\n"));
+		}
+	}
+	output.push_str("review units:\n");
+	for unit in analyzed.list_units() {
+		let disposition = match unit.disposition {
+			MergeDisposition::Safe => "safe",
+			MergeDisposition::Copy => "copy",
+			MergeDisposition::NeedsUserChoice => "needs_user_choice",
+			MergeDisposition::UnsupportedInput => "unsupported_input",
+			MergeDisposition::EngineFailure => "engine_failure",
+			MergeDisposition::Deferred => "deferred",
+		};
+		let kind = match unit.kind {
+			MergeUnitKind::File => "file",
+			MergeUnitKind::DefinitionModule => "definition_module",
+		};
+		output.push_str(&format!(
+			"- [{disposition}] {}\n  id: {}\n  family: {}\n  kind: {kind}\n  strategy: {}\n  summary: {}\n",
+			unit.path, unit.id, unit.family, unit.strategy, unit.summary,
+		));
+		if let Some(path) = unit.output_path.as_deref() {
+			output.push_str(&format!("  output: {path}\n"));
+		}
+		if !unit.contributors.is_empty() {
+			let contributors = unit
+				.contributors
+				.iter()
+				.map(|contributor| {
+					format!(
+						"{} ({}, precedence {})",
+						contributor.name, contributor.mod_id, contributor.precedence
+					)
+				})
+				.collect::<Vec<_>>()
+				.join(", ");
+			output.push_str(&format!("  contributors: {contributors}\n"));
+		}
+		for note in &unit.notes {
+			output.push_str(&format!("  note: {note}\n"));
+		}
+	}
+	output
 }
 
 fn confirm_merge_commit(
@@ -232,7 +297,7 @@ fn applied_dep_overrides(
 /// Compute the playset fingerprint without resolving the complete input.
 ///
 /// Launcher playsets use their ordered enabled-mod list and descriptor
-/// versions. Manifest workspaces use only their ordered, trusted Workshop ACF
+/// versions. Project inputs use only their ordered, trusted Workshop ACF
 /// identities; imports or local unversioned mods fail closed. Neither path
 /// inventories a mod root. The fingerprint also binds foch overrides and
 /// resolutions.

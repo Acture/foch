@@ -70,10 +70,10 @@
 					"default": "",
 					"description": "Working directory for launching the server. Empty means first workspace folder."
 				},
-				"fochLsp.workspaceManifest": {
+				"fochLsp.projectManifest": {
 					"type": "string",
 					"default": "",
-					"description": "Optional foch.toml workspace manifest. When set, the language server resolves game and mod roots through the manifest before using gamePath/modPaths."
+					"description": "Optional foch.toml project manifest. When set, the language server resolves game and mod roots through the manifest before using gamePath/modPaths."
 				},
 				"fochLsp.gamePath": {
 					"type": "string",
