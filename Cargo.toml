@@ -22,10 +22,7 @@ members = [
 	".",
 	"apps/foch-cli",
 	"apps/foch-desktop/src-tauri",
-	"crates/foch-cwt",
 	"crates/foch-engine",
-	"crates/foch-language",
-	"crates/foch-syntax",
 	"packages/tree-sitter-paradox",
 ]
 default-members = [".", "apps/foch-cli"]

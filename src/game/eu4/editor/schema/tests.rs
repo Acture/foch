@@ -171,8 +171,9 @@ fn active_schema_discovers_vendored_pack() {
 #[test]
 fn schema_loader_reads_existing_fixture_pack() {
 	let fixture_dir = repository_root()
-		.join("crates")
-		.join("foch-cwt")
+		.join("src")
+		.join("game")
+		.join("schema")
 		.join("tests/fixtures/schema-pack");
 	assert!(
 		fixture_dir.join("events/events.cwt").is_file(),

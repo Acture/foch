@@ -1,11 +1,7 @@
 use crate::model::{SemanticIndex, SymbolDefinition, SymbolKind};
 use std::collections::{HashMap, HashSet};
 
-/// Source of vanilla semantic definitions for a workspace-like value.
-///
-/// `foch-language` cannot depend on the engine crate that owns
-/// `ResolvedWorkspace`, so the engine implements this trait for its workspace
-/// type and the indexer stays on the analyzer side of the crate boundary.
+/// Source of vanilla semantic definitions for an analyzed input.
 pub trait VanillaSymbolSource {
 	fn visit_vanilla_definitions(&self, visit: &mut dyn FnMut(&SymbolDefinition));
 }

@@ -1382,20 +1382,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "foch-cwt"
-version = "0.0.1"
-dependencies = [
- "bincode",
- "foch",
- "foch-syntax",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "walkdir",
-]
-
-[[package]]
 name = "foch-desktop"
 version = "0.0.1"
 dependencies = [
@@ -1415,7 +1401,6 @@ dependencies = [
  "filetime",
  "flate2",
  "foch",
- "foch-cwt",
  "globset",
  "libc",
  "rayon",
@@ -1433,36 +1418,6 @@ dependencies = [
  "tracing",
  "walkdir",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "foch-language"
-version = "0.0.1"
-dependencies = [
- "bincode",
- "blake3",
- "console",
- "dirs",
- "encoding_rs",
- "filetime",
- "foch",
- "foch-cwt",
- "rayon",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "walkdir",
-]
-
-[[package]]
-name = "foch-syntax"
-version = "0.0.1"
-dependencies = [
- "foch",
- "tree-sitter",
- "tree-sitter-paradox",
 ]
 
 [[package]]
