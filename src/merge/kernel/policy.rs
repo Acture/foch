@@ -1,4 +1,4 @@
-use crate::{ClassId, ConflictKind, NormalizedNode, RevisionId, RevisionNode};
+use crate::merge::kernel::{ClassId, ConflictKind, NormalizedNode, RevisionId, RevisionNode};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NWayNodeView<'a> {

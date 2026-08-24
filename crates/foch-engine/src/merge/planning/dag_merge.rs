@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use foch::merge::kernel::{DeltaOperation, RevisionNode};
 use foch::model::MergeTraceContributor;
 use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::parser::AstStatement;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
-use foch_merge_kernel::{DeltaOperation, RevisionNode};
 
 use super::super::conflict_handler::{ConflictHandler, DeferHandler};
 use super::dag::{FileDag, ModId};
@@ -322,7 +322,7 @@ fn record_semantic_top_level_key(
 	node: RevisionNode,
 	keys: &mut BTreeSet<String>,
 ) -> Result<(), String> {
-	let tree = if node.revision == foch_merge_kernel::RevisionId::BASE {
+	let tree = if node.revision == foch::merge::kernel::RevisionId::BASE {
 		&partition.base_tree
 	} else if node.revision == partition.delta.revision.revision {
 		&partition.revision_tree

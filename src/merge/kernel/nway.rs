@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::pcs::merge_orders;
-use crate::{
+use crate::merge::kernel::pcs::merge_orders;
+use crate::merge::kernel::{
 	ChildCardinality, ChildOrder, ClassId, ClassMapping, ConflictKind, DeltaOperation, Matching,
 	MergeDecisionEvidence, MergeDecisionReason, MergeDecisionResult, MergeInputId, MergePolicyKind,
 	NormalizedNode, NormalizedTree, RevisionDelta, RevisionId, RevisionNode, RevisionSourceRef,
@@ -277,7 +277,7 @@ impl NWayCorrespondence {
 		&self,
 		base: &NormalizedTree,
 		revisions: &[MergeRevision<'_>],
-		policy: &dyn crate::MergePolicy,
+		policy: &dyn crate::merge::kernel::MergePolicy,
 	) -> NWaySelectionPlan {
 		self.selection_with_policy_profiled(base, revisions, policy)
 			.0
@@ -287,7 +287,7 @@ impl NWayCorrespondence {
 		&self,
 		base: &NormalizedTree,
 		revisions: &[MergeRevision<'_>],
-		policy: &dyn crate::MergePolicy,
+		policy: &dyn crate::merge::kernel::MergePolicy,
 	) -> (NWaySelectionPlan, u64) {
 		self.selection_with_policy_and_overrides_profiled(
 			base,
@@ -301,12 +301,14 @@ impl NWayCorrespondence {
 		&self,
 		base: &NormalizedTree,
 		revisions: &[MergeRevision<'_>],
-		policy: &dyn crate::MergePolicy,
+		policy: &dyn crate::merge::kernel::MergePolicy,
 		overrides: &NWaySelectionOverrides,
 	) -> (NWaySelectionPlan, u64) {
 		let mut plan = self.conservative_class_selection(base, revisions);
 		let policy_started = Instant::now();
-		crate::nway_policy::apply_nway_policy(base, revisions, self, policy, &mut plan);
+		crate::merge::kernel::nway_policy::apply_nway_policy(
+			base, revisions, self, policy, &mut plan,
+		);
 		apply_selection_overrides(&mut plan, overrides, self);
 		let policy_ns = nanos(policy_started.elapsed());
 		assign_nway_parents(base, revisions, self, overrides, &mut plan);
@@ -901,7 +903,7 @@ fn parent_class_for_source(
 fn class_common_policy_path(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],
-	class: &crate::RevisionClass,
+	class: &crate::merge::kernel::RevisionClass,
 ) -> Vec<String> {
 	let base_node = class
 		.get(RevisionId::BASE)
@@ -1226,7 +1228,7 @@ fn nanos(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{
+	use crate::merge::kernel::{
 		ConservativeMergePolicy, MergePolicy, NWayClassContext, NWayDeleteContext, NodeId,
 		PolicyDecision, RevisionNode, SourceNodeRef, TreeNode, n_way_merge,
 		n_way_merge_with_policy, n_way_merge_with_policy_and_resolutions,
@@ -1633,12 +1635,12 @@ mod tests {
 
 		assert!(conflict.candidates.iter().any(|candidate| matches!(
 			candidate,
-			crate::SourceNodeRef::Tombstone { input, .. }
+			crate::merge::kernel::SourceNodeRef::Tombstone { input, .. }
 				if input.revision == RevisionId::new(1)
 		)));
 		assert!(conflict.candidates.iter().any(|candidate| matches!(
 			candidate,
-			crate::SourceNodeRef::Node { input, .. }
+			crate::merge::kernel::SourceNodeRef::Node { input, .. }
 				if input.revision == RevisionId::new(2)
 		)));
 	}

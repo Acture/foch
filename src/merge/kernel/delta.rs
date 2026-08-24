@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{
+use crate::merge::kernel::{
 	ChildOrder, Matching, NodeId, NormalizedNode, NormalizedTree, RevisionId, RevisionNode,
 	SemanticKey, SubtreeHash,
 };
@@ -339,7 +339,7 @@ fn ordering_is_new(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::{TreeMatcher, TreeNode};
+	use crate::merge::kernel::{TreeMatcher, TreeNode};
 
 	fn normalize(root: TreeNode) -> NormalizedTree {
 		NormalizedTree::from_root(root).unwrap()

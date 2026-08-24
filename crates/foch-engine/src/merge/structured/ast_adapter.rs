@@ -3,12 +3,12 @@ use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 
-use foch_language::analyzer::parser::{
-	AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange,
-};
-use foch_merge_kernel::{
+use foch::merge::kernel::{
 	ChildCardinality, ChildOrder, NWayMergeError, NodeId, NormalizedNode, NormalizedTree,
 	SemanticKey, TreeError, TreeNode,
+};
+use foch_language::analyzer::parser::{
+	AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange,
 };
 
 use super::policy::ClausewitzTreePolicy;

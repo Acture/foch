@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
+use foch::merge::kernel::{ConflictKind, SemanticKeyScope};
 use foch_language::analyzer::content_family::{
 	BlockMergePolicy, DivergentBlockPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy,
 	ScalarMergePolicy, ScalarReducerRule,
 };
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
-use foch_merge_kernel::{ConflictKind, SemanticKeyScope};
 
 use crate::emit::emit_clausewitz_statements;
 
@@ -1655,8 +1655,8 @@ fn eu4_ages_reducer_retains_the_stronger_value_against_a_one_sided_change() {
 				"global_colonial_growth".to_string(),
 			],
 			inputs: vec![
-				(foch_merge_kernel::RevisionId::LEFT, "50".to_string()),
-				(foch_merge_kernel::RevisionId::RIGHT, "35".to_string()),
+				(foch::merge::kernel::RevisionId::LEFT, "50".to_string()),
+				(foch::merge::kernel::RevisionId::RIGHT, "35".to_string()),
 			],
 			output: "50".to_string(),
 		}]

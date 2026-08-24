@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Matching, NodeId, NormalizedTree, RevisionId, RevisionNode};
+use crate::merge::kernel::{Matching, NodeId, NormalizedTree, RevisionId, RevisionNode};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ClassId(u32);
@@ -180,7 +180,7 @@ impl ClassMapping {
 
 #[cfg(test)]
 mod tests {
-	use crate::{TreeMatcher, TreeNode};
+	use crate::merge::kernel::{TreeMatcher, TreeNode};
 
 	use super::*;
 

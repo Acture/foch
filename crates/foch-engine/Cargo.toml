@@ -17,7 +17,6 @@ globset.workspace = true
 foch = { path = "../.." }
 foch-cwt = { path = "../foch-cwt" }
 foch-language = { path = "../foch-language" }
-foch-merge-kernel = { path = "../foch-merge-kernel" }
 rayon.workspace = true
 reqwest.workspace = true
 remove_dir_all.workspace = true

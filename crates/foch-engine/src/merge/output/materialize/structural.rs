@@ -550,11 +550,11 @@ mod tests {
 	use std::fs;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
+	use foch::merge::kernel::RevisionId;
 	use foch::project::{Project, ResolutionMap};
 	use foch_language::analyzer::content_family::{GameProfile, MergePolicies};
 	use foch_language::analyzer::eu4_profile::eu4_profile;
 	use foch_language::analyzer::parser::parse_clausewitz_content;
-	use foch_merge_kernel::RevisionId;
 
 	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 	use crate::merge::model::{SemanticConflictCandidate, SemanticMergeConflict};

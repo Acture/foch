@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
+use crate::merge::kernel::{
 	ChildCardinality, NodeId, NormalizedNode, NormalizedTree, SemanticKey, SemanticKeyLineage,
 	SemanticKeyMatchMode, SemanticKeyScope, SubtreeHash,
 };
@@ -1588,7 +1588,7 @@ fn isomorphic_child_pairs(
 	{
 		return None;
 	}
-	if left_node.child_order == crate::ChildOrder::Ordered {
+	if left_node.child_order == crate::merge::kernel::ChildOrder::Ordered {
 		let pairs = left_node
 			.children
 			.iter()
@@ -1893,7 +1893,7 @@ fn anchor_repeats_under_parent(tree: &NormalizedTree, id: NodeId, anchor: &Seman
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::TreeNode;
+	use crate::merge::kernel::TreeNode;
 
 	fn scalar(value: &str) -> TreeNode {
 		TreeNode::leaf("scalar", value)

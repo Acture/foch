@@ -25,7 +25,6 @@ members = [
 	"crates/foch-cwt",
 	"crates/foch-engine",
 	"crates/foch-language",
-	"crates/foch-merge-kernel",
 	"crates/foch-syntax",
 	"packages/tree-sitter-paradox",
 ]
@@ -101,6 +100,7 @@ steamlocate.workspace = true
 toml.workspace = true
 tree-sitter = "0.25"
 tree-sitter-paradox = { path = "packages/tree-sitter-paradox" }
+thiserror = "2.0"
 walkdir.workspace = true
 
 [target.'cfg(windows)'.dependencies]

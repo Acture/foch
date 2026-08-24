@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use foch::merge::kernel::{
+	DeltaOperation, MergeDecisionEvidence, MergeDecisionResult, NormalizedTree, RevisionDelta,
+	RevisionId, RevisionNode, TreeMatcher,
+};
 use foch::model::{MergeTraceContributor, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, DivergentBlockPolicy, MergePolicies, NamedContainerPolicy,
 };
 use foch_language::analyzer::parser::AstFile;
-use foch_merge_kernel::{
-	DeltaOperation, MergeDecisionEvidence, MergeDecisionResult, NormalizedTree, RevisionDelta,
-	RevisionId, RevisionNode, TreeMatcher,
-};
 
 use crate::merge::model::{
 	SemanticDeltaPartition, SemanticMergeComputation, SemanticMergeFacts, SemanticMergeSource,
@@ -385,7 +385,7 @@ fn decision_source(decision: &MergeDecisionEvidence) -> Option<RevisionNode> {
 fn tree_for_revision(
 	facts: &SemanticMergeFacts,
 	revision: RevisionId,
-) -> Result<&foch_merge_kernel::NormalizedTree, String> {
+) -> Result<&foch::merge::kernel::NormalizedTree, String> {
 	if revision == RevisionId::BASE {
 		return Ok(&facts.base_tree);
 	}

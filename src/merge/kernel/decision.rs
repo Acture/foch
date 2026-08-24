@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ClassId, RevisionId, RevisionNode, SourceSet};
+use crate::merge::kernel::{ClassId, RevisionId, RevisionNode, SourceSet};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,7 +56,7 @@ pub struct MergeDecisionEvidence {
 
 #[cfg(test)]
 mod tests {
-	use crate::{NodeId, RevisionId, RevisionNode};
+	use crate::merge::kernel::{NodeId, RevisionId, RevisionNode};
 
 	use super::*;
 

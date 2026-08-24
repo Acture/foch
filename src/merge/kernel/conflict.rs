@@ -4,7 +4,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
+use crate::merge::kernel::{
 	ClassId, ConflictNodeId, MergeDecisionEvidence, MergeInputId, NodeId, NormalizedTree,
 	RevisionDelta, RevisionId, RevisionNode, SourceNodeRef, SourceSet,
 };

@@ -1,4 +1,4 @@
-use crate::{
+use crate::merge::kernel::{
 	ChildOrder, ClassId, ConflictKind, MergeDecisionEvidence, MergeDecisionReason,
 	MergeDecisionResult, MergePolicy, MergePolicyKind, MergeRevision, NWayClassContext,
 	NWayCorrespondence, NWayDeleteContext, NWayNodeView, NWayScalarSynthesis, NWaySelectionPlan,
@@ -397,7 +397,7 @@ fn class_views<'tree>(
 fn node_view<'tree>(
 	base: &'tree NormalizedTree,
 	revisions: &[MergeRevision<'tree>],
-	facts: &crate::NWayClassFacts,
+	facts: &crate::merge::kernel::NWayClassFacts,
 	source: RevisionNode,
 ) -> NWayNodeView<'tree> {
 	let tree = tree_for_revision(base, revisions, source.revision);

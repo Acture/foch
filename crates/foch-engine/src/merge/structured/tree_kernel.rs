@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use foch::model::HandlerResolutionRecord;
-use foch_language::analyzer::content_family::MergePolicies;
-use foch_language::analyzer::parser::{AstFile, AstStatement};
-use foch_merge_kernel::{
+use foch::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
+use foch::model::HandlerResolutionRecord;
+use foch_language::analyzer::content_family::MergePolicies;
+use foch_language::analyzer::parser::{AstFile, AstStatement};
 
 use crate::emit::emit_clausewitz_statements;
 use crate::merge::conflict_handler::{
@@ -69,7 +69,7 @@ pub(crate) trait TreePartitionAdapter {
 		file: &AstFile,
 		partition: &SemanticPartitionId,
 		policies: &MergePolicies,
-	) -> Result<foch_merge_kernel::NormalizedTree, super::AstAdapterError> {
+	) -> Result<foch::merge::kernel::NormalizedTree, super::AstAdapterError> {
 		super::normalize_clausewitz_partition(file, partition, policies)
 	}
 }
@@ -182,7 +182,7 @@ impl TreePartitionAdapter for DefinitionModuleAdapter {
 		file: &AstFile,
 		partition: &SemanticPartitionId,
 		policies: &MergePolicies,
-	) -> Result<foch_merge_kernel::NormalizedTree, super::AstAdapterError> {
+	) -> Result<foch::merge::kernel::NormalizedTree, super::AstAdapterError> {
 		if matches!(partition, SemanticPartitionId::File) {
 			return super::normalize_clausewitz_partition(file, partition, policies);
 		}
@@ -1322,6 +1322,7 @@ mod tests {
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::{Path, PathBuf};
 
+	use foch::merge::kernel::{ConflictResolution, DeltaOperation, RevisionId};
 	use foch::project::{ResolutionDecision, ResolutionMap};
 	use foch_language::analyzer::content_family::{
 		CwtType, GameProfile, MergePolicies, ScalarMergePolicy, ScalarReducerRule,
@@ -1330,7 +1331,6 @@ mod tests {
 		AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange, parse_clausewitz_content,
 	};
 	use foch_language::analyzer::semantic_index::ParsedScriptFile;
-	use foch_merge_kernel::{ConflictResolution, DeltaOperation, RevisionId};
 
 	use super::{
 		ClausewitzFileAdapter, ClausewitzFileJoin, ConflictRecordBuilder, DefinitionModuleAdapter,
@@ -2354,7 +2354,7 @@ mod tests {
 			for (source, candidate) in sources.zip(&view.candidates) {
 				assert_eq!(
 					candidate.candidate_rendered == "(removed)",
-					matches!(source, foch_merge_kernel::SourceNodeRef::Tombstone { .. }),
+					matches!(source, foch::merge::kernel::SourceNodeRef::Tombstone { .. }),
 					"candidate kind and rendering diverged: {source:?}",
 				);
 			}
@@ -2380,7 +2380,7 @@ mod tests {
 			.position(|source| {
 				matches!(
 					source,
-					foch_merge_kernel::SourceNodeRef::Node { input, .. }
+					foch::merge::kernel::SourceNodeRef::Node { input, .. }
 						if input.revision == RevisionId::new(1)
 				)
 			})
@@ -2392,7 +2392,7 @@ mod tests {
 			.expect("b candidate")
 			.input()
 			.root_hash;
-		let foch_merge_kernel::SourceNodeRef::Node {
+		let foch::merge::kernel::SourceNodeRef::Node {
 			input: mut candidate_input,
 			node,
 		} = conflict.candidates[source_index]
@@ -2400,7 +2400,7 @@ mod tests {
 			unreachable!("source index was filtered to node candidates")
 		};
 		candidate_input.root_hash = wrong_root_hash;
-		conflict.candidates[source_index] = foch_merge_kernel::SourceNodeRef::Node {
+		conflict.candidates[source_index] = foch::merge::kernel::SourceNodeRef::Node {
 			input: candidate_input,
 			node,
 		};

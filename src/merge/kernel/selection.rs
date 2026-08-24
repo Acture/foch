@@ -2,7 +2,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ConflictKind, MergeInputId, NodeId, RevisionNode};
+use crate::merge::kernel::{ConflictKind, MergeInputId, NodeId, RevisionNode};
 
 #[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct ConflictNodeId([u8; 32]);

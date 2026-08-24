@@ -1,12 +1,12 @@
+use foch::merge::kernel::{
+	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
+	RevisionId, SemanticKey,
+};
 use foch_language::analyzer::content_family::{
 	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, NestedInsertionPolicy,
 	OneSidedRemovalPolicy, ScalarMergePolicy,
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_merge_kernel::{
-	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
-	RevisionId, SemanticKey,
-};
 
 pub(crate) trait ClausewitzTreePolicy {
 	fn assignment_anchor(
@@ -229,7 +229,7 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 			};
 		if preserve
 			&& base.parent.is_some_and(|parent| {
-				parent.child_cardinality == foch_merge_kernel::ChildCardinality::Many
+				parent.child_cardinality == foch::merge::kernel::ChildCardinality::Many
 			}) {
 			PolicyDecision::Resolved
 		} else {
@@ -311,7 +311,7 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 		}
 	}
 
-	fn permits_ancestor_closure(&self, node: &foch_merge_kernel::NormalizedNode) -> bool {
+	fn permits_ancestor_closure(&self, node: &foch::merge::kernel::NormalizedNode) -> bool {
 		node.kind.starts_with("clausewitz.block")
 			|| matches!(
 				node.value.as_deref(),
@@ -342,7 +342,7 @@ fn is_negated_boolean_block_kind(kind: &str) -> bool {
 	)
 }
 
-fn is_scalar_node(node: &foch_merge_kernel::NormalizedNode) -> bool {
+fn is_scalar_node(node: &foch::merge::kernel::NormalizedNode) -> bool {
 	node.kind.starts_with("clausewitz.scalar.") && node.children.is_empty()
 }
 
@@ -501,11 +501,11 @@ fn descendant_scalar_field(value: &AstValue, field: &str) -> Option<String> {
 mod tests {
 	use std::path::PathBuf;
 
+	use foch::merge::kernel::{SemanticKeyLineage, SemanticKeyMatchMode, SemanticKeyScope};
 	use foch_language::analyzer::content_family::{
 		MergeKeySource, MergePolicies, NestedInsertionPolicy,
 	};
 	use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_content};
-	use foch_merge_kernel::{SemanticKeyLineage, SemanticKeyMatchMode, SemanticKeyScope};
 
 	use super::{ClausewitzTreePolicy, ContentFamilyMergePolicy};
 

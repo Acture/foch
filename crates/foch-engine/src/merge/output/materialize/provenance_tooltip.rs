@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use foch::merge::kernel::NodeId;
 use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::eu4_profile::EU4_LOCALISATION_LANGUAGE_HEADERS;
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, ScalarValue};
-use foch_merge_kernel::NodeId;
 
 use crate::merge::error::MergeError;
 use crate::merge::model::{
@@ -547,10 +547,10 @@ mod tests {
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::PathBuf;
 
+	use foch::merge::kernel::NodeId;
 	use foch_language::analyzer::content_family::{CwtType, MergePolicies};
 	use foch_language::analyzer::parser::parse_clausewitz_content;
 	use foch_language::analyzer::semantic_index::ParsedScriptFile;
-	use foch_merge_kernel::NodeId;
 
 	use crate::emit::emit_clausewitz_statements;
 	use crate::merge::model::{

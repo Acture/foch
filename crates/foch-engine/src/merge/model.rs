@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use foch::model::HandlerResolutionRecord;
-use foch_language::analyzer::parser::AstStatement;
-use foch_merge_kernel::{
+use foch::merge::kernel::{
 	ConflictResolution, MergeOutcome, NodeId, NormalizedTree, RevisionDelta, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
+use foch::model::HandlerResolutionRecord;
+use foch_language::analyzer::parser::AstStatement;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum VanillaBaseMode {

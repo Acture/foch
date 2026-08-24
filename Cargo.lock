@@ -1346,6 +1346,7 @@ dependencies = [
  "sha2",
  "steamlocate",
  "tempfile",
+ "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
  "tree-sitter",
  "tree-sitter-paradox",
@@ -1418,7 +1419,6 @@ dependencies = [
  "foch",
  "foch-cwt",
  "foch-language",
- "foch-merge-kernel",
  "globset",
  "libc",
  "rayon",
@@ -1457,16 +1457,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "walkdir",
-]
-
-[[package]]
-name = "foch-merge-kernel"
-version = "0.0.1"
-dependencies = [
- "blake3",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
 ]
 
 [[package]]

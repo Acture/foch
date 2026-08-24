@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::nway::{NWayExactSelection, NWaySelectionOverrides};
-use crate::{
+use crate::merge::kernel::nway::{NWayExactSelection, NWaySelectionOverrides};
+use crate::merge::kernel::{
 	ChildCardinality, ChildOrder, ClassId, ConflictKind, ConflictNodeId, ConflictResolution,
 	ConservativeMergePolicy, MergeInputId, MergeOutcome, MergePolicy, MergeRevision, MergeTimings,
 	NWayClassSelection, NWayCorrespondence, NWayInputError, NWayScalarSynthesis, NodeId,

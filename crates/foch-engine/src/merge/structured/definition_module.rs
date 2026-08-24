@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use foch::merge::kernel::{ConflictResolution, StructuralConflict};
 use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
 use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
-use foch_merge_kernel::{ConflictResolution, StructuralConflict};
 
 use crate::merge::model::SemanticPartitionId;
 
