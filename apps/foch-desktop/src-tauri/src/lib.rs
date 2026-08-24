@@ -10,6 +10,6 @@ mod tests {
 	#[test]
 	fn shared_product_dependencies_compile() {
 		let _: u32 = foch_engine::BASE_DATA_SCHEMA_VERSION;
-		let _: foch_core::model::MergeReportStatus = foch_core::model::MergeReportStatus::Blocked;
+		let _: foch::model::MergeReportStatus = foch::model::MergeReportStatus::Blocked;
 	}
 }

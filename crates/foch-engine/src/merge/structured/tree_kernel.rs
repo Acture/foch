@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use foch_core::model::HandlerResolutionRecord;
+use foch::model::HandlerResolutionRecord;
 use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_merge_kernel::{
@@ -1322,7 +1322,7 @@ mod tests {
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::{Path, PathBuf};
 
-	use foch_core::config::{ResolutionDecision, ResolutionMap};
+	use foch::project::{ResolutionDecision, ResolutionMap};
 	use foch_language::analyzer::content_family::{
 		CwtType, GameProfile, MergePolicies, ScalarMergePolicy, ScalarReducerRule,
 	};

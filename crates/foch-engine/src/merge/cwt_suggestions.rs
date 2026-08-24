@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use foch_core::model::ConflictKind;
+use foch::model::ConflictKind;
 use foch_cwt::{
 	CompiledRoot, CompiledRuleField, CompiledRuleValue, RuleContext, RuleEngine, SchemaBinding,
 	SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,

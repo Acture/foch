@@ -9,7 +9,7 @@ use super::semantic_index::{
 };
 use super::vanilla_index::VanillaSymbolIndex;
 use super::visibility::{should_flag_duplicates, should_flag_unresolved};
-use foch_core::model::{
+use foch::model::{
 	AnalysisMode, Finding, FindingChannel, ScopeSet, SemanticDiagnostics, SemanticIndex, Severity,
 	SymbolKind, base_scope,
 };

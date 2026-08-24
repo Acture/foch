@@ -316,7 +316,7 @@ mod tests {
 		AstFile, AstStatement, AstValue, SpanRange, parse_clausewitz_content,
 	};
 	use crate::analyzer::semantic_index::ParsedScriptFile;
-	use foch_core::model::ParseIssue;
+	use foch::model::ParseIssue;
 	use std::path::{Path, PathBuf};
 
 	const POLICY: DefinitionModulePolicy = DefinitionModulePolicy {

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use foch_core::model::MergeTraceContributor;
+use foch::model::MergeTraceContributor;
 
 use super::dag::{FileDag, ModId, topo_levels};
 

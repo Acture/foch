@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch_core::config::DepOverride;
-use foch_core::model::{MergePlanEntry, MergePlanTarget};
+use foch::model::{MergePlanEntry, MergePlanTarget};
+use foch::project::DepOverride;
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 	DuplicateDefinitionPolicy, MergeKeySource,
@@ -205,7 +205,7 @@ fn validate_module_target<'a>(
 	has_covering_reset_participant: bool,
 ) -> Result<
 	(
-		&'a foch_core::model::MergeUnitId,
+		&'a foch::model::MergeUnitId,
 		&'a [String],
 		DefinitionModulePolicy,
 	),
@@ -493,7 +493,7 @@ mod tests {
 		parse_contributor, validate_module_target,
 	};
 	use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
-	use foch_core::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
+	use foch::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use foch_language::analyzer::content_family::{
 		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
 		DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy, GameProfile,

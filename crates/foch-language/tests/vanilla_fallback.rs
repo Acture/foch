@@ -1,4 +1,4 @@
-use foch_core::model::{
+use foch::model::{
 	AnalysisMode, MaybeScope, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind,
 	SymbolReference, test_support,
 };

@@ -5,7 +5,7 @@
 //! Runs as its own binary (separate `tests/` file) so its env-var writes to
 //! `FOCH_DATA_DIR` are isolated from the parallel merge e2e suite.
 
-use foch_core::model::MergeReportStatus;
+use foch::model::MergeReportStatus;
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use std::collections::HashMap;
 use std::fs;

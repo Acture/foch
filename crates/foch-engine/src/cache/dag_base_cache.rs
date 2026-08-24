@@ -7,7 +7,7 @@
 
 use super::generation::{generation_dir, prepare as prepare_generation};
 use super::mod_parse_cache::CacheError;
-use foch_core::cache::default_foch_cache_dir;
+use foch::platform::cache_store::default_foch_cache_dir;
 use foch_language::analyzer::parser::AstStatement;
 use std::fs;
 use std::path::{Path, PathBuf};

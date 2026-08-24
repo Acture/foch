@@ -20,6 +20,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
-foch-core = { path = "../../../crates/foch-core" }
+foch = { path = "../../.." }
 foch-engine = { path = "../../../crates/foch-engine" }
 tauri = { version = "2.11.5", features = [] }

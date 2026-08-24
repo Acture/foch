@@ -5,10 +5,10 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use foch_core::config::{
+use foch::model::HandlerResolutionRecord;
+use foch::project::{
 	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
 };
-use foch_core::model::HandlerResolutionRecord;
 use foch_cwt::RuleEngine;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -1104,10 +1104,10 @@ mod tests {
 	use std::rc::Rc;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use foch_core::config::compute_conflict_id;
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::playlist::PlaylistEntry;
-	use foch_core::model::ModCandidate;
+	use foch::model::ModCandidate;
+	use foch::playset::PlaysetEntry;
+	use foch::playset::descriptor::ModDescriptor;
+	use foch::project::compute_conflict_id;
 
 	use super::*;
 	use crate::merge::conflict_view::CandidateView;
@@ -1201,9 +1201,9 @@ mod tests {
 
 	fn mod_candidate(mod_id: &str, name: &str, dependencies: &[&str]) -> ModCandidate {
 		ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				steam_id: Some(mod_id.to_string()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: mod_id.to_string(),
 			root_path: None,
@@ -1358,13 +1358,13 @@ mod tests {
 		);
 
 		let (file_matcher, leaf_matcher) =
-			foch_core::config::parse_match_dsl("events/**").expect("compile test pattern");
+			foch::project::parse_match_dsl("events/**").expect("compile test pattern");
 		let file_map = ResolutionMap {
 			by_file: BTreeMap::from([(
 				current_file.clone(),
 				ResolutionDecision::PreferMod("mod_b".to_string()),
 			)]),
-			pattern_rules: vec![foch_core::config::PatternRule {
+			pattern_rules: vec![foch::project::PatternRule {
 				dsl: "events/**".to_string(),
 				file_matcher,
 				leaf_matcher,
@@ -1634,7 +1634,7 @@ mod tests {
 		assert!(diagnostics.is_empty());
 		let graph = DepResolutionGraph::from_mod_dag(
 			&dag,
-			&[foch_core::config::DepOverride::new("mod_a", "mod_b")],
+			&[foch::project::DepOverride::new("mod_a", "mod_b")],
 		);
 		let mut handler =
 			DepImpliesResolutionHandler::new(PathBuf::from("common/ideas/dep.txt"), graph);
@@ -1831,7 +1831,7 @@ dep = "b"
 		assert!(content.contains("[[resolutions]]"));
 		assert!(content.contains(r#"conflict_id = "abc12345""#));
 		assert!(content.contains(r#"prefer_mod = "mod_a""#));
-		let parsed = foch_core::config::FochConfig::from_toml_str(&content).expect("parse config");
+		let parsed = foch::project::Project::from_toml_str(&content).expect("parse config");
 		assert_eq!(parsed.resolutions.len(), 1);
 	}
 

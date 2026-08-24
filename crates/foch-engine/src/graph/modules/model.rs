@@ -1,4 +1,4 @@
-use foch_core::model::MergeTraceEdge;
+use foch::model::MergeTraceEdge;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 

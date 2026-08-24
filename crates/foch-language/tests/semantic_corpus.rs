@@ -1,4 +1,4 @@
-use foch_core::model::{AnalysisMode, Finding, MaybeScope, SymbolKind, base_scope, test_support};
+use foch::model::{AnalysisMode, Finding, MaybeScope, SymbolKind, base_scope, test_support};
 use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use foch_language::analyzer::semantic_index::{
 	build_semantic_index, collect_localisation_definitions, parse_script_file,
@@ -217,8 +217,8 @@ fn decision_keywords_are_not_recorded_as_scripted_effect_references() {
 			.definitions
 			.iter()
 			.any(|item| item.kind == SymbolKind::Decision
-				&& item.local_name == "_player_decision"
-				&& item.name.ends_with("::_player_decision"))
+				&& item.local_name == "01_player_decision"
+				&& item.name.ends_with("::01_player_decision"))
 	);
 }
 

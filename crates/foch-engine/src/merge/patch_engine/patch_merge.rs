@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use foch_core::model::HandlerResolutionRecord;
+use foch::model::HandlerResolutionRecord;
 #[cfg(test)]
 use foch_language::analyzer::content_family::NamedContainerPolicy;
 #[cfg(test)]

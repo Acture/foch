@@ -14,8 +14,8 @@ use super::{
 	write_test_installed_snapshot,
 };
 use filetime::{FileTime, set_file_mtime};
-use foch_core::domain::game::Game;
-use foch_core::model::{
+use foch::game::eu4::Eu4;
+use foch::model::{
 	DocumentFamily, DocumentRecord, LocalisationDefinition, MaybeScope, ParamContract,
 	ResourceReference, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind, base_scope,
 	test_support,
@@ -91,7 +91,7 @@ fn sample_snapshot_with_contract() -> BaseAnalysisSnapshot {
 		scope_param_names: Vec::new(),
 	});
 	BaseAnalysisSnapshot::from_semantic_index(
-		&Game::EuropaUniversalis4,
+		&Eu4,
 		"schema-test",
 		vec!["common/scripted_effects/test.txt".to_string()],
 		&index,
@@ -155,7 +155,7 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 		parse_ok: true,
 	});
 	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
-		&Game::EuropaUniversalis4,
+		&Eu4,
 		"parsed-script-test",
 		vec![relative_path.to_string_lossy().to_string()],
 		&index,
@@ -1489,7 +1489,7 @@ fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {
 		},
 	]);
 	BaseAnalysisSnapshot::from_semantic_index(
-		&Game::EuropaUniversalis4,
+		&Eu4,
 		"coverage-test",
 		vec![
 			"common/country_tags/00_countries.txt".to_string(),

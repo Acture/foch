@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use foch_core::model::HandlerResolutionRecord;
+use foch::model::HandlerResolutionRecord;
 use foch_language::analyzer::parser::AstStatement;
 use foch_merge_kernel::{
 	ConflictResolution, MergeOutcome, NodeId, NormalizedTree, RevisionDelta, RevisionId,

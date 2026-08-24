@@ -1,4 +1,4 @@
-use foch_core::model::{AnalysisMode, ChannelMode};
+use foch::model::{AnalysisMode, ChannelMode};
 use std::path::{Path, PathBuf};
 
 use crate::base_data::InstalledBaseSnapshotIdentity;

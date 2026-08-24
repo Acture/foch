@@ -8,15 +8,15 @@ use crate::config::Config;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use foch_core::domain::game::Game;
-use foch_core::model::{
+use foch::game::eu4::Eu4;
+use foch::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
 	ParseFamilyStats, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
 	ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
 	UiDefinition,
 };
-use foch_core::utils::steam::steam_game_install_path;
+use foch::playset::steam::steam_game_install_path;
 use foch_language::analysis_version::analysis_rules_version;
 use foch_language::analyzer::documents::{
 	DiscoveredTextDocument, ParsedTextDocument, build_semantic_index_from_documents,
@@ -523,7 +523,7 @@ pub struct BaseAnalysisSnapshot {
 
 impl BaseAnalysisSnapshot {
 	pub fn from_semantic_index(
-		game: &Game,
+		game: &Eu4,
 		game_version: &str,
 		inventory_paths: Vec<String>,
 		index: &SemanticIndex,
@@ -540,7 +540,7 @@ impl BaseAnalysisSnapshot {
 	}
 
 	pub fn from_semantic_index_with_parsed_scripts(
-		game: &Game,
+		game: &Eu4,
 		game_version: &str,
 		inventory_paths: Vec<String>,
 		index: &SemanticIndex,
@@ -1233,7 +1233,7 @@ pub fn base_game_mod_id(game_key: &str) -> String {
 	format!("{BASE_GAME_MOD_ID_PREFIX}{game_key}")
 }
 
-pub fn resolve_game_root(config: &Config, game: &Game) -> Option<PathBuf> {
+pub fn resolve_game_root(config: &Config, game: &Eu4) -> Option<PathBuf> {
 	let mut candidates = Vec::new();
 	if let Some(path) = config.game_path.get(game.key()) {
 		candidates.push(path.clone());
@@ -1282,7 +1282,7 @@ pub fn detect_game_version(game_root: &Path) -> Option<String> {
 
 pub fn resolve_game_root_and_version(
 	config: &Config,
-	game: &Game,
+	game: &Eu4,
 ) -> Result<(PathBuf, String), String> {
 	let game_root = resolve_game_root(config, game).ok_or_else(|| {
 		format!(
@@ -2082,7 +2082,7 @@ pub fn list_installed_base_data() -> Result<Vec<InstalledBaseDataEntry>, String>
 }
 
 pub fn build_base_snapshot(
-	game: &Game,
+	game: &Eu4,
 	game_root: &Path,
 	game_version: Option<&str>,
 	filter: &crate::workspace::FileFilter,
@@ -2092,7 +2092,7 @@ pub fn build_base_snapshot(
 }
 
 pub fn build_base_snapshot_with_observer(
-	game: &Game,
+	game: &Eu4,
 	game_root: &Path,
 	game_version: Option<&str>,
 	filter: &crate::workspace::FileFilter,
@@ -2466,7 +2466,7 @@ pub fn write_snapshot_bundle(
 }
 
 pub fn install_snapshot_from_release(
-	game: &Game,
+	game: &Eu4,
 	game_version: &str,
 	release_tag: Option<&str>,
 ) -> Result<InstalledBaseSnapshot, String> {

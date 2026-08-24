@@ -1,13 +1,13 @@
 use flate2::Compression;
 use flate2::bufread::GzDecoder;
 use flate2::write::GzEncoder;
-use foch_core::cache::default_foch_cache_dir;
-use foch_core::model::{
+use foch::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
 	ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet, SemanticIndex,
 	SourceSpan, SymbolDefinition, SymbolKind, SymbolReference, UiDefinition,
 };
+use foch::platform::cache_store::default_foch_cache_dir;
 use rkyv::ser::{Positional, writer::IoWriter};
 use rkyv::util::AlignedVec;
 use std::fmt;
@@ -434,7 +434,7 @@ impl ModParseCache {
 		let compressed_bytes = fs::metadata(&path).ok()?.len();
 		if compressed_bytes > cap_bytes {
 			tracing::warn!(
-				target: "foch::cache::mod_snapshot",
+				target: "foch::platform::cache_store::mod_snapshot",
 				path = %path.display(),
 				compressed_bytes,
 				cap_bytes,
@@ -1211,7 +1211,7 @@ fn store_payload_streaming(
 	if profile.compressed_bytes > cap_bytes {
 		let _ = fs::remove_file(&tmp);
 		tracing::warn!(
-			target: "foch::cache::mod_snapshot",
+			target: "foch::platform::cache_store::mod_snapshot",
 			path = %path.display(),
 			compressed_bytes = profile.compressed_bytes,
 			cap_bytes,
@@ -1385,7 +1385,7 @@ fn sanitize_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::model::{DocumentFamily, DocumentRecord};
+	use foch::model::{DocumentFamily, DocumentRecord};
 	use std::time::Duration;
 	use tempfile::TempDir;
 

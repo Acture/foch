@@ -1,6 +1,6 @@
 #![no_main]
 
-use foch_core::decode_paradox_bytes;
+use foch::game::eu4::text::decode_paradox_bytes;
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|bytes: &[u8]| {

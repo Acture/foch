@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 arbitrary = { version = "1.4", features = ["derive"] }
-foch-core = { path = "../crates/foch-core" }
+foch = { path = ".." }
 foch-engine = { path = "../crates/foch-engine" }
 foch-language = { path = "../crates/foch-language" }
 libfuzzer-sys = "0.4"

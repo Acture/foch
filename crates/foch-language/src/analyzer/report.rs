@@ -1,4 +1,4 @@
-use foch_core::model::{
+use foch::model::{
 	ChannelMode, CheckResult, ConflictKind, DepMisuseFinding, Finding, FindingChannel,
 	MergePlanEntry, MergePlanResult, MergePlanStrategy, MergeReport, MergeReportStatus,
 	STALE_VANILLA_FALLBACK_RULE_ID, Severity,
@@ -749,8 +749,8 @@ mod tests {
 		assert!(output.contains("S002B  stale-vanilla-fallback"));
 	}
 
-	fn stale_vanilla_target(mod_id: &str) -> foch_core::model::StaleVanillaTargetDescriptor {
-		foch_core::model::StaleVanillaTargetDescriptor {
+	fn stale_vanilla_target(mod_id: &str) -> foch::model::StaleVanillaTargetDescriptor {
+		foch::model::StaleVanillaTargetDescriptor {
 			mod_id: mod_id.to_string(),
 			mod_version: "1.0".to_string(),
 			file_path: "common/example.txt".to_string(),
@@ -761,8 +761,8 @@ mod tests {
 		}
 	}
 
-	fn version_mismatch_finding(mod_id: &str) -> foch_core::model::VersionMismatchFinding {
-		foch_core::model::VersionMismatchFinding {
+	fn version_mismatch_finding(mod_id: &str) -> foch::model::VersionMismatchFinding {
+		foch::model::VersionMismatchFinding {
 			tag: "version_mismatch".to_string(),
 			severity: Severity::Warning,
 			mod_id: mod_id.to_string(),
@@ -878,7 +878,7 @@ mod tests {
 			mod_display_name: mod_display_name.to_string(),
 			suspicious_dep_id: dep_id.to_string(),
 			suspicious_dep_display_name: dep_display_name.to_string(),
-			evidence: foch_core::model::DepMisuseEvidence {
+			evidence: foch::model::DepMisuseEvidence {
 				semantic_refs_to_dep: 0,
 				false_remove_count,
 			},
@@ -888,12 +888,12 @@ mod tests {
 	#[test]
 	fn render_merge_report_text_includes_conflict_kinds() {
 		let report = MergeReport {
-			conflict_resolutions: vec![foch_core::model::MergeReportConflictResolution {
+			conflict_resolutions: vec![foch::model::MergeReportConflictResolution {
 				path: "history/countries/TES - Test.txt".to_string(),
 				reason: "manual resolution required".to_string(),
-				deferred_reason: foch_core::model::DeferredUnitReason::NeedsUserChoice,
+				deferred_reason: foch::model::DeferredUnitReason::NeedsUserChoice,
 				kind: Some(ConflictKind::SchemaCardinalityViolation),
-				leaf_conflicts: vec![foch_core::model::LeafConflictDetail {
+				leaf_conflicts: vec![foch::model::LeafConflictDetail {
 					address_path: String::new(),
 					address_key: "religion".to_string(),
 					conflict_id: "deadbeef".to_string(),

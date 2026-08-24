@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use foch_core::model::ScopeKind;
+use foch::model::ScopeKind;
 use foch_cwt::{
 	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtSchemaGraph, RuleContext, RuleEngine,
 };

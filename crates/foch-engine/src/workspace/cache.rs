@@ -1,7 +1,7 @@
 use crate::cache::{
 	CachedDocumentInputIdentity, CachedModData, ModParseCache, ModParseCacheStoreOutcome,
 };
-use foch_core::model::{
+use foch::model::{
 	DocumentFamily, FamilyParseStats, ModCandidate, ParseFamilyStats, SemanticIndex,
 };
 use foch_language::analyzer::documents::{
@@ -473,9 +473,9 @@ fn normalize_relative_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::PlaylistEntry;
+	use foch::game::eu4::Eu4;
+	use foch::playset::PlaysetEntry;
+	use foch::playset::descriptor::ModDescriptor;
 	use std::fs;
 	use tempfile::TempDir;
 
@@ -537,12 +537,12 @@ mod tests {
 		)
 		.expect("write omitted scripted effect");
 		let mod_item = ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				enabled: true,
 				position: Some(0),
 				steam_id: Some("9001".to_string()),
 				display_name: Some("cache-test".to_string()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: "9001".to_string(),
 			root_path: Some(mod_root.clone()),
@@ -561,7 +561,7 @@ mod tests {
 			descriptor_error: None,
 			files: Vec::new(),
 		};
-		let filter = super::super::FileFilter::for_game(Game::EuropaUniversalis4);
+		let filter = super::super::FileFilter::for_game(Eu4);
 		let mod_hash = "acf-key-9001".to_string();
 
 		let cold = load_or_build_mod_snapshot_with_cache(

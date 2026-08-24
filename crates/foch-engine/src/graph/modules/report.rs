@@ -1,5 +1,5 @@
 use super::model::{CollisionHotspot, ModSummary, ModulePartition, ModuleReport, SymbolGraph};
-use foch_core::model::{MergeTraceEdge, MergeTraceEntry};
+use foch::model::{MergeTraceEdge, MergeTraceEntry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -161,7 +161,7 @@ mod tests {
 
 	#[test]
 	fn trace_edges_are_sorted_and_deterministic() {
-		use foch_core::model::{MergeTraceContributor, MergeTraceDecision, MergeTracePolicy};
+		use foch::model::{MergeTraceContributor, MergeTraceDecision, MergeTracePolicy};
 
 		let mut trace = BTreeMap::new();
 		trace.insert(

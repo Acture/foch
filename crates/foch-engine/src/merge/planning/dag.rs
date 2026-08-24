@@ -20,9 +20,9 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use foch_core::config::DepOverride;
-use foch_core::domain::dep_resolution::ModIdentityIndex;
-use foch_core::model::ModCandidate;
+use foch::model::ModCandidate;
+use foch::playset::dependency::ModIdentityIndex;
+use foch::project::DepOverride;
 
 use crate::workspace::ResolvedFileContributor;
 
@@ -94,7 +94,7 @@ pub struct ModDag {
 	children: HashMap<ModId, Vec<ModId>>,
 	/// Topological order (parents before children).
 	topo: Vec<ModId>,
-	/// Playlist position for each mod (stable break tiebreak).
+	/// Playset position for each mod (stable break tiebreak).
 	position: HashMap<ModId, usize>,
 	/// Mods declared a dep that wasn't in the playset (collected for
 	/// diagnostics; the dep is treated as absent for DAG purposes).
@@ -740,8 +740,8 @@ fn lift_ancestor_edges(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::playlist::PlaylistEntry;
+	use foch::playset::PlaysetEntry;
+	use foch::playset::descriptor::ModDescriptor;
 	use std::path::PathBuf;
 
 	fn mod_with(
@@ -756,9 +756,9 @@ mod tests {
 			replace_path: replace_path.into_iter().map(str::to_string).collect(),
 			..ModDescriptor::default()
 		};
-		let entry = PlaylistEntry {
+		let entry = PlaysetEntry {
 			steam_id: Some(mod_id.to_string()),
-			..PlaylistEntry::default()
+			..PlaysetEntry::default()
 		};
 		ModCandidate {
 			entry,

@@ -3,7 +3,7 @@ use crate::emit::emit_clausewitz_statements;
 use crate::request::CheckRequest;
 use crate::runtime::overlap::{OverlapStatus, classify_definition_overlaps};
 use crate::workspace::{ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace};
-use foch_core::model::{SemanticIndex, SymbolKind, SymbolReference};
+use foch::model::{SemanticIndex, SymbolKind, SymbolReference};
 use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
 use foch_language::analyzer::semantic_index::{
 	ParsedScriptFile, resolve_scripted_effect_reference_targets,

@@ -1,4 +1,4 @@
-use foch_core::model::{SemanticIndex, SymbolDefinition, SymbolKind};
+use foch::model::{SemanticIndex, SymbolDefinition, SymbolKind};
 use std::collections::{HashMap, HashSet};
 
 /// Source of vanilla semantic definitions for a workspace-like value.
@@ -90,7 +90,7 @@ fn symbol_kind_order(kind: SymbolKind) -> u8 {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::model::{MaybeScope, ScopeSet, test_support};
+	use foch::model::{MaybeScope, ScopeSet, test_support};
 	use std::path::PathBuf;
 
 	struct TestWorkspace {

@@ -2,11 +2,11 @@ use super::super::super::error::MergeError;
 use super::{StructuralMergeOutput, provenance_tooltip::PROVENANCE_KEY_PREFIX};
 use crate::merge::model::ExternalFileResolution;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
-use foch_core::config::{ResolutionDecision, ResolutionMap};
-use foch_core::model::{
+use foch::model::{
 	HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 	MergePlanContributor, MergePlanEntry, MergePlanResult, MergeReport,
 };
+use foch::project::{ResolutionDecision, ResolutionMap};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "macos")]

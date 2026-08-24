@@ -1,9 +1,9 @@
-use foch_core::domain::game::Game;
+use foch::game::eu4::Eu4;
 use globset::{GlobSet, GlobSetBuilder};
 use std::path::Path;
 
 /// Filter applied while walking mod roots and the base game install. Combines
-/// the game's authoritative content-root list (`Game::is_loadable_content_path`)
+/// the game's authoritative content-root list (`Eu4::is_loadable_content_path`)
 /// with user-configured extra ignore globs from [`crate::Config`].
 ///
 /// Globs are matched (case-insensitive) against the slash-normalized relative
@@ -11,7 +11,7 @@ use std::path::Path;
 /// reused for every walk to avoid repeated regex compilation.
 #[derive(Clone, Debug)]
 pub struct FileFilter {
-	game: Game,
+	game: Eu4,
 	extra_ignore: GlobSet,
 	extra_ignore_pattern_count: usize,
 }
@@ -21,7 +21,7 @@ impl FileFilter {
 	///
 	/// Returns `Err` containing the offending pattern and `globset` message if
 	/// any pattern fails to compile.
-	pub fn new(game: Game, extra_patterns: &[String]) -> Result<Self, String> {
+	pub fn new(game: Eu4, extra_patterns: &[String]) -> Result<Self, String> {
 		let mut builder = GlobSetBuilder::new();
 		for pattern in extra_patterns {
 			let glob = globset::GlobBuilder::new(pattern)
@@ -46,7 +46,7 @@ impl FileFilter {
 	/// Filter that retains every path the game would load and applies no extra
 	/// ignore patterns. Useful in tests and contexts that don't have a
 	/// [`crate::Config`] handy.
-	pub fn for_game(game: Game) -> Self {
+	pub fn for_game(game: Eu4) -> Self {
 		Self {
 			game,
 			extra_ignore: GlobSet::empty(),
@@ -54,7 +54,7 @@ impl FileFilter {
 		}
 	}
 
-	pub fn game(&self) -> &Game {
+	pub fn game(&self) -> &Eu4 {
 		&self.game
 	}
 
@@ -86,7 +86,7 @@ mod tests {
 
 	#[test]
 	fn extra_pattern_bak_matches_top_and_nested() {
-		let filter = FileFilter::new(Game::EuropaUniversalis4, &["*.bak".to_string()]).unwrap();
+		let filter = FileFilter::new(Eu4, &["*.bak".to_string()]).unwrap();
 		assert!(!filter.accepts(&pf("common/foo.bak")));
 		assert!(!filter.accepts(&pf("common/dir/foo.bak")));
 		assert!(filter.accepts(&pf("common/foo.txt")));
@@ -94,38 +94,30 @@ mod tests {
 
 	#[test]
 	fn extra_pattern_dsstore_matches_top_and_nested() {
-		let filter =
-			FileFilter::new(Game::EuropaUniversalis4, &["**/.DS_Store".to_string()]).unwrap();
+		let filter = FileFilter::new(Eu4, &["**/.DS_Store".to_string()]).unwrap();
 		assert!(!filter.accepts(&pf("common/.DS_Store")));
 		assert!(!filter.accepts(&pf("common/nested/.DS_Store")));
 	}
 
 	#[test]
 	fn extra_pattern_match_is_case_insensitive() {
-		let filter = FileFilter::new(Game::EuropaUniversalis4, &["*.BAK".to_string()]).unwrap();
+		let filter = FileFilter::new(Eu4, &["*.BAK".to_string()]).unwrap();
 		assert!(!filter.accepts(&pf("common/Foo.bak")));
 		assert!(!filter.accepts(&pf("common/foo.BAK")));
 	}
 
 	#[test]
 	fn rejects_invalid_glob() {
-		let err = FileFilter::new(Game::EuropaUniversalis4, &["[".to_string()]).unwrap_err();
+		let err = FileFilter::new(Eu4, &["[".to_string()]).unwrap_err();
 		assert!(err.contains("extra_ignore_patterns"));
 	}
 
 	#[test]
 	fn defers_to_game_root_filter_when_no_extra_patterns() {
-		let filter = FileFilter::for_game(Game::EuropaUniversalis4);
+		let filter = FileFilter::for_game(Eu4);
 		assert!(filter.accepts(&pf("common/countries/X.txt")));
 		assert!(!filter.accepts(&pf("README.md")));
 		assert!(!filter.accepts(&pf(".git/HEAD")));
-	}
-
-	#[test]
-	fn unknown_game_only_filters_by_extra_patterns() {
-		let filter = FileFilter::new(Game::Unknown, &["*.bak".to_string()]).unwrap();
-		assert!(filter.accepts(&pf("README.md")));
-		assert!(!filter.accepts(&pf("foo.bak")));
 	}
 
 	#[test]
@@ -144,11 +136,8 @@ mod tests {
 		fs::write(root.join("nested/.DS_Store"), "d").unwrap();
 		fs::write(root.join("descriptor.mod"), "name=\"x\"").unwrap();
 
-		let filter = FileFilter::new(
-			Game::EuropaUniversalis4,
-			&["*.bak".to_string(), "**/.DS_Store".to_string()],
-		)
-		.unwrap();
+		let filter =
+			FileFilter::new(Eu4, &["*.bak".to_string(), "**/.DS_Store".to_string()]).unwrap();
 		let files = collect_relative_files(root, &filter).expect("collect relative files");
 		let strs: Vec<String> = files
 			.iter()
@@ -175,7 +164,7 @@ mod tests {
 		symlink(&regular, root.join("common/countries/linked.txt")).expect("create file symlink");
 		symlink(outside.join("events"), root.join("events")).expect("create directory symlink");
 
-		let files = collect_relative_files(&root, &FileFilter::for_game(Game::EuropaUniversalis4))
+		let files = collect_relative_files(&root, &FileFilter::for_game(Eu4))
 			.expect("collect relative files");
 		assert_eq!(files, vec![PathBuf::from("common/countries/regular.txt")]);
 	}

@@ -1,5 +1,5 @@
 use super::model::{SymbolGraph, SymbolNodeId};
-use foch_core::model::{SemanticIndex, SymbolDefinition, SymbolKind};
+use foch::model::{SemanticIndex, SymbolDefinition, SymbolKind};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -98,7 +98,7 @@ fn nearest_enclosing_def(
 mod tests {
 	use super::super::model::SymbolNodeId;
 	use super::*;
-	use foch_core::model::{
+	use foch::model::{
 		MaybeScope, ScopeKind, ScopeNode, ScopeSet, SemanticIndex, SourceSpan, SymbolDefinition,
 		SymbolKind, SymbolReference,
 	};

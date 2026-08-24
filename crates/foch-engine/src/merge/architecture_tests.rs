@@ -78,7 +78,7 @@ const ADDRESS_PATCH_DEPENDENCIES: &[&str] = &[
 
 const DAG_MERGE_FACADE_DEPENDENCIES: &[&str] = &[
 	"DagMergeEvaluation",
-	"MergeKernelMode",
+	"MergeBackendId",
 	"ReferenceDag",
 	"compute_reference",
 ];
@@ -105,12 +105,43 @@ fn semantic_pipeline_does_not_depend_on_address_patch_types() {
 	assert_source_excludes(
 		"planning/module_view.rs",
 		include_str!("planning/module_view.rs"),
-		&["MergeKernelMode", "MergeEvaluationKernel"],
+		&["MergeBackendId", "MergeEvaluationKernel"],
 	);
 	assert_source_excludes(
 		"output/materialize/structural.rs",
 		include_str!("output/materialize/structural.rs"),
-		&["MergeKernelMode", "MergeEvaluationKernel", "reference::"],
+		&["MergeBackendId", "MergeEvaluationKernel", "reference::"],
+	);
+}
+
+#[test]
+fn backend_adapter_has_one_private_analysis_entrypoint() {
+	let seam = include_str!("backend/mod.rs");
+	assert!(seam.contains("pub(crate) trait MergeBackend"));
+	assert!(seam.contains("fn analyze(&self, request: BackendRequest"));
+	assert!(!seam.contains("fn merge_file"));
+	assert!(!seam.contains("fn merge_definition_module"));
+
+	assert_source_excludes(
+		"backend/gumtree_pcs_nway.rs",
+		include_str!("backend/gumtree_pcs_nway.rs"),
+		ADDRESS_PATCH_DEPENDENCIES,
+	);
+}
+
+#[test]
+fn public_engine_facade_exposes_only_current_backend_names() {
+	let facade = include_str!("../lib.rs");
+	assert!(facade.contains("MergeBackendDescriptor"));
+	assert!(facade.contains("MergeBackendId"));
+	assert_source_excludes(
+		"lib.rs",
+		facade,
+		&[
+			"MergeEvaluationKernel",
+			"MergeKernelMode",
+			"MergeReportKernel",
+		],
 	);
 }
 

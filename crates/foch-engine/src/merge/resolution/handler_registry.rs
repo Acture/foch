@@ -14,11 +14,11 @@
 //! ambiguous cases — explicit named handlers like `last_writer` make the
 //! choice the user's, not the engine's.
 //!
-//! [`ResolutionDecision::Handler`]: foch_core::config::ResolutionDecision::Handler
+//! [`ResolutionDecision::Handler`]: foch::project::ResolutionDecision::Handler
 //! [`LookupHandler`]: super::conflict_handler::LookupHandler
-//! [`HandlerResolutionRecord`]: foch_core::model::HandlerResolutionRecord
+//! [`HandlerResolutionRecord`]: foch::model::HandlerResolutionRecord
 
-use foch_core::model::HandlerResolutionRecord;
+use foch::model::HandlerResolutionRecord;
 
 use super::conflict_handler::ConflictDecision;
 use super::conflict_view::ConflictView;

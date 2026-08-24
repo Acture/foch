@@ -1,7 +1,7 @@
 use super::content_family::{GameProfile, MergeKeySource};
 use super::eu4_profile::eu4_profile;
 use super::semantic_index::{count_symbol_references_resolving_to_mod, is_decision_container_key};
-use foch_core::model::{
+use foch::model::{
 	CheckContext, DepMisuseEvidence, DepMisuseFinding, Finding, FindingChannel, ModCandidate,
 	ScopeKind, ScopeNode, SemanticIndex, Severity, SymbolKind, VersionMismatchFinding,
 };
@@ -260,7 +260,7 @@ fn is_structurally_mergeable_path(path: &str) -> bool {
 }
 
 pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
-	let identity = foch_core::domain::dep_resolution::ModIdentityIndex::from_mods(&ctx.mods);
+	let identity = foch::playset::dependency::ModIdentityIndex::from_mods(&ctx.mods);
 
 	let mut findings = Vec::new();
 	for mod_item in &ctx.mods {
@@ -292,7 +292,7 @@ pub fn check_missing_dependency(ctx: &CheckContext) -> Vec<Finding> {
 }
 
 pub fn detect_dependency_misuse(ctx: &CheckContext) -> Vec<DepMisuseFinding> {
-	let identity = foch_core::domain::dep_resolution::ModIdentityIndex::from_mods(&ctx.mods);
+	let identity = foch::playset::dependency::ModIdentityIndex::from_mods(&ctx.mods);
 	let semantic_signals = DependencySemanticSignals::from_context(ctx);
 	let mut findings = Vec::new();
 
@@ -728,7 +728,7 @@ fn parse_version_component(value: &str) -> Option<u32> {
 	value.parse().ok()
 }
 
-fn display_name_for_mod(mod_item: &foch_core::model::ModCandidate) -> String {
+fn display_name_for_mod(mod_item: &foch::model::ModCandidate) -> String {
 	mod_item
 		.entry
 		.display_name
@@ -836,12 +836,12 @@ fn new_finding(args: FindingArgs<'_>) -> Finding {
 mod tests {
 	use super::*;
 	use crate::analyzer::semantic_index::{build_semantic_index, parse_script_file};
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
-	use foch_core::model::{
+	use foch::model::{
 		LocalisationDefinition, MaybeScope, ModCandidate, ScopeSet, SemanticIndex,
 		SymbolDefinition, SymbolReference, test_support,
 	};
+	use foch::playset::descriptor::ModDescriptor;
+	use foch::playset::{Playset, PlaysetEntry};
 	use std::fs;
 	use std::path::{Path, PathBuf};
 
@@ -852,12 +852,12 @@ mod tests {
 		deps: &[&str],
 	) -> ModCandidate {
 		ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				display_name: Some(display_name.to_string()),
 				enabled: true,
 				position: Some(0),
 				steam_id: Some(mod_id.to_string()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: mod_id.to_string(),
 			root_path: None,
@@ -923,9 +923,9 @@ mod tests {
 	fn context(mods: Vec<ModCandidate>, semantic_index: SemanticIndex) -> CheckContext {
 		CheckContext {
 			playlist_path: PathBuf::from("playlist.json"),
-			playlist: Playlist {
+			playlist: Playset {
 				mods: mods.iter().map(|mod_item| mod_item.entry.clone()).collect(),
-				..Playlist::default()
+				..Playset::default()
 			},
 			mods,
 			semantic_index,

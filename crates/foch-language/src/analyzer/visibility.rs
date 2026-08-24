@@ -1,4 +1,4 @@
-use foch_core::model::SymbolKind;
+use foch::model::SymbolKind;
 
 /// Declares that definitions of `producer` kind are globally visible
 /// and can be referenced from any content family.

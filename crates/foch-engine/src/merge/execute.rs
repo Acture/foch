@@ -1,11 +1,9 @@
+use super::backend::backend_for;
 use super::conflict_handler::ConflictHandler;
 use super::error::MergeError;
 use super::materialize::{
 	MergeMaterializeOptions, OutputTransaction, materialize_prepared_merge_with_workspace_result,
 	prepare_merge_plan,
-};
-use super::output::materialize::backend::{
-	ReferenceStructuralBackend, SemanticStructuralBackend, StructuralMergeBackend,
 };
 use crate::base_data::{
 	InstalledBaseSnapshotIdentity, InstalledBaseSnapshotPublicationGuard,
@@ -25,21 +23,21 @@ use crate::workspace::{
 	WorkspaceInventory, build_workspace_inventory_for_paths, resolve_product_input_manifest,
 	resolve_workspace_from_inventory,
 };
-use foch_core::config::{AppliedDepOverride, FochConfig, ResolutionDecision, ResolutionMap};
-use foch_core::model::{
+use foch::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PLAN_ARTIFACT_PATH, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
 	MERGE_TRACE_ARTIFACT_PATH, MergeExecutionAttestation, MergePlanResult, MergePlanTarget,
-	MergeReport, MergeReportBaseSnapshot, MergeReportKernel, MergeReportScope, MergeReportStatus,
+	MergeReport, MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus,
 	MergeReportValidation, ProductInputAttestation, ProductInputManifest,
 };
+use foch::project::{AppliedDepOverride, Project, ResolutionDecision, ResolutionMap};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use super::kernel::{MergeEvaluationKernel, MergeKernelMode};
+use super::kernel::MergeBackendId;
 
 pub struct MergeExecuteOptions {
 	pub out_dir: PathBuf,
@@ -113,21 +111,21 @@ pub fn prepare_merge_with_options(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
 ) -> Result<PreparedMerge, MergeError> {
-	prepare_merge_with_kernel_mode(request, options, MergeKernelMode::Structured)
+	prepare_merge_with_backend(request, options, MergeBackendId::GumtreePcsNway)
 }
 
 pub fn run_merge_for_evaluation(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
-	kernel: MergeEvaluationKernel,
+	backend: MergeBackendId,
 ) -> Result<MergeExecutionResult, MergeError> {
-	prepare_merge_with_kernel_mode(request, options, kernel.into())?.export()
+	prepare_merge_with_backend(request, options, backend)?.export()
 }
 
 pub struct PreparedMerge {
 	request: CheckRequest,
 	options: MergeExecuteOptions,
-	merge_kernel: MergeKernelMode,
+	backend_id: MergeBackendId,
 	workspace_result:
 		Result<crate::workspace::ResolvedWorkspace, crate::workspace::WorkspaceResolveError>,
 	plan: MergePlanResult,
@@ -165,10 +163,10 @@ impl PreparedMerge {
 	}
 }
 
-fn prepare_merge_with_kernel_mode(
+fn prepare_merge_with_backend(
 	request: CheckRequest,
 	options: MergeExecuteOptions,
-	merge_kernel: MergeKernelMode,
+	backend_id: MergeBackendId,
 ) -> Result<PreparedMerge, MergeError> {
 	let inventory_started = Instant::now();
 	let mut inventory_result = build_workspace_inventory_for_paths(
@@ -211,7 +209,7 @@ fn prepare_merge_with_kernel_mode(
 		)
 	});
 	let execution_attestation = merge_execution_attestation(
-		merge_kernel,
+		backend_id,
 		options.retained_paths.is_some(),
 		options.include_game_base,
 		base_snapshot_publish_guard.as_ref(),
@@ -238,7 +236,7 @@ fn prepare_merge_with_kernel_mode(
 		(None, Some(reason))
 	} else {
 		let key = inventory_result.as_ref().ok().and_then(|inventory| {
-			build_modset_cache_key(inventory, &options, merge_kernel, &merge_policy_hash)
+			build_modset_cache_key(inventory, &options, backend_id, &merge_policy_hash)
 		});
 		if key.is_some() {
 			(key, None)
@@ -295,7 +293,7 @@ fn prepare_merge_with_kernel_mode(
 	Ok(PreparedMerge {
 		request,
 		options,
-		merge_kernel,
+		backend_id,
 		workspace_result,
 		plan,
 		resolution_map,
@@ -316,7 +314,7 @@ fn export_prepared_merge(
 	let PreparedMerge {
 		request,
 		options,
-		merge_kernel,
+		backend_id,
 		workspace_result,
 		plan,
 		resolution_map,
@@ -421,7 +419,7 @@ fn export_prepared_merge(
 			interactive_conflict_handler: options.interactive_conflict_handler,
 			interactive_resolution_config_path: options.interactive_resolution_config_path,
 			provenance: options.provenance,
-			structural_backend: structural_backend(merge_kernel),
+			backend: backend_for(backend_id),
 			retained_paths: effective_retained_paths,
 		},
 		workspace_result,
@@ -472,23 +470,12 @@ fn export_prepared_merge(
 	})
 }
 
-fn structural_backend(mode: MergeKernelMode) -> Box<dyn StructuralMergeBackend> {
-	match mode {
-		MergeKernelMode::Structured => Box::new(SemanticStructuralBackend),
-		MergeKernelMode::Legacy => Box::new(ReferenceStructuralBackend),
-	}
-}
-
 fn merge_execution_attestation(
-	kernel: MergeKernelMode,
+	backend: MergeBackendId,
 	retained_path_evaluation: bool,
 	include_game_base: bool,
 	base_snapshot: Option<&BaseSnapshotPublishGuard>,
 ) -> MergeExecutionAttestation {
-	let kernel = match kernel {
-		MergeKernelMode::Legacy => MergeReportKernel::AddressPatchReference,
-		MergeKernelMode::Structured => MergeReportKernel::SemanticTree,
-	};
 	let scope = if retained_path_evaluation {
 		MergeReportScope::RetainedPathEvaluation
 	} else {
@@ -505,7 +492,7 @@ fn merge_execution_attestation(
 	};
 	MergeExecutionAttestation {
 		schema: MERGE_EXECUTION_ATTESTATION_SCHEMA.to_string(),
-		kernel,
+		backend,
 		scope,
 		base_snapshot,
 	}
@@ -655,7 +642,7 @@ fn validate_publish_guards(
 fn build_modset_cache_key(
 	inventory: &WorkspaceInventory,
 	options: &MergeExecuteOptions,
-	merge_kernel: MergeKernelMode,
+	backend_id: MergeBackendId,
 	merge_policy_hash: &str,
 ) -> Option<String> {
 	let game_version = inventory
@@ -685,7 +672,7 @@ fn build_modset_cache_key(
 		provenance: options.provenance,
 		dep_overrides: &dep_overrides_label,
 		retained_paths: &retained_paths_label,
-		merge_kernel: merge_kernel.as_str(),
+		merge_backend: backend_id.as_str(),
 		product_digest: &product_digest,
 	});
 	Some(compute_modset_cache_key(
@@ -705,15 +692,15 @@ struct ModsetCacheBehavior<'a> {
 	provenance: bool,
 	dep_overrides: &'a str,
 	retained_paths: &'a str,
-	merge_kernel: &'a str,
+	merge_backend: &'a str,
 	product_digest: &'a str,
 }
 
 fn modset_cache_version_label(behavior: ModsetCacheBehavior<'_>) -> String {
 	format!(
-		"{} modset_cache={MODSET_CACHE_VERSION} merge_kernel={} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={} product={}",
+		"{} modset_cache={MODSET_CACHE_VERSION} merge_backend={} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={} product={}",
 		env!("CARGO_PKG_VERSION"),
-		behavior.merge_kernel,
+		behavior.merge_backend,
 		behavior.include_base,
 		behavior.provenance,
 		behavior.gui_scroll_merge,
@@ -835,7 +822,7 @@ fn rewrite_cached_generated_descriptor(
 		));
 	}
 	fs::write(
-		staging_dir.join(foch_core::model::MERGED_MOD_DESCRIPTOR_PATH),
+		staging_dir.join(foch::model::MERGED_MOD_DESCRIPTOR_PATH),
 		descriptor,
 	)?;
 	Ok(())
@@ -903,7 +890,7 @@ fn dep_overrides_cache_label(dep_overrides: &[AppliedDepOverride]) -> String {
 
 fn retained_paths_cache_label(
 	retained_paths: Option<&BTreeSet<String>>,
-	module_policy_versions: &std::collections::BTreeMap<foch_core::model::MergeUnitId, u32>,
+	module_policy_versions: &std::collections::BTreeMap<foch::model::MergeUnitId, u32>,
 ) -> String {
 	let Some(retained_paths) = retained_paths else {
 		return "full".to_string();
@@ -1025,12 +1012,12 @@ fn load_merge_policy(
 		.parent()
 		.unwrap_or_else(|| Path::new("."));
 	let config = if let Some(path) = explicit_path {
-		FochConfig::load_from_path(path).map_err(|err| MergeError::Validation {
+		Project::load_from_path(path).map_err(|err| MergeError::Validation {
 			path: Some(path.display().to_string()),
 			message: err.to_string(),
 		})?
 	} else {
-		FochConfig::try_load(playset_root).map_err(|err| MergeError::Validation {
+		Project::try_load(playset_root).map_err(|err| MergeError::Validation {
 			path: Some(playset_root.display().to_string()),
 			message: err.to_string(),
 		})?
@@ -1319,9 +1306,9 @@ mod tests {
 	};
 	use crate::config::Config;
 	use crate::workspace::FileFilter;
-	use foch_core::domain::game::Game;
-	use foch_core::model::{HandlerResolutionRecord, MergePlanEntry, ProductInputMod};
-	use foch_core::utils::steam::{SteamId, WorkshopInstallIdentity};
+	use foch::game::eu4::Eu4;
+	use foch::model::{HandlerResolutionRecord, MergePlanEntry, ProductInputMod};
+	use foch::playset::steam::{SteamId, WorkshopInstallIdentity};
 	use std::collections::HashMap;
 
 	fn report_with(mut update: impl FnMut(&mut MergeReport)) -> MergeReport {
@@ -1331,17 +1318,18 @@ mod tests {
 	}
 
 	#[test]
-	fn product_attestation_distinguishes_scope_kernel_and_disabled_base() {
+	fn product_attestation_distinguishes_scope_backend_and_disabled_base() {
 		let attestation =
-			merge_execution_attestation(MergeKernelMode::Structured, false, false, None);
+			merge_execution_attestation(MergeBackendId::GumtreePcsNway, false, false, None);
 
 		assert_eq!(attestation.schema, MERGE_EXECUTION_ATTESTATION_SCHEMA);
-		assert_eq!(attestation.kernel, MergeReportKernel::SemanticTree);
+		assert_eq!(attestation.backend, MergeBackendId::GumtreePcsNway);
 		assert_eq!(attestation.scope, MergeReportScope::FullProductMerge);
 		assert_eq!(attestation.base_snapshot, MergeReportBaseSnapshot::Disabled);
 
-		let evaluation = merge_execution_attestation(MergeKernelMode::Legacy, true, true, None);
-		assert_eq!(evaluation.kernel, MergeReportKernel::AddressPatchReference);
+		let evaluation =
+			merge_execution_attestation(MergeBackendId::AddressPatch, true, true, None);
+		assert_eq!(evaluation.backend, MergeBackendId::AddressPatch);
 		assert_eq!(evaluation.scope, MergeReportScope::RetainedPathEvaluation);
 		assert_eq!(
 			evaluation.base_snapshot,
@@ -1388,7 +1376,7 @@ mod tests {
 		let reviewed_plan = serde_json::to_value(prepared.plan()).expect("serialize reviewed plan");
 		prepared.export().expect("export prepared merge");
 		let persisted_plan: serde_json::Value = serde_json::from_slice(
-			&fs::read(out_dir.join(foch_core::model::MERGE_PLAN_ARTIFACT_PATH))
+			&fs::read(out_dir.join(foch::model::MERGE_PLAN_ARTIFACT_PATH))
 				.expect("read persisted plan"),
 		)
 		.expect("decode persisted plan");
@@ -1615,7 +1603,7 @@ mod tests {
 	#[test]
 	fn retained_paths_cache_label_includes_module_policy_version() {
 		let retained = BTreeSet::from(["common/governments/00_governments.txt".to_string()]);
-		let module = foch_core::model::MergeUnitId {
+		let module = foch::model::MergeUnitId {
 			family_id: "governments".to_string(),
 			module_name: "governments".to_string(),
 		};
@@ -1639,7 +1627,7 @@ mod tests {
 				provenance: false,
 				dep_overrides: "none",
 				retained_paths: "full",
-				merge_kernel: "legacy",
+				merge_backend: "address-patch",
 				product_digest: "same-product",
 			});
 			compute_modset_cache_key(
@@ -1654,8 +1642,8 @@ mod tests {
 	}
 
 	#[test]
-	fn modset_cache_key_separates_merge_kernels() {
-		let key_for = |merge_kernel| {
+	fn modset_cache_key_separates_merge_backends() {
+		let key_for = |merge_backend| {
 			let version = modset_cache_version_label(ModsetCacheBehavior {
 				include_base: false,
 				gui_scroll_merge: false,
@@ -1664,7 +1652,7 @@ mod tests {
 				provenance: false,
 				dep_overrides: "none",
 				retained_paths: "full",
-				merge_kernel,
+				merge_backend,
 				product_digest: "same-product",
 			});
 			compute_modset_cache_key(
@@ -1675,7 +1663,7 @@ mod tests {
 			)
 		};
 
-		assert_ne!(key_for("legacy"), key_for("structured"));
+		assert_ne!(key_for("address-patch"), key_for("gumtree-pcs-nway"));
 	}
 
 	#[test]
@@ -1690,7 +1678,7 @@ mod tests {
 				provenance: false,
 				dep_overrides: &dep_overrides,
 				retained_paths: "full",
-				merge_kernel: "legacy",
+				merge_backend: "address-patch",
 				product_digest: "same-product",
 			});
 			compute_modset_cache_key(
@@ -1740,7 +1728,7 @@ mod tests {
 				provenance: false,
 				dep_overrides: "none",
 				retained_paths: "subset:same",
-				merge_kernel: "structured",
+				merge_backend: "gumtree-pcs-nway",
 				product_digest: &product_digest,
 			});
 			compute_modset_cache_key(
@@ -2154,7 +2142,7 @@ mod tests {
 		)
 		.expect("write cached module");
 		fs::write(
-			cached_output.join(foch_core::model::MERGED_MOD_DESCRIPTOR_PATH),
+			cached_output.join(foch::model::MERGED_MOD_DESCRIPTOR_PATH),
 			"# Source playset: /cached/source.toml\nname=\"Cached (Merged)\"\npath=\"/cached/output\"\nreplace_path=\"common/governments\"\nreplace_path=\"common/scripted_effects\"\n",
 		)
 		.expect("write cached descriptor");
@@ -2185,7 +2173,7 @@ mod tests {
 			paths: vec![
 				MergePlanEntry {
 					target: MergePlanTarget::Module {
-						id: foch_core::model::MergeUnitId {
+						id: foch::model::MergeUnitId {
 							family_id: "governments".to_string(),
 							module_name: "governments".to_string(),
 						},
@@ -2193,14 +2181,14 @@ mod tests {
 						output_path: "common/governments/current.txt".to_string(),
 						replace_prefix: Some("common/governments".to_string()),
 					},
-					strategy: foch_core::model::MergePlanStrategy::StructuralMerge,
+					strategy: foch::model::MergePlanStrategy::StructuralMerge,
 					contributors: Vec::new(),
 					winner: None,
 					notes: Vec::new(),
 				},
 				MergePlanEntry {
 					target: MergePlanTarget::Module {
-						id: foch_core::model::MergeUnitId {
+						id: foch::model::MergeUnitId {
 							family_id: "scripted_effects".to_string(),
 							module_name: "scripted_effects".to_string(),
 						},
@@ -2208,7 +2196,7 @@ mod tests {
 						output_path: "common/scripted_effects/missing.txt".to_string(),
 						replace_prefix: Some("common/scripted_effects".to_string()),
 					},
-					strategy: foch_core::model::MergePlanStrategy::StructuralMerge,
+					strategy: foch::model::MergePlanStrategy::StructuralMerge,
 					contributors: Vec::new(),
 					winner: None,
 					notes: Vec::new(),
@@ -2239,9 +2227,8 @@ mod tests {
 		)
 		.expect("decode persisted plan");
 		assert_eq!(persisted_plan.generated_at, "reviewed");
-		let descriptor =
-			fs::read_to_string(out_dir.join(foch_core::model::MERGED_MOD_DESCRIPTOR_PATH))
-				.expect("read rewritten descriptor");
+		let descriptor = fs::read_to_string(out_dir.join(foch::model::MERGED_MOD_DESCRIPTOR_PATH))
+			.expect("read rewritten descriptor");
 		assert!(
 			descriptor.contains(&format!(
 				"# Source playset: {}",
@@ -2386,7 +2373,7 @@ mod tests {
 			std::env::set_var(BASE_DATA_DIR_ENV, temp.path().join("base-data"));
 		}
 
-		let game = Game::EuropaUniversalis4;
+		let game = Eu4;
 		let game_version = "1.37.5";
 		let game_root = temp.path().join("eu4-game");
 		fs::create_dir_all(game_root.join("common/scripted_triggers"))
@@ -2398,7 +2385,7 @@ mod tests {
 			"base_trigger = { always = yes }\n",
 		)
 		.expect("write base script");
-		let filter = FileFilter::new(game.clone(), &[]).expect("build file filter");
+		let filter = FileFilter::new(game, &[]).expect("build file filter");
 		let built = build_base_snapshot(&game, &game_root, Some(game_version), &filter)
 			.expect("build base snapshot");
 		install_built_snapshot(
@@ -2470,7 +2457,7 @@ mod tests {
 			std::env::set_var(BASE_DATA_DIR_ENV, temp.path().join("base-data"));
 		}
 
-		let game = Game::EuropaUniversalis4;
+		let game = Eu4;
 		let game_version = "1.37.5";
 		let game_root = temp.path().join("eu4-game");
 		fs::create_dir_all(game_root.join("common/scripted_triggers"))
@@ -2482,7 +2469,7 @@ mod tests {
 			"base_trigger = { always = yes }\n",
 		)
 		.expect("write base script");
-		let filter = FileFilter::new(game.clone(), &[]).expect("build file filter");
+		let filter = FileFilter::new(game, &[]).expect("build file filter");
 		let built = build_base_snapshot(&game, &game_root, Some(game_version), &filter)
 			.expect("build base snapshot");
 		install_built_snapshot(

@@ -19,7 +19,7 @@ use super::parser::{
 	AstFile, AstStatement, AstValue, ParseResult, SpanRange, parse_clausewitz_content,
 	parse_clausewitz_file,
 };
-use foch_core::model::{
+use foch::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, MaybeScope,
 	ParamBinding, ParseIssue, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode, ScopeSet,
 	ScopeType, SemanticIndex, SourceSpan, SymbolDefinition, SymbolKind, SymbolReference,
@@ -225,7 +225,7 @@ fn parse_script_file_with_profile_and_cache_with_input_identity(
 	let (parsed, parse_cache_hit, source, input_identity) = match std::fs::read(file) {
 		Ok(bytes) => {
 			let content_digest = blake3::hash(&bytes).to_hex().to_string();
-			let source = foch_core::decode_paradox_bytes(&bytes).into_owned();
+			let source = foch::game::eu4::text::decode_paradox_bytes(&bytes).into_owned();
 			let (parsed, parse_cache_hit) = if use_cache {
 				parse_clausewitz_bytes_cached(file, &bytes)
 			} else {

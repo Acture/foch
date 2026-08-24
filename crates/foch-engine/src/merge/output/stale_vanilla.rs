@@ -1,4 +1,4 @@
-use foch_core::model::StaleVanillaTargetDescriptor;
+use foch::model::StaleVanillaTargetDescriptor;
 use foch_language::analyzer::content_family::MergeKeySource;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;

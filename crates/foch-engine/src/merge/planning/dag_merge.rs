@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use foch_core::model::MergeTraceContributor;
+use foch::model::MergeTraceContributor;
 use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::parser::AstStatement;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
@@ -397,10 +397,10 @@ mod tests {
 	use super::*;
 	use std::path::{Path, PathBuf};
 
-	use foch_core::config::DepOverride;
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::playlist::PlaylistEntry;
-	use foch_core::model::ModCandidate;
+	use foch::model::ModCandidate;
+	use foch::playset::PlaysetEntry;
+	use foch::playset::descriptor::ModDescriptor;
+	use foch::project::DepOverride;
 	use foch_language::analyzer::content_family::{
 		CwtType, GameProfile, ListMergePolicy, MergeKeySource,
 	};
@@ -432,9 +432,9 @@ mod tests {
 		replace_path: Vec<&str>,
 	) -> ModCandidate {
 		ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				steam_id: Some(mod_id.to_string()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: mod_id.to_string(),
 			root_path: None,

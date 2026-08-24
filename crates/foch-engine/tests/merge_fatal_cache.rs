@@ -5,7 +5,7 @@
 //! merge e2e test suite.  Any shared-binary approach would contaminate other
 //! tests that write real cache entries into the same dir.
 
-use foch_core::model::MergeReportStatus;
+use foch::model::MergeReportStatus;
 use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;

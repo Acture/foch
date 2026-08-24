@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use foch_core::model::MergeTraceContributor;
+use foch::model::MergeTraceContributor;
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;

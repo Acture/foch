@@ -2,7 +2,7 @@ use std::path::Path;
 
 use super::super::content_family::CwtType;
 use super::super::eu4_builtin::is_builtin_effect;
-use foch_core::model::{ScopeKind, ScopeType, base_scope};
+use foch::model::{ScopeKind, ScopeType, base_scope};
 use foch_cwt::{
 	CompiledAlias, CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue,
 	RuleContext, RuleEngine,
@@ -981,7 +981,7 @@ mod tests {
 
 	use super::{cwt_path_container_scope_kind, iterator_scope_type};
 	use crate::analyzer::content_family::CwtType;
-	use foch_core::model::{ScopeKind, base_scope};
+	use foch::model::{ScopeKind, base_scope};
 
 	#[test]
 	fn iterator_scope_type_classifies_known_iterators() {

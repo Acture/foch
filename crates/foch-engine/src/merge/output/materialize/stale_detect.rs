@@ -7,7 +7,7 @@ use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::merge::model::{SemanticDeltaPartition, SemanticSourceDelta};
 use crate::merge::structured::{normalize_clausewitz_partition, semantic_node_address};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
-use foch_core::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
+use foch::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use foch_core::model::ScopeKind;
+use foch::model::ScopeKind;
 use foch_language::analyzer::content_family::{
 	BooleanMergePolicy, CwtType, DivergentBlockPolicy, MergePolicies,
 };

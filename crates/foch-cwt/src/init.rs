@@ -1,5 +1,5 @@
 use crate::schema::CwtSchemaGraph;
-use foch_core::model::base_scope;
+use foch::model::base_scope;
 
 pub fn install_base_scopes(graph: &CwtSchemaGraph) {
 	if base_scope::is_initialized() {

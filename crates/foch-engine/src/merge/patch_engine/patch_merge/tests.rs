@@ -2,8 +2,8 @@ use super::super::patch::{ListItemOccurrence, ListItemTarget};
 use super::block_merge::NamedContainerMergeError;
 use super::*;
 use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
-use foch_core::config::{ResolutionDecision, ResolutionMap, compute_conflict_id};
-use foch_core::model::HandlerResolutionRecord;
+use foch::model::HandlerResolutionRecord;
+use foch::project::{ResolutionDecision, ResolutionMap, compute_conflict_id};
 use foch_language::analyzer::content_family::MergePolicies;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 

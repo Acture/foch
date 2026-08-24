@@ -1,6 +1,6 @@
 use super::super::parser::{ParseResult, parse_clausewitz_content, parse_clausewitz_file};
 use filetime::{FileTime, set_file_mtime};
-use foch_core::cache::{
+use foch::platform::cache_store::{
 	cache_version_namespace, default_foch_cache_dir, is_cache_version_namespace,
 };
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,7 @@ fn parse_clausewitz_bytes_with_key(
 		return (result, true);
 	}
 
-	let content = foch_core::decode_paradox_bytes(bytes);
+	let content = foch::game::eu4::text::decode_paradox_bytes(bytes);
 	let parsed = parse_clausewitz_content(path.to_path_buf(), &content);
 	let entry = ParseCacheEntry {
 		version: PARSE_CACHE_VERSION.to_string(),

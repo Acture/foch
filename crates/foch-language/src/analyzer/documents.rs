@@ -3,7 +3,7 @@ use super::semantic_index::{
 	ParsedScriptFile, ParsedScriptWithInputIdentity, build_semantic_index,
 	parse_script_file_with_input_identity, parse_script_file_without_cache_with_input_identity,
 };
-use foch_core::model::{
+use foch::model::{
 	CsvRow, DocumentFamily, DocumentRecord, FamilyParseStats, JsonProperty, LocalisationDefinition,
 	LocalisationDuplicate, ParseFamilyStats, ParseIssue, SemanticIndex,
 };
@@ -548,7 +548,7 @@ fn parse_csv_document(
 }
 
 fn decode_csv_bytes(raw: &[u8]) -> String {
-	foch_core::decode_paradox_bytes(raw).into_owned()
+	foch::game::eu4::text::decode_paradox_bytes(raw).into_owned()
 }
 
 fn csv_schema_for(relative_path: &Path) -> CsvSchema {
@@ -804,7 +804,7 @@ mod tests {
 		classify_document_family, discover_text_documents, parse_csv_document,
 		parse_discovered_text_documents, parse_localisation_document,
 	};
-	use foch_core::model::DocumentFamily;
+	use foch::model::DocumentFamily;
 	use std::fs;
 	use std::path::Path;
 	use tempfile::TempDir;

@@ -1,5 +1,5 @@
 use super::binding::{DefinitionRecord, RuntimeState};
-use foch_core::model::{Finding, FindingChannel, Severity, SymbolKind};
+use foch::model::{Finding, FindingChannel, Severity, SymbolKind};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]

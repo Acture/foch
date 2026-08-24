@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use foch_core::model::{ScopeKind, ScopeType, base_scope};
+use foch::model::{ScopeKind, ScopeType, base_scope};
 use foch_cwt::{CwtSchemaGraph, RuleEngine};
 use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_file};
 use foch_language::analyzer::semantic_index::{

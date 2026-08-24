@@ -132,7 +132,8 @@ pub struct ParadoxTree {
 
 impl ParadoxTree {
 	pub fn parse(bytes: &[u8]) -> Result<Self, ParseError> {
-		let source = Arc::<str>::from(foch_core::decode_paradox_bytes(bytes).into_owned());
+		let source =
+			Arc::<str>::from(foch::game::eu4::text::decode_paradox_bytes(bytes).into_owned());
 		let mut parser = Parser::new();
 		parser
 			.set_language(&tree_sitter_paradox::LANGUAGE.into())

@@ -1,4 +1,4 @@
-use foch_core::model::{MaybeScope, ScopeType};
+use foch::model::{MaybeScope, ScopeType};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;

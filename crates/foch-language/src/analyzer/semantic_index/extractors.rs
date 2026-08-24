@@ -8,7 +8,7 @@ use super::{
 	is_top_level_named_block, monarch_power_prefix, province_name_table_id,
 	push_resource_reference, random_map_tile_id, random_name_table_id, scalar_text, scope_kind,
 };
-use foch_core::model::{ScopeKind, SemanticIndex};
+use foch::model::{ScopeKind, SemanticIndex};
 
 // ---------------------------------------------------------------------------
 // Trait

@@ -7,7 +7,7 @@ use super::{
 use crate::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
 use crate::analyzer::content_family::{GameProfile, MergeKeySource};
 use crate::analyzer::eu4_profile::{Eu4Profile, eu4_profile as raw_eu4_profile};
-use foch_core::model::{
+use foch::model::{
 	AnalysisMode, MaybeScope, ScopeKind, ScopeSet, SymbolKind, base_scope, test_support,
 };
 use std::fs;
@@ -27,7 +27,7 @@ fn parse_script_file(
 	raw_parse_script_file(mod_id, mod_root, path)
 }
 
-fn build_semantic_index(files: &[super::ParsedScriptFile]) -> foch_core::model::SemanticIndex {
+fn build_semantic_index(files: &[super::ParsedScriptFile]) -> foch::model::SemanticIndex {
 	init_scopes();
 	raw_build_semantic_index(files)
 }
@@ -3067,7 +3067,7 @@ country_event = {
 	)
 	.expect("parsed event");
 	let engine = foch_cwt::RuleEngine::from_graph(&foch_cwt::CwtSchemaGraph::default());
-	let mut index = foch_core::model::SemanticIndex::default();
+	let mut index = foch::model::SemanticIndex::default();
 	super::reset_create_child_scope_cwt_path_bindings();
 	super::build_file_index(
 		&parsed,

@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-foch-core = { path = "../foch-core" }
+foch = { path = "../.." }
 foch-syntax = { path = "../foch-syntax" }
 bincode.workspace = true
 serde.workspace = true

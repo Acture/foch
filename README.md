@@ -51,7 +51,7 @@ repository:
 ```fish
 git clone --recurse-submodules https://github.com/Acture/foch.git
 cd foch
-cargo install --path crates/foch-cli
+cargo install --path apps/foch-cli
 ```
 
 Build and install the EU4 base-data snapshot, then inspect and merge a launcher

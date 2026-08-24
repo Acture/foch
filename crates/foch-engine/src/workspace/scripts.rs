@@ -1,5 +1,5 @@
 use crate::base_data::InstalledBaseSnapshot;
-use foch_core::model::ModCandidate;
+use foch::model::ModCandidate;
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_bytes_cached};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -315,8 +315,8 @@ fn normalize_path(path: &Path) -> String {
 mod tests {
 	use super::*;
 	use crate::cache::CachedDocumentInputIdentity;
-	use foch_core::domain::playlist::PlaylistEntry;
-	use foch_core::model::{ParseFamilyStats, SemanticIndex};
+	use foch::model::{ParseFamilyStats, SemanticIndex};
+	use foch::playset::PlaysetEntry;
 	use std::fs;
 	use tempfile::TempDir;
 
@@ -353,11 +353,11 @@ mod tests {
 			})
 			.collect();
 		let mod_item = ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				enabled: true,
 				position: Some(0),
 				steam_id: Some("1".to_string()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: "mod-a".to_string(),
 			root_path: Some(root.to_path_buf()),

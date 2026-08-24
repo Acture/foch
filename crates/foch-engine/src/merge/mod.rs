@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod architecture_tests;
+pub(crate) mod backend;
 pub(crate) mod boolean;
 pub(crate) mod cwt_suggestions;
 pub(crate) mod error;
@@ -23,7 +24,7 @@ pub use execute::{
 	AnalysisStatusView, MergeExecuteOptions, MergeExecutionResult, MergeStatusView, PreparedMerge,
 	prepare_merge_with_options, run_merge_for_evaluation, run_merge_with_options,
 };
-pub use kernel::MergeEvaluationKernel;
+pub use kernel::{MergeBackendDescriptor, MergeBackendId};
 #[allow(unused_imports)]
 pub(crate) use output::{localisation_merge, materialize, stale_vanilla};
 #[cfg(test)]

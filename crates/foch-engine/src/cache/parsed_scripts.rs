@@ -1,4 +1,4 @@
-use foch_core::model::ParseIssue;
+use foch::model::ParseIssue;
 use foch_language::analyzer::content_family::{CwtType, GameProfile};
 use foch_language::analyzer::eu4_profile::eu4_profile;
 use foch_language::analyzer::parser::{AstFile, AstStatement};

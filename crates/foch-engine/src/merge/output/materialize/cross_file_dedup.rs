@@ -2,7 +2,7 @@ use super::super::super::error::MergeError;
 use super::super::super::namespace::{FamilyKeyIndex, build_family_key_index, group_by_family};
 use super::super::super::normalize::normalize_defines_file;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
-use foch_core::model::{HandlerResolutionRecord, MergeReport};
+use foch::model::{HandlerResolutionRecord, MergeReport};
 use foch_language::analyzer::content_family::{GameProfile, MergeKeySource};
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 use foch_language::analyzer::semantic_index::{
@@ -578,8 +578,8 @@ fn fingerprint_text_into(value: &str, hasher: &mut blake3::Hasher) {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::Playlist;
+	use foch::game::eu4::Eu4;
+	use foch::playset::Playset;
 	use foch_language::analyzer::content_family::CwtType;
 	use foch_language::analyzer::parser::parse_clausewitz_content;
 	use std::path::{Path, PathBuf};
@@ -652,8 +652,8 @@ mod tests {
 
 		ResolvedWorkspace {
 			playlist_path: test_root.join("playlist.json"),
-			playlist: Playlist {
-				game: Game::EuropaUniversalis4,
+			playlist: Playset {
+				game: Eu4,
 				name: "cross-file-completeness".to_string(),
 				mods: Vec::new(),
 			},

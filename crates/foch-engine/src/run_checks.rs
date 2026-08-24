@@ -8,7 +8,7 @@ use crate::workspace::{
 	LoadedModSnapshot, ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind,
 	normalize_relative_path, resolve_workspace,
 };
-use foch_core::model::{
+use foch::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
 	Finding, FindingChannel, ParseFamilyStats, ParseIssueReportItem, SemanticIndex, Severity,
 	SymbolDefinition,

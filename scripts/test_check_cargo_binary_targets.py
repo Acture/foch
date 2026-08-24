@@ -35,7 +35,7 @@ def desktop_package(*extra_dependencies: CargoDependency) -> CargoPackage:
 		manifest_path="apps/foch-desktop/src-tauri/Cargo.toml",
 		targets=[],
 		dependencies=[
-			cargo_dependency("foch-core"),
+			cargo_dependency("foch"),
 			cargo_dependency("foch-engine"),
 			cargo_dependency("tauri"),
 			*extra_dependencies,

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch_core::model::HandlerResolutionRecord;
+use foch::model::HandlerResolutionRecord;
 use foch_language::analyzer::content_family::{CwtType, MergeKeySource, MergePolicies};
 use foch_language::analyzer::parser::{AstFile, AstStatement};
 use foch_language::analyzer::semantic_index::ParsedScriptFile;

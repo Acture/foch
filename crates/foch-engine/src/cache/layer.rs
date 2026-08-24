@@ -1,5 +1,5 @@
 use super::{CacheError, DagBaseCache, ModDiffCache, ModParseCache, ModsetCache};
-use foch_core::cache::default_foch_cache_dir;
+use foch::platform::cache_store::default_foch_cache_dir;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

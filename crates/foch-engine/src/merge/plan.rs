@@ -5,7 +5,7 @@ use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceResolveErrorKind,
 	WorkspaceScriptCache, resolve_workspace,
 };
-use foch_core::model::{
+use foch::model::{
 	DocumentFamily, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies,
 	MergePlanStrategy, MergePlanTarget, MergeUnitId,
 };
@@ -520,10 +520,10 @@ pub(crate) fn is_localisation_yml_path(path: &str) -> bool {
 mod tests {
 	use super::build_merge_plan_from_workspace;
 	use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::{Playlist, PlaylistEntry};
-	use foch_core::model::{MergePlanStrategy, MergePlanTarget, ModCandidate};
+	use foch::game::eu4::Eu4;
+	use foch::model::{MergePlanStrategy, MergePlanTarget, ModCandidate};
+	use foch::playset::descriptor::ModDescriptor;
+	use foch::playset::{Playset, PlaysetEntry};
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::{Path, PathBuf};
 
@@ -558,8 +558,8 @@ mod tests {
 		);
 		ResolvedWorkspace {
 			playlist_path: PathBuf::from("playlist.json"),
-			playlist: Playlist {
-				game: Game::EuropaUniversalis4,
+			playlist: Playset {
+				game: Eu4,
 				name: "snapshot-gap".to_string(),
 				mods: Vec::new(),
 			},
@@ -596,10 +596,10 @@ mod tests {
 	fn reset_only_mod(mod_id: &str, replace_path: &str) -> ModCandidate {
 		let root_path = PathBuf::from(mod_id);
 		ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				enabled: true,
 				root_path: Some(root_path.clone()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: mod_id.to_string(),
 			root_path: Some(root_path),
@@ -821,7 +821,7 @@ mod tests {
 		assert_eq!(result.strategies.last_writer_overlay, 1);
 		assert!(matches!(
 			&result.paths[0].target,
-			foch_core::model::MergePlanTarget::File { path }
+			foch::model::MergePlanTarget::File { path }
 				if path == "common/governments/metadata.json"
 		));
 	}

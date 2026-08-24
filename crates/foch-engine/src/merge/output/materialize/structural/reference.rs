@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use foch_core::config::{ResolutionMap, compute_conflict_id};
-use foch_core::model::{LeafConflictDetail, MergeReportConflictContributor};
+use foch::model::{LeafConflictDetail, MergeReportConflictContributor};
+use foch::project::{ResolutionMap, compute_conflict_id};
 use foch_cwt::RuleEngine;
 use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
@@ -35,7 +35,7 @@ use crate::merge::resolution::conflict_view::ConflictView;
 use crate::merge::structured::observe_merge_trace;
 use crate::workspace::ResolvedFileContributor;
 
-pub(in crate::merge::output::materialize) fn merge_structural_file(
+pub(crate) fn merge_structural_file(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: StructuralMergeContext<'_>,
@@ -57,7 +57,7 @@ pub(in crate::merge::output::materialize) fn merge_structural_file(
 	)
 }
 
-pub(in crate::merge::output::materialize) fn merge_definition_module(
+pub(crate) fn merge_definition_module(
 	target_path: &str,
 	views: &CrossFileModuleViews,
 	context: StructuralMergeContext<'_>,

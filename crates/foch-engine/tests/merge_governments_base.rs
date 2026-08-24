@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
 
-use foch_core::domain::game::Game;
-use foch_core::model::MergeReportStatus;
+use foch::game::eu4::Eu4;
+use foch::model::MergeReportStatus;
 use foch_engine::{
 	BaseDataSource, CheckRequest, Config, FileFilter, MergeExecuteOptions, build_base_snapshot,
 	install_built_snapshot, run_merge_with_options,
@@ -133,12 +133,12 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 		std::env::set_var("FOCH_DATA_DIR", &data_root);
 		std::env::set_var("FOCH_CACHE_ROOT", &cache_root);
 	}
-	let game = Game::EuropaUniversalis4;
+	let game = Eu4;
 	let built = build_base_snapshot(
 		&game,
 		&game_root,
 		Some("test-1.0"),
-		&FileFilter::for_game(game.clone()),
+		&FileFilter::for_game(game),
 	)
 	.expect("build synthetic base snapshot");
 	install_built_snapshot(

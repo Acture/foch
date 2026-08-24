@@ -12,7 +12,7 @@ pub use model::{
 pub use project::project_symbol_graph;
 pub use report::{build_module_report, merge_trace_edges_from_trace};
 
-use foch_core::model::SemanticIndex;
+use foch::model::SemanticIndex;
 
 pub fn run_module_report(index: &SemanticIndex, max_iters: usize) -> ModuleReport {
 	let graph = project_symbol_graph(index);

@@ -1,10 +1,10 @@
-use foch_core::config::compute_conflict_id;
-use foch_core::domain::descriptor::load_descriptor;
-use foch_core::model::{
+use foch::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
 };
+use foch::playset::descriptor::load_descriptor;
+use foch::project::compute_conflict_id;
 use foch_engine::{
-	CheckRequest, Config, ConflictDecision, ConflictHandler, ConflictView, MergeEvaluationKernel,
+	CheckRequest, Config, ConflictDecision, ConflictHandler, ConflictView, MergeBackendId,
 	MergeExecuteOptions, prepare_merge_with_options, run_merge_for_evaluation,
 	run_merge_with_options,
 };
@@ -501,10 +501,10 @@ fn public_tree_selection_does_not_bundle_full_product_output() {
 	fs::write(
 		&manifest_path,
 		r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "200001"
 steam_id = "200001"
 path = "steamapps/workshop/content/236850/200001"
@@ -562,7 +562,7 @@ workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "30
 	let explicit = run_merge_for_evaluation(
 		request(),
 		options(&warm_out_dir),
-		MergeEvaluationKernel::SemanticTree,
+		MergeBackendId::GumtreePcsNway,
 	)
 	.expect("run explicit tree merge");
 	assert_eq!(
@@ -1927,7 +1927,7 @@ fn structured_merge_allows_an_explicit_empty_base() {
 			provenance: false,
 			retained_paths: Some(["events/test_events.txt".to_string()].into()),
 		},
-		MergeEvaluationKernel::SemanticTree,
+		MergeBackendId::GumtreePcsNway,
 	)
 	.expect("an explicitly disabled game base should permit an empty semantic base");
 	assert_eq!(result.exit_code, 0, "report: {:#?}", result.report);
@@ -1977,7 +1977,7 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 			provenance: false,
 			retained_paths: Some(["events/foo.txt".to_string()].into()),
 		},
-		MergeEvaluationKernel::SemanticTree,
+		MergeBackendId::GumtreePcsNway,
 	)
 	.expect_err("structured merge must reject a copy-through unit");
 	let message = error.to_string();

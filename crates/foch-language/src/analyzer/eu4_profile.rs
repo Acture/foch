@@ -7,7 +7,7 @@ use super::content_family::{
 	ScalarMergePolicy, ScalarReducerRule,
 };
 use super::eu4_builtin::builtin_base_scope_names;
-use foch_core::model::{MaybeScope, ScopeType, base_scope};
+use foch::model::{MaybeScope, ScopeType, base_scope};
 use std::path::Path;
 use std::sync::OnceLock;
 

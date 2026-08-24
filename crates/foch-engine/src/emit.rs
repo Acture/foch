@@ -1,5 +1,5 @@
 use crate::merge::MergeError;
-use foch_core::config::DEFAULT_EMIT_INDENT;
+use foch::project::DEFAULT_EMIT_INDENT;
 use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

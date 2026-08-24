@@ -4,7 +4,7 @@ use crate::runtime::{
 	RuntimeState, build_runtime_state_from_workspace, nearest_enclosing_definition,
 };
 use crate::workspace::{ResolvedWorkspace, normalize_relative_path, resolve_workspace};
-use foch_core::model::{
+use foch::model::{
 	AliasUsage, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
 	SymbolReference,
 };
@@ -1426,14 +1426,14 @@ fn scope_kind_text(kind: ScopeKind) -> &'static str {
 	}
 }
 
-fn symbol_kind_text(kind: foch_core::model::SymbolKind) -> &'static str {
+fn symbol_kind_text(kind: foch::model::SymbolKind) -> &'static str {
 	match kind {
-		foch_core::model::SymbolKind::Event => "event",
-		foch_core::model::SymbolKind::Decision => "decision",
-		foch_core::model::SymbolKind::ScriptedEffect => "scripted_effect",
-		foch_core::model::SymbolKind::ScriptedTrigger => "scripted_trigger",
-		foch_core::model::SymbolKind::DiplomaticAction => "diplomatic_action",
-		foch_core::model::SymbolKind::TriggeredModifier => "triggered_modifier",
+		foch::model::SymbolKind::Event => "event",
+		foch::model::SymbolKind::Decision => "decision",
+		foch::model::SymbolKind::ScriptedEffect => "scripted_effect",
+		foch::model::SymbolKind::ScriptedTrigger => "scripted_trigger",
+		foch::model::SymbolKind::DiplomaticAction => "diplomatic_action",
+		foch::model::SymbolKind::TriggeredModifier => "triggered_modifier",
 	}
 }
 
@@ -1765,12 +1765,12 @@ mod tests {
 	use crate::graph::model::{GraphArtifactFormat, GraphModeSelection, GraphScopeSelection};
 	use crate::request::CheckRequest;
 	use crate::workspace::ResolvedFileContributor;
-	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::Playlist;
-	use foch_core::model::{
+	use foch::game::eu4::Eu4;
+	use foch::model::{
 		DocumentFamily, DocumentRecord, KeyUsage, MaybeScope, ScalarAssignment, ScopeNode,
 		SemanticIndex, SourceSpan, base_scope, test_support,
 	};
+	use foch::playset::Playset;
 	use std::collections::{BTreeMap, HashMap};
 	use std::path::PathBuf;
 
@@ -2131,8 +2131,8 @@ mod tests {
 		);
 		ResolvedWorkspace {
 			playlist_path: PathBuf::from("/tmp/test.playset"),
-			playlist: Playlist {
-				game: Game::EuropaUniversalis4,
+			playlist: Playset {
+				game: Eu4,
 				name: "test".to_string(),
 				mods: Vec::new(),
 			},

@@ -243,9 +243,9 @@ pub(crate) fn ancestry_metrics() -> AncestryMetrics {
 mod tests {
 	use std::path::PathBuf;
 
-	use foch_core::domain::descriptor::ModDescriptor;
-	use foch_core::domain::playlist::PlaylistEntry;
-	use foch_core::model::ModCandidate;
+	use foch::model::ModCandidate;
+	use foch::playset::PlaysetEntry;
+	use foch::playset::descriptor::ModDescriptor;
 
 	use super::*;
 	use crate::workspace::ResolvedFileContributor;
@@ -254,9 +254,9 @@ mod tests {
 
 	fn mod_candidate(mod_id: &str, name: &str, dependencies: &[&str]) -> ModCandidate {
 		ModCandidate {
-			entry: PlaylistEntry {
+			entry: PlaysetEntry {
 				steam_id: Some(mod_id.to_string()),
-				..PlaylistEntry::default()
+				..PlaysetEntry::default()
 			},
 			mod_id: mod_id.to_string(),
 			root_path: None,

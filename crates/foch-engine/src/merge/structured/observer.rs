@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use foch_core::model::{
-	MergeTraceContributor, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
-};
+use foch::model::{MergeTraceContributor, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, DivergentBlockPolicy, MergePolicies, NamedContainerPolicy,
 };

@@ -9,7 +9,7 @@ use crate::runtime::{
 	nearest_enclosing_definition, runtime_reference_target,
 };
 use crate::workspace::resolve_workspace;
-use foch_core::model::SymbolKind;
+use foch::model::SymbolKind;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs;
@@ -1006,7 +1006,7 @@ fn escape_dot(value: &str) -> String {
 mod definition_deps_tests {
 	use super::*;
 	use crate::runtime::RuntimeState;
-	use foch_core::model::{
+	use foch::model::{
 		MaybeScope, ScopeSet, SymbolDefinition, SymbolKind, SymbolReference, test_support,
 	};
 	use std::collections::{HashMap, HashSet};
@@ -1069,7 +1069,7 @@ mod definition_deps_tests {
 		enabled_mod_ids: Vec<&str>,
 		winners: Vec<((SymbolKind, &str), usize)>,
 	) -> RuntimeState {
-		let semantic_index = foch_core::model::SemanticIndex {
+		let semantic_index = foch::model::SemanticIndex {
 			definitions,
 			references,
 			..Default::default()

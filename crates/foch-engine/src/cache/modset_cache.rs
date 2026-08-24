@@ -9,8 +9,8 @@ use super::mod_parse_cache::CacheError;
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use foch_core::cache::default_foch_cache_dir;
-use foch_core::model::MergeReport;
+use foch::model::MergeReport;
+use foch::platform::cache_store::default_foch_cache_dir;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -69,8 +69,8 @@ impl ModsetCache {
 	pub fn open_versioned(cache_dir: &Path, version: &str) -> Result<Self, CacheError> {
 		let layer_root = cache_dir.join(MODSETS_DIR_NAME);
 		fs::create_dir_all(&layer_root).map_err(CacheError::Io)?;
-		let namespace =
-			foch_core::cache::cache_version_namespace(version).map_err(CacheError::Io)?;
+		let namespace = foch::platform::cache_store::cache_version_namespace(version)
+			.map_err(CacheError::Io)?;
 		let entries_dir = layer_root.join(&namespace);
 		fs::create_dir_all(&entries_dir).map_err(CacheError::Io)?;
 
@@ -520,7 +520,7 @@ fn prune_empty_dirs(root: &Path) {
 mod tests {
 	use super::*;
 	use filetime::{FileTime, set_file_mtime};
-	use foch_core::model::{MergeReportStatus, MergeReportValidation};
+	use foch::model::{MergeReportStatus, MergeReportValidation};
 	use std::sync::atomic::{AtomicUsize, Ordering};
 	use tempfile::TempDir;
 

@@ -45,8 +45,8 @@ pub use graph::{
 pub use merge::{
 	AnalysisStatusView, AstAdapterError, CandidateView, ClausewitzDefinitionModuleOutcome,
 	ClausewitzMergeOutcome, ClausewitzMergeTimings, ClausewitzScalarReduction, ConflictDecision,
-	ConflictHandler, ConflictView, InteractiveCliHandler, MergeError, MergeEvaluationKernel,
-	MergeExecuteOptions, MergeExecutionResult, MergeStatusView, PreparedMerge,
+	ConflictHandler, ConflictView, InteractiveCliHandler, MergeBackendDescriptor, MergeBackendId,
+	MergeError, MergeExecuteOptions, MergeExecutionResult, MergeStatusView, PreparedMerge,
 	canonicalize_clausewitz_file, merge_clausewitz_definition_module, merge_clausewitz_files,
 	prepare_merge_with_options, run_merge_for_evaluation, run_merge_plan,
 	run_merge_plan_with_options, run_merge_with_options,

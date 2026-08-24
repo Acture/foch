@@ -10,17 +10,17 @@ use crate::base_data::{
 };
 use crate::config::Config;
 use crate::request::{CheckRequest, WorkspaceSource};
-use foch_core::config::{FochConfig, WorkspaceConfig, WorkspaceImportKind, WorkspaceMod};
-use foch_core::domain::ParseErrorKind;
-use foch_core::domain::descriptor::load_descriptor;
-use foch_core::domain::game::Game;
-use foch_core::domain::playlist::{Playlist, PlaylistEntry};
-use foch_core::model::{
+use foch::game::eu4::Eu4;
+use foch::model::{
 	DocumentFamily, MergeUnitId, ModCandidate, ProductInputManifest, ProductInputMod,
 };
-use foch_core::utils::steam::{
+use foch::playset::ParseErrorKind;
+use foch::playset::descriptor::load_descriptor;
+use foch::playset::steam::{
 	SteamWorkshopCatalog, WorkshopInstallIdentity, steam_workshop_mod_path,
 };
+use foch::playset::{Playset, PlaysetEntry};
+use foch::project::{Project, ProjectConfig, ProjectImportKind, ProjectMod};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, module_name_for_descriptor,
 };
@@ -81,7 +81,7 @@ pub struct WorkspaceResolvedMod {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceResolveSummary {
 	pub source_path: PathBuf,
-	pub game: Game,
+	pub game: Eu4,
 	pub game_root: Option<PathBuf>,
 	pub mods: Vec<WorkspaceResolvedMod>,
 }
@@ -101,7 +101,7 @@ pub(crate) struct ResolvedFileContributor {
 #[derive(Clone, Debug)]
 pub(crate) struct ResolvedWorkspace {
 	pub playlist_path: PathBuf,
-	pub playlist: Playlist,
+	pub playlist: Playset,
 	pub mods: Vec<ModCandidate>,
 	pub installed_base_snapshot: Option<InstalledBaseSnapshot>,
 	pub cache_game_version: Option<String>,
@@ -120,7 +120,7 @@ pub(crate) struct ResolvedWorkspace {
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceInventory {
 	pub playlist_path: PathBuf,
-	pub playlist: Playlist,
+	pub playlist: Playset,
 	pub mods: Vec<ModCandidate>,
 	pub base_game_root: Option<PathBuf>,
 	pub mod_cache_game_version: Option<String>,
@@ -145,7 +145,7 @@ impl WorkspaceInventory {
 struct LoadedWorkspaceSource {
 	source_path: PathBuf,
 	source_root: PathBuf,
-	playlist: Playlist,
+	playlist: Playset,
 	config: Config,
 }
 
@@ -162,7 +162,7 @@ fn load_dlc_load_source(
 	path: &Path,
 	config: &Config,
 ) -> Result<LoadedWorkspaceSource, WorkspaceResolveError> {
-	let playlist = Playlist::from_dlc_load(path).map_err(workspace_error_from_parse)?;
+	let playlist = Playset::from_dlc_load(path).map_err(workspace_error_from_parse)?;
 	Ok(LoadedWorkspaceSource {
 		source_path: path.to_path_buf(),
 		source_root: source_root_for(path),
@@ -175,23 +175,23 @@ fn load_manifest_source(
 	path: &Path,
 	config: &Config,
 ) -> Result<LoadedWorkspaceSource, WorkspaceResolveError> {
-	let manifest = FochConfig::load_from_path(path).map_err(|err| WorkspaceResolveError {
+	let manifest = Project::load_from_path(path).map_err(|err| WorkspaceResolveError {
 		kind: WorkspaceResolveErrorKind::PlaylistFormat,
 		path: path.to_path_buf(),
 		message: err.to_string(),
 	})?;
-	let workspace = manifest
-		.workspace
+	let project = manifest
+		.project
 		.as_ref()
 		.ok_or_else(|| WorkspaceResolveError {
 			kind: WorkspaceResolveErrorKind::PlaylistFormat,
 			path: path.to_path_buf(),
-			message: "foch.toml does not contain a [workspace] table".to_string(),
+			message: "foch.toml does not contain a [project] table".to_string(),
 		})?;
 	let source_root = source_root_for(path);
 	let mut effective_config = config.clone();
-	apply_workspace_config_overrides(&mut effective_config, workspace, &source_root, path)?;
-	let playlist = playlist_from_workspace_config(workspace, &source_root, path)?;
+	apply_project_config_overrides(&mut effective_config, project, &source_root, path)?;
+	let playlist = playset_from_project_config(project, &source_root, path)?;
 	Ok(LoadedWorkspaceSource {
 		source_path: path.to_path_buf(),
 		source_root,
@@ -200,7 +200,7 @@ fn load_manifest_source(
 	})
 }
 
-fn workspace_error_from_parse(err: foch_core::domain::ParseError) -> WorkspaceResolveError {
+fn workspace_error_from_parse(err: foch::playset::ParseError) -> WorkspaceResolveError {
 	WorkspaceResolveError {
 		kind: if matches!(err.kind, ParseErrorKind::Format) {
 			WorkspaceResolveErrorKind::PlaylistFormat
@@ -215,24 +215,21 @@ fn workspace_error_from_parse(err: foch_core::domain::ParseError) -> WorkspaceRe
 	}
 }
 
-fn apply_workspace_config_overrides(
+fn apply_project_config_overrides(
 	config: &mut Config,
-	workspace: &WorkspaceConfig,
+	project: &ProjectConfig,
 	source_root: &Path,
 	manifest_path: &Path,
 ) -> Result<(), WorkspaceResolveError> {
-	if let Some(path) = workspace.paradox_data_path.as_ref() {
+	if let Some(path) = project.paradox_data_path.as_ref() {
 		config.paradox_data_path = Some(resolve_manifest_path(source_root, path));
 	}
-	if let Some(path) = workspace.game_path.as_ref() {
-		let game = workspace
-			.game
-			.as_ref()
-			.ok_or_else(|| WorkspaceResolveError {
-				kind: WorkspaceResolveErrorKind::PlaylistFormat,
-				path: manifest_path.to_path_buf(),
-				message: "[workspace].game_path requires [workspace].game".to_string(),
-			})?;
+	if let Some(path) = project.game_path.as_ref() {
+		let game = project.game.as_ref().ok_or_else(|| WorkspaceResolveError {
+			kind: WorkspaceResolveErrorKind::PlaylistFormat,
+			path: manifest_path.to_path_buf(),
+			message: "[project].game_path requires [project].game".to_string(),
+		})?;
 		config.game_path.insert(
 			game.key().to_string(),
 			resolve_manifest_path(source_root, path),
@@ -241,20 +238,20 @@ fn apply_workspace_config_overrides(
 	Ok(())
 }
 
-fn playlist_from_workspace_config(
-	workspace: &WorkspaceConfig,
+fn playset_from_project_config(
+	project: &ProjectConfig,
 	source_root: &Path,
 	manifest_path: &Path,
-) -> Result<Playlist, WorkspaceResolveError> {
-	let mut game = workspace.game.clone();
+) -> Result<Playset, WorkspaceResolveError> {
+	let mut game = project.game;
 	let mut mods = Vec::new();
 	let mut next_position = 0usize;
-	for import in &workspace.imports {
+	for import in &project.imports {
 		match import.kind {
-			WorkspaceImportKind::DlcLoad => {
+			ProjectImportKind::DlcLoad => {
 				let import_path = resolve_manifest_path(source_root, &import.path);
 				let imported =
-					Playlist::from_dlc_load(&import_path).map_err(workspace_error_from_parse)?;
+					Playset::from_dlc_load(&import_path).map_err(workspace_error_from_parse)?;
 				let import_root = source_root_for(&import_path);
 				if game.is_none() {
 					game = Some(imported.game);
@@ -272,11 +269,11 @@ fn playlist_from_workspace_config(
 			}
 		}
 	}
-	for manifest_mod in &workspace.mods {
+	for manifest_mod in &project.mods {
 		if !manifest_mod.enabled {
 			continue;
 		}
-		let entry = playlist_entry_from_workspace_mod(
+		let entry = playset_entry_from_project_mod(
 			manifest_mod,
 			source_root,
 			next_position,
@@ -286,8 +283,8 @@ fn playlist_from_workspace_config(
 		remove_duplicate_entries(&mut mods, &entry);
 		mods.push(entry);
 	}
-	let game = game.unwrap_or(Game::EuropaUniversalis4);
-	Ok(Playlist {
+	let game = game.unwrap_or(Eu4);
+	Ok(Playset {
 		game,
 		name: manifest_path
 			.file_stem()
@@ -299,12 +296,12 @@ fn playlist_from_workspace_config(
 	})
 }
 
-fn playlist_entry_from_workspace_mod(
-	manifest_mod: &WorkspaceMod,
+fn playset_entry_from_project_mod(
+	manifest_mod: &ProjectMod,
 	source_root: &Path,
 	next_position: usize,
 	manifest_path: &Path,
-) -> Result<PlaylistEntry, WorkspaceResolveError> {
+) -> Result<PlaysetEntry, WorkspaceResolveError> {
 	let root_path = manifest_mod
 		.path
 		.as_ref()
@@ -323,14 +320,14 @@ fn playlist_entry_from_workspace_mod(
 		return Err(WorkspaceResolveError {
 			kind: WorkspaceResolveErrorKind::PlaylistFormat,
 			path: manifest_path.to_path_buf(),
-			message: "[[workspace.mods]] entries require at least one of path or steam_id"
+			message: "[[project.mods]] entries require at least one of path or steam_id"
 				.to_string(),
 		});
 	}
 	let display_name = id
 		.clone()
 		.or_else(|| steam_id.as_ref().map(|steam_id| format!("ugc_{steam_id}")));
-	Ok(PlaylistEntry {
+	Ok(PlaysetEntry {
 		id,
 		display_name,
 		enabled: true,
@@ -341,7 +338,7 @@ fn playlist_entry_from_workspace_mod(
 	})
 }
 
-fn remove_duplicate_entries(entries: &mut Vec<PlaylistEntry>, explicit: &PlaylistEntry) {
+fn remove_duplicate_entries(entries: &mut Vec<PlaysetEntry>, explicit: &PlaysetEntry) {
 	let keys = playlist_entry_identity_keys(explicit);
 	if keys.is_empty() {
 		return;
@@ -353,7 +350,7 @@ fn remove_duplicate_entries(entries: &mut Vec<PlaylistEntry>, explicit: &Playlis
 	});
 }
 
-fn playlist_entry_identity_keys(entry: &PlaylistEntry) -> HashSet<String> {
+fn playlist_entry_identity_keys(entry: &PlaysetEntry) -> HashSet<String> {
 	let mut keys = HashSet::new();
 	if let Some(steam_id) = entry
 		.steam_id
@@ -495,24 +492,15 @@ pub fn resolve_product_input_manifest(
 	Ok(ProductInputManifest::new(mods))
 }
 
-fn game_profile(game: &Game) -> Option<&'static dyn GameProfile> {
-	match game {
-		Game::EuropaUniversalis4 => Some(eu4_profile()),
-		Game::CrusaderKings3
-		| Game::Victoria3
-		| Game::Stellaris
-		| Game::HeartsOfIron4
-		| Game::Unknown => None,
-	}
+fn game_profile(_game: &Eu4) -> &'static dyn GameProfile {
+	eu4_profile()
 }
 
 fn retained_definition_modules(
-	game: &Game,
+	game: &Eu4,
 	requested_paths: &BTreeSet<String>,
 ) -> BTreeMap<MergeUnitId, u32> {
-	let Some(profile) = game_profile(game) else {
-		return BTreeMap::new();
-	};
+	let profile = game_profile(game);
 	requested_paths
 		.iter()
 		.filter_map(|path| {
@@ -532,7 +520,7 @@ fn retained_definition_modules(
 }
 
 fn expand_retained_paths_for_game<'a>(
-	game: &Game,
+	game: &Eu4,
 	requested_paths: Option<&BTreeSet<String>>,
 	available_paths: impl IntoIterator<Item = &'a str>,
 ) -> Option<BTreeSet<String>> {
@@ -545,9 +533,7 @@ fn expand_retained_paths_for_game<'a>(
 	if selected_modules.is_empty() {
 		return Some(effective);
 	}
-	let Some(profile) = game_profile(game) else {
-		return Some(effective);
-	};
+	let profile = game_profile(game);
 	for available_path in available_paths {
 		let normalized = normalize_relative_path(Path::new(available_path));
 		let Some(descriptor) = profile.classify_content_family(Path::new(&normalized)) else {
@@ -583,14 +569,11 @@ pub(crate) fn build_workspace_inventory_for_paths(
 		config,
 	} = loaded;
 
-	let snapshot_filter = match FileFilter::new(
-		playlist.game.clone(),
-		&config.extra_ignore_patterns,
-	) {
+	let snapshot_filter = match FileFilter::new(playlist.game, &config.extra_ignore_patterns) {
 		Ok(filter) => filter,
 		Err(message) => {
 			tracing::warn!(target: "foch::workspace::resolve", message, "falling back to filter without extra ignore globs");
-			FileFilter::for_game(playlist.game.clone())
+			FileFilter::for_game(playlist.game)
 		}
 	};
 	let mods = build_mod_candidates_metadata(&source_root, &config, &playlist);
@@ -908,15 +891,16 @@ pub(crate) fn resolve_workspace_from_inventory(
 }
 
 fn verify_absent_semantic_bases(
-	playlist: &Playlist,
+	playlist: &Playset,
 	base_game_root: Option<&Path>,
 	base_snapshot_loaded: bool,
 	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
 	error_path: &Path,
 ) -> Result<BTreeSet<String>, WorkspaceResolveError> {
-	let (Some(root), Some(profile)) = (base_game_root, game_profile(&playlist.game)) else {
+	let Some(root) = base_game_root else {
 		return Ok(BTreeSet::new());
 	};
+	let profile = game_profile(&playlist.game);
 	if !base_snapshot_loaded {
 		return Ok(BTreeSet::new());
 	}
@@ -979,7 +963,7 @@ fn verify_absent_semantic_bases(
 	Ok(absent)
 }
 
-fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) -> String {
+fn missing_base_data_message(game: &Eu4, game_version: &str, game_root: &Path) -> String {
 	format!(
 		"missing installed base data for {} {}; run `foch data install {} --game-version auto` or `foch data build {} --from-game-path {} --game-version auto --install`, or use --no-game-base",
 		game.key(),
@@ -993,7 +977,7 @@ fn missing_base_data_message(game: &Game, game_version: &str, game_root: &Path) 
 pub(crate) fn build_mod_candidates_metadata(
 	source_root: &Path,
 	config: &Config,
-	playlist: &Playlist,
+	playlist: &Playset,
 ) -> Vec<ModCandidate> {
 	let mut entries = playlist.mods.clone();
 	entries.sort_by_key(|entry| entry.position.unwrap_or(usize::MAX));
@@ -1034,7 +1018,7 @@ fn load_mod_candidate_descriptor(mod_item: &mut ModCandidate) {
 	mod_item.descriptor_error = descriptor_error;
 }
 
-fn mod_id_for_entry(entry: &PlaylistEntry) -> String {
+fn mod_id_for_entry(entry: &PlaysetEntry) -> String {
 	entry
 		.steam_id
 		.clone()
@@ -1115,7 +1099,7 @@ fn validate_workshop_lease(
 }
 
 fn semantic_snapshot_key(
-	game: &Game,
+	game: &Eu4,
 	extra_ignore_patterns: &[String],
 	mod_item: &ModCandidate,
 ) -> Option<String> {
@@ -1145,8 +1129,8 @@ fn update_cache_key_field(hasher: &mut blake3::Hasher, value: &str) {
 fn resolve_mod_root(
 	source_root: &Path,
 	config: &Config,
-	playlist: &Playlist,
-	entry: &PlaylistEntry,
+	playlist: &Playset,
+	entry: &PlaysetEntry,
 ) -> Option<PathBuf> {
 	if let Some(path) = entry.root_path.as_ref() {
 		return Some(path.clone());
@@ -1220,7 +1204,7 @@ fn dedup_candidates(candidates: Vec<PathBuf>) -> Vec<PathBuf> {
 	result
 }
 
-fn paradox_game_data_dirs(base: &Path, game: &Game) -> Vec<PathBuf> {
+fn paradox_game_data_dirs(base: &Path, game: &Eu4) -> Vec<PathBuf> {
 	let mut dirs = vec![base.to_path_buf()];
 	if let Some(game_dir_name) = game.paradox_data_dir_name() {
 		dirs.push(base.join(game_dir_name));
@@ -1332,7 +1316,7 @@ fn collect_relative_files_from_entries(
 }
 
 pub(crate) fn build_file_inventory(
-	playlist: &Playlist,
+	playlist: &Playset,
 	mods: &[ModCandidate],
 	mod_snapshots: &[Option<LoadedModSnapshot>],
 	base_game_root: Option<&PathBuf>,
@@ -1447,7 +1431,7 @@ pub(crate) fn inject_synthetic_bases(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_core::utils::steam::SteamId;
+	use foch::playset::steam::SteamId;
 	use std::fs;
 	use tempfile::TempDir;
 
@@ -1500,7 +1484,7 @@ mod tests {
 
 	#[test]
 	fn relative_file_inventory_propagates_walk_errors() {
-		let filter = FileFilter::for_game(Game::EuropaUniversalis4);
+		let filter = FileFilter::for_game(Eu4);
 		let injected_error = io::Error::new(
 			io::ErrorKind::PermissionDenied,
 			"injected directory traversal failure",
@@ -1524,7 +1508,7 @@ mod tests {
 			manifest_id: SteamId::new(2_001),
 		};
 		let candidate = |mod_id: &str, root: &str, files: Vec<&str>| ModCandidate {
-			entry: PlaylistEntry::default(),
+			entry: PlaysetEntry::default(),
 			mod_id: mod_id.to_string(),
 			root_path: Some(PathBuf::from(root)),
 			descriptor_path: None,
@@ -1551,29 +1535,21 @@ mod tests {
 		];
 
 		assert_eq!(
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &reordered_patterns, &moved),
+			semantic_snapshot_key(&Eu4, &base_patterns, &first),
+			semantic_snapshot_key(&Eu4, &reordered_patterns, &moved),
 			"root and discovered file-set changes must not precede an ACF-keyed lookup"
 		);
 		assert_ne!(
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
+			semantic_snapshot_key(&Eu4, &base_patterns, &first),
 			semantic_snapshot_key(
-				&Game::EuropaUniversalis4,
+				&Eu4,
 				&base_patterns,
 				&candidate("mod-b", "/first/workshop/root", Vec::new()),
 			)
 		);
 		assert_ne!(
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
-			semantic_snapshot_key(
-				&Game::EuropaUniversalis4,
-				&["different/**".to_string()],
-				&first,
-			)
-		);
-		assert_ne!(
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
-			semantic_snapshot_key(&Game::CrusaderKings3, &base_patterns, &first)
+			semantic_snapshot_key(&Eu4, &base_patterns, &first),
+			semantic_snapshot_key(&Eu4, &["different/**".to_string()], &first,)
 		);
 		let mut updated_acf = first.clone();
 		updated_acf
@@ -1582,8 +1558,8 @@ mod tests {
 			.expect("Workshop identity")
 			.manifest_id = SteamId::new(2_002);
 		assert_ne!(
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &first),
-			semantic_snapshot_key(&Game::EuropaUniversalis4, &base_patterns, &updated_acf)
+			semantic_snapshot_key(&Eu4, &base_patterns, &first),
+			semantic_snapshot_key(&Eu4, &base_patterns, &updated_acf)
 		);
 	}
 
@@ -1603,7 +1579,7 @@ mod tests {
 		fs::set_permissions(root.join("irrelevant"), fs::Permissions::from_mode(0o000))
 			.expect("poison irrelevant subtree");
 
-		let result = collect_relative_files(&root, &FileFilter::for_game(Game::EuropaUniversalis4));
+		let result = collect_relative_files(&root, &FileFilter::for_game(Eu4));
 		fs::set_permissions(root.join("irrelevant"), fs::Permissions::from_mode(0o700))
 			.expect("restore irrelevant subtree");
 
@@ -1628,15 +1604,15 @@ mod tests {
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 game_path = "game-root"
 
-[[workspace.imports]]
+[[project.imports]]
 kind = "dlc_load"
 path = "Europa Universalis IV/dlc_load.json"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "local_patch"
 path = "local_patch"
 "#,
@@ -1645,7 +1621,7 @@ path = "local_patch"
 
 		let request = request_for_manifest(&manifest_path);
 		let summary = resolve_workspace_summary(&request).expect("resolve manifest");
-		assert_eq!(summary.game, Game::EuropaUniversalis4);
+		assert_eq!(summary.game, Eu4);
 		assert_eq!(summary.game_root.as_deref(), Some(game_root.as_path()));
 		assert_eq!(summary.mods.len(), 2);
 		assert_eq!(summary.mods[0].mod_id, "1001");
@@ -1687,10 +1663,10 @@ path = "local_patch"
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "local_mod"
 path = "local_mod"
 "#,
@@ -1719,14 +1695,14 @@ path = "local_mod"
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.imports]]
+[[project.imports]]
 kind = "dlc_load"
 path = "Europa Universalis IV/dlc_load.json"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "override"
 steam_id = "1001"
 path = "override_mod"
@@ -1752,10 +1728,10 @@ path = "override_mod"
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "broken"
 "#,
 		)
@@ -1778,10 +1754,10 @@ id = "broken"
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "local_patch"
 path = "missing-local-patch"
 "#,
@@ -1832,10 +1808,10 @@ path = "missing-local-patch"
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "mod-a"
 steam_id = "1001"
 path = "steamapps/workshop/content/236850/1001"
@@ -1892,10 +1868,10 @@ workshop_identity = { app_id = 236850, workshop_id = "1001", manifest_id = "2001
 		fs::write(
 			&manifest_path,
 			r#"
-[workspace]
+[project]
 game = "eu4"
 
-[[workspace.mods]]
+[[project.mods]]
 id = "governments_mod"
 path = "governments_mod"
 "#,
@@ -1950,7 +1926,7 @@ path = "governments_mod"
 		let requested = BTreeSet::from(["common/countries/France.txt".to_string()]);
 
 		let effective = expand_retained_paths_for_game(
-			&Game::EuropaUniversalis4,
+			&Eu4,
 			Some(&requested),
 			available.iter().map(String::as_str),
 		);
@@ -1968,7 +1944,7 @@ path = "governments_mod"
 		]);
 
 		let effective = expand_retained_paths_for_game(
-			&Game::EuropaUniversalis4,
+			&Eu4,
 			Some(&requested),
 			available.iter().map(String::as_str),
 		);
@@ -2009,9 +1985,9 @@ path = "governments_mod"
 		)])
 	}
 
-	fn eu4_test_playlist() -> Playlist {
-		Playlist {
-			game: Game::EuropaUniversalis4,
+	fn eu4_test_playlist() -> Playset {
+		Playset {
+			game: Eu4,
 			name: "semantic-base-proof".to_string(),
 			mods: Vec::new(),
 		}

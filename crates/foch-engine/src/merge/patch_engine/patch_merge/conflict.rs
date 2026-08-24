@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch_core::config::compute_conflict_id;
+use foch::project::compute_conflict_id;
 
 use super::super::patch::AstPath;
 use super::address::{patch_kind, patch_raw_address};

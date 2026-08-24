@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch_core::model::{
-	HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor,
-};
+use foch::model::{HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor};
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, MergePolicies, NamedContainerPolicy,
 };
@@ -42,7 +40,7 @@ use crate::merge::planning::dag_merge::{
 };
 use crate::merge::planning::module_view::CrossFileModuleViews;
 
-pub(super) mod reference;
+pub(crate) mod reference;
 
 fn leaf_conflicts_for_semantic(
 	target_path: &str,
@@ -128,7 +126,7 @@ fn semantic_output_metadata(
 	)
 }
 
-pub(super) fn merge_semantic_structural_file(
+pub(crate) fn merge_semantic_structural_file(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: StructuralMergeContext<'_>,
@@ -150,7 +148,7 @@ pub(super) fn merge_semantic_structural_file(
 	)
 }
 
-pub(super) fn merge_semantic_definition_module(
+pub(crate) fn merge_semantic_definition_module(
 	target_path: &str,
 	views: &CrossFileModuleViews,
 	context: StructuralMergeContext<'_>,
@@ -181,7 +179,7 @@ fn finish_semantic_structural_merge<F>(
 ) -> Result<StructuralMergeOutput, StructuralMergeFailure>
 where
 	F: FnMut(
-		&foch_core::config::ResolutionMap,
+		&foch::project::ResolutionMap,
 		&StructuralMergeContext<'_>,
 	) -> Result<SemanticDagMergeComputation, MergeError>,
 {
@@ -353,7 +351,7 @@ where
 fn prompt_conflict_views(
 	target_path: &str,
 	views: &[crate::merge::conflict_view::ConflictView],
-	effective_map: &mut foch_core::config::ResolutionMap,
+	effective_map: &mut foch::project::ResolutionMap,
 	handler: &mut dyn ConflictHandler,
 	config_path: &Path,
 ) -> Result<bool, StructuralMergeFailure> {
@@ -455,7 +453,7 @@ fn run_semantic_structural_file_engine(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: &StructuralMergeContext<'_>,
-	resolution_map: &foch_core::config::ResolutionMap,
+	resolution_map: &foch::project::ResolutionMap,
 ) -> Result<SemanticDagMergeComputation, MergeError> {
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
 	let effective_policies = effective_merge_policies(context);
@@ -484,7 +482,7 @@ fn run_semantic_definition_module_engine(
 	target_path: &str,
 	views: &CrossFileModuleViews,
 	context: &StructuralMergeContext<'_>,
-	resolution_map: &foch_core::config::ResolutionMap,
+	resolution_map: &foch::project::ResolutionMap,
 ) -> Result<SemanticDagMergeComputation, MergeError> {
 	let mut handler = automatic_conflict_handler(target_path, context, resolution_map);
 	let effective_policies = effective_merge_policies(context);
@@ -505,7 +503,7 @@ fn run_semantic_definition_module_engine(
 fn automatic_conflict_handler<'a>(
 	target_path: &str,
 	context: &'a StructuralMergeContext<'a>,
-	resolution_map: &'a foch_core::config::ResolutionMap,
+	resolution_map: &'a foch::project::ResolutionMap,
 ) -> impl ConflictHandler + 'a {
 	ChainHandler {
 		first: LookupHandler::with_display_names(
@@ -552,7 +550,7 @@ mod tests {
 	use std::fs;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
-	use foch_core::config::{FochConfig, ResolutionMap};
+	use foch::project::{Project, ResolutionMap};
 	use foch_language::analyzer::content_family::{GameProfile, MergePolicies};
 	use foch_language::analyzer::eu4_profile::eu4_profile;
 	use foch_language::analyzer::parser::parse_clausewitz_content;
@@ -678,7 +676,7 @@ mod tests {
 			expected_ids
 		);
 
-		let config = FochConfig::from_toml_str(
+		let config = Project::from_toml_str(
 			&fs::read_to_string(&config_path).expect("read persisted conflict resolutions"),
 		)
 		.expect("parse persisted conflict resolutions");
@@ -725,7 +723,7 @@ mod tests {
 		assert!(!prompt.aborted);
 		assert_eq!(prompt.outcomes.len(), 2);
 
-		let config = FochConfig::from_toml_str(
+		let config = Project::from_toml_str(
 			&fs::read_to_string(&config_path).expect("read persisted conflict resolutions"),
 		)
 		.expect("parse persisted conflict resolutions");

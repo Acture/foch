@@ -13,7 +13,7 @@ pub(crate) mod parsed_scripts;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};
-pub use foch_core::cache::default_foch_cache_dir;
+pub use foch::platform::cache_store::default_foch_cache_dir;
 pub use layer::{CacheLayer, CacheLayerEntryInfo, CacheLayerOps, EvictionStats, all_layers};
 pub use mod_diff_cache::default_mod_diff_cache_dir;
 pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_diff_cache_stats};

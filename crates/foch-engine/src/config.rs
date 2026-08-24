@@ -1,4 +1,4 @@
-use foch_core::utils::steam::find_steam_root_path;
+use foch::playset::steam::find_steam_root_path;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

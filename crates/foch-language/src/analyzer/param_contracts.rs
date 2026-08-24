@@ -1,4 +1,4 @@
-use foch_core::model::{ConditionalParamRule, ParamContract, SemanticIndex, SymbolKind};
+use foch::model::{ConditionalParamRule, ParamContract, SemanticIndex, SymbolKind};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::OnceLock;
@@ -601,7 +601,7 @@ pub(crate) fn evaluate_param_contract(
 #[cfg(test)]
 mod tests {
 	use super::{apply_registered_param_contracts, registered_param_contract};
-	use foch_core::model::{
+	use foch::model::{
 		MaybeScope, ParamContract, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind,
 		base_scope, test_support,
 	};

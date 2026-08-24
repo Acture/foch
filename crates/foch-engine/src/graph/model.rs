@@ -1,4 +1,4 @@
-use foch_core::model::SymbolKind;
+use foch::model::SymbolKind;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

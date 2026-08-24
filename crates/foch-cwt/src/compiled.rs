@@ -58,7 +58,7 @@ pub struct RuleEngineLoadTimings {
 }
 
 pub fn default_compiled_rule_cache_dir() -> PathBuf {
-	foch_core::cache::default_foch_cache_dir().join(DEFAULT_COMPILED_RULE_CACHE_DIR_NAME)
+	foch::platform::cache_store::default_foch_cache_dir().join(DEFAULT_COMPILED_RULE_CACHE_DIR_NAME)
 }
 
 pub fn load_rule_engine_from_dir(
@@ -118,7 +118,7 @@ pub fn load_rule_engine_from_dir(
 }
 
 fn prepare_compiled_rule_cache_generation(cache_dir: &Path) -> PathBuf {
-	let namespace = foch_core::cache::cache_version_namespace(PACK_FORMAT_VERSION)
+	let namespace = foch::platform::cache_store::cache_version_namespace(PACK_FORMAT_VERSION)
 		.expect("compiled CWT pack version is valid SemVer");
 	let generation = cache_dir.join(&namespace);
 	let _ = fs::create_dir_all(&generation);

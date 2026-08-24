@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use foch_core::decode_paradox_bytes;
+use foch::game::eu4::text::decode_paradox_bytes;
 use foch_engine::merge::patch::{ClausewitzPatch, diff_ast};
 use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies, CwtType};
 use foch_language::analyzer::parser::{ParseResult, parse_clausewitz_content};

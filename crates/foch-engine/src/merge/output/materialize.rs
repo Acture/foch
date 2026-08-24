@@ -1,13 +1,12 @@
 #![allow(dead_code)]
 
-pub(crate) mod backend;
 mod cross_file_dedup;
 mod io;
 mod output_transaction;
 mod per_entry_noop;
 mod provenance_tooltip;
 mod stale_detect;
-mod structural;
+pub(crate) mod structural;
 
 use super::super::conflict_handler::ConflictHandler;
 use super::super::dag::{
@@ -27,6 +26,7 @@ use super::super::planning::module_view::{
 };
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
+use crate::merge::backend::{BackendRequest, BackendUnit, GumtreePcsNwayBackend, MergeBackend};
 use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::request::CheckRequest;
@@ -34,15 +34,14 @@ use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceScriptCache,
 	resolve_workspace,
 };
-use backend::{SemanticStructuralBackend, StructuralMergeBackend};
 use cross_file_dedup::{CrossFilePruneResult, prune_cross_file_noop_duplicates};
-use foch_core::config::{AppliedDepOverride, DepOverride, ResolutionMap};
-use foch_core::model::{
+use foch::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, HandlerResolutionRecord,
 	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult,
 	MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportConflictResolution,
 	MergeReportStatus, MergeTraceEntry, SemanticIndex, StaleVanillaTargetDescriptor,
 };
+use foch::project::{AppliedDepOverride, DepOverride, ResolutionMap};
 use foch_cwt::RuleEngine;
 use foch_language::analyzer::content_family::{
 	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, MergeKeySource,
@@ -74,7 +73,7 @@ pub(crate) struct MergeMaterializeOptions {
 	pub force: bool,
 	pub ignore_replace_path: bool,
 	pub dep_overrides: Vec<AppliedDepOverride>,
-	pub resolution_map: foch_core::config::ResolutionMap,
+	pub resolution_map: foch::project::ResolutionMap,
 	pub emit_options: EmitOptions,
 	/// External resolution payloads read during prepare. Configured `use_file`
 	/// decisions consume these bytes so export cannot drift during review.
@@ -84,7 +83,7 @@ pub(crate) struct MergeMaterializeOptions {
 	/// When set, annotate merged definitions with their adopted source mods
 	/// (inline `# foch: …` comments + `.foch/foch-provenance.json`).
 	pub provenance: bool,
-	pub structural_backend: Box<dyn StructuralMergeBackend>,
+	pub backend: Box<dyn MergeBackend>,
 	/// Optional relative-path retention set for callers that only need a subset
 	/// of copy-through output.
 	pub retained_paths: Option<BTreeSet<String>>,
@@ -99,13 +98,13 @@ impl Default for MergeMaterializeOptions {
 			force: false,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
-			resolution_map: foch_core::config::ResolutionMap::default(),
+			resolution_map: foch::project::ResolutionMap::default(),
 			emit_options: EmitOptions::default(),
 			frozen_external_files: BTreeMap::new(),
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
-			structural_backend: Box::new(SemanticStructuralBackend),
+			backend: Box::new(GumtreePcsNwayBackend),
 			retained_paths: None,
 		}
 	}
@@ -279,7 +278,7 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 		write_clean_metadata_only(out_dir, &plan, &report)?;
 		return Ok(report);
 	}
-	if options.structural_backend.profile().validate_semantic_units {
+	if options.backend.profile().validate_semantic_units {
 		validate_structured_plan_selection(&plan, options.retained_paths.as_ref())?;
 	}
 	record_plan_unsupported_inputs(&mut report, &plan);
@@ -400,7 +399,7 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 						.verified_absent_base_paths
 						.contains(entry.output_path()),
 				);
-				if options.structural_backend.profile().validate_semantic_units {
+				if options.backend.profile().validate_semantic_units {
 					validate_structured_merge_entry(
 						entry,
 						contributors.map(Vec::as_slice),
@@ -471,7 +470,7 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 							let resolution_map = options.resolution_map.clone();
 							let interactive_config_path =
 								options.interactive_resolution_config_path.clone();
-							let structural_backend = &*options.structural_backend;
+							let backend = &*options.backend;
 							let interactive_handler =
 								options.interactive_conflict_handler.as_deref_mut();
 							let result =
@@ -494,13 +493,13 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 										script_cache: &workspace.script_cache,
 										vanilla_base_mode,
 									};
-									structural_backend.merge_file(
-										&target,
-										&contribs,
+									backend.analyze(BackendRequest {
+										target_path: &target,
+										unit: BackendUnit::File(&contribs),
 										context,
 										interactive_handler,
-										interactive_config_path.as_deref(),
-									)
+										interactive_config_path: interactive_config_path.as_deref(),
+									})
 								}));
 							match result {
 								Ok(Ok(mut merge_output)) => {
@@ -914,10 +913,7 @@ fn materialize_cross_file_module(
 		mod_dag,
 		ignore_replace_path,
 		dep_overrides,
-		options
-			.structural_backend
-			.profile()
-			.duplicate_definition_override,
+		options.backend.profile().duplicate_definition_override,
 	) {
 		Ok(views) => views,
 		Err(error) => {
@@ -941,7 +937,7 @@ fn materialize_cross_file_module(
 		}
 	};
 	let cwt_rule_engine = crate::merge::cwt_suggestions::cwt_rule_engine_for_profile(profile);
-	let structural_backend = &*options.structural_backend;
+	let backend = &*options.backend;
 	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let merge_context = StructuralMergeContext {
 			descriptor,
@@ -961,13 +957,13 @@ fn materialize_cross_file_module(
 			script_cache: &workspace.script_cache,
 			vanilla_base_mode: VanillaBaseMode::from_include_game_base(options.include_game_base),
 		};
-		structural_backend.merge_definition_module(
-			entry.output_path(),
-			&views,
-			merge_context,
-			options.interactive_conflict_handler.as_deref_mut(),
-			options.interactive_resolution_config_path.as_deref(),
-		)
+		backend.analyze(BackendRequest {
+			target_path: entry.output_path(),
+			unit: BackendUnit::DefinitionModule(&views),
+			context: merge_context,
+			interactive_handler: options.interactive_conflict_handler.as_deref_mut(),
+			interactive_config_path: options.interactive_resolution_config_path.as_deref(),
+		})
 	}));
 	match result {
 		Ok(Ok(mut merge_output)) => {
@@ -1805,7 +1801,7 @@ pub(crate) struct StructuralMergeOutput {
 	definition_provenance: BTreeMap<String, Vec<String>>,
 	/// Per top-level definition key → merge audit trail.
 	merge_trace: BTreeMap<String, MergeTraceEntry>,
-	/// Game-loadable localisation entries for condition tooltip wrappers. These
+	/// Eu4-loadable localisation entries for condition tooltip wrappers. These
 	/// are published only when this exact rendered output survives materialization.
 	provenance_localisation: BTreeMap<String, String>,
 }
@@ -1856,7 +1852,7 @@ pub(crate) struct StructuralMergeContext<'a> {
 	ignore_replace_path: &'a IgnoreReplacePath,
 	dep_overrides: &'a [DepOverride],
 	dep_misuse_findings: &'a [DepMisuseFinding],
-	resolution_map: &'a foch_core::config::ResolutionMap,
+	resolution_map: &'a foch::project::ResolutionMap,
 	mod_versions: &'a HashMap<String, String>,
 	mod_display_names: &'a HashMap<String, String>,
 	cache_game_version: &'a str,
@@ -1957,15 +1953,15 @@ mod tests {
 		ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError,
 		WorkspaceResolveErrorKind,
 	};
-	use foch_core::config::{ResolutionDecision, ResolutionMap};
-	use foch_core::domain::game::Game;
-	use foch_core::domain::playlist::Playlist;
-	use foch_core::model::{
+	use foch::game::eu4::Eu4;
+	use foch::model::{
 		DeferredUnitReason, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
 		MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor,
 		MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 		MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy, MergeUnitId,
 	};
+	use foch::playset::Playset;
+	use foch::project::{ResolutionDecision, ResolutionMap};
 	use foch_language::analyzer::content_family::{
 		ContentFamilyDescriptor, GameProfile, MergeKeySource,
 	};
@@ -1982,39 +1978,28 @@ mod tests {
 		output: super::StructuralMergeOutput,
 	}
 
-	impl super::backend::StructuralMergeBackend for FixedStructuralBackend {
-		fn profile(&self) -> super::backend::StructuralBackendProfile {
-			super::backend::StructuralBackendProfile {
-				cache_label: "fixed-test",
+	impl crate::merge::backend::MergeBackend for FixedStructuralBackend {
+		fn descriptor(&self) -> crate::merge::backend::MergeBackendDescriptor {
+			crate::merge::backend::MergeBackendId::GumtreePcsNway.descriptor()
+		}
+
+		fn profile(&self) -> crate::merge::backend::BackendProfile {
+			crate::merge::backend::BackendProfile {
 				validate_semantic_units: false,
 				duplicate_definition_override: None,
 			}
 		}
 
-		fn merge_file(
+		fn analyze(
 			&self,
-			_target_path: &str,
-			_contributors: &[ResolvedFileContributor],
-			_context: super::StructuralMergeContext<'_>,
-			_interactive_handler: Option<
-				&mut (dyn crate::merge::conflict_handler::ConflictHandler + '_),
-			>,
-			_interactive_config_path: Option<&Path>,
-		) -> Result<super::StructuralMergeOutput, super::StructuralMergeFailure> {
-			Ok(self.output.clone())
-		}
-
-		fn merge_definition_module(
-			&self,
-			_target_path: &str,
-			_views: &crate::merge::planning::module_view::CrossFileModuleViews,
-			_context: super::StructuralMergeContext<'_>,
-			_interactive_handler: Option<
-				&mut (dyn crate::merge::conflict_handler::ConflictHandler + '_),
-			>,
-			_interactive_config_path: Option<&Path>,
-		) -> Result<super::StructuralMergeOutput, super::StructuralMergeFailure> {
-			panic!("ordinary structural regression must not use the module branch")
+			request: crate::merge::backend::BackendRequest<'_, '_>,
+		) -> crate::merge::backend::BackendOutcome {
+			match request.unit {
+				crate::merge::backend::BackendUnit::File(_) => Ok(self.output.clone()),
+				crate::merge::backend::BackendUnit::DefinitionModule(_) => {
+					panic!("ordinary structural regression must not use the module branch")
+				}
+			}
 		}
 	}
 
@@ -2469,8 +2454,8 @@ mod tests {
 		file_inventory.insert(path.to_string(), vec![contributor]);
 		ResolvedWorkspace {
 			playlist_path: PathBuf::from("playlist.json"),
-			playlist: Playlist {
-				game: Game::EuropaUniversalis4,
+			playlist: Playset {
+				game: Eu4,
 				name: "test".to_string(),
 				mods: Vec::new(),
 			},
@@ -2657,13 +2642,13 @@ mod tests {
 			force,
 			ignore_replace_path: false,
 			dep_overrides: Vec::new(),
-			resolution_map: foch_core::config::ResolutionMap::default(),
+			resolution_map: foch::project::ResolutionMap::default(),
 			emit_options: EmitOptions::default(),
 			frozen_external_files: BTreeMap::new(),
 			interactive_conflict_handler: None,
 			interactive_resolution_config_path: None,
 			provenance: false,
-			structural_backend: Box::new(super::backend::ReferenceStructuralBackend),
+			backend: Box::new(crate::merge::backend::AddressPatchBackend),
 			retained_paths: None,
 		}
 	}
@@ -2728,8 +2713,8 @@ mod tests {
 
 		ResolvedWorkspace {
 			playlist_path: test_root.join("playlist.json"),
-			playlist: Playlist {
-				game: Game::EuropaUniversalis4,
+			playlist: Playset {
+				game: Eu4,
 				name: "cross-file-noop".to_string(),
 				mods: Vec::new(),
 			},
@@ -2782,7 +2767,7 @@ mod tests {
 		let out_dir = test_root.join("out");
 		let mut options = no_base_options(false);
 		options.provenance = true;
-		options.structural_backend = Box::new(FixedStructuralBackend { output });
+		options.backend = Box::new(FixedStructuralBackend { output });
 		let report = materialize_prepared_merge_with_workspace_result(
 			request_for(&workspace.playlist_path),
 			&out_dir,

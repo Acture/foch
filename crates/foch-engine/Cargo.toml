@@ -14,7 +14,7 @@ rkyv.workspace = true
 dirs.workspace = true
 flate2.workspace = true
 globset.workspace = true
-foch-core = { path = "../foch-core" }
+foch = { path = "../.." }
 foch-cwt = { path = "../foch-cwt" }
 foch-language = { path = "../foch-language" }
 foch-merge-kernel = { path = "../foch-merge-kernel" }
@@ -40,5 +40,5 @@ libc = "0.2.186"
 
 [dev-dependencies]
 filetime = "0.2"
-foch-core = { path = "../foch-core", features = ["test-utils"] }
+foch = { path = "../..", features = ["test-utils"] }
 tempfile.workspace = true

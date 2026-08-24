@@ -1,5 +1,5 @@
-use foch_core::config::{ConfigError, FochConfig, ResolutionMap};
-use foch_core::model::{Finding, SemanticIndex, SymbolDefinition, SymbolKind};
+use foch::model::{Finding, SemanticIndex, SymbolDefinition, SymbolKind};
+use foch::project::{ConfigError, Project, ResolutionMap};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -39,7 +39,7 @@ impl WorkspaceSession {
 		file_paths: Vec<PathBuf>,
 		path_lookup: HashMap<String, PathBuf>,
 		findings: Vec<Finding>,
-		config: &FochConfig,
+		config: &Project,
 	) -> Result<Self, ConfigError> {
 		let resolution_map = ResolutionMap::from_entries(&config.resolutions)?;
 		Ok(Self::from_analysis_with_resolution_map(
@@ -91,14 +91,14 @@ mod tests {
 	use std::collections::HashMap;
 	use std::path::Path;
 
-	use foch_core::config::{FochConfig, ResolutionDecision};
-	use foch_core::model::SemanticIndex;
+	use foch::model::SemanticIndex;
+	use foch::project::{Project, ResolutionDecision};
 
 	use super::WorkspaceSession;
 
 	#[test]
 	fn workspace_session_loads_foch_toml_resolutions() {
-		let config = FochConfig::from_toml_str(
+		let config = Project::from_toml_str(
 			r#"
 [[resolutions]]
 file = "common/ideas/resolved.txt"

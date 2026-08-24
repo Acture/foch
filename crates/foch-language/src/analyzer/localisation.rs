@@ -1,4 +1,4 @@
-use foch_core::model::{LocalisationDefinition, LocalisationDuplicate, ParseIssue};
+use foch::model::{LocalisationDefinition, LocalisationDuplicate, ParseIssue};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;

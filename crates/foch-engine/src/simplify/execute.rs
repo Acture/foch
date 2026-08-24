@@ -5,7 +5,7 @@ use crate::emit::emit_clausewitz_statements;
 use crate::request::CheckRequest;
 use crate::runtime::{OverlapStatus, build_runtime_state_from_workspace};
 use crate::workspace::resolve_workspace;
-use foch_core::model::SymbolKind;
+use foch::model::SymbolKind;
 use foch_language::analyzer::parser::{AstStatement, AstValue};
 use foch_language::analyzer::semantic_index::parse_script_file;
 use std::collections::{BTreeMap, HashSet};

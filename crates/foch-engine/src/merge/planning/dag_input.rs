@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use foch_core::config::DepOverride;
+use foch::project::DepOverride;
 use foch_language::analyzer::parser::AstStatement;
 use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 

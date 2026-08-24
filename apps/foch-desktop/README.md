@@ -7,7 +7,7 @@ Launcher, base-data, and current-playset discovery belong to APP-002. Analysis c
 and merge state belong to APP-003 after the engine progress and complete-preview
 contracts exist.
 
-The Rust backend links `foch-engine` and `foch-core` directly. It must not spawn or
+The Rust backend links `foch-engine` and the root `foch` library directly. It must not spawn or
 bundle the `foch` CLI, read merge-quality JSONL as a product API, or add filesystem and
 shell capabilities without a task-specific requirement.
 

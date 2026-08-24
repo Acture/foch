@@ -1,4 +1,4 @@
-use foch_core::model::{
+use foch::model::{
 	CheckResult, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
 	MergeReportStatus, MergeReportValidation, Severity,
 };
@@ -270,7 +270,7 @@ fn duplicate_scripted_effect_creates_duplicate_scripted_effect() {
 		request_for(&playlist_path),
 		RunOptions {
 			include_game_base: false,
-			analysis_mode: foch_core::model::AnalysisMode::Basic,
+			analysis_mode: foch::model::AnalysisMode::Basic,
 			..RunOptions::default()
 		},
 	);
