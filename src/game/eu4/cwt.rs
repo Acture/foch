@@ -10,6 +10,8 @@ use crate::game::schema::query::{
 use crate::game::schema::{CwtSchema, CwtSource};
 use crate::model::{ScopeKind, ScopeType, base_scope};
 
+pub mod merge;
+
 const VENDORED_CWT_COMMIT: &str = "a85622d6f87970fbae7831598f13d29f7df9a762";
 
 struct SchemaCandidate {

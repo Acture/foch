@@ -1,67 +1,80 @@
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+//! High-level EU4 merge guidance derived from the active CWT schema.
+//!
+//! Callers provide only a file path and an AST address. The compiled CWT rule
+//! graph stays private to `foch` and is never exposed as part of the merge API.
 
-use foch::model::ConflictKind;
-use foch_cwt::{
-	CompiledRoot, CompiledRuleField, CompiledRuleValue, RuleContext, RuleEngine, SchemaBinding,
-	SchemaSource, default_compiled_rule_cache_dir, load_rule_engine_from_dir,
+use std::path::Path;
+
+use crate::game::eu4::content::BlockMergePolicy;
+use crate::game::schema::query::{
+	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery, RuleContext, SchemaBinding,
 };
-use foch_language::analyzer::content_family::{BlockMergePolicy, GameId, GameProfile};
+use crate::model::ConflictKind;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CwtMergeSuggestion {
-	pub suggested_identity_source: Option<CwtMergeIdentity>,
+pub struct SchemaMergeSuggestion {
+	pub suggested_identity_source: Option<SchemaMergeIdentity>,
 	pub suggested_block_policy: Option<BlockMergePolicy>,
 	pub schema_provenance: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CwtMergeIdentity {
+pub enum SchemaMergeIdentity {
 	AssignmentKey,
 	FieldValue(String),
 }
 
-pub(crate) fn cwt_rule_engine_for_profile(profile: &dyn GameProfile) -> Option<Arc<RuleEngine>> {
-	match profile.game_id() {
-		GameId::Eu4 => eu4_cwt_rule_engine(),
-	}
+/// Suggests schema-backed merge identity and block policy for an EU4 AST path.
+pub fn suggest_for_conflict(file_path: &Path, ast_path: &[&str]) -> Option<SchemaMergeSuggestion> {
+	let schema = super::rule_engine()?;
+	suggest_for_conflict_with_query(schema, file_path, ast_path)
 }
 
-pub fn suggest_for_conflict(
-	engine: &RuleEngine,
+/// Classifies an unresolved EU4 merge conflict using schema evidence.
+pub fn classify_conflict_kind(
 	file_path: &Path,
 	ast_path: &[&str],
-) -> Option<CwtMergeSuggestion> {
-	let SchemaBinding::Bound { type_id, .. } = engine.bind_chain(file_path, ast_path) else {
+	reason: &str,
+) -> Option<ConflictKind> {
+	let schema = super::rule_engine()?;
+	classify_conflict_kind_with_query(schema, file_path, ast_path, reason)
+}
+
+fn suggest_for_conflict_with_query(
+	schema: &CwtQuery,
+	file_path: &Path,
+	ast_path: &[&str],
+) -> Option<SchemaMergeSuggestion> {
+	let SchemaBinding::Bound { type_id, .. } = schema.bind_chain(file_path, ast_path) else {
 		return None;
 	};
-	let definition = engine.root(type_id.as_str())?;
-	Some(CwtMergeSuggestion {
+	let definition = schema.root(type_id.as_str())?;
+	Some(SchemaMergeSuggestion {
 		suggested_identity_source: Some(match &definition.name_field {
-			Some(field) => CwtMergeIdentity::FieldValue(field.clone()),
-			None => CwtMergeIdentity::AssignmentKey,
+			Some(field) => SchemaMergeIdentity::FieldValue(field.clone()),
+			None => SchemaMergeIdentity::AssignmentKey,
 		}),
-		suggested_block_policy: rule_field_for_path(engine, file_path, ast_path)
+		suggested_block_policy: rule_field_for_path(schema, file_path, ast_path)
 			.and_then(|field| block_policy_for_value(&field.value)),
 		schema_provenance: format!("{}:<{}>", path_namespace(file_path), type_id.as_str()),
 	})
 }
 
-pub(crate) fn classify_conflict_kind(
-	engine: &RuleEngine,
+fn classify_conflict_kind_with_query(
+	schema: &CwtQuery,
 	file_path: &Path,
 	ast_path: &[&str],
 	reason: &str,
 ) -> Option<ConflictKind> {
 	if reason.contains("deep merge of replaced block has ")
 		&& !matches!(
-			engine.root_binding(file_path),
+			schema.root_binding(file_path),
 			SchemaBinding::Unbound { .. }
 		) {
 		return Some(ConflictKind::DeepMergeable);
 	}
 
-	let rule_fields = conflict_rule_fields_for_path(engine, file_path, ast_path);
+	let rule_fields = conflict_rule_fields_for_path(schema, file_path, ast_path);
 	let has_single_cardinality_match = rule_fields.iter().any(|field| {
 		field
 			.attributes
@@ -83,7 +96,7 @@ pub(crate) fn classify_conflict_kind(
 	if reason.starts_with("policy:")
 		&& ast_path.len() > 1
 		&& !matches!(
-			engine.root_binding(file_path),
+			schema.root_binding(file_path),
 			SchemaBinding::Unbound { .. }
 		) {
 		return Some(ConflictKind::DeepMergeable);
@@ -91,7 +104,7 @@ pub(crate) fn classify_conflict_kind(
 
 	if (reason.contains("sibling mods inserted divergent statements at the same key")
 		|| reason.contains("multiple mods replace the same block with different content"))
-		&& (root_name_field(engine, file_path).is_some()
+		&& (root_name_field(schema, file_path).is_some()
 			|| (!rule_fields.is_empty()
 				&& rule_fields
 					.iter()
@@ -103,49 +116,12 @@ pub(crate) fn classify_conflict_kind(
 	None
 }
 
-fn eu4_cwt_rule_engine() -> Option<Arc<RuleEngine>> {
-	static EU4_CWT_RULE_ENGINE: OnceLock<Option<Arc<RuleEngine>>> = OnceLock::new();
-	EU4_CWT_RULE_ENGINE
-		.get_or_init(load_eu4_cwt_rule_engine)
-		.clone()
-}
-
-fn load_eu4_cwt_rule_engine() -> Option<Arc<RuleEngine>> {
-	let root = cwt_schema_search_roots()
-		.into_iter()
-		.find(|root| root.is_dir())?;
-	let cache_dir = default_compiled_rule_cache_dir();
-	load_rule_engine_from_dir(
-		&root,
-		SchemaSource::UserProvided { path: root.clone() },
-		Some(&cache_dir),
-	)
-	.ok()
-	.map(|load| load.engine)
-}
-
-fn cwt_schema_search_roots() -> Vec<PathBuf> {
-	let mut roots = std::env::var_os("FOCH_CWTOOLS_SCHEMA_DIR")
-		.map(PathBuf::from)
-		.into_iter()
-		.collect::<Vec<_>>();
-	let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-		.parent()
-		.expect("crates dir")
-		.parent()
-		.expect("workspace root")
-		.to_path_buf();
-	roots.push(workspace_root.join("vendor").join("cwtools-eu4-config"));
-	roots.push(workspace_root.join("output").join("cwtools-eu4-config"));
-	roots
-}
-
-fn conflict_rule_fields_for_path<'e>(
-	engine: &'e RuleEngine,
+fn conflict_rule_fields_for_path<'schema>(
+	schema: &'schema CwtQuery,
 	file_path: &Path,
 	ast_path: &[&str],
-) -> Vec<&'e CompiledRuleField> {
-	let Some(root) = engine.bind_root(file_path) else {
+) -> Vec<&'schema CompiledRuleField> {
+	let Some(root) = schema.bind_root(file_path) else {
 		return Vec::new();
 	};
 	let mut matches = fields_for_segments(root, ast_path);
@@ -157,10 +133,10 @@ fn conflict_rule_fields_for_path<'e>(
 	matches
 }
 
-fn fields_for_segments<'e>(
-	root: &'e CompiledRoot,
+fn fields_for_segments<'schema>(
+	root: &'schema CompiledRoot,
 	ast_path: &[&str],
-) -> Vec<&'e CompiledRuleField> {
+) -> Vec<&'schema CompiledRuleField> {
 	if ast_path.is_empty() {
 		return Vec::new();
 	}
@@ -193,15 +169,15 @@ fn fields_for_segments<'e>(
 	last_matches
 }
 
-fn rule_field_for_path<'e>(
-	engine: &'e RuleEngine,
+fn rule_field_for_path<'schema>(
+	schema: &'schema CwtQuery,
 	file_path: &Path,
 	ast_path: &[&str],
-) -> Option<&'e CompiledRuleField> {
-	let mut context = RuleContext::RootType(engine.bind_root(file_path)?);
+) -> Option<&'schema CompiledRuleField> {
+	let mut context = RuleContext::RootType(schema.bind_root(file_path)?);
 	let mut last_field = None;
 	for (index, segment) in ast_path.iter().enumerate() {
-		let field = engine.bind_field(context, segment)?;
+		let field = schema.bind_field(context, segment)?;
 		last_field = Some(field);
 		if index + 1 == ast_path.len() {
 			break;
@@ -214,8 +190,8 @@ fn rule_field_for_path<'e>(
 	last_field
 }
 
-fn root_name_field<'e>(engine: &'e RuleEngine, file_path: &Path) -> Option<&'e str> {
-	engine.bind_root(file_path)?.name_field.as_deref()
+fn root_name_field<'schema>(schema: &'schema CwtQuery, file_path: &Path) -> Option<&'schema str> {
+	schema.bind_root(file_path)?.name_field.as_deref()
 }
 
 fn block_policy_for_value(value: &CompiledRuleValue) -> Option<BlockMergePolicy> {
@@ -241,18 +217,52 @@ fn path_namespace(file_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-	use std::path::{Path, PathBuf};
+	use std::fs;
+
+	use tempfile::TempDir;
 
 	use super::*;
+	use crate::game::schema::{CwtSchema, CwtSource};
+
+	const EVENT_SCHEMA: &str = r#"
+		types = {
+			type[event] = {
+				path = "game/events"
+				name_field = "id"
+				## type_key_filter = country_event
+				subtype[country] = {}
+			}
+		}
+
+		event = {
+			trigger = { alias_name[trigger] = alias_match_left[trigger] }
+			immediate = { alias_name[effect] = alias_match_left[effect] }
+			option = { name = scalar }
+		}
+	"#;
+
+	const BINDING_SCHEMA: &str = r#"
+		types = {
+			type[mission] = { path = "game/missions" }
+		}
+
+		mission = {
+			## cardinality = 0..1
+			provinces_to_highlight = {
+				alias_name[trigger] = alias_match_left[trigger]
+			}
+		}
+	"#;
 
 	#[test]
 	fn suggests_field_value_identity_from_name_field() {
-		let engine = schema_pack_engine("events");
-		let suggestion = suggest_for_conflict(&engine, Path::new("events/example.txt"), &[])
-			.expect("suggestion");
+		let schema = test_schema(EVENT_SCHEMA);
+		let suggestion =
+			suggest_for_conflict_with_query(schema.facts(), Path::new("events/example.txt"), &[])
+				.expect("suggestion");
 		assert_eq!(
 			suggestion.suggested_identity_source,
-			Some(CwtMergeIdentity::FieldValue("id".to_string()))
+			Some(SchemaMergeIdentity::FieldValue("id".to_string()))
 		);
 		assert_eq!(suggestion.suggested_block_policy, None);
 		assert_eq!(suggestion.schema_provenance, "events:<event>");
@@ -260,23 +270,26 @@ mod tests {
 
 	#[test]
 	fn suggests_assignment_key_when_schema_has_no_name_field() {
-		let engine = binding_engine();
-		let suggestion =
-			suggest_for_conflict(&engine, Path::new("missions/example.txt"), &["my_mission"])
-				.expect("suggestion");
+		let schema = test_schema(BINDING_SCHEMA);
+		let suggestion = suggest_for_conflict_with_query(
+			schema.facts(),
+			Path::new("missions/example.txt"),
+			&["my_mission"],
+		)
+		.expect("suggestion");
 		assert_eq!(
 			suggestion.suggested_identity_source,
-			Some(CwtMergeIdentity::AssignmentKey)
+			Some(SchemaMergeIdentity::AssignmentKey)
 		);
 		assert_eq!(suggestion.schema_provenance, "missions:<mission>");
 	}
 
 	#[test]
 	fn classifies_root_name_field_conflicts_as_deep_mergeable() {
-		let engine = schema_pack_engine("events");
+		let schema = test_schema(EVENT_SCHEMA);
 		assert_eq!(
-			classify_conflict_kind(
-				&engine,
+			classify_conflict_kind_with_query(
+				schema.facts(),
 				Path::new("events/example.txt"),
 				&["country_event"],
 				"sibling mods inserted divergent statements at the same key"
@@ -287,10 +300,10 @@ mod tests {
 
 	#[test]
 	fn classifies_tree_policy_conflicts_below_bound_roots_as_deep_mergeable() {
-		let engine = schema_pack_engine("events");
+		let schema = test_schema(EVENT_SCHEMA);
 		assert_eq!(
-			classify_conflict_kind(
-				&engine,
+			classify_conflict_kind_with_query(
+				schema.facts(),
 				Path::new("events/example.txt"),
 				&["country_event", "immediate"],
 				"policy: divergent block revisions remain unresolved"
@@ -301,10 +314,10 @@ mod tests {
 
 	#[test]
 	fn classifies_single_cardinality_fields_as_schema_cardinality_violations() {
-		let engine = binding_engine();
+		let schema = test_schema(BINDING_SCHEMA);
 		assert_eq!(
-			classify_conflict_kind(
-				&engine,
+			classify_conflict_kind_with_query(
+				schema.facts(),
 				Path::new("missions/example.txt"),
 				&["provinces_to_highlight"],
 				"sibling mods inserted divergent statements at the same key"
@@ -316,10 +329,8 @@ mod tests {
 	#[test]
 	#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 	fn classifies_vendor_country_history_cardinality_conflict() {
-		let engine = eu4_cwt_rule_engine().expect("eu4 vendor rules");
 		assert_eq!(
 			classify_conflict_kind(
-				&engine,
 				Path::new("history/countries/TES - Test.txt"),
 				&["government_rank"],
 				"sibling mods inserted divergent statements at the same key"
@@ -331,10 +342,8 @@ mod tests {
 	#[test]
 	#[ignore = "requires vendor/cwtools-eu4-config, output/cwtools-eu4-config, or FOCH_CWTOOLS_SCHEMA_DIR"]
 	fn classifies_vendor_recursive_block_conflict_as_deep_mergeable() {
-		let engine = eu4_cwt_rule_engine().expect("eu4 vendor rules");
 		assert_eq!(
 			classify_conflict_kind(
-				&engine,
 				Path::new("common/government_reforms/test.txt"),
 				&["test_reform"],
 				"deep merge of replaced block has 1 unresolved sub-conflict(s)"
@@ -345,35 +354,27 @@ mod tests {
 
 	#[test]
 	fn returns_none_for_unbound_schema_path() {
-		let engine = schema_pack_engine("events");
+		let schema = test_schema(EVENT_SCHEMA);
 		assert!(
-			suggest_for_conflict(&engine, Path::new("events/example.txt"), &["missing"]).is_none()
+			suggest_for_conflict_with_query(
+				schema.facts(),
+				Path::new("events/example.txt"),
+				&["missing"]
+			)
+			.is_none()
 		);
 	}
 
-	fn schema_pack_engine(name: &str) -> RuleEngine {
-		let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-			.parent()
-			.expect("crates dir")
-			.join("foch-cwt")
-			.join("tests")
-			.join("fixtures")
-			.join("schema-pack")
-			.join(name);
-		let graph =
-			foch_cwt::CwtSchemaGraph::from_directory(&root).expect("load schema-pack graph");
-		RuleEngine::from_graph(&graph)
-	}
-
-	fn binding_engine() -> RuleEngine {
-		let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-			.parent()
-			.expect("crates dir")
-			.join("foch-cwt")
-			.join("tests")
-			.join("fixtures")
-			.join("binding");
-		let graph = foch_cwt::CwtSchemaGraph::from_directory(&root).expect("load binding graph");
-		RuleEngine::from_graph(&graph)
+	fn test_schema(source: &str) -> CwtSchema {
+		let root = TempDir::new().expect("create merge schema directory");
+		fs::write(root.path().join("merge.cwt"), source).expect("write merge schema");
+		CwtSchema::load_with_cache(
+			root.path(),
+			CwtSource::UserProvided {
+				path: root.path().to_path_buf(),
+			},
+			None,
+		)
+		.expect("load merge schema")
 	}
 }

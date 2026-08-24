@@ -3,13 +3,11 @@ use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use foch::model::HandlerResolutionRecord;
 use foch::project::{
 	DepOverride, ResolutionDecision, ResolutionEntry, ResolutionMap, compute_conflict_id,
 };
-use foch_cwt::RuleEngine;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 use crate::merge::conflict_view::ConflictView;
@@ -416,7 +414,6 @@ impl<'a> ConflictHandler for PriorityBoostResolutionHandler<'a> {
 pub struct LookupHandler<'a> {
 	pub map: &'a ResolutionMap,
 	pub _current_file: PathBuf,
-	cwt_rule_engine: Option<Arc<RuleEngine>>,
 	current_conflict_index: usize,
 	total_conflicts: usize,
 }
@@ -424,19 +421,17 @@ pub struct LookupHandler<'a> {
 impl<'a> LookupHandler<'a> {
 	#[cfg(test)]
 	pub(crate) fn new(map: &'a ResolutionMap, file: PathBuf) -> Self {
-		Self::with_display_names(map, file, HashMap::new(), None)
+		Self::with_display_names(map, file, HashMap::new())
 	}
 
 	pub(crate) fn with_display_names(
 		map: &'a ResolutionMap,
 		file: PathBuf,
 		_mod_displayname_lookup: HashMap<String, String>,
-		cwt_rule_engine: Option<Arc<RuleEngine>>,
 	) -> Self {
 		Self {
 			map,
 			_current_file: file,
-			cwt_rule_engine,
 			current_conflict_index: 1,
 			total_conflicts: 1,
 		}
@@ -509,7 +504,6 @@ impl<'a> LookupHandler<'a> {
 			}
 			None => {
 				log_cwt_suggestion_on_miss(
-					self.cwt_rule_engine.as_deref(),
 					self.lookup_file(view),
 					&view.address_path,
 					&view.address_key,
@@ -520,22 +514,14 @@ impl<'a> LookupHandler<'a> {
 	}
 }
 
-fn log_cwt_suggestion_on_miss(
-	engine: Option<&RuleEngine>,
-	current_file: &Path,
-	address_path: &[String],
-	address_key: &str,
-) {
-	let Some(engine) = engine else {
-		return;
-	};
+fn log_cwt_suggestion_on_miss(current_file: &Path, address_path: &[String], address_key: &str) {
 	let ast_path = if address_path.is_empty() {
 		vec![address_key]
 	} else {
 		address_path.iter().map(String::as_str).collect::<Vec<_>>()
 	};
 	let Some(suggestion) =
-		crate::merge::cwt_suggestions::suggest_for_conflict(engine, current_file, &ast_path)
+		foch::game::eu4::cwt::merge::suggest_for_conflict(current_file, &ast_path)
 	else {
 		return;
 	};

@@ -38,6 +38,9 @@ use crate::workspace::{
 	resolve_workspace,
 };
 use cross_file_dedup::{CrossFilePruneResult, prune_cross_file_noop_duplicates};
+use foch::game::eu4::Eu4;
+use foch::game::eu4::analysis::rules::{detect_dependency_misuse, detect_version_mismatch};
+use foch::game::eu4::content::{ContentFamilyDescriptor, ContentLoadPolicy, MergeKeySource, eu4};
 use foch::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, HandlerResolutionRecord,
 	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult,
@@ -45,12 +48,6 @@ use foch::model::{
 	MergeReportStatus, MergeTraceEntry, SemanticIndex, StaleVanillaTargetDescriptor,
 };
 use foch::project::{AppliedDepOverride, DepOverride, ResolutionMap};
-use foch_cwt::RuleEngine;
-use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, MergeKeySource,
-};
-use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::rules::{detect_dependency_misuse, detect_version_mismatch};
 #[cfg(test)]
 use io::StructuralOutputMaterialization;
 use io::{
@@ -66,7 +63,6 @@ use std::fs;
 use std::io::IsTerminal;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub(crate) struct MergeMaterializeOptions {
@@ -159,7 +155,7 @@ pub(crate) fn prepare_merge_plan(
 ) -> MergePlanResult {
 	if let Ok(workspace) = workspace_result {
 		apply_mod_priority_boosts(workspace, &resolution_map.mod_priority_boost);
-		prune_noop_script_contributors(workspace, eu4_profile());
+		prune_noop_script_contributors(workspace, eu4());
 	}
 
 	stage_log_with("build_merge_plan", || {
@@ -268,7 +264,7 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 	} = output;
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
-	let profile = eu4_profile();
+	let profile = eu4();
 	report.unsupported_input_count = plan.strategies.manual_conflict;
 	report.definition_module_count = plan
 		.paths
@@ -480,8 +476,6 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 							let target = entry.output_path().to_string();
 							let contribs = contributors.clone();
 							let desc = descriptor.clone();
-							let cwt_rule_engine =
-								crate::merge::cwt_suggestions::cwt_rule_engine_for_profile(profile);
 							let dag = mod_dag.clone();
 							let ignore = ignore_replace_path.clone();
 							let dep_overrides = dep_overrides.clone();
@@ -496,7 +490,6 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 								std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 									let context = StructuralMergeContext {
 										descriptor: &desc,
-										cwt_rule_engine: cwt_rule_engine.clone(),
 										merge_key_source,
 										gui_scroll_merge: options.gui_scroll_merge,
 										mod_dag: &dag,
@@ -867,7 +860,7 @@ struct CrossFileModuleMaterializeContext<'a> {
 	report: &'a mut MergeReport,
 	generated_paths: &'a mut BTreeSet<String>,
 	counted_generated_paths: &'a mut BTreeSet<String>,
-	profile: &'a dyn GameProfile,
+	profile: &'a Eu4,
 	mod_dag: &'a ModDag,
 	ignore_replace_path: &'a IgnoreReplacePath,
 	dep_overrides: &'a [DepOverride],
@@ -955,12 +948,10 @@ fn materialize_cross_file_module(
 			);
 		}
 	};
-	let cwt_rule_engine = crate::merge::cwt_suggestions::cwt_rule_engine_for_profile(profile);
 	let backend = &*options.backend;
 	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
 		let merge_context = StructuralMergeContext {
 			descriptor,
-			cwt_rule_engine,
 			merge_key_source,
 			gui_scroll_merge: options.gui_scroll_merge,
 			mod_dag,
@@ -1298,7 +1289,7 @@ fn build_surviving_output_manifest(
 	out_dir: &Path,
 	pending_copy_through: &[MergePlanEntry],
 	generated_paths: BTreeSet<String>,
-	profile: &dyn GameProfile,
+	profile: &Eu4,
 	report: &mut MergeReport,
 ) -> Result<CrossFilePruneResult, MergeError> {
 	flush_pending_copy_through(workspace, out_dir, pending_copy_through)?;
@@ -1505,7 +1496,7 @@ fn validate_structured_merge_entry(
 	entry: &MergePlanEntry,
 	contributors: Option<&[ResolvedFileContributor]>,
 	vanilla_base_mode: VanillaBaseMode,
-	profile: &dyn GameProfile,
+	profile: &Eu4,
 ) -> Result<(), MergeError> {
 	let descriptor = profile
 		.classify_content_family(Path::new(entry.output_path()))
@@ -1864,7 +1855,6 @@ struct DepMisuseRemoveCount {
 #[derive(Clone)]
 pub(crate) struct StructuralMergeContext<'a> {
 	descriptor: &'a ContentFamilyDescriptor,
-	cwt_rule_engine: Option<Arc<RuleEngine>>,
 	merge_key_source: MergeKeySource,
 	gui_scroll_merge: bool,
 	mod_dag: &'a ModDag,
@@ -1985,6 +1975,8 @@ mod tests {
 		WorkspaceResolveErrorKind,
 	};
 	use foch::game::eu4::Eu4;
+	use foch::game::eu4::content::{ContentFamilyDescriptor, MergeKeySource, eu4};
+	use foch::game::eu4::script::parser::{AstStatement, parse_clausewitz_content};
 	use foch::model::{
 		DeferredUnitReason, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
 		MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor,
@@ -1993,10 +1985,6 @@ mod tests {
 	};
 	use foch::playset::Playset;
 	use foch::project::{ResolutionDecision, ResolutionMap};
-	use foch_language::analyzer::content_family::{
-		ContentFamilyDescriptor, GameProfile, MergeKeySource,
-	};
-	use foch_language::analyzer::parser::{AstStatement, parse_clausewitz_content};
 	use serde_json::json;
 	use std::cell::Cell;
 	use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -2232,13 +2220,8 @@ mod tests {
 
 		super::validate_structured_plan_selection(&plan, Some(&retained))
 			.expect("select definition module");
-		super::validate_structured_merge_entry(
-			&entry,
-			None,
-			VanillaBaseMode::Required,
-			foch_language::analyzer::eu4_profile::eu4_profile(),
-		)
-		.expect("validate definition module");
+		super::validate_structured_merge_entry(&entry, None, VanillaBaseMode::Required, eu4())
+			.expect("validate definition module");
 	}
 
 	#[test]
@@ -2278,13 +2261,9 @@ mod tests {
 	fn structured_definition_module_requires_a_vanilla_base() {
 		let entry = structured_definition_module_entry(false);
 
-		let error = super::validate_structured_merge_entry(
-			&entry,
-			None,
-			VanillaBaseMode::Required,
-			foch_language::analyzer::eu4_profile::eu4_profile(),
-		)
-		.expect_err("module without vanilla must be rejected");
+		let error =
+			super::validate_structured_merge_entry(&entry, None, VanillaBaseMode::Required, eu4())
+				.expect_err("module without vanilla must be rejected");
 
 		assert!(error.to_string().contains("vanilla definition module"));
 	}
@@ -2297,14 +2276,14 @@ mod tests {
 			&entry,
 			None,
 			VanillaBaseMode::ExplicitlyDisabled,
-			foch_language::analyzer::eu4_profile::eu4_profile(),
+			eu4(),
 		)
 		.expect("explicit empty base is allowed");
 	}
 
 	#[test]
 	fn supported_file_families_treat_verified_missing_vanilla_as_known_absent() {
-		let profile = foch_language::analyzer::eu4_profile::eu4_profile();
+		let profile = eu4();
 		let defines = profile.classify_content_family(Path::new("common/defines/es_defines.lua"));
 		let events = profile.classify_content_family(Path::new("events/test.txt"));
 		let gfx =
@@ -2927,7 +2906,7 @@ mod tests {
 			out_dir,
 			generated_paths,
 			workspace,
-			foch_language::analyzer::eu4_profile::eu4_profile(),
+			eu4(),
 			&mut report,
 		)
 		.expect("cross-file noop prune succeeds");
@@ -3010,7 +2989,7 @@ mod tests {
 			&out_dir,
 			&pending_copy_through,
 			BTreeSet::from([generated_path.to_string()]),
-			foch_language::analyzer::eu4_profile::eu4_profile(),
+			eu4(),
 			&mut report,
 		)
 		.expect("flush pending winner before cross-file pruning");
@@ -3128,7 +3107,7 @@ mod tests {
 			temp.path(),
 			BTreeSet::from([dropped_path.to_string(), kept_path.to_string()]),
 			&workspace,
-			foch_language::analyzer::eu4_profile::eu4_profile(),
+			eu4(),
 			&mut report,
 		)
 		.expect("prune covered replacement module output");

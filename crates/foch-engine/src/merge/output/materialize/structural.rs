@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch::model::{HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor};
-use foch_language::analyzer::content_family::{
+use foch::game::eu4::content::{
 	ContentFamilyDescriptor, ContentLoadPolicy, MergePolicies, NamedContainerPolicy,
 };
-use foch_language::analyzer::parser::{AstFile, AstStatement, Span, SpanRange};
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstFile, AstStatement, Span, SpanRange};
+use foch::model::{HandlerResolutionRecord, LeafConflictDetail, MergeReportConflictContributor};
 
 use super::per_entry_noop::drop_per_entry_noop_duplicates;
 use super::provenance_tooltip::materialize_condition_provenance_tooltips;
@@ -17,7 +18,6 @@ use super::{
 	StructuralConflictReport, StructuralMergeContext, StructuralMergeFailure, StructuralMergeOutput,
 };
 use crate::emit::{EmitOptions, EmitOrdering, emit_clausewitz_statements_with_options};
-use crate::merge::cwt_suggestions::classify_conflict_kind;
 use crate::merge::model::{
 	ExternalFileResolution, MergeOutputDirective, SemanticMergeComputation, SemanticMergeConflict,
 };
@@ -26,7 +26,7 @@ use crate::merge::structured::{
 	semantic_conflict_view,
 };
 use crate::workspace::ResolvedFileContributor;
-use foch_cwt::RuleEngine;
+use foch::game::eu4::cwt::merge::classify_conflict_kind;
 
 use super::super::super::conflict_handler::{
 	ChainHandler, ConflictHandler, DeferHandler, DepImpliesResolutionHandler, LookupHandler,
@@ -46,7 +46,6 @@ fn leaf_conflicts_for_semantic(
 	target_path: &str,
 	conflicts: &[SemanticMergeConflict],
 	mod_versions: &HashMap<String, String>,
-	cwt_rule_engine: Option<&RuleEngine>,
 ) -> Vec<LeafConflictDetail> {
 	conflicts
 		.iter()
@@ -78,14 +77,7 @@ fn leaf_conflicts_for_semantic(
 				address_path: joined_path.clone(),
 				address_key: address_key.clone(),
 				conflict_id: semantic_conflict_id(Path::new(target_path), conflict.conflict.id),
-				kind: cwt_rule_engine.and_then(|engine| {
-					classify_conflict_kind(
-						engine,
-						Path::new(target_path),
-						&ast_path,
-						&conflict.reason,
-					)
-				}),
+				kind: classify_conflict_kind(Path::new(target_path), &ast_path, &conflict.reason),
 				contributors,
 			}
 		})
@@ -172,7 +164,7 @@ fn finish_semantic_structural_merge<F>(
 	target_path: &str,
 	contributors: &[ResolvedFileContributor],
 	context: StructuralMergeContext<'_>,
-	vanilla: Option<foch_language::analyzer::semantic_index::ParsedScriptFile>,
+	vanilla: Option<ParsedScriptFile>,
 	mut interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
 	interactive_config_path: Option<&Path>,
 	mut run_engine: F,
@@ -255,7 +247,6 @@ where
 					target_path,
 					&dag_merge.semantic.unresolved_conflicts,
 					context.mod_versions,
-					context.cwt_rule_engine.as_deref(),
 				),
 				handler_resolutions: dag_merge.semantic.handler_resolutions.clone(),
 			},
@@ -386,7 +377,7 @@ fn preserves_complete_tree_module(descriptor: &ContentFamilyDescriptor) -> bool 
 
 fn emit_options_for_descriptor(
 	options: &EmitOptions,
-	descriptor: &foch_language::analyzer::content_family::ContentFamilyDescriptor,
+	descriptor: &ContentFamilyDescriptor,
 ) -> EmitOptions {
 	let ordering = if descriptor_preserves_sibling_order(descriptor) {
 		EmitOrdering::Preserve
@@ -396,9 +387,7 @@ fn emit_options_for_descriptor(
 	options.clone().with_ordering(ordering)
 }
 
-fn descriptor_preserves_sibling_order(
-	descriptor: &foch_language::analyzer::content_family::ContentFamilyDescriptor,
-) -> bool {
+fn descriptor_preserves_sibling_order(descriptor: &ContentFamilyDescriptor) -> bool {
 	matches!(
 		descriptor.id.as_str(),
 		"interface" | "common/interface" | "gfx"
@@ -510,7 +499,6 @@ fn automatic_conflict_handler<'a>(
 			resolution_map,
 			PathBuf::from(target_path),
 			(*context.mod_display_names).clone(),
-			context.cwt_rule_engine.clone(),
 		),
 		second: ChainHandler {
 			first: PriorityBoostResolutionHandler::new(
@@ -550,11 +538,10 @@ mod tests {
 	use std::fs;
 	use std::time::{SystemTime, UNIX_EPOCH};
 
+	use foch::game::eu4::content::{MergePolicies, eu4};
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use foch::merge::kernel::RevisionId;
 	use foch::project::{Project, ResolutionMap};
-	use foch_language::analyzer::content_family::{GameProfile, MergePolicies};
-	use foch_language::analyzer::eu4_profile::eu4_profile;
-	use foch_language::analyzer::parser::parse_clausewitz_content;
 
 	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 	use crate::merge::model::{SemanticConflictCandidate, SemanticMergeConflict};
@@ -580,12 +567,12 @@ mod tests {
 
 	#[test]
 	fn structured_definition_modules_keep_the_complete_resolved_output() {
-		let module = eu4_profile()
+		let module = eu4()
 			.classify_content_family(Path::new(
 				"common/scripted_triggers/zzz_foch_scripted_triggers.txt",
 			))
 			.expect("scripted triggers descriptor");
-		let event = eu4_profile()
+		let event = eu4()
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events descriptor");
 
@@ -636,12 +623,7 @@ mod tests {
 			.iter()
 			.zip(&conflicts)
 			.flat_map(|(target, conflict)| {
-				leaf_conflicts_for_semantic(
-					target,
-					std::slice::from_ref(conflict),
-					&HashMap::new(),
-					None,
-				)
+				leaf_conflicts_for_semantic(target, std::slice::from_ref(conflict), &HashMap::new())
 			})
 			.collect::<Vec<_>>();
 		assert_eq!(

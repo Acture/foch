@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use foch::game::eu4::cwt::merge::classify_conflict_kind;
+use foch::game::eu4::script::ParsedScriptFile;
 use foch::model::{LeafConflictDetail, MergeReportConflictContributor};
 use foch::project::{ResolutionMap, compute_conflict_id};
-use foch_cwt::RuleEngine;
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use super::super::{
 	StructuralConflictReport, StructuralMergeContext, StructuralMergeFailure,
@@ -24,7 +24,6 @@ use crate::merge::address_patch::dag_merge::{
 use crate::merge::address_patch::patch_merge::{
 	AttributedPatch, PatchConflict, PatchMergeResult, PatchResolution,
 };
-use crate::merge::cwt_suggestions::classify_conflict_kind;
 use crate::merge::error::MergeError;
 use crate::merge::planning::dag_input::{
 	DagMergeInputRequest, merge_ancestor_statements, template_for,
@@ -134,7 +133,6 @@ where
 			target_path,
 			&dag_merge.merge_result,
 			context.mod_versions,
-			context.cwt_rule_engine.as_deref(),
 		)));
 	}
 
@@ -292,7 +290,6 @@ pub(super) fn unresolved_report(
 	target_path: &str,
 	merge_result: &PatchMergeResult,
 	mod_versions: &HashMap<String, String>,
-	cwt_rule_engine: Option<&RuleEngine>,
 ) -> StructuralConflictReport {
 	let conflict_keys = merge_result
 		.conflicts
@@ -310,12 +307,7 @@ pub(super) fn unresolved_report(
 			conflict_keys.len(),
 			conflict_keys.join("; "),
 		),
-		leaf_conflicts: leaf_conflicts(
-			target_path,
-			&merge_result.conflicts,
-			mod_versions,
-			cwt_rule_engine,
-		),
+		leaf_conflicts: leaf_conflicts(target_path, &merge_result.conflicts, mod_versions),
 		handler_resolutions: merge_result.handler_resolutions.clone(),
 	}
 }
@@ -324,7 +316,6 @@ fn leaf_conflicts(
 	target_path: &str,
 	conflicts: &[PatchResolution],
 	mod_versions: &HashMap<String, String>,
-	cwt_rule_engine: Option<&RuleEngine>,
 ) -> Vec<LeafConflictDetail> {
 	conflicts
 		.iter()
@@ -344,9 +335,7 @@ fn leaf_conflicts(
 						&address_path,
 						&address.key,
 					),
-					kind: cwt_rule_engine.and_then(|engine| {
-						classify_conflict_kind(engine, Path::new(target_path), &ast_path, reason)
-					}),
+					kind: classify_conflict_kind(Path::new(target_path), &ast_path, reason),
 					contributors: leaf_conflict_contributors(patches, mod_versions),
 				})
 			}
