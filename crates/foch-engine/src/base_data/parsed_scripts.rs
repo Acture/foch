@@ -1,3 +1,5 @@
+//! Codec for parsed Clausewitz documents embedded in base-data snapshots.
+
 use foch::model::ParseIssue;
 use foch_language::analyzer::content_family::{CwtType, GameProfile};
 use foch_language::analyzer::eu4_profile::eu4_profile;

@@ -47,23 +47,13 @@ struct StoredModDiff {
 impl ModDiffCache {
 	pub fn open(cache_dir: &Path) -> Self {
 		let root = generation_dir(cache_dir, MOD_DIFF_CACHE_VERSION);
-		match prepare_generation(cache_dir, MOD_DIFF_CACHE_VERSION) {
-			Ok(removed_items) if removed_items > 0 => {
-				tracing::info!(
-					cache_version = MOD_DIFF_CACHE_VERSION,
-					removed_items,
-					"removed obsolete mod-diff cache generations"
-				);
-			}
-			Err(error) => {
-				tracing::warn!(
-					cache_dir = %cache_dir.display(),
-					cache_version = MOD_DIFF_CACHE_VERSION,
-					%error,
-					"failed to prepare mod-diff cache generation"
-				);
-			}
-			Ok(_) => {}
+		if let Err(error) = prepare_generation(cache_dir, MOD_DIFF_CACHE_VERSION) {
+			tracing::warn!(
+				cache_dir = %cache_dir.display(),
+				cache_version = MOD_DIFF_CACHE_VERSION,
+				%error,
+				"failed to create current mod-diff cache generation"
+			);
 		}
 		Self {
 			layer_root: cache_dir.to_path_buf(),
@@ -77,10 +67,6 @@ impl ModDiffCache {
 
 	pub(crate) fn layer_root(&self) -> &Path {
 		&self.layer_root
-	}
-
-	pub(crate) fn entries_root(&self) -> &Path {
-		&self.root
 	}
 
 	pub fn lookup(
@@ -513,7 +499,7 @@ mod tests {
 	}
 
 	#[test]
-	fn mod_diff_cache_open_cleans_old_generations_and_preserves_current_and_other_layers() {
+	fn mod_diff_cache_open_preserves_old_generations_flat_and_temporary_items() {
 		let workspace = cache_dir("mod-diff-generation-lifecycle");
 		let layer_root = workspace.join("diffs");
 		let cache = ModDiffCache::open(&layer_root);
@@ -536,14 +522,17 @@ mod tests {
 		fs::write(old_generation.join("obsolete.bin"), b"obsolete").expect("seed old generation");
 		let legacy_entry = layer_root.join("legacy.bin");
 		fs::write(&legacy_entry, b"legacy").expect("seed legacy flat entry");
+		let temporary_entry = layer_root.join("orphan.bin.tmp");
+		fs::write(&temporary_entry, b"temporary").expect("seed temporary entry");
 		let unrelated_entry = workspace.join("dag-base").join("v1").join("keep.bin");
 		fs::create_dir_all(unrelated_entry.parent().expect("unrelated parent"))
 			.expect("create unrelated layer");
 		fs::write(&unrelated_entry, b"keep").expect("seed unrelated layer");
 
 		let reopened = ModDiffCache::open(&layer_root);
-		assert!(!old_generation.exists());
-		assert!(!legacy_entry.exists());
+		assert!(old_generation.is_dir());
+		assert!(legacy_entry.is_file());
+		assert!(temporary_entry.is_file());
 		assert!(unrelated_entry.exists());
 		assert_eq!(
 			reopened

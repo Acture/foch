@@ -1,4 +1,5 @@
 mod coverage;
+mod parsed_scripts;
 
 #[cfg(test)]
 pub(crate) use coverage::{CoverageClass, build_coverage_report};
@@ -908,9 +909,8 @@ impl BaseAnalysisSnapshot {
 		if self.parsed_scripts.is_empty() {
 			return Ok(Vec::new());
 		}
-		let mut parsed =
-			crate::cache::parsed_scripts::decode_parsed_documents(&self.parsed_scripts)?;
-		crate::cache::parsed_scripts::rebase_parsed_documents(game_root, &mut parsed);
+		let mut parsed = parsed_scripts::decode_parsed_documents(&self.parsed_scripts)?;
+		parsed_scripts::rebase_parsed_documents(game_root, &mut parsed);
 		Ok(parsed)
 	}
 
@@ -2204,8 +2204,7 @@ pub fn build_base_snapshot_with_observer(
 				_ => None,
 			})
 			.collect::<Vec<_>>();
-		let encoded_parsed_scripts =
-			crate::cache::parsed_scripts::encode_parsed_documents(&parsed_scripts)?;
+		let encoded_parsed_scripts = parsed_scripts::encode_parsed_documents(&parsed_scripts)?;
 		counts.insert("parsed_scripts".to_string(), parsed_scripts.len() as u64);
 		counts.insert(
 			"parsed_scripts_bytes".to_string(),

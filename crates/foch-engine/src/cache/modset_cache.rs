@@ -68,21 +68,10 @@ impl ModsetCache {
 
 	pub fn open_versioned(cache_dir: &Path, version: &str) -> Result<Self, CacheError> {
 		let layer_root = cache_dir.join(MODSETS_DIR_NAME);
-		fs::create_dir_all(&layer_root).map_err(CacheError::Io)?;
 		let namespace = foch::platform::cache_store::cache_version_namespace(version)
 			.map_err(CacheError::Io)?;
 		let entries_dir = layer_root.join(&namespace);
 		fs::create_dir_all(&entries_dir).map_err(CacheError::Io)?;
-
-		let cleanup = remove_obsolete_version_entries(&layer_root, &namespace)?;
-		if cleanup.removed_items > 0 {
-			tracing::info!(
-				cache_version = version,
-				removed_items = cleanup.removed_items,
-				freed_bytes = cleanup.freed_bytes,
-				"removed obsolete modset cache versions"
-			);
-		}
 
 		Ok(Self {
 			layer_root,
@@ -166,13 +155,13 @@ impl ModsetCache {
 			remove_if_exists(&entry.report_path)?;
 			purged += 1;
 		}
-		prune_empty_dirs(self.entries_dir());
+		prune_empty_dirs(self.layer_root());
 		Ok(purged)
 	}
 
 	pub fn list_entries(&self) -> Result<Vec<CacheEntryInfo>, CacheError> {
 		let mut entries = Vec::new();
-		let root = self.entries_dir();
+		let root = self.layer_root();
 		if !root.is_dir() {
 			return Ok(entries);
 		}
@@ -230,55 +219,6 @@ pub fn default_modset_cache_root_dir() -> PathBuf {
 
 pub fn default_modset_cache_dir() -> PathBuf {
 	default_modset_cache_root_dir().join(MODSETS_DIR_NAME)
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct VersionCleanupStats {
-	removed_items: usize,
-	freed_bytes: u64,
-}
-
-fn remove_obsolete_version_entries(
-	entries_root: &Path,
-	active_namespace: &str,
-) -> Result<VersionCleanupStats, CacheError> {
-	let mut stats = VersionCleanupStats::default();
-	for entry in fs::read_dir(entries_root).map_err(CacheError::Io)? {
-		let entry = entry.map_err(CacheError::Io)?;
-		if entry.file_name() == active_namespace {
-			continue;
-		}
-		let path = entry.path();
-		stats.freed_bytes = stats.freed_bytes.saturating_add(path_size(&path)?);
-		if entry.file_type().map_err(CacheError::Io)?.is_dir() {
-			fs::remove_dir_all(&path).map_err(CacheError::Io)?;
-		} else {
-			remove_if_exists(&path)?;
-		}
-		stats.removed_items += 1;
-	}
-	Ok(stats)
-}
-
-fn path_size(path: &Path) -> Result<u64, CacheError> {
-	if !path.is_dir() {
-		return fs::metadata(path)
-			.map(|metadata| metadata.len())
-			.map_err(CacheError::Io);
-	}
-	let mut bytes = 0_u64;
-	for entry in WalkDir::new(path).min_depth(1) {
-		let entry = entry.map_err(|err| {
-			CacheError::Io(
-				err.into_io_error()
-					.unwrap_or_else(|| io::Error::other("failed to walk modset cache")),
-			)
-		})?;
-		if entry.file_type().is_file() {
-			bytes = bytes.saturating_add(fs::metadata(entry.path()).map_err(CacheError::Io)?.len());
-		}
-	}
-	Ok(bytes)
 }
 
 fn collect_tarballs(root: &Path, tarballs: &mut Vec<PathBuf>) -> Result<(), CacheError> {
@@ -811,7 +751,7 @@ mod tests {
 	}
 
 	#[test]
-	fn versioned_cache_removes_flat_entries_and_obsolete_versions() {
+	fn versioned_cache_preserves_and_lists_flat_old_and_temporary_entries() {
 		let root = cache_root("modset-version-lifecycle");
 		let out = write_out_dir("effect = { add_prestige = 1 }\n");
 		let report = sample_report();
@@ -820,13 +760,16 @@ mod tests {
 			.expect("store flat entry");
 
 		let old = ModsetCache::open_versioned(&root, "11.4.0").expect("open old version");
-		assert!(flat.lookup("flat").is_none());
+		assert!(flat.lookup("flat").is_some());
 		old.store("old", out.path(), &report)
 			.expect("store old version entry");
+		let temporary_entry = root.join(MODSETS_DIR_NAME).join("orphan.tar.gz.tmp");
+		fs::write(&temporary_entry, b"temporary").expect("seed temporary entry");
 
 		let current = ModsetCache::open_versioned(&root, "11.4.1").expect("open current version");
-		assert!(old.lookup("old").is_none());
-		assert!(!root.join(MODSETS_DIR_NAME).join("v11.4.0").exists());
+		assert!(old.lookup("old").is_some());
+		assert!(root.join(MODSETS_DIR_NAME).join("v11.4.0").is_dir());
+		assert!(temporary_entry.is_file());
 		current
 			.store("current", out.path(), &report)
 			.expect("store current version entry");
@@ -834,7 +777,19 @@ mod tests {
 		let reopened =
 			ModsetCache::open_versioned(&root, "11.4.1").expect("reopen current version");
 		assert!(reopened.lookup("current").is_some());
-		assert_eq!(ModsetCache::open(&root).list_entries().unwrap().len(), 1);
+		assert_eq!(
+			reopened
+				.list_entries()
+				.expect("list every retained generation")
+				.into_iter()
+				.map(|entry| entry.key)
+				.collect::<std::collections::BTreeSet<_>>(),
+			std::collections::BTreeSet::from([
+				"current".to_string(),
+				"flat".to_string(),
+				"old".to_string(),
+			])
+		);
 	}
 
 	#[test]

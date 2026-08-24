@@ -17,7 +17,7 @@ use std::io::Cursor;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// Bump when the mod-level cached payload becomes wire-incompatible or parser /
 /// semantic-index behavior changes in a way that should invalidate old entries.
@@ -26,7 +26,6 @@ const DEFAULT_CACHE_DIR_NAME: &str = "mods";
 const MOD_PARSE_CACHE_MAGIC: &[u8; 8] = b"FOCHMOD\0";
 const MOD_PARSE_CACHE_HEADER_BYTES: usize = MOD_PARSE_CACHE_MAGIC.len() + size_of::<u64>();
 const MAX_UNCOMPRESSED_MOD_PARSE_CACHE_BYTES: u64 = 4_u64 << 30;
-const STALE_MOD_PARSE_CACHE_TMP_SECONDS: u64 = 24 * 60 * 60;
 static MOD_PARSE_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct SizeLimitedWriter<W> {
@@ -313,7 +312,6 @@ struct StoredParseIssue {
 impl ModParseCache {
 	pub fn open(cache_dir: &Path) -> Self {
 		let _ = fs::create_dir_all(cache_dir);
-		prune_obsolete_cache_generations(cache_dir);
 		Self {
 			root: cache_dir.to_path_buf(),
 		}
@@ -323,7 +321,7 @@ impl ModParseCache {
 		Self::open(&default_mod_parse_cache_dir())
 	}
 
-	pub(crate) fn root(&self) -> &Path {
+	pub(crate) fn layer_root(&self) -> &Path {
 		&self.root
 	}
 
@@ -504,42 +502,7 @@ fn touch_cache_file(path: &Path) {
 	}
 }
 
-fn prune_obsolete_cache_generations(cache_dir: &Path) {
-	let Ok(entries) = fs::read_dir(cache_dir) else {
-		return;
-	};
-	for entry in entries.flatten() {
-		let path = entry.path();
-		if !path.is_file() {
-			continue;
-		}
-		let name = entry.file_name();
-		let name = name.to_string_lossy();
-		if is_mod_parse_cache_tmp(&name) {
-			let stale = entry
-				.metadata()
-				.ok()
-				.and_then(|metadata| metadata.modified().ok())
-				.and_then(|modified| SystemTime::now().duration_since(modified).ok())
-				.is_some_and(|age| age >= Duration::from_secs(STALE_MOD_PARSE_CACHE_TMP_SECONDS));
-			if stale {
-				let _ = fs::remove_file(path);
-			}
-			continue;
-		}
-		let Some(version) = name
-			.split_once("__cv")
-			.and_then(|(_, suffix)| suffix.split_once("__"))
-			.map(|(version, _)| version)
-		else {
-			continue;
-		};
-		if version != MOD_PARSE_CACHE_VERSION {
-			let _ = fs::remove_file(path);
-		}
-	}
-}
-
+#[cfg(test)]
 fn is_mod_parse_cache_tmp(name: &str) -> bool {
 	name.contains("__cv") && name.contains(".rkyv.") && name.ends_with(".tmp")
 }
@@ -1481,7 +1444,7 @@ mod tests {
 		));
 		assert!(!final_path.exists());
 		assert!(
-			fs::read_dir(tmp.path())
+			fs::read_dir(&cache.root)
 				.expect("read cache dir")
 				.flatten()
 				.all(|entry| !is_mod_parse_cache_tmp(&entry.file_name().to_string_lossy()))
@@ -1512,7 +1475,7 @@ mod tests {
 		assert_eq!(returned.semantic_index.documents.len(), 1);
 		assert!(returned.document_noop_hints.is_empty());
 		assert!(
-			fs::read_dir(tmp.path())
+			fs::read_dir(&cache.root)
 				.expect("read cache dir")
 				.flatten()
 				.all(|entry| !is_mod_parse_cache_tmp(&entry.file_name().to_string_lossy()))
@@ -1560,7 +1523,7 @@ mod tests {
 			);
 		}
 		assert!(
-			fs::read_dir(tmp.path())
+			fs::read_dir(&cache.root)
 				.expect("read cache dir")
 				.next()
 				.is_none()
@@ -1697,36 +1660,34 @@ mod tests {
 	}
 
 	#[test]
-	fn open_prunes_obsolete_cache_generations() {
+	fn open_preserves_old_generations_flat_and_temporary_items() {
 		let tmp = TempDir::new().expect("temp dir");
-		let obsolete = tmp
-			.path()
-			.join(cache_filename("2.0.0", "old", "0.1.0", "eu4 1.37.4"));
-		let current = tmp.path().join(cache_filename(
-			MOD_PARSE_CACHE_VERSION,
-			"current",
+		let cache = ModParseCache::open(tmp.path());
+		let old_generation = tmp.path().join("v2.0.0");
+		fs::create_dir_all(&old_generation).expect("create old generation");
+		let old_generation_entry = old_generation.join(cache_filename(
+			"2.0.0",
+			"old-generation",
 			"0.1.0",
 			"eu4 1.37.4",
 		));
+		let flat_entry =
+			tmp.path()
+				.join(cache_filename("2.0.0", "old-flat", "0.1.0", "eu4 1.37.4"));
+		let current = cache.cache_file(MOD_PARSE_CACHE_VERSION, "current", "0.1.0", "eu4 1.37.4");
 		let unrelated = tmp.path().join("owner.txt");
-		let stale_tmp = current.with_extension("rkyv.123.456.tmp");
-		let fresh_tmp = current.with_extension("rkyv.123.457.tmp");
-		fs::write(&obsolete, "stale").expect("write obsolete cache");
+		let temporary_entry = current.with_extension("rkyv.123.456.tmp");
+		fs::write(&old_generation_entry, "old generation").expect("write old generation entry");
+		fs::write(&flat_entry, "old flat").expect("write old flat entry");
 		fs::write(&current, "current").expect("write current cache");
 		fs::write(&unrelated, "keep").expect("write unrelated file");
-		fs::write(&stale_tmp, "stale tmp").expect("write stale tmp");
-		fs::write(&fresh_tmp, "fresh tmp").expect("write fresh tmp");
-		let old_time = SystemTime::now()
-			.checked_sub(Duration::from_secs(STALE_MOD_PARSE_CACHE_TMP_SECONDS + 1))
-			.expect("old time");
-		filetime::set_file_mtime(&stale_tmp, filetime::FileTime::from_system_time(old_time))
-			.expect("age stale tmp");
+		fs::write(&temporary_entry, "temporary").expect("write temporary entry");
 
 		let _cache = ModParseCache::open(tmp.path());
 
-		assert!(!obsolete.exists());
-		assert!(!stale_tmp.exists());
-		assert!(fresh_tmp.is_file());
+		assert!(old_generation_entry.is_file());
+		assert!(flat_entry.is_file());
+		assert!(temporary_entry.is_file());
 		assert!(current.is_file());
 		assert!(unrelated.is_file());
 	}

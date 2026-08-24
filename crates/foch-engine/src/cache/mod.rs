@@ -9,7 +9,6 @@ pub mod layer;
 mod mod_diff_cache;
 mod mod_parse_cache;
 mod modset_cache;
-pub(crate) mod parsed_scripts;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};

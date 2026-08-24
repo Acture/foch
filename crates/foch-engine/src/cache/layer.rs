@@ -84,11 +84,11 @@ impl CacheLayerOps for ModParseCache {
 	}
 
 	fn path(&self) -> &Path {
-		self.root()
+		self.layer_root()
 	}
 
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(CacheLayer::Mods, self.root(), "rkyv")
+		list_file_entries(CacheLayer::Mods, self.layer_root(), "rkyv")
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -98,7 +98,7 @@ impl CacheLayerOps for ModParseCache {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(self.root(), self.list_entries()?, days)
+		purge_file_entries(self.layer_root(), self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -106,7 +106,7 @@ impl CacheLayerOps for ModParseCache {
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(self.root())
+		clear_dir(self.layer_root())
 	}
 }
 
@@ -120,7 +120,7 @@ impl CacheLayerOps for ModDiffCache {
 	}
 
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(CacheLayer::Diffs, self.entries_root(), "bin")
+		list_file_entries(CacheLayer::Diffs, self.layer_root(), "bin")
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -130,7 +130,7 @@ impl CacheLayerOps for ModDiffCache {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(self.entries_root(), self.list_entries()?, days)
+		purge_file_entries(self.layer_root(), self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -152,7 +152,7 @@ impl CacheLayerOps for DagBaseCache {
 	}
 
 	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		list_file_entries(CacheLayer::DagBase, self.entries_root(), "bin")
+		list_file_entries(CacheLayer::DagBase, self.layer_root(), "bin")
 	}
 
 	fn total_bytes(&self) -> Result<u64, super::CacheError> {
@@ -162,7 +162,7 @@ impl CacheLayerOps for DagBaseCache {
 	}
 
 	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		purge_file_entries(self.entries_root(), self.list_entries()?, days)
+		purge_file_entries(self.layer_root(), self.list_entries()?, days)
 	}
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
@@ -450,6 +450,19 @@ fn prune_empty_dirs(root: &Path) {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use filetime::{FileTime, set_file_mtime};
+
+	fn write_entry(path: &Path, bytes: &[u8], modified: SystemTime) {
+		fs::create_dir_all(path.parent().expect("cache entry parent"))
+			.expect("create cache entry parent");
+		fs::write(path, bytes).expect("write cache entry");
+		set_file_mtime(path, FileTime::from_system_time(modified)).expect("set cache entry mtime");
+	}
+
+	fn write_modset_entry(root: &Path, key: &str, bytes: &[u8], modified: SystemTime) {
+		write_entry(&root.join(format!("{key}.tar.gz")), bytes, modified);
+		write_entry(&root.join(format!("{key}.report.json")), b"{}", modified);
+	}
 
 	#[test]
 	fn all_layers_present_and_report_size() {
@@ -473,6 +486,81 @@ mod tests {
 			assert!(layer.path().starts_with(temp.path()));
 		}
 		assert_eq!(layers[0].total_bytes().expect("mods cache size"), 5);
+	}
+
+	#[test]
+	fn file_cache_lifecycle_spans_flat_current_and_old_generations() {
+		let temp = tempfile::tempdir().expect("cache root");
+		let layers = all_layers_at(temp.path());
+		let old_time = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
+		let current_time = SystemTime::now();
+
+		for (index, current_namespace, extension) in [
+			(0_usize, None, "rkyv"),
+			(1_usize, Some("v6.0.0"), "bin"),
+			(2_usize, Some("v12.0.0"), "bin"),
+		] {
+			let root = layers[index].path();
+			let current_root =
+				current_namespace.map_or_else(|| root.to_path_buf(), |name| root.join(name));
+			let current = current_root.join(format!("current.{extension}"));
+			let old = root.join("v0.0.1").join(format!("old.{extension}"));
+			let flat = root.join(format!("flat.{extension}"));
+			write_entry(&current, b"c", current_time);
+			write_entry(&old, b"oo", old_time);
+			write_entry(&flat, b"fff", old_time);
+
+			assert_eq!(layers[index].list_entries().expect("list entries").len(), 3);
+			assert_eq!(layers[index].total_bytes().expect("total bytes"), 6);
+			assert_eq!(
+				layers[index].purge_older_than(30).expect("purge entries"),
+				2
+			);
+			assert!(current.is_file());
+			assert!(!old.exists());
+			assert!(!flat.exists());
+
+			write_entry(&old, b"oo", old_time);
+			write_entry(&flat, b"fff", old_time);
+			let eviction = layers[index].evict_to_byte_cap(1).expect("evict entries");
+			assert_eq!(eviction.removed_entries, 2);
+			assert_eq!(eviction.freed_bytes, 5);
+			assert!(current.is_file());
+			assert!(!old.exists());
+			assert!(!flat.exists());
+		}
+	}
+
+	#[test]
+	fn modset_lifecycle_spans_flat_current_and_old_generations() {
+		let temp = tempfile::tempdir().expect("cache root");
+		let layers = all_layers_at(temp.path());
+		let layer = &layers[3];
+		let root = layer.path();
+		let old_time = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
+		let current_time = SystemTime::now();
+		let current_root = root.join("v14.3.0");
+		let old_root = root.join("v14.2.0");
+
+		write_modset_entry(&current_root, "current", b"c", current_time);
+		write_modset_entry(&old_root, "old", b"oo", old_time);
+		write_modset_entry(root, "flat", b"fff", old_time);
+
+		assert_eq!(layer.list_entries().expect("list entries").len(), 3);
+		assert_eq!(layer.total_bytes().expect("total bytes"), 12);
+		assert_eq!(layer.purge_older_than(30).expect("purge entries"), 2);
+		assert!(current_root.join("current.tar.gz").is_file());
+		assert!(!old_root.join("old.tar.gz").exists());
+		assert!(!root.join("flat.tar.gz").exists());
+
+		write_modset_entry(&old_root, "old", b"oo", old_time);
+		write_modset_entry(root, "flat", b"fff", old_time);
+		let eviction = layer.evict_to_byte_cap(3).expect("evict entries");
+		assert_eq!(eviction.removed_entries, 2);
+		assert_eq!(eviction.freed_bytes, 9);
+		assert!(current_root.join("current.tar.gz").is_file());
+		assert!(!old_root.join("old.tar.gz").exists());
+		assert!(!root.join("flat.tar.gz").exists());
 	}
 
 	#[test]

@@ -145,7 +145,7 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 		parse_issues: Vec::new(),
 		parse_cache_hit: false,
 	};
-	let parsed_scripts = crate::cache::parsed_scripts::encode_parsed_documents(&[parsed_script])
+	let parsed_scripts = super::parsed_scripts::encode_parsed_documents(&[parsed_script])
 		.expect("encode parsed script");
 	let mut index = SemanticIndex::default();
 	index.documents.push(DocumentRecord {
