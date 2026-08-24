@@ -9,6 +9,7 @@ use super::materialize::{
 	MaterializeOutput, MergeMaterializeOptions, freeze_path_plan, materialize_analyzed_input,
 };
 use super::output::artifact_tree::AnalyzedArtifactTree;
+use super::review::{MergeReview, MergeReviewSummary, MergeUnitOutcome};
 use crate::game::eu4::base::snapshot::InstalledBaseSnapshotIdentity;
 use crate::game::eu4::script::emit::EmitOptions;
 static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -47,8 +48,8 @@ pub struct MergeAnalysisOptions {
 	pub interactive_conflict_handler: Option<Box<dyn ConflictHandler>>,
 	/// foch.toml path where interactive prompt decisions should be persisted.
 	pub interactive_resolution_config_path: Option<PathBuf>,
-	/// Caller-computed playset fingerprint to stamp on the merge report so
-	/// subsequent runs can detect "same mod set, reuse the cached output".
+	/// Caller-computed input fingerprint stamped on the merge report so later
+	/// validation can identify the exact analyzed load order and decisions.
 	/// `None` skips the stamp (e.g., merge invoked from a context where
 	/// computing it isn't possible).
 	pub playset_fingerprint: Option<String>,
@@ -240,6 +241,7 @@ pub struct AnalyzedMerge {
 	pub(super) base_snapshot_commit_guard: Option<BaseSnapshotCommitGuard>,
 	pub(super) product_input_commit_guard: Option<ProductInputCommitGuard>,
 	pub(super) prior_output_guard: Option<PriorOutputGuard>,
+	pub(super) review: MergeReview,
 }
 
 struct PendingAnalysis {
@@ -259,6 +261,18 @@ struct PendingAnalysis {
 impl AnalyzedMerge {
 	pub fn analysis(&self) -> &MergeAnalysis {
 		&self.analysis
+	}
+
+	pub fn review_summary(&self) -> &MergeReviewSummary {
+		self.review.summary()
+	}
+
+	pub fn list_units(&self) -> &[MergeUnitOutcome] {
+		self.review.units()
+	}
+
+	pub fn unit(&self, id: &str) -> Option<&MergeUnitOutcome> {
+		self.review.unit(id)
 	}
 }
 
@@ -465,7 +479,7 @@ fn complete_merge_analysis(
 		.as_ref()
 		.ok()
 		.and_then(|input| input.effective_retained_paths.clone());
-	let mut report = materialize_analyzed_input(
+	let materialized = materialize_analyzed_input(
 		request.clone(),
 		MaterializeOutput {
 			artifacts_dir: &staging_dir,
@@ -493,6 +507,8 @@ fn complete_merge_analysis(
 		plan.clone(),
 		Some((progress, analysis_started)),
 	)?;
+	let mut report = materialized.report;
+	let review = materialized.review;
 	notify_progress(
 		progress,
 		analysis_started,
@@ -579,6 +595,7 @@ fn complete_merge_analysis(
 		base_snapshot_commit_guard,
 		product_input_commit_guard,
 		prior_output_guard,
+		review,
 	})
 }
 
@@ -1087,6 +1104,16 @@ mod tests {
 		.expect("analyze merge");
 
 		assert!(analyzed.analysis().plan().strategies.total_paths > 0);
+		assert_eq!(
+			analyzed.review_summary().total,
+			analyzed.analysis().plan().paths.len()
+		);
+		assert!(
+			analyzed
+				.list_units()
+				.iter()
+				.all(|unit| analyzed.unit(&unit.id) == Some(unit))
+		);
 		assert!(analyzed.analysis().artifact_file_count() > 0);
 		assert_ne!(analyzed.analysis().status(), MergeAnalysisStatus::Blocked);
 		assert!(!out_dir.exists(), "analysis must not touch the output path");

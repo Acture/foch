@@ -220,7 +220,7 @@ pub enum ResolutionDecision {
 	PreferMod(String),
 	/// Zero-based exact candidate index used internally after config parsing.
 	PreferCandidate(usize),
-	/// Configured external file whose payload is frozen by merge preparation.
+	/// Configured external file whose payload is frozen during merge analysis.
 	UseFile(PathBuf),
 	/// Runtime-only external file selected interactively after export starts.
 	UseLiveFile(PathBuf),

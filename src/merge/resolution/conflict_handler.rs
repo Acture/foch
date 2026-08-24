@@ -111,7 +111,7 @@ pub enum ConflictDecision {
 	},
 	/// Use this external file's content (handled at materialize time).
 	UseFile(PathBuf),
-	/// Use bytes frozen from a configured external file during preparation.
+	/// Use bytes frozen from a configured external file during analysis.
 	UseFrozenFile(PathBuf),
 	/// Keep whatever already exists at output dir (handled at materialize time).
 	KeepExisting,

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static OUTPUT_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Publishes a fully staged output tree without exposing partial contents.
+/// Commits a fully staged output tree without exposing partial contents.
 ///
 /// This protects process-level atomicity and cooperating-writer serialization.
 /// It does not fsync staged files or parent directories, so it is not a

@@ -19,6 +19,7 @@ mod patch_real_mods;
 pub(crate) mod path_plan;
 pub(crate) mod planning;
 pub(crate) mod resolution;
+mod review;
 pub(crate) mod semantic_fingerprint;
 pub(crate) mod structured;
 
@@ -44,3 +45,6 @@ pub use resolution::conflict_handler::{
 };
 pub use resolution::conflict_view::{CandidateView, ConflictView};
 pub(crate) use resolution::{conflict_handler, conflict_view, handler_registry};
+pub use review::{
+	MergeDisposition, MergeReviewContributor, MergeReviewSummary, MergeUnitKind, MergeUnitOutcome,
+};

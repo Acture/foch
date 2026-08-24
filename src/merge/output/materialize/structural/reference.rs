@@ -133,6 +133,7 @@ where
 			target_path,
 			&dag_merge.merge_result,
 			context.mod_versions,
+			&effective_map,
 		)));
 	}
 
@@ -290,6 +291,7 @@ pub(super) fn unresolved_report(
 	target_path: &str,
 	merge_result: &PatchMergeResult,
 	mod_versions: &HashMap<String, String>,
+	resolution_map: &crate::project::ResolutionMap,
 ) -> StructuralConflictReport {
 	let conflict_keys = merge_result
 		.conflicts
@@ -301,14 +303,18 @@ pub(super) fn unresolved_report(
 			_ => None,
 		})
 		.collect::<Vec<_>>();
+	let leaf_conflicts = leaf_conflicts(target_path, &merge_result.conflicts, mod_versions);
+	let explicitly_deferred =
+		super::all_conflicts_explicitly_deferred(target_path, &leaf_conflicts, resolution_map);
 	StructuralConflictReport {
 		reason: format!(
 			"structural merge has {} unresolved conflict(s): {}",
 			conflict_keys.len(),
 			conflict_keys.join("; "),
 		),
-		leaf_conflicts: leaf_conflicts(target_path, &merge_result.conflicts, mod_versions),
+		leaf_conflicts,
 		handler_resolutions: merge_result.handler_resolutions.clone(),
+		explicitly_deferred,
 	}
 }
 

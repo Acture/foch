@@ -242,15 +242,19 @@ where
 			conflict_keys.len(),
 			conflict_keys.join("; "),
 		);
+		let leaf_conflicts = leaf_conflicts_for_semantic(
+			target_path,
+			&dag_merge.semantic.unresolved_conflicts,
+			context.mod_versions,
+		);
+		let explicitly_deferred =
+			all_conflicts_explicitly_deferred(target_path, &leaf_conflicts, &effective_map);
 		return Err(StructuralMergeFailure::Unresolved(
 			StructuralConflictReport {
 				reason,
-				leaf_conflicts: leaf_conflicts_for_semantic(
-					target_path,
-					&dag_merge.semantic.unresolved_conflicts,
-					context.mod_versions,
-				),
+				leaf_conflicts,
 				handler_resolutions: dag_merge.semantic.handler_resolutions.clone(),
+				explicitly_deferred,
 			},
 		));
 	}
@@ -339,6 +343,29 @@ where
 		merge_trace,
 		provenance_localisation,
 	})
+}
+
+fn all_conflicts_explicitly_deferred(
+	target_path: &str,
+	leaves: &[LeafConflictDetail],
+	resolution_map: &crate::project::ResolutionMap,
+) -> bool {
+	!leaves.is_empty()
+		&& leaves.iter().all(|leaf| {
+			let leaf_address = if leaf.address_path.is_empty() {
+				leaf.address_key.clone()
+			} else {
+				format!("{}/{}", leaf.address_path, leaf.address_key)
+			};
+			matches!(
+				resolution_map.lookup(
+					Path::new(target_path),
+					&leaf.conflict_id,
+					&leaf_address,
+				),
+				Some(crate::project::ResolutionDecision::Handler(name)) if name.eq_ignore_ascii_case("defer")
+			)
+		})
 }
 
 fn prompt_conflict_views(
@@ -543,7 +570,7 @@ mod tests {
 	use crate::game::eu4::content::{MergePolicies, eu4};
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
 	use crate::merge::kernel::RevisionId;
-	use crate::project::{Project, ResolutionMap};
+	use crate::project::{Project, ResolutionDecision, ResolutionMap};
 
 	use crate::merge::conflict_handler::{ConflictDecision, ConflictHandler};
 	use crate::merge::model::{SemanticConflictCandidate, SemanticMergeConflict};
@@ -771,6 +798,50 @@ mod tests {
 		let parsed = parse_clausewitz_content(PathBuf::from(target_path), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
+	}
+
+	#[test]
+	fn explicit_defer_requires_every_surviving_leaf_to_match_the_recorded_handler() {
+		let target = "common/ideas/test.txt";
+		let leaves = vec![
+			LeafConflictDetail {
+				address_path: "idea_a".into(),
+				address_key: "cost".into(),
+				conflict_id: "first".into(),
+				..Default::default()
+			},
+			LeafConflictDetail {
+				address_path: "idea_b".into(),
+				address_key: "cost".into(),
+				conflict_id: "second".into(),
+				..Default::default()
+			},
+		];
+		let mut resolutions = ResolutionMap::default();
+		resolutions.by_file.insert(
+			PathBuf::from(target),
+			ResolutionDecision::Handler("DEFER".into()),
+		);
+		assert!(all_conflicts_explicitly_deferred(
+			target,
+			&leaves,
+			&resolutions
+		));
+
+		resolutions.by_conflict_id.insert(
+			"second".into(),
+			ResolutionDecision::Handler("last_writer".into()),
+		);
+		assert!(!all_conflicts_explicitly_deferred(
+			target,
+			&leaves,
+			&resolutions
+		));
+		assert!(!all_conflicts_explicitly_deferred(
+			target,
+			&[],
+			&resolutions
+		));
 	}
 
 	fn project_test_dir(name: &str) -> PathBuf {

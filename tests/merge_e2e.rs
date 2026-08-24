@@ -5,9 +5,9 @@ use foch::game::eu4::script::parse_script_file;
 use foch::game::eu4::script::parser::parse_clausewitz_file;
 use foch::input::{Config, InputRequest};
 use foch::merge::{
-	CancellationToken, CommitAuthorization, ConflictDecision, ConflictHandler, ConflictView,
-	MergeAnalysisOptions, MergeBackendId, NoopProgressObserver, analyze_merge,
-	run_merge_for_evaluation, run_merge_with_options,
+	AnalyzedMerge, CancellationToken, CommitAuthorization, ConflictDecision, ConflictHandler,
+	ConflictView, MergeAnalysisOptions, MergeBackendId, MergeDisposition, NoopProgressObserver,
+	analyze_merge, run_merge_for_evaluation, run_merge_with_options,
 };
 use foch::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
@@ -168,9 +168,27 @@ fn run_merge_for_playset(
 	force: bool,
 	resolution_config_path: Option<PathBuf>,
 ) -> foch::merge::CommitResult {
+	analyze_merge_for_playset(
+		playset_path,
+		out_dir,
+		game_root,
+		force,
+		resolution_config_path,
+	)
+	.commit(CommitAuthorization::EmptyTargetOnly)
+	.expect("commit analyzed fixture merge")
+}
+
+fn analyze_merge_for_playset(
+	playset_path: &Path,
+	out_dir: PathBuf,
+	game_root: PathBuf,
+	force: bool,
+	resolution_config_path: Option<PathBuf>,
+) -> AnalyzedMerge {
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
-	run_merge_with_options(
+	analyze_merge(
 		InputRequest::from_playset_path(
 			playset_path.to_path_buf(),
 			Config {
@@ -195,8 +213,10 @@ fn run_merge_for_playset(
 			provenance: false,
 			retained_paths: None,
 		},
+		&NoopProgressObserver,
+		&CancellationToken::new(),
 	)
-	.expect("run merge with custom playset")
+	.expect("analyze custom playset")
 }
 
 fn copy_dir_recursive(source: &Path, destination: &Path) {
@@ -1410,6 +1430,125 @@ fn eu4_defer_handler_keeps_manual_conflict_with_attribution() {
 		result.report
 	);
 	assert!(out_dir.exists(), "out dir should still be tracked");
+}
+
+#[test]
+fn eu4_case_insensitive_explicit_defer_is_reviewed_without_a_forced_marker() {
+	let fixture = fixture_dir("eu4_handler_defer");
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_case_insensitive_defer-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+	let config_path = temp_dir.path().join("foch.defer.toml");
+	fs::write(
+		&config_path,
+		"[[resolutions]]\nmatch = \"history/**\"\nhandler = \"DeFeR\"\n",
+	)
+	.expect("write mixed-case defer config");
+	let target = "history/countries/TES - Test.txt";
+
+	let analyzed = analyze_merge_for_playset(
+		&fixture.join("dlc_load.json"),
+		out_dir.clone(),
+		game_root,
+		true,
+		Some(config_path),
+	);
+	let units = analyzed.list_units();
+	assert_eq!(units.len(), 1, "fixture must produce one review unit");
+	assert_eq!(units[0].path, target);
+	assert_eq!(units[0].disposition, MergeDisposition::Deferred);
+	assert_eq!(units[0].output_path, None);
+	assert_eq!(analyzed.review_summary().deferred, 1);
+	let result = analyzed
+		.commit(CommitAuthorization::EmptyTargetOnly)
+		.expect("commit explicit defer analysis");
+
+	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
+	assert!(
+		!out_dir.join(rel_path(target)).exists(),
+		"--force must not turn an explicit defer into a manual marker"
+	);
+}
+
+#[test]
+fn eu4_mixed_explicit_defer_and_unresolved_leaf_still_needs_user_choice() {
+	let source_fixture = fixture_dir("eu4_two_mod_conflict");
+	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("target")
+		.join("merge-e2e");
+	fs::create_dir_all(&scratch_root).expect("create merge e2e scratch root");
+	let temp_dir = Builder::new()
+		.prefix("eu4_mixed_defer_unresolved-")
+		.tempdir_in(&scratch_root)
+		.expect("create merge e2e tempdir");
+	let playset = temp_dir.path().join("playset");
+	copy_dir_recursive(&source_fixture, &playset);
+
+	for (mod_dir, culture) in [("conflict_a", "french"), ("conflict_b", "german")] {
+		let file = playset
+			.join("mods")
+			.join(mod_dir)
+			.join("history")
+			.join("countries")
+			.join("TES - Test.txt");
+		let text = fs::read_to_string(&file).expect("read copied country file");
+		fs::write(
+			&file,
+			text.replace(
+				"primary_culture = english",
+				&format!("primary_culture = {culture}"),
+			),
+		)
+		.expect("write copied country file with second conflict");
+	}
+
+	let target = "history/countries/TES - Test.txt";
+	let config_path = temp_dir.path().join("foch.partial-defer.toml");
+	fs::write(
+		&config_path,
+		r#"[[resolutions]]
+match = "history/countries/TES - Test.txt::religion"
+handler = "DeFeR"
+"#,
+	)
+	.expect("write conflict-scoped defer config");
+	let out_dir = temp_dir.path().join("out");
+	let game_root = temp_dir.path().join("eu4-game");
+	fs::create_dir_all(&game_root).expect("create fixture game root");
+
+	let analyzed = analyze_merge_for_playset(
+		&playset.join("dlc_load.json"),
+		out_dir.clone(),
+		game_root,
+		true,
+		Some(config_path),
+	);
+	let units = analyzed.list_units();
+	assert_eq!(units.len(), 1, "fixture must produce one review unit");
+	assert_eq!(units[0].path, target);
+	assert_eq!(
+		units[0].disposition,
+		MergeDisposition::NeedsUserChoice,
+		"one explicit defer must not hide the unrelated unresolved leaf"
+	);
+	assert_eq!(units[0].output_path.as_deref(), Some(target));
+	assert_eq!(analyzed.review_summary().needs_user_choice, 1);
+	let result = analyzed
+		.commit(CommitAuthorization::EmptyTargetOnly)
+		.expect("commit mixed defer analysis");
+
+	assert_eq!(result.report.status, MergeReportStatus::PartialSuccess);
+	let marker = fs::read_to_string(out_dir.join(rel_path(target))).expect("read manual marker");
+	assert!(marker.starts_with("FOCH_MERGE_CONFLICT"));
+	assert!(marker.contains("primary_culture"));
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "redox")))]
