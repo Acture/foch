@@ -118,8 +118,8 @@ pub enum MergePlanOutputFormat {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Prepare a merge plan, then optionally export and revalidate it",
-	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod                 # review, then confirm in a TTY\n  foch merge ./foch.toml --out ./merged-mod --confirm          # explicitly export\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # plan only\n  foch merge ./playlist.json --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path\n  foch merge ./playlist.json --out ./merged-mod --force --confirm\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
+	about = "Analyze a merge, review its frozen plan, then optionally commit it",
+	after_help = "Examples:\n  foch merge ./playlist.json --out ./merged-mod                 # analyze, review, then confirm in a TTY\n  foch merge ./foch.toml --out ./merged-mod --confirm          # analyze and explicitly commit\n  foch merge ./playlist.json --out ./merged-mod --non-interactive  # analysis only\n  foch merge ./playlist.json --out ./new-merged-mod --confirm --non-interactive  # CI: new/empty path\n  foch merge ./playlist.json --out ./merged-mod --force --confirm\n  foch merge ./playlist.json --out ./merged-mod --no-game-base"
 )]
 pub struct MergeArgs {
 	#[arg(default_value = None, value_name = "WORKSPACE_SOURCE")]
@@ -129,7 +129,7 @@ pub struct MergeArgs {
 	pub out: PathBuf,
 
 	/// Emit explicit fallbacks for deferred conflicts where supported. Safe
-	/// units are exported with or without this flag.
+	/// units are committed with or without this flag.
 	#[arg(long)]
 	pub force: bool,
 
@@ -166,7 +166,7 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub provenance: bool,
 
-	/// Export without the plan prompt. A non-empty --out still requires a
+	/// Commit without the review prompt. A non-empty --out still requires a
 	/// separate TTY overwrite confirmation.
 	#[arg(long)]
 	pub confirm: bool,

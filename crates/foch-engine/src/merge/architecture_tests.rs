@@ -138,11 +138,42 @@ fn public_engine_facade_exposes_only_current_backend_names() {
 		"lib.rs",
 		facade,
 		&[
+			"MergeExecuteOptions",
+			"MergeExecutionResult",
+			"PreparedMerge",
+			"prepare_merge_with_options",
 			"MergeEvaluationKernel",
 			"MergeKernelMode",
 			"MergeReportKernel",
 		],
 	);
+}
+
+#[test]
+fn commit_consumes_frozen_artifacts_without_reanalysis() {
+	let source = include_str!("execute.rs");
+	let commit = source
+		.split("\tpub fn commit(")
+		.nth(1)
+		.expect("AnalyzedMerge commit method")
+		.split("\n\t}\n}\n\nfn analyze_merge_with_backend_and_observer")
+		.next()
+		.expect("commit method body");
+	assert_source_excludes(
+		"AnalyzedMerge::commit",
+		commit,
+		&[
+			"backend_for",
+			"materialize_",
+			"prepare_merge_plan",
+			"run_checks",
+			"resolve_workspace",
+			"cwt",
+		],
+	);
+	assert!(commit.contains("artifacts.copy_into"));
+	assert!(commit.contains("transaction.commit"));
+	assert!(!include_str!("output/materialize/output_transaction.rs").contains("fn publish("));
 }
 
 fn assert_source_excludes(path: &str, source: &str, dependencies: &[&str]) {

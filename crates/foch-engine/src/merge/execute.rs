@@ -2,9 +2,10 @@ use super::backend::backend_for;
 use super::conflict_handler::ConflictHandler;
 use super::error::MergeError;
 use super::materialize::{
-	MergeMaterializeOptions, OutputTransaction, materialize_prepared_merge_with_workspace_result,
-	prepare_merge_plan,
+	MaterializeOutput, MergeMaterializeOptions, OutputTransaction,
+	materialize_prepared_merge_with_workspace_result, prepare_merge_plan,
 };
+use super::output::artifact_tree::AnalyzedArtifactTree;
 use crate::base_data::{
 	InstalledBaseSnapshotIdentity, InstalledBaseSnapshotPublicationGuard,
 	lock_and_validate_installed_base_snapshot_identity,
@@ -17,6 +18,7 @@ use crate::emit::EmitOptions;
 // SemVer identity for cached merge output. Bump patch for output bug fixes,
 // minor for additive semantics, and major for incompatible cache payloads.
 const MODSET_CACHE_VERSION: &str = "14.3.0";
+static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
 use crate::workspace::{
@@ -35,11 +37,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use walkdir::WalkDir;
 
 use super::kernel::MergeBackendId;
 
-pub struct MergeExecuteOptions {
+pub struct MergeAnalysisOptions {
 	pub out_dir: PathBuf,
 	pub include_game_base: bool,
 	pub include_base: bool,
@@ -68,11 +74,147 @@ pub struct MergeExecuteOptions {
 }
 
 #[derive(Clone, Debug)]
-pub struct MergeExecutionResult {
+pub struct CommitResult {
 	pub report: MergeReport,
 	pub merge_status: MergeStatusView,
 	pub analysis_status: AnalysisStatusView,
 	pub exit_code: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommitAuthorization {
+	EmptyTargetOnly,
+	ReplaceExisting(ReplacementTarget),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplacementTarget {
+	path: PathBuf,
+	fingerprint: blake3::Hash,
+	file_count: usize,
+	total_bytes: u64,
+}
+
+impl ReplacementTarget {
+	pub fn path(&self) -> &Path {
+		&self.path
+	}
+
+	pub fn file_count(&self) -> usize {
+		self.file_count
+	}
+
+	pub fn total_bytes(&self) -> u64 {
+		self.total_bytes
+	}
+
+	pub fn fingerprint(&self) -> String {
+		self.fingerprint.to_hex().to_string()
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeAnalysisStatus {
+	ReadyToCommit,
+	CommittableWithDeferrals,
+	Blocked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MergeAnalysisStage {
+	Inventory,
+	ResolveInput,
+	SemanticMerge,
+	ValidateOutput,
+	FreezeArtifacts,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MergeProgress {
+	pub stage: MergeAnalysisStage,
+	pub completed: bool,
+	pub completed_units: Option<u64>,
+	pub total_units: Option<u64>,
+	pub elapsed: Duration,
+}
+
+pub trait ProgressObserver: Send + Sync {
+	fn update(&self, progress: MergeProgress);
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopProgressObserver;
+
+impl ProgressObserver for NoopProgressObserver {
+	fn update(&self, _progress: MergeProgress) {}
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CancellationToken {
+	cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+	pub fn new() -> Self {
+		Self::default()
+	}
+
+	pub fn cancel(&self) {
+		self.cancelled.store(true, Ordering::Release);
+	}
+
+	pub fn is_cancelled(&self) -> bool {
+		self.cancelled.load(Ordering::Acquire)
+	}
+
+	pub(crate) fn check(&self) -> Result<(), MergeError> {
+		if self.is_cancelled() {
+			Err(MergeError::Cancelled)
+		} else {
+			Ok(())
+		}
+	}
+}
+
+#[derive(Clone, Debug)]
+pub struct MergeAnalysis {
+	plan: MergePlanResult,
+	report: MergeReport,
+	merge_status: MergeStatusView,
+	analysis_status: AnalysisStatusView,
+	status: MergeAnalysisStatus,
+	activation_safe: bool,
+	artifact_file_count: usize,
+}
+
+impl MergeAnalysis {
+	pub fn plan(&self) -> &MergePlanResult {
+		&self.plan
+	}
+
+	pub fn report(&self) -> &MergeReport {
+		&self.report
+	}
+
+	pub fn merge_status(&self) -> &MergeStatusView {
+		&self.merge_status
+	}
+
+	pub fn analysis_status(&self) -> &AnalysisStatusView {
+		&self.analysis_status
+	}
+
+	pub fn status(&self) -> MergeAnalysisStatus {
+		self.status
+	}
+
+	pub fn activation_safe(&self) -> bool {
+		self.activation_safe
+	}
+
+	pub fn artifact_file_count(&self) -> usize {
+		self.artifact_file_count
+	}
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,34 +239,64 @@ pub struct AnalysisStatusView {
 
 pub fn run_merge_with_options(
 	request: CheckRequest,
-	options: MergeExecuteOptions,
-) -> Result<MergeExecutionResult, MergeError> {
-	prepare_merge_with_options(request, options)?.export()
+	options: MergeAnalysisOptions,
+) -> Result<CommitResult, MergeError> {
+	analyze_merge(
+		request,
+		options,
+		&NoopProgressObserver,
+		&CancellationToken::new(),
+	)?
+	.commit(CommitAuthorization::EmptyTargetOnly)
 }
 
-/// Prepare and freeze a merge plan without touching the requested output.
+/// Run the complete semantic merge and freeze its exact output bytes without
+/// touching the requested target directory.
 ///
-/// The returned session owns the already-resolved workspace. Calling
-/// [`PreparedMerge::export`] consumes it, so the reviewed plan and exported
-/// result cannot diverge through a second resolve pass.
-pub fn prepare_merge_with_options(
+/// [`AnalyzedMerge::commit`] only validates drift and atomically installs the
+/// reviewed bytes; it never invokes a merge backend or schema engine again.
+pub fn analyze_merge(
 	request: CheckRequest,
-	options: MergeExecuteOptions,
-) -> Result<PreparedMerge, MergeError> {
-	prepare_merge_with_backend(request, options, MergeBackendId::GumtreePcsNway)
+	options: MergeAnalysisOptions,
+	progress: &dyn ProgressObserver,
+	cancellation: &CancellationToken,
+) -> Result<AnalyzedMerge, MergeError> {
+	analyze_merge_with_backend_and_observer(
+		request,
+		options,
+		MergeBackendId::GumtreePcsNway,
+		progress,
+		cancellation,
+	)
 }
 
 pub fn run_merge_for_evaluation(
 	request: CheckRequest,
-	options: MergeExecuteOptions,
+	options: MergeAnalysisOptions,
 	backend: MergeBackendId,
-) -> Result<MergeExecutionResult, MergeError> {
-	prepare_merge_with_backend(request, options, backend)?.export()
+) -> Result<CommitResult, MergeError> {
+	analyze_merge_with_backend_and_observer(
+		request,
+		options,
+		backend,
+		&NoopProgressObserver,
+		&CancellationToken::new(),
+	)?
+	.commit(CommitAuthorization::EmptyTargetOnly)
 }
 
-pub struct PreparedMerge {
+pub struct AnalyzedMerge {
+	out_dir: PathBuf,
+	analysis: MergeAnalysis,
+	artifacts: AnalyzedArtifactTree,
+	base_snapshot_publish_guard: Option<BaseSnapshotPublishGuard>,
+	product_input_publish_guard: Option<ProductInputPublishGuard>,
+	prior_output_guard: Option<PriorOutputGuard>,
+}
+
+struct PendingAnalysis {
 	request: CheckRequest,
-	options: MergeExecuteOptions,
+	options: MergeAnalysisOptions,
 	backend_id: MergeBackendId,
 	workspace_result:
 		Result<crate::workspace::ResolvedWorkspace, crate::workspace::WorkspaceResolveError>,
@@ -139,35 +311,70 @@ pub struct PreparedMerge {
 	modset_cache_bypass: Option<&'static str>,
 }
 
-impl PreparedMerge {
-	pub fn plan(&self) -> &MergePlanResult {
-		&self.plan
+impl AnalyzedMerge {
+	pub fn analysis(&self) -> &MergeAnalysis {
+		&self.analysis
 	}
 
-	pub fn export(self) -> Result<MergeExecutionResult, MergeError> {
-		let transaction = OutputTransaction::begin(&self.options.out_dir)?;
-		export_prepared_merge(self, transaction)
+	/// Capture the exact non-empty target the caller is being asked to replace.
+	pub fn replacement_target(&self) -> Result<Option<ReplacementTarget>, MergeError> {
+		fingerprint_replacement_target(&self.out_dir)
 	}
 
-	/// Export while holding the output transaction lock across any required
-	/// replacement confirmation. `None` means the caller declined replacement.
-	pub fn export_with_overwrite_confirmation(
-		self,
-		confirm: impl FnOnce(&Path) -> io::Result<bool>,
-	) -> Result<Option<MergeExecutionResult>, MergeError> {
-		let transaction = OutputTransaction::begin(&self.options.out_dir)?;
-		if transaction.prior_dir().is_some() && !confirm(&self.options.out_dir)? {
-			return Ok(None);
+	pub fn commit(self, authorization: CommitAuthorization) -> Result<CommitResult, MergeError> {
+		let transaction = OutputTransaction::begin(&self.out_dir)?;
+		let expected_replacement = match (transaction.prior_dir(), authorization) {
+			(None, CommitAuthorization::EmptyTargetOnly) => None,
+			(None, CommitAuthorization::ReplaceExisting(_)) => {
+				return Err(MergeError::ReplacementTargetChanged { path: self.out_dir });
+			}
+			(Some(_), CommitAuthorization::EmptyTargetOnly) => {
+				return Err(MergeError::ReplacementAuthorizationRequired { path: self.out_dir });
+			}
+			(Some(_), CommitAuthorization::ReplaceExisting(expected)) => {
+				validate_replacement_target(&self.out_dir, &expected)?;
+				Some(expected)
+			}
+		};
+		if let Some(guard) = self.prior_output_guard.as_ref() {
+			guard.validate()?;
 		}
-		export_prepared_merge(self, transaction).map(Some)
+		self.artifacts.copy_into(transaction.staging_dir())?;
+		let _base_snapshot_commit_guard = validate_publish_guards(
+			self.base_snapshot_publish_guard.as_ref(),
+			self.product_input_publish_guard.as_ref(),
+		)?;
+		if let Some(expected) = expected_replacement.as_ref() {
+			validate_replacement_target(&self.out_dir, expected)?;
+		}
+		transaction.commit()?;
+		let exit_code = commit_exit_code(&self.analysis);
+		Ok(CommitResult {
+			report: self.analysis.report,
+			merge_status: self.analysis.merge_status,
+			analysis_status: self.analysis.analysis_status,
+			exit_code,
+		})
 	}
 }
 
-fn prepare_merge_with_backend(
+fn analyze_merge_with_backend_and_observer(
 	request: CheckRequest,
-	options: MergeExecuteOptions,
+	options: MergeAnalysisOptions,
 	backend_id: MergeBackendId,
-) -> Result<PreparedMerge, MergeError> {
+	progress: &dyn ProgressObserver,
+	cancellation: &CancellationToken,
+) -> Result<AnalyzedMerge, MergeError> {
+	let analysis_started = Instant::now();
+	cancellation.check()?;
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::Inventory,
+		false,
+		Some(0),
+		None,
+	);
 	let inventory_started = Instant::now();
 	let mut inventory_result = build_workspace_inventory_for_paths(
 		&request,
@@ -224,7 +431,7 @@ fn prepare_merge_with_backend(
 	let depends_on_prior_output = resolution_map_depends_on_prior_output(&resolution_map);
 	// Full product output must always be materialized from its source roots. The
 	// retained-path evaluation cache is intentionally small and is bound to the
-	// frozen policy and session metadata reviewed by this prepared merge.
+	// frozen policy and analysis metadata reviewed with the result.
 	let (modset_cache_key, modset_cache_bypass) = if options.retained_paths.is_none() {
 		(None, Some("full_product_output"))
 	} else if !modset_cache_is_eligible(has_interactive_conflict_handler, depends_on_prior_output) {
@@ -244,6 +451,27 @@ fn prepare_merge_with_backend(
 			(None, Some("incomplete_input_identity"))
 		}
 	};
+	let inventory_units = inventory_result
+		.as_ref()
+		.ok()
+		.map_or(0, |inventory| inventory.mods.len() as u64);
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::Inventory,
+		true,
+		Some(inventory_units),
+		Some(inventory_units),
+	);
+	cancellation.check()?;
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::ResolveInput,
+		false,
+		Some(0),
+		None,
+	);
 	let resolve_started = Instant::now();
 	let mut workspace_result = inventory_result.and_then(resolve_workspace_from_inventory);
 	match workspace_result.as_ref() {
@@ -289,29 +517,46 @@ fn prepare_merge_with_backend(
 		options.include_game_base,
 		&resolution_map,
 	);
+	let plan_units = plan.paths.len() as u64;
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::ResolveInput,
+		true,
+		Some(plan_units),
+		Some(plan_units),
+	);
+	cancellation.check()?;
 
-	Ok(PreparedMerge {
-		request,
-		options,
-		backend_id,
-		workspace_result,
-		plan,
-		resolution_map,
-		emit_options,
-		frozen_external_files,
-		base_snapshot_publish_guard,
-		product_input_publish_guard,
-		execution_attestation,
-		modset_cache_key,
-		modset_cache_bypass,
-	})
+	complete_merge_analysis(
+		PendingAnalysis {
+			request,
+			options,
+			backend_id,
+			workspace_result,
+			plan,
+			resolution_map,
+			emit_options,
+			frozen_external_files,
+			base_snapshot_publish_guard,
+			product_input_publish_guard,
+			execution_attestation,
+			modset_cache_key,
+			modset_cache_bypass,
+		},
+		progress,
+		cancellation,
+		analysis_started,
+	)
 }
 
-fn export_prepared_merge(
-	prepared: PreparedMerge,
-	transaction: OutputTransaction,
-) -> Result<MergeExecutionResult, MergeError> {
-	let PreparedMerge {
+fn complete_merge_analysis(
+	pending: PendingAnalysis,
+	progress: &dyn ProgressObserver,
+	cancellation: &CancellationToken,
+	analysis_started: Instant,
+) -> Result<AnalyzedMerge, MergeError> {
+	let PendingAnalysis {
 		request,
 		options,
 		backend_id,
@@ -325,7 +570,7 @@ fn export_prepared_merge(
 		execution_attestation,
 		modset_cache_key,
 		modset_cache_bypass,
-	} = prepared;
+	} = pending;
 
 	let modset_cache = if let Some(key) = modset_cache_key {
 		match ModsetCache::open_default_versioned(MODSET_CACHE_VERSION) {
@@ -347,8 +592,21 @@ fn export_prepared_merge(
 	};
 
 	let final_out_dir = options.out_dir.clone();
-	let prior_out_dir = transaction.prior_dir().map(Path::to_path_buf);
-	let staging_dir = transaction.staging_dir().to_path_buf();
+	let prior_out_dir = final_out_dir.is_dir().then_some(final_out_dir.as_path());
+	let artifact_root = AnalyzedArtifactTree::create()?;
+	let staging_dir = artifact_root.path().to_path_buf();
+	cancellation.check()?;
+	let semantic_total = plan.paths.len() as u64;
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::SemanticMerge,
+		false,
+		Some(0),
+		Some(semantic_total),
+	);
+	let mut cache_hit = false;
+	let mut cached_report = None;
 	if let Some(cache_context) = modset_cache.as_ref() {
 		if let Some(cached) = cache_context.cache.lookup(&cache_context.key) {
 			if modset_cache_entry_depends_on_prior_output(&cached.report) {
@@ -382,76 +640,82 @@ fn export_prepared_merge(
 				report.input = product_input_publish_guard
 					.as_ref()
 					.map(|guard| guard.expected.clone());
-				let execution = merge_execution_result(report);
-				return finalize_merge_output(transaction, execution, None, false, |_| {
-					validate_publish_guards(
-						base_snapshot_publish_guard.as_ref(),
-						product_input_publish_guard.as_ref(),
-					)
-				});
+				cached_report = Some(report);
+				cache_hit = true;
 			}
 		}
-		eprintln!(
-			"[merge] modset_cache_hits=0 modset_cache_misses=1 key={}",
-			short_key(&cache_context.key)
-		);
+		if !cache_hit {
+			eprintln!(
+				"[merge] modset_cache_hits=0 modset_cache_misses=1 key={}",
+				short_key(&cache_context.key)
+			);
+		}
 	}
 
-	let effective_retained_paths = workspace_result
-		.as_ref()
-		.ok()
-		.and_then(|workspace| workspace.effective_retained_paths.clone());
-	let mut report = materialize_prepared_merge_with_workspace_result(
-		request.clone(),
-		&staging_dir,
-		prior_out_dir.as_deref(),
-		&final_out_dir,
-		MergeMaterializeOptions {
-			include_game_base: options.include_game_base,
-			include_base: options.include_base,
-			gui_scroll_merge: options.gui_scroll_merge,
-			force: options.force,
-			ignore_replace_path: options.ignore_replace_path,
-			dep_overrides: options.dep_overrides.clone(),
-			resolution_map,
-			emit_options,
-			frozen_external_files,
-			interactive_conflict_handler: options.interactive_conflict_handler,
-			interactive_resolution_config_path: options.interactive_resolution_config_path,
-			provenance: options.provenance,
-			backend: backend_for(backend_id),
-			retained_paths: effective_retained_paths,
-		},
-		workspace_result,
-		plan,
-	)?;
+	let mut report = if let Some(report) = cached_report {
+		report
+	} else {
+		let effective_retained_paths = workspace_result
+			.as_ref()
+			.ok()
+			.and_then(|workspace| workspace.effective_retained_paths.clone());
+		materialize_prepared_merge_with_workspace_result(
+			request.clone(),
+			MaterializeOutput {
+				artifacts_dir: &staging_dir,
+				prior_dir: prior_out_dir,
+				target_dir: &final_out_dir,
+			},
+			MergeMaterializeOptions {
+				include_game_base: options.include_game_base,
+				include_base: options.include_base,
+				gui_scroll_merge: options.gui_scroll_merge,
+				force: options.force,
+				ignore_replace_path: options.ignore_replace_path,
+				dep_overrides: options.dep_overrides.clone(),
+				resolution_map,
+				emit_options,
+				frozen_external_files,
+				interactive_conflict_handler: options.interactive_conflict_handler,
+				interactive_resolution_config_path: options.interactive_resolution_config_path,
+				provenance: options.provenance,
+				backend: backend_for(backend_id),
+				retained_paths: effective_retained_paths,
+				cancellation: cancellation.clone(),
+			},
+			workspace_result,
+			plan.clone(),
+			Some((progress, analysis_started)),
+		)?
+	};
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::SemanticMerge,
+		true,
+		Some(semantic_total),
+		Some(semantic_total),
+	);
+	cancellation.check()?;
 	report.playset_fingerprint = options.playset_fingerprint.clone();
 	report.execution = Some(execution_attestation);
 	report.input = product_input_publish_guard
 		.as_ref()
 		.map(|guard| guard.expected.clone());
 
-	if report.status == MergeReportStatus::Fatal {
-		let execution = merge_execution_result(report);
-		return finalize_merge_output(transaction, execution, modset_cache.as_ref(), false, |_| {
-			validate_publish_guards(
-				base_snapshot_publish_guard.as_ref(),
-				product_input_publish_guard.as_ref(),
-			)
-		});
-	}
-
-	if report.status == MergeReportStatus::Blocked {
-		let execution = merge_execution_result(report);
-		return finalize_merge_output(transaction, execution, modset_cache.as_ref(), true, |_| {
-			validate_publish_guards(
-				base_snapshot_publish_guard.as_ref(),
-				product_input_publish_guard.as_ref(),
-			)
-		});
-	}
-
-	if options.retained_paths.is_none() {
+	if !matches!(
+		report.status,
+		MergeReportStatus::Fatal | MergeReportStatus::Blocked
+	) && options.retained_paths.is_none()
+	{
+		notify_progress(
+			progress,
+			analysis_started,
+			MergeAnalysisStage::ValidateOutput,
+			false,
+			Some(0),
+			Some(report.generated_file_count as u64),
+		);
 		report.validation = revalidate_generated_output(
 			&request,
 			&staging_dir,
@@ -460,14 +724,85 @@ fn export_prepared_merge(
 				.as_ref()
 				.map(|guard| guard.identity.clone()),
 		)?;
+		let generated = report.generated_file_count as u64;
+		notify_progress(
+			progress,
+			analysis_started,
+			MergeAnalysisStage::ValidateOutput,
+			true,
+			Some(generated),
+			Some(generated),
+		);
 	}
+	cancellation.check()?;
 	let execution = merge_execution_result(report);
-	finalize_merge_output(transaction, execution, modset_cache.as_ref(), true, |_| {
-		validate_publish_guards(
-			base_snapshot_publish_guard.as_ref(),
-			product_input_publish_guard.as_ref(),
-		)
+	write_merge_report_artifact(&staging_dir, &execution.report)?;
+	let prior_output_guard = PriorOutputGuard::from_report(&final_out_dir, &execution.report)?;
+	if !cache_hit && execution.report.status != MergeReportStatus::Fatal {
+		let _cache_input_guard = if modset_cache.is_some() {
+			validate_publish_guards(
+				base_snapshot_publish_guard.as_ref(),
+				product_input_publish_guard.as_ref(),
+			)?
+		} else {
+			None
+		};
+		store_modset_cache_entry(modset_cache.as_ref(), &staging_dir, &execution.report);
+	}
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::FreezeArtifacts,
+		false,
+		Some(0),
+		None,
+	);
+	let artifacts = AnalyzedArtifactTree::freeze(artifact_root)?;
+	let artifact_count = artifacts.file_count() as u64;
+	notify_progress(
+		progress,
+		analysis_started,
+		MergeAnalysisStage::FreezeArtifacts,
+		true,
+		Some(artifact_count),
+		Some(artifact_count),
+	);
+	let status = merge_analysis_status(&execution);
+	let activation_safe = status == MergeAnalysisStatus::ReadyToCommit;
+	let analysis = MergeAnalysis {
+		plan,
+		report: execution.report,
+		merge_status: execution.merge_status,
+		analysis_status: execution.analysis_status,
+		status,
+		activation_safe,
+		artifact_file_count: artifacts.file_count(),
+	};
+	Ok(AnalyzedMerge {
+		out_dir: final_out_dir,
+		analysis,
+		artifacts,
+		base_snapshot_publish_guard,
+		product_input_publish_guard,
+		prior_output_guard,
 	})
+}
+
+fn notify_progress(
+	observer: &dyn ProgressObserver,
+	started: Instant,
+	stage: MergeAnalysisStage,
+	completed: bool,
+	completed_units: Option<u64>,
+	total_units: Option<u64>,
+) {
+	observer.update(MergeProgress {
+		stage,
+		completed,
+		completed_units,
+		total_units,
+		elapsed: started.elapsed(),
+	});
 }
 
 fn merge_execution_attestation(
@@ -517,6 +852,154 @@ struct ProductInputPublishGuard {
 	request: CheckRequest,
 	retained_paths: Option<BTreeSet<String>>,
 	expected: ProductInputAttestation,
+}
+
+#[derive(Clone, Debug)]
+struct PriorOutputGuard {
+	root: PathBuf,
+	files: BTreeMap<PathBuf, blake3::Hash>,
+}
+
+impl PriorOutputGuard {
+	fn from_report(root: &Path, report: &MergeReport) -> Result<Option<Self>, MergeError> {
+		let mut files = BTreeMap::new();
+		for resolution in &report.handler_resolutions {
+			if !resolution.action.eq_ignore_ascii_case("kept_existing") {
+				continue;
+			}
+			let relative = safe_output_relative_path(Path::new(&resolution.path))?;
+			let bytes = fs::read(root.join(&relative))?;
+			files.insert(relative, blake3::hash(&bytes));
+		}
+		if files.is_empty() {
+			Ok(None)
+		} else {
+			Ok(Some(Self {
+				root: root.to_path_buf(),
+				files,
+			}))
+		}
+	}
+
+	fn validate(&self) -> Result<(), MergeError> {
+		for (relative, expected) in &self.files {
+			let path = self.root.join(relative);
+			let unchanged = fs::read(&path)
+				.map(|bytes| blake3::hash(&bytes) == *expected)
+				.unwrap_or(false);
+			if !unchanged {
+				return Err(MergeError::AnalyzedOutputChanged { path });
+			}
+		}
+		Ok(())
+	}
+}
+
+fn safe_output_relative_path(path: &Path) -> Result<PathBuf, MergeError> {
+	if path.as_os_str().is_empty()
+		|| path
+			.components()
+			.any(|component| !matches!(component, std::path::Component::Normal(_)))
+	{
+		return Err(MergeError::Validation {
+			path: Some(path.display().to_string()),
+			message: "output path is not a safe relative path".to_string(),
+		});
+	}
+	Ok(path.to_path_buf())
+}
+
+fn fingerprint_replacement_target(root: &Path) -> Result<Option<ReplacementTarget>, MergeError> {
+	match fs::symlink_metadata(root) {
+		Ok(metadata) if metadata.file_type().is_dir() => {}
+		Ok(_) => {
+			return Err(MergeError::Validation {
+				path: Some(root.display().to_string()),
+				message: "merge output target is not a directory".to_string(),
+			});
+		}
+		Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+		Err(error) => return Err(MergeError::Io(error)),
+	}
+
+	let mut entries = WalkDir::new(root)
+		.min_depth(1)
+		.follow_links(false)
+		.into_iter()
+		.collect::<Result<Vec<_>, _>>()
+		.map_err(|error| {
+			let message = error.to_string();
+			match error.into_io_error() {
+				Some(error) => MergeError::Io(io::Error::new(error.kind(), message)),
+				None => MergeError::Validation {
+					path: Some(root.display().to_string()),
+					message,
+				},
+			}
+		})?;
+	entries.sort_by(|left, right| left.path().cmp(right.path()));
+	if entries.is_empty() {
+		return Ok(None);
+	}
+
+	let mut hasher = blake3::Hasher::new();
+	let mut file_count = 0usize;
+	let mut total_bytes = 0u64;
+	for entry in entries {
+		let relative = entry
+			.path()
+			.strip_prefix(root)
+			.map_err(|_| MergeError::Validation {
+				path: Some(entry.path().display().to_string()),
+				message: "replacement target entry escaped its root".to_string(),
+			})?;
+		let relative = safe_output_relative_path(relative)?;
+		let relative = relative.to_str().ok_or_else(|| MergeError::Validation {
+			path: Some(relative.display().to_string()),
+			message: "replacement target path is not valid UTF-8".to_string(),
+		})?;
+		if entry.file_type().is_dir() {
+			hash_replacement_part(&mut hasher, b"directory");
+			hash_replacement_part(&mut hasher, relative.as_bytes());
+		} else if entry.file_type().is_file() {
+			let bytes = fs::read(entry.path())?;
+			hash_replacement_part(&mut hasher, b"file");
+			hash_replacement_part(&mut hasher, relative.as_bytes());
+			hash_replacement_part(&mut hasher, &bytes);
+			file_count = file_count.saturating_add(1);
+			total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+		} else {
+			return Err(MergeError::Validation {
+				path: Some(entry.path().display().to_string()),
+				message: "replacement target contains a symlink or special file".to_string(),
+			});
+		}
+	}
+
+	Ok(Some(ReplacementTarget {
+		path: root.to_path_buf(),
+		fingerprint: hasher.finalize(),
+		file_count,
+		total_bytes,
+	}))
+}
+
+fn validate_replacement_target(
+	root: &Path,
+	expected: &ReplacementTarget,
+) -> Result<(), MergeError> {
+	let observed = fingerprint_replacement_target(root)?;
+	if expected.path != root || observed.as_ref() != Some(expected) {
+		return Err(MergeError::ReplacementTargetChanged {
+			path: root.to_path_buf(),
+		});
+	}
+	Ok(())
+}
+
+fn hash_replacement_part(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+	hasher.update(&(bytes.len() as u64).to_le_bytes());
+	hasher.update(bytes);
 }
 
 impl ProductInputPublishGuard {
@@ -575,31 +1058,33 @@ impl BaseSnapshotPublishGuard {
 	}
 }
 
+#[cfg(test)]
 fn finalize_merge_output<Guard>(
 	transaction: OutputTransaction,
-	execution: MergeExecutionResult,
+	execution: CommitResult,
 	cache_context: Option<&ModsetCacheContext>,
 	store_cache: bool,
 	validate_base_snapshot: impl FnOnce(&Path) -> Result<Guard, MergeError>,
-) -> Result<MergeExecutionResult, MergeError> {
+) -> Result<CommitResult, MergeError> {
 	finalize_merge_output_with_publish(
 		transaction,
 		execution,
 		cache_context,
 		store_cache,
 		validate_base_snapshot,
-		OutputTransaction::publish,
+		OutputTransaction::commit,
 	)
 }
 
+#[cfg(test)]
 fn finalize_merge_output_with_publish<Guard>(
 	transaction: OutputTransaction,
-	execution: MergeExecutionResult,
+	execution: CommitResult,
 	cache_context: Option<&ModsetCacheContext>,
 	store_cache: bool,
 	validate_base_snapshot: impl FnOnce(&Path) -> Result<Guard, MergeError>,
-	publish: impl FnOnce(OutputTransaction) -> Result<(), MergeError>,
-) -> Result<MergeExecutionResult, MergeError> {
+	commit: impl FnOnce(OutputTransaction) -> Result<(), MergeError>,
+) -> Result<CommitResult, MergeError> {
 	write_merge_report_artifact(transaction.staging_dir(), &execution.report)?;
 	// Validate every mutable input before the staging tree becomes reusable or
 	// visible. A failed guard must never poison the modset cache under an old key.
@@ -607,7 +1092,7 @@ fn finalize_merge_output_with_publish<Guard>(
 	if store_cache {
 		store_modset_cache_entry(cache_context, transaction.staging_dir(), &execution.report);
 	}
-	publish(transaction)?;
+	commit(transaction)?;
 	Ok(execution)
 }
 
@@ -641,7 +1126,7 @@ fn validate_publish_guards(
 
 fn build_modset_cache_key(
 	inventory: &WorkspaceInventory,
-	options: &MergeExecuteOptions,
+	options: &MergeAnalysisOptions,
 	backend_id: MergeBackendId,
 	merge_policy_hash: &str,
 ) -> Option<String> {
@@ -938,17 +1423,35 @@ fn short_key(key: &str) -> &str {
 	key.get(..16).unwrap_or(key)
 }
 
-fn merge_execution_result(mut report: MergeReport) -> MergeExecutionResult {
+fn merge_execution_result(mut report: MergeReport) -> CommitResult {
 	let merge_status = compute_merge_status(&report);
 	report.status = merge_status.status;
 	let analysis_status = compute_analysis_status(&report);
 	let exit_code = merge_execution_exit_code(&merge_status, &analysis_status);
-	MergeExecutionResult {
+	CommitResult {
 		report,
 		merge_status,
 		analysis_status,
 		exit_code,
 	}
+}
+
+fn merge_analysis_status(execution: &CommitResult) -> MergeAnalysisStatus {
+	if matches!(
+		execution.merge_status.status,
+		MergeReportStatus::Fatal | MergeReportStatus::Blocked
+	) || execution.analysis_status.fatal_errors > 0
+	{
+		MergeAnalysisStatus::Blocked
+	} else if execution.merge_status.status == MergeReportStatus::PartialSuccess {
+		MergeAnalysisStatus::CommittableWithDeferrals
+	} else {
+		MergeAnalysisStatus::ReadyToCommit
+	}
+}
+
+fn commit_exit_code(analysis: &MergeAnalysis) -> i32 {
+	merge_execution_exit_code(&analysis.merge_status, &analysis.analysis_status)
 }
 
 fn compute_merge_status(report: &MergeReport) -> MergeStatusView {
@@ -1278,11 +1781,12 @@ fn write_merge_trace_artifact(out_dir: &Path, report: &MergeReport) -> Result<()
 
 fn validation_playlist_dir(parent_dir: &Path) -> PathBuf {
 	let pid = std::process::id();
+	let nonce = VALIDATION_PLAYSET_COUNTER.fetch_add(1, Ordering::Relaxed);
 	let nanos = SystemTime::now()
 		.duration_since(UNIX_EPOCH)
 		.map(|duration| duration.as_nanos())
 		.unwrap_or_default();
-	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}"))
+	parent_dir.join(format!(".foch-merge-validation-{pid}-{nanos}-{nonce}"))
 }
 
 fn normalize_descriptor_path(path: &Path) -> String {
@@ -1310,6 +1814,51 @@ mod tests {
 	use foch::model::{HandlerResolutionRecord, MergePlanEntry, ProductInputMod};
 	use foch::playset::steam::{SteamId, WorkshopInstallIdentity};
 	use std::collections::HashMap;
+	use std::sync::Mutex;
+
+	#[derive(Default)]
+	struct RecordingProgressObserver {
+		updates: Mutex<Vec<MergeProgress>>,
+	}
+
+	impl ProgressObserver for RecordingProgressObserver {
+		fn update(&self, progress: MergeProgress) {
+			self.updates
+				.lock()
+				.expect("progress observer lock")
+				.push(progress);
+		}
+	}
+
+	impl RecordingProgressObserver {
+		fn updates(&self) -> Vec<MergeProgress> {
+			self.updates.lock().expect("progress observer lock").clone()
+		}
+	}
+
+	struct CancellingProgressObserver {
+		cancellation: CancellationToken,
+	}
+
+	impl ProgressObserver for CancellingProgressObserver {
+		fn update(&self, progress: MergeProgress) {
+			if progress.stage == MergeAnalysisStage::SemanticMerge && !progress.completed {
+				self.cancellation.cancel();
+			}
+		}
+	}
+
+	fn analyze_merge_for_test(
+		request: CheckRequest,
+		options: MergeAnalysisOptions,
+	) -> Result<AnalyzedMerge, MergeError> {
+		analyze_merge(
+			request,
+			options,
+			&NoopProgressObserver,
+			&CancellationToken::new(),
+		)
+	}
 
 	fn report_with(mut update: impl FnMut(&mut MergeReport)) -> MergeReport {
 		let mut report = MergeReport::default();
@@ -1338,12 +1887,12 @@ mod tests {
 	}
 
 	#[test]
-	fn preparing_merge_freezes_plan_without_creating_output() {
+	fn analysis_freezes_complete_output_without_creating_target() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
 		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 			.join("tests/fixtures/playsets/eu4_minimal_passthrough");
 		let out_dir = temp.path().join("out");
-		let prepared = prepare_merge_with_options(
+		let analyzed = analyze_merge_for_test(
 			CheckRequest::from_playset_path(
 				fixture.join("dlc_load.json"),
 				crate::Config {
@@ -1353,7 +1902,7 @@ mod tests {
 					extra_ignore_patterns: Vec::new(),
 				},
 			),
-			MergeExecuteOptions {
+			MergeAnalysisOptions {
 				out_dir: out_dir.clone(),
 				include_game_base: false,
 				include_base: false,
@@ -1369,12 +1918,17 @@ mod tests {
 				retained_paths: None,
 			},
 		)
-		.expect("prepare merge");
+		.expect("analyze merge");
 
-		assert!(prepared.plan().strategies.total_paths > 0);
-		assert!(!out_dir.exists(), "prepare must not touch the output path");
-		let reviewed_plan = serde_json::to_value(prepared.plan()).expect("serialize reviewed plan");
-		prepared.export().expect("export prepared merge");
+		assert!(analyzed.analysis().plan().strategies.total_paths > 0);
+		assert!(analyzed.analysis().artifact_file_count() > 0);
+		assert_ne!(analyzed.analysis().status(), MergeAnalysisStatus::Blocked);
+		assert!(!out_dir.exists(), "analysis must not touch the output path");
+		let reviewed_plan =
+			serde_json::to_value(analyzed.analysis().plan()).expect("serialize reviewed plan");
+		analyzed
+			.commit(CommitAuthorization::EmptyTargetOnly)
+			.expect("commit analyzed merge");
 		let persisted_plan: serde_json::Value = serde_json::from_slice(
 			&fs::read(out_dir.join(foch::model::MERGE_PLAN_ARTIFACT_PATH))
 				.expect("read persisted plan"),
@@ -1384,7 +1938,7 @@ mod tests {
 	}
 
 	#[test]
-	fn preparing_merge_freezes_emit_options() {
+	fn analysis_freezes_emit_options() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
 		let root = temp.path();
 		let mod_root = root.join("mods/minimal");
@@ -1413,9 +1967,9 @@ mod tests {
 		let config_path = root.join("foch.toml");
 		fs::write(&config_path, "[emit]\nindent = \"  \"\n").expect("write emit config");
 		let out_dir = root.join("out");
-		let prepared = prepare_merge_with_options(
+		let analyzed = analyze_merge_for_test(
 			CheckRequest::from_playset_path(root.join("dlc_load.json"), Config::default()),
-			MergeExecuteOptions {
+			MergeAnalysisOptions {
 				out_dir: out_dir.clone(),
 				include_game_base: false,
 				include_base: false,
@@ -1431,14 +1985,232 @@ mod tests {
 				retained_paths: None,
 			},
 		)
-		.expect("prepare merge");
+		.expect("analyze merge");
 
 		fs::write(&config_path, "[emit]\nindent = \"\\t\"\n").expect("mutate emit config");
-		prepared.export().expect("export prepared merge");
+		analyzed
+			.commit(CommitAuthorization::EmptyTargetOnly)
+			.expect("commit analyzed merge");
 		let output = fs::read_to_string(out_dir.join("common/cultures/zzz_foch_cultures.txt"))
 			.expect("read generated culture module");
 		assert!(output.contains("\n  graphical_culture"), "{output}");
 		assert!(!output.contains("\n\tgraphical_culture"), "{output}");
+	}
+
+	#[test]
+	fn cancelled_analysis_stops_before_reading_inputs() {
+		let cancellation = CancellationToken::new();
+		cancellation.cancel();
+		let error = analyze_merge(
+			CheckRequest::from_playset_path(
+				PathBuf::from("missing/cancelled-dlc-load.json"),
+				Config::default(),
+			),
+			MergeAnalysisOptions {
+				out_dir: PathBuf::from("target/cancelled-analysis-must-not-exist"),
+				include_game_base: false,
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				dep_overrides: Vec::new(),
+				resolution_config_path: None,
+				interactive_conflict_handler: None,
+				interactive_resolution_config_path: None,
+				playset_fingerprint: None,
+				provenance: false,
+				retained_paths: None,
+			},
+			&NoopProgressObserver,
+			&cancellation,
+		)
+		.err()
+		.expect("cancelled analysis must stop immediately");
+
+		assert!(matches!(error, MergeError::Cancelled));
+	}
+
+	#[test]
+	fn cancellation_during_semantic_merge_leaves_target_untouched() {
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("tests/fixtures/playsets/eu4_minimal_passthrough");
+		let out_dir = temp.path().join("out");
+		let cancellation = CancellationToken::new();
+		let observer = CancellingProgressObserver {
+			cancellation: cancellation.clone(),
+		};
+		let error = analyze_merge(
+			CheckRequest::from_playset_path(fixture.join("dlc_load.json"), Config::default()),
+			MergeAnalysisOptions {
+				out_dir: out_dir.clone(),
+				include_game_base: false,
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				dep_overrides: Vec::new(),
+				resolution_config_path: None,
+				interactive_conflict_handler: None,
+				interactive_resolution_config_path: None,
+				playset_fingerprint: None,
+				provenance: false,
+				retained_paths: None,
+			},
+			&observer,
+			&cancellation,
+		)
+		.err()
+		.expect("semantic analysis should be cancelled");
+
+		assert!(matches!(error, MergeError::Cancelled));
+		assert!(!out_dir.exists());
+	}
+
+	#[test]
+	fn analysis_reports_ordered_stages_counts_and_elapsed_time() {
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("tests/fixtures/playsets/eu4_minimal_passthrough");
+		let observer = RecordingProgressObserver::default();
+		analyze_merge(
+			CheckRequest::from_playset_path(fixture.join("dlc_load.json"), Config::default()),
+			MergeAnalysisOptions {
+				out_dir: temp.path().join("out"),
+				include_game_base: false,
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				dep_overrides: Vec::new(),
+				resolution_config_path: None,
+				interactive_conflict_handler: None,
+				interactive_resolution_config_path: None,
+				playset_fingerprint: None,
+				provenance: false,
+				retained_paths: None,
+			},
+			&observer,
+			&CancellationToken::new(),
+		)
+		.expect("analyze merge");
+
+		let updates = observer.updates();
+		let stage_boundaries = updates
+			.iter()
+			.filter(|progress| progress.completed || progress.completed_units == Some(0))
+			.map(|progress| (progress.stage, progress.completed))
+			.collect::<Vec<_>>();
+		assert_eq!(
+			stage_boundaries,
+			vec![
+				(MergeAnalysisStage::Inventory, false),
+				(MergeAnalysisStage::Inventory, true),
+				(MergeAnalysisStage::ResolveInput, false),
+				(MergeAnalysisStage::ResolveInput, true),
+				(MergeAnalysisStage::SemanticMerge, false),
+				(MergeAnalysisStage::SemanticMerge, true),
+				(MergeAnalysisStage::ValidateOutput, false),
+				(MergeAnalysisStage::ValidateOutput, true),
+				(MergeAnalysisStage::FreezeArtifacts, false),
+				(MergeAnalysisStage::FreezeArtifacts, true),
+			],
+		);
+		assert!(
+			updates
+				.windows(2)
+				.all(|pair| pair[0].elapsed <= pair[1].elapsed)
+		);
+		for progress in updates.iter().filter(|progress| progress.completed) {
+			assert_eq!(progress.completed_units, progress.total_units);
+		}
+	}
+
+	#[test]
+	fn commit_requires_separate_replacement_authorization() {
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("tests/fixtures/playsets/eu4_minimal_passthrough");
+		let out_dir = temp.path().join("out");
+		let analyzed = analyze_merge_for_test(
+			CheckRequest::from_playset_path(fixture.join("dlc_load.json"), Config::default()),
+			MergeAnalysisOptions {
+				out_dir: out_dir.clone(),
+				include_game_base: false,
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				dep_overrides: Vec::new(),
+				resolution_config_path: None,
+				interactive_conflict_handler: None,
+				interactive_resolution_config_path: None,
+				playset_fingerprint: None,
+				provenance: false,
+				retained_paths: None,
+			},
+		)
+		.expect("analyze merge");
+		fs::create_dir_all(&out_dir).expect("create output");
+		fs::write(out_dir.join("user-file.txt"), b"preserve me\n").expect("seed output");
+
+		let error = analyzed
+			.commit(CommitAuthorization::EmptyTargetOnly)
+			.expect_err("replacement must require explicit authorization");
+
+		assert!(matches!(
+			error,
+			MergeError::ReplacementAuthorizationRequired { .. }
+		));
+		assert_eq!(
+			fs::read(out_dir.join("user-file.txt")).expect("read preserved output"),
+			b"preserve me\n"
+		);
+	}
+
+	#[test]
+	fn commit_rejects_a_replacement_target_changed_after_confirmation() {
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+			.join("tests/fixtures/playsets/eu4_minimal_passthrough");
+		let out_dir = temp.path().join("out");
+		let analyzed = analyze_merge_for_test(
+			CheckRequest::from_playset_path(fixture.join("dlc_load.json"), Config::default()),
+			MergeAnalysisOptions {
+				out_dir: out_dir.clone(),
+				include_game_base: false,
+				include_base: false,
+				gui_scroll_merge: false,
+				force: false,
+				ignore_replace_path: false,
+				dep_overrides: Vec::new(),
+				resolution_config_path: None,
+				interactive_conflict_handler: None,
+				interactive_resolution_config_path: None,
+				playset_fingerprint: None,
+				provenance: false,
+				retained_paths: None,
+			},
+		)
+		.expect("analyze merge");
+		fs::create_dir_all(&out_dir).expect("create output");
+		let user_file = out_dir.join("user-file.txt");
+		fs::write(&user_file, b"confirmed bytes\n").expect("seed output");
+		let replacement = analyzed
+			.replacement_target()
+			.expect("fingerprint output")
+			.expect("non-empty output token");
+		fs::write(&user_file, b"changed after confirmation\n").expect("mutate output");
+
+		let error = analyzed
+			.commit(CommitAuthorization::ReplaceExisting(replacement))
+			.expect_err("changed output must invalidate replacement authorization");
+
+		assert!(matches!(error, MergeError::ReplacementTargetChanged { .. }));
+		assert_eq!(
+			fs::read(&user_file).expect("read preserved changed output"),
+			b"changed after confirmation\n"
+		);
 	}
 
 	#[test]
@@ -1514,6 +2286,31 @@ mod tests {
 		assert_eq!(
 			compute_merge_status(&engine_failure).status,
 			MergeReportStatus::PartialSuccess
+		);
+	}
+
+	#[test]
+	fn analysis_status_uses_precommit_lifecycle_terms() {
+		let ready = merge_execution_result(MergeReport::default());
+		assert_eq!(
+			merge_analysis_status(&ready),
+			MergeAnalysisStatus::ReadyToCommit
+		);
+
+		let deferred = merge_execution_result(report_with(|report| {
+			report.unsupported_input_count = 1;
+		}));
+		assert_eq!(
+			merge_analysis_status(&deferred),
+			MergeAnalysisStatus::CommittableWithDeferrals
+		);
+
+		let blocked = merge_execution_result(report_with(|report| {
+			report.status = MergeReportStatus::Blocked;
+		}));
+		assert_eq!(
+			merge_analysis_status(&blocked),
+			MergeAnalysisStatus::Blocked
 		);
 	}
 
@@ -1866,7 +2663,7 @@ mod tests {
 		assert_eq!(transaction.prior_dir(), None);
 		fs::write(transaction.staging_dir().join("new.txt"), "new output\n")
 			.expect("write staged output");
-		transaction.publish().expect("publish transaction");
+		transaction.commit().expect("commit transaction");
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("new.txt")).expect("read published output"),
@@ -1899,7 +2696,7 @@ mod tests {
 			"current government\n",
 		)
 		.expect("write staged module");
-		transaction.publish().expect("publish transaction");
+		transaction.commit().expect("commit transaction");
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/governments/current.txt"))
@@ -2003,7 +2800,7 @@ mod tests {
 		fs::write(out_dir.join("concurrent.txt"), "preserve me\n")
 			.expect("write concurrent replacement");
 		let error = transaction
-			.publish()
+			.commit()
 			.expect_err("concurrent directory replacement must be rejected");
 
 		assert!(
@@ -2214,7 +3011,7 @@ mod tests {
 		.expect("rewrite cached descriptor for current request");
 		write_merge_plan_artifact(transaction.staging_dir(), &reviewed_plan)
 			.expect("replace cached plan with reviewed plan");
-		transaction.publish().expect("publish cached output");
+		transaction.commit().expect("commit cached output");
 
 		assert_eq!(
 			fs::read_to_string(out_dir.join("common/governments/current.txt"))
@@ -2431,9 +3228,9 @@ mod tests {
 			|transaction| {
 				assert!(
 					publish_guard_alive.load(Ordering::SeqCst),
-					"publication guard dropped before OutputTransaction::publish"
+					"commit guard dropped before OutputTransaction::commit"
 				);
-				transaction.publish()
+				transaction.commit()
 			},
 		)
 		.expect("finalize merge output");
@@ -2523,7 +3320,7 @@ mod tests {
 		);
 		let result = run_merge_with_options(
 			request,
-			MergeExecuteOptions {
+			MergeAnalysisOptions {
 				out_dir: temp.path().join("out"),
 				include_game_base: true,
 				include_base: false,

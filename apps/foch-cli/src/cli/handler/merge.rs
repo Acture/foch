@@ -6,8 +6,9 @@ use foch::playset::descriptor::load_descriptor;
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
 use foch_engine::{
-	CheckRequest, Config, ConflictHandler, InteractiveCliHandler, MergeExecuteOptions,
-	WorkspaceSource, prepare_merge_with_options, resolve_product_input_manifest,
+	CancellationToken, CheckRequest, CommitAuthorization, Config, ConflictHandler,
+	InteractiveCliHandler, MergeAnalysisOptions, NoopProgressObserver, WorkspaceSource,
+	analyze_merge, resolve_product_input_manifest,
 };
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
@@ -27,9 +28,9 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
 	let (interactive_conflict_handler, interactive_resolution_config_path) =
 		build_interactive_conflict_handler(merge_args, &source);
-	let prepared = prepare_merge_with_options(
+	let analyzed = analyze_merge(
 		request,
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: merge_args.out.clone(),
 			include_game_base: !merge_args.no_game_base,
 			include_base: merge_args.include_base,
@@ -47,20 +48,29 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			provenance: merge_args.provenance,
 			retained_paths: None,
 		},
+		&NoopProgressObserver,
+		&CancellationToken::new(),
 	)?;
-	println!("{}", render_merge_plan_text(prepared.plan()));
-	let plan_exit_code = merge_plan_exit_code(prepared.plan());
-	if prepared.plan().has_fatal_errors() {
+	let analysis = analyzed.analysis();
+	println!("{}", render_merge_plan_text(analysis.plan()));
+	let plan_exit_code = merge_plan_exit_code(analysis.plan());
+	if analysis.plan().has_fatal_errors() {
 		return Ok(plan_exit_code);
 	}
-	if !confirm_merge_export(merge_args, merge_args.out.as_path())? {
+	if !confirm_merge_commit(merge_args, merge_args.out.as_path())? {
 		return Ok(0);
 	}
 
-	let Some(execution) = prepared.export_with_overwrite_confirmation(confirm_existing_out_dir)?
-	else {
-		return Ok(1);
+	let authorization = match analyzed.replacement_target()? {
+		Some(target) => {
+			if !confirm_existing_out_dir(target.path())? {
+				return Ok(1);
+			}
+			CommitAuthorization::ReplaceExisting(target)
+		}
+		None => CommitAuthorization::EmptyTargetOnly,
 	};
+	let execution = analyzed.commit(authorization)?;
 	println!("{}", render_merge_report_text(&execution.report));
 	if let Some(tip) = render_unresolved_conflict_tip(&execution.report, merge_args.out.as_path()) {
 		eprintln!("{tip}");
@@ -76,7 +86,7 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 	Ok(execution.exit_code)
 }
 
-fn confirm_merge_export(
+fn confirm_merge_commit(
 	merge_args: &MergeArgs,
 	out_dir: &Path,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -85,21 +95,21 @@ fn confirm_merge_export(
 	}
 
 	if merge_args.non_interactive {
-		eprintln!("[foch] plan prepared; output not written. Pass --confirm to export it.");
+		eprintln!("[foch] analysis complete; output not written. Pass --confirm to commit it.");
 		return Ok(false);
 	}
 
 	let stdin = std::io::stdin();
 	let stderr = std::io::stderr();
 	if !stdin.is_terminal() || !stderr.is_terminal() {
-		eprintln!("[foch] plan prepared; output not written. Pass --confirm to export it.");
+		eprintln!("[foch] analysis complete; output not written. Pass --confirm to commit it.");
 		return Ok(false);
 	}
 
 	let mut handle = stderr.lock();
 	write!(
 		handle,
-		"[foch] export this plan to {}? [y/N] ",
+		"[foch] commit this analyzed merge to {}? [y/N] ",
 		out_dir.display()
 	)?;
 	handle.flush()?;
@@ -111,7 +121,7 @@ fn confirm_merge_export(
 	if answer == "y" || answer == "yes" {
 		Ok(true)
 	} else {
-		eprintln!("[foch] plan kept as preview; output directory not modified");
+		eprintln!("[foch] analysis kept for review; output directory not modified");
 		Ok(false)
 	}
 }
@@ -181,7 +191,7 @@ fn render_unresolved_conflict_tip(report: &MergeReport, out_dir: &Path) -> Optio
 		lines.push("  3. Resolve skipped files manually, then re-run merge.".to_string());
 	}
 	lines.push(
-		"Foch exported the safe units and withheld only these conflicts; use an explicit resolution when you're ready."
+		"Foch committed the safe units and withheld only these conflicts; use an explicit resolution when you're ready."
 			.to_string(),
 	);
 	Some(lines.join("\n"))
@@ -317,9 +327,9 @@ fn playset_root_for(playset_path: &Path) -> PathBuf {
 		.to_path_buf()
 }
 
-/// Confirm replacement while the engine holds the output transaction lock.
-/// This keeps the path inspected by the prompt identical to the path replaced
-/// by publication; a concurrent writer cannot swap it after authorization.
+/// Confirm replacement of the target captured by the engine's opaque token.
+/// Commit revalidates that exact target under the output lock before and after
+/// staging the frozen analyzed bytes.
 fn confirm_existing_out_dir(out_dir: &Path) -> io::Result<bool> {
 	let stdin = std::io::stdin();
 	let stderr = std::io::stderr();
@@ -334,7 +344,7 @@ fn confirm_existing_out_dir(out_dir: &Path) -> io::Result<bool> {
 	let mut handle = stderr.lock();
 	write!(
 		handle,
-		"[foch] --out {} already exists and is non-empty. Overwrite it with the confirmed plan? [y/N] ",
+		"[foch] --out {} already exists and is non-empty. Replace it with the analyzed merge? [y/N] ",
 		out_dir.display()
 	)?;
 	handle.flush()?;

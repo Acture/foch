@@ -10,7 +10,7 @@ use std::path::Path;
 use foch::game::eu4::Eu4;
 use foch::model::MergeReportStatus;
 use foch_engine::{
-	BaseDataSource, CheckRequest, Config, FileFilter, MergeExecuteOptions, build_base_snapshot,
+	BaseDataSource, CheckRequest, Config, FileFilter, MergeAnalysisOptions, build_base_snapshot,
 	install_built_snapshot, run_merge_with_options,
 };
 use foch_language::analyzer::parser::{AstStatement, AstValue};
@@ -162,7 +162,7 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 	);
 	let result = run_merge_with_options(
 		request,
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: true,
 			include_base: false,

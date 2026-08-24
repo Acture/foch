@@ -63,7 +63,7 @@ impl OutputTransaction {
 	pub(crate) fn staging_dir(&self) -> &Path {
 		self.staging_dir
 			.as_deref()
-			.expect("published output transaction has no staging directory")
+			.expect("committed output transaction has no staging directory")
 	}
 
 	pub(crate) fn prior_dir(&self) -> Option<&Path> {
@@ -71,12 +71,12 @@ impl OutputTransaction {
 			.then_some(self.final_dir.as_path())
 	}
 
-	pub(crate) fn publish(mut self) -> Result<(), MergeError> {
+	pub(crate) fn commit(mut self) -> Result<(), MergeError> {
 		let staging_dir = self
 			.staging_dir
 			.as_ref()
 			.cloned()
-			.expect("output transaction can only be published once");
+			.expect("output transaction can only be committed once");
 		let current_target = inspect_output_target(&self.final_dir)?;
 		if current_target != self.initial_target {
 			return Err(output_target_changed_error(&self.final_dir));

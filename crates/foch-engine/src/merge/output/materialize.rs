@@ -27,6 +27,9 @@ use super::super::planning::module_view::{
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::emit::EmitOptions;
 use crate::merge::backend::{BackendRequest, BackendUnit, GumtreePcsNwayBackend, MergeBackend};
+use crate::merge::execute::{
+	CancellationToken, MergeAnalysisStage, MergeProgress, ProgressObserver,
+};
 use crate::merge::model::ExternalFileResolution;
 use crate::merge::model::VanillaBaseMode;
 use crate::request::CheckRequest;
@@ -87,6 +90,13 @@ pub(crate) struct MergeMaterializeOptions {
 	/// Optional relative-path retention set for callers that only need a subset
 	/// of copy-through output.
 	pub retained_paths: Option<BTreeSet<String>>,
+	pub cancellation: CancellationToken,
+}
+
+pub(crate) struct MaterializeOutput<'a> {
+	pub artifacts_dir: &'a Path,
+	pub prior_dir: Option<&'a Path>,
+	pub target_dir: &'a Path,
 }
 
 impl Default for MergeMaterializeOptions {
@@ -106,6 +116,7 @@ impl Default for MergeMaterializeOptions {
 			provenance: false,
 			backend: Box::new(GumtreePcsNwayBackend),
 			retained_paths: None,
+			cancellation: CancellationToken::new(),
 		}
 	}
 }
@@ -211,7 +222,7 @@ pub(crate) fn materialize_merge_internal(
 		options,
 		workspace_result,
 	)?;
-	transaction.publish()?;
+	transaction.commit()?;
 	Ok(report)
 }
 
@@ -230,24 +241,31 @@ pub(crate) fn materialize_merge_with_workspace_result(
 	);
 	materialize_prepared_merge_with_workspace_result(
 		request,
-		out_dir,
-		prior_out_dir,
-		published_out_dir,
+		MaterializeOutput {
+			artifacts_dir: out_dir,
+			prior_dir: prior_out_dir,
+			target_dir: published_out_dir,
+		},
 		options,
 		workspace_result,
 		plan,
+		None,
 	)
 }
 
 pub(crate) fn materialize_prepared_merge_with_workspace_result(
 	request: CheckRequest,
-	out_dir: &Path,
-	prior_out_dir: Option<&Path>,
-	published_out_dir: &Path,
+	output: MaterializeOutput<'_>,
 	mut options: MergeMaterializeOptions,
 	workspace_result: Result<ResolvedWorkspace, WorkspaceResolveError>,
 	plan: MergePlanResult,
+	progress: Option<(&dyn ProgressObserver, Instant)>,
 ) -> Result<MergeReport, MergeError> {
+	let MaterializeOutput {
+		artifacts_dir: out_dir,
+		prior_dir: prior_out_dir,
+		target_dir: published_out_dir,
+	} = output;
 	let mut report = MergeReport::default();
 	let mut generated_paths = BTreeSet::new();
 	let profile = eu4_profile();
@@ -326,12 +344,13 @@ pub(crate) fn materialize_prepared_merge_with_workspace_result(
 	let materialize_started = Instant::now();
 	let total_paths = plan.paths.len();
 	eprintln!("[merge] materialize: start (total_paths={total_paths})");
-	let mut materialize_progress = MaterializeProgress::new(total_paths);
+	let mut materialize_progress = MaterializeProgress::new(total_paths, progress);
 	let mut pending_copy_through = Vec::new();
 	let mut counted_generated_paths = BTreeSet::new();
 	let mut provenance_localisation_by_script = BTreeMap::<String, BTreeMap<String, String>>::new();
 
 	for entry in &plan.paths {
+		options.cancellation.check()?;
 		materialize_progress.tick();
 		match entry.strategy {
 			MergePlanStrategy::CopyThrough => {
@@ -1883,28 +1902,39 @@ where
 /// In-place per-file counter for the materialize loop. On a TTY, refreshes the
 /// same line via `\r`; off a TTY, prints a fresh line every `TICK_EVERY` items
 /// so piped logs stay readable.
-struct MaterializeProgress {
+struct MaterializeProgress<'a> {
 	total: usize,
 	current: usize,
 	tty: bool,
 	last_tick: Instant,
+	progress: Option<(&'a dyn ProgressObserver, Instant)>,
 }
 
-impl MaterializeProgress {
+impl<'a> MaterializeProgress<'a> {
 	const TICK_EVERY: usize = 200;
 	const TICK_INTERVAL_MS: u128 = 200;
 
-	fn new(total: usize) -> Self {
+	fn new(total: usize, progress: Option<(&'a dyn ProgressObserver, Instant)>) -> Self {
 		Self {
 			total,
 			current: 0,
 			tty: std::io::stderr().is_terminal(),
 			last_tick: Instant::now(),
+			progress,
 		}
 	}
 
 	fn tick(&mut self) {
 		self.current += 1;
+		if let Some((observer, started)) = self.progress {
+			observer.update(MergeProgress {
+				stage: MergeAnalysisStage::SemanticMerge,
+				completed: false,
+				completed_units: Some(self.current as u64),
+				total_units: Some(self.total as u64),
+				elapsed: started.elapsed(),
+			});
+		}
 		let last_ms = self.last_tick.elapsed().as_millis();
 		let due_by_count = self.current.is_multiple_of(Self::TICK_EVERY);
 		let due_by_time = last_ms >= Self::TICK_INTERVAL_MS;
@@ -1942,11 +1972,12 @@ impl MaterializeProgress {
 #[cfg(test)]
 mod tests {
 	use super::{
-		MergeMaterializeOptions, materialize_merge_internal,
+		MaterializeOutput, MergeMaterializeOptions, materialize_merge_internal,
 		materialize_merge_with_workspace_result, materialize_prepared_merge_with_workspace_result,
 	};
 	use crate::config::Config;
 	use crate::emit::EmitOptions;
+	use crate::merge::execute::CancellationToken;
 	use crate::merge::model::{ExternalFileResolution, VanillaBaseMode};
 	use crate::request::CheckRequest;
 	use crate::workspace::{
@@ -2650,6 +2681,7 @@ mod tests {
 			provenance: false,
 			backend: Box::new(crate::merge::backend::AddressPatchBackend),
 			retained_paths: None,
+			cancellation: CancellationToken::new(),
 		}
 	}
 
@@ -2770,12 +2802,15 @@ mod tests {
 		options.backend = Box::new(FixedStructuralBackend { output });
 		let report = materialize_prepared_merge_with_workspace_result(
 			request_for(&workspace.playlist_path),
-			&out_dir,
-			None,
-			&out_dir,
+			MaterializeOutput {
+				artifacts_dir: &out_dir,
+				prior_dir: None,
+				target_dir: &out_dir,
+			},
 			options,
 			Ok(workspace),
 			plan,
+			None,
 		)
 		.expect("materialize ordinary structural fixture");
 		(report, out_dir, TARGET)

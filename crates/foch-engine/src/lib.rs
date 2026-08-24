@@ -43,13 +43,15 @@ pub use graph::{
 	merge_trace_edges_from_trace, run_graph_with_options, run_module_report, write_module_report,
 };
 pub use merge::{
-	AnalysisStatusView, AstAdapterError, CandidateView, ClausewitzDefinitionModuleOutcome,
-	ClausewitzMergeOutcome, ClausewitzMergeTimings, ClausewitzScalarReduction, ConflictDecision,
-	ConflictHandler, ConflictView, InteractiveCliHandler, MergeBackendDescriptor, MergeBackendId,
-	MergeError, MergeExecuteOptions, MergeExecutionResult, MergeStatusView, PreparedMerge,
-	canonicalize_clausewitz_file, merge_clausewitz_definition_module, merge_clausewitz_files,
-	prepare_merge_with_options, run_merge_for_evaluation, run_merge_plan,
-	run_merge_plan_with_options, run_merge_with_options,
+	AnalysisStatusView, AnalyzedMerge, AstAdapterError, CancellationToken, CandidateView,
+	ClausewitzDefinitionModuleOutcome, ClausewitzMergeOutcome, ClausewitzMergeTimings,
+	ClausewitzScalarReduction, CommitAuthorization, CommitResult, ConflictDecision,
+	ConflictHandler, ConflictView, InteractiveCliHandler, MergeAnalysis, MergeAnalysisOptions,
+	MergeAnalysisStage, MergeAnalysisStatus, MergeBackendDescriptor, MergeBackendId, MergeError,
+	MergeProgress, MergeStatusView, NoopProgressObserver, ProgressObserver, ReplacementTarget,
+	analyze_merge, canonicalize_clausewitz_file, merge_clausewitz_definition_module,
+	merge_clausewitz_files, run_merge_for_evaluation, run_merge_plan, run_merge_plan_with_options,
+	run_merge_with_options,
 };
 pub use request::{CheckRequest, MergePlanOptions, RunOptions, WorkspaceSource};
 pub use run_checks::{CHECK_PROGRESS_TARGET, run_checks, run_checks_with_options};

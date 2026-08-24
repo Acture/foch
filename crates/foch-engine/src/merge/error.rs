@@ -4,6 +4,16 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum MergeError {
+	/// The caller cancelled an in-progress merge analysis.
+	Cancelled,
+	/// Commit would replace an existing non-empty output without authorization.
+	ReplacementAuthorizationRequired { path: PathBuf },
+	/// The output changed after the caller confirmed the exact replacement token.
+	ReplacementTargetChanged { path: PathBuf },
+	/// A frozen analysis artifact was modified before commit.
+	AnalyzedArtifactChanged,
+	/// Output bytes consumed by an analysis-time keep-existing decision changed.
+	AnalyzedOutputChanged { path: PathBuf },
 	/// Workspace resolution failed (playlist, game root, base data, profile)
 	WorkspaceResolve { path: PathBuf, message: String },
 	/// Parse failure during IR construction
@@ -28,6 +38,25 @@ pub enum MergeError {
 impl fmt::Display for MergeError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		match self {
+			Self::Cancelled => write!(f, "merge analysis cancelled"),
+			Self::ReplacementAuthorizationRequired { path } => write!(
+				f,
+				"commit requires explicit authorization to replace non-empty output {}",
+				path.display()
+			),
+			Self::ReplacementTargetChanged { path } => write!(
+				f,
+				"merge output changed after replacement confirmation: {}",
+				path.display()
+			),
+			Self::AnalyzedArtifactChanged => {
+				write!(f, "frozen merge analysis artifacts changed before commit")
+			}
+			Self::AnalyzedOutputChanged { path } => write!(
+				f,
+				"output used by merge analysis changed before commit: {}",
+				path.display()
+			),
 			Self::WorkspaceResolve { message, .. } => {
 				write!(f, "workspace resolve: {message}")
 			}

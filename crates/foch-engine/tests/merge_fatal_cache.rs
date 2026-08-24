@@ -6,7 +6,7 @@
 //! tests that write real cache entries into the same dir.
 
 use foch::model::MergeReportStatus;
-use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
+use foch_engine::{CheckRequest, Config, MergeAnalysisOptions, run_merge_with_options};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
@@ -87,7 +87,7 @@ fn fatal_merge_is_not_cached() {
 		)
 	};
 
-	let make_options = |suffix: &str| MergeExecuteOptions {
+	let make_options = |suffix: &str| MergeAnalysisOptions {
 		out_dir: output_dir.path().join(suffix),
 		include_game_base: true,
 		include_base: false,

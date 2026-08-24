@@ -21,8 +21,10 @@ pub(crate) mod structured;
 
 pub use error::MergeError;
 pub use execute::{
-	AnalysisStatusView, MergeExecuteOptions, MergeExecutionResult, MergeStatusView, PreparedMerge,
-	prepare_merge_with_options, run_merge_for_evaluation, run_merge_with_options,
+	AnalysisStatusView, AnalyzedMerge, CancellationToken, CommitAuthorization, CommitResult,
+	MergeAnalysis, MergeAnalysisOptions, MergeAnalysisStage, MergeAnalysisStatus, MergeProgress,
+	MergeStatusView, NoopProgressObserver, ProgressObserver, ReplacementTarget, analyze_merge,
+	run_merge_for_evaluation, run_merge_with_options,
 };
 pub use kernel::{MergeBackendDescriptor, MergeBackendId};
 #[allow(unused_imports)]

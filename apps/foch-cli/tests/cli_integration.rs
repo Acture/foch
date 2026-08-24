@@ -1871,7 +1871,7 @@ fn merge_command_default_unresolved_conflict_prints_resolution_tip_to_stderr() {
 		"stderr: {stderr}"
 	);
 	assert!(
-		stderr.contains("Foch exported the safe units"),
+		stderr.contains("Foch committed the safe units"),
 		"stderr: {stderr}"
 	);
 }

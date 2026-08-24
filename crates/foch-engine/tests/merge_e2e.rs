@@ -4,9 +4,9 @@ use foch::model::{
 use foch::playset::descriptor::load_descriptor;
 use foch::project::compute_conflict_id;
 use foch_engine::{
-	CheckRequest, Config, ConflictDecision, ConflictHandler, ConflictView, MergeBackendId,
-	MergeExecuteOptions, prepare_merge_with_options, run_merge_for_evaluation,
-	run_merge_with_options,
+	CancellationToken, CheckRequest, CommitAuthorization, Config, ConflictDecision,
+	ConflictHandler, ConflictView, MergeAnalysisOptions, MergeBackendId, NoopProgressObserver,
+	analyze_merge, run_merge_for_evaluation, run_merge_with_options,
 };
 use foch_language::analyzer::content_family::{ContentLoadPolicy, GameProfile};
 use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
@@ -70,10 +70,10 @@ fn run_merge_fixture(name: &str) -> PathBuf {
 }
 
 /// Lower-level harness used by both the strict copy-through tests and the
-/// conflict-scenario tests. Returns the full [`MergeExecutionResult`] plus
+/// conflict-scenario tests. Returns the full [`CommitResult`] plus
 /// the output dir so tests can assert on report fields, status, and the
 /// produced tree without the wrapper enforcing its own success contract.
-fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::MergeExecutionResult, PathBuf) {
+fn run_merge_for_fixture(name: &str, force: bool) -> (foch_engine::CommitResult, PathBuf) {
 	run_merge_for_fixture_inner(
 		name, force, /*provenance=*/ false, /*gui_scroll_merge=*/ false,
 	)
@@ -83,14 +83,14 @@ fn run_merge_for_fixture_with_gui_scroll(
 	name: &str,
 	force: bool,
 	gui_scroll_merge: bool,
-) -> (foch_engine::MergeExecutionResult, PathBuf) {
+) -> (foch_engine::CommitResult, PathBuf) {
 	run_merge_for_fixture_inner(name, force, /*provenance=*/ false, gui_scroll_merge)
 }
 
 fn run_merge_for_fixture_with_provenance(
 	name: &str,
 	force: bool,
-) -> (foch_engine::MergeExecutionResult, PathBuf) {
+) -> (foch_engine::CommitResult, PathBuf) {
 	run_merge_for_fixture_inner(
 		name, force, /*provenance=*/ true, /*gui_scroll_merge=*/ false,
 	)
@@ -101,7 +101,7 @@ fn run_merge_for_fixture_inner(
 	force: bool,
 	provenance: bool,
 	gui_scroll_merge: bool,
-) -> (foch_engine::MergeExecutionResult, PathBuf) {
+) -> (foch_engine::CommitResult, PathBuf) {
 	let fixture = fixture_dir(name);
 	assert!(
 		fixture.is_dir(),
@@ -133,7 +133,7 @@ fn run_merge_for_fixture_inner(
 				extra_ignore_patterns: Vec::new(),
 			},
 		),
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,
@@ -166,7 +166,7 @@ fn run_merge_for_playset(
 	game_root: PathBuf,
 	force: bool,
 	resolution_config_path: Option<PathBuf>,
-) -> foch_engine::MergeExecutionResult {
+) -> foch_engine::CommitResult {
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
 	run_merge_with_options(
@@ -179,7 +179,7 @@ fn run_merge_for_playset(
 				extra_ignore_patterns: Vec::new(),
 			},
 		),
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir,
 			include_game_base: false,
 			include_base: false,
@@ -525,7 +525,7 @@ workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "30
 			},
 		)
 	};
-	let options = |out_dir: &Path| MergeExecuteOptions {
+	let options = |out_dir: &Path| MergeAnalysisOptions {
 		out_dir: out_dir.to_path_buf(),
 		include_game_base: false,
 		include_base: false,
@@ -1450,10 +1450,10 @@ religion = sentinel
 	let config_path = temp_dir.path().join("foch.keep-existing.toml");
 	fs::copy(fixture.join("foch.toml"), &config_path).expect("copy keep_existing foch.toml");
 
-	let run = |target_out: &Path| {
+	let analyze = |target_out: &Path| {
 		let mut game_path = HashMap::new();
 		game_path.insert("eu4".to_string(), game_root.clone());
-		run_merge_with_options(
+		analyze_merge(
 			CheckRequest::from_playset_path(
 				fixture.join("dlc_load.json"),
 				Config {
@@ -1463,7 +1463,7 @@ religion = sentinel
 					extra_ignore_patterns: Vec::new(),
 				},
 			),
-			MergeExecuteOptions {
+			MergeAnalysisOptions {
 				out_dir: target_out.to_path_buf(),
 				include_game_base: false,
 				include_base: false,
@@ -1478,7 +1478,17 @@ religion = sentinel
 				provenance: false,
 				retained_paths: None,
 			},
+			&NoopProgressObserver,
+			&CancellationToken::new(),
 		)
+	};
+	let run = |target_out: &Path| {
+		let analyzed = analyze(target_out)?;
+		let authorization = match analyzed.replacement_target()? {
+			Some(target) => CommitAuthorization::ReplaceExisting(target),
+			None => CommitAuthorization::EmptyTargetOnly,
+		};
+		analyzed.commit(authorization)
 	};
 	let result = run(&out_dir)
 		.unwrap_or_else(|err| panic!("merge fixture eu4_handler_keep_existing failed: {err}"));
@@ -1508,6 +1518,29 @@ religion = sentinel
 			.any(|record| record.action.eq_ignore_ascii_case("kept_existing")),
 		"handler_resolutions must record the keep_existing decision; report: {:#?}",
 		result.report
+	);
+
+	let stale = analyze(&out_dir).expect("analyze keep_existing output for stale check");
+	fs::write(
+		&sentinel_path,
+		"# changed after analysis\nreligion = stale_guard_sentinel\n",
+	)
+	.expect("change keep_existing output after analysis");
+	let current_target = stale
+		.replacement_target()
+		.expect("fingerprint current target")
+		.expect("non-empty current target");
+	let stale_error = stale
+		.commit(CommitAuthorization::ReplaceExisting(current_target))
+		.expect_err("keep_existing output drift must stale the analysis");
+	assert!(matches!(
+		stale_error,
+		foch_engine::MergeError::AnalyzedOutputChanged { .. }
+	));
+	assert!(
+		fs::read_to_string(&sentinel_path)
+			.expect("read stale-guard sentinel")
+			.contains("stale_guard_sentinel")
 	);
 
 	fs::write(
@@ -1591,7 +1624,7 @@ use_file = "{}"
 
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
-	let prepared = prepare_merge_with_options(
+	let analyzed = analyze_merge(
 		CheckRequest::from_playset_path(
 			fixture.join("dlc_load.json"),
 			Config {
@@ -1601,7 +1634,7 @@ use_file = "{}"
 				extra_ignore_patterns: Vec::new(),
 			},
 		),
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,
@@ -1616,14 +1649,18 @@ use_file = "{}"
 			provenance: false,
 			retained_paths: None,
 		},
+		&NoopProgressObserver,
+		&CancellationToken::new(),
 	)
-	.expect("prepare use_file merge");
+	.expect("analyze use_file merge");
 	fs::write(
 		&external_file,
 		"# changed while the prepared plan was under review\n",
 	)
 	.expect("mutate external resolution file");
-	let result = prepared.export().expect("export prepared use_file merge");
+	let result = analyzed
+		.commit(CommitAuthorization::EmptyTargetOnly)
+		.expect("commit analyzed use_file merge");
 
 	assert_eq!(
 		result.exit_code, 0,
@@ -1662,7 +1699,7 @@ use_file = "{}"
 }
 
 #[test]
-fn eu4_semantic_interactive_use_file_applies_live_payload_end_to_end() {
+fn eu4_semantic_interactive_use_file_is_frozen_by_analysis() {
 	let fixture = fixture_dir("eu4_two_mod_conflict");
 	let scratch_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 		.join("target")
@@ -1677,11 +1714,12 @@ fn eu4_semantic_interactive_use_file_applies_live_payload_end_to_end() {
 	fs::create_dir_all(&game_root).expect("create fixture game root");
 
 	let external_file = temp_dir.path().join("interactive-resolution.txt");
-	fs::write(&external_file, "stale before review\n").expect("write initial external file");
+	let analyzed_bytes = b"selected during analysis\n";
+	fs::write(&external_file, analyzed_bytes).expect("write initial external file");
 	let interactive_config = temp_dir.path().join("foch.interactive.toml");
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), game_root);
-	let prepared = prepare_merge_with_options(
+	let analyzed = analyze_merge(
 		CheckRequest::from_playset_path(
 			fixture.join("dlc_load.json"),
 			Config {
@@ -1691,7 +1729,7 @@ fn eu4_semantic_interactive_use_file_applies_live_payload_end_to_end() {
 				extra_ignore_patterns: Vec::new(),
 			},
 		),
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,
@@ -1708,19 +1746,20 @@ fn eu4_semantic_interactive_use_file_applies_live_payload_end_to_end() {
 			provenance: false,
 			retained_paths: None,
 		},
+		&NoopProgressObserver,
+		&CancellationToken::new(),
 	)
-	.expect("prepare interactive use_file merge");
-	let live_bytes = b"# selected after review\nreligion = live_interactive\ncapital = 777\n";
-	fs::write(&external_file, live_bytes).expect("update live external file");
-	let result = prepared
-		.export()
-		.expect("export interactive use_file merge");
+	.expect("analyze interactive use_file merge");
+	fs::write(&external_file, b"changed after analysis\n").expect("update external file");
+	let result = analyzed
+		.commit(CommitAuthorization::EmptyTargetOnly)
+		.expect("commit interactive use_file merge");
 
 	assert_eq!(result.exit_code, 0, "report: {:#?}", result.report);
 	assert_eq!(result.report.manual_conflict_count, 0);
 	assert_eq!(
 		fs::read(out_dir.join("history/countries/TES - Test.txt")).expect("read output"),
-		live_bytes
+		analyzed_bytes
 	);
 	let persisted = fs::read_to_string(interactive_config).expect("read persisted decision");
 	assert!(persisted.contains("use_file"), "{persisted}");
@@ -1912,7 +1951,7 @@ fn structured_merge_allows_an_explicit_empty_base() {
 				extra_ignore_patterns: Vec::new(),
 			},
 		),
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,
@@ -1962,7 +2001,7 @@ fn structured_merge_rejects_a_copy_through_unit_without_claiming_kernel_success(
 				extra_ignore_patterns: Vec::new(),
 			},
 		),
-		MergeExecuteOptions {
+		MergeAnalysisOptions {
 			out_dir: out_dir.clone(),
 			include_game_base: false,
 			include_base: false,

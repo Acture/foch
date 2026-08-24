@@ -6,7 +6,7 @@
 //! `FOCH_DATA_DIR` are isolated from the parallel merge e2e suite.
 
 use foch::model::MergeReportStatus;
-use foch_engine::{CheckRequest, Config, MergeExecuteOptions, run_merge_with_options};
+use foch_engine::{CheckRequest, Config, MergeAnalysisOptions, run_merge_with_options};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -64,7 +64,7 @@ fn fatal_merge_surfaces_resolve_error_reason() {
 		},
 	);
 
-	let options = MergeExecuteOptions {
+	let options = MergeAnalysisOptions {
 		out_dir: output_dir.path().join("out"),
 		include_game_base: true,
 		include_base: false,
