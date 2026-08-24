@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use super::base::builtin::is_builtin_effect;
 use super::content::ScriptFileKind;
@@ -19,18 +19,25 @@ struct SchemaCandidate {
 
 /// Loads the active EU4 schema without changing EU4's global base-scope state.
 pub(crate) fn rule_engine() -> Option<&'static CwtQuery> {
-	static EU4_SCHEMA: OnceLock<Option<CwtSchema>> = OnceLock::new();
-	EU4_SCHEMA
-		.get_or_init(load_schema)
-		.as_ref()
-		.map(CwtSchema::facts)
+	active_schema_slot().as_ref().map(|schema| schema.facts())
 }
 
-fn load_schema() -> Option<CwtSchema> {
+pub(crate) fn active_schema() -> Option<Arc<CwtSchema>> {
+	active_schema_slot().clone()
+}
+
+fn active_schema_slot() -> &'static Option<Arc<CwtSchema>> {
+	static EU4_SCHEMA: OnceLock<Option<Arc<CwtSchema>>> = OnceLock::new();
+	EU4_SCHEMA.get_or_init(load_schema)
+}
+
+fn load_schema() -> Option<Arc<CwtSchema>> {
 	let candidate = schema_candidates()
 		.into_iter()
 		.find(|candidate| candidate.root.is_dir())?;
-	CwtSchema::load(&candidate.root, candidate.source).ok()
+	CwtSchema::load(&candidate.root, candidate.source)
+		.ok()
+		.map(Arc::new)
 }
 
 fn schema_candidates() -> Vec<SchemaCandidate> {

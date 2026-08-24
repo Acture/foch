@@ -2,6 +2,7 @@ pub mod analysis;
 pub mod base;
 pub mod content;
 pub mod cwt;
+pub mod editor;
 mod profile;
 pub mod scope;
 pub mod script;
