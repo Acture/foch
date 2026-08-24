@@ -1393,8 +1393,11 @@ name = "foch-desktop"
 version = "0.0.1"
 dependencies = [
  "foch",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "uuid",
 ]
 
 [[package]]
