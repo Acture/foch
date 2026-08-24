@@ -1,0 +1,915 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use crate::game::schema::cache::{CwtLoadStatus, load_cwt_from_dir};
+use crate::game::schema::compile::CwtSchemaGraph;
+use crate::game::schema::query::{
+	CompiledRuleCondition, CompiledRulePack, CompiledRuleValue, CompiledSeverity,
+	CompiledTypeKeyFilter, CwtQuery, RuleContext, SchemaBinding,
+};
+use crate::game::schema::source::CwtSource;
+use crate::game::schema::syntax::ParadoxTree;
+
+#[test]
+fn compiled_engine_binds_root_and_alias_chain() {
+	let graph = load_binding_graph();
+	let engine = CwtQuery::from_graph(&graph);
+
+	let root_path = Path::new("events/example.txt");
+	assert!(matches!(
+		engine.root_binding(root_path),
+		SchemaBinding::Bound { .. }
+	));
+	let root = engine.bind_root(root_path).expect("bind event root");
+	assert_eq!(
+		root.subtypes
+			.iter()
+			.find(|subtype| subtype.name == "country")
+			.and_then(|subtype| subtype.attributes.push_scope.as_deref()),
+		Some("country")
+	);
+
+	let ast_path = ["country_event", "trigger", "is_year"];
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(root_path, &ast_path) else {
+		panic!("expected compiled binding to resolve alias path");
+	};
+	assert_eq!(type_id.as_str(), "event");
+	assert_eq!(
+		node_id.0,
+		"type:event:subtype:country_event/field:trigger/alias:trigger:is_year"
+	);
+}
+
+#[test]
+fn compiled_engine_projects_field_and_alias_metadata() {
+	let graph = load_binding_graph();
+	let engine = CwtQuery::from_graph(&graph);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let iterator = engine
+		.bind_field(RuleContext::RootType(event), "every_country")
+		.expect("bind every_country");
+	assert_eq!(
+		iterator.attributes.scope,
+		vec!["country".to_string(), "province".to_string()]
+	);
+	assert_eq!(iterator.attributes.push_scope.as_deref(), Some("country"));
+	assert_eq!(
+		iterator.attributes.description.as_deref(),
+		Some("Scopes to all countries.")
+	);
+
+	let trigger = engine
+		.bind_field(RuleContext::RootType(event), "trigger")
+		.expect("bind trigger field");
+	let alias_match = engine
+		.bind_field_match(RuleContext::RuleField(trigger), "is_year")
+		.expect("bind trigger alias");
+	assert_eq!(alias_match.field().key, "alias_name[trigger]");
+	let alias = alias_match.alias().expect("alias metadata");
+	assert_eq!(alias.name, "is_year");
+	assert_eq!(alias.value, CompiledRuleValue::Scalar("int".to_string()));
+	assert_eq!(alias.attributes.scope, vec!["country".to_string()]);
+}
+
+#[test]
+fn compiled_engine_tracks_subtype_and_root_instance_contexts() {
+	let graph = load_binding_graph();
+	let engine = CwtQuery::from_graph(&graph);
+
+	let event_context = engine
+		.bind_context(Path::new("events/example.txt"), &["country_event"])
+		.expect("bind event subtype context");
+	let RuleContext::Subtype(event, subtype) = event_context else {
+		panic!("expected subtype context, got {event_context:?}");
+	};
+	assert_eq!(event.name, "event");
+	assert_eq!(
+		subtype.type_key_filter,
+		Some(CompiledTypeKeyFilter::Exact(vec![
+			"country_event".to_string()
+		]))
+	);
+
+	let mission_context = engine
+		.bind_context(Path::new("missions/example.txt"), &["my_mission"])
+		.expect("bind mission root instance context");
+	let RuleContext::RootType(mission) = mission_context else {
+		panic!("expected root context, got {mission_context:?}");
+	};
+	assert_eq!(mission.name, "mission");
+}
+
+#[test]
+fn compiled_engine_returns_all_direct_field_matches() {
+	let schema = r#"
+	types = {
+		type[estate_privilege] = {
+			path = "game/common/estate_privileges"
+		}
+	}
+
+	estate_privilege = {
+		can_revoke = bool
+		can_revoke = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	let privilege = engine
+		.bind_root(Path::new("common/estate_privileges/example.txt"))
+		.expect("bind privilege root");
+	let matches = engine.bind_fields(RuleContext::RootType(privilege), "can_revoke");
+
+	assert_eq!(matches.len(), 2);
+	assert!(matches.iter().any(|field| matches!(
+		&field.value,
+		CompiledRuleValue::Scalar(value) if value == "bool"
+	)));
+	assert!(
+		matches
+			.iter()
+			.any(|field| matches!(&field.value, CompiledRuleValue::Block(_)))
+	);
+}
+
+#[test]
+fn compiled_engine_projects_plural_replace_scopes() {
+	let schema = r#"
+	types = {
+		type[incident] = {
+			path = "game/common/incidents"
+		}
+	}
+
+	incident = {
+		## replace_scopes = { this = country root = country }
+		immediate = {
+			alias_name[effect] = alias_match_left[effect]
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	let incident = engine
+		.bind_root(Path::new("common/incidents/example.txt"))
+		.expect("bind incident root");
+	let field = engine
+		.bind_field(RuleContext::RootType(incident), "immediate")
+		.expect("bind immediate field");
+
+	assert_eq!(
+		field
+			.attributes
+			.replace_scope
+			.get("this")
+			.map(String::as_str),
+		Some("country")
+	);
+	assert_eq!(
+		field
+			.attributes
+			.replace_scope
+			.get("root")
+			.map(String::as_str),
+		Some("country")
+	);
+}
+
+#[test]
+fn compiled_binary_pack_roundtrips_conditional_rule_fields() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			subtype[hidden] = {
+				hidden = yes
+			}
+		}
+	}
+
+	event = {
+		subtype[hidden] = {
+			hidden_only = bool
+		}
+		subtype[!hidden] = {
+			visible_only = bool
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let hidden_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "hidden_only")
+		.expect("hidden-only conditional field");
+	assert_eq!(
+		hidden_only.conditions,
+		vec![CompiledRuleCondition::SubtypeActive("hidden".to_string())]
+	);
+	let visible_only = event
+		.rules
+		.iter()
+		.find(|field| field.key == "visible_only")
+		.expect("visible-only conditional field");
+	assert_eq!(
+		visible_only.conditions,
+		vec![CompiledRuleCondition::SubtypeInactive("hidden".to_string())]
+	);
+}
+
+#[test]
+fn compiled_binary_pack_roundtrips_type_localisation_metadata() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+			localisation = {
+				## required
+				title = "$_title"
+				desc = "$_desc"
+			}
+		}
+	}
+
+	event = {
+		title = scalar
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	assert!(
+		event.rules.iter().all(|field| field.key != "localisation"),
+		"type header localisation metadata must not become a compiled script field"
+	);
+	assert_eq!(event.localisation.len(), 2);
+	assert_eq!(event.localisation[0].key, "title");
+	assert_eq!(
+		event.localisation[0].attributes.raw,
+		vec![("required".to_string(), String::new())]
+	);
+	assert_eq!(
+		event.localisation[0].value,
+		CompiledRuleValue::Scalar("$_title".to_string())
+	);
+	assert_eq!(event.localisation[1].key, "desc");
+}
+
+#[test]
+fn compiled_engine_uses_enums_and_values_blocks() {
+	let schema = r#"
+	enums = {
+		enum[power_categories] = { ADM DIP MIL }
+	}
+
+	values = {
+		value[event_target] = { root from prev }
+		value_set[cooldown_token] = { parliament_debate }
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	assert_eq!(
+		engine.enum_values("power_categories"),
+		Some(&["ADM".to_string(), "DIP".to_string(), "MIL".to_string()][..])
+	);
+	assert_eq!(
+		engine.value_set_values("event_target"),
+		Some(&["from".to_string(), "prev".to_string(), "root".to_string()][..])
+	);
+	assert_eq!(
+		engine.value_set_values("cooldown_token"),
+		Some(&["parliament_debate".to_string()][..])
+	);
+}
+
+#[test]
+fn compiled_engine_roundtrips_complex_enums() {
+	let schema = r#"
+	enums = {
+		complex_enum[country_tags] = {
+			path = "game/common/country_tags"
+			name = {
+				enum_name = scalar
+			}
+			start_from_root = yes
+		}
+		complex_enum[graphical_cultures] = {
+			path = "game/common"
+			path_file = "graphicalculturetype.txt"
+			name = {
+				enum_name
+			}
+			start_from_root = yes
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	let complex_enum = engine
+		.complex_enum("country_tags")
+		.expect("country_tags complex enum");
+	assert_eq!(complex_enum.path.as_deref(), Some("common/country_tags"));
+	assert_eq!(
+		complex_enum.normalized_path.as_deref(),
+		Some("common/country_tags")
+	);
+	assert!(complex_enum.start_from_root);
+	assert_eq!(complex_enum.name_rules.len(), 1);
+	assert_eq!(complex_enum.name_rules[0].key, "enum_name");
+	assert_eq!(
+		complex_enum.name_rules[0].value,
+		CompiledRuleValue::Scalar("scalar".to_string())
+	);
+	assert_eq!(engine.complex_enums().len(), 2);
+	let graphical_cultures = engine
+		.complex_enum("graphical_cultures")
+		.expect("graphical_cultures complex enum");
+	assert_eq!(graphical_cultures.path.as_deref(), Some("common"));
+	assert_eq!(
+		graphical_cultures.path_file.as_deref(),
+		Some("graphicalculturetype.txt")
+	);
+	assert_eq!(
+		graphical_cultures.normalized_file_path.as_deref(),
+		Some("common/graphicalculturetype.txt")
+	);
+	assert!(graphical_cultures.start_from_root);
+	assert_eq!(graphical_cultures.name_rules.len(), 1);
+	assert_eq!(graphical_cultures.name_rules[0].key, "enum_name");
+	assert_eq!(
+		graphical_cultures.name_rules[0].value,
+		CompiledRuleValue::Marker("enum_name".to_string())
+	);
+}
+
+#[test]
+fn compiled_engine_roundtrips_links() {
+	let schema = r#"
+	links = {
+		owner = {
+			input_scopes = { province country province }
+			output_scope = country
+		}
+		controller = {
+			input_scopes = { province }
+			output_scope = country
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	let owner = engine.link("owner").expect("owner link");
+	assert_eq!(owner.output_scope.as_deref(), Some("country"));
+	assert_eq!(
+		owner.input_scopes,
+		vec!["country".to_string(), "province".to_string()]
+	);
+	assert_eq!(engine.links().len(), 2);
+	assert_eq!(engine.links()[0].name, "controller");
+	assert_eq!(engine.links()[1].name, "owner");
+}
+
+#[test]
+fn compiled_engine_lists_scope_values_from_scope_hierarchy() {
+	let schema = r#"
+	scopes = {
+		country = {
+			aliases = { country root }
+		}
+		province = {
+			aliases = { province from }
+			is_subscope_of = { country }
+		}
+		sea = {
+			aliases = { sea }
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	assert_eq!(
+		engine.scope_values("country"),
+		vec![
+			"country".to_string(),
+			"from".to_string(),
+			"province".to_string(),
+			"root".to_string()
+		]
+	);
+	assert_eq!(
+		engine.scope_values("any"),
+		vec![
+			"country".to_string(),
+			"from".to_string(),
+			"province".to_string(),
+			"root".to_string(),
+			"sea".to_string()
+		]
+	);
+	assert!(engine.scope_values("unknown").is_empty());
+}
+
+#[test]
+fn compiled_engine_matches_static_dynamic_key_markers() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+		}
+	}
+
+	event = {
+		dynamic_fields = {
+			enum[dynamic_keys] = int
+			value[dynamic_value_key] = bool
+			value_set[dynamic_set_key] = float
+			scope[country] = yes
+		}
+	}
+
+	enums = {
+		enum[dynamic_keys] = { alpha beta }
+	}
+
+	values = {
+		value[dynamic_value_key] = { saved_key }
+		value_set[dynamic_set_key] = { reusable_key }
+	}
+
+	scopes = {
+		country = {
+			aliases = { country root }
+		}
+		province = {
+			aliases = { province from }
+			is_subscope_of = { country }
+		}
+		sea = {
+			aliases = { sea }
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let dynamic_fields = engine
+		.bind_field(RuleContext::RootType(event), "dynamic_fields")
+		.expect("bind dynamic_fields");
+	let context = RuleContext::RuleField(dynamic_fields);
+	assert_eq!(
+		engine
+			.bind_field(context, "alpha")
+			.map(|field| field.key.as_str()),
+		Some("enum[dynamic_keys]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "saved_key")
+			.map(|field| field.key.as_str()),
+		Some("value[dynamic_value_key]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "reusable_key")
+			.map(|field| field.key.as_str()),
+		Some("value_set[dynamic_set_key]")
+	);
+	assert_eq!(
+		engine
+			.bind_field(context, "province")
+			.map(|field| field.key.as_str()),
+		Some("scope[country]")
+	);
+	assert!(engine.bind_field(context, "sea").is_none());
+	assert!(engine.bind_field(context, "missing_key").is_none());
+}
+
+#[test]
+fn compiled_engine_binds_angle_bracket_dynamic_fields() {
+	let schema = r#"
+	types = {
+		type[mission] = {
+			path = "game/missions"
+		}
+	}
+
+	mission = {
+		mission_tree = {
+			<mission_stage> = {
+				trigger = bool
+			}
+		}
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	let path = Path::new("missions/example.txt");
+	let ast_path = ["demo_mission", "mission_tree", "conquest", "trigger"];
+
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
+		panic!("expected compiled dynamic field binding");
+	};
+	assert_eq!(type_id.as_str(), "mission");
+	assert_eq!(
+		node_id.0,
+		"type:mission:field:mission_tree/field:<mission_stage>/field:trigger"
+	);
+
+	let context = engine
+		.bind_context(path, &["demo_mission", "mission_tree"])
+		.expect("bind mission tree context");
+	let field_match = engine
+		.bind_field_match(context, "conquest")
+		.expect("bind dynamic mission stage");
+	assert_eq!(field_match.field().key, "<mission_stage>");
+}
+
+#[test]
+fn compiled_engine_honors_root_type_key_filter_exclusions() {
+	let schema = r#"
+	types = {
+		type[idea_group] = {
+			path = "game/common/ideas"
+			subtype[selectable] = {
+				category = scalar
+			}
+		}
+		## type_key_filter <> { start trigger bonus ai_will_do }
+		type[idea] = {
+			path = "game/common/ideas"
+			skip_root_key = any
+		}
+	}
+
+	idea_group = {
+		subtype[selectable] = {
+			category = scalar
+		}
+	}
+
+	idea = {
+		idea_only = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	let path = Path::new("common/ideas/example.txt");
+	let ast_path = ["sample_group", "sample_idea", "idea_only"];
+
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
+		panic!("expected compiled idea binding");
+	};
+	assert_eq!(type_id.as_str(), "idea");
+	assert_eq!(node_id.0, "type:idea:field:idea_only");
+
+	let excluded_path = ["sample_group", "start", "idea_only"];
+	assert!(
+		!matches!(
+			engine.bind_chain(path, &excluded_path),
+			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "idea"
+		),
+		"compiled engine must not bind excluded root key to idea type"
+	);
+}
+
+#[test]
+fn compiled_engine_honors_path_file_root_matching() {
+	let schema = r#"
+	types = {
+		type[map_fallback] = {
+			path = "game/map"
+		}
+		type[area] = {
+			path = "game/map"
+			path_file = "area.txt"
+		}
+		type[region] = {
+			path = "game/map"
+			path_file = "region.txt"
+		}
+	}
+
+	map_fallback = {
+		fallback_only = bool
+	}
+
+	area = {
+		area_only = bool
+	}
+
+	region = {
+		region_only = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	let area_path = Path::new("map/area.txt");
+	let area_ast_path = ["sample_area", "area_only"];
+
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(area_path, &area_ast_path)
+	else {
+		panic!("expected compiled area binding");
+	};
+	assert_eq!(type_id.as_str(), "area");
+	assert_eq!(node_id.0, "type:area:field:area_only");
+
+	let region_path = Path::new("map/region.txt");
+	let region_ast_path = ["sample_region", "region_only"];
+	let SchemaBinding::Bound { type_id, node_id } =
+		engine.bind_chain(region_path, &region_ast_path)
+	else {
+		panic!("expected compiled region binding");
+	};
+	assert_eq!(type_id.as_str(), "region");
+	assert_eq!(node_id.0, "type:region:field:region_only");
+
+	let fallback_path = Path::new("map/other.txt");
+	let fallback_ast_path = ["sample_map", "fallback_only"];
+	let SchemaBinding::Bound { type_id, node_id } =
+		engine.bind_chain(fallback_path, &fallback_ast_path)
+	else {
+		panic!("expected compiled fallback binding");
+	};
+	assert_eq!(type_id.as_str(), "map_fallback");
+	assert_eq!(node_id.0, "type:map_fallback:field:fallback_only");
+}
+
+#[test]
+fn compiled_engine_honors_ordered_skip_root_key_chain() {
+	let schema = r#"
+	types = {
+		type[game_age] = {
+			path = "game/common/ages"
+		}
+		type[game_age_ability] = {
+			path = "game/common/ages"
+			skip_root_key = { any abilities }
+		}
+	}
+
+	game_age = {
+		start = int
+	}
+
+	game_age_ability = {
+		power = bool
+	}
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let engine = CwtQuery::from_graph(&graph);
+	let path = Path::new("common/ages/example.txt");
+	let ast_path = ["age_of_discovery", "abilities", "free_war_taxes", "power"];
+
+	let SchemaBinding::Bound { type_id, node_id } = engine.bind_chain(path, &ast_path) else {
+		panic!("expected compiled game_age_ability binding");
+	};
+	assert_eq!(type_id.as_str(), "game_age_ability");
+	assert_eq!(node_id.0, "type:game_age_ability:field:power");
+
+	let missing_fixed_wrapper = ["age_of_discovery", "free_war_taxes", "power"];
+	assert!(
+		!matches!(
+			engine.bind_chain(path, &missing_fixed_wrapper),
+			SchemaBinding::Bound { ref type_id, .. } if type_id.as_str() == "game_age_ability"
+		),
+		"ability type must require the ordered skip_root_key chain"
+	);
+}
+
+#[test]
+fn compiled_engine_matches_scope_hierarchy_metadata() {
+	let graph = CwtSchemaGraph::from_directory(&schema_pack_fixture_dir())
+		.expect("load schema-pack fixture graph");
+	let engine = CwtQuery::from_graph(&graph);
+	assert_eq!(engine.pack().scope_definitions.len(), 2);
+
+	assert!(engine.scope_matches("country", "country"));
+	assert!(engine.scope_matches("province", "province"));
+	assert!(engine.scope_matches("country", "province"));
+	assert!(!engine.scope_matches("province", "country"));
+	assert!(engine.scope_matches("unknown", "unknown"));
+	assert!(!engine.scope_matches("country", "unknown"));
+	assert!(!engine.scope_matches("unknown", "country"));
+}
+
+#[test]
+fn compiled_binary_pack_roundtrips_and_keeps_binding_semantics() {
+	let graph = load_binding_graph();
+	let pack = CompiledRulePack::from_graph(&graph);
+	let bytes = pack.to_bytes().expect("encode compiled pack");
+	let decoded = CompiledRulePack::from_bytes(&bytes).expect("decode compiled pack");
+	assert_eq!(decoded, pack);
+
+	let engine = CwtQuery::new(decoded);
+	let mission = engine
+		.bind_root(Path::new("missions/example.txt"))
+		.expect("bind mission root after roundtrip");
+	let field = engine
+		.bind_field(RuleContext::RootType(mission), "provinces_to_highlight")
+		.expect("bind mission field after roundtrip");
+	assert_eq!(field.attributes.cardinality, Some((0, Some(1))));
+	assert!(matches!(field.value, CompiledRuleValue::Block(_)));
+}
+
+#[test]
+fn compiled_binary_pack_roundtrips_severity_attributes() {
+	let schema = r#"
+	types = {
+		type[event] = {
+			path = "game/events"
+		}
+	}
+
+	event = {
+		## severity = warning
+		gentle_bool = bool
+		trigger = {
+			alias_name[trigger] = alias_match_left[trigger]
+		}
+	}
+
+	## scope = country
+	## severity = info
+	alias[trigger:gentle_trigger] = bool
+	"#;
+	let tree = ParadoxTree::parse(schema.as_bytes()).expect("parse inline schema");
+	let graph = CwtSchemaGraph::from_paradox_tree(&tree);
+	let pack = CompiledRulePack::from_graph(&graph);
+	let decoded = CompiledRulePack::from_bytes(&pack.to_bytes().expect("encode compiled pack"))
+		.expect("decode compiled pack");
+	let engine = CwtQuery::new(decoded);
+	let event = engine
+		.bind_root(Path::new("events/example.txt"))
+		.expect("bind event root");
+	let field = engine
+		.bind_field(RuleContext::RootType(event), "gentle_bool")
+		.expect("bind severity field");
+	assert_eq!(field.attributes.severity, Some(CompiledSeverity::Warning));
+
+	let trigger = engine
+		.bind_field(RuleContext::RootType(event), "trigger")
+		.expect("bind trigger field");
+	let alias_match = engine
+		.bind_field_match(RuleContext::RuleField(trigger), "gentle_trigger")
+		.expect("bind severity alias");
+	assert_eq!(
+		alias_match.alias().map(|alias| alias.attributes.severity),
+		Some(Some(CompiledSeverity::Info))
+	);
+}
+
+#[test]
+fn compiled_rule_cache_reuses_binary_pack_when_source_unchanged() {
+	let root = binding_fixture_dir();
+	let cache = tempfile::tempdir().expect("create compiled rule cache tempdir");
+	let obsolete_generation = cache.path().join("v0.10.0");
+	fs::create_dir_all(&obsolete_generation).expect("create obsolete generation");
+	fs::write(obsolete_generation.join("rules.bin"), b"obsolete")
+		.expect("write obsolete generation entry");
+	let legacy_flat_entry = cache.path().join("rules-fmt-0_10_0-src-old.bin");
+	fs::write(&legacy_flat_entry, b"obsolete").expect("write legacy flat entry");
+
+	let first = load_cwt_from_dir(
+		&root,
+		CwtSource::UserProvided { path: root.clone() },
+		Some(cache.path()),
+	)
+	.expect("compile fixture schema into cache");
+	assert_eq!(first.status, CwtLoadStatus::CompiledFromSource);
+	assert!(first.cache_path.as_ref().is_some_and(|path| path.is_file()));
+	assert!(
+		first
+			.cache_path
+			.as_ref()
+			.is_some_and(|path| { path.starts_with(cache.path().join("v0.11.0")) })
+	);
+	assert!(obsolete_generation.exists());
+	assert!(legacy_flat_entry.exists());
+	assert!(first.timings.cache_read.is_some());
+	assert!(first.timings.source_compile.is_some());
+	assert!(first.facts.alias_count() > 0);
+
+	let second = load_cwt_from_dir(
+		&root,
+		CwtSource::UserProvided { path: root.clone() },
+		Some(cache.path()),
+	)
+	.expect("load fixture schema from compiled cache");
+	assert_eq!(second.status, CwtLoadStatus::CacheHit);
+	assert!(second.timings.cache_read.is_some());
+	assert!(second.timings.source_compile.is_none());
+	assert_eq!(second.source_id, first.source_id);
+	assert_eq!(second.facts.alias_count(), first.facts.alias_count());
+	assert_eq!(
+		second.facts.root_binding(Path::new("events/example.txt")),
+		first.facts.root_binding(Path::new("events/example.txt"))
+	);
+}
+
+#[test]
+fn compiled_vendor_pack_preserves_cwtools_alias_binding() {
+	let Some(root) = vendor_schema_dir() else {
+		eprintln!("skipping compiled CWTools vendor test: schema directory not available");
+		return;
+	};
+	let graph = CwtSchemaGraph::from_directory(&root).expect("load CWTools schema graph");
+	let engine = CwtQuery::from_graph(&graph);
+	assert_eq!(engine.alias_count(), graph.aliases.len());
+	assert!(engine.alias_count() > 2_000);
+
+	let context = engine
+		.bind_context(
+			Path::new("events/example.txt"),
+			&["country_event", "trigger"],
+		)
+		.expect("bind event trigger context");
+	let field_match = engine
+		.bind_field_match(context, "is_year")
+		.expect("bind real CWTools trigger alias");
+	assert_eq!(field_match.field().key, "alias_name[trigger]");
+	assert_eq!(
+		field_match.alias().map(|alias| alias.name.as_str()),
+		Some("is_year")
+	);
+
+	let bytes = engine
+		.pack()
+		.to_bytes()
+		.expect("encode vendor compiled pack");
+	let decoded = CompiledRulePack::from_bytes(&bytes).expect("decode vendor compiled pack");
+	let roundtripped = CwtQuery::new(decoded);
+	assert_eq!(roundtripped.alias_count(), engine.alias_count());
+}
+
+fn load_binding_graph() -> CwtSchemaGraph {
+	CwtSchemaGraph::from_directory(&binding_fixture_dir()).expect("load binding fixture graph")
+}
+
+fn binding_fixture_dir() -> PathBuf {
+	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("src/game/schema/tests/fixtures")
+		.join("binding")
+}
+
+fn schema_pack_fixture_dir() -> PathBuf {
+	PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("src/game/schema/tests/fixtures")
+		.join("schema-pack")
+}
+
+fn vendor_schema_dir() -> Option<PathBuf> {
+	let from_env = std::env::var_os("FOCH_CWTOOLS_SCHEMA_DIR").map(PathBuf::from);
+	let candidate_paths = [
+		from_env,
+		Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/cwtools-eu4-config")),
+		Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("output/cwtools-eu4-config")),
+	];
+	candidate_paths
+		.into_iter()
+		.flatten()
+		.find(|path| path.is_dir())
+}

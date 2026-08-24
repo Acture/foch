@@ -1,0 +1,77 @@
+{
+  "game_key": "eu4",
+  "detected_version": "builtin-test-1.0.0",
+  "parsed_files": 1,
+  "index": {
+    "documents": [
+      {
+        "mod_id": "__game__eu4",
+        "path": "events/base.txt",
+        "family": "clausewitz",
+        "parse_ok": true
+      }
+    ],
+    "scopes": [
+      {
+        "id": 0,
+        "kind": "File",
+        "parent": null,
+        "this_type": "Unknown",
+        "aliases": {
+          "ROOT": "Unknown",
+          "THIS": "Unknown"
+        },
+        "mod_id": "__game__eu4",
+        "path": "events/base.txt",
+        "span": {
+          "line": 1,
+          "column": 1
+        }
+      },
+      {
+        "id": 1,
+        "kind": "Event",
+        "parent": 0,
+        "this_type": "Country",
+        "aliases": {
+          "PREV": "Unknown",
+          "ROOT": "Country",
+          "THIS": "Country"
+        },
+        "mod_id": "__game__eu4",
+        "path": "events/base.txt",
+        "span": {
+          "line": 2,
+          "column": 1
+        }
+      }
+    ],
+    "definitions": [
+      {
+        "kind": "Event",
+        "name": "base.1",
+        "module": "events",
+        "local_name": "country_event",
+        "mod_id": "__game__eu4",
+        "path": "events/base.txt",
+        "line": 2,
+        "column": 1,
+        "scope_id": 1,
+        "declared_this_type": "Country",
+        "inferred_this_type": "Country",
+        "required_params": []
+      }
+    ],
+    "references": [],
+    "alias_usages": [],
+    "key_usages": [],
+    "scalar_assignments": [],
+    "localisation_definitions": [],
+    "localisation_duplicates": [],
+    "ui_definitions": [],
+    "resource_references": [],
+    "csv_rows": [],
+    "json_properties": [],
+    "parse_issues": []
+  }
+}

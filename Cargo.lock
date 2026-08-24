@@ -1326,22 +1326,30 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 name = "foch"
 version = "0.0.1"
 dependencies = [
+ "bincode",
  "blake3",
  "chardetng",
+ "console",
  "dirs",
  "encoding_rs",
+ "filetime",
  "globset",
  "jomini",
  "keyvalues-parser",
+ "rayon",
  "regex",
  "rkyv",
  "rustix",
  "semver",
  "serde",
  "serde_json",
+ "sha2",
  "steamlocate",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+ "tree-sitter",
+ "tree-sitter-paradox",
+ "walkdir",
  "winreg 0.55.0",
 ]
 

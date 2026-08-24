@@ -1,0 +1,19 @@
+types = {
+	type[mission_series] = {
+		path = "game/missions"
+		skip_root_key = any
+	}
+	type[mission] = {
+		path = "game/missions"
+		name_field = icon
+	}
+}
+
+mission_series = {
+	subtype[country_mission_series] = {
+		slot = scalar
+		mission = {
+			icon = scalar
+		}
+	}
+}
