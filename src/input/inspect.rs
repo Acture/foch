@@ -267,7 +267,7 @@ fn inspect_playset(
 		));
 		return (None, None);
 	};
-	let mut playset = match Playset::from_dlc_load(&playset_path) {
+	let mut playset = match Playset::from_dlc_load_with_required_descriptors(&playset_path) {
 		Ok(playset) => playset,
 		Err(error) => {
 			issues.push(issue(
@@ -848,6 +848,38 @@ remote_file_id="43"
 				.is_some_and(|error| error.contains("empty name"))
 		);
 		assert!(unnamed.into_request().is_none());
+	}
+
+	#[test]
+	fn missing_and_invalid_launcher_descriptors_block_preparation() {
+		let _lock = BASE_DATA_ENV_LOCK
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let temp = TempDir::new().expect("fixture root");
+		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &temp.path().join("base-data"));
+		setup_input_fixture(temp.path());
+		let descriptor = temp
+			.path()
+			.join("Paradox EU4/mod")
+			.join(format!("ugc_{SECOND_ID}.mod"));
+		fs::remove_file(&descriptor).expect("remove Launcher descriptor");
+
+		let missing = inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+		assert_eq!(missing.readiness, InputReadiness::Blocked);
+		assert!(missing.playset.is_none());
+		assert!(missing.issues.iter().any(|issue| {
+			issue.id == "current_playset_unavailable" && issue.detail.contains("ugc_43.mod")
+		}));
+		assert!(missing.into_request().is_none());
+
+		fs::write(&descriptor, b"name={ invalid").expect("write invalid Launcher descriptor");
+		let invalid = inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+		assert_eq!(invalid.readiness, InputReadiness::Blocked);
+		assert!(invalid.playset.is_none());
+		assert!(invalid.issues.iter().any(|issue| {
+			issue.id == "current_playset_unavailable" && issue.detail.contains("ugc_43.mod")
+		}));
+		assert!(invalid.into_request().is_none());
 	}
 
 	#[test]

@@ -6,7 +6,7 @@ pub mod steam;
 pub use error::{ParseError, ParseErrorKind};
 
 use crate::game::eu4::Eu4;
-use descriptor::load_descriptor;
+use descriptor::{ModDescriptor, load_descriptor};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use steam::WorkshopInstallIdentity;
@@ -58,6 +58,14 @@ impl Playset {
 	/// - EU4 is the only supported game, so the parsed playset carries the
 	///   concrete [`Eu4`] identity.
 	pub fn from_dlc_load(path: &Path) -> Result<Self, ParseError> {
+		Self::from_dlc_load_impl(path, false)
+	}
+
+	pub(crate) fn from_dlc_load_with_required_descriptors(path: &Path) -> Result<Self, ParseError> {
+		Self::from_dlc_load_impl(path, true)
+	}
+
+	fn from_dlc_load_impl(path: &Path, require_descriptors: bool) -> Result<Self, ParseError> {
 		let bytes = std::fs::read(path).map_err(|err| ParseError::io(path.to_path_buf(), err))?;
 		let dlc: DlcLoad = serde_json::from_slice(&bytes)
 			.map_err(|err| ParseError::format(path.to_path_buf(), err.to_string()))?;
@@ -71,12 +79,15 @@ impl Playset {
 			})?
 			.to_path_buf();
 		let game = Eu4;
-		let mods = dlc
-			.enabled_mods
-			.iter()
-			.enumerate()
-			.map(|(position, rel)| read_dlc_load_entry(&parent, position, rel))
-			.collect();
+		let mut mods = Vec::with_capacity(dlc.enabled_mods.len());
+		for (position, rel) in dlc.enabled_mods.iter().enumerate() {
+			let entry = if require_descriptors {
+				read_dlc_load_entry_required(&parent, position, rel)?
+			} else {
+				read_dlc_load_entry(&parent, position, rel)
+			};
+			mods.push(entry);
+		}
 		let name = match path.file_stem().and_then(|s| s.to_str()) {
 			Some(stem) if !stem.is_empty() => format!("{stem} (active)"),
 			_ => "active".to_string(),
@@ -88,6 +99,39 @@ impl Playset {
 fn read_dlc_load_entry(paradox_data_dir: &Path, position: usize, rel: &str) -> PlaysetEntry {
 	let descriptor_path = paradox_data_dir.join(rel);
 	let descriptor = load_descriptor(&descriptor_path).ok();
+	playset_entry_from_descriptor(position, rel, descriptor)
+}
+
+fn read_dlc_load_entry_required(
+	paradox_data_dir: &Path,
+	position: usize,
+	rel: &str,
+) -> Result<PlaysetEntry, ParseError> {
+	let relative_path = Path::new(rel);
+	if relative_path.is_absolute()
+		|| relative_path
+			.components()
+			.any(|component| !matches!(component, std::path::Component::Normal(_)))
+	{
+		return Err(ParseError::format(
+			paradox_data_dir.join(relative_path),
+			"enabled mod descriptor path must be normalized and relative".to_string(),
+		));
+	}
+	let descriptor_path = paradox_data_dir.join(relative_path);
+	let descriptor = load_descriptor(&descriptor_path)?;
+	Ok(playset_entry_from_descriptor(
+		position,
+		rel,
+		Some(descriptor),
+	))
+}
+
+fn playset_entry_from_descriptor(
+	position: usize,
+	rel: &str,
+	descriptor: Option<ModDescriptor>,
+) -> PlaysetEntry {
 	let steam_id = descriptor
 		.as_ref()
 		.and_then(|d| d.remote_file_id.clone())
@@ -192,6 +236,36 @@ mod tests {
 		assert_eq!(playlist.mods.len(), 1);
 		assert_eq!(playlist.mods[0].steam_id.as_deref(), Some("999"));
 		assert_eq!(playlist.mods[0].display_name.as_deref(), Some("ugc_999"));
+		let strict_error =
+			Playset::from_dlc_load_with_required_descriptors(&game_dir.join("dlc_load.json"))
+				.expect_err("current-input inspection must require the sibling descriptor");
+		assert!(strict_error.path.ends_with("mod/ugc_999.mod"));
+	}
+
+	#[test]
+	fn strict_loader_rejects_descriptor_path_escape() {
+		let temp = TempDir::new().unwrap();
+		let game_dir = temp.path().join("Europa Universalis IV");
+		fs::create_dir_all(&game_dir).unwrap();
+		fs::write(
+			temp.path().join("outside.mod"),
+			"name=\"Outside\"\nremote_file_id=\"999\"\n",
+		)
+		.unwrap();
+		fs::write(
+			game_dir.join("dlc_load.json"),
+			r#"{"enabled_mods":["../outside.mod"],"disabled_dlcs":[]}"#,
+		)
+		.unwrap();
+
+		let error =
+			Playset::from_dlc_load_with_required_descriptors(&game_dir.join("dlc_load.json"))
+				.expect_err("strict loader must reject paths escaping the game data directory");
+		assert!(
+			error
+				.to_string()
+				.contains("must be normalized and relative")
+		);
 	}
 
 	#[test]
