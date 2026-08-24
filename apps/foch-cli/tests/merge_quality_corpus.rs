@@ -104,7 +104,7 @@ fn tiny_product_cli_to_pure_scorer_seam() {
 		"preview failed: {:?}",
 		preview.failure
 	);
-	assert!(preview.plan_output.contains("Foch Merge Plan"));
+	assert!(preview.plan_output.contains("Foch Merge Review"));
 	assert!(!preview.output_exists);
 	assert!(!preview.report_exists);
 
@@ -447,8 +447,8 @@ fn assert_cache_gate_observation(
 		observation.failure
 	);
 	assert!(
-		observation.plan_output.contains("Foch Merge Plan"),
-		"{phase} cache-gate preview did not return a merge plan"
+		observation.plan_output.contains("Foch Merge Review"),
+		"{phase} cache-gate preview did not return a merge review"
 	);
 	assert!(
 		!observation.plan_output.contains("<stdout truncated"),
