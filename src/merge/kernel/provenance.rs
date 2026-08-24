@@ -40,6 +40,7 @@ impl SourceSet {
 		self.nodes.is_empty()
 	}
 
+	#[cfg(test)]
 	pub fn len(&self) -> usize {
 		self.nodes.len()
 	}

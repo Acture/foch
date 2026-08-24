@@ -3,9 +3,11 @@ use std::sync::{Arc, OnceLock};
 
 use super::base::builtin::is_builtin_effect;
 use super::content::ScriptFileKind;
+#[cfg(test)]
+use crate::game::schema::query::CompiledAlias;
 use crate::game::schema::query::{
-	CompiledAlias, CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue,
-	CwtQuery, RuleContext,
+	CompiledAliasCategory, CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery,
+	RuleContext,
 };
 use crate::game::schema::{CwtSchema, CwtSource};
 use crate::model::{ScopeKind, ScopeType, base_scope};
@@ -167,20 +169,23 @@ pub fn iterator_scope_type(key: &str) -> Option<ScopeType> {
 	}
 }
 
-pub fn schema_iterator_scope_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> {
+#[cfg(test)]
+pub(crate) fn schema_iterator_scope_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> {
 	cwt_alias_push_scope(engine, key)
 		.and_then(scope_name_to_base_scope)
 		.or_else(|| cwt_field_push_scope_type(engine, key))
 }
 
-pub fn schema_scope_changer_target_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> {
+#[cfg(test)]
+pub(crate) fn schema_scope_changer_target_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> {
 	cwt_alias_push_scope(engine, key)
 		.and_then(scope_name_to_base_scope)
 		.or_else(|| cwt_direct_scope_marker_type(engine, key))
 		.or_else(|| scope_changer_target_type_fallback(key))
 }
 
-pub fn schema_special_block_scope_kind(engine: &CwtQuery, key: &str) -> ScopeKind {
+#[cfg(test)]
+pub(crate) fn schema_special_block_scope_kind(engine: &CwtQuery, key: &str) -> ScopeKind {
 	let mut has_trigger = false;
 	let mut has_effect = false;
 	for alias in engine.aliases() {
@@ -212,6 +217,7 @@ pub fn schema_special_block_scope_kind(engine: &CwtQuery, key: &str) -> ScopeKin
 	}
 }
 
+#[cfg(test)]
 fn cwt_alias_push_scope<'a>(engine: &'a CwtQuery, key: &str) -> Option<&'a str> {
 	[
 		CompiledAliasCategory::Effect,
@@ -221,6 +227,7 @@ fn cwt_alias_push_scope<'a>(engine: &'a CwtQuery, key: &str) -> Option<&'a str> 
 	.find_map(|category| engine.alias(category, key).and_then(alias_push_scope))
 }
 
+#[cfg(test)]
 fn alias_push_scope(alias: &CompiledAlias) -> Option<&str> {
 	alias.attributes.push_scope.as_deref().or_else(|| {
 		alias
@@ -230,6 +237,7 @@ fn alias_push_scope(alias: &CompiledAlias) -> Option<&str> {
 	})
 }
 
+#[cfg(test)]
 fn scope_name_to_base_scope(scope_name: &str) -> Option<ScopeType> {
 	if scope_name.eq_ignore_ascii_case("country") {
 		Some(base_scope::country())
@@ -240,6 +248,7 @@ fn scope_name_to_base_scope(scope_name: &str) -> Option<ScopeType> {
 	}
 }
 
+#[cfg(test)]
 fn cwt_field_push_scope_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> {
 	let mut matched = None;
 	let mut ambiguous = false;
@@ -264,6 +273,7 @@ fn cwt_field_push_scope_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> 
 	if ambiguous { None } else { matched }
 }
 
+#[cfg(test)]
 fn cwt_direct_scope_marker_type(engine: &CwtQuery, key: &str) -> Option<ScopeType> {
 	let mut matched = None;
 	let mut ambiguous = false;
@@ -283,6 +293,7 @@ fn cwt_direct_scope_marker_type(engine: &CwtQuery, key: &str) -> Option<ScopeTyp
 	if ambiguous { None } else { matched }
 }
 
+#[cfg(test)]
 fn rule_field_scope_marker_type(field: &CompiledRuleField) -> Option<ScopeType> {
 	match &field.value {
 		CompiledRuleValue::Marker(marker) | CompiledRuleValue::Scalar(marker) => {
@@ -292,6 +303,7 @@ fn rule_field_scope_marker_type(field: &CompiledRuleField) -> Option<ScopeType> 
 	}
 }
 
+#[cfg(test)]
 fn marker_scope_type(marker: &str) -> Option<ScopeType> {
 	let (head, payload) = cwt_marker_parts(marker)?;
 	(head == "scope")
@@ -304,6 +316,7 @@ fn cwt_marker_parts(text: &str) -> Option<(&str, &str)> {
 	Some((head, rest.strip_suffix(']')?))
 }
 
+#[cfg(test)]
 fn scope_changer_target_type_fallback(key: &str) -> Option<ScopeType> {
 	match key {
 		// `scope_links.cwt:385-387` comments out `alias[effect:owner]`, and
@@ -316,10 +329,12 @@ fn scope_changer_target_type_fallback(key: &str) -> Option<ScopeType> {
 	}
 }
 
+#[cfg(test)]
 fn alias_rules_scope_kind(alias: &CompiledAlias) -> Option<ScopeKind> {
 	rules_alias_scope_kind(&alias.rules)
 }
 
+#[cfg(test)]
 fn rule_field_alias_scope_kind(field: &CompiledRuleField) -> Option<ScopeKind> {
 	let CompiledRuleValue::Block(fields) = &field.value else {
 		return None;
@@ -327,6 +342,7 @@ fn rule_field_alias_scope_kind(field: &CompiledRuleField) -> Option<ScopeKind> {
 	rules_alias_scope_kind(fields)
 }
 
+#[cfg(test)]
 fn rules_alias_scope_kind(fields: &[CompiledRuleField]) -> Option<ScopeKind> {
 	if fields.iter().any(|child| child.key == "alias_name[effect]") {
 		Some(ScopeKind::Effect)
@@ -340,6 +356,7 @@ fn rules_alias_scope_kind(fields: &[CompiledRuleField]) -> Option<ScopeKind> {
 	}
 }
 
+#[cfg(test)]
 fn visit_rule_engine_fields<F>(engine: &CwtQuery, visit: &mut F)
 where
 	F: FnMut(&CompiledRuleField),
@@ -355,6 +372,7 @@ where
 	}
 }
 
+#[cfg(test)]
 fn visit_rule_fields<F>(fields: &[CompiledRuleField], visit: &mut F)
 where
 	F: FnMut(&CompiledRuleField),
@@ -367,7 +385,7 @@ where
 	}
 }
 
-pub fn schema_file_kind_container_scope_kind(
+pub(crate) fn schema_file_kind_container_scope_kind(
 	engine: &CwtQuery,
 	file_kind: ScriptFileKind,
 	key: &str,
@@ -385,7 +403,7 @@ pub fn schema_file_kind_container_scope_kind(
 ///
 /// Unlike [`schema_file_kind_container_scope_kind`], this follows the active
 /// schema branch and therefore handles dynamic keys such as age objective ids.
-pub fn schema_path_container_scope_kind(
+pub(crate) fn schema_path_container_scope_kind(
 	engine: &CwtQuery,
 	file_kind: ScriptFileKind,
 	file_path: &Path,

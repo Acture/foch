@@ -13,7 +13,6 @@ description = "Paradox mod static analysis toolkit with CLI and EU4-focused lang
 clap.workspace = true
 clap-verbosity-flag.workspace = true
 foch = { path = "../.." }
-foch-engine = { path = "../../crates/foch-engine" }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde.workspace = true

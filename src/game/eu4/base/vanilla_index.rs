@@ -20,9 +20,9 @@ pub struct VanillaSymbolIndex {
 }
 
 impl VanillaSymbolIndex {
-	pub fn build(workspace: &impl VanillaSymbolSource) -> Self {
+	pub fn build(source: &impl VanillaSymbolSource) -> Self {
 		let mut index = Self::default();
-		workspace.visit_vanilla_definitions(&mut |definition| {
+		source.visit_vanilla_definitions(&mut |definition| {
 			index.insert_definition(definition);
 		});
 		index
@@ -89,11 +89,11 @@ mod tests {
 	use crate::model::{MaybeScope, ScopeSet, test_support};
 	use std::path::PathBuf;
 
-	struct TestWorkspace {
+	struct TestSource {
 		base: Option<SemanticIndex>,
 	}
 
-	impl VanillaSymbolSource for TestWorkspace {
+	impl VanillaSymbolSource for TestSource {
 		fn visit_vanilla_definitions(&self, visit: &mut dyn FnMut(&SymbolDefinition)) {
 			let Some(base) = self.base.as_ref() else {
 				return;
@@ -137,7 +137,7 @@ mod tests {
 
 	#[test]
 	fn vanilla_symbol_index_groups_by_kind() {
-		let workspace = TestWorkspace {
+		let source = TestSource {
 			base: Some(semantic_index(vec![
 				definition(SymbolKind::ScriptedEffect, "eu4::effects::shared", "shared"),
 				definition(
@@ -148,7 +148,7 @@ mod tests {
 			])),
 		};
 
-		let index = VanillaSymbolIndex::build(&workspace);
+		let index = VanillaSymbolIndex::build(&source);
 
 		assert!(index.contains(SymbolKind::ScriptedEffect, "shared"));
 		assert!(index.contains(SymbolKind::ScriptedTrigger, "shared"));
@@ -157,7 +157,7 @@ mod tests {
 
 	#[test]
 	fn vanilla_symbol_index_contains_known_vanilla_symbol() {
-		let workspace = TestWorkspace {
+		let source = TestSource {
 			base: Some(semantic_index(vec![definition(
 				SymbolKind::ScriptedEffect,
 				"eu4::common.scripted_effects::vanilla_effect",
@@ -165,7 +165,7 @@ mod tests {
 			)])),
 		};
 
-		let index = VanillaSymbolIndex::build(&workspace);
+		let index = VanillaSymbolIndex::build(&source);
 
 		assert!(index.contains(SymbolKind::ScriptedEffect, "vanilla_effect"));
 		assert!(index.contains(
@@ -175,10 +175,10 @@ mod tests {
 	}
 
 	#[test]
-	fn vanilla_symbol_index_returns_empty_when_workspace_has_no_base() {
-		let workspace = TestWorkspace { base: None };
+	fn vanilla_symbol_index_returns_empty_when_source_has_no_base() {
+		let source = TestSource { base: None };
 
-		let index = VanillaSymbolIndex::build(&workspace);
+		let index = VanillaSymbolIndex::build(&source);
 
 		assert!(!index.contains(SymbolKind::ScriptedEffect, "vanilla_effect"));
 		assert!(index.kinds_resolving("vanilla_effect").is_empty());
@@ -186,7 +186,7 @@ mod tests {
 
 	#[test]
 	fn vanilla_symbol_index_kinds_resolving_finds_cross_kind_collisions() {
-		let workspace = TestWorkspace {
+		let source = TestSource {
 			base: Some(semantic_index(vec![
 				definition(SymbolKind::ScriptedEffect, "eu4::effects::shared", "shared"),
 				definition(SymbolKind::Decision, "eu4::decisions::shared", "shared"),
@@ -198,7 +198,7 @@ mod tests {
 			])),
 		};
 
-		let index = VanillaSymbolIndex::build(&workspace);
+		let index = VanillaSymbolIndex::build(&source);
 
 		assert_eq!(
 			index.kinds_resolving("shared"),

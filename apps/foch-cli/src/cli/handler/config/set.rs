@@ -1,7 +1,7 @@
 use crate::cli::arg;
 use crate::cli::arg::SetConfigArgs;
 use crate::cli::handler::HandlerResult;
-use foch_engine::Config;
+use foch::input::Config;
 use std::path::Path;
 
 pub fn handle_set(

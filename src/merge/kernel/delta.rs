@@ -216,6 +216,7 @@ impl RevisionDelta {
 		}
 	}
 
+	#[cfg(test)]
 	pub fn tombstones(&self) -> impl Iterator<Item = &Tombstone> {
 		self.operations
 			.iter()

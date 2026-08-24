@@ -944,7 +944,7 @@ mod tests {
 	}
 
 	fn tempdir_in_target() -> tempfile::TempDir {
-		let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/rules-tests");
+		let target = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/rules-tests");
 		fs::create_dir_all(&target).expect("rules test target dir");
 		tempfile::Builder::new()
 			.prefix("dep-misuse-")

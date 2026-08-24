@@ -3,14 +3,14 @@ pub mod check;
 pub mod config;
 pub mod data;
 pub mod graph;
+pub mod input;
 pub mod merge;
 pub mod merge_plan;
 pub mod simplify;
-pub mod workspace;
 
 pub type HandlerResult = Result<i32, Box<dyn std::error::Error>>;
 
-use foch_engine::{Config, WorkspaceSource};
+use foch::input::{Config, InputSource};
 use std::path::{Path, PathBuf};
 
 /// Resolve the `<PLAYSET_PATH>` argument shared by `check`, `merge-plan`,
@@ -18,12 +18,12 @@ use std::path::{Path, PathBuf};
 /// it is used verbatim; otherwise `<paradox_data_path>/dlc_load.json` (the
 /// launcher's currently-active playset) is the implicit default. Returns a
 /// human-readable error string when neither source produces a usable path.
-pub fn resolve_workspace_source(
+pub fn resolve_input_source(
 	explicit: Option<&Path>,
 	config: &Config,
-) -> Result<WorkspaceSource, String> {
+) -> Result<InputSource, String> {
 	if let Some(path) = explicit {
-		return Ok(WorkspaceSource::from_path(path.to_path_buf()));
+		return Ok(InputSource::from_path(path.to_path_buf()));
 	}
 	let paradox = config.paradox_data_path.as_ref().ok_or_else(|| {
 		"no <PLAYSET_PATH> given and `paradox_data_path` is not configured; either pass a path \
@@ -39,11 +39,9 @@ pub fn resolve_workspace_source(
 			candidate.display()
 		));
 	}
-	Ok(WorkspaceSource::DlcLoad(candidate))
+	Ok(InputSource::DlcLoad(candidate))
 }
 
 pub fn resolve_playset_path(explicit: Option<&Path>, config: &Config) -> Result<PathBuf, String> {
-	Ok(resolve_workspace_source(explicit, config)?
-		.path()
-		.to_path_buf())
+	Ok(resolve_input_source(explicit, config)?.path().to_path_buf())
 }

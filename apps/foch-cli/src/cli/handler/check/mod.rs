@@ -1,15 +1,16 @@
 use crate::cli::arg::{AnalysisModeArg, CheckArgs, CheckChannelArg, CheckOutputFormat};
-use crate::cli::handler::{HandlerResult, resolve_workspace_source};
+use crate::cli::handler::{HandlerResult, resolve_input_source};
+use foch::check::run_checks_with_options;
 use foch::game::eu4::analysis::report::render_text;
+use foch::input::{CheckOptions, Config, InputRequest};
 use foch::model::{AnalysisMode, ChannelMode, CheckResult};
-use foch_engine::{CheckRequest, Config, RunOptions, run_checks_with_options};
 
 pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
-	let request = CheckRequest::new(
-		resolve_workspace_source(check_args.playset_path.as_deref(), &config)?,
+	let request = InputRequest::new(
+		resolve_input_source(check_args.playset_path.as_deref(), &config)?,
 		config,
 	);
-	let run_options = RunOptions {
+	let run_options = CheckOptions {
 		analysis_mode: to_analysis_mode(check_args.analysis_mode),
 		channel_mode: to_channel_mode(check_args.channel),
 		include_game_base: !check_args.no_game_base,

@@ -99,10 +99,6 @@ impl ClassMapping {
 			.expect("class id resolves to a live class")
 	}
 
-	pub fn get_class(&self, id: ClassId) -> Option<&RevisionClass> {
-		self.classes.get(id.get() as usize)?.as_ref()
-	}
-
 	pub fn classes(&self) -> impl Iterator<Item = &RevisionClass> {
 		self.classes.iter().filter_map(Option::as_ref)
 	}

@@ -16,7 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph, Widget, Wrap};
 
-use foch_engine::{ConflictDecision, ConflictHandler, ConflictView};
+use foch::merge::{ConflictDecision, ConflictHandler, ConflictView};
 
 const ACTION_COUNT: usize = 4;
 const MAX_RENDERED_SUMMARY_LINES: usize = 4;
@@ -913,7 +913,7 @@ fn truncate_snippet_line(line: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_engine::CandidateView;
+	use foch::merge::CandidateView;
 
 	fn sample_view() -> ConflictView {
 		ConflictView {

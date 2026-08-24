@@ -73,20 +73,6 @@ impl SourceNodeRef {
 			Self::Node { input, .. } | Self::Tombstone { input, .. } => input,
 		}
 	}
-
-	pub const fn node(self) -> Option<NodeId> {
-		match self {
-			Self::Node { node, .. } => Some(node),
-			Self::Tombstone { .. } => None,
-		}
-	}
-
-	pub const fn base_node(self) -> Option<NodeId> {
-		match self {
-			Self::Node { .. } => None,
-			Self::Tombstone { base_node, .. } => Some(base_node),
-		}
-	}
 }
 
 fn hash_source_node_ref(hasher: &mut blake3::Hasher, source: SourceNodeRef) {

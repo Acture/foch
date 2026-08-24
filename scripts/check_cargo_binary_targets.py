@@ -44,9 +44,7 @@ EXPECTED_EXAMPLES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 	("foch-cli", "parse_stats", ("dev-tools",)),
 	("foch-cli", "symbol_dump", ("dev-tools",)),
 )
-REQUIRED_DESKTOP_RUNTIME_CRATES: frozenset[str] = frozenset(
-	{"foch", "foch-engine", "tauri"}
-)
+REQUIRED_DESKTOP_RUNTIME_CRATES: frozenset[str] = frozenset({"foch", "tauri"})
 ALLOWED_DESKTOP_TAURI_PLUGIN_CRATES: frozenset[str] = frozenset()
 ALLOWED_DESKTOP_PROCESS_HELPER_CRATES: frozenset[str] = frozenset()
 RUST_PROCESS_HELPER_CRATES: frozenset[str] = frozenset(

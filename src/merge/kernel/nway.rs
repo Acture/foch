@@ -110,6 +110,7 @@ pub(crate) struct NWayCorrespondenceTimings {
 }
 
 impl NWayCorrespondence {
+	#[cfg(test)]
 	pub fn build(
 		base: &NormalizedTree,
 		revisions: &[MergeRevision<'_>],
@@ -213,26 +214,32 @@ impl NWayCorrespondence {
 		))
 	}
 
+	#[cfg(test)]
 	pub fn revision_order(&self) -> &[RevisionId] {
 		&self.revision_order
 	}
 
+	#[cfg(test)]
 	pub fn inputs(&self) -> &BTreeMap<RevisionId, MergeInputId> {
 		&self.inputs
 	}
 
+	#[cfg(test)]
 	pub fn matching(&self, left: RevisionId, right: RevisionId) -> Option<&Matching> {
 		self.matchings.get(&(left, right))
 	}
 
+	#[cfg(test)]
 	pub fn revision_deltas(&self) -> &BTreeMap<RevisionId, RevisionDelta> {
 		&self.revision_deltas
 	}
 
+	#[cfg(test)]
 	pub fn classes(&self) -> &ClassMapping {
 		&self.classes
 	}
 
+	#[cfg(test)]
 	pub fn class_facts(&self) -> &BTreeMap<ClassId, NWayClassFacts> {
 		&self.class_facts
 	}
@@ -256,6 +263,7 @@ impl NWayCorrespondence {
 		descendants
 	}
 
+	#[cfg(test)]
 	pub fn conservative_selection(
 		&self,
 		base: &NormalizedTree,
@@ -271,30 +279,6 @@ impl NWayCorrespondence {
 		);
 		assign_nway_children(base, revisions, self, &mut plan);
 		plan
-	}
-
-	pub fn selection_with_policy(
-		&self,
-		base: &NormalizedTree,
-		revisions: &[MergeRevision<'_>],
-		policy: &dyn crate::merge::kernel::MergePolicy,
-	) -> NWaySelectionPlan {
-		self.selection_with_policy_profiled(base, revisions, policy)
-			.0
-	}
-
-	pub(crate) fn selection_with_policy_profiled(
-		&self,
-		base: &NormalizedTree,
-		revisions: &[MergeRevision<'_>],
-		policy: &dyn crate::merge::kernel::MergePolicy,
-	) -> (NWaySelectionPlan, u64) {
-		self.selection_with_policy_and_overrides_profiled(
-			base,
-			revisions,
-			policy,
-			&NWaySelectionOverrides::default(),
-		)
 	}
 
 	pub(crate) fn selection_with_policy_and_overrides_profiled(

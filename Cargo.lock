@@ -1333,13 +1333,18 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "filetime",
+ "flate2",
  "globset",
  "jomini",
  "keyvalues-parser",
+ "libc",
  "rayon",
  "regex",
+ "remove_dir_all",
+ "reqwest 0.12.28",
  "rkyv",
  "rustix",
+ "same-file",
  "semver",
  "serde",
  "serde_json",
@@ -1348,9 +1353,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.9.12+spec-1.1.0",
+ "toml_edit 0.23.10+spec-1.0.0",
+ "tracing",
  "tree-sitter",
  "tree-sitter-paradox",
  "walkdir",
+ "windows-sys 0.61.2",
  "winreg 0.55.0",
 ]
 
@@ -1364,7 +1372,6 @@ dependencies = [
  "crossterm",
  "dirs",
  "foch",
- "foch-engine",
  "libc",
  "ratatui",
  "regex",
@@ -1386,38 +1393,8 @@ name = "foch-desktop"
 version = "0.0.1"
 dependencies = [
  "foch",
- "foch-engine",
  "tauri",
  "tauri-build",
-]
-
-[[package]]
-name = "foch-engine"
-version = "0.0.1"
-dependencies = [
- "bincode",
- "blake3",
- "dirs",
- "filetime",
- "flate2",
- "foch",
- "globset",
- "libc",
- "rayon",
- "remove_dir_all",
- "reqwest 0.12.28",
- "rkyv",
- "rustix",
- "same-file",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "toml 0.9.12+spec-1.1.0",
- "toml_edit 0.23.10+spec-1.0.0",
- "tracing",
- "walkdir",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

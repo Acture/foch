@@ -22,7 +22,6 @@ members = [
 	".",
 	"apps/foch-cli",
 	"apps/foch-desktop/src-tauri",
-	"crates/foch-engine",
 	"packages/tree-sitter-paradox",
 ]
 default-members = [".", "apps/foch-cli"]
@@ -82,29 +81,37 @@ console.workspace = true
 dirs.workspace = true
 encoding_rs.workspace = true
 filetime = "0.2"
+flate2.workspace = true
 globset.workspace = true
 jomini.workspace = true
 keyvalues-parser.workspace = true
 regex.workspace = true
 rkyv.workspace = true
 rayon.workspace = true
+remove_dir_all.workspace = true
+reqwest.workspace = true
 rustix.workspace = true
+same-file.workspace = true
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 steamlocate.workspace = true
+tempfile.workspace = true
 toml.workspace = true
+toml_edit = "0.23"
+tracing.workspace = true
 tree-sitter = "0.25"
 tree-sitter-paradox = { path = "packages/tree-sitter-paradox" }
 thiserror = "2.0"
 walkdir.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 winreg.workspace = true
 
-[dev-dependencies]
-tempfile.workspace = true
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
 
 [features]
 test-utils = []

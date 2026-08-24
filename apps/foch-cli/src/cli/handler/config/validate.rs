@@ -1,5 +1,5 @@
 use crate::cli::handler::HandlerResult;
-use foch_engine::{Config, ValidationStatus};
+use foch::input::{Config, ValidationStatus};
 
 pub fn handle_validate(config: &Config) -> HandlerResult {
 	let items = config.validate();

@@ -190,7 +190,7 @@ fn workshop_product_cache_residency_gate() {
 		"FOCH_CACHE_MAX_BYTES must be absent for the default 1 GiB gate"
 	);
 	assert_eq!(
-		foch_engine::cache_cap_bytes(),
+		foch::platform::cache_store::cache_cap_bytes(),
 		DEFAULT_CACHE_CAP_BYTES,
 		"cache gate must exercise the product's default 1 GiB per-layer cap"
 	);
@@ -237,15 +237,17 @@ fn workshop_product_cache_residency_gate() {
 	let expected_installs = std::iter::once(compatch.clone())
 		.chain(sources.iter().cloned())
 		.collect::<Vec<_>>();
-	let base_snapshot =
-		foch_engine::installed_base_snapshot_identity("eu4", &discovery.game_version)
-			.expect("read installed EU4 base snapshot identity")
-			.unwrap_or_else(|| {
-				panic!(
-					"no installed base snapshot for eu4@{}",
-					discovery.game_version
-				)
-			});
+	let base_snapshot = foch::game::eu4::base::snapshot::installed_base_snapshot_identity(
+		"eu4",
+		&discovery.game_version,
+	)
+	.expect("read installed EU4 base snapshot identity")
+	.unwrap_or_else(|| {
+		panic!(
+			"no installed base snapshot for eu4@{}",
+			discovery.game_version
+		)
+	});
 	let work = tempfile::Builder::new()
 		.prefix("foch-workshop-cache-gate-")
 		.tempdir()
@@ -475,15 +477,16 @@ fn assert_cache_gate_observation(
 			.all(|line| line.contains(" state=stored ")),
 		"{phase} cache gate observed a non-resident semantic snapshot store:\n{diagnostics}"
 	);
-	let workspace_summary =
-		format!("mod_parse_cache_hits={expected_hits} mod_parse_cache_misses={expected_misses}");
+	let input_summary = format!(
+		"mod_snapshot_cache_hits={expected_hits} mod_snapshot_cache_misses={expected_misses}"
+	);
 	assert_eq!(
 		diagnostics
 			.lines()
-			.filter(|line| line.contains(&workspace_summary))
+			.filter(|line| line.contains(&input_summary))
 			.count(),
 		1,
-		"{phase} cache-gate workspace summary mismatch:\n{diagnostics}"
+		"{phase} cache-gate input summary mismatch:\n{diagnostics}"
 	);
 	assert_diagnostic_mod_ids(
 		phase,

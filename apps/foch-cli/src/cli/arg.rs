@@ -29,7 +29,7 @@ pub enum FochCliCommands {
 	Data(DataArgs),
 	Cache(FochCliCacheArgs),
 	Config(ConfigArgs),
-	Workspace(WorkspaceArgs),
+	Input(InputArgs),
 	Lsp(LspArgs),
 }
 
@@ -282,7 +282,7 @@ pub enum GraphModeArg {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum GraphScopeArg {
-	Workspace,
+	Input,
 	Base,
 	Mods,
 	All,
@@ -440,21 +440,21 @@ pub enum FochCliCacheLayerArg {
 
 #[derive(Parser, Debug)]
 #[command(
-	about = "Inspect a foch workspace source",
-	after_help = "Examples:\n  foch workspace resolve ./foch.toml\n  foch workspace resolve ~/Documents/Paradox\\ Interactive/Europa\\ Universalis\\ IV/dlc_load.json"
+	about = "Inspect a Foch input source",
+	after_help = "Examples:\n  foch input resolve ./foch.toml\n  foch input resolve ~/Documents/Paradox\\ Interactive/Europa\\ Universalis\\ IV/dlc_load.json"
 )]
-pub struct WorkspaceArgs {
+pub struct InputArgs {
 	#[command(subcommand)]
-	pub command: FochCliWorkspaceCommands,
+	pub command: FochCliInputCommands,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum FochCliWorkspaceCommands {
-	Resolve(WorkspaceResolveArgs),
+pub enum FochCliInputCommands {
+	Resolve(InputResolveArgs),
 }
 
 #[derive(Parser, Debug)]
-pub struct WorkspaceResolveArgs {
+pub struct InputResolveArgs {
 	pub source_path: PathBuf,
 }
 

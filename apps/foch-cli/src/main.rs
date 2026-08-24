@@ -1,7 +1,9 @@
 use clap::Parser;
+use foch::check::CHECK_PROGRESS_TARGET;
+use foch::graph::SEMANTIC_GRAPH_PROGRESS_TARGET;
+use foch::input::load_or_init_config;
 use foch_cli::cli::arg;
 use foch_cli::cli::handler;
-use foch_engine::{CHECK_PROGRESS_TARGET, SEMANTIC_GRAPH_PROGRESS_TARGET, load_or_init_config};
 use std::io;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::Layer;
@@ -104,9 +106,7 @@ fn run() -> Result<i32, Box<dyn std::error::Error>> {
 		arg::FochCliCommands::Config(config_args) => {
 			handler::config::handle_config(config_args, &mut config, &config_file)
 		}
-		arg::FochCliCommands::Workspace(workspace_args) => {
-			handler::workspace::handle_workspace(workspace_args, config)
-		}
+		arg::FochCliCommands::Input(input_args) => handler::input::handle_input(input_args, config),
 		arg::FochCliCommands::Lsp(_lsp_args) => Ok(foch_cli::lsp::run()),
 	};
 

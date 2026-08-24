@@ -1,6 +1,7 @@
 use crate::cli::arg::SimplifyArgs;
-use crate::cli::handler::{HandlerResult, resolve_workspace_source};
-use foch_engine::{CheckRequest, Config, SimplifyOptions, run_simplify_with_options};
+use crate::cli::handler::{HandlerResult, resolve_input_source};
+use foch::input::{Config, InputRequest};
+use foch::simplify::{SimplifyOptions, run_simplify_with_options};
 
 pub fn handle_simplify(simplify_args: &SimplifyArgs, config: Config) -> HandlerResult {
 	if (simplify_args.in_place && simplify_args.out.is_some())
@@ -8,8 +9,8 @@ pub fn handle_simplify(simplify_args: &SimplifyArgs, config: Config) -> HandlerR
 	{
 		return Err("simplify requires exactly one of --out or --in-place".into());
 	}
-	let request = CheckRequest::new(
-		resolve_workspace_source(simplify_args.playset_path.as_deref(), &config)?,
+	let request = InputRequest::new(
+		resolve_input_source(simplify_args.playset_path.as_deref(), &config)?,
 		config,
 	);
 	let summary = run_simplify_with_options(

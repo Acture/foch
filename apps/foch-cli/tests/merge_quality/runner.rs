@@ -27,8 +27,7 @@ const MAX_PLAN_BYTES: u64 = 4 * 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const DISABLED_BASE_SNAPSHOT_IDENTITY: &str = "explicitly-disabled";
 const CACHE_MAX_BYTES_ENV: &str = "FOCH_CACHE_MAX_BYTES";
-const CACHE_DIAGNOSTIC_PREFIXES: [&[u8]; 2] =
-	[b"[merge] mod_snapshot:", b"[merge] resolve_workspace:"];
+const CACHE_DIAGNOSTIC_PREFIXES: [&[u8]; 2] = [b"[merge] mod_snapshot:", b"[merge] resolve_input:"];
 
 enum ProductCacheRoot {
 	SystemManaged { path: PathBuf },
@@ -53,7 +52,7 @@ impl ProductCacheEnvironment {
 	fn system_managed() -> Self {
 		Self {
 			root: ProductCacheRoot::SystemManaged {
-				path: foch_engine::default_foch_cache_dir(),
+				path: foch::platform::cache_store::default_foch_cache_dir(),
 			},
 			max_bytes: std::env::var_os(CACHE_MAX_BYTES_ENV),
 		}
@@ -182,7 +181,7 @@ impl ProductMeasurementRunner {
 	) -> io::Result<Self> {
 		let executable = PathBuf::from(env!("CARGO_BIN_EXE_foch"));
 		let hash = executable_hash(&executable)?;
-		let base_data_root = std::env::var_os(foch_engine::BASE_DATA_DIR_ENV)
+		let base_data_root = std::env::var_os(foch::game::eu4::base::snapshot::BASE_DATA_DIR_ENV)
 			.map(PathBuf::from)
 			.unwrap_or_else(|| {
 				dirs::data_local_dir()
@@ -250,7 +249,10 @@ impl ProductMeasurementRunner {
 		command
 			.env_clear()
 			.env("FOCH_CONFIG_DIR", &config_dir)
-			.env(foch_engine::BASE_DATA_DIR_ENV, &self.base_data_root)
+			.env(
+				foch::game::eu4::base::snapshot::BASE_DATA_DIR_ENV,
+				&self.base_data_root,
+			)
 			.env("HOME", &home_dir)
 			.env("XDG_CONFIG_HOME", &xdg_config_home)
 			.env("XDG_DATA_HOME", &xdg_data_home)
@@ -597,13 +599,13 @@ fn parse_completed_cache_diagnostics(
 	let workspace_summaries = lines
 		.iter()
 		.copied()
-		.filter(|line| line.starts_with("[merge] resolve_workspace: done "))
+		.filter(|line| line.starts_with("[merge] resolve_input: done "))
 		.collect::<Vec<_>>();
 	let [workspace_summary] = workspace_summaries.as_slice() else {
-		return Err("expected exactly one completed workspace cache summary".to_string());
+		return Err("expected exactly one completed input cache summary".to_string());
 	};
-	let expected_hits = diagnostic_usize_field(workspace_summary, "mod_parse_cache_hits")?;
-	let expected_misses = diagnostic_usize_field(workspace_summary, "mod_parse_cache_misses")?;
+	let expected_hits = diagnostic_usize_field(workspace_summary, "mod_snapshot_cache_hits")?;
+	let expected_misses = diagnostic_usize_field(workspace_summary, "mod_snapshot_cache_misses")?;
 	let expected_mods = diagnostic_usize_field(workspace_summary, "mods")?;
 	let started_mod_ids = diagnostic_mod_ids(&lines, "[merge] mod_snapshot: start ")?;
 	let parsed_mod_ids = diagnostic_mod_ids(&lines, "[merge] mod_snapshot: parse_done ")?;
@@ -645,7 +647,7 @@ fn parse_completed_cache_diagnostics(
 		|| disk_hit_mod_ids.len() != expected_hits
 		|| expected_hits + expected_misses != expected_mods
 	{
-		return Err("workspace cache summary does not match per-mod diagnostics".to_string());
+		return Err("input cache summary does not match per-mod diagnostics".to_string());
 	}
 	let started = started_mod_ids.iter().cloned().collect::<BTreeSet<_>>();
 	let observed = parsed_mod_ids
@@ -922,8 +924,9 @@ fn validate_request(request: &MeasurementRequest) -> Result<(), String> {
 fn validate_base_snapshot(request: &MeasurementRequest) -> Result<(), String> {
 	let version = crate::merge_quality::config::detect_game_version(&request.basegame_root)
 		.ok_or_else(|| "failed to detect measurement base-game version".to_string())?;
-	let installed = foch_engine::installed_base_snapshot_identity("eu4", &version)?
-		.ok_or_else(|| format!("no installed base snapshot for eu4@{version}"))?;
+	let installed =
+		foch::game::eu4::base::snapshot::installed_base_snapshot_identity("eu4", &version)?
+			.ok_or_else(|| format!("no installed base snapshot for eu4@{version}"))?;
 	let actual = installed.as_label();
 	if actual != request.expected_base_snapshot_identity {
 		return Err("installed base snapshot changed after measurement selection".to_string());
@@ -983,7 +986,7 @@ fn write_engine_config(
 ) -> Result<(), String> {
 	let mut game_path = HashMap::new();
 	game_path.insert("eu4".to_string(), request.basegame_root.clone());
-	let config = foch_engine::Config {
+	let config = foch::input::Config {
 		steam_root_path: Some(run_root.join("unavailable-steam-root")),
 		paradox_data_path: None,
 		game_path,
@@ -1269,7 +1272,7 @@ mod tests {
 
 	#[test]
 	fn full_product_and_fixture_runners_use_distinct_cache_lifetimes() {
-		let system_root = foch_engine::default_foch_cache_dir();
+		let system_root = foch::platform::cache_store::default_foch_cache_dir();
 		let inherited_max_bytes = std::env::var_os(CACHE_MAX_BYTES_ENV);
 		let full_product = ProductMeasurementRunner::full_product().expect("full-product runner");
 		assert!(matches!(
@@ -1503,7 +1506,7 @@ mod tests {
 			));
 		}
 		lines.push(format!(
-			"[merge] resolve_workspace: done elapsed_ms=1 mods={} files=3 requested_paths=0 effective_paths=0 mod_parse_cache_hits={} mod_parse_cache_misses={}",
+			"[merge] resolve_input: done elapsed_ms=1 mods={} files=3 requested_paths=0 effective_paths=0 mod_snapshot_cache_hits={} mod_snapshot_cache_misses={}",
 			parsed.len() + disk_hits.len(),
 			disk_hits.len(),
 			parsed.len()

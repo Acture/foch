@@ -3,12 +3,13 @@ use crate::cli::arg::{
 };
 use crate::cli::handler::HandlerResult;
 use foch::game::eu4::Eu4;
-use foch_engine::{
-	BaseBuildObserver, BaseDataSource, Config, FileFilter, INSTALLED_COVERAGE_FILE_NAME,
+use foch::game::eu4::base::snapshot::{
+	BaseBuildObserver, BaseDataSource, INSTALLED_COVERAGE_FILE_NAME,
 	build_base_snapshot_with_observer, default_release_tag, install_built_snapshot,
 	install_snapshot_from_release, list_installed_base_data, resolve_game_root_and_version,
 	write_release_artifacts, write_snapshot_bundle,
 };
+use foch::input::{Config, FileFilter};
 
 pub fn handle_data(data_args: &DataArgs, config: Config) -> HandlerResult {
 	match &data_args.command {

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 /// Index that resolves a dependency string declared in a `descriptor.mod`'s
 /// `dependencies = { ... }` block to a concrete [`ModCandidate`] in the
-/// workspace.
+/// resolved input.
 ///
 /// Paradox launcher accepts either the human-readable mod `name` (the value of
 /// the `name = "..."` field in `descriptor.mod`) or, occasionally, the
@@ -20,7 +20,7 @@ pub struct ModIdentityIndex {
 }
 
 impl ModIdentityIndex {
-	/// Build an index from the workspace's mod candidates. Later candidates
+	/// Build an index from the input's mod candidates. Later candidates
 	/// with a colliding key win — this matches playlist semantics where a
 	/// later position overrides earlier ones.
 	pub fn from_mods(mods: &[ModCandidate]) -> Self {

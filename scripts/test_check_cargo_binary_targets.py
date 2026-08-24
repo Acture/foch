@@ -36,7 +36,6 @@ def desktop_package(*extra_dependencies: CargoDependency) -> CargoPackage:
 		targets=[],
 		dependencies=[
 			cargo_dependency("foch"),
-			cargo_dependency("foch-engine"),
 			cargo_dependency("tauri"),
 			*extra_dependencies,
 		],

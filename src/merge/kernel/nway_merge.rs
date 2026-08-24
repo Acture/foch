@@ -3,13 +3,15 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
+#[cfg(test)]
+use crate::merge::kernel::ConservativeMergePolicy;
 use crate::merge::kernel::nway::{NWayExactSelection, NWaySelectionOverrides};
 use crate::merge::kernel::{
 	ChildCardinality, ChildOrder, ClassId, ConflictKind, ConflictNodeId, ConflictResolution,
-	ConservativeMergePolicy, MergeInputId, MergeOutcome, MergePolicy, MergeRevision, MergeTimings,
-	NWayClassSelection, NWayCorrespondence, NWayInputError, NWayScalarSynthesis, NodeId,
-	NormalizedNode, NormalizedTree, RevisionId, RevisionNode, RevisionSourceRef, SourceNodeRef,
-	SourceSet, StructuralConflict, StructuralConflictDraft, TreeError, TreeNode,
+	MergeInputId, MergeOutcome, MergePolicy, MergeRevision, MergeTimings, NWayClassSelection,
+	NWayCorrespondence, NWayInputError, NWayScalarSynthesis, NodeId, NormalizedNode,
+	NormalizedTree, RevisionId, RevisionNode, RevisionSourceRef, SourceNodeRef, SourceSet,
+	StructuralConflict, StructuralConflictDraft, TreeError, TreeNode,
 };
 
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
@@ -34,6 +36,7 @@ pub enum NWayMergeError {
 	InvalidOutput(#[from] TreeError),
 }
 
+#[cfg(test)]
 pub fn n_way_merge(
 	base: &NormalizedTree,
 	revisions: &[MergeRevision<'_>],

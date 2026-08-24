@@ -93,12 +93,9 @@ impl Matching {
 		&self.ambiguous
 	}
 
+	#[cfg(test)]
 	pub fn len(&self) -> usize {
 		self.by_left.len()
-	}
-
-	pub fn is_empty(&self) -> bool {
-		self.by_left.is_empty()
 	}
 
 	fn is_left_matched(&self, left: NodeId) -> bool {
@@ -161,10 +158,6 @@ pub struct TreeMatcher {
 }
 
 impl TreeMatcher {
-	pub const fn new(config: MatcherConfig) -> Self {
-		Self { config }
-	}
-
 	pub fn match_trees(&self, left: &NormalizedTree, right: &NormalizedTree) -> Matching {
 		self.match_trees_with_seed(left, right, None)
 	}

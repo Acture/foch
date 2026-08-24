@@ -238,31 +238,12 @@ impl MergeOutcome {
 		));
 	}
 
-	pub fn source_node_ref(&self, source: RevisionNode) -> Option<SourceNodeRef> {
-		self.inputs
-			.get(&source.revision)
-			.copied()
-			.map(|input| SourceNodeRef::Node {
-				input,
-				node: source.node,
-			})
-	}
-
-	pub fn tombstone_ref(
-		&self,
-		deleted_by: RevisionId,
-		base_node: NodeId,
-	) -> Option<SourceNodeRef> {
-		self.inputs
-			.get(&deleted_by)
-			.copied()
-			.map(|input| SourceNodeRef::Tombstone { input, base_node })
-	}
-
+	#[cfg(test)]
 	pub fn has_conflicts(&self) -> bool {
 		!self.conflicts.is_empty()
 	}
 
+	#[cfg(test)]
 	pub fn resolved_tree(&self) -> Option<&NormalizedTree> {
 		(!self.has_conflicts()).then_some(&self.tentative_tree)
 	}

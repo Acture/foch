@@ -21,5 +21,4 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 foch = { path = "../../.." }
-foch-engine = { path = "../../../crates/foch-engine" }
 tauri = { version = "2.11.5", features = [] }

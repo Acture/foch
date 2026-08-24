@@ -4,7 +4,7 @@ use crate::cli::handler::HandlerResult;
 use crate::cli::handler::config::set::handle_set;
 use crate::cli::handler::config::show::handle_show;
 use crate::cli::handler::config::validate::handle_validate;
-use foch_engine::Config;
+use foch::input::Config;
 use std::path::Path;
 
 pub mod set;

@@ -3,8 +3,9 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use super::content::ScriptFileKind;
+use super::cwt::schema_file_kind_container_scope_kind;
+use super::script::classify_script_file;
 use super::script::parser::{AstStatement, AstValue, parse_clausewitz_file};
-use super::script::{classify_script_file, schema_file_kind_container_scope_kind};
 use crate::game::schema::compile::CwtSchemaGraph;
 use crate::game::schema::query::{
 	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery, RuleContext,

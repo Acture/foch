@@ -820,7 +820,7 @@ fn check_unresolved_flag_references(index: &SemanticIndex) -> Vec<Finding> {
 	// parameters or nested scopes the indexer does not cross, so the binding
 	// expansion below misses those callers. The pattern check keeps reads of
 	// flags shaped like `<prefix><value><suffix>` from being flagged when a
-	// matching setter exists somewhere in the workspace.
+	// matching setter exists somewhere in the resolved input.
 	let mut templated_flag_patterns: Vec<TemplatedFlagPattern> = Vec::new();
 	let mut seen_patterns: HashSet<(&'static str, String, String)> = HashSet::new();
 	for templates in templated_flag_defs.values() {

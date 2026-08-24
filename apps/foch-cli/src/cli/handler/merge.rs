@@ -1,18 +1,18 @@
 use crate::cli::arg::MergeArgs;
-use crate::cli::handler::{HandlerResult, resolve_workspace_source};
+use crate::cli::handler::{HandlerResult, resolve_input_source};
 use foch::game::eu4::analysis::report::{
 	merge_plan_exit_code, render_merge_plan_text, render_merge_report_text,
+};
+use foch::input::{Config, InputRequest, InputSource, resolve_product_input_manifest};
+use foch::merge::{
+	CancellationToken, CommitAuthorization, ConflictHandler, InteractiveCliHandler,
+	MergeAnalysisOptions, NoopProgressObserver, analyze_merge,
 };
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
 use foch::playset::descriptor::load_descriptor;
 use foch::project::compute_playset_fingerprint;
 use foch::project::{AppliedDepOverride, Project};
-use foch_engine::{
-	CancellationToken, CheckRequest, CommitAuthorization, Config, ConflictHandler,
-	InteractiveCliHandler, MergeAnalysisOptions, NoopProgressObserver, WorkspaceSource,
-	analyze_merge, resolve_product_input_manifest,
-};
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
 use std::fs;
@@ -20,9 +20,9 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
-	let source = resolve_workspace_source(merge_args.playset_path.as_deref(), &config)?;
+	let source = resolve_input_source(merge_args.playset_path.as_deref(), &config)?;
 	let paradox_data_path = config.paradox_data_path.clone();
-	let request = CheckRequest::new(source.clone(), config);
+	let request = InputRequest::new(source.clone(), config);
 	let local_config = load_local_foch_config(merge_args, &source)?;
 	let fingerprint = compute_fingerprint_for_source(&request, &local_config);
 	let dep_overrides = applied_dep_overrides(merge_args, &local_config);
@@ -39,8 +39,8 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			ignore_replace_path: merge_args.ignore_replace_path,
 			dep_overrides,
 			resolution_config_path: merge_args.config.clone().or_else(|| match &source {
-				WorkspaceSource::Manifest(path) => Some(path.clone()),
-				WorkspaceSource::DlcLoad(_) => None,
+				InputSource::Manifest(path) => Some(path.clone()),
+				InputSource::DlcLoad(_) => None,
 			}),
 			interactive_conflict_handler,
 			interactive_resolution_config_path,
@@ -128,7 +128,7 @@ fn confirm_merge_commit(
 
 fn build_interactive_conflict_handler(
 	merge_args: &MergeArgs,
-	source: &WorkspaceSource,
+	source: &InputSource,
 ) -> (Option<Box<dyn ConflictHandler>>, Option<PathBuf>) {
 	if merge_args.non_interactive {
 		return (None, None);
@@ -199,11 +199,11 @@ fn render_unresolved_conflict_tip(report: &MergeReport, out_dir: &Path) -> Optio
 
 fn load_local_foch_config(
 	merge_args: &MergeArgs,
-	source: &WorkspaceSource,
+	source: &InputSource,
 ) -> Result<Project, Box<dyn std::error::Error>> {
 	if let Some(path) = merge_args.config.as_ref() {
 		Ok(Project::load_from_path(path)?)
-	} else if let WorkspaceSource::Manifest(path) = source {
+	} else if let InputSource::Manifest(path) = source {
 		Ok(Project::load_from_path(path)?)
 	} else {
 		let playset_root = playset_root_for(source.path());
@@ -229,7 +229,7 @@ fn applied_dep_overrides(
 	overrides
 }
 
-/// Compute the playset fingerprint without doing a full workspace resolve.
+/// Compute the playset fingerprint without resolving the complete input.
 ///
 /// Launcher playsets use their ordered enabled-mod list and descriptor
 /// versions. Manifest workspaces use only their ordered, trusted Workshop ACF
@@ -237,12 +237,12 @@ fn applied_dep_overrides(
 /// inventories a mod root. The fingerprint also binds foch overrides and
 /// resolutions.
 fn compute_fingerprint_for_source(
-	request: &CheckRequest,
+	request: &InputRequest,
 	local_config: &Project,
 ) -> Option<String> {
 	match &request.source {
-		WorkspaceSource::DlcLoad(path) => compute_fingerprint_for_playset(path, local_config),
-		WorkspaceSource::Manifest(_) => compute_fingerprint_for_manifest(request, local_config),
+		InputSource::DlcLoad(path) => compute_fingerprint_for_playset(path, local_config),
+		InputSource::Manifest(_) => compute_fingerprint_for_manifest(request, local_config),
 	}
 }
 
@@ -269,7 +269,7 @@ fn compute_fingerprint_for_playset(playset_path: &Path, local_config: &Project) 
 }
 
 fn compute_fingerprint_for_manifest(
-	request: &CheckRequest,
+	request: &InputRequest,
 	local_config: &Project,
 ) -> Option<String> {
 	let manifest = resolve_product_input_manifest(request, None).ok()?;
@@ -301,12 +301,12 @@ fn compute_fingerprint_for_workshop_manifest(
 	compute_playset_fingerprint(&mods, &local_config.overrides, &local_config.resolutions)
 }
 
-fn resolve_resolution_config_path(merge_args: &MergeArgs, source: &WorkspaceSource) -> PathBuf {
+fn resolve_resolution_config_path(merge_args: &MergeArgs, source: &InputSource) -> PathBuf {
 	if let Some(path) = merge_args.config.as_ref() {
 		return path.clone();
 	}
 
-	if let WorkspaceSource::Manifest(path) = source {
+	if let InputSource::Manifest(path) = source {
 		return path.clone();
 	}
 
@@ -463,7 +463,7 @@ mod tests {
 	#[test]
 	fn manifest_fingerprint_fails_closed_when_acf_resolution_fails() {
 		let request =
-			CheckRequest::from_manifest_path(PathBuf::from("missing-foch.toml"), Config::default());
+			InputRequest::from_manifest_path(PathBuf::from("missing-foch.toml"), Config::default());
 		assert!(compute_fingerprint_for_manifest(&request, &Project::default()).is_none());
 	}
 }

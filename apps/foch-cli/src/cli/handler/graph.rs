@@ -1,23 +1,27 @@
 use crate::cli::arg::{GraphArgs, GraphArtifactFormatArg, GraphModeArg, GraphScopeArg};
-use crate::cli::handler::{HandlerResult, resolve_workspace_source};
-use foch::model::{MERGE_TRACE_ARTIFACT_PATH, MergeTraceEntry, SymbolKind};
-use foch_engine::{
-	CheckRequest, Config, GraphArtifactFormat, GraphBuildOptions, GraphModeSelection,
-	GraphRootSelector, GraphScopeSelection, build_runtime_state_for_request,
-	merge_trace_edges_from_trace, run_graph_with_options, run_module_report, write_module_report,
+use crate::cli::handler::{HandlerResult, resolve_input_source};
+use foch::graph::{
+	GraphArtifactFormat, GraphBuildOptions, GraphModeSelection, GraphRootSelector,
+	GraphScopeSelection, merge_trace_edges_from_trace, run_graph_with_options,
+	run_module_report_for_request, write_module_report,
 };
+use foch::input::{Config, InputRequest};
+use foch::model::{MERGE_TRACE_ARTIFACT_PATH, MergeTraceEntry, SymbolKind};
 use std::collections::BTreeMap;
 
 const MODULE_REPORT_MAX_ITERS: usize = 20;
 
 pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 	if graph_args.modules {
-		let request = CheckRequest::new(
-			resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
+		let request = InputRequest::new(
+			resolve_input_source(graph_args.playset_path.as_deref(), &config)?,
 			config,
 		);
-		let state = build_runtime_state_for_request(&request, !graph_args.no_game_base)?;
-		let mut report = run_module_report(&state.semantic_index, MODULE_REPORT_MAX_ITERS);
+		let mut report = run_module_report_for_request(
+			&request,
+			!graph_args.no_game_base,
+			MODULE_REPORT_MAX_ITERS,
+		)?;
 		let trace_path = graph_args.out.join(MERGE_TRACE_ARTIFACT_PATH);
 		if trace_path.is_file() {
 			let trace_text = std::fs::read_to_string(&trace_path)?;
@@ -42,15 +46,15 @@ pub fn handle_graph(graph_args: &GraphArgs, config: Config) -> HandlerResult {
 			return Err("semantic graph mode does not support --root".into());
 		}
 		if matches!(graph_args.scope, GraphScopeArg::Base | GraphScopeArg::Mods) {
-			return Err("semantic graph mode currently supports only workspace/all scope".into());
+			return Err("semantic graph mode currently supports only input/all scope".into());
 		}
 		if graph_args.format != GraphArtifactFormatArg::Both {
 			return Err("semantic graph mode always writes JSON and HTML; omit --format".into());
 		}
 	}
 
-	let request = CheckRequest::new(
-		resolve_workspace_source(graph_args.playset_path.as_deref(), &config)?,
+	let request = InputRequest::new(
+		resolve_input_source(graph_args.playset_path.as_deref(), &config)?,
 		config,
 	);
 	let summary = run_graph_with_options(
@@ -102,7 +106,7 @@ fn to_mode(mode: GraphModeArg) -> GraphModeSelection {
 
 fn to_scope(scope: GraphScopeArg) -> GraphScopeSelection {
 	match scope {
-		GraphScopeArg::Workspace => GraphScopeSelection::Workspace,
+		GraphScopeArg::Input => GraphScopeSelection::Input,
 		GraphScopeArg::Base => GraphScopeSelection::Base,
 		GraphScopeArg::Mods => GraphScopeSelection::Mods,
 		GraphScopeArg::All => GraphScopeSelection::All,
@@ -169,17 +173,12 @@ mod tests {
 		)
 		.expect("write trace");
 		let fixture = repository_root()
-			.join("crates")
-			.join("foch-engine")
 			.join("tests")
 			.join("fixtures")
 			.join("playsets")
 			.join("eu4_minimal_passthrough")
 			.join("dlc_load.json");
-		assert!(
-			fixture.is_file(),
-			"engine playset fixture must exist: {fixture:?}"
-		);
+		assert!(fixture.is_file(), "playset fixture must exist: {fixture:?}");
 
 		let exit_code = handle_graph(
 			&GraphArgs {

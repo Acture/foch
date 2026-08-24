@@ -3,11 +3,45 @@ use crate::cli::arg::{
 	FochCliCacheLayerArg, FochCliCacheListArgs, FochCliCacheStatsArgs,
 };
 use crate::cli::handler::HandlerResult;
-use foch_engine::{
-	CacheLayer, CacheLayerEntryInfo, CacheLayerOps, all_layers, cache_cap_bytes,
-	default_foch_cache_dir,
+use foch::platform::cache_store::{
+	CacheLayerEntryInfo, FileCacheLayer, cache_cap_bytes, default_foch_cache_dir,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Copy)]
+struct CacheLayerSpec {
+	selection: FochCliCacheLayerArg,
+	name: &'static str,
+	extension: &'static str,
+}
+
+const CACHE_LAYER_SPECS: [CacheLayerSpec; 5] = [
+	CacheLayerSpec {
+		selection: FochCliCacheLayerArg::Mods,
+		name: "mods",
+		extension: "rkyv",
+	},
+	CacheLayerSpec {
+		selection: FochCliCacheLayerArg::Diffs,
+		name: "diffs",
+		extension: "bin",
+	},
+	CacheLayerSpec {
+		selection: FochCliCacheLayerArg::DagBase,
+		name: "dag-base",
+		extension: "bin",
+	},
+	CacheLayerSpec {
+		selection: FochCliCacheLayerArg::CwtRules,
+		name: "cwt-rules",
+		extension: "bin",
+	},
+	CacheLayerSpec {
+		selection: FochCliCacheLayerArg::Parse,
+		name: "parse",
+		extension: "bin",
+	},
+];
 
 #[derive(Clone, Debug, Default)]
 struct LayerStats {
@@ -30,17 +64,17 @@ pub fn handle_cache(cache_args: &FochCliCacheArgs) -> HandlerResult {
 /// Runs automatic post-command cache GC by byte-capping every cache layer.
 pub fn run_auto_cache_gc() {
 	let cap = cache_cap_bytes();
-	for layer in all_layers() {
+	for layer in selected_layers(Some(FochCliCacheLayerArg::All)) {
 		match layer.evict_to_byte_cap(cap) {
 			Ok(stats) => tracing::debug!(
-				layer = layer.layer().name(),
+				layer = layer.name(),
 				evicted = stats.removed_entries,
 				freed_bytes = stats.freed_bytes,
 				cap_bytes = cap,
 				"cache GC complete"
 			),
 			Err(err) => tracing::warn!(
-				layer = layer.layer().name(),
+				layer = layer.name(),
 				error = %err,
 				"cache GC failed"
 			),
@@ -59,14 +93,14 @@ fn handle_cache_stats(args: &FochCliCacheStatsArgs) -> HandlerResult {
 	println!("cache root: {}", root.display());
 	println!("layer       entries  size       path");
 	for layer in &layers {
-		let stats = layer_stats(layer.as_ref())?;
+		let stats = layer_stats(layer)?;
 		total_size = total_size.saturating_add(stats.total_bytes);
 		total_entries = total_entries.saturating_add(stats.entry_count);
 		oldest = min_time(oldest, stats.oldest_mtime);
 		newest = max_time(newest, stats.newest_mtime);
 		println!(
 			"{:<11} {:>7}  {:>9}  {}",
-			layer.layer().name(),
+			layer.name(),
 			stats.entry_count,
 			format_bytes(stats.total_bytes),
 			layer.path().display()
@@ -89,9 +123,8 @@ fn handle_cache_list(args: &FochCliCacheListArgs) -> HandlerResult {
 		entries.extend(layer.list_entries()?);
 	}
 	entries.sort_by(|left, right| {
-		left.layer
-			.name()
-			.cmp(right.layer.name())
+		left.layer_name
+			.cmp(&right.layer_name)
 			.then_with(|| left.modified.cmp(&right.modified))
 			.then_with(|| left.key.cmp(&right.key))
 	});
@@ -100,7 +133,7 @@ fn handle_cache_list(args: &FochCliCacheListArgs) -> HandlerResult {
 	for entry in entries {
 		println!(
 			"{:<11} {:<32} {:>9}  {}",
-			entry.layer.name(),
+			entry.layer_name,
 			format_system_time(entry.modified),
 			format_bytes(entry.size_bytes),
 			entry.key
@@ -161,29 +194,22 @@ fn handle_cache_where() -> HandlerResult {
 	Ok(0)
 }
 
-fn selected_layers(arg: Option<FochCliCacheLayerArg>) -> Vec<Box<dyn CacheLayerOps>> {
-	let selected = match arg.unwrap_or(FochCliCacheLayerArg::All) {
-		FochCliCacheLayerArg::Parse => Some(CacheLayer::Parse),
-		FochCliCacheLayerArg::Mods => Some(CacheLayer::Mods),
-		FochCliCacheLayerArg::Diffs => Some(CacheLayer::Diffs),
-		FochCliCacheLayerArg::DagBase => Some(CacheLayer::DagBase),
-		FochCliCacheLayerArg::CwtRules => Some(CacheLayer::CwtRules),
-		FochCliCacheLayerArg::All => None,
-	};
-	all_layers()
-		.into_iter()
-		.filter(|layer| selected.is_none_or(|selected| layer.layer() == selected))
+fn selected_layers(arg: Option<FochCliCacheLayerArg>) -> Vec<FileCacheLayer> {
+	let selected = arg.unwrap_or(FochCliCacheLayerArg::All);
+	let root = default_foch_cache_dir();
+	CACHE_LAYER_SPECS
+		.iter()
+		.filter(|spec| selected == FochCliCacheLayerArg::All || spec.selection == selected)
+		.map(|spec| FileCacheLayer::new(spec.name, root.join(spec.name), spec.extension))
 		.collect()
 }
 
-fn layer_stats(layer: &dyn CacheLayerOps) -> Result<LayerStats, Box<dyn std::error::Error>> {
+fn layer_stats(layer: &FileCacheLayer) -> Result<LayerStats, Box<dyn std::error::Error>> {
 	let entries = layer.list_entries()?;
 	Ok(stats_from_entries(&entries))
 }
 
-fn combined_stats(
-	layers: &[Box<dyn CacheLayerOps>],
-) -> Result<LayerStats, Box<dyn std::error::Error>> {
+fn combined_stats(layers: &[FileCacheLayer]) -> Result<LayerStats, Box<dyn std::error::Error>> {
 	let mut entries = Vec::new();
 	for layer in layers {
 		entries.extend(layer.list_entries()?);

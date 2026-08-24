@@ -8,6 +8,7 @@ use foch::game::eu4::editor::schema::{
 	SchemaDiagnostic as EditorSchemaDiagnostic, SchemaDocument, SchemaHover, SchemaLoadStatus,
 	SchemaWorkspace,
 };
+use foch::game::eu4::editor::workspace::WorkspaceSession;
 use foch::game::eu4::script::parser::{
 	AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
 };
@@ -15,13 +16,12 @@ use foch::game::eu4::script::{
 	ParsedScriptFile, build_semantic_index, collect_localisation_definitions, parse_script_file,
 	resolve_symbol_reference_targets,
 };
+use foch::input::{
+	Config, InputRequest, InputSource, InputTargetRole, load_or_init_config, resolve_input_targets,
+};
 use foch::model::{
 	AnalysisMode, DocumentFamily, DocumentRecord, Finding, LocalisationDefinition, SemanticIndex,
 	Severity, SymbolDefinition, SymbolKind as FochSymbolKind,
-};
-use foch_engine::{
-	CheckRequest, Config, WorkspaceSession, WorkspaceSource, WorkspaceTargetRole,
-	load_or_init_config, resolve_workspace_targets,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -1975,8 +1975,8 @@ fn scan_targets_from_manifest_path(
 	manifest_path: PathBuf,
 	config: Config,
 ) -> std::result::Result<Vec<ScanTarget>, String> {
-	let request = CheckRequest::new(WorkspaceSource::Manifest(manifest_path), config);
-	let targets = resolve_workspace_targets(&request, true)
+	let request = InputRequest::new(InputSource::Manifest(manifest_path), config);
+	let targets = resolve_input_targets(&request, true)
 		.map_err(|err| format!("resolve FOCH_LSP_WORKSPACE_MANIFEST failed: {err}"))?;
 	Ok(dedup_scan_targets(
 		targets
@@ -1984,8 +1984,8 @@ fn scan_targets_from_manifest_path(
 			.map(|target| ScanTarget {
 				path: target.path,
 				role: match target.role {
-					WorkspaceTargetRole::Game => TargetRole::Game,
-					WorkspaceTargetRole::Mod => TargetRole::Mod,
+					InputTargetRole::Game => TargetRole::Game,
+					InputTargetRole::Mod => TargetRole::Mod,
 				},
 			})
 			.collect(),
@@ -2274,8 +2274,8 @@ mod tests {
 		EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
 		SchemaDiagnostic as EditorSchemaDiagnostic, SchemaHover,
 	};
+	use foch::input::Config;
 	use foch::model::{Severity, test_support};
-	use foch_engine::Config;
 	use std::fs;
 	use std::path::PathBuf;
 	use tempfile::TempDir;

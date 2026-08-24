@@ -1,5 +1,6 @@
 pub mod definition_module;
 pub mod documents;
+pub(crate) mod emit;
 mod extractors;
 pub mod localisation;
 pub mod parse_cache;
@@ -24,13 +25,10 @@ use super::content::{
 use super::cwt::{
 	hand_container_scope_fallback, is_country_file_reference, is_country_tag_selector,
 	is_country_tag_text, is_dynamic_scope_reference_key, is_province_id_selector,
-	is_province_id_text, looks_like_map_group_key,
+	is_province_id_text, looks_like_map_group_key, schema_file_kind_container_scope_kind,
+	schema_path_container_scope_kind,
 };
-pub use super::cwt::{
-	iterator_scope_type, schema_file_kind_container_scope_kind, schema_iterator_scope_type,
-	schema_path_container_scope_kind, schema_scope_changer_target_type,
-	schema_special_block_scope_kind, scope_changer_target_type, special_block_scope_kind,
-};
+pub use super::cwt::{iterator_scope_type, scope_changer_target_type, special_block_scope_kind};
 use crate::game::schema::query::CwtQuery;
 use crate::model::{
 	AliasUsage, DocumentFamily, DocumentRecord, KeyUsage, LocalisationDefinition, MaybeScope,

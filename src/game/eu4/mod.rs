@@ -1,7 +1,7 @@
 pub mod analysis;
 pub mod base;
 pub mod content;
-pub mod cwt;
+pub(crate) mod cwt;
 pub mod editor;
 mod profile;
 pub mod scope;

@@ -5,11 +5,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use foch::input::Config;
 use foch::playset::steam::{
 	InstalledWorkshopItem, SteamId, SteamWorkshopCatalog, WorkshopInstallIdentity,
 	find_steam_root_path, locate_steam_app, locate_steam_app_from_root,
 };
-use foch_engine::Config;
 
 /// Europa Universalis IV Steam application id.
 pub const EU4_APPID: u32 = 236850;
@@ -309,7 +309,7 @@ fn infer_workshop_manifest_path(content_root: &Path) -> Option<PathBuf> {
 }
 
 fn load_existing_config() -> Result<Config, String> {
-	let config_dir = foch_engine::get_config_dir_path().map_err(|err| err.to_string())?;
+	let config_dir = foch::input::get_config_dir_path().map_err(|err| err.to_string())?;
 	let path = config_dir.join("config.toml");
 	if !path.is_file() {
 		return Ok(Config::default());

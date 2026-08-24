@@ -9,6 +9,7 @@ pub struct RevisionId(u16);
 impl RevisionId {
 	pub const BASE: Self = Self(0);
 	pub const LEFT: Self = Self(1);
+	#[cfg(test)]
 	pub const RIGHT: Self = Self(2);
 
 	pub const fn new(value: u16) -> Self {
@@ -180,6 +181,7 @@ pub struct TreeNode {
 }
 
 impl TreeNode {
+	#[cfg(test)]
 	pub fn branch(kind: impl Into<String>, children: Vec<Self>) -> Self {
 		Self {
 			kind: kind.into(),
@@ -204,11 +206,13 @@ impl TreeNode {
 		}
 	}
 
+	#[cfg(test)]
 	pub fn with_anchor(mut self, namespace: impl Into<String>, value: impl Into<String>) -> Self {
 		self.anchor = Some(SemanticKey::new(namespace, value));
 		self
 	}
 
+	#[cfg(test)]
 	pub fn with_parent_scoped_anchor(
 		mut self,
 		namespace: impl Into<String>,
@@ -218,6 +222,7 @@ impl TreeNode {
 		self
 	}
 
+	#[cfg(test)]
 	pub fn with_parent_scoped_ordered_similarity_anchor(
 		mut self,
 		namespace: impl Into<String>,
@@ -229,6 +234,7 @@ impl TreeNode {
 		self
 	}
 
+	#[cfg(test)]
 	pub fn with_parent_scoped_ordered_similarity_position_anchor(
 		mut self,
 		namespace: impl Into<String>,
@@ -240,16 +246,19 @@ impl TreeNode {
 		self
 	}
 
+	#[cfg(test)]
 	pub fn with_signature(mut self, signature: impl Into<String>) -> Self {
 		self.signature = Some(signature.into());
 		self
 	}
 
+	#[cfg(test)]
 	pub const fn with_child_order(mut self, child_order: ChildOrder) -> Self {
 		self.child_order = child_order;
 		self
 	}
 
+	#[cfg(test)]
 	pub const fn with_child_cardinality(mut self, child_cardinality: ChildCardinality) -> Self {
 		self.child_cardinality = child_cardinality;
 		self
@@ -294,6 +303,7 @@ pub enum TreeError {
 	InvalidChildCardinality { kind: String, actual: usize },
 	#[error("node {0:?} is outside the normalized tree")]
 	UnknownNode(NodeId),
+	#[cfg(test)]
 	#[error("node `{kind}` is not a scalar leaf")]
 	InvalidScalarSynthesis { kind: String },
 }
@@ -326,14 +336,11 @@ impl NormalizedTree {
 		self.nodes.len()
 	}
 
-	pub fn is_empty(&self) -> bool {
-		self.nodes.is_empty()
-	}
-
 	pub fn semantically_equivalent(&self, other: &Self) -> bool {
 		equivalent_subtrees(self, self.root, other, other.root)
 	}
 
+	#[cfg(test)]
 	pub fn to_debug_json(&self) -> Result<String, serde_json::Error> {
 		serde_json::to_string_pretty(self)
 	}
@@ -355,6 +362,7 @@ impl NormalizedTree {
 		Ok(())
 	}
 
+	#[cfg(test)]
 	pub fn synthesize_scalar_value(
 		&mut self,
 		id: NodeId,
@@ -379,6 +387,7 @@ impl NormalizedTree {
 		Ok(())
 	}
 
+	#[cfg(test)]
 	fn recompute_summaries(&mut self) {
 		for index in (0..self.nodes.len()).rev() {
 			let id = NodeId::new(index as u32);

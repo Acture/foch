@@ -623,7 +623,7 @@ pub struct MergeReport {
 	pub input: Option<ProductInputAttestation>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub cache_source: Option<String>,
-	/// When `status == Fatal` because workspace resolution failed, the
+	/// When `status == Fatal` because input resolution failed, the
 	/// underlying cause (e.g. missing/stale installed base data with the
 	/// `foch data install` hint), mirroring what `foch check` surfaces.
 	/// `None` on success — omitted from the report JSON so a non-fatal

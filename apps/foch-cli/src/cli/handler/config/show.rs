@@ -1,6 +1,6 @@
 use crate::cli::arg::ShowConfigArgs;
 use crate::cli::handler::HandlerResult;
-use foch_engine::Config;
+use foch::input::Config;
 
 pub fn handle_show(config: &Config, show_args: &ShowConfigArgs) -> HandlerResult {
 	if show_args.json {

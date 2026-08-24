@@ -8,7 +8,7 @@
 //! matches the original characters in-game instead of producing mojibake.
 //!
 //! `decode_paradox_bytes` is the single funnel for all
-//! Paradox-script-flavoured byte → string conversion in the workspace.
+//! Paradox-script-flavoured byte → string conversion for the crate.
 //! Use it instead of ad-hoc `String::from_utf8_lossy` /
 //! `WINDOWS_1252.decode` calls so the encoding rules stay uniform.
 

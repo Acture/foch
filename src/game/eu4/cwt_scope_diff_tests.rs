@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use super::script::parser::{AstStatement, AstValue, parse_clausewitz_file};
-use super::script::{
+use super::cwt::{
 	schema_iterator_scope_type, schema_scope_changer_target_type, schema_special_block_scope_kind,
 };
+use super::script::parser::{AstStatement, AstValue, parse_clausewitz_file};
 use crate::game::schema::compile::CwtSchemaGraph;
 use crate::game::schema::query::CwtQuery;
 use crate::model::{ScopeKind, ScopeType, base_scope};

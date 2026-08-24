@@ -1,15 +1,16 @@
 use crate::cli::arg::{MergePlanArgs, MergePlanOutputFormat};
-use crate::cli::handler::{HandlerResult, resolve_workspace_source};
+use crate::cli::handler::{HandlerResult, resolve_input_source};
 use foch::game::eu4::analysis::report::{merge_plan_exit_code, render_merge_plan_text};
+use foch::input::{Config, InputRequest};
+use foch::merge::{PathPlanOptions, run_merge_plan_with_options};
 use foch::model::MergePlanFormat;
-use foch_engine::{CheckRequest, Config, MergePlanOptions, run_merge_plan_with_options};
 
 pub fn handle_merge_plan(merge_plan_args: &MergePlanArgs, config: Config) -> HandlerResult {
-	let request = CheckRequest::new(
-		resolve_workspace_source(merge_plan_args.playset_path.as_deref(), &config)?,
+	let request = InputRequest::new(
+		resolve_input_source(merge_plan_args.playset_path.as_deref(), &config)?,
 		config,
 	);
-	let options = MergePlanOptions {
+	let options = PathPlanOptions {
 		include_game_base: !merge_plan_args.no_game_base,
 	};
 

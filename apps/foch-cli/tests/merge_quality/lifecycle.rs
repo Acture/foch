@@ -266,14 +266,16 @@ pub fn measure_workshop_with_runner(
 	let steam_build_id = local_game.steam_build_id.ok_or(
 		"full-product Workshop measurement requires a Steam build id from appmanifest_236850.acf",
 	)?;
-	let base_snapshot =
-		foch_engine::installed_base_snapshot_identity("eu4", &local_game.game_version)?
-			.ok_or_else(|| {
-				format!(
-					"no installed base snapshot for eu4@{}",
-					local_game.game_version
-				)
-			})?;
+	let base_snapshot = foch::game::eu4::base::snapshot::installed_base_snapshot_identity(
+		"eu4",
+		&local_game.game_version,
+	)?
+	.ok_or_else(|| {
+		format!(
+			"no installed base snapshot for eu4@{}",
+			local_game.game_version
+		)
+	})?;
 	let base_snapshot_label = base_snapshot.as_label();
 	let preflight_started = Instant::now();
 	let resolved_cases = resolve_workshop_cases(
@@ -439,11 +441,11 @@ pub fn measure_workshop_with_runner(
 			)
 			.into());
 		}
-		let current_base =
-			foch_engine::installed_base_snapshot_identity("eu4", &local_game.game_version)?
-				.ok_or_else(|| {
-					"installed base snapshot disappeared during measurement".to_string()
-				})?;
+		let current_base = foch::game::eu4::base::snapshot::installed_base_snapshot_identity(
+			"eu4",
+			&local_game.game_version,
+		)?
+		.ok_or_else(|| "installed base snapshot disappeared during measurement".to_string())?;
 		if current_base.as_label() != base_snapshot_label {
 			return Err(format!(
 				"installed base snapshot changed during case {}",

@@ -67,6 +67,8 @@ pub trait MergePolicy {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+#[cfg(test)]
 pub struct ConservativeMergePolicy;
 
+#[cfg(test)]
 impl MergePolicy for ConservativeMergePolicy {}

@@ -229,7 +229,7 @@ fn run_foch_with_env(
 }
 
 #[test]
-fn workspace_resolve_reads_manifest_path_mod() {
+fn input_resolve_reads_manifest_path_mod() {
 	let tmp = TempDir::new().expect("tempdir");
 	let mod_root = tmp.path().join("local-mod");
 	write_descriptor(&mod_root, "Local Mod");
@@ -248,11 +248,10 @@ path = "local-mod"
 	.expect("write manifest");
 
 	let manifest_arg = manifest.to_string_lossy().to_string();
-	let (code, stdout, stderr) =
-		run_foch(&["workspace", "resolve", manifest_arg.as_str()], tmp.path());
+	let (code, stdout, stderr) = run_foch(&["input", "resolve", manifest_arg.as_str()], tmp.path());
 
 	assert_eq!(code, 0, "stderr: {stderr}");
-	assert!(stdout.contains("workspace:"));
+	assert!(stdout.contains("input:"));
 	assert!(stdout.contains("game: eu4"));
 	assert!(stdout.contains("id=local_mod"));
 	assert!(stdout.contains("path="));
@@ -687,7 +686,7 @@ fn graph_command_exports_declared_dependency_and_symbol_tree() {
 	assert_eq!(call_edge["declared_dependency"], true);
 	assert_eq!(call_edge["dependency_match_kind"], "descriptor_name");
 
-	let deps = read_json_file(&out_dir.join("workspace/mod-deps.json"));
+	let deps = read_json_file(&out_dir.join("input/mod-deps.json"));
 	let dep_edge = deps["edges"]
 		.as_array()
 		.expect("deps edges")
@@ -896,7 +895,7 @@ fn semantic_graph_real_minimized_playlist_emits_progress_and_real_nodes() {
 	);
 	assert_eq!(code, 0, "stderr: {stderr}");
 	assert!(
-		stderr.contains("semantic graph resolve workspace: start"),
+		stderr.contains("semantic graph resolve input: start"),
 		"stderr: {stderr}"
 	);
 	assert!(
@@ -1947,7 +1946,7 @@ fn merge_command_force_mode_does_not_override_unsupported_input() {
 		"safe\n"
 	);
 	// Malformed input is unsupported, not a user-choice conflict; --force must
-	// not publish a placeholder for it.
+	// not commit a placeholder for it.
 	assert!(!out_dir.join(STRUCTURAL_CONFLICT_PATH).exists());
 
 	let report = read_json_file(&out_dir.join(MERGE_REPORT_ARTIFACT_PATH));
