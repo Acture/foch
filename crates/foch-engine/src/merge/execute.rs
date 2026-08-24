@@ -10,14 +10,7 @@ use crate::base_data::{
 	InstalledBaseSnapshotIdentity, InstalledBaseSnapshotPublicationGuard,
 	lock_and_validate_installed_base_snapshot_identity,
 };
-use crate::cache::{
-	ModsetCache, compute_modset_cache_key, compute_resolution_map_hash, unpack_modset_tarball,
-};
 use crate::emit::EmitOptions;
-
-// SemVer identity for cached merge output. Bump patch for output bug fixes,
-// minor for additive semantics, and major for incompatible cache payloads.
-const MODSET_CACHE_VERSION: &str = "14.3.0";
 static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
 use crate::request::{CheckRequest, RunOptions};
 use crate::run_checks_with_options;
@@ -27,10 +20,9 @@ use crate::workspace::{
 };
 use foch::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
-	MERGE_PLAN_ARTIFACT_PATH, MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH,
-	MERGE_TRACE_ARTIFACT_PATH, MergeExecutionAttestation, MergePlanResult, MergePlanTarget,
-	MergeReport, MergeReportBaseSnapshot, MergeReportScope, MergeReportStatus,
-	MergeReportValidation, ProductInputAttestation, ProductInputManifest,
+	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
+	MergeExecutionAttestation, MergePlanResult, MergeReport, MergeReportBaseSnapshot,
+	MergeReportScope, MergeReportStatus, MergeReportValidation, ProductInputAttestation,
 };
 use foch::project::{AppliedDepOverride, Project, ResolutionDecision, ResolutionMap};
 use std::collections::{BTreeMap, BTreeSet};
@@ -307,8 +299,6 @@ struct PendingAnalysis {
 	base_snapshot_publish_guard: Option<BaseSnapshotPublishGuard>,
 	product_input_publish_guard: Option<ProductInputPublishGuard>,
 	execution_attestation: MergeExecutionAttestation,
-	modset_cache_key: Option<String>,
-	modset_cache_bypass: Option<&'static str>,
 }
 
 impl AnalyzedMerge {
@@ -425,32 +415,7 @@ fn analyze_merge_with_backend_and_observer(
 		resolution_map,
 		emit_options,
 		frozen_external_files,
-		policy_hash: merge_policy_hash,
 	} = load_merge_policy(&request, options.resolution_config_path.as_deref())?;
-	let has_interactive_conflict_handler = options.interactive_conflict_handler.is_some();
-	let depends_on_prior_output = resolution_map_depends_on_prior_output(&resolution_map);
-	// Full product output must always be materialized from its source roots. The
-	// retained-path evaluation cache is intentionally small and is bound to the
-	// frozen policy and analysis metadata reviewed with the result.
-	let (modset_cache_key, modset_cache_bypass) = if options.retained_paths.is_none() {
-		(None, Some("full_product_output"))
-	} else if !modset_cache_is_eligible(has_interactive_conflict_handler, depends_on_prior_output) {
-		let reason = if has_interactive_conflict_handler {
-			"interactive_conflict_handler"
-		} else {
-			"keep_existing_resolution"
-		};
-		(None, Some(reason))
-	} else {
-		let key = inventory_result.as_ref().ok().and_then(|inventory| {
-			build_modset_cache_key(inventory, &options, backend_id, &merge_policy_hash)
-		});
-		if key.is_some() {
-			(key, None)
-		} else {
-			(None, Some("incomplete_input_identity"))
-		}
-	};
 	let inventory_units = inventory_result
 		.as_ref()
 		.ok()
@@ -541,8 +506,6 @@ fn analyze_merge_with_backend_and_observer(
 			base_snapshot_publish_guard,
 			product_input_publish_guard,
 			execution_attestation,
-			modset_cache_key,
-			modset_cache_bypass,
 		},
 		progress,
 		cancellation,
@@ -568,28 +531,7 @@ fn complete_merge_analysis(
 		base_snapshot_publish_guard,
 		product_input_publish_guard,
 		execution_attestation,
-		modset_cache_key,
-		modset_cache_bypass,
 	} = pending;
-
-	let modset_cache = if let Some(key) = modset_cache_key {
-		match ModsetCache::open_default_versioned(MODSET_CACHE_VERSION) {
-			Ok(cache) => Some(ModsetCacheContext { cache, key }),
-			Err(err) => {
-				tracing::warn!(
-					cache_version = MODSET_CACHE_VERSION,
-					error = %err,
-					"modset cache version cleanup failed; continuing without modset cache"
-				);
-				None
-			}
-		}
-	} else {
-		if let Some(reason) = modset_cache_bypass {
-			eprintln!("[merge] modset_cache_bypass={reason}");
-		}
-		None
-	};
 
 	let final_out_dir = options.out_dir.clone();
 	let prior_out_dir = final_out_dir.is_dir().then_some(final_out_dir.as_path());
@@ -605,89 +547,38 @@ fn complete_merge_analysis(
 		Some(0),
 		Some(semantic_total),
 	);
-	let mut cache_hit = false;
-	let mut cached_report = None;
-	if let Some(cache_context) = modset_cache.as_ref() {
-		if let Some(cached) = cache_context.cache.lookup(&cache_context.key) {
-			if modset_cache_entry_depends_on_prior_output(&cached.report) {
-				eprintln!(
-					"[merge] modset_cache_bypass=keep_existing key={}",
-					short_key(&cache_context.key)
-				);
-			} else {
-				eprintln!(
-					"[merge] modset_cache_hits=1 modset_cache_misses=0 key={}",
-					short_key(&cache_context.key)
-				);
-				unpack_modset_tarball(&cached.tarball_path, &staging_dir).map_err(|err| {
-					MergeError::Io(io::Error::other(format!(
-						"failed to unpack modset cache entry {} into {}: {err}",
-						cached.tarball_path.display(),
-						staging_dir.display()
-					)))
-				})?;
-				rewrite_cached_generated_descriptor(
-					&staging_dir,
-					&final_out_dir,
-					request.source_path(),
-					&plan,
-				)?;
-				write_merge_plan_artifact(&staging_dir, &plan)?;
-				let mut report = cached.report;
-				report.cache_source = Some("modset".to_string());
-				report.playset_fingerprint = options.playset_fingerprint.clone();
-				report.execution = Some(execution_attestation.clone());
-				report.input = product_input_publish_guard
-					.as_ref()
-					.map(|guard| guard.expected.clone());
-				cached_report = Some(report);
-				cache_hit = true;
-			}
-		}
-		if !cache_hit {
-			eprintln!(
-				"[merge] modset_cache_hits=0 modset_cache_misses=1 key={}",
-				short_key(&cache_context.key)
-			);
-		}
-	}
-
-	let mut report = if let Some(report) = cached_report {
-		report
-	} else {
-		let effective_retained_paths = workspace_result
-			.as_ref()
-			.ok()
-			.and_then(|workspace| workspace.effective_retained_paths.clone());
-		materialize_prepared_merge_with_workspace_result(
-			request.clone(),
-			MaterializeOutput {
-				artifacts_dir: &staging_dir,
-				prior_dir: prior_out_dir,
-				target_dir: &final_out_dir,
-			},
-			MergeMaterializeOptions {
-				include_game_base: options.include_game_base,
-				include_base: options.include_base,
-				gui_scroll_merge: options.gui_scroll_merge,
-				force: options.force,
-				ignore_replace_path: options.ignore_replace_path,
-				dep_overrides: options.dep_overrides.clone(),
-				resolution_map,
-				emit_options,
-				frozen_external_files,
-				interactive_conflict_handler: options.interactive_conflict_handler,
-				interactive_resolution_config_path: options.interactive_resolution_config_path,
-				provenance: options.provenance,
-				backend: backend_for(backend_id),
-				retained_paths: effective_retained_paths,
-				cancellation: cancellation.clone(),
-			},
-			workspace_result,
-			plan.clone(),
-			Some((progress, analysis_started)),
-		)?
-	};
+	let effective_retained_paths = workspace_result
+		.as_ref()
+		.ok()
+		.and_then(|workspace| workspace.effective_retained_paths.clone());
+	let mut report = materialize_prepared_merge_with_workspace_result(
+		request.clone(),
+		MaterializeOutput {
+			artifacts_dir: &staging_dir,
+			prior_dir: prior_out_dir,
+			target_dir: &final_out_dir,
+		},
+		MergeMaterializeOptions {
+			include_game_base: options.include_game_base,
+			include_base: options.include_base,
+			gui_scroll_merge: options.gui_scroll_merge,
+			force: options.force,
+			ignore_replace_path: options.ignore_replace_path,
+			dep_overrides: options.dep_overrides.clone(),
+			resolution_map,
+			emit_options,
+			frozen_external_files,
+			interactive_conflict_handler: options.interactive_conflict_handler,
+			interactive_resolution_config_path: options.interactive_resolution_config_path,
+			provenance: options.provenance,
+			backend: backend_for(backend_id),
+			retained_paths: effective_retained_paths,
+			cancellation: cancellation.clone(),
+		},
+		workspace_result,
+		plan.clone(),
+		Some((progress, analysis_started)),
+	)?;
 	notify_progress(
 		progress,
 		analysis_started,
@@ -738,17 +629,6 @@ fn complete_merge_analysis(
 	let execution = merge_execution_result(report);
 	write_merge_report_artifact(&staging_dir, &execution.report)?;
 	let prior_output_guard = PriorOutputGuard::from_report(&final_out_dir, &execution.report)?;
-	if !cache_hit && execution.report.status != MergeReportStatus::Fatal {
-		let _cache_input_guard = if modset_cache.is_some() {
-			validate_publish_guards(
-				base_snapshot_publish_guard.as_ref(),
-				product_input_publish_guard.as_ref(),
-			)?
-		} else {
-			None
-		};
-		store_modset_cache_entry(modset_cache.as_ref(), &staging_dir, &execution.report);
-	}
 	notify_progress(
 		progress,
 		analysis_started,
@@ -831,12 +711,6 @@ fn merge_execution_attestation(
 		scope,
 		base_snapshot,
 	}
-}
-
-#[derive(Clone, Debug)]
-struct ModsetCacheContext {
-	cache: ModsetCache,
-	key: String,
 }
 
 #[derive(Clone, Debug)]
@@ -1062,15 +936,11 @@ impl BaseSnapshotPublishGuard {
 fn finalize_merge_output<Guard>(
 	transaction: OutputTransaction,
 	execution: CommitResult,
-	cache_context: Option<&ModsetCacheContext>,
-	store_cache: bool,
 	validate_base_snapshot: impl FnOnce(&Path) -> Result<Guard, MergeError>,
 ) -> Result<CommitResult, MergeError> {
 	finalize_merge_output_with_publish(
 		transaction,
 		execution,
-		cache_context,
-		store_cache,
 		validate_base_snapshot,
 		OutputTransaction::commit,
 	)
@@ -1080,18 +950,12 @@ fn finalize_merge_output<Guard>(
 fn finalize_merge_output_with_publish<Guard>(
 	transaction: OutputTransaction,
 	execution: CommitResult,
-	cache_context: Option<&ModsetCacheContext>,
-	store_cache: bool,
 	validate_base_snapshot: impl FnOnce(&Path) -> Result<Guard, MergeError>,
 	commit: impl FnOnce(OutputTransaction) -> Result<(), MergeError>,
 ) -> Result<CommitResult, MergeError> {
 	write_merge_report_artifact(transaction.staging_dir(), &execution.report)?;
-	// Validate every mutable input before the staging tree becomes reusable or
-	// visible. A failed guard must never poison the modset cache under an old key.
+	// Validate every mutable input before the staging tree becomes visible.
 	let _base_snapshot_publication_guard = validate_base_snapshot(transaction.staging_dir())?;
-	if store_cache {
-		store_modset_cache_entry(cache_context, transaction.staging_dir(), &execution.report);
-	}
 	commit(transaction)?;
 	Ok(execution)
 }
@@ -1122,305 +986,6 @@ fn validate_publish_guards(
 		product_input_guard.validate()?;
 	}
 	validate_base_snapshot_publish_guard(base_snapshot_guard)
-}
-
-fn build_modset_cache_key(
-	inventory: &WorkspaceInventory,
-	options: &MergeAnalysisOptions,
-	backend_id: MergeBackendId,
-	merge_policy_hash: &str,
-) -> Option<String> {
-	let game_version = inventory
-		.cache_game_version
-		.clone()
-		.unwrap_or_else(|| format!("{} unknown", inventory.playlist.game.key()));
-	let mut mod_hashes = Vec::new();
-	for (_candidate, hash) in inventory
-		.mods
-		.iter()
-		.zip(inventory.mod_hashes.iter())
-		.filter(|(candidate, _hash)| candidate.entry.enabled)
-	{
-		mod_hashes.push(hash.clone()?);
-	}
-	let retained_paths_label = retained_paths_cache_label(
-		inventory.effective_retained_paths.as_ref(),
-		&inventory.retained_module_policy_versions,
-	);
-	let dep_overrides_label = dep_overrides_cache_label(&options.dep_overrides);
-	let product_digest = modset_cache_product_digest(inventory, options.provenance)?;
-	let foch_version = modset_cache_version_label(ModsetCacheBehavior {
-		include_base: options.include_base,
-		gui_scroll_merge: options.gui_scroll_merge,
-		force: options.force,
-		ignore_replace_path: options.ignore_replace_path,
-		provenance: options.provenance,
-		dep_overrides: &dep_overrides_label,
-		retained_paths: &retained_paths_label,
-		merge_backend: backend_id.as_str(),
-		product_digest: &product_digest,
-	});
-	Some(compute_modset_cache_key(
-		&mod_hashes,
-		merge_policy_hash,
-		&foch_version,
-		&game_version,
-	))
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ModsetCacheBehavior<'a> {
-	include_base: bool,
-	gui_scroll_merge: bool,
-	force: bool,
-	ignore_replace_path: bool,
-	provenance: bool,
-	dep_overrides: &'a str,
-	retained_paths: &'a str,
-	merge_backend: &'a str,
-	product_digest: &'a str,
-}
-
-fn modset_cache_version_label(behavior: ModsetCacheBehavior<'_>) -> String {
-	format!(
-		"{} modset_cache={MODSET_CACHE_VERSION} merge_backend={} include_base={} provenance={} gui_scroll_merge={} force={} ignore_replace_path={} dep_overrides={} retained_paths={} product={}",
-		env!("CARGO_PKG_VERSION"),
-		behavior.merge_backend,
-		behavior.include_base,
-		behavior.provenance,
-		behavior.gui_scroll_merge,
-		behavior.force,
-		behavior.ignore_replace_path,
-		behavior.dep_overrides,
-		behavior.retained_paths,
-		behavior.product_digest,
-	)
-}
-
-fn modset_cache_product_digest(inventory: &WorkspaceInventory, provenance: bool) -> Option<String> {
-	let manifest = inventory.product_input_manifest.as_ref()?;
-	if !provenance {
-		return Some(manifest.digest.clone());
-	}
-
-	let display_names = manifest
-		.mods
-		.iter()
-		.map(|product_mod| {
-			let display_name = inventory
-				.mods
-				.iter()
-				.find(|candidate| candidate.mod_id == product_mod.mod_id)
-				.and_then(|candidate| {
-					candidate
-						.descriptor
-						.as_ref()
-						.map(|descriptor| descriptor.name.trim())
-						.filter(|name| !name.is_empty())
-						.map(str::to_string)
-						.or_else(|| {
-							candidate
-								.entry
-								.display_name
-								.as_deref()
-								.map(str::trim)
-								.filter(|name| !name.is_empty())
-								.map(str::to_string)
-						})
-				})
-				.unwrap_or_else(|| product_mod.mod_id.clone());
-			(product_mod.mod_id.clone(), display_name)
-		})
-		.collect::<Vec<_>>();
-	Some(modset_cache_product_identity(
-		manifest,
-		Some(&display_names),
-	))
-}
-
-fn modset_cache_product_identity(
-	manifest: &ProductInputManifest,
-	provenance_display_names: Option<&[(String, String)]>,
-) -> String {
-	let Some(display_names) = provenance_display_names else {
-		return manifest.digest.clone();
-	};
-
-	let mut hasher = blake3::Hasher::new();
-	for value in [&manifest.digest, "provenance-display-names-v1"] {
-		let bytes = value.as_bytes();
-		hasher.update(&(bytes.len() as u64).to_le_bytes());
-		hasher.update(bytes);
-	}
-	hasher.update(&(display_names.len() as u64).to_le_bytes());
-	for (mod_id, display_name) in display_names {
-		for value in [mod_id, display_name] {
-			let bytes = value.as_bytes();
-			hasher.update(&(bytes.len() as u64).to_le_bytes());
-			hasher.update(bytes);
-		}
-	}
-	hasher.finalize().to_hex().to_string()
-}
-
-fn rewrite_cached_generated_descriptor(
-	staging_dir: &Path,
-	published_out_dir: &Path,
-	playset_path: &Path,
-	plan: &MergePlanResult,
-) -> Result<(), MergeError> {
-	let mut replace_prefixes = BTreeSet::new();
-	for entry in &plan.paths {
-		if !matches!(&entry.target, MergePlanTarget::Module { .. }) {
-			continue;
-		}
-		let staged_output = staging_dir.join(entry.output_path());
-		match fs::metadata(&staged_output) {
-			Ok(metadata) if metadata.is_file() => {
-				if let Some(prefix) = entry.target.replace_prefix() {
-					replace_prefixes.insert(prefix.to_string());
-				}
-			}
-			Ok(_) => {}
-			Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-			Err(err) => return Err(MergeError::Io(err)),
-		}
-	}
-
-	let descriptor_root = if published_out_dir.is_absolute() {
-		published_out_dir.to_path_buf()
-	} else {
-		std::env::current_dir()?.join(published_out_dir)
-	};
-	let normalized_out_dir = normalize_descriptor_path(&descriptor_root);
-	let normalized_playset_path = normalize_descriptor_path(playset_path);
-	let escaped_name = escape_descriptor_value(&format!("{} (Merged)", plan.playset_name));
-	let escaped_path = escape_descriptor_value(&normalized_out_dir);
-	let escaped_playset = escape_descriptor_value(&normalized_playset_path);
-	let mut descriptor = format!(
-		"# Source playset: {escaped_playset}\nname=\"{escaped_name}\"\npath=\"{escaped_path}\"\n"
-	);
-	for prefix in replace_prefixes {
-		descriptor.push_str(&format!(
-			"replace_path=\"{}\"\n",
-			escape_descriptor_value(&prefix)
-		));
-	}
-	fs::write(
-		staging_dir.join(foch::model::MERGED_MOD_DESCRIPTOR_PATH),
-		descriptor,
-	)?;
-	Ok(())
-}
-
-fn modset_cache_is_eligible(
-	has_interactive_conflict_handler: bool,
-	depends_on_prior_output: bool,
-) -> bool {
-	!has_interactive_conflict_handler && !depends_on_prior_output
-}
-
-fn resolution_map_depends_on_prior_output(resolution_map: &ResolutionMap) -> bool {
-	resolution_map
-		.by_file
-		.values()
-		.chain(resolution_map.by_conflict_id.values())
-		.chain(
-			resolution_map
-				.pattern_rules
-				.iter()
-				.map(|rule| &rule.decision),
-		)
-		.any(resolution_decision_depends_on_prior_output)
-}
-
-fn resolution_decision_depends_on_prior_output(decision: &ResolutionDecision) -> bool {
-	match decision {
-		ResolutionDecision::KeepExisting => true,
-		ResolutionDecision::Handler(name) => name.eq_ignore_ascii_case("keep_existing"),
-		ResolutionDecision::PreferMod(_)
-		| ResolutionDecision::PreferCandidate(_)
-		| ResolutionDecision::UseFile(_)
-		| ResolutionDecision::UseLiveFile(_) => false,
-	}
-}
-
-fn modset_cache_entry_depends_on_prior_output(report: &MergeReport) -> bool {
-	report
-		.handler_resolutions
-		.iter()
-		.any(|record| record.action.eq_ignore_ascii_case("kept_existing"))
-}
-
-fn dep_overrides_cache_label(dep_overrides: &[AppliedDepOverride]) -> String {
-	if dep_overrides.is_empty() {
-		return "none".to_string();
-	}
-
-	let mut hasher = blake3::Hasher::new();
-	hasher.update(&(dep_overrides.len() as u64).to_le_bytes());
-	for dep_override in dep_overrides {
-		for value in [
-			dep_override.mod_id.as_str(),
-			dep_override.dep_id.as_str(),
-			&dep_override.source.to_string(),
-		] {
-			let bytes = value.as_bytes();
-			hasher.update(&(bytes.len() as u64).to_le_bytes());
-			hasher.update(bytes);
-		}
-	}
-	format!("ordered:{}", hasher.finalize().to_hex())
-}
-
-fn retained_paths_cache_label(
-	retained_paths: Option<&BTreeSet<String>>,
-	module_policy_versions: &std::collections::BTreeMap<foch::model::MergeUnitId, u32>,
-) -> String {
-	let Some(retained_paths) = retained_paths else {
-		return "full".to_string();
-	};
-	let mut hasher = blake3::Hasher::new();
-	for path in retained_paths {
-		let bytes = path.as_bytes();
-		hasher.update(&(bytes.len() as u64).to_le_bytes());
-		hasher.update(bytes);
-	}
-	for (module, version) in module_policy_versions {
-		for value in [&module.family_id, &module.module_name] {
-			let bytes = value.as_bytes();
-			hasher.update(&(bytes.len() as u64).to_le_bytes());
-			hasher.update(bytes);
-		}
-		hasher.update(&version.to_le_bytes());
-	}
-	format!("subset:{}", hasher.finalize().to_hex())
-}
-
-fn store_modset_cache_entry(
-	cache_context: Option<&ModsetCacheContext>,
-	out_dir: &Path,
-	report: &MergeReport,
-) {
-	let Some(cache_context) = cache_context else {
-		return;
-	};
-	if report.status == MergeReportStatus::Fatal {
-		return;
-	}
-	if let Err(err) = cache_context
-		.cache
-		.store(&cache_context.key, out_dir, report)
-	{
-		eprintln!(
-			"[merge] warning: failed to store modset cache entry {}: {err}",
-			short_key(&cache_context.key)
-		);
-	}
-}
-
-fn short_key(key: &str) -> &str {
-	key.get(..16).unwrap_or(key)
 }
 
 fn merge_execution_result(mut report: MergeReport) -> CommitResult {
@@ -1503,7 +1068,6 @@ struct LoadedMergePolicy {
 	resolution_map: ResolutionMap,
 	emit_options: EmitOptions,
 	frozen_external_files: BTreeMap<PathBuf, Vec<u8>>,
-	policy_hash: String,
 }
 
 fn load_merge_policy(
@@ -1532,16 +1096,10 @@ fn load_merge_policy(
 		})?;
 	let emit_options = EmitOptions::with_indent(config.emit_indent());
 	let frozen_external_files = freeze_external_resolution_files(&resolution_map)?;
-	let serialized_policy = toml::to_string(&config).map_err(|err| MergeError::Validation {
-		path: Some(explicit_path.unwrap_or(playset_root).display().to_string()),
-		message: format!("failed to freeze merge policy: {err}"),
-	})?;
-	let policy_hash = frozen_merge_policy_hash(&serialized_policy, &frozen_external_files);
 	Ok(LoadedMergePolicy {
 		resolution_map,
 		emit_options,
 		frozen_external_files,
-		policy_hash,
 	})
 }
 
@@ -1574,23 +1132,6 @@ fn freeze_external_resolution_files(
 		frozen.insert(path, bytes);
 	}
 	Ok(frozen)
-}
-
-fn frozen_merge_policy_hash(
-	serialized_policy: &str,
-	frozen_external_files: &BTreeMap<PathBuf, Vec<u8>>,
-) -> String {
-	let mut hasher = blake3::Hasher::new();
-	let config_hash = compute_resolution_map_hash(serialized_policy.as_bytes());
-	hasher.update(config_hash.as_bytes());
-	for (path, bytes) in frozen_external_files {
-		let normalized_path = path.to_string_lossy().replace('\\', "/");
-		hasher.update(&(normalized_path.len() as u64).to_le_bytes());
-		hasher.update(normalized_path.as_bytes());
-		hasher.update(&(bytes.len() as u64).to_le_bytes());
-		hasher.update(bytes);
-	}
-	hasher.finalize().to_hex().to_string()
 }
 
 fn revalidate_generated_output(
@@ -1718,21 +1259,6 @@ fn write_merge_report_artifact(out_dir: &Path, report: &MergeReport) -> Result<(
 	Ok(())
 }
 
-fn write_merge_plan_artifact(out_dir: &Path, plan: &MergePlanResult) -> Result<(), MergeError> {
-	let path = out_dir.join(MERGE_PLAN_ARTIFACT_PATH);
-	if let Some(parent) = path.parent() {
-		fs::create_dir_all(parent)?;
-	}
-	let bytes = serde_json::to_vec_pretty(plan).map_err(|err| {
-		MergeError::Io(io::Error::other(format!(
-			"failed to serialize merge plan {}: {err}",
-			path.display()
-		)))
-	})?;
-	fs::write(path, bytes)?;
-	Ok(())
-}
-
 /// Write the `.foch/foch-provenance.json` sidecar when provenance was collected
 /// (i.e. `--provenance` was on). When the map is empty the sidecar is omitted,
 /// and any stale relic from a previous provenance run is removed so toggling the
@@ -1811,8 +1337,7 @@ mod tests {
 	use crate::config::Config;
 	use crate::workspace::FileFilter;
 	use foch::game::eu4::Eu4;
-	use foch::model::{HandlerResolutionRecord, MergePlanEntry, ProductInputMod};
-	use foch::playset::steam::{SteamId, WorkshopInstallIdentity};
+	use foch::model::HandlerResolutionRecord;
 	use std::collections::HashMap;
 	use std::sync::Mutex;
 
@@ -2370,273 +1895,6 @@ mod tests {
 		assert_eq!(compute_analysis_status(&report).fatal_errors, 0);
 	}
 
-	#[test]
-	fn retained_paths_cache_label_is_order_insensitive_and_subset_sensitive() {
-		let no_module_policies = std::collections::BTreeMap::new();
-		let left = BTreeSet::from([
-			"common/scripted_effects/a.txt".to_string(),
-			"interface/frontend.gui".to_string(),
-		]);
-		let right = BTreeSet::from([
-			"interface/frontend.gui".to_string(),
-			"common/scripted_effects/a.txt".to_string(),
-		]);
-		let different = BTreeSet::from(["common/scripted_effects/a.txt".to_string()]);
-
-		assert_eq!(
-			retained_paths_cache_label(Some(&left), &no_module_policies),
-			retained_paths_cache_label(Some(&right), &no_module_policies)
-		);
-		assert_ne!(
-			retained_paths_cache_label(Some(&left), &no_module_policies),
-			retained_paths_cache_label(Some(&different), &no_module_policies)
-		);
-		assert_eq!(
-			retained_paths_cache_label(None, &no_module_policies),
-			"full"
-		);
-	}
-
-	#[test]
-	fn retained_paths_cache_label_includes_module_policy_version() {
-		let retained = BTreeSet::from(["common/governments/00_governments.txt".to_string()]);
-		let module = foch::model::MergeUnitId {
-			family_id: "governments".to_string(),
-			module_name: "governments".to_string(),
-		};
-		let version_one = std::collections::BTreeMap::from([(module.clone(), 1)]);
-		let version_two = std::collections::BTreeMap::from([(module, 2)]);
-
-		assert_ne!(
-			retained_paths_cache_label(Some(&retained), &version_one),
-			retained_paths_cache_label(Some(&retained), &version_two)
-		);
-	}
-
-	#[test]
-	fn modset_cache_key_separates_force_from_non_force_runs() {
-		let key_for = |force| {
-			let version = modset_cache_version_label(ModsetCacheBehavior {
-				include_base: false,
-				gui_scroll_merge: false,
-				force,
-				ignore_replace_path: false,
-				provenance: false,
-				dep_overrides: "none",
-				retained_paths: "full",
-				merge_backend: "address-patch",
-				product_digest: "same-product",
-			});
-			compute_modset_cache_key(
-				&["same-mod".to_string()],
-				"same-resolution",
-				&version,
-				"same-game",
-			)
-		};
-
-		assert_ne!(key_for(false), key_for(true));
-	}
-
-	#[test]
-	fn modset_cache_key_separates_merge_backends() {
-		let key_for = |merge_backend| {
-			let version = modset_cache_version_label(ModsetCacheBehavior {
-				include_base: false,
-				gui_scroll_merge: false,
-				force: false,
-				ignore_replace_path: false,
-				provenance: false,
-				dep_overrides: "none",
-				retained_paths: "full",
-				merge_backend,
-				product_digest: "same-product",
-			});
-			compute_modset_cache_key(
-				&["same-mod".to_string()],
-				"same-resolution",
-				&version,
-				"same-game",
-			)
-		};
-
-		assert_ne!(key_for("address-patch"), key_for("gumtree-pcs-nway"));
-	}
-
-	#[test]
-	fn modset_cache_key_separates_programmatic_dep_overrides() {
-		let key_for = |dep_overrides: &[AppliedDepOverride]| {
-			let dep_overrides = dep_overrides_cache_label(dep_overrides);
-			let version = modset_cache_version_label(ModsetCacheBehavior {
-				include_base: false,
-				gui_scroll_merge: false,
-				force: false,
-				ignore_replace_path: false,
-				provenance: false,
-				dep_overrides: &dep_overrides,
-				retained_paths: "full",
-				merge_backend: "address-patch",
-				product_digest: "same-product",
-			});
-			compute_modset_cache_key(
-				&["same-mod".to_string()],
-				"same-resolution",
-				&version,
-				"same-game",
-			)
-		};
-		let override_edge = AppliedDepOverride::cli("child", "parent");
-
-		assert_ne!(key_for(&[]), key_for(&[override_edge]));
-	}
-
-	#[test]
-	fn modset_cache_key_binds_path_free_product_manifest() {
-		let product_mod =
-			|mod_id: &str, precedence: usize, workshop_id, manifest_id| ProductInputMod {
-				mod_id: mod_id.to_string(),
-				precedence,
-				workshop_identity: WorkshopInstallIdentity {
-					app_id: 236_850,
-					workshop_id: SteamId::new(workshop_id),
-					manifest_id: SteamId::new(manifest_id),
-				},
-			};
-		let first = product_mod("mod-a", 1, 1_001, 2_001);
-		let second = product_mod("mod-b", 2, 1_002, 2_002);
-		let manifest = ProductInputManifest::new(vec![first.clone(), second.clone()]);
-		let reordered = ProductInputManifest::new(vec![
-			product_mod("mod-b", 1, 1_002, 2_002),
-			product_mod("mod-a", 2, 1_001, 2_001),
-		]);
-		let revised =
-			ProductInputManifest::new(vec![product_mod("mod-a", 1, 1_001, 2_003), second]);
-		let key_for = |manifest: &ProductInputManifest,
-		               source_path: &Path,
-		               playset_name: &str,
-		               out_dir: &Path| {
-			let _publication_metadata = (source_path, playset_name, out_dir);
-			let product_digest = modset_cache_product_identity(manifest, None);
-			let version = modset_cache_version_label(ModsetCacheBehavior {
-				include_base: false,
-				gui_scroll_merge: false,
-				force: false,
-				ignore_replace_path: false,
-				provenance: false,
-				dep_overrides: "none",
-				retained_paths: "subset:same",
-				merge_backend: "gumtree-pcs-nway",
-				product_digest: &product_digest,
-			});
-			compute_modset_cache_key(
-				&["same-mod".to_string()],
-				"same-policy",
-				&version,
-				"same-game",
-			)
-		};
-
-		let first_key = key_for(
-			&manifest,
-			Path::new("/first/source/foch.toml"),
-			"First playset",
-			Path::new("/first/output"),
-		);
-		let moved_key = key_for(
-			&manifest,
-			Path::new("/moved/source/renamed.toml"),
-			"Renamed playset",
-			Path::new("/different/output"),
-		);
-		assert_eq!(first_key, moved_key);
-		assert_ne!(
-			first_key,
-			key_for(
-				&reordered,
-				Path::new("/first/source/foch.toml"),
-				"First playset",
-				Path::new("/first/output"),
-			)
-		);
-		assert_ne!(
-			first_key,
-			key_for(
-				&revised,
-				Path::new("/first/source/foch.toml"),
-				"First playset",
-				Path::new("/first/output"),
-			)
-		);
-	}
-
-	#[test]
-	fn provenance_product_identity_binds_ordered_display_names() {
-		let manifest = ProductInputManifest::new(vec![ProductInputMod {
-			mod_id: "mod-a".to_string(),
-			precedence: 1,
-			workshop_identity: WorkshopInstallIdentity {
-				app_id: 236_850,
-				workshop_id: SteamId::new(1_001),
-				manifest_id: SteamId::new(2_001),
-			},
-		}]);
-		let original = vec![("mod-a".to_string(), "Original".to_string())];
-		let renamed = vec![("mod-a".to_string(), "Renamed".to_string())];
-
-		assert_eq!(
-			modset_cache_product_identity(&manifest, None),
-			manifest.digest
-		);
-		assert_ne!(
-			modset_cache_product_identity(&manifest, Some(&original)),
-			modset_cache_product_identity(&manifest, Some(&renamed))
-		);
-	}
-
-	#[test]
-	fn interactive_conflict_handler_bypasses_modset_cache() {
-		assert!(modset_cache_is_eligible(false, false));
-		assert!(!modset_cache_is_eligible(true, false));
-		assert!(!modset_cache_is_eligible(false, true));
-	}
-
-	#[test]
-	fn keep_existing_resolution_bypasses_modset_cache_before_lookup() {
-		let mut direct = ResolutionMap::default();
-		direct.by_file.insert(
-			PathBuf::from("history/countries/TES - Test.txt"),
-			ResolutionDecision::KeepExisting,
-		);
-		let mut handler = ResolutionMap::default();
-		handler.by_conflict_id.insert(
-			"conflict-id".to_string(),
-			ResolutionDecision::Handler("KEEP_EXISTING".to_string()),
-		);
-
-		assert!(resolution_map_depends_on_prior_output(&direct));
-		assert!(resolution_map_depends_on_prior_output(&handler));
-		assert!(!resolution_map_depends_on_prior_output(
-			&ResolutionMap::default()
-		));
-	}
-
-	#[test]
-	fn modset_cache_entry_with_keep_existing_depends_on_current_output() {
-		let report = report_with(|report| {
-			report.handler_resolutions.push(HandlerResolutionRecord {
-				path: "history/countries/TES - Test.txt".to_string(),
-				action: "kept_existing".to_string(),
-				source: None,
-				rationale: None,
-			});
-		});
-
-		assert!(modset_cache_entry_depends_on_prior_output(&report));
-		assert!(!modset_cache_entry_depends_on_prior_output(
-			&MergeReport::default()
-		));
-	}
-
 	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
 	fn output_transaction_reports_the_prior_tree_it_observed() {
@@ -2928,181 +2186,8 @@ mod tests {
 
 	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
-	fn modset_cache_restore_replaces_instead_of_overlaying_output() {
+	fn failed_publication_guard_does_not_publish_subset_output() {
 		let temp = tempfile::TempDir::new().expect("temp dir");
-		let cache = ModsetCache::open(&temp.path().join("cache"));
-		let cached_output = temp.path().join("cached-output");
-		fs::create_dir_all(cached_output.join("common/governments")).expect("create cached output");
-		fs::write(
-			cached_output.join("common/governments/current.txt"),
-			"cached current module\n",
-		)
-		.expect("write cached module");
-		fs::write(
-			cached_output.join(foch::model::MERGED_MOD_DESCRIPTOR_PATH),
-			"# Source playset: /cached/source.toml\nname=\"Cached (Merged)\"\npath=\"/cached/output\"\nreplace_path=\"common/governments\"\nreplace_path=\"common/scripted_effects\"\n",
-		)
-		.expect("write cached descriptor");
-		let cached_plan = MergePlanResult {
-			generated_at: "cached".to_string(),
-			..MergePlanResult::default()
-		};
-		write_merge_plan_artifact(&cached_output, &cached_plan).expect("write cached plan");
-		cache
-			.store("cache-key", &cached_output, &MergeReport::default())
-			.expect("store cache entry");
-		let cached = cache.lookup("cache-key").expect("cache hit");
-
-		let out_dir = temp.path().join("merged-mod");
-		fs::create_dir_all(out_dir.join("common/governments")).expect("create old output");
-		fs::write(
-			out_dir.join("common/governments/stale.txt"),
-			"stale module\n",
-		)
-		.expect("write stale module");
-
-		let transaction = OutputTransaction::begin(&out_dir).expect("begin transaction");
-		unpack_modset_tarball(&cached.tarball_path, transaction.staging_dir())
-			.expect("restore cache into staging");
-		let reviewed_plan = MergePlanResult {
-			playset_name: "Current playset".to_string(),
-			generated_at: "reviewed".to_string(),
-			paths: vec![
-				MergePlanEntry {
-					target: MergePlanTarget::Module {
-						id: foch::model::MergeUnitId {
-							family_id: "governments".to_string(),
-							module_name: "governments".to_string(),
-						},
-						input_paths: Vec::new(),
-						output_path: "common/governments/current.txt".to_string(),
-						replace_prefix: Some("common/governments".to_string()),
-					},
-					strategy: foch::model::MergePlanStrategy::StructuralMerge,
-					contributors: Vec::new(),
-					winner: None,
-					notes: Vec::new(),
-				},
-				MergePlanEntry {
-					target: MergePlanTarget::Module {
-						id: foch::model::MergeUnitId {
-							family_id: "scripted_effects".to_string(),
-							module_name: "scripted_effects".to_string(),
-						},
-						input_paths: Vec::new(),
-						output_path: "common/scripted_effects/missing.txt".to_string(),
-						replace_prefix: Some("common/scripted_effects".to_string()),
-					},
-					strategy: foch::model::MergePlanStrategy::StructuralMerge,
-					contributors: Vec::new(),
-					winner: None,
-					notes: Vec::new(),
-				},
-			],
-			..MergePlanResult::default()
-		};
-		let current_source = temp.path().join("current/source.toml");
-		rewrite_cached_generated_descriptor(
-			transaction.staging_dir(),
-			&out_dir,
-			&current_source,
-			&reviewed_plan,
-		)
-		.expect("rewrite cached descriptor for current request");
-		write_merge_plan_artifact(transaction.staging_dir(), &reviewed_plan)
-			.expect("replace cached plan with reviewed plan");
-		transaction.commit().expect("commit cached output");
-
-		assert_eq!(
-			fs::read_to_string(out_dir.join("common/governments/current.txt"))
-				.expect("read cached module"),
-			"cached current module\n"
-		);
-		assert!(!out_dir.join("common/governments/stale.txt").exists());
-		let persisted_plan: MergePlanResult = serde_json::from_slice(
-			&fs::read(out_dir.join(MERGE_PLAN_ARTIFACT_PATH)).expect("read persisted plan"),
-		)
-		.expect("decode persisted plan");
-		assert_eq!(persisted_plan.generated_at, "reviewed");
-		let descriptor = fs::read_to_string(out_dir.join(foch::model::MERGED_MOD_DESCRIPTOR_PATH))
-			.expect("read rewritten descriptor");
-		assert!(
-			descriptor.contains(&format!(
-				"# Source playset: {}",
-				normalize_descriptor_path(&current_source)
-			)),
-			"{descriptor}"
-		);
-		assert!(descriptor.contains("name=\"Current playset (Merged)\""));
-		assert!(
-			descriptor.contains(&format!("path=\"{}\"", normalize_descriptor_path(&out_dir))),
-			"{descriptor}"
-		);
-		assert!(descriptor.contains("replace_path=\"common/governments\""));
-		assert!(!descriptor.contains("common/scripted_effects"));
-		assert!(!descriptor.contains("/cached/"));
-	}
-
-	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
-	#[test]
-	fn modset_cache_stale_base_after_restore_preserves_old_output() {
-		let temp = tempfile::TempDir::new().expect("temp dir");
-		let cache = ModsetCache::open(&temp.path().join("cache"));
-		let cached_output = temp.path().join("cached-output");
-		fs::create_dir_all(cached_output.join("common/governments")).expect("create cached output");
-		fs::write(
-			cached_output.join("common/governments/current.txt"),
-			"cached current module\n",
-		)
-		.expect("write cached module");
-		cache
-			.store("cache-key", &cached_output, &MergeReport::default())
-			.expect("store cache entry");
-		let cached = cache.lookup("cache-key").expect("cache hit");
-
-		let out_dir = temp.path().join("merged-mod");
-		fs::create_dir_all(&out_dir).expect("create old output");
-		fs::write(out_dir.join("descriptor.mod"), "old descriptor\n")
-			.expect("write old descriptor");
-		let base_snapshot = temp.path().join("base-snapshot.bin");
-		fs::write(&base_snapshot, "base-v1").expect("write original base token");
-		let expected_base = fs::read(&base_snapshot).expect("read original base token");
-
-		let transaction = OutputTransaction::begin(&out_dir).expect("begin transaction");
-		let staging_dir = transaction.staging_dir().to_path_buf();
-		unpack_modset_tarball(&cached.tarball_path, &staging_dir)
-			.expect("restore cache into staging");
-		let execution = merge_execution_result(cached.report);
-		let result = finalize_merge_output(transaction, execution, None, false, |staging_dir| {
-			assert!(staging_dir.join("common/governments/current.txt").is_file());
-			assert!(staging_dir.join(MERGE_REPORT_ARTIFACT_PATH).is_file());
-			fs::write(&base_snapshot, "base-v2")?;
-			if fs::read(&base_snapshot)? != expected_base {
-				return Err(MergeError::WorkspaceResolve {
-					path: base_snapshot.clone(),
-					message: "base snapshot changed after cache extraction".to_string(),
-				});
-			}
-			Ok(())
-		});
-
-		let error = result.expect_err("stale base must prevent publication");
-		assert!(error.to_string().contains("base snapshot changed"));
-		assert_eq!(
-			fs::read_to_string(out_dir.join("descriptor.mod")).expect("read old output"),
-			"old descriptor\n"
-		);
-		assert!(!out_dir.join("common/governments/current.txt").exists());
-	}
-
-	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
-	#[test]
-	fn failed_publication_guard_does_not_store_or_publish_subset_output() {
-		let temp = tempfile::TempDir::new().expect("temp dir");
-		let cache_context = ModsetCacheContext {
-			cache: ModsetCache::open(&temp.path().join("cache")),
-			key: "subset-cache-key".to_string(),
-		};
 		let out_dir = temp.path().join("merged-mod");
 		fs::create_dir_all(&out_dir).expect("create old output");
 		fs::write(out_dir.join("descriptor.mod"), "old descriptor\n")
@@ -3118,24 +2203,17 @@ mod tests {
 		)
 		.expect("write staged subset");
 		let execution = merge_execution_result(MergeReport::default());
-		let result = finalize_merge_output(
-			transaction,
-			execution,
-			Some(&cache_context),
-			true,
-			|staging_dir| {
-				assert!(staging_dir.join(MERGE_REPORT_ARTIFACT_PATH).is_file());
-				assert!(cache_context.cache.lookup(&cache_context.key).is_none());
-				fs::write(&base_snapshot, "base-v2")?;
-				if fs::read(&base_snapshot)? != expected_base {
-					return Err(MergeError::WorkspaceResolve {
-						path: base_snapshot.clone(),
-						message: "base snapshot changed before subset publish".to_string(),
-					});
-				}
-				Ok(())
-			},
-		);
+		let result = finalize_merge_output(transaction, execution, |staging_dir| {
+			assert!(staging_dir.join(MERGE_REPORT_ARTIFACT_PATH).is_file());
+			fs::write(&base_snapshot, "base-v2")?;
+			if fs::read(&base_snapshot)? != expected_base {
+				return Err(MergeError::WorkspaceResolve {
+					path: base_snapshot.clone(),
+					message: "base snapshot changed before subset publish".to_string(),
+				});
+			}
+			Ok(())
+		});
 
 		let error = result.expect_err("stale base must prevent subset publication");
 		assert!(error.to_string().contains("base snapshot changed"));
@@ -3144,7 +2222,6 @@ mod tests {
 			"old descriptor\n"
 		);
 		assert!(!out_dir.join("subset.txt").exists());
-		assert!(cache_context.cache.lookup(&cache_context.key).is_none());
 	}
 
 	#[test]
@@ -3207,8 +2284,6 @@ mod tests {
 		finalize_merge_output_with_publish(
 			transaction,
 			execution,
-			None,
-			false,
 			|_| {
 				let guard = lock_and_validate_installed_base_snapshot_identity(
 					game.key(),
@@ -3359,27 +2434,5 @@ mod tests {
 		unsafe {
 			std::env::remove_var(BASE_DATA_DIR_ENV);
 		}
-	}
-
-	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
-	#[test]
-	fn modset_cache_unpack_error_preserves_old_output() {
-		let temp = tempfile::TempDir::new().expect("temp dir");
-		let out_dir = temp.path().join("merged-mod");
-		fs::create_dir_all(&out_dir).expect("create old output");
-		fs::write(out_dir.join("descriptor.mod"), "old descriptor\n")
-			.expect("write old descriptor");
-		let invalid_tarball = temp.path().join("invalid.tar.gz");
-		fs::write(&invalid_tarball, "not a tarball").expect("write invalid tarball");
-
-		let transaction = OutputTransaction::begin(&out_dir).expect("begin transaction");
-		let result = unpack_modset_tarball(&invalid_tarball, transaction.staging_dir());
-		drop(transaction);
-
-		assert!(result.is_err());
-		assert_eq!(
-			fs::read_to_string(out_dir.join("descriptor.mod")).expect("read old descriptor"),
-			"old descriptor\n"
-		);
 	}
 }

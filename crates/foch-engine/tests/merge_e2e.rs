@@ -470,11 +470,11 @@ fn eu4_minimal_passthrough_copies_per_path_files_and_materializes_common_module(
 }
 
 #[test]
-fn public_tree_selection_does_not_bundle_full_product_output() {
+fn analysis_never_restores_bundled_product_output() {
 	let fixture = fixture_dir("eu4_minimal_passthrough");
 	let temp_dir = tempfile::tempdir().expect("create tree parity tempdir");
-	let cold_out_dir = temp_dir.path().join("cold-out");
-	let warm_out_dir = temp_dir.path().join("warm-out");
+	let default_out_dir = temp_dir.path().join("default-out");
+	let explicit_out_dir = temp_dir.path().join("explicit-out");
 	let game_root = temp_dir.path().join("empty-eu4-game");
 	fs::create_dir_all(&game_root).expect("create empty game root");
 	let workshop_root = temp_dir.path().join("steamapps/workshop");
@@ -556,22 +556,22 @@ workshop_identity = { app_id = 236850, workshop_id = "200001", manifest_id = "30
 			.collect::<Vec<_>>()
 	};
 
-	let default =
-		run_merge_with_options(request(), options(&cold_out_dir)).expect("run default tree merge");
-	let cold_outputs = read_outputs(&cold_out_dir);
+	let default = run_merge_with_options(request(), options(&default_out_dir))
+		.expect("run default tree merge");
+	let default_outputs = read_outputs(&default_out_dir);
 	let explicit = run_merge_for_evaluation(
 		request(),
-		options(&warm_out_dir),
+		options(&explicit_out_dir),
 		MergeBackendId::GumtreePcsNway,
 	)
 	.expect("run explicit tree merge");
 	assert_eq!(
 		explicit.report.cache_source.as_deref(),
 		None,
-		"full-product reruns must not restore a bundled modset output"
+		"analysis must materialize current inputs instead of restoring bundled output"
 	);
 	assert_eq!(explicit.report.status, default.report.status);
-	assert_eq!(read_outputs(&warm_out_dir), cold_outputs);
+	assert_eq!(read_outputs(&explicit_out_dir), default_outputs);
 }
 
 fn assert_output_matches_fixture_input(name: &str, mod_name: &str, out_dir: &Path, rel: &str) {
@@ -1551,10 +1551,6 @@ religion = sentinel
 	let repeated = run(&out_dir)
 		.unwrap_or_else(|err| panic!("repeated fixture eu4_handler_keep_existing failed: {err}"));
 	assert_eq!(repeated.exit_code, 0);
-	assert_eq!(
-		repeated.report.cache_source, None,
-		"keep_existing output is mutable state and must bypass a prior modset cache entry"
-	);
 	let repeated_text = fs::read_to_string(&sentinel_path).expect("read updated sentinel");
 	assert!(
 		repeated_text.contains("religion = updated_sentinel"),
@@ -1582,11 +1578,10 @@ religion = sentinel
 	let after_edit = run(&initially_missing_out)
 		.unwrap_or_else(|err| panic!("merge after editing generated output failed: {err}"));
 	assert_eq!(after_edit.exit_code, 0);
-	assert_eq!(after_edit.report.cache_source, None);
 	let after_edit_text = fs::read_to_string(&generated_path).expect("read preserved edit");
 	assert!(
 		after_edit_text.contains("religion = post_merge_edit"),
-		"a current keep_existing rule must bypass cache even when the cached run had no prior file; got:\n{after_edit_text}"
+		"a current keep_existing rule must preserve an edit made after the prior merge; got:\n{after_edit_text}"
 	);
 }
 

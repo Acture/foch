@@ -1,6 +1,5 @@
-use super::{CacheError, DagBaseCache, ModDiffCache, ModParseCache, ModsetCache};
+use super::{CacheError, DagBaseCache, ModDiffCache, ModParseCache};
 use foch::platform::cache_store::default_foch_cache_dir;
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -11,7 +10,6 @@ pub enum CacheLayer {
 	Mods,
 	Diffs,
 	DagBase,
-	Modsets,
 	CwtRules,
 	Parse,
 }
@@ -22,7 +20,6 @@ impl CacheLayer {
 			Self::Mods => "mods",
 			Self::Diffs => "diffs",
 			Self::DagBase => "dag-base",
-			Self::Modsets => "modsets",
 			Self::CwtRules => "cwt-rules",
 			Self::Parse => "parse",
 		}
@@ -64,7 +61,6 @@ fn all_layers_at(root: &Path) -> Vec<Box<dyn CacheLayerOps>> {
 		Box::new(ModParseCache::open(&root.join(CacheLayer::Mods.name()))),
 		Box::new(ModDiffCache::open(&root.join(CacheLayer::Diffs.name()))),
 		Box::new(DagBaseCache::open(&root.join(CacheLayer::DagBase.name()))),
-		Box::new(ModsetCache::open(root)),
 		Box::new(FileCacheLayer::new(
 			CacheLayer::CwtRules,
 			root.join(CacheLayer::CwtRules.name()),
@@ -167,79 +163,6 @@ impl CacheLayerOps for DagBaseCache {
 
 	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
 		evict_file_entries(self.list_entries()?, cap_bytes)
-	}
-
-	fn clear(&self) -> Result<(), super::CacheError> {
-		clear_dir(self.layer_root())
-	}
-}
-
-impl CacheLayerOps for ModsetCache {
-	fn layer(&self) -> super::CacheLayer {
-		CacheLayer::Modsets
-	}
-
-	fn path(&self) -> &Path {
-		self.layer_root()
-	}
-
-	fn list_entries(&self) -> Result<Vec<super::CacheLayerEntryInfo>, super::CacheError> {
-		ModsetCache::list_entries(self).map(|entries| {
-			entries
-				.into_iter()
-				.map(|entry| CacheLayerEntryInfo {
-					layer: CacheLayer::Modsets,
-					key: entry.key,
-					path: entry.tarball_path,
-					size_bytes: entry.size_bytes,
-					modified: entry.modified,
-				})
-				.collect()
-		})
-	}
-
-	fn total_bytes(&self) -> Result<u64, super::CacheError> {
-		Ok(total_entry_bytes(&<Self as CacheLayerOps>::list_entries(
-			self,
-		)?))
-	}
-
-	fn purge_older_than(&self, days: u32) -> Result<usize, super::CacheError> {
-		ModsetCache::purge_older_than(self, days)
-	}
-
-	fn evict_to_byte_cap(&self, cap_bytes: u64) -> Result<EvictionStats, super::CacheError> {
-		let entries = ModsetCache::list_entries(self)?;
-		let eviction_entries = entries
-			.iter()
-			.map(|entry| CacheLayerEntryInfo {
-				layer: CacheLayer::Modsets,
-				key: entry.key.clone(),
-				path: entry.tarball_path.clone(),
-				size_bytes: entry.size_bytes,
-				modified: entry.modified,
-			})
-			.collect::<Vec<_>>();
-		let evicted_paths = eviction_plan(eviction_entries, cap_bytes)
-			.into_iter()
-			.map(|entry| entry.path)
-			.collect::<HashSet<_>>();
-		let mut removed_entries = 0_usize;
-		let mut freed_bytes = 0_u64;
-		for entry in entries {
-			if !evicted_paths.contains(&entry.tarball_path) {
-				continue;
-			}
-			remove_if_exists(&entry.tarball_path)?;
-			remove_if_exists(&entry.report_path)?;
-			removed_entries += 1;
-			freed_bytes = freed_bytes.saturating_add(entry.size_bytes);
-		}
-		prune_empty_dirs(self.layer_root());
-		Ok(EvictionStats {
-			removed_entries,
-			freed_bytes,
-		})
 	}
 
 	fn clear(&self) -> Result<(), super::CacheError> {
@@ -459,25 +382,19 @@ mod tests {
 		set_file_mtime(path, FileTime::from_system_time(modified)).expect("set cache entry mtime");
 	}
 
-	fn write_modset_entry(root: &Path, key: &str, bytes: &[u8], modified: SystemTime) {
-		write_entry(&root.join(format!("{key}.tar.gz")), bytes, modified);
-		write_entry(&root.join(format!("{key}.report.json")), b"{}", modified);
-	}
-
 	#[test]
 	fn all_layers_present_and_report_size() {
 		let temp = tempfile::tempdir().expect("cache root");
 		let layers = all_layers_at(temp.path());
 		fs::write(layers[0].path().join("entry.rkyv"), b"cache").expect("cache entry");
 
-		assert_eq!(layers.len(), 6);
+		assert_eq!(layers.len(), 5);
 		assert_eq!(
 			layers.iter().map(|layer| layer.layer()).collect::<Vec<_>>(),
 			vec![
 				CacheLayer::Mods,
 				CacheLayer::Diffs,
 				CacheLayer::DagBase,
-				CacheLayer::Modsets,
 				CacheLayer::CwtRules,
 				CacheLayer::Parse,
 			]
@@ -529,38 +446,6 @@ mod tests {
 			assert!(!old.exists());
 			assert!(!flat.exists());
 		}
-	}
-
-	#[test]
-	fn modset_lifecycle_spans_flat_current_and_old_generations() {
-		let temp = tempfile::tempdir().expect("cache root");
-		let layers = all_layers_at(temp.path());
-		let layer = &layers[3];
-		let root = layer.path();
-		let old_time = SystemTime::now() - Duration::from_secs(40 * 24 * 60 * 60);
-		let current_time = SystemTime::now();
-		let current_root = root.join("v14.3.0");
-		let old_root = root.join("v14.2.0");
-
-		write_modset_entry(&current_root, "current", b"c", current_time);
-		write_modset_entry(&old_root, "old", b"oo", old_time);
-		write_modset_entry(root, "flat", b"fff", old_time);
-
-		assert_eq!(layer.list_entries().expect("list entries").len(), 3);
-		assert_eq!(layer.total_bytes().expect("total bytes"), 12);
-		assert_eq!(layer.purge_older_than(30).expect("purge entries"), 2);
-		assert!(current_root.join("current.tar.gz").is_file());
-		assert!(!old_root.join("old.tar.gz").exists());
-		assert!(!root.join("flat.tar.gz").exists());
-
-		write_modset_entry(&old_root, "old", b"oo", old_time);
-		write_modset_entry(root, "flat", b"fff", old_time);
-		let eviction = layer.evict_to_byte_cap(3).expect("evict entries");
-		assert_eq!(eviction.removed_entries, 2);
-		assert_eq!(eviction.freed_bytes, 9);
-		assert!(current_root.join("current.tar.gz").is_file());
-		assert!(!old_root.join("old.tar.gz").exists());
-		assert!(!root.join("flat.tar.gz").exists());
 	}
 
 	#[test]

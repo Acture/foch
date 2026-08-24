@@ -1,7 +1,7 @@
 //! Hermetic base-aware definition-module merge coverage.
 //!
 //! This is a separate integration-test process because it overrides the base
-//! data and modset cache roots for a synthetic EU4 installation.
+//! data and cache roots for a synthetic EU4 installation.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -70,7 +70,7 @@ fn government_reforms(path: &Path, root: &Path) -> BTreeMap<String, String> {
 fn retained_governments_merge_includes_complete_version_bound_base_module() {
 	let temp = TempDir::new().expect("temp dir");
 	let data_root = temp.path().join("base-data");
-	let cache_root = temp.path().join("modset-cache");
+	let cache_root = temp.path().join("cache");
 	let game_root = temp.path().join("eu4-game");
 	let playset_root = temp.path().join("playset");
 	let out_dir = temp.path().join("out");
@@ -184,7 +184,6 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 	.expect("merge synthetic base-aware module");
 
 	assert_eq!(result.report.status, MergeReportStatus::Ready);
-	assert_eq!(result.report.cache_source, None);
 	assert_eq!(result.report.definition_module_count, 1);
 	assert_eq!(result.report.definition_module_generated_count, 1);
 	let merged_path = out_dir.join("common/governments/zzz_foch_governments.txt");

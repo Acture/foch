@@ -167,7 +167,6 @@ fn selected_layers(arg: Option<FochCliCacheLayerArg>) -> Vec<Box<dyn CacheLayerO
 		FochCliCacheLayerArg::Mods => Some(CacheLayer::Mods),
 		FochCliCacheLayerArg::Diffs => Some(CacheLayer::Diffs),
 		FochCliCacheLayerArg::DagBase => Some(CacheLayer::DagBase),
-		FochCliCacheLayerArg::Modsets => Some(CacheLayer::Modsets),
 		FochCliCacheLayerArg::CwtRules => Some(CacheLayer::CwtRules),
 		FochCliCacheLayerArg::All => None,
 	};

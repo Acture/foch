@@ -397,8 +397,6 @@ struct CacheLayerFixture {
 	mods: PathBuf,
 	diffs: PathBuf,
 	dag_base: PathBuf,
-	modset_tarball: PathBuf,
-	modset_report: PathBuf,
 	cwt_rules: PathBuf,
 	parse: PathBuf,
 }
@@ -422,14 +420,6 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 			.join("dag-base")
 			.join("v12.0.0")
 			.join("dag-base-entry.bin"),
-		modset_tarball: root
-			.join("modsets")
-			.join("v14.3.0")
-			.join("modset-entry.tar.gz"),
-		modset_report: root
-			.join("modsets")
-			.join("v14.3.0")
-			.join("modset-entry.report.json"),
 		cwt_rules: root.join("cwt-rules").join("v0.11.0").join("cwt-entry.bin"),
 		parse: root
 			.join("parse")
@@ -442,8 +432,6 @@ fn seed_cache_layers(root: &Path) -> CacheLayerFixture {
 		&fixture.mods,
 		&fixture.diffs,
 		&fixture.dag_base,
-		&fixture.modset_tarball,
-		&fixture.modset_report,
 		&fixture.cwt_rules,
 		&fixture.parse,
 	] {
@@ -476,7 +464,6 @@ fn cache_commands_stats_where_and_clean_noop() {
 	assert!(stats_stdout.contains("mods"));
 	assert!(stats_stdout.contains("diffs"));
 	assert!(stats_stdout.contains("dag-base"));
-	assert!(stats_stdout.contains("modsets"));
 	assert!(stats_stdout.contains("cwt-rules"));
 	assert!(stats_stdout.contains("parse"));
 	assert!(!stats_stdout.contains("input-digests"));
@@ -2275,8 +2262,6 @@ fn cache_clean_layer_filter_targets_only_specified_layer() {
 	assert!(!fixture.mods.exists());
 	assert!(fixture.diffs.exists());
 	assert!(fixture.dag_base.exists());
-	assert!(fixture.modset_tarball.exists());
-	assert!(fixture.modset_report.exists());
 	assert!(fixture.cwt_rules.exists());
 	assert!(fixture.parse.exists());
 }
@@ -2303,8 +2288,6 @@ fn cache_clear_all_wipes_every_layer() {
 	assert!(!fixture.mods.exists());
 	assert!(!fixture.diffs.exists());
 	assert!(!fixture.dag_base.exists());
-	assert!(!fixture.modset_tarball.exists());
-	assert!(!fixture.modset_report.exists());
 	assert!(!fixture.cwt_rules.exists());
 	assert!(!fixture.parse.exists());
 }

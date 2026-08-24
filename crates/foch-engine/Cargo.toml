@@ -26,7 +26,6 @@ same-file.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tar.workspace = true
 tempfile.workspace = true
 toml.workspace = true
 toml_edit = "0.23"

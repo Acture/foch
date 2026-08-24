@@ -131,8 +131,6 @@ pub(crate) struct WorkspaceInventory {
 	pub mod_hashes: Vec<Option<String>>,
 	pub product_input_manifest: Option<ProductInputManifest>,
 	pub requested_retained_paths: Option<BTreeSet<String>>,
-	pub effective_retained_paths: Option<BTreeSet<String>>,
-	pub retained_module_policy_versions: BTreeMap<MergeUnitId, u32>,
 }
 
 impl WorkspaceInventory {
@@ -577,12 +575,6 @@ pub(crate) fn build_workspace_inventory_for_paths(
 		}
 	};
 	let mods = build_mod_candidates_metadata(&source_root, &config, &playlist);
-	let effective_retained_paths =
-		expand_retained_paths_for_game(&playlist.game, retained_paths, std::iter::empty());
-	let retained_module_policy_versions = effective_retained_paths
-		.as_ref()
-		.map(|paths| retained_definition_modules(&playlist.game, paths))
-		.unwrap_or_default();
 	let optional_game_root = resolve_game_root(&config, &playlist.game);
 	let (base_game_root, mod_cache_game_version) = if include_game_base {
 		let (game_root, game_version) = resolve_game_root_and_version(&config, &playlist.game)
@@ -712,8 +704,6 @@ pub(crate) fn build_workspace_inventory_for_paths(
 		mod_hashes,
 		product_input_manifest,
 		requested_retained_paths: retained_paths.cloned(),
-		effective_retained_paths,
-		retained_module_policy_versions,
 	})
 }
 
@@ -741,8 +731,6 @@ pub(crate) fn resolve_workspace_from_inventory(
 		mod_hashes,
 		product_input_manifest: _,
 		requested_retained_paths,
-		effective_retained_paths: _,
-		retained_module_policy_versions: _,
 	} = inventory;
 	let installed_base_snapshot = match (
 		base_game_root.as_ref(),
@@ -1888,12 +1876,7 @@ path = "governments_mod"
 		assert!(inventory.mods[0].files.is_empty());
 		assert!(inventory.mods[0].descriptor.is_none());
 		assert!(inventory.mods[0].descriptor_error.is_none());
-		assert_eq!(inventory.requested_retained_paths, Some(requested.clone()));
-		assert_eq!(
-			inventory.effective_retained_paths,
-			Some(requested),
-			"pre-cache inventory identity must not require walking sibling paths"
-		);
+		assert_eq!(inventory.requested_retained_paths, Some(requested));
 		let workspace = resolve_workspace_from_inventory(inventory).expect("resolve workspace");
 		assert_eq!(
 			workspace.mods[0]

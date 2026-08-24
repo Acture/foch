@@ -379,7 +379,7 @@ pub struct DataListArgs {
 #[derive(Parser, Debug)]
 #[command(
 	about = "Inspect and maintain local foch caches",
-	after_help = "Examples:\n  foch cache stats --layer all\n  foch cache list --layer modsets\n  foch cache clean --layer all --byte-cap 1073741824\n  foch cache clear --layer all --yes\n  foch cache where"
+	after_help = "Examples:\n  foch cache stats --layer all\n  foch cache list --layer mods\n  foch cache clean --layer all --byte-cap 1073741824\n  foch cache clear --layer all --yes\n  foch cache where"
 )]
 pub struct FochCliCacheArgs {
 	#[command(subcommand)]
@@ -434,7 +434,6 @@ pub enum FochCliCacheLayerArg {
 	Mods,
 	Diffs,
 	DagBase,
-	Modsets,
 	CwtRules,
 	All,
 }

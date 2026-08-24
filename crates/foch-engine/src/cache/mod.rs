@@ -8,7 +8,6 @@ mod generation;
 pub mod layer;
 mod mod_diff_cache;
 mod mod_parse_cache;
-mod modset_cache;
 
 pub use dag_base_cache::default_dag_base_cache_dir;
 pub(crate) use dag_base_cache::{DagBaseCache, dag_base_cache_stats, reset_dag_base_cache_stats};
@@ -19,13 +18,6 @@ pub(crate) use mod_diff_cache::{ModDiffCache, mod_diff_cache_stats, reset_mod_di
 pub use mod_parse_cache::{CacheError, default_mod_parse_cache_dir};
 pub(crate) use mod_parse_cache::{
 	CachedDocumentInputIdentity, CachedModData, ModParseCache, ModParseCacheStoreOutcome,
-};
-pub use modset_cache::{
-	CacheEntryInfo, CacheStats, CachedModsetResult, ModsetCache, default_modset_cache_dir,
-	default_modset_cache_root_dir,
-};
-pub(crate) use modset_cache::{
-	compute_modset_cache_key, compute_resolution_map_hash, unpack_modset_tarball,
 };
 
 const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
@@ -109,7 +101,6 @@ mod tests {
 		assert_eq!(default_mod_parse_cache_dir(), root.join("mods"));
 		assert_eq!(default_mod_diff_cache_dir(), root.join("diffs"));
 		assert_eq!(default_dag_base_cache_dir(), root.join("dag-base"));
-		assert_eq!(default_modset_cache_dir(), root.join("modsets"));
 		assert_eq!(
 			parse_cache::parser_cache_root(),
 			root.join("parse").join("v10.0.0")
