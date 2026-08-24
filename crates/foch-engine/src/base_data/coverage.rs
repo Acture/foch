@@ -3,9 +3,9 @@ use super::{
 	BaseLocalisationDefinition, BaseLocalisationDuplicate, BaseResourceReference,
 	BaseScalarAssignment, BaseSymbolDefinition, BaseSymbolReference, BaseUiDefinition,
 };
+use foch::game::eu4::content::eu4_content_family_for_root_family;
+use foch::game::eu4::script::classify_script_file;
 use foch::model::DocumentFamily;
-use foch_language::analyzer::eu4_profile::eu4_content_family_for_root_family;
-use foch_language::analyzer::semantic_index::classify_script_file;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;

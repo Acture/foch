@@ -1,15 +1,15 @@
 use crate::cache::{
 	CachedDocumentInputIdentity, CachedModData, ModParseCache, ModParseCacheStoreOutcome,
 };
-use foch::model::{
-	DocumentFamily, FamilyParseStats, ModCandidate, ParseFamilyStats, SemanticIndex,
-};
-use foch_language::analyzer::documents::{
+use foch::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
+use foch::game::eu4::script::documents::{
 	ParsedTextDocument, build_semantic_index_from_owned_documents,
 	discover_text_documents_from_paths, parse_discovered_text_documents,
 };
-use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
-use foch_language::analyzer::parser::AstStatement;
+use foch::game::eu4::script::parser::AstStatement;
+use foch::model::{
+	DocumentFamily, FamilyParseStats, ModCandidate, ParseFamilyStats, SemanticIndex,
+};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};

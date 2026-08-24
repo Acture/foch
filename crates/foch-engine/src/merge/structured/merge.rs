@@ -1,17 +1,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use foch::game::eu4::content::{
+	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
+};
+use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
+use foch::game::eu4::script::{classify_script_file, script_container_scope_kind};
 use foch::merge::kernel::{
 	ConflictKind, ConflictResolution, MergeDecisionEvidence, MergeOutcome, MergeRevision,
 	NormalizedTree, RevisionDelta, RevisionId, SourceSet, StructuralConflict,
 	StructuralConflictDraft, n_way_merge_with_policy, n_way_merge_with_policy_and_resolutions,
 };
 use foch::model::ScopeKind;
-use foch_language::analyzer::content_family::{
-	BooleanMergePolicy, CwtType, DivergentBlockPolicy, MergePolicies,
-};
-use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::{classify_script_file, script_container_scope_kind};
 
 use crate::merge::boolean::{canonical_boolean_or_body, simplify_boolean_or_body};
 use crate::merge::model::SemanticPartitionId;
@@ -402,7 +402,7 @@ enum BooleanTransform {
 
 struct BooleanConditionTransformer<'a> {
 	file_path: &'a Path,
-	file_kind: &'a CwtType,
+	file_kind: &'a ScriptFileKind,
 	policies: &'a MergePolicies,
 	transform: BooleanTransform,
 	scope_cache: &'a mut HashMap<Vec<String>, Option<ScopeKind>>,

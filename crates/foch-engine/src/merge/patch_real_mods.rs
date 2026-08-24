@@ -12,9 +12,9 @@ use super::namespace::{FamilyKeyIndex, KeyContributor, detect_key_conflicts};
 use super::patch::{ClausewitzPatch, diff_ast};
 use super::patch_apply::{apply_patches, merge_single_mod};
 use crate::emit::emit_clausewitz_statements;
-use foch_language::analyzer::content_family::MergeKeySource;
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
+use foch::game::eu4::content::MergeKeySource;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
+use foch::game::eu4::script::{ParsedScriptFile, parse_script_file};
 
 // ---------------------------------------------------------------------------
 // Helpers

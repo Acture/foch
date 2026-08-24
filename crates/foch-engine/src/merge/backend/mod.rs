@@ -5,7 +5,7 @@ mod gumtree_pcs_nway;
 
 use std::path::Path;
 
-use foch_language::analyzer::content_family::DuplicateDefinitionPolicy;
+use foch::game::eu4::content::DuplicateDefinitionPolicy;
 
 use super::output::materialize::{
 	StructuralMergeContext, StructuralMergeFailure, StructuralMergeOutput,

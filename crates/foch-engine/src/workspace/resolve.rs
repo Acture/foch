@@ -11,6 +11,10 @@ use crate::base_data::{
 use crate::config::Config;
 use crate::request::{CheckRequest, WorkspaceSource};
 use foch::game::eu4::Eu4;
+use foch::game::eu4::content::{
+	ContentFamilyDescriptor, ContentLoadPolicy, module_name_for_descriptor,
+};
+use foch::game::eu4::script::documents::classify_document_family;
 use foch::model::{
 	DocumentFamily, MergeUnitId, ModCandidate, ProductInputManifest, ProductInputMod,
 };
@@ -21,11 +25,6 @@ use foch::playset::steam::{
 };
 use foch::playset::{Playset, PlaysetEntry};
 use foch::project::{Project, ProjectConfig, ProjectImportKind, ProjectMod};
-use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, ContentLoadPolicy, GameProfile, module_name_for_descriptor,
-};
-use foch_language::analyzer::documents::classify_document_family;
-use foch_language::analyzer::eu4_profile::eu4_profile;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::error::Error;
 use std::ffi::OsStr;
@@ -490,15 +489,11 @@ pub fn resolve_product_input_manifest(
 	Ok(ProductInputManifest::new(mods))
 }
 
-fn game_profile(_game: &Eu4) -> &'static dyn GameProfile {
-	eu4_profile()
-}
-
 fn retained_definition_modules(
 	game: &Eu4,
 	requested_paths: &BTreeSet<String>,
 ) -> BTreeMap<MergeUnitId, u32> {
-	let profile = game_profile(game);
+	let profile = game;
 	requested_paths
 		.iter()
 		.filter_map(|path| {
@@ -531,7 +526,7 @@ fn expand_retained_paths_for_game<'a>(
 	if selected_modules.is_empty() {
 		return Some(effective);
 	}
-	let profile = game_profile(game);
+	let profile = game;
 	for available_path in available_paths {
 		let normalized = normalize_relative_path(Path::new(available_path));
 		let Some(descriptor) = profile.classify_content_family(Path::new(&normalized)) else {
@@ -888,7 +883,7 @@ fn verify_absent_semantic_bases(
 	let Some(root) = base_game_root else {
 		return Ok(BTreeSet::new());
 	};
-	let profile = game_profile(&playlist.game);
+	let profile = &playlist.game;
 	if !base_snapshot_loaded {
 		return Ok(BTreeSet::new());
 	}

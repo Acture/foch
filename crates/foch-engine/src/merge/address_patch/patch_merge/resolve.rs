@@ -1,7 +1,7 @@
-use foch_language::analyzer::content_family::{
+use foch::game::eu4::content::{
 	DivergentBlockPolicy, MergePolicies, NamedContainerPolicy, ScalarMergePolicy,
 };
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 
 use super::super::patch::{ClausewitzPatch, patches_semantically_equal};
 use super::address::patch_kind;

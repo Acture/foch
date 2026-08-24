@@ -2,10 +2,10 @@ use super::super::patch::{ListItemOccurrence, ListItemTarget};
 use super::block_merge::NamedContainerMergeError;
 use super::*;
 use crate::merge::conflict_handler::{ChainHandler, LookupHandler};
+use foch::game::eu4::content::MergePolicies;
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 use foch::model::HandlerResolutionRecord;
 use foch::project::{ResolutionDecision, ResolutionMap, compute_conflict_id};
-use foch_language::analyzer::content_family::MergePolicies;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 fn span() -> SpanRange {
 	SpanRange {

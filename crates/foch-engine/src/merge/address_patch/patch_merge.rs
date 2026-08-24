@@ -7,13 +7,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use foch::game::eu4::content::NamedContainerPolicy;
+#[cfg(test)]
+use foch::game::eu4::content::{DivergentBlockPolicy, ScalarMergePolicy};
+use foch::game::eu4::content::{ListMergePolicy, MergeKeySource, MergePolicies};
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 use foch::model::HandlerResolutionRecord;
-#[cfg(test)]
-use foch_language::analyzer::content_family::NamedContainerPolicy;
-#[cfg(test)]
-use foch_language::analyzer::content_family::{DivergentBlockPolicy, ScalarMergePolicy};
-use foch_language::analyzer::content_family::{ListMergePolicy, MergeKeySource, MergePolicies};
-use foch_language::analyzer::parser::{AstStatement, AstValue};
 
 #[cfg(test)]
 use super::super::conflict_handler::ConflictDecision;

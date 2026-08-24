@@ -1,4 +1,4 @@
-use foch_language::analyzer::parser::parse_clausewitz_file;
+use foch::game::eu4::script::parser::parse_clausewitz_file;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use walkdir::WalkDir;

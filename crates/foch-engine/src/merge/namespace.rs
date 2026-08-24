@@ -5,9 +5,10 @@
 // conflict. This module detects such cross-file key conflicts.
 #![allow(dead_code)]
 
-use foch_language::analyzer::content_family::{GameProfile, MergeKeySource};
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, is_decision_container_key};
+use foch::game::eu4::Eu4;
+use foch::game::eu4::content::MergeKeySource;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
+use foch::game::eu4::script::{ParsedScriptFile, is_decision_container_key};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -200,7 +201,7 @@ pub(crate) fn build_family_key_index(
 	family_id: &str,
 	merge_key_source: MergeKeySource,
 	contributors_by_path: &BTreeMap<String, Vec<ResolvedFileContributor>>,
-	profile: &dyn GameProfile,
+	_profile: &Eu4,
 ) -> FamilyKeyIndex {
 	let mut index = FamilyKeyIndex {
 		family_id: family_id.to_string(),
@@ -209,11 +210,10 @@ pub(crate) fn build_family_key_index(
 
 	for (rel_path, contributors) in contributors_by_path {
 		for contributor in contributors {
-			let parsed = foch_language::analyzer::semantic_index::parse_script_file_with_profile(
+			let parsed = foch::game::eu4::script::parse_script_file(
 				&contributor.mod_id,
 				&contributor.root_path,
 				&contributor.absolute_path,
-				profile,
 			);
 			let Some(parsed) = parsed else {
 				continue;
@@ -266,7 +266,7 @@ pub fn detect_key_conflicts(index: &FamilyKeyIndex) -> Vec<FamilyKeyConflict> {
 /// Returns `family_id → { relative_path → contributors }`.
 pub(crate) fn group_by_family(
 	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
-	profile: &dyn GameProfile,
+	profile: &Eu4,
 ) -> HashMap<String, BTreeMap<String, Vec<ResolvedFileContributor>>> {
 	let mut grouped: HashMap<String, BTreeMap<String, Vec<ResolvedFileContributor>>> =
 		HashMap::new();
@@ -433,9 +433,9 @@ mod tests {
 
 	#[test]
 	fn group_by_family_groups_correctly() {
-		use foch_language::analyzer::eu4_profile::eu4_profile;
+		use foch::game::eu4::content::eu4;
 
-		let profile = eu4_profile();
+		let profile = eu4();
 		let mut inventory: BTreeMap<String, Vec<ResolvedFileContributor>> = BTreeMap::new();
 
 		let trigger_path = "common/scripted_triggers/my_mod.txt";

@@ -1,7 +1,19 @@
+use foch::game::eu4::analysis::{AnalyzeOptions, analyze_visibility};
+use foch::game::eu4::base::builtin::{
+	alias_keywords, builtin_effect_names, builtin_trigger_names, contextual_keywords,
+	reserved_keywords,
+};
 use foch::game::eu4::editor::schema::{
 	EditorPosition, EditorRange, EditorSchema, SchemaCompletion, SchemaCompletionKind,
 	SchemaDiagnostic as EditorSchemaDiagnostic, SchemaDocument, SchemaHover, SchemaLoadStatus,
 	SchemaWorkspace,
+};
+use foch::game::eu4::script::parser::{
+	AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
+};
+use foch::game::eu4::script::{
+	ParsedScriptFile, build_semantic_index, collect_localisation_definitions, parse_script_file,
+	resolve_symbol_reference_targets,
 };
 use foch::model::{
 	AnalysisMode, DocumentFamily, DocumentRecord, Finding, LocalisationDefinition, SemanticIndex,
@@ -10,18 +22,6 @@ use foch::model::{
 use foch_engine::{
 	CheckRequest, Config, WorkspaceSession, WorkspaceSource, WorkspaceTargetRole,
 	load_or_init_config, resolve_workspace_targets,
-};
-use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility};
-use foch_language::analyzer::eu4_builtin::{
-	alias_keywords, builtin_effect_names, builtin_trigger_names, contextual_keywords,
-	reserved_keywords,
-};
-use foch_language::analyzer::parser::{
-	AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
-};
-use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, build_semantic_index, collect_localisation_definitions, parse_script_file,
-	resolve_symbol_reference_targets,
 };
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};

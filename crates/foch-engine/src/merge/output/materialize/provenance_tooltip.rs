@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use foch::game::eu4::content::EU4_LOCALISATION_LANGUAGE_HEADERS;
+use foch::game::eu4::content::MergePolicies;
+use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
 use foch::merge::kernel::NodeId;
-use foch_language::analyzer::content_family::MergePolicies;
-use foch_language::analyzer::eu4_profile::EU4_LOCALISATION_LANGUAGE_HEADERS;
-use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, ScalarValue};
 
 use crate::merge::error::MergeError;
 use crate::merge::model::{
@@ -547,10 +547,10 @@ mod tests {
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::PathBuf;
 
+	use foch::game::eu4::content::{MergePolicies, ScriptFileKind};
+	use foch::game::eu4::script::ParsedScriptFile;
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use foch::merge::kernel::NodeId;
-	use foch_language::analyzer::content_family::{CwtType, MergePolicies};
-	use foch_language::analyzer::parser::parse_clausewitz_content;
-	use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 	use crate::emit::emit_clausewitz_statements;
 	use crate::merge::model::{
@@ -567,7 +567,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("diplomatic_actions"),
+			file_kind: ScriptFileKind::new("diplomatic_actions"),
 			module_name: "diplomatic_actions".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),

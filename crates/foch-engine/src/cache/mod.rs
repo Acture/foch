@@ -32,7 +32,7 @@ pub fn cache_cap_bytes() -> u64 {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::semantic_index::parse_cache;
+	use foch::game::eu4::script::parse_cache;
 	use std::path::{Path, PathBuf};
 	use std::sync::{Mutex, MutexGuard};
 

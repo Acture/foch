@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use foch::game::eu4::content::MergePolicies;
+use foch::game::eu4::script::parser::{AstFile, AstStatement};
 use foch::merge::kernel::{
 	ConflictNodeId, ConflictResolution, MergeInputId, NodeId, NormalizedTree, RevisionId,
 	SourceNodeRef, StructuralConflict,
 };
 use foch::model::HandlerResolutionRecord;
-use foch_language::analyzer::content_family::MergePolicies;
-use foch_language::analyzer::parser::{AstFile, AstStatement};
 
 use crate::emit::emit_clausewitz_statements;
 use crate::merge::conflict_handler::{
@@ -1322,15 +1322,15 @@ mod tests {
 	use std::collections::{BTreeMap, BTreeSet};
 	use std::path::{Path, PathBuf};
 
-	use foch::merge::kernel::{ConflictResolution, DeltaOperation, RevisionId};
-	use foch::project::{ResolutionDecision, ResolutionMap};
-	use foch_language::analyzer::content_family::{
-		CwtType, GameProfile, MergePolicies, ScalarMergePolicy, ScalarReducerRule,
+	use foch::game::eu4::content::{
+		MergePolicies, ScalarMergePolicy, ScalarReducerRule, ScriptFileKind,
 	};
-	use foch_language::analyzer::parser::{
+	use foch::game::eu4::script::ParsedScriptFile;
+	use foch::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, ScalarValue, Span, SpanRange, parse_clausewitz_content,
 	};
-	use foch_language::analyzer::semantic_index::ParsedScriptFile;
+	use foch::merge::kernel::{ConflictResolution, DeltaOperation, RevisionId};
+	use foch::project::{ResolutionDecision, ResolutionMap};
 
 	use super::{
 		ClausewitzFileAdapter, ClausewitzFileJoin, ConflictRecordBuilder, DefinitionModuleAdapter,
@@ -1968,7 +1968,7 @@ mod tests {
 				"ME_change_all_subject_colors",
 			),
 		] {
-			let policies = foch_language::analyzer::eu4_profile::eu4_profile()
+			let policies = foch::game::eu4::content::eu4()
 				.classify_content_family(Path::new(path))
 				.unwrap_or_else(|| panic!("classify {path}"))
 				.merge_policies;
@@ -2067,7 +2067,7 @@ mod tests {
 	#[test]
 	fn definition_module_file_fallback_lineage_matches_join_input_with_trivia() {
 		let path = "common/cb_types/zzz_foch_cb_types.txt";
-		let policies = foch_language::analyzer::eu4_profile::eu4_profile()
+		let policies = foch::game::eu4::content::eu4()
 			.classify_content_family(Path::new(path))
 			.expect("classify cb types")
 			.merge_policies;
@@ -2635,7 +2635,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),

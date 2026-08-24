@@ -3,10 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use foch::game::eu4::content::{MergeKeySource, MergePolicies, ScriptFileKind};
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstFile, AstStatement};
 use foch::model::HandlerResolutionRecord;
-use foch_language::analyzer::content_family::{CwtType, MergeKeySource, MergePolicies};
-use foch_language::analyzer::parser::{AstFile, AstStatement};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use crate::cache::{DagBaseCache, ModDiffCache};
 use crate::merge::planning::dag::{FileDag, ModId};
@@ -987,7 +987,7 @@ fn synthesized_parsed_file(
 		path: path.clone(),
 		relative_path: path.clone(),
 		content_family: None,
-		file_kind: CwtType::new("other"),
+		file_kind: ScriptFileKind::new("other"),
 		module_name: "running_base".to_string(),
 		ast: AstFile {
 			path: path.clone(),

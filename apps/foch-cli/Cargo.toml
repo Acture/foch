@@ -14,7 +14,6 @@ clap.workspace = true
 clap-verbosity-flag.workspace = true
 foch = { path = "../.." }
 foch-engine = { path = "../../crates/foch-engine" }
-foch-language = { path = "../../crates/foch-language" }
 crossterm = "0.29.0"
 ratatui = "0.30.0"
 serde.workspace = true

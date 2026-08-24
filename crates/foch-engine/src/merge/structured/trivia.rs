@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, ScalarValue, SpanRange};
+use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue, SpanRange};
 
 /// Trivia detached from a Clausewitz AST before structural matching.
 ///
@@ -427,7 +427,7 @@ fn append_comments(statements: &mut Vec<AstStatement>, entries: Vec<&TriviaEntry
 mod tests {
 	use std::path::PathBuf;
 
-	use foch_language::analyzer::parser::{Span, SpanRange};
+	use foch::game::eu4::script::parser::{Span, SpanRange};
 
 	use super::*;
 

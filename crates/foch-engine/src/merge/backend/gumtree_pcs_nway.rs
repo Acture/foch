@@ -1,4 +1,4 @@
-use foch_language::analyzer::content_family::DuplicateDefinitionPolicy;
+use foch::game::eu4::content::DuplicateDefinitionPolicy;
 
 use super::{
 	BackendOutcome, BackendProfile, BackendRequest, BackendUnit, MergeBackend,

@@ -15,15 +15,15 @@ use super::{
 };
 use filetime::{FileTime, set_file_mtime};
 use foch::game::eu4::Eu4;
+use foch::game::eu4::base::analysis_rules_version;
+use foch::game::eu4::content::ScriptFileKind;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::parse_clausewitz_content;
 use foch::model::{
 	DocumentFamily, DocumentRecord, LocalisationDefinition, MaybeScope, ParamContract,
 	ResourceReference, ScopeSet, SemanticIndex, SymbolDefinition, SymbolKind, base_scope,
 	test_support,
 };
-use foch_language::analysis_version::analysis_rules_version;
-use foch_language::analyzer::content_family::CwtType;
-use foch_language::analyzer::parser::parse_clausewitz_content;
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 use tempfile::TempDir;
@@ -138,7 +138,7 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 		path: absolute_path,
 		relative_path: relative_path.clone(),
 		content_family: None,
-		file_kind: CwtType::new("scripted_effects"),
+		file_kind: ScriptFileKind::new("scripted_effects"),
 		module_name: "scripted_effects".to_string(),
 		ast: parsed.ast,
 		source: source.to_string(),

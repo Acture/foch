@@ -1,4 +1,4 @@
-use foch_language::analyzer::parser::AstFile;
+use foch::game::eu4::script::parser::AstFile;
 
 pub use foch::model::{MergeBackendDescriptor, MergeBackendId};
 

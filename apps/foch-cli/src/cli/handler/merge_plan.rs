@@ -1,8 +1,8 @@
 use crate::cli::arg::{MergePlanArgs, MergePlanOutputFormat};
 use crate::cli::handler::{HandlerResult, resolve_workspace_source};
+use foch::game::eu4::analysis::report::{merge_plan_exit_code, render_merge_plan_text};
 use foch::model::MergePlanFormat;
 use foch_engine::{CheckRequest, Config, MergePlanOptions, run_merge_plan_with_options};
-use foch_language::analyzer::report::{merge_plan_exit_code, render_merge_plan_text};
 
 pub fn handle_merge_plan(merge_plan_args: &MergePlanArgs, config: Config) -> HandlerResult {
 	let request = CheckRequest::new(

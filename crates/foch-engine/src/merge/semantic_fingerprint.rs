@@ -1,4 +1,4 @@
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 
 const VALUE_SCALAR: u8 = 0x01;
 const VALUE_BLOCK: u8 = 0x02;
@@ -106,7 +106,7 @@ pub(crate) fn statement_fingerprint(stmt: &AstStatement) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::parser::{ScalarValue, Span, SpanRange};
+	use foch::game::eu4::script::parser::{ScalarValue, Span, SpanRange};
 
 	fn span() -> SpanRange {
 		SpanRange {

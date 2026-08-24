@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
+use foch::game::eu4::script::ParsedScriptFile;
 
 use super::dag::{FileDag, ModId, topo_levels};
 use super::dag_join::{DagJoinPlan, DagJoinScope, plan_dag_join, sink_mods};
@@ -243,11 +243,11 @@ where
 mod tests {
 	use std::path::PathBuf;
 
+	use foch::game::eu4::content::ScriptFileKind;
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use foch::model::ModCandidate;
 	use foch::playset::PlaysetEntry;
 	use foch::playset::descriptor::ModDescriptor;
-	use foch_language::analyzer::content_family::CwtType;
-	use foch_language::analyzer::parser::parse_clausewitz_content;
 
 	use super::*;
 	use crate::workspace::ResolvedFileContributor;
@@ -334,7 +334,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: format!("{mod_id} = yes\n"),

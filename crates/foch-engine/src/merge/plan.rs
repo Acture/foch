@@ -5,16 +5,16 @@ use crate::workspace::{
 	ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveError, WorkspaceResolveErrorKind,
 	WorkspaceScriptCache, resolve_workspace,
 };
+use foch::game::eu4::Eu4;
+use foch::game::eu4::content::eu4;
+use foch::game::eu4::content::{
+	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
+};
+use foch::game::eu4::script::documents::{classify_document_family, is_clausewitz_defines_path};
 use foch::model::{
 	DocumentFamily, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies,
 	MergePlanStrategy, MergePlanTarget, MergeUnitId,
 };
-use foch_language::analyzer::content_family::GameProfile;
-use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
-};
-use foch_language::analyzer::documents::{classify_document_family, is_clausewitz_defines_path};
-use foch_language::analyzer::eu4_profile::eu4_profile;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,7 +31,7 @@ pub fn run_merge_plan_with_options(
 		Ok(workspace) => workspace,
 		Err(err) => return fatal_plan_from_workspace_error(&err, options.include_game_base),
 	};
-	prune_noop_script_contributors(&mut workspace, eu4_profile());
+	prune_noop_script_contributors(&mut workspace, eu4());
 
 	build_merge_plan_from_workspace(&workspace, options.include_game_base)
 }
@@ -66,7 +66,7 @@ pub(crate) fn build_merge_plan_from_workspace(
 	result.game = workspace.playlist.game.key().to_string();
 	result.playset_name = workspace.playlist.name.clone();
 
-	let profile = eu4_profile();
+	let profile = eu4();
 	if let Err(error) = validate_structural_snapshot(workspace, profile) {
 		result.push_fatal_error(error);
 		return result;
@@ -78,10 +78,7 @@ pub(crate) fn build_merge_plan_from_workspace(
 
 type ModuleInputs<'a> = Vec<(&'a str, &'a [ResolvedFileContributor])>;
 
-fn build_merge_units(
-	workspace: &ResolvedWorkspace,
-	profile: &dyn GameProfile,
-) -> Vec<MergePlanEntry> {
+fn build_merge_units(workspace: &ResolvedWorkspace, profile: &Eu4) -> Vec<MergePlanEntry> {
 	let mut regular = Vec::new();
 	let mut modules: BTreeMap<MergeUnitId, (DefinitionModulePolicy, ModuleInputs<'_>)> =
 		BTreeMap::new();
@@ -180,7 +177,7 @@ fn module_has_reset_participant(
 
 fn participating_module_namespaces(
 	workspace: &ResolvedWorkspace,
-	profile: &dyn GameProfile,
+	profile: &Eu4,
 ) -> BTreeSet<&'static str> {
 	workspace
 		.file_inventory
@@ -419,7 +416,7 @@ fn is_structural_merge_path(path: &str, descriptor: Option<&ContentFamilyDescrip
 
 fn validate_structural_snapshot(
 	workspace: &ResolvedWorkspace,
-	profile: &dyn GameProfile,
+	profile: &Eu4,
 ) -> Result<(), String> {
 	let participating_modules = participating_module_namespaces(workspace, profile);
 	for (path, contributors) in &workspace.file_inventory {
@@ -454,10 +451,7 @@ fn validate_structural_snapshot(
 	Ok(())
 }
 
-pub(crate) fn prune_noop_script_contributors(
-	workspace: &mut ResolvedWorkspace,
-	profile: &dyn GameProfile,
-) {
+pub(crate) fn prune_noop_script_contributors(workspace: &mut ResolvedWorkspace, profile: &Eu4) {
 	let script_cache = &workspace.script_cache;
 	workspace
 		.file_inventory

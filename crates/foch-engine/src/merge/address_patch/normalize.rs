@@ -1,6 +1,6 @@
 use super::super::error::MergeError;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, SpanRange};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, SpanRange};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
@@ -117,8 +117,8 @@ fn describe_assignment_path(path_segments: &[String]) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::parser::parse_clausewitz_content;
-	use foch_language::analyzer::semantic_index::ParsedScriptFile;
+	use foch::game::eu4::script::ParsedScriptFile;
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use std::path::PathBuf;
 
 	fn parsed(path: &str, content: &str) -> ParsedScriptFile {
@@ -129,7 +129,7 @@ mod tests {
 			path: path_buf.clone(),
 			relative_path: path_buf,
 			content_family: None,
-			file_kind: foch_language::analyzer::content_family::CwtType::new("other"),
+			file_kind: foch::game::eu4::content::ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			ast: parse_result.ast,
 			source: content.to_string(),

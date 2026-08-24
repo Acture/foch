@@ -2,12 +2,11 @@ use super::super::super::error::MergeError;
 use super::super::super::namespace::{FamilyKeyIndex, build_family_key_index, group_by_family};
 use super::super::super::normalize::normalize_defines_file;
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace};
+use foch::game::eu4::Eu4;
+use foch::game::eu4::content::MergeKeySource;
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
+use foch::game::eu4::script::{ParsedScriptFile, is_decision_container_key, parse_script_file};
 use foch::model::{HandlerResolutionRecord, MergeReport};
-use foch_language::analyzer::content_family::{GameProfile, MergeKeySource};
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
-use foch_language::analyzer::semantic_index::{
-	ParsedScriptFile, is_decision_container_key, parse_script_file_with_profile,
-};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io;
@@ -67,7 +66,7 @@ pub(super) fn prune_cross_file_noop_duplicates(
 	out_dir: &Path,
 	mut generated_paths: BTreeSet<String>,
 	workspace: &ResolvedWorkspace,
-	profile: &dyn GameProfile,
+	profile: &Eu4,
 	report: &mut MergeReport,
 ) -> Result<CrossFilePruneResult, MergeError> {
 	if generated_paths.is_empty() {
@@ -189,16 +188,15 @@ fn build_effective_merged_inventory(
 fn build_family_value_fingerprint_index(
 	paths_by_file: &BTreeMap<String, Vec<ResolvedFileContributor>>,
 	merge_key_source: MergeKeySource,
-	profile: &dyn GameProfile,
+	_profile: &Eu4,
 ) -> FamilyValueFingerprintIndex {
 	let mut index = FamilyValueFingerprintIndex::default();
 	for (rel_path, contributors) in paths_by_file {
 		for contributor in contributors {
-			let extraction = if let Some(parsed) = parse_script_file_with_profile(
+			let extraction = if let Some(parsed) = parse_script_file(
 				&contributor.mod_id,
 				&contributor.root_path,
 				&contributor.absolute_path,
-				profile,
 			) {
 				extract_key_value_fingerprints(&parsed, merge_key_source)
 			} else {
@@ -579,9 +577,9 @@ fn fingerprint_text_into(value: &str, hasher: &mut blake3::Hasher) {
 mod tests {
 	use super::*;
 	use foch::game::eu4::Eu4;
+	use foch::game::eu4::content::ScriptFileKind;
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use foch::playset::Playset;
-	use foch_language::analyzer::content_family::CwtType;
-	use foch_language::analyzer::parser::parse_clausewitz_content;
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
 
@@ -598,7 +596,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("test"),
+			file_kind: ScriptFileKind::new("test"),
 			module_name: "test".to_string(),
 			ast: parse_result.ast,
 			source: content.to_string(),
@@ -691,7 +689,7 @@ mod tests {
 			&out_dir,
 			BTreeSet::from([generated_path.to_string()]),
 			&workspace,
-			foch_language::analyzer::eu4_profile::eu4_profile(),
+			foch::game::eu4::content::eu4(),
 			&mut report,
 		)
 		.expect("prune completes");

@@ -10,6 +10,13 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use foch::game::eu4::Eu4;
+use foch::game::eu4::analysis::param_contracts::apply_registered_param_contracts;
+use foch::game::eu4::base::analysis_rules_version;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::documents::{
+	DiscoveredTextDocument, ParsedTextDocument, build_semantic_index_from_documents,
+	discover_text_documents, parse_discovered_text_documents,
+};
 use foch::model::{
 	AliasUsage, CsvRow, DocumentFamily, DocumentRecord, JsonProperty, KeyUsage,
 	LocalisationDefinition, LocalisationDuplicate, MaybeScope, ParamBinding, ParamContract,
@@ -18,13 +25,6 @@ use foch::model::{
 	UiDefinition,
 };
 use foch::playset::steam::steam_game_install_path;
-use foch_language::analysis_version::analysis_rules_version;
-use foch_language::analyzer::documents::{
-	DiscoveredTextDocument, ParsedTextDocument, build_semantic_index_from_documents,
-	discover_text_documents, parse_discovered_text_documents,
-};
-use foch_language::analyzer::param_contracts::apply_registered_param_contracts;
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use rayon::join;
 use reqwest::blocking::Client;
 use same_file::Handle as SameFileHandle;

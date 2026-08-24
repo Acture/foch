@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use foch::game::eu4::content::{
+	ContentFamilyDescriptor, DivergentBlockPolicy, MergePolicies, NamedContainerPolicy,
+};
+use foch::game::eu4::script::parser::AstFile;
 use foch::merge::kernel::{
 	DeltaOperation, MergeDecisionEvidence, MergeDecisionResult, NormalizedTree, RevisionDelta,
 	RevisionId, RevisionNode, TreeMatcher,
 };
 use foch::model::{MergeTraceContributor, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy};
-use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, DivergentBlockPolicy, MergePolicies, NamedContainerPolicy,
-};
-use foch_language::analyzer::parser::AstFile;
 
 use crate::merge::model::{
 	SemanticDeltaPartition, SemanticMergeComputation, SemanticMergeFacts, SemanticMergeSource,
@@ -443,8 +443,8 @@ mod tests {
 	use std::path::PathBuf;
 
 	use super::*;
-	use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
-	use foch_language::analyzer::parser::parse_clausewitz_content;
+	use foch::game::eu4::content::{MergeKeySource, MergePolicies};
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 
 	use crate::merge::structured::{merge_clausewitz_files_n_way, normalize_clausewitz_partition};
 

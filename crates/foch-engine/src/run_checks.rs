@@ -8,20 +8,19 @@ use crate::workspace::{
 	LoadedModSnapshot, ResolvedFileContributor, ResolvedWorkspace, WorkspaceResolveErrorKind,
 	normalize_relative_path, resolve_workspace,
 };
+use foch::game::eu4::analysis::rules::{
+	check_dependency_misuse, check_duplicate_mod_identity, check_duplicate_scripted_effect,
+	check_file_conflict, check_missing_dependency, check_missing_descriptor, check_required_fields,
+	check_version_mismatch,
+};
+use foch::game::eu4::analysis::{AnalyzeOptions, analyze_visibility_with_vanilla_index};
+use foch::game::eu4::base::vanilla_index::{VanillaSymbolIndex, VanillaSymbolSource};
+use foch::game::eu4::content::eu4;
 use foch::model::{
 	AnalysisMeta, AnalysisMode, CheckContext, CheckResult, DocumentFamily, FamilyParseStats,
 	Finding, FindingChannel, ParseFamilyStats, ParseIssueReportItem, SemanticIndex, Severity,
 	SymbolDefinition,
 };
-use foch_language::analyzer::analysis::{AnalyzeOptions, analyze_visibility_with_vanilla_index};
-use foch_language::analyzer::content_family::GameProfile;
-use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::rules::{
-	check_dependency_misuse, check_duplicate_mod_identity, check_duplicate_scripted_effect,
-	check_file_conflict, check_missing_dependency, check_missing_descriptor, check_required_fields,
-	check_version_mismatch,
-};
-use foch_language::analyzer::vanilla_index::{VanillaSymbolIndex, VanillaSymbolSource};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
@@ -452,7 +451,7 @@ fn check_namespace_conflicts(
 	file_inventory: &BTreeMap<String, Vec<ResolvedFileContributor>>,
 	mod_dag: &ModDag,
 ) -> Vec<Finding> {
-	let profile = eu4_profile();
+	let profile = eu4();
 	let families_by_id = group_by_family(file_inventory, profile);
 
 	let mut findings = Vec::new();

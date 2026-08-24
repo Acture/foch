@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use foch::merge::kernel::{
 	ChildCardinality, ChildOrder, NodeId, NormalizedNode, NormalizedTree, SemanticKey, TreeNode,
 };
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
 use super::ast_adapter::{
 	AstAdapterError, COMMENT_KIND, assignment_key, branch, denormalize_only_value_child,
@@ -1424,11 +1424,11 @@ fn value_key(value: &AstValue) -> String {
 mod tests {
 	use std::path::PathBuf;
 
-	use foch::merge::kernel::{ConflictKind, SemanticKeyMatchMode, SemanticKeyScope};
-	use foch_language::analyzer::content_family::MergePolicies;
-	use foch_language::analyzer::parser::{
+	use foch::game::eu4::content::MergePolicies;
+	use foch::game::eu4::script::parser::{
 		AstFile, AstStatement, AstValue, parse_clausewitz_content,
 	};
+	use foch::merge::kernel::{ConflictKind, SemanticKeyMatchMode, SemanticKeyScope};
 
 	use crate::emit::emit_clausewitz_statements;
 

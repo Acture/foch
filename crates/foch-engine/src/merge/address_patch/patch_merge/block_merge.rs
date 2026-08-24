@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use foch_language::analyzer::content_family::{
-	MergeKeySource, MergePolicies, NamedContainerPolicy,
-};
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
+use foch::game::eu4::content::{MergeKeySource, MergePolicies, NamedContainerPolicy};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use crate::merge::boolean::combine_boolean_or_bodies;
 use crate::merge::gui::synthesize_scroll_stack;

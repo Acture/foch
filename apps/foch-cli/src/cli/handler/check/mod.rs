@@ -1,8 +1,8 @@
 use crate::cli::arg::{AnalysisModeArg, CheckArgs, CheckChannelArg, CheckOutputFormat};
 use crate::cli::handler::{HandlerResult, resolve_workspace_source};
+use foch::game::eu4::analysis::report::render_text;
 use foch::model::{AnalysisMode, ChannelMode, CheckResult};
 use foch_engine::{CheckRequest, Config, RunOptions, run_checks_with_options};
-use foch_language::analyzer::report::render_text;
 
 pub fn handle_check(check_args: &CheckArgs, config: Config) -> HandlerResult {
 	let request = CheckRequest::new(

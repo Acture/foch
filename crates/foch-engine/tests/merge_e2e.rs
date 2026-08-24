@@ -1,3 +1,8 @@
+use foch::game::eu4::content::ContentLoadPolicy;
+use foch::game::eu4::content::eu4;
+use foch::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
+use foch::game::eu4::script::parse_script_file;
+use foch::game::eu4::script::parser::parse_clausewitz_file;
 use foch::model::{
 	ConflictKind, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
 };
@@ -8,11 +13,6 @@ use foch_engine::{
 	ConflictHandler, ConflictView, MergeAnalysisOptions, MergeBackendId, NoopProgressObserver,
 	analyze_merge, run_merge_for_evaluation, run_merge_with_options,
 };
-use foch_language::analyzer::content_family::{ContentLoadPolicy, GameProfile};
-use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
-use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::parse_clausewitz_file;
-use foch_language::analyzer::semantic_index::parse_script_file;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -1177,7 +1177,7 @@ fn eu4_governments_cross_file_module_emits_union_once() {
 	let parsed_output = parse_script_file("generated", &out_dir, &merged_path)
 		.expect("parse generated governments module");
 	let relative = Path::new("common/governments/zzz_foch_governments.txt");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(relative)
 		.expect("governments descriptor");
 	let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {

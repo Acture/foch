@@ -1,4 +1,4 @@
-use foch_language::analyzer::parser::{AstStatement, AstValue, Span, SpanRange};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, Span, SpanRange};
 
 use super::patch::ast_statements_semantically_equal;
 

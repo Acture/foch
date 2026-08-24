@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-use foch::merge::kernel::{ConflictKind, SemanticKeyScope};
-use foch_language::analyzer::content_family::{
-	BlockMergePolicy, DivergentBlockPolicy, GameProfile, MergePolicies, OneSidedRemovalPolicy,
+use foch::game::eu4::content::eu4;
+use foch::game::eu4::content::{
+	BlockMergePolicy, DivergentBlockPolicy, MergePolicies, OneSidedRemovalPolicy,
 	ScalarMergePolicy, ScalarReducerRule,
 };
-use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
+use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
+use foch::merge::kernel::{ConflictKind, SemanticKeyScope};
 
 use crate::emit::emit_clausewitz_statements;
 
@@ -1634,7 +1634,7 @@ fn eu4_ages_reducer_retains_the_stronger_value_against_a_one_sided_change() {
 	let base = source("50");
 	let left = source("50");
 	let right = source("35");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from("common/ages/00_default.txt").as_path())
 		.expect("ages descriptor");
 
@@ -1687,7 +1687,7 @@ fn eu4_diplomatic_actions_keep_distinct_tooltip_conditions_independent() {
 		\t}\n\
 		}\n",
 	);
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1729,7 +1729,7 @@ fn eu4_diplomatic_actions_keep_missing_and_keyed_conditions_independent() {
 		\t}\n\
 		}\n",
 	);
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1764,7 +1764,7 @@ fn eu4_diplomatic_actions_preserve_duplicate_blank_tooltip_cardinality() {
 	let base = conditions("always = no", "always = no");
 	let left = conditions("has_country_flag = left_annexation", "always = no");
 	let right = conditions("always = no", "has_country_flag = right_annexation");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1804,7 +1804,7 @@ fn eu4_diplomatic_actions_keep_same_tooltip_additions_source_isolated() {
 	};
 	let left = condition("ee_war");
 	let right = condition("ice_war");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1844,7 +1844,7 @@ fn eu4_diplomatic_actions_defer_divergent_edits_to_the_same_base_condition() {
 	let base = condition("base_war");
 	let left = condition("ee_war");
 	let right = condition("ice_war");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1872,7 +1872,7 @@ fn eu4_diplomatic_actions_do_not_duplicate_unchanged_base_conditions() {
 	);
 	let left = base.clone();
 	let right = base.clone();
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1905,7 +1905,7 @@ fn eu4_diplomatic_actions_preserve_one_mods_duplicate_condition_order() {
 		\tcondition = { tooltip = SHARED potential = { tag = EEE } allow = { always = no } }\n\
 		}\n",
 	);
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -1950,7 +1950,7 @@ fn eu4_diplomatic_actions_append_source_isolated_conditions_in_nway_order() {
 	let first = condition("first_war");
 	let second = condition("second_war");
 	let third = condition("third_war");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("diplomatic actions descriptor");
 
@@ -2001,7 +2001,7 @@ fn eu4_subject_types_keep_distinct_modifier_subject_entries_independent() {
 	let base = subject_type(None);
 	let left = subject_type(Some("ee_colony_modifier"));
 	let right = subject_type(Some("ice_colony_modifier"));
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("subject types descriptor");
 
@@ -2051,7 +2051,7 @@ fn eu4_subject_types_key_modifier_overlord_entries_by_modifier() {
 	};
 	let left = subject_type("ee_overlord_modifier");
 	let right = subject_type("ice_overlord_modifier");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("subject types descriptor");
 
@@ -2097,7 +2097,7 @@ fn eu4_subject_types_still_conflict_on_same_modifier_subject_identity() {
 	};
 	let left = subject_type("ee_flag");
 	let right = subject_type("ice_flag");
-	let descriptor = eu4_profile()
+	let descriptor = eu4()
 		.classify_content_family(PathBuf::from(path).as_path())
 		.expect("subject types descriptor");
 

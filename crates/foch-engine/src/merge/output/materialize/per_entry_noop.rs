@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
-use foch_language::analyzer::content_family::{
-	ContentFamilyDescriptor, MergeKeySource, MergePolicies,
-};
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::is_decision_container_key;
+use foch::game::eu4::content::{ContentFamilyDescriptor, MergeKeySource, MergePolicies};
+use foch::game::eu4::script::is_decision_container_key;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 
 use super::cross_file_dedup::{container_child_field_value_key, scalar_assignment_value};
 use crate::merge::structured::clausewitz_statements_semantically_equivalent;

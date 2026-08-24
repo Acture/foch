@@ -7,8 +7,8 @@
 
 use super::generation::{generation_dir, prepare as prepare_generation};
 use super::mod_parse_cache::CacheError;
+use foch::game::eu4::script::parser::AstStatement;
 use foch::platform::cache_store::default_foch_cache_dir;
-use foch_language::analyzer::parser::AstStatement;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -223,7 +223,7 @@ fn sanitize_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::parser::{AstValue, ScalarValue, Span, SpanRange};
+	use foch::game::eu4::script::parser::{AstValue, ScalarValue, Span, SpanRange};
 	use std::path::PathBuf;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 

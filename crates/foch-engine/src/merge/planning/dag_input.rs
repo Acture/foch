@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 
+use foch::game::eu4::script::parser::AstStatement;
+use foch::game::eu4::script::{ParsedScriptFile, parse_script_file};
 use foch::project::DepOverride;
-use foch_language::analyzer::parser::AstStatement;
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_file};
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};

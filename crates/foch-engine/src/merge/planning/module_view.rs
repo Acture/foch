@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use foch::model::{MergePlanEntry, MergePlanTarget};
-use foch::project::DepOverride;
-use foch_language::analyzer::content_family::{
+use foch::game::eu4::content::{
 	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 	DuplicateDefinitionPolicy, MergeKeySource,
 };
-use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
+use foch::model::{MergePlanEntry, MergePlanTarget};
+use foch::project::DepOverride;
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
 use crate::workspace::{ResolvedFileContributor, ResolvedWorkspace, WorkspaceScriptCache};
@@ -468,7 +468,7 @@ fn fold_visible_module_files(
 			path: output_path.clone(),
 			relative_path: output_path.clone(),
 			content_family: None,
-			file_kind: foch_language::analyzer::content_family::CwtType::new("other"),
+			file_kind: foch::game::eu4::content::ScriptFileKind::new("other"),
 			module_name: module_name.to_string(),
 			ast: canonical.ast.clone(),
 			source: String::new(),
@@ -493,14 +493,14 @@ mod tests {
 		parse_contributor, validate_module_target,
 	};
 	use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
-	use foch::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
-	use foch_language::analyzer::content_family::{
+	use foch::game::eu4::content::eu4;
+	use foch::game::eu4::content::{
 		ContentFamilyDescriptor, ContentLoadPolicy, DefinitionFileOrder, DefinitionKeyPolicy,
-		DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy, GameProfile,
+		DefinitionModuleOutput, DefinitionModulePolicy, DuplicateDefinitionPolicy,
 	};
-	use foch_language::analyzer::eu4_profile::eu4_profile;
-	use foch_language::analyzer::parser::{AstStatement, AstValue};
-	use foch_language::analyzer::semantic_index::parse_script_file;
+	use foch::game::eu4::script::parse_script_file;
+	use foch::game::eu4::script::parser::{AstStatement, AstValue};
+	use foch::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
 	use std::collections::BTreeMap;
 	use std::fs;
 	use std::path::Path;
@@ -549,7 +549,7 @@ mod tests {
 	}
 
 	fn governments_descriptor() -> &'static ContentFamilyDescriptor {
-		eu4_profile()
+		eu4()
 			.classify_content_family(Path::new("common/governments/example.txt"))
 			.expect("governments descriptor")
 	}
@@ -573,7 +573,7 @@ mod tests {
 	}
 
 	fn powerprojection_descriptor() -> &'static ContentFamilyDescriptor {
-		eu4_profile()
+		eu4()
 			.classify_content_family(Path::new("common/powerprojection/example.txt"))
 			.expect("powerprojection descriptor")
 	}
@@ -657,7 +657,7 @@ mod tests {
 
 	#[test]
 	fn structured_module_views_use_runtime_effective_duplicate_definitions() {
-		let descriptor = eu4_profile()
+		let descriptor = eu4()
 			.classify_content_family(Path::new("common/scripted_triggers/example.txt"))
 			.expect("scripted triggers descriptor");
 		let ContentLoadPolicy::DefinitionModule(mut policy) = descriptor.load_policy else {
@@ -686,7 +686,7 @@ mod tests {
 
 	#[test]
 	fn nested_identity_modules_preserve_repeated_top_level_assignments() {
-		let descriptor = eu4_profile()
+		let descriptor = eu4()
 			.classify_content_family(Path::new("common/estates_preload/example.txt"))
 			.expect("estates preload descriptor");
 		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {

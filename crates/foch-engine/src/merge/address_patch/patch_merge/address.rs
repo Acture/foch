@@ -1,4 +1,4 @@
-use foch_language::analyzer::content_family::{DivergentBlockPolicy, MergePolicies};
+use foch::game::eu4::content::{DivergentBlockPolicy, MergePolicies};
 
 use crate::merge::semantic_fingerprint::{statement_fingerprint, value_fingerprint};
 

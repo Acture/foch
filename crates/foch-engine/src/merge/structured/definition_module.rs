@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use foch::game::eu4::content::{MergePolicies, OneSidedRemovalPolicy};
+use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
 use foch::merge::kernel::{ConflictResolution, StructuralConflict};
-use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
-use foch_language::analyzer::parser::{AstFile, AstStatement, AstValue};
 
 use crate::merge::model::SemanticPartitionId;
 
@@ -523,18 +523,18 @@ fn compare_top_level_statements(left: &AstStatement, right: &AstStatement) -> st
 mod tests {
 	use std::path::PathBuf;
 
-	use foch_language::analyzer::content_family::{MergePolicies, OneSidedRemovalPolicy};
-	use foch_language::analyzer::parser::parse_clausewitz_content;
+	use foch::game::eu4::content::{MergePolicies, OneSidedRemovalPolicy};
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 
 	use super::merge_clausewitz_definition_module;
 
-	fn parse(source: &str) -> foch_language::analyzer::parser::AstFile {
+	fn parse(source: &str) -> foch::game::eu4::script::parser::AstFile {
 		let parsed = parse_clausewitz_content(PathBuf::from("common/test/test.txt"), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		parsed.ast
 	}
 
-	fn emit(file: &foch_language::analyzer::parser::AstFile) -> String {
+	fn emit(file: &foch::game::eu4::script::parser::AstFile) -> String {
 		crate::emit::emit_clausewitz_statements(&file.statements).expect("emit module")
 	}
 

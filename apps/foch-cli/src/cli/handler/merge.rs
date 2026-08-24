@@ -1,5 +1,8 @@
 use crate::cli::arg::MergeArgs;
 use crate::cli::handler::{HandlerResult, resolve_workspace_source};
+use foch::game::eu4::analysis::report::{
+	merge_plan_exit_code, render_merge_plan_text, render_merge_report_text,
+};
 use foch::model::{MERGE_REPORT_ARTIFACT_PATH, MergeReport, ProductInputManifest};
 use foch::playset::Playset;
 use foch::playset::descriptor::load_descriptor;
@@ -12,9 +15,6 @@ use foch_engine::{
 };
 
 use crate::tui::conflict_handler::InteractiveTuiHandler;
-use foch_language::analyzer::report::{
-	merge_plan_exit_code, render_merge_plan_text, render_merge_report_text,
-};
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};

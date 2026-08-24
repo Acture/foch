@@ -2,11 +2,11 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use foch::game::eu4::content::MergePolicies;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::AstStatement;
 use foch::merge::kernel::{DeltaOperation, RevisionNode};
 use foch::model::MergeTraceContributor;
-use foch_language::analyzer::content_family::MergePolicies;
-use foch_language::analyzer::parser::AstStatement;
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use super::super::conflict_handler::{ConflictHandler, DeferHandler};
 use super::dag::{FileDag, ModId};
@@ -397,14 +397,12 @@ mod tests {
 	use super::*;
 	use std::path::{Path, PathBuf};
 
+	use foch::game::eu4::content::{ListMergePolicy, MergeKeySource, ScriptFileKind};
+	use foch::game::eu4::script::parser::AstValue;
 	use foch::model::ModCandidate;
 	use foch::playset::PlaysetEntry;
 	use foch::playset::descriptor::ModDescriptor;
 	use foch::project::DepOverride;
-	use foch_language::analyzer::content_family::{
-		CwtType, GameProfile, ListMergePolicy, MergeKeySource,
-	};
-	use foch_language::analyzer::parser::AstValue;
 
 	use crate::cache::{DagBaseCache, ModDiffCache};
 	use crate::merge::address_patch::dag_merge::{
@@ -478,13 +476,13 @@ mod tests {
 	fn parsed_file(mod_id: &str, source: &str) -> ParsedScriptFile {
 		let path = PathBuf::from("common/foo.txt");
 		let parsed =
-			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+			foch::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),
@@ -496,14 +494,14 @@ mod tests {
 	fn parsed_event_file(mod_id: &str, source: &str) -> ParsedScriptFile {
 		let path = PathBuf::from("events/test.txt");
 		let parsed =
-			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+			foch::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("events"),
+			file_kind: ScriptFileKind::new("events"),
 			module_name: "events".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),
@@ -515,14 +513,14 @@ mod tests {
 	fn parsed_definition_module_file(mod_id: &str, source: &str) -> ParsedScriptFile {
 		let path = PathBuf::from("common/institutions/zzz_foch_institutions.txt");
 		let parsed =
-			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+			foch::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("institutions"),
+			file_kind: ScriptFileKind::new("institutions"),
 			module_name: "institutions".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),
@@ -534,14 +532,14 @@ mod tests {
 	fn parsed_diplomatic_actions_file(mod_id: &str, source: &str) -> ParsedScriptFile {
 		let path = PathBuf::from("common/diplomatic_actions/zzz_foch_diplomatic_actions.txt");
 		let parsed =
-			foch_language::analyzer::parser::parse_clausewitz_content(path.clone(), source);
+			foch::game::eu4::script::parser::parse_clausewitz_content(path.clone(), source);
 		assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
 		ParsedScriptFile {
 			mod_id: mod_id.to_string(),
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("diplomatic_actions"),
+			file_kind: ScriptFileKind::new("diplomatic_actions"),
 			module_name: "diplomatic_actions".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),
@@ -575,7 +573,7 @@ mod tests {
 			(mid("left"), parsed_event_file("left", left_source)),
 			(mid("right"), parsed_event_file("right", right_source)),
 		]);
-		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+		let descriptor = foch::game::eu4::content::eu4()
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events content family");
 		let mut handler = DeferHandler;
@@ -607,7 +605,7 @@ mod tests {
 		);
 		let vanilla = vanilla_source.map(|source| parsed_event_file("__game__", source));
 		let inventory = HashMap::from([(mid("only"), parsed_event_file("only", source))]);
-		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+		let descriptor = foch::game::eu4::content::eu4()
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events content family");
 		let mut handler = DeferHandler;
@@ -652,7 +650,7 @@ mod tests {
 				parsed_definition_module_file("right", right_source),
 			),
 		]);
-		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+		let descriptor = foch::game::eu4::content::eu4()
 			.classify_content_family(Path::new(path))
 			.expect("institutions content family");
 		let mut handler = DeferHandler;
@@ -699,7 +697,7 @@ mod tests {
 				parsed_diplomatic_actions_file("right", right_source),
 			),
 		]);
-		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+		let descriptor = foch::game::eu4::content::eu4()
 			.classify_content_family(Path::new(path))
 			.expect("diplomatic actions content family");
 		let mut handler = DeferHandler;
@@ -1289,7 +1287,7 @@ mod tests {
 				)
 			})
 			.collect::<HashMap<_, _>>();
-		let descriptor = foch_language::analyzer::eu4_profile::eu4_profile()
+		let descriptor = foch::game::eu4::content::eu4()
 			.classify_content_family(Path::new("events/test.txt"))
 			.expect("events content family");
 		let mut handler = DeferHandler;
@@ -2184,7 +2182,7 @@ mod tests {
 
 	#[test]
 	fn resolved_branch_cache_invalidates_when_merge_policy_changes() {
-		use foch_language::analyzer::content_family::ScalarMergePolicy;
+		use foch::game::eu4::content::ScalarMergePolicy;
 
 		let temp = tempfile::TempDir::new().expect("temp cache root");
 		let diff_cache = ModDiffCache::open(&temp.path().join("diff"));
@@ -3672,7 +3670,7 @@ mod tests {
 				child_key_field: "name",
 				child_types: &["option"],
 			},
-			scalar: foch_language::analyzer::content_family::ScalarMergePolicy::LastWriter,
+			scalar: foch::game::eu4::content::ScalarMergePolicy::LastWriter,
 			list: ListMergePolicy::UnionWithRename,
 			edit_wins_over_remove: true,
 			..MergePolicies::default()

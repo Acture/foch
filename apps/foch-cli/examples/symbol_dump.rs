@@ -1,5 +1,5 @@
+use foch::game::eu4::script::{build_semantic_index, parse_script_file};
 use foch::model::{SemanticIndex, SymbolDefinition, SymbolKind};
-use foch_language::analyzer::semantic_index::{build_semantic_index, parse_script_file};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

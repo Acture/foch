@@ -1,6 +1,6 @@
 use crate::base_data::InstalledBaseSnapshot;
+use foch::game::eu4::script::{ParsedScriptFile, parse_script_bytes_cached};
 use foch::model::ModCandidate;
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, parse_script_bytes_cached};
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};

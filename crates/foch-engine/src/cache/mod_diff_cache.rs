@@ -265,7 +265,7 @@ fn sanitize_component(value: &str) -> String {
 mod tests {
 	use super::*;
 	use crate::merge::patch::ListItemTarget;
-	use foch_language::analyzer::parser::{AstValue, ScalarValue, Span, SpanRange};
+	use foch::game::eu4::script::parser::{AstValue, ScalarValue, Span, SpanRange};
 	use std::path::PathBuf;
 	use std::sync::atomic::{AtomicUsize, Ordering};
 

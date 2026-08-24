@@ -3,12 +3,12 @@ use crate::emit::emit_clausewitz_statements;
 use crate::request::CheckRequest;
 use crate::runtime::overlap::{OverlapStatus, classify_definition_overlaps};
 use crate::workspace::{ResolvedWorkspace, WorkspaceResolveErrorKind, resolve_workspace};
-use foch::model::{SemanticIndex, SymbolKind, SymbolReference};
-use foch_language::analyzer::parser::{AstStatement, AstValue, SpanRange};
-use foch_language::analyzer::semantic_index::{
+use foch::game::eu4::script::parser::{AstStatement, AstValue, SpanRange};
+use foch::game::eu4::script::{
 	ParsedScriptFile, resolve_scripted_effect_reference_targets,
 	resolve_scripted_trigger_reference_targets,
 };
+use foch::model::{SemanticIndex, SymbolKind, SymbolReference};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;

@@ -12,19 +12,18 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 use foch::game::eu4::Eu4;
-use foch::model::{DeferredUnitReason, DocumentFamily, MergeReport};
-use foch::playset::descriptor::load_descriptor;
-use foch_language::analyzer::content_family::{
+use foch::game::eu4::content::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
-	GameProfile, MergeKeySource,
+	MergeKeySource,
 };
-use foch_language::analyzer::definition_module::{DefinitionModuleInput, load_definition_module};
-use foch_language::analyzer::documents::classify_document_family;
-use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{
+use foch::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
+use foch::game::eu4::script::documents::classify_document_family;
+use foch::game::eu4::script::parse_script_file;
+use foch::game::eu4::script::parser::{
 	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content, parse_clausewitz_file,
 };
-use foch_language::analyzer::semantic_index::parse_script_file;
+use foch::model::{DeferredUnitReason, DocumentFamily, MergeReport};
+use foch::playset::descriptor::load_descriptor;
 use regex::Regex;
 
 /// `^key = {` at a line start — a top-level Clausewitz definition.
@@ -1006,7 +1005,7 @@ fn eligible_module_family(rel: &str) -> Option<&'static ContentFamilyDescriptor>
 	if is_path_sensitive_for_module_scoring(rel) {
 		return None;
 	}
-	let descriptor = eu4_profile().classify_content_family(Path::new(rel))?;
+	let descriptor = Eu4.classify_content_family(Path::new(rel))?;
 	if !matches!(descriptor.matcher, ContentFamilyPathMatcher::Prefix(_)) {
 		return None;
 	}
@@ -1046,7 +1045,7 @@ pub(crate) fn definition_module_policy_for_path(rel: &str) -> Option<DefinitionM
 
 fn definition_module_policy_for_prefix(prefix: &str) -> Option<DefinitionModulePolicy> {
 	let probe = format!("{}/__foch_module__.txt", prefix.trim_end_matches('/'));
-	let descriptor = eu4_profile().classify_content_family(Path::new(&probe))?;
+	let descriptor = Eu4.classify_content_family(Path::new(&probe))?;
 	match descriptor.load_policy {
 		ContentLoadPolicy::DefinitionModule(policy) if policy.namespace_prefix == prefix => {
 			Some(policy)

@@ -7,11 +7,11 @@ use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::merge::model::{SemanticDeltaPartition, SemanticSourceDelta};
 use crate::merge::structured::{normalize_clausewitz_partition, semantic_node_address};
 use crate::workspace::{ResolvedFileContributor, WorkspaceScriptCache};
+use foch::game::eu4::content::{MergeKeySource, MergePolicies};
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 use foch::merge::kernel::{DeltaOperation, NodeId, TreeMatcher};
 use foch::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
-use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::collections::{HashMap, HashSet};
 
 const SEMANTIC_MISSING_PATH_NOTE: &str = "vanilla snapshot for this file does not contain the semantic parent; this remove-style change may be cross-version drift, dependency-targeted, or intentionally guarded";
@@ -344,11 +344,11 @@ mod tests {
 	use std::fs;
 	use std::path::PathBuf;
 
+	use foch::game::eu4::content::ScriptFileKind;
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 	use foch::merge::kernel::{
 		ChildCardinality, NormalizedTree, RevisionDelta, RevisionId, TreeMatcher, TreeNode,
 	};
-	use foch_language::analyzer::content_family::CwtType;
-	use foch_language::analyzer::parser::parse_clausewitz_content;
 
 	use super::*;
 	use crate::merge::model::{
@@ -491,7 +491,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path,
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),

@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use foch_language::analyzer::content_family::MergeKeySource;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, is_decision_container_key};
+use foch::game::eu4::content::MergeKeySource;
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
+use foch::game::eu4::script::{ParsedScriptFile, is_decision_container_key};
 
 /// A path into the Clausewitz AST: sequence of keys from root to target node.
 pub type AstPath = Vec<String>;
@@ -1796,8 +1796,8 @@ fn diff_repeated_key(
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::content_family::CwtType;
-	use foch_language::analyzer::parser::{AstFile, ScalarValue, Span, SpanRange};
+	use foch::game::eu4::content::ScriptFileKind;
+	use foch::game::eu4::script::parser::{AstFile, ScalarValue, Span, SpanRange};
 	use std::path::PathBuf;
 
 	fn dummy_span() -> SpanRange {
@@ -1863,7 +1863,7 @@ mod tests {
 			path: PathBuf::from("test.txt"),
 			relative_path: PathBuf::from("test.txt"),
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			source: String::new(),
 			ast: AstFile {

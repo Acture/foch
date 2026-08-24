@@ -7,9 +7,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use foch_language::analyzer::content_family::MergeKeySource;
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::{ParsedScriptFile, is_decision_container_key};
+use foch::game::eu4::content::MergeKeySource;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
+use foch::game::eu4::script::{ParsedScriptFile, is_decision_container_key};
 
 use super::patch::{ClausewitzPatch, ast_values_semantically_equal, diff_ast, fold_renames};
 #[cfg(test)]
@@ -631,7 +631,7 @@ fn set_stmt_value(stmt: &mut AstStatement, new_value: AstValue) {
 fn replace_block_items(
 	stmt: &AstStatement,
 	new_items: Vec<AstStatement>,
-	block_span: foch_language::analyzer::parser::SpanRange,
+	block_span: foch::game::eu4::script::parser::SpanRange,
 ) -> AstStatement {
 	match stmt {
 		AstStatement::Assignment {
@@ -652,8 +652,8 @@ fn replace_block_items(
 	}
 }
 
-fn dummy_span() -> foch_language::analyzer::parser::SpanRange {
-	use foch_language::analyzer::parser::{Span, SpanRange};
+fn dummy_span() -> foch::game::eu4::script::parser::SpanRange {
+	use foch::game::eu4::script::parser::{Span, SpanRange};
 	SpanRange {
 		start: Span {
 			line: 0,
@@ -676,8 +676,8 @@ fn dummy_span() -> foch_language::analyzer::parser::SpanRange {
 mod tests {
 	use super::super::patch::ast_statements_semantically_equal;
 	use super::*;
-	use foch_language::analyzer::content_family::CwtType;
-	use foch_language::analyzer::parser::{AstFile, ScalarValue, Span, SpanRange};
+	use foch::game::eu4::content::ScriptFileKind;
+	use foch::game::eu4::script::parser::{AstFile, ScalarValue, Span, SpanRange};
 	use std::path::PathBuf;
 
 	fn test_span() -> SpanRange {
@@ -736,7 +736,7 @@ mod tests {
 			path: PathBuf::from("test.txt"),
 			relative_path: PathBuf::from("test.txt"),
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			source: String::new(),
 			ast: AstFile {

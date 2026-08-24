@@ -1,7 +1,7 @@
+use foch::game::eu4::content::MergeKeySource;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 use foch::model::StaleVanillaTargetDescriptor;
-use foch_language::analyzer::content_family::MergeKeySource;
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use super::super::patch::ClausewitzPatch;
 
@@ -196,8 +196,8 @@ fn block_items(stmt: &AstStatement) -> Option<&[AstStatement]> {
 mod tests {
 	use std::path::PathBuf;
 
-	use foch_language::analyzer::content_family::CwtType;
-	use foch_language::analyzer::parser::parse_clausewitz_content;
+	use foch::game::eu4::content::ScriptFileKind;
+	use foch::game::eu4::script::parser::parse_clausewitz_content;
 
 	use super::*;
 
@@ -211,7 +211,7 @@ mod tests {
 			path: path.clone(),
 			relative_path: path.clone(),
 			content_family: None,
-			file_kind: CwtType::new("other"),
+			file_kind: ScriptFileKind::new("other"),
 			module_name: "test".to_string(),
 			ast: parsed.ast,
 			source: source.to_string(),

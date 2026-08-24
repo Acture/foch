@@ -1,12 +1,12 @@
+use foch::game::eu4::content::{
+	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, NestedInsertionPolicy,
+	OneSidedRemovalPolicy, ScalarMergePolicy,
+};
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 use foch::merge::kernel::{
 	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
 	RevisionId, SemanticKey,
 };
-use foch_language::analyzer::content_family::{
-	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, NestedInsertionPolicy,
-	OneSidedRemovalPolicy, ScalarMergePolicy,
-};
-use foch_language::analyzer::parser::{AstStatement, AstValue};
 
 pub(crate) trait ClausewitzTreePolicy {
 	fn assignment_anchor(
@@ -106,7 +106,7 @@ impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
 		parent_assignment_key
 			.is_some_and(|parent| {
 				self.policies.divergent_block_policy_for_key(parent)
-					== foch_language::analyzer::content_family::DivergentBlockPolicy::Union
+					== foch::game::eu4::content::DivergentBlockPolicy::Union
 			})
 			.then(|| {
 				SemanticKey::parent_scoped(
@@ -501,11 +501,9 @@ fn descendant_scalar_field(value: &AstValue, field: &str) -> Option<String> {
 mod tests {
 	use std::path::PathBuf;
 
+	use foch::game::eu4::content::{MergeKeySource, MergePolicies, NestedInsertionPolicy};
+	use foch::game::eu4::script::parser::{AstStatement, AstValue, parse_clausewitz_content};
 	use foch::merge::kernel::{SemanticKeyLineage, SemanticKeyMatchMode, SemanticKeyScope};
-	use foch_language::analyzer::content_family::{
-		MergeKeySource, MergePolicies, NestedInsertionPolicy,
-	};
-	use foch_language::analyzer::parser::{AstStatement, AstValue, parse_clausewitz_content};
 
 	use super::{ClausewitzTreePolicy, ContentFamilyMergePolicy};
 

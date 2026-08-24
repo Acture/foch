@@ -1,10 +1,10 @@
 //! Codec for parsed Clausewitz documents embedded in base-data snapshots.
 
+use foch::game::eu4::content::ScriptFileKind;
+use foch::game::eu4::content::eu4;
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstFile, AstStatement};
 use foch::model::ParseIssue;
-use foch_language::analyzer::content_family::{CwtType, GameProfile};
-use foch_language::analyzer::eu4_profile::eu4_profile;
-use foch_language::analyzer::parser::{AstFile, AstStatement};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -12,7 +12,7 @@ struct StoredParsedScriptFile {
 	mod_id: String,
 	path: String,
 	relative_path: String,
-	file_kind: CwtType,
+	file_kind: ScriptFileKind,
 	module_name: String,
 	ast: StoredAstFile,
 	source: String,
@@ -80,7 +80,7 @@ impl StoredParsedScriptFile {
 
 	fn into_parsed_script_file(self) -> ParsedScriptFile {
 		let relative_path = PathBuf::from(self.relative_path);
-		let content_family = eu4_profile().classify_content_family(&relative_path);
+		let content_family = eu4().classify_content_family(&relative_path);
 		ParsedScriptFile {
 			mod_id: self.mod_id,
 			path: PathBuf::from(self.path),

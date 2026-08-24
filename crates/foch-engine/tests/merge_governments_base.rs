@@ -8,13 +8,13 @@ use std::fs;
 use std::path::Path;
 
 use foch::game::eu4::Eu4;
+use foch::game::eu4::script::parse_script_file;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 use foch::model::MergeReportStatus;
 use foch_engine::{
 	BaseDataSource, CheckRequest, Config, FileFilter, MergeAnalysisOptions, build_base_snapshot,
 	install_built_snapshot, run_merge_with_options,
 };
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::parse_script_file;
 use tempfile::TempDir;
 
 fn write_file(root: &Path, relative: &str, content: &str) {

@@ -2,10 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use foch::game::eu4::content::{MergeKeySource, MergePolicies};
+use foch::game::eu4::script::ParsedScriptFile;
+use foch::game::eu4::script::parser::{AstStatement, AstValue};
 use foch::model::MergeTraceContributor;
-use foch_language::analyzer::content_family::{MergeKeySource, MergePolicies};
-use foch_language::analyzer::parser::{AstStatement, AstValue};
-use foch_language::analyzer::semantic_index::ParsedScriptFile;
 
 use crate::merge::planning::dag::{FileDag, ModId};
 use crate::merge::planning::dag_input::{

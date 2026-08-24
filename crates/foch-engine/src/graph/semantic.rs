@@ -4,12 +4,11 @@ use crate::runtime::{
 	RuntimeState, build_runtime_state_from_workspace, nearest_enclosing_definition,
 };
 use crate::workspace::{ResolvedWorkspace, normalize_relative_path, resolve_workspace};
+use foch::game::eu4::content::eu4;
 use foch::model::{
 	AliasUsage, KeyUsage, ResourceReference, ScalarAssignment, ScopeKind, ScopeNode,
 	SymbolReference,
 };
-use foch_language::analyzer::content_family::GameProfile;
-use foch_language::analyzer::eu4_profile::eu4_profile;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
@@ -371,7 +370,7 @@ fn build_semantic_graph_artifact(
 	state: &RuntimeState,
 	family_id: &str,
 ) -> Result<SemanticGraphArtifact, Box<dyn std::error::Error>> {
-	let profile = eu4_profile();
+	let profile = eu4();
 	let Some(_descriptor) = profile.descriptor_for_root_family(family_id) else {
 		return Err(format!("unknown content family {family_id}").into());
 	};
@@ -675,7 +674,7 @@ fn collect_family_contributors(
 	workspace: &ResolvedWorkspace,
 	family_id: &str,
 ) -> Vec<FamilyContributor> {
-	let profile = eu4_profile();
+	let profile = eu4();
 	let mut contributors = Vec::new();
 	for (relative_path, items) in &workspace.file_inventory {
 		let Some(fid) = profile.family_id_for(Path::new(relative_path)) else {
@@ -791,7 +790,7 @@ fn build_block_nodes(
 			continue;
 		}
 		let relative_path = normalize_relative_path(&scope.path);
-		let profile = eu4_profile();
+		let profile = eu4();
 		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
 			continue;
 		};
@@ -979,7 +978,7 @@ fn attachment_node_for_scoped_item(
 	block_attachments: &HashMap<usize, String>,
 ) -> Option<String> {
 	let relative_path = normalize_relative_path(path);
-	let profile = eu4_profile();
+	let profile = eu4();
 	let fid = profile.family_id_for(Path::new(&relative_path))?;
 	if fid != family_id {
 		return None;
@@ -1009,7 +1008,7 @@ fn attach_resource_references(
 		else {
 			continue;
 		};
-		let profile = eu4_profile();
+		let profile = eu4();
 		let Some(fid) = profile.family_id_for(Path::new(&relative_path)) else {
 			continue;
 		};

@@ -1,6 +1,6 @@
 use crate::merge::MergeError;
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue};
 use foch::project::DEFAULT_EMIT_INDENT;
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum EmitOrdering {
@@ -256,7 +256,7 @@ fn scalar_sort_key(value: &ScalarValue) -> String {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use foch_language::analyzer::parser::{Span, SpanRange};
+	use foch::game::eu4::script::parser::{Span, SpanRange};
 
 	#[test]
 	fn default_emit_options_keep_tab_indentation() {

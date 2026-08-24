@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use foch_language::analyzer::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
+use foch::game::eu4::script::parser::{AstStatement, AstValue, ScalarValue, Span, SpanRange};
 
 use crate::emit::{EmitOptions, emit_clausewitz_statements_with_options};
 use crate::merge::conflict_view::{CandidateView, ConflictView};
