@@ -10,7 +10,8 @@ export const MERGE_DISPOSITIONS = [
 ] as const;
 
 export type MergeDisposition = (typeof MERGE_DISPOSITIONS)[number];
-export type ReadinessState = "ready" | "blocked";
+export type ReadinessState = "ready" | "ready_with_omissions" | "blocked";
+export type AnalysisInputMode = "complete" | "without_unavailable_mods";
 
 export interface ReadinessIssue {
 	id: string;
@@ -50,12 +51,29 @@ export interface DetectedPlaysetView {
 	mods: PlaysetModView[];
 }
 
+export interface OmittedPlaysetMod {
+	id: string;
+	name: string;
+	position: number;
+	reason: string;
+}
+
+export interface InputRecoveryOption {
+	kind: AnalysisInputMode;
+	sourceModCount: number;
+	omittedMods: OmittedPlaysetMod[];
+	omittedModCount: number;
+	includedModCount: number;
+}
+
 export interface InputInspection {
+	inspectionId: string;
 	readiness: ReadinessState;
 	game: InstalledGameView;
 	baseData: BaseDataView;
 	playset: DetectedPlaysetView | null;
 	issues: ReadinessIssue[];
+	recovery: InputRecoveryOption | null;
 }
 
 export type MergeAnalysisState =
@@ -87,6 +105,15 @@ export interface MergeUnitCounts {
 
 export interface StartMergeAnalysisResult {
 	analysisId: string;
+	inputScope: AnalysisInputScope;
+}
+
+export interface AnalysisInputScope {
+	mode: AnalysisInputMode;
+	sourceModCount: number;
+	omittedMods: OmittedPlaysetMod[];
+	omittedModCount: number;
+	includedModCount: number;
 }
 
 export interface MergeAnalysisSummary {
@@ -98,6 +125,7 @@ export interface MergeAnalysisSummary {
 	elapsedMs: number;
 	counts: MergeUnitCounts;
 	message: string | null;
+	inputScope: AnalysisInputScope;
 }
 
 export interface MergeUnitListItem {
@@ -147,7 +175,10 @@ export interface MergeUnitDetail {
 
 export interface DesktopClient {
 	inspectInput(): Promise<InputInspection>;
-	startMergeAnalysis(): Promise<StartMergeAnalysisResult>;
+	startMergeAnalysis(
+		inspectionId: string,
+		inputMode: AnalysisInputMode,
+	): Promise<StartMergeAnalysisResult>;
 	cancelMergeAnalysis(analysisId: string): Promise<void>;
 	getMergeAnalysisSummary(analysisId: string): Promise<MergeAnalysisSummary>;
 	listMergeUnits(request: MergeUnitListRequest): Promise<MergeUnitPage>;
@@ -162,8 +193,11 @@ export type InvokeCommand = <T>(
 export function createDesktopClient(invokeCommand: InvokeCommand): DesktopClient {
 	return {
 		inspectInput: (): Promise<InputInspection> => invokeCommand("inspect_input"),
-		startMergeAnalysis: (): Promise<StartMergeAnalysisResult> =>
-			invokeCommand("start_merge_analysis"),
+		startMergeAnalysis: (
+			inspectionId: string,
+			inputMode: AnalysisInputMode,
+		): Promise<StartMergeAnalysisResult> =>
+			invokeCommand("start_merge_analysis", { inspectionId, inputMode }),
 		cancelMergeAnalysis: (analysisId: string): Promise<void> =>
 			invokeCommand("cancel_merge_analysis", { analysisId }),
 		getMergeAnalysisSummary: (analysisId: string): Promise<MergeAnalysisSummary> =>

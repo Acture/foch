@@ -396,6 +396,11 @@ pub enum SteamWorkshopError {
 		workshop_id: SteamId,
 		content_path: PathBuf,
 	},
+	InspectItemContent {
+		workshop_id: SteamId,
+		content_path: PathBuf,
+		source: std::io::Error,
+	},
 	EscapedWorkshopItemContent {
 		workshop_id: SteamId,
 		content_root: PathBuf,
@@ -509,6 +514,15 @@ impl fmt::Display for SteamWorkshopError {
 				"Workshop item {workshop_id} has no content directory {}",
 				content_path.display()
 			),
+			Self::InspectItemContent {
+				workshop_id,
+				content_path,
+				source,
+			} => write!(
+				formatter,
+				"failed to inspect Workshop item {workshop_id} content {}: {source}",
+				content_path.display()
+			),
 			Self::EscapedWorkshopItemContent {
 				workshop_id,
 				content_root,
@@ -539,7 +553,9 @@ impl fmt::Display for SteamWorkshopError {
 impl std::error::Error for SteamWorkshopError {
 	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
 		match self {
-			Self::ReadManifest { source, .. } => Some(source),
+			Self::ReadManifest { source, .. } | Self::InspectItemContent { source, .. } => {
+				Some(source)
+			}
 			_ => None,
 		}
 	}
@@ -550,12 +566,8 @@ fn validate_workshop_item_root(item: &InstalledWorkshopItem) -> Result<(), Steam
 		.content_path
 		.parent()
 		.expect("Workshop item paths are constructed below a content root");
-	let metadata = fs::symlink_metadata(&item.content_path).map_err(|_| {
-		SteamWorkshopError::MissingItemContent {
-			workshop_id: item.workshop_id.clone(),
-			content_path: item.content_path.clone(),
-		}
-	})?;
+	let metadata = fs::symlink_metadata(&item.content_path)
+		.map_err(|source| item_content_io_error(item, source))?;
 	if metadata.file_type().is_symlink() {
 		return Err(SteamWorkshopError::SymlinkWorkshopPath {
 			path: item.content_path.clone(),
@@ -567,12 +579,8 @@ fn validate_workshop_item_root(item: &InstalledWorkshopItem) -> Result<(), Steam
 			content_path: item.content_path.clone(),
 		});
 	}
-	let canonical_item = fs::canonicalize(&item.content_path).map_err(|_| {
-		SteamWorkshopError::MissingItemContent {
-			workshop_id: item.workshop_id.clone(),
-			content_path: item.content_path.clone(),
-		}
-	})?;
+	let canonical_item = fs::canonicalize(&item.content_path)
+		.map_err(|source| item_content_io_error(item, source))?;
 	if canonical_item != item.content_path || canonical_item.parent() != Some(content_root) {
 		return Err(SteamWorkshopError::EscapedWorkshopItemContent {
 			workshop_id: item.workshop_id.clone(),
@@ -583,6 +591,24 @@ fn validate_workshop_item_root(item: &InstalledWorkshopItem) -> Result<(), Steam
 	// The stored path is byte-for-byte the canonical direct child validated
 	// above, so callers receive a canonical item root without changing the API.
 	Ok(())
+}
+
+fn item_content_io_error(
+	item: &InstalledWorkshopItem,
+	source: std::io::Error,
+) -> SteamWorkshopError {
+	if source.kind() == std::io::ErrorKind::NotFound {
+		SteamWorkshopError::MissingItemContent {
+			workshop_id: item.workshop_id.clone(),
+			content_path: item.content_path.clone(),
+		}
+	} else {
+		SteamWorkshopError::InspectItemContent {
+			workshop_id: item.workshop_id.clone(),
+			content_path: item.content_path.clone(),
+			source,
+		}
+	}
 }
 
 fn validate_workshop_library_pair(
@@ -1078,9 +1104,10 @@ fn normalize_candidate(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
 	use super::{
-		SteamId, SteamWorkshopCatalog, SteamWorkshopError, WorkshopInstallIdentity,
-		WorkshopManifestId, locate_steam_app_from_root, steam_game_install_path,
-		steam_library_paths, steam_workshop_mod_path,
+		InstalledWorkshopItem, SteamId, SteamWorkshopCatalog, SteamWorkshopError,
+		WorkshopInstallIdentity, WorkshopManifestId, item_content_io_error,
+		locate_steam_app_from_root, steam_game_install_path, steam_library_paths,
+		steam_workshop_mod_path,
 	};
 	use std::path::{Path, PathBuf};
 	use tempfile::TempDir;
@@ -1282,6 +1309,32 @@ mod tests {
 		assert!(matches!(
 			catalog.require_item(&"45".parse().unwrap()),
 			Err(SteamWorkshopError::MissingItem { .. })
+		));
+	}
+
+	#[test]
+	fn item_content_io_errors_only_classify_not_found_as_missing() {
+		let item = InstalledWorkshopItem {
+			app_id: 236_850,
+			workshop_id: "42".parse().unwrap(),
+			manifest: WorkshopManifestId::Id("123".parse().unwrap()),
+			size_bytes: 0,
+			time_updated: 0,
+			ugc_handle: None,
+			content_path: PathBuf::from("/workshop/content/236850/42"),
+			manifest_path: PathBuf::from("/workshop/appworkshop_236850.acf"),
+		};
+
+		assert!(matches!(
+			item_content_io_error(&item, std::io::Error::from(std::io::ErrorKind::NotFound),),
+			SteamWorkshopError::MissingItemContent { .. }
+		));
+		assert!(matches!(
+			item_content_io_error(
+				&item,
+				std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+			),
+			SteamWorkshopError::InspectItemContent { .. }
 		));
 	}
 

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import type {
+	AnalysisInputScope,
 	DesktopClient,
 	InputInspection,
 	MergeAnalysisState,
@@ -12,7 +13,31 @@ import type {
 	StartMergeAnalysisResult,
 } from "./api";
 
+const COMPLETE_INPUT_SCOPE: AnalysisInputScope = {
+	mode: "complete",
+	sourceModCount: 3,
+	omittedMods: [],
+	omittedModCount: 0,
+	includedModCount: 3,
+};
+
+const INCOMPLETE_INPUT_SCOPE: AnalysisInputScope = {
+	mode: "without_unavailable_mods",
+	sourceModCount: 3,
+	omittedMods: [
+		{
+			id: "mod-2",
+			name: "Trade Goods Expanded",
+			position: 2,
+			reason: "Workshop item 282001 is not installed",
+		},
+	],
+	omittedModCount: 1,
+	includedModCount: 2,
+};
+
 const READY_INSPECTION: InputInspection = {
+	inspectionId: "inspection-ready",
 	readiness: "ready",
 	game: {
 		name: "Europa Universalis IV",
@@ -65,15 +90,17 @@ const READY_INSPECTION: InputInspection = {
 				declaredDependencies: [],
 				descriptorPath:
 					"C:\\Users\\Player\\Documents\\Paradox Interactive\\Europa Universalis IV\\mod\\local.mod",
-				sourceError: "descriptor.mod could not be read",
+				sourceError: null,
 			},
 		],
 	},
 	issues: [],
+	recovery: null,
 };
 
 const BLOCKED_INSPECTION: InputInspection = {
 	...READY_INSPECTION,
+	inspectionId: "inspection-blocked",
 	readiness: "blocked",
 	baseData: {
 		state: "missing",
@@ -88,6 +115,42 @@ const BLOCKED_INSPECTION: InputInspection = {
 			action: "Run foch data build eu4",
 		},
 	],
+};
+
+const RECOVERABLE_INSPECTION: InputInspection = {
+	...READY_INSPECTION,
+	inspectionId: "inspection-recoverable",
+	readiness: "ready_with_omissions",
+	playset: {
+		...READY_INSPECTION.playset!,
+		mods: READY_INSPECTION.playset!.mods.map((mod) =>
+			mod.id === "mod-2"
+				? {
+						...mod,
+						workshopManifestId: null,
+						version: null,
+						declaredDependencies: [],
+						descriptorPath: null,
+						sourceError: "Workshop item 282001 is not installed",
+					}
+				: mod,
+		),
+	},
+	issues: [
+		{
+			id: "workshop-mod-2",
+			title: "Workshop mod 282001 is not ready",
+			detail: "Workshop item 282001 is not installed",
+			action: "Repair or redownload this Workshop item in Steam.",
+		},
+	],
+	recovery: {
+		kind: "without_unavailable_mods",
+		sourceModCount: INCOMPLETE_INPUT_SCOPE.sourceModCount,
+		omittedMods: INCOMPLETE_INPUT_SCOPE.omittedMods,
+		omittedModCount: INCOMPLETE_INPUT_SCOPE.omittedModCount,
+		includedModCount: INCOMPLETE_INPUT_SCOPE.includedModCount,
+	},
 };
 
 const UNIT_PAGE: MergeUnitPage = {
@@ -168,7 +231,10 @@ const UNIT_DETAIL: MergeUnitDetail = {
 	notes: ["Base snapshot used as the semantic ancestor."],
 };
 
-function analysisSummary(state: MergeAnalysisState): MergeAnalysisSummary {
+function analysisSummary(
+	state: MergeAnalysisState,
+	inputScope: AnalysisInputScope = COMPLETE_INPUT_SCOPE,
+): MergeAnalysisSummary {
 	const active: boolean = state === "queued" || state === "running";
 	return {
 		analysisId: "analysis-1",
@@ -190,13 +256,17 @@ function analysisSummary(state: MergeAnalysisState): MergeAnalysisSummary {
 			state === "ready_with_deferrals"
 				? "Three units require review before export."
 				: null,
+		inputScope,
 	};
 }
 
 function createClient(overrides: Partial<DesktopClient> = {}): DesktopClient {
 	return {
 		inspectInput: vi.fn(async (): Promise<InputInspection> => READY_INSPECTION),
-		startMergeAnalysis: vi.fn(async () => ({ analysisId: "analysis-1" })),
+		startMergeAnalysis: vi.fn(async (): Promise<StartMergeAnalysisResult> => ({
+			analysisId: "analysis-1",
+			inputScope: COMPLETE_INPUT_SCOPE,
+		})),
 		cancelMergeAnalysis: vi.fn(async (): Promise<void> => undefined),
 		getMergeAnalysisSummary: vi.fn(async (): Promise<MergeAnalysisSummary> =>
 			analysisSummary("ready_with_deferrals"),
@@ -244,9 +314,6 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		).toBeInTheDocument();
 		expect(screen.getByText("Depends on: Europa Expanded")).toBeInTheDocument();
 		expect(
-			screen.getByText("Source error: descriptor.mod could not be read"),
-		).toBeInTheDocument();
-		expect(
 			screen.getByRole("button", { name: /Analyze current playset/i }),
 		).toBeEnabled();
 	});
@@ -269,12 +336,99 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(
 			screen.queryByRole("button", { name: /Analyze current playset/i }),
 		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Analyze available mods/i }),
+		).not.toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: "Check again" }));
 		expect(
 			await screen.findByRole("button", { name: /Analyze current playset/i }),
 		).toBeEnabled();
 		expect(inspectInput).toHaveBeenCalledTimes(2);
+	});
+
+	it("shows unavailable mods and retries without changing the Launcher playset", async (): Promise<void> => {
+		const inspectInput = vi
+			.fn<DesktopClient["inspectInput"]>()
+			.mockResolvedValueOnce(RECOVERABLE_INSPECTION)
+			.mockResolvedValueOnce(READY_INSPECTION);
+		const startMergeAnalysis = vi.fn<DesktopClient["startMergeAnalysis"]>();
+		const client = createClient({ inspectInput, startMergeAnalysis });
+
+		render(<App client={client} />);
+
+		expect(
+			await screen.findByRole("heading", { name: "1 Workshop mod unavailable" }),
+		).toBeInTheDocument();
+		expect(screen.getByText("Available mods ready")).toBeInTheDocument();
+		expect(
+			screen.getByText("Unavailable", { selector: ".mod-state" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Unavailable: Workshop item 282001 is not installed"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(/The Launcher playset and every mod file stay untouched/),
+		).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+
+		expect(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		).toBeEnabled();
+		expect(inspectInput).toHaveBeenCalledTimes(2);
+		expect(startMergeAnalysis).not.toHaveBeenCalled();
+	});
+
+	it("starts the frozen available-mod scope and labels every analysis state incomplete", async (): Promise<void> => {
+		const pendingSummary = deferred<MergeAnalysisSummary>();
+		const startMergeAnalysis = vi.fn<DesktopClient["startMergeAnalysis"]>(
+			async (): Promise<StartMergeAnalysisResult> => ({
+				analysisId: "analysis-incomplete",
+				inputScope: INCOMPLETE_INPUT_SCOPE,
+			}),
+		);
+		const client = createClient({
+			inspectInput: vi.fn(async (): Promise<InputInspection> => RECOVERABLE_INSPECTION),
+			startMergeAnalysis,
+			getMergeAnalysisSummary: vi.fn(() => pendingSummary.promise),
+		});
+		render(<App client={client} pollIntervalMs={10_000} />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze available mods/i }),
+		);
+
+		expect(await screen.findByRole("heading", { name: "Queued" })).toBeInTheDocument();
+		expect(startMergeAnalysis).toHaveBeenCalledWith(
+			"inspection-recoverable",
+			"without_unavailable_mods",
+		);
+		expect(
+			screen.getByText("Incomplete input", { selector: ".section-kicker" }),
+		).toBeInTheDocument();
+		expect(screen.getByText("2 of 3 playset mods analyzed")).toBeInTheDocument();
+		expect(
+			screen.getByText(/the Launcher playset remains unchanged/i),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { name: "Building the available-mod review" }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: "Building the complete review" }),
+		).not.toBeInTheDocument();
+
+		await act(async (): Promise<void> => {
+			pendingSummary.resolve(
+				analysisSummary("ready_with_deferrals", INCOMPLETE_INPUT_SCOPE),
+			);
+		});
+
+		expect(
+			await screen.findByRole("heading", { name: "Incomplete review required" }),
+		).toBeInTheDocument();
+		expect(screen.getByText("2 of 3 playset mods analyzed")).toBeInTheDocument();
+		expect(await screen.findByText("6 results")).toBeInTheDocument();
 	});
 
 	it("runs read-only analysis and exposes every merge-unit outcome with focused detail", async (): Promise<void> => {
@@ -303,6 +457,10 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(
 			await screen.findByText("Both contributions can be preserved without a choice."),
 		).toBeInTheDocument();
+		expect(client.startMergeAnalysis).toHaveBeenCalledWith(
+			"inspection-ready",
+			"complete",
+		);
 		expect(
 			screen.getByText("Base snapshot used as the semantic ancestor."),
 		).toBeInTheDocument();
@@ -348,6 +506,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		const startMergeAnalysis = vi.fn<DesktopClient["startMergeAnalysis"]>(
 			async (): Promise<StartMergeAnalysisResult> => ({
 				analysisId: "analysis-queued",
+				inputScope: COMPLETE_INPUT_SCOPE,
 			}),
 		);
 		const client = createClient({

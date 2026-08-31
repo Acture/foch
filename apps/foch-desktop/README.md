@@ -23,6 +23,11 @@ Only one analysis may be queued or running. Terminal analyses are bounded, and u
 lists are filtered and paginated before crossing IPC. `AnalyzedMerge`, raw reports,
 syntax trees, and generated artifact bytes stay in Rust.
 
+If individual Workshop items are absent, inspection offers an explicit
+`without_unavailable_mods` analysis instead of blocking the remaining installed mods.
+The omitted-input scope stays attached to the analysis and review. This recovery is
+in-memory only: Foch does not edit `dlc_load.json`, Launcher descriptors, or Steam data.
+
 There is no desktop commit/export command in this checkpoint. `MergeSession` design is
 deferred.
 
