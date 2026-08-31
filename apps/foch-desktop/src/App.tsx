@@ -21,11 +21,13 @@ import {
 	type MergeUnitDetail,
 	type MergeUnitListItem,
 	type MergeUnitPage,
+	hasMergeReview,
 	isAnalysisActive,
 	tauriDesktopClient,
 } from "./api";
 
 const PAGE_SIZE = 12;
+const MAX_QUERY_CHARS: number = 256;
 
 const DISPOSITION_LABELS: Record<MergeDisposition, string> = {
 	safe: "Safe merge",
@@ -37,22 +39,22 @@ const DISPOSITION_LABELS: Record<MergeDisposition, string> = {
 };
 
 const STAGE_LABELS: Record<MergeAnalysisStage, string> = {
-	inventory: "Inventory",
-	resolve_input: "Resolve input",
-	semantic_merge: "Analyze merge units",
-	validate_output: "Validate output",
-	freeze_artifacts: "Freeze analyzed bytes",
+	inventory: "Scan load order",
+	resolve_input: "Read playset",
+	semantic_merge: "Compare merge units",
+	validate_output: "Check results",
+	freeze_artifacts: "Prepare review",
 	complete: "Complete",
 };
 
 const ANALYSIS_STATE_LABELS: Record<MergeAnalysisState, string> = {
 	queued: "Queued",
 	running: "Analyzing",
-	ready: "Ready",
+	ready: "Review ready",
 	ready_with_deferrals: "Review required",
-	blocked: "Blocked",
+	blocked: "Review blocked",
 	cancelled: "Cancelled",
-	failed: "Failed",
+	failed: "Analysis failed",
 };
 
 interface AppProps {
@@ -75,6 +77,27 @@ const EMPTY_UNIT_PAGE: MergeUnitPage = {
 
 function initialAsyncValue<T>(): AsyncValue<T> {
 	return { value: null, loading: true, error: null };
+}
+
+function queuedAnalysisSummary(analysisId: string): MergeAnalysisSummary {
+	return {
+		analysisId,
+		state: "queued",
+		stage: "inventory",
+		completedUnits: 0,
+		totalUnits: 0,
+		elapsedMs: 0,
+		counts: {
+			total: 0,
+			safe: 0,
+			copy: 0,
+			needsUserChoice: 0,
+			unsupportedInput: 0,
+			engineFailure: 0,
+			deferred: 0,
+		},
+		message: null,
+	};
 }
 
 function errorMessage(error: unknown): string {
@@ -156,7 +179,9 @@ function ReadinessRail({ inspection }: { inspection: InputInspection }): JSX.Ele
 				<div className="section-heading-row">
 					<div>
 						<p className="section-kicker">Current playset</p>
-						<h2>{inspection.playset?.name ?? "Not detected"}</h2>
+						<h2 title={inspection.playset?.name ?? undefined}>
+							{inspection.playset?.name ?? "Not detected"}
+						</h2>
 					</div>
 					<span className="compact-count">{enabledMods.length}</span>
 				</div>
@@ -171,8 +196,13 @@ function ReadinessRail({ inspection }: { inspection: InputInspection }): JSX.Ele
 									{mod.position.toString().padStart(2, "0")}
 								</span>
 								<span className="mod-copy">
-									<span className="mod-name">{mod.name}</span>
-									<span className="mod-identity">
+									<span className="mod-name" title={mod.name}>
+										{mod.name}
+									</span>
+									<span
+										className="mod-identity"
+										title={mod.descriptorPath ?? undefined}
+									>
 										{mod.workshopId === null
 											? "Local mod"
 											: `Workshop ${mod.workshopId}`}
@@ -181,7 +211,10 @@ function ReadinessRail({ inspection }: { inspection: InputInspection }): JSX.Ele
 											` · manifest ${mod.workshopManifestId}`}
 									</span>
 									{mod.declaredDependencies.length > 0 && (
-										<span className="mod-dependencies">
+										<span
+											className="mod-dependencies"
+											title={mod.declaredDependencies.join(", ")}
+										>
 											Depends on: {mod.declaredDependencies.join(", ")}
 										</span>
 									)}
@@ -307,6 +340,48 @@ function AnalysisHeader({
 	);
 }
 
+function ReviewUnavailablePanel({
+	state,
+	onReset,
+}: {
+	state: MergeAnalysisState;
+	onReset: () => void;
+}): JSX.Element {
+	const active: boolean = isAnalysisActive(state);
+	const copy: { title: string; detail: string } = active
+		? {
+				title: "Building the complete review",
+				detail:
+					"Results appear after every merge unit has reached a final outcome. No partial review is shown.",
+			}
+		: {
+				title: "No review was produced",
+				detail:
+					state === "cancelled"
+						? "The analysis stopped before it produced final outcomes. Check the current input before starting again."
+						: "The analysis ended before a review was available. Check the current input, then run it again.",
+			};
+
+	return (
+		<section className="review-unavailable" aria-live="polite">
+			<span
+				className={`review-state-mark ${active ? "review-state-active" : ""}`}
+				aria-hidden="true"
+			/>
+			<div>
+				<p className="section-kicker">Merge unit review</p>
+				<h2>{copy.title}</h2>
+				<p>{copy.detail}</p>
+				{!active && (
+					<button className="primary-action" type="button" onClick={onReset}>
+						Check input again
+					</button>
+				)}
+			</div>
+		</section>
+	);
+}
+
 function UnitRow({
 	unit,
 	selected,
@@ -322,6 +397,7 @@ function UnitRow({
 			type="button"
 			onClick={(): void => onSelect(unit.id)}
 			aria-pressed={selected}
+			title={unit.path}
 		>
 			<span className="unit-path">{unit.path}</span>
 			<span className="unit-meta">
@@ -485,7 +561,11 @@ export default function App({
 					}, pollIntervalMs);
 				}
 			} catch (error: unknown) {
-				if (!disposed) setAnalysisError(errorMessage(error));
+				if (disposed) return;
+				setAnalysisError(errorMessage(error));
+				timer = setTimeout((): void => {
+					void refresh();
+				}, pollIntervalMs);
 			}
 		};
 		void refresh();
@@ -495,9 +575,10 @@ export default function App({
 		};
 	}, [analysisId, client, pollIntervalMs]);
 
+	const reviewAvailable: boolean = summary !== null && hasMergeReview(summary.state);
+
 	useEffect((): (() => void) | undefined => {
-		if (analysisId === null || summary === null || summary.state === "queued")
-			return undefined;
+		if (analysisId === null || !reviewAvailable) return undefined;
 		let disposed = false;
 		queueMicrotask((): void => {
 			if (disposed) return;
@@ -518,6 +599,7 @@ export default function App({
 			.then((value): void => {
 				if (disposed) return;
 				setUnitPage({ value, loading: false, error: null });
+				if (value.page !== page) setPage(value.page);
 				setSelectedUnitId((current): string | null => {
 					if (
 						current !== null &&
@@ -538,11 +620,11 @@ export default function App({
 		return (): void => {
 			disposed = true;
 		};
-	}, [analysisId, client, disposition, page, searchQuery, summary]);
+	}, [analysisId, client, disposition, page, reviewAvailable, searchQuery]);
 
 	useEffect((): (() => void) => {
 		let disposed = false;
-		if (analysisId === null || selectedUnitId === null) {
+		if (analysisId === null || selectedUnitId === null || !reviewAvailable) {
 			queueMicrotask((): void => {
 				if (!disposed) setUnitDetail({ value: null, loading: false, error: null });
 			});
@@ -565,7 +647,7 @@ export default function App({
 		return (): void => {
 			disposed = true;
 		};
-	}, [analysisId, client, selectedUnitId]);
+	}, [analysisId, client, reviewAvailable, selectedUnitId]);
 
 	const startAnalysis = async (): Promise<void> => {
 		setStarting(true);
@@ -575,7 +657,9 @@ export default function App({
 		setUnitDetail({ value: null, loading: false, error: null });
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
 		try {
-			setAnalysisId((await client.startMergeAnalysis()).analysisId);
+			const nextAnalysisId: string = (await client.startMergeAnalysis()).analysisId;
+			setAnalysisId(nextAnalysisId);
+			setSummary(queuedAnalysisSummary(nextAnalysisId));
 		} catch (error: unknown) {
 			setAnalysisError(errorMessage(error));
 		} finally {
@@ -597,6 +681,20 @@ export default function App({
 		}
 	};
 
+	const resetAnalysis = async (): Promise<void> => {
+		setAnalysisId(null);
+		setSummary(null);
+		setAnalysisError(null);
+		setSelectedUnitId(null);
+		setUnitDetail({ value: null, loading: false, error: null });
+		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
+		setSearchDraft("");
+		setSearchQuery("");
+		setDisposition(null);
+		setPage(1);
+		await inspectInput();
+	};
+
 	const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
 		event.preventDefault();
 		setPage(1);
@@ -604,10 +702,18 @@ export default function App({
 	};
 
 	const pageValue = unitPage.value ?? EMPTY_UNIT_PAGE;
-	const pageCount = Math.max(1, Math.ceil(pageValue.total / PAGE_SIZE));
+	const pageCount: number = Math.max(
+		1,
+		Math.ceil(pageValue.total / Math.max(1, pageValue.pageSize)),
+	);
+	const displayedPage: number = Math.min(Math.max(1, pageValue.page), pageCount);
 	const playsetName = inspection.value?.playset?.name ?? "Current EU4 playset";
-	const canAnalyze = inspection.value?.readiness === "ready" && !starting;
-	const showBrowser = analysisId !== null && summary !== null;
+	const canAnalyze =
+		inspection.value?.readiness === "ready" &&
+		!inspection.loading &&
+		!starting &&
+		analysisId === null;
+	const showBrowser = analysisId !== null && reviewAvailable;
 	const dispositionOptions = useMemo(
 		(): Array<{ value: MergeDisposition; label: string }> =>
 			MERGE_DISPOSITIONS.map((value): { value: MergeDisposition; label: string } => ({
@@ -633,7 +739,7 @@ export default function App({
 					<span>Detected input</span>
 					<strong>{playsetName}</strong>
 				</div>
-				<span className="read-only-badge">Read-only checkpoint</span>
+				<span className="read-only-badge">Read-only analysis</span>
 			</header>
 
 			{inspection.loading && inspection.value === null ? (
@@ -685,8 +791,8 @@ export default function App({
 									<p className="section-kicker">Current load order</p>
 									<h2>{inspection.value.playset?.name ?? "EU4 playset"}</h2>
 									<p>
-										Analyze every merge unit before any output is written. Foch keeps
-										the analyzed result opaque and read-only in this checkpoint.
+										Foch reads the detected load order and prepares a complete review.
+										It does not change Launcher settings, game files, or mod files.
 									</p>
 								</div>
 								<button
@@ -695,7 +801,11 @@ export default function App({
 									disabled={!canAnalyze}
 								>
 									<span>
-										{starting ? "Starting analysis…" : "Analyze current playset"}
+										{inspection.loading
+											? "Checking input…"
+											: starting
+												? "Starting analysis…"
+												: "Analyze current playset"}
 									</span>
 									<small>No mod files will be changed</small>
 								</button>
@@ -710,13 +820,23 @@ export default function App({
 									cancelling={cancelling}
 									onCancel={(): void => void cancelAnalysis()}
 								/>
-								<DispositionRibbon summary={summary} />
 								{analysisError !== null && (
 									<p className="inline-error" role="alert">
 										Analysis update failed: {analysisError}
 									</p>
 								)}
-								<section className="unit-browser" aria-labelledby="unit-browser-title">
+								{reviewAvailable && <DispositionRibbon summary={summary} />}
+								{!reviewAvailable && (
+									<ReviewUnavailablePanel
+										state={summary.state}
+										onReset={(): void => void resetAnalysis()}
+									/>
+								)}
+								<section
+									className="unit-browser"
+									aria-labelledby="unit-browser-title"
+									hidden={!reviewAvailable}
+								>
 									<div className="unit-browser-heading">
 										<div>
 											<p className="section-kicker">Merge units</p>
@@ -730,6 +850,7 @@ export default function App({
 												<input
 													type="search"
 													placeholder="Search path or family"
+													maxLength={MAX_QUERY_CHARS}
 													value={searchDraft}
 													onChange={(event): void => setSearchDraft(event.target.value)}
 												/>
@@ -786,22 +907,20 @@ export default function App({
 									<footer className="pagination" aria-label="Merge unit pages">
 										<button
 											type="button"
-											onClick={(): void =>
-												setPage((current): number => Math.max(1, current - 1))
-											}
-											disabled={page <= 1}
+											onClick={(): void => setPage(Math.max(1, displayedPage - 1))}
+											disabled={unitPage.loading || displayedPage <= 1}
 										>
 											Previous
 										</button>
 										<span>
-											Page {page} of {pageCount}
+											Page {displayedPage} of {pageCount}
 										</span>
 										<button
 											type="button"
 											onClick={(): void =>
-												setPage((current): number => Math.min(pageCount, current + 1))
+												setPage(Math.min(pageCount, displayedPage + 1))
 											}
-											disabled={page >= pageCount}
+											disabled={unitPage.loading || displayedPage >= pageCount}
 										>
 											Next
 										</button>
