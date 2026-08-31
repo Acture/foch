@@ -431,8 +431,11 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(await screen.findByText("6 results")).toBeInTheDocument();
 	});
 
-	it("runs read-only analysis and exposes every merge-unit outcome with focused detail", async (): Promise<void> => {
-		const client = createClient();
+	it("lands on the review summary before opening focused unit detail", async (): Promise<void> => {
+		const getMergeUnit = vi.fn<DesktopClient["getMergeUnit"]>(
+			async (): Promise<MergeUnitDetail> => UNIT_DETAIL,
+		);
+		const client = createClient({ getMergeUnit });
 		render(<App client={client} pollIntervalMs={10_000} />);
 
 		fireEvent.click(
@@ -454,13 +457,23 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		]) {
 			expect(screen.getAllByText(label).length).toBeGreaterThan(0);
 		}
-		expect(
-			await screen.findByText("Both contributions can be preserved without a choice."),
-		).toBeInTheDocument();
 		expect(client.startMergeAnalysis).toHaveBeenCalledWith(
 			"inspection-ready",
 			"complete",
 		);
+		expect(
+			screen.getByRole("heading", { name: "Select a merge unit" }),
+		).toBeInTheDocument();
+		expect(await screen.findByText("6 results")).toBeInTheDocument();
+		expect(getMergeUnit).not.toHaveBeenCalled();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /common\/countries\/France\.txt/i }),
+		);
+		expect(
+			await screen.findByText("Both contributions can be preserved without a choice."),
+		).toBeInTheDocument();
+		expect(getMergeUnit).toHaveBeenCalledWith("analysis-1", "safe-unit");
 		expect(
 			screen.getByText("Base snapshot used as the semantic ancestor."),
 		).toBeInTheDocument();
@@ -605,6 +618,13 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			expect(listMergeUnits).toHaveBeenLastCalledWith(
 				expect.objectContaining({ page: 2, pageSize: 12 }),
 			);
+		});
+		expect(getMergeUnit).not.toHaveBeenCalled();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /missions\/french_missions\.txt/i }),
+		);
+		await waitFor((): void => {
 			expect(getMergeUnit).toHaveBeenCalledWith("analysis-1", "choice-unit");
 		});
 	});
