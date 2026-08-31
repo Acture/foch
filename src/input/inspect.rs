@@ -8,7 +8,9 @@ use crate::game::eu4::base::snapshot::{
 use crate::input::config::{Config, get_config_dir_path};
 use crate::input::request::InputRequest;
 use crate::playset::descriptor::load_descriptor;
-use crate::playset::steam::{SteamId, SteamWorkshopCatalog, find_steam_root_path};
+use crate::playset::steam::{
+	SteamId, SteamWorkshopCatalog, SteamWorkshopError, find_steam_root_path,
+};
 use crate::playset::{Playset, default_dlc_load_path};
 
 const CURRENT_PLAYSET_NAME: &str = "Current EU4 playset";
@@ -18,6 +20,7 @@ const GAME_NAME: &str = "Europa Universalis IV";
 #[serde(rename_all = "snake_case")]
 pub enum InputReadiness {
 	Ready,
+	ReadyWithOmissions,
 	Blocked,
 }
 
@@ -78,6 +81,36 @@ pub struct InputReadinessIssue {
 	pub action: Option<String>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OmittedPlaysetMod {
+	pub id: String,
+	pub name: String,
+	pub position: usize,
+	pub reason: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableInputRecovery {
+	pub source_mod_count: usize,
+	pub omitted_mods: Vec<OmittedPlaysetMod>,
+	pub included_mod_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InputPreparationMode {
+	Complete,
+	AvailableOnly,
+}
+
+#[derive(Clone, Debug)]
+pub struct PreparedAnalysisInput {
+	pub request: InputRequest,
+	pub source_mod_count: usize,
+	pub recovery: Option<AvailableInputRecovery>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CurrentEu4Input {
@@ -86,6 +119,7 @@ pub struct CurrentEu4Input {
 	pub base_data: BaseDataInspection,
 	pub playset: Option<DetectedPlayset>,
 	pub issues: Vec<InputReadinessIssue>,
+	pub recovery: Option<AvailableInputRecovery>,
 	#[serde(skip)]
 	prepared: Option<PreparedCurrentEu4Input>,
 }
@@ -96,6 +130,8 @@ struct PreparedCurrentEu4Input {
 	game_root: PathBuf,
 	playset_path: PathBuf,
 	playset: Playset,
+	source_mod_count: usize,
+	recovery: Option<AvailableInputRecovery>,
 	base_snapshot_identity: InstalledBaseSnapshotIdentity,
 }
 
@@ -122,15 +158,30 @@ impl CurrentEu4InputEnvironment {
 
 impl CurrentEu4Input {
 	pub fn into_request(self) -> Option<InputRequest> {
+		self.prepare(InputPreparationMode::Complete)
+			.map(|prepared| prepared.request)
+	}
+
+	pub fn prepare(self, mode: InputPreparationMode) -> Option<PreparedAnalysisInput> {
 		let prepared = self.prepared?;
+		let prepared_mode = if prepared.recovery.is_some() {
+			InputPreparationMode::AvailableOnly
+		} else {
+			InputPreparationMode::Complete
+		};
+		if mode != prepared_mode {
+			return None;
+		}
 		let identity_label = prepared.base_snapshot_identity.as_label();
-		Some(
-			InputRequest::from_playset_path(prepared.playset_path, prepared.config)
+		Some(PreparedAnalysisInput {
+			request: InputRequest::from_playset_path(prepared.playset_path, prepared.config)
 				.with_expected_base_snapshot_identity(identity_label)
 				.with_base_snapshot_lease(Some(prepared.base_snapshot_identity))
 				.with_expected_game_root(prepared.game_root)
 				.with_preloaded_playset(prepared.playset),
-		)
+			source_mod_count: prepared.source_mod_count,
+			recovery: prepared.recovery,
+		})
 	}
 }
 
@@ -156,7 +207,10 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 			.game_path
 			.insert(Eu4::KEY.to_string(), game_root.clone());
 	}
-	let (playset_view, prepared_playset) = inspect_playset(&config, &mut issues);
+	let (playset_view, prepared_playset, playset_recovery) = inspect_playset(&config, &mut issues);
+	let source_mod_count = playset_view
+		.as_ref()
+		.map_or(0, |playset| playset.mods.len());
 	let (base_data, base_snapshot_identity) =
 		inspect_base_data(game_version.as_deref(), &mut issues);
 
@@ -172,17 +226,22 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 				game_root: game_root.clone(),
 				playset_path,
 				playset,
+				source_mod_count,
+				recovery: playset_recovery.clone(),
 				base_snapshot_identity,
 			})
 		}
 		_ => None,
 	};
+	let recovery = prepared
+		.as_ref()
+		.and_then(|prepared| prepared.recovery.clone());
 
 	CurrentEu4Input {
-		readiness: if prepared.is_some() {
-			InputReadiness::Ready
-		} else {
-			InputReadiness::Blocked
+		readiness: match (prepared.is_some(), recovery.is_some()) {
+			(false, _) => InputReadiness::Blocked,
+			(true, false) => InputReadiness::Ready,
+			(true, true) => InputReadiness::ReadyWithOmissions,
 		},
 		game: InstalledGameInspection {
 			name: GAME_NAME.to_string(),
@@ -192,6 +251,7 @@ pub(crate) fn inspect_current_eu4_input_with_environment(
 		base_data,
 		playset: playset_view,
 		issues,
+		recovery,
 		prepared,
 	}
 }
@@ -251,7 +311,11 @@ fn inspect_game(
 fn inspect_playset(
 	config: &Config,
 	issues: &mut Vec<InputReadinessIssue>,
-) -> (Option<DetectedPlayset>, Option<(PathBuf, Playset)>) {
+) -> (
+	Option<DetectedPlayset>,
+	Option<(PathBuf, Playset)>,
+	Option<AvailableInputRecovery>,
+) {
 	let candidates = paradox_data_candidates(config.paradox_data_path.as_deref());
 	let playset_path = candidates
 		.iter()
@@ -265,7 +329,7 @@ fn inspect_playset(
 			"Foch could not determine where the current EU4 dlc_load.json lives.",
 			Some("Select the EU4 user data directory."),
 		));
-		return (None, None);
+		return (None, None, None);
 	};
 	let mut playset = match Playset::from_dlc_load_with_required_descriptors(&playset_path) {
 		Ok(playset) => playset,
@@ -276,7 +340,7 @@ fn inspect_playset(
 				error.to_string(),
 				Some("Start the EU4 Launcher and select a playset, then retry."),
 			));
-			return (None, None);
+			return (None, None, None);
 		}
 	};
 	playset.name = CURRENT_PLAYSET_NAME.to_string();
@@ -298,7 +362,9 @@ fn inspect_playset(
 		));
 	}
 
-	let mut all_mods_ready = catalog.is_ok();
+	let catalog_ready = catalog.is_ok();
+	let mut has_blocking_mod_error = false;
+	let mut omittable_mods = Vec::with_capacity(playset.mods.len());
 	let mut detected_mods = Vec::with_capacity(playset.mods.len());
 	for (index, entry) in playset.mods.iter_mut().enumerate() {
 		let workshop_id = entry.steam_id.clone();
@@ -321,22 +387,36 @@ fn inspect_playset(
 		};
 		let enrichment = workshop_id
 			.as_deref()
-			.ok_or_else(|| "playset entry has no Workshop id".to_string())
-			.and_then(|id| id.parse::<SteamId>())
+			.ok_or_else(|| ("playset entry has no Workshop id".to_string(), false))
 			.and_then(|id| {
-				let catalog = catalog.as_ref().map_err(Clone::clone)?;
-				let item = catalog
-					.require_item(&id)
-					.map_err(|error| error.to_string())?;
-				let identity = item.identity().map_err(|error| error.to_string())?;
+				id.parse::<SteamId>()
+					.map_err(|error| (error.to_string(), false))
+			})
+			.and_then(|id| {
+				let catalog = catalog.as_ref().map_err(|error| (error.clone(), false))?;
+				let item = catalog.require_item(&id).map_err(|error| {
+					let omittable = matches!(
+						&error,
+						SteamWorkshopError::MissingItem { .. }
+							| SteamWorkshopError::UnavailableManifest { .. }
+							| SteamWorkshopError::MissingItemContent { .. }
+					);
+					(error.to_string(), omittable)
+				})?;
+				let identity = item
+					.identity()
+					.map_err(|error| (error.to_string(), false))?;
 				let descriptor_path = item.content_path.join("descriptor.mod");
 				detected.descriptor_path = Some(descriptor_path.clone());
-				let descriptor =
-					load_descriptor(&descriptor_path).map_err(|error| error.to_string())?;
+				let descriptor = load_descriptor(&descriptor_path)
+					.map_err(|error| (error.to_string(), false))?;
 				if descriptor.name.trim().is_empty() {
-					return Err(format!(
-						"Workshop descriptor {} has an empty name",
-						descriptor_path.display()
+					return Err((
+						format!(
+							"Workshop descriptor {} has an empty name",
+							descriptor_path.display()
+						),
+						false,
 					));
 				}
 				Ok((
@@ -348,6 +428,7 @@ fn inspect_playset(
 			});
 		match enrichment {
 			Ok((root_path, identity, descriptor_path, descriptor)) => {
+				omittable_mods.push(false);
 				detected.name = descriptor.name.clone();
 				detected.workshop_manifest_id = Some(identity.manifest_id.to_string());
 				detected.version = descriptor.version.clone();
@@ -357,14 +438,21 @@ fn inspect_playset(
 				entry.root_path = Some(root_path);
 				entry.workshop_identity = Some(identity);
 			}
-			Err(error) => {
-				all_mods_ready = false;
+			Err((error, omittable)) => {
+				omittable_mods.push(omittable);
+				if !omittable {
+					has_blocking_mod_error = true;
+				}
 				detected.source_error = Some(error.clone());
 				issues.push(issue(
 					format!("workshop_mod_unavailable_{}", index + 1),
 					format!("Workshop mod {} is not ready", detected.id),
 					error,
-					Some("Repair or redownload this Workshop item in Steam."),
+					Some(if omittable {
+						"Analyze the remaining installed mods, or remove/reinstall this item in the EU4 Launcher."
+					} else {
+						"Repair or redownload this Workshop item in Steam."
+					}),
 				));
 			}
 		}
@@ -376,8 +464,49 @@ fn inspect_playset(
 		source_path: playset_path.clone(),
 		mods: detected_mods,
 	};
-	let prepared = all_mods_ready.then_some((playset_path, playset));
-	(Some(detected), prepared)
+	let omitted_mods = detected
+		.mods
+		.iter()
+		.zip(&omittable_mods)
+		.filter(|(_, omittable)| **omittable)
+		.filter_map(|(playset_mod, _)| {
+			playset_mod
+				.source_error
+				.as_ref()
+				.map(|reason| OmittedPlaysetMod {
+					id: playset_mod.id.clone(),
+					name: playset_mod.name.clone(),
+					position: playset_mod.position,
+					reason: reason.clone(),
+				})
+		})
+		.collect::<Vec<_>>();
+	let prepared = if catalog_ready && !has_blocking_mod_error {
+		playset
+			.mods
+			.retain(|entry| entry.root_path.is_some() && entry.workshop_identity.is_some());
+		if playset.mods.is_empty() && !omitted_mods.is_empty() {
+			issues.push(issue(
+				"no_available_workshop_mods",
+				"No installed Workshop mods remain to analyze",
+				"Every enabled Workshop item in the current playset is unavailable.",
+				Some("Repair the missing items or select another playset in the EU4 Launcher."),
+			));
+			None
+		} else {
+			Some((playset_path, playset))
+		}
+	} else {
+		None
+	};
+	let recovery = prepared.as_ref().and_then(|(_, playset)| {
+		(!omitted_mods.is_empty()).then_some(AvailableInputRecovery {
+			source_mod_count: detected.mods.len(),
+			omitted_mods,
+			included_mod_count: playset.mods.len(),
+		})
+	});
+	(Some(detected), prepared, recovery)
 }
 
 fn paradox_data_candidates(path: Option<&Path>) -> Vec<PathBuf> {
@@ -555,31 +684,7 @@ mod tests {
 			.join(Eu4::STEAM_APP_ID.to_string());
 		fs::create_dir_all(content_root.join(FIRST_ID)).expect("create first Workshop item");
 		fs::create_dir_all(content_root.join(SECOND_ID)).expect("create second Workshop item");
-		fs::write(
-			workshop_root.join("appworkshop_236850.acf"),
-			format!(
-				r#""AppWorkshop"
-{{
-	"appid" "236850"
-	"WorkshopItemsInstalled"
-	{{
-		"{FIRST_ID}"
-		{{
-			"size" "10"
-			"timeupdated" "1"
-			"manifest" "{LARGE_MANIFEST_ID}"
-		}}
-		"{SECOND_ID}"
-		{{
-			"size" "20"
-			"timeupdated" "2"
-			"manifest" "44"
-		}}
-	}}
-}}"#
-			),
-		)
-		.expect("write Workshop ACF");
+		write_two_item_workshop_manifest(&workshop_root.join("appworkshop_236850.acf"), "44");
 		fs::write(
 			content_root.join(FIRST_ID).join("descriptor.mod"),
 			r#"name="First Workshop Mod"
@@ -619,6 +724,34 @@ remote_file_id="43"
 			.expect("write Launcher descriptor");
 		}
 		(game_root, content_root)
+	}
+
+	fn write_two_item_workshop_manifest(path: &Path, second_manifest_id: &str) {
+		fs::write(
+			path,
+			format!(
+				r#""AppWorkshop"
+{{
+	"appid" "236850"
+	"WorkshopItemsInstalled"
+	{{
+		"{FIRST_ID}"
+		{{
+			"size" "10"
+			"timeupdated" "1"
+			"manifest" "{LARGE_MANIFEST_ID}"
+		}}
+		"{SECOND_ID}"
+		{{
+			"size" "20"
+			"timeupdated" "2"
+			"manifest" "{second_manifest_id}"
+		}}
+	}}
+}}"#
+			),
+		)
+		.expect("write Workshop ACF");
 	}
 
 	fn install_matching_base_data(game_root: &Path) {
@@ -848,6 +981,174 @@ remote_file_id="43"
 				.is_some_and(|error| error.contains("empty name"))
 		);
 		assert!(unnamed.into_request().is_none());
+	}
+
+	#[test]
+	fn missing_workshop_item_can_be_explicitly_omitted_from_the_frozen_input() {
+		let _lock = BASE_DATA_ENV_LOCK
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let temp = TempDir::new().expect("fixture root");
+		let data_root = temp.path().join("base-data");
+		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &data_root);
+		let (game_root, _) = setup_input_fixture(temp.path());
+		install_matching_base_data(&game_root);
+		let manifest_path = temp
+			.path()
+			.join("Steam/steamapps/workshop/appworkshop_236850.acf");
+		fs::write(
+			&manifest_path,
+			format!(
+				r#""AppWorkshop"
+{{
+	"appid" "236850"
+	"WorkshopItemsInstalled"
+	{{
+		"{FIRST_ID}"
+		{{
+			"size" "10"
+			"timeupdated" "1"
+			"manifest" "{LARGE_MANIFEST_ID}"
+		}}
+	}}
+}}"#
+			),
+		)
+		.expect("remove second item from Workshop ACF");
+		let before = file_system_snapshot(temp.path());
+
+		let inspection =
+			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+
+		assert_eq!(inspection.readiness, InputReadiness::ReadyWithOmissions);
+		let recovery = inspection
+			.recovery
+			.clone()
+			.expect("available-only recovery");
+		assert_eq!(recovery.source_mod_count, 2);
+		assert_eq!(recovery.included_mod_count, 1);
+		assert_eq!(recovery.omitted_mods.len(), 1);
+		assert_eq!(recovery.omitted_mods[0].id, SECOND_ID);
+		assert_eq!(recovery.omitted_mods[0].name, "Launcher Second");
+		assert_eq!(recovery.omitted_mods[0].position, 2);
+		assert!(
+			recovery.omitted_mods[0]
+				.reason
+				.contains("absent from appworkshop_236850.acf")
+		);
+		assert_eq!(
+			before,
+			file_system_snapshot(temp.path()),
+			"available-only inspection must not modify Launcher, Workshop, game, or base data"
+		);
+		assert!(inspection.clone().into_request().is_none());
+		let mut tampered = inspection.clone();
+		tampered.readiness = InputReadiness::Ready;
+		tampered.recovery = None;
+		if let Some(playset) = tampered.playset.as_mut() {
+			playset.mods.clear();
+		}
+		assert!(tampered.clone().into_request().is_none());
+
+		fs::write(
+			temp.path().join("Paradox EU4/dlc_load.json"),
+			r#"{"enabled_mods":[],"disabled_dlcs":[]}"#,
+		)
+		.expect("mutate live playset after inspection");
+		let prepared = tampered
+			.prepare(InputPreparationMode::AvailableOnly)
+			.expect("prepare available subset");
+		assert_eq!(prepared.source_mod_count, 2);
+		assert_eq!(prepared.recovery.as_ref(), Some(&recovery));
+		let manifest =
+			resolve_product_input_manifest(&prepared.request, None).expect("selected manifest");
+		assert_eq!(manifest.mods.len(), 1);
+		assert_eq!(manifest.mods[0].mod_id, FIRST_ID);
+		assert_eq!(manifest.mods[0].precedence, 1);
+	}
+
+	#[test]
+	fn unavailable_manifest_and_missing_content_are_recoverable_absences() {
+		let _lock = BASE_DATA_ENV_LOCK
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let temp = TempDir::new().expect("fixture root");
+		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &temp.path().join("base-data"));
+		let (game_root, content_root) = setup_input_fixture(temp.path());
+		install_matching_base_data(&game_root);
+		let manifest_path = temp
+			.path()
+			.join("Steam/steamapps/workshop/appworkshop_236850.acf");
+
+		write_two_item_workshop_manifest(&manifest_path, "-1");
+		let unavailable_manifest =
+			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+		assert_eq!(
+			unavailable_manifest.readiness,
+			InputReadiness::ReadyWithOmissions
+		);
+		assert!(
+			unavailable_manifest
+				.recovery
+				.as_ref()
+				.is_some_and(|recovery| {
+					recovery.omitted_mods.len() == 1
+						&& recovery.omitted_mods[0].id == SECOND_ID
+						&& recovery.omitted_mods[0].reason.contains("manifest = -1")
+				})
+		);
+
+		write_two_item_workshop_manifest(&manifest_path, "44");
+		fs::remove_dir_all(content_root.join(SECOND_ID)).expect("remove second item content");
+		let missing_content =
+			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+		assert_eq!(
+			missing_content.readiness,
+			InputReadiness::ReadyWithOmissions
+		);
+		assert!(missing_content.recovery.as_ref().is_some_and(|recovery| {
+			recovery.omitted_mods.len() == 1
+				&& recovery.omitted_mods[0].id == SECOND_ID
+				&& recovery.omitted_mods[0]
+					.reason
+					.contains("has no content directory")
+		}));
+	}
+
+	#[test]
+	fn all_missing_workshop_items_do_not_offer_an_empty_analysis() {
+		let _lock = BASE_DATA_ENV_LOCK
+			.lock()
+			.unwrap_or_else(std::sync::PoisonError::into_inner);
+		let temp = TempDir::new().expect("fixture root");
+		let _data_guard = EnvVarGuard::set(BASE_DATA_DIR_ENV, &temp.path().join("base-data"));
+		let (game_root, _) = setup_input_fixture(temp.path());
+		install_matching_base_data(&game_root);
+		fs::write(
+			temp.path()
+				.join("Steam/steamapps/workshop/appworkshop_236850.acf"),
+			r#""AppWorkshop"
+{
+	"appid" "236850"
+	"WorkshopItemsInstalled" {}
+}"#,
+		)
+		.expect("empty Workshop ACF");
+
+		let inspection =
+			inspect_current_eu4_input_with_environment(fixture_environment(temp.path()));
+
+		assert_eq!(inspection.readiness, InputReadiness::Blocked);
+		assert!(inspection.recovery.is_none());
+		assert!(inspection.issues.iter().any(|issue| {
+			issue.id == "no_available_workshop_mods"
+				&& issue.title == "No installed Workshop mods remain to analyze"
+		}));
+		assert!(
+			inspection
+				.prepare(InputPreparationMode::AvailableOnly)
+				.is_none()
+		);
 	}
 
 	#[test]

@@ -1,6 +1,6 @@
 use crate::dto::{
-	DesktopError, InputInspection, MergeAnalysisSummary, MergeDisposition, MergeUnitDetail,
-	MergeUnitPage, StartMergeAnalysisResult,
+	AnalysisInputMode, DesktopError, InputInspection, MergeAnalysisSummary, MergeDisposition,
+	MergeUnitDetail, MergeUnitPage, StartMergeAnalysisResult,
 };
 use crate::state::DesktopState;
 use tauri::State;
@@ -15,16 +15,18 @@ pub(crate) async fn inspect_input(
 		.map_err(|error| DesktopError::internal(format!("input inspection failed: {error}")))?
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn start_merge_analysis(
 	state: State<'_, DesktopState>,
+	inspection_id: String,
+	input_mode: AnalysisInputMode,
 ) -> Result<StartMergeAnalysisResult, DesktopError> {
 	let desktop = state.inner().clone();
-	let analysis_id = desktop.queue_analysis()?;
+	let started = desktop.queue_analysis(&inspection_id, input_mode)?;
 	let worker_state = desktop.clone();
-	let worker_id = analysis_id.clone();
+	let worker_id = started.analysis_id.clone();
 	tauri::async_runtime::spawn_blocking(move || worker_state.run_analysis(&worker_id));
-	Ok(StartMergeAnalysisResult { analysis_id })
+	Ok(started)
 }
 
 #[tauri::command(rename_all = "camelCase")]

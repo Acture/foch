@@ -1,10 +1,11 @@
 use crate::backend::{
 	AnalysisReview, AnalysisRunError, AnalysisRunner, FochAnalysisRunner, InspectedAnalysisInput,
-	bounded_text,
+	PreparedDesktopInput, bounded_text,
 };
 use crate::dto::{
-	DesktopError, InputInspection, MergeAnalysisStage, MergeAnalysisState, MergeDisposition,
-	MergeUnitCounts, MergeUnitDetail, MergeUnitListItem, MergeUnitPage, ReadinessState,
+	AnalysisInputMode, AnalysisInputScope, DesktopError, InputInspection, MergeAnalysisStage,
+	MergeAnalysisState, MergeDisposition, MergeUnitCounts, MergeUnitDetail, MergeUnitListItem,
+	MergeUnitPage, StartMergeAnalysisResult,
 };
 use foch::input::InputRequest;
 use foch::merge::{
@@ -36,10 +37,17 @@ struct DesktopStateCore {
 #[derive(Default)]
 struct RecordBook {
 	active: Option<String>,
-	input_inspected: bool,
-	pending_request: Option<InputRequest>,
+	latest_inspection_id: Option<String>,
+	inspection_in_progress: bool,
+	pending_input: Option<PendingAnalysisInput>,
 	by_id: HashMap<String, AnalysisRecord>,
 	terminal_fifo: VecDeque<String>,
+}
+
+struct PendingAnalysisInput {
+	inspection_id: String,
+	request: InputRequest,
+	input_scope: AnalysisInputScope,
 }
 
 struct AnalysisRecord {
@@ -52,6 +60,7 @@ struct AnalysisRecord {
 	terminal_elapsed: Option<Duration>,
 	counts: MergeUnitCounts,
 	message: Option<String>,
+	input_scope: AnalysisInputScope,
 	cancellation: CancellationToken,
 	request: Option<InputRequest>,
 	review: Option<Arc<dyn AnalysisReview>>,
@@ -72,21 +81,46 @@ impl DesktopState {
 	}
 
 	pub(crate) fn inspect_input(&self) -> Result<InputInspection, DesktopError> {
+		let inspection_id = Uuid::new_v4().to_string();
+		{
+			let mut records = self.records()?;
+			records.latest_inspection_id = Some(inspection_id.clone());
+			records.inspection_in_progress = true;
+			records.pending_input = None;
+		}
 		let InspectedAnalysisInput {
-			inspection,
-			request,
+			mut inspection,
+			prepared,
 		} = self.core.runner.inspect_input();
+		inspection.inspection_id = inspection_id.clone();
 		let mut records = self.records()?;
-		records.input_inspected = true;
-		records.pending_request = if inspection.readiness == ReadinessState::Ready {
-			request
-		} else {
-			None
-		};
+		if records.latest_inspection_id.as_deref() != Some(&inspection_id) {
+			return Err(DesktopError::new(
+				"input_inspection_superseded",
+				"a newer input inspection completed before this result could be installed",
+			));
+		}
+		records.inspection_in_progress = false;
+		records.pending_input = prepared.map(
+			|PreparedDesktopInput {
+			     request,
+			     input_scope,
+			 }| {
+				PendingAnalysisInput {
+					inspection_id,
+					request,
+					input_scope,
+				}
+			},
+		);
 		Ok(inspection)
 	}
 
-	pub(crate) fn queue_analysis(&self) -> Result<String, DesktopError> {
+	pub(crate) fn queue_analysis(
+		&self,
+		inspection_id: &str,
+		input_mode: AnalysisInputMode,
+	) -> Result<StartMergeAnalysisResult, DesktopError> {
 		let mut records = self.records()?;
 		if records.active.is_some() {
 			return Err(DesktopError::new(
@@ -94,18 +128,41 @@ impl DesktopState {
 				"another merge analysis is queued or running",
 			));
 		}
-		if !records.input_inspected {
+		let Some(latest_inspection_id) = records.latest_inspection_id.as_deref() else {
 			return Err(DesktopError::new(
 				"input_not_inspected",
 				"inspect the current EU4 input before starting analysis",
 			));
+		};
+		if latest_inspection_id != inspection_id {
+			return Err(DesktopError::new(
+				"stale_input_inspection",
+				"the requested input inspection is no longer current; inspect the playset again",
+			));
 		}
-		let Some(request) = records.pending_request.take() else {
+		if records.inspection_in_progress {
+			return Err(DesktopError::new(
+				"input_inspection_in_progress",
+				"the current EU4 input inspection has not completed yet",
+			));
+		}
+		let Some(pending) = records.pending_input.as_ref() else {
 			return Err(DesktopError::new(
 				"input_not_ready",
 				"the latest EU4 input inspection is not ready for analysis",
 			));
 		};
+		debug_assert_eq!(pending.inspection_id, inspection_id);
+		if pending.input_scope.mode != input_mode {
+			return Err(DesktopError::new(
+				"input_mode_not_available",
+				"the requested analysis input mode is not available for the latest inspection",
+			));
+		}
+		let pending = records
+			.pending_input
+			.take()
+			.expect("pending input was checked above");
 		let analysis_id = loop {
 			let candidate = Uuid::new_v4().to_string();
 			if !records.by_id.contains_key(&candidate) {
@@ -125,12 +182,16 @@ impl DesktopState {
 				terminal_elapsed: None,
 				counts: MergeUnitCounts::default(),
 				message: None,
+				input_scope: pending.input_scope.clone(),
 				cancellation: CancellationToken::new(),
-				request: Some(request),
+				request: Some(pending.request),
 				review: None,
 			},
 		);
-		Ok(analysis_id)
+		Ok(StartMergeAnalysisResult {
+			analysis_id,
+			input_scope: pending.input_scope,
+		})
 	}
 
 	pub(crate) fn run_analysis(&self, analysis_id: &str) {
@@ -221,6 +282,7 @@ impl DesktopState {
 			elapsed_ms: duration_millis(elapsed),
 			counts: record.counts,
 			message: record.message.clone(),
+			input_scope: record.input_scope.clone(),
 		})
 	}
 
@@ -535,12 +597,13 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 mod tests {
 	use super::*;
 	use crate::dto::{
-		BaseDataState, BaseDataView, InstalledGameView, MergeUnitContributor, MergeUnitKind,
-		ReadinessIssue,
+		BaseDataState, BaseDataView, InputRecoveryOption, InstalledGameView, MergeUnitContributor,
+		MergeUnitKind, OmittedPlaysetMod, ReadinessIssue, ReadinessState,
 	};
 	use foch::input::Config;
 	use std::path::PathBuf;
 	use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+	use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 	use std::thread;
 
 	struct FakeReview {
@@ -602,12 +665,7 @@ mod tests {
 		fn inspect_input(&self) -> InspectedAnalysisInput {
 			let sequence = self.inspection_count.fetch_add(1, Ordering::Relaxed) + 1;
 			let inspection = self.inspection.lock().unwrap().clone();
-			let request = (inspection.readiness == ReadinessState::Ready)
-				.then(|| fake_request(&format!("inspection-{sequence}")));
-			InspectedAnalysisInput {
-				inspection,
-				request,
-			}
+			fake_inspected_input(inspection, sequence)
 		}
 
 		fn run_analysis(
@@ -644,8 +702,96 @@ mod tests {
 		}
 	}
 
+	struct DelayedSecondInspectionRunner {
+		inspection_count: AtomicUsize,
+		second_started: Mutex<Option<SyncSender<()>>>,
+		release_second: Mutex<Receiver<()>>,
+	}
+
+	impl AnalysisRunner for DelayedSecondInspectionRunner {
+		fn inspect_input(&self) -> InspectedAnalysisInput {
+			let sequence = self.inspection_count.fetch_add(1, Ordering::Relaxed) + 1;
+			if sequence == 2 {
+				self.second_started
+					.lock()
+					.unwrap()
+					.take()
+					.expect("second inspection sender")
+					.send(())
+					.expect("announce second inspection");
+				self.release_second
+					.lock()
+					.unwrap()
+					.recv()
+					.expect("release second inspection");
+			}
+			fake_inspected_input(ready_inspection(), sequence)
+		}
+
+		fn run_analysis(
+			&self,
+			_analysis_id: &str,
+			_request: InputRequest,
+			_progress: &dyn ProgressObserver,
+			_cancellation: &CancellationToken,
+		) -> Result<Arc<dyn AnalysisReview>, AnalysisRunError> {
+			unreachable!("concurrent inspection test never runs analysis")
+		}
+	}
+
+	fn fake_inspected_input(
+		inspection: InputInspection,
+		sequence: usize,
+	) -> InspectedAnalysisInput {
+		let input_scope = match inspection.readiness {
+			ReadinessState::Ready => Some(AnalysisInputScope {
+				mode: AnalysisInputMode::Complete,
+				source_mod_count: inspection
+					.playset
+					.as_ref()
+					.map_or(0, |playset| playset.mods.len()),
+				omitted_mods: Vec::new(),
+				omitted_mod_count: 0,
+				included_mod_count: inspection
+					.playset
+					.as_ref()
+					.map_or(0, |playset| playset.mods.len()),
+			}),
+			ReadinessState::ReadyWithOmissions => {
+				inspection
+					.recovery
+					.as_ref()
+					.map(|recovery| AnalysisInputScope {
+						mode: recovery.kind,
+						source_mod_count: recovery.source_mod_count,
+						omitted_mods: recovery.omitted_mods.clone(),
+						omitted_mod_count: recovery.omitted_mod_count,
+						included_mod_count: recovery.included_mod_count,
+					})
+			}
+			ReadinessState::Blocked => None,
+		};
+		let request = matches!(
+			inspection.readiness,
+			ReadinessState::Ready | ReadinessState::ReadyWithOmissions
+		)
+		.then(|| fake_request(&format!("inspection-{sequence}")));
+		let prepared =
+			request
+				.zip(input_scope)
+				.map(|(request, input_scope)| PreparedDesktopInput {
+					request,
+					input_scope,
+				});
+		InspectedAnalysisInput {
+			inspection,
+			prepared,
+		}
+	}
+
 	fn ready_inspection() -> InputInspection {
 		InputInspection {
+			inspection_id: String::new(),
 			readiness: ReadinessState::Ready,
 			game: InstalledGameView {
 				name: "Europa Universalis IV".to_string(),
@@ -659,11 +805,30 @@ mod tests {
 			},
 			playset: None,
 			issues: Vec::new(),
+			recovery: None,
 		}
 	}
 
 	fn fake_state(outcomes: Vec<FakeOutcome>) -> DesktopState {
 		DesktopState::new(fake_runner(ready_inspection(), outcomes))
+	}
+
+	fn recoverable_inspection() -> InputInspection {
+		let mut inspection = ready_inspection();
+		inspection.readiness = ReadinessState::ReadyWithOmissions;
+		inspection.recovery = Some(InputRecoveryOption {
+			kind: AnalysisInputMode::WithoutUnavailableMods,
+			source_mod_count: 5,
+			omitted_mods: vec![OmittedPlaysetMod {
+				id: "3344925456".to_string(),
+				name: "Unavailable Workshop mod".to_string(),
+				position: 3,
+				reason: "Workshop item is absent".to_string(),
+			}],
+			omitted_mod_count: 1,
+			included_mod_count: 4,
+		});
+		inspection
 	}
 
 	fn fake_runner(inspection: InputInspection, outcomes: Vec<FakeOutcome>) -> Arc<FakeRunner> {
@@ -680,8 +845,11 @@ mod tests {
 	}
 
 	fn queue_fake_analysis(state: &DesktopState) -> String {
-		state.inspect_input().unwrap();
-		state.queue_analysis().unwrap()
+		let inspection = state.inspect_input().unwrap();
+		state
+			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.unwrap()
+			.analysis_id
 	}
 
 	fn run_fake_analysis(state: &DesktopState, analysis_id: &str) {
@@ -717,13 +885,22 @@ mod tests {
 	fn enforces_one_active_analysis_and_generates_v4_ids() {
 		let state = fake_state(Vec::new());
 		assert_eq!(
-			state.queue_analysis().unwrap_err().code,
+			state
+				.queue_analysis("not-inspected", AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
 			"input_not_inspected"
 		);
 		let id = queue_fake_analysis(&state);
 		let parsed = Uuid::parse_str(&id).unwrap();
 		assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
-		assert_eq!(state.queue_analysis().unwrap_err().code, "analysis_busy");
+		assert_eq!(
+			state
+				.queue_analysis("busy", AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"analysis_busy"
+		);
 		state.cancel_analysis(&id).unwrap();
 		assert_eq!(
 			state.summary(&id).unwrap().state,
@@ -741,12 +918,15 @@ mod tests {
 			))],
 		);
 		let state = DesktopState::new(runner.clone());
-		state.inspect_input().unwrap();
+		let inspection = state.inspect_input().unwrap();
 		let mut changed_environment = ready_inspection();
 		changed_environment.game.install_path = Some("/different-game".to_string());
 		*runner.inspection.lock().unwrap() = changed_environment;
 
-		let id = state.queue_analysis().unwrap();
+		let id = state
+			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.unwrap()
+			.analysis_id;
 		state.run_analysis(&id);
 
 		assert_eq!(runner.inspection_count.load(Ordering::Relaxed), 1);
@@ -757,10 +937,105 @@ mod tests {
 	}
 
 	#[test]
+	fn requires_the_frozen_recovery_mode_and_retains_omission_scope() {
+		let runner = fake_runner(recoverable_inspection(), Vec::new());
+		let state = DesktopState::new(runner);
+		let inspection = state.inspect_input().unwrap();
+
+		assert_eq!(
+			state
+				.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"input_mode_not_available"
+		);
+		let started = state
+			.queue_analysis(
+				&inspection.inspection_id,
+				AnalysisInputMode::WithoutUnavailableMods,
+			)
+			.unwrap();
+		assert_eq!(
+			started.input_scope.mode,
+			AnalysisInputMode::WithoutUnavailableMods
+		);
+		assert_eq!(started.input_scope.source_mod_count, 5);
+		assert_eq!(started.input_scope.included_mod_count, 4);
+		assert_eq!(started.input_scope.omitted_mod_count, 1);
+		assert_eq!(started.input_scope.omitted_mods[0].id, "3344925456");
+		let queued = state.summary(&started.analysis_id).unwrap();
+		assert_eq!(queued.input_scope, started.input_scope);
+		state.cancel_analysis(&started.analysis_id).unwrap();
+		let cancelled = state.summary(&started.analysis_id).unwrap();
+		assert_eq!(cancelled.input_scope, started.input_scope);
+	}
+
+	#[test]
+	fn stale_inspection_id_does_not_consume_the_latest_input() {
+		let state = fake_state(Vec::new());
+		let stale = state.inspect_input().unwrap();
+		let current = state.inspect_input().unwrap();
+
+		assert_eq!(
+			state
+				.queue_analysis(&stale.inspection_id, AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"stale_input_inspection"
+		);
+		let started = state
+			.queue_analysis(&current.inspection_id, AnalysisInputMode::Complete)
+			.unwrap();
+		assert!(!started.analysis_id.is_empty());
+	}
+
+	#[test]
+	fn concurrent_reinspection_rejects_old_and_out_of_order_results() {
+		let (second_started_tx, second_started_rx) = sync_channel(0);
+		let (release_second_tx, release_second_rx) = sync_channel(0);
+		let state = DesktopState::new(Arc::new(DelayedSecondInspectionRunner {
+			inspection_count: AtomicUsize::new(0),
+			second_started: Mutex::new(Some(second_started_tx)),
+			release_second: Mutex::new(release_second_rx),
+		}));
+		let initial = state.inspect_input().unwrap();
+		let delayed_state = state.clone();
+		let delayed = thread::spawn(move || delayed_state.inspect_input());
+		second_started_rx
+			.recv()
+			.expect("second inspection entered runner");
+
+		assert_eq!(
+			state
+				.queue_analysis(&initial.inspection_id, AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"stale_input_inspection"
+		);
+		let current = state.inspect_input().unwrap();
+		release_second_tx
+			.send(())
+			.expect("release second inspection");
+		assert_eq!(
+			delayed
+				.join()
+				.expect("join delayed inspection")
+				.unwrap_err()
+				.code,
+			"input_inspection_superseded"
+		);
+		let started = state
+			.queue_analysis(&current.inspection_id, AnalysisInputMode::Complete)
+			.unwrap();
+		assert_eq!(started.input_scope.mode, AnalysisInputMode::Complete);
+		state.cancel_analysis(&started.analysis_id).unwrap();
+	}
+
+	#[test]
 	fn blocked_reinspection_clears_the_previous_ready_token() {
 		let runner = fake_runner(ready_inspection(), Vec::new());
 		let state = DesktopState::new(runner.clone());
-		state.inspect_input().unwrap();
+		let ready = state.inspect_input().unwrap();
 		let mut blocked = ready_inspection();
 		blocked.readiness = ReadinessState::Blocked;
 		blocked.issues.push(ReadinessIssue {
@@ -771,10 +1046,23 @@ mod tests {
 		});
 		*runner.inspection.lock().unwrap() = blocked;
 
-		state.inspect_input().unwrap();
+		let blocked = state.inspect_input().unwrap();
 
 		assert_eq!(runner.inspection_count.load(Ordering::Relaxed), 2);
-		assert_eq!(state.queue_analysis().unwrap_err().code, "input_not_ready");
+		assert_eq!(
+			state
+				.queue_analysis(&ready.inspection_id, AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"stale_input_inspection"
+		);
+		assert_eq!(
+			state
+				.queue_analysis(&blocked.inspection_id, AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"input_not_ready"
+		);
 		assert!(runner.seen_request_paths.lock().unwrap().is_empty());
 	}
 
@@ -788,8 +1076,11 @@ mod tests {
 			))],
 		);
 		let state = DesktopState::new(runner.clone());
-		state.inspect_input().unwrap();
-		let id = state.queue_analysis().unwrap();
+		let inspection = state.inspect_input().unwrap();
+		let id = state
+			.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+			.unwrap()
+			.analysis_id;
 
 		state.cancel_analysis(&id).unwrap();
 		state.run_analysis(&id);
@@ -962,8 +1253,14 @@ mod tests {
 			inspection_count: AtomicUsize::new(0),
 			seen_request_paths: Mutex::new(Vec::new()),
 		}));
-		state.inspect_input().unwrap();
-		assert_eq!(state.queue_analysis().unwrap_err().code, "input_not_ready");
+		let inspection = state.inspect_input().unwrap();
+		assert_eq!(
+			state
+				.queue_analysis(&inspection.inspection_id, AnalysisInputMode::Complete)
+				.unwrap_err()
+				.code,
+			"input_not_ready"
+		);
 		assert_eq!(
 			state.summary("not-a-uuid").unwrap_err().code,
 			"invalid_analysis_id"
