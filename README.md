@@ -36,10 +36,9 @@ Reusable CWT schema machinery lives under `src/game/schema`. That boundary is
 intended to support future concrete game implementations, but today only
 `src/game/eu4` has verified loader and content-family behavior.
 
-The active product milestone is a Windows read-only desktop workflow: inspect
-the current EU4 input, run merge analysis, and browse every review unit without
-writing output. See [the desktop plan](./docs/desktop-app-plan.md) and
-[the current checkpoint](./docs/project-status.md).
+Linear owns active milestones, issues, and dependencies. The repository records
+the verified implementation state in [the current checkpoint](./docs/project-status.md)
+and the stable execution contract in [the architecture](./docs/architecture.md).
 
 ## Build and try it
 
@@ -155,7 +154,6 @@ not part of a normal build.
 
 - [Project status](./docs/project-status.md)
 - [Architecture](./docs/architecture.md)
-- [Desktop app plan](./docs/desktop-app-plan.md)
 - [Merge design](./docs/merge-design.md)
 - [`foch.toml` project manifest](./docs/foch-project-manifest.md)
 - [Resolution DSL](./docs/foch-toml-resolutions.md)

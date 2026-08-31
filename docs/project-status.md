@@ -4,8 +4,8 @@ Last source verification: 2026-08-25 on branch `refactor/structure-reset` at
 `30aa902` (`Update quality harness for merge reviews`).
 
 This page is the repository handoff. Recheck Git and local inputs before using
-any checkpoint fact: Notion page **foch — Merge Corpus & Game Semantics** carries
-live ownership when access is available.
+any checkpoint fact. Linear owns live execution; Notion holds the project
+narrative and research record.
 
 ## Product goal
 
@@ -17,7 +17,7 @@ The current source line is an unreleased EU4-only alpha at `0.0.1`. It is not a
 reliable one-click merger for arbitrary modlists. The active product direction
 is one root Rust library with a `foch` CLI and a player-facing Tauri desktop
 application. The fixed 14-case Workshop cohort remains the product merge-quality
-gate; it is not a substitute for the desktop roadmap.
+gate; it does not establish desktop product readiness.
 
 ## Structural-reset checkpoint
 
@@ -185,49 +185,38 @@ without first establishing their identity and getting the user's decision.
 Installed local availability must not shrink the fixed 14-case, 26-item
 denominator.
 
-## Next work
+## Execution tracking
 
-1. Install the pinned JS dependencies, then run the desktop/VS Code frontend
-   format, type, lint, unit, and bundle gates plus the Windows Tauri smoke.
-2. Exercise the packaged current-playset → analysis → complete review flow and
-   confirm that it creates no output mod.
-3. Continue with pre-confirmation conflict decisions and visual review; keep
-   durable session design deferred until that workflow requires it.
-4. Continue merge-quality work only from a freshly reproduced failure, one
-   exact EU4 content-family and cause per slice.
-5. Hand the maintainer the long acceptance wrapper instead of launching it
-   unannounced:
-
-```fish
-scripts/merge-quality/acceptance.fish
-```
+Active milestones, issues, dependencies, and acceptance criteria live in the
+Linear `foch` project. This file records verified repository state and evidence;
+do not reconstruct an execution backlog here.
 
 ## Fresh-agent runbook
 
-1. Read this page, [architecture](./architecture.md), and the relevant task in
-   [the desktop plan](./desktop-app-plan.md).
+1. Read this page, [architecture](./architecture.md), and
+   [merge design](./merge-design.md).
 2. Inspect `git status --short --branch` and `git log -3 --oneline`. Preserve
    unrelated changes and append-only measurement history.
 3. Distinguish committed implementation, local worktree observation, recorded
    verification, and accepted product evidence.
-4. Check Notion for current ownership when available.
-5. Run focused tests before workspace gates. Update this page and Notion when a
-   product fact changes.
+4. Check Linear first for the current issue, dependencies, and blockers. Use
+   Notion only for project narrative or research context.
+5. Run focused tests before workspace gates. Update this page when a verified
+   product fact changes and write execution status back to Linear.
 6. Never use `--no-verify`, mutate source mods/game files, or claim a cohort
    passed until the supported wrapper validates it.
 
 ## Reading order
 
 1. [README](../README.md)
-2. [Desktop app plan](./desktop-app-plan.md)
-3. [Architecture](./architecture.md)
-4. [Merge design](./merge-design.md)
-5. [Merge-quality dataset](./merge-quality-dataset.md)
-6. [Cache architecture](./cache-architecture.md)
-7. [Project manifest](./foch-project-manifest.md)
-8. [Resolution DSL](./foch-toml-resolutions.md)
-9. [Known issues](../KNOWN_ISSUES.md)
+2. [Architecture](./architecture.md)
+3. [Merge design](./merge-design.md)
+4. [Merge-quality dataset](./merge-quality-dataset.md)
+5. [Cache architecture](./cache-architecture.md)
+6. [Project manifest](./foch-project-manifest.md)
+7. [Resolution DSL](./foch-toml-resolutions.md)
+8. [Known issues](../KNOWN_ISSUES.md)
 
-The auto-merge roadmap, structured-merge shadow, common-applicability probe,
-reviews, research notes, and top-level plan files are historical or auxiliary
-evidence. They are not the active backlog or current architecture.
+The structured-merge shadow, common-applicability probe, reviews, and research
+notes are historical or auxiliary evidence. They are not the active backlog or
+current architecture.
