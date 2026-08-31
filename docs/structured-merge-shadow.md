@@ -105,7 +105,7 @@ Use `scripts/merge-quality/acceptance.fish` for the fixed 14-case V2 product
 acceptance. It invokes the exact ignored
 `workshop_product_corpus_acceptance` test, resolves the committed logical cases
 from read-only Workshop content and same-library ACF files, launches the
-release-built public `foch merge`, and records scorer `2.0.0`,
+release-built public `foch merge`, and records scorer `2.1.0`,
 `semantic_tree`, and `full_product_merge`. This path does not read the legacy
 `objects/` store; completed results retain compact scorer evidence.
 

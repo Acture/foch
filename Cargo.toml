@@ -1,14 +1,30 @@
+[package]
+name = "foch"
+version.workspace = true
+edition.workspace = true
+license = "AGPL-3.0-only AND GPL-3.0-only"
+readme.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "EU4 mod analysis and merge toolkit"
+include = [
+	"src/**",
+	"Cargo.toml",
+	"README.md",
+	"LICENSE",
+	"LICENSE-MERGIRAF.txt",
+	"NOTICE.md",
+]
+
 [workspace]
 resolver = "2"
 members = [
-	"crates/foch-cli",
-	"crates/foch-core", "crates/foch-cwt",
-	"crates/foch-engine",
-	"crates/foch-language", "crates/foch-syntax",
-	"crates/foch-merge-kernel",
-	"crates/foch-merge-quality",
+	".",
+	"apps/foch-cli",
+	"apps/foch-desktop/src-tauri",
 	"packages/tree-sitter-paradox",
 ]
+default-members = [".", "apps/foch-cli"]
 
 [workspace.package]
 version = "0.0.1"
@@ -56,3 +72,46 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 walkdir = "2.5.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
 winreg = "0.55.0"
+
+[dependencies]
+bincode.workspace = true
+blake3 = "1.5.5"
+chardetng = "1.0.0"
+console.workspace = true
+dirs.workspace = true
+encoding_rs.workspace = true
+filetime = "0.2"
+flate2.workspace = true
+globset.workspace = true
+jomini.workspace = true
+keyvalues-parser.workspace = true
+regex.workspace = true
+rkyv.workspace = true
+rayon.workspace = true
+remove_dir_all.workspace = true
+reqwest.workspace = true
+rustix.workspace = true
+same-file.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+steamlocate.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+toml_edit = "0.23"
+tracing.workspace = true
+tree-sitter = "0.25"
+tree-sitter-paradox = { path = "packages/tree-sitter-paradox" }
+thiserror = "2.0"
+walkdir.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+winreg.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.186"
+
+[features]
+test-utils = []

@@ -23,7 +23,7 @@ class Foch < Formula
   depends_on "rust" => :build
 
   def install
-    system "cargo", "install", *std_cargo_args(path: "crates/foch-cli"), "--bin", "foch"
+    system "cargo", "install", *std_cargo_args(path: "apps/foch-cli"), "--bin", "foch"
   end
 
   test do

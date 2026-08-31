@@ -9,7 +9,7 @@ const RELOAD_REQUIRED_CONFIG_KEYS = [
 	'fochLsp.serverPath',
 	'fochLsp.serverArgs',
 	'fochLsp.serverCwd',
-	'fochLsp.workspaceManifest',
+	'fochLsp.projectManifest',
 	'fochLsp.gamePath',
 	'fochLsp.modPaths',
 	'fochLsp.autoDetectMods',
@@ -45,8 +45,8 @@ function existingFile(p) {
 	}
 }
 
-function resolveWorkspaceManifest(cfg) {
-	const manifest = normalizePath(cfg.get('workspaceManifest'));
+function resolveProjectManifest(cfg) {
+	const manifest = normalizePath(cfg.get('projectManifest'));
 	if (existingFile(manifest)) {
 		return manifest;
 	}
@@ -188,8 +188,8 @@ function hasOpenFochDocument() {
 		|| vscode.window.visibleTextEditors.some((editor) => editor.document.languageId === 'foch-eu4');
 }
 
-function shouldStartLanguageClient(targets, workspaceManifest) {
-	return !!workspaceManifest || targets.length > 0 || hasOpenFochDocument();
+function shouldStartLanguageClient(targets, projectManifest) {
+	return !!projectManifest || targets.length > 0 || hasOpenFochDocument();
 }
 
 function configChangeRequiresReload(event) {
@@ -332,7 +332,7 @@ async function activate(context) {
 	const outputChannel = vscode.window.createOutputChannel('Foch');
 	context.subscriptions.push(outputChannel);
 
-	const workspaceManifest = resolveWorkspaceManifest(cfg);
+	const projectManifest = resolveProjectManifest(cfg);
 	const targets = await buildTargets(cfg);
 	context.subscriptions.push(
 		vscode.commands.registerCommand('foch.createLocalisationStub', (rawUri, key) => {
@@ -367,16 +367,16 @@ async function activate(context) {
 		await maybeSetEu4Language(editor.document, targets);
 	}
 
-	if (!shouldStartLanguageClient(targets, workspaceManifest)) {
+	if (!shouldStartLanguageClient(targets, projectManifest)) {
 		outputChannel.appendLine(
-			'Foch is inactive in this workspace: configure fochLsp.workspaceManifest/modPaths/gamePath or open a workspace containing descriptor.mod.'
+			'Foch is inactive in this workspace: configure fochLsp.projectManifest/modPaths/gamePath or open a workspace containing descriptor.mod.'
 		);
 		return;
 	}
 
 	const env = { ...process.env };
-	if (workspaceManifest) {
-		env.FOCH_LSP_WORKSPACE_MANIFEST = workspaceManifest;
+	if (projectManifest) {
+		env.FOCH_LSP_PROJECT_MANIFEST = projectManifest;
 	}
 	if (targets.length > 0) {
 		env.FOCH_LSP_TARGETS_JSON = JSON.stringify(targets);

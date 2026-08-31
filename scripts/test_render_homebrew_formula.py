@@ -25,7 +25,7 @@ def main() -> None:
 		'url "https://example.test/foch-1.2.3-source.tar.gz"',
 		f'sha256 "{"a" * 64}"',
 		'version "1.2.3"',
-		'std_cargo_args(path: "crates/foch-cli")',
+		'std_cargo_args(path: "apps/foch-cli")',
 		'"--bin", "foch"',
 	)
 	missing = [fragment for fragment in expected_fragments if fragment not in formula]

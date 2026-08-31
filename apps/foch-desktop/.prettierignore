@@ -1,0 +1,4 @@
+dist/
+src-tauri/gen/
+src-tauri/icons/
+src-tauri/target/

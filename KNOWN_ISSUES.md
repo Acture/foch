@@ -2,15 +2,22 @@
 
 These are user-visible alpha limitations and practical workarounds. They are not release blockers unless a specific workflow depends on them.
 
-## EU4 is the only supported game profile
+## EU4 is the only supported game
 
-foch currently ships one game profile: Europa Universalis IV. CK3, Victoria 3, Stellaris, Hearts of Iron IV, and other Clausewitz titles will require new `GameProfile` and `ContentFamilyDescriptor` registries before their scope rules, symbol kinds, merge keys, and resource extraction can be trusted.
+foch currently implements one concrete game: Europa Universalis IV. CK3,
+Victoria 3, Stellaris, Hearts of Iron IV, and other Clausewitz titles need their
+own verified loader behavior, content-family registry, base-data model, merge
+keys, and resource extraction before they can be trusted. Reusable CWT support
+under `src/game/schema` is not game support by itself.
 
 **Workaround:** treat foch as EU4-only for this alpha. Contributors adding a new game should start with narrow content-family descriptors, fixtures, and base-data coverage probes.
 
 ## Manual conflicts are expected on large EU4 playsets
 
-The latest N=37 EU4 active playset probe reports `manual_conflict_count = 9` after the leaf-conflict fix. These are expected ambiguous structural disagreements between mods, not errors that foch should silently override.
+Ambiguous structural disagreements between mods are expected product outcomes,
+not errors that Foch should silently override. Analysis computes structural
+leaf outcomes before confirmation, so they can be reviewed without writing the
+target directory.
 
 **Workaround:** copy [`examples/eu4-default-foch.toml`](./examples/eu4-default-foch.toml) next to `dlc_load.json`, or write narrow `[[resolutions]]` rules using the DSL in [`docs/foch-toml-resolutions.md`](./docs/foch-toml-resolutions.md). Avoid global `last_writer` rules unless you explicitly want load-order semantics everywhere.
 
@@ -18,15 +25,25 @@ The latest N=37 EU4 active playset probe reports `manual_conflict_count = 9` aft
 
 The alpha decodes Paradox text through `decode_paradox_bytes`, with UTF-8/BOM handling plus GB18030, GBK, Big5/CJK detection, and Windows-1252 fallback via `chardetng`/`encoding_rs`. That covers common EU4 and translation-mod cases, but exotic or malformed encodings can still display as mojibake.
 
-**Workaround:** keep suspicious localisation files under review, report minimal byte samples, and extend the `decode_paradox_bytes` funnel in `crates/foch-core/src/text.rs` when a repeatable encoding family appears.
+**Workaround:** keep suspicious localisation files under review, report minimal byte samples, and extend the `decode_paradox_bytes` funnel in `src/game/eu4/text.rs` when a repeatable encoding family appears.
 
-## Cold performance is still rough without cache
+## Two total-conversion cases have a cold-path outlier
 
-Large-playset cold runs are expensive, especially in debug builds. The current N=37 baseline is roughly 25-30 minutes cold in debug, while warm cache-backed iterations are seconds and release+cache runs have been observed around 40 seconds.
+Most mods in the fixed corpus do not declare `replace_path`. Two total
+conversions are outliers: Elder Scrolls Universalis declares 107 paths and World
+of Warcraft Universalis declares 108. A bounded `custom_ideas` diagnostic using
+them was stopped after more than 6m39s while Foch inspected many base-game
+content folders those mods replace. This is not a representative runtime
+baseline for ordinary mods.
 
-**Workaround:** use a release binary or `cargo install --path crates/foch-cli`, keep cache enabled, inspect it with `foch cache stats` / `foch cache list`, and reserve debug cold runs for engine debugging.
+**Workaround:** use a release binary or `cargo install --path apps/foch-cli`,
+keep parser and semantic caches enabled, inspect them with `foch cache stats` /
+`foch cache list`, and reserve debug cold runs for engine debugging.
 
-Automatic post-command cache GC byte-caps every layer at 1 GiB by default via `FOCH_CACHE_MAX_BYTES`, so artifacts larger than the cap can be evicted immediately after creation. Raise `FOCH_CACHE_MAX_BYTES` when retaining very large cached outputs, such as modset tarballs, matters.
+Foch no longer has a full merge-output/modset archive cache. Increasing
+`FOCH_CACHE_MAX_BYTES` must not be used to relax the fixed acceptance contract.
+Optimize the total-conversion path only if a current acceptance result
+reproduces the timeout.
 
 ## TUI conflict resolver has limited Windows coverage
 
@@ -38,7 +55,8 @@ The terminal conflict resolver works on Linux and macOS in regular TTYs. Windows
 
 The VS Code extension is bundled and can launch `foch lsp`, but it should be treated as preview software. Diagnostics, completions, and go-to-definition are the intended alpha surface; merge-conflict workflows are still CLI-first.
 
-**Workaround:** use the extension for editing assistance, then run `foch check`, `foch merge-plan`, and `foch merge` in a terminal for authoritative reports.
+**Workaround:** use the extension for editing assistance, then run `foch check`
+and `foch merge` in a terminal for authoritative analysis and review.
 
 ## NoOp dedup policies are opt-in per content family
 
@@ -48,6 +66,9 @@ Per-entry NoOp and cross-file NoOp dedup are only enabled for content families w
 
 ## Graph artifacts have no interactive viewer yet
 
-`foch graph` writes `definition-deps.json/.dot` and `mod-deps.json/.dot` for workspace and per-mod scopes, including `SymbolKind` filtering for definition dependencies. There is no interactive graph viewer in the alpha release.
+`foch graph` writes `definition-deps.json/.dot` and `mod-deps.json/.dot` for
+combined-input and per-mod scopes, including `SymbolKind` filtering for
+definition dependencies. There is no interactive graph viewer in the alpha
+release.
 
 **Workaround:** open DOT files with Graphviz or another external graph tool, and use the JSON artifacts for scripts and CI checks.
