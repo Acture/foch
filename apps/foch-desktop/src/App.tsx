@@ -79,6 +79,12 @@ const EMPTY_UNIT_PAGE: MergeUnitPage = {
 	pageSize: PAGE_SIZE,
 };
 
+const EMPTY_UNIT_DETAIL: AsyncValue<MergeUnitDetail> = {
+	value: null,
+	loading: false,
+	error: null,
+};
+
 function initialAsyncValue<T>(): AsyncValue<T> {
 	return { value: null, loading: true, error: null };
 }
@@ -694,11 +700,8 @@ export default function App({
 		error: null,
 	});
 	const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
-	const [unitDetail, setUnitDetail] = useState<AsyncValue<MergeUnitDetail>>({
-		value: null,
-		loading: false,
-		error: null,
-	});
+	const [unitDetail, setUnitDetail] =
+		useState<AsyncValue<MergeUnitDetail>>(EMPTY_UNIT_DETAIL);
 	const [searchDraft, setSearchDraft] = useState<string>("");
 	const [searchQuery, setSearchQuery] = useState<string>("");
 	const [disposition, setDisposition] = useState<MergeDisposition | null>(null);
@@ -787,7 +790,7 @@ export default function App({
 						value.items.some((item): boolean => item.id === current)
 					)
 						return current;
-					return value.items[0]?.id ?? null;
+					return null;
 				});
 			})
 			.catch((error: unknown): void => {
@@ -836,7 +839,7 @@ export default function App({
 		setAnalysisError(null);
 		setSummary(null);
 		setSelectedUnitId(null);
-		setUnitDetail({ value: null, loading: false, error: null });
+		setUnitDetail(EMPTY_UNIT_DETAIL);
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
 		try {
 			const started = await client.startMergeAnalysis(
@@ -871,7 +874,7 @@ export default function App({
 		setSummary(null);
 		setAnalysisError(null);
 		setSelectedUnitId(null);
-		setUnitDetail({ value: null, loading: false, error: null });
+		setUnitDetail(EMPTY_UNIT_DETAIL);
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
 		setSearchDraft("");
 		setSearchQuery("");
@@ -1133,7 +1136,9 @@ export default function App({
 						)}
 					</section>
 					{showBrowser ? (
-						<UnitDetailPanel detail={unitDetail} />
+						<UnitDetailPanel
+							detail={selectedUnitId === null ? EMPTY_UNIT_DETAIL : unitDetail}
+						/>
 					) : (
 						<aside className="detail-pane detail-empty" aria-label="Merge unit detail">
 							<p className="section-kicker">Unit detail</p>
