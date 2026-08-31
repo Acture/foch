@@ -191,3 +191,7 @@ export const tauriDesktopClient: DesktopClient = createDesktopClient(tauriInvoke
 export function isAnalysisActive(state: MergeAnalysisState): boolean {
 	return state === "queued" || state === "running";
 }
+
+export function hasMergeReview(state: MergeAnalysisState): boolean {
+	return state === "ready" || state === "ready_with_deferrals" || state === "blocked";
+}

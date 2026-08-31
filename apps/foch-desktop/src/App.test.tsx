@@ -9,6 +9,7 @@ import type {
 	MergeAnalysisSummary,
 	MergeUnitDetail,
 	MergeUnitPage,
+	StartMergeAnalysisResult,
 } from "./api";
 
 const READY_INSPECTION: InputInspection = {
@@ -307,6 +308,65 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		).toBeInTheDocument();
 	});
 
+	it("waits for a complete review before querying bounded unit endpoints", async (): Promise<void> => {
+		const listMergeUnits = vi.fn<DesktopClient["listMergeUnits"]>(
+			async (): Promise<MergeUnitPage> => UNIT_PAGE,
+		);
+		const getMergeUnit = vi.fn<DesktopClient["getMergeUnit"]>(
+			async (): Promise<MergeUnitDetail> => UNIT_DETAIL,
+		);
+		const client = createClient({
+			getMergeAnalysisSummary: vi.fn(async (): Promise<MergeAnalysisSummary> =>
+				analysisSummary("running"),
+			),
+			listMergeUnits,
+			getMergeUnit,
+		});
+		render(<App client={client} pollIntervalMs={10_000} />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+
+		expect(
+			await screen.findByRole("heading", { name: "Building the complete review" }),
+		).toBeInTheDocument();
+		await waitFor((): void => {
+			expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "35");
+		});
+		const unitBrowser: Element | null = document.querySelector(".unit-browser");
+		expect(unitBrowser).toBeInstanceOf(HTMLElement);
+		if (!(unitBrowser instanceof HTMLElement))
+			throw new Error("merge unit browser is missing");
+		expect(window.getComputedStyle(unitBrowser).display).toBe("none");
+		expect(listMergeUnits).not.toHaveBeenCalled();
+		expect(getMergeUnit).not.toHaveBeenCalled();
+	});
+
+	it("enters queued state immediately after starting and prevents a duplicate run", async (): Promise<void> => {
+		const pendingSummary = deferred<MergeAnalysisSummary>();
+		const startMergeAnalysis = vi.fn<DesktopClient["startMergeAnalysis"]>(
+			async (): Promise<StartMergeAnalysisResult> => ({
+				analysisId: "analysis-queued",
+			}),
+		);
+		const client = createClient({
+			startMergeAnalysis,
+			getMergeAnalysisSummary: vi.fn(() => pendingSummary.promise),
+		});
+		render(<App client={client} pollIntervalMs={10_000} />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+
+		expect(await screen.findByRole("heading", { name: "Queued" })).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Analyze current playset/i }),
+		).not.toBeInTheDocument();
+		expect(startMergeAnalysis).toHaveBeenCalledTimes(1);
+	});
+
 	it("passes search and outcome filters through the bounded list endpoint", async (): Promise<void> => {
 		const listMergeUnits = vi.fn<DesktopClient["listMergeUnits"]>(
 			async (): Promise<MergeUnitPage> => UNIT_PAGE,
@@ -322,6 +382,10 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		fireEvent.change(screen.getByPlaceholderText("Search path or family"), {
 			target: { value: "missions" },
 		});
+		expect(screen.getByPlaceholderText("Search path or family")).toHaveAttribute(
+			"maxlength",
+			"256",
+		);
 		fireEvent.click(screen.getByRole("button", { name: "Search" }));
 
 		await waitFor((): void => {
@@ -347,6 +411,45 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		});
 	});
 
+	it("uses server pagination metadata and stable unit ids for detail lookup", async (): Promise<void> => {
+		const secondUnit: MergeUnitDetail = {
+			...UNIT_DETAIL,
+			id: "choice-unit",
+			path: "missions/french_missions.txt",
+			disposition: "needs_user_choice",
+		};
+		const secondPage: MergeUnitPage = {
+			items: [UNIT_PAGE.items[2]],
+			total: 13,
+			page: 2,
+			pageSize: 12,
+		};
+		const listMergeUnits = vi
+			.fn<DesktopClient["listMergeUnits"]>()
+			.mockResolvedValueOnce({ ...UNIT_PAGE, total: 13 })
+			.mockResolvedValueOnce(secondPage);
+		const getMergeUnit = vi.fn<DesktopClient["getMergeUnit"]>(
+			async (_analysisId: string, unitId: string): Promise<MergeUnitDetail> =>
+				unitId === secondUnit.id ? secondUnit : UNIT_DETAIL,
+		);
+		const client = createClient({ listMergeUnits, getMergeUnit });
+		render(<App client={client} pollIntervalMs={10_000} />);
+
+		fireEvent.click(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		);
+		expect(await screen.findByText("Page 1 of 2")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Next" }));
+
+		expect(await screen.findByText("Page 2 of 2")).toBeInTheDocument();
+		await waitFor((): void => {
+			expect(listMergeUnits).toHaveBeenLastCalledWith(
+				expect.objectContaining({ page: 2, pageSize: 12 }),
+			);
+			expect(getMergeUnit).toHaveBeenCalledWith("analysis-1", "choice-unit");
+		});
+	});
+
 	it("cancels an active analysis by opaque analysis id", async (): Promise<void> => {
 		const cancelMergeAnalysis = vi.fn<DesktopClient["cancelMergeAnalysis"]>(
 			async (): Promise<void> => undefined,
@@ -367,5 +470,13 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			await screen.findByRole("heading", { name: "Cancelled" }),
 		).toBeInTheDocument();
 		expect(cancelMergeAnalysis).toHaveBeenCalledWith("analysis-1");
+		expect(
+			screen.getByRole("heading", { name: "No review was produced" }),
+		).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Check input again" }));
+		expect(
+			await screen.findByRole("button", { name: /Analyze current playset/i }),
+		).toBeEnabled();
+		expect(client.inspectInput).toHaveBeenCalledTimes(2);
 	});
 });
