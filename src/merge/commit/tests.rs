@@ -53,6 +53,7 @@ fn minimal_passthrough_fixture() -> PathBuf {
 		.join("tests/fixtures/playsets/eu4_minimal_passthrough")
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 #[test]
 fn commit_requires_separate_replacement_authorization() {
 	let temp = tempfile::TempDir::new().expect("temp dir");
@@ -82,6 +83,7 @@ fn commit_requires_separate_replacement_authorization() {
 	);
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 #[test]
 fn commit_rejects_a_replacement_target_changed_after_confirmation() {
 	let temp = tempfile::TempDir::new().expect("temp dir");

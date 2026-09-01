@@ -60,7 +60,6 @@ struct AnalysisRecord {
 	terminal_elapsed: Option<Duration>,
 	counts: MergeUnitCounts,
 	message: Option<String>,
-	input_scope: AnalysisInputScope,
 	cancellation: CancellationToken,
 	request: Option<InputRequest>,
 	review: Option<Arc<dyn AnalysisReview>>,
@@ -97,7 +96,7 @@ impl DesktopState {
 		if records.latest_inspection_id.as_deref() != Some(&inspection_id) {
 			return Err(DesktopError::new(
 				"input_inspection_superseded",
-				"a newer input inspection completed before this result could be installed",
+				"this input inspection was superseded by a newer request",
 			));
 		}
 		records.inspection_in_progress = false;
@@ -182,7 +181,6 @@ impl DesktopState {
 				terminal_elapsed: None,
 				counts: MergeUnitCounts::default(),
 				message: None,
-				input_scope: pending.input_scope.clone(),
 				cancellation: CancellationToken::new(),
 				request: Some(pending.request),
 				review: None,
@@ -282,7 +280,6 @@ impl DesktopState {
 			elapsed_ms: duration_millis(elapsed),
 			counts: record.counts,
 			message: record.message.clone(),
-			input_scope: record.input_scope.clone(),
 		})
 	}
 
@@ -937,7 +934,7 @@ mod tests {
 	}
 
 	#[test]
-	fn requires_the_frozen_recovery_mode_and_retains_omission_scope() {
+	fn requires_the_frozen_recovery_mode_and_returns_omission_scope_on_start() {
 		let runner = fake_runner(recoverable_inspection(), Vec::new());
 		let state = DesktopState::new(runner);
 		let inspection = state.inspect_input().unwrap();
@@ -964,10 +961,10 @@ mod tests {
 		assert_eq!(started.input_scope.omitted_mod_count, 1);
 		assert_eq!(started.input_scope.omitted_mods[0].id, "3344925456");
 		let queued = state.summary(&started.analysis_id).unwrap();
-		assert_eq!(queued.input_scope, started.input_scope);
+		assert_eq!(queued.state, MergeAnalysisState::Queued);
 		state.cancel_analysis(&started.analysis_id).unwrap();
 		let cancelled = state.summary(&started.analysis_id).unwrap();
-		assert_eq!(cancelled.input_scope, started.input_scope);
+		assert_eq!(cancelled.state, MergeAnalysisState::Cancelled);
 	}
 
 	#[test]

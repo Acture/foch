@@ -125,7 +125,11 @@ export interface MergeAnalysisSummary {
 	elapsedMs: number;
 	counts: MergeUnitCounts;
 	message: string | null;
-	inputScope: AnalysisInputScope;
+}
+
+export interface DesktopCommandError {
+	code: string | null;
+	message: string;
 }
 
 export interface MergeUnitListItem {
@@ -221,6 +225,23 @@ const tauriInvoke: InvokeCommand = <T>(
 ): Promise<T> => invoke<T>(command, args);
 
 export const tauriDesktopClient: DesktopClient = createDesktopClient(tauriInvoke);
+
+export function parseDesktopCommandError(error: unknown): DesktopCommandError {
+	if (typeof error === "object" && error !== null) {
+		const candidate = error as { code?: unknown; message?: unknown };
+		if (typeof candidate.message === "string") {
+			return {
+				code: typeof candidate.code === "string" ? candidate.code : null,
+				message: candidate.message,
+			};
+		}
+	}
+
+	return {
+		code: null,
+		message: error instanceof Error ? error.message : String(error),
+	};
+}
 
 export function isAnalysisActive(state: MergeAnalysisState): boolean {
 	return state === "queued" || state === "running";
