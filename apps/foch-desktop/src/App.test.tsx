@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import type {
@@ -231,10 +231,7 @@ const UNIT_DETAIL: MergeUnitDetail = {
 	notes: ["Base snapshot used as the semantic ancestor."],
 };
 
-function analysisSummary(
-	state: MergeAnalysisState,
-	inputScope: AnalysisInputScope = COMPLETE_INPUT_SCOPE,
-): MergeAnalysisSummary {
+function analysisSummary(state: MergeAnalysisState): MergeAnalysisSummary {
 	const active: boolean = state === "queued" || state === "running";
 	return {
 		analysisId: "analysis-1",
@@ -256,7 +253,6 @@ function analysisSummary(
 			state === "ready_with_deferrals"
 				? "Three units require review before export."
 				: null,
-		inputScope,
 	};
 }
 
@@ -289,6 +285,10 @@ function deferred<T>(): {
 }
 
 describe("Foch desktop analysis checkpoint", (): void => {
+	afterEach((): void => {
+		vi.useRealTimers();
+	});
+
 	it("shows first-launch loading, then the detected playset and source identity", async (): Promise<void> => {
 		const pendingInspection = deferred<InputInspection>();
 		const client = createClient({
@@ -360,7 +360,9 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		expect(
 			await screen.findByRole("heading", { name: "1 Workshop mod unavailable" }),
 		).toBeInTheDocument();
-		expect(screen.getByText("Available mods ready")).toBeInTheDocument();
+		expect(
+			screen.getByText("Available mods ready").closest(".readiness-seal"),
+		).toHaveClass("readiness-ready_with_omissions");
 		expect(
 			screen.getByText("Unavailable", { selector: ".mod-state" }),
 		).toBeInTheDocument();
@@ -419,9 +421,7 @@ describe("Foch desktop analysis checkpoint", (): void => {
 		).not.toBeInTheDocument();
 
 		await act(async (): Promise<void> => {
-			pendingSummary.resolve(
-				analysisSummary("ready_with_deferrals", INCOMPLETE_INPUT_SCOPE),
-			);
+			pendingSummary.resolve(analysisSummary("ready_with_deferrals"));
 		});
 
 		expect(
@@ -537,6 +537,126 @@ describe("Foch desktop analysis checkpoint", (): void => {
 			screen.queryByRole("button", { name: /Analyze current playset/i }),
 		).not.toBeInTheDocument();
 		expect(startMergeAnalysis).toHaveBeenCalledTimes(1);
+	});
+
+	it("backs off transient update failures, pauses after three, and retries explicitly", async (): Promise<void> => {
+		const pollIntervalMs = 100;
+		const getMergeAnalysisSummary = vi
+			.fn<DesktopClient["getMergeAnalysisSummary"]>()
+			.mockRejectedValueOnce({ code: "summary_unavailable", message: "temporary 1" })
+			.mockRejectedValueOnce({ code: "summary_unavailable", message: "temporary 2" })
+			.mockRejectedValueOnce({ code: "summary_unavailable", message: "temporary 3" })
+			.mockResolvedValueOnce(analysisSummary("running"));
+		const client = createClient({ getMergeAnalysisSummary });
+		render(<App client={client} pollIntervalMs={pollIntervalMs} />);
+		const analyzeButton = await screen.findByRole("button", {
+			name: /Analyze current playset/i,
+		});
+
+		vi.useFakeTimers();
+		await act(async (): Promise<void> => {
+			fireEvent.click(analyzeButton);
+			await Promise.resolve();
+		});
+
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(1);
+		expect(screen.getByRole("heading", { name: "Queued" })).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: "Analysis failed" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Retry update" }),
+		).not.toBeInTheDocument();
+
+		await act(async (): Promise<void> => {
+			await vi.advanceTimersByTimeAsync(pollIntervalMs - 1);
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(1);
+
+		await act(async (): Promise<void> => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(2);
+
+		await act(async (): Promise<void> => {
+			await vi.advanceTimersByTimeAsync(pollIntervalMs * 2 - 1);
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(2);
+
+		await act(async (): Promise<void> => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(3);
+		expect(screen.getByRole("button", { name: "Retry update" })).toBeInTheDocument();
+		expect(screen.getByText(/temporary 3/)).toBeInTheDocument();
+		expect(screen.getByRole("heading", { name: "Queued" })).toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: "Analysis failed" }),
+		).not.toBeInTheDocument();
+
+		await act(async (): Promise<void> => {
+			await vi.advanceTimersByTimeAsync(pollIntervalMs * 10);
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(3);
+
+		await act(async (): Promise<void> => {
+			fireEvent.click(screen.getByRole("button", { name: "Retry update" }));
+			await Promise.resolve();
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(4);
+		expect(screen.getByRole("heading", { name: "Analyzing" })).toBeInTheDocument();
+		expect(screen.queryByText(/Analysis update failed/)).not.toBeInTheDocument();
+	});
+
+	it("stops polling on a structured analysis_not_found error without inventing failure", async (): Promise<void> => {
+		const getMergeAnalysisSummary = vi
+			.fn<DesktopClient["getMergeAnalysisSummary"]>()
+			.mockRejectedValue({
+				code: "analysis_not_found",
+				message: "The analysis record expired",
+			});
+		const client = createClient({ getMergeAnalysisSummary });
+		render(<App client={client} pollIntervalMs={100} />);
+		const analyzeButton = await screen.findByRole("button", {
+			name: /Analyze current playset/i,
+		});
+
+		vi.useFakeTimers();
+		await act(async (): Promise<void> => {
+			fireEvent.click(analyzeButton);
+			await Promise.resolve();
+		});
+
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(1);
+		expect(screen.getByText(/The analysis record expired/)).toBeInTheDocument();
+		expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { name: "Analysis unavailable" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Check input again" }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("heading", { name: "Queued" })).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("heading", { name: "Analysis failed" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Retry update" }),
+		).not.toBeInTheDocument();
+
+		await act(async (): Promise<void> => {
+			await vi.advanceTimersByTimeAsync(10_000);
+		});
+		expect(getMergeAnalysisSummary).toHaveBeenCalledTimes(1);
+
+		await act(async (): Promise<void> => {
+			fireEvent.click(screen.getByRole("button", { name: "Check input again" }));
+			await Promise.resolve();
+		});
+		expect(client.inspectInput).toHaveBeenCalledTimes(2);
+		expect(
+			screen.getByRole("button", { name: /Analyze current playset/i }),
+		).toBeEnabled();
 	});
 
 	it("passes search and outcome filters through the bounded list endpoint", async (): Promise<void> => {

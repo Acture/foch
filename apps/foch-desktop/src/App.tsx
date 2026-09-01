@@ -26,12 +26,14 @@ import {
 	type MergeUnitPage,
 	hasMergeReview,
 	isAnalysisActive,
+	parseDesktopCommandError,
 	tauriDesktopClient,
 } from "./api";
 
 const PAGE_SIZE = 12;
 const MAX_QUERY_CHARS: number = 256;
 const OMITTED_MOD_PREVIEW_LIMIT: number = 5;
+const MAX_CONSECUTIVE_POLL_FAILURES: number = 3;
 
 const DISPOSITION_LABELS: Record<MergeDisposition, string> = {
 	safe: "Safe merge",
@@ -66,6 +68,8 @@ interface AppProps {
 	pollIntervalMs?: number;
 }
 
+type AnalysisUpdateStatus = "polling" | "paused" | "unavailable";
+
 interface AsyncValue<T> {
 	value: T | null;
 	loading: boolean;
@@ -89,10 +93,7 @@ function initialAsyncValue<T>(): AsyncValue<T> {
 	return { value: null, loading: true, error: null };
 }
 
-function queuedAnalysisSummary(
-	analysisId: string,
-	inputScope: AnalysisInputScope,
-): MergeAnalysisSummary {
+function queuedAnalysisSummary(analysisId: string): MergeAnalysisSummary {
 	return {
 		analysisId,
 		state: "queued",
@@ -110,12 +111,11 @@ function queuedAnalysisSummary(
 			deferred: 0,
 		},
 		message: null,
-		inputScope,
 	};
 }
 
 function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
+	return parseDesktopCommandError(error).message;
 }
 
 async function loadInputInspection(
@@ -149,9 +149,11 @@ function hasInputOmissions(scope: AnalysisInputScope): boolean {
 	return scope.mode === "without_unavailable_mods";
 }
 
-function analysisStateLabel(summary: MergeAnalysisSummary): string {
-	if (!hasInputOmissions(summary.inputScope))
-		return ANALYSIS_STATE_LABELS[summary.state];
+function analysisStateLabel(
+	summary: MergeAnalysisSummary,
+	inputScope: AnalysisInputScope,
+): string {
+	if (!hasInputOmissions(inputScope)) return ANALYSIS_STATE_LABELS[summary.state];
 	if (summary.state === "ready") return "Incomplete review ready";
 	if (summary.state === "ready_with_deferrals") return "Incomplete review required";
 	if (summary.state === "blocked") return "Incomplete review blocked";
@@ -465,10 +467,12 @@ function DispositionRibbon({
 
 function AnalysisHeader({
 	summary,
+	inputScope,
 	cancelling,
 	onCancel,
 }: {
 	summary: MergeAnalysisSummary;
+	inputScope: AnalysisInputScope;
 	cancelling: boolean;
 	onCancel: () => void;
 }): JSX.Element {
@@ -483,7 +487,7 @@ function AnalysisHeader({
 			<div className="analysis-title-row">
 				<div>
 					<p className="section-kicker">Read-only analysis</p>
-					<h2>{analysisStateLabel(summary)}</h2>
+					<h2>{analysisStateLabel(summary, inputScope)}</h2>
 				</div>
 				{active && (
 					<button
@@ -563,6 +567,31 @@ function ReviewUnavailablePanel({
 						Check input again
 					</button>
 				)}
+			</div>
+		</section>
+	);
+}
+
+function AnalysisUnavailablePanel({
+	message,
+	onReset,
+}: {
+	message: string | null;
+	onReset: () => void;
+}): JSX.Element {
+	return (
+		<section className="review-unavailable" role="alert">
+			<span className="review-state-mark" aria-hidden="true" />
+			<div>
+				<p className="section-kicker">Read-only analysis</p>
+				<h2>Analysis unavailable</h2>
+				<p>
+					{message ??
+						"The analysis record is no longer available. Check the current input before starting again."}
+				</p>
+				<button className="primary-action" type="button" onClick={onReset}>
+					Check input again
+				</button>
 			</div>
 		</section>
 	);
@@ -692,8 +721,13 @@ export default function App({
 	const [starting, setStarting] = useState<boolean>(false);
 	const [cancelling, setCancelling] = useState<boolean>(false);
 	const [analysisId, setAnalysisId] = useState<string | null>(null);
+	const [analysisInputScope, setAnalysisInputScope] =
+		useState<AnalysisInputScope | null>(null);
 	const [summary, setSummary] = useState<MergeAnalysisSummary | null>(null);
 	const [analysisError, setAnalysisError] = useState<string | null>(null);
+	const [analysisUpdateStatus, setAnalysisUpdateStatus] =
+		useState<AnalysisUpdateStatus>("polling");
+	const [pollRetryGeneration, setPollRetryGeneration] = useState<number>(0);
 	const [unitPage, setUnitPage] = useState<AsyncValue<MergeUnitPage>>({
 		value: EMPTY_UNIT_PAGE,
 		loading: false,
@@ -732,13 +766,16 @@ export default function App({
 	useEffect((): (() => void) | undefined => {
 		if (analysisId === null) return undefined;
 		let disposed = false;
+		let consecutiveFailures = 0;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const refresh = async (): Promise<void> => {
 			try {
 				const next = await client.getMergeAnalysisSummary(analysisId);
 				if (disposed) return;
+				consecutiveFailures = 0;
 				setSummary(next);
 				setAnalysisError(null);
+				setAnalysisUpdateStatus("polling");
 				if (isAnalysisActive(next.state)) {
 					timer = setTimeout((): void => {
 						void refresh();
@@ -746,10 +783,22 @@ export default function App({
 				}
 			} catch (error: unknown) {
 				if (disposed) return;
-				setAnalysisError(errorMessage(error));
+				const commandError = parseDesktopCommandError(error);
+				setAnalysisError(commandError.message);
+				if (commandError.code === "analysis_not_found") {
+					setAnalysisUpdateStatus("unavailable");
+					return;
+				}
+
+				consecutiveFailures += 1;
+				if (consecutiveFailures >= MAX_CONSECUTIVE_POLL_FAILURES) {
+					setAnalysisUpdateStatus("paused");
+					return;
+				}
+				const retryDelayMs: number = pollIntervalMs * 2 ** (consecutiveFailures - 1);
 				timer = setTimeout((): void => {
 					void refresh();
-				}, pollIntervalMs);
+				}, retryDelayMs);
 			}
 		};
 		void refresh();
@@ -757,7 +806,7 @@ export default function App({
 			disposed = true;
 			if (timer !== undefined) clearTimeout(timer);
 		};
-	}, [analysisId, client, pollIntervalMs]);
+	}, [analysisId, client, pollIntervalMs, pollRetryGeneration]);
 
 	const reviewAvailable: boolean = summary !== null && hasMergeReview(summary.state);
 
@@ -837,7 +886,10 @@ export default function App({
 		if (inspection.value === null) return;
 		setStarting(true);
 		setAnalysisError(null);
+		setAnalysisInputScope(null);
 		setSummary(null);
+		setAnalysisUpdateStatus("polling");
+		setPollRetryGeneration(0);
 		setSelectedUnitId(null);
 		setUnitDetail(EMPTY_UNIT_DETAIL);
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
@@ -846,8 +898,9 @@ export default function App({
 				inspection.value.inspectionId,
 				inputMode,
 			);
+			setAnalysisInputScope(started.inputScope);
 			setAnalysisId(started.analysisId);
-			setSummary(queuedAnalysisSummary(started.analysisId, started.inputScope));
+			setSummary(queuedAnalysisSummary(started.analysisId));
 		} catch (error: unknown) {
 			setAnalysisError(errorMessage(error));
 		} finally {
@@ -871,8 +924,11 @@ export default function App({
 
 	const resetAnalysis = async (): Promise<void> => {
 		setAnalysisId(null);
+		setAnalysisInputScope(null);
 		setSummary(null);
 		setAnalysisError(null);
+		setAnalysisUpdateStatus("polling");
+		setPollRetryGeneration(0);
 		setSelectedUnitId(null);
 		setUnitDetail(EMPTY_UNIT_DETAIL);
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
@@ -881,6 +937,12 @@ export default function App({
 		setDisposition(null);
 		setPage(1);
 		await inspectInput();
+	};
+
+	const retryAnalysisUpdate = (): void => {
+		setAnalysisError(null);
+		setAnalysisUpdateStatus("polling");
+		setPollRetryGeneration((generation): number => generation + 1);
 	};
 
 	const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
@@ -951,7 +1013,7 @@ export default function App({
 				<div className="workbench">
 					<ReadinessRail
 						inspection={inspection.value}
-						inputScope={summary?.inputScope ?? null}
+						inputScope={analysisInputScope}
 					/>
 					<section className="analysis-workspace" aria-label="Merge analysis workspace">
 						{summary === null &&
@@ -1017,24 +1079,40 @@ export default function App({
 									<p className="error-copy">{analysisError}</p>
 								)}
 							</div>
+						) : analysisInputScope === null ? null : analysisUpdateStatus ===
+						  "unavailable" ? (
+							<AnalysisUnavailablePanel
+								message={analysisError}
+								onReset={(): void => void resetAnalysis()}
+							/>
 						) : (
 							<>
 								<AnalysisHeader
 									summary={summary}
+									inputScope={analysisInputScope}
 									cancelling={cancelling}
 									onCancel={(): void => void cancelAnalysis()}
 								/>
-								<InputScopeNotice scope={summary.inputScope} />
+								<InputScopeNotice scope={analysisInputScope} />
 								{analysisError !== null && (
-									<p className="inline-error" role="alert">
-										Analysis update failed: {analysisError}
-									</p>
+									<div className="inline-error" role="alert">
+										<span>Analysis update failed: {analysisError}</span>
+										{analysisUpdateStatus === "paused" && (
+											<button
+												className="secondary-action"
+												type="button"
+												onClick={retryAnalysisUpdate}
+											>
+												Retry update
+											</button>
+										)}
+									</div>
 								)}
 								{reviewAvailable && <DispositionRibbon summary={summary} />}
 								{!reviewAvailable && (
 									<ReviewUnavailablePanel
 										state={summary.state}
-										inputScope={summary.inputScope}
+										inputScope={analysisInputScope}
 										onReset={(): void => void resetAnalysis()}
 									/>
 								)}

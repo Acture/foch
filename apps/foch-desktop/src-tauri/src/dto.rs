@@ -176,7 +176,6 @@ pub(crate) struct MergeAnalysisSummary {
 	pub(crate) elapsed_ms: u64,
 	pub(crate) counts: MergeUnitCounts,
 	pub(crate) message: Option<String>,
-	pub(crate) input_scope: AnalysisInputScope,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -284,18 +283,6 @@ mod tests {
 				..MergeUnitCounts::default()
 			},
 			message: None,
-			input_scope: AnalysisInputScope {
-				mode: AnalysisInputMode::WithoutUnavailableMods,
-				source_mod_count: 5,
-				omitted_mods: vec![OmittedPlaysetMod {
-					id: "3344925456".to_string(),
-					name: "Unavailable mod".to_string(),
-					position: 3,
-					reason: "Workshop item is missing".to_string(),
-				}],
-				omitted_mod_count: 1,
-				included_mod_count: 4,
-			},
 		};
 		assert_eq!(
 			serde_json::to_value(summary).unwrap(),
@@ -315,19 +302,7 @@ mod tests {
 					"engineFailure": 0,
 					"deferred": 0
 				},
-				"message": null,
-				"inputScope": {
-					"mode": "without_unavailable_mods",
-					"sourceModCount": 5,
-					"omittedMods": [{
-						"id": "3344925456",
-						"name": "Unavailable mod",
-						"position": 3,
-						"reason": "Workshop item is missing"
-					}],
-					"omittedModCount": 1,
-					"includedModCount": 4
-				}
+				"message": null
 			})
 		);
 	}

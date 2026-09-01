@@ -11,7 +11,7 @@ use crate::playset::descriptor::load_descriptor;
 use crate::playset::steam::{
 	SteamId, SteamWorkshopCatalog, SteamWorkshopError, find_steam_root_path,
 };
-use crate::playset::{Playset, default_dlc_load_path};
+use crate::playset::{Playset, PlaysetEntry, default_dlc_load_path};
 
 const CURRENT_PLAYSET_NAME: &str = "Current EU4 playset";
 const GAME_NAME: &str = "Europa Universalis IV";
@@ -133,6 +133,63 @@ struct PreparedCurrentEu4Input {
 	source_mod_count: usize,
 	recovery: Option<AvailableInputRecovery>,
 	base_snapshot_identity: InstalledBaseSnapshotIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlaysetModClassification {
+	Usable,
+	Omittable,
+	Blocking,
+}
+
+#[derive(Debug)]
+struct ClassifiedPlaysetMod {
+	entry: PlaysetEntry,
+	detected: DetectedPlaysetMod,
+	classification: PlaysetModClassification,
+}
+
+#[derive(Debug)]
+struct DerivedPlaysetModViews {
+	detected: Vec<DetectedPlaysetMod>,
+	usable: Vec<PlaysetEntry>,
+	omittable: Vec<OmittedPlaysetMod>,
+	has_blocking: bool,
+}
+
+fn derive_playset_mod_views(classified_mods: Vec<ClassifiedPlaysetMod>) -> DerivedPlaysetModViews {
+	let mut detected = Vec::with_capacity(classified_mods.len());
+	let mut usable = Vec::with_capacity(classified_mods.len());
+	let mut omittable = Vec::new();
+	let mut has_blocking = false;
+
+	for classified in classified_mods {
+		match classified.classification {
+			PlaysetModClassification::Usable => usable.push(classified.entry),
+			PlaysetModClassification::Omittable => {
+				let reason = classified
+					.detected
+					.source_error
+					.clone()
+					.expect("omittable mod classification requires a source error");
+				omittable.push(OmittedPlaysetMod {
+					id: classified.detected.id.clone(),
+					name: classified.detected.name.clone(),
+					position: classified.detected.position,
+					reason,
+				});
+			}
+			PlaysetModClassification::Blocking => has_blocking = true,
+		}
+		detected.push(classified.detected);
+	}
+
+	DerivedPlaysetModViews {
+		detected,
+		usable,
+		omittable,
+		has_blocking,
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -363,10 +420,9 @@ fn inspect_playset(
 	}
 
 	let catalog_ready = catalog.is_ok();
-	let mut has_blocking_mod_error = false;
-	let mut omittable_mods = Vec::with_capacity(playset.mods.len());
-	let mut detected_mods = Vec::with_capacity(playset.mods.len());
-	for (index, entry) in playset.mods.iter_mut().enumerate() {
+	let source_mods = std::mem::take(&mut playset.mods);
+	let mut classified_mods = Vec::with_capacity(source_mods.len());
+	for (index, mut entry) in source_mods.into_iter().enumerate() {
 		let workshop_id = entry.steam_id.clone();
 		let mut detected = DetectedPlaysetMod {
 			id: workshop_id
@@ -387,36 +443,47 @@ fn inspect_playset(
 		};
 		let enrichment = workshop_id
 			.as_deref()
-			.ok_or_else(|| ("playset entry has no Workshop id".to_string(), false))
-			.and_then(|id| {
-				id.parse::<SteamId>()
-					.map_err(|error| (error.to_string(), false))
+			.ok_or_else(|| {
+				(
+					"playset entry has no Workshop id".to_string(),
+					PlaysetModClassification::Blocking,
+				)
 			})
 			.and_then(|id| {
-				let catalog = catalog.as_ref().map_err(|error| (error.clone(), false))?;
+				id.parse::<SteamId>()
+					.map_err(|error| (error.to_string(), PlaysetModClassification::Blocking))
+			})
+			.and_then(|id| {
+				let catalog = catalog
+					.as_ref()
+					.map_err(|error| (error.clone(), PlaysetModClassification::Blocking))?;
 				let item = catalog.require_item(&id).map_err(|error| {
-					let omittable = matches!(
+					let classification = if matches!(
 						&error,
 						SteamWorkshopError::MissingItem { .. }
 							| SteamWorkshopError::UnavailableManifest { .. }
 							| SteamWorkshopError::MissingItemContent { .. }
-					);
-					(error.to_string(), omittable)
+					) {
+						PlaysetModClassification::Omittable
+					} else {
+						PlaysetModClassification::Blocking
+					};
+					(error.to_string(), classification)
 				})?;
 				let identity = item
 					.identity()
-					.map_err(|error| (error.to_string(), false))?;
+					.map_err(|error| (error.to_string(), PlaysetModClassification::Blocking))?;
 				let descriptor_path = item.content_path.join("descriptor.mod");
 				detected.descriptor_path = Some(descriptor_path.clone());
 				let descriptor = load_descriptor(&descriptor_path)
-					.map_err(|error| (error.to_string(), false))?;
+					.map_err(|error| (error.to_string(), PlaysetModClassification::Blocking))?;
 				if descriptor.name.trim().is_empty() {
 					return Err((
 						format!(
 							"Workshop descriptor {} has an empty name",
 							descriptor_path.display()
 						),
-						false,
+						PlaysetModClassification::Blocking,
 					));
 				}
 				Ok((
@@ -426,9 +493,8 @@ fn inspect_playset(
 					descriptor,
 				))
 			});
-		match enrichment {
+		let classification = match enrichment {
 			Ok((root_path, identity, descriptor_path, descriptor)) => {
-				omittable_mods.push(false);
 				detected.name = descriptor.name.clone();
 				detected.workshop_manifest_id = Some(identity.manifest_id.to_string());
 				detected.version = descriptor.version.clone();
@@ -437,55 +503,40 @@ fn inspect_playset(
 				entry.display_name = Some(descriptor.name);
 				entry.root_path = Some(root_path);
 				entry.workshop_identity = Some(identity);
+				PlaysetModClassification::Usable
 			}
-			Err((error, omittable)) => {
-				omittable_mods.push(omittable);
-				if !omittable {
-					has_blocking_mod_error = true;
-				}
+			Err((error, classification)) => {
+				debug_assert_ne!(classification, PlaysetModClassification::Usable);
 				detected.source_error = Some(error.clone());
 				issues.push(issue(
 					format!("workshop_mod_unavailable_{}", index + 1),
 					format!("Workshop mod {} is not ready", detected.id),
 					error,
-					Some(if omittable {
+					Some(if classification == PlaysetModClassification::Omittable {
 						"Analyze the remaining installed mods, or remove/reinstall this item in the EU4 Launcher."
 					} else {
 						"Repair or redownload this Workshop item in Steam."
 					}),
 				));
+				classification
 			}
-		}
-		detected_mods.push(detected);
+		};
+		classified_mods.push(ClassifiedPlaysetMod {
+			entry,
+			detected,
+			classification,
+		});
 	}
+	let views = derive_playset_mod_views(classified_mods);
 
 	let detected = DetectedPlayset {
 		name: CURRENT_PLAYSET_NAME.to_string(),
 		source_path: playset_path.clone(),
-		mods: detected_mods,
+		mods: views.detected,
 	};
-	let omitted_mods = detected
-		.mods
-		.iter()
-		.zip(&omittable_mods)
-		.filter(|(_, omittable)| **omittable)
-		.filter_map(|(playset_mod, _)| {
-			playset_mod
-				.source_error
-				.as_ref()
-				.map(|reason| OmittedPlaysetMod {
-					id: playset_mod.id.clone(),
-					name: playset_mod.name.clone(),
-					position: playset_mod.position,
-					reason: reason.clone(),
-				})
-		})
-		.collect::<Vec<_>>();
-	let prepared = if catalog_ready && !has_blocking_mod_error {
-		playset
-			.mods
-			.retain(|entry| entry.root_path.is_some() && entry.workshop_identity.is_some());
-		if playset.mods.is_empty() && !omitted_mods.is_empty() {
+	let prepared = if catalog_ready && !views.has_blocking {
+		playset.mods = views.usable;
+		if playset.mods.is_empty() && !views.omittable.is_empty() {
 			issues.push(issue(
 				"no_available_workshop_mods",
 				"No installed Workshop mods remain to analyze",
@@ -500,9 +551,9 @@ fn inspect_playset(
 		None
 	};
 	let recovery = prepared.as_ref().and_then(|(_, playset)| {
-		(!omitted_mods.is_empty()).then_some(AvailableInputRecovery {
+		(!views.omittable.is_empty()).then_some(AvailableInputRecovery {
 			source_mod_count: detected.mods.len(),
-			omitted_mods,
+			omitted_mods: views.omittable,
 			included_mod_count: playset.mods.len(),
 		})
 	});
@@ -832,6 +883,65 @@ remote_file_id="43"
 			.collect::<Vec<_>>();
 		entries.sort_by(|left, right| left.path.cmp(&right.path));
 		entries
+	}
+
+	#[test]
+	fn classified_mods_derive_usable_omittable_and_blocking_views() {
+		let detected = |id: &str, source_error: Option<&str>| DetectedPlaysetMod {
+			id: id.to_string(),
+			name: format!("Mod {id}"),
+			position: id.parse().expect("numeric test id"),
+			enabled: true,
+			workshop_id: Some(id.to_string()),
+			workshop_manifest_id: None,
+			version: None,
+			declared_dependencies: Vec::new(),
+			descriptor_path: None,
+			source_error: source_error.map(str::to_string),
+		};
+		let entry = |id: &str| PlaysetEntry {
+			steam_id: Some(id.to_string()),
+			..PlaysetEntry::default()
+		};
+
+		let views = derive_playset_mod_views(vec![
+			ClassifiedPlaysetMod {
+				entry: entry("1"),
+				detected: detected("1", None),
+				classification: PlaysetModClassification::Usable,
+			},
+			ClassifiedPlaysetMod {
+				entry: entry("2"),
+				detected: detected("2", Some("not installed")),
+				classification: PlaysetModClassification::Omittable,
+			},
+			ClassifiedPlaysetMod {
+				entry: entry("3"),
+				detected: detected("3", Some("descriptor invalid")),
+				classification: PlaysetModClassification::Blocking,
+			},
+		]);
+
+		assert_eq!(
+			views
+				.detected
+				.iter()
+				.map(|playset_mod| playset_mod.id.as_str())
+				.collect::<Vec<_>>(),
+			["1", "2", "3"]
+		);
+		assert_eq!(views.usable.len(), 1);
+		assert_eq!(views.usable[0].steam_id.as_deref(), Some("1"));
+		assert_eq!(
+			views.omittable,
+			[OmittedPlaysetMod {
+				id: "2".to_string(),
+				name: "Mod 2".to_string(),
+				position: 2,
+				reason: "not installed".to_string(),
+			}]
+		);
+		assert!(views.has_blocking);
 	}
 
 	#[test]

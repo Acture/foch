@@ -187,7 +187,7 @@ select:focus-visible {
 .readiness-ready {
 	color: var(--safe);
 }
-.readiness-ready-with-omissions {
+.readiness-ready_with_omissions {
 	color: var(--choice);
 }
 .readiness-blocked {
@@ -761,10 +761,17 @@ select:focus-visible {
 	line-height: 1.5;
 }
 .inline-error {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.8rem;
 	margin: 0;
 	padding: 0.7rem 1.35rem;
 	border-bottom: 1px solid #d5aaa5;
 	background: #f3e5e2;
+}
+.inline-error .secondary-action {
+	flex: none;
 }
 .unit-browser {
 	display: grid;
@@ -1140,6 +1147,10 @@ select:focus-visible {
 	}
 	.progress-copy {
 		gap: 0.3rem;
+	}
+	.inline-error {
+		align-items: stretch;
+		flex-direction: column;
 	}
 	.recovery-actions {
 		align-items: stretch;
