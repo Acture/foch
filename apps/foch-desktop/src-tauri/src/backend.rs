@@ -1,13 +1,9 @@
 use crate::dto::{
-	AnalysisInputMode, AnalysisInputScope, BaseDataState, BaseDataView, DetectedPlaysetView,
-	InputInspection, InputRecoveryOption, InstalledGameView, MergeAnalysisState, MergeDisposition,
-	MergeUnitContributor, MergeUnitCounts, MergeUnitDetail, MergeUnitKind, OmittedPlaysetMod,
-	PlaysetModView, ReadinessIssue, ReadinessState,
+	BaseDataState, BaseDataView, DetectedPlaysetView, InputInspection, InstalledGameView,
+	MergeAnalysisState, MergeDisposition, MergeUnitContributor, MergeUnitCounts, MergeUnitDetail,
+	MergeUnitKind, PlaysetModView, ReadinessIssue, ReadinessState,
 };
-use foch::input::{
-	CurrentEu4Input, InputPreparationMode, InputRequest, PreparedAnalysisInput,
-	inspect_current_eu4_input,
-};
+use foch::input::{CurrentEu4Input, InputRequest, inspect_current_eu4_input};
 use foch::merge::{
 	AnalyzedMerge, CancellationToken, MergeAnalysisOptions, MergeAnalysisStatus, MergeError,
 	ProgressObserver, analyze_merge,
@@ -32,13 +28,7 @@ pub(crate) enum AnalysisRunError {
 #[derive(Debug)]
 pub(crate) struct InspectedAnalysisInput {
 	pub(crate) inspection: InputInspection,
-	pub(crate) prepared: Option<PreparedDesktopInput>,
-}
-
-#[derive(Debug)]
-pub(crate) struct PreparedDesktopInput {
-	pub(crate) request: InputRequest,
-	pub(crate) input_scope: AnalysisInputScope,
+	pub(crate) request: Option<InputRequest>,
 }
 
 pub(crate) trait AnalysisReview: Send + Sync {
@@ -68,22 +58,9 @@ impl AnalysisRunner for FochAnalysisRunner {
 	fn inspect_input(&self) -> InspectedAnalysisInput {
 		let input = inspect_current_eu4_input();
 		let inspection = input_inspection_view(&input);
-		let preparation_mode = match input.readiness {
-			foch::input::InputReadiness::Ready => Some(InputPreparationMode::Complete),
-			foch::input::InputReadiness::ReadyWithOmissions => {
-				Some(InputPreparationMode::AvailableOnly)
-			}
-			foch::input::InputReadiness::Blocked => None,
-		};
-		let prepared = preparation_mode
-			.and_then(|mode| input.prepare(mode))
-			.map(|prepared| PreparedDesktopInput {
-				input_scope: prepared_input_scope(&prepared),
-				request: prepared.request,
-			});
 		InspectedAnalysisInput {
 			inspection,
-			prepared,
+			request: input.into_request(),
 		}
 	}
 
@@ -291,26 +268,11 @@ pub(crate) fn input_inspection_view(input: &CurrentEu4Input) -> InputInspection 
 			mods,
 		}
 	});
-	let readiness = match input.readiness {
-		foch::input::InputReadiness::Ready => ReadinessState::Ready,
-		foch::input::InputReadiness::ReadyWithOmissions => ReadinessState::ReadyWithOmissions,
-		foch::input::InputReadiness::Blocked => ReadinessState::Blocked,
-	};
-	let recovery = input.recovery.as_ref().map(|recovery| InputRecoveryOption {
-		kind: AnalysisInputMode::WithoutUnavailableMods,
-		source_mod_count: recovery.source_mod_count,
-		omitted_mods: recovery
-			.omitted_mods
-			.iter()
-			.take(MAX_PLAYSET_MODS)
-			.map(omitted_playset_mod_view)
-			.collect(),
-		omitted_mod_count: recovery.omitted_mods.len(),
-		included_mod_count: recovery.included_mod_count,
-	});
 	InputInspection {
-		inspection_id: String::new(),
-		readiness,
+		readiness: match input.readiness {
+			foch::input::InputReadiness::Ready => ReadinessState::Ready,
+			foch::input::InputReadiness::Blocked => ReadinessState::Blocked,
+		},
 		game: InstalledGameView {
 			name: bounded_text(&input.game.name, MAX_SHORT_TEXT_CHARS),
 			version: input
@@ -335,40 +297,6 @@ pub(crate) fn input_inspection_view(input: &CurrentEu4Input) -> InputInspection 
 		},
 		playset,
 		issues,
-		recovery,
-	}
-}
-
-fn prepared_input_scope(prepared: &PreparedAnalysisInput) -> AnalysisInputScope {
-	match prepared.recovery.as_ref() {
-		Some(recovery) => AnalysisInputScope {
-			mode: AnalysisInputMode::WithoutUnavailableMods,
-			source_mod_count: recovery.source_mod_count,
-			omitted_mods: recovery
-				.omitted_mods
-				.iter()
-				.take(MAX_PLAYSET_MODS)
-				.map(omitted_playset_mod_view)
-				.collect(),
-			omitted_mod_count: recovery.omitted_mods.len(),
-			included_mod_count: recovery.included_mod_count,
-		},
-		None => AnalysisInputScope {
-			mode: AnalysisInputMode::Complete,
-			source_mod_count: prepared.source_mod_count,
-			omitted_mods: Vec::new(),
-			omitted_mod_count: 0,
-			included_mod_count: prepared.source_mod_count,
-		},
-	}
-}
-
-fn omitted_playset_mod_view(omitted: &foch::input::OmittedPlaysetMod) -> OmittedPlaysetMod {
-	OmittedPlaysetMod {
-		id: bounded_text(&omitted.id, MAX_SHORT_TEXT_CHARS),
-		name: bounded_text(&omitted.name, MAX_SHORT_TEXT_CHARS),
-		position: omitted.position,
-		reason: bounded_text(&omitted.reason, MAX_DETAIL_TEXT_CHARS),
 	}
 }
 
@@ -381,75 +309,4 @@ pub(crate) fn bounded_text(value: &str, max_chars: usize) -> String {
 		return value.to_string();
 	}
 	value.chars().take(max_chars).collect()
-}
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-	use serde_json::json;
-
-	#[test]
-	fn truncated_recovery_view_retains_full_selection_counts() {
-		let source_mod_count = MAX_PLAYSET_MODS + 2;
-		let omitted_mod_count = source_mod_count - 1;
-		let mods = (0..source_mod_count)
-			.map(|index| {
-				json!({
-					"id": index.to_string(),
-					"name": format!("Mod {index}"),
-					"position": index + 1,
-					"enabled": true,
-					"workshopId": index.to_string(),
-					"workshopManifestId": null,
-					"version": null,
-					"declaredDependencies": [],
-					"descriptorPath": null,
-					"sourceError": "missing"
-				})
-			})
-			.collect::<Vec<_>>();
-		let omitted_mods = (0..omitted_mod_count)
-			.map(|index| {
-				json!({
-					"id": index.to_string(),
-					"name": format!("Mod {index}"),
-					"position": index + 1,
-					"reason": "missing"
-				})
-			})
-			.collect::<Vec<_>>();
-		let input: CurrentEu4Input = serde_json::from_value(json!({
-			"readiness": "ready_with_omissions",
-			"game": {
-				"name": "Europa Universalis IV",
-				"version": "1.37.5",
-				"installPath": "/game"
-			},
-			"baseData": {
-				"state": "ready",
-				"version": "1.37.5",
-				"detail": "ready"
-			},
-			"playset": {
-				"name": "Current EU4 playset",
-				"sourcePath": "/playset/dlc_load.json",
-				"mods": mods
-			},
-			"issues": [],
-			"recovery": {
-				"sourceModCount": source_mod_count,
-				"omittedMods": omitted_mods,
-				"includedModCount": 1
-			}
-		}))
-		.expect("deserialize oversized inspection view");
-
-		let view = input_inspection_view(&input);
-		let recovery = view.recovery.expect("recovery option");
-		assert_eq!(view.playset.expect("playset").mods.len(), MAX_PLAYSET_MODS);
-		assert_eq!(recovery.omitted_mods.len(), MAX_PLAYSET_MODS);
-		assert_eq!(recovery.source_mod_count, source_mod_count);
-		assert_eq!(recovery.omitted_mod_count, omitted_mod_count);
-		assert_eq!(recovery.included_mod_count, 1);
-	}
 }

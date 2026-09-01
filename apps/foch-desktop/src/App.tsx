@@ -12,11 +12,8 @@ import {
 
 import {
 	MERGE_DISPOSITIONS,
-	type AnalysisInputMode,
-	type AnalysisInputScope,
 	type DesktopClient,
 	type InputInspection,
-	type InputRecoveryOption,
 	type MergeAnalysisStage,
 	type MergeAnalysisState,
 	type MergeAnalysisSummary,
@@ -24,14 +21,11 @@ import {
 	type MergeUnitDetail,
 	type MergeUnitListItem,
 	type MergeUnitPage,
-	hasMergeReview,
 	isAnalysisActive,
 	tauriDesktopClient,
 } from "./api";
 
 const PAGE_SIZE = 12;
-const MAX_QUERY_CHARS: number = 256;
-const OMITTED_MOD_PREVIEW_LIMIT: number = 5;
 
 const DISPOSITION_LABELS: Record<MergeDisposition, string> = {
 	safe: "Safe merge",
@@ -43,22 +37,22 @@ const DISPOSITION_LABELS: Record<MergeDisposition, string> = {
 };
 
 const STAGE_LABELS: Record<MergeAnalysisStage, string> = {
-	inventory: "Scan load order",
-	resolve_input: "Read playset",
-	semantic_merge: "Compare merge units",
-	validate_output: "Check results",
-	freeze_artifacts: "Prepare review",
+	inventory: "Inventory",
+	resolve_input: "Resolve input",
+	semantic_merge: "Analyze merge units",
+	validate_output: "Validate output",
+	freeze_artifacts: "Freeze analyzed bytes",
 	complete: "Complete",
 };
 
 const ANALYSIS_STATE_LABELS: Record<MergeAnalysisState, string> = {
 	queued: "Queued",
 	running: "Analyzing",
-	ready: "Review ready",
+	ready: "Ready",
 	ready_with_deferrals: "Review required",
-	blocked: "Review blocked",
+	blocked: "Blocked",
 	cancelled: "Cancelled",
-	failed: "Analysis failed",
+	failed: "Failed",
 };
 
 interface AppProps {
@@ -79,39 +73,8 @@ const EMPTY_UNIT_PAGE: MergeUnitPage = {
 	pageSize: PAGE_SIZE,
 };
 
-const EMPTY_UNIT_DETAIL: AsyncValue<MergeUnitDetail> = {
-	value: null,
-	loading: false,
-	error: null,
-};
-
 function initialAsyncValue<T>(): AsyncValue<T> {
 	return { value: null, loading: true, error: null };
-}
-
-function queuedAnalysisSummary(
-	analysisId: string,
-	inputScope: AnalysisInputScope,
-): MergeAnalysisSummary {
-	return {
-		analysisId,
-		state: "queued",
-		stage: "inventory",
-		completedUnits: 0,
-		totalUnits: 0,
-		elapsedMs: 0,
-		counts: {
-			total: 0,
-			safe: 0,
-			copy: 0,
-			needsUserChoice: 0,
-			unsupportedInput: 0,
-			engineFailure: 0,
-			deferred: 0,
-		},
-		message: null,
-		inputScope,
-	};
 }
 
 function errorMessage(error: unknown): string {
@@ -145,19 +108,6 @@ function dispositionClass(disposition: MergeDisposition): string {
 	return `disposition-${disposition.replace(/_/g, "-")}`;
 }
 
-function hasInputOmissions(scope: AnalysisInputScope): boolean {
-	return scope.mode === "without_unavailable_mods";
-}
-
-function analysisStateLabel(summary: MergeAnalysisSummary): string {
-	if (!hasInputOmissions(summary.inputScope))
-		return ANALYSIS_STATE_LABELS[summary.state];
-	if (summary.state === "ready") return "Incomplete review ready";
-	if (summary.state === "ready_with_deferrals") return "Incomplete review required";
-	if (summary.state === "blocked") return "Incomplete review blocked";
-	return ANALYSIS_STATE_LABELS[summary.state];
-}
-
 function StatusMark({ disposition }: { disposition: MergeDisposition }): JSX.Element {
 	return (
 		<span className={`status-mark ${dispositionClass(disposition)}`}>
@@ -167,43 +117,19 @@ function StatusMark({ disposition }: { disposition: MergeDisposition }): JSX.Ele
 	);
 }
 
-function ReadinessRail({
-	inspection,
-	inputScope,
-}: {
-	inspection: InputInspection;
-	inputScope: AnalysisInputScope | null;
-}): JSX.Element {
+function ReadinessRail({ inspection }: { inspection: InputInspection }): JSX.Element {
 	const enabledMods =
 		inspection.playset?.mods.filter((mod): boolean => mod.enabled) ?? [];
-	const scope = inputScope ?? inspection.recovery;
-	const omittedModIds: Set<string> = new Set(
-		scope?.omittedMods.map((mod): string => mod.id) ?? [],
-	);
-	const omissionsAccepted: boolean =
-		inputScope !== null && hasInputOmissions(inputScope);
-	const readiness = omissionsAccepted ? "ready_with_omissions" : inspection.readiness;
-	const readinessCopy: string = omissionsAccepted
-		? "Incomplete input"
-		: readiness === "ready"
-			? "Ready to analyze"
-			: readiness === "ready_with_omissions"
-				? "Available mods ready"
-				: "Setup blocked";
-	const readinessSymbol: string =
-		readiness === "ready" ? "✓" : readiness === "blocked" ? "!" : "–";
-	const modCountCopy: string =
-		scope === null
-			? enabledMods.length.toString()
-			: `${scope.includedModCount}/${scope.sourceModCount}`;
 
 	return (
 		<aside className="input-rail" aria-label="Detected EU4 input">
 			<div className="rail-section rail-readiness">
 				<p className="section-kicker">Input readiness</p>
-				<div className={`readiness-seal readiness-${readiness}`}>
-					<span aria-hidden="true">{readinessSymbol}</span>
-					<strong>{readinessCopy}</strong>
+				<div className={`readiness-seal readiness-${inspection.readiness}`}>
+					<span aria-hidden="true">{inspection.readiness === "ready" ? "✓" : "!"}</span>
+					<strong>
+						{inspection.readiness === "ready" ? "Ready to analyze" : "Setup blocked"}
+					</strong>
 				</div>
 			</div>
 
@@ -230,190 +156,51 @@ function ReadinessRail({
 				<div className="section-heading-row">
 					<div>
 						<p className="section-kicker">Current playset</p>
-						<h2 title={inspection.playset?.name ?? undefined}>
-							{inspection.playset?.name ?? "Not detected"}
-						</h2>
+						<h2>{inspection.playset?.name ?? "Not detected"}</h2>
 					</div>
-					<span
-						className="compact-count"
-						title={
-							scope === null ? "Enabled mods" : "Included mods / source playset mods"
-						}
-					>
-						{modCountCopy}
-					</span>
+					<span className="compact-count">{enabledMods.length}</span>
 				</div>
 
 				{inspection.playset === null ? (
 					<p className="rail-empty">No current EU4 playset was found.</p>
 				) : (
 					<ol className="load-order" aria-label="Detected mod load order">
-						{inspection.playset.mods.map((mod): JSX.Element => {
-							const unavailable: boolean =
-								omittedModIds.has(mod.id) || mod.sourceError !== null;
-							const className: string = [
-								!mod.enabled ? "mod-disabled" : "",
-								unavailable ? "mod-unavailable" : "",
-							]
-								.filter(Boolean)
-								.join(" ");
-							return (
-								<li key={mod.id} className={className}>
-									<span className="load-position">
-										{mod.position.toString().padStart(2, "0")}
+						{inspection.playset.mods.map((mod): JSX.Element => (
+							<li key={mod.id} className={mod.enabled ? "" : "mod-disabled"}>
+								<span className="load-position">
+									{mod.position.toString().padStart(2, "0")}
+								</span>
+								<span className="mod-copy">
+									<span className="mod-name">{mod.name}</span>
+									<span className="mod-identity">
+										{mod.workshopId === null
+											? "Local mod"
+											: `Workshop ${mod.workshopId}`}
+										{mod.version !== null && ` · v${mod.version}`}
+										{mod.workshopManifestId !== null &&
+											` · manifest ${mod.workshopManifestId}`}
 									</span>
-									<span className="mod-copy">
-										<span className="mod-name" title={mod.name}>
-											{mod.name}
+									{mod.declaredDependencies.length > 0 && (
+										<span className="mod-dependencies">
+											Depends on: {mod.declaredDependencies.join(", ")}
 										</span>
+									)}
+									{mod.sourceError !== null && (
 										<span
-											className="mod-identity"
+											className="mod-source-error"
 											title={mod.descriptorPath ?? undefined}
 										>
-											{mod.workshopId === null
-												? "Local mod"
-												: `Workshop ${mod.workshopId}`}
-											{mod.version !== null && ` · v${mod.version}`}
-											{mod.workshopManifestId !== null &&
-												` · manifest ${mod.workshopManifestId}`}
+											Source error: {mod.sourceError}
 										</span>
-										{mod.declaredDependencies.length > 0 && (
-											<span
-												className="mod-dependencies"
-												title={mod.declaredDependencies.join(", ")}
-											>
-												Depends on: {mod.declaredDependencies.join(", ")}
-											</span>
-										)}
-										{mod.sourceError !== null && (
-											<span className="mod-source-error" title={mod.sourceError}>
-												Unavailable: {mod.sourceError}
-											</span>
-										)}
-									</span>
-									{unavailable ? (
-										<span className="mod-state">Unavailable</span>
-									) : (
-										!mod.enabled && <span className="mod-state">Off</span>
 									)}
-								</li>
-							);
-						})}
+								</span>
+								{!mod.enabled && <span className="mod-state">Off</span>}
+							</li>
+						))}
 					</ol>
 				)}
 			</div>
 		</aside>
-	);
-}
-
-function RecoveryState({
-	recovery,
-	checking,
-	starting,
-	error,
-	onAnalyze,
-	onCheck,
-}: {
-	recovery: InputRecoveryOption;
-	checking: boolean;
-	starting: boolean;
-	error: string | null;
-	onAnalyze: () => void;
-	onCheck: () => void;
-}): JSX.Element {
-	const omittedPreview = recovery.omittedMods.slice(0, OMITTED_MOD_PREVIEW_LIMIT);
-	const remainingOmittedCount: number = Math.max(
-		0,
-		recovery.omittedModCount - omittedPreview.length,
-	);
-	const modNoun: string = recovery.omittedModCount === 1 ? "mod" : "mods";
-
-	return (
-		<div className="recovery-state">
-			<p className="section-kicker">Incomplete playset</p>
-			<h2>
-				{recovery.omittedModCount} Workshop {modNoun} unavailable
-			</h2>
-			<p className="state-intro">
-				Foch can analyze {recovery.includedModCount} of {recovery.sourceModCount} mods.
-				The Launcher playset and every mod file stay untouched.
-			</p>
-			<ul className="omission-list" aria-label="Unavailable Workshop mods">
-				{omittedPreview.map((mod): JSX.Element => (
-					<li key={mod.id}>
-						<span>{mod.position.toString().padStart(2, "0")}</span>
-						<div>
-							<strong>{mod.name}</strong>
-							<small>{mod.reason}</small>
-						</div>
-					</li>
-				))}
-				{remainingOmittedCount > 0 && (
-					<li className="omission-overflow">
-						<span>+</span>
-						<div>
-							<strong>{remainingOmittedCount} more unavailable</strong>
-						</div>
-					</li>
-				)}
-			</ul>
-			<p className="recovery-warning">
-				The review will be marked incomplete because unavailable mods cannot contribute
-				to its outcomes.
-			</p>
-			<div className="recovery-actions">
-				<button
-					className="primary-action analyze-action"
-					type="button"
-					onClick={onAnalyze}
-					disabled={checking || starting}
-				>
-					<span>{starting ? "Starting analysis…" : "Analyze available mods"}</span>
-					<small>Results will be marked incomplete</small>
-				</button>
-				<button
-					className="secondary-action"
-					type="button"
-					onClick={onCheck}
-					disabled={checking || starting}
-				>
-					{checking ? "Checking…" : "Check again"}
-				</button>
-			</div>
-			{error !== null && (
-				<p className="error-copy" role="alert">
-					{error}
-				</p>
-			)}
-		</div>
-	);
-}
-
-function InputScopeNotice({
-	scope,
-}: {
-	scope: AnalysisInputScope;
-}): JSX.Element | null {
-	if (!hasInputOmissions(scope)) return null;
-	const modNoun: string = scope.omittedModCount === 1 ? "mod" : "mods";
-	const omittedNames: string = scope.omittedMods
-		.map((mod): string => mod.name)
-		.join(", ");
-
-	return (
-		<section className="input-scope-notice" role="status" aria-label="Incomplete input">
-			<span className="input-scope-mark" aria-hidden="true" />
-			<div>
-				<p className="section-kicker">Incomplete input</p>
-				<strong title={omittedNames || undefined}>
-					{scope.includedModCount} of {scope.sourceModCount} playset mods analyzed
-				</strong>
-				<p>
-					{scope.omittedModCount} unavailable {modNoun} omitted. Outcomes apply only to
-					the included mods; the Launcher playset remains unchanged.
-				</p>
-			</div>
-		</section>
 	);
 }
 
@@ -483,7 +270,7 @@ function AnalysisHeader({
 			<div className="analysis-title-row">
 				<div>
 					<p className="section-kicker">Read-only analysis</p>
-					<h2>{analysisStateLabel(summary)}</h2>
+					<h2>{ANALYSIS_STATE_LABELS[summary.state]}</h2>
 				</div>
 				{active && (
 					<button
@@ -520,54 +307,6 @@ function AnalysisHeader({
 	);
 }
 
-function ReviewUnavailablePanel({
-	state,
-	inputScope,
-	onReset,
-}: {
-	state: MergeAnalysisState;
-	inputScope: AnalysisInputScope;
-	onReset: () => void;
-}): JSX.Element {
-	const active: boolean = isAnalysisActive(state);
-	const incomplete: boolean = hasInputOmissions(inputScope);
-	const copy: { title: string; detail: string } = active
-		? {
-				title: incomplete
-					? "Building the available-mod review"
-					: "Building the complete review",
-				detail: incomplete
-					? "Results appear after every included merge unit has reached a final outcome. Unavailable mods are not represented."
-					: "Results appear after every merge unit has reached a final outcome. No partial review is shown.",
-			}
-		: {
-				title: "No review was produced",
-				detail:
-					state === "cancelled"
-						? "The analysis stopped before it produced final outcomes. Check the current input before starting again."
-						: "The analysis ended before a review was available. Check the current input, then run it again.",
-			};
-
-	return (
-		<section className="review-unavailable" aria-live="polite">
-			<span
-				className={`review-state-mark ${active ? "review-state-active" : ""}`}
-				aria-hidden="true"
-			/>
-			<div>
-				<p className="section-kicker">Merge unit review</p>
-				<h2>{copy.title}</h2>
-				<p>{copy.detail}</p>
-				{!active && (
-					<button className="primary-action" type="button" onClick={onReset}>
-						Check input again
-					</button>
-				)}
-			</div>
-		</section>
-	);
-}
-
 function UnitRow({
 	unit,
 	selected,
@@ -583,7 +322,6 @@ function UnitRow({
 			type="button"
 			onClick={(): void => onSelect(unit.id)}
 			aria-pressed={selected}
-			title={unit.path}
 		>
 			<span className="unit-path">{unit.path}</span>
 			<span className="unit-meta">
@@ -700,15 +438,17 @@ export default function App({
 		error: null,
 	});
 	const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
-	const [unitDetail, setUnitDetail] =
-		useState<AsyncValue<MergeUnitDetail>>(EMPTY_UNIT_DETAIL);
+	const [unitDetail, setUnitDetail] = useState<AsyncValue<MergeUnitDetail>>({
+		value: null,
+		loading: false,
+		error: null,
+	});
 	const [searchDraft, setSearchDraft] = useState<string>("");
 	const [searchQuery, setSearchQuery] = useState<string>("");
 	const [disposition, setDisposition] = useState<MergeDisposition | null>(null);
 	const [page, setPage] = useState<number>(1);
 
 	const inspectInput = useCallback(async (): Promise<void> => {
-		setAnalysisError(null);
 		setInspection((current): AsyncValue<InputInspection> => ({
 			value: current.value,
 			loading: true,
@@ -745,11 +485,7 @@ export default function App({
 					}, pollIntervalMs);
 				}
 			} catch (error: unknown) {
-				if (disposed) return;
-				setAnalysisError(errorMessage(error));
-				timer = setTimeout((): void => {
-					void refresh();
-				}, pollIntervalMs);
+				if (!disposed) setAnalysisError(errorMessage(error));
 			}
 		};
 		void refresh();
@@ -759,10 +495,9 @@ export default function App({
 		};
 	}, [analysisId, client, pollIntervalMs]);
 
-	const reviewAvailable: boolean = summary !== null && hasMergeReview(summary.state);
-
 	useEffect((): (() => void) | undefined => {
-		if (analysisId === null || !reviewAvailable) return undefined;
+		if (analysisId === null || summary === null || summary.state === "queued")
+			return undefined;
 		let disposed = false;
 		queueMicrotask((): void => {
 			if (disposed) return;
@@ -783,14 +518,13 @@ export default function App({
 			.then((value): void => {
 				if (disposed) return;
 				setUnitPage({ value, loading: false, error: null });
-				if (value.page !== page) setPage(value.page);
 				setSelectedUnitId((current): string | null => {
 					if (
 						current !== null &&
 						value.items.some((item): boolean => item.id === current)
 					)
 						return current;
-					return null;
+					return value.items[0]?.id ?? null;
 				});
 			})
 			.catch((error: unknown): void => {
@@ -804,11 +538,11 @@ export default function App({
 		return (): void => {
 			disposed = true;
 		};
-	}, [analysisId, client, disposition, page, reviewAvailable, searchQuery]);
+	}, [analysisId, client, disposition, page, searchQuery, summary]);
 
 	useEffect((): (() => void) => {
 		let disposed = false;
-		if (analysisId === null || selectedUnitId === null || !reviewAvailable) {
+		if (analysisId === null || selectedUnitId === null) {
 			queueMicrotask((): void => {
 				if (!disposed) setUnitDetail({ value: null, loading: false, error: null });
 			});
@@ -831,23 +565,17 @@ export default function App({
 		return (): void => {
 			disposed = true;
 		};
-	}, [analysisId, client, reviewAvailable, selectedUnitId]);
+	}, [analysisId, client, selectedUnitId]);
 
-	const startAnalysis = async (inputMode: AnalysisInputMode): Promise<void> => {
-		if (inspection.value === null) return;
+	const startAnalysis = async (): Promise<void> => {
 		setStarting(true);
 		setAnalysisError(null);
 		setSummary(null);
 		setSelectedUnitId(null);
-		setUnitDetail(EMPTY_UNIT_DETAIL);
+		setUnitDetail({ value: null, loading: false, error: null });
 		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
 		try {
-			const started = await client.startMergeAnalysis(
-				inspection.value.inspectionId,
-				inputMode,
-			);
-			setAnalysisId(started.analysisId);
-			setSummary(queuedAnalysisSummary(started.analysisId, started.inputScope));
+			setAnalysisId((await client.startMergeAnalysis()).analysisId);
 		} catch (error: unknown) {
 			setAnalysisError(errorMessage(error));
 		} finally {
@@ -869,20 +597,6 @@ export default function App({
 		}
 	};
 
-	const resetAnalysis = async (): Promise<void> => {
-		setAnalysisId(null);
-		setSummary(null);
-		setAnalysisError(null);
-		setSelectedUnitId(null);
-		setUnitDetail(EMPTY_UNIT_DETAIL);
-		setUnitPage({ value: EMPTY_UNIT_PAGE, loading: false, error: null });
-		setSearchDraft("");
-		setSearchQuery("");
-		setDisposition(null);
-		setPage(1);
-		await inspectInput();
-	};
-
 	const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
 		event.preventDefault();
 		setPage(1);
@@ -890,19 +604,10 @@ export default function App({
 	};
 
 	const pageValue = unitPage.value ?? EMPTY_UNIT_PAGE;
-	const pageCount: number = Math.max(
-		1,
-		Math.ceil(pageValue.total / Math.max(1, pageValue.pageSize)),
-	);
-	const displayedPage: number = Math.min(Math.max(1, pageValue.page), pageCount);
+	const pageCount = Math.max(1, Math.ceil(pageValue.total / PAGE_SIZE));
 	const playsetName = inspection.value?.playset?.name ?? "Current EU4 playset";
-	const inputRecovery: InputRecoveryOption | null = inspection.value?.recovery ?? null;
-	const canAnalyze =
-		inspection.value?.readiness === "ready" &&
-		!inspection.loading &&
-		!starting &&
-		analysisId === null;
-	const showBrowser = analysisId !== null && reviewAvailable;
+	const canAnalyze = inspection.value?.readiness === "ready" && !starting;
+	const showBrowser = analysisId !== null && summary !== null;
 	const dispositionOptions = useMemo(
 		(): Array<{ value: MergeDisposition; label: string }> =>
 			MERGE_DISPOSITIONS.map((value): { value: MergeDisposition; label: string } => ({
@@ -928,7 +633,7 @@ export default function App({
 					<span>Detected input</span>
 					<strong>{playsetName}</strong>
 				</div>
-				<span className="read-only-badge">Read-only analysis</span>
+				<span className="read-only-badge">Read-only checkpoint</span>
 			</header>
 
 			{inspection.loading && inspection.value === null ? (
@@ -949,23 +654,9 @@ export default function App({
 				</section>
 			) : inspection.value === null ? null : (
 				<div className="workbench">
-					<ReadinessRail
-						inspection={inspection.value}
-						inputScope={summary?.inputScope ?? null}
-					/>
+					<ReadinessRail inspection={inspection.value} />
 					<section className="analysis-workspace" aria-label="Merge analysis workspace">
-						{summary === null &&
-						inspection.value.readiness === "ready_with_omissions" &&
-						inputRecovery !== null ? (
-							<RecoveryState
-								recovery={inputRecovery}
-								checking={inspection.loading}
-								starting={starting}
-								error={analysisError}
-								onAnalyze={(): void => void startAnalysis(inputRecovery.kind)}
-								onCheck={(): void => void inspectInput()}
-							/>
-						) : summary === null && inspection.value.readiness === "blocked" ? (
+						{inspection.value.readiness === "blocked" ? (
 							<div className="blocked-state">
 								<p className="section-kicker">Action required</p>
 								<h2>Resolve setup blockers before analysis</h2>
@@ -984,9 +675,8 @@ export default function App({
 								<button
 									className="primary-action"
 									onClick={(): void => void inspectInput()}
-									disabled={inspection.loading}
 								>
-									{inspection.loading ? "Checking…" : "Check again"}
+									Check again
 								</button>
 							</div>
 						) : summary === null ? (
@@ -995,21 +685,17 @@ export default function App({
 									<p className="section-kicker">Current load order</p>
 									<h2>{inspection.value.playset?.name ?? "EU4 playset"}</h2>
 									<p>
-										Foch reads the detected load order and prepares a complete review.
-										It does not change Launcher settings, game files, or mod files.
+										Analyze every merge unit before any output is written. Foch keeps
+										the analyzed result opaque and read-only in this checkpoint.
 									</p>
 								</div>
 								<button
 									className="primary-action analyze-action"
-									onClick={(): void => void startAnalysis("complete")}
+									onClick={(): void => void startAnalysis()}
 									disabled={!canAnalyze}
 								>
 									<span>
-										{inspection.loading
-											? "Checking input…"
-											: starting
-												? "Starting analysis…"
-												: "Analyze current playset"}
+										{starting ? "Starting analysis…" : "Analyze current playset"}
 									</span>
 									<small>No mod files will be changed</small>
 								</button>
@@ -1024,25 +710,13 @@ export default function App({
 									cancelling={cancelling}
 									onCancel={(): void => void cancelAnalysis()}
 								/>
-								<InputScopeNotice scope={summary.inputScope} />
+								<DispositionRibbon summary={summary} />
 								{analysisError !== null && (
 									<p className="inline-error" role="alert">
 										Analysis update failed: {analysisError}
 									</p>
 								)}
-								{reviewAvailable && <DispositionRibbon summary={summary} />}
-								{!reviewAvailable && (
-									<ReviewUnavailablePanel
-										state={summary.state}
-										inputScope={summary.inputScope}
-										onReset={(): void => void resetAnalysis()}
-									/>
-								)}
-								<section
-									className="unit-browser"
-									aria-labelledby="unit-browser-title"
-									hidden={!reviewAvailable}
-								>
+								<section className="unit-browser" aria-labelledby="unit-browser-title">
 									<div className="unit-browser-heading">
 										<div>
 											<p className="section-kicker">Merge units</p>
@@ -1056,7 +730,6 @@ export default function App({
 												<input
 													type="search"
 													placeholder="Search path or family"
-													maxLength={MAX_QUERY_CHARS}
 													value={searchDraft}
 													onChange={(event): void => setSearchDraft(event.target.value)}
 												/>
@@ -1113,20 +786,22 @@ export default function App({
 									<footer className="pagination" aria-label="Merge unit pages">
 										<button
 											type="button"
-											onClick={(): void => setPage(Math.max(1, displayedPage - 1))}
-											disabled={unitPage.loading || displayedPage <= 1}
+											onClick={(): void =>
+												setPage((current): number => Math.max(1, current - 1))
+											}
+											disabled={page <= 1}
 										>
 											Previous
 										</button>
 										<span>
-											Page {displayedPage} of {pageCount}
+											Page {page} of {pageCount}
 										</span>
 										<button
 											type="button"
 											onClick={(): void =>
-												setPage(Math.min(pageCount, displayedPage + 1))
+												setPage((current): number => Math.min(pageCount, current + 1))
 											}
-											disabled={unitPage.loading || displayedPage >= pageCount}
+											disabled={page >= pageCount}
 										>
 											Next
 										</button>
@@ -1136,9 +811,7 @@ export default function App({
 						)}
 					</section>
 					{showBrowser ? (
-						<UnitDetailPanel
-							detail={selectedUnitId === null ? EMPTY_UNIT_DETAIL : unitDetail}
-						/>
+						<UnitDetailPanel detail={unitDetail} />
 					) : (
 						<aside className="detail-pane detail-empty" aria-label="Merge unit detail">
 							<p className="section-kicker">Unit detail</p>

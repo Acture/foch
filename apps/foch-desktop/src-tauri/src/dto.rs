@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReadinessState {
 	Ready,
-	ReadyWithOmissions,
 	Blocked,
 }
 
@@ -65,42 +64,14 @@ pub(crate) struct DetectedPlaysetView {
 	pub(crate) mods: Vec<PlaysetModView>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum AnalysisInputMode {
-	Complete,
-	WithoutUnavailableMods,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct OmittedPlaysetMod {
-	pub(crate) id: String,
-	pub(crate) name: String,
-	pub(crate) position: usize,
-	pub(crate) reason: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct InputRecoveryOption {
-	pub(crate) kind: AnalysisInputMode,
-	pub(crate) source_mod_count: usize,
-	pub(crate) omitted_mods: Vec<OmittedPlaysetMod>,
-	pub(crate) omitted_mod_count: usize,
-	pub(crate) included_mod_count: usize,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InputInspection {
-	pub(crate) inspection_id: String,
 	pub(crate) readiness: ReadinessState,
 	pub(crate) game: InstalledGameView,
 	pub(crate) base_data: BaseDataView,
 	pub(crate) playset: Option<DetectedPlaysetView>,
 	pub(crate) issues: Vec<ReadinessIssue>,
-	pub(crate) recovery: Option<InputRecoveryOption>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -152,17 +123,6 @@ pub(crate) struct MergeUnitCounts {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct StartMergeAnalysisResult {
 	pub(crate) analysis_id: String,
-	pub(crate) input_scope: AnalysisInputScope,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AnalysisInputScope {
-	pub(crate) mode: AnalysisInputMode,
-	pub(crate) source_mod_count: usize,
-	pub(crate) omitted_mods: Vec<OmittedPlaysetMod>,
-	pub(crate) omitted_mod_count: usize,
-	pub(crate) included_mod_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -176,7 +136,6 @@ pub(crate) struct MergeAnalysisSummary {
 	pub(crate) elapsed_ms: u64,
 	pub(crate) counts: MergeUnitCounts,
 	pub(crate) message: Option<String>,
-	pub(crate) input_scope: AnalysisInputScope,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -284,18 +243,6 @@ mod tests {
 				..MergeUnitCounts::default()
 			},
 			message: None,
-			input_scope: AnalysisInputScope {
-				mode: AnalysisInputMode::WithoutUnavailableMods,
-				source_mod_count: 5,
-				omitted_mods: vec![OmittedPlaysetMod {
-					id: "3344925456".to_string(),
-					name: "Unavailable mod".to_string(),
-					position: 3,
-					reason: "Workshop item is missing".to_string(),
-				}],
-				omitted_mod_count: 1,
-				included_mod_count: 4,
-			},
 		};
 		assert_eq!(
 			serde_json::to_value(summary).unwrap(),
@@ -315,19 +262,7 @@ mod tests {
 					"engineFailure": 0,
 					"deferred": 0
 				},
-				"message": null,
-				"inputScope": {
-					"mode": "without_unavailable_mods",
-					"sourceModCount": 5,
-					"omittedMods": [{
-						"id": "3344925456",
-						"name": "Unavailable mod",
-						"position": 3,
-						"reason": "Workshop item is missing"
-					}],
-					"omittedModCount": 1,
-					"includedModCount": 4
-				}
+				"message": null
 			})
 		);
 	}

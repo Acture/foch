@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::game::schema::compile::{
 	AliasCategory, CwtAlias, CwtRuleCondition, CwtRuleField, CwtRuleValue, CwtSchemaGraph,
@@ -27,6 +28,7 @@ struct FixtureBaseline {
 
 #[derive(Serialize)]
 struct VendorBaseline {
+	schema_commit: Option<String>,
 	file_count: usize,
 	pack_id: String,
 	type_count: usize,
@@ -192,6 +194,7 @@ fn build_vendor_baseline(root: &Path) -> VendorBaseline {
 	let graph = pack.graph.as_ref();
 	let engine = CwtQuery::from_graph(graph);
 	VendorBaseline {
+		schema_commit: git_head(root),
 		file_count: cwt_files(root).len(),
 		pack_id: pack.id.to_hex(),
 		type_count: graph.types.len(),
@@ -443,6 +446,20 @@ fn assert_json_fixture(path: &Path, actual: &impl Serialize) {
 
 fn should_regenerate_baselines() -> bool {
 	std::env::var_os("FOCH_REGENERATE_BASELINES").is_some()
+}
+
+fn git_head(root: &Path) -> Option<String> {
+	let output = Command::new("git")
+		.arg("-C")
+		.arg(root)
+		.arg("rev-parse")
+		.arg("HEAD")
+		.output()
+		.ok()?;
+	output
+		.status
+		.success()
+		.then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn fixture_schema_dir() -> PathBuf {
