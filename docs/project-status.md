@@ -1,6 +1,10 @@
 # Project Status
 
-Last source verification: 2026-08-25 on branch `refactor/structure-reset` at
+Latest focused verification: 2026-09-05, P-553/P-556 static-modifier product
+fixtures and bounded Workshop observation. See
+[the verification record](./static-modifiers-verification.md).
+
+Earlier project-wide source verification: 2026-08-25 on branch `refactor/structure-reset` at
 `30aa902` (`Update quality harness for merge reviews`).
 
 This page is the repository handoff. Recheck Git and local inputs before using
@@ -18,6 +22,22 @@ reliable one-click merger for arbitrary modlists. The active product direction
 is one root Rust library with a `foch` CLI and a player-facing Tauri desktop
 application. The fixed 14-case Workshop cohort remains the product merge-quality
 gate; it does not establish desktop product readiness.
+
+## Static-modifier product checkpoint
+
+P-553 reproduced safe output that summed unchanged vanilla values into independent
+mod changes. `common/static_modifiers` now uses conflict semantics for divergent
+final values; independent field changes, equivalent contributions and explicit
+dependency adapters remain automatically mergeable. P-556 also excludes unchanged
+carriers from final value and delete/modify candidates while retaining complete
+input evidence, the ancestor and real deletion choices.
+
+The shared synthetic matrix exercises public analyze/commit and CLI
+preview/confirmation, reparses actual output and checks ordering, provenance,
+omission, stable IDs and input immutability. A bounded installed RCE/EE probe also
+preserved selected contributions within the same definition. Commands, precise
+observations and limitations are in the verification record above. No new full
+Workshop cohort or EU4 runtime acceptance is claimed.
 
 ## Structural-reset checkpoint
 

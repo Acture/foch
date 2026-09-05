@@ -1,0 +1,48 @@
+{
+  "verification_date": "2026-09-05",
+  "source_base_commit": "06e3fa7",
+  "source_state": "P-553 and P-556 worktree changes",
+  "harness_sha256": "a132b0b914e82bd054058484c68018b7c9d2895b760c2a9a4ce8e050a50f0d47",
+  "artifact_directory": "target/p553-workshop/static-modifiers-FOGbPh",
+  "scope": "bounded_static_modifiers_only",
+  "input": {
+    "schema": "2.0.0",
+    "input_version_id": "b8073e91cb2791e7931ef36cfe4740470f5596831708002edb0233dd5e728392",
+    "case_id": "3630934157",
+    "game": {
+      "app_id": "236850",
+      "version": "v1.37.5.0",
+      "steam_build_id": "15918133"
+    },
+    "compatch": {
+      "workshop_id": "3630934157",
+      "manifest_id": "7438779146910039961"
+    },
+    "source_mods": [
+      {
+        "workshop_id": "3342969370",
+        "manifest_id": "8880625672601120600"
+      },
+      {
+        "workshop_id": "2164202838",
+        "manifest_id": "5733043465812710048"
+      }
+    ]
+  },
+  "base_snapshot": "sha256:fec03656e735ed4680b8f121685a83c66f59130374b92b05f557a1c1c880e195",
+  "disposition": "Safe",
+  "report_status": "ready",
+  "distinct_definitions": 380,
+  "duplicate_definitions": [],
+  "prestige": {
+    "land_morale": "0.1",
+    "rce_monthly_religion_mechanic_sylvan_affinity_change": "2",
+    "monthly_frankish_chivalry": "0.05",
+    "adopted": [
+      "3342969370",
+      "2164202838"
+    ]
+  },
+  "source_family_bytes_unchanged": true,
+  "workshop_acf_unchanged": true
+}

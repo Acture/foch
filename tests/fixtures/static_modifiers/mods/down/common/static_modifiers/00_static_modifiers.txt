@@ -1,0 +1,6 @@
+shared = {
+	global_tax_modifier = 0.05
+	land_morale = 0.10
+	discipline = 0.05
+}
+base_only = { global_manpower_modifier = 0.20 }
