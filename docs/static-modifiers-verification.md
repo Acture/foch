@@ -36,6 +36,15 @@ filter or new review API was introduced.
 The kernel candidate fix is isolated in commit `3832e6c`; the family policy and
 product-entrypoint regressions are the following P-553 commit.
 
+Windows CI at `5192f30` then exposed a separate source-path lookup defect in the
+CLI fixture: canonicalized paths kept the `\\?\` prefix in the merge plan, but
+copy-through inventory lookup stripped it using descriptor formatting. The
+materializer now preserves that prefix when matching the plan and retains the
+original filesystem path for copying. Prefix stripping remains specific to the
+generated descriptor. A drive/UNC regression reproduces the lookup failure even
+on non-Windows hosts; the existing canonicalized CLI fixture remains unchanged
+as the Windows product-path gate.
+
 ## Product matrix
 
 Every row runs twice through public analysis/commit and twice through CLI

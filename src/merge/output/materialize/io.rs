@@ -340,8 +340,8 @@ pub(super) fn write_generated_descriptor(
 	if let Some(parent) = descriptor_path.parent() {
 		fs::create_dir_all(parent)?;
 	}
-	let normalized_out_dir = normalize_path_string(out_dir);
-	let normalized_playset_path = normalize_path_string(playset_path);
+	let normalized_out_dir = descriptor_path_string(out_dir);
+	let normalized_playset_path = descriptor_path_string(playset_path);
 	let escaped_name = escape_descriptor_value(&format!("{playset_name} (Merged)"));
 	let escaped_path = escape_descriptor_value(&normalized_out_dir);
 	let escaped_playset = escape_descriptor_value(&normalized_playset_path);
@@ -405,10 +405,15 @@ fn find_contributor_path<'a>(
 }
 
 fn normalized_contributor_path(contributor: &ResolvedInputContributor) -> String {
-	normalize_path_string(&contributor.absolute_path)
+	// Match the plan's source identity, including any Windows extended prefix.
+	// Descriptor formatting must not change the path used to find an input file.
+	contributor
+		.absolute_path
+		.to_string_lossy()
+		.replace('\\', "/")
 }
 
-fn normalize_path_string(path: &Path) -> String {
+fn descriptor_path_string(path: &Path) -> String {
 	let raw = path.to_string_lossy();
 	let stripped = strip_extended_length_prefix(&raw);
 	stripped.replace('\\', "/")
@@ -444,4 +449,51 @@ pub(super) fn is_text_placeholder_path(path: &str) -> bool {
 		ext,
 		"txt" | "lua" | "yml" | "yaml" | "csv" | "json" | "asset" | "gui" | "gfx" | "mod"
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{descriptor_path_string, find_contributor_path};
+	use crate::input::ResolvedInputContributor;
+	use crate::model::MergePlanContributor;
+	use std::path::{Path, PathBuf};
+
+	#[test]
+	fn winner_lookup_preserves_windows_extended_path_identity() {
+		for (source, plan_path, descriptor_path) in [
+			(
+				r"\\?\D:\mods\tax\localisation\p553.yml",
+				"//?/D:/mods/tax/localisation/p553.yml",
+				"D:/mods/tax/localisation/p553.yml",
+			),
+			(
+				r"\\?\UNC\server\mods\tax\localisation\p553.yml",
+				"//?/UNC/server/mods/tax/localisation/p553.yml",
+				"//server/mods/tax/localisation/p553.yml",
+			),
+		] {
+			let contributor: ResolvedInputContributor = ResolvedInputContributor {
+				mod_id: "tax".to_string(),
+				root_path: PathBuf::new(),
+				absolute_path: PathBuf::from(source),
+				precedence: 1,
+				is_base_game: false,
+				is_synthetic_base: false,
+				parse_ok_hint: None,
+				mod_hash: None,
+			};
+			let winner: MergePlanContributor = MergePlanContributor {
+				mod_id: "tax".to_string(),
+				source_path: plan_path.to_string(),
+				precedence: 1,
+				is_base_game: false,
+			};
+			assert_eq!(
+				find_contributor_path(std::slice::from_ref(&contributor), &winner),
+				Some(&contributor.absolute_path),
+				"copy lookup must retain the original filesystem path"
+			);
+			assert_eq!(descriptor_path_string(Path::new(source)), descriptor_path);
+		}
+	}
 }
