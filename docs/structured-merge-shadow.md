@@ -101,7 +101,7 @@ focused results establishes or changes a V2 product baseline.
 
 ## Current acceptance paths
 
-Use `scripts/merge-quality/acceptance.fish` for the fixed 14-case V2 product
+Use `cargo acceptance` for the fixed 14-case V2 product
 acceptance. It invokes the exact ignored
 `workshop_product_corpus_acceptance` test, resolves the committed logical cases
 from read-only Workshop content and same-library ACF files, launches the

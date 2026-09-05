@@ -139,6 +139,6 @@ Each run prints a new artifact directory with `input.json`, `review.txt`,
 
 The complete fixed 14-case gate remains a separate manual run:
 
-```fish
-scripts/merge-quality/acceptance.fish
+```text
+cargo acceptance
 ```

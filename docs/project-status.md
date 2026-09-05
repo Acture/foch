@@ -23,6 +23,11 @@ is one root Rust library with a `foch` CLI and a player-facing Tauri desktop
 application. The fixed 14-case Workshop cohort remains the product merge-quality
 gate; it does not establish desktop product readiness.
 
+The manual product-acceptance entrypoint is `cargo acceptance`. A repository
+Cargo alias selects the Rust test orchestrator; it runs the cache and corpus
+gates sequentially in separate processes without requiring fish. This entrypoint
+change does not establish a new accepted cohort.
+
 ## Static-modifier product checkpoint
 
 P-553 reproduced safe output that summed unchanged vanilla values into independent
