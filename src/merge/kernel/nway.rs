@@ -1032,6 +1032,20 @@ fn select_base_class(
 				class.get(),
 			),
 		);
+		// Keep all revisions as evidence, but only changed survivors are choices.
+		// Deletions are added as tombstones below; the ancestor keeps its own slot.
+		conflict.candidates.retain(|candidate| match candidate {
+			RevisionSourceRef::Node(source) => {
+				*source == base_source
+					|| facts
+						.subtree_changed
+						.iter()
+						.chain(facts.moved.iter())
+						.chain(facts.reordered.iter())
+						.any(|changed| changed == source)
+			}
+			RevisionSourceRef::Tombstone { .. } => true,
+		});
 		for revision in &facts.deleted_by {
 			conflict = conflict.with_candidate(RevisionSourceRef::Tombstone {
 				revision: *revision,
@@ -1097,6 +1111,16 @@ fn select_base_class(
 			class.get(),
 		),
 	);
+	// Unmodified carriers belong to the input history, not the final alternatives.
+	conflict.candidates.retain(|candidate| match candidate {
+		RevisionSourceRef::Node(source) => {
+			*source == base_source
+				|| changed
+					.iter()
+					.any(|(_, changed_source)| changed_source == source)
+		}
+		RevisionSourceRef::Tombstone { .. } => true,
+	});
 	conflict.semantic_path = common_policy_path(
 		std::iter::once(base_node).chain(
 			changed
@@ -1389,6 +1413,15 @@ mod tests {
 
 		assert_eq!(plan.conflicts.len(), 1);
 		assert_eq!(plan.conflicts[0].kind, ConflictKind::DeleteModify);
+		assert_eq!(plan.conflicts[0].candidates.len(), 3);
+		assert!(
+			!plan.conflicts[0]
+				.candidates
+				.iter()
+				.any(|candidate| matches!(
+					candidate, RevisionSourceRef::Node(source) if source.revision == RevisionId::new(3)
+				))
+		);
 		assert!(
 			plan.conflicts[0]
 				.candidates
@@ -1398,6 +1431,51 @@ mod tests {
 					RevisionSourceRef::Tombstone { revision, .. }
 						if *revision == RevisionId::new(1)
 				)),
+		);
+	}
+
+	#[test]
+	fn final_conflict_candidates_exclude_unchanged_revisions_and_keep_equivalent_changes() {
+		let base: NormalizedTree = root(vec![field("base")]);
+		let first: NormalizedTree = root(vec![field("one")]);
+		let second: NormalizedTree = root(vec![field("two")]);
+		let equivalent: NormalizedTree = first.clone();
+		let unchanged: NormalizedTree = base.clone();
+		let revisions: [MergeRevision<'_>; 4] = [
+			MergeRevision::new(RevisionId::new(1), &first),
+			MergeRevision::new(RevisionId::new(2), &second),
+			MergeRevision::new(RevisionId::new(3), &equivalent),
+			MergeRevision::new(RevisionId::new(4), &unchanged),
+		];
+		let outcome: crate::merge::kernel::MergeOutcome = n_way_merge(&base, &revisions).unwrap();
+		assert_eq!(outcome.conflicts.len(), 1);
+		let conflict: &crate::merge::kernel::StructuralConflict = &outcome.conflicts[0];
+		assert_eq!(
+			conflict.revisions.len(),
+			5,
+			"retain complete input evidence"
+		);
+		let candidates: Vec<RevisionId> = conflict
+			.candidates
+			.iter()
+			.map(|candidate| candidate.input().revision)
+			.collect();
+		assert_eq!(
+			candidates,
+			[
+				RevisionId::BASE,
+				RevisionId::new(1),
+				RevisionId::new(2),
+				RevisionId::new(3)
+			]
+		);
+		let unchanged_source: SourceNodeRef = SourceNodeRef::Node {
+			input: crate::merge::kernel::MergeInputId::from_tree(RevisionId::new(4), &unchanged),
+			node: unchanged.node(unchanged.root()).unwrap().children[0],
+		};
+		assert!(
+			conflict.select(unchanged_source).is_err(),
+			"unchanged carrier must not be selectable"
 		);
 	}
 

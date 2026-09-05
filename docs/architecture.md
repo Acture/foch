@@ -172,8 +172,8 @@ The private harness under `apps/foch-cli/tests/merge_quality/` owns the fixed
 14-case, 26-item Workshop denominator, append-only V2 records, evidence capture,
 scoring, and reports. The supported operator entrypoint is:
 
-```fish
-scripts/merge-quality/acceptance.fish
+```text
+cargo acceptance
 ```
 
 It reads installed Workshop content in place and binds identity to paired Steam

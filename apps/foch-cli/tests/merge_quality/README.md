@@ -23,9 +23,12 @@ Generated compact evidence objects and work directories are ignored by Git.
 
 The maintainer entrypoint is:
 
-```fish
-scripts/merge-quality/acceptance.fish
+```text
+cargo acceptance
 ```
 
-It first runs the cache-residency gate, then the complete fixed cohort. Both are
-long, real-Workshop tests and should be launched manually.
+The repository Cargo alias runs a Rust orchestrator inside this test harness.
+It first runs the cache-residency gate, then the complete fixed cohort in separate
+processes, clearing cache-cap overrides and stopping at the first failure. It
+requires no shell-specific runtime. Both stages are long, real-Workshop tests
+and should be launched manually.

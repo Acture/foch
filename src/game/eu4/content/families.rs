@@ -1190,7 +1190,10 @@ fn eu4_content_families() -> &'static [ContentFamilyDescriptor] {
 				.scope(unknown_scope())
 				.capabilities(semantic_complete_and_merge_ready())
 				.merge_key(MergeKeySource::AssignmentKey)
-				.scalar_policy(ScalarMergePolicy::Sum)
+				// These are final modifier values, not additive contributions. Independent
+				// fields merge structurally; divergent values need review unless the DAG
+				// establishes an explicit downstream override.
+				.scalar_policy(ScalarMergePolicy::Conflict)
 				.build(),
 			ContentFamilyDescriptor::prefix("common/timed_modifiers", "common/timed_modifiers/")
 				.module_name(ModuleNameRule::Static("timed_modifiers"))
@@ -1614,6 +1617,17 @@ mod tests {
 			.classify_content_family(Path::new("common/defines/00_test.lua"))
 			.expect("defines descriptor");
 		assert_eq!(defines.merge_policies.scalar, ScalarMergePolicy::LastWriter);
+	}
+
+	#[test]
+	fn static_modifiers_do_not_sum_final_values() {
+		let descriptor: &ContentFamilyDescriptor = eu4()
+			.classify_content_family(Path::new("common/static_modifiers/00_static_modifiers.txt"))
+			.expect("static modifiers descriptor");
+		assert_eq!(
+			descriptor.merge_policies.scalar,
+			ScalarMergePolicy::Conflict
+		);
 	}
 
 	#[test]

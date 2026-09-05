@@ -119,8 +119,8 @@ and `276456014`.
 
 The final manual command is:
 
-```fish
-scripts/merge-quality/acceptance.fish
+```text
+cargo acceptance
 ```
 
 Acceptance requires 14 unique successful terminal measurements, zero failures,

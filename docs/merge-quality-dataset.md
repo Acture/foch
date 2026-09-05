@@ -8,18 +8,28 @@ no production merge-quality crate or binary.
 
 The only supported acceptance entrypoint is:
 
-```fish
-scripts/merge-quality/acceptance.fish
+```text
+cargo acceptance
 ```
 
-It runs two exact ignored integration tests:
+The repository Cargo alias selects an explicit ignored Rust orchestrator, which
+runs two exact ignored integration tests in separate processes:
 
 1. `workshop_product_cache_residency_gate`; and
 2. `workshop_product_corpus_acceptance`.
 
 These are long, real-Workshop runs for the maintainer to launch manually.
 Agents should use focused fixtures and bounded real-case probes, then hand off
-the wrapper.
+the Cargo command. No fish, Bash, or additional task runner is required. The
+orchestrator removes cache-cap overrides from each child, uses stage-specific
+authorization, and stops immediately if a stage fails.
+
+The 2026-09-05 entrypoint change was checked with a temporary Cargo fixture that
+loaded the actual Rust orchestrator and replaced the expensive stages with empty
+tests. It verified successful stage ordering, first-stage short-circuiting,
+second-stage failure propagation, removal of inherited cache-cap overrides, and
+rejection of a raw invocation without the alias's authorization. This was an
+orchestration check; it did not run or record a Workshop cohort.
 
 The denominator is the committed
 `apps/foch-cli/tests/merge_quality/fixtures/workshop-product-cases-v2.json`:
@@ -125,7 +135,7 @@ costed integrity audit rather than hidden work in acceptance.
 
 ## Cache-residency gate
 
-The wrapper clears any enlarged `FOCH_CACHE_MAX_BYTES` value before running.
+The orchestrator clears `FOCH_CACHE_MAX_BYTES` from each child environment.
 The cache-residency test exercises analysis without commit and verifies that
 the fixed workflow fits the normal per-layer cache contract. The cohort test
 then passes `--confirm` explicitly and measures committed product output.

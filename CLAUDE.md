@@ -67,8 +67,8 @@ The current product acceptance denominator is the committed fixed 14-case
 Workshop cohort containing 26 unique items. Installed local availability must
 not shrink that denominator. The supported entrypoint is:
 
-```fish
-scripts/merge-quality/acceptance.fish
+```text
+cargo acceptance
 ```
 
 That denominator defines the gate; it does not mean a current cohort has
@@ -79,7 +79,7 @@ project-wide architecture requirement.
 
 This is a long, real-Workshop run for the maintainer to execute manually.
 Agents should use focused fixtures and bounded real-case probes while
-developing, then hand off the wrapper command instead of launching it
+developing, then hand off the Cargo command instead of launching it
 unannounced.
 
 The V2 JSONL streams under `apps/foch-cli/tests/merge_quality/data/` are

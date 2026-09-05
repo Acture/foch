@@ -12,6 +12,79 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tempfile::TempDir;
 
+#[path = "../../../tests/support/static_modifiers.rs"]
+mod static_modifiers;
+
+#[test]
+fn static_modifiers_cli_preserves_contributions_and_defers_final_disagreement() {
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let fixture: PathBuf = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+		.join("../../tests/fixtures/static_modifiers")
+		.canonicalize()
+		.expect("fixture root");
+	let original: std::collections::BTreeMap<PathBuf, Vec<u8>> =
+		static_modifiers::source_bytes(&fixture);
+	write_game_path_config(scratch.path(), &fixture.join("base"));
+	build_base_data_install(scratch.path(), &fixture.join("base"));
+	for case in static_modifiers::CASES {
+		let manifest: PathBuf =
+			static_modifiers::write_manifest(&fixture, &scratch.path().join(case.name), case);
+		for run in 0..2 {
+			let out: PathBuf = scratch.path().join(case.name).join(format!("out-{run}"));
+			let (code, stdout, stderr): (i32, String, String) = run_foch(
+				&[
+					"merge",
+					manifest.to_str().unwrap(),
+					"--out",
+					out.to_str().unwrap(),
+					"--non-interactive",
+					"--provenance",
+				],
+				scratch.path(),
+			);
+			assert_eq!(code, 0, "{}: {stdout}\n{stderr}", case.name);
+			assert!(!out.exists(), "preview must not create output");
+			let (code, stdout, stderr): (i32, String, String) = run_foch(
+				&[
+					"merge",
+					manifest.to_str().unwrap(),
+					"--out",
+					out.to_str().unwrap(),
+					"--non-interactive",
+					"--confirm",
+					"--provenance",
+				],
+				scratch.path(),
+			);
+			assert_eq!(code, 0, "{}: {stdout}\n{stderr}", case.name);
+			let report: foch::model::MergeReport = serde_json::from_slice(
+				&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).expect("read report"),
+			)
+			.expect("decode report");
+			static_modifiers::assert_output(case, &out, &report);
+			if run == 1 && case.expected.is_some() {
+				assert_eq!(
+					fs::read(out.join(static_modifiers::OUTPUT)).unwrap(),
+					fs::read(
+						scratch
+							.path()
+							.join(case.name)
+							.join("out-0")
+							.join(static_modifiers::OUTPUT)
+					)
+					.unwrap(),
+					"repeatable CLI output"
+				);
+			}
+		}
+	}
+	assert_eq!(
+		static_modifiers::source_bytes(&fixture),
+		original,
+		"CLI must preserve source bytes"
+	);
+}
+
 fn descriptor_path_value(path: &Path) -> String {
 	path.to_string_lossy()
 		.replace('\\', "/")

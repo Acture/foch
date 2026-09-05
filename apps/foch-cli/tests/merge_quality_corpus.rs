@@ -1,6 +1,12 @@
 #[path = "merge_quality/mod.rs"]
 mod merge_quality;
 
+#[path = "merge_quality/acceptance.rs"]
+mod acceptance;
+
+#[path = "merge_quality/static_modifiers_probe.rs"]
+mod static_modifiers_probe;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -430,7 +436,7 @@ fn require_acceptance(expected: &str) {
 	assert_eq!(
 		std::env::var(ACCEPTANCE_ENV).unwrap_or_default(),
 		expected,
-		"run the matching fixed script under scripts/merge-quality"
+		"run cargo acceptance from the repository"
 	);
 }
 

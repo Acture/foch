@@ -24,7 +24,7 @@ tags: [architecture, refactor, testing, merge-quality, cli, dataset]
 > record for removing the `foch-mq` binary. Acquisition, corpus/fixture refresh,
 > fixture acceptance, review-pack, and semantic/full payload-export paths have
 > since been deleted. The only current product gate is
-> `scripts/merge-quality/acceptance.fish`; `export.fish` is metadata-only.
+> `cargo acceptance`; `export.fish` is metadata-only.
 
 Delete the standalone `foch-mq` Cargo binary instead of renaming or embedding it as a `foch mq` product command. Keep `crates/foch-merge-quality` as a private, library-only package that owns deterministic scoring, immutable dataset records, reports, and evidence verification. Put product-quality assertions in integration tests that execute the real `foch` binary. Put state-changing corpus maintenance behind fixed Fish scripts that invoke explicitly named ignored tests; do not recreate a general-purpose hidden CLI inside libtest.
 
