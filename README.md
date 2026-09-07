@@ -150,6 +150,52 @@ EU4 CWT schemas are vendored at `vendor/cwtools-eu4-config`. Refreshing that
 submodule and its recorded snapshot hash is an explicit maintenance operation,
 not part of a normal build.
 
+### EU4 database loading rules
+
+Versioned rules live in [`src/game/eu4/content/rules`](./src/game/eu4/content/rules).
+Each rule states **which database reads which directory and filename pattern**:
+
+```json
+"CStaticModifierDataBase": [
+  {"directory": "common/event_modifiers", "files": "*.txt"},
+  {"directory": "common/static_modifiers", "files": "*.txt"}
+]
+```
+
+The file header identifies the game version and inspected executable hash.
+Directories are relative to the game/mod root; `files` matches filenames.
+These relations establish merge input scope. Structural merge behavior remains
+in the EU4 content-family descriptors.
+
+[`tools/eu4-analysis`](./tools/eu4-analysis) extracts these relations from a
+symbol-bearing x86_64 Mach-O executable. It inventories loaders, follows each
+directory-loading call and its file filter, and resolves directory enum values
+from `CDirectorySettings`. Object-key discovery is not required to emit a
+loading rule. Unresolved relations remain in the local diagnostic catalog.
+
+It requires Ghidra 12.1.3, JDK 21+, and `uv`. Set `GHIDRA_INSTALL_DIR` and
+`EU4_BINARY` to your local installation and executable, then run:
+
+```fish
+uv run --directory tools/eu4-analysis python -m eu4_analysis discover \
+	--binary "$EU4_BINARY" --game-version 1.37.5
+```
+
+A complete scan writes `<version>.json` directly into the rule
+directory; `--rules-dir` overrides that destination. Review the resulting diff
+before using a new snapshot. `--limit N` runs a bounded probe and preserves
+pending inventory entries without replacing repository rules.
+
+Analysis projects, diagnostic catalogs, disassembly, and pseudocode stay under
+ignored `target/eu4-analysis` (or `--workspace`). `inspect --symbol '<glob>'`
+examines one function using its Mach-O boundary. `--timeout` bounds each
+operation; whole-program auto-analysis is disabled. The inventory does not
+prove coverage of all indirect loaders, and Foch does not yet automatically
+consume the rule files.
+
+Run the module's tests without Ghidra using
+`uv run --directory tools/eu4-analysis python -m unittest discover -s tests`.
+
 ## Documentation
 
 - [Project status](./docs/project-status.md)

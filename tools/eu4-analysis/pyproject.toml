@@ -1,0 +1,12 @@
+[project]
+name = "foch-eu4-analysis"
+version = "0.1.0"
+description = "Maintainer analysis of EU4 resource scopes and definition identity"
+requires-python = ">=3.11,<3.14"
+dependencies = ["pyghidra==3.1.0", "jpype1==1.5.2"]
+
+[tool.uv]
+package = false
+
+[tool.ruff.format]
+indent-style = "tab"

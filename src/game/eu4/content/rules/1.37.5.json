@@ -1,0 +1,484 @@
+{
+  "binary_sha256": "bfb1f9dade119cb3adee4f595593df3983d9b7c3b480d3c2e2cb92e7576a7dbf",
+  "databases": {
+    "CAIArmyDataBase": [
+      {
+        "directory": "common/ai_army",
+        "files": "*.txt"
+      }
+    ],
+    "CAIPersonalityDatabase": [
+      {
+        "directory": "common/ai_personalities",
+        "files": "*.txt"
+      }
+    ],
+    "CAdvisorTypeDataBase": [
+      {
+        "directory": "common/advisortypes",
+        "files": "*.txt"
+      }
+    ],
+    "CAgeDatabase": [
+      {
+        "directory": "common/ages",
+        "files": "*.txt"
+      }
+    ],
+    "CBuildingDataBase": [
+      {
+        "directory": "common/buildings",
+        "files": "*.txt"
+      }
+    ],
+    "CCasusBelliDatabase": [
+      {
+        "directory": "common/cb_types",
+        "files": "*.txt"
+      }
+    ],
+    "CCenterOfTradeDatabase": [
+      {
+        "directory": "common/centers_of_trade",
+        "files": "*.txt"
+      }
+    ],
+    "CChurchAspectDatabase": [
+      {
+        "directory": "common/church_aspects",
+        "files": "*.txt"
+      }
+    ],
+    "CClientStateDatabase": [
+      {
+        "directory": "common/client_states",
+        "files": "*.txt"
+      }
+    ],
+    "CColonialRegionDatabase": [
+      {
+        "directory": "common/colonial_regions",
+        "files": "*.txt"
+      }
+    ],
+    "CCountryDataBase": [
+      {
+        "directory": "common/country_colors",
+        "files": "*.txt"
+      },
+      {
+        "directory": "common/country_tags",
+        "files": "*.txt"
+      }
+    ],
+    "CCrownLandDataBase": [
+      {
+        "directory": "common/estate_crown_land",
+        "files": "*.txt"
+      }
+    ],
+    "CCultureDataBase": [
+      {
+        "directory": "common/cultures",
+        "files": "*.txt"
+      }
+    ],
+    "CCustomCountryColorsDatabase": [
+      {
+        "directory": "common/custom_country_colors",
+        "files": "*.txt"
+      }
+    ],
+    "CCustomGuiDatabase": [
+      {
+        "directory": "common/custom_gui",
+        "files": "*.txt"
+      }
+    ],
+    "CCustomIdeaDataBase": [
+      {
+        "directory": "common/custom_ideas",
+        "files": "*.txt"
+      }
+    ],
+    "CDecreeDatabase": [
+      {
+        "directory": "common/decrees",
+        "files": "*.txt"
+      }
+    ],
+    "CDiplomaticActionDatabase": [
+      {
+        "directory": "common/new_diplomatic_actions",
+        "files": "*.txt"
+      }
+    ],
+    "CDiplomaticActionTriggerDatabase": [
+      {
+        "directory": "common/diplomatic_actions",
+        "files": "*.txt"
+      }
+    ],
+    "CDynamicProvinceNamesDatabase": [
+      {
+        "directory": "common/province_names",
+        "files": "*.txt"
+      }
+    ],
+    "CDynastyColorsDatabase": [
+      {
+        "directory": "common/dynasty_colors",
+        "files": "*.txt"
+      }
+    ],
+    "CEstateAgendaDataBase": [
+      {
+        "directory": "common/estate_agendas",
+        "files": "*.txt"
+      }
+    ],
+    "CEstateDatabase": [
+      {
+        "directory": "common/estates",
+        "files": "*.txt"
+      }
+    ],
+    "CEstatePrivilegeDataBase": [
+      {
+        "directory": "common/estate_privileges",
+        "files": "*.txt"
+      }
+    ],
+    "CFactionDatabase": [
+      {
+        "directory": "common/factions",
+        "files": "*.txt"
+      }
+    ],
+    "CFederationAdvancementDatabase": [
+      {
+        "directory": "common/federation_advancements",
+        "files": "*.txt"
+      }
+    ],
+    "CFervorDataBase": [
+      {
+        "directory": "common/fervor",
+        "files": "*.txt"
+      }
+    ],
+    "CFetishistCultDatabase": [
+      {
+        "directory": "common/fetishist_cults",
+        "files": "*.txt"
+      }
+    ],
+    "CFlagshipModificationDatabase": [
+      {
+        "directory": "common/flagship_modifications",
+        "files": "*.txt"
+      }
+    ],
+    "CGovernmentDataBase": [
+      {
+        "directory": "common/governments",
+        "files": "*.txt"
+      }
+    ],
+    "CGovernmentMechanicTypeDatabase": [
+      {
+        "directory": "common/government_mechanics",
+        "files": "*.txt"
+      }
+    ],
+    "CGovernmentRankDatabase": [
+      {
+        "directory": "common/government_ranks",
+        "files": "*.txt"
+      }
+    ],
+    "CGovernmentReformDatabase": [
+      {
+        "directory": "common/government_reforms",
+        "files": "*.txt"
+      }
+    ],
+    "CGovernmentTextDataBase": [
+      {
+        "directory": "common/government_names",
+        "files": "*.txt"
+      }
+    ],
+    "CGreatProjectTypeDatabase": [
+      {
+        "directory": "common/great_projects",
+        "files": "*.txt"
+      }
+    ],
+    "CHegemonDatabase": [
+      {
+        "directory": "common/hegemons",
+        "files": "*.txt"
+      }
+    ],
+    "CHolyOrderDataBase": [
+      {
+        "directory": "common/holy_orders",
+        "files": "*.txt"
+      }
+    ],
+    "CIdeaDataBase": [
+      {
+        "directory": "common/ideas",
+        "files": "*.txt"
+      }
+    ],
+    "CImperialIncidentDataBase": [
+      {
+        "directory": "common/imperial_incidents",
+        "files": "*.txt"
+      }
+    ],
+    "CImperialReformDatabase": [
+      {
+        "directory": "common/imperial_reforms",
+        "files": "*.txt"
+      }
+    ],
+    "CIncidentDatabase": [
+      {
+        "directory": "common/incidents",
+        "files": "*.txt"
+      }
+    ],
+    "CInstitutionDatabase": [
+      {
+        "directory": "common/institutions",
+        "files": "*.txt"
+      }
+    ],
+    "CInsultDatabase": [
+      {
+        "directory": "common/insults",
+        "files": "*.txt"
+      }
+    ],
+    "CIsolationismDatabase": [
+      {
+        "directory": "common/isolationism",
+        "files": "*.txt"
+      }
+    ],
+    "CLeaderPersonalityDatabase": [
+      {
+        "directory": "common/leader_personalities",
+        "files": "*.txt"
+      }
+    ],
+    "CMercenaryTemplateDatabase": [
+      {
+        "directory": "common/mercenary_companies",
+        "files": "*.txt"
+      }
+    ],
+    "CNavalDoctrineDatabase": [
+      {
+        "directory": "common/naval_doctrines",
+        "files": "*.txt"
+      }
+    ],
+    "COpinionModifierDatabase": [
+      {
+        "directory": "common/opinion_modifiers",
+        "files": "*.txt"
+      }
+    ],
+    "CParliamentBribeDatabase": [
+      {
+        "directory": "common/parliament_bribes",
+        "files": "*.txt"
+      }
+    ],
+    "CParliamentIssueDatabase": [
+      {
+        "directory": "common/parliament_issues",
+        "files": "*.txt"
+      }
+    ],
+    "CPeaceTreatyDatabase": [
+      {
+        "directory": "common/peace_treaties",
+        "files": "*.txt"
+      }
+    ],
+    "CPersonalDeityDatabase": [
+      {
+        "directory": "common/personal_deities",
+        "files": "*.txt"
+      }
+    ],
+    "CPolicyDatabase": [
+      {
+        "directory": "common/policies",
+        "files": "*.txt"
+      }
+    ],
+    "CPowerProjectionDatabase": [
+      {
+        "directory": "common/powerprojection",
+        "files": "*.txt"
+      }
+    ],
+    "CProfessionalismDatabase": [
+      {
+        "directory": "common/professionalism",
+        "files": "*.txt"
+      }
+    ],
+    "CProvinceTriggeredModifierDataBase": [
+      {
+        "directory": "common/province_triggered_modifiers",
+        "files": "*.txt"
+      }
+    ],
+    "CRebelTypeDatabase": [
+      {
+        "directory": "common/rebel_types",
+        "files": "*.txt"
+      }
+    ],
+    "CReligionDataBase": [
+      {
+        "directory": "common/religions",
+        "files": "*.txt"
+      }
+    ],
+    "CReligiousConversionDataBase": [
+      {
+        "directory": "common/religious_conversions",
+        "files": "*.txt"
+      }
+    ],
+    "CReligiousReformDataBase": [
+      {
+        "directory": "common/religious_reforms",
+        "files": "*.txt"
+      }
+    ],
+    "CRulerPersonalityDatabase": [
+      {
+        "directory": "common/ancestor_personalities",
+        "files": "*.txt"
+      },
+      {
+        "directory": "common/ruler_personalities",
+        "files": "*.txt"
+      }
+    ],
+    "CScriptedEffectTemplateDatabase": [
+      {
+        "directory": "common/scripted_effects",
+        "files": "*.txt"
+      }
+    ],
+    "CScriptedFunctionDatabase": [
+      {
+        "directory": "common/scripted_functions",
+        "files": "*.txt"
+      }
+    ],
+    "CScriptedTriggerTemplateDatabase": [
+      {
+        "directory": "common/scripted_triggers",
+        "files": "*.txt"
+      }
+    ],
+    "CStateEdictDatabase": [
+      {
+        "directory": "common/state_edicts",
+        "files": "*.txt"
+      }
+    ],
+    "CStateViewDataBase": [
+      {
+        "directory": "interface/state_view",
+        "files": "*.txt"
+      }
+    ],
+    "CStaticModifierDataBase": [
+      {
+        "directory": "common/event_modifiers",
+        "files": "*.txt"
+      },
+      {
+        "directory": "common/static_modifiers",
+        "files": "*.txt"
+      }
+    ],
+    "CSubjectTypeDatabase": [
+      {
+        "directory": "common/subject_types",
+        "files": "*.txt"
+      }
+    ],
+    "CSubjectTypeUpgradeDatabase": [
+      {
+        "directory": "common/subject_type_upgrades",
+        "files": "*.txt"
+      }
+    ],
+    "CTimedModifierDataBase": [
+      {
+        "directory": "common/timed_modifiers",
+        "files": "*.txt"
+      }
+    ],
+    "CTradeCompanyInvestmentDatabase": [
+      {
+        "directory": "common/tradecompany_investments",
+        "files": "*.txt"
+      }
+    ],
+    "CTradeCompanyRegionDatabase": [
+      {
+        "directory": "common/trade_companies",
+        "files": "*.txt"
+      }
+    ],
+    "CTradeGoodsDataBase": [
+      {
+        "directory": "common/prices",
+        "files": "*.txt"
+      },
+      {
+        "directory": "common/tradegoods",
+        "files": "*.txt"
+      }
+    ],
+    "CTradeNodeDatabase": [
+      {
+        "directory": "common/tradenodes",
+        "files": "*.txt"
+      }
+    ],
+    "CTradingPolicyDataBase": [
+      {
+        "directory": "common/trading_policies",
+        "files": "*.txt"
+      }
+    ],
+    "CTriggeredModifierDataBase": [
+      {
+        "directory": "common/triggered_modifiers",
+        "files": "*.txt"
+      }
+    ],
+    "CWarGoalDatabase": [
+      {
+        "directory": "common/wargoal_types",
+        "files": "*.txt"
+      }
+    ]
+  },
+  "game_version": "1.37.5"
+}

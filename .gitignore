@@ -1,4 +1,6 @@
 target/
+__pycache__/
+.venv/
 packages/tree-sitter-paradox/target/
 packages/vscode-foch/node_modules/
 packages/vscode-foch/bin/*/foch
