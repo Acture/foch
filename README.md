@@ -163,9 +163,20 @@ Each rule states **which database reads which directory and filename pattern**:
 ```
 
 The file header identifies the game version and inspected executable hash.
-Directories are relative to the game/mod root; `files` matches filenames.
-These relations establish merge input scope. Structural merge behavior remains
-in the EU4 content-family descriptors.
+Directories are relative to the game/mod root; `files` matches filenames directly
+in that directory. For the resolved game version, the path planner groups matching
+inputs by database, including files in different directories. Retained-path
+selection expands to the same database's available inputs. A file matching more
+than one database blocks planning with an explicit error. Unmatched files in a
+rule-covered family stay separate; other unmatched resources and versions without
+a rule snapshot use the existing family policies.
+
+Structural merge behavior remains in the EU4 content-family descriptors.
+Database units with a common definition-module output policy use that policy.
+Units spanning different policies retain all inputs in one plan unit and defer
+output, including with `--force`; this currently includes a static/event modifier
+database containing files from both directories. Base-only units without a mod
+contribution or namespace reset remain copy-through paths.
 
 [`tools/eu4-analysis`](./tools/eu4-analysis) extracts these relations from a
 symbol-bearing x86_64 Mach-O executable. It inventories loaders, follows each
@@ -190,8 +201,8 @@ Analysis projects, diagnostic catalogs, disassembly, and pseudocode stay under
 ignored `target/eu4-analysis` (or `--workspace`). `inspect --symbol '<glob>'`
 examines one function using its Mach-O boundary. `--timeout` bounds each
 operation; whole-program auto-analysis is disabled. The inventory does not
-prove coverage of all indirect loaders, and Foch does not yet automatically
-consume the rule files.
+prove coverage of all indirect loaders. Rule snapshots are embedded in the Foch
+library at build time; ordinary merges do not require Python or Ghidra.
 
 Run the module's tests without Ghidra using
 `uv run --directory tools/eu4-analysis python -m unittest discover -s tests`.

@@ -1,6 +1,7 @@
 # Project Status
 
-Latest focused verification: 2026-09-05, P-553/P-556 static-modifier product
+Latest source verification: 2026-09-07 for database-rule planning (P-579).
+Earlier focused verification: 2026-09-05, P-553/P-556 static-modifier product
 fixtures and bounded Workshop observation. See
 [the verification record](./static-modifiers-verification.md).
 
@@ -10,6 +11,45 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Database-rule planning (2026-09-07)
+
+`78c6d7c` adds the PyGhidra extractor and `content/rules/1.37.5.json`.
+P-579 makes `path_plan` select that snapshot by resolved game version and group
+matching files by database. Retained selections expand to that database's
+available inputs. Plan and review IDs use the database name; input paths,
+precedence, and vanilla sources remain attached. Snapshot validation follows
+the planned unit, including vanilla inputs from another directory.
+
+An ambiguous database match is an error. Unmatched files in rule-covered
+families stay separate; other unmatched resources and versions without rules
+keep the existing family policies. Base-only units without a participating
+namespace reset remain copy-through paths. Reset-only mods still participate
+in supported module merges.
+
+Known single-directory module outputs remain supported. Cross-directory groups
+currently defer because output requires one compatible descriptor, even with
+`--force`. Output adaptation belongs to P-580; P-579 establishes input grouping
+and review, not cross-directory output correctness. This limitation does not
+establish separate game namespaces: the inspected 1.37.5 binary uses the same
+singleton, loader, registration, and lookup for static and event modifiers,
+loading the static directory first.
+
+Validation passed:
+
+```fish
+cargo test -p foch --lib database
+cargo test -p foch -p foch-cli
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+git diff --check
+```
+
+The focused database regressions passed (11 tests), covering version selection,
+directory and filename matching, retained input expansion, cross-directory
+vanilla, namespace resets, and planning through materialization/review. Root
+library, integration, and CLI suites also passed. No full Workshop acceptance
+or in-game test was run.
 
 ## Product goal
 

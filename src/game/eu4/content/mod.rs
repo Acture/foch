@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 mod families;
+pub(crate) mod load_rules;
 
 pub use families::{EU4_LOCALISATION_LANGUAGE_HEADERS, eu4, eu4_content_family_for_root_family};
 

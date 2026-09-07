@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use crate::game::eu4::content::load_rules::load_rules_for_version;
 use crate::game::eu4::content::{
 	ContentFamilyDescriptor, ContentLoadPolicy, DefinitionModuleOutput, DefinitionModulePolicy,
 	DuplicateDefinitionPolicy, MergeKeySource,
@@ -54,9 +55,13 @@ pub(crate) fn build_cross_file_module_views(
 ) -> Result<CrossFileModuleViews, CrossFileModuleViewError> {
 	let has_covering_reset_participant =
 		definition_module_has_covering_reset_participant(input, descriptor);
-	let (merge_unit, input_paths, module_policy) =
-		validate_module_target(entry, descriptor, has_covering_reset_participant)
-			.map_err(CrossFileModuleViewError::engine_failure)?;
+	let (merge_unit, input_paths, module_policy) = validate_module_target(
+		entry,
+		descriptor,
+		has_covering_reset_participant,
+		input.game_version.as_deref(),
+	)
+	.map_err(CrossFileModuleViewError::engine_failure)?;
 	let module_policy = apply_duplicate_definition_override(
 		module_policy,
 		duplicate_definitions,
@@ -203,6 +208,7 @@ fn validate_module_target<'a>(
 	entry: &'a MergePlanEntry,
 	descriptor: &ContentFamilyDescriptor,
 	has_covering_reset_participant: bool,
+	game_version: Option<&str>,
 ) -> Result<
 	(
 		&'a crate::model::MergeUnitId,
@@ -223,11 +229,16 @@ fn validate_module_target<'a>(
 			entry.output_path()
 		));
 	};
-	if merge_unit.family_id != descriptor.id.as_str() {
+	let database: Option<&str> = game_version
+		.and_then(load_rules_for_version)
+		.map(|rules| rules.database_for(entry.output_path()))
+		.transpose()?
+		.flatten();
+	let expected_family: &str = database.unwrap_or(descriptor.id.as_str());
+	if merge_unit.family_id != expected_family {
 		return Err(format!(
-			"merge unit family {} does not match descriptor {}",
-			merge_unit.family_id,
-			descriptor.id.as_str()
+			"merge unit family {} does not match expected family {}",
+			merge_unit.family_id, expected_family
 		));
 	}
 	if !matches!(
@@ -289,6 +300,12 @@ fn validate_module_target<'a>(
 			.rsplit('/')
 			.next()
 			.unwrap_or(descriptor.id.as_str());
+		let database: Option<&str> = game_version
+			.and_then(load_rules_for_version)
+			.map(|rules| rules.database_for(input_path))
+			.transpose()?
+			.flatten();
+		let expected_module_name: &str = database.unwrap_or(expected_module_name);
 		if merge_unit.module_name != expected_module_name {
 			return Err(format!(
 				"merge unit module {} does not match input module {expected_module_name} for {input_path}",
@@ -579,6 +596,22 @@ mod tests {
 	}
 
 	#[test]
+	fn module_target_uses_the_database_name_from_the_selected_game_version() {
+		let mut entry = powerprojection_entry(None);
+		let MergePlanTarget::Module { id, .. } = &mut entry.target else {
+			unreachable!();
+		};
+		id.module_name = "CPowerProjectionDatabase".to_string();
+		id.family_id = "CPowerProjectionDatabase".to_string();
+		validate_module_target(&entry, powerprojection_descriptor(), false, Some("1.37.5"))
+			.expect("database unit keeps the existing output policy");
+		assert!(
+			validate_module_target(&entry, powerprojection_descriptor(), false, Some("1.37.4"))
+				.is_err()
+		);
+	}
+
+	#[test]
 	fn module_target_rejects_a_different_replacement_prefix() {
 		let entry = module_entry(
 			"common/governments/example.txt",
@@ -586,7 +619,7 @@ mod tests {
 			"common/ideas",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor(), false)
+		let error = validate_module_target(&entry, governments_descriptor(), false, None)
 			.expect_err("target prefix must match the load policy");
 
 		assert!(error.contains("common/ideas"), "error: {error}");
@@ -601,7 +634,7 @@ mod tests {
 			"common/governments",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor(), false)
+		let error = validate_module_target(&entry, governments_descriptor(), false, None)
 			.expect_err("module input must stay within its runtime prefix");
 
 		assert!(
@@ -618,7 +651,7 @@ mod tests {
 			"common/governments",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor(), false)
+		let error = validate_module_target(&entry, governments_descriptor(), false, None)
 			.expect_err("module id must match the descriptor's module rule");
 
 		assert!(error.contains("ideas"), "error: {error}");
@@ -637,7 +670,7 @@ mod tests {
 		};
 		input_paths.clear();
 
-		let error = validate_module_target(&entry, governments_descriptor(), false)
+		let error = validate_module_target(&entry, governments_descriptor(), false, None)
 			.expect_err("module target must have at least one input");
 
 		assert!(error.contains("no input paths"), "error: {error}");
@@ -647,11 +680,11 @@ mod tests {
 	fn overlay_module_replacement_requires_a_covering_reset_participant() {
 		let entry = powerprojection_entry(Some("common/powerprojection"));
 
-		let error = validate_module_target(&entry, powerprojection_descriptor(), false)
+		let error = validate_module_target(&entry, powerprojection_descriptor(), false, None)
 			.expect_err("overlay module cannot replace its namespace without a reset participant");
 		assert!(error.contains("covering reset participant: false"));
 
-		validate_module_target(&entry, powerprojection_descriptor(), true)
+		validate_module_target(&entry, powerprojection_descriptor(), true, None)
 			.expect("covering reset participant permits dynamic namespace replacement");
 	}
 

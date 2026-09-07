@@ -2131,6 +2131,7 @@ mod tests {
 			mods: Vec::new(),
 			installed_base_snapshot: None,
 			cache_game_version: None,
+			game_version: None,
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,

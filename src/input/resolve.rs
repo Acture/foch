@@ -9,6 +9,7 @@ use crate::game::eu4::base::snapshot::{
 	base_game_mod_id, detect_game_version, installed_base_snapshot_identity,
 	load_installed_base_snapshot_from_identity, resolve_game_root, resolve_game_root_and_version,
 };
+use crate::game::eu4::content::load_rules::load_rules_for_version;
 use crate::game::eu4::content::{
 	ContentFamilyDescriptor, ContentLoadPolicy, module_name_for_descriptor,
 };
@@ -101,6 +102,7 @@ pub(crate) struct ResolvedInputContributor {
 pub(crate) struct ResolvedInput {
 	pub playlist_path: PathBuf,
 	pub playlist: Playset,
+	pub game_version: Option<String>,
 	pub mods: Vec<ModCandidate>,
 	pub installed_base_snapshot: Option<InstalledBaseSnapshot>,
 	pub cache_game_version: Option<String>,
@@ -512,28 +514,52 @@ fn retained_definition_modules(
 
 fn expand_retained_paths_for_game<'a>(
 	game: &Eu4,
+	game_version: Option<&str>,
 	requested_paths: Option<&BTreeSet<String>>,
 	available_paths: impl IntoIterator<Item = &'a str>,
-) -> Option<BTreeSet<String>> {
-	let requested_paths = requested_paths?;
+) -> Result<Option<BTreeSet<String>>, String> {
+	let Some(requested_paths) = requested_paths else {
+		return Ok(None);
+	};
 	let mut effective = requested_paths
 		.iter()
 		.map(|path| normalize_relative_path(Path::new(path)))
 		.collect::<BTreeSet<_>>();
 	let selected_modules = retained_definition_modules(game, &effective);
-	if selected_modules.is_empty() {
-		return Some(effective);
+	let rules = game_version.and_then(load_rules_for_version);
+	let mut selected_databases: BTreeSet<&str> = BTreeSet::new();
+	if let Some(rules) = rules {
+		for path in &effective {
+			if let Some(database) = rules.database_for(path)? {
+				selected_databases.insert(database);
+			}
+		}
 	}
 	let profile = game;
 	for available_path in available_paths {
 		let normalized = normalize_relative_path(Path::new(available_path));
+		if let Some(database) = rules
+			.map(|rules| rules.database_for(&normalized))
+			.transpose()?
+			.flatten()
+		{
+			if selected_databases.contains(database) {
+				effective.insert(normalized);
+			}
+			continue;
+		}
 		let Some(descriptor) = profile.classify_content_family(Path::new(&normalized)) else {
 			continue;
 		};
-		if !matches!(
-			descriptor.load_policy,
-			ContentLoadPolicy::DefinitionModule(_)
-		) {
+		let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy else {
+			continue;
+		};
+		if rules
+			.map(|rules| rules.database_for(policy.output_path))
+			.transpose()?
+			.flatten()
+			.is_some()
+		{
 			continue;
 		}
 		let module = MergeUnitId {
@@ -544,7 +570,7 @@ fn expand_retained_paths_for_game<'a>(
 			effective.insert(normalized);
 		}
 	}
-	Some(effective)
+	Ok(Some(effective))
 }
 
 pub(crate) fn build_input_inventory_for_paths(
@@ -824,9 +850,15 @@ pub(crate) fn resolve_input_from_inventory(
 	}
 	let effective_retained_paths = expand_retained_paths_for_game(
 		&playlist.game,
+		mod_cache_game_version.as_deref(),
 		requested_retained_paths.as_ref(),
 		available_paths.iter().map(String::as_str),
-	);
+	)
+	.map_err(|message| InputResolveError {
+		kind: InputResolveErrorKind::Io,
+		path: playlist_path.clone(),
+		message,
+	})?;
 	if let Some(effective_retained_paths) = effective_retained_paths.as_ref() {
 		for mod_item in &mut mods {
 			mod_item.files.retain(|relative| {
@@ -886,6 +918,7 @@ pub(crate) fn resolve_input_from_inventory(
 	Ok(ResolvedInput {
 		playlist_path,
 		playlist,
+		game_version: mod_cache_game_version,
 		mods,
 		installed_base_snapshot,
 		cache_game_version,
@@ -1921,6 +1954,94 @@ path = "governments_mod"
 	}
 
 	#[test]
+	fn retained_database_inputs_use_the_resolved_game_version_and_keep_playset_order() {
+		let temp: TempDir = TempDir::new().unwrap();
+		let game_root: PathBuf = temp.path().join("game-root");
+		fs::create_dir_all(&game_root).unwrap();
+		fs::write(game_root.join("version.txt"), "1.37.5\n").unwrap();
+		for (mod_id, directory) in [
+			("mod-z", "common/static_modifiers"),
+			("mod-a", "common/event_modifiers"),
+		] {
+			let root: PathBuf = temp.path().join(mod_id);
+			write_descriptor(&root, mod_id, None);
+			fs::create_dir_all(root.join(directory)).unwrap();
+			fs::write(root.join(directory).join("entry.txt"), "test = { }\n").unwrap();
+		}
+		let manifest: PathBuf = temp.path().join("foch.toml");
+		fs::write(
+			&manifest,
+			r#"
+[project]
+game = "eu4"
+game_path = "game-root"
+
+[[project.mods]]
+id = "mod-z"
+path = "mod-z"
+
+[[project.mods]]
+id = "mod-a"
+path = "mod-a"
+"#,
+		)
+		.unwrap();
+		let requested: BTreeSet<String> =
+			BTreeSet::from(["common/static_modifiers/entry.txt".to_string()]);
+		let inventory = build_input_inventory_for_paths(
+			&request_for_manifest(&manifest),
+			false,
+			Some(&requested),
+		)
+		.unwrap();
+		let input = resolve_input_from_inventory(inventory).unwrap();
+		assert_eq!(input.game_version.as_deref(), Some("1.37.5"));
+		assert_eq!(input.cache_game_version.as_deref(), Some("eu4 1.37.5"));
+		assert_eq!(input.requested_retained_paths, Some(requested));
+		assert_eq!(
+			input.effective_retained_paths,
+			Some(BTreeSet::from([
+				"common/static_modifiers/entry.txt".to_string(),
+				"common/event_modifiers/entry.txt".to_string(),
+			]))
+		);
+		assert_eq!(input.mods[0].mod_id, "mod-z");
+		assert_eq!(input.mods[1].mod_id, "mod-a");
+		assert_eq!(
+			input.file_inventory["common/static_modifiers/entry.txt"][0].precedence,
+			0
+		);
+		assert_eq!(
+			input.file_inventory["common/event_modifiers/entry.txt"][0].precedence,
+			1
+		);
+	}
+
+	#[test]
+	fn retained_database_selection_includes_other_directories_and_respects_file_filters() {
+		let requested: BTreeSet<String> =
+			BTreeSet::from(["common/static_modifiers/mod.txt".to_string()]);
+		let available: [&str; 5] = [
+			"common/static_modifiers/base.txt",
+			"common/static_modifiers/notes.gui",
+			"common/event_modifiers/base.txt",
+			"common/event_modifiers/notes.gui",
+			"common/policies/unrelated.txt",
+		];
+		let expanded: Option<BTreeSet<String>> =
+			expand_retained_paths_for_game(&Eu4, Some("1.37.5"), Some(&requested), available)
+				.unwrap();
+		assert_eq!(
+			expanded,
+			Some(BTreeSet::from([
+				"common/static_modifiers/mod.txt".to_string(),
+				"common/static_modifiers/base.txt".to_string(),
+				"common/event_modifiers/base.txt".to_string(),
+			]))
+		);
+	}
+
+	#[test]
 	fn retained_non_module_path_stays_exact() {
 		let available = BTreeSet::from([
 			"common/countries/France.txt".to_string(),
@@ -1930,9 +2051,11 @@ path = "governments_mod"
 
 		let effective = expand_retained_paths_for_game(
 			&Eu4,
+			None,
 			Some(&requested),
 			available.iter().map(String::as_str),
-		);
+		)
+		.unwrap();
 
 		assert_eq!(effective, Some(requested));
 	}
@@ -1948,9 +2071,11 @@ path = "governments_mod"
 
 		let effective = expand_retained_paths_for_game(
 			&Eu4,
+			None,
 			Some(&requested),
 			available.iter().map(String::as_str),
-		);
+		)
+		.unwrap();
 
 		assert_eq!(
 			effective,

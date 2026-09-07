@@ -2722,6 +2722,7 @@ mod tests {
 			mods: Vec::new(),
 			installed_base_snapshot: None,
 			cache_game_version: None,
+			game_version: None,
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
@@ -3022,6 +3023,7 @@ mod tests {
 			mods: Vec::new(),
 			installed_base_snapshot: None,
 			cache_game_version: None,
+			game_version: None,
 			mod_snapshots: Vec::new(),
 			script_cache: Default::default(),
 			file_inventory,
@@ -3119,6 +3121,77 @@ mod tests {
 		);
 		assert!(target.starts_with("common/diplomatic_actions/"));
 		output
+	}
+
+	#[test]
+	fn database_plans_reach_materialization_and_defer_unsupported_cross_directory_output() {
+		for (second_directory, expected) in [
+			("static_modifiers", MergeDisposition::Safe),
+			("event_modifiers", MergeDisposition::UnsupportedInput),
+		] {
+			let temp: TempDir = TempDir::new().unwrap();
+			let playlist_path: PathBuf = temp.path().join("playlist.json");
+			let out_dir: PathBuf = temp.path().join("out");
+			write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
+			let first: &str = "common/static_modifiers/a.txt";
+			let second: String = format!("common/{second_directory}/b.txt");
+			for (mod_id, path, content) in [
+				("mod-a", first, "from_a = { tax_income = 1 }\n"),
+				("mod-b", second.as_str(), "from_b = { tax_income = 2 }\n"),
+			] {
+				let root: PathBuf = temp.path().join(mod_id);
+				write_descriptor(&root, mod_id);
+				write_file(&root, path, content);
+			}
+			let request: InputRequest = request_for(&playlist_path);
+			write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
+			let mut input = crate::input::resolve_input(&request, false);
+			assert_eq!(
+				input.as_ref().unwrap().game_version.as_deref(),
+				Some("1.37.5")
+			);
+			let plan: MergePlanResult =
+				super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
+			assert!(!plan.has_fatal_errors(), "{:?}", plan.fatal_errors);
+			assert_eq!(plan.paths.len(), 1);
+			assert_eq!(plan.paths[0].target.input_paths().len(), 2);
+			let materialized: MaterializedMerge = materialize_analyzed_input(
+				request,
+				MaterializeOutput {
+					artifacts_dir: &out_dir,
+					prior_dir: None,
+					target_dir: &out_dir,
+				},
+				no_base_options(true),
+				input,
+				plan,
+				None,
+			)
+			.unwrap();
+			let units = materialized.review.units();
+			assert_eq!(units.len(), 1);
+			assert_eq!(units[0].disposition, expected, "{:?}", units[0]);
+			assert_eq!(
+				units[0].id,
+				"module:CStaticModifierDataBase/CStaticModifierDataBase"
+			);
+			let target: PathBuf =
+				out_dir.join("common/static_modifiers/zzz_foch_static_modifiers.txt");
+			if expected == MergeDisposition::Safe {
+				let merged: String = fs::read_to_string(target).unwrap();
+				assert!(merged.contains("from_a"), "{merged}");
+				assert!(merged.contains("from_b"), "{merged}");
+			} else {
+				assert!(units[0].output_path.is_none());
+				assert!(!target.exists());
+				assert!(!out_dir.join(first).exists());
+				assert!(!out_dir.join(second).exists());
+			}
+			assert_eq!(
+				fs::read_to_string(temp.path().join("mod-a").join(first)).unwrap(),
+				"from_a = { tax_income = 1 }\n"
+			);
+		}
 	}
 
 	#[test]
@@ -4255,7 +4328,7 @@ mod tests {
 
 	#[cfg(not(any(target_os = "windows", target_os = "redox")))]
 	#[test]
-	fn reset_only_mod_participates_in_definition_module_merge() {
+	fn database_reset_only_mod_participates_in_definition_module_merge() {
 		let temp = TempDir::new().expect("temp dir");
 		let playlist_path = temp.path().join("playlist.json");
 		let mod_a = temp.path().join("government-a");
@@ -4298,6 +4371,7 @@ mod tests {
 			"stale descriptor\n",
 		)
 		.expect("write stale descriptor");
+		write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
 
 		let materialized = run_materialization_with_review(
 			request_for(&playlist_path),
@@ -4305,6 +4379,10 @@ mod tests {
 			no_base_options(false),
 		);
 		let report = &materialized.report;
+		assert_eq!(
+			materialized.review.units()[0].id,
+			"module:CGovernmentDataBase/CGovernmentDataBase"
+		);
 		assert_single_review_unit(
 			&materialized,
 			"common/governments/zzz_foch_governments.txt",
