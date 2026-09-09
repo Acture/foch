@@ -647,9 +647,11 @@ fn render_merge_plan_entry(entry: &MergePlanEntry) -> String {
 		format!(" notes={}", entry.notes.join(" | "))
 	};
 
+	// A unit can write one file per contributing directory; showing only the
+	// primary would understate the plan.
 	format!(
 		"[{strategy}] path={} winner={} contributors={}{}",
-		entry.target.output_path(),
+		entry.target.output_paths().join(", "),
 		winner,
 		contributors,
 		notes

@@ -75,6 +75,29 @@ mod adding `SWE` to `common/country_tags` and another adding `SWE` to
 directories and no `unsupported_input`, because vanilla's own 278 repeated tags
 establish that the database composes. Source mods were unchanged.
 
+An adversarial review of the first commit confirmed seven defects, all fixed
+with regressions:
+
+- only the primary namespace's `replace_path` reached the generated
+  `descriptor.mod`. Outputs sort by path, so a reset declared on the later
+  directory was dropped and the merged mod overlaid a namespace it had merged
+  as replaced;
+- the review recorded a unit's planned outputs rather than the files it wrote,
+  so a directory whose merge was a vanilla no-op was reported as written;
+- an input in a subdirectory failed its whole definition module. EU4 reads the
+  directory itself, so such a file now keeps its own per-path handling instead
+  of joining, and blocking, the module;
+- a database whose directories are not definition modules at all — 1.37.5 has
+  one, `interface/state_view` — deferred instead of keeping the per-path merge
+  its content family already defines;
+- the collision check read the raw file inventory, so a name hidden by a
+  `replace_path` reset still counted; it now reads each namespace's merged
+  bytes;
+- a withheld unit kept the stale-vanilla targets, handler resolutions, warnings
+  and dep-misuse adjustments its first namespace staged; and
+- a withdrawn unit deleted only its primary output, and the analysis report
+  rendered only the primary path.
+
 Validation passed:
 
 ```fish
