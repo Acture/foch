@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::game::eu4::content::load_rules::load_rules_for_version;
@@ -8,7 +8,8 @@ use crate::game::eu4::content::{
 };
 use crate::game::eu4::script::ParsedScriptFile;
 use crate::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
-use crate::model::{MergePlanEntry, MergePlanTarget};
+use crate::game::eu4::script::parser::AstStatement;
+use crate::model::{MergeModuleOutput, MergePlanEntry, MergePlanTarget, path_is_within_namespace};
 use crate::project::DepOverride;
 
 use super::dag::{FileDag, IgnoreReplacePath, ModDag, ModId, induced_file_dag_with_overrides};
@@ -44,8 +45,10 @@ struct VisibleModuleFile {
 	parsed: ParsedScriptFile,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_cross_file_module_views(
 	entry: &MergePlanEntry,
+	namespace: &MergeModuleOutput,
 	input: &ResolvedInput,
 	descriptor: &ContentFamilyDescriptor,
 	mod_dag: &ModDag,
@@ -57,11 +60,13 @@ pub(crate) fn build_cross_file_module_views(
 		definition_module_has_covering_reset_participant(input, descriptor);
 	let (merge_unit, input_paths, module_policy) = validate_module_target(
 		entry,
+		namespace,
 		descriptor,
 		has_covering_reset_participant,
 		input.game_version.as_deref(),
 	)
 	.map_err(CrossFileModuleViewError::engine_failure)?;
+	let input_paths: &[String] = &input_paths;
 	let module_policy = apply_duplicate_definition_override(
 		module_policy,
 		duplicate_definitions,
@@ -124,9 +129,11 @@ pub(crate) fn build_cross_file_module_views(
 			.then_with(|| left.mod_id.cmp(&right.mod_id))
 	});
 
+	// `replace_path` is declared per directory, so the visibility DAG is induced
+	// for this namespace's own output path and never the unit's primary one.
 	let file_dag = induced_file_dag_with_overrides(
 		mod_dag,
-		entry.output_path(),
+		&namespace.output_path,
 		&aggregate_contributors,
 		ignore_replace_path,
 		dep_overrides,
@@ -206,32 +213,49 @@ fn apply_duplicate_definition_override(
 
 fn validate_module_target<'a>(
 	entry: &'a MergePlanEntry,
+	namespace: &MergeModuleOutput,
 	descriptor: &ContentFamilyDescriptor,
 	has_covering_reset_participant: bool,
 	game_version: Option<&str>,
 ) -> Result<
 	(
 		&'a crate::model::MergeUnitId,
-		&'a [String],
+		Vec<String>,
 		DefinitionModulePolicy,
 	),
 	String,
 > {
-	let MergePlanTarget::Module {
-		id: merge_unit,
-		input_paths,
-		replace_prefix,
-		..
-	} = &entry.target
-	else {
+	let MergePlanTarget::Module { id: merge_unit, .. } = &entry.target else {
 		return Err(format!(
 			"{} is not a cross-file merge unit",
 			entry.output_path()
 		));
 	};
+	let replace_prefix: &Option<String> = &namespace.replace_prefix;
+	// Each namespace of a database unit keeps only its own inputs: the
+	// directory decides the output file, the `replace_path` prefix and the
+	// extractor, so inputs must not cross namespaces. An input claimed by no
+	// namespace would otherwise be dropped from every merge without a word.
+	let namespaces: &[MergeModuleOutput] = entry.target.module_outputs();
+	if let Some(orphan) = entry.target.input_paths().iter().find(|path| {
+		!namespaces
+			.iter()
+			.any(|namespace| path_is_within_namespace(path, &namespace.namespace_prefix))
+	}) {
+		return Err(format!(
+			"module input {orphan} is outside every output namespace of {}",
+			merge_unit.module_name
+		));
+	}
+	let input_paths: Vec<String> = entry
+		.target
+		.namespace_input_paths(&namespace.namespace_prefix)
+		.into_iter()
+		.map(str::to_string)
+		.collect();
 	let database: Option<&str> = game_version
 		.and_then(load_rules_for_version)
-		.map(|rules| rules.database_for(entry.output_path()))
+		.map(|rules| rules.database_for(&namespace.output_path))
 		.transpose()?
 		.flatten();
 	let expected_family: &str = database.unwrap_or(descriptor.id.as_str());
@@ -260,11 +284,10 @@ fn validate_module_target<'a>(
 			merge_unit.module_name
 		));
 	};
-	if module_policy.output_path != entry.output_path() {
+	if module_policy.output_path != namespace.output_path {
 		return Err(format!(
 			"module output {} does not match policy output {}",
-			entry.output_path(),
-			module_policy.output_path
+			namespace.output_path, module_policy.output_path
 		));
 	}
 	let statically_replaces_namespace =
@@ -284,11 +307,11 @@ fn validate_module_target<'a>(
 	}
 	if input_paths.is_empty() {
 		return Err(format!(
-			"definition module {} has no input paths",
-			merge_unit.module_name
+			"definition module {} has no input paths in namespace {}",
+			merge_unit.module_name, namespace.namespace_prefix
 		));
 	}
-	for input_path in input_paths {
+	for input_path in &input_paths {
 		if !module_input_is_within_prefix(input_path, module_policy.namespace_prefix) {
 			return Err(format!(
 				"module input {input_path} is outside namespace prefix {}",
@@ -348,6 +371,44 @@ fn parse_contributor(
 	script_cache
 		.load(contributor)
 		.map(|parsed| (*parsed).clone())
+}
+
+/// Top-level definition names every contributor declares under `input_paths`.
+///
+/// Used to detect one name defined in two directories of the same database.
+/// Files that fail to parse are skipped: a parse failure is reported by the
+/// merge itself, and this check must not turn it into a name collision.
+pub(crate) fn declared_definition_keys<'a>(
+	input_paths: impl IntoIterator<Item = &'a str>,
+	input: &ResolvedInput,
+) -> BTreeSet<String> {
+	let mut keys: BTreeSet<String> = BTreeSet::new();
+	for input_path in input_paths {
+		let Some(contributors) = input.file_inventory.get(input_path) else {
+			continue;
+		};
+		for contributor in contributors {
+			if contributor.is_synthetic_base {
+				continue;
+			}
+			let Ok(parsed) = parse_contributor(contributor, &input.script_cache) else {
+				continue;
+			};
+			keys.extend(
+				parsed
+					.ast
+					.statements
+					.iter()
+					.filter_map(|statement| match statement {
+						AstStatement::Assignment { key, .. } if !key.trim().is_empty() => {
+							Some(key.clone())
+						}
+						_ => None,
+					}),
+			);
+		}
+	}
+	keys
 }
 
 fn include_reset_only_module_participants(
@@ -517,7 +578,9 @@ mod tests {
 	use crate::game::eu4::script::parse_script_file;
 	use crate::game::eu4::script::parser::{AstStatement, AstValue};
 	use crate::input::{InputScriptCache, ResolvedInputContributor};
-	use crate::model::{MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId};
+	use crate::model::{
+		MergeModuleOutput, MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeUnitId,
+	};
 	use std::collections::BTreeMap;
 	use std::fs;
 	use std::path::Path;
@@ -555,8 +618,10 @@ mod tests {
 					module_name: module_name.to_string(),
 				},
 				input_paths: vec![input_path.to_string()],
-				output_path: "common/governments/zzz_foch_governments.txt".to_string(),
-				replace_prefix: Some(replace_prefix.to_string()),
+				outputs: vec![MergeModuleOutput::new(
+					"common/governments/zzz_foch_governments.txt".to_string(),
+					Some(replace_prefix.to_string()),
+				)],
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -579,8 +644,10 @@ mod tests {
 					module_name: "powerprojection".to_string(),
 				},
 				input_paths: vec!["common/powerprojection/example.txt".to_string()],
-				output_path: "common/powerprojection/zzz_foch_powerprojection.txt".to_string(),
-				replace_prefix: replace_prefix.map(str::to_string),
+				outputs: vec![MergeModuleOutput::new(
+					"common/powerprojection/zzz_foch_powerprojection.txt".to_string(),
+					replace_prefix.map(str::to_string),
+				)],
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -603,11 +670,23 @@ mod tests {
 		};
 		id.module_name = "CPowerProjectionDatabase".to_string();
 		id.family_id = "CPowerProjectionDatabase".to_string();
-		validate_module_target(&entry, powerprojection_descriptor(), false, Some("1.37.5"))
-			.expect("database unit keeps the existing output policy");
+		validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			powerprojection_descriptor(),
+			false,
+			Some("1.37.5"),
+		)
+		.expect("database unit keeps the existing output policy");
 		assert!(
-			validate_module_target(&entry, powerprojection_descriptor(), false, Some("1.37.4"))
-				.is_err()
+			validate_module_target(
+				&entry,
+				&entry.target.module_outputs()[0].clone(),
+				powerprojection_descriptor(),
+				false,
+				Some("1.37.4")
+			)
+			.is_err()
 		);
 	}
 
@@ -619,8 +698,14 @@ mod tests {
 			"common/ideas",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor(), false, None)
-			.expect_err("target prefix must match the load policy");
+		let error = validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			governments_descriptor(),
+			false,
+			None,
+		)
+		.expect_err("target prefix must match the load policy");
 
 		assert!(error.contains("common/ideas"), "error: {error}");
 		assert!(error.contains("common/governments"), "error: {error}");
@@ -634,8 +719,14 @@ mod tests {
 			"common/governments",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor(), false, None)
-			.expect_err("module input must stay within its runtime prefix");
+		let error = validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			governments_descriptor(),
+			false,
+			None,
+		)
+		.expect_err("module input must stay within its runtime prefix");
 
 		assert!(
 			error.contains("events/not_governments.txt"),
@@ -651,8 +742,14 @@ mod tests {
 			"common/governments",
 		);
 
-		let error = validate_module_target(&entry, governments_descriptor(), false, None)
-			.expect_err("module id must match the descriptor's module rule");
+		let error = validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			governments_descriptor(),
+			false,
+			None,
+		)
+		.expect_err("module id must match the descriptor's module rule");
 
 		assert!(error.contains("ideas"), "error: {error}");
 		assert!(error.contains("governments"), "error: {error}");
@@ -670,8 +767,14 @@ mod tests {
 		};
 		input_paths.clear();
 
-		let error = validate_module_target(&entry, governments_descriptor(), false, None)
-			.expect_err("module target must have at least one input");
+		let error = validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			governments_descriptor(),
+			false,
+			None,
+		)
+		.expect_err("module target must have at least one input");
 
 		assert!(error.contains("no input paths"), "error: {error}");
 	}
@@ -680,12 +783,24 @@ mod tests {
 	fn overlay_module_replacement_requires_a_covering_reset_participant() {
 		let entry = powerprojection_entry(Some("common/powerprojection"));
 
-		let error = validate_module_target(&entry, powerprojection_descriptor(), false, None)
-			.expect_err("overlay module cannot replace its namespace without a reset participant");
+		let error = validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			powerprojection_descriptor(),
+			false,
+			None,
+		)
+		.expect_err("overlay module cannot replace its namespace without a reset participant");
 		assert!(error.contains("covering reset participant: false"));
 
-		validate_module_target(&entry, powerprojection_descriptor(), true, None)
-			.expect("covering reset participant permits dynamic namespace replacement");
+		validate_module_target(
+			&entry,
+			&entry.target.module_outputs()[0].clone(),
+			powerprojection_descriptor(),
+			true,
+			None,
+		)
+		.expect("covering reset participant permits dynamic namespace replacement");
 	}
 
 	#[test]

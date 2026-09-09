@@ -723,10 +723,10 @@ fn merge_plan_marks_valid_scripted_effect_overlap_as_structural_merge() {
 		&entry.target,
 		MergePlanTarget::Module {
 			input_paths,
-			replace_prefix,
+			outputs,
 			..
 		} if input_paths == &["common/scripted_effects/effects.txt"]
-			&& replace_prefix.is_none()
+			&& outputs[0].replace_prefix.is_none()
 	));
 	assert_eq!(
 		entry.winner.as_ref().expect("winner").mod_id,
@@ -773,14 +773,17 @@ fn merge_plan_groups_opted_in_governments_module_across_filenames() {
 	);
 	let MergePlanTarget::Module {
 		input_paths,
-		replace_prefix,
+		outputs,
 		..
 	} = &result.paths[0].target
 	else {
 		panic!("governments must be planned as a module target");
 	};
 	assert_eq!(input_paths.len(), 2);
-	assert_eq!(replace_prefix.as_deref(), Some("common/governments"));
+	assert_eq!(
+		outputs[0].replace_prefix.as_deref(),
+		Some("common/governments")
+	);
 }
 
 #[test]
@@ -802,12 +805,11 @@ fn merge_plan_keeps_single_governments_file_as_a_complete_module_target() {
 		&result.paths[0].target,
 		MergePlanTarget::Module {
 			input_paths,
-			output_path,
-			replace_prefix,
+			outputs,
 			..
 		} if input_paths == &["common/governments/only.txt"]
-			&& output_path == "common/governments/zzz_foch_governments.txt"
-			&& replace_prefix.as_deref() == Some("common/governments")
+			&& outputs[0].output_path == "common/governments/zzz_foch_governments.txt"
+			&& outputs[0].replace_prefix.as_deref() == Some("common/governments")
 	));
 }
 
@@ -837,15 +839,14 @@ fn merge_plan_closes_common_institutions_across_filenames_without_replace_path()
 		&result.paths[0].target,
 		MergePlanTarget::Module {
 			input_paths,
-			output_path,
-			replace_prefix,
+			outputs,
 			..
 		} if input_paths == &[
 			"common/institutions/00_Core.txt",
 			"common/institutions/00_ME_Override.txt",
 		]
-			&& output_path == "common/institutions/zzz_foch_institutions.txt"
-			&& replace_prefix.is_none()
+			&& outputs[0].output_path == "common/institutions/zzz_foch_institutions.txt"
+			&& outputs[0].replace_prefix.is_none()
 	));
 }
 

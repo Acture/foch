@@ -12,8 +12,8 @@ use crate::input::{
 	ResolvedInputContributor,
 };
 use crate::model::{
-	DocumentFamily, MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategies,
-	MergePlanStrategy, MergePlanTarget, MergeUnitId,
+	DocumentFamily, MergeModuleOutput, MergePlanContributor, MergePlanEntry, MergePlanResult,
+	MergePlanStrategies, MergePlanStrategy, MergePlanTarget, MergeUnitId,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -160,9 +160,9 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 		}
 		regular.push(classify_module_entry(
 			merge_unit,
-			policy,
+			[policy],
 			&inputs,
-			has_reset_participant,
+			input,
 			&input.script_cache,
 		));
 	}
@@ -184,64 +184,106 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 			}
 			continue;
 		}
-		regular.push(classify_database_entry(
-			database, &inputs, has_reset, input, profile,
-		));
+		regular.push(classify_database_entry(database, &inputs, input, profile));
 	}
 	regular.sort_by(|left, right| left.output_path().cmp(right.output_path()));
 	Ok(regular)
 }
 
+/// Plan one database as a single merge unit that writes one file per
+/// participating directory.
+///
+/// A database can be fed by several directories, and each keeps its own output
+/// file and `replace_path` prefix: `replace_path` is declared per directory and
+/// the extractors dispatch on the directory a definition was read from, so
+/// folding a database into one file would apply one directory's semantics to
+/// all of them. Writing each directory also avoids depending on the order in
+/// which the loader reads them, which the extracted rules do not record.
 fn classify_database_entry(
 	database: &str,
 	inputs: &ModuleInputs<'_>,
-	has_reset: bool,
 	input: &ResolvedInput,
 	profile: &Eu4,
 ) -> MergePlanEntry {
-	let first_path: &str = inputs[0].0;
-	let descriptor: Option<&ContentFamilyDescriptor> =
-		profile.classify_content_family(Path::new(first_path));
-	if let Some(descriptor) = descriptor
-		&& let ContentLoadPolicy::DefinitionModule(policy) = descriptor.load_policy
-		&& inputs.iter().all(|(path, _)| {
-			profile.classify_content_family(Path::new(path)) == Some(descriptor)
-				&& is_structural_merge_path(path, Some(descriptor))
-		}) {
+	let mut policies: BTreeMap<&str, DefinitionModulePolicy> = BTreeMap::new();
+	let mut unsupported: Vec<&str> = Vec::new();
+	for (path, _) in inputs {
+		let descriptor: Option<&ContentFamilyDescriptor> =
+			profile.classify_content_family(Path::new(path));
+		match descriptor.map(|descriptor| descriptor.load_policy) {
+			Some(ContentLoadPolicy::DefinitionModule(policy))
+				if is_structural_merge_path(path, descriptor) =>
+			{
+				policies.insert(policy.namespace_prefix, policy);
+			}
+			_ => unsupported.push(path),
+		}
+	}
+	let merge_unit: MergeUnitId = MergeUnitId {
+		family_id: database.to_string(),
+		module_name: database.to_string(),
+	};
+	if unsupported.is_empty() && !policies.is_empty() {
 		return classify_module_entry(
-			MergeUnitId {
-				family_id: database.to_string(),
-				module_name: database.to_string(),
-			},
-			policy,
+			merge_unit,
+			policies.values().copied(),
 			inputs,
-			has_reset,
+			input,
 			&input.script_cache,
 		);
 	}
-	let output_path: &str = descriptor
-		.and_then(|descriptor| match descriptor.load_policy {
-			ContentLoadPolicy::DefinitionModule(policy) => Some(policy.output_path),
-			ContentLoadPolicy::PerPath => None,
-		})
-		.unwrap_or(first_path);
+	// Only inputs the analyzer cannot merge structurally reach this point.
+	// Deferring names them instead of reporting the whole database as opaque.
+	let outputs: Vec<MergeModuleOutput> = module_outputs(policies.values().copied(), input);
 	MergePlanEntry {
 		target: MergePlanTarget::Module {
-			id: MergeUnitId {
-				family_id: database.to_string(),
-				module_name: database.to_string(),
-			},
+			id: merge_unit,
 			input_paths: inputs.iter().map(|(path, _)| (*path).to_string()).collect(),
-			output_path: output_path.to_string(),
-			replace_prefix: None,
+			outputs: if outputs.is_empty() {
+				vec![MergeModuleOutput {
+					output_path: inputs[0].0.to_string(),
+					namespace_prefix: namespace_of(inputs[0].0).to_string(),
+					replace_prefix: None,
+				}]
+			} else {
+				outputs
+			},
 		},
 		strategy: MergePlanStrategy::ManualConflict,
 		contributors: module_contributors(inputs),
 		winner: None,
 		notes: vec![format!(
-			"Database {database} has no common definition-module output policy for its selected files; the complete database unit is deferred"
+			"Database {database} cannot merge {} structurally; the complete database unit is deferred",
+			unsupported.join(", ")
 		)],
 	}
+}
+
+fn namespace_of(path: &str) -> &str {
+	path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
+/// One output per participating namespace, ordered by output path so the
+/// primary output — the unit's review path and staging identity — is stable.
+fn module_outputs(
+	policies: impl IntoIterator<Item = DefinitionModulePolicy>,
+	input: &ResolvedInput,
+) -> Vec<MergeModuleOutput> {
+	let mut outputs: Vec<MergeModuleOutput> = policies
+		.into_iter()
+		.map(|policy| MergeModuleOutput {
+			output_path: policy.output_path.to_string(),
+			namespace_prefix: policy.namespace_prefix.to_string(),
+			// `replace_path` is declared per directory, so each namespace
+			// answers this for itself.
+			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace
+				|| namespace_has_reset_participant(input, policy.namespace_prefix))
+			.then(|| policy.namespace_prefix.to_string()),
+		})
+		.collect();
+	outputs.sort_by(|left, right| left.output_path.cmp(&right.output_path));
+	outputs.dedup_by(|left, right| left.output_path == right.output_path);
+	outputs
 }
 
 fn module_has_non_base_contributor(inputs: &ModuleInputs<'_>) -> bool {
@@ -280,11 +322,12 @@ fn replace_path_covers_namespace(replace_path: &str, namespace_prefix: &str) -> 
 
 fn classify_module_entry(
 	merge_unit: MergeUnitId,
-	policy: DefinitionModulePolicy,
+	policies: impl IntoIterator<Item = DefinitionModulePolicy>,
 	inputs: &ModuleInputs<'_>,
-	has_reset_participant: bool,
+	input: &ResolvedInput,
 	script_cache: &InputScriptCache,
 ) -> MergePlanEntry {
+	let outputs: Vec<MergeModuleOutput> = module_outputs(policies, input);
 	let input_paths = inputs
 		.iter()
 		.map(|(path, _)| (*path).to_string())
@@ -308,10 +351,7 @@ fn classify_module_entry(
 		target: MergePlanTarget::Module {
 			id: merge_unit,
 			input_paths,
-			output_path: policy.output_path.to_string(),
-			replace_prefix: (policy.output_mode == DefinitionModuleOutput::ReplaceNamespace
-				|| has_reset_participant)
-				.then(|| policy.namespace_prefix.to_string()),
+			outputs,
 		},
 		strategy,
 		contributors,
@@ -695,7 +735,7 @@ mod tests {
 	}
 
 	#[test]
-	fn database_rules_collect_cross_directory_inputs_without_selecting_a_winner() {
+	fn database_rules_merge_cross_directory_inputs_into_one_unit_per_directory_output() {
 		let event_path: &str = "common/event_modifiers/a.txt";
 		let static_path: &str = "common/static_modifiers/b.txt";
 		let mut input: ResolvedInput =
@@ -715,8 +755,34 @@ mod tests {
 			entry.target.module_id().unwrap().module_name,
 			"CStaticModifierDataBase"
 		);
-		assert_eq!(entry.strategy, MergePlanStrategy::ManualConflict);
-		assert!(entry.winner.is_none());
+		// One review unit, one output file per contributing directory: both
+		// mods' contributions are kept instead of deferring the database.
+		assert_eq!(entry.strategy, MergePlanStrategy::StructuralMerge);
+		assert_eq!(
+			entry.target.output_paths(),
+			[
+				"common/event_modifiers/zzz_foch_event_modifiers.txt",
+				"common/static_modifiers/zzz_foch_static_modifiers.txt",
+			]
+		);
+		// Each namespace keeps only the inputs read from its own directory.
+		assert_eq!(
+			entry.target.namespace_input_paths("common/event_modifiers"),
+			[event_path]
+		);
+		assert_eq!(
+			entry
+				.target
+				.namespace_input_paths("common/static_modifiers"),
+			[static_path]
+		);
+		assert!(
+			entry
+				.target
+				.module_outputs()
+				.iter()
+				.all(|output| output.replace_prefix.is_none())
+		);
 		assert_eq!(
 			entry
 				.contributors
@@ -922,14 +988,14 @@ mod tests {
 		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
 		let MergePlanTarget::Module {
 			input_paths,
-			replace_prefix,
+			outputs,
 			..
 		} = &result.paths[0].target
 		else {
 			panic!("expected definition module");
 		};
 		assert_eq!(input_paths, &[base_path.to_string(), mod_path.to_string()]);
-		assert!(replace_prefix.is_none());
+		assert!(outputs[0].replace_prefix.is_none());
 		assert!(
 			result.paths[0]
 				.contributors
@@ -955,10 +1021,8 @@ mod tests {
 		assert_eq!(result.paths.len(), 1, "{:#?}", result.paths);
 		assert!(matches!(
 			&result.paths[0].target,
-			MergePlanTarget::Module {
-				replace_prefix: Some(prefix),
-				..
-			} if prefix == "common/powerprojection"
+			MergePlanTarget::Module { outputs, .. }
+				if outputs[0].replace_prefix.as_deref() == Some("common/powerprojection")
 		));
 	}
 

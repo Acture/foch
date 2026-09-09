@@ -867,6 +867,7 @@ mod tests {
 			strategy: "structural_merge".to_string(),
 			summary: format!("review {path}"),
 			output_path: Some(path.to_string()),
+			output_paths: vec![path.to_string()],
 			contributors: vec![MergeUnitContributor {
 				mod_id: "mod-a".to_string(),
 				name: "Mod A".to_string(),
