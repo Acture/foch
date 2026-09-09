@@ -37,13 +37,19 @@ namespace prefix and `replace_path` prefix; the persisted plan schema changed
 with it. A unit stages every namespace before committing any, so a unit that
 fails in its second directory leaves no file from its first.
 
-Cross-directory same-name definitions are `unsupported_input`, never
-`needs_user_choice`: the directory read order is an engine evidence gap, not a
-gameplay divergence. The check is gated to databases whose directories share one
-definition lookup, currently only `CStaticModifierDataBase`. Measured top-level
-key overlap in the installed 1.37.5 shows why the gate is needed:
+Files bound to one database share one name-to-object registry, so the same name
+in two of its directories is the same game object. What that means for output
+depends on how the database registers the repeat: it either composes the two as
+different aspects of one object, or the directory read later replaces the one
+read earlier. The extracted rules record neither that registration behavior nor
+the directory read order, so both are extraction gaps.
 
-| Database | Directories (keys) | Overlap |
+The analyzed vanilla snapshot decides it per database at merge time, with no
+hardcoded database list. If vanilla itself declares a name in two of the
+database's directories, the game composes them, and no repeat there is a
+conflict. Measured top-level key overlap in the installed 1.37.5:
+
+| Database | Directories (keys) | Vanilla repeats |
 | --- | --- | --- |
 | CStaticModifierDataBase | static_modifiers (375) / event_modifiers (3055) | 0 |
 | CRulerPersonalityDatabase | ancestor_personalities (41) / ruler_personalities (60) | 0 |
@@ -51,18 +57,23 @@ key overlap in the installed 1.37.5 shows why the gate is needed:
 | CTradeGoodsDataBase | prices (32) / tradegoods (32) | 32, all |
 
 For the last two the same key names different aspects of one object
-(`SWE = "countries/Sweden.txt"` against `SWE = { color1 = ... }`), which is
-ordinary content; treating a shared database as one merge namespace would
-report all of it as conflict.
+(`SWE = "countries/Sweden.txt"` against `SWE = { color1 = ... }`), and vanilla's
+own arrangement is the evidence that composing them is correct. Where vanilla
+never repeats a name, nothing establishes what a mod-introduced repeat would do,
+so it is reported as `unsupported_input` — never `needs_user_choice`, which
+would present an engine evidence gap as a gameplay divergence.
 
-Observed on the installed EU4 v1.37.5.0 with two synthetic mods, one editing
-`common/static_modifiers` and one `common/event_modifiers`. Before: one
-`unsupported_input` unit withholding both directories. After: one `safe`
+Observed on the installed EU4 v1.37.5.0. With two synthetic mods, one editing
+`common/static_modifiers` and one `common/event_modifiers` — before: one
+`unsupported_input` unit withholding both directories; after: one `safe`
 `CStaticModifierDataBase` unit writing
 `common/static_modifiers/zzz_foch_static_modifiers.txt` (360 definitions) and
 `common/event_modifiers/zzz_foch_event_modifiers.txt` (5420 definitions), each
-carrying its own mod's contribution alongside vanilla. Source mods were
-unchanged.
+carrying its own mod's contribution alongside vanilla. A second probe with one
+mod adding `SWE` to `common/country_tags` and another adding `SWE` to
+`common/country_colors` produced one `safe` `CCountryDataBase` unit writing both
+directories and no `unsupported_input`, because vanilla's own 278 repeated tags
+establish that the database composes. Source mods were unchanged.
 
 Validation passed:
 

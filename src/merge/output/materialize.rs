@@ -26,7 +26,6 @@ use super::super::planning::module_view::{
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::game::eu4::Eu4;
 use crate::game::eu4::analysis::rules::{detect_dependency_misuse, detect_version_mismatch};
-use crate::game::eu4::content::load_rules::database_shares_definition_namespace;
 use crate::game::eu4::content::{ContentFamilyDescriptor, ContentLoadPolicy, MergeKeySource, eu4};
 use crate::game::eu4::script::emit::EmitOptions;
 use crate::input::request::InputRequest;
@@ -1389,13 +1388,24 @@ fn stage_cross_file_module_namespace<'a>(
 	}
 }
 
-/// Report a definition name that two of a database's directories both define.
+/// Report a definition name that two of a database's directories both define
+/// when nothing establishes what the game does with the repeat.
 ///
-/// Only databases whose directories are known to share one definition lookup
-/// are checked. Shared database identity alone does not establish that: in the
-/// installed EU4 1.37.5, `common/country_colors` and `common/country_tags`
-/// define all 278 of the former's names in both directories as separate aspects
-/// of one object, which is normal content and not a conflict.
+/// Files bound to one database share one name-to-object registry, so the same
+/// name in two of its directories is the same game object. What that means for
+/// output depends on how the database registers the repeat: it either composes
+/// the two as different aspects of one object, or the directory read later
+/// replaces the one read earlier. The extracted loading rules record neither
+/// that registration behavior nor the directory read order.
+///
+/// The analyzed vanilla snapshot answers it per database. If vanilla itself
+/// declares a name in two of the database's directories, the game composes them
+/// — in the installed 1.37.5, `common/country_tags` and `common/country_colors`
+/// both declare all 278 country tags (`SWE = "countries/Sweden.txt"` against
+/// `SWE = { color1 = ... }`), and `common/prices` and `common/tradegoods` both
+/// declare all 32 goods. Where vanilla never repeats a name — static and event
+/// modifiers share none of their 375 and 3055 names — nothing shows what a
+/// mod-introduced repeat would do, so it is reported instead of guessed.
 fn cross_namespace_definition_collision(
 	entry: &MergePlanEntry,
 	input: &ResolvedInput,
@@ -1404,38 +1414,54 @@ fn cross_namespace_definition_collision(
 	if staged.len() < 2 {
 		return None;
 	}
-	let database: &str = entry.target.module_id()?.family_id.as_str();
-	if !database_shares_definition_namespace(database) {
-		return None;
-	}
-	let mut owners: BTreeMap<String, &str> = BTreeMap::new();
-	let mut collisions: Vec<String> = Vec::new();
-	for output in staged {
-		let namespace_prefix: &str = output.namespace.namespace_prefix.as_str();
-		for definition in
-			declared_definition_keys(entry.target.namespace_input_paths(namespace_prefix), input)
-		{
-			match owners.get(&definition) {
-				Some(previous) if *previous != namespace_prefix => {
-					collisions.push(format!(
-						"{definition} (in {previous} and {namespace_prefix})"
-					));
-				}
-				Some(_) => {}
-				None => {
-					owners.insert(definition, namespace_prefix);
-				}
+	let namespaces: Vec<&str> = staged
+		.iter()
+		.map(|output| output.namespace.namespace_prefix.as_str())
+		.collect();
+	cross_namespace_collision_detail(
+		entry.target.module_id()?.family_id.as_str(),
+		&namespaces,
+		|namespace, base_game_only| {
+			declared_definition_keys(
+				entry.target.namespace_input_paths(namespace),
+				input,
+				base_game_only,
+			)
+		},
+	)
+}
+
+fn cross_namespace_collision_detail(
+	database: &str,
+	namespaces: &[&str],
+	keys_for: impl Fn(&str, bool) -> BTreeSet<String>,
+) -> Option<String> {
+	let repeated_in = |base_game_only: bool| -> BTreeMap<String, Vec<&str>> {
+		let mut owners: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+		for namespace in namespaces {
+			for definition in keys_for(namespace, base_game_only) {
+				owners.entry(definition).or_default().push(namespace);
 			}
 		}
+		owners.retain(|_, owners| owners.len() > 1);
+		owners
+	};
+	// Vanilla repeating a name across these directories proves the database
+	// composes them, so no repeat in it is a conflict.
+	if !repeated_in(true).is_empty() {
+		return None;
 	}
+	let collisions: BTreeMap<String, Vec<&str>> = repeated_in(false);
 	if collisions.is_empty() {
 		return None;
 	}
-	collisions.sort();
-	collisions.dedup();
+	let detail: Vec<String> = collisions
+		.iter()
+		.map(|(definition, owners)| format!("{definition} (in {})", owners.join(" and ")))
+		.collect();
 	Some(format!(
-		"database {database} defines {} in more than one directory, and the order in which the game reads those directories is not recorded in the extracted loading rules",
-		collisions.join(", ")
+		"database {database} defines {} in more than one directory. The analyzed base game never repeats a name across those directories, so nothing establishes whether the game composes the two or lets one directory replace the other, and the extracted loading rules record neither the registration behavior nor the directory read order",
+		detail.join(", ")
 	))
 }
 
@@ -1557,13 +1583,19 @@ fn discard_module_output(
 	out_dir: &Path,
 	generated_paths: &mut BTreeSet<String>,
 ) -> Result<(), MergeError> {
-	generated_paths.remove(entry.output_path());
-	let target = out_dir.join(entry.output_path());
-	match fs::remove_file(target) {
-		Ok(()) => Ok(()),
-		Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-		Err(error) => Err(MergeError::Io(error)),
+	// A unit writes one file per contributing directory and commits them in
+	// order, so a failure in a later directory can leave earlier ones already
+	// installed. Withdrawing the unit must withdraw every file it wrote, not
+	// just the primary one.
+	for output_path in entry.target.output_paths() {
+		generated_paths.remove(output_path);
+		match fs::remove_file(out_dir.join(output_path)) {
+			Ok(()) => {}
+			Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+			Err(error) => return Err(MergeError::Io(error)),
+		}
 	}
+	Ok(())
 }
 
 fn should_skip_base_passthrough(
@@ -3430,7 +3462,8 @@ mod tests {
 		assert_eq!(units[0].disposition, MergeDisposition::UnsupportedInput);
 		assert_ne!(units[0].disposition, MergeDisposition::NeedsUserChoice);
 		assert!(
-			units[0].summary.contains("shared_name") && units[0].summary.contains("not recorded"),
+			units[0].summary.contains("shared_name")
+				&& units[0].summary.contains("never repeats a name"),
 			"{}",
 			units[0].summary
 		);
@@ -3447,55 +3480,47 @@ mod tests {
 	}
 
 	#[test]
-	fn a_database_whose_directories_do_not_share_a_namespace_keeps_same_name_definitions() {
-		// common/country_colors and common/country_tags both define every tag as
-		// separate aspects of one object, so the same name there is ordinary
-		// content and must merge, not conflict.
-		let temp: TempDir = TempDir::new().unwrap();
-		let playlist_path: PathBuf = temp.path().join("playlist.json");
-		let out_dir: PathBuf = temp.path().join("out");
-		write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
-		for (mod_id, path, content) in [
-			(
-				"mod-a",
-				"common/country_tags/a.txt",
-				"SWE = \"countries/Sweden.txt\"\n",
-			),
-			(
-				"mod-b",
-				"common/country_colors/b.txt",
-				"SWE = { color1 = { 1 2 3 } }\n",
-			),
-		] {
-			let root: PathBuf = temp.path().join(mod_id);
-			write_descriptor(&root, mod_id);
-			write_file(&root, path, content);
-		}
-		let request: InputRequest = request_for(&playlist_path);
-		write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
-		let mut input = crate::input::resolve_input(&request, false);
-		let plan: MergePlanResult =
-			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
-		let materialized: MaterializedMerge = materialize_analyzed_input(
-			request,
-			MaterializeOutput {
-				artifacts_dir: &out_dir,
-				prior_dir: None,
-				target_dir: &out_dir,
-			},
-			no_base_options(true),
-			input,
-			plan,
-			None,
+	fn vanilla_repeating_a_name_across_directories_proves_the_database_composes_them() {
+		// common/country_tags and common/country_colors both declare every tag
+		// in the installed 1.37.5 and the game runs, so a repeat there is one
+		// object's two aspects and never a conflict — including when mods add
+		// their own tag to both.
+		let namespaces: [&str; 2] = ["common/country_colors", "common/country_tags"];
+		let composing = |namespace: &str, _base_only: bool| {
+			BTreeSet::from([namespace.to_string(), "SWE".to_string()])
+		};
+		assert_eq!(
+			super::cross_namespace_collision_detail("CCountryDataBase", &namespaces, composing),
+			None
+		);
+
+		// Static and event modifiers share none of their names in vanilla, so a
+		// mod-introduced repeat has nothing establishing what the game does.
+		let namespaces: [&str; 2] = ["common/event_modifiers", "common/static_modifiers"];
+		let only_a_mod_repeats = |namespace: &str, base_only: bool| {
+			if base_only {
+				BTreeSet::from([format!("vanilla_{namespace}")])
+			} else {
+				BTreeSet::from([format!("vanilla_{namespace}"), "shared_name".to_string()])
+			}
+		};
+		let detail = super::cross_namespace_collision_detail(
+			"CStaticModifierDataBase",
+			&namespaces,
+			only_a_mod_repeats,
 		)
-		.unwrap();
-		let units = materialized.review.units();
-		assert_eq!(units.len(), 1);
-		assert_ne!(
-			units[0].disposition,
-			MergeDisposition::UnsupportedInput,
-			"same-name definitions across these directories are not a collision: {:?}",
-			units[0]
+		.expect("a repeat with no vanilla precedent is reported");
+		assert!(detail.contains("shared_name"), "{detail}");
+		assert!(detail.contains("never repeats a name"), "{detail}");
+
+		// One directory alone can never collide with itself.
+		assert_eq!(
+			super::cross_namespace_collision_detail(
+				"CStaticModifierDataBase",
+				&["common/static_modifiers"],
+				only_a_mod_repeats
+			),
+			None
 		);
 	}
 

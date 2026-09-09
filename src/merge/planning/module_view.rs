@@ -378,9 +378,13 @@ fn parse_contributor(
 /// Used to detect one name defined in two directories of the same database.
 /// Files that fail to parse are skipped: a parse failure is reported by the
 /// merge itself, and this check must not turn it into a name collision.
+///
+/// `base_game_only` restricts the scan to the analyzed vanilla snapshot, whose
+/// own arrangement is the evidence for how a database registers a repeated name.
 pub(crate) fn declared_definition_keys<'a>(
 	input_paths: impl IntoIterator<Item = &'a str>,
 	input: &ResolvedInput,
+	base_game_only: bool,
 ) -> BTreeSet<String> {
 	let mut keys: BTreeSet<String> = BTreeSet::new();
 	for input_path in input_paths {
@@ -388,7 +392,7 @@ pub(crate) fn declared_definition_keys<'a>(
 			continue;
 		};
 		for contributor in contributors {
-			if contributor.is_synthetic_base {
+			if contributor.is_synthetic_base || (base_game_only && !contributor.is_base_game) {
 				continue;
 			}
 			let Ok(parsed) = parse_contributor(contributor, &input.script_cache) else {

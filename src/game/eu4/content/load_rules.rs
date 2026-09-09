@@ -112,28 +112,9 @@ pub(crate) fn load_rules_for_version(version: &str) -> Option<&'static DatabaseL
 	}
 }
 
-/// Databases whose directories are known to share one definition-name lookup,
-/// so the same name in either directory is the same game object and a
-/// cross-directory duplicate is a real collision.
-///
-/// Shared database identity alone does not establish this. Measured top-level
-/// key overlap in the installed EU4 1.37.5 shows two distinct shapes:
-/// `common/static_modifiers` (375 keys) and `common/event_modifiers` (3055)
-/// share none, whereas `common/country_colors` and `common/country_tags` share
-/// all 278 of the former's keys and `common/prices` and `common/tradegoods`
-/// share all 32 — there the same key names different aspects of one object
-/// (`SWE = "countries/Sweden.txt"` against `SWE = { color1 = ... }`), which a
-/// duplicate check must not report as a conflict.
-pub(crate) fn database_shares_definition_namespace(database: &str) -> bool {
-	matches!(database, "CStaticModifierDataBase")
-}
-
 #[cfg(test)]
 mod tests {
-	use super::{
-		DatabaseLoadRules, database_shares_definition_namespace, load_rules_for_version,
-		normalize_game_version,
-	};
+	use super::{DatabaseLoadRules, load_rules_for_version, normalize_game_version};
 
 	#[test]
 	fn rules_resolve_for_the_version_string_a_real_installation_reports() {
@@ -163,23 +144,6 @@ mod tests {
 			Some("1.37.4")
 		);
 		assert!(load_rules_for_version("v1.37.4.0").is_none());
-	}
-
-	#[test]
-	fn only_verified_databases_share_a_definition_namespace() {
-		assert!(database_shares_definition_namespace(
-			"CStaticModifierDataBase"
-		));
-		for database in [
-			"CCountryDataBase",
-			"CTradeGoodsDataBase",
-			"CRulerPersonalityDatabase",
-		] {
-			assert!(
-				!database_shares_definition_namespace(database),
-				"{database}"
-			);
-		}
 	}
 
 	#[test]
