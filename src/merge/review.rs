@@ -41,6 +41,10 @@ pub struct MergeUnitOutcome {
 	pub strategy: String,
 	pub summary: String,
 	pub output_path: Option<String>,
+	/// Every file this unit wrote, in plan order. A unit that writes several
+	/// files — an EU4 database fed by more than one directory — commits all of
+	/// them or none, so this is empty exactly when `output_path` is `None`.
+	pub output_paths: Vec<String>,
 	pub contributors: Vec<MergeReviewContributor>,
 	pub notes: Vec<String>,
 }
@@ -95,13 +99,25 @@ impl UnitOutcomeLedger {
 					format!("duplicate review unit id `{id}`"),
 				));
 			}
-			let output_path = normalize_path(entry.output_path());
-			validate_relative_id_part(&output_path, entry.output_path())?;
-			if !output_paths.insert(output_path.clone()) {
+			// A unit can write more than one file: an EU4 database fed by
+			// several directories keeps one output per directory. Every one of
+			// them must be unique across the plan, not just the primary.
+			if matches!(&entry.target, MergePlanTarget::Module { outputs, .. } if outputs.is_empty())
+			{
 				return Err(invariant(
 					entry.output_path(),
-					format!("duplicate review output path `{output_path}`"),
+					"definition module has no output namespace".to_string(),
 				));
+			}
+			for planned_path in entry.target.output_paths() {
+				let output_path = normalize_path(planned_path);
+				validate_relative_id_part(&output_path, planned_path)?;
+				if !output_paths.insert(output_path.clone()) {
+					return Err(invariant(
+						planned_path,
+						format!("duplicate review output path `{output_path}`"),
+					));
+				}
 			}
 			units.push(None);
 		}
@@ -136,12 +152,17 @@ impl UnitOutcomeLedger {
 			.map(|path| -> Result<String, MergeError> {
 				let normalized = normalize_path(&path);
 				validate_relative_id_part(&normalized, entry.output_path())?;
-				let planned = normalize_path(entry.output_path());
-				if normalized != planned {
+				if !entry
+					.target
+					.output_paths()
+					.iter()
+					.any(|planned| normalize_path(planned) == normalized)
+				{
 					return Err(invariant(
 						entry.output_path(),
 						format!(
-							"review output path `{normalized}` does not match planned output `{planned}`"
+							"review output path `{normalized}` is not one of this unit's planned outputs `{}`",
+							entry.target.output_paths().join(", ")
 						),
 					));
 				}
@@ -156,6 +177,16 @@ impl UnitOutcomeLedger {
 			disposition,
 			strategy: strategy_name(entry.strategy).to_string(),
 			summary: summary.into(),
+			output_paths: if output_path.is_some() {
+				entry
+					.target
+					.output_paths()
+					.into_iter()
+					.map(normalize_path)
+					.collect()
+			} else {
+				Vec::new()
+			},
 			output_path,
 			contributors: review_contributors(&entry.contributors),
 			notes,
@@ -220,18 +251,22 @@ impl UnitOutcomeLedger {
 	) -> Result<(), MergeError> {
 		for path in paths {
 			let normalized = normalize_path(path);
-			let Some(unit) = self
-				.units
-				.iter_mut()
-				.flatten()
-				.find(|unit| unit.output_path.as_deref() == Some(normalized.as_str()))
-			else {
+			let Some(unit) = self.units.iter_mut().flatten().find(|unit| {
+				unit.output_paths
+					.iter()
+					.any(|written| written == &normalized)
+			}) else {
 				return Err(invariant(
 					path,
 					"pruned output does not match a resolved review unit",
 				));
 			};
-			unit.output_path = None;
+			// A unit that writes several files keeps the rest: pruning one
+			// directory's duplicate does not withdraw the others.
+			unit.output_paths.retain(|written| written != &normalized);
+			if unit.output_path.as_deref() == Some(normalized.as_str()) {
+				unit.output_path = unit.output_paths.first().cloned();
+			}
 			unit.notes
 				.push("cross-file semantic duplicate pruned from output".to_string());
 		}
@@ -376,7 +411,7 @@ fn invariant(path: impl Into<String>, message: impl Into<String>) -> MergeError 
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::model::{MergePlanStrategies, MergeUnitId};
+	use crate::model::{MergeModuleOutput, MergePlanStrategies, MergeUnitId};
 
 	fn entry(path: &str, strategy: MergePlanStrategy) -> MergePlanEntry {
 		MergePlanEntry {
@@ -465,8 +500,10 @@ mod tests {
 					module_name: "ideas".into(),
 				},
 				input_paths: vec![],
-				output_path: "common/ideas/zzz_foch_ideas.txt".into(),
-				replace_prefix: None,
+				outputs: vec![MergeModuleOutput::new(
+					"common/ideas/zzz_foch_ideas.txt",
+					None,
+				)],
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: vec![contributor, second],

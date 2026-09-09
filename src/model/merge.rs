@@ -40,6 +40,37 @@ pub struct MergeUnitId {
 	pub module_name: String,
 }
 
+/// One namespace a definition module writes.
+///
+/// An EU4 database can be fed by more than one directory, and each directory
+/// keeps its own output file, `replace_path` prefix and content-family
+/// semantics: `replace_path` is declared per directory, and the extractors
+/// dispatch on the directory a definition was read from. Consolidating a
+/// database into a single file would apply one directory's semantics to all of
+/// them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MergeModuleOutput {
+	pub output_path: String,
+	pub namespace_prefix: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub replace_prefix: Option<String>,
+}
+
+impl MergeModuleOutput {
+	/// One output whose namespace is the directory holding `output_path`.
+	pub fn new(output_path: impl Into<String>, replace_prefix: Option<String>) -> Self {
+		let output_path: String = output_path.into();
+		let namespace_prefix: String = output_path
+			.rsplit_once('/')
+			.map_or(String::new(), |(parent, _)| parent.to_string());
+		Self {
+			output_path,
+			namespace_prefix,
+			replace_prefix,
+		}
+	}
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MergePlanTarget {
@@ -49,17 +80,41 @@ pub enum MergePlanTarget {
 	Module {
 		id: MergeUnitId,
 		input_paths: Vec<String>,
-		output_path: String,
-		#[serde(default, skip_serializing_if = "Option::is_none")]
-		replace_prefix: Option<String>,
+		/// Ordered by output path, never empty. The first output is the unit's
+		/// primary path: its review path, staging identity and plan ordering.
+		outputs: Vec<MergeModuleOutput>,
 	},
 }
 
 impl MergePlanTarget {
+	/// The unit's primary output path. Modules are constructed with at least
+	/// one output; a plan deserialized without one is rejected by
+	/// [`crate::merge::review::UnitOutcomeLedger::from_plan`].
 	pub fn output_path(&self) -> &str {
 		match self {
 			Self::File { path } => path,
-			Self::Module { output_path, .. } => output_path,
+			Self::Module { outputs, .. } => outputs
+				.first()
+				.map(|output| output.output_path.as_str())
+				.unwrap_or_default(),
+		}
+	}
+
+	/// Every path this unit writes, in plan order.
+	pub fn output_paths(&self) -> Vec<&str> {
+		match self {
+			Self::File { path } => vec![path.as_str()],
+			Self::Module { outputs, .. } => outputs
+				.iter()
+				.map(|output| output.output_path.as_str())
+				.collect(),
+		}
+	}
+
+	pub fn module_outputs(&self) -> &[MergeModuleOutput] {
+		match self {
+			Self::File { .. } => &[],
+			Self::Module { outputs, .. } => outputs,
 		}
 	}
 
@@ -77,12 +132,37 @@ impl MergePlanTarget {
 		}
 	}
 
+	/// Inputs belonging to one of this unit's output namespaces, in plan order.
+	pub fn namespace_input_paths(&self, namespace_prefix: &str) -> Vec<&str> {
+		self.input_paths()
+			.iter()
+			.filter(|path| path_is_within_namespace(path, namespace_prefix))
+			.map(String::as_str)
+			.collect()
+	}
+
+	/// The primary output's `replace_path` prefix. Use [`Self::module_outputs`]
+	/// when every namespace's prefix matters.
 	pub fn replace_prefix(&self) -> Option<&str> {
 		match self {
 			Self::File { .. } => None,
-			Self::Module { replace_prefix, .. } => replace_prefix.as_deref(),
+			Self::Module { outputs, .. } => outputs
+				.first()
+				.and_then(|output| output.replace_prefix.as_deref()),
 		}
 	}
+}
+
+/// True when `path` names a file directly inside `namespace_prefix`.
+///
+/// Definition modules are flat: EU4 reads the directory itself, not a tree
+/// below it, so `common/static_modifiers/nested/a.txt` is not a module input.
+pub fn path_is_within_namespace(path: &str, namespace_prefix: &str) -> bool {
+	let path: String = path.replace('\\', "/");
+	let prefix: String = namespace_prefix.trim_matches('/').replace('\\', "/");
+	path.strip_prefix(&prefix)
+		.and_then(|rest| rest.strip_prefix('/'))
+		.is_some_and(|tail| !tail.is_empty() && !tail.contains('/'))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -105,8 +185,9 @@ impl MergePlanEntry {
 mod tests {
 	use super::{
 		MERGE_EXECUTION_ATTESTATION_SCHEMA, MergeBackendId, MergeExecutionAttestation,
-		MergePlanEntry, MergePlanStrategy, MergePlanTarget, MergeReportBaseSnapshot,
-		MergeReportScope, MergeUnitId, ProductInputManifest, ProductInputMod,
+		MergeModuleOutput, MergePlanEntry, MergePlanStrategy, MergePlanTarget,
+		MergeReportBaseSnapshot, MergeReportScope, MergeUnitId, ProductInputManifest,
+		ProductInputMod,
 	};
 	use crate::playset::steam::{SteamId, WorkshopInstallIdentity};
 
@@ -119,8 +200,10 @@ mod tests {
 					module_name: "governments".to_string(),
 				},
 				input_paths: vec!["common/governments/00_governments.txt".to_string()],
-				output_path: "common/governments/zzz_foch_governments.txt".to_string(),
-				replace_prefix: Some("common/governments".to_string()),
+				outputs: vec![MergeModuleOutput::new(
+					"common/governments/zzz_foch_governments.txt".to_string(),
+					Some("common/governments".to_string()),
+				)],
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -130,11 +213,16 @@ mod tests {
 
 		let json = serde_json::to_value(&entry).expect("serialize merge plan entry");
 		assert_eq!(json["target"]["kind"], "module");
+		// A unit writes one file per namespace, so the persisted plan carries a
+		// list. Each entry keeps its own `replace_path` prefix.
+		let outputs = json["target"]["outputs"].as_array().expect("outputs array");
+		assert_eq!(outputs.len(), 1);
 		assert_eq!(
-			json["target"]["output_path"],
+			outputs[0]["output_path"],
 			"common/governments/zzz_foch_governments.txt"
 		);
-		assert_eq!(json["target"]["replace_prefix"], "common/governments");
+		assert_eq!(outputs[0]["namespace_prefix"], "common/governments");
+		assert_eq!(outputs[0]["replace_prefix"], "common/governments");
 	}
 
 	#[test]

@@ -21,11 +21,12 @@ use super::super::path_plan::{
 	build_merge_plan_from_input, fatal_plan_from_input_error, prune_noop_script_contributors,
 };
 use super::super::planning::module_view::{
-	CrossFileModuleViewError, build_cross_file_module_views,
+	CrossFileModuleViewError, build_cross_file_module_views, declared_definition_keys,
 };
 use super::localisation_merge::{LocalisationMergeOutcome, merge_localisation_file};
 use crate::game::eu4::Eu4;
 use crate::game::eu4::analysis::rules::{detect_dependency_misuse, detect_version_mismatch};
+use crate::game::eu4::content::load_rules::database_shares_definition_namespace;
 use crate::game::eu4::content::{ContentFamilyDescriptor, ContentLoadPolicy, MergeKeySource, eu4};
 use crate::game::eu4::script::emit::EmitOptions;
 use crate::input::request::InputRequest;
@@ -41,13 +42,13 @@ use crate::merge::model::VanillaBaseMode;
 use crate::merge::review::{MergeDisposition, MergeReview, UnitOutcomeLedger};
 use crate::model::{
 	CheckContext, ConflictKind, DeferredUnitReason, DepMisuseFinding, HandlerResolutionRecord,
-	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergePlanEntry, MergePlanResult,
-	MergePlanStrategy, MergePlanTarget, MergeReport, MergeReportConflictResolution,
-	MergeReportStatus, MergeTraceEntry, SemanticIndex, StaleVanillaTargetDescriptor,
+	LeafConflictDetail, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput, MergePlanEntry,
+	MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
+	MergeReportConflictResolution, MergeReportStatus, MergeTraceEntry, SemanticIndex,
+	StaleVanillaTargetDescriptor,
 };
 use crate::project::{AppliedDepOverride, DepOverride, ResolutionMap};
 use cross_file_dedup::{CrossFilePruneResult, prune_cross_file_noop_duplicates};
-#[cfg(test)]
 use io::StructuralOutputMaterialization;
 use io::{
 	copy_winner_file, is_text_placeholder_path, write_clean_metadata_only,
@@ -1014,6 +1015,18 @@ struct CrossFileModuleOutcome {
 	summary: String,
 }
 
+/// One namespace's merged bytes, staged but not yet installed.
+///
+/// A database unit writes every namespace or none: staging all of them before
+/// committing any keeps a unit that fails in its second directory from leaving
+/// the first one's file behind.
+struct StagedNamespaceOutput<'a> {
+	namespace: &'a MergeModuleOutput,
+	stage_dir: PathBuf,
+	merge_output: StructuralMergeOutput,
+	materialization: StructuralOutputMaterialization,
+}
+
 fn materialize_cross_file_module(
 	context: CrossFileModuleMaterializeContext<'_>,
 ) -> Result<CrossFileModuleOutcome, MergeError> {
@@ -1036,7 +1049,9 @@ fn materialize_cross_file_module(
 		emit_options,
 		provenance_localisation_by_script,
 	} = context;
-	let Some(descriptor) = profile.classify_content_family(Path::new(entry.output_path())) else {
+
+	let namespaces: &[MergeModuleOutput] = entry.target.module_outputs();
+	if namespaces.is_empty() {
 		return resolve_cross_file_module_failure(
 			entry,
 			out_dir,
@@ -1045,24 +1060,226 @@ fn materialize_cross_file_module(
 			generated_paths,
 			DeferredUnitReason::EngineFailure,
 			format!(
-				"missing content-family descriptor for {}",
+				"definition module {} has no output namespace",
 				entry.output_path()
 			),
 		);
-	};
-	let Some(merge_key_source) = descriptor.merge_key_source else {
+	}
+
+	let mut staged: Vec<StagedNamespaceOutput<'_>> = Vec::new();
+	let mut failure: Option<(DeferredUnitReason, String)> = None;
+	let mut conflict: Option<(MergeDisposition, String, StructuralConflictReport)> = None;
+
+	for namespace in namespaces {
+		match stage_cross_file_module_namespace(
+			entry,
+			namespace,
+			input,
+			out_dir,
+			prior_out_dir,
+			options,
+			report,
+			profile,
+			mod_dag,
+			ignore_replace_path,
+			dep_overrides,
+			mod_versions,
+			mod_display_names,
+			cache_game_version,
+			emit_options,
+		) {
+			Ok(NamespaceStaging::Staged(output)) => staged.push(*output),
+			Ok(NamespaceStaging::Conflict(disposition, summary, report_detail)) => {
+				conflict = Some((disposition, summary, report_detail));
+				break;
+			}
+			Ok(NamespaceStaging::Failed(reason, message)) => {
+				failure = Some((reason, message));
+				break;
+			}
+			Err(error) => {
+				for output in &staged {
+					let _ = fs::remove_dir_all(&output.stage_dir);
+				}
+				return Err(error);
+			}
+		}
+	}
+
+	// A database whose directories share one definition lookup cannot keep the
+	// same name in two of them: the loader would register one over the other,
+	// and the extracted rules do not record which directory it reads first.
+	if failure.is_none()
+		&& conflict.is_none()
+		&& let Some(collision) = cross_namespace_definition_collision(entry, input, &staged)
+	{
+		failure = Some((DeferredUnitReason::UnsupportedInput, collision));
+	}
+
+	if let Some((deferred_reason, reason)) = failure {
+		for output in &staged {
+			let _ = fs::remove_dir_all(&output.stage_dir);
+		}
 		return resolve_cross_file_module_failure(
 			entry,
 			out_dir,
 			options,
 			report,
 			generated_paths,
-			DeferredUnitReason::EngineFailure,
-			format!("missing merge-key policy for {}", entry.output_path()),
+			deferred_reason,
+			reason,
 		);
+	}
+	if let Some((disposition, summary, report_detail)) = conflict {
+		for output in &staged {
+			let _ = fs::remove_dir_all(&output.stage_dir);
+		}
+		resolve_cross_file_module_conflict(
+			entry,
+			out_dir,
+			options,
+			report,
+			generated_paths,
+			DeferredUnitReason::NeedsUserChoice,
+			report_detail,
+		)?;
+		return Ok(CrossFileModuleOutcome {
+			disposition,
+			summary,
+		});
+	}
+
+	let mut committed_any = false;
+	for output in &mut staged {
+		let output_path: &str = output.namespace.output_path.as_str();
+		if output.materialization.uses_rendered_output() {
+			report.per_entry_noop_skipped_count += output.merge_output.per_entry_noop_skipped_count;
+		}
+		if output.materialization.commits_output() {
+			if !output.stage_dir.join(output_path).is_file() {
+				for output in &staged {
+					let _ = fs::remove_dir_all(&output.stage_dir);
+				}
+				return resolve_cross_file_module_failure(
+					entry,
+					out_dir,
+					options,
+					report,
+					generated_paths,
+					DeferredUnitReason::EngineFailure,
+					"definition module staging completed without an output file".to_string(),
+				);
+			}
+			commit_staged_module_output(&output.stage_dir, out_dir, output_path)?;
+			generated_paths.insert(output_path.to_string());
+			committed_any = true;
+			if output.materialization.uses_rendered_output() {
+				let entries = std::mem::take(&mut output.merge_output.provenance_localisation);
+				if !entries.is_empty() {
+					provenance_localisation_by_script.insert(output_path.to_string(), entries);
+				}
+			}
+			if output.materialization.counts_as_generated() {
+				record_counted_generated_output(
+					output_path,
+					generated_paths,
+					counted_generated_paths,
+					report,
+				);
+			}
+			if output.materialization.counts_as_generated()
+				&& output.materialization.uses_rendered_output()
+				&& options.provenance
+			{
+				let trace = std::mem::take(&mut output.merge_output.merge_trace);
+				if !trace.is_empty() {
+					report.merge_trace.insert(output_path.to_string(), trace);
+				}
+				let provenance = std::mem::take(&mut output.merge_output.definition_provenance);
+				if !provenance.is_empty() {
+					report
+						.definition_provenance
+						.insert(output_path.to_string(), provenance);
+				}
+			}
+		} else if output.materialization.counts_as_noop_skipped()
+			&& output.namespace.replace_prefix.is_none()
+		{
+			report.noop_skipped_file_count += 1;
+		} else {
+			for output in &staged {
+				let _ = fs::remove_dir_all(&output.stage_dir);
+			}
+			return resolve_cross_file_module_failure(
+				entry,
+				out_dir,
+				options,
+				report,
+				generated_paths,
+				DeferredUnitReason::EngineFailure,
+				"definition module did not produce its required staged output".to_string(),
+			);
+		}
+	}
+	for output in &staged {
+		let _ = fs::remove_dir_all(&output.stage_dir);
+	}
+	let _ = committed_any;
+	Ok(CrossFileModuleOutcome {
+		disposition: MergeDisposition::Safe,
+		summary: if namespaces.len() > 1 {
+			format!(
+				"merged the complete definition module safely across {} directories",
+				namespaces.len()
+			)
+		} else {
+			"merged the complete definition module safely".to_string()
+		},
+	})
+}
+
+enum NamespaceStaging<'a> {
+	Staged(Box<StagedNamespaceOutput<'a>>),
+	Conflict(MergeDisposition, String, StructuralConflictReport),
+	Failed(DeferredUnitReason, String),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_cross_file_module_namespace<'a>(
+	entry: &MergePlanEntry,
+	namespace: &'a MergeModuleOutput,
+	input: &ResolvedInput,
+	out_dir: &Path,
+	prior_out_dir: Option<&Path>,
+	options: &mut MergeMaterializeOptions,
+	report: &mut MergeReport,
+	profile: &Eu4,
+	mod_dag: &ModDag,
+	ignore_replace_path: &IgnoreReplacePath,
+	dep_overrides: &[DepOverride],
+	mod_versions: &HashMap<String, String>,
+	mod_display_names: &HashMap<String, String>,
+	cache_game_version: &str,
+	emit_options: &EmitOptions,
+) -> Result<NamespaceStaging<'a>, MergeError> {
+	let output_path: &str = namespace.output_path.as_str();
+	// The descriptor comes from this namespace's own output path: the
+	// extractors dispatch on the directory a definition was read from.
+	let Some(descriptor) = profile.classify_content_family(Path::new(output_path)) else {
+		return Ok(NamespaceStaging::Failed(
+			DeferredUnitReason::EngineFailure,
+			format!("missing content-family descriptor for {output_path}"),
+		));
+	};
+	let Some(merge_key_source) = descriptor.merge_key_source else {
+		return Ok(NamespaceStaging::Failed(
+			DeferredUnitReason::EngineFailure,
+			format!("missing merge-key policy for {output_path}"),
+		));
 	};
 	let views = match build_cross_file_module_views(
 		entry,
+		namespace,
 		input,
 		descriptor,
 		mod_dag,
@@ -1080,15 +1297,7 @@ fn materialize_cross_file_module(
 					(DeferredUnitReason::EngineFailure, reason)
 				}
 			};
-			return resolve_cross_file_module_failure(
-				entry,
-				out_dir,
-				options,
-				report,
-				generated_paths,
-				deferred_reason,
-				reason,
-			);
+			return Ok(NamespaceStaging::Failed(deferred_reason, reason));
 		}
 	};
 	let backend = &*options.backend;
@@ -1111,7 +1320,7 @@ fn materialize_cross_file_module(
 			vanilla_base_mode: VanillaBaseMode::from_include_game_base(options.include_game_base),
 		};
 		backend.analyze(BackendRequest {
-			target_path: entry.output_path(),
+			target_path: output_path,
 			unit: BackendUnit::DefinitionModule(&views),
 			context: merge_context,
 			interactive_handler: options.interactive_conflict_handler.as_deref_mut(),
@@ -1130,12 +1339,12 @@ fn materialize_cross_file_module(
 			// A namespace replacement cannot skip output merely because it matches
 			// vanilla: its descriptor will hide the original prefix. An overlay
 			// module can safely remain absent when it is a semantic no-op.
-			if entry.target.replace_prefix().is_some() {
+			if namespace.replace_prefix.is_some() {
 				merge_output.noop_vs_vanilla = false;
 			}
-			let stage_dir = prepare_module_stage_dir(out_dir, entry.output_path())?;
+			let stage_dir = prepare_module_stage_dir(out_dir, output_path)?;
 			let materialization = match write_structural_merge_output(
-				entry.output_path(),
+				output_path,
 				&mut merge_output,
 				&stage_dir,
 				prior_out_dir,
@@ -1149,77 +1358,12 @@ fn materialize_cross_file_module(
 					return Err(error);
 				}
 			};
-			if materialization.uses_rendered_output() {
-				report.per_entry_noop_skipped_count += merge_output.per_entry_noop_skipped_count;
-			}
-			if materialization.commits_output() {
-				if !stage_dir.join(entry.output_path()).is_file() {
-					let _ = fs::remove_dir_all(&stage_dir);
-					return resolve_cross_file_module_failure(
-						entry,
-						out_dir,
-						options,
-						report,
-						generated_paths,
-						DeferredUnitReason::EngineFailure,
-						"definition module staging completed without an output file".to_string(),
-					);
-				}
-				commit_staged_module_output(&stage_dir, out_dir, entry.output_path())?;
-				generated_paths.insert(entry.output_path().to_string());
-				if materialization.uses_rendered_output() {
-					let entries = std::mem::take(&mut merge_output.provenance_localisation);
-					if !entries.is_empty() {
-						provenance_localisation_by_script
-							.insert(entry.output_path().to_string(), entries);
-					}
-				}
-				if materialization.counts_as_generated() {
-					record_counted_generated_output(
-						entry.output_path(),
-						generated_paths,
-						counted_generated_paths,
-						report,
-					);
-				}
-				if materialization.counts_as_generated()
-					&& materialization.uses_rendered_output()
-					&& options.provenance
-				{
-					let trace = std::mem::take(&mut merge_output.merge_trace);
-					if !trace.is_empty() {
-						report
-							.merge_trace
-							.insert(entry.output_path().to_string(), trace);
-					}
-					let provenance = std::mem::take(&mut merge_output.definition_provenance);
-					if !provenance.is_empty() {
-						report
-							.definition_provenance
-							.insert(entry.output_path().to_string(), provenance);
-					}
-				}
-			} else if materialization.counts_as_noop_skipped()
-				&& entry.target.replace_prefix().is_none()
-			{
-				report.noop_skipped_file_count += 1;
-			} else {
-				let _ = fs::remove_dir_all(&stage_dir);
-				return resolve_cross_file_module_failure(
-					entry,
-					out_dir,
-					options,
-					report,
-					generated_paths,
-					DeferredUnitReason::EngineFailure,
-					"definition module did not produce its required staged output".to_string(),
-				);
-			}
-			let _ = fs::remove_dir_all(&stage_dir);
-			Ok(CrossFileModuleOutcome {
-				disposition: MergeDisposition::Safe,
-				summary: "merged the complete definition module safely".to_string(),
-			})
+			Ok(NamespaceStaging::Staged(Box::new(StagedNamespaceOutput {
+				namespace,
+				stage_dir,
+				merge_output,
+				materialization,
+			})))
 		}
 		Ok(Err(StructuralMergeFailure::Unresolved(conflict))) => {
 			let disposition = if conflict.explicitly_deferred {
@@ -1232,39 +1376,67 @@ fn materialize_cross_file_module(
 			} else {
 				conflict.reason.clone()
 			};
-			resolve_cross_file_module_conflict(
-				entry,
-				out_dir,
-				options,
-				report,
-				generated_paths,
-				DeferredUnitReason::NeedsUserChoice,
-				conflict,
-			)?;
-			Ok(CrossFileModuleOutcome {
-				disposition,
-				summary,
-			})
+			Ok(NamespaceStaging::Conflict(disposition, summary, conflict))
 		}
-		Ok(Err(StructuralMergeFailure::Merge(error))) => resolve_cross_file_module_failure(
-			entry,
-			out_dir,
-			options,
-			report,
-			generated_paths,
+		Ok(Err(StructuralMergeFailure::Merge(error))) => Ok(NamespaceStaging::Failed(
 			DeferredUnitReason::EngineFailure,
 			format!("cross-file module merge failed: {error}"),
-		),
-		Err(_) => resolve_cross_file_module_failure(
-			entry,
-			out_dir,
-			options,
-			report,
-			generated_paths,
+		)),
+		Err(_) => Ok(NamespaceStaging::Failed(
 			DeferredUnitReason::EngineFailure,
 			"cross-file module merge panicked".to_string(),
-		),
+		)),
 	}
+}
+
+/// Report a definition name that two of a database's directories both define.
+///
+/// Only databases whose directories are known to share one definition lookup
+/// are checked. Shared database identity alone does not establish that: in the
+/// installed EU4 1.37.5, `common/country_colors` and `common/country_tags`
+/// define all 278 of the former's names in both directories as separate aspects
+/// of one object, which is normal content and not a conflict.
+fn cross_namespace_definition_collision(
+	entry: &MergePlanEntry,
+	input: &ResolvedInput,
+	staged: &[StagedNamespaceOutput<'_>],
+) -> Option<String> {
+	if staged.len() < 2 {
+		return None;
+	}
+	let database: &str = entry.target.module_id()?.family_id.as_str();
+	if !database_shares_definition_namespace(database) {
+		return None;
+	}
+	let mut owners: BTreeMap<String, &str> = BTreeMap::new();
+	let mut collisions: Vec<String> = Vec::new();
+	for output in staged {
+		let namespace_prefix: &str = output.namespace.namespace_prefix.as_str();
+		for definition in
+			declared_definition_keys(entry.target.namespace_input_paths(namespace_prefix), input)
+		{
+			match owners.get(&definition) {
+				Some(previous) if *previous != namespace_prefix => {
+					collisions.push(format!(
+						"{definition} (in {previous} and {namespace_prefix})"
+					));
+				}
+				Some(_) => {}
+				None => {
+					owners.insert(definition, namespace_prefix);
+				}
+			}
+		}
+	}
+	if collisions.is_empty() {
+		return None;
+	}
+	collisions.sort();
+	collisions.dedup();
+	Some(format!(
+		"database {database} defines {} in more than one directory, and the order in which the game reads those directories is not recorded in the extracted loading rules",
+		collisions.join(", ")
+	))
 }
 
 fn prepare_module_stage_dir(out_dir: &Path, output_path: &str) -> Result<PathBuf, MergeError> {
@@ -2165,9 +2337,10 @@ mod tests {
 	use crate::merge::{MergeDisposition, MergeError};
 	use crate::model::{
 		DeferredUnitReason, HandlerResolutionRecord, MERGE_PLAN_ARTIFACT_PATH,
-		MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergePlanContributor,
-		MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget, MergeReport,
-		MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy, MergeUnitId,
+		MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH, MergeModuleOutput,
+		MergePlanContributor, MergePlanEntry, MergePlanResult, MergePlanStrategy, MergePlanTarget,
+		MergeReport, MergeReportStatus, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy,
+		MergeUnitId,
 	};
 	use crate::playset::Playset;
 	use crate::project::{ResolutionDecision, ResolutionMap};
@@ -2640,8 +2813,10 @@ mod tests {
 					"common/institutions/left.txt".to_string(),
 					"common/institutions/right.txt".to_string(),
 				],
-				output_path: "common/institutions/zzz_foch_institutions.txt".to_string(),
-				replace_prefix: None,
+				outputs: vec![MergeModuleOutput::new(
+					"common/institutions/zzz_foch_institutions.txt".to_string(),
+					None,
+				)],
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors,
@@ -3124,10 +3299,22 @@ mod tests {
 	}
 
 	#[test]
-	fn database_plans_reach_materialization_and_defer_unsupported_cross_directory_output() {
-		for (second_directory, expected) in [
-			("static_modifiers", MergeDisposition::Safe),
-			("event_modifiers", MergeDisposition::UnsupportedInput),
+	fn database_plans_materialize_one_output_per_contributing_directory() {
+		// Both directories feed CStaticModifierDataBase. Whether the second mod
+		// writes into the same directory or the other one, every contribution
+		// survives; only the number of generated files differs.
+		for (second_directory, expected_outputs) in [
+			(
+				"static_modifiers",
+				vec!["common/static_modifiers/zzz_foch_static_modifiers.txt"],
+			),
+			(
+				"event_modifiers",
+				vec![
+					"common/event_modifiers/zzz_foch_event_modifiers.txt",
+					"common/static_modifiers/zzz_foch_static_modifiers.txt",
+				],
+			),
 		] {
 			let temp: TempDir = TempDir::new().unwrap();
 			let playlist_path: PathBuf = temp.path().join("playlist.json");
@@ -3155,6 +3342,7 @@ mod tests {
 			assert!(!plan.has_fatal_errors(), "{:?}", plan.fatal_errors);
 			assert_eq!(plan.paths.len(), 1);
 			assert_eq!(plan.paths[0].target.input_paths().len(), 2);
+			assert_eq!(plan.paths[0].target.output_paths(), expected_outputs);
 			let materialized: MaterializedMerge = materialize_analyzed_input(
 				request,
 				MaterializeOutput {
@@ -3170,28 +3358,145 @@ mod tests {
 			.unwrap();
 			let units = materialized.review.units();
 			assert_eq!(units.len(), 1);
-			assert_eq!(units[0].disposition, expected, "{:?}", units[0]);
+			assert_eq!(
+				units[0].disposition,
+				MergeDisposition::Safe,
+				"{:?}",
+				units[0]
+			);
 			assert_eq!(
 				units[0].id,
 				"module:CStaticModifierDataBase/CStaticModifierDataBase"
 			);
-			let target: PathBuf =
-				out_dir.join("common/static_modifiers/zzz_foch_static_modifiers.txt");
-			if expected == MergeDisposition::Safe {
-				let merged: String = fs::read_to_string(target).unwrap();
-				assert!(merged.contains("from_a"), "{merged}");
-				assert!(merged.contains("from_b"), "{merged}");
-			} else {
-				assert!(units[0].output_path.is_none());
-				assert!(!target.exists());
-				assert!(!out_dir.join(first).exists());
-				assert!(!out_dir.join(second).exists());
-			}
+			assert_eq!(units[0].output_paths, expected_outputs);
+			// Each contribution lands in the file for its own directory.
+			let merged_first: String = fs::read_to_string(
+				out_dir.join("common/static_modifiers/zzz_foch_static_modifiers.txt"),
+			)
+			.unwrap();
+			assert!(merged_first.contains("from_a"), "{merged_first}");
+			let merged_second: String = fs::read_to_string(out_dir.join(format!(
+				"common/{second_directory}/zzz_foch_{second_directory}.txt"
+			)))
+			.unwrap();
+			assert!(merged_second.contains("from_b"), "{merged_second}");
+			// Source mods stay read-only.
 			assert_eq!(
 				fs::read_to_string(temp.path().join("mod-a").join(first)).unwrap(),
 				"from_a = { tax_income = 1 }\n"
 			);
 		}
+	}
+
+	#[test]
+	fn same_definition_in_two_directories_of_one_database_is_unsupported_not_a_user_choice() {
+		// The loader registers one of the two over the other, and the extracted
+		// rules do not record which directory it reads first. That is an engine
+		// evidence gap, so it must not be offered as a gameplay choice.
+		let temp: TempDir = TempDir::new().unwrap();
+		let playlist_path: PathBuf = temp.path().join("playlist.json");
+		let out_dir: PathBuf = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
+		let first: &str = "common/static_modifiers/a.txt";
+		let second: &str = "common/event_modifiers/b.txt";
+		for (mod_id, path, content) in [
+			("mod-a", first, "shared_name = { tax_income = 1 }\n"),
+			("mod-b", second, "shared_name = { tax_income = 2 }\n"),
+		] {
+			let root: PathBuf = temp.path().join(mod_id);
+			write_descriptor(&root, mod_id);
+			write_file(&root, path, content);
+		}
+		let request: InputRequest = request_for(&playlist_path);
+		write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
+		let mut input = crate::input::resolve_input(&request, false);
+		let plan: MergePlanResult =
+			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
+		let materialized: MaterializedMerge = materialize_analyzed_input(
+			request,
+			MaterializeOutput {
+				artifacts_dir: &out_dir,
+				prior_dir: None,
+				target_dir: &out_dir,
+			},
+			no_base_options(true),
+			input,
+			plan,
+			None,
+		)
+		.unwrap();
+		let units = materialized.review.units();
+		assert_eq!(units.len(), 1);
+		assert_eq!(units[0].disposition, MergeDisposition::UnsupportedInput);
+		assert_ne!(units[0].disposition, MergeDisposition::NeedsUserChoice);
+		assert!(
+			units[0].summary.contains("shared_name") && units[0].summary.contains("not recorded"),
+			"{}",
+			units[0].summary
+		);
+		// Nothing is written when the unit cannot be merged.
+		assert!(units[0].output_paths.is_empty());
+		assert!(units[0].output_path.is_none());
+		for directory in ["static_modifiers", "event_modifiers"] {
+			assert!(
+				!out_dir
+					.join(format!("common/{directory}/zzz_foch_{directory}.txt"))
+					.exists()
+			);
+		}
+	}
+
+	#[test]
+	fn a_database_whose_directories_do_not_share_a_namespace_keeps_same_name_definitions() {
+		// common/country_colors and common/country_tags both define every tag as
+		// separate aspects of one object, so the same name there is ordinary
+		// content and must merge, not conflict.
+		let temp: TempDir = TempDir::new().unwrap();
+		let playlist_path: PathBuf = temp.path().join("playlist.json");
+		let out_dir: PathBuf = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
+		for (mod_id, path, content) in [
+			(
+				"mod-a",
+				"common/country_tags/a.txt",
+				"SWE = \"countries/Sweden.txt\"\n",
+			),
+			(
+				"mod-b",
+				"common/country_colors/b.txt",
+				"SWE = { color1 = { 1 2 3 } }\n",
+			),
+		] {
+			let root: PathBuf = temp.path().join(mod_id);
+			write_descriptor(&root, mod_id);
+			write_file(&root, path, content);
+		}
+		let request: InputRequest = request_for(&playlist_path);
+		write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
+		let mut input = crate::input::resolve_input(&request, false);
+		let plan: MergePlanResult =
+			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
+		let materialized: MaterializedMerge = materialize_analyzed_input(
+			request,
+			MaterializeOutput {
+				artifacts_dir: &out_dir,
+				prior_dir: None,
+				target_dir: &out_dir,
+			},
+			no_base_options(true),
+			input,
+			plan,
+			None,
+		)
+		.unwrap();
+		let units = materialized.review.units();
+		assert_eq!(units.len(), 1);
+		assert_ne!(
+			units[0].disposition,
+			MergeDisposition::UnsupportedInput,
+			"same-name definitions across these directories are not a collision: {:?}",
+			units[0]
+		);
 	}
 
 	#[test]
@@ -3557,8 +3862,10 @@ mod tests {
 					module_name: family.to_string(),
 				},
 				input_paths: Vec::new(),
-				output_path: path.to_string(),
-				replace_prefix: Some(prefix.to_string()),
+				outputs: vec![MergeModuleOutput::new(
+					path.to_string(),
+					Some(prefix.to_string()),
+				)],
 			},
 			strategy: MergePlanStrategy::StructuralMerge,
 			contributors: Vec::new(),
@@ -4479,10 +4786,8 @@ mod tests {
 				"common/powerprojection/zzz_foch_powerprojection.txt"
 			)
 			.target,
-			MergePlanTarget::Module {
-				replace_prefix: Some(prefix),
-				..
-			} if prefix == "common/powerprojection"
+			MergePlanTarget::Module { outputs, .. }
+				if outputs[0].replace_prefix.as_deref() == Some("common/powerprojection")
 		));
 	}
 

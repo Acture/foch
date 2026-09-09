@@ -1,6 +1,8 @@
 # Project Status
 
-Latest source verification: 2026-09-07 for database-rule planning (P-579).
+Latest source verification: 2026-09-10 for cross-directory database output
+(P-580) and rule-version matching (P-591).
+Earlier source verification: 2026-09-07 for database-rule planning (P-579).
 Earlier focused verification: 2026-09-05, P-553/P-556 static-modifier product
 fixtures and bounded Workshop observation. See
 [the verification record](./static-modifiers-verification.md).
@@ -11,6 +13,71 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Cross-directory database output (2026-09-10)
+
+P-580 makes a database that is fed by several directories one merge unit that
+writes one file per contributing directory, and P-591 makes those rules reach a
+real installation at all.
+
+`detect_game_version` returns the launcher's `rawVersion` (`v1.37.5.0`) while a
+rule snapshot is keyed by the extracted triple (`1.37.5`), so before this change
+`load_rules_for_version` never matched on an installed game and every database
+rule was inert in production. `normalize_game_version` reduces the former to the
+latter. The two changes ship together on purpose: matching alone would have made
+`classify_database_entry` defer the whole modifier database on any real playset
+touching either directory.
+
+Output is per directory because `replace_path` is declared per directory, the
+extractors dispatch on the directory a definition was read from
+(`static_modifiers_definition` against `event_modifier_definition`), and EU4
+reads both, so disjoint names need no directory order. `MergePlanTarget::Module`
+now carries `outputs: Vec<MergeModuleOutput>`, each with its own output path,
+namespace prefix and `replace_path` prefix; the persisted plan schema changed
+with it. A unit stages every namespace before committing any, so a unit that
+fails in its second directory leaves no file from its first.
+
+Cross-directory same-name definitions are `unsupported_input`, never
+`needs_user_choice`: the directory read order is an engine evidence gap, not a
+gameplay divergence. The check is gated to databases whose directories share one
+definition lookup, currently only `CStaticModifierDataBase`. Measured top-level
+key overlap in the installed 1.37.5 shows why the gate is needed:
+
+| Database | Directories (keys) | Overlap |
+| --- | --- | --- |
+| CStaticModifierDataBase | static_modifiers (375) / event_modifiers (3055) | 0 |
+| CRulerPersonalityDatabase | ancestor_personalities (41) / ruler_personalities (60) | 0 |
+| CCountryDataBase | country_colors (278) / country_tags (974) | 278, all |
+| CTradeGoodsDataBase | prices (32) / tradegoods (32) | 32, all |
+
+For the last two the same key names different aspects of one object
+(`SWE = "countries/Sweden.txt"` against `SWE = { color1 = ... }`), which is
+ordinary content; treating a shared database as one merge namespace would
+report all of it as conflict.
+
+Observed on the installed EU4 v1.37.5.0 with two synthetic mods, one editing
+`common/static_modifiers` and one `common/event_modifiers`. Before: one
+`unsupported_input` unit withholding both directories. After: one `safe`
+`CStaticModifierDataBase` unit writing
+`common/static_modifiers/zzz_foch_static_modifiers.txt` (360 definitions) and
+`common/event_modifiers/zzz_foch_event_modifiers.txt` (5420 definitions), each
+carrying its own mod's contribution alongside vanilla. Source mods were
+unchanged.
+
+Validation passed:
+
+```fish
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test -p foch -p foch-cli --no-fail-fast
+```
+
+15 tests fail, and all 15 fail identically at `77e790f` in a clean worktree:
+12 in the root library (CWT/schema baseline, script scope, structured trigger,
+and a unix-socket case) plus `corpus_real_minimized_europa_expanded_building_params_stay_clean`,
+`eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks` and
+`data_install_downloads_release_asset_from_manifest`. They are unrelated to this
+change and remain untriaged. No full Workshop acceptance or in-game test was run.
 
 ## Database-rule planning (2026-09-07)
 
@@ -27,13 +94,22 @@ keep the existing family policies. Base-only units without a participating
 namespace reset remain copy-through paths. Reset-only mods still participate
 in supported module merges.
 
-Known single-directory module outputs remain supported. Cross-directory groups
-currently defer because output requires one compatible descriptor, even with
-`--force`. Output adaptation belongs to P-580; P-579 establishes input grouping
-and review, not cross-directory output correctness. This limitation does not
-establish separate game namespaces: the inspected 1.37.5 binary uses the same
-singleton, loader, registration, and lookup for static and event modifiers,
-loading the static directory first.
+Known single-directory module outputs remain supported. At this commit
+cross-directory groups still deferred because output required one compatible
+descriptor; P-580 above lifted that. The deferral never established separate
+game namespaces: the inspected 1.37.5 binary uses the same singleton, loader,
+registration, and lookup for static and event modifiers.
+
+The order in which that loader reads the two directories is **not recorded**.
+An earlier revision of this page claimed the static directory is read first;
+nothing supports it. The extractor collects selections into a `set` and emits
+them sorted by directory name
+(`tools/eu4-analysis/eu4_analysis/load_rules.py:120`, `:172-183`), so the JSON
+array order is a sorted dump, and for `CStaticModifierDataBase` it is
+`event_modifiers` then `static_modifiers` — the reverse of the removed claim.
+Read order must not be inferred from array position. Trace order does exist in
+the extractor (`x86.py`; `catalog.py` and `families.py` both preserve it) and is
+discarded by `discover_load_rules`; recovering it is an extraction gap.
 
 Validation passed:
 

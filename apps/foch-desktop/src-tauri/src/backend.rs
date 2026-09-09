@@ -200,6 +200,12 @@ fn unit_view(unit: &foch::merge::MergeUnitOutcome) -> MergeUnitDetail {
 			.output_path
 			.as_deref()
 			.map(|path| bounded_text(path, MAX_DETAIL_TEXT_CHARS)),
+		// A definition module can write one file per contributing directory.
+		output_paths: unit
+			.output_paths
+			.iter()
+			.map(|path| bounded_text(path, MAX_DETAIL_TEXT_CHARS))
+			.collect(),
 		contributors: unit
 			.contributors
 			.iter()

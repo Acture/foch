@@ -75,9 +75,33 @@ impl DatabaseLoadRules {
 	}
 }
 
+/// EU4 reports its own version as the launcher's `rawVersion` (`v1.37.5.0`),
+/// while an extracted rule snapshot is keyed by the `major.minor.patch` triple
+/// the extractor read from the binary (`1.37.5`). Reduce the former to the
+/// latter so rules resolve for a real installation and not only for a
+/// hand-written test string.
+///
+/// The triple is a proxy identity, not the real one: the rule file also records
+/// `binary_sha256`, and a hotfix can ship a different binary under the same
+/// triple.
+fn normalize_game_version(version: &str) -> Option<String> {
+	let version: &str = version.trim();
+	let version: &str = version.strip_prefix(['v', 'V']).unwrap_or(version);
+	let mut components = version.splitn(4, '.');
+	let major: &str = components.next()?;
+	let minor: &str = components.next()?;
+	let patch: &str = components.next()?;
+	[major, minor, patch]
+		.iter()
+		.all(|component| {
+			!component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+		})
+		.then(|| format!("{major}.{minor}.{patch}"))
+}
+
 pub(crate) fn load_rules_for_version(version: &str) -> Option<&'static DatabaseLoadRules> {
 	static RULES: OnceLock<DatabaseLoadRules> = OnceLock::new();
-	match version {
+	match normalize_game_version(version)?.as_str() {
 		"1.37.5" => Some(RULES.get_or_init(|| {
 			let rules: DatabaseLoadRules =
 				DatabaseLoadRules::parse(RULES_1_37_5).expect("valid embedded EU4 loading rules");
@@ -88,9 +112,75 @@ pub(crate) fn load_rules_for_version(version: &str) -> Option<&'static DatabaseL
 	}
 }
 
+/// Databases whose directories are known to share one definition-name lookup,
+/// so the same name in either directory is the same game object and a
+/// cross-directory duplicate is a real collision.
+///
+/// Shared database identity alone does not establish this. Measured top-level
+/// key overlap in the installed EU4 1.37.5 shows two distinct shapes:
+/// `common/static_modifiers` (375 keys) and `common/event_modifiers` (3055)
+/// share none, whereas `common/country_colors` and `common/country_tags` share
+/// all 278 of the former's keys and `common/prices` and `common/tradegoods`
+/// share all 32 — there the same key names different aspects of one object
+/// (`SWE = "countries/Sweden.txt"` against `SWE = { color1 = ... }`), which a
+/// duplicate check must not report as a conflict.
+pub(crate) fn database_shares_definition_namespace(database: &str) -> bool {
+	matches!(database, "CStaticModifierDataBase")
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{DatabaseLoadRules, load_rules_for_version};
+	use super::{
+		DatabaseLoadRules, database_shares_definition_namespace, load_rules_for_version,
+		normalize_game_version,
+	};
+
+	#[test]
+	fn rules_resolve_for_the_version_string_a_real_installation_reports() {
+		// `detect_game_version` returns launcher-settings.json's `rawVersion`
+		// verbatim, so production never supplies a bare triple.
+		for version in [
+			"v1.37.5.0",
+			"1.37.5.0",
+			"1.37.5",
+			"V1.37.5.0",
+			" v1.37.5.0 ",
+		] {
+			assert_eq!(
+				normalize_game_version(version).as_deref(),
+				Some("1.37.5"),
+				"{version}"
+			);
+			assert!(load_rules_for_version(version).is_some(), "{version}");
+		}
+		for version in ["1.37", "v1.37", "", "v", "1.37.x", "Inca"] {
+			assert_eq!(normalize_game_version(version), None, "{version}");
+			assert!(load_rules_for_version(version).is_none(), "{version}");
+		}
+		// A different patch level must not borrow another snapshot's rules.
+		assert_eq!(
+			normalize_game_version("v1.37.4.0").as_deref(),
+			Some("1.37.4")
+		);
+		assert!(load_rules_for_version("v1.37.4.0").is_none());
+	}
+
+	#[test]
+	fn only_verified_databases_share_a_definition_namespace() {
+		assert!(database_shares_definition_namespace(
+			"CStaticModifierDataBase"
+		));
+		for database in [
+			"CCountryDataBase",
+			"CTradeGoodsDataBase",
+			"CRulerPersonalityDatabase",
+		] {
+			assert!(
+				!database_shares_definition_namespace(database),
+				"{database}"
+			);
+		}
+	}
 
 	#[test]
 	fn rules_match_database_directories_and_filename_filters() {

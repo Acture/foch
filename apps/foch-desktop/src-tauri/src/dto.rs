@@ -237,6 +237,8 @@ pub(crate) struct MergeUnitDetail {
 	pub(crate) strategy: String,
 	pub(crate) summary: String,
 	pub(crate) output_path: Option<String>,
+	#[serde(default)]
+	pub(crate) output_paths: Vec<String>,
 	pub(crate) contributors: Vec<MergeUnitContributor>,
 	#[serde(skip)]
 	pub(crate) contributor_count: usize,

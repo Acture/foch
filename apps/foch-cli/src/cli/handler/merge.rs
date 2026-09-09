@@ -127,7 +127,9 @@ fn render_merge_review_text(analyzed: &AnalyzedMerge) -> String {
 			"- [{disposition}] {}\n  id: {}\n  family: {}\n  kind: {kind}\n  strategy: {}\n  summary: {}\n",
 			unit.path, unit.id, unit.family, unit.strategy, unit.summary,
 		));
-		if let Some(path) = unit.output_path.as_deref() {
+		// A unit can write one file per contributing directory. Listing only the
+		// primary path would hide the rest of what the merge produced.
+		for path in &unit.output_paths {
 			output.push_str(&format!("  output: {path}\n"));
 		}
 		if !unit.contributors.is_empty() {
