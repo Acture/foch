@@ -13,7 +13,7 @@ use crate::input::{
 };
 use crate::model::{
 	DocumentFamily, MergeModuleOutput, MergePlanContributor, MergePlanEntry, MergePlanResult,
-	MergePlanStrategies, MergePlanStrategy, MergePlanTarget, MergeUnitId,
+	MergePlanStrategies, MergePlanStrategy, MergePlanTarget, MergeUnitId, path_is_within_namespace,
 };
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -119,7 +119,12 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 			));
 			continue;
 		}
-		if !is_structural_merge_path(path, Some(descriptor)) {
+		// A definition module is the directory itself, not the tree below it, so
+		// a file in a subdirectory is not one of its inputs. It keeps its own
+		// per-path handling instead of joining — and then blocking — the module.
+		if !is_structural_merge_path(path, Some(descriptor))
+			|| !path_is_within_namespace(path, policy.namespace_prefix)
+		{
 			regular.push(classify_entry(
 				path,
 				contributors,
@@ -184,7 +189,19 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 			}
 			continue;
 		}
-		regular.push(classify_database_entry(database, &inputs, input, profile));
+		match classify_database_entry(database, &inputs, input, profile) {
+			Some(entry) => regular.push(entry),
+			None => {
+				for (path, contributors) in inputs {
+					regular.push(classify_entry(
+						path,
+						contributors,
+						profile.classify_content_family(Path::new(path)),
+						&input.script_cache,
+					));
+				}
+			}
+		}
 	}
 	regular.sort_by(|left, right| left.output_path().cmp(right.output_path()));
 	Ok(regular)
@@ -199,18 +216,22 @@ fn build_merge_units(input: &ResolvedInput, profile: &Eu4) -> Result<Vec<MergePl
 /// folding a database into one file would apply one directory's semantics to
 /// all of them. Writing each directory also avoids depending on the order in
 /// which the loader reads them, which the extracted rules do not record.
+/// `None` when the database has no definition-module directory at all, which
+/// leaves its files to the per-path policies they had before the rules applied.
 fn classify_database_entry(
 	database: &str,
 	inputs: &ModuleInputs<'_>,
 	input: &ResolvedInput,
 	profile: &Eu4,
-) -> MergePlanEntry {
+) -> Option<MergePlanEntry> {
 	let mut policies: BTreeMap<&str, DefinitionModulePolicy> = BTreeMap::new();
 	let mut unsupported: Vec<&str> = Vec::new();
 	for (path, _) in inputs {
 		let descriptor: Option<&ContentFamilyDescriptor> =
 			profile.classify_content_family(Path::new(path));
 		match descriptor.map(|descriptor| descriptor.load_policy) {
+			// `database_for` matches only direct children of a rule directory,
+			// so every input here is already inside its namespace.
 			Some(ContentLoadPolicy::DefinitionModule(policy))
 				if is_structural_merge_path(path, descriptor) =>
 			{
@@ -223,31 +244,30 @@ fn classify_database_entry(
 		family_id: database.to_string(),
 		module_name: database.to_string(),
 	};
-	if unsupported.is_empty() && !policies.is_empty() {
-		return classify_module_entry(
+	// A database whose directories are not definition modules at all — EU4
+	// 1.37.5 has one, `interface/state_view` — keeps the per-path merge its
+	// content family already defines. Grouping it by database would withhold
+	// content the analyzer merges today.
+	if policies.is_empty() {
+		return None;
+	}
+	if unsupported.is_empty() {
+		return Some(classify_module_entry(
 			merge_unit,
 			policies.values().copied(),
 			inputs,
 			input,
 			&input.script_cache,
-		);
+		));
 	}
 	// Only inputs the analyzer cannot merge structurally reach this point.
 	// Deferring names them instead of reporting the whole database as opaque.
 	let outputs: Vec<MergeModuleOutput> = module_outputs(policies.values().copied(), input);
-	MergePlanEntry {
+	Some(MergePlanEntry {
 		target: MergePlanTarget::Module {
 			id: merge_unit,
 			input_paths: inputs.iter().map(|(path, _)| (*path).to_string()).collect(),
-			outputs: if outputs.is_empty() {
-				vec![MergeModuleOutput {
-					output_path: inputs[0].0.to_string(),
-					namespace_prefix: namespace_of(inputs[0].0).to_string(),
-					replace_prefix: None,
-				}]
-			} else {
-				outputs
-			},
+			outputs,
 		},
 		strategy: MergePlanStrategy::ManualConflict,
 		contributors: module_contributors(inputs),
@@ -256,11 +276,7 @@ fn classify_database_entry(
 			"Database {database} cannot merge {} structurally; the complete database unit is deferred",
 			unsupported.join(", ")
 		)],
-	}
-}
-
-fn namespace_of(path: &str) -> &str {
-	path.rsplit_once('/').map_or("", |(parent, _)| parent)
+	})
 }
 
 /// One output per participating namespace, ordered by output path so the

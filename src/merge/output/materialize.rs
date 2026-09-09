@@ -510,21 +510,29 @@ pub(crate) fn materialize_analyzed_input(
 							provenance_localisation_by_script:
 								&mut provenance_localisation_by_script,
 						})?;
-					review.resolve(
+					// A unit writes one file per contributing directory, and a
+					// directory that merges to a no-op against vanilla writes
+					// none, so the review records what was written rather than
+					// what was planned.
+					let written: Vec<String> = entry
+						.target
+						.output_paths()
+						.into_iter()
+						.filter(|path| generated_paths.contains(*path))
+						.map(str::to_string)
+						.collect();
+					let wrote_nothing: bool = written.is_empty();
+					review.resolve_written(
 						entry,
 						outcome.disposition,
 						outcome.summary,
-						generated_paths
-							.contains(entry.output_path())
-							.then(|| entry.output_path().to_string()),
+						written,
 						[],
 					)?;
 					report.definition_module_elapsed_ms = report
 						.definition_module_elapsed_ms
 						.saturating_add(module_started.elapsed().as_millis() as u64);
-					if !generated_paths.contains(entry.output_path())
-						&& report.deferred_unit_count() > deferred_before
-					{
+					if wrote_nothing && report.deferred_unit_count() > deferred_before {
 						report.definition_module_blocked_count += 1;
 					}
 					continue;
@@ -968,14 +976,18 @@ fn reconcile_surviving_output_facts(
 	let mut committed_module_replacements = BTreeSet::new();
 	report.definition_module_generated_count = 0;
 	for entry in &plan.paths {
-		if !matches!(&entry.target, MergePlanTarget::Module { .. })
-			|| !surviving_paths.contains(entry.output_path())
-		{
-			continue;
-		}
-		report.definition_module_generated_count += 1;
-		if let Some(prefix) = entry.target.replace_prefix() {
-			committed_module_replacements.insert(prefix.to_string());
+		// A unit writes one file per contributing directory, and each directory
+		// carries its own `replace_path`. Reading only the primary output would
+		// drop the other directories' resets from the generated descriptor,
+		// leaving the merged mod overlaying a namespace it merged as replaced.
+		for output in entry.target.module_outputs() {
+			if !surviving_paths.contains(output.output_path.as_str()) {
+				continue;
+			}
+			report.definition_module_generated_count += 1;
+			if let Some(prefix) = output.replace_prefix.as_deref() {
+				committed_module_replacements.insert(prefix.to_string());
+			}
 		}
 	}
 
@@ -1026,6 +1038,37 @@ struct StagedNamespaceOutput<'a> {
 	materialization: StructuralOutputMaterialization,
 }
 
+/// Report state captured before a unit stages, so a withheld unit publishes no
+/// facts about files it never wrote.
+struct ReportStagingMarks {
+	stale_vanilla_targets: usize,
+	handler_resolutions: usize,
+	warnings: usize,
+	dep_misuse: Vec<DepMisuseFinding>,
+}
+
+impl ReportStagingMarks {
+	fn capture(report: &MergeReport) -> Self {
+		Self {
+			stale_vanilla_targets: report.stale_vanilla_targets.len(),
+			handler_resolutions: report.handler_resolutions.len(),
+			warnings: report.warnings.len(),
+			dep_misuse: report.dep_misuse.clone(),
+		}
+	}
+
+	fn roll_back(&self, report: &mut MergeReport) {
+		report
+			.stale_vanilla_targets
+			.truncate(self.stale_vanilla_targets);
+		report
+			.handler_resolutions
+			.truncate(self.handler_resolutions);
+		report.warnings.truncate(self.warnings);
+		report.dep_misuse.clone_from(&self.dep_misuse);
+	}
+}
+
 fn materialize_cross_file_module(
 	context: CrossFileModuleMaterializeContext<'_>,
 ) -> Result<CrossFileModuleOutcome, MergeError> {
@@ -1068,6 +1111,10 @@ fn materialize_cross_file_module(
 	let mut staged: Vec<StagedNamespaceOutput<'_>> = Vec::new();
 	let mut failure: Option<(DeferredUnitReason, String)> = None;
 	let mut conflict: Option<(MergeDisposition, String, StructuralConflictReport)> = None;
+	// Staging a namespace records facts about the file it expects to write. A
+	// unit that is later withheld writes none of them, so those records are
+	// rolled back rather than published for a file the merged mod never gets.
+	let staging_marks: ReportStagingMarks = ReportStagingMarks::capture(report);
 
 	for namespace in namespaces {
 		match stage_cross_file_module_namespace(
@@ -1119,6 +1166,7 @@ fn materialize_cross_file_module(
 		for output in &staged {
 			let _ = fs::remove_dir_all(&output.stage_dir);
 		}
+		staging_marks.roll_back(report);
 		return resolve_cross_file_module_failure(
 			entry,
 			out_dir,
@@ -1133,6 +1181,7 @@ fn materialize_cross_file_module(
 		for output in &staged {
 			let _ = fs::remove_dir_all(&output.stage_dir);
 		}
+		staging_marks.roll_back(report);
 		resolve_cross_file_module_conflict(
 			entry,
 			out_dir,
@@ -1159,6 +1208,7 @@ fn materialize_cross_file_module(
 				for output in &staged {
 					let _ = fs::remove_dir_all(&output.stage_dir);
 				}
+				staging_marks.roll_back(report);
 				return resolve_cross_file_module_failure(
 					entry,
 					out_dir,
@@ -1209,6 +1259,7 @@ fn materialize_cross_file_module(
 			for output in &staged {
 				let _ = fs::remove_dir_all(&output.stage_dir);
 			}
+			staging_marks.roll_back(report);
 			return resolve_cross_file_module_failure(
 				entry,
 				out_dir,
@@ -1418,17 +1469,47 @@ fn cross_namespace_definition_collision(
 		.iter()
 		.map(|output| output.namespace.namespace_prefix.as_str())
 		.collect();
+	// Vanilla's own arrangement comes from the base snapshot, but the collision
+	// itself is read from each namespace's merged bytes: a `replace_path` reset
+	// or a dependency override can hide a contributor, and a name that no longer
+	// survives into the output is not a collision in it.
+	let merged_keys: BTreeMap<&str, BTreeSet<String>> = staged
+		.iter()
+		.map(|output| {
+			(
+				output.namespace.namespace_prefix.as_str(),
+				rendered_definition_keys(&output.merge_output.rendered),
+			)
+		})
+		.collect();
 	cross_namespace_collision_detail(
 		entry.target.module_id()?.family_id.as_str(),
 		&namespaces,
 		|namespace, base_game_only| {
-			declared_definition_keys(
-				entry.target.namespace_input_paths(namespace),
-				input,
-				base_game_only,
-			)
+			if base_game_only {
+				declared_definition_keys(entry.target.namespace_input_paths(namespace), input, true)
+			} else {
+				merged_keys.get(namespace).cloned().unwrap_or_default()
+			}
 		},
 	)
+}
+
+/// Top-level definition names in one namespace's merged output.
+fn rendered_definition_keys(rendered: &str) -> BTreeSet<String> {
+	crate::game::eu4::script::parser::parse_clausewitz_content(PathBuf::new(), rendered)
+		.ast
+		.statements
+		.iter()
+		.filter_map(|statement| match statement {
+			crate::game::eu4::script::parser::AstStatement::Assignment { key, .. }
+				if !key.trim().is_empty() =>
+			{
+				Some(key.clone())
+			}
+			_ => None,
+		})
+		.collect()
 }
 
 fn cross_namespace_collision_detail(
@@ -2364,6 +2445,7 @@ mod tests {
 	use crate::input::{
 		InputResolveError, InputResolveErrorKind, ResolvedInput, ResolvedInputContributor,
 	};
+	use crate::merge::MergeUnitKind;
 	use crate::merge::analyze::CancellationToken;
 	use crate::merge::model::{ExternalFileResolution, VanillaBaseMode};
 	use crate::merge::{MergeDisposition, MergeError};
@@ -3522,6 +3604,207 @@ mod tests {
 			),
 			None
 		);
+	}
+
+	#[test]
+	fn every_namespace_replace_path_reaches_the_generated_descriptor() {
+		// Outputs sort by path, so a reset declared on the LATER directory is
+		// not the unit's primary output. Reading only the primary would emit a
+		// descriptor without that replace_path, and the merged mod would
+		// overlay a namespace it merged as replaced.
+		let temp: TempDir = TempDir::new().unwrap();
+		let playlist_path: PathBuf = temp.path().join("playlist.json");
+		let out_dir: PathBuf = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
+		let root_a: PathBuf = temp.path().join("mod-a");
+		fs::create_dir_all(&root_a).unwrap();
+		fs::write(
+			root_a.join("descriptor.mod"),
+			"name=\"mod-a\"\nversion=\"1.0.0\"\nreplace_path=\"common/static_modifiers\"\n",
+		)
+		.unwrap();
+		write_file(
+			&root_a,
+			"common/static_modifiers/a.txt",
+			"from_a = { tax_income = 1 }\n",
+		);
+		let root_b: PathBuf = temp.path().join("mod-b");
+		write_descriptor(&root_b, "mod-b");
+		write_file(
+			&root_b,
+			"common/event_modifiers/b.txt",
+			"from_b = { tax_income = 2 }\n",
+		);
+		let request: InputRequest = request_for(&playlist_path);
+		write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
+		let mut input = crate::input::resolve_input(&request, false);
+		let plan: MergePlanResult =
+			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
+		// The reset is on the non-primary output.
+		let outputs = plan.paths[0].target.module_outputs();
+		assert_eq!(outputs[0].replace_prefix, None);
+		assert_eq!(
+			outputs[1].replace_prefix.as_deref(),
+			Some("common/static_modifiers")
+		);
+		materialize_analyzed_input(
+			request,
+			MaterializeOutput {
+				artifacts_dir: &out_dir,
+				prior_dir: None,
+				target_dir: &out_dir,
+			},
+			no_base_options(true),
+			input,
+			plan,
+			None,
+		)
+		.unwrap();
+		let descriptor: String =
+			fs::read_to_string(out_dir.join(MERGED_MOD_DESCRIPTOR_PATH)).unwrap();
+		assert!(
+			descriptor.contains("replace_path=\"common/static_modifiers\""),
+			"{descriptor}"
+		);
+	}
+
+	#[test]
+	fn a_subdirectory_file_keeps_its_own_handling_instead_of_blocking_the_module() {
+		// A mod shipping common/<family>/backup/x.txt must not withhold every
+		// mod's contribution to that family. EU4 reads the directory itself, so
+		// the nested file is not one of the module's inputs.
+		let temp: TempDir = TempDir::new().unwrap();
+		let playlist_path: PathBuf = temp.path().join("playlist.json");
+		let out_dir: PathBuf = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
+		for (mod_id, path, content) in [
+			(
+				"mod-a",
+				"common/government_names/a.txt",
+				"from_a = { ruler_male = { NAME } }\n",
+			),
+			(
+				"mod-b",
+				"common/government_names/backup/old.txt",
+				"from_backup = { ruler_male = { NAME } }\n",
+			),
+		] {
+			let root: PathBuf = temp.path().join(mod_id);
+			write_descriptor(&root, mod_id);
+			write_file(&root, path, content);
+		}
+		let request: InputRequest = request_for(&playlist_path);
+		// No embedded rules for this version, so the module branch plans it.
+		write_file(temp.path(), "eu4-game/version.txt", "1.36.0\n");
+		let mut input = crate::input::resolve_input(&request, false);
+		let plan: MergePlanResult =
+			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
+		let module = plan
+			.paths
+			.iter()
+			.find(|entry| entry.target.module_id().is_some())
+			.expect("the direct-child file still forms a module");
+		assert_eq!(
+			module.target.input_paths(),
+			&["common/government_names/a.txt"]
+		);
+		let materialized: MaterializedMerge = materialize_analyzed_input(
+			request,
+			MaterializeOutput {
+				artifacts_dir: &out_dir,
+				prior_dir: None,
+				target_dir: &out_dir,
+			},
+			no_base_options(true),
+			input,
+			plan,
+			None,
+		)
+		.unwrap();
+		let module_unit = materialized
+			.review
+			.units()
+			.iter()
+			.find(|unit| unit.kind == MergeUnitKind::DefinitionModule)
+			.expect("module unit")
+			.clone();
+		assert_ne!(
+			module_unit.disposition,
+			MergeDisposition::EngineFailure,
+			"{module_unit:?}"
+		);
+	}
+
+	#[test]
+	fn the_review_records_only_the_directories_a_unit_actually_wrote() {
+		// mod-b's event_modifiers contribution is byte-identical to what the
+		// merge would produce from vanilla alone, so that directory is a no-op
+		// and writes nothing while static_modifiers commits. The review must
+		// name the file that exists and not the one that does not.
+		let temp: TempDir = TempDir::new().unwrap();
+		let playlist_path: PathBuf = temp.path().join("playlist.json");
+		let out_dir: PathBuf = temp.path().join("out");
+		write_dlc_load(&playlist_path, &[("mod-a", "A"), ("mod-b", "B")]);
+		for (mod_id, path, content) in [
+			(
+				"mod-a",
+				"common/event_modifiers/shared.txt",
+				"from_base = { tax_income = 1 }\n",
+			),
+			(
+				"mod-b",
+				"common/event_modifiers/shared.txt",
+				"from_base = { tax_income = 1 }\n",
+			),
+			(
+				"mod-b",
+				"common/static_modifiers/b.txt",
+				"from_b = { tax_income = 2 }\n",
+			),
+		] {
+			let root: PathBuf = temp.path().join(mod_id);
+			write_descriptor(&root, mod_id);
+			write_file(&root, path, content);
+		}
+		let request: InputRequest = request_for(&playlist_path);
+		write_file(temp.path(), "eu4-game/version.txt", "1.37.5\n");
+		let mut input = crate::input::resolve_input(&request, false);
+		let plan: MergePlanResult =
+			super::freeze_path_plan(&mut input, false, &ResolutionMap::default());
+		let materialized: MaterializedMerge = materialize_analyzed_input(
+			request,
+			MaterializeOutput {
+				artifacts_dir: &out_dir,
+				prior_dir: None,
+				target_dir: &out_dir,
+			},
+			no_base_options(true),
+			input,
+			plan,
+			None,
+		)
+		.unwrap();
+		let unit = materialized
+			.review
+			.units()
+			.iter()
+			.find(|unit| unit.kind == MergeUnitKind::DefinitionModule)
+			.expect("module unit")
+			.clone();
+		// Whatever the review claims was written must exist, and every file
+		// that exists must be claimed.
+		for path in &unit.output_paths {
+			assert!(out_dir.join(path).is_file(), "review claims {path}");
+		}
+		for directory in ["static_modifiers", "event_modifiers"] {
+			let path: String = format!("common/{directory}/zzz_foch_{directory}.txt");
+			assert_eq!(
+				out_dir.join(&path).is_file(),
+				unit.output_paths.contains(&path),
+				"{path} on disk vs review {:?}",
+				unit.output_paths
+			);
+		}
 	}
 
 	#[test]

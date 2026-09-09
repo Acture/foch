@@ -132,6 +132,28 @@ impl UnitOutcomeLedger {
 		output_path: Option<String>,
 		additional_notes: impl IntoIterator<Item = String>,
 	) -> Result<(), MergeError> {
+		self.resolve_written(
+			entry,
+			disposition,
+			summary,
+			output_path.into_iter().collect(),
+			additional_notes,
+		)
+	}
+
+	/// Record a unit against the files it actually wrote.
+	///
+	/// A unit can write one file per contributing directory, and a directory
+	/// whose merge is a no-op against vanilla writes none, so what was written
+	/// is not derivable from the plan.
+	pub(super) fn resolve_written(
+		&mut self,
+		entry: &MergePlanEntry,
+		disposition: MergeDisposition,
+		summary: impl Into<String>,
+		written_paths: Vec<String>,
+		additional_notes: impl IntoIterator<Item = String>,
+	) -> Result<(), MergeError> {
 		let id = stable_unit_id(entry)?;
 		let Some(index) = self.by_id.get(&id).copied() else {
 			return Err(invariant(
@@ -148,27 +170,27 @@ impl UnitOutcomeLedger {
 		let (kind, family) = unit_kind_and_family(entry);
 		let mut notes = entry.notes.clone();
 		notes.extend(additional_notes);
-		let output_path = output_path
-			.map(|path| -> Result<String, MergeError> {
-				let normalized = normalize_path(&path);
-				validate_relative_id_part(&normalized, entry.output_path())?;
-				if !entry
-					.target
-					.output_paths()
-					.iter()
-					.any(|planned| normalize_path(planned) == normalized)
-				{
-					return Err(invariant(
-						entry.output_path(),
-						format!(
-							"review output path `{normalized}` is not one of this unit's planned outputs `{}`",
-							entry.target.output_paths().join(", ")
-						),
-					));
-				}
-				Ok(normalized)
-			})
-			.transpose()?;
+		let mut output_paths: Vec<String> = Vec::with_capacity(written_paths.len());
+		for path in written_paths {
+			let normalized = normalize_path(&path);
+			validate_relative_id_part(&normalized, entry.output_path())?;
+			if !entry
+				.target
+				.output_paths()
+				.iter()
+				.any(|planned| normalize_path(planned) == normalized)
+			{
+				return Err(invariant(
+					entry.output_path(),
+					format!(
+						"review output path `{normalized}` is not one of this unit's planned outputs `{}`",
+						entry.target.output_paths().join(", ")
+					),
+				));
+			}
+			output_paths.push(normalized);
+		}
+		let output_path: Option<String> = output_paths.first().cloned();
 		self.units[index] = Some(MergeUnitOutcome {
 			id,
 			path: normalize_path(entry.output_path()),
@@ -177,16 +199,7 @@ impl UnitOutcomeLedger {
 			disposition,
 			strategy: strategy_name(entry.strategy).to_string(),
 			summary: summary.into(),
-			output_paths: if output_path.is_some() {
-				entry
-					.target
-					.output_paths()
-					.into_iter()
-					.map(normalize_path)
-					.collect()
-			} else {
-				Vec::new()
-			},
+			output_paths,
 			output_path,
 			contributors: review_contributors(&entry.contributors),
 			notes,
