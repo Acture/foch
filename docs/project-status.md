@@ -106,12 +106,24 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test -p foch -p foch-cli --no-fail-fast
 ```
 
-15 tests fail, and all 15 fail identically at `77e790f` in a clean worktree:
-12 in the root library (CWT/schema baseline, script scope, structured trigger,
-and a unix-socket case) plus `corpus_real_minimized_europa_expanded_building_params_stay_clean`,
-`eu4_recurse_policy_emits_conflict_on_divergent_sub_blocks` and
-`data_install_downloads_release_asset_from_manifest`. They are unrelated to this
-change and remain untriaged. No full Workshop acceptance or in-game test was run.
+The full suite passes: 1,169 in the root library, 42 CLI integration, 110 in the
+fixed-corpus harness, and the remaining targets, with 0 failures. No full
+Workshop acceptance or in-game test was run.
+
+A worktree needs both submodules before its tests mean anything. `git worktree
+add` checks out neither, and an absent `vendor/cwtools-eu4-config` fails 13
+schema, CWT, script, structured-merge and corpus tests that have nothing
+obviously to do with CWT, while an absent `packages/tree-sitter-paradox` breaks
+the build outright. Run this once in a new worktree:
+
+```fish
+git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-config
+```
+
+Two tests additionally need privileges a restricted sandbox may withhold:
+`output_transaction_rejects_an_existing_unix_socket` binds a Unix socket and
+`data_install_downloads_release_asset_from_manifest` opens a local HTTP server.
+Both pass normally; a sandbox denial is an environment result, not a defect.
 
 ## Database-rule planning (2026-09-07)
 

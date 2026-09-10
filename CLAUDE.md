@@ -171,6 +171,16 @@ Keep changing coverage status in `docs/project-status.md` and Notion. `AGENTS.md
 
 Use `direnv` in the repo root and keep Node on the supported line: `>=22 <25`. Run `direnv allow` once after cloning. `node@25` is currently not a supported local development environment for `packages/tree-sitter-paradox`.
 
+Both submodules must be checked out before any test result means anything, and `git worktree add` checks out neither:
+
+```fish
+git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-config
+```
+
+A missing `packages/tree-sitter-paradox` breaks the build; a missing `vendor/cwtools-eu4-config` instead fails 13 schema, CWT, script, structured-merge and corpus tests, most of which do not mention CWT. Treat a cluster of those failures as an uninitialized submodule before investigating them as defects.
+
+Two tests need privileges a restricted sandbox may withhold: `output_transaction_rejects_an_existing_unix_socket` binds a Unix socket and `data_install_downloads_release_asset_from_manifest` opens a local HTTP server. A sandbox denial there is an environment result, not a defect.
+
 ## Local quality gates
 
 Run `bash scripts/install-hooks.sh` once after cloning to install the local git hooks. The pre-commit hook runs `cargo fmt --all --check`, strict workspace clippy, and `cargo build --workspace --tests`; the pre-push hook runs the full `cargo test --workspace` suite. Override only in emergencies with `FOCH_SKIP_PRE_COMMIT=1 git commit ...` or `FOCH_SKIP_PRE_PUSH=1 git push ...`, and make the next push without skipping the gate. Agents in autopilot or fleet mode must install hooks before doing work and must not use `--no-verify` to bypass them.
