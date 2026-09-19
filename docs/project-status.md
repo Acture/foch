@@ -1,6 +1,6 @@
 # Project Status
 
-Latest committed-source verification: 2026-09-19 at `1fe4c6f` (P-609, parallel
+Latest committed-source verification: 2026-09-19 at `4b8444c` (P-609, parallel
 merge units): workspace tests, strict workspace Clippy and formatting, plus a
 bounded serial/parallel comparison on the retained 30-mod Workshop page.
 Earlier committed-source verification: 2026-09-19 at `12a7f92`: full workspace
@@ -36,9 +36,8 @@ not what is written. Commits:
   indices in order; the calling thread applies results strictly by index. The
   first error or panic in plan order ends the run, cancellation is checked before
   every apply, a definition module stays one job, and copy, overlay and deferred
-  units never reach a worker. One worker, or an interactive conflict handler,
-  keeps the previous serial path. `MergeAnalysisOptions.merge_workers` and
-  `foch merge --jobs N` set the count.
+  units never reach a worker. One worker keeps the previous serial path.
+  `MergeAnalysisOptions.merge_workers` and `foch merge --jobs N` set the count.
 - `98360a4` — cache entries are written through unique temporary files, since
   workers store parse and address-patch cache entries concurrently.
 - `50ef6a8` — the default count is the detected CPU count, and memory is bounded
@@ -50,6 +49,19 @@ not what is written. Commits:
   lifetime-peak memory, so a long-lived desktop process keeps its parallelism;
   Linux honours cgroup memory limits; scheduler tests fail through a watchdog
   instead of hanging.
+- `70fa206` — interactive merges stay parallel. Workers analyze without
+  prompting; when the unit about to be applied could have prompted (any backend
+  outcome other than a clean merge), the calling thread pauses the workers,
+  waits for running ones, analyzes that unit again with the prompt, and resumes
+  them. Prompts and the resolutions they persist stay in plan order and alone on
+  the terminal; with 1, 4 and 8 workers a handler answering every conflict gives
+  the same prompts, the same `foch.toml` and identical output. `4b8444c` makes a
+  panic during such a redo stop the paused workers instead of releasing them.
+- `e8b163e` — output validation checks the generated mod against the game
+  installation the merge resolved, including a manifest's
+  `[project].game_path`. Before, it fell back to Steam discovery, so the two
+  Workshop probe tests failed on every CI platform since `12a7f92` (also on
+  `master`) and a local run could validate against a different installation.
 
 `definition_module_elapsed_ms` is now the sum of each module's analysis and
 apply time rather than one wall-clock span; it was already excluded from any
@@ -87,19 +99,20 @@ memory bounds, module atomicity, ordered errors and panics, cancellation and the
 interactive fallback; for each, the matching scheduler defect was injected and a
 test failed. The CLI runs `--jobs 1` and `--jobs 4` to identical trees.
 
-Validation on `1fe4c6f`: `cargo fmt --all --check`, strict workspace Clippy and
-`cargo test --workspace --no-fail-fast -- --test-threads 4` passed (1,513 tests)
-except the three that need local sockets or HTTP servers, which passed when
-rerun outside the sandbox. The Windows memory query in `src/platform/memory.rs` is not
+Validation on `4b8444c`: `cargo fmt --all --check`, strict workspace Clippy and
+`cargo test --workspace --no-fail-fast -- --test-threads 4` passed (1,516 tests)
+except the three that need local sockets or HTTP servers, which pass outside the
+sandbox; the pre-push `cargo test --workspace` gate passed outside it. The two
+Workshop probe tests also pass with an empty `HOME`, which reproduces the CI
+failure `e8b163e` fixes. The Windows memory query in `src/platform/memory.rs` is not
 compiled locally. Evidence, harness and per-unit tables are in
 `target/validation/p609-parallel-2026-09-19/` (`summary.md`, run logs, reports,
 `*-w1-mem.units.tsv`, `local_parallel_probe.rs`, `run.sh`, `compare.sh`).
 
-Known limits: an interactive conflict handler, which `foch merge` installs by
-default on a TTY, keeps the serial path, so only `--non-interactive`, desktop and
-harness runs are parallel. With prompts on, a module's later namespaces are
-prompted before an earlier one is staged, so a staging I/O error can follow a
-prompt the serial loop would not have shown.
+Known limit: with prompts on, a module's later namespaces are prompted before an
+earlier one is staged, so a staging I/O error can follow a prompt the serial loop
+before P-609 would not have shown. A unit that could prompt is analyzed twice
+when workers are in use.
 
 Not established: a complete full-page merge with these changes, the fixed
 cohort, and in-game behaviour. Repeating `cargo workshop-probe` on the installed
