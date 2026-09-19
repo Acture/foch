@@ -1,10 +1,12 @@
 # Project Status
 
-Latest committed-source verification: 2026-09-19 at `12a7f92`: full workspace
+Latest committed-source verification: 2026-09-19 at `1fe4c6f` (P-609, parallel
+merge units): workspace tests, strict workspace Clippy and formatting, plus a
+bounded serial/parallel comparison on the retained 30-mod Workshop page.
+Earlier committed-source verification: 2026-09-19 at `12a7f92`: full workspace
 tests, strict workspace Clippy, formatting, and workspace/test compilation.
 The automatic Workshop probe, missing-input fix, definition-module indexing,
-and tree matching/lineage fixes are now committed. The latest bounded real-input
-verification remains the 2026-09-17 observations below.
+and tree matching/lineage fixes are now committed.
 Earlier committed-source verification: 2026-09-14 at `f0d348f`: workspace regressions and
 isolated CLI smoke tests for cross-directory output and version matching.
 Earlier source verification: 2026-09-10 for cross-directory database output
@@ -20,6 +22,88 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Parallel merge units (2026-09-19)
+
+P-609 analyzes independent merge units on worker threads and applies their
+results in plan order, so the worker count changes when a unit is analyzed but
+not what is written. Commits:
+
+- `02b1d01` — split each unit into analysis, which reads only frozen inputs, and
+  apply, which does every output write and every report and review change.
+- `d01370e` — `run_units` in `src/merge/output/materialize/executor.rs`: scoped
+  workers (`foch-merge-N`, 64 MiB stacks like the CLI main thread) take plan
+  indices in order; the calling thread applies results strictly by index. The
+  first error or panic in plan order ends the run, cancellation is checked before
+  every apply, a definition module stays one job, and copy, overlay and deferred
+  units never reach a worker. One worker, or an interactive conflict handler,
+  keeps the previous serial path. `MergeAnalysisOptions.merge_workers` and
+  `foch merge --jobs N` set the count.
+- `98360a4` — cache entries are written through unique temporary files, since
+  workers store parse and address-patch cache entries concurrently.
+- `50ef6a8` — the default count is the detected CPU count, and memory is bounded
+  separately: a unit starts only while its estimate (2,000 bytes per input byte)
+  fits beside the unfinished ones within 60% of physical memory less the memory
+  the process holds when units start; a larger unit runs alone. Units dispatched
+  ahead of the one being applied are bounded at 256 per worker.
+- `2cd5257`, `1fe4c6f` — review fixes: the budget subtracts current rather than
+  lifetime-peak memory, so a long-lived desktop process keeps its parallelism;
+  Linux honours cgroup memory limits; scheduler tests fail through a watchdog
+  instead of hanging.
+
+`definition_module_elapsed_ms` is now the sum of each module's analysis and
+apply time rather than one wall-clock span; it was already excluded from any
+byte comparison.
+
+A bounded comparison used the retained 30-mod newest page, a cloned probe cache
+and data dir, retained windows from the 2026-09-17 plan, and release builds, one
+run at a time on a shared 32 GiB M2 Max. The table gives `materialize`, the
+parallel phase, and the `/usr/bin/time -l` peak memory footprint. File windows
+were measured at `50ef6a8` and the module window at `1fe4c6f`; the budget
+change between them does not bind for small units.
+
+| Window (units) | 1 worker | 12 workers, admitted | Peak footprint 1 → 12 |
+| --- | ---: | ---: | --- |
+| history/provinces (3,916 files) | 21.4 s | 3.0 s | 6.34 → 7.08 GB |
+| common/countries (1,224 files) | 84.4 s | 17.8 s | 6.58 → 7.11 GB |
+| 9 largest definition modules | 97.3 s | 62.4 s | 13.33 → 18.09 GB |
+
+Every multi-worker output was identical to its one-worker output after masking
+only the report's module time, the plan's `generated_at` and the output path in
+`descriptor.mod`; one-worker control runs of the two file windows were identical
+too. With 4 workers the country window took 37.1 s under the earlier bound of 16
+pending units per worker and 23.5 s at 256, because workers idled behind its
+9 s units. With one worker the nine modules peaked at 0.65 to 6.9 GB each (325
+to 1,758 bytes per input byte), about 29 GB together beside a 6 GB baseline,
+which is why the default is bounded by estimated memory instead of CPU count.
+File units peaked at a median of 1.7 to 5.7 MiB. These are local observations,
+not a controlled benchmark; the slowest country unit grew from 9.0 s to 12.5 s
+at 12 workers, most likely from contention.
+
+Tests compare 1, 2, 4 and 8 workers, and 4 workers with room for one unit, byte
+for byte on a playset with every unit kind while an early conflict is forced to
+finish after a late one. Gate-based tests cover overlap, the worker, pending and
+memory bounds, module atomicity, ordered errors and panics, cancellation and the
+interactive fallback; for each, the matching scheduler defect was injected and a
+test failed. The CLI runs `--jobs 1` and `--jobs 4` to identical trees.
+
+Validation on `1fe4c6f`: `cargo fmt --all --check`, strict workspace Clippy and
+`cargo test --workspace --no-fail-fast -- --test-threads 4` passed (1,513 tests)
+except the three that need local sockets or HTTP servers, which passed when
+rerun outside the sandbox. The Windows memory query in `src/platform/memory.rs` is not
+compiled locally. Evidence, harness and per-unit tables are in
+`target/validation/p609-parallel-2026-09-19/` (`summary.md`, run logs, reports,
+`*-w1-mem.units.tsv`, `local_parallel_probe.rs`, `run.sh`, `compare.sh`).
+
+Known limits: an interactive conflict handler, which `foch merge` installs by
+default on a TTY, keeps the serial path, so only `--non-interactive`, desktop and
+harness runs are parallel. With prompts on, a module's later namespaces are
+prompted before an earlier one is staged, so a staging I/O error can follow a
+prompt the serial loop would not have shown.
+
+Not established: a complete full-page merge with these changes, the fixed
+cohort, and in-game behaviour. Repeating `cargo workshop-probe` on the installed
+inputs is the maintainer's full-page check and belongs to P-581.
 
 ## Commit and validation checkpoint (2026-09-19)
 
