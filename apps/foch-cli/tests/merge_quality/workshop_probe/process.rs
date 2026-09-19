@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -28,12 +28,23 @@ impl ProcessResult {
 		} else {
 			return None;
 		};
+		let stderr: PathBuf = dir.join(format!("{stage}.stderr.log"));
 		Some(format!(
-			"{stage} {reason}; inspect {} and {}",
-			dir.join(format!("{stage}.stderr.log")).display(),
-			dir.join(format!("{stage}.stdout.log")).display()
+			"{stage} {reason}; inspect {} and {}\nlast stderr lines:\n{}",
+			stderr.display(),
+			dir.join(format!("{stage}.stdout.log")).display(),
+			log_tail(&stderr, 20)
 		))
 	}
+}
+
+/// The last `lines` lines of a log. A failure message carries them because
+/// the log itself may live in a temporary directory that is gone by the time
+/// anyone reads the message, as on CI.
+fn log_tail(path: &Path, lines: usize) -> String {
+	let log: String = std::fs::read_to_string(path).unwrap_or_default();
+	let tail: Vec<&str> = log.lines().rev().take(lines).collect();
+	tail.into_iter().rev().collect::<Vec<&str>>().join("\n")
 }
 
 pub(super) fn run(
