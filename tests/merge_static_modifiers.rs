@@ -88,6 +88,7 @@ fn static_modifiers_preserve_contributions_through_analyze_and_commit() {
 					))),
 					interactive_resolution_config_path: Some(scratch.path().join("decisions.toml")),
 					playset_fingerprint: None,
+					merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 					retained_paths: None,
 				},
 				&NoopProgressObserver,

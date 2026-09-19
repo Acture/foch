@@ -176,6 +176,7 @@ fn retained_governments_merge_includes_complete_version_bound_base_module() {
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 			retained_paths: Some(BTreeSet::from([
 				"common/governments/zzz_10_override.txt".to_string(),
 				"common/defines/es_defines.lua".to_string(),

@@ -39,7 +39,8 @@ pub(crate) struct BackendRequest<'data, 'handler> {
 
 pub(crate) type BackendOutcome = Result<StructuralMergeOutput, StructuralMergeFailure>;
 
-pub(crate) trait MergeBackend {
+/// Backends are shared by the threads that analyze merge units concurrently.
+pub(crate) trait MergeBackend: Send + Sync {
 	fn descriptor(&self) -> MergeBackendDescriptor;
 	fn profile(&self) -> BackendProfile;
 	fn analyze(&self, request: BackendRequest<'_, '_>) -> BackendOutcome;

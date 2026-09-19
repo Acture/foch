@@ -60,6 +60,14 @@ pub(super) struct InteractivePrompt<'a> {
 }
 
 impl InteractivePrompt<'_> {
+	/// For worker threads, which never prompt.
+	pub(super) fn none() -> Self {
+		Self {
+			handler: None,
+			config_path: None,
+		}
+	}
+
 	fn reborrow(&mut self) -> InteractivePrompt<'_> {
 		InteractivePrompt {
 			handler: self.handler.as_deref_mut(),
@@ -109,6 +117,15 @@ impl NamespaceAnalysis {
 	fn merged(&self) -> bool {
 		matches!(self, Self::Analyzed(outcome) if matches!(**outcome, Ok(Ok(_))))
 	}
+}
+
+/// Whether a unit's strategy has analysis worth handing to a worker; the
+/// others only copy or defer, which applying does itself.
+pub(super) fn unit_needs_analysis(entry: &MergePlanEntry) -> bool {
+	matches!(
+		entry.strategy,
+		MergePlanStrategy::LocalisationMerge | MergePlanStrategy::StructuralMerge
+	)
 }
 
 pub(super) fn analyze_unit(

@@ -26,6 +26,7 @@ use crate::project::{AppliedDepOverride, Project, ResolutionDecision, Resolution
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -57,9 +58,26 @@ pub struct MergeAnalysisOptions {
 	/// `# foch: …` comments + a `.foch/foch-provenance.json` sidecar). Off by
 	/// default; when off, emitted output is byte-identical to a normal merge.
 	pub provenance: bool,
+	/// Merge units analyzed at once. Results are applied in plan order, so the
+	/// output does not depend on it; an interactive conflict handler analyzes
+	/// one unit at a time.
+	pub merge_workers: NonZeroUsize,
 	/// Optional relative-path retention set for scoring callers that only need
 	/// target corpus paths. Full production merge leaves this unset.
 	pub retained_paths: Option<BTreeSet<String>>,
+}
+
+/// Upper bound on [`default_merge_workers`]. Each worker holds one unit's
+/// working set in memory, and a single large unit has been observed at
+/// several gigabytes.
+const DEFAULT_MERGE_WORKERS_CAP: NonZeroUsize = NonZeroUsize::new(4).unwrap();
+
+/// Worker count for callers that do not choose one: the available
+/// parallelism, capped by memory rather than CPU count.
+pub fn default_merge_workers() -> NonZeroUsize {
+	std::thread::available_parallelism()
+		.unwrap_or(NonZeroUsize::MIN)
+		.min(DEFAULT_MERGE_WORKERS_CAP)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -502,6 +520,7 @@ fn complete_merge_analysis(
 			backend: backend_for(backend_id),
 			retained_paths: effective_retained_paths,
 			cancellation: cancellation.clone(),
+			workers: options.merge_workers,
 		},
 		input_result,
 		plan.clone(),
@@ -1098,6 +1117,7 @@ mod tests {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 				retained_paths: None,
 			},
 		)
@@ -1175,6 +1195,7 @@ mod tests {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 				retained_paths: None,
 			},
 		)
@@ -1212,6 +1233,7 @@ mod tests {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 				retained_paths: None,
 			},
 			&NoopProgressObserver,
@@ -1248,6 +1270,7 @@ mod tests {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 				retained_paths: None,
 			},
 			&observer,
@@ -1281,6 +1304,7 @@ mod tests {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 				retained_paths: None,
 			},
 			&observer,
@@ -1565,6 +1589,7 @@ mod tests {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 				retained_paths: None,
 			},
 		)

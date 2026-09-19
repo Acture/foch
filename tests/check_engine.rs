@@ -140,6 +140,7 @@ fn run_merge_plan_no_base(request: InputRequest) -> MergePlanResult {
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: false,
+			merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 			retained_paths: None,
 		},
 		&NoopProgressObserver,

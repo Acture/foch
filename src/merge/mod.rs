@@ -29,7 +29,8 @@ pub(crate) use address_patch::{normalize, patch, patch_merge};
 pub use analyze::{
 	AnalysisStatusView, AnalyzedMerge, CancellationToken, MergeAnalysis, MergeAnalysisOptions,
 	MergeAnalysisStage, MergeAnalysisStatus, MergeProgress, MergeStatusView, NoopProgressObserver,
-	ProgressObserver, analyze_merge, run_merge_for_evaluation, run_merge_with_options,
+	ProgressObserver, analyze_merge, default_merge_workers, run_merge_for_evaluation,
+	run_merge_with_options,
 };
 pub use commit::{CommitAuthorization, CommitResult, ReplacementTarget};
 pub use error::MergeError;
