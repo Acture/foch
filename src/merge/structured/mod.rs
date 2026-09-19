@@ -6,6 +6,8 @@ mod observer;
 mod policy;
 mod tree_kernel;
 mod trivia;
+#[cfg(test)]
+mod work;
 
 pub use ast_adapter::AstAdapterError;
 pub(crate) use ast_adapter::{semantic_node_address, top_level_assignment_key};
@@ -15,7 +17,7 @@ pub(crate) use merge::merge_event_files;
 pub(crate) use merge::{
 	ClausewitzKernelFacts, clausewitz_files_semantically_equivalent,
 	clausewitz_statements_semantically_equivalent, merge_clausewitz_files_n_way_with_resolutions,
-	merge_event_files_n_way_with_resolutions, normalize_clausewitz_partition,
+	merge_event_files_n_way_with_resolutions, normalize_clausewitz_file,
 };
 pub use merge::{ClausewitzMergeOutcome, merge_clausewitz_files_n_way};
 #[cfg(test)]

@@ -10,9 +10,11 @@ use crate::game::eu4::script::parser::{AstStatement, AstValue};
 use crate::input::{InputScriptCache, ResolvedInputContributor};
 use crate::merge::kernel::{DeltaOperation, NodeId, TreeMatcher};
 use crate::merge::model::{SemanticDeltaPartition, SemanticSourceDelta};
-use crate::merge::structured::{normalize_clausewitz_partition, semantic_node_address};
+use crate::merge::structured::{
+	DefinitionModuleAdapter, TreePartitionAdapter, semantic_node_address,
+};
 use crate::model::{DepMisuseFinding, StaleVanillaTargetDescriptor};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, btree_map::Entry};
 
 const SEMANTIC_MISSING_PATH_NOTE: &str = "vanilla snapshot for this file does not contain the semantic parent; this remove-style change may be cross-version drift, dependency-targeted, or intentionally guarded";
 const SEMANTIC_MISSING_KEY_NOTE: &str = "vanilla snapshot contains the semantic parent but not the target; this remove-style change may be cross-version drift, dependency-targeted, or intentionally guarded";
@@ -142,6 +144,8 @@ pub(super) fn collect_semantic_stale_vanilla_targets(
 	let Some(vanilla) = vanilla else {
 		return Ok(Vec::new());
 	};
+	let prepared = DefinitionModuleAdapter.prepare(&vanilla.ast);
+	let mut vanilla_trees = BTreeMap::new();
 	let mut findings = Vec::new();
 	for source_delta in source_deltas {
 		let mod_version = mod_versions
@@ -149,16 +153,25 @@ pub(super) fn collect_semantic_stale_vanilla_targets(
 			.map(String::as_str)
 			.unwrap_or("unknown");
 		for partition in &source_delta.partitions {
-			let vanilla_tree =
-				normalize_clausewitz_partition(&vanilla.ast, &partition.partition, policies)
-					.map_err(|error| {
-						format!(
-							"failed to normalize vanilla partition {:?}: {error}",
-							partition.partition
-						)
-					})?;
-			let matching = TreeMatcher::default().match_trees(&vanilla_tree, &partition.base_tree);
-			for (kind, target) in semantic_remove_targets(partition) {
+			let mut remove_targets = semantic_remove_targets(partition).peekable();
+			if remove_targets.peek().is_none() {
+				continue;
+			}
+			let vanilla_tree = match vanilla_trees.entry(&partition.partition) {
+				Entry::Occupied(entry) => entry.into_mut(),
+				Entry::Vacant(entry) => {
+					entry.insert(prepared.normalize(&partition.partition, policies).map_err(
+						|error| {
+							format!(
+								"failed to normalize vanilla partition {:?}: {error}",
+								partition.partition
+							)
+						},
+					)?)
+				}
+			};
+			let matching = TreeMatcher::default().match_trees(vanilla_tree, &partition.base_tree);
+			for (kind, target) in remove_targets {
 				if matching.get_from_right(target).is_some() {
 					continue;
 				}

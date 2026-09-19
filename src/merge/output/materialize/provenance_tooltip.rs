@@ -63,10 +63,8 @@ impl FinalSemanticProjection {
 			path: PathBuf::from(target_path),
 			statements: statements.to_vec(),
 		};
-		let final_partitions = adapter
-			.normalization_partitions(&final_file, &final_file)
-			.into_iter()
-			.collect::<BTreeSet<_>>();
+		let prepared = adapter.prepare(&final_file);
+		let final_partitions = prepared.partitions().into_iter().collect::<BTreeSet<_>>();
 		let mut lineage_partitions = BTreeSet::new();
 		for (partition, lineage) in &semantic.partition_lineage {
 			let root = lineage
@@ -91,11 +89,9 @@ impl FinalSemanticProjection {
 				.partition_lineage
 				.get(&partition)
 				.ok_or_else(|| format!("missing final lineage partition {partition:?}"))?;
-			let final_tree = adapter
-				.normalize_partition(&final_file, &partition, policies)
-				.map_err(|error| {
-					format!("failed to normalize final diplomatic-actions partition: {error}")
-				})?;
+			let final_tree = prepared.normalize(&partition, policies).map_err(|error| {
+				format!("failed to normalize final diplomatic-actions partition: {error}")
+			})?;
 			if final_tree != lineage.tree {
 				return Err(format!(
 					"final diplomatic-actions AST diverged from semantic lineage for partition {partition:?}",
@@ -556,7 +552,7 @@ mod tests {
 	use crate::merge::model::{
 		SemanticMergeSource, SemanticOrigin, SemanticPartitionId, SemanticPartitionLineage,
 	};
-	use crate::merge::structured::normalize_clausewitz_partition;
+	use crate::merge::structured::DefinitionModuleAdapter;
 
 	fn parsed(source: &str) -> ParsedScriptFile {
 		let path = PathBuf::from("common/diplomatic_actions/00_actions.txt");
@@ -587,12 +583,13 @@ mod tests {
 		final_file: &ParsedScriptFile,
 		marker_origins: &[(&str, Vec<SemanticOrigin>)],
 	) -> SemanticMergeComputation {
-		let tree = normalize_clausewitz_partition(
-			&final_file.ast,
-			&SemanticPartitionId::Definition("send_warning".to_string()),
-			&MergePolicies::default(),
-		)
-		.expect("normalize final fixture");
+		let tree = DefinitionModuleAdapter
+			.prepare(&final_file.ast)
+			.normalize(
+				&SemanticPartitionId::Definition("send_warning".to_string()),
+				&MergePolicies::default(),
+			)
+			.expect("normalize final fixture");
 		let mut origins = tree
 			.nodes()
 			.map(|(node, _)| (node, BTreeSet::new()))
@@ -887,12 +884,10 @@ mod tests {
 			&[("surviving", vec![SemanticOrigin::Mod(source("mod_a", 10))])],
 		);
 		let deleted_partition = SemanticPartitionId::Definition("deleted_action".to_string());
-		let deleted_tree = normalize_clausewitz_partition(
-			&final_file.ast,
-			&deleted_partition,
-			&MergePolicies::default(),
-		)
-		.expect("normalize absent deleted partition");
+		let deleted_tree = DefinitionModuleAdapter
+			.prepare(&final_file.ast)
+			.normalize(&deleted_partition, &MergePolicies::default())
+			.expect("normalize absent deleted partition");
 		assert!(
 			deleted_tree
 				.node(deleted_tree.root())
@@ -942,12 +937,10 @@ mod tests {
 			"deleted_action = { condition = { tooltip = DELETED_TT allow = { marker = deleted } } }",
 		);
 		let missing_partition = SemanticPartitionId::Definition("deleted_action".to_string());
-		let missing_tree = normalize_clausewitz_partition(
-			&missing_file.ast,
-			&missing_partition,
-			&MergePolicies::default(),
-		)
-		.expect("normalize nonempty missing partition");
+		let missing_tree = DefinitionModuleAdapter
+			.prepare(&missing_file.ast)
+			.normalize(&missing_partition, &MergePolicies::default())
+			.expect("normalize nonempty missing partition");
 		let missing_origins = missing_tree
 			.nodes()
 			.map(|(node, _)| {

@@ -309,27 +309,12 @@ pub(crate) fn clausewitz_statements_semantically_equivalent(
 	)
 }
 
-pub(crate) fn normalize_clausewitz_partition(
+pub(crate) fn normalize_clausewitz_file(
 	file: &AstFile,
-	partition: &SemanticPartitionId,
 	policies: &MergePolicies,
 ) -> Result<NormalizedTree, AstAdapterError> {
-	let file = match partition {
-		SemanticPartitionId::File => file.clone(),
-		SemanticPartitionId::Definition(key) => AstFile {
-			path: file.path.clone(),
-			statements: file
-				.statements
-				.iter()
-				.filter(|statement| {
-					matches!(statement, AstStatement::Assignment { key: candidate, .. } if candidate == key)
-				})
-				.cloned()
-				.collect(),
-		},
-	};
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_boolean_or_definitions(&file, policies, &mut scope_cache);
+	let canonical = canonicalize_boolean_or_definitions(file, policies, &mut scope_cache);
 	let (semantic, _) = detach_trivia(&canonical);
 	normalize_ast(&semantic, &ContentFamilyMergePolicy::new(policies))
 }

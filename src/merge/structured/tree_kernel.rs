@@ -28,7 +28,7 @@ use crate::merge::planning::dag_pipeline::{
 };
 
 use super::ast_adapter::denormalize_statement;
-use super::definition_module::definition_module_partition_ids;
+use super::definition_module::DefinitionModuleIndex;
 use super::observer::TreeSourceObserver;
 use super::trivia::detach_trivia;
 use super::{
@@ -56,21 +56,63 @@ pub(crate) fn semantic_conflict_id(target_path: &Path, raw_conflict_id: Conflict
 }
 
 pub(crate) trait TreePartitionAdapter {
-	fn normalization_partitions(
-		&self,
-		_base: &AstFile,
-		_revision: &AstFile,
-	) -> Vec<SemanticPartitionId> {
-		vec![SemanticPartitionId::File]
+	fn prepare<'a>(&self, file: &'a AstFile) -> TreePartitionIndex<'a> {
+		TreePartitionIndex {
+			file,
+			definitions: None,
+		}
+	}
+}
+
+/// Prepare once per input, then normalize only the requested partition.
+pub(crate) struct TreePartitionIndex<'a> {
+	file: &'a AstFile,
+	definitions: Option<DefinitionModuleIndex<'a>>,
+}
+
+impl TreePartitionIndex<'_> {
+	pub(crate) fn partitions(&self) -> Vec<SemanticPartitionId> {
+		match &self.definitions {
+			Some(index) if !index.has_items => index
+				.keys()
+				.map(|key| SemanticPartitionId::Definition(key.to_owned()))
+				.collect(),
+			_ => vec![SemanticPartitionId::File],
+		}
 	}
 
-	fn normalize_partition(
+	pub(crate) fn partitions_with(&self, other: &Self) -> Vec<SemanticPartitionId> {
+		let (Some(left), Some(right)) = (&self.definitions, &other.definitions) else {
+			return vec![SemanticPartitionId::File];
+		};
+		if left.has_items || right.has_items {
+			return vec![SemanticPartitionId::File];
+		}
+		left.keys()
+			.chain(right.keys())
+			.collect::<BTreeSet<_>>()
+			.into_iter()
+			.map(|key| SemanticPartitionId::Definition(key.to_owned()))
+			.collect()
+	}
+
+	pub(crate) fn normalize(
 		&self,
-		file: &AstFile,
 		partition: &SemanticPartitionId,
 		policies: &MergePolicies,
 	) -> Result<crate::merge::kernel::NormalizedTree, super::AstAdapterError> {
-		super::normalize_clausewitz_partition(file, partition, policies)
+		let SemanticPartitionId::Definition(key) = partition else {
+			return super::normalize_clausewitz_file(self.file, policies);
+		};
+		let index = self.definitions.as_ref().ok_or_else(|| {
+			super::AstAdapterError::InvalidTree(
+				"file adapter cannot normalize a definition partition".into(),
+			)
+		})?;
+		let definition = index.select(key);
+		// Comments must be removed before Boolean-OR canonicalization, as in the join.
+		let (semantic, _) = detach_trivia(&definition);
+		super::normalize_clausewitz_file(&semantic, policies)
 	}
 }
 
@@ -169,28 +211,11 @@ impl TreeJoinProtocol for EventFileJoin {
 pub(crate) struct DefinitionModuleAdapter;
 
 impl TreePartitionAdapter for DefinitionModuleAdapter {
-	fn normalization_partitions(
-		&self,
-		base: &AstFile,
-		revision: &AstFile,
-	) -> Vec<SemanticPartitionId> {
-		definition_module_partition_ids(&[base, revision])
-	}
-
-	fn normalize_partition(
-		&self,
-		file: &AstFile,
-		partition: &SemanticPartitionId,
-		policies: &MergePolicies,
-	) -> Result<crate::merge::kernel::NormalizedTree, super::AstAdapterError> {
-		if matches!(partition, SemanticPartitionId::File) {
-			return super::normalize_clausewitz_partition(file, partition, policies);
+	fn prepare<'a>(&self, file: &'a AstFile) -> TreePartitionIndex<'a> {
+		TreePartitionIndex {
+			file,
+			definitions: Some(DefinitionModuleIndex::new(file)),
 		}
-		// The module join detaches trivia before selecting and canonicalizing each
-		// definition. Lineage must normalize in that same order: comments inside a
-		// trigger otherwise change the temporary Boolean-OR wrapper shape.
-		let (semantic, _) = detach_trivia(file);
-		super::normalize_clausewitz_partition(&semantic, partition, policies)
 	}
 }
 
@@ -384,13 +409,12 @@ struct SemanticCandidateIndex {
 
 impl SemanticCandidateIndex {
 	fn new(
-		file: &AstFile,
+		file: &TreePartitionIndex<'_>,
 		partition: &SemanticPartitionId,
-		partition_adapter: &dyn TreePartitionAdapter,
 		policies: &MergePolicies,
 	) -> Result<Self, String> {
-		let tree = partition_adapter
-			.normalize_partition(file, partition, policies)
+		let tree = file
+			.normalize(partition, policies)
 			.map_err(|error| format!("failed to normalize conflict candidate: {error}"))?;
 		Ok(Self { tree })
 	}
@@ -422,7 +446,7 @@ impl SemanticCandidateIndex {
 struct ConflictRecordBuilder<'a> {
 	input: &'a KernelMergeInput,
 	policies: &'a MergePolicies,
-	partition_adapter: &'a dyn TreePartitionAdapter,
+	inputs: Vec<TreePartitionIndex<'a>>,
 	partitions: BTreeSet<SemanticPartitionId>,
 	indexes: BTreeMap<(RevisionId, SemanticPartitionId), SemanticCandidateIndex>,
 	#[cfg(test)]
@@ -437,17 +461,19 @@ impl<'a> ConflictRecordBuilder<'a> {
 		policies: &'a MergePolicies,
 		partition_adapter: &'a dyn TreePartitionAdapter,
 	) -> Self {
-		let partitions = input
-			.revisions
+		let inputs: Vec<_> = std::iter::once(&input.base)
+			.chain(input.revisions.iter().map(|revision| &revision.ast))
+			.map(|file| partition_adapter.prepare(file))
+			.collect();
+		let partitions = inputs
 			.iter()
-			.flat_map(|revision| {
-				partition_adapter.normalization_partitions(&input.base, &revision.ast)
-			})
+			.skip(1)
+			.flat_map(|revision| inputs[0].partitions_with(revision))
 			.collect();
 		Self {
 			input,
 			policies,
-			partition_adapter,
+			inputs,
 			partitions,
 			indexes: BTreeMap::new(),
 			#[cfg(test)]
@@ -465,12 +491,10 @@ impl<'a> ConflictRecordBuilder<'a> {
 		self.partitions.contains(&partition).then_some(partition)
 	}
 
-	fn input_file(&self, revision_id: RevisionId) -> Result<&AstFile, String> {
-		if revision_id == RevisionId::BASE {
-			Ok(&self.input.base)
-		} else {
-			Ok(&input_revision(self.input, revision_id)?.ast)
-		}
+	fn input_file(&self, revision_id: RevisionId) -> Result<&TreePartitionIndex<'_>, String> {
+		self.inputs
+			.get(usize::from(revision_id.get()))
+			.ok_or_else(|| format!("conflict references unknown revision {}", revision_id.get()))
 	}
 
 	fn node_statement(
@@ -486,7 +510,6 @@ impl<'a> ConflictRecordBuilder<'a> {
 			let index = SemanticCandidateIndex::new(
 				self.input_file(revision_id)?,
 				partition,
-				self.partition_adapter,
 				self.policies,
 			)?;
 			self.indexes.insert(cache_key.clone(), index);
@@ -1007,6 +1030,7 @@ fn compose_join_lineage(
 
 	let mut sources = BTreeMap::new();
 	let mut origins = BTreeMap::new();
+	let mut validated_revisions = BTreeSet::new();
 	for (output_node, input_sources) in &facts.outcome.provenance {
 		let mut original_sources = BTreeSet::new();
 		let mut original_origins = BTreeSet::new();
@@ -1037,13 +1061,23 @@ fn compose_join_lineage(
 					input_source.node.get()
 				)
 			})?;
-			if let Some(lineage) = lineage {
-				if lineage.tree != *expected_tree {
+			if validated_revisions.insert(input_source.revision) {
+				#[cfg(test)]
+				super::work::compare_lineage_tree();
+				if lineage.is_some_and(|lineage| lineage.tree != *expected_tree) {
 					return Err(format!(
 						"lineage tree does not match merge input for partition {:?}",
 						facts.partition
 					));
 				}
+				if lineage.is_none() && !normalized_tree_is_empty_root(expected_tree)? {
+					return Err(format!(
+						"non-empty merge input is missing lineage for partition {:?}",
+						facts.partition,
+					));
+				}
+			}
+			if let Some(lineage) = lineage {
 				if let Some(node_sources) = lineage.sources.get(&input_source.node) {
 					original_sources.extend(node_sources.iter().cloned());
 				}
@@ -1055,11 +1089,6 @@ fn compose_join_lineage(
 					)
 				})?;
 				original_origins.extend(node_origins.iter().cloned());
-			} else if !normalized_tree_is_empty_root(expected_tree)? {
-				return Err(format!(
-					"non-empty merge input is missing lineage for partition {:?}",
-					facts.partition,
-				));
 			}
 		}
 		if !original_sources.is_empty() {
@@ -1853,6 +1882,64 @@ mod tests {
 	}
 
 	#[test]
+	fn file_join_lineage_checks_each_input_tree_once() {
+		for definitions in [64, 256] {
+			let policies = MergePolicies::default();
+			let base_source = definition_work_fixture(definitions, 0);
+			let changed_source = definition_work_fixture(definitions, 1);
+			let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
+			let input = KernelMergeInput::new(
+				parsed_file(&base_source),
+				vec![parsed_revision("a", 10, &changed_source)],
+			);
+			let outcome = kernel
+				.merge_tentative(&input)
+				.expect("merge many nodes in one file");
+			let facts = &outcome.merge_facts[0];
+			let used_revisions: BTreeSet<_> = facts
+				.outcome
+				.provenance
+				.values()
+				.flat_map(|sources| sources.iter().map(|source| source.revision))
+				.collect();
+			let base = vanilla_tree_state(&base_source, &policies);
+			let mut changed = mod_file_tree_state(&changed_source, "a", 10, &policies);
+			let mod_id = ModId::from("a");
+			let revisions = [DagJoinRevision {
+				mod_id: &mod_id,
+				precedence: 10,
+				state: &changed,
+			}];
+			let (lineage, work) = super::super::work::measure(|| {
+				compose_join_lineage(facts, &base, &revisions).expect("compose file lineage")
+			});
+			assert_eq!(work.lineage_tree_checks, used_revisions.len());
+			assert!(work.lineage_tree_checks <= 2);
+			assert_eq!(lineage.origins.len(), lineage.tree.len());
+			assert!(lineage.origins.values().all(|origins| !origins.is_empty()));
+
+			// Validation still rejects a wrong input, even after caching is added.
+			changed
+				.partition_lineage
+				.get_mut(&SemanticPartitionId::File)
+				.unwrap()
+				.tree = base.partition_lineage[&SemanticPartitionId::File]
+				.tree
+				.clone();
+			let revisions = [DagJoinRevision {
+				mod_id: &mod_id,
+				precedence: 10,
+				state: &changed,
+			}];
+			assert!(
+				compose_join_lineage(facts, &base, &revisions)
+					.unwrap_err()
+					.contains("lineage tree does not match merge input")
+			);
+		}
+	}
+
+	#[test]
 	fn compose_join_lineage_rejects_a_missing_non_empty_input_lineage() {
 		let policies = MergePolicies::default();
 		let kernel = TreeMergeKernel::new(&ClausewitzFileJoin, &policies);
@@ -1948,6 +2035,204 @@ mod tests {
 				.iter()
 				.any(|operation| matches!(operation, DeltaOperation::Update { .. }))
 		);
+	}
+
+	#[test]
+	fn definition_lineage_and_observation_visit_input_size_once_per_stage() {
+		fn measured(definitions: usize) -> super::super::work::Work {
+			let policies = MergePolicies::default();
+			let base_source = definition_work_fixture(definitions, 0);
+			let source = parsed_script_file("mod-a", &definition_work_fixture(definitions, 1));
+			let mod_id = ModId::from("mod-a");
+			let (_, work) = super::super::work::measure(|| {
+				let parent = vanilla_definition_tree_state(&base_source, &policies);
+				assert_eq!(parent.partition_lineage.len(), definitions);
+				let mut handler = DeferHandler;
+				let mut protocol = TreeDagProtocol::new(
+					&DefinitionModuleAdapter,
+					&DefinitionModuleJoin,
+					&policies,
+					true,
+					VanillaBaseMode::Required,
+					&mut handler,
+				);
+				let state = protocol
+					.effective_node(EffectiveNodeRequest {
+						mod_id: &mod_id,
+						precedence: 10,
+						resets_base: false,
+						parent: &parent,
+						source: &source,
+					})
+					.expect("observe every definition");
+				assert_eq!(state.statements, source.ast.statements);
+				assert_eq!(state.source_deltas[0].partitions.len(), definitions);
+				assert!(state.source_deltas[0].partitions.iter().all(|partition| {
+					partition
+						.delta
+						.operations
+						.iter()
+						.any(|operation| matches!(operation, DeltaOperation::Update { .. }))
+				}));
+			});
+			// One index for the ancestor, two for the source observation.
+			assert_eq!(work.indexed_statements, 3 * definitions);
+			work
+		}
+
+		assert_definition_work_scales(measured(64), measured(256));
+	}
+
+	#[test]
+	fn definition_join_and_conflict_views_do_not_rescan_unrelated_definitions() {
+		fn measured(definitions: usize) -> (super::super::work::Work, super::super::work::Work) {
+			let policies = MergePolicies::default();
+			let kernel = TreeMergeKernel::new(&DefinitionModuleJoin, &policies);
+			let input = KernelMergeInput::new(
+				parsed_file(&definition_work_fixture(definitions, 0)),
+				vec![
+					parsed_revision("a", 10, &definition_work_fixture(definitions, 1)),
+					parsed_revision("b", 20, &definition_work_fixture(definitions, 2)),
+				],
+			);
+			let (probe, join_work) = super::super::work::measure(|| {
+				kernel
+					.merge_tentative(&input)
+					.expect("merge definition conflicts")
+			});
+			assert_eq!(probe.conflicts.len(), definitions);
+			assert_eq!(join_work.indexed_statements, 3 * definitions);
+			let (_, view_work) = super::super::work::measure(|| {
+				let mut builder =
+					ConflictRecordBuilder::new(&input, &policies, &DefinitionModuleAdapter);
+				let mut handler = CaptureDeferHandler::default();
+				resolve_tree_conflicts(&mut builder, &probe.conflicts, &mut handler)
+					.expect("render all definitions");
+				assert_eq!(handler.views.len(), definitions);
+				for view in &handler.views {
+					assert!(
+						view.vanilla_snippet
+							.as_deref()
+							.unwrap()
+							.contains("value = 0")
+					);
+					assert_eq!(view.candidates.len(), 2);
+					assert!(view.candidates[0].candidate_rendered.contains("value = 1"));
+					assert!(view.candidates[1].candidate_rendered.contains("value = 2"));
+				}
+				assert_eq!(builder.normalized_input_count, 3 * definitions);
+			});
+			assert_eq!(view_work.indexed_statements, 3 * definitions);
+			(join_work, view_work)
+		}
+
+		let (small_join, small_views) = measured(64);
+		let (large_join, large_views) = measured(256);
+		assert_definition_work_scales(small_join, large_join);
+		assert_definition_work_scales(small_views, large_views);
+	}
+
+	fn definition_work_fixture(definitions: usize, value: usize) -> String {
+		(0..definitions)
+			.map(|index| {
+				format!("definition_{index:04} = {{ nested = {{ # comment\nvalue = {value} }} }}\n")
+			})
+			.collect()
+	}
+
+	#[test]
+	fn definition_resolution_replay_indexes_each_selection_once() {
+		fn measured(definitions: usize) -> super::super::work::Work {
+			let policies = MergePolicies::default();
+			let kernel = TreeMergeKernel::new(&DefinitionModuleJoin, &policies);
+			let input = KernelMergeInput::new(
+				parsed_file(&definition_work_fixture(definitions, 0)),
+				vec![
+					parsed_revision("a", 10, &definition_work_fixture(definitions, 1)),
+					parsed_revision("b", 20, &definition_work_fixture(definitions, 2)),
+				],
+			);
+			let probe = kernel
+				.merge_tentative(&input)
+				.expect("probe definition conflicts");
+			let resolutions: TreeConflictResolutions = probe
+				.conflicts
+				.iter()
+				.map(|conflict| {
+					let selected = *conflict
+						.candidates
+						.iter()
+						.find(|candidate| candidate.input().revision == RevisionId::new(2))
+						.expect("second revision candidate");
+					(
+						conflict.id,
+						ConflictResolution::new(conflict.clone(), selected)
+							.expect("exact selection"),
+					)
+				})
+				.collect();
+			assert_eq!(resolutions.len(), definitions);
+			let (merged, work) = super::super::work::measure(|| {
+				kernel
+					.merge_with_resolutions(&input, &resolutions)
+					.expect("replay definition selections")
+			});
+			let output = emit_clausewitz_statements(&merged).expect("emit replay result");
+			assert_eq!(output.matches("value = 2").count(), definitions);
+			assert!(!output.contains("value = 1"));
+			assert_eq!(work.indexed_resolutions, definitions);
+			work
+		}
+		assert_definition_work_scales(measured(64), measured(256));
+	}
+
+	fn assert_definition_work_scales(
+		small: super::super::work::Work,
+		large: super::super::work::Work,
+	) {
+		assert!(small.indexed_statements > 0 && small.trivia_statements > 0);
+		assert_eq!(
+			large.indexed_statements,
+			4 * small.indexed_statements,
+			"index work: {small:?} -> {large:?}"
+		);
+		assert_eq!(
+			large.indexed_resolutions,
+			4 * small.indexed_resolutions,
+			"resolution work: {small:?} -> {large:?}"
+		);
+		assert_eq!(
+			large.trivia_statements,
+			4 * small.trivia_statements,
+			"trivia work: {small:?} -> {large:?}"
+		);
+	}
+
+	#[test]
+	fn definition_partition_preserves_duplicate_keys_and_comment_canonicalization() {
+		let path = "common/cb_types/zzz_foch_cb_types.txt";
+		let policies = crate::game::eu4::content::eu4()
+			.classify_content_family(Path::new(path))
+			.unwrap()
+			.merge_policies;
+		let definitions = "chosen = { trigger = { always = yes # inner comment\n } }\nchosen = { trigger = { always = no } }\n";
+		let isolated = parsed_script_file_at(path, "isolated", definitions).ast;
+		let surrounding = parsed_script_file_at(path, "module", &format!(
+			"# module comment\nunrelated = {{ trigger = {{ always = no }} }}\n{definitions}\n# trailing comment\nother = {{ value = 1 }}\n"
+		)).ast;
+		let partition = SemanticPartitionId::Definition("chosen".into());
+		let actual = DefinitionModuleAdapter
+			.prepare(&surrounding)
+			.normalize(&partition, &policies)
+			.unwrap();
+		let (semantic, _) = super::detach_trivia(&isolated);
+		let expected = super::super::normalize_clausewitz_file(&semantic, &policies).unwrap();
+		assert_eq!(actual, expected);
+		let missing = DefinitionModuleAdapter
+			.prepare(&surrounding)
+			.normalize(&SemanticPartitionId::Definition("absent".into()), &policies)
+			.unwrap();
+		assert_eq!(missing.nodes().count(), 1);
 	}
 
 	#[test]
@@ -2049,7 +2334,8 @@ mod tests {
 				statements: state.statements.clone(),
 			};
 			let normalized = DefinitionModuleAdapter
-				.normalize_partition(&output, &partition, &policies)
+				.prepare(&output)
+				.normalize(&partition, &policies)
 				.unwrap_or_else(|error| panic!("normalize joined {definition}: {error}"));
 			assert_eq!(lineage.tree, normalized, "output lineage for {definition}");
 			assert!(
@@ -2137,7 +2423,8 @@ mod tests {
 			statements: state.statements,
 		};
 		let normalized = DefinitionModuleAdapter
-			.normalize_partition(&output, &SemanticPartitionId::File, &policies)
+			.prepare(&output)
+			.normalize(&SemanticPartitionId::File, &policies)
 			.expect("normalize joined file fallback");
 		assert_eq!(lineage.tree, normalized);
 	}
@@ -2704,9 +2991,10 @@ mod tests {
 	) -> TreeDagState {
 		let file = parsed_file(source);
 		let mut state = tree_state(source);
-		for partition in adapter.normalization_partitions(&file, &file) {
-			let tree = adapter
-				.normalize_partition(&file, &partition, policies)
+		let prepared = adapter.prepare(&file);
+		for partition in prepared.partitions() {
+			let tree = prepared
+				.normalize(&partition, policies)
 				.expect("normalize lineaged test state");
 			let origins = tree
 				.nodes()

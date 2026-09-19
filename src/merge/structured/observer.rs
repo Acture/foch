@@ -49,19 +49,17 @@ impl<'a> TreeSourceObserver<'a> {
 		parent_lineage: &BTreeMap<SemanticPartitionId, SemanticPartitionLineage>,
 		resets_base: bool,
 	) -> Result<TreeSourceObservation, String> {
-		let partition_ids = self
-			.partition_adapter
-			.normalization_partitions(base, revision);
+		let base = self.partition_adapter.prepare(base);
+		let revision = self.partition_adapter.prepare(revision);
+		let partition_ids = base.partitions_with(&revision);
 		let mut partitions = Vec::with_capacity(partition_ids.len());
 		let mut lineage = BTreeMap::new();
 		for partition in partition_ids {
-			let base_tree = self
-				.partition_adapter
-				.normalize_partition(base, &partition, self.policies)
+			let base_tree = base
+				.normalize(&partition, self.policies)
 				.map_err(|error| format!("failed to normalize source-delta base: {error}"))?;
-			let revision_tree = self
-				.partition_adapter
-				.normalize_partition(revision, &partition, self.policies)
+			let revision_tree = revision
+				.normalize(&partition, self.policies)
 				.map_err(|error| format!("failed to normalize source-delta revision: {error}"))?;
 			let matching = self.matcher.match_trees(&base_tree, &revision_tree);
 			let delta =
@@ -446,7 +444,7 @@ mod tests {
 	use crate::game::eu4::content::{MergeKeySource, MergePolicies};
 	use crate::game::eu4::script::parser::parse_clausewitz_content;
 
-	use crate::merge::structured::{merge_clausewitz_files_n_way, normalize_clausewitz_partition};
+	use crate::merge::structured::{merge_clausewitz_files_n_way, normalize_clausewitz_file};
 
 	fn participant(mod_id: &str, precedence: usize, dag_level: usize) -> MergeTraceContributor {
 		MergeTraceContributor {
@@ -463,12 +461,8 @@ mod tests {
 	}
 
 	fn normalized(source: &str) -> NormalizedTree {
-		normalize_clausewitz_partition(
-			&parse(source),
-			&SemanticPartitionId::File,
-			&MergePolicies::default(),
-		)
-		.expect("normalize origin fixture")
+		normalize_clausewitz_file(&parse(source), &MergePolicies::default())
+			.expect("normalize origin fixture")
 	}
 
 	fn source(mod_id: &str, precedence: usize) -> SemanticMergeSource {

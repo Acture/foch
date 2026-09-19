@@ -141,6 +141,8 @@ fn detach_statements(
 	let mut semantic = Vec::with_capacity(statements.len());
 
 	for (index, statement) in statements.iter().enumerate() {
+		#[cfg(test)]
+		super::work::trivia_statement();
 		if let AstStatement::Comment { text, span } = statement {
 			entries.push(TriviaEntry {
 				attachment: Attachment {
@@ -167,19 +169,40 @@ fn detach_statement(
 	child_parent: &SemanticParent,
 	entries: &mut Vec<TriviaEntry>,
 ) -> AstStatement {
-	let mut statement = statement.clone();
-	match &mut statement {
-		AstStatement::Assignment { value, .. } | AstStatement::Item { value, .. } => {
-			detach_value(value, child_parent, entries);
-		}
+	match statement {
+		AstStatement::Assignment {
+			key,
+			key_span,
+			value,
+			span,
+		} => AstStatement::Assignment {
+			key: key.clone(),
+			key_span: key_span.clone(),
+			value: detach_value(value, child_parent, entries),
+			span: span.clone(),
+		},
+		AstStatement::Item { value, span } => AstStatement::Item {
+			value: detach_value(value, child_parent, entries),
+			span: span.clone(),
+		},
 		AstStatement::Comment { .. } => unreachable!("comments are handled by detach_statements"),
 	}
-	statement
 }
 
-fn detach_value(value: &mut AstValue, parent: &SemanticParent, entries: &mut Vec<TriviaEntry>) {
-	if let AstValue::Block { items, .. } = value {
-		*items = detach_statements(items, parent, entries);
+fn detach_value(
+	value: &AstValue,
+	parent: &SemanticParent,
+	entries: &mut Vec<TriviaEntry>,
+) -> AstValue {
+	match value {
+		AstValue::Scalar { value, span } => AstValue::Scalar {
+			value: value.clone(),
+			span: span.clone(),
+		},
+		AstValue::Block { items, span } => AstValue::Block {
+			items: detach_statements(items, parent, entries),
+			span: span.clone(),
+		},
 	}
 }
 

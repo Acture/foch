@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use crate::game::eu4::content::MergePolicies;
@@ -128,10 +128,26 @@ fn merge_clausewitz_definition_module_n_way_inner(
 		.iter()
 		.map(|(_, trivia)| trivia)
 		.collect::<Vec<_>>();
-	let keys = std::iter::once(&base)
-		.chain(revision_files.iter().copied())
-		.flat_map(top_level_assignment_keys)
+	let base_index = DefinitionModuleIndex::new(&base);
+	let revision_indexes: Vec<_> = revision_files
+		.iter()
+		.map(|file| DefinitionModuleIndex::new(file))
+		.collect();
+	let keys = std::iter::once(&base_index)
+		.chain(&revision_indexes)
+		.flat_map(DefinitionModuleIndex::keys)
 		.collect::<BTreeSet<_>>();
+	let mut resolutions_by_definition: BTreeMap<&str, Vec<ConflictResolution>> = BTreeMap::new();
+	for resolution in resolutions {
+		#[cfg(test)]
+		super::work::index_resolution();
+		if let Some(key) = resolution.conflict.semantic_path.first() {
+			resolutions_by_definition
+				.entry(key)
+				.or_default()
+				.push(resolution.clone());
+		}
+	}
 	let mut statements = Vec::new();
 	let mut conflicts = Vec::new();
 	let mut kernel_facts = Vec::new();
@@ -142,10 +158,10 @@ fn merge_clausewitz_definition_module_n_way_inner(
 	let progress_step = (total / 10).max(1);
 	let started = Instant::now();
 	for (index, key) in keys.into_iter().enumerate() {
-		let base_group = select_definition(&base, &key);
-		let revision_groups = revision_files
+		let base_group = base_index.select(key);
+		let revision_groups = revision_indexes
 			.iter()
-			.map(|revision| select_definition(revision, &key))
+			.map(|revision| revision.select(key))
 			.collect::<Vec<_>>();
 		if revision_groups
 			.iter()
@@ -155,23 +171,22 @@ fn merge_clausewitz_definition_module_n_way_inner(
 		} else {
 			active_definitions += 1;
 			let revision_group_refs = revision_groups.iter().collect::<Vec<_>>();
-			let partition_resolutions = resolutions
-				.iter()
-				.filter(|resolution| resolution.conflict.semantic_path.first() == Some(&key))
-				.cloned()
-				.collect::<Vec<_>>();
+			let partition_resolutions = resolutions_by_definition
+				.get(key)
+				.map(Vec::as_slice)
+				.unwrap_or_default();
 			let outcome = merge_files_n_way(
 				&base_group,
 				&revision_group_refs,
 				policies,
-				&partition_resolutions,
+				partition_resolutions,
 			)?;
 			conflicts.extend(outcome.conflicts().iter().cloned().map(|mut conflict| {
 				conflict.detail = format!("definition `{key}`: {}", conflict.detail);
 				conflict
 			}));
 			let (partition_ast, kernel_fact) =
-				outcome.into_parts(SemanticPartitionId::Definition(key.clone()));
+				outcome.into_parts(SemanticPartitionId::Definition(key.to_owned()));
 			statements.extend(partition_ast.statements);
 			kernel_facts.push(kernel_fact);
 			structured_definitions += 1;
@@ -239,10 +254,13 @@ fn merge_clausewitz_definition_module_inner(
 	let (left, left_trivia) = detach_trivia(left);
 	let (right, right_trivia) = detach_trivia(right);
 
-	let keys = top_level_assignment_keys(&base)
-		.into_iter()
-		.chain(top_level_assignment_keys(&left))
-		.chain(top_level_assignment_keys(&right))
+	let base_index = DefinitionModuleIndex::new(&base);
+	let left_index = DefinitionModuleIndex::new(&left);
+	let right_index = DefinitionModuleIndex::new(&right);
+	let keys = base_index
+		.keys()
+		.chain(left_index.keys())
+		.chain(right_index.keys())
 		.collect::<BTreeSet<_>>();
 	let mut statements = Vec::new();
 	let mut conflicts = Vec::new();
@@ -254,9 +272,9 @@ fn merge_clausewitz_definition_module_inner(
 	let progress_step = (total / 10).max(1);
 	let started = Instant::now();
 	for (index, key) in keys.into_iter().enumerate() {
-		let base_group = select_definition(&base, &key);
-		let left_group = select_definition(&left, &key);
-		let right_group = select_definition(&right, &key);
+		let base_group = base_index.select(key);
+		let left_group = left_index.select(key);
+		let right_group = right_index.select(key);
 		if statements_content_equal(&base_group.statements, &left_group.statements)
 			&& statements_content_equal(&base_group.statements, &right_group.statements)
 		{
@@ -276,7 +294,7 @@ fn merge_clausewitz_definition_module_inner(
 					conflict
 				}));
 				let (partition_ast, kernel_fact) =
-					outcome.into_parts(SemanticPartitionId::Definition(key.clone()));
+					outcome.into_parts(SemanticPartitionId::Definition(key.to_owned()));
 				statements.extend(partition_ast.statements);
 				kernel_facts.push(kernel_fact);
 				structured_definitions += 1;
@@ -352,17 +370,50 @@ fn direct_three_way_selection<'a>(
 	None
 }
 
-fn select_definition(ast: &AstFile, key: &str) -> AstFile {
-	AstFile {
-		path: ast.path.clone(),
-		statements: ast
-			.statements
-			.iter()
-			.filter(|statement| {
-				matches!(statement, AstStatement::Assignment { key: candidate, .. } if candidate == key)
-			})
-			.cloned()
-			.collect(),
+// Index references, not cloned subtrees; preserve source order for repeated keys.
+pub(super) struct DefinitionModuleIndex<'a> {
+	file: &'a AstFile,
+	definitions: BTreeMap<&'a str, Vec<&'a AstStatement>>,
+	pub has_items: bool,
+}
+
+impl<'a> DefinitionModuleIndex<'a> {
+	pub fn new(file: &'a AstFile) -> Self {
+		let mut definitions: BTreeMap<&str, Vec<&AstStatement>> = BTreeMap::new();
+		let mut has_items = false;
+		for statement in &file.statements {
+			#[cfg(test)]
+			super::work::index_statement();
+			match statement {
+				AstStatement::Assignment { key, .. } => {
+					definitions.entry(key).or_default().push(statement)
+				}
+				AstStatement::Item { .. } => has_items = true,
+				AstStatement::Comment { .. } => {}
+			}
+		}
+		Self {
+			file,
+			definitions,
+			has_items,
+		}
+	}
+
+	pub fn keys(&self) -> impl Iterator<Item = &'a str> + '_ {
+		self.definitions.keys().copied()
+	}
+
+	pub fn select(&self, key: &str) -> AstFile {
+		AstFile {
+			path: self.file.path.clone(),
+			statements: self
+				.definitions
+				.get(key)
+				.into_iter()
+				.flatten()
+				.map(|statement| (**statement).clone())
+				.collect(),
+		}
 	}
 }
 
@@ -373,20 +424,6 @@ fn top_level_assignment_keys(ast: &AstFile) -> BTreeSet<String> {
 			AstStatement::Assignment { key, .. } => Some(key.clone()),
 			AstStatement::Item { .. } | AstStatement::Comment { .. } => None,
 		})
-		.collect()
-}
-
-pub(crate) fn definition_module_partition_ids(files: &[&AstFile]) -> Vec<SemanticPartitionId> {
-	if files.iter().copied().any(has_top_level_items) {
-		return vec![SemanticPartitionId::File];
-	}
-	files
-		.iter()
-		.copied()
-		.flat_map(top_level_assignment_keys)
-		.map(SemanticPartitionId::Definition)
-		.collect::<BTreeSet<_>>()
-		.into_iter()
 		.collect()
 }
 

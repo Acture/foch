@@ -238,9 +238,10 @@ fn seed_vanilla_partition_lineage(
 		return Ok(BTreeMap::new());
 	};
 	let mut lineage = BTreeMap::new();
-	for partition in partition_adapter.normalization_partitions(&vanilla.ast, &vanilla.ast) {
-		let tree = partition_adapter
-			.normalize_partition(&vanilla.ast, &partition, policies)
+	let prepared = partition_adapter.prepare(&vanilla.ast);
+	for partition in prepared.partitions() {
+		let tree = prepared
+			.normalize(&partition, policies)
 			.map_err(|error| format!("failed to normalize vanilla root lineage: {error}"))?;
 		if lineage
 			.insert(partition, SemanticPartitionLineage::vanilla(tree))

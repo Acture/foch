@@ -43,11 +43,51 @@ pub struct AmbiguousMatch {
 	pub score: u32,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[serde(transparent)]
+struct Ambiguities {
+	entries: Vec<AmbiguousMatch>,
+	#[serde(skip)]
+	left: BTreeSet<NodeId>,
+	#[serde(skip)]
+	right: BTreeSet<NodeId>,
+}
+
+impl Ambiguities {
+	fn rebuild_indexes(&mut self) {
+		self.left = self.entries.iter().map(|entry| entry.left).collect();
+		self.right = self
+			.entries
+			.iter()
+			.flat_map(|entry| entry.candidates.iter().copied())
+			.collect();
+	}
+
+	fn insert(&mut self, ambiguity: AmbiguousMatch) {
+		if !self.entries.contains(&ambiguity) {
+			self.left.insert(ambiguity.left);
+			self.right.extend(ambiguity.candidates.iter().copied());
+			self.entries.push(ambiguity);
+		}
+	}
+}
+
+impl<'de> Deserialize<'de> for Ambiguities {
+	fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut ambiguities = Self {
+			entries: Vec::<AmbiguousMatch>::deserialize(deserializer)?,
+			..Self::default()
+		};
+		ambiguities.rebuild_indexes();
+		Ok(ambiguities)
+	}
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Matching {
 	by_left: BTreeMap<NodeId, MatchRecord>,
 	by_right: BTreeMap<NodeId, NodeId>,
-	ambiguous: Vec<AmbiguousMatch>,
+	ambiguous: Ambiguities,
 }
 
 impl Matching {
@@ -90,7 +130,7 @@ impl Matching {
 	}
 
 	pub fn ambiguities(&self) -> &[AmbiguousMatch] {
-		&self.ambiguous
+		&self.ambiguous.entries
 	}
 
 	#[cfg(test)]
@@ -107,15 +147,11 @@ impl Matching {
 	}
 
 	fn is_left_ambiguous(&self, left: NodeId) -> bool {
-		self.ambiguous
-			.iter()
-			.any(|ambiguity| ambiguity.left == left)
+		self.ambiguous.left.contains(&left)
 	}
 
 	fn is_right_ambiguous(&self, right: NodeId) -> bool {
-		self.ambiguous
-			.iter()
-			.any(|ambiguity| ambiguity.candidates.contains(&right))
+		self.ambiguous.right.contains(&right)
 	}
 
 	fn insert(&mut self, record: MatchRecord) -> bool {
@@ -128,9 +164,7 @@ impl Matching {
 	}
 
 	fn record_ambiguity(&mut self, ambiguity: AmbiguousMatch) {
-		if !self.ambiguous.contains(&ambiguity) {
-			self.ambiguous.push(ambiguity);
-		}
+		self.ambiguous.insert(ambiguity);
 	}
 }
 
@@ -274,7 +308,7 @@ fn retain_seeded_lineage_matches(
 		.values()
 		.map(|record| (record.right, record.left))
 		.collect();
-	for ambiguity in &mut matching.ambiguous {
+	for ambiguity in &mut matching.ambiguous.entries {
 		let left_id = ambiguity.left;
 		ambiguity.candidates.retain(|right_id| {
 			seeded_lineage_pair_is_allowed(left, right, seed, left_id, *right_id)
@@ -282,7 +316,9 @@ fn retain_seeded_lineage_matches(
 	}
 	matching
 		.ambiguous
+		.entries
 		.retain(|ambiguity| !ambiguity.candidates.is_empty());
+	matching.ambiguous.rebuild_indexes();
 }
 
 fn seeded_lineage_pair_is_allowed(
@@ -1164,11 +1200,7 @@ fn match_repeated_parent_scoped_siblings(
 					right_nodes,
 					threshold,
 				);
-				for candidate in &candidates {
-					if is_mutual_unique_best(*candidate, &candidates) {
-						proposals.push(*candidate);
-					}
-				}
+				proposals.extend(candidates.mutual_unique_best());
 			}
 		}
 
@@ -1205,7 +1237,7 @@ fn repeated_sibling_candidates(
 	left_nodes: &[NodeId],
 	right_nodes: &[NodeId],
 	threshold: u32,
-) -> Vec<RecoveryCandidate> {
+) -> SiblingCandidates {
 	let left_features = left_nodes
 		.iter()
 		.map(|id| (*id, subtree_features(left, *id)))
@@ -1214,7 +1246,7 @@ fn repeated_sibling_candidates(
 		.iter()
 		.map(|id| (*id, subtree_features(right, *id)))
 		.collect::<BTreeMap<_, _>>();
-	let mut candidates = Vec::new();
+	let mut candidates = SiblingCandidates::default();
 	for left_id in left_nodes {
 		for right_id in right_nodes {
 			if !compatible_at(left, right, matching, *left_id, *right_id) {
@@ -1227,7 +1259,7 @@ fn repeated_sibling_candidates(
 					.expect("right features collected"),
 			);
 			if score > threshold {
-				candidates.push(RecoveryCandidate {
+				candidates.insert(RecoveryCandidate {
 					left: *left_id,
 					right: *right_id,
 					score,
@@ -1238,29 +1270,60 @@ fn repeated_sibling_candidates(
 	candidates
 }
 
-fn is_mutual_unique_best(candidate: RecoveryCandidate, candidates: &[RecoveryCandidate]) -> bool {
-	let left_best = candidates
-		.iter()
-		.filter(|other| other.left == candidate.left)
-		.map(|other| other.score)
-		.max();
-	let right_best = candidates
-		.iter()
-		.filter(|other| other.right == candidate.right)
-		.map(|other| other.score)
-		.max();
-	if left_best != Some(candidate.score) || right_best != Some(candidate.score) {
-		return false;
+#[derive(Default)]
+struct BestCandidates {
+	score: u32,
+	peers: Vec<NodeId>,
+}
+
+impl BestCandidates {
+	fn insert(&mut self, peer: NodeId, score: u32) {
+		if score > self.score {
+			self.score = score;
+			self.peers.clear();
+		}
+		if score == self.score {
+			self.peers.push(peer);
+		}
 	}
-	let left_ties = candidates
-		.iter()
-		.filter(|other| other.left == candidate.left && other.score == candidate.score)
-		.count();
-	let right_ties = candidates
-		.iter()
-		.filter(|other| other.right == candidate.right && other.score == candidate.score)
-		.count();
-	left_ties == 1 && right_ties == 1
+}
+
+/// Accumulate best scores and ties while scoring pairs. Never rescan the full
+/// candidate relation for each pair: a dense sibling group already has O(L*R)
+/// pairs before selecting mutually unique maxima.
+#[derive(Default)]
+struct SiblingCandidates {
+	left: BTreeMap<NodeId, BestCandidates>,
+	right: BTreeMap<NodeId, BestCandidates>,
+}
+
+impl SiblingCandidates {
+	fn insert(&mut self, candidate: RecoveryCandidate) {
+		self.left
+			.entry(candidate.left)
+			.or_default()
+			.insert(candidate.right, candidate.score);
+		self.right
+			.entry(candidate.right)
+			.or_default()
+			.insert(candidate.left, candidate.score);
+	}
+
+	fn mutual_unique_best(&self) -> impl Iterator<Item = RecoveryCandidate> + '_ {
+		self.left.iter().filter_map(|(left, best)| {
+			let [right] = best.peers.as_slice() else {
+				return None;
+			};
+			let reverse = self.right.get(right)?;
+			(reverse.score == best.score && reverse.peers.as_slice() == [*left]).then_some(
+				RecoveryCandidate {
+					left: *left,
+					right: *right,
+					score: best.score,
+				},
+			)
+		})
+	}
 }
 
 fn subtree_features(
@@ -1344,7 +1407,7 @@ fn record_unresolved_repeated_sibling_ambiguities(
 			if !repeated {
 				continue;
 			}
-			let candidates = repeated_sibling_candidates(
+			let mut candidates = repeated_sibling_candidates(
 				left,
 				right,
 				matching,
@@ -1353,25 +1416,13 @@ fn record_unresolved_repeated_sibling_ambiguities(
 				threshold,
 			);
 			for left_node in left_nodes {
-				let Some(best_score) = candidates
-					.iter()
-					.filter(|candidate| candidate.left == left_node)
-					.map(|candidate| candidate.score)
-					.max()
-				else {
+				let Some(best) = candidates.left.remove(&left_node) else {
 					continue;
 				};
-				let best_candidates = candidates
-					.iter()
-					.filter(|candidate| {
-						candidate.left == left_node && candidate.score == best_score
-					})
-					.map(|candidate| candidate.right)
-					.collect::<Vec<_>>();
 				matching.record_ambiguity(AmbiguousMatch {
 					left: left_node,
-					candidates: best_candidates,
-					score: best_score,
+					candidates: best.peers,
+					score: best.score,
 				});
 			}
 		}
@@ -1626,6 +1677,10 @@ fn match_by_descendants(
 	matching: &mut Matching,
 	threshold: u32,
 ) {
+	let mut right_by_kind: BTreeMap<&str, Vec<NodeId>> = BTreeMap::new();
+	for (id, node) in right.nodes() {
+		right_by_kind.entry(&node.kind).or_default().push(id);
+	}
 	let mut changed = true;
 	while changed {
 		changed = false;
@@ -1644,23 +1699,26 @@ fn match_by_descendants(
 				.cmp(&right_node.height)
 				.then_with(|| left_id.cmp(right_id))
 		});
-		for (left_id, _left_node) in left_nodes {
-			let mut candidates = right
-				.nodes()
-				.filter(|(right_id, _right_node)| {
-					!matching.is_right_matched(*right_id)
-						&& !matching.is_right_ambiguous(*right_id)
-						&& !child_of_unmatched_required_parent(right, *right_id, matching, false)
-						&& compatible_at(left, right, matching, left_id, *right_id)
-				})
-				.map(|(right_id, _)| {
-					(
-						right_id,
-						descendant_similarity(left, right, matching, left_id, right_id),
-					)
-				})
-				.filter(|(_, score)| *score >= threshold)
-				.collect::<Vec<_>>();
+		for (left_id, left_node) in left_nodes {
+			let mut candidates =
+				descendant_candidate_nodes(left_node, right, matching, &right_by_kind)
+					.iter()
+					.copied()
+					.filter(|right_id| {
+						!matching.is_right_matched(*right_id)
+							&& !matching.is_right_ambiguous(*right_id)
+							&& !child_of_unmatched_required_parent(
+								right, *right_id, matching, false,
+							) && compatible_at(left, right, matching, left_id, *right_id)
+					})
+					.map(|right_id| {
+						(
+							right_id,
+							descendant_similarity(left, right, matching, left_id, right_id),
+						)
+					})
+					.filter(|(_, score)| *score >= threshold)
+					.collect::<Vec<_>>();
 			candidates.sort_by(|(left_id, left_score), (right_id, right_score)| {
 				right_score
 					.cmp(left_score)
@@ -1690,6 +1748,31 @@ fn match_by_descendants(
 			});
 		}
 	}
+}
+
+fn descendant_candidate_nodes<'a>(
+	left: &NormalizedNode,
+	right: &'a NormalizedTree,
+	matching: &Matching,
+	right_by_kind: &'a BTreeMap<&str, Vec<NodeId>>,
+) -> &'a [NodeId] {
+	// Parent-scoped anchors can only match children of an already corresponding
+	// parent. Do not scan an entire file to rediscover that restriction per node.
+	if left
+		.anchor
+		.as_ref()
+		.is_some_and(|anchor| anchor.scope == SemanticKeyScope::Parent)
+	{
+		return left
+			.parent
+			.and_then(|parent| matching.get_from_left(parent))
+			.and_then(|parent| right.node(parent).ok())
+			.map_or(&[], |parent| parent.children.as_slice());
+	}
+	right_by_kind
+		.get(left.kind.as_str())
+		.map(Vec::as_slice)
+		.unwrap_or_default()
 }
 
 fn descendant_similarity(
@@ -1894,6 +1977,215 @@ mod tests {
 
 	fn block(kind: &str, children: Vec<TreeNode>) -> TreeNode {
 		TreeNode::branch(kind, children)
+	}
+
+	#[test]
+	fn descendant_candidate_index_preserves_all_compatible_pairs() {
+		let fixture = |value: &str| {
+			NormalizedTree::from_root(block(
+				"root",
+				(0..16)
+					.map(|_| {
+						block(
+							"parent",
+							vec![
+								block("entry", vec![scalar(value)])
+									.with_parent_scoped_anchor("entry.key", "shared"),
+								block("entry", vec![scalar(value)]),
+								block("other", vec![scalar(value)]),
+							],
+						)
+					})
+					.collect(),
+			))
+			.unwrap()
+		};
+		let left = fixture("left");
+		let right = fixture("right");
+		let mut right_by_kind: BTreeMap<&str, Vec<NodeId>> = BTreeMap::new();
+		for (id, node) in right.nodes() {
+			right_by_kind.entry(&node.kind).or_default().push(id);
+		}
+		for mapped_parents in [false, true] {
+			let mut matching = Matching::default();
+			if mapped_parents {
+				for (left, right) in left
+					.node(left.root())
+					.unwrap()
+					.children
+					.iter()
+					.zip(right.node(right.root()).unwrap().children.iter().rev())
+				{
+					matching.insert(MatchRecord {
+						left: *left,
+						right: *right,
+						kind: MatchKind::Recovery,
+						score: 500_000,
+					});
+				}
+			}
+			for (id, node) in left.nodes() {
+				let expected: Vec<_> = right
+					.nodes()
+					.map(|(id, _)| id)
+					.filter(|right_id| compatible_at(&left, &right, &matching, id, *right_id))
+					.collect();
+				let candidates =
+					descendant_candidate_nodes(node, &right, &matching, &right_by_kind);
+				let actual: Vec<_> = candidates
+					.iter()
+					.copied()
+					.filter(|right_id| compatible_at(&left, &right, &matching, id, *right_id))
+					.collect();
+				assert_eq!(
+					actual, expected,
+					"node {id:?}, parents mapped: {mapped_parents}"
+				);
+				if node
+					.anchor
+					.as_ref()
+					.is_some_and(|anchor| anchor.scope == SemanticKeyScope::Parent)
+				{
+					assert!(
+						candidates.len() <= 3,
+						"parent-scoped lookup must not scan other parents"
+					);
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn ambiguity_membership_preserves_wire_format_and_rebuilds_on_decode() {
+		let mut matching = Matching::default();
+		let first = AmbiguousMatch {
+			left: NodeId::new(1),
+			candidates: vec![NodeId::new(3), NodeId::new(4)],
+			score: 700_000,
+		};
+		matching.record_ambiguity(first.clone());
+		matching.record_ambiguity(first);
+		matching.record_ambiguity(AmbiguousMatch {
+			left: NodeId::new(2),
+			candidates: vec![NodeId::new(4)],
+			score: 800_000,
+		});
+		assert_eq!(matching.ambiguities().len(), 2);
+		let encoded = serde_json::to_value(&matching).unwrap();
+		assert!(encoded["ambiguous"].is_array());
+		let decoded: Matching = serde_json::from_value(encoded).unwrap();
+		assert_eq!(decoded, matching);
+		for node in 0..6 {
+			let node = NodeId::new(node);
+			assert_eq!(
+				decoded.is_left_ambiguous(node),
+				matching
+					.ambiguities()
+					.iter()
+					.any(|entry| entry.left == node)
+			);
+			assert_eq!(
+				decoded.is_right_ambiguous(node),
+				matching
+					.ambiguities()
+					.iter()
+					.any(|entry| entry.candidates.contains(&node))
+			);
+		}
+	}
+
+	#[test]
+	fn sibling_candidate_summary_matches_exhaustive_pair_selection_and_ties() {
+		// All 3x3 relations with absent, low and high scores, including asymmetric
+		// competition and ties. The oracle deliberately scans the small relation.
+		for relation in 0..3_u32.pow(9) {
+			let mut encoded = relation;
+			let mut all: Vec<RecoveryCandidate> = Vec::new();
+			let mut summary = SiblingCandidates::default();
+			for left in 0..3 {
+				for right in 0..3 {
+					let score = encoded % 3;
+					encoded /= 3;
+					if score == 0 {
+						continue;
+					}
+					let candidate = RecoveryCandidate {
+						left: NodeId::new(left),
+						right: NodeId::new(right),
+						score,
+					};
+					all.push(candidate);
+					summary.insert(candidate);
+				}
+			}
+			let expected: Vec<_> = all
+				.iter()
+				.copied()
+				.filter(|candidate| {
+					let competes = |other: &&RecoveryCandidate| {
+						other.left == candidate.left || other.right == candidate.right
+					};
+					all.iter()
+						.filter(competes)
+						.all(|other| other == candidate || other.score < candidate.score)
+				})
+				.collect();
+			assert_eq!(
+				summary.mutual_unique_best().collect::<Vec<_>>(),
+				expected,
+				"relation {relation}"
+			);
+			for left in 0..3 {
+				let left = NodeId::new(left);
+				let best_score = all
+					.iter()
+					.filter(|candidate| candidate.left == left)
+					.map(|candidate| candidate.score)
+					.max();
+				assert_eq!(summary.left.get(&left).map(|best| best.score), best_score);
+				if let Some(best) = summary.left.get(&left) {
+					let ties: Vec<_> = all
+						.iter()
+						.filter(|candidate| candidate.left == left && candidate.score == best.score)
+						.map(|candidate| candidate.right)
+						.collect();
+					assert_eq!(best.peers, ties, "ties for relation {relation}");
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn dense_sibling_candidates_retain_only_endpoint_maxima() {
+		const COUNT: u32 = 256;
+		let mut summary = SiblingCandidates::default();
+		for left in 0..COUNT {
+			for right in 0..COUNT {
+				summary.insert(RecoveryCandidate {
+					left: NodeId::new(left),
+					right: NodeId::new(right),
+					score: if left == right { 900_000 } else { 600_000 },
+				});
+			}
+		}
+		assert_eq!(summary.left.len(), COUNT as usize);
+		assert_eq!(summary.right.len(), COUNT as usize);
+		assert_eq!(
+			summary
+				.left
+				.values()
+				.chain(summary.right.values())
+				.map(|best| best.peers.len())
+				.sum::<usize>(),
+			2 * COUNT as usize
+		);
+		let selected: Vec<_> = summary.mutual_unique_best().collect();
+		assert_eq!(selected.len(), COUNT as usize);
+		assert!(
+			selected
+				.iter()
+				.all(|candidate| candidate.left == candidate.right && candidate.score == 900_000)
+		);
 	}
 
 	fn seeded_lineage_block(child: TreeNode) -> TreeNode {
