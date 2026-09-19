@@ -540,8 +540,8 @@ fn ensure_base(config: &ProbeConfig, run: &Path) -> ProbeResult<()> {
 			"base-build",
 			TIMEOUT,
 		)?;
-		if result.code != Some(0) || result.timed_out {
-			return Err("base preparation failed; inspect base-build logs".into());
+		if let Some(failure) = result.failure("base-build", run) {
+			return Err(failure.into());
 		}
 	}
 	write_json(

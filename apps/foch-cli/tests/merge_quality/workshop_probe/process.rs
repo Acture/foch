@@ -42,7 +42,10 @@ impl ProcessResult {
 /// the log itself may live in a temporary directory that is gone by the time
 /// anyone reads the message, as on CI.
 fn log_tail(path: &Path, lines: usize) -> String {
-	let log: String = std::fs::read_to_string(path).unwrap_or_default();
+	let log: String = match std::fs::read(path) {
+		Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+		Err(error) => return format!("(could not read {}: {error})", path.display()),
+	};
 	let tail: Vec<&str> = log.lines().rev().take(lines).collect();
 	tail.into_iter().rev().collect::<Vec<&str>>().join("\n")
 }
