@@ -9,7 +9,6 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -105,17 +104,17 @@ enum WorkerEvent<T> {
 
 /// Tells workers to stop analyzing queued units once the coordinator leaves,
 /// whether it returns or unwinds.
-struct StopOnDrop<'a>(&'a AtomicBool);
+struct StopOnDrop<'a>(&'a PauseGate);
 
 impl Drop for StopOnDrop<'_> {
 	fn drop(&mut self) {
-		self.0.store(true, Ordering::Release);
+		self.0.stop();
 	}
 }
 
-/// Lets the coordinator stop workers from starting units, and wait for the
-/// ones running to finish, while it analyzes a unit again itself: an
-/// interactive prompt must have the terminal to itself.
+/// What workers wait on before starting a unit. The coordinator pauses them
+/// while it analyzes a unit again itself, since an interactive prompt must
+/// have the terminal to itself, and stops them when it leaves.
 #[derive(Default)]
 struct PauseGate {
 	state: Mutex<PauseState>,
@@ -125,6 +124,7 @@ struct PauseGate {
 #[derive(Default)]
 struct PauseState {
 	paused: bool,
+	stopped: bool,
 	running: usize,
 }
 
@@ -133,16 +133,21 @@ impl PauseGate {
 		self.state.lock().unwrap_or_else(PoisonError::into_inner)
 	}
 
-	/// Wait while paused, then count the calling worker as running.
-	fn enter(&self) {
+	/// Wait while paused, then count the calling worker as running. Returns
+	/// false, counting nothing, once the coordinator has stopped.
+	fn enter(&self) -> bool {
 		let mut state: MutexGuard<'_, PauseState> = self.lock();
-		while state.paused {
+		while state.paused && !state.stopped {
 			state = self
 				.changed
 				.wait(state)
 				.unwrap_or_else(PoisonError::into_inner);
 		}
+		if state.stopped {
+			return false;
+		}
 		state.running += 1;
+		true
 	}
 
 	fn leave(&self) {
@@ -150,8 +155,18 @@ impl PauseGate {
 		self.changed.notify_all();
 	}
 
+	fn stopped(&self) -> bool {
+		self.lock().stopped
+	}
+
+	fn stop(&self) {
+		self.lock().stopped = true;
+		self.changed.notify_all();
+	}
+
 	/// Stop workers from starting units and wait until none is running. The
-	/// workers resume when the returned guard drops, even during unwinding.
+	/// workers resume when the returned guard drops; if it drops during
+	/// unwinding they stop instead, so none starts another unit on the way out.
 	fn pause(&self) -> Paused<'_> {
 		let mut state: MutexGuard<'_, PauseState> = self.lock();
 		state.paused = true;
@@ -169,7 +184,12 @@ struct Paused<'a>(&'a PauseGate);
 
 impl Drop for Paused<'_> {
 	fn drop(&mut self) {
-		self.0.lock().paused = false;
+		let mut state: MutexGuard<'_, PauseState> = self.0.lock();
+		if thread::panicking() {
+			state.stopped = true;
+		}
+		state.paused = false;
+		drop(state);
 		self.0.changed.notify_all();
 	}
 }
@@ -186,7 +206,6 @@ fn run_parallel<T: Send>(
 	redo_here: &dyn Fn(&T) -> bool,
 	apply: &mut dyn FnMut(usize, T) -> Result<(), MergeError>,
 ) -> Result<(), MergeError> {
-	let stop: AtomicBool = AtomicBool::new(false);
 	let pause: PauseGate = PauseGate::default();
 	let (job_sender, job_receiver) = mpsc::channel::<usize>();
 	let job_receiver: Mutex<Receiver<usize>> = Mutex::new(job_receiver);
@@ -195,11 +214,10 @@ fn run_parallel<T: Send>(
 		// Declared first so it is dropped last: workers see the stop flag
 		// before the closed queue, and skip what is still queued.
 		let job_sender: Sender<usize> = job_sender;
-		let _stop_on_drop: StopOnDrop<'_> = StopOnDrop(&stop);
+		let _stop_on_drop: StopOnDrop<'_> = StopOnDrop(&pause);
 		for worker in 0..schedule.workers.get() {
 			let events: Sender<WorkerEvent<T>> = event_sender.clone();
 			let job_receiver: &Mutex<Receiver<usize>> = &job_receiver;
-			let stop: &AtomicBool = &stop;
 			let pause: &PauseGate = &pause;
 			thread::Builder::new()
 				.name(worker_name(worker))
@@ -211,7 +229,6 @@ fn run_parallel<T: Send>(
 						job_receiver,
 						events,
 						WorkerControl {
-							stop,
 							pause,
 							cancellation,
 						},
@@ -236,7 +253,6 @@ fn run_parallel<T: Send>(
 
 /// What tells a worker to skip units or wait before starting one.
 struct WorkerControl<'a> {
-	stop: &'a AtomicBool,
 	pause: &'a PauseGate,
 	cancellation: &'a CancellationToken,
 }
@@ -245,7 +261,7 @@ impl WorkerControl<'_> {
 	/// The coordinator is leaving, or fails at its next cancellation check
 	/// without applying anything further.
 	fn skipping(&self) -> bool {
-		self.stop.load(Ordering::Acquire) || self.cancellation.is_cancelled()
+		self.pause.stopped() || self.cancellation.is_cancelled()
 	}
 }
 
@@ -264,9 +280,11 @@ fn run_worker<T: Send>(
 		if control.skipping() {
 			continue;
 		}
-		control.pause.enter();
+		if !control.pause.enter() {
+			continue;
+		}
 		// A pause can last as long as a prompt; check again after it.
-		if control.skipping() {
+		if control.cancellation.is_cancelled() {
 			control.pause.leave();
 			continue;
 		}
@@ -364,8 +382,16 @@ fn coordinate<T: Send>(
 				Err(payload) => resume_unwind(payload),
 			};
 			if redo_here(&analysis) {
-				let _paused: Paused<'_> = pause.pause();
+				eprintln!(
+					"[merge] materialize: analyzing {} again for its prompt",
+					(schedule.label)(next_apply)
+				);
+				let paused: Paused<'_> = pause.pause();
 				analysis = analyze_here(next_apply);
+				drop(paused);
+				// Units that finished during the pause are still in flight until
+				// their events are read; a prompt must not make them look slow.
+				last_slow_report = Instant::now();
 			}
 			apply(next_apply, analysis)?;
 			next_apply += 1;
@@ -1072,15 +1098,29 @@ mod tests {
 	}
 
 	#[test]
-	fn a_panic_while_redoing_still_releases_the_workers() {
+	fn a_panic_while_redoing_stops_the_waiting_workers() {
 		let cancellation: CancellationToken = CancellationToken::new();
+		let redo_began: Mutex<bool> = Mutex::new(false);
+		let started_after_redo: Mutex<usize> = Mutex::new(0);
+		// Units take a little while, so workers still hold queued units, and
+		// wait at the pause with them, when the redo panics.
+		let analyze = |index: usize| -> usize {
+			if *redo_began.lock().unwrap() {
+				*started_after_redo.lock().unwrap() += 1;
+			}
+			thread::sleep(EXTRA_WORK_WINDOW / 5);
+			index
+		};
 		let payload = catch_unwind(AssertUnwindSafe(|| {
 			with_watchdog(&cancellation, || {
 				run_units(
 					&schedule(20, 3),
 					&cancellation,
-					&|index: usize| index,
-					&mut |index| -> usize { panic!("redo of unit {index}") },
+					&analyze,
+					&mut |index| -> usize {
+						*redo_began.lock().unwrap() = true;
+						panic!("redo of unit {index}")
+					},
 					&|value: &usize| *value == 4,
 					&mut |_, _| Ok(()),
 				)
@@ -1094,6 +1134,11 @@ mod tests {
 		assert!(
 			!cancellation.is_cancelled(),
 			"the run hung until the watchdog"
+		);
+		assert_eq!(
+			*started_after_redo.lock().unwrap(),
+			0,
+			"workers started units after the redo panicked"
 		);
 	}
 

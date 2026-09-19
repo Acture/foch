@@ -16,7 +16,8 @@ static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
 use crate::check::run_checks_with_options;
 use crate::input::request::{CheckOptions, InputRequest};
 use crate::input::{
-	Config, build_input_inventory_for_paths, resolve_input_from_inventory, resolve_input_summary,
+	Config, InputResolveError, build_input_inventory_for_paths, resolve_input_from_inventory,
+	resolve_input_summary,
 };
 use crate::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
@@ -493,6 +494,12 @@ fn complete_merge_analysis(
 		.as_ref()
 		.ok()
 		.and_then(|input| input.effective_retained_paths.clone());
+	// Resolved before merging, since interactive prompts may append
+	// resolutions to the manifest this reads.
+	let output_validation_config: Option<Config> = match &input_result {
+		Ok(_) => Some(validation_config(&request)?),
+		Err(_) => None,
+	};
 	let materialized = materialize_analyzed_input(
 		request.clone(),
 		MaterializeOutput {
@@ -553,8 +560,13 @@ fn complete_merge_analysis(
 			Some(0),
 			Some(report.generated_file_count as u64),
 		);
+		let config: Config = output_validation_config.ok_or_else(|| MergeError::Validation {
+			path: None,
+			message: "output validation requires a resolved input".to_string(),
+		})?;
 		report.validation = revalidate_generated_output(
 			&request,
+			config,
 			&staging_dir,
 			options.include_game_base,
 			base_snapshot_commit_guard
@@ -808,6 +820,7 @@ fn freeze_external_resolution_files(
 
 fn revalidate_generated_output(
 	request: &InputRequest,
+	config: Config,
 	out_dir: &Path,
 	include_game_base: bool,
 	base_snapshot_lease: Option<InstalledBaseSnapshotIdentity>,
@@ -865,7 +878,7 @@ fn revalidate_generated_output(
 	let mut cleanup_error = None;
 	let mut validation_request = InputRequest::new(
 		crate::input::request::InputSource::DlcLoad(dlc_load_path.clone()),
-		validation_config(request),
+		config,
 	)
 	.with_base_snapshot_lease(base_snapshot_lease);
 	if let Some(expected) = request.expected_base_snapshot_identity.as_ref() {
@@ -912,16 +925,15 @@ fn revalidate_generated_output(
 /// playset built for validation has no manifest, so without pinning that
 /// installation here validation would look for the game elsewhere, or fail to
 /// find one.
-fn validation_config(request: &InputRequest) -> Config {
+fn validation_config(request: &InputRequest) -> Result<Config, InputResolveError> {
 	let mut config: Config = request.config.clone();
-	if let Ok(summary) = resolve_input_summary(request)
-		&& let Some(game_root) = summary.game_root
-	{
+	let summary = resolve_input_summary(request)?;
+	if let Some(game_root) = summary.game_root {
 		config
 			.game_path
 			.insert(summary.game.key().to_string(), game_root);
 	}
-	config
+	Ok(config)
 }
 
 fn count_findings_for_rules(findings: &[Finding], rule_ids: &[&str]) -> usize {
@@ -1530,7 +1542,7 @@ mod tests {
 		let request: InputRequest =
 			InputRequest::from_manifest_path(manifest_path, Config::default());
 		assert!(request.config.game_path.is_empty());
-		let config: Config = validation_config(&request);
+		let config: Config = validation_config(&request).expect("resolve manifest");
 		assert_eq!(
 			config.game_path.get("eu4").map(PathBuf::as_path),
 			Some(game_root.as_path())
