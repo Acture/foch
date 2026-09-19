@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_verbosity_flag::{Verbosity, WarnLevel};
 use foch::model::SymbolKind;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -150,6 +151,12 @@ pub struct MergeArgs {
 	/// Use the simple stdin/stderr prompt instead of the ratatui interactive UI.
 	#[arg(long)]
 	pub cli_prompt: bool,
+
+	/// Merge units to analyze at once (default: available CPUs, at most 4).
+	/// Results are applied in plan order, so output does not depend on it;
+	/// interactive prompts analyze one unit at a time.
+	#[arg(long, value_name = "N")]
+	pub jobs: Option<NonZeroUsize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

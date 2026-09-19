@@ -45,6 +45,9 @@ pub fn handle_merge(merge_args: &MergeArgs, config: Config) -> HandlerResult {
 			interactive_resolution_config_path,
 			playset_fingerprint: fingerprint.clone(),
 			provenance: merge_args.provenance,
+			merge_workers: merge_args
+				.jobs
+				.unwrap_or_else(foch::merge::default_merge_workers),
 			retained_paths: None,
 		},
 		&NoopProgressObserver,

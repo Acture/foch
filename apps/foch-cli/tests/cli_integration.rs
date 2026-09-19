@@ -2,6 +2,7 @@ use foch::model::{
 	MERGE_PLAN_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGED_MOD_DESCRIPTOR_PATH,
 };
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
@@ -2291,5 +2292,383 @@ fn data_build_emits_progress_and_profile_output() {
 			.iter()
 			.any(|section| section["name"] == "parsed_scripts"),
 		"missing parsed_scripts section: {profile_raw}"
+	);
+}
+
+const JOBS_EVENT_FILE_COUNT: usize = 4;
+const JOBS_OPINION_PATH: &str = "common/opinion_modifiers/00_opinion_modifiers.txt";
+const JOBS_EFFECTS_PATH: &str = "common/scripted_effects/p609_effects.txt";
+const JOBS_HISTORY_PATH: &str = "history/countries/P09 - P609.txt";
+const JOBS_FLAG_PATH: &str = "gfx/flags/P09.tga";
+
+fn jobs_event_file(index: usize, first_title: &str, second_title: &str) -> String {
+	format!(
+		"namespace = p609\ncountry_event = {{\n\tid = p609.{index}1\n\ttitle = {first_title}\n\tis_triggered_only = yes\n}}\ncountry_event = {{\n\tid = p609.{index}2\n\ttitle = {second_title}\n\tis_triggered_only = yes\n}}\n"
+	)
+}
+
+/// Stage a two-mod playset over a synthetic EU4 base that yields every kind of
+/// merge unit: event files where each mod edits a different event, one
+/// static-modifier database module spanning two directories, a safe and a
+/// conflicting definition module, a conflicting history file, a localisation
+/// merge, a single-contributor copy and a binary last-writer overlay.
+///
+/// The base reports 1.37.5, the version with load rules, so `static_modifiers`
+/// and `event_modifiers` compose one database module. The base also ships an
+/// event modifier: without one that directory has no verified ancestor and the
+/// module fails instead of merging.
+fn stage_jobs_playset(root: &Path) -> (PathBuf, PathBuf) {
+	let game_root: PathBuf = root.join("eu4-base");
+	let (game, mod_a, mod_b): (&Path, &Path, &Path) = (
+		&game_root,
+		&root.join("mods").join("a"),
+		&root.join("mods").join("b"),
+	);
+	write_descriptor(mod_a, "p609-a");
+	write_descriptor(mod_b, "p609-b");
+	let static_modifier_file = |tax: &str, morale: &str| -> String {
+		format!("shared = {{\n\tglobal_tax_modifier = {tax}\n\tland_morale = {morale}\n}}\n")
+	};
+	let opinion =
+		|value: u32| -> String { format!("p609_opinion = {{\n\topinion = {value}\n}}\n") };
+	let country =
+		|capital: u32| -> String { format!("government = monarchy\ncapital = {capital}\n") };
+	let base_effect: &str = "p609_effect = { add_prestige = 1 }\n";
+	let mut files: Vec<(&Path, String, String)> = vec![
+		(game, "version.txt".into(), "1.37.5\n".into()),
+		(
+			game,
+			static_modifiers::SOURCE.into(),
+			static_modifier_file("0.10", "0.10"),
+		),
+		(
+			mod_a,
+			static_modifiers::SOURCE.into(),
+			static_modifier_file("0.15", "0.10"),
+		),
+		(
+			mod_b,
+			static_modifiers::SOURCE.into(),
+			static_modifier_file("0.10", "0.20"),
+		),
+		(
+			game,
+			"common/event_modifiers/00_event_modifiers.txt".into(),
+			"p609_base_event_modifier = {\n\tglobal_tax_modifier = 0.01\n}\n".into(),
+		),
+		(
+			mod_b,
+			"common/event_modifiers/p609_event_modifiers.txt".into(),
+			"p609_event_modifier = {\n\tglobal_tax_modifier = 0.05\n}\n".into(),
+		),
+		(game, JOBS_OPINION_PATH.into(), opinion(10)),
+		(mod_a, JOBS_OPINION_PATH.into(), opinion(20)),
+		(mod_b, JOBS_OPINION_PATH.into(), opinion(30)),
+		(game, JOBS_EFFECTS_PATH.into(), base_effect.into()),
+		(
+			mod_a,
+			JOBS_EFFECTS_PATH.into(),
+			format!("{base_effect}p609_effect_a = {{ add_prestige = 2 }}\n"),
+		),
+		(
+			mod_b,
+			JOBS_EFFECTS_PATH.into(),
+			format!("{base_effect}p609_effect_b = {{ add_legitimacy = 3 }}\n"),
+		),
+		(game, JOBS_HISTORY_PATH.into(), country(1)),
+		(mod_a, JOBS_HISTORY_PATH.into(), country(2)),
+		(mod_b, JOBS_HISTORY_PATH.into(), country(3)),
+		(
+			mod_a,
+			"localisation/p609_l_english.yml".into(),
+			"l_english:\n p609_from_a:0 \"From A\"\n".into(),
+		),
+		(
+			mod_b,
+			"localisation/p609_l_english.yml".into(),
+			"l_english:\n p609_from_b:0 \"From B\"\n".into(),
+		),
+		(
+			mod_a,
+			"localisation/p609_only_l_english.yml".into(),
+			"l_english:\n p609_only_a:0 \"Only A\"\n".into(),
+		),
+	];
+	for index in 0..JOBS_EVENT_FILE_COUNT {
+		let path: String = format!("events/p609_events_{index}.txt");
+		let base_first: String = format!("p609_{index}1_t");
+		let base_second: String = format!("p609_{index}2_t");
+		files.extend([
+			(
+				game,
+				path.clone(),
+				jobs_event_file(index, &base_first, &base_second),
+			),
+			(
+				mod_a,
+				path.clone(),
+				jobs_event_file(index, &format!("p609_{index}1_from_a"), &base_second),
+			),
+			(
+				mod_b,
+				path,
+				jobs_event_file(index, &base_first, &format!("p609_{index}2_from_b")),
+			),
+		]);
+	}
+	for (dir, path, content) in &files {
+		write_script_file(dir, path, content);
+	}
+	for (dir, bytes) in [(mod_a, b"flag-a\x00\x01"), (mod_b, b"flag-b\x00\x02")] {
+		let path: PathBuf = dir.join(JOBS_FLAG_PATH);
+		fs::create_dir_all(path.parent().expect("flag parent")).expect("create flag dir");
+		fs::write(path, bytes).expect("write binary flag");
+	}
+	let manifest: PathBuf = root.join("foch.toml");
+	fs::write(
+		&manifest,
+		"[project]\ngame = 'eu4'\n[[project.mods]]\nid = 'p609-a'\npath = 'mods/a'\n[[project.mods]]\nid = 'p609-b'\npath = 'mods/b'\n",
+	)
+	.expect("write manifest");
+	(game_root, manifest)
+}
+
+/// Commit the playset into a fresh output directory with `--jobs <jobs>`,
+/// returning the output directory and stdout.
+fn commit_merge_with_jobs(scratch: &Path, manifest: &Path, jobs: &str) -> (PathBuf, String) {
+	let out: PathBuf = scratch.join(format!("out-jobs-{jobs}"));
+	// A cache of its own keeps one run from reusing the other's analysis.
+	let cache: PathBuf = scratch.join(format!("cache-jobs-{jobs}"));
+	assert!(!out.exists() && !cache.exists(), "each run starts fresh");
+	let (code, stdout, stderr): (i32, String, String) = run_foch_with_env(
+		&[
+			"merge",
+			manifest.to_str().unwrap(),
+			"--out",
+			out.to_str().unwrap(),
+			"--confirm",
+			"--non-interactive",
+			"--provenance",
+			"--jobs",
+			jobs,
+		],
+		scratch,
+		&[("FOCH_CACHE_ROOT", cache.to_str().unwrap())],
+	);
+	assert_eq!(code, 0, "--jobs {jobs}\nstdout: {stdout}\nstderr: {stderr}");
+	assert!(
+		stderr.contains(&format!(" workers={jobs})")),
+		"--jobs {jobs} must reach materialization: {stderr}"
+	);
+	(out, stdout)
+}
+
+/// Decode a JSON artifact, check that `field` holds the expected kind of
+/// value, and replace it with null.
+fn mask_json_field(
+	tree: &mut BTreeMap<PathBuf, Vec<u8>>,
+	path: &str,
+	field: &str,
+	expected: fn(&serde_json::Value) -> bool,
+) {
+	let bytes: &mut Vec<u8> = tree
+		.get_mut(Path::new(path))
+		.unwrap_or_else(|| panic!("missing {path}"));
+	let mut value: serde_json::Value =
+		serde_json::from_slice(bytes).unwrap_or_else(|err| panic!("decode {path}: {err}"));
+	let slot: &mut serde_json::Value = value
+		.get_mut(field)
+		.unwrap_or_else(|| panic!("{path} has no {field}"));
+	assert!(expected(slot), "{path}: unexpected {field}: {slot}");
+	*slot = serde_json::Value::Null;
+	*bytes = serde_json::to_vec_pretty(&value).expect("encode masked JSON");
+}
+
+/// Every file of a committed merge, masking only what differs between runs by
+/// design: the output directory in descriptor.mod, the plan's creation time
+/// and the wall-clock time spent on definition modules.
+fn normalized_merge_tree(out: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+	let mut tree: BTreeMap<PathBuf, Vec<u8>> = static_modifiers::source_bytes(out);
+	let descriptor: &mut Vec<u8> = tree
+		.get_mut(Path::new(MERGED_MOD_DESCRIPTOR_PATH))
+		.expect("merged descriptor");
+	let mut text: String = String::from_utf8(std::mem::take(descriptor)).expect("UTF-8 descriptor");
+	// The canonical form first: on macOS it contains the given path.
+	for form in [
+		out.canonicalize().expect("canonical out"),
+		out.to_path_buf(),
+	] {
+		text = text.replace(&descriptor_path_value(&form), "<out>");
+	}
+	*descriptor = text.into_bytes();
+	mask_json_field(
+		&mut tree,
+		MERGE_PLAN_ARTIFACT_PATH,
+		"generated_at",
+		serde_json::Value::is_string,
+	);
+	mask_json_field(
+		&mut tree,
+		MERGE_REPORT_ARTIFACT_PATH,
+		"definition_module_elapsed_ms",
+		serde_json::Value::is_u64,
+	);
+	tree
+}
+
+#[test]
+fn merge_output_is_identical_for_one_and_many_jobs() {
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let (game, manifest): (PathBuf, PathBuf) = stage_jobs_playset(scratch.path());
+	write_game_path_config(scratch.path(), &game);
+	build_base_data_install(scratch.path(), &game);
+	let (serial, serial_stdout): (PathBuf, String) =
+		commit_merge_with_jobs(scratch.path(), &manifest, "1");
+	let (parallel, parallel_stdout): (PathBuf, String) =
+		commit_merge_with_jobs(scratch.path(), &manifest, "4");
+
+	// Equality proves nothing unless the playset reaches every unit kind.
+	let report: foch::model::MergeReport = serde_json::from_slice(
+		&fs::read(serial.join(MERGE_REPORT_ARTIFACT_PATH)).expect("read report"),
+	)
+	.expect("decode report");
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::PartialSuccess,
+		"{report:#?}"
+	);
+	assert_eq!(report.unsupported_input_count, 0, "{report:#?}");
+	assert_eq!(report.engine_failure_count, 0, "{report:#?}");
+	assert!(
+		report.generated_file_count > 0
+			&& report.copied_file_count > 0
+			&& report.overlay_file_count > 0,
+		"{report:#?}"
+	);
+	let deferred: Vec<(&str, foch::model::DeferredUnitReason)> = report
+		.conflict_resolutions
+		.iter()
+		.map(|conflict| (conflict.path.as_str(), conflict.deferred_reason))
+		.collect();
+	let opinion_output: &str = "common/opinion_modifiers/zzz_foch_opinion_modifiers.txt";
+	assert_eq!(
+		deferred,
+		[
+			(
+				opinion_output,
+				foch::model::DeferredUnitReason::NeedsUserChoice
+			),
+			(
+				JOBS_HISTORY_PATH,
+				foch::model::DeferredUnitReason::NeedsUserChoice
+			),
+		]
+	);
+	for path in [opinion_output, JOBS_HISTORY_PATH] {
+		assert!(!serial.join(path).exists(), "deferred {path} is withheld");
+	}
+	for index in 0..JOBS_EVENT_FILE_COUNT {
+		let merged: String =
+			fs::read_to_string(serial.join(format!("events/p609_events_{index}.txt")))
+				.expect("read merged events");
+		assert!(
+			merged.contains(&format!("p609_{index}1_from_a"))
+				&& merged.contains(&format!("p609_{index}2_from_b")),
+			"{merged}"
+		);
+	}
+	// One database unit, analyzed per namespace, writes both directories.
+	assert!(
+		serial_stdout.contains("id: module:CStaticModifierDataBase/CStaticModifierDataBase"),
+		"{serial_stdout}"
+	);
+	let merged_static: String =
+		fs::read_to_string(serial.join(static_modifiers::OUTPUT)).expect("read static modifiers");
+	assert!(
+		merged_static.contains("global_tax_modifier = 0.15")
+			&& merged_static.contains("land_morale = 0.20"),
+		"{merged_static}"
+	);
+	let merged_event: String =
+		fs::read_to_string(serial.join("common/event_modifiers/zzz_foch_event_modifiers.txt"))
+			.expect("read event modifiers");
+	assert!(
+		merged_event.contains("p609_event_modifier"),
+		"{merged_event}"
+	);
+	let merged_effects: String =
+		fs::read_to_string(serial.join("common/scripted_effects/zzz_foch_scripted_effects.txt"))
+			.expect("read scripted effects");
+	assert!(
+		merged_effects.contains("p609_effect_a") && merged_effects.contains("p609_effect_b"),
+		"{merged_effects}"
+	);
+	let localisation: String = fs::read_to_string(serial.join("localisation/p609_l_english.yml"))
+		.expect("read merged localisation");
+	assert!(
+		localisation.contains("p609_from_a") && localisation.contains("p609_from_b"),
+		"{localisation}"
+	);
+	assert_eq!(
+		fs::read(serial.join("localisation/p609_only_l_english.yml")).expect("read copy"),
+		b"l_english:\n p609_only_a:0 \"Only A\"\n"
+	);
+	assert_eq!(
+		fs::read(serial.join(JOBS_FLAG_PATH)).expect("read overlay"),
+		b"flag-b\x00\x02"
+	);
+
+	assert_eq!(serial_stdout, parallel_stdout, "review and report listings");
+	let expected: BTreeMap<PathBuf, Vec<u8>> = normalized_merge_tree(&serial);
+	let actual: BTreeMap<PathBuf, Vec<u8>> = normalized_merge_tree(&parallel);
+	assert_eq!(
+		expected.keys().collect::<Vec<&PathBuf>>(),
+		actual.keys().collect::<Vec<&PathBuf>>(),
+		"output file sets"
+	);
+	for (path, bytes) in &expected {
+		assert!(
+			*bytes == actual[path],
+			"{} differs\n--- --jobs 1\n{}\n--- --jobs 4\n{}",
+			path.display(),
+			String::from_utf8_lossy(bytes),
+			String::from_utf8_lossy(&actual[path])
+		);
+	}
+}
+
+#[test]
+fn merge_rejects_zero_jobs() {
+	let tmp: TempDir = TempDir::new().expect("temp dir");
+	let playlist_path: PathBuf = tmp.path().join("playlist.json");
+	let out_dir: PathBuf = tmp.path().join("merged-out");
+	let mod_root: PathBuf = tmp.path().join("7861");
+	write_dlc_load(&playlist_path, &[("7861", "A")]);
+	write_descriptor(&mod_root, "mod-a");
+	write_script_file(&mod_root, "common/only.txt", "from-a\n");
+
+	let (code, stdout, stderr): (i32, String, String) = run_foch(
+		&[
+			"merge",
+			playlist_path.to_str().unwrap(),
+			"--out",
+			out_dir.to_str().unwrap(),
+			"--no-game-base",
+			"--confirm",
+			"--non-interactive",
+			"--jobs",
+			"0",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 2, "stdout: {stdout}\nstderr: {stderr}");
+	assert!(
+		stderr.contains("invalid value '0' for '--jobs"),
+		"stderr: {stderr}"
+	);
+	assert!(!stdout.contains("Foch Merge Review"), "stdout: {stdout}");
+	assert!(
+		!out_dir.exists(),
+		"a rejected job count must not write --out"
 	);
 }

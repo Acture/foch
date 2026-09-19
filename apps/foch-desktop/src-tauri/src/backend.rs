@@ -116,6 +116,7 @@ impl AnalysisRunner for FochAnalysisRunner {
 				interactive_resolution_config_path: None,
 				playset_fingerprint: None,
 				provenance: false,
+				merge_workers: foch::merge::default_merge_workers(),
 				retained_paths: None,
 			},
 			progress,

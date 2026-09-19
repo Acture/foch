@@ -2,6 +2,7 @@
 
 mod analysis;
 mod cross_file_dedup;
+mod executor;
 mod io;
 mod output_transaction;
 mod per_entry_noop;
@@ -48,9 +49,10 @@ use crate::model::{
 use crate::project::{AppliedDepOverride, DepOverride, ResolutionMap};
 use analysis::{
 	FileAnalysis, InteractivePrompt, ModuleAnalysis, NamespaceAnalysis, UnitAnalysis,
-	UnitAnalysisContext, analyze_unit,
+	UnitAnalysisContext, analyze_unit, unit_needs_analysis,
 };
 use cross_file_dedup::{CrossFilePruneResult, prune_cross_file_noop_duplicates};
+use executor::{UnitSchedule, run_units};
 use io::StructuralOutputMaterialization;
 use io::{
 	copy_winner_file, is_text_placeholder_path, write_clean_metadata_only,
@@ -64,6 +66,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::IsTerminal;
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -89,6 +92,10 @@ pub(crate) struct MergeMaterializeOptions {
 	/// of copy-through output.
 	pub retained_paths: Option<BTreeSet<String>>,
 	pub cancellation: CancellationToken,
+	/// Units analyzed at once. With one worker every unit is analyzed and
+	/// applied on the calling thread; an interactive conflict handler also
+	/// runs one unit at a time.
+	pub workers: NonZeroUsize,
 }
 
 pub(crate) struct MaterializeOutput<'a> {
@@ -120,6 +127,7 @@ impl Default for MergeMaterializeOptions {
 			backend: Box::new(GumtreePcsNwayBackend),
 			retained_paths: None,
 			cancellation: CancellationToken::new(),
+			workers: NonZeroUsize::MIN,
 		}
 	}
 }
@@ -349,13 +357,19 @@ pub(crate) fn materialize_analyzed_input(
 	crate::merge::address_patch::cache::reset_dag_base_cache_stats();
 	let materialize_started = Instant::now();
 	let total_paths = plan.paths.len();
-	eprintln!("[merge] materialize: start (total_paths={total_paths})");
+	let mut interactive_handler = options.interactive_conflict_handler.take();
+	// Prompts and the resolutions they persist must follow plan order.
+	let workers: NonZeroUsize = if interactive_handler.is_some() {
+		NonZeroUsize::MIN
+	} else {
+		options.workers
+	};
+	eprintln!("[merge] materialize: start (total_paths={total_paths} workers={workers})");
 	let mut materialize_progress = MaterializeProgress::new(total_paths, progress);
 	let mut outputs = UnitOutputs::default();
 	// Units read the findings as detected; the evidence count a unit adds is
 	// applied to the report with the rest of that unit.
 	let dep_misuse_findings: Vec<DepMisuseFinding> = report.dep_misuse.clone();
-	let mut interactive_handler = options.interactive_conflict_handler.take();
 	let options = &options;
 	let analysis_context = UnitAnalysisContext {
 		input: &input,
@@ -381,27 +395,50 @@ pub(crate) fn materialize_analyzed_input(
 		options,
 		profile,
 	};
-
-	for entry in &plan.paths {
-		options.cancellation.check()?;
-		let analysis = analyze_unit(
+	let entries: &[MergePlanEntry] = &plan.paths;
+	let runs_here = |index: usize| -> bool { !unit_needs_analysis(&entries[index]) };
+	let label = |index: usize| -> String { entries[index].output_path().to_string() };
+	let analyze = |index: usize| -> UnitAnalysis {
+		analyze_unit(
 			&analysis_context,
-			entry,
+			&entries[index],
+			InteractivePrompt::none(),
+		)
+	};
+	let mut analyze_here = |index: usize| -> UnitAnalysis {
+		analyze_unit(
+			&analysis_context,
+			&entries[index],
 			InteractivePrompt {
 				handler: interactive_handler.as_deref_mut(),
 				config_path: options.interactive_resolution_config_path.as_deref(),
 			},
-		);
+		)
+	};
+	let mut apply = |index: usize, analysis: UnitAnalysis| -> Result<(), MergeError> {
 		apply_unit(
 			&apply_env,
 			&mut report,
 			&mut review,
 			&mut outputs,
-			entry,
+			&entries[index],
 			analysis,
 		)?;
 		materialize_progress.tick();
-	}
+		Ok(())
+	};
+	run_units(
+		&UnitSchedule {
+			count: entries.len(),
+			workers,
+			runs_here: &runs_here,
+			label: &label,
+		},
+		&options.cancellation,
+		&analyze,
+		&mut analyze_here,
+		&mut apply,
+	)?;
 	materialize_progress.finish();
 	let UnitOutputs {
 		generated_paths,
@@ -2374,6 +2411,8 @@ impl<'a> MaterializeProgress<'a> {
 
 #[cfg(test)]
 mod tests {
+	mod parallel;
+
 	use super::{
 		MaterializeOutput, MaterializedMerge, MergeMaterializeOptions, materialize_analyzed_input,
 		materialize_with_resolved_input, run_materialization_test,
@@ -3143,6 +3182,8 @@ mod tests {
 			backend: Box::new(crate::merge::backend::AddressPatchBackend),
 			retained_paths: None,
 			cancellation: CancellationToken::new(),
+			// Existing fixtures double as coverage of the parallel path.
+			workers: std::num::NonZeroUsize::new(4).unwrap(),
 		}
 	}
 

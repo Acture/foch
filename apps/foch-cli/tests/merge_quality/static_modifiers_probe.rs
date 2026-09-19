@@ -131,6 +131,7 @@ fn workshop_static_modifiers_product_probe() {
 			interactive_resolution_config_path: None,
 			playset_fingerprint: None,
 			provenance: true,
+			merge_workers: foch::merge::default_merge_workers(),
 			retained_paths: Some(retained),
 		},
 		&NoopProgressObserver,

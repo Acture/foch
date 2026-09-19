@@ -78,6 +78,7 @@ fn fatal_merge_surfaces_resolve_error_reason() {
 		interactive_resolution_config_path: None,
 		playset_fingerprint: None,
 		provenance: false,
+		merge_workers: std::num::NonZeroUsize::new(2).unwrap(),
 		retained_paths: None,
 	};
 
