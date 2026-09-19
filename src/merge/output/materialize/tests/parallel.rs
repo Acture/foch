@@ -1169,46 +1169,120 @@ fn cancelling_mid_run_returns_cancelled_and_leaves_no_worker_running() {
 	}
 }
 
-/// Defers every conflict and records the thread each prompt ran on.
-struct RecordingHandler {
-	threads: Arc<Mutex<Vec<ThreadId>>>,
+/// One conflict prompt as the test observed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Prompt {
+	file_path: PathBuf,
+	conflict_id: String,
+	/// Not compared across runs: the thread the prompt ran on, and how many
+	/// backend calls were running at the time.
+	thread: ThreadId,
+	running_analyses: usize,
 }
 
-impl ConflictHandler for RecordingHandler {
-	fn on_conflict(&mut self, _: &ConflictView) -> ConflictDecision {
-		lock(&self.threads).push(thread::current().id());
-		ConflictDecision::Defer { record: None }
+/// Picks the first candidate of every conflict, which persists a resolution,
+/// and records each prompt.
+struct PickingHandler {
+	prompts: Arc<Mutex<Vec<Prompt>>>,
+	recorder: Arc<Recorder>,
+}
+
+impl ConflictHandler for PickingHandler {
+	fn on_conflict(&mut self, view: &ConflictView) -> ConflictDecision {
+		lock(&self.prompts).push(Prompt {
+			file_path: view.file_path.clone(),
+			conflict_id: view.conflict_id.clone(),
+			thread: thread::current().id(),
+			running_analyses: self.recorder.active(),
+		});
+		ConflictDecision::PickCandidate {
+			candidate: 0,
+			record: None,
+		}
 	}
 }
 
+/// What an interactive run produced that must not depend on the number of
+/// workers.
+struct InteractiveRun {
+	snapshot: RunSnapshot,
+	prompts: Vec<(PathBuf, String)>,
+	persisted: String,
+}
+
 #[test]
-fn an_interactive_handler_keeps_analysis_on_the_calling_thread() {
+fn interactive_prompts_match_one_worker_and_run_with_every_worker_paused() {
 	let temp: TempDir = TempDir::new().unwrap();
 	write_mixed_playset(temp.path());
 	let frozen: FrozenPlayset = FrozenPlayset::freeze(temp.path());
-	let (backend, recorder) = recording(|_, _, proceed| proceed());
-	let prompts: Arc<Mutex<Vec<ThreadId>>> = Arc::default();
-	let mut options: MergeMaterializeOptions = options_with(backend, 4);
-	options.interactive_conflict_handler = Some(Box::new(RecordingHandler {
-		threads: Arc::clone(&prompts),
-	}));
-	options.interactive_resolution_config_path = Some(temp.path().join("foch.toml"));
-	let (result, _) = frozen.materialize("interactive", options);
-	let merged: MaterializedMerge = result.unwrap();
-	assert_eq!(
-		unit_for(&merged, GENUINE_CONFLICT_PATH).disposition,
-		MergeDisposition::NeedsUserChoice
-	);
 	let test_thread: ThreadId = thread::current().id();
-	let prompted: Vec<ThreadId> = lock(&prompts).clone();
-	assert!(!prompted.is_empty(), "no conflict reached the handler");
-	assert!(prompted.iter().all(|thread| *thread == test_thread));
-	let calls: Vec<Call> = recorder.calls();
-	assert!(calls.len() > SAFE_FILE_COUNT, "{calls:?}");
-	assert!(
-		calls.iter().all(|call| call.thread == test_thread),
-		"{calls:?}"
-	);
+	let mut serial: Option<InteractiveRun> = None;
+	for worker_count in [1, 4, 8] {
+		let run: String = format!("interactive-workers-{worker_count}");
+		let (backend, recorder) = recording(|_, _, proceed| proceed());
+		let prompts: Arc<Mutex<Vec<Prompt>>> = Arc::default();
+		let config_path: PathBuf = temp.path().join(format!("{run}.toml"));
+		let mut options: MergeMaterializeOptions = options_with(backend, worker_count);
+		options.interactive_conflict_handler = Some(Box::new(PickingHandler {
+			prompts: Arc::clone(&prompts),
+			recorder: Arc::clone(&recorder),
+		}));
+		options.interactive_resolution_config_path = Some(config_path.clone());
+		let (result, artifacts_dir) = frozen.materialize(&run, options);
+		let merged: MaterializedMerge = result.unwrap_or_else(|error| panic!("{run}: {error}"));
+		let prompted: Vec<Prompt> = lock(&prompts).clone();
+		// Every prompt ran on the calling thread with no analysis in flight.
+		assert!(
+			prompted
+				.iter()
+				.all(|prompt| prompt.thread == test_thread && prompt.running_analyses == 1),
+			"{run}: {prompted:?}"
+		);
+		if worker_count > 1 {
+			assert!(
+				recorder.calls().iter().any(Call::on_worker),
+				"{run}: no unit reached a worker"
+			);
+		}
+		let sequence: Vec<(PathBuf, String)> = prompted
+			.iter()
+			.map(|prompt| (prompt.file_path.clone(), prompt.conflict_id.clone()))
+			.collect();
+		let persisted: String = fs::read_to_string(&config_path).unwrap_or_default();
+		let snapshot: RunSnapshot = RunSnapshot::capture(&merged, &artifacts_dir);
+		match &serial {
+			None => {
+				// The prompts settled the sibling conflicts, and each answer
+				// was persisted.
+				assert!(sequence.len() >= 4, "{run}: {sequence:?}");
+				for path in [
+					EARLY_CONFLICT_PATH,
+					GENUINE_CONFLICT_PATH,
+					LATE_CONFLICT_PATH,
+				] {
+					assert_eq!(
+						unit_for(&merged, path).disposition,
+						MergeDisposition::Safe,
+						"{run}: {path}"
+					);
+				}
+				assert!(persisted.contains("[[resolutions]]"), "{run}: {persisted}");
+				serial = Some(InteractiveRun {
+					snapshot,
+					prompts: sequence,
+					persisted,
+				});
+			}
+			Some(serial) => {
+				assert_eq!(sequence, serial.prompts, "{run}: prompt order differs");
+				assert_eq!(
+					persisted, serial.persisted,
+					"{run}: persisted resolutions differ"
+				);
+				serial.snapshot.assert_matches(&snapshot, &run);
+			}
+		}
+	}
 }
 
 #[test]

@@ -11,7 +11,7 @@ use std::num::NonZeroUsize;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -57,16 +57,18 @@ pub(super) struct UnitSchedule<'a> {
 /// Analyze every unit and apply each result in index order.
 ///
 /// `analyze` runs on worker threads and must neither prompt nor write.
-/// `analyze_here` runs on the calling thread, for units that `runs_here`
-/// selects and for every unit when there is one worker, which then keeps
-/// today's serial order exactly. The first error or panic in index order ends
-/// the run; results computed for later units are discarded unapplied, and no
-/// worker outlives the call.
+/// `analyze_here` runs on the calling thread: for units that `runs_here`
+/// selects, for every unit when there is one worker, which then keeps the
+/// serial order exactly, and again for a worker's result that `redo_here`
+/// selects, while every worker is paused. The first error or panic in index
+/// order ends the run; results computed for later units are discarded
+/// unapplied, and no worker outlives the call.
 pub(super) fn run_units<T: Send>(
 	schedule: &UnitSchedule<'_>,
 	cancellation: &CancellationToken,
 	analyze: &(dyn Fn(usize) -> T + Sync),
 	analyze_here: &mut dyn FnMut(usize) -> T,
+	redo_here: &dyn Fn(&T) -> bool,
 	apply: &mut dyn FnMut(usize, T) -> Result<(), MergeError>,
 ) -> Result<(), MergeError> {
 	if schedule.workers.get() == 1 {
@@ -77,7 +79,14 @@ pub(super) fn run_units<T: Send>(
 		}
 		return Ok(());
 	}
-	run_parallel(schedule, cancellation, analyze, analyze_here, apply)
+	run_parallel(
+		schedule,
+		cancellation,
+		analyze,
+		analyze_here,
+		redo_here,
+		apply,
+	)
 }
 
 enum WorkerEvent<T> {
@@ -104,6 +113,67 @@ impl Drop for StopOnDrop<'_> {
 	}
 }
 
+/// Lets the coordinator stop workers from starting units, and wait for the
+/// ones running to finish, while it analyzes a unit again itself: an
+/// interactive prompt must have the terminal to itself.
+#[derive(Default)]
+struct PauseGate {
+	state: Mutex<PauseState>,
+	changed: Condvar,
+}
+
+#[derive(Default)]
+struct PauseState {
+	paused: bool,
+	running: usize,
+}
+
+impl PauseGate {
+	fn lock(&self) -> MutexGuard<'_, PauseState> {
+		self.state.lock().unwrap_or_else(PoisonError::into_inner)
+	}
+
+	/// Wait while paused, then count the calling worker as running.
+	fn enter(&self) {
+		let mut state: MutexGuard<'_, PauseState> = self.lock();
+		while state.paused {
+			state = self
+				.changed
+				.wait(state)
+				.unwrap_or_else(PoisonError::into_inner);
+		}
+		state.running += 1;
+	}
+
+	fn leave(&self) {
+		self.lock().running -= 1;
+		self.changed.notify_all();
+	}
+
+	/// Stop workers from starting units and wait until none is running. The
+	/// workers resume when the returned guard drops, even during unwinding.
+	fn pause(&self) -> Paused<'_> {
+		let mut state: MutexGuard<'_, PauseState> = self.lock();
+		state.paused = true;
+		while state.running > 0 {
+			state = self
+				.changed
+				.wait(state)
+				.unwrap_or_else(PoisonError::into_inner);
+		}
+		Paused(self)
+	}
+}
+
+struct Paused<'a>(&'a PauseGate);
+
+impl Drop for Paused<'_> {
+	fn drop(&mut self) {
+		self.0.lock().paused = false;
+		self.0.changed.notify_all();
+	}
+}
+
 fn worker_name(worker: usize) -> String {
 	format!("foch-merge-{worker}")
 }
@@ -113,9 +183,11 @@ fn run_parallel<T: Send>(
 	cancellation: &CancellationToken,
 	analyze: &(dyn Fn(usize) -> T + Sync),
 	analyze_here: &mut dyn FnMut(usize) -> T,
+	redo_here: &dyn Fn(&T) -> bool,
 	apply: &mut dyn FnMut(usize, T) -> Result<(), MergeError>,
 ) -> Result<(), MergeError> {
 	let stop: AtomicBool = AtomicBool::new(false);
+	let pause: PauseGate = PauseGate::default();
 	let (job_sender, job_receiver) = mpsc::channel::<usize>();
 	let job_receiver: Mutex<Receiver<usize>> = Mutex::new(job_receiver);
 	let (event_sender, events) = mpsc::channel::<WorkerEvent<T>>();
@@ -128,23 +200,53 @@ fn run_parallel<T: Send>(
 			let events: Sender<WorkerEvent<T>> = event_sender.clone();
 			let job_receiver: &Mutex<Receiver<usize>> = &job_receiver;
 			let stop: &AtomicBool = &stop;
+			let pause: &PauseGate = &pause;
 			thread::Builder::new()
 				.name(worker_name(worker))
 				.stack_size(MERGE_THREAD_STACK_SIZE)
 				.spawn_scoped(scope, move || {
-					run_worker(worker, analyze, job_receiver, events, stop, cancellation);
+					run_worker(
+						worker,
+						analyze,
+						job_receiver,
+						events,
+						WorkerControl {
+							stop,
+							pause,
+							cancellation,
+						},
+					);
 				})?;
 		}
 		drop(event_sender);
 		coordinate(
 			schedule,
 			cancellation,
-			&job_sender,
-			events,
+			WorkerLinks {
+				jobs: &job_sender,
+				events,
+				pause: &pause,
+			},
 			analyze_here,
+			redo_here,
 			apply,
 		)
 	})
+}
+
+/// What tells a worker to skip units or wait before starting one.
+struct WorkerControl<'a> {
+	stop: &'a AtomicBool,
+	pause: &'a PauseGate,
+	cancellation: &'a CancellationToken,
+}
+
+impl WorkerControl<'_> {
+	/// The coordinator is leaving, or fails at its next cancellation check
+	/// without applying anything further.
+	fn skipping(&self) -> bool {
+		self.stop.load(Ordering::Acquire) || self.cancellation.is_cancelled()
+	}
 }
 
 fn run_worker<T: Send>(
@@ -152,31 +254,36 @@ fn run_worker<T: Send>(
 	analyze: &(dyn Fn(usize) -> T + Sync),
 	jobs: &Mutex<Receiver<usize>>,
 	events: Sender<WorkerEvent<T>>,
-	stop: &AtomicBool,
-	cancellation: &CancellationToken,
+	control: WorkerControl<'_>,
 ) {
 	loop {
 		let job = jobs.lock().unwrap_or_else(PoisonError::into_inner).recv();
 		let Ok(index) = job else {
 			return;
 		};
-		// The coordinator is leaving, or fails at its next cancellation check
-		// without applying anything further.
-		if stop.load(Ordering::Acquire) || cancellation.is_cancelled() {
+		if control.skipping() {
+			continue;
+		}
+		control.pause.enter();
+		// A pause can last as long as a prompt; check again after it.
+		if control.skipping() {
+			control.pause.leave();
 			continue;
 		}
 		let started: Instant = Instant::now();
-		if events
+		let announced: bool = events
 			.send(WorkerEvent::Started {
 				index,
 				worker,
 				started,
 			})
-			.is_err()
-		{
+			.is_ok();
+		let analysis: Option<thread::Result<T>> =
+			announced.then(|| catch_unwind(AssertUnwindSafe(|| analyze(index))));
+		control.pause.leave();
+		let Some(analysis) = analysis else {
 			return;
-		}
-		let analysis: thread::Result<T> = catch_unwind(AssertUnwindSafe(|| analyze(index)));
+		};
 		let finished = WorkerEvent::Finished {
 			index,
 			worker,
@@ -189,14 +296,26 @@ fn run_worker<T: Send>(
 	}
 }
 
+/// The coordinator's ends of what it shares with the workers.
+struct WorkerLinks<'a, T> {
+	jobs: &'a Sender<usize>,
+	events: Receiver<WorkerEvent<T>>,
+	pause: &'a PauseGate,
+}
+
 fn coordinate<T: Send>(
 	schedule: &UnitSchedule<'_>,
 	cancellation: &CancellationToken,
-	jobs: &Sender<usize>,
-	events: Receiver<WorkerEvent<T>>,
+	links: WorkerLinks<'_, T>,
 	analyze_here: &mut dyn FnMut(usize) -> T,
+	redo_here: &dyn Fn(&T) -> bool,
 	apply: &mut dyn FnMut(usize, T) -> Result<(), MergeError>,
 ) -> Result<(), MergeError> {
+	let WorkerLinks {
+		jobs,
+		events,
+		pause,
+	} = links;
 	let window: usize = schedule.workers.get() * PENDING_UNITS_PER_WORKER;
 	let mut next_dispatch: usize = 0;
 	let mut next_apply: usize = 0;
@@ -240,10 +359,14 @@ fn coordinate<T: Send>(
 		}
 		if let Some(result) = finished.remove(&next_apply) {
 			outstanding -= 1;
-			let analysis: T = match result {
+			let mut analysis: T = match result {
 				Ok(analysis) => analysis,
 				Err(payload) => resume_unwind(payload),
 			};
+			if redo_here(&analysis) {
+				let _paused: Paused<'_> = pause.pause();
+				analysis = analyze_here(next_apply);
+			}
 			apply(next_apply, analysis)?;
 			next_apply += 1;
 			continue;
@@ -455,7 +578,14 @@ mod tests {
 	) -> Result<(), MergeError> {
 		let cancellation: CancellationToken = CancellationToken::new();
 		with_watchdog(&cancellation, || {
-			run_units(schedule, &cancellation, analyze, analyze_here, apply)
+			run_units(
+				schedule,
+				&cancellation,
+				analyze,
+				analyze_here,
+				&|_: &T| false,
+				apply,
+			)
 		})
 	}
 
@@ -643,6 +773,7 @@ mod tests {
 				&cancellation,
 				&|index: usize| index,
 				&mut not_here,
+				&|_| false,
 				&mut |index, _| {
 					applied.push(index);
 					if index == 4 {
@@ -709,6 +840,7 @@ mod tests {
 					thread::sleep(EXTRA_WORK_WINDOW);
 					index
 				},
+				&|_| false,
 				&mut |_, _| Ok(()),
 			)
 		})
@@ -871,6 +1003,98 @@ mod tests {
 		assert_eq!(started_before, 2);
 		assert_eq!(started_after, 3, "a unit started beside the large one");
 		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
+	}
+
+	#[test]
+	fn units_redone_here_run_while_every_worker_is_paused() {
+		let caller: ThreadId = thread::current().id();
+		let gate: Gate = Gate::default();
+		let count: usize = 15;
+		let redone: Mutex<Vec<(usize, usize, usize, usize)>> = Mutex::new(Vec::new());
+		// Each unit takes a little while, so workers are mid-unit, with more
+		// queued, whenever the coordinator reaches a unit to redo.
+		let analyze = |index: usize| -> usize {
+			enter(&gate, index);
+			thread::sleep(EXTRA_WORK_WINDOW / 5);
+			exit(&gate, index);
+			index
+		};
+		let mut applied: Vec<(usize, usize)> = Vec::new();
+		let cancellation: CancellationToken = CancellationToken::new();
+		with_watchdog(&cancellation, || {
+			run_units(
+				&schedule(count, 3),
+				&cancellation,
+				&analyze,
+				&mut |index| {
+					assert_eq!(thread::current().id(), caller);
+					let (started, running) = {
+						let progress = gate.lock();
+						(progress.started, progress.active)
+					};
+					// A worker that ignored the pause would start a unit now.
+					thread::sleep(EXTRA_WORK_WINDOW);
+					let started_after: usize = gate.lock().started;
+					redone
+						.lock()
+						.unwrap()
+						.push((index, running, started, started_after));
+					index + 1000
+				},
+				&|value: &usize| value % 5 == 2,
+				&mut |index, value| {
+					applied.push((index, value));
+					Ok(())
+				},
+			)
+		})
+		.unwrap();
+		let redone = redone.lock().unwrap();
+		assert_eq!(
+			redone.iter().map(|redo| redo.0).collect::<Vec<usize>>(),
+			vec![2, 7, 12]
+		);
+		for &(index, running, started, started_after) in redone.iter() {
+			assert_eq!(
+				running, 0,
+				"a worker was running while unit {index} was redone"
+			);
+			assert_eq!(
+				started, started_after,
+				"a unit started while unit {index} was redone"
+			);
+		}
+		let expected: Vec<(usize, usize)> = (0..count)
+			.map(|index| (index, if index % 5 == 2 { index + 1000 } else { index }))
+			.collect();
+		assert_eq!(applied, expected);
+		assert_eq!(gate.lock().started, count);
+	}
+
+	#[test]
+	fn a_panic_while_redoing_still_releases_the_workers() {
+		let cancellation: CancellationToken = CancellationToken::new();
+		let payload = catch_unwind(AssertUnwindSafe(|| {
+			with_watchdog(&cancellation, || {
+				run_units(
+					&schedule(20, 3),
+					&cancellation,
+					&|index: usize| index,
+					&mut |index| -> usize { panic!("redo of unit {index}") },
+					&|value: &usize| *value == 4,
+					&mut |_, _| Ok(()),
+				)
+			})
+		}))
+		.unwrap_err();
+		assert_eq!(
+			payload.downcast_ref::<String>().map(String::as_str),
+			Some("redo of unit 4")
+		);
+		assert!(
+			!cancellation.is_cancelled(),
+			"the run hung until the watchdog"
+		);
 	}
 
 	/// Uses at least 4 MiB of stack, more in unoptimized builds: more than a

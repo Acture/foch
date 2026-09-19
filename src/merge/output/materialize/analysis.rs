@@ -91,6 +91,25 @@ pub(super) enum UnitAnalysis {
 	Module(ModuleAnalysis),
 }
 
+impl UnitAnalysis {
+	/// Whether analyzing the unit with an interactive prompt could differ from
+	/// this analysis, which had none. Both backends consult the prompt only
+	/// after a first engine run leaves conflicts unresolved, so a unit that
+	/// merged cleanly would never have prompted. Any other backend outcome is
+	/// analyzed again with the prompt, failures and panics included, since a
+	/// failure can come after the point where the prompt would have run.
+	pub(super) fn could_prompt(&self) -> bool {
+		let unmerged = |outcome: &CaughtOutcome| !matches!(**outcome, Ok(Ok(_)));
+		match self {
+			Self::File(FileAnalysis::Merged(outcome)) => unmerged(outcome),
+			Self::Module(module) => module.namespaces.iter().any(
+				|namespace| matches!(namespace, NamespaceAnalysis::Analyzed(outcome) if unmerged(outcome)),
+			),
+			Self::Nothing | Self::Localisation(_) | Self::File(_) => false,
+		}
+	}
+}
+
 pub(super) enum FileAnalysis {
 	Merged(CaughtOutcome),
 	/// Fewer than two mods contribute, or the family has no merge-key
