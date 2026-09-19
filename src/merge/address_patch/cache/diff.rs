@@ -7,8 +7,8 @@
 
 use crate::merge::patch::ClausewitzPatch;
 use crate::platform::cache_store::CacheError;
-use crate::platform::cache_store::default_foch_cache_dir;
 use crate::platform::cache_store::generation::{ensure as ensure_generation, generation_dir};
+use crate::platform::cache_store::{default_foch_cache_dir, write_atomically};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -112,12 +112,7 @@ impl ModDiffCache {
 			foch_version,
 			game_version,
 		);
-		let tmp = path.with_extension(format!("bin.{}.tmp", std::process::id()));
-		fs::write(&tmp, encoded).map_err(CacheError::Io)?;
-		fs::rename(&tmp, &path).map_err(|err| {
-			let _ = fs::remove_file(&tmp);
-			CacheError::Io(err)
-		})?;
+		write_atomically(&path, &encoded).map_err(CacheError::Io)?;
 		Ok(())
 	}
 
