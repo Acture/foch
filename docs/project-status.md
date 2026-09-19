@@ -1,6 +1,13 @@
 # Project Status
 
-Latest source verification: 2026-09-10 for cross-directory database output
+Latest committed-source verification: 2026-09-19 at `12a7f92`: full workspace
+tests, strict workspace Clippy, formatting, and workspace/test compilation.
+The automatic Workshop probe, missing-input fix, definition-module indexing,
+and tree matching/lineage fixes are now committed. The latest bounded real-input
+verification remains the 2026-09-17 observations below.
+Earlier committed-source verification: 2026-09-14 at `f0d348f`: workspace regressions and
+isolated CLI smoke tests for cross-directory output and version matching.
+Earlier source verification: 2026-09-10 for cross-directory database output
 (P-580) and rule-version matching (P-591).
 Earlier source verification: 2026-09-07 for database-rule planning (P-579).
 Earlier focused verification: 2026-09-05, P-553/P-556 static-modifier product
@@ -13,6 +20,360 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Commit and validation checkpoint (2026-09-19)
+
+The previously uncommitted implementation is recorded in these commits:
+
+- `02ef0fb` — reject unavailable enabled mod inputs, with CLI regressions.
+- `a95cd6f` — avoid repeated database/tree work, with matching, lineage and
+  traversal-work regressions.
+- `12a7f92` — add resumable Workshop page probes, account selection, source
+  identity checks, progress diagnostics, the frozen page fixture and usage docs.
+
+All source commits passed the installed pre-commit gate: `cargo fmt --all --check`,
+strict all-target/all-feature workspace Clippy, and `cargo build --workspace --tests`.
+`cargo test --workspace --quiet` then passed on `12a7f92`, including the local
+socket/HTTP fixtures, CLI integration tests, corpus-harness tests and desktop
+tests. Checks used `DEVELOPER_DIR=/Library/Developer/CommandLineTools`; no hook
+was bypassed. Local logs are under `target/validation/commit-push-2026-09-19/`
+(`commit-input.log`, `commit-performance.log`, `commit-probe.log`, and
+`workspace-tests.log`).
+
+This delivery check did not launch the ignored full Workshop jobs or EU4, and
+does not establish a complete page/cohort result. P-581 retains full-flow
+validation ownership; P-609 tracks the still-unimplemented parallel merge work.
+Earlier dated sections describe their own checkpoint, including input
+availability and validation limitations at that time.
+
+## Full-page retry stalled in advisor history (2026-09-17)
+
+The maintainer's retries, `target/workshop-probe/runs/run-mOlJzi/` and
+`run-UVHrGZ/`, both reached the harness's 30-minute merge limit. Both logs stopped
+after the 16,600/34,209 progress message; the definition modules from the earlier
+investigation had completed. The last live process observation was CPU-bound.
+Sampling that process missed its timeout exit, so the retained input was used to
+rebuild the exact plan and reproduce the failure in a bounded analysis.
+
+The first structural item after that progress marker is item 16,703,
+`history/advisors/00_converter_advisors.txt`. Its two source files total 56,609
+lines of repeated advisor blocks. The isolated case timed out at 90 seconds;
+all sampled merge-thread stacks were in repeated-sibling matching. Progressive
+sampling exposed additional work after each preceding bottleneck was removed:
+
+- Candidate selection rescanned every pair for each pair to find mutual unique
+  maxima. Best scores and all tied peers are now accumulated while scoring pairs.
+- Ambiguous-node membership repeatedly scanned ambiguity lists and peer lists.
+  Membership is now indexed, including rebuilding the indexes after decoding or
+  lineage filtering. The serialized ambiguity array is unchanged.
+- Descendant recovery searched the whole opposite tree per node, even when a
+  parent-scoped anchor required a corresponding parent. It now searches that
+  parent's children, or a kind index for nodes without that restriction, retaining
+  the existing compatibility checks and cross-parent matches where permitted.
+- Join lineage compared the entire input tree for every output-node source.
+  Each referenced revision is now validated once per partition; node validity and
+  origin checks still run for every node.
+
+The final isolated analysis completed in 28.02 seconds, including 20,581 ms in
+the structural file. It reported `partial_success`, no engine or validation
+errors, and one withheld file with 2,293 unresolved leaf conflicts. These are
+reported ambiguities/conflicts, not independently adjudicated incompatibilities.
+No advisor identity rule or arbitrary winner was introduced for performance.
+
+A follow-up selected the 200 consecutive plan items starting at the stuck file.
+The structural probe rejected its 13 copy-through items, so the subsequent run
+retained all 187 structural items in that window. This completed in 30.01 seconds
+(materialization 22,200 ms), producing 143 generated files, one no-op omission and
+43 deferred files, with no engine failures or output validation errors. This is
+a scoped analysis, not a complete full-page merge, output commit, fixed-cohort
+acceptance, or in-game verification. Timings are local observations, not a
+controlled benchmark.
+
+Regressions exhaustively compare all 19,683 small candidate relations against the
+original mutual-maximum and tie semantics, check dense candidate summaries and
+ambiguity serialization/membership, compare indexed descendant candidates with
+the unrestricted compatibility relation, and enforce one lineage-tree check per
+referenced input at different file sizes while rejecting mismatched trees.
+Complete root/CLI package tests, strict workspace Clippy, formatting and diff
+checks pass. The probe now prints its child PID and the latest stderr line in
+each heartbeat; structural-file logs include path and elapsed time. A heartbeat
+indicates process liveness, not completed semantic work.
+
+Evidence is under `target/validation/workshop-stall-2026-09-17/`: `plan.json`,
+`before-converter.log`, the successive `*.sample.txt` stacks and timed-out logs,
+`after-lineage-converter.log` / `.report.json`,
+`history-structural-window.log` / `.report.json`, path-selection files, and
+`package-tests.log` / `clippy.log`. Temporary diagnostic sources are retained
+there and removed from normal test discovery. The earlier rejected window probe
+is retained as `history-window.log`. Changes were uncommitted at this checkpoint
+and are included in the 2026-09-19 commits above. P-581 stayed in progress because
+a complete `cargo workshop-probe` result with these fixes had not been verified.
+Repeating that command builds the repaired executable and reuses the already
+installed inputs.
+
+## Definition-module repeated-work audit (2026-09-17)
+
+The timeout hotfix below did not remove all repeated module-wide work. The same
+path still scanned every top-level statement for each definition during joins,
+lineage normalization and conflict rendering. Trivia detachment cloned complete
+subtrees before recursively rebuilding their descendants. Resolution replay also
+filtered all selections per definition, and stale-target detection repeatedly
+normalized the same vanilla partitions across contributors.
+
+The local implementation now prepares a borrowed definition index once per input
+at each processing stage, retaining every same-key statement in source order.
+Ancestor seeding, source observation, joins, conflict candidates, final tooltip
+projection and stale-target detection use indexed selection. The old unindexed
+partition-normalization helper was removed. Replay selections are grouped once;
+stale-target detection reuses normalized vanilla partitions and skips matching
+when there are no remove-style operations. Trivia detachment rebuilds node fields
+directly without first cloning a block's descendants.
+
+Three deterministic regressions exercise lineage/source observation, joins and
+conflict previews, and exact source-selection replay. Scaling fixed-size
+definitions from 64 to 256 produces exactly four times the instrumented index,
+resolution and trivia traversal work. They also verify delta production, candidate
+content/order and replay output. These counters protect these traversal boundaries;
+they do not prove that all merge algorithms have linear complexity. Existing
+duplicate-key, comment canonicalization, file-fallback and provenance tests pass.
+
+The same retained event-modifier case described below was rerun with the same
+ordered Workshop inputs and base. Module materialization fell from 32,568 ms to
+10,248 ms; total scoped analysis completed in 18.02 seconds (previously 61.17).
+These are local observations with cache/environment effects, not a controlled
+benchmark. After excluding `definition_module_elapsed_ms`, the complete reports
+are identical: `partial_success`, no engine failure, and the same deferred module
+and unresolved conflicts. The full-page merge and in-game behavior remain unverified.
+
+Evidence: `target/validation/definition-module-work-2026-09-17/` contains
+`after.log`, `after-out.report.json`, the empty `report.diff`, canonical reports,
+and `diagnostic.rs` (removed from normal test discovery). Complete root/CLI package
+tests passed, including the three work regressions; strict workspace Clippy,
+formatting and diff checks passed. Logs are `package-tests.log` and `clippy.log`.
+Changes were uncommitted at this checkpoint and are included in the 2026-09-19
+commits above. P-581 remained in progress pending the maintainer's complete
+`cargo workshop-probe` rerun with the installed inputs.
+
+## Workshop merge timeout and bounded repair (2026-09-16)
+
+The maintainer's full-page run, `target/workshop-probe/runs/run-zJVfOe/`, acquired
+and validated all 30 selected inputs. Download took 978,178 ms; the merge child
+was killed by the harness's 30-minute limit after 1,800,711 ms. The outer panic
+was a timeout assertion, not a Rust panic inside the merge engine. No complete
+merge output/report was produced. The last progress was at the definition
+modules around `common/estates_preload`, after 2,411 of 34,209 planned paths.
+
+A bounded reproduction retained `common/event_modifiers/00_event_modifiers.txt`
+through the public `analyze_merge` API, preserving the original ordered 30 mods,
+their installed source paths, and the analyzed base. Scope expansion included
+97 database input paths. Before the fix, it did not finish within 120 seconds.
+A 3-second macOS sample found 2,287 of 2,455 samples on the merge thread inside
+`DefinitionModuleAdapter::normalize_partition -> detach_trivia`: every
+definition stripped comments from the entire module before selecting its own
+statements, repeatedly traversing and cloning unrelated definitions.
+
+The fix selects the complete same-key definition group first, then strips its
+comments before Boolean-OR canonicalization. Existing comment/lineage cases and
+a regression for duplicate keys, surrounding definitions, and missing keys pass.
+Module-start logging now identifies the active output path, and probe failures
+distinguish timeout from process exit and include the exact log paths.
+
+The same bounded release-build analysis completed after the fix in 61.17 seconds,
+including 32,568 ms of materialization. This is one local observation, not a
+controlled throughput benchmark. Its report is `partial_success`, with no engine
+failure and one deferred module containing 12 unresolved leaf conflicts, including
+delete/modify disagreements and divergent scalar values. The unit was withheld
+as `needs_user_choice`; no arbitrary winner was applied. This was scoped analysis,
+not a completed full-page CLI merge or a commit of generated output.
+
+Evidence is under `target/validation/workshop-timeout-2026-09-16/`: `before.log`,
+`before.sample.txt`, `after.log`, `after-out.report.json`, `gaps.json`, and
+`diagnostic.rs` (the temporary reproducer, removed from normal test discovery).
+The full fixed acceptance cohort is unchanged. Retry `cargo workshop-probe` to
+use already installed inputs and verify the complete page with the repaired
+engine; that complete result remains pending.
+
+Validation: the focused definition-module regressions, complete root/CLI package
+tests (`cargo test -p foch -p foch-cli --no-fail-fast`), strict workspace Clippy,
+formatting, and diff checks passed. Package tests were run with the local
+socket/server permissions they require. Logs are `regression.log`,
+`package-tests.log`, and `clippy.log` in the same evidence directory. Changes
+were uncommitted at this checkpoint and are included in the 2026-09-19 commits
+above.
+
+## Automatic Workshop exploration (2026-09-15)
+
+The local implementation now provides `cargo workshop-probe`, a Rust test-harness
+entrypoint for newest-page selection, automatic SteamCMD input preparation,
+paired ACF validation, base preparation, actual CLI merge, and gap reporting.
+Download preparation now selects the most-recent remembered Steam account with
+automatic login enabled (or the sole eligible account); `FOCH_STEAM_ACCOUNT`
+is an optional override. It delegates credential reuse to SteamCMD and never
+silently defaults to anonymous when account discovery fails. Account selection
+is needed only when inputs require downloading.
+It reuses frozen selections and installed inputs on subsequent runs, preserves
+each attempt's logs/results, bounds subprocess time, and refuses incomplete
+inputs. See the [usage guide](../apps/foch-cli/tests/merge_quality/README.md#automatic-newest-page-exploration).
+The earlier `download.fish` handoff below is superseded by this complete workflow.
+
+P-603 is fixed locally at the public input-inventory boundary: unavailable
+enabled mod roots now cause an error before base loading or output creation.
+The CLI regression covers all/partially missing inputs, local paths and Workshop
+IDs, analysis and confirmation, base/no-base modes, force, and explicit disabling.
+No source mod or game file is changed by that check.
+
+Pipeline fixtures inject acquisition of tiny synthetic Workshop inputs, then use
+the real CLI to build/install their base and merge them. They verify preservation
+across static/event modifier directories, deterministic repeat output, reuse
+without downloading or rebuilding the base, incomplete-download rejection, and
+path/reason reporting for unsupported cross-directory duplicate names. Selection
+decoding, HTTP fetch/cache reuse, and subprocess timeout behavior are also tested.
+These tests establish automation behavior; P-581 remains in progress for complete
+real-content merge evidence.
+
+A real attempt of the same ignored test using the development build fetched and
+froze all 30 page items, started SteamCMD automatically, and observed a
+`No Connection` download error for every item even though SteamCMD exited 0.
+Input revalidation correctly failed and merge never started. The unchanged
+attempt evidence is `target/workshop-probe/runs/run-K6fbqn/`, including
+`download.stdout.log`, `download-result.json`, and `report.json`. The subsequent
+diagnostic improvement also extracts per-item SteamCMD failures into structured
+download results; it was checked against the observed error format. This is an
+input-acquisition failure, not a measured EU4 semantic gap. A live SSR response
+also corrected the page decoder to use Steam's `eresult` field.
+
+Follow-up diagnosis of the same attempt traced all 30 failures to Steam's
+`content_log.txt`: `BYldRequestDepotManifest` failed to obtain a manifest request
+code with `Access Denied`. The matching Workshop log then reported manifest
+download failure as `No connection`. The anonymous login succeeded and item
+metadata/manifest IDs were returned. The observed blocker is download
+authorization for this anonymous session; the outer message alone was misleading.
+Relevant timestamped excerpts, with original source line numbers, are preserved
+under `target/validation/steamcmd-access-denied-2026-09-15/`. The next check is an
+authenticated SteamCMD session using an account with EU4 access and
+`FOCH_STEAM_ACCOUNT`; authenticated download success has not yet been verified.
+
+A subsequent bounded check found one remembered, most-recent desktop Steam
+account with automatic login enabled. Explicitly selecting that account in
+SteamCMD, with `@NoPromptForPassword 1` and only the smallest selected Workshop
+item queued, exited 5 with `Cached credentials not found` before downloading.
+Desktop login metadata therefore did not provide reusable SteamCMD credentials
+in this environment. Logs are under
+`target/validation/steamcmd-cached-login-2026-09-15/`; no passwords or tokens were
+read or supplied. Initial interactive SteamCMD authentication was required at
+that checkpoint.
+
+After the maintainer completed SteamCMD login, the same bounded invocation
+reported `Logging in using cached credentials`, completed without password or
+Steam Guard interaction, and downloaded item `3801430887` (More Policies,
+2,067 bytes). Its descriptor ID matches the selection, and both paired ACF
+records agree on manifest `2758251771954978074` and update time `1789364990`.
+Logs are under `target/validation/steamcmd-cached-login-after-auth-2026-09-15/`.
+This verifies authenticated acquisition of one real input; the full page merge
+has not been run. The new automatic account-selection tests cover preference,
+explicit override, missing/ambiguous accounts, and disabled automatic login.
+The updated probe suite passed 9 tests (2 explicit jobs ignored); logs and
+strict workspace Clippy results are under
+`target/validation/workshop-account-reuse-2026-09-15/`. Ordinary runs now need
+only `cargo workshop-probe` while the selected account's cached login is valid.
+
+Validation: the root/CLI package suite passed apart from the two documented
+sandbox socket/server restrictions, and both restricted tests passed when rerun
+with those permissions. The final probe suite passed 7 tests (2 explicit jobs
+ignored), and strict workspace Clippy, formatting, and diff checks passed.
+The original missing-page input was rerun after the fix: exit 1, `blocked`, and
+no output directory; see the original probe's `after-fix-merge.log`.
+Final probe test logs are in
+`target/validation/workshop-probe-automation-2026-09-15/probe-tests.log`.
+
+Local Rust checks use `DEVELOPER_DIR=/Library/Developer/CommandLineTools` because
+the selected Xcode installation currently refuses linking until its license is
+accepted; no global developer-directory setting or license state was changed.
+
+## Initial newest-page probe (2026-09-15)
+
+The next P-581 probe uses the first EU4 Workshop page sorted by newest
+publication (`mostrecent`), directly in page order, to discover concrete
+failures. It is an exploratory playset, not a claim that all selected mods are
+compatible. Declared dependencies must remain visible; do not silently remove
+missing inputs or invent order overrides. The fixed product cohort is unchanged.
+
+The selection is frozen in
+[`workshop-recent-page1-2026-09-15.json`](../apps/foch-cli/tests/merge_quality/fixtures/workshop-recent-page1-2026-09-15.json),
+including the query URL, collection time, raw-page SHA-256, ranks, IDs, titles,
+published/updated times, and advertised file sizes. It contains 30 items totaling
+3,129,671,385 advertised bytes (about 3.13 GB, not measured download traffic).
+None were installed in the discovered Steam library. Workshop-page metadata is
+not installed ACF identity or verified dependency metadata.
+
+Local artifacts are under `target/validation/workshop-recent-page1-2026-09-15/`:
+
+- `source-page.html`, `foch.toml`, and `inspect.log`: frozen source page,
+  executable ordered input, and all 30 entries reported as `path=<missing>`.
+- `download.txt` and `download.fish`: prepared SteamCMD batch; not executed.
+  The maintainer runs the long download manually. Check each item's actual
+  download location and its paired ACF before resuming; SteamCMD's exit code
+  alone does not prove availability.
+- `merge.log`: the normal installed-base attempt continued through analysis
+  despite missing sources, then failed at the installed base snapshot lock with
+  sandbox `Operation not permitted`. It is not a completed real-content merge.
+- `missing-input-repro/foch.toml`, `missing-input-merge.log`, and
+  `missing-input-out/.foch/foch-merge-report.json`: bounded reproduction using
+  the previously built tiny synthetic base, the same missing Workshop IDs,
+  isolated cache/config, and a local Launcher directory. Normal merge with
+  `--confirm --non-interactive` exited 0, reported `ready`, generated/copied
+  no game files, and reported no unsupported input or engine failure.
+- `no-base-merge.log`: `--no-game-base` independently reproduced empty `READY`
+  output. This diagnostic does not validate base-aware merge semantics.
+
+This reproduces **P-603**, an input-integrity defect: missing enabled mod roots
+are silently omitted from the inventory rather than blocking analysis/export.
+`build_mod_candidates_metadata` retains `root_path=None`, and
+`build_file_inventory` skipped such candidates. The subsequent local fix and
+automatic workflow are described above; these files retain the original failure.
+No content-family semantic gap or successful real-Workshop merge is established
+by these missing-input runs. P-581 awaits installed inputs and further analysis.
+The CLI artifact and paired system Workshop ACF hashes were unchanged after the
+probe. JSON selection assertions, the reproduction report assertions, and
+`git diff --check` passed; no production source changed.
+
+## Validation recheck (2026-09-14)
+
+Both submodules were present. The following gates passed on `f0d348f`, without
+source changes or test exclusions:
+
+```fish
+cargo test -p foch --lib database
+cargo test --workspace --no-fail-fast
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+```
+
+The focused database suite passed 13 tests. The workspace run passed 1,169 root
+library tests (10 ignored), 42 CLI integration tests, 110 corpus-harness tests
+(4 ignored), 20 desktop tests, and the remaining integration and documentation
+targets. There were no failures. Ignored installed-input and full-cohort tests
+were not run.
+
+An additional CLI smoke used a tiny synthetic base reporting `v1.37.5.0`, with
+isolated data/config/cache directories and synthetic mods:
+
+- Analysis alone left the requested output directory absent.
+- Independent edits to static and event modifiers produced one
+  `CStaticModifierDataBase` unit and two output files. The static tax value
+  became `0.20`, its unchanged discipline remained `0.05`, and the event morale
+  became `0.30`. Generated-output validation reported no parse errors or
+  unresolved references.
+- Repeating the merge produced byte-identical content in both directories.
+- A mod-introduced name repeated across both directories produced
+  `unsupported_input`, with neither output file written even under `--force`.
+- SHA-256 checks of the synthetic source files were unchanged after all runs.
+
+Local logs, synthetic inputs, installed fixture base, reports, and generated
+outputs are under `target/validation/p581-2026-09-14/`. This is automated and
+synthetic-input validation, not a new installed-Workshop comparison or accepted
+cohort. P-581's real-playset comparison/scoring and manual `cargo acceptance`
+remain outstanding; no EU4 runtime test was run.
 
 ## Cross-directory database output (2026-09-10)
 
