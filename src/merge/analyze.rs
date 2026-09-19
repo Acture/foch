@@ -15,7 +15,9 @@ use crate::game::eu4::script::emit::EmitOptions;
 static VALIDATION_PLAYSET_COUNTER: AtomicU64 = AtomicU64::new(0);
 use crate::check::run_checks_with_options;
 use crate::input::request::{CheckOptions, InputRequest};
-use crate::input::{build_input_inventory_for_paths, resolve_input_from_inventory};
+use crate::input::{
+	Config, build_input_inventory_for_paths, resolve_input_from_inventory, resolve_input_summary,
+};
 use crate::model::{
 	AnalysisMode, ChannelMode, Finding, MERGE_EXECUTION_ATTESTATION_SCHEMA,
 	MERGE_PROVENANCE_ARTIFACT_PATH, MERGE_REPORT_ARTIFACT_PATH, MERGE_TRACE_ARTIFACT_PATH,
@@ -864,7 +866,7 @@ fn revalidate_generated_output(
 	let mut cleanup_error = None;
 	let mut validation_request = InputRequest::new(
 		crate::input::request::InputSource::DlcLoad(dlc_load_path.clone()),
-		request.config.clone(),
+		validation_config(request),
 	)
 	.with_base_snapshot_lease(base_snapshot_lease);
 	if let Some(expected) = request.expected_base_snapshot_identity.as_ref() {
@@ -904,6 +906,23 @@ fn revalidate_generated_output(
 		),
 		missing_localisation: count_findings_for_rules(&result.findings, &["missing-localisation"]),
 	})
+}
+
+/// The configuration that checks the generated output. A project manifest can
+/// name the game installation itself, which the merge used; the synthetic
+/// playset built for validation has no manifest, so without pinning that
+/// installation here validation would look for the game elsewhere, or fail to
+/// find one.
+fn validation_config(request: &InputRequest) -> Config {
+	let mut config: Config = request.config.clone();
+	if let Ok(summary) = resolve_input_summary(request)
+		&& let Some(game_root) = summary.game_root
+	{
+		config
+			.game_path
+			.insert(summary.game.key().to_string(), game_root);
+	}
+	config
 }
 
 fn count_findings_for_rules(findings: &[Finding], rule_ids: &[&str]) -> usize {
@@ -1494,6 +1513,29 @@ mod tests {
 		});
 
 		assert_eq!(compute_analysis_status(&report).fatal_errors, 0);
+	}
+
+	#[test]
+	fn output_validation_uses_the_game_installation_the_manifest_names() {
+		let temp: tempfile::TempDir = tempfile::tempdir().expect("temp dir");
+		let game_root: PathBuf = temp.path().join("game-root");
+		fs::create_dir_all(&game_root).expect("create game root");
+		let manifest_path: PathBuf = temp.path().join("foch.toml");
+		fs::write(
+			&manifest_path,
+			"[project]\ngame = \"eu4\"\ngame_path = \"game-root\"\n",
+		)
+		.expect("write manifest");
+		// The caller's configuration names no installation; only the manifest
+		// does, and the synthetic validation playset has no manifest.
+		let request: InputRequest =
+			InputRequest::from_manifest_path(manifest_path, Config::default());
+		assert!(request.config.game_path.is_empty());
+		let config: Config = validation_config(&request);
+		assert_eq!(
+			config.game_path.get("eu4").map(PathBuf::as_path),
+			Some(game_root.as_path())
+		);
 	}
 
 	#[test]
