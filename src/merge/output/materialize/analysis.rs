@@ -267,6 +267,11 @@ fn analyze_file(
 	}))))
 }
 
+/// With an interactive prompt, every namespace up to the first unresolved one
+/// is prompted before any namespace is staged. If staging an earlier namespace
+/// then fails the merge, the answers already given for later namespaces stay
+/// in the resolution config, which the serial loop before P-609 would not
+/// have asked for.
 fn analyze_module(
 	context: &UnitAnalysisContext<'_>,
 	entry: &MergePlanEntry,
