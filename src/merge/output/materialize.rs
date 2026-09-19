@@ -1019,13 +1019,13 @@ fn copy_file_unit_winner(
 const MERGE_MEMORY_SHARE_PERCENT: u64 = 60;
 
 /// The memory budget for units running at once: the merge's share of physical
-/// memory, less the most the process has held so far (the loaded inputs). An
-/// unknown machine size leaves the worker count as the only bound.
+/// memory, less what the process holds when units start (mostly the loaded
+/// inputs). An unknown machine size leaves the worker count as the only bound.
 fn derived_memory_budget() -> u64 {
 	let Some(physical) = crate::platform::memory::physical_memory_bytes() else {
 		return u64::MAX;
 	};
-	let resident: u64 = crate::platform::memory::peak_resident_bytes().unwrap_or(0);
+	let resident: u64 = crate::platform::memory::resident_bytes().unwrap_or(0);
 	(physical / 100 * MERGE_MEMORY_SHARE_PERCENT).saturating_sub(resident)
 }
 
