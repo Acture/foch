@@ -49,7 +49,7 @@ use crate::model::{
 use crate::project::{AppliedDepOverride, DepOverride, ResolutionMap};
 use analysis::{
 	FileAnalysis, InteractivePrompt, ModuleAnalysis, NamespaceAnalysis, UnitAnalysis,
-	UnitAnalysisContext, analyze_unit, unit_needs_analysis,
+	UnitAnalysisContext, analyze_unit, unit_needs_analysis, working_set_estimate,
 };
 use cross_file_dedup::{CrossFilePruneResult, prune_cross_file_noop_duplicates};
 use executor::{UnitSchedule, run_units};
@@ -96,6 +96,9 @@ pub(crate) struct MergeMaterializeOptions {
 	/// applied on the calling thread; an interactive conflict handler also
 	/// runs one unit at a time.
 	pub workers: NonZeroUsize,
+	/// Estimated memory, in bytes, that units being analyzed may use at once.
+	/// `None` derives it from this machine when materialization starts.
+	pub memory_budget: Option<u64>,
 }
 
 pub(crate) struct MaterializeOutput<'a> {
@@ -128,6 +131,7 @@ impl Default for MergeMaterializeOptions {
 			retained_paths: None,
 			cancellation: CancellationToken::new(),
 			workers: NonZeroUsize::MIN,
+			memory_budget: None,
 		}
 	}
 }
@@ -364,7 +368,11 @@ pub(crate) fn materialize_analyzed_input(
 	} else {
 		options.workers
 	};
-	eprintln!("[merge] materialize: start (total_paths={total_paths} workers={workers})");
+	let memory_budget: u64 = options.memory_budget.unwrap_or_else(derived_memory_budget);
+	eprintln!(
+		"[merge] materialize: start (total_paths={total_paths} workers={workers} memory_budget_mib={})",
+		memory_budget / (1024 * 1024)
+	);
 	let mut materialize_progress = MaterializeProgress::new(total_paths, progress);
 	let mut outputs = UnitOutputs::default();
 	// Units read the findings as detected; the evidence count a unit adds is
@@ -398,6 +406,7 @@ pub(crate) fn materialize_analyzed_input(
 	let entries: &[MergePlanEntry] = &plan.paths;
 	let runs_here = |index: usize| -> bool { !unit_needs_analysis(&entries[index]) };
 	let label = |index: usize| -> String { entries[index].output_path().to_string() };
+	let estimate = |index: usize| -> u64 { working_set_estimate(&input, &entries[index]) };
 	let analyze = |index: usize| -> UnitAnalysis {
 		analyze_unit(
 			&analysis_context,
@@ -431,6 +440,8 @@ pub(crate) fn materialize_analyzed_input(
 		&UnitSchedule {
 			count: entries.len(),
 			workers,
+			estimate: &estimate,
+			memory_budget,
 			runs_here: &runs_here,
 			label: &label,
 		},
@@ -1001,6 +1012,21 @@ fn copy_file_unit_winner(
 		Some(entry.output_path().to_string()),
 		[],
 	)
+}
+
+/// Share of physical memory, in percent, that merging may occupy: what the
+/// process already holds when units start, plus the units running at once.
+const MERGE_MEMORY_SHARE_PERCENT: u64 = 60;
+
+/// The memory budget for units running at once: the merge's share of physical
+/// memory, less the most the process has held so far (the loaded inputs). An
+/// unknown machine size leaves the worker count as the only bound.
+fn derived_memory_budget() -> u64 {
+	let Some(physical) = crate::platform::memory::physical_memory_bytes() else {
+		return u64::MAX;
+	};
+	let resident: u64 = crate::platform::memory::peak_resident_bytes().unwrap_or(0);
+	(physical / 100 * MERGE_MEMORY_SHARE_PERCENT).saturating_sub(resident)
 }
 
 fn record_counted_generated_output(
@@ -3184,6 +3210,8 @@ mod tests {
 			cancellation: CancellationToken::new(),
 			// Existing fixtures double as coverage of the parallel path.
 			workers: std::num::NonZeroUsize::new(4).unwrap(),
+			// Tests never depend on the memory of the machine running them.
+			memory_budget: Some(u64::MAX),
 		}
 	}
 

@@ -58,26 +58,21 @@ pub struct MergeAnalysisOptions {
 	/// `# foch: …` comments + a `.foch/foch-provenance.json` sidecar). Off by
 	/// default; when off, emitted output is byte-identical to a normal merge.
 	pub provenance: bool,
-	/// Merge units analyzed at once. Results are applied in plan order, so the
-	/// output does not depend on it; an interactive conflict handler analyzes
-	/// one unit at a time.
+	/// Most merge units analyzed at once. Results are applied in plan order, so
+	/// the output does not depend on it; fewer run while their estimated memory
+	/// does not fit, and an interactive conflict handler analyzes one at a
+	/// time.
 	pub merge_workers: NonZeroUsize,
 	/// Optional relative-path retention set for scoring callers that only need
 	/// target corpus paths. Full production merge leaves this unset.
 	pub retained_paths: Option<BTreeSet<String>>,
 }
 
-/// Upper bound on [`default_merge_workers`]. Each worker holds one unit's
-/// working set in memory, and a single large unit has been observed at
-/// several gigabytes.
-const DEFAULT_MERGE_WORKERS_CAP: NonZeroUsize = NonZeroUsize::new(4).unwrap();
-
-/// Worker count for callers that do not choose one: the available
-/// parallelism, capped by memory rather than CPU count.
+/// Worker count for callers that do not choose one: the detected available
+/// parallelism. Memory is bounded separately: a unit starts only while its
+/// estimated memory fits beside the units already running.
 pub fn default_merge_workers() -> NonZeroUsize {
-	std::thread::available_parallelism()
-		.unwrap_or(NonZeroUsize::MIN)
-		.min(DEFAULT_MERGE_WORKERS_CAP)
+	std::thread::available_parallelism().unwrap_or(NonZeroUsize::MIN)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -521,6 +516,7 @@ fn complete_merge_analysis(
 			retained_paths: effective_retained_paths,
 			cancellation: cancellation.clone(),
 			workers: options.merge_workers,
+			memory_budget: None,
 		},
 		input_result,
 		plan.clone(),

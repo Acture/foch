@@ -152,9 +152,10 @@ pub struct MergeArgs {
 	#[arg(long)]
 	pub cli_prompt: bool,
 
-	/// Merge units to analyze at once (default: available CPUs, at most 4).
-	/// Results are applied in plan order, so output does not depend on it;
-	/// interactive prompts analyze one unit at a time.
+	/// Most merge units to analyze at once (default: the detected CPU count).
+	/// Fewer run while their estimated memory would not fit; results are
+	/// applied in plan order, so output does not depend on it. Interactive
+	/// prompts analyze one unit at a time.
 	#[arg(long, value_name = "N")]
 	pub jobs: Option<NonZeroUsize>,
 }

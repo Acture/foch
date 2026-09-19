@@ -6,6 +6,7 @@
 //! cannot change the merged output.
 
 use std::collections::HashMap;
+use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -117,6 +118,28 @@ impl NamespaceAnalysis {
 	fn merged(&self) -> bool {
 		matches!(self, Self::Analyzed(outcome) if matches!(**outcome, Ok(Ok(_))))
 	}
+}
+
+/// Peak memory analyzing a unit may take, per byte of its inputs (every
+/// contributor, vanilla included). Measured with one worker on a retained
+/// 30-mod Workshop page (2026-09-19): province and country history files
+/// peaked at about 500 to 900 bytes per input byte, and the nine largest
+/// definition modules at 325 to 1,758, up to 6.9 GB for the 5 MB of scripted
+/// effects. Estimates only decide when a unit starts, never what it writes.
+const WORKING_SET_PER_INPUT_BYTE: u64 = 2_000;
+
+/// Estimated peak memory, in bytes, of analyzing `entry`.
+pub(super) fn working_set_estimate(input: &ResolvedInput, entry: &MergePlanEntry) -> u64 {
+	let input_bytes: u64 = entry
+		.target
+		.input_paths()
+		.iter()
+		.filter_map(|path| input.file_inventory.get(path))
+		.flatten()
+		.filter_map(|contributor| fs::metadata(&contributor.absolute_path).ok())
+		.map(|metadata| metadata.len())
+		.sum();
+	input_bytes.saturating_mul(WORKING_SET_PER_INPUT_BYTE)
 }
 
 /// Whether a unit's strategy has analysis worth handing to a worker; the

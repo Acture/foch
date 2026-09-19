@@ -786,14 +786,18 @@ fn parallel_output_matches_one_worker() {
 		(MergeBackendId::GumtreePcsNway, true, false),
 	] {
 		let mut serial: Option<RunSnapshot> = None;
-		for worker_count in [1, 2, 4, 8] {
+		// The last run leaves room in memory for one unit at a time, so units
+		// go through the workers strictly in turn.
+		for (worker_count, memory_budget) in
+			[(1, None), (2, None), (4, None), (8, None), (4, Some(1))]
+		{
 			let run: String = format!(
-				"{}-force-{force}-provenance-{provenance}-workers-{worker_count}",
+				"{}-force-{force}-provenance-{provenance}-workers-{worker_count}-budget-{memory_budget:?}",
 				backend.as_str()
 			);
-			// With several workers the early conflict finishes after the late
-			// one, so results arrive out of plan order.
-			let hold: bool = worker_count > 1;
+			// With several workers and room for them, the early conflict
+			// finishes after the late one, so results arrive out of plan order.
+			let hold: bool = worker_count > 1 && memory_budget.is_none();
 			let (wrapped, recorder) =
 				recording_over(backend_for(backend), move |attempt, recorder, proceed| {
 					if hold && attempt.target == EARLY_CONFLICT_PATH {
@@ -805,6 +809,9 @@ fn parallel_output_matches_one_worker() {
 			options.force = force;
 			options.provenance = provenance;
 			options.resolution_map = chosen_resolution();
+			if memory_budget.is_some() {
+				options.memory_budget = memory_budget;
+			}
 			let (result, artifacts_dir) = frozen.materialize(&run, options);
 			let merged: MaterializedMerge = result.unwrap_or_else(|error| panic!("{run}: {error}"));
 			assert!(
@@ -816,6 +823,10 @@ fn parallel_output_matches_one_worker() {
 				let late: Call = recorder.call(LATE_CONFLICT_PATH);
 				assert!(late.exited < early.exited, "{run}: {early:?} {late:?}");
 				assert!(early.on_worker() && late.on_worker(), "{run}");
+			}
+			if memory_budget.is_some() {
+				assert_eq!(recorder.max_active(), 1, "{run}");
+				assert!(recorder.calls().iter().all(Call::on_worker), "{run}");
 			}
 			let snapshot: RunSnapshot = RunSnapshot::capture(&merged, &artifacts_dir);
 			match &serial {
