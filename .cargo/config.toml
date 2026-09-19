@@ -1,4 +1,10 @@
 [alias]
+workshop-probe = [
+	"--config", 'env.FOCH_MERGE_QUALITY_ACCEPTANCE.value = "workshop-recent-probe"',
+	"--config", "env.FOCH_MERGE_QUALITY_ACCEPTANCE.force = true",
+	"test", "--locked", "--release", "-p", "foch-cli", "--test", "merge_quality_corpus",
+	"workshop_probe::workshop_recent_page", "--", "--ignored", "--exact", "--nocapture",
+]
 acceptance = [
 	"--config", 'env.FOCH_MERGE_QUALITY_ACCEPTANCE.value = "workshop-product-acceptance"',
 	"--config", "env.FOCH_MERGE_QUALITY_ACCEPTANCE.force = true",

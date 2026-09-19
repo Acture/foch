@@ -27,8 +27,10 @@ walkdir.workspace = true
 blake3 = "1.5.5"
 dirs.workspace = true
 foch = { path = "../..", features = ["test-utils"] }
+keyvalues-parser.workspace = true
 libc = "0.2.186"
 regex.workspace = true
+reqwest.workspace = true
 tempfile.workspace = true
 time.workspace = true
 tiny_http.workspace = true

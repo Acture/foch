@@ -1,0 +1,586 @@
+{
+  "purpose": "Exploratory newest-first page playset; not the fixed product acceptance cohort",
+  "collected_at": "2026-09-15T12:21:57.672199+00:00",
+  "url": "https://steamcommunity.com/workshop/browse/?appid=236850&browsesort=mostrecent&section=readytouseitems&p=1&numperpage=30",
+  "sort": "mostrecent",
+  "page": 1,
+  "page_size": 30,
+  "html_sha256": "bbdda73850f02272c6578ada0ef4ac1cbe3de14b5bf3aacc0c6073efb2d4d6af",
+  "playset_order": "Page order, rank 1 first; preserve declared dependencies without inventing overrides",
+  "items": [
+    {
+      "publishedfileid": "3801899454",
+      "title": "Converted - Observer_(19_March,_1227)",
+      "time_created": 1789433086,
+      "time_updated": 1789433086,
+      "file_size": "66903943",
+      "tags": [],
+      "rank": 1,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801899454",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801865482",
+      "title": "LegioEnhanced",
+      "time_created": 1789427135,
+      "time_updated": 1789427757,
+      "file_size": "34807124",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        }
+      ],
+      "rank": 2,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801865482",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801830029",
+      "title": "N0_Balls_FixerUpper",
+      "time_created": 1789421577,
+      "time_updated": 1789424647,
+      "file_size": "18441004",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        }
+      ],
+      "rank": 3,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801830029",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801707789",
+      "title": "Anbennar Magic System Standalone - CN",
+      "time_created": 1789406828,
+      "time_updated": 1789406828,
+      "file_size": "842716",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        },
+        {
+          "tag": "Translation",
+          "display_name": "Translation"
+        }
+      ],
+      "rank": 4,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801707789",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801706548",
+      "title": "Anbennar Magic System Standalone",
+      "time_created": 1789406733,
+      "time_updated": 1789406733,
+      "file_size": "16217099",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        },
+        {
+          "tag": "Translation",
+          "display_name": "Translation"
+        }
+      ],
+      "rank": 5,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801706548",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801666966",
+      "title": "Pro_EU_4",
+      "time_created": 1789402041,
+      "time_updated": 1789414813,
+      "file_size": "3461",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        }
+      ],
+      "rank": 6,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801666966",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801623010",
+      "title": "Everywhere at the end of time",
+      "time_created": 1789397157,
+      "time_updated": 1789397157,
+      "file_size": "780931419",
+      "tags": [
+        {
+          "tag": "Sound",
+          "display_name": "Sound"
+        }
+      ],
+      "rank": 7,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801623010",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801552753",
+      "title": "pro eu4 lettere life",
+      "time_created": 1789387364,
+      "time_updated": 1789395418,
+      "file_size": "3761",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        },
+        {
+          "tag": "Fixes",
+          "display_name": "Fixes"
+        }
+      ],
+      "rank": 8,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801552753",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801430887",
+      "title": "More Policies",
+      "time_created": 1789361487,
+      "time_updated": 1789364990,
+      "file_size": "2067",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        }
+      ],
+      "rank": 9,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801430887",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801294364",
+      "title": "Converted - HME2",
+      "time_created": 1789338031,
+      "time_updated": 1789338031,
+      "file_size": "96504135",
+      "tags": [],
+      "rank": 10,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801294364",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3801274609",
+      "title": "Auto Colonization",
+      "time_created": 1789335507,
+      "time_updated": 1789335507,
+      "file_size": "33978",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        },
+        {
+          "tag": "Utilities",
+          "display_name": "Utilities"
+        }
+      ],
+      "rank": 11,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3801274609",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800898795",
+      "title": "Colonial Office (Auto-Colonisation)",
+      "time_created": 1789300420,
+      "time_updated": 1789300420,
+      "file_size": "567330",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        }
+      ],
+      "rank": 12,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800898795",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800881421",
+      "title": "Modern Eu4 V2",
+      "time_created": 1789298484,
+      "time_updated": 1789299325,
+      "file_size": "1010969",
+      "tags": [
+        {
+          "tag": "Alternative History",
+          "display_name": "Alternative History"
+        },
+        {
+          "tag": "Map",
+          "display_name": "Map"
+        },
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        }
+      ],
+      "rank": 13,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800881421",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800854853",
+      "title": "Exponential Colonisation",
+      "time_created": 1789295391,
+      "time_updated": 1789296946,
+      "file_size": "490365",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        },
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        },
+        {
+          "tag": "Fixes",
+          "display_name": "Fixes"
+        },
+        {
+          "tag": "Utilities",
+          "display_name": "Utilities"
+        }
+      ],
+      "rank": 14,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800854853",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800798961",
+      "title": "中华秋海棠",
+      "time_created": 1789288599,
+      "time_updated": 1789392091,
+      "file_size": "318575",
+      "tags": [
+        {
+          "tag": "Expansion",
+          "display_name": "Expansion"
+        }
+      ],
+      "rank": 15,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800798961",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800319855",
+      "title": "Turkunyu MP Mod",
+      "time_created": 1789228821,
+      "time_updated": 1789298164,
+      "file_size": "437233",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        }
+      ],
+      "rank": 16,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800319855",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800261960",
+      "title": "Spain Universalis",
+      "time_created": 1789223154,
+      "time_updated": 1789225531,
+      "file_size": "356125",
+      "tags": [
+        {
+          "tag": "Trade",
+          "display_name": "Trade"
+        }
+      ],
+      "rank": 17,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800261960",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800153905",
+      "title": "Anbennar解锁特殊佣兵",
+      "time_created": 1789209942,
+      "time_updated": 1789210150,
+      "file_size": "1000077",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        },
+        {
+          "tag": "Fixes",
+          "display_name": "Fixes"
+        }
+      ],
+      "rank": 18,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800153905",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3800140536",
+      "title": "Anbennar Trainer",
+      "time_created": 1789207959,
+      "time_updated": 1789447622,
+      "file_size": "2202845",
+      "tags": [
+        {
+          "tag": "Utilities",
+          "display_name": "Utilities"
+        }
+      ],
+      "rank": 19,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3800140536",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799961927",
+      "title": "Europe Map Only",
+      "time_created": 1789177542,
+      "time_updated": 1789257965,
+      "file_size": "123633",
+      "tags": [
+        {
+          "tag": "Map",
+          "display_name": "Map"
+        }
+      ],
+      "rank": 20,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799961927",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799936009",
+      "title": "Doge Ideas Fixed",
+      "time_created": 1789173278,
+      "time_updated": 1789317476,
+      "file_size": "22952174",
+      "tags": [
+        {
+          "tag": "Utilities",
+          "display_name": "Utilities"
+        }
+      ],
+      "rank": 21,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799936009",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799843183",
+      "title": "Less Lategame Troops",
+      "time_created": 1789159963,
+      "time_updated": 1789159963,
+      "file_size": "16332",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        },
+        {
+          "tag": "Military",
+          "display_name": "Military"
+        },
+        {
+          "tag": "Fixes",
+          "display_name": "Fixes"
+        }
+      ],
+      "rank": 22,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799843183",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799800232",
+      "title": "Witcher Universalis EN",
+      "time_created": 1789155100,
+      "time_updated": 1789155523,
+      "file_size": "1914451809",
+      "tags": [
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        },
+        {
+          "tag": "graphics",
+          "display_name": "graphics"
+        },
+        {
+          "tag": "Loading Screen",
+          "display_name": "Loading Screen"
+        },
+        {
+          "tag": "Map",
+          "display_name": "Map"
+        },
+        {
+          "tag": "Missions and Decisions",
+          "display_name": "Missions and Decisions"
+        },
+        {
+          "tag": "National Ideas",
+          "display_name": "National Ideas"
+        },
+        {
+          "tag": "New Nations",
+          "display_name": "New Nations"
+        },
+        {
+          "tag": "Religion",
+          "display_name": "Religion"
+        },
+        {
+          "tag": "Sound",
+          "display_name": "Sound"
+        }
+      ],
+      "rank": 23,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799800232",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799711205",
+      "title": "Scuffbennar 2",
+      "time_created": 1789145125,
+      "time_updated": 1789146892,
+      "file_size": "2402011",
+      "tags": [
+        {
+          "tag": "Alternative History",
+          "display_name": "Alternative History"
+        }
+      ],
+      "rank": 24,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799711205",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799427795",
+      "title": "Voltaire's New Nightmare More Cultures",
+      "time_created": 1789092772,
+      "time_updated": 1789190694,
+      "file_size": "25622071",
+      "tags": [
+        {
+          "tag": "Map",
+          "display_name": "Map"
+        },
+        {
+          "tag": "Historical",
+          "display_name": "Historical"
+        }
+      ],
+      "rank": 25,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799427795",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799240584",
+      "title": "The levantine order",
+      "time_created": 1789065147,
+      "time_updated": 1789065147,
+      "file_size": "3003245",
+      "tags": [
+        {
+          "tag": "Alternative History",
+          "display_name": "Alternative History"
+        },
+        {
+          "tag": "Religion",
+          "display_name": "Religion"
+        },
+        {
+          "tag": "Missions and Decisions",
+          "display_name": "Missions and Decisions"
+        },
+        {
+          "tag": "Expansion",
+          "display_name": "Expansion"
+        }
+      ],
+      "rank": 26,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799240584",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799211447",
+      "title": "Gecko Sunday Fork",
+      "time_created": 1789061646,
+      "time_updated": 1789313799,
+      "file_size": "133401201",
+      "tags": [
+        {
+          "tag": "Balance",
+          "display_name": "Balance"
+        }
+      ],
+      "rank": 27,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799211447",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799116221",
+      "title": "一键全科技",
+      "time_created": 1789050600,
+      "time_updated": 1789084761,
+      "file_size": "736413",
+      "tags": [
+        {
+          "tag": "Technologies",
+          "display_name": "Technologies"
+        },
+        {
+          "tag": "Utilities",
+          "display_name": "Utilities"
+        }
+      ],
+      "rank": 28,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799116221",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799063628",
+      "title": "Vanilla QoL",
+      "time_created": 1789043161,
+      "time_updated": 1789395324,
+      "file_size": "5882285",
+      "tags": [
+        {
+          "tag": "Fixes",
+          "display_name": "Fixes"
+        },
+        {
+          "tag": "Gameplay",
+          "display_name": "Gameplay"
+        }
+      ],
+      "rank": 29,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799063628",
+      "installed_at_collection": false
+    },
+    {
+      "publishedfileid": "3799017635",
+      "title": "东宁重建大明拓展",
+      "time_created": 1789034628,
+      "time_updated": 1789034628,
+      "file_size": "5985",
+      "tags": [
+        {
+          "tag": "Decisions",
+          "display_name": "Decisions"
+        }
+      ],
+      "rank": 30,
+      "url": "https://steamcommunity.com/sharedfiles/filedetails/?id=3799017635",
+      "installed_at_collection": false
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::game::eu4::content::{
 	ContentFamilyDescriptor, ContentLoadPolicy, MergePolicies, NamedContainerPolicy,
@@ -127,9 +128,11 @@ pub(crate) fn merge_semantic_structural_file(
 	interactive_handler: Option<&mut (dyn ConflictHandler + '_)>,
 	interactive_config_path: Option<&Path>,
 ) -> Result<StructuralMergeOutput, StructuralMergeFailure> {
+	let started = Instant::now();
+	eprintln!("[merge] structural file: start {target_path}");
 	let vanilla =
 		parse_vanilla_for_stale_detection(target_path, contributors, context.script_cache)?;
-	finish_semantic_structural_merge(
+	let result = finish_semantic_structural_merge(
 		target_path,
 		contributors,
 		context,
@@ -139,7 +142,12 @@ pub(crate) fn merge_semantic_structural_file(
 		|resolution_map, context| {
 			run_semantic_structural_file_engine(target_path, contributors, context, resolution_map)
 		},
-	)
+	);
+	eprintln!(
+		"[merge] structural file: done {target_path} elapsed_ms={}",
+		started.elapsed().as_millis()
+	);
+	result
 }
 
 pub(crate) fn merge_semantic_definition_module(

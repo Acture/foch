@@ -1313,6 +1313,7 @@ fn stage_cross_file_module_namespace<'a>(
 	emit_options: &EmitOptions,
 ) -> Result<NamespaceStaging<'a>, MergeError> {
 	let output_path: &str = namespace.output_path.as_str();
+	eprintln!("[merge] definition module: start {output_path}");
 	// The descriptor comes from this namespace's own output path: the
 	// extractors dispatch on the directory a definition was read from.
 	let Some(descriptor) = profile.classify_content_family(Path::new(output_path)) else {

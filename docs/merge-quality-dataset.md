@@ -43,6 +43,14 @@ required before making a product-quality claim.
 
 ## Input identity
 
+For automatic exploratory testing of the newest Workshop page, use
+`cargo workshop-probe`. It freezes the page, prepares unavailable inputs through
+SteamCMD, verifies ACF identities, prepares base data, runs the actual merge, and
+records outputs or failure diagnostics. Its selection and per-attempt reports
+live under `target/workshop-probe`; it does not append exploratory results to the
+fixed-cohort streams. See the [probe guide](../apps/foch-cli/tests/merge_quality/README.md#automatic-newest-page-exploration)
+for authentication, resuming, artifact paths, and the evidence boundary.
+
 For each Steam library, discovery pairs:
 
 - `steamapps/workshop/content/236850`; and

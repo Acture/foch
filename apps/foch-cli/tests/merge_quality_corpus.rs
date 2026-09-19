@@ -7,6 +7,9 @@ mod acceptance;
 #[path = "merge_quality/static_modifiers_probe.rs"]
 mod static_modifiers_probe;
 
+#[path = "merge_quality/workshop_probe/mod.rs"]
+mod workshop_probe;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
