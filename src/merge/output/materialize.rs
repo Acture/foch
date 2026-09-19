@@ -93,8 +93,9 @@ pub(crate) struct MergeMaterializeOptions {
 	pub retained_paths: Option<BTreeSet<String>>,
 	pub cancellation: CancellationToken,
 	/// Units analyzed at once. With one worker every unit is analyzed and
-	/// applied on the calling thread; an interactive conflict handler also
-	/// runs one unit at a time.
+	/// applied on the calling thread. With several and an interactive conflict
+	/// handler, a unit that could prompt is analyzed again on the calling
+	/// thread, in plan order, while every worker is paused.
 	pub workers: NonZeroUsize,
 	/// Estimated memory, in bytes, that units being analyzed may use at once.
 	/// `None` derives it from this machine when materialization starts.
@@ -362,12 +363,11 @@ pub(crate) fn materialize_analyzed_input(
 	let materialize_started = Instant::now();
 	let total_paths = plan.paths.len();
 	let mut interactive_handler = options.interactive_conflict_handler.take();
-	// Prompts and the resolutions they persist must follow plan order.
-	let workers: NonZeroUsize = if interactive_handler.is_some() {
-		NonZeroUsize::MIN
-	} else {
-		options.workers
-	};
+	// Prompts, and the resolutions they persist, must follow plan order: a
+	// unit that could prompt is analyzed again here when its turn comes.
+	let prompts: bool =
+		interactive_handler.is_some() && options.interactive_resolution_config_path.is_some();
+	let workers: NonZeroUsize = options.workers;
 	let memory_budget: u64 = options.memory_budget.unwrap_or_else(derived_memory_budget);
 	eprintln!(
 		"[merge] materialize: start (total_paths={total_paths} workers={workers} memory_budget_mib={})",
@@ -436,6 +436,7 @@ pub(crate) fn materialize_analyzed_input(
 		materialize_progress.tick();
 		Ok(())
 	};
+	let redo_here = |analysis: &UnitAnalysis| -> bool { prompts && analysis.could_prompt() };
 	run_units(
 		&UnitSchedule {
 			count: entries.len(),
@@ -448,6 +449,7 @@ pub(crate) fn materialize_analyzed_input(
 		&options.cancellation,
 		&analyze,
 		&mut analyze_here,
+		&redo_here,
 		&mut apply,
 	)?;
 	materialize_progress.finish();

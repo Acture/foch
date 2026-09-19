@@ -61,9 +61,8 @@ pub struct MergeAnalysisOptions {
 	/// default; when off, emitted output is byte-identical to a normal merge.
 	pub provenance: bool,
 	/// Most merge units analyzed at once. Results are applied in plan order, so
-	/// the output does not depend on it; fewer run while their estimated memory
-	/// does not fit, and an interactive conflict handler analyzes one at a
-	/// time.
+	/// the output does not depend on it, and fewer run while their estimated
+	/// memory does not fit. Interactive prompts still come in plan order.
 	pub merge_workers: NonZeroUsize,
 	/// Optional relative-path retention set for scoring callers that only need
 	/// target corpus paths. Full production merge leaves this unset.
