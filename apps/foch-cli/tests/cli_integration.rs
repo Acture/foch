@@ -359,6 +359,71 @@ path = "local-mod"
 }
 
 #[test]
+fn merge_rejects_missing_enabled_inputs_before_base_loading_or_export() {
+	let tmp: TempDir = TempDir::new().unwrap();
+	let present: PathBuf = tmp.path().join("present");
+	write_descriptor(&present, "Present");
+	write_script_file(
+		&present,
+		"common/scripted_effects/test.txt",
+		"present = { add_prestige = 1 }",
+	);
+	let manifest: PathBuf = tmp.path().join("foch.toml");
+	for partial in [false, true] {
+		let present_entry: &str = if partial {
+			"[[project.mods]]\npath = 'present'\n"
+		} else {
+			""
+		};
+		fs::write(&manifest, format!("[project]\ngame = 'eu4'\n{present_entry}[[project.mods]]\nid = 'missing-local'\npath = 'missing'\n[[project.mods]]\nsteam_id = '999999999999999999'\n")).unwrap();
+		for no_base in [false, true] {
+			for confirm in [false, true] {
+				let out: PathBuf = tmp
+					.path()
+					.join(format!("out-{partial}-{no_base}-{confirm}"));
+				let mut args: Vec<&str> = vec![
+					"merge",
+					manifest.to_str().unwrap(),
+					"--out",
+					out.to_str().unwrap(),
+					"--non-interactive",
+					"--force",
+				];
+				if no_base {
+					args.push("--no-game-base");
+				}
+				if confirm {
+					args.push("--confirm");
+				}
+				let (code, stdout, stderr): (i32, String, String) = run_foch(&args, tmp.path());
+				assert_eq!(code, 1, "{stdout}\n{stderr}");
+				assert!(
+					stderr.contains("missing-local") && stderr.contains("999999999999999999"),
+					"{stderr}"
+				);
+				assert!(stderr.contains("unavailable enabled mod"), "{stderr}");
+				assert!(!out.exists(), "missing input must not publish output");
+			}
+		}
+	}
+	fs::write(&manifest, "[project]\ngame = 'eu4'\n[[project.mods]]\npath = 'present'\n[[project.mods]]\npath = 'missing'\nenabled = false\n").unwrap();
+	let out: PathBuf = tmp.path().join("disabled-out");
+	let (code, stdout, stderr): (i32, String, String) = run_foch(
+		&[
+			"merge",
+			manifest.to_str().unwrap(),
+			"--out",
+			out.to_str().unwrap(),
+			"--no-game-base",
+			"--confirm",
+			"--non-interactive",
+		],
+		tmp.path(),
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+}
+
+#[test]
 fn input_inspect_does_not_initialize_configuration() {
 	let tmp = TempDir::new().expect("tempdir");
 	let config_dir = tmp.path().join("absent-config");

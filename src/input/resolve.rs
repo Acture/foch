@@ -594,6 +594,24 @@ pub(crate) fn build_input_inventory_for_paths(
 		}
 	};
 	let mods = build_mod_candidates_metadata(&source_root, &config, &playlist);
+	let unavailable: Vec<String> = mods
+		.iter()
+		.filter(|item| item.root_path.as_ref().is_none_or(|root| !root.is_dir()))
+		.map(|item| match &item.root_path {
+			Some(root) => format!("{} ({})", item.mod_id, root.display()),
+			None => item.mod_id.clone(),
+		})
+		.collect();
+	if !unavailable.is_empty() {
+		return Err(InputResolveError {
+			kind: InputResolveErrorKind::Io,
+			path: source_path.clone(),
+			message: format!(
+				"unavailable enabled mod inputs: {}; install them or explicitly disable/remove them from the playset",
+				unavailable.join(", ")
+			),
+		});
+	}
 	let optional_game_root = resolve_game_root(&config, &playlist.game);
 	let (base_game_root, mod_cache_game_version) = if include_game_base {
 		let (game_root, game_version) = resolve_game_root_and_version(&config, &playlist.game)
@@ -1025,6 +1043,7 @@ pub(crate) fn build_mod_candidates_metadata(
 
 	entries
 		.into_iter()
+		.filter(|entry| entry.enabled)
 		.map(|entry| {
 			let mod_id = mod_id_for_entry(&entry);
 
