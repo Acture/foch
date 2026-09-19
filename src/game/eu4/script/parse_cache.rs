@@ -1,5 +1,7 @@
 use super::parser::{ParseResult, parse_clausewitz_content, parse_clausewitz_file};
-use crate::platform::cache_store::{cache_version_namespace, default_foch_cache_dir};
+use crate::platform::cache_store::{
+	cache_version_namespace, default_foch_cache_dir, write_atomically,
+};
 use filetime::{FileTime, set_file_mtime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -213,13 +215,7 @@ fn store_parse_cache_entry(path: &Path, entry: &ParseCacheEntry) {
 	let Ok(raw) = bincode::serialize(entry) else {
 		return;
 	};
-	let tmp = path.with_extension(format!("bin.{}.tmp", std::process::id()));
-	if fs::write(&tmp, raw).is_err() {
-		return;
-	}
-	if fs::rename(&tmp, path).is_err() {
-		let _ = fs::remove_file(tmp);
-	}
+	let _ = write_atomically(path, &raw);
 }
 
 pub fn cache_stats() -> CacheStats {

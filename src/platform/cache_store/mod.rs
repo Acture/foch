@@ -1,8 +1,9 @@
 use semver::Version;
 use std::fmt;
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) mod generation;
 mod layer;
@@ -46,6 +47,41 @@ impl From<io::Error> for CacheError {
 }
 
 const DEFAULT_CACHE_CAP_BYTES: u64 = 1 << 30;
+
+static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Publish `bytes` at `path` through a temporary sibling that no other writer
+/// shares, then rename it into place. Merge workers store cache entries
+/// concurrently, and two writers of the same entry must not truncate or rename
+/// one temporary file under each other; the last complete rename wins.
+pub(crate) fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
+	let extension: String = path
+		.extension()
+		.map(|extension| extension.to_string_lossy().into_owned())
+		.unwrap_or_default();
+	let (temporary, mut file) = loop {
+		let sequence: u64 = TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+		let temporary: PathBuf =
+			path.with_extension(format!("{extension}.{}.{sequence}.tmp", std::process::id()));
+		match OpenOptions::new()
+			.write(true)
+			.create_new(true)
+			.open(&temporary)
+		{
+			Ok(file) => break (temporary, file),
+			Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+			Err(error) => return Err(error),
+		}
+	};
+	let written: io::Result<()> = file.write_all(bytes).and_then(|()| {
+		drop(file);
+		fs::rename(&temporary, path)
+	});
+	if written.is_err() {
+		let _ = fs::remove_file(&temporary);
+	}
+	written
+}
 
 pub fn cache_cap_bytes() -> u64 {
 	std::env::var("FOCH_CACHE_MAX_BYTES")
@@ -127,5 +163,31 @@ mod tests {
 				.join("target")
 				.join("foch-cache")
 		);
+	}
+
+	#[test]
+	fn concurrent_writers_of_one_entry_each_publish_a_complete_file() {
+		let root: tempfile::TempDir = tempfile::tempdir().expect("cache root");
+		let entry: std::path::PathBuf = root.path().join("entry.bin");
+		// Each payload is recognisable in full, so a torn or mixed file fails.
+		let payloads: Vec<Vec<u8>> = (0..4u8).map(|writer| vec![writer; 256 * 1024]).collect();
+		std::thread::scope(|scope| {
+			for payload in &payloads {
+				let entry: &std::path::Path = &entry;
+				scope.spawn(move || {
+					for _ in 0..25 {
+						super::write_atomically(entry, payload).expect("write entry");
+					}
+				});
+			}
+		});
+		let published: Vec<u8> = std::fs::read(&entry).expect("read entry");
+		assert!(payloads.contains(&published), "the entry mixes writers");
+		let leftovers: Vec<std::ffi::OsString> = std::fs::read_dir(root.path())
+			.expect("list cache root")
+			.map(|item| item.expect("cache entry").file_name())
+			.filter(|name| name != "entry.bin")
+			.collect();
+		assert!(leftovers.is_empty(), "{leftovers:?}");
 	}
 }
