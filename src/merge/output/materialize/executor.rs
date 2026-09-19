@@ -428,6 +428,37 @@ mod tests {
 		panic!("unit {index} must be analyzed on a worker")
 	}
 
+	/// Cancels `cancellation` if `run` outlives twice the gate timeout, so a
+	/// scheduler that stalls fails the test with `Cancelled` instead of hanging.
+	fn with_watchdog<R>(cancellation: &CancellationToken, run: impl FnOnce() -> R) -> R {
+		let (done, finished) = std::sync::mpsc::channel::<()>();
+		thread::scope(|scope| {
+			scope.spawn(move || {
+				if matches!(
+					finished.recv_timeout(GATE_TIMEOUT * 2),
+					Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+				) {
+					cancellation.cancel();
+				}
+			});
+			let result: R = run();
+			drop(done);
+			result
+		})
+	}
+
+	fn run_guarded<T: Send>(
+		schedule: &UnitSchedule<'_>,
+		analyze: &(dyn Fn(usize) -> T + Sync),
+		analyze_here: &mut dyn FnMut(usize) -> T,
+		apply: &mut dyn FnMut(usize, T) -> Result<(), MergeError>,
+	) -> Result<(), MergeError> {
+		let cancellation: CancellationToken = CancellationToken::new();
+		with_watchdog(&cancellation, || {
+			run_units(schedule, &cancellation, analyze, analyze_here, apply)
+		})
+	}
+
 	#[test]
 	fn results_apply_in_index_order_whatever_order_they_finish() {
 		let gate: Gate = Gate::default();
@@ -440,9 +471,8 @@ mod tests {
 			index * 10
 		};
 		let mut applied: Vec<(usize, usize)> = Vec::new();
-		run_units(
+		run_guarded(
 			&schedule(4, 4),
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |index, value| {
@@ -481,9 +511,8 @@ mod tests {
 			index
 		};
 		let mut applied: Vec<usize> = Vec::new();
-		run_units(
+		run_guarded(
 			&schedule(count, 3),
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |index, _| {
@@ -524,9 +553,8 @@ mod tests {
 			}
 			index
 		};
-		run_units(
+		run_guarded(
 			&schedule(count, worker_count),
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |_, _| {
@@ -559,9 +587,8 @@ mod tests {
 			}
 			index
 		};
-		let error: MergeError = run_units(
+		let error: MergeError = run_guarded(
 			&schedule(20, 2),
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |index, _| {
@@ -591,9 +618,8 @@ mod tests {
 			index
 		};
 		let payload = catch_unwind(AssertUnwindSafe(|| {
-			run_units(
+			run_guarded(
 				&schedule(10, 4),
-				&CancellationToken::new(),
 				&analyze,
 				&mut not_here,
 				&mut |index, _| {
@@ -611,19 +637,21 @@ mod tests {
 	fn cancellation_stops_before_the_next_unit_is_applied() {
 		let cancellation: CancellationToken = CancellationToken::new();
 		let mut applied: Vec<usize> = Vec::new();
-		let error: MergeError = run_units(
-			&schedule(50, 3),
-			&cancellation,
-			&|index: usize| index,
-			&mut not_here,
-			&mut |index, _| {
-				applied.push(index);
-				if index == 4 {
-					cancellation.cancel();
-				}
-				Ok(())
-			},
-		)
+		let error: MergeError = with_watchdog(&cancellation, || {
+			run_units(
+				&schedule(50, 3),
+				&cancellation,
+				&|index: usize| index,
+				&mut not_here,
+				&mut |index, _| {
+					applied.push(index);
+					if index == 4 {
+						cancellation.cancel();
+					}
+					Ok(())
+				},
+			)
+		})
 		.unwrap_err();
 		assert!(matches!(error, MergeError::Cancelled), "{error}");
 		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
@@ -635,9 +663,8 @@ mod tests {
 		// Each unit is applied before the next is analyzed, as the serial loop
 		// always did; interactive prompts rely on it.
 		let steps: Mutex<Vec<(&str, usize)>> = Mutex::new(Vec::new());
-		run_units(
+		run_guarded(
 			&schedule(4, 1),
-			&CancellationToken::new(),
 			&|index: usize| -> usize { panic!("unit {index} reached a worker") },
 			&mut |index| {
 				assert_eq!(thread::current().id(), caller);
@@ -664,25 +691,27 @@ mod tests {
 		// Unit zero runs on the coordinator after the queue is filled. It
 		// cancels, then keeps the coordinator from leaving for a while, which
 		// is when idle workers would start queued units if they ignored it.
-		let error: MergeError = run_units(
-			&UnitSchedule {
-				runs_here: &runs_here,
-				..schedule(40, 2)
-			},
-			&cancellation,
-			&|index: usize| -> usize {
-				if cancellation.is_cancelled() {
-					*started_after_cancel.lock().unwrap() += 1;
-				}
-				index
-			},
-			&mut |index| {
-				cancellation.cancel();
-				thread::sleep(EXTRA_WORK_WINDOW);
-				index
-			},
-			&mut |_, _| Ok(()),
-		)
+		let error: MergeError = with_watchdog(&cancellation, || {
+			run_units(
+				&UnitSchedule {
+					runs_here: &runs_here,
+					..schedule(40, 2)
+				},
+				&cancellation,
+				&|index: usize| -> usize {
+					if cancellation.is_cancelled() {
+						*started_after_cancel.lock().unwrap() += 1;
+					}
+					index
+				},
+				&mut |index| {
+					cancellation.cancel();
+					thread::sleep(EXTRA_WORK_WINDOW);
+					index
+				},
+				&mut |_, _| Ok(()),
+			)
+		})
 		.unwrap_err();
 		assert!(matches!(error, MergeError::Cancelled), "{error}");
 		// A worker that checked just before the token changed may still start
@@ -700,12 +729,11 @@ mod tests {
 			index
 		};
 		let mut applied: Vec<usize> = Vec::new();
-		run_units(
+		run_guarded(
 			&UnitSchedule {
 				runs_here: &runs_here,
 				..schedule(12, 3)
 			},
-			&CancellationToken::new(),
 			&analyze,
 			&mut |index| {
 				assert!(runs_here(index), "unit {index} was analyzed here");
@@ -757,13 +785,12 @@ mod tests {
 			exit(&gate, index);
 			index
 		};
-		run_units(
+		run_guarded(
 			&UnitSchedule {
 				estimate: &|_| 10,
 				memory_budget: 25,
 				..schedule(count, 3)
 			},
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |_, _| Ok(()),
@@ -792,13 +819,12 @@ mod tests {
 			index
 		};
 		let estimates: [u64; 2] = [10, 20];
-		run_units(
+		run_guarded(
 			&UnitSchedule {
 				estimate: &|index| estimates[index],
 				memory_budget: 25,
 				..schedule(2, 2)
 			},
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |_, _| Ok(()),
@@ -825,13 +851,12 @@ mod tests {
 		};
 		let estimates: [u64; 5] = [1, 1, 100, 1, 1];
 		let mut applied: Vec<usize> = Vec::new();
-		run_units(
+		run_guarded(
 			&UnitSchedule {
 				estimate: &|index| estimates[index],
 				memory_budget: 25,
 				..schedule(5, 3)
 			},
-			&CancellationToken::new(),
 			&analyze,
 			&mut not_here,
 			&mut |index, _| {
@@ -861,9 +886,8 @@ mod tests {
 	#[test]
 	fn workers_have_room_for_deeply_nested_scripts() {
 		let mut applied: Vec<usize> = Vec::new();
-		run_units(
+		run_guarded(
 			&schedule(4, 2),
-			&CancellationToken::new(),
 			&|_: usize| consume_stack(1024),
 			&mut not_here,
 			&mut |_, depth_sum| {

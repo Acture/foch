@@ -731,6 +731,8 @@ pub struct MergeReport {
 	pub definition_module_generated_count: usize,
 	#[serde(default)]
 	pub definition_module_blocked_count: usize,
+	/// Summed analysis and apply time of every definition module. Modules
+	/// analyzed on different workers overlap, so the sum can exceed wall time.
 	#[serde(default)]
 	pub definition_module_elapsed_ms: u64,
 	/// Unchanged vanilla base-game CopyThrough files intentionally not written

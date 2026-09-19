@@ -64,6 +64,25 @@ const LOCALISATION_PATH: &str = "localisation/par_l_english.yml";
 const OVERLAY_PATH: &str = "gfx/interface/par_icon.dds";
 const SAFE_FILE_COUNT: usize = 8;
 
+/// Cancels `cancellation` if `run` outlives twice the deadlock guard, so a
+/// scheduler that stalls fails the test with `Cancelled` instead of hanging.
+fn with_watchdog<R>(cancellation: &CancellationToken, run: impl FnOnce() -> R) -> R {
+	let (done, finished) = std::sync::mpsc::channel::<()>();
+	thread::scope(|scope| {
+		scope.spawn(move || {
+			if matches!(
+				finished.recv_timeout(DEADLOCK_GUARD * 2),
+				Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+			) {
+				cancellation.cancel();
+			}
+		});
+		let result: R = run();
+		drop(done);
+		result
+	})
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 	mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -189,18 +208,21 @@ impl FrozenPlayset {
 	) -> (Result<MaterializedMerge, MergeError>, PathBuf) {
 		let artifacts_dir: PathBuf = self.root.join("runs").join(run);
 		let target_dir: PathBuf = self.root.join("target");
-		let result: Result<MaterializedMerge, MergeError> = materialize_analyzed_input(
-			self.request.clone(),
-			MaterializeOutput {
-				artifacts_dir: &artifacts_dir,
-				prior_dir: None,
-				target_dir: &target_dir,
-			},
-			options,
-			input,
-			self.plan.clone(),
-			None,
-		);
+		let cancellation: CancellationToken = options.cancellation.clone();
+		let result: Result<MaterializedMerge, MergeError> = with_watchdog(&cancellation, || {
+			materialize_analyzed_input(
+				self.request.clone(),
+				MaterializeOutput {
+					artifacts_dir: &artifacts_dir,
+					prior_dir: None,
+					target_dir: &target_dir,
+				},
+				options,
+				input,
+				self.plan.clone(),
+				None,
+			)
+		});
 		(result, artifacts_dir)
 	}
 }
@@ -1105,7 +1127,12 @@ fn cancelling_mid_run_returns_cancelled_and_leaves_no_worker_running() {
 	for worker_count in [1, 4] {
 		let cancellation: CancellationToken = CancellationToken::new();
 		let cancel: CancellationToken = cancellation.clone();
+		let started_after_cancel: Arc<AtomicUsize> = Arc::default();
+		let late_starts: Arc<AtomicUsize> = Arc::clone(&started_after_cancel);
 		let (backend, recorder) = recording(move |attempt, _, proceed| {
+			if cancel.is_cancelled() {
+				late_starts.fetch_add(1, Ordering::SeqCst);
+			}
 			if attempt.position == 3 {
 				cancel.cancel();
 			}
@@ -1123,15 +1150,17 @@ fn cancelling_mid_run_returns_cancelled_and_leaves_no_worker_running() {
 			result.as_ref().err()
 		);
 		assert_eq!(active_at_return, 0, "{run}: an analysis outlived the call");
+		let started_late: usize = started_after_cancel.load(Ordering::SeqCst);
 		if worker_count == 1 {
 			// The serial loop checks before every unit and stops at the next.
 			assert_eq!(started_at_return, 3, "{run}");
+			assert_eq!(started_late, 0, "{run}");
 		} else {
-			// Units already running when the token was cancelled finish; the
-			// executor tests pin down that queued ones are skipped.
+			// Another worker may have claimed a unit just before the token
+			// changed; none claims a second one after it.
 			assert!(
-				(3..3 + worker_count).contains(&started_at_return),
-				"{run}: {started_at_return}"
+				started_late < worker_count,
+				"{run}: {started_late} units started after cancellation"
 			);
 		}
 		// Nothing keeps running after the call returns.
