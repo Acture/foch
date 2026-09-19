@@ -24,10 +24,11 @@ use crate::merge::error::MergeError;
 /// instead of failing one unit.
 pub(crate) const MERGE_THREAD_STACK_SIZE: usize = 64 * 1024 * 1024;
 
-/// Analyzed units each worker may hold ahead of the unit being applied. The
-/// bound keeps one slow unit from letting finished results pile up without
-/// limit behind it.
-const PENDING_UNITS_PER_WORKER: usize = 16;
+/// Units each worker may have dispatched ahead of the unit being applied. A
+/// finished result holds little more than its rendered output, so the bound is
+/// loose enough for workers to keep going past a slow unit; at 16 per worker,
+/// a real window with a 9 s unit took a third longer.
+const PENDING_UNITS_PER_WORKER: usize = 256;
 /// How often the coordinator wakes while waiting, to notice cancellation and
 /// report long-running units.
 const HEARTBEAT: Duration = Duration::from_secs(1);
@@ -40,6 +41,12 @@ const SLOW_UNIT: Duration = Duration::from_secs(10);
 pub(super) struct UnitSchedule<'a> {
 	pub(super) count: usize,
 	pub(super) workers: NonZeroUsize,
+	/// Estimated peak memory, in bytes, of analyzing one unit.
+	pub(super) estimate: &'a dyn Fn(usize) -> u64,
+	/// Estimated memory the units handed to workers may use at once. A unit
+	/// is handed over only while its estimate fits beside those not yet
+	/// finished; one larger than the whole budget runs alone.
+	pub(super) memory_budget: u64,
 	/// Units with nothing worth handing to a worker; the coordinator analyzes
 	/// them itself when their turn to be applied comes.
 	pub(super) runs_here: &'a dyn Fn(usize) -> bool,
@@ -195,6 +202,11 @@ fn coordinate<T: Send>(
 	let mut next_apply: usize = 0;
 	// Units handed to workers and not yet applied.
 	let mut outstanding: usize = 0;
+	// Estimates of units handed to workers and not yet finished.
+	let mut unfinished_estimates: BTreeMap<usize, u64> = BTreeMap::new();
+	let mut unfinished_bytes: u64 = 0;
+	// The estimate of the unit waiting for memory, so it is taken only once.
+	let mut waiting_estimate: Option<(usize, u64)> = None;
 	let mut finished: BTreeMap<usize, thread::Result<T>> = BTreeMap::new();
 	let mut in_flight: BTreeMap<usize, (usize, Instant)> = BTreeMap::new();
 	let mut last_slow_report: Instant = Instant::now();
@@ -203,7 +215,19 @@ fn coordinate<T: Send>(
 		cancellation.check()?;
 		while next_dispatch < schedule.count && outstanding < window {
 			if !(schedule.runs_here)(next_dispatch) {
+				let estimate: u64 = match waiting_estimate {
+					Some((index, estimate)) if index == next_dispatch => estimate,
+					_ => (schedule.estimate)(next_dispatch),
+				};
+				if unfinished_bytes > 0
+					&& unfinished_bytes.saturating_add(estimate) > schedule.memory_budget
+				{
+					waiting_estimate = Some((next_dispatch, estimate));
+					break;
+				}
 				jobs.send(next_dispatch).map_err(|_| workers_exited())?;
+				unfinished_estimates.insert(next_dispatch, estimate);
+				unfinished_bytes = unfinished_bytes.saturating_add(estimate);
 				outstanding += 1;
 			}
 			next_dispatch += 1;
@@ -239,6 +263,8 @@ fn coordinate<T: Send>(
 				elapsed,
 			}) => {
 				in_flight.remove(&index);
+				let estimate: u64 = unfinished_estimates.remove(&index).unwrap_or_default();
+				unfinished_bytes = unfinished_bytes.saturating_sub(estimate);
 				if elapsed >= SLOW_UNIT {
 					eprintln!(
 						"[merge] materialize: unit done {} on {} elapsed_ms={}",
@@ -383,10 +409,16 @@ mod tests {
 		format!("unit {index}")
 	}
 
+	fn no_estimate(_: usize) -> u64 {
+		0
+	}
+
 	fn schedule<'a>(count: usize, worker_count: usize) -> UnitSchedule<'a> {
 		UnitSchedule {
 			count,
 			workers: workers(worker_count),
+			estimate: &no_estimate,
+			memory_budget: u64::MAX,
 			runs_here: &on_workers,
 			label: &label,
 		}
@@ -634,10 +666,8 @@ mod tests {
 		// is when idle workers would start queued units if they ignored it.
 		let error: MergeError = run_units(
 			&UnitSchedule {
-				count: 40,
-				workers: workers(2),
 				runs_here: &runs_here,
-				label: &label,
+				..schedule(40, 2)
 			},
 			&cancellation,
 			&|index: usize| -> usize {
@@ -672,10 +702,8 @@ mod tests {
 		let mut applied: Vec<usize> = Vec::new();
 		run_units(
 			&UnitSchedule {
-				count: 12,
-				workers: workers(3),
 				runs_here: &runs_here,
-				label: &label,
+				..schedule(12, 3)
 			},
 			&CancellationToken::new(),
 			&analyze,
@@ -691,6 +719,133 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(applied, (0..12).collect::<Vec<usize>>());
+	}
+
+	/// Records a unit's start and whether any other unit is running then.
+	fn enter(gate: &Gate, index: usize) -> (usize, usize) {
+		let mut entered: (usize, usize) = (0, 0);
+		gate.update(|progress| {
+			entered = (progress.started, progress.active);
+			progress.started += 1;
+			progress.active += 1;
+			progress.max_active = progress.max_active.max(progress.active);
+			progress.threads.push(Some(format!("enter {index}")));
+		});
+		entered
+	}
+
+	fn exit(gate: &Gate, index: usize) {
+		gate.update(|progress| {
+			progress.active -= 1;
+			progress.finished.push(index);
+		});
+	}
+
+	#[test]
+	fn units_start_only_while_their_estimates_fit_the_memory_budget() {
+		let gate: Gate = Gate::default();
+		let count: usize = 6;
+		let analyze = |index: usize| -> usize {
+			let (_, running) = enter(&gate, index);
+			if running == 1 {
+				// Two fit the budget; give a third, if one were let through,
+				// the time to start before either finishes.
+				thread::sleep(EXTRA_WORK_WINDOW);
+			} else {
+				gate.wait_until(|progress| progress.max_active >= 2 || progress.started == count);
+			}
+			exit(&gate, index);
+			index
+		};
+		run_units(
+			&UnitSchedule {
+				estimate: &|_| 10,
+				memory_budget: 25,
+				..schedule(count, 3)
+			},
+			&CancellationToken::new(),
+			&analyze,
+			&mut not_here,
+			&mut |_, _| Ok(()),
+		)
+		.unwrap();
+		let progress = gate.lock();
+		assert!(!progress.timed_out);
+		assert_eq!(progress.max_active, 2);
+		assert_eq!(progress.finished.len(), count);
+	}
+
+	#[test]
+	fn a_unit_waits_until_its_estimate_fits_beside_the_running_ones() {
+		let gate: Gate = Gate::default();
+		let second_saw_first_finished: Mutex<Option<bool>> = Mutex::new(None);
+		let analyze = |index: usize| -> usize {
+			enter(&gate, index);
+			if index == 0 {
+				// Unit one would fit a worker at once, but not the budget.
+				thread::sleep(EXTRA_WORK_WINDOW);
+			} else {
+				*second_saw_first_finished.lock().unwrap() =
+					Some(gate.lock().finished.contains(&0));
+			}
+			exit(&gate, index);
+			index
+		};
+		let estimates: [u64; 2] = [10, 20];
+		run_units(
+			&UnitSchedule {
+				estimate: &|index| estimates[index],
+				memory_budget: 25,
+				..schedule(2, 2)
+			},
+			&CancellationToken::new(),
+			&analyze,
+			&mut not_here,
+			&mut |_, _| Ok(()),
+		)
+		.unwrap();
+		assert_eq!(*second_saw_first_finished.lock().unwrap(), Some(true));
+		assert_eq!(gate.lock().max_active, 1);
+	}
+
+	#[test]
+	fn a_unit_larger_than_the_budget_runs_alone() {
+		let gate: Gate = Gate::default();
+		let large_unit: Mutex<Option<(usize, usize, usize)>> = Mutex::new(None);
+		let analyze = |index: usize| -> usize {
+			let (started_before, running) = enter(&gate, index);
+			if index == 2 {
+				// While it runs, nothing else may start.
+				thread::sleep(EXTRA_WORK_WINDOW);
+				let started_after: usize = gate.lock().started;
+				*large_unit.lock().unwrap() = Some((started_before, running, started_after));
+			}
+			exit(&gate, index);
+			index
+		};
+		let estimates: [u64; 5] = [1, 1, 100, 1, 1];
+		let mut applied: Vec<usize> = Vec::new();
+		run_units(
+			&UnitSchedule {
+				estimate: &|index| estimates[index],
+				memory_budget: 25,
+				..schedule(5, 3)
+			},
+			&CancellationToken::new(),
+			&analyze,
+			&mut not_here,
+			&mut |index, _| {
+				applied.push(index);
+				Ok(())
+			},
+		)
+		.unwrap();
+		let (started_before, running, started_after) =
+			large_unit.lock().unwrap().expect("the large unit ran");
+		assert_eq!(running, 0, "the large unit started beside another");
+		assert_eq!(started_before, 2);
+		assert_eq!(started_after, 3, "a unit started beside the large one");
+		assert_eq!(applied, vec![0, 1, 2, 3, 4]);
 	}
 
 	/// Uses at least 4 MiB of stack, more in unoptimized builds: more than a

@@ -2457,7 +2457,7 @@ fn commit_merge_with_jobs(scratch: &Path, manifest: &Path, jobs: &str) -> (PathB
 	);
 	assert_eq!(code, 0, "--jobs {jobs}\nstdout: {stdout}\nstderr: {stderr}");
 	assert!(
-		stderr.contains(&format!(" workers={jobs})")),
+		stderr.contains(&format!(" workers={jobs} ")),
 		"--jobs {jobs} must reach materialization: {stderr}"
 	);
 	(out, stdout)
