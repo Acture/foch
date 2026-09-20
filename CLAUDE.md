@@ -179,7 +179,7 @@ git submodule update --init packages/tree-sitter-paradox vendor/cwtools-eu4-conf
 
 A missing `packages/tree-sitter-paradox` breaks the build; a missing `vendor/cwtools-eu4-config` instead fails 13 schema, CWT, script, structured-merge and corpus tests, most of which do not mention CWT. Treat a cluster of those failures as an uninitialized submodule before investigating them as defects.
 
-Two tests need privileges a restricted sandbox may withhold: `output_transaction_rejects_an_existing_unix_socket` binds a Unix socket and `data_install_downloads_release_asset_from_manifest` opens a local HTTP server. A sandbox denial there is an environment result, not a defect.
+Three tests need privileges a restricted sandbox may withhold: `output_transaction_rejects_an_existing_unix_socket` binds a Unix socket, and `data_install_downloads_release_asset_from_manifest` and `page_fetch_is_frozen_and_reused_without_another_network_request` each open a local HTTP server. A sandbox denial there is an environment result, not a defect. Committing an analyzed merge also takes the installed base-snapshot lock under the user data directory; point `FOCH_DATA_DIR` at a cloned data directory when that path is not writable.
 
 ## Local quality gates
 
