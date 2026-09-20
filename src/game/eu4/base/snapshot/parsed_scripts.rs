@@ -81,6 +81,12 @@ impl StoredParsedScriptFile {
 	fn into_parsed_script_file(self) -> ParsedScriptFile {
 		let relative_path = PathBuf::from(self.relative_path);
 		let content_family = eu4().classify_content_family(&relative_path);
+		// A snapshot records the absolute path of the machine that built it, and
+		// `rebase_parsed_documents` only repairs the outer `path`. Restore the
+		// semantic relative path here so decoded base documents normalize the
+		// same way as the merge inputs they are the ancestor of.
+		let mut ast = self.ast.into_ast_file();
+		ast.path = relative_path.clone();
 		ParsedScriptFile {
 			mod_id: self.mod_id,
 			path: PathBuf::from(self.path),
@@ -88,7 +94,7 @@ impl StoredParsedScriptFile {
 			content_family,
 			file_kind: self.file_kind,
 			module_name: self.module_name,
-			ast: self.ast.into_ast_file(),
+			ast,
 			source: self.source,
 			parse_issues: self
 				.parse_issues
