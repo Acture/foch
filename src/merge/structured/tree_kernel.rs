@@ -3124,6 +3124,92 @@ mod tests {
 		);
 	}
 
+	/// On Windows the two sides of a join describe the same file with different
+	/// separators: `ParsedScriptFile.relative_path` comes from `strip_prefix`
+	/// and keeps backslashes, while `FileDag::file_path()` is normalized to
+	/// forward slashes by `normalize_relative_path`. Content classification and
+	/// the CWT path queries both fold separators, so the two must still
+	/// normalize to the same tree. Pinned on every platform because CI runs
+	/// Windows and this worktree does not.
+	#[test]
+	fn dag_join_accepts_a_backslash_separated_observed_path() {
+		crate::model::test_support::install_defaults();
+		let relative = "decisions/Regression.txt";
+		let policies = &crate::game::eu4::content::eu4()
+			.classify_content_family(Path::new(relative))
+			.expect("decisions content family")
+			.merge_policies;
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let vanilla = parse_from_absolute_root(
+			&temp.path().join("Europa Universalis IV"),
+			"__game__eu4",
+			relative,
+			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 5 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
+		);
+		let mut contributor = parse_from_absolute_root(
+			&temp.path().join("workshop/content/236850/900000001"),
+			"mod-a",
+			relative,
+			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 7 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
+		);
+
+		// Reproduce the Windows shape on every platform: the observed side
+		// carries backslashes, the join side carries the normalized DAG path.
+		let mut base = vanilla_state_from_parsed(&vanilla, policies);
+		let backslash_path = PathBuf::from(relative.replace('/', "\\"));
+		let mut vanilla_backslash = vanilla.clone();
+		vanilla_backslash.ast.path = backslash_path.clone();
+		contributor.ast.path = backslash_path;
+		base.partition_lineage =
+			vanilla_state_from_parsed(&vanilla_backslash, policies).partition_lineage;
+
+		let mod_id = ModId::from("mod-a");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+		let revision = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &mod_id,
+				precedence: 1,
+				resets_base: false,
+				parent: &base,
+				source: &contributor,
+			})
+			.expect("observe a backslash-separated contributor");
+
+		let mut file_dag = FileDag::default();
+		file_dag.file_path = relative.to_string();
+		let plan = plan_dag_join(
+			std::slice::from_ref(&mod_id),
+			&file_dag,
+			DagJoinScope::Final,
+		)
+		.expect("plan the final join");
+		let joined = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &base,
+				revisions: vec![DagJoinRevision {
+					mod_id: &mod_id,
+					precedence: 1,
+					state: &revision,
+				}],
+			})
+			.expect("separators must not change the normalized tree");
+
+		assert_eq!(
+			emit_clausewitz_statements(&joined.statements).expect("emit joined"),
+			emit_clausewitz_statements(&contributor.ast.statements).expect("emit contributor"),
+		);
+	}
+
 	/// The repair must not weaken the check: an input whose lineage really does
 	/// describe different content is still rejected.
 	#[test]
