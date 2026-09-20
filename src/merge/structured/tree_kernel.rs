@@ -2983,6 +2983,235 @@ mod tests {
 		)
 	}
 
+	/// Seeds a vanilla state from a document parsed off disk, so the AST path
+	/// is whatever the parse entrypoint recorded rather than a relative literal.
+	fn vanilla_state_from_parsed(
+		vanilla: &ParsedScriptFile,
+		policies: &MergePolicies,
+	) -> TreeDagState {
+		let mut state = TreeDagState {
+			statements: vanilla.ast.statements.clone(),
+			source_deltas: Vec::new(),
+			partition_lineage: BTreeMap::new(),
+			merge_facts: Vec::new(),
+			unresolved_conflicts: Vec::new(),
+			handler_resolutions: Vec::new(),
+			resolved_conflict_ids: Vec::new(),
+			conflict_resolutions: Vec::new(),
+			output_directives: Vec::new(),
+		};
+		let prepared = ClausewitzFileAdapter.prepare(&vanilla.ast);
+		for partition in prepared.partitions() {
+			let tree = prepared
+				.normalize(&partition, policies)
+				.expect("normalize vanilla ancestor");
+			let origins = tree
+				.nodes()
+				.map(|(node, _)| (node, BTreeSet::from([SemanticOrigin::Vanilla])))
+				.collect();
+			state.partition_lineage.insert(
+				partition,
+				SemanticPartitionLineage {
+					tree,
+					sources: BTreeMap::new(),
+					origins,
+				},
+			);
+		}
+		state
+	}
+
+	/// Writes `source` to `<root>/<relative>` under an absolute temporary root
+	/// and parses it through the production entrypoint.
+	fn parse_from_absolute_root(
+		root: &Path,
+		mod_id: &str,
+		relative: &str,
+		source: &str,
+	) -> ParsedScriptFile {
+		let absolute = root.join(relative);
+		std::fs::create_dir_all(absolute.parent().expect("parent")).expect("create dirs");
+		std::fs::write(&absolute, source).expect("write source");
+		assert!(root.is_absolute(), "the parse root must be absolute");
+		crate::game::eu4::script::parse_script_file(mod_id, root, &absolute)
+			.expect("parse from absolute root")
+	}
+
+	/// A real merge parses its inputs from absolute installation and Workshop
+	/// roots, while `join` rebuilds the merge input from the relative DAG file
+	/// path. Normalization classifies content and resolves CWT rules by path,
+	/// so a disk path used to normalize the same content into a different tree
+	/// than the merge target path did, and the join was rejected with
+	/// "lineage tree does not match merge input". Lineage observation and the
+	/// join must agree on the semantic relative path.
+	#[test]
+	fn dag_join_accepts_inputs_parsed_from_absolute_roots() {
+		crate::model::test_support::install_defaults();
+		let relative = "decisions/Regression.txt";
+		let policies = &crate::game::eu4::content::eu4()
+			.classify_content_family(Path::new(relative))
+			.expect("decisions content family")
+			.merge_policies;
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let vanilla = parse_from_absolute_root(
+			&temp.path().join("Europa Universalis IV"),
+			"__game__eu4",
+			relative,
+			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 5 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
+		);
+		let contributor = parse_from_absolute_root(
+			&temp.path().join("workshop/content/236850/900000001"),
+			"mod-a",
+			relative,
+			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 7 }\n\t\teffect = { add_adm_power = 10 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
+		);
+
+		// The fixture is only meaningful while the two roots really are
+		// different absolute locations and the content family is path-sensitive.
+		assert_ne!(vanilla.path, contributor.path);
+		assert!(vanilla.path.is_absolute() && contributor.path.is_absolute());
+
+		let base = vanilla_state_from_parsed(&vanilla, policies);
+		let mod_id = ModId::from("mod-a");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+		let revision = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &mod_id,
+				precedence: 1,
+				resets_base: false,
+				parent: &base,
+				source: &contributor,
+			})
+			.expect("observe the contributor");
+
+		let mut file_dag = FileDag::default();
+		file_dag.file_path = relative.to_string();
+		let plan = plan_dag_join(
+			std::slice::from_ref(&mod_id),
+			&file_dag,
+			DagJoinScope::Final,
+		)
+		.expect("plan the final join");
+		let joined = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &base,
+				revisions: vec![DagJoinRevision {
+					mod_id: &mod_id,
+					precedence: 1,
+					state: &revision,
+				}],
+			})
+			.expect("join inputs parsed from absolute roots");
+
+		assert!(
+			joined.unresolved_conflicts.is_empty(),
+			"a single contributor over vanilla has nothing to adjudicate",
+		);
+		assert_eq!(
+			emit_clausewitz_statements(&joined.statements).expect("emit joined"),
+			emit_clausewitz_statements(&contributor.ast.statements).expect("emit contributor"),
+			"the sole contributor's content is preserved",
+		);
+	}
+
+	/// The repair must not weaken the check: an input whose lineage really does
+	/// describe different content is still rejected.
+	#[test]
+	fn dag_join_still_rejects_a_lineage_tree_that_does_not_match_its_input() {
+		crate::model::test_support::install_defaults();
+		let relative = "decisions/Regression.txt";
+		let policies = &crate::game::eu4::content::eu4()
+			.classify_content_family(Path::new(relative))
+			.expect("decisions content family")
+			.merge_policies;
+		let temp = tempfile::TempDir::new().expect("temp dir");
+		let vanilla = parse_from_absolute_root(
+			&temp.path().join("Europa Universalis IV"),
+			"__game__eu4",
+			relative,
+			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 5 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
+		);
+		let contributor = parse_from_absolute_root(
+			&temp.path().join("workshop/content/236850/900000001"),
+			"mod-a",
+			relative,
+			"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 7 }\n\t\tai_will_do = { factor = 1 }\n\t}\n}\n",
+		);
+
+		let base = vanilla_state_from_parsed(&vanilla, policies);
+		let mod_id = ModId::from("mod-a");
+		let mut handler = DeferHandler;
+		let mut protocol = TreeDagProtocol::new(
+			&ClausewitzFileAdapter,
+			&ClausewitzFileJoin,
+			policies,
+			true,
+			VanillaBaseMode::Required,
+			&mut handler,
+		);
+		let mut revision = protocol
+			.effective_node(EffectiveNodeRequest {
+				mod_id: &mod_id,
+				precedence: 1,
+				resets_base: false,
+				parent: &base,
+				source: &contributor,
+			})
+			.expect("observe the contributor");
+
+		// Corrupt only the recorded lineage tree, leaving the merge input alone.
+		let unrelated = parse_from_absolute_root(
+			&temp.path().join("workshop/content/236850/900000002"),
+			"mod-b",
+			relative,
+			"country_decisions = {\n\tfoch_unrelated = {\n\t\tpotential = { tag = DAN }\n\t\tai_will_do = { factor = 3 }\n\t}\n}\n",
+		);
+		let prepared = ClausewitzFileAdapter.prepare(&unrelated.ast);
+		let wrong_tree = prepared
+			.normalize(&SemanticPartitionId::File, policies)
+			.expect("normalize unrelated content");
+		revision
+			.partition_lineage
+			.get_mut(&SemanticPartitionId::File)
+			.expect("file partition lineage")
+			.tree = wrong_tree;
+
+		let mut file_dag = FileDag::default();
+		file_dag.file_path = relative.to_string();
+		let plan = plan_dag_join(
+			std::slice::from_ref(&mod_id),
+			&file_dag,
+			DagJoinScope::Final,
+		)
+		.expect("plan the final join");
+		let error = protocol
+			.join(DagJoinRequest {
+				plan: &plan,
+				file_dag: &file_dag,
+				base: &base,
+				revisions: vec![DagJoinRevision {
+					mod_id: &mod_id,
+					precedence: 1,
+					state: &revision,
+				}],
+			})
+			.expect_err("a lineage tree describing other content must be rejected");
+		assert!(
+			error.contains("lineage tree does not match merge input"),
+			"{error}",
+		);
+	}
+
 	fn lineaged_tree_state(
 		source: &str,
 		adapter: &dyn TreePartitionAdapter,

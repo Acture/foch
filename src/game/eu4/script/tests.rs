@@ -7833,3 +7833,57 @@ fn batch_promoted_roots_have_registered_extractors() {
 		);
 	}
 }
+
+/// Semantic processing classifies content and resolves CWT rules by path, so a
+/// parsed document must carry the game-relative path in its AST while keeping
+/// the disk location for file access. Parsing from an absolute root used to
+/// leave the disk path in the AST, which classified as `other` and normalized
+/// the same content into a different tree than the merge target path did.
+#[test]
+fn parsing_from_an_absolute_root_keeps_the_relative_path_in_the_ast() {
+	let tmp = TempDir::new().expect("temp dir");
+	let mod_root = tmp.path().join("mod");
+	let decisions = mod_root.join("decisions");
+	fs::create_dir_all(&decisions).expect("create decisions");
+	let file = decisions.join("Regression.txt");
+	fs::write(
+		&file,
+		"country_decisions = {\n\tfoch_regression = {\n\t\tpotential = { tag = SWE }\n\t\tallow = { adm_tech = 5 }\n\t\teffect = { add_adm_power = 10 }\n\t}\n}\n",
+	)
+	.expect("write decision");
+
+	let parsed = parse_script_file("mod-a", &mod_root, &file).expect("parse decision");
+
+	assert!(mod_root.is_absolute(), "the parse root must be absolute");
+	assert_eq!(parsed.path, file, "the disk location stays absolute");
+	assert_eq!(parsed.relative_path, Path::new("decisions/Regression.txt"));
+	assert_eq!(
+		parsed.ast.path, parsed.relative_path,
+		"the AST carries the semantic relative path",
+	);
+	assert_eq!(
+		classify_script_file(&parsed.ast.path),
+		ScriptFileKind::new("decisions"),
+		"the AST path must classify to the real content family",
+	);
+}
+
+/// The byte-supplied entrypoint skips `std::fs::read` but shares the same
+/// semantic contract.
+#[test]
+fn parsing_supplied_bytes_keeps_the_relative_path_in_the_ast() {
+	init_scopes();
+	let mod_root = Path::new("/absolute/workshop/content/236850/999");
+	let file = mod_root.join("decisions").join("Regression.txt");
+	let parsed = super::parse_script_bytes_cached(
+		"mod-a",
+		mod_root,
+		&file,
+		b"country_decisions = { foch_regression = { potential = { tag = SWE } } }\n",
+	)
+	.expect("parse supplied bytes");
+
+	assert_eq!(parsed.path, file, "the disk location stays absolute");
+	assert_eq!(parsed.relative_path, Path::new("decisions/Regression.txt"));
+	assert_eq!(parsed.ast.path, parsed.relative_path);
+}

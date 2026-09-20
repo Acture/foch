@@ -179,6 +179,74 @@ fn base_snapshot_roundtrips_parsed_scripts_section() {
 	assert_eq!(decoded_scripts[0].source, source);
 	assert_eq!(decoded_scripts[0].ast.statements.len(), 1);
 	assert!(decoded_scripts[0].parse_cache_hit);
+	assert_eq!(decoded_scripts[0].ast.path, relative_path);
+}
+
+/// A snapshot stores the absolute path of the machine that built it, and
+/// release snapshots are installed on machines where that path does not exist.
+/// `rebase_parsed_documents` only repairs the outer disk location, so decoding
+/// must restore the semantic relative path in the AST; otherwise the vanilla
+/// ancestor normalizes as `other` while the merge target normalizes under its
+/// real content family, and lineage validation rejects the join.
+#[test]
+fn decoding_a_foreign_snapshot_restores_the_relative_ast_path() {
+	test_support::install_defaults();
+	let temp = TempDir::new().expect("temp dir");
+	let relative_path = PathBuf::from("decisions/Regression.txt");
+	let foreign_root = PathBuf::from("/builder/machine/Europa Universalis IV");
+	let source = "country_decisions = { foch_regression = { potential = { tag = SWE } } }\n";
+	let parsed = parse_clausewitz_content(foreign_root.join(&relative_path), source);
+	assert_eq!(
+		parsed.ast.path,
+		foreign_root.join(&relative_path),
+		"the fixture must encode a foreign absolute AST path",
+	);
+	let parsed_script = ParsedScriptFile {
+		mod_id: "__game__eu4".to_string(),
+		path: foreign_root.join(&relative_path),
+		relative_path: relative_path.clone(),
+		content_family: None,
+		file_kind: ScriptFileKind::new("decisions"),
+		module_name: "decisions".to_string(),
+		ast: parsed.ast,
+		source: source.to_string(),
+		parse_issues: Vec::new(),
+		parse_cache_hit: false,
+	};
+	let parsed_scripts = super::parsed_scripts::encode_parsed_documents(&[parsed_script])
+		.expect("encode parsed script");
+	let mut index = SemanticIndex::default();
+	index.documents.push(DocumentRecord {
+		mod_id: "__game__eu4".to_string(),
+		path: relative_path.clone(),
+		family: DocumentFamily::Clausewitz,
+		parse_ok: true,
+	});
+	let snapshot = BaseAnalysisSnapshot::from_semantic_index_with_parsed_scripts(
+		&Eu4,
+		"foreign-snapshot-test",
+		vec![relative_path.to_string_lossy().to_string()],
+		&index,
+		Default::default(),
+		parsed_scripts,
+	);
+
+	let encoded = encode_snapshot_to_bytes(&snapshot).expect("encode snapshot");
+	let decoded = decode_snapshot_from_bytes(&encoded.bytes).expect("decode snapshot");
+	let decoded_scripts = decoded
+		.parsed_script_files(temp.path())
+		.expect("decode parsed scripts");
+
+	assert_eq!(decoded_scripts.len(), 1);
+	assert_eq!(
+		decoded_scripts[0].path,
+		temp.path().join(&relative_path),
+		"the disk location is rebased onto the local installation",
+	);
+	assert_eq!(
+		decoded_scripts[0].ast.path, relative_path,
+		"the AST carries the semantic relative path, not the builder's",
+	);
 }
 
 fn sample_coverage_snapshot() -> BaseAnalysisSnapshot {

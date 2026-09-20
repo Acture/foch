@@ -255,6 +255,13 @@ fn parsed_script_file_from_result(
 		})
 		.collect();
 
+	// Semantic processing identifies content and resolves CWT rules by path, so
+	// the AST carries the game-relative path while `path` keeps the disk
+	// location for file access. A disk path classifies as `other` and
+	// normalizes to a different tree for the same content.
+	let mut ast = parsed.ast;
+	ast.path = relative.clone();
+
 	ParsedScriptFile {
 		mod_id: mod_id.to_string(),
 		path: file.to_path_buf(),
@@ -262,7 +269,7 @@ fn parsed_script_file_from_result(
 		content_family,
 		file_kind,
 		module_name,
-		ast: parsed.ast,
+		ast,
 		source,
 		parse_issues,
 		parse_cache_hit,
