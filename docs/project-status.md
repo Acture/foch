@@ -1,6 +1,11 @@
 # Project Status
 
-Latest committed-source verification: 2026-09-19 at `4b8444c` (P-609, parallel
+Latest worktree verification: 2026-09-20 on `e7439c5` plus the uncommitted
+P-640 lineage fix: strict workspace Clippy and formatting, `cargo test
+--workspace` at 1,521 passed and 3 failed (all three sandbox socket denials),
+and a bounded recheck of the 167 retained Workshop paths that failed lineage
+validation, at one and four workers.
+Earlier committed-source verification: 2026-09-19 at `4b8444c` (P-609, parallel
 merge units): workspace tests, strict workspace Clippy and formatting, plus a
 bounded serial/parallel comparison on the retained 30-mod Workshop page.
 Earlier committed-source verification: 2026-09-19 at `12a7f92`: full workspace
@@ -22,6 +27,93 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Workshop lineage input-tree inconsistency (2026-09-20)
+
+P-640. The retained full-page run `run-mrGKJR` failed output validation with
+179 engine failures, 167 of them `lineage tree does not match merge input for
+partition File`. That report predates the parallel merge work, so the class was
+first re-verified on current master `e7439c5` through `analyze_merge`: the three
+representative paths `common/technology.txt`, `decisions/AndalusianNation.txt`
+and `decisions/ArabNation.txt` all still failed with the same error.
+
+Cause: one AST was classified under two path conventions. `parse_script_file`
+and `parse_script_bytes_cached` left the disk path in `ParsedScriptFile.ast.path`
+while setting `relative_path` correctly, and a decoded base snapshot kept the
+absolute path of the machine that built it, because `rebase_parsed_documents`
+repairs only the outer `path`. `normalize_clausewitz_file` identifies the
+content family and resolves CWT block roles from that AST path, and
+`classify_content_family` matches relative prefixes, so an absolute path
+resolved to `other` and Boolean-OR canonicalization did not run.
+`TreeDagProtocol::effective_node` observed lineage from `source.ast.path` while
+`TreeDagProtocol::join` rebuilt the merge input from `FileDag::file_path()`, so
+the same statements normalized into different trees and `compose_join_lineage`
+rejected the join.
+
+The repair applies the existing relative-path contract at the two entrypoints
+that construct a `ParsedScriptFile`, not at the site that reported the error:
+`parsed_script_file_from_result` in `src/game/eu4/script/mod.rs` and
+`StoredParsedScriptFile::into_parsed_script_file` in
+`src/game/eu4/base/snapshot/parsed_scripts.rs`. `ParsedScriptFile.path` still
+holds the disk location, and `rebase_parsed_documents` is deliberately
+unchanged. Both entrypoints are needed: `InputScriptCache` fills `loaded` from
+the base snapshot and `lazy` from on-disk mod files, so fixing either alone
+leaves the other side of every join on the old convention. Normalizing at
+snapshot decode rather than at build also repairs snapshots already installed or
+downloaded; `StoredAstFile.path` is retained because bincode is positional, and
+no schema, wire-format or analysis-rules version bump is required. The lineage
+consistency check itself is unchanged.
+
+Bounded recheck on the retained ordered playset, its Workshop trees read in
+place, and the same installed EU4 v1.37.5.0 base that `run-mrGKJR` recorded
+(`snapshot.bin` sha256 `fec03656…` matches its `base-metadata.json`). The
+representative window went from 3 engine failures to 0: two files generated and
+`decisions/ArabNation.txt` deferred as `needs_user_choice` on a real
+`delete_modify` conflict. Analyzing all 167 same-class paths at once gave 81
+generated, 60 `needs_user_choice`, 26 skipped as semantic no-ops against
+vanilla, and 0 engine failures, with no deferral of any other reason. One worker
+and four workers produced identical committed trees, provenance and merge traces
+under the P-609 masks.
+
+This changes normalization for every structured merge, not only the files that
+were failing. Merge inputs and the vanilla ancestor now canonicalize under their
+real content family, so the no-op-against-vanilla check in
+`src/merge/output/materialize/structural.rs` and stale-vanilla-target detection
+run under that policy too, and a full-page file count can differ from
+`run-mrGKJR`. Newly built base snapshots encode a relative `StoredAstFile.path`,
+so `data build eu4` output bytes change for identical game content. Nothing a
+mod snapshot persists depends on the AST path, so no cache version was bumped.
+
+Out of scope and untouched: the other 12 engine failures in that report (one
+missing non-empty vanilla base, two cross-file module failures, nine
+control-flow/event-join failures) and the pre-existing empty-path normalization
+in `clausewitz_statements_semantically_equivalent`
+(`src/merge/structured/merge.rs:300`), which is the same defect class and is
+tracked separately as P-658.
+
+Regressions: `parsing_from_an_absolute_root_keeps_the_relative_path_in_the_ast`
+and `parsing_supplied_bytes_keeps_the_relative_path_in_the_ast`,
+`decoding_a_foreign_snapshot_restores_the_relative_ast_path`,
+`dag_join_accepts_inputs_parsed_from_absolute_roots` — which fails with the
+exact production error string when the entrypoint fix is reverted — and
+`dag_join_still_rejects_a_lineage_tree_that_does_not_match_its_input`, which
+passes on both sides of the fix, so the check was not weakened.
+
+Validation: `cargo fmt --all --check` and strict workspace Clippy passed.
+`cargo test --workspace --no-fail-fast -- --test-threads 4` reported 1,521
+passed and 3 failed; all three failures are sandbox socket denials
+(`output_transaction_rejects_an_existing_unix_socket`,
+`data_install_downloads_release_asset_from_manifest`,
+`page_fetch_is_frozen_and_reused_without_another_network_request`) and were not
+re-run outside the sandbox in this session, so the pre-push gate remains the
+maintainer's check. Evidence is under
+`target/validation/p640-lineage-2026-09-20/` (`findings.md`, the run logs and
+reports, `lineage-failure-paths.txt`, `manifest.toml`, the archived
+`p640_retained_window.rs` harness and `normalization-probe.rs`).
+
+Not established: a complete full-page merge with this change, the fixed cohort,
+or in-game behaviour. `cargo workshop-probe` stays the maintainer's full-page
+run and P-581 keeps full-flow validation.
 
 ## Parallel merge units (2026-09-19)
 
