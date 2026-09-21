@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::game::eu4::content::{ContentFamilyDescriptor, MergeKeySource, MergePolicies};
 use crate::game::eu4::script::is_decision_container_key;
@@ -13,10 +14,16 @@ struct PerEntryNoopLookupKey {
 	key: String,
 }
 
+/// Drop merged entries that the game already defines identically in `vanilla_statements`.
+///
+/// `relative_path` is the game-relative path the statements belong to. Equivalence
+/// is decided under that path's content family, so passing an empty or absolute
+/// path silently compares under `ScriptFileKind("other")` instead.
 pub(super) fn drop_per_entry_noop_duplicates(
 	merged_statements: Vec<AstStatement>,
 	vanilla_statements: &[AstStatement],
 	descriptor: &ContentFamilyDescriptor,
+	relative_path: &Path,
 ) -> (Vec<AstStatement>, usize) {
 	if !descriptor.capabilities.dedup_policy.per_entry_safe() {
 		return (merged_statements, 0);
@@ -38,6 +45,7 @@ pub(super) fn drop_per_entry_noop_duplicates(
 		merge_key_source,
 		&vanilla_lookup,
 		&descriptor.merge_policies,
+		relative_path,
 	)
 }
 
@@ -62,13 +70,19 @@ fn filter_per_entry_noop_statements(
 	merge_key_source: MergeKeySource,
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 	policies: &MergePolicies,
+	relative_path: &Path,
 ) -> (Vec<AstStatement>, usize) {
 	let mut filtered = Vec::with_capacity(statements.len());
 	let mut dropped = 0usize;
 	for statement in statements {
 		if let Some(key) = per_entry_noop_top_level_key(&statement, merge_key_source)
-			&& per_entry_noop_matches_vanilla(&key, &statement, vanilla_lookup, policies)
-		{
+			&& per_entry_noop_matches_vanilla(
+				&key,
+				&statement,
+				vanilla_lookup,
+				policies,
+				relative_path,
+			) {
 			dropped += 1;
 			continue;
 		}
@@ -78,6 +92,7 @@ fn filter_per_entry_noop_statements(
 			merge_key_source,
 			vanilla_lookup,
 			policies,
+			relative_path,
 		);
 		dropped += child_dropped;
 		filtered.push(statement);
@@ -90,6 +105,7 @@ fn filter_per_entry_noop_child_statements(
 	merge_key_source: MergeKeySource,
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 	policies: &MergePolicies,
+	relative_path: &Path,
 ) -> (AstStatement, usize) {
 	match statement {
 		AstStatement::Assignment {
@@ -105,8 +121,13 @@ fn filter_per_entry_noop_child_statements(
 			let mut dropped = 0usize;
 			for item in items {
 				if let Some(lookup_key) = per_entry_noop_child_key(&key, &item, merge_key_source)
-					&& per_entry_noop_matches_vanilla(&lookup_key, &item, vanilla_lookup, policies)
-				{
+					&& per_entry_noop_matches_vanilla(
+						&lookup_key,
+						&item,
+						vanilla_lookup,
+						policies,
+						relative_path,
+					) {
 					dropped += 1;
 					continue;
 				}
@@ -134,11 +155,17 @@ fn per_entry_noop_matches_vanilla(
 	statement: &AstStatement,
 	vanilla_lookup: &HashMap<PerEntryNoopLookupKey, Vec<AstStatement>>,
 	policies: &MergePolicies,
+	relative_path: &Path,
 ) -> bool {
 	vanilla_lookup.get(key).is_some_and(|vanilla_entries| {
 		vanilla_entries.iter().any(|vanilla| {
-			clausewitz_statements_semantically_equivalent(vanilla, statement, policies)
-				.unwrap_or(false)
+			clausewitz_statements_semantically_equivalent(
+				relative_path,
+				vanilla,
+				statement,
+				policies,
+			)
+			.unwrap_or(false)
 		})
 	})
 }

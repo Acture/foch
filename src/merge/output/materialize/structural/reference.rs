@@ -145,7 +145,12 @@ where
 	});
 	let merged_statements = dag_merge.merged_statements;
 	let (merged_statements, per_entry_noop_skipped_count) = if let Some(base) = vanilla.as_ref() {
-		drop_per_entry_noop_duplicates(merged_statements, &base.ast.statements, context.descriptor)
+		drop_per_entry_noop_duplicates(
+			merged_statements,
+			&base.ast.statements,
+			context.descriptor,
+			&base.ast.path,
+		)
 	} else {
 		(merged_statements, 0)
 	};

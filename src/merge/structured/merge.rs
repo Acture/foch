@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::eu4::content::{
 	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
@@ -291,18 +291,25 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 	Ok(left.semantically_equivalent(&right))
 }
 
+/// Compare two statements of `relative_path`'s content family.
+///
+/// The path is a semantic input, not a label: `canonicalize_boolean_or_definitions`
+/// resolves each container's script role from it, so an empty path classifies as
+/// `ScriptFileKind("other")` and skips the family's boolean canonicalization.
+/// Callers must pass the game-relative path the statements belong to.
 pub(crate) fn clausewitz_statements_semantically_equivalent(
+	relative_path: &Path,
 	left: &AstStatement,
 	right: &AstStatement,
 	policies: &MergePolicies,
 ) -> Result<bool, AstAdapterError> {
 	clausewitz_files_semantically_equivalent(
 		&AstFile {
-			path: PathBuf::new(),
+			path: relative_path.to_path_buf(),
 			statements: vec![left.clone()],
 		},
 		&AstFile {
-			path: PathBuf::new(),
+			path: relative_path.to_path_buf(),
 			statements: vec![right.clone()],
 		},
 		policies,
