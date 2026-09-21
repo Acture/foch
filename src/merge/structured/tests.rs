@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::game::eu4::content::eu4;
 use crate::game::eu4::content::{
@@ -2152,4 +2152,66 @@ fn structured_merge_preserves_distinct_comments_without_semantic_conflicts() {
 	for comment in ["# base", "# left", "# right"] {
 		assert!(output.contains(comment), "missing {comment}:\n{output}");
 	}
+}
+
+/// P-658: statement equivalence resolves container roles from the file path.
+///
+/// `custom_trigger_tooltip` is a trigger container for `scripted_triggers` only
+/// through `hand_container_scope_fallback`, which is keyed on the content family
+/// that the path classifies into. Under `common/scripted_triggers/`, the family's
+/// `BooleanMergePolicy::Or` canonicalizes that body, so a mod that ships the
+/// explicit `OR`/`AND` shape is recognized as the vanilla definition. Under the
+/// empty path the same statements classify as `ScriptFileKind("other")`, the
+/// canonicalization does not run, and the two shapes compare as different
+/// content. The second assertion is what pins the path as a semantic input: drop
+/// it and this equivalence silently stops depending on the content family.
+#[test]
+fn statement_equivalence_resolves_containers_from_its_content_family_path() {
+	let path = "common/scripted_triggers/00_scripted_triggers.txt";
+	let policies = &eu4()
+		.classify_content_family(Path::new(path))
+		.expect("scripted_triggers family")
+		.merge_policies;
+	let vanilla = parse_at(
+		path,
+		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = BYZ_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+	);
+	let merged = parse_at(
+		path,
+		"BYZ_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = BYZ_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
+	);
+	let [vanilla_statement] = vanilla.statements.as_slice() else {
+		panic!("one vanilla definition")
+	};
+	let [merged_statement] = merged.statements.as_slice() else {
+		panic!("one merged definition")
+	};
+
+	assert!(
+		super::clausewitz_statements_semantically_equivalent(
+			Path::new(path),
+			vanilla_statement,
+			merged_statement,
+			policies,
+		)
+		.expect("compare under the content family"),
+		"the family's boolean canonicalization must recognize the rewritten trigger"
+	);
+
+	let empty_path_verdict = super::clausewitz_files_semantically_equivalent(
+		&AstFile {
+			path: PathBuf::new(),
+			statements: vec![vanilla_statement.clone()],
+		},
+		&AstFile {
+			path: PathBuf::new(),
+			statements: vec![merged_statement.clone()],
+		},
+		policies,
+	)
+	.expect("compare under an empty path");
+	assert!(
+		!empty_path_verdict,
+		"an empty path classifies as `other`, so this comparison must not be family-aware"
+	);
 }

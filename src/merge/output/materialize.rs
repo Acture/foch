@@ -3070,8 +3070,12 @@ mod tests {
 			"same = {\n\tadd_prestige = 1\n}\nchanged = {\n\tadd_legitimacy = 2\n}\n",
 		);
 
-		let (filtered, count) =
-			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
+			merged,
+			&vanilla,
+			&descriptor,
+			Path::new("test/test.txt"),
+		);
 
 		assert_eq!(count, 1);
 		assert_eq!(assignment_keys(&filtered), vec!["changed".to_string()]);
@@ -3083,8 +3087,12 @@ mod tests {
 		let vanilla = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
 		let merged = parse_test_statements("same = {\n\tadd_prestige = 2\n}\n");
 
-		let (filtered, count) =
-			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
+			merged,
+			&vanilla,
+			&descriptor,
+			Path::new("test/test.txt"),
+		);
 
 		assert_eq!(count, 0);
 		assert_eq!(assignment_keys(&filtered), vec!["same".to_string()]);
@@ -3096,8 +3104,12 @@ mod tests {
 		let vanilla = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
 		let merged = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
 
-		let (filtered, count) =
-			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
+			merged,
+			&vanilla,
+			&descriptor,
+			Path::new("test/test.txt"),
+		);
 
 		assert_eq!(count, 0);
 		assert_eq!(assignment_keys(&filtered), vec!["same".to_string()]);
@@ -3109,11 +3121,72 @@ mod tests {
 		let vanilla = parse_test_statements("same = {\n\tadd_prestige = 1\n}\n");
 		let merged = parse_test_statements("unique = {\n\tadd_legitimacy = 1\n}\n");
 
-		let (filtered, count) =
-			super::per_entry_noop::drop_per_entry_noop_duplicates(merged, &vanilla, &descriptor);
+		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
+			merged,
+			&vanilla,
+			&descriptor,
+			Path::new("test/test.txt"),
+		);
 
 		assert_eq!(count, 0);
 		assert_eq!(assignment_keys(&filtered), vec!["unique".to_string()]);
+	}
+
+	/// P-658: the per-entry no-op decision runs under the target's content family.
+	///
+	/// `common/scripted_triggers` canonicalizes trigger bodies with
+	/// `BooleanMergePolicy::Or`, but `custom_trigger_tooltip` only counts as a
+	/// trigger container once the path classifies into that family. A mod that
+	/// re-ships vanilla's definition in the explicit `OR`/`AND` shape therefore
+	/// adds nothing, and the merged output must not carry the duplicate.
+	#[test]
+	fn per_entry_noop_drops_a_vanilla_equivalent_definition_under_its_content_family() {
+		let path = Path::new("common/scripted_triggers/00_scripted_triggers.txt");
+		let descriptor = eu4()
+			.classify_content_family(path)
+			.expect("scripted_triggers family");
+		let vanilla = parse_test_statements(
+			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+		);
+		let merged = parse_test_statements(
+			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\tOR = {\n\t\t\t\tAND = {\n\t\t\t\t\ttooltip = byz_tt\n\t\t\t\t\talways = no\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n}\n",
+		);
+
+		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
+			merged, &vanilla, descriptor, path,
+		);
+
+		assert_eq!(count, 1);
+		assert!(
+			filtered.is_empty(),
+			"a vanilla-equivalent trigger must not be re-shipped: {:?}",
+			assignment_keys(&filtered)
+		);
+	}
+
+	/// The same comparison must still keep a real change to the same definition.
+	#[test]
+	fn per_entry_noop_keeps_a_changed_definition_under_its_content_family() {
+		let path = Path::new("common/scripted_triggers/00_scripted_triggers.txt");
+		let descriptor = eu4()
+			.classify_content_family(path)
+			.expect("scripted_triggers family");
+		let vanilla = parse_test_statements(
+			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+		);
+		let merged = parse_test_statements(
+			"byz_is_not_latin_empire = {\n\tif = {\n\t\tlimit = {\n\t\t\ttag = LAE\n\t\t\treligion = catholic\n\t\t}\n\t\tcustom_trigger_tooltip = {\n\t\t\ttooltip = byz_tt\n\t\t\talways = no\n\t\t}\n\t}\n}\n",
+		);
+
+		let (filtered, count) = super::per_entry_noop::drop_per_entry_noop_duplicates(
+			merged, &vanilla, descriptor, path,
+		);
+
+		assert_eq!(count, 0);
+		assert_eq!(
+			assignment_keys(&filtered),
+			vec!["byz_is_not_latin_empire".to_string()]
+		);
 	}
 
 	fn descriptor_path_value(path: &Path) -> String {

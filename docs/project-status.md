@@ -1,6 +1,10 @@
 # Project Status
 
-Latest worktree verification: 2026-09-20 on `e7439c5` plus the uncommitted
+Latest worktree verification: 2026-09-21 on `417b2d5` plus the P-658 per-entry
+no-op path fix: strict workspace Clippy and formatting, `cargo test --workspace`
+green apart from the known sandbox denials, and a bounded vanilla probe of the
+three families that enable per-entry no-op dedup.
+Earlier worktree verification: 2026-09-20 on `e7439c5` plus the uncommitted
 P-640 lineage fix: strict workspace Clippy and formatting, `cargo test
 --workspace` at 1,521 passed and 3 failed (all three sandbox socket denials),
 and a bounded recheck of the 167 retained Workshop paths that failed lineage
@@ -27,6 +31,87 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Per-entry no-op equivalence ran outside its content family (2026-09-21)
+
+P-658, the empty-path case that P-640 left out of scope.
+`clausewitz_statements_semantically_equivalent` wrapped both sides in
+`AstFile { path: PathBuf::new(), .. }`, and `canonicalize_boolean_or_definitions`
+is the only step downstream of it that reads the AST path. An empty path
+classifies as `ScriptFileKind("other")`, which matches no
+`hand_container_scope_fallback` arm and binds no CWT root, so
+`script_container_scope_kind` is always `None` there.
+
+The issue's premise needed narrowing. `script_context` classifies a keyword set
+(`trigger`, `limit`, `potential`, `allow`, `condition`, `hidden_trigger` and the
+boolean operators) before it consults the scope kind, and the
+`configured_definition` branch is policy-driven, so both still fire under an
+empty path. What is lost is the schema and hand-fallback role for *non-keyword*
+containers. The two sets of canonicalization roots are incomparable rather than
+nested: a real path can also suppress a root, because a `Trigger`-scoped parent
+propagates `Trigger` down and makes a keyword child fail `parent_context !=
+context`.
+
+Measured, not argued. A temporary probe parsed every vanilla file of the three
+families whose descriptors call `.per_entry_dedup_safe()` —
+`common/scripted_effects`, `common/scripted_triggers`, `common/ideas` — and
+compared each top-level definition normalized under an empty path against the
+same definition under its real relative path: 31 files, 5,315 definitions, **10
+that normalize differently**, all 10 with the real path emitting net more
+canonicalization. That is a per-definition net, not a per-node comparison, so it
+does not exclude a suppressed root inside a definition that gained more than it
+lost. The smallest is
+`common/scripted_triggers/02_scripted_triggers_for_mission_conditions.txt:11`,
+where `custom_trigger_tooltip` is a trigger container for that family only
+through the hand fallback and sits under a keyword *effect* parent (`if`), so
+the parent context does not already supply `Trigger`. A mod re-shipping vanilla
+in the explicit `OR`/`AND` shape was judged different from vanilla and kept. The
+observed direction is under-permissive: a retained duplicate, not a dropped
+contribution. Re-rooting divergence was 0 — all three families use
+`MergeKeySource::AssignmentKey`, so only top-level definitions are ever
+compared and the synthetic one-statement file keeps the statement at its real
+depth.
+
+Reach, stated separately from the defect. The decision has one production call
+site, `src/merge/output/materialize/per_entry_noop.rs`. The semantic backend
+(`MergeBackendId::GumtreePcsNway`, the default) skips
+`drop_per_entry_noop_duplicates` whenever `preserves_complete_tree_module`
+holds, and `enable_common_definition_modules` makes all three gate-passing
+families definition modules, so on the product backend the affected set is
+empty. The address-patch backend calls it ungated and states in-file that it is
+test-only. So nothing here places the defect in current product merge output; it
+is a latent gap that becomes live if a per-entry-safe family is not a definition
+module or that guard changes.
+
+Fix: `clausewitz_statements_semantically_equivalent` takes the game-relative
+path, threaded from `base.ast.path` through `drop_per_entry_noop_duplicates`.
+That path is already in scope in both calling frames — `structural.rs` uses it
+two statements earlier for the whole-file comparison — and for a definition
+module `fold_visible_module_files` gives the folded view the module
+`output_path`, which classifies into the same family.
+
+Regressions:
+`statement_equivalence_resolves_containers_from_its_content_family_path` pins
+both arms of the contrast, including that an empty path must *not* be
+family-aware, so a future refactor that drops the path fails rather than
+silently reverting;
+`per_entry_noop_drops_a_vanilla_equivalent_definition_under_its_content_family`
+and `per_entry_noop_keeps_a_changed_definition_under_its_content_family` cover
+the owning output flow. Reverting the threading fails only the first of that
+pair, which is the intended asymmetry: the fix adds recognition of equivalence
+and never drops a real change.
+
+Validation: `cargo fmt --all --check` and strict workspace Clippy passed.
+`cargo test --workspace` passed apart from
+`output_transaction_rejects_an_existing_unix_socket`, a sandbox socket denial
+that `AGENTS.md` already records as an environment result. Evidence is under
+`target/validation/p658-empty-path-2026-09-21/` (`findings.md`, the archived
+`p658_probe.rs`, `divergent-definitions.txt`, and the 10 original/empty-path/
+real-path canonical-form triples in `divergences/`).
+
+Not established: a full-page or fixed-cohort merge with this change, any change
+to product merge output, or in-game behaviour. Only vanilla was surveyed, so
+10/5,315 is a vanilla-corpus rate, not a mod rate.
 
 ## Workshop lineage input-tree inconsistency (2026-09-20)
 
