@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use crate::game::eu4::content::eu4;
 use crate::game::eu4::content::{
-	BlockMergePolicy, DivergentBlockPolicy, MergePolicies, OneSidedRemovalPolicy,
-	ScalarMergePolicy, ScalarReducerRule,
+	BlockMergePolicy, BooleanMergePolicy, DivergentBlockPolicy, MergePolicies,
+	OneSidedRemovalPolicy, ScalarMergePolicy, ScalarReducerRule,
 };
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, parse_clausewitz_content};
 use crate::merge::kernel::{ConflictKind, SemanticKeyScope};
@@ -2213,5 +2213,68 @@ fn statement_equivalence_resolves_containers_from_its_content_family_path() {
 	assert!(
 		!empty_path_verdict,
 		"an empty path classifies as `other`, so this comparison must not be family-aware"
+	);
+}
+
+/// P-687: canonicalization must not turn an equal pair into an unequal one.
+///
+/// Both of these run under `common/scripted_triggers`, whose family-wide
+/// `DivergentBlockPolicy::BooleanOr` makes every definition body a
+/// canonicalization root, so the rewrite is actually exercised.
+fn scripted_trigger_policies() -> &'static MergePolicies {
+	&eu4()
+		.classify_content_family(Path::new(SCRIPTED_TRIGGERS_PATH))
+		.expect("scripted_triggers family")
+		.merge_policies
+}
+
+const SCRIPTED_TRIGGERS_PATH: &str = "common/scripted_triggers/00_scripted_triggers.txt";
+
+#[test]
+fn canonicalization_does_not_make_a_comment_a_content_difference() {
+	let plain = parse_at(SCRIPTED_TRIGGERS_PATH, "t = {\n\ta = yes\n}\n");
+	let commented = parse_at(SCRIPTED_TRIGGERS_PATH, "t = {\n\t# note\n\ta = yes\n}\n");
+
+	assert!(
+		super::clausewitz_files_semantically_equivalent(
+			&plain,
+			&commented,
+			scripted_trigger_policies(),
+		)
+		.expect("compare"),
+		"a comment is trivia; it must not register as changed content"
+	);
+}
+
+#[test]
+fn canonicalization_does_not_change_the_verdict_on_reordered_quoted_scalars() {
+	let left = parse_at(
+		SCRIPTED_TRIGGERS_PATH,
+		"t = {\n\tOR = {\n\t\ttag = SWE\n\t\ttag = \"SWE\"\n\t}\n}\n",
+	);
+	let right = parse_at(
+		SCRIPTED_TRIGGERS_PATH,
+		"t = {\n\tOR = {\n\t\ttag = \"SWE\"\n\t\ttag = SWE\n\t}\n}\n",
+	);
+	// A policy that never reaches a trigger root leaves the bodies untouched,
+	// so its verdict is the one canonicalization has to preserve.
+	let untouched = MergePolicies {
+		boolean: BooleanMergePolicy::And,
+		..MergePolicies::default()
+	};
+
+	let canonicalized =
+		super::clausewitz_files_semantically_equivalent(&left, &right, scripted_trigger_policies())
+			.expect("compare under the family");
+	let baseline = super::clausewitz_files_semantically_equivalent(&left, &right, &untouched)
+		.expect("compare without canonicalization");
+
+	assert!(
+		baseline,
+		"an OR block matches its reordering before canonicalization"
+	);
+	assert_eq!(
+		canonicalized, baseline,
+		"canonicalization must not split a pair the relation already equates"
 	);
 }

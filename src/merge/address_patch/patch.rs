@@ -1096,15 +1096,31 @@ fn statements_equal_ignoring_span(a: &AstStatement, b: &AstStatement) -> bool {
 }
 
 /// Compare scalar values ignoring span (for list-level dedup).
-#[allow(dead_code)]
 fn scalar_values_equal(a: &ScalarValue, b: &ScalarValue) -> bool {
 	a == b
 }
 
-fn scalar_values_semantically_equal(a: &ScalarValue, b: &ScalarValue) -> bool {
-	match (a, b) {
-		(ScalarValue::Identifier(a), ScalarValue::String(b))
-		| (ScalarValue::String(b), ScalarValue::Identifier(a)) => {
+/// How the comment-ignoring equality walk compares scalar leaves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ScalarEquality {
+	/// `SWE` and `"SWE"` are the same value. Correct for patch convergence,
+	/// where two mods writing one value differently must still converge.
+	IgnoringQuotes,
+	/// `SWE` and `"SWE"` are different values. Required by callers whose
+	/// output is later judged by the normalized tree, which gives the two
+	/// spellings different leaf kinds.
+	Exact,
+}
+
+fn scalar_values_semantically_equal(
+	a: &ScalarValue,
+	b: &ScalarValue,
+	scalars: ScalarEquality,
+) -> bool {
+	match (scalars, a, b) {
+		(ScalarEquality::Exact, _, _) => scalar_values_equal(a, b),
+		(ScalarEquality::IgnoringQuotes, ScalarValue::Identifier(a), ScalarValue::String(b))
+		| (ScalarEquality::IgnoringQuotes, ScalarValue::String(b), ScalarValue::Identifier(a)) => {
 			a == b && is_valid_bare_identifier_text(a)
 		}
 		_ => a == b,
@@ -1143,9 +1159,19 @@ fn is_valid_bare_identifier_text(value: &str) -> bool {
 /// Semantic equality on `AstValue` — ignores spans and (inside blocks) any
 /// `Comment` statements. Order of the remaining statements matters.
 pub(crate) fn ast_values_semantically_equal(a: &AstValue, b: &AstValue) -> bool {
+	ast_values_equal_ignoring_comments(a, b, ScalarEquality::IgnoringQuotes)
+}
+
+/// [`ast_values_semantically_equal`] with the scalar relation chosen by the
+/// caller.
+pub(crate) fn ast_values_equal_ignoring_comments(
+	a: &AstValue,
+	b: &AstValue,
+	scalars: ScalarEquality,
+) -> bool {
 	match (a, b) {
 		(AstValue::Scalar { value: va, .. }, AstValue::Scalar { value: vb, .. }) => {
-			scalar_values_semantically_equal(va, vb)
+			scalar_values_semantically_equal(va, vb, scalars)
 		}
 		(AstValue::Block { items: ia, .. }, AstValue::Block { items: ib, .. }) => {
 			let ia: Vec<&AstStatement> = ia
@@ -1160,7 +1186,7 @@ pub(crate) fn ast_values_semantically_equal(a: &AstValue, b: &AstValue) -> bool 
 				&& ia
 					.iter()
 					.zip(ib.iter())
-					.all(|(sa, sb)| ast_statements_semantically_equal(sa, sb))
+					.all(|(sa, sb)| ast_statements_equal_ignoring_comments(sa, sb, scalars))
 		}
 		_ => false,
 	}
@@ -1172,6 +1198,16 @@ pub(crate) fn ast_values_semantically_equal(a: &AstValue, b: &AstValue) -> bool 
 /// patches as equivalent. Inside blocks, comments are filtered out by
 /// `ast_values_semantically_equal` and never reach this function.
 pub(crate) fn ast_statements_semantically_equal(a: &AstStatement, b: &AstStatement) -> bool {
+	ast_statements_equal_ignoring_comments(a, b, ScalarEquality::IgnoringQuotes)
+}
+
+/// [`ast_statements_semantically_equal`] with the scalar relation chosen by
+/// the caller.
+pub(crate) fn ast_statements_equal_ignoring_comments(
+	a: &AstStatement,
+	b: &AstStatement,
+	scalars: ScalarEquality,
+) -> bool {
 	match (a, b) {
 		(
 			AstStatement::Assignment {
@@ -1180,9 +1216,9 @@ pub(crate) fn ast_statements_semantically_equal(a: &AstStatement, b: &AstStateme
 			AstStatement::Assignment {
 				key: kb, value: vb, ..
 			},
-		) => ka == kb && ast_values_semantically_equal(va, vb),
+		) => ka == kb && ast_values_equal_ignoring_comments(va, vb, scalars),
 		(AstStatement::Item { value: va, .. }, AstStatement::Item { value: vb, .. }) => {
-			ast_values_semantically_equal(va, vb)
+			ast_values_equal_ignoring_comments(va, vb, scalars)
 		}
 		(AstStatement::Comment { .. }, AstStatement::Comment { .. }) => true,
 		_ => false,
