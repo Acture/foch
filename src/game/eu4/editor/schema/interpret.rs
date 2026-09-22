@@ -1609,39 +1609,72 @@ fn schema_scalar_type_diagnostic(
 
 /// Warn where the game's own coercion silently changes the written value.
 ///
-/// Only the boolean case is decidable today. A field's meaning comes from the
-/// accessor its consumer calls, and the game has two numeric readers with very
-/// different precision: `CToken::GetFloat` truncates to three decimals, while
-/// `CToken::GetFloat64` scales by 32768 with round-to-nearest, keeping about
-/// five. Vanilla writes `monthly_piety = 0.0025` thirteen times, which only
-/// survives the second, so modifier fields evidently do not use the first.
-/// Until the schema can say which reader a field uses, a precision warning on
-/// `float` would be wrong for the largest family of them.
-///
-/// Booleans have no such ambiguity: `CToken::GetBool` is the only thing that
-/// decides one, and it is a case-sensitive comparison against `yes`.
+/// A field's meaning comes from the accessor its consumer calls, and two of
+/// those discard what the file says. Script numbers reach `CFixedPoint`, whose
+/// `CToken::ReadValue` copies at most three fraction digits into a `"000"`
+/// buffer and scales the integer part by 1000 — three decimals, truncated, not
+/// rounded. `CToken::GetFloat` does the same through `StringToFixedPoint`. The
+/// game's finer reader, `GetFloat64` at 1/32768, has two callers and neither is
+/// a script path, so it does not apply here. `CToken::GetBool` is a
+/// case-sensitive comparison against `yes`, so only that spelling is true.
 fn schema_value_coercion_diagnostic(
 	field_match: &CompiledBindFieldMatch<'_>,
 	key: &str,
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<SchemaDiagnostic> {
-	let (SchemaScalarType::Bool, ScalarValue::Identifier(text)) =
-		(schema_scalar_type(schema_match_value(field_match))?, scalar)
-	else {
-		return None;
+	let (code, severity, message) = match (
+		schema_scalar_type(schema_match_value(field_match))?,
+		scalar,
+	) {
+		(SchemaScalarType::Float { .. }, ScalarValue::Number(text)) => {
+			let (integer, fraction) = text.split_once('.')?;
+			let (kept, discarded) = fraction.split_at_checked(3)?;
+			// Three decimals exactly is what the game keeps, so there is
+			// nothing to report.
+			if discarded.is_empty() {
+				return None;
+			}
+			if discarded.bytes().any(|byte| byte != b'0') {
+				// The file says one number and the game reads another.
+				(
+					"V008",
+					Severity::Error,
+					format!(
+						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
+					),
+				)
+			} else {
+				// Nothing is lost, but the written precision is still not
+				// the precision the game keeps.
+				(
+					"V008",
+					Severity::Warning,
+					format!(
+						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}`, so the trailing `{discarded}` is not the extra precision it looks like"
+					),
+				)
+			}
+		}
+		(SchemaScalarType::Bool, ScalarValue::Identifier(text))
+			if text.eq_ignore_ascii_case("yes") || text.eq_ignore_ascii_case("no") =>
+		{
+			(
+				"V009",
+				Severity::Error,
+				format!(
+					"`{key}` is read as false: the game compares against the exact lowercase `yes`, so `{text}` is not a boolean"
+				),
+			)
+		}
+		_ => return None,
 	};
-	if !text.eq_ignore_ascii_case("yes") && !text.eq_ignore_ascii_case("no") {
-		return None;
-	}
 	Some(SchemaDiagnostic {
 		range: editor_range_from_span(span),
-		severity: Some(Severity::Warning),
-		code: Some("V009".to_string()),
+		severity: Some(severity),
+		code: Some(code.to_string()),
 		source: Some("foch".to_string()),
-		message: format!(
-			"`{key}` is read as false: the game compares against the exact lowercase `yes`, so `{text}` is not a boolean"
-		),
+		message,
 	})
 }
 

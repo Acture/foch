@@ -118,19 +118,27 @@ depended on the folding. Regressions:
 `only_lowercase_yes_and_no_are_boolean` and
 `emitting_a_non_lowercase_yes_keeps_its_spelling`.
 
-One LSP diagnostic came out of this, and a second was withdrawn before release.
-`V009` warns that a `yes`-shaped value on a schema `bool` field which is not the
-exact lowercase spelling is read as false; `CToken::GetBool` is the only thing
-that decides a boolean, so there is no ambiguity. A `V008` warning about numeric
-literals keeping only three decimals was written, tested, and then pulled:
-`CToken::GetFloat64` is a second numeric reader that scales by 32768 with
-round-to-nearest — about five decimals, not three — and vanilla writes
-`monthly_piety = 0.0025` thirteen times, which survives that reader and would be
-mangled by the other. Modifier fields evidently use the finer one, nothing in the
-schema distinguishes the two, and 218 of the config's `float` occurrences sit
-under `alias[modifier:*]`, so the warning would have been wrong for most of what
-it fired on. Which accessor a field calls is now the open question that gates any
-numeric claim.
+Two LSP diagnostics came out of this, after one wrong turn. `V008` reports a
+numeric literal on a schema `float` field carrying a fourth decimal, and `V009`
+a `yes`-shaped value on a schema `bool` field that is not the exact lowercase
+spelling. Both are errors where the game reads a different value than the file
+states, and `V008` drops to a warning when the discarded digits are zeros, where
+the value survives but the written precision still is not the one kept. At
+exactly three decimals it says nothing.
+
+The wrong turn is worth recording. `V008` was withdrawn on the argument that
+vanilla writes `monthly_piety = 0.0025` thirteen times, which three-decimal
+truncation would turn into a fifth-off balance value, so modifier fields must
+use the game's finer reader. Counting the call sites disproved it: the finer
+`GetFloat64` at 1/32768 has two callers, `CCountry::ReadMember` and an `fpml`
+overload, neither a script path, while the script surface —
+`CReader::Read(CFixedPoint&)`, `TValueEffect`, `TValueTrigger` — reaches
+`CToken::ReadValue(CFixedPoint&)`, which copies at most three fraction digits
+into a `"000"` buffer and scales the integer by 1000. Script reads three
+decimals. The same vanilla evidence reads the other way once the rule is known:
+only 15 values in `common/`, `events/`, `decisions/` and `missions/` carry a
+meaningful fourth decimal at all, 13 of them that one number, which is what a
+rare authoring slip looks like rather than a family with finer precision.
 
 Reading the consumers rather than the lexer turned out to matter more.
 `CToken::GetFloat` tail-calls `StringToFixedPoint`, which is `atoi` for the
