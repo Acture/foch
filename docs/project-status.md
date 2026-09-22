@@ -74,10 +74,19 @@ disjunction — and lifted comments are re-emitted ahead of the `OR` rather than
 inside the `AND` their presence used to create. Both are pinned.
 
 Not fixed here: the underlying asymmetry that produced the second defect. The
-normalized tree distinguishes `SWE` from `"SWE"` while EU4 does not, and
-`scalar_values_semantically_equal` does not. Making the kernel equate them would
-change leaf kinds, subtree hashes and cache identity, so it is a separate
-question; this fix only stops canonicalization from relying on the coarser side.
+normalized tree distinguishes `SWE` from `"SWE"`; `scalar_values_semantically_equal`
+does not. Which side matches EU4 was asserted without evidence when this fix
+landed, and has since been checked against the installed 1.37.5: vanilla writes
+81 distinct `key = value` pairs both ways, including identity lookups such as
+`has_country_modifier`, and `counter_reformation` — defined once as a bare block
+key — is referenced both bare and quoted in shipped missions and events, which
+those triggers could not survive if the loader kept the spellings apart. So the
+game folds identifier-shaped text, and the kernel is the side that differs. The
+guard's other carve-outs (`yes`/`no`, leading digit or `-`) remain unevidenced:
+vanilla never writes `"yes"`. Making the kernel equate the spellings would move
+leaf kinds, subtree hashes and cache identity, so it stays a separate question;
+this fix only stops canonicalization from relying on the coarser side. Evidence:
+`target/validation/p687-quoting-2026-09-22/`.
 
 Regressions: five unit tests in `src/merge/boolean.rs` cover the transform
 itself (comment-blind shape, comment survival, comment-only body, both scalar
