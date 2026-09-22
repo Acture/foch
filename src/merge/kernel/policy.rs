@@ -1,6 +1,4 @@
-use crate::merge::kernel::{
-	ClassId, ConflictKind, MergePolicyKind, NormalizedNode, RevisionId, RevisionNode,
-};
+use crate::merge::kernel::{ClassId, ConflictKind, NormalizedNode, RevisionId, RevisionNode};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NWayNodeView<'a> {
@@ -35,17 +33,7 @@ pub enum PolicyDecision {
 	Unresolved,
 	Resolved,
 	Select(RevisionId),
-	/// Replace the divergent scalar with `value`, recorded under `policy`.
-	///
-	/// The kind travels with the decision because a synthesized scalar can
-	/// come from two unrelated judgements — a domain reducer combining
-	/// different values, or a finding that the contributors were never
-	/// different to the game — and a report that cannot tell them apart says
-	/// the wrong thing about the merge.
-	SynthesizeScalar {
-		value: String,
-		policy: MergePolicyKind,
-	},
+	SynthesizeScalar(String),
 }
 
 pub trait MergePolicy {

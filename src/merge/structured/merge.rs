@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::game::eu4::content::{
 	BooleanMergePolicy, DivergentBlockPolicy, MergePolicies, ScriptFileKind,
 };
+use crate::game::eu4::cwt::rule_engine;
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
 use crate::game::eu4::script::{classify_script_file, script_container_scope_kind};
 use crate::game::schema::query::CwtQuery;
@@ -160,7 +161,7 @@ fn merge_clausewitz_files_n_way_inner(
 		base,
 		revisions,
 		policies,
-		crate::game::eu4::cwt::rule_engine(),
+		rule_engine(),
 		reduce_event_fallbacks,
 		resolutions,
 	)
@@ -178,14 +179,12 @@ pub fn merge_clausewitz_files_n_way_with_schema(
 	reduce_event_fallbacks: bool,
 	resolutions: &[ConflictResolution],
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	// The merged file's own path is the address the schema binds, and every
-	// revision is a revision of it.
-	let policy = ContentFamilyMergePolicy::with_schema_fields(policies, schema, &base.path);
+	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let base = canonicalize_boolean_or_definitions(base, policies, &mut scope_cache);
+	let base = canonicalize_for_merge(base, policies, schema, &mut scope_cache);
 	let revisions = revisions
 		.iter()
-		.map(|revision| canonicalize_boolean_or_definitions(revision, policies, &mut scope_cache))
+		.map(|revision| canonicalize_for_merge(revision, policies, schema, &mut scope_cache))
 		.collect::<Vec<_>>();
 	let (base, base_trivia) = detach_trivia(&base);
 	let detached_revisions = revisions.iter().map(detach_trivia).collect::<Vec<_>>();
@@ -291,7 +290,7 @@ pub fn canonicalize_clausewitz_file(
 ) -> Result<AstFile, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_boolean_or_definitions(file, policies, &mut scope_cache);
+	let canonical = canonicalize_for_merge(file, policies, rule_engine(), &mut scope_cache);
 	let (semantic, trivia) = detach_trivia(&canonical);
 	let tree = normalize_ast(&semantic, &policy)?;
 	let mut canonical = denormalize_ast(file.path.clone(), &tree)?;
@@ -307,8 +306,8 @@ pub(crate) fn clausewitz_files_semantically_equivalent(
 ) -> Result<bool, AstAdapterError> {
 	let policy = ContentFamilyMergePolicy::new(policies);
 	let mut scope_cache = HashMap::new();
-	let left = canonicalize_boolean_or_definitions(left, policies, &mut scope_cache);
-	let right = canonicalize_boolean_or_definitions(right, policies, &mut scope_cache);
+	let left = canonicalize_for_merge(left, policies, rule_engine(), &mut scope_cache);
+	let right = canonicalize_for_merge(right, policies, rule_engine(), &mut scope_cache);
 	let (left, _) = detach_trivia(&left);
 	let (right, _) = detach_trivia(&right);
 	let left = normalize_ast(&left, &policy)?;
@@ -346,9 +345,24 @@ pub(crate) fn normalize_clausewitz_file(
 	policies: &MergePolicies,
 ) -> Result<NormalizedTree, AstAdapterError> {
 	let mut scope_cache = HashMap::new();
-	let canonical = canonicalize_boolean_or_definitions(file, policies, &mut scope_cache);
+	let canonical = canonicalize_for_merge(file, policies, rule_engine(), &mut scope_cache);
 	let (semantic, _) = detach_trivia(&canonical);
 	normalize_ast(&semantic, &ContentFamilyMergePolicy::new(policies))
+}
+
+/// Bring a file to the form every identity in the merge is derived from.
+///
+/// Numbers first: `canonicalize_boolean_or_definitions` deduplicates disjuncts
+/// by exact scalar text, so two that differ only in how one number is spelled
+/// have to already read alike by then.
+fn canonicalize_for_merge(
+	file: &AstFile,
+	policies: &MergePolicies,
+	schema: Option<&CwtQuery>,
+	scope_cache: &mut HashMap<Vec<String>, Option<ScopeKind>>,
+) -> AstFile {
+	let file = crate::merge::numeric::canonicalize_numeric_values(file, schema);
+	canonicalize_boolean_or_definitions(&file, policies, scope_cache)
 }
 
 fn canonicalize_boolean_or_definitions(

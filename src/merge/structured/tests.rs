@@ -895,6 +895,9 @@ fn event_merge_amalgamates_independent_ordered_insertions() {
 		merge_event_files(&base, &left, &right, &event_policies()).expect("merge event files");
 
 	assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+	// `add_prestige` is a schema `float` (`alias[effect:add_prestige]`), so the
+	// merged output carries it in the engine's own representation; `CFixedPoint`
+	// holds thousandths. `add_stability` is an `int` and keeps its spelling.
 	assert_eq!(
 		emit(outcome.resolved_ast().expect("conflict-free AST")),
 		"namespace = demo\n\
@@ -906,7 +909,7 @@ fn event_merge_amalgamates_independent_ordered_insertions() {
 		\t}\n\
 		\toption = {\n\
 		\t\tname = demo.accept\n\
-		\t\tadd_prestige = 1\n\
+		\t\tadd_prestige = 1.000\n\
 		\t}\n\
 		\toption = {\n\
 		\t\tname = demo.reject\n\
@@ -2280,18 +2283,17 @@ fn canonicalization_does_not_change_the_verdict_on_reordered_quoted_scalars() {
 }
 
 /// P-695: EU4 reads a script number through a reader coarser than text
-/// comparison, so the same value can be written several ways. These pin the
-/// verdict, not just the transform: a spelling difference is not a conflict, a
-/// value difference still is, and the schema decides which is which.
+/// comparison, so the same value can be written several ways. Numbers are
+/// canonicalized before the merge looks at them, so these pin the product
+/// verdict: a spelling difference is not a conflict, a value difference still
+/// is, and the schema decides which is which.
 mod game_value_equivalence {
 	use std::fs;
-	use std::path::Path;
 
 	use tempfile::TempDir;
 
 	use super::{MergePolicies, emit, parse_at};
 	use crate::game::schema::{CwtSchema, CwtSource};
-	use crate::merge::kernel::{MergeDecisionReason, MergePolicyKind};
 	use crate::merge::structured::merge_clausewitz_files_n_way_with_schema;
 
 	const SCHEMA: &str = r#"
@@ -2350,20 +2352,20 @@ mod game_value_equivalence {
 	#[test]
 	fn spellings_of_one_value_are_not_a_conflict() {
 		let schema = schema();
-		for (base, values, expected) in [
-			("0.1", ["0.5", "0.50"], "upkeep = 0.50"),
-			("0.1", ["0.50", "0.5"], "upkeep = 0.5"),
-			("0.1", ["1", "1.0"], "upkeep = 1.0"),
-			("0.1", ["0.500", "0.5"], "upkeep = 0.5"),
+		for values in [
+			["0.5", "0.50"],
+			["0.50", "0.5"],
+			["1", "1.0"],
+			["0.500", "0.5"],
 			// The reader keeps three decimals and truncates, so a fourth
 			// decimal never reaches the game at all.
-			("0.1", ["0.1234", "0.1239"], "upkeep = 0.1239"),
+			["0.1234", "0.1239"],
 		] {
 			let outcome = merge_with(
 				Some(&schema),
 				&MergePolicies::default(),
 				"upkeep",
-				base,
+				"0.1",
 				values,
 			);
 
@@ -2372,9 +2374,24 @@ mod game_value_equivalence {
 				"{values:?} should agree: {:?}",
 				outcome.conflicts()
 			);
-			let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
-			assert!(output.contains(expected), "{values:?} produced {output}");
 		}
+	}
+
+	#[test]
+	fn the_output_is_written_in_the_engines_own_representation() {
+		let schema = schema();
+		let outcome = merge_with(
+			Some(&schema),
+			&MergePolicies::default(),
+			"upkeep",
+			"0.1",
+			["0.5", "0.50"],
+		);
+
+		let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+		// `CFixedPoint` holds thousandths, so three decimals is the value the
+		// game keeps rather than a formatting preference.
+		assert!(output.contains("upkeep = 0.500"), "{output}");
 	}
 
 	#[test]
@@ -2394,33 +2411,6 @@ mod game_value_equivalence {
 				"{values:?} are different values and must still conflict"
 			);
 		}
-	}
-
-	#[test]
-	fn the_equivalence_is_labelled_rather_than_folded_silently() {
-		let schema = schema();
-		let outcome = merge_with(
-			Some(&schema),
-			&MergePolicies::default(),
-			"upkeep",
-			"0.1",
-			["0.5", "0.50"],
-		);
-
-		let decisions = &outcome.kernel().decisions;
-		assert!(
-			decisions.iter().any(|decision| {
-				decision.policy == MergePolicyKind::GameValueEquivalence
-					&& decision.reason == MergeDecisionReason::EquivalentChanges
-			}),
-			"the decision must say why the values agreed: {decisions:?}"
-		);
-		assert!(
-			!decisions
-				.iter()
-				.any(|decision| decision.policy == MergePolicyKind::ScalarReducer),
-			"nothing was reduced: {decisions:?}"
-		);
 	}
 
 	#[test]
@@ -2473,6 +2463,7 @@ mod game_value_equivalence {
 			"`GetInt` is `atoi`, so both are 3: {:?}",
 			agreeing.conflicts()
 		);
+		assert!(emit(agreeing.resolved_ast().expect("conflict-free AST")).contains("slots = 3\n"),);
 
 		let differing = merge_with(
 			Some(&schema),
@@ -2502,24 +2493,60 @@ mod game_value_equivalence {
 	}
 
 	#[test]
-	fn equivalence_is_decided_before_a_reducer_combines_the_values() {
+	fn how_a_value_is_spelled_changes_nothing_downstream() {
 		use crate::game::eu4::content::{ScalarMergePolicy, ScalarReducerRule};
 
 		const RULES: &[ScalarReducerRule] =
 			&[ScalarReducerRule::new(&["upkeep"], ScalarMergePolicy::Sum)];
 		let schema = schema();
-		let policies = MergePolicies {
+		let summed = MergePolicies {
 			scalar_reducer_rules: RULES,
 			..MergePolicies::default()
 		};
 
-		let outcome = merge_with(Some(&schema), &policies, "upkeep", "0.1", ["0.5", "0.50"]);
+		// This is the whole property: once the text is canonical, a merge
+		// cannot tell `0.50` from `0.5`, so every policy behaves as if both
+		// mods had written the same thing — including a reducer, which then
+		// sums two equal contributions exactly as it would have anyway.
+		for policies in [&MergePolicies::default(), &summed] {
+			let spelled = merge_with(Some(&schema), policies, "upkeep", "0.1", ["0.5", "0.50"]);
+			let identical = merge_with(Some(&schema), policies, "upkeep", "0.1", ["0.5", "0.5"]);
+
+			assert_eq!(
+				spelled.conflicts().len(),
+				identical.conflicts().len(),
+				"spelling must not change the verdict"
+			);
+			assert_eq!(
+				spelled.resolved_ast().map(emit),
+				identical.resolved_ast().map(emit),
+				"spelling must not change the output"
+			);
+		}
+	}
+
+	#[test]
+	fn both_contributors_stay_in_the_provenance_of_an_equivalent_value() {
+		// Provenance is recomputed from source text. If one spelling had
+		// survived and the other had not, the trace would report the losing
+		// mod as overridden, which is not what happened.
+		let schema = schema();
+		let outcome = merge_with(
+			Some(&schema),
+			&MergePolicies::default(),
+			"upkeep",
+			"0.1",
+			["0.5", "0.50"],
+		);
 
 		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
-		let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+		let decisions = &outcome.kernel().decisions;
 		assert!(
-			output.contains("upkeep = 0.50"),
-			"one value written twice must not be summed into another: {output}"
+			!decisions.iter().any(|decision| matches!(
+				decision.result,
+				crate::merge::kernel::MergeDecisionResult::SynthesizeScalar { .. }
+			)),
+			"no decision is needed where the contributors never differed: {decisions:?}"
 		);
 	}
 
@@ -2579,6 +2606,5 @@ mod game_value_equivalence {
 			!outcome.conflicts().is_empty(),
 			"no root type matches this path, so no field type is known"
 		);
-		let _ = Path::new(FILE);
 	}
 }

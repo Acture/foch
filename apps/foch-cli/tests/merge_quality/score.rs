@@ -22,6 +22,7 @@ use foch::game::eu4::script::parse_script_file;
 use foch::game::eu4::script::parser::{
 	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content, parse_clausewitz_file,
 };
+use foch::merge::numeric::canonicalize_numeric_values_with_active_schema;
 use foch::model::{DeferredUnitReason, DocumentFamily, MergeReport};
 use foch::playset::descriptor::load_descriptor;
 use regex::Regex;
@@ -639,7 +640,11 @@ impl ScoreCache {
 					.text,
 			);
 			let canonical = if parsed.diagnostics.is_empty() {
-				Some(canonical_statements(&parsed.ast.statements, ordering))
+				// `path` is a scratch location; the schema binds the
+				// game-relative one.
+				let ast =
+					canonicalize_numeric_values_with_active_schema(Path::new(rel), &parsed.ast);
+				Some(canonical_statements(&ast.statements, ordering))
 			} else {
 				None
 			};
@@ -1082,9 +1087,16 @@ fn canonical_layered_module_view_uncached(
 		})
 		.collect::<Vec<_>>();
 	let module = load_definition_module(&inputs, policy).ok()?;
+	// Score the representation the merge produces. Every file in a module
+	// family shares one prefix, so one probe path binds the same root the
+	// merge bound; `definition_module_merge_key_for_prefix` probes the same way.
+	let probe = PathBuf::from(format!(
+		"{}/__foch_module__.txt",
+		family_prefix.trim_end_matches('/')
+	));
+	let module_ast = canonicalize_numeric_values_with_active_schema(&probe, &module.ast);
 	Some(
-		module
-			.ast
+		module_ast
 			.statements
 			.iter()
 			.filter_map(|statement| canonical_module_assignment(statement, merge_key_source))
@@ -1898,8 +1910,11 @@ fn semantic_atoms_for_path_with_ordering(
 					AstOrderingPolicy::OrderInsensitive
 				}
 			});
+			// `path` is a scratch location; the schema binds the game-relative
+			// one.
+			let ast = canonicalize_numeric_values_with_active_schema(Path::new(rel), &parsed.ast);
 			let mut atoms = AtomBag::new();
-			flatten_semantic_statements(&parsed.ast.statements, ordering, &[], &mut atoms);
+			flatten_semantic_statements(&ast.statements, ordering, &[], &mut atoms);
 			return Some(atoms);
 		}
 	}

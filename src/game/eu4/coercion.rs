@@ -101,6 +101,28 @@ pub fn script_int(text: &str) -> Option<i64> {
 	Some(if negative { -magnitude } else { magnitude })
 }
 
+/// The spelling EU4's own representation implies for a `float` field.
+///
+/// `CFixedPoint` holds thousandths, so three decimals is not a style choice —
+/// it is the value the engine keeps, written out. `0.5` becomes `0.500` and
+/// `0.1239` becomes `0.123`, and two spellings of one value become one string.
+pub fn canonical_float_text(text: &str) -> Option<String> {
+	let ScriptFixedPoint(thousandths) = script_fixed_point(text)?;
+	let sign = if thousandths < 0 { "-" } else { "" };
+	let magnitude = thousandths.unsigned_abs();
+	Some(format!(
+		"{sign}{}.{:03}",
+		magnitude / FIXED_POINT_SCALE.unsigned_abs(),
+		magnitude % FIXED_POINT_SCALE.unsigned_abs()
+	))
+}
+
+/// The spelling `CToken::GetInt` implies for an `int` field: the integer it
+/// reads, with any fraction the game discards already dropped.
+pub fn canonical_int_text(text: &str) -> Option<String> {
+	Some(script_int(text)?.to_string())
+}
+
 fn split_sign(text: &str) -> Option<(bool, &str)> {
 	// The sign is modelled separately so truncation goes toward zero on both
 	// sides. Which side of the decimal point the binary applies the sign to is
@@ -199,6 +221,53 @@ mod tests {
 		assert_eq!(script_int("abc"), None);
 		assert_eq!(script_int(""), None);
 		assert_eq!(script_int("1444.11.11"), None);
+	}
+
+	#[test]
+	fn the_canonical_float_spelling_is_the_engine_representation() {
+		assert_eq!(canonical_float_text("0.5").as_deref(), Some("0.500"));
+		assert_eq!(canonical_float_text("0.50").as_deref(), Some("0.500"));
+		assert_eq!(canonical_float_text("0.500").as_deref(), Some("0.500"));
+		assert_eq!(canonical_float_text("1").as_deref(), Some("1.000"));
+		assert_eq!(canonical_float_text("0.1239").as_deref(), Some("0.123"));
+		assert_eq!(canonical_float_text(".5").as_deref(), Some("0.500"));
+		assert_eq!(canonical_float_text("007").as_deref(), Some("7.000"));
+		assert_eq!(canonical_float_text("0").as_deref(), Some("0.000"));
+	}
+
+	#[test]
+	fn the_canonical_float_spelling_keeps_the_sign_and_truncates_toward_zero() {
+		assert_eq!(canonical_float_text("-0.1239").as_deref(), Some("-0.123"));
+		assert_eq!(canonical_float_text("-1.5").as_deref(), Some("-1.500"));
+		assert_eq!(canonical_float_text("-0.0001").as_deref(), Some("0.000"));
+	}
+
+	#[test]
+	fn the_canonical_int_spelling_drops_what_the_reader_discards() {
+		assert_eq!(canonical_int_text("3").as_deref(), Some("3"));
+		assert_eq!(canonical_int_text("3.4").as_deref(), Some("3"));
+		assert_eq!(canonical_int_text("007").as_deref(), Some("7"));
+		assert_eq!(canonical_int_text("-4.9").as_deref(), Some("-4"));
+	}
+
+	#[test]
+	fn a_canonical_spelling_is_its_own_canonical_spelling() {
+		// The transform runs on every input, including output it produced
+		// earlier, so it has to be idempotent or a second pass would drift.
+		for text in ["0.5", "0.50", "1", "0.1239", "-1.5", "007", "3.4"] {
+			let once = canonical_float_text(text).expect("canonical float");
+			assert_eq!(canonical_float_text(&once).as_deref(), Some(once.as_str()));
+			let once = canonical_int_text(text).expect("canonical int");
+			assert_eq!(canonical_int_text(&once).as_deref(), Some(once.as_str()));
+		}
+	}
+
+	#[test]
+	fn texts_the_game_reads_alike_get_one_spelling() {
+		for (left, right) in [("0.5", "0.50"), ("1", "1.0"), ("0.1234", "0.1239")] {
+			assert_eq!(canonical_float_text(left), canonical_float_text(right));
+		}
+		assert_ne!(canonical_float_text("0.5"), canonical_float_text("0.6"));
 	}
 
 	#[test]

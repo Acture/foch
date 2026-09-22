@@ -5,8 +5,8 @@ use crate::game::eu4::content::{
 };
 use crate::game::eu4::script::parser::AstFile;
 use crate::merge::kernel::{
-	DeltaOperation, MergeDecisionEvidence, MergeDecisionResult, MergePolicyKind, NormalizedTree,
-	RevisionDelta, RevisionId, RevisionNode, TreeMatcher,
+	DeltaOperation, MergeDecisionEvidence, MergeDecisionResult, NormalizedTree, RevisionDelta,
+	RevisionId, RevisionNode, TreeMatcher,
 };
 use crate::model::{MergeTraceContributor, MergeTraceDecision, MergeTraceEntry, MergeTracePolicy};
 
@@ -264,12 +264,6 @@ struct DefinitionDecisionEvidence {
 	decision_count: usize,
 	combines_children: bool,
 	revisions: BTreeSet<RevisionId>,
-	/// Assignments the contributors wrote in different spellings of one value.
-	///
-	/// Counted separately because the trace otherwise cannot distinguish it
-	/// from a mod's value being overridden: the losing spelling is absent from
-	/// the output either way, so provenance alone reads the same.
-	game_value_equivalences: u32,
 }
 
 /// Project parser-independent kernel evidence into the stable, definition-level
@@ -302,9 +296,6 @@ pub(crate) fn observe_merge_trace(
 				contributors,
 				policy,
 				decision,
-				game_value_equivalences: evidence
-					.get(key)
-					.map_or(0, |evidence| evidence.game_value_equivalences),
 			},
 		);
 	}
@@ -349,9 +340,6 @@ fn collect_definition_decision_evidence(
 			};
 			let evidence = by_definition.entry(key).or_default();
 			evidence.decision_count += 1;
-			if decision.policy == MergePolicyKind::GameValueEquivalence {
-				evidence.game_value_equivalences += 1;
-			}
 			evidence.combines_children |=
 				matches!(decision.result, MergeDecisionResult::CombineChildren);
 			evidence.revisions.extend(
@@ -915,116 +903,5 @@ mod tests {
 		assert!(shared.decision_count > 0);
 		assert!(shared.revisions.contains(&RevisionId::new(1)));
 		assert!(shared.revisions.contains(&RevisionId::new(2)));
-	}
-
-	/// The count has to survive the projection into the definition-level
-	/// trace, because that is the only place a reader can tell a spelling
-	/// difference from one mod overriding another: the losing spelling is
-	/// absent from the output either way.
-	#[test]
-	fn trace_reports_a_coercion_equivalence_rather_than_an_override() {
-		use std::fs;
-
-		use tempfile::TempDir;
-
-		use crate::game::schema::{CwtSchema, CwtSource};
-		use crate::merge::structured::merge_clausewitz_files_n_way_with_schema;
-
-		let schema_dir = TempDir::new().expect("create schema directory");
-		fs::write(
-			schema_dir.path().join("things.cwt"),
-			r#"
-				types = { type[thing] = { path = "game/common/things" } }
-				thing = { alias_name[modifier] = alias_match_left[modifier] }
-				alias[modifier:upkeep] = float
-			"#,
-		)
-		.expect("write schema");
-		let schema = CwtSchema::load_with_cache(
-			schema_dir.path(),
-			CwtSource::UserProvided {
-				path: schema_dir.path().to_path_buf(),
-			},
-			None,
-		)
-		.expect("load schema");
-
-		let descriptor = ContentFamilyDescriptor::prefix("common/things", "common/things/")
-			.merge_key(MergeKeySource::AssignmentKey)
-			.build();
-		let source = |value: &str| {
-			crate::game::eu4::script::parser::parse_clausewitz_content(
-				std::path::PathBuf::from("common/things/example.txt"),
-				&format!("a_thing = {{ upkeep = {value} }}\n"),
-			)
-			.ast
-		};
-		let base = source("0.1");
-		let left = source("0.5");
-		let right = source("0.50");
-		let outcome = merge_clausewitz_files_n_way_with_schema(
-			&base,
-			&[&left, &right],
-			&descriptor.merge_policies,
-			Some(schema.facts()),
-			false,
-			&[],
-		)
-		.expect("merge");
-		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
-
-		let statements = outcome.tentative_ast().statements.clone();
-		let (_, facts) = outcome.into_parts(SemanticPartitionId::File);
-		let semantic = SemanticMergeComputation {
-			statements,
-			source_deltas: Vec::new(),
-			merge_facts: vec![SemanticMergeFacts {
-				partition: facts.partition,
-				sources: BTreeMap::from([
-					(
-						RevisionId::new(1),
-						SemanticMergeSource {
-							source_id: "mod_a".to_string(),
-							precedence: 1,
-						},
-					),
-					(
-						RevisionId::new(2),
-						SemanticMergeSource {
-							source_id: "mod_b".to_string(),
-							precedence: 2,
-						},
-					),
-				]),
-				base_tree: facts.base_tree,
-				revision_trees: facts.revision_trees,
-				outcome: facts.outcome,
-			}],
-			partition_lineage: BTreeMap::new(),
-			unresolved_conflicts: Vec::new(),
-			handler_resolutions: Vec::new(),
-			resolved_conflict_ids: Vec::new(),
-			conflict_resolutions: Vec::new(),
-			output_directives: Vec::new(),
-		};
-
-		// Only `mod_b`'s spelling survives into the output, which is exactly
-		// the shape that otherwise reads as an override.
-		let provenance = BTreeMap::from([("a_thing".to_string(), vec!["mod_b".to_string()])]);
-		let participants = BTreeMap::from([(
-			"a_thing".to_string(),
-			vec![participant("mod_a", 1, 0), participant("mod_b", 2, 1)],
-		)]);
-
-		let trace =
-			observe_merge_trace(&provenance, &participants, &descriptor, Some(&semantic)).unwrap();
-
-		assert_eq!(
-			trace
-				.get("a_thing")
-				.expect("trace entry")
-				.game_value_equivalences,
-			1
-		);
 	}
 }

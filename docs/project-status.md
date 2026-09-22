@@ -2,9 +2,9 @@
 
 Latest worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
 equivalence change: strict workspace Clippy and formatting, and `cargo test
---workspace --no-fail-fast` at 1,569 passed and 3 failed across all targets,
-the three being exactly the sandbox denials `AGENTS.md` records as environment
-results, with no existing expectation changed.
+--workspace --no-fail-fast` green apart from the three sandbox denials
+`AGENTS.md` records as environment results. Two existing expectations moved and
+are adjudicated in the entry below.
 Earlier worktree verification: 2026-09-22 on `02ebd37` plus the P-687 boolean
 canonicalization fix: strict workspace Clippy and formatting, and `cargo test
 --workspace` green apart from the known sandbox denials, with no existing
@@ -55,121 +55,141 @@ The reader. `CToken::ReadValue(CFixedPoint&)` takes the integer part with
 scales the integer by 1000 — three decimals, truncated, never rounded.
 `CToken::GetInt` is `atoi`. The finer `GetFloat64` at 1/32768 has two callers,
 neither a script path. That is modelled in `src/game/eu4/coercion.rs`, with the
-evidence in the module's own doc comment so the claim travels with the code —
-naming the functions rather than a scratch file, because the P-687 findings
-directory was under `target/` and no longer exists.
+evidence restated in the module's own doc comment rather than cited, because
+the P-687 findings directory lived under `target/` and is gone.
 
-Where it acts. In `ContentFamilyMergePolicy::resolve_nway_divergent_node`,
-before the scalar-reducer branch: the conflict class is already formed and the
-divergence already marked, so only the verdict changes. Nothing in hashing,
-`shallow_eq`, the tree matcher or the anchors that embed scalar text is
-touched. Making the leaves coercion-aware instead would move subtree hashes and
-matcher buckets, and the same pair would then compare equal under an `Ordered`
-parent and unequal under a `Commutative` one. Ordering matters for a second
-reason the regression pins: a reducer handed one value written twice would sum
-or average spellings of the same number, so equivalence is decided first.
+Where it acts, and why not where the issue said. The issue ruled out the
+normalization layer on the grounds that `equivalent_subtrees` compares
+`subtree_hash` before recursing, so a leaf-equal, hash-unequal pair would be
+equal under an `Ordered` parent and unequal under a `Commutative` one. That
+argument holds against making the *comparison* coercion-aware; it does not hold
+against rewriting the *value*, because the hash is computed from the value and
+follows it. The first implementation followed the issue and resolved
+equivalence inside `resolve_nway_divergent_node`; the maintainer redirected it
+to semantic normalization, and that is what shipped.
 
-What it emits. The last contributor's own spelling, because playset order is
-the precedence the rest of the merge follows and the reader's canonical form
-would put a number in the output that no contributor wrote.
+`canonicalize_numeric_values` (`src/merge/numeric.rs`) rewrites the AST before
+the merge, beside `canonicalize_boolean_or_definitions` and ahead of it, since
+that pass deduplicates disjuncts by exact scalar text. The AST is what every
+identity is derived from — `assignment_anchor` and `value_fingerprint` read
+`AstValue` directly, and the normalized tree hashes the values it carries — so
+the matcher, the hashes, the anchors, `definition_provenance` and the
+semantic-equivalence check all agree by construction instead of each learning
+the rule. Nothing needs a decision label any more: the values are identical
+before the merge looks at them, and both contributors stay in provenance, so
+the trace no longer calls the losing spelling an override. The
+`MergePolicyKind` variant, the `PolicyDecision` policy field, the
+`MergeTraceEntry` count and the review note the first implementation added were
+all removed with it.
 
-Three obstacles had to be cleared first.
+Doing it in the AST also removed a class of guesswork. The first version had to
+recover the field path from `policy_path`, whose components are anchor values —
+either a bare key or `key:identity`, indistinguishable as text, and vanilla
+writes `event_target:<name>` as an ordinary assignment key about 1,890 times.
+That forced two readings and a unanimity rule. A top-down AST walk holds the
+real keys, and `RuleContext` descends with the recursion: one binding per block
+entered, cached by ancestor chain, rather than one per number.
 
-*The type classifier was in the wrong layer.* `SchemaScalarType` and its range
-parsing were private to `src/game/eu4/editor/schema/interpret.rs`; they are CWT
-vocabulary, not EU4 interpretation, and now live in `src/game/schema/query.rs`
-where the LSP and the merge share them. `SchemaScalarType::matches` stayed
-behind as `schema_scalar_type_matches`: it asks schema conformance, which is
-deliberately stricter than what the game reads, and conflating the two would
-fold `123abc` into `123` on the strength of a check that rejects it.
+Canonical form. `CFixedPoint` holds thousandths, so a `float` field is written
+with exactly three decimals and an `int` field as the integer `atoi` reads.
+This is the engine's representation, not a formatting preference.
 
-*The alias trap was real and was already a live defect.*
-`CompiledBindFieldMatch::field()` returns the alias wildcard, whose value is an
-`alias_match_left[...]` marker rather than a type. In the vendored config 682
-of 1,428 `int`/`float` declarations are alias-bound, so reading the type off
-`field()` loses roughly half of them. `CompiledBindFieldMatch::value()` now
-reads `alias.value`, and `rule_value_for_path` descends alias-bound blocks
-through `RuleContext::AliasRules`. `rule_field_for_path` had exactly this bug,
-so an alias-bound block field was suggested as `Replace` rather than
-`Recursive`; `alias_bound_block_fields_are_recursive_rather_than_replaced`
-pins the fix.
+Honest coverage and its price, measured through the shipped transform against
+the installed 1.37.5 over `common/`, `events/`, `decisions/` and `missions/`
+(1,941 files; the probe is `measure_coverage_against_vanilla`, `#[ignore]`d,
+needs `EU4_ROOT`):
 
-*The query shape.* The issue expected per-leaf binding to be too slow, but the
-landing point runs once per divergent class, not once per scalar leaf, so
-`bind_context` is called for conflicts only. No cache was added; none is
-warranted by the call volume, and a wrong one would be worse than none.
+- **1,783** numbers are spelled redundantly — a trailing zero or a fourth
+  decimal, the shape a sibling mod could write differently. **772 of them
+  (43%)** sit on a field the schema types, and those are the false conflicts
+  this removes.
+- **26,559** numbers are rewritten in total, because every schema-typed number
+  takes the canonical spelling whether or not anything ever disagreed about it.
+  That is the cost side of writing the engine's representation: roughly 34
+  numbers change spelling for each potential false conflict removed.
 
-Honest coverage, measured through the shipped code against the installed
-1.37.5 over `common/`, `events/`, `decisions/` and `missions/` (1,941 files):
-of 148,456 numeric leaves the model reads, **1,783 are spelled redundantly** —
-a trailing zero or a fourth decimal, the shape a sibling mod could write
-differently — and **772 of those (43%) resolve to an explicit schema `float`**.
-The other 1,011 abstain, dominated by the modifier keys the vendored CWT config
-records only in its `modifiers = { ... }` registry and never declares as
-`alias[modifier:<key>]`: `land_morale`, `global_tax_modifier`,
-`trade_efficiency`, `stability_cost_modifier`. That is the benefit ceiling as
-the schema stands, and raising it is a CWT-coverage question, not a merge one.
+The 1,011 redundant numbers that are left alone are dominated by the modifier
+keys the vendored CWT config records only in its `modifiers = { ... }` registry
+and never declares as `alias[modifier:<key>]`: `land_morale`,
+`global_tax_modifier`, `trade_efficiency`, `stability_cost_modifier`. That is a
+CWT-coverage question, not a merge one. Where the schema is silent the text is
+left exactly as written, which is the point — the tree asserts a value only
+where the meaning is known.
+
+Two supporting fixes came out of it and are worth keeping separate.
+`SchemaScalarType` and its range parsing were private to
+`src/game/eu4/editor/schema/interpret.rs`; they are CWT vocabulary rather than
+EU4 interpretation and now live in `src/game/schema/query.rs`, shared with the
+LSP. `SchemaScalarType::matches` stayed behind as
+`schema_scalar_type_matches`, because schema conformance is deliberately
+stricter than what the game reads and conflating them would fold `123abc` into
+`123` on the strength of a check that rejects it. And
+`CompiledBindFieldMatch::value()` now reads `alias.value` instead of the
+wildcard's `alias_match_left[...]` marker: 682 of 1,428 `int`/`float`
+declarations in the vendored config are alias-bound, and `rule_field_for_path`
+had been reading the marker, so an alias-bound block field was suggested as
+`Replace` rather than `Recursive`.
 
 Deliberately out of scope. `123abc` and `123` are one value to `GetInt`, but
 `script_int` abstains on text it has not modelled, because `atoi` over
 arbitrary text makes every unparseable string `0` and therefore equal to every
 other — an equivalence that would hide real divergence rather than explain it.
-The kernel also requires contributors to share a leaf kind, and those two do
-not. `bool` is excluded for the same reason: `CToken::GetBool` compares against
-the exact lowercase `yes`, so every other spelling reads false and they would
-all collapse together, including the mis-spellings `V009` reports as errors.
+`bool` is excluded for the same kind of reason: `CToken::GetBool` compares
+against the exact lowercase `yes`, so every other spelling reads false and they
+would all collapse together, including the mis-spellings `V009` reports.
 
-Not folded silently. `MergePolicyKind::GameValueEquivalence` with
-`MergeDecisionReason::EquivalentChanges` distinguishes "the game reads these as
-one value" from a reducer combining values that really differ;
-`PolicyDecision::SynthesizeScalar` carries the kind because the application
-site cannot otherwise tell the two apart. That mattered more than a label:
-`definition_provenance` is recomputed from source text, so the mod whose
-spelling lost drops out of the contributor list and the trace would have called
-the definition `Overridden`, which is not what happened. The count now reaches
-`MergeTraceEntry.game_value_equivalences` (additive, `skip_serializing_if`, so
-no existing trace output changes) and, because the trace is computed whether or
-not `--provenance` keeps it, also reaches the review unit's notes, which is the
-channel a user sees by default. The decision-to-trace half of that is pinned by
-`trace_reports_a_coercion_equivalence_rather_than_an_override`; the review-note
-half is verified by reading the code, not by an end-to-end CLI test.
+Scoring had to follow, or the harness would count its own tool's output as a
+divergence. Three separate paths needed it — `canonical_ast`,
+`semantic_atoms_for_path_with_ordering` and the layered module view — and all
+three now call the merge's own transform rather than a second rule, keyed on
+the **game-relative** path. That last detail is load-bearing and was found by
+measurement: root binding is a path-prefix match, so the absolute scratch paths
+the harness holds bind nothing and silently canonicalize nothing.
 
-Known bounds, stated rather than hidden. Policy-path components are anchor
-values, and an anchor is either the bare key or `key:identity`; vanilla writes
-`event_target:<name>` as an ordinary assignment key about 1,890 times, so the
-two are not distinguishable as text. Both readings are therefore generated and
-must agree, with more than two ambiguous ancestors refused outright. Where only
-one reading binds it is accepted, so a mis-resolution is possible in principle;
-`event_target` is never a CWT rule key, so that specific shape abstains today.
-A control-flow wrapper contributes no path component, so such a chain omits a
-level and normally fails to bind. The leaf is guarded exactly: its key is read
-off the parent assignment node, and a list item — matched by position, its text
-not a field value — is refused.
+Still open on the measurement side: `similarity()` compares raw text, and foch
+now writes `0.500` where a human compatch writes `0.50`, so text similarity
+will drift down across the cohort even where the AST verdict is unchanged. A
+unit that was `matches_human` (AST equal and similarity >= 0.92) can become
+`matches_ast`. Nothing has been changed for that yet.
 
-Regressions: nine unit tests in `src/game/eu4/coercion.rs`, including one that
-proves fixed-point equality is never coarser than integer equality, so a wrong
-field type cannot turn a real difference into an equivalence; five in
-`src/merge/structured/policy.rs` for the key chain; six in
-`src/game/eu4/cwt/merge.rs` for the alias fix and the abstain cases; and ten in
-`merge::structured::tests::game_value_equivalence` covering the product
-verdict, both directions, the missing-schema and untyped-field paths, the
-decision label, and the reducer ordering.
+Two existing expectations moved, both adjudicated rather than made green.
+`event_merge_amalgamates_independent_ordered_insertions` now expects
+`add_prestige = 1.000`, because `alias[effect:add_prestige]` is a schema
+`float` — and that makes this test schema-dependent, one more in the cluster
+`AGENTS.md` records for an uninitialized `vendor/cwtools-eu4-config`.
+`tiny_product_cli_to_pure_scorer_seam` regressed to `diverges_ast` until the
+module-view path was canonicalized too, which is how that third scorer path was
+found.
+
+Regressions: fourteen unit tests in `src/game/eu4/coercion.rs`, including one
+proving fixed-point equality is never coarser than integer equality — so a
+wrong field type cannot turn a real difference into an equivalence — and one
+proving the canonical spelling is idempotent, since the transform runs on
+output it produced earlier. Ten in `src/merge/numeric.rs` for the transform and
+its abstain cases. Eleven in `merge::structured::tests::game_value_equivalence`
+for the product verdict, including `how_a_value_is_spelled_changes_nothing_downstream`,
+which pins the real property: under any policy, `0.5`/`0.50` produces the same
+verdict and the same output as `0.5`/`0.5`. Two in `src/game/eu4/cwt/merge.rs`
+for the alias fix. And `merge_reads_one_value_written_two_ways_as_one_value` in
+the CLI integration suite, which is the end-to-end proof that the schema
+binding reaches the real pipeline — the canonicalization keys off the
+game-relative path, and only the production plumbing supplies it.
 
 Validation: `cargo fmt --all --check` and strict workspace Clippy passed.
-`cargo test --workspace --no-fail-fast` gave 1,569 passed and 3 failed across
-all targets, the three being exactly the tests `AGENTS.md` records as sandbox
-denials (`PermissionDenied` binding a Unix socket or a local HTTP server).
-**No existing expectation changed.**
+`cargo test --workspace --no-fail-fast` left only the three tests `AGENTS.md`
+records as sandbox denials (`PermissionDenied` binding a Unix socket or a local
+HTTP server).
 
-One reading of the probe needs stating so it is not read as a bug: `factor`
-and `share` appear in both the covered and the abstaining lists. The same key
-resolves under one root and not another — `common/ideas` and
-`common/religions`, among others, bind to more than one root type and come
-back `ambiguous-root-type`, where the resolver abstains by design.
+Derived blocker, filed as **P-709**: the compiled CWT pack is not embedded in
+the binary. `schema_candidates()` resolves `vendor/cwtools-eu4-config` through
+`env!("CARGO_MANIFEST_DIR")`, the build machine's source path. Before this
+change a missing schema cost only capability; now it decides output bytes, so
+the same binary on another machine would produce a different merged mod.
 
 Not established: any full-page or fixed-cohort merge with this change, and
-whether a real Workshop mod pair hits the covered 43% rather than the abstaining
-57%. The vanilla measurement bounds the shape's frequency, not its rate in mods.
+whether a real Workshop mod pair hits the covered 43% rather than the
+abstaining 57%. The vanilla measurement bounds the shape's frequency, not its
+rate in mods.
 
 ## Boolean canonicalization split equivalent statements (2026-09-22)
 

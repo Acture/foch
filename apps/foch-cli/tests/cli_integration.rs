@@ -2672,3 +2672,98 @@ fn merge_rejects_zero_jobs() {
 		"a rejected job count must not write --out"
 	);
 }
+
+/// P-695: two mods writing one value differently must merge, and the merged
+/// mod must carry the value in EU4's own representation.
+///
+/// This is the end-to-end proof that the schema binding reaches the merge in
+/// the real pipeline: the canonicalization keys off the game-relative path,
+/// which only the production plumbing supplies.
+#[test]
+fn merge_reads_one_value_written_two_ways_as_one_value() {
+	let scratch: TempDir = TempDir::new().expect("test scratch");
+	let root: &Path = scratch.path();
+	let game: PathBuf = root.join("game");
+	// `all_estate_loyalty_equilibrium` is one of the modifiers the vendored CWT
+	// config actually declares (`alias[modifier:...] = float`), unlike the
+	// registry-only keys the other fixtures use.
+	write_fixture_mod(
+		&game,
+		None,
+		"shared = {\n\tall_estate_loyalty_equilibrium = 0.1\n}\n",
+	);
+	fs::write(game.join("version.txt"), "p695-1.0").expect("write game version");
+	write_fixture_mod(
+		&root.join("mods/spelled_short"),
+		Some("spelled_short"),
+		"shared = {\n\tall_estate_loyalty_equilibrium = 0.5\n}\n",
+	);
+	write_fixture_mod(
+		&root.join("mods/spelled_long"),
+		Some("spelled_long"),
+		"shared = {\n\tall_estate_loyalty_equilibrium = 0.50\n}\n",
+	);
+	write_game_path_config(root, &game);
+	build_base_data_install(root, &game);
+
+	let manifest: PathBuf = root.join("foch.toml");
+	fs::write(
+		&manifest,
+		format!(
+			"[project]\ngame = \"eu4\"\n\n[[project.mods]]\nid = \"spelled_short\"\npath = {}\n\n[[project.mods]]\nid = \"spelled_long\"\npath = {}\n",
+			serde_json::to_string(&root.join("mods/spelled_short")).unwrap(),
+			serde_json::to_string(&root.join("mods/spelled_long")).unwrap(),
+		),
+	)
+	.expect("write manifest");
+
+	let out: PathBuf = root.join("out");
+	let (code, stdout, stderr) = run_foch(
+		&[
+			"merge",
+			manifest.to_str().unwrap(),
+			"--out",
+			out.to_str().unwrap(),
+			"--non-interactive",
+			"--confirm",
+		],
+		root,
+	);
+	assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+	let report: foch::model::MergeReport = serde_json::from_slice(
+		&fs::read(out.join(MERGE_REPORT_ARTIFACT_PATH)).expect("read report"),
+	)
+	.expect("decode report");
+	assert_eq!(
+		report.status,
+		foch::model::MergeReportStatus::Ready,
+		"one value written two ways is not a conflict: {report:#?}"
+	);
+
+	let merged: String = fs::read_dir(out.join("common/static_modifiers"))
+		.expect("read merged directory")
+		.filter_map(|entry| {
+			let path = entry.expect("merged entry").path();
+			(path.extension()? == "txt").then(|| fs::read_to_string(&path).expect("read merged"))
+		})
+		.collect();
+	// `CFixedPoint` holds thousandths, so this is the value the game keeps.
+	assert!(
+		merged.contains("all_estate_loyalty_equilibrium = 0.500"),
+		"merged output must use the engine's representation: {merged}"
+	);
+}
+
+fn write_fixture_mod(root: &Path, name: Option<&str>, modifiers: &str) {
+	let directory: PathBuf = root.join("common/static_modifiers");
+	fs::create_dir_all(&directory).expect("create fixture directory");
+	fs::write(directory.join("00_static_modifiers.txt"), modifiers).expect("write fixture script");
+	if let Some(name) = name {
+		fs::write(
+			root.join("descriptor.mod"),
+			format!("name=\"{name}\"\nversion=\"1.0.0\"\n"),
+		)
+		.expect("write fixture descriptor");
+	}
+}
