@@ -1,6 +1,11 @@
 # Project Status
 
-Latest worktree verification: 2026-09-22 on `02ebd37` plus the P-687 boolean
+Latest worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
+equivalence change: strict workspace Clippy and formatting, and `cargo test
+--workspace --no-fail-fast` at 1,569 passed and 3 failed across all targets,
+the three being exactly the sandbox denials `AGENTS.md` records as environment
+results, with no existing expectation changed.
+Earlier worktree verification: 2026-09-22 on `02ebd37` plus the P-687 boolean
 canonicalization fix: strict workspace Clippy and formatting, and `cargo test
 --workspace` green apart from the known sandbox denials, with no existing
 expectation changed by the fix.
@@ -35,6 +40,136 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Numeric equivalence under the game's field coercion (2026-09-22)
+
+P-695. EU4 reads a script number through a reader far coarser than byte
+comparison, so two mods can write one value several ways and foch reported the
+difference as a content conflict. Measured before the change, not assumed: on
+`common/ideas/test.txt` with `land_morale`, `0.5` vs `0.50`, `1` vs `1.0` and
+`0.1234` vs `0.1239` each produced a `Policy` conflict at
+`["test_idea", "land_morale"]`, alongside the genuine `0.5` vs `0.6`.
+
+The reader. `CToken::ReadValue(CFixedPoint&)` takes the integer part with
+`sscanf("%i")`, copies at most three fraction digits into a `"000"` buffer and
+scales the integer by 1000 — three decimals, truncated, never rounded.
+`CToken::GetInt` is `atoi`. The finer `GetFloat64` at 1/32768 has two callers,
+neither a script path. That is modelled in `src/game/eu4/coercion.rs`, with the
+evidence in the module's own doc comment so the claim travels with the code —
+naming the functions rather than a scratch file, because the P-687 findings
+directory was under `target/` and no longer exists.
+
+Where it acts. In `ContentFamilyMergePolicy::resolve_nway_divergent_node`,
+before the scalar-reducer branch: the conflict class is already formed and the
+divergence already marked, so only the verdict changes. Nothing in hashing,
+`shallow_eq`, the tree matcher or the anchors that embed scalar text is
+touched. Making the leaves coercion-aware instead would move subtree hashes and
+matcher buckets, and the same pair would then compare equal under an `Ordered`
+parent and unequal under a `Commutative` one. Ordering matters for a second
+reason the regression pins: a reducer handed one value written twice would sum
+or average spellings of the same number, so equivalence is decided first.
+
+What it emits. The last contributor's own spelling, because playset order is
+the precedence the rest of the merge follows and the reader's canonical form
+would put a number in the output that no contributor wrote.
+
+Three obstacles had to be cleared first.
+
+*The type classifier was in the wrong layer.* `SchemaScalarType` and its range
+parsing were private to `src/game/eu4/editor/schema/interpret.rs`; they are CWT
+vocabulary, not EU4 interpretation, and now live in `src/game/schema/query.rs`
+where the LSP and the merge share them. `SchemaScalarType::matches` stayed
+behind as `schema_scalar_type_matches`: it asks schema conformance, which is
+deliberately stricter than what the game reads, and conflating the two would
+fold `123abc` into `123` on the strength of a check that rejects it.
+
+*The alias trap was real and was already a live defect.*
+`CompiledBindFieldMatch::field()` returns the alias wildcard, whose value is an
+`alias_match_left[...]` marker rather than a type. In the vendored config 682
+of 1,428 `int`/`float` declarations are alias-bound, so reading the type off
+`field()` loses roughly half of them. `CompiledBindFieldMatch::value()` now
+reads `alias.value`, and `rule_value_for_path` descends alias-bound blocks
+through `RuleContext::AliasRules`. `rule_field_for_path` had exactly this bug,
+so an alias-bound block field was suggested as `Replace` rather than
+`Recursive`; `alias_bound_block_fields_are_recursive_rather_than_replaced`
+pins the fix.
+
+*The query shape.* The issue expected per-leaf binding to be too slow, but the
+landing point runs once per divergent class, not once per scalar leaf, so
+`bind_context` is called for conflicts only. No cache was added; none is
+warranted by the call volume, and a wrong one would be worse than none.
+
+Honest coverage, measured through the shipped code against the installed
+1.37.5 over `common/`, `events/`, `decisions/` and `missions/` (1,941 files):
+of 148,456 numeric leaves the model reads, **1,783 are spelled redundantly** —
+a trailing zero or a fourth decimal, the shape a sibling mod could write
+differently — and **772 of those (43%) resolve to an explicit schema `float`**.
+The other 1,011 abstain, dominated by the modifier keys the vendored CWT config
+records only in its `modifiers = { ... }` registry and never declares as
+`alias[modifier:<key>]`: `land_morale`, `global_tax_modifier`,
+`trade_efficiency`, `stability_cost_modifier`. That is the benefit ceiling as
+the schema stands, and raising it is a CWT-coverage question, not a merge one.
+
+Deliberately out of scope. `123abc` and `123` are one value to `GetInt`, but
+`script_int` abstains on text it has not modelled, because `atoi` over
+arbitrary text makes every unparseable string `0` and therefore equal to every
+other — an equivalence that would hide real divergence rather than explain it.
+The kernel also requires contributors to share a leaf kind, and those two do
+not. `bool` is excluded for the same reason: `CToken::GetBool` compares against
+the exact lowercase `yes`, so every other spelling reads false and they would
+all collapse together, including the mis-spellings `V009` reports as errors.
+
+Not folded silently. `MergePolicyKind::GameValueEquivalence` with
+`MergeDecisionReason::EquivalentChanges` distinguishes "the game reads these as
+one value" from a reducer combining values that really differ;
+`PolicyDecision::SynthesizeScalar` carries the kind because the application
+site cannot otherwise tell the two apart. That mattered more than a label:
+`definition_provenance` is recomputed from source text, so the mod whose
+spelling lost drops out of the contributor list and the trace would have called
+the definition `Overridden`, which is not what happened. The count now reaches
+`MergeTraceEntry.game_value_equivalences` (additive, `skip_serializing_if`, so
+no existing trace output changes) and, because the trace is computed whether or
+not `--provenance` keeps it, also reaches the review unit's notes, which is the
+channel a user sees by default. The decision-to-trace half of that is pinned by
+`trace_reports_a_coercion_equivalence_rather_than_an_override`; the review-note
+half is verified by reading the code, not by an end-to-end CLI test.
+
+Known bounds, stated rather than hidden. Policy-path components are anchor
+values, and an anchor is either the bare key or `key:identity`; vanilla writes
+`event_target:<name>` as an ordinary assignment key about 1,890 times, so the
+two are not distinguishable as text. Both readings are therefore generated and
+must agree, with more than two ambiguous ancestors refused outright. Where only
+one reading binds it is accepted, so a mis-resolution is possible in principle;
+`event_target` is never a CWT rule key, so that specific shape abstains today.
+A control-flow wrapper contributes no path component, so such a chain omits a
+level and normally fails to bind. The leaf is guarded exactly: its key is read
+off the parent assignment node, and a list item — matched by position, its text
+not a field value — is refused.
+
+Regressions: nine unit tests in `src/game/eu4/coercion.rs`, including one that
+proves fixed-point equality is never coarser than integer equality, so a wrong
+field type cannot turn a real difference into an equivalence; five in
+`src/merge/structured/policy.rs` for the key chain; six in
+`src/game/eu4/cwt/merge.rs` for the alias fix and the abstain cases; and ten in
+`merge::structured::tests::game_value_equivalence` covering the product
+verdict, both directions, the missing-schema and untyped-field paths, the
+decision label, and the reducer ordering.
+
+Validation: `cargo fmt --all --check` and strict workspace Clippy passed.
+`cargo test --workspace --no-fail-fast` gave 1,569 passed and 3 failed across
+all targets, the three being exactly the tests `AGENTS.md` records as sandbox
+denials (`PermissionDenied` binding a Unix socket or a local HTTP server).
+**No existing expectation changed.**
+
+One reading of the probe needs stating so it is not read as a bug: `factor`
+and `share` appear in both the covered and the abstaining lists. The same key
+resolves under one root and not another — `common/ideas` and
+`common/religions`, among others, bind to more than one root type and come
+back `ambiguous-root-type`, where the resolver abstains by design.
+
+Not established: any full-page or fixed-cohort merge with this change, and
+whether a real Workshop mod pair hits the covered 43% rather than the abstaining
+57%. The vanilla measurement bounds the shape's frequency, not its rate in mods.
 
 ## Boolean canonicalization split equivalent statements (2026-09-22)
 
@@ -158,7 +293,13 @@ and `YES` that the game keeps apart. Three of those are foch being stricter than
 the game (spurious divergence), one is foch being looser (a real risk). The
 coercion is per field, so any normalization has to be driven by the CWT field
 type rather than by the lexer, and it is pinned to this engine build. Nothing has
-been changed for it yet. Evidence: `findings-coercion.md` beside the disassembly.
+been changed for it yet. Evidence: `findings-coercion.md` beside the
+disassembly, under `target/validation/p687-quoting-2026-09-22/` — which is a
+build directory and is **gone**. The call-site census it recorded (113 callers
+of `GetFloat`/`StringToFixedPoint`, 8 of `CToken::ReadValue(CFixedPoint&)`, 2
+of `GetFloat64`, the last two both save-data paths) survives in the P-695
+Linear thread and in the prose above; the disassembly itself would have to be
+retaken to re-derive it.
 
 Regressions: five unit tests in `src/merge/boolean.rs` cover the transform
 itself (comment-blind shape, comment survival, comment-only body, both scalar

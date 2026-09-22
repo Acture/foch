@@ -6,6 +6,7 @@ use crate::game::eu4::content::{
 };
 use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue};
 use crate::game::eu4::script::{classify_script_file, script_container_scope_kind};
+use crate::game::schema::query::CwtQuery;
 use crate::merge::kernel::{
 	ConflictKind, ConflictResolution, MergeOutcome, MergeRevision, NormalizedTree, RevisionId,
 	SourceSet, StructuralConflict, StructuralConflictDraft, n_way_merge_with_policy,
@@ -155,7 +156,31 @@ fn merge_clausewitz_files_n_way_inner(
 	reduce_event_fallbacks: bool,
 	resolutions: &[ConflictResolution],
 ) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
-	let policy = ContentFamilyMergePolicy::new(policies);
+	merge_clausewitz_files_n_way_with_schema(
+		base,
+		revisions,
+		policies,
+		crate::game::eu4::cwt::rule_engine(),
+		reduce_event_fallbacks,
+		resolutions,
+	)
+}
+
+/// The n-way merge with its schema evidence supplied rather than looked up.
+///
+/// The active schema is process-global, so this is also how a test exercises
+/// schema-dependent behavior without one installed.
+pub fn merge_clausewitz_files_n_way_with_schema(
+	base: &AstFile,
+	revisions: &[&AstFile],
+	policies: &MergePolicies,
+	schema: Option<&CwtQuery>,
+	reduce_event_fallbacks: bool,
+	resolutions: &[ConflictResolution],
+) -> Result<ClausewitzMergeOutcome, AstAdapterError> {
+	// The merged file's own path is the address the schema binds, and every
+	// revision is a revision of it.
+	let policy = ContentFamilyMergePolicy::with_schema_fields(policies, schema, &base.path);
 	let mut scope_cache = HashMap::new();
 	let base = canonicalize_boolean_or_definitions(base, policies, &mut scope_cache);
 	let revisions = revisions

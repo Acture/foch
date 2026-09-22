@@ -2278,3 +2278,307 @@ fn canonicalization_does_not_change_the_verdict_on_reordered_quoted_scalars() {
 		"canonicalization must not split a pair the relation already equates"
 	);
 }
+
+/// P-695: EU4 reads a script number through a reader coarser than text
+/// comparison, so the same value can be written several ways. These pin the
+/// verdict, not just the transform: a spelling difference is not a conflict, a
+/// value difference still is, and the schema decides which is which.
+mod game_value_equivalence {
+	use std::fs;
+	use std::path::Path;
+
+	use tempfile::TempDir;
+
+	use super::{MergePolicies, emit, parse_at};
+	use crate::game::schema::{CwtSchema, CwtSource};
+	use crate::merge::kernel::{MergeDecisionReason, MergePolicyKind};
+	use crate::merge::structured::merge_clausewitz_files_n_way_with_schema;
+
+	const SCHEMA: &str = r#"
+		types = {
+			type[thing] = { path = "game/common/things" }
+		}
+
+		thing = {
+			alias_name[modifier] = alias_match_left[modifier]
+			untyped = scalar
+		}
+
+		alias[modifier:upkeep] = float
+		alias[modifier:slots] = int
+		alias[modifier:enabled] = bool
+	"#;
+
+	const FILE: &str = "common/things/example.txt";
+
+	fn schema() -> CwtSchema {
+		let root = TempDir::new().expect("create schema directory");
+		fs::write(root.path().join("things.cwt"), SCHEMA).expect("write schema");
+		CwtSchema::load_with_cache(
+			root.path(),
+			CwtSource::UserProvided {
+				path: root.path().to_path_buf(),
+			},
+			None,
+		)
+		.expect("load schema")
+	}
+
+	fn merge_with(
+		schema: Option<&CwtSchema>,
+		policies: &MergePolicies,
+		field: &str,
+		base_value: &str,
+		values: [&str; 2],
+	) -> crate::merge::structured::ClausewitzMergeOutcome {
+		let source =
+			|value: &str| parse_at(FILE, &format!("a_thing = {{\n\t{field} = {value}\n}}\n"));
+		let base = source(base_value);
+		let left = source(values[0]);
+		let right = source(values[1]);
+		merge_clausewitz_files_n_way_with_schema(
+			&base,
+			&[&left, &right],
+			policies,
+			schema.map(CwtSchema::facts),
+			false,
+			&[],
+		)
+		.expect("merge")
+	}
+
+	#[test]
+	fn spellings_of_one_value_are_not_a_conflict() {
+		let schema = schema();
+		for (base, values, expected) in [
+			("0.1", ["0.5", "0.50"], "upkeep = 0.50"),
+			("0.1", ["0.50", "0.5"], "upkeep = 0.5"),
+			("0.1", ["1", "1.0"], "upkeep = 1.0"),
+			("0.1", ["0.500", "0.5"], "upkeep = 0.5"),
+			// The reader keeps three decimals and truncates, so a fourth
+			// decimal never reaches the game at all.
+			("0.1", ["0.1234", "0.1239"], "upkeep = 0.1239"),
+		] {
+			let outcome = merge_with(
+				Some(&schema),
+				&MergePolicies::default(),
+				"upkeep",
+				base,
+				values,
+			);
+
+			assert!(
+				outcome.conflicts().is_empty(),
+				"{values:?} should agree: {:?}",
+				outcome.conflicts()
+			);
+			let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+			assert!(output.contains(expected), "{values:?} produced {output}");
+		}
+	}
+
+	#[test]
+	fn a_real_value_difference_is_still_a_conflict() {
+		let schema = schema();
+		for values in [["0.5", "0.6"], ["0.001", "0.002"], ["0.5", "-0.5"]] {
+			let outcome = merge_with(
+				Some(&schema),
+				&MergePolicies::default(),
+				"upkeep",
+				"0.1",
+				values,
+			);
+
+			assert!(
+				!outcome.conflicts().is_empty(),
+				"{values:?} are different values and must still conflict"
+			);
+		}
+	}
+
+	#[test]
+	fn the_equivalence_is_labelled_rather_than_folded_silently() {
+		let schema = schema();
+		let outcome = merge_with(
+			Some(&schema),
+			&MergePolicies::default(),
+			"upkeep",
+			"0.1",
+			["0.5", "0.50"],
+		);
+
+		let decisions = &outcome.kernel().decisions;
+		assert!(
+			decisions.iter().any(|decision| {
+				decision.policy == MergePolicyKind::GameValueEquivalence
+					&& decision.reason == MergeDecisionReason::EquivalentChanges
+			}),
+			"the decision must say why the values agreed: {decisions:?}"
+		);
+		assert!(
+			!decisions
+				.iter()
+				.any(|decision| decision.policy == MergePolicyKind::ScalarReducer),
+			"nothing was reduced: {decisions:?}"
+		);
+	}
+
+	#[test]
+	fn without_a_schema_the_divergence_stays_a_conflict() {
+		let outcome = merge_with(
+			None,
+			&MergePolicies::default(),
+			"upkeep",
+			"0.1",
+			["0.5", "0.50"],
+		);
+
+		assert!(
+			!outcome.conflicts().is_empty(),
+			"which reader applies is a schema fact; with no schema there is nothing to act on"
+		);
+	}
+
+	#[test]
+	fn an_untyped_field_stays_a_conflict() {
+		let schema = schema();
+		for field in ["untyped", "not_in_the_schema"] {
+			let outcome = merge_with(
+				Some(&schema),
+				&MergePolicies::default(),
+				field,
+				"0.1",
+				["0.5", "0.50"],
+			);
+
+			assert!(
+				!outcome.conflicts().is_empty(),
+				"`{field}` has no declared numeric type, so the reader is unknown"
+			);
+		}
+	}
+
+	#[test]
+	fn an_int_field_is_read_with_the_integer_reader() {
+		let schema = schema();
+		let agreeing = merge_with(
+			Some(&schema),
+			&MergePolicies::default(),
+			"slots",
+			"1",
+			["3", "3.4"],
+		);
+		assert!(
+			agreeing.conflicts().is_empty(),
+			"`GetInt` is `atoi`, so both are 3: {:?}",
+			agreeing.conflicts()
+		);
+
+		let differing = merge_with(
+			Some(&schema),
+			&MergePolicies::default(),
+			"slots",
+			"1",
+			["3", "4"],
+		);
+		assert!(!differing.conflicts().is_empty());
+	}
+
+	#[test]
+	fn a_bool_field_is_left_alone() {
+		let schema = schema();
+		let outcome = merge_with(
+			Some(&schema),
+			&MergePolicies::default(),
+			"enabled",
+			"no",
+			["yes", "YES"],
+		);
+
+		assert!(
+			!outcome.conflicts().is_empty(),
+			"`CToken::GetBool` reads only the exact lowercase `yes` as true, so these differ"
+		);
+	}
+
+	#[test]
+	fn equivalence_is_decided_before_a_reducer_combines_the_values() {
+		use crate::game::eu4::content::{ScalarMergePolicy, ScalarReducerRule};
+
+		const RULES: &[ScalarReducerRule] =
+			&[ScalarReducerRule::new(&["upkeep"], ScalarMergePolicy::Sum)];
+		let schema = schema();
+		let policies = MergePolicies {
+			scalar_reducer_rules: RULES,
+			..MergePolicies::default()
+		};
+
+		let outcome = merge_with(Some(&schema), &policies, "upkeep", "0.1", ["0.5", "0.50"]);
+
+		assert!(outcome.conflicts().is_empty(), "{:?}", outcome.conflicts());
+		let output = emit(outcome.resolved_ast().expect("conflict-free AST"));
+		assert!(
+			output.contains("upkeep = 0.50"),
+			"one value written twice must not be summed into another: {output}"
+		);
+	}
+
+	#[test]
+	fn a_list_item_is_not_treated_as_a_field_value() {
+		// List items are matched by position and their text is not the value
+		// of the enclosing field, so the field's declared type says nothing
+		// about them.
+		let schema = schema();
+		let source = |value: &str| {
+			parse_at(
+				FILE,
+				&format!("a_thing = {{\n\tupkeep = {{ 0.1 {value} }}\n}}\n"),
+			)
+		};
+		let base = source("0.2");
+		let left = source("0.5");
+		let right = source("0.50");
+
+		let outcome = merge_clausewitz_files_n_way_with_schema(
+			&base,
+			&[&left, &right],
+			&MergePolicies::default(),
+			Some(schema.facts()),
+			false,
+			&[],
+		)
+		.expect("merge");
+
+		assert!(!outcome.conflicts().is_empty());
+	}
+
+	#[test]
+	fn a_path_outside_the_schema_stays_a_conflict() {
+		let schema = schema();
+		let source = |value: &str| {
+			parse_at(
+				"common/elsewhere/example.txt",
+				&format!("a_thing = {{\n\tupkeep = {value}\n}}\n"),
+			)
+		};
+		let base = source("0.1");
+		let left = source("0.5");
+		let right = source("0.50");
+
+		let outcome = merge_clausewitz_files_n_way_with_schema(
+			&base,
+			&[&left, &right],
+			&MergePolicies::default(),
+			Some(schema.facts()),
+			false,
+			&[],
+		)
+		.expect("merge");
+
+		assert!(
+			!outcome.conflicts().is_empty(),
+			"no root type matches this path, so no field type is known"
+		);
+		let _ = Path::new(FILE);
+	}
+}
