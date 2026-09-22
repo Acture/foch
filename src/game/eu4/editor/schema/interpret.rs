@@ -1343,6 +1343,11 @@ fn collect_schema_diagnostics(
 					{
 						diagnostics.push(diagnostic);
 					}
+					if let Some(diagnostic) =
+						schema_value_coercion_diagnostic(&field_match, key, scalar, span)
+					{
+						diagnostics.push(diagnostic);
+					}
 				}
 				if let Some(field_match) = field_match {
 					*present_key_counts
@@ -1599,6 +1604,55 @@ fn schema_scalar_type_diagnostic(
 			scalar.as_text(),
 			expected.label()
 		),
+	})
+}
+
+/// Warn where the game's own coercion silently changes the written value.
+///
+/// A field's meaning comes from the accessor its consumer calls, and two of
+/// those discard part of what was written. `CToken::GetFloat` keeps exactly
+/// three decimals and truncates the rest, and `CToken::GetBool` is a
+/// case-sensitive comparison against `yes`, so only that spelling is true. Both
+/// are silent in game, which is what makes them worth surfacing here.
+fn schema_value_coercion_diagnostic(
+	field_match: &CompiledBindFieldMatch<'_>,
+	key: &str,
+	scalar: &ScalarValue,
+	span: &SpanRange,
+) -> Option<SchemaDiagnostic> {
+	let (code, message) = match (schema_scalar_type(schema_match_value(field_match))?, scalar) {
+		(SchemaScalarType::Float { .. }, ScalarValue::Number(text)) => {
+			let (integer, fraction) = text.split_once('.')?;
+			let (kept, discarded) = fraction.split_at_checked(3)?;
+			// Trailing zeros carry nothing, so dropping them changes no value.
+			if !discarded.bytes().any(|byte| byte != b'0') {
+				return None;
+			}
+			(
+				"V008",
+				format!(
+					"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
+				),
+			)
+		}
+		(SchemaScalarType::Bool, ScalarValue::Identifier(text))
+			if text.eq_ignore_ascii_case("yes") || text.eq_ignore_ascii_case("no") =>
+		{
+			(
+				"V009",
+				format!(
+					"`{key}` is read as false: the game compares against the exact lowercase `yes`, so `{text}` is not a boolean"
+				),
+			)
+		}
+		_ => return None,
+	};
+	Some(SchemaDiagnostic {
+		range: editor_range_from_span(span),
+		severity: Some(Severity::Warning),
+		code: Some(code.to_string()),
+		source: Some("foch".to_string()),
+		message,
 	})
 }
 
