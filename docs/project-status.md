@@ -1,6 +1,10 @@
 # Project Status
 
-Latest worktree verification: 2026-09-21 on `417b2d5` plus the P-658 per-entry
+Latest worktree verification: 2026-09-22 on `02ebd37` plus the P-687 boolean
+canonicalization fix: strict workspace Clippy and formatting, and `cargo test
+--workspace` green apart from the known sandbox denials, with no existing
+expectation changed by the fix.
+Earlier worktree verification: 2026-09-21 on `417b2d5` plus the P-658 per-entry
 no-op path fix: strict workspace Clippy and formatting, `cargo test --workspace`
 green apart from the known sandbox denials, and a bounded vanilla probe of the
 three families that enable per-entry no-op dedup.
@@ -31,6 +35,69 @@ Earlier project-wide source verification: 2026-08-25 on branch `refactor/structu
 This page is the repository handoff. Recheck Git and local inputs before using
 any checkpoint fact. Linear owns live execution; Notion holds the project
 narrative and research record.
+
+## Boolean canonicalization split equivalent statements (2026-09-22)
+
+P-687, found during the P-658 audit and fixed separately: it is the opposite
+defect. P-658 was a judgement made outside its content family, which kept a
+duplicate. These two make `canonicalize_boolean_or_definitions` turn an
+**equal** pair into an unequal one, and they sit on the production n-way path —
+`merge_clausewitz_files_n_way` canonicalizes before `detach_trivia`, the same
+order the equivalence check uses.
+
+First, comments decided structure. `body_to_disjunct` wrapped a body in `AND`
+whenever it held more than one statement, and `AstStatement::Comment` counted.
+`detach_trivia` then removed the comment and left the `AND` behind, so a
+comment-only difference outlived its trivia as a structural one: under
+`common/scripted_triggers`' real policies, `t = { a = yes }` and the same
+definition with one comment above `a` compared as different content.
+
+Second, deduplication used a coarser relation than the judge. `unique_disjuncts`
+deduplicated with `ast_statements_semantically_equal`, which equates `SWE` and
+`"SWE"` — correct for patch convergence, where two mods writing one value
+differently must converge — while the normalized tree gives the two spellings
+different leaf kinds. Dedup keeps the first survivor, so
+`OR = { tag = SWE tag = "SWE" }` and its reordering canonicalized to
+`OR = { tag = SWE }` and `OR = { tag = "SWE" }`: equivalent before
+canonicalization, not equivalent after.
+
+Fix. Comments are lifted out of the disjunct walk and re-emitted with the body,
+so every structural choice is made on content alone and the transform is blind
+to trivia. Deduplication uses `ScalarEquality::Exact`, which is no coarser than
+the tree that later judges the output; `patch.rs` now parameterizes one
+comment-ignoring walk rather than growing a second copy, and every other caller
+keeps the convergence relation it was written for.
+
+Two deliberate behavior changes: a body holding only comments no longer becomes
+`OR = {}` — it states no condition, so it keeps its comments and emits no
+disjunction — and lifted comments are re-emitted ahead of the `OR` rather than
+inside the `AND` their presence used to create. Both are pinned.
+
+Not fixed here: the underlying asymmetry that produced the second defect. The
+normalized tree distinguishes `SWE` from `"SWE"` while EU4 does not, and
+`scalar_values_semantically_equal` does not. Making the kernel equate them would
+change leaf kinds, subtree hashes and cache identity, so it is a separate
+question; this fix only stops canonicalization from relying on the coarser side.
+
+Regressions: five unit tests in `src/merge/boolean.rs` cover the transform
+itself (comment-blind shape, comment survival, comment-only body, both scalar
+spellings kept, genuine duplicates still collapsed, and the simplify path
+keeping a comment through an `AND` unwrap), and
+`canonicalization_does_not_make_a_comment_a_content_difference` plus
+`canonicalization_does_not_change_the_verdict_on_reordered_quoted_scalars` pin
+the product-visible relation. The second compares the family verdict against a
+policy that never reaches a trigger root, so it asserts the property directly:
+canonicalization must not change the verdict.
+
+Validation: `cargo fmt --all --check` and strict workspace Clippy passed.
+`cargo test --workspace` passed apart from the sandbox denials that `AGENTS.md`
+records as environment results. **No existing expectation changed** — the fix is
+invisible to every corpus fixture and merge test already in the suite, which
+bounds how much current output it can move, though it does not prove the same on
+Workshop input.
+
+Not established: a full-page or fixed-cohort merge with this change, and whether
+any real mod pair actually hit either shape.
 
 ## Per-entry no-op equivalence ran outside its content family (2026-09-21)
 
