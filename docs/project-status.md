@@ -85,12 +85,21 @@ rule behind that was then read out of the game binary, which ships unstripped
 with full C++ symbols: `CTextLexer::GetTok` stores `{int type, char text[512],
 bool wasQuoted}`, strips the delimiters, and assigns type 15 both to a quoted
 string and to a bare word that misses `CLexer::_TokenTree` — so the two spellings
-differ only in a flag kept for round-tripping. They diverge only where the bare
+differ only in a flag kept for round-tripping. `CLexer::GetPrimitiveString` names
+ids 12-15 `num`, `float`, `bool` and `string`, and the text lexer only ever emits
+`num` and `string`: for text script every other scalar meaning is a
+consumer-side coercion, which is why a value like `00_government_names` is a
+`num`. They diverge only where the bare
 form would lex as a number (leading `-` or digit), match a tree entry, or split
 into several tokens, which is exactly what `is_valid_bare_identifier_text`
 already refuses to equate. Its `yes`/`no` carve-out is the exception:
 `CToken::GetBool` is `strncmp(text, "yes", 4)`, reading text rather than type, so
-that exclusion is over-conservative rather than necessary. Unestablished: what
+that exclusion is over-conservative rather than necessary. That comparison is
+also case-sensitive, and it is the only thing that decides a boolean, so `YES` is
+not `true` to EU4. foch's tokenizer lowercases before matching and yields
+`Bool(true)` — foch being more permissive than the game, the unsafe direction,
+and the first lexer divergence found that is a correctness risk rather than extra
+strictness. Unestablished: what
 `AddDynamicToken` puts in the tree at script-parse time, and whether consumers
 other than `GetBool` branch on the type. Making the kernel equate the spellings
 would move leaf kinds, subtree hashes and cache identity, so it stays a separate
