@@ -1066,9 +1066,11 @@ fn canonical_layered_module_view_uncached(
 		}
 	}
 
-	// The one read that cannot go through `representation::parse`: composition
-	// needs the library's own loader per file. `representation::compose` brings
-	// the composed tree into line below instead.
+	// Composition picks whole definitions by key and never compares a value
+	// (`DefinitionKeyPolicy::AssignmentKey`, `LaterDefinitionWins`), so
+	// `representation::compose` on the composed tree below gives the same
+	// answer as canonicalizing every input first — and skips the definitions
+	// composition discards.
 	let mut parsed_files = Vec::with_capacity(visible_files.len());
 	for (relative, (layer_ordinal, root, path)) in visible_files {
 		let parsed = parse_script_file("__score__", &root, &path)?;

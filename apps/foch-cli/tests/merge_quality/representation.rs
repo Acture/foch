@@ -7,9 +7,9 @@
 //! without bringing both to that representation counts the tool's own output
 //! as a divergence.
 //!
-//! Everything this harness reads for comparison goes through here. That is not
-//! tidiness: the canonicalization was first added at each comparison site
-//! separately, and two of the four were missed — the layered module view, which
+//! Everything this harness compares goes through here. That is not tidiness:
+//! the canonicalization was first added at each comparison site separately,
+//! and two of the four were missed — the layered module view, which
 //! `tiny_product_cli_to_pure_scorer_seam` caught by regressing to
 //! `diverges_ast`, and the text similarity behind `matches_human`. A fifth
 //! comparison added later would have been missed the same way.
@@ -54,8 +54,9 @@ pub fn parse_text(rel: &str, source: &str) -> Option<AstFile> {
 /// Bring an already-composed tree — a layered module view, say — into the same
 /// representation.
 ///
-/// Composition reads several files through the library's own loader, so there
-/// is no single text to canonicalize first.
+/// Composing a module picks whole definitions by key and never compares a
+/// value, so canonicalizing the result is the same answer as canonicalizing
+/// every input file first, and it skips the definitions composition discards.
 pub fn compose(rel: &str, ast: &AstFile) -> AstFile {
 	canonicalize_numeric_values_with_active_schema(Path::new(rel), ast)
 }

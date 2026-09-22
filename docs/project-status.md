@@ -146,10 +146,12 @@ missed two: the module view, which `tiny_product_cli_to_pure_scorer_seam`
 caught by regressing to `diverges_ast`, and the similarity path. That is a
 design fault, not an attention one, so the four collapsed into one module,
 `merge_quality::representation`. It is now the only thing in the harness that
-reads a script file for comparison, and `score.rs` no longer imports a raw
-parser. The single exception is the per-file read inside module composition,
-which needs the library's own loader; the composed tree goes through the same
-seam immediately after, and the call site says so.
+brings a file into foch's representation, and `score.rs` no longer imports a
+raw parser. Module composition still reads its inputs through the library's own
+loader and is canonicalized once on the composed tree: composition picks whole
+definitions by key and never compares a value, so that is the same answer as
+canonicalizing every input first, and it skips the definitions composition
+discards.
 
 The seam keys on the **game-relative** path, which is load-bearing and was
 found by measurement rather than reading: root binding is a path-prefix match,
