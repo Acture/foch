@@ -40,8 +40,9 @@ narrative and research record.
 
 P-687, found during the P-658 audit and fixed separately: it is the opposite
 defect. P-658 was a judgement made outside its content family, which kept a
-duplicate. These two make `canonicalize_boolean_or_definitions` turn an
-**equal** pair into an unequal one, and they sit on the production n-way path —
+duplicate. The two defects recorded here instead make
+`canonicalize_boolean_or_definitions` turn an **equal** pair into an unequal
+one, and they sit on the production n-way path —
 `merge_clausewitz_files_n_way` canonicalizes before `detach_trivia`, the same
 order the equivalence check uses.
 
@@ -67,6 +68,12 @@ to trivia. Deduplication uses `ScalarEquality::Exact`, which is no coarser than
 the tree that later judges the output; `patch.rs` now parameterizes one
 comment-ignoring walk rather than growing a second copy, and every other caller
 keeps the convergence relation it was written for.
+
+Deduplication compares disjuncts with comments ignored at every depth, so two
+that differ only in a nested comment collapse to one. What the discarded one
+said is now lifted out and re-emitted with the body rather than going with it —
+that loss predates this change, but the fix claims comment preservation, so it
+had to hold there too.
 
 Two deliberate behavior changes: a body holding only comments no longer becomes
 `OR = {}` — it states no condition, so it keeps its comments and emits no
