@@ -118,17 +118,19 @@ depended on the folding. Regressions:
 `only_lowercase_yes_and_no_are_boolean` and
 `emitting_a_non_lowercase_yes_keeps_its_spelling`.
 
-Two LSP diagnostics now surface the coercions that discard what was written,
-since both are silent in game: `V008` warns that a numeric literal on a schema
-`float` field keeps only three decimals (`chance = 0.1234` is read as `0.123`),
-and `V009` warns that a `yes`-shaped value on a schema `bool` field which is not
-the exact lowercase spelling is read as false. Both fire only where the CWT
-schema states the field's type. `V008` drops to `Info` when the discarded digits
-are all zeros rather than going quiet: `0.5000` loses no value, but it is still
-not the precision the game keeps, and the author writing it probably believes
-otherwise. It says nothing at exactly three decimals, where there is nothing to
-report. They live beside the existing scalar checks in
-`src/game/eu4/editor/schema/interpret.rs`.
+One LSP diagnostic came out of this, and a second was withdrawn before release.
+`V009` warns that a `yes`-shaped value on a schema `bool` field which is not the
+exact lowercase spelling is read as false; `CToken::GetBool` is the only thing
+that decides a boolean, so there is no ambiguity. A `V008` warning about numeric
+literals keeping only three decimals was written, tested, and then pulled:
+`CToken::GetFloat64` is a second numeric reader that scales by 32768 with
+round-to-nearest — about five decimals, not three — and vanilla writes
+`monthly_piety = 0.0025` thirteen times, which survives that reader and would be
+mangled by the other. Modifier fields evidently use the finer one, nothing in the
+schema distinguishes the two, and 218 of the config's `float` occurrences sit
+under `alias[modifier:*]`, so the warning would have been wrong for most of what
+it fired on. Which accessor a field calls is now the open question that gates any
+numeric claim.
 
 Reading the consumers rather than the lexer turned out to matter more.
 `CToken::GetFloat` tail-calls `StringToFixedPoint`, which is `atoi` for the
