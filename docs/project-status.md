@@ -2,9 +2,9 @@
 
 Latest worktree verification: 2026-09-22 on `614aab6` plus the P-695 numeric
 equivalence change: strict workspace Clippy and formatting, and `cargo test
---workspace --no-fail-fast` green apart from the three sandbox denials
-`AGENTS.md` records as environment results. Two existing expectations moved and
-are adjudicated in the entry below.
+--workspace --no-fail-fast` at 1,579 passed and 3 failed across all targets,
+the three being exactly the sandbox denials `AGENTS.md` records as environment
+results. Two existing expectations moved and are adjudicated in the entry below.
 Earlier worktree verification: 2026-09-22 on `02ebd37` plus the P-687 boolean
 canonicalization fix: strict workspace Clippy and formatting, and `cargo test
 --workspace` green apart from the known sandbox denials, with no existing
@@ -139,18 +139,22 @@ against the exact lowercase `yes`, so every other spelling reads false and they
 would all collapse together, including the mis-spellings `V009` reports.
 
 Scoring had to follow, or the harness would count its own tool's output as a
-divergence. Three separate paths needed it — `canonical_ast`,
-`semantic_atoms_for_path_with_ordering` and the layered module view — and all
-three now call the merge's own transform rather than a second rule, keyed on
-the **game-relative** path. That last detail is load-bearing and was found by
-measurement: root binding is a path-prefix match, so the absolute scratch paths
-the harness holds bind nothing and silently canonicalize nothing.
+divergence. Four separate paths needed it — `canonical_ast`,
+`semantic_atoms_for_path_with_ordering`, the layered module view, and the text
+similarity behind `matches_human` — and all four now go through the merge's own
+transform rather than a second rule, keyed on the **game-relative** path. That
+last detail is load-bearing and was found by measurement, not by reading: root
+binding is a path-prefix match, so the absolute scratch paths the harness holds
+bind nothing and canonicalize nothing, silently.
 
-Still open on the measurement side: `similarity()` compares raw text, and foch
-now writes `0.500` where a human compatch writes `0.50`, so text similarity
-will drift down across the cohort even where the AST verdict is unchanged. A
-unit that was `matches_human` (AST equal and similarity >= 0.92) can become
-`matches_ast`. Nothing has been changed for that yet.
+The similarity path needed a different shape from the rest.
+`canonicalize_numeric_text` replaces the numbers' byte ranges in the source
+instead of re-emitting the parsed file, because re-emitting would also reformat
+the comments and whitespace that this metric is measuring — the reformatting
+would swamp the signal. Without it, `0.500` against a human patch's `0.50`
+scored 0.667 on a three-line file, and a unit that was `matches_human` (AST
+equal and similarity >= 0.92) would have degraded to `matches_ast` across the
+cohort for no real reason.
 
 Two existing expectations moved, both adjudicated rather than made green.
 `event_merge_amalgamates_independent_ordered_insertions` now expects
@@ -161,12 +165,14 @@ Two existing expectations moved, both adjudicated rather than made green.
 module-view path was canonicalized too, which is how that third scorer path was
 found.
 
-Regressions: fourteen unit tests in `src/game/eu4/coercion.rs`, including one
+Regressions: `text_similarity_ignores_how_a_number_is_spelled` pins the
+scorer's text path. Fourteen unit tests in `src/game/eu4/coercion.rs`, including one
 proving fixed-point equality is never coarser than integer equality — so a
 wrong field type cannot turn a real difference into an equivalence — and one
 proving the canonical spelling is idempotent, since the transform runs on
-output it produced earlier. Ten in `src/merge/numeric.rs` for the transform and
-its abstain cases. Eleven in `merge::structured::tests::game_value_equivalence`
+output it produced earlier. Twelve in `src/merge/numeric.rs` for the transform and
+its abstain cases, two of them proving the text rewrite moves the numbers and
+nothing else. Eleven in `merge::structured::tests::game_value_equivalence`
 for the product verdict, including `how_a_value_is_spelled_changes_nothing_downstream`,
 which pins the real property: under any policy, `0.5`/`0.50` produces the same
 verdict and the same output as `0.5`/`0.5`. Two in `src/game/eu4/cwt/merge.rs`

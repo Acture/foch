@@ -22,7 +22,9 @@ use foch::game::eu4::script::parse_script_file;
 use foch::game::eu4::script::parser::{
 	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content, parse_clausewitz_file,
 };
-use foch::merge::numeric::canonicalize_numeric_values_with_active_schema;
+use foch::merge::numeric::{
+	canonicalize_numeric_text, canonicalize_numeric_values_with_active_schema,
+};
 use foch::model::{DeferredUnitReason, DocumentFamily, MergeReport};
 use foch::playset::descriptor::load_descriptor;
 use regex::Regex;
@@ -502,7 +504,7 @@ struct ContentKey(String);
 
 struct ContentEntry {
 	text: String,
-	normalized: Option<Vec<String>>,
+	normalized: HashMap<String, Vec<String>>,
 	keys: Option<HashSet<String>>,
 	canonical: HashMap<(String, AstOrderingPolicy), Option<Vec<CanonicalStatement>>>,
 }
@@ -511,7 +513,7 @@ impl ContentEntry {
 	fn new(bytes: &[u8]) -> Self {
 		Self {
 			text: foch::game::eu4::text::decode_paradox_bytes(bytes).into_owned(),
-			normalized: None,
+			normalized: HashMap::new(),
 			keys: None,
 			canonical: HashMap::new(),
 		}
@@ -576,16 +578,23 @@ impl ScoreCache {
 		)
 	}
 
-	fn normalized_lines(&mut self, path: &Path) -> Vec<String> {
+	fn normalized_lines(&mut self, rel: &str, path: &Path) -> Vec<String> {
 		let Some(entry) = self.content_entry(path) else {
 			return Vec::new();
 		};
-		if entry.normalized.is_none() {
-			entry.normalized = Some(normalise(&entry.text));
+		if !entry.normalized.contains_key(rel) {
+			// Both sides of a similarity comparison go through the merge's own
+			// numeric canonicalization first. foch writes a schema-typed float
+			// in the engine's representation, so a human patch that wrote
+			// `0.50` would otherwise read as a textual difference from output
+			// that says `0.500`.
+			let canonical = canonicalize_numeric_text(Path::new(rel), &entry.text);
+			let lines = normalise(&canonical);
+			entry.normalized.insert(rel.to_string(), lines);
 		}
 		entry
 			.normalized
-			.as_ref()
+			.get(rel)
 			.expect("normalized lines inserted")
 			.clone()
 	}
@@ -604,12 +613,12 @@ impl ScoreCache {
 			.clone()
 	}
 
-	fn rounded_similarity(&mut self, left: &Path, right: &Path) -> Option<f64> {
+	fn rounded_similarity(&mut self, rel: &str, left: &Path, right: &Path) -> Option<f64> {
 		if !left.is_file() || !right.is_file() {
 			return None;
 		}
-		let left_lines = self.normalized_lines(left);
-		let right_lines = self.normalized_lines(right);
+		let left_lines = self.normalized_lines(rel, left);
+		let right_lines = self.normalized_lines(rel, right);
 		Some((ratio(&left_lines, &right_lines) * 1000.0).round() / 1000.0)
 	}
 
@@ -750,7 +759,7 @@ pub fn score_file_with_cache_and_basegame(
 		keys_match = Some(fk == ck);
 		ast_match = ast_match_for_path_cached(cache, rel, foch_path, &compatch_path);
 		if ast_match == Some(true) {
-			sim = cache.rounded_similarity(foch_path, &compatch_path);
+			sim = cache.rounded_similarity(rel, foch_path, &compatch_path);
 		}
 		policy_equivalent = ast_match == Some(false)
 			&& accepted_equivalent_for_path(cache, rel, foch_path, &compatch_path);
@@ -3405,6 +3414,37 @@ mod classify_tests {
 				"structured atoms drifted for {rel}"
 			);
 		}
+	}
+
+	/// P-695: foch writes a schema-typed float in EU4's own representation, so
+	/// text similarity has to compare that representation on both sides or a
+	/// human patch's spelling reads as a difference from the tool's.
+	#[test]
+	fn text_similarity_ignores_how_a_number_is_spelled() {
+		let (foch, human, _) = make_dirs();
+		// `all_estate_loyalty_equilibrium` is one of the modifiers the
+		// vendored CWT config actually declares as `alias[modifier:...]`.
+		let rel = "common/static_modifiers/example.txt";
+		write_file(
+			foch.path(),
+			rel,
+			"shared = {\n\tall_estate_loyalty_equilibrium = 0.500\n}\n",
+		);
+		write_file(
+			human.path(),
+			rel,
+			"shared = {\n\tall_estate_loyalty_equilibrium = 0.50\n}\n",
+		);
+
+		let mut cache = ScoreCache::new();
+		let similarity = cache
+			.rounded_similarity(rel, &foch.path().join(rel), &human.path().join(rel))
+			.expect("both files exist");
+
+		assert_eq!(
+			similarity, 1.0,
+			"one value written two ways is not a textual difference"
+		);
 	}
 
 	#[test]
