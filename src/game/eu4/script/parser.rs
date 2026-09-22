@@ -320,8 +320,11 @@ impl<'a> Lexer<'a> {
 					self.advance_byte();
 				}
 				let text = self.source[text_start..self.index].trim().to_string();
-				let lower = text.to_ascii_lowercase();
-				let kind = match lower.as_str() {
+				// Only the exact lowercase spellings are boolean. `CToken::GetBool`
+				// in the game is a case-sensitive `strncmp` against `yes`, so `YES`
+				// is not true there; folding it here and emitting `yes` would turn
+				// a false into a true in merged output.
+				let kind = match text.as_str() {
 					"yes" => TokenKind::Bool(true),
 					"no" => TokenKind::Bool(false),
 					_ => TokenKind::Identifier(text),
@@ -970,6 +973,44 @@ mod tests {
 			panic!("expected block value");
 		};
 		assert!(!items.is_empty());
+	}
+
+	/// Only the exact lowercase spelling is boolean.
+	///
+	/// The game decides a boolean in `CToken::GetBool`, a case-sensitive
+	/// `strncmp` against `yes`, so `YES` is not true to it. foch used to lower
+	/// the word before matching and emit the canonical `yes`, which rewrote a
+	/// value the game reads as false into one it reads as true.
+	#[test]
+	fn only_lowercase_yes_and_no_are_boolean() {
+		for (source, expected) in [
+			("v = yes\n", ScalarValue::Bool(true)),
+			("v = no\n", ScalarValue::Bool(false)),
+			("v = YES\n", ScalarValue::Identifier("YES".to_string())),
+			("v = Yes\n", ScalarValue::Identifier("Yes".to_string())),
+			("v = NO\n", ScalarValue::Identifier("NO".to_string())),
+		] {
+			let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), source);
+			assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+			let [AstStatement::Assignment { value, .. }] = parsed.ast.statements.as_slice() else {
+				panic!("expected one assignment for {source:?}")
+			};
+			let AstValue::Scalar { value, .. } = value else {
+				panic!("expected a scalar for {source:?}")
+			};
+			assert_eq!(value, &expected, "{source:?}");
+		}
+	}
+
+	/// The round trip must not change which value the game reads.
+	#[test]
+	fn emitting_a_non_lowercase_yes_keeps_its_spelling() {
+		let parsed = parse_clausewitz_content(PathBuf::from("test.txt"), "v = YES\n");
+		let rendered =
+			crate::game::eu4::script::emit::emit_clausewitz_statements(&parsed.ast.statements)
+				.expect("emit");
+
+		assert!(rendered.contains("v = YES"), "{rendered}");
 	}
 
 	#[test]

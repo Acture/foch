@@ -107,6 +107,17 @@ question; this fix only stops canonicalization from relying on the coarser side.
 Evidence: `target/validation/p687-quoting-2026-09-22/`, including the
 disassembly.
 
+That last one was not latent. foch's tokenizer lowered a bare word before
+matching, so `YES` parsed to `Bool(true)`, and `render_scalar` writes every
+`Bool(true)` as the canonical `yes` — measured end to end, `v = YES` came out of
+foch as `v = yes`. To the game that rewrites a value it reads as false into one
+it reads as true, in any merged file whose source wrote `YES` or `Yes`. Fixed by
+matching only the exact lowercase spellings; everything else stays an identifier
+and keeps its text. The whole workspace suite passed unchanged, so nothing
+depended on the folding. Regressions:
+`only_lowercase_yes_and_no_are_boolean` and
+`emitting_a_non_lowercase_yes_keeps_its_spelling`.
+
 Reading the consumers rather than the lexer turned out to matter more.
 `CToken::GetFloat` tail-calls `StringToFixedPoint`, which is `atoi` for the
 integer part plus **exactly three truncated decimal places**, so `0.5`, `0.50`
