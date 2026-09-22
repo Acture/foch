@@ -1639,7 +1639,7 @@ fn schema_value_coercion_diagnostic(
 				// The file says one number and the game reads another.
 				(
 					"V008",
-					Severity::Error,
+					schema_match_diagnostic_severity(field_match, Severity::Error),
 					format!(
 						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
 					),
@@ -1649,7 +1649,7 @@ fn schema_value_coercion_diagnostic(
 				// the precision the game keeps.
 				(
 					"V008",
-					Severity::Warning,
+					schema_match_diagnostic_severity(field_match, Severity::Warning),
 					format!(
 						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}`, so the trailing `{discarded}` is not the extra precision it looks like"
 					),
@@ -1661,7 +1661,7 @@ fn schema_value_coercion_diagnostic(
 		{
 			(
 				"V009",
-				Severity::Error,
+				schema_match_diagnostic_severity(field_match, Severity::Error),
 				format!(
 					"`{key}` is read as false: the game compares against the exact lowercase `yes`, so `{text}` is not a boolean"
 				),

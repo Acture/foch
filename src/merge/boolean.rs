@@ -4,7 +4,7 @@ use super::patch::{ScalarEquality, ast_statements_equal_ignoring_comments};
 
 pub(crate) fn canonical_boolean_or_body(body: Vec<AstStatement>) -> Vec<AstStatement> {
 	let mut comments = Vec::new();
-	let disjuncts = unique_disjuncts(body_to_disjuncts(body, &mut comments));
+	let disjuncts = unique_disjuncts(body_to_disjuncts(body, &mut comments), &mut comments);
 	boolean_or_body(comments, disjuncts)
 }
 
@@ -12,18 +12,17 @@ pub(crate) fn combine_boolean_or_bodies(
 	bodies: impl IntoIterator<Item = Vec<AstStatement>>,
 ) -> Option<Vec<AstStatement>> {
 	let mut comments = Vec::new();
-	let disjuncts = unique_disjuncts(
-		bodies
-			.into_iter()
-			.flat_map(|body| body_to_disjuncts(body, &mut comments))
-			.collect(),
-	);
+	let collected = bodies
+		.into_iter()
+		.flat_map(|body| body_to_disjuncts(body, &mut comments))
+		.collect();
+	let disjuncts = unique_disjuncts(collected, &mut comments);
 	(!disjuncts.is_empty()).then(|| boolean_or_body(comments, disjuncts))
 }
 
 pub(crate) fn simplify_boolean_or_body(body: Vec<AstStatement>) -> Vec<AstStatement> {
 	let mut comments = Vec::new();
-	let mut disjuncts = unique_disjuncts(body_to_disjuncts(body, &mut comments));
+	let mut disjuncts = unique_disjuncts(body_to_disjuncts(body, &mut comments), &mut comments);
 	if disjuncts.len() != 1 {
 		return boolean_or_body(comments, disjuncts);
 	}
@@ -55,20 +54,48 @@ fn boolean_or_body(
 	comments
 }
 
-fn unique_disjuncts(disjuncts: Vec<AstStatement>) -> Vec<AstStatement> {
+fn unique_disjuncts(
+	disjuncts: Vec<AstStatement>,
+	comments: &mut Vec<AstStatement>,
+) -> Vec<AstStatement> {
 	let mut unique: Vec<AstStatement> = Vec::with_capacity(disjuncts.len());
 	for disjunct in disjuncts {
 		// Deduplicate no more eagerly than the normalized tree that later
 		// judges this output: it gives `SWE` and `"SWE"` different leaf kinds,
 		// so collapsing them here would pick a different survivor on each side
 		// of a comparison and turn an equal pair into an unequal one.
-		if !unique.iter().any(|existing| {
+		if unique.iter().any(|existing| {
 			ast_statements_equal_ignoring_comments(existing, &disjunct, ScalarEquality::Exact)
 		}) {
-			unique.push(disjunct);
+			// The duplicate goes, but what it says must not: the equality above
+			// ignores comments at every depth, so two disjuncts can differ only
+			// in the comments nested inside them and still collapse to one.
+			collect_comments(&disjunct, comments);
+			continue;
 		}
+		unique.push(disjunct);
 	}
 	unique
+}
+
+/// Move every comment inside `statement`, at any depth, into `comments`.
+fn collect_comments(statement: &AstStatement, comments: &mut Vec<AstStatement>) {
+	match statement {
+		AstStatement::Comment { .. } => comments.push(statement.clone()),
+		AstStatement::Assignment {
+			value: AstValue::Block { items, .. },
+			..
+		}
+		| AstStatement::Item {
+			value: AstValue::Block { items, .. },
+			..
+		} => {
+			for item in items {
+				collect_comments(item, comments);
+			}
+		}
+		AstStatement::Assignment { .. } | AstStatement::Item { .. } => {}
+	}
 }
 
 fn body_to_disjuncts(
@@ -234,6 +261,25 @@ mod tests {
 			1,
 			"{}",
 			emit(&canonical)
+		);
+	}
+
+	/// Deduplication compares disjuncts with comments ignored at every depth, so
+	/// two that differ only in a nested comment collapse to one. What the
+	/// discarded one said must still reach the output.
+	#[test]
+	fn canonicalization_keeps_comments_from_a_discarded_duplicate() {
+		let canonical = canonical_boolean_or_body(body(
+			"OR = {\n\tAND = {\n\t\t# first\n\t\ta = yes\n\t\tb = yes\n\t}\n\tAND = {\n\t\t# second\n\t\ta = yes\n\t\tb = yes\n\t}\n}\n",
+		));
+
+		let rendered = emit(&canonical);
+		assert!(rendered.contains("# first"), "{rendered}");
+		assert!(rendered.contains("# second"), "{rendered}");
+		assert_eq!(
+			rendered.matches("a = yes").count(),
+			1,
+			"the duplicate disjunct itself must still collapse: {rendered}"
 		);
 	}
 
