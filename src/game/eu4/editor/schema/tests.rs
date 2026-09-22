@@ -1540,22 +1540,45 @@ fn diagnostics_skip_unknown_keys_inside_alias_bodies() {
 	}));
 }
 
-/// P-687: only the boolean coercion is decidable, so only it warns.
-///
-/// The game has two numeric readers with very different precision, and nothing
-/// in the schema says which one a field uses, so a precision warning would be
-/// wrong for modifier fields — see `schema_value_coercion_diagnostic`.
+/// P-687: the game reading a different value than the file states is an error.
 #[test]
-fn diagnostics_warn_where_a_boolean_spelling_is_read_as_false() {
+fn value_coercion_errors_where_the_game_reads_a_different_value() {
 	let engine = load_lsp_schema();
 	let text = "namespace = sample\ncountry_event = {\n  id = sample.3\n  chance = 0.1234\n  hidden = YES\n}\n";
 	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
 
 	assert!(
 		diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some("V008".to_string())
+				&& diagnostic.message.contains("chance")
+				&& diagnostic.message.contains("0.123")
+				&& diagnostic.severity == Some(Severity::Error)
+		}),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostics.iter().any(|diagnostic| {
 			diagnostic.code == Some("V009".to_string())
 				&& diagnostic.message.contains("hidden")
 				&& diagnostic.message.contains("YES")
+				&& diagnostic.severity == Some(Severity::Error)
+		}),
+		"{diagnostics:?}"
+	);
+}
+
+/// Trailing zeros read back as written, so the note drops to a warning: the
+/// value survives, but it is not the precision the author appears to expect.
+#[test]
+fn value_coercion_warns_on_a_lossless_excess_decimal() {
+	let engine = load_lsp_schema();
+	let text = "namespace = sample\ncountry_event = {\n  id = sample.4\n  chance = 0.5000\n  hidden = yes\n}\n";
+	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+
+	assert!(
+		diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some("V008".to_string())
+				&& diagnostic.message.contains("0.500")
 				&& diagnostic.severity == Some(Severity::Warning)
 		}),
 		"{diagnostics:?}"
@@ -1563,22 +1586,22 @@ fn diagnostics_warn_where_a_boolean_spelling_is_read_as_false() {
 	assert!(
 		!diagnostics
 			.iter()
-			.any(|diagnostic| diagnostic.code == Some("V008".to_string())),
-		"a precision warning cannot be justified per field yet: {diagnostics:?}"
+			.any(|diagnostic| diagnostic.code == Some("V009".to_string())),
+		"the exact lowercase spelling is the boolean: {diagnostics:?}"
 	);
 }
 
-/// The exact lowercase spelling is the boolean the game reads, so it is quiet.
+/// Exactly three decimals is what the game keeps, so there is nothing to say.
 #[test]
-fn boolean_coercion_diagnostic_stays_quiet_on_the_exact_spelling() {
+fn value_coercion_diagnostics_stay_quiet_at_the_kept_precision() {
 	let engine = load_lsp_schema();
-	let text = "namespace = sample\ncountry_event = {\n  id = sample.4\n  hidden = yes\n}\n";
+	let text = "namespace = sample\ncountry_event = {\n  id = sample.5\n  chance = 0.500\n}\n";
 	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
 
 	assert!(
 		!diagnostics
 			.iter()
-			.any(|diagnostic| diagnostic.code == Some("V009".to_string())),
+			.any(|diagnostic| diagnostic.code == Some("V008".to_string())),
 		"{diagnostics:?}"
 	);
 }
