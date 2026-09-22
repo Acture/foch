@@ -643,17 +643,6 @@ pub struct MergeTraceEntry {
 	pub contributors: Vec<MergeTraceContributor>,
 	pub policy: MergeTracePolicy,
 	pub decision: MergeTraceDecision,
-	/// How many of this definition's assignments were only spelled
-	/// differently — values EU4's own coercion reads as one.
-	///
-	/// Without this the trace states a contributor was overridden wherever a
-	/// spelling lost, which is not what happened.
-	#[serde(default, skip_serializing_if = "is_zero")]
-	pub game_value_equivalences: u32,
-}
-
-fn is_zero(value: &u32) -> bool {
-	*value == 0
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

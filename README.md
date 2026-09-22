@@ -106,6 +106,39 @@ Prefer exact files or conflict IDs over broad policies. See the
 [resolution reference](./docs/foch-toml-resolutions.md) and
 [project manifest reference](./docs/foch-project-manifest.md).
 
+## How numbers are written
+
+EU4 reads a script number far more coarsely than a text comparison does. The
+script surface reaches `CToken::ReadValue(CFixedPoint&)`, which takes the
+integer part and at most **three** fraction digits, truncated rather than
+rounded, and scales by 1000; `CToken::GetInt` is plain `atoi`. So `0.5`, `0.50`
+and `0.500` are one value to the game, and `0.1234` and `0.1239` are both
+`0.123`.
+
+Foch therefore writes numbers in that representation — a `float` field with
+three decimals, an `int` field as the integer the game reads:
+
+```text
+land_morale = 0.50     ->  land_morale = 0.500
+add_prestige = 1       ->  add_prestige = 1.000
+slots = 3.4            ->  slots = 3
+```
+
+The point is not tidiness. Two mods writing one value in two spellings used to
+be reported as a content conflict for you to adjudicate, and there was nothing
+to adjudicate. Canonicalizing before the merge makes the spelling invisible to
+every part of it at once.
+
+This applies **only where the CWT schema states the field's type**, because
+which reader the game uses is a property of the field, not of the text. Where
+the schema is silent the number is left exactly as written, rather than
+asserting a meaning from how a token happens to look. EU4's schema coverage is
+partial, so a good deal of real content is left untouched.
+
+Source mods are never modified — this affects the separate merged mod foch
+writes. The rule is pinned to the engine build it was read from; a patch that
+changes a reader invalidates the equivalences, not just their precision.
+
 ## CLI surface
 
 | Command | Purpose |

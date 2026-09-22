@@ -13,9 +13,6 @@ pub enum MergePolicyKind {
 	ChildSetSelection,
 	DivergentNode,
 	ScalarReducer,
-	/// The contributors wrote one value in more than one spelling, and the
-	/// game's own coercion reads them all the same.
-	GameValueEquivalence,
 	Ordering,
 	ManualResolution,
 }

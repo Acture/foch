@@ -8,7 +8,6 @@ use std::path::Path;
 use crate::game::eu4::content::BlockMergePolicy;
 use crate::game::schema::query::{
 	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery, RuleContext, SchemaBinding,
-	SchemaScalarType,
 };
 use crate::model::ConflictKind;
 
@@ -205,49 +204,6 @@ fn rule_value_for_path<'schema>(
 		};
 	}
 	last_value
-}
-
-/// The primitive scalar type the schema declares for `ast_path`, or `None`
-/// wherever the schema does not say so unambiguously.
-///
-/// Abstaining is the point: EU4's CWT coverage is incomplete, several
-/// directories bind to more than one root type, and `bind_context` gives up on
-/// dynamic keys. A caller that needs to know how the game reads a field may
-/// only act where the schema is explicit, so every uncertain shape returns
-/// `None` rather than a guess.
-pub(crate) fn scalar_field_type(
-	schema: &CwtQuery,
-	file_path: &Path,
-	ast_path: &[&str],
-) -> Option<SchemaScalarType> {
-	let (last, parents) = ast_path.split_last()?;
-	// A definition's own instance key leads the path under most root types but
-	// is absorbed by `skip_root_key` under others, and which applies is not
-	// recoverable from the path alone. Try both readings and accept only a
-	// unanimous answer.
-	let mut candidates: Vec<&[&str]> = vec![parents];
-	if let Some((_, rest)) = parents.split_first() {
-		candidates.push(rest);
-	}
-	let mut resolved: Option<SchemaScalarType> = None;
-	for candidate in candidates {
-		let Some(context) = schema.bind_context(file_path, candidate) else {
-			continue;
-		};
-		for field_match in schema.bind_field_matches(context, last) {
-			let Some(scalar_type) = SchemaScalarType::from_rule_value(field_match.value()) else {
-				// One matching rule that is not a primitive scalar means the
-				// key is overloaded; the schema is not explicit here.
-				return None;
-			};
-			match resolved {
-				None => resolved = Some(scalar_type),
-				Some(previous) if previous.is_same_primitive(scalar_type) => {}
-				Some(_) => return None,
-			}
-		}
-	}
-	resolved
 }
 
 fn root_name_field<'schema>(schema: &'schema CwtQuery, file_path: &Path) -> Option<&'schema str> {
@@ -462,76 +418,6 @@ mod tests {
 		assert_eq!(
 			suggestion.suggested_block_policy,
 			Some(BlockMergePolicy::Replace)
-		);
-	}
-
-	#[test]
-	fn scalar_field_type_reads_the_alias_value_not_the_wildcard() {
-		let schema = test_schema(ALIAS_SCHEMA);
-		let file = Path::new("common/things/example.txt");
-
-		assert_eq!(
-			scalar_field_type(schema.facts(), file, &["upkeep"]),
-			Some(SchemaScalarType::Float { range: None })
-		);
-		assert!(matches!(
-			scalar_field_type(schema.facts(), file, &["slots"]),
-			Some(SchemaScalarType::Int { range: Some(_) })
-		));
-	}
-
-	#[test]
-	fn scalar_field_type_descends_through_an_alias_bound_block() {
-		let schema = test_schema(ALIAS_SCHEMA);
-
-		assert_eq!(
-			scalar_field_type(
-				schema.facts(),
-				Path::new("common/things/example.txt"),
-				&["breakdown", "base"]
-			),
-			Some(SchemaScalarType::Float { range: None })
-		);
-	}
-
-	#[test]
-	fn scalar_field_type_abstains_where_the_schema_is_not_explicit() {
-		let schema = test_schema(ALIAS_SCHEMA);
-		let file = Path::new("common/things/example.txt");
-
-		assert_eq!(
-			scalar_field_type(schema.facts(), file, &["plain_scalar"]),
-			None
-		);
-		assert_eq!(
-			scalar_field_type(schema.facts(), file, &["unknown_key"]),
-			None
-		);
-		assert_eq!(
-			scalar_field_type(schema.facts(), file, &["breakdown"]),
-			None
-		);
-		assert_eq!(
-			scalar_field_type(schema.facts(), Path::new("other/x.txt"), &["upkeep"]),
-			None
-		);
-		assert_eq!(scalar_field_type(schema.facts(), file, &[]), None);
-	}
-
-	#[test]
-	fn scalar_field_type_tolerates_a_leading_definition_instance_key() {
-		// A merge path carries the definition's own key ahead of the field,
-		// and whether the schema absorbs that key is not recoverable from the
-		// path, so both readings have to be tried.
-		let schema = test_schema(ALIAS_SCHEMA);
-
-		assert_eq!(
-			scalar_field_type(
-				schema.facts(),
-				Path::new("common/things/example.txt"),
-				&["some_thing", "upkeep"]
-			),
-			Some(SchemaScalarType::Float { range: None })
 		);
 	}
 

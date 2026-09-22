@@ -1,15 +1,11 @@
-use std::fmt;
-use std::path::Path;
-
 use crate::game::eu4::content::{
 	BlockMergePolicy, DivergentBlockPolicy, MergeKeySource, MergePolicies, NestedInsertionPolicy,
 	OneSidedRemovalPolicy, ScalarMergePolicy,
 };
 use crate::game::eu4::script::parser::{AstStatement, AstValue};
-use crate::game::schema::query::{CwtQuery, SchemaScalarType};
 use crate::merge::kernel::{
-	ChildOrder, ConflictKind, MergePolicy, MergePolicyKind, NWayClassContext, NWayDeleteContext,
-	NormalizedNode, PolicyDecision, RevisionId, SemanticKey,
+	ChildOrder, ConflictKind, MergePolicy, NWayClassContext, NWayDeleteContext, PolicyDecision,
+	RevisionId, SemanticKey,
 };
 
 pub(crate) trait ClausewitzTreePolicy {
@@ -40,221 +36,15 @@ pub(crate) trait ClausewitzTreePolicy {
 	}
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ContentFamilyMergePolicy<'a> {
 	policies: &'a MergePolicies,
-	fields: Option<SchemaFields<'a>>,
-}
-
-impl fmt::Debug for ContentFamilyMergePolicy<'_> {
-	fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-		formatter
-			.debug_struct("ContentFamilyMergePolicy")
-			.field("policies", self.policies)
-			.field("schema_fields", &self.fields.is_some())
-			.finish()
-	}
-}
-
-/// The active CWT schema, bound to the file being merged.
-///
-/// Held as a pair rather than a resolved binding because a file can match more
-/// than one root type, which `scalar_field_type` resolves per path.
-#[derive(Clone, Copy)]
-pub(crate) struct SchemaFields<'a> {
-	schema: &'a CwtQuery,
-	file_path: &'a Path,
 }
 
 impl<'a> ContentFamilyMergePolicy<'a> {
 	pub(crate) const fn new(policies: &'a MergePolicies) -> Self {
-		Self {
-			policies,
-			fields: None,
-		}
+		Self { policies }
 	}
-
-	/// Adds the schema evidence needed to tell a spelling difference from a
-	/// value difference. Without it the policy keeps its schema-blind
-	/// behavior, which is what happens wherever no CWT schema is installed.
-	pub(crate) const fn with_schema_fields(
-		policies: &'a MergePolicies,
-		schema: Option<&'a CwtQuery>,
-		file_path: &'a Path,
-	) -> Self {
-		Self {
-			policies,
-			fields: match schema {
-				Some(schema) => Some(SchemaFields { schema, file_path }),
-				None => None,
-			},
-		}
-	}
-
-	/// Resolves a divergence that only exists in the file text.
-	///
-	/// EU4 reads a script number through a reader far coarser than byte
-	/// comparison, so contributors can write one value several ways.
-	/// `0.5`, `0.50` and `0.500` are one value to the game, and so are
-	/// `0.1234` and `0.1239`; reporting those as content conflicts asks the
-	/// user to adjudicate a difference the game cannot see.
-	///
-	/// This runs after the conflict is already detected, and deliberately so.
-	/// Making the leaves or their hashes coercion-aware would move subtree
-	/// hashes, the tree matcher's buckets and the anchors that embed scalar
-	/// text, and the same pair would then compare equal under one parent and
-	/// unequal under another. Here the class is formed and the divergence
-	/// marked; only the verdict changes.
-	///
-	/// Which reader applies is a property of the field, not of the text, so
-	/// this acts only where the CWT schema states the field's type. That
-	/// bounds the benefit: EU4's schema coverage is partial, and where it is
-	/// silent the divergence stays a conflict.
-	fn game_value_equivalence(&self, context: NWayClassContext<'_>) -> Option<PolicyDecision> {
-		let fields = self.fields?;
-		let first = context.contributors.first()?;
-		// Only an assignment's own value is the field the schema types. A list
-		// item is matched by position and its text is not a field value, so
-		// the schema would be answering about the wrong thing.
-		let key = assignment_key(first.parent?)?;
-		let chains = script_key_chains(&first.node.policy_path, key)?;
-		let mut scalar_type: Option<SchemaScalarType> = None;
-		for chain in &chains {
-			let chain = chain.iter().map(String::as_str).collect::<Vec<_>>();
-			let Some(resolved) = crate::game::eu4::cwt::merge::scalar_field_type(
-				fields.schema,
-				fields.file_path,
-				&chain,
-			) else {
-				continue;
-			};
-			match scalar_type {
-				None => scalar_type = Some(resolved),
-				Some(previous) if previous.is_same_primitive(resolved) => {}
-				// Two readings of one path that disagree about the reader mean
-				// the path is ambiguous, not that either answer is right.
-				Some(_) => return None,
-			}
-		}
-		let scalar_type = scalar_type?;
-		let values = context
-			.contributors
-			.iter()
-			.map(|view| {
-				(view.node.kind == first.node.kind)
-					.then_some(view.node.value.as_deref())
-					.flatten()
-			})
-			.collect::<Option<Vec<_>>>()?;
-		if values.len() < 2 {
-			return None;
-		}
-		if !reads_as_one_value(scalar_type, &values) {
-			return None;
-		}
-		Some(PolicyDecision::SynthesizeScalar {
-			// Keep a spelling that was actually written, and take it from the
-			// last contributor, because playset order is the precedence the
-			// rest of the merge already follows. Emitting the reader's own
-			// canonical form instead would put a number in the output that no
-			// contributor wrote.
-			value: values.last()?.to_string(),
-			policy: MergePolicyKind::GameValueEquivalence,
-		})
-	}
-}
-
-/// Whether every contributor's text reaches the same value through the reader
-/// this field's type selects.
-fn reads_as_one_value(scalar_type: SchemaScalarType, values: &[&str]) -> bool {
-	use crate::game::eu4::coercion::{script_fixed_point, script_int};
-
-	match scalar_type {
-		SchemaScalarType::Float { .. } => {
-			let Some(first) = script_fixed_point(values[0]) else {
-				return false;
-			};
-			values[1..]
-				.iter()
-				.all(|value| script_fixed_point(value) == Some(first))
-		}
-		SchemaScalarType::Int { .. } => {
-			let Some(first) = script_int(values[0]) else {
-				return false;
-			};
-			values[1..]
-				.iter()
-				.all(|value| script_int(value) == Some(first))
-		}
-		// `CToken::GetBool` compares against the exact lowercase `yes`, so
-		// every other spelling reads as false and would collapse together —
-		// including the mis-spellings the editor reports as errors. Equating
-		// them here would hide the divergence rather than explain it.
-		SchemaScalarType::Bool => false,
-	}
-}
-
-/// The script key chains a normalized node's policy path can stand for.
-///
-/// Policy-path components are anchor values, and an anchor is either the bare
-/// assignment key or that key followed by `:` and an identity — the shapes
-/// `assignment_anchor` builds. The two are not distinguishable as text,
-/// because a script key may itself contain a colon: vanilla writes
-/// `event_target:<name>` as an assignment key roughly 1,900 times. So a
-/// colon-bearing component yields both readings and the caller must accept
-/// only an answer they agree on.
-///
-/// The leaf's own component is not guessed. `leaf_key` is read off the parent
-/// assignment node, and a last component that matches neither reading of it
-/// means this path is not a plain assignment chain.
-fn script_key_chains(policy_path: &[String], leaf_key: &str) -> Option<Vec<Vec<String>>> {
-	let (last, ancestors) = policy_path.split_last()?;
-	if last != leaf_key && last.split_once(':').map(|(key, _)| key) != Some(leaf_key) {
-		return None;
-	}
-	// Each ambiguous ancestor doubles the candidates. Two is already more
-	// uncertainty than an answer should be built on.
-	const MAX_AMBIGUOUS_ANCESTORS: usize = 2;
-	if ancestors
-		.iter()
-		.filter(|component| component.contains(':'))
-		.count()
-		> MAX_AMBIGUOUS_ANCESTORS
-	{
-		return None;
-	}
-	let mut chains = vec![Vec::with_capacity(policy_path.len())];
-	for component in ancestors {
-		chains = match component.split_once(':') {
-			Some((key, _)) => chains
-				.into_iter()
-				.flat_map(|chain| {
-					let mut decorated = chain.clone();
-					decorated.push(component.clone());
-					let mut bare = chain;
-					bare.push(key.to_string());
-					[decorated, bare]
-				})
-				.collect(),
-			None => chains
-				.into_iter()
-				.map(|mut chain| {
-					chain.push(component.clone());
-					chain
-				})
-				.collect(),
-		};
-	}
-	for chain in &mut chains {
-		chain.push(leaf_key.to_string());
-	}
-	Some(chains)
-}
-
-fn assignment_key(node: &NormalizedNode) -> Option<&str> {
-	node.kind
-		.strip_prefix("clausewitz.assignment:")
-		.and(node.value.as_deref())
 }
 
 impl ClausewitzTreePolicy for ContentFamilyMergePolicy<'_> {
@@ -501,30 +291,18 @@ impl MergePolicy for ContentFamilyMergePolicy<'_> {
 				.map(|view| view.node.value.as_deref())
 				.collect::<Option<Vec<_>>>()
 		};
-		// Ask whether the contributors ever disagreed before asking a reducer
-		// to combine them: a reducer handed one value written two ways would
-		// average or sum spellings of the same number.
-		if let Some(decision) = self.game_value_equivalence(context) {
-			return decision;
-		}
 		if let Some(rule) = self
 			.policies
 			.scalar_reducer_rule_for_path(&first.policy_path)
 			&& let Some(values) = values()
 			&& let Some(output) = rule.reducer.reduce_numeric_values(values)
 		{
-			return PolicyDecision::SynthesizeScalar {
-				value: output,
-				policy: MergePolicyKind::ScalarReducer,
-			};
+			return PolicyDecision::SynthesizeScalar(output);
 		}
 		if let Some(values) = values()
 			&& let Some(output) = self.policies.scalar.reduce_numeric_values(values)
 		{
-			return PolicyDecision::SynthesizeScalar {
-				value: output,
-				policy: MergePolicyKind::ScalarReducer,
-			};
+			return PolicyDecision::SynthesizeScalar(output);
 		}
 		if changed.len() >= 2 && self.policies.scalar == ScalarMergePolicy::LastWriter {
 			PolicyDecision::Select(changed.last().unwrap().source.revision)
@@ -861,78 +639,6 @@ mod tests {
 				.expect("configured condition anchor");
 			assert_eq!(anchor.lineage, SemanticKeyLineage::Seeded);
 		}
-	}
-
-	#[test]
-	fn a_key_chain_reads_an_identity_anchor_both_ways() {
-		// `country_event:demo.1` is an identity anchor over the key
-		// `country_event`; `event_target:my_target` is a script key that
-		// simply contains a colon. Nothing in the text tells them apart.
-		let path = [
-			"country_event:demo.1".to_string(),
-			"immediate".to_string(),
-			"add_prestige".to_string(),
-		];
-
-		let chains = super::script_key_chains(&path, "add_prestige").expect("chains");
-
-		assert_eq!(
-			chains,
-			vec![
-				vec![
-					"country_event:demo.1".to_string(),
-					"immediate".to_string(),
-					"add_prestige".to_string()
-				],
-				vec![
-					"country_event".to_string(),
-					"immediate".to_string(),
-					"add_prestige".to_string()
-				],
-			]
-		);
-	}
-
-	#[test]
-	fn a_key_chain_without_decoration_has_one_reading() {
-		let path = ["a_thing".to_string(), "upkeep".to_string()];
-
-		assert_eq!(
-			super::script_key_chains(&path, "upkeep"),
-			Some(vec![vec!["a_thing".to_string(), "upkeep".to_string()]])
-		);
-	}
-
-	#[test]
-	fn a_key_chain_accepts_a_decorated_leaf_component() {
-		let path = ["a_thing".to_string(), "option:accept".to_string()];
-
-		assert_eq!(
-			super::script_key_chains(&path, "option"),
-			Some(vec![vec!["a_thing".to_string(), "option".to_string()]])
-		);
-	}
-
-	#[test]
-	fn a_key_chain_refuses_a_leaf_that_is_not_the_assignment_key() {
-		// A positional or fingerprint anchor is not this field's key, so the
-		// path is not a plain assignment chain and nothing may be read off it.
-		let path = ["a_thing".to_string(), "0".to_string()];
-
-		assert_eq!(super::script_key_chains(&path, "upkeep"), None);
-		assert_eq!(super::script_key_chains(&[], "upkeep"), None);
-	}
-
-	#[test]
-	fn a_key_chain_refuses_more_ambiguity_than_it_can_justify() {
-		let path = [
-			"a:1".to_string(),
-			"b:2".to_string(),
-			"c:3".to_string(),
-			"upkeep".to_string(),
-		];
-
-		assert_eq!(super::script_key_chains(&path, "upkeep"), None);
 	}
 
 	fn assignment(source: &str) -> (String, AstValue) {

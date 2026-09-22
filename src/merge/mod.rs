@@ -13,6 +13,7 @@ pub(crate) mod kernel;
 pub(crate) mod kernel_adapter;
 pub(crate) mod model;
 pub(crate) mod namespace;
+pub mod numeric;
 pub(crate) mod output;
 #[cfg(test)]
 mod patch_real_mods;

@@ -163,7 +163,7 @@ fn apply_delete_decision(
 		MergePolicyKind::OneSidedRemoval
 	};
 	match decision {
-		PolicyDecision::Unresolved | PolicyDecision::SynthesizeScalar { .. } => false,
+		PolicyDecision::Unresolved | PolicyDecision::SynthesizeScalar(_) => false,
 		PolicyDecision::Resolved => {
 			let Some(source) = context
 				.class
@@ -255,8 +255,8 @@ fn apply_divergent_decision(
 			);
 			true
 		}
-		PolicyDecision::SynthesizeScalar { value, policy } => {
-			let Some(synthesis) = scalar_synthesis(context, value) else {
+		PolicyDecision::SynthesizeScalar(output) => {
+			let Some(synthesis) = scalar_synthesis(context, output) else {
 				return false;
 			};
 			let Some(source) = context.contributors.last().map(|view| view.source) else {
@@ -273,14 +273,8 @@ fn apply_divergent_decision(
 			selection.child_revision = None;
 			plan.decisions.push(MergeDecisionEvidence {
 				affected_class: context.class,
-				policy,
-				reason: match policy {
-					// Nothing was combined: the spellings only looked
-					// different, so this is an equivalence, not a domain rule
-					// choosing between disagreeing values.
-					MergePolicyKind::GameValueEquivalence => MergeDecisionReason::EquivalentChanges,
-					_ => MergeDecisionReason::ExplicitDomainRule,
-				},
+				policy: MergePolicyKind::ScalarReducer,
+				reason: MergeDecisionReason::ExplicitDomainRule,
 				contributors: selection.sources.clone(),
 				result: MergeDecisionResult::SynthesizeScalar {
 					value: synthesis.output,
