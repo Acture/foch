@@ -12,6 +12,7 @@ pub mod evidence_store;
 pub mod lifecycle;
 pub mod orchestrate;
 pub mod report;
+pub mod representation;
 pub mod runner;
 pub mod score;
 pub mod workshop_inputs;

@@ -141,11 +141,21 @@ would all collapse together, including the mis-spellings `V009` reports.
 Scoring had to follow, or the harness would count its own tool's output as a
 divergence. Four separate paths needed it — `canonical_ast`,
 `semantic_atoms_for_path_with_ordering`, the layered module view, and the text
-similarity behind `matches_human` — and all four now go through the merge's own
-transform rather than a second rule, keyed on the **game-relative** path. That
-last detail is load-bearing and was found by measurement, not by reading: root
-binding is a path-prefix match, so the absolute scratch paths the harness holds
-bind nothing and canonicalize nothing, silently.
+similarity behind `matches_human` — and adding it at each of them in turn
+missed two: the module view, which `tiny_product_cli_to_pure_scorer_seam`
+caught by regressing to `diverges_ast`, and the similarity path. That is a
+design fault, not an attention one, so the four collapsed into one module,
+`merge_quality::representation`. It is now the only thing in the harness that
+reads a script file for comparison, and `score.rs` no longer imports a raw
+parser. The single exception is the per-file read inside module composition,
+which needs the library's own loader; the composed tree goes through the same
+seam immediately after, and the call site says so.
+
+The seam keys on the **game-relative** path, which is load-bearing and was
+found by measurement rather than reading: root binding is a path-prefix match,
+so the absolute scratch paths the harness holds bind nothing and canonicalize
+nothing, silently. The same content at the same bytes now caches per relative
+path for that reason.
 
 The similarity path needed a different shape from the rest.
 `canonicalize_numeric_text` replaces the numbers' byte ranges in the source
