@@ -1539,3 +1539,47 @@ fn diagnostics_skip_unknown_keys_inside_alias_bodies() {
 		diagnostic.code == Some("V001".to_string()) && diagnostic.message.contains("mystery_key")
 	}));
 }
+
+/// P-687: warn where the game's own coercion discards what was written.
+#[test]
+fn diagnostics_warn_where_the_game_truncates_or_ignores_a_written_value() {
+	let engine = load_lsp_schema();
+	let text = "namespace = sample\ncountry_event = {\n  id = sample.3\n  chance = 0.1234\n  hidden = YES\n}\n";
+	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+
+	assert!(
+		diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some("V008".to_string())
+				&& diagnostic.message.contains("chance")
+				&& diagnostic.message.contains("0.123")
+				&& diagnostic.message.contains("4")
+				&& diagnostic.severity == Some(Severity::Warning)
+		}),
+		"{diagnostics:?}"
+	);
+	assert!(
+		diagnostics.iter().any(|diagnostic| {
+			diagnostic.code == Some("V009".to_string())
+				&& diagnostic.message.contains("hidden")
+				&& diagnostic.message.contains("YES")
+				&& diagnostic.severity == Some(Severity::Warning)
+		}),
+		"{diagnostics:?}"
+	);
+}
+
+/// Trailing zeros and the exact lowercase spelling lose nothing, so neither
+/// warning may fire on them.
+#[test]
+fn value_coercion_diagnostics_stay_quiet_where_nothing_is_lost() {
+	let engine = load_lsp_schema();
+	let text = "namespace = sample\ncountry_event = {\n  id = sample.4\n  chance = 0.5000\n  hidden = yes\n}\n";
+	let diagnostics = schema_diagnostics_for_text(&engine, Path::new("events/sample.txt"), text);
+
+	assert!(
+		!diagnostics
+			.iter()
+			.any(|diagnostic| matches!(diagnostic.code.as_deref(), Some("V008") | Some("V009"))),
+		"{diagnostics:?}"
+	);
+}

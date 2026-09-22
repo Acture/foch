@@ -96,10 +96,10 @@ already refuses to equate. Its `yes`/`no` carve-out is the exception:
 `CToken::GetBool` is `strncmp(text, "yes", 4)`, reading text rather than type, so
 that exclusion is over-conservative rather than necessary. That comparison is
 also case-sensitive, and it is the only thing that decides a boolean, so `YES` is
-not `true` to EU4. foch's tokenizer lowercases before matching and yields
+not `true` to EU4. foch's tokenizer lowercased before matching and yielded
 `Bool(true)` — foch being more permissive than the game, the unsafe direction,
 and the first lexer divergence found that is a correctness risk rather than extra
-strictness. Unestablished: what
+strictness. Fixed below. Unestablished: what
 `AddDynamicToken` puts in the tree at script-parse time, and whether consumers
 other than `GetBool` branch on the type. Making the kernel equate the spellings
 would move leaf kinds, subtree hashes and cache identity, so it stays a separate
@@ -117,6 +117,15 @@ and keeps its text. The whole workspace suite passed unchanged, so nothing
 depended on the folding. Regressions:
 `only_lowercase_yes_and_no_are_boolean` and
 `emitting_a_non_lowercase_yes_keeps_its_spelling`.
+
+Two LSP diagnostics now surface the coercions that discard what was written,
+since both are silent in game: `V008` warns that a numeric literal on a schema
+`float` field keeps only three decimals (`chance = 0.1234` is read as `0.123`),
+and `V009` warns that a `yes`-shaped value on a schema `bool` field which is not
+the exact lowercase spelling is read as false. Both fire only where the CWT
+schema states the field's type, and `V008` stays quiet when the discarded digits
+are zeros, which lose nothing. They live beside the existing scalar checks in
+`src/game/eu4/editor/schema/interpret.rs`.
 
 Reading the consumers rather than the lexer turned out to matter more.
 `CToken::GetFloat` tail-calls `StringToFixedPoint`, which is `atoi` for the
