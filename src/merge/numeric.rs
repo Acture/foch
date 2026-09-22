@@ -22,10 +22,13 @@
 //! claim about this value" rather than asserting one from a token's shape.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::Path;
 
 use crate::game::eu4::coercion::{canonical_float_text, canonical_int_text};
-use crate::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
+use crate::game::eu4::script::parser::{
+	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content,
+};
 use crate::game::schema::query::{CwtQuery, RuleContext, SchemaScalarType};
 
 /// Rewrite every schema-typed number in `file` under the installed schema.
@@ -67,9 +70,53 @@ fn canonicalize_numeric_values_at(
 		schema,
 		file_path: relative_path,
 		contexts: HashMap::new(),
+		edits: Vec::new(),
 	};
 	walker.visit(&mut file.statements, &mut Vec::new());
 	file
+}
+
+/// Rewrite the numbers in `source` and leave every other byte untouched.
+///
+/// Re-emitting the parsed file would work for the values but would also
+/// reformat the comments and whitespace around them, and the merge-quality
+/// harness measures text similarity against a human patch — reformatting would
+/// swamp the signal it is trying to read. Replacing byte ranges keeps the
+/// comparison about content.
+pub fn canonicalize_numeric_text(relative_path: &Path, source: &str) -> String {
+	canonicalize_numeric_text_with(relative_path, source, crate::game::eu4::cwt::rule_engine())
+}
+
+fn canonicalize_numeric_text_with(
+	relative_path: &Path,
+	source: &str,
+	schema: Option<&CwtQuery>,
+) -> String {
+	let Some(schema) = schema else {
+		return source.to_string();
+	};
+	let parsed = parse_clausewitz_content(relative_path.to_path_buf(), source);
+	if !parsed.diagnostics.is_empty() {
+		return source.to_string();
+	}
+	let mut file = parsed.ast;
+	let mut walker = NumericWalker {
+		schema,
+		file_path: relative_path,
+		contexts: HashMap::new(),
+		edits: Vec::new(),
+	};
+	walker.visit(&mut file.statements, &mut Vec::new());
+	let mut edits = walker.edits;
+	// Apply from the end so earlier offsets stay valid.
+	edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+	let mut source = source.to_string();
+	for (range, canonical) in edits {
+		if source.get(range.clone()).is_some() {
+			source.replace_range(range, &canonical);
+		}
+	}
+	source
 }
 
 struct NumericWalker<'a> {
@@ -81,6 +128,9 @@ struct NumericWalker<'a> {
 	/// with fifty modifier fields costs one binding, then fifty cheap field
 	/// lookups inside it.
 	contexts: HashMap<Vec<String>, Vec<RuleContext<'a>>>,
+	/// Byte ranges rewritten, for callers that edit the source text rather
+	/// than the tree.
+	edits: Vec<(Range<usize>, String)>,
 }
 
 impl<'a> NumericWalker<'a> {
@@ -100,9 +150,11 @@ impl<'a> NumericWalker<'a> {
 				}
 				AstValue::Scalar {
 					value: ScalarValue::Number(text),
-					..
+					span,
 				} => {
 					if let Some(canonical) = self.canonical_text(chain, key, text) {
+						self.edits
+							.push((span.start.offset..span.end.offset, canonical.clone()));
 						*text = canonical;
 					}
 				}
@@ -342,6 +394,45 @@ mod tests {
 		let source = "a_thing = { upkeep = 0.50 slots = 3.4 }\n";
 
 		assert!(canonicalize("common/things/example.txt", source, None).contains("upkeep = 0.50"));
+	}
+
+	#[test]
+	fn rewriting_text_touches_only_the_numbers() {
+		let source = "# a leading note\n\
+			a_thing = {\n\
+			\t# why this value\n\
+			\tupkeep    =    0.5   # trailing note\n\
+			\tuntyped = 0.50\n\
+			}\n";
+
+		let schema = schema();
+		let rewritten = canonicalize_numeric_text_with(
+			Path::new("common/things/example.txt"),
+			source,
+			Some(schema.facts()),
+		);
+
+		// Only the schema-typed number moves; the comments, the odd spacing
+		// and the untyped value are byte-for-byte what they were.
+		assert_eq!(
+			rewritten,
+			source.replace("0.5   #", "0.500   #"),
+			"{rewritten}"
+		);
+	}
+
+	#[test]
+	fn rewriting_text_is_a_no_op_where_nothing_is_typed() {
+		for source in ["a_thing = { untyped = 0.50 }\n", "not_parseable = {\n"] {
+			assert_eq!(
+				canonicalize_numeric_text_with(
+					Path::new("common/things/example.txt"),
+					source,
+					Some(schema().facts())
+				),
+				source
+			);
+		}
 	}
 
 	#[test]
