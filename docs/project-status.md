@@ -80,13 +80,23 @@ landed, and has since been checked against the installed 1.37.5: vanilla writes
 81 distinct `key = value` pairs both ways, including identity lookups such as
 `has_country_modifier`, and `counter_reformation` — defined once as a bare block
 key — is referenced both bare and quoted in shipped missions and events, which
-those triggers could not survive if the loader kept the spellings apart. So the
-game folds identifier-shaped text, and the kernel is the side that differs. The
-guard's other carve-outs (`yes`/`no`, leading digit or `-`) remain unevidenced:
-vanilla never writes `"yes"`. Making the kernel equate the spellings would move
-leaf kinds, subtree hashes and cache identity, so it stays a separate question;
-this fix only stops canonicalization from relying on the coarser side. Evidence:
-`target/validation/p687-quoting-2026-09-22/`.
+those triggers could not survive if the loader kept the spellings apart. The
+rule behind that was then read out of the game binary, which ships unstripped
+with full C++ symbols: `CTextLexer::GetTok` stores `{int type, char text[512],
+bool wasQuoted}`, strips the delimiters, and assigns type 15 both to a quoted
+string and to a bare word that misses `CLexer::_TokenTree` — so the two spellings
+differ only in a flag kept for round-tripping. They diverge only where the bare
+form would lex as a number (leading `-` or digit), match a tree entry, or split
+into several tokens, which is exactly what `is_valid_bare_identifier_text`
+already refuses to equate. Its `yes`/`no` carve-out is the exception:
+`CToken::GetBool` is `strncmp(text, "yes", 4)`, reading text rather than type, so
+that exclusion is over-conservative rather than necessary. Unestablished: what
+`AddDynamicToken` puts in the tree at script-parse time, and whether consumers
+other than `GetBool` branch on the type. Making the kernel equate the spellings
+would move leaf kinds, subtree hashes and cache identity, so it stays a separate
+question; this fix only stops canonicalization from relying on the coarser side.
+Evidence: `target/validation/p687-quoting-2026-09-22/`, including the
+disassembly.
 
 Regressions: five unit tests in `src/merge/boolean.rs` cover the transform
 itself (comment-blind shape, comment survival, comment-only body, both scalar
