@@ -107,6 +107,19 @@ question; this fix only stops canonicalization from relying on the coarser side.
 Evidence: `target/validation/p687-quoting-2026-09-22/`, including the
 disassembly.
 
+Reading the consumers rather than the lexer turned out to matter more.
+`CToken::GetFloat` tail-calls `StringToFixedPoint`, which is `atoi` for the
+integer part plus **exactly three truncated decimal places**, so `0.5`, `0.50`
+and `0.500` are one value to the game and `0.1234` and `0.1239` are both `0.123`;
+`GetInt` is `atoi`, so `123abc` is `123`; `GetBool` is the case-sensitive
+`strncmp` above. foch compares scalars as source text and therefore reports all
+three numeric pairs as different — measured, not assumed — while folding `yes`
+and `YES` that the game keeps apart. Three of those are foch being stricter than
+the game (spurious divergence), one is foch being looser (a real risk). The
+coercion is per field, so any normalization has to be driven by the CWT field
+type rather than by the lexer, and it is pinned to this engine build. Nothing has
+been changed for it yet. Evidence: `findings-coercion.md` beside the disassembly.
+
 Regressions: five unit tests in `src/merge/boolean.rs` cover the transform
 itself (comment-blind shape, comment survival, comment-only body, both scalar
 spellings kept, genuine duplicates still collapsed, and the simplify path
