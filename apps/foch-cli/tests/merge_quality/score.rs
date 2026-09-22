@@ -11,6 +11,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
+use super::representation;
 use foch::game::eu4::Eu4;
 use foch::game::eu4::content::{
 	ContentFamilyDescriptor, ContentFamilyPathMatcher, ContentLoadPolicy, DefinitionModulePolicy,
@@ -19,12 +20,7 @@ use foch::game::eu4::content::{
 use foch::game::eu4::script::definition_module::{DefinitionModuleInput, load_definition_module};
 use foch::game::eu4::script::documents::classify_document_family;
 use foch::game::eu4::script::parse_script_file;
-use foch::game::eu4::script::parser::{
-	AstFile, AstStatement, AstValue, ScalarValue, parse_clausewitz_content, parse_clausewitz_file,
-};
-use foch::merge::numeric::{
-	canonicalize_numeric_text, canonicalize_numeric_values_with_active_schema,
-};
+use foch::game::eu4::script::parser::{AstFile, AstStatement, AstValue, ScalarValue};
 use foch::model::{DeferredUnitReason, DocumentFamily, MergeReport};
 use foch::playset::descriptor::load_descriptor;
 use regex::Regex;
@@ -583,13 +579,7 @@ impl ScoreCache {
 			return Vec::new();
 		};
 		if !entry.normalized.contains_key(rel) {
-			// Both sides of a similarity comparison go through the merge's own
-			// numeric canonicalization first. foch writes a schema-typed float
-			// in the engine's representation, so a human patch that wrote
-			// `0.50` would otherwise read as a textual difference from output
-			// that says `0.500`.
-			let canonical = canonicalize_numeric_text(Path::new(rel), &entry.text);
-			let lines = normalise(&canonical);
+			let lines = normalise(&representation::canonicalize_text(rel, &entry.text));
 			entry.normalized.insert(rel.to_string(), lines);
 		}
 		entry
@@ -640,23 +630,15 @@ impl ScoreCache {
 			.canonical
 			.contains_key(&key)
 		{
-			let parsed = parse_clausewitz_content(
-				path.to_path_buf(),
+			let canonical = representation::parse_text(
+				rel,
 				&self
 					.content_entries
 					.get(&content)
 					.expect("content entry inserted")
 					.text,
-			);
-			let canonical = if parsed.diagnostics.is_empty() {
-				// `path` is a scratch location; the schema binds the
-				// game-relative one.
-				let ast =
-					canonicalize_numeric_values_with_active_schema(Path::new(rel), &parsed.ast);
-				Some(canonical_statements(&ast.statements, ordering))
-			} else {
-				None
-			};
+			)
+			.map(|ast| canonical_statements(&ast.statements, ordering));
 			self.content_entries
 				.get_mut(&content)
 				.expect("content entry inserted")
@@ -1084,6 +1066,9 @@ fn canonical_layered_module_view_uncached(
 		}
 	}
 
+	// The one read that cannot go through `representation::parse`: composition
+	// needs the library's own loader per file. `representation::compose` brings
+	// the composed tree into line below instead.
 	let mut parsed_files = Vec::with_capacity(visible_files.len());
 	for (relative, (layer_ordinal, root, path)) in visible_files {
 		let parsed = parse_script_file("__score__", &root, &path)?;
@@ -1096,14 +1081,14 @@ fn canonical_layered_module_view_uncached(
 		})
 		.collect::<Vec<_>>();
 	let module = load_definition_module(&inputs, policy).ok()?;
-	// Score the representation the merge produces. Every file in a module
-	// family shares one prefix, so one probe path binds the same root the
-	// merge bound; `definition_module_merge_key_for_prefix` probes the same way.
-	let probe = PathBuf::from(format!(
+	// Every file in a module family shares one prefix, so one probe path binds
+	// the same root the merge bound; `definition_module_merge_key_for_prefix`
+	// probes the same way.
+	let probe = format!(
 		"{}/__foch_module__.txt",
 		family_prefix.trim_end_matches('/')
-	));
-	let module_ast = canonicalize_numeric_values_with_active_schema(&probe, &module.ast);
+	);
+	let module_ast = representation::compose(&probe, &module.ast);
 	Some(
 		module_ast
 			.statements
@@ -1909,23 +1894,19 @@ fn semantic_atoms_for_path_with_ordering(
 		"json" => return json_atoms(path),
 		_ => {}
 	}
-	if is_clausewitz_like_path(rel) {
-		let parsed = parse_clausewitz_file(path);
-		if parsed.diagnostics.is_empty() {
-			let ordering = ordering.unwrap_or_else(|| {
-				if is_gui_like_path(rel) {
-					AstOrderingPolicy::OrderSensitive
-				} else {
-					AstOrderingPolicy::OrderInsensitive
-				}
-			});
-			// `path` is a scratch location; the schema binds the game-relative
-			// one.
-			let ast = canonicalize_numeric_values_with_active_schema(Path::new(rel), &parsed.ast);
-			let mut atoms = AtomBag::new();
-			flatten_semantic_statements(&ast.statements, ordering, &[], &mut atoms);
-			return Some(atoms);
-		}
+	if is_clausewitz_like_path(rel)
+		&& let Some(ast) = representation::parse(rel, path)
+	{
+		let ordering = ordering.unwrap_or_else(|| {
+			if is_gui_like_path(rel) {
+				AstOrderingPolicy::OrderSensitive
+			} else {
+				AstOrderingPolicy::OrderInsensitive
+			}
+		});
+		let mut atoms = AtomBag::new();
+		flatten_semantic_statements(&ast.statements, ordering, &[], &mut atoms);
+		return Some(atoms);
 	}
 	let text = read(path)?;
 	let mut atoms = AtomBag::new();
