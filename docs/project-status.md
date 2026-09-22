@@ -123,8 +123,11 @@ since both are silent in game: `V008` warns that a numeric literal on a schema
 `float` field keeps only three decimals (`chance = 0.1234` is read as `0.123`),
 and `V009` warns that a `yes`-shaped value on a schema `bool` field which is not
 the exact lowercase spelling is read as false. Both fire only where the CWT
-schema states the field's type, and `V008` stays quiet when the discarded digits
-are zeros, which lose nothing. They live beside the existing scalar checks in
+schema states the field's type. `V008` drops to `Info` when the discarded digits
+are all zeros rather than going quiet: `0.5000` loses no value, but it is still
+not the precision the game keeps, and the author writing it probably believes
+otherwise. It says nothing at exactly three decimals, where there is nothing to
+report. They live beside the existing scalar checks in
 `src/game/eu4/editor/schema/interpret.rs`.
 
 Reading the consumers rather than the lexer turned out to matter more.

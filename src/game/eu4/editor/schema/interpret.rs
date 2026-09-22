@@ -1620,26 +1620,44 @@ fn schema_value_coercion_diagnostic(
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<SchemaDiagnostic> {
-	let (code, message) = match (schema_scalar_type(schema_match_value(field_match))?, scalar) {
+	let (code, severity, message) = match (
+		schema_scalar_type(schema_match_value(field_match))?,
+		scalar,
+	) {
 		(SchemaScalarType::Float { .. }, ScalarValue::Number(text)) => {
 			let (integer, fraction) = text.split_once('.')?;
 			let (kept, discarded) = fraction.split_at_checked(3)?;
-			// Trailing zeros carry nothing, so dropping them changes no value.
-			if !discarded.bytes().any(|byte| byte != b'0') {
+			// Three decimals exactly is what the game keeps; there is nothing to say.
+			if discarded.is_empty() {
 				return None;
 			}
-			(
-				"V008",
-				format!(
-					"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
-				),
-			)
+			// Trailing zeros carry no value, so nothing is lost — but the written
+			// precision still is not the precision the game keeps, which is worth
+			// saying quietly rather than not at all.
+			if discarded.bytes().any(|byte| byte != b'0') {
+				(
+					"V008",
+					Severity::Warning,
+					format!(
+						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}` and discards `{discarded}`"
+					),
+				)
+			} else {
+				(
+					"V008",
+					Severity::Info,
+					format!(
+						"`{key}` keeps three decimals: the game reads `{text}` as `{integer}.{kept}`, so the trailing `{discarded}` is not the extra precision it looks like"
+					),
+				)
+			}
 		}
 		(SchemaScalarType::Bool, ScalarValue::Identifier(text))
 			if text.eq_ignore_ascii_case("yes") || text.eq_ignore_ascii_case("no") =>
 		{
 			(
 				"V009",
+				Severity::Warning,
 				format!(
 					"`{key}` is read as false: the game compares against the exact lowercase `yes`, so `{text}` is not a boolean"
 				),
@@ -1649,7 +1667,7 @@ fn schema_value_coercion_diagnostic(
 	};
 	Some(SchemaDiagnostic {
 		range: editor_range_from_span(span),
-		severity: Some(Severity::Warning),
+		severity: Some(severity),
 		code: Some(code.to_string()),
 		source: Some("foch".to_string()),
 		message,
