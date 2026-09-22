@@ -8,6 +8,7 @@ use std::path::Path;
 use crate::game::eu4::content::BlockMergePolicy;
 use crate::game::schema::query::{
 	CompiledRoot, CompiledRuleField, CompiledRuleValue, CwtQuery, RuleContext, SchemaBinding,
+	SchemaScalarType,
 };
 use crate::model::ConflictKind;
 
@@ -54,8 +55,10 @@ fn suggest_for_conflict_with_query(
 			Some(field) => SchemaMergeIdentity::FieldValue(field.clone()),
 			None => SchemaMergeIdentity::AssignmentKey,
 		}),
-		suggested_block_policy: rule_field_for_path(schema, file_path, ast_path)
-			.and_then(|field| block_policy_for_value(&field.value)),
+		suggested_block_policy: schema
+			.bind_root(file_path)
+			.and_then(|root| rule_value_for_path(schema, root, ast_path))
+			.and_then(block_policy_for_value),
 		schema_provenance: format!("{}:<{}>", path_namespace(file_path), type_id.as_str()),
 	})
 }
@@ -169,25 +172,82 @@ fn fields_for_segments<'schema>(
 	last_matches
 }
 
-fn rule_field_for_path<'schema>(
+/// The rule value the schema gives the field at `ast_path`.
+///
+/// The value has to come from [`CompiledBindFieldMatch::value`] rather than
+/// from `field()`. An alias-bound field's wildcard carries the
+/// `alias_match_left[...]` marker, not a type, so reading `field().value` sees
+/// a marker wherever the schema routes a key through an alias — which in the
+/// EU4 config is roughly half of the typed fields, including the whole
+/// `alias[modifier:*]` family.
+fn rule_value_for_path<'schema>(
 	schema: &'schema CwtQuery,
-	file_path: &Path,
+	root: &'schema CompiledRoot,
 	ast_path: &[&str],
-) -> Option<&'schema CompiledRuleField> {
-	let mut context = RuleContext::RootType(schema.bind_root(file_path)?);
-	let mut last_field = None;
+) -> Option<&'schema CompiledRuleValue> {
+	let mut context = RuleContext::RootType(root);
+	let mut last_value = None;
 	for (index, segment) in ast_path.iter().enumerate() {
-		let field = schema.bind_field(context, segment)?;
-		last_field = Some(field);
+		let field_match = schema.bind_field_match(context, segment)?;
+		let value = field_match.value();
+		last_value = Some(value);
 		if index + 1 == ast_path.len() {
 			break;
 		}
-		let CompiledRuleValue::Block(_) = &field.value else {
-			return None;
+		context = match field_match.alias() {
+			Some(alias) => RuleContext::AliasRules(alias.rules.as_slice()),
+			None => {
+				let CompiledRuleValue::Block(_) = value else {
+					return None;
+				};
+				RuleContext::RuleField(field_match.field())
+			}
 		};
-		context = RuleContext::RuleField(field);
 	}
-	last_field
+	last_value
+}
+
+/// The primitive scalar type the schema declares for `ast_path`, or `None`
+/// wherever the schema does not say so unambiguously.
+///
+/// Abstaining is the point: EU4's CWT coverage is incomplete, several
+/// directories bind to more than one root type, and `bind_context` gives up on
+/// dynamic keys. A caller that needs to know how the game reads a field may
+/// only act where the schema is explicit, so every uncertain shape returns
+/// `None` rather than a guess.
+pub(crate) fn scalar_field_type(
+	schema: &CwtQuery,
+	file_path: &Path,
+	ast_path: &[&str],
+) -> Option<SchemaScalarType> {
+	let (last, parents) = ast_path.split_last()?;
+	// A definition's own instance key leads the path under most root types but
+	// is absorbed by `skip_root_key` under others, and which applies is not
+	// recoverable from the path alone. Try both readings and accept only a
+	// unanimous answer.
+	let mut candidates: Vec<&[&str]> = vec![parents];
+	if let Some((_, rest)) = parents.split_first() {
+		candidates.push(rest);
+	}
+	let mut resolved: Option<SchemaScalarType> = None;
+	for candidate in candidates {
+		let Some(context) = schema.bind_context(file_path, candidate) else {
+			continue;
+		};
+		for field_match in schema.bind_field_matches(context, last) {
+			let Some(scalar_type) = SchemaScalarType::from_rule_value(field_match.value()) else {
+				// One matching rule that is not a primitive scalar means the
+				// key is overloaded; the schema is not explicit here.
+				return None;
+			};
+			match resolved {
+				None => resolved = Some(scalar_type),
+				Some(previous) if previous.is_same_primitive(scalar_type) => {}
+				Some(_) => return None,
+			}
+		}
+	}
+	resolved
 }
 
 fn root_name_field<'schema>(schema: &'schema CwtQuery, file_path: &Path) -> Option<&'schema str> {
@@ -349,6 +409,129 @@ mod tests {
 				"deep merge of replaced block has 1 unresolved sub-conflict(s)"
 			),
 			Some(ConflictKind::DeepMergeable)
+		);
+	}
+
+	const ALIAS_SCHEMA: &str = r#"
+		types = {
+			type[thing] = { path = "game/common/things" }
+		}
+
+		thing = {
+			alias_name[modifier] = alias_match_left[modifier]
+			plain_scalar = scalar
+		}
+
+		alias[modifier:upkeep] = float
+		alias[modifier:slots] = int[0..10]
+		alias[modifier:breakdown] = {
+			base = float
+		}
+	"#;
+
+	#[test]
+	fn alias_bound_block_fields_are_recursive_rather_than_replaced() {
+		// `field()` would report the `alias_match_left[modifier]` wildcard
+		// here, whose marker value is not a block, so the suggestion used to
+		// come out as `Replace` for every alias-bound field no matter what the
+		// alias actually declares.
+		let schema = test_schema(ALIAS_SCHEMA);
+		let suggestion = suggest_for_conflict_with_query(
+			schema.facts(),
+			Path::new("common/things/example.txt"),
+			&["breakdown"],
+		)
+		.expect("suggestion");
+
+		assert_eq!(
+			suggestion.suggested_block_policy,
+			Some(BlockMergePolicy::Recursive)
+		);
+	}
+
+	#[test]
+	fn alias_bound_scalar_fields_keep_the_replace_policy() {
+		let schema = test_schema(ALIAS_SCHEMA);
+		let suggestion = suggest_for_conflict_with_query(
+			schema.facts(),
+			Path::new("common/things/example.txt"),
+			&["upkeep"],
+		)
+		.expect("suggestion");
+
+		assert_eq!(
+			suggestion.suggested_block_policy,
+			Some(BlockMergePolicy::Replace)
+		);
+	}
+
+	#[test]
+	fn scalar_field_type_reads_the_alias_value_not_the_wildcard() {
+		let schema = test_schema(ALIAS_SCHEMA);
+		let file = Path::new("common/things/example.txt");
+
+		assert_eq!(
+			scalar_field_type(schema.facts(), file, &["upkeep"]),
+			Some(SchemaScalarType::Float { range: None })
+		);
+		assert!(matches!(
+			scalar_field_type(schema.facts(), file, &["slots"]),
+			Some(SchemaScalarType::Int { range: Some(_) })
+		));
+	}
+
+	#[test]
+	fn scalar_field_type_descends_through_an_alias_bound_block() {
+		let schema = test_schema(ALIAS_SCHEMA);
+
+		assert_eq!(
+			scalar_field_type(
+				schema.facts(),
+				Path::new("common/things/example.txt"),
+				&["breakdown", "base"]
+			),
+			Some(SchemaScalarType::Float { range: None })
+		);
+	}
+
+	#[test]
+	fn scalar_field_type_abstains_where_the_schema_is_not_explicit() {
+		let schema = test_schema(ALIAS_SCHEMA);
+		let file = Path::new("common/things/example.txt");
+
+		assert_eq!(
+			scalar_field_type(schema.facts(), file, &["plain_scalar"]),
+			None
+		);
+		assert_eq!(
+			scalar_field_type(schema.facts(), file, &["unknown_key"]),
+			None
+		);
+		assert_eq!(
+			scalar_field_type(schema.facts(), file, &["breakdown"]),
+			None
+		);
+		assert_eq!(
+			scalar_field_type(schema.facts(), Path::new("other/x.txt"), &["upkeep"]),
+			None
+		);
+		assert_eq!(scalar_field_type(schema.facts(), file, &[]), None);
+	}
+
+	#[test]
+	fn scalar_field_type_tolerates_a_leading_definition_instance_key() {
+		// A merge path carries the definition's own key ahead of the field,
+		// and whether the schema absorbs that key is not recoverable from the
+		// path, so both readings have to be tried.
+		let schema = test_schema(ALIAS_SCHEMA);
+
+		assert_eq!(
+			scalar_field_type(
+				schema.facts(),
+				Path::new("common/things/example.txt"),
+				&["some_thing", "upkeep"]
+			),
+			Some(SchemaScalarType::Float { range: None })
 		);
 	}
 

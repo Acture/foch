@@ -183,6 +183,7 @@ mod tests {
 					],
 					policy: MergeTracePolicy::Union,
 					decision: MergeTraceDecision::Unioned,
+					game_value_equivalences: 0,
 				},
 			)]),
 		);

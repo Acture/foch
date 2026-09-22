@@ -1760,7 +1760,10 @@ mod tests {
 					.filter(|view| view.shallow_changed)
 					.map(|view| view.node.value.as_deref().unwrap().parse::<i64>().unwrap())
 					.sum::<i64>();
-				PolicyDecision::SynthesizeScalar(sum.to_string())
+				PolicyDecision::SynthesizeScalar {
+					value: sum.to_string(),
+					policy: MergePolicyKind::ScalarReducer,
+				}
 			}
 		}
 

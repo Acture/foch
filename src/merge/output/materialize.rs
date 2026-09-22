@@ -897,6 +897,16 @@ fn apply_file_unit(
 			if materialization.uses_rendered_output() {
 				report.per_entry_noop_skipped_count += merge_output.per_entry_noop_skipped_count;
 			}
+			// Read before the provenance block takes the trace. A fold that
+			// says nothing looks identical to one contributor overriding
+			// another, because the losing spelling is absent from the output
+			// either way, so this reaches the review unit whether or not the
+			// audit trace is kept.
+			let game_value_equivalences: u32 = merge_output
+				.merge_trace
+				.values()
+				.map(|trace| trace.game_value_equivalences)
+				.sum();
 			if materialization.commits_output() && materialization.uses_rendered_output() {
 				let entries = std::mem::take(&mut merge_output.provenance_localisation);
 				if !entries.is_empty() {
@@ -936,7 +946,11 @@ fn apply_file_unit(
 				materialization
 					.commits_output()
 					.then(|| entry.output_path().to_string()),
-				[],
+				(game_value_equivalences > 0).then(|| {
+					format!(
+						"{game_value_equivalences} assignment(s) differed only in spelling; EU4's own coercion reads the contributors' values as one"
+					)
+				}),
 			);
 		}
 		Ok(Err(StructuralMergeFailure::Unresolved(conflict))) => {
@@ -3492,6 +3506,7 @@ mod tests {
 				contributors: Vec::new(),
 				policy: MergeTracePolicy::Union,
 				decision: MergeTraceDecision::Unioned,
+				game_value_equivalences: 0,
 			},
 		);
 		assert!(target.starts_with("common/diplomatic_actions/"));
@@ -4277,6 +4292,7 @@ mod tests {
 			contributors: Vec::new(),
 			policy: MergeTracePolicy::Union,
 			decision: MergeTraceDecision::Unioned,
+			game_value_equivalences: 0,
 		};
 		let mut report = MergeReport {
 			generated_file_count: 2,

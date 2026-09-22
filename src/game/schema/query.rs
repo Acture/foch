@@ -1188,6 +1188,20 @@ impl<'p> CompiledBindFieldMatch<'p> {
 			Self::Alias { alias, .. } => Some(alias),
 		}
 	}
+
+	/// The rule value that actually types this match.
+	///
+	/// `field()` returns the alias *wildcard*, whose value is the
+	/// `alias_match_left[...]` marker rather than a type, so reading the type
+	/// off it loses every alias-bound field. Roughly half of the EU4 schema's
+	/// `int` and `float` fields are alias-bound, so callers that want a type
+	/// must go through here.
+	pub fn value(&self) -> &'p CompiledRuleValue {
+		match self {
+			Self::Field(field) => &field.value,
+			Self::Alias { alias, .. } => &alias.value,
+		}
+	}
 }
 
 struct RuntimeRuleIndex {
@@ -1525,4 +1539,134 @@ mod tests {
 		assert_eq!(root_path_match_len("commonplace/foo", "common", None), None);
 		assert_eq!(root_path_match_len("events/a.txt", "", None), None);
 	}
+}
+
+/// Splits a CWT marker such as `int[0..10]` into its head and payload.
+pub fn parse_schema_marker(text: &str) -> Option<(&str, &str)> {
+	let (head, rest) = text.split_once('[')?;
+	Some((head, rest.strip_suffix(']')?))
+}
+
+/// The primitive scalar type a CWT rule value names.
+///
+/// This is schema vocabulary, not game behavior: it says what the schema
+/// declares a field to be, and says nothing about how any particular engine
+/// reads that text.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SchemaScalarType {
+	Int { range: Option<SchemaIntRange> },
+	Float { range: Option<SchemaFloatRange> },
+	Bool,
+}
+
+impl SchemaScalarType {
+	/// Classifies a rule value, or `None` where the schema names something
+	/// other than a primitive scalar type.
+	pub fn from_rule_value(value: &CompiledRuleValue) -> Option<Self> {
+		let value = match value {
+			CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value.as_str(),
+			CompiledRuleValue::Block(_) => return None,
+		};
+		match value {
+			"int" => Some(Self::Int { range: None }),
+			"float" => Some(Self::Float { range: None }),
+			"bool" => Some(Self::Bool),
+			_ => match parse_schema_marker(value) {
+				Some(("int", range)) => {
+					parse_schema_int_range(range).map(|range| Self::Int { range: Some(range) })
+				}
+				Some(("float", range)) => {
+					parse_schema_float_range(range).map(|range| Self::Float { range: Some(range) })
+				}
+				_ => None,
+			},
+		}
+	}
+
+	/// Whether two declarations name the same primitive, ignoring their
+	/// ranges. A range constrains which values are legal, not how the text is
+	/// read, so a caller asking only which reader applies can treat two
+	/// range-differing declarations of one primitive as agreeing.
+	pub fn is_same_primitive(self, other: Self) -> bool {
+		matches!(
+			(self, other),
+			(Self::Int { .. }, Self::Int { .. })
+				| (Self::Float { .. }, Self::Float { .. })
+				| (Self::Bool, Self::Bool)
+		)
+	}
+
+	pub fn label(&self) -> String {
+		match self {
+			Self::Int { range: None } => "int".to_string(),
+			Self::Int { range: Some(range) } => range.label("int"),
+			Self::Float { range: None } => "float".to_string(),
+			Self::Float { range: Some(range) } => range.label("float"),
+			Self::Bool => "bool".to_string(),
+		}
+	}
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SchemaIntRange {
+	pub minimum: i64,
+	pub maximum: Option<i64>,
+}
+
+impl SchemaIntRange {
+	pub fn contains(self, value: i64) -> bool {
+		value >= self.minimum && self.maximum.is_none_or(|maximum| value <= maximum)
+	}
+
+	pub fn label(self, kind: &str) -> String {
+		format!(
+			"{kind}[{}..{}]",
+			self.minimum,
+			self.maximum
+				.map(|value| value.to_string())
+				.unwrap_or_else(|| "inf".to_string())
+		)
+	}
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SchemaFloatRange {
+	pub minimum: f64,
+	pub maximum: Option<f64>,
+}
+
+impl SchemaFloatRange {
+	pub fn contains(self, value: f64) -> bool {
+		value >= self.minimum && self.maximum.is_none_or(|maximum| value <= maximum)
+	}
+
+	pub fn label(self, kind: &str) -> String {
+		format!(
+			"{kind}[{}..{}]",
+			self.minimum,
+			self.maximum
+				.map(|value| value.to_string())
+				.unwrap_or_else(|| "inf".to_string())
+		)
+	}
+}
+
+fn parse_schema_int_range(value: &str) -> Option<SchemaIntRange> {
+	let (minimum, maximum) = value.split_once("..")?;
+	let minimum = minimum.trim().parse::<i64>().ok()?;
+	let maximum = match maximum.trim() {
+		"inf" => None,
+		value => Some(value.parse::<i64>().ok()?),
+	};
+	Some(SchemaIntRange { minimum, maximum })
+}
+
+fn parse_schema_float_range(value: &str) -> Option<SchemaFloatRange> {
+	let (minimum, maximum) = value.split_once("..")?;
+	let minimum = minimum.trim().parse::<f64>().ok()?;
+	let maximum = match maximum.trim() {
+		"inf" => None,
+		value => Some(value.parse::<f64>().ok()?),
+	};
+	Some(SchemaFloatRange { minimum, maximum })
 }

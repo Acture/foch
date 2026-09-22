@@ -7,7 +7,7 @@ use crate::game::eu4::script::parser::{
 use crate::game::schema::query::{
 	CompiledAlias, CompiledAliasCategory, CompiledBindFieldMatch, CompiledFieldAttributes,
 	CompiledLink, CompiledRoot, CompiledRuleCondition, CompiledRuleField, CompiledRuleValue,
-	CompiledSeverity, CwtQuery, RuleContext,
+	CompiledSeverity, CwtQuery, RuleContext, SchemaScalarType, parse_schema_marker,
 };
 use crate::model::{LocalisationDefinition, Severity};
 
@@ -100,7 +100,7 @@ fn render_schema_hover_markdown(
 	key: &str,
 	field_match: &CompiledBindFieldMatch<'_>,
 ) -> String {
-	let value = schema_match_value(field_match);
+	let value = field_match.value();
 	let mut sections = vec![
 		format!("**{key}**"),
 		format!("Type: `{}`", rule_value_kind(value)),
@@ -384,7 +384,7 @@ fn schema_value_completion_candidates(
 		key,
 		&active_subtypes,
 	)?;
-	let values = schema_allowed_values(engine, dynamic_values, schema_match_value(&field_match))?;
+	let values = schema_allowed_values(engine, dynamic_values, field_match.value())?;
 	let kind = values.kind.completion_kind();
 	let mut candidates = values
 		.values
@@ -955,11 +955,6 @@ fn schema_completion_detail(description: Option<&str>) -> String {
 		.and_then(|text| text.lines().next())
 		.map(|line| format!("cwt: {line}"))
 		.unwrap_or_else(|| "cwt schema field".to_string())
-}
-
-fn parse_schema_marker(text: &str) -> Option<(&str, &str)> {
-	let (head, rest) = text.split_once('[')?;
-	Some((head, rest.strip_suffix(']')?))
 }
 
 fn is_schema_dynamic_key_marker(key: &str) -> bool {
@@ -1559,7 +1554,7 @@ fn schema_invalid_value_diagnostic(
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<SchemaDiagnostic> {
-	let values = schema_allowed_values(engine, dynamic_values, schema_match_value(field_match))?;
+	let values = schema_allowed_values(engine, dynamic_values, field_match.value())?;
 	let text = scalar.as_text();
 	if values.values.iter().any(|value| value == &text) {
 		return None;
@@ -1587,8 +1582,8 @@ fn schema_scalar_type_diagnostic(
 	scalar: &ScalarValue,
 	span: &SpanRange,
 ) -> Option<SchemaDiagnostic> {
-	let expected = schema_scalar_type(schema_match_value(field_match))?;
-	if expected.matches(scalar) {
+	let expected = SchemaScalarType::from_rule_value(field_match.value())?;
+	if schema_scalar_type_matches(expected, scalar) {
 		return None;
 	}
 	Some(SchemaDiagnostic {
@@ -1624,7 +1619,7 @@ fn schema_value_coercion_diagnostic(
 	span: &SpanRange,
 ) -> Option<SchemaDiagnostic> {
 	let (code, severity, message) = match (
-		schema_scalar_type(schema_match_value(field_match))?,
+		SchemaScalarType::from_rule_value(field_match.value())?,
 		scalar,
 	) {
 		(SchemaScalarType::Float { .. }, ScalarValue::Number(text)) => {
@@ -1683,7 +1678,7 @@ fn schema_value_shape_diagnostic(
 	key: &str,
 	value: &AstValue,
 ) -> Option<SchemaDiagnostic> {
-	let expected = schema_value_shape(schema_match_value(field_match));
+	let expected = schema_value_shape(field_match.value());
 	let actual = SchemaValueShape::from_ast_value(value);
 	if expected == actual {
 		return None;
@@ -1731,124 +1726,29 @@ fn schema_alias_scope_diagnostic(
 	})
 }
 
-fn schema_scalar_type(value: &CompiledRuleValue) -> Option<SchemaScalarType> {
-	let value = match value {
-		CompiledRuleValue::Scalar(value) | CompiledRuleValue::Marker(value) => value.as_str(),
-		CompiledRuleValue::Block(_) => return None,
-	};
-	match value {
-		"int" => Some(SchemaScalarType::Int { range: None }),
-		"float" => Some(SchemaScalarType::Float { range: None }),
-		"bool" => Some(SchemaScalarType::Bool),
-		_ => match parse_schema_marker(value) {
-			Some(("int", range)) => parse_schema_int_range(range)
-				.map(|range| SchemaScalarType::Int { range: Some(range) }),
-			Some(("float", range)) => parse_schema_float_range(range)
-				.map(|range| SchemaScalarType::Float { range: Some(range) }),
-			_ => None,
+/// Whether `scalar` satisfies the schema's declared primitive type.
+///
+/// This is schema conformance, deliberately strict: it asks whether the file
+/// says what the schema declares, not what the game would read from it. The
+/// game's coercion is modelled separately in `crate::game::eu4::coercion`, and
+/// the two must not be conflated — `123abc` fails this check yet still reads
+/// as `123`.
+fn schema_scalar_type_matches(scalar_type: SchemaScalarType, scalar: &ScalarValue) -> bool {
+	match scalar_type {
+		SchemaScalarType::Int { range } => match scalar {
+			ScalarValue::Number(value) => value
+				.parse::<i64>()
+				.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
+			_ => false,
 		},
+		SchemaScalarType::Float { range } => match scalar {
+			ScalarValue::Number(value) => value
+				.parse::<f64>()
+				.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
+			_ => false,
+		},
+		SchemaScalarType::Bool => matches!(scalar, ScalarValue::Bool(_)),
 	}
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum SchemaScalarType {
-	Int { range: Option<SchemaIntRange> },
-	Float { range: Option<SchemaFloatRange> },
-	Bool,
-}
-
-impl SchemaScalarType {
-	fn label(&self) -> String {
-		match self {
-			Self::Int { range: None } => "int".to_string(),
-			Self::Int { range: Some(range) } => range.label("int"),
-			Self::Float { range: None } => "float".to_string(),
-			Self::Float { range: Some(range) } => range.label("float"),
-			Self::Bool => "bool".to_string(),
-		}
-	}
-
-	fn matches(&self, scalar: &ScalarValue) -> bool {
-		match self {
-			Self::Int { range } => match scalar {
-				ScalarValue::Number(value) => value
-					.parse::<i64>()
-					.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
-				_ => false,
-			},
-			Self::Float { range } => match scalar {
-				ScalarValue::Number(value) => value
-					.parse::<f64>()
-					.is_ok_and(|number| range.is_none_or(|range| range.contains(number))),
-				_ => false,
-			},
-			Self::Bool => matches!(scalar, ScalarValue::Bool(_)),
-		}
-	}
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct SchemaIntRange {
-	minimum: i64,
-	maximum: Option<i64>,
-}
-
-impl SchemaIntRange {
-	fn contains(self, value: i64) -> bool {
-		value >= self.minimum && self.maximum.is_none_or(|maximum| value <= maximum)
-	}
-
-	fn label(self, kind: &str) -> String {
-		format!(
-			"{kind}[{}..{}]",
-			self.minimum,
-			self.maximum
-				.map(|value| value.to_string())
-				.unwrap_or_else(|| "inf".to_string())
-		)
-	}
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct SchemaFloatRange {
-	minimum: f64,
-	maximum: Option<f64>,
-}
-
-impl SchemaFloatRange {
-	fn contains(self, value: f64) -> bool {
-		value >= self.minimum && self.maximum.is_none_or(|maximum| value <= maximum)
-	}
-
-	fn label(self, kind: &str) -> String {
-		format!(
-			"{kind}[{}..{}]",
-			self.minimum,
-			self.maximum
-				.map(|value| value.to_string())
-				.unwrap_or_else(|| "inf".to_string())
-		)
-	}
-}
-
-fn parse_schema_int_range(value: &str) -> Option<SchemaIntRange> {
-	let (minimum, maximum) = value.split_once("..")?;
-	let minimum = minimum.trim().parse::<i64>().ok()?;
-	let maximum = match maximum.trim() {
-		"inf" => None,
-		value => Some(value.parse::<i64>().ok()?),
-	};
-	Some(SchemaIntRange { minimum, maximum })
-}
-
-fn parse_schema_float_range(value: &str) -> Option<SchemaFloatRange> {
-	let (minimum, maximum) = value.split_once("..")?;
-	let minimum = minimum.trim().parse::<f64>().ok()?;
-	let maximum = match maximum.trim() {
-		"inf" => None,
-		value => Some(value.parse::<f64>().ok()?),
-	};
-	Some(SchemaFloatRange { minimum, maximum })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1878,13 +1778,6 @@ fn schema_value_shape(value: &CompiledRuleValue) -> SchemaValueShape {
 		CompiledRuleValue::Scalar(_) | CompiledRuleValue::Marker(_) => SchemaValueShape::Scalar,
 		CompiledRuleValue::Block(_) => SchemaValueShape::Block,
 	}
-}
-
-fn schema_match_value<'p>(field_match: &CompiledBindFieldMatch<'p>) -> &'p CompiledRuleValue {
-	field_match
-		.alias()
-		.map(|alias| &alias.value)
-		.unwrap_or_else(|| &field_match.field().value)
 }
 
 fn schema_allowed_values<'a>(

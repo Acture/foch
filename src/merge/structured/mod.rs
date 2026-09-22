@@ -21,7 +21,10 @@ pub(crate) use merge::{
 };
 pub use merge::{ClausewitzMergeOutcome, merge_clausewitz_files_n_way};
 #[cfg(test)]
-pub use merge::{ClausewitzScalarReduction, canonicalize_clausewitz_file, merge_clausewitz_files};
+pub use merge::{
+	ClausewitzScalarReduction, canonicalize_clausewitz_file, merge_clausewitz_files,
+	merge_clausewitz_files_n_way_with_schema,
+};
 pub(crate) use observer::observe_merge_trace;
 pub(crate) use tree_kernel::{
 	ClausewitzFileAdapter, ClausewitzFileJoin, DefinitionModuleAdapter, DefinitionModuleJoin,

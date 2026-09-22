@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod base;
+pub mod coercion;
 pub mod content;
 pub(crate) mod cwt;
 pub mod editor;
